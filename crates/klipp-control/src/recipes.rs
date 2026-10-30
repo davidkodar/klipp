@@ -23,6 +23,24 @@ pub fn all(dir: Option<&std::path::Path>) -> Vec<CompositionTemplate> {
     recipes
 }
 
+/// Every audio chain recipe there is (#2886): the user's own, the
+/// installed packs', then Klipp's, found as [`all`] finds recipes.
+pub fn audio_all(dir: Option<&std::path::Path>) -> Vec<CompositionTemplate> {
+    let mut chains: Vec<CompositionTemplate> = crate::plans::template_store(dir).audio_chains().cloned().collect();
+    chains.extend(ct::builtin_audio_chains());
+    chains
+}
+
+/// An audio chain recipe as the list call gives it (#2886): its steps,
+/// each the effect it adds and what it does, and its controls.
+pub fn listed_audio(r: &CompositionTemplate) -> Value {
+    let steps: Vec<Value> = r.audio.iter().flat_map(|a| &a.steps).map(|s| json!({ "name": s.name, "effect": s.effect, "says": s.says })).collect();
+    let mut v = listed(r);
+    v["steps"] = json!(steps);
+    v.as_object_mut().map(|o| o.remove("slots"));
+    v
+}
+
 /// The recipe called `name` (ignoring case), among `recipes`.
 pub fn named<'a>(recipes: &'a [CompositionTemplate], name: &str) -> Result<&'a CompositionTemplate, String> {
     recipes.iter().find(|r| r.name.eq_ignore_ascii_case(name.trim())).ok_or_else(|| {
@@ -202,6 +220,47 @@ mod tests {
         assert!(why.contains("\"Green screen\""), "names those there are: {why}");
     }
 
+    /// #2886: the recipe op, bound as the socket binds it, adds an audio
+    /// chain's steps to a clip's sound as one step: those asked for, in
+    /// the recipe's order, a control setting one; a step its sound has
+    /// already left out; a step the recipe hasn't got refused, and one
+    /// with nothing left to add. The listing names it with its steps.
+    #[test]
+    fn the_recipe_op_adds_an_audio_chains_steps() {
+        use klipp_document::history::EditCommand;
+        use klipp_document::ops::{resolve, ClipRef, Op};
+        let t = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 25);
+        let mut pool = klipp_media::MediaPool::new();
+        let mut item = klipp_media::MediaItem::synthetic_for_test("/tmp/talk.wav".into(), None);
+        item.has_audio = true;
+        let media = pool.add(item);
+        let mut clip = klipp_timeline::Clip::media(media, t(0.0), t(4.0), t(0.0), t(4.0));
+        clip.audio_effects = vec![klipp_core::AudioEffectInstance { effect_type: "deesser".into(), enabled: true, wet_dry: 1.0, params: Vec::new() }];
+        let id = clip.id;
+        let mut track = klipp_timeline::Track::new("A1", klipp_timeline::TrackKind::Audio);
+        track.clips = vec![clip];
+        let mut seq = Sequence::new_default();
+        seq.tracks = vec![track];
+        let op = |steps: Option<Vec<&str>>, controls: Value| Op::Recipe {
+            clip_id: ClipRef::Id(id), name: "clean AUDIO".into(), slots: BTreeMap::new(), controls: serde_json::from_value(controls).unwrap(),
+            steps: steps.map(|s| s.into_iter().map(String::from).collect()), build: None, audio: None,
+        };
+        let placed = |o: Op| resolve(&seq, &pool, &crate::plans::with_recipes(&[o], None, &pool));
+        let plan = placed(op(Some(vec!["deess", "voice", "hum"]), json!({"Voice reduction (dB)": 12.0}))).unwrap_or_else(|r| panic!("{r:?}"));
+        let [step] = plan.steps.as_slice() else { panic!("one step") };
+        let EditCommand::EditAudioChain { new_state, .. } = &step.edit else { panic!("an audio step: {:?}", step.edit) };
+        let types: Vec<&str> = new_state.audio_effects.iter().map(|e| e.effect_type.as_str()).collect();
+        assert_eq!(types, ["deesser", "voice_isolation", "hum_removal"], "the de-esser it had kept, not added twice; the rest in the recipe's order");
+        assert_eq!(new_state.audio_effects[1].params[0], ("reduction".to_string(), 12.0), "set by its control");
+        assert!(step.what.contains("speech isolated") && step.what.contains("mains hum removed") && !step.what.contains("sibilance"), "{}", step.what);
+        assert!(placed(op(Some(vec!["reverb"]), json!({}))).unwrap_err().why.contains("has no step \"reverb\""));
+        assert!(placed(op(Some(vec!["deess"]), json!({}))).unwrap_err().why.contains("already has every effect"));
+        let listed = crate::plans::title_templates(None, None);
+        assert!(listed["text"].as_str().unwrap().contains("audio chains, added to a clip's sound with the recipe op"), "{}", listed["text"]);
+        let chain = listed["audio_chains"].as_array().unwrap().iter().find(|c| c["name"] == "Clean Audio").expect("listed");
+        assert_eq!(chain["steps"].as_array().unwrap().len(), 5);
+    }
+
     /// The recipe op, bound as the socket binds it, builds the recipe into
     /// the clip as one picture step: a key node after the chain's end,
     /// its colour, tolerance and softness set. A name no recipe has and a slot left
@@ -219,7 +278,7 @@ mod tests {
         let pool = klipp_media::MediaPool::new();
         let op = |name: &str, slots: Value, controls: Value| Op::Recipe {
             clip_id: ClipRef::Id(id), name: name.into(),
-            slots: serde_json::from_value(slots).unwrap(), controls: serde_json::from_value(controls).unwrap(), build: None,
+            slots: serde_json::from_value(slots).unwrap(), controls: serde_json::from_value(controls).unwrap(), steps: None, build: None, audio: None,
         };
         let bound = crate::plans::with_recipes(&[op("green screen", json!({"screen": "#05be05"}), json!({"Tolerance": 0.25, "Softness": 0.3}))], None, &klipp_media::MediaPool::new());
         let plan = resolve(&seq, &pool, &bound).unwrap_or_else(|r| panic!("{r:?}"));
@@ -261,7 +320,7 @@ mod tests {
         seq.tracks = vec![track];
         let pool = klipp_media::MediaPool::new();
         let link = |control: Option<&str>, target: Option<&str>, value: f64| Op::TemplateLink { clip_id: ClipRef::Id(id), control: control.map(Into::into), target: target.map(Into::into), action: None, value: Some(value) };
-        let place = |name: &str, slots: Value| Op::Recipe { clip_id: ClipRef::Id(id), name: name.into(), slots: serde_json::from_value(slots).unwrap(), controls: BTreeMap::new(), build: None };
+        let place = |name: &str, slots: Value| Op::Recipe { clip_id: ClipRef::Id(id), name: name.into(), slots: serde_json::from_value(slots).unwrap(), controls: BTreeMap::new(), steps: None, build: None, audio: None };
         let ops = [
             place("Picture in picture", json!({"picture": "m1"})),
             place("Green screen", json!({"screen": "#05be05"})),
@@ -421,7 +480,7 @@ mod tests {
         track.clips = vec![clip];
         seq.tracks = vec![track];
         let ops = [
-            Op::Recipe { clip_id: ClipRef::Id(id), name: "Shaking".into(), slots: BTreeMap::new(), controls: BTreeMap::new(), build: None },
+            Op::Recipe { clip_id: ClipRef::Id(id), name: "Shaking".into(), slots: BTreeMap::new(), controls: BTreeMap::new(), steps: None, build: None, audio: None },
             Op::TemplateLink { clip_id: ClipRef::Id(id), control: Some("Shake".into()), target: None, action: None, value: Some(50.0) },
         ];
         let plan = resolve(&seq, &klipp_media::MediaPool::new(), &crate::plans::with_recipes(&ops, Some(&dir), &klipp_media::MediaPool::new())).unwrap_or_else(|r| panic!("{r:?}"));

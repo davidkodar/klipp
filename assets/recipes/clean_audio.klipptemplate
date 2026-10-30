@@ -1,0 +1,62 @@
+{
+  "format_version": 2,
+  "id": "6f1c2d84-3b5e-4a7f-9c21-8d4e0b7a5c13",
+  "name": "Clean Audio",
+  "category": "Sound",
+  "written_by": "built-in",
+  "kind": "audio_chain",
+  "composition_id": "00000000-0000-0000-0000-000000000000",
+  "parameters": {
+    "reduction": {
+      "label": "Voice reduction (dB)",
+      "default": {
+        "type": "Number",
+        "value": 24.0
+      },
+      "range": {
+        "min": 0.0,
+        "max": 60.0
+      }
+    }
+  },
+  "bindings": [
+    {
+      "parameter": "reduction",
+      "property": "step:voice.reduction"
+    }
+  ],
+  "audio": {
+    "steps": [
+      {
+        "name": "voice",
+        "effect": "voice_isolation",
+        "params": { "reduction": 24.0, "mode": 0.0 },
+        "says": "speech isolated from the noise (Voice Isolation)"
+      },
+      {
+        "name": "wind",
+        "effect": "denoiser",
+        "params": { "strength": 1.0, "floor": 0.03, "wind": 1.0, "profile_seconds": 1.0 },
+        "says": "wind and rumble reduced"
+      },
+      {
+        "name": "hiss",
+        "effect": "denoiser",
+        "params": { "strength": 0.85, "floor": 0.06, "wind": 0.0, "profile_seconds": 0.5 },
+        "says": "hiss reduced"
+      },
+      {
+        "name": "hum",
+        "effect": "hum_removal",
+        "params": { "fundamental_hz": 50.0, "harmonics": 4.0, "q": 30.0 },
+        "says": "mains hum removed"
+      },
+      {
+        "name": "deess",
+        "effect": "deesser",
+        "params": { "frequency": 6500.0, "threshold": -24.0, "reduction": 6.0, "bandwidth": 1.0 },
+        "says": "sibilance tamed"
+      }
+    ]
+  }
+}

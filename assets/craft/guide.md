@@ -870,7 +870,7 @@ exist until the plan runs.
   step. On a clip holding a recipe it moves the recipe's controls the
   same way, its targets named `node:<step>.<param>` as the timeline view
   lists them.
-- `recipe {clip_id, name, slots?, controls?}`: a recipe built into the
+- `recipe {clip_id, name, slots?, controls?, steps?}`: a recipe built into the
   clip's picture, as ordinary nodes the graph shows and edits (green
   screen, picture in picture...). `slots` fills what it needs by name or
   label: a media slot a media id, a colour slot `#rrggbb`; `controls` sets
@@ -878,6 +878,11 @@ exist until the plan runs.
   frame named for the recipe. Its controls stay live: `template_link`
   moves them later, and the timeline view lists them on the clip.
   `klipp_title_templates` lists the recipes with their slots and controls.
+  An audio chain (listed under `audio_chains`, Clean Audio among them)
+  adds steps of Klipp's own audio effects to the clip's sound instead:
+  `steps` names those to add (all when left out), each one the sound
+  has already is skipped, and `controls` sets their numbers. One undo
+  step.
 - `join {clip_id, side?}`: a split undone later, or a scene cut found
   where the shot did not change: the clip and the piece of the same shot
   on its `side` ("next", the default, or "previous") made one again, its

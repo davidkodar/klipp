@@ -1194,10 +1194,18 @@ pub enum Op {
         slots: std::collections::BTreeMap<String, serde_json::Value>,
         #[serde(default)]
         controls: std::collections::BTreeMap<String, serde_json::Value>,
+        /// An audio chain recipe's steps to add (#2886), by name; all of
+        /// them when left out.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        steps: Option<Vec<String>>,
         /// What builds it into a clip, bound by whoever resolves the op
         /// (the socket, which reads the recipe files): never sent.
         #[serde(skip)]
         build: Option<RecipeBuilder>,
+        /// An audio chain recipe's effects (#2886), worked out the same
+        /// way: never sent.
+        #[serde(skip)]
+        audio: Option<AudioSteps>,
     },
     /// A lower third: `name`, and `role` under it, bottom left inside
     /// title-safe, for `secs` from `at`, fading in and out. It goes on a
@@ -4458,6 +4466,16 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             }
             template_link(i, clip, control.as_deref(), target.as_deref(), action.as_deref(), *value)
         }
+        Op::Recipe { clip_id, name, audio: Some(AudioSteps(steps)), .. } => {
+            let (_, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
+            let steps = steps.clone().map_err(|why| refuse(i, why, "title_templates lists each recipe's steps and controls"))?;
+            let (added, edit) = add_audio_steps(seq, pool, i, clip, &steps, "Recipe")?;
+            if added.is_empty() {
+                return Err(refuse(i, "the sound already has every effect these steps add", "nothing to add"));
+            }
+            let said: Vec<&str> = added.iter().map(|(_, says)| *says).collect();
+            Ok((format!("{} on the sound of {}: {}", quoted(name), clip_name(seq, pool, clip), said.join(", ")), edit, vec![clip.id]))
+        }
         Op::Recipe { clip_id, name, build, .. } => {
             let (_, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
             let build = build.as_ref().ok_or_else(|| refuse(i, format!("there is no recipe \"{name}\""), "title_templates lists the recipes"))?;
@@ -7031,6 +7049,12 @@ impl PartialEq for RecipeMaker {
         std::sync::Arc::ptr_eq(&self.0, &other.0)
     }
 }
+
+/// An audio chain recipe's steps as the effects they add (#2886), each
+/// with its name and what it says, or why they can't be: worked out by
+/// whoever resolves the op from the recipe file and the op's controls.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AudioSteps(pub Result<Vec<(String, String, klipp_core::AudioEffectInstance)>, String>);
 
 /// What a recipe's builder gives (#2758): the graph ops, the instance its
 /// frame keeps, and anything the reply says beside (a subject matte the
@@ -10880,6 +10904,7 @@ fn retime(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, clip_id: ClipId,
 }
 
 /// What `clean_audio` was asked to fix.
+#[derive(Clone, Copy)]
 struct CleanFlags {
     voice: bool,
     reduction_db: Option<f32>,
@@ -10889,7 +10914,82 @@ struct CleanFlags {
     deess: bool,
 }
 
+/// The steps of Klipp's own Clean Audio recipe (#2886) the flags ask
+/// for, added to the clip's sound: voice isolation; else the denoiser
+/// for wind (stronger) or hiss, one of it; hum removal; the de-esser.
+/// Its own file, never one saved under that name.
 fn clean_audio(seq: &Sequence, pool: &MediaPool, i: usize, given: &Clip, flags: CleanFlags) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
+    let CleanFlags { voice, reduction_db, wind, hiss, hum, deess } = flags;
+    let clip = sound_settings_clip(seq, given);
+    if !clip.media_id().and_then(|id| pool.get(&id)).is_some_and(|m| m.has_audio) {
+        return Err(refuse(i, format!("{} has no sound", clip_name(seq, pool, clip)), "name a clip whose media has audio"));
+    }
+    if !(voice || wind || hiss || hum || deess) {
+        return Err(refuse(i, "nothing to clean", "set voice, wind, hiss, hum or deess"));
+    }
+    let recipe = klipp_timeline::composition_template::builtin_audio_chains().into_iter().find(|r| r.name == "Clean Audio").ok_or_else(|| refuse(i, "Klipp's Clean Audio recipe is missing", "report it"))?;
+    // With Voice Isolation it has wind and hiss covered; wind and hiss
+    // are one denoiser, so two flags do not stack two reducers.
+    let mut want: Vec<String> = Vec::new();
+    if voice {
+        want.push("voice".into());
+    }
+    if (wind || hiss) && !voice {
+        want.push(if wind { "wind" } else { "hiss" }.into());
+    }
+    if hum {
+        want.push("hum".into());
+    }
+    if deess {
+        want.push("deess".into());
+    }
+    let db = reduction_db.unwrap_or(24.0).clamp(0.0, 60.0);
+    let values = std::collections::BTreeMap::from([("reduction".to_string(), klipp_core::TemplateValue::Number(f64::from(db)))]);
+    let steps = recipe.audio_steps(&values, Some(&want)).map_err(|why| refuse(i, why, "report it"))?;
+    let (added, edit) = add_audio_steps(seq, pool, i, given, &steps, "Clean Audio")?;
+    if added.is_empty() {
+        return Err(refuse(i, "the sound already has these cleaners", "nothing to add"));
+    }
+    let said: Vec<String> = added
+        .iter()
+        .map(|(step, says)| match *step {
+            "voice" if wind || hiss => format!("speech isolated from the noise, wind and hiss included (Voice Isolation, {db:.0} dB)"),
+            "voice" => format!("speech isolated from the noise (Voice Isolation, {db:.0} dB)"),
+            _ => (*says).to_string(),
+        })
+        .collect();
+    let on = if clip.id == given.id { String::new() } else { " (on the linked audio)".to_string() };
+    let what = format!("clean {}: {}{on}", clip_name(seq, pool, given), said.join(", "));
+    Ok((what, edit, vec![given.id]))
+}
+
+/// `steps` added to the end of the sound chain of the clip holding
+/// `given`'s sound settings (the picture, for a sound linked to one), as
+/// one undo step (#2886):
+/// a step whose effect the chain has already is left out. The steps
+/// added, by name and what each says, and the edit; refused when the
+/// clip has no sound.
+fn add_audio_steps<'a>(seq: &Sequence, pool: &MediaPool, i: usize, given: &Clip, steps: &'a [(String, String, klipp_core::AudioEffectInstance)], description: &'static str) -> Result<(Vec<(&'a str, &'a str)>, EditCommand), Refusal> {
+    let clip = sound_settings_clip(seq, given);
+    if !clip.media_id().and_then(|id| pool.get(&id)).is_some_and(|m| m.has_audio) {
+        return Err(refuse(i, format!("{} has no sound", clip_name(seq, pool, clip)), "name a clip whose media has audio"));
+    }
+    let mut chain = clip.audio_effects.clone();
+    let mut added = Vec::new();
+    for (name, says, effect) in steps {
+        if !chain.iter().any(|e| e.effect_type == effect.effect_type) {
+            chain.push(effect.clone());
+            added.push((name.as_str(), says.as_str()));
+        }
+    }
+    let mut new_state = crate::history::AudioChainSnapshot::from_clip(clip);
+    new_state.audio_effects = chain;
+    let edit = EditCommand::EditAudioChain { clip_id: clip.id, description, old_state: crate::history::AudioChainSnapshot::from_clip(clip), new_state };
+    Ok((added, edit))
+}
+
+#[cfg(test)]
+fn clean_audio_coded(seq: &Sequence, pool: &MediaPool, i: usize, given: &Clip, flags: CleanFlags) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
     let CleanFlags { voice, reduction_db, wind, hiss, hum, deess } = flags;
     let clip = sound_settings_clip(seq, given);
     if !clip.media_id().and_then(|id| pool.get(&id)).is_some_and(|m| m.has_audio) {
@@ -15200,7 +15300,7 @@ mod tests {
         }
     }
 
-    fn fixture() -> (Sequence, MediaPool, MediaId, ClipId, ClipId) {
+    pub(super) fn fixture() -> (Sequence, MediaPool, MediaId, ClipId, ClipId) {
         let mut seq = Sequence::new_default();
         seq.fps = Fps::new(25, 1);
         let mut pool = MediaPool::new();
@@ -21522,5 +21622,46 @@ mod effect_params_tests {
         assert!(effect("displace", r#"{"direction": "sideways"}"#).is_err());
         assert!(effect("displace", r#"{"seed": 1.5}"#).is_err());
         assert!(effect("displace", r#"{"amount": "lots"}"#).is_err());
+    }
+}
+
+#[cfg(test)]
+mod clean_audio_file_check {
+    use super::tests::fixture;
+    use super::*;
+
+    /// #2886: `clean_audio` built on Klipp's own Clean Audio recipe makes
+    /// what its code made, reply, edit and refusal alike, for every set of
+    /// flags, a reduction left out, given or past its range, a sound
+    /// already holding any of the four cleaners, asked of the picture or
+    /// of its linked sound.
+    #[test]
+    fn clean_audio_on_its_recipe_makes_what_its_code_made() {
+        let (seq, pool, _, a, _) = fixture();
+        let linked = seq.tracks[0].clips[0].linked_clip_id.unwrap();
+        // Asked of the picture, and of its linked sound: either way the
+        // picture holds the sound settings.
+        let fx = |t: &str| klipp_core::AudioEffectInstance { effect_type: t.into(), enabled: true, wet_dry: 0.7, params: vec![("x".into(), 1.0)] };
+        let cleaners = ["voice_isolation", "denoiser", "hum_removal", "deesser"];
+        let mut n = 0;
+        for had in 0..16u32 {
+            let mut seq = seq.clone();
+            let holder = seq.tracks.iter_mut().flat_map(|t| t.clips.iter_mut()).find(|c| c.id == a).unwrap();
+            holder.audio_effects = cleaners.iter().enumerate().filter(|(k, _)| had & (1 << k) != 0).map(|(_, t)| fx(t)).collect();
+            for (bits, asked) in (0..32u32).flat_map(|b| [(b, a), (b, linked)]) {
+                let given = seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == asked).unwrap().clone();
+                for reduction_db in [None, Some(12.0), Some(90.0)] {
+                    let flags = CleanFlags { voice: bits & 1 != 0, reduction_db, wind: bits & 2 != 0, hiss: bits & 4 != 0, hum: bits & 8 != 0, deess: bits & 16 != 0 };
+                    // The edit by its Debug form: every field of every
+                    // effect, in order.
+                    let shown = |r: Result<(String, EditCommand, Vec<ClipId>), Refusal>| r.map(|(what, edit, ids)| (what, format!("{edit:?}"), ids)).map_err(|r| (r.why, r.hint));
+                    let want = shown(clean_audio_coded(&seq, &pool, 0, &given, flags));
+                    let got = shown(clean_audio(&seq, &pool, 0, &given, flags));
+                    assert_eq!(got, want, "had {had:04b} flags {bits:05b} reduction {reduction_db:?} asked of {asked:?}");
+                    n += 1;
+                }
+            }
+        }
+        assert_eq!(n, 16 * 32 * 2 * 3);
     }
 }

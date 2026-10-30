@@ -1526,3 +1526,39 @@ fn a_pack_s_denoiser_preset_of_huge_values_is_held_to_the_effect_s_ranges() {
     assert!(peak(&buf) <= peak(&input) + 1e-4, "no louder: {} out of {} in", peak(&buf), peak(&input));
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+/// Klipp's own audio chain recipes (#2886): each step's effect is one the
+/// factory makes, and each setting it gives is inside that effect's own
+/// range.
+#[test]
+fn every_built_in_audio_chain_step_is_inside_its_effects_ranges() {
+    let file: serde_json::Value = serde_json::from_str(include_str!("../../../../assets/recipes/clean_audio.klipptemplate")).unwrap();
+    let steps = file["audio"]["steps"].as_array().expect("its steps");
+    assert_eq!(steps.len(), 5);
+    for step in steps {
+        let (name, effect) = (step["name"].as_str().unwrap(), step["effect"].as_str().unwrap());
+        let fx = create_effect(effect, SR).unwrap_or_else(|| panic!("{name}: no {effect}"));
+        for (k, v) in step["params"].as_object().unwrap() {
+            let v = v.as_f64().unwrap() as f32;
+            let d = fx.param_descriptors().iter().find(|d| d.name == *k).unwrap_or_else(|| panic!("{name}: no {k}"));
+            assert!((d.min..=d.max).contains(&v), "{name}: {k} {v} outside {}..{}", d.min, d.max);
+        }
+    }
+}
+
+/// A person's or a pack's audio chain step of huge settings (#2886): they
+/// pass its reading, finite as they are, and each effect a chain may name
+/// holds each to its own range.
+#[test]
+fn an_audio_chain_step_of_huge_values_is_held_to_the_effects_ranges() {
+    for effect in ["voice_isolation", "denoiser", "hum_removal", "deesser"] {
+        let mut fx = create_effect(effect, SR).unwrap();
+        let names: Vec<String> = fx.param_descriptors().iter().map(|d| d.name.to_string()).collect();
+        for (k, v) in names.iter().flat_map(|k| [(k, 1e30f32), (k, -1e30)]) {
+            fx.set_param(k, v);
+            let d = fx.param_descriptors().iter().find(|d| d.name == *k).unwrap();
+            let held = fx.get_param(k).unwrap();
+            assert!((d.min..=d.max).contains(&held), "{effect}: {k} {v} held at {held}, outside {}..{}", d.min, d.max);
+        }
+    }
+}
