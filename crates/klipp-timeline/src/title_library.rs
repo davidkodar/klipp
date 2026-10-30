@@ -430,92 +430,6 @@ pub fn outlined(mut t: Text, width: f32) -> Text {
     t
 }
 
-// ── Lower thirds ──
-fn lt_name_bar() -> TitleData {
-    layers(vec![
-        rect(0.30, 0.845, 0.48, 0.115, [14, 14, 18, 210], 4.0),
-        // Both lines inside the bar, from 0.085 to its right edge less
-        // the same margin.
-        boxed_at(
-            moved(keeps_line(face("[Name]", GRO, FontStyle::Bold, 44.0, WHITE, TextAlignment::Left)),
-                TitleMotion::both(enter(MotionKind::MaskRise, 0.5, Easing::OutExpo).delay(0.1), fade_out(0.3))),
-            0.085, 0.822, 0.43,
-        ),
-        boxed_at(
-            moved(keeps_line(face("[Title or role]", GRO, FontStyle::Regular, 26.0, MUTED, TextAlignment::Left)),
-                TitleMotion::both(enter(MotionKind::MaskRise, 0.5, Easing::OutExpo).delay(0.25), fade_out(0.3))),
-            0.085, 0.872, 0.43,
-        ),
-    ])
-}
-
-fn lt_clean_line() -> TitleData {
-    layers(vec![
-        rect(0.19, 0.847, 0.22, 0.006, ACCENT, 0.0),
-        text_at(
-            moved(keeps_line(lifted(face("[Name]", GRO, FontStyle::Bold, 46.0, WHITE, TextAlignment::Left))),
-                TitleMotion::both(enter(MotionKind::SlideRight, 0.5, Easing::OutQuint).distance(0.4), fade_out(0.3))),
-            0.08, 0.805, 0.0,
-        ),
-        text_at(
-            moved(lifted(face("[Title or role]", GRO, FontStyle::Regular, 26.0, MUTED, TextAlignment::Left)),
-                TitleMotion::both(enter(MotionKind::SlideRight, 0.5, Easing::OutQuint).distance(0.4).delay(0.12), fade_out(0.3))),
-            0.08, 0.882, 0.0,
-        ),
-    ])
-}
-
-fn lt_broadcast() -> TitleData {
-    let mut td = layers(vec![
-        rect(0.25, 0.815, 0.38, 0.07, [26, 84, 196, 255], 0.0),
-        rect(0.25, 0.874, 0.38, 0.048, [244, 244, 246, 255], 0.0),
-        text_at(
-            moved(keeps_line(upper(face("[Name]", DISPLAY, FontStyle::Regular, 50.0, WHITE, TextAlignment::Left), 2.0)),
-                TitleMotion::both(enter(MotionKind::SlideRight, 0.4, Easing::OutExpo).distance(0.8), fade_out(0.25))),
-            0.075, 0.815, 0.0,
-        ),
-        text_at(
-            moved(upper(face("[Title or role]", GRO, FontStyle::Bold, 20.0, INK, TextAlignment::Left), 2.5),
-                TitleMotion::both(enter(MotionKind::SlideRight, 0.4, Easing::OutExpo).distance(0.8).delay(0.1), fade_out(0.25))),
-            0.075, 0.874, 0.0,
-        ),
-    ]);
-    // The two backing strips grow independently with their text.
-    for (shape_index, text_index) in [(0, 2), (1, 3)] {
-        let target = td.objects[text_index].id;
-        if let TitleObjectContent::Shape(shape) = &mut td.objects[shape_index].content {
-            shape.fit = Some(crate::ShapeFit {
-                target, padding: TitlePosition { x: 28.0, y: 12.0 },
-            });
-        }
-        td.objects[text_index].transform.size.x = 0.85;
-    }
-    td
-}
-
-fn lt_documentary() -> TitleData {
-    layers(vec![
-        text_at(
-            moved(keeps_line(lifted(face("[Name]", EDITORIAL, FontStyle::Italic, 52.0, WHITE, TextAlignment::Left))),
-                TitleMotion::both(enter(MotionKind::Rise, 0.8, Easing::OutCubic).distance(0.3), fade_out(0.5))),
-            0.08, 0.815, 0.0,
-        ),
-        text_at(
-            moved(lifted(upper(weight(face("[Title or role]", LABEL, FontStyle::Regular, 28.0, MUTED, TextAlignment::Left), 500), 4.0)),
-                TitleMotion::both(enter(MotionKind::Rise, 0.8, Easing::OutCubic).distance(0.3).delay(0.15), fade_out(0.5))),
-            0.08, 0.868, 0.0,
-        ),
-    ])
-}
-
-fn lt_location() -> TitleData {
-    layers(vec![text_at(
-        moved(lifted(upper(face("[City, Country]\n[14:32]", MONO, FontStyle::Regular, 26.0, WHITE, TextAlignment::Left), 3.0)),
-            TitleMotion::both(Motion::new(MotionKind::Typewriter).duration(0.02).stagger(StaggerUnit::Char, 0.035), fade_out(0.3))),
-        0.06, 0.12, 0.0,
-    )])
-}
-
 // ── Openers ──
 fn op_cinematic() -> TitleData {
     layers(vec![text_at(
@@ -737,53 +651,6 @@ fn ut_label() -> TitleData {
 
 
 // ── More lower thirds (#1724) ──
-fn lt_accent_block() -> TitleData {
-    let words = |d: f32| TitleMotion::both(enter(MotionKind::SlideRight, 0.55, Easing::OutQuint).distance(0.25).delay(d), fade_out(0.3));
-    layers(vec![
-        moving(rect(0.072, 0.85, 0.008, 0.105, ACCENT, 0.0),
-            TitleMotion::both(enter(MotionKind::MaskRise, 0.45, Easing::OutExpo), fade_out(0.3))),
-        text_at(moved(lifted(face("[Name]", GRO, FontStyle::Bold, 48.0, WHITE, TextAlignment::Left)), words(0.12)), 0.088, 0.822, 0.0),
-        text_at(moved(lifted(face("[Title or role]", GRO, FontStyle::Regular, 26.0, MUTED, TextAlignment::Left)), words(0.22)), 0.088, 0.878, 0.0),
-    ])
-}
-
-fn lt_pill() -> TitleData {
-    let mut td = layers(vec![
-        moving(rect(0.18, 0.835, 0.2, 0.07, WHITE, 30.0),
-            TitleMotion::both(enter(MotionKind::ScaleUp, 0.4, Easing::OutBack), fade_out(0.25))),
-        text_at(
-            moved(face("[Name]", GRO, FontStyle::Bold, 40.0, INK, TextAlignment::Left),
-                TitleMotion::both(enter(MotionKind::Fade, 0.3, Easing::OutCubic).delay(0.15), fade_out(0.25))),
-            0.08, 0.835, 0.0,
-        ),
-        text_at(
-            moved(lifted(face("[Title or role]", GRO, FontStyle::Regular, 26.0, WHITE, TextAlignment::Left)),
-                TitleMotion::both(enter(MotionKind::Rise, 0.45, Easing::OutCubic).distance(0.3).delay(0.3), fade_out(0.25))),
-            0.08, 0.905, 0.0,
-        ),
-    ]);
-    fit(&mut td, 0, 1, (30.0, 14.0));
-    td.objects[1].transform.size.x = 0.85;
-    td
-}
-
-fn lt_stacked() -> TitleData {
-    layers(vec![
-        moving(rect(0.13, 0.857, 0.1, 0.005, ACCENT, 0.0),
-            TitleMotion::both(enter(MotionKind::SlideRight, 0.5, Easing::OutExpo).distance(0.5).delay(0.2), fade_out(0.3))),
-        text_at(
-            moved(lifted(upper(face("[Name]", DISPLAY, FontStyle::Regular, 72.0, WHITE, TextAlignment::Left), 3.0)),
-                TitleMotion::both(enter(MotionKind::MaskRise, 0.55, Easing::OutExpo).stagger(StaggerUnit::Char, 0.02), fade_out(0.3))),
-            0.08, 0.81, 0.0,
-        ),
-        text_at(
-            moved(lifted(upper(face("[Title or role]", GRO, FontStyle::Bold, 20.0, MUTED, TextAlignment::Left), 4.0)),
-                TitleMotion::both(enter(MotionKind::Fade, 0.5, Easing::OutCubic).delay(0.4), fade_out(0.3))),
-            0.08, 0.89, 0.0,
-        ),
-    ])
-}
-
 // ── More openers and chapters (#1724) ──
 fn op_chapter_number() -> TitleData {
     layers(vec![
@@ -986,11 +853,8 @@ impl Coded {
     }
 }
 
-/// Lower thirds grow from their left edge; centred titles from the
-/// middle of the frame.
-const LT: (f32, f32) = (0.08, 0.85);
+/// Centred titles grow from the middle of the frame.
 const MID: (f32, f32) = (0.5, 0.5);
-const NAME_ROLE: &[&str] = &["Name", "Role"];
 
 /// Every built-in title template, in the order the browser shows them:
 /// those Klipp ships as files in `assets/titles` (#2886), read and checked
@@ -1026,23 +890,6 @@ fn from_files() -> impl Iterator<Item = TitleTemplate> {
     })
 }
 
-/// The Lower Thirds as code made them, for the check that their files
-/// draw the same (#2886).
-#[doc(hidden)]
-pub fn coded_lower_thirds() -> Vec<TitleTemplate> {
-    CODED_LOWER_THIRDS.iter().map(Coded::template).collect()
-}
-
-const CODED_LOWER_THIRDS: &[Coded] = &[
-    Coded { name: "Name Bar", category: "Lower Thirds", preview_text: "[Name]", create_data: lt_name_bar, fields: f(NAME_ROLE, Some(0), LT) },
-    Coded { name: "Clean Line", category: "Lower Thirds", preview_text: "[Name]", create_data: lt_clean_line, fields: f(NAME_ROLE, Some(0), LT) },
-    Coded { name: "Broadcast", category: "Lower Thirds", preview_text: "[Name]", create_data: lt_broadcast, fields: f(NAME_ROLE, Some(0), LT) },
-    Coded { name: "Accent Block", category: "Lower Thirds", preview_text: "[Name]", create_data: lt_accent_block, fields: f(NAME_ROLE, Some(0), LT) },
-    Coded { name: "Pill", category: "Lower Thirds", preview_text: "[Name]", create_data: lt_pill, fields: f(NAME_ROLE, Some(0), LT) },
-    Coded { name: "Stacked", category: "Lower Thirds", preview_text: "[Name]", create_data: lt_stacked, fields: f(NAME_ROLE, Some(0), LT) },
-    Coded { name: "Documentary", category: "Lower Thirds", preview_text: "[Name]", create_data: lt_documentary, fields: f(NAME_ROLE, None, LT) },
-    Coded { name: "Location", category: "Lower Thirds", preview_text: "[City, Country]", create_data: lt_location, fields: f(&["Place and time"], None, (0.06, 0.12)) },
-];
 
 const CODED: &[Coded] = &[
     Coded { name: "Cinematic", category: "Openers", preview_text: "[Title]", create_data: op_cinematic, fields: f(&["Title"], None, MID) },
@@ -1139,23 +986,22 @@ impl TitleTemplate {
 mod tests {
     use super::*;
 
-    /// #2886: each Lower Third read from its file makes the title its
-    /// code made, on a wide, a tall and a square frame, with its name,
-    /// category, card text and fields.
+    /// #2886: every built-in file reads, is listed first in its order,
+    /// and makes its title, its fields published, on each frame.
     #[test]
-    fn every_lower_third_file_makes_what_its_code_made() {
-        let coded = coded_lower_thirds();
-        assert_eq!(coded.len(), 8);
-        for c in &coded {
-            let t = builtin(&c.name).unwrap_or_else(|| panic!("{} is listed", c.name));
-            assert_eq!((t.category.as_str(), t.preview_text.as_str(), &t.fields.names, t.fields.accent, t.fields.anchor, t.grow), (c.category.as_str(), c.preview_text.as_str(), &c.fields.names, c.fields.accent, c.fields.anchor, c.grow), "{}", c.name);
+    fn every_built_in_file_reads_and_makes_its_title() {
+        assert_eq!(from_files().count(), FILES.len());
+        let names: Vec<&str> = TITLES.iter().take(FILES.len()).map(|t| t.name.as_str()).collect();
+        assert_eq!(names, ["Name Bar", "Clean Line", "Broadcast", "Accent Block", "Pill", "Stacked", "Documentary", "Location"]);
+        assert_eq!(TITLES.len(), 38);
+        for t in TITLES.iter().take(FILES.len()) {
             for (w, h) in [(1920, 1080), (1080, 1920), (1080, 1080)] {
-                assert_eq!(t.data_for(w, h), c.data_for(w, h), "{} at {w}x{h}", c.name);
+                let td = t.data_for(w, h);
+                let labels: Vec<&str> = td.published.iter().map(|f| f.label.as_str()).collect();
+                assert!(t.fields.names.iter().all(|n| labels.contains(&n.as_str())), "{} at {w}x{h}: {labels:?}", t.name);
+                assert_eq!(td.template.as_deref(), Some(t.name.as_str()));
             }
         }
-        let names: Vec<&str> = TITLES.iter().take(8).map(|t| t.name.as_str()).collect();
-        assert_eq!(names, coded.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(), "first, in their order");
-        assert_eq!(TITLES.len(), 38);
     }
 
     #[test]
