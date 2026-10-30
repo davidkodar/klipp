@@ -140,6 +140,22 @@ fn document(directory: &Path, name: &str) -> Result<Value, String> {
             .and_then(Value::as_array_mut)
             .ok_or("manifest items missing")?;
         items.sort_by_key(|item| item["id"].as_str().unwrap_or("").to_owned());
+        // A save writes where a file outside the project is, from its
+        // relative path (#2800): a stamp of that, never a value of its own,
+        // but it must name the same file (#3175).
+        for item in items.iter_mut() {
+            // The disk cache key a save takes from the file is this
+            // machine's, a stamp as well.
+            if let Some(m) = item.as_object_mut() {
+                m.remove("cache_key");
+            }
+            let Some(at) = item.as_object_mut().and_then(|m| m.remove("absolute_path")) else { continue };
+            let relative = item["path"].as_str().unwrap_or("");
+            let named = klipp_project::path_util::resolve_media_path(directory, Path::new(relative));
+            if at.as_str().map(Path::new) != Some(named.as_path()) {
+                return Err(format!("{name}: an absolute path {at} that is not {}", named.display()));
+            }
+        }
     }
     paths(&mut value, directory);
     Ok(value)
@@ -264,6 +280,29 @@ mod tests {
         })
         .unwrap_err();
         assert!(error.contains("open wrote project.json"), "{error}");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// #3175: the absolute path a save writes beside a file's relative one
+    /// is a stamp of it, left out of the comparison, but one naming another
+    /// file is named.
+    #[test]
+    fn an_absolute_path_naming_another_file_is_named() {
+        let root = generated();
+        let error = reopen_with(
+            &root.join("projects/edit.klipp"),
+            &root.join("reopen"),
+            |copy| {
+                let path = copy.join("media/manifest.json");
+                let mut value = json(&path)?;
+                for item in value["items"].as_array_mut().unwrap() {
+                    item["absolute_path"] = Value::String("/elsewhere/motion.mkv".into());
+                }
+                std::fs::write(path, serde_json::to_vec(&value).unwrap()).map_err(|e| e.to_string())
+            },
+        )
+        .unwrap_err();
+        assert!(error.contains("/elsewhere/motion.mkv"), "{error}");
         std::fs::remove_dir_all(root).unwrap();
     }
 
