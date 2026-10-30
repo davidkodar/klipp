@@ -33,6 +33,8 @@ const TOAST_FADE_OUT: f64 = 0.2;
 impl ToastState {
     #[cfg(test)]
     pub(crate) fn message_for_test(&self) -> Option<&str> { self.message.as_deref() }
+    #[cfg(test)]
+    pub(crate) fn action_for_test(&self) -> Option<ToastAction> { self.action.as_ref().map(|(_, a)| *a) }
 
     /// Show a new toast message. Replaces any existing toast.
     pub fn show(&mut self, message: impl Into<String>) {

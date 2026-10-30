@@ -237,3 +237,37 @@ fn a_stretch_ripples_only_with_alt() {
         assert_eq!(ripples, vec![alt], "Alt {alt}: {:?}", tl.sent);
     }
 }
+
+/// #3124: a start edge trimmed past its media onto the previous clip's
+/// end, as a walkthrough had it (1 s of handle, 2 s of gap): the toast's
+/// stretch plans, with ripple off and on.
+#[test]
+fn the_toasts_stretch_instead_plans_from_a_start_edge() {
+    for ripple in [false, true] {
+        let mut state = AppState { snap_threshold_px: 10.0, playhead: t(30.0), ..Default::default() };
+        state.ripple_enabled = ripple;
+        let mut item = klipp_media::MediaItem::synthetic_for_test("/tmp/stretch-head.mov".into(), None);
+        item.duration = t(10.0);
+        let media = state.media_pool.add(item);
+        let seq = &mut state.sequences[0];
+        let v1 = seq.tracks.iter().position(|t| t.name == "Video 1").unwrap();
+        let before = Clip::media(media, t(1.0), t(4.0), t(1.0), t(4.0));
+        let clip = Clip::media(media, t(6.0), t(9.0), t(1.0), t(4.0));
+        let id = clip.id;
+        seq.tracks[v1].clips = vec![before, clip];
+        seq.fill_primary_holes();
+        let mut tl = Timeline::new(state);
+        let r = tl.rect(v1);
+        let edge = egui::pos2(tl.x(v1, 6.0) + 3.0, r.bottom() - 8.0);
+        let onto = egui::pos2(tl.x(v1, 4.0) + 1.0, edge.y);
+        tl.drag(edge, &[onto], egui::Modifiers::NONE);
+        let action = tl.state.toast.action_for_test();
+        let Some(crate::widgets::toast::ToastAction::Stretch { clip_id, at_end, to }) = action else {
+            panic!("ripple {ripple}: no stretch offered: {:?} {:?}", tl.state.toast.message_for_test(), tl.sent)
+        };
+        assert!(!at_end && clip_id == id);
+        assert!((to.to_secs_f64() - 4.0).abs() < 1e-6, "ripple {ripple}: to the previous clip's end: {}", to.to_secs_f64());
+        let planned = klipp_document::ops::stretch_at(tl.state.sequence(), &tl.state.media_pool, &[id], klipp_document::ops::Edge::In, klipp_document::ops::StretchTo::EdgeAt(to.to_secs_f64()), false, true);
+        assert!(planned.is_ok(), "ripple {ripple}: {:?}; sent {:?}", planned.err().map(|r| r.why), tl.sent);
+    }
+}

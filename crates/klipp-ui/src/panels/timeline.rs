@@ -11075,7 +11075,18 @@ impl TimelinePanel {
                         self.frame_cache.snap_line_x = Some((content_rect.left() + secs as f32 * zoom - state.timeline_scroll_x, kind));
                     }
                 }
-                trim.wanted = Some(target);
+                // The stretch offered at the media's end goes where the
+                // start was dragged, snapped as a start edge snaps: a
+                // ripple head trim snaps its drawn end instead, and the
+                // stretch handed that start ran a frame into the clip
+                // before and was refused (#3124).
+                trim.wanted = Some(match trim.edge {
+                    TrimEdge::Left if trim.ripple => {
+                        let start = trim.original_timeline_in + dt;
+                        find_snap(start, trim.clip_id).map(|(at, _, _)| at).unwrap_or(start)
+                    }
+                    _ => target,
+                });
                 let t = target.to_secs_f64();
                 let (lo, hi) = match trim.edge {
                     TrimEdge::Left => (head_min.max(if trim.ripple { f64::NEG_INFINITY } else { 0.0 }), was.timeline_out.to_secs_f64() - frame),
