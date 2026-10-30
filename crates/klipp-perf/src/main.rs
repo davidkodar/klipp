@@ -6,6 +6,7 @@
 //!   cargo run --release -p klipp-perf             # run all scenarios
 //!   cargo run --release -p klipp-perf -- --list   # list scenario names
 //!   cargo run --release -p klipp-perf -- --scenario s01_colorbalance_1node_1080p
+//!   cargo run --release -p klipp-perf -- --match s2   # every scenario whose name has "s2"
 //!
 //! Results land in `target/perf-results/<timestamp>_<scenario>.json`.
 //! No regression tooling — numbers are for eyeballing. Diffs between
@@ -13,6 +14,7 @@
 
 mod fixtures;
 mod composite;
+mod nesting;
 mod scenarios;
 mod stats;
 
@@ -51,6 +53,7 @@ fn main() -> std::io::Result<()> {
 
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut selected: Option<String> = None;
+    let mut matching: Option<String> = None;
     let mut list_only = false;
     let mut cpu_only = false;
     let mut in_process = false;
@@ -65,6 +68,10 @@ fn main() -> std::io::Result<()> {
             "--scenario" => {
                 i += 1;
                 selected = args.get(i).cloned();
+            }
+            "--match" => {
+                i += 1;
+                matching = args.get(i).cloned();
             }
             "-h" | "--help" => {
                 print_help();
@@ -109,7 +116,7 @@ fn main() -> std::io::Result<()> {
         print_table_header();
         let mut any_failed = false;
         let mut any_unsettled = false;
-        for s in scenarios::ALL {
+        for s in scenarios::ALL.iter().filter(|s| matching.as_deref().is_none_or(|m| s.name.contains(m))) {
             let mut cmd = std::process::Command::new(&exe);
             cmd.arg("--scenario").arg(s.name).arg("--in-process").arg("--no-header");
             if cpu_only {
@@ -204,6 +211,7 @@ fn print_help() {
     eprintln!("  cargo run --release -p klipp-perf -- --cpu-only                # force CPU fallback path");
     eprintln!("  cargo run --release -p klipp-perf -- --list                    # list scenarios");
     eprintln!("  cargo run --release -p klipp-perf -- --scenario <name>         # run one");
+    eprintln!("  cargo run --release -p klipp-perf -- --match <text>           # every scenario whose name has <text>");
     eprintln!();
     eprintln!("Results: target/perf-results/<stamp>_<scenario>.json");
 }
