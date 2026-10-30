@@ -4,12 +4,14 @@
 //! inside title-safe, laid out for the frame's format, moved by the
 //! motion model, and keeping a few fields editable once applied.
 //!
-//! Here, beside the title model, so the app and the control socket name
-//! and build one set.
+//! The templates are files, `assets/titles/*.klipptitle` (#2886), each
+//! the layers as designed with how they are laid out and published; this
+//! module makes the title from them. Here, beside the title model, so the
+//! app and the control socket name and build one set.
 
 use crate::{
     default_text_transform, Easing, FontStyle, Motion, MotionKind, ObjectTransform, Shape, ShapeKind,
-    StaggerUnit, TextAlignment, TitleAnimationType, TitleBackground, TitleData, TitleMotion, TitleObjectContent,
+    TextAlignment, TitleAnimationType, TitleBackground, TitleData, TitleMotion, TitleObjectContent,
     TitlePosition, TitleShadow,
 };
 
@@ -253,13 +255,9 @@ fn publish(mut td: TitleData, fields: &Fields, anchor: (f32, f32)) -> TitleData 
 }
 
 // ---------------------------------------------------------------------------
-// The curated set: every template designed on the bundled and catalogue faces, placed
-// inside title-safe, and moved by the motion model; backing shapes move
-// with their text. Each keeps a few fields editable once applied (#1724):
-// its texts, its accent, Size and Speed, so one drag and two sliders make
-// it the user's own. Everything else is restyled from the Inspector.
+// The design vocabulary: colours, faces and layer helpers the motion pack's
+// authoring (#2757) designs in, as the built-ins were designed.
 // ---------------------------------------------------------------------------
-
 
 pub const WHITE: [u8; 4] = [255, 255, 255, 255];
 pub const INK: [u8; 4] = [18, 18, 22, 255];
@@ -430,80 +428,10 @@ pub fn outlined(mut t: Text, width: f32) -> Text {
     t
 }
 
-// ── Utility ──
-fn ut_slate() -> TitleData {
-    layers(vec![
-        rect(0.5, 0.5, 1.0, 1.0, [12, 12, 14, 255], 0.0),
-        text_at(
-            moved(face("PROJECT   [Project]\nSCENE     [1]\nTAKE      [1]\nDATE      [2026-01-01]", MONO, FontStyle::Bold, 40.0, WHITE, TextAlignment::Left),
-                TitleMotion::enter(Motion::new(MotionKind::Typewriter).duration(0.02).stagger(StaggerUnit::Line, 0.18))),
-            // Its left edge where the block of lines comes out centred.
-            0.36, 0.5, 0.0,
-        ),
-    ])
-}
-
-fn ut_timecode() -> TitleData {
-    layers(vec![text_at(lifted(face("00:00:00:00", MONO, FontStyle::Regular, 26.0, WHITE, TextAlignment::Left)), 0.06, 0.93, 0.0)])
-}
-
-fn ut_watermark() -> TitleData {
-    layers(vec![text_at(face("[Brand]", GRO, FontStyle::Bold, 28.0, [255, 255, 255, 110], TextAlignment::Right), 0.94, 0.92, 1.0)])
-}
-
-fn ut_label() -> TitleData {
-    layers(vec![
-        rect(0.14, 0.10, 0.18, 0.06, [0, 0, 0, 180], 4.0),
-        text_at(
-            moved(upper(face("[Label]", GRO, FontStyle::Bold, 22.0, WHITE, TextAlignment::Center), 3.0),
-                TitleMotion::both(enter(MotionKind::Fade, 0.3, Easing::OutCubic), fade_out(0.25))),
-            0.14, 0.10, 0.5,
-        ),
-    ])
-}
-
-
-/// A built-in still made by code: its name, category, card text, the
-/// function making its layers, and its fields.
-struct Coded {
-    name: &'static str,
-    category: &'static str,
-    preview_text: &'static str,
-    create_data: fn() -> TitleData,
-    fields: Spec,
-}
-
-/// A coded built-in's [`Fields`].
-struct Spec {
-    names: &'static [&'static str],
-    accent: Option<usize>,
-    anchor: (f32, f32),
-}
-
-const fn f(names: &'static [&'static str], accent: Option<usize>, anchor: (f32, f32)) -> Spec {
-    Spec { names, accent, anchor }
-}
-
-impl Coded {
-    fn template(&self) -> TitleTemplate {
-        TitleTemplate {
-            name: self.name.into(),
-            category: self.category.into(),
-            preview_text: self.preview_text.into(),
-            design: (self.create_data)(),
-            fields: Fields { names: self.fields.names.iter().map(|n| (*n).to_owned()).collect(), accent: self.fields.accent, anchor: self.fields.anchor },
-            grow: self.category != "Utility",
-        }
-    }
-}
-
-/// Centred titles grow from the middle of the frame.
-const MID: (f32, f32) = (0.5, 0.5);
-
 /// Every built-in title template, in the order the browser shows them:
-/// those Klipp ships as files in `assets/titles` (#2886), read and checked
-/// as a saved one is, then those still made by code.
-pub static TITLES: std::sync::LazyLock<Vec<TitleTemplate>> = std::sync::LazyLock::new(|| from_files().chain(CODED.iter().map(Coded::template)).collect());
+/// the files Klipp ships in `assets/titles` (#2886), each read and checked
+/// as a saved one is.
+pub static TITLES: std::sync::LazyLock<Vec<TitleTemplate>> = std::sync::LazyLock::new(|| from_files().collect());
 
 /// The built-in title templates shipped as files (#2886).
 const FILES: &[&str] = &[
@@ -551,19 +479,6 @@ const FILES: &[&str] = &[
 
 
 
-/// The templates being moved to files, as code made them, for the check
-/// that their files make and draw the same (#2886).
-#[doc(hidden)]
-pub fn coded_for_check() -> Vec<TitleTemplate> {
-    CODED_CHECKED.iter().map(Coded::template).collect()
-}
-
-const CODED_CHECKED: &[Coded] = &[
-    Coded { name: "Slate", category: "Utility", preview_text: "PROJECT", create_data: ut_slate, fields: f(&["Slate"], None, MID) },
-    Coded { name: "Timecode", category: "Utility", preview_text: "00:00:00:00", create_data: ut_timecode, fields: f(&["Timecode"], None, (0.06, 0.93)) },
-    Coded { name: "Watermark", category: "Utility", preview_text: "[Brand]", create_data: ut_watermark, fields: f(&["Brand"], None, (0.94, 0.92)) },
-    Coded { name: "Label", category: "Utility", preview_text: "[Label]", create_data: ut_label, fields: f(&["Label"], Some(0), (0.14, 0.10)) },
-];
 
 fn from_files() -> impl Iterator<Item = TitleTemplate> {
     FILES.iter().filter_map(|json| {
@@ -582,9 +497,6 @@ fn from_files() -> impl Iterator<Item = TitleTemplate> {
     })
 }
 
-
-const CODED: &[Coded] = &[
-];
 
 /// Ordered list of categories for display.
 pub const CATEGORIES: &[&str] = &["Lower Thirds", "Openers", "Captions", "Credits", "Social", "Utility"];
@@ -647,22 +559,6 @@ impl TitleTemplate {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// #2886: each template read from its file makes the title its code
-    /// made, on a wide, a tall and a square frame, with its name,
-    /// category, card text and fields.
-    #[test]
-    fn every_moved_file_makes_what_its_code_made() {
-        let coded = coded_for_check();
-        assert!(!coded.is_empty());
-        for c in &coded {
-            let t = builtin(&c.name).unwrap_or_else(|| panic!("{} is listed", c.name));
-            assert_eq!((t.category.as_str(), t.preview_text.as_str(), &t.fields.names, t.fields.accent, t.fields.anchor, t.grow), (c.category.as_str(), c.preview_text.as_str(), &c.fields.names, c.fields.accent, c.fields.anchor, c.grow), "{}", c.name);
-            for (w, h) in [(1920, 1080), (1080, 1920), (1080, 1080)] {
-                assert_eq!(t.data_for(w, h), c.data_for(w, h), "{} at {w}x{h}", c.name);
-            }
-        }
-    }
 
     /// #2886: every built-in Klipp ships is listed, by name in its order:
     /// a file that doesn't read is logged and left out in a release, so
