@@ -364,6 +364,27 @@ fn sfx_words(query: &str) -> Vec<String> {
 /// limit, so the best match can come from below Freesound's first few.
 const SFX_POOL: u32 = 50;
 
+/// How many of one uploader's sounds a result list leads with before
+/// the others' come.
+const SFX_PER_UPLOADER: usize = 2;
+
+/// Move each uploader's sounds past their first `per` to the end, in
+/// order: one uploader's two hundred takes of a dog ("Jazz the Dog Howl
+/// & Bark (001)" … "(199)") filled every result for "dog bark", all
+/// named for it. Freesound is asked for one sound per pack, which
+/// catches a pack; this catches the same takes uploaded loose. Nothing
+/// is dropped, so a search with few uploaders still fills its list.
+fn spread_uploaders(tracks: &mut Vec<Track>, per: usize) {
+    let mut seen: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let (lead, rest): (Vec<Track>, Vec<Track>) = std::mem::take(tracks).into_iter().partition(|t| {
+        let n = seen.entry(t.artist.clone()).or_insert(0);
+        *n += 1;
+        *n <= per
+    });
+    *tracks = lead;
+    tracks.extend(rest);
+}
+
 /// Put first the sounds whose name and tags hold the query's words, and
 /// among those the ones whose name is about little else. Freesound's
 /// relevance also counts a word in a sound's description, so "dog
@@ -413,6 +434,7 @@ pub fn search_sfx_filtered(query: &str, limit: u32, filter: SfxFilter) -> Result
             tracks.retain(|t| t.commercial_ok);
         }
         rank_sfx(&mut tracks, &words);
+        spread_uploaders(&mut tracks, SFX_PER_UPLOADER);
         tracks.truncate(limit as usize);
         for t in &mut tracks {
             t.tags.truncate(8);
@@ -502,7 +524,7 @@ fn freesound_page(token: &str, query: &str, page: u32, max_secs: Option<f64>) ->
         None => String::new(),
     };
     let url = format!(
-        "https://freesound.org/apiv2/search/text/?query={q}&token={token}&page_size={page}&sort=score&fields={FREESOUND_FIELDS}{filter}"
+        "https://freesound.org/apiv2/search/text/?query={q}&token={token}&page_size={page}&sort=score&group_by_pack=1&fields={FREESOUND_FIELDS}{filter}"
     );
     let text = ureq::get(&url)
         .timeout(std::time::Duration::from_secs(30))
@@ -1705,6 +1727,19 @@ mod tests {
         assert_eq!(order[2], "27th of May 2014 distant thunderstorm", "a match in the description only goes last: {order:?}");
     }
 
+    /// One uploader's takes lead with two, and the others' sounds come
+    /// before the rest of them; none is dropped.
+    #[test]
+    fn one_uploader_does_not_fill_the_list() {
+        let by = |name: &str, user: &str| Track { source: Source::Freesound, artist: user.into(), ..track(name, &[]) };
+        let mut t: Vec<Track> = (1..=5).map(|i| by(&format!("Jazz {i}"), "delphidebrain")).collect();
+        t.push(by("Dog Bark 9", "TRP"));
+        t.push(by("dog tripple bark", "snapssound"));
+        spread_uploaders(&mut t, 2);
+        let order: Vec<&str> = t.iter().map(|t| t.title.as_str()).collect();
+        assert_eq!(order, vec!["Jazz 1", "Jazz 2", "Dog Bark 9", "dog tripple bark", "Jazz 3", "Jazz 4", "Jazz 5"]);
+    }
+
     /// #1931: a family is named as results label it, or loosely; one that
     /// isn't is refused with the families there are.
     #[test]
@@ -1812,6 +1847,10 @@ mod tests {
             eprintln!("skipping: no Freesound token");
             return;
         }
+        // "dog bark" was two hundred takes of one dog from one uploader.
+        let found = search_sfx_filtered("dog bark", 10, SfxFilter::default()).expect("search runs");
+        let uploaders: std::collections::HashSet<&str> = found.tracks.iter().map(|t| t.artist.as_str()).collect();
+        assert!(uploaders.len() >= 5, "dog bark: {} uploaders in the top ten", uploaders.len());
         for (query, must) in [("dog barking far away", &["dog", "bark"][..]), ("footsteps on gravel slow", &["gravel"][..])] {
             let found = search_sfx_filtered(query, 5, SfxFilter::default()).expect("search runs");
             let first = found.tracks.first().unwrap_or_else(|| panic!("{query}: nothing found"));
