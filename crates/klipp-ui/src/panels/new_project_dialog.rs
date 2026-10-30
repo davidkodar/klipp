@@ -3,125 +3,10 @@ use klipp_core::AppCommand;
 use klipp_project::template::ProjectTemplate;
 use std::path::{Path, PathBuf};
 
-/// A frame rate, as numerator and denominator.
-pub type Rate = (u32, u32);
-
-/// A project format: what it is for, its picture, and the rates it is
-/// made at, the first the usual one. Shared by the New Project dialog and
-/// the welcome screen.
-#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Format {
-    pub name: String,
-    /// 0×0 takes the picture from the first clip.
-    #[serde(default)]
-    pub width: u32,
-    #[serde(default)]
-    pub height: u32,
-    /// Empty takes the rate from the first clip.
-    #[serde(default)]
-    pub rates: Vec<Rate>,
-    /// Graded in a wide-gamut space for HLG or PQ delivery.
-    #[serde(default)]
-    pub hdr: bool,
-}
-
-#[derive(serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Size {
-    name: String,
-    width: u32,
-    height: u32,
-}
-
-#[derive(serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct FrameRate {
-    name: String,
-    rate: Rate,
-}
-
-/// The dialogs' lists: the formats, the picture sizes and the frame
-/// rates, each as offered (#2887).
-struct Presets {
-    formats: Vec<Format>,
-    sizes: Vec<(String, u32, u32)>,
-    rates: Vec<(String, u32, u32)>,
-}
-
-/// The largest picture side a format or a size may give.
-const MAX_SIDE: u32 = 16384;
-
-/// Why a project formats file can't be used: an entry without a name or
-/// with one twice in its list, a picture with no size or past
-/// [`MAX_SIDE`], a format with no rate, or a rate of nothing.
-fn presets_fault(formats: &[Format], sizes: &[Size], rates: &[FrameRate]) -> Option<String> {
-    let names = |list: Vec<&str>, what: &str| {
-        list.iter().enumerate().find_map(|(i, n)| {
-            if n.trim().is_empty() {
-                Some(format!("{what} {}: a name says something", i + 1))
-            } else {
-                list[..i].contains(n).then(|| format!("\"{n}\" twice among the {what}s"))
-            }
-        })
-    };
-    let side = |w: u32, h: u32| (1..=MAX_SIDE).contains(&w) && (1..=MAX_SIDE).contains(&h);
-    let rate = |(n, d): Rate| n > 0 && d > 0 && n / d <= 1000;
-    names(formats.iter().map(|f| f.name.as_str()).collect(), "format")
-        .or_else(|| names(sizes.iter().map(|s| s.name.as_str()).collect(), "size"))
-        .or_else(|| names(rates.iter().map(|r| r.name.as_str()).collect(), "rate"))
-        .or_else(|| formats.iter().find(|f| !side(f.width, f.height)).map(|f| format!("\"{}\": its picture is 1 to {MAX_SIDE} pixels a side", f.name)))
-        .or_else(|| formats.iter().find(|f| f.rates.is_empty() || !f.rates.iter().all(|r| rate(*r))).map(|f| format!("\"{}\": it is made at one rate or more, none of nothing", f.name)))
-        .or_else(|| sizes.iter().find(|s| !side(s.width, s.height)).map(|s| format!("\"{}\": its picture is 1 to {MAX_SIDE} pixels a side", s.name)))
-        .or_else(|| rates.iter().find(|r| !rate(r.rate)).map(|r| format!("\"{}\": a rate of nothing", r.name)))
-}
-
-fn read_presets(text: &str) -> Result<Presets, String> {
-    fn read<T: serde::de::DeserializeOwned>(text: &str, table: &str) -> Result<Vec<T>, String> {
-        klipp_core::preset_file::read(text, "project_formats", 1, table)
-    }
-    let (formats, sizes, rates): (Vec<Format>, Vec<Size>, Vec<FrameRate>) = (read(text, "format")?, read(text, "size")?, read(text, "rate")?);
-    if let Some(why) = presets_fault(&formats, &sizes, &rates) {
-        return Err(why);
-    }
-    // What the dialogs do, besides the presets: take the first clip's
-    // picture and rate, or a size typed in.
-    let first = Format { name: "Match first clip".into(), width: 0, height: 0, rates: Vec::new(), hdr: false };
-    let automatic = ("Automatic (from first clip)".to_string(), 0, 0);
-    Ok(Presets {
-        formats: std::iter::once(first).chain(formats).collect(),
-        sizes: std::iter::once(automatic.clone()).chain(sizes.into_iter().map(|s| (s.name, s.width, s.height))).chain(std::iter::once(("Custom...".to_string(), 0, 0))).collect(),
-        rates: std::iter::once(automatic).chain(rates.into_iter().map(|r| (r.name, r.rate.0, r.rate.1))).collect(),
-    })
-}
-
-/// Klipp's file, `assets/presets/project_formats/builtin.toml`, read
-/// once; a file that doesn't read leaves only what the dialogs do, said,
-/// never a crash.
-fn presets() -> &'static Presets {
-    static PRESETS: std::sync::OnceLock<Presets> = std::sync::OnceLock::new();
-    PRESETS.get_or_init(|| {
-        read_presets(include_str!("../../../../assets/presets/project_formats/builtin.toml")).unwrap_or_else(|why| {
-            tracing::error!("the built-in project formats don't read: {why}");
-            read_presets("kind = \"project_formats\"\nformat_version = 1\n").expect("no presets read")
-        })
-    })
-}
-
-/// The formats, "Match first clip" first.
-pub fn formats() -> &'static [Format] {
-    &presets().formats
-}
-
-/// The picture sizes: "Automatic" first, "Custom..." last.
-pub fn resolution_presets() -> &'static [(String, u32, u32)] {
-    &presets().sizes
-}
-
-/// The frame rates, "Automatic" first.
-pub fn fps_presets() -> &'static [(String, u32, u32)] {
-    &presets().rates
-}
+// The formats, sizes and rates, Klipp's then a person's own formats
+// (#3095), are read below the app: the control socket takes a format by
+// name too.
+pub use klipp_core::project_formats::{formats, fps_presets, resolution_presets, Format, Rate};
 
 /// A rate as people say it: "25", "29.97", "23.976".
 pub fn rate_label((num, den): Rate) -> String {
@@ -881,28 +766,6 @@ mod template_tests {
         ]);
         let f = &formats()[6];
         assert_eq!((f.name.as_str(), f.width, f.height, f.rates.as_slice(), f.hdr), ("HDR UHD (HLG / PQ)", 3840, 2160, &[(25, 1), (30000, 1001)][..], true));
-    }
-
-    /// A project formats file with an entry that can't be offered is
-    /// refused, saying why: a name twice or empty, a picture of no size or
-    /// past 16384, a format with no rate, a rate of nothing, an unknown
-    /// field.
-    #[test]
-    fn a_bad_project_formats_file_is_refused() {
-        let file = |body: &str| format!("kind = \"project_formats\"\nformat_version = 1\n{body}");
-        assert!(read_presets(&file("[[size]]\nname = \"Tiny\"\nwidth = 64\nheight = 64\n")).is_ok());
-        for (body, says) in [
-            ("[[size]]\nname = \"A\"\nwidth = 64\nheight = 64\n[[size]]\nname = \"A\"\nwidth = 32\nheight = 32\n", "\"A\" twice"),
-            ("[[rate]]\nname = \" \"\nrate = [25, 1]\n", "a name says something"),
-            ("[[size]]\nname = \"Huge\"\nwidth = 99999\nheight = 64\n", "1 to 16384 pixels"),
-            ("[[format]]\nname = \"Flat\"\nwidth = 0\nheight = 0\nrates = [[25, 1]]\n", "1 to 16384 pixels"),
-            ("[[format]]\nname = \"Still\"\nwidth = 64\nheight = 64\nrates = []\n", "one rate or more"),
-            ("[[rate]]\nname = \"Zero\"\nrate = [25, 0]\n", "a rate of nothing"),
-            ("[[size]]\nname = \"X\"\nwidth = 64\nheight = 64\ncolour = 1\n", "unknown field"),
-        ] {
-            let why = read_presets(&file(body)).err().unwrap_or_default();
-            assert!(why.contains(says), "{body}: {why}");
-        }
     }
 
     /// #1864: the built-in formats are the purpose-named list, and no two

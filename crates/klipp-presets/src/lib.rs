@@ -58,6 +58,13 @@ pub fn read<T: DeserializeOwned>(text: &str, kind: &str, version: u32, table: &s
 /// The most files a person's preset folder is read for.
 pub const MAX_FILES: usize = 64;
 
+/// The most names a preset folder's listing is read for, before any is
+/// sorted or opened: a folder of more is read for its first ones.
+pub const MAX_LISTED: usize = 4096;
+
+/// The longest name a person's preset takes, in characters.
+pub const MAX_NAME_CHARS: usize = 64;
+
 /// Where a person keeps their own presets of `kind`:
 /// `$XDG_CONFIG_HOME/klipp/presets/<kind>/`, else `~/.config/klipp/…`.
 pub fn user_dir(kind: &str) -> Option<std::path::PathBuf> {
@@ -78,7 +85,18 @@ pub fn read_dir<T: DeserializeOwned>(dir: &std::path::Path, kind: &str, version:
     use std::io::Read;
     let (mut entries, mut skipped) = (Vec::new(), Vec::new());
     let Ok(listing) = std::fs::read_dir(dir) else { return (entries, skipped) };
-    let mut files: Vec<std::path::PathBuf> = listing.filter_map(|e| e.ok().map(|e| e.path())).filter(|p| p.extension().is_some_and(|x| x == "toml")).collect();
+    let mut listed = 0;
+    let mut files: Vec<std::path::PathBuf> = listing
+        .take_while(|_| {
+            listed += 1;
+            listed <= MAX_LISTED
+        })
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().is_some_and(|x| x == "toml"))
+        .collect();
+    if listed > MAX_LISTED {
+        skipped.push(format!("the folder holds more than {MAX_LISTED} names: only the first {MAX_LISTED} listed are read"));
+    }
     files.sort();
     if files.len() > MAX_FILES {
         skipped.push(format!("{} files past the first {MAX_FILES}", files.len() - MAX_FILES));
@@ -104,6 +122,64 @@ pub fn read_dir<T: DeserializeOwned>(dir: &std::path::Path, kind: &str, version:
         }
     }
     (entries, skipped)
+}
+
+/// A kind's entries: the built-in ones first, then a person's own and
+/// those of the packs they installed, and what was skipped, said.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Merged<T> {
+    pub entries: Vec<T>,
+    /// How many of `entries`, from the start, are Klipp's own.
+    pub built_in: usize,
+    pub skipped: Vec<String>,
+}
+
+impl<T> Merged<T> {
+    /// Whether the entry at `i` is one of Klipp's own.
+    pub fn is_built_in(&self, i: usize) -> bool {
+        i < self.built_in
+    }
+}
+
+/// `built_in`, then the entries under `table` of every file of `kind` in
+/// `dirs` in turn, each folder read by [`read_dir`] (#3095). An entry
+/// from a folder is skipped, and said, when its name (`name`) is empty,
+/// past [`MAX_NAME_CHARS`] or has control characters, is a built-in
+/// one's in any case (a built-in is never stood in for), or is that of
+/// an entry read before it from a folder (the earlier stays), or when
+/// `check` refuses it.
+pub fn merge<T: DeserializeOwned>(
+    built_in: Vec<T>,
+    dirs: &[std::path::PathBuf],
+    kind: &str,
+    version: u32,
+    table: &str,
+    name: impl Fn(&T) -> &str,
+    check: impl Fn(&T) -> Result<(), String>,
+) -> Merged<T> {
+    let mut merged = Merged { built_in: built_in.len(), entries: built_in, skipped: Vec::new() };
+    for dir in dirs {
+        let (found, skipped) = read_dir::<T>(dir, kind, version, table);
+        merged.skipped.extend(skipped);
+        for entry in found {
+            let n = name(&entry).trim().to_string();
+            let taken = |range: std::ops::Range<usize>| merged.entries[range].iter().any(|e| name(e).trim().eq_ignore_ascii_case(&n));
+            let why = if n.is_empty() || n.chars().count() > MAX_NAME_CHARS || n.chars().any(char::is_control) {
+                Some(format!("a {kind} name of {} characters, or with control characters", n.chars().count()))
+            } else if taken(0..merged.built_in) {
+                Some(format!("\"{n}\" is the name of one of Klipp's own"))
+            } else if taken(merged.built_in..merged.entries.len()) {
+                Some(format!("\"{n}\" is the name of one read before it"))
+            } else {
+                check(&entry).err().map(|why| format!("\"{n}\": {why}"))
+            };
+            match why {
+                Some(why) => merged.skipped.push(why),
+                None => merged.entries.push(entry),
+            }
+        }
+    }
+    merged
 }
 
 #[cfg(test)]
@@ -173,5 +249,51 @@ mod tests {
         assert!(!skipped.iter().any(|s| s.contains("notes")));
         std::fs::remove_dir_all(&dir).unwrap();
         assert_eq!(read_dir::<Entry>(&dir, "thing", 1, "entry"), (Vec::new(), Vec::new()), "no folder, none");
+    }
+
+    /// A person's entries come after Klipp's, never in place of one
+    /// (#3095): one named as a built-in (any case), as one read before it
+    /// (the first stays, in a later folder too), with no name, a name past
+    /// its length or control characters, or one `check` refuses is
+    /// skipped, said by name; the built-ins stay whole.
+    #[test]
+    fn a_person_s_entries_follow_the_built_ins_and_never_replace_one() {
+        let base = std::env::temp_dir().join(format!("klipp-presets-merge-{}", std::process::id()));
+        let (mine, pack) = (base.join("mine"), base.join("pack"));
+        for d in [&mine, &pack] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        let entry = |n: &str, size: u32| format!("[[entry]]\nname = \"{n}\"\nsize = {size}\n");
+        let file = |d: &std::path::Path, entries: &[String]| std::fs::write(d.join("a.toml"), format!("kind = \"thing\"\nformat_version = 1\n{}", entries.concat())).unwrap();
+        let long = "x".repeat(MAX_NAME_CHARS + 1);
+        file(&mine, &[entry("Mine", 1), entry("BUILT", 2), entry("mine", 3), entry(" ", 4), entry(&long, 5), entry("Big", 900), entry("Ta\\tb", 6)]);
+        file(&pack, &[entry("Packed", 7), entry("MINE", 8)]);
+        let built_in = vec![Entry { name: "Built".into(), size: 0 }];
+        let m = merge(built_in, &[mine, pack], "thing", 1, "entry", |e: &Entry| &e.name, |e: &Entry| if e.size > 100 { Err(format!("size {} is past 100", e.size)) } else { Ok(()) });
+        let names: Vec<&str> = m.entries.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, ["Built", "Mine", "Packed"]);
+        assert_eq!(m.built_in, 1);
+        assert!(m.is_built_in(0) && !m.is_built_in(1));
+        for says in ["\"BUILT\" is the name of one of Klipp's own", "\"mine\" is the name of one read before it", "a thing name of 0 characters", "a thing name of 65 characters", "\"Big\": size 900 is past 100", "control characters", "\"MINE\" is the name of one read before it"] {
+            assert!(m.skipped.iter().any(|s| s.contains(says)), "{says}: {:?}", m.skipped);
+        }
+        assert_eq!(m.skipped.len(), 7, "{:?}", m.skipped);
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    /// A folder of thousands of files is read for its first 64 only,
+    /// counted before any is opened, and the rest said (#3095).
+    #[test]
+    fn a_folder_of_thousands_of_files_stops_at_the_cap() {
+        let dir = std::env::temp_dir().join(format!("klipp-presets-many-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for i in 0..MAX_LISTED + 10 {
+            std::fs::write(dir.join(format!("{i:05}.toml")), "kind = \"thing\"\nformat_version = 1\n[[entry]]\nname = \"a\"\nsize = 1\n").unwrap();
+        }
+        let (found, skipped) = read_dir::<Entry>(&dir, "thing", 1, "entry");
+        assert_eq!(found.len(), MAX_FILES, "one entry from each of the first {MAX_FILES} files");
+        assert!(skipped.iter().any(|s| s.contains(&format!("more than {MAX_LISTED} names"))), "{skipped:?}");
+        assert!(skipped.iter().any(|s| s.contains(&format!("past the first {MAX_FILES}"))), "{skipped:?}");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

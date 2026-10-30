@@ -43,6 +43,7 @@ pub mod config;
 pub mod events;
 pub mod generator;
 pub mod generator_entries;
+pub mod project_formats;
 pub mod pointer;
 pub mod gpu_vendor;
 pub mod keyframe;

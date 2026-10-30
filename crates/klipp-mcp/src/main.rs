@@ -578,6 +578,7 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             "secs": args.get("secs").and_then(|v| v.as_f64())
                 .ok_or("missing required argument: secs")?,
         }),
+        "klipp_generator" if args.get("list").and_then(Value::as_bool).unwrap_or(false) => json!({ "method": "generators" }),
         "klipp_generator" => json!({
             "method": if args.get("apply").and_then(Value::as_bool).unwrap_or(false) { "apply" } else { "plan" },
             "ops": [{ "op": "generator", "data": args.get("data").ok_or("missing required argument: data")?, "at": { "secs": args.get("at_secs").and_then(Value::as_f64).ok_or("missing required argument: at_secs")? }, "secs": args.get("secs").and_then(Value::as_f64).ok_or("missing required argument: secs")?, "track": args.get("track") }],
@@ -1372,7 +1373,7 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
         }
         "klipp_new_project" => {
             let mut v = json!({ "method": "new_project", "name": arg_str(args, "name")?, "location": arg_str(args, "location")? });
-            for key in ["width", "height", "fps", "sequence_name", "discard_changes", "template"] {
+            for key in ["format", "width", "height", "fps", "sequence_name", "discard_changes", "template"] {
                 if let Some(x) = args.get(key) {
                     v[key] = x.clone();
                 }
@@ -2129,8 +2130,8 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              "The media pool: media ids, paths, kind, duration, fps, resolution, codec. Details: klipp_guide topic list_media.",
              json!({}), vec![]),
         tool("klipp_generator",
-             "Preview a native generator clip; apply true places it. Details: klipp_guide topic generator.",
-             json!({ "data": { "type": ["object", "string"] }, "at_secs": { "type": "number" }, "secs": { "type": "number" }, "track": { "type": "integer" }, "apply": { "type": "boolean" } }), vec!["data", "at_secs", "secs"]),
+             "Preview a native generator clip; apply true places it; list true, the named ones. Details: klipp_guide topic generator.",
+             json!({ "data": { "type": ["object", "string"] }, "at_secs": { "type": "number" }, "secs": { "type": "number" }, "track": { "type": "integer" }, "apply": { "type": "boolean" }, "list": { "type": "boolean" } }), vec![]),
         tool("klipp_import_media",
              "Import media: a path, paths, or a folder's files. Details: klipp_guide topic import_media.",
              json!({ "path": { "type": "string" }, "paths": { "type": "array", "items": { "type": "string" } }, "folder": { "type": "string" }, "recursive": { "type": "boolean" }, "bins": { "type": "boolean" }, "analyze": { "type": "boolean" } }),
@@ -2641,7 +2642,8 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
                  "fps": { "type": "number" },
                  "sequence_name": { "type": "string" },
                  "discard_changes": { "type": "boolean" },
-                 "template": { "type": "string" }
+                 "template": { "type": "string" },
+                 "format": { "type": "string" }
              }), vec!["name", "location"]),
         tool("klipp_project_templates",
              "The user's project templates: what each holds and needs. With save, keep the open project as one first. Details: klipp_guide topic project_templates.",
@@ -3403,6 +3405,10 @@ mod generator_tests {
         args["data"] = json!("Countdown");
         assert_eq!(tool_to_command("klipp_generator", &args).unwrap()["ops"][0]["data"], "Countdown");
         assert!(tool_to_command("klipp_generator", &json!({})).is_err());
+        // The named ones, Klipp's and the person's (#3095).
+        assert_eq!(tool_to_command("klipp_generator", &json!({ "list": true })).unwrap(), json!({ "method": "generators" }));
+        let np = tool_to_command("klipp_new_project", &json!({ "name": "a", "location": "/tmp", "format": "Studio 50p" })).unwrap();
+        assert_eq!(np["format"], "Studio 50p");
         let text = content_for("klipp_generator", &json!({"text": "place generator", "next": "check"})).unwrap();
         assert!(text[0]["text"].as_str().unwrap().contains("place generator"));
     }

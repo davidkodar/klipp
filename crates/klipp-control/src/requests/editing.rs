@@ -200,7 +200,7 @@ pub(crate) fn respond(
     let mut send = sender!(ctx, collect);
 
     match cmd {
-        ControlCommand::NewProject { name, location, width, height, fps, sequence_name, discard_changes, template } => {
+        ControlCommand::NewProject { name, location, format, width, height, fps, sequence_name, discard_changes, template } => {
             if in_batch {
                 return Err("new_project is not part of a batch; send it on its own".into());
             }
@@ -216,15 +216,27 @@ pub(crate) fn respond(
             if dir.exists() {
                 return Err(format!("{} exists already: open_project it, or pick another name", dir.display()));
             }
-            let (fps_num, fps_den) = match fps {
-                Some(f) => fps_fraction(f)?,
-                None => (0, 0),
+            // A format by name (#3095): its picture, usual rate and HDR.
+            let format = match format {
+                Some(f) if width.is_some() || height.is_some() || fps.is_some() => return Err(format!("format \"{}\" sets the picture and rate: leave width, height and fps out", f.trim())),
+                Some(f) => Some(klipp_core::project_formats::format_named(&f).ok_or_else(|| {
+                    let names: Vec<&str> = klipp_core::project_formats::formats().iter().map(|f| f.name.as_str()).collect();
+                    format!("no project format \"{}\"; there are {}", f.trim(), names.join(", "))
+                })?),
+                None => None,
             };
-            let (width, height) = match (width, height) {
-                (Some(w), Some(h)) if w > 0 && h > 0 => (w, h),
+            let (fps_num, fps_den) = match (fps, format) {
+                (Some(f), _) => fps_fraction(f)?,
+                (None, Some(f)) => f.rates.first().copied().unwrap_or((0, 0)),
                 (None, None) => (0, 0),
+            };
+            let (width, height) = match (width, height, format) {
+                (Some(w), Some(h), _) if w > 0 && h > 0 => (w, h),
+                (None, None, Some(f)) => (f.width, f.height),
+                (None, None, None) => (0, 0),
                 _ => return Err("give both width and height, or neither".into()),
             };
+            let hdr = format.is_some_and(|f| f.hdr);
             let before = project_status(ctx)?;
             if before.dirty && !discard_changes {
                 return Err("the open project has unsaved changes: save_project first, or pass discard_changes true to lose them".into());
@@ -236,7 +248,7 @@ pub(crate) fn respond(
                 None => None,
             };
             let from_template = template.is_some();
-            send_envelope(ctx, vec![AppCommand::CreateProject { name, location, fps_num, fps_den, width, height, sequence_name, template, hdr: false, brand_kit: None }], false)?;
+            send_envelope(ctx, vec![AppCommand::CreateProject { name, location, fps_num, fps_den, width, height, sequence_name, template, hdr, brand_kit: None }], false)?;
             let after = wait_for_project_event(ctx, before.generation, 60_000)?;
             if let Some(e) = after.last_error {
                 return Err(e);
@@ -325,7 +337,14 @@ pub(crate) fn respond(
                 None if templates.is_empty() => "No project templates yet: save one with save {name}.".into(),
                 None => format!("{} project template(s): start a project from one with new_project's template.", templates.len()),
             };
-            Ok(json!({ "templates": templates, "text": text }))
+            // The formats new_project takes by name (#3095).
+            let built_in = klipp_core::project_formats::built_in_formats();
+            let formats: Vec<serde_json::Value> = klipp_core::project_formats::formats()
+                .iter()
+                .enumerate()
+                .map(|(i, f)| json!({ "name": f.name, "width": f.width, "height": f.height, "rates": f.rates, "hdr": f.hdr, "source": if i < built_in { "built-in" } else { "yours" } }))
+                .collect();
+            Ok(json!({ "templates": templates, "formats": formats, "formats_skipped": klipp_core::project_formats::skipped_formats(), "text": text }))
         }
 
         ControlCommand::NewSequence { name, width, height, fps } => {
@@ -1058,6 +1077,25 @@ pub(crate) fn respond(
                 return Err("a font fetch is not part of a batch: send it on its own".into());
             }
             fetch_font(&name)
+        }
+
+        ControlCommand::Generators => {
+            if in_batch {
+                return read_in_batch("generators");
+            }
+            let listing = klipp_core::generator_entries::generator_listing();
+            let generators: Vec<serde_json::Value> = listing
+                .entries
+                .iter()
+                .enumerate()
+                .map(|(i, g)| json!({ "name": g.name, "group": g.category, "animated": g.animated, "source": if listing.is_built_in(i) { "built-in" } else { "yours" } }))
+                .collect();
+            let yours = listing.entries.len() - listing.built_in;
+            Ok(json!({
+                "generators": generators,
+                "skipped": listing.skipped,
+                "text": format!("{} generators, {yours} of them yours{}: a generator op places one by name as its data", listing.entries.len(), if listing.skipped.is_empty() { String::new() } else { format!("; {} of yours skipped", listing.skipped.len()) }),
+            }))
         }
 
         ControlCommand::Fonts { query, fetch: None } => {

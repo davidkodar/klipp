@@ -804,6 +804,16 @@ fn run_script(s: &str, i: usize) -> Result<klipp_timeline::Script, Refusal> {
     }
 }
 
+/// A generator's settings, or a name the Generators tab lists (any case),
+/// read as that one's settings (#3095).
+fn generator_or_named<'de, D: serde::Deserializer<'de>>(d: D) -> Result<klipp_core::GeneratorData, D::Error> {
+    let value = serde_json::Value::deserialize(d)?;
+    if let Some(entry) = value.as_str().and_then(klipp_core::generator_entries::generator_named) {
+        return Ok(entry.data.clone());
+    }
+    serde_json::from_value(value).map_err(serde::de::Error::custom)
+}
+
 /// One editorial operation.
 // The `title` variant carries many optional style/motion fields, so it is
 // larger than the rest; ops are resolved one at a time, never held in bulk,
@@ -2201,7 +2211,10 @@ pub enum Op {
     /// Place a native generator. Omit track to use/create a bottom
     /// Background video track. Give exactly one of secs or end; end can
     /// be a clip_end anchor so a background matches its picture exactly.
+    /// `data` is the generator's settings, or the name of one the
+    /// Generators tab lists, Klipp's or a person's own (#3095).
     Generator {
+        #[serde(deserialize_with = "generator_or_named")]
         data: klipp_core::GeneratorData,
         at: Anchor,
         #[serde(default)]
@@ -20636,6 +20649,20 @@ mod generator_tests {
         assert!((secs(clip.timeline_out) - 3.0).abs() < 1e-6);
         view.apply_inverse(&plan.steps[0].edit);
         assert_eq!(serde_json::to_value(&view.sequences[0]).unwrap(), before);
+    }
+
+    /// A generator op's data may be a listed generator's name, in any
+    /// case (#3095): it places that one's settings. A name no generator
+    /// has, and not one of the plain kinds, is refused.
+    #[test]
+    fn a_generator_op_places_a_listed_generator_by_name() {
+        let op: Op = serde_json::from_value(serde_json::json!({ "op": "generator", "data": "living gradient", "at": { "secs": 0.0 }, "secs": 2.0 })).unwrap();
+        let Op::Generator { data, .. } = op else { panic!("a generator op") };
+        assert_eq!(data, klipp_core::generator_entries::generator_named("Living Gradient").unwrap().data);
+        assert!(matches!(data, klipp_core::GeneratorData::LivingGradient { .. }));
+        let plain: Op = serde_json::from_value(serde_json::json!({ "op": "generator", "data": "ColorBars100", "at": { "secs": 0.0 }, "secs": 2.0 })).unwrap();
+        assert!(matches!(plain, Op::Generator { data: klipp_core::GeneratorData::ColorBars100, .. }));
+        assert!(serde_json::from_value::<Op>(serde_json::json!({ "op": "generator", "data": "No Such Thing", "at": { "secs": 0.0 }, "secs": 2.0 })).is_err());
     }
 
     #[test]
