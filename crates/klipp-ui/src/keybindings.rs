@@ -181,7 +181,7 @@ pub const APP_ACTIONS: &[&str] = &["new_project", "open_project", "preferences",
 /// The Ctrl combinations, read while typing and on the canvases too
 /// (`shortcuts_ctrl_global`).
 pub const CTRL_ACTIONS: &[&str] = &[
-    "close_project", "command_palette", "export", "focus_panel_search", "group_clips", "import_media", "redo",
+    "close_project", "command_palette", "export", "focus_panel_search", "go_to_timecode", "group_clips", "import_media", "redo",
     "save_project", "save_project_as", "toggle_audio_mixer", "toggle_subtitle_editor", "undo", "ungroup_clips",
 ];
 /// The grade's keys, on the grade canvas and in the editor
@@ -588,6 +588,7 @@ impl KeyBindings {
         bind(&mut b, "clear_out_point", vec![KeyCombo::shift("O")]);
         bind(&mut b, "clear_in_out", vec![KeyCombo::alt("X")]);
         bind(&mut b, "set_range_to_clip", vec![KeyCombo::new("X")]);
+        bind(&mut b, "go_to_timecode", vec![KeyCombo::ctrl("J")]);
 
         // Transport
         bind(&mut b, "play_pause", vec![KeyCombo::new("Space")]);
@@ -890,6 +891,7 @@ impl KeyBindings {
             "clear_out_point" => "Clear Out Point",
             "clear_in_out" => "Clear In/Out Points",
             "set_range_to_clip" => "Set Range to Clip",
+            "go_to_timecode" => "Go to Timecode",
             "play_pause" => "Play / Pause",
             "step_forward" => "Step Forward",
             "step_backward" => "Step Backward",
@@ -973,7 +975,7 @@ impl KeyBindings {
             ("Edit", &["undo", "redo", "cut_clip", "copy_clip", "paste_clip", "paste_insert", "copy_attributes", "paste_attributes", "duplicate_clip", "select_all", "deselect_all", "select_track_clips", "select_track_forward", "select_track_backward", "select_forward", "select_backward", "delete_clip", "lift_clip", "split_at_playhead", "group_clips", "ungroup_clips"]),
             ("Tools", &["select_tool", "blade_tool", "range_tool", "trim_tool", "stretch_tool", "text_tool", "mask_tool"]),
             ("Timeline", &["add_default_transition", "add_audio_crossfade", "nudge_clips_back", "nudge_clips_forward", "nudge_clips_back_many", "nudge_clips_forward_many", "move_clips_up_a_track", "move_clips_down_a_track", "select_edit_point", "extend_edit", "play_around_edit", "trim_edit_back", "trim_edit_forward", "trim_edit_back_many", "trim_edit_forward_many", "insert_edit", "overwrite_edit", "fit_to_fill_edit", "place_on_top_edit", "replace_edit", "lift_edit", "extract_edit", "toggle_edit_mode", "ripple_trim_head", "ripple_trim_tail", "trim_out_to_playhead", "trim_in_to_playhead", "freeze_frame"]),
-            ("Navigation", &["next_edit_point", "prev_edit_point", "leave_compound", "next_marker", "prev_marker", "set_in_point", "set_out_point", "clear_in_point", "clear_out_point", "clear_in_out", "set_range_to_clip", "match_frame_program_to_source", "match_frame_source_to_program"]),
+            ("Navigation", &["next_edit_point", "prev_edit_point", "leave_compound", "next_marker", "prev_marker", "set_in_point", "set_out_point", "clear_in_point", "clear_out_point", "clear_in_out", "set_range_to_clip", "go_to_timecode", "match_frame_program_to_source", "match_frame_source_to_program"]),
             ("Transport", &["play_pause", "step_forward", "step_backward", "go_to_start", "go_to_end", "shuttle_reverse", "shuttle_pause", "shuttle_forward", "toggle_loop", "play_in_to_out"]),
             ("Viewer", &["toggle_fullscreen", "toggle_before_after", "toggle_color_panel", "toggle_scopes", "toggle_zebra", "toggle_false_color", "toggle_perf_overlay", "toggle_perf_recording", "toggle_matte_preview", "toggle_safe_areas", "toggle_grid_overlay", "extract_frame_to_file", "extract_frame_to_bin"]),
             ("Window", &["command_palette", "toggle_browser_panel", "toggle_inspector_panel", "toggle_audio_mixer", "toggle_subtitle_editor", "toggle_project_notes", "focus_panel_search"]),

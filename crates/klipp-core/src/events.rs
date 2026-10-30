@@ -1920,6 +1920,9 @@ pub enum AppCommand {
     /// The sequence's range set to a clip's span, one step (#3127): the
     /// selected clip, else the one under the playhead.
     SetRangeToClip,
+    /// The program viewer's timecode opened to type a time to go to
+    /// (#3130).
+    GoToTimecode,
     SetSequenceOutPoint(RationalTime),
     ClearSequenceInPoint,
     ClearSequenceOutPoint,

@@ -1030,6 +1030,10 @@ struct DragState {
     shown_in: Option<Timecode>,
     /// The snap the drag holds from frame to frame.
     hold: Option<crate::timeline::snap::SnapHold>,
+    /// The timeline time the clip was grabbed at, taken when the drag
+    /// began: which of its edges snaps first (#3129). Worked out from the
+    /// pointer each frame, it moved when the timeline scrolled under it.
+    grabbed_at: f64,
     /// The other clips the drag moves with it (#3060): the rest of a
     /// selection the grabbed clip is in, and their groups, each with its
     /// track and start when the drag began. Empty for a clip on its own.
@@ -8305,6 +8309,7 @@ impl TimelinePanel {
                                     linked_original_in: linked_orig,
                                     shown_in: None,
                                     hold: None,
+                                    grabbed_at: (pos.x - content_rect.left() + state.timeline_scroll_x) as f64 / zoom as f64,
                                     party: drag_party(state, hit_id),
                                 });
                             }
@@ -9660,7 +9665,7 @@ impl TimelinePanel {
                     // snaps first (#3129): grabbed by its start half, its
                     // start goes to a marker though its end is nearer a
                     // clip's edge.
-                    let grabbed_at = (drag.start_x - content_rect.left() + state.timeline_scroll_x) as f64 / zoom as f64;
+                    let grabbed_at = drag.grabbed_at;
                     let preferred = movers.iter().position(|c| c.id == drag.clip_id).map(|i| {
                         let c = movers[i];
                         let nearer_end = (c.timeline_out.to_secs_f64() - grabbed_at).abs() < (grabbed_at - c.timeline_in.to_secs_f64()).abs();

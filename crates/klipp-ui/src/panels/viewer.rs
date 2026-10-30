@@ -3,7 +3,7 @@ use crate::icons::Icon;
 use crate::inspector::video_tab::{find_transform_index, TransformParams};
 use crate::state::{AppState, TransformHandle, ViewerTransformDrag};
 use crate::theme::KlippTheme;
-use klipp_core::{AppCommand, Fps, RationalTime, ViewerMode};
+use klipp_core::{AppCommand, ViewerMode};
 use klipp_engine::PlaybackState;
 
 /// Drop the alpha so the input color renders as a solid outline /
@@ -2672,7 +2672,10 @@ impl ViewerPanel {
             }
         };
         let tc_str = format_timecode_hmsf(tc_secs, tc_display);
-        if state.editing_timecode {
+        // Only the program's box edits: drawn in the source viewer too, a
+        // second field on the same text took the focus back each frame and
+        // nothing typed reached either (#3130).
+        if state.editing_timecode && viewer_kind == ViewerMode::Program {
             let tc_rect = egui::Rect::from_min_size(
                 egui::pos2(rect.min.x + 8.0, cy - 12.0),
                 egui::vec2(110.0, 24.0),
@@ -2681,15 +2684,20 @@ impl ViewerPanel {
             let response = tc_ui.add(
                 egui::TextEdit::singleline(&mut state.timecode_input)
                     .desired_width(100.0)
+                    .hint_text(tc_str.as_str())
                     .font(egui::TextStyle::Monospace),
             );
-            if !response.has_focus() { response.request_focus(); }
+            // Lost read first: focus asked for again before it, the field
+            // never lost it, and Enter left the box open (#3130).
             let lost = response.lost_focus();
+            if !lost && !response.has_focus() { response.request_focus(); }
             let esc = ui.input(|i| i.key_pressed(egui::Key::Escape));
             let enter = ui.input(|i| i.key_pressed(egui::Key::Enter));
             if lost || esc {
                 if enter {
-                    if let Some(tc) = parse_timecode_input(&state.timecode_input, state.fps) {
+                    // A timecode, frames, seconds, or +/- that far from
+                    // the playhead (#3130).
+                    if let Some(tc) = crate::panels::transport::parse_goto(&state.timecode_input, state.playhead, state.timecode_display()) {
                         cmds.push(AppCommand::SeekTo(tc));
                     }
                 }
@@ -2718,9 +2726,11 @@ impl ViewerPanel {
                 egui::FontId::monospace(13.0),
                 theme.text_primary,
             );
-            if tc_resp.clicked() {
+            if tc_resp.on_hover_text("Click to type a time to go to: a timecode, or +/- that far from here (Ctrl+J)").clicked() {
+                // Empty, the playhead's timecode its hint, so a time is
+                // typed straight in (#3130).
                 state.editing_timecode = true;
-                state.timecode_input = tc_str;
+                state.timecode_input.clear();
             }
         }
 
@@ -7058,24 +7068,6 @@ fn rotate_point(point: egui::Pos2, center: egui::Pos2, angle_rad: f32) -> egui::
 /// where the sequence counts that way, and marked with a semicolon.
 fn format_timecode_hmsf(smooth_secs: f64, tc: klipp_core::TimecodeDisplay) -> String {
     tc.position_secs(smooth_secs)
-}
-
-fn parse_timecode_input(input: &str, fps: Fps) -> Option<RationalTime> {
-    let input = input.trim();
-    if let Some(tc) = parse_hmsf(input, fps.rate()) { return Some(tc); }
-    if let Ok(f) = input.parse::<i64>() { return Some(RationalTime::from_frames(f, fps.rate())); }
-    if let Ok(s) = input.parse::<f64>() { return Some(RationalTime::from_secs_f64(s, fps.rate())); }
-    None
-}
-
-fn parse_hmsf(input: &str, rate: u32) -> Option<RationalTime> {
-    let p: Vec<&str> = input.split(':').collect();
-    if p.len() != 4 { return None; }
-    let hh: i64 = p[0].parse().ok()?;
-    let mm: i64 = p[1].parse().ok()?;
-    let ss: i64 = p[2].parse().ok()?;
-    let ff: i64 = p[3].parse().ok()?;
-    Some(RationalTime::from_frames(((hh * 3600 + mm * 60 + ss) * rate as i64) + ff, rate))
 }
 
 // ── WYSIWYG text edit helpers ──
