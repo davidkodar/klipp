@@ -1222,7 +1222,7 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
                 }
                 Some(p) => {
                     let mut v = json!({ "method": "export_template_pack", "path": arg_str(p, "path")?, "name": arg_str(p, "name")? });
-                    for k in ["templates", "licences", "author", "version", "licence"] {
+                    for k in ["templates", "presets", "licences", "author", "version", "licence"] {
                         if let Some(x) = p.get(k) { v[k] = x.clone(); }
                     }
                     v
@@ -3203,6 +3203,9 @@ mod wait_tests {
             json!({ "method": "import_template_pack", "path": "/tmp/a.klipppack", "replace": false })
         );
         assert!(tool_to_command("klipp_title_templates", &json!({ "pack": { "name": "Mine" } })).is_err(), "a path is needed");
+        // A person's presets go in too (#3095).
+        let presets = json!([{ "kind": "hdr_zones", "name": "Night lift" }]);
+        assert_eq!(tool_to_command("klipp_title_templates", &json!({ "pack": { "path": "/tmp/a.klipppack", "name": "Mine", "presets": presets.clone() } })).unwrap()["presets"], presets);
         // Installed packs (#2757): listed, removed, updated.
         assert_eq!(tool_to_command("klipp_title_templates", &json!({ "pack": { "list": true } })).unwrap(), json!({ "method": "template_packs" }));
         assert_eq!(tool_to_command("klipp_title_templates", &json!({ "pack": { "remove": "Bold Cards" } })).unwrap(), json!({ "method": "remove_template_pack", "name": "Bold Cards" }));

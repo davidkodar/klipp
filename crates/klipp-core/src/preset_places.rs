@@ -5,6 +5,11 @@
 
 use std::path::{Path, PathBuf};
 
+/// The most installed packs whose presets are read: every kind reads
+/// each one's folder, so a packs folder of thousands is read for its
+/// first ones only, said in the log.
+pub const MAX_PACKS: usize = 256;
+
 /// The largest `pack.json` read for when its pack was installed.
 const MAX_PACK_JSON_BYTES: u64 = 1024 * 1024;
 
@@ -30,20 +35,41 @@ pub fn installed_secs(pack: &Path) -> u64 {
 }
 
 /// The `presets/<folder>/` of every pack installed under `root`, the one
-/// installed first first (by [`installed_secs`], then by folder name). A
-/// pack's folder that is a link, or one being installed, is passed over.
+/// installed first first (by [`installed_secs`], then by folder name), up
+/// to [`MAX_PACKS`]; past them, the rest are said and not read. A pack's
+/// folder that is a link, or one being installed, is passed over. The
+/// listing itself is read for its first [`crate::preset_file::MAX_LISTED`]
+/// names.
 pub fn pack_dirs(root: &Path, folder: &str) -> Vec<PathBuf> {
+    let (dirs, skipped) = pack_dirs_said(root, folder);
+    if let Some(why) = skipped {
+        tracing::warn!("{why}");
+    }
+    dirs
+}
+
+/// [`pack_dirs`], and what of the packs was not read, said.
+pub fn pack_dirs_said(root: &Path, folder: &str) -> (Vec<PathBuf>, Option<String>) {
     let mut packs: Vec<(u64, String, PathBuf)> = std::fs::read_dir(root.join("packs"))
         .into_iter()
         .flatten()
+        .take(crate::preset_file::MAX_LISTED)
         .flatten()
         .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
         .filter_map(|e| Some((e.file_name().to_str()?.to_string(), e.path())))
         .filter(|(name, _)| !name.starts_with('.'))
-        .map(|(name, path)| (installed_secs(&path), name, path))
+        .map(|(name, path)| (0, name, path))
         .collect();
+    // Counted before any pack.json is opened: only the first by name are
+    // read for when they were installed.
+    let skipped = (packs.len() > MAX_PACKS).then(|| format!("{} installed packs past the first {MAX_PACKS}: their presets are not read", packs.len() - MAX_PACKS));
+    packs.sort_by(|a, b| a.1.cmp(&b.1));
+    packs.truncate(MAX_PACKS);
+    for p in &mut packs {
+        p.0 = installed_secs(&p.2);
+    }
     packs.sort();
-    packs.into_iter().map(|(_, _, path)| path.join("presets").join(folder)).collect()
+    (packs.into_iter().map(|(_, _, path)| path.join("presets").join(folder)).collect(), skipped)
 }
 
 /// Every folder a kind's presets in `folder` are read from: the
@@ -76,6 +102,21 @@ mod tests {
         let order: Vec<String> = pack_dirs(&root, "generators").iter().map(|p| p.parent().unwrap().parent().unwrap().file_name().unwrap().to_string_lossy().into_owned()).collect();
         assert_eq!(order, ["ccc", "bbb", "ddd", "aaa"]);
         assert!(pack_dirs(&root, "generators").iter().all(|p| p.ends_with("presets/generators")));
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// A packs folder of more than [`MAX_PACKS`] is read for its first
+    /// ones by name, the rest said, before any of the rest is opened.
+    #[test]
+    fn a_folder_of_too_many_packs_stops_at_the_cap() {
+        let root = std::env::temp_dir().join(format!("klipp-many-packs-{}", std::process::id()));
+        for i in 0..MAX_PACKS + 5 {
+            std::fs::create_dir_all(root.join("packs").join(format!("p{i:04}"))).unwrap();
+        }
+        let (dirs, skipped) = pack_dirs_said(&root, "generators");
+        assert_eq!(dirs.len(), MAX_PACKS);
+        assert!(dirs.last().unwrap().starts_with(root.join("packs").join(format!("p{:04}", MAX_PACKS - 1))));
+        assert_eq!(skipped.as_deref(), Some("5 installed packs past the first 256: their presets are not read"));
         std::fs::remove_dir_all(&root).unwrap();
     }
 }

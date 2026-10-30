@@ -816,7 +816,7 @@ pub fn animator_preset(name: &str, clip_secs: f64) -> Option<Animator> {
 /// An animator preset as `assets/presets/animators` writes it.
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
-struct AnimatorPreset {
+pub(crate) struct AnimatorPreset {
     id: String,
     name: String,
     #[serde(default)]
@@ -936,7 +936,7 @@ fn user_animator_fault(p: &AnimatorPreset) -> Result<(), String> {
 /// Klipp's animator presets, then those in `dirs` (a person's folder,
 /// then the packs'), each read as someone else's (#3095), by id: one
 /// whose id or name is that of one before it is skipped, said.
-fn animator_preset_listing_in(dirs: &[std::path::PathBuf]) -> crate::preset_file::Merged<AnimatorPreset> {
+pub(crate) fn animator_preset_listing_in(dirs: &[std::path::PathBuf]) -> crate::preset_file::Merged<AnimatorPreset> {
     let built_in = read_animator_presets(include_str!("../../../assets/presets/animators/builtin.toml")).unwrap_or_else(|why| {
         tracing::error!("the built-in animator presets don't read: {why}");
         Vec::new()

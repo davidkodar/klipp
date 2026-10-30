@@ -150,6 +150,17 @@ fn presets() -> &'static Presets {
     })
 }
 
+/// How many formats the files in `dirs` add after Klipp's.
+pub fn added_in(dirs: &[std::path::PathBuf]) -> usize {
+    let (presets, _) = presets_in(dirs);
+    presets.formats.len() - presets.built_in
+}
+
+/// What of the formats in `dirs` would be skipped, read after Klipp's.
+pub fn skipped_in(dirs: &[std::path::PathBuf]) -> Vec<String> {
+    presets_in(dirs).1
+}
+
 /// How many of [`formats`], from the start, are Klipp's own ("Match
 /// first clip" among them).
 pub fn built_in_formats() -> usize {
