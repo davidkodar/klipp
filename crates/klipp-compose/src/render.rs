@@ -3111,6 +3111,14 @@ impl Renderer {
                     let mut source_fx=object.fx().clone();
                     let edges=std::mem::take(&mut source_fx.edge_fade);
                     let motion=std::mem::take(&mut source_fx.motion);
+                    // Loops that only fade the layer (#3160), as the CPU poses
+                    // a shape: its opacity scaled after its paint. A colour
+                    // loop does nothing to a shape there. The loops that move
+                    // it go by its painted height or width and stay with the
+                    // title's raster.
+                    let loops=if source_fx.loops.iter().all(|l|matches!(l,klipp_timeline::TitleLoop::Blink{..}|klipp_timeline::TitleLoop::Pulse{..}|klipp_timeline::TitleLoop::Flicker{..}|klipp_timeline::TitleLoop::ColorCycle{..}|klipp_timeline::TitleLoop::ColorBlend{..})) {
+                        std::mem::take(&mut source_fx.loops)
+                    } else {Vec::new()};
                     if !source_fx.is_default()
                         || motion.enter.iter().chain(motion.exit.iter())
                         .any(|m|!matches!(m.kind,klipp_timeline::MotionKind::Fade|klipp_timeline::MotionKind::Rise|klipp_timeline::MotionKind::Drop|klipp_timeline::MotionKind::SlideLeft|klipp_timeline::MotionKind::SlideRight|klipp_timeline::MotionKind::ScaleUp|klipp_timeline::MotionKind::ScaleDown|klipp_timeline::MotionKind::Blur|klipp_timeline::MotionKind::MaskRise|klipp_timeline::MotionKind::MaskDrop|klipp_timeline::MotionKind::Pop|klipp_timeline::MotionKind::Slam|klipp_timeline::MotionKind::Larger|klipp_timeline::MotionKind::Smaller|klipp_timeline::MotionKind::FlyLeft|klipp_timeline::MotionKind::FlyRight|klipp_timeline::MotionKind::FlyTop|klipp_timeline::MotionKind::FlyBottom|klipp_timeline::MotionKind::Bounce|klipp_timeline::MotionKind::Flicker|klipp_timeline::MotionKind::Typewriter|klipp_timeline::MotionKind::FocusIn|klipp_timeline::MotionKind::SoftRise)) {
@@ -3124,7 +3132,10 @@ impl Renderer {
                     // no effect, and both fades use unit zero as on the CPU.
                     let (enter,exit)=motion.progress(clip_time as f32,Some(total),0);
                     // Mask reveals clip the source without fading their own alpha.
-                    let fade=motion.enter.map_or(1.0,|m|m.pose(enter,1.0).0)*motion.exit.map_or(1.0,|m|m.pose(exit,1.0).0);
+                    // Their geometry moves nothing here: only the opacity is read.
+                    let geo=klipp_timeline::LoopGeometry {frame_w:width as f32,frame_h:height as f32,text_w:1.0,text_h:1.0,font_px:1.0};
+                    let loop_fade=if loops.is_empty() {1.0} else {klipp_core::title_motion::eval_loops(&loops,clip_time as f32,Some(total),geo,[255,255,255,255]).opacity.clamp(0.0,1.0)};
+                    let fade=motion.enter.map_or(1.0,|m|m.pose(enter,1.0).0)*motion.exit.map_or(1.0,|m|m.pose(exit,1.0).0)*loop_fade;
                     let travel=|m:Option<klipp_timeline::Motion>,progress:f32| {
                         use klipp_timeline::MotionKind;
                         m.map_or([0.0;4],|m| {
@@ -3208,6 +3219,9 @@ impl Renderer {
                         } else if (moves && !gpu.stack_title_motion_translate(slot,enter_travel,exit_travel,clip_rows))
                             || !gpu.stack_title_motion_alpha(slot,fade) {return None;}
                     }
+                    // The loops' fade on top, as the CPU poses the layer once
+                    // with its motion's fade and its loops' together.
+                    if !motion.is_active() && !loops.is_empty() && (!gpu.stack_title_precision(slot,true) || !gpu.stack_title_motion_alpha(slot,loop_fade)) {return None;}
                     if !edges.is_none() && (!gpu.stack_title_precision(slot,true)
                         || !gpu.stack_title_alpha(slot,[edges.top,edges.bottom,edges.left,edges.right],1.0)) {return None;}
                     // Scene objects arrive with opacity stripped; matte sources retain it.

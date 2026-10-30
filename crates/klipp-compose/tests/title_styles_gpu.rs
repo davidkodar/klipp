@@ -789,6 +789,31 @@ fn motion_faded_panel(fitted: bool, mode: u8, width: u32, height: u32) -> Sequen
     seq
 }
 
+/// #3160: a rectangle of a two-layer title that blinks, pulses or
+/// flickers: its loop fades it on the GPU shape route as the CPU fades
+/// it, on and off.
+fn looping_panel(fitted: bool, mode: u8, width: u32, height: u32) -> Sequence {
+    use klipp_timeline::{TitleLoop, TitleObjectContent};
+    let mut seq=edge_faded_panel(fitted,0,width,height);
+    let ClipKind::Title(title)=&mut seq.tracks[0].clips[0].kind else {unreachable!()};
+    for object in &mut title.objects {
+        if matches!(object.content,TitleObjectContent::Shape(_)) {
+            object.fx_mut().edge_fade=Default::default();
+            object.fx_mut().loops=vec![match mode {
+                0=>TitleLoop::Blink { rate_hz: 2.0, duty: 0.5 },
+                1=>TitleLoop::Pulse { rate_hz: 0.5, min_opacity: 0.9 },
+                _=>TitleLoop::Flicker { rate_hz: 6.0, depth: 0.6 },
+            }];
+        }
+    }
+    seq
+}
+
+#[test]
+fn rectangle_loops_fade_it_on_the_gpu_as_on_the_cpu() {
+    check_rectangle_motion_samples(looping_panel,3,&[0.1,0.3,0.6,1.0,2.2]);
+}
+
 #[test]
 fn rectangle_motion_fades_match_cpu_and_remain_resident() {
     check_rectangle_motion_fades(motion_faded_panel);
