@@ -449,7 +449,11 @@ pub fn takes_glyph_route(title: &TitleData, scene: Option<&TitleData>) -> bool {
         || tb.chromatic_aberration_px > 0.0
         || tb.char_animation.as_ref().is_some_and(|c| c.enabled)
         || !fx.edge_fade.is_none()
-        || fx.motion_blur.is_some()
+        // A blurred layer whose drawing moves (an entrance, an exit, a
+        // loop) is drawn at each of the shutter's instants by the source
+        // route. One that moves only by its keys is drawn once, as here,
+        // and the shutter blurs where it is placed (#3160).
+        || (fx.motion_blur.is_some() && (fx.motion.enter.is_some() || fx.motion.exit.is_some() || !fx.loops.is_empty()))
     {
         return false;
     }

@@ -2199,13 +2199,18 @@ fn blurred_title(case: u8, w: u32, h: u32) -> Sequence {
     use klipp_timeline::{Motion, MotionBlur, MotionKind, TitleMotion};
     let blur = Some(MotionBlur { enabled: true, shutter_angle: 180.0, shutter_angle_keyframes: vec![], samples: 8 });
     let mut fx = LayerFx { motion_blur: blur, ..Default::default() };
-    if case != 1 { fx.motion = TitleMotion::enter(Motion::new(if case == 4 { MotionKind::FlyLeft } else { MotionKind::Rise }).duration(0.8)); }
+    if case != 1 && case != 5 { fx.motion = TitleMotion::enter(Motion::new(if case == 4 { MotionKind::FlyLeft } else { MotionKind::Rise }).duration(0.8)); }
     if case == 2 { fx.outlines = vec![TextOutline { enabled: true, color: [20, 30, 40, 255], width: 4.0, width_keyframes: vec![] }]; }
     let mut title = TitleData::single_text_fx(TextBox { text: "Blur".into(), font_size: 180.0, color: [230, 190, 80, 255], ..Default::default() }, fx);
     if case == 3 {
         title.add_object(klipp_timeline::TitleObjectContent::Shape(klipp_timeline::Shape { kind: klipp_timeline::ShapeKind::Rectangle { corner_radius: 0.0 }, fill: Some([40, 80, 200, 160]), gradient: None, stroke: None, fit: None }),
             klipp_timeline::ObjectTransform { size: klipp_timeline::TitlePosition { x: 0.8, y: 0.3 }, ..klipp_timeline::default_text_transform() });
         title.objects.swap(0, 1);
+    }
+    // The layer moved by its own keys, its drawing otherwise still (#3160):
+    // the glyph source draws it on the GPU, the shutter blurs what it is.
+    if case == 5 {
+        title.objects[0].transform.center_x_keyframes = vec![key(0.0, 0.4), key(3.0, 0.6)];
     }
     let mut seq = Sequence::new_default(); seq.resolution = Resolution { width: w, height: h };
     let mut track = Track::new("blur", TrackKind::Video);
@@ -2218,7 +2223,7 @@ fn blurred_title(case: u8, w: u32, h: u32) -> Sequence {
 #[test]
 fn title_motion_blur_matches_cpu_on_the_stack() {
     let (w, h) = (320, 180);
-    for case in 0..5u8 {
+    for case in 0..6u8 {
         let seq = blurred_title(case, w, h);
         let mut gpu = renderer(); gpu.set_gpu_enabled(true);
         assert!(gpu.executor().gpu_pipeline_or_init().is_some(), "GPU required");
