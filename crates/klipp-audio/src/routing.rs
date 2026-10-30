@@ -37,10 +37,16 @@ pub fn add_bus(bus: &[f32], volume: f32, (pan_l, pan_r): (f32, f32), dest: &mut 
     (peak_l, peak_r)
 }
 
+/// The most a way through the buses is made up for, in seconds: each
+/// bus's effects may take up to 1 s, and 32 buses one after another
+/// would hold the picture back half a minute.
+pub const MAX_ROUTE_SECS: u32 = 2;
+
 /// The latency of each bus's way to master: its own effects' and that of
-/// every bus after it, in stereo frames. `output[b]` is the bus `b`
-/// feeds, `None` master; a way that loops is cut where it comes round.
-pub fn bus_routes(latency: &[u32], output: &[Option<usize>]) -> Vec<u32> {
+/// every bus after it, in stereo frames, at most `cap`. `output[b]` is the
+/// bus `b` feeds, `None` master; a way that loops is cut where it comes
+/// round. A way held at `cap` comes back that much early.
+pub fn bus_routes(latency: &[u32], output: &[Option<usize>], cap: u32) -> Vec<u32> {
     (0..latency.len())
         .map(|b| {
             let (mut at, mut sum, mut steps) = (Some(b), 0u32, 0);
@@ -49,7 +55,7 @@ pub fn bus_routes(latency: &[u32], output: &[Option<usize>]) -> Vec<u32> {
                 at = output.get(i).copied().flatten();
                 steps += 1;
             }
-            sum
+            sum.min(cap)
         })
         .collect()
 }
@@ -101,9 +107,15 @@ mod tests {
     /// loop is cut.
     #[test]
     fn a_buses_way_adds_the_buses_after_it() {
-        assert_eq!(bus_routes(&[100, 30, 5], &[Some(1), None, Some(0)]), vec![130, 30, 135]);
-        let looped = bus_routes(&[10, 20], &[Some(1), Some(0)]);
+        assert_eq!(bus_routes(&[100, 30, 5], &[Some(1), None, Some(0)], u32::MAX), vec![130, 30, 135]);
+        let looped = bus_routes(&[10, 20], &[Some(1), Some(0)], u32::MAX);
         assert!(looped.iter().all(|&l| l < 1000), "{looped:?}");
+        // 32 buses of 1 s each, one after another: held at 2 s.
+        let rate = 48_000;
+        let chained: Vec<Option<usize>> = (0..32).map(|b| (b < 31).then_some(b + 1)).collect();
+        let routes = bus_routes(&[rate; 32], &chained, MAX_ROUTE_SECS * rate);
+        assert_eq!(routes[0], 2 * rate);
+        assert_eq!(routes[31], rate);
     }
 
     /// Every way reaches master together: a track's own latency, plus its
@@ -111,7 +123,7 @@ mod tests {
     /// the total for each way.
     #[test]
     fn every_way_reaches_master_together() {
-        let route = bus_routes(&[512, 0], &[None, None]);
+        let route = bus_routes(&[512, 0], &[None, None], u32::MAX);
         // Track 0: 64 of its own, sends to the 512 bus and the 0 bus.
         // Track 1: 200 of its own, to master only.
         let plan = pdc_plan(&[64, 200], &[None, None], &[vec![0, 1], vec![]], &route);

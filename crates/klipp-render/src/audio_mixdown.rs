@@ -91,7 +91,7 @@ impl Routing {
             .collect();
         let latency: Vec<u32> = buses.iter().map(|b| b.chain.as_ref().map_or(0, |c| c.total_latency_samples(sample_rate))).collect();
         let outputs: Vec<Option<usize>> = buses.iter().map(|b| b.output).collect();
-        let route = klipp_audio::routing::bus_routes(&latency, &outputs);
+        let route = klipp_audio::routing::bus_routes(&latency, &outputs, klipp_audio::routing::MAX_ROUTE_SECS * sample_rate);
         let sends: Vec<Vec<(klipp_timeline::AuxSend, usize)>> = snapshot.audio_tracks.iter().map(|t| t.sends.iter().filter_map(|s| Some((s.clone(), index(s.bus)?))).collect()).collect();
         // The tracks' own effects are already made up for, read ahead.
         let n = sends.len();

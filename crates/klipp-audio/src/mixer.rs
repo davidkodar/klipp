@@ -242,7 +242,7 @@ impl AudioMixer {
     pub fn pdc_plan(&self) -> crate::routing::PdcPlan {
         let bus_latency: Vec<u32> = self.bus_inserts.iter().map(|i| i.as_ref().map_or(0, |i| i.chain.total_latency_samples(self.sample_rate))).collect();
         let outputs: Vec<Option<usize>> = self.buses.iter().map(|b| b.output).collect();
-        let route = crate::routing::bus_routes(&bus_latency, &outputs);
+        let route = crate::routing::bus_routes(&bus_latency, &outputs, crate::routing::MAX_ROUTE_SECS * self.sample_rate);
         let n = self.track_latency_samples.len();
         let out: Vec<Option<usize>> = (0..n).map(|t| self.tracks.get(t).and_then(|s| s.bus).filter(|&b| b < self.buses.len())).collect();
         let sends: Vec<Vec<usize>> = (0..n).map(|t| self.tracks.get(t).map_or_else(Vec::new, |s| s.sends.iter().map(|l| l.bus).collect())).collect();
