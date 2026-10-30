@@ -21,18 +21,22 @@
 //!    hyperzoom from the selected clip into its track-neighbour.
 //! 2. [`TemplateKind::TrackMatteReveal`] — binds the clip-above as
 //!    an alpha matte and lays a feather fade-in on the binding so
-//!    the matte reveals over the first 0.5 s instead of popping.
+//!    the matte reveals over the first 0.5 s instead of popping. A
+//!    clips recipe file since #2886
+//!    (`assets/recipes/cut/track_matte_reveal.klipptemplate`), placed
+//!    through the document as one undo step.
 //! 3. [`TemplateKind::CrossDissolveHyperzoomBridge`] — gentle
 //!    hyperzoom intensity preset between the selected clip and
 //!    its track-neighbour. Peak 15× / duration 0.4 s / hold 0.05 s
 //!    / Bezier easing — a "soft punch" tier between hard cut and
 //!    crossfade.
 //! 4. [`TemplateKind::WhipPanTransition`] — different motion shape
-//!    entirely. Pans the selected clip's tail off-screen with a
-//!    motion-blur ramp; pans its track-neighbour in from the
-//!    opposite edge. Direction is part of the variant (left/right
+//!    entirely. Pans the selected clip's tail off-screen over its
+//!    last 0.2 s; pans its track-neighbour in from the opposite edge
+//!    over its first. Direction is part of the variant (left/right
 //!    are separate palette entries; the user picks before
-//!    dispatch, no parameter dialog).
+//!    dispatch, no parameter dialog). Clips recipe files since #2886
+//!    (`assets/recipes/cut/whip_pan_{left,right}.klipptemplate`).
 //!
 //! # Idempotency
 //!
@@ -46,7 +50,7 @@
 //! group template dispatches into a single undo entry; that's a
 //! follow-up, not a template-layer concern.
 
-use klipp_core::{AppCommand, ClipId, Fps, Timecode, VideoParam};
+use klipp_core::{AppCommand, ClipId, Fps, Timecode};
 use klipp_timeline::{ClipKind, Sequence};
 
 use crate::state::AppState;
@@ -102,9 +106,9 @@ pub fn plan_template(kind: &TemplateKind, ctx: &TemplateContext) -> Vec<AppComma
     }
     match kind {
         TemplateKind::HyperzoomLetterTransition => plan_hyperzoom_letter_transition(ctx),
-        TemplateKind::TrackMatteReveal => plan_track_matte_reveal(ctx),
         TemplateKind::CrossDissolveHyperzoomBridge => plan_cross_dissolve_hyperzoom_bridge(ctx),
-        TemplateKind::WhipPanTransition { direction } => plan_whip_pan_transition(ctx, *direction),
+        // Clips recipes (#2886): the document places them.
+        TemplateKind::TrackMatteReveal | TemplateKind::WhipPanTransition { .. } => Vec::new(),
     }
 }
 
@@ -201,41 +205,6 @@ fn plan_hyperzoom_letter_transition(ctx: &TemplateContext) -> Vec<AppCommand> {
     ]
 }
 
-/// Track Matte Reveal — bind clip-above as alpha matte, fade in
-/// the matte feather over 0.5 s for a soft reveal instead of a
-/// hard pop.
-fn plan_track_matte_reveal(ctx: &TemplateContext) -> Vec<AppCommand> {
-    let Some(consumer_id) = ctx.selected_clip_id else { return Vec::new(); };
-    let Some(matte_source_id) = find_matte_candidate(ctx.seq, consumer_id) else { return Vec::new(); };
-    vec![
-    // Bind alpha matte (no feather, no choke — the keyframe pair
-    // below provides the reveal animation).
-    AppCommand::SetClipMatte {
-        clip_id: consumer_id,
-        source_clip_id: matte_source_id,
-        channel: 0, // Alpha
-        invert: false,
-        feather_px: 0.0,
-        choke_px: 0.0,
-    },
-    // Feather reveal: 50 px → 0 px over 0.5 s at clip start.
-    // Soft initial edge melts into a hard mask. Same keyframe
-    // primitive the inspector's matte-feather slider uses.
-    AppCommand::AddVideoKeyframe {
-        clip_id: consumer_id,
-        param: VideoParam::MatteFeather,
-        time_secs: 0.0,
-        value: 50.0,
-    },
-    AppCommand::AddVideoKeyframe {
-        clip_id: consumer_id,
-        param: VideoParam::MatteFeather,
-        time_secs: 0.5,
-        value: 0.0,
-    },
-    ]
-}
-
 /// Cross-Dissolve with Hyperzoom Bridge — gentle hyperzoom
 /// intensity preset between the selected clip and its track-
 /// neighbour. A "soft punch" mid-tier between hard cut and
@@ -267,76 +236,6 @@ fn plan_cross_dissolve_hyperzoom_bridge(ctx: &TemplateContext) -> Vec<AppCommand
         add_light_leak: false,
         light_leak_intensity: 0.0,
     }]
-}
-
-/// Whip Pan Transition — pans the selected clip's tail off-screen
-/// in `direction`; pans its track-neighbour in from the opposite
-/// edge. Adds a synchronised motion-blur ramp via GaussianBlur
-/// keyframes so the pan reads as fast motion rather than a slide.
-///
-/// Position values are in clip-frame pixels (the Transform
-/// builtin's position_x / position_y units). Off-screen distance
-/// is taken from the sequence resolution width — pan goes one
-/// full frame width past the centre, so the clip clears
-/// regardless of any pre-existing zoom.
-fn plan_whip_pan_transition(ctx: &TemplateContext, direction: WhipDirection) -> Vec<AppCommand> {
-    let Some(source_id) = ctx.selected_clip_id else { return Vec::new(); };
-    let Some((target_id, source_dur, _target_dur)) =
-        find_next_clip_on_track(ctx.seq, source_id)
-    else { return Vec::new(); };
-    let pan_distance = ctx.seq.resolution.width as f32; // one frame width
-    let signed = match direction {
-        WhipDirection::Left => -pan_distance,
-        WhipDirection::Right => pan_distance,
-    };
-    let pan_secs = 0.2_f64; // half-pan each side; cut bridges the two halves
-    let blur_peak = 25.0_f32;
-    let mut cmds = Vec::with_capacity(8);
-    // Source clip outgoing — pan from current position (0) to
-    // off-screen in `direction`. Keyframe at clip end - pan_secs
-    // is the held-static state; clip end is fully offscreen.
-    let source_pan_start = (source_dur - pan_secs).max(0.0);
-    cmds.push(AppCommand::AddVideoKeyframe {
-        clip_id: source_id,
-        param: VideoParam::PositionX,
-        time_secs: source_pan_start,
-        value: 0.0,
-    });
-    cmds.push(AppCommand::AddVideoKeyframe {
-        clip_id: source_id,
-        param: VideoParam::PositionX,
-        time_secs: source_dur,
-        value: signed,
-    });
-    // Source clip motion-blur ramp 0 → blur_peak.
-    cmds.push(AppCommand::AddVideoKeyframe {
-        clip_id: source_id,
-        param: VideoParam::Scale, // sentinel — motion blur via builtin keyframes lives in effect_keyframes; we'll route via Scale's existing path. See follow-up note in tests.
-        time_secs: source_pan_start,
-        value: 1.0,
-    });
-    // Target clip incoming — pan from offscreen (opposite of
-    // source's exit direction) back to centre. Direction is
-    // mirrored: source pans LEFT → target pans IN from RIGHT.
-    cmds.push(AppCommand::AddVideoKeyframe {
-        clip_id: target_id,
-        param: VideoParam::PositionX,
-        time_secs: 0.0,
-        value: -signed, // mirror of source's exit
-    });
-    cmds.push(AppCommand::AddVideoKeyframe {
-        clip_id: target_id,
-        param: VideoParam::PositionX,
-        time_secs: pan_secs,
-        value: 0.0,
-    });
-    // Target motion-blur ramp blur_peak → 0.
-    let _ = blur_peak; // motion-blur via GaussianBlur effect keyframes
-                      // would need an effect_keyframes-keyed AppCommand —
-                      // routed via SetClipBuiltinEffectParam in a
-                      // follow-up; v1 ships position-only whip pan and
-                      // documents the missing piece in the test below.
-    cmds
 }
 
 // ──────────── Gating predicates ────────────
@@ -379,9 +278,8 @@ pub fn can_apply(kind: &TemplateKind, ctx: &TemplateContext) -> bool {
     }
     match kind {
         TemplateKind::HyperzoomLetterTransition => can_apply_hyperzoom_letter_transition(ctx),
-        TemplateKind::TrackMatteReveal => can_apply_track_matte_reveal(ctx),
         TemplateKind::CrossDissolveHyperzoomBridge => can_apply_cross_dissolve(ctx),
-        TemplateKind::WhipPanTransition { .. } => can_apply_whip_pan(ctx),
+        TemplateKind::TrackMatteReveal | TemplateKind::WhipPanTransition { .. } => false,
     }
 }
 
@@ -391,17 +289,7 @@ fn can_apply_hyperzoom_letter_transition(ctx: &TemplateContext) -> bool {
         && find_next_clip_on_track(ctx.seq, cid).is_some()
 }
 
-fn can_apply_track_matte_reveal(ctx: &TemplateContext) -> bool {
-    let Some(cid) = ctx.selected_clip_id else { return false; };
-    find_matte_candidate(ctx.seq, cid).is_some()
-}
-
 fn can_apply_cross_dissolve(ctx: &TemplateContext) -> bool {
-    let Some(cid) = ctx.selected_clip_id else { return false; };
-    find_next_clip_on_track(ctx.seq, cid).is_some()
-}
-
-fn can_apply_whip_pan(ctx: &TemplateContext) -> bool {
     let Some(cid) = ctx.selected_clip_id else { return false; };
     find_next_clip_on_track(ctx.seq, cid).is_some()
 }
@@ -765,12 +653,7 @@ mod tests {
         let seq = seq_with(vec![track("V1", TrackKind::Video, vec![lone])]);
         let c = ctx(&seq, Some(lone_id));
         assert!(plan_template(&TemplateKind::HyperzoomLetterTransition, &c).is_empty());
-        assert!(plan_template(&TemplateKind::TrackMatteReveal, &c).is_empty());
         assert!(plan_template(&TemplateKind::CrossDissolveHyperzoomBridge, &c).is_empty());
-        assert!(plan_template(
-            &TemplateKind::WhipPanTransition { direction: WhipDirection::Left },
-            &c,
-        ).is_empty());
     }
 
     // ────────── Snapshot tests (audit note ii) ──────────
@@ -852,27 +735,6 @@ mod tests {
     }
 
     #[test]
-    fn track_matte_reveal_plan_shape() {
-        let consumer = media_clip(0, 48);
-        let consumer_id = consumer.id;
-        let above = media_clip(0, 48);
-        let seq = seq_with(vec![
-            track("V1", TrackKind::Video, vec![consumer]),
-            track("V2", TrackKind::Video, vec![above]),
-        ]);
-        let cmds = plan_template(
-            &TemplateKind::TrackMatteReveal,
-            &ctx(&seq, Some(consumer_id)),
-        );
-        let actual = shape_all(&cmds);
-        expect![[r#"
-            SetClipMatte { clip_id: ClipId(<uuid>), source_clip_id: ClipId(<uuid>), channel: 0, invert: false, feather_px: 0.0, choke_px: 0.0 }
-            AddVideoKeyframe { clip_id: ClipId(<uuid>), param: MatteFeather, time_secs: 0.0, value: 50.0 }
-            AddVideoKeyframe { clip_id: ClipId(<uuid>), param: MatteFeather, time_secs: 0.5, value: 0.0 }"#]]
-            .assert_eq(&actual);
-    }
-
-    #[test]
     fn cross_dissolve_plan_shape() {
         let a = media_clip(0, 48);
         let aid = a.id;
@@ -884,62 +746,6 @@ mod tests {
         );
         let actual = shape_all(&cmds);
         expect!["ApplyHyperzoom { source_clip_id: ClipId(<uuid>), target_clip_id: None, focal_x_norm: 0.5, focal_y_norm: 0.5, duration_secs: 0.4, max_scale: 15.0, easing: 1, hold_secs: 0.05, add_radial_blur: false, radial_blur_amount: 0.0, focal_ref: None, add_whoosh: false, whoosh_variant: 0, whoosh_custom_path: None, add_chromatic_aberration: false, chromatic_aberration_amount: 0.0, add_light_leak: false, light_leak_intensity: 0.0 }"]
-            .assert_eq(&actual);
-    }
-
-    #[test]
-    fn whip_pan_plan_shape_left() {
-        let a = media_clip(0, 48);
-        let aid = a.id;
-        let b = media_clip(48, 96);
-        let seq = seq_with(vec![track("V1", TrackKind::Video, vec![a, b])]);
-        let cmds = plan_template(
-            &TemplateKind::WhipPanTransition { direction: WhipDirection::Left },
-            &ctx(&seq, Some(aid)),
-        );
-        let actual = shape_all(&cmds);
-        // Source clip duration = 48 frames at 24 fps = 2.0 s.
-        // pan_secs = 0.2 → source_pan_start = 1.8.
-        // pan_distance = 1920 (default sequence width).
-        // Direction Left → signed = -1920 on source; mirror +1920
-        // on target.
-        expect![[r#"
-            AddVideoKeyframe { clip_id: ClipId(<uuid>), param: PositionX, time_secs: 1.8, value: 0.0 }
-            AddVideoKeyframe { clip_id: ClipId(<uuid>), param: PositionX, time_secs: 2.0, value: -1920.0 }
-            AddVideoKeyframe { clip_id: ClipId(<uuid>), param: Scale, time_secs: 1.8, value: 1.0 }
-            AddVideoKeyframe { clip_id: ClipId(<uuid>), param: PositionX, time_secs: 0.0, value: 1920.0 }
-            AddVideoKeyframe { clip_id: ClipId(<uuid>), param: PositionX, time_secs: 0.2, value: 0.0 }"#]]
-            .assert_eq(&actual);
-        // FOLLOW-UP: motion-blur ramp (currently the dummy Scale
-        // keyframe at 1.0) should drive a `GaussianBlur::radius`
-        // keyframe instead, but that requires routing through
-        // `effect_keyframes` (HashMap<String,
-        // Vec<Keyframe>>) which has no AppCommand wrapper today.
-        // Position-only whip pan ships first; motion-blur
-        // sweetener lands when the effect-keyframe AppCommand
-        // surface lands.
-    }
-
-    #[test]
-    fn whip_pan_plan_mirrors_direction_right() {
-        // Direction-Right pin: signed values flip on both source
-        // and target. Catches a regression where someone
-        // accidentally hardcodes the sign.
-        let a = media_clip(0, 48);
-        let aid = a.id;
-        let b = media_clip(48, 96);
-        let seq = seq_with(vec![track("V1", TrackKind::Video, vec![a, b])]);
-        let cmds = plan_template(
-            &TemplateKind::WhipPanTransition { direction: WhipDirection::Right },
-            &ctx(&seq, Some(aid)),
-        );
-        let actual = shape_all(&cmds);
-        expect![[r#"
-            AddVideoKeyframe { clip_id: ClipId(<uuid>), param: PositionX, time_secs: 1.8, value: 0.0 }
-            AddVideoKeyframe { clip_id: ClipId(<uuid>), param: PositionX, time_secs: 2.0, value: 1920.0 }
-            AddVideoKeyframe { clip_id: ClipId(<uuid>), param: Scale, time_secs: 1.8, value: 1.0 }
-            AddVideoKeyframe { clip_id: ClipId(<uuid>), param: PositionX, time_secs: 0.0, value: -1920.0 }
-            AddVideoKeyframe { clip_id: ClipId(<uuid>), param: PositionX, time_secs: 0.2, value: 0.0 }"#]]
             .assert_eq(&actual);
     }
 
@@ -1081,10 +887,8 @@ mod tests {
 #[cfg(test)]
 mod recipe_check {
     //! #2886: the matte reveal and the whip pans as Klipp's own clips
-    //! recipes, against the commands their code planned, applied as the
-    //! app's handlers apply them.
+    //! recipes, placed through the document.
     use super::*;
-    use klipp_compose::{FrameSource, RenderOptions, Renderer, SourceFrame};
     use klipp_core::{GeneratorData, RationalTime, Resolution};
     use klipp_timeline::{Clip, ClipKind, TextBox, TitleData, Track, TrackKind};
 
@@ -1110,30 +914,6 @@ mod recipe_check {
         (seq, id)
     }
 
-    /// The old plan's commands, as the app's handlers apply them: a matte
-    /// binds the source and hides it (`SetClipMatte`), a key is upserted
-    /// on its lane (`AddVideoKeyframe`).
-    fn by_code(seq: &Sequence, kind: &TemplateKind, selected: ClipId) -> Sequence {
-        let pool = klipp_media::MediaPool::new();
-        let ctx = TemplateContext { seq, pool: &pool, selected_clip_id: Some(selected), playhead: tc(0.0), fps: seq.fps };
-        let mut out = seq.clone();
-        for cmd in plan_template(kind, &ctx) {
-            match cmd {
-                AppCommand::SetClipMatte { clip_id, source_clip_id, channel, invert, feather_px, choke_px } => {
-                    assert_eq!(channel, 0, "alpha");
-                    let binding = klipp_timeline::MatteBinding { source_clip_id, channel: klipp_nodes::params::MatteChannel::Alpha, invert, feather_px, choke_px };
-                    out.all_clips_mut().find(|c| c.id == clip_id).unwrap().matte_source = Some(binding);
-                    out.all_clips_mut().find(|c| c.id == source_clip_id).unwrap().consumed_as_matte = true;
-                }
-                AppCommand::AddVideoKeyframe { clip_id, param, time_secs, value } => {
-                    out.all_clips_mut().find(|c| c.id == clip_id).unwrap().edit_video_param_keyframes(param, |k| klipp_core::keyframe::upsert_keyframe(k, time_secs, value));
-                }
-                other => panic!("not a command these plan: {other:?}"),
-            }
-        }
-        out
-    }
-
     fn by_recipe(seq: &Sequence, kind: &TemplateKind, selected: ClipId) -> Sequence {
         let pool = klipp_media::MediaPool::new();
         let ctx = TemplateContext { seq, pool: &pool, selected_clip_id: Some(selected), playhead: tc(0.0), fps: seq.fps };
@@ -1146,80 +926,20 @@ mod recipe_check {
         seqs.remove(0)
     }
 
-    struct NoMedia;
-    impl FrameSource for NoMedia {
-        fn frame(&mut self, _: &Clip, _: f64, _: u32, _: u32) -> Option<SourceFrame> {
-            None
-        }
-    }
-
-    const KINDS: [TemplateKind; 3] = [TemplateKind::TrackMatteReveal, TemplateKind::WhipPanTransition { direction: WhipDirection::Left }, TemplateKind::WhipPanTransition { direction: WhipDirection::Right }];
-
-    /// Each recipe makes the timeline its code made, field for field, but
-    /// the Scale key of 1.0 the code's whip pan put on the outgoing clip
-    /// at the pan's start (a reset of a scaled clip, dropped); and on the
-    /// GPU stack the two draw the same frames, mid-reveal, mid-whip and at
-    /// rest, within a level, with no frame falling back.
-    #[test]
-    fn each_cut_recipe_makes_and_draws_what_its_code_did() {
-        let mut gpu = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
-        gpu.set_gpu_enabled(true);
-        let has_gpu = gpu.executor().gpu_pipeline_or_init().is_some();
-        assert!(has_gpu || std::env::var_os("KLIPP_TEST_REQUIRE_GPU").is_none(), "GPU required");
-        let mut worst = 0;
-        for kind in &KINDS {
-            let (seq, red) = scene();
-            let mut want = by_code(&seq, kind, red);
-            let got = by_recipe(&seq, kind, red);
-            if matches!(kind, TemplateKind::WhipPanTransition { .. }) {
-                let clip = want.all_clips_mut().find(|c| c.id == red).unwrap();
-                let scale = clip.video_param_keyframes(klipp_core::VideoParam::Scale).to_vec();
-                assert_eq!(scale.iter().map(|k| (k.time_secs, k.value)).collect::<Vec<_>>(), [(1.8, 1.0)], "the code's one Scale key");
-                clip.edit_video_param_keyframes(klipp_core::VideoParam::Scale, Vec::clear);
-            }
-            assert_eq!(serde_json::to_value(&got).unwrap(), serde_json::to_value(&want).unwrap(), "{kind:?}");
-            if !has_gpu {
-                continue;
-            }
-            for secs in [0.25, 1.0, 1.9, 2.1, 3.0] {
-                let mut frame = |s: &Sequence| {
-                    let (px, _) = gpu.render_display_u8_on_gpu(s, tc(secs), 320, 180, &mut NoMedia, RenderOptions::default()).expect("drawn on the GPU");
-                    assert_eq!(klipp_effects::residency::last_frame().fallback_count(), 0, "{kind:?} at {secs}");
-                    px
-                };
-                let (a, b, plain) = (frame(&want), frame(&got), frame(&seq));
-                let d = a.iter().zip(&b).map(|(x, y)| x.abs_diff(*y)).max().unwrap();
-                assert!(d <= 1, "{kind:?} at {secs}: {d} levels");
-                worst = worst.max(d);
-                // It does something: mid-reveal and mid-whip the frame is
-                // not the untouched timeline's.
-                let moved = b.iter().zip(&plain).map(|(x, y)| x.abs_diff(*y)).max().unwrap();
-                let acting = match kind { TemplateKind::TrackMatteReveal => secs < 2.0, _ => secs == 1.9 || secs == 2.1 };
-                if acting {
-                    assert!(moved > 30, "{kind:?} at {secs}: only {moved} levels from the untouched timeline");
-                }
-            }
-        }
-        println!("cut recipes, file against code: worst {worst} levels over 3 recipes x 5 times");
-    }
-
     /// #2886: a scaled clip keeps its scale through a whip pan: the
-    /// recipe keys its position only. The code's Scale key reset it to 1
-    /// from the pan's start.
+    /// recipe keys its position only (the planner it replaced also keyed
+    /// a scale of 1 at the pan's start, which reset it).
     #[test]
     fn a_scaled_clip_keeps_its_scale_through_a_whip_pan() {
         let (mut seq, red) = scene();
         let clip = seq.all_clips_mut().find(|c| c.id == red).unwrap();
         clip.push_effect(klipp_effects::BuiltinEffect::Transform { position_x: 0.0, position_y: 0.0, scale_x: 1.5, scale_y: 1.5, rotation: 0.0, anchor_x: 0.5, anchor_y: 0.5, rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0, focal_ref: None });
         assert_eq!(seq.all_clips().find(|c| c.id == red).unwrap().video_param_value(klipp_core::VideoParam::Scale), 1.5);
-        for kind in &KINDS[1..] {
+        for kind in &[TemplateKind::WhipPanTransition { direction: WhipDirection::Left }, TemplateKind::WhipPanTransition { direction: WhipDirection::Right }] {
             let got = by_recipe(&seq, kind, red);
             let clip = got.all_clips().find(|c| c.id == red).unwrap();
             assert!(clip.video_param_keyframes(klipp_core::VideoParam::Scale).is_empty(), "{kind:?}: no Scale key");
             assert_eq!(clip.video_param_value(klipp_core::VideoParam::Scale), 1.5, "{kind:?}: its scale kept");
-            let old = by_code(&seq, kind, red);
-            let keys = old.all_clips().find(|c| c.id == red).unwrap().video_param_keyframes(klipp_core::VideoParam::Scale).to_vec();
-            assert_eq!(klipp_core::keyframe::evaluate(&keys, 1.9, 1.5), 1.0, "the code reset it");
         }
     }
 }
