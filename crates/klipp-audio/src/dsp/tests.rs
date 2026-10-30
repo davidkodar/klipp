@@ -101,7 +101,8 @@ fn every_declared_effect_is_made_with_its_declared_params() {
 /// model can remove.
 #[test]
 fn every_audio_preset_is_inside_its_effects_ranges() {
-    for p in klipp_core::audio_effect_registry::audio_presets() {
+    let listing = klipp_core::audio_effect_registry::audio_preset_listing();
+    for p in &listing.entries[..listing.built_in] {
         let fx = create_effect(&p.effect, SR).unwrap_or_else(|| panic!("{}: no {}", p.name, p.effect));
         for (k, v) in p.values() {
             let d = fx.param_descriptors().iter().find(|d| d.name == k).unwrap_or_else(|| panic!("{}: no {k}", p.name));

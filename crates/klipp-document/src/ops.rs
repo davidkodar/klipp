@@ -641,8 +641,9 @@ pub struct RangeSpec {
     pub offset: Option<f32>,
 }
 
-/// An animator (#1510) as an op gives it: a `preset` by name with any
-/// field over it, or the fields alone. What it picks: `unit`, the range
+/// An animator (#1510) as an op gives it: a `preset` by id (Klipp's, or
+/// one the person keeps in their `animators` presets folder, #3095) with
+/// any field over it, or the fields alone. What it picks: `unit`, the range
 /// `start`..`end` moved by `offset` (0..1, keyed by `*_keys`), `shape`,
 /// `order` (random by `seed`), `easing`, `amount` and a `within` range;
 /// what it does to what it picks wholly: `move_x`, `move_y` (font
@@ -1897,12 +1898,16 @@ pub enum Op {
     /// own effects, gain and fades and before the track's fader (its
     /// volume and pan, #2560), with `params` by
     /// name (a plug-in's by its name or key, inside its range; the rest at
-    /// their defaults); `bypass` switches the track's effect of that type
-    /// off (true) or on (false) without taking it off; `remove` takes it
-    /// off.
+    /// their defaults); `preset` starts the params from one of the
+    /// effect's presets by name, Klipp's or the person's own (#3095), the
+    /// `params` given over it; `bypass` switches the track's effect of
+    /// that type off (true) or on (false) without taking it off; `remove`
+    /// takes it off.
     TrackAudio {
         track: TrackRef,
         effect: String,
+        #[serde(default)]
+        preset: Option<String>,
         #[serde(default, deserialize_with = "audio_params")]
         params: std::collections::BTreeMap<String, f32>,
         #[serde(default)]
@@ -1917,6 +1922,8 @@ pub enum Op {
     ClipAudio {
         clip_id: ClipRef,
         effect: String,
+        #[serde(default)]
+        preset: Option<String>,
         #[serde(default, deserialize_with = "audio_params")]
         params: std::collections::BTreeMap<String, f32>,
         #[serde(default)]
@@ -4191,10 +4198,10 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             let (_, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
             replace_media(seq, pool, fps, i, clip, *media_id, *source_in)
         }
-        Op::TrackAudio { track, effect, params, bypass, remove } => track_audio(seq, fps, i, track, AudioChainEdit { effect, params, bypass: *bypass, remove: *remove }, transcripts),
-        Op::ClipAudio { clip_id, effect, params, bypass, remove } => {
+        Op::TrackAudio { track, effect, preset, params, bypass, remove } => track_audio(seq, fps, i, track, AudioChainEdit { effect, preset: preset.as_deref(), params, bypass: *bypass, remove: *remove }, transcripts),
+        Op::ClipAudio { clip_id, effect, preset, params, bypass, remove } => {
             let (_, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
-            clip_audio(seq, pool, i, clip, AudioChainEdit { effect, params, bypass: *bypass, remove: *remove }, transcripts)
+            clip_audio(seq, pool, i, clip, AudioChainEdit { effect, preset: preset.as_deref(), params, bypass: *bypass, remove: *remove }, transcripts)
         }
         Op::CleanAudio { clip_id, voice, reduction_db, wind, hiss, hum, deess } => {
             let (_, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
@@ -8078,6 +8085,7 @@ fn onto_track_grade(seq: &Sequence, i: usize, ti: usize, (what, edit, _): (Strin
 /// [`Op::ClipAudio`]'s fields.
 struct AudioChainEdit<'a> {
     effect: &'a str,
+    preset: Option<&'a str>,
     params: &'a std::collections::BTreeMap<String, f32>,
     bypass: Option<bool>,
     remove: bool,
@@ -8093,6 +8101,9 @@ fn audio_chain_effect(i: usize, edit: &AudioChainEdit, transcripts: &dyn Transcr
         }
     }
     let given = edit.effect.trim();
+    if let (Some(p), true) = (edit.preset, given.starts_with("lv2:") || given.starts_with("clap:")) {
+        return Err(refuse(i, format!("a plug-in has no Klipp presets, so not \"{p}\""), "give the plug-in's params, or leave preset out"));
+    }
     if given.starts_with("lv2:") || given.starts_with("clap:") {
         let plugin = transcripts.audio_plugin(given).ok_or_else(|| refuse(i, format!("no installed plug-in {given}"), "audio_plugins lists the installed LV2 and CLAP plug-ins and their ids"))?;
         // A plug-in that cannot run passes the sound through untouched:
@@ -8127,7 +8138,20 @@ fn audio_chain_effect(i: usize, edit: &AudioChainEdit, transcripts: &dyn Transcr
     if let Some(name) = edit.params.keys().find(|n| !known.contains(&n.as_str())) {
         return Err(refuse(i, format!("{effect} has no param \"{name}\""), format!("use one of {}", known.join(", "))));
     }
-    Ok((effect, edit.params.iter().map(|(n, v)| (n.clone(), *v)).collect()))
+    // A preset's settings first, Klipp's or the person's own (#3095); the
+    // params given over them.
+    let mut params: std::collections::BTreeMap<String, f32> = match edit.preset {
+        Some(p) => {
+            let preset = klipp_core::audio_effect_registry::preset_of(&effect, p).ok_or_else(|| {
+                let names: Vec<&str> = klipp_core::audio_effect_registry::presets_of(&effect).map(|p| p.name.as_str()).collect();
+                refuse(i, format!("{} has no preset \"{p}\"", spec.name), if names.is_empty() { format!("{} has no presets: give its params", spec.name) } else { format!("use one of {}", names.join(", ")) })
+            })?;
+            preset.values().into_iter().collect()
+        }
+        None => Default::default(),
+    };
+    params.extend(edit.params.iter().map(|(n, v)| (n.clone(), *v)));
+    Ok((effect, params.into_iter().collect()))
 }
 
 /// `chain` with the edit made: the effect added (or the one there set),
@@ -18089,6 +18113,27 @@ mod tests {
         assert_eq!((param("band1_enabled"), param("band2_enabled")), (Some(1.0), Some(0.0)), "{eq:?}");
         assert!(serde_json::from_value::<Op>(serde_json::json!({ "op": "track_audio", "track": "audio", "effect": "eq", "params": { "band1_enabled": false } })).is_ok());
         assert!(serde_json::from_value::<Op>(serde_json::json!({ "op": "clip_audio", "clip_id": a.0.to_string(), "effect": "eq", "params": { "band1_enabled": "on" } })).is_err());
+    }
+
+    /// An audio effect goes on from one of its presets by name, in any
+    /// case (#3095): the preset's settings, the params given over them. A
+    /// name the effect has no preset of, and a preset on a plug-in, are
+    /// refused.
+    #[test]
+    fn an_audio_effect_goes_on_from_a_preset() {
+        let (seq, pool, _, a, _) = fixture();
+        let one = |op: serde_json::Value| resolve(&seq, &pool, &[serde_json::from_value(op).unwrap()]);
+        let plan = one(serde_json::json!({ "op": "clip_audio", "clip_id": a.0.to_string(), "effect": "denoiser", "preset": "dialogue", "params": { "strength": 0.5 } })).unwrap();
+        let EditCommand::EditAudioChain { new_state, .. } = &plan.steps[0].edit else { panic!() };
+        let fx = new_state.audio_effects.last().unwrap();
+        assert_eq!(fx.effect_type, "denoiser");
+        assert_eq!(fx.params, [("floor".to_string(), 0.12), ("profile_seconds".into(), 0.5), ("strength".into(), 0.5), ("wind".into(), 0.0)], "Dialogue's, strength given over it");
+        let plan = one(serde_json::json!({ "op": "track_audio", "track": "audio", "effect": "voice_isolation", "preset": "Full" })).unwrap();
+        let EditCommand::SetTrackSettings { changes } = &plan.steps[0].edit else { panic!() };
+        assert_eq!(changes[0].2.effects.audio.last().unwrap().params, [("reduction".to_string(), 60.0)]);
+        let why = |op: serde_json::Value| one(op).unwrap_err().why;
+        assert!(why(serde_json::json!({ "op": "clip_audio", "clip_id": a.0.to_string(), "effect": "denoiser", "preset": "Opera" })).contains("Broadband Denoiser has no preset \"Opera\""));
+        assert!(why(serde_json::json!({ "op": "clip_audio", "clip_id": a.0.to_string(), "effect": "lv2:urn:test:room", "preset": "Dialogue" })).contains("a plug-in has no Klipp presets"));
     }
 
     #[test]

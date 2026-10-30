@@ -122,19 +122,72 @@ impl AudioPreset {
     }
 }
 
-/// Every built-in audio effect preset, `assets/presets/audio_effects/
-/// builtin.toml`, read once; a file that doesn't read leaves none, said,
-/// never a crash.
-pub fn audio_presets() -> &'static [AudioPreset] {
-    static PRESETS: std::sync::OnceLock<Vec<AudioPreset>> = std::sync::OnceLock::new();
-    PRESETS.get_or_init(|| {
-        let read = crate::preset_file::read::<AudioPreset>(include_str!("../../../assets/presets/audio_effects/builtin.toml"), "audio_effect_preset", 1, "preset")
-            .and_then(|presets| presets.iter().find_map(AudioPreset::fault).map_or(Ok(presets), Err));
-        read.unwrap_or_else(|why| {
+/// The presets folder a person's own audio presets are read from.
+pub const AUDIO_PRESETS_FOLDER: &str = "audio_effects";
+
+/// The effects a person's own presets may be for (#3095): the cleanup a
+/// recording needs again and again.
+pub const USER_PRESET_EFFECTS: [&str; 2] = ["denoiser", "voice_isolation"];
+
+/// The longest description a person's audio preset takes.
+const MAX_AUDIO_DESCRIPTION_CHARS: usize = 256;
+
+/// Why an audio preset someone wrote can't be offered, beyond what
+/// [`crate::preset_file::merge`] asks of its name: an effect other than
+/// [`USER_PRESET_EFFECTS`], [`AudioPreset::fault`], or a description past
+/// its length. Its values are held to the effect's ranges by the effect
+/// itself, which clamps every setting it is given.
+fn user_audio_fault(p: &AudioPreset) -> Result<(), String> {
+    if !USER_PRESET_EFFECTS.contains(&p.effect.as_str()) {
+        return Err(format!("presets of yours are for the {} only, not \"{}\"", USER_PRESET_EFFECTS.join(" and "), p.effect));
+    }
+    if let Some(why) = p.fault() {
+        // Said with the preset's name already, as merge says it too.
+        return Err(why.split_once(": ").map_or(why.clone(), |(_, rest)| rest.to_string()));
+    }
+    if p.description.chars().count() > MAX_AUDIO_DESCRIPTION_CHARS {
+        return Err(format!("a description past {MAX_AUDIO_DESCRIPTION_CHARS} characters"));
+    }
+    Ok(())
+}
+
+/// Klipp's audio presets, then those in `dirs` (a person's folder, then
+/// the packs'), each read as someone else's (#3095), and what was
+/// skipped. A name is one across every effect: one of a person's named
+/// as any of Klipp's is skipped.
+pub fn audio_preset_listing_in(dirs: &[std::path::PathBuf]) -> crate::preset_file::Merged<AudioPreset> {
+    let built_in = crate::preset_file::read::<AudioPreset>(include_str!("../../../assets/presets/audio_effects/builtin.toml"), "audio_effect_preset", 1, "preset")
+        .and_then(|presets| presets.iter().find_map(AudioPreset::fault).map_or(Ok(presets), Err))
+        .unwrap_or_else(|why| {
             tracing::error!("the built-in audio effect presets don't read: {why}");
             Vec::new()
-        })
+        });
+    crate::preset_file::merge(built_in, dirs, "audio_effect_preset", 1, "preset", |p: &AudioPreset| &p.name, user_audio_fault)
+}
+
+/// The audio presets, with what was skipped, read once a run: Klipp's,
+/// then the person's own. A file that doesn't read is said in the log,
+/// never a crash.
+pub fn audio_preset_listing() -> &'static crate::preset_file::Merged<AudioPreset> {
+    static LISTING: std::sync::OnceLock<crate::preset_file::Merged<AudioPreset>> = std::sync::OnceLock::new();
+    LISTING.get_or_init(|| {
+        let listing = audio_preset_listing_in(&crate::preset_file::user_dir(AUDIO_PRESETS_FOLDER).into_iter().collect::<Vec<_>>());
+        for why in &listing.skipped {
+            tracing::warn!("an audio preset of yours was skipped: {why}");
+        }
+        listing
     })
+}
+
+/// Every audio effect preset, Klipp's then the person's own, in order.
+pub fn audio_presets() -> &'static [AudioPreset] {
+    &audio_preset_listing().entries
+}
+
+/// The preset named `name` (any case) of the effect saved as `type_id`.
+pub fn preset_of(type_id: &str, name: &str) -> Option<&'static AudioPreset> {
+    let name = name.trim().to_lowercase();
+    presets_of(type_id).find(|p| p.name.to_lowercase() == name)
 }
 
 /// The presets of the audio effect saved as `type_id`, in order.
@@ -183,5 +236,42 @@ mod tests {
         assert!(read("effect = \"denoiser\"\nparams = { strength = \"lots\" }").unwrap_err().contains("finite number"));
         assert!(read("effect = \"denoiser\"\nparams = { strength = inf }").unwrap_err().contains("finite number"));
         assert!(read("effect = \"denoiser\"\nparams = {}\nvolume = 2").unwrap_err().contains("unknown field"));
+    }
+
+    /// A file dropped in a person's audio presets folder lists its preset
+    /// after Klipp's (#3095), among its effect's; a hostile one is
+    /// refused, said, and Klipp's stay whole: a link, one past the size,
+    /// an unknown field, the wrong kind, a built-in's name (of another
+    /// effect's too), an effect other than the denoiser and Voice
+    /// Isolation, a setting the effect hasn't.
+    #[test]
+    fn a_person_s_audio_preset_lists_after_klipp_s_and_a_hostile_one_is_refused() {
+        let dir = std::env::temp_dir().join(format!("klipp-user-audio-presets-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = |n: &str, body: &str| std::fs::write(dir.join(n), format!("kind = \"audio_effect_preset\"\nformat_version = 1\n{body}")).unwrap();
+        let preset = |effect: &str, name: &str, params: &str| format!("[[preset]]\neffect = \"{effect}\"\nname = \"{name}\"\ndescription = \"mine\"\nparams = {{ {params} }}\n");
+        file("a.toml", &preset("denoiser", "Studio hum", "strength = 0.4"));
+        file("b.toml", &(preset("denoiser", "Odd", "strength = 0.4") + "volume = 2\n"));
+        std::fs::write(dir.join("c.toml"), "kind = \"generator_entry\"\nformat_version = 1\n").unwrap();
+        file("d.toml", &format!("# {}\n", "x".repeat(crate::preset_file::MAX_FILE_BYTES)));
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(dir.join("a.toml"), dir.join("e.toml")).unwrap();
+        file("f.toml", &[preset("denoiser", "WIND", "strength = 0.4"), preset("denoiser", "natural", "strength = 0.4"), preset("reverb", "Hall", "wet = 0.5"), preset("voice_isolation", "Sparkle", "sparkle = 1.0")].concat());
+        let listing = audio_preset_listing_in(std::slice::from_ref(&dir));
+        let klipp_s = audio_preset_listing_in(&[]).entries;
+        assert_eq!(listing.entries[..klipp_s.len()], klipp_s[..], "Klipp's, whole and first");
+        let mine: Vec<(&str, &str)> = listing.entries[klipp_s.len()..].iter().map(|p| (p.effect.as_str(), p.name.as_str())).collect();
+        assert_eq!(mine, [("denoiser", "Studio hum")]);
+        let said = |what: &str| assert!(listing.skipped.iter().any(|s| s.contains(what)), "{what}: {:?}", listing.skipped);
+        said("b.toml: audio_effect_preset entry 1: unknown field");
+        said("c.toml: a generator_entry file, not a audio_effect_preset file");
+        said("d.toml: ");
+        #[cfg(unix)]
+        said("e.toml: not a plain file");
+        said("\"WIND\" is the name of one of Klipp's own");
+        said("\"natural\" is the name of one of Klipp's own");
+        said("\"Hall\": presets of yours are for the denoiser and voice_isolation only");
+        said("\"Sparkle\": Voice Isolation has no setting \"sparkle\"");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }
