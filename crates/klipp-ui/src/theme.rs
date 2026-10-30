@@ -494,7 +494,17 @@ impl KlippTheme {
 ///
 /// Both are tried at common Linux paths; missing fonts are skipped
 /// silently so headless/minimal installs still run.
+///
+/// Last comes JetBrains Mono, bundled for titles, which a machine always
+/// has: a Mac mini M1 under Asahi had no DejaVu Sans, and the ▾ of every
+/// "Add ▾" button drew as a tofu box. It holds ▾ ▸ ● ✓ but not ⓘ, so it
+/// fills what nothing above it has, and where DejaVu is installed it
+/// draws nothing at all.
 fn install_unicode_fallback_fonts(ctx: &egui::Context) {
+    ctx.set_fonts(unicode_fallback_fonts());
+}
+
+fn unicode_fallback_fonts() -> egui::FontDefinitions {
     use egui::{FontData, FontFamily};
 
     let mut defs = egui::FontDefinitions::default();
@@ -549,7 +559,20 @@ fn install_unicode_fallback_fonts(ctx: &egui::Context) {
         }
     }
 
-    ctx.set_fonts(defs);
+    // The bundled mono, last: in every build, so a missing system font
+    // never leaves an arrow as tofu. The bytes are the title renderer's
+    // own copy, not a second one.
+    if let Some(bytes) = klipp_title::bundled::lookup("JetBrains Mono", "Regular") {
+        defs.font_data.insert("klipp_fallback_bundled".to_owned(), FontData::from_static(bytes));
+        for family in [FontFamily::Proportional, FontFamily::Monospace] {
+            defs.families
+                .entry(family)
+                .or_default()
+                .push("klipp_fallback_bundled".to_owned());
+        }
+    }
+
+    defs
 }
 
 // ── Fixed size constants ──
@@ -646,3 +669,30 @@ pub const CLIP_ROLE_BAR_W: f32 = 3.0;
 pub const PLAY_BTN_SIZE: f32 = 38.0;
 pub const TOOL_BTN_SIZE: f32 = 32.0;
 pub const SMALL_BTN_SIZE: f32 = 26.0;
+
+#[cfg(test)]
+mod fallback_font_tests {
+    use super::unicode_fallback_fonts;
+
+    /// The bundled font comes last, after any system fallback, so it only
+    /// fills what nothing else draws.
+    #[test]
+    fn the_bundled_font_is_the_last_fallback() {
+        let defs = unicode_fallback_fonts();
+        for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
+            assert_eq!(defs.families[&family].last().map(String::as_str), Some("klipp_fallback_bundled"), "{family:?}");
+        }
+    }
+
+    /// The ▾ of "Add ▾" draws whatever the machine has installed: a Mac
+    /// mini M1 with no DejaVu Sans drew it as a tofu box.
+    #[test]
+    fn a_menu_arrow_always_has_a_glyph() {
+        let ctx = egui::Context::default();
+        ctx.set_fonts(unicode_fallback_fonts());
+        let _ = ctx.run(Default::default(), |_| {});
+        for c in ['▾', '▸', '●', '✓'] {
+            assert!(ctx.fonts(|f| f.has_glyph(&egui::FontId::proportional(13.0), c)), "no glyph for {c:?}");
+        }
+    }
+}

@@ -26,6 +26,7 @@ depends=(
   'alsa-lib'            # audio output (cpal)
   'lilv'                # the LV2 audio-plugin host
   'fontconfig'          # font matching (fc-match) and text
+  'ttf-dejavu'          # the UI's symbol fallback (ⓘ, ▾, box drawing), looked for at /usr/share/fonts/TTF
   'freetype2'           # glyph rasterising
   'libxkbcommon'        # keyboard handling (Wayland)
   'wayland'             # the Wayland window (Omarchy / Hyprland)
