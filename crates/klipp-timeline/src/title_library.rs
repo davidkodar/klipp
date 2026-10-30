@@ -430,56 +430,6 @@ pub fn outlined(mut t: Text, width: f32) -> Text {
     t
 }
 
-// ── Captions and quotes ──
-fn cap_quote() -> TitleData {
-    layers(vec![
-        text_at(
-            moved(lifted(spaced(face("\u{201c}[Quote]\u{201d}", EDITORIAL, FontStyle::Italic, 68.0, WHITE, TextAlignment::Center), 1.15)),
-                TitleMotion::both(enter(MotionKind::Fade, 0.8, Easing::OutCubic).stagger(StaggerUnit::Line, 0.15), fade_out(0.5))),
-            0.5, 0.46, 0.5,
-        ),
-        text_at(
-            moved(lifted(upper(weight(face("\u{2014} [Who said it]", LABEL, FontStyle::Regular, 30.0, MUTED, TextAlignment::Center), 500), 5.0)),
-                TitleMotion::both(enter(MotionKind::Fade, 0.6, Easing::OutCubic).delay(0.5), fade_out(0.5))),
-            0.5, 0.6, 0.5,
-        ),
-    ])
-}
-
-fn cap_caption() -> TitleData {
-    // A box the size of the words, not a bar the width of the frame.
-    let mut td = layers(vec![
-        rect(0.5, 0.885, 0.3, 0.07, [0, 0, 0, 185], 12.0),
-        text_at(
-            moved(weight(face("[Caption]", SANS, FontStyle::Regular, 42.0, WHITE, TextAlignment::Center), 600),
-                TitleMotion::both(enter(MotionKind::Fade, 0.3, Easing::OutCubic), fade_out(0.25))),
-            0.5, 0.885, 0.5,
-        ),
-    ]);
-    fit(&mut td, 0, 1, (26.0, 12.0));
-    td
-}
-
-fn cap_subtitle() -> TitleData {
-    let mut tb = face("[Subtitle]", GRO, FontStyle::Bold, 40.0, WHITE, TextAlignment::Center);
-    tb.fx.shadows.push(TitleShadow { color: [0, 0, 0, 200], offset_x: 0.0, offset_y: 2.0, blur: 4.0, enabled: true, offset_x_keyframes: Vec::new(), offset_y_keyframes: Vec::new(), blur_keyframes: Vec::new() });
-    tb.fx.shadows.push(lift());
-    layers(vec![text_at(tb, 0.5, 0.90, 0.5)])
-}
-
-fn cap_callout() -> TitleData {
-    let mut td = layers(vec![
-        rect(0.80, 0.14, 0.26, 0.08, [38, 99, 200, 245], 40.0),
-        text_at(
-            moved(weight(face("[Callout]", SANS, FontStyle::Bold, 34.0, WHITE, TextAlignment::Center), 700),
-                TitleMotion::both(enter(MotionKind::ScaleUp, 0.35, Easing::OutBack), fade_out(0.25))),
-            0.80, 0.14, 0.5,
-        ),
-    ]);
-    fit(&mut td, 0, 1, (32.0, 20.0));
-    td
-}
-
 // ── Credits ──
 fn cr_roll() -> TitleData {
     let mut td = layers(vec![text_at(
@@ -697,23 +647,6 @@ fn so_tip() -> TitleData {
     td
 }
 
-// ── Callout (#1724) ──
-fn cap_note() -> TitleData {
-    let mut td = layers(vec![
-        moving(rect(0.25, 0.16, 0.3, 0.1, [16, 16, 20, 225], 8.0),
-            TitleMotion::both(enter(MotionKind::Fade, 0.3, Easing::OutCubic), fade_out(0.25))),
-        moving(rect(0.105, 0.16, 0.005, 0.07, ACCENT, 0.0),
-            TitleMotion::both(enter(MotionKind::MaskRise, 0.35, Easing::OutExpo).delay(0.1), fade_out(0.25))),
-        text_at(
-            moved(face("[A note on screen]", GRO, FontStyle::Regular, 30.0, WHITE, TextAlignment::Left),
-                TitleMotion::both(enter(MotionKind::Fade, 0.35, Easing::OutCubic).delay(0.15), fade_out(0.25))),
-            0.12, 0.16, 0.0,
-        ),
-    ]);
-    fit(&mut td, 0, 2, (40.0, 22.0));
-    td
-}
-
 /// A built-in still made by code: its name, category, card text, the
 /// function making its layers, and its fields.
 struct Coded {
@@ -782,20 +715,6 @@ const FILES: &[&str] = &[
 ];
 
 
-/// The templates being moved to files, as code made them, for the check
-/// that their files make and draw the same (#2886).
-#[doc(hidden)]
-pub fn coded_for_check() -> Vec<TitleTemplate> {
-    CODED_CHECKED.iter().map(Coded::template).collect()
-}
-
-const CODED_CHECKED: &[Coded] = &[
-    Coded { name: "Quote", category: "Captions", preview_text: "[Quote]", create_data: cap_quote, fields: f(&["Quote", "Who said it"], None, MID) },
-    Coded { name: "Caption", category: "Captions", preview_text: "[Caption]", create_data: cap_caption, fields: f(&["Caption"], Some(0), (0.5, 0.885)) },
-    Coded { name: "Subtitle", category: "Captions", preview_text: "[Subtitle]", create_data: cap_subtitle, fields: f(&["Subtitle"], None, (0.5, 0.9)) },
-    Coded { name: "Callout", category: "Captions", preview_text: "[Callout]", create_data: cap_callout, fields: f(&["Callout"], Some(0), (0.8, 0.14)) },
-    Coded { name: "Note", category: "Captions", preview_text: "[A note on screen]", create_data: cap_note, fields: f(&["Note"], Some(1), (0.1, 0.16)) },
-];
 
 fn from_files() -> impl Iterator<Item = TitleTemplate> {
     FILES.iter().filter_map(|json| {
@@ -896,22 +815,6 @@ impl TitleTemplate {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// #2886: each template read from its file makes the title its code
-    /// made, on a wide, a tall and a square frame, with its name,
-    /// category, card text and fields.
-    #[test]
-    fn every_moved_file_makes_what_its_code_made() {
-        let coded = coded_for_check();
-        assert!(!coded.is_empty());
-        for c in &coded {
-            let t = builtin(&c.name).unwrap_or_else(|| panic!("{} is listed", c.name));
-            assert_eq!((t.category.as_str(), t.preview_text.as_str(), &t.fields.names, t.fields.accent, t.fields.anchor, t.grow), (c.category.as_str(), c.preview_text.as_str(), &c.fields.names, c.fields.accent, c.fields.anchor, c.grow), "{}", c.name);
-            for (w, h) in [(1920, 1080), (1080, 1920), (1080, 1080)] {
-                assert_eq!(t.data_for(w, h), c.data_for(w, h), "{} at {w}x{h}", c.name);
-            }
-        }
-    }
 
     /// #2886: every built-in Klipp ships is listed, by name in its order:
     /// a file that doesn't read is logged and left out in a release, so
