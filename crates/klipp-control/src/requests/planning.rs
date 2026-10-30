@@ -651,7 +651,7 @@ pub(crate) fn respond(
             };
             // The craft lines at or over the floor; the counts at the top
             // count them all.
-            let mut text = report.text().lines().filter(|l| l.strip_prefix('[').and_then(|r| r.split(']').next()).is_none_or(&shown)).collect::<Vec<_>>().join("\n");
+            let mut text = report.text().lines().filter(|l| l.strip_prefix('[').and_then(|r| r.split(']').next()).is_none_or(shown)).collect::<Vec<_>>().join("\n");
             if errors != report.errors || warnings != report.warnings {
                 let notes = report.findings.len() - report.errors - report.warnings;
                 let head = format!(

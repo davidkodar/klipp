@@ -418,7 +418,7 @@ pub(crate) fn list_clips(seq: &klipp_timeline::Sequence, pool: &klipp_media::Med
             let transitions: Vec<serde_json::Value> = t
                 .transitions
                 .iter()
-                .filter(|tr| [tr.clip_a_id, tr.clip_b_id].iter().any(|id| t.find_clip(*id).is_some_and(&want_clip)))
+                .filter(|tr| [tr.clip_a_id, tr.clip_b_id].iter().any(|id| t.find_clip(*id).is_some_and(want_clip)))
                 .map(|tr| {
                     let spec = klipp_core::spec_for_kind(tr.kind);
                     let d = tr.duration.to_secs_f64();
