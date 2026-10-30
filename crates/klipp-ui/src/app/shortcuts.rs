@@ -143,6 +143,11 @@ impl KlippApp {
         self.shortcuts_app(ctx, cmds);
         let kb = self.key_bindings.clone();
         ctx.input(|i| {
+            // Ctrl+J: the program timecode opened to type a time (#3130),
+            // from anywhere a Ctrl key reaches.
+            if kb.is_action_pressed("go_to_timecode", i) {
+                cmds.push(AppCommand::GoToTimecode);
+            }
             // Ctrl+S — Save
             if kb.is_action_pressed("save_project", i) {
                 cmds.push(AppCommand::SaveProject);

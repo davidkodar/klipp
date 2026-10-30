@@ -19,6 +19,7 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         // scopes, a panel, a dialog, a preference, a job whose result
         // arrives later.
         AppCommand::SetSplitCompareNode { .. }
+        | AppCommand::GoToTimecode
         | AppCommand::ShowPanel { .. }
         | AppCommand::InjectPointer(_)
         | AppCommand::ShowMaskKeysOnTimeline { .. }

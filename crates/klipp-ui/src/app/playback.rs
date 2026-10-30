@@ -193,8 +193,15 @@ impl KlippApp {
                 let _ = self.cmd_tx.send(AppCommand::SetMasterVolume(effective));
                 true
             }
+            AppCommand::GoToTimecode => {
+                // Typed straight in: the box starts empty, the playhead's
+                // timecode its hint.
+                self.state.editing_timecode = true;
+                self.state.timecode_input.clear();
+                true
+            }
             AppCommand::SetPlayheadFromTimecode { input } => {
-                if let Some(tc) = crate::panels::transport::parse_timecode_input_pub(input, self.state.timecode_display()) {
+                if let Some(tc) = crate::panels::transport::parse_goto(input, self.state.playhead, self.state.timecode_display()) {
                     self.state.awaiting_seek_frame = true;
                     let _ = self.cmd_tx.send(AppCommand::SeekTo(tc));
                 }

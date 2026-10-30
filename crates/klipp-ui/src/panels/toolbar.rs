@@ -947,6 +947,7 @@ impl ToolbarPanel {
             ui.separator();
             if ui.add(egui::Button::new("Go to In Point")).clicked() { if let Some(inp) = state.sequence().in_point { cmds.push(AppCommand::SeekTo(inp)); } ui.close_menu(); }
             if ui.add(egui::Button::new("Go to Out Point")).clicked() { if let Some(outp) = state.sequence().out_point { cmds.push(AppCommand::SeekTo(outp)); } ui.close_menu(); }
+            if ui.add(egui::Button::new("Go to Timecode\u{2026}").shortcut_text(kb.display_for("go_to_timecode"))).on_hover_text("Type a time to go to in the program viewer's timecode: a timecode, frames, seconds, or +/- that far from the playhead").clicked() { cmds.push(AppCommand::GoToTimecode); ui.close_menu(); }
             if ui.add(egui::Button::new("Play In to Out").shortcut_text(kb.display_for("play_in_to_out"))).clicked() { cmds.push(AppCommand::PlayInToOut); ui.close_menu(); }
             ui.separator();
             if ui.add(egui::Button::new("Add Marker").shortcut_text(kb.display_for("add_marker"))).clicked() {

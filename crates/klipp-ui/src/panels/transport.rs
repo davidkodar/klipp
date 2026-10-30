@@ -672,6 +672,46 @@ pub fn parse_timecode_input_pub(input: &str, tc: klipp_core::TimecodeDisplay) ->
     parse_timecode_input(input, tc)
 }
 
+/// A time typed to go to (#3130): a timecode as the sequence counts it,
+/// frames or seconds; with a leading `+` or `-`, that far from
+/// `playhead` (never before the start).
+pub fn parse_goto(input: &str, playhead: RationalTime, tc: klipp_core::TimecodeDisplay) -> Option<RationalTime> {
+    let s = input.trim();
+    let (sign, rest) = match s.as_bytes().first() {
+        Some(b'+') => (1, &s[1..]),
+        Some(b'-') => (-1, &s[1..]),
+        _ => (0, s),
+    };
+    let t = parse_timecode_input(rest.trim(), tc)?;
+    let frame = |secs: f64| RationalTime::from_secs_f64(secs.max(0.0), playhead.rate);
+    Some(match sign {
+        0 => t,
+        1 => frame(playhead.to_secs_f64() + t.to_secs_f64()),
+        _ => frame(playhead.to_secs_f64() - t.to_secs_f64()),
+    })
+}
+
+#[cfg(test)]
+mod goto_tests {
+    /// #3130: a timecode, frames or seconds, or that far either way from
+    /// the playhead, never before the start.
+    #[test]
+    fn a_typed_time_is_absolute_or_from_the_playhead() {
+        let tc = klipp_core::TimecodeDisplay::plain(klipp_core::Fps::film_24());
+        let at = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 24);
+        let go = |s: &str| super::parse_goto(s, at(10.0), tc).map(|t| t.to_secs_f64());
+        assert_eq!(go("00:00:12:00"), Some(12.0));
+        assert_eq!(go("00:00:12:12"), Some(12.5));
+        assert_eq!(go("48"), Some(2.0), "a whole number is frames");
+        assert_eq!(go("2.5"), Some(2.5), "a decimal is seconds");
+        assert_eq!(go("+00:00:02:00"), Some(12.0));
+        assert_eq!(go("+24"), Some(11.0));
+        assert_eq!(go("-1.5"), Some(8.5));
+        assert_eq!(go("-00:01:00:00"), Some(0.0), "not before the start");
+        assert_eq!(go("soon"), None);
+    }
+}
+
 fn parse_timecode_input(input: &str, tc: klipp_core::TimecodeDisplay) -> Option<RationalTime> {
     let input = input.trim();
     // A timecode, counted the way this sequence counts — and a
