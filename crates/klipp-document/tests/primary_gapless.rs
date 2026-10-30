@@ -171,3 +171,37 @@ fn a_generator_fills_a_gap_clip() {
     let Err(refused) = resolve(&seq, &pool, &[op]) else { panic!("over the next shot: refused") };
     assert!(refused.why.contains("overlap a clip"), "{}", refused.why);
 }
+
+/// #3127: `mark` sets the sequence's range to a clip's span, to two
+/// times, or clears it, one undoable step each; a retime fitted to the
+/// range in the same plan reads the range the mark set.
+#[test]
+fn mark_sets_the_range_a_retime_can_fit_to() {
+    let (seq, pool, ids) = with_a_gap();
+    let p = seq.primary_track_index().unwrap();
+    let id = |i: usize| ids[i].0.to_string();
+    let marked = holds("mark a clip", seq.clone(), pool.clone(), serde_json::json!({ "op": "mark", "clip_id": id(2) }));
+    assert_eq!((marked.in_point, marked.out_point), (Some(t(4.0)), Some(t(6.0))));
+    let times = holds("mark two times", seq.clone(), pool.clone(), serde_json::json!({ "op": "mark", "from": { "secs": 1.0 }, "to": { "secs": 3.5 } }));
+    assert_eq!((times.in_point, times.out_point), (Some(t(1.0)), Some(t(3.5))));
+    let cleared = holds("clear the range", marked.clone(), pool.clone(), serde_json::json!({ "op": "mark", "clear": true }));
+    assert_eq!((cleared.in_point, cleared.out_point), (None, None));
+
+    let ops: Vec<Op> = serde_json::from_value(serde_json::json!([
+        { "op": "mark", "from": { "secs": 0.0 }, "to": { "secs": 3.0 } },
+        { "op": "retime", "clip_id": id(0), "fit_range": true },
+    ])).unwrap();
+    let plan = resolve(&seq, &pool, &ops).unwrap_or_else(|r| panic!("{}", r.why));
+    let (mut seqs, mut pl, mut fps) = (vec![seq.clone()], pool.clone(), seq.fps);
+    let mut view = DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut pl, fps: &mut fps };
+    for s in &plan.steps {
+        let _ = view.apply_forward(&s.edit);
+    }
+    let first = view.sequences[0].tracks[p].clips.iter().find(|c| c.id == ids[0]).unwrap();
+    assert_eq!(first.timeline_out, t(3.0), "fitted to the 3 s range the mark set");
+
+    for bad in [serde_json::json!({ "op": "mark" }), serde_json::json!({ "op": "mark", "from": { "secs": 3.0 }, "to": { "secs": 1.0 } }), serde_json::json!({ "op": "mark", "clip_id": id(0), "clear": true })] {
+        let op: Op = serde_json::from_value(bad.clone()).unwrap();
+        assert!(resolve(&seq, &pool, &[op]).is_err(), "{bad}");
+    }
+}

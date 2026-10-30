@@ -940,6 +940,10 @@ impl ToolbarPanel {
             if ui.add(egui::Button::new("Clear In Point").shortcut_text(kb.display_for("clear_in_point"))).clicked() { cmds.push(AppCommand::ClearSequenceInPoint); ui.close_menu(); }
             if ui.add(egui::Button::new("Clear Out Point").shortcut_text(kb.display_for("clear_out_point"))).clicked() { cmds.push(AppCommand::ClearSequenceOutPoint); ui.close_menu(); }
             if ui.add(egui::Button::new("Clear In and Out").shortcut_text(kb.display_for("clear_in_out"))).clicked() { cmds.push(AppCommand::ClearSequenceInPoint); cmds.push(AppCommand::ClearSequenceOutPoint); ui.close_menu(); }
+            // The selected clip's span, else the one under the playhead
+            // (#3127): it was only on X, so a walkthrough looking for a
+            // way to mark a clip's range in this menu found none.
+            if ui.add(egui::Button::new("Set Range to Clip").shortcut_text(kb.display_for("set_range_to_clip"))).on_hover_text("Mark the selected clip's start and end as the In and Out points (the clip under the playhead when none is selected)").clicked() { cmds.push(AppCommand::SetRangeToClip); ui.close_menu(); }
             ui.separator();
             if ui.add(egui::Button::new("Go to In Point")).clicked() { if let Some(inp) = state.sequence().in_point { cmds.push(AppCommand::SeekTo(inp)); } ui.close_menu(); }
             if ui.add(egui::Button::new("Go to Out Point")).clicked() { if let Some(outp) = state.sequence().out_point { cmds.push(AppCommand::SeekTo(outp)); } ui.close_menu(); }

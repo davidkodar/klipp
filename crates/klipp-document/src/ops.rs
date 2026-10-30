@@ -1826,6 +1826,19 @@ pub enum Op {
         #[serde(default)]
         interpolation: Option<String>,
     },
+    /// Mark the sequence's range, its in and out points (#3127): a clip's
+    /// span with `clip_id`, two times with `from` and `to`, or none with
+    /// `clear`. What `retime`'s `fit_range` and an export's range read.
+    Mark {
+        #[serde(default)]
+        clip_id: Option<ClipRef>,
+        #[serde(default)]
+        from: Option<Anchor>,
+        #[serde(default)]
+        to: Option<Anchor>,
+        #[serde(default)]
+        clear: bool,
+    },
     /// Change a clip's speed. `speed` above 1 is faster and shorter, below
     /// 1 slower and longer (0.5 is half speed); negative plays the clip
     /// reversed at that magnitude (#617), its sound read at the speed,
@@ -2404,7 +2417,7 @@ pub const OP_NAMES: &[&str] = &[
     "graphics", "vector_path", "connector", "place", "add_track", "remove_track", "set_track", "track_automation", "trim", "j_cut", "l_cut", "split", "join", "remove", "move", "cut",
     "captions", "audio", "volume", "duck", "lower_third", "set_text", "grade", "effect", "redact",
     "slip", "slide", "pin", "role", "match", "matte", "format", "stabilize", "reframe", "zoom", "pan", "follow", "refit", "highlight",
-    "ramp", "freeze", "grade_group", "remove_grade_group", "look", "qualify", "zones", "retime", "stretch", "replace", "track_audio", "clip_audio", "clean_audio",
+    "ramp", "freeze", "grade_group", "remove_grade_group", "look", "qualify", "zones", "retime", "mark", "stretch", "replace", "track_audio", "clip_audio", "clean_audio",
     "transition", "style", "title", "compose", "camera", "crop", "generator", "depth", "label", "motion_blur",
     "strobe", "remove_silences", "auto_colour", "set_length", "over_edits", "template", "template_link", "recipe", "edit_from_selects", "opacity_mask",
 ];
@@ -4110,6 +4123,28 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
                 Some((how, frames)) => Ok((format!("{what}; {how}"), EditCommand::Batch(vec![edit, frames]), touched)),
                 None => Ok((what, edit, touched)),
             }
+        }
+        Op::Mark { clip_id, from, to, clear } => {
+            let (new_in, new_out, what) = match (clip_id, from, to, clear) {
+                (Some(c), None, None, false) => {
+                    let (_, _, clip) = resolve_clip(seq, fps, c, i)?;
+                    (Some(clip.timeline_in), Some(clip.timeline_out), format!("mark {} as the range", clip_name(seq, pool, clip)))
+                }
+                (None, Some(a), Some(b), false) => {
+                    let (a, b) = (resolve_anchor(seq, fps, a, i)?, resolve_anchor(seq, fps, b, i)?);
+                    if b <= a {
+                        return Err(refuse(i, "the range's out is not after its in", "give to after from"));
+                    }
+                    (Some(a), Some(b), "mark the range".to_string())
+                }
+                (None, None, None, true) => (None, None, "clear the marked range".to_string()),
+                _ => return Err(refuse(i, "mark takes one of clip_id, from and to together, or clear", "give a clip_id, or from and to, or clear true")),
+            };
+            let what = match (new_in, new_out) {
+                (Some(a), Some(b)) => format!("{what}: {:.2}-{:.2} s", secs(a), secs(b)),
+                _ => what,
+            };
+            Ok((what, EditCommand::SetRange { old_in: seq.in_point, old_out: seq.out_point, new_in, new_out }, vec![]))
         }
         Op::Retime { clip_id, speed, fit, ripple, interpolation, length_secs, fit_range } => {
             let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;

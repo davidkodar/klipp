@@ -622,31 +622,7 @@ impl KlippApp {
             // as well as in its own clear_in_out handler, so Alt+X ran
             // it twice and left two entries in the history.
             if kb.is_action_pressed("set_range_to_clip", i) {
-                {
-                    // X: Set range to clip at playhead
-                    let ph = self.state.playhead;
-                    let pushed = {
-                        let seq = &self.state.sequences[self.state.active_sequence_idx];
-                        let mut found_clip: Option<(klipp_core::Timecode, klipp_core::Timecode, Option<klipp_core::Timecode>, Option<klipp_core::Timecode>)> = None;
-                        for track in &seq.tracks {
-                            if let Some((_, clip)) = track.clip_at_timecode(ph) {
-                                found_clip = Some((clip.timeline_in, clip.timeline_out, seq.in_point, seq.out_point));
-                                break;
-                            }
-                        }
-                        found_clip
-                    };
-                    if let Some((tl_in, tl_out, old_in, old_out)) = pushed {
-                        cmds.push(AppCommand::SetSequenceInPoint(tl_in));
-                        cmds.push(AppCommand::SetSequenceOutPoint(tl_out));
-                        self.state.push_history(crate::history::EditCommand::SetRange {
-                            old_in, old_out,
-                            new_in: Some(tl_in),
-                            new_out: Some(tl_out),
-                        });
-                        self.state.toast.show("Range: clip selected");
-                    }
-                }
+                cmds.push(AppCommand::SetRangeToClip);
             }
             // Fullscreen viewer, on F11 — the combo every desktop
             // agrees on. It was on bare F, which is Match Frame, so a
