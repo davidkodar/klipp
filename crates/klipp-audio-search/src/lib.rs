@@ -341,10 +341,62 @@ pub struct SfxSearch {
 /// The queries tried in turn: the whole phrase, then shorter and
 /// shorter runs of its first words. Freesound matches every word, so
 /// "reverse cymbal swell" finds nothing where "reverse cymbal" finds
-/// plenty (#1573).
+/// plenty (#1573). Words that only join others ("on", "a", "the") are
+/// left out: a sound is rarely named or tagged with one, so "footsteps
+/// on gravel slow" found nothing at all.
 fn sfx_attempts(query: &str) -> Vec<String> {
-    let words: Vec<&str> = query.split_whitespace().collect();
+    let words = sfx_words(query);
     (1..=words.len()).rev().map(|n| words[..n].join(" ")).collect()
+}
+
+/// Words that join a query's others and name nothing a sound is tagged
+/// with.
+const SFX_FILLER: &[&str] = &["a", "an", "the", "on", "in", "of", "at", "with", "and", "for", "to", "from", "into", "onto", "by"];
+
+/// A query's words less its filler; all of them when that is all it has.
+fn sfx_words(query: &str) -> Vec<String> {
+    let all: Vec<String> = query.split_whitespace().map(|w| w.to_lowercase()).collect();
+    let kept: Vec<String> = all.iter().filter(|w| !SFX_FILLER.contains(&w.as_str())).cloned().collect();
+    if kept.is_empty() { all } else { kept }
+}
+
+/// How many results a sound-effect search reads to rank: more than any
+/// limit, so the best match can come from below Freesound's first few.
+const SFX_POOL: u32 = 50;
+
+/// Put first the sounds whose name and tags hold the query's words, and
+/// among those the ones whose name is about little else. Freesound's
+/// relevance also counts a word in a sound's description, so "dog
+/// barking far away" led with a thunderstorm whose description
+/// mentioned a dog; and a long catch-all name ("traffic slow dirt
+/// gravel road intersection … footsteps and pushing carts") holds every
+/// word of "footsteps gravel slow" without being about them. Ties keep
+/// Freesound's order.
+fn rank_sfx(tracks: &mut [Track], words: &[String]) {
+    // A word is met by a name or tag word it begins: "bark" by "barking".
+    let tokens = |s: &str| -> Vec<String> {
+        s.to_lowercase()
+            .split(|c: char| !c.is_alphanumeric())
+            .filter(|w| !w.is_empty() && !w.chars().all(|c| c.is_ascii_digit()) && !matches!(*w, "wav" | "mp3" | "flac" | "ogg" | "aif" | "aiff"))
+            .map(str::to_string)
+            .collect()
+    };
+    let score = |t: &Track| -> (usize, f64) {
+        let name = tokens(&t.title);
+        let mut all = name.clone();
+        for tag in &t.tags {
+            all.extend(tokens(tag));
+        }
+        let met = words.iter().filter(|w| all.iter().any(|x| x.starts_with(w.as_str()))).count();
+        let about = name.iter().filter(|x| words.iter().any(|w| x.starts_with(w.as_str()))).count();
+        (met, about as f64 / name.len().max(1) as f64)
+    };
+    let mut scored: Vec<((usize, f64), Track)> = tracks.iter().map(|t| (score(t), t.clone())).collect();
+    // Stable: equal scores keep Freesound's relevance order.
+    scored.sort_by(|(a, _), (b, _)| b.0.cmp(&a.0).then(b.1.total_cmp(&a.1)));
+    for (slot, (_, t)) in tracks.iter_mut().zip(scored) {
+        *slot = t;
+    }
 }
 
 /// [`search_sfx_within`] with the licence filter, falling back to fewer
@@ -352,16 +404,25 @@ fn sfx_attempts(query: &str) -> Vec<String> {
 pub fn search_sfx_filtered(query: &str, limit: u32, filter: SfxFilter) -> Result<SfxSearch, String> {
     let token = freesound_token().ok_or_else(|| "no Freesound token set — put freesound_token in ~/.config/klipp/keys.toml or set KLIPP_FREESOUND_TOKEN".to_string())?;
     let limit = limit.clamp(1, 50);
-    // A larger page when the licence filter thins it here.
-    let page = if filter.commercial_only { (limit * 3).min(150) } else { limit };
+    // A pool to rank, larger when the licence filter thins it here.
+    let page = if filter.commercial_only { (limit * 3).clamp(SFX_POOL, 150) } else { SFX_POOL };
+    let words = sfx_words(query);
     for attempt in sfx_attempts(query) {
         let mut tracks = freesound_page(&token, &attempt, page, filter.max_secs)?;
         if filter.commercial_only {
             tracks.retain(|t| t.commercial_ok);
         }
+        rank_sfx(&mut tracks, &words);
         tracks.truncate(limit as usize);
+        for t in &mut tracks {
+            t.tags.truncate(8);
+        }
         if !tracks.is_empty() {
-            return Ok(SfxSearch { tracks, matched_query: attempt });
+            // Every word that names something matched: the query as it
+            // was typed, filler and all, so a caller doesn't read the
+            // dropped "on" as a fallback.
+            let matched_query = if attempt.split_whitespace().count() == words.len() { query.trim().to_string() } else { attempt };
+            return Ok(SfxSearch { tracks, matched_query });
         }
     }
     Ok(SfxSearch { tracks: Vec::new(), matched_query: query.trim().to_string() })
@@ -391,10 +452,9 @@ fn freesound_track(r: &serde_json::Value) -> Track {
     let license_url = str_of("license");
     let (license, commercial_ok) = if license_url.is_empty() { ("Creative Commons".to_string(), false) } else { cc_label(&license_url) };
     let preview = r.get("previews").and_then(|p| p.get("preview-hq-mp3").or_else(|| p.get("preview-lq-mp3"))).and_then(|v| v.as_str()).unwrap_or("").to_string();
+    // Every tag, for a search to rank by; a result keeps eight.
     let tags = r.get("tags").and_then(|t| t.as_array()).map(|a| {
-        let mut v: Vec<String> = a.iter().filter_map(|x| x.as_str().map(|s| s.to_string())).collect();
-        v.truncate(8);
-        v
+        a.iter().filter_map(|x| x.as_str().map(|s| s.to_string())).collect::<Vec<String>>()
     }).unwrap_or_default();
     Track {
         source: Source::Freesound,
@@ -430,7 +490,9 @@ pub fn freesound_sound(id: &str) -> Result<Track, String> {
         .into_string()
         .map_err(|e| format!("Freesound returned an unreadable body: {e}"))?;
     let body: serde_json::Value = serde_json::from_str(&text).map_err(|e| format!("Freesound returned unreadable JSON: {e}"))?;
-    Ok(freesound_track(&body))
+    let mut track = freesound_track(&body);
+    track.tags.truncate(8);
+    Ok(track)
 }
 
 fn freesound_page(token: &str, query: &str, page: u32, max_secs: Option<f64>) -> Result<Vec<Track>, String> {
@@ -440,7 +502,7 @@ fn freesound_page(token: &str, query: &str, page: u32, max_secs: Option<f64>) ->
         None => String::new(),
     };
     let url = format!(
-        "https://freesound.org/apiv2/search/text/?query={q}&token={token}&page_size={page}&sort=rating_desc&fields={FREESOUND_FIELDS}{filter}"
+        "https://freesound.org/apiv2/search/text/?query={q}&token={token}&page_size={page}&sort=score&fields={FREESOUND_FIELDS}{filter}"
     );
     let text = ureq::get(&url)
         .timeout(std::time::Duration::from_secs(30))
@@ -1373,6 +1435,9 @@ mod tests {
         assert_eq!(super::sfx_attempts("reverse cymbal swell"), vec!["reverse cymbal swell", "reverse cymbal", "reverse"]);
         assert_eq!(super::sfx_attempts("  whoosh "), vec!["whoosh"]);
         assert!(super::sfx_attempts("   ").is_empty());
+        // Filler is left out; a query of nothing else keeps it.
+        assert_eq!(super::sfx_attempts("Footsteps on gravel slow"), vec!["footsteps gravel slow", "footsteps gravel", "footsteps"]);
+        assert_eq!(super::sfx_attempts("the"), vec!["the"]);
     }
 
     /// #824: a download stops at its limit instead of reading on, however
@@ -1622,6 +1687,24 @@ mod tests {
         assert_eq!(calls, 2 * (1 + EMPTY_RETRIES), "two attempts (fuzzy tags, plain search), each tried three times");
     }
 
+    /// Freesound's relevance counts a word in a description, and a
+    /// catch-all name holds every word without being about them: the
+    /// sound named and tagged for the query comes first.
+    #[test]
+    fn a_sound_named_for_the_query_comes_first() {
+        let sound = |name: &str, tags: &[&str]| Track { source: Source::Freesound, ..track(name, tags) };
+        let mut t = vec![
+            sound("27th of May 2014 distant thunderstorm", &["thunder", "storm", "rain"]),
+            sound("City hum with car traffic far away, slight dog barking sometimes recorded at dusk", &["city", "dog", "barking", "away"]),
+            sound("Barking dog far away.wav", &["dog", "bark"]),
+        ];
+        let words: Vec<String> = ["dog", "barking", "far", "away"].iter().map(|w| w.to_string()).collect();
+        rank_sfx(&mut t, &words);
+        let order: Vec<&str> = t.iter().map(|t| t.title.as_str()).collect();
+        assert_eq!(order[0], "Barking dog far away.wav", "{order:?}");
+        assert_eq!(order[2], "27th of May 2014 distant thunderstorm", "a match in the description only goes last: {order:?}");
+    }
+
     /// #1931: a family is named as results label it, or loosely; one that
     /// isn't is refused with the families there are.
     #[test]
@@ -1717,6 +1800,26 @@ mod tests {
         assert!(!tracks.is_empty(), "whoosh returns effects");
         let t = &tracks[0];
         assert!(!t.title.is_empty() && !t.preview_url.is_empty(), "effect has a title and a preview: {t:?}");
+    }
+
+    /// The queries that led with a thunderstorm and with nothing at all:
+    /// the first result is the sound asked for, and the filler dropped
+    /// is not reported as a fallback.
+    #[test]
+    #[ignore = "hits the live Freesound API"]
+    fn live_sfx_search_finds_the_sound_named() {
+        if !sfx_available() {
+            eprintln!("skipping: no Freesound token");
+            return;
+        }
+        for (query, must) in [("dog barking far away", &["dog", "bark"][..]), ("footsteps on gravel slow", &["gravel"][..])] {
+            let found = search_sfx_filtered(query, 5, SfxFilter::default()).expect("search runs");
+            let first = found.tracks.first().unwrap_or_else(|| panic!("{query}: nothing found"));
+            eprintln!("{query}: {} | {:?}", first.title, first.tags);
+            let name = first.title.to_lowercase();
+            assert!(must.iter().all(|w| name.contains(w)), "{query}: first is {:?}", first.title);
+            assert_eq!(found.matched_query, query, "every word that names something matched");
+        }
     }
 
     /// Hits the live Jamendo API — run on demand (`--ignored`), so a
