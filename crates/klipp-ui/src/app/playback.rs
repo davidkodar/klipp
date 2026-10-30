@@ -45,6 +45,11 @@ impl KlippApp {
                 self.sync_sequence_to_engine();
                 true
             }
+            AppCommand::RoutingChanged => {
+                self.state.dirty = true;
+                self.sync_sequence_to_engine();
+                true
+            }
             AppCommand::SetSpeed(speed) => {
                 // Re-anchor interpolation at current position with new speed
                 self.state.playhead_anchor = self.state.playhead;

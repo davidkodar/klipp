@@ -930,7 +930,7 @@ impl KlippApp {
         // Factor 0.96/frame at 60fps → ~0.96^60 ≈ 0.085 after 1s → -21dB/s.
         // This gives smooth, professional-looking decay without flicker.
         let peak_release = ballistics.peak_release;
-        for (l, r) in &mut self.state.track_peak_levels {
+        for (l, r) in self.state.track_peak_levels.iter_mut().chain(&mut self.state.bus_peak_levels) {
             *l *= peak_release;
             *r *= peak_release;
         }

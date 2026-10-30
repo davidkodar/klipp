@@ -249,6 +249,16 @@ impl AudioMixer {
         crate::routing::pdc_plan(&self.track_latency_samples, &out, &sends, &route)
     }
 
+    /// Which buses' way to master is longer than is made up for
+    /// ([`crate::routing::MAX_ROUTE_SECS`]): their sound comes back that
+    /// much early against the rest. Asked on the edit side.
+    pub fn buses_held_at_cap(&self) -> Vec<bool> {
+        let bus_latency: Vec<u32> = self.bus_inserts.iter().map(|i| i.as_ref().map_or(0, |i| i.chain.total_latency_samples(self.sample_rate))).collect();
+        let outputs: Vec<Option<usize>> = self.buses.iter().map(|b| b.output).collect();
+        let cap = crate::routing::MAX_ROUTE_SECS * self.sample_rate;
+        crate::routing::bus_routes(&bus_latency, &outputs, u32::MAX).into_iter().map(|r| r > cap).collect()
+    }
+
     /// Every delay line sized to the plan: made where one is needed,
     /// dropped where none is. Done where the routing or a latency
     /// changes, not in the mix.

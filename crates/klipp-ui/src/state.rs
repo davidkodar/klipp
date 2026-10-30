@@ -2812,6 +2812,13 @@ pub struct AppState {
     pub peak_hold_time_secs: f32,
     /// Mixer: track name being edited (track_index, buffer)
     pub mixer_editing_name: Option<(usize, String)>,
+    /// Each aux bus's levels, held and decayed as a track's are (#2861).
+    pub bus_peak_levels: Vec<(f32, f32)>,
+    /// Which buses' way to master is longer than is made up for.
+    pub buses_held_at_cap: Vec<bool>,
+    /// The routing when a mixer drag on a bus or a send began: the step
+    /// pushed when it ends goes from it.
+    pub mixer_routing_drag: Option<klipp_timeline::routing::Routing>,
 
     // Phase 7: Dynamic tracks
     pub confirm_remove_track: Option<TrackId>,
@@ -5200,6 +5207,9 @@ impl Default for AppState {
             lufs_short_term_smooth: f32::NEG_INFINITY,
             clip_indicator: false,
             mixer_editing_name: None,
+            bus_peak_levels: Vec::new(),
+            buses_held_at_cap: Vec::new(),
+            mixer_routing_drag: None,
             lufs_target: -23.0,
             peak_hold_time_secs: 3.0,
             confirm_remove_track: None,

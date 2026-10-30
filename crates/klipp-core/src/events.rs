@@ -1538,6 +1538,10 @@ pub enum AppCommand {
     /// first edit inside it.
     EndHistoryBatchAs { label: String },
     SequenceUpdated,
+    /// The sequence's aux buses or sends were changed in place, by the
+    /// mixer (#2861): the app gives the engine the sequence and marks the
+    /// project changed. The undo step, if any, is already pushed.
+    RoutingChanged,
     SetAntiClickFade(bool),
 
     // Export
@@ -4804,6 +4808,11 @@ pub enum AppEvent {
 
     // Audio metering
     TrackPeakLevels { track_index: usize, left: f32, right: f32 },
+    /// An aux bus's levels after its fader (#2861), by its index.
+    BusPeakLevels { bus_index: usize, left: f32, right: f32 },
+    /// Which aux buses' way to master is longer than playback and the
+    /// export make up for, by index (#2861): sent when it changes.
+    BusesHeldAtCap(Vec<bool>),
     MasterPeakLevels { left: f32, right: f32 },
     /// BS.1770-4 loudness meter readings from the mix thread.
     LufsReadings { momentary: f32, short_term: f32, integrated: f32, loudness_range: f32, true_peak_dbfs: f32 },
