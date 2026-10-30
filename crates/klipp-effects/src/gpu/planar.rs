@@ -1,5 +1,5 @@
 //! The planar tracker on the GPU (#2754): `crate::planar`'s backend, its
-//! passes the mirrors in [`super::planar_wgsl`]. A frame's pyramid and a
+//! passes the mirrors in `super::planar_wgsl`. A frame's pyramid and a
 //! region's template stay on the device; an alignment runs each level's
 //! iterations as one submission, every step (the light, the robust cut,
 //! the normal equations, the solve and the update of the map) on the

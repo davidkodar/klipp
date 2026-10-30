@@ -152,7 +152,7 @@ pub fn fetched(name: &str) -> bool {
 /// draws its titles again (#2734).
 static FETCHES: AtomicU64 = AtomicU64::new(0);
 
-/// The fetches finished so far, for [`FETCHES`]'s readers.
+/// The fetches finished so far, for `FETCHES`'s readers.
 pub fn fetches() -> u64 {
     FETCHES.load(Ordering::Acquire)
 }

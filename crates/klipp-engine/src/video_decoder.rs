@@ -1564,7 +1564,7 @@ fn send_to_decoder(bsf: Option<&BsfContext>, decoder: &mut ffmpeg_next::decoder:
 const HW_OPEN_LIMIT: Duration = Duration::from_secs(3);
 
 /// How long after a hardware open ran out of time new streams skip
-/// the GPU, so each does not wait [`HW_OPEN_LIMIT`] on a driver that is
+/// the GPU, so each does not wait `HW_OPEN_LIMIT` on a driver that is
 /// still refusing work.
 const HW_SHUNNED_FOR: Duration = Duration::from_secs(30);
 
@@ -1575,7 +1575,7 @@ static HW_OPEN_TIMED_OUT_AT: Mutex<Option<std::time::Instant>> = Mutex::new(None
 static HW_OPENS_TIMED_OUT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// How many hardware decoder opens, since the process began, ran out of
-/// [`HW_OPEN_LIMIT`] and went on in software (#2394).
+/// `HW_OPEN_LIMIT` and went on in software (#2394).
 pub fn hw_opens_timed_out() -> u64 {
     HW_OPENS_TIMED_OUT.load(std::sync::atomic::Ordering::Relaxed)
 }
@@ -1598,7 +1598,7 @@ pub fn stall_next_hw_open(stall: Duration) {
 }
 
 /// Open `path`'s video stream on the GPU and decode up to its first
-/// frame, on a thread of its own, within [`HW_OPEN_LIMIT`]. The decoder
+/// frame, on a thread of its own, within `HW_OPEN_LIMIT`. The decoder
 /// comes back flushed, ready for the caller's packets from the start.
 /// `None` when the open ran out of time, or `stop` was set while it ran:
 /// that thread is left behind, blocked in the driver, and its decoder

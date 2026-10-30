@@ -230,7 +230,7 @@ impl GpuContext {
     ///
     /// Returns `None` if initialisation fails (no adapter, a driver
     /// refusing new work, etc.), and keeps answering `None` for
-    /// [`SHARED_RETRY_AFTER`] so a broken driver isn't retried on every
+    /// `SHARED_RETRY_AFTER` so a broken driver isn't retried on every
     /// decoder spawn; after that the next caller tries again. It used to
     /// keep that answer for the life of the process, so a driver that
     /// recovered was never used (#2394). Meanwhile the `*::new()` paths

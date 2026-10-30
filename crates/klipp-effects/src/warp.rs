@@ -6,7 +6,7 @@
 //! own strength through the cut, so a fix to one is a fix to both.
 //!
 //! `include/warp_functions.wgsl` is the GPU's text of them and the functions here
-//! are the CPU's, written in Rust through [`crate::wgsl`] line for line,
+//! are the CPU's, written in Rust through `crate::wgsl` line for line,
 //! so the two agree. Each keeps the order of its arithmetic as the
 //! transitions had it, so they draw what they drew.
 
