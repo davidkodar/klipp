@@ -558,18 +558,64 @@ impl ZonePreset {
     }
 }
 
-/// Klipp's HDR Zones presets, `assets/presets/hdr_zones/builtin.toml`,
-/// read once; a file that doesn't read leaves none, said, never a crash.
-pub fn zone_presets() -> &'static [ZonePreset] {
-    static PRESETS: std::sync::OnceLock<Vec<ZonePreset>> = std::sync::OnceLock::new();
-    PRESETS.get_or_init(|| {
-        let read = crate::preset_file::read::<ZonePreset>(include_str!("../../../assets/presets/hdr_zones/builtin.toml"), "hdr_zones_preset", 1, "preset")
-            .and_then(|presets| presets.iter().find_map(ZonePreset::fault).map_or(Ok(presets), Err));
-        read.unwrap_or_else(|why| {
+/// The presets folder a person's own HDR Zones presets are read from.
+pub const ZONE_PRESETS_FOLDER: &str = "hdr_zones";
+
+/// The longest description a person's HDR Zones preset takes.
+const MAX_ZONE_DESCRIPTION_CHARS: usize = 256;
+
+/// Why an HDR Zones preset someone wrote can't be offered, beyond what
+/// [`crate::preset_file::merge`] asks of every entry: [`ZonePreset::fault`],
+/// a description past its length, or a value past what the `zones` op
+/// takes (exposure ±4 stops, saturation 0 to 2, hue ±360°, amount 0
+/// to 1).
+fn user_zone_fault(p: &ZonePreset) -> Result<(), String> {
+    if let Some(why) = p.fault() {
+        // Said with the preset's name already, as merge says it too.
+        return Err(why.split_once(": ").map_or(why.clone(), |(_, rest)| rest.to_string()));
+    }
+    if p.description.chars().count() > MAX_ZONE_DESCRIPTION_CHARS {
+        return Err(format!("a description past {MAX_ZONE_DESCRIPTION_CHARS} characters"));
+    }
+    let values = p.exposure.values().map(|v| ("exposure", *v, -4.0, 4.0)).chain(p.saturation.values().map(|v| ("saturation", *v, 0.0, 2.0))).chain(p.tint.iter().flat_map(|t| [("hue", t.hue, -360.0, 360.0), ("amount", t.amount, 0.0, 1.0)]));
+    for (what, v, lo, hi) in values {
+        if !(lo..=hi).contains(&v) {
+            return Err(format!("{what} {v} is outside {lo} to {hi}"));
+        }
+    }
+    Ok(())
+}
+
+/// Klipp's HDR Zones presets, then those in `dirs` (a person's folder,
+/// then the packs'), each read as someone else's (#3095), and what was
+/// skipped.
+pub fn zone_preset_listing_in(dirs: &[std::path::PathBuf]) -> crate::preset_file::Merged<ZonePreset> {
+    let built_in = crate::preset_file::read::<ZonePreset>(include_str!("../../../assets/presets/hdr_zones/builtin.toml"), "hdr_zones_preset", 1, "preset")
+        .and_then(|presets| presets.iter().find_map(ZonePreset::fault).map_or(Ok(presets), Err))
+        .unwrap_or_else(|why| {
             tracing::error!("the built-in HDR Zones presets don't read: {why}");
             Vec::new()
-        })
+        });
+    crate::preset_file::merge(built_in, dirs, "hdr_zones_preset", 1, "preset", |p: &ZonePreset| &p.name, user_zone_fault)
+}
+
+/// The HDR Zones presets, with what was skipped, read once a run:
+/// Klipp's, then the person's own. A file that doesn't read is said in
+/// the log, never a crash.
+pub fn zone_preset_listing() -> &'static crate::preset_file::Merged<ZonePreset> {
+    static LISTING: std::sync::OnceLock<crate::preset_file::Merged<ZonePreset>> = std::sync::OnceLock::new();
+    LISTING.get_or_init(|| {
+        let listing = zone_preset_listing_in(&crate::preset_file::user_dir(ZONE_PRESETS_FOLDER).into_iter().collect::<Vec<_>>());
+        for why in &listing.skipped {
+            tracing::warn!("an HDR Zones preset of yours was skipped: {why}");
+        }
+        listing
     })
+}
+
+/// The HDR Zones presets, Klipp's then the person's own, in order.
+pub fn zone_presets() -> &'static [ZonePreset] {
+    &zone_preset_listing().entries
 }
 
 impl Default for HdrZonesSettings {
@@ -1841,5 +1887,50 @@ mod mask_track_tests {
         assert!(read("glow = 1.0").unwrap_err().contains("unknown field"));
         assert!(read("saturation = { dark = inf }").unwrap_err().contains("isn't finite"));
         assert!(read("tint = [{ zone = \"dark\", hue = nan, amount = 0.2 }]").unwrap_err().contains("isn't finite"));
+    }
+}
+
+#[cfg(test)]
+mod user_zone_preset_tests {
+    use super::*;
+
+    /// A file dropped in a person's HDR Zones folder lists its preset after
+    /// Klipp's (#3095), and the zones op finds it by name; a hostile one is
+    /// refused, said, and Klipp's stay whole: a link, one past the size,
+    /// an unknown field, the wrong kind, a built-in's name, a zone that
+    /// isn't one, a value past what the op takes.
+    #[test]
+    fn a_person_s_zones_preset_lists_after_klipp_s_and_a_hostile_one_is_refused() {
+        let dir = std::env::temp_dir().join(format!("klipp-user-zones-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = |n: &str, body: &str| std::fs::write(dir.join(n), format!("kind = \"hdr_zones_preset\"\nformat_version = 1\n{body}")).unwrap();
+        let preset = |name: &str, extra: &str| format!("[[preset]]\nname = \"{name}\"\ndescription = \"mine\"\n{extra}");
+        file("a.toml", &preset("Night lift", "exposure = { shadow = 0.5 }\n"));
+        file("b.toml", &preset("Odd", "colour = 2\n"));
+        std::fs::write(dir.join("c.toml"), "kind = \"generator_entry\"\nformat_version = 1\n").unwrap();
+        file("d.toml", &format!("# {}\n", "x".repeat(crate::preset_file::MAX_FILE_BYTES)));
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(dir.join("a.toml"), dir.join("e.toml")).unwrap();
+        let klipp_s = zone_preset_listing_in(&[]).entries;
+        let first = klipp_s[0].name.to_uppercase();
+        file("f.toml", &(preset(&first, "") + &preset("Elbow", "exposure = { elbow = 1.0 }\n") + &preset("Blinding", "exposure = { light = 40.0 }\n") + &preset("Grey", "saturation = { global = 9.0 }\n")));
+        let listing = zone_preset_listing_in(std::slice::from_ref(&dir));
+        let names: Vec<&str> = listing.entries.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names.len(), klipp_s.len() + 1, "{names:?}");
+        assert_eq!(listing.entries[..klipp_s.len()], klipp_s[..], "Klipp's, whole and first");
+        let mine = &listing.entries[klipp_s.len()];
+        assert_eq!(mine.name, "Night lift");
+        assert_eq!(mine.on(false).exposure[ZONE_KEYS.iter().position(|k| *k == "shadow").unwrap()], 0.5);
+        let said = |what: &str| assert!(listing.skipped.iter().any(|s| s.contains(what)), "{what}: {:?}", listing.skipped);
+        said("b.toml: hdr_zones_preset entry 1: unknown field");
+        said("c.toml: a generator_entry file, not a hdr_zones_preset file");
+        said("d.toml: ");
+        #[cfg(unix)]
+        said("e.toml: not a plain file");
+        said(&format!("\"{first}\" is the name of one of Klipp's own"));
+        said("\"elbow\" is not a zone");
+        said("\"Blinding\": exposure 40 is outside -4 to 4");
+        said("\"Grey\": saturation 9 is outside 0 to 2");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

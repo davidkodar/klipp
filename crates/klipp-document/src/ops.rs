@@ -1700,7 +1700,8 @@ pub enum Op {
     /// orange, 210 a cool blue) and `amount` (0 none, 1 the wheel's rim)
     /// its colour; `saturation` 1 as shot; `boundary` and `falloff` where
     /// the zone reaches, in stops (not Global's). `preset` starts every
-    /// zone from a named starting point; `reset` from neutral.
+    /// zone from a named starting point, Klipp's or one the person keeps
+    /// in their `hdr_zones` presets folder (#3095); `reset` from neutral.
     Zones {
         #[serde(default)]
         clip_id: Option<ClipRef>,

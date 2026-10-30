@@ -1045,6 +1045,7 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             }
             json!({ "method": "batch", "commands": commands })
         }
+        "klipp_export" if args.get("list_deliveries").and_then(Value::as_bool).unwrap_or(false) => json!({ "method": "delivery_templates" }),
         "klipp_export" => {
             // A delivery of several formats (#2724) names a file for each.
             let overwrite = args.get("overwrite").and_then(|v| v.as_bool()).unwrap_or(false);
@@ -2130,7 +2131,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              "The media pool: media ids, paths, kind, duration, fps, resolution, codec. Details: klipp_guide topic list_media.",
              json!({}), vec![]),
         tool("klipp_generator",
-             "Preview a native generator clip; apply true places it; list true, the named ones. Details: klipp_guide topic generator.",
+             "Preview a native generator clip; apply true places it. Details: klipp_guide topic generator.",
              json!({ "data": { "type": ["object", "string"] }, "at_secs": { "type": "number" }, "secs": { "type": "number" }, "track": { "type": "integer" }, "apply": { "type": "boolean" }, "list": { "type": "boolean" } }), vec![]),
         tool("klipp_import_media",
              "Import media: a path, paths, or a folder's files. Details: klipp_guide topic import_media.",
@@ -2435,7 +2436,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
                      "tool": { "type": "string" }, "args": { "type": "object" } }, "required": ["tool"] } } }),
              vec!["calls"]),
         tool("klipp_export",
-             "Render the active sequence to an absolute path with the defaults, a preset, or a codec, bit depth and bitrate; asynchronous. Details: klipp_guide topic export.",
+             "Render the active sequence to an absolute path: defaults, a preset, or codec settings; asynchronous. Details: klipp_guide topic export.",
              json!({
                  "path": { "type": "string" },
                  "overwrite": { "type": "boolean" },
@@ -2452,7 +2453,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
                  "encoder_speed": { "type": "string", "enum": klipp_control::ENCODER_SPEEDS },
                  "codec": { "type": "string" }, "audio_codec": { "type": "string" },
                  "bit_depth": { "type": "integer" }, "bitrate_kbps": { "type": "integer" },
-                 "outputs": { "type": "array" },
+                 "outputs": { "type": "array" }, "list_deliveries": { "type": "boolean" },
              }),
              vec![]),
         tool("klipp_export_status",
@@ -3407,6 +3408,7 @@ mod generator_tests {
         assert!(tool_to_command("klipp_generator", &json!({})).is_err());
         // The named ones, Klipp's and the person's (#3095).
         assert_eq!(tool_to_command("klipp_generator", &json!({ "list": true })).unwrap(), json!({ "method": "generators" }));
+        assert_eq!(tool_to_command("klipp_export", &json!({ "list_deliveries": true })).unwrap(), json!({ "method": "delivery_templates" }));
         let np = tool_to_command("klipp_new_project", &json!({ "name": "a", "location": "/tmp", "format": "Studio 50p" })).unwrap();
         assert_eq!(np["format"], "Studio 50p");
         let text = content_for("klipp_generator", &json!({"text": "place generator", "next": "check"})).unwrap();

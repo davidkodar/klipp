@@ -1279,6 +1279,10 @@ pub enum ControlCommand {
     /// then a person's own, each with its group, and what of theirs was
     /// skipped.
     Generators,
+    /// The Export page's one-click delivery formats (#2724, #3095):
+    /// Klipp's, then a person's own, each with its aspect, file suffix and
+    /// export preset, and what of theirs was skipped.
+    DeliveryTemplates,
     /// The title templates, built-in (#1724) and saved (#1139), each with
     /// the fields it keeps editable: what a `template` op places and sets.
     TitleTemplates,
@@ -2179,6 +2183,8 @@ mod tests {
         assert!(matches!(by_format.command, super::ControlCommand::NewProject { format: Some(ref f), fps: None, .. } if f == "UHD 4K"));
         let list: Request = serde_json::from_value(json!({"id": 1, "method": "generators"})).unwrap();
         assert!(matches!(list.command, super::ControlCommand::Generators));
+        let deliveries: Request = serde_json::from_value(json!({"id": 1, "method": "delivery_templates"})).unwrap();
+        assert!(matches!(deliveries.command, super::ControlCommand::DeliveryTemplates));
         let ns: Request = serde_json::from_value(json!({"id": 1, "method": "new_sequence", "name": "V", "width": 1080, "height": 1920, "fps": 30})).unwrap();
         assert!(matches!(ns.command, super::ControlCommand::NewSequence { width: 1080, height: 1920, .. }));
     }

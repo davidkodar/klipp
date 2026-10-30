@@ -4067,7 +4067,8 @@ impl PreferencesPanel {
     fn show_false_color_editor(ui: &mut egui::Ui, prefs: &mut Preferences, dirty: &mut bool, theme: &KlippTheme) {
         use crate::prefs::{FalseColorPalette, FalseColorStop};
 
-        let built_ins = FalseColorPalette::built_ins();
+        // Klipp's palettes, then the person's own (#3095).
+        let built_ins = FalseColorPalette::palettes();
         let current_name = prefs.viewer.false_color_palette.name.clone();
 
         // Determine if current palette matches a built-in
@@ -4224,7 +4225,7 @@ impl PreferencesPanel {
         if any_changed {
             // Sort stops and mark as custom if no longer matching a preset
             prefs.viewer.false_color_palette.sort_stops();
-            if !FalseColorPalette::built_ins().contains(&prefs.viewer.false_color_palette) {
+            if !FalseColorPalette::palettes().contains(&prefs.viewer.false_color_palette) {
                 prefs.viewer.false_color_palette.name = "Custom".into();
             }
             *dirty = true;

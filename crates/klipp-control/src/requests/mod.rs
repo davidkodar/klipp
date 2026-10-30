@@ -94,7 +94,8 @@ mod routing_tests {
             assert_eq!(area_of.get(variant).copied(), Some(area), "{variant}");
         }
         // 141 with template_packs and remove_template_pack (#2924), 148
-        // with the brand kit's seven, 149 with generators (#3095).
-        assert_eq!(routed_all.len(), 149);
+        // with the brand kit's seven, 150 with generators and delivery
+        // templates (#3095).
+        assert_eq!(routed_all.len(), 150);
     }
 }

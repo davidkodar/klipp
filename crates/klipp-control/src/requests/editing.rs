@@ -1098,6 +1098,29 @@ pub(crate) fn respond(
             }))
         }
 
+        ControlCommand::DeliveryTemplates => {
+            if in_batch {
+                return read_in_batch("delivery_templates");
+            }
+            let listing = klipp_core::delivery_template_listing();
+            let presets = klipp_core::builtin_presets();
+            let templates: Vec<serde_json::Value> = listing
+                .entries
+                .iter()
+                .enumerate()
+                .map(|(i, t)| {
+                    let preset = presets.iter().find(|p| p.id == t.preset).map(|p| p.name.clone());
+                    json!({ "name": t.name, "aspect": [t.aspect.0, t.aspect.1], "suffix": t.suffix, "preset": preset, "source": if listing.is_built_in(i) { "built-in" } else { "yours" } })
+                })
+                .collect();
+            let yours = listing.entries.len() - listing.built_in;
+            Ok(json!({
+                "templates": templates,
+                "skipped": listing.skipped,
+                "text": format!("{} delivery formats, {yours} of them yours{}: the Export page's Deliver offers them in one click", listing.entries.len(), if listing.skipped.is_empty() { String::new() } else { format!("; {} of yours skipped", listing.skipped.len()) }),
+            }))
+        }
+
         ControlCommand::Fonts { query, fetch: None } => {
             if in_batch {
                 return read_in_batch("fonts");

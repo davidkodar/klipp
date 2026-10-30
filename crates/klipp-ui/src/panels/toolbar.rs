@@ -1083,8 +1083,9 @@ impl ToolbarPanel {
             // The palette quick-switcher, a row of its own under the
             // toggle rather than a button beside it (#2632).
             ui.menu_rows("False Colour Palette", |ui| {
-                let built_ins = crate::prefs::FalseColorPalette::built_ins();
-                for preset in &built_ins {
+                // Klipp's palettes, then the person's own (#3095).
+                let palettes = crate::prefs::FalseColorPalette::palettes();
+                for preset in &palettes {
                     let is_current = state.pending_false_color_palette.is_none()
                         && state.false_color_lut == preset.build_lut();
                     if menu_toggle(ui, &preset.name, "", is_current).clicked() {
