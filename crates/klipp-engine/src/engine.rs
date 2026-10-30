@@ -8016,10 +8016,10 @@ impl PlaybackEngine {
             let lease = crate::decode_budget::admit(0.0, crate::decode_budget::Priority::Fixed);
             let Ok(decoder) = VideoDecoder::open_with_queue(&path, rotation, lease, 8) else { return false };
             let bytes = self.media_pool.read().unwrap_or_else(|e| e.into_inner()).get(&media).map_or(0.0, |m| m.resolution.width as f64 * m.resolution.height as f64 * 4.0);
-            let capacity = reverse_gop::ReverseGop::capacity_for(bytes, crate::decode_budget::free_vram());
-            self.step_back = Some((clip.id, reverse_gop::ReverseGop::new(decoder, capacity, 0.0)));
+            self.step_back = Some((clip.id, reverse_gop::ReverseGop::for_memory(decoder, bytes, crate::decode_budget::free_vram(), 0.0)));
         }
         let Some((_, window)) = self.step_back.as_mut() else { return false };
+        window.learn_free(crate::decode_budget::free_vram());
         window.want(source, false);
         let deadline = std::time::Instant::now() + Duration::from_secs(1);
         let frame = loop {

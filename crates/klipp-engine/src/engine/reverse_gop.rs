@@ -11,13 +11,21 @@
 //! back to front, the same frame for as long as it is shown, while the
 //! window before is decoded. The frames held are counted against the
 //! memory they live in.
+//!
+//! A window is decoded from its keyframe and keeps every frame from
+//! there (#3118): the window before it then ends at that keyframe, and
+//! starts at the one before, so each group of pictures is decoded once.
+//! Windows that dropped the frames before their own start decoded those
+//! again for the window before: read back a frame at a time, a source
+//! with a keyframe every 50 frames decoded 338 frames for its 150.
 
 use super::streams::HeldFrame;
 use crate::video_decoder::VideoDecoder;
 
 /// A window being decoded: the frames from `from` to before `to`, after
 /// the seek `epoch` that started it, given as far as `reached`, the
-/// latest frame's time.
+/// latest frame's time. `from` moves back to the keyframe the decode
+/// started from once its frame has come.
 #[derive(Debug, Clone, Copy)]
 struct Fill {
     from: f64,
@@ -36,6 +44,9 @@ pub(crate) struct ReverseGop {
     /// The most frames held at once; a window is half of it, so the one
     /// decoding ahead fits beside the one shown.
     capacity: usize,
+    /// The bytes of a frame, while `capacity` is the guess made before
+    /// the memory's free size was known: see [`Self::learn_free`].
+    guessed_for: Option<f64>,
     /// Where the source starts: nothing is decoded before it.
     start: f64,
     /// The frame last handed out, by its time, and how many different
@@ -55,7 +66,27 @@ impl ReverseGop {
     /// frames it decodes; 30 fps until then.
     pub fn new(decoder: VideoDecoder, capacity: usize, start: f64) -> Self {
         decoder.pause();
-        Self { decoder, frame_secs: 1.0 / 30.0, frames: Vec::new(), filling: None, capacity: capacity.max(8), start: start.max(0.0), last_given: None, measured: None, target: None, ahead: false }
+        Self { decoder, frame_secs: 1.0 / 30.0, frames: Vec::new(), filling: None, capacity: capacity.max(8), guessed_for: None, start: start.max(0.0), last_given: None, measured: None, target: None, ahead: false }
+    }
+
+    /// Reading `decoder`'s source backward, frames of `bytes` each held in
+    /// a memory with `free` bytes free ([`Self::capacity_for`]), nothing
+    /// before `start`. With `free` not known yet, as on the first read of
+    /// the GPU's, the capacity is a guess until [`Self::learn_free`] has it.
+    pub fn for_memory(decoder: VideoDecoder, bytes: f64, free: Option<f64>, start: f64) -> Self {
+        let mut gop = Self::new(decoder, Self::capacity_for(bytes, free), start);
+        gop.guessed_for = free.is_none().then_some(bytes);
+        gop
+    }
+
+    /// The memory's free bytes, read again: a capacity guessed before
+    /// they were known is made from them, once. Not again after: the free
+    /// memory read later is less by the frames this one holds.
+    pub fn learn_free(&mut self, free: Option<f64>) {
+        if let (Some(bytes), Some(free)) = (self.guessed_for, free) {
+            self.capacity = Self::capacity_for(bytes, Some(free)).max(8);
+            self.guessed_for = None;
+        }
     }
 
     /// Frames held at once for a picture of `bytes` each, given `free`
@@ -74,6 +105,10 @@ impl ReverseGop {
     fn window(&self) -> f64 {
         (self.capacity / 2).max(4) as f64 * self.frame_secs
     }
+
+    /// Frames after the one shown kept when the memory is short: a step
+    /// forward again, and the frame a blend draws toward.
+    const KEEP_AFTER_FRAMES: f64 = 4.0;
 
     /// Whether a frame for `secs` is held: one within half a frame, or
     /// `secs` lies between two held frames. Not in a window still being
@@ -101,7 +136,8 @@ impl ReverseGop {
         if to <= from {
             return;
         }
-        let epoch = self.decoder.seek(from);
+        // From the keyframe at or before `from`, every frame handed over.
+        let epoch = self.decoder.seek_from_keyframe(from);
         self.decoder.resume();
         self.filling = Some(Fill { from, to, epoch, reached: None });
     }
@@ -116,9 +152,11 @@ impl ReverseGop {
         self.pump();
         let filling_here = self.filling.is_some_and(|f| secs >= f.from - self.half() && secs < f.to);
         if !self.covers(secs) && !filling_here {
-            // A jump: what is held is no use there.
+            // A jump: what is held is no use there. Decoded from the
+            // keyframe before `secs`, the least that gives its frame, and
+            // all of it kept: the next window ends at that keyframe.
             self.frames.clear();
-            self.fill(secs - self.window(), secs + self.half() + 1e-6);
+            self.fill(secs - self.half(), secs + self.half() + 1e-6);
             return;
         }
         // Played on (back): the frames after the shown one are done with,
@@ -157,11 +195,8 @@ impl ReverseGop {
                     break;
                 }
                 let f = q.pop().expect("the front frame");
-                // Decoded from the keyframe before the window: only the
-                // window's frames are kept.
-                if pts >= fill.from - self.half() {
-                    taken.push(HeldFrame::from_frame(f));
-                }
+                // Decoded from the keyframe before the window: all kept.
+                taken.push(HeldFrame::from_frame(f));
             }
         }
         // The source's frame duration, from frames decoded one after
@@ -173,8 +208,9 @@ impl ReverseGop {
                 self.measured = Some(step);
             }
         }
-        if let (Some(fill), Some(latest)) = (self.filling.as_mut(), taken.last().and_then(|f| f.pts)) {
+        if let (Some(fill), Some(earliest), Some(latest)) = (self.filling.as_mut(), taken.first().and_then(|f| f.pts), taken.last().and_then(|f| f.pts)) {
             fill.reached = Some(fill.reached.map_or(latest, |r| r.max(latest)));
+            fill.from = fill.from.min(earliest);
         }
         for f in taken {
             let pts = f.pts.unwrap_or(0.0);
@@ -183,9 +219,16 @@ impl ReverseGop {
                 Err(i) => self.frames.insert(i, f),
             }
         }
-        // Over the limit: the latest go first, already shown.
+        // Over the limit: the latest go first, already shown, down to a
+        // few after the one shown; then the earliest, the furthest from
+        // being shown.
+        let keep_to = self.target.map_or(f64::NEG_INFINITY, |t| t + Self::KEEP_AFTER_FRAMES * self.frame_secs);
         while self.frames.len() > self.capacity {
-            self.frames.pop();
+            if self.frames.last().is_some_and(|f| f.pts.unwrap_or(0.0) > keep_to) {
+                self.frames.pop();
+            } else {
+                self.frames.remove(0);
+            }
         }
         if done {
             self.decoder.pause();
@@ -253,6 +296,29 @@ mod tests {
         (ok && std::fs::rename(&partial, &out).is_ok()).then_some(out)
     }
 
+    /// Six seconds at 25 fps of long-GOP H.264, a keyframe every 50
+    /// frames (0, 2 and 4 s). `None` without ffmpeg or its H.264 encoder.
+    fn long_gop_source() -> Option<std::path::PathBuf> {
+        let out = std::env::temp_dir().join("klipp-reverse-gop-720p-gop50.mp4");
+        if out.exists() {
+            return Some(out);
+        }
+        let partial = out.with_extension(format!("{}.mp4", std::process::id()));
+        let ok = std::process::Command::new("ffmpeg")
+            .args(["-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=s=1280x720:r=25:d=6"])
+            .args(["-c:v", "libx264", "-preset", "ultrafast", "-g", "50", "-keyint_min", "50", "-sc_threshold", "0", "-bf", "0", "-pix_fmt", "yuv420p"])
+            .arg(&partial)
+            .status()
+            .ok()?
+            .success();
+        if !ok {
+            let _ = std::fs::remove_file(&partial);
+            return None;
+        }
+        std::fs::rename(&partial, &out).ok()?;
+        Some(out)
+    }
+
     /// Asked for `secs` until its frame is held.
     fn settle(gop: &mut ReverseGop, secs: f64) {
         let t0 = Instant::now();
@@ -303,6 +369,63 @@ mod tests {
             std::thread::sleep(Duration::from_micros(500));
         }
         drop(gop);
+        crate::video_decoder::wait_for_decode_threads(Duration::from_secs(10));
+    }
+
+    /// Read back from its last frame to its first a frame at a time, a
+    /// long-GOP source is decoded about once (#3118): at most 160 frames
+    /// decoded for its 150, each step given its own frame. Windows of 60
+    /// frames (120 held) that kept only their own frames decoded from the
+    /// keyframe before each one, the frames before it again for every
+    /// window.
+    #[test]
+    fn read_backward_each_group_of_pictures_is_decoded_once() {
+        let Some(path) = long_gop_source() else {
+            eprintln!("skipping: no ffmpeg with libx264");
+            return;
+        };
+        let lease = crate::decode_budget::admit(0.0, crate::decode_budget::Priority::Overflow);
+        let decoder = VideoDecoder::open_with_queue(&path, 0, lease, 8).expect("the source opens");
+        let mut gop = ReverseGop::new(decoder, 120, 0.0);
+        for i in (0..150).rev() {
+            let secs = i as f64 / 25.0;
+            settle(&mut gop, secs);
+            let pts = gop.frame(secs).and_then(|f| f.pts).expect("a frame");
+            assert!((pts - secs).abs() < 0.02, "the frame given at {secs:.2} s is the one at {pts:.2} s");
+        }
+        let decoded = gop.decoder.frames_decoded();
+        eprintln!("read backward: {decoded} frames decoded for 150");
+        assert!(decoded <= 160, "{decoded} frames decoded to read 150 backward");
+        drop(gop);
+        crate::video_decoder::wait_for_decode_threads(Duration::from_secs(10));
+    }
+
+    /// A capacity guessed before the GPU's free memory was read (#3118):
+    /// 32 frames, held for good, kept a 4K source read backward under 29
+    /// fps from a cold start. It is made from the free memory once that is
+    /// read, and only then: a later, smaller reading leaves it.
+    #[test]
+    fn a_capacity_guessed_without_the_free_memory_is_made_once_it_is_read() {
+        let Some(path) = source() else {
+            eprintln!("skipping: no ffmpeg");
+            return;
+        };
+        let lease = crate::decode_budget::admit(0.0, crate::decode_budget::Priority::Overflow);
+        let decoder = VideoDecoder::open_with_queue(&path, 0, lease, 8).expect("the source opens");
+        let mut gop = ReverseGop::for_memory(decoder, 1000.0, None, 0.0);
+        assert_eq!(gop.capacity, 32, "the guess");
+        gop.learn_free(None);
+        assert_eq!(gop.capacity, 32, "still not known");
+        gop.learn_free(Some(400_000.0));
+        assert_eq!(gop.capacity, 100, "a quarter of 400 kB in frames of 1 kB");
+        gop.learn_free(Some(40_000.0));
+        assert_eq!(gop.capacity, 100, "made once");
+        let lease = crate::decode_budget::admit(0.0, crate::decode_budget::Priority::Overflow);
+        let decoder = VideoDecoder::open_with_queue(&path, 0, lease, 8).expect("the source opens");
+        let mut known = ReverseGop::for_memory(decoder, 1000.0, Some(200_000.0), 0.0);
+        known.learn_free(Some(400_000.0));
+        assert_eq!(known.capacity, 50, "known from the start: kept");
+        drop((gop, known));
         crate::video_decoder::wait_for_decode_threads(Duration::from_secs(10));
     }
 }
