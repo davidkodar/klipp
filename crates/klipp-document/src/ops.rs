@@ -4984,13 +4984,16 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
                 None => seq.tracks.last().filter(|t| t.kind == TrackKind::Video && t.visible && !t.locked && t.name == "Background").map(|_| seq.tracks.len() - 1).unwrap_or(seq.tracks.len()),
             };
             let created = ti == seq.tracks.len();
+            // A gap clip in the way is room the generator fills (#3116):
+            // a gap on the primary track filled with a colour, a gradient
+            // or a placeholder. A shot in the way is refused.
+            let mut taken = Vec::new();
             if !created {
                 if seq.tracks[ti].kind != TrackKind::Video || seq.tracks[ti].locked {
                     return Err(refuse(i, "a generator needs an unlocked video track", "choose a video track or omit track for a background track"));
                 }
-                if overlapping(seq, ti, start, finish, None).is_some() {
-                    return Err(refuse(i, "the generator would overlap a clip", "use an empty range or a different video track"));
-                }
+                taken = room_from_gaps(seq, ti, start, finish, &|_| false)
+                    .map_err(|_| refuse(i, "the generator would overlap a clip", "use an empty range or a different video track"))?;
             }
             let mut clip = Clip::gap(start, finish);
             clip.kind = ClipKind::Generator(data.clone());
@@ -4998,7 +5001,12 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             let append = EditCommand::LegacyAppendClip { clip, track_index: ti };
             let edit = if created {
                 EditCommand::Batch(vec![EditCommand::AddTrack { index: ti, track: klipp_timeline::Track::new("Background", TrackKind::Video) }, append])
-            } else { append };
+            } else if taken.is_empty() {
+                append
+            } else {
+                taken.push(append);
+                EditCommand::Batch(taken)
+            };
             Ok((format!("place generator on video track {ti} at {:.2}-{:.2} s{}", secs(start), secs(finish), if created { "; create Background below the existing tracks" } else { "" }), edit, vec![id]))
         }
 

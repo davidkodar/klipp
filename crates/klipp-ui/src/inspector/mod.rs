@@ -7,6 +7,7 @@ pub mod tracker_picker;
 pub mod video_tab;
 pub mod piece_transition;
 pub mod sequence_view;
+pub mod gap_view;
 pub(crate) mod rows;
 pub mod placement_by_path;
 pub mod audio_tab;
@@ -158,6 +159,8 @@ impl NewInspectorPanel {
             (name, false)
         } else if let Some(bm) = bin_media {
             (bm.filename.clone(), false)
+        } else if state.selected_gap.is_some() {
+            ("Gap".to_string(), false)
         } else {
             // Name what the panel is showing, not what it is missing.
             // With nothing selected the body is the sequence's own
@@ -174,6 +177,13 @@ impl NewInspectorPanel {
         };
         if crate::widgets::inspector_group::panel_title_row(ui, &clip_name, name_dim, theme) {
             cmds.push(AppCommand::ToggleInspectorPanel);
+        }
+
+        // ── A gap (#3116): no picture to transform, so its start, its
+        // length, and closing or filling it, and nothing else ──
+        if let Some(gap) = gap_view::gap_of(state) {
+            gap_view::show(ui, state, gap, &mut cmds);
+            return cmds;
         }
 
         // ── Several clips selected (#843) ──

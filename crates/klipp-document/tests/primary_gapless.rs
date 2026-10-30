@@ -149,3 +149,25 @@ fn a_retime_fits_to_the_next_shot_a_length_or_the_marked_range() {
     let Err(refused) = resolve(&seq, &pool, &[op]) else { panic!("no range: refused") };
     assert!(refused.why.contains("no marked range"), "{}", refused.why);
 }
+
+/// #3116: a generator placed over a gap clip takes its room, whole or in
+/// part, the rest staying a gap clip; over a shot it is still refused.
+#[test]
+fn a_generator_fills_a_gap_clip() {
+    let (seq, pool, ids) = with_a_gap();
+    let p = seq.primary_track_index().unwrap();
+    let black = serde_json::json!({ "SolidColor": { "color": [0, 0, 0, 255] } });
+    let kinds = |s: &Sequence| s.tracks[p].clips.iter().map(|c| (c.kind.is_gap(), matches!(c.kind, klipp_timeline::ClipKind::Generator(_)), c.timeline_in, c.timeline_out)).collect::<Vec<_>>();
+
+    let whole = holds("fill the whole gap", seq.clone(), pool.clone(), serde_json::json!({ "op": "generator", "data": black, "at": { "secs": 2.0 }, "end": { "secs": 4.0 }, "track": p }));
+    assert!(kinds(&whole).contains(&(false, true, t(2.0), t(4.0))), "{:?}", kinds(&whole));
+    assert!(!kinds(&whole).iter().any(|k| k.0), "no gap clip left: {:?}", kinds(&whole));
+    assert_eq!(whole.tracks[p].clips.iter().find(|c| c.id == ids[2]).map(|c| c.timeline_in), Some(t(4.0)), "the next shot stays");
+
+    let part = holds("fill part of the gap", seq.clone(), pool.clone(), serde_json::json!({ "op": "generator", "data": black, "at": { "secs": 2.0 }, "end": { "secs": 3.0 }, "track": p }));
+    assert!(kinds(&part).contains(&(false, true, t(2.0), t(3.0))) && kinds(&part).contains(&(true, false, t(3.0), t(4.0))), "{:?}", kinds(&part));
+
+    let op: Op = serde_json::from_value(serde_json::json!({ "op": "generator", "data": black, "at": { "secs": 2.0 }, "end": { "secs": 5.0 }, "track": p })).unwrap();
+    let Err(refused) = resolve(&seq, &pool, &[op]) else { panic!("over the next shot: refused") };
+    assert!(refused.why.contains("overlap a clip"), "{}", refused.why);
+}

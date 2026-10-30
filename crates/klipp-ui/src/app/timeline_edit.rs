@@ -458,6 +458,31 @@ impl KlippApp {
                     true
                 }
                 // Close gap: remove empty space on a track by shifting downstream clips left
+                AppCommand::FillGap { track_index, start, end, data } => {
+                    // The document's generator op over the gap's span: it
+                    // takes a gap clip's room and refuses a shot (#3116).
+                    let op = klipp_document::ops::Op::Generator {
+                        data: data.clone(),
+                        at: klipp_document::ops::Anchor::Secs(start.to_secs_f64()),
+                        secs: None,
+                        end: Some(klipp_document::ops::Anchor::Secs(end.to_secs_f64())),
+                        track: Some(klipp_document::ops::TrackRef::Index(*track_index)),
+                    };
+                    match klipp_document::ops::resolve(self.state.sequence(), &self.state.media_pool, std::slice::from_ref(&op)) {
+                        Ok(plan) => {
+                            let made = plan.steps.iter().flat_map(|s| s.made_clips.iter().copied()).next();
+                            let edits: Vec<klipp_document::history::EditCommand> = plan.steps.into_iter().map(|s| s.edit).collect();
+                            self.apply_edits_as_one(&edits, "Fill Gap");
+                            self.state.selected_gap = None;
+                            if let Some(id) = made {
+                                self.state.selected_clip = Some(id);
+                                self.state.selected_clips = vec![id];
+                            }
+                        }
+                        Err(r) => self.state.toast.show(format!("Gap not filled: {}", r.why)),
+                    }
+                    true
+                }
                 AppCommand::CloseGap { track_index, gap_start, gap_end } => {
                     let ti = *track_index;
                     let start = *gap_start;

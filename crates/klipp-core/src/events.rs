@@ -1850,6 +1850,9 @@ pub enum AppCommand {
     PrevEditPoint,
     /// Close the gap (empty space) at the playhead on a given track, or the nearest gap.
     CloseGap { track_index: usize, gap_start: RationalTime, gap_end: RationalTime },
+    /// A gap filled with a generator spanning it exactly, as one step
+    /// (#3116): a gap clip on the primary track gives up its room.
+    FillGap { track_index: usize, start: RationalTime, end: RationalTime, data: crate::GeneratorData },
 
     // Source monitor
     LoadSourceMedia { media_id: MediaId },
