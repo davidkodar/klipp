@@ -133,9 +133,9 @@ pub fn delivery_template_listing_in(dirs: &[std::path::PathBuf]) -> crate::prese
 /// Klipp's, then the person's own. A file that doesn't read is said in
 /// the log, never a crash.
 pub fn delivery_template_listing() -> &'static crate::preset_file::Merged<DeliveryTemplate> {
-    static LISTING: std::sync::OnceLock<crate::preset_file::Merged<DeliveryTemplate>> = std::sync::OnceLock::new();
-    LISTING.get_or_init(|| {
-        let listing = delivery_template_listing_in(&crate::preset_file::user_dir(DELIVERY_TEMPLATES_FOLDER).into_iter().collect::<Vec<_>>());
+    static LISTING: crate::preset_file::Reloading<crate::preset_file::Merged<DeliveryTemplate>> = crate::preset_file::Reloading::new();
+    LISTING.get(|| {
+        let listing = delivery_template_listing_in(&crate::preset_places::dirs_for(DELIVERY_TEMPLATES_FOLDER));
         for why in &listing.skipped {
             tracing::warn!("a delivery template of yours was skipped: {why}");
         }
