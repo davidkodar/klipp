@@ -44,7 +44,7 @@ impl klipp_compose::GpuPixels for OnGpu {
     }
 }
 
-type Make = Box<dyn Fn() -> SourcePixels>;
+pub(crate) type Make = Box<dyn Fn() -> SourcePixels>;
 
 #[derive(Default)]
 struct Sources(HashMap<ClipId, Make>);
@@ -56,7 +56,7 @@ impl FrameSource for Sources {
 }
 
 /// The decoded picture: a gradient with a diagonal, in sRGB bytes.
-fn picture(width: u32, height: u32) -> Arc<Vec<u8>> {
+pub(crate) fn picture(width: u32, height: u32) -> Arc<Vec<u8>> {
     let mut out = vec![0u8; (width * height * 4) as usize];
     for y in 0..height {
         for x in 0..width {
@@ -94,6 +94,21 @@ struct Build {
     src: Sources,
 }
 
+/// `bytes`, a decoded sRGB frame, as the engine holds one on the GPU: a
+/// maker of the frame's pixels, each call sharing the one buffer.
+pub(crate) fn decoded_on_gpu(ctx: &GpuContext, bytes: Arc<Vec<u8>>) -> Make {
+    let buffer = Arc::new(ctx.device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("klipp-perf decoded frame"),
+        size: bytes.len() as u64,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    }));
+    ctx.queue.write_buffer(&buffer, 0, &bytes);
+    ctx.device.poll(wgpu::Maintain::Poll);
+    let on: Arc<dyn klipp_compose::GpuPixels> = Arc::new(OnGpu { buffer, bytes });
+    Box::new(move || SourcePixels::Gpu(Arc::clone(&on)))
+}
+
 /// A media clip on `track`, its frame on the GPU when `ctx` is given.
 fn add_media(b: &mut Build, track: usize, from: f64, to: f64, width: u32, height: u32, ctx: Option<&GpuContext>, graph: Option<klipp_nodes::NodeGraph>) -> ClipId {
     let mut c = clip(ClipKind::Media { media_id: klipp_core::MediaId::new() }, from, to);
@@ -104,16 +119,7 @@ fn add_media(b: &mut Build, track: usize, from: f64, to: f64, width: u32, height
     let bytes = picture(width, height);
     match ctx {
         Some(ctx) => {
-            let buffer = Arc::new(ctx.device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("klipp-perf decoded frame"),
-                size: bytes.len() as u64,
-                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            }));
-            ctx.queue.write_buffer(&buffer, 0, &bytes);
-            ctx.device.poll(wgpu::Maintain::Poll);
-            let on = Arc::new(OnGpu { buffer, bytes });
-            b.src.0.insert(id, Box::new(move || SourcePixels::Gpu(Arc::clone(&on) as Arc<dyn klipp_compose::GpuPixels>)));
+            b.src.0.insert(id, decoded_on_gpu(ctx, bytes));
         }
         None => {
             let linear = Arc::new(klipp_effects::srgb_u8_to_linear_f32_rgba(&bytes));

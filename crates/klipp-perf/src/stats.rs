@@ -45,6 +45,10 @@ pub struct ScenarioResult {
     /// sample that was still moving.
     pub settled: bool,
     pub committed_at_utc: String,
+    /// The process's GPU memory after the run, in MB, where a scenario
+    /// reads it (#3073).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gpu_mem_mb: Option<f64>,
 }
 
 /// Half-to-half drift beyond which a run is not a measurement.
@@ -136,6 +140,7 @@ pub fn summarise(
         drift_pct,
         settled,
         committed_at_utc: iso8601_now(),
+        gpu_mem_mb: None,
     }
 }
 

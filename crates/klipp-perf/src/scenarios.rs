@@ -103,6 +103,126 @@ pub const ALL: &[Scenario] = &[
         desc: "1080p: two titles over three video layers, one graded, one at Overlay",
         run: crate::composite::s14_hd_five_layers,
     },
+    Scenario {
+        name: "s20_flatten_1_instances",
+        desc: "#3073: flatten 1 template instance(s)",
+        run: crate::nesting::flatten_1,
+    },
+    Scenario {
+        name: "s20_flatten_1_instances_overrides",
+        desc: "#3073: flatten 1 template instance(s) with overrides",
+        run: crate::nesting::flatten_1_o,
+    },
+    Scenario {
+        name: "s20_flatten_10_instances",
+        desc: "#3073: flatten 10 template instance(s)",
+        run: crate::nesting::flatten_10,
+    },
+    Scenario {
+        name: "s20_flatten_10_instances_overrides",
+        desc: "#3073: flatten 10 template instance(s) with overrides",
+        run: crate::nesting::flatten_10_o,
+    },
+    Scenario {
+        name: "s20_flatten_50_instances",
+        desc: "#3073: flatten 50 template instance(s)",
+        run: crate::nesting::flatten_50,
+    },
+    Scenario {
+        name: "s20_flatten_50_instances_overrides",
+        desc: "#3073: flatten 50 template instance(s) with overrides",
+        run: crate::nesting::flatten_50_o,
+    },
+    Scenario {
+        name: "s20_flatten_200_instances",
+        desc: "#3073: flatten 200 template instance(s)",
+        run: crate::nesting::flatten_200,
+    },
+    Scenario {
+        name: "s20_flatten_200_instances_overrides",
+        desc: "#3073: flatten 200 template instance(s) with overrides",
+        run: crate::nesting::flatten_200_o,
+    },
+    Scenario {
+        name: "s21_nest_1_levels_1080p",
+        desc: "#3073: precomposition nested 1 level(s), 1080p",
+        run: crate::nesting::nest_1_hd,
+    },
+    Scenario {
+        name: "s21_nest_2_levels_1080p",
+        desc: "#3073: precomposition nested 2 level(s), 1080p",
+        run: crate::nesting::nest_2_hd,
+    },
+    Scenario {
+        name: "s21_nest_3_levels_1080p",
+        desc: "#3073: precomposition nested 3 level(s), 1080p",
+        run: crate::nesting::nest_3_hd,
+    },
+    Scenario {
+        name: "s21_nest_4_levels_1080p",
+        desc: "#3073: precomposition nested 4 level(s), 1080p",
+        run: crate::nesting::nest_4_hd,
+    },
+    Scenario {
+        name: "s21_nest_1_levels_uhd",
+        desc: "#3073: precomposition nested 1 level(s), uhd",
+        run: crate::nesting::nest_1_uhd,
+    },
+    Scenario {
+        name: "s21_nest_2_levels_uhd",
+        desc: "#3073: precomposition nested 2 level(s), uhd",
+        run: crate::nesting::nest_2_uhd,
+    },
+    Scenario {
+        name: "s21_nest_3_levels_uhd",
+        desc: "#3073: precomposition nested 3 level(s), uhd",
+        run: crate::nesting::nest_3_uhd,
+    },
+    Scenario {
+        name: "s21_nest_4_levels_uhd",
+        desc: "#3073: precomposition nested 4 level(s), uhd",
+        run: crate::nesting::nest_4_uhd,
+    },
+    Scenario {
+        name: "s21_nest_1_levels_1080p_overrides",
+        desc: "#3073: precomposition nested 1 level(s), 1080p, overrides at every level",
+        run: crate::nesting::nest_1_hd_o,
+    },
+    Scenario {
+        name: "s21_nest_2_levels_1080p_overrides",
+        desc: "#3073: precomposition nested 2 level(s), 1080p, overrides at every level",
+        run: crate::nesting::nest_2_hd_o,
+    },
+    Scenario {
+        name: "s21_nest_3_levels_1080p_overrides",
+        desc: "#3073: precomposition nested 3 level(s), 1080p, overrides at every level",
+        run: crate::nesting::nest_3_hd_o,
+    },
+    Scenario {
+        name: "s21_nest_4_levels_1080p_overrides",
+        desc: "#3073: precomposition nested 4 level(s), 1080p, overrides at every level",
+        run: crate::nesting::nest_4_hd_o,
+    },
+    Scenario {
+        name: "s21_nest_1_levels_uhd_overrides",
+        desc: "#3073: precomposition nested 1 level(s), uhd, overrides at every level",
+        run: crate::nesting::nest_1_uhd_o,
+    },
+    Scenario {
+        name: "s21_nest_2_levels_uhd_overrides",
+        desc: "#3073: precomposition nested 2 level(s), uhd, overrides at every level",
+        run: crate::nesting::nest_2_uhd_o,
+    },
+    Scenario {
+        name: "s21_nest_3_levels_uhd_overrides",
+        desc: "#3073: precomposition nested 3 level(s), uhd, overrides at every level",
+        run: crate::nesting::nest_3_uhd_o,
+    },
+    Scenario {
+        name: "s21_nest_4_levels_uhd_overrides",
+        desc: "#3073: precomposition nested 4 level(s), uhd, overrides at every level",
+        run: crate::nesting::nest_4_uhd_o,
+    },
 ];
 
 // ─── Scenario implementations ───────────────────────────────────────
