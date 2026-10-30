@@ -405,7 +405,7 @@ mod tests {
             "skimming_enabled", "audio_skimming_enabled", "skim_speed_px_per_sec", "skim_last_update", "skim_last_x", "skim_audio_session", "skim_last_audio_dispatch", "program_skim_active", "program_skim_revert_deadline",
             "keyframe_context_menu", "automation_lane_param_menu", "keyframe_clipboard", "curve_key_clipboard", "selects_range", "selects_drag", "selects_edit", "selects_height", "selects_sequence",
             "source_playhead", "dragging_media", "dragging_media_group", "selected_media_ids", "browser_range_selection", "browser_drag_start", "selected_title_object", "title_object_drag",
-            "viewer_transform_drag", "motion_path_drag", "viewer_corner_pin_drag", "viewer_waterline_drag", "viewer_mask_drag", "color_grade_drag_start", "resumable_path_drag", "selected_node_id", "selected_node_ids", "selected_node_addr",
+            "viewer_transform_drag", "motion_path_drag", "viewer_corner_pin_drag", "viewer_waterline_drag", "viewer_mask_drag", "color_grade_drag_start", "mixer_routing_drag", "resumable_path_drag", "selected_node_id", "selected_node_ids", "selected_node_addr",
             "selected_subtitle_track", "command_palette_selected", "title_find_selected", "workspace_manager_selected", "preset_manager_selected", "show_camera_lane", "file_browser_video_skim_enabled", "file_browser_audio_skim_enabled",
             "save_hyperzoom_preset_name", "save_hyperzoom_preset_error", "save_hyperzoom_preset_source_clip", "hyperzoom_preset_registry", "render_cache_ranges", "render_range", "scope_legal_range",
             "multicam_at_playhead", "waveform_zoom", "viewer_text_edit_select_all", "viewer_text_selection", "viewer_text_selection_locked", "viewer_text_select_anchor",

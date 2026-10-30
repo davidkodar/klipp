@@ -1,5 +1,6 @@
 pub mod ai_models;
 pub mod audio_mixer;
+pub mod aux_routing;
 pub mod audio_plugins;
 pub mod frame_glide_tool;
 pub mod selects_strip;

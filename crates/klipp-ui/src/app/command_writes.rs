@@ -409,6 +409,7 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::SetTrackOpacity { .. }
         | AppCommand::SetTrackVisibility { .. }
         | AppCommand::SetTrackVolume { .. }
+        | AppCommand::RoutingChanged
         | AppCommand::SetTrackMute { .. }
         | AppCommand::SetTrackSolo { .. }
         | AppCommand::SetTrackPan { .. }

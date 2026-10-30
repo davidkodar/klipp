@@ -70,6 +70,8 @@ pub(crate) fn event_writes(event: &AppEvent) -> bool {
         | AppEvent::AudioConformStarted { .. }
         | AppEvent::AudioConformFailed { .. }
         | AppEvent::TrackPeakLevels { .. }
+        | AppEvent::BusPeakLevels { .. }
+        | AppEvent::BusesHeldAtCap(..)
         | AppEvent::MasterPeakLevels { .. }
         | AppEvent::LufsReadings { .. }
         | AppEvent::DeliveryLoudness { .. }

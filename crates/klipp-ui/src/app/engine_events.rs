@@ -459,6 +459,17 @@ impl KlippApp {
                     *dl = dl.max(left);
                     *dr = dr.max(right);
                 }
+                AppEvent::BusPeakLevels { bus_index, left, right } => {
+                    if self.state.bus_peak_levels.len() <= bus_index {
+                        self.state.bus_peak_levels.resize(bus_index + 1, (0.0, 0.0));
+                    }
+                    let (l, r) = &mut self.state.bus_peak_levels[bus_index];
+                    *l = l.max(left);
+                    *r = r.max(right);
+                }
+                AppEvent::BusesHeldAtCap(held) => {
+                    self.state.buses_held_at_cap = held;
+                }
                 AppEvent::MasterPeakLevels { left, right } => {
                     self.state.master_peak_left = self.state.master_peak_left.max(left);
                     self.state.master_peak_right = self.state.master_peak_right.max(right);

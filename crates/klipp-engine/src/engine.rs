@@ -1545,6 +1545,8 @@ pub struct PlaybackEngine {
     /// automation (#2306), by sequence index: one no longer automated gets
     /// its controls as set back.
     automated_tracks: std::sync::Mutex<Vec<bool>>,
+    /// Which buses were last said to be held at the cap (#2861).
+    buses_held_sent: std::sync::Mutex<Vec<bool>>,
     /// The track controls the user is moving or a pass is recording
     /// (#2306), by sequence index: played at this value, not from their
     /// keys, so what is heard is what is written.
@@ -2756,6 +2758,7 @@ impl PlaybackEngine {
             current_track_index: 0,
             contiguous_audio: std::sync::atomic::AtomicBool::new(false),
             automated_tracks: std::sync::Mutex::new(Vec::new()),
+            buses_held_sent: std::sync::Mutex::new(Vec::new()),
             automation_override: Default::default(),
             fps: Fps::film_24(),
             playhead: RationalTime::from_frames(0, 24),
@@ -3348,6 +3351,11 @@ impl PlaybackEngine {
                         });
                         master_l = master_l.max(track.peak_left);
                         master_r = master_r.max(track.peak_right);
+                    }
+                    for (i, bus) in mixer.buses.iter().enumerate() {
+                        let _ = self.event_tx.send(AppEvent::BusPeakLevels { bus_index: i, left: bus.peak_left, right: bus.peak_right });
+                        master_l = master_l.max(bus.peak_left);
+                        master_r = master_r.max(bus.peak_right);
                     }
                     let _ = self.event_tx.send(AppEvent::MasterPeakLevels {
                         left: master_l,
@@ -4893,6 +4901,15 @@ impl PlaybackEngine {
         // The delay lines to the routing: a bus's effects or a send
         // changed may change how long each way is held back.
         m.refresh_pdc();
+        // A way through the buses longer than is made up for is said, so
+        // the mixer can show it, when that changes.
+        let held = m.buses_held_at_cap();
+        if let Ok(mut sent) = self.buses_held_sent.lock() {
+            if *sent != held {
+                let _ = self.event_tx.send(AppEvent::BusesHeldAtCap(held.clone()));
+                *sent = held;
+            }
+        }
     }
 
     /// Each track's mute and solo as the sequence has them, onto its

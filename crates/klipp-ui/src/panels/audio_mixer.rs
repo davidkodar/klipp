@@ -28,13 +28,15 @@ const READOUT_GAP: f32 = 8.0;
 const STRIP_BOTTOM_PAD: f32 = 14.0;
 /// A track strip's height less its fader: mode, name, pan, readout,
 /// mute and solo.
-const STRIP_FIXED_H: f32 = 52.0 + READOUT_GAP + 16.0 + 16.0 + STRIP_BOTTOM_PAD;
+const STRIP_FIXED_H: f32 = 52.0 + READOUT_GAP + 16.0 + 16.0 + SENDS_ROW_H + STRIP_BOTTOM_PAD;
+/// The row under a strip's mute and solo that opens its sends (#2861).
+const SENDS_ROW_H: f32 = 20.0;
 /// The master strip's height less its fader: label, meter scale,
 /// four readout rows and the reset button.
 const MASTER_FIXED_H: f32 = 40.0 + READOUT_GAP + 43.0 + 14.0 + STRIP_BOTTOM_PAD;
 /// The shortest strip: below it the panel scrolls rather than hide a
 /// strip's mute and solo (#2693).
-pub(crate) const STRIP_MIN_H: f32 = FADER_MIN_H + MASTER_FIXED_H;
+pub(crate) const STRIP_MIN_H: f32 = FADER_MIN_H + if STRIP_FIXED_H > MASTER_FIXED_H { STRIP_FIXED_H } else { MASTER_FIXED_H };
 /// Room under the strips for the horizontal scroll bar.
 const SCROLLBAR_ROOM: f32 = 8.0;
 /// The mixer header's height.
@@ -129,6 +131,12 @@ fn lufs_text_color(lufs: f32, target: f32, theme: &KlippTheme) -> egui::Color32 
 // ═══════════════════════════════════════════════════════════════════
 // Peak meter bar
 // ═══════════════════════════════════════════════════════════════════
+
+/// A bus's left and right meters, side by side from `x` (#2861).
+pub(crate) fn draw_bus_meters(painter: &egui::Painter, x: f32, top: f32, bottom: f32, left: f32, right: f32, theme: &KlippTheme) {
+    draw_peak_bar(painter, x, top, bottom, PEAK_BAR_W, left, theme);
+    draw_peak_bar(painter, x + PEAK_BAR_W + 1.0, top, bottom, PEAK_BAR_W, right, theme);
+}
 
 fn draw_peak_bar(
     painter: &egui::Painter,
@@ -349,8 +357,9 @@ fn fader_strip(
     automation: &StripAutomation,
     touches: &mut Vec<(klipp_core::automation::TrackParam, bool)>,
     lives: &mut Vec<(klipp_core::automation::TrackParam, f32)>,
+    sends: usize,
     cmds: &mut Vec<AppCommand>,
-) {
+) -> egui::Response {
     use klipp_core::automation::{AutomationMode, TrackParam};
     // What the controls show: as moved, or the keys' values when played.
     let shown_pan = automation.shown_pan.unwrap_or(*pan);
@@ -638,6 +647,19 @@ fn fader_strip(
         *solo = !*solo;
         cmds.push(AppCommand::SetTrackSolo { track_index, solo: *solo });
     }
+    y += btn_size.y + 4.0;
+
+    // -- Sends (#2861): opens the track's sends to the aux buses --
+    let sends_rect = egui::Rect::from_min_size(egui::pos2(inner_left, y), egui::vec2(inner_w, SENDS_ROW_H - 4.0));
+    let sends_resp = ui.allocate_rect(sends_rect, egui::Sense::click())
+        .on_hover_text("This track's sends to the aux buses: some of its sound into a bus, for one reverb many tracks share");
+    let sends_bg = if sends_resp.hovered() { theme.bg_raised } else { theme.bg_deep };
+    painter.rect_filled(sends_rect, 2.0, sends_bg);
+    painter.rect_stroke(sends_rect, 2.0, egui::Stroke::new(1.0_f32, theme.border));
+    let label = if sends == 0 { "Sends".to_string() } else { format!("Sends {sends}") };
+    let colour = if sends == 0 { theme.text_dim } else { theme.accent };
+    painter.text(sends_rect.center(), egui::Align2::CENTER_CENTER, label, egui::FontId::proportional(9.0), colour);
+    sends_resp
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -997,8 +1019,9 @@ pub fn show(
                                     // the row's cursor inside it, and the
                                     // next strip drawn over its right side
                                     // (#2699).
+                                    let sends = state.sequence().tracks.get(i).map_or(0, |t| t.sends.len());
                                     ui.allocate_ui_with_layout(egui::vec2(STRIP_W, strip_h), egui::Layout::top_down(egui::Align::Min), |ui| {
-                                        fader_strip(
+                                        let sends_button = fader_strip(
                                             ui, theme, strip_h, i, name, track_id,
                                             vol, pan, muted, solo,
                                             pl, pr,
@@ -1006,14 +1029,23 @@ pub fn show(
                                             &strip_automation[i],
                                             &mut strip_touches,
                                             &mut strip_lives,
+                                            sends,
                                             &mut cmds,
                                         );
+                                        super::aux_routing::sends_popup(ui, theme, state, &mut cmds, track_id, &sends_button);
                                     });
                                     touches.extend(strip_touches.into_iter().map(|(param, down)| (i, param, down)));
                                     lives.extend(strip_lives.into_iter().map(|(param, v)| (i, track_id, param, v)));
                                     // Gap between strips
                                     ui.add_space(4.0);
                                 }
+                                // The aux buses (#2861), after the tracks.
+                                ui.add_space(8.0);
+                                for b in 0..state.sequence().buses.len() {
+                                    super::aux_routing::bus_strip(ui, theme, state, &mut cmds, b, STRIP_W, strip_h);
+                                    ui.add_space(4.0);
+                                }
+                                ui.vertical(|ui| super::aux_routing::add_bus_button(ui, theme, state, &mut cmds));
                             });
                         });
 
@@ -1268,6 +1300,44 @@ mod tests {
             mixer_frame(&ctx, &mut state, panel_h, Some((at, true)));
             let (_, cmds) = mixer_frame(&ctx, &mut state, panel_h, Some((at, false)));
             assert!(cmds.iter().any(|c| matches!(c, AppCommand::SetTrackMute { muted: true, .. })), "{panel_h} px: the mute is clicked: {cmds:?}");
+        }
+    }
+
+    /// #2861: every track strip shows its Sends whole at the panel's
+    /// heights; "+ Bus" adds a bus, one undo step, whose strip then shows
+    /// its name, level and mute; a click on a strip's Sends opens them.
+    #[test]
+    fn buses_are_added_and_a_tracks_sends_open_from_its_strip() {
+        for panel_h in [220.0, MIXER_MIN_H] {
+            let ctx = egui::Context::default();
+            let mut state = AppState::default();
+            let seq = &state.sequences[state.active_sequence_idx];
+            let tracks = seq.tracks.iter().filter(|t| is_heard(seq, t, &state.media_pool)).count();
+            mixer_frame(&ctx, &mut state, panel_h, None);
+            let (shapes, _) = mixer_frame(&ctx, &mut state, panel_h, None);
+            let sends = shown_whole(&shapes, "Sends");
+            assert_eq!(sends.len(), tracks, "{panel_h} px: every strip's sends are seen");
+            let levels = shown_whole(&shapes, "+0.0 dB").len();
+            let add = shown_whole(&shapes, "+ Bus");
+            assert_eq!(add.len(), 1, "{panel_h} px");
+
+            let at = add[0].center();
+            mixer_frame(&ctx, &mut state, panel_h, Some((at, true)));
+            let (_, cmds) = mixer_frame(&ctx, &mut state, panel_h, Some((at, false)));
+            assert!(cmds.iter().any(|c| matches!(c, AppCommand::RoutingChanged)), "{cmds:?}");
+            assert_eq!(state.sequence().buses.len(), 1);
+            assert_eq!(state.active_history_mut().undo_label(), Some("Aux Routing"));
+            mixer_frame(&ctx, &mut state, panel_h, None);
+            let (shapes, _) = mixer_frame(&ctx, &mut state, panel_h, None);
+            assert_eq!(shown_whole(&shapes, "Bus 1").len(), 1, "{panel_h} px: the bus's strip");
+            assert_eq!(shown_whole(&shapes, "+0.0 dB").len(), levels + 1, "{panel_h} px: its level beside the tracks' and master's");
+            assert_eq!(shown_whole(&shapes, "M").len(), tracks + 1, "{panel_h} px: its mute beside the tracks'");
+
+            let at = sends[0].center();
+            mixer_frame(&ctx, &mut state, panel_h, Some((at, true)));
+            mixer_frame(&ctx, &mut state, panel_h, Some((at, false)));
+            let (shapes, _) = mixer_frame(&ctx, &mut state, panel_h, None);
+            assert_eq!(shown_whole(&shapes, "Send to").len(), 1, "{panel_h} px: the sends open");
         }
     }
 
