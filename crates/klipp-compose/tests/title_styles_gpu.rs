@@ -842,6 +842,27 @@ fn styled_panel(fitted: bool, mode: u8, width: u32, height: u32) -> Sequence {
     seq
 }
 
+/// #3160: the Terminal Card's panel: the keyed, glowing rectangle with
+/// its own motion blur, and a pulse (mode 1) that makes its drawing move,
+/// so the shutter draws it at each of its instants.
+fn blurred_styled_panel(fitted: bool, mode: u8, width: u32, height: u32) -> Sequence {
+    use klipp_timeline::{MotionBlur, TitleLoop, TitleObjectContent};
+    let mut seq=styled_panel(fitted,0,width,height);
+    let ClipKind::Title(title)=&mut seq.tracks[0].clips[0].kind else {unreachable!()};
+    for object in &mut title.objects {
+        if matches!(object.content,TitleObjectContent::Shape(_)) {
+            object.fx_mut().motion_blur=Some(MotionBlur { enabled: true, shutter_angle: 180.0, shutter_angle_keyframes: vec![], samples: 8 });
+            if mode==1 { object.fx_mut().loops=vec![TitleLoop::Pulse { rate_hz: 0.55, min_opacity: 0.94 }]; }
+        }
+    }
+    seq
+}
+
+#[test]
+fn a_blurred_shapes_panel_is_drawn_on_the_gpu_as_on_the_cpu() {
+    check_rectangle_motion_samples(blurred_styled_panel,2,&[0.0,0.3,0.7,1.0,2.2]);
+}
+
 #[test]
 fn shape_stacks_are_drawn_on_the_gpu_as_on_the_cpu() {
     check_rectangle_motion_samples(styled_panel,2,&[0.0,0.3,0.7,1.0,2.2]);
