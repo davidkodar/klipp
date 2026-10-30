@@ -2875,66 +2875,64 @@ impl Renderer {
                     }
                 }
             }
-            ClipKind::Title(td) if title_motion_blur(c).is_some() && crate::title_shutter::translates_only(td) && shutter.is_some() => {
-                // Its layers only move by their keys: each drawn once, at the
-                // frame's time, and placed at each instant by its offset
-                // (#3160), as `motion_blurred` does on the CPU.
+            ClipKind::Title(td) if title_motion_blur(c).is_some() && title_raster_moves(td).is_some() && shutter.is_some() && self.title_shutter_plan(c, td, clip_time, width, height).is_some() => {
+                // Its layers only move by their keys or fade at the shutter's
+                // instants: each drawn once, at the frame's time, and laid at
+                // each instant at its offset and alpha (#3160, #3170), as
+                // `motion_blurred` does on the CPU.
                 let total = (c.timeline_out - c.timeline_in).to_secs_f64() as f32;
                 let times: Vec<f64> = self.title_shutter.get(&c.id).map(|s| s.iter().map(|&(_, t)| t).collect()).unwrap_or_default();
                 let placements = shutter.as_deref().unwrap_or_default();
                 if times.len() != placements.len() || has_active_effects(&fx) || !c.grade_is_identity() {
                     return Err("title motion blur");
                 }
+                let layers = self.title_shutter_plan(c, td, clip_time, width, height).ok_or("title motion blur")?;
                 let backing = matches!(td.background, klipp_timeline::TitleBackground::Color { .. }).then(|| td.background.clone());
-                let shown: Vec<&klipp_timeline::TitleObject> = td.objects.iter().filter(|o| o.visible).collect();
                 let shifted = self.executor.gpu_pipeline_or_init().and_then(|g| g.stack_title_kept_slot(0)).ok_or("title motion blur")?;
-                let mut kept = Vec::with_capacity(shown.len());
-                for (k, object) in shown.iter().enumerate() {
-                    let layer = self.executor.gpu_pipeline_or_init().and_then(|g| g.stack_title_kept_slot(k + 1)).ok_or("title motion blur")?;
-                    let opacity = object.evaluated_opacity(clip_time).clamp(0.0, 1.0);
-                    let mut single = td.clone();
-                    single.objects = vec![(*object).clone()];
-                    single.background = if matches!(object.content, klipp_timeline::TitleObjectContent::TextBox(_)) { backing.clone().unwrap_or_default() } else { klipp_timeline::TitleBackground::None };
-                    single.objects[0].opacity = 1.0;
-                    single.objects[0].opacity_keyframes.clear();
-                    let (_, soft) = self.place_title_source_in_scene(&single, layer, width, height, clip_time, total, td, Some(false)).ok_or("title motion blur")?;
-                    let gpu = self.executor.gpu_pipeline_or_init().ok_or("title motion blur")?;
-                    let plain = matches!(object.content, klipp_timeline::TitleObjectContent::Shape(_)) && object.fx().is_default();
-                    if !gpu.stack_title_source_effects(layer, &soft)
-                        || (plain && (opacity - 1.0).abs() >= 0.001 && !gpu.stack_title_precision(layer, true))
-                        || !gpu.stack_title_alpha(layer, [0.0; 4], opacity)
-                    {
+                let mut kept = Vec::with_capacity(layers.len());
+                for (k, layer) in layers.iter().enumerate() {
+                    let at = self.executor.gpu_pipeline_or_init().and_then(|g| g.stack_title_kept_slot(k + 1)).ok_or("title motion blur")?;
+                    let mut single = layer.single.clone();
+                    if matches!(single.objects[0].content, klipp_timeline::TitleObjectContent::TextBox(_)) {
+                        single.background = backing.clone().unwrap_or_default();
+                    }
+                    let (_, soft) = self.place_title_source_in_scene(&single, at, width, height, clip_time, total, td, Some(false)).ok_or("title motion blur")?;
+                    if !self.executor.gpu_pipeline_or_init().is_some_and(|g| g.stack_title_source_effects(at, &soft)) {
                         return Err("title motion blur");
                     }
-                    kept.push(layer);
+                    kept.push(at);
                 }
-                // Each run of still layers laid once, as one.
-                let groups = crate::title_shutter::groups(td);
-                let mut laid = Vec::with_capacity(groups.len());
-                for (g, (run, moves)) in groups.iter().enumerate() {
-                    if run.len() == 1 {
-                        laid.push((kept[run[0]], run[0], *moves));
+                // Each run of layers laid the same at every instant laid once,
+                // as one, at its alpha.
+                let runs = crate::title_shutter::runs(&layers);
+                let mut laid = Vec::with_capacity(runs.len());
+                for (g, run) in runs.iter().enumerate() {
+                    let first = &layers[run[0]];
+                    if run.len() == 1 || !first.holds() {
+                        laid.push((kept[run[0]], Some(run[0])));
                         continue;
                     }
                     let gpu = self.executor.gpu_pipeline_or_init().ok_or("title motion blur")?;
                     let together = gpu.stack_title_kept_slot(kept.len() + 1 + g).ok_or("title motion blur")?;
-                    if !gpu.stack_layer_copy(kept[run[0]], together) || !run[1..].iter().all(|&i| gpu.stack_title_over(kept[i], together, 1.0, klipp_core::BlendMode::Normal)) {
+                    if !run.iter().enumerate().all(|(n, &i)| gpu.stack_title_lay_encoded(kept[i], together, layers[i].alphas[0], n == 0)) || !gpu.stack_title_laid_to_working(together) {
                         return Err("title motion blur");
                     }
-                    laid.push((together, run[0], false));
+                    laid.push((together, None));
                 }
-                for (k, (&t, placement)) in times.iter().zip(placements).enumerate() {
-                    let moved = crate::title_shutter::offsets(td, clip_time, t, width, height);
+                for (k, placement) in placements.iter().enumerate() {
                     let gpu = self.executor.gpu_pipeline_or_init().ok_or("title motion blur")?;
-                    for (g, &(layer, first, moves)) in laid.iter().enumerate() {
-                        let by = moved[first];
-                        let from = if !moves || by.iter().all(|v| v.abs() < 1e-4) { layer } else if gpu.stack_title_shift(layer, shifted, by) { shifted } else { return Err("title motion blur") };
-                        let ok = if g == 0 { gpu.stack_layer_copy(from, slot) } else { gpu.stack_title_over(from, slot, 1.0, klipp_core::BlendMode::Normal) };
-                        if !ok {
+                    // Laid in encoded colour, taken to the working space once.
+                    for (n, &(from, one)) in laid.iter().enumerate() {
+                        let (by, alpha) = one.map_or(([0.0; 2], 1.0), |i| (layers[i].offsets[k], layers[i].alphas[k]));
+                        let from = if by.iter().all(|v| v.abs() < 1e-4) { from } else if gpu.stack_title_shift(from, shifted, by) { shifted } else { return Err("title motion blur") };
+                        if !gpu.stack_title_lay_encoded(from, slot, alpha, n == 0) {
                             return Err("title motion blur");
                         }
                     }
-                    if !gpu.stack_shutter_add(slot, placement, k == 0) {
+                    if laid.is_empty() && !gpu.stack_layer_clear(slot) {
+                        return Err("title motion blur");
+                    }
+                    if !gpu.stack_title_laid_to_working(slot) || !gpu.stack_shutter_add(slot, placement, k == 0) {
                         return Err("title motion blur");
                     }
                 }
@@ -5117,59 +5115,61 @@ impl Renderer {
         self.title_pixels_from(clip, linear, t, fps, width, height)
     }
 
-    /// A title's layers drawn once at `at`, each alone, in linear authored
-    /// light, straight: what [`crate::title_shutter`] places at each of the
-    /// shutter's instants (#3160).
-    fn title_layers_at(&mut self, clip: &Clip, td: &klipp_timeline::TitleData, at: f64, width: u32, height: u32) -> Vec<Vec<f32>> {
+    /// How a blurred title's layers are laid at this frame's shutter
+    /// instants, when they only move by their keys or fade there
+    /// ([`crate::title_shutter::plan`]).
+    fn title_shutter_plan(&self, clip: &Clip, td: &klipp_timeline::TitleData, at: f64, width: u32, height: u32) -> Option<Vec<crate::title_shutter::Layer>> {
+        let times: Vec<f64> = self.title_shutter.get(&clip.id)?.iter().map(|&(_, t)| t).collect();
+        let total = (clip.timeline_out - clip.timeline_in).to_secs_f64() as f32;
+        crate::title_shutter::plan(td, at, &times, total, width, height)
+    }
+
+    /// The planned layers drawn once at `at`, each alone, in linear authored
+    /// light, straight, laid in their runs: each run that holds laid once,
+    /// as one, at its alpha; with the layer each other run is.
+    fn title_runs_at(&mut self, clip: &Clip, td: &klipp_timeline::TitleData, layers: &[crate::title_shutter::Layer], at: f64, width: u32, height: u32) -> Vec<(Vec<f32>, Option<usize>)> {
         residency::record("title.cpu_composition", "Title raster/placement and linear conversion on CPU", Work::Fallback);
         let total = (clip.timeline_out - clip.timeline_in).to_secs_f64() as f32;
         let backing = matches!(td.background, klipp_timeline::TitleBackground::Color { .. }).then(|| td.background.clone());
-        td.objects.iter().filter(|o| o.visible).map(|object| {
-            let mut single = td.clone();
-            single.objects = vec![object.clone()];
-            single.background = if matches!(object.content, klipp_timeline::TitleObjectContent::TextBox(_)) { backing.clone().unwrap_or_default() } else { klipp_timeline::TitleBackground::None };
+        let mut drawn: Vec<Vec<f32>> = layers.iter().map(|layer| {
+            let mut single = layer.single.clone();
+            if matches!(single.objects[0].content, klipp_timeline::TitleObjectContent::TextBox(_)) {
+                single.background = backing.clone().unwrap_or_default();
+            }
             let mut adapter = self.gpu.as_mut().map(crate::synth::GpuAlphaMaskAdapter);
             let gpu = adapter.as_mut().map(|a| a as &mut dyn klipp_title::AlphaMaskProcessor);
             srgb_stack_to_linear(&self.titles.render_with_window_stack(&single, width, height, gpu, at as f32, Some(total)))
+        }).collect();
+        crate::title_shutter::runs(layers).into_iter().map(|run| {
+            if run.len() == 1 || !layers[run[0]].holds() {
+                return (std::mem::take(&mut drawn[run[0]]), Some(run[0]));
+            }
+            let mut laid = vec![0.0f32; (width as usize) * (height as usize) * 4];
+            for &i in &run {
+                crate::title_shutter::over_encoded(&mut laid, &drawn[i], layers[i].alphas[0]);
+            }
+            (crate::title_shutter::decoded(&laid), None)
         }).collect()
     }
 
-    /// One shutter instant of a title whose layers only translate: its
-    /// `layers` placed by their offsets at `t` from `at` and laid in order,
-    /// then graded as [`Self::title_pixels_at`] grades a sample.
+    /// Shutter instant `k` of a planned title: its runs laid in order, each
+    /// layer at its offset and alpha there, then graded as
+    /// [`Self::title_pixels_at`] grades a sample.
     #[allow(clippy::too_many_arguments)]
-    fn title_shifted_at(&mut self, clip: &Clip, td: &klipp_timeline::TitleData, layers: &[(Vec<f32>, usize, bool)], at: f64, t: f64, fps: f64, width: u32, height: u32) -> Vec<f32> {
-        let moved = crate::title_shutter::offsets(td, at, t, width, height);
+    fn title_shifted_at(&mut self, clip: &Clip, layers: &[crate::title_shutter::Layer], runs: &[(Vec<f32>, Option<usize>)], k: usize, t: f64, fps: f64, width: u32, height: u32) -> Vec<f32> {
         let mut laid = vec![0.0f32; (width as usize) * (height as usize) * 4];
-        for (layer, first, moves) in layers {
-            let by = moved[*first];
-            if !moves || by.iter().all(|v| v.abs() < 1e-4) {
-                crate::title_shutter::over_encoded(&mut laid, layer);
+        for (picture, one) in runs {
+            let (by, alpha) = one.map_or(([0.0; 2], 1.0), |i| (layers[i].offsets[k], layers[i].alphas[k]));
+            if by.iter().all(|v| v.abs() < 1e-4) {
+                crate::title_shutter::over_encoded(&mut laid, picture, alpha);
             } else {
-                crate::title_shutter::over_encoded(&mut laid, &crate::title_shutter::shift(layer, width, height, by));
+                crate::title_shutter::over_encoded(&mut laid, &crate::title_shutter::shift(picture, width, height, by), alpha);
             }
         }
         laid.chunks_exact_mut(4).for_each(|p| p.iter_mut().for_each(|c| *c *= 255.0));
         let mut linear = srgb_stack_to_linear(&laid);
         self.authored_to_working(&mut linear);
         self.title_pixels_from(clip, linear, t, fps, width, height)
-    }
-
-    /// [`Self::title_layers_at`] in the runs [`crate::title_shutter::groups`]
-    /// lays: each still run laid once, as one layer; with the index of its
-    /// first layer and whether it moves.
-    fn title_runs_at(&mut self, clip: &Clip, td: &klipp_timeline::TitleData, at: f64, width: u32, height: u32) -> Vec<(Vec<f32>, usize, bool)> {
-        let mut layers = self.title_layers_at(clip, td, at, width, height);
-        crate::title_shutter::groups(td).into_iter().map(|(run, moves)| {
-            if run.len() == 1 {
-                return (std::mem::take(&mut layers[run[0]]), run[0], moves);
-            }
-            let mut laid = vec![0.0f32; (width as usize) * (height as usize) * 4];
-            for &i in &run {
-                crate::title_shutter::over_encoded(&mut laid, &layers[i]);
-            }
-            (crate::title_shutter::decoded(&laid), run[0], false)
-        }).collect()
     }
 
     /// A title sample's grade and plugins, on its linear picture.
@@ -6302,15 +6302,19 @@ impl Renderer {
         };
         // Layers that only move by their keys: each drawn once, placed at
         // each instant by its offset, as the GPU stack places them (#3160).
-        let layers = redrawn.filter(|td| crate::title_shutter::translates_only(td)).map(|td| self.title_runs_at(clip, td, clip_time, width, height));
+        let laid_plan = redrawn.and_then(|td| self.title_shutter_plan(clip, td, clip_time, width, height));
+        let runs = match (redrawn, &laid_plan) {
+            (Some(td), Some(layers)) => Some(self.title_runs_at(clip, td, layers, clip_time, width, height)),
+            _ => None,
+        };
         let mut acc = vec![0.0f32; pixels.len()];
-        for &(xf, t) in samples {
+        for (k, &(xf, t)) in samples.iter().enumerate() {
             let picture = match (&still, redrawn) {
                 (Some(base), _) => base.clone(),
                 (None, Some(td)) => {
-                    let drawn = match &layers {
-                        Some(layers) => self.title_shifted_at(clip, td, layers, clip_time, t, fps, width, height),
-                        None => self.title_pixels_at(clip, td, t, fps, width, height),
+                    let drawn = match (&laid_plan, &runs) {
+                        (Some(layers), Some(runs)) => self.title_shifted_at(clip, layers, runs, k, t, fps, width, height),
+                        _ => self.title_pixels_at(clip, td, t, fps, width, height),
                     };
                     self.effects_by(plan, clip, before, &before_blends, drawn, t, fps, width, height)
                 }
