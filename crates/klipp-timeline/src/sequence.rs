@@ -1608,7 +1608,27 @@ impl TrackPaste {
     }
 }
 
+/// A track's mixer controls, as the mixer and the track header set them
+/// (#3165): one undo step changes them, a fader drag one step whole.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct TrackMix {
+    pub volume: f32,
+    pub pan: f32,
+    pub muted: bool,
+    pub solo: bool,
+}
+
 impl Track {
+    /// Its volume, pan, mute and solo.
+    pub fn mix(&self) -> TrackMix {
+        TrackMix { volume: self.volume, pan: self.pan, muted: self.muted, solo: self.solo }
+    }
+
+    /// Put `mix` on the track.
+    pub fn set_mix(&mut self, mix: TrackMix) {
+        (self.volume, self.pan, self.muted, self.solo) = (mix.volume, mix.pan, mix.muted, mix.solo);
+    }
+
     /// The track's levels and own effects, as Copy Track Attributes takes them.
     pub fn settings(&self) -> TrackSettings {
         TrackSettings { opacity: self.opacity, volume: self.volume, pan: self.pan, effects: self.effects.clone() }

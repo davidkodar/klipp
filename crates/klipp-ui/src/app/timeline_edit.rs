@@ -3,6 +3,29 @@
 
 use super::*;
 
+impl crate::state::AppState {
+    /// Tracks' volume, pan, mute or solo changed by `change`, one undo step
+    /// named `label` (#3165), or folded into an open batch: a fader drag's
+    /// steps are one. A change that changes nothing is no step.
+    pub fn set_track_mix(&mut self, tracks: impl IntoIterator<Item = usize>, label: &str, change: impl Fn(usize, &mut klipp_timeline::Track)) {
+        let seq = &mut self.sequences[self.active_sequence_idx];
+        let mut changes = Vec::new();
+        for i in tracks {
+            let Some(t) = seq.tracks.get_mut(i) else { continue };
+            let old = t.mix();
+            change(i, t);
+            if t.mix() != old {
+                changes.push((t.id, old, t.mix()));
+            }
+        }
+        if !changes.is_empty() {
+            self.push_edits_as_one(&[EditCommand::SetTrackMix { changes }], label);
+            self.dirty = true;
+        }
+    }
+
+}
+
 impl KlippApp {
     pub(super) fn handle_timeline_commands(&mut self, cmd: &AppCommand, needs_refresh: &mut bool) -> bool {
         if self.handle_timeline_track_creation(cmd, needs_refresh) { return true; }
@@ -29,42 +52,29 @@ impl KlippApp {
                     true
                 }
                 AppCommand::SetTrackVolume { track_index, volume } => {
-                    if let Some(track) = self.state.sequences[self.state.active_sequence_idx].tracks.get_mut(*track_index) {
-                        track.volume = volume.clamp(0.0, 2.0);
-                    }
+                    self.state.set_track_mix([*track_index], "Track Volume", |_, t| t.volume = volume.clamp(0.0, 2.0));
                     let _ = self.cmd_tx.send(cmd.clone());
                     true
                     // Fall through to forward to engine (updates AudioMixer)
                 }
                 AppCommand::SetTrackMute { track_index, muted } => {
-                    if let Some(track) = self.state.sequences[self.state.active_sequence_idx].tracks.get_mut(*track_index) {
-                        track.muted = *muted;
-                    }
+                    self.state.set_track_mix([*track_index], if *muted { "Mute Track" } else { "Unmute Track" }, |_, t| t.muted = *muted);
                     let _ = self.cmd_tx.send(cmd.clone());
                     true
                     // Fall through to forward to engine
                 }
                 AppCommand::SetTrackSolo { track_index, solo } => {
-                    if *solo {
-                        // Enable solo on this track, disable on all others
-                        let solo_idx = *track_index;
-                        for (i, track) in self.state.sequences[self.state.active_sequence_idx].tracks.iter_mut().enumerate() {
-                            track.solo = i == solo_idx;
-                        }
-                    } else {
-                        // Unsolo: clear solo on all tracks
-                        for track in self.state.sequences[self.state.active_sequence_idx].tracks.iter_mut() {
-                            track.solo = false;
-                        }
-                    }
+                    // One track soloed at a time; unsoloed, none is. The others'
+                    // solo turned off goes in the same undo step.
+                    let count = self.state.sequences[self.state.active_sequence_idx].tracks.len();
+                    let solo_idx = *track_index;
+                    self.state.set_track_mix(0..count, if *solo { "Solo Track" } else { "Unsolo Track" }, |i, t| t.solo = *solo && i == solo_idx);
                     let _ = self.cmd_tx.send(cmd.clone());
                     true
                     // Fall through to forward to engine
                 }
                 AppCommand::SetTrackPan { track_index, pan } => {
-                    if let Some(track) = self.state.sequences[self.state.active_sequence_idx].tracks.get_mut(*track_index) {
-                        track.pan = pan.clamp(-1.0, 1.0);
-                    }
+                    self.state.set_track_mix([*track_index], "Track Pan", |_, t| t.pan = pan.clamp(-1.0, 1.0));
                     let _ = self.cmd_tx.send(cmd.clone());
                     true
                     // Fall through to forward to engine
@@ -1662,5 +1672,62 @@ pub(super) fn pip_offsets_for_corner(
         "pip_bottom_left"  => (-offset_x,  offset_y),
         "pip_bottom_right" => ( offset_x,  offset_y),
         _ => (0.0, 0.0),
+    }
+}
+
+#[cfg(test)]
+mod track_mix_tests {
+    use crate::state::AppState;
+
+    fn view(state: &mut AppState) -> klipp_document::apply::DocumentView<'_> {
+        klipp_document::apply::DocumentView { sequences: &mut state.sequences, active: state.active_sequence_idx, media_pool: &mut state.media_pool, fps: &mut state.fps }
+    }
+
+    /// #3165: a track's volume set is one undo step that puts it back, and
+    /// redo sets it again; a fader drag's many moves are one step, from
+    /// where it began to where it ended; a solo turns the others' off in
+    /// the same step; a change that changes nothing is no step.
+    #[test]
+    fn a_tracks_volume_mute_and_solo_are_undo_steps() {
+        let mut state = AppState::default();
+        let a = state.sequence().tracks.len();
+        state.sequences[state.active_sequence_idx].tracks.push(klipp_timeline::Track::new("A2", klipp_timeline::TrackKind::Audio));
+        let steps = |s: &mut AppState| s.active_history_mut().undo_count();
+        let before = steps(&mut state);
+        state.set_track_mix([0], "Track Volume", |_, t| t.volume = 0.5);
+        assert_eq!(steps(&mut state), before + 1);
+        assert_eq!(state.active_history_mut().undo_label(), Some("Track Volume"));
+        state.set_track_mix([0], "Track Volume", |_, t| t.volume = 0.5);
+        assert_eq!(steps(&mut state), before + 1, "no change, no step");
+        let undone = state.active_history_mut().undo().unwrap();
+        view(&mut state).apply_inverse(&undone.command);
+        assert_eq!(state.sequence().tracks[0].volume, 1.0, "undone");
+        let redone = state.active_history_mut().redo().unwrap();
+        view(&mut state).apply_forward(&redone.command);
+        assert_eq!(state.sequence().tracks[0].volume, 0.5, "redone");
+
+        // A drag: begun, moved three times, ended.
+        let before = steps(&mut state);
+        state.active_history_mut().begin_batch();
+        for v in [0.6, 0.8, 1.2] {
+            state.set_track_mix([0], "Track Volume", |_, t| t.volume = v);
+        }
+        state.active_history_mut().end_batch_as("Track Volume");
+        assert_eq!(steps(&mut state), before + 1, "the drag is one step");
+        let undone = state.active_history_mut().undo().unwrap();
+        view(&mut state).apply_inverse(&undone.command);
+        assert_eq!(state.sequence().tracks[0].volume, 0.5, "back to where the drag began");
+
+        state.set_track_mix([a], "Solo Track", |_, t| t.solo = true);
+        let count = state.sequence().tracks.len();
+        state.set_track_mix(0..count, "Solo Track", |i, t| t.solo = i == 0);
+        assert!(state.sequence().tracks[0].solo && !state.sequence().tracks[a].solo);
+        let undone = state.active_history_mut().undo().unwrap();
+        view(&mut state).apply_inverse(&undone.command);
+        assert!(!state.sequence().tracks[0].solo && state.sequence().tracks[a].solo, "the other's solo back with it");
+        state.set_track_mix([0], "Mute Track", |_, t| t.muted = true);
+        let undone = state.active_history_mut().undo().unwrap();
+        view(&mut state).apply_inverse(&undone.command);
+        assert!(!state.sequence().tracks[0].muted);
     }
 }

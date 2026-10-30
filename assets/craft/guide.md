@@ -207,8 +207,11 @@ exist until the plan runs.
   kind; every track below moves up by one. Refused while it holds clips
   unless `with_clips`, which takes them too and unlinks anything on
   another track from them. One undo step puts it back.
-- `set_track {track, visible?, language?, locked?}`: a track's own
-  settings, one undo step. `visible` false hides its picture or captions
+- `set_track {track, visible?, language?, locked?, volume_db?, pan?, mute?, solo?}`: a track's own
+  settings, one undo step. `volume_db` (+6 at most, -60 or below
+  silence), `pan` (-1 left to 1 right), `mute` and `solo` are its mixer
+  controls, as its fader and buttons set them; a solo turns every other
+  track's off. `visible` false hides its picture or captions
   (its eye), true shows them; `language` is a BCP 47 tag (`de`, `pt-br`;
   empty for none) a subtitle export tags its file with; `locked` true
   keeps every edit off its clips, so an insert or a cut leaves a music

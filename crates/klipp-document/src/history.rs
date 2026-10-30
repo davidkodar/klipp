@@ -196,6 +196,9 @@ pub enum EditCommand {
     /// The sequence's aux buses and every track's sends, old and new
     /// (#2861): a bus taken out takes the sends to it in the same step.
     SetRouting { old: Box<klipp_timeline::routing::Routing>, new: Box<klipp_timeline::routing::Routing> },
+    /// Tracks' volume, pan, mute and solo, old and new for each (#3165): a
+    /// solo turns the others' off in the same step.
+    SetTrackMix { changes: Vec<(klipp_core::TrackId, klipp_timeline::TrackMix, klipp_timeline::TrackMix)> },
     /// The sequence's brief, replaced whole.
     SetBrief { old: Option<Box<klipp_timeline::Brief>>, new: Option<Box<klipp_timeline::Brief>> },
     /// The sequence's edit plan, replaced whole.
@@ -900,6 +903,7 @@ impl EditCommand {
             EditCommand::RemoveTrack { .. } => "Remove Track",
             EditCommand::SetTrackSettings { .. } => "Track Settings",
             EditCommand::SetRouting { .. } => "Aux Routing",
+            EditCommand::SetTrackMix { .. } => "Track Mix",
             EditCommand::SetBrief { .. } => "Set Brief",
             EditCommand::SetEditPlan { .. } => "Set Edit Plan",
             EditCommand::SetReviews { .. } => "Review Finding",
