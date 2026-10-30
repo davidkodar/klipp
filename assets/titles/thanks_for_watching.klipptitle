@@ -1,0 +1,247 @@
+{
+  "category": "Credits",
+  "data": {
+    "animation_type": "Static",
+    "background": "None",
+    "next_object_id": 2,
+    "objects": [
+      {
+        "content": {
+          "TextBox": {
+            "alignment": "Center",
+            "ass_style_name": null,
+            "baseline_shift": 0.0,
+            "case_transform": "None",
+            "char_animation": null,
+            "chromatic_aberration_px": 0.0,
+            "color": [
+              255,
+              255,
+              255,
+              255
+            ],
+            "columns": 1,
+            "drop_cap_scale": 0.0,
+            "extrusion": null,
+            "font_name": "Inter",
+            "font_size": 72.0,
+            "font_style": "Bold",
+            "glitch_intensity": 0.0,
+            "gradient": null,
+            "line_spacing": 1.0,
+            "outline_write_on": 1.0,
+            "pattern_fill": null,
+            "pattern_fill_enabled": true,
+            "strikethrough": false,
+            "style_runs": [],
+            "text": "Thanks for watching",
+            "text_direction": "Ltr",
+            "text_path": null,
+            "texture_fill": null,
+            "tracking": 0.0,
+            "underline": false,
+            "vertical_layout": false,
+            "write_on": 1.0
+          }
+        },
+        "fx": {
+          "motion": {
+            "enter": {
+              "amount": null,
+              "anchor": null,
+              "delay_secs": 0.0,
+              "distance": 0.3,
+              "duration_secs": 0.7,
+              "easing": "OutQuint",
+              "kind": "Rise",
+              "stagger": "Word",
+              "stagger_secs": 0.08
+            },
+            "exit": {
+              "amount": null,
+              "anchor": null,
+              "delay_secs": 0.0,
+              "distance": 0.6,
+              "duration_secs": 0.5,
+              "easing": "InCubic",
+              "kind": "Fade",
+              "stagger": "None",
+              "stagger_secs": 0.05
+            }
+          },
+          "shadows": [
+            {
+              "blur": 12.0,
+              "blur_keyframes": [],
+              "color": [
+                0,
+                0,
+                0,
+                120
+              ],
+              "enabled": true,
+              "offset_x": 0.0,
+              "offset_x_keyframes": [],
+              "offset_y": 3.0,
+              "offset_y_keyframes": []
+            }
+          ]
+        },
+        "id": 0,
+        "locked": false,
+        "name": "Text 1",
+        "opacity": 1.0,
+        "opacity_keyframes": [],
+        "transform": {
+          "anchor_norm": {
+            "x": 0.5,
+            "y": 0.5
+          },
+          "anchor_x_keyframes": [],
+          "anchor_y_keyframes": [],
+          "center": {
+            "x": 0.5,
+            "y": 0.46
+          },
+          "center_x_keyframes": [],
+          "center_y_keyframes": [],
+          "rotation": 0.0,
+          "rotation_keyframes": [],
+          "size": {
+            "x": 1.0,
+            "y": 1.0
+          },
+          "size_x_keyframes": [],
+          "size_y_keyframes": []
+        },
+        "visible": true
+      },
+      {
+        "content": {
+          "TextBox": {
+            "alignment": "Center",
+            "ass_style_name": null,
+            "baseline_shift": 0.0,
+            "case_transform": "None",
+            "char_animation": null,
+            "chromatic_aberration_px": 0.0,
+            "color": [
+              225,
+              225,
+              230,
+              255
+            ],
+            "columns": 1,
+            "drop_cap_scale": 0.0,
+            "extrusion": null,
+            "font_name": "Inter",
+            "font_size": 30.0,
+            "font_style": "Regular",
+            "glitch_intensity": 0.0,
+            "gradient": null,
+            "line_spacing": 1.0,
+            "outline_write_on": 1.0,
+            "pattern_fill": null,
+            "pattern_fill_enabled": true,
+            "strikethrough": false,
+            "style_runs": [],
+            "text": "[@yourhandle \u00b7 yoursite.com]",
+            "text_direction": "Ltr",
+            "text_path": null,
+            "texture_fill": null,
+            "tracking": 0.0,
+            "underline": false,
+            "vertical_layout": false,
+            "write_on": 1.0
+          }
+        },
+        "fx": {
+          "motion": {
+            "enter": {
+              "amount": null,
+              "anchor": null,
+              "delay_secs": 0.5,
+              "distance": 0.6,
+              "duration_secs": 0.6,
+              "easing": "OutCubic",
+              "kind": "Fade",
+              "stagger": "None",
+              "stagger_secs": 0.05
+            },
+            "exit": {
+              "amount": null,
+              "anchor": null,
+              "delay_secs": 0.0,
+              "distance": 0.6,
+              "duration_secs": 0.5,
+              "easing": "InCubic",
+              "kind": "Fade",
+              "stagger": "None",
+              "stagger_secs": 0.05
+            }
+          },
+          "shadows": [
+            {
+              "blur": 12.0,
+              "blur_keyframes": [],
+              "color": [
+                0,
+                0,
+                0,
+                120
+              ],
+              "enabled": true,
+              "offset_x": 0.0,
+              "offset_x_keyframes": [],
+              "offset_y": 3.0,
+              "offset_y_keyframes": []
+            }
+          ]
+        },
+        "id": 1,
+        "locked": false,
+        "name": "Text 2",
+        "opacity": 1.0,
+        "opacity_keyframes": [],
+        "transform": {
+          "anchor_norm": {
+            "x": 0.5,
+            "y": 0.5
+          },
+          "anchor_x_keyframes": [],
+          "anchor_y_keyframes": [],
+          "center": {
+            "x": 0.5,
+            "y": 0.56
+          },
+          "center_x_keyframes": [],
+          "center_y_keyframes": [],
+          "rotation": 0.0,
+          "rotation_keyframes": [],
+          "size": {
+            "x": 1.0,
+            "y": 1.0
+          },
+          "size_x_keyframes": [],
+          "size_y_keyframes": []
+        },
+        "visible": true
+      }
+    ]
+  },
+  "design": {
+    "anchor": [
+      0.5,
+      0.5
+    ],
+    "fields": [
+      "Title",
+      "Where to find you"
+    ],
+    "grow": true,
+    "preview": "Thanks for watching"
+  },
+  "format": 2,
+  "name": "Thanks for Watching",
+  "written_by": "built-in"
+}

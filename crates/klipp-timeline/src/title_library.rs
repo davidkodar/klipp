@@ -8,8 +8,8 @@
 //! and build one set.
 
 use crate::{
-    default_text_transform, Easing, FontStyle, Motion, MotionKind, ObjectTransform, ScrollDirection, Shape, ShapeKind,
-    StaggerUnit, TextAlignment, TitleAnimationType, TitleBackground, TitleData, TitleLoop, TitleMotion, TitleObjectContent,
+    default_text_transform, Easing, FontStyle, Motion, MotionKind, ObjectTransform, Shape, ShapeKind,
+    StaggerUnit, TextAlignment, TitleAnimationType, TitleBackground, TitleData, TitleMotion, TitleObjectContent,
     TitlePosition, TitleShadow,
 };
 
@@ -430,41 +430,6 @@ pub fn outlined(mut t: Text, width: f32) -> Text {
     t
 }
 
-// ── Credits ──
-fn cr_roll() -> TitleData {
-    let mut td = layers(vec![text_at(
-        lifted(spaced(face("Director\n[Name]\n\nProducer\n[Name]\n\nEditor\n[Name]", SANS, FontStyle::Regular, 44.0, WHITE, TextAlignment::Center), 1.2)),
-        0.5, 0.5, 0.5,
-    )]);
-    if let Some(o) = td.primary_object_mut() {
-        o.fx_mut().loops.push(TitleLoop::Scroll { direction: ScrollDirection::Up, speed_px_per_sec: 0.0, shape: Default::default() });
-    }
-    td
-}
-
-fn cr_end_card() -> TitleData {
-    layers(vec![text_at(
-        moved(lifted(upper(weight(face("The End", CLASSIC, FontStyle::Regular, 104.0, WHITE, TextAlignment::Center), 500), 16.0)),
-            TitleMotion::both(enter(MotionKind::Fade, 2.0, Easing::InOutCubic), fade_out(1.5))),
-        0.5, 0.5, 0.5,
-    )])
-}
-
-fn cr_cast() -> TitleData {
-    layers(vec![
-        text_at(
-            moved(lifted(upper(weight(face("[Role]", LABEL, FontStyle::Regular, 30.0, MUTED, TextAlignment::Center), 500), 6.0)),
-                TitleMotion::both(enter(MotionKind::Rise, 0.6, Easing::OutQuint).distance(0.4), fade_out(0.4))),
-            0.5, 0.43, 0.5,
-        ),
-        text_at(
-            moved(lifted(face("[Name]", HEADING, FontStyle::Regular, 84.0, WHITE, TextAlignment::Center)),
-                TitleMotion::both(enter(MotionKind::Rise, 0.6, Easing::OutQuint).distance(0.4).delay(0.12), fade_out(0.4))),
-            0.5, 0.525, 0.5,
-        ),
-    ])
-}
-
 // ── Social ──
 fn so_hook() -> TitleData {
     layers(vec![text_at(
@@ -528,66 +493,6 @@ fn ut_label() -> TitleData {
     ])
 }
 
-
-// ── More end cards and credits (#1724) ──
-fn cr_end_credits() -> TitleData {
-    let col = |text: &str, x: f32, anchor: f32, align: TextAlignment, colour: [u8; 4], style: FontStyle| text_at(
-        moved(lifted(face(text, if style == FontStyle::Bold { SANS } else { LABEL }, style, 32.0, colour, align)),
-            TitleMotion::both(enter(MotionKind::Fade, 0.8, Easing::OutCubic).delay(0.6).stagger(StaggerUnit::Line, 0.12), fade_out(0.6))),
-        x, 0.62, anchor,
-    );
-    let mut roles = col("Directed by\nProduced by\nEdited by\nMusic by", 0.485, 1.0, TextAlignment::Right, MUTED, FontStyle::Regular);
-    let mut names = col("[Name]\n[Name]\n[Name]\n[Name]", 0.515, 0.0, TextAlignment::Left, WHITE, FontStyle::Bold);
-    for l in [&mut roles, &mut names] {
-        l.1.size.x = 0.45;
-        if let TitleObjectContent::TextBox(tb) = &mut l.0 {
-            tb.line_spacing = 1.35;
-        }
-    }
-    layers(vec![
-        text_at(
-            moved(lifted(upper(weight(face("[Film title]", CLASSIC, FontStyle::Regular, 88.0, WHITE, TextAlignment::Center), 500), 12.0)),
-                TitleMotion::both(enter(MotionKind::Fade, 1.2, Easing::InOutCubic), fade_out(0.8))),
-            0.5, 0.30, 0.5,
-        ),
-        roles,
-        names,
-    ])
-}
-
-fn cr_thanks() -> TitleData {
-    layers(vec![
-        text_at(
-            moved(lifted(face("Thanks for watching", GRO, FontStyle::Bold, 72.0, WHITE, TextAlignment::Center)),
-                TitleMotion::both(enter(MotionKind::Rise, 0.7, Easing::OutQuint).distance(0.3).stagger(StaggerUnit::Word, 0.08), fade_out(0.5))),
-            0.5, 0.46, 0.5,
-        ),
-        text_at(
-            moved(lifted(face("[@yourhandle \u{00b7} yoursite.com]", GRO, FontStyle::Regular, 30.0, MUTED, TextAlignment::Center)),
-                TitleMotion::both(enter(MotionKind::Fade, 0.6, Easing::OutCubic).delay(0.5), fade_out(0.5))),
-            0.5, 0.56, 0.5,
-        ),
-    ])
-}
-
-fn cr_up_next() -> TitleData {
-    let mut td = layers(vec![
-        moving(rect(0.12, 0.70, 0.1, 0.05, ACCENT, 4.0),
-            TitleMotion::both(enter(MotionKind::SlideRight, 0.4, Easing::OutExpo).distance(0.3), fade_out(0.3))),
-        text_at(
-            moved(upper(face("Up next", GRO, FontStyle::Bold, 22.0, WHITE, TextAlignment::Left), 4.0),
-                TitleMotion::both(enter(MotionKind::Fade, 0.3, Easing::OutCubic).delay(0.15), fade_out(0.3))),
-            0.08, 0.70, 0.0,
-        ),
-        text_at(
-            moved(lifted(face("[Next video title]", GRO, FontStyle::Bold, 58.0, WHITE, TextAlignment::Left)),
-                TitleMotion::both(enter(MotionKind::MaskRise, 0.55, Easing::OutExpo).delay(0.25).stagger(StaggerUnit::Word, 0.06), fade_out(0.3))),
-            0.08, 0.79, 0.0,
-        ),
-    ]);
-    fit(&mut td, 0, 1, (16.0, 8.0));
-    td
-}
 
 // ── More social, made for any frame shape (#1724) ──
 fn so_bold_caption() -> TitleData {
@@ -712,7 +617,14 @@ const FILES: &[&str] = &[
     include_str!("../../../assets/titles/subtitle.klipptitle"),
     include_str!("../../../assets/titles/callout.klipptitle"),
     include_str!("../../../assets/titles/note.klipptitle"),
+    include_str!("../../../assets/titles/credits_roll.klipptitle"),
+    include_str!("../../../assets/titles/end_credits.klipptitle"),
+    include_str!("../../../assets/titles/end_card.klipptitle"),
+    include_str!("../../../assets/titles/cast.klipptitle"),
+    include_str!("../../../assets/titles/thanks_for_watching.klipptitle"),
+    include_str!("../../../assets/titles/up_next.klipptitle"),
 ];
+
 
 
 
@@ -735,12 +647,6 @@ fn from_files() -> impl Iterator<Item = TitleTemplate> {
 
 
 const CODED: &[Coded] = &[
-    Coded { name: "Credits Roll", category: "Credits", preview_text: "Director", create_data: cr_roll, fields: f(&["Credits"], None, MID) },
-    Coded { name: "End Credits", category: "Credits", preview_text: "[Film title]", create_data: cr_end_credits, fields: f(&["Film title", "Roles", "Names"], None, MID) },
-    Coded { name: "End Card", category: "Credits", preview_text: "The End", create_data: cr_end_card, fields: f(&["Title"], None, MID) },
-    Coded { name: "Cast", category: "Credits", preview_text: "[Name]", create_data: cr_cast, fields: f(&["Role", "Name"], None, MID) },
-    Coded { name: "Thanks for Watching", category: "Credits", preview_text: "Thanks for watching", create_data: cr_thanks, fields: f(&["Title", "Where to find you"], None, MID) },
-    Coded { name: "Up Next", category: "Credits", preview_text: "[Next video title]", create_data: cr_up_next, fields: f(&["Label", "Next title"], Some(0), (0.08, 0.75)) },
     Coded { name: "Hook", category: "Social", preview_text: "[HOOK LINE]", create_data: so_hook, fields: f(&["Hook"], None, (0.5, 0.45)) },
     Coded { name: "Bold Caption", category: "Social", preview_text: "[Say it big]", create_data: so_bold_caption, fields: f(&["Caption"], None, (0.5, 0.64)) },
     Coded { name: "Highlight", category: "Social", preview_text: "[Key words]", create_data: so_highlight, fields: f(&["Words"], Some(0), (0.5, 0.7)) },
