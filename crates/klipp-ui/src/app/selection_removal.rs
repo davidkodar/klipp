@@ -197,6 +197,35 @@ mod tests {
         assert!(matches!(&cmds[..], [klipp_core::AppCommand::RemoveClip { clip_id }] if *clip_id == ids[1]), "{cmds:?}");
     }
 
+    /// Ripple off governs trims, not Delete and Lift: on a primary of
+    /// 0–4 s, a gap clip 4–14 s and 14–18 s, the gap selected and deleted
+    /// closes (the last clip moves to 4 s), and the first clip lifted
+    /// leaves its gap (the last clip stays at 14 s).
+    #[test]
+    fn with_ripple_off_delete_closes_a_gap_and_lift_leaves_one() {
+        let mut state = AppState { magnetic_timeline_enabled: true, ripple_enabled: false, ..Default::default() };
+        let p = state.sequence().tracks.iter().position(|t| t.magnetic_role == klipp_timeline::TrackRole::Primary).unwrap();
+        let c = |a: f64, b: f64| Clip::media(klipp_core::MediaId::new(), t(a), t(b), t(0.0), t(b - a));
+        let (first, gap, last) = (c(0.0, 4.0), Clip::gap(t(4.0), t(14.0)), c(14.0, 18.0));
+        let (first_id, gap_id, last_id) = (first.id, gap.id, last.id);
+        state.sequences[0].tracks[p].clips = vec![first, gap, last];
+        let at = |state: &AppState, id: ClipId| state.sequence().find_clip(id).map(|(ti, ci)| state.sequence().tracks[ti].clips[ci].timeline_in);
+
+        state.selected_clip = Some(gap_id);
+        let cmds = crate::app::shortcuts::delete_selection(&mut state);
+        assert!(matches!(&cmds[..], [klipp_core::AppCommand::RemoveClip { clip_id }] if *clip_id == gap_id), "{cmds:?}");
+        remove_clips(&mut state, &[gap_id], false, "Remove Clip").unwrap();
+        assert_eq!(at(&state, gap_id), None, "the gap is gone");
+        assert_eq!(at(&state, last_id), Some(t(4.0)), "Delete closed it");
+        undo(&mut state);
+        assert_eq!(at(&state, last_id), Some(t(14.0)));
+
+        remove_clips(&mut state, &[first_id], true, "Lift").unwrap();
+        assert_eq!(at(&state, first_id), None);
+        assert_eq!(at(&state, last_id), Some(t(14.0)), "Lift left the gap");
+        state.sequence().assert_primary_gapless();
+    }
+
     /// On a primary track with gaps, deleting or lifting selected clips,
     /// one of them the matte of a clip on another track, is one undo step
     /// that puts the whole document back as it was: the gaps, the other

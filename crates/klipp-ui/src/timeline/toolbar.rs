@@ -105,6 +105,16 @@ enum Group {
 const GROUPS: [Group; 10] = [Group::Tools, Group::EditMode, Group::Ripple, Group::Snap, Group::Skim, Group::Options, Group::Linked, Group::Marker, Group::Title, Group::Context];
 const SEPARATOR_AFTER: [Group; 3] = [Group::Tools, Group::Ripple, Group::Linked];
 
+/// The Ripple switch's tooltip. Ripple governs trims only: Delete
+/// always closes a gap and Lift always leaves one, whatever the switch.
+fn ripple_tip(on: bool) -> &'static str {
+    if on {
+        "Ripple on: trimming closes the gap."
+    } else {
+        "Ripple off: trimming leaves a gap. Use Lift (Shift+Delete) to remove a clip and leave its gap."
+    }
+}
+
 /// One group's controls, in the row or in the "»" menu.
 fn draw_group(group: Group, ui: &mut egui::Ui, state: &mut AppState, theme: &KlippTheme, cmds: &mut Vec<AppCommand>, kb: &crate::keybindings::KeyBindings, btn: f32) {
     match group {
@@ -165,12 +175,7 @@ fn draw_group(group: Group, ui: &mut egui::Ui, state: &mut AppState, theme: &Kli
                     .font(egui::FontId::monospace(crate::theme::type_scale::CAPTION))
                     .color(if state.ripple_enabled { theme.accent } else { theme.text_dim });
                 let resp = ui.add(egui::Button::new(text).selected(state.ripple_enabled).min_size(egui::vec2(0.0, crate::theme::control::COMPACT)));
-                let tip = if state.ripple_enabled {
-                    "Ripple on: deleting and trimming close the gap. Click to leave gaps."
-                } else {
-                    "Ripple off: deleting and trimming leave a gap. Click to close gaps."
-                };
-                styled_tooltip(&resp, theme, tip, None);
+                styled_tooltip(&resp, theme, ripple_tip(state.ripple_enabled), None);
                 if resp.clicked() {
                     cmds.push(AppCommand::SetRippleEnabled(!state.ripple_enabled));
                 }
@@ -698,4 +703,15 @@ fn draw_tl_title_icon(painter: &egui::Painter, btn: egui::Rect, c: egui::Color32
         egui::FontId::proportional(a.height() * 1.05),
         c,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    /// The Ripple tooltip speaks of trimming only, as the switch governs
+    /// only trims; off, it points to Lift for leaving a clip's gap.
+    #[test]
+    fn the_ripple_tooltip_speaks_only_of_trimming() {
+        assert_eq!(super::ripple_tip(true), "Ripple on: trimming closes the gap.");
+        assert_eq!(super::ripple_tip(false), "Ripple off: trimming leaves a gap. Use Lift (Shift+Delete) to remove a clip and leave its gap.");
+    }
 }
