@@ -45,6 +45,7 @@ impl KlippApp {
             grade_groups: Vec::new(),
             title_nits: klipp_timeline::DEFAULT_TITLE_NITS,
             node_labels: Vec::new(),
+            buses: Vec::new(),
             drop_frame: klipp_timeline::Sequence::default_drop_frame(fps),
             id: klipp_core::SequenceId::new(),
             name: name.clone(),
@@ -745,6 +746,7 @@ mod compound_clip_cycle_tests {
         Sequence {
             title_nits: klipp_timeline::DEFAULT_TITLE_NITS,
             node_labels: Vec::new(),
+            buses: Vec::new(),
             drop_frame: false,
             camera: Default::default(),
             timeline_graph: None,

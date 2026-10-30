@@ -4845,6 +4845,53 @@ impl PlaybackEngine {
         *was = now;
     }
 
+    /// The sequence's aux buses and each track's sends into the mixer
+    /// (#2861), made here, on the edit side, so the mix thread only runs
+    /// them: the buses, their effects and the order they are mixed in,
+    /// and each send's level at the end of the block heard next, which
+    /// the mixer ramps to as it does a fader. A send to a bus that is
+    /// gone is left out.
+    fn sync_routing(&self, m: &mut klipp_audio::AudioMixer, seq: &klipp_timeline::Sequence, heard_at: f64) {
+        if seq.buses.is_empty() && m.buses.is_empty() {
+            return;
+        }
+        let block_secs = if self.cpal_sample_rate > 0 {
+            (crate::mix_thread::MIX_CHUNK_SAMPLES / 2) as f64 / self.cpal_sample_rate as f64
+        } else {
+            0.0
+        };
+        let at = heard_at + block_secs;
+        m.set_bus_count(seq.buses.len());
+        for (i, bus) in seq.buses.iter().enumerate() {
+            let lane = &mut m.buses[i];
+            (lane.volume, lane.pan, lane.muted) = (bus.volume, bus.pan, bus.muted);
+            lane.output = bus.output.and_then(|o| seq.bus_index(o));
+            if lane.name != bus.name {
+                lane.name = bus.name.clone();
+            }
+            m.set_bus_inserts(i, &bus.effects);
+        }
+        m.set_bus_order(&seq.bus_order());
+        m.ensure_tracks(seq.tracks.len());
+        for (lane, track) in m.tracks.iter_mut().zip(&seq.tracks) {
+            let sends = track.sends.iter().filter_map(|s| Some((seq.bus_index(s.bus)?, s)));
+            let mut n = 0;
+            for (bus, send) in sends {
+                let gain = send.gain_at(at, track.automation.mode);
+                match lane.sends.get_mut(n) {
+                    // The same send: its level ramps from where it was.
+                    Some(l) if l.bus == bus => {
+                        (l.gain, l.pre_fader, l.muted) = (gain, send.pre_fader, send.muted);
+                    }
+                    Some(l) => *l = klipp_audio::SendLane::new(bus, gain, send.pre_fader, send.muted),
+                    None => lane.sends.push(klipp_audio::SendLane::new(bus, gain, send.pre_fader, send.muted)),
+                }
+                n += 1;
+            }
+            lane.sends.truncate(n);
+        }
+    }
+
     /// Each track's mute and solo as the sequence has them, onto its
     /// mixer lane: a project opened, a sequence switched to or an undo
     /// brings its own, which otherwise reached the mix only by a click
@@ -4877,6 +4924,7 @@ impl PlaybackEngine {
             for (i, track) in seq.tracks.iter().enumerate().filter(|(_, t)| t.kind == klipp_timeline::TrackKind::Audio) {
                 m.set_track_inserts(i, &track.effects.audio, 8192);
             }
+            self.sync_routing(&mut m, &seq, heard_at);
         }
 
         for active in &self.audio_sources {
@@ -15345,5 +15393,62 @@ mod track_switch_tests {
         engine.handle_command(AppCommand::SetTrackMute { track_index: 1, muted: true });
         engine.handle_command(AppCommand::SequenceUpdated);
         assert_eq!(peak(&mix(&engine)), 0.0, "a later update put A2's old switch back");
+    }
+}
+
+#[cfg(test)]
+mod routing_sync_tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    /// #2861: the sequence's buses and sends reach the mixer by index,
+    /// each bus before the bus it feeds; a send keeps its ramp while it
+    /// is the same send, a send to a bus that is gone is left out, and
+    /// the buses go with the last one.
+    #[test]
+    fn the_sequences_routing_reaches_the_mixer() {
+        let mut seq = klipp_timeline::Sequence::new_default();
+        let (mut verb, delay) = (klipp_timeline::AuxBus::new("Verb"), klipp_timeline::AuxBus::new("Delay"));
+        verb.output = Some(delay.id);
+        verb.volume = 0.5;
+        let mut a1 = klipp_timeline::Track::new("A1", klipp_timeline::TrackKind::Audio);
+        a1.sends = vec![klipp_timeline::AuxSend::new(verb.id), klipp_timeline::AuxSend { pre_fader: true, level: 0.25, ..klipp_timeline::AuxSend::new(delay.id) }];
+        seq.tracks = vec![a1];
+        // Listed delay first, but verb feeds it.
+        seq.buses = vec![delay, verb];
+        let sequence = Arc::new(klipp_timeline::SharedSequence::new(seq.clone()));
+        let (_cmd_tx, cmd_rx) = crossbeam_channel::unbounded();
+        let (ev_tx, _ev_rx) = crossbeam_channel::unbounded();
+        let fb = || Arc::new(Mutex::new(crate::texture::FrameBuffer::new(16, 16)));
+        let engine = PlaybackEngine::new(
+            cmd_rx, ev_tx, fb(), fb(),
+            Arc::clone(&sequence), Arc::new(RwLock::new(klipp_media::MediaPool::new())), Box::new(|| {}),
+            Arc::new(Mutex::new(None)), Arc::new(Mutex::new(crate::perf::PerfRing::default())),
+        );
+        let sync = |seq: &klipp_timeline::Sequence| {
+            let mut m = engine.mixer.lock().unwrap();
+            engine.sync_routing(&mut m, seq, 0.0);
+        };
+        sync(&seq);
+        {
+            let mut m = engine.mixer.lock().unwrap();
+            assert_eq!(m.buses.len(), 2);
+            assert_eq!((m.buses[1].output, m.buses[1].volume, m.buses[0].output), (Some(0), 0.5, None));
+            let lanes: Vec<(usize, f32, bool)> = m.tracks[0].sends.iter().map(|s| (s.bus, s.gain, s.pre_fader)).collect();
+            assert_eq!(lanes, vec![(1, 1.0, false), (0, 0.25, true)]);
+            m.tracks[0].sends[0].ramp_from = Some(0.75);
+        }
+        let mut changed = seq.clone();
+        changed.tracks[0].sends[0].level = 0.5;
+        sync(&changed);
+        assert_eq!(engine.mixer.lock().unwrap().tracks[0].sends[0].ramp_from, Some(0.75), "the same send ramps on");
+        changed.buses.remove(1);
+        sync(&changed);
+        let lanes: Vec<usize> = engine.mixer.lock().unwrap().tracks[0].sends.iter().map(|s| s.bus).collect();
+        assert_eq!(lanes, vec![0], "the send to the bus gone is left out");
+        changed.buses.clear();
+        sync(&changed);
+        let m = engine.mixer.lock().unwrap();
+        assert!(m.buses.is_empty() && m.tracks[0].sends.is_empty());
     }
 }

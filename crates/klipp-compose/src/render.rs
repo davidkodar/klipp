@@ -861,6 +861,7 @@ pub fn frame_snapshot(seq: &Sequence, time: Timecode) -> Sequence {
         title_nits: seq.title_nits,
         // The render reads no labels.
         node_labels: Vec::new(),
+        buses: Vec::new(),
         drop_frame: seq.drop_frame,
         fps: seq.fps,
         resolution: seq.resolution,

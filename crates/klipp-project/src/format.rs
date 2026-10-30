@@ -132,6 +132,9 @@ pub struct SequenceJson {
     pub resolution: ResolutionJson,
     #[serde(default)]
     pub first_clip_autoset: klipp_timeline::FirstClipAutoSet,
+    /// The aux buses (#2861), skipped when there are none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub buses: Vec<klipp_timeline::AuxBus>,
     pub tracks: Vec<TrackJson>,
     #[serde(default)]
     pub in_point: Option<TimecodeJson>,
@@ -303,6 +306,9 @@ pub struct TrackJson {
     /// The track's own automation (#2306), skipped when it has none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub automation: Option<klipp_timeline::TrackAutomation>,
+    /// Its sends to aux buses (#2861), skipped when it has none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sends: Vec<klipp_timeline::AuxSend>,
 }
 
 /// A track's own effects (#846). The picture effects are kept as JSON and
@@ -1240,6 +1246,7 @@ mod tests {
                 automation_lane_visible: Some(label.to_string()),
                 automation_lane_height: None,
                 automation: None,
+                sends: Vec::new(),
             };
             let s = serde_json::to_string(&track).expect("serialise");
             let back: TrackJson = serde_json::from_str(&s).expect("deserialise");
@@ -1293,6 +1300,7 @@ mod tests {
             automation_lane_visible: None,
             automation_lane_height: None,
             automation: None,
+            sends: Vec::new(),
         };
         let s = serde_json::to_string(&track).expect("serialise");
         assert!(!s.contains("automation_lane_visible"),
@@ -1333,6 +1341,7 @@ mod tests {
             automation_lane_visible: Some("Volume".to_string()),
             automation_lane_height: Some(180.0),
             automation: None,
+            sends: Vec::new(),
         };
         let s = serde_json::to_string(&track).expect("serialise");
         let back: TrackJson = serde_json::from_str(&s).expect("deserialise");

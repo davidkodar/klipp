@@ -42,3 +42,5 @@ klipp_id!(BinId);
 // A grade group (#237): clips that share a pre-clip and a post-clip
 // grade. Not an editing group (GroupId), which moves clips together.
 klipp_id!(GradeGroupId);
+// An aux bus (#2861): a mix of the sends to it, with its own effects.
+klipp_id!(BusId);

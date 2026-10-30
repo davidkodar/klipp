@@ -1372,6 +1372,7 @@ pub fn load_kdenlive(path: &Path) -> Result<ImportResult, MltImportError> {
         // An imported timeline takes its rate's convention.
         title_nits: klipp_timeline::DEFAULT_TITLE_NITS,
         node_labels: Vec::new(),
+        buses: Vec::new(),
         drop_frame: Sequence::default_drop_frame(mlt.profile.fps),
         id: klipp_core::SequenceId::new(),
         name: project_name,

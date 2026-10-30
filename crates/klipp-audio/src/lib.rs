@@ -44,6 +44,7 @@ pub mod ladspa;
 pub mod lv2;
 pub mod lufs;
 pub mod pdc;
+pub mod routing;
 pub mod mixer;
 pub mod narration;
 pub mod spectrum;
@@ -52,6 +53,6 @@ pub mod true_peak;
 
 pub use denormal::flush_denormals_to_zero;
 pub use lufs::{LufsMeter, LufsReadings};
-pub use mixer::{AudioMixer, AudioTrackSettings};
+pub use mixer::{AudioMixer, AudioTrackSettings, SendLane};
 pub use synth::{synthesise_whoosh, write_whoosh_wav, WhooshVariant};
 pub use true_peak::TruePeakDetector;

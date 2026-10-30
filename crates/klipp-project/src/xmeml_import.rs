@@ -409,6 +409,7 @@ pub fn parse_xmeml(xml: &str) -> Result<ImportResult, String> {
         grade_groups: Vec::new(),
         title_nits: klipp_timeline::DEFAULT_TITLE_NITS,
         node_labels: Vec::new(),
+        buses: Vec::new(),
         drop_frame: drop_frame.unwrap_or_else(|| Sequence::default_drop_frame(seq_fps)),
         id: SequenceId::new(),
         name: text(seq_node, "name").filter(|n| !n.is_empty()).unwrap_or("Imported").to_string(),
