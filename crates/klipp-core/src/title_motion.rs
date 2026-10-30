@@ -895,16 +895,80 @@ enum KeyAt {
 /// The most keys one preset places.
 const MAX_PRESET_KEYS: usize = 64;
 
-/// Klipp's animator presets, read once from the file built in; none
-/// when it can't be read.
+/// The presets folder a person's own animator presets are read from.
+pub const ANIMATOR_PRESETS_FOLDER: &str = "animators";
+
+/// Why an animator preset someone wrote can't be offered, beyond what
+/// [`crate::preset_file::merge`] asks of its id: an id that isn't a
+/// lowercase word, no name or one past its length, too many keys, or a
+/// number outside what the animator op takes (start and end 0 to 1,
+/// offset and amount -1 to 1, a move ±20 font sizes, scale 0 to 20,
+/// rotation ±3600°, opacity 0 to 1, blur 0 to 4 font sizes).
+fn user_animator_fault(p: &AnimatorPreset) -> Result<(), String> {
+    let word = !p.id.is_empty() && p.id.len() <= 32 && p.id.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_');
+    if !word {
+        return Err("an id of lowercase letters, digits and _, up to 32".into());
+    }
+    let name = p.name.trim();
+    if name.is_empty() || name.chars().count() > crate::preset_file::MAX_NAME_CHARS || name.chars().any(char::is_control) {
+        return Err(format!("a name of 1 to {} characters", crate::preset_file::MAX_NAME_CHARS));
+    }
+    if p.keys.len() > MAX_PRESET_KEYS {
+        return Err(format!("at most {MAX_PRESET_KEYS} keys"));
+    }
+    let (s, q) = (&p.selector, &p.props);
+    let key_range = |k: &PresetKey| match k.on {
+        KeyOn::Offset => ("an offset key", k.value, -1.0, 1.0),
+        KeyOn::Start => ("a start key", k.value, 0.0, 1.0),
+        KeyOn::End => ("an end key", k.value, 0.0, 1.0),
+    };
+    let values = [
+        ("start", s.start, 0.0, 1.0), ("end", s.end, 0.0, 1.0), ("offset", s.offset, -1.0, 1.0), ("amount", s.amount, -1.0, 1.0),
+        ("dx", q.dx, -20.0, 20.0), ("dy", q.dy, -20.0, 20.0), ("scale", q.scale, 0.0, 20.0), ("rotation", q.rotation, -3600.0, 3600.0),
+        ("opacity", q.opacity, 0.0, 1.0), ("blur", q.blur, 0.0, 4.0),
+    ];
+    match values.into_iter().chain(p.keys.iter().map(key_range)).find(|(_, v, lo, hi)| !(*lo..=*hi).contains(v)) {
+        Some((what, v, lo, hi)) => Err(format!("{what} {v} is outside {lo} to {hi}")),
+        None => Ok(()),
+    }
+}
+
+/// Klipp's animator presets, then those in `dirs` (a person's folder,
+/// then the packs'), each read as someone else's (#3095), by id: one
+/// whose id or name is that of one before it is skipped, said.
+fn animator_preset_listing_in(dirs: &[std::path::PathBuf]) -> crate::preset_file::Merged<AnimatorPreset> {
+    let built_in = read_animator_presets(include_str!("../../../assets/presets/animators/builtin.toml")).unwrap_or_else(|why| {
+        tracing::error!("the built-in animator presets don't read: {why}");
+        Vec::new()
+    });
+    let mut merged = crate::preset_file::merge(built_in, dirs, "animator_preset", 1, "preset", |p: &AnimatorPreset| &p.id, user_animator_fault);
+    // The id is what the op takes; the name is what the Title tab shows,
+    // and two of one name there are one too many.
+    let mut kept: Vec<AnimatorPreset> = merged.entries.drain(..merged.built_in).collect();
+    for p in std::mem::take(&mut merged.entries) {
+        if kept.iter().any(|k| k.name.trim().to_lowercase() == p.name.trim().to_lowercase()) {
+            merged.skipped.push(format!("\"{}\": its name \"{}\" is that of one before it", p.id, p.name.trim()));
+        } else {
+            kept.push(p);
+        }
+    }
+    merged.entries = kept;
+    merged
+}
+
+/// Klipp's animator presets, then the person's own, read once a run;
+/// what of theirs is skipped is said in the log.
 fn animator_presets() -> &'static [AnimatorPreset] {
-    static PRESETS: std::sync::OnceLock<Vec<AnimatorPreset>> = std::sync::OnceLock::new();
-    PRESETS.get_or_init(|| {
-        read_animator_presets(include_str!("../../../assets/presets/animators/builtin.toml")).unwrap_or_else(|why| {
-            tracing::error!("the built-in animator presets don't read: {why}");
-            Vec::new()
+    static LISTING: std::sync::OnceLock<crate::preset_file::Merged<AnimatorPreset>> = std::sync::OnceLock::new();
+    &LISTING
+        .get_or_init(|| {
+            let listing = animator_preset_listing_in(&crate::preset_file::user_dir(ANIMATOR_PRESETS_FOLDER).into_iter().collect::<Vec<_>>());
+            for why in &listing.skipped {
+                tracing::warn!("an animator preset of yours was skipped: {why}");
+            }
+            listing
         })
-    })
+        .entries
 }
 
 /// The presets in `text`, or why it is refused: an id that isn't a
@@ -2120,5 +2184,55 @@ mod animator_tests {
         let many = format!("[[preset]]\nid = \"many\"\nname = \"Many\"\n{}", "[[preset.keys]]\non = \"start\"\nat = \"start\"\nvalue = 0.0\n".repeat(65));
         assert!(read_animator_presets(&file(&many)).unwrap_err().contains("at most 64 keys"));
         assert!(read_animator_presets(&file(one).replace("animator_preset", "effect_preset")).is_err());
+    }
+}
+
+#[cfg(test)]
+mod user_animator_preset_tests {
+    use super::*;
+
+    /// A file dropped in a person's animators folder lists its preset after
+    /// Klipp's (#3095); a hostile one is refused, said, and Klipp's stay
+    /// whole: a link, one past the size, an unknown field, the wrong kind,
+    /// a built-in's id or name, an id that isn't a word, a value past what
+    /// the animator op takes.
+    #[test]
+    fn a_person_s_animator_preset_lists_after_klipp_s_and_a_hostile_one_is_refused() {
+        let dir = std::env::temp_dir().join(format!("klipp-user-animators-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = |n: &str, body: &str| std::fs::write(dir.join(n), format!("kind = \"animator_preset\"\nformat_version = 1\n{body}")).unwrap();
+        let preset = |id: &str, name: &str, extra: &str| format!("[[preset]]\nid = \"{id}\"\nname = \"{name}\"\n{extra}");
+        file("a.toml", &preset("drift_up", "Drift up", "props = { dy = -0.5 }\n[[preset.keys]]\non = \"start\"\nat = \"start\"\nvalue = 0.0\n"));
+        file("b.toml", &(preset("odd", "Odd", "") + "price = 2\n"));
+        std::fs::write(dir.join("c.toml"), "kind = \"generator_entry\"\nformat_version = 1\n").unwrap();
+        file("d.toml", &format!("# {}\n", "x".repeat(crate::preset_file::MAX_FILE_BYTES)));
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(dir.join("a.toml"), dir.join("e.toml")).unwrap();
+        let klipp_s = animator_preset_listing_in(&[]).entries;
+        let (first_id, first_name) = (klipp_s[0].id.clone(), klipp_s[0].name.to_uppercase());
+        file("f.toml", &[
+            preset(&first_id, "Mine", ""),
+            preset("same_name", &first_name, ""),
+            preset("Bad Id", "Bad id", ""),
+            preset("huge", "Huge", "props = { scale = 1000000.0 }\n"),
+            preset("far", "Far", "[[preset.keys]]\non = \"end\"\nat = \"end\"\nvalue = 9.0\n"),
+        ].concat());
+        let listing = animator_preset_listing_in(std::slice::from_ref(&dir));
+        let ids: Vec<&str> = listing.entries.iter().map(|p| p.id.as_str()).collect();
+        assert_eq!(ids.len(), klipp_s.len() + 1, "{ids:?}");
+        assert_eq!(ids[..klipp_s.len()], klipp_s.iter().map(|p| p.id.as_str()).collect::<Vec<_>>()[..], "Klipp's, whole and first");
+        assert_eq!(ids[klipp_s.len()], "drift_up");
+        let said = |what: &str| assert!(listing.skipped.iter().any(|s| s.contains(what)), "{what}: {:?}", listing.skipped);
+        said("b.toml: animator_preset entry 1: unknown field");
+        said("c.toml: a generator_entry file, not a animator_preset file");
+        said("d.toml: ");
+        #[cfg(unix)]
+        said("e.toml: not a plain file");
+        said(&format!("\"{first_id}\" is the name of one of Klipp's own"));
+        said(&format!("\"same_name\": its name \"{first_name}\" is that of one before it"));
+        said("\"Bad Id\": an id of lowercase letters");
+        said("\"huge\": scale 1000000 is outside 0 to 20");
+        said("\"far\": an end key 9 is outside 0 to 1");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

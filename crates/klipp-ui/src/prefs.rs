@@ -3159,6 +3159,18 @@ mod tests {
         said("\"arri\" is the name of one of Klipp's own");
         said("\"Empty\": 1 to 256 stops");
         said("\"Wordy\": the stop");
+        // A stop's luma and colour are 8-bit integers: a value that isn't
+        // one is refused with its file, whole.
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let bad = ["luma = [nan, 255]", "luma = [0, inf]", "luma = [0, 256]", "luma = [-1, 255]", "luma = [0.5, 255]", "luma = [0, 255]\ncolor = [300, 0, 0]"];
+        for (i, luma) in bad.iter().enumerate() {
+            let colour = if luma.contains("color") { "" } else { "\ncolor = [1, 2, 3]" };
+            file(&format!("bad{i}.toml"), &format!("[[palette]]\nname = \"Bad {i}\"\n[[palette.stop]]\n{luma}{colour}\nlabel = \"L\"\n"));
+        }
+        let (palettes, skipped) = palettes_in(std::slice::from_ref(&dir));
+        assert_eq!(palettes, FalseColorPalette::built_ins(), "none of them read");
+        assert_eq!(skipped.iter().filter(|s| s.starts_with("bad") && s.contains("false_colour_palette entry 1")).count(), bad.len(), "{skipped:?}");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
