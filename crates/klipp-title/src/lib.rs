@@ -6880,6 +6880,56 @@ fn paint_shape_layer<C: Channel>(
     }
 }
 
+/// The pixels a rectangle shape's layer covers, as `paint_shape_layer`
+/// paints it: `(x0, y0, x1, y1)` of every pixel whose centre is inside
+/// it and whose colour shows, as `layer_bounds` finds them in the painted
+/// layer (#3160). `None` when it covers none, or for another shape. Each
+/// row is scanned in from both ends, so a big rectangle costs its edges.
+pub fn rect_layer_bounds(shape: &Shape, transform: &ObjectTransform, width: u32, height: u32) -> Option<(u32, u32, u32, u32)> {
+    let ShapeKind::Rectangle { corner_radius } = shape.kind else { return None };
+    let shows = |c: Option<[u8; 4]>| c.is_some_and(|c| c[3] > 0);
+    let gradient = shape.gradient.as_ref().is_some_and(|g| g.enabled);
+    let scale = crate::frame_scale(width, height);
+    let stroke_w = shape.stroke.map_or(0.0, |s| s.width).max(0.0) * scale;
+    // A pixel is painted when its centre is inside, and the band it falls
+    // in, stroke or fill, has a colour to paint.
+    if !shows(shape.fill) && !gradient && !(stroke_w > 0.0 && shows(shape.stroke.map(|s| s.color))) {
+        return None;
+    }
+    let (w_f, h_f) = (width as f32, height as f32);
+    let (half_w, half_h) = ((transform.size.x * w_f * 0.5).max(0.0), (transform.size.y * h_f * 0.5).max(0.0));
+    let (cx, cy) = (transform.center.x * w_f, transform.center.y * h_f);
+    let pivot_x = cx + (transform.anchor_norm.x - 0.5) * 2.0 * half_w;
+    let pivot_y = cy + (transform.anchor_norm.y - 0.5) * 2.0 * half_h;
+    let (sin, cos) = transform.rotation.to_radians().sin_cos();
+    let (mut min_x, mut min_y, mut max_x, mut max_y) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+    for (ux, uy) in [(cx - half_w, cy - half_h), (cx + half_w, cy - half_h), (cx - half_w, cy + half_h), (cx + half_w, cy + half_h)] {
+        let (dx, dy) = (ux - pivot_x, uy - pivot_y);
+        let (rx, ry) = (pivot_x + cos * dx - sin * dy, pivot_y + sin * dx + cos * dy);
+        (min_x, min_y, max_x, max_y) = (min_x.min(rx), min_y.min(ry), max_x.max(rx), max_y.max(ry));
+    }
+    let (x0, y0) = ((min_x.floor() as i32).max(0), (min_y.floor() as i32).max(0));
+    let (x1, y1) = ((max_x.ceil() as i32).min(width as i32), (max_y.ceil() as i32).min(height as i32));
+    let r = (corner_radius.max(0.0) * scale).max(0.0);
+    let painted = |x: i32, y: i32| {
+        let (dx, dy) = (x as f32 + 0.5 - pivot_x, y as f32 + 0.5 - pivot_y);
+        let (px, py) = (pivot_x + cos * dx + sin * dy, pivot_y - sin * dx + cos * dy);
+        if !is_in_rounded_rect(px, py, cx - half_w, cy - half_h, cx + half_w, cy + half_h, r, r * r) {
+            return false;
+        }
+        let ri = (r - stroke_w).max(0.0);
+        let in_stroke = stroke_w > 0.0 && !is_in_rounded_rect(px, py, cx - half_w + stroke_w, cy - half_h + stroke_w, cx + half_w - stroke_w, cy + half_h - stroke_w, ri, ri * ri);
+        if in_stroke { shows(shape.stroke.map(|s| s.color)) } else { gradient || shows(shape.fill) }
+    };
+    let (mut bx0, mut by0, mut bx1, mut by1) = (i32::MAX, i32::MAX, i32::MIN, i32::MIN);
+    for y in y0..y1 {
+        let Some(first) = (x0..x1).find(|&x| painted(x, y)) else { continue };
+        let last = (first..x1).rev().find(|&x| painted(x, y)).unwrap_or(first);
+        (bx0, by0, bx1, by1) = (bx0.min(first), by0.min(y), bx1.max(last + 1), by1.max(y + 1));
+    }
+    (bx1 > bx0).then_some((bx0 as u32, by0 as u32, bx1 as u32, by1 as u32))
+}
+
 /// Test whether a point lies inside a rounded rectangle defined by
 /// its bounds and corner radius. The four corners use a circular
 /// quadrant; the body is a plain rectangle inset by `r` on each
@@ -7659,7 +7709,7 @@ fn stack_draws(fx: &LayerFx) -> bool {
 /// How far, in frame pixels, a stack reaches beyond its layer's
 /// coverage at worst: the widest glow, the farthest shadow with its
 /// blur, the widest outline — the padding a working mask needs.
-fn stack_reach(fx: &LayerFx, scale: f32) -> usize {
+pub fn stack_reach(fx: &LayerFx, scale: f32) -> usize {
     let worst = |v: f32, keys: &[klipp_core::Keyframe]| keys.iter().map(|k| k.value).fold(v, f32::max);
     let mut reach = 0.0f32;
     for g in fx.glows.iter().filter(|g| g.enabled) {

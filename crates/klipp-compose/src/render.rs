@@ -3119,6 +3119,22 @@ impl Renderer {
                     let loops=if source_fx.loops.iter().all(|l|matches!(l,klipp_timeline::TitleLoop::Blink{..}|klipp_timeline::TitleLoop::Pulse{..}|klipp_timeline::TitleLoop::Flicker{..}|klipp_timeline::TitleLoop::ColorCycle{..}|klipp_timeline::TitleLoop::ColorBlend{..})) {
                         std::mem::take(&mut source_fx.loops)
                     } else {Vec::new()};
+                    // A shape's stack (#3160): its glows, shadows, outlines and
+                    // inner shadows round and inside its painted coverage,
+                    // before its pose, as the CPU dresses a shape layer. An
+                    // image's stays with its title's raster.
+                    let mut stack=klipp_timeline::LayerFx::default();
+                    if shape.is_some() {
+                        stack.glows=std::mem::take(&mut source_fx.glows);
+                        stack.shadows=std::mem::take(&mut source_fx.shadows);
+                        stack.outlines=std::mem::take(&mut source_fx.outlines);
+                        stack.inner_shadows=std::mem::take(&mut source_fx.inner_shadows);
+                        let still=klipp_timeline::LayerFx::default();
+                        stack.glow_stack_enabled=std::mem::replace(&mut source_fx.glow_stack_enabled,still.glow_stack_enabled);
+                        stack.shadow_stack_enabled=std::mem::replace(&mut source_fx.shadow_stack_enabled,still.shadow_stack_enabled);
+                        stack.outline_stack_enabled=std::mem::replace(&mut source_fx.outline_stack_enabled,still.outline_stack_enabled);
+                        stack.inner_shadow_stack_enabled=std::mem::replace(&mut source_fx.inner_shadow_stack_enabled,still.inner_shadow_stack_enabled);
+                    }
                     if !source_fx.is_default()
                         || motion.enter.iter().chain(motion.exit.iter())
                         .any(|m|!matches!(m.kind,klipp_timeline::MotionKind::Fade|klipp_timeline::MotionKind::Rise|klipp_timeline::MotionKind::Drop|klipp_timeline::MotionKind::SlideLeft|klipp_timeline::MotionKind::SlideRight|klipp_timeline::MotionKind::ScaleUp|klipp_timeline::MotionKind::ScaleDown|klipp_timeline::MotionKind::Blur|klipp_timeline::MotionKind::MaskRise|klipp_timeline::MotionKind::MaskDrop|klipp_timeline::MotionKind::Pop|klipp_timeline::MotionKind::Slam|klipp_timeline::MotionKind::Larger|klipp_timeline::MotionKind::Smaller|klipp_timeline::MotionKind::FlyLeft|klipp_timeline::MotionKind::FlyRight|klipp_timeline::MotionKind::FlyTop|klipp_timeline::MotionKind::FlyBottom|klipp_timeline::MotionKind::Bounce|klipp_timeline::MotionKind::Flicker|klipp_timeline::MotionKind::Typewriter|klipp_timeline::MotionKind::FocusIn|klipp_timeline::MotionKind::SoftRise)) {
@@ -3197,6 +3213,23 @@ impl Renderer {
                         }
                     }} else {false};
                     if !painted {return None;}
+                    let passes=crate::synth::title_style_passes(&stack,scale,clip_time);
+                    if passes.iter().any(|p|!matches!(p,klipp_effects::gpu::TitleStyle::Face)) {
+                        // Over the box the CPU dresses: the layer's painted pixels
+                        // padded by how far the stack spreads from them.
+                        let (bx0,by0,bx1,by1)=shape.and_then(|s|klipp_title::rect_layer_bounds(s,&transform,width,height))?;
+                        // A glow seen through a translucent shape is mixed in the
+                        // working space here and in the authored one on the CPU:
+                        // outside Rec.709 the two part by several levels, so that
+                        // one stays with the title's raster.
+                        let translucent=shape.is_some_and(|s|s.fill.is_some_and(|c|c[3]<255) || s.stroke.is_some_and(|k|k.color[3]<255) || s.gradient.as_ref().is_some_and(|g|g.enabled));
+                        if translucent && self.working!=WorkingColorspace::Rec709Linear && passes.iter().any(|p|matches!(p,klipp_effects::gpu::TitleStyle::Glow{..})) {return None;}
+                        let pad=klipp_title::stack_reach(&stack,scale) as u32;
+                        let (x0,y0)=(bx0.saturating_sub(pad),by0.saturating_sub(pad));
+                        let (x1,y1)=((bx1+pad).min(width),(by1+pad).min(height));
+                        // The dressed layer is a byte layer on the CPU.
+                        if x1>x0 && y1>y0 && (!gpu.stack_title_styles(slot,[x0,y0,x1-x0,y1-y0],&passes) || !gpu.stack_title_precision(slot,true)) {return None;}
+                    }
                     if motion.is_active() {
                         if !gpu.stack_title_precision(slot,true) {return None;}
                         if scales && motion_scale == 0.0 {
