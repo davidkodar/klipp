@@ -38,6 +38,8 @@ pub const MAX_RECIPE_CHECKS: usize = 32;
 pub const MAX_RECIPE_KEYS: usize = 256;
 /// The longest name, label or property, bytes.
 pub const MAX_TEXT: usize = 256;
+/// The most steps an audio chain recipe adds (#2886).
+pub const MAX_AUDIO_STEPS: usize = 16;
 /// The format this build writes and reads: 2 carries the composition.
 pub const FORMAT_VERSION: u32 = 2;
 
@@ -252,6 +254,10 @@ pub struct CompositionTemplate {
     /// picture. `None` for a composition.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub graph: Option<RecipeGraph>,
+    /// An audio chain recipe's steps (#2886): what placing it adds to a
+    /// clip's sound. `None` for any other kind.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio: Option<AudioChain>,
     /// The composition laid out for other frames (#2757): `tall` (9:16
     /// and other portrait frames) and `square`, each the id of one of
     /// `sequences`, with the same layers in the same order, so one set of
@@ -269,6 +275,41 @@ pub enum TemplateKind {
     #[default]
     Composition,
     Recipe,
+    /// A chain of Klipp's own audio effects added to a clip's sound
+    /// (#2886).
+    AudioChain,
+}
+
+/// An audio chain recipe's steps, in the order they are added (#2886).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AudioChain {
+    pub steps: Vec<AudioStep>,
+}
+
+/// One step of an [`AudioChain`]: its name, the built-in audio effect it
+/// adds by its type id, the settings it gives it (the rest the effect's
+/// own), its wet/dry mix, and what a reply says it did.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AudioStep {
+    pub name: String,
+    pub effect: String,
+    #[serde(default)]
+    pub params: BTreeMap<String, f32>,
+    #[serde(default = "full_mix")]
+    pub wet_dry: f32,
+    #[serde(default)]
+    pub says: String,
+}
+
+fn full_mix() -> f32 {
+    1.0
+}
+
+/// `step:<name>.<param>` (#2886): setting `param` of an audio chain
+/// recipe's step `name`.
+pub fn step_binding(property: &str) -> Option<(&str, &str)> {
+    let (step, param) = property.strip_prefix("step:")?.split_once('.')?;
+    (!step.is_empty() && !param.is_empty()).then_some((step, param))
 }
 
 impl TemplateKind {
@@ -920,6 +961,39 @@ impl CompositionTemplate {
                     }
                 }
             }
+            TemplateKind::AudioChain => {
+                let chain = self.audio.as_ref().filter(|a| !a.steps.is_empty()).ok_or("an audio chain recipe carries the steps it adds")?;
+                if chain.steps.len() > MAX_AUDIO_STEPS {
+                    return Err(format!("an audio chain adds at most {MAX_AUDIO_STEPS} steps, not {}", chain.steps.len()));
+                }
+                let mut names = std::collections::BTreeSet::new();
+                for step in &chain.steps {
+                    if step.name.trim().is_empty() || !names.insert(step.name.to_lowercase()) {
+                        return Err(format!("a step's name \"{}\" is blank or twice", step.name));
+                    }
+                    // Klipp's own effects only: never a plugin (an LV2 URI,
+                    // an OFX bundle) a file names.
+                    let spec = klipp_core::audio_effect_registry::audio_effect(&step.effect).ok_or_else(|| format!("step \"{}\": \"{}\" is not one of Klipp's audio effects", step.name, step.effect))?;
+                    if let Some(k) = step.params.keys().find(|k| !spec.params.contains(&k.as_str())) {
+                        return Err(format!("step \"{}\": {} has no setting \"{k}\"", step.name, spec.name));
+                    }
+                    // Each in range is the effect's own to keep: it clamps
+                    // every setting it is given.
+                    if step.params.values().any(|v| !v.is_finite()) || !(0.0..=1.0).contains(&step.wet_dry) {
+                        return Err(format!("step \"{}\": each setting is a finite number and the mix 0 to 1", step.name));
+                    }
+                }
+                for b in &self.bindings {
+                    let (step, param) = step_binding(&b.property).ok_or_else(|| format!("an audio chain binds step:<name>.<param>, not '{}'", b.property))?;
+                    let found = chain.steps.iter().find(|s| s.name.eq_ignore_ascii_case(step)).ok_or_else(|| format!("'{}' names no step \"{step}\"", b.property))?;
+                    if !klipp_core::audio_effect_registry::audio_effect(&found.effect).is_some_and(|s| s.params.contains(&param)) {
+                        return Err(format!("'{}': {} has no setting \"{param}\"", b.property, found.effect));
+                    }
+                    if b.link.is_some() || self.parameters.get(&b.parameter).is_some_and(|p| !matches!(p.default, TemplateValue::Number(_))) {
+                        return Err(format!("'{}' sets a setting, so '{}' is a number, bound as it is", b.property, b.parameter));
+                    }
+                }
+            }
             TemplateKind::Composition => {
                 // Each format's layout carried, and every binding and
                 // control resolving in it as in the main one.
@@ -968,6 +1042,12 @@ impl CompositionTemplate {
         count("bindings", self.bindings.len(), MAX_BINDINGS)?;
         count("slots", self.slots.len(), MAX_SLOTS)?;
         count("sequences", self.sequences.len(), MAX_SEQUENCES)?;
+        if let Some(a) = &self.audio {
+            count("audio steps", a.steps.len(), MAX_AUDIO_STEPS)?;
+            for step in &a.steps {
+                count("settings in one step", step.params.len(), MAX_PARAMETERS)?;
+            }
+        }
         if let Some(g) = &self.graph {
             count("graph ops", g.ops.len(), MAX_RECIPE_OPS)?;
             count("checks", g.checks.len(), MAX_RECIPE_CHECKS)?;
@@ -988,7 +1068,8 @@ impl CompositionTemplate {
             .chain(self.parameters.values().flat_map(|p| p.choices.iter().map(String::as_str)))
             .chain(self.slots.iter().flat_map(|(k, s)| [k.as_str(), s.label.as_str()]))
             .chain(self.bindings.iter().flat_map(|b| [b.parameter.as_str(), b.property.as_str()]))
-            .chain(self.graph.iter().flat_map(|g| g.checks.iter().map(|c| c.says.as_str()).chain(g.check_with.keys().map(String::as_str))));
+            .chain(self.graph.iter().flat_map(|g| g.checks.iter().map(|c| c.says.as_str()).chain(g.check_with.keys().map(String::as_str))))
+            .chain(self.audio.iter().flat_map(|a| a.steps.iter().flat_map(|s| [s.name.as_str(), s.effect.as_str(), s.says.as_str()].into_iter().chain(s.params.keys().map(String::as_str)))));
         for t in texts {
             if t.len() > MAX_TEXT || t.chars().any(char::is_control) {
                 return Err(format!("a name or label of {} bytes, or with control characters, is refused", t.len()));
@@ -1011,6 +1092,7 @@ impl CompositionTemplate {
             slots: BTreeMap::new(),
             kind: TemplateKind::Composition,
             graph: None,
+            audio: None,
             formats: BTreeMap::new(),
         }
     }
@@ -1018,6 +1100,39 @@ impl CompositionTemplate {
 
 
 impl CompositionTemplate {
+    /// An audio chain recipe's steps as the effects it adds (#2886):
+    /// those named in `only` (any case), else all, in the recipe's order,
+    /// each with its name, what it says, and its effect with its settings
+    /// in the order the effect lists them, a bound one from `values` (a
+    /// control's number, its default when not given). A step `only`
+    /// names that the recipe hasn't got is refused with those it has.
+    pub fn audio_steps(&self, values: &BTreeMap<String, TemplateValue>, only: Option<&[String]>) -> Result<Vec<(String, String, klipp_core::AudioEffectInstance)>, String> {
+        let chain = self.audio.as_ref().filter(|_| self.kind == TemplateKind::AudioChain).ok_or_else(|| format!("\"{}\" is not an audio chain", self.name))?;
+        if let Some(want) = only {
+            if let Some(w) = want.iter().find(|w| !chain.steps.iter().any(|s| s.name.eq_ignore_ascii_case(w.trim()))) {
+                return Err(format!("\"{}\" has no step \"{w}\"; it has {}", self.name, chain.steps.iter().map(|s| format!("\"{}\"", s.name)).collect::<Vec<_>>().join(", ")));
+            }
+        }
+        let mut out = Vec::new();
+        for step in chain.steps.iter().filter(|s| only.is_none_or(|w| w.iter().any(|w| s.name.eq_ignore_ascii_case(w.trim())))) {
+            let spec = klipp_core::audio_effect_registry::audio_effect(&step.effect).ok_or_else(|| format!("\"{}\" is not one of Klipp's audio effects", step.effect))?;
+            let mut params = step.params.clone();
+            for b in &self.bindings {
+                let Some((on, param)) = step_binding(&b.property) else { continue };
+                if !on.eq_ignore_ascii_case(&step.name) {
+                    continue;
+                }
+                let value = values.get(&b.parameter).or_else(|| self.parameters.get(&b.parameter).map(|p| &p.default));
+                if let Some(TemplateValue::Number(v)) = value {
+                    params.insert(param.to_string(), *v as f32);
+                }
+            }
+            let ordered = spec.params.iter().filter_map(|k| params.get(*k).map(|v| (k.to_string(), *v))).collect();
+            out.push((step.name.clone(), step.says.clone(), klipp_core::AudioEffectInstance { effect_type: step.effect.clone(), enabled: true, wet_dry: step.wet_dry, params: ordered }));
+        }
+        Ok(out)
+    }
+
     /// The composition's sequence the template carries.
     pub fn composition(&self) -> Option<&Sequence> {
         self.sequences.iter().find(|s| s.id.0 == self.composition_id)
@@ -1319,6 +1434,27 @@ pub fn builtin_templates() -> Vec<CompositionTemplate> {
         .collect()
 }
 
+/// The audio chain recipes Klipp ships (#2886), as files in
+/// `assets/recipes`: each read and checked as a saved one is.
+pub fn builtin_audio_chains() -> Vec<CompositionTemplate> {
+    const FILES: [&str; 1] = [include_str!("../../../assets/recipes/clean_audio.klipptemplate")];
+    FILES
+        .iter()
+        .filter_map(|json| match CompositionTemplate::read(json) {
+            Ok(t) if t.kind == TemplateKind::AudioChain => Some(t),
+            Ok(t) => {
+                debug_assert!(false, "\"{}\" is not an audio chain", t.name);
+                None
+            }
+            Err(why) => {
+                tracing::error!("a built-in audio chain doesn't read: {why}");
+                debug_assert!(false, "a built-in audio chain doesn't read: {why}");
+                None
+            }
+        })
+        .collect()
+}
+
 /// The recipes Klipp ships (#2758), as files in `assets/recipes`: each a
 /// recipe like a saved one, read and checked as one is.
 pub fn builtin_recipes() -> Vec<CompositionTemplate> {
@@ -1474,6 +1610,12 @@ impl CompositionTemplateStore {
     pub fn recipes(&self) -> impl Iterator<Item = &CompositionTemplate> {
         let packs = self.packs.iter().map(|(_, t)| t).filter(|t| !self.entries.iter().any(|(_, m)| m.id == t.id));
         self.entries.iter().map(|(_, template)| template).chain(packs).filter(|t| t.kind == TemplateKind::Recipe)
+    }
+
+    /// The audio chain recipes (#2886): the user's own, then the packs'.
+    pub fn audio_chains(&self) -> impl Iterator<Item = &CompositionTemplate> {
+        let packs = self.packs.iter().map(|(_, t)| t).filter(|t| !self.entries.iter().any(|(_, m)| m.id == t.id));
+        self.entries.iter().map(|(_, template)| template).chain(packs).filter(|t| t.kind == TemplateKind::AudioChain)
     }
 
     pub fn save(&mut self, mut template: CompositionTemplate) -> Result<(), String> {
@@ -1971,6 +2113,80 @@ mod tests {
         assert!(std::fs::read_dir(&dir).unwrap().flatten().any(|e| e.file_name().to_string_lossy().ends_with(&format!("escaped.{EXTENSION}"))), "saved inside the folder");
         std::fs::remove_dir_all(&dir).ok();
         std::fs::remove_file(&outside).ok();
+    }
+
+    /// #2886: an audio chain recipe from a file names only Klipp's own
+    /// audio effects (never an LV2 plugin's URI or an OFX bundle), only
+    /// their settings, with finite values and a mix from 0 to 1, at most
+    /// 16 steps, each named once and not blank; its bindings set a step's
+    /// setting from a number. Each such file is refused, and one in a
+    /// person's template folder is left out of the store.
+    #[test]
+    fn a_hostile_audio_chain_is_refused() {
+        let good = || builtin_audio_chains().into_iter().find(|r| r.name == "Clean Audio").expect("shipped");
+        let refused = |f: &dyn Fn(&mut CompositionTemplate)| {
+            let mut t = good();
+            f(&mut t);
+            CompositionTemplate::read(&serde_json::to_string(&t).unwrap()).unwrap_err()
+        };
+        fn step(t: &mut CompositionTemplate) -> &mut AudioStep {
+            &mut t.audio.as_mut().unwrap().steps[0]
+        }
+        for plugin in ["lv2:http://gareus.org/oss/lv2/dpl#mono", "lv2:urn:gx_amp", "ofx:net.sf.openfx.Gain", "/usr/lib/lv2/x.lv2", "Voice_Isolation"] {
+            let why = refused(&|t| step(t).effect = plugin.into());
+            assert!(why.contains("is not one of Klipp's audio effects"), "{plugin}: {why}");
+        }
+        assert!(refused(&|t| { step(t).params.insert("gain".into(), 1.0); }).contains("has no setting \"gain\""));
+        assert!(refused(&|t| step(t).wet_dry = 1.5).contains("mix 0 to 1"));
+        assert!(refused(&|t| step(t).wet_dry = -0.1).contains("mix 0 to 1"));
+        assert!(refused(&|t| { let s = t.audio.as_mut().unwrap(); s.steps = vec![s.steps[0].clone(); MAX_AUDIO_STEPS + 1].into_iter().enumerate().map(|(i, mut x)| { x.name = format!("s{i}"); x }).collect(); }).contains("at most 16"));
+        assert!(refused(&|t| t.audio.as_mut().unwrap().steps.clear()).contains("carries the steps"));
+        assert!(refused(&|t| t.audio = None).contains("carries the steps"));
+        assert!(refused(&|t| step(t).name = " ".into()).contains("blank or twice"));
+        assert!(refused(&|t| step(t).name = "WIND".into()).contains("blank or twice"));
+        assert!(refused(&|t| t.bindings[0].property = "step:loud.reduction".into()).contains("names no step"));
+        assert!(refused(&|t| t.bindings[0].property = "step:voice.gain".into()).contains("has no setting"));
+        assert!(refused(&|t| t.bindings[0].property = "node:0.reduction".into()).contains("binds step:<name>.<param>"));
+        assert!(refused(&|t| t.bindings[0].link = Some(LinkMap { to: [0.0, 1.0], curve: klipp_core::LinkCurve::Linear, per: None })).contains("bound as it is"));
+        assert!(refused(&|t| step(t).says = "x".repeat(MAX_TEXT + 1)).contains("is refused"));
+        // A setting too large for an f32 doesn't read at all.
+        let mut json = serde_json::to_value(good()).unwrap();
+        json["audio"]["steps"][0]["params"]["reduction"] = serde_json::Value::Number(serde_json::Number::from_f64(1e300).unwrap());
+        let why = CompositionTemplate::read(&json.to_string()).unwrap_err();
+        assert!(why.contains("number out of range"), "{why}");
+
+        // In a person's folder: left out, and a good one beside it read.
+        let dir = std::env::temp_dir().join(format!("klipp-hostile-chain-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut bad = good();
+        bad.id = Uuid::new_v4();
+        bad.name = "Plugged".into();
+        bad.audio.as_mut().unwrap().steps[0].effect = "lv2:urn:gx_amp".into();
+        std::fs::write(dir.join("plugged.klipptemplate"), serde_json::to_string(&bad).unwrap()).unwrap();
+        let mut mine = good();
+        mine.id = Uuid::new_v4();
+        mine.name = "My clean".into();
+        std::fs::write(dir.join("mine.klipptemplate"), serde_json::to_string(&mine).unwrap()).unwrap();
+        let store = CompositionTemplateStore::load(Some(dir.clone()));
+        assert_eq!(store.audio_chains().map(|t| t.name.as_str()).collect::<Vec<_>>(), ["My clean"]);
+        assert_eq!(store.templates().count() + store.recipes().count(), 0, "an audio chain is neither a composition nor a picture recipe");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// #2886: an audio chain recipe's steps, those asked for in its
+    /// order, each the effect with its settings in the effect's own order
+    /// and a bound one from its control (the default when none is given);
+    /// a step it hasn't got is refused with those it has.
+    #[test]
+    fn an_audio_chain_makes_its_steps() {
+        let r = builtin_audio_chains().into_iter().find(|r| r.name == "Clean Audio").expect("shipped");
+        let all = r.audio_steps(&BTreeMap::new(), None).unwrap();
+        assert_eq!(all.iter().map(|(n, _, e)| (n.as_str(), e.effect_type.as_str())).collect::<Vec<_>>(), [("voice", "voice_isolation"), ("wind", "denoiser"), ("hiss", "denoiser"), ("hum", "hum_removal"), ("deess", "deesser")]);
+        assert_eq!(all[0].2.params, [("reduction".to_string(), 24.0), ("mode".to_string(), 0.0)], "the effect's order, the control's default");
+        let some = r.audio_steps(&BTreeMap::from([("reduction".to_string(), TemplateValue::Number(12.0))]), Some(&["DEESS".into(), "voice".into()])).unwrap();
+        assert_eq!(some.iter().map(|(n, _, _)| n.as_str()).collect::<Vec<_>>(), ["voice", "deess"], "the recipe's order");
+        assert_eq!(some[0].2.params[0], ("reduction".to_string(), 12.0));
+        assert!(r.audio_steps(&BTreeMap::new(), Some(&["reverb".into()])).unwrap_err().contains("has no step \"reverb\""));
     }
 
     /// #2757: the templates Klipp ships load and check as saved ones do;

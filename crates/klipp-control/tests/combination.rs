@@ -127,7 +127,7 @@ fn recipe_op(clip: klipp_core::ClipId, name: &str) -> Op {
         let (ops, placed) = klipp_control::recipes::on_clip(seq, clip, &r, &values)?;
         Ok(klipp_document::ops::RecipeBuild { ops, placed, note: None })
     }));
-    Op::Recipe { clip_id: klipp_document::ops::ClipRef::Id(clip), name: name.into(), slots: BTreeMap::new(), controls: BTreeMap::new(), build: Some(build) }
+    Op::Recipe { clip_id: klipp_document::ops::ClipRef::Id(clip), name: name.into(), slots: BTreeMap::new(), controls: BTreeMap::new(), steps: None, build: Some(build), audio: None }
 }
 
 /// The project's parts, each left out in turn to show it draws.

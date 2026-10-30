@@ -364,7 +364,8 @@ such a file, `assets/titles/ops/lower_third.klipptitle`, which only the
 composition and is refused with a hint to save it again):
 
 * `id`, `name`, `category`, `written_by`.
-* `kind` — `composition` (the default, left out) or `recipe`.
+* `kind` — `composition` (the default, left out), `recipe` or
+  `audio_chain`.
 * `composition_id` and `sequences` — a composition carries its
   sequence and every sequence it nests, so it inserts into any project.
 * `graph` — a recipe's `{ops, checks, check_with}` instead: graph ops
@@ -378,6 +379,16 @@ composition and is refused with a hint to save it again):
   unless it reads as that node's), the harness's checks, and the
   control values the checks run with where the test shot needs other
   values than the defaults.
+* `audio` — an audio chain's `{steps: [{name, effect, params, wet_dry,
+  says}]}` instead (#2886): Klipp's own audio effects (`effect` a type
+  id of the built-in list; an LV2 or OFX plugin is refused), each with
+  the settings it gives by the effect's names, finite (the effect holds
+  each to its range), a mix from 0 to 1, and what a reply says it did;
+  at most 16 steps, each named once. Placed by the `recipe` op, the
+  steps it asks for (all by default) go on the end of the clip's own
+  sound chain in their order, one whose effect the chain has already
+  skipped, as one undo step. Its bindings are
+  `step:<name>.<setting>` from a number control, without a link.
 * `parameters` — by name: `{label, default, range?, choices}`, the
   default a `TemplateValue` (`Text`, `Color`, `Number`, `Bool`, `Enum`).
 * `slots` — by name: `{label, kind}`, kind `media`, `clip`, `title`,

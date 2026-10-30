@@ -1194,10 +1194,18 @@ pub enum Op {
         slots: std::collections::BTreeMap<String, serde_json::Value>,
         #[serde(default)]
         controls: std::collections::BTreeMap<String, serde_json::Value>,
+        /// An audio chain recipe's steps to add (#2886), by name; all of
+        /// them when left out.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        steps: Option<Vec<String>>,
         /// What builds it into a clip, bound by whoever resolves the op
         /// (the socket, which reads the recipe files): never sent.
         #[serde(skip)]
         build: Option<RecipeBuilder>,
+        /// An audio chain recipe's effects (#2886), worked out the same
+        /// way: never sent.
+        #[serde(skip)]
+        audio: Option<AudioSteps>,
     },
     /// A lower third: `name`, and `role` under it, bottom left inside
     /// title-safe, for `secs` from `at`, fading in and out. It goes on a
@@ -4458,6 +4466,16 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             }
             template_link(i, clip, control.as_deref(), target.as_deref(), action.as_deref(), *value)
         }
+        Op::Recipe { clip_id, name, audio: Some(AudioSteps(steps)), .. } => {
+            let (_, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
+            let steps = steps.clone().map_err(|why| refuse(i, why, "title_templates lists each recipe's steps and controls"))?;
+            let (added, edit) = add_audio_steps(seq, pool, i, clip, &steps, "Recipe")?;
+            if added.is_empty() {
+                return Err(refuse(i, "the sound already has every effect these steps add", "nothing to add"));
+            }
+            let said: Vec<&str> = added.iter().map(|(_, says)| *says).collect();
+            Ok((format!("{} on the sound of {}: {}", quoted(name), clip_name(seq, pool, clip), said.join(", ")), edit, vec![clip.id]))
+        }
         Op::Recipe { clip_id, name, build, .. } => {
             let (_, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
             let build = build.as_ref().ok_or_else(|| refuse(i, format!("there is no recipe \"{name}\""), "title_templates lists the recipes"))?;
@@ -7031,6 +7049,12 @@ impl PartialEq for RecipeMaker {
         std::sync::Arc::ptr_eq(&self.0, &other.0)
     }
 }
+
+/// An audio chain recipe's steps as the effects they add (#2886), each
+/// with its name and what it says, or why they can't be: worked out by
+/// whoever resolves the op from the recipe file and the op's controls.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AudioSteps(pub Result<Vec<(String, String, klipp_core::AudioEffectInstance)>, String>);
 
 /// What a recipe's builder gives (#2758): the graph ops, the instance its
 /// frame keeps, and anything the reply says beside (a subject matte the
@@ -10889,6 +10913,10 @@ struct CleanFlags {
     deess: bool,
 }
 
+/// The steps of Klipp's own Clean Audio recipe (#2886) the flags ask
+/// for, added to the clip's sound: voice isolation; else the denoiser
+/// for wind (stronger) or hiss, one of it; hum removal; the de-esser.
+/// Its own file, never one saved under that name.
 fn clean_audio(seq: &Sequence, pool: &MediaPool, i: usize, given: &Clip, flags: CleanFlags) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
     let CleanFlags { voice, reduction_db, wind, hiss, hum, deess } = flags;
     let clip = sound_settings_clip(seq, given);
@@ -10898,54 +10926,65 @@ fn clean_audio(seq: &Sequence, pool: &MediaPool, i: usize, given: &Clip, flags: 
     if !(voice || wind || hiss || hum || deess) {
         return Err(refuse(i, "nothing to clean", "set voice, wind, hiss, hum or deess"));
     }
-    let mk = |effect_type: &str, params: Vec<(&str, f32)>| klipp_core::AudioEffectInstance {
-        effect_type: effect_type.to_string(),
-        enabled: true,
-        wet_dry: 1.0,
-        params: params.into_iter().map(|(k, v)| (k.to_string(), v)).collect(),
-    };
-    let mut chain = clip.audio_effects.clone();
-    let has = |chain: &[klipp_core::AudioEffectInstance], t: &str| chain.iter().any(|e| e.effect_type == t);
-    let mut said: Vec<String> = Vec::new();
-    if voice && !has(&chain, "voice_isolation") {
-        let db = reduction_db.unwrap_or(24.0).clamp(0.0, 60.0);
-        chain.push(mk("voice_isolation", vec![("reduction", db), ("mode", 0.0)]));
-        said.push(if wind || hiss {
-            format!("speech isolated from the noise, wind and hiss included (Voice Isolation, {db:.0} dB)")
-        } else {
-            format!("speech isolated from the noise (Voice Isolation, {db:.0} dB)")
-        });
+    let recipe = klipp_timeline::composition_template::builtin_audio_chains().into_iter().find(|r| r.name == "Clean Audio").ok_or_else(|| refuse(i, "Klipp's Clean Audio recipe is missing", "report it"))?;
+    // With Voice Isolation it has wind and hiss covered; wind and hiss
+    // are one denoiser, so two flags do not stack two reducers.
+    let mut want: Vec<String> = Vec::new();
+    if voice {
+        want.push("voice".into());
     }
-    // Wind and hiss go to the Broadband Denoiser's presets, wind the
-    // stronger; one of it, so two flags do not stack two reducers. With
-    // Voice Isolation on the clip it has them covered.
-    if (wind || hiss) && !voice && !has(&chain, "denoiser") {
-        let (strength, floor, wind_amount, window) = if wind { (1.0, 0.03, 1.0, 1.0) } else { (0.85, 0.06, 0.0, 0.5) };
-        chain.push(mk("denoiser", vec![("strength", strength), ("floor", floor), ("wind", wind_amount), ("profile_seconds", window)]));
-        said.push(if wind { "wind and rumble reduced".into() } else { "hiss reduced".into() });
+    if (wind || hiss) && !voice {
+        want.push(if wind { "wind" } else { "hiss" }.into());
     }
-    if hum && !has(&chain, "hum_removal") {
-        chain.push(mk("hum_removal", vec![("fundamental_hz", 50.0), ("harmonics", 4.0), ("q", 30.0)]));
-        said.push("mains hum removed".into());
+    if hum {
+        want.push("hum".into());
     }
-    if deess && !has(&chain, "deesser") {
-        chain.push(mk("deesser", vec![("frequency", 6500.0), ("threshold", -24.0), ("reduction", 6.0), ("bandwidth", 1.0)]));
-        said.push("sibilance tamed".into());
+    if deess {
+        want.push("deess".into());
     }
-    if said.is_empty() {
+    let db = reduction_db.unwrap_or(24.0).clamp(0.0, 60.0);
+    let values = std::collections::BTreeMap::from([("reduction".to_string(), klipp_core::TemplateValue::Number(f64::from(db)))]);
+    let steps = recipe.audio_steps(&values, Some(&want)).map_err(|why| refuse(i, why, "report it"))?;
+    let (added, edit) = add_audio_steps(seq, pool, i, given, &steps, "Clean Audio")?;
+    if added.is_empty() {
         return Err(refuse(i, "the sound already has these cleaners", "nothing to add"));
+    }
+    let said: Vec<String> = added
+        .iter()
+        .map(|(step, says)| match *step {
+            "voice" if wind || hiss => format!("speech isolated from the noise, wind and hiss included (Voice Isolation, {db:.0} dB)"),
+            "voice" => format!("speech isolated from the noise (Voice Isolation, {db:.0} dB)"),
+            _ => (*says).to_string(),
+        })
+        .collect();
+    let on = if clip.id == given.id { String::new() } else { " (on the linked audio)".to_string() };
+    let what = format!("clean {}: {}{on}", clip_name(seq, pool, given), said.join(", "));
+    Ok((what, edit, vec![given.id]))
+}
+
+/// `steps` added to the end of the sound chain of the clip holding
+/// `given`'s sound settings (the picture, for a sound linked to one), as
+/// one undo step (#2886):
+/// a step whose effect the chain has already is left out. The steps
+/// added, by name and what each says, and the edit; refused when the
+/// clip has no sound.
+fn add_audio_steps<'a>(seq: &Sequence, pool: &MediaPool, i: usize, given: &Clip, steps: &'a [(String, String, klipp_core::AudioEffectInstance)], description: &'static str) -> Result<(Vec<(&'a str, &'a str)>, EditCommand), Refusal> {
+    let clip = sound_settings_clip(seq, given);
+    if !clip.media_id().and_then(|id| pool.get(&id)).is_some_and(|m| m.has_audio) {
+        return Err(refuse(i, format!("{} has no sound", clip_name(seq, pool, clip)), "name a clip whose media has audio"));
+    }
+    let mut chain = clip.audio_effects.clone();
+    let mut added = Vec::new();
+    for (name, says, effect) in steps {
+        if !chain.iter().any(|e| e.effect_type == effect.effect_type) {
+            chain.push(effect.clone());
+            added.push((name.as_str(), says.as_str()));
+        }
     }
     let mut new_state = crate::history::AudioChainSnapshot::from_clip(clip);
     new_state.audio_effects = chain;
-    let on = if clip.id == given.id { String::new() } else { " (on the linked audio)".to_string() };
-    let what = format!("clean {}: {}{on}", clip_name(seq, pool, given), said.join(", "));
-    let edit = EditCommand::EditAudioChain {
-        clip_id: clip.id,
-        description: "Clean Audio",
-        old_state: crate::history::AudioChainSnapshot::from_clip(clip),
-        new_state,
-    };
-    Ok((what, edit, vec![given.id]))
+    let edit = EditCommand::EditAudioChain { clip_id: clip.id, description, old_state: crate::history::AudioChainSnapshot::from_clip(clip), new_state };
+    Ok((added, edit))
 }
 
 /// A transition between `clip` and the clip after it on its track. The
