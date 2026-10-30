@@ -862,7 +862,7 @@ const MID: (f32, f32) = (0.5, 0.5);
 pub static TITLES: std::sync::LazyLock<Vec<TitleTemplate>> = std::sync::LazyLock::new(|| from_files().chain(CODED.iter().map(Coded::template)).collect());
 
 /// The built-in title templates shipped as files (#2886).
-const FILES: [&str; 8] = [
+const FILES: &[&str] = &[
     include_str!("../../../assets/titles/name_bar.klipptitle"),
     include_str!("../../../assets/titles/clean_line.klipptitle"),
     include_str!("../../../assets/titles/broadcast.klipptitle"),
@@ -871,6 +871,32 @@ const FILES: [&str; 8] = [
     include_str!("../../../assets/titles/stacked.klipptitle"),
     include_str!("../../../assets/titles/documentary.klipptitle"),
     include_str!("../../../assets/titles/location.klipptitle"),
+    include_str!("../../../assets/titles/cinematic.klipptitle"),
+    include_str!("../../../assets/titles/impact.klipptitle"),
+    include_str!("../../../assets/titles/editorial.klipptitle"),
+    include_str!("../../../assets/titles/title_card.klipptitle"),
+    include_str!("../../../assets/titles/minimal.klipptitle"),
+    include_str!("../../../assets/titles/chapter.klipptitle"),
+    include_str!("../../../assets/titles/chapter_number.klipptitle"),
+    include_str!("../../../assets/titles/statement.klipptitle"),
+];
+
+/// The templates being moved to files, as code made them, for the check
+/// that their files make and draw the same (#2886).
+#[doc(hidden)]
+pub fn coded_for_check() -> Vec<TitleTemplate> {
+    CODED_CHECKED.iter().map(Coded::template).collect()
+}
+
+const CODED_CHECKED: &[Coded] = &[
+    Coded { name: "Cinematic", category: "Openers", preview_text: "[Title]", create_data: op_cinematic, fields: f(&["Title"], None, MID) },
+    Coded { name: "Impact", category: "Openers", preview_text: "[BIG TITLE]", create_data: op_impact, fields: f(&["Title"], None, MID) },
+    Coded { name: "Editorial", category: "Openers", preview_text: "[Headline]", create_data: op_editorial, fields: f(&["Headline", "Subtitle"], None, MID) },
+    Coded { name: "Title Card", category: "Openers", preview_text: "[Title]", create_data: op_title_card, fields: f(&["Title", "Subtitle"], None, MID) },
+    Coded { name: "Minimal", category: "Openers", preview_text: "[Title]", create_data: op_minimal, fields: f(&["Title"], None, MID) },
+    Coded { name: "Chapter", category: "Openers", preview_text: "[Chapter title]", create_data: op_chapter, fields: f(&["Chapter", "Chapter title"], None, MID) },
+    Coded { name: "Chapter Number", category: "Openers", preview_text: "[Chapter title]", create_data: op_chapter_number, fields: f(&["Number", "Chapter title"], Some(0), MID) },
+    Coded { name: "Statement", category: "Openers", preview_text: "[BOLD STATEMENT]", create_data: op_statement, fields: f(&["Statement"], Some(0), (0.08, 0.44)) },
 ];
 
 fn from_files() -> impl Iterator<Item = TitleTemplate> {
@@ -892,14 +918,6 @@ fn from_files() -> impl Iterator<Item = TitleTemplate> {
 
 
 const CODED: &[Coded] = &[
-    Coded { name: "Cinematic", category: "Openers", preview_text: "[Title]", create_data: op_cinematic, fields: f(&["Title"], None, MID) },
-    Coded { name: "Impact", category: "Openers", preview_text: "[BIG TITLE]", create_data: op_impact, fields: f(&["Title"], None, MID) },
-    Coded { name: "Editorial", category: "Openers", preview_text: "[Headline]", create_data: op_editorial, fields: f(&["Headline", "Subtitle"], None, MID) },
-    Coded { name: "Title Card", category: "Openers", preview_text: "[Title]", create_data: op_title_card, fields: f(&["Title", "Subtitle"], None, MID) },
-    Coded { name: "Minimal", category: "Openers", preview_text: "[Title]", create_data: op_minimal, fields: f(&["Title"], None, MID) },
-    Coded { name: "Chapter", category: "Openers", preview_text: "[Chapter title]", create_data: op_chapter, fields: f(&["Chapter", "Chapter title"], None, MID) },
-    Coded { name: "Chapter Number", category: "Openers", preview_text: "[Chapter title]", create_data: op_chapter_number, fields: f(&["Number", "Chapter title"], Some(0), MID) },
-    Coded { name: "Statement", category: "Openers", preview_text: "[BOLD STATEMENT]", create_data: op_statement, fields: f(&["Statement"], Some(0), (0.08, 0.44)) },
     Coded { name: "Quote", category: "Captions", preview_text: "[Quote]", create_data: cap_quote, fields: f(&["Quote", "Who said it"], None, MID) },
     Coded { name: "Caption", category: "Captions", preview_text: "[Caption]", create_data: cap_caption, fields: f(&["Caption"], Some(0), (0.5, 0.885)) },
     Coded { name: "Subtitle", category: "Captions", preview_text: "[Subtitle]", create_data: cap_subtitle, fields: f(&["Subtitle"], None, (0.5, 0.9)) },
@@ -986,14 +1004,38 @@ impl TitleTemplate {
 mod tests {
     use super::*;
 
-    /// #2886: every built-in file reads, is listed first in its order,
-    /// and makes its title, its fields published, on each frame.
+    /// #2886: each template read from its file makes the title its code
+    /// made, on a wide, a tall and a square frame, with its name,
+    /// category, card text and fields.
+    #[test]
+    fn every_moved_file_makes_what_its_code_made() {
+        let coded = coded_for_check();
+        assert!(!coded.is_empty());
+        for c in &coded {
+            let t = builtin(&c.name).unwrap_or_else(|| panic!("{} is listed", c.name));
+            assert_eq!((t.category.as_str(), t.preview_text.as_str(), &t.fields.names, t.fields.accent, t.fields.anchor, t.grow), (c.category.as_str(), c.preview_text.as_str(), &c.fields.names, c.fields.accent, c.fields.anchor, c.grow), "{}", c.name);
+            for (w, h) in [(1920, 1080), (1080, 1920), (1080, 1080)] {
+                assert_eq!(t.data_for(w, h), c.data_for(w, h), "{} at {w}x{h}", c.name);
+            }
+        }
+    }
+
+    /// #2886: every built-in Klipp ships is listed, by name in its order:
+    /// a file that doesn't read is logged and left out in a release, so
+    /// this is where a dropped one fails. Each file reads and makes its
+    /// title, its fields published, on each frame.
     #[test]
     fn every_built_in_file_reads_and_makes_its_title() {
-        assert_eq!(from_files().count(), FILES.len());
-        let names: Vec<&str> = TITLES.iter().take(FILES.len()).map(|t| t.name.as_str()).collect();
-        assert_eq!(names, ["Name Bar", "Clean Line", "Broadcast", "Accent Block", "Pill", "Stacked", "Documentary", "Location"]);
-        assert_eq!(TITLES.len(), 38);
+        const ALL: [&str; 38] = [
+            "Name Bar", "Clean Line", "Broadcast", "Accent Block", "Pill", "Stacked", "Documentary", "Location",
+            "Cinematic", "Impact", "Editorial", "Title Card", "Minimal", "Chapter", "Chapter Number", "Statement",
+            "Quote", "Caption", "Subtitle", "Callout", "Note",
+            "Credits Roll", "End Credits", "End Card", "Cast", "Thanks for Watching", "Up Next",
+            "Hook", "Bold Caption", "Highlight", "Question", "Tip", "Handle", "Subscribe",
+            "Slate", "Timecode", "Watermark", "Label",
+        ];
+        assert_eq!(TITLES.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(), ALL);
+        assert_eq!(from_files().count(), FILES.len(), "every file reads");
         for t in TITLES.iter().take(FILES.len()) {
             for (w, h) in [(1920, 1080), (1080, 1920), (1080, 1080)] {
                 let td = t.data_for(w, h);

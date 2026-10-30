@@ -120,6 +120,8 @@ mod title_blend_mask_stack;
 mod title_effects_spread;
 #[path = "../title_pinned_to_surface.rs"]
 mod title_pinned_to_surface;
+#[path = "../title_files_gpu.rs"]
+mod title_files_gpu;
 #[path = "../title_templates_gpu.rs"]
 mod title_templates_gpu;
 #[path = "../title_image_gpu.rs"]

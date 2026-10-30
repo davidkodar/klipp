@@ -1,0 +1,149 @@
+{
+  "category": "Openers",
+  "data": {
+    "animation_type": "Static",
+    "background": "None",
+    "next_object_id": 1,
+    "objects": [
+      {
+        "content": {
+          "TextBox": {
+            "alignment": "Center",
+            "ass_style_name": null,
+            "baseline_shift": 0.0,
+            "case_transform": "Uppercase",
+            "char_animation": null,
+            "chromatic_aberration_px": 0.0,
+            "color": [
+              255,
+              255,
+              255,
+              255
+            ],
+            "columns": 1,
+            "drop_cap_scale": 0.0,
+            "extrusion": null,
+            "font_name": "Anton",
+            "font_size": 180.0,
+            "font_style": "Regular",
+            "glitch_intensity": 0.0,
+            "gradient": {
+              "bottom_color": [
+                214,
+                220,
+                230,
+                255
+              ],
+              "enabled": true,
+              "top_color": [
+                255,
+                255,
+                255,
+                255
+              ]
+            },
+            "line_spacing": 1.0,
+            "outline_write_on": 1.0,
+            "pattern_fill": null,
+            "pattern_fill_enabled": true,
+            "strikethrough": false,
+            "style_runs": [],
+            "text": "[Big title]",
+            "text_direction": "Ltr",
+            "text_path": null,
+            "texture_fill": null,
+            "tracking": 2.0,
+            "underline": false,
+            "vertical_layout": false,
+            "write_on": 1.0
+          }
+        },
+        "fx": {
+          "motion": {
+            "enter": {
+              "amount": null,
+              "anchor": null,
+              "delay_secs": 0.0,
+              "distance": 0.6,
+              "duration_secs": 0.55,
+              "easing": "OutExpo",
+              "kind": "MaskRise",
+              "stagger": "Word",
+              "stagger_secs": 0.08
+            },
+            "exit": {
+              "amount": null,
+              "anchor": null,
+              "delay_secs": 0.0,
+              "distance": 0.6,
+              "duration_secs": 0.4,
+              "easing": "InCubic",
+              "kind": "MaskDrop",
+              "stagger": "None",
+              "stagger_secs": 0.05
+            }
+          },
+          "shadows": [
+            {
+              "blur": 12.0,
+              "blur_keyframes": [],
+              "color": [
+                0,
+                0,
+                0,
+                120
+              ],
+              "enabled": true,
+              "offset_x": 0.0,
+              "offset_x_keyframes": [],
+              "offset_y": 3.0,
+              "offset_y_keyframes": []
+            }
+          ]
+        },
+        "id": 0,
+        "locked": false,
+        "name": "Text 1",
+        "opacity": 1.0,
+        "opacity_keyframes": [],
+        "transform": {
+          "anchor_norm": {
+            "x": 0.5,
+            "y": 0.5
+          },
+          "anchor_x_keyframes": [],
+          "anchor_y_keyframes": [],
+          "center": {
+            "x": 0.5,
+            "y": 0.5
+          },
+          "center_x_keyframes": [],
+          "center_y_keyframes": [],
+          "rotation": 0.0,
+          "rotation_keyframes": [],
+          "size": {
+            "x": 1.0,
+            "y": 1.0
+          },
+          "size_x_keyframes": [],
+          "size_y_keyframes": []
+        },
+        "visible": true
+      }
+    ]
+  },
+  "design": {
+    "anchor": [
+      0.5,
+      0.5
+    ],
+    "fields": [
+      "Title"
+    ],
+    "grow": true,
+    "preview": "[BIG TITLE]"
+  },
+  "format": 2,
+  "name": "Impact",
+  "written_by": "built-in"
+}
