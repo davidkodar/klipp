@@ -240,6 +240,9 @@ impl DocumentView<'_> {
                 seq.tracks.insert(idx, track.clone());
                 seq.renumber_tracks();
             }
+            EditCommand::SetRouting { old, .. } => {
+                self.sequences[self.active].set_routing(old);
+            }
             EditCommand::SetTrackSettings { changes } => {
                 let seq = &mut self.sequences[self.active];
                 for (id, old, _) in changes {
@@ -977,6 +980,9 @@ impl DocumentView<'_> {
                     seq.tracks.remove(*index);
                     seq.renumber_tracks();
                 }
+            }
+            EditCommand::SetRouting { new, .. } => {
+                self.sequences[self.active].set_routing(new);
             }
             EditCommand::SetTrackSettings { changes } => {
                 let seq = &mut self.sequences[self.active];

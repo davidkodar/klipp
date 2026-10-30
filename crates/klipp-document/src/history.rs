@@ -193,6 +193,9 @@ pub enum EditCommand {
     /// track's effects edited, or one track's attributes pasted onto
     /// several, is one step.
     SetTrackSettings { changes: Vec<(klipp_core::TrackId, klipp_timeline::TrackSettings, klipp_timeline::TrackSettings)> },
+    /// The sequence's aux buses and every track's sends, old and new
+    /// (#2861): a bus taken out takes the sends to it in the same step.
+    SetRouting { old: Box<klipp_timeline::routing::Routing>, new: Box<klipp_timeline::routing::Routing> },
     /// The sequence's brief, replaced whole.
     SetBrief { old: Option<Box<klipp_timeline::Brief>>, new: Option<Box<klipp_timeline::Brief>> },
     /// The sequence's edit plan, replaced whole.
@@ -896,6 +899,7 @@ impl EditCommand {
             EditCommand::AddTrack { .. } => "Add Track",
             EditCommand::RemoveTrack { .. } => "Remove Track",
             EditCommand::SetTrackSettings { .. } => "Track Settings",
+            EditCommand::SetRouting { .. } => "Aux Routing",
             EditCommand::SetBrief { .. } => "Set Brief",
             EditCommand::SetEditPlan { .. } => "Set Edit Plan",
             EditCommand::SetReviews { .. } => "Review Finding",

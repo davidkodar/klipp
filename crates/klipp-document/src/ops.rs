@@ -231,6 +231,15 @@ pub enum GradeOn {
     Named(String),
 }
 
+/// An aux bus (#2861), by its index among the sequence's buses or its
+/// name; as an output, "master" is master.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum BusRef {
+    Index(usize),
+    Name(String),
+}
+
 /// Which track a clip goes on.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
@@ -1915,6 +1924,56 @@ pub enum Op {
         #[serde(default)]
         remove: bool,
     },
+    /// An aux bus (#2861): with no `bus`, a new one called `name`; with
+    /// `bus` (its name or index), that one changed: `name` renames it,
+    /// `volume_db`, `pan` and `mute` set its fader, `output` sends it to
+    /// another bus or "master", and `effect`, `preset`, `params` and
+    /// `bypass` edit its effects as [`Op::TrackAudio`] edits a track's.
+    /// `remove` takes the effect named off, or with no effect the bus,
+    /// and every send to it. One undo step.
+    AuxBus {
+        #[serde(default)]
+        bus: Option<BusRef>,
+        #[serde(default)]
+        name: Option<String>,
+        #[serde(default)]
+        volume_db: Option<f32>,
+        #[serde(default)]
+        pan: Option<f32>,
+        #[serde(default)]
+        mute: Option<bool>,
+        #[serde(default)]
+        output: Option<BusRef>,
+        #[serde(default)]
+        effect: Option<String>,
+        #[serde(default)]
+        preset: Option<String>,
+        #[serde(default, deserialize_with = "audio_params")]
+        params: std::collections::BTreeMap<String, f32>,
+        #[serde(default)]
+        bypass: Option<bool>,
+        #[serde(default)]
+        remove: bool,
+    },
+    /// A track's send to an aux bus (#2861): added (after the fader, at
+    /// 0 dB) or changed: `level_db`, `pre_fader` (taken before the
+    /// track's fader and pan, so they don't change it), `mute`, and
+    /// `keys` [{at, db}] for its level over the sequence, replacing its
+    /// keys (empty clears them). `remove` takes it off. One undo step.
+    Send {
+        track: TrackRef,
+        bus: BusRef,
+        #[serde(default)]
+        level_db: Option<f32>,
+        #[serde(default)]
+        pre_fader: Option<bool>,
+        #[serde(default)]
+        mute: Option<bool>,
+        #[serde(default)]
+        keys: Option<Vec<AutomationKey>>,
+        #[serde(default)]
+        remove: bool,
+    },
     /// A clip's own audio chain, as [`Op::TrackAudio`] is a track's
     /// (#2485): a built-in effect or an installed plug-in added, set,
     /// bypassed or taken off, on the clip that holds its sound settings
@@ -2421,7 +2480,7 @@ pub enum GradientShape {
 /// Serialized operation tags accepted by `Op`. Keep this in sync with the
 /// variants; the test below catches additions and renames.
 pub const OP_NAMES: &[&str] = &[
-    "graphics", "vector_path", "connector", "place", "add_track", "remove_track", "set_track", "track_automation", "trim", "j_cut", "l_cut", "split", "join", "remove", "move", "cut",
+    "graphics", "vector_path", "connector", "place", "add_track", "remove_track", "set_track", "track_automation", "aux_bus", "send", "trim", "j_cut", "l_cut", "split", "join", "remove", "move", "cut",
     "captions", "audio", "volume", "duck", "lower_third", "set_text", "grade", "effect", "redact",
     "slip", "slide", "pin", "role", "match", "matte", "format", "stabilize", "reframe", "zoom", "pan", "follow", "refit", "highlight",
     "ramp", "freeze", "grade_group", "remove_grade_group", "look", "qualify", "zones", "retime", "mark", "stretch", "replace", "track_audio", "clip_audio", "clean_audio",
@@ -4199,6 +4258,11 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             replace_media(seq, pool, fps, i, clip, *media_id, *source_in)
         }
         Op::TrackAudio { track, effect, preset, params, bypass, remove } => track_audio(seq, fps, i, track, AudioChainEdit { effect, preset: preset.as_deref(), params, bypass: *bypass, remove: *remove }, transcripts),
+        Op::AuxBus { bus, name, volume_db, pan, mute, output, effect, preset, params, bypass, remove } => {
+            let fx = effect.as_deref().map(|effect| AudioChainEdit { effect, preset: preset.as_deref(), params, bypass: *bypass, remove: *remove });
+            aux_bus(seq, i, bus.as_ref(), AuxBusSet { name: name.as_deref(), volume_db: *volume_db, pan: *pan, mute: *mute, output: output.as_ref(), remove: *remove && effect.is_none() }, fx, transcripts)
+        }
+        Op::Send { track, bus, level_db, pre_fader, mute, keys, remove } => send(seq, i, track, bus, SendSet { level_db: *level_db, pre_fader: *pre_fader, mute: *mute, keys: keys.as_deref(), remove: *remove }),
         Op::ClipAudio { clip_id, effect, preset, params, bypass, remove } => {
             let (_, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
             clip_audio(seq, pool, i, clip, AudioChainEdit { effect, preset: preset.as_deref(), params, bypass: *bypass, remove: *remove }, transcripts)
@@ -8210,6 +8274,215 @@ fn track_audio(seq: &Sequence, fps: Fps, i: usize, track: &TrackRef, edit: Audio
         what.push_str(", after every clip's own chain");
     }
     Ok((what, EditCommand::SetTrackSettings { changes: vec![(t.id, old, new)] }, Vec::new()))
+}
+
+/// What [`Op::AuxBus`] sets on the bus itself.
+struct AuxBusSet<'a> {
+    name: Option<&'a str>,
+    volume_db: Option<f32>,
+    pan: Option<f32>,
+    mute: Option<bool>,
+    output: Option<&'a BusRef>,
+    /// The bus taken out.
+    remove: bool,
+}
+
+/// What [`Op::Send`] sets on the send.
+struct SendSet<'a> {
+    level_db: Option<f32>,
+    pre_fader: Option<bool>,
+    mute: Option<bool>,
+    keys: Option<&'a [AutomationKey]>,
+    remove: bool,
+}
+
+/// The index of the bus `bus` names among `buses`: by index, or by name
+/// with case not minded.
+fn resolve_bus(buses: &[klipp_timeline::AuxBus], bus: &BusRef, i: usize) -> Result<usize, Refusal> {
+    let names = || {
+        if buses.is_empty() {
+            "there are no buses: make one with aux_bus {name}".to_string()
+        } else {
+            format!("name one of {}", buses.iter().enumerate().map(|(k, b)| format!("{k} \"{}\"", b.name)).collect::<Vec<_>>().join(", "))
+        }
+    };
+    match bus {
+        BusRef::Index(k) if *k < buses.len() => Ok(*k),
+        BusRef::Index(k) => Err(refuse(i, format!("no bus {k}"), names())),
+        BusRef::Name(n) => buses.iter().position(|b| b.name.eq_ignore_ascii_case(n.trim())).ok_or_else(|| refuse(i, format!("no bus \"{n}\""), names())),
+    }
+}
+
+/// A level in dB from an op as gain: -60 and below silence, up to +12.
+fn bus_level(i: usize, db: f32, what: &str) -> Result<f32, Refusal> {
+    if !db.is_finite() || db > 12.0 {
+        return Err(refuse(i, format!("{what} {db} dB"), "give a level up to +12 dB, -60 or below for silence"));
+    }
+    Ok(if db <= -60.0 { 0.0 } else { db_to_linear(db) })
+}
+
+/// [`Op::AuxBus`]: a bus made, changed or taken out, with the sends to
+/// one taken out going with it.
+fn aux_bus(seq: &Sequence, i: usize, bus: Option<&BusRef>, set: AuxBusSet, fx: Option<AudioChainEdit>, transcripts: &dyn Transcripts) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
+    use klipp_timeline::routing::{MAX_BUSES, MAX_BUS_EFFECTS, MAX_BUS_NAME};
+    let old = seq.routing();
+    let mut r = old.clone();
+    let mut what = Vec::new();
+    let at = match bus {
+        Some(b) => resolve_bus(&r.buses, b, i)?,
+        None => {
+            let name = set.name.map(str::trim).filter(|n| !n.is_empty()).ok_or_else(|| refuse(i, "a new bus without a name", "give name, or bus to change one there is"))?;
+            if r.buses.len() >= MAX_BUSES {
+                return Err(refuse(i, format!("the sequence has {MAX_BUSES} buses, as many as it may"), "send to one of them, or take one out"));
+            }
+            if r.buses.iter().any(|b| b.name.eq_ignore_ascii_case(name)) {
+                return Err(refuse(i, format!("there is a bus \"{name}\" already"), "change it with bus, or give another name"));
+            }
+            r.buses.push(klipp_timeline::AuxBus::new(&name.chars().take(MAX_BUS_NAME).collect::<String>()));
+            what.push("added".to_string());
+            r.buses.len() - 1
+        }
+    };
+    if set.remove {
+        if bus.is_none() {
+            return Err(refuse(i, "nothing to take out", "name the bus with bus"));
+        }
+        let gone = r.buses.remove(at);
+        for b in &mut r.buses {
+            if b.output == Some(gone.id) {
+                b.output = None;
+            }
+        }
+        let mut sends = 0;
+        for (_, s) in &mut r.sends {
+            let before = s.len();
+            s.retain(|x| x.bus != gone.id);
+            sends += before - s.len();
+        }
+        r.sends.retain(|(_, s)| !s.is_empty());
+        let and = if sends > 0 { format!(", with the {sends} send{} to it", if sends == 1 { "" } else { "s" }) } else { String::new() };
+        return Ok((format!("bus \"{}\" taken out{and}", gone.name), EditCommand::SetRouting { old: Box::new(old), new: Box::new(r) }, Vec::new()));
+    }
+    if let (Some(name), Some(_)) = (set.name, bus) {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(refuse(i, "an empty name", "give the bus a name"));
+        }
+        if r.buses.iter().enumerate().any(|(k, b)| k != at && b.name.eq_ignore_ascii_case(name)) {
+            return Err(refuse(i, format!("there is a bus \"{name}\" already"), "give another name"));
+        }
+        r.buses[at].name = name.chars().take(MAX_BUS_NAME).collect();
+        what.push("renamed".into());
+    }
+    if let Some(db) = set.volume_db {
+        r.buses[at].volume = bus_level(i, db, "level")?;
+        what.push(format!("at {}", klipp_timeline::routing::level_text(r.buses[at].volume)));
+    }
+    if let Some(p) = set.pan {
+        if !(-1.0..=1.0).contains(&p) {
+            return Err(refuse(i, format!("pan {p}"), "give pan from -1 (left) to 1 (right)"));
+        }
+        r.buses[at].pan = p;
+        what.push(format!("pan {p:+.2}"));
+    }
+    if let Some(m) = set.mute {
+        r.buses[at].muted = m;
+        what.push(if m { "muted" } else { "unmuted" }.into());
+    }
+    if let Some(out) = set.output {
+        let id = r.buses[at].id;
+        r.buses[at].output = match out {
+            BusRef::Name(n) if n.trim().eq_ignore_ascii_case("master") => None,
+            other => {
+                let to = r.buses[resolve_bus(&r.buses, other, i)?].id;
+                if klipp_timeline::routing::route_loops(&r.buses, id, to) {
+                    return Err(refuse(i, "that output makes a loop: the bus would be fed what it puts out", "send it to master or to a bus that does not feed it"));
+                }
+                Some(to)
+            }
+        };
+        what.push("output set".into());
+    }
+    if let Some(edit) = fx {
+        let (effect, params) = audio_chain_effect(i, &edit, transcripts)?;
+        let on = format!("bus \"{}\"", r.buses[at].name);
+        let said = edit_audio_chain(i, &mut r.buses[at].effects, &on, &effect, &params, edit.bypass, edit.remove)?;
+        if r.buses[at].effects.len() > MAX_BUS_EFFECTS {
+            return Err(refuse(i, format!("{on} has {MAX_BUS_EFFECTS} effects, as many as it may"), "take one off first"));
+        }
+        if r.buses[at].effects.iter().any(|inst| inst.effect_type == "normalize" && inst.enabled && inst.params.iter().find(|(k, _)| k == "mode").is_none_or(|(_, v)| *v > 0.5)) {
+            return Err(refuse(i, "a Normalize on a bus has no one clip to measure", "on a bus set mode 0 (ride: a leveler)"));
+        }
+        what.push(said);
+    }
+    if what.is_empty() {
+        return Err(refuse(i, "nothing to set", "give name, volume_db, pan, mute, output, an effect, or remove"));
+    }
+    let text = format!("bus {}: {}; now {}", at, what.join(", "), klipp_timeline::routing::bus_text(&r.buses, &r.buses[at]));
+    Ok((text, EditCommand::SetRouting { old: Box::new(old), new: Box::new(r) }, Vec::new()))
+}
+
+/// [`Op::Send`]: a track's send to a bus added, changed or taken off.
+fn send(seq: &Sequence, i: usize, track: &TrackRef, bus: &BusRef, set: SendSet) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
+    use klipp_timeline::routing::MAX_SENDS;
+    let ti = resolve_track(seq, track, i)?;
+    let t = &seq.tracks[ti];
+    if !matches!(t.kind, TrackKind::Audio | TrackKind::Video) {
+        return Err(refuse(i, format!("track {ti} {} carries no sound", quoted(&t.name)), "name an audio track, or a video track whose clips play their own sound"));
+    }
+    let b = resolve_bus(&seq.buses, bus, i)?;
+    let id = seq.buses[b].id;
+    let old = seq.routing();
+    let mut r = old.clone();
+    if !r.sends.iter().any(|(tid, _)| *tid == t.id) {
+        r.sends.push((t.id, Vec::new()));
+    }
+    let sends = &mut r.sends.iter_mut().find(|(tid, _)| *tid == t.id).expect("pushed above").1;
+    let at = sends.iter().position(|s| s.bus == id);
+    let who = format!("track {ti} {}", quoted(&t.name));
+    if set.remove {
+        let k = at.ok_or_else(|| refuse(i, format!("{who} has no send to \"{}\"", seq.buses[b].name), "nothing to take off"))?;
+        sends.remove(k);
+        r.sends.retain(|(_, s)| !s.is_empty());
+        return Ok((format!("{who}'s send to \"{}\" taken off", seq.buses[b].name), EditCommand::SetRouting { old: Box::new(old), new: Box::new(r) }, Vec::new()));
+    }
+    let k = match at {
+        Some(k) => k,
+        None => {
+            if sends.len() >= MAX_SENDS {
+                return Err(refuse(i, format!("{who} has {MAX_SENDS} sends, as many as it may"), "take one off first"));
+            }
+            sends.push(klipp_timeline::AuxSend::new(id));
+            sends.len() - 1
+        }
+    };
+    let s = &mut sends[k];
+    if let Some(db) = set.level_db {
+        s.level = bus_level(i, db, "level")?;
+    }
+    if let Some(p) = set.pre_fader {
+        s.pre_fader = p;
+    }
+    if let Some(m) = set.mute {
+        s.muted = m;
+    }
+    if let Some(keys) = set.keys {
+        let mut kfs: Vec<klipp_core::Keyframe> = Vec::new();
+        for key in keys {
+            if !(key.at >= 0.0 && key.at.is_finite()) {
+                return Err(refuse(i, format!("{} s", key.at), "give times at or after the sequence's start, in seconds"));
+            }
+            let (Some(db), None) = (key.db, key.pan) else {
+                return Err(refuse(i, format!("a key at {:.2} s without db alone", key.at), "give each key {at, db}"));
+            };
+            klipp_core::keyframe::upsert_keyframe(&mut kfs, key.at, bus_level(i, db, "a key at")?);
+        }
+        kfs.sort_by(|a, b| a.time_secs.total_cmp(&b.time_secs));
+        s.keys = kfs;
+    }
+    let s = s.clone();
+    let text = format!("{who} sends to {}", seq.send_text(&s));
+    Ok((text, EditCommand::SetRouting { old: Box::new(old), new: Box::new(r) }, Vec::new()))
 }
 
 /// [`Op::ClipAudio`]: the chain of the clip that holds the sound's
@@ -16942,6 +17215,62 @@ mod tests {
         faded.tracks[1].transitions.push(klipp_timeline::Transition { clip_a_id: sa, clip_b_id: sb, ..tr });
         let err = resolve(&faded, &pool, &[serde_json::from_value(serde_json::json!({ "op": "join", "clip_id": b.0.to_string(), "side": "previous" })).unwrap()]).unwrap_err();
         assert!(err.why.contains("crossfade"), "{}", err.why);
+    }
+
+    /// #2861: buses made, set and taken out, and sends to them, each one
+    /// undo step: a new send is after the fader at 0 dB; an output that
+    /// loops, a 33rd bus, a 17th send and a level over +12 dB are
+    /// refused; a bus taken out takes the sends to it; undo puts it all
+    /// back.
+    #[test]
+    fn buses_and_sends_are_made_by_ops() {
+        let (seq, pool, _, _, _) = fixture();
+        let one = |seq: &Sequence, v: serde_json::Value| resolve(seq, &pool, &[serde_json::from_value(v).unwrap()]);
+        let run = |seq: &Sequence, v: serde_json::Value| {
+            let plan = one(seq, v).unwrap();
+            let EditCommand::SetRouting { new, .. } = &plan.steps[0].edit else { panic!("a routing edit: {:?}", plan.steps[0].edit) };
+            let mut next = seq.clone();
+            next.set_routing(new);
+            (next, plan.steps[0].what.clone())
+        };
+        let (s, said) = run(&seq, serde_json::json!({ "op": "aux_bus", "name": "Verb" }));
+        assert!(said.contains("\"Verb\" +0.0 dB, to master"), "{said}");
+        let (s, _) = run(&s, serde_json::json!({ "op": "aux_bus", "name": "Delay" }));
+        let (s, said) = run(&s, serde_json::json!({ "op": "aux_bus", "bus": "verb", "volume_db": -6, "output": "Delay", "effect": "reverb" }));
+        assert!(said.contains("-6.0 dB") && said.contains("effects reverb") && said.contains("to \"Delay\""), "{said}");
+        let err = one(&s, serde_json::json!({ "op": "aux_bus", "bus": 1, "output": 0 })).unwrap_err();
+        assert!(err.why.contains("loop"), "{}", err.why);
+        assert!(one(&s, serde_json::json!({ "op": "aux_bus", "name": "verb" })).unwrap_err().why.contains("already"));
+        assert!(one(&s, serde_json::json!({ "op": "aux_bus", "bus": "Echo", "mute": true })).unwrap_err().hint.contains("0 \"Verb\""));
+
+        let (s, said) = run(&s, serde_json::json!({ "op": "send", "track": "audio", "bus": "Verb" }));
+        assert!(said.contains("sends to \"Verb\" +0.0 dB"), "post-fader at 0 dB: {said}");
+        let a = s.tracks.iter().position(|t| t.kind == TrackKind::Audio).unwrap();
+        assert_eq!(s.tracks[a].sends, vec![klipp_timeline::AuxSend::new(s.buses[0].id)]);
+        let (s, said) = run(&s, serde_json::json!({ "op": "send", "track": "audio", "bus": 0, "level_db": -6, "pre_fader": true, "keys": [{ "at": 0.0, "db": 0 }, { "at": 2.0, "db": -60 }] }));
+        assert!(said.contains("-6.0 dB pre-fader with 2 level keys"), "{said}");
+        assert_eq!(s.tracks[a].sends.len(), 1, "the same send changed");
+        assert!(one(&s, serde_json::json!({ "op": "send", "track": "audio", "bus": 0, "level_db": 13 })).unwrap_err().hint.contains("+12 dB"));
+        let (s, _) = run(&s, serde_json::json!({ "op": "send", "track": "audio", "bus": "Delay" }));
+
+        let plan = one(&s, serde_json::json!({ "op": "aux_bus", "bus": "Verb", "remove": true })).unwrap();
+        assert!(plan.steps[0].what.contains("with the 1 send to it"), "{}", plan.steps[0].what);
+        let EditCommand::SetRouting { old, new } = &plan.steps[0].edit else { panic!() };
+        let mut gone = s.clone();
+        gone.set_routing(new);
+        assert_eq!(gone.buses.len(), 1);
+        assert_eq!(gone.tracks[a].sends.len(), 1, "the send to Delay stays");
+        gone.set_routing(old);
+        assert_eq!(gone.routing(), s.routing(), "undo puts it back");
+
+        let mut full = s.clone();
+        full.buses.extend((0..30).map(|k| klipp_timeline::AuxBus::new(&format!("b{k}"))));
+        assert!(one(&full, serde_json::json!({ "op": "aux_bus", "name": "one more" })).unwrap_err().why.contains("32 buses"));
+        let ids: Vec<_> = full.buses.iter().map(|b| b.id).collect();
+        full.tracks[a].sends = ids[..16].iter().map(|id| klipp_timeline::AuxSend::new(*id)).collect();
+        assert!(one(&full, serde_json::json!({ "op": "send", "track": "audio", "bus": 20 })).unwrap_err().why.contains("16 sends"));
+        let (_, said) = run(&s, serde_json::json!({ "op": "send", "track": "audio", "bus": "Delay", "remove": true }));
+        assert!(said.contains("taken off"), "{said}");
     }
 
     /// #497: a track removed in one undo step. An empty one at once; one

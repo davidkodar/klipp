@@ -57,6 +57,11 @@ pub(crate) fn timeline_text(
     if let Some(g) = seq.timeline_grade().filter(|_| timeline_graded) {
         let _ = writeln!(out, "Timeline grade: {} nodes, over every clip after its own and its track's.", g.nodes.len());
     }
+    // The aux buses (#2861), each track's sends on its own line below.
+    if !seq.buses.is_empty() {
+        let said: Vec<String> = seq.buses.iter().enumerate().map(|(k, b)| format!("[{k}] {}", seq.bus_text(b))).collect();
+        let _ = writeln!(out, "Aux buses: {}.", said.join("; "));
+    }
     let _ = writeln!(out, "Tracks, top first. Times are seconds and frames at {:.3} fps.", fps);
     if view.narrowed() {
         let mut said = Vec::new();
@@ -95,6 +100,10 @@ pub(crate) fn timeline_text(
             }
             said.extend(fx.audio.iter().map(|e| if e.enabled { word(&e.effect_type) } else { format!("{} (bypassed)", word(&e.effect_type)) }));
             let _ = write!(head, "  track effects: {}", said.join(", "));
+        }
+        if !t.sends.is_empty() {
+            let said: Vec<String> = t.sends.iter().map(|s| seq.send_text(s)).collect();
+            let _ = write!(head, "  sends to: {}", said.join(", "));
         }
         if t.clips.is_empty() {
             head.push_str("  (empty)");
@@ -640,6 +649,24 @@ mod tests {
         seq.timeline_grade_slot().set(Some(graph));
         let text = timeline_text(&seq, &pool, None, 1, TimelineView::default());
         assert!(text.contains("Timeline grade: 3 nodes") && text.contains("grade none of its own, under the timeline's grade"), "{text}");
+    }
+
+    /// #2861: the buses are listed with where they go, and a track's sends
+    /// on its line; a sequence without them says nothing of them.
+    #[test]
+    fn the_buses_and_a_tracks_sends_are_said() {
+        let mut seq = klipp_timeline::Sequence::new_default();
+        let pool = klipp_media::MediaPool::new();
+        assert!(!timeline_text(&seq, &pool, None, 1, TimelineView::default()).contains("Aux buses"));
+        let (mut verb, delay) = (klipp_timeline::AuxBus::new("Verb"), klipp_timeline::AuxBus::new("Delay"));
+        verb.output = Some(delay.id);
+        verb.volume = 0.5;
+        let a = seq.tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Audio).unwrap();
+        seq.tracks[a].sends = vec![klipp_timeline::AuxSend { pre_fader: true, ..klipp_timeline::AuxSend::new(verb.id) }];
+        seq.buses = vec![verb, delay];
+        let text = timeline_text(&seq, &pool, None, 1, TimelineView::default());
+        assert!(text.contains("Aux buses: [0] \"Verb\" -6.0 dB, to \"Delay\"; [1] \"Delay\" +0.0 dB, to master."), "{text}");
+        assert!(text.contains("sends to: \"Verb\" +0.0 dB pre-fader"), "{text}");
     }
 
     /// #2430: a caption's or title's words come back whole, with their

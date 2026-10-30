@@ -450,6 +450,22 @@ exist until the plan runs.
   of the track. `effect` may also be an installed LV2 or CLAP plug-in's
   id (`lv2:…`, `clap:…`; `audio_plugins` lists them), its `params` by
   name or key and inside their ranges.
+- `aux_bus {bus?, name?, volume_db?, pan?, mute?, output?, effect?, params?, bypass?, remove?}`:
+  an aux bus, one reverb or delay that many tracks send to. With no
+  `bus`, a new one called `name`; with `bus` (its name or index), that
+  one: `volume_db` (+12 at most, -60 or below silence), `pan`, `mute`,
+  `output` another bus or `"master"` (a loop is refused), and `effect`,
+  `params`, `bypass` edit its effects as `track_audio` does. `remove`
+  takes the effect named off, or with no effect the bus and every send
+  to it. Up to 32 buses; they are never silenced by a solo.
+- `send {track, bus, level_db?, pre_fader?, mute?, keys?, remove?}`: a
+  track's send to a bus, added after its fader at 0 dB or changed:
+  `pre_fader` true takes it before the fader and pan, so a fade on the
+  track leaves the reverb as it was; `keys` `[{at, db}]` at sequence
+  seconds replace its level's keys (empty clears). `remove` takes it
+  off. Up to 16 sends a track. The buses and sends are listed in
+  `timeline` and `orient`; playback and the export mix them alike, a
+  bus's latency made up for (at most 2 s through the buses).
 - `clip_audio {clip_id, effect, params?, bypass?, remove?}`: the same on
   one clip's own chain (a linked pair's, either clip named): a built-in
   effect or an installed plug-in. Five voice tools in it: `normalize`

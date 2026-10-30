@@ -7,7 +7,7 @@
 //! track's sends on its [`Track`]. Playback and export read it the same
 //! way, a send's level through [`AuxSend::gain_at`].
 
-use klipp_core::{AudioEffectInstance, BusId, Keyframe};
+use klipp_core::{AudioEffectInstance, BusId, Keyframe, TrackId};
 use serde::{Deserialize, Serialize};
 
 use crate::track_automation::{gain_at, AutomationMode};
@@ -131,24 +131,107 @@ pub fn bus_order_of(buses: &[AuxBus]) -> Vec<usize> {
     order
 }
 
+/// A sequence's routing whole: its buses and each track's sends, as one
+/// undo step changes them. A track not listed sends nothing.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct Routing {
+    pub buses: Vec<AuxBus>,
+    pub sends: Vec<(TrackId, Vec<AuxSend>)>,
+}
+
+/// A gain in decibels, as said: "-6.0 dB", "silent" at none.
+pub fn level_text(gain: f32) -> String {
+    if gain <= 0.0 { "silent".into() } else { format!("{:+.1} dB", 20.0 * gain.log10()) }
+}
+
+/// Whether routing bus `from` into bus `to`, among `buses`, would make a
+/// loop: `to` already feeds `from`, or is it.
+pub fn route_loops(buses: &[AuxBus], from: BusId, to: BusId) -> bool {
+    let mut at = Some(to);
+    for _ in 0..=buses.len() {
+        match at {
+            None => return false,
+            Some(b) if b == from => return true,
+            Some(b) => at = buses.iter().find(|x| x.id == b).and_then(|x| x.output),
+        }
+    }
+    true
+}
+
+/// Bus `id`'s name, quoted, or "a bus that is gone".
+pub fn bus_name(buses: &[AuxBus], id: BusId) -> String {
+    buses.iter().find(|b| b.id == id).map_or_else(|| "a bus that is gone".into(), |b| format!("\"{}\"", b.name))
+}
+
+/// A bus as said: its name, level, pan, mute, effects and where it goes.
+pub fn bus_text(buses: &[AuxBus], bus: &AuxBus) -> String {
+    let mut said = vec![format!("\"{}\" {}", bus.name, level_text(bus.volume))];
+    if bus.pan.abs() > 1e-4 {
+        said.push(format!("pan {:+.2}", bus.pan));
+    }
+    if bus.muted {
+        said.push("muted".into());
+    }
+    if !bus.effects.is_empty() {
+        let fx: Vec<String> = bus.effects.iter().map(|e| if e.enabled { e.effect_type.clone() } else { format!("{} (bypassed)", e.effect_type) }).collect();
+        said.push(format!("effects {}", fx.join(", ")));
+    }
+    said.push(match bus.output {
+        Some(o) => format!("to {}", bus_name(buses, o)),
+        None => "to master".into(),
+    });
+    said.join(", ")
+}
+
 impl Sequence {
     /// The index of bus `id`.
     pub fn bus_index(&self, id: BusId) -> Option<usize> {
         self.buses.iter().position(|b| b.id == id)
     }
 
+    /// Its buses and each track's sends.
+    pub fn routing(&self) -> Routing {
+        Routing { buses: self.buses.clone(), sends: self.tracks.iter().filter(|t| !t.sends.is_empty()).map(|t| (t.id, t.sends.clone())).collect() }
+    }
+
+    /// `r` as its buses and each track's sends.
+    pub fn set_routing(&mut self, r: &Routing) {
+        self.buses = r.buses.clone();
+        for t in &mut self.tracks {
+            t.sends = r.sends.iter().find(|(id, _)| *id == t.id).map(|(_, s)| s.clone()).unwrap_or_default();
+        }
+    }
+
+    /// Bus `id`'s name, quoted, or "a bus that is gone".
+    pub fn bus_name(&self, id: BusId) -> String {
+        bus_name(&self.buses, id)
+    }
+
+    /// A bus as said: its name, level, pan, mute, effects and where it goes.
+    pub fn bus_text(&self, bus: &AuxBus) -> String {
+        bus_text(&self.buses, bus)
+    }
+
+    /// A send as said: to which bus, its level, before or after the
+    /// fader, muted, and its keys.
+    pub fn send_text(&self, send: &AuxSend) -> String {
+        let mut s = format!("{} {}", self.bus_name(send.bus), level_text(send.level));
+        if send.pre_fader {
+            s.push_str(" pre-fader");
+        }
+        if send.muted {
+            s.push_str(" (muted)");
+        }
+        if !send.keys.is_empty() {
+            s.push_str(&format!(" with {} level key{}", send.keys.len(), if send.keys.len() == 1 { "" } else { "s" }));
+        }
+        s
+    }
+
     /// Whether routing bus `from` into bus `to` would make a loop: `to`
     /// already feeds `from`, or is it.
     pub fn bus_route_loops(&self, from: BusId, to: BusId) -> bool {
-        let mut at = Some(to);
-        for _ in 0..=self.buses.len() {
-            match at {
-                None => return false,
-                Some(b) if b == from => return true,
-                Some(b) => at = self.buses.iter().find(|x| x.id == b).and_then(|x| x.output),
-            }
-        }
-        true
+        route_loops(&self.buses, from, to)
     }
 
     /// The buses in the order they are mixed: each before the bus it
