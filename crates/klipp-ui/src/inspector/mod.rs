@@ -324,7 +324,15 @@ impl NewInspectorPanel {
         // ── Tab bar ──
         let is_title_clip = clip_info.as_ref().is_some_and(|(_, c)| matches!(c.kind, klipp_timeline::ClipKind::Title(_)));
         let is_generator_clip = clip_info.as_ref().is_some_and(|(_, c)| matches!(c.kind, klipp_timeline::ClipKind::Generator(_)));
-        let tabs: Vec<(InspectorTab, &str, &str)> = if is_title_clip {
+        // A sound has no picture: its sound and what it is, no Transform
+        // or Colour (#3128).
+        let is_sound_clip = clip_info.as_ref().is_some_and(|(_, c)| crate::selection::is_sound_only(state.sequence(), &state.media_pool, c.id));
+        let tabs: Vec<(InspectorTab, &str, &str)> = if is_sound_clip {
+            vec![
+                (InspectorTab::Audio, "AUDIO", "AUD"),
+                (InspectorTab::Info, "INFO", "INFO"),
+            ]
+        } else if is_title_clip {
             vec![
                 (InspectorTab::Title, "TITLE", "TTL"),
                 (InspectorTab::Video, "CLIP VIDEO", "CLIP"),
@@ -363,7 +371,9 @@ impl NewInspectorPanel {
         }
 
         // Auto-switch to Title/Generator tab when a synthetic clip is selected (and away when not)
-        if clip_changed && is_title_clip && *active_tab != InspectorTab::Title {
+        if is_sound_clip && !tabs.iter().any(|t| t.0 == *active_tab) {
+            *active_tab = InspectorTab::Audio;
+        } else if clip_changed && is_title_clip && *active_tab != InspectorTab::Title {
             *active_tab = InspectorTab::Title;
         } else if clip_changed && is_generator_clip && *active_tab != InspectorTab::Generator {
             *active_tab = InspectorTab::Generator;

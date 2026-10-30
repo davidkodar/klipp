@@ -63,6 +63,21 @@ pub fn gap_at(track: &klipp_timeline::Track, at: Timecode) -> Option<(Timecode, 
     gaps(track).into_iter().find(|&(a, b)| a <= at && at < b)
 }
 
+/// Whether a file has a picture: a video stream or a still. A sound
+/// file's cover art is not one (#3128).
+pub fn has_picture(media: &klipp_media::MediaItem) -> bool {
+    media.is_still || !media.video_codec.is_empty()
+}
+
+/// Whether a clip is sound only: on an audio track, or of a file with no
+/// picture (#3128). Its inspector shows the sound's tabs, and the viewer
+/// no transform handles for it.
+pub fn is_sound_only(seq: &Sequence, pool: &klipp_media::MediaPool, clip_id: ClipId) -> bool {
+    let Some((ti, ci)) = seq.find_clip(clip_id) else { return false };
+    let clip = &seq.tracks[ti].clips[ci];
+    seq.tracks[ti].kind == klipp_timeline::TrackKind::Audio || clip.media_id().and_then(|m| pool.get(&m)).is_some_and(|m| !has_picture(m))
+}
+
 /// The span a Set Range to Clip marks (#3127): the selected clip's, a
 /// gap clip aside, else the first clip under the playhead.
 pub fn range_to_clip(seq: &Sequence, selected: Option<klipp_core::ClipId>, playhead: Timecode) -> Option<(Timecode, Timecode)> {
@@ -113,6 +128,33 @@ pub fn track_of(seq: &Sequence, clip: ClipId) -> Option<usize> {
 
 #[cfg(test)]
 mod tests {
+    /// #3128: a clip on an audio track, or of a file with no picture
+    /// (cover art aside), is sound only; a picture clip is not.
+    #[test]
+    fn a_clip_on_an_audio_track_or_of_a_sound_file_is_sound_only() {
+        let t = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 24);
+        let mut pool = klipp_media::MediaPool::default();
+        let mut song = klipp_media::MediaItem::synthetic_for_test("/tmp/song.mp3".into(), None);
+        song.video_codec.clear();
+        song.pixel_format = Some("yuvj420p".into());
+        let mut film = klipp_media::MediaItem::synthetic_for_test("/tmp/film.mov".into(), None);
+        film.video_codec = "h264".into();
+        let (song, film) = (pool.add(song), pool.add(film));
+        let mut seq = klipp_timeline::Sequence::new_default();
+        let v = seq.tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
+        let a = seq.tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Audio).unwrap();
+        let picture = klipp_timeline::Clip::media(film, t(0.0), t(2.0), t(0.0), t(2.0));
+        let its_sound = klipp_timeline::Clip::media(film, t(0.0), t(2.0), t(0.0), t(2.0));
+        let music_on_video = klipp_timeline::Clip::media(song, t(2.0), t(4.0), t(0.0), t(2.0));
+        let ids = (picture.id, its_sound.id, music_on_video.id);
+        seq.tracks[v].clips = vec![picture, music_on_video];
+        seq.tracks[a].clips = vec![its_sound];
+        assert!(!super::is_sound_only(&seq, &pool, ids.0), "a picture");
+        assert!(super::is_sound_only(&seq, &pool, ids.1), "the film's sound on an audio track");
+        assert!(super::is_sound_only(&seq, &pool, ids.2), "a sound file, cover art and all, even on a video track");
+        assert!(!super::has_picture(pool.get(&song).unwrap()));
+    }
+
     /// #3127: Set Range to Clip marks the selected clip; a gap clip
     /// selected, or nothing, gives the clip under the playhead; nothing
     /// there, no range.

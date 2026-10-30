@@ -2115,6 +2115,8 @@ impl ViewerPanel {
         } else if state.surface_tool.is_some() && !state.has_modal_open() {
             self.draw_surface_tool(ui, state, image_rect, cmds);
         } else if state.show_transform_controls
+            // A sound has no picture to move (#3128).
+            && !state.selected_clip.is_some_and(|id| crate::selection::is_sound_only(state.sequence(), &state.media_pool, id))
             && !state.show_color_panel
             && !state.viewer_text_edit
             && !text_tool
