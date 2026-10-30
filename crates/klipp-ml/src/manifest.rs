@@ -333,11 +333,22 @@ impl ModelManifest {
     /// 64-char lowercase-hex SHA-256, etc.) before returning.
     pub fn parse(toml_str: &str) -> Result<Self, ManifestError> {
         let manifest: Self = toml::from_str(toml_str)?;
+        #[cfg(target_arch = "aarch64")]
+        let manifest = manifest.without_x86_64_downloads();
         if manifest.version != DEFAULT_MANIFEST_VERSION {
             return Err(ManifestError::UnsupportedVersion(manifest.version));
         }
         manifest.validate()?;
         Ok(manifest)
+    }
+
+    /// The manifest less the downloads built for x86_64 only (an id
+    /// ending `_linux_x86_64`), which cannot run here. Their aarch64
+    /// builds come from `assets/models-aarch64.toml`.
+    #[cfg(target_arch = "aarch64")]
+    fn without_x86_64_downloads(mut self) -> Self {
+        self.models.retain(|m| !m.id.ends_with("_linux_x86_64"));
+        self
     }
 
     /// Run schema-level validation. Cheap, called from `parse`. Catches
@@ -475,7 +486,12 @@ pub fn user_manifest_path() -> Option<PathBuf> {
 /// Builtin manifest, baked into the binary at compile time. The
 /// `include_str!` is the trust root: changing the bytes here requires
 /// a Git PR, which is reviewed.
+#[cfg(not(target_arch = "aarch64"))]
 pub const BUILTIN_MANIFEST: &str = include_str!("../../../assets/models.toml");
+/// On aarch64, `assets/models-aarch64.toml` follows: the builds of
+/// downloads that differ by architecture.
+#[cfg(target_arch = "aarch64")]
+pub const BUILTIN_MANIFEST: &str = concat!(include_str!("../../../assets/models.toml"), include_str!("../../../assets/models-aarch64.toml"));
 
 /// Load the effective manifest: builtin merged with the user override
 /// at `~/.config/klipp/models.toml` if present. Returns the builtin
@@ -870,6 +886,14 @@ prompts = "point | box | scribble | temporal"
         let err = toml::from_str::<Wrap>("prompts = \"point | bogus\"").expect_err("unknown token");
         let msg = err.to_string();
         assert!(msg.contains("bogus"), "error should mention the offending token: {msg}");
+    }
+
+    #[test]
+    #[cfg(target_arch = "aarch64")]
+    fn aarch64_lists_its_own_downloads_and_not_x86_64_ones() {
+        let m = ModelManifest::parse(BUILTIN_MANIFEST).expect("builtin parses");
+        assert!(m.get("piper_engine_linux_aarch64").is_some(), "the aarch64 Piper engine is listed");
+        assert!(m.models.iter().all(|e| !e.id.ends_with("_linux_x86_64")), "an x86_64-only download is listed on aarch64");
     }
 
     #[test]
