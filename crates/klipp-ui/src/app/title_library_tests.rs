@@ -21,7 +21,7 @@ fn drawn(r: &mut klipp_title::TitleRenderer, td: &klipp_timeline::TitleData) -> 
 #[test]
 fn every_built_in_template_applies_in_one_drag_and_its_fields_edit() {
     let mut r = klipp_title::TitleRenderer::new();
-    for tpl in TITLES {
+    for tpl in TITLES.iter() {
         let mut state = AppState { pending_title_data: Some(Entry::Builtin(tpl).data()), ..Default::default() };
         let frames = state.sequence().fps.rate() * 5;
         let at = state.playhead;
@@ -29,7 +29,7 @@ fn every_built_in_template_applies_in_one_drag_and_its_fields_edit() {
         let (id, _) = add_title_clip(&mut state, track, at, frames);
         assert_eq!(state.active_history().undo_count(), 1, "{}: one step", tpl.name);
         let td = title(&state, id);
-        assert_eq!(td.template.as_deref(), Some(tpl.name), "{}", tpl.name);
+        assert_eq!(td.template.as_deref(), Some(tpl.name.as_str()), "{}", tpl.name);
         assert!(drawn(&mut r, &td) > 50, "{}: drawn once applied", tpl.name);
         let fields = td.live_fields();
         assert!(!fields.is_empty(), "{}: fields to edit", tpl.name);

@@ -1,0 +1,253 @@
+{
+  "category": "Lower Thirds",
+  "data": {
+    "animation_type": "Static",
+    "background": "None",
+    "next_object_id": 2,
+    "objects": [
+      {
+        "content": {
+          "TextBox": {
+            "alignment": "Left",
+            "ass_style_name": null,
+            "baseline_shift": 0.0,
+            "case_transform": "None",
+            "char_animation": null,
+            "chromatic_aberration_px": 0.0,
+            "color": [
+              255,
+              255,
+              255,
+              255
+            ],
+            "columns": 1,
+            "drop_cap_scale": 0.0,
+            "extrusion": null,
+            "fit": {
+              "Shrink": {
+                "min_size": 26.0
+              }
+            },
+            "font_name": "Playfair Display",
+            "font_size": 52.0,
+            "font_style": "Italic",
+            "glitch_intensity": 0.0,
+            "gradient": null,
+            "line_spacing": 1.0,
+            "outline_write_on": 1.0,
+            "pattern_fill": null,
+            "pattern_fill_enabled": true,
+            "strikethrough": false,
+            "style_runs": [],
+            "text": "[Name]",
+            "text_direction": "Ltr",
+            "text_path": null,
+            "texture_fill": null,
+            "tracking": 0.0,
+            "underline": false,
+            "vertical_layout": false,
+            "write_on": 1.0
+          }
+        },
+        "fx": {
+          "motion": {
+            "enter": {
+              "amount": null,
+              "anchor": null,
+              "delay_secs": 0.0,
+              "distance": 0.3,
+              "duration_secs": 0.8,
+              "easing": "OutCubic",
+              "kind": "Rise",
+              "stagger": "None",
+              "stagger_secs": 0.05
+            },
+            "exit": {
+              "amount": null,
+              "anchor": null,
+              "delay_secs": 0.0,
+              "distance": 0.6,
+              "duration_secs": 0.5,
+              "easing": "InCubic",
+              "kind": "Fade",
+              "stagger": "None",
+              "stagger_secs": 0.05
+            }
+          },
+          "shadows": [
+            {
+              "blur": 12.0,
+              "blur_keyframes": [],
+              "color": [
+                0,
+                0,
+                0,
+                120
+              ],
+              "enabled": true,
+              "offset_x": 0.0,
+              "offset_x_keyframes": [],
+              "offset_y": 3.0,
+              "offset_y_keyframes": []
+            }
+          ]
+        },
+        "id": 0,
+        "locked": false,
+        "name": "Text 1",
+        "opacity": 1.0,
+        "opacity_keyframes": [],
+        "transform": {
+          "anchor_norm": {
+            "x": 0.0,
+            "y": 0.5
+          },
+          "anchor_x_keyframes": [],
+          "anchor_y_keyframes": [],
+          "center": {
+            "x": 0.08,
+            "y": 0.815
+          },
+          "center_x_keyframes": [],
+          "center_y_keyframes": [],
+          "rotation": 0.0,
+          "rotation_keyframes": [],
+          "size": {
+            "x": 1.0,
+            "y": 1.0
+          },
+          "size_x_keyframes": [],
+          "size_y_keyframes": []
+        },
+        "visible": true
+      },
+      {
+        "content": {
+          "TextBox": {
+            "alignment": "Left",
+            "ass_style_name": null,
+            "baseline_shift": 0.0,
+            "case_transform": "Uppercase",
+            "char_animation": null,
+            "chromatic_aberration_px": 0.0,
+            "color": [
+              225,
+              225,
+              230,
+              255
+            ],
+            "columns": 1,
+            "drop_cap_scale": 0.0,
+            "extrusion": null,
+            "font_name": "Work Sans",
+            "font_size": 28.0,
+            "font_style": "Regular",
+            "font_weight": 500,
+            "glitch_intensity": 0.0,
+            "gradient": null,
+            "line_spacing": 1.0,
+            "outline_write_on": 1.0,
+            "pattern_fill": null,
+            "pattern_fill_enabled": true,
+            "strikethrough": false,
+            "style_runs": [],
+            "text": "[Title or role]",
+            "text_direction": "Ltr",
+            "text_path": null,
+            "texture_fill": null,
+            "tracking": 4.0,
+            "underline": false,
+            "vertical_layout": false,
+            "write_on": 1.0
+          }
+        },
+        "fx": {
+          "motion": {
+            "enter": {
+              "amount": null,
+              "anchor": null,
+              "delay_secs": 0.15,
+              "distance": 0.3,
+              "duration_secs": 0.8,
+              "easing": "OutCubic",
+              "kind": "Rise",
+              "stagger": "None",
+              "stagger_secs": 0.05
+            },
+            "exit": {
+              "amount": null,
+              "anchor": null,
+              "delay_secs": 0.0,
+              "distance": 0.6,
+              "duration_secs": 0.5,
+              "easing": "InCubic",
+              "kind": "Fade",
+              "stagger": "None",
+              "stagger_secs": 0.05
+            }
+          },
+          "shadows": [
+            {
+              "blur": 12.0,
+              "blur_keyframes": [],
+              "color": [
+                0,
+                0,
+                0,
+                120
+              ],
+              "enabled": true,
+              "offset_x": 0.0,
+              "offset_x_keyframes": [],
+              "offset_y": 3.0,
+              "offset_y_keyframes": []
+            }
+          ]
+        },
+        "id": 1,
+        "locked": false,
+        "name": "Text 2",
+        "opacity": 1.0,
+        "opacity_keyframes": [],
+        "transform": {
+          "anchor_norm": {
+            "x": 0.0,
+            "y": 0.5
+          },
+          "anchor_x_keyframes": [],
+          "anchor_y_keyframes": [],
+          "center": {
+            "x": 0.08,
+            "y": 0.868
+          },
+          "center_x_keyframes": [],
+          "center_y_keyframes": [],
+          "rotation": 0.0,
+          "rotation_keyframes": [],
+          "size": {
+            "x": 1.0,
+            "y": 1.0
+          },
+          "size_x_keyframes": [],
+          "size_y_keyframes": []
+        },
+        "visible": true
+      }
+    ]
+  },
+  "design": {
+    "anchor": [
+      0.08,
+      0.85
+    ],
+    "fields": [
+      "Name",
+      "Role"
+    ],
+    "grow": true,
+    "preview": "[Name]"
+  },
+  "format": 2,
+  "name": "Documentary",
+  "written_by": "built-in"
+}

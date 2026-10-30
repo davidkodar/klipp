@@ -798,7 +798,7 @@ mod tests {
         std::fs::write(&photo, b"PNG-BYTES").unwrap();
         let house = src.join("HouseSans.ttf");
         std::fs::write(&house, b"FONT-BYTES").unwrap();
-        let card = TemplateFile { name: "Card".into(), category: "Mine".into(), data: title(&["Anton", "House Sans"], Some(&photo)), format: 1 };
+        let card = TemplateFile { name: "Card".into(), category: "Mine".into(), data: title(&["Anton", "House Sans"], Some(&photo)), format: 1, design: None };
         let mut scene = Sequence::new_default();
         scene.tracks[0].clips.push(Clip { kind: ClipKind::Title(title(&["Inter", "Nowhere Serif"], Some(&photo))), ..Clip::gap(klipp_core::RationalTime::from_secs_f64(0.0, 24), klipp_core::RationalTime::from_secs_f64(3.0, 24)) });
         let mut stack = klipp_timeline::composition_template::template_from_scene(&scene, &[], "Stack", None).unwrap();
@@ -868,7 +868,7 @@ mod tests {
         let write = |format: u32| {
             let path = d.join(format!("p{format}.klipppack"));
             let mut zip = ZipWriter::new(std::fs::File::create(&path).unwrap());
-            let manifest = PackManifest { format, name: "Broken".into(), written_by: String::new(), about: PackAbout::default(), titles: vec![TemplateFile { name: "Card".into(), category: String::new(), data: title(&["Inter"], Some(Path::new("assets/pictures/1-gone.png"))), format: 1 }], templates: Vec::new(), fonts: Vec::new(), pictures: vec![PackPicture { file: "assets/pictures/1-gone.png".into(), licence: "assets/pictures/1-gone.png.licence.txt".into() }], presets: Vec::new() };
+            let manifest = PackManifest { format, name: "Broken".into(), written_by: String::new(), about: PackAbout::default(), titles: vec![TemplateFile { name: "Card".into(), category: String::new(), data: title(&["Inter"], Some(Path::new("assets/pictures/1-gone.png"))), format: 1, design: None }], templates: Vec::new(), fonts: Vec::new(), pictures: vec![PackPicture { file: "assets/pictures/1-gone.png".into(), licence: "assets/pictures/1-gone.png.licence.txt".into() }], presets: Vec::new() };
             zip.start_file("pack.json", SimpleFileOptions::default()).unwrap();
             zip.write_all(serde_json::to_string(&manifest).unwrap().as_bytes()).unwrap();
             zip.finish().unwrap();
@@ -902,7 +902,7 @@ mod tests {
             name: "..".into(),
             written_by: String::new(),
             about: PackAbout::default(),
-            titles: vec![TemplateFile { name: "../../Card".into(), category: String::new(), data: title(&["../../x"], Some(Path::new(evil_picture))), format: 1 }],
+            titles: vec![TemplateFile { name: "../../Card".into(), category: String::new(), data: title(&["../../x"], Some(Path::new(evil_picture))), format: 1, design: None }],
             templates: Vec::new(),
             fonts: vec![PackFont { family: "../../x".into(), catalogue: false, files: vec![evil_font.into()], licence: Some("assets/fonts/../../LICENCE".into()) }],
             pictures: vec![PackPicture { file: evil_picture.into(), licence: "assets/pictures/../../../evil.txt".into() }],
@@ -961,7 +961,7 @@ mod tests {
         std::fs::write(&photo, b"PNG").unwrap();
         let house = src.join("HouseSans.ttf");
         std::fs::write(&house, b"FONT").unwrap();
-        let card = TemplateFile { name: "Card".into(), category: "Packed".into(), data: title(&["House Sans"], Some(&photo)), format: 1 };
+        let card = TemplateFile { name: "Card".into(), category: "Packed".into(), data: title(&["House Sans"], Some(&photo)), format: 1, design: None };
         let mut scene = Sequence::new_default();
         scene.tracks[0].clips.push(Clip { kind: ClipKind::Title(title(&["Inter"], None)), ..Clip::gap(klipp_core::RationalTime::from_secs_f64(0.0, 24), klipp_core::RationalTime::from_secs_f64(3.0, 24)) });
         let stack = klipp_timeline::composition_template::template_from_scene(&scene, &[], "Stack", None).unwrap();

@@ -256,7 +256,7 @@ pub(crate) fn title_templates(dir: Option<&std::path::Path>, compositions: Optio
         .collect();
     let by_category: Vec<String> = CATEGORIES
         .iter()
-        .map(|c| format!("{c}: {}", TITLES.iter().filter(|t| t.category == *c).map(|t| t.name).collect::<Vec<_>>().join(", ")))
+        .map(|c| format!("{c}: {}", TITLES.iter().filter(|t| t.category == *c).map(|t| t.name.as_str()).collect::<Vec<_>>().join(", ")))
         .collect();
     let mut text = format!("{} built-in title templates. {}.", TITLES.len(), by_category.join("; "));
     text.push_str(&match saved.len() {

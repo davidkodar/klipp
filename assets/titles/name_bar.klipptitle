@@ -1,0 +1,271 @@
+{
+  "category": "Lower Thirds",
+  "data": {
+    "animation_type": "Static",
+    "background": "None",
+    "next_object_id": 3,
+    "objects": [
+      {
+        "content": {
+          "Shape": {
+            "fill": [
+              14,
+              14,
+              18,
+              210
+            ],
+            "kind": {
+              "Rectangle": {
+                "corner_radius": 4.0
+              }
+            },
+            "stroke": null
+          }
+        },
+        "fx": {},
+        "id": 0,
+        "locked": false,
+        "name": "Shape 1",
+        "opacity": 1.0,
+        "opacity_keyframes": [],
+        "transform": {
+          "anchor_norm": {
+            "x": 0.5,
+            "y": 0.5
+          },
+          "anchor_x_keyframes": [],
+          "anchor_y_keyframes": [],
+          "center": {
+            "x": 0.3,
+            "y": 0.845
+          },
+          "center_x_keyframes": [],
+          "center_y_keyframes": [],
+          "rotation": 0.0,
+          "rotation_keyframes": [],
+          "size": {
+            "x": 0.48,
+            "y": 0.115
+          },
+          "size_x_keyframes": [],
+          "size_y_keyframes": []
+        },
+        "visible": true
+      },
+      {
+        "content": {
+          "TextBox": {
+            "alignment": "Left",
+            "ass_style_name": null,
+            "baseline_shift": 0.0,
+            "case_transform": "None",
+            "char_animation": null,
+            "chromatic_aberration_px": 0.0,
+            "color": [
+              255,
+              255,
+              255,
+              255
+            ],
+            "columns": 1,
+            "drop_cap_scale": 0.0,
+            "extrusion": null,
+            "fit": {
+              "Shrink": {
+                "min_size": 22.0
+              }
+            },
+            "font_name": "Inter",
+            "font_size": 44.0,
+            "font_style": "Bold",
+            "glitch_intensity": 0.0,
+            "gradient": null,
+            "line_spacing": 1.0,
+            "outline_write_on": 1.0,
+            "pattern_fill": null,
+            "pattern_fill_enabled": true,
+            "strikethrough": false,
+            "style_runs": [],
+            "text": "[Name]",
+            "text_direction": "Ltr",
+            "text_path": null,
+            "texture_fill": null,
+            "tracking": 0.0,
+            "underline": false,
+            "vertical_layout": false,
+            "write_on": 1.0
+          }
+        },
+        "fx": {
+          "motion": {
+            "enter": {
+              "amount": null,
+              "anchor": null,
+              "delay_secs": 0.1,
+              "distance": 0.6,
+              "duration_secs": 0.5,
+              "easing": "OutExpo",
+              "kind": "MaskRise",
+              "stagger": "None",
+              "stagger_secs": 0.05
+            },
+            "exit": {
+              "amount": null,
+              "anchor": null,
+              "delay_secs": 0.0,
+              "distance": 0.6,
+              "duration_secs": 0.3,
+              "easing": "InCubic",
+              "kind": "Fade",
+              "stagger": "None",
+              "stagger_secs": 0.05
+            }
+          }
+        },
+        "id": 1,
+        "locked": false,
+        "name": "Text 2",
+        "opacity": 1.0,
+        "opacity_keyframes": [],
+        "transform": {
+          "anchor_norm": {
+            "x": 0.0,
+            "y": 0.5
+          },
+          "anchor_x_keyframes": [],
+          "anchor_y_keyframes": [],
+          "center": {
+            "x": 0.085,
+            "y": 0.822
+          },
+          "center_x_keyframes": [],
+          "center_y_keyframes": [],
+          "rotation": 0.0,
+          "rotation_keyframes": [],
+          "size": {
+            "x": 0.43,
+            "y": 1.0
+          },
+          "size_x_keyframes": [],
+          "size_y_keyframes": []
+        },
+        "visible": true
+      },
+      {
+        "content": {
+          "TextBox": {
+            "alignment": "Left",
+            "ass_style_name": null,
+            "baseline_shift": 0.0,
+            "case_transform": "None",
+            "char_animation": null,
+            "chromatic_aberration_px": 0.0,
+            "color": [
+              225,
+              225,
+              230,
+              255
+            ],
+            "columns": 1,
+            "drop_cap_scale": 0.0,
+            "extrusion": null,
+            "fit": {
+              "Shrink": {
+                "min_size": 13.0
+              }
+            },
+            "font_name": "Inter",
+            "font_size": 26.0,
+            "font_style": "Regular",
+            "glitch_intensity": 0.0,
+            "gradient": null,
+            "line_spacing": 1.0,
+            "outline_write_on": 1.0,
+            "pattern_fill": null,
+            "pattern_fill_enabled": true,
+            "strikethrough": false,
+            "style_runs": [],
+            "text": "[Title or role]",
+            "text_direction": "Ltr",
+            "text_path": null,
+            "texture_fill": null,
+            "tracking": 0.0,
+            "underline": false,
+            "vertical_layout": false,
+            "write_on": 1.0
+          }
+        },
+        "fx": {
+          "motion": {
+            "enter": {
+              "amount": null,
+              "anchor": null,
+              "delay_secs": 0.25,
+              "distance": 0.6,
+              "duration_secs": 0.5,
+              "easing": "OutExpo",
+              "kind": "MaskRise",
+              "stagger": "None",
+              "stagger_secs": 0.05
+            },
+            "exit": {
+              "amount": null,
+              "anchor": null,
+              "delay_secs": 0.0,
+              "distance": 0.6,
+              "duration_secs": 0.3,
+              "easing": "InCubic",
+              "kind": "Fade",
+              "stagger": "None",
+              "stagger_secs": 0.05
+            }
+          }
+        },
+        "id": 2,
+        "locked": false,
+        "name": "Text 3",
+        "opacity": 1.0,
+        "opacity_keyframes": [],
+        "transform": {
+          "anchor_norm": {
+            "x": 0.0,
+            "y": 0.5
+          },
+          "anchor_x_keyframes": [],
+          "anchor_y_keyframes": [],
+          "center": {
+            "x": 0.085,
+            "y": 0.872
+          },
+          "center_x_keyframes": [],
+          "center_y_keyframes": [],
+          "rotation": 0.0,
+          "rotation_keyframes": [],
+          "size": {
+            "x": 0.43,
+            "y": 1.0
+          },
+          "size_x_keyframes": [],
+          "size_y_keyframes": []
+        },
+        "visible": true
+      }
+    ]
+  },
+  "design": {
+    "accent": 0,
+    "anchor": [
+      0.08,
+      0.85
+    ],
+    "fields": [
+      "Name",
+      "Role"
+    ],
+    "grow": true,
+    "preview": "[Name]"
+  },
+  "format": 2,
+  "name": "Name Bar",
+  "written_by": "built-in"
+}

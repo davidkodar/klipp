@@ -289,8 +289,8 @@ fn sweep_templates() {
     let mut renderer = TitleRenderer::new();
     let sheet_dir = std::env::var_os("KLIPP_TEMPLATES_SHEET").map(std::path::PathBuf::from);
     let mut sheet = Sheet { rows: Vec::new() };
-    for template in TITLES {
-        measure(&mut sweep, &mut renderer, &mut sheet, sheet_dir.is_some(), template.name, &|w, h| template.data_for(w, h));
+    for template in TITLES.iter() {
+        measure(&mut sweep, &mut renderer, &mut sheet, sheet_dir.is_some(), &template.name, &|w, h| template.data_for(w, h));
     }
     // The built-in composition templates' titles (#2757): each as placed,
     // its controls at their defaults, in the layout for each frame.
