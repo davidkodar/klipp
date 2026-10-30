@@ -29,6 +29,12 @@ pub const MAX_FIELD_CHARS: usize = 64;
 pub const MAX_DESIGN_LAYERS: usize = 256;
 pub const MAX_PREVIEW_CHARS: usize = 128;
 
+/// The most variants a design has, options a variant has, and edits one
+/// option or optional field makes.
+pub const MAX_VARIANTS: usize = 8;
+pub const MAX_OPTIONS: usize = 8;
+pub const MAX_EDITS: usize = 64;
+
 fn format_one() -> u32 {
     1
 }
@@ -64,6 +70,75 @@ pub struct TitleDesign {
     pub accent: Option<usize>,
     #[serde(default)]
     pub preview: String,
+    /// Fields that may be left empty (#2886), each by its name in
+    /// `fields`: left empty, its edits are made and its layer goes.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub optional: Vec<OptionalField>,
+    /// Named choices (#2886), each option a set of edits; the first
+    /// option is the one taken when none is chosen.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub variants: Vec<Variant>,
+    /// The layer the title is placed by (#2886): put at a point, or
+    /// inside a box, it goes there and the others keep their distance
+    /// from it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub place_by: Option<usize>,
+}
+
+/// A field of a design that may be left empty, and the edits made when
+/// it is (#2886).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct OptionalField {
+    pub field: String,
+    #[serde(default)]
+    pub edits: Vec<DesignEdit>,
+}
+
+/// A named choice of a design and its options (#2886).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Variant {
+    pub name: String,
+    pub options: Vec<VariantOption>,
+}
+
+/// One option of a [`Variant`]: its name and the edits it makes.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct VariantOption {
+    pub name: String,
+    #[serde(default)]
+    pub edits: Vec<DesignEdit>,
+}
+
+/// One edit of a designed title (#2886): the value at `pointer`, a JSON
+/// pointer into the title, replaced by `value`. It reaches the layers
+/// (`/objects/...`) and the title's background and readability setting
+/// (`/background`, `/protect`), never anything else of the title or the
+/// file.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DesignEdit {
+    pub pointer: String,
+    pub value: serde_json::Value,
+}
+
+/// Whether an edit may reach `pointer`.
+fn editable(pointer: &str) -> bool {
+    pointer.starts_with("/objects/") || pointer == "/background" || pointer.starts_with("/background/") || pointer == "/protect"
+}
+
+/// `edits` made on `json`, a title as JSON: each pointer one an edit may
+/// reach and there already.
+fn edit(json: &mut serde_json::Value, edits: &[DesignEdit]) -> Result<(), String> {
+    for e in edits {
+        if !editable(&e.pointer) {
+            return Err(format!("an edit reaches {}, outside the layers, background and readability", e.pointer));
+        }
+        *json.pointer_mut(&e.pointer).ok_or_else(|| format!("an edit's {} is not in the title", e.pointer))? = e.value.clone();
+    }
+    Ok(())
+}
+
+fn short_name(n: &str) -> bool {
+    !n.trim().is_empty() && n.chars().count() <= MAX_FIELD_CHARS
 }
 
 fn yes() -> bool {
@@ -94,7 +169,102 @@ impl TitleDesign {
         if self.preview.chars().count() > MAX_PREVIEW_CHARS {
             return Err(format!("its preview is longer than {MAX_PREVIEW_CHARS}"));
         }
+        if let Some(k) = self.place_by.filter(|k| *k >= data.objects.len()) {
+            return Err(format!("it is placed by layer {k} of {}", data.objects.len()));
+        }
+        if self.variants.len() > MAX_VARIANTS || self.optional.len() > MAX_DESIGN_FIELDS {
+            return Err(format!("it has {} variants and {} optional fields, more than {MAX_VARIANTS} and {MAX_DESIGN_FIELDS}", self.variants.len(), self.optional.len()));
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        for v in &self.variants {
+            if !short_name(&v.name) || !seen.insert(v.name.to_lowercase()) {
+                return Err(format!("a variant's name \"{}\" is blank, long or twice", v.name.chars().take(MAX_FIELD_CHARS).collect::<String>()));
+            }
+            if v.options.is_empty() || v.options.len() > MAX_OPTIONS {
+                return Err(format!("variant \"{}\" has {} options, from 1 to {MAX_OPTIONS}", v.name, v.options.len()));
+            }
+            let mut named = std::collections::BTreeSet::new();
+            if let Some(o) = v.options.iter().find(|o| !short_name(&o.name) || !named.insert(o.name.to_lowercase())) {
+                return Err(format!("variant \"{}\" has an option \"{}\" blank, long or twice", v.name, o.name.chars().take(MAX_FIELD_CHARS).collect::<String>()));
+            }
+        }
+        for o in &self.optional {
+            if !self.fields.contains(&o.field) || self.optional.iter().filter(|p| p.field == o.field).count() > 1 {
+                return Err(format!("optional \"{}\" is not one of its fields, or is named twice", o.field.chars().take(MAX_FIELD_CHARS).collect::<String>()));
+            }
+        }
+        // Each option's and each optional field's edits, alone on the
+        // design, leave a title this design fits.
+        let edits = self.variants.iter().flat_map(|v| v.options.iter().map(|o| &o.edits)).chain(self.optional.iter().map(|o| &o.edits));
+        for e in edits {
+            if e.len() > MAX_EDITS {
+                return Err(format!("{} edits in one option, more than {MAX_EDITS}", e.len()));
+            }
+            let mut json = serde_json::to_value(data).map_err(|e| e.to_string())?;
+            edit(&mut json, e)?;
+            let edited: TitleData = serde_json::from_value(json).map_err(|e| format!("an edit leaves no title: {e}"))?;
+            if edited.objects.len() != data.objects.len() {
+                return Err("an edit adds or takes layers".into());
+            }
+        }
         Ok(())
+    }
+
+    /// The title `data` made as this design says (#2886): first each
+    /// variant's option, in the order the variants are listed (the one
+    /// `choose` names by variant, else its first); then each field's text
+    /// from `texts` by its name, a field left empty or out that is
+    /// optional getting its edits, in the order the optional fields are
+    /// listed; last, those fields' layers taken out. Not laid out for a
+    /// frame, placed or published. An unknown variant or option is
+    /// refused with what there is.
+    pub fn make(&self, data: &TitleData, choose: &[(&str, &str)], texts: &[(&str, &str)]) -> Result<TitleData, String> {
+        let mut json = serde_json::to_value(data).map_err(|e| e.to_string())?;
+        for (name, _) in choose {
+            if !self.variants.iter().any(|v| v.name.eq_ignore_ascii_case(name)) {
+                return Err(format!("there is no \"{name}\": the choices are {}", self.variants.iter().map(|v| v.name.as_str()).collect::<Vec<_>>().join(", ")));
+            }
+        }
+        for v in &self.variants {
+            let option = match choose.iter().find(|(n, _)| v.name.eq_ignore_ascii_case(n)) {
+                Some((_, want)) => v.options.iter().find(|o| o.name.eq_ignore_ascii_case(want.trim())).ok_or_else(|| format!("\"{want}\" is not a {}: use {}", v.name, v.options.iter().map(|o| o.name.as_str()).collect::<Vec<_>>().join(", ")))?,
+                None => &v.options[0],
+            };
+            edit(&mut json, &option.edits)?;
+        }
+        let mut td: TitleData = serde_json::from_value(json).map_err(|e| format!("the choices leave no title: {e}"))?;
+        let layer_of: Vec<usize> = td.objects.iter().enumerate().filter(|(_, o)| matches!(o.content, crate::TitleObjectContent::TextBox(_))).map(|(i, _)| i).collect();
+        let mut gone = Vec::new();
+        for (field, layer) in self.fields.iter().zip(&layer_of) {
+            let text = texts.iter().find(|(n, _)| n.eq_ignore_ascii_case(field)).map(|(_, t)| t.trim()).filter(|t| !t.is_empty());
+            match text {
+                Some(t) => {
+                    if let crate::TitleObjectContent::TextBox(tb) = &mut td.objects[*layer].content {
+                        tb.text = t.to_string();
+                    }
+                }
+                None => {
+                    if self.optional.iter().any(|o| &o.field == field) {
+                        gone.push(*layer);
+                    }
+                }
+            }
+        }
+        // The optional fields' edits in their listed order, on the layers
+        // as they stand, before any goes.
+        let empty: Vec<&OptionalField> = self.optional.iter().filter(|o| self.fields.iter().zip(&layer_of).any(|(f, l)| f == &o.field && gone.contains(l))).collect();
+        if !empty.is_empty() {
+            let mut json = serde_json::to_value(&td).map_err(|e| e.to_string())?;
+            for o in empty {
+                edit(&mut json, &o.edits)?;
+            }
+            td = serde_json::from_value(json).map_err(|e| format!("the empty fields leave no title: {e}"))?;
+        }
+        gone.sort_unstable();
+        for layer in gone.into_iter().rev() {
+            td.objects.remove(layer);
+        }
+        Ok(td)
     }
 }
 
@@ -299,7 +469,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let mut two = TitleData::single_text(TextBox { text: "[Name]".into(), ..Default::default() });
         two.add_object(crate::TitleObjectContent::TextBox(TextBox { text: "[Role]".into(), ..Default::default() }), crate::default_text_transform());
-        let design = |anchor: [f32; 2], fields: &[&str], accent: Option<usize>, preview: &str| TitleDesign { anchor, grow: true, fields: fields.iter().map(|f| f.to_string()).collect(), accent, preview: preview.into() };
+        let design = |anchor: [f32; 2], fields: &[&str], accent: Option<usize>, preview: &str| TitleDesign { anchor, grow: true, fields: fields.iter().map(|f| f.to_string()).collect(), accent, preview: preview.into(), optional: Vec::new(), variants: Vec::new(), place_by: None };
         let file = |name: &str, data: &TitleData, format: u32, d: Option<TitleDesign>| {
             let json = serde_json::to_string(&TemplateFile { name: name.into(), category: "Packed".into(), data: data.clone(), format, design: d }).unwrap();
             std::fs::write(dir.join(format!("{name}.{TEMPLATE_EXTENSION}")), json).unwrap();
@@ -339,6 +509,119 @@ mod tests {
             let err = TemplateFile::read(&dir.join(format!("{name}.{TEMPLATE_EXTENSION}"))).expect_err(name);
             assert!(err.contains(says), "{name}: {err}");
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn three_texts() -> TitleData {
+        let mut td = TitleData::single_text(TextBox { text: "[A]".into(), ..Default::default() });
+        for t in ["[B]", "[C]"] {
+            td.add_object(crate::TitleObjectContent::TextBox(TextBox { text: t.into(), ..Default::default() }), crate::default_text_transform());
+        }
+        td.protect = crate::ContrastProtect::Auto;
+        td
+    }
+
+    fn plain_design() -> TitleDesign {
+        TitleDesign { anchor: [0.5, 0.5], grow: true, fields: vec!["A".into(), "B".into(), "C".into()], accent: None, preview: String::new(), optional: Vec::new(), variants: Vec::new(), place_by: None }
+    }
+
+    fn set(pointer: &str, value: serde_json::Value) -> DesignEdit {
+        DesignEdit { pointer: pointer.into(), value }
+    }
+
+    fn variant(name: &str, options: Vec<(&str, Vec<DesignEdit>)>) -> Variant {
+        Variant { name: name.into(), options: options.into_iter().map(|(n, edits)| VariantOption { name: n.into(), edits }).collect() }
+    }
+
+    /// #2886: the order a designed title's edits are made in, as
+    /// klipp-format.md says it: the variants in their listed order (a
+    /// later one's edit of the same value wins), then the texts, then
+    /// each empty optional field's edits in their listed order (after
+    /// every variant, so they win), made on the layers as they stand;
+    /// last, the empty fields' layers taken out.
+    #[test]
+    fn a_designs_edits_are_made_in_their_order() {
+        let mut d = plain_design();
+        d.variants = vec![
+            variant("first", vec![("on", vec![set("/objects/0/opacity", 0.5.into())])]),
+            variant("second", vec![("on", vec![set("/objects/0/opacity", 0.6.into())]), ("off", Vec::new())]),
+        ];
+        d.optional = vec![
+            OptionalField { field: "B".into(), edits: vec![set("/objects/0/opacity", 0.7.into()), set("/objects/2/opacity", 0.2.into())] },
+            OptionalField { field: "C".into(), edits: vec![set("/objects/0/opacity", 0.8.into())] },
+        ];
+        let data = three_texts();
+        d.check(&data).unwrap();
+        let text = |td: &TitleData, i: usize| match &td.objects[i].content { crate::TitleObjectContent::TextBox(tb) => tb.text.clone(), _ => unreachable!() };
+
+        // Later variants win; the first option when none is chosen.
+        let all = d.make(&data, &[], &[("A", "a"), ("B", "b"), ("C", "c")]).unwrap();
+        assert_eq!(all.objects[0].opacity, 0.6);
+        assert_eq!((text(&all, 0), text(&all, 1), text(&all, 2)), ("a".into(), "b".into(), "c".into()));
+        let off = d.make(&data, &[("SECOND", "Off")], &[("A", "a"), ("B", "b"), ("C", "c")]).unwrap();
+        assert_eq!(off.objects[0].opacity, 0.5, "a choice by name, in any case");
+
+        // An empty optional field's edits come after the variants, in
+        // their order, on the layers before any goes: B's edit of layer 2
+        // lands on C's layer, which is then layer 1.
+        let no_b = d.make(&data, &[], &[("A", "a"), ("B", " "), ("C", "c")]).unwrap();
+        assert_eq!(no_b.objects.len(), 2);
+        assert_eq!((no_b.objects[0].opacity, text(&no_b, 1), no_b.objects[1].opacity), (0.7, "c".into(), 0.2));
+        let neither = d.make(&data, &[], &[("A", "a")]).unwrap();
+        assert_eq!((neither.objects.len(), neither.objects[0].opacity), (1, 0.8), "C's edit after B's");
+
+        assert!(d.make(&data, &[("third", "on")], &[]).unwrap_err().contains("the choices are first, second"));
+        assert!(d.make(&data, &[("second", "sideways")], &[]).unwrap_err().contains("use on, off"));
+    }
+
+    /// #2886: a design's variants, optional fields and edits from a file
+    /// are checked before anything is made: an edit reaching outside the
+    /// layers, background and readability (the id counter, the published
+    /// fields, the template's name, the style), or a value not there, or
+    /// one that leaves no title; too many edits, variants or options; a
+    /// blank, long or twice-given name; an optional field that is not a
+    /// field; a placing layer that isn't there. Each is refused.
+    #[test]
+    fn a_hostile_design_edit_is_refused() {
+        let data = three_texts();
+        let with = |f: &dyn Fn(&mut TitleDesign)| {
+            let mut d = plain_design();
+            f(&mut d);
+            d.check(&data)
+        };
+        let one = |e: DesignEdit| move |d: &mut TitleDesign| d.variants = vec![variant("v", vec![("o", vec![e.clone()])])];
+        for pointer in ["/next_object_id", "/published", "/template", "/style", "/animation_type", "", "/objects"] {
+            let err = with(&one(set(pointer, 3.into()))).unwrap_err();
+            assert!(err.contains("outside the layers"), "{pointer}: {err}");
+        }
+        assert!(with(&one(set("/objects/7/opacity", 0.5.into()))).unwrap_err().contains("not in the title"));
+        assert!(with(&one(set("/objects/0/opacity", "lots".into()))).unwrap_err().contains("leaves no title"));
+        assert!(with(&one(set("/objects/0", 3.into()))).unwrap_err().contains("leaves no title"));
+        assert!(with(&one(set("/protect", "sometimes".into()))).unwrap_err().contains("leaves no title"));
+        with(&one(set("/protect", "always".into()))).unwrap();
+        with(&one(set("/background", serde_json::json!({ "Color": { "color": [0, 0, 0, 200], "padding": 14.0 } })))).unwrap();
+        let many = vec![set("/objects/0/opacity", 0.5.into()); MAX_EDITS + 1];
+        assert!(with(&|d: &mut TitleDesign| d.variants = vec![variant("v", vec![("o", many.clone())])]).unwrap_err().contains("edits in one option"));
+        assert!(with(&|d: &mut TitleDesign| d.optional = vec![OptionalField { field: "B".into(), edits: many.clone() }]).unwrap_err().contains("edits in one option"));
+        assert!(with(&|d: &mut TitleDesign| d.variants = (0..=MAX_VARIANTS).map(|i| variant(&format!("v{i}"), vec![("o", Vec::new())])).collect()).unwrap_err().contains("variants"));
+        assert!(with(&|d: &mut TitleDesign| d.variants = vec![variant("v", (0..=MAX_OPTIONS).map(|_| ("o", Vec::new())).collect())]).unwrap_err().contains("options"));
+        assert!(with(&|d: &mut TitleDesign| d.variants = vec![variant("v", Vec::new())]).unwrap_err().contains("0 options"));
+        assert!(with(&|d: &mut TitleDesign| d.variants = vec![variant(" ", vec![("o", Vec::new())])]).unwrap_err().contains("blank, long or twice"));
+        assert!(with(&|d: &mut TitleDesign| d.variants = vec![variant("v", vec![("o", Vec::new())]), variant("V", vec![("o", Vec::new())])]).unwrap_err().contains("blank, long or twice"));
+        assert!(with(&|d: &mut TitleDesign| d.variants = vec![variant("v", vec![("o", Vec::new()), ("O", Vec::new())])]).unwrap_err().contains("blank, long or twice"));
+        assert!(with(&|d: &mut TitleDesign| d.variants = vec![variant("v", vec![(&"o".repeat(MAX_FIELD_CHARS + 1), Vec::new())])]).unwrap_err().contains("blank, long or twice"));
+        assert!(with(&|d: &mut TitleDesign| d.optional = vec![OptionalField { field: "D".into(), edits: Vec::new() }]).unwrap_err().contains("not one of its fields"));
+        assert!(with(&|d: &mut TitleDesign| d.optional = vec![OptionalField { field: "B".into(), edits: Vec::new() }; 2]).unwrap_err().contains("named twice"));
+        assert!(with(&|d: &mut TitleDesign| d.place_by = Some(3)).unwrap_err().contains("placed by layer 3"));
+
+        // Through the reader: a file with such an edit is left out.
+        let dir = scratch("hostile-edit");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut d = plain_design();
+        d.variants = vec![variant("v", vec![("o", vec![set("/template", "user:Someone".into())])])];
+        let json = serde_json::to_string(&TemplateFile { name: "Reach".into(), category: "x".into(), data: data.clone(), format: 2, design: Some(d) }).unwrap();
+        std::fs::write(dir.join(format!("Reach.{TEMPLATE_EXTENSION}")), json).unwrap();
+        assert!(read_templates(&dir).is_empty(), "left out");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

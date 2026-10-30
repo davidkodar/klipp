@@ -330,6 +330,34 @@ design comes in format 1; any `.klipptitle` over 16 MB is not read.
 Klipp's built-in title templates are such files, in `assets/titles`
 (#2886). A save still writes format 1.
 
+A design may also carry (#2886):
+
+* `optional` — `[{field, edits}]`: fields that may be left empty. An
+  empty one gets its edits and its layer is taken out.
+* `variants` — `[{name, options: [{name, edits}]}]`: named choices; the
+  first option is taken when none is chosen.
+* `place_by` — the layer the title is placed by: put at a point, or the
+  same point of a box (a shot's picture), it moves there and every other
+  layer keeps its distance from it.
+
+An edit is `{pointer, value}`: the value at `pointer`, a JSON pointer
+into `data`, replaced. It may reach only the layers (`/objects/...`) and
+the title's `/background` and `/protect`, and the value must be there
+already. Edits are made in this order: each variant's chosen option, in
+the order the variants are listed (a later variant's edit of the same
+value wins); then the field texts; then each empty optional field's
+edits, in the order `optional` lists them, on the layers as they stand
+(so they come after every variant); last, the empty fields' layers are
+taken out. Then, as what makes it needs, the title is placed, laid out
+for the frame and published. A file is refused when an edit reaches
+anything else or a value not there, when an option's or optional field's
+edits alone leave no title or change the number of layers, with over 64
+edits in one option, over 8 variants or 8 options in one, a blank, long
+or repeated variant or option name, an optional field that is not one of
+`fields`, or a `place_by` past the layers. Klipp's own lower third is
+such a file, `assets/titles/ops/lower_third.klipptitle`, which only the
+`lower_third` op reads.
+
 ### `.klipptemplate` — a composition template or a recipe
 
 `CompositionTemplate`, `format_version: 2` (format 1 only named its

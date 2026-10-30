@@ -11833,85 +11833,21 @@ fn lower_third_place(i: usize, side: Option<&str>, x: Option<f32>, y: Option<f32
     Ok(LowerThirdPlace { right, x, y, backing, picture: (0.0, 0.0, 1.0, 1.0) })
 }
 
-fn lower_third_title(name: &str, role: Option<&str>, place: LowerThirdPlace) -> klipp_timeline::TitleData {
-    use klipp_timeline::{default_text_transform, Easing, FontStyle, Motion, MotionKind, ObjectTransform, TextAlignment, TextBox, TitleMotion, TitleObjectContent, TitlePosition};
-    let lift = klipp_timeline::TitleShadow {
-        color: [0, 0, 0, 120],
-        offset_x: 0.0,
-        offset_y: 3.0,
-        blur: 12.0,
-        enabled: true,
-        offset_x_keyframes: Vec::new(),
-        offset_y_keyframes: Vec::new(),
-        blur_keyframes: Vec::new(),
+/// The lower third as Klipp's own title file makes it (#2886): its
+/// side and backing chosen, the name and role set (no role, its line
+/// gone and the name lower), and placed by the name's line in the
+/// picture's area, or at `x`/`y`.
+fn lower_third_made(name: &str, role: Option<&str>, place: LowerThirdPlace) -> Result<klipp_timeline::TitleData, String> {
+    let (data, design) = klipp_timeline::title_library::op_title("Lower Third").ok_or("Klipp's lower third is missing")?;
+    let backing = match place.backing {
+        LowerThirdBacking::Shadow => "shadow",
+        LowerThirdBacking::Box => "box",
+        LowerThirdBacking::None => "none",
     };
-    let motion = |delay: f32| {
-        TitleMotion::both(
-            Motion::new(MotionKind::Fade).duration(0.4).easing(Easing::OutCubic).delay(delay),
-            Motion::new(MotionKind::Fade).duration(0.4).easing(Easing::InCubic),
-        )
-    };
-    let (left, top, width, height) = place.picture;
-    let edge = place.x.unwrap_or(left + width * if place.right { 0.92 } else { 0.08 });
-    let name_y = place.y.unwrap_or(top + height * if role.is_some() { 0.815 } else { 0.85 });
-    let alignment = if place.right { TextAlignment::Right } else { TextAlignment::Left };
-    let at = |y: f32| ObjectTransform { center: TitlePosition { x: edge, y }, anchor_norm: TitlePosition { x: if place.right { 1.0 } else { 0.0 }, y: 0.5 }, ..default_text_transform() };
-    let mut td = klipp_timeline::TitleData {
-        objects: Vec::new(),
-        next_object_id: 0,
-        animation_type: Default::default(),
-        background: klipp_timeline::TitleBackground::None,
-        style: None,
-        published: Vec::new(),
-        template: None,
-        // A new lower third keeps itself readable (#2734).
-        protect: klipp_timeline::ContrastProtect::Auto,
-    };
-    let name_box = TextBox {
-        text: name.to_string(),
-        font_size: 46.0,
-        font_name: "Inter".into(),
-        font_style: FontStyle::Bold,
-        color: [255, 255, 255, 255],
-        alignment,
-        ..Default::default()
-    };
-    // Legible over a light picture too (#2428): a close dark shadow and a
-    // thin outline, or a dark box behind the lines.
-    let close = klipp_timeline::TitleShadow { color: [0, 0, 0, 210], offset_y: 2.0, blur: 4.0, ..lift.clone() };
-    let outline = |width: f32| klipp_timeline::TextOutline { color: [0, 0, 0, 170], width, enabled: true, width_keyframes: Vec::new() };
-    let legible = |fx: &mut klipp_timeline::LayerFx, width: f32| {
-        fx.shadows.push(lift.clone());
-        if place.backing == LowerThirdBacking::Shadow {
-            fx.shadows.push(close.clone());
-            fx.outlines.push(outline(width));
-        }
-    };
-    if place.backing == LowerThirdBacking::Box {
-        td.background = klipp_timeline::TitleBackground::Color { color: [0, 0, 0, 200], padding: 14.0 };
-    }
-    let name_id = td.add_object(TitleObjectContent::TextBox(name_box), at(name_y));
-    let name_fx = td.object_mut(name_id).expect("just added").fx_mut();
-    legible(name_fx, 1.5);
-    name_fx.motion = motion(0.0);
-    if let Some(role) = role {
-        let mut role_box = TextBox {
-            text: role.to_string(),
-            font_size: 24.0,
-            font_name: "Inter".into(),
-            font_style: FontStyle::Regular,
-            color: [205, 205, 212, 255],
-            alignment,
-            ..Default::default()
-        };
-        role_box.case_transform = klipp_timeline::TextCase::Uppercase;
-        role_box.tracking = 3.0;
-        let role_id = td.add_object(TitleObjectContent::TextBox(role_box), at(name_y + LOWER_THIRD_ROLE_DROP));
-        let role_fx = td.object_mut(role_id).expect("just added").fx_mut();
-        legible(role_fx, 1.0);
-        role_fx.motion = motion(0.1);
-    }
-    td
+    let side = if place.right { "right" } else { "left" };
+    let mut td = design.make(data, &[("side", side), ("backing", backing)], &[("Name", name), ("Role", role.unwrap_or(""))])?;
+    klipp_timeline::title_library::place_by(&mut td, design.place_by.unwrap_or(0), [place.x, place.y], place.picture);
+    Ok(td)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -13373,7 +13309,8 @@ fn lower_third(
         }
         None => text_track_in_view(seq, tl_in, tl_out),
     };
-    let clip = title_clip(lower_third_title(name, role, place), tl_in, tl_out, fps);
+    let td = lower_third_made(name, role, place).map_err(|e| refuse(i, format!("the lower third couldn't be made: {e}"), "report it"))?;
+    let clip = title_clip(td, tl_in, tl_out, fps);
     let id = clip.id;
     let what = format!(
         "lower third {}{} at {:.2}-{:.2} s on {}",
