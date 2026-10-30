@@ -935,8 +935,9 @@ pub enum Op {
     /// picture or captions, its header's eye; `language` (a BCP 47 tag,
     /// empty for none) is what a subtitle export tags its file with;
     /// `locked` keeps its clips out of every edit, an insert's ripple and
-    /// a cut among them, so a music bed stays whole (#2486). One undo
-    /// step.
+    /// a cut among them, so a music bed stays whole (#2486); `volume_db`,
+    /// `pan`, `mute` and `solo` set its mixer controls, as its fader and
+    /// buttons do, a solo turning the others' off (#3165). One undo step.
     SetTrack {
         track: TrackRef,
         #[serde(default)]
@@ -945,6 +946,14 @@ pub enum Op {
         language: Option<String>,
         #[serde(default)]
         locked: Option<bool>,
+        #[serde(default)]
+        volume_db: Option<f32>,
+        #[serde(default)]
+        pan: Option<f32>,
+        #[serde(default)]
+        mute: Option<bool>,
+        #[serde(default)]
+        solo: Option<bool>,
     },
     /// A track's own automation (#2306): `mode` how it is played (off,
     /// read, touch, latch, write), and `keys` for its `param`, volume or
@@ -4767,7 +4776,9 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             join(seq, pool, i, ti, clip, *side)
         }
         Op::RemoveTrack { track, with_clips } => remove_track(seq, i, track, *with_clips),
-        Op::SetTrack { track, visible, language, locked } => set_track(seq, i, track, *visible, language.as_deref(), *locked),
+        Op::SetTrack { track, visible, language, locked, volume_db, pan, mute, solo } => {
+            set_track(seq, i, track, *visible, language.as_deref(), *locked, TrackMixSet { volume_db: *volume_db, pan: *pan, mute: *mute, solo: *solo })
+        }
         Op::TrackAutomation { track, param, mode, keys } => track_automation(seq, i, track, *param, *mode, keys.as_deref()),
         Op::Split { clip_id: clip_ref, at } => {
             let (ti, ci, clip) = resolve_clip(seq, fps, clip_ref, i)?;
@@ -5616,11 +5627,59 @@ fn join(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, side
 
 /// [`Op::RemoveTrack`].
 /// [`Op::SetTrack`]: the track with what was given changed.
-fn set_track(seq: &Sequence, i: usize, track: &TrackRef, visible: Option<bool>, language: Option<&str>, locked: Option<bool>) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
+/// What [`Op::SetTrack`] sets on a track's mixer controls.
+#[derive(Clone, Copy)]
+struct TrackMixSet {
+    volume_db: Option<f32>,
+    pan: Option<f32>,
+    mute: Option<bool>,
+    solo: Option<bool>,
+}
+
+fn set_track(seq: &Sequence, i: usize, track: &TrackRef, visible: Option<bool>, language: Option<&str>, locked: Option<bool>, mix: TrackMixSet) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
     let ti = resolve_track(seq, track, i)?;
     let t = &seq.tracks[ti];
+    let mixes = mix.volume_db.is_some() || mix.pan.is_some() || mix.mute.is_some() || mix.solo.is_some();
+    if visible.is_none() && language.is_none() && locked.is_none() && !mixes {
+        return Err(refuse(i, "nothing to set", "give visible, language, locked, volume_db, pan, mute, solo or more than one"));
+    }
+    // Its mixer controls, as the fader and its buttons set them (#3165).
+    let mut mix_changes = Vec::new();
+    let mut mixed = Vec::new();
+    if mixes {
+        let mut m = t.mix();
+        if let Some(db) = mix.volume_db {
+            if !db.is_finite() || db > 6.0 {
+                return Err(refuse(i, format!("volume {db} dB"), "give a level up to +6 dB, -60 or below for silence"));
+            }
+            m.volume = if db <= -60.0 { 0.0 } else { db_to_linear(db) };
+            mixed.push(format!("at {db:+.1} dB"));
+        }
+        if let Some(p) = mix.pan {
+            if !(-1.0..=1.0).contains(&p) {
+                return Err(refuse(i, format!("pan {p}"), "give pan from -1 (left) to 1 (right)"));
+            }
+            m.pan = p;
+            mixed.push(format!("pan {p:+.2}"));
+        }
+        if let Some(on) = mix.mute {
+            m.muted = on;
+            mixed.push(if on { "muted" } else { "unmuted" }.into());
+        }
+        if let Some(on) = mix.solo {
+            m.solo = on;
+            mixed.push(if on { "soloed" } else { "unsoloed" }.into());
+        }
+        for (k, other) in seq.tracks.iter().enumerate() {
+            let want = if k == ti { m } else if mix.solo.is_some() { klipp_timeline::TrackMix { solo: false, ..other.mix() } } else { continue };
+            if want != other.mix() {
+                mix_changes.push((other.id, other.mix(), want));
+            }
+        }
+    }
     if visible.is_none() && language.is_none() && locked.is_none() {
-        return Err(refuse(i, "nothing to set", "give visible, language, locked or more than one"));
+        let what = if mixed.is_empty() { "as it was".to_string() } else { mixed.join(", ") };
+        return Ok((format!("track {ti} {} {what}", quoted(&t.name)), EditCommand::SetTrackMix { changes: mix_changes }, Vec::new()));
     }
     let mut new = t.clone();
     let mut what = Vec::new();
@@ -5640,7 +5699,11 @@ fn set_track(seq: &Sequence, i: usize, track: &TrackRef, visible: Option<bool>, 
         new.locked = l;
         what.push(if l { "locked" } else { "unlocked" }.to_string());
     }
-    let edit = EditCommand::SetTrack { description: "Track", track_index: ti, old: Box::new(t.clone()), new: Box::new(new) };
+    what.extend(mixed);
+    let set = EditCommand::SetTrack { description: "Track", track_index: ti, old: Box::new(t.clone()), new: Box::new(new) };
+    // The mixer controls after the rest of the track, which `SetTrack`
+    // puts back whole on undo.
+    let edit = if mix_changes.is_empty() { set } else { EditCommand::Batch(vec![set, EditCommand::SetTrackMix { changes: mix_changes }]) };
     Ok((format!("track {ti} {} {}", quoted(&t.name), what.join(", ")), edit, Vec::new()))
 }
 
@@ -17337,6 +17400,35 @@ mod tests {
         faded.tracks[1].transitions.push(klipp_timeline::Transition { clip_a_id: sa, clip_b_id: sb, ..tr });
         let err = resolve(&faded, &pool, &[serde_json::from_value(serde_json::json!({ "op": "join", "clip_id": b.0.to_string(), "side": "previous" })).unwrap()]).unwrap_err();
         assert!(err.why.contains("crossfade"), "{}", err.why);
+    }
+
+    /// #3165: set_track sets a track's mixer controls, one undo step: its
+    /// level in dB, its pan, its mute; a solo turns every other track's off
+    /// in the same step; with another setting, the two as one step that
+    /// undo puts back whole; a level over +6 dB or a pan past the side is
+    /// refused.
+    #[test]
+    fn set_track_sets_the_mixer_controls_as_one_step() {
+        let (mut seq, pool, _, _, _) = fixture();
+        let one = |seq: &Sequence, v: serde_json::Value| resolve(seq, &pool, &[serde_json::from_value(v).unwrap()]);
+        let a = seq.tracks.iter().position(|t| t.kind == TrackKind::Audio).unwrap();
+        let other = (0..seq.tracks.len()).find(|&k| k != a).unwrap();
+        seq.tracks[other].solo = true;
+        let plan = one(&seq, serde_json::json!({ "op": "set_track", "track": a, "volume_db": -6.0, "pan": -0.5, "mute": true, "solo": true })).unwrap();
+        assert!(plan.steps[0].what.contains("-6.0 dB") && plan.steps[0].what.contains("soloed"), "{}", plan.steps[0].what);
+        let EditCommand::SetTrackMix { changes } = &plan.steps[0].edit else { panic!("a mix step: {:?}", plan.steps[0].edit) };
+        let mut view = seq.clone();
+        for (id, _, new) in changes {
+            view.tracks.iter_mut().find(|t| t.id == *id).unwrap().set_mix(*new);
+        }
+        let t = &view.tracks[a];
+        assert!((t.volume - 0.501).abs() < 1e-3 && t.pan == -0.5 && t.muted && t.solo);
+        assert!(!view.tracks[other].solo, "the other's solo off in the same step");
+        let both = one(&seq, serde_json::json!({ "op": "set_track", "track": a, "locked": true, "volume_db": -60.0 })).unwrap();
+        let EditCommand::Batch(parts) = &both.steps[0].edit else { panic!("one step of two: {:?}", both.steps[0].edit) };
+        assert!(matches!(parts[..], [EditCommand::SetTrack { .. }, EditCommand::SetTrackMix { .. }]));
+        assert!(one(&seq, serde_json::json!({ "op": "set_track", "track": a, "volume_db": 7.0 })).unwrap_err().hint.contains("+6 dB"));
+        assert!(one(&seq, serde_json::json!({ "op": "set_track", "track": a, "pan": 1.5 })).is_err());
     }
 
     /// #2861: buses made, set and taken out, and sends to them, each one

@@ -5692,12 +5692,19 @@ impl TimelinePanel {
                         format!("{}%", vol_pct), egui::FontId::proportional(10.0),
                         tt.text_secondary,
                     );
+                    // A drag is one undo step, whole (#3165).
+                    if vol_resp.drag_started() {
+                        cmds.push(AppCommand::BeginHistoryBatch);
+                    }
                     if vol_resp.double_clicked() {
                         cmds.push(AppCommand::SetTrackVolume { track_index: track_idx, volume: 1.0 });
                     } else if vol_resp.dragged() {
                         let dx = vol_resp.drag_delta().x;
                         let new_vol = (track.volume + dx / vol_rect.width() * 1.3).clamp(0.0, 1.3);
                         cmds.push(AppCommand::SetTrackVolume { track_index: track_idx, volume: new_vol });
+                    }
+                    if vol_resp.drag_stopped() {
+                        cmds.push(AppCommand::EndHistoryBatchAs { label: "Track Volume".into() });
                     }
 
                     let pan_y = btn_y - 14.0;
@@ -5732,12 +5739,18 @@ impl TimelinePanel {
                         egui::Align2::RIGHT_CENTER, &pan_label,
                         egui::FontId::proportional(10.0), tt.text_dim,
                     );
+                    if pan_resp.drag_started() {
+                        cmds.push(AppCommand::BeginHistoryBatch);
+                    }
                     if pan_resp.dragged() {
                         let dx = pan_resp.drag_delta().x;
                         let new_pan = (track.pan + dx / (pan_rect.width() * 0.5)).clamp(-1.0, 1.0);
                         cmds.push(AppCommand::SetTrackPan { track_index: track_idx, pan: new_pan });
                     } else if pan_resp.double_clicked() {
                         cmds.push(AppCommand::SetTrackPan { track_index: track_idx, pan: 0.0 });
+                    }
+                    if pan_resp.drag_stopped() {
+                        cmds.push(AppCommand::EndHistoryBatchAs { label: "Track Pan".into() });
                     }
 
                     let vu_y = track_y + 4.0;

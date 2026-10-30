@@ -243,6 +243,14 @@ impl DocumentView<'_> {
             EditCommand::SetRouting { old, .. } => {
                 self.sequences[self.active].set_routing(old);
             }
+            EditCommand::SetTrackMix { changes } => {
+                let seq = &mut self.sequences[self.active];
+                for (id, old, _) in changes {
+                    if let Some(t) = seq.tracks.iter_mut().find(|t| t.id == *id) {
+                        t.set_mix(*old);
+                    }
+                }
+            }
             EditCommand::SetTrackSettings { changes } => {
                 let seq = &mut self.sequences[self.active];
                 for (id, old, _) in changes {
@@ -983,6 +991,14 @@ impl DocumentView<'_> {
             }
             EditCommand::SetRouting { new, .. } => {
                 self.sequences[self.active].set_routing(new);
+            }
+            EditCommand::SetTrackMix { changes } => {
+                let seq = &mut self.sequences[self.active];
+                for (id, _, new) in changes {
+                    if let Some(t) = seq.tracks.iter_mut().find(|t| t.id == *id) {
+                        t.set_mix(*new);
+                    }
+                }
             }
             EditCommand::SetTrackSettings { changes } => {
                 let seq = &mut self.sequences[self.active];

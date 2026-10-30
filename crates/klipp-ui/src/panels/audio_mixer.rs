@@ -483,11 +483,14 @@ fn fader_strip(
     let pan_resp = ui.allocate_rect(pan_rect.expand(2.0), egui::Sense::click_and_drag());
     // Held, the pan is recorded by the track's mode (#2306), moving from
     // where it shows.
+    // A drag is one undo step, whole (#3165).
     if pan_resp.drag_started() {
         touches.push((TrackParam::Pan, true));
+        cmds.push(AppCommand::BeginHistoryBatch);
     }
     if pan_resp.drag_stopped() {
         touches.push((TrackParam::Pan, false));
+        cmds.push(AppCommand::EndHistoryBatchAs { label: "Track Pan".into() });
     }
     let mut moved_pan = None;
     if pan_resp.dragged() {
@@ -566,11 +569,14 @@ fn fader_strip(
     let fader_resp = ui.allocate_rect(fader_hit, egui::Sense::click_and_drag());
     // Held, the fader is recorded by the track's mode (#2306), moving from
     // where it shows.
+    // A drag is one undo step, whole (#3165).
     if fader_resp.drag_started() {
         touches.push((TrackParam::Volume, true));
+        cmds.push(AppCommand::BeginHistoryBatch);
     }
     if fader_resp.drag_stopped() {
         touches.push((TrackParam::Volume, false));
+        cmds.push(AppCommand::EndHistoryBatchAs { label: "Track Volume".into() });
     }
     let mut moved_volume = None;
     if fader_resp.dragged() {
@@ -1339,6 +1345,50 @@ mod tests {
             let (shapes, _) = mixer_frame(&ctx, &mut state, panel_h, None);
             assert_eq!(shown_whole(&shapes, "Send to").len(), 1, "{panel_h} px: the sends open");
         }
+    }
+
+    /// #3165: a fader drag opens a history batch as it starts and closes it,
+    /// named, as it ends, so the drag's moves are one undo step.
+    #[test]
+    fn a_fader_drag_is_one_history_batch() {
+        let ctx = egui::Context::default();
+        let mut state = AppState::default();
+        let panel_h = 260.0;
+        mixer_frame(&ctx, &mut state, panel_h, None);
+        let (shapes, _) = mixer_frame(&ctx, &mut state, panel_h, None);
+        let mut readouts = shown_whole(&shapes, "+0.0 dB");
+        readouts.sort_by(|a, b| a.min.x.total_cmp(&b.min.x));
+        // The first strip's fader, above its readout.
+        let r = readouts[0];
+        let at = egui::pos2(r.center().x - STRIP_W / 2.0 + STRIP_PAD + 22.0, r.min.y - READOUT_GAP - 30.0);
+        let theme = KlippTheme::default();
+        let mut sent = Vec::new();
+        let mut frame = |events: Vec<egui::Event>| {
+            let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200.0, 800.0))), events, ..Default::default() };
+            let mut cmds = Vec::new();
+            let _ = ctx.run(input, |ctx| {
+                egui::CentralPanel::default().frame(egui::Frame::none()).show(ctx, |ui| {
+                    let rect = egui::Rect::from_min_size(egui::pos2(0.0, 300.0), egui::vec2(1200.0, panel_h));
+                    crate::ui_util::allocate_clipped_ui(ui, rect, |ui| {
+                        ui.set_min_size(rect.size());
+                        cmds = show(ui, &mut state, &theme);
+                    });
+                });
+            });
+            sent.extend(cmds);
+        };
+        let button = |pos: egui::Pos2, pressed: bool| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() };
+        frame(vec![egui::Event::PointerMoved(at), button(at, true)]);
+        for k in 1..=6 {
+            frame(vec![egui::Event::PointerMoved(at - egui::vec2(0.0, 4.0 * k as f32))]);
+        }
+        let end = at - egui::vec2(0.0, 24.0);
+        frame(vec![button(end, false)]);
+        frame(vec![]);
+        let begin = sent.iter().position(|c| matches!(c, AppCommand::BeginHistoryBatch)).expect("the drag opens a batch");
+        let close = sent.iter().position(|c| matches!(c, AppCommand::EndHistoryBatchAs { label } if label == "Track Volume")).expect("and closes it, named");
+        let moves: Vec<usize> = sent.iter().enumerate().filter(|(_, c)| matches!(c, AppCommand::SetTrackVolume { .. })).map(|(i, _)| i).collect();
+        assert!(!moves.is_empty() && moves.iter().all(|&i| begin < i && i < close), "every move inside the batch: {sent:?}");
     }
 
     /// #2696: only tracks that can be heard get a strip. A text track

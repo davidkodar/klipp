@@ -3725,6 +3725,12 @@ impl PlaybackEngine {
             }
 
             AppCommand::SetTrackVolume { track_index, volume } => {
+                // Into the sequence the levels are synced from too, so a
+                // sequence update before the app's next sync does not put
+                // the old one back (#3165), as mute and solo go.
+                if let Some(track) = self.sequence.write().unwrap_or_else(|e| e.into_inner()).tracks.get_mut(track_index) {
+                    track.volume = volume;
+                }
                 if let Ok(mut m) = self.mixer.lock() {
                     m.ensure_tracks(track_index + 1);
                     m.tracks[track_index].volume = volume;
@@ -3757,6 +3763,9 @@ impl PlaybackEngine {
                 self.sync_track_switches();
             }
             AppCommand::SetTrackPan { track_index, pan } => {
+                if let Some(track) = self.sequence.write().unwrap_or_else(|e| e.into_inner()).tracks.get_mut(track_index) {
+                    track.pan = pan;
+                }
                 if let Ok(mut m) = self.mixer.lock() {
                     m.ensure_tracks(track_index + 1);
                     m.tracks[track_index].pan = pan;
@@ -4177,6 +4186,7 @@ impl PlaybackEngine {
                 // Sync per-clip volume/pan to active audio sources
                 self.sync_clip_volumes();
                 self.sync_track_switches();
+                self.sync_track_levels();
                 // Restart audio sources only when audio-relevant state changed.
                 // Title color/opacity/position edits fire SequenceUpdated but don't
                 // affect audio — skipping the teardown+rebuild prevents a storm that
@@ -4908,6 +4918,28 @@ impl PlaybackEngine {
             if *sent != held {
                 let _ = self.event_tx.send(AppEvent::BusesHeldAtCap(held.clone()));
                 *sent = held;
+            }
+        }
+    }
+
+    /// Each track's volume and pan as the sequence has them, onto its mixer
+    /// lane (#3165): an undo or a redo of a fader puts them back there,
+    /// which otherwise reached the mix only by a move of the fader. A
+    /// control its automation plays, or that is being moved live, is left
+    /// to [`Self::sync_track_automation`].
+    fn sync_track_levels(&self) {
+        use klipp_timeline::TrackParam;
+        let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
+        let overrides = self.automation_override.lock().map(|o| o.clone()).unwrap_or_default();
+        let Ok(mut m) = self.mixer.lock() else { return };
+        m.ensure_tracks(seq.tracks.len());
+        for (i, (lane, track)) in m.tracks.iter_mut().zip(&seq.tracks).enumerate() {
+            let set = |param: TrackParam| !track.automation.plays(param) && !overrides.contains_key(&(i, param));
+            if set(TrackParam::Volume) {
+                lane.volume = track.volume;
+            }
+            if set(TrackParam::Pan) {
+                lane.pan = track.pan;
             }
         }
     }
@@ -15470,5 +15502,51 @@ mod routing_sync_tests {
         sync(&changed);
         let m = engine.mixer.lock().unwrap();
         assert!(m.buses.is_empty() && m.tracks[0].sends.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod track_level_sync_tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    /// #3165: a track's volume and pan as the sequence has them reach its
+    /// mixer lane on a sequence update, as an undo of a fader brings them;
+    /// one its automation plays is left to the automation; a fader moved
+    /// is kept in the sequence the update reads, so it is not put back.
+    #[test]
+    fn an_undone_fader_reaches_the_mix() {
+        use klipp_timeline::TrackParam;
+        let mut seq = klipp_timeline::Sequence::new_default();
+        let key = |t: f64, v: f32| klipp_core::Keyframe { time_secs: t, value: v, interpolation: Default::default(), tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() };
+        let mut keyed = klipp_timeline::Track::new("A1", klipp_timeline::TrackKind::Audio);
+        keyed.automation.lanes.insert(TrackParam::Volume, vec![key(0.0, 1.0), key(5.0, 0.2)]);
+        seq.tracks = vec![klipp_timeline::Track::new("A0", klipp_timeline::TrackKind::Audio), keyed];
+        let sequence = Arc::new(klipp_timeline::SharedSequence::new(seq));
+        let (_cmd_tx, cmd_rx) = crossbeam_channel::unbounded();
+        let (ev_tx, _ev_rx) = crossbeam_channel::unbounded();
+        let fb = || Arc::new(Mutex::new(crate::texture::FrameBuffer::new(16, 16)));
+        let mut engine = PlaybackEngine::new(
+            cmd_rx, ev_tx, fb(), fb(),
+            Arc::clone(&sequence), Arc::new(RwLock::new(klipp_media::MediaPool::new())), Box::new(|| {}),
+            Arc::new(Mutex::new(None)), Arc::new(Mutex::new(crate::perf::PerfRing::default())),
+        );
+        engine.handle_command(AppCommand::SetTrackVolume { track_index: 0, volume: 0.3 });
+        assert_eq!(engine.sequence.read().unwrap().tracks[0].volume, 0.3, "the move kept where the update reads");
+        {
+            let mut s = engine.sequence.write().unwrap();
+            s.tracks[0].volume = 0.7;
+            s.tracks[0].pan = -0.4;
+            s.tracks[1].volume = 0.5;
+        }
+        {
+            let mut m = engine.mixer.lock().unwrap();
+            m.ensure_tracks(2);
+            m.tracks[1].volume = 0.9;
+        }
+        engine.sync_track_levels();
+        let m = engine.mixer.lock().unwrap();
+        assert_eq!((m.tracks[0].volume, m.tracks[0].pan), (0.7, -0.4), "undone, heard");
+        assert_eq!(m.tracks[1].volume, 0.9, "the automation's, untouched");
     }
 }
