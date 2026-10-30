@@ -509,12 +509,17 @@ impl MusicFilter {
 /// Search Jamendo for music. `query` is matched as fuzzy tags (moods,
 /// genres), so "upbeat electronic" finds upbeat electronic tracks; when
 /// the tags find nothing, the words are tried as a plain search, then
-/// each word alone, so a natural phrase still finds something.
+/// each word alone, so a natural phrase still finds something. An
+/// instrument named in two words ("acoustic guitar") is asked for as the
+/// library's own tag for it, and "instrumental" as its filter.
 pub fn search_music(query: &str, limit: u32) -> Result<Vec<Track>, String> {
     search_music_filtered(query, limit, MusicFilter::default())
 }
 
 pub fn search_music_filtered(query: &str, limit: u32, filter: MusicFilter) -> Result<Vec<Track>, String> {
+    // "instrumental" in the words is the library's filter, not a tag:
+    // Jamendo tags no track with it, so as a word it asked for nothing.
+    let filter = MusicFilter { instrumental: filter.instrumental || read_query(query).instrumental, ..filter };
     let mut tracks = ranked_pool(query, &filter, |extra, page, offset| jamendo_tracks(extra, page, offset, &filter))?;
     tracks.truncate(limit.clamp(1, 50) as usize);
     for t in &mut tracks {
@@ -531,10 +536,27 @@ pub fn search_music_filtered(query: &str, limit: u32, filter: MusicFilter) -> Re
 /// guitar" was a dance track (#739). The same pool whatever the limit, so
 /// the best match is the same with limit 1 as with 20, and a limit only
 /// cuts the ranked list (#1895).
+///
+/// An instrument tag the query names ("acoustic guitar") is asked for
+/// first, strictly: Jamendo's fuzzy tags match any one word, so "acoustic
+/// guitar" found popular vocal dance tracks tagged "acoustic" and electric
+/// guitars tagged "guitar" before any acoustic guitar.
 fn ranked_pool(query: &str, filter: &MusicFilter, mut fetch: impl FnMut(&str, u32, u32) -> Result<Vec<Track>, String>) -> Result<Vec<Track>, String> {
     let page = RANK_PAGE;
-    let words: Vec<String> = query.split_whitespace().map(|w| w.to_lowercase()).collect();
-    let mut attempts: Vec<String> = vec![format!("fuzzytags={}", encode(&words.join("+"))), format!("search={}", encode(query.trim()))];
+    let q = read_query(query);
+    let words = q.words;
+    let mut attempts: Vec<String> = Vec::new();
+    if !q.tags.is_empty() {
+        attempts.push(format!("tags={}", encode(&q.tags.join("+"))));
+    }
+    if words.is_empty() {
+        // Nothing but a filter word ("instrumental"): the library's own
+        // order, filtered.
+        attempts.push(String::new());
+    } else {
+        attempts.push(format!("fuzzytags={}", encode(&words.join("+"))));
+        attempts.push(format!("search={}", encode(&q.text)));
+    }
     if words.len() > 1 {
         attempts.extend(words.iter().map(|w| format!("fuzzytags={}", encode(w))));
     }
@@ -545,6 +567,16 @@ fn ranked_pool(query: &str, filter: &MusicFilter, mut fetch: impl FnMut(&str, u3
         // six gives six, not the two of a page's six that passed (#739).
         for offset in [0, page] {
             let mut got = fetch(&extra, page, offset)?;
+            // Jamendo answers a good query with nothing, as a success,
+            // about one time in three: an empty first page is asked
+            // again before it is taken for no match, or a search fell
+            // through to its loosest attempt by chance.
+            for _ in 0..EMPTY_RETRIES {
+                if offset != 0 || !got.is_empty() {
+                    break;
+                }
+                got = fetch(&extra, page, offset)?;
+            }
             let read = got.len();
             // Before ranking and the limit, so a limit of eight gives
             // eight that pass (#1931).
@@ -570,6 +602,76 @@ fn ranked_pool(query: &str, filter: &MusicFilter, mut fetch: impl FnMut(&str, u3
 const RANK_PAGE: u32 = 150;
 const RANK_POOL: usize = 50;
 
+/// How many more times an empty first page is asked for before it counts
+/// as no match: measured on 2026-10-30, a third of identical queries came
+/// back empty, so two more leave about one in thirty.
+const EMPTY_RETRIES: usize = 2;
+
+/// Instruments Jamendo tags as one word that a query names in two, each
+/// checked against the library on 2026-10-30.
+const INSTRUMENT_TAGS: &[(&str, &str, &str)] = &[
+    ("acoustic", "guitar", "acousticguitar"),
+    ("electric", "guitar", "electricguitar"),
+    ("classical", "guitar", "classicalguitar"),
+    ("slide", "guitar", "slideguitar"),
+    ("drum", "machine", "drummachine"),
+    ("double", "bass", "doublebass"),
+];
+
+/// A music query as the library is asked it.
+#[derive(Debug, PartialEq)]
+struct MusicQuery {
+    /// The words to match and rank by, lowercase, an instrument named in
+    /// two words joined to its tag ("acousticguitar").
+    words: Vec<String>,
+    /// The instrument tags among `words`, asked for strictly.
+    tags: Vec<String>,
+    /// Whether the query asked for no vocals: "instrumental", "no vocals".
+    instrumental: bool,
+    /// The query's own words less the ones that asked for no vocals, for
+    /// the library's plain search.
+    text: String,
+}
+
+/// Read a music query: the words that ask for no vocals become the
+/// filter, and an instrument named in two words its one tag.
+fn read_query(query: &str) -> MusicQuery {
+    let raw: Vec<String> = query.split_whitespace().map(|w| w.to_lowercase()).collect();
+    let mut instrumental = false;
+    let mut kept: Vec<String> = Vec::new();
+    let mut i = 0;
+    while i < raw.len() {
+        let w = raw[i].as_str();
+        let next = raw.get(i + 1).map(String::as_str);
+        if matches!(w, "instrumental" | "instrumentals") {
+            instrumental = true;
+            i += 1;
+        } else if matches!(w, "no" | "without") && matches!(next, Some("vocals" | "vocal" | "voice" | "singing")) {
+            instrumental = true;
+            i += 2;
+        } else {
+            kept.push(raw[i].clone());
+            i += 1;
+        }
+    }
+    let text = kept.join(" ");
+    let mut words = Vec::new();
+    let mut tags = Vec::new();
+    let mut i = 0;
+    while i < kept.len() {
+        let joined = kept.get(i + 1).and_then(|next| INSTRUMENT_TAGS.iter().find(|(a, b, _)| *a == kept[i] && b == next));
+        if let Some((_, _, tag)) = joined {
+            words.push(tag.to_string());
+            tags.push(tag.to_string());
+            i += 2;
+        } else {
+            words.push(kept[i].clone());
+            i += 1;
+        }
+    }
+    MusicQuery { words, tags, instrumental, text }
+}
+
 /// Tracks by their library ids (#1895): the ones a search was asked to
 /// listen to by id that its results don't hold. An id the library
 /// doesn't know is left out; the caller says so.
@@ -593,14 +695,30 @@ fn rank_by_query(tracks: &mut [Track], words: &[String]) {
     let score = |t: &Track| -> i32 {
         let tags: Vec<String> = t.tags.iter().map(|x| x.to_lowercase()).collect();
         let title = t.title.to_lowercase();
-        let has = |w: &str| tags.iter().any(|x| x == w || x.contains(w)) || title.split(|c: char| !c.is_alphanumeric()).any(|x| x == w);
+        let has = |w: &str| {
+            // An instrument tag ("acousticguitar") is met by itself, or by
+            // both its words as tags of their own; never by a tag that
+            // only contains one ("electricguitar" for "guitar" is fine,
+            // but not for "acousticguitar").
+            if let Some((a, b, _)) = INSTRUMENT_TAGS.iter().find(|(_, _, t)| *t == w) {
+                return tags.iter().any(|x| x == w) || (tags.iter().any(|x| x == a) && tags.iter().any(|x| x == b));
+            }
+            tags.iter().any(|x| x == w || x.contains(w)) || title.split(|c: char| !c.is_alphanumeric()).any(|x| x == w)
+        };
         let mut s = 0;
         for w in words {
             if has(w) {
                 s += 2;
             }
         }
-        let asks = |side: &[&str]| words.iter().any(|w| side.contains(&w.as_str()));
+        // Moods by the words as typed: "acoustic" is a calm word inside
+        // "acousticguitar" too.
+        let asks = |side: &[&str]| {
+            words.iter().flat_map(|w| match INSTRUMENT_TAGS.iter().find(|(_, _, t)| t == w) {
+                Some((a, b, _)) => vec![*a, *b],
+                None => vec![w.as_str()],
+            }).any(|w| side.contains(&w))
+        };
         let meets = |side: &[&str]| side.iter().filter(|m| tags.iter().any(|x| x == *m)).count() as i32;
         if asks(CALM) && !asks(DRIVING) {
             s -= 2 * meets(DRIVING);
@@ -1441,6 +1559,69 @@ mod tests {
         assert_eq!(order, vec!["Porch", "Morning", "Energy"]);
     }
 
+    /// "instrumental acoustic guitar": the filter word becomes the filter,
+    /// and the two-word instrument its one tag, asked for strictly.
+    #[test]
+    fn an_instrument_in_two_words_is_its_tag_and_instrumental_the_filter() {
+        let q = read_query("Instrumental Acoustic Guitar");
+        assert_eq!(q, MusicQuery { words: vec!["acousticguitar".into()], tags: vec!["acousticguitar".into()], instrumental: true, text: "acoustic guitar".into() });
+        let q = read_query("chill guitar without vocals");
+        assert_eq!((q.words, q.tags, q.instrumental), (vec!["chill".to_string(), "guitar".into()], vec![], true));
+        // A query with neither reads as it always did.
+        let q = read_query("upbeat electronic");
+        assert_eq!((q.words, q.tags, q.instrumental, q.text.as_str()), (vec!["upbeat".to_string(), "electronic".into()], vec![], false, "upbeat electronic"));
+    }
+
+    /// A track a search keeps: one with a preview to play.
+    fn playable(title: &str, tags: &[&str]) -> Track {
+        Track { preview_url: "https://p".into(), ..track(title, tags) }
+    }
+
+    /// The strict tag is asked first, and an acoustic guitar outranks the
+    /// electric one and the vocal dance track tagged "acoustic" that the
+    /// loose tags put first by popularity.
+    #[test]
+    fn acoustic_guitar_finds_acoustic_guitars_first() {
+        let library = vec![
+            playable("Dance", &["dance", "acoustic", "guitar", "vocal"]),
+            playable("Electric", &["rock", "electricguitar"]),
+            playable("Porch", &["folk", "acousticguitar"]),
+        ];
+        let mut asked = Vec::new();
+        let pool = ranked_pool("acoustic guitar", &MusicFilter::default(), |extra: &str, _, offset| {
+            asked.push(extra.to_string());
+            Ok(if offset == 0 { library.clone() } else { Vec::new() })
+        })
+        .unwrap();
+        assert_eq!(asked[0], "tags=acousticguitar", "the instrument tag is asked first: {asked:?}");
+        assert_eq!(pool[0].title, "Porch");
+        assert!(pool.iter().position(|t| t.title == "Electric") > Some(0));
+    }
+
+    /// Jamendo answers a good query with nothing now and then: the empty
+    /// page is asked again, and the strict answer kept, not the loosest.
+    #[test]
+    fn an_empty_answer_is_asked_again_before_falling_back() {
+        let porch = playable("Porch", &["acousticguitar"]);
+        let mut calls = 0;
+        let pool = ranked_pool("acoustic guitar", &MusicFilter::default(), |extra: &str, _, offset| {
+            calls += 1;
+            // The strict query comes back empty once, then answers.
+            Ok(if extra.starts_with("tags=") && offset == 0 && calls > 1 { vec![porch.clone()] } else { Vec::new() })
+        })
+        .unwrap();
+        assert_eq!(pool.first().map(|t| t.title.as_str()), Some("Porch"));
+        // A page that stays empty is asked 1 + EMPTY_RETRIES times, no more.
+        let mut calls = 0;
+        let pool = ranked_pool("nothing", &MusicFilter::default(), |_: &str, _, _| {
+            calls += 1;
+            Ok(Vec::new())
+        })
+        .unwrap();
+        assert!(pool.is_empty());
+        assert_eq!(calls, 2 * (1 + EMPTY_RETRIES), "two attempts (fuzzy tags, plain search), each tried three times");
+    }
+
     /// #1931: a family is named as results label it, or loosely; one that
     /// isn't is refused with the families there are.
     #[test]
@@ -1551,6 +1732,24 @@ mod tests {
         assert!(!tracks.is_empty(), "upbeat returns tracks");
         let t = &tracks[0];
         assert!(!t.title.is_empty() && !t.preview_url.is_empty(), "track has a title and a preview: {t:?}");
+    }
+
+    /// The query that found vocal dance tracks: every result now an
+    /// acoustic guitar, from the library's own instrument tag.
+    #[test]
+    #[ignore = "hits the live Jamendo API"]
+    fn live_instrumental_acoustic_guitar_when_configured() {
+        if !music_available() {
+            eprintln!("skipping: no Jamendo client id");
+            return;
+        }
+        let tracks = search_music("instrumental acoustic guitar", 10).expect("search runs");
+        for t in &tracks {
+            eprintln!("{} — {}: {:?}", t.title, t.artist, t.tags);
+        }
+        assert_eq!(tracks.len(), 10);
+        let guitars = tracks.iter().filter(|t| t.tags.iter().any(|x| x == "acousticguitar")).count();
+        assert_eq!(guitars, 10, "every result is tagged acousticguitar");
     }
 }
 
