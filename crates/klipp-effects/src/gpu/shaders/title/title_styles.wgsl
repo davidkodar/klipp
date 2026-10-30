@@ -967,6 +967,23 @@ fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgro
             }
         } else if abs(p.row0.x-1.0)>=0.001 { alpha=floor(alpha*p.row0.x*255.0+0.5)/255.0; }
         store_rgba(i,vec4<f32>(v.rgb,alpha));
+    } else if p.op==64u {
+        // A layer moved by (color.x, color.y) pixels, sampled bilinearly in
+        // premultiplied light: a keyed layer at one of the shutter's
+        // instants (#3160). `title_shutter::shift` is its CPU twin.
+        let sx=f32(x)-p.color.x; let sy=f32(y)-p.color.y;
+        let bx=floor(sx); let by=floor(sy); let fx=sx-bx; let fy=sy-by;
+        var acc=vec4<f32>(0.0);
+        for(var j=0;j<2;j+=1) {
+            for(var k=0;k<2;k+=1) {
+                let xi=i32(bx)+k; let yi=i32(by)+j;
+                if xi<0 || yi<0 || xi>=i32(p.width) || yi>=i32(p.height) {continue;}
+                let wx=select(1.0-fx,fx,k==1); let wy=select(1.0-fy,fy,j==1);
+                let v=load_rgba(u32(yi)*p.width+u32(xi));
+                acc+=vec4<f32>(v.rgb*v.a,v.a)*(wx*wy);
+            }
+        }
+        store_rgba(i,select(vec4<f32>(0.0),vec4<f32>(acc.rgb/acc.a,acc.a),acc.a>0.0));
     } else if p.op==10u {
         let s=load_rgba(i); let d=load_dst(i);
         let srgb=matrix(s.rgb); let drgb=matrix(d.rgb);
