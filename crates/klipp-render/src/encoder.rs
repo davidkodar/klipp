@@ -2238,6 +2238,7 @@ mod tests {
 
     fn make_snapshot() -> SequenceSnapshot {
         SequenceSnapshot {
+            audio_buses: Vec::new(),
             fps: 24.0,
             fps_num: 24,
             fps_den: 1,
@@ -2866,6 +2867,7 @@ mod tests {
         // pixel (10.0 linear) and the rest diffuse white (1.0).
         let (w, h) = (320usize, 240usize);
         let snapshot = SequenceSnapshot {
+            audio_buses: Vec::new(),
             fps: 24.0,
             fps_num: 24,
             fps_den: 1,

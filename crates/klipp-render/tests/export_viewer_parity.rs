@@ -85,6 +85,7 @@ fn timeline(tracks: Vec<Vec<klipp_timeline::Clip>>) -> VideoTimeline {
 /// "match viewer", adjusted by `tweak`.
 fn export_video(video: VideoTimeline, out: &Path, tweak: impl FnOnce(&mut ExportSettings)) {
     let snapshot = SequenceSnapshot {
+        audio_buses: Vec::new(),
         fps: 25.0, fps_num: 25, fps_den: 1, width: W, height: H, sample_rate: 48000,
         duration_frames: FRAMES, export_range: None, video,
         audio_tracks: vec![], global_lut_path: None, subtitle_tracks: vec![], chapters: vec![],

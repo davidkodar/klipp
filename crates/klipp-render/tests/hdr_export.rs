@@ -67,6 +67,7 @@ fn export_seq(
     video.sequence.tracks.push(t);
     video.media.extend(media);
     let snapshot = SequenceSnapshot {
+        audio_buses: Vec::new(),
         fps: 25.0, fps_num: 25, fps_den: 1, width: W, height: H, sample_rate: 48000,
         duration_frames: FRAMES, export_range: None, video,
         audio_tracks: vec![], global_lut_path: None, subtitle_tracks: vec![], chapters: vec![],

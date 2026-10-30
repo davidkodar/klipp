@@ -51,6 +51,7 @@ fn exported(media: &Path, out: &Path, codec: ExportVideoCodec, format: ExportFor
     video.sequence.tracks = vec![top, base];
     video.media.insert(id, MediaFile { path: media.to_path_buf(), log_format: None, source_rotation: 0, ..Default::default() });
     let snapshot = SequenceSnapshot {
+        audio_buses: Vec::new(),
         fps: 24.0, fps_num: 24, fps_den: 1, width: 320, height: 180, sample_rate: 48000,
         duration_frames: N as u64, export_range: None, video,
         audio_tracks: vec![], global_lut_path: None, subtitle_tracks: vec![], chapters: vec![],

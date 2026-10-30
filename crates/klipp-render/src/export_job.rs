@@ -1353,6 +1353,7 @@ mod tests {
 
     fn make_test_snapshot() -> SequenceSnapshot {
         SequenceSnapshot {
+            audio_buses: Vec::new(),
             fps: 24.0,
             fps_num: 24,
             fps_den: 1,

@@ -28,6 +28,8 @@ pub struct SequenceSnapshot {
     pub video: VideoTimeline,
     /// Audio tracks.
     pub audio_tracks: Vec<AudioTrackSnapshot>,
+    /// The aux buses the tracks send to (#2861).
+    pub audio_buses: Vec<klipp_timeline::AuxBus>,
     /// How a track's pan position becomes left and right gains.
     ///
     /// Carried so the render mixes the way playback does. The export
@@ -146,6 +148,8 @@ pub struct AudioTrackSnapshot {
     /// The track's own effects (#2560), run on its summed clips before
     /// its fader, as the playback mixer runs them.
     pub effects: Vec<klipp_core::AudioEffectInstance>,
+    /// Its sends to the aux buses (#2861).
+    pub sends: Vec<klipp_timeline::AuxSend>,
 }
 
 #[derive(Clone)]
@@ -657,6 +661,7 @@ impl SequenceSnapshot {
             export_range,
             video: VideoTimeline { sequence: timeline, media, global_lut_opacity: 1.0 },
             audio_tracks,
+            audio_buses: seq.buses.clone(),
             pan_law: settings.pan_law,
             global_lut_path,
             subtitle_tracks,
@@ -784,6 +789,7 @@ fn snapshot_audio_track(
         clips,
         automation: track.automation.clone(),
         effects: track.effects.audio.clone(),
+        sends: track.sends.clone(),
     })
 }
 
@@ -829,7 +835,7 @@ fn snapshot_video_track_sound(track: &Track, seq: &Sequence, media_pool: &MediaP
     if clips.is_empty() {
         return None;
     }
-    Some(AudioTrackSnapshot { volume: track.volume, pan: track.pan, muted: track.muted, solo: track.solo, clips, automation: track.automation.clone(), effects: track.effects.audio.clone() })
+    Some(AudioTrackSnapshot { volume: track.volume, pan: track.pan, muted: track.muted, solo: track.solo, clips, automation: track.automation.clone(), effects: track.effects.audio.clone(), sends: track.sends.clone() })
 }
 
 /// Flatten a compound clip's inner sequence audio tracks into the parent audio clip list.

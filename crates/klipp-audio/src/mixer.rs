@@ -160,6 +160,16 @@ pub struct AudioMixer {
     /// as long as a block.
     bus_scratch: Vec<Vec<f32>>,
     track_out: Vec<f32>,
+    send_tap: Vec<f32>,
+    /// Each track's further delay on its own way and on each send, after
+    /// its fader (#2861): with `track_delay_lines` before it, they bring
+    /// every way through the buses to master together ([`crate::routing::pdc_plan`]).
+    direct_delay_lines: Vec<Option<crate::pdc::TrackDelayLine>>,
+    send_delay_lines: Vec<Vec<Option<crate::pdc::TrackDelayLine>>>,
+    /// The latency every way is brought to.
+    pdc_total: u32,
+    /// The largest block a delay line is sized for.
+    max_block_samples: usize,
 }
 
 impl AudioMixer {
@@ -179,6 +189,11 @@ impl AudioMixer {
             bus_inserts: Vec::new(),
             bus_scratch: Vec::new(),
             track_out: Vec::new(),
+            send_tap: Vec::new(),
+            direct_delay_lines: Vec::new(),
+            send_delay_lines: Vec::new(),
+            pdc_total: 0,
+            max_block_samples: 4096,
         }
     }
 
@@ -211,14 +226,58 @@ impl AudioMixer {
     /// Maximum latency (in stereo frames) reported across all tracks.
     /// Drives both the per-track delay-line sizing and the eventual
     /// `MasterClock::pdc_offset_us` (`PDC-NEXT-AV-OFFSET` follow-up).
+    /// With aux buses (#2861) it is the slowest way through them too.
     pub fn pdc_global_max_latency(&self) -> u32 {
-        crate::pdc::max_latency_across_tracks(&self.track_latency_samples)
+        self.pdc_total
     }
 
     /// Per-track delay each track needs in order to align with the
     /// slowest. Length matches `tracks.len()`.
     pub fn pdc_compensation_per_track(&self) -> Vec<u32> {
-        crate::pdc::compensation_per_track(&self.track_latency_samples)
+        self.pdc_plan().pre
+    }
+
+    /// How long each way is held back, from the tracks' latencies and
+    /// the buses' effects and routing.
+    pub fn pdc_plan(&self) -> crate::routing::PdcPlan {
+        let bus_latency: Vec<u32> = self.bus_inserts.iter().map(|i| i.as_ref().map_or(0, |i| i.chain.total_latency_samples(self.sample_rate))).collect();
+        let outputs: Vec<Option<usize>> = self.buses.iter().map(|b| b.output).collect();
+        let route = crate::routing::bus_routes(&bus_latency, &outputs);
+        let n = self.track_latency_samples.len();
+        let out: Vec<Option<usize>> = (0..n).map(|t| self.tracks.get(t).and_then(|s| s.bus).filter(|&b| b < self.buses.len())).collect();
+        let sends: Vec<Vec<usize>> = (0..n).map(|t| self.tracks.get(t).map_or_else(Vec::new, |s| s.sends.iter().map(|l| l.bus).collect())).collect();
+        crate::routing::pdc_plan(&self.track_latency_samples, &out, &sends, &route)
+    }
+
+    /// Every delay line sized to the plan: made where one is needed,
+    /// dropped where none is. Done where the routing or a latency
+    /// changes, not in the mix.
+    pub fn refresh_pdc(&mut self) {
+        let plan = self.pdc_plan();
+        let max_block = self.max_block_samples;
+        let size = |slot: &mut Option<crate::pdc::TrackDelayLine>, needed: u32| match (needed, slot.as_mut()) {
+            (0, _) => *slot = None,
+            (n, Some(line)) => {
+                if line.delay_samples() != n as usize {
+                    line.set_delay_samples(n as usize, max_block);
+                }
+            }
+            (n, None) => *slot = Some(crate::pdc::TrackDelayLine::new(n as usize, max_block)),
+        };
+        let n = self.track_latency_samples.len();
+        self.track_delay_lines.resize_with(n, || None);
+        self.direct_delay_lines.resize_with(n, || None);
+        self.send_delay_lines.resize_with(n, Vec::new);
+        for t in 0..n {
+            size(&mut self.track_delay_lines[t], plan.pre[t]);
+            size(&mut self.direct_delay_lines[t], plan.direct[t]);
+            let lines = &mut self.send_delay_lines[t];
+            lines.resize_with(plan.sends[t].len(), || None);
+            for (slot, &needed) in lines.iter_mut().zip(&plan.sends[t]) {
+                size(slot, needed);
+            }
+        }
+        self.pdc_total = plan.total;
     }
 
     /// Update one track's reported chain latency. Resizes the per-
@@ -251,22 +310,8 @@ impl AudioMixer {
         // accordingly. A track with 0 required delay has its line
         // dropped (no per-block work); a track that needs a delay
         // gets its line either created or resized.
-        let comp = self.pdc_compensation_per_track();
-        for (i, &needed) in comp.iter().enumerate() {
-            if needed == 0 {
-                self.track_delay_lines[i] = None;
-            } else {
-                match &mut self.track_delay_lines[i] {
-                    Some(line) => line.set_delay_samples(needed as usize, max_block_samples),
-                    slot @ None => {
-                        *slot = Some(crate::pdc::TrackDelayLine::new(
-                            needed as usize,
-                            max_block_samples,
-                        ));
-                    }
-                }
-            }
-        }
+        self.max_block_samples = self.max_block_samples.max(max_block_samples);
+        self.refresh_pdc();
     }
 
     /// Apply per-track PDC delay to one track's interleaved-stereo
@@ -288,7 +333,8 @@ impl AudioMixer {
     /// seek so stale samples from before the seek don't bleed
     /// across the boundary.
     pub fn reset_pdc_delay_lines(&mut self) {
-        for slot in &mut self.track_delay_lines {
+        let sends = self.send_delay_lines.iter_mut().flatten();
+        for slot in self.track_delay_lines.iter_mut().chain(&mut self.direct_delay_lines).chain(sends) {
             if let Some(line) = slot.as_mut() {
                 line.reset();
             }
@@ -460,21 +506,37 @@ impl AudioMixer {
                 out.push(out_l);
                 out.push(out_r);
             }
+            for (si, send) in settings.sends.iter_mut().enumerate() {
+                let from = send.ramp_from.unwrap_or(send.gain);
+                send.ramp_from = Some(send.gain);
+                if send.bus >= bus_count {
+                    continue;
+                }
+                let tap: &[f32] = if send.pre_fader { buf } else { out };
+                // Held back to reach master with the other ways; the
+                // line runs muted too, so unmuted it has no old sound.
+                let tap = match self.send_delay_lines.get_mut(track_idx).and_then(|l| l.get_mut(si)).and_then(Option::as_mut) {
+                    Some(line) => {
+                        self.send_tap.clear();
+                        self.send_tap.extend_from_slice(tap);
+                        line.process_in_place(&mut self.send_tap);
+                        &self.send_tap[..]
+                    }
+                    None => tap,
+                };
+                if !send.muted {
+                    crate::routing::add_ramped(tap, from, send.gain, &mut self.bus_scratch[send.bus][..frame_len]);
+                }
+            }
+            if let Some(line) = self.direct_delay_lines.get_mut(track_idx).and_then(Option::as_mut) {
+                line.process_in_place(out);
+            }
             let target = match settings.bus {
                 Some(bus_idx) if bus_idx < bus_count => &mut self.bus_scratch[bus_idx][..frame_len],
                 _ => &mut master_buf[..],
             };
             for (t, o) in target.iter_mut().zip(out.iter()) {
                 *t += *o;
-            }
-            for send in &mut settings.sends {
-                let from = send.ramp_from.unwrap_or(send.gain);
-                send.ramp_from = Some(send.gain);
-                if send.muted || send.bus >= bus_count {
-                    continue;
-                }
-                let tap: &[f32] = if send.pre_fader { buf } else { out };
-                crate::routing::add_ramped(tap, from, send.gain, &mut self.bus_scratch[send.bus][..frame_len]);
             }
 
             settings.peak_left = peak_l;
@@ -725,6 +787,36 @@ mod tests {
         }
         want.iter_mut().for_each(|s| *s = s.clamp(-1.0, 1.0));
         assert!(out.iter().zip(&want).all(|(o, w)| o.to_bits() == w.to_bits()), "bit for bit");
+    }
+
+    /// #2861: a bus with a latent effect is held to, and the tracks held
+    /// to it: a tone sent through a declick bus (which looks ahead) and
+    /// the same tone straight to master land on the same sample, the sum
+    /// twice the tone, and the picture is held back by the bus's latency.
+    #[test]
+    fn a_send_through_a_latent_bus_lands_with_the_dry_sound() {
+        let declick = vec![klipp_core::AudioEffectInstance { effect_type: "declick".into(), enabled: true, wet_dry: 1.0, params: vec![] }];
+        let mut m = routed(2, 1);
+        m.set_sample_rate(48_000);
+        m.set_bus_inserts(0, &declick);
+        m.tracks[0].volume = 0.0;
+        m.tracks[0].sends.push(SendLane::new(0, 1.0, true, false));
+        settle(&mut m);
+        m.refresh_pdc();
+        let latency = m.pdc_global_max_latency() as usize;
+        assert!(latency > 0, "declick looks ahead");
+        assert_eq!(m.pdc_compensation_per_track(), vec![0, latency as u32], "the dry track waits for the bus");
+        let x: Vec<f32> = (0..48_000).map(|i| 0.25 * ((i / 2) as f32 * 0.01).sin()).collect();
+        let mut out = Vec::new();
+        for block in x.chunks(1024) {
+            let (mut a, mut b) = (block.to_vec(), block.to_vec());
+            m.apply_per_track_pdc_delay(0, &mut a);
+            m.apply_per_track_pdc_delay(1, &mut b);
+            out.extend(m.mix(&[(0, &a), (1, &b)]));
+        }
+        let (l, _) = AudioMixer::pan_gains_for(0.0, m.pan_law);
+        let worst = (latency * 2 + 4096..out.len()).step_by(2).map(|i| (out[i] - 2.0 * l * x[i - latency * 2]).abs()).fold(0.0f32, f32::max);
+        assert!(worst < 1e-4, "both ways land together: off by {worst}");
     }
 
     /// Mixing allocates no routing buffers once they are a block long:

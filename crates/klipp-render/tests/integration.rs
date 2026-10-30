@@ -70,6 +70,7 @@ fn export_job_empty_sequence() {
     let path = dir.join("empty_export.mp4");
 
     let snapshot = SequenceSnapshot {
+        audio_buses: Vec::new(),
         fps: 24.0,
         fps_num: 24,
         fps_den: 1,
@@ -124,6 +125,7 @@ fn export_job_cancellation_immediate() {
     let path = dir.join("cancel_immediate.mp4");
 
     let snapshot = SequenceSnapshot {
+        audio_buses: Vec::new(),
         fps: 24.0,
         fps_num: 24,
         fps_den: 1,
@@ -169,6 +171,7 @@ fn export_job_cancellation_midway() {
     let path = dir.join("cancel_midway.mp4");
 
     let snapshot = SequenceSnapshot {
+        audio_buses: Vec::new(),
         fps: 24.0,
         fps_num: 24,
         fps_den: 1,
@@ -242,6 +245,7 @@ fn export_job_progress_advances() {
 
     let total = 10u64;
     let snapshot = SequenceSnapshot {
+        audio_buses: Vec::new(),
         fps: 24.0,
         fps_num: 24,
         fps_den: 1,
@@ -299,6 +303,7 @@ fn export_real_media_h264() {
     let output_path = dir.join("real_export_h264.mp4");
 
     let snapshot = SequenceSnapshot {
+        audio_buses: Vec::new(),
         fps: 30.0,
         fps_num: 30,
         fps_den: 1,
@@ -310,6 +315,7 @@ fn export_real_media_h264() {
         video: media_timeline(&media_path, 0, 30, 30, 0.0),
         pan_law: Default::default(),
         audio_tracks: vec![snapshot::AudioTrackSnapshot {
+            sends: Vec::new(),
             volume: 1.0,
             pan: 0.0,
             muted: false,
@@ -392,6 +398,7 @@ fn export_real_media_with_color_grade() {
     let output_path = dir.join("real_export_graded.mp4");
 
     let snapshot = SequenceSnapshot {
+        audio_buses: Vec::new(),
         fps: 30.0,
         fps_num: 30,
         fps_den: 1,
@@ -445,6 +452,7 @@ fn export_with_title_and_gap() {
     let title_data = klipp_timeline::TitleData::default();
 
     let snapshot = SequenceSnapshot {
+        audio_buses: Vec::new(),
         fps: 24.0,
         fps_num: 24,
         fps_den: 1,
@@ -517,6 +525,7 @@ fn export_with_keyframed_opacity() {
     effect_keyframes.insert("0:value".to_string(), vec![kf_start.clone(), kf_end.clone()]);
 
     let snapshot = SequenceSnapshot {
+        audio_buses: Vec::new(),
         fps: 24.0,
         fps_num: 24,
         fps_den: 1,
@@ -579,6 +588,7 @@ fn export_mp4_with_embedded_subtitle_stream() {
     settings.embed_subtitles = true;
 
     let snapshot = SequenceSnapshot {
+        audio_buses: Vec::new(),
         fps: 24.0,
         fps_num: 24,
         fps_den: 1,
@@ -657,6 +667,7 @@ fn export_without_embed_has_no_subtitle_stream() {
     settings.embed_subtitles = false;
 
     let snapshot = SequenceSnapshot {
+        audio_buses: Vec::new(),
         fps: 24.0,
         fps_num: 24,
         fps_den: 1,
