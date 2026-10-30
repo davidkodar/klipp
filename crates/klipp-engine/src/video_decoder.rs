@@ -454,6 +454,11 @@ pub enum DecodeCommand {
     /// container. The requester has already kept the queued frames at or
     /// after the time, restamped with the epoch.
     SeekOn(f64, u64),
+    /// Seek the container to the keyframe at or before a time and hand
+    /// over every frame from there, none skipped: for a reader that keeps
+    /// the frames before the time too, as reading a source backward does
+    /// (#3118).
+    SeekFromKeyframe(f64, u64),
     Pause,
     Resume,
     Stop,
@@ -506,6 +511,8 @@ pub struct VideoDecoder {
     /// container seek. Read by [`VideoDecoder::seek`] to decide whether a
     /// seek can be answered by decoding on.
     last_decoded_pts: Arc<std::sync::atomic::AtomicU64>,
+    /// Frames the decode thread has decoded, those a seek skips too.
+    frames_decoded: Arc<std::sync::atomic::AtomicU64>,
     /// The stream's declared average frame rate, when it declares one.
     source_fps: Option<f64>,
     /// Its place in the GPU decoder's count (#2116), and how it decodes.
@@ -588,6 +595,8 @@ impl VideoDecoder {
         let last_decode_us_clone = last_decode_us.clone();
         let last_decoded_pts = Arc::new(std::sync::atomic::AtomicU64::new(NO_PTS));
         let last_decoded_pts_clone = last_decoded_pts.clone();
+        let frames_decoded = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let frames_decoded_clone = frames_decoded.clone();
 
         let alive = DecodeThreadToken::new();
         let thread = std::thread::Builder::new()
@@ -598,7 +607,7 @@ impl VideoDecoder {
                 // is still inside ffmpeg's teardown.
                 let _alive = alive;
                 crate::thread_guard::catch_panic("klipp-vdec", || {
-                    decode_thread_main(path_owned, queue_clone, cmd_rx, hw_flag, stop_flag_clone, source_rotation, last_decode_us_clone, last_decoded_pts_clone, lease_id, decoding, source_fps.unwrap_or(30.0));
+                    decode_thread_main(path_owned, queue_clone, cmd_rx, hw_flag, stop_flag_clone, source_rotation, last_decode_us_clone, last_decoded_pts_clone, frames_decoded_clone, lease_id, decoding, source_fps.unwrap_or(30.0));
                 });
             })
             .map_err(|e| DecoderError::Open(format!("spawn thread: {e}")))?;
@@ -616,6 +625,7 @@ impl VideoDecoder {
             stop_flag,
             last_decode_us,
             last_decoded_pts,
+            frames_decoded,
             source_fps,
             lease,
         })
@@ -668,6 +678,23 @@ impl VideoDecoder {
         let cmd = if decode_on { DecodeCommand::SeekOn(secs, epoch) } else { DecodeCommand::SeekTo(secs, epoch) };
         let _ = self.decode_cmd_tx.send(cmd);
         epoch
+    }
+
+    /// Seek to the keyframe at or before `secs` and hand over every frame
+    /// from it, the ones before `secs` too, and claim an epoch for it as
+    /// [`Self::seek`] does. Always a container seek: what is queued goes.
+    pub fn seek_from_keyframe(&self, secs: f64) -> u64 {
+        self.last_seek_bits.store(secs.to_bits(), std::sync::atomic::Ordering::Relaxed);
+        let epoch = self.seek_epoch.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+        self.frame_queue.lock().unwrap_or_else(|e| e.into_inner()).clear();
+        debug!("VideoDecoder::seek_from_keyframe {secs:.3}s (epoch {epoch})");
+        let _ = self.decode_cmd_tx.send(DecodeCommand::SeekFromKeyframe(secs, epoch));
+        epoch
+    }
+
+    /// Frames decoded so far, those a seek decoded and skipped too.
+    pub fn frames_decoded(&self) -> u64 {
+        self.frames_decoded.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// The second the newest seek asked for, if any.
@@ -2576,6 +2603,7 @@ fn decode_thread_main(
     source_rotation: i32,
     last_decode_us: Arc<std::sync::atomic::AtomicU32>,
     last_decoded_pts: Arc<std::sync::atomic::AtomicU64>,
+    frames_decoded: Arc<std::sync::atomic::AtomicU64>,
     lease_id: u64,
     decoding: crate::decode_budget::Decoding,
     source_fps: f64,
@@ -2829,16 +2857,19 @@ fn decode_thread_main(
         // HEVC), pinning the CPU and stalling the visible
         // playhead behind the cursor by hundreds of ms. Only the
         // newest scrub target matters.
-        let mut latest_seek: Option<(f64, u64, bool)> = None;
+        let mut latest_seek: Option<(f64, u64, bool, bool)> = None;
         let mut got_stop = false;
         while let Ok(cmd) = cmd_rx.try_recv() {
             match cmd {
                 DecodeCommand::SeekTo(secs, epoch) => {
                     // Coalesced: the newest seek wins, and its epoch with it.
-                    latest_seek = Some((secs, epoch, false));
+                    latest_seek = Some((secs, epoch, false, false));
                 }
                 DecodeCommand::SeekOn(secs, epoch) => {
-                    latest_seek = Some((secs, epoch, true));
+                    latest_seek = Some((secs, epoch, true, false));
+                }
+                DecodeCommand::SeekFromKeyframe(secs, epoch) => {
+                    latest_seek = Some((secs, epoch, false, true));
                 }
                 DecodeCommand::Pause => paused = true,
                 DecodeCommand::Resume => {
@@ -2855,7 +2886,7 @@ fn decode_thread_main(
             debug!("decode_thread: stop");
             return;
         }
-        if let Some((secs, epoch, decode_on)) = latest_seek {
+        if let Some((secs, epoch, decode_on, from_keyframe)) = latest_seek {
             seek_epoch = epoch;
             if still_picture.is_some() {
                 replay_still(secs, &mut still_at, &mut still_replay, &frame_queue);
@@ -2888,7 +2919,8 @@ fn decode_thread_main(
                     bsf.flush();
                 }
                 frame_queue.lock().unwrap_or_else(|e| e.into_inner()).clear();
-                seek_target = Some(secs);
+                // From the keyframe, nothing is skipped.
+                seek_target = (!from_keyframe).then_some(secs);
                 last_pts_secs = None;
                 publish_pts(&last_decoded_pts, None);
                 eof_sent = false;
@@ -2927,16 +2959,19 @@ fn decode_thread_main(
                 // Re-check commands (seek/stop) while waiting.
                 // Drain the whole queue and coalesce SeekTo to the
                 // latest, same reasoning as the top-of-loop drain.
-                let mut latest_inner_seek: Option<(f64, u64, bool)> = None;
+                let mut latest_inner_seek: Option<(f64, u64, bool, bool)> = None;
                 let mut inner_break = false;
                 let mut inner_return = false;
                 while let Ok(cmd) = cmd_rx.try_recv() {
                     match cmd {
                         DecodeCommand::SeekTo(secs, epoch) => {
-                            latest_inner_seek = Some((secs, epoch, false));
+                            latest_inner_seek = Some((secs, epoch, false, false));
                         }
                         DecodeCommand::SeekOn(secs, epoch) => {
-                            latest_inner_seek = Some((secs, epoch, true));
+                            latest_inner_seek = Some((secs, epoch, true, false));
+                        }
+                        DecodeCommand::SeekFromKeyframe(secs, epoch) => {
+                            latest_inner_seek = Some((secs, epoch, false, true));
                         }
                         DecodeCommand::Pause => { paused = true; inner_break = true; break; }
                         DecodeCommand::Resume => { paused = false; eof_sent = false; }
@@ -2944,7 +2979,7 @@ fn decode_thread_main(
                     }
                 }
                 if inner_return { return; }
-                if let Some((secs, epoch, decode_on)) = latest_inner_seek {
+                if let Some((secs, epoch, decode_on, from_keyframe)) = latest_inner_seek {
                     seek_epoch = epoch;
                     if still_picture.is_some() {
                         replay_still(secs, &mut still_at, &mut still_replay, &frame_queue);
@@ -2972,7 +3007,7 @@ fn decode_thread_main(
                         bsf.flush();
                     }
                     frame_queue.lock().unwrap_or_else(|e| e.into_inner()).clear();
-                    seek_target = Some(secs);
+                    seek_target = (!from_keyframe).then_some(secs);
                     last_pts_secs = None;
                     publish_pts(&last_decoded_pts, None);
                     eof_sent = false;
@@ -3004,6 +3039,7 @@ fn decode_thread_main(
                 break;
             }
             meter.frame(received_frame.width() as u64 * received_frame.height() as u64);
+            frames_decoded.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
             let pts_secs = received_frame
                 .pts()

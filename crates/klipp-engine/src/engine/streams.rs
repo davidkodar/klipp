@@ -572,8 +572,7 @@ impl ClipStreams {
                     match VideoDecoder::open_with_queue(&path, rotation, lease, MIN_QUEUE_FRAMES * 2) {
                         Ok(decoder) => {
                             let free = if crate::video_decoder::hardware_decode_enabled() { (self.free_vram)() } else { Some((self.free_memory)()) };
-                            let capacity = super::reverse_gop::ReverseGop::capacity_for(cost.frame_bytes, free);
-                            e.insert(Reversed::Gop(super::reverse_gop::ReverseGop::new(decoder, capacity, 0.0)))
+                            e.insert(Reversed::Gop(super::reverse_gop::ReverseGop::for_memory(decoder, cost.frame_bytes, free, 0.0)))
                         }
                         Err(err) => {
                             warn!("clip streams: no decoder for {path:?} ({err}); reading it backward on the CPU");
@@ -590,7 +589,12 @@ impl ClipStreams {
             // Its frames for the time wanted start decoding now, off this
             // thread: a clip about to come up is ready when it does.
             match r {
-                Reversed::Gop(g) => g.want(w.source_secs, w.ahead),
+                Reversed::Gop(g) => {
+                    // The GPU's free memory is read on a thread of its own:
+                    // a reader opened before the first reading guessed.
+                    g.learn_free(if crate::video_decoder::hardware_decode_enabled() { (self.free_vram)() } else { Some((self.free_memory)()) });
+                    g.want(w.source_secs, w.ahead)
+                }
                 Reversed::Cpu { reader, .. } => reader.prepare(w.source_secs),
             }
         }
