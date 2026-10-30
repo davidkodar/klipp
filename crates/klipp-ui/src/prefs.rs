@@ -1979,6 +1979,23 @@ impl FalseColorPalette {
             .clone()
     }
 
+    /// Every palette offered: Klipp's, then a person's own from their
+    /// `false_colour` presets folder (#3095), read once a run, each read
+    /// as someone else's file; what of theirs is skipped is said in the
+    /// log.
+    pub fn palettes() -> Vec<FalseColorPalette> {
+        static PALETTES: std::sync::OnceLock<Vec<FalseColorPalette>> = std::sync::OnceLock::new();
+        PALETTES
+            .get_or_init(|| {
+                let (palettes, skipped) = palettes_in(&klipp_core::preset_file::user_dir(PALETTES_FOLDER).into_iter().collect::<Vec<_>>());
+                for why in skipped {
+                    tracing::warn!("a false colour palette of yours was skipped: {why}");
+                }
+                palettes
+            })
+            .clone()
+    }
+
     /// Count of luma values (0–255) not covered by any stop.
     pub fn unmapped_count(&self) -> u32 {
         let mut covered = [false; 256];
@@ -2029,26 +2046,59 @@ struct StopEntry {
     label: String,
 }
 
+/// The presets folder a person's own false colour palettes are read from.
+const PALETTES_FOLDER: &str = "false_colour";
+
+/// The longest label a stop takes, in characters.
+const MAX_STOP_LABEL_CHARS: usize = 64;
+
+/// Why a palette can't be offered: no stops or more than 256, or a stop
+/// whose band runs backwards, has no label or one past
+/// [`MAX_STOP_LABEL_CHARS`].
+fn palette_fault(e: &PaletteEntry) -> Result<(), String> {
+    if e.stop.is_empty() || e.stop.len() > 256 {
+        return Err("1 to 256 stops".into());
+    }
+    match e.stop.iter().find(|s| s.luma.0 > s.luma.1 || s.label.trim().is_empty() || s.label.chars().count() > MAX_STOP_LABEL_CHARS) {
+        Some(s) => Err(format!("the stop \"{}\" runs from low luma to high and says what it is, in up to {MAX_STOP_LABEL_CHARS} characters", s.label)),
+        None => Ok(()),
+    }
+}
+
+impl From<PaletteEntry> for FalseColorPalette {
+    fn from(e: PaletteEntry) -> Self {
+        let stops = e.stop.into_iter().map(|s| FalseColorStop { luma_min: s.luma.0, luma_max: s.luma.1, color: s.color, label: s.label }).collect();
+        FalseColorPalette { name: e.name, stops }
+    }
+}
+
 /// The palettes of a false colour palettes file; refused, saying why, for
-/// a palette with no name, one named twice, one with no stops or more
-/// than 256, or a stop whose band runs backwards or has no label.
+/// a palette with no name, one named twice, or one [`palette_fault`]
+/// refuses.
 fn read_palettes(text: &str) -> Result<Vec<FalseColorPalette>, String> {
+    read_palette_entries(text).map(|entries| entries.into_iter().map(FalseColorPalette::from).collect())
+}
+
+fn read_palette_entries(text: &str) -> Result<Vec<PaletteEntry>, String> {
     let entries: Vec<PaletteEntry> = klipp_core::preset_file::read(text, "false_colour_palette", 1, "palette")?;
-    let mut out: Vec<FalseColorPalette> = Vec::new();
-    for (i, e) in entries.into_iter().enumerate() {
-        if e.name.trim().is_empty() || out.iter().any(|p| p.name == e.name) {
+    for (i, e) in entries.iter().enumerate() {
+        if e.name.trim().is_empty() || entries[..i].iter().any(|p| p.name == e.name) {
             return Err(format!("palette {}: a name, said once", i + 1));
         }
-        if e.stop.is_empty() || e.stop.len() > 256 {
-            return Err(format!("\"{}\": 1 to 256 stops", e.name));
-        }
-        if let Some(s) = e.stop.iter().find(|s| s.luma.0 > s.luma.1 || s.label.trim().is_empty()) {
-            return Err(format!("\"{}\": the stop \"{}\" runs from low luma to high and says what it is", e.name, s.label));
-        }
-        let stops = e.stop.into_iter().map(|s| FalseColorStop { luma_min: s.luma.0, luma_max: s.luma.1, color: s.color, label: s.label }).collect();
-        out.push(FalseColorPalette { name: e.name, stops });
+        palette_fault(e).map_err(|why| format!("\"{}\": {why}", e.name))?;
     }
-    Ok(out)
+    Ok(entries)
+}
+
+/// Klipp's palettes, then those in `dirs` (a person's folder, then the
+/// packs'), each read as someone else's (#3095), and what was skipped.
+fn palettes_in(dirs: &[std::path::PathBuf]) -> (Vec<FalseColorPalette>, Vec<String>) {
+    let built_in = read_palette_entries(include_str!("../../../assets/presets/false_colour/builtin.toml")).unwrap_or_else(|why| {
+        tracing::error!("the built-in false colour palettes don't read: {why}");
+        Vec::new()
+    });
+    let merged = klipp_core::preset_file::merge(built_in, dirs, "false_colour_palette", 1, "palette", |e: &PaletteEntry| &e.name, palette_fault);
+    (merged.entries.into_iter().map(FalseColorPalette::from).collect(), merged.skipped)
 }
 
 fn default_false_color_palette() -> FalseColorPalette {
@@ -3076,6 +3126,40 @@ mod tests {
         assert_eq!(stop(&built[2], 11), (241, 255, [0xff, 0x60, 0x60], "Clipped".to_string()));
         assert_eq!(FalseColorPalette::arri(), built[1]);
         assert!(built.iter().all(|p| p.unmapped_count() == 0), "each covers 0-255");
+    }
+
+    /// A file dropped in a person's false colour folder lists its palette
+    /// after Klipp's (#3095); a hostile one is refused, said, and Klipp's
+    /// stay whole: a link, one past the size, an unknown field, the wrong
+    /// kind, a built-in's name, no stops, a label past its length.
+    #[test]
+    fn a_person_s_palette_lists_after_klipp_s_and_a_hostile_one_is_refused() {
+        let dir = std::env::temp_dir().join(format!("klipp-user-palettes-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = |n: &str, body: &str| std::fs::write(dir.join(n), format!("kind = \"false_colour_palette\"\nformat_version = 1\n{body}")).unwrap();
+        let palette = |name: &str, label: &str| format!("[[palette]]\nname = \"{name}\"\n[[palette.stop]]\nluma = [0, 255]\ncolor = [10, 20, 30]\nlabel = \"{label}\"\n");
+        file("a.toml", &palette("Studio", "All"));
+        file("b.toml", &(palette("Odd", "All") + "colour = 2\n"));
+        std::fs::write(dir.join("c.toml"), "kind = \"generator_entry\"\nformat_version = 1\n").unwrap();
+        file("d.toml", &format!("# {}\n", "x".repeat(klipp_core::preset_file::MAX_FILE_BYTES)));
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(dir.join("a.toml"), dir.join("e.toml")).unwrap();
+        file("f.toml", &(palette("arri", "All") + "[[palette]]\nname = \"Empty\"\nstop = []\n" + &palette("Wordy", &"x".repeat(65))));
+        let (palettes, skipped) = palettes_in(std::slice::from_ref(&dir));
+        let names: Vec<&str> = palettes.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, ["Broadcast Standard", "ARRI", "RED", "Studio"]);
+        assert_eq!(palettes[..3], FalseColorPalette::built_ins()[..], "Klipp's, whole and first");
+        assert_eq!(palettes[3].stops, [FalseColorStop { luma_min: 0, luma_max: 255, color: [10, 20, 30], label: "All".into() }]);
+        let said = |what: &str| assert!(skipped.iter().any(|s| s.contains(what)), "{what}: {skipped:?}");
+        said("b.toml: false_colour_palette entry 1: unknown field");
+        said("c.toml: a generator_entry file, not a false_colour_palette file");
+        said("d.toml: ");
+        #[cfg(unix)]
+        said("e.toml: not a plain file");
+        said("\"arri\" is the name of one of Klipp's own");
+        said("\"Empty\": 1 to 256 stops");
+        said("\"Wordy\": the stop");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// A palettes file with one that can't be offered is refused, saying

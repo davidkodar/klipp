@@ -113,17 +113,39 @@ fn read_delivery_templates(text: &str) -> Result<Vec<DeliveryTemplate>, String> 
     delivery_fault(&templates).map_or(Ok(templates), Err)
 }
 
-/// The delivery templates, `assets/presets/delivery_templates/
-/// builtin.toml`, read once; a file that doesn't read leaves none, said,
-/// never a crash.
-pub fn delivery_templates() -> &'static [DeliveryTemplate] {
-    static TEMPLATES: std::sync::OnceLock<Vec<DeliveryTemplate>> = std::sync::OnceLock::new();
-    TEMPLATES.get_or_init(|| {
-        read_delivery_templates(include_str!("../../../assets/presets/delivery_templates/builtin.toml")).unwrap_or_else(|why| {
-            tracing::error!("the built-in delivery templates don't read: {why}");
-            Vec::new()
-        })
+/// The presets folder a person's own delivery templates are read from.
+pub const DELIVERY_TEMPLATES_FOLDER: &str = "delivery_templates";
+
+/// Klipp's delivery templates, then those in `dirs` (a person's folder,
+/// then the packs'), each read as someone else's (#3095) and held to
+/// what Klipp's are ([`delivery_fault`]: its preset one of Klipp's own),
+/// and what was skipped.
+pub fn delivery_template_listing_in(dirs: &[std::path::PathBuf]) -> crate::preset_file::Merged<DeliveryTemplate> {
+    let built_in = read_delivery_templates(include_str!("../../../assets/presets/delivery_templates/builtin.toml")).unwrap_or_else(|why| {
+        tracing::error!("the built-in delivery templates don't read: {why}");
+        Vec::new()
+    });
+    let fault = |t: &DeliveryTemplate| delivery_fault(std::slice::from_ref(t)).map_or(Ok(()), |why| Err(why.split_once(": ").map_or(why.clone(), |(_, rest)| rest.to_string())));
+    crate::preset_file::merge(built_in, dirs, "delivery_template", 1, "template", |t: &DeliveryTemplate| &t.name, fault)
+}
+
+/// The delivery templates, with what was skipped, read once a run:
+/// Klipp's, then the person's own. A file that doesn't read is said in
+/// the log, never a crash.
+pub fn delivery_template_listing() -> &'static crate::preset_file::Merged<DeliveryTemplate> {
+    static LISTING: std::sync::OnceLock<crate::preset_file::Merged<DeliveryTemplate>> = std::sync::OnceLock::new();
+    LISTING.get_or_init(|| {
+        let listing = delivery_template_listing_in(&crate::preset_file::user_dir(DELIVERY_TEMPLATES_FOLDER).into_iter().collect::<Vec<_>>());
+        for why in &listing.skipped {
+            tracing::warn!("a delivery template of yours was skipped: {why}");
+        }
+        listing
     })
+}
+
+/// The delivery templates, Klipp's then the person's own, in order.
+pub fn delivery_templates() -> &'static [DeliveryTemplate] {
+    &delivery_template_listing().entries
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -690,5 +712,40 @@ mod delivery_template_tests {
             let why = read_delivery_templates(&file(&body)).err().unwrap_or_default();
             assert!(why.contains(says), "{body}: {why}");
         }
+    }
+
+    /// A file dropped in a person's delivery templates folder lists its
+    /// template after Klipp's (#3095); a hostile one is refused, said, and
+    /// Klipp's stay whole: a link, one past the size, an unknown field,
+    /// the wrong kind, a built-in's name, a suffix that climbs out of the
+    /// output folder, a preset Klipp hasn't got.
+    #[test]
+    fn a_person_s_delivery_template_lists_after_klipp_s_and_a_hostile_one_is_refused() {
+        let dir = std::env::temp_dir().join(format!("klipp-user-delivery-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = |n: &str, body: &str| std::fs::write(dir.join(n), format!("kind = \"delivery_template\"\nformat_version = 1\n{body}")).unwrap();
+        let one = |name: &str, suffix: &str, preset: &str| format!("[[template]]\nname = \"{name}\"\naspect = [21, 9]\nsuffix = \"{suffix}\"\npreset = \"{preset}\"\n");
+        let yt = "00000000-0000-4000-a000-000000000001";
+        file("a.toml", &one("Cinema 21:9", "21x9", yt));
+        file("b.toml", &(one("Odd", "x", yt) + "fps = 30\n"));
+        std::fs::write(dir.join("c.toml"), "kind = \"generator_entry\"\nformat_version = 1\n").unwrap();
+        file("d.toml", &format!("# {}\n", "x".repeat(crate::preset_file::MAX_FILE_BYTES)));
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(dir.join("a.toml"), dir.join("e.toml")).unwrap();
+        file("f.toml", &(one("square 1:1", "sq", yt) + &one("Escape", "../../x", yt) + &one("Nowhere", "nw", "00000000-0000-4000-a000-000000000999")));
+        let listing = delivery_template_listing_in(std::slice::from_ref(&dir));
+        let names: Vec<&str> = listing.entries.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(names, ["YouTube 16:9", "Shorts, Reels, TikTok 9:16", "Square 1:1", "Instagram feed 4:5", "Cinema 21:9"]);
+        assert_eq!(listing.built_in, 4);
+        let said = |what: &str| assert!(listing.skipped.iter().any(|s| s.contains(what)), "{what}: {:?}", listing.skipped);
+        said("b.toml: delivery_template entry 1: unknown field");
+        said("c.toml: a generator_entry file, not a delivery_template file");
+        said("d.toml: ");
+        #[cfg(unix)]
+        said("e.toml: not a plain file");
+        said("\"square 1:1\" is the name of one of Klipp's own");
+        said("\"Escape\": a suffix of letters");
+        said("\"Nowhere\": 00000000-0000-4000-a000-000000000999 is not one of Klipp's export presets");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

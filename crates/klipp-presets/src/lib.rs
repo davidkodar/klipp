@@ -145,7 +145,7 @@ impl<T> Merged<T> {
 /// `dirs` in turn, each folder read by [`read_dir`] (#3095). An entry
 /// from a folder is skipped, and said, when its name (`name`) is empty,
 /// past [`MAX_NAME_CHARS`] or has control characters, is a built-in
-/// one's in any case (a built-in is never stood in for), or is that of
+/// one's in any case, accented letters too (a built-in is never stood in for), or is that of
 /// an entry read before it from a folder (the earlier stays), or when
 /// `check` refuses it.
 pub fn merge<T: DeserializeOwned>(
@@ -163,7 +163,9 @@ pub fn merge<T: DeserializeOwned>(
         merged.skipped.extend(skipped);
         for entry in found {
             let n = name(&entry).trim().to_string();
-            let taken = |range: std::ops::Range<usize>| merged.entries[range].iter().any(|e| name(e).trim().eq_ignore_ascii_case(&n));
+            // Folded whole, not only ASCII: "É" and "é" are one name.
+            let folded = n.to_lowercase();
+            let taken = |range: std::ops::Range<usize>| merged.entries[range].iter().any(|e| name(e).trim().to_lowercase() == folded);
             let why = if n.is_empty() || n.chars().count() > MAX_NAME_CHARS || n.chars().any(char::is_control) {
                 Some(format!("a {kind} name of {} characters, or with control characters", n.chars().count()))
             } else if taken(0..merged.built_in) {
@@ -267,17 +269,17 @@ mod tests {
         let file = |d: &std::path::Path, entries: &[String]| std::fs::write(d.join("a.toml"), format!("kind = \"thing\"\nformat_version = 1\n{}", entries.concat())).unwrap();
         let long = "x".repeat(MAX_NAME_CHARS + 1);
         file(&mine, &[entry("Mine", 1), entry("BUILT", 2), entry("mine", 3), entry(" ", 4), entry(&long, 5), entry("Big", 900), entry("Ta\\tb", 6)]);
-        file(&pack, &[entry("Packed", 7), entry("MINE", 8)]);
-        let built_in = vec![Entry { name: "Built".into(), size: 0 }];
+        file(&pack, &[entry("Packed", 7), entry("MINE", 8), entry("ÉTÉ", 9)]);
+        let built_in = vec![Entry { name: "Built".into(), size: 0 }, Entry { name: "Été".into(), size: 0 }];
         let m = merge(built_in, &[mine, pack], "thing", 1, "entry", |e: &Entry| &e.name, |e: &Entry| if e.size > 100 { Err(format!("size {} is past 100", e.size)) } else { Ok(()) });
         let names: Vec<&str> = m.entries.iter().map(|e| e.name.as_str()).collect();
-        assert_eq!(names, ["Built", "Mine", "Packed"]);
-        assert_eq!(m.built_in, 1);
-        assert!(m.is_built_in(0) && !m.is_built_in(1));
-        for says in ["\"BUILT\" is the name of one of Klipp's own", "\"mine\" is the name of one read before it", "a thing name of 0 characters", "a thing name of 65 characters", "\"Big\": size 900 is past 100", "control characters", "\"MINE\" is the name of one read before it"] {
+        assert_eq!(names, ["Built", "Été", "Mine", "Packed"]);
+        assert_eq!(m.built_in, 2);
+        assert!(m.is_built_in(1) && !m.is_built_in(2));
+        for says in ["\"BUILT\" is the name of one of Klipp's own", "\"mine\" is the name of one read before it", "a thing name of 0 characters", "a thing name of 65 characters", "\"Big\": size 900 is past 100", "control characters", "\"MINE\" is the name of one read before it", "\"ÉTÉ\" is the name of one of Klipp's own"] {
             assert!(m.skipped.iter().any(|s| s.contains(says)), "{says}: {:?}", m.skipped);
         }
-        assert_eq!(m.skipped.len(), 7, "{:?}", m.skipped);
+        assert_eq!(m.skipped.len(), 8, "{:?}", m.skipped);
         std::fs::remove_dir_all(&base).unwrap();
     }
 
