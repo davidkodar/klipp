@@ -2414,10 +2414,61 @@ fn a_layers_keyed_move_is_blurred_by_its_motion_blur() {
     let fps = sweep(true, true).fps.as_f64() as f32;
     let smear = 640.0 * (0.5 / fps);
     let grown = span(&blurred) - span(&sharp);
-    assert!((grown - smear).abs() <= 2.0, "the stroke grew {grown} px, the shutter swept {smear} px");
+    assert!((grown - smear).abs() <= 1.0, "the stroke grew {grown} px, the shutter swept {smear} px");
     let still = draw(&mut gpu, &sweep(true, false), true);
     assert!(worst(&still, &draw(&mut gpu, &sweep(false, false), true)) <= 1, "a still layer's blur changes nothing");
     assert!(worst(&still, &draw(&mut cpu, &sweep(true, false), false)) <= 1);
+}
+
+/// #3160: a blurred title whose layers only move by their keys draws
+/// each layer once and places it at each of the shutter's instants: on the
+/// GPU as on the CPU, and close to drawing each instant afresh, which a
+/// shape's colour loop (nothing to a shape's picture) still makes it do.
+fn sliding_panel(per_instant: bool, w: u32, h: u32) -> Sequence {
+    use klipp_timeline::{MotionBlur, ObjectTransform, Shape, ShapeKind, ShapeStroke, TitleLoop, TitleObjectContent, TitlePosition};
+    let blur = Some(MotionBlur { enabled: true, shutter_angle: 180.0, shutter_angle_keyframes: vec![], samples: 8 });
+    let mut title = TitleData::single_text_fx(TextBox { text: "Slide".into(), font_size: 150.0, color: [240, 235, 255, 255], ..Default::default() }, LayerFx { motion_blur: blur.clone(), ..Default::default() });
+    title.add_object(TitleObjectContent::Shape(Shape { kind: ShapeKind::Rectangle { corner_radius: 18.0 }, fill: Some([40, 60, 160, 255]), gradient: None, stroke: Some(ShapeStroke { color: [200, 120, 250, 255], width: 3.0 }), fit: None }),
+        ObjectTransform { size: TitlePosition { x: 0.5, y: 0.35 }, center_x_keyframes: vec![key(0.0, 0.3), key(1.0, 0.7)], center_y_keyframes: vec![key(0.0, 0.55), key(1.0, 0.45)], ..klipp_timeline::default_text_transform() });
+    let panel = title.objects.len() - 1;
+    {
+        let fx = title.objects[panel].fx_mut();
+        fx.motion_blur = blur;
+        fx.glows = vec![TextGlow { enabled: true, color: [160, 130, 255, 255], radius: 20.0, radius_keyframes: vec![], intensity: 0.35, intensity_keyframes: vec![] }];
+        if per_instant { fx.loops = vec![TitleLoop::ColorCycle { rate_hz: 0.5 }]; }
+    }
+    title.objects.swap(0, panel);
+    let mut seq = Sequence::new_default(); seq.resolution = Resolution { width: w, height: h };
+    let mut track = Track::new("slide", TrackKind::Video);
+    track.clips.push(Clip { kind: ClipKind::Title(title), ..Clip::gap(RationalTime::from_secs_f64(0.0, 30), RationalTime::from_secs_f64(3.0, 30)) });
+    seq.tracks = vec![track]; seq
+}
+
+#[test]
+fn a_sliding_layer_is_placed_at_each_instant_on_the_gpu_as_on_the_cpu() {
+    let (w, h) = (320u32, 180u32);
+    let mut gpu = renderer(); gpu.set_gpu_enabled(true);
+    let mut cpu = renderer(); cpu.set_gpu_enabled(false);
+    assert!(gpu.executor().gpu_pipeline_or_init().is_some(), "GPU required");
+    let display = |px: &[f32]| klipp_color::display::display_transform_ws_dithered_to(px, klipp_color::display::ToneMapOp::None, klipp_core::WorkingColorspace::Rec709Linear, klipp_core::SdrTransfer::Srgb);
+    for t in [0.2, 0.5, 0.8] {
+        let at = RationalTime::from_secs_f64(t, 30);
+        let (want, _) = cpu.render_inspected(&sliding_panel(false, w, h), at, w, h, &mut NoMedia, RenderOptions::default(), Default::default());
+        let want = display(&want);
+        let scope = klipp_effects::residency::frame("sliding layer", t);
+        let (got, _) = gpu.render_display_u8_on_gpu(&sliding_panel(false, w, h), at, w, h, &mut NoMedia, RenderOptions::default()).expect("GPU frame");
+        drop(scope);
+        let events = klipp_effects::residency::last_frame().events;
+        assert!(!events.iter().any(|e| e.work == klipp_effects::residency::Work::Fallback), "at {t}: {events:?}");
+        let worst = got.iter().zip(&want).map(|(a, b)| a.abs_diff(*b)).max().unwrap();
+        assert!(worst <= 1, "at {t}: the GPU {worst} levels from the CPU");
+        // Against every instant drawn afresh.
+        let (fresh, _) = cpu.render_inspected(&sliding_panel(true, w, h), at, w, h, &mut NoMedia, RenderOptions::default(), Default::default());
+        let fresh = display(&fresh);
+        let apart: Vec<u8> = want.iter().zip(&fresh).map(|(a, b)| a.abs_diff(*b)).collect();
+        let (most, mean) = (*apart.iter().max().unwrap(), apart.iter().map(|&d| d as f64).sum::<f64>() / apart.len() as f64);
+        eprintln!("MEASURE at {t}: placed vs drawn afresh: worst {most}, mean {mean:.3}, over 2: {}", apart.iter().filter(|&&d| d > 2).count());
+    }
 }
 
 #[test]

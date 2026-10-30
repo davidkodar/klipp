@@ -1488,6 +1488,28 @@ impl GpuEffectsPipeline {
         self.title_over(source,destination,opacity,mode,false)
     }
 
+    /// Layer `source` moved by `offset` pixels into `destination`, sampled
+    /// bilinearly in premultiplied light, nothing outside the frame read:
+    /// a layer that only translates, placed at one of the shutter's
+    /// instants without being drawn again (#3160).
+    pub fn stack_title_shift(&mut self, source: usize, destination: usize, offset: [f32; 2]) -> bool {
+        let (w, h) = self.stack_dims;
+        let count = u64::from(w) * u64::from(h);
+        if source == destination
+            || source >= self.stack_layers.len()
+            || destination >= self.stack_layers.len()
+            || count == 0
+            || offset.iter().any(|v| !v.is_finite())
+            || self.is_device_lost()
+        {
+            return false;
+        }
+        let params = StyleParams { width: w, height: h, frame_width: w, op: 64, x0: 0, y0: 0, offset_x: 0, offset_y: 0, color: [offset[0], offset[1], 0.0, 0.0], matrix: [[0.0; 4]; 3] };
+        self.write_params(&params);
+        self.stack_pass(&self.pipelines.title_style_pipeline, &self.stack_layers[source], &self.stack_layers[destination], (count as u32).div_ceil(WORKGROUP_SIZE), "title layer shift");
+        true
+    }
+
     /// An undressed normal shape paints premultiplied encoded colour directly.
     pub fn stack_title_painted_over(&mut self,source:usize,destination:usize)->bool {
         self.title_over(source,destination,1.0,crate::BlendMode::Normal,true)

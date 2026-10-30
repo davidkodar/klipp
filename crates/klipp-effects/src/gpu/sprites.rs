@@ -22,6 +22,23 @@ impl GpuEffectsPipeline {
         Some(index)
     }
 
+    /// A title layer kept apart for the length of a frame, past the scratch
+    /// slots the title routes use while drawing (#3160): the layers a
+    /// blurred title places at each of the shutter's instants. `None` past
+    /// sixteen.
+    pub fn stack_title_kept_slot(&mut self, index: usize) -> Option<usize> {
+        if self.stack_buf_size == 0 || self.is_device_lost() || index >= 16 { return None; }
+        let index = self.stack_title_slot + 4 + index;
+        while self.stack_layers.len() <= index {
+            self.stack_layers.push(std::sync::Arc::new(self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("title kept layer"), size: self.stack_buf_size,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
+                mapped_at_creation: false,
+            })));
+        }
+        Some(index)
+    }
+
     /// Source-local title effects, with no CPU break route. The caller orders
     /// these before title post-processing and the clip grade.
     pub fn stack_title_source_effects(&mut self, slot: usize, effects: &[BuiltinEffect]) -> bool {
