@@ -105,6 +105,8 @@ pub mod surface;
 #[cfg(any(test, feature = "test-clip"))]
 pub mod test_clip;
 pub mod track_automation;
+pub mod routing;
+pub use routing::{AuxBus, AuxSend};
 pub use surface::{PinFit, PinLoss, Surface, SurfaceKey, SurfacePin, TrackState};
 pub use shared::{SequenceRead, SequenceRevision, SequenceWrite, SharedSequence};
 

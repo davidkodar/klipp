@@ -2180,6 +2180,7 @@ mod tests {
         Sequence {
             title_nits: crate::DEFAULT_TITLE_NITS,
             node_labels: Vec::new(),
+            buses: Vec::new(),
             drop_frame: false,
             camera: Default::default(),
             timeline_graph: None,
@@ -2250,6 +2251,7 @@ mod tests {
         Sequence {
             title_nits: crate::DEFAULT_TITLE_NITS,
             node_labels: Vec::new(),
+            buses: Vec::new(),
             drop_frame: false,
             camera: Default::default(),
             timeline_graph: None,

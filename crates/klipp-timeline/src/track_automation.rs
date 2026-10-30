@@ -40,6 +40,17 @@ pub fn to_db(gain: f32) -> f32 {
     if gain <= 0.0 { FLOOR_DB } else { 20.0 * gain.log10() }
 }
 
+/// A gain at `secs` from keys in gain, interpolated in dB, so a fade
+/// sounds even: the track's volume, and an aux send's level (#2861).
+pub fn gain_at(keys: &[Keyframe], secs: f64) -> f32 {
+    let quietest = keys.iter().filter(|k| k.value > 0.0).map(|k| to_db(k.value)).fold(f32::INFINITY, f32::min);
+    let silence = FLOOR_DB.min(quietest - SILENCE_BELOW_DB);
+    let level = |g: f32| if g <= 0.0 { silence } else { to_db(g) };
+    let in_db: Vec<Keyframe> = keys.iter().map(|k| Keyframe { value: level(k.value), tangent_in: (k.tangent_in.0, 0.0), tangent_out: (k.tangent_out.0, 0.0), ..k.clone() }).collect();
+    let db = klipp_core::keyframe::evaluate(&in_db, secs, silence);
+    if db <= silence + 1e-3 { 0.0 } else { 10f32.powf(db / 20.0) }
+}
+
 impl TrackAutomation {
     /// Whether it is as a track that was never automated has it: saved
     /// only when not.
@@ -70,14 +81,7 @@ impl TrackAutomation {
         }
         let keys = self.keys(param);
         match param {
-            TrackParam::Volume => {
-                let quietest = keys.iter().filter(|k| k.value > 0.0).map(|k| to_db(k.value)).fold(f32::INFINITY, f32::min);
-                let silence = FLOOR_DB.min(quietest - SILENCE_BELOW_DB);
-                let level = |g: f32| if g <= 0.0 { silence } else { to_db(g) };
-                let in_db: Vec<Keyframe> = keys.iter().map(|k| Keyframe { value: level(k.value), tangent_in: (k.tangent_in.0, 0.0), tangent_out: (k.tangent_out.0, 0.0), ..k.clone() }).collect();
-                let db = klipp_core::keyframe::evaluate(&in_db, secs, silence);
-                if db <= silence + 1e-3 { 0.0 } else { 10f32.powf(db / 20.0) }
-            }
+            TrackParam::Volume => gain_at(keys, secs),
             TrackParam::Pan => klipp_core::keyframe::evaluate(keys, secs, static_value),
         }
     }

@@ -456,6 +456,7 @@ fn sequence_to_json(seq: &Sequence, color: &ColorSettings, project_dir: &Path) -
         title_nits: (seq.title_nits != klipp_timeline::DEFAULT_TITLE_NITS).then_some(seq.title_nits),
         // A label whose node is gone names nothing any more (#1753).
         node_labels: seq.live_node_labels(),
+        buses: seq.buses.clone(),
         last_playhead: seq.last_playhead.map(|rt| TimecodeJson { value: rt.value, rate: rt.rate }),
         markers: seq.markers.iter().map(|m| {
             MarkerJson {
@@ -504,6 +505,7 @@ fn sequence_to_json(seq: &Sequence, color: &ColorSettings, project_dir: &Path) -
                 }),
                 automation_lane_height: t.automation_lane_height,
                 automation: (!t.automation.is_default()).then(|| t.automation.clone()),
+                sends: t.sends.clone(),
                 magnetic_role: Some(t.magnetic_role.clone()),
                 storyline_anchor: t.storyline_anchor.clone(),
                 effects: (!t.effects.is_empty()).then(|| crate::format::TrackEffectsJson {

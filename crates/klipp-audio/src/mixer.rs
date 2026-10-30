@@ -22,6 +22,29 @@ pub struct AudioTrackSettings {
     /// or moved control doesn't step (and click) at each block. `None`
     /// before the first block.
     pub ramp_from: Option<(f32, f32)>,
+    /// Its sends to the aux buses (#2861).
+    pub sends: Vec<SendLane>,
+}
+
+/// A track's send to an aux bus (#2861), as the mixer runs it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SendLane {
+    /// Index into `AudioMixer::buses`.
+    pub bus: usize,
+    /// Its level now, as gain.
+    pub gain: f32,
+    /// Taken before the track's fader and pan; after them otherwise.
+    pub pre_fader: bool,
+    pub muted: bool,
+    /// The level the last block ended at: a change is ramped across the
+    /// next block, as a track's fader is.
+    pub ramp_from: Option<f32>,
+}
+
+impl SendLane {
+    pub fn new(bus: usize, gain: f32, pre_fader: bool, muted: bool) -> Self {
+        Self { bus, gain, pre_fader, muted, ramp_from: None }
+    }
 }
 
 impl Default for AudioTrackSettings {
@@ -38,6 +61,7 @@ impl Default for AudioTrackSettings {
             rms_right: 0.0,
             bus: None,
             ramp_from: None,
+            sends: Vec::new(),
         }
     }
 }
@@ -52,6 +76,8 @@ pub struct AudioBus {
     pub solo: bool,
     pub peak_left: f32,
     pub peak_right: f32,
+    /// The bus it feeds (#2861), by index; `None` is master.
+    pub output: Option<usize>,
 }
 
 impl AudioBus {
@@ -64,6 +90,7 @@ impl AudioBus {
             solo: false,
             peak_left: 0.0,
             peak_right: 0.0,
+            output: None,
         }
     }
 }
@@ -77,6 +104,22 @@ pub struct TrackInserts {
     /// the chain made again rather than its settings changed in place.
     shape: Vec<(String, bool)>,
     chain: crate::dsp::AudioEffectChain,
+}
+
+/// `slot`'s chain as `instances` say: made when there is none or its
+/// effects or which are on changed, its settings changed in place
+/// otherwise.
+fn set_inserts(slot: &mut Option<TrackInserts>, instances: &[klipp_core::AudioEffectInstance], sample_rate: u32) {
+    let shape: Vec<(String, bool)> = instances.iter().map(|i| (i.effect_type.clone(), i.enabled)).collect();
+    if instances.is_empty() {
+        *slot = None;
+    } else if let Some(inserts) = slot.as_mut().filter(|i| i.shape == shape) {
+        inserts.chain.apply_settings(instances);
+    } else {
+        let mut chain = crate::dsp::AudioEffectChain::from_instances(instances, sample_rate);
+        chain.prepare(2);
+        *slot = Some(TrackInserts { shape, chain });
+    }
 }
 
 /// Mixes multiple audio tracks into a single stereo output.
@@ -107,6 +150,16 @@ pub struct AudioMixer {
     insert_latency: Vec<u32>,
     /// The rate the inserts run at.
     pub sample_rate: u32,
+    /// The order the buses are mixed in, each before the bus it feeds
+    /// (#2861): every bus once ([`Self::set_bus_order`]).
+    bus_order: Vec<usize>,
+    /// Each bus's own effects, run on its sum before its fader.
+    pub bus_inserts: Vec<Option<TrackInserts>>,
+    /// Each bus's sum and one track's output, kept from block to block
+    /// so mixing a block allocates nothing for the routing once they are
+    /// as long as a block.
+    bus_scratch: Vec<Vec<f32>>,
+    track_out: Vec<f32>,
 }
 
 impl AudioMixer {
@@ -122,6 +175,10 @@ impl AudioMixer {
             source_latency: vec![0; track_count],
             insert_latency: vec![0; track_count],
             sample_rate: 48_000,
+            bus_order: Vec::new(),
+            bus_inserts: Vec::new(),
+            bus_scratch: Vec::new(),
+            track_out: Vec::new(),
         }
     }
 
@@ -131,6 +188,7 @@ impl AudioMixer {
         if sample_rate != self.sample_rate {
             self.sample_rate = sample_rate;
             self.track_inserts.iter_mut().for_each(|i| *i = None);
+            self.bus_inserts.iter_mut().for_each(|i| *i = None);
         }
     }
 
@@ -141,17 +199,7 @@ impl AudioMixer {
     /// sources'.
     pub fn set_track_inserts(&mut self, track_idx: usize, instances: &[klipp_core::AudioEffectInstance], max_block_samples: usize) {
         self.ensure_tracks(track_idx + 1);
-        let shape: Vec<(String, bool)> = instances.iter().map(|i| (i.effect_type.clone(), i.enabled)).collect();
-        let slot = &mut self.track_inserts[track_idx];
-        if instances.is_empty() {
-            *slot = None;
-        } else if let Some(inserts) = slot.as_mut().filter(|i| i.shape == shape) {
-            inserts.chain.apply_settings(instances);
-        } else {
-            let mut chain = crate::dsp::AudioEffectChain::from_instances(instances, self.sample_rate);
-            chain.prepare(2);
-            *slot = Some(TrackInserts { shape, chain });
-        }
+        set_inserts(&mut self.track_inserts[track_idx], instances, self.sample_rate);
         let latency = self.track_inserts[track_idx].as_ref().map_or(0, |i| i.chain.total_latency_samples(self.sample_rate));
         if latency != self.insert_latency[track_idx] {
             self.insert_latency[track_idx] = latency;
@@ -262,7 +310,47 @@ impl AudioMixer {
     pub fn add_bus(&mut self, name: &str) -> usize {
         let idx = self.buses.len();
         self.buses.push(AudioBus::new(name));
+        self.bus_inserts.push(None);
+        self.bus_scratch.push(Vec::new());
+        self.bus_order.push(idx);
         idx
+    }
+
+    /// Exactly `count` buses (#2861): new ones at their defaults, those
+    /// past it dropped with their effects. Done where the routing is made,
+    /// not in the mix.
+    pub fn set_bus_count(&mut self, count: usize) {
+        self.buses.resize_with(count, || AudioBus::new(""));
+        self.bus_inserts.resize_with(count, || None);
+        self.bus_scratch.resize_with(count, Vec::new);
+        if self.bus_order.len() != count || self.bus_order.iter().any(|&b| b >= count) {
+            self.bus_order = (0..count).collect();
+        }
+    }
+
+    /// The order the buses are mixed in, each before the bus it feeds:
+    /// as `order` lists them, a bus it lists twice or past the last once,
+    /// and those it leaves out after it.
+    pub fn set_bus_order(&mut self, order: &[usize]) {
+        let count = self.buses.len();
+        let mut seen = vec![false; count];
+        let mut next = Vec::with_capacity(count);
+        for &b in order.iter().chain(&(0..count).collect::<Vec<_>>()) {
+            if b < count && !seen[b] {
+                seen[b] = true;
+                next.push(b);
+            }
+        }
+        self.bus_order = next;
+    }
+
+    /// Bus `bus_idx`'s own effects as `instances` say, made or changed as
+    /// a track's are ([`Self::set_track_inserts`]).
+    pub fn set_bus_inserts(&mut self, bus_idx: usize, instances: &[klipp_core::AudioEffectInstance]) {
+        if bus_idx >= self.buses.len() {
+            self.set_bus_count(bus_idx + 1);
+        }
+        set_inserts(&mut self.bus_inserts[bus_idx], instances, self.sample_rate);
     }
 
     /// Ensure at least `count` track settings exist. Keeps the PDC
@@ -290,19 +378,25 @@ impl AudioMixer {
     /// Mix one callback worth of samples from all tracks.
     /// `track_buffers`: `(sequence_track_index, samples)` pairs.
     /// Returns interleaved f32 stereo output.
+    ///
+    /// Each heard track, after its inserts, fader and pan, goes to master
+    /// or its bus; its sends (#2861) take it before the fader or after and
+    /// add it, at their level, to their buses. The buses are mixed in
+    /// [`Self::bus_order`]: each sum through its effects, its fader and
+    /// pan, into the bus it feeds or master. A bus is never silenced by a
+    /// track's solo: the soloed tracks' sends are heard through it.
     pub fn mix(&mut self, track_buffers: &[(usize, &[f32])]) -> Vec<f32> {
         let frame_len = track_buffers.iter().map(|(_, b)| b.len()).max().unwrap_or(0);
         // Solo picks among the tracks that have the sound: a timeline
         // track soloed does not silence the source viewer's own.
         let any_solo = self.tracks.iter().any(|t| t.solo && !t.held);
-        let has_buses = !self.buses.is_empty();
-
-        // If buses exist, create per-bus intermediate buffers
-        let mut bus_buffers: Vec<Vec<f32>> = if has_buses {
-            vec![vec![0.0f32; frame_len]; self.buses.len()]
-        } else {
-            Vec::new()
-        };
+        let bus_count = self.buses.len();
+        for b in &mut self.bus_scratch {
+            if b.len() < frame_len {
+                b.resize(frame_len, 0.0);
+            }
+            b[..frame_len].fill(0.0);
+        }
         let mut master_buf = vec![0.0f32; frame_len];
 
         let mut inserted: Vec<f32> = Vec::new();
@@ -345,17 +439,9 @@ impl AudioMixer {
             let mut sum_sq_r = 0.0f32;
             let mut sample_count = 0u32;
 
-            // Determine output target: bus buffer or master
-            let target = if let Some(bus_idx) = settings.bus {
-                if bus_idx < bus_buffers.len() {
-                    &mut bus_buffers[bus_idx]
-                } else {
-                    &mut master_buf
-                }
-            } else {
-                &mut master_buf
-            };
-
+            // The track after its fader, then into master or its bus.
+            let out = &mut self.track_out;
+            out.clear();
             for (j, pair) in buf.chunks(2).enumerate() {
                 let l = pair.first().copied().unwrap_or(0.0);
                 let r = pair.get(1).copied().unwrap_or(0.0);
@@ -371,13 +457,24 @@ impl AudioMixer {
                 sum_sq_l += out_l * out_l;
                 sum_sq_r += out_r * out_r;
                 sample_count += 1;
-                let base = j * 2;
-                if base < target.len() {
-                    target[base] += out_l;
+                out.push(out_l);
+                out.push(out_r);
+            }
+            let target = match settings.bus {
+                Some(bus_idx) if bus_idx < bus_count => &mut self.bus_scratch[bus_idx][..frame_len],
+                _ => &mut master_buf[..],
+            };
+            for (t, o) in target.iter_mut().zip(out.iter()) {
+                *t += *o;
+            }
+            for send in &mut settings.sends {
+                let from = send.ramp_from.unwrap_or(send.gain);
+                send.ramp_from = Some(send.gain);
+                if send.muted || send.bus >= bus_count {
+                    continue;
                 }
-                if base + 1 < target.len() {
-                    target[base + 1] += out_r;
-                }
+                let tap: &[f32] = if send.pre_fader { buf } else { out };
+                crate::routing::add_ramped(tap, from, send.gain, &mut self.bus_scratch[send.bus][..frame_len]);
             }
 
             settings.peak_left = peak_l;
@@ -392,33 +489,32 @@ impl AudioMixer {
         // track starts from them, not ramping from where it was silenced.
         for t in &mut self.tracks {
             t.ramp_from = Some((t.volume, t.pan));
+            for send in &mut t.sends {
+                send.ramp_from = Some(send.gain);
+            }
         }
 
-        // Mix buses into master
-        for (bus_idx, bus_buf) in bus_buffers.iter().enumerate() {
-            if let Some(bus) = self.buses.get_mut(bus_idx) {
-                if bus.muted { continue; }
-                let (pan_l, pan_r) = Self::pan_gains_for(bus.pan, self.pan_law);
-                let mut peak_l = 0.0f32;
-                let mut peak_r = 0.0f32;
-                for (j, pair) in bus_buf.chunks(2).enumerate() {
-                    let l = pair.first().copied().unwrap_or(0.0);
-                    let r = pair.get(1).copied().unwrap_or(0.0);
-                    let out_l = l * bus.volume * pan_l;
-                    let out_r = r * bus.volume * pan_r;
-                    peak_l = peak_l.max(out_l.abs());
-                    peak_r = peak_r.max(out_r.abs());
-                    let base = j * 2;
-                    if base < master_buf.len() {
-                        master_buf[base] += out_l;
-                    }
-                    if base + 1 < master_buf.len() {
-                        master_buf[base + 1] += out_r;
-                    }
-                }
-                bus.peak_left = peak_l;
-                bus.peak_right = peak_r;
+        // The buses, each before the bus it feeds, into it or master.
+        for i in 0..self.bus_order.len() {
+            let bus_idx = self.bus_order[i];
+            let mut bus_buf = std::mem::take(&mut self.bus_scratch[bus_idx]);
+            let bus = &mut self.buses[bus_idx];
+            if bus.muted {
+                bus.peak_left = 0.0;
+                bus.peak_right = 0.0;
+                self.bus_scratch[bus_idx] = bus_buf;
+                continue;
             }
+            if let Some(inserts) = self.bus_inserts.get_mut(bus_idx).and_then(Option::as_mut) {
+                inserts.chain.process(&mut bus_buf[..frame_len], &crate::dsp::AudioProcessContext { sample_rate: self.sample_rate, channels: 2, clip_time_secs: 0.0 });
+            }
+            let gains = Self::pan_gains_for(bus.pan, self.pan_law);
+            let dest = match bus.output {
+                Some(o) if o < bus_count && o != bus_idx => &mut self.bus_scratch[o][..frame_len],
+                _ => &mut master_buf[..],
+            };
+            (bus.peak_left, bus.peak_right) = crate::routing::add_bus(&bus_buf[..frame_len], bus.volume, gains, dest);
+            self.bus_scratch[bus_idx] = bus_buf;
         }
 
         // Soft clip
@@ -460,6 +556,190 @@ mod tests {
 
     use super::*;
     use klipp_core::PanLaw;
+
+    fn tone(n: usize, amp: f32) -> Vec<f32> {
+        (0..n).map(|i| amp * ((i / 2) as f32 * 0.03 + (i % 2) as f32).sin()).collect()
+    }
+
+    /// A mixer at rest on its settings (no ramp), with `buses` buses.
+    fn routed(tracks: usize, buses: usize) -> AudioMixer {
+        let mut m = AudioMixer::new(tracks);
+        m.set_bus_count(buses);
+        for t in &mut m.tracks {
+            t.ramp_from = Some((t.volume, t.pan));
+        }
+        m
+    }
+
+    fn settle(m: &mut AudioMixer) {
+        for t in &mut m.tracks {
+            t.ramp_from = Some((t.volume, t.pan));
+            for s in &mut t.sends {
+                s.ramp_from = Some(s.gain);
+            }
+        }
+    }
+
+    /// #2861: a send at -6 dB to a bus with no effects adds the track to
+    /// master again through the bus at half its amplitude (0.501).
+    #[test]
+    fn a_send_at_minus_6_db_adds_the_wet_return_at_its_level() {
+        let dry = tone(1024, 0.3);
+        let send_gain = 10f32.powf(-6.0 / 20.0);
+        let mut m = routed(1, 1);
+        m.tracks[0].sends.push(SendLane::new(0, send_gain, false, false));
+        settle(&mut m);
+        let out = m.mix(&[(0, &dry)]);
+        let (l, r) = AudioMixer::pan_gains_for(0.0, m.pan_law);
+        for (i, (o, d)) in out.iter().zip(&dry).enumerate() {
+            let g = if i % 2 == 0 { l } else { r };
+            let want = d * g + d * g * send_gain * g;
+            assert!((o - want).abs() < 1e-6, "sample {i}: {o} vs {want}");
+        }
+        let without = routed(1, 0).mix(&[(0, &dry)]);
+        let wet: f32 = out.iter().zip(&without).map(|(a, b)| (a - b).abs()).fold(0.0, f32::max);
+        let dry_peak = without.iter().fold(0.0f32, |a, s| a.max(s.abs()));
+        assert!((20.0 * (wet / dry_peak).log10() + 6.0).abs() < 0.05, "the return is -6 dB under the dry: {wet} vs {dry_peak}");
+    }
+
+    /// A pre-fader send ignores the track's fader; a post-fader one
+    /// follows it, 12 dB down with it.
+    #[test]
+    fn a_pre_fader_send_ignores_the_fader_and_a_post_fader_one_follows_it() {
+        let dry = tone(1024, 0.3);
+        let bus_peak = |pre: bool, fader: f32| {
+            let mut m = routed(1, 1);
+            m.tracks[0].volume = fader;
+            m.tracks[0].sends.push(SendLane::new(0, 1.0, pre, false));
+            settle(&mut m);
+            m.mix(&[(0, &dry)]);
+            m.buses[0].peak_left
+        };
+        let quiet = 10f32.powf(-12.0 / 20.0);
+        assert!((bus_peak(true, quiet) - bus_peak(true, 1.0)).abs() < 1e-7, "pre: the fader is not heard on the bus");
+        assert!(bus_peak(true, 0.0) > 0.1, "pre: a fader down to nothing still sends");
+        let (loud, down) = (bus_peak(false, 1.0), bus_peak(false, quiet));
+        assert!((20.0 * (down / loud).log10() + 12.0).abs() < 1e-3, "post: 12 dB down with the fader: {loud} {down}");
+    }
+
+    /// A muted track sends nothing; a track soloed out sends nothing; a
+    /// soloed track's send is heard through its bus, which no solo
+    /// silences; a muted send or bus adds nothing.
+    #[test]
+    fn mute_and_solo_reach_the_sends_and_buses_are_solo_safe() {
+        let dry = tone(512, 0.3);
+        let bus_out = |setup: &dyn Fn(&mut AudioMixer)| {
+            let mut m = routed(2, 1);
+            m.tracks[0].sends.push(SendLane::new(0, 1.0, true, false));
+            setup(&mut m);
+            settle(&mut m);
+            m.mix(&[(0, &dry), (1, &dry)]);
+            m.buses[0].peak_left
+        };
+        assert!(bus_out(&|_| {}) > 0.1);
+        assert_eq!(bus_out(&|m| m.tracks[0].muted = true), 0.0, "a muted track, pre-fader send and all");
+        assert_eq!(bus_out(&|m| m.tracks[1].solo = true), 0.0, "soloed out");
+        assert!(bus_out(&|m| m.tracks[0].solo = true) > 0.1, "a bus is solo-safe");
+        assert_eq!(bus_out(&|m| m.tracks[0].sends[0].muted = true), 0.0);
+        assert_eq!(bus_out(&|m| m.buses[0].muted = true), 0.0);
+    }
+
+    /// A bus feeding another is mixed first, whatever their indices, and
+    /// its sum reaches master through both faders.
+    #[test]
+    fn a_bus_feeds_the_bus_after_it_in_the_order() {
+        let dry = tone(512, 0.2);
+        let mut m = routed(1, 2);
+        // Bus 1 feeds bus 0, so 1 goes first.
+        m.buses[1].output = Some(0);
+        m.buses[1].volume = 0.5;
+        m.buses[0].volume = 0.5;
+        m.set_bus_order(&[1, 0]);
+        m.tracks[0].volume = 0.0;
+        m.tracks[0].sends.push(SendLane::new(1, 1.0, true, false));
+        settle(&mut m);
+        let out = m.mix(&[(0, &dry)]);
+        let (l, _) = AudioMixer::pan_gains_for(0.0, m.pan_law);
+        assert!((out[0] - dry[0] * 0.25 * l * l).abs() < 1e-7, "{} vs {}", out[0], dry[0] * 0.25 * l * l);
+        m.set_bus_order(&[0, 1, 1, 7]);
+        assert_eq!(m.bus_order, vec![0, 1], "each bus once, none past the last");
+        m.set_bus_order(&[1]);
+        assert_eq!(m.bus_order, vec![1, 0], "one left out goes after");
+    }
+
+    /// A send's level moved is ramped across the next block, ending on
+    /// it, as a fader is.
+    #[test]
+    fn a_sends_level_is_ramped_across_a_block() {
+        let dry = vec![0.5f32; 512];
+        let mut m = routed(1, 1);
+        m.tracks[0].sends.push(SendLane::new(0, 0.0, true, false));
+        settle(&mut m);
+        m.tracks[0].sends[0].gain = 1.0;
+        m.mix(&[(0, &dry)]);
+        let (l, _) = AudioMixer::pan_gains_for(0.0, m.pan_law);
+        assert!((m.buses[0].peak_left - 0.5 * l).abs() < 1e-6, "ends at the new level");
+        let out = m.mix(&[(0, &dry)]);
+        let next = out[0];
+        let mut m2 = routed(1, 1);
+        m2.tracks[0].sends.push(SendLane::new(0, 0.0, true, false));
+        settle(&mut m2);
+        m2.tracks[0].sends[0].gain = 1.0;
+        let first = m2.mix(&[(0, &dry)])[0];
+        assert!(first < next, "the first frame is near the old level: {first} vs {next}");
+    }
+
+    /// A mix with no buses or sends is the mix it was before them, bit
+    /// for bit: two tracks, one moving its fader and pan across the block.
+    #[test]
+    fn a_mix_without_routing_is_unchanged_bit_for_bit() {
+        let (a, b) = (tone(1000, 0.4), tone(1000, 0.35));
+        let mut m = AudioMixer::new(2);
+        m.tracks[0].ramp_from = Some((1.0, 0.0));
+        m.tracks[0].volume = 0.7;
+        m.tracks[0].pan = -0.3;
+        m.tracks[1].ramp_from = Some((0.9, 0.2));
+        m.tracks[1].volume = 0.9;
+        m.tracks[1].pan = 0.2;
+        let out = m.mix(&[(0, &a), (1, &b)]);
+        // The mix as it was written before #2861, sample by sample.
+        let law = m.pan_law;
+        let mut want = vec![0.0f32; 1000];
+        for (buf, (fv, fp), (v, p)) in [(&a, (1.0f32, 0.0f32), (0.7f32, -0.3f32)), (&b, (0.9, 0.2), (0.9, 0.2))] {
+            let (pl, pr) = law.gains(p);
+            let (fl, fr) = law.gains(fp);
+            let ramped = (fv, fp) != (v, p);
+            let frames = (buf.len() / 2) as f32;
+            for (j, pair) in buf.chunks(2).enumerate() {
+                let (l, r) = (pair[0], pair[1]);
+                let (ol, or) = if ramped {
+                    let t = (j + 1) as f32 / frames;
+                    let vol = fv + (v - fv) * t;
+                    (l * vol * (fl + (pl - fl) * t), r * vol * (fr + (pr - fr) * t))
+                } else {
+                    (l * v * pl, r * v * pr)
+                };
+                want[j * 2] += ol;
+                want[j * 2 + 1] += or;
+            }
+        }
+        want.iter_mut().for_each(|s| *s = s.clamp(-1.0, 1.0));
+        assert!(out.iter().zip(&want).all(|(o, w)| o.to_bits() == w.to_bits()), "bit for bit");
+    }
+
+    /// Mixing allocates no routing buffers once they are a block long:
+    /// the second block reuses the first's.
+    #[test]
+    fn the_routing_buffers_are_kept_between_blocks() {
+        let dry = tone(1024, 0.3);
+        let mut m = routed(1, 2);
+        m.tracks[0].sends.push(SendLane::new(1, 0.5, false, false));
+        m.mix(&[(0, &dry)]);
+        let at: Vec<*const f32> = m.bus_scratch.iter().map(|b| b.as_ptr()).chain([m.track_out.as_ptr()]).collect();
+        m.mix(&[(0, &dry)]);
+        let again: Vec<*const f32> = m.bus_scratch.iter().map(|b| b.as_ptr()).chain([m.track_out.as_ptr()]).collect();
+        assert_eq!(at, again);
+    }
 
     const EPS: f32 = 1e-4;
 

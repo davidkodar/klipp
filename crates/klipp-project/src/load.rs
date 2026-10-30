@@ -866,6 +866,7 @@ fn load_sequence_from_json(
             track.automation_lane_track = matches!(t.automation_lane_visible.as_deref(), Some("TrackVolume" | "TrackPan"));
             track.automation_lane_height = t.automation_lane_height;
             track.automation = t.automation.clone().unwrap_or_default();
+            track.sends = t.sends.clone();
             if let Some(fx) = &t.effects {
                 // Read once already, before anything was loaded: an effect
                 // this Klipp does not know refused the load there.
@@ -1123,6 +1124,8 @@ fn load_sequence_from_json(
             }),
         // A colour past the six is no label.
         node_labels: seq_json.node_labels.iter().filter(|l| (1..=klipp_timeline::NODE_LABEL_COLOURS).contains(&l.colour)).cloned().collect(),
+        // Mended where it is opened, which says what changed.
+        buses: seq_json.buses.clone(),
     };
     // A file from before roles were saved carries none: give it the roles
     // a new sequence gets, which is what it had when it was made and what

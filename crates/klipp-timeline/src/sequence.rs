@@ -138,6 +138,9 @@ pub struct Sequence {
     /// [`crate::NodeLabel`]. Empty for every sequence made before them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub node_labels: Vec<crate::NodeLabel>,
+    /// The aux buses its tracks send to (#2861); see [`crate::routing`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub buses: Vec<crate::AuxBus>,
 }
 
 /// [`Sequence::title_nits`] when nobody has chosen one: SDR reference
@@ -741,6 +744,7 @@ impl Sequence {
             drop_frame: Self::default_drop_frame(Fps::film_24()),
             title_nits: DEFAULT_TITLE_NITS,
             node_labels: Vec::new(),
+            buses: Vec::new(),
             name: "Main Sequence".to_string(),
             fps: Fps::film_24(),
             resolution: Resolution::hd_1080(),
@@ -1513,6 +1517,9 @@ pub struct Track {
     /// volume and pan, in sequence seconds.
     #[serde(default, skip_serializing_if = "crate::track_automation::TrackAutomation::is_default")]
     pub automation: crate::track_automation::TrackAutomation,
+    /// Its sends to aux buses (#2861); see [`crate::routing`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sends: Vec<crate::AuxSend>,
 }
 
 /// A track's own effects (#846), applied to every clip on it after the
@@ -1691,6 +1698,7 @@ impl Track {
             automation: Default::default(),
             automation_lane_height: None,
             effects: TrackEffects::default(),
+            sends: Vec::new(),
         }
     }
 
@@ -4718,6 +4726,7 @@ mod tests {
         Sequence {
             title_nits: crate::DEFAULT_TITLE_NITS,
             node_labels: Vec::new(),
+            buses: Vec::new(),
             drop_frame: false,
             camera: Default::default(),
             timeline_graph: None,

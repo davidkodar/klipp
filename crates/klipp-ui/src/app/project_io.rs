@@ -911,6 +911,12 @@ impl KlippApp {
                 if filled > 0 {
                     tracing::warn!("{}: filled {filled} hole(s) on the primary track with gap clips", path.display());
                 }
+                // Aux routing a file can't be mixed as (#2861): a loop, a
+                // send to no bus, levels out of range, past the caps.
+                let mended: Vec<String> = sequences.iter_mut().flat_map(|s| s.mend_routing()).collect();
+                for note in &mended {
+                    tracing::warn!("{}: {note}", path.display());
+                }
                 self.state.fps = sequences.first().map(|s| s.fps).unwrap_or(klipp_core::Fps { num: 24, den: 1 });
                 let active_idx = active_id.as_deref()
                     .and_then(|id| sequences.iter().position(|s| s.id.to_string() == id))
@@ -921,6 +927,10 @@ impl KlippApp {
                 self.state.project_notes = notes;
                 self.state.last_import_report = klipp_project::import_report::read(path).unwrap_or_else(|e| { tracing::warn!("Could not read last import report: {e}"); None });
                 self.state.show_import_report = false;
+                if let Some(first) = mended.first() {
+                    let more = if mended.len() > 1 { format!(" (and {} more)", mended.len() - 1) } else { String::new() };
+                    self.state.toast.show(format!("The project's sends and buses were mended to play: {first}{more}"));
+                }
                 if filled > 0 {
                     self.state.toast.show(format!("The primary track had {filled} empty stretch{} without a gap clip; gap clips now hold {}, so nothing moves on the next edit", if filled == 1 { "" } else { "es" }, if filled == 1 { "it" } else { "them" }));
                 }
