@@ -1880,6 +1880,14 @@ pub struct AppState {
     pub selected_gap: Option<(usize, Timecode, Timecode)>,
     /// The Speed dialog's "move the clips after it" (#639).
     pub speed_dialog_ripple: bool,
+    /// That box as it was when the dialog opened: put back when it closes
+    /// without Apply, so a cancelled try leaves nothing behind (#3115).
+    pub speed_dialog_ripple_before: bool,
+    /// Seconds of source the dialog's clip shows: its speed and its length
+    /// are one setting over this (#3115).
+    pub speed_dialog_content_secs: f64,
+    /// The lengths the dialog offers to fit the clip to (#3115).
+    pub speed_dialog_fit: crate::speed_dialog::FitTargets,
 
     // Source viewer
     pub source_media_id: Option<MediaId>,
@@ -4859,6 +4867,9 @@ impl Default for AppState {
             speed_dialog_keep_pitch: false,
             selected_gap: None,
             speed_dialog_ripple: true,
+            speed_dialog_ripple_before: true,
+            speed_dialog_content_secs: 0.0,
+            speed_dialog_fit: Default::default(),
             source_media_id: None,
             source_playhead: Timecode::zero(),
             source_seek_dispatch_at: None,
@@ -5519,6 +5530,31 @@ impl AppState {
     /// one back. Use `.position()` for a place on the timeline and
     /// `.duration()` for a length — drop-frame applies to the first and
     /// not the second; see `TimecodeDisplay`.
+    /// The Speed dialog opened on `clip_id`: its speed, direction and
+    /// pitch read from the clip, the length it plays for and the lengths
+    /// it can be fitted to worked out, and the stored options noted so
+    /// closing without Apply puts them back (#3115).
+    pub fn open_speed_dialog(&mut self, clip_id: klipp_core::ClipId) {
+        let (speed, keep) = self.sequence().all_clips().find(|c| c.id == clip_id).map(|c| (c.speed, c.keep_pitch)).unwrap_or((1.0, false));
+        self.speed_dialog_value = speed.abs() * 100.0;
+        self.speed_dialog_reverse = speed < 0.0;
+        self.speed_dialog_keep_pitch = keep;
+        self.speed_dialog_content_secs = crate::speed_dialog::content_secs(self.sequence(), clip_id).unwrap_or(0.0);
+        self.speed_dialog_fit = crate::speed_dialog::fit_targets(self.sequence(), clip_id);
+        self.speed_dialog_ripple_before = self.speed_dialog_ripple;
+        self.show_speed_dialog = true;
+    }
+
+    /// The Speed dialog closed: by Apply its options stand; by Cancel, its
+    /// close button or a click outside, they are put back as they were
+    /// when it opened (#3115).
+    pub fn close_speed_dialog(&mut self, applied: bool) {
+        if !applied {
+            self.speed_dialog_ripple = self.speed_dialog_ripple_before;
+        }
+        self.show_speed_dialog = false;
+    }
+
     pub fn timecode_display(&self) -> klipp_core::TimecodeDisplay {
         self.sequence().timecode_display()
     }
@@ -7741,6 +7777,34 @@ mod pool_import_undo_tests {
         state.complete_pool_import(item, false);
         assert_eq!(state.media_pool.get(&id).unwrap().bin, None, "a re-probe is not put in a bin");
         assert!(state.pending_import_bins.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod speed_dialog_tests {
+    use super::*;
+
+    /// #3115: a box ticked in a cancelled try is back as it was when the
+    /// dialog opened, on the next clip too; one ticked and applied stays.
+    #[test]
+    fn a_cancelled_try_leaves_the_stored_options_as_they_were() {
+        let mut state = AppState::default();
+        let t = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 24);
+        let p = state.sequence().primary_track_index().unwrap();
+        let a = klipp_timeline::Clip::media(klipp_core::MediaId::new(), t(0.0), t(4.0), t(0.0), t(2.0));
+        let id = a.id;
+        state.sequences[state.active_sequence_idx].tracks[p].clips = vec![a];
+        state.speed_dialog_ripple = false;
+        state.open_speed_dialog(id);
+        assert!((state.speed_dialog_content_secs - 2.0).abs() < 1e-6, "2 s of source");
+        state.speed_dialog_ripple = true;
+        state.close_speed_dialog(false);
+        assert!(!state.speed_dialog_ripple && !state.show_speed_dialog, "Cancel put it back");
+        state.open_speed_dialog(id);
+        assert!(!state.speed_dialog_ripple, "the next opening starts as before the cancelled try");
+        state.speed_dialog_ripple = true;
+        state.close_speed_dialog(true);
+        assert!(state.speed_dialog_ripple, "Apply keeps it");
     }
 }
 

@@ -1826,10 +1826,20 @@ pub enum Op {
         #[serde(default)]
         speed: f64,
         /// Fit to fill: the speed that makes the clip end where the next
-        /// clip on its track begins, in place of `speed` (#788). The
-        /// clip keeps its direction.
+        /// clip on its track begins, in place of `speed` (#788); a gap
+        /// clip is room to fill, not a clip to stop at. The clip keeps its
+        /// direction.
         #[serde(default)]
         fit: bool,
+        /// The clip made this many seconds long, the speed worked out, in
+        /// place of `speed` (#3115). The clip keeps its direction.
+        #[serde(default)]
+        length_secs: Option<f64>,
+        /// The clip made as long as the sequence's marked range (its in
+        /// and out points), the speed worked out, in place of `speed`
+        /// (#3115).
+        #[serde(default)]
+        fit_range: bool,
         /// Move the clips after it on its track, and on its linked sound's,
         /// by the change in length. Without it a clip made longer than the
         /// room before the next one is refused rather than laid over it.
@@ -4087,20 +4097,28 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
                 None => Ok((what, edit, touched)),
             }
         }
-        Op::Retime { clip_id, speed, fit, ripple, interpolation } => {
+        Op::Retime { clip_id, speed, fit, ripple, interpolation, length_secs, fit_range } => {
             let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
             let interpolated = interpolation.as_deref().map(|how| interpolation_edit(seq, pool, i, clip, how)).transpose()?.flatten();
-            if *speed == 0.0 && !*fit && interpolation.is_some() {
+            let ways = [*speed != 0.0, *fit, length_secs.is_some(), *fit_range].iter().filter(|w| **w).count();
+            if ways > 1 {
+                return Err(refuse(i, "more than one of speed, fit, length_secs and fit_range", "give one: the speed, or the length to make the clip"));
+            }
+            if ways == 0 && interpolation.is_some() {
                 return match interpolated {
                     Some((what, edit)) => Ok((what, edit, vec![clip.id])),
                     None => Err(refuse(i, format!("{} already repeats the nearest frame", clip_name(seq, pool, clip)), "give interpolation blend or flow, or a speed")),
                 };
             }
             let speed = if *fit {
-                if *speed != 0.0 {
-                    return Err(refuse(i, "both a speed and fit", "give speed, or fit to take the speed that fills the gap"));
-                }
                 fit_speed(seq, pool, i, ti, clip)?
+            } else if let Some(len) = length_secs {
+                speed_for_length(seq, pool, i, clip, *len)?
+            } else if *fit_range {
+                let (Some(a), Some(b)) = (seq.in_point, seq.out_point) else {
+                    return Err(refuse(i, "the sequence has no marked range", "mark an in and an out point first, or give length_secs"));
+                };
+                speed_for_length(seq, pool, i, clip, secs(b) - secs(a))?
             } else {
                 *speed
             };
@@ -10219,16 +10237,22 @@ pub fn retime_at(seq: &Sequence, pool: &MediaPool, clip_id: ClipId, speed: f64, 
 /// room is whole frames, so the retimed clip lands on that frame; worked
 /// out by hand from a rounded speed it overran by one and was refused.
 fn fit_speed(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip) -> Result<f64, Refusal> {
-    let next = seq.tracks[ti].clips.iter().filter(|c| c.id != clip.id && c.timeline_in >= clip.timeline_out).map(|c| c.timeline_in).min();
+    // A gap clip is the room itself (#3083 keeps the primary's holes as
+    // gap clips): the fit runs to the next shot.
+    let next = seq.tracks[ti].clips.iter().filter(|c| c.id != clip.id && !c.kind.is_gap() && c.timeline_in >= clip.timeline_out).map(|c| c.timeline_in).min();
     let Some(next) = next else {
-        return Err(refuse(i, format!("nothing follows {} on its track to fit it to", clip_name(seq, pool, clip)), "give speed instead, or place the clip that should follow first"));
+        return Err(refuse(i, format!("nothing follows {} on its track to fit it to", clip_name(seq, pool, clip)), "give speed or length_secs instead, or place the clip that should follow first"));
     };
-    let room = secs(next - clip.timeline_in);
+    speed_for_length(seq, pool, i, clip, secs(next - clip.timeline_in))
+}
+
+/// The speed that makes `clip` `len` seconds long, in its direction.
+fn speed_for_length(seq: &Sequence, pool: &MediaPool, i: usize, clip: &Clip, len: f64) -> Result<f64, Refusal> {
     let source = secs(clip.source_out - clip.source_in);
-    if room <= 0.0 || source <= 0.0 {
-        return Err(refuse(i, "no room to fit the clip into", "give speed instead"));
+    if !len.is_finite() || len <= 0.0 || source <= 0.0 {
+        return Err(refuse(i, format!("no length to fit {} into", clip_name(seq, pool, clip)), "give a length above zero, or a speed"));
     }
-    let speed = source / room;
+    let speed = source / len;
     Ok(if clip.speed < 0.0 { -speed } else { speed })
 }
 
@@ -17875,7 +17899,7 @@ mod tests {
         seq.tracks[0].clips[0].linked_clip_id = None;
         seq.tracks[1].clips.remove(0);
         let ab = seq.tracks[1].clips[0].id;
-        let plan = resolve(&seq, &pool, &[Op::Retime { clip_id: ClipRef::Id(a), speed: 0.5, fit: false, ripple: true, interpolation: None }]).unwrap();
+        let plan = resolve(&seq, &pool, &[Op::Retime { clip_id: ClipRef::Id(a), speed: 0.5, fit: false, ripple: true, interpolation: None, length_secs: None, fit_range: false }]).unwrap();
         assert!(plan.steps[0].what.contains("1 linked to them on other tracks with them"), "{}", plan.steps[0].what);
         let mut seqs = vec![seq.clone()];
         let (mut p, mut f) = (pool.clone(), seq.fps);
@@ -17891,7 +17915,7 @@ mod tests {
         // refused, not laid over.
         let mut blocked = seq.clone();
         blocked.tracks[1].clips.push(Clip::media(media, tc(9.0), tc(10.0), tc(0.0), tc(1.0)));
-        let refused = resolve(&blocked, &pool, &[Op::Retime { clip_id: ClipRef::Id(a), speed: 0.5, fit: false, ripple: true, interpolation: None }]).unwrap_err();
+        let refused = resolve(&blocked, &pool, &[Op::Retime { clip_id: ClipRef::Id(a), speed: 0.5, fit: false, ripple: true, interpolation: None, length_secs: None, fit_range: false }]).unwrap_err();
         assert!(refused.why.contains("linked to a later clip, would run over"), "{}", refused.why);
     }
 
@@ -18086,28 +18110,28 @@ mod tests {
 
         // Retime to 2x halves the clip (clip a is 0-4, clip b starts at 4;
         // 2x makes a 0-2, a gap opens), its linked sound with it.
-        let plan = resolve(&seq, &pool, &[Op::Retime { clip_id: ClipRef::Id(a), speed: 2.0, fit: false, ripple: false, interpolation: None }]).unwrap();
+        let plan = resolve(&seq, &pool, &[Op::Retime { clip_id: ClipRef::Id(a), speed: 2.0, fit: false, ripple: false, interpolation: None, length_secs: None, fit_range: false }]).unwrap();
         assert!(plan.steps[0].what.contains("2.00x") && plan.steps[0].what.contains("0.00-2.00 s") && plan.steps[0].what.contains("its sound at that speed"), "{}", plan.steps[0].what);
         // Fit to fill (#788): sped up to leave a gap, then fitted, a lands
         // back on b's first frame at 1x; b has nothing after it to fill to,
         // and a speed with fit is one too many.
         let ops = [
-            Op::Retime { clip_id: ClipRef::Id(a), speed: 1.7, fit: false, ripple: false, interpolation: None },
-            Op::Retime { clip_id: ClipRef::Id(a), speed: 0.0, fit: true, ripple: false, interpolation: None },
+            Op::Retime { clip_id: ClipRef::Id(a), speed: 1.7, fit: false, ripple: false, interpolation: None, length_secs: None, fit_range: false },
+            Op::Retime { clip_id: ClipRef::Id(a), speed: 0.0, fit: true, ripple: false, interpolation: None, length_secs: None, fit_range: false },
         ];
         let plan = resolve(&seq, &pool, &ops).unwrap();
         assert!(plan.steps[1].what.contains("1.00x") && plan.steps[1].what.contains("0.00-4.00 s"), "{}", plan.steps[1].what);
         let b = seq.tracks.iter().find_map(|t| t.clips.iter().find(|c| c.timeline_in == tc(4.0) && matches!(c.kind, ClipKind::Media { .. }))).unwrap().id;
-        let last = resolve(&seq, &pool, &[Op::Retime { clip_id: ClipRef::Id(b), speed: 0.0, fit: true, ripple: false, interpolation: None }]);
+        let last = resolve(&seq, &pool, &[Op::Retime { clip_id: ClipRef::Id(b), speed: 0.0, fit: true, ripple: false, interpolation: None, length_secs: None, fit_range: false }]);
         assert!(last.is_err_and(|r| r.why.contains("nothing follows")), "b is last on its track");
-        let both = resolve(&seq, &pool, &[Op::Retime { clip_id: ClipRef::Id(a), speed: 0.5, fit: true, ripple: false, interpolation: None }]).unwrap_err();
-        assert!(both.why.contains("both a speed and fit"), "{}", both.why);
+        let both = resolve(&seq, &pool, &[Op::Retime { clip_id: ClipRef::Id(a), speed: 0.5, fit: true, ripple: false, interpolation: None, length_secs: None, fit_range: false }]).unwrap_err();
+        assert!(both.why.contains("more than one of speed, fit"), "{}", both.why);
         let as_sent: Vec<Op> = serde_json::from_str(r#"[{"op":"retime","clip_id":{"track":0,"secs":1.0},"fit":true}]"#).unwrap();
         assert!(matches!(as_sent[0], Op::Retime { fit: true, speed, .. } if speed == 0.0), "fit alone parses");
         // Interpolation (#2215): alone it sets the clip's Speed Ramp and
         // nothing else; with a speed, both in one step; a word it doesn't
         // know is refused.
-        let plan = resolve(&seq, &pool, &[Op::Retime { clip_id: ClipRef::Id(a), speed: 0.0, fit: false, ripple: false, interpolation: Some("flow".into()) }]).unwrap();
+        let plan = resolve(&seq, &pool, &[Op::Retime { clip_id: ClipRef::Id(a), speed: 0.0, fit: false, ripple: false, interpolation: Some("flow".into()), length_secs: None, fit_range: false }]).unwrap();
         assert!(plan.steps[0].what.contains("follow the motion"), "{}", plan.steps[0].what);
         let mut seqs = vec![seq.clone()];
         let (mut p, mut f) = (pool.clone(), seq.fps);
@@ -18118,27 +18142,27 @@ mod tests {
         assert_eq!(clip.timeline_out, seq.tracks[0].clips[0].timeline_out, "its length kept");
         view.apply_inverse(&plan.steps[0].edit);
         assert_eq!(view.sequences[0].tracks[0].clips[0].frame_blend_mode(), None);
-        let plan = resolve(&seq, &pool, &[Op::Retime { clip_id: ClipRef::Id(a), speed: 2.0, fit: false, ripple: false, interpolation: Some("blend".into()) }]).unwrap();
+        let plan = resolve(&seq, &pool, &[Op::Retime { clip_id: ClipRef::Id(a), speed: 2.0, fit: false, ripple: false, interpolation: Some("blend".into()), length_secs: None, fit_range: false }]).unwrap();
         assert!(plan.steps[0].what.contains("2.00x") && plan.steps[0].what.contains("cross-fade"), "{}", plan.steps[0].what);
         // A slowed clip that will judder says so, and says nothing blended.
-        let slowed = resolve(&seq, &pool, &[Op::Retime { clip_id: ClipRef::Id(a), speed: 0.4, fit: false, ripple: true, interpolation: Some("nearest".into()) }]).unwrap();
+        let slowed = resolve(&seq, &pool, &[Op::Retime { clip_id: ClipRef::Id(a), speed: 0.4, fit: false, ripple: true, interpolation: Some("nearest".into()), length_secs: None, fit_range: false }]).unwrap();
         assert!(slowed.steps[0].what.contains("which judders"), "{}", slowed.steps[0].what);
-        let flowed = resolve(&seq, &pool, &[Op::Retime { clip_id: ClipRef::Id(a), speed: 0.4, fit: false, ripple: true, interpolation: Some("optical_flow".into()) }]).unwrap();
+        let flowed = resolve(&seq, &pool, &[Op::Retime { clip_id: ClipRef::Id(a), speed: 0.4, fit: false, ripple: true, interpolation: Some("optical_flow".into()), length_secs: None, fit_range: false }]).unwrap();
         assert!(!flowed.steps[0].what.contains("judders") && flowed.steps[0].what.contains("follow the motion"), "{}", flowed.steps[0].what);
-        let unknown = resolve(&seq, &pool, &[Op::Retime { clip_id: ClipRef::Id(a), speed: 0.0, fit: false, ripple: false, interpolation: Some("morph".into()) }]).unwrap_err();
+        let unknown = resolve(&seq, &pool, &[Op::Retime { clip_id: ClipRef::Id(a), speed: 0.0, fit: false, ripple: false, interpolation: Some("morph".into()), length_secs: None, fit_range: false }]).unwrap_err();
         assert!(unknown.why.contains("not one of sample (nearest), blend or flow (optical_flow)"), "{}", unknown.why);
         // Sample on a clip with no Speed Ramp changes nothing: refused
         // alone, left out beside a speed.
-        let nothing = resolve(&seq, &pool, &[Op::Retime { clip_id: ClipRef::Id(a), speed: 0.0, fit: false, ripple: false, interpolation: Some("sample".into()) }]).unwrap_err();
+        let nothing = resolve(&seq, &pool, &[Op::Retime { clip_id: ClipRef::Id(a), speed: 0.0, fit: false, ripple: false, interpolation: Some("sample".into()), length_secs: None, fit_range: false }]).unwrap_err();
         assert!(nothing.why.contains("already repeats the nearest frame"), "{}", nothing.why);
-        let plan = resolve(&seq, &pool, &[Op::Retime { clip_id: ClipRef::Id(a), speed: 2.0, fit: false, ripple: false, interpolation: Some("sample".into()) }]).unwrap();
+        let plan = resolve(&seq, &pool, &[Op::Retime { clip_id: ClipRef::Id(a), speed: 2.0, fit: false, ripple: false, interpolation: Some("sample".into()), length_secs: None, fit_range: false }]).unwrap();
         assert!(plan.steps[0].what.contains("2.00x") && !plan.steps[0].what.contains("nearest"), "only the speed change: {}", plan.steps[0].what);
         // Half speed would run over b: refused, not laid over it (#639).
-        let refused =resolve(&seq, &pool, &[Op::Retime { clip_id: ClipRef::Id(a), speed: 0.5, fit: false, ripple: false, interpolation: None }]).unwrap_err();
+        let refused =resolve(&seq, &pool, &[Op::Retime { clip_id: ClipRef::Id(a), speed: 0.5, fit: false, ripple: false, interpolation: None, length_secs: None, fit_range: false }]).unwrap_err();
         assert!(refused.why.contains("would run over") && refused.hint.contains("ripple"), "{}", refused.why);
         // With ripple, b and everything after it on both tracks move on by
         // the four seconds a grew, and undo puts them back.
-        let plan = resolve(&seq, &pool, &[Op::Retime { clip_id: ClipRef::Id(a), speed: 0.5, fit: false, ripple: true, interpolation: None }]).unwrap();
+        let plan = resolve(&seq, &pool, &[Op::Retime { clip_id: ClipRef::Id(a), speed: 0.5, fit: false, ripple: true, interpolation: None, length_secs: None, fit_range: false }]).unwrap();
         assert!(plan.steps[0].what.contains("later clip(s) moved +4.00 s"), "{}", plan.steps[0].what);
         let mut seqs = vec![seq.clone()];
         let (mut p, mut f) = (pool.clone(), seq.fps);
