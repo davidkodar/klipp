@@ -17,7 +17,12 @@ use std::io::Read as _;
 use std::path::{Component, Path, PathBuf};
 
 /// The manifest entry of the engine for this machine.
+#[cfg(not(target_arch = "aarch64"))]
 pub const ENGINE: &str = "piper_engine_linux_x86_64";
+/// The manifest entry of the engine for this machine, from
+/// `assets/models-aarch64.toml`.
+#[cfg(target_arch = "aarch64")]
+pub const ENGINE: &str = "piper_engine_linux_aarch64";
 
 /// What an archive may unpack to.
 #[derive(Debug, Clone, Copy)]

@@ -383,6 +383,14 @@ fn mix_loop(
             options(nostack, preserves_flags),
         );
     }
+    // AArch64 has one bit for both, FPCR.FZ (bit 24).
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        let mut fpcr: u64;
+        std::arch::asm!("mrs {0}, fpcr", out(reg) fpcr, options(nomem, nostack, preserves_flags));
+        fpcr |= 1 << 24;
+        std::arch::asm!("msr fpcr, {0}", in(reg) fpcr, options(nomem, nostack, preserves_flags));
+    }
 
     struct StagingEntry {
         track_index: usize,

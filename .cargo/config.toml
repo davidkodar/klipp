@@ -10,6 +10,17 @@ rustflags = [
     "-C", "target-cpu=native",
 ]
 
+[target.aarch64-unknown-linux-gnu]
+# The same linker setup as x86_64, for Apple Silicon under Asahi and other
+# ARM64 Linux machines. lld matters more here than its speed: GNU ld took
+# 1.2-1.3 GB a test binary, and eight of them at once ran a 16 GB Mac mini
+# out of memory. target-cpu=native is apple-m1 or newer on Asahi.
+linker = "clang"
+rustflags = [
+    "-C", "link-arg=-fuse-ld=lld",
+    "-C", "target-cpu=native",
+]
+
 [env]
 # 512 MB. The release-profile LTO pass on klipp-app blows past
 # 128 MB and 256 MB after recent klipp-ui growth; rustc's diagnostic

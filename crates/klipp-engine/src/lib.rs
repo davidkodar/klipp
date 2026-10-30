@@ -109,6 +109,14 @@ pub fn init_ffmpeg() -> Result<(), ffmpeg_next::Error> {
     ffmpeg_next::init()
 }
 
+/// The `va_list` an ffmpeg log callback is handed, as bindgen spells it:
+/// on x86_64 a pointer to the list's one element, on aarch64 the list
+/// itself, a struct passed by value.
+#[cfg(not(target_arch = "aarch64"))]
+type FfmpegVaList = *mut ffmpeg_next::ffi::__va_list_tag;
+#[cfg(target_arch = "aarch64")]
+type FfmpegVaList = ffmpeg_next::ffi::va_list;
+
 /// `av_log_set_callback` target that routes ffmpeg's own log messages
 /// into our `tracing` subscriber. Without this, ffmpeg writes to
 /// stderr (invisible to GUI launches) — and we need its diagnostics
@@ -134,7 +142,7 @@ pub unsafe extern "C" fn ffmpeg_log_to_tracing(
     avcl: *mut std::ffi::c_void,
     level: std::os::raw::c_int,
     fmt: *const std::os::raw::c_char,
-    vl: *mut ffmpeg_next::ffi::__va_list_tag,
+    vl: FfmpegVaList,
 ) {
     use ffmpeg_next::ffi::*;
     // Skip if level is above the user's configured ffmpeg log level

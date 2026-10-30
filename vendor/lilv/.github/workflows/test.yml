@@ -1,0 +1,28 @@
+name: Testing
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Cargo & Rust version
+        run: cargo --version && rustc --version
+      - name: Install Dependencies
+        run: sudo apt-get -y install liblilv-dev lv2-examples
+      - name: Checkout Repository
+        uses: actions/checkout@v2
+      - name: Lint
+        run: cargo clippy --all-targets --all-features -- -D clippy::all || echo "Clippy Lint Failed"
+      - name: Build
+        run: cargo build --verbose
+      - name: Run tests
+        run: cargo test --verbose

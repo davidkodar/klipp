@@ -1,0 +1,25 @@
+
+# ── aarch64 only: appended to models.toml in aarch64 builds ──
+#
+# klipp-ml's BUILTIN_MANIFEST is this file after assets/models.toml when
+# built for aarch64, and models.toml alone otherwise, so an x86_64 build
+# never lists these. On aarch64 the x86_64-only downloads above are
+# dropped as the manifest loads.
+#
+# The Piper engine for aarch64: Piper's official release, the same
+# version as the x86_64 entry, unpacked under the same guards and caps.
+# Checksum taken from the release asset on 2026-10-30.
+
+[[model]]
+id = "piper_engine_linux_aarch64"
+display_name = "Piper engine — runs the Piper voices (Linux aarch64)"
+size_bytes = 26004717
+sha256 = "fea0fd2d87c54dbc7078d0f878289f404bd4d6eea6e7444a77835d1537ab88eb"
+license = "MIT (Piper); espeak-ng data GPL-3.0; ONNX Runtime MIT"
+attribution = "rhasspy/piper release 2023.11.14-2, piper_linux_aarch64.tar.gz"
+sources = [
+    { url = "https://github.com/rhasspy/piper/releases/download/2023.11.14-2/piper_linux_aarch64.tar.gz" },
+]
+kind = "voice"
+runtime = "piper"
+prompts = ""
