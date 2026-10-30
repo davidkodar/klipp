@@ -45,6 +45,7 @@ struct FrameRate {
 
 /// The dialogs' lists: the formats, the picture sizes and the frame
 /// rates, each as offered (#2887).
+#[derive(PartialEq)]
 struct Presets {
     formats: Vec<Format>,
     sizes: Vec<(String, u32, u32)>,
@@ -139,9 +140,9 @@ fn presets_in(dirs: &[std::path::PathBuf]) -> (Presets, Vec<String>) {
 /// The dialogs' lists, read once a run: Klipp's, then the person's own
 /// formats. A file that doesn't read is said in the log, never a crash.
 fn presets() -> &'static Presets {
-    static PRESETS: std::sync::OnceLock<Presets> = std::sync::OnceLock::new();
-    PRESETS.get_or_init(|| {
-        let (presets, skipped) = presets_in(&crate::preset_file::user_dir(USER_FOLDER).into_iter().collect::<Vec<_>>());
+    static PRESETS: crate::preset_file::Reloading<Presets> = crate::preset_file::Reloading::new();
+    PRESETS.get(|| {
+        let (presets, skipped) = presets_in(&crate::preset_places::dirs_for(USER_FOLDER));
         for why in &skipped {
             tracing::warn!("a project format of yours was skipped: {why}");
         }

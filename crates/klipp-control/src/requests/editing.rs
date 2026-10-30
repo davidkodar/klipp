@@ -1027,6 +1027,8 @@ pub(crate) fn respond(
             let root = klipp_timeline::template_places::data_root().ok_or("no data folder to keep packs in")?;
             let gone = klipp_project::template_pack::remove_pack(&root, &name)?;
             let _ = send(AppCommand::ReloadTitleTemplates);
+            // Its presets go with it (#3095): read again on their next use.
+            klipp_core::preset_file::reload();
             Ok(json!({ "text": format!("removed the pack \"{}\" and its {} templates", gone.name, gone.titles + gone.templates) }))
         }
 
@@ -1035,8 +1037,11 @@ pub(crate) fn respond(
                 return Err("importing a pack is not part of a batch: send it on its own".into());
             }
             let reply = import_template_pack(&path, replace)?;
-            // The Titles browser and the Templates tab show what came in.
+            // The Titles browser and the Templates tab show what came in,
+            // and every kind's presets are read again on their next use
+            // (#3095).
             let _ = send(AppCommand::ReloadTitleTemplates);
+            klipp_core::preset_file::reload();
             Ok(reply)
         }
 

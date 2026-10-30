@@ -436,6 +436,11 @@ struct InstalledManifest {
     written_by: String,
     #[serde(default, flatten)]
     about: PackAbout,
+    /// When the pack was first installed, seconds since 1970 (#3095): an
+    /// update keeps it, so of two packs with a preset of one name the one
+    /// installed first keeps it. 0 for one installed before it was kept.
+    #[serde(default)]
+    installed_secs: u64,
 }
 
 /// The pack at `pack` installed under `root` (Klipp's data folder) as a
@@ -461,7 +466,10 @@ pub fn install_pack(pack: &Path, root: &Path, fonts: &dyn FontLookup, update: bo
         std::fs::create_dir_all(&staging).map_err(|e| format!("{}: {e}", staging.display()))?;
         let to = PackTargets { titles: staging.join("titles"), templates: staging.join("templates"), assets: staging.join("pictures"), fonts: staging.join("fonts") };
         let (name, report) = import_pack(pack, &to, fonts, false)?;
-        let manifest = InstalledManifest { format: PACK_FORMAT, name: name.clone(), written_by: head.written_by.clone(), about: head.about.clone() };
+        // First installed now, or when the pack it updates was.
+        let first = if target.exists() { klipp_core::preset_places::installed_secs(&target) } else { 0 };
+        let installed_secs = if first > 0 { first } else { std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(1, |d| d.as_secs().max(1)) };
+        let manifest = InstalledManifest { format: PACK_FORMAT, name: name.clone(), written_by: head.written_by.clone(), about: head.about.clone(), installed_secs };
         std::fs::write(staging.join("pack.json"), serde_json::to_string_pretty(&manifest).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
         if target.exists() {
             std::fs::remove_dir_all(&target).map_err(|e| format!("{}: {e}", target.display()))?;
@@ -792,8 +800,15 @@ mod tests {
         // Installed again: refused; updated: replaced whole.
         assert!(install_pack(&out, &root, &fonts, false).unwrap_err().contains("installed already"));
         std::fs::write(folder.join("templates").join("left-behind.klipptemplate"), b"{}").unwrap();
+        // When it was first installed is kept (#3095): set back, an update
+        // leaves it there.
+        let first = klipp_core::preset_places::installed_secs(&folder);
+        assert!(first > 0, "an install says when");
+        let json = std::fs::read_to_string(folder.join("pack.json")).unwrap().replace(&format!("\"installed_secs\": {first}"), "\"installed_secs\": 5");
+        std::fs::write(folder.join("pack.json"), json).unwrap();
         install_pack(&out, &root, &fonts, true).unwrap();
         assert!(!folder.join("templates").join("left-behind.klipptemplate").exists(), "an update replaces the folder");
+        assert_eq!(klipp_core::preset_places::installed_secs(&folder), 5, "an update keeps when the pack was first installed");
 
         // Removed: its folder, and nothing else.
         assert!(remove_pack(&root, "No Such Pack").unwrap_err().contains("there are \"Bold Cards\", \"Other\""));

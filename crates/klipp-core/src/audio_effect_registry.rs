@@ -169,9 +169,9 @@ pub fn audio_preset_listing_in(dirs: &[std::path::PathBuf]) -> crate::preset_fil
 /// then the person's own. A file that doesn't read is said in the log,
 /// never a crash.
 pub fn audio_preset_listing() -> &'static crate::preset_file::Merged<AudioPreset> {
-    static LISTING: std::sync::OnceLock<crate::preset_file::Merged<AudioPreset>> = std::sync::OnceLock::new();
-    LISTING.get_or_init(|| {
-        let listing = audio_preset_listing_in(&crate::preset_file::user_dir(AUDIO_PRESETS_FOLDER).into_iter().collect::<Vec<_>>());
+    static LISTING: crate::preset_file::Reloading<crate::preset_file::Merged<AudioPreset>> = crate::preset_file::Reloading::new();
+    LISTING.get(|| {
+        let listing = audio_preset_listing_in(&crate::preset_places::dirs_for(AUDIO_PRESETS_FOLDER));
         for why in &listing.skipped {
             tracing::warn!("an audio preset of yours was skipped: {why}");
         }

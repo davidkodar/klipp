@@ -184,6 +184,75 @@ pub fn merge<T: DeserializeOwned>(
     merged
 }
 
+/// How many times the presets have been asked to be read again.
+static GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Every kind's presets read again on their next use (#3095): after a
+/// pack that carries them is installed or removed.
+pub fn reload() {
+    GENERATION.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// A kind's listing, read on first use and again after [`reload`].
+///
+/// Handed out for the rest of the run, as the app's lists hold places
+/// and names in it from frame to frame: a listing read again and found
+/// changed leaves the one before in memory. One read again and found the
+/// same is dropped, the one before kept. A change comes with a pack
+/// installed or removed, so what stays is a listing's few kilobytes a
+/// time, and [`Self::kept`] counts them.
+pub struct Reloading<T: 'static> {
+    slot: std::sync::RwLock<Option<(u64, &'static T)>>,
+    kept: std::sync::atomic::AtomicUsize,
+}
+
+impl<T: PartialEq + Send + Sync + 'static> Reloading<T> {
+    pub const fn new() -> Self {
+        Self { slot: std::sync::RwLock::new(None), kept: std::sync::atomic::AtomicUsize::new(0) }
+    }
+
+    /// How many listings have been read and kept: one, and one more for
+    /// each reload that found a change.
+    pub fn kept(&self) -> usize {
+        self.kept.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// The listing, `load`ed when there is none yet or [`reload`] has
+    /// been asked for since.
+    pub fn get(&self, load: impl FnOnce() -> T) -> &'static T {
+        let now = GENERATION.load(std::sync::atomic::Ordering::SeqCst);
+        if let Some((at, listing)) = *self.slot.read().unwrap_or_else(|e| e.into_inner()) {
+            if at == now {
+                return listing;
+            }
+        }
+        let mut slot = self.slot.write().unwrap_or_else(|e| e.into_inner());
+        // Another thread may have read it while this one waited.
+        if let Some((at, listing)) = *slot {
+            if at == now {
+                return listing;
+            }
+        }
+        let read = load();
+        let listing: &'static T = match *slot {
+            // The same as before: the one before stays, nothing is kept.
+            Some((_, before)) if *before == read => before,
+            _ => {
+                self.kept.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Box::leak(Box::new(read))
+            }
+        };
+        *slot = Some((now, listing));
+        listing
+    }
+}
+
+impl<T: PartialEq + Send + Sync + 'static> Default for Reloading<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -297,5 +366,31 @@ mod tests {
         assert!(skipped.iter().any(|s| s.contains(&format!("more than {MAX_LISTED} names"))), "{skipped:?}");
         assert!(skipped.iter().any(|s| s.contains(&format!("past the first {MAX_FILES}"))), "{skipped:?}");
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A listing is read once, then kept, until [`reload`] asks for it
+    /// again. Read again and the same, the one before stays and nothing
+    /// more is kept, however many reloads; read again and changed, one
+    /// listing more is kept per reload, and the one before stays whole for
+    /// whoever holds it.
+    #[test]
+    fn a_reload_keeps_a_listing_only_when_it_changed() {
+        static LISTING: Reloading<Vec<u32>> = Reloading::new();
+        let value = std::sync::atomic::AtomicU32::new(7);
+        let load = || vec![value.load(std::sync::atomic::Ordering::SeqCst); 100];
+        let first = LISTING.get(load);
+        assert!(std::ptr::eq(first, LISTING.get(load)), "kept");
+        assert_eq!(LISTING.kept(), 1);
+        for _ in 0..50 {
+            reload();
+            assert!(std::ptr::eq(first, LISTING.get(load)), "the same read again: the one before");
+        }
+        assert_eq!(LISTING.kept(), 1, "fifty reloads of the same keep nothing more");
+        value.store(8, std::sync::atomic::Ordering::SeqCst);
+        reload();
+        let second = LISTING.get(load);
+        assert!(!std::ptr::eq(first, second) && second[0] == 8);
+        assert_eq!(LISTING.kept(), 2, "one change, one listing more");
+        assert_eq!(*first, vec![7; 100], "the one before is still whole");
     }
 }

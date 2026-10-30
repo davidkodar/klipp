@@ -88,9 +88,9 @@ pub fn generator_listing_in(dirs: &[std::path::PathBuf]) -> crate::preset_file::
 /// run: Klipp's, then the person's own. A file that doesn't read is said
 /// in the log, never a crash.
 pub fn generator_listing() -> &'static crate::preset_file::Merged<GeneratorEntry> {
-    static LISTING: std::sync::OnceLock<crate::preset_file::Merged<GeneratorEntry>> = std::sync::OnceLock::new();
-    LISTING.get_or_init(|| {
-        let listing = generator_listing_in(&crate::preset_file::user_dir(USER_FOLDER).into_iter().collect::<Vec<_>>());
+    static LISTING: crate::preset_file::Reloading<crate::preset_file::Merged<GeneratorEntry>> = crate::preset_file::Reloading::new();
+    LISTING.get(|| {
+        let listing = generator_listing_in(&crate::preset_places::dirs_for(USER_FOLDER));
         for why in &listing.skipped {
             tracing::warn!("a generator of yours was skipped: {why}");
         }
@@ -199,5 +199,27 @@ mod tests {
         said("\"Still\": a still frame");
         said("\"Card\": text of 300 characters");
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Installed packs' generators come after the person's own (#3095),
+    /// the pack installed first first: of two with a generator of one
+    /// name, the earlier keeps it, whatever the folders are called, and
+    /// the later's is said.
+    #[test]
+    fn of_two_packs_the_one_installed_first_keeps_a_name() {
+        let root = std::env::temp_dir().join(format!("klipp-pack-generators-{}", std::process::id()));
+        let write = |pack: &str, secs: u64, colour: u8| {
+            let dir = root.join("packs").join(pack);
+            std::fs::create_dir_all(dir.join("presets/generators")).unwrap();
+            std::fs::write(dir.join("pack.json"), format!("{{\"format\": 2, \"name\": \"{pack}\", \"installed_secs\": {secs}}}")).unwrap();
+            std::fs::write(dir.join("presets/generators/a.toml"), format!("kind = \"generator_entry\"\nformat_version = 1\n[[generator]]\nname = \"Shared\"\ncategory = \"Packed\"\ndata = {{ SolidColor = {{ color = [{colour}, 0, 0, 255] }} }}\n")).unwrap();
+        };
+        write("aaa-later", 200, 2);
+        write("zzz-earlier", 100, 1);
+        let listing = generator_listing_in(&crate::preset_places::pack_dirs(&root, USER_FOLDER));
+        let shared: Vec<&GeneratorData> = listing.entries.iter().filter(|e| e.name == "Shared").map(|e| &e.data).collect();
+        assert_eq!(shared, [&GeneratorData::SolidColor { color: [1, 0, 0, 255] }], "the earlier pack's");
+        assert!(listing.skipped.iter().any(|s| s.contains("\"Shared\" is the name of one read before it")), "{:?}", listing.skipped);
+        std::fs::remove_dir_all(&root).unwrap();
     }
 }

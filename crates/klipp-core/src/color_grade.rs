@@ -603,9 +603,9 @@ pub fn zone_preset_listing_in(dirs: &[std::path::PathBuf]) -> crate::preset_file
 /// Klipp's, then the person's own. A file that doesn't read is said in
 /// the log, never a crash.
 pub fn zone_preset_listing() -> &'static crate::preset_file::Merged<ZonePreset> {
-    static LISTING: std::sync::OnceLock<crate::preset_file::Merged<ZonePreset>> = std::sync::OnceLock::new();
-    LISTING.get_or_init(|| {
-        let listing = zone_preset_listing_in(&crate::preset_file::user_dir(ZONE_PRESETS_FOLDER).into_iter().collect::<Vec<_>>());
+    static LISTING: crate::preset_file::Reloading<crate::preset_file::Merged<ZonePreset>> = crate::preset_file::Reloading::new();
+    LISTING.get(|| {
+        let listing = zone_preset_listing_in(&crate::preset_places::dirs_for(ZONE_PRESETS_FOLDER));
         for why in &listing.skipped {
             tracing::warn!("an HDR Zones preset of yours was skipped: {why}");
         }

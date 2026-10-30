@@ -1984,10 +1984,10 @@ impl FalseColorPalette {
     /// as someone else's file; what of theirs is skipped is said in the
     /// log.
     pub fn palettes() -> Vec<FalseColorPalette> {
-        static PALETTES: std::sync::OnceLock<Vec<FalseColorPalette>> = std::sync::OnceLock::new();
+        static PALETTES: klipp_core::preset_file::Reloading<Vec<FalseColorPalette>> = klipp_core::preset_file::Reloading::new();
         PALETTES
-            .get_or_init(|| {
-                let (palettes, skipped) = palettes_in(&klipp_core::preset_file::user_dir(PALETTES_FOLDER).into_iter().collect::<Vec<_>>());
+            .get(|| {
+                let (palettes, skipped) = palettes_in(&klipp_core::preset_places::dirs_for(PALETTES_FOLDER));
                 for why in skipped {
                     tracing::warn!("a false colour palette of yours was skipped: {why}");
                 }

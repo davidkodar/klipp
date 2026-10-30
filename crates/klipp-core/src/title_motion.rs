@@ -814,7 +814,7 @@ pub fn animator_preset(name: &str, clip_secs: f64) -> Option<Animator> {
 }
 
 /// An animator preset as `assets/presets/animators` writes it.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 struct AnimatorPreset {
     id: String,
@@ -828,7 +828,7 @@ struct AnimatorPreset {
 }
 
 /// A preset's selector without its keys, which `keys` places.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 struct PresetSelector {
     unit: SelectUnit,
@@ -848,7 +848,7 @@ impl Default for PresetSelector {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 struct PresetProps {
     dx: f32,
@@ -868,7 +868,7 @@ impl Default for PresetProps {
 }
 
 /// A key on the range's `on` at `at` on the clip.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 struct PresetKey {
     on: KeyOn,
@@ -876,7 +876,7 @@ struct PresetKey {
     value: f32,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize)]
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 enum KeyOn {
     Start,
@@ -884,7 +884,7 @@ enum KeyOn {
     Offset,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize)]
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 enum KeyAt {
     Start,
@@ -959,10 +959,10 @@ fn animator_preset_listing_in(dirs: &[std::path::PathBuf]) -> crate::preset_file
 /// Klipp's animator presets, then the person's own, read once a run;
 /// what of theirs is skipped is said in the log.
 fn animator_presets() -> &'static [AnimatorPreset] {
-    static LISTING: std::sync::OnceLock<crate::preset_file::Merged<AnimatorPreset>> = std::sync::OnceLock::new();
+    static LISTING: crate::preset_file::Reloading<crate::preset_file::Merged<AnimatorPreset>> = crate::preset_file::Reloading::new();
     &LISTING
-        .get_or_init(|| {
-            let listing = animator_preset_listing_in(&crate::preset_file::user_dir(ANIMATOR_PRESETS_FOLDER).into_iter().collect::<Vec<_>>());
+        .get(|| {
+            let listing = animator_preset_listing_in(&crate::preset_places::dirs_for(ANIMATOR_PRESETS_FOLDER));
             for why in &listing.skipped {
                 tracing::warn!("an animator preset of yours was skipped: {why}");
             }
