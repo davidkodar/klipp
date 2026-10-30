@@ -430,77 +430,6 @@ pub fn outlined(mut t: Text, width: f32) -> Text {
     t
 }
 
-// ── Openers ──
-fn op_cinematic() -> TitleData {
-    layers(vec![text_at(
-        moved(lifted(upper(weight(face("[Title]", CLASSIC, FontStyle::Regular, 112.0, WHITE, TextAlignment::Center), 500), 18.0)),
-            TitleMotion::both(enter(MotionKind::Blur, 1.4, Easing::OutCubic), Motion::new(MotionKind::Blur).duration(0.9).easing(Easing::InCubic))),
-        0.5, 0.5, 0.5,
-    )])
-}
-
-fn op_impact() -> TitleData {
-    layers(vec![text_at(
-        moved(lifted(graded(upper(face("[Big title]", POSTER, FontStyle::Regular, 180.0, WHITE, TextAlignment::Center), 2.0), WHITE, [214, 220, 230, 255])),
-            TitleMotion::both(
-                enter(MotionKind::MaskRise, 0.55, Easing::OutExpo).stagger(StaggerUnit::Word, 0.08),
-                Motion::new(MotionKind::MaskDrop).duration(0.4).easing(Easing::InCubic),
-            )),
-        0.5, 0.5, 0.5,
-    )])
-}
-
-fn op_editorial() -> TitleData {
-    layers(vec![
-        text_at(
-            moved(lifted(weight(face("[Headline]", EDITORIAL, FontStyle::Bold, 112.0, WHITE, TextAlignment::Center), 700)),
-                TitleMotion::both(enter(MotionKind::Rise, 0.7, Easing::OutQuint).distance(0.35).stagger(StaggerUnit::Word, 0.06), fade_out(0.4))),
-            0.5, 0.45, 0.5,
-        ),
-        moving(rect(0.5, 0.548, 0.05, 0.004, ACCENT, 0.0),
-            TitleMotion::both(enter(MotionKind::Fade, 0.6, Easing::OutCubic).delay(0.3), fade_out(0.4))),
-        text_at(
-            moved(lifted(upper(weight(face("[Subtitle]", LABEL, FontStyle::Regular, 32.0, MUTED, TextAlignment::Center), 500), 6.0)),
-                TitleMotion::both(enter(MotionKind::Fade, 0.6, Easing::OutCubic).delay(0.35), fade_out(0.4))),
-            0.5, 0.6, 0.5,
-        ),
-    ])
-}
-
-fn op_minimal() -> TitleData {
-    layers(vec![text_at(
-        moved(lifted(upper(weight(face("[Title]", SANS, FontStyle::Regular, 76.0, WHITE, TextAlignment::Center), 300), 16.0)),
-            TitleMotion::both(enter(MotionKind::Fade, 1.5, Easing::InOutCubic), fade_out(1.0))),
-        0.5, 0.5, 0.5,
-    )])
-}
-
-fn op_chapter() -> TitleData {
-    layers(vec![
-        text_at(
-            moved(lifted(upper(weight(face("Chapter One", LABEL, FontStyle::Regular, 30.0, MUTED, TextAlignment::Center), 500), 8.0)),
-                TitleMotion::both(Motion::new(MotionKind::Typewriter).duration(0.02).stagger(StaggerUnit::Char, 0.04), fade_out(0.4))),
-            0.5, 0.41, 0.5,
-        ),
-        text_at(
-            moved(lifted(face("[Chapter title]", HEADING, FontStyle::Regular, 104.0, WHITE, TextAlignment::Center)),
-                TitleMotion::both(enter(MotionKind::MaskRise, 0.6, Easing::OutExpo).delay(0.5).stagger(StaggerUnit::Word, 0.1), fade_out(0.4))),
-            0.5, 0.53, 0.5,
-        ),
-    ])
-}
-
-fn op_statement() -> TitleData {
-    layers(vec![
-        rect(0.17, 0.60, 0.18, 0.012, ACCENT, 0.0),
-        text_at(
-            moved(face("[BOLD\nSTATEMENT]", DISPLAY, FontStyle::Regular, 130.0, WHITE, TextAlignment::Left),
-                TitleMotion::both(enter(MotionKind::SlideLeft, 0.5, Easing::OutExpo).distance(0.5).stagger(StaggerUnit::Line, 0.1), fade_out(0.3))),
-            0.08, 0.44, 0.0,
-        ),
-    ])
-}
-
 // ── Captions and quotes ──
 fn cap_quote() -> TitleData {
     layers(vec![
@@ -649,40 +578,6 @@ fn ut_label() -> TitleData {
     ])
 }
 
-
-// ── More lower thirds (#1724) ──
-// ── More openers and chapters (#1724) ──
-fn op_chapter_number() -> TitleData {
-    layers(vec![
-        text_at(
-            moved(lifted(face("01", DISPLAY, FontStyle::Regular, 200.0, [120, 175, 255, 255], TextAlignment::Center)),
-                TitleMotion::both(enter(MotionKind::MaskRise, 0.7, Easing::OutExpo), fade_out(0.4))),
-            0.5, 0.40, 0.5,
-        ),
-        text_at(
-            moved(lifted(upper(face("[Chapter title]", GRO, FontStyle::Bold, 44.0, WHITE, TextAlignment::Center), 8.0)),
-                TitleMotion::both(enter(MotionKind::Fade, 0.6, Easing::OutCubic).delay(0.45).stagger(StaggerUnit::Char, 0.015), fade_out(0.4))),
-            0.5, 0.60, 0.5,
-        ),
-    ])
-}
-
-fn op_title_card() -> TitleData {
-    layers(vec![
-        moving(rect(0.5, 0.5, 1.0, 1.0, [8, 8, 10, 170], 0.0),
-            TitleMotion::both(enter(MotionKind::Fade, 0.8, Easing::OutCubic), fade_out(0.8))),
-        text_at(
-            moved(face("[Title]", EDITORIAL, FontStyle::Regular, 100.0, WHITE, TextAlignment::Center),
-                TitleMotion::both(enter(MotionKind::FocusIn, 1.1, Easing::OutCubic).delay(0.3), fade_out(0.6))),
-            0.5, 0.47, 0.5,
-        ),
-        text_at(
-            moved(upper(weight(face("[Subtitle]", LABEL, FontStyle::Regular, 30.0, MUTED, TextAlignment::Center), 500), 8.0),
-                TitleMotion::both(enter(MotionKind::Fade, 0.8, Easing::OutCubic).delay(0.9), fade_out(0.6))),
-            0.5, 0.585, 0.5,
-        ),
-    ])
-}
 
 // ── More end cards and credits (#1724) ──
 fn cr_end_credits() -> TitleData {
@@ -862,7 +757,7 @@ const MID: (f32, f32) = (0.5, 0.5);
 pub static TITLES: std::sync::LazyLock<Vec<TitleTemplate>> = std::sync::LazyLock::new(|| from_files().chain(CODED.iter().map(Coded::template)).collect());
 
 /// The built-in title templates shipped as files (#2886).
-const FILES: [&str; 8] = [
+const FILES: &[&str] = &[
     include_str!("../../../assets/titles/name_bar.klipptitle"),
     include_str!("../../../assets/titles/clean_line.klipptitle"),
     include_str!("../../../assets/titles/broadcast.klipptitle"),
@@ -871,7 +766,16 @@ const FILES: [&str; 8] = [
     include_str!("../../../assets/titles/stacked.klipptitle"),
     include_str!("../../../assets/titles/documentary.klipptitle"),
     include_str!("../../../assets/titles/location.klipptitle"),
+    include_str!("../../../assets/titles/cinematic.klipptitle"),
+    include_str!("../../../assets/titles/impact.klipptitle"),
+    include_str!("../../../assets/titles/editorial.klipptitle"),
+    include_str!("../../../assets/titles/title_card.klipptitle"),
+    include_str!("../../../assets/titles/minimal.klipptitle"),
+    include_str!("../../../assets/titles/chapter.klipptitle"),
+    include_str!("../../../assets/titles/chapter_number.klipptitle"),
+    include_str!("../../../assets/titles/statement.klipptitle"),
 ];
+
 
 fn from_files() -> impl Iterator<Item = TitleTemplate> {
     FILES.iter().filter_map(|json| {
@@ -892,14 +796,6 @@ fn from_files() -> impl Iterator<Item = TitleTemplate> {
 
 
 const CODED: &[Coded] = &[
-    Coded { name: "Cinematic", category: "Openers", preview_text: "[Title]", create_data: op_cinematic, fields: f(&["Title"], None, MID) },
-    Coded { name: "Impact", category: "Openers", preview_text: "[BIG TITLE]", create_data: op_impact, fields: f(&["Title"], None, MID) },
-    Coded { name: "Editorial", category: "Openers", preview_text: "[Headline]", create_data: op_editorial, fields: f(&["Headline", "Subtitle"], None, MID) },
-    Coded { name: "Title Card", category: "Openers", preview_text: "[Title]", create_data: op_title_card, fields: f(&["Title", "Subtitle"], None, MID) },
-    Coded { name: "Minimal", category: "Openers", preview_text: "[Title]", create_data: op_minimal, fields: f(&["Title"], None, MID) },
-    Coded { name: "Chapter", category: "Openers", preview_text: "[Chapter title]", create_data: op_chapter, fields: f(&["Chapter", "Chapter title"], None, MID) },
-    Coded { name: "Chapter Number", category: "Openers", preview_text: "[Chapter title]", create_data: op_chapter_number, fields: f(&["Number", "Chapter title"], Some(0), MID) },
-    Coded { name: "Statement", category: "Openers", preview_text: "[BOLD STATEMENT]", create_data: op_statement, fields: f(&["Statement"], Some(0), (0.08, 0.44)) },
     Coded { name: "Quote", category: "Captions", preview_text: "[Quote]", create_data: cap_quote, fields: f(&["Quote", "Who said it"], None, MID) },
     Coded { name: "Caption", category: "Captions", preview_text: "[Caption]", create_data: cap_caption, fields: f(&["Caption"], Some(0), (0.5, 0.885)) },
     Coded { name: "Subtitle", category: "Captions", preview_text: "[Subtitle]", create_data: cap_subtitle, fields: f(&["Subtitle"], None, (0.5, 0.9)) },
@@ -986,14 +882,22 @@ impl TitleTemplate {
 mod tests {
     use super::*;
 
-    /// #2886: every built-in file reads, is listed first in its order,
-    /// and makes its title, its fields published, on each frame.
+    /// #2886: every built-in Klipp ships is listed, by name in its order:
+    /// a file that doesn't read is logged and left out in a release, so
+    /// this is where a dropped one fails. Each file reads and makes its
+    /// title, its fields published, on each frame.
     #[test]
     fn every_built_in_file_reads_and_makes_its_title() {
-        assert_eq!(from_files().count(), FILES.len());
-        let names: Vec<&str> = TITLES.iter().take(FILES.len()).map(|t| t.name.as_str()).collect();
-        assert_eq!(names, ["Name Bar", "Clean Line", "Broadcast", "Accent Block", "Pill", "Stacked", "Documentary", "Location"]);
-        assert_eq!(TITLES.len(), 38);
+        const ALL: [&str; 38] = [
+            "Name Bar", "Clean Line", "Broadcast", "Accent Block", "Pill", "Stacked", "Documentary", "Location",
+            "Cinematic", "Impact", "Editorial", "Title Card", "Minimal", "Chapter", "Chapter Number", "Statement",
+            "Quote", "Caption", "Subtitle", "Callout", "Note",
+            "Credits Roll", "End Credits", "End Card", "Cast", "Thanks for Watching", "Up Next",
+            "Hook", "Bold Caption", "Highlight", "Question", "Tip", "Handle", "Subscribe",
+            "Slate", "Timecode", "Watermark", "Label",
+        ];
+        assert_eq!(TITLES.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(), ALL);
+        assert_eq!(from_files().count(), FILES.len(), "every file reads");
         for t in TITLES.iter().take(FILES.len()) {
             for (w, h) in [(1920, 1080), (1080, 1920), (1080, 1080)] {
                 let td = t.data_for(w, h);
