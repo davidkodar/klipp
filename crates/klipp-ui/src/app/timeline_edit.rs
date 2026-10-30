@@ -457,7 +457,7 @@ impl KlippApp {
                     }
                     true
                 }
-                // Close gap: remove empty space on a track by shifting downstream clips left
+                // Fill a gap with a generator spanning it (#3116)
                 AppCommand::FillGap { track_index, start, end, data } => {
                     // The document's generator op over the gap's span: it
                     // takes a gap clip's room and refuses a shot (#3116).
@@ -483,6 +483,7 @@ impl KlippApp {
                     }
                     true
                 }
+                // Close gap: remove empty space on a track by shifting downstream clips left
                 AppCommand::CloseGap { track_index, gap_start, gap_end } => {
                     let ti = *track_index;
                     let start = *gap_start;

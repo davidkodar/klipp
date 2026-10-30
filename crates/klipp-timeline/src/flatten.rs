@@ -262,6 +262,42 @@ pub const MAX_COMPOUND_DEPTH: u8 = 8;
 /// The returned `Sequence` shares `seq`'s id, name, fps, resolution,
 /// markers, in_point, out_point, and last_playhead — only `tracks` differ.
 pub fn flatten_sequence(seq: &Sequence, all_sequences: &[Sequence]) -> Sequence {
+    flatten_top(seq, all_sequences, None)
+}
+
+/// Each precomposition's scene as last flattened, by what it was made
+/// from (#3117): the clip (its id names the scene's clips, its kind holds
+/// a template's overrides), the scenes above it, and every sequence the
+/// top one reaches. An edit flattens again only the scenes it changed:
+/// with 200 template instances on the timeline every edit flattened all
+/// 200, about 33 ms. A scene not reached by a pass is dropped after it.
+#[derive(Default)]
+pub struct FlattenCache {
+    scenes: HashMap<u64, Arc<Sequence>>,
+    used: HashSet<u64>,
+    /// Scenes taken from the cache and made again, since it was made.
+    pub hits: usize,
+    pub misses: usize,
+}
+
+/// [`flatten_sequence`], each precomposition's scene taken from `cache`
+/// when nothing it was made from has changed.
+pub fn flatten_sequence_cached(seq: &Sequence, all_sequences: &[Sequence], cache: &mut FlattenCache) -> Sequence {
+    let flat = flatten_top(seq, all_sequences, Some(cache));
+    let FlattenCache { scenes, used, .. } = cache;
+    scenes.retain(|k, _| used.contains(k));
+    used.clear();
+    flat
+}
+
+/// The scenes a pass resolves, and the cache it takes them from.
+struct Scenes<'c> {
+    cache: Option<&'c mut FlattenCache>,
+    /// The fingerprint of every sequence the top one reaches.
+    sources: u64,
+}
+
+fn flatten_top(seq: &Sequence, all_sequences: &[Sequence], cache: Option<&mut FlattenCache>) -> Sequence {
     // Grade groups wrap each member's grade before anything is expanded,
     // each sequence with its own groups, so a scene inside a compound
     // grades as it does on its own (#237); then each track's effects go
@@ -269,9 +305,12 @@ pub fn flatten_sequence(seq: &Sequence, all_sequences: &[Sequence]) -> Sequence 
     let mut flat = if seq.bakes_for_render() || all_sequences.iter().any(Sequence::bakes_for_render) {
         let bake = |s: &Sequence| s.baked_for_render().into_owned();
         let all: Vec<Sequence> = all_sequences.iter().map(bake).collect();
-        flatten_within(&bake(seq), &all, &mut Vec::new(), None)
+        let top = bake(seq);
+        let sources = if cache.is_some() { reached_fingerprint(&top, &all) } else { 0 };
+        flatten_within(&top, &all, &mut Vec::new(), None, &mut Scenes { cache, sources })
     } else {
-        flatten_within(seq, all_sequences, &mut Vec::new(), None)
+        let sources = if cache.is_some() { reached_fingerprint(seq, all_sequences) } else { 0 };
+        flatten_within(seq, all_sequences, &mut Vec::new(), None, &mut Scenes { cache, sources })
     };
     // Each Frame Glide over its clip's length as it is now (#611): the
     // viewer and the export both render from here, so a trim moves End
@@ -289,7 +328,7 @@ pub fn flatten_sequence(seq: &Sequence, all_sequences: &[Sequence]) -> Sequence 
 /// scenes inside it are resolved, so a scene inside a scene is named
 /// under the instance-scoped id of the clip that holds it: the same
 /// leaf reached through two instances of a middle scene is two leaves.
-fn flatten_within(seq: &Sequence, all_sequences: &[Sequence], ancestors: &mut Vec<SequenceId>, namespace: Option<ClipId>) -> Sequence {
+fn flatten_within(seq: &Sequence, all_sequences: &[Sequence], ancestors: &mut Vec<SequenceId>, namespace: Option<ClipId>, scenes: &mut Scenes) -> Sequence {
     ancestors.push(seq.id);
     let mut flat = seq.clone();
     let mut graded = HashSet::new();
@@ -314,7 +353,7 @@ fn flatten_within(seq: &Sequence, all_sequences: &[Sequence], ancestors: &mut Ve
         for clip in &mut track.clips {
             if let ClipKind::Precomposition { sequence_id, .. } | ClipKind::TemplatePrecomposition { sequence_id, .. } = clip.kind {
                 // A clip that is off is off: no scene, no sound.
-                clip.precomp = if clip.enabled { resolve_precomposition(clip, sequence_id, all_sequences, ancestors) } else { None };
+                clip.precomp = if clip.enabled { resolve_scene(clip, sequence_id, all_sequences, ancestors, scenes) } else { None };
                 // A graded compound's sound stays with its own audio
                 // clip, which is flattened as before: taken from the
                 // scene too, it would play twice.
@@ -346,8 +385,20 @@ pub fn resolve_precomposition(
     all_sequences: &[Sequence],
     ancestors: &mut Vec<SequenceId>,
 ) -> Option<Arc<Sequence>> {
+    resolve_scene(clip, sequence_id, all_sequences, ancestors, &mut Scenes { cache: None, sources: 0 })
+}
+
+fn resolve_scene(clip: &Clip, sequence_id: SequenceId, all_sequences: &[Sequence], ancestors: &mut Vec<SequenceId>, scenes: &mut Scenes) -> Option<Arc<Sequence>> {
     if ancestors.contains(&sequence_id) || ancestors.len() >= MAX_COMPOUND_DEPTH as usize {
         return None;
+    }
+    let key = scenes.cache.is_some().then(|| scene_key(scenes.sources, clip, ancestors));
+    if let (Some(k), Some(cache)) = (key, scenes.cache.as_deref_mut()) {
+        if let Some(scene) = cache.scenes.get(&k).cloned() {
+            cache.used.insert(k);
+            cache.hits += 1;
+            return Some(scene);
+        }
     }
     let mut inner = all_sequences.iter().find(|s| s.id == sequence_id)?.clone();
     if let ClipKind::TemplatePrecomposition { template_instance: instance, .. } = &clip.kind {
@@ -355,7 +406,57 @@ pub fn resolve_precomposition(
             return None;
         }
     }
-    Some(Arc::new(flatten_within(&inner, all_sequences, ancestors, Some(clip.id))))
+    let scene = Arc::new(flatten_within(&inner, all_sequences, ancestors, Some(clip.id), scenes));
+    if let (Some(k), Some(cache)) = (key, scenes.cache.as_deref_mut()) {
+        cache.scenes.insert(k, Arc::clone(&scene));
+        cache.used.insert(k);
+        cache.misses += 1;
+    }
+    Some(scene)
+}
+
+/// What a scene is made from, as one number: the sequences the top one
+/// reaches, the clip that places it, and the scenes above it.
+fn scene_key(sources: u64, clip: &Clip, ancestors: &[SequenceId]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    sources.hash(&mut h);
+    clip.id.hash(&mut h);
+    serde_json::to_vec(&clip.kind).unwrap_or_default().hash(&mut h);
+    ancestors.hash(&mut h);
+    h.finish()
+}
+
+/// A fingerprint of every sequence `top` reaches through its compounds
+/// and precompositions, at any remove: what its scenes are made of.
+fn reached_fingerprint(top: &Sequence, all: &[Sequence]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let refs = |s: &Sequence| -> Vec<SequenceId> {
+        s.tracks.iter().flat_map(|t| t.clips.iter()).filter_map(|c| match c.kind {
+            ClipKind::Precomposition { sequence_id, .. } | ClipKind::TemplatePrecomposition { sequence_id, .. } | ClipKind::Sequence { sequence_id } => Some(sequence_id),
+            _ => None,
+        }).collect()
+    };
+    let mut reached: Vec<SequenceId> = Vec::new();
+    let mut todo = refs(top);
+    while let Some(id) = todo.pop() {
+        if id == top.id || reached.contains(&id) {
+            continue;
+        }
+        reached.push(id);
+        if let Some(s) = all.iter().find(|s| s.id == id) {
+            todo.extend(refs(s));
+        }
+    }
+    reached.sort_by_key(|id| id.0);
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    for id in reached {
+        id.hash(&mut h);
+        if let Some(s) = all.iter().find(|s| s.id == id) {
+            serde_json::to_vec(s).unwrap_or_default().hash(&mut h);
+        }
+    }
+    h.finish()
 }
 
 /// A track's say over the sound on it.
@@ -1098,6 +1199,80 @@ mod tests {
         let ClipKind::Title(data) = &title_clip.kind else { panic!("expected title") };
         let crate::TitleObjectContent::TextBox(text) = &data.objects[0].content else { panic!("expected text") };
         assert_eq!(text.text, "resolved");
+    }
+
+    /// A template of one title and `n` instances of it, a second each, the
+    /// i-th saying "card i".
+    fn instances(n: usize) -> (Sequence, Sequence) {
+        let mut inner = make_seq("template");
+        let mut title_track = Track::new("V1", TrackKind::Video);
+        let mut clip = Clip::gap(t(0), t(24));
+        clip.kind = ClipKind::Title(crate::TitleData::single_text(crate::TextBox { text: "default".into(), ..Default::default() }));
+        title_track.clips.push(clip);
+        inner.tracks.push(title_track);
+        let mut outer = make_seq("outer");
+        outer.tracks.push(Track::new("V1", TrackKind::Video));
+        for i in 0..n as i64 {
+            let mut pre = Clip::precomposition(inner.id, t(24 * i), t(24 * i + 24));
+            pre.kind = ClipKind::TemplatePrecomposition {
+                sequence_id: inner.id,
+                template_instance: klipp_core::TemplateInstance {
+                    template_id: uuid::Uuid::new_v4(),
+                    bindings: BTreeMap::from([("text".into(), "object:0.text".into())]),
+                    overrides: BTreeMap::from([("text".into(), klipp_core::TemplateValue::Text(format!("card {i}")))]),
+                    media_slots: BTreeMap::new(),
+                    links: Vec::new(),
+                },
+            };
+            outer.tracks[0].clips.push(pre);
+        }
+        (outer, inner)
+    }
+
+    fn same(a: &Sequence, b: &Sequence) -> bool {
+        serde_json::to_value(a).unwrap() == serde_json::to_value(b).unwrap()
+    }
+
+    /// #3117: the cached flattening is the flattening; a second pass takes
+    /// every scene from the cache; an edit to one instance makes only its
+    /// scene again, a move makes none, an edit to the template makes every
+    /// one again; scenes no longer placed are dropped.
+    #[test]
+    fn a_cached_flattening_makes_again_only_the_scenes_an_edit_changed() {
+        let (mut outer, mut inner) = instances(20);
+        let mut cache = FlattenCache::default();
+        let flat = |outer: &Sequence, inner: &Sequence, cache: &mut FlattenCache| {
+            let all = [outer.clone(), inner.clone()];
+            let cached = flatten_sequence_cached(outer, &all, cache);
+            assert!(same(&cached, &flatten_sequence(outer, &all)), "the cached flattening is the flattening");
+            cached
+        };
+        let counts = |c: &FlattenCache| (c.hits, c.misses);
+        flat(&outer, &inner, &mut cache);
+        assert_eq!(counts(&cache), (0, 20), "every scene made the first time");
+        flat(&outer, &inner, &mut cache);
+        assert_eq!(counts(&cache), (20, 20), "and taken from the cache the second");
+
+        outer.tracks[0].clips[3].timeline_in = t(24 * 3 + 5);
+        flat(&outer, &inner, &mut cache);
+        assert_eq!(counts(&cache), (40, 20), "a trim makes no scene again");
+
+        let ClipKind::TemplatePrecomposition { template_instance, .. } = &mut outer.tracks[0].clips[7].kind else { unreachable!() };
+        template_instance.overrides.insert("text".into(), klipp_core::TemplateValue::Text("changed".into()));
+        let out = flat(&outer, &inner, &mut cache);
+        assert_eq!(counts(&cache), (59, 21), "an instance's override makes its scene again, only its");
+        let said = |s: &Sequence| s.tracks.iter().flat_map(|t| &t.clips).find_map(|c| match &c.kind { ClipKind::Title(td) => Some(td.text()), _ => None });
+        assert_eq!(out.tracks[0].clips[7].precomp.as_deref().and_then(said).as_deref(), Some("changed"));
+
+        let ClipKind::Title(td) = &mut inner.tracks[0].clips[0].kind else { unreachable!() };
+        let crate::TitleObjectContent::TextBox(text) = &mut td.objects[0].content else { unreachable!() };
+        text.font_size = 99.0;
+        flat(&outer, &inner, &mut cache);
+        assert_eq!(counts(&cache), (59, 41), "an edit to the template makes every scene again");
+
+        outer.tracks[0].clips.truncate(5);
+        flat(&outer, &inner, &mut cache);
+        assert_eq!(cache.scenes.len(), 5, "the scenes no longer placed are dropped");
     }
 
     fn t(frames: i64) -> RationalTime {

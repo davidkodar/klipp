@@ -1671,6 +1671,9 @@ pub struct AppState {
     /// state is O(1) (single-track find_clip), with the full walk
     /// only on actual selection / topology change.
     pub selected_clip_loc_cache: std::cell::Cell<Option<(ClipId, usize)>>,
+    /// Each precomposition's scene as the engine sync last flattened it
+    /// (#3117): an edit flattens again only the scenes it changed.
+    pub flatten_cache: std::cell::RefCell<klipp_timeline::flatten::FlattenCache>,
     /// UI-only state — not undoable. Multi-clip selection is managed directly
     /// for performance (marquee updates every frame). Do not convert to commands.
     pub selected_clips: Vec<ClipId>,
@@ -4792,6 +4795,7 @@ impl Default for AppState {
             show_overview_bar: true,
             selected_clip: None,
             selected_clip_loc_cache: std::cell::Cell::new(None),
+            flatten_cache: Default::default(),
             selected_transition: None,
             selected_clips: Vec::new(),
             selected_edits: Vec::new(),
