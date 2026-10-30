@@ -430,56 +430,6 @@ pub fn outlined(mut t: Text, width: f32) -> Text {
     t
 }
 
-// ── Captions and quotes ──
-fn cap_quote() -> TitleData {
-    layers(vec![
-        text_at(
-            moved(lifted(spaced(face("\u{201c}[Quote]\u{201d}", EDITORIAL, FontStyle::Italic, 68.0, WHITE, TextAlignment::Center), 1.15)),
-                TitleMotion::both(enter(MotionKind::Fade, 0.8, Easing::OutCubic).stagger(StaggerUnit::Line, 0.15), fade_out(0.5))),
-            0.5, 0.46, 0.5,
-        ),
-        text_at(
-            moved(lifted(upper(weight(face("\u{2014} [Who said it]", LABEL, FontStyle::Regular, 30.0, MUTED, TextAlignment::Center), 500), 5.0)),
-                TitleMotion::both(enter(MotionKind::Fade, 0.6, Easing::OutCubic).delay(0.5), fade_out(0.5))),
-            0.5, 0.6, 0.5,
-        ),
-    ])
-}
-
-fn cap_caption() -> TitleData {
-    // A box the size of the words, not a bar the width of the frame.
-    let mut td = layers(vec![
-        rect(0.5, 0.885, 0.3, 0.07, [0, 0, 0, 185], 12.0),
-        text_at(
-            moved(weight(face("[Caption]", SANS, FontStyle::Regular, 42.0, WHITE, TextAlignment::Center), 600),
-                TitleMotion::both(enter(MotionKind::Fade, 0.3, Easing::OutCubic), fade_out(0.25))),
-            0.5, 0.885, 0.5,
-        ),
-    ]);
-    fit(&mut td, 0, 1, (26.0, 12.0));
-    td
-}
-
-fn cap_subtitle() -> TitleData {
-    let mut tb = face("[Subtitle]", GRO, FontStyle::Bold, 40.0, WHITE, TextAlignment::Center);
-    tb.fx.shadows.push(TitleShadow { color: [0, 0, 0, 200], offset_x: 0.0, offset_y: 2.0, blur: 4.0, enabled: true, offset_x_keyframes: Vec::new(), offset_y_keyframes: Vec::new(), blur_keyframes: Vec::new() });
-    tb.fx.shadows.push(lift());
-    layers(vec![text_at(tb, 0.5, 0.90, 0.5)])
-}
-
-fn cap_callout() -> TitleData {
-    let mut td = layers(vec![
-        rect(0.80, 0.14, 0.26, 0.08, [38, 99, 200, 245], 40.0),
-        text_at(
-            moved(weight(face("[Callout]", SANS, FontStyle::Bold, 34.0, WHITE, TextAlignment::Center), 700),
-                TitleMotion::both(enter(MotionKind::ScaleUp, 0.35, Easing::OutBack), fade_out(0.25))),
-            0.80, 0.14, 0.5,
-        ),
-    ]);
-    fit(&mut td, 0, 1, (32.0, 20.0));
-    td
-}
-
 // ── Credits ──
 fn cr_roll() -> TitleData {
     let mut td = layers(vec![text_at(
@@ -697,23 +647,6 @@ fn so_tip() -> TitleData {
     td
 }
 
-// ── Callout (#1724) ──
-fn cap_note() -> TitleData {
-    let mut td = layers(vec![
-        moving(rect(0.25, 0.16, 0.3, 0.1, [16, 16, 20, 225], 8.0),
-            TitleMotion::both(enter(MotionKind::Fade, 0.3, Easing::OutCubic), fade_out(0.25))),
-        moving(rect(0.105, 0.16, 0.005, 0.07, ACCENT, 0.0),
-            TitleMotion::both(enter(MotionKind::MaskRise, 0.35, Easing::OutExpo).delay(0.1), fade_out(0.25))),
-        text_at(
-            moved(face("[A note on screen]", GRO, FontStyle::Regular, 30.0, WHITE, TextAlignment::Left),
-                TitleMotion::both(enter(MotionKind::Fade, 0.35, Easing::OutCubic).delay(0.15), fade_out(0.25))),
-            0.12, 0.16, 0.0,
-        ),
-    ]);
-    fit(&mut td, 0, 2, (40.0, 22.0));
-    td
-}
-
 /// A built-in still made by code: its name, category, card text, the
 /// function making its layers, and its fields.
 struct Coded {
@@ -774,7 +707,13 @@ const FILES: &[&str] = &[
     include_str!("../../../assets/titles/chapter.klipptitle"),
     include_str!("../../../assets/titles/chapter_number.klipptitle"),
     include_str!("../../../assets/titles/statement.klipptitle"),
+    include_str!("../../../assets/titles/quote.klipptitle"),
+    include_str!("../../../assets/titles/caption.klipptitle"),
+    include_str!("../../../assets/titles/subtitle.klipptitle"),
+    include_str!("../../../assets/titles/callout.klipptitle"),
+    include_str!("../../../assets/titles/note.klipptitle"),
 ];
+
 
 
 fn from_files() -> impl Iterator<Item = TitleTemplate> {
@@ -796,11 +735,6 @@ fn from_files() -> impl Iterator<Item = TitleTemplate> {
 
 
 const CODED: &[Coded] = &[
-    Coded { name: "Quote", category: "Captions", preview_text: "[Quote]", create_data: cap_quote, fields: f(&["Quote", "Who said it"], None, MID) },
-    Coded { name: "Caption", category: "Captions", preview_text: "[Caption]", create_data: cap_caption, fields: f(&["Caption"], Some(0), (0.5, 0.885)) },
-    Coded { name: "Subtitle", category: "Captions", preview_text: "[Subtitle]", create_data: cap_subtitle, fields: f(&["Subtitle"], None, (0.5, 0.9)) },
-    Coded { name: "Callout", category: "Captions", preview_text: "[Callout]", create_data: cap_callout, fields: f(&["Callout"], Some(0), (0.8, 0.14)) },
-    Coded { name: "Note", category: "Captions", preview_text: "[A note on screen]", create_data: cap_note, fields: f(&["Note"], Some(1), (0.1, 0.16)) },
     Coded { name: "Credits Roll", category: "Credits", preview_text: "Director", create_data: cr_roll, fields: f(&["Credits"], None, MID) },
     Coded { name: "End Credits", category: "Credits", preview_text: "[Film title]", create_data: cr_end_credits, fields: f(&["Film title", "Roles", "Names"], None, MID) },
     Coded { name: "End Card", category: "Credits", preview_text: "The End", create_data: cr_end_card, fields: f(&["Title"], None, MID) },
