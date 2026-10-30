@@ -3111,6 +3111,11 @@ impl Renderer {
                     let mut source_fx=object.fx().clone();
                     let edges=std::mem::take(&mut source_fx.edge_fade);
                     let motion=std::mem::take(&mut source_fx.motion);
+                    // Its motion blur is the shutter's, which draws the title at
+                    // each of its instants, or places it once when its drawing
+                    // holds still; the layer itself is drawn unblurred, as the
+                    // CPU draws it (#3160).
+                    source_fx.motion_blur=None;
                     // Loops that only fade the layer (#3160), as the CPU poses
                     // a shape: its opacity scaled after its paint. A colour
                     // loop does nothing to a shape there. The loops that move
