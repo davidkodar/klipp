@@ -8829,11 +8829,23 @@ impl PlaybackEngine {
         self.v1_clip_id(&seq)
     }
 
-    /// The primary clip's source time at the playhead.
+    /// The primary clip's source time at the playhead: the time its frame
+    /// is taken for. A slowed clip that frame-blends there takes it half
+    /// a media frame early, as the renderer reads it, so the frame is the
+    /// one at or before the time and the blend has the next to go to
+    /// (#3216). Taken at the time itself, the nearest frame could be the
+    /// later one, which a parked frame showed unblended whenever it had
+    /// reached the queue first.
     fn v1_source_secs(&self) -> Option<f64> {
         let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
         let clip = seq.tracks.get(self.current_track_index)?.clips.get(self.current_clip_index)?;
-        Some(klipp_compose::render::source_secs(clip, self.playhead, seq.fps.as_f64()))
+        let fps = seq.fps.as_f64();
+        let at = klipp_compose::render::source_secs(clip, self.playhead, fps);
+        let rate = self.clip_media_fps(clip).filter(|r| *r > 0.0);
+        Some(match rate {
+            Some(rate) if klipp_compose::frame_blends(clip, self.playhead, Some(rate), fps) => at - 0.5 / rate,
+            _ => at,
+        })
     }
 
     /// Take the primary decoder's frame for the playhead out of its queue:

@@ -117,16 +117,20 @@ impl ReverseGop {
     /// between its frames and those after it, where the latest frame held
     /// is one from before the time, not the one at it. A jump there from
     /// later in the clip showed a frame half a second early, as complete.
+    /// In a window being decoded, the frame after the one shown has to
+    /// have come too: a frame blend draws toward it, and parked fresh
+    /// between two frames, the render could come while the window held
+    /// the one but not yet the other, and showed it unblended (#3216).
     fn covers(&self, secs: f64) -> bool {
         let (Some(first), Some(last)) = (self.frames.first(), self.frames.last()) else { return false };
         let (a, b) = (first.pts.unwrap_or(0.0), last.pts.unwrap_or(0.0));
         if secs < a - self.half() || secs > b + self.half() {
             return false;
         }
-        // Frames come in time order: once one at or past `secs` has come,
-        // the frame for it is the one there or the one before.
+        // Frames come in time order: once one past `secs` has come, the
+        // frame for it is the one before, and the one after is held.
         match self.filling {
-            Some(fill) if secs >= fill.from - self.half() && secs < fill.to => fill.reached.is_some_and(|r| r >= secs - self.half()),
+            Some(fill) if secs >= fill.from - self.half() && secs < fill.to => fill.reached.is_some_and(|r| r > secs + self.half()),
             _ => true,
         }
     }
