@@ -72,12 +72,12 @@ fn each_route_lands_within_a_level_of_the_byte_frame() {
         let mut r = TitleRenderer::new();
         let frame = r.frame_with_window(&td, W, H, None, t, Some(4.0));
         let (route, got) = match frame {
-            TitleFrame::Placed { sprite, dx, dy, opacity, scale, anchor, under, shape, rows, blur } => {
+            TitleFrame::Placed { sprite, dx, dy, opacity, scale, anchor, under, shape, rows, blur, .. } => {
                 assert!(blur <= 0.5 && shape.is_none(), "{name}: a plain placement");
                 let got = read(&mut gpu, |g| g.stack_layer_place_sprite_posed(0, 1, &sprite.pixels.texels, sprite_box(&sprite.pixels), dx, dy, opacity, scale, anchor, under, None, rows.0, rows.1));
                 ("placed", got)
             }
-            TitleFrame::Glyphs { sprite, poses, rows } => {
+            TitleFrame::Glyphs { sprite, poses, rows, .. } => {
                 let u = sprite.units.clone().expect("a glyph map");
                 let packed: Vec<[f32; 16]> = poses.iter().map(|p| p.packed()).collect();
                 let got = read(&mut gpu, |g| g.stack_layer_place_glyphs(0, 2, &sprite.pixels.texels, sprite_box(&sprite.pixels), (u.x0, u.y0, u.w, u.h, &u.index), &packed, rows.0, rows.1));
@@ -134,7 +134,7 @@ fn tracking_glyphs_match_static_reference_on_gpu() {
         *tb = tb.at(t as f64);
         let bytes = TitleRenderer::new().render_with_window(&still, W, H, None, t, Some(4.0));
         let want = read(&mut gpu, |g| g.stack_layer_from_srgb_u8(0, &bytes));
-        let TitleFrame::Glyphs { sprite, poses, rows } = r.frame_with_window(&td, W, H, None, t, Some(4.0)) else { panic!("tracking uses glyph placement") };
+        let TitleFrame::Glyphs { sprite, poses, rows, .. } = r.frame_with_window(&td, W, H, None, t, Some(4.0)) else { panic!("tracking uses glyph placement") };
         assert_eq!(*id.get_or_insert(sprite.id), sprite.id);
         let u = sprite.units.as_ref().unwrap();
         let packed: Vec<_> = poses.iter().map(|p| p.packed()).collect();
@@ -173,7 +173,7 @@ fn tracking_4k_cached_and_raster_composition_timing() {
             let frame = renderer.frame_with_window(&td, 3840, 2160, None, f as f32 / 10.0, Some(7.0));
             assert!(gpu.stack_begin(3840, 2160, 1));
             match frame {
-                TitleFrame::Glyphs { sprite, poses, rows } if cached => {
+                TitleFrame::Glyphs { sprite, poses, rows, .. } if cached => {
                     assert_eq!(*sprite_id.get_or_insert(sprite.id), sprite.id);
                     let u = sprite.units.as_ref().unwrap();
                     let packed: Vec<_> = poses.iter().map(|p| p.packed()).collect();
@@ -293,4 +293,42 @@ fn fading_layers_at_4k_only_rasterize_the_resting_pictures() {
         assert!(matches!(renderer.frame_with_window(&keyed, 3840, 2160, None, t, Some(4.0)), TitleFrame::Layers { .. }));
         assert_eq!(renderer.resting_renders(), 2);
     }
+}
+
+/// #3237: a staggered title's backing per line, laid under its posed
+/// glyphs mid-entrance and under its placed sprite at rest by the GPU
+/// stack's pass, lands within one sRGB level of the byte frame the CPU
+/// makes, the boxes painted under there.
+#[test]
+fn a_backing_per_line_under_posed_glyphs_lands_within_a_level() {
+    let Some(mut gpu) = GpuEffectsPipeline::new() else {
+        assert!(std::env::var_os("KLIPP_TEST_REQUIRE_GPU").is_none_or(|v| v != "1"), "GPU required");
+        return;
+    };
+    let mut td = lower_third(LayerFx { motion: TitleMotion::enter(Motion::new(MotionKind::Rise).duration(0.5).stagger(StaggerUnit::Line, 0.6)), ..Default::default() });
+    td.background = klipp_timeline::TitleBackground::Color { color: [20, 30, 40, 200], padding: 14.0, lines: Some(klipp_timeline::LineBoxes::default()) };
+    let boxes = |l: &klipp_title::BackingLines| klipp_effects::gpu::TitleBackingLines { rects: l.rects.clone(), alphas: l.alphas.clone(), radius: l.radius, joined: l.joined };
+    let mut seen = Vec::new();
+    for t in [0.3f32, 0.9, 3.0] {
+        let bytes = TitleRenderer::new().render_with_window(&td, W, H, None, t, Some(4.0));
+        let want = read(&mut gpu, |g| g.stack_layer_from_srgb_u8(0, &bytes));
+        let mut r = TitleRenderer::new();
+        let (route, got) = match r.frame_with_window(&td, W, H, None, t, Some(4.0)) {
+            TitleFrame::Placed { sprite, dx, dy, opacity, scale, anchor, under, rows, backing, .. } => {
+                let (lines, colour) = backing.expect("the boxes go under the sprite");
+                ("placed", read(&mut gpu, |g| g.stack_layer_place_sprite_posed(0, 1, &sprite.pixels.texels, sprite_box(&sprite.pixels), dx, dy, opacity, scale, anchor, under, None, rows.0, rows.1) && g.stack_layer_line_boxes_under(0, &boxes(&lines), colour)))
+            }
+            TitleFrame::Glyphs { sprite, poses, rows, backing } => {
+                let (lines, colour) = backing.expect("the boxes go under the glyphs");
+                let u = sprite.units.clone().expect("a glyph map");
+                let packed: Vec<[f32; 16]> = poses.iter().map(|p| p.packed()).collect();
+                ("glyphs", read(&mut gpu, |g| g.stack_layer_place_glyphs(0, 2, &sprite.pixels.texels, sprite_box(&sprite.pixels), (u.x0, u.y0, u.w, u.h, &u.index), &packed, rows.0, rows.1) && g.stack_layer_line_boxes_under(0, &boxes(&lines), colour)))
+            }
+            _ => panic!("at {t} s: a staggered title's frame is its sprite placed or its glyphs posed"),
+        };
+        let worst = worst_code(&want, &got);
+        assert!(worst <= 1.0, "at {t} s, {route}: {worst} codes off the byte frame");
+        seen.push(route);
+    }
+    assert!(seen.contains(&"glyphs"), "the glyphs posed mid-entrance: {seen:?}");
 }

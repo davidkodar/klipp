@@ -141,11 +141,13 @@ pub struct TitleTexture<'a> {
     pub mode: u32,
 }
 /// A title's backing drawn one box per line (#3237), as klipp-title's
-/// `BackingLines` holds it: each box `[x0, y0, x1, y1]` in frame pixels,
-/// their corners' radius, and whether they are joined into one shape.
+/// `BackingLines` holds it: each box `[x0, y0, x1, y1]` in frame pixels
+/// and how much it shows, their corners' radius, and whether they are
+/// joined into one shape.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TitleBackingLines {
     pub rects: Vec<[f32; 4]>,
+    pub alphas: Vec<f32>,
     pub radius: f32,
     pub joined: bool,
 }
@@ -153,15 +155,67 @@ pub struct TitleBackingLines {
 impl TitleBackingLines {
     /// The boxes one shader pass draws; more go in passes of this many,
     /// each keeping the most covered of it and those before.
-    pub const PER_PASS: usize = 8;
+    pub const PER_PASS: usize = 6;
+
+    /// The boxes in passes: each pass's boxes and how much each shows.
+    fn passes(&self) -> impl Iterator<Item = (&[[f32; 4]], &[f32])> {
+        self.rects.chunks(Self::PER_PASS).zip(self.alphas.chunks(Self::PER_PASS))
+    }
 }
 
-/// Up to [`TitleBackingLines::PER_PASS`] boxes as the shader's stops, each
-/// a box's corners as f32 bits.
-fn line_box_stops(rects: &[[f32; 4]]) -> [[u32; 4]; 8] {
+impl GpuEffectsPipeline {
+    /// A title's backing per line laid under what stack layer `slot`
+    /// holds (#3237), in `color`: a staggered title's glyphs are posed from
+    /// a resting render without it, the boxes drawn where their lines are
+    /// at this frame. Only the rows the boxes reach are worked.
+    pub fn stack_layer_line_boxes_under(&mut self, slot: usize, lines: &TitleBackingLines, color: [u8; 4]) -> bool {
+        if self.is_device_lost() || slot >= self.stack_layers.len() || lines.rects.is_empty() || lines.rects.iter().flatten().any(|v| !v.is_finite()) {
+            return false;
+        }
+        let (fw, fh) = self.stack_dims;
+        let (top, bottom) = lines.rects.iter().fold((f32::MAX, f32::MIN), |(t, b), r| (t.min(r[1]), b.max(r[3])));
+        let (y0, y1) = ((top.floor().max(0.0) as u32).min(fh), (bottom.ceil().max(0.0) as u32).min(fh));
+        if y1 <= y0 || fw == 0 {
+            return true;
+        }
+        // The pass reads no input; any storage buffer binds there.
+        if self.title_style_scratch.is_none() {
+            self.title_style_scratch = Some(StyleScratch::new(&self.device, 1));
+        }
+        let s = self.title_style_scratch.as_ref().unwrap();
+        let layer = &self.stack_layers[slot];
+        for (chunk, alphas) in lines.passes() {
+            self.write_params(&FillParams {
+                base: StyleParams {
+                    width: fw,
+                    height: y1 - y0,
+                    frame_width: fw,
+                    op: 57,
+                    x0: lines.radius.to_bits(),
+                    y0,
+                    offset_x: chunk.len() as i32,
+                    offset_y: i32::from(lines.joined),
+                    color: color.map(|v| v as f32 / 255.0),
+                    matrix: self.authored_to_working,
+                },
+                stops: line_box_stops(chunk, alphas),
+            });
+            self.stack_pass(&self.pipelines.title_style_pipeline, &s.mask, layer, (fw * (y1 - y0)).div_ceil(WORKGROUP_SIZE), "title backing per line under posed glyphs");
+        }
+        true
+    }
+}
+
+/// Up to [`TitleBackingLines::PER_PASS`] boxes as the shader's stops: each
+/// box's corners in one, as f32 bits, and how much each shows in the last
+/// two, four to a stop.
+fn line_box_stops(rects: &[[f32; 4]], alphas: &[f32]) -> [[u32; 4]; 8] {
     let mut stops = [[0u32; 4]; 8];
     for (stop, r) in stops.iter_mut().zip(rects) {
         *stop = r.map(f32::to_bits);
+    }
+    for (k, a) in alphas.iter().enumerate().take(TitleBackingLines::PER_PASS) {
+        stops[6 + k / 4][k % 4] = a.to_bits();
     }
     stops
 }
@@ -1815,10 +1869,10 @@ impl GpuEffectsPipeline {
         self.submit(enc);
         if let (Some(lines), Some((_, color))) = (&backing_lines, backing) {
             let color = color.map(|v| v as f32 / 255.0);
-            for (n, chunk) in lines.rects.chunks(TitleBackingLines::PER_PASS).enumerate() {
+            for (n, (chunk, alphas)) in lines.passes().enumerate() {
                 self.write_params(&FillParams {
                     base: StyleParams { op: 55, offset_x: chunk.len() as i32, offset_y: i32::from(n > 0), color, matrix: [[lines.radius, f32::from(u8::from(lines.joined)), 0.0, 0.0], [0.0; 4], [0.0; 4]], ..base },
-                    stops: line_box_stops(chunk),
+                    stops: line_box_stops(chunk, alphas),
                 });
                 self.stack_pass(&self.pipelines.title_style_pipeline, layer, &s.composite, (count as u32).div_ceil(WORKGROUP_SIZE), "title backing per line");
             }
@@ -1993,7 +2047,7 @@ impl GpuEffectsPipeline {
         enc.clear_buffer(layer, 0, None);
         self.submit(enc);
         if let (Some(lines), Some((_, color))) = (&backing_lines, backing) {
-            for (n, chunk) in lines.rects.chunks(TitleBackingLines::PER_PASS).enumerate() {
+            for (n, (chunk, alphas)) in lines.passes().enumerate() {
                 self.write_params(&FillParams {
                     base: StyleParams {
                         width: fw,
@@ -2007,7 +2061,7 @@ impl GpuEffectsPipeline {
                         color: color.map(|v| v as f32 / 255.0),
                         matrix: self.authored_to_working,
                     },
-                    stops: line_box_stops(chunk),
+                    stops: line_box_stops(chunk, alphas),
                 });
                 self.stack_pass(&self.pipelines.title_style_pipeline, &s.composite, layer, (fw * fh).div_ceil(WORKGROUP_SIZE), "title backing per line outside mask");
             }

@@ -3775,7 +3775,7 @@ impl Renderer {
                             && face_slot.is_none_or(|face|p.stack_layer_copy(slot,face))
                             && source.glyphs.iter().filter(|g|g.native_colour).all(|g|match g.target_size {None=>p.stack_title_colour_coverage_subtract(coverage,g.id,&g.pixels.texels,[g.pixels.w,g.pixels.h],g.origin,place(g)),Some(size)=>p.stack_title_resized_colour_glyph(coverage,g.id,&g.pixels.texels,[g.pixels.w,g.pixels.h],size,g.origin,source.color,3,place(g))})
                             && colour_slot.is_none_or(|c|p.stack_layer_clear(c) && source.glyphs.iter().filter(|g|g.native_colour).all(|g|match g.target_size {None=>p.stack_title_colour_glyph(c,g.id,&g.pixels.texels,[g.pixels.w,g.pixels.h],g.origin,place(g)),Some(size)=>p.stack_title_resized_colour_glyph(c,g.id,&g.pixels.texels,[g.pixels.w,g.pixels.h],size,g.origin,source.color,1,place(g))}))
-                            && (source.roi[2]==0 || source.roi[3]==0 || p.stack_title_styles_with_face(slot,source.roi,&passes,klipp_effects::gpu::TitleFace {alpha:source.color[3] as f32/255.0,outline_cutoff:source.outline_cutoff,write_cutoff:source.write_cutoff,backing:source.backing,backing_lines:source.backing_lines.as_ref().map(|l|klipp_effects::gpu::TitleBackingLines{rects:l.rects.clone(),radius:l.radius,joined:l.joined}),fill:title_fill(&source,klipp_title::frame_scale(width,height)),bounds:source.bounds,rich_slot,face_slot,colour_slot}))
+                            && (source.roi[2]==0 || source.roi[3]==0 || p.stack_title_styles_with_face(slot,source.roi,&passes,klipp_effects::gpu::TitleFace {alpha:source.color[3] as f32/255.0,outline_cutoff:source.outline_cutoff,write_cutoff:source.write_cutoff,backing:source.backing,backing_lines:source.backing_lines.as_ref().map(gpu_line_boxes),fill:title_fill(&source,klipp_title::frame_scale(width,height)),bounds:source.bounds,rich_slot,face_slot,colour_slot}))
                             && (colour_slot.is_some() || source.glyphs.iter().filter(|g|g.native_colour).all(|g|match g.target_size {None=>p.stack_title_colour_glyph(slot,g.id,&g.pixels.texels,[g.pixels.w,g.pixels.h],g.origin,place(g)),Some(size)=>p.stack_title_resized_colour_glyph(slot,g.id,&g.pixels.texels,[g.pixels.w,g.pixels.h],size,g.origin,source.color,1,place(g))}))
                             && source.texture.as_ref().is_none_or(|t|source.roi[2]==0 || source.roi[3]==0 || p.stack_title_texture(slot,source.roi,klipp_effects::gpu::TitleTexture {
                                 id:t.id,texels:&t.pixels.texels,size:[t.pixels.w,t.pixels.h],bounds:source.bounds,
@@ -3838,7 +3838,7 @@ impl Renderer {
             }
         }
         let placed = match frame {
-            klipp_title::TitleFrame::Placed { sprite, dx, dy, opacity, scale, anchor, under, blur, shape, rows: r } => {
+            klipp_title::TitleFrame::Placed { sprite, dx, dy, opacity, scale, anchor, under, blur, shape, rows: r, backing } => {
                 rows = r;
                 // The blur entrance, and a roll's focus band going
                 // soft (#592): the placed sprite blurred first, as
@@ -3867,14 +3867,16 @@ impl Renderer {
                         edge_opacity: s.focus.map_or(1.0, |(_, f)| f.edge_opacity),
                     });
                     p.stack_layer_place_sprite_posed(slot, sprite.id, &sprite.pixels.texels, sprite_box(&sprite.pixels), dx, dy, opacity, scale, anchor, under, shape, r.0, r.1)
+                        && backing.as_ref().is_none_or(|(lines, color)| p.stack_layer_line_boxes_under(slot, &gpu_line_boxes(lines), *color))
                 })
             }
-            klipp_title::TitleFrame::Glyphs { sprite, poses, rows: r } => {
+            klipp_title::TitleFrame::Glyphs { sprite, poses, rows: r, backing } => {
                 rows = r;
                 let packed: Vec<[f32; 16]> = poses.iter().map(|p| p.packed()).collect();
                 match &sprite.units {
                     Some(u) => self.executor.gpu_pipeline_or_init().is_some_and(|p| {
                         p.stack_layer_place_glyphs(slot, sprite.id, &sprite.pixels.texels, sprite_box(&sprite.pixels), (u.x0, u.y0, u.w, u.h, &u.index), &packed, r.0, r.1)
+                            && backing.as_ref().is_none_or(|(lines, color)| p.stack_layer_line_boxes_under(slot, &gpu_line_boxes(lines), *color))
                     }),
                     None => false,
                 }
@@ -9127,4 +9129,9 @@ fn generator_feature(g: &klipp_core::GeneratorData) -> &'static str {
         Grain { .. } => "generator.grain", Countdown => "generator.countdown", Timer { .. } => "generator.timer", StillFrame { .. } => "generator.still_frame",
         LivingGradient { .. } => "generator.living_gradient", SolidColor { .. } => "generator.solid", Placeholder { .. } => "generator.placeholder", Gradient { .. } => "generator.gradient", ColorBars => "generator.color_bars", ColorBars100 => "generator.color_bars_100", ColorBarsSmpte => "generator.color_bars_smpte", Slate { .. } => "generator.slate", Polygon { .. } => "generator.polygon", Star { .. } => "generator.star",
     }
+}
+
+/// A title's backing per line as the GPU stack takes it (#3237).
+fn gpu_line_boxes(l: &klipp_title::BackingLines) -> klipp_effects::gpu::TitleBackingLines {
+    klipp_effects::gpu::TitleBackingLines { rects: l.rects.clone(), alphas: l.alphas.clone(), radius: l.radius, joined: l.joined }
 }

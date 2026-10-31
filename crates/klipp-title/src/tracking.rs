@@ -166,6 +166,9 @@ impl TitleRenderer {
             pad: u.pad,
             path: None,
             tracking_origins: Vec::new(),
+            line_boxes: Vec::new(),
+            line_ranges: Vec::new(),
+            lines_vertical: false,
         };
         let mut poses = glyph_poses(
             &placed,
@@ -201,12 +204,16 @@ impl TitleRenderer {
             y0.clamp(0, height as i32) as u32,
             y1.clamp(0, height as i32) as u32,
         );
+        // A backing per line under the tracked glyphs (#3237).
+        let backing = super::posed_backing(title, u, &poses, frame_scale(width, height));
+        let rows = super::widened(rows, backing.as_ref(), height);
         self.last_rows = rows;
         self.last_blur = 0.0;
         Some(TitleFrame::Glyphs {
             sprite,
             poses,
             rows,
+            backing,
         })
     }
 }
