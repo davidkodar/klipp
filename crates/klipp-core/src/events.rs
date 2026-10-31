@@ -1989,6 +1989,14 @@ pub enum AppCommand {
     /// cache size): past it the least recently used frames go, at once
     /// when it shrinks.
     SetRenderCacheLimitGb(u32),
+    /// What of the cache budget frozen tracks hold, bytes (#3207): the
+    /// render cache keeps to the rest.
+    SetRenderCacheReserved(u64),
+    /// Every frame of the render cache let go, on disk and in its index.
+    ClearRenderCacheAll,
+    /// The open project's frozen frames and/or frozen sound cleared
+    /// (#3207): their tracks played live again, one undo step.
+    ClearFrozenCache { frames: bool, sound: bool },
     /// Scan cache directories and remove files not referenced by any media in the pool.
     CleanOrphanedCaches,
     /// Cache Manager (feature #78): clear a single cache category by wiping

@@ -265,6 +265,10 @@ fn path_hash(path: &Path) -> u64 {
 pub struct DiskRenderCache {
     cache_dir: PathBuf,
     max_size_bytes: u64,
+    /// The cache budget the person set, and what of it frozen tracks
+    /// hold (#3207): the render cache keeps to the rest.
+    budget_bytes: u64,
+    reserved_bytes: u64,
     /// Every .lz4 entry currently on disk, sorted by mtime
     /// (oldest first — the front of the map is the next eviction target).
     index: BTreeMap<EntryKey, EntryMeta>,
@@ -346,6 +350,8 @@ impl DiskRenderCache {
         let mut me = Self {
             cache_dir,
             max_size_bytes: max_size_gb as u64 * 1_073_741_824,
+            budget_bytes: max_size_gb as u64 * 1_073_741_824,
+            reserved_bytes: 0,
             index,
             total_bytes,
             enabled: true,
@@ -360,8 +366,28 @@ impl DiskRenderCache {
     /// The cap in GB; past it the least recently used frames go, at
     /// once when the cap shrinks below what is held.
     pub fn set_max_size_gb(&mut self, gb: u32) {
-        self.max_size_bytes = gb as u64 * 1_073_741_824;
+        self.budget_bytes = gb as u64 * 1_073_741_824;
+        self.max_size_bytes = self.budget_bytes.saturating_sub(self.reserved_bytes);
         self.evict_if_needed();
+    }
+
+    /// What of the budget frozen tracks hold (#3207): their frames and
+    /// stems are kept first, and the render cache keeps to the rest,
+    /// letting its oldest frames go at once where that is less.
+    pub fn set_reserved_bytes(&mut self, bytes: u64) {
+        self.reserved_bytes = bytes;
+        self.max_size_bytes = self.budget_bytes.saturating_sub(bytes);
+        self.evict_if_needed();
+    }
+
+    /// Every cached frame let go, its file removed: the index and the
+    /// disk agree after, which a folder wiped behind its back did not.
+    pub fn clear_all(&mut self) {
+        while let Some((_, meta)) = self.index.pop_first() {
+            let _ = std::fs::remove_file(&meta.path);
+        }
+        self.total_bytes = 0;
+        self.frames.clear();
     }
 
     pub fn max_size_gb(&self) -> f64 {
@@ -776,6 +802,56 @@ mod tests {
         cache.set_max_size_gb(0);
         assert_eq!(cache.total_bytes, 0, "over the cap: let go at once");
         assert!(cache.index.is_empty());
+    }
+
+    /// #3207: frozen tracks are kept first; the render cache keeps to what
+    /// of the budget they leave, letting frames go at once, and
+    /// a budget set again keeps the reserve.
+    #[test]
+    fn the_render_cache_keeps_to_what_frozen_tracks_leave() {
+        let tmp = TmpDir::new("reserve");
+        let mut cache = DiskRenderCache::new(tmp.path().to_path_buf(), 1);
+        let mut rgba = vec![0u8; 256 * 256 * 4];
+        let mut x: u32 = 7;
+        for b in rgba.iter_mut() {
+            x ^= x << 13;
+            x ^= x >> 17;
+            x ^= x << 5;
+            *b = x as u8;
+        }
+        let (k1, k2) = (make_key(1), make_key(2));
+        cache.put(&k1, &rgba, 256, 256);
+        cache.put(&k2, &rgba, 256, 256);
+        if cache.total_bytes == 0 {
+            eprintln!("SKIP: the temp dir took no writes");
+            return;
+        }
+        let held = cache.total_bytes;
+        let one = held / 2;
+        cache.set_reserved_bytes((1 << 30) - held - 1 + one);
+        assert!(cache.total_bytes < held && cache.total_bytes > 0, "the oldest let go: {} of {held}", cache.total_bytes);
+        assert!(cache.contains(&k1) != cache.contains(&k2), "one frame kept");
+        cache.set_max_size_gb(1);
+        assert_eq!(cache.max_size_bytes, (1u64 << 30) - ((1 << 30) - held - 1 + one), "the reserve kept under a budget set again");
+        cache.set_reserved_bytes(0);
+        assert_eq!(cache.max_size_bytes, 1 << 30);
+    }
+
+    /// Cleared, every file goes and the index agrees.
+    #[test]
+    fn a_cleared_render_cache_holds_nothing_on_disk_or_off() {
+        let tmp = TmpDir::new("clear-all");
+        let mut cache = DiskRenderCache::new(tmp.path().to_path_buf(), 1);
+        let rgba = vec![9u8; 64 * 64 * 4];
+        let k1 = make_key(1);
+        cache.put(&k1, &rgba, 64, 64);
+        cache.put(&make_key(2), &rgba, 64, 64);
+        assert!(cache.contains(&k1));
+        cache.clear_all();
+        assert_eq!(cache.total_bytes, 0);
+        assert!(cache.index.is_empty() && !cache.contains(&k1));
+        let left = walkdir::WalkDir::new(tmp.path()).into_iter().flatten().filter(|e| e.file_type().is_file()).count();
+        assert_eq!(left, 0, "no file left");
     }
 
     #[test]

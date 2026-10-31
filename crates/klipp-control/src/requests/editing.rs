@@ -536,6 +536,14 @@ pub(crate) fn respond(
             }
         }
 
+        ControlCommand::ClearFrozen { frames, sound } => {
+            let (frames, sound) = (frames != Some(false), sound != Some(false));
+            if !frames && !sound {
+                return Err("nothing to clear: give frames or sound true, or leave them out".into());
+            }
+            send(AppCommand::ClearFrozenCache { frames, sound })
+        }
+
         ControlCommand::RemoveClip { clip_id: c } => {
             send(AppCommand::RemoveClip { clip_id: existing_clip_id(ctx, &c)? })
         }

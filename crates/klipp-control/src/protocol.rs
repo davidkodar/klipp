@@ -356,6 +356,15 @@ pub enum ControlCommand {
         track: Option<usize>,
     },
     RemoveClip { clip_id: String },
+    /// The open project's frozen frames and frozen sound cleared (#3207):
+    /// the tracks frozen so in the open sequence played live again, one
+    /// undo step, and the files removed. Each is cleared unless `false`.
+    ClearFrozen {
+        #[serde(default)]
+        frames: Option<bool>,
+        #[serde(default)]
+        sound: Option<bool>,
+    },
     /// Give a clip the audio it should have come with, linked, at its
     /// own position. Repairs a timeline built before appending brought
     /// the audio along — re-appending those clips would get the audio

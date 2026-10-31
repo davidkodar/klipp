@@ -3996,6 +3996,14 @@ impl PlaybackEngine {
                 self.render_cache_disk.set_max_size_gb(gb);
                 debug!("Render cache cap {gb} GB");
             }
+            AppCommand::SetRenderCacheReserved(bytes) => self.render_cache_disk.set_reserved_bytes(bytes),
+            AppCommand::ClearRenderCacheAll => {
+                self.render_cache_disk.clear_all();
+                self.render_cache_hot.clear();
+                info!("Render cache: cleared");
+                self.update_render_cache_ranges();
+                (self.repaint_cb)();
+            }
             AppCommand::SetRenderCacheEnabled(enabled) => {
                 self.render_cache_disk.set_enabled(enabled);
                 if !enabled {

@@ -5022,3 +5022,20 @@ fn a_frei0r_effect_is_added_only_by_an_installed_plug_ins_id() {
     });
     assert_eq!(stored.as_deref(), Some("frei0r:/usr/lib/frei0r-1/klipp3200fx.so:Klipp3200Fx"), "stored as the plug-in's own id");
 }
+
+/// #3207: `clear_frozen` clears both kinds unless told one is kept; with
+/// both kept there is nothing to do, and it says so.
+#[test]
+fn clear_frozen_asks_the_app_to_clear_what_it_names() {
+    let mut h = harness();
+    let cleared = |h: &Harness| h.sent.lock().unwrap().iter().filter_map(|c| match c {
+        klipp_core::AppCommand::ClearFrozenCache { frames, sound } => Some((*frames, *sound)),
+        _ => None,
+    }).collect::<Vec<_>>();
+    h.ok(json!({ "method": "clear_frozen" }));
+    h.ok(json!({ "method": "clear_frozen", "sound": false }));
+    assert_eq!(cleared(&h), vec![(true, true), (true, false)]);
+    let refused = h.call(json!({ "method": "clear_frozen", "frames": false, "sound": false }));
+    assert!(refused["error"].as_str().unwrap_or("").contains("nothing to clear"), "{refused}");
+    assert_eq!(cleared(&h).len(), 2);
+}

@@ -14,6 +14,9 @@ impl KlippApp {
         let proxy_override = self.prefs.proxy.proxy_cache_dir.as_deref();
         self.state.cache_categories =
             crate::cache_manager::scan_cache_categories(&cache_root, proxy_override);
+        if let Some(project_cache) = self.freeze_cache_folder() {
+            self.state.cache_categories.extend(crate::cache_manager::frozen_categories(&project_cache));
+        }
     }
 
     pub(super) fn clean_orphaned_caches(&self) -> String {

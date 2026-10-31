@@ -54,7 +54,7 @@ static PENDING_WRITE_GENERATION: std::sync::atomic::AtomicU64 =
 const WRITE_TOOLS: &[&str] = &[
     "klipp_graph", "klipp_import_timeline",
     "klipp_play", "klipp_pause", "klipp_stop", "klipp_seek",
-    "klipp_append_clip", "klipp_remove_clip", "klipp_attach_audio", "klipp_normalize", "klipp_set_append_audio", "klipp_select_clip",
+    "klipp_append_clip", "klipp_clear_frozen", "klipp_remove_clip", "klipp_attach_audio", "klipp_normalize", "klipp_set_append_audio", "klipp_select_clip",
     "klipp_add_node", "klipp_remove_node", "klipp_connect_nodes",
     "klipp_set_node_param", "klipp_toggle_node", "klipp_set_log_format",
     "klipp_generator", "klipp_undo", "klipp_redo", "klipp_batch", "klipp_export", "klipp_export_subtitles", "klipp_import_subtitles", "klipp_translate_captions", "klipp_apply",
@@ -601,6 +601,15 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             if let Some(b) = args.get("bins").and_then(Value::as_bool) { v["bins"] = json!(b); }
             if v.get("path").is_none() && v.get("paths").is_none() && v.get("folder").is_none() {
                 return Err("klipp_import_media needs path, paths or folder".into());
+            }
+            v
+        }
+        "klipp_clear_frozen" => {
+            let mut v = json!({ "method": "clear_frozen" });
+            for key in ["frames", "sound"] {
+                if let Some(b) = args.get(key).and_then(Value::as_bool) {
+                    v[key] = json!(b);
+                }
             }
             v
         }
@@ -2132,6 +2141,10 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              "Import media: a path, paths, or a folder's files. Details: klipp_guide topic import_media.",
              json!({ "path": { "type": "string" }, "paths": { "type": "array", "items": { "type": "string" } }, "folder": { "type": "string" }, "recursive": { "type": "boolean" }, "bins": { "type": "boolean" }, "analyze": { "type": "boolean" } }),
              vec![]),
+        tool("klipp_clear_frozen",
+             "Clear the open project's frozen frames and sound; their tracks play live again, one undo step. Details: klipp_guide topic clear_frozen.",
+             json!({ "frames": { "type": "boolean" }, "sound": { "type": "boolean" } }),
+             vec![]),
         tool("klipp_append_clip",
              "Append a media pool item to the timeline as a new clip. Details: klipp_guide topic append_clip.",
              json!({
@@ -3580,6 +3593,8 @@ mod catalogue_trim_tests {
         ("klipp_list_clips", "to_secs", "Only clips that start before this"),
         ("klipp_list_clips", "track", "A track's index or name"),
         ("klipp_append_clip", "media_id", "From klipp_list_media"),
+        ("klipp_clear_frozen", "frames", "Clear frozen video tracks' frames (default true)"),
+        ("klipp_clear_frozen", "sound", "Clear frozen audio tracks' stems (default true)"),
         ("klipp_append_clip", "track", "Track index; omit for the default track"),
         ("klipp_set_append_audio", "enabled", "true brings audio, false is video only"),
         ("klipp_attach_audio", "clip_id", "From klipp_list_clips"),

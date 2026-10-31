@@ -44,6 +44,44 @@ pub fn scan_dir_size(path: &Path) -> (u64, u64) {
     (total, count)
 }
 
+/// Every file under `path`, at any depth: `(total_bytes, file_count)`.
+pub fn scan_tree_size(path: &Path) -> (u64, u64) {
+    let mut total = 0u64;
+    let mut count = 0u64;
+    for e in walkdir::WalkDir::new(path).into_iter().flatten().filter(|e| e.file_type().is_file()) {
+        total += e.metadata().map(|m| m.len()).unwrap_or(0);
+        count += 1;
+    }
+    (total, count)
+}
+
+/// The open project's frozen tracks (#3207), under `project_cache`
+/// (`<project>/cache`): their frames, and their sound's stems.
+pub fn frozen_categories(project_cache: &Path) -> Vec<CacheCategory> {
+    let frames = project_cache.join("freeze");
+    let sound = project_cache.join("stems");
+    let (frame_bytes, frame_count) = scan_tree_size(&frames);
+    let (sound_bytes, sound_count) = scan_tree_size(&sound);
+    vec![
+        CacheCategory {
+            name: "Frozen frames (this project)",
+            path: frames,
+            size_bytes: frame_bytes,
+            file_count: frame_count,
+            // Ice blue
+            color: egui::Color32::from_rgb(0x7f, 0xc8, 0xe8),
+        },
+        CacheCategory {
+            name: "Frozen sound (this project)",
+            path: sound,
+            size_bytes: sound_bytes,
+            file_count: sound_count,
+            // Teal
+            color: egui::Color32::from_rgb(0x3f, 0xa8, 0x9c),
+        },
+    ]
+}
+
 /// Sum sizes for a set of directories into a single `(total_bytes, file_count)`.
 /// Used by categories whose storage spans more than one on-disk folder
 /// (e.g. audio has both `audio-peaks` and `audio-cache`).
@@ -168,6 +206,24 @@ pub fn format_cache_size(bytes: u64) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// #3207: the frozen categories count every file under the project's
+    /// cache, in the folders a track each keeps.
+    #[test]
+    fn frozen_categories_count_every_file_below() {
+        let root = std::env::temp_dir().join(format!("klipp-frozen-cats-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        for (dir, bytes) in [("freeze/a", 10), ("freeze/b", 20), ("stems/c", 7)] {
+            std::fs::create_dir_all(root.join(dir)).unwrap();
+            std::fs::write(root.join(dir).join("x.bin"), vec![0u8; bytes]).unwrap();
+        }
+        let cats = super::frozen_categories(&root);
+        assert_eq!((cats[0].size_bytes, cats[0].file_count), (30, 2), "frames: {:?}", cats[0].path);
+        assert_eq!((cats[1].size_bytes, cats[1].file_count), (7, 1));
+        assert_eq!(cats[0].path, root.join("freeze"));
+        assert_eq!(cats[1].path, root.join("stems"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     use super::*;
 
     #[test]

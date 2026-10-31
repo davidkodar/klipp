@@ -855,6 +855,7 @@ fn handle(
             | ControlCommand::DuplicateSequence { .. }
             | ControlCommand::RemoveSequence { .. }
             | ControlCommand::AppendClip { .. }
+            | ControlCommand::ClearFrozen { .. }
             | ControlCommand::RemoveClip { .. }
             | ControlCommand::AttachAudio { .. }
             | ControlCommand::NormalizeClips { .. }
