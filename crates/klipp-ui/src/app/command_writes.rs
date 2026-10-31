@@ -26,6 +26,8 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::SetFreezeFolder(_)
         | AppCommand::SetFrozenTracks(_)
         | AppCommand::SetFrozenStems(_)
+        | AppCommand::SetPlaybackQuality(_)
+        | AppCommand::DismissPlaybackNote { .. }
         | AppCommand::ShowMaskKeysOnTimeline { .. }
         | AppCommand::SetViewerOverlay { .. }
         | AppCommand::SetMulticamMode { .. }
@@ -796,7 +798,6 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::SetTrackFrozen { .. }
         | AppCommand::SetTrackLockWhileFrozen { .. }
         | AppCommand::ClearFrozenCache { .. }
-        | AppCommand::SetPlaybackQuality(_)
         | AppCommand::SetTrackCustomHeight { .. }
         | AppCommand::SetTrackAutomationLaneHeight { .. }
         | AppCommand::GroupClips { .. }

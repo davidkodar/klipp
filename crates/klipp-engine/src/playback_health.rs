@@ -157,6 +157,35 @@ pub enum Fix {
     PlaybackQuality { divisor: u8 },
 }
 
+impl Fix {
+    /// The kind of fix, a word: what a note shown once per project is
+    /// remembered by.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Fix::FreezeTrack { .. } => "freeze_track",
+            Fix::MakeProxies { .. } => "make_proxies",
+            Fix::UseProxies => "use_proxies",
+            Fix::PlaybackQuality { .. } => "playback_quality",
+        }
+    }
+}
+
+/// How much worse than the note last shown a new one must be to show
+/// again for the same cause: twice the share dropped, and over this.
+pub const CLEARLY_WORSE: f32 = 0.2;
+
+/// Whether `d` is shown as a note, given the one last shown for this
+/// project (its fix's kind and share dropped): one with a fix, for a
+/// project that had none, for another fix, or clearly worse.
+pub fn should_show(last: Option<(&str, f32)>, d: &Diagnosis) -> bool {
+    let Some(fix) = &d.fix else { return false };
+    match last {
+        None => true,
+        Some((kind, _)) if kind != fix.kind() => true,
+        Some((_, dropping)) => d.health.dropping >= 2.0 * dropping && d.health.dropping > CLEARLY_WORSE,
+    }
+}
+
 /// Why playback drops frames, and what would help.
 #[derive(Clone, Debug, PartialEq, serde::Serialize)]
 pub struct Diagnosis {
@@ -367,6 +396,21 @@ mod tests {
         assert_eq!(diagnose(&i).unwrap().fix, Some(Fix::UseProxies));
         i.proxies_on = true;
         assert!(matches!(diagnose(&i).unwrap().fix, Some(Fix::PlaybackQuality { .. })), "proxies played already: the frame as a whole");
+    }
+
+    /// A note shows once per project: again for another fix, or when the
+    /// share dropped at least doubled and is over 20 %; never without a
+    /// fix to offer.
+    #[test]
+    fn a_note_shows_once_unless_another_fix_or_clearly_worse() {
+        let d = |dropping: f32, fix: Option<Fix>| Diagnosis { health: Health { seconds: WINDOW, dropping, sustained: true }, cause: String::new(), fix };
+        let half = Some(Fix::PlaybackQuality { divisor: 2 });
+        assert!(should_show(None, &d(0.08, half.clone())), "the first");
+        assert!(!should_show(Some(("playback_quality", 0.08)), &d(0.12, half.clone())), "the same, a little worse");
+        assert!(!should_show(Some(("playback_quality", 0.08)), &d(0.18, half.clone())), "doubled but under 20 %");
+        assert!(should_show(Some(("playback_quality", 0.12)), &d(0.30, half.clone())), "doubled and over 20 %");
+        assert!(should_show(Some(("playback_quality", 0.5)), &d(0.06, Some(Fix::UseProxies))), "another fix");
+        assert!(!should_show(None, &d(0.5, None)), "nothing to offer");
     }
 
     #[test]

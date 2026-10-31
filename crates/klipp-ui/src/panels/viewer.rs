@@ -2140,6 +2140,7 @@ impl ViewerPanel {
             self.draw_surface_outlines(ui, state, image_rect);
         }
         self.draw_surface_tracking_badge(ui, state, image_rect, cmds);
+        draw_playback_note(ui, state, image_rect, cmds);
         self.handle_surface_drop(ui, state, image_rect);
 
         // ── On-canvas Title-object editor ──
@@ -8563,5 +8564,112 @@ mod overlay_layer_tests {
         let code: String = src.lines().filter(|l| !l.trim_start().starts_with("//")).collect::<Vec<_>>().join("\n");
         assert_eq!(code.matches("layer_painter(").count(), 0, "an overlay on a layer of its own");
         assert_eq!(code.matches(".order(egui::Order::Foreground)").count(), 1, "only the right-click menu floats");
+    }
+}
+
+/// What the playback note's fix button says, and what it sends: what the
+/// person would do by hand, never more (#3234).
+pub(crate) fn playback_fix_action(fix: &klipp_engine::playback_health::Fix) -> (String, Vec<AppCommand>) {
+    use klipp_engine::playback_health::Fix;
+    match fix {
+        Fix::FreezeTrack { track, name } => (format!("Freeze {name}"), vec![AppCommand::SetTrackFrozen { track_id: *track, frozen: true }]),
+        Fix::MakeProxies { media } => {
+            let n = media.len();
+            (if n == 1 { "Make a proxy".into() } else { format!("Make {n} proxies") }, media.iter().map(|m| AppCommand::GenerateProxy { media_id: *m }).collect())
+        }
+        Fix::UseProxies => ("Play from proxies".into(), vec![AppCommand::SetUseProxies(true)]),
+        Fix::PlaybackQuality { divisor } if *divisor >= 4 => ("Quarter size".into(), vec![AppCommand::SetPlaybackQuality(klipp_core::PlaybackQuality::Quarter)]),
+        Fix::PlaybackQuality { .. } => ("Half size".into(), vec![AppCommand::SetPlaybackQuality(klipp_core::PlaybackQuality::Half)]),
+    }
+}
+
+/// The note suggesting a fix while playback keeps dropping frames
+/// (#3234), at the viewer's foot on its own layer: no focus, no keys,
+/// playback goes on. One button for the fix, "Not now", and "Don't
+/// suggest this again".
+fn draw_playback_note(ui: &mut egui::Ui, state: &AppState, image_rect: egui::Rect, cmds: &mut Vec<AppCommand>) {
+    let Some((d, _)) = &state.playback_note else { return };
+    let Some(fix) = &d.fix else { return };
+    let (label, fix_cmds) = playback_fix_action(fix);
+    let area = egui::Rect::from_min_max(egui::pos2(image_rect.left() + 8.0, image_rect.bottom() - 96.0), image_rect.right_bottom());
+    ui.new_child(egui::UiBuilder::new().max_rect(area)).scope(|ui| {
+        egui::Frame::popup(ui.style()).show(ui, |ui| {
+            ui.set_max_width(420.0);
+            ui.label(egui::RichText::new(format!("Playback is dropping {:.0} % of frames", d.health.dropping * 100.0)).strong());
+            ui.label(egui::RichText::new(&d.cause).small());
+            ui.horizontal(|ui| {
+                if ui.small_button(label).clicked() {
+                    cmds.extend(fix_cmds);
+                    cmds.push(AppCommand::DismissPlaybackNote { forever: false });
+                }
+                if ui.small_button("Not now").clicked() {
+                    cmds.push(AppCommand::DismissPlaybackNote { forever: false });
+                }
+                if ui.link(egui::RichText::new("Don't suggest this again").small()).clicked() {
+                    cmds.push(AppCommand::DismissPlaybackNote { forever: true });
+                }
+            });
+        });
+    });
+}
+
+#[cfg(test)]
+mod playback_note_tests {
+    use super::*;
+    use klipp_engine::playback_health::{Diagnosis, Fix, Health};
+
+    /// #3234: the note names how much is dropped and why; its fix button
+    /// sends what the person would do by hand and puts the note away;
+    /// "Not now" puts it away; "Don't suggest this again" for good. None
+    /// of it pauses playback.
+    #[test]
+    fn the_note_offers_the_fix_and_never_stops_playback() {
+        let ctx = egui::Context::default();
+        let mut state = AppState { playback: PlaybackState::Playing, ..AppState::default() };
+        let image = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(800.0, 450.0));
+        let run = |state: &AppState, events: Vec<egui::Event>| {
+            let mut cmds = Vec::new();
+            let out = ctx.run(egui::RawInput { screen_rect: Some(image), events, ..Default::default() }, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| draw_playback_note(ui, state, image, &mut cmds));
+            });
+            let texts: Vec<(String, egui::Pos2)> = out.shapes.iter().filter_map(|s| match &s.shape { egui::Shape::Text(t) => Some((t.galley.text().to_owned(), t.pos + t.galley.rect.center().to_vec2())), _ => None }).collect();
+            (texts, cmds)
+        };
+        let click = |state: &AppState, label: &str| {
+            let (texts, _) = run(state, Vec::new());
+            let at = texts.iter().find(|(t, _)| t == label).unwrap_or_else(|| panic!("{label} shown: {texts:?}")).1;
+            run(state, vec![egui::Event::PointerMoved(at), egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE }]);
+            run(state, vec![egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE }]).1
+        };
+        assert!(run(&state, Vec::new()).0.is_empty(), "no note, nothing drawn");
+        let track = klipp_core::TrackId::new();
+        let d = Diagnosis {
+            health: Health { seconds: 10, dropping: 0.32, sustained: true },
+            cause: "V2 takes 95 ms a frame (on the GPU), of the 42 ms a frame has".into(),
+            fix: Some(Fix::FreezeTrack { track, name: "V2".into() }),
+        };
+        state.playback_note = Some((d, std::time::Instant::now()));
+        let (texts, _) = run(&state, Vec::new());
+        assert!(texts.iter().any(|(t, _)| t == "Playback is dropping 32 % of frames"), "{texts:?}");
+        assert!(texts.iter().any(|(t, _)| t.starts_with("V2 takes 95 ms")));
+        let cmds = click(&state, "Freeze V2");
+        assert!(matches!(cmds.as_slice(), [AppCommand::SetTrackFrozen { track_id, frozen: true }, AppCommand::DismissPlaybackNote { forever: false }] if *track_id == track), "{cmds:?}");
+        assert!(matches!(click(&state, "Not now").as_slice(), [AppCommand::DismissPlaybackNote { forever: false }]));
+        assert!(matches!(click(&state, "Don't suggest this again").as_slice(), [AppCommand::DismissPlaybackNote { forever: true }]));
+        assert!(!cmds.iter().any(|c| matches!(c, AppCommand::Pause | AppCommand::Stop)), "playback goes on");
+        assert_eq!(state.playback, PlaybackState::Playing);
+    }
+
+    /// Each fix's button says what it does and sends only that.
+    #[test]
+    fn each_fix_sends_what_the_person_would() {
+        let (m1, m2) = (klipp_core::MediaId::new(), klipp_core::MediaId::new());
+        let (label, cmds) = playback_fix_action(&Fix::MakeProxies { media: vec![m1, m2] });
+        assert_eq!(label, "Make 2 proxies");
+        assert!(matches!(cmds.as_slice(), [AppCommand::GenerateProxy { media_id: a }, AppCommand::GenerateProxy { media_id: b }] if *a == m1 && *b == m2));
+        assert!(matches!(playback_fix_action(&Fix::UseProxies).1.as_slice(), [AppCommand::SetUseProxies(true)]));
+        let (label, cmds) = playback_fix_action(&Fix::PlaybackQuality { divisor: 4 });
+        assert_eq!(label, "Quarter size");
+        assert!(matches!(cmds.as_slice(), [AppCommand::SetPlaybackQuality(klipp_core::PlaybackQuality::Quarter)]));
     }
 }

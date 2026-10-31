@@ -2000,6 +2000,9 @@ pub enum AppCommand {
     /// The size frames are drawn at while playing (#3234), saved as the
     /// preference, as its control in Preferences sets it.
     SetPlaybackQuality(crate::PlaybackQuality),
+    /// The playback note put away (#3234): for now, or with `forever`
+    /// never suggested again (the preference turned off).
+    DismissPlaybackNote { forever: bool },
     /// Scan cache directories and remove files not referenced by any media in the pool.
     CleanOrphanedCaches,
     /// Cache Manager (feature #78): clear a single cache category by wiping

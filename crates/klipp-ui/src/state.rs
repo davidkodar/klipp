@@ -2945,6 +2945,9 @@ pub struct AppState {
     /// The note that Auto made the interface smaller (#2944): the size
     /// it chose, while the note is up.
     pub small_screen_note: Option<u32>,
+    /// The note suggesting a fix while playback keeps dropping frames
+    /// (#3234), and when it was shown.
+    pub playback_note: Option<(klipp_engine::playback_health::Diagnosis, std::time::Instant)>,
     /// Auto-create tracks when dropping clips outside existing tracks (synced from prefs).
     pub auto_create_tracks: bool,
 
@@ -5280,6 +5283,7 @@ impl Default for AppState {
             ui_scale_percent: 0,
             small_window: false,
             small_screen_note: None,
+            playback_note: None,
             auto_create_tracks: true,
             project_auto_filmstrips: None,
             project_auto_skim: None,

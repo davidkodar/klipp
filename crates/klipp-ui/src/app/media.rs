@@ -694,6 +694,14 @@ impl KlippApp {
                     self.refresh_cache_categories();
                     true
                 }
+                AppCommand::DismissPlaybackNote { forever } => {
+                    self.state.playback_note = None;
+                    if *forever {
+                        self.prefs.playback.suggest_playback_fixes = false;
+                        self.prefs_dirty = true;
+                    }
+                    true
+                }
                 AppCommand::SetPlaybackQuality(q) => {
                     self.prefs.playback.playback_quality = *q;
                     self.prefs_dirty = true;

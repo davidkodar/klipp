@@ -286,6 +286,14 @@ pub struct PlaybackPrefs {
     /// Playback quality preset.
     #[serde(default)]
     pub playback_quality: klipp_core::PlaybackQuality,
+    /// Whether a note suggests a fix when playback keeps dropping frames
+    /// (#3234).
+    #[serde(default = "default_true")]
+    pub suggest_playback_fixes: bool,
+    /// The note last shown for each project, by its folder: once per
+    /// project, again only for another fix or clearly worse (#3234).
+    #[serde(default)]
+    pub playback_notes_shown: std::collections::BTreeMap<String, PlaybackNoteShown>,
     /// Pre-render complex sections in background.
     #[serde(default = "default_true")]
     pub background_render: bool,
@@ -950,6 +958,17 @@ impl Default for GeneralPrefs {
     }
 }
 
+/// A playback note shown for a project (#3234): its fix's kind, and the
+/// share of frames dropped then.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PlaybackNoteShown {
+    pub fix: String,
+    pub dropping: f32,
+}
+
+/// The most projects whose last playback note is kept.
+pub const PLAYBACK_NOTES_KEPT: usize = 64;
+
 impl Default for PlaybackPrefs {
     fn default() -> Self {
         Self {
@@ -960,6 +979,8 @@ impl Default for PlaybackPrefs {
             hear_delivery_loudness: true,
             skim_resolution: default_skim_resolution(),
             playback_quality: Default::default(),
+            suggest_playback_fixes: true,
+            playback_notes_shown: Default::default(),
             background_render: true,
             background_performance: BackgroundPerformance::default(),
             optimised_playback: OptimisedPlayback::default(),
@@ -2152,6 +2173,25 @@ fn default_media_list_columns() -> Vec<klipp_media::Field> {
 
 #[cfg(test)]
 mod tests {
+    /// #3234: the playback suggestions' switch and each project's last
+    /// note are kept across sessions; a preferences file from before them
+    /// suggests, with none shown yet.
+    #[test]
+    fn playback_suggestions_are_kept_across_sessions() {
+        let mut p = PlaybackPrefs::default();
+        assert!(p.suggest_playback_fixes && p.playback_notes_shown.is_empty());
+        p.suggest_playback_fixes = false;
+        p.playback_notes_shown.insert("/films/a.klipp".into(), PlaybackNoteShown { fix: "freeze_track".into(), dropping: 0.12 });
+        let back: PlaybackPrefs = serde_json::from_value(serde_json::to_value(&p).unwrap()).unwrap();
+        assert!(!back.suggest_playback_fixes);
+        assert_eq!(back.playback_notes_shown["/films/a.klipp"], PlaybackNoteShown { fix: "freeze_track".into(), dropping: 0.12 });
+        let mut old = serde_json::to_value(PlaybackPrefs::default()).unwrap();
+        old.as_object_mut().unwrap().remove("suggest_playback_fixes");
+        old.as_object_mut().unwrap().remove("playback_notes_shown");
+        let old: PlaybackPrefs = serde_json::from_value(old).unwrap();
+        assert!(old.suggest_playback_fixes && old.playback_notes_shown.is_empty());
+    }
+
     use super::*;
 
     /// #1854: a recent project goes by its file's name, not a name
