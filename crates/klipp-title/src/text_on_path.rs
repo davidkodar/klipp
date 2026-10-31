@@ -176,6 +176,20 @@ mod tests {
         assert!(PathLine::new(vec![[3.0, 3.0], [3.0, 3.0]], false).is_none());
     }
 
+    /// #2584: centred text sits on its path where its middle is at the
+    /// path's middle; at offset 0, the path's start, the half before it
+    /// is drawn nowhere, which is what a centred title showed.
+    #[test]
+    fn centred_text_at_the_middle_of_a_path_is_all_on_it() {
+        let line = PathLine::new(vec![[100.0, 500.0], [500.0, 300.0], [900.0, 500.0]], false).unwrap();
+        // 24 glyphs, 20 px each: shorter than the path.
+        let glyphs: Vec<Laid> = (0..24).map(|i| Laid { along: 10.0 + 20.0 * i as f32, below_baseline: -10.0 }).collect();
+        let centred = TextPath::Layer { layer: klipp_timeline::TitleObjectId(1), contour: 0, offset: 0.5, offset_keyframes: Vec::new(), align: PathTextAlign::Center, flip: false };
+        let on = |offset| place(&centred, Some(&line), offset, &glyphs, 480.0, [0.0; 2], 0.0).iter().filter(|g| g.is_some()).count();
+        assert_eq!(on(0.5), 24, "all of it on the path");
+        assert_eq!(on(0.0), 12, "at the start, the first half nowhere");
+    }
+
     #[test]
     fn glyphs_stand_on_a_drawn_path_by_offset_align_and_flip() {
         let line = PathLine::new(vec![[100.0, 500.0], [900.0, 500.0]], false).unwrap();

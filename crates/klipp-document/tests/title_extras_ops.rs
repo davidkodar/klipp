@@ -132,6 +132,28 @@ fn a_style_op_puts_the_text_on_a_path_layer() {
     assert_eq!(d.title().1.primary_text().unwrap().text_path, None);
 }
 
+/// #2584: with no offset given, the text sits where its alignment puts it
+/// on the path: centred text on the path's middle, end-aligned on its
+/// end. Every alignment took the path's start, and centred text hung
+/// half off it. An offset given is kept.
+#[test]
+fn a_path_alignment_without_an_offset_puts_the_text_on_the_path() {
+    let (mut d, id) = titled("Twenty-four characters!!");
+    d.run(json!([{"op":"vector_path","clip_id":id,"shape":"ellipse","x":0.5,"y":0.5,"w":0.6,"h":0.4}])).unwrap();
+    let path_id = d.title().1.objects.iter().find(|o| matches!(o.content, TitleObjectContent::Shape(_))).unwrap().id;
+    let offset_for = |d: &mut Doc, path: serde_json::Value| {
+        d.run(json!([{"op":"style","clip_id":id,"on_path":path}])).unwrap();
+        match d.title().1.primary_text().unwrap().text_path.clone() {
+            Some(TextPath::Layer { offset, .. }) => offset,
+            other => panic!("{other:?}"),
+        }
+    };
+    assert_eq!(offset_for(&mut d, json!({"layer":path_id.0,"align":"center"})), 0.5);
+    assert_eq!(offset_for(&mut d, json!({"layer":path_id.0,"align":"end"})), 1.0);
+    assert_eq!(offset_for(&mut d, json!({"layer":path_id.0})), 0.0, "start, at the start, as before");
+    assert_eq!(offset_for(&mut d, json!({"layer":path_id.0,"align":"center","offset":0.3})), 0.3, "an offset given is kept");
+}
+
 /// Every wrong value is refused before anything changes, with the
 /// choices or the range.
 #[test]

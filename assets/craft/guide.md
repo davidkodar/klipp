@@ -746,6 +746,9 @@ exist until the plan runs.
   (`vector_path` adds one to its clip; a new title has none, so style
   it on after): `{layer, contour?, offset? (0 to 1), offset_keys?,
   align? (start, center, end), flip?}`, or `"none"` to lay it straight.
+  `align` says which part of the text sits at `offset`; left out,
+  `offset` is the start for start, the middle for center and the end
+  for end, so centred text centres on the path.
   `blend` mixes the text with the title's layers below it (normal, add,
   multiply, screen, overlay, soft_light, hard_light, difference,
   exclusion, color_dodge, color_burn, darken, lighten); `mask`
