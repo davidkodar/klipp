@@ -104,6 +104,11 @@ pub const ALL: &[Scenario] = &[
         run: crate::composite::s14_hd_five_layers,
     },
     Scenario {
+        name: "s22_composite_uhd_terminal_card_busy_24fps",
+        desc: "#3179: UHD at 24 fps: Terminal Card over a blurred layer, a graded clip and music",
+        run: crate::composite::s22_uhd_terminal_card_busy,
+    },
+    Scenario {
         name: "s20_flatten_1_instances",
         desc: "#3073: flatten 1 template instance(s)",
         run: crate::nesting::flatten_1,
