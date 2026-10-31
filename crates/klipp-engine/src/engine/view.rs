@@ -1203,6 +1203,17 @@ impl PlaybackEngine {
         tracing::debug!("the GPU stack's empty frame drawn ahead at {w}x{h} in {:.1} ms (drawn {})", t.elapsed().as_secs_f64() * 1000.0, drawn.is_some());
     }
 
+    /// The preview up drawn at `at` (#3210), as a timeline skim draws a
+    /// time, the playhead left where it is; whether it was. Not drawn, it
+    /// is said skipped.
+    pub(super) fn draw_preview_at(&mut self, at: klipp_core::Timecode) -> bool {
+        let shown = self.skim_timeline(at);
+        if self.sequence.view_with_revision().2.is_some() {
+            self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner()).preview_skipped = !shown;
+        }
+        shown
+    }
+
     /// The frame drawn without the preview that is up (#3210), the GPU
     /// stack having declined it: a preview is drawn on the stack or not
     /// at all, and the browser says it couldn't be.
@@ -1233,6 +1244,14 @@ impl PlaybackEngine {
     /// paths could show, because the stack presents it without the
     /// readback and the UI upload they pay.
     pub(super) fn present_frame_with(&mut self, primary: Option<HeldFrame>, stack_only: bool) -> bool {
+        // A preview up at a time of its own (#3210), parked: that time is
+        // the frame, drawn as its skim, never the playhead's under it.
+        if let Some(at) = self.preview_at.filter(|_| self.state != PlaybackState::Playing && !self.preview_declined) {
+            if self.sequence.view_with_revision().2.is_some() {
+                return self.draw_preview_at(at);
+            }
+            self.preview_at = None;
+        }
         if let Some(p) = primary.as_ref() {
             self.retain_primary(p);
         }

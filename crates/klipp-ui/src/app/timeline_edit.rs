@@ -120,52 +120,7 @@ impl KlippApp {
                     true
                 }
                 AppCommand::CreateGeneratorClip { track_index, data } => {
-                    let fps_rate = self.state.sequences[self.state.active_sequence_idx].fps.rate();
-                    let ph = self.state.playhead.rescale_to(fps_rate);
-                    // 5s default, expressed in seconds rather than
-                    // raw frames. `Fps::rate()` returns the numerator
-                    // (e.g. 24000 for 23.976 NTSC), so a literal
-                    // `from_frames(120, fps_rate)` produces a 5 ms
-                    // clip on fractional-fps projects — visible only
-                    // as a green flash before the playhead skips past.
-                    let duration = klipp_core::RationalTime::from_secs_f64(5.0, fps_rate);
-                    let timeline_out = ph + duration;
-                    let label = match &data {
-                        klipp_core::GeneratorData::SolidColor { .. } => "Solid Colour",
-                        klipp_core::GeneratorData::LivingGradient { .. } => "Living Gradient",
-                        klipp_core::GeneratorData::Grain { .. } => "Grain",
-                        klipp_core::GeneratorData::Placeholder { .. } => "Placeholder",
-                        klipp_core::GeneratorData::Gradient { .. } => "Gradient",
-                        klipp_core::GeneratorData::ColorBars => "Colour Bars",
-                        klipp_core::GeneratorData::ColorBars100 => "Colour Bars 100%",
-                        klipp_core::GeneratorData::ColorBarsSmpte => "SMPTE Colour Bars",
-                        klipp_core::GeneratorData::Countdown => "Countdown",
-                        klipp_core::GeneratorData::Timer { .. } => "Timer",
-                        klipp_core::GeneratorData::Slate { .. } => "Slate",
-                        klipp_core::GeneratorData::StillFrame { .. } => "Freeze Frame",
-                        klipp_core::GeneratorData::Polygon { .. } => "Polygon",
-                        klipp_core::GeneratorData::Star { .. } => "Star",
-                    };
-                    let seq = &mut self.state.sequences[self.state.active_sequence_idx];
-                    let track_idx = track_index.unwrap_or_else(|| {
-                        seq.tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video)
-                            .unwrap_or_else(|| {
-                                seq.tracks.insert(0, klipp_timeline::Track::new("Generator", klipp_timeline::TrackKind::Video));
-                                0
-                            })
-                    });
-                    let clip = klipp_timeline::Clip {
-                        id: klipp_core::ClipId::new(),
-                        kind: klipp_timeline::ClipKind::Generator(data.clone()),
-                        timeline_in: ph,
-                        timeline_out,
-                        source_in: klipp_core::RationalTime::from_secs_f64(0.0, fps_rate),
-                        source_out: duration,
-                        ..klipp_timeline::Clip::gap(ph, timeline_out)
-                    };
-                    let clip_id = clip.id;
-                    seq.tracks[track_idx].clips.push(clip);
-                    seq.tracks[track_idx].sort_clips();
+                    let (clip_id, label, park) = add_generator_clip(&mut self.state, *track_index, data);
                     // The new generator is the selection, the inspector
                     // opens on its parameters, and the playhead parks a
                     // little way in so the viewer shows it.
@@ -174,7 +129,6 @@ impl KlippApp {
                     self.state.toast.show(format!("{label} generator created"));
                     self.state.dirty = true;
                     self.sync_sequence_to_engine();
-                    let park = ph + klipp_core::RationalTime::from_secs_f64(0.25, fps_rate);
                     let _ = self.cmd_tx.send(AppCommand::SeekTo(park));
                     true
                 }
@@ -1673,6 +1627,60 @@ pub(super) fn pip_offsets_for_corner(
         "pip_bottom_right" => ( offset_x,  offset_y),
         _ => (0.0, 0.0),
     }
+}
+
+/// A generator clip of `data` put at the playhead on `track_index`, or the
+/// first picture track (a new one at the top if there is none), five
+/// seconds long: as the Generators browser adds one and, on a copy of the
+/// sequence, its preview (#3210) shows it. Its id, its name, and where the
+/// playhead parks to show it, a little way in.
+pub(super) fn add_generator_clip(state: &mut AppState, track_index: Option<usize>, data: &klipp_core::GeneratorData) -> (klipp_core::ClipId, &'static str, klipp_core::Timecode) {
+    let fps_rate = state.sequences[state.active_sequence_idx].fps.rate();
+    let ph = state.playhead.rescale_to(fps_rate);
+    // 5s default, expressed in seconds rather than raw frames.
+    // `Fps::rate()` returns the numerator (e.g. 24000 for 23.976 NTSC), so a
+    // literal `from_frames(120, fps_rate)` produces a 5 ms clip on
+    // fractional-fps projects — visible only as a green flash before the
+    // playhead skips past.
+    let duration = klipp_core::RationalTime::from_secs_f64(5.0, fps_rate);
+    let timeline_out = ph + duration;
+    let label = match &data {
+        klipp_core::GeneratorData::SolidColor { .. } => "Solid Colour",
+        klipp_core::GeneratorData::LivingGradient { .. } => "Living Gradient",
+        klipp_core::GeneratorData::Grain { .. } => "Grain",
+        klipp_core::GeneratorData::Placeholder { .. } => "Placeholder",
+        klipp_core::GeneratorData::Gradient { .. } => "Gradient",
+        klipp_core::GeneratorData::ColorBars => "Colour Bars",
+        klipp_core::GeneratorData::ColorBars100 => "Colour Bars 100%",
+        klipp_core::GeneratorData::ColorBarsSmpte => "SMPTE Colour Bars",
+        klipp_core::GeneratorData::Countdown => "Countdown",
+        klipp_core::GeneratorData::Timer { .. } => "Timer",
+        klipp_core::GeneratorData::Slate { .. } => "Slate",
+        klipp_core::GeneratorData::StillFrame { .. } => "Freeze Frame",
+        klipp_core::GeneratorData::Polygon { .. } => "Polygon",
+        klipp_core::GeneratorData::Star { .. } => "Star",
+    };
+    let seq = &mut state.sequences[state.active_sequence_idx];
+    let track_idx = track_index.unwrap_or_else(|| {
+        seq.tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video)
+            .unwrap_or_else(|| {
+                seq.tracks.insert(0, klipp_timeline::Track::new("Generator", klipp_timeline::TrackKind::Video));
+                0
+            })
+    });
+    let clip = klipp_timeline::Clip {
+        id: klipp_core::ClipId::new(),
+        kind: klipp_timeline::ClipKind::Generator(data.clone()),
+        timeline_in: ph,
+        timeline_out,
+        source_in: klipp_core::RationalTime::from_secs_f64(0.0, fps_rate),
+        source_out: duration,
+        ..klipp_timeline::Clip::gap(ph, timeline_out)
+    };
+    let clip_id = clip.id;
+    seq.tracks[track_idx].clips.push(clip);
+    seq.tracks[track_idx].sort_clips();
+    (clip_id, label, ph + klipp_core::RationalTime::from_secs_f64(0.25, fps_rate))
 }
 
 #[cfg(test)]

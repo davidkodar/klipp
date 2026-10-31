@@ -327,3 +327,98 @@ fn a_transition_previewed_is_drawn_at_its_middle_as_applied() {
     assert!(versus_applied < 0.25, "the preview is the dissolve applied: {versus_applied:.3} levels apart");
     assert!(after_down < 0.25, "taken down, the parked frame is back: {after_down:.3} levels apart");
 }
+
+/// #3210 PR 3: a generator previewed where its click would place it, on a
+/// track over the clip, is drawn at the time its click parks on, as the
+/// skim of it applied draws it; scrubbed to another time on it, the same.
+#[test]
+fn a_placed_generator_previewed_is_drawn_as_applied() {
+    let Some(path) = hd() else {
+        eprintln!("skipping: no ffmpeg");
+        return;
+    };
+    let fps = Fps::new(FPS, 1);
+    let tc = |s: f64| common::frame_tc((s * f64::from(FPS)).round() as i64, fps);
+    let media = MediaId::new();
+    let mut pool = MediaPool::default();
+    pool.add(MediaItem {
+        id: media,
+        path: path.clone(),
+        kind: klipp_media::MediaItemKind::File,
+        resolution: Resolution { width: W, height: H },
+        is_still: false,
+        has_audio: false,
+        fps,
+        skim_file: Some(path.clone()),
+        ..MediaItem::new_synthetic_title(media, path.display().to_string(), tc(3.0), fps)
+    });
+    let clip = Clip { kind: ClipKind::Media { media_id: media }, source_in: tc(0.0), source_out: tc(3.0), ..Clip::gap(tc(0.0), tc(3.0)) };
+    let mut v1 = Track::new("V1", TrackKind::Video);
+    v1.clips = vec![clip];
+    let mut seq = Sequence::new_default();
+    seq.fps = fps;
+    seq.resolution = Resolution { width: W, height: H };
+    seq.tracks = vec![v1];
+    // Half-opaque red over the picture from 0.4 s, as a generator placed
+    // there by its click lies.
+    let mut with = seq.clone();
+    let mut v2 = Track::new("V2", TrackKind::Video);
+    let red = Clip { kind: ClipKind::Generator(GeneratorData::SolidColor { color: [220, 30, 30, 128] }), source_in: tc(0.0), source_out: tc(2.0), ..Clip::gap(tc(0.4), tc(2.4)) };
+    v2.clips = vec![red];
+    with.tracks.insert(0, v2);
+    let with = Arc::new(with);
+
+    let shared = Arc::new(SharedSequence::new(seq.clone()));
+    let (cmd, cmd_rx) = crossbeam_channel::unbounded();
+    let (ev_tx, ev_rx) = crossbeam_channel::unbounded::<AppEvent>();
+    std::thread::spawn(move || while ev_rx.recv().is_ok() {});
+    let fb = Arc::new(Mutex::new(FrameBuffer::new(W, H)));
+    let engine = PlaybackEngine::new(
+        cmd_rx, ev_tx, Arc::clone(&fb), Arc::new(Mutex::new(FrameBuffer::new(W, H))),
+        Arc::clone(&shared), Arc::new(RwLock::new(pool)), Box::new(|| {}),
+        Arc::new(Mutex::new(None)), Arc::new(Mutex::new(klipp_engine::perf::PerfRing::default())),
+    );
+    let thread = std::thread::spawn(move || engine.run());
+    // A skim finds no frame in its budget on a busy machine and draws
+    // nothing: asked again until it draws.
+    let frame = |send: &dyn Fn()| -> Vec<u8> {
+        let g = common::generation(&fb);
+        let drawn = (0..10).any(|_| {
+            send();
+            common::wait_new(&fb, g, Duration::from_secs(3)).is_some()
+        });
+        assert!(drawn, "no frame was drawn in ten tries");
+        common::settle(&fb);
+        fb.lock().unwrap().latest_frame().0.to_vec()
+    };
+    // Parked at the generator's start, the time its click shows a quarter
+    // second on: a parked redraw while the preview is up draws that time
+    // too, not the playhead's.
+    let (park, later) = (tc(0.65), tc(1.8));
+    let _parked = frame(&|| cmd.send(AppCommand::SetPlayhead(tc(0.4))).unwrap());
+    let plain = frame(&|| cmd.send(AppCommand::SkimTimeline { time: park }).unwrap());
+    assert!(shared.set_preview(shared.revision(), Arc::clone(&with)));
+    let previewed = frame(&|| cmd.send(AppCommand::RefreshPreview { at: Some(park) }).unwrap());
+    // The parked frame drawn again while it is up (anything the engine
+    // redraws for): still the preview at its time, not the playhead's.
+    let redrawn = frame(&|| cmd.send(AppCommand::SequenceUpdated).unwrap());
+    let scrubbed = frame(&|| cmd.send(AppCommand::RefreshPreview { at: Some(later) }).unwrap());
+    // Applied for real, as the app applies an edit: the sequence put in
+    // and the engine told, then the playhead parked where the click parks
+    // it, and a skim at the later time.
+    let applied = frame(&|| {
+        shared.replace((*with).clone());
+        cmd.send(AppCommand::SequenceUpdated).unwrap();
+        cmd.send(AppCommand::SetPlayhead(park)).unwrap();
+    });
+    let applied_later = frame(&|| cmd.send(AppCommand::SkimTimeline { time: later }).unwrap());
+    let _ = cmd.send(AppCommand::Quit);
+    let _ = thread.join();
+    klipp_engine::video_decoder::wait_for_decode_threads(Duration::from_secs(10));
+
+    let (from_plain, versus_applied, scrub_versus, redraw) = (mean_diff(&previewed, &plain), mean_diff(&previewed, &applied), mean_diff(&scrubbed, &applied_later), mean_diff(&redrawn, &previewed));
+    eprintln!("generator previewed: {from_plain:.2} levels from the picture without it, {versus_applied:.3} from it applied; redrawn {redraw:.3} from it; scrubbed later {scrub_versus:.3} from it applied there");
+    assert!(redraw < 0.25, "a parked redraw with the preview up drew another time: {redraw:.3} levels off");
+    assert!(from_plain > 5.0, "the preview shows the red: {from_plain:.2} levels from the picture");
+    assert!(versus_applied < 0.25 && scrub_versus < 0.25, "the preview is the generator applied: {versus_applied:.3}, scrubbed {scrub_versus:.3}");
+}

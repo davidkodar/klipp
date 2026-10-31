@@ -1671,7 +1671,7 @@ fn handle_transition_interaction(
 ) {
     // Shown on the cut while hovered (#3210).
     if resp.hovered() {
-        if let Some(note) = crate::app::hover_preview::want_transition(state, spec).and_then(|key| crate::app::hover_preview::note_for(state, &key)) {
+        if let Some(note) = crate::app::hover_preview::want_transition(state, spec, crate::app::hover_preview::across(resp)).and_then(|key| crate::app::hover_preview::note_for(state, &key)) {
             resp.clone().on_hover_text(note);
         }
     }

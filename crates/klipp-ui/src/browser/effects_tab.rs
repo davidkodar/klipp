@@ -464,7 +464,7 @@ pub fn show(
                             let is_fav = favorite_effects.iter().any(|n| n == &fx.name);
                             let card_hovered = resp.hovered();
                             // Shown on the clip while hovered (#3210).
-                            let resp = match card_hovered.then(|| crate::app::hover_preview::want_effect(state, &fx.name, &fx.source)).flatten().and_then(|key| crate::app::hover_preview::note_for(state, &key)) {
+                            let resp = match card_hovered.then(|| crate::app::hover_preview::want_effect(state, &fx.name, &fx.source, crate::app::hover_preview::across(&resp))).flatten().and_then(|key| crate::app::hover_preview::note_for(state, &key)) {
                                 Some(note) => resp.on_hover_text(note),
                                 None => resp,
                             };

@@ -1790,6 +1790,11 @@ pub struct PlaybackEngine {
     /// The frame being drawn again without the preview up (#3210), the
     /// GPU stack having declined it.
     preview_declined: bool,
+    /// The time the preview up is shown at, when not the playhead's (a
+    /// transition's middle, a scrub over its card): a parked frame drawn
+    /// again draws that time, or the preview would give way to the
+    /// playhead's frame at the next redraw.
+    preview_at: Option<Timecode>,
     /// What the viewer shows of the picture (#2758): the picture, or one
     /// channel of it in grey (`AppCommand::SetViewChannel`).
     view_channel: klipp_core::ViewChannel,
@@ -2893,6 +2898,7 @@ impl PlaybackEngine {
             node_sample_since: None,
             solo: None,
             preview_declined: false,
+            preview_at: None,
             view_channel: klipp_core::ViewChannel::Picture,
             fast_solo: None,
             visible_node_thumbs: std::collections::HashSet::new(),
@@ -4247,20 +4253,20 @@ impl PlaybackEngine {
             }
             // A preview put up or taken down (#3210): the frame parked is
             // drawn again with it or without it; playing, the next one is.
-            AppCommand::RefreshPreview { at } => match at {
-                Some(at) => {
-                    let shown = self.skim_timeline(at);
-                    if self.sequence.view_with_revision().2.is_some() {
-                        self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner()).preview_skipped = !shown;
+            AppCommand::RefreshPreview { at } => {
+                self.preview_at = at;
+                match at {
+                    Some(at) => {
+                        self.draw_preview_at(at);
+                    }
+                    None => {
+                        self.end_skim();
+                        if self.state != PlaybackState::Playing {
+                            self.regrade_cached_frame();
+                        }
                     }
                 }
-                None => {
-                    self.end_skim();
-                    if self.state != PlaybackState::Playing {
-                        self.regrade_cached_frame();
-                    }
-                }
-            },
+            }
 
             AppCommand::SequenceUpdated => {
                 // A frozen frame's key reads the pool's media anew (#3207).

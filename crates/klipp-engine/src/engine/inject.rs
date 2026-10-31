@@ -380,15 +380,19 @@ mod tests {
 
         assert!(playhead() > then + 1.0, "the playhead goes on: {then:.2} s, then {:.2} s", playhead());
         super::disarm_decoder(&path);
-        let shown = fb.lock().unwrap().latest_generation();
         cmd.send(AppCommand::Pause).unwrap();
+        // Back at 1 s, a refresh's seek, which forgives nothing: on a
+        // loaded machine the waits above can run the playhead to the
+        // clip's end, where playing again has no frames to show.
+        cmd.send(AppCommand::SetPlayhead(tc(25))).unwrap();
         std::thread::sleep(Duration::from_millis(200));
+        let shown = fb.lock().unwrap().latest_generation();
         cmd.send(AppCommand::Play).unwrap();
         let t0 = Instant::now();
         while fb.lock().unwrap().latest_generation() <= shown + 25 && t0.elapsed() < Duration::from_secs(10) {
             std::thread::sleep(Duration::from_millis(10));
         }
-        assert!(fb.lock().unwrap().latest_generation() > shown + 25, "playing again shows frames");
+        assert!(fb.lock().unwrap().latest_generation() > shown + 25, "playing again shows frames (playhead at {:.2} s)", playhead());
         let _ = cmd.send(AppCommand::Quit);
         let _ = thread.join();
         crate::video_decoder::wait_for_decode_threads(Duration::from_secs(10));

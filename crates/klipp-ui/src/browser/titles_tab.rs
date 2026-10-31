@@ -548,6 +548,11 @@ fn handle_title_interaction(
     selected: &mut Option<String>,
     is_fav: bool,
 ) -> bool {
+    // Shown where a double-click would put it while hovered (#3210).
+    if resp.hovered() {
+        let place = crate::app::hover_preview::Place::Title(Box::new(title.data()));
+        crate::app::hover_preview::want_placed(state, &format!("title:{}", title.key()), place, crate::app::hover_preview::across(resp));
+    }
     if resp.clicked() {
         *selected = Some(title.key());
     }
@@ -567,44 +572,7 @@ fn handle_title_interaction(
     });
     if resp.double_clicked() {
         crate::browser::library_card::push_recent(&mut state.library_recent.titles, &title.list_key());
-        let title_data = title.data();
-        state.pending_title_data = Some(title_data);
-        let ph = state.playhead;
-        let track_index = state.sequences[state.active_sequence_idx]
-            .tracks
-            .iter()
-            .enumerate()
-            .find(|(_, t)| {
-                t.kind == klipp_timeline::TrackKind::Text
-                    && t.clip_at_timecode(ph).is_none()
-            })
-            .map(|(idx, _)| idx);
-        let track_index = match track_index {
-            Some(idx) => idx,
-            None => {
-                let track_num = state.sequences[state.active_sequence_idx]
-                    .tracks
-                    .iter()
-                    .filter(|t| t.kind == klipp_timeline::TrackKind::Text)
-                    .count()
-                    + 1;
-                let track = klipp_timeline::Track::new(
-                    &format!("Text {track_num}"),
-                    klipp_timeline::TrackKind::Text,
-                );
-                state.sequences[state.active_sequence_idx]
-                    .tracks
-                    .insert(0, track);
-                0
-            }
-        };
-        let fps_rate = state.sequences[state.active_sequence_idx].fps.rate();
-        let duration_frames = fps_rate * 5;
-        cmds.push(AppCommand::CreateTitleClip {
-            track_index,
-            timeline_in: ph,
-            duration_frames,
-        });
+        cmds.push(place_title(state, title.data()));
         state
             .toast
             .show(format!("\"{}\" title added to timeline", title.name()));
@@ -1435,6 +1403,27 @@ fn titles_result_strip(
     );
 }
 
+/// A title of `data` put at the playhead, five seconds long, on the first
+/// text track free there, or a new one at the top: the title made the
+/// next to place, and the command that places it. As a double-click on a
+/// title card adds it and, on a copy of the sequence, its preview (#3210)
+/// shows it.
+pub(crate) fn place_title(state: &mut AppState, data: klipp_timeline::TitleData) -> AppCommand {
+    state.pending_title_data = Some(data);
+    let ph = state.playhead;
+    let seq = &mut state.sequences[state.active_sequence_idx];
+    let track_index = match seq.tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Text && t.clip_at_timecode(ph).is_none()) {
+        Some(idx) => idx,
+        None => {
+            let track_num = seq.tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Text).count() + 1;
+            seq.tracks.insert(0, klipp_timeline::Track::new(&format!("Text {track_num}"), klipp_timeline::TrackKind::Text));
+            0
+        }
+    };
+    let duration_frames = seq.fps.rate() * 5;
+    AppCommand::CreateTitleClip { track_index, timeline_in: ph, duration_frames }
+}
+
 #[cfg(test)]
 mod tests {
     use klipp_timeline::title_library::builtin;
@@ -1649,4 +1638,3 @@ mod tests {
         assert!(checked >= 8, "only {checked} moving backings");
     }
 }
-
