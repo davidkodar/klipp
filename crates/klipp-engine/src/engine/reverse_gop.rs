@@ -190,7 +190,15 @@ impl ReverseGop {
                     break;
                 }
                 let pts = f.pts_secs();
+                // The frame that ends the window is kept too: the time
+                // asked for lies between it and the one before. A window
+                // is a frame wide at the rate guessed before any were
+                // measured, 30 fps; at 25 one around a time halfway
+                // between two frames held neither, only the keyframe
+                // before, and that time was not covered: the frame came
+                // black (#3217).
                 if pts >= fill.to {
+                    taken.push(HeldFrame::from_frame(q.pop().expect("the front frame")));
                     done = true;
                     break;
                 }
@@ -319,6 +327,30 @@ mod tests {
         Some(out)
     }
 
+    /// Six seconds at 25 fps of H.264 with every frame a keyframe, in MP4,
+    /// which seeks to the frame asked for. `None` without ffmpeg or its
+    /// H.264 encoder.
+    fn intra_source() -> Option<std::path::PathBuf> {
+        let out = std::env::temp_dir().join("klipp-reverse-gop-720p-intra.mp4");
+        if out.exists() {
+            return Some(out);
+        }
+        let partial = out.with_extension(format!("{}.mp4", std::process::id()));
+        let ok = std::process::Command::new("ffmpeg")
+            .args(["-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=s=1280x720:r=25:d=6"])
+            .args(["-c:v", "libx264", "-preset", "ultrafast", "-g", "1", "-pix_fmt", "yuv420p"])
+            .arg(&partial)
+            .status()
+            .ok()?
+            .success();
+        if !ok {
+            let _ = std::fs::remove_file(&partial);
+            return None;
+        }
+        std::fs::rename(&partial, &out).ok()?;
+        Some(out)
+    }
+
     /// Asked for `secs` until its frame is held.
     fn settle(gop: &mut ReverseGop, secs: f64) {
         let t0 = Instant::now();
@@ -369,6 +401,33 @@ mod tests {
             std::thread::sleep(Duration::from_micros(500));
         }
         drop(gop);
+        crate::video_decoder::wait_for_decode_threads(Duration::from_secs(10));
+    }
+
+    /// #3217: a jump, the reader new, to a time near halfway between two
+    /// frames is given the nearer. Its window is a frame wide at the 30 fps
+    /// it guesses before measuring any, so at 25 fps it held only the
+    /// keyframe before such a time, which then was not covered: no frame,
+    /// and the viewer drew black.
+    #[test]
+    fn a_jump_between_two_frames_gives_the_nearer() {
+        let Some(path) = intra_source() else {
+            eprintln!("skipping: no ffmpeg with libx264");
+            return;
+        };
+        // Every frame a keyframe: the decode starts at the one before the
+        // window, as for an intra-coded camera file.
+        for frame in [68, 30, 99] {
+            let lease = crate::decode_budget::admit(0.0, crate::decode_budget::Priority::Overflow);
+            let decoder = VideoDecoder::open_with_queue(&path, 0, lease, 8).expect("the source opens");
+            let mut gop = ReverseGop::new(decoder, 120, 0.0);
+            // 0.45 of the way on: no frame in the window at 30 fps.
+            let secs = (frame as f64 + 0.45) / 25.0;
+            settle(&mut gop, secs);
+            let pts = gop.frame(secs).and_then(|f| f.pts).unwrap_or_else(|| panic!("no frame at {secs:.2} s"));
+            assert!((pts - frame as f64 / 25.0).abs() < 0.005, "the frame given at {secs:.2} s is the one at {pts:.2} s");
+            drop(gop);
+        }
         crate::video_decoder::wait_for_decode_threads(Duration::from_secs(10));
     }
 
