@@ -69,6 +69,14 @@ name = "all"
 path = "tests/all/main.rs"
 
 [[test]]
+name = "a_frame_kept_ahead_shows_as_live"
+path = "tests/a_frame_kept_ahead_shows_as_live.rs"
+
+[[test]]
+name = "frame_format_sizes"
+path = "tests/frame_format_sizes.rs"
+
+[[test]]
 name = "a_frozen_track_plays_from_its_frames"
 path = "tests/a_frozen_track_plays_from_its_frames.rs"
 

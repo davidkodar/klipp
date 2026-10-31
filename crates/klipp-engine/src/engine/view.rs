@@ -904,92 +904,8 @@ impl PlaybackEngine {
         self.pushed_lut_sig = Some(sig);
     }
 
-    /// The render cache's key for this frame, when the frame is one it can
-    /// hold: the primary clip alone on screen, graded, and nothing on that
-    /// the cache does not key (a grade tool's view, a split, a drag).
-    /// `size` is the frame's rendered size, part of the key: a half-size
-    /// frame and a full-size one of the same clip and grade are different
-    /// pictures, and the disk cache is looked up by name alone, so without
-    /// it a frame cached at one Playback Quality stopped the other ever
-    /// being rendered ahead. It is its own field, not folded into the
-    /// grade hash, so the timeline's cache bar still counts a clip's
-    /// frames by grade.
-    fn render_cache_key(&mut self, seq: &Sequence, primary: Option<ClipId>, size: (u32, u32)) -> Option<crate::render_cache::RenderCacheKey> {
-        if self.in_node_param_edit
-            || self.solo.is_some()
-            // The cache holds the picture, not a channel of it.
-            || self.view_channel != klipp_core::ViewChannel::Picture
-            || self.matte_preview
-            // The cache holds display bytes of the SDR picture; HDR
-            // monitoring shows another picture entirely.
-            || self.hdr_monitor.renders_hdr()
-            || self.bypass_color_grade
-            || self.compare_stabilization
-            || self.compare_effect_active
-            || self.node_sample.is_some()
-            || (self.state != PlaybackState::Playing && !self.visible_node_thumbs.is_empty())
-        {
-            return None;
-        }
-        let layers = klipp_compose::active_layers(seq, self.playhead);
-        let [layer] = layers.as_slice() else { return None };
-        let [clip] = layer.clips.as_slice() else { return None };
-        if layer.transition || Some(clip.id) != primary {
-            return None;
-        }
-        if !clip.frames_cacheable() {
-            return None;
-        }
-        let track_opacity = seq.tracks.get(layer.track).map(|t| t.opacity).unwrap_or(1.0);
-        let grade_hash = self.render_key_hash(seq, clip, track_opacity);
-        Some(crate::render_cache::RenderCacheKey { clip_id: clip.id, frame_number: self.playhead.value, grade_hash, size })
-    }
 
-    /// The render cache's hash for a clip's frames: the clip, the global
-    /// LUT, its track's opacity, and the render environment (working
-    /// space, LUT interpolation, proxy decode, the media's log format).
-    pub(super) fn render_key_hash(&mut self, seq: &klipp_timeline::Sequence, clip: &Clip, track_opacity: f32) -> u64 {
-        let environment = crate::render_cache::render_environment_hash(
-            self.color_pipeline.use_tetrahedral,
-            crate::video_decoder::working_colorspace(),
-            self.use_proxies,
-            self.current_file.as_deref().and_then(crate::video_decoder::registered_log_format),
-        );
-        self.clip_render_hash(clip) ^ self.lut_hash() ^ self.timeline_grade_hash(seq) ^ (track_opacity.to_bits() as u64).rotate_left(17) ^ environment.rotate_left(29)
-    }
 
-    /// The timeline grade, for the cache key: it runs over every frame,
-    /// so a change to it is a change to every cached frame. Hashed as the
-    /// clip it renders as, so it is cached and cleared with the others.
-    fn timeline_grade_hash(&mut self, seq: &klipp_timeline::Sequence) -> u64 {
-        match Clip::timeline_grade_of(seq) {
-            Some(tg) => self.clip_render_hash(&tg).rotate_left(41),
-            None => 0,
-        }
-    }
-
-    /// A hash of everything about a clip that its rendered frames depend
-    /// on, kept until the sequence changes. The same in every session for
-    /// the same clip, whatever order its maps were built in, so the disk
-    /// cache is found again after a restart (#1132).
-    fn clip_render_hash(&mut self, clip: &Clip) -> u64 {
-        if self.current_grade_hash == 0 {
-            // The sequence or a grade changed since the hashes were made.
-            self.render_hashes.clear();
-            self.current_grade_hash = 1;
-        }
-        *self.render_hashes.entry(clip.id).or_insert_with(|| clip_render_hash_of(clip))
-    }
-
-    fn lut_hash(&self) -> u64 {
-        use std::hash::{Hash, Hasher};
-        let p = &self.color_pipeline;
-        let mut h = std::collections::hash_map::DefaultHasher::new();
-        p.applies().hash(&mut h);
-        p.global_lut_path.hash(&mut h);
-        p.global_lut_opacity.to_bits().hash(&mut h);
-        h.finish()
-    }
 
     /// Render the timeline at the playhead. `primary` is the primary
     /// decoder's frame, when there is one; `width` × `height` the size to
@@ -1404,45 +1320,13 @@ impl PlaybackEngine {
                 ((pw, ph) == (w, h)).then_some(published);
         }
 
-        let cache_key = if progress || stack_only || previewing || self.measure_only_clip.is_some() { None } else { self.render_cache_key(&seq, primary_clip, (w, h)) };
-        if let Some(key) = &cache_key {
-            // The cached frame is 8-bit, so the display transform over it is
-            // a table: no expansion to float on the way to the same bytes.
-            let lut = self.cached_frame_display_lut();
-            // Read it where it lies. A 4K frame is 33 MB, and this path used
-            // to copy it twice — once out of the cache, once back in to say
-            // it had been used — before doing any work on it.
-            let from_hot = {
-                let hot = self
-                    .render_cache_hot
-                    .get(key)
-                    .filter(|(_, cw, ch)| (*cw, *ch) == (w, h))
-                    .map(|(data, _, _)| data);
-                hot.map(|data| match lut {
-                    Some(lut) => Picture::Display(super::map_u8_rgb(data, &lut)),
-                    None => Picture::Linear(super::u8_rgba_to_linear(data)),
-                })
-            };
-            if let Some(picture) = from_hot {
-                self.render_cache_hot.touch(key);
-                self.show_rendered(Rendered { picture, width: w, height: h, stats: None }, t_frame);
-                return true;
-            }
-            let from_disk =
-                self.render_cache_disk.get(key).filter(|(_, cw, ch)| (*cw, *ch) == (w, h));
-            if let Some((bytes, _, _)) = from_disk {
-                // Straight into the hot cache, then read back out of it, so
-                // the frame is moved rather than copied.
-                self.render_cache_hot.insert(key.clone(), bytes, w, h);
-                let picture = self
-                    .render_cache_hot
-                    .get(key)
-                    .map(|(data, _, _)| match lut {
-                        Some(lut) => Picture::Display(super::map_u8_rgb(data, &lut)),
-                        None => Picture::Linear(super::u8_rgba_to_linear(data)),
-                    })
-                    .expect("just inserted");
-                self.show_rendered(Rendered { picture, width: w, height: h, stats: None }, t_frame);
+        // A whole frame drawn ahead under its key (#3212): shown as it is,
+        // nothing decoded or composed. Its key covers everything in it, so
+        // a frame kept is current exactly as long as what it shows.
+        if !(progress || stack_only || previewing) && self.viewer_shows_program_frame() {
+            if let Some(pixels) = self.kept_frame(&seq, self.playhead, (w, h)) {
+                super::FRAMES_SHOWN_KEPT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                self.show_rendered(Rendered { picture: Picture::Linear(pixels.as_ref().clone()), width: w, height: h, stats: None }, t_frame);
                 return true;
             }
         }
@@ -1571,12 +1455,6 @@ impl PlaybackEngine {
             .with_unavailable(&self.thumbnail_priority, std::mem::take(&mut found.unavailable));
             self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner()).publish_node_thumbnails(batch);
         }
-        // A frame a node didn't draw as asked isn't kept: shown again from
-        // the cache it would carry no decline, and no chip (M4 step 10).
-        let cached = cache_key
-            .filter(|_| self.state != PlaybackState::Playing)
-            .filter(|_| !found.declines.iter().any(|d| d.fails()))
-            .map(|key| (key, super::rendered_frame_to_cache_u8(&linear)));
 
         self.show_split_views(&seq, primary_ref, w, h, inspected, found.ungraded.as_deref());
         self.show_inspection(&found, w, h, progress);
@@ -1591,12 +1469,6 @@ impl PlaybackEngine {
             self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner()).set_declines(declines);
         }
 
-        // Cached once the frame is on screen: compressing and writing a 4K
-        // frame (~15 ms) is not something the viewer should wait for.
-        if let Some((key, bytes)) = cached {
-            self.render_cache_disk.put(&key, &bytes, w, h);
-            self.render_cache_hot.insert(key, bytes, w, h);
-        }
         true
     }
 
@@ -1692,42 +1564,6 @@ impl PlaybackEngine {
         if let (Some(mask), Some(consumer)) = (&found.matte_mask, self.inspector_matte_preview_target) {
             let _ = self.event_tx.send(matte_preview_event(consumer, mask, w, h));
         }
-    }
-
-    /// The picture for the screen, and the light it carries.
-    ///
-    /// Off HDR monitoring this is the display encode of a display-referred
-    /// frame, as it has always been. On, the frame is HDR display light:
-    /// the screen gets either its SDR preview or the false colours, and
-    /// the light itself goes out as a map for the readout
-    /// (`klipp_color::hdr_view`).
-    /// The display transform for a frame that is already 8-bit, as a
-    /// per-channel table — or `None` when this tick cannot use one.
-    ///
-    /// The render cache holds frames sRGB-encoded, so a hit used to expand
-    /// them back to linear light (132 MB at 4K, and ~34 ms of it) purely to
-    /// run a transform that then quantises straight back to 8 bit. With 256
-    /// possible values per channel the whole chain is a table, and
-    /// `display::the_u8_table_is_the_float_path` pins it byte for byte.
-    ///
-    /// Three things have to hold, and monitoring can change between ticks:
-    ///
-    /// * the transform is per-channel — a BT.2020 or ACEScg project mixes
-    ///   channels on the way to the display and cannot be a table;
-    /// * HDR monitoring is off, since its readout needs the picture's light
-    ///   and a cached frame has been clamped to `[0, 1]` besides.
-    ///
-    /// The scopes are no reason to leave the table: they measure the bytes
-    /// it makes, which are the bytes the float path makes.
-    fn cached_frame_display_lut(&self) -> Option<[u8; 256]> {
-        if self.hdr_monitor.renders_hdr() {
-            return None;
-        }
-        klipp_color::display::display_transform_u8_lut_to(
-            self.tone_map_op,
-            crate::video_decoder::working_colorspace(),
-            self.sdr_transfer,
-        )
     }
 
     /// Hand the HDR picture to `klipp-hdr-out`, which shows it on a
@@ -1954,54 +1790,6 @@ impl PlaybackEngine {
         (self.repaint_cb)();
     }
 
-    /// Render the frame at `frame_number` from the pre-grade cache into the
-    /// render cache, without showing it. Only frames the cache can hold.
-    pub(super) fn prerender_frame(&mut self, frame_number: i64, pixels: HeldFrame) -> bool {
-        let primary = self.sequence.read().ok().and_then(|s| self.v1_clip_id(&s));
-        self.prerender_frame_as(frame_number, primary, &pixels)
-    }
-
-    /// Render `frame_number` into the render cache with `pixels` as
-    /// `primary`'s picture: the clip the frame shows, named by the caller.
-    /// The idle pre-render names the primary decoder's clip; Render In to
-    /// Out (#924) the clip at the frame, wherever the playhead is.
-    pub(super) fn prerender_frame_as(&mut self, frame_number: i64, primary: Option<ClipId>, pixels: &HeldFrame) -> bool {
-        let saved = self.playhead;
-        self.playhead = klipp_core::RationalTime { value: frame_number, rate: saved.rate };
-        let seq = {
-            let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
-            klipp_compose::frame_snapshot(&seq, self.playhead)
-        };
-        // Both sizes a frame is shown at: full, for a parked scrub, and
-        // under Half or Quarter the reduced one playback asks for. Full
-        // size first, since the scan runs while parked. One render per
-        // call, as before: a size already cached is passed over.
-        let full = viewer_canvas((pixels.width, pixels.height), (seq.resolution.width, seq.resolution.height));
-        let mut rendered = false;
-        for (w, h) in prerender_sizes(full, crate::video_decoder::playback_quality_divisor()) {
-            let Some(key) = self.render_cache_key(&seq, primary, (w, h)) else { break };
-            // Already cached at this size, in memory or on disk: nothing to
-            // render. Without this the scan rendered its nearest candidate
-            // again on every idle tick, forever — a full render, a readback,
-            // compression and a disk write, every 40 to 80 ms while paused.
-            let cached = self.render_cache_hot.get(&key).is_some_and(|(_, cw, ch)| (cw, ch) == (w, h))
-                || self.render_cache_disk.contains(&key);
-            if cached {
-                continue;
-            }
-            // No per-node thumbnails: this is not the user's frame.
-            self.thumb_capture_suspended = true;
-            let (linear, _) = self.render_timeline(&seq, primary.map(|id| (id, pixels)), w, h, Inspect::default());
-            self.thumb_capture_suspended = false;
-            let bytes = super::rendered_frame_to_cache_u8(&linear);
-            self.render_cache_hot.insert(key.clone(), bytes.clone(), w, h);
-            self.render_cache_disk.put(&key, &bytes, w, h);
-            rendered = true;
-            break;
-        }
-        self.playhead = saved;
-        rendered
-    }
 }
 
 /// Disable stabilization in the comparison's render copy.
@@ -2165,36 +1953,6 @@ mod playback_quality_tests {
     }
 }
 
-/// [`clip_render_hash`]'s value for `clip`. A clip that won't serialise
-/// gets a key no other has had, made afresh after each change, so a frame
-/// of one state of it is never taken for another: salted per process, so
-/// it doesn't meet a file the disk cache kept from another run either.
-/// A clip's render hash: the clip as it serialises and its picture, which
-/// a picture-truth clip's own serde leaves out. Hashed as the clip alone,
-/// an edit of such a clip's picture (a grade node's mix) kept its key, and
-/// the frame cached before the edit was shown after it.
-fn clip_render_hash_of(clip: &Clip) -> u64 {
-    let hashed = || -> Result<u64, crate::canonical_hash::Error> {
-        use std::hash::{Hash, Hasher};
-        let mut h = std::collections::hash_map::DefaultHasher::new();
-        crate::canonical_hash::canonical_hash(clip)?.hash(&mut h);
-        if let Ok(p) = clip.picture_v2() {
-            crate::canonical_hash::canonical_hash(&p.picture)?.hash(&mut h);
-            crate::canonical_hash::canonical_hash(&p.versions)?.hash(&mut h);
-        }
-        Ok(h.finish())
-    };
-    hashed().unwrap_or_else(|e| {
-        tracing::warn!("render cache: clip {} can't be hashed ({e}); its frames are kept for this state only", clip.id.0);
-        static SALT: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
-        static UNHASHABLE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let salt = *SALT.get_or_init(|| {
-            use std::hash::BuildHasher;
-            std::hash::RandomState::new().hash_one(std::process::id())
-        });
-        salt ^ UNHASHABLE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-    })
-}
 
 #[cfg(test)]
 mod picture_key_tests {
@@ -2223,25 +1981,25 @@ mod picture_key_tests {
         (c, path)
     }
 
-    /// A frame cached for a picture-truth clip is not shown after its
-    /// picture is edited through picture ops: the edit changes the key the
-    /// cache is looked up by. The key used to hash the clip's serde alone,
-    /// which leaves a picture-truth clip's picture out, so the frame of
-    /// the grade before the edit was found and shown.
+    /// A frame kept for a picture-truth clip is not shown after its
+    /// picture is edited through picture ops: the edit changes the whole
+    /// frame's key (#3212). A key that hashed the clip's serde alone
+    /// would leave a picture-truth clip's picture out, and the frame of the
+    /// grade before the edit would be found and shown (#3227).
     #[test]
-    fn a_picture_edit_is_not_served_the_frame_cached_before_it() {
-        let dir = std::env::temp_dir().join(format!("klipp-render-cache-picture-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let mut cache = crate::render_cache::DiskRenderCache::new(dir.clone(), 1);
+    fn a_picture_edit_is_not_served_the_frame_kept_before_it() {
         let (before, path) = graded(0.5);
-        let key = |c: &Clip| crate::render_cache::RenderCacheKey { clip_id: c.id, frame_number: 12, grade_hash: clip_render_hash_of(c), size: (8, 8) };
-        cache.put(&key(&before), &[7u8; 8 * 8 * 4], 8, 8);
-        assert!(cache.get(&key(&before)).is_some(), "cached");
         let mut after = before.clone();
         after.apply_picture_ops(&[GraphOp::SetMix { path, mix: Some(0.8) }]).unwrap();
-        assert_ne!(clip_render_hash_of(&after), clip_render_hash_of(&before), "the edit changes the clip's render hash");
-        assert!(cache.get(&key(&after)).is_none(), "the frame cached before the edit is not served after it");
-        let _ = std::fs::remove_dir_all(&dir);
+        let key = |c: &Clip| {
+            let mut track = klipp_timeline::Track::new("V1", klipp_timeline::TrackKind::Video);
+            track.clips = vec![c.clone()];
+            let mut seq = Sequence::new_default();
+            seq.tracks = vec![track];
+            let keying = crate::frame_cache::Keying { media: std::sync::Arc::new(std::collections::HashMap::new()), environment: 1 };
+            keying.place(&seq, klipp_core::RationalTime { value: 12, rate: 24 }, (8, 8)).key
+        };
+        assert_ne!(key(&after), key(&before), "the frame kept before the edit is not the one asked for after it");
     }
 }
 

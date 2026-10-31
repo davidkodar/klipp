@@ -65,7 +65,7 @@ pub(crate) struct FreezeJobs {
     /// The project's cache: its folder and the store, opened off the UI
     /// thread (it counts every file in it).
     store: Option<(PathBuf, Arc<Mutex<CacheStore>>)>,
-    opening: Option<(PathBuf, mpsc::Receiver<CacheStore>)>,
+    opening: Option<(PathBuf, mpsc::Receiver<Arc<Mutex<CacheStore>>>)>,
     started_for: Option<Inputs>,
     seen: Option<(Inputs, Instant)>,
     jobs: HashMap<TrackId, Arc<ThreadJob>>,
@@ -76,9 +76,6 @@ pub(crate) struct FreezeJobs {
     orders: HashMap<TrackId, (Vec<klipp_core::Timecode>, klipp_core::Fps, usize)>,
     /// What the engine was last told.
     told: Option<(Option<PathBuf>, Vec<TrackId>)>,
-    /// What frozen tracks hold of the cache budget, as the engine was last
-    /// told it.
-    reserved: Option<u64>,
     /// Frozen sound tracks' stems that are current, as the engine was
     /// told them, and the file each stem job is drawing.
     stems: Vec<(TrackId, PathBuf)>,
@@ -111,7 +108,7 @@ impl FreezeJobs {
         // The store, opened once per folder.
         if let Some((path, rx)) = &self.opening {
             if let Ok(store) = rx.try_recv() {
-                self.store = Some((path.clone(), Arc::new(Mutex::new(store))));
+                self.store = Some((path.clone(), store));
                 self.opening = None;
             }
         }
@@ -201,7 +198,7 @@ impl FreezeJobs {
         std::thread::Builder::new()
             .name("freeze-store".into())
             .spawn(move || {
-                let _ = tx.send(CacheStore::open(root, cap));
+                let _ = tx.send(klipp_engine::cache_store::shared_at(&root, cap));
             })
             .ok();
         self.opening = Some((folder, rx));
@@ -240,10 +237,10 @@ impl KlippApp {
             if sound {
                 self.freeze_jobs.stems.clear();
                 let _ = self.cmd_tx.send(AppCommand::SetFrozenStems(Vec::new()));
-            } else {
-                // The store forgets what it held; opened again when wanted.
-                self.freeze_jobs.store = None;
-                self.freeze_jobs.opening = None;
+            } else if let Some((_, store)) = &self.freeze_jobs.store {
+                // Through the store, so its index forgets them too: the
+                // store is the engine's as well (#3212).
+                store.lock().unwrap_or_else(|e| e.into_inner()).remove_prefix("freeze/");
             }
             let project = cache.parent().map(std::path::Path::to_path_buf).unwrap_or_default();
             match cache_inside(&project, Some(if sound { "stems" } else { "freeze" })) {
@@ -259,25 +256,16 @@ impl KlippApp {
         }
         self.freeze_jobs.started_for = None;
         self.freeze_jobs.seen = None;
-        self.freeze_jobs.reserved = None;
     }
 
-    /// Tell the engine what of the cache budget frozen tracks hold, when
-    /// it changed: their frames and stems are kept first, and the render
-    /// cache keeps to the rest (#3207). The frame store keeps to what the
-    /// stems leave.
-    fn reserve_for_frozen(&mut self, folder: Option<&std::path::Path>) {
+    /// The project's cache store keeps to the budget less what frozen
+    /// sound holds beside it (#3207): in the store, frozen tracks' frames
+    /// are pinned and frames drawn ahead (#3212) let go first.
+    fn cap_for_frozen(&mut self, folder: Option<&std::path::Path>) {
         let budget = u64::from(self.prefs.media_cache.max_cache_size_gb) << 30;
         let stems = folder.map_or(0, |f| crate::cache_manager::scan_tree_size(&f.join("stems")).0);
-        let frames = self.freeze_jobs.store.as_ref().map_or(0, |(_, s)| {
-            let mut s = s.lock().unwrap_or_else(|e| e.into_inner());
-            s.set_cap(budget.saturating_sub(stems));
-            s.total_bytes()
-        });
-        let held = frames + stems;
-        if self.freeze_jobs.reserved != Some(held) {
-            self.freeze_jobs.reserved = Some(held);
-            let _ = self.cmd_tx.send(AppCommand::SetRenderCacheReserved(held));
+        if let Some((_, s)) = &self.freeze_jobs.store {
+            s.lock().unwrap_or_else(|e| e.into_inner()).set_cap(budget.saturating_sub(stems));
         }
     }
 
@@ -330,8 +318,8 @@ impl KlippApp {
             self.start_freeze_jobs(&seq, &inputs);
         }
         // What they hold of the budget, again once jobs end or start.
-        if tick.start || tick.stems || tick.ended || self.freeze_jobs.reserved.is_none() {
-            self.reserve_for_frozen(inputs.folder.as_deref());
+        if tick.start || tick.stems || tick.ended {
+            self.cap_for_frozen(inputs.folder.as_deref());
         }
         klipp_engine::freeze::set_statuses(self.freeze_jobs.statuses.clone());
     }

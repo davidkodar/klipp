@@ -688,7 +688,7 @@ impl KlippApp {
                 }
                 // The render cache is the engine's to clear, its index
                 // with it; a frozen category unfreezes its tracks (#3207).
-                AppCommand::ClearCacheCategory { path } if dirs::cache_dir().map(|d| d.join("klipp").join("render")).as_ref() == Some(path) => {
+                AppCommand::ClearCacheCategory { path } if dirs::cache_dir().map(|d| d.join("klipp").join("render")).as_ref() == Some(path) || self.freeze_cache_folder().is_some_and(|c| *path == c.join("frames")) => {
                     let _ = self.cmd_tx.send(AppCommand::ClearRenderCacheAll);
                     self.state.toast.show("Cleared the render cache");
                     self.refresh_cache_categories();

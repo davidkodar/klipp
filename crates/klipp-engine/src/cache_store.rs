@@ -23,6 +23,38 @@ const MAGIC: &[u8; 4] = b"KLF1";
 /// The format of a stored frame: RGBA half floats, straight alpha, linear
 /// in the working space.
 const FORMAT_RGBA_F16: u32 = 1;
+/// The format of a whole opaque frame (#3212): red, green and blue in ten
+/// bits each through [`encode10`]'s curve, a word a pixel. 23 % smaller
+/// than half floats after LZ4 on grainy footage, and no display level off.
+const FORMAT_RGB10: u32 = 2;
+
+/// The curve a whole frame's linear values take into ten bits (#3212):
+/// sRGB's to 1, then a log segment to 16, so highlights past 1 are kept.
+/// A fixed curve, not the display's: a frame kept so is never stale under
+/// another display transform.
+pub(crate) fn encode10(c: f32) -> u32 {
+    let e = if c <= 1.0 {
+        if c <= 0.003_130_8 { c.max(0.0) * 12.92 } else { 1.055 * c.powf(1.0 / 2.4) - 0.055 }
+    } else {
+        1.0 + c.min(16.0).log2() / 4.0
+    };
+    ((e / 2.0).clamp(0.0, 1.0) * 1023.0).round() as u32
+}
+
+pub(crate) fn decode10(v: u32) -> f32 {
+    let e = (v & 1023) as f32 / 1023.0 * 2.0;
+    if e <= 1.0 {
+        if e <= 0.04045 { e / 12.92 } else { ((e + 0.055) / 1.055).powf(2.4) }
+    } else {
+        2f32.powf((e - 1.0) * 4.0)
+    }
+}
+
+/// Whether a frame keeps in ten bits: opaque, and every value within the
+/// curve.
+fn fits_ten_bits(rgba: &[f32]) -> bool {
+    rgba.chunks_exact(4).all(|p| p[3] >= 1.0 && p[..3].iter().all(|c| (0.0..=16.0).contains(c)))
+}
 const HEADER: usize = 16;
 /// The largest frame a header may claim, so a hostile or corrupt file
 /// can't ask for an allocation the size of memory: 16K × 16K.
@@ -193,6 +225,16 @@ impl CacheStore {
     /// Store `rgba` (straight alpha, linear, `at.size`) as `namespace`'s frame
     /// `at`, evicting the oldest unpinned frames over the cap.
     pub fn put(&mut self, namespace: &str, at: FrameAt, rgba: &[f32]) -> Result<(), PutRefused> {
+        self.put_as(namespace, at, rgba, false)
+    }
+
+    /// [`Self::put`] a whole frame (#3212): in ten bits a channel where it
+    /// is opaque and within the curve, as half floats otherwise.
+    pub fn put_frame(&mut self, namespace: &str, at: FrameAt, rgba: &[f32]) -> Result<(), PutRefused> {
+        self.put_as(namespace, at, rgba, true)
+    }
+
+    fn put_as(&mut self, namespace: &str, at: FrameAt, rgba: &[f32], ten_bits: bool) -> Result<(), PutRefused> {
         if !valid_namespace(namespace) {
             return Err(PutRefused::Namespace(namespace.to_owned()));
         }
@@ -200,11 +242,20 @@ impl CacheStore {
         if w == 0 || h == 0 || w > MAX_SIDE || h > MAX_SIDE || rgba.len() != (w as usize) * (h as usize) * 4 {
             return Err(PutRefused::Io(format!("{} values for a {w}x{h} frame", rgba.len())));
         }
-        let mut halves = Vec::with_capacity(rgba.len() * 2);
-        for v in rgba {
-            halves.extend_from_slice(&half::f16::from_f32(*v).to_bits().to_le_bytes());
-        }
-        let packed = lz4_flex::compress_prepend_size(&halves);
+        let (format, payload) = if ten_bits && fits_ten_bits(rgba) {
+            let mut words = Vec::with_capacity(rgba.len());
+            for p in rgba.chunks_exact(4) {
+                words.extend_from_slice(&(encode10(p[0]) | encode10(p[1]) << 10 | encode10(p[2]) << 20).to_le_bytes());
+            }
+            (FORMAT_RGB10, words)
+        } else {
+            let mut halves = Vec::with_capacity(rgba.len() * 2);
+            for v in rgba {
+                halves.extend_from_slice(&half::f16::from_f32(*v).to_bits().to_le_bytes());
+            }
+            (FORMAT_RGBA_F16, halves)
+        };
+        let packed = lz4_flex::compress_prepend_size(&payload);
         let needed = (HEADER + packed.len()) as u64;
         if !self.room_for(namespace, needed) {
             return Err(PutRefused::Full);
@@ -221,7 +272,7 @@ impl CacheStore {
             let tmp = path.with_extension("klf.tmp");
             let mut f = std::fs::File::create(&tmp)?;
             f.write_all(MAGIC)?;
-            f.write_all(&FORMAT_RGBA_F16.to_le_bytes())?;
+            f.write_all(&format.to_le_bytes())?;
             f.write_all(&w.to_le_bytes())?;
             f.write_all(&h.to_le_bytes())?;
             f.write_all(&packed)?;
@@ -259,6 +310,26 @@ impl CacheStore {
     /// Every frame `namespace` holds.
     pub fn frames(&self, namespace: &str) -> Vec<FrameAt> {
         self.entries.values().filter(|e| e.namespace == namespace).map(|e| e.at).collect()
+    }
+
+    /// Remove `namespace`'s frames whose tick is in `ticks`, at every key
+    /// and size (a cleared range): how many went.
+    pub fn remove_ticks(&mut self, namespace: &str, ticks: std::ops::Range<i64>) -> usize {
+        let paths: Vec<PathBuf> = self.entries.iter().filter(|(_, e)| e.namespace == namespace && ticks.contains(&e.at.tick)).map(|((_, p), _)| p.clone()).collect();
+        for p in &paths {
+            let _ = std::fs::remove_file(p);
+            self.forget(p);
+        }
+        paths.len()
+    }
+
+    /// Remove every namespace under `prefix` (`freeze/`: every frozen
+    /// track's frames) and its frames.
+    pub fn remove_prefix(&mut self, prefix: &str) {
+        let names: std::collections::BTreeSet<String> = self.entries.values().filter(|e| e.namespace.starts_with(prefix)).map(|e| e.namespace.clone()).collect();
+        for n in names {
+            self.remove_namespace(&n);
+        }
     }
 
     /// Remove `namespace` and its frames (a cleared freeze).
@@ -341,29 +412,43 @@ pub fn read_stored_packed(root: &Path, namespace: &str, at: FrameAt) -> Option<V
     if !valid_namespace(namespace) {
         return None;
     }
-    let raw = read_raw(&root.join(namespace).join(at.file_name()), at.size)?;
-    Some(raw.chunks_exact(4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect())
+    let (format, raw) = read_raw(&root.join(namespace).join(at.file_name()), at.size)?;
+    (format == FORMAT_RGBA_F16).then(|| raw.chunks_exact(4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect())
 }
 
 fn read_frame(path: &Path, size: (u32, u32)) -> Option<Vec<f32>> {
-    let raw = read_raw(path, size)?;
-    Some(raw.chunks_exact(2).map(|b| half::f16::from_bits(u16::from_le_bytes([b[0], b[1]])).to_f32()).collect())
+    let (format, raw) = read_raw(path, size)?;
+    Some(match format {
+        FORMAT_RGB10 => raw
+            .chunks_exact(4)
+            .flat_map(|b| {
+                let w = u32::from_le_bytes([b[0], b[1], b[2], b[3]]);
+                [decode10(w), decode10(w >> 10), decode10(w >> 20), 1.0]
+            })
+            .collect(),
+        _ => raw.chunks_exact(2).map(|b| half::f16::from_bits(u16::from_le_bytes([b[0], b[1]])).to_f32()).collect(),
+    })
 }
 
-/// A frame file's pixels, decompressed: little-endian half floats, or
-/// `None` when the file isn't a frame of `size` (checked before anything
-/// is allocated for it).
-fn read_raw(path: &Path, size: (u32, u32)) -> Option<Vec<u8>> {
+/// A frame file's format and pixels, decompressed: little-endian half
+/// floats, or ten-bit words. `None` when the file isn't a frame of `size`
+/// in a format known (checked before anything is allocated for it).
+fn read_raw(path: &Path, size: (u32, u32)) -> Option<(u32, Vec<u8>)> {
     let data = std::fs::read(path).ok()?;
     if data.len() < HEADER || &data[..4] != MAGIC {
         return None;
     }
     let word = |i: usize| u32::from_le_bytes(data[i..i + 4].try_into().unwrap());
     let (format, w, h) = (word(4), word(8), word(12));
-    if format != FORMAT_RGBA_F16 || (w, h) != size || w == 0 || h == 0 || w > MAX_SIDE || h > MAX_SIDE {
+    let bytes_a_pixel = match format {
+        FORMAT_RGBA_F16 => 8,
+        FORMAT_RGB10 => 4,
+        _ => return None,
+    };
+    if (w, h) != size || w == 0 || h == 0 || w > MAX_SIDE || h > MAX_SIDE {
         return None;
     }
-    let expected = (w as usize) * (h as usize) * 4 * 2;
+    let expected = (w as usize) * (h as usize) * bytes_a_pixel;
     // The prepended size must match the frame, before anything is
     // allocated for it.
     let claimed = u32::from_le_bytes(data.get(HEADER..HEADER + 4)?.try_into().ok()?) as usize;
@@ -371,7 +456,18 @@ fn read_raw(path: &Path, size: (u32, u32)) -> Option<Vec<u8>> {
         return None;
     }
     let raw = lz4_flex::decompress_size_prepended(&data[HEADER..]).ok()?;
-    (raw.len() == expected).then_some(raw)
+    (raw.len() == expected).then_some((format, raw))
+}
+
+static SHARED: std::sync::LazyLock<std::sync::Mutex<HashMap<PathBuf, std::sync::Arc<std::sync::Mutex<CacheStore>>>>> = std::sync::LazyLock::new(Default::default);
+
+/// The one store at `root` in this process (#3212): the app's frozen
+/// tracks and the engine's frame cache write into the same store, so one
+/// index counts both against one cap. Opened on first asking, with
+/// `cap_bytes` as its cap then; [`CacheStore::set_cap`] changes it after.
+pub fn shared_at(root: &Path, cap_bytes: u64) -> std::sync::Arc<std::sync::Mutex<CacheStore>> {
+    let mut all = SHARED.lock().unwrap_or_else(|e| e.into_inner());
+    all.entry(root.to_path_buf()).or_insert_with(|| std::sync::Arc::new(std::sync::Mutex::new(CacheStore::open(root, cap_bytes)))).clone()
 }
 
 #[cfg(test)]
@@ -409,6 +505,72 @@ mod tests {
         s.put("freeze/t1", at(5, 0xb), &frame(0.2)).unwrap();
         assert!(s.contains("freeze/t1", at(5, 0xa)) && s.contains("freeze/t1", at(5, 0xb)), "the older key kept");
         assert!(s.bytes("freeze/t1") > 0 && s.bytes("freeze/t1") == s.total_bytes());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// #3212: a whole opaque frame keeps in ten bits a channel, smaller
+    /// than half floats and within a display level; one with alpha, or a
+    /// value past the curve, keeps as half floats, exactly.
+    #[test]
+    fn a_whole_opaque_frame_keeps_in_ten_bits_within_a_level() {
+        let d = dir("ten-bits");
+        let mut s = CacheStore::open(&d, 1 << 30);
+        let (w, h) = (64u32, 32u32);
+        let opaque: Vec<f32> = (0..w * h).flat_map(|i| [(i % 97) as f32 / 96.0, (i % 13) as f32 / 12.0 * 0.2, 1.5 * (i % 5) as f32 / 4.0, 1.0]).collect();
+        let at = FrameAt { tick: 1, key: 9, size: (w, h) };
+        s.put_frame("frames", at, &opaque).unwrap();
+        let ten = s.bytes("frames");
+        let back = s.get("frames", at).expect("stored");
+        let display = |c: f32| (if c <= 0.003_130_8 { c * 12.92 } else { 1.055 * c.powf(1.0 / 2.4) - 0.055 }.clamp(0.0, 1.0) * 255.0).round() as i32;
+        let worst = opaque.iter().zip(&back).map(|(a, b)| (display(*a) - display(*b)).abs()).max().unwrap();
+        assert!(worst <= 1, "{worst} levels");
+        assert!(back.chunks_exact(4).all(|p| p[3] == 1.0), "opaque back");
+        // The same frame as half floats is larger.
+        s.put("frames", FrameAt { key: 10, ..at }, &opaque).unwrap();
+        assert!(s.bytes("frames") - ten > ten, "ten bits {ten} vs half floats {}", s.bytes("frames") - ten);
+        // Alpha, or past 16: half floats, exactly as half floats keep them.
+        let mut with_alpha = opaque.clone();
+        with_alpha[3] = 0.5;
+        let mut hot = opaque.clone();
+        hot[0] = 40.0;
+        for (k, pixels) in [(11u64, with_alpha), (12, hot)] {
+            let at = FrameAt { key: k, ..at };
+            s.put_frame("frames", at, &pixels).unwrap();
+            let back = s.get("frames", at).unwrap();
+            assert!(pixels.iter().zip(&back).all(|(a, b)| (half::f16::from_f32(*a).to_f32() - b).abs() < 1e-6), "key {k}");
+        }
+        // A frozen layer's packed reader takes half floats only.
+        assert!(read_stored_packed(&d, "frames", at).is_none());
+        assert!(read_stored_packed(&d, "frames", FrameAt { key: 11, ..at }).is_some());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// A ten-bit file whose size it claims isn't its frame's is refused
+    /// before anything is allocated for it.
+    #[test]
+    fn a_ten_bit_file_claiming_another_size_is_refused() {
+        let d = dir("ten-bits-hostile");
+        let at = FrameAt { tick: 1, key: 1, size: (4, 2) };
+        let path = d.join("frames").join(at.file_name());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let mut bytes = MAGIC.to_vec();
+        for word in [FORMAT_RGB10, 4, 2] {
+            bytes.extend_from_slice(&word.to_le_bytes());
+        }
+        bytes.extend_from_slice(&lz4_flex::compress_prepend_size(&vec![0u8; 1 << 20]));
+        std::fs::write(&path, bytes).unwrap();
+        assert!(read_stored(&d, "frames", at).is_none());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// One store a folder in a process.
+    #[test]
+    fn a_folder_has_one_store() {
+        let d = dir("shared");
+        let a = shared_at(&d, 1 << 20);
+        let b = shared_at(&d, 1 << 30);
+        assert!(std::sync::Arc::ptr_eq(&a, &b));
+        assert_eq!(a.lock().unwrap().cap(), 1 << 20, "the cap it was opened with, until set");
         let _ = std::fs::remove_dir_all(&d);
     }
 
