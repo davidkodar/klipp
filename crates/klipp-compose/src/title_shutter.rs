@@ -6,8 +6,10 @@
 //! every instant cost some 16 ms an instant at 4K; this costs a shift and
 //! a composite. A rectangle's entrance or exit that only moves or fades it
 //! is laid the same way, at the offset and alpha klipp-title poses it at.
-//! A layer doing anything else at those instants (typing on, a text
-//! sliding in, a keyed scale or style) has the title drawn at each.
+//! A layer whose entrance or exit is otherwise live at those instants
+//! (typing on, a text sliding in) is drawn alone at each, the others laid
+//! (#3185). A layer doing anything else (a keyed scale or style) has the
+//! title drawn at each.
 //!
 //! The CPU and the GPU stack run the same arithmetic: `shift` is the
 //! title style shader's op 64, `over_encoded` its op 10, laid in the
@@ -25,17 +27,19 @@ fn animated(k: &[klipp_core::Keyframe]) -> bool {
 
 /// One shown layer of a title, as the shutter lays it: `single`, the layer
 /// alone with its fades taken out, drawn once; its offset in frame pixels
-/// and its alpha at each instant.
+/// and its alpha at each instant. A `live` one is the layer alone as it
+/// is, drawn at each instant and laid there as drawn.
 pub(crate) struct Layer {
     pub single: TitleData,
     pub offsets: Vec<[f32; 2]>,
     pub alphas: Vec<f32>,
+    pub live: bool,
 }
 
 impl Layer {
     /// Whether it is laid the same at every instant.
     pub fn holds(&self) -> bool {
-        self.offsets.iter().all(|o| o.iter().all(|v| v.abs() < 1e-4)) && self.alphas.windows(2).all(|w| (w[0] - w[1]).abs() < 1e-6)
+        !self.live && self.offsets.iter().all(|o| o.iter().all(|v| v.abs() < 1e-4)) && self.alphas.windows(2).all(|w| (w[0] - w[1]).abs() < 1e-6)
     }
 }
 
@@ -113,13 +117,18 @@ pub(crate) fn plan(td: &TitleData, at: f64, times: &[f64], window: f32, width: u
             Some(_) => moves_or_fades(m.kind),
             None => m.kind == MotionKind::Fade && m.stagger == StaggerUnit::None,
         };
-        for &tk in times {
+        let live = times.iter().any(|&tk| {
             let tk = tk as f32;
             let enter_live = fx.motion.enter.as_ref().is_some_and(|m| !laid(m) && tk < span(o, m));
             let exit_live = fx.motion.exit.as_ref().is_some_and(|m| !laid(m) && window - tk < span(o, m));
-            if enter_live || exit_live {
-                return None;
-            }
+            enter_live || exit_live
+        });
+        if live {
+            // Drawn alone at each instant, all it does with it.
+            let mut single = td.clone();
+            single.objects = vec![o.clone()];
+            layers.push(Layer { single, offsets: vec![[0.0; 2]; times.len()], alphas: vec![1.0; times.len()], live: true });
+            continue;
         }
         // The motion's pose at `tk`, as klipp-title's `dress_layer` poses
         // a shape: travelling in the layer's painted height, its offset
@@ -162,11 +171,12 @@ pub(crate) fn plan(td: &TitleData, at: f64, times: &[f64], window: f32, width: u
         lone.fx_mut().loops.clear();
         lone.fx_mut().motion = Default::default();
         single.objects = vec![lone];
-        layers.push(Layer { single, offsets, alphas });
+        layers.push(Layer { single, offsets, alphas, live: false });
     }
-    // Worth it only when something moves or fades: a title held still is
-    // drawn once and placed by the shutter as before.
-    layers.iter().any(|l| !l.holds()).then_some(layers)
+    // Worth it only when something moves or fades and something is laid: a
+    // title held still is drawn once and placed by the shutter as before,
+    // and one whose every layer is live is drawn whole at each instant.
+    (layers.iter().any(|l| !l.holds()) && layers.iter().any(|l| !l.live)).then_some(layers)
 }
 
 /// The layers in the runs they are laid in: each that changes across the
@@ -355,5 +365,30 @@ mod tests {
         let mut scaled = td.clone();
         scaled.objects[0].fx_mut().motion = TitleMotion::enter(Motion::new(MotionKind::ScaleUp).duration(0.3));
         assert!(plan(&scaled, 0.1, &[0.09, 0.1, 0.11], 3.0, w, h).is_none(), "a rectangle scaling up");
+    }
+
+    /// #3185: a text typing on over a card is drawn alone at each instant,
+    /// as it is, while the card is laid; a title whose every layer is live
+    /// is drawn whole at each instead.
+    #[test]
+    fn a_text_typing_on_over_a_card_is_live_while_the_card_is_laid() {
+        use klipp_timeline::{Motion, MotionKind, ObjectTransform, Shape, ShapeKind, StaggerUnit, TitleMotion, TitlePosition};
+        let (w, h) = (200u32, 100u32);
+        let rect = Shape { kind: ShapeKind::Rectangle { corner_radius: 4.0 }, fill: Some([40, 60, 160, 255]), gradient: None, stroke: None, fit: None };
+        let mut td = TitleData::single_text(klipp_timeline::TextBox { text: "$ find".into(), ..Default::default() });
+        let typing = Motion::new(MotionKind::Typewriter).duration(0.02).stagger(StaggerUnit::Char, 0.05);
+        td.objects[0].fx_mut().motion = TitleMotion::enter(typing);
+        td.add_object(TitleObjectContent::Shape(rect), ObjectTransform { size: TitlePosition { x: 0.5, y: 0.4 }, center: TitlePosition { x: 0.5, y: 0.5 }, ..klipp_timeline::default_text_transform() });
+        td.objects[1].transform.center_x_keyframes = vec![klipp_core::Keyframe { time_secs: 0.0, value: 0.4, interpolation: Default::default(), tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() }, klipp_core::Keyframe { time_secs: 1.0, value: 0.6, interpolation: Default::default(), tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() }];
+        let times = [0.09, 0.1, 0.11];
+        let p = plan(&td, 0.1, &times, 3.0, w, h).expect("the card laid, the text live");
+        assert!(p[0].live && !p[0].holds(), "typing on: live");
+        assert_eq!(p[0].single.objects[0].fx().motion.enter, Some(typing), "drawn with its typing");
+        assert_eq!((p[0].offsets.clone(), p[0].alphas.clone()), (vec![[0.0; 2]; 3], vec![1.0; 3]), "laid as drawn");
+        assert!(!p[1].live && p[1].offsets[0] != p[1].offsets[2], "the card laid where its keys move it");
+        assert!(plan(&td, 0.8, &[0.79, 0.8, 0.81], 3.0, w, h).is_some_and(|p| p.iter().all(|l| !l.live)), "typed: nothing live");
+        let mut alone = td.clone();
+        alone.objects.truncate(1);
+        assert!(plan(&alone, 0.1, &times, 3.0, w, h).is_none(), "only a live layer: drawn whole");
     }
 }

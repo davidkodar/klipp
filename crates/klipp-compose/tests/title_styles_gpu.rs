@@ -2563,6 +2563,46 @@ fn a_card_sliding_in_and_out_is_laid_at_each_instant_on_the_gpu_as_on_the_cpu() 
     }
 }
 
+/// #3185: the card's text types on as the Terminal Card's does, drawn
+/// alone at each instant while the panel slides in and is laid: on the GPU
+/// as on the CPU, and as drawing each instant afresh.
+fn typing_in_card(per_instant: bool, w: u32, h: u32) -> Sequence {
+    use klipp_timeline::{Motion, MotionKind, StaggerUnit, TitleMotion};
+    let mut seq = sliding_in_card(per_instant, w, h);
+    let ClipKind::Title(title) = &mut seq.tracks[0].clips[0].kind else { unreachable!() };
+    let text = title.objects.iter().position(|o| matches!(o.content, klipp_timeline::TitleObjectContent::TextBox(_))).expect("its text");
+    title.objects[text].fx_mut().motion = TitleMotion::enter(Motion::new(MotionKind::Typewriter).duration(0.02).stagger(StaggerUnit::Char, 0.06));
+    seq
+}
+
+#[test]
+fn a_card_typing_in_is_drawn_live_at_each_instant_on_the_gpu_as_on_the_cpu() {
+    let (w, h) = (320u32, 180u32);
+    let mut gpu = renderer(); gpu.set_gpu_enabled(true);
+    let mut cpu = renderer(); cpu.set_gpu_enabled(false);
+    assert!(gpu.executor().gpu_pipeline_or_init().is_some(), "GPU required");
+    let display = |px: &[f32]| klipp_color::display::display_transform_ws_dithered_to(px, klipp_color::display::ToneMapOp::None, klipp_core::WorkingColorspace::Rec709Linear, klipp_core::SdrTransfer::Srgb);
+    // Typing while the panel slides, typing at rest, typed; and again, a
+    // seek back, so nothing of an earlier frame's live drawing is left.
+    for t in [0.05, 0.12, 0.2, 0.33, 1.1, 0.12] {
+        let at = RationalTime::from_secs_f64(t, 30);
+        let (want, _) = cpu.render_inspected(&typing_in_card(false, w, h), at, w, h, &mut NoMedia, RenderOptions::default(), Default::default());
+        let want = display(&want);
+        let scope = klipp_effects::residency::frame("typing card", t);
+        let (got, _) = gpu.render_display_u8_on_gpu(&typing_in_card(false, w, h), at, w, h, &mut NoMedia, RenderOptions::default()).expect("GPU frame");
+        drop(scope);
+        let events = klipp_effects::residency::last_frame().events;
+        assert!(!events.iter().any(|e| e.work == klipp_effects::residency::Work::Fallback), "at {t}: {events:?}");
+        let worst = got.iter().zip(&want).map(|(a, b)| a.abs_diff(*b)).max().unwrap();
+        assert!(worst <= 1, "at {t}: the GPU {worst} levels from the CPU");
+        let (fresh, _) = cpu.render_inspected(&typing_in_card(true, w, h), at, w, h, &mut NoMedia, RenderOptions::default(), Default::default());
+        let fresh = display(&fresh);
+        let apart: Vec<u8> = want.iter().zip(&fresh).map(|(a, b)| a.abs_diff(*b)).collect();
+        let (most, mean) = (*apart.iter().max().unwrap(), apart.iter().map(|&d| d as f64).sum::<f64>() / apart.len() as f64);
+        eprintln!("MEASURE at {t}: live vs drawn afresh: worst {most}, mean {mean:.3}, over 2: {}", apart.iter().filter(|&&d| d > 2).count());
+    }
+}
+
 #[test]
 fn title_motion_blur_stays_on_the_stack_at_4k() {
     let (w, h) = (3840, 2160);
