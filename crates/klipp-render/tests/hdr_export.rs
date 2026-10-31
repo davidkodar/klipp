@@ -27,6 +27,16 @@ fn ffmpeg_ok() -> bool {
     std::process::Command::new("ffmpeg").arg("-version").output().is_ok_and(|o| o.status.success())
 }
 
+/// Whether a 10-bit HEVC file can be made here, which these exports
+/// write; said when not, and the test passes over it.
+fn hevc_10_bit_here() -> bool {
+    let here = klipp_testing::encoders::libx265_encodes_10_bit();
+    if !here {
+        eprintln!("skipping: this ffmpeg's libx265 encodes no 10-bit");
+    }
+    here
+}
+
 fn clip(kind: klipp_timeline::ClipKind) -> klipp_timeline::Clip {
     let tc = |f| RationalTime::from_frames(f, 25);
     klipp_timeline::Clip { kind, source_in: tc(0), source_out: tc(FRAMES as i64), ..klipp_timeline::Clip::gap(tc(0), tc(FRAMES as i64)) }
@@ -195,6 +205,9 @@ fn assert_codes(label: &str, got: [i32; 3], want: [i32; 3], tol: i32) {
 /// sRGB-encoded, under PQ tags: 100 nits came out as 0.56 of PQ's range.
 #[test]
 fn a_pq_clip_exports_to_pq_as_it_came() {
+    if !hevc_10_bit_here() {
+        return;
+    }
     let bands = [[pq_y(5.0), 512, 512], [pq_y(203.0), 512, 512], [450, 400, 650], [pq_y(4000.0), 512, 512]];
     let Some(src) = band_clip("pq_src", bands, TAGS_PQ) else { return };
     let out = tmp("pq_to_pq.mp4");
@@ -236,6 +249,9 @@ fn a_pq_clip_exports_to_pq_as_it_came() {
 /// 203 cd/m², which is PQ 58% and HLG 75%.
 #[test]
 fn sdr_white_lands_on_the_bt2408_reference_level() {
+    if !hevc_10_bit_here() {
+        return;
+    }
     if !ffmpeg_ok() {
         return;
     }
@@ -288,6 +304,9 @@ fn text_luma(path: &Path) -> i32 {
 /// and never above the master's peak. Its black stays black.
 #[test]
 fn a_title_in_a_pq_export_is_as_bright_as_the_sequence_asks() {
+    if !hevc_10_bit_here() {
+        return;
+    }
     if !ffmpeg_ok() {
         return;
     }
@@ -365,6 +384,9 @@ fn slog3_to_linear(code: f64) -> f64 {
 /// clipped at SDR white as before.
 #[test]
 fn slog3_exports_to_pq_with_bt2408_grey_and_its_highlights() {
+    if !hevc_10_bit_here() {
+        return;
+    }
     let bands = [95u16, 420, 598, 1000].map(|y| [y, 512, 512]);
     let tags_709 = ["-color_range", "tv", "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709"];
     let Some(src) = band_clip("slog3_src", bands, &tags_709) else { return };
@@ -384,6 +406,9 @@ fn slog3_exports_to_pq_with_bt2408_grey_and_its_highlights() {
 /// tagged PQ whatever the HDR setting says. It was tagged BT.709.
 #[test]
 fn an_aces_pq_transform_is_a_pq_delivery() {
+    if !hevc_10_bit_here() {
+        return;
+    }
     if !ffmpeg_ok() {
         return;
     }
@@ -420,6 +445,9 @@ fn mastering_peak(path: &Path) -> f64 {
 /// puts it.
 #[test]
 fn a_pq_export_masters_to_the_peak_the_user_picked() {
+    if !hevc_10_bit_here() {
+        return;
+    }
     let bands = [[pq_y(203.0), 512, 512], [pq_y(2000.0), 512, 512], [pq_y(4000.0), 512, 512], [pq_y(500.0), 512, 512]];
     let Some(src) = band_clip("peak_src", bands, TAGS_PQ) else { return };
 
@@ -459,6 +487,9 @@ fn a_pq_export_masters_to_the_peak_the_user_picked() {
 /// decoder converted it in, the two would differ.
 #[test]
 fn a_bt2020_project_exports_a_bt2020_source_as_it_came() {
+    if !hevc_10_bit_here() {
+        return;
+    }
     let bands = [[pq_y(5.0), 512, 512], [pq_y(203.0), 512, 512], [450, 400, 650], [pq_y(1000.0), 512, 512]];
     let Some(src) = band_clip("bt2020_ws_src", bands, TAGS_PQ) else { return };
 
@@ -490,6 +521,9 @@ fn a_bt2020_project_exports_a_bt2020_source_as_it_came() {
 /// colour than the file holds.
 #[test]
 fn an_sdr_export_of_a_bt2020_project_is_converted() {
+    if !hevc_10_bit_here() {
+        return;
+    }
     let bands = [[pq_y(203.0), 512, 512], [450, 400, 650], [pq_y(203.0), 512, 512], [pq_y(5.0), 512, 512]];
     let Some(src) = band_clip("bt2020_sdr_src", bands, TAGS_PQ) else { return };
 

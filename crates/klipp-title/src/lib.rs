@@ -13103,8 +13103,17 @@ mod gradient_fill_tests {
     /// byte as they did. Built from the saved form, as an old file has it.
     #[test]
     fn old_two_colour_gradients_draw_as_before() {
+        #[cfg(not(target_arch = "aarch64"))]
         const BEFORE: [u64; 8] = [
             0x4d8c_db0e_2a65_99ae, 0x560c_05b5_cf8b_48a0, 0xf17e_ab77_ad95_545a, 0x7500_53c7_7e64_92af,
+            0x410f_8ab4_0d83_ad58, 0x0a04_66db_ed53_3706, 0x434b_00d9_3b42_4aec, 0x0687_5e9a_360f_fd0e,
+        ];
+        // On aarch64 the translucent pair's text at 1920x1080 rasterises a
+        // hair differently (the same at 640x360); taken on an M1 at
+        // f380730f, the rest as on x86_64.
+        #[cfg(target_arch = "aarch64")]
+        const BEFORE: [u64; 8] = [
+            0x4d8c_db0e_2a65_99ae, 0x560c_05b5_cf8b_48a0, 0xf17e_ab77_ad95_545a, 0xe030_b93b_da26_70fc,
             0x410f_8ab4_0d83_ad58, 0x0a04_66db_ed53_3706, 0x434b_00d9_3b42_4aec, 0x0687_5e9a_360f_fd0e,
         ];
         let saved = |json: &str, body: &str| {

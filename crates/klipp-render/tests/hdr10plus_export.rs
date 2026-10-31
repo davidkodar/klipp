@@ -11,8 +11,10 @@ use std::sync::{
     Arc,
 };
 
+/// An ffmpeg that can make the 10-bit HEVC file HDR10+ rides in: Arch
+/// Linux ARM's libx265 encodes 8-bit only.
 fn ffmpeg_ok() -> bool {
-    std::process::Command::new("ffmpeg").arg("-version").output().is_ok_and(|o| o.status.success())
+    std::process::Command::new("ffmpeg").arg("-version").output().is_ok_and(|o| o.status.success()) && klipp_testing::encoders::libx265_encodes_10_bit()
 }
 
 /// A dark grey shot, then a white one, a second each at 25.
