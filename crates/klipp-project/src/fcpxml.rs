@@ -853,6 +853,7 @@ mod tests {
             name: None,
             colour_label: 0,
             grade_flag: klipp_timeline::GradeFlag::None,
+            audition: None,
             precomp: None,
             baked_own: None,
         }

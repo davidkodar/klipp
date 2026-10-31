@@ -844,6 +844,7 @@ fn handle(
             | ControlCommand::ListMarkers
             | ControlCommand::UpdateMarker { .. }
             | ControlCommand::RemoveMarker { .. }
+            | ControlCommand::Alternatives { .. }
         ) => requests::media::respond(ctx, cmd, collect),
         cmd @ (ControlCommand::NewProject { .. }
             | ControlCommand::ProjectTemplates { .. }

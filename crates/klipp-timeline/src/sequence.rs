@@ -1888,6 +1888,7 @@ impl Track {
             name: None,
             colour_label: 0,
             grade_flag: crate::GradeFlag::None,
+            audition: None,
             precomp: None,
             baked_own: None,
         });
@@ -2201,6 +2202,9 @@ impl Track {
             name: clip.name.clone(),
             colour_label: clip.colour_label,
             grade_flag: crate::GradeFlag::None,
+            // The first half keeps the slot's other takes (#3209); the
+            // second is a plain clip of the active one.
+            audition: clip.audition.clone(),
             precomp: None,
             baked_own: None,
         };
@@ -2280,6 +2284,7 @@ impl Track {
             name: clip.name.clone(),
             colour_label: clip.colour_label,
             grade_flag: crate::GradeFlag::None,
+            audition: None,
             precomp: None,
             baked_own: None,
         };
@@ -2849,6 +2854,10 @@ pub struct Clip {
     /// from its colour label, which says what the clip is.
     #[serde(default, skip_serializing_if = "GradeFlag::is_none")]
     pub grade_flag: GradeFlag,
+    /// The other takes this clip's slot holds (#3209): the clip is the
+    /// active one; see [`crate::audition`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audition: Option<Box<crate::audition::Audition>>,
     /// A precomposition's scene, resolved for rendering: the inner
     /// sequence with its compounds flattened, its own precompositions
     /// resolved, and every clip re-identified for this instance. Set by
@@ -3290,6 +3299,7 @@ impl Clip {
             name: None,
             colour_label: 0,
             grade_flag: crate::GradeFlag::None,
+            audition: None,
             precomp: None,
             baked_own: None,
         }
@@ -3408,6 +3418,7 @@ impl Clip {
             name: None,
             colour_label: 0,
             grade_flag: crate::GradeFlag::None,
+            audition: None,
             precomp: None,
             baked_own: None,
         }
@@ -3515,6 +3526,7 @@ impl Clip {
             name: None,
             colour_label: 0,
             grade_flag: crate::GradeFlag::None,
+            audition: None,
             precomp: None,
             baked_own: None,
         }

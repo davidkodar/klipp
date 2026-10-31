@@ -194,6 +194,18 @@ Arguments:
 - `inline`: Also return the picture in the reply; by default only when no path is given
 - `path`: Absolute PNG path; temp dir when omitted
 
+## klipp_alternatives
+
+Auditions: takes held in one clip slot, switched in place, one undo step each. action list reads the slot's takes: each take's id, name, length, what it shows, its source range, whether it has sound, which is in the slot, and what differs from that one (media, range, length, speed, effects, grade, title, sound level). create, add, remove, rename, switch and finalize are the alternatives op, as klipp_apply runs it; see that op for what each does, and for ripple off the primary storyline.
+
+Arguments:
+- `action`: list, create, add, remove, rename, switch or finalize
+- `clip_id`: the slot's clip
+- `takes`: for create and add: each {media_id, from, to, name} a stretch of a pool file, or {} a copy of the clip to vary
+- `take`: for remove, rename and switch: a take's name or id
+- `name`: for rename, the new name; for create, the first take's
+- `ripple`: for switch off the primary storyline, move the clips after it
+
 ## klipp_apply
 
 Apply a list of editorial operations as ONE undo step, after resolving them the way klipp_plan does; pass its expected_revision and optionally expected_project_identity to refuse the whole edit if the timeline or project changed since planning. Replies with the steps and the revision. Ops: klipp_guide topic ops.

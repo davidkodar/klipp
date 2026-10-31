@@ -561,6 +561,7 @@ impl KlippApp {
             name: None,
             colour_label: 0,
             grade_flag: Default::default(),
+            audition: None,
             precomp: None,
             baked_own: None,
         };
@@ -3995,6 +3996,7 @@ pub(super) fn add_title_clip(
         name: None,
         colour_label: 0,
         grade_flag: Default::default(),
+        audition: None,
         precomp: None,
         baked_own: None,
     };

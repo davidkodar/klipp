@@ -16,15 +16,17 @@ use std::process::Command;
 
 use klipp_core::{MediaId, Timecode};
 use klipp_media::{MediaItem, MediaItemKind, MediaPool};
-use klipp_timeline::Sequence;
+use klipp_timeline::{Clip, Sequence};
 
-/// The media the sequences use: every clip's, the parents of subclips
-/// used, and the separate recordings synced to used media.
+/// The media the sequences use: every clip's, an audition's other takes'
+/// too (#3209), the parents of subclips used, and the separate recordings
+/// synced to used media.
 pub fn used_media(pool: &MediaPool, sequences: &[Sequence]) -> HashSet<MediaId> {
     let mut used: HashSet<MediaId> = sequences
         .iter()
         .flat_map(|s| s.tracks.iter())
         .flat_map(|t| t.clips.iter())
+        .flat_map(Clip::with_takes)
         .filter_map(|c| c.media_id())
         .collect();
     let direct: Vec<MediaId> = used.iter().copied().collect();
@@ -73,7 +75,8 @@ pub fn used_ranges(pool: &MediaPool, sequences: &[Sequence], handle: f64) -> Has
     }
     let mut raw: HashMap<PathBuf, (f64, Vec<Range>)> = HashMap::new();
     for track in sequences.iter().flat_map(|s| s.tracks.iter()) {
-        for clip in &track.clips {
+        // An audition's other takes keep their stretches too (#3209).
+        for clip in track.clips.iter().flat_map(Clip::with_takes) {
             let Some(item) = clip.media_id().and_then(|id| pool.get(&id)) else { continue };
             if item.kind != MediaItemKind::File || whole.contains(&item.path) {
                 continue;
@@ -145,7 +148,7 @@ impl Segment {
 /// and play the wrong frames, so the file is copied whole instead.
 pub fn unheld(pool: &MediaPool, sequences: &[Sequence], cuts: &HashMap<PathBuf, Vec<Segment>>) -> Vec<PathBuf> {
     let mut out: Vec<PathBuf> = Vec::new();
-    for clip in sequences.iter().flat_map(|s| s.tracks.iter()).flat_map(|t| t.clips.iter()) {
+    for clip in sequences.iter().flat_map(|s| s.tracks.iter()).flat_map(|t| t.clips.iter()).flat_map(Clip::with_takes) {
         let Some(item) = clip.media_id().and_then(|id| pool.get(&id)) else { continue };
         let Some(segments) = cuts.get(&item.path) else { continue };
         let (a, b) = (clip.source_in.to_secs_f64(), clip.source_out.to_secs_f64());
@@ -166,11 +169,11 @@ pub fn remap(pool: &MediaPool, sequences: &[Sequence], cuts: &HashMap<PathBuf, V
     // (item, segment index) → the id of the item on that segment.
     let mut ids: HashMap<(MediaId, usize), MediaId> = HashMap::new();
     let mut first_segment: HashMap<MediaId, usize> = HashMap::new();
-    for clip in seqs.iter_mut().flat_map(|s| s.tracks.iter_mut()).flat_map(|t| t.clips.iter_mut()) {
-        let Some(item) = clip.media_id().and_then(|id| pool.get(&id)) else { continue };
-        let Some(segments) = cuts.get(&item.path) else { continue };
+    let mut onto_segment = |clip: &mut Clip| {
+        let Some(item) = clip.media_id().and_then(|id| pool.get(&id)) else { return };
+        let Some(segments) = cuts.get(&item.path) else { return };
         let (a, b) = (clip.source_in.to_secs_f64(), clip.source_out.to_secs_f64());
-        let Some(j) = segments.iter().position(|s| s.holds(a.min(b), a.max(b))) else { continue };
+        let Some(j) = segments.iter().position(|s| s.holds(a.min(b), a.max(b))) else { return };
         let first = *first_segment.entry(item.id).or_insert(j);
         let id = *ids.entry((item.id, j)).or_insert_with(|| if j == first { item.id } else { MediaId::new() });
         let shift = segments[j].start;
@@ -178,6 +181,11 @@ pub fn remap(pool: &MediaPool, sequences: &[Sequence], cuts: &HashMap<PathBuf, V
         clip.source_in = moved(clip.source_in);
         clip.source_out = moved(clip.source_out);
         clip.kind = klipp_timeline::ClipKind::Media { media_id: id };
+    };
+    for clip in seqs.iter_mut().flat_map(|s| s.tracks.iter_mut()).flat_map(|t| t.clips.iter_mut()) {
+        onto_segment(clip);
+        // An audition's other takes moved with it (#3209).
+        clip.takes_mut().for_each(&mut onto_segment);
     }
     let mut out = MediaPool::new();
     out.bins = pool.bins.clone();

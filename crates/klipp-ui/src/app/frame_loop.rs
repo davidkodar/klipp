@@ -542,7 +542,8 @@ impl KlippApp {
             self.state.media_usage_cache.clear();
             for seq in &self.state.sequences {
                 for track in &seq.tracks {
-                    for clip in &track.clips {
+                    // An audition's other takes use their media too (#3209).
+                    for clip in track.clips.iter().flat_map(klipp_timeline::Clip::with_takes) {
                         if let Some(mid) = clip.media_id() {
                             *self.state.media_usage_cache.entry(mid).or_insert(0) += 1;
                         }

@@ -52,6 +52,8 @@ mod edit_plan_round_trip;
 mod frame_glide_round_trip;
 #[path = "../edit_planner_corpus.rs"]
 mod edit_planner_corpus;
+#[path = "../audition_round_trip.rs"]
+mod audition_round_trip;
 #[path = "../edits_survive_save_load.rs"]
 mod edits_survive_save_load;
 #[path = "../effect_list_round_trip.rs"]
