@@ -56,6 +56,10 @@ pub(crate) struct ResidentPool {
     /// Each buffer and the last take at which something else held it.
     buffers: Vec<(std::sync::Arc<wgpu::Buffer>, u64)>,
     takes: u64,
+    /// The most buffers it keeps, and what one made past them is counted
+    /// as in the GPU memory report.
+    cap: usize,
+    past: crate::gpu_memory::Made,
     /// What it keeps, in the GPU memory report (#3174).
     gauge: crate::gpu_memory::Gauge,
 }
@@ -68,7 +72,13 @@ impl ResidentPool {
     const QUIET_TAKES: u64 = 4;
 
     pub(crate) fn new(label: &'static str) -> Self {
-        Self { label, size: 0, buffers: Vec::new(), takes: 0, gauge: crate::gpu_memory::Gauge::new(crate::gpu_memory::Held::DecodedFrames) }
+        Self::with_cap(label, Self::CAP, crate::gpu_memory::Held::DecodedFrames, crate::gpu_memory::Made::DecodedPastPool)
+    }
+
+    /// A pool keeping at most `cap` buffers, reported as `held`, a buffer
+    /// made past them as `past`.
+    pub(crate) fn with_cap(label: &'static str, cap: usize, held: crate::gpu_memory::Held, past: crate::gpu_memory::Made) -> Self {
+        Self { label, size: 0, buffers: Vec::new(), takes: 0, cap, past, gauge: crate::gpu_memory::Gauge::new(held) }
     }
 
     /// A `size`-byte buffer nothing else holds: one kept, or one made.
@@ -95,10 +105,10 @@ impl ResidentPool {
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         }));
-        if self.buffers.len() < Self::CAP {
+        if self.buffers.len() < self.cap {
             self.buffers.push((std::sync::Arc::clone(&made), now));
         } else {
-            crate::gpu_memory::made(crate::gpu_memory::Made::DecodedPastPool, size);
+            crate::gpu_memory::made(self.past, size);
         }
         let in_use = self.buffers.iter().filter(|(b, _)| std::sync::Arc::strong_count(b) > 1).count() as u64;
         self.gauge.report_holding(self.buffers.len() as u64 * self.size, crate::gpu_memory::Holding { count: self.buffers.len() as u64, in_use, each: self.size, bytes_per_pixel: 4 });

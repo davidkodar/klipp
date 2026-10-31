@@ -31,6 +31,9 @@ pub enum Held {
     Sprites,
     /// Optical flow's kept pairs and its drawn frame.
     FlowPairs,
+    /// Neighbour frames for a frame blend or a temporal denoise, decoded
+    /// to linear at the chain's size and kept for reuse.
+    Neighbours,
 }
 
 /// Memory made for one call and let go after it.
@@ -44,21 +47,24 @@ pub enum Made {
     FlowPair,
     /// Optical flow's uniform buffers, one a dispatch.
     FlowUniforms,
+    /// A neighbour frame decoded to linear (fitted to the chain's size)
+    /// or uploaded, for a frame blend or a temporal denoise.
+    Neighbour,
 }
 
-const HELD: [Held; 6] = [Held::DecodedFrames, Held::ChainBuffers, Held::Slots, Held::StackLayers, Held::Sprites, Held::FlowPairs];
-const MADE: [Made; 4] = [Made::ConvertToLinear, Made::DecodedPastPool, Made::FlowPair, Made::FlowUniforms];
+const HELD: [Held; 7] = [Held::DecodedFrames, Held::ChainBuffers, Held::Slots, Held::StackLayers, Held::Sprites, Held::FlowPairs, Held::Neighbours];
+const MADE: [Made; 5] = [Made::ConvertToLinear, Made::DecodedPastPool, Made::FlowPair, Made::FlowUniforms, Made::Neighbour];
 
-static HELD_BYTES: [AtomicU64; 6] = [const { AtomicU64::new(0) }; 6];
+static HELD_BYTES: [AtomicU64; 7] = [const { AtomicU64::new(0) }; 7];
 /// Per cache: how many buffers, how many of them in use (held by a reader
 /// or leased) rather than kept for reuse, the bytes of one (the last
 /// reported), and its bytes a pixel (0 where it isn't a picture).
-static HELD_COUNT: [AtomicU64; 6] = [const { AtomicU64::new(0) }; 6];
-static HELD_IN_USE: [AtomicU64; 6] = [const { AtomicU64::new(0) }; 6];
-static HELD_EACH: [AtomicU64; 6] = [const { AtomicU64::new(0) }; 6];
-static HELD_BPP: [AtomicU64; 6] = [const { AtomicU64::new(0) }; 6];
-static MADE_BYTES: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
-static MADE_COUNT: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
+static HELD_COUNT: [AtomicU64; 7] = [const { AtomicU64::new(0) }; 7];
+static HELD_IN_USE: [AtomicU64; 7] = [const { AtomicU64::new(0) }; 7];
+static HELD_EACH: [AtomicU64; 7] = [const { AtomicU64::new(0) }; 7];
+static HELD_BPP: [AtomicU64; 7] = [const { AtomicU64::new(0) }; 7];
+static MADE_BYTES: [AtomicU64; 5] = [const { AtomicU64::new(0) }; 5];
+static MADE_COUNT: [AtomicU64; 5] = [const { AtomicU64::new(0) }; 5];
 
 impl Held {
     fn index(self) -> usize {
@@ -73,6 +79,7 @@ impl Held {
             Held::StackLayers => "stack_layers",
             Held::Sprites => "sprites",
             Held::FlowPairs => "flow_pairs",
+            Held::Neighbours => "neighbours",
         }
     }
 }
@@ -88,6 +95,7 @@ impl Made {
             Made::DecodedPastPool => "decoded_past_pool",
             Made::FlowPair => "flow_pair",
             Made::FlowUniforms => "flow_uniforms",
+            Made::Neighbour => "neighbour",
         }
     }
 }

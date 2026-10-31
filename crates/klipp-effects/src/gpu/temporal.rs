@@ -4,7 +4,45 @@
 
 use super::*;
 
+/// Neighbour frames kept for reuse (#3174): a blend's two and a denoise's
+/// two, and the ones before them while they are let go.
+pub(super) const NEIGHBOURS_KEPT: usize = 6;
+
+/// Neighbour decodes submitted and not done that are let pile up before
+/// the next waits for them (#3174): on a GPU slow to finish, each held a
+/// frame's worth of memory until it did, and a 4K reverse by flow filled
+/// an M1's in three seconds.
+const NEIGHBOURS_IN_FLIGHT: usize = 4;
+
 impl GpuEffectsPipeline {
+    /// A buffer of `size` bytes for a neighbour decode: one kept, or made.
+    /// Past [`NEIGHBOURS_IN_FLIGHT`] decodes not yet done, the GPU is
+    /// waited on first.
+    fn neighbour_buffer(&self, size: u64) -> std::sync::Arc<wgpu::Buffer> {
+        use std::sync::atomic::Ordering;
+        if self.neighbours_in_flight.load(Ordering::Acquire) >= NEIGHBOURS_IN_FLIGHT {
+            let _ = self.device.poll(wgpu::Maintain::Wait);
+        }
+        crate::gpu_memory::made(crate::gpu_memory::Made::Neighbour, size);
+        self.neighbour_pool.lock().unwrap_or_else(|e| e.into_inner()).take(&self.device, size)
+    }
+
+    /// A neighbour decode was submitted: counted until the GPU is done.
+    fn neighbour_submitted(&self) {
+        use std::sync::atomic::Ordering;
+        self.neighbours_in_flight.fetch_add(1, Ordering::AcqRel);
+        let left = std::sync::Arc::clone(&self.neighbours_in_flight);
+        self.queue.on_submitted_work_done(move || {
+            left.fetch_sub(1, Ordering::AcqRel);
+        });
+    }
+
+    /// Neighbour decodes submitted and not done on the GPU (#3174).
+    #[doc(hidden)]
+    pub fn neighbours_in_flight(&self) -> usize {
+        self.neighbours_in_flight.load(std::sync::atomic::Ordering::Acquire)
+    }
+
     /// A neighbour frame for [`Self::apply_temporal_denoise_chain`], from
     /// linear working-space pixels on the CPU: a buffer of its own, never
     /// the chain's or the stack's, which the caller holds (an `Arc`) until
@@ -20,6 +58,7 @@ impl GpuEffectsPipeline {
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
+        crate::gpu_memory::made(crate::gpu_memory::Made::Neighbour, buf.size());
         self.upload_frame(&buf, bytemuck::cast_slice(linear));
         Some(std::sync::Arc::new(buf))
     }
@@ -36,12 +75,7 @@ impl GpuEffectsPipeline {
         if self.is_device_lost() || pixels == 0 || src_w == 0 || src_h == 0 || input_u8.size() < u64::from(src_w) * u64::from(src_h) * 4 {
             return None;
         }
-        let out = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("neighbour_fit_from_u8"),
-            size: pixels * 16,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
-            mapped_at_creation: false,
-        });
+        let out = self.neighbour_buffer(pixels * 16);
         let (dst_w, dst_h, x_off, y_off) = fit_rect(src_w, src_h, width, height);
         let params = wgpu::util::DeviceExt::create_buffer_init(self.device.as_ref(), &wgpu::util::BufferInitDescriptor {
             label: Some("neighbour_fit_from_u8_params"),
@@ -66,7 +100,8 @@ impl GpuEffectsPipeline {
             dispatch_flat(&mut pass, (pixels as u32).div_ceil(WORKGROUP_SIZE));
         }
         self.queue.submit(Some(encoder.finish()));
-        Some(std::sync::Arc::new(out))
+        self.neighbour_submitted();
+        Some(out)
     }
 
     /// A neighbour frame the GPU holds as sRGB bytes (a viewer stream's
@@ -80,12 +115,7 @@ impl GpuEffectsPipeline {
         if self.is_device_lost() || pixels == 0 || input_u8.size() < pixels * 4 {
             return None;
         }
-        let out = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("temporal_neighbour_from_u8"),
-            size: pixels * 16,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
-            mapped_at_creation: false,
-        });
+        let out = self.neighbour_buffer(pixels * 16);
         let params = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("temporal_neighbour_from_u8_params"),
             size: std::mem::size_of::<BridgeU8Params>() as u64,
@@ -111,7 +141,8 @@ impl GpuEffectsPipeline {
             dispatch_flat(&mut pass, (pixels as u32).div_ceil(WORKGROUP_SIZE));
         }
         self.queue.submit(std::iter::once(encoder.finish()));
-        Some(std::sync::Arc::new(out))
+        self.neighbour_submitted();
+        Some(out)
     }
 
     /// Dispatch-only temporal noise reduction (#1988): the chain's picture
