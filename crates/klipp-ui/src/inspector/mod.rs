@@ -541,6 +541,7 @@ impl NewInspectorPanel {
                             name: None,
                             colour_label: 0,
                             grade_flag: Default::default(),
+                            audition: None,
                             precomp: None,
                             baked_own: None,
                         };

@@ -531,6 +531,35 @@ pub struct ClipJson {
     /// Where the clip's grade stands (#899).
     #[serde(default, skip_serializing_if = "klipp_timeline::GradeFlag::is_none")]
     pub grade_flag: klipp_timeline::GradeFlag,
+    /// The slot's other takes (#3209).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audition: Option<AuditionJson>,
+}
+
+/// Wire-format mirror of [`klipp_timeline::audition::Audition`]: its takes'
+/// clips saved as any clip is.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct AuditionJson {
+    pub active: String,
+    pub takes: Vec<TakeJson>,
+}
+
+/// One take: no clip for the active one, which is the slot.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TakeJson {
+    pub id: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clip: Option<Box<ClipJson>>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sound: Vec<TakeSoundJson>,
+}
+
+/// A take's linked sound clip and the track it was on.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TakeSoundJson {
+    pub track: String,
+    pub clip: ClipJson,
 }
 
 /// Wire-format mirror of [`klipp_timeline::MatteBinding`]. The clip-id is
@@ -1134,6 +1163,7 @@ mod tests {
             name: None,
             colour_label: 0,
             grade_flag: Default::default(),
+            audition: None,
         };
 
         let serialised = serde_json::to_string(&clip).expect("serialise clip");
@@ -1207,6 +1237,7 @@ mod tests {
             name: None,
             colour_label: 0,
             grade_flag: Default::default(),
+            audition: None,
         };
         let serialised = serde_json::to_string(&clip).expect("serialise");
         assert!(!serialised.contains("audio_effect_keyframes"),
@@ -1413,6 +1444,7 @@ mod tests {
             name: None,
             colour_label: 0,
             grade_flag: Default::default(),
+            audition: None,
         }
     }
 

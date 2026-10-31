@@ -43,6 +43,7 @@
 //!   duplicates `MagneticEditor` logic and bypasses undo — prefer the
 //!   magnetic entry points for any new call.
 
+pub mod audition;
 mod brief;
 mod clip_anim;
 mod picture_fields;

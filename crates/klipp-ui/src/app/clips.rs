@@ -1987,6 +1987,7 @@ pub(super) fn duplicate_after(clip: &klipp_timeline::Clip) -> klipp_timeline::Cl
         name: clip.name.clone(),
         colour_label: clip.colour_label,
         grade_flag: Default::default(),
+        audition: clip.audition.clone(),
         precomp: None,
         baked_own: None,
     };

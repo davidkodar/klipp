@@ -44,3 +44,6 @@ klipp_id!(BinId);
 klipp_id!(GradeGroupId);
 // An aux bus (#2861): a mix of the sends to it, with its own effects.
 klipp_id!(BusId);
+// A take of an audition (#3209): one of the alternatives a clip's slot
+// on the timeline holds.
+klipp_id!(TakeId);

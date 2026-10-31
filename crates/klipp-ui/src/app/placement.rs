@@ -563,6 +563,7 @@ impl KlippApp {
                 name: clip.name.clone(),
                 colour_label: clip.colour_label,
                 grade_flag: Default::default(),
+                audition: None,
                 precomp: None,
                 baked_own: None,
             };

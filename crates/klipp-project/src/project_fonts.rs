@@ -53,7 +53,8 @@ pub struct CollectFont {
 }
 
 /// The font families `sequences` name: each title's text and its runs,
-/// and each subtitle track's caption look, once each, in order met.
+/// an audition's other takes' too, and each subtitle track's caption
+/// look, once each, in order met.
 pub fn fonts_used(sequences: &[Sequence]) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     let mut add = |name: &str| {
@@ -67,7 +68,8 @@ pub fn fonts_used(sequences: &[Sequence]) -> Vec<String> {
             if let Some(style) = &track.caption_style {
                 add(&style.font);
             }
-            for clip in &track.clips {
+            // An audition's other takes' titles too (#3209).
+            for clip in track.clips.iter().flat_map(klipp_timeline::Clip::with_takes) {
                 let ClipKind::Title(td) = &clip.kind else { continue };
                 for o in &td.objects {
                     if let TitleObjectContent::TextBox(tb) = &o.content {

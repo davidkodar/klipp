@@ -1780,6 +1780,10 @@ pub enum ControlCommand {
         kind: Option<String>,
     },
     RemoveMarker { marker_id: String },
+    /// The takes a clip's slot holds (#3209), each with its id, name,
+    /// length, what it shows and what differs from the take in the slot.
+    /// The edits to them are the `alternatives` op.
+    Alternatives { clip_id: String },
     /// Sync pool items onto one clock and lay them out as a multicam at
     /// the playhead (seek first), each angle on tracks of its own: what
     /// Create Synced Multicam does. `sync` is "timecode", "audio" or

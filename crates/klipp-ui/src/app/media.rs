@@ -1951,6 +1951,7 @@ pub(super) fn media_usage_count(media_id: MediaId, sequences: &[Sequence]) -> us
     sequences.iter()
         .flat_map(|seq| seq.tracks.iter())
         .flat_map(|t| &t.clips)
+        .flat_map(klipp_timeline::Clip::with_takes)
         .filter(|c| c.media_id() == Some(media_id))
         .count()
 }

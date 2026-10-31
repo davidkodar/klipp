@@ -572,6 +572,10 @@ exist until the plan runs.
   sound moved to the same file. `source_in` is where in the file it starts:
   the clip's own when that fits, else the start. For the shot that turns
   out wrong after it is graded and dressed.
+- `alternatives {action, clip_id, takes?, take?, name?, ripple?}`:
+  auditions, several takes in one clip slot, switched in place: `create`,
+  `add`, `remove`, `rename`, `switch`, `finalize`. The way to offer the
+  person options to choose between. Topic `op.alternatives` says how.
 - `reframe {clip_id, scale?, x?, y?}`: punch in and reposition a
   picture. `scale` zooms (1 as shot, up to 4); `x` and `y` pan the frame
   from -1 to 1. What you leave out stays as the clip has it, so a re-pan

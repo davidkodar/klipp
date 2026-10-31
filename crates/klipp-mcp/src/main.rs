@@ -52,7 +52,7 @@ static PENDING_WRITE_GENERATION: std::sync::atomic::AtomicU64 =
 /// Tools that change what the viewer should show. Any of them arms the
 /// next screenshot to wait for a fresh frame.
 const WRITE_TOOLS: &[&str] = &[
-    "klipp_graph", "klipp_import_timeline",
+    "klipp_graph", "klipp_import_timeline", "klipp_alternatives",
     "klipp_play", "klipp_pause", "klipp_stop", "klipp_seek",
     "klipp_append_clip", "klipp_clear_frozen", "klipp_remove_clip", "klipp_attach_audio", "klipp_normalize", "klipp_set_append_audio", "klipp_select_clip",
     "klipp_add_node", "klipp_remove_node", "klipp_connect_nodes",
@@ -1405,6 +1405,21 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             }
             v
         }
+        "klipp_alternatives" => {
+            let action = arg_str(args, "action")?;
+            let clip_id = arg_str(args, "clip_id")?;
+            if action == "list" {
+                json!({ "method": "alternatives", "clip_id": clip_id })
+            } else {
+                let mut op = json!({ "op": "alternatives", "action": action, "clip_id": clip_id });
+                for key in ["takes", "take", "name", "ripple"] {
+                    if let Some(v) = args.get(key) {
+                        op[key] = v.clone();
+                    }
+                }
+                json!({ "method": "apply", "ops": [op] })
+            }
+        }
         "klipp_switch_angle" => json!({
             "method": "switch_angle",
             "angle": args.get("angle").and_then(|v| v.as_u64()).ok_or("missing required argument: angle")?,
@@ -2604,6 +2619,16 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
                  "media_ids": { "type": "array", "items": { "type": "string" } },
                  "sync": { "type": "string", "enum": ["timecode", "audio", "timecode_then_audio"] }
              }), vec!["media_ids"]),
+        tool("klipp_alternatives",
+             "Auditions: takes in one clip slot, switched in place: list, create, add, remove, rename, switch, finalize. Details: klipp_guide topic alternatives.",
+             json!({
+                 "action": { "type": "string", "enum": ["list", "create", "add", "remove", "rename", "switch", "finalize"] },
+                 "clip_id": { "type": "string" },
+                 "takes": { "type": "array", "items": { "type": "object" } },
+                 "take": { "type": "string" },
+                 "name": { "type": "string" },
+                 "ripple": { "type": "boolean" }
+             }), vec!["action", "clip_id"]),
         tool("klipp_switch_angle",
              "Cut the multicam group in play to an angle, counted from 1, at at_secs or the playhead, as one undo step. Details: klipp_guide topic switch_angle.",
              json!({
@@ -2827,6 +2852,20 @@ mod interface_tests {
 
     /// #2722: klipp_brand_kit is one of list, get, set (with its files)
     /// or remove, each its request; none or two of them is refused.
+    /// #3209: list reads the slot's takes; every other action is the
+    /// alternatives op, applied, with only the arguments given.
+    #[test]
+    fn alternatives_list_reads_and_the_rest_apply_the_op() {
+        assert_eq!(tool_to_command("klipp_alternatives", &json!({"action": "list", "clip_id": "c"})).unwrap(), json!({"method": "alternatives", "clip_id": "c"}));
+        assert_eq!(
+            tool_to_command("klipp_alternatives", &json!({"action": "switch", "clip_id": "c", "take": "Wide", "ripple": true})).unwrap(),
+            json!({"method": "apply", "ops": [{"op": "alternatives", "action": "switch", "clip_id": "c", "take": "Wide", "ripple": true}]})
+        );
+        assert!(tool_to_command("klipp_alternatives", &json!({"clip_id": "c"})).is_err(), "no action");
+        assert!(guide_topic("alternatives").unwrap().starts_with("## klipp_alternatives"));
+        assert!(guide_topic("op.alternatives").unwrap().contains("ripple true"));
+    }
+
     #[test]
     fn brand_kit_calls_are_one_request_each() {
         assert_eq!(tool_to_command("klipp_brand_kit", &json!({"list": true})).unwrap(), json!({"method": "brand_kits"}));
@@ -2943,7 +2982,8 @@ mod interface_tests {
         // their fields alone, and each op in full on its own.
         let ops = guide_topic("ops").unwrap();
         let index = guide_topic("ops_index").unwrap();
-        assert!(ops.len() < 20_000 && index.len() < 6_000, "ops {} bytes, ops_index {}", ops.len(), index.len());
+        // The index grew past 6,000 with the alternatives op (#3209).
+        assert!(ops.len() < 20_000 && index.len() < 6_200, "ops {} bytes, ops_index {}", ops.len(), index.len());
         assert!(ops.starts_with("## Ops\n") && ops.contains("`place {media_id, track, at"), "the guide's op list");
         assert!(ops.contains("Ops run in order"), "with what holds for every op");
         assert!(!ops.contains("## Batches"), "and nothing of the guide's next part");

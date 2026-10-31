@@ -506,6 +506,31 @@ pub(crate) fn respond(
             Ok(v)
         }
 
+        ControlCommand::Alternatives { clip_id } => {
+            let id = klipp_core::ClipId(parse_uuid(&clip_id, "clip_id")?);
+            let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+            let pool = ctx.media_pool.read().recovered();
+            let slot = seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == id).ok_or("no clip with that clip_id on the timeline")?;
+            let Some(a) = slot.audition.as_deref() else {
+                return Ok(json!({ "clip_id": clip_id, "takes": [], "note": "not an audition: the alternatives op's create makes one" }));
+            };
+            let takes: Vec<serde_json::Value> = a.takes.iter().map(|t| {
+                let c = t.clip.as_deref().unwrap_or(slot);
+                json!({
+                    "take": t.id.to_string(),
+                    "name": t.name,
+                    "active": t.id == a.active,
+                    "secs": (c.timeline_out - c.timeline_in).to_secs_f64(),
+                    "shows": take_shows(c, &pool),
+                    "from_secs": c.source_in.to_secs_f64(),
+                    "to_secs": c.source_out.to_secs_f64(),
+                    "sound": t.clip.is_none() && slot.linked_clip_id.is_some() || !t.sound.is_empty(),
+                    "differs": if t.clip.is_some() { take_differs(c, slot) } else { Vec::new() },
+                })
+            }).collect();
+            Ok(json!({ "clip_id": clip_id, "active": a.active.to_string(), "takes": takes }))
+        }
+
         ControlCommand::ListMarkers => {
             let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
             let pool = ctx.media_pool.read().recovered();
@@ -667,4 +692,47 @@ mod listing_tests {
             assert!(v["warning"].is_null(), "{v}");
         }
     }
+}
+
+/// What a take's clip shows (#3209): its file's name, its title's first
+/// line, or what kind of clip it is.
+fn take_shows(c: &klipp_timeline::Clip, pool: &klipp_media::MediaPool) -> String {
+    match &c.kind {
+        klipp_timeline::ClipKind::Media { media_id } => pool.get(media_id).map_or_else(|| "missing media".to_string(), |m| m.filename.clone()),
+        klipp_timeline::ClipKind::Title(td) => td.text().lines().next().map_or_else(|| "a title".to_string(), str::to_string),
+        klipp_timeline::ClipKind::Generator(_) => "a generator".to_string(),
+        klipp_timeline::ClipKind::Sequence { .. } => "a compound clip".to_string(),
+        _ => "a clip".to_string(),
+    }
+}
+
+/// What differs between a take's clip and the one in the slot (#3209), by
+/// name: what an assistant says when it offers the takes.
+fn take_differs(c: &klipp_timeline::Clip, slot: &klipp_timeline::Clip) -> Vec<&'static str> {
+    let mut out = Vec::new();
+    if c.media_id() != slot.media_id() || std::mem::discriminant(&c.kind) != std::mem::discriminant(&slot.kind) {
+        out.push("media");
+    }
+    if (c.source_in, c.source_out) != (slot.source_in, slot.source_out) {
+        out.push("range");
+    }
+    if (c.timeline_out - c.timeline_in) != (slot.timeline_out - slot.timeline_in) {
+        out.push("length");
+    }
+    if (c.speed - slot.speed).abs() > 1e-9 || c.speed_keyframes != slot.speed_keyframes {
+        out.push("speed");
+    }
+    if c.picture_effects().ok() != slot.picture_effects().ok() {
+        out.push("effects");
+    }
+    if c.grade_to_run() != slot.grade_to_run() {
+        out.push("grade");
+    }
+    if matches!((&c.kind, &slot.kind), (klipp_timeline::ClipKind::Title(a), klipp_timeline::ClipKind::Title(b)) if serde_json::to_value(a).ok() != serde_json::to_value(b).ok()) {
+        out.push("title");
+    }
+    if (c.volume - slot.volume).abs() > 1e-6 || (c.gain - slot.gain).abs() > 1e-6 {
+        out.push("sound level");
+    }
+    out
 }

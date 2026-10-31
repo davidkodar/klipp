@@ -809,7 +809,7 @@ fn load_sequence_from_json(
     // effect it had, silently, and the next save wrote it back without
     // them (#222).
     let mut effects_by_clip: HashMap<&str, Vec<klipp_effects::BuiltinEffect>> = HashMap::new();
-    for clip in seq_json.tracks.iter().flat_map(|t| t.clips.iter()) {
+    for clip in seq_json.tracks.iter().flat_map(|t| t.clips.iter()).flat_map(with_takes) {
         if let Some(value) = &clip.builtin_effects {
             effects_by_clip.insert(clip.id.as_str(), read_builtin_effects(value, &format!("clip {}", clip.id))?);
         }
@@ -898,184 +898,7 @@ fn load_sequence_from_json(
                     alignment: tr.alignment,
                 })
             }).collect();
-            track.clips = t.clips.iter().map(|c| {
-                let clip_kind = load_clip_kind(c, project_dir);
-                let mut clip = Clip {
-                    id: ClipId(parse_uuid(&c.id).unwrap_or_else(|_| Uuid::new_v4())),
-                    kind: clip_kind,
-                    timeline_in: RationalTime { value: c.timeline_in, rate: c.rate },
-                    timeline_out: RationalTime { value: c.timeline_out, rate: c.rate },
-                    source_in: RationalTime { value: c.source_in, rate: c.rate },
-                    source_out: RationalTime { value: c.source_out, rate: c.rate },
-                    picture: klipp_timeline::ClipPictureParts {
-                        grade: {
-                            let mut g = c.node_graph.clone().unwrap_or_default();
-                            migrate_graph(&mut g);
-                            g
-                        },
-                        builtin_effects: effects_by_clip.get(c.id.as_str()).cloned().unwrap_or_default(),
-                        builtin_effects_enabled: c.builtin_effects_enabled.clone(),
-                        ofx_effects: c.effects.iter().map(|e| e.to_effect()).collect(),
-                        opacity_keyframes: c.opacity_keyframes.clone().unwrap_or_default(),
-                        transform_pos_x_keyframes: c.transform_pos_x_keyframes.clone().unwrap_or_default(),
-                        transform_pos_y_keyframes: c.transform_pos_y_keyframes.clone().unwrap_or_default(),
-                        transform_scale_keyframes: c.transform_scale_keyframes.clone().unwrap_or_default(),
-                        transform_scale_y_keyframes: c.transform_scale_y_keyframes.clone().unwrap_or_default(),
-                        transform_rotation_keyframes: c.transform_rotation_keyframes.clone().unwrap_or_default(),
-                        transform_tilt_x_keyframes: c.transform_tilt_x_keyframes.clone().unwrap_or_default(),
-                        transform_tilt_y_keyframes: c.transform_tilt_y_keyframes.clone().unwrap_or_default(),
-                        effect_keyframes: c.effect_keyframes.clone().unwrap_or_default(),
-                        param_modifiers: c.param_modifiers.as_ref().map(|m| {
-                            m.iter().filter_map(|(k, v)| {
-                                klipp_core::ParamId::from_key(k).map(|pid| (pid, v.clone()))
-                            }).collect::<std::collections::HashMap<_, _>>()
-                        }).unwrap_or_default(),
-                        grade_versions: c.grade_versions.iter().map(|gv| {
-                            let mut g = gv.node_graph.clone();
-                            migrate_graph(&mut g);
-                            klipp_timeline::GradeVersion {
-                                name: gv.name.clone(),
-                                node_graph: g.into(),
-                            }
-                        }).collect(),
-                        active_grade_version: c.active_grade_version,
-                    }
-                    .into(),
-                    linked_clip_id: c.linked_clip_id.as_ref().and_then(|s| {
-                        parse_uuid(s).ok().map(ClipId)
-                    }),
-                    linked_title_asset_id: c.linked_title_asset_id.as_ref().and_then(|s| {
-                        parse_uuid(s).ok().map(klipp_core::MediaId)
-                    }),
-                    group_id: c.group_id.as_ref().and_then(|s| {
-                        parse_uuid(s).ok().map(GroupId)
-                    }),
-                    grade_group: c.grade_group.as_ref().and_then(|s| parse_uuid(s).ok().map(klipp_core::GradeGroupId)),
-                    magnetic_anchor: c.magnetic_anchor.clone(),
-                    gain: c.gain.unwrap_or(1.0),
-                    volume: c.volume.unwrap_or(1.0),
-                    pan: c.pan.unwrap_or(0.0),
-                    fade_in_secs: c.fade_in_secs.unwrap_or(0.0),
-                    fade_out_secs: c.fade_out_secs.unwrap_or(0.0),
-                    fade_in_curve: c.fade_in_curve.unwrap_or_default(),
-                    fade_out_curve: c.fade_out_curve.unwrap_or_default(),
-                    channel_config: c.channel_config.unwrap_or_default(),
-                    volume_keyframes: c.volume_keyframes.clone().unwrap_or_default(),
-                    pan_keyframes: c.pan_keyframes.clone().unwrap_or_default(),
-                    gain_keyframes: c.gain_keyframes.clone().unwrap_or_default(),
-                    matte_feather_keyframes: c.matte_feather_keyframes.clone().unwrap_or_default(),
-                    matte_choke_keyframes: c.matte_choke_keyframes.clone().unwrap_or_default(),
-                    frame_glide: c.frame_glide,
-                    clip_markers: c.clip_markers.as_ref().map(|markers| {
-                        markers.iter().map(|m| klipp_timeline::ClipMarker {
-                            time_secs: m.time_secs,
-                            name: m.name.clone(),
-                            color: match m.color.as_str() {
-                                "Red" => klipp_core::MarkerColor::Red,
-                                "Orange" => klipp_core::MarkerColor::Orange,
-                                "Yellow" => klipp_core::MarkerColor::Yellow,
-                                "Green" => klipp_core::MarkerColor::Green,
-                                "Purple" => klipp_core::MarkerColor::Purple,
-                                _ => klipp_core::MarkerColor::Blue,
-                            },
-                            comment: m.comment.clone(),
-                        }).collect()
-                    }).unwrap_or_default(),
-                    role: c.role.unwrap_or_default(),
-                    role_source: c.role_source,
-                    matched_to: c.matched_to,
-                    speed: c.speed.unwrap_or(1.0),
-                    speed_keyframes: c.speed_keyframes.clone().unwrap_or_default(),
-                    keep_pitch: c.keep_pitch.unwrap_or(false),
-                    hold: c.hold.as_ref().map(|tc| RationalTime { value: tc.value, rate: tc.rate }),
-                    source_rotation: c.source_rotation.unwrap_or(0),
-                    enabled: c.enabled.unwrap_or(true),
-                    solo: c.solo.unwrap_or(false),
-                    blend_mode: c.blend_mode.unwrap_or(klipp_core::BlendMode::Normal),
-                    depth: c.depth.filter(|d| d.is_finite() && *d >= 0.0).unwrap_or(1.0),
-                    matte_source: c.matte_source.as_ref().and_then(load_matte_binding),
-                    matte_stencil: c.matte_stencil.as_ref().map(|s| klipp_timeline::StencilSettings {
-                        channel: s.channel,
-                        invert: s.invert,
-                        feather_px: s.feather_px,
-                        choke_px: s.choke_px,
-                    }),
-                    consumed_as_matte: c.consumed_as_matte.unwrap_or(false),
-                    transform_link: c.transform_link.as_ref().and_then(load_transform_link),
-                    audio_effects: c.audio_effects.clone().unwrap_or_default(),
-                    audio_effect_keyframes: c.audio_effect_keyframes.clone(),
-                    multicam_group: c.multicam_group.as_ref().and_then(|s| parse_uuid(s).ok().map(klipp_core::GroupId)),
-                    multicam_angle: c.multicam_angle.unwrap_or(0),
-                    multicam_cuts: c.multicam_cuts.clone(),
-                    multicam_sound: c.multicam_sound.unwrap_or_default(),
-                    track_points: c.track_points.clone(),
-                    surfaces: c.surfaces.clone(),
-                    surface_pin: c.surface_pin,
-                    name: c.name.clone(),
-                    colour_label: c.colour_label,
-                    grade_flag: c.grade_flag,
-                    precomp: None,
-                    baked_own: None,
-                };
-                // Titles saved with the old whole-title or
-                // per-character animation get the layer model; the
-                // keyframes the old kinds baked onto the clip go
-                // with them, since the loops now do the moving.
-                if let ClipKind::Title(td) = &mut clip.kind {
-                    // The layer stacks first: an object from before they
-                    // existed takes its text box's old fields; a text box
-                    // with old fields beside an explicit stack loses them
-                    // to it, and the log says so.
-                    let fx = td.migrate_fx();
-                    if fx.dropped_legacy > 0 {
-                        warn!("title {}: {} text box(es) had old effect fields beside a layer stack; the stack wins", clip.id, fx.dropped_legacy);
-                    }
-                    let m = td.migrate_legacy_animation();
-                    if m.clear_clip_keyframes {
-                        rewritten.insert(clip.id.0.to_string());
-                        clip.edit_opacity_keyframes(|v| v.clear());
-                        clip.edit_transform_pos_x_keyframes(|v| v.clear());
-                        clip.edit_transform_pos_y_keyframes(|v| v.clear());
-                        clip.edit_transform_scale_keyframes(|v| v.clear());
-                        clip.edit_transform_rotation_keyframes(|v| v.clear());
-                    }
-                }
-                // Self-heal orphaned mask trackers from older
-                // projects that were saved before the inspector's
-                // delete-mask button routed through the centralized
-                // cleanup. A `TrackPoint` whose `linked_mask` points
-                // at a Mask node that no longer exists in any grade
-                // version (or at a `mask_index` past the end of the
-                // mask stack on whichever Mask node it does match)
-                // would otherwise stay attached forever and there's
-                // no UI to remove an orphaned tracker because the
-                // Untrack button lives inside the missing mask's
-                // inspector row. Drop them at load time.
-                let mask_counts: std::collections::HashMap<uuid::Uuid, usize> = clip
-                    .grade_versions().iter()
-                    .flat_map(|gv| gv.grade().nodes.iter())
-                    .filter(|n| n.kind == klipp_nodes::NodeKind::Mask)
-                    .map(|n| {
-                        let count = n.params.masks.as_ref()
-                            .map(|ms| ms.masks.len())
-                            .unwrap_or(0);
-                        (n.id, count)
-                    })
-                    .collect();
-                let pre = clip.track_points.len();
-                clip.track_points.retain(|tp| match tp.linked_mask {
-                    None => true,
-                    Some((nid, mi)) => mask_counts.get(&nid).is_some_and(|&n| mi < n),
-                });
-                let dropped = pre - clip.track_points.len();
-                if dropped > 0 {
-                    tracing::info!(
-                        "load: pruned {dropped} orphaned mask tracker(s) from clip {:?}",
-                        clip.id,
-                    );
-                }
-                clip
-            }).collect();
+            track.clips = t.clips.iter().map(|c| load_clip(c, project_dir, &effects_by_clip, rewritten)).collect();
             track
         }).collect(),
         in_point: seq_json.in_point.as_ref().map(|tc| RationalTime { value: tc.value, rate: tc.rate }),
@@ -1179,6 +1002,235 @@ fn resolve_title_paths(td: &mut klipp_timeline::TitleData, project_dir: &Path) {
 }
 
 /// Load ClipKind from JSON — backward-compatible with old `media_id`-only format.
+/// The most takes an audition read from a file keeps (#3209).
+const MAX_TAKES: usize = 100;
+
+/// A saved clip and the clips its audition's takes hold (#3209): one
+/// level, as [`load_audition`] reads them.
+fn with_takes(c: &ClipJson) -> Vec<&ClipJson> {
+    let takes = c.audition.iter().flat_map(|a| a.takes.iter().take(MAX_TAKES));
+    std::iter::once(c).chain(takes.flat_map(|t| t.clip.as_deref().into_iter().chain(t.sound.iter().map(|s| &s.clip)))).collect()
+}
+
+/// A saved audition, read as untrusted (#3209): at most [`MAX_TAKES`]
+/// takes; a take's own clips never hold an audition of their own; and
+/// exactly one take, the active one, has no clip, being the slot. One
+/// that isn't so is dropped with a warning, the slot kept as a plain clip.
+fn load_audition(a: &crate::format::AuditionJson, owner: &str, project_dir: &Path, effects: &HashMap<&str, Vec<klipp_effects::BuiltinEffect>>, rewritten: &mut std::collections::HashSet<String>) -> Option<Box<klipp_timeline::audition::Audition>> {
+    use klipp_timeline::audition::{Audition, Take};
+    if a.takes.len() > MAX_TAKES {
+        warn!("clip {owner}: {} takes, more than {MAX_TAKES}; the rest are left out", a.takes.len());
+    }
+    let id = |s: &str| parse_uuid(s).ok().map(klipp_core::TakeId);
+    let Some(active) = id(&a.active) else {
+        warn!("clip {owner}: its audition's active take has no id; the takes are left out");
+        return None;
+    };
+    let mut plain = |c: &ClipJson| {
+        let mut clip = load_clip(c, project_dir, effects, rewritten);
+        clip.audition = None;
+        clip
+    };
+    let mut takes = Vec::new();
+    for t in a.takes.iter().take(MAX_TAKES) {
+        let Some(tid) = id(&t.id) else {
+            warn!("clip {owner}: a take has no id; it is left out");
+            continue;
+        };
+        let sound = t.sound.iter().filter_map(|s| Some((klipp_core::TrackId(parse_uuid(&s.track).ok()?), plain(&s.clip)))).collect();
+        takes.push(Take { id: tid, name: t.name.clone(), clip: t.clip.as_deref().map(|c| Box::new(plain(c))), sound });
+    }
+    let slots = takes.iter().filter(|t| t.clip.is_none()).count();
+    if slots != 1 || takes.iter().find(|t| t.clip.is_none()).is_none_or(|t| t.id != active) {
+        warn!("clip {owner}: its audition doesn't name the take in the slot; the takes are left out");
+        return None;
+    }
+    Some(Box::new(Audition { takes, active }))
+}
+
+/// A saved clip as the timeline holds it, its audition's takes (#3209)
+/// read the same way.
+fn load_clip(c: &ClipJson, project_dir: &Path, effects_by_clip: &HashMap<&str, Vec<klipp_effects::BuiltinEffect>>, rewritten: &mut std::collections::HashSet<String>) -> Clip {
+    let clip_kind = load_clip_kind(c, project_dir);
+    let mut clip = Clip {
+        id: ClipId(parse_uuid(&c.id).unwrap_or_else(|_| Uuid::new_v4())),
+        kind: clip_kind,
+        timeline_in: RationalTime { value: c.timeline_in, rate: c.rate },
+        timeline_out: RationalTime { value: c.timeline_out, rate: c.rate },
+        source_in: RationalTime { value: c.source_in, rate: c.rate },
+        source_out: RationalTime { value: c.source_out, rate: c.rate },
+        picture: klipp_timeline::ClipPictureParts {
+            grade: {
+                let mut g = c.node_graph.clone().unwrap_or_default();
+                migrate_graph(&mut g);
+                g
+            },
+            builtin_effects: effects_by_clip.get(c.id.as_str()).cloned().unwrap_or_default(),
+            builtin_effects_enabled: c.builtin_effects_enabled.clone(),
+            ofx_effects: c.effects.iter().map(|e| e.to_effect()).collect(),
+            opacity_keyframes: c.opacity_keyframes.clone().unwrap_or_default(),
+            transform_pos_x_keyframes: c.transform_pos_x_keyframes.clone().unwrap_or_default(),
+            transform_pos_y_keyframes: c.transform_pos_y_keyframes.clone().unwrap_or_default(),
+            transform_scale_keyframes: c.transform_scale_keyframes.clone().unwrap_or_default(),
+            transform_scale_y_keyframes: c.transform_scale_y_keyframes.clone().unwrap_or_default(),
+            transform_rotation_keyframes: c.transform_rotation_keyframes.clone().unwrap_or_default(),
+            transform_tilt_x_keyframes: c.transform_tilt_x_keyframes.clone().unwrap_or_default(),
+            transform_tilt_y_keyframes: c.transform_tilt_y_keyframes.clone().unwrap_or_default(),
+            effect_keyframes: c.effect_keyframes.clone().unwrap_or_default(),
+            param_modifiers: c.param_modifiers.as_ref().map(|m| {
+                m.iter().filter_map(|(k, v)| {
+                    klipp_core::ParamId::from_key(k).map(|pid| (pid, v.clone()))
+                }).collect::<std::collections::HashMap<_, _>>()
+            }).unwrap_or_default(),
+            grade_versions: c.grade_versions.iter().map(|gv| {
+                let mut g = gv.node_graph.clone();
+                migrate_graph(&mut g);
+                klipp_timeline::GradeVersion {
+                    name: gv.name.clone(),
+                    node_graph: g.into(),
+                }
+            }).collect(),
+            active_grade_version: c.active_grade_version,
+        }
+        .into(),
+        linked_clip_id: c.linked_clip_id.as_ref().and_then(|s| {
+            parse_uuid(s).ok().map(ClipId)
+        }),
+        linked_title_asset_id: c.linked_title_asset_id.as_ref().and_then(|s| {
+            parse_uuid(s).ok().map(klipp_core::MediaId)
+        }),
+        group_id: c.group_id.as_ref().and_then(|s| {
+            parse_uuid(s).ok().map(GroupId)
+        }),
+        grade_group: c.grade_group.as_ref().and_then(|s| parse_uuid(s).ok().map(klipp_core::GradeGroupId)),
+        magnetic_anchor: c.magnetic_anchor.clone(),
+        gain: c.gain.unwrap_or(1.0),
+        volume: c.volume.unwrap_or(1.0),
+        pan: c.pan.unwrap_or(0.0),
+        fade_in_secs: c.fade_in_secs.unwrap_or(0.0),
+        fade_out_secs: c.fade_out_secs.unwrap_or(0.0),
+        fade_in_curve: c.fade_in_curve.unwrap_or_default(),
+        fade_out_curve: c.fade_out_curve.unwrap_or_default(),
+        channel_config: c.channel_config.unwrap_or_default(),
+        volume_keyframes: c.volume_keyframes.clone().unwrap_or_default(),
+        pan_keyframes: c.pan_keyframes.clone().unwrap_or_default(),
+        gain_keyframes: c.gain_keyframes.clone().unwrap_or_default(),
+        matte_feather_keyframes: c.matte_feather_keyframes.clone().unwrap_or_default(),
+        matte_choke_keyframes: c.matte_choke_keyframes.clone().unwrap_or_default(),
+        frame_glide: c.frame_glide,
+        clip_markers: c.clip_markers.as_ref().map(|markers| {
+            markers.iter().map(|m| klipp_timeline::ClipMarker {
+                time_secs: m.time_secs,
+                name: m.name.clone(),
+                color: match m.color.as_str() {
+                    "Red" => klipp_core::MarkerColor::Red,
+                    "Orange" => klipp_core::MarkerColor::Orange,
+                    "Yellow" => klipp_core::MarkerColor::Yellow,
+                    "Green" => klipp_core::MarkerColor::Green,
+                    "Purple" => klipp_core::MarkerColor::Purple,
+                    _ => klipp_core::MarkerColor::Blue,
+                },
+                comment: m.comment.clone(),
+            }).collect()
+        }).unwrap_or_default(),
+        role: c.role.unwrap_or_default(),
+        role_source: c.role_source,
+        matched_to: c.matched_to,
+        speed: c.speed.unwrap_or(1.0),
+        speed_keyframes: c.speed_keyframes.clone().unwrap_or_default(),
+        keep_pitch: c.keep_pitch.unwrap_or(false),
+        hold: c.hold.as_ref().map(|tc| RationalTime { value: tc.value, rate: tc.rate }),
+        source_rotation: c.source_rotation.unwrap_or(0),
+        enabled: c.enabled.unwrap_or(true),
+        solo: c.solo.unwrap_or(false),
+        blend_mode: c.blend_mode.unwrap_or(klipp_core::BlendMode::Normal),
+        depth: c.depth.filter(|d| d.is_finite() && *d >= 0.0).unwrap_or(1.0),
+        matte_source: c.matte_source.as_ref().and_then(load_matte_binding),
+        matte_stencil: c.matte_stencil.as_ref().map(|s| klipp_timeline::StencilSettings {
+            channel: s.channel,
+            invert: s.invert,
+            feather_px: s.feather_px,
+            choke_px: s.choke_px,
+        }),
+        consumed_as_matte: c.consumed_as_matte.unwrap_or(false),
+        transform_link: c.transform_link.as_ref().and_then(load_transform_link),
+        audio_effects: c.audio_effects.clone().unwrap_or_default(),
+        audio_effect_keyframes: c.audio_effect_keyframes.clone(),
+        multicam_group: c.multicam_group.as_ref().and_then(|s| parse_uuid(s).ok().map(klipp_core::GroupId)),
+        multicam_angle: c.multicam_angle.unwrap_or(0),
+        multicam_cuts: c.multicam_cuts.clone(),
+        multicam_sound: c.multicam_sound.unwrap_or_default(),
+        track_points: c.track_points.clone(),
+        surfaces: c.surfaces.clone(),
+        surface_pin: c.surface_pin,
+        name: c.name.clone(),
+        colour_label: c.colour_label,
+        grade_flag: c.grade_flag,
+        audition: None,
+        precomp: None,
+        baked_own: None,
+    };
+    // Titles saved with the old whole-title or
+    // per-character animation get the layer model; the
+    // keyframes the old kinds baked onto the clip go
+    // with them, since the loops now do the moving.
+    if let ClipKind::Title(td) = &mut clip.kind {
+        // The layer stacks first: an object from before they
+        // existed takes its text box's old fields; a text box
+        // with old fields beside an explicit stack loses them
+        // to it, and the log says so.
+        let fx = td.migrate_fx();
+        if fx.dropped_legacy > 0 {
+            warn!("title {}: {} text box(es) had old effect fields beside a layer stack; the stack wins", clip.id, fx.dropped_legacy);
+        }
+        let m = td.migrate_legacy_animation();
+        if m.clear_clip_keyframes {
+            rewritten.insert(clip.id.0.to_string());
+            clip.edit_opacity_keyframes(|v| v.clear());
+            clip.edit_transform_pos_x_keyframes(|v| v.clear());
+            clip.edit_transform_pos_y_keyframes(|v| v.clear());
+            clip.edit_transform_scale_keyframes(|v| v.clear());
+            clip.edit_transform_rotation_keyframes(|v| v.clear());
+        }
+    }
+    // Self-heal orphaned mask trackers from older
+    // projects that were saved before the inspector's
+    // delete-mask button routed through the centralized
+    // cleanup. A `TrackPoint` whose `linked_mask` points
+    // at a Mask node that no longer exists in any grade
+    // version (or at a `mask_index` past the end of the
+    // mask stack on whichever Mask node it does match)
+    // would otherwise stay attached forever and there's
+    // no UI to remove an orphaned tracker because the
+    // Untrack button lives inside the missing mask's
+    // inspector row. Drop them at load time.
+    let mask_counts: std::collections::HashMap<uuid::Uuid, usize> = clip
+        .grade_versions().iter()
+        .flat_map(|gv| gv.grade().nodes.iter())
+        .filter(|n| n.kind == klipp_nodes::NodeKind::Mask)
+        .map(|n| {
+            let count = n.params.masks.as_ref()
+                .map(|ms| ms.masks.len())
+                .unwrap_or(0);
+            (n.id, count)
+        })
+        .collect();
+    let pre = clip.track_points.len();
+    clip.track_points.retain(|tp| match tp.linked_mask {
+        None => true,
+        Some((nid, mi)) => mask_counts.get(&nid).is_some_and(|&n| mi < n),
+    });
+    let dropped = pre - clip.track_points.len();
+    if dropped > 0 {
+        tracing::info!(
+            "load: pruned {dropped} orphaned mask tracker(s) from clip {:?}",
+            clip.id,
+        );
+    }
+    clip.audition = c.audition.as_ref().and_then(|a| load_audition(a, &c.id, project_dir, effects_by_clip, rewritten));
+    clip
+}
+
 fn load_clip_kind(c: &ClipJson, project_dir: &Path) -> ClipKind {
     // New format: `kind` field is present
     if let Some(kind_json) = &c.kind {

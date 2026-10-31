@@ -259,6 +259,8 @@ pub enum Edge {
 
 mod stretch;
 pub use stretch::{plays_at_speed, stretch_at, stretch_range, StretchTo};
+mod alternatives;
+pub use alternatives::{AlternativesAction, TakeSpec};
 
 /// How a title's text is set, for `title` and `style` (#1686): its
 /// weight, a variable font's axes, OpenType features, a justified
@@ -1879,6 +1881,26 @@ pub enum Op {
         #[serde(default)]
         clear: bool,
     },
+    /// Auditions (#3209): a clip's slot holding several takes, switched in
+    /// place. `create` makes the clip the first take and adds `takes` (a
+    /// copy of the clip to vary when none are given); `add` adds `takes`;
+    /// `remove` and `rename` change `take` (by name or id); `switch` puts
+    /// `take` in the slot; `finalize` keeps the take in the slot as a plain
+    /// clip. A switch on the primary storyline moves the clips after it by
+    /// the change in length, and the clips connected to them; elsewhere
+    /// they move only with `ripple`.
+    Alternatives {
+        action: AlternativesAction,
+        clip_id: ClipRef,
+        #[serde(default)]
+        takes: Vec<TakeSpec>,
+        #[serde(default)]
+        take: Option<String>,
+        #[serde(default)]
+        name: Option<String>,
+        #[serde(default)]
+        ripple: bool,
+    },
     /// Change a clip's speed. `speed` above 1 is faster and shorter, below
     /// 1 slower and longer (0.5 is half speed); negative plays the clip
     /// reversed at that magnitude (#617), its sound read at the speed,
@@ -2513,7 +2535,7 @@ pub const OP_NAMES: &[&str] = &[
     "graphics", "vector_path", "connector", "place", "add_track", "remove_track", "set_track", "track_automation", "aux_bus", "send", "trim", "j_cut", "l_cut", "split", "join", "remove", "move", "cut",
     "captions", "audio", "volume", "duck", "lower_third", "set_text", "grade", "effect", "redact",
     "slip", "slide", "pin", "role", "match", "matte", "format", "stabilize", "reframe", "zoom", "pan", "follow", "refit", "highlight",
-    "ramp", "freeze", "grade_group", "remove_grade_group", "look", "qualify", "zones", "retime", "mark", "stretch", "replace", "track_audio", "clip_audio", "clean_audio",
+    "ramp", "freeze", "grade_group", "remove_grade_group", "look", "qualify", "zones", "retime", "mark", "stretch", "replace", "alternatives", "track_audio", "clip_audio", "clean_audio",
     "transition", "style", "title", "compose", "camera", "crop", "generator", "depth", "label", "motion_blur",
     "strobe", "remove_silences", "auto_colour", "set_length", "over_edits", "template", "template_link", "recipe", "edit_from_selects", "opacity_mask",
 ];
@@ -4242,6 +4264,7 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             };
             Ok((what, EditCommand::SetRange { old_in: seq.in_point, old_out: seq.out_point, new_in, new_out }, vec![]))
         }
+        Op::Alternatives { action, clip_id, takes, take, name, ripple } => alternatives::alternatives(seq, pool, fps, i, *action, clip_id, takes, take.as_deref(), name.as_deref(), *ripple),
         Op::Retime { clip_id, speed, fit, ripple, interpolation, length_secs, fit_range } => {
             let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
             let interpolated = interpolation.as_deref().map(|how| interpolation_edit(seq, pool, i, clip, how)).transpose()?.flatten();
