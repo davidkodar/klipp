@@ -20,7 +20,7 @@ mod reverse_gop;
 mod skim_render;
 pub use skim_render::{SKIMS_COMPOSITED, SKIMS_DECLINED, SKIM_SOURCES_OFF_GPU};
 mod streams;
-mod view;
+pub(crate) mod view;
 
 /// Wrapper to make AudioOutput Send. The cpal::Stream inside is !Send
 /// due to platform internals, but we only ever use it on the engine thread.

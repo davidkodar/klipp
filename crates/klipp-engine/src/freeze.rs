@@ -30,6 +30,15 @@ pub fn environment(working: klipp_core::WorkingColorspace, use_proxies: bool) ->
     h.finish()
 }
 
+/// The size playback draws a sequence of `sequence` size at while playing,
+/// with no other picture setting the frame: the size a track is frozen at.
+/// A frame the viewer draws at another size (a shot of another size below
+/// sets it) lays the track live.
+pub fn playback_size(sequence: (u32, u32)) -> (u32, u32) {
+    let full = crate::engine::view::playback_canvas(None, sequence);
+    crate::engine::view::reduced_for_quality(full, crate::video_decoder::playback_quality_divisor())
+}
+
 /// A frozen track's namespace in the cache store.
 pub fn namespace(track: TrackId) -> String {
     format!("freeze/{}", track)
@@ -209,6 +218,80 @@ impl FreezeRequest {
     }
 }
 
+/// The frames of track `track` that have a clip on them, at the
+/// sequence's rate as playback times them, those from `from` on first and
+/// then those before it: what is played next is frozen first.
+pub fn track_frames(seq: &Sequence, track: usize, from: Timecode) -> Vec<Timecode> {
+    let Some(t) = seq.tracks.get(track) else { return Vec::new() };
+    let (num, den) = (i128::from(seq.fps.num.max(1)), i128::from(seq.fps.den.max(1)));
+    // Frame f is at f·den/num s: the first frame at or after a time, and the
+    // first at or after its end.
+    let first_at = |at: Timecode| -> i64 {
+        let (v, r) = (i128::from(at.value), i128::from(at.rate.max(1)));
+        let (n, d) = (v * num, r * den);
+        (n.div_euclid(d) + i128::from(n.rem_euclid(d) != 0)) as i64
+    };
+    let mut frames = std::collections::BTreeSet::new();
+    for c in &t.clips {
+        frames.extend(first_at(c.timeline_in).max(0)..first_at(c.timeline_out));
+    }
+    let start = first_at(from);
+    let (before, after): (Vec<i64>, Vec<i64>) = frames.into_iter().partition(|f| *f < start);
+    let tc = |f: i64| Timecode { value: f * i64::from(seq.fps.den), rate: seq.fps.num };
+    after.into_iter().chain(before).map(tc).collect()
+}
+
+/// How a frozen track stands (#3207), as its freeze job last told it.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct FreezeStatus {
+    /// The frames the track has something on.
+    pub frames: usize,
+    /// The share of them gone through, while the job runs.
+    pub progress: Option<f32>,
+    /// What the last finished job found.
+    pub tally: Option<FreezeTally>,
+    /// Why nothing is frozen: no saved project to keep the frames in.
+    pub unsaved: bool,
+}
+
+impl FreezeStatus {
+    /// The status in a few words, for the timeline text and the header.
+    pub fn describe(&self) -> String {
+        if self.unsaved {
+            return "frozen, but played live until the project is saved: its frames are kept in the project".into();
+        }
+        let mut out = match (self.progress, &self.tally) {
+            (Some(p), _) => format!("frozen, drawing its frames: {:.0} % of {}", p * 100.0, self.frames),
+            (None, Some(t)) => format!("frozen, {} of {} frames current", t.stored + t.current, self.frames),
+            (None, None) => format!("frozen, {} frames waiting to be drawn", self.frames),
+        };
+        if let Some(t) = &self.tally {
+            if t.live > 0 {
+                out.push_str(&format!(", {} played live (they read other tracks)", t.live));
+            }
+            if t.failed > 0 {
+                out.push_str(&format!(", {} couldn't be drawn", t.failed));
+            }
+            if t.full {
+                out.push_str(", the cache is full");
+            }
+        }
+        out
+    }
+}
+
+static STATUS: std::sync::LazyLock<Mutex<HashMap<TrackId, FreezeStatus>>> = std::sync::LazyLock::new(Default::default);
+
+/// Set every frozen track's status at once: a track left out isn't frozen.
+pub fn set_statuses(statuses: HashMap<TrackId, FreezeStatus>) {
+    *STATUS.lock().unwrap_or_else(|e| e.into_inner()) = statuses;
+}
+
+/// A frozen track's status; `None` for a track that isn't frozen.
+pub fn status(track: TrackId) -> Option<FreezeStatus> {
+    STATUS.lock().unwrap_or_else(|e| e.into_inner()).get(&track).cloned()
+}
+
 /// Freeze `req`'s frames in a background job: a frame at a time, waiting
 /// between frames while the scheduler has the job paused (the person
 /// playing, scrubbing or editing), stopping when cancelled with every
@@ -385,5 +468,62 @@ mod tests {
         job.join();
         assert_eq!(rx.recv().unwrap().stored, frames.len());
         let _ = std::fs::remove_dir_all(&d);
+    }
+}
+
+#[cfg(test)]
+mod track_frames_tests {
+    use super::*;
+    use klipp_core::{Fps, MediaId};
+    use klipp_timeline::{Clip, Track, TrackKind};
+
+    fn seq(fps: Fps, clips: Vec<Clip>) -> Sequence {
+        let mut s = Sequence::new_default();
+        s.fps = fps;
+        let mut t = Track::new("V1", TrackKind::Video);
+        t.clips = clips;
+        s.tracks = vec![t];
+        s
+    }
+
+    fn at(secs: f64, rate: u32) -> Timecode {
+        Timecode::from_secs_f64(secs, rate)
+    }
+
+    /// The frames under the clips, none in the gap between them, each
+    /// once, as playback times them; from the playhead on first, then
+    /// the ones before it.
+    #[test]
+    fn a_track_s_frames_are_those_under_its_clips_from_the_playhead_on_first() {
+        let m = MediaId::new();
+        let s = seq(Fps::new(25, 1), vec![Clip::media(m, at(0.0, 25), at(0.2, 25), at(0.0, 25), at(0.2, 25)), Clip::media(m, at(0.4, 25), at(0.6, 25), at(0.0, 25), at(0.2, 25))]);
+        let frames = track_frames(&s, 0, at(0.48, 25));
+        let index: Vec<i64> = frames.iter().map(|t| t.value).collect();
+        assert_eq!(index, vec![12, 13, 14, 0, 1, 2, 3, 4, 10, 11], "from frame 12 on, then before");
+        assert!(frames.iter().all(|t| t.rate == 25));
+        assert!(track_frames(&s, 3, at(0.0, 25)).is_empty(), "no such track");
+    }
+
+    /// At 29.97 a frame is 1001 ticks of 30000, as the engine's playhead
+    /// counts; a clip whose edges fall between frames covers the frames
+    /// that start inside it.
+    #[test]
+    fn ntsc_frames_are_timed_as_playback_times_them() {
+        let m = MediaId::new();
+        let s = seq(Fps::ntsc_29970(), vec![Clip::media(m, at(0.05, 30_000), at(0.15, 30_000), at(0.0, 30_000), at(0.1, 30_000))]);
+        let frames = track_frames(&s, 0, at(0.0, 30_000));
+        assert_eq!(frames, vec![Timecode { value: 2 * 1001, rate: 30_000 }, Timecode { value: 3 * 1001, rate: 30_000 }, Timecode { value: 4 * 1001, rate: 30_000 }]);
+    }
+
+    #[test]
+    fn a_status_says_how_far_its_frames_are_drawn() {
+        let mut s = FreezeStatus { frames: 240, progress: Some(0.25), ..Default::default() };
+        assert_eq!(s.describe(), "frozen, drawing its frames: 25 % of 240");
+        s.progress = None;
+        s.tally = Some(FreezeTally { stored: 200, current: 30, live: 10, ..Default::default() });
+        assert_eq!(s.describe(), "frozen, 230 of 240 frames current, 10 played live (they read other tracks)");
+        s.tally = Some(FreezeTally { stored: 5, full: true, ..Default::default() });
+        assert!(s.describe().ends_with("the cache is full"), "{}", s.describe());
+        assert!(FreezeStatus { unsaved: true, ..Default::default() }.describe().contains("until the project is saved"));
     }
 }

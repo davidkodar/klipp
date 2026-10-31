@@ -3482,6 +3482,9 @@ pub enum AppCommand {
 
     // Track locking
     SetTrackLocked { track_id: TrackId, locked: bool },
+    /// Freeze a video track, or play it live again (#3207): frozen, it
+    /// plays from frames drawn ahead where they are current.
+    SetTrackFrozen { track_id: TrackId, frozen: bool },
 
     /// Set (or clear) a track's custom pixel height. `None` restores the
     /// kind's default height. Height is clamped to (32.0, 300.0).

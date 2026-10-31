@@ -772,6 +772,7 @@ impl KlippApp {
 
         self.poll_project_copy();
         self.poll_fetched_fonts();
+        self.keep_frozen_tracks();
         self.write_untitled_on_first_edit();
         self.sync_project_lock();
 
