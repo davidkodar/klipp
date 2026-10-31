@@ -14,20 +14,79 @@ pub(super) const NEIGHBOURS_KEPT: usize = 6;
 /// an M1's in three seconds.
 const NEIGHBOURS_IN_FLIGHT: usize = 4;
 
+/// The longest a neighbour decode waits for one in flight to finish
+/// before the frame goes without it (#3174). The wait it replaced,
+/// `Maintain::Wait`, waited on every submission for up to a minute, and
+/// on an M1 playing a reverse by flow it never came back.
+const NEIGHBOUR_ROOM_WAIT: std::time::Duration = std::time::Duration::from_millis(4);
+
+/// Neighbour decodes a frame went without, there being no room in
+/// [`NEIGHBOUR_ROOM_WAIT`] (#3174).
+static NEIGHBOURS_SKIPPED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Neighbour decodes counted in flight on top of the real ones, as a GPU
+/// that never finishes them would hold them: a test's (#3174).
+#[cfg(feature = "test-hooks")]
+static PINNED_IN_FLIGHT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Count `n` neighbour decodes in flight that never finish, on every
+/// pipeline, until it is called again with 0: a test's (#3174).
+#[cfg(feature = "test-hooks")]
+pub fn pin_neighbours_in_flight(n: usize) {
+    PINNED_IN_FLIGHT.store(n, std::sync::atomic::Ordering::Release);
+}
+
+fn pinned_in_flight() -> usize {
+    #[cfg(feature = "test-hooks")]
+    return PINNED_IN_FLIGHT.load(std::sync::atomic::Ordering::Acquire);
+    #[cfg(not(feature = "test-hooks"))]
+    0
+}
+
+/// Neighbour decodes frames have gone without so far (#3174).
+pub fn neighbours_skipped() -> u64 {
+    NEIGHBOURS_SKIPPED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 impl GpuEffectsPipeline {
-    /// A buffer of `size` bytes for a neighbour decode: one kept, or made.
-    /// Past [`NEIGHBOURS_IN_FLIGHT`] decodes not yet done, the GPU is
-    /// waited on first.
-    pub(super) fn neighbour_buffer(&self, size: u64) -> std::sync::Arc<wgpu::Buffer> {
+    /// Whether a neighbour decode may be submitted now: fewer than
+    /// [`NEIGHBOURS_IN_FLIGHT`] are, or one finishes within
+    /// [`NEIGHBOUR_ROOM_WAIT`]. The device is polled, never waited on, so
+    /// a submission that does not finish holds the frame up by that bound
+    /// at most; the poll also runs the done callbacks that count them
+    /// off. `false` is counted ([`neighbours_skipped`]): the caller does
+    /// without the neighbour for this frame.
+    pub fn make_room_for_neighbour(&self) -> bool {
         use std::sync::atomic::Ordering;
-        if self.neighbours_in_flight.load(Ordering::Acquire) >= NEIGHBOURS_IN_FLIGHT {
-            let _ = self.device.poll(wgpu::Maintain::Wait);
+        let in_flight = || self.neighbours_in_flight.load(Ordering::Acquire) + pinned_in_flight();
+        if in_flight() < NEIGHBOURS_IN_FLIGHT {
+            return true;
         }
+        let until = std::time::Instant::now() + NEIGHBOUR_ROOM_WAIT;
+        loop {
+            let _ = self.device.poll(wgpu::Maintain::Poll);
+            if in_flight() < NEIGHBOURS_IN_FLIGHT {
+                return true;
+            }
+            if std::time::Instant::now() >= until {
+                NEIGHBOURS_SKIPPED.fetch_add(1, Ordering::Relaxed);
+                tracing::debug!("{} neighbour decodes still in flight after {NEIGHBOUR_ROOM_WAIT:?}: the frame goes without another", in_flight());
+                return false;
+            }
+            std::thread::sleep(std::time::Duration::from_micros(200));
+        }
+    }
+
+    /// A buffer of `size` bytes for a neighbour decode: one kept, or made.
+    /// Never waits: the room for the decode is the caller's to make
+    /// ([`Self::make_room_for_neighbour`]).
+    pub(super) fn neighbour_buffer(&self, size: u64) -> std::sync::Arc<wgpu::Buffer> {
         crate::gpu_memory::made(crate::gpu_memory::Made::Neighbour, size);
         self.neighbour_pool.lock().unwrap_or_else(|e| e.into_inner()).take(&self.device, size)
     }
 
-    /// A neighbour decode was submitted: counted until the GPU is done.
+    /// A neighbour decode was submitted: counted from here until the GPU
+    /// is done with that submission, not while a cache keeps its buffer.
     fn neighbour_submitted(&self) {
         use std::sync::atomic::Ordering;
         self.neighbours_in_flight.fetch_add(1, Ordering::AcqRel);
@@ -109,7 +168,8 @@ impl GpuEffectsPipeline {
     /// temporal denoise to bind (#1988): nothing read back or uploaded.
     /// Never the chain's buffers or its parameters: the pass has a uniform
     /// of its own, and is submitted at once, ahead of the chain that reads
-    /// it. `None` on a lost device or a buffer too small.
+    /// it. `None` on a lost device or a buffer too small. The caller
+    /// makes room for it first ([`Self::make_room_for_neighbour`]).
     pub fn neighbour_from_u8(&self, input_u8: &wgpu::Buffer, width: u32, height: u32) -> Option<std::sync::Arc<wgpu::Buffer>> {
         let pixels = u64::from(width) * u64::from(height);
         if self.is_device_lost() || pixels == 0 || input_u8.size() < pixels * 4 {
@@ -358,3 +418,46 @@ pub(super) const SHADER_ROLLING_SHUTTER: &str = gpu_shader!("temporal/rolling_sh
 pub(super) const SHADER_STABILIZATION: &str = gpu_shader!("temporal/stabilization.wgsl");
 
 pub(super) const SHADER_DEFLICKER: &str = gpu_shader!("temporal/deflicker.wgsl");
+
+#[cfg(test)]
+mod neighbour_room_tests {
+    use super::*;
+    use std::sync::atomic::Ordering;
+
+    /// #3174: with as many neighbour decodes in flight as are let pile up
+    /// and none finishing, as on the M1 whose render thread then sat in a
+    /// minute-long fence wait for good, the next is refused within its
+    /// bound and counted, and room comes back as one finishes: a real
+    /// decode submitted and polled is counted off.
+    #[test]
+    fn a_neighbour_without_room_is_refused_in_time() {
+        let Some(gpu) = GpuEffectsPipeline::new() else {
+            eprintln!("no GPU adapter: skipped");
+            return;
+        };
+        assert!(gpu.make_room_for_neighbour(), "room with nothing in flight");
+        gpu.neighbours_in_flight.fetch_add(NEIGHBOURS_IN_FLIGHT, Ordering::AcqRel);
+        let skipped = neighbours_skipped();
+        let t0 = std::time::Instant::now();
+        let room = gpu.make_room_for_neighbour();
+        let waited = t0.elapsed();
+        gpu.neighbours_in_flight.fetch_sub(NEIGHBOURS_IN_FLIGHT, Ordering::AcqRel);
+        assert!(!room, "no room with the limit in flight and none finishing");
+        assert!(waited < NEIGHBOUR_ROOM_WAIT * 10, "refused after {waited:?}, the bound being {NEIGHBOUR_ROOM_WAIT:?}");
+        assert!(neighbours_skipped() > skipped, "the frame that went without is counted");
+        // One short of the limit, and a real decode makes it the limit:
+        // the poll runs its done callback, and there is room again.
+        gpu.neighbours_in_flight.fetch_add(NEIGHBOURS_IN_FLIGHT - 1, Ordering::AcqRel);
+        let bytes = gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("test_u8"), size: 64 * 64 * 4, usage: wgpu::BufferUsages::STORAGE, mapped_at_creation: false });
+        let made = gpu.neighbour_from_u8(&bytes, 64, 64);
+        assert!(made.is_some(), "a neighbour decoded");
+        let mut room = false;
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !room && std::time::Instant::now() < until {
+            room = gpu.make_room_for_neighbour();
+        }
+        assert!(room, "the decode finished and was counted off");
+        assert_eq!(gpu.neighbours_in_flight(), NEIGHBOURS_IN_FLIGHT - 1, "only the real decode was counted off");
+        gpu.neighbours_in_flight.fetch_sub(NEIGHBOURS_IN_FLIGHT - 1, Ordering::AcqRel);
+    }
+}

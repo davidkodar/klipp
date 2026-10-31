@@ -294,18 +294,52 @@ fn at_a_tenth_reversed_by_flow_the_frames_stay_on_the_gpu() {
     let r = start(&video, vec![flow]);
     let decodes = || klipp_effects::gpu_memory::snapshot().made.into_iter().find(|(n, _, _)| *n == "neighbour").map_or(0, |(_, _, n)| n);
     let decodes_before = decodes();
+    let skipped_before = klipp_effects::gpu::neighbours_skipped();
     let (shown, made, fell) = play(&r, 2.0, 5.0);
     let decoded = decodes() - decodes_before;
     stop(r);
     let presented = presented_fps(&shown, 2.0);
     let by_feature = klipp_effects::residency::snapshot().by_feature;
-    eprintln!("−0.1 reversed by flow: {presented:.1} presents a second, {made} source frames in the last 4 s, {decoded} neighbour decodes for {} frames shown; fallbacks and readbacks {fell:?}; by feature {by_feature:?}", shown.len());
+    let skipped = klipp_effects::gpu::neighbours_skipped() - skipped_before;
+    eprintln!("−0.1 reversed by flow: {presented:.1} presents a second, {made} source frames in the last 4 s, {decoded} neighbour decodes and {skipped} gone without (no room) for {} frames shown; fallbacks and readbacks {fell:?}; by feature {by_feature:?}", shown.len());
     assert!(presented >= FLOW_MIN_PRESENTS, "flow at a tenth presents {presented:.1} frames a second");
     // A neighbour is decoded once a source frame, not once a frame shown
     // (#3174): at a tenth that is about one for every ten, where it was
     // more than one a frame, each a frame's worth of GPU memory.
     assert!((decoded as f64) < 0.25 * shown.len() as f64, "{decoded} neighbour decodes for {} frames shown", shown.len());
     assert_eq!(fell, (0, 0, 0), "no picture fallbacks, engine readbacks or effect downloads while it played (picture, engine, effects)");
+}
+
+/// With the GPU never done with the neighbour decodes in flight (#3174),
+/// flow at a tenth reversed plays on at its rate: each frame that finds
+/// no room for a decode goes without its blend in a few milliseconds.
+/// On an M1 the render thread waited on the GPU for good there, and
+/// nothing was presented after the first two seconds.
+#[test]
+fn flow_plays_on_when_the_neighbour_decodes_never_finish() {
+    let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+    if ready().is_none() {
+        return;
+    }
+    let video = pan_source().expect("ffmpeg made the panning source");
+    let flow = klipp_timeline::test_clip::TestClip::of(clip_at(MediaId::new(), -0.1, 0.0, 80.0)).effect(klipp_effects::BuiltinEffect::SpeedRamp { speed: 1.0, blend_mode: 2 }).build();
+    let r = start(&video, vec![flow]);
+    // Held after the first frame is up, as the stall came mid-play.
+    let g = common::generation(&r.fb);
+    r.cmd.send(AppCommand::SetPlayhead(tc(2.0))).unwrap();
+    common::wait_new(&r.fb, g, Duration::from_secs(20));
+    common::settle(&r.fb);
+    klipp_effects::gpu::pin_neighbours_in_flight(64);
+    let skipped_before = klipp_effects::gpu::neighbours_skipped();
+    let (shown, _, fell) = play(&r, 2.5, 5.0);
+    let skipped = klipp_effects::gpu::neighbours_skipped() - skipped_before;
+    klipp_effects::gpu::pin_neighbours_in_flight(0);
+    stop(r);
+    let presented = presented_fps(&shown, 2.0);
+    eprintln!("−0.1 reversed by flow, no decode ever done: {presented:.1} presents a second, {skipped} neighbour decodes gone without for {} frames shown; fallbacks and readbacks {fell:?}", shown.len());
+    assert!(presented >= FLOW_MIN_PRESENTS, "with no room for a neighbour it presents {presented:.1} frames a second");
+    assert!(skipped > 0, "no frame found the limit reached: the hold didn't hold");
+    assert_eq!(fell, (0, 0, 0), "going without a neighbour is neither a picture fallback nor a readback (picture, engine, effects)");
 }
 
 #[test]

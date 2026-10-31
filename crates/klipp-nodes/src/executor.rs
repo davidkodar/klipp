@@ -4889,7 +4889,7 @@ impl GraphExecutor {
         let mut held: Vec<HeldNeighbour> = Vec::with_capacity(neighbours.len());
         for n in neighbours {
             held.push(match n {
-                NeighbourPixels::Gpu(g) if g.srgb8() => HeldNeighbour::Uploaded(decoded.get_or(g, (width, height), || gpu.neighbour_from_u8(g.buffer(), width, height))?),
+                NeighbourPixels::Gpu(g) if g.srgb8() => HeldNeighbour::Uploaded(decoded.get_or(g, (width, height), || gpu.make_room_for_neighbour().then(|| gpu.neighbour_from_u8(g.buffer(), width, height)).flatten())?),
                 NeighbourPixels::Gpu(g) => HeldNeighbour::Source(Arc::clone(g)),
                 NeighbourPixels::Cpu(p) if p.len() == pixels => HeldNeighbour::Uploaded(gpu.upload_neighbour(p)?),
                 NeighbourPixels::Cpu(_) => return None,
@@ -4914,11 +4914,29 @@ impl GraphExecutor {
         // on the CPU uploaded to a buffer of its own. Both held until the
         // run's chain is submitted.
         let mut held: Vec<HeldNeighbour> = Vec::with_capacity(read.neighbours.len());
+        // No room for a neighbour's decode (#3174): the frame goes
+        // undenoised, rather than waiting on the GPU or drawing it on the
+        // CPU.
+        let mut no_room = false;
         for n in &read.neighbours {
-            held.push(match n {
+            let made = match n {
                 // sRGB bytes on the GPU (a viewer stream's frame): decoded
                 // to linear there, into a buffer of its own.
-                NeighbourPixels::Gpu(g) if g.srgb8() => HeldNeighbour::Uploaded(decoded.get_or(g, (width, height), || gpu.neighbour_from_u8(g.buffer(), width, height))?),
+                NeighbourPixels::Gpu(g) if g.srgb8() => decoded.get_or(g, (width, height), || {
+                    if gpu.make_room_for_neighbour() {
+                        gpu.neighbour_from_u8(g.buffer(), width, height)
+                    } else {
+                        no_room = true;
+                        None
+                    }
+                }),
+                _ => None,
+            };
+            if no_room {
+                return Some(2);
+            }
+            held.push(match n {
+                NeighbourPixels::Gpu(g) if g.srgb8() => HeldNeighbour::Uploaded(made?),
                 NeighbourPixels::Gpu(g) => HeldNeighbour::Source(Arc::clone(g)),
                 NeighbourPixels::Cpu(p) if p.len() == pixels => {
                     self.run_neighbour_uploads += 1;
@@ -5908,6 +5926,10 @@ impl GraphExecutor {
         let decoded = &mut self.decoded_neighbours;
         let gpu = self.gpu.as_ref()?;
         let mut uploads = 0u32;
+        // No room for a frame's decode (#3174): the chain's picture shows
+        // as it is, unblended, rather than waiting on the GPU or drawing
+        // the blend on the CPU.
+        let mut no_room = false;
         let mut held = |n: &NeighbourPixels| -> Option<HeldNeighbour> {
             Some(match n {
                 // Fitted to the render where the stream decoded it smaller,
@@ -5915,7 +5937,14 @@ impl GraphExecutor {
                 // frames the blend reads it for.
                 NeighbourPixels::Gpu(g) if g.srgb8() => {
                     let (sw, sh) = g.source_size().unwrap_or((width, height));
-                    HeldNeighbour::Uploaded(decoded.get_or(g, (width, height), || gpu.neighbour_fit_from_u8(g.buffer(), sw, sh, width, height))?)
+                    HeldNeighbour::Uploaded(decoded.get_or(g, (width, height), || {
+                        if gpu.make_room_for_neighbour() {
+                            gpu.neighbour_fit_from_u8(g.buffer(), sw, sh, width, height)
+                        } else {
+                            no_room = true;
+                            None
+                        }
+                    })?)
                 }
                 NeighbourPixels::Gpu(g) => HeldNeighbour::Source(Arc::clone(g)),
                 NeighbourPixels::Cpu(p) if p.len() == pixels => {
@@ -5925,12 +5954,17 @@ impl GraphExecutor {
                 NeighbourPixels::Cpu(_) => return None,
             })
         };
-        let from = match &read.from {
-            Some(n) => Some(held(n)?),
+        let from = read.from.as_ref().map(&mut held);
+        let to = read.to.as_ref().map(&mut held);
+        if no_room {
+            return Some(2);
+        }
+        let from = match from {
+            Some(f) => Some(f?),
             None => None,
         };
-        let to = match &read.to {
-            Some(n) => Some(held(n)?),
+        let to = match to {
+            Some(t) => Some(t?),
             None => None,
         };
         self.run_neighbour_uploads += uploads;

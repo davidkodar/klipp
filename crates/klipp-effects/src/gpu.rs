@@ -2073,6 +2073,9 @@ mod sprites;
 use sprites::*;
 mod temporal;
 use temporal::*;
+#[cfg(feature = "test-hooks")]
+pub use temporal::pin_neighbours_in_flight;
+pub use temporal::neighbours_skipped;
 mod output;
 use output::*;
 mod build;
