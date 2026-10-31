@@ -239,6 +239,11 @@ fn a_frozen_track_plays_from_its_frames_and_isnt_decoded() {
     let _ = play(&seq, &pool, None, 2.0);
     let live = play(&seq, &pool, None, 3.0);
     eprintln!("MEASURE live: {live:?}");
+    // What the heavy track cost to play, as the engine last said it.
+    let heavy = seq.tracks[0].id;
+    let live_cost = klipp_engine::track_cost::cost(heavy).unwrap_or_default();
+    eprintln!("MEASURE the heavy track's cost live: {}", live_cost.describe());
+    assert!(live_cost.decoders >= 1 && live_cost.gpu_bytes + live_cost.cpu_bytes > 0, "the heavy track's decoder and its frames counted: {live_cost:?}");
     assert!(live.size.0 > 0 && live.frames > 10, "live played: {live:?}");
 
     // Frozen at the size the app freezes at: the size the viewer drew.
@@ -281,6 +286,9 @@ fn a_frozen_track_plays_from_its_frames_and_isnt_decoded() {
     eprintln!("MEASURE frozen layers laid {laid}, clip decodes skipped {skipped}");
     assert!(laid as usize >= frozen.frames / 2, "frozen layers laid while playing: {laid} for {} frames", frozen.frames);
     eprintln!("MEASURE frozen: {frozen:?}");
+    let frozen_cost = klipp_engine::track_cost::cost(heavy).unwrap_or_default();
+    eprintln!("MEASURE the heavy track's cost frozen: {}", frozen_cost.describe());
+    assert!(frozen_cost.decoders < live_cost.decoders, "frozen, its decoder isn't counted: {frozen_cost:?} against {live_cost:?}");
     assert!(frozen.frames > 10, "frozen played: {frozen:?}");
     assert!(frozen.decoders < live.decoders, "the frozen track's media isn't decoded: {} decoders frozen, {} live", frozen.decoders, live.decoders);
     assert!(frozen.frames + 3 >= live.frames, "no fewer frames drawn: {} frozen, {} live", frozen.frames, live.frames);

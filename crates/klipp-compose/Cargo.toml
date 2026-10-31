@@ -54,6 +54,10 @@ name = "all"
 path = "tests/all/main.rs"
 
 [[test]]
+name = "track_gpu_time"
+path = "tests/track_gpu_time.rs"
+
+[[test]]
 name = "effect_param_stress"
 path = "tests/effect_param_stress.rs"
 

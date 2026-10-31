@@ -897,6 +897,13 @@ impl ClipStreams {
         self.shared.get(&clip).copied().unwrap_or(clip)
     }
 
+    /// What each stream open or opening holds (#3207): its clip, and its
+    /// queued frames' bytes on the GPU and in memory.
+    pub(crate) fn held(&self) -> Vec<(ClipId, u64, u64)> {
+        let clips: std::collections::HashSet<ClipId> = self.streams.keys().chain(self.opening.keys()).copied().collect();
+        clips.into_iter().map(|c| (c, self.vram.get(&c).copied().unwrap_or(0.0) as u64, self.bytes.get(&c).copied().unwrap_or(0.0) as u64)).collect()
+    }
+
     pub fn has(&self, clip: ClipId) -> bool {
         let clip = self.reader(clip);
         self.streams.contains_key(&clip) || self.opening.contains_key(&clip) || self.reversed.contains_key(&clip)

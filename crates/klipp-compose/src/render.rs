@@ -985,6 +985,13 @@ pub struct Renderer {
     /// in the track's place, with its clip's opacity and blend mode and
     /// the track's opacity applied live, as a drawn layer's are.
     frozen: HashMap<usize, Arc<crate::freeze::FrozenLayer>>,
+    /// Timing each track's GPU work (#3207): asked for the next frame,
+    /// the marks of the frame being timed (each the track whose work it
+    /// starts, `None` for the end of a step), and a timed frame's marks
+    /// waiting for their times.
+    time_next: bool,
+    time_marks: Option<Vec<(Option<klipp_core::TrackId>, u32)>>,
+    time_pending: Option<Vec<(Option<klipp_core::TrackId>, u32)>>,
     /// What is below the clip the GPU stack is laying now (#2758): the
     /// composite so far, kept on the GPU for its run to read.
     stack_below: Option<klipp_effects::gpu::KeptPicture>,
@@ -1213,6 +1220,9 @@ impl Renderer {
             below: None,
             capture: None,
             frozen: HashMap::new(),
+            time_next: false,
+            time_marks: None,
+            time_pending: None,
             stack_below: None,
             plan_misses: 0,
             spliced: klipp_nodes::NodeGraph::default(),
@@ -1481,6 +1491,44 @@ impl Renderer {
     /// Lay `layers` (track index → a frozen frame, as
     /// [`Self::render_track_layer`] draws it) in their tracks' places in
     /// the frames rendered from now on, until set again (#3207).
+    /// Whether the GPU stack's device times its work.
+    pub fn gpu_times_tracks(&mut self) -> bool {
+        self.executor.gpu_pipeline_or_init().is_some_and(|g| g.timing_available())
+    }
+
+    /// Time each track's GPU work in the next frame drawn on the stack
+    /// (#3207), on a device that times; read with
+    /// [`Self::take_track_gpu_ms`].
+    pub fn time_tracks_next_frame(&mut self) {
+        self.time_next = true;
+    }
+
+    /// A timed frame's GPU time a track, ms, once the GPU has the times:
+    /// its scene composed, its layer laid with its effects, and its
+    /// layer finished and blended, on the GPU's clock from the queue
+    /// reaching each to the next. A wait for the CPU within one (a frame
+    /// uploaded from memory) counts in it. `None` until then, and with
+    /// nothing timed. Never waits.
+    pub fn take_track_gpu_ms(&mut self) -> Option<HashMap<klipp_core::TrackId, f64>> {
+        self.time_pending.as_ref()?;
+        let times = self.executor.gpu_pipeline_mut()?.take_times()?;
+        let marks = self.time_pending.take()?;
+        Some(track_spans(&marks, &times))
+    }
+
+    /// A timestamp where the GPU is now, starting `track`'s work (or ending
+    /// a step), in a timed frame's own stack, not a scene's inside it.
+    fn time_mark(&mut self, track: Option<klipp_core::TrackId>) {
+        if self.time_marks.is_none() || self.nesting != 0 {
+            return;
+        }
+        if let Some(i) = self.executor.gpu_pipeline_or_init().and_then(|g| g.time_mark()) {
+            if let Some(m) = self.time_marks.as_mut() {
+                m.push((track, i));
+            }
+        }
+    }
+
     pub fn set_frozen_layers(&mut self, layers: HashMap<usize, Arc<crate::freeze::FrozenLayer>>) {
         self.frozen = layers;
     }
@@ -2101,7 +2149,18 @@ impl Renderer {
         // This frame's declines, the stack's own as the timeline's (M4
         // step 10): read after it with `frame_declines`.
         self.found.declines.clear();
+        if std::mem::take(&mut self.time_next) && self.nesting == 0 && self.time_pending.is_none() && self.executor.gpu_pipeline_or_init().is_some_and(|g| g.time_begin()) {
+            self.time_marks = Some(Vec::new());
+        }
         let result = self.render_display_on_gpu_inner(seq, time, width, height, src, opts, out);
+        if let Some(marks) = self.time_marks.take() {
+            if let Some(gpu) = self.executor.gpu_pipeline_mut() {
+                gpu.time_end();
+            }
+            if !marks.is_empty() {
+                self.time_pending = Some(marks);
+            }
+        }
         if result.is_none() && self.frame_decline.is_none() {
             self.frame_decline = Some("the GPU pipeline was unavailable");
             residency::record("composition.gpu_stack", "GPU pipeline unavailable", Work::Fallback);
@@ -2367,20 +2426,25 @@ impl Renderer {
                 }
             }
         }
-        let scenes: Vec<(ClipId, Arc<Sequence>, Timecode)> = items
+        let scenes: Vec<(ClipId, Arc<Sequence>, Timecode, klipp_core::TrackId)> = items
             .iter()
-            .filter_map(|(_, item)| match item {
+            .filter_map(|(track, item)| match item {
                 Item::Clip { c, slot } if !frozen_slots.contains_key(slot) && matches!(c.kind, ClipKind::Precomposition { .. } | ClipKind::TemplatePrecomposition { .. }) => {
                     c.precomp.clone().map(|scene| {
                         let at = precomposition_time(c, &scene, time, fps);
-                        (c.id, scene, at)
+                        (c.id, scene, at, track.id)
                     })
                 }
                 _ => None,
             })
             .collect();
-        for (id, scene, at) in scenes {
+        let timed_scenes = !scenes.is_empty();
+        for (id, scene, at, track) in scenes {
+            self.time_mark(Some(track));
             self.compose_precomposition(id, &scene, at, width, height, src, opts);
+        }
+        if timed_scenes {
+            self.time_mark(None);
         }
 
         let mut transforms: HashMap<ClipId, ResolvedTransform> = HashMap::new();
@@ -2427,7 +2491,8 @@ impl Renderer {
         // ── 1. Every layer in its buffer, effects run on it there ──
         let mut placed: HashMap<usize, Placed> = HashMap::new();
         let mut slot_of_clip: HashMap<ClipId, usize> = HashMap::new();
-        for (_, item) in &items {
+        for (track, item) in &items {
+            self.time_mark(Some(track.id));
             match item {
                 // A frozen layer (#3207): uploaded as it is, laid with its
                 // clip's opacity, as `place_layer` returns it for a drawn one.
@@ -2483,6 +2548,7 @@ impl Renderer {
             }
         }
 
+        self.time_mark(None);
         // ── 2. Mattes and stencils, multiplied into the consumers' alpha ──
         let t = Instant::now();
         let stencils: Vec<(usize, &Clip)> = items
@@ -2573,6 +2639,7 @@ impl Renderer {
 
         // ── 3. Bottom to top onto the accumulator ──
         for (track, item) in &items {
+            self.time_mark(Some(track.id));
             let t = Instant::now();
             match item {
                 Item::Clip { c, .. } if matches!(c.kind, ClipKind::AdjustmentLayer) => {
@@ -2666,6 +2733,7 @@ impl Renderer {
             stats.composite_ms += ms_since(t);
         }
 
+        self.time_mark(None);
         // Nothing laid (nothing on screen, or every layer skipped): the
         // clear canvas is the composite.
         if !self.executor.gpu_pipeline_or_init().is_some_and(|g| g.stack_clear_canvas()) {
@@ -6860,6 +6928,19 @@ pub fn source_secs(clip: &Clip, time: Timecode, fps: f64) -> f64 {
     clip.source_secs_at((time - clip.timeline_in).to_secs_f64(), fps)
 }
 
+/// Each track's time from a timed frame's `marks` and their `times`, ns
+/// by mark index: the span from a mark that starts a track's work to the
+/// next mark, added up a track, in ms.
+fn track_spans(marks: &[(Option<klipp_core::TrackId>, u32)], times: &[f64]) -> HashMap<klipp_core::TrackId, f64> {
+    let mut out: HashMap<klipp_core::TrackId, f64> = HashMap::new();
+    for w in marks.windows(2) {
+        let ((track, a), (_, b)) = (w[0], w[1]);
+        let (Some(track), Some(ta), Some(tb)) = (track, times.get(a as usize), times.get(b as usize)) else { continue };
+        *out.entry(track).or_default() += (tb - ta).max(0.0) / 1e6;
+    }
+    out
+}
+
 /// How many render pixels one sequence pixel is, across and down: 1 when
 /// rendering at the sequence's size, ½ for a half-size preview, and
 /// whatever an export at another resolution makes it.
@@ -8010,6 +8091,19 @@ fn fit(p: Arc<Vec<f32>>, w: u32, h: u32, ow: u32, oh: u32) -> Arc<Vec<f32>> {
 
 #[cfg(test)]
 mod missing_matte_tests {
+    /// #3207: a track's time is the spans from its marks to the next, added
+    /// up over the steps; a step's end mark starts nothing.
+    #[test]
+    fn a_track_s_gpu_time_is_its_spans_added_up() {
+        let (a, b) = (klipp_core::TrackId::new(), klipp_core::TrackId::new());
+        let marks = [(Some(a), 0), (Some(b), 1), (None, 2), (Some(a), 3), (Some(b), 4), (None, 5)];
+        let times = [0.0, 2e6, 3e6, 10e6, 11e6, 15e6];
+        let ms = super::track_spans(&marks, &times);
+        assert!((ms[&a] - 3.0).abs() < 1e-9, "2 ms placed + 1 ms blended: {ms:?}");
+        assert!((ms[&b] - 5.0).abs() < 1e-9, "1 ms placed + 4 ms blended: {ms:?}");
+        assert!(super::track_spans(&marks, &times[..3]).get(&a).is_some_and(|m| (*m - 2.0).abs() < 1e-9), "a time missing: that span left out");
+    }
+
     use super::*;
     use klipp_timeline::GradeAccess;
 

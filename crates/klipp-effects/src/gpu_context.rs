@@ -64,6 +64,17 @@ fn instance_unlocked() -> wgpu::Instance {
     })
 }
 
+/// The features a device asks for to time the GPU's work (#3207): both
+/// timestamp features where the adapter has them, none where it hasn't,
+/// so a device is never refused for want of them.
+pub fn timing_features(adapter: &wgpu::Adapter) -> wgpu::Features {
+    if adapter.features().contains(crate::gpu::timing::FEATURES) {
+        crate::gpu::timing::FEATURES
+    } else {
+        wgpu::Features::empty()
+    }
+}
+
 /// The limits Klipp asks a device for, the engine's and the UI's alike
 /// (#2341): wgpu's defaults, but the adapter's own largest buffer and
 /// storage binding. The defaults cap a binding at 128 MiB and a buffer at
@@ -159,7 +170,7 @@ impl GpuContext {
         let (device, queue) = pollster::block_on(adapter.request_device(
             &wgpu::DeviceDescriptor {
                 label: Some("klipp-shared"),
-                required_features: wgpu::Features::empty(),
+                required_features: timing_features(&adapter),
                 required_limits: device_limits(&adapter),
                 ..Default::default()
             },

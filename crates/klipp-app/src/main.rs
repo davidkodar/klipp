@@ -518,7 +518,9 @@ fn main() -> Result<()> {
             supported_backends: klipp_effects::gpu_context::backends(),
             device_descriptor: std::sync::Arc::new(|adapter| eframe::egui_wgpu::wgpu::DeviceDescriptor {
                 label: Some("egui wgpu device"),
-                required_features: eframe::egui_wgpu::wgpu::Features::default(),
+                // Timestamps where the adapter has them, to time each
+                // track's GPU work (#3207); never asked of one without.
+                required_features: klipp_effects::gpu_context::timing_features(adapter),
                 required_limits: klipp_effects::gpu_context::device_limits(adapter),
                 memory_hints: eframe::egui_wgpu::wgpu::MemoryHints::default(),
             }),
