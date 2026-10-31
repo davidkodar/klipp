@@ -1,0 +1,29 @@
+[package]
+name = "klipp-spell"
+version = "0.4.2"
+edition = "2021"
+# Vendored from spellbook 0.4.2; keeps the upstream licence. Its legacy
+# test cases are Hunspell's, under GPL-2.0-or-later (tests/legacy/README.md).
+license = "MPL-2.0"
+authors = ["Michael Davis <mcarsondavis@gmail.com>"]
+description = "Hunspell-compatible spell checking (vendored from spellbook 0.4.2, without unsafe)"
+publish = false
+
+[dependencies]
+# Used for HashMap and HashTable for a custom bag structure.
+hashbrown = { version = "0.15", default-features = false }
+# The default BuildHasher, with the `default-hasher` feature.
+foldhash = { version = "0.1", default-features = false, optional = true }
+
+[dev-dependencies]
+# Used in the integration tests to read Hunspell test case files, potentially
+# with odd encodings.
+encoding_rs = "0.8"
+chardetng = "0.1"
+
+[features]
+default = ["default-hasher"]
+default-hasher = ["dep:foldhash"]
+
+[lints]
+workspace = true

@@ -25,6 +25,8 @@ members = [
     "crates/klipp-export",
     "crates/klipp-ml",
     "crates/klipp-deepfilter",
+    "crates/klipp-spell",
+    "crates/klipp-spelling",
     "crates/klipp-ml-candle",
     "crates/klipp-ml-ort",
     "crates/klipp-ui",
@@ -253,6 +255,8 @@ klipp-compose = { path = "crates/klipp-compose" }
 klipp-export  = { path = "crates/klipp-export" }
 klipp-ml         = { path = "crates/klipp-ml" }
 klipp-deepfilter = { path = "crates/klipp-deepfilter" }
+klipp-spell = { path = "crates/klipp-spell" }
+klipp-spelling = { path = "crates/klipp-spelling" }
 klipp-ml-candle  = { path = "crates/klipp-ml-candle" }
 klipp-ml-ort     = { path = "crates/klipp-ml-ort" }
 klipp-ui      = { path = "crates/klipp-ui" }

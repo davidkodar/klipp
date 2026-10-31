@@ -1,0 +1,19 @@
+[package]
+name = "klipp-spelling"
+version.workspace = true
+edition = "2021"
+license = "GPL-3.0-only"
+description = "Spell checking for Klipp's titles, captions and subtitles"
+publish = false
+
+[dependencies]
+klipp-spell = { workspace = true }
+klipp-timeline = { workspace = true }
+klipp-core = { workspace = true }
+encoding_rs = "0.8"
+unicode-segmentation = "1.12"
+dirs = { workspace = true }
+tracing = { workspace = true }
+
+[lints]
+workspace = true

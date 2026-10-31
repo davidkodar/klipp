@@ -5056,3 +5056,47 @@ fn playback_quality_is_set_by_name_and_perf_says_why() {
     let perf = h.ok(json!({ "method": "perf" }));
     assert!(perf["diagnosis"]["cause"].as_str().is_some_and(|c| c.contains("not enough playback")), "{perf}");
 }
+
+/// Spelling over the socket (#3236): the list names what it marked and
+/// what it could not check, whatever dictionaries this machine has; an
+/// ignored word goes on the brief's vocabulary as one undo step (that a
+/// vocabulary word is not marked is klipp-spelling's test, as the harness
+/// records edits without applying them); what is not one word is refused
+/// before anything is kept. (`learn` writes the person's own list, so only its refusal is
+/// tried here.)
+#[test]
+fn spelling_lists_and_an_ignored_word_goes_on_the_brief() {
+    let mut h = harness();
+    {
+        let mut seq = h.sequence.write().unwrap();
+        let mut track = klipp_timeline::Track::new("Text 1", klipp_timeline::TrackKind::Text);
+        let (zero, two) = (klipp_core::Timecode::from_secs_f64(0.0, 24), klipp_core::Timecode::from_secs_f64(2.0, 24));
+        let td = klipp_timeline::TitleData::single_text(klipp_timeline::TextBox { text: "Welcome to Kestrelholm".into(), language: Some("en".into()), ..Default::default() });
+        track.clips.push(klipp_timeline::Clip { kind: klipp_timeline::ClipKind::Title(td), ..klipp_timeline::Clip::gap(zero, two) });
+        seq.tracks.push(track);
+    }
+    let r = h.ok(json!({ "method": "spelling" }));
+    assert!(r["misspellings"].is_array() && r["missing"].is_array(), "{r}");
+    let marked_or_unchecked = r["misspellings"].as_array().unwrap().iter().any(|m| m["word"] == "Kestrelholm" && m["language"] == "en" && m["start"] == 11 && m["end"] == 22)
+        || r["missing"].as_array().unwrap().iter().any(|m| m.as_str().unwrap().contains("no en dictionary"));
+    assert!(marked_or_unchecked, "the made-up name marked, or English said to have no dictionary: {r}");
+
+    let before = h.ok(json!({ "method": "status" }))["revision"].as_u64().unwrap();
+    let r = h.ok(json!({ "method": "spelling", "action": "ignore", "word": "Kestrelholm" }));
+    assert_eq!(r["revision"], json!(before + 1), "{r}");
+    let vocabulary = match h.edits_seen.lock().unwrap().last() {
+        Some(klipp_document::history::EditCommand::SetBrief { new: Some(b), .. }) => b.vocabulary.clone(),
+        other => panic!("a set_brief, got {other:?}"),
+    };
+    assert_eq!(vocabulary, ["Kestrelholm"]);
+
+    for (req, why) in [
+        (json!({ "method": "spelling", "action": "ignore", "word": "two words" }), "not one word"),
+        (json!({ "method": "spelling", "action": "learn", "word": "../x" }), "not one word"),
+        (json!({ "method": "spelling", "action": "ignore" }), "needs the word"),
+        (json!({ "method": "spelling", "action": "fix" }), "give list, ignore or learn"),
+    ] {
+        let reply = h.call(req.clone());
+        assert!(reply["error"].as_str().is_some_and(|e| e.contains(why)), "{req}: {reply}");
+    }
+}

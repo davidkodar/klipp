@@ -1029,6 +1029,11 @@ pub struct TextBox {
     /// face's default instance.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub font_axes: Vec<FontAxis>,
+    /// The language the text is written in (#3236), a tag such as `de`
+    /// or `en-GB`: what its spelling is checked against. `None` (the
+    /// default, left unwritten) takes its track's, then the brief's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
 }
 
 /// One axis of a variable font set to a value (#1504): the axis's
@@ -1489,6 +1494,7 @@ impl Default for TextBox {
             features: Vec::new(),
             font_weight: None,
             font_axes: Vec::new(),
+            language: None,
         }
     }
 }

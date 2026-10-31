@@ -1328,6 +1328,13 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             "detail": args.get("detail").and_then(|v| v.as_bool()).unwrap_or(false),
         }),
         "klipp_check" => json!({ "method": "check", "color": args.get("color").and_then(|v| v.as_bool()).unwrap_or(false), "loudness": args.get("loudness").and_then(|v| v.as_bool()).unwrap_or(false), "min_severity": args.get("min_severity").and_then(|v| v.as_str()) }),
+        "klipp_spelling" => {
+            let mut v = json!({ "method": "spelling", "action": args.get("action").and_then(Value::as_str).unwrap_or("list") });
+            if let Some(w) = args.get("word").and_then(Value::as_str) {
+                v["word"] = json!(w);
+            }
+            v
+        }
         "klipp_rename_sequence" => json!({ "method": "rename_sequence", "name": arg_str(args, "name")? }),
         "klipp_review_finding" => json!({ "method": "review_finding", "finding_id": arg_str(args, "finding_id")?, "decision": arg_str(args, "decision")?, "rationale": args.get("rationale").and_then(Value::as_str) }),
         "klipp_switch_sequence" => match (args.get("index").and_then(Value::as_u64), args.get("sequence_id").and_then(Value::as_str)) {
@@ -2603,6 +2610,9 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
         tool("klipp_check",
              "Read-only checks of the cut against craft and the brief, each with where, why and the fix. Details: klipp_guide topic check.",
              json!({ "color": { "type": "boolean" }, "loudness": { "type": "boolean" }, "min_severity": { "type": "string", "enum": ["error", "warning", "note"] } }), vec![]),
+        tool("klipp_spelling",
+             "Spelling in titles and captions: list the words marked with suggestions; ignore a word for this project; learn it for every project. Details: klipp_guide topic spelling.",
+             json!({ "action": { "type": "string", "enum": ["list", "ignore", "learn"] }, "word": { "type": "string" } }), vec![]),
         tool("klipp_review_finding",
              "Decide a klipp_check finding by id: accepted (with rationale), to_fix or clear. Details: klipp_guide topic review_finding.",
              json!({ "finding_id": { "type": "string" }, "decision": { "type": "string" }, "rationale": { "type": "string" } }), vec!["finding_id", "decision"]),
@@ -2857,6 +2867,15 @@ mod interface_tests {
 
     /// #2722: klipp_brand_kit is one of list, get, set (with its files)
     /// or remove, each its request; none or two of them is refused.
+    /// #3236: klipp_spelling is the one spelling request, list by
+    /// default, the word passed only when given.
+    #[test]
+    fn spelling_is_one_request_list_by_default() {
+        assert_eq!(tool_to_command("klipp_spelling", &json!({})).unwrap(), json!({"method": "spelling", "action": "list"}));
+        assert_eq!(tool_to_command("klipp_spelling", &json!({"action": "ignore", "word": "Omarchy"})).unwrap(), json!({"method": "spelling", "action": "ignore", "word": "Omarchy"}));
+        assert!(guide_topic("spelling").unwrap().starts_with("## klipp_spelling"));
+    }
+
     /// #3209: list reads the slot's takes; every other action is the
     /// alternatives op, applied, with only the arguments given.
     #[test]
