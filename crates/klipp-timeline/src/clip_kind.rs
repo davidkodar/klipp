@@ -2867,13 +2867,48 @@ pub struct TitlePosition {
 pub enum TitleBackground {
     #[default]
     None,
+    /// A panel behind the text, `padding` pixels (at 1080p) round it;
+    /// with `lines`, one per line of it (#3237).
     Color {
         color: [u8; 4],
         padding: f32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        lines: Option<LineBoxes>,
     },
     FullFrame {
         color: [u8; 4],
     },
+}
+
+/// A backing drawn one box per line (#3237), as social-video captions
+/// are: each line's box fitted to its width, `padding` across and
+/// `padding_y` (the backing's padding when left out) down, in pixels at
+/// 1080p. Boxes that meet or overlap are joined into one shape, its
+/// inside corners rounded by `radius` as its outside ones are; `gap`
+/// keeps them apart by that much instead. A `radius` of 0 is square.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+pub struct LineBoxes {
+    #[serde(default = "default_line_box_radius")]
+    pub radius: f32,
+    #[serde(default)]
+    pub gap: f32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub padding_y: Option<f32>,
+}
+
+fn default_line_box_radius() -> f32 {
+    LineBoxes::DEFAULT_RADIUS
+}
+
+impl LineBoxes {
+    /// The corners' radius when none is given, at 1080p.
+    pub const DEFAULT_RADIUS: f32 = 10.0;
+}
+
+impl Default for LineBoxes {
+    fn default() -> Self {
+        Self { radius: Self::DEFAULT_RADIUS, gap: 0.0, padding_y: None }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -5178,7 +5213,7 @@ mod styled_like_tests {
     fn a_title_styled_like_another_keeps_its_words() {
         let mut look = titled("Look", "Libre Baskerville", 72.0);
         look.objects[0].fx_mut().glows.push(TextGlow { enabled: true, color: [0, 255, 255, 255], radius: 18.0, radius_keyframes: Vec::new(), intensity: 0.7, intensity_keyframes: Vec::new() });
-        look.background = TitleBackground::Color { color: [0, 0, 0, 200], padding: 12.0 };
+        look.background = TitleBackground::Color { color: [0, 0, 0, 200], padding: 12.0, lines: None };
         let mut target = titled("Ana Diaz", "Inter", 40.0);
         if let TitleObjectContent::TextBox(tb) = &mut target.objects[0].content {
             tb.style_runs = vec![StyleRun { color: Some([255, 0, 0, 255]), ..StyleRun::default_for_range(0, 3) }];

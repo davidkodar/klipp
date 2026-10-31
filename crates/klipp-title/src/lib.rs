@@ -32,6 +32,9 @@
 //! from the embedded face or a bundled family. Colour emoji in CBDT
 //! bitmap fonts draw in their colours (`colour`).
 
+mod backing;
+pub use backing::{backing_lines, BackingLines};
+use backing::BackgroundLines;
 mod colour;
 pub mod raster;
 pub use raster::BoxRaster;
@@ -145,6 +148,12 @@ pub struct TitleLayout {
     pub path_units: Option<PathUnits>,
     /// Untracked X and frame-space Y before pixel rounding, for spacing animation.
     pub tracking_origins: Vec<[f32; 2]>,
+    /// Each line's band in frame pixels, `[x0, y0, x1, y1]`, for a backing
+    /// drawn per line (#3237): its ink across, the font's ascent to
+    /// descent down. A vertical layout's columns, when `lines_vertical`.
+    /// Empty where the text isn't set in lines (on a path).
+    pub line_boxes: Vec<[f32; 4]>,
+    pub lines_vertical: bool,
 }
 
 impl TitleLayout {
@@ -152,7 +161,7 @@ impl TitleLayout {
         Self {word_backing:None,alpha_mask:Vec::new(),mask_w:0,mask_h:0,mask_x0:0,mask_y0:0,
             text_left:bounds[0],text_top:bounds[1],text_right:bounds[2],text_bottom:bounds[3],glyph_count,scale,
             glyph_colors:Vec::new(),glyph_coverages:Vec::new(),glyph_index:Vec::new(),glyph_boxes:Vec::new(),glyph_parents:Vec::new(),pad:0,
-            colour_glyphs:Vec::new(),path_units:None,tracking_origins:Vec::new()}
+            colour_glyphs:Vec::new(),path_units:None,tracking_origins:Vec::new(), line_boxes: Vec::new(), lines_vertical: false}
     }
 }
 
@@ -1314,6 +1323,7 @@ impl TitleRenderer {
                 colour_glyphs: Vec::new(),
                 path_units: None,
                 tracking_origins: Vec::new(),
+                line_boxes: Vec::new(), lines_vertical: false,
             };
         }
 
@@ -1431,6 +1441,13 @@ impl TitleRenderer {
         let baseline_shift_px = tb.baseline_shift * scale;
         let offset_y = text_offset_y(tb.vertical_align, title.position().y * height as f32, box_h, text_h, text_min_y)
             + baseline_shift_px;
+        // A backing per line's bands (#3237), where the title has one and
+        // the text is set in lines.
+        let line_boxes: Vec<[f32; 4]> = if matches!(title.background, TitleBackground::Color { lines: Some(_), .. }) && !on_path {
+            backing::line_bands(&fonts, glyphs, &line_starts, vertical_active).into_iter().map(|b| [b[0] + offset_x, b[1] + offset_y, b[2] + offset_x, b[3] + offset_y]).collect()
+        } else {
+            Vec::new()
+        };
         if self.layout_bounds_only {
             return TitleLayout::bounds_only([text_min_x+offset_x,text_min_y+offset_y,text_max_x+offset_x,text_max_y+offset_y],glyphs.len(),scale);
         }
@@ -1537,6 +1554,7 @@ impl TitleRenderer {
                 colour_glyphs: Vec::new(),
                 path_units: None,
                 tracking_origins: Vec::new(),
+                line_boxes: Vec::new(), lines_vertical: false,
             };
         }
         if self.gpu_layout_only {
@@ -1689,7 +1707,14 @@ impl TitleRenderer {
                 source.pattern=tb.pattern_fill.filter(|_|tb.pattern_fill_enabled);
                 source.material=tb.material.map(|m|m.clamped());
                 source.font_px=tb.font_size*scale;
-                if let TitleBackground::Color{color,padding}=title.background {
+                // One box per line (#3237): drawn from its boxes, `backing`
+                // their bounds.
+                if let Some(lines)=title.background_lines(&line_boxes,vertical_active,scale) {
+                    let b=lines.bounds();
+                    let x0=(b[0].floor() as i32).max(0) as u32;let y0=(b[1].floor() as i32).max(0) as u32;
+                    let x1=(b[2].ceil() as i32).clamp(0,width as i32) as u32;let y1=(b[3].ceil() as i32).clamp(0,height as i32) as u32;
+                    if let (true,TitleBackground::Color{color,..})=(x1>x0&&y1>y0,&title.background) {source.backing=Some(([x0,y0,x1-x0,y1-y0],*color));source.backing_lines=Some(lines);}
+                } else if let TitleBackground::Color{color,padding,..}=title.background {
                     let pad=padding*scale;
                     let x0=((text_min_x+offset_x-pad) as i32).max(0) as u32;
                     let y0=((text_min_y+offset_y-pad) as i32).max(0) as u32;
@@ -1728,6 +1753,7 @@ impl TitleRenderer {
                 glyph_count:glyphs.len(), scale, glyph_colors:Vec::new(),glyph_coverages:Vec::new(),
                 glyph_index:Vec::new(),glyph_boxes:Vec::new(),glyph_parents:Vec::new(),pad:max_pad,
                 colour_glyphs:Vec::new(),path_units:None,tracking_origins:Vec::new(),
+                line_boxes, lines_vertical: vertical_active,
             };
         }
         // A staggered motion poses each glyph on its own from the
@@ -1923,6 +1949,7 @@ impl TitleRenderer {
             colour_glyphs,
             path_units: None,
             tracking_origins: tracking_origins.into_iter().map(|p| [p[0], p[1] + offset_y]).collect(),
+            line_boxes, lines_vertical: vertical_active,
             word_backing,
         }
     }
@@ -2185,6 +2212,7 @@ impl TitleRenderer {
                 colour_glyphs: Vec::new(),
                 path_units: None,
                 tracking_origins: Vec::new(),
+                line_boxes: Vec::new(), lines_vertical: false,
             };
         }
 
@@ -2212,7 +2240,7 @@ impl TitleRenderer {
                 source.material=tb.material.map(|m|m.clamped());
                 source.font_px=tb.font_size*scale;
                 if tb.outline_write_on<1.0 {source.outline_cutoff=(text_min_x+(text_max_x-text_min_x)*tb.outline_write_on.clamp(0.0,1.0)).floor() as i32;}
-                if let TitleBackground::Color{color,padding}=title.background {
+                if let TitleBackground::Color{color,padding,..}=title.background {
                     let pad=padding*scale;
                     let x0=((text_min_x-pad) as i32).max(0) as u32;let y0=((text_min_y-pad) as i32).max(0) as u32;
                     let x1=((text_max_x+pad) as i32).clamp(0,width as i32) as u32;let y1=((text_max_y+pad) as i32).clamp(0,height as i32) as u32;
@@ -2223,7 +2251,7 @@ impl TitleRenderer {
             return TitleLayout { word_backing: None,alpha_mask:Vec::new(),mask_w:roi[2],mask_h:roi[3],mask_x0:roi[0],mask_y0:roi[1],
                 text_top:text_min_y,text_bottom:text_max_y,text_left:text_min_x,text_right:text_max_x,glyph_count:glyphs.len(),scale,
                 glyph_colors:Vec::new(),glyph_coverages:Vec::new(),glyph_index:Vec::new(),glyph_boxes:Vec::new(),glyph_parents:Vec::new(),pad:max_pad,
-                colour_glyphs:Vec::new(),path_units:None,tracking_origins:Vec::new()};
+                colour_glyphs:Vec::new(),path_units:None,tracking_origins:Vec::new(), line_boxes: Vec::new(), lines_vertical: false};
         }
         for (info,_) in &mut path_fills {
             info.mask_x-=crop_x0 as i32;info.mask_y-=crop_y0 as i32;
@@ -2264,6 +2292,7 @@ impl TitleRenderer {
             colour_glyphs: Vec::new(),
             path_units: Some(text_on_path::PathUnits { laid, length, resting: placed }),
             tracking_origins: Vec::new(),
+            line_boxes: Vec::new(), lines_vertical: false,
         }
     }
 
@@ -2297,7 +2326,13 @@ impl TitleRenderer {
             (0, h)
         } else {
             let (mut y0, mut y1) = ((layout.mask_y0 as usize).min(h), (layout.mask_y0 as usize + layout.mask_h as usize).min(h));
-            if let TitleBackground::Color { padding, .. } = &title.background {
+            if let Some(lines) = title.background_lines(&layout.line_boxes, layout.lines_vertical, layout.scale) {
+                // Per line (#3237): the boxes' own reach, the font's ascent
+                // above the ink included.
+                let b = lines.bounds();
+                y0 = y0.min((b[1].floor() as i32).max(0) as usize);
+                y1 = y1.max(((b[3].ceil() as i32).max(0) as usize).min(h));
+            } else if let TitleBackground::Color { padding, .. } = &title.background {
                 let pad = padding * layout.scale;
                 y0 = y0.min(((layout.text_top - pad) as i32).max(0) as usize);
                 y1 = y1.max((((layout.text_bottom + pad) as i32).max(0) as usize).min(h));
@@ -2358,7 +2393,8 @@ impl TitleRenderer {
         let mask_y0 = layout.mask_y0 as usize;
         let alpha_mask = &layout.alpha_mask;
 
-        paint_backing(buf, title, [layout.text_left, layout.text_top, layout.text_right, layout.text_bottom], width, height, scale);
+        let lines = title.background_lines(&layout.line_boxes, layout.lines_vertical, scale);
+        paint_backing(buf, title, [layout.text_left, layout.text_top, layout.text_right, layout.text_bottom], lines.as_ref(), width, height, scale);
         // The spoken word's box, where the title has no backing of its
         // own, as the GPU draws it there (#2710).
         if let (Some((rect, colour)), TitleBackground::None) = (layout.word_backing, &title.background) {
@@ -4057,7 +4093,8 @@ impl TitleRenderer {
         }
         if bx1 > bx0 {
             let local = |v: usize, o: usize| (v - o) as f32;
-            paint_backing(&mut buf, title, [local(bx0, rx0), local(by0, ry0), local(bx1, rx0), local(by1, ry0)], rw as u32, rh as u32, scale);
+            // Round the solid's own pixels: no lines to box one by one.
+            paint_backing(&mut buf, title, [local(bx0, rx0), local(by0, ry0), local(bx1, rx0), local(by1, ry0)], None, rw as u32, rh as u32, scale);
         }
         let t = time_secs.map(|t| t as f64).unwrap_or(0.0);
         // The GPU for a mask large enough to be worth it, as `compose`.
@@ -8296,9 +8333,27 @@ fn fill_full_frame(buf: &mut [f32], title: &TitleData) {
 }
 
 /// A backing panel round `bounds` (left, top, right, bottom in frame
-/// pixels), padded by its padding at `scale`, when the title has one.
-fn paint_backing(buf: &mut [f32], title: &TitleData, bounds: [f32; 4], width: u32, height: u32, scale: f32) {
-    if let TitleBackground::Color { color, padding } = &title.background {
+/// pixels), padded by its padding at `scale`, when the title has one; or,
+/// given `lines`, one box per line (#3237), each pixel covered as far as
+/// the boxes' shape reaches into it.
+fn paint_backing(buf: &mut [f32], title: &TitleData, bounds: [f32; 4], lines: Option<&BackingLines>, width: u32, height: u32, scale: f32) {
+    if let (Some(lines), TitleBackground::Color { color, .. }) = (lines, &title.background) {
+        let w = width as usize;
+        let b = lines.bounds();
+        let (x0, y0) = ((b[0].floor() as i32).max(0) as usize, (b[1].floor() as i32).max(0) as usize);
+        let (x1, y1) = ((b[2].ceil() as i32).clamp(0, width as i32) as usize, (b[3].ceil() as i32).clamp(0, height as i32) as usize);
+        for row in y0..y1 {
+            for col in x0..x1 {
+                let cover = lines.coverage(col as f32 + 0.5, row as f32 + 0.5);
+                if cover > 0.0 {
+                    let a = (color[3] as f32 * cover).round() as u8;
+                    blend_pixel(buf, (row * w + col) * 4, &[color[0], color[1], color[2], a]);
+                }
+            }
+        }
+        return;
+    }
+    if let TitleBackground::Color { color, padding, .. } = &title.background {
         let w = width as usize;
         let pad = padding * scale;
         let bx0 = ((bounds[0] - pad) as i32).max(0) as usize;
@@ -8715,7 +8770,7 @@ mod tests {
     fn a_colour_backing_is_painted_round_the_words() {
         let mut renderer = TitleRenderer::new();
         let mut td = klipp_timeline::TitleData::single_text(klipp_timeline::TextBox { text: "BG".to_string(), ..Default::default() });
-        td.background = TitleBackground::Color { color: [0, 0, 0, 200], padding: 20.0 };
+        td.background = TitleBackground::Color { color: [0, 0, 0, 200], padding: 20.0, lines: None };
         let (w, h) = (320usize, 240usize);
         let buf = renderer.render(&td, w as u32, h as u32);
         // Dark, mostly opaque pixels that are no part of a white glyph:
@@ -8736,7 +8791,7 @@ mod tests {
         let at = |y: f32| ObjectTransform { center: TitlePosition { x: 0.5, y }, ..default_text_transform() };
         td.add_object(TitleObjectContent::TextBox(klipp_timeline::TextBox { text: "NAME".to_string(), ..Default::default() }), at(0.25));
         td.add_object(TitleObjectContent::TextBox(klipp_timeline::TextBox { text: "ROLE".to_string(), ..Default::default() }), at(0.75));
-        td.background = TitleBackground::Color { color: [0, 0, 0, 200], padding: 10.0 };
+        td.background = TitleBackground::Color { color: [0, 0, 0, 200], padding: 10.0, lines: None };
         let (w, h) = (320usize, 240usize);
         let buf = renderer.render(&td, w as u32, h as u32);
         let boxed = |rows: std::ops::Range<usize>| rows.flat_map(|y| (0..w).map(move |x| (y * w + x) * 4)).filter(|&i| buf[i + 3] >= 190 && buf[i] < 20).count();

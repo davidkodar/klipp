@@ -2262,7 +2262,7 @@ impl KlippApp {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
                             td.background = match bg_kind {
-                                1 => klipp_timeline::TitleBackground::Color { color: *color, padding: 20.0 },
+                                1 => klipp_timeline::TitleBackground::Color { color: *color, padding: 20.0, lines: None },
                                 2 => klipp_timeline::TitleBackground::FullFrame { color: *color },
                                 _ => klipp_timeline::TitleBackground::None,
                             };

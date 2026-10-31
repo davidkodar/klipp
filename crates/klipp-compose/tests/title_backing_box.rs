@@ -53,7 +53,7 @@ fn seq(at: Option<(f32, f32)>) -> Sequence {
         let mut td = TitleData::single_text(TextBox { text: "8\u{d7} speed".into(), font_size: 30.0, color: [255, 255, 255, 255], ..Default::default() });
         td.objects[0].transform.center.x = x;
         td.objects[0].transform.center.y = y;
-        td.background = TitleBackground::Color { color: [0, 0, 0, ALPHA], padding: 12.0 };
+        td.background = TitleBackground::Color { color: [0, 0, 0, ALPHA], padding: 12.0, lines: None };
         td.protect = ContrastProtect::Auto;
         let mut t = Track::new("T", TrackKind::Video);
         t.clips = vec![Clip { kind: ClipKind::Title(td), ..Clip::gap(tc(0.0), tc(4.0)) }];

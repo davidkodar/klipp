@@ -60,6 +60,9 @@ pub struct GlyphSource {
     pub write_cutoff: i32,
     pub stripes: Vec<[u32; 4]>,
     pub backing: Option<([u32; 4], [u8; 4])>,
+    /// The backing's boxes when it is drawn one per line (#3237); `backing`
+    /// is then their bounds.
+    pub backing_lines: Option<crate::BackingLines>,
 }
 struct CachedGlyph {
     native_colour: bool,
@@ -208,6 +211,7 @@ impl GlyphCache {
             write_cutoff: i32::MAX,
             stripes: Vec::new(),
             backing: None,
+            backing_lines: None,
             gradient: None,
             pattern: None,
             material: None,
@@ -414,6 +418,7 @@ impl GlyphCache {
             write_cutoff: i32::MAX,
             stripes: Vec::new(),
             backing: None,
+            backing_lines: None,
             gradient: None,
             pattern: None,
             material: None,
@@ -614,6 +619,7 @@ impl TitleRenderer {
                     write_cutoff: i32::MAX,
                     stripes: Vec::new(),
                     backing: None,
+                    backing_lines: None,
                     gradient: None,
                     pattern: None,
                     material: None,

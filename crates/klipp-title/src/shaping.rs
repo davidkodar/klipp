@@ -931,6 +931,25 @@ mod tests {
     /// of the letters before it), left of the Hebrew, which reads right
     /// to left. In a left-to-right paragraph the Hebrew comes first,
     /// still right to left inside.
+    /// #3237: a right-to-left line's box for a backing per line spans
+    /// its ink as a left-to-right one's does, whatever order its glyphs
+    /// were laid in; and its height is the font's ascent to descent, so a
+    /// line of Hebrew and one of Latin with descenders stand as tall as
+    /// their faces say.
+    #[test]
+    fn a_right_to_left_lines_box_spans_its_ink() {
+        let (hebrew, latin) = (font("NotoSansHebrew-subset.ttf"), latin());
+        let faces = [Face::new(&hebrew, &[]), Face::new(&latin, &[])];
+        let text = "שלום עולם";
+        let glyphs = lay(&faces, text, &[(0, text.len(), 0)], true);
+        let bands = crate::backing::line_bands(&faces, &glyphs, &[0], false);
+        assert_eq!(bands.len(), 1);
+        let ink = glyphs.iter().filter(|g| g.width > 0).fold([f32::MAX, f32::MIN], |e, g| [e[0].min(g.x), e[1].max(g.x + g.width as f32)]);
+        assert_eq!([bands[0][0], bands[0][2]], ink, "across: the line's ink");
+        let m = hebrew.font.horizontal_line_metrics(48.0).unwrap();
+        assert!((bands[0][3] - bands[0][1] - (m.ascent - m.descent)).abs() < 0.5, "down: the face's ascent to descent, {:?}", bands[0]);
+    }
+
     #[test]
     fn a_mixed_hebrew_english_line_reads_in_order() {
         let (hebrew, latin) = (font("NotoSansHebrew-subset.ttf"), latin());

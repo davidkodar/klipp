@@ -211,7 +211,7 @@ fn a_3d_text_keeps_its_shadow_glow_outline_and_backing() {
     let outside = plain.chunks_exact(4).zip(shaded.chunks_exact(4)).filter(|(a, b)| a[3] == 0 && b[3] > 0).count();
     assert!(darker > 500 && outside == 0, "inside {darker}, outside {outside}");
     // A backing panel round the solid, and a full-frame card under it.
-    let backed = draw(&mut r, &word(true, Default::default(), TitleBackground::Color { color: [10, 20, 30, 255], padding: 12.0 }));
+    let backed = draw(&mut r, &word(true, Default::default(), TitleBackground::Color { color: [10, 20, 30, 255], padding: 12.0, lines: None }));
     let (changed, panel) = added(&backed, &draw(&mut r, &word(true, Default::default(), none())), [10, 20, 30]);
     // Every change is the panel but the letters' soft edges, now over it.
     assert!(panel > 5000 && panel as f32 >= changed as f32 * 0.9, "a panel round the word: {panel} of {changed}");

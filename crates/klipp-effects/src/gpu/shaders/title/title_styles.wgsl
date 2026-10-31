@@ -36,6 +36,30 @@ fn round_away(x: f32) -> f32 {
 fn round_away3(v: vec3<f32>) -> vec3<f32> {
     return vec3<f32>(round_away(v.x),round_away(v.y),round_away(v.z));
 }
+// A backing drawn one box per line (#3237), as the CPU's
+// `backing::BackingLines::coverage` draws it: each box `stops[k]`
+// (x0, y0, x1, y1 in frame pixels, as f32 bits) a signed distance with
+// its corners rounded, joined ones blended over the radius so their
+// inside corners round too, one pixel of antialiasing at the edge.
+fn box_distance(pos:vec2<f32>,r:vec4<f32>,radius:f32)->f32 {
+    let half=(r.zw-r.xy)*0.5;
+    let rad=max(min(radius,min(half.x,half.y)),0.0);
+    let q=abs(pos-(r.xy+half))-half+vec2<f32>(rad);
+    return length(max(q,vec2<f32>(0.0)))+min(max(q.x,q.y),0.0)-rad;
+}
+fn smooth_min(a:f32,b:f32,k:f32)->f32 {
+    if k<=0.0 {return min(a,b);}
+    let h=max(k-abs(a-b),0.0)/k;
+    return min(a,b)-k*0.5*(1.0+h-sqrt(1.0-h*(h-2.0)));
+}
+fn line_boxes_cover(pos:vec2<f32>,count:u32,radius:f32,joined:bool)->f32 {
+    var d=0.0;
+    for(var k=0u;k<min(count,8u);k+=1u) {
+        let e=box_distance(pos,bitcast<vec4<f32>>(p.stops[k]),radius);
+        if k==0u {d=e;} else if joined {d=smooth_min(d,e,radius);} else {d=min(d,e);}
+    }
+    return clamp(0.5-d,0.0,1.0);
+}
 fn rounded_rect(point:vec2<f32>,lo:vec2<f32>,hi:vec2<f32>,r:f32)->bool {
     if any(point<lo) || any(point>hi) {return false;}
     if r<=0.0 {return true;}
@@ -884,6 +908,21 @@ fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgro
             let s=load_rgba(u32(sample.y)*p.width+u32(sample.x));
             if s.a>0.0 {v=s;}
         }
+        store_rgba(i,v);
+    } else if p.op==55u {
+        // The boxes inside the mask's box, under the styles, as op 17's
+        // rectangle; a later pass of boxes keeps the most covered.
+        let pos=vec2<f32>(f32(x+p.x0)+0.5,f32(y+p.y0)+0.5);
+        var v=vec4<f32>(p.color.rgb,p.color.a*line_boxes_cover(pos,u32(p.offset_x),p.row0.x,p.row0.y>0.5));
+        if p.offset_y==1 {let d=load_dst(i); if d.a>v.a {v=d;}}
+        store_rgba(i,v);
+    } else if p.op==56u {
+        // The boxes over the whole frame, in working light, as op 18's
+        // rectangle: the radius in x0's bits, joined in y0.
+        let pos=vec2<f32>(f32(x)+0.5,f32(y)+0.5);
+        let rgb=matrix(vec3<f32>(linear(p.color.x),linear(p.color.y),linear(p.color.z)));
+        var v=vec4<f32>(rgb,p.color.a*line_boxes_cover(pos,u32(p.offset_x),bitcast<f32>(p.x0),p.y0==1u));
+        if p.offset_y==1 {let d=load_dst(i); if d.a>v.a {v=d;}}
         store_rgba(i,v);
     } else if p.op==17u {
         let pos=vec2<f32>(f32(x+p.x0),f32(y+p.y0));
