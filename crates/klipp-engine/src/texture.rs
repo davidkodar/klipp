@@ -266,6 +266,10 @@ pub struct FrameBuffer {
     /// drawn without it: the GPU stack couldn't draw it, and a preview is
     /// never drawn another way. The browser says so on the entry.
     pub preview_skipped: bool,
+    /// The generation of the last frame drawn with a preview up (#3210):
+    /// what a reader waiting for the preview waits for, any frame drawn
+    /// before it being the picture without it.
+    pub preview_generation: Option<u64>,
 
     /// Advances on each complete thumbnail publication, including empty results.
     pub node_thumbs_gen: u64,
@@ -348,6 +352,7 @@ impl FrameBuffer {
             gpu_output_queue: None,
             declines: Default::default(),
             preview_skipped: false,
+            preview_generation: None,
             gpu_output_frame: 0,
             node_thumbs_gen: 0,
             node_thumbnail_batch: None,

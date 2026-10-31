@@ -108,6 +108,10 @@ fn a_preview_is_drawn_as_applying_it_would_and_leaves_nothing_behind() {
         cmd.send(AppCommand::RefreshPreview { at: None }).unwrap();
     });
     let skipped = fb.lock().unwrap().preview_skipped;
+    // The frame drawn with it is marked, for a reader to wait for it and
+    // not the frame drawn before it (frame_at's preview).
+    let marked = { let fb = fb.lock().unwrap(); fb.preview_generation == Some(fb.latest_generation()) };
+    assert!(marked, "the frame drawn with the preview is marked as such");
     let down = frame(&|| {
         assert!(shared.clear_preview());
         cmd.send(AppCommand::RefreshPreview { at: None }).unwrap();

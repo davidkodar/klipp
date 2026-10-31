@@ -1115,6 +1115,16 @@ pub struct ProjectColour {
     pub output_lut_enabled: bool,
 }
 
+/// A browser's entry by its name, as `frame_at` previews one (#3210): an
+/// effect or look, a transition, a title template or a generator.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PreviewEntry {
+    Effect(String),
+    Transition(String),
+    Title(String),
+    Generator(String),
+}
+
 #[derive(Debug, Clone)]
 pub enum AppCommand {
     /// A batch of graph ops on one picture, applied as one undo step named
@@ -1545,6 +1555,13 @@ pub enum AppCommand {
     /// left where it is (a transition, at its middle); without, any such
     /// skim ends and the parked frame is drawn again.
     RefreshPreview { at: Option<Timecode> },
+    /// Show `entry` on `clip_id` (else the selected clip, else the top
+    /// picture under the playhead) as its card's hover shows it, at the
+    /// playhead, at once (#3210): `frame_at`'s preview. The app's alone;
+    /// refused, with why, when it can't be shown.
+    ShowPreview { entry: PreviewEntry, clip_id: Option<ClipId> },
+    /// Take the preview `ShowPreview` put up down.
+    ClearPreview,
     /// The sequence's aux buses or sends were changed in place, by the
     /// mixer (#2861): the app gives the engine the sequence and marks the
     /// project changed. The undo step, if any, is already pushed.

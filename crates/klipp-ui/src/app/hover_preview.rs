@@ -270,17 +270,93 @@ impl KlippApp {
     }
 }
 
+impl KlippApp {
+    /// `ShowPreview` and `ClearPreview` (#3210): an entry named over the
+    /// control socket shown as its card's hover shows it, at the playhead
+    /// and at once, for `frame_at`; refused with why in
+    /// `preview_command_refused`, which the control bridge answers with.
+    pub(super) fn handle_preview_commands(&mut self, cmd: &AppCommand) -> bool {
+        match cmd {
+            AppCommand::ShowPreview { entry, clip_id } => {
+                self.state.preview_command_refused = self.show_named_preview(entry, *clip_id).err();
+                true
+            }
+            AppCommand::ClearPreview => {
+                self.take_preview_down();
+                self.state.hover_preview = None;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn show_named_preview(&mut self, entry: &klipp_core::PreviewEntry, clip_id: Option<klipp_core::ClipId>) -> Result<(), String> {
+        let want = want_named(&mut self.state, entry, clip_id)?;
+        // At the playhead, where frame_at has put it: the time asked for,
+        // not the entry's own (a transition's middle).
+        let (shown, base) = self.sequence.snapshot_with_revision();
+        let ctx = PreviewContext { pool: &self.state.media_pool, analysis: &self.transcript_source, playhead: self.state.playhead };
+        let Shown { seq, .. } = previewed(&shown, &want, &ctx)?;
+        if !self.sequence.set_preview(base, Arc::new(seq)) {
+            return Err("the timeline changed while it was made: ask again".into());
+        }
+        self.send_commands(vec![AppCommand::RefreshPreview { at: None }]);
+        Ok(())
+    }
+}
+
+/// The [`PreviewWant`] of `entry` named as its browser names it (any
+/// case), on `clip_id` when given: as its card's hover would want it. Or
+/// why there is none: no such entry, no clip to show it on, or the reason
+/// its card would give.
+pub(crate) fn want_named(state: &mut AppState, entry: &klipp_core::PreviewEntry, clip_id: Option<klipp_core::ClipId>) -> Result<PreviewWant, String> {
+    use klipp_core::PreviewEntry as E;
+    state.hover_preview_note = None;
+    state.hover_preview_wanted = None;
+    let no_clip = "no clip to show it on: select one, or give clip_id";
+    let key = match entry {
+        E::Effect(name) => {
+            let source = state.effect_registry.effects.iter().find(|e| e.name.eq_ignore_ascii_case(name)).map(|e| e.source.clone()).ok_or_else(|| format!("no effect or look named {name:?} in the Effects browser"))?;
+            want_effect_on(state, name, &source, clip_id, None).ok_or(no_clip)?
+        }
+        E::Transition(name) => {
+            let spec = klipp_core::TRANSITION_SPECS.iter().find(|s| s.display_name.eq_ignore_ascii_case(name) || s.string_key.eq_ignore_ascii_case(name)).ok_or_else(|| format!("no transition named {name:?}"))?;
+            want_transition_on(state, spec, clip_id, None).ok_or(no_clip)?
+        }
+        E::Title(name) => {
+            let data = match klipp_timeline::title_library::TITLES.iter().find(|t| t.name.eq_ignore_ascii_case(name)) {
+                Some(t) => crate::browser::titles_tab::Entry::Builtin(t).data(),
+                None => {
+                    let user = state.title_templates.templates().find(|t| t.name.eq_ignore_ascii_case(name)).ok_or_else(|| format!("no title template named {name:?}"))?;
+                    crate::browser::titles_tab::Entry::User(user).data()
+                }
+            };
+            want_placed(state, &format!("title:{name}"), Place::Title(Box::new(data)), None)
+        }
+        E::Generator(name) => {
+            let tmpl = crate::browser::generators_tab::generators().iter().find(|g| g.name.as_str().eq_ignore_ascii_case(name)).ok_or_else(|| format!("no generator named {name:?}"))?;
+            want_placed(state, &format!("generator:{name}"), Place::Generator(tmpl.data.clone()), None)
+        }
+    };
+    state.hover_preview_wanted.take().ok_or_else(|| note_for(state, &key).map_or_else(|| "it can't be previewed".into(), |n| n.trim_start_matches("Can't preview this one: ").to_owned()))
+}
+
 /// An effect, look or frei0r card hovered in the Effects browser: what a
 /// click on it would put on the clip a preview goes on (the selected one,
 /// else the top picture under the playhead), wanted on the viewer, or the
 /// reason noted when the click would be refused. Its key; `None` for what
 /// has no picture to show (a sound effect, an OFX plug-in) or no clip.
 pub(crate) fn want_effect(state: &mut AppState, name: &str, source: &crate::browser::effect_registry::EffectSource, across: Option<f32>) -> Option<String> {
+    want_effect_on(state, name, source, None, across)
+}
+
+/// [`want_effect`] on `clip` when given.
+pub(crate) fn want_effect_on(state: &mut AppState, name: &str, source: &crate::browser::effect_registry::EffectSource, clip: Option<klipp_core::ClipId>, across: Option<f32>) -> Option<String> {
     use crate::browser::effect_registry::EffectSource;
     if !matches!(source, EffectSource::Builtin(_) | EffectSource::Look(_) | EffectSource::Frei0r(_)) {
         return None;
     }
-    let clip = state.selected_clip.or_else(|| state.picture_under_playhead())?;
+    let clip = clip.or(state.selected_clip).or_else(|| state.picture_under_playhead())?;
     let key = format!("effect:{name}:{}", clip.0);
     match crate::browser::effects_tab::effect_commands_in(state, source, clip) {
         Ok(cmds) => {
@@ -298,7 +374,12 @@ pub(crate) fn want_effect(state: &mut AppState, name: &str, source: &crate::brow
 /// on the viewer at its middle. Its key; `None` with no clip, the reason
 /// noted when there is no cut after it.
 pub(crate) fn want_transition(state: &mut AppState, spec: &klipp_core::TransitionSpec, across: Option<f32>) -> Option<String> {
-    let clip = state.selected_clip.or_else(|| state.picture_under_playhead())?;
+    want_transition_on(state, spec, None, across)
+}
+
+/// [`want_transition`] on the cut out of `clip` when given.
+pub(crate) fn want_transition_on(state: &mut AppState, spec: &klipp_core::TransitionSpec, clip: Option<klipp_core::ClipId>, across: Option<f32>) -> Option<String> {
+    let clip = clip.or(state.selected_clip).or_else(|| state.picture_under_playhead())?;
     let key = format!("transition:{}:{}", spec.string_key, clip.0);
     let next = state.sequence().tracks.iter().enumerate().find_map(|(ti, t)| {
         let at = t.clips.iter().position(|c| c.id == clip)?;
@@ -539,6 +620,31 @@ mod tests {
             let placed = clicked.sequences[0].all_clips().find(|c| c.id == clip).unwrap();
             assert_eq!((shown.at, shown.span), (Some(park), Some((placed.timeline_in, placed.timeline_out))), "shown where the click parks, over the clip's time");
         }
+    }
+
+    /// #3210 PR 4: an entry named as frame_at names it (in any case) is
+    /// wanted as hovering its card wants it, on the clip given, else the
+    /// selected one; and each way it can't be is said.
+    #[test]
+    fn a_named_entry_is_wanted_as_its_card_wants_it() {
+        use klipp_core::PreviewEntry as E;
+        let (mut state, first) = timeline(2);
+        let second = state.sequence().tracks[0].clips[1].id;
+        let blur = state.effect_registry.effects.iter().find(|e| matches!(e.source, crate::browser::effect_registry::EffectSource::Builtin(klipp_effects::BuiltinEffect::GaussianBlur { .. }))).map(|e| e.name.clone()).expect("the blur in the browser");
+        let want = want_named(&mut state, &E::Effect(blur.to_uppercase()), Some(second)).expect("the blur, by its name in capitals");
+        assert!(want.key.contains(&second.0.to_string()) && !want.cmds.is_empty(), "on the clip given: {}", want.key);
+        let want = want_named(&mut state, &E::Effect(blur.clone()), None).expect("the blur");
+        assert!(want.key.contains(&first.0.to_string()), "else the selected clip: {}", want.key);
+        assert!(want_named(&mut state, &E::Effect("No Such Effect".into()), None).unwrap_err().contains("no effect"));
+        let gen = crate::browser::generators_tab::generators()[0].name.as_str().to_owned();
+        assert!(want_named(&mut state, &E::Generator(gen), None).is_ok_and(|w| matches!(w.place, Some(Place::Generator(_)))));
+        let title = klipp_timeline::title_library::TITLES[0].name.to_string();
+        assert!(want_named(&mut state, &E::Title(title), None).is_ok_and(|w| matches!(w.place, Some(Place::Title(_)))));
+        let why = want_named(&mut state, &E::Transition("cross dissolve".into()), Some(second)).unwrap_err();
+        assert!(why.contains("no cut after it"), "the card's reason: {why}");
+        state.selected_clip = None;
+        state.playhead = klipp_core::Timecode::from_frames(24 * 1000, 24);
+        assert!(want_named(&mut state, &E::Effect(blur), None).unwrap_err().contains("no clip"), "nothing selected and nothing under the playhead");
     }
 
     #[test]

@@ -1209,7 +1209,11 @@ impl PlaybackEngine {
     pub(super) fn draw_preview_at(&mut self, at: klipp_core::Timecode) -> bool {
         let shown = self.skim_timeline(at);
         if self.sequence.view_with_revision().2.is_some() {
-            self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner()).preview_skipped = !shown;
+            let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
+            fb.preview_skipped = !shown;
+            if shown {
+                fb.preview_generation = Some(fb.latest_generation());
+            }
         }
         shown
     }
@@ -1466,7 +1470,11 @@ impl PlaybackEngine {
                 if !declines.is_empty() {
                     self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner()).set_declines(declines);
                 }
-                self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner()).preview_skipped = false;
+                let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
+                fb.preview_skipped = false;
+                if previewing {
+                    fb.preview_generation = Some(fb.latest_generation());
+                }
                 return true;
             }
             if previewing {

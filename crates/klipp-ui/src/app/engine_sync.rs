@@ -219,6 +219,7 @@ impl KlippApp {
                 if self.handle_frame_glide_commands(&cmd) { break 'dispatch; }
                 if self.handle_track_subject_commands(&cmd, &mut needs_refresh) { break 'dispatch; }
                 if self.handle_transition_commands(&cmd, &mut needs_refresh) { break 'dispatch; }
+                if self.handle_preview_commands(&cmd) { break 'dispatch; }
                 if self.handle_playback_commands(&cmd, &mut needs_refresh) { break 'dispatch; }
                 if self.handle_transition_key_commands(&cmd) { break 'dispatch; }
                 if self.handle_edit_point_commands(&cmd) { break 'dispatch; }

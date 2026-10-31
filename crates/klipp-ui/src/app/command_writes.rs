@@ -330,7 +330,9 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         // The engine's alone, while a pass records (#2306).
         | AppCommand::OverrideTrackAutomation { .. }
         // A preview is drawn, never written (#3210).
-        | AppCommand::RefreshPreview { .. } => false,
+        | AppCommand::RefreshPreview { .. }
+        | AppCommand::ShowPreview { .. }
+        | AppCommand::ClearPreview => false,
         // Write the picture, the project or the history, start a step of
         // their own, or aren't known to write nothing. The path edits are
         // among them; a path drag takes its own (`closes_path_drag`).

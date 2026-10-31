@@ -1962,6 +1962,10 @@ pub enum ControlCommand {
         /// frame (#2758), by its path as graph_read gives it.
         #[serde(default)]
         node: Option<crate::graph_wire::GraphPath>,
+        /// A browser's entry shown on the frame without being applied
+        /// (#3210), as hovering its card shows it.
+        #[serde(default)]
+        preview: Option<PreviewArg>,
     },
     /// Tail of the app's debug log.
     LogTail {
@@ -2234,3 +2238,55 @@ pub enum EffectAction {
 #[cfg(feature = "test-hooks")]
 #[cfg(not(debug_assertions))]
 compile_error!("klipp-control's test-hooks are never in a release build");
+
+/// `frame_at`'s preview (#3210): one entry by the name its browser shows,
+/// and the clip it goes on; else the selected clip, else the top picture
+/// under the time asked for.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct PreviewArg {
+    #[serde(default)]
+    pub effect: Option<String>,
+    #[serde(default)]
+    pub transition: Option<String>,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub generator: Option<String>,
+    #[serde(default)]
+    pub clip_id: Option<String>,
+}
+
+impl PreviewArg {
+    /// The entry it names, and its clip; or why it names none, or more
+    /// than one.
+    pub fn entry(&self) -> Result<(klipp_core::PreviewEntry, Option<klipp_core::ClipId>), String> {
+        use klipp_core::PreviewEntry as E;
+        let named: Vec<E> = [self.effect.clone().map(E::Effect), self.transition.clone().map(E::Transition), self.title.clone().map(E::Title), self.generator.clone().map(E::Generator)].into_iter().flatten().collect();
+        let [entry] = <[E; 1]>::try_from(named).map_err(|named| format!("preview names {} entries; give one of effect, transition, title or generator", named.len()))?;
+        let clip = self.clip_id.as_deref().map(|id| uuid::Uuid::parse_str(id).map(klipp_core::ClipId).map_err(|e| format!("clip_id {id:?} is not a clip id: {e}"))).transpose()?;
+        Ok((entry, clip))
+    }
+}
+
+#[cfg(test)]
+mod preview_arg_tests {
+    use super::PreviewArg;
+    use klipp_core::PreviewEntry;
+
+    /// #3210: frame_at's preview names one entry, and its clip by id.
+    #[test]
+    fn a_preview_names_one_entry_and_its_clip() {
+        let clip = uuid::Uuid::new_v4();
+        let arg: PreviewArg = serde_json::from_value(serde_json::json!({ "effect": "Gaussian Blur", "clip_id": clip.to_string() })).unwrap();
+        assert_eq!(arg.entry().unwrap(), (PreviewEntry::Effect("Gaussian Blur".into()), Some(klipp_core::ClipId(clip))));
+        let arg: PreviewArg = serde_json::from_value(serde_json::json!({ "transition": "cross_dissolve" })).unwrap();
+        assert_eq!(arg.entry().unwrap(), (PreviewEntry::Transition("cross_dissolve".into()), None));
+        let two: PreviewArg = serde_json::from_value(serde_json::json!({ "effect": "Glow", "title": "Lower Third" })).unwrap();
+        assert!(two.entry().unwrap_err().contains("names 2 entries"));
+        assert!(PreviewArg::default().entry().unwrap_err().contains("names 0 entries"));
+        let bad: PreviewArg = serde_json::from_value(serde_json::json!({ "generator": "Grain", "clip_id": "c1" })).unwrap();
+        assert!(bad.entry().unwrap_err().contains("not a clip id"));
+        assert!(serde_json::from_value::<PreviewArg>(serde_json::json!({ "lut": "Kodak" })).is_err(), "an unknown kind is refused");
+    }
+}
