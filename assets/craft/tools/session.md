@@ -91,7 +91,7 @@ Frame timings: decode, grade, composite, total, drops, plus GPU->CPU readback co
 - `use_proxies`: proxies exist but aren't played.
 - `playback_quality` gives a smaller size: klipp_set_playback_quality.
 
-Nothing is done for the person: ask before acting, since freezing costs disk and time and changes what is live. Without ten seconds of playback it says so.
+Nothing is done for the person: ask before acting, since freezing costs disk and time and changes what is live. Without ten seconds of playback it says so. The person sees the same suggestion in a note at the viewer's foot while playing, once per project, unless they turned it off in Preferences > Playback.
 
 `picture_fallbacks` reports cumulative counts by feature and the latest viewer
 frame's timeline time, clip IDs, reasons and per-feature event counts. It catches

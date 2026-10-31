@@ -921,6 +921,20 @@ impl PreferencesPanel {
 
         Self::setting_row_with_subtitle(
             ui,
+            "Suggest fixes when playback drops frames",
+            "When playback keeps dropping frames, a note at the viewer's foot says why and offers a fix: freeze a track, make proxies, a smaller size. Nothing is done for you",
+            theme,
+            |ui| {
+                let mut val = prefs.playback.suggest_playback_fixes;
+                if ui.add(Switch::new(&mut val, theme)).changed() {
+                    prefs.playback.suggest_playback_fixes = val;
+                    *dirty = true;
+                }
+            },
+        );
+
+        Self::setting_row_with_subtitle(
+            ui,
             "Audio scrubbing",
             "Play audio while dragging the playhead",
             theme,
