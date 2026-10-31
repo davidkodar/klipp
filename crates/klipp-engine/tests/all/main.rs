@@ -16,6 +16,8 @@ mod a_frame_without_a_primary_plays_at_the_playback_size;
 mod a_reversed_clip_parks_with_its_picture;
 #[path = "../a_preview_is_the_picture_applying_would_show.rs"]
 mod a_preview_is_the_picture_applying_would_show;
+#[path = "../a_parked_retimed_frame_is_blended.rs"]
+mod a_parked_retimed_frame_is_blended;
 #[path = "../a_large_jpeg_still_shows.rs"]
 mod a_large_jpeg_still_shows;
 #[path = "../a_live_drag_reaches.rs"]
