@@ -37,6 +37,7 @@ tracing = { workspace = true }
 rayon = { workspace = true }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 lz4_flex = { workspace = true }
+half = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 walkdir = { workspace = true }

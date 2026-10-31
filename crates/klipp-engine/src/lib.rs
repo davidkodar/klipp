@@ -64,6 +64,8 @@ pub mod analyse;
 pub use analyse::{analyse_into, analyse_media};
 /// Moved to klipp-timeline, where the compositor keys frozen frames with it (#3207).
 pub use klipp_timeline::canonical_hash;
+pub mod cache_store;
+pub mod freeze;
 pub mod node_thumbnails;
 pub mod audio_decoder;
 pub mod audio_input;

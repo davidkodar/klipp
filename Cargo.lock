@@ -3136,6 +3136,7 @@ dependencies = [
  "crossbeam-queue",
  "dirs",
  "ffmpeg-next",
+ "half",
  "image",
  "kamadak-exif",
  "klipp-analysis",
