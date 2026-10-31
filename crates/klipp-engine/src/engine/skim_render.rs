@@ -236,7 +236,10 @@ impl super::PlaybackEngine {
         if !self.gpu_composite_allowed() {
             return refused(self, "the display path is not the GPU stack's");
         }
-        let snapshot = self.sequence.snapshot();
+        // A preview up (#3210) is what the skim shows, as the parked
+        // frame does.
+        let (snapshot, _, preview) = self.sequence.view_with_revision();
+        let snapshot = preview.unwrap_or(snapshot);
         let seq = klipp_compose::frame_snapshot(&snapshot, time);
         let files: HashMap<MediaId, PathBuf> = self.media_pool.read().unwrap_or_else(|e| e.into_inner()).all().filter_map(|m| Some((m.id, skim_file(m)?))).collect();
         let Some(mut src) = SkimSource::gather(&seq, time, &files, &mut self.skim_pool) else { return refused(self, "a source with no skim file, or no frame in time") };
