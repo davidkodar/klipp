@@ -5595,6 +5595,14 @@ impl PlaybackEngine {
         track_index: usize,
         latency_advertise: std::sync::Arc<std::sync::atomic::AtomicU32>,
     ) -> std::sync::Arc<crate::mix_thread::SourceMix> {
+        // A mix thread that has ended (a panic past the block it mixed)
+        // is made again with its output (#3181): it used to stay, and the
+        // session was silent until a restart.
+        if self.mix_thread.as_ref().is_some_and(MixThread::is_finished) {
+            warn!("the audio mix thread had ended; it is started again");
+            self.mix_thread = None;
+            self.audio_output = None;
+        }
         // Create mix thread + audio output on first use
         if self.mix_thread.is_none() {
             let (mt, main_consumer) = MixThread::new(
