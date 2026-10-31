@@ -636,6 +636,13 @@ fn pcm_feed_thread(
                     let sample_index = (secs * SAMPLE_RATE as f64) as usize;
                     read_pos = (sample_index * CHANNELS).min(total_floats);
                     vpos = secs.max(0.0) * SAMPLE_RATE as f64;
+                    // A retimed clip reads from the seek's own position,
+                    // not the 1x one held to the sound's end: a reversed
+                    // clip seeks to its source out, which can lie past
+                    // its sound's last sample, and taken from there it
+                    // played that sound early by the difference (#3219).
+                    let (speed, ..) = varispeed.get();
+                    vari = (speed - 1.0).abs() > 1e-6 && speed.is_finite() && speed != 0.0;
                     eof = false;
 
                     // Report seek position
@@ -1109,6 +1116,44 @@ mod tests {
         assert!(back.windows(2).all(|w| (w[1] - w[0] + 1.0).abs() < 0.01), "reversed steps one back: {:?}", &back[..4]);
         assert_eq!(first_frames(1.0).windows(2).filter(|w| (w[1] - w[0] - 1.0).abs() > 0.01).count(), 0, "1x as ever");
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// #3219: a reversed clip whose sound ends before its picture plays
+    /// from its source out, past the sound's last sample: silence until
+    /// the sound, then the sound backward. The read stopped at its first
+    /// position, past the end, and the feed ended there with nothing.
+    #[test]
+    fn a_reversed_feed_from_past_the_sound_plays_it_backward() {
+        use ringbuf::traits::Consumer;
+        let path = std::env::temp_dir().join(format!("klipp-pcm-short-sound-{}.pcm", std::process::id()));
+        // 3.98 s of sound under a 4.0 s picture: a ramp, each frame its
+        // index, from 1 so silence is told from the first frame.
+        let frames = (SAMPLE_RATE as f64 * 3.98) as usize;
+        let ramp: Vec<f32> = (0..frames).flat_map(|i| [(i + 1) as f32 / frames as f32; CHANNELS]).collect();
+        write_pcm(&path, &ramp);
+        let (feeder, mut consumer) = PcmAudioFeeder::open(&path, SAMPLE_RATE, vec![], Default::default()).unwrap();
+        feeder.set_fade(0.0, f64::MAX, 0.0, 0.0, 0, 0, 1.0);
+        feeder.anti_click.store(false, Ordering::Relaxed);
+        feeder.set_varispeed(-1.0, 0.0, 4.0, false);
+        feeder.seek(4.0);
+        feeder.resume();
+        let want = SAMPLE_RATE as usize / 10;
+        let mut got: Vec<f64> = Vec::new();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let mut buf = vec![0.0f32; 4096];
+        while got.len() < want && std::time::Instant::now() < deadline {
+            let n = consumer.pop_slice(&mut buf);
+            got.extend(buf[..n].chunks(CHANNELS).map(|f| f[0] as f64 * frames as f64));
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let _ = std::fs::remove_file(&path);
+        let silent = got.iter().take_while(|v| **v == 0.0).count();
+        let gap = (SAMPLE_RATE as f64 * 0.02) as usize;
+        assert!(got.len() >= want, "the feed played {} frames of the first {want}", got.len());
+        assert!(silent.abs_diff(gap) <= 2, "{silent} frames of silence before the sound, where it ends 0.02 s ({gap} frames) before the picture");
+        let sound = &got[silent..];
+        assert!((sound[0] - frames as f64).abs() < 1.5, "the sound starts at its last frame: {}", sound[0]);
+        assert!(sound.windows(2).all(|w| (w[1] - w[0] + 1.0).abs() < 0.01), "and goes backward: {:?}", &sound[..4]);
     }
 
     /// `secs` of a 440 Hz tone, as the PCM cache playback reads and the

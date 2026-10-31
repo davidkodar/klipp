@@ -48,8 +48,13 @@ fn tap(k: &[f32], u: f64) -> f32 {
 }
 
 /// `n` interleaved frames of `samples` (`channels` to a frame), read from
-/// frame position `pos` at `step` frames a frame; fewer when an end of the
-/// sound comes first.
+/// frame position `pos` at `step` frames a frame; fewer when the end the
+/// read is heading for comes first. Where it has not reached the sound
+/// yet — read backward from past its end, or forward from before its
+/// start — it is silence, and the read goes on into it: a reversed clip
+/// starts at its source out, which for most camera files is the
+/// picture's end, a few milliseconds past the sound's last sample, and
+/// read from there its sound was nothing at all (#3219).
 ///
 /// Up to 1x either way it reads by linear interpolation between the
 /// frames either side. Faster, that would throw sound away above the
@@ -65,6 +70,16 @@ pub fn read(samples: &[f32], channels: usize, pos: f64, step: f64, n: usize) -> 
         return out;
     }
     let last = (frames - 1) as f64;
+    // Outside the sound at `p`: `Some(true)` where the read has yet to
+    // reach it (silence, and on), `Some(false)` past the end it heads
+    // for (stop), `None` inside.
+    let outside = |p: f64| {
+        if (0.0..=last).contains(&p) {
+            None
+        } else {
+            Some(if p > last { step < 0.0 } else { step > 0.0 })
+        }
+    };
     if step.abs() > 1.0 {
         // The kernel's u per frame of source, and how far it reaches.
         let per = 0.9 / step.abs();
@@ -74,8 +89,13 @@ pub fn read(samples: &[f32], channels: usize, pos: f64, step: f64, n: usize) -> 
         let mut acc = vec![0.0f64; channels];
         for m in 0..n {
             let p = pos + m as f64 * step;
-            if !(0.0..=last).contains(&p) {
-                break;
+            match outside(p) {
+                Some(true) => {
+                    out.extend(std::iter::repeat_n(0.0, channels));
+                    continue;
+                }
+                Some(false) => break,
+                None => {}
             }
             let lo = (p - reach).ceil().max(0.0) as usize;
             let hi = ((p + reach).floor() as usize).min(frames - 1);
@@ -94,8 +114,13 @@ pub fn read(samples: &[f32], channels: usize, pos: f64, step: f64, n: usize) -> 
     }
     for k in 0..n {
         let p = pos + k as f64 * step;
-        if !(0.0..=last).contains(&p) {
-            break;
+        match outside(p) {
+            Some(true) => {
+                out.extend(std::iter::repeat_n(0.0, channels));
+                continue;
+            }
+            Some(false) => break,
+            None => {}
         }
         let i = p.floor() as usize;
         let t = (p - i as f64) as f32;
@@ -112,6 +137,27 @@ pub fn read(samples: &[f32], channels: usize, pos: f64, step: f64, n: usize) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #3219: read backward from past the sound's end, as a reversed clip
+    /// whose picture outlasts its sound starts, it is silence up to the
+    /// last sample and then the sound backward, not nothing; the same at
+    /// 2x, through the low-pass. Forward from before the start likewise.
+    /// Past the end it heads for, it still stops.
+    #[test]
+    fn a_read_from_beyond_the_sound_waits_for_it() {
+        let ramp: Vec<f32> = (1..=10).flat_map(|i| [i as f32, -(i as f32)]).collect();
+        let left = |v: Vec<f32>| v.chunks(2).map(|f| f[0]).collect::<Vec<_>>();
+        let back = left(read(&ramp, 2, 12.0, -1.0, 100));
+        assert_eq!(back[..3], [0.0, 0.0, 0.0], "past the end: silence");
+        assert_eq!(back[3..], (1..=10).rev().map(|i| i as f32).collect::<Vec<_>>()[..], "then the sound, backward, to its start");
+        let fast = left(read(&ramp, 2, 13.0, -2.0, 100));
+        assert_eq!((fast.len(), fast[0], fast[1]), (7, 0.0, 0.0), "at 2x: two frames of silence, then five read: {fast:?}");
+        assert!(fast[2..].iter().all(|v| *v > 0.5), "the sound itself at 2x: {fast:?}");
+        let ahead = left(read(&ramp, 2, -2.0, 1.0, 4));
+        assert_eq!(ahead, vec![0.0, 0.0, 1.0, 2.0], "forward from before the start");
+        assert!(read(&ramp, 2, 12.0, 1.0, 5).is_empty(), "forward from past the end: nothing to wait for");
+        assert!(read(&ramp, 2, -1.0, -1.0, 5).is_empty(), "backward from before the start: nothing either");
+    }
 
     /// A ramp read at 0.5x reads halfway between its frames; backward from
     /// the end, the ramp the other way; at 2x it stops at the end.
