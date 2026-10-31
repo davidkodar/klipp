@@ -212,8 +212,15 @@ impl KlippApp {
     /// The open project's cache folder, `<project>/cache`, where frozen
     /// tracks keep what is drawn of them: `None` without a saved, writable
     /// project.
+    /// A project folder whose `cache` isn't a real folder inside it gives
+    /// none: nothing is written or removed through it.
     pub(super) fn freeze_cache_folder(&self) -> Option<PathBuf> {
-        self.state.project_path.clone().filter(|p| !crate::project_paths::is_untitled(Some(p)) && self.read_only_project.as_ref() != Some(p)).map(|p| p.join("cache"))
+        let project = self.state.project_path.clone().filter(|p| !crate::project_paths::is_untitled(Some(p)) && self.read_only_project.as_ref() != Some(p))?;
+        let cache = cache_inside(&project, None).filter(|_| cache_inside(&project, Some("freeze")).is_some() && cache_inside(&project, Some("stems")).is_some());
+        if cache.is_none() {
+            tracing::warn!("{}: its cache isn't a folder inside the project; frozen tracks play live", project.display());
+        }
+        cache
     }
 
     /// The open project's frozen frames (`sound` false) or frozen sound
@@ -238,10 +245,16 @@ impl KlippApp {
                 self.freeze_jobs.store = None;
                 self.freeze_jobs.opening = None;
             }
-            if let Err(e) = std::fs::remove_dir_all(&dir) {
-                if e.kind() != std::io::ErrorKind::NotFound {
-                    tracing::warn!("Clearing {}: {e}", dir.display());
+            let project = cache.parent().map(std::path::Path::to_path_buf).unwrap_or_default();
+            match cache_inside(&project, Some(if sound { "stems" } else { "freeze" })) {
+                Some(inside) if inside == dir => {
+                    if let Err(e) = std::fs::remove_dir_all(&dir) {
+                        if e.kind() != std::io::ErrorKind::NotFound {
+                            tracing::warn!("Clearing {}: {e}", dir.display());
+                        }
+                    }
                 }
+                _ => tracing::warn!("{}: not a folder inside the project; nothing removed", dir.display()),
             }
         }
         self.freeze_jobs.started_for = None;
@@ -464,6 +477,30 @@ impl KlippApp {
         }
         statuses
     }
+}
+
+/// `<project>/cache`, or the folder `sub` in it, when each that is there
+/// is a real folder (not a link) and the cache sits inside the project:
+/// what frozen tracks may write into and remove. `None` otherwise, a link
+/// leading out of the project among them.
+fn cache_inside(project: &std::path::Path, sub: Option<&str>) -> Option<PathBuf> {
+    let real_dir = |p: &std::path::Path| match std::fs::symlink_metadata(p) {
+        Ok(m) => m.file_type().is_dir(),
+        Err(e) => e.kind() == std::io::ErrorKind::NotFound,
+    };
+    let cache = project.join("cache");
+    if !real_dir(&cache) {
+        return None;
+    }
+    if cache.exists() {
+        let within = cache.canonicalize().ok()?.parent().map(std::path::Path::to_path_buf);
+        if within != Some(project.canonicalize().ok()?) {
+            return None;
+        }
+    }
+    let Some(sub) = sub else { return Some(cache) };
+    let dir = cache.join(sub);
+    real_dir(&dir).then_some(dir)
 }
 
 /// Every track of `kind` frozen in `seq` played live again, unlocked if it
@@ -746,5 +783,35 @@ mod tests {
         klipp_document::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut pool, fps: &mut fps }.apply_inverse(&step);
         assert_eq!(serde_json::to_value(&seqs[0].tracks).unwrap(), serde_json::to_value(&before.tracks).unwrap(), "undone, frozen again");
         assert!(unfreeze_all(&mut seq, TrackKind::Video).is_none(), "nothing frozen left");
+    }
+
+    /// A project whose cache, or the folder cleared in it, is a link to
+    /// somewhere else gives no folder to write or remove through: the
+    /// file there survives. A real cache folder is given.
+    #[test]
+    fn a_cache_that_links_out_of_the_project_is_not_used() {
+        let root = std::env::temp_dir().join(format!("klipp-cache-link-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (project, outside) = (root.join("film.klipp"), root.join("elsewhere"));
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::create_dir_all(outside.join("freeze")).unwrap();
+        std::fs::write(outside.join("freeze").join("keep.txt"), b"mine").unwrap();
+        assert_eq!(cache_inside(&project, None), Some(project.join("cache")), "no cache yet: it will be made inside");
+        std::os::unix::fs::symlink(&outside, project.join("cache")).unwrap();
+        assert_eq!(cache_inside(&project, None), None, "the cache links out");
+        assert_eq!(cache_inside(&project, Some("freeze")), None);
+        assert!(outside.join("freeze").join("keep.txt").exists(), "the file elsewhere survives");
+
+        // A real cache whose `freeze` is the link.
+        std::fs::remove_file(project.join("cache")).unwrap();
+        std::fs::create_dir_all(project.join("cache")).unwrap();
+        std::os::unix::fs::symlink(outside.join("freeze"), project.join("cache").join("freeze")).unwrap();
+        assert_eq!(cache_inside(&project, None), Some(project.join("cache")));
+        assert_eq!(cache_inside(&project, Some("freeze")), None, "the folder cleared links out");
+        assert_eq!(cache_inside(&project, Some("stems")), Some(project.join("cache").join("stems")), "one not there yet is inside");
+        std::fs::create_dir_all(project.join("cache").join("stems")).unwrap();
+        assert_eq!(cache_inside(&project, Some("stems")), Some(project.join("cache").join("stems")));
+        assert!(outside.join("freeze").join("keep.txt").exists());
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
