@@ -1014,6 +1014,14 @@ impl ClipStreams {
         std::mem::take(&mut self.given_up)
     }
 
+    /// `clip` is not opened until the person seeks or plays (#3181): its
+    /// file's decoder panicked too often where the engine plays it itself.
+    pub fn give_up(&mut self, clip: ClipId) {
+        self.panics.insert(clip, super::PANIC_RESTARTS);
+        self.streams.remove(&clip);
+        self.opening.remove(&clip);
+    }
+
     /// Clips whose decoders panicked too often may be opened again (#3181).
     pub fn forgive_panics(&mut self) {
         self.panics.clear();
