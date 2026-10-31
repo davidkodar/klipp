@@ -399,7 +399,8 @@ fn resident_bytes() -> Option<u64> {
 /// have made, wgpu's own
 /// totals for the device (built with `klipp-effects/gpu-memory-report`),
 /// the GPU's free memory as Klipp reads it, out-of-memory and validation
-/// errors, and frames presented. Printed, and written as a CSV into
+/// errors, and frames presented; the GPU's errors and wgpu's warnings are
+/// printed as they come. Printed, and written as a CSV into
 /// `KLIPP_REPORT_DIR` when it is set. `KLIPP_REPORT_HW=0` turns hardware
 /// decode off, so frames are decoded in software and uploaded, as on a
 /// machine without a decoder Klipp can use.
@@ -409,6 +410,9 @@ fn resident_bytes() -> Option<u64> {
 #[ignore]
 fn reversed_by_flow_memory_report() {
     let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+    // What the GPU says as it goes wrong, with the rows: Klipp's
+    // WGPU_UNCAPTURED lines and wgpu's own warnings (#3174).
+    let _ = tracing_subscriber::fmt().with_max_level(tracing::Level::WARN).with_test_writer().try_init();
     if std::env::var("KLIPP_REPORT_HW").as_deref() == Ok("0") {
         klipp_engine::video_decoder::set_hardware_decode(false);
     }
