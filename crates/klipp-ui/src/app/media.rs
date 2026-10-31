@@ -694,6 +694,12 @@ impl KlippApp {
                     self.refresh_cache_categories();
                     true
                 }
+                AppCommand::SetPlaybackQuality(q) => {
+                    self.prefs.playback.playback_quality = *q;
+                    self.prefs_dirty = true;
+                    klipp_engine::video_decoder::set_playback_quality_divisor(crate::prefs::playback_quality_divisor(*q));
+                    true
+                }
                 AppCommand::ClearFrozenCache { frames, sound } => {
                     if *frames {
                         self.clear_frozen(false);

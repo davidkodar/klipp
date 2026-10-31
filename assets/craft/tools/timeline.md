@@ -112,6 +112,13 @@ Write the subtitle clips (the text clips when there are none) to an absolute pat
 
 Change a marker's label, note, colour or kind, by its id from klipp_list_markers. Mark a todo done by changing its kind or colour, rather than removing the note.
 
+## klipp_set_playback_quality
+
+Set the size frames are drawn at while playing, as Preferences > Playback sets it, and save it: `full`, `half` or `quarter` of the playback resolution. A smaller size plays a heavy timeline that drops frames; a parked frame is still drawn full size. klipp_perf's `diagnosis` says when this is the fix.
+
+Arguments:
+- `quality`: full, half or quarter of the playback resolution
+
 ## klipp_clear_frozen
 
 Clear the open project's frozen frames and frozen sound: the files a frozen track plays from, kept in the project's cache. The tracks frozen so in the open sequence play live again, as one undo step; undone, they are frozen again and drawn anew. A frozen track's state is in `timeline`. To unfreeze one track and keep its files, use set_track frozen false through klipp_apply.

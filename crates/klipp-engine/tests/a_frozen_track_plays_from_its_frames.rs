@@ -228,8 +228,13 @@ fn stack_cost(seq: &Sequence, files: &'static HashMap<MediaId, klipp_render::Med
 /// Live, then frozen at the size the viewer drew: the frozen track's frames
 /// are stored, its decoder isn't opened while they serve, and the frame
 /// costs less to render.
+/// The tests here set process-wide switches and time playback: one at
+/// a time.
+static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
+
 #[test]
 fn a_frozen_track_plays_from_its_frames_and_isnt_decoded() {
+    let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
     let Some((seq, pool)) = project() else {
         eprintln!("skipping: no ffmpeg");
         return;
@@ -301,4 +306,33 @@ fn a_frozen_track_plays_from_its_frames_and_isnt_decoded() {
     eprintln!("MEASURE frame on the GPU stack, GPU waited for, median: {gpu_live:.1} ms live (its decode included), {gpu_frozen:.1} ms frozen");
     assert!(gpu_frozen < gpu_live, "the frozen frame costs less on the GPU stack: {gpu_frozen:.1} ms frozen, {gpu_live:.1} ms live");
     let _ = std::fs::remove_dir_all(&folder);
+}
+
+/// #3234: on a device without timestamps (timing switched off here),
+/// trouble has each visible track drawn alone once, a track a frame, as
+/// its cost "measured once"; with timestamps, nothing is drawn alone.
+#[test]
+fn without_timestamps_trouble_measures_each_track_once() {
+    let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+    let Some((seq, pool)) = project() else {
+        eprintln!("skipping: no ffmpeg");
+        return;
+    };
+    klipp_engine::playback_health::force_trouble(true);
+    klipp_effects::gpu::timing::set_off(true);
+    klipp_engine::playback_health::set_shared(|s| s.measured_once.clear());
+    let _ = play(&seq, &pool, None, 2.0);
+    let once = klipp_engine::playback_health::shared().measured_once;
+    eprintln!("MEASURE measured once, timing off: {:?}", seq.tracks.iter().map(|t| (t.name.clone(), once.get(&t.id).copied())).collect::<Vec<_>>());
+    let timed_after_off = klipp_engine::track_cost::gpu_timed();
+    klipp_effects::gpu::timing::set_off(false);
+    klipp_engine::playback_health::set_shared(|s| s.measured_once.clear());
+    let _ = play(&seq, &pool, None, 2.0);
+    let once_timed = klipp_engine::playback_health::shared().measured_once;
+    klipp_engine::playback_health::force_trouble(false);
+    assert!(!timed_after_off, "timing switched off reads as not measured");
+    for t in seq.tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Video) {
+        assert!(once.get(&t.id).is_some_and(|ms| *ms > 0.0), "{} measured once: {once:?}", t.name);
+    }
+    assert!(once_timed.is_empty(), "with timestamps, nothing drawn alone: {once_timed:?}");
 }

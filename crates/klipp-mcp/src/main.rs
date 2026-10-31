@@ -54,7 +54,7 @@ static PENDING_WRITE_GENERATION: std::sync::atomic::AtomicU64 =
 const WRITE_TOOLS: &[&str] = &[
     "klipp_graph", "klipp_import_timeline", "klipp_alternatives",
     "klipp_play", "klipp_pause", "klipp_stop", "klipp_seek",
-    "klipp_append_clip", "klipp_clear_frozen", "klipp_remove_clip", "klipp_attach_audio", "klipp_normalize", "klipp_set_append_audio", "klipp_select_clip",
+    "klipp_append_clip", "klipp_clear_frozen", "klipp_set_playback_quality", "klipp_remove_clip", "klipp_attach_audio", "klipp_normalize", "klipp_set_append_audio", "klipp_select_clip",
     "klipp_add_node", "klipp_remove_node", "klipp_connect_nodes",
     "klipp_set_node_param", "klipp_toggle_node", "klipp_set_log_format",
     "klipp_generator", "klipp_undo", "klipp_redo", "klipp_batch", "klipp_export", "klipp_export_subtitles", "klipp_import_subtitles", "klipp_translate_captions", "klipp_apply",
@@ -604,6 +604,7 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             }
             v
         }
+        "klipp_set_playback_quality" => json!({ "method": "set_playback_quality", "quality": arg_str(args, "quality")? }),
         "klipp_clear_frozen" => {
             let mut v = json!({ "method": "clear_frozen" });
             for key in ["frames", "sound"] {
@@ -2156,6 +2157,10 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              "Import media: a path, paths, or a folder's files. Details: klipp_guide topic import_media.",
              json!({ "path": { "type": "string" }, "paths": { "type": "array", "items": { "type": "string" } }, "folder": { "type": "string" }, "recursive": { "type": "boolean" }, "bins": { "type": "boolean" }, "analyze": { "type": "boolean" } }),
              vec![]),
+        tool("klipp_set_playback_quality",
+             "Set the size frames are drawn at while playing: full, half or quarter of the playback resolution; saved as the preference. Details: klipp_guide topic set_playback_quality.",
+             json!({ "quality": { "type": "string", "enum": ["full", "half", "quarter"] } }),
+             vec!["quality"]),
         tool("klipp_clear_frozen",
              "Clear the open project's frozen frames and sound; their tracks play live again, one undo step. Details: klipp_guide topic clear_frozen.",
              json!({ "frames": { "type": "boolean" }, "sound": { "type": "boolean" } }),
@@ -2295,7 +2300,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              }),
              vec![]),
         tool("klipp_perf",
-             "Frame timings and presented_fps over the last 2 s. Details: klipp_guide topic perf.",
+             "Frame timings, presented_fps over the last 2 s, and why playback drops frames with the fix that fits. Details: klipp_guide topic perf.",
              json!({}), vec![]),
         tool("klipp_log_tail",
              "Tail of Klipp's debug log. Details: klipp_guide topic log_tail.",
@@ -3634,6 +3639,7 @@ mod catalogue_trim_tests {
         ("klipp_list_clips", "track", "A track's index or name"),
         ("klipp_append_clip", "media_id", "From klipp_list_media"),
         ("klipp_clear_frozen", "frames", "Clear frozen video tracks' frames (default true)"),
+        ("klipp_set_playback_quality", "quality", "full, half or quarter of the playback resolution"),
         ("klipp_clear_frozen", "sound", "Clear frozen audio tracks' stems (default true)"),
         ("klipp_append_clip", "track", "Track index; omit for the default track"),
         ("klipp_set_append_audio", "enabled", "true brings audio, false is video only"),

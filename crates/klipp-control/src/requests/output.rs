@@ -999,8 +999,22 @@ pub(crate) fn respond(
             let ring = ctx.perf_ring.lock().map_err(|_| "perf ring lock poisoned")?;
             let latest = ring.latest().cloned();
             let avg = ring.averages(60);
+            // Why playback drops frames, if it does, and what would help
+            // (#3234): over the last ten seconds played at 1x.
+            let diagnosis = {
+                let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+                let pool = ctx.media_pool.read().recovered();
+                let samples = (seq.fps.as_f64() * klipp_engine::playback_health::WINDOW as f64).ceil() as usize;
+                let health = klipp_engine::playback_health::shared().health;
+                match klipp_engine::playback_health::diagnose_now(&seq, &pool, &ring, samples) {
+                    Some(d) => serde_json::to_value(&d).unwrap_or_default(),
+                    None if health.seconds < klipp_engine::playback_health::WINDOW => json!({ "health": health, "cause": "not enough playback at 1x to say: play ten seconds and ask again" }),
+                    None => json!({ "health": health, "cause": "playback keeps up" }),
+                }
+            };
             Ok(json!({
                 "presented_fps": presented_fps,
+                "diagnosis": diagnosis,
                 "latest": latest.map(|p| json!({
                     "width": p.width,
                     "height": p.height,

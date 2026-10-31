@@ -734,6 +734,30 @@ impl PlaybackEngine {
         self.publish_track_costs();
     }
 
+    /// A second's record of how playback keeps up, while it plays at 1×
+    /// (#3234); not playing so, the record starts again.
+    pub(super) fn record_playback(&mut self, now: std::time::Instant) {
+        let at_one = self.state == PlaybackState::Playing && (self.master_clock.speed() - 1.0).abs() < 1e-6;
+        if !at_one {
+            if self.playback_record.health() != crate::playback_health::Health::default() || !self.measured_once.is_empty() {
+                self.playback_record.reset();
+                self.measured_once.clear();
+                // What was measured once stays to be read; the next
+                // trouble measures again.
+                crate::playback_health::set_shared(|s| s.health = Default::default());
+            }
+            return;
+        }
+        let shown = self.frame_buffer.lock().ok().and_then(|fb| fb.presented_fps(now, std::time::Duration::from_secs(1)));
+        self.playback_record.tick(now, shown, self.fps.as_f64());
+        let (health, proxies, at) = (self.playback_record.health(), self.use_proxies, self.playhead.to_secs_f64());
+        crate::playback_health::set_shared(|s| {
+            s.health = health;
+            s.proxies_on = proxies;
+            s.at_secs = at;
+        });
+    }
+
     /// Each track's GPU time (#3207): a frame a second timed, its times
     /// taken once the GPU has them, never waited for.
     fn time_track_gpu(&mut self) {
@@ -1125,6 +1149,18 @@ impl PlaybackEngine {
             ..Default::default()
         };
         let shown = self.renderer.render_display_on_gpu(seq, time, width, height, &mut src, opts, out);
+        // With trouble on a device without timestamps (#3234): the next
+        // visible track drawn alone, the GPU waited for (its layer read
+        // back), as its cost measured once. A track a frame, a few frames.
+        if shown.is_some() {
+            if let Some((index, id)) = next_to_measure(seq, time, &self.measured_once, &self.playback_record) {
+                let t = std::time::Instant::now();
+                let _ = self.renderer.render_track_layer_on_gpu(seq, index, time, width, height, &mut src);
+                self.measured_once.insert(id, (t.elapsed().as_secs_f64() * 1000.0) as f32);
+                let measured = self.measured_once.clone();
+                crate::playback_health::set_shared(|s| s.measured_once = measured);
+            }
+        }
         // Declined, the frame is drawn by `render_timeline` next, which
         // needs the frame before still.
         self.previous_primary = if shown.is_some() { primary.map(|(id, f)| (id, f.clone())) } else { previous };
@@ -2388,4 +2424,16 @@ pub(crate) fn cut_for_solo(seq: &mut Sequence, at: &klipp_compose::InspectAt) ->
         return false;
     }
     seq.tracks.iter_mut().flat_map(|t| t.clips.iter_mut()).find(|c| c.id == clip).is_some_and(|c| c.cut_chain_at(node))
+}
+
+/// The next track to draw alone and time once (#3234): with trouble, on a
+/// device without timestamps, a visible picture track with a clip at
+/// `time` not yet measured; its index and id.
+fn next_to_measure(seq: &Sequence, time: klipp_core::Timecode, measured: &HashMap<klipp_core::TrackId, f32>, record: &crate::playback_health::Recorder) -> Option<(usize, klipp_core::TrackId)> {
+    if crate::track_cost::gpu_timed() || !record.health().sustained {
+        return None;
+    }
+    seq.tracks.iter().enumerate().find(|(_, t)| {
+        t.kind == klipp_timeline::TrackKind::Video && t.visible && !measured.contains_key(&t.id) && t.clips.iter().any(|c| c.timeline_in <= time && time < c.timeline_out)
+    }).map(|(i, t)| (i, t.id))
 }

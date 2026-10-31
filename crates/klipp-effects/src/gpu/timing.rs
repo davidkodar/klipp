@@ -18,6 +18,15 @@ const MARKS: u32 = 256;
 /// The features timing needs: timestamps, and written between passes.
 pub const FEATURES: wgpu::Features = wgpu::Features::TIMESTAMP_QUERY.union(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS);
 
+static OFF: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Timing switched off whatever the device offers: what a device without
+/// timestamps does, for a test of what is done then (#3234).
+#[doc(hidden)]
+pub fn set_off(off: bool) {
+    OFF.store(off, std::sync::atomic::Ordering::Relaxed);
+}
+
 enum Reading {
     /// Resolved into the read buffer: `n` marks, not yet asked for.
     Copied(u32),
@@ -39,7 +48,7 @@ pub(crate) struct Timing {
 impl GpuEffectsPipeline {
     /// Whether the device times the GPU's work.
     pub fn timing_available(&self) -> bool {
-        self.device.features().contains(FEATURES)
+        !OFF.load(std::sync::atomic::Ordering::Relaxed) && self.device.features().contains(FEATURES)
     }
 
     /// Start timing this frame: `false` on a device without timestamps,
