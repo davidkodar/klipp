@@ -32,7 +32,7 @@ engine_commands!(
     AbandonNodeParamEdit, EndNodeParamEdit, EndScrub, LoadGlobalLut, LoadMediaFile, MediaDecodeChanged, Pause,
     PauseSource, Play, PlaySource, Quit, RenderNodeThumbsFromSource,
     RenderScopesForFrame, RenderScopeSnapshot, ResetEngine, ResetLufsMeter,
-    RenderRange, SampleNodeInput, SeekRelative, SeekSource, SeekTo, SequenceUpdated,
+    RenderRange, SampleNodeInput, SeekRelative, SeekSource, SeekTo, SequenceUpdated, RefreshPreview,
     SetActiveScopeModes, SetAntiClickFade, SetDeliveryTarget, SetClipChannelConfig, SetClipGain,
     SetClipPan, SetClipVolume, SetGlobalLutEnabled, SetGlobalLutOpacity, SetHdrMonitor,
     SetHdrReferenceOutput, SetInspectorMattePreviewTarget, SetMeasureOnlyClip, SetLoopPlayback,
@@ -42,7 +42,7 @@ engine_commands!(
     SetScrubAudioEnabled, SetSdrTransfer, SetSourceMedia, SetSpeed,
     SetSplitCompareNode, SetTrackMute, SetTrackPan, SetTrackSolo, SetTrackVolume, OverrideTrackAutomation,
     SetUseProxies, SetViewChannel, SetVisibleNodeThumbs, StepSource, Stop, StopSource,
-    ToggleBeforeAfter, ToggleStabilizationCompare, InjectPanic, SetFreezeFolder, SetFrozenTracks
+    ToggleBeforeAfter, ToggleStabilizationCompare, InjectPanic
 );
 
 /// A command's variant name, for saying which one went astray.

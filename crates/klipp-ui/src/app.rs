@@ -54,6 +54,7 @@ mod viewer_textures;
 mod startup;
 mod shortcuts;
 mod frame_loop;
+pub(crate) mod hover_preview;
 mod colour_workspace;
 mod caption_translation;
 mod delivery_check;

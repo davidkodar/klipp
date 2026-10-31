@@ -1062,17 +1062,6 @@ pub fn cut_openings() -> (u64, u64) {
     (CUTS_FROM_PREROLL.load(std::sync::atomic::Ordering::Relaxed), CUTS_OPENED_COLD.load(std::sync::atomic::Ordering::Relaxed))
 }
 
-/// Frozen tracks' layers laid from their stored frames (#3207), and clips
-/// left undecoded because their frames were, since the process began.
-pub(crate) static FROZEN_LAYERS_LAID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-pub(crate) static FROZEN_CLIPS_SKIPPED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-
-/// (frozen layers laid, clip decodes skipped for them) since the process
-/// began (#3207).
-pub fn frozen_counts() -> (u64, u64) {
-    (FROZEN_LAYERS_LAID.load(std::sync::atomic::Ordering::Relaxed), FROZEN_CLIPS_SKIPPED.load(std::sync::atomic::Ordering::Relaxed))
-}
-
 /// Shots the primary decoder took over from their clip streams, rather
 /// than opening their files again, since the process began.
 pub fn stream_take_overs() -> u64 {
@@ -1629,18 +1618,6 @@ pub struct PlaybackEngine {
     /// an edit's refresh does not open it again, nor say so again, until
     /// the person seeks or plays.
     decoder_given_up: bool,
-    /// Where frozen tracks' frames are stored, and which tracks are frozen
-    /// (#3207): `SetFreezeFolder`, `SetFrozenTracks`.
-    freeze_folder: Option<std::path::PathBuf>,
-    frozen_tracks: std::collections::HashSet<klipp_core::TrackId>,
-    /// The pool's media identities a frozen frame's key reads, made once
-    /// and again after an edit or a load.
-    freeze_media: Option<Arc<HashMap<String, u64>>>,
-    /// The size the viewer's frames were last drawn at: the size a frozen
-    /// frame is looked for at when deciding what to decode.
-    freeze_size: Option<(u32, u32)>,
-    /// Frozen frames read ahead while playing.
-    frozen_reader: Option<crate::freeze::FrozenReader>,
     /// The clip those two count for: another clip's decoder that panics
     /// has tries of its own, and is said of its own.
     decoder_panic_clip: Option<klipp_core::ClipId>,
@@ -1787,6 +1764,9 @@ pub struct PlaybackEngine {
     /// active clip's graph (so switching clips silently un-solos).
     /// The soloed node's output, by path (M3 step 16a).
     solo: Option<klipp_compose::InspectAt>,
+    /// The frame being drawn again without the preview up (#3210), the
+    /// GPU stack having declined it.
+    preview_declined: bool,
     /// What the viewer shows of the picture (#2758): the picture, or one
     /// channel of it in grey (`AppCommand::SetViewChannel`).
     view_channel: klipp_core::ViewChannel,
@@ -2829,11 +2809,6 @@ impl PlaybackEngine {
             decoder_restarts: 0,
             mix_restarts: 0,
             decoder_given_up: false,
-            freeze_folder: None,
-            frozen_tracks: std::collections::HashSet::new(),
-            freeze_media: None,
-            freeze_size: None,
-            frozen_reader: None,
             decoder_panic_clip: None,
             mixer,
             lufs_readings,
@@ -2889,6 +2864,7 @@ impl PlaybackEngine {
             node_sample: None,
             node_sample_since: None,
             solo: None,
+            preview_declined: false,
             view_channel: klipp_core::ViewChannel::Picture,
             fast_solo: None,
             visible_node_thumbs: std::collections::HashSet::new(),
@@ -3456,19 +3432,10 @@ impl PlaybackEngine {
 
             #[cfg(feature = "test-hooks")]
             AppCommand::InjectPanic { at } => self.inject_panic(&at),
-            AppCommand::SetFreezeFolder(folder) => {
-                self.freeze_folder = folder;
-                self.regrade_cached_frame();
-            }
-            AppCommand::SetFrozenTracks(tracks) => {
-                self.frozen_tracks = tracks.into_iter().collect();
-                self.regrade_cached_frame();
-            }
             #[cfg(not(feature = "test-hooks"))]
             AppCommand::InjectPanic { .. } => warn!("inject_panic: this build has no test hooks"),
 
             AppCommand::LoadMediaFile { path, media_id } => {
-                self.freeze_media = None;
                 self.load_file(path, media_id);
             }
 
@@ -4241,10 +4208,15 @@ impl PlaybackEngine {
             AppCommand::StopSource => {
                 self.stop_source();
             }
+            // A preview put up or taken down (#3210): the frame parked is
+            // drawn again with it or without it; playing, the next one is.
+            AppCommand::RefreshPreview => {
+                if self.state != PlaybackState::Playing {
+                    self.regrade_cached_frame();
+                }
+            }
 
             AppCommand::SequenceUpdated => {
-                // A frozen frame's key reads the pool's media anew (#3207).
-                self.freeze_media = None;
                 // Invalidate grade hash so render cache re-checks on next frame.
                 // Also drop the cached graph Arc — the graph may have mutated,
                 // so a fresh snapshot must be built on the next `post_process_rgba_inner`.

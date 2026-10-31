@@ -9,7 +9,7 @@
 //! and handing the result to the UI.
 
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use std::sync::RwLock;
 use std::time::{Duration, Instant};
 
 use klipp_compose::{FrameSource, Inspect, Inspection, RenderOptions, RenderStats, SourceFrame};
@@ -281,10 +281,6 @@ pub(super) fn prerender_sizes(full: (u32, u32), divisor: u8) -> Vec<(u32, u32)> 
 /// The next opens as the one before comes on screen, a shot ahead, which
 /// was in time for 6-frame shots of long-GOP 4K files.
 const AHEAD_PER_FILE: usize = 1;
-
-/// Frames of each frozen track read ahead of the one drawn, while playing
-/// (#3207).
-const FROZEN_READ_AHEAD: i64 = 6;
 
 /// The fewest lines Playback Quality reduces the viewer to.
 pub(super) const MIN_REDUCED_HEIGHT: u32 = 180;
@@ -674,18 +670,6 @@ impl PlaybackEngine {
             let primary_track = primary_track(self.v1_decoder.is_some(), self.preroll_decoder.is_some() || self.preroll_pending.is_some(), self.current_track_index);
             (on_screen, upcoming(&seq, time, playing, primary_track))
         };
-        // A frozen track's clips laid from stored frames aren't decoded
-        // (#3207): their streams close, and their memory goes with them.
-        let frozen = if self.frozen_tracks.is_empty() || self.freeze_folder.is_none() {
-            std::collections::HashSet::new()
-        } else {
-            let seq = self.sequence.snapshot();
-            self.frozen_clips(&seq, time)
-        };
-        let before = wants.len();
-        wants.retain(|w| !frozen.contains(&w.clip));
-        super::FROZEN_CLIPS_SKIPPED.fetch_add((before - wants.len()) as u64, std::sync::atomic::Ordering::Relaxed);
-        let ahead: Vec<(Want, f64)> = ahead.into_iter().filter(|(w, _)| !frozen.contains(&w.clip)).collect();
         // Clips on screen with no stream yet: opened late, if playing.
         let late: Vec<ClipId> = if playing { wants.iter().filter(|w| !self.streams.has(w.clip)).map(|w| w.clip).collect() } else { Vec::new() };
         // Each coming clip as early as its own seek needs (#2108): one
@@ -953,113 +937,6 @@ impl PlaybackEngine {
 
     /// `render_timeline`'s GPU twin: display bytes straight off the GPU
     /// stack, or `None` when the stack cannot take this frame.
-    /// The frozen tracks' layers at `time`, by track index (#3207): each
-    /// frozen track's frame stored under its current key at this size, read
-    /// from the freeze folder. A track whose frame isn't stored, is stale or
-    /// stays live is left out, and is drawn live.
-    pub(super) fn frozen_layers_at(&mut self, seq: &Sequence, time: klipp_core::Timecode, width: u32, height: u32) -> HashMap<usize, Arc<klipp_compose::freeze::FrozenLayer>> {
-        self.freeze_size = Some((width, height));
-        let Some(folder) = self.freeze_folder.clone() else { return HashMap::new() };
-        let places = self.frozen_frames_at(seq, time, (width, height));
-        if places.is_empty() {
-            return HashMap::new();
-        }
-        let reader = self.frozen_reader.get_or_insert_with(crate::freeze::FrozenReader::new);
-        let laid: HashMap<usize, Arc<klipp_compose::freeze::FrozenLayer>> = places.into_iter().filter_map(|(index, ns, at)| reader.take(&folder, &ns, at).map(|layer| (index, layer))).collect();
-        super::FROZEN_LAYERS_LAID.fetch_add(laid.len() as u64, std::sync::atomic::Ordering::Relaxed);
-        // Playing, the next frames are read ahead, off this thread.
-        if self.state == PlaybackState::Playing {
-            let step = (i64::from(time.rate) * i64::from(seq.fps.den)).checked_div(i64::from(seq.fps.num)).unwrap_or(1).max(1);
-            for k in 1..=FROZEN_READ_AHEAD {
-                let next = klipp_core::RationalTime { value: time.value + step * k, rate: time.rate };
-                let ahead = self.frozen_frames_at(seq, next, (width, height));
-                if let Some(reader) = &self.frozen_reader {
-                    for (_, ns, at) in ahead {
-                        reader.ask(&folder, &ns, at);
-                    }
-                }
-            }
-        }
-        laid
-    }
-
-    /// Where each frozen track's frame at `time` would be stored at `size`,
-    /// under its current key: (track index, namespace, place). A track
-    /// whose frame stays live there is left out.
-    fn frozen_frames_at(&mut self, seq: &Sequence, time: klipp_core::Timecode, size: (u32, u32)) -> Vec<(usize, String, crate::cache_store::FrameAt)> {
-        if self.freeze_folder.is_none() || self.frozen_tracks.is_empty() || !seq.tracks.iter().any(|t| self.frozen_tracks.contains(&t.id)) {
-            return Vec::new();
-        }
-        let media = match &self.freeze_media {
-            Some(m) => Arc::clone(m),
-            None => {
-                let m = Arc::new(crate::freeze::media_identities(&self.media_pool.read().unwrap_or_else(|e| e.into_inner())));
-                self.freeze_media = Some(Arc::clone(&m));
-                m
-            }
-        };
-        let lookup = |id: &str| media.get(id).copied();
-        let env = klipp_compose::freeze::FreezeEnv {
-            sequences: &[],
-            media: &lookup,
-            plugin: &crate::freeze::plugin_identity,
-            environment: crate::freeze::environment(crate::video_decoder::working_colorspace(), self.use_proxies),
-        };
-        seq.tracks
-            .iter()
-            .enumerate()
-            .filter(|(_, t)| self.frozen_tracks.contains(&t.id))
-            .filter_map(|(index, track)| {
-                let key = klipp_compose::freeze::slot_key(seq, index, time, &env)?;
-                Some((index, crate::freeze::namespace(track.id), crate::cache_store::FrameAt { tick: time.value, key, size }))
-            })
-            .collect()
-    }
-
-    /// The clips frozen tracks lay from stored frames at `time`, and those
-    /// coming up whose first frame is stored (#3207): not decoded. Looked
-    /// for at the size the viewer last drew. A frame not stored, stale or
-    /// live is drawn live, and its clips are decoded as any track's.
-    fn frozen_clips(&mut self, seq: &Sequence, time: klipp_core::Timecode) -> std::collections::HashSet<ClipId> {
-        let mut out = std::collections::HashSet::new();
-        let (Some(folder), Some(size)) = (self.freeze_folder.clone(), self.freeze_size) else { return out };
-        let stored = |ns: &str, at: crate::cache_store::FrameAt| crate::cache_store::is_stored(&folder, ns, at);
-        // A clip and everything a precomposition on it lays.
-        fn with_inner(c: &Clip, out: &mut std::collections::HashSet<ClipId>) {
-            out.insert(c.id);
-            if let Some(scene) = &c.precomp {
-                for inner in scene.all_clips() {
-                    with_inner(inner, out);
-                }
-            }
-        }
-        for (index, ns, at) in self.frozen_frames_at(seq, time, size) {
-            if stored(&ns, at) {
-                if let Some((_, c)) = seq.tracks[index].clip_at_timecode(time) {
-                    with_inner(c, &mut out);
-                }
-            }
-        }
-        // Clips coming up on a frozen track, by their first frame.
-        let starts: Vec<(usize, klipp_core::Timecode)> = seq
-            .tracks
-            .iter()
-            .enumerate()
-            .filter(|(_, t)| self.frozen_tracks.contains(&t.id))
-            .flat_map(|(i, t)| t.clips.iter().filter(|c| c.timeline_in > time && (c.timeline_in - time).to_secs_f64() <= super::seek_lead::MAX_LEAD_SECS).map(move |c| (i, c.timeline_in)))
-            .collect();
-        for (index, at_start) in starts {
-            for (i, ns, at) in self.frozen_frames_at(seq, at_start, size) {
-                if i == index && stored(&ns, at) {
-                    if let Some((_, c)) = seq.tracks[index].clip_at_timecode(at_start) {
-                        with_inner(c, &mut out);
-                    }
-                }
-            }
-        }
-        out
-    }
-
     fn render_composite_on_gpu(
         &mut self,
         seq: &Sequence,
@@ -1074,9 +951,6 @@ impl PlaybackEngine {
         self.push_global_lut();
         self.scope_held_outputs(primary.map(|(id, _)| id));
         let time = self.playhead;
-        // Frozen tracks laid from their frames where those are current (#3207).
-        let frozen = self.frozen_layers_at(seq, time, width, height);
-        self.renderer.set_frozen_layers(frozen);
         let previous = self.previous_primary.take();
         let mut src = ViewerSource {
             primary,
@@ -1132,9 +1006,6 @@ impl PlaybackEngine {
         let (w, h) = if downsample { (width / 2, height / 2) } else { (width, height) };
         self.scope_held_outputs(primary.map(|(id, _)| id));
         let time = self.playhead;
-        // Frozen tracks laid from their frames where those are current (#3207).
-        let frozen = self.frozen_layers_at(seq, time, w, h);
-        self.renderer.set_frozen_layers(frozen);
         let previous = self.previous_primary.take();
         let mut src = ViewerSource {
             primary,
@@ -1203,6 +1074,17 @@ impl PlaybackEngine {
         tracing::debug!("the GPU stack's empty frame drawn ahead at {w}x{h} in {:.1} ms (drawn {})", t.elapsed().as_secs_f64() * 1000.0, drawn.is_some());
     }
 
+    /// The frame drawn without the preview that is up (#3210), the GPU
+    /// stack having declined it: a preview is drawn on the stack or not
+    /// at all, and the browser says it couldn't be.
+    fn present_without_preview(&mut self, primary: Option<HeldFrame>, stack_only: bool) -> bool {
+        self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner()).preview_skipped = true;
+        self.preview_declined = true;
+        let shown = self.present_frame_with(primary, stack_only);
+        self.preview_declined = false;
+        shown
+    }
+
     /// Render the timeline at the playhead and show it. `primary` is the
     /// primary decoder's frame (live or from the pre-grade cache), `None`
     /// when no media clip is under the primary decoder.
@@ -1239,7 +1121,13 @@ impl PlaybackEngine {
         }
         self.frame_phases.sync_ms = ms(t_frame);
         let t = Instant::now();
-        let (snapshot, revision) = self.sequence.snapshot_with_revision();
+        let (snapshot, revision, preview) = self.sequence.view_with_revision();
+        // An entry hovered in a browser (#3210): its sequence drawn in
+        // place of the document's, on the GPU stack only, and kept out of
+        // the caches and the fast paths, which know only the document's.
+        let preview = preview.filter(|_| !self.preview_declined);
+        let previewing = preview.is_some();
+        let snapshot = preview.unwrap_or(snapshot);
         self.frame_phases.snapshot_ms = ms(t);
         let primary_clip = primary.as_ref().and(self.v1_clip_id(&snapshot));
         // A still's one frame, shown wherever it is first (a parked seek
@@ -1298,7 +1186,7 @@ impl PlaybackEngine {
                 ((pw, ph) == (w, h)).then_some(published);
         }
 
-        let cache_key = if progress || stack_only || self.measure_only_clip.is_some() { None } else { self.render_cache_key(&seq, primary_clip, (w, h)) };
+        let cache_key = if progress || stack_only || previewing || self.measure_only_clip.is_some() { None } else { self.render_cache_key(&seq, primary_clip, (w, h)) };
         if let Some(key) = &cache_key {
             // The cached frame is 8-bit, so the display transform over it is
             // a table: no expansion to float on the way to the same bytes.
@@ -1349,7 +1237,7 @@ impl PlaybackEngine {
         // present, for the same bytes. Everything the blockers name —
         // a grade, an effect, a LUT, a tone map, a scope tap, node
         // thumbnails — still takes the full path.
-        if let Some(p) = primary.as_ref().filter(|_| !stack_only && self.measure_only_clip.is_none()) {
+        if let Some(p) = primary.as_ref().filter(|_| !stack_only && !previewing && self.measure_only_clip.is_none()) {
             let mut blockers = self.fast_path_blockers_for(super::FastPath::PausedPresent);
             blockers.extend(self.picture_shape_blocker((p.width, p.height)));
             if !blockers.is_empty() {
@@ -1376,7 +1264,7 @@ impl PlaybackEngine {
             }
         }
 
-        let inspect = self.inspect_request(&seq, primary_clip, solo_cut);
+        let inspect = if previewing { Default::default() } else { self.inspect_request(&seq, primary_clip, solo_cut) };
         let inspected = inspect.clip;
         let primary_ref = primary_clip.zip(primary.as_ref());
 
@@ -1430,12 +1318,18 @@ impl PlaybackEngine {
                 if !declines.is_empty() {
                     self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner()).set_declines(declines);
                 }
+                self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner()).preview_skipped = false;
                 return true;
+            }
+            if previewing {
+                return self.present_without_preview(primary, stack_only);
             }
             if stack_only {
                 return false;
             }
             self.note_composite_path("CPU (the stack declined, see the renderer's reason)");
+        } else if previewing {
+            return self.present_without_preview(primary, stack_only);
         } else if stack_only {
             return false;
         } else if !progress {

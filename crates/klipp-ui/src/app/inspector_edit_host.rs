@@ -921,7 +921,7 @@ impl InspectorEditHost<'_> {
     }
 }
 
-fn is_ramp(effect: &klipp_effects::BuiltinEffect) -> bool {
+pub(super) fn is_ramp(effect: &klipp_effects::BuiltinEffect) -> bool {
     matches!(effect, klipp_effects::BuiltinEffect::SpeedRamp { .. })
 }
 
