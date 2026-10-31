@@ -3405,7 +3405,7 @@ impl TimelinePanel {
                                     // by path on every target as one step,
                                     // or refused whole with the reason (M3
                                     // step 19).
-                                    let effects = state.effect_registry.effects.iter().find(|e| e.name == name).and_then(|e| crate::browser::effects_tab::picture_effects(&e.source)).unwrap_or_default();
+                                    let effects = state.effect_registry.effects.iter().find(|e| e.name == name).and_then(|e| crate::browser::effects_tab::starting_effects(state, &e.source)).unwrap_or_default();
                                     if !effects.is_empty() {
                                         let adds = crate::effect_targets::all_or_none(&targets, |clip_id| {
                                             let clip = state.sequence().tracks.iter().flat_map(|t| &t.clips).find(|c| c.id == clip_id).ok_or("the clip isn't in the sequence")?;

@@ -12,7 +12,7 @@
 //!   reset is 0.5.
 
 use super::{
-    listed, BrowserCategory,
+    listed, starting, BrowserCategory,
     mixable,
     Alpha, Category, ColourDomain, EffectType, NodeTypeDesc, ParamDesc, ParamKind, Scaling, Spatial, Temporal, Unit,
     IMAGE_IN, IMAGE_OUT,
@@ -209,7 +209,7 @@ pub(super) static TYPES: &[EffectType] = &[
             Spatial::PerPixel,
         )),
         tag: "vibrance",
-        browser: listed(BrowserCategory::Colour, "Colour", "More colour in the muted tones, leaving saturated ones alone"),
+        browser: starting(BrowserCategory::Colour, "Colour", "More colour in the muted tones, leaving saturated ones alone", || BuiltinEffect::Vibrance { amount: 0.5 }),
         sample: || BuiltinEffect::Vibrance { amount: 0.0 },
     },
     // The picture's brightness along a ramp of three colours (#2758),

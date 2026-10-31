@@ -231,7 +231,7 @@ pub(super) static TYPES: &[EffectType] = &[
             true,
         ),
         tag: "outer_glow",
-        browser: listed(BrowserCategory::Light, "Light", "Light spilling out from the edge of the layer onto what is behind it"),
+        browser: starting(BrowserCategory::Light, "Light", "Light spilling out from the edge of the layer onto what is behind it", || BuiltinEffect::OuterGlow { radius: 0.04, intensity: 0.6, color: [255, 255, 255] }),
         sample: || BuiltinEffect::OuterGlow { radius: 0.0, intensity: 0.0, color: [255, 255, 255] },
     },
     EffectType {
@@ -316,7 +316,7 @@ pub(super) static TYPES: &[EffectType] = &[
             true,
         ),
         tag: "drop_shadow",
-        browser: listed(BrowserCategory::Light, "Light", "A shadow cast by the layer onto what is behind it"),
+        browser: starting(BrowserCategory::Light, "Light", "A shadow cast by the layer onto what is behind it", || BuiltinEffect::DropShadow { offset_x: 0.01, offset_y: 0.015, blur: 0.01, color: [0, 0, 0], opacity: 0.6 }),
         sample: || BuiltinEffect::DropShadow { offset_x: 0.0, offset_y: 0.0, blur: 0.0, color: [0, 0, 0], opacity: 0.0 },
     },
 ];

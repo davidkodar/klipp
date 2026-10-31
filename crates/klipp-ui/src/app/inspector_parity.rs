@@ -71,7 +71,7 @@ fn a_browser_add_puts_its_effects_after_the_stack() {
             Ok(cmds) => cmds.into_iter().for_each(|cmd| run.apply(cmd)),
             Err(why) => differ.push(format!("{}: refused ({why})", entry.name)),
         }
-        let want: Vec<BuiltinEffect> = std::iter::once(base).chain(crate::browser::effects_tab::picture_effects(&entry.source).unwrap_or_default()).collect();
+        let want: Vec<BuiltinEffect> = std::iter::once(base).chain(crate::browser::effects_tab::starting_effects(&run.state, &entry.source).unwrap_or_default()).collect();
         let list = |effects: &[BuiltinEffect]| serde_json::to_value(effects).unwrap();
         if list(&test_clip::effects(run.clip())) != list(&want) {
             differ.push(format!("{}: {} where {} is expected", entry.name, list(&test_clip::effects(run.clip())), list(&want)));

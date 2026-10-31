@@ -14,7 +14,7 @@
 //! and offers 0.1..3, and the compositor substitutes one when tilted.
 
 use super::{
-    hidden, listed, BrowserCategory,
+    hidden, listed, starting, BrowserCategory,
     Alpha, Category, ColourDomain, EffectType, NodeTypeDesc, ParamDesc, ParamKind, Scaling,
     Spatial, Temporal, Unit, IMAGE_IN, IMAGE_OUT, SEED_RANGE, TIME_RANGE,
 };
@@ -234,7 +234,9 @@ pub(super) static TYPES: &[EffectType] = &[
             false,
         ),
         tag: "lens_distortion",
-        browser: listed(BrowserCategory::Distort, "Distort", "Bends the picture as a wide or long lens does, barrel or pincushion"),
+        // A wide lens's barrel to start; at its reset, 0, the picture was
+        // unchanged (#3243).
+        browser: starting(BrowserCategory::Distort, "Distort", "Bends the picture as a wide or long lens does, barrel or pincushion", || BuiltinEffect::LensDistortion { distortion: -0.2, scale: 1.0 }),
         sample: || BuiltinEffect::LensDistortion {
             distortion: 0.0,
             scale: 1.0,

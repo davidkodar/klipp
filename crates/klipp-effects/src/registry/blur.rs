@@ -18,7 +18,7 @@
 //!   title layer from its roll's focus band, so it has no slider ranges.
 
 use super::{
-    hidden, listed, BrowserCategory,
+    hidden, listed, starting, BrowserCategory,
     mixable,
     Alpha, Category, ColourDomain, EffectType, NodeTypeDesc, ParamDesc, ParamKind, Scaling, Spatial, Temporal, Unit, IMAGE_IN,
     IMAGE_OUT,
@@ -83,7 +83,10 @@ pub(super) static TYPES: &[EffectType] = &[
             &[ParamDesc::float("radius", "Radius", 0.0, (0.0, 100.0), Unit::CanvasPx)],
         )),
         tag: "gaussian_blur",
-        browser: listed(BrowserCategory::Blur, "Blur", "Softens the whole picture evenly"),
+        // A blur that reads as one at 1080p; added from the browser at the
+        // sequence's height over 1080 (#3243). At its reset, 0, the
+        // picture was unchanged.
+        browser: starting(BrowserCategory::Blur, "Blur", "Softens the whole picture evenly", || BuiltinEffect::GaussianBlur { radius: 12.0 }),
         sample: || BuiltinEffect::GaussianBlur { radius: 0.0 },
     },
     EffectType {
@@ -116,7 +119,7 @@ pub(super) static TYPES: &[EffectType] = &[
     EffectType {
         desc: mixable(blur("klipp.fx.sharpen", "Sharpen", &[ParamDesc::float("amount", "Amount", 0.0, (0.0, 2.0), Unit::Ratio)])),
         tag: "sharpen",
-        browser: listed(BrowserCategory::Blur, "Blur", "Brings out edges and fine detail"),
+        browser: starting(BrowserCategory::Blur, "Blur", "Brings out edges and fine detail", || BuiltinEffect::Sharpen { amount: 0.6 }),
         sample: || BuiltinEffect::Sharpen { amount: 0.0 },
     },
     EffectType {
