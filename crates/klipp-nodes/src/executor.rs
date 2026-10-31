@@ -439,6 +439,8 @@ pub struct GraphExecutor {
     /// A frame-blend node's frames, read once for the node this run
     /// (#2854): what its chain dispatch binds.
     run_blend: Option<RunBlend>,
+    /// Neighbours decoded for blends and denoises, kept (#3174).
+    decoded_neighbours: DecodedNeighbours,
     /// Side pictures the renderer handed over on the GPU for the next run
     /// (#2758): what is below a clip on the stack. Its pool slots are
     /// given back with the run's.
@@ -959,6 +961,7 @@ impl GraphExecutor {
             run_denoise_on_chain: 0,
             last_denoise_on_chain: 0,
             run_blend: None,
+            decoded_neighbours: DecodedNeighbours::default(),
             gpu_side_pictures: HashMap::new(),
             blend_chain_allowed: true,
             run_blend_on_chain: 0,
@@ -1106,6 +1109,7 @@ impl GraphExecutor {
             run_denoise_on_chain: 0,
             last_denoise_on_chain: 0,
             run_blend: None,
+            decoded_neighbours: DecodedNeighbours::default(),
             gpu_side_pictures: HashMap::new(),
             blend_chain_allowed: true,
             run_blend_on_chain: 0,
@@ -4258,6 +4262,41 @@ enum HeldNeighbour {
     Uploaded(Arc<wgpu::Buffer>),
 }
 
+/// Neighbour frames decoded to linear at the chain's size, by the frame
+/// each was decoded from (#3174): a blend at a slow speed reads one pair
+/// for many frames, and decoded it again for each, a frame's worth of GPU
+/// memory every time. The source frame is held with it, so its buffer is
+/// never handed out again for other pixels while it is kept.
+type DecodedNeighbours = Decoded<dyn crate::frame_context::GpuFramePixels, Arc<wgpu::Buffer>>;
+
+/// What was made from each of the last few `K`s, by the `K` (the same one,
+/// not an equal one) and a size, the `K` held with it.
+struct Decoded<K: ?Sized, B>(Vec<(Arc<K>, (u32, u32), B)>);
+
+impl<K: ?Sized, B> Default for Decoded<K, B> {
+    fn default() -> Self {
+        Self(Vec::new())
+    }
+}
+
+impl<K: ?Sized, B: Clone> Decoded<K, B> {
+    /// A blend's two and a denoise's two.
+    const KEPT: usize = 4;
+
+    /// `from` made at `size`: the one kept, else `make`'s, kept.
+    fn get_or(&mut self, from: &Arc<K>, size: (u32, u32), make: impl FnOnce() -> Option<B>) -> Option<B> {
+        if let Some((_, _, b)) = self.0.iter().find(|(f, s, _)| std::ptr::addr_eq(Arc::as_ptr(f), Arc::as_ptr(from)) && *s == size) {
+            return Some(b.clone());
+        }
+        let b = make()?;
+        self.0.push((Arc::clone(from), size, b.clone()));
+        if self.0.len() > Self::KEPT {
+            self.0.remove(0);
+        }
+        Some(b)
+    }
+}
+
 impl HeldNeighbour {
     fn buffer(&self) -> &wgpu::Buffer {
         match self {
@@ -4844,12 +4883,13 @@ impl GraphExecutor {
     /// when a neighbour won't go up or the draw fails.
     fn denoise_off_chain(&mut self, input: &[f32], neighbours: &[NeighbourPixels], width: u32, height: u32, threshold: f32, strength: f32) -> Option<(Vec<f32>, Arc<wgpu::Buffer>)> {
         let luma = klipp_color::linear::luma_coefs(self.working_colorspace);
+        let decoded = &mut self.decoded_neighbours;
         let gpu = self.gpu.as_mut()?;
         let pixels = (width as usize) * (height as usize) * 4;
         let mut held: Vec<HeldNeighbour> = Vec::with_capacity(neighbours.len());
         for n in neighbours {
             held.push(match n {
-                NeighbourPixels::Gpu(g) if g.srgb8() => HeldNeighbour::Uploaded(gpu.neighbour_from_u8(g.buffer(), width, height)?),
+                NeighbourPixels::Gpu(g) if g.srgb8() => HeldNeighbour::Uploaded(decoded.get_or(g, (width, height), || gpu.neighbour_from_u8(g.buffer(), width, height))?),
                 NeighbourPixels::Gpu(g) => HeldNeighbour::Source(Arc::clone(g)),
                 NeighbourPixels::Cpu(p) if p.len() == pixels => HeldNeighbour::Uploaded(gpu.upload_neighbour(p)?),
                 NeighbourPixels::Cpu(_) => return None,
@@ -4868,6 +4908,7 @@ impl GraphExecutor {
     fn denoise_chain(&mut self, node_id: NodeId, params: &NodeParams, width: u32, height: u32, in_is_a: bool) -> Option<u32> {
         let read = self.run_denoise.as_ref().filter(|r| r.node == node_id)?;
         let pixels = (width as usize) * (height as usize) * 4;
+        let decoded = &mut self.decoded_neighbours;
         let gpu = self.gpu.as_ref()?;
         // Each neighbour as a buffer: one on the GPU already as it is, one
         // on the CPU uploaded to a buffer of its own. Both held until the
@@ -4877,7 +4918,7 @@ impl GraphExecutor {
             held.push(match n {
                 // sRGB bytes on the GPU (a viewer stream's frame): decoded
                 // to linear there, into a buffer of its own.
-                NeighbourPixels::Gpu(g) if g.srgb8() => HeldNeighbour::Uploaded(gpu.neighbour_from_u8(g.buffer(), width, height)?),
+                NeighbourPixels::Gpu(g) if g.srgb8() => HeldNeighbour::Uploaded(decoded.get_or(g, (width, height), || gpu.neighbour_from_u8(g.buffer(), width, height))?),
                 NeighbourPixels::Gpu(g) => HeldNeighbour::Source(Arc::clone(g)),
                 NeighbourPixels::Cpu(p) if p.len() == pixels => {
                     self.run_neighbour_uploads += 1;
@@ -5864,15 +5905,17 @@ impl GraphExecutor {
     fn blend_chain(&mut self, node_id: NodeId, width: u32, height: u32, in_is_a: bool) -> Option<u32> {
         let read = self.run_blend.take().filter(|r| r.node == node_id)?;
         let pixels = (width as usize) * (height as usize) * 4;
+        let decoded = &mut self.decoded_neighbours;
         let gpu = self.gpu.as_ref()?;
         let mut uploads = 0u32;
         let mut held = |n: &NeighbourPixels| -> Option<HeldNeighbour> {
             Some(match n {
                 // Fitted to the render where the stream decoded it smaller,
-                // as the frame shown is.
+                // as the frame shown is; once a source frame, however many
+                // frames the blend reads it for.
                 NeighbourPixels::Gpu(g) if g.srgb8() => {
                     let (sw, sh) = g.source_size().unwrap_or((width, height));
-                    HeldNeighbour::Uploaded(gpu.neighbour_fit_from_u8(g.buffer(), sw, sh, width, height)?)
+                    HeldNeighbour::Uploaded(decoded.get_or(g, (width, height), || gpu.neighbour_fit_from_u8(g.buffer(), sw, sh, width, height))?)
                 }
                 NeighbourPixels::Gpu(g) => HeldNeighbour::Source(Arc::clone(g)),
                 NeighbourPixels::Cpu(p) if p.len() == pixels => {
@@ -7865,6 +7908,27 @@ impl Drop for GraphExecutor {
 
 #[cfg(test)]
 mod tests {
+    /// #3174: a neighbour is made once for its source frame and size, and
+    /// handed again while kept: the same frame, not one equal to it; at
+    /// another size made again; the oldest let go past four.
+    #[test]
+    fn a_neighbour_is_decoded_once_for_its_frame() {
+        let mut kept: Decoded<str, u32> = Decoded::default();
+        let (a, also_a) = (Arc::<str>::from("frame"), Arc::<str>::from("frame"));
+        let mut made = 0;
+        let mut get = |k: &mut Decoded<str, u32>, f: &Arc<str>, size| k.get_or(f, size, || { made += 1; Some(made) });
+        assert_eq!(get(&mut kept, &a, (8, 8)), Some(1));
+        assert_eq!(get(&mut kept, &a, (8, 8)), Some(1), "kept");
+        assert_eq!(get(&mut kept, &also_a, (8, 8)), Some(2), "an equal frame is another frame");
+        assert_eq!(get(&mut kept, &a, (4, 4)), Some(3), "another size");
+        for n in 0..4 {
+            get(&mut kept, &Arc::from(format!("other {n}")), (8, 8));
+        }
+        assert_eq!(get(&mut kept, &a, (8, 8)), Some(8), "let go past four");
+        assert!(kept.get_or(&Arc::from("none"), (8, 8), || None).is_none(), "nothing made is nothing kept");
+        assert_eq!(kept.0.len(), 4);
+    }
+
     use super::*;
 
     /// Whole-pixel settings keep their full-size meaning: what rounded to

@@ -292,12 +292,19 @@ fn at_a_tenth_reversed_by_flow_the_frames_stay_on_the_gpu() {
     let video = pan_source().expect("ffmpeg made the panning source");
     let flow = klipp_timeline::test_clip::TestClip::of(clip_at(MediaId::new(), -0.1, 0.0, 80.0)).effect(klipp_effects::BuiltinEffect::SpeedRamp { speed: 1.0, blend_mode: 2 }).build();
     let r = start(&video, vec![flow]);
+    let decodes = || klipp_effects::gpu_memory::snapshot().made.into_iter().find(|(n, _, _)| *n == "neighbour").map_or(0, |(_, _, n)| n);
+    let decodes_before = decodes();
     let (shown, made, fell) = play(&r, 2.0, 5.0);
+    let decoded = decodes() - decodes_before;
     stop(r);
     let presented = presented_fps(&shown, 2.0);
     let by_feature = klipp_effects::residency::snapshot().by_feature;
-    eprintln!("−0.1 reversed by flow: {presented:.1} presents a second, {made} source frames in the last 4 s; fallbacks and readbacks {fell:?}; by feature {by_feature:?}");
+    eprintln!("−0.1 reversed by flow: {presented:.1} presents a second, {made} source frames in the last 4 s, {decoded} neighbour decodes for {} frames shown; fallbacks and readbacks {fell:?}; by feature {by_feature:?}", shown.len());
     assert!(presented >= FLOW_MIN_PRESENTS, "flow at a tenth presents {presented:.1} frames a second");
+    // A neighbour is decoded once a source frame, not once a frame shown
+    // (#3174): at a tenth that is about one for every ten, where it was
+    // more than one a frame, each a frame's worth of GPU memory.
+    assert!((decoded as f64) < 0.25 * shown.len() as f64, "{decoded} neighbour decodes for {} frames shown", shown.len());
     assert_eq!(fell, (0, 0, 0), "no picture fallbacks, engine readbacks or effect downloads while it played (picture, engine, effects)");
 }
 

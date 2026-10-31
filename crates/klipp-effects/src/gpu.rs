@@ -563,6 +563,11 @@ pub struct GpuEffectsPipeline {
     stack_buf_size: u64,
     /// What its caches hold, in the GPU memory report (#3174).
     memory_gauges: MemoryGauges,
+    /// Neighbour frames decoded to linear for a blend or a denoise, kept
+    /// for reuse (#3174): at the chain's size each is a frame's worth.
+    neighbour_pool: std::sync::Mutex<crate::nv12_gpu::ResidentPool>,
+    /// Neighbour decodes submitted and not yet done on the GPU (#3174).
+    neighbours_in_flight: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     /// Whether anything has been blended into the accumulator yet.
     stack_acc_touched: bool,
     stack_dims: (u32, u32),
