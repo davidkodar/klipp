@@ -111,6 +111,11 @@ build() {
     export CFLAGS='-O2 -march=armv8-a'
     export CXXFLAGS="$CFLAGS"
     export GGML_NATIVE=OFF
+  elif [[ $pkgname == klipp-git && $RUSTFLAGS != *fuse-ld=* ]]; then
+    # makepkg's rust.conf sets RUSTFLAGS, and those replace the Cargo
+    # config's flags, lld with them: GNU ld ran a 16 GB Mac mini out of
+    # memory. Keep makepkg's flags and add lld; no CPU of this machine's.
+    export RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-C link-arg=-fuse-ld=lld"
   fi
   # Lay out the Vulkan SDK directory the speech model's build expects.
   ./scripts/vulkan-sdk.sh
