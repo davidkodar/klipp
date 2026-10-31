@@ -21,6 +21,15 @@ use klipp_timeline::Sequence;
 
 use crate::cache_store::{CacheStore, FrameAt, PutRefused};
 
+/// The render environment a frozen frame's key takes (#3207): the
+/// working space and whether proxies are drawn. The freeze and playback
+/// both key by it, so a frame frozen in one space is never laid in another.
+pub fn environment(working: klipp_core::WorkingColorspace, use_proxies: bool) -> u64 {
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    (format!("{working:?}"), use_proxies).hash(&mut h);
+    h.finish()
+}
+
 /// A frozen track's namespace in the cache store.
 pub fn namespace(track: TrackId) -> String {
     format!("freeze/{}", track)
@@ -61,6 +70,58 @@ pub fn plugin_identity(id: &str) -> Option<u64> {
         id.hash(&mut h);
     }
     Some(h.finish())
+}
+
+/// Frozen frames read ahead of playback (#3207): a thread reads and
+/// decompresses the frames the engine asks for next, so the frame being
+/// drawn finds its frozen layers read. Holds the last few it read.
+pub struct FrozenReader {
+    ask: std::sync::mpsc::Sender<(std::path::PathBuf, String, FrameAt)>,
+    ready: Arc<Mutex<std::collections::VecDeque<((String, FrameAt), Arc<klipp_compose::freeze::FrozenLayer>)>>>,
+}
+
+/// Frames a [`FrozenReader`] keeps: a few frames ahead of each frozen track.
+const READ_AHEAD_KEPT: usize = 24;
+
+impl FrozenReader {
+    pub fn new() -> Self {
+        let (ask, asked) = std::sync::mpsc::channel::<(std::path::PathBuf, String, FrameAt)>();
+        let ready: Arc<Mutex<std::collections::VecDeque<((String, FrameAt), Arc<klipp_compose::freeze::FrozenLayer>)>>> = Arc::default();
+        let held = Arc::clone(&ready);
+        let _ = std::thread::Builder::new().name("klipp-frozen-read".into()).spawn(move || {
+            while let Ok((folder, ns, at)) = asked.recv() {
+                let have = held.lock().unwrap_or_else(|e| e.into_inner()).iter().any(|((n, a), _)| *n == ns && *a == at);
+                if have {
+                    continue;
+                }
+                if let Some(packed) = crate::cache_store::read_stored_packed(&folder, &ns, at) {
+                    let mut held = held.lock().unwrap_or_else(|e| e.into_inner());
+                    held.push_back(((ns, at), Arc::new(klipp_compose::freeze::FrozenLayer::from_packed(packed))));
+                    while held.len() > READ_AHEAD_KEPT {
+                        held.pop_front();
+                    }
+                }
+            }
+        });
+        FrozenReader { ask, ready }
+    }
+
+    /// Read `namespace`'s frame `at` ahead.
+    pub fn ask(&self, folder: &std::path::Path, namespace: &str, at: FrameAt) {
+        let _ = self.ask.send((folder.to_path_buf(), namespace.to_owned(), at));
+    }
+
+    /// `namespace`'s frame `at`: read ahead, or read now.
+    pub fn take(&self, folder: &std::path::Path, namespace: &str, at: FrameAt) -> Option<Arc<klipp_compose::freeze::FrozenLayer>> {
+        let found = self.ready.lock().unwrap_or_else(|e| e.into_inner()).iter().find(|((n, a), _)| n == namespace && *a == at).map(|(_, l)| Arc::clone(l));
+        found.or_else(|| crate::cache_store::read_stored_packed(folder, namespace, at).map(|p| Arc::new(klipp_compose::freeze::FrozenLayer::from_packed(p))))
+    }
+}
+
+impl Default for FrozenReader {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 /// What freezing a range reads: the sequence as the renderer draws it, the
@@ -143,7 +204,7 @@ impl FreezeRequest {
         match store.lock().unwrap_or_else(|e| e.into_inner()).put(&ns, place, &layer) {
             Ok(()) => FrameOutcome::Stored,
             Err(PutRefused::Full) => FrameOutcome::Full,
-            Err(PutRefused::Io(why)) => FrameOutcome::Failed(why),
+            Err(why @ (PutRefused::Io(_) | PutRefused::Namespace(_))) => FrameOutcome::Failed(why.to_string()),
         }
     }
 }
@@ -151,11 +212,14 @@ impl FreezeRequest {
 /// Freeze `req`'s frames in a background job: a frame at a time, waiting
 /// between frames while the scheduler has the job paused (the person
 /// playing, scrubbing or editing), stopping when cancelled with every
-/// stored frame whole. `src` gives the track's pictures; `done` hears the
-/// tally when it ends. The job's progress is the share of frames done.
-pub fn spawn_freeze(req: FreezeRequest, store: Arc<Mutex<CacheStore>>, mut src: Box<dyn FrameSource + Send>, done: impl FnOnce(FreezeTally) + Send + 'static) -> Arc<ThreadJob> {
+/// stored frame whole. `source` makes, on the job's thread, what gives the
+/// track's pictures (a decoder's state stays on the thread that made it);
+/// `done` hears the tally when it ends. The job's progress is the share of
+/// frames done.
+pub fn spawn_freeze<S: FrameSource + 'static>(req: FreezeRequest, store: Arc<Mutex<CacheStore>>, source: impl FnOnce() -> S + Send + 'static, done: impl FnOnce(FreezeTally) + Send + 'static) -> Arc<ThreadJob> {
     let name = format!("Freeze track {}", req.track + 1);
     ThreadJob::spawn(name, JobPriority::Background, ResourceClass::GpuMixed, move |pause, progress| {
+        let mut src = source();
         let mut renderer = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
         renderer.set_gpu_enabled(true);
         renderer.set_working_colorspace(req.working);
@@ -167,7 +231,7 @@ pub fn spawn_freeze(req: FreezeRequest, store: Arc<Mutex<CacheStore>>, mut src: 
                 tally.cancelled = true;
                 break;
             }
-            match req.freeze_frame(&mut renderer, &store, *at, src.as_mut(), &mut tally.on_cpu) {
+            match req.freeze_frame(&mut renderer, &store, *at, &mut src, &mut tally.on_cpu) {
                 FrameOutcome::Stored => tally.stored += 1,
                 FrameOutcome::Current => tally.current += 1,
                 FrameOutcome::Live(_) => tally.live += 1,
@@ -240,7 +304,7 @@ mod tests {
 
     fn run(req: FreezeRequest, store: &Arc<Mutex<CacheStore>>) -> FreezeTally {
         let (tx, rx) = std::sync::mpsc::channel();
-        let job = spawn_freeze(req, Arc::clone(store), Box::new(Pictures), move |t| tx.send(t).unwrap());
+        let job = spawn_freeze(req, Arc::clone(store), || Pictures, move |t| tx.send(t).unwrap());
         job.join();
         rx.recv().unwrap()
     }
@@ -264,7 +328,7 @@ mod tests {
         let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
         r.set_gpu_enabled(false);
         let live = r.render(&flat, at, W, H, &mut Pictures, RenderOptions::default());
-        r.set_frozen_layers(HashMap::from([(0, Arc::new(layer))]));
+        r.set_frozen_layers(HashMap::from([(0, Arc::new(klipp_compose::freeze::FrozenLayer::from_linear(&layer)))]));
         let laid = r.render(&flat, at, W, H, &mut Pictures, RenderOptions::default());
         let code = |c: f32| (c.clamp(0.0, 1.0).powf(1.0 / 2.2) * 255.0).round() as i32;
         let worst = live.iter().zip(&laid).map(|(a, b)| (code(*a) - code(*b)).abs()).max().unwrap();
@@ -280,7 +344,7 @@ mod tests {
         let (s, d) = store("cancel");
         let flat = project();
         let (tx, rx) = std::sync::mpsc::channel();
-        let job = spawn_freeze(request_for(&flat, frames.clone()), Arc::clone(&s), Box::new(Pictures), move |t| tx.send(t).unwrap());
+        let job = spawn_freeze(request_for(&flat, frames.clone()), Arc::clone(&s), || Pictures, move |t| tx.send(t).unwrap());
         while job.progress() <= 0.0 && !job.is_done() {
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
@@ -307,7 +371,7 @@ mod tests {
         let (s, d) = store("pause");
         let flat = project();
         let (tx, rx) = std::sync::mpsc::channel();
-        let job = spawn_freeze(request_for(&flat, frames.clone()), Arc::clone(&s), Box::new(Pictures), move |t| tx.send(t).unwrap());
+        let job = spawn_freeze(request_for(&flat, frames.clone()), Arc::clone(&s), || Pictures, move |t| tx.send(t).unwrap());
         while job.progress() <= 0.0 {
             std::thread::sleep(std::time::Duration::from_millis(1));
         }

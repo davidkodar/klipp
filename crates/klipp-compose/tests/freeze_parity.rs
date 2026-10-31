@@ -9,6 +9,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use klipp_compose::freeze::FrozenLayer;
 use klipp_compose::{FrameSource, RenderOptions, Renderer, SourceFrame, SourcePixels};
 use klipp_core::{BlendMode, RationalTime, Timecode, TransitionAlignment, TransitionId, TransitionKind, WorkingColorspace};
 use klipp_effects::BuiltinEffect;
@@ -136,7 +137,7 @@ fn measure(name: &str, project: &[Sequence], frozen: usize, times: &[f64]) -> (i
         let layer = r.render_track_layer(&seq, frozen, tc(t), W, H, &mut Pictures).unwrap_or_else(|| panic!("{name} at {t}: a layer to freeze"));
         for (store, worst_so_far) in [(as_8bit(&layer), &mut w8), (as_f16(&layer), &mut w16)] {
             let mut r = renderer();
-            r.set_frozen_layers(HashMap::from([(frozen, Arc::new(store))]));
+            r.set_frozen_layers(HashMap::from([(frozen, Arc::new(FrozenLayer::from_linear(&store)))]));
             let laid = display(&r.render(&seq, tc(t), W, H, &mut Pictures, RenderOptions::default()));
             *worst_so_far = (*worst_so_far).max(worst(&live, &laid));
         }
@@ -251,9 +252,55 @@ fn the_gpu_stack_draws_the_layer_the_cpu_draws() {
             assert!(apart <= 1, "{name} at {t}: the GPU's layer {apart} levels from the CPU's");
             let mut r = renderer();
             let live = display(&r.render(&seq, tc(t), W, H, &mut Pictures, RenderOptions::default()));
-            r.set_frozen_layers(HashMap::from([(0, Arc::new(as_f16(&on_gpu)))]));
+            r.set_frozen_layers(HashMap::from([(0, Arc::new(FrozenLayer::from_linear(&on_gpu)))]));
             let laid = display(&r.render(&seq, tc(t), W, H, &mut Pictures, RenderOptions::default()));
             assert!(worst(&live, &laid) <= 1, "{name} at {t}: the GPU's frozen layer laid {} levels from live", worst(&live, &laid));
         }
     }
+}
+
+/// Laid on the GPU stack (the viewer's path while playing), a frozen layer
+/// draws the live frame within a level for every kind of content; and a
+/// frozen clip with what the stack can't draw (a frei0r plug-in) no longer
+/// sends the frame to the CPU: nothing of it is drawn.
+#[test]
+fn the_gpu_stack_lays_a_frozen_layer_as_the_live_track_draws() {
+    let gpu_renderer = || {
+        let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
+        r.set_gpu_enabled(true);
+        r.set_working_colorspace(WorkingColorspace::Rec709Linear);
+        r
+    };
+    let mut probe = gpu_renderer();
+    if probe.executor().gpu_pipeline_or_init().is_none() {
+        assert!(std::env::var_os("KLIPP_TEST_REQUIRE_GPU").is_none(), "GPU required");
+        eprintln!("UNVERIFIED: no GPU");
+        return;
+    }
+    for (name, mut project, times) in cases() {
+        project[0].tracks[0].opacity = 0.8;
+        let seq = klipp_timeline::flatten::flatten_sequence(&project[0], &project);
+        for t in times {
+            let mut live_r = gpu_renderer();
+            let (live, _) = live_r.render_display_u8_on_gpu(&seq, tc(t), W, H, &mut Pictures, RenderOptions::default()).unwrap_or_else(|| panic!("{name} at {t}: live declined: {:?}", live_r.last_decline()));
+            let layer = gpu_renderer().render_track_layer_on_gpu(&seq, 0, tc(t), W, H, &mut Pictures).expect("the frozen layer");
+            let mut r = gpu_renderer();
+            r.set_frozen_layers(HashMap::from([(0, Arc::new(FrozenLayer::from_linear(&layer)))]));
+            let (laid, _) = r.render_display_u8_on_gpu(&seq, tc(t), W, H, &mut Pictures, RenderOptions::default()).unwrap_or_else(|| panic!("{name} at {t}: frozen declined: {:?}", r.last_decline()));
+            let apart = worst(&live, &laid);
+            eprintln!("MEASURE {name} at {t}: frozen on the GPU stack vs live, worst {apart} levels");
+            assert!(apart <= 1, "{name} at {t}: {apart} levels");
+        }
+    }
+    // A frei0r plug-in the stack can't draw: live, the frame declines;
+    // frozen, the stack lays it.
+    let plugged = TestClip::of(media(0.0, 4.0)).effects(vec![BuiltinEffect::Frei0r { type_id: "frei0r:/nowhere/klipp3207.so:x".into(), params: Vec::new() }]).build();
+    let project = over_a_clip(plugged);
+    let seq = klipp_timeline::flatten::flatten_sequence(&project[0], &project);
+    let mut live = gpu_renderer();
+    assert!(live.render_display_u8_on_gpu(&seq, tc(0.5), W, H, &mut Pictures, RenderOptions::default()).is_none(), "live, the stack declines a frei0r plug-in");
+    let layer = renderer().render_track_layer(&seq, 0, tc(0.5), W, H, &mut Pictures).expect("drawn on the CPU");
+    let mut frozen = gpu_renderer();
+    frozen.set_frozen_layers(HashMap::from([(0, Arc::new(FrozenLayer::from_linear(&layer)))]));
+    assert!(frozen.render_display_u8_on_gpu(&seq, tc(0.5), W, H, &mut Pictures, RenderOptions::default()).is_some(), "frozen, the stack lays it: {:?}", frozen.last_decline());
 }

@@ -390,6 +390,8 @@ pub(super) struct EffectPipelines {
     alpha_form_pipeline: wgpu::ComputePipeline,
     sprite_rows_pipeline: wgpu::ComputePipeline,
     sprite_rows_f16_pipeline: wgpu::ComputePipeline,
+    /// A frozen track's layer, half floats in the working space (#3207).
+    frozen_from_f16_pipeline: wgpu::ComputePipeline,
     sprite_box_f16_pipeline: wgpu::ComputePipeline,
     matte_extract_pipeline: wgpu::ComputePipeline,
     mask_min_h_pipeline: wgpu::ComputePipeline,
@@ -2611,6 +2613,7 @@ pub fn shader_sources() -> Vec<(&'static str, &'static str)> {
         ("SHADER_HDR16_TO_LINEAR", shader_hdr16_to_linear()),
         ("SHADER_SCENE_TO_DISPLAY", shader_scene_to_display()),
         ("SHADER_SPRITE_ROWS_F16", SHADER_SPRITE_ROWS_F16),
+        ("SHADER_FROZEN_FROM_F16", SHADER_FROZEN_FROM_F16),
         ("SHADER_SPRITE_BOX_F16", SHADER_SPRITE_BOX_F16),
         ("SHADER_DIFFERENCE_KEY", SHADER_DIFFERENCE_KEY),
         ("SHADER_TEMPORAL_DENOISE", SHADER_TEMPORAL_DENOISE),

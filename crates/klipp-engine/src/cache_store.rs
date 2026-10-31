@@ -58,6 +58,16 @@ struct Entry {
     bytes: u64,
 }
 
+/// Whether `namespace` names a folder under the root and nothing else:
+/// one or more components joined by `/`, each a plain name of letters,
+/// digits, `-` and `_`. Not empty, not absolute, no `.` or `..`: a
+/// namespace is joined onto the root and, cleared, removed with all it
+/// holds, so anything else could reach the root itself or outside it.
+pub fn valid_namespace(namespace: &str) -> bool {
+    !namespace.is_empty()
+        && namespace.split('/').all(|c| !c.is_empty() && c.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_'))
+}
+
 /// Why a frame wasn't stored.
 #[derive(Debug, PartialEq, Eq)]
 pub enum PutRefused {
@@ -65,6 +75,8 @@ pub enum PutRefused {
     Full,
     /// The file couldn't be written.
     Io(String),
+    /// The namespace isn't a plain name under the root ([`valid_namespace`]).
+    Namespace(String),
 }
 
 impl std::fmt::Display for PutRefused {
@@ -72,6 +84,7 @@ impl std::fmt::Display for PutRefused {
         match self {
             PutRefused::Full => write!(f, "the cache is full of frozen frames: raise its size or unfreeze a track"),
             PutRefused::Io(why) => write!(f, "the frame couldn't be written: {why}"),
+            PutRefused::Namespace(ns) => write!(f, "{ns:?} isn't a cache namespace"),
         }
     }
 }
@@ -156,12 +169,15 @@ impl CacheStore {
 
     /// Whether the frame is stored.
     pub fn contains(&self, namespace: &str, at: FrameAt) -> bool {
-        self.order_of.contains_key(&self.path(namespace, at))
+        valid_namespace(namespace) && self.order_of.contains_key(&self.path(namespace, at))
     }
 
     /// Store `rgba` (straight alpha, linear, `at.size`) as `namespace`'s frame
     /// `at`, evicting the oldest unpinned frames over the cap.
     pub fn put(&mut self, namespace: &str, at: FrameAt, rgba: &[f32]) -> Result<(), PutRefused> {
+        if !valid_namespace(namespace) {
+            return Err(PutRefused::Namespace(namespace.to_owned()));
+        }
         let (w, h) = at.size;
         if w == 0 || h == 0 || w > MAX_SIDE || h > MAX_SIDE || rgba.len() != (w as usize) * (h as usize) * 4 {
             return Err(PutRefused::Io(format!("{} values for a {w}x{h} frame", rgba.len())));
@@ -199,6 +215,9 @@ impl CacheStore {
     /// `namespace`'s frame `at`, as stored (straight alpha, linear), or
     /// `None` when it isn't stored or its file is unreadable (then removed).
     pub fn get(&mut self, namespace: &str, at: FrameAt) -> Option<Vec<f32>> {
+        if !valid_namespace(namespace) {
+            return None;
+        }
         let path = self.path(namespace, at);
         if !self.order_of.contains_key(&path) {
             return None;
@@ -221,6 +240,10 @@ impl CacheStore {
 
     /// Remove `namespace` and its frames (a cleared freeze).
     pub fn remove_namespace(&mut self, namespace: &str) {
+        if !valid_namespace(namespace) {
+            tracing::warn!("frame cache: {namespace:?} isn't a namespace; nothing removed");
+            return;
+        }
         let paths: Vec<PathBuf> = self.entries.iter().filter(|(_, e)| e.namespace == namespace).map(|((_, p), _)| p.clone()).collect();
         for p in paths {
             let _ = std::fs::remove_file(&p);
@@ -271,7 +294,43 @@ impl CacheStore {
     }
 }
 
+/// `namespace`'s frame `at` under `root`, read without a store's index:
+/// what playback reads while the app's store writes (#3207). `None` when
+/// it isn't there, the namespace isn't one, or the file doesn't read as a
+/// frame of that size: drawn live then.
+pub fn read_stored(root: &Path, namespace: &str, at: FrameAt) -> Option<Vec<f32>> {
+    if !valid_namespace(namespace) {
+        return None;
+    }
+    read_frame(&root.join(namespace).join(at.file_name()), at.size)
+}
+
+/// Whether `namespace`'s frame `at` is stored under `root`, by its file
+/// alone, unread: for deciding what playback need not decode.
+pub fn is_stored(root: &Path, namespace: &str, at: FrameAt) -> bool {
+    valid_namespace(namespace) && root.join(namespace).join(at.file_name()).is_file()
+}
+
+/// [`read_stored`] as the frame's half floats, two to a word as the GPU
+/// stack takes them (red and green, then blue and alpha, the low half
+/// first): read and decompressed, nothing widened.
+pub fn read_stored_packed(root: &Path, namespace: &str, at: FrameAt) -> Option<Vec<u32>> {
+    if !valid_namespace(namespace) {
+        return None;
+    }
+    let raw = read_raw(&root.join(namespace).join(at.file_name()), at.size)?;
+    Some(raw.chunks_exact(4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect())
+}
+
 fn read_frame(path: &Path, size: (u32, u32)) -> Option<Vec<f32>> {
+    let raw = read_raw(path, size)?;
+    Some(raw.chunks_exact(2).map(|b| half::f16::from_bits(u16::from_le_bytes([b[0], b[1]])).to_f32()).collect())
+}
+
+/// A frame file's pixels, decompressed: little-endian half floats, or
+/// `None` when the file isn't a frame of `size` (checked before anything
+/// is allocated for it).
+fn read_raw(path: &Path, size: (u32, u32)) -> Option<Vec<u8>> {
     let data = std::fs::read(path).ok()?;
     if data.len() < HEADER || &data[..4] != MAGIC {
         return None;
@@ -289,10 +348,7 @@ fn read_frame(path: &Path, size: (u32, u32)) -> Option<Vec<f32>> {
         return None;
     }
     let raw = lz4_flex::decompress_size_prepended(&data[HEADER..]).ok()?;
-    if raw.len() != expected {
-        return None;
-    }
-    Some(raw.chunks_exact(2).map(|b| half::f16::from_bits(u16::from_le_bytes([b[0], b[1]])).to_f32()).collect())
+    (raw.len() == expected).then_some(raw)
 }
 
 #[cfg(test)]
@@ -393,6 +449,32 @@ mod tests {
         assert!(!d.join("freeze/t1").exists());
         assert!(s.contains("frames", at(1, 1)), "another namespace kept");
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// A namespace is a plain name under the root, or refused: an empty
+    /// one, `..`, an absolute path or one that climbs out stores, finds
+    /// and removes nothing, and deletes nothing outside its own folder.
+    #[test]
+    fn a_namespace_that_could_reach_outside_the_root_is_refused() {
+        let d = dir("namespace");
+        let outside = d.with_file_name(format!("klipp-cache-store-outside-{}", std::process::id()));
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("keep"), b"kept").unwrap();
+        let mut s = CacheStore::open(&d, 1 << 30);
+        s.put("freeze/t1", at(1, 1), &frame(0.1)).unwrap();
+        let outside_name = outside.file_name().unwrap().to_string_lossy().into_owned();
+        let climbs = format!("../{outside_name}");
+        for ns in ["", "..", ".", "/tmp", "freeze/../..", "freeze/", "/", "a//b", "freeze/./t1", climbs.as_str(), outside.to_str().unwrap()] {
+            assert!(!valid_namespace(ns), "{ns:?} refused");
+            assert_eq!(s.put(ns, at(2, 1), &frame(0.2)), Err(PutRefused::Namespace(ns.to_owned())), "{ns:?}: not stored");
+            assert!(s.get(ns, at(1, 1)).is_none() && !s.contains(ns, at(1, 1)), "{ns:?}: nothing found");
+            s.remove_namespace(ns);
+            assert!(d.exists() && s.contains("freeze/t1", at(1, 1)), "{ns:?}: the root and its frames kept");
+            assert!(outside.join("keep").exists(), "{ns:?}: nothing outside the root deleted");
+        }
+        assert!(valid_namespace("freeze/0a1b-c2_d3") && valid_namespace("frames"));
+        let _ = std::fs::remove_dir_all(&d);
+        let _ = std::fs::remove_dir_all(&outside);
     }
 
     /// A frame file from elsewhere is read as hostile: a header that isn't

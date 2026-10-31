@@ -47,6 +47,38 @@ pub const FREEZE_RENDER_VERSION: u64 = 1;
 /// there too.
 const MAX_NEST: usize = klipp_timeline::flatten::MAX_COMPOUND_DEPTH as usize;
 
+/// A frozen track's layer as playback lays it (#3207): RGBA half floats,
+/// two to a word (red and green, then blue and alpha, each the low half
+/// first), linear in the working space with straight alpha — as the frame
+/// store keeps it, so it reaches the GPU stack as read, widened there.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FrozenLayer {
+    packed: Vec<u32>,
+}
+
+impl FrozenLayer {
+    /// A layer from its packed words, as the frame store reads them.
+    pub fn from_packed(packed: Vec<u32>) -> Self {
+        FrozenLayer { packed }
+    }
+
+    /// A layer from straight linear RGBA, rounded to half floats.
+    pub fn from_linear(rgba: &[f32]) -> Self {
+        let half = |v: f32| half::f16::from_f32(v).to_bits() as u32;
+        FrozenLayer { packed: rgba.chunks_exact(2).map(|p| half(p[0]) | (half(p[1]) << 16)).collect() }
+    }
+
+    pub fn packed(&self) -> &[u32] {
+        &self.packed
+    }
+
+    /// Straight linear RGBA, for the CPU's stack.
+    pub fn to_linear(&self) -> Vec<f32> {
+        let float = |bits: u32| half::f16::from_bits(bits as u16).to_f32();
+        self.packed.iter().flat_map(|w| [float(w & 0xffff), float(w >> 16)]).collect()
+    }
+}
+
 /// What a key reads beyond the sequence: the project's other sequences
 /// (for nested ones), the identity of each media item and plug-in, and
 /// the render's environment.
@@ -175,8 +207,11 @@ fn clip_hash(seq: &Sequence, c: &Clip, env: &FreezeEnv<'_>, laid: bool, depth: u
         ClipKind::Sequence { sequence_id } | ClipKind::Precomposition { sequence_id } | ClipKind::TemplatePrecomposition { sequence_id, .. } => Some(*sequence_id),
         _ => None,
     };
+    // The scene a render copy lays in the clip, else the project's
+    // sequence by id: the engine has the render copy alone, the freeze
+    // the project too, and both must key alike.
     if let Some(id) = nested {
-        match env.sequences.iter().chain(std::iter::once(seq)).find(|s| s.id == id) {
+        match c.precomp.as_deref().or_else(|| env.sequences.iter().chain(std::iter::once(seq)).find(|s| s.id == id)) {
             Some(_) if depth >= MAX_NEST => "too deep".hash(h),
             Some(inner) => sequence_hash(inner, env, depth + 1, h),
             None => "missing sequence".hash(h),
