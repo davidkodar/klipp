@@ -14,7 +14,7 @@ use klipp_compose::eval::{resolve_clip_transform, ResolvedTransform};
 mod delivery;
 #[cfg(any(test, feature = "test-hooks"))]
 pub(crate) mod inject;
-mod render_job;
+mod frames_job;
 mod seek_lead;
 mod reverse_gop;
 mod skim_render;
@@ -122,47 +122,7 @@ fn linear_to_srgb_u8_lut() -> &'static [u8; 4096] {
     })
 }
 
-/// Bulk linear f32 RGBA → sRGB u8 RGBA with boundary clamp. The
-/// inverse of [`u8_rgba_to_linear`]; values outside `[0.0, 1.0]`
-/// clamp at the u8 boundary, not earlier.
-#[inline]
-/// Map each colour channel of an RGBA frame through `lut`, leaving alpha as
-/// it is — the display transform does not touch alpha, which
-/// `display::the_transform_leaves_alpha_where_it_found_it` pins.
-///
-/// One pass over the frame, no float buffer: this is the whole cost of a
-/// render-cache hit's display transform once the chain has been collapsed
-/// into a table.
-fn map_u8_rgb(rgba: &[u8], lut: &[u8; 256]) -> Vec<u8> {
-    klipp_effects::residency::record("display.cached_lut", "Cached display pixels transformed on CPU", klipp_effects::residency::Work::Fallback);
-    use rayon::prelude::*;
-    let mut out = vec![0u8; rgba.len() / 4 * 4];
-    out.par_chunks_exact_mut(4).zip(rgba.par_chunks_exact(4)).for_each(|(o, c)| {
-        o[0] = lut[c[0] as usize];
-        o[1] = lut[c[1] as usize];
-        o[2] = lut[c[2] as usize];
-        o[3] = c[3];
-    });
-    out
-}
 
-/// A rendered (graded, composited, generated) frame as the render cache
-/// stores it: sRGB-encoded as it stands, rounded with the viewer's dither
-/// (#2072). A cache hit in a Rec.709 project with no tone map shows these
-/// bytes through an identity table, so they have to be the bytes the
-/// viewer's encode gave the frame when it was drawn — dithered the same
-/// way — or the hit would show the frame's gradients banded where the
-/// render showed them smooth. The decoder's frames go through
-/// [`linear_rgba_to_u8`] instead: they were 8-bit to begin with, and the
-/// dither leaves a value already on a code alone.
-fn rendered_frame_to_cache_u8(linear: &[f32]) -> Vec<u8> {
-    klipp_color::display::display_transform_ws_dithered_to(
-        linear,
-        klipp_color::display::ToneMapOp::None,
-        klipp_core::WorkingColorspace::Rec709Linear,
-        klipp_core::SdrTransfer::Srgb,
-    )
-}
 
 fn linear_rgba_to_u8(linear: &[f32]) -> Vec<u8> {
     use rayon::prelude::*;
@@ -1069,6 +1029,14 @@ pub(crate) static FROZEN_CLIPS_SKIPPED: std::sync::atomic::AtomicU64 = std::sync
 
 /// (frozen layers laid, clip decodes skipped for them) since the process
 /// began (#3207).
+/// Frames shown from the frame cache in place of composing (#3212).
+pub(crate) static FRAMES_SHOWN_KEPT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// [`FRAMES_SHOWN_KEPT`]: frames shown as drawn ahead.
+pub fn frames_shown_kept() -> u64 {
+    FRAMES_SHOWN_KEPT.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 pub fn frozen_counts() -> (u64, u64) {
     (FROZEN_LAYERS_LAID.load(std::sync::atomic::Ordering::Relaxed), FROZEN_CLIPS_SKIPPED.load(std::sync::atomic::Ordering::Relaxed))
 }
@@ -1309,11 +1277,6 @@ impl FrameCache {
         self.entries.get(&frame_number).filter(|e| e.clip == clip).map(|e| (e.pixels.clone(), e.width, e.height))
     }
 
-    /// Frame numbers currently held — the only frames that can be graded
-    /// without decoding.
-    fn frame_numbers(&self) -> impl Iterator<Item = i64> + '_ {
-        self.entries.keys().copied()
-    }
 
     /// Clear the entire cache: the timeline changed under it, or the
     /// media decodes differently now.
@@ -1837,9 +1800,6 @@ pub struct PlaybackEngine {
     /// The global LUT last handed to the renderer, to hand it over again
     /// only when it changes.
     pushed_lut_sig: Option<(bool, Option<PathBuf>, u32, Option<(usize, usize)>)>,
-    /// Per-clip hashes keying the render cache, dropped whenever
-    /// `current_grade_hash` is reset.
-    render_hashes: HashMap<klipp_core::ClipId, u64>,
     /// Set to `true` while `prerender_cache_frames` is running a
     /// background re-grade at some near-playhead frame. Those
     /// speculative grades must NOT overwrite the per-node thumbnails
@@ -2035,8 +1995,12 @@ pub struct PlaybackEngine {
     frame_cache: FrameCache,
     // Smart render cache — stores post-grade frames on disk (LZ4 compressed).
     // Hot tier: last 30 graded frames in RAM. Cold tier: disk LZ4.
-    render_cache_hot: crate::render_cache::HotCache,
-    render_cache_disk: crate::render_cache::DiskRenderCache,
+    /// Whole frames drawn ahead (#3212): read ahead of playback, the job
+    /// drawing them, whether they are used, and the cache's size in GB.
+    frames_reader: Option<crate::frame_cache::FrameReader>,
+    frames_job: Option<frames_job::FramesJob>,
+    frames_enabled: bool,
+    cache_budget_gb: u32,
     /// Current grade hash for the active clip (cached to avoid recomputing per frame).
     current_grade_hash: u64,
     current_grade_clip_id: Option<klipp_core::ClipId>,
@@ -2095,7 +2059,6 @@ pub struct PlaybackEngine {
     // Loop playback — cycle between in/out points or whole sequence
     loop_enabled: bool,
     /// Render In to Out under way (#924).
-    render_job: Option<render_job::RenderJob>,
     /// When the render status strip was last worked out (#924): idle,
     /// it is refreshed once a second so edits show.
     render_status_at: std::time::Instant,
@@ -2865,13 +2828,6 @@ impl PlaybackEngine {
 
         // Heavy field inits — extracted from the struct literal below so we can
         // measure each one independently for STARTUP_PERF.
-        let render_cache_disk = {
-            let _t = klipp_core::startup_timer::LogTimer::new("engine: DiskRenderCache::new (LRU walk)");
-            crate::render_cache::DiskRenderCache::new(
-                dirs::cache_dir().unwrap_or_default().join("klipp/render"),
-                20, // 20 GB default max
-            )
-        };
         let ofx_host = {
             let _t = klipp_core::startup_timer::LogTimer::new("engine: OfxHost::discover_plugins");
             let mut h = klipp_plugin::OfxHost::new();
@@ -3004,7 +2960,6 @@ impl PlaybackEngine {
             pending_stream_refresh: false,
             pending_audio_reposition: None,
             pushed_lut_sig: None,
-            render_hashes: HashMap::new(),
             thumb_capture_suspended: false,
             pending_paused_refresh: false,
             paused_refresh_since: None,
@@ -3059,8 +3014,10 @@ impl PlaybackEngine {
             last_direct_present_blockers: Vec::new(),
             last_grab_wait: Duration::ZERO,
             frame_cache: FrameCache::new(120), // ~5s at 24fps (backward history + forward prefetch)
-            render_cache_hot: crate::render_cache::HotCache::new(30),
-            render_cache_disk,
+            frames_reader: None,
+            frames_job: None,
+            frames_enabled: true,
+            cache_budget_gb: 20,
             current_grade_hash: 0,
             current_grade_clip_id: None,
             current_graph_arc: None,
@@ -3083,7 +3040,6 @@ impl PlaybackEngine {
             use_proxies: true,
             skim_consumer,
             loop_enabled: false,
-            render_job: None,
             render_status_at: std::time::Instant::now(),
             scrub_audio_enabled: true,
             is_scrubbing: false,
@@ -3357,6 +3313,8 @@ impl PlaybackEngine {
             if matches!(self.state, PlaybackState::Idle | PlaybackState::Stopped) {
                 self.tick_stream_refresh();
             }
+            // Frames drawn ahead in their job (#3212): progress and end.
+            self.poll_frames_job();
             if self.state == PlaybackState::Playing {
                 // Playback already produces fresh frames at full res
                 // every tick; the drag-recovery flag isn't needed here.
@@ -3400,23 +3358,10 @@ impl PlaybackEngine {
                     self.scope_render_owed = false;
                     self.dbg_regrade_count += 1;
                     self.regrade_cached_frame();
-                } else if !had_commands && self.state != PlaybackState::Playing && self.render_job.is_some() {
-                    // Render In to Out (#924): a frame a tick while
-                    // paused, ahead of the nearby pre-render.
-                    self.step_render_range();
-                } else if !had_commands && self.last_command_at.elapsed() >= PRERENDER_AFTER_IDLE {
-                    // Engine is genuinely idle — pre-render nearby frames
-                    // into cache. Skip prerender when we just applied param
-                    // changes so the next tick re-runs through the fresh
-                    // graph instead of caching stale output. And not between
-                    // the commands of someone stepping or clicking through
-                    // frames: one pre-render is a full render (~100 ms at
-                    // 4K), and the next step waited for it.
-                    self.prerender_cache_frames();
-                    if self.render_status_at.elapsed() >= Duration::from_secs(1) {
-                        self.render_status_at = std::time::Instant::now();
-                        self.update_render_cache_ranges();
-                    }
+                } else if !had_commands && self.last_command_at.elapsed() >= PRERENDER_AFTER_IDLE && self.render_status_at.elapsed() >= Duration::from_secs(1) {
+                    // What the timeline shows of the frames drawn ahead.
+                    self.render_status_at = std::time::Instant::now();
+                    self.update_render_cache_ranges();
                 }
             }
 
@@ -3983,9 +3928,6 @@ impl PlaybackEngine {
                 self.retained_primary = None;
                 // Pre-grades decoded the old way.
                 self.frame_cache.clear();
-                // Rendered from pixels decoded the old way. (The disk
-                // cache misses on its own: the log format is in the key.)
-                self.render_cache_hot.clear();
                 // Decoded with the old settings: every stream reopens.
                 self.streams.clear();
                 // Idle / stopped has nothing on screen to refresh; the next
@@ -4007,21 +3949,21 @@ impl PlaybackEngine {
                 self.use_proxies = enabled;
             }
             AppCommand::SetRenderCacheLimitGb(gb) => {
-                self.render_cache_disk.set_max_size_gb(gb);
-                debug!("Render cache cap {gb} GB");
+                // The store's cap: frozen tracks pinned in it, frames
+                // drawn ahead let go first (#3212).
+                self.cache_budget_gb = gb;
+                // A project's cache has its cap from the app, which counts
+                // its frozen sound beside it; the user's is this.
+                if self.freeze_folder.is_none() {
+                    self.frames_store().lock().unwrap_or_else(|e| e.into_inner()).set_cap(u64::from(gb) << 30);
+                }
+                debug!("Cache cap {gb} GB");
             }
-            AppCommand::SetRenderCacheReserved(bytes) => self.render_cache_disk.set_reserved_bytes(bytes),
-            AppCommand::ClearRenderCacheAll => {
-                self.render_cache_disk.clear_all();
-                self.render_cache_hot.clear();
-                info!("Render cache: cleared");
-                self.update_render_cache_ranges();
-                (self.repaint_cb)();
-            }
+            AppCommand::ClearRenderCacheAll => self.clear_render_cache_all(),
             AppCommand::SetRenderCacheEnabled(enabled) => {
-                self.render_cache_disk.set_enabled(enabled);
+                self.frames_enabled = enabled;
                 if !enabled {
-                    self.render_cache_hot.clear();
+                    self.cancel_frames_job(true);
                 }
                 debug!("Render cache enabled={enabled}");
             }
@@ -5296,7 +5238,6 @@ impl PlaybackEngine {
         self.pregrade_source = None;
         self.retained_primary = None;
         self.frame_cache.clear();
-        self.render_cache_hot.clear();
         self.last_synth_frame_rendered = None;
         self.current_grade_hash = 0;
         self.current_grade_clip_id = None;
@@ -8638,113 +8579,6 @@ impl PlaybackEngine {
                 self.seek_in_sequence_with_timeout(new_tc, Duration::from_millis(300));
             }
         }
-    }
-
-    /// Pre-render nearby frames into the render cache during idle time,
-    /// one per call to stay responsive. Only frames already decoded into
-    /// `frame_cache` are candidates — this never decodes — nearest the
-    /// playhead first. (It once enumerated every timeline tick of the
-    /// clip; at 59.94 fps a tick is a thousandth of a frame, and the scan
-    /// held the engine thread for seconds on every idle tick.)
-    fn prerender_cache_frames(&mut self) {
-        mark_stage(EngineStage::Prerender);
-        let t_call = std::time::Instant::now();
-        if !self.render_cache_disk.is_enabled() {
-            return;
-        }
-        let clip_range = {
-            let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
-            seq.tracks
-                .get(self.current_track_index)
-                .and_then(|t| t.clips.get(self.current_clip_index))
-                .filter(|c| c.frames_cacheable())
-                .map(|c| (c.timeline_in.value, c.timeline_out.value))
-        };
-        let Some((clip_start, clip_end)) = clip_range else { return };
-        let current = self.playhead.value;
-        let mut candidates: Vec<i64> = self
-            .frame_cache
-            .frame_numbers()
-            .filter(|f| *f >= clip_start && *f < clip_end && *f != current)
-            .collect();
-        candidates.sort_by_key(|f| (f - current).abs());
-        let candidate_count = candidates.len();
-        for (scanned, frame_num) in candidates.into_iter().enumerate() {
-            let Some((pixels, w, h)) = self.frame_cache.get(frame_num, self.primary_clip_now()) else { continue };
-            if self.prerender_frame(frame_num, streams::HeldFrame::from_pregrade(&pixels, w, h)) {
-                let ms = t_call.elapsed().as_secs_f64() * 1000.0;
-                if ms > 20.0 {
-                    debug!("PERF prerender: {ms:.1}ms rendered frame {frame_num} ({w}x{h}) after scanning {}/{candidate_count}", scanned + 1);
-                }
-                return;
-            }
-        }
-        self.update_render_cache_ranges();
-    }
-
-    /// Update the shared frame buffer with current render cache coverage per clip.
-    fn update_render_cache_ranges(&mut self) {
-        // A lock on a clone of the Arc, so hashing (which caches into
-        // `self`) can run while it is held.
-        let sequence = Arc::clone(&self.sequence);
-        let seq = sequence.read().unwrap_or_else(|e| e.into_inner());
-        let mut ranges = Vec::new();
-        let mut status = Vec::new();
-
-        for track in seq.tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Video) {
-            for clip in &track.clips {
-                if !clip.frames_cacheable() {
-                    continue;
-                }
-                let grade_hash = self.render_key_hash(&seq, clip, track.opacity);
-                // Timeline positions are ticks; a frame is `fps.den` of them
-                // (1001 at the NTSC rates, 1 at integer rates). Counting
-                // ticks made every clip look 1001x longer than it is, so
-                // the cache bar read ~0% however much was cached.
-                let ticks_per_frame = (self.fps.den as i64).max(1);
-                let total = ((clip.timeline_out.value - clip.timeline_in.value) / ticks_per_frame)
-                    .max(1) as u32;
-                // Hot cache only — disk is too slow for timeline display.
-                let cached = self.render_cache_hot.count_for(clip.id, grade_hash) as u32;
-                if cached > 0 {
-                    ranges.push((clip.id, cached, total));
-                }
-                // The strip over the ruler (#924): frames in memory or on
-                // disk, which the disk cache knows from its file names.
-                let mut frames: Vec<i64> = self.render_cache_hot.frames_for(clip.id, grade_hash).collect();
-                frames.extend(self.render_cache_disk.cached_frames(clip.id, grade_hash));
-                frames.sort_unstable();
-                frames.dedup();
-                status.extend(crate::texture::render_spans(clip.timeline_in.value, clip.timeline_out.value, &frames, ticks_per_frame));
-            }
-        }
-        drop(seq);
-
-        let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
-        fb.render_cache_ranges = ranges;
-        fb.render_status = status;
-    }
-
-    /// Clear the render cache for every clip under `from..to` (#924):
-    /// the frames in memory and on disk, at every grade and size.
-    fn clear_render_cache_range(&mut self, from: RationalTime, to: RationalTime) {
-        let clips: Vec<klipp_core::ClipId> = {
-            let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
-            seq.tracks
-                .iter()
-                .flat_map(|t| t.clips.iter())
-                .filter(|c| c.timeline_in < to && c.timeline_out > from)
-                .map(|c| c.id)
-                .collect()
-        };
-        let mut removed = 0;
-        for clip in clips {
-            self.render_cache_hot.remove_frames(clip, from.value..to.value);
-            removed += self.render_cache_disk.remove_frames(clip, from.value..to.value);
-        }
-        info!("Render cache: cleared {removed} cached frame(s) from {:.2}s to {:.2}s", from.to_secs_f64(), to.to_secs_f64());
-        self.update_render_cache_ranges();
-        (self.repaint_cb)();
     }
 
     fn prefetch_ahead(&mut self) {
@@ -14422,72 +14256,6 @@ mod audio_fingerprint_kf_tests {
         let b = make_clip_with_kfs(&["makeup", "threshold", "ratio"]);
         assert_eq!(audio_fingerprint_for_clip(&a), audio_fingerprint_for_clip(&b),
             "fingerprint must be insertion-order-independent");
-    }
-}
-
-#[cfg(test)]
-mod cached_frame_display_tests {
-    use super::*;
-
-    /// A rendered frame shown from the render cache is the frame the
-    /// viewer showed when it drew it (#2072): the cache stores it rounded
-    /// with the viewer's dither, and in a Rec.709 project with no tone map
-    /// the hit's table is the identity. A slow gradient, which the dither
-    /// is for, is where an undithered cache would show bands instead.
-    #[test]
-    fn a_cache_hit_shows_the_rendered_frames_bytes() {
-        let (w, h) = (960usize, 4usize);
-        let mut linear = Vec::with_capacity(w * h * 4);
-        for _ in 0..h {
-            for x in 0..w {
-                let v = klipp_color::transfer::srgb_to_linear((40.0 + 12.0 * x as f32 / (w - 1) as f32) / 255.0);
-                linear.extend_from_slice(&[v, v * 0.97, v * 1.02, 1.0]);
-            }
-        }
-        let ws = klipp_core::WorkingColorspace::Rec709Linear;
-        let lut = klipp_color::display::display_transform_u8_lut(klipp_color::display::ToneMapOp::None, ws).expect("a table");
-        let hit = map_u8_rgb(&rendered_frame_to_cache_u8(&linear), &lut);
-        let drawn = klipp_color::display::display_transform_ws_dithered_to(
-            &linear,
-            klipp_color::display::ToneMapOp::None,
-            ws,
-            klipp_core::SdrTransfer::Srgb,
-        );
-        let differ = hit.iter().zip(&drawn).filter(|(a, b)| a != b).count();
-        assert_eq!(differ, 0, "a cache hit differs from the drawn frame at {differ} samples");
-    }
-
-    /// The table path a render-cache hit takes has to land on the bytes the
-    /// float path would have produced. `klipp-color` pins the table against
-    /// the display transform; this pins the composition around it — that
-    /// `map_u8_rgb` applies it to the right channels, that alpha comes
-    /// through, and that the engine's own decode LUT is the one the table
-    /// was built from.
-    #[test]
-    fn the_table_path_is_the_float_path_it_replaces() {
-        let ws = klipp_core::WorkingColorspace::Rec709Linear;
-        // Every code in every channel, with alpha varying independently.
-        let mut frame: Vec<u8> = Vec::new();
-        for r in 0..256usize {
-            frame.extend_from_slice(&[
-                r as u8,
-                (255 - r) as u8,
-                ((r * 7) % 256) as u8,
-                (r / 2) as u8,
-            ]);
-        }
-        for op in klipp_color::display::TONE_MAP_OPS_ALL {
-            let Some(lut) = klipp_color::display::display_transform_u8_lut(op, ws) else {
-                continue;
-            };
-            let through_table = map_u8_rgb(&frame, &lut);
-            let through_float =
-                klipp_color::display::display_transform_ws(&u8_rgba_to_linear(&frame), op, ws);
-            assert_eq!(
-                through_table, through_float,
-                "{op:?}: the cache-hit shortcut does not match the path it replaces",
-            );
-        }
     }
 }
 

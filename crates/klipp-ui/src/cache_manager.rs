@@ -60,9 +60,19 @@ pub fn scan_tree_size(path: &Path) -> (u64, u64) {
 pub fn frozen_categories(project_cache: &Path) -> Vec<CacheCategory> {
     let frames = project_cache.join("freeze");
     let sound = project_cache.join("stems");
+    let rendered = project_cache.join("frames");
     let (frame_bytes, frame_count) = scan_tree_size(&frames);
     let (sound_bytes, sound_count) = scan_tree_size(&sound);
+    let (rendered_bytes, rendered_count) = scan_tree_size(&rendered);
     vec![
+        CacheCategory {
+            name: "Rendered frames (this project)",
+            path: rendered,
+            size_bytes: rendered_bytes,
+            file_count: rendered_count,
+            // Accent green
+            color: egui::Color32::from_rgb(0x5f, 0xb8, 0x5f),
+        },
         CacheCategory {
             name: "Frozen frames (this project)",
             path: frames,
@@ -217,10 +227,11 @@ mod tests {
             std::fs::write(root.join(dir).join("x.bin"), vec![0u8; bytes]).unwrap();
         }
         let cats = super::frozen_categories(&root);
-        assert_eq!((cats[0].size_bytes, cats[0].file_count), (30, 2), "frames: {:?}", cats[0].path);
-        assert_eq!((cats[1].size_bytes, cats[1].file_count), (7, 1));
-        assert_eq!(cats[0].path, root.join("freeze"));
-        assert_eq!(cats[1].path, root.join("stems"));
+        assert_eq!(cats[0].path, root.join("frames"), "rendered frames first (#3212)");
+        assert_eq!((cats[1].size_bytes, cats[1].file_count), (30, 2), "frames: {:?}", cats[1].path);
+        assert_eq!((cats[2].size_bytes, cats[2].file_count), (7, 1));
+        assert_eq!(cats[1].path, root.join("freeze"));
+        assert_eq!(cats[2].path, root.join("stems"));
         let _ = std::fs::remove_dir_all(&root);
     }
 
