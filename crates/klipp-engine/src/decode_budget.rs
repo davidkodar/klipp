@@ -384,16 +384,25 @@ pub fn free_memory() -> f64 {
 /// How often the GPU's free memory is read again.
 const VRAM_REFRESH: Duration = Duration::from_secs(2);
 
+/// Whether the GPU's free memory is what frames are counted against
+/// (#3174): wherever frames are held on the GPU, decoded there or decoded
+/// in software and uploaded, not only with hardware decode chosen. A
+/// machine without a decoder Klipp can use uploads its frames all the
+/// same, and they were counted against nothing there.
+pub fn reads_free_vram(frames_on_gpu: bool) -> bool {
+    frames_on_gpu
+}
+
 /// What the GPU has free for new memory, in bytes (#2128): where a stream
-/// decoded on it keeps its queue of frames. `None` where frames don't stay
-/// on the GPU (hardware decode or GPU frames off) or its memory can't be
+/// whose frames are held on it keeps its queue of frames. `None` where
+/// frames don't stay on the GPU (GPU frames off) or its memory can't be
 /// read; its frames are then counted in [`free_memory`]. Read on a thread
 /// of its own every `VRAM_REFRESH`, as reading NVIDIA's takes a
 /// program's start: the engine never waits for it.
 pub fn free_vram() -> Option<f64> {
     static FREE: AtomicU64 = AtomicU64::new(u64::MAX);
     static READER: OnceLock<()> = OnceLock::new();
-    if !crate::video_decoder::hardware_decode_enabled() || !crate::video_decoder::should_attach_gpu_source() {
+    if !reads_free_vram(crate::video_decoder::should_attach_gpu_source()) {
         return None;
     }
     READER.get_or_init(|| {
@@ -471,6 +480,14 @@ pub fn budget() -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #3174: frames held on the GPU are counted against its memory
+    /// whatever decodes them; the hardware decode choice is not asked.
+    #[test]
+    fn the_gpu_budget_follows_where_frames_are_held() {
+        assert!(reads_free_vram(true));
+        assert!(!reads_free_vram(false));
+    }
 
     #[test]
     fn free_memory_is_read_from_meminfo() {

@@ -571,7 +571,7 @@ impl ClipStreams {
                     let lease = crate::decode_budget::admit(cost.rate, crate::decode_budget::Priority::Overflow);
                     match VideoDecoder::open_with_queue(&path, rotation, lease, MIN_QUEUE_FRAMES * 2) {
                         Ok(decoder) => {
-                            let free = if crate::video_decoder::hardware_decode_enabled() { (self.free_vram)() } else { Some((self.free_memory)()) };
+                            let free = window_free(crate::video_decoder::should_attach_gpu_source(), (self.free_vram)(), (self.free_memory)());
                             e.insert(Reversed::Gop(super::reverse_gop::ReverseGop::for_memory(decoder, cost.frame_bytes, free, 0.0)))
                         }
                         Err(err) => {
@@ -592,7 +592,7 @@ impl ClipStreams {
                 Reversed::Gop(g) => {
                     // The GPU's free memory is read on a thread of its own:
                     // a reader opened before the first reading guessed.
-                    g.learn_free(if crate::video_decoder::hardware_decode_enabled() { (self.free_vram)() } else { Some((self.free_memory)()) });
+                    g.learn_free(window_free(crate::video_decoder::should_attach_gpu_source(), (self.free_vram)(), (self.free_memory)()));
                     g.want(w.source_secs, w.ahead)
                 }
                 Reversed::Cpu { reader, .. } => reader.prepare(w.source_secs),
@@ -997,9 +997,29 @@ impl ClipStreams {
     }
 }
 
+/// The free memory a reversed window's frames are counted against
+/// (#3174): the GPU's where frames are held on the GPU, decoded there or
+/// uploaded (`None` where it can't be read, and the window guesses), else
+/// memory's. It used to follow the hardware decode choice: frames decoded
+/// in software and uploaded were counted against nothing.
+fn window_free(frames_on_gpu: bool, vram: Option<f64>, memory: f64) -> Option<f64> {
+    if frames_on_gpu { vram } else { Some(memory) }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #3174: a reversed window is counted against the GPU's free memory
+    /// where frames are held on the GPU, however they were decoded, and
+    /// guesses where that can't be read; against memory where frames stay
+    /// in memory.
+    #[test]
+    fn a_reversed_window_is_counted_where_its_frames_are_held() {
+        assert_eq!(window_free(true, Some(2e9), 16e9), Some(2e9));
+        assert_eq!(window_free(true, None, 16e9), None, "the GPU's can't be read: a guess, not memory's");
+        assert_eq!(window_free(false, Some(2e9), 16e9), Some(16e9));
+    }
 
     /// Clips at the same frame of the same file read one stream, the one
     /// kept on screen if any of them is; another time, another file,
