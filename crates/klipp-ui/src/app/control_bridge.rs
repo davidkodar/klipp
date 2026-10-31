@@ -112,6 +112,7 @@ impl KlippApp {
                     AppCommand::ImportTimeline { request_id, .. } | AppCommand::OpenFromAnotherEditor { request_id, .. } => Some(*request_id), _ => None,
                 });
                 let project_switch = env.commands.iter().any(|c| matches!(c, AppCommand::OpenProjectNow { .. } | AppCommand::CloseProjectNow { .. }));
+                let shows_preview = env.commands.iter().any(|c| matches!(c, AppCommand::ShowPreview { .. }));
                 let project_before = project_switch.then(|| self.state.control_shared.project.lock().unwrap_or_else(|e|e.into_inner()).generation);
                 let cmds = expand_control_commands(env.commands, env.batch);
                 self.send_commands(cmds);
@@ -124,6 +125,11 @@ impl KlippApp {
                     refused = if project.generation == before {
                         Some("project switch did not complete".into())
                     } else { project.last_error.clone() };
+                }
+                // A preview frame_at asked for, or why it couldn't be shown
+                // (#3210).
+                if shows_preview {
+                    refused = self.state.preview_command_refused.take().map(|why| format!("can't preview this one: {why}"));
                 }
                 if let Some(request_id) = import_request {
                     let outcome = self.state.control_shared.import_outcome.lock().unwrap_or_else(|e| e.into_inner());

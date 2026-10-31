@@ -780,10 +780,11 @@ pub(crate) fn respond(
             Ok(json!({ "text": text, "path": out.to_string_lossy(), "width": sw, "height": sh, "tiles": listed, "inline": inline }))
         }
 
-        ControlCommand::FrameAt { secs, path, max_width, timeout_ms, channel, node } => {
+        ControlCommand::FrameAt { secs, path, max_width, timeout_ms, channel, node, preview } => {
             if in_batch {
                 return read_in_batch("frame_at");
             }
+            let preview = preview.as_ref().map(crate::protocol::PreviewArg::entry).transpose()?;
             let channel = channel
                 .map(|n| klipp_core::ViewChannel::from_name(n.trim()).ok_or_else(|| format!("{n:?} is not a channel; give red, green, blue, alpha or luma")))
                 .transpose()?;
@@ -886,16 +887,59 @@ pub(crate) fn respond(
                 }
                 std::thread::sleep(std::time::Duration::from_millis(10));
             };
+            // A browser's entry put on the frame without being applied
+            // (#3210): shown by the app at the time sought, and the frame
+            // drawn with it waited for. Refused, it says why, as the
+            // entry's card does.
+            let generation = match &preview {
+                Some((entry, clip_id)) => {
+                    let before = ctx.frame_buffer.lock().map_err(|_| "frame buffer lock poisoned")?.latest_generation();
+                    if let Err(why) = send_envelope(ctx, vec![AppCommand::ShowPreview { entry: entry.clone(), clip_id: *clip_id }], false) {
+                        restore_transport(ctx, held);
+                        return Err(why);
+                    }
+                    // The frame the engine drew with the preview up, by its
+                    // generation: one drawn after the request but before
+                    // the preview (the seek's own, late) is not it.
+                    let drawn = loop {
+                        let (preview, skipped) = {
+                            let fb = ctx.frame_buffer.lock().map_err(|_| "frame buffer lock poisoned")?;
+                            (fb.preview_generation.filter(|g| *g > before), fb.preview_skipped)
+                        };
+                        if let Some(g) = preview {
+                            break Some(g);
+                        }
+                        if skipped && ctx.frame_buffer.lock().map(|fb| fb.latest_generation() != before).unwrap_or(false) {
+                            break None;
+                        }
+                        if std::time::Instant::now() >= deadline {
+                            break None;
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(10));
+                    };
+                    match drawn {
+                        Some(g) => g,
+                        None => {
+                            let skipped = ctx.frame_buffer.lock().map(|fb| fb.preview_skipped).unwrap_or(false);
+                            let _ = send_envelope(ctx, vec![AppCommand::ClearPreview], false);
+                            restore_transport(ctx, held);
+                            return Err(if skipped { "can't preview this one: the GPU can't draw it here".to_string() } else { format!("the preview wasn't drawn within {} ms; give a longer timeout_ms", wait.as_millis()) });
+                        }
+                    }
+                }
+                None => generation,
+            };
             // Wider than the viewer's frame, which is decoded at the
             // playback size, and the timeline has it: drawn from the files
-            // at that size, as the export draws it (#2491).
+            // at that size, as the export draws it (#2491). Not a preview,
+            // which only the viewer draws.
             let viewer_width = ctx.frame_buffer.lock().map_err(|_| "frame buffer lock poisoned")?.latest_frame().1;
             let (seq_w, seq_h) = {
                 let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
                 (seq.resolution.width.max(2), seq.resolution.height.max(2))
             };
             // A channel or a node is the viewer's to draw: at its size.
-            if let Some((w, h)) = full_size_for(max_width, viewer_width, (seq_w, seq_h)).filter(|_| _put_back.is_none()) {
+            if let Some((w, h)) = full_size_for(max_width, viewer_width, (seq_w, seq_h)).filter(|_| _put_back.is_none() && preview.is_none()) {
                 restore_transport(ctx, held);
                 let still = full_size_frame(ctx, secs, w, h)?;
                 if let Some(p) = path.as_deref().filter(|p| !std::path::Path::new(p).is_absolute()) {
@@ -914,9 +958,22 @@ pub(crate) fn respond(
                 ControlCommand::Screenshot { path, max_width: Some(max_width.unwrap_or(1280)), min_generation: Some(generation), timeout_ms },
                 &mut None,
             );
-            // Back where the playhead was, whatever the capture did.
+            // The preview taken down, and back where the playhead was,
+            // whatever the capture did.
+            if preview.is_some() {
+                let _ = send_envelope(ctx, vec![AppCommand::ClearPreview], false);
+            }
             restore_transport(ctx, held);
             let mut v = shot?;
+            if let Some((entry, _)) = &preview {
+                v["previewed"] = json!(match entry {
+                    klipp_core::PreviewEntry::Effect(n) => format!("effect {n}"),
+                    klipp_core::PreviewEntry::Transition(n) => format!("transition {n}"),
+                    klipp_core::PreviewEntry::Title(n) => format!("title {n}"),
+                    klipp_core::PreviewEntry::Generator(n) => format!("generator {n}"),
+                });
+                v["note"] = json!("shown on the frame, not applied: nothing in the project changed");
+            }
             v["secs"] = json!(secs);
             v["frame"] = json!((secs * fps.as_f64()).round() as i64);
             if let Some(c) = channel {

@@ -2062,6 +2062,9 @@ pub struct AppState {
     pub(crate) hover_preview: Option<crate::app::hover_preview::HoverPreview>,
     /// Why the entry by this key can't be previewed, for its tooltip.
     pub(crate) hover_preview_note: Option<(String, String)>,
+    /// Why the last `ShowPreview` couldn't be shown (#3210), for the
+    /// control bridge to answer `frame_at` with.
+    pub(crate) preview_command_refused: Option<String>,
     /// The newest timeline skim position asked for while one is in
     /// flight, sent when it is answered.
     pub timeline_skim_queued: Option<(Timecode, Option<(MediaId, f64)>)>,
@@ -4941,6 +4944,7 @@ impl Default for AppState {
             hover_preview_wanted: None,
             hover_preview: None,
             hover_preview_note: None,
+            preview_command_refused: None,
             timeline_skim_queued: None,
             timeline_skim_declined: false,
             skim_last_requested: None,

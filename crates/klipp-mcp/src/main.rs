@@ -1478,8 +1478,9 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             if let Some(t) = args.get("timeout_ms").and_then(|v| v.as_u64()) {
                 v["timeout_ms"] = json!(t);
             }
-            // A channel in grey, or a node in place of the frame (#2758).
-            for key in ["channel", "node"] {
+            // A channel in grey, or a node in place of the frame (#2758);
+            // a browser's entry shown on it without being applied (#3210).
+            for key in ["channel", "node", "preview"] {
                 if let Some(x) = args.get(key) {
                     v[key] = x.clone();
                 }
@@ -2717,6 +2718,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
                  "timeout_ms": { "type": "integer" },
                  "channel": { "type": "string" },
                  "node": { "type": "object" },
+                 "preview": { "type": "object" },
              }),
              vec!["secs"]),
         tool("klipp_scope",

@@ -13,7 +13,7 @@ use klipp_core::AppCommand;
 // `assets/presets/generators/builtin.toml`.
 type GeneratorTemplate = klipp_core::generator_entries::GeneratorEntry;
 
-fn generators() -> &'static [GeneratorTemplate] {
+pub(crate) fn generators() -> &'static [GeneratorTemplate] {
     klipp_core::generator_entries::generator_entries()
 }
 
