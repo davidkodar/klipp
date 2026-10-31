@@ -2885,7 +2885,14 @@ mod tests {
             working_colorspace: klipp_core::WorkingColorspace::Rec709Linear, grade_encoding: klipp_core::GradeEncoding::Bt1886,
         };
 
-        let mut enc = Encoder::open(&path, &settings, &snapshot).unwrap();
+        let mut enc = match Encoder::open(&path, &settings, &snapshot) {
+            Ok(enc) => enc,
+            Err(e) if klipp_testing::encoders::no_10_bit_hevc_here(&format!("{e:?}")) => {
+                eprintln!("skipping: no 10-bit HEVC encoder here ({e:?})");
+                return;
+            }
+            Err(e) => panic!("{e:?}"),
+        };
 
         let mut frame = vec![1.0_f32; w * h * 4];
         for px in frame.chunks_exact_mut(4) {

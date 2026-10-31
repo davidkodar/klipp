@@ -36,6 +36,12 @@ const FPS: Fps = Fps { num: 30000, den: 1001 };
 /// GPU's own pace and not a debug build's; and stalled 64 to 111 ms at
 /// the cut, decoding in software, as Asahi has no hardware video decode.
 /// Its figures leave room above those, and still fail a real slowdown.
+/// Reversed 4K on the M1 hands out 26.7 to 27.0 source frames a second
+/// from a fresh boot (24 after many GPU job timeouts in one session).
+#[cfg(not(target_arch = "aarch64"))]
+const REVERSED_4K_MIN_FPS: f64 = 29.0;
+#[cfg(target_arch = "aarch64")]
+const REVERSED_4K_MIN_FPS: f64 = 25.0;
 #[cfg(not(target_arch = "aarch64"))]
 const FLOW_MIN_PRESENTS: f64 = 29.0;
 #[cfg(target_arch = "aarch64")]
@@ -253,7 +259,7 @@ fn a_reversed_4k_long_gop_clip_plays_at_speed_on_the_gpu() {
     // presented count repeats a frame the display asks for again.
     let fps = given as f64 / 3.0;
     eprintln!("reversed 4K: {fps:.1} source frames a second ({} presents); fallbacks and readbacks {fell:?}", shown.len());
-    assert!(fps >= 29.0, "reversed 4K plays at {fps:.1} fps ({load})");
+    assert!(fps >= REVERSED_4K_MIN_FPS, "reversed 4K plays at {fps:.1} fps ({load})");
     assert_eq!(fell, (0, 0, 0), "no picture fallbacks, engine readbacks or effect downloads while it played (picture, engine, effects)");
 }
 
@@ -366,4 +372,112 @@ fn the_gpus_other_users_are_named() {
     // Shader time and the decoder, each at its highest: another app
     // decoding holds up a reversed clip with its shaders all but idle.
     assert_eq!(common::busy_on_gpu(pmon, 4242), vec![("klipp-app".to_string(), 2, 55), ("Hyprland".to_string(), 23, 0), ("localsend".to_string(), 10, 0)]);
+}
+
+/// The process's resident memory, bytes: what unified memory gives the
+/// GPU shows here too.
+fn resident_bytes() -> Option<u64> {
+    let status = std::fs::read_to_string("/proc/self/status").ok()?;
+    let kb: u64 = status.lines().find_map(|l| l.strip_prefix("VmRSS:"))?.trim().strip_suffix("kB")?.trim().parse().ok()?;
+    Some(kb * 1024)
+}
+
+/// #3174, a measurement, not a gate: what holds the GPU's memory while
+/// a 4K clip plays reversed at a tenth by optical flow, the case that
+/// filled an M1's. Every 250 ms for 6 s (or until the device is lost) one
+/// row: free memory, the process's resident memory, the size of the frames
+/// decoded onto the GPU, what each of Klipp's GPU caches holds (MiB, its
+/// buffers, how many in use rather than kept for reuse, and one's pixels:
+/// 8294400 for a 4K picture, 2073600 for 1080p), what one-call allocations
+/// have made, wgpu's own
+/// totals for the device (built with `klipp-effects/gpu-memory-report`),
+/// the GPU's free memory as Klipp reads it, out-of-memory and validation
+/// errors, and frames presented. Printed, and written as a CSV into
+/// `KLIPP_REPORT_DIR` when it is set. `KLIPP_REPORT_HW=0` turns hardware
+/// decode off, so frames are decoded in software and uploaded, as on a
+/// machine without a decoder Klipp can use.
+///
+/// `KLIPP_TEST_REQUIRE_GPU=1 KLIPP_REPORT_DIR=/tmp/klipp-mem cargo test -p klipp-engine --features klipp-effects/gpu-memory-report --test reversed_plays_on_the_gpu reversed_by_flow_memory_report -- --ignored --nocapture`
+#[test]
+#[ignore]
+fn reversed_by_flow_memory_report() {
+    let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+    if std::env::var("KLIPP_REPORT_HW").as_deref() == Ok("0") {
+        klipp_engine::video_decoder::set_hardware_decode(false);
+    }
+    if ready().is_none() {
+        return;
+    }
+    let video = pan_source().expect("ffmpeg made the panning source");
+    let flow = klipp_timeline::test_clip::TestClip::of(clip_at(MediaId::new(), -0.1, 0.0, 80.0)).effect(klipp_effects::BuiltinEffect::SpeedRamp { speed: 1.0, blend_mode: 2 }).build();
+    let r = start(&video, vec![flow]);
+    let g = common::generation(&r.fb);
+    r.cmd.send(AppCommand::SetPlayhead(tc(2.0))).unwrap();
+    common::wait_new(&r.fb, g, Duration::from_secs(20));
+    common::settle(&r.fb);
+    let first = klipp_effects::gpu_memory::snapshot();
+    let mib = |b: u64| b as f64 / (1024.0 * 1024.0);
+    let held_names: Vec<String> = first.held.iter().flat_map(|h| ["mib", "n", "in_use", "px_each"].map(|f| format!("{}_{f}", h.name))).collect();
+    let made_names: Vec<&str> = first.made.iter().map(|(n, _, _)| *n).collect();
+    let mut header = vec!["secs", "mem_available_mib", "resident_mib", "free_vram_mib", "decoded_frame", "held_total_mib"];
+    header.extend(held_names.iter().map(String::as_str));
+    header.extend(made_names.iter().copied());
+    header.extend(["driver_buffers_mib", "driver_textures_mib", "driver_allocations", "unowned_mib", "out_of_memory", "validation_errors", "device_lost", "presented"]);
+    let mut rows = vec![header.join(",")];
+    println!("{}", rows[0]);
+    let lost = klipp_effects::gpu_context::GpuContext::shared().map(|c| c.device_lost_flag());
+    let t0 = Instant::now();
+    r.cmd.send(AppCommand::Play).unwrap();
+    let mut next = 0.0;
+    while t0.elapsed() < Duration::from_secs(6) {
+        let secs = t0.elapsed().as_secs_f64();
+        if secs < next {
+            std::thread::sleep(Duration::from_millis(5));
+            continue;
+        }
+        next += 0.25;
+        let s = klipp_effects::gpu_memory::snapshot();
+        let device_lost = lost.as_ref().is_some_and(|l| l.load(std::sync::atomic::Ordering::Relaxed));
+        let driver = s.driver.unwrap_or_default();
+        let mut row = vec![
+            format!("{secs:.2}"),
+            format!("{:.0}", mib(klipp_engine::decode_budget::free_memory() as u64)),
+            resident_bytes().map_or(String::new(), |b| format!("{:.0}", mib(b))),
+            klipp_engine::decode_budget::free_vram().map_or(String::new(), |b| format!("{:.0}", mib(b as u64))),
+            s.decoded_frame.map_or(String::new(), |(w, h)| format!("{w}x{h}")),
+            format!("{:.0}", mib(s.held_total)),
+        ];
+        // Each cache: its MiB, its buffers, how many in use (held by a
+        // reader, or the most slots leased in a run), and one's pixels.
+        for h in &s.held {
+            row.extend([format!("{:.0}", mib(h.bytes)), h.count.to_string(), h.in_use.to_string(), h.pixels_each().map_or(String::new(), |p| p.to_string())]);
+        }
+        // Made: bytes since the play started, and how many.
+        row.extend(s.made.iter().zip(&first.made).map(|((_, b, n), (_, b0, n0))| format!("{:.0}MiB/{}", mib(b - b0), n - n0)));
+        let unowned = (driver.buffer_bytes + driver.texture_bytes).saturating_sub(s.held_total);
+        row.extend([
+            s.driver.map_or(String::new(), |_| format!("{:.0}", mib(driver.buffer_bytes))),
+            s.driver.map_or(String::new(), |_| format!("{:.0}", mib(driver.texture_bytes))),
+            s.driver.map_or(String::new(), |_| driver.allocations.to_string()),
+            s.driver.map_or(String::new(), |_| format!("{:.0}", mib(unowned))),
+            klipp_effects::gpu_context::out_of_memory_errors().to_string(),
+            klipp_effects::gpu_context::validation_errors().to_string(),
+            device_lost.to_string(),
+            presents(&r).to_string(),
+        ]);
+        let line = row.join(",");
+        println!("{line}");
+        rows.push(line);
+        if device_lost {
+            break;
+        }
+    }
+    stop(r);
+    if let Some(dir) = std::env::var_os("KLIPP_REPORT_DIR") {
+        let dir = std::path::PathBuf::from(dir);
+        std::fs::create_dir_all(&dir).expect("the report folder");
+        let path = dir.join("reversed_by_flow_memory.csv");
+        std::fs::write(&path, rows.join("\n") + "\n").expect("the report written");
+        println!("written to {}", path.display());
+    }
 }

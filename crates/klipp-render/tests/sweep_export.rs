@@ -233,7 +233,11 @@ fn sweep_export() {
     for (p, out, done) in results {
         let (name, s) = (&p.name, &p.settings);
         if let Err(why) = done {
-            sweep.check(&format!("{name} exports"), format!("refused: {why}"), false);
+            if s.video_codec == ExportVideoCodec::H265 && s.bit_depth == 10 && klipp_testing::encoders::no_10_bit_hevc_here(&why) {
+                sweep.skip(&format!("{name} exports"), "no 10-bit HEVC encoder here");
+            } else {
+                sweep.check(&format!("{name} exports"), format!("refused: {why}"), false);
+            }
             continue;
         }
         let has_video = s.format != ExportFormat::Mp3;

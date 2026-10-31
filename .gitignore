@@ -45,7 +45,8 @@ ggml-*.bin
 # Packaging: makepkg's work folders and built packages.
 /packaging/src/
 /packaging/pkg/
-/packaging/*.pkg.tar.zst
+# .zst on Arch Linux, .xz from Arch Linux ARM's makepkg.
+/packaging/*.pkg.tar.*
 
 # Laid out by scripts/vulkan-sdk.sh: headers fetched or linked, not ours to keep.
 /vendor/vulkan-sdk

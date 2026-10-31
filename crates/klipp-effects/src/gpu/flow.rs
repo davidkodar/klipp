@@ -87,6 +87,18 @@ pub(super) struct FlowGpu {
     /// The drawn frame's buffer and its read-back copy (with room for the
     /// count after it), kept for the next frame of the same size.
     frame: Option<(u64, wgpu::Buffer, wgpu::Buffer)>,
+    /// What it keeps, in the GPU memory report (#3174).
+    gauge: crate::gpu_memory::Gauge,
+}
+
+impl FlowGpu {
+    /// What its kept pairs and drawn frame hold, reported (#3174).
+    pub(super) fn report_memory(&mut self) {
+        let pairs: u64 = self.pairs.iter().map(|p| p.bytes).sum();
+        let frame = self.frame.as_ref().map_or(0, |(_, a, b)| a.size() + b.size());
+        let n = self.pairs.len() as u64;
+        self.gauge.report_holding(pairs + frame, crate::gpu_memory::Holding { count: n, in_use: 0, each: pairs.checked_div(n).unwrap_or(0), bytes_per_pixel: 0 });
+    }
 }
 
 /// FNV-1a over every 997th value of `a` and `b` and their lengths: what
@@ -280,6 +292,7 @@ impl FlowGpu {
             synth,
             pairs: Vec::new(),
             frame: None,
+            gauge: crate::gpu_memory::Gauge::new(crate::gpu_memory::Held::FlowPairs),
         }
     }
 }
@@ -288,6 +301,7 @@ impl FlowGpu {
 /// from 0, the first `params`.
 fn pass(device: &wgpu::Device, enc: &mut wgpu::CommandEncoder, pipeline: &wgpu::ComputePipeline, params: &Params, buffers: &[&wgpu::Buffer], (w, h): (u32, u32)) {
     let uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("flow_params"), contents: bytemuck::bytes_of(params), usage: wgpu::BufferUsages::UNIFORM });
+    crate::gpu_memory::made(crate::gpu_memory::Made::FlowUniforms, uniform.size());
     let mut entries = vec![wgpu::BindGroupEntry { binding: 0, resource: uniform.as_entire_binding() }];
     entries.extend(buffers.iter().enumerate().map(|(i, b)| wgpu::BindGroupEntry { binding: i as u32 + 1, resource: b.as_entire_binding() }));
     let layout = pipeline.get_bind_group_layout(0);
@@ -459,6 +473,7 @@ fn estimate_pair(device: &wgpu::Device, queue: &wgpu::Queue, gpu: &FlowGpu, enc:
     let fb = storage("flow_b", frame_bytes, wgpu::BufferUsages::COPY_DST);
     queue.write_buffer(&fa, 0, bytemuck::cast_slice(a));
     queue.write_buffer(&fb, 0, bytemuck::cast_slice(b));
+    crate::gpu_memory::made(crate::gpu_memory::Made::FlowPair, 2 * frame_bytes);
     let mut pair = estimate_fields(device, queue, gpu, enc, key, &fa, &fb, size, luma);
     pair.bytes += 2 * frame_bytes;
     pair.frames = Some((fa, fb));
@@ -485,6 +500,7 @@ fn estimate_fields(device: &wgpu::Device, queue: &wgpu::Queue, gpu: &FlowGpu, en
     let raw = storage("flow_raw", u64::from(work.0 * work.1) * 16, wgpu::BufferUsages::empty());
     let count = storage("flow_count", 4, wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC);
     queue.write_buffer(&count, 0, &[0; 4]);
+    crate::gpu_memory::made(crate::gpu_memory::Made::FlowPair, [&lum_a, &lum_b, &forward, &backward, &raw, &count].iter().map(|b| b.size()).sum());
 
     let base = Params { src_w: size.0, src_h: size.1, lr: luma[0], lg: luma[1], lb: luma[2], ..Params::level(work.0, work.1, 0) };
     pass(device, enc, &gpu.luma, &base, &[fa, &lum_a], work);

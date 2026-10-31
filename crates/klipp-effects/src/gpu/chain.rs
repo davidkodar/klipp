@@ -656,7 +656,29 @@ impl GpuEffectsPipeline {
     /// at once.
     #[doc(hidden)]
     pub fn end_slot_run(&mut self) -> usize {
-        self.slot_pool.end_run()
+        let peak = self.slot_pool.end_run();
+        self.report_memory(peak);
+        peak
+    }
+
+    /// What each of its caches holds now, into the GPU memory report
+    /// (#3174): read at a run's end, after the slots unused for a while
+    /// are dropped; a slot "in use" is the most leased at once in the run.
+    fn report_memory(&mut self, peak_slots: usize) {
+        use crate::gpu_memory::Holding;
+        let kept: Vec<u64> = [&self.buf_a, &self.buf_b, &self.buf_c, &self.matte_buf, &self.staging_read].iter().filter_map(|b| b.as_ref().map(wgpu::Buffer::size)).collect();
+        self.memory_gauges.chain.report_holding(kept.iter().sum(), Holding { count: kept.len() as u64, in_use: 0, each: kept.first().copied().unwrap_or(0), bytes_per_pixel: 16 });
+        let slots = self.slot_pool.bytes(|k| u64::from(k.width) * u64::from(k.height) * 16);
+        let count = self.slot_pool.len() as u64;
+        self.memory_gauges.slots.report_holding(slots, Holding { count, in_use: peak_slots as u64, each: slots.checked_div(count).unwrap_or(0), bytes_per_pixel: 16 });
+        let layers = self.stack_layers.len() as u64 + u64::from(self.stack_acc.is_some());
+        self.memory_gauges.stack.report_holding(layers * self.stack_buf_size, Holding { count: layers, in_use: 0, each: self.stack_buf_size, bytes_per_pixel: 16 });
+        let sprites: u64 = self.stack_sprites.iter().map(|s| s.buffer.size() + s.units.as_ref().map_or(0, |u| u.4.size())).sum();
+        let n = self.stack_sprites.len() as u64;
+        self.memory_gauges.sprites.report_holding(sprites, Holding { count: n, in_use: 0, each: sprites.checked_div(n).unwrap_or(0), bytes_per_pixel: 0 });
+        if let Some(flow) = self.flow_gpu.as_mut() {
+            flow.report_memory();
+        }
     }
 
     /// Record one effect, or one run of spills, into the open chain

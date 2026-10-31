@@ -850,6 +850,9 @@ exist until the plan runs.
   by name or label, and fills its media slots with a media item's id
   (an empty slot shows a dark placeholder until filled). The sequences
   it is made of are copied into the project when it has not got them.
+  Terminal Card is one: a command typed onto a floating dark card, its
+  `command_text`, `accent` colour, `typing_speed`, `entry_direction`
+  (left or right) and `float_amount` its parameters.
   A built-in is laid out for the sequence's frame: on 9:16 a lower
   third or caption sits above the bottom fifth and clear of the right
   edge's buttons, a corner mark goes to the top, and a centred opener

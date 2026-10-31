@@ -1011,6 +1011,7 @@ impl GpuEffectsPipeline {
             chain_bg_build_count: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             chain_encoder: None,
             current_buf_size: 0,
+            memory_gauges: MemoryGauges::default(),
             device_lost,
             submit_count: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             frame_upload_count: Arc::new(std::sync::atomic::AtomicU64::new(0)),

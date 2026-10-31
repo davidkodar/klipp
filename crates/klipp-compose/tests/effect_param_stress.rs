@@ -151,7 +151,7 @@ impl Run {
         let start = Instant::now();
         match catch_unwind(AssertUnwindSafe(|| self.gpu.render_display_u8_on_gpu(&seq, tc(1.0), size.0, size.1, &mut Chart, RenderOptions::default()))) {
             Err(_) => self.failures.push(format!("{what} (GPU): panicked")),
-            Ok(None) if gpu_baseline => self.failures.push(format!("{what} (GPU): the stack declined it")),
+            Ok(None) if gpu_baseline => self.failures.push(format!("{what} (GPU): the stack declined it: {}", self.gpu.last_decline().unwrap_or("no reason given"))),
             Ok(_) => {
                 let fell = klipp_effects::residency::last_frame();
                 if gpu_baseline && fell.fallback_count() > 0 {

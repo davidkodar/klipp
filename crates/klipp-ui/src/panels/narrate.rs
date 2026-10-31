@@ -489,6 +489,10 @@ mod tests {
         for v in &voices {
             assert!(super::picker_label(v).contains(&super::licence_short(v)) && !super::licence_short(v).is_empty(), "{}", v.id);
         }
+        // Each architecture downloads its own build of the engine.
+        #[cfg(not(target_arch = "aarch64"))]
         assert_eq!(super::engine_offer(), "Piper voices need the Piper engine (25.2 MB). Download?");
+        #[cfg(target_arch = "aarch64")]
+        assert_eq!(super::engine_offer(), "Piper voices need the Piper engine (24.8 MB). Download?");
     }
 }

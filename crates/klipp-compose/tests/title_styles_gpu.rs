@@ -906,6 +906,14 @@ fn check_rectangle_motion_fade_modes(panel: fn(bool,u8,u32,u32)->Sequence, modes
     check_rectangle_motion_samples(panel,modes,&[0.0,0.2,0.7,2.6,2.95,0.2]);
 }
 
+/// How far the GPU's moving rectangle may be from the CPU's, in 8-bit
+/// levels. Apple's GPU under Asahi puts a dark pixel on a blurred,
+/// moving edge up to 5 levels off (measured on an M1); elsewhere 3.
+#[cfg(not(target_arch = "aarch64"))]
+const MOTION_LEVELS_APART: u8 = 3;
+#[cfg(target_arch = "aarch64")]
+const MOTION_LEVELS_APART: u8 = 5;
+
 fn check_rectangle_motion_samples(panel: fn(bool,u8,u32,u32)->Sequence, modes: u8, times: &[f64]) {
     let (w,h) = (320,180);
     for fitted in [false,true] {
@@ -927,8 +935,8 @@ fn check_rectangle_motion_samples(panel: fn(bool,u8,u32,u32)->Sequence, modes: u
                     assert!(!events.iter().any(|e|e.work==klipp_effects::residency::Work::Fallback), "{events:?}");
                     assert_eq!(klipp_effects::gpu::thread_readback_stats().count-before.count,1,"only verification download");
                     let worst = got.iter().zip(&want).map(|(a,b)|a.abs_diff(*b)).max().unwrap();
-                    if worst>3 {let i=got.iter().zip(&want).position(|(a,b)|a.abs_diff(*b)==worst).unwrap()/4;eprintln!("pixel {},{} got {:?}, want {:?}",i%w as usize,i/w as usize,&got[i*4..i*4+4],&want[i*4..i*4+4]);}
-                    assert!(worst<=3,"fitted={fitted} mode={mode} {ws:?} time={t}: {worst} levels apart");
+                    if worst>MOTION_LEVELS_APART {let i=got.iter().zip(&want).position(|(a,b)|a.abs_diff(*b)==worst).unwrap()/4;eprintln!("pixel {},{} got {:?}, want {:?}",i%w as usize,i/w as usize,&got[i*4..i*4+4],&want[i*4..i*4+4]);}
+                    assert!(worst<=MOTION_LEVELS_APART,"fitted={fitted} mode={mode} {ws:?} time={t}: {worst} levels apart");
                 }
                 assert_eq!(gpu.title_renderer().resting_renders(),0,"no full title raster");
             }
