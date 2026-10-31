@@ -942,7 +942,7 @@ mod tests {
         let faces = [Face::new(&hebrew, &[]), Face::new(&latin, &[])];
         let text = "שלום עולם";
         let glyphs = lay(&faces, text, &[(0, text.len(), 0)], true);
-        let bands = crate::backing::line_bands(&faces, &glyphs, &[0], false);
+        let bands: Vec<[f32; 4]> = crate::backing::line_bands(&faces, &glyphs, &[0], false).into_iter().map(|(b, _)| b).collect();
         assert_eq!(bands.len(), 1);
         let ink = glyphs.iter().filter(|g| g.width > 0).fold([f32::MAX, f32::MIN], |e, g| [e[0].min(g.x), e[1].max(g.x + g.width as f32)]);
         assert_eq!([bands[0][0], bands[0][2]], ink, "across: the line's ink");

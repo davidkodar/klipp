@@ -302,6 +302,9 @@ impl TitleRenderer {
             pad: 0,
             path: None,
             tracking_origins: Vec::new(),
+            line_boxes: Vec::new(),
+            line_ranges: Vec::new(),
+            lines_vertical: false,
         };
         let id = self.next_cache_id;
         self.next_cache_id = self.next_cache_id.wrapping_add(1);

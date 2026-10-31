@@ -422,7 +422,7 @@ fn posed_glyphs_are_the_cpu_glyph_pose_uploaded() {
             }
         }
     }
-    let units = klipp_title::UnitMap { x0: ux0, y0: uy0, w: uw, h: uh, index, boxes: boxes.to_vec(), parents: vec!['a', 'b', 'c'], pad: 3, path: None, tracking_origins: Vec::new() };
+    let units = klipp_title::UnitMap { x0: ux0, y0: uy0, w: uw, h: uh, index, boxes: boxes.to_vec(), parents: vec!['a', 'b', 'c'], pad: 3, path: None, tracking_origins: Vec::new(), line_boxes: Vec::new(), line_ranges: Vec::new(), lines_vertical: false };
     let pose = |g: usize, dx: f32, dy: f32, scale: f32, alpha: f32, clip: Option<(i32, i32)>| {
         let b = boxes[g];
         let anchor = ((b[0] + b[2]) as f32 * 0.5, (b[1] + b[3]) as f32 * 0.5);

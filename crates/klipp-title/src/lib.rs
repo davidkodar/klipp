@@ -154,6 +154,10 @@ pub struct TitleLayout {
     /// Empty where the text isn't set in lines (on a path).
     pub line_boxes: Vec<[f32; 4]>,
     pub lines_vertical: bool,
+    /// Each line box's glyphs, `from..to`, and, while the text moves, each
+    /// line as its glyphs are posed (#3237); empty at rest.
+    pub line_ranges: Vec<(usize, usize)>,
+    pub line_poses: Vec<backing::LinePose>,
 }
 
 impl TitleLayout {
@@ -161,7 +165,7 @@ impl TitleLayout {
         Self {word_backing:None,alpha_mask:Vec::new(),mask_w:0,mask_h:0,mask_x0:0,mask_y0:0,
             text_left:bounds[0],text_top:bounds[1],text_right:bounds[2],text_bottom:bounds[3],glyph_count,scale,
             glyph_colors:Vec::new(),glyph_coverages:Vec::new(),glyph_index:Vec::new(),glyph_boxes:Vec::new(),glyph_parents:Vec::new(),pad:0,
-            colour_glyphs:Vec::new(),path_units:None,tracking_origins:Vec::new(), line_boxes: Vec::new(), lines_vertical: false}
+            colour_glyphs:Vec::new(),path_units:None,tracking_origins:Vec::new(), line_boxes: Vec::new(), lines_vertical: false, line_ranges: Vec::new(), line_poses: Vec::new()}
     }
 }
 
@@ -186,6 +190,11 @@ pub struct UnitMap {
     pub path: Option<PathUnits>,
     /// Untracked X and frame-space Y before pixel rounding.
     pub tracking_origins: Vec<[f32; 2]>,
+    /// The lines' bands and glyphs, for a backing per line drawn under
+    /// the posed glyphs (#3237).
+    pub line_boxes: Vec<[f32; 4]>,
+    pub line_ranges: Vec<(usize, usize)>,
+    pub lines_vertical: bool,
 }
 
 impl UnitMap {
@@ -226,7 +235,7 @@ impl UnitMap {
                 index[i] = best.1;
             }
         }
-        Self { x0, y0, w, h, index, boxes: layout.glyph_boxes.clone(), parents: layout.glyph_parents.clone(), pad: layout.pad, path: layout.path_units.clone(), tracking_origins: layout.tracking_origins.clone() }
+        Self { x0, y0, w, h, index, boxes: layout.glyph_boxes.clone(), parents: layout.glyph_parents.clone(), pad: layout.pad, path: layout.path_units.clone(), tracking_origins: layout.tracking_origins.clone(), line_boxes: layout.line_boxes.clone(), line_ranges: layout.line_ranges.clone(), lines_vertical: layout.lines_vertical }
     }
 
     /// The glyph at frame pixel `(x, y)`, if any.
@@ -410,11 +419,16 @@ pub enum TitleFrame {
         /// and a roll's focus band (#592).
         shape: Option<ScreenFade>,
         rows: (u32, u32),
+        /// A backing per line drawn under the placed sprite, with its
+        /// colour, where the resting render was made without it (#3237).
+        backing: Option<(BackingLines, [u8; 4])>,
     },
     /// The resting render's glyphs each placed on its own: a motion
     /// that staggers by character, word or line. The frame's bytes are
     /// those `pose_sprite_glyphs` makes from the sprite's `units`.
-    Glyphs { sprite: RestingSprite, poses: Vec<GlyphPose>, rows: (u32, u32) },
+    /// `backing` is a backing per line drawn under the posed glyphs, with
+    /// its colour (#3237).
+    Glyphs { sprite: RestingSprite, poses: Vec<GlyphPose>, rows: (u32, u32), backing: Option<(BackingLines, [u8; 4])> },
     /// Rendered for this time alone.
     Rendered { pixels: BoxRaster, rows: (u32, u32) },
     /// Text layers whose only change is keyed opacity or a whole-layer fade, a
@@ -426,16 +440,66 @@ pub enum TitleFrame {
 }
 
 /// The title whose resting render is the sprite: a full-frame card's
-/// words alone (its fill goes under them when the sprite is placed);
-/// any other title as it is.
+/// words alone (its fill goes under them when the sprite is placed); a
+/// title whose glyphs are posed each on its own, with a backing per line,
+/// its backing made clear (#3237): the boxes are drawn under the posed
+/// glyphs at each frame, where their lines are, and the clear backing
+/// keeps the layout's lines for them; any other title as it is.
 pub fn resting_title(title: &TitleData) -> std::borrow::Cow<'_, TitleData> {
     if card_goes_under(title) {
         let mut words = title.clone();
         words.background = TitleBackground::None;
         std::borrow::Cow::Owned(words)
+    } else if lines_go_under(title) {
+        let mut words = title.clone();
+        if let TitleBackground::Color { color, .. } = &mut words.background {
+            color[3] = 0;
+        }
+        std::borrow::Cow::Owned(words)
     } else {
         std::borrow::Cow::Borrowed(title)
     }
+}
+
+/// Whether a title's frames pose its resting glyphs each on its own: a
+/// staggered motion, an animator, a wave or animated tracking.
+fn poses_its_glyphs(title: &TitleData) -> bool {
+    let staggers = |m: Option<klipp_timeline::Motion>| m.is_some_and(|m| m.stagger != klipp_timeline::StaggerUnit::None);
+    let fx = title.primary_fx();
+    // A wave bobs each glyph on its own too (#2069).
+    let waves = fx.loops.iter().any(|l| matches!(l, klipp_timeline::TitleLoop::Wave { .. }));
+    staggers(fx.motion.enter) || staggers(fx.motion.exit) || fx.animators.iter().any(|a| a.enabled) || waves || tracking::eligible(title)
+}
+
+/// Whether a backing per line goes under a title's posed glyphs rather
+/// than into its resting render (#3237).
+fn lines_go_under(title: &TitleData) -> bool {
+    matches!(title.background, TitleBackground::Color { lines: Some(_), color, .. } if color[3] > 0) && poses_its_glyphs(title)
+}
+
+/// `rows` widened to those `backing` reaches, in a frame `height` tall.
+fn widened(rows: (u32, u32), backing: Option<&(BackingLines, [u8; 4])>, height: u32) -> (u32, u32) {
+    match backing {
+        Some((lines, _)) => {
+            let b = lines.bounds();
+            let (y0, y1) = ((b[1].floor().max(0.0) as u32).min(height), (b[3].ceil().max(0.0) as u32).min(height));
+            if rows.1 <= rows.0 { (y0, y1) } else { (rows.0.min(y0), rows.1.max(y1)) }
+        }
+        None => rows,
+    }
+}
+
+/// The backing per line under a frame of `title` whose glyphs `poses`
+/// places from the resting render `units` maps (#3237), and its colour.
+fn posed_backing(title: &TitleData, units: &UnitMap, poses: &[GlyphPose], scale: f32) -> Option<(BackingLines, [u8; 4])> {
+    let TitleBackground::Color { color, .. } = &title.background else { return None };
+    if !lines_go_under(title) || units.line_boxes.is_empty() {
+        return None;
+    }
+    let rest: Vec<[f32; 4]> = units.boxes.iter().map(|b| b.map(|v| v as f32)).collect();
+    let glyphs: Vec<backing::GlyphPose> = poses.iter().enumerate().map(|(index, p)| backing::GlyphPose { index, dx: p.dx, dy: p.dy, scale: p.scale, alpha: p.alpha }).collect();
+    let lines = backing::line_poses(&units.line_ranges, &rest, &units.parents, &glyphs, units.lines_vertical);
+    title.background_lines(&units.line_boxes, &lines, units.lines_vertical, scale).map(|l| (l, *color))
 }
 
 /// Whether a full-frame card's fill is laid under the sprite when it is
@@ -1323,7 +1387,7 @@ impl TitleRenderer {
                 colour_glyphs: Vec::new(),
                 path_units: None,
                 tracking_origins: Vec::new(),
-                line_boxes: Vec::new(), lines_vertical: false,
+                line_boxes: Vec::new(), lines_vertical: false, line_ranges: Vec::new(), line_poses: Vec::new(),
             };
         }
 
@@ -1443,10 +1507,10 @@ impl TitleRenderer {
             + baseline_shift_px;
         // A backing per line's bands (#3237), where the title has one and
         // the text is set in lines.
-        let line_boxes: Vec<[f32; 4]> = if matches!(title.background, TitleBackground::Color { lines: Some(_), .. }) && !on_path {
-            backing::line_bands(&fonts, glyphs, &line_starts, vertical_active).into_iter().map(|b| [b[0] + offset_x, b[1] + offset_y, b[2] + offset_x, b[3] + offset_y]).collect()
+        let (line_boxes, line_ranges): (Vec<[f32; 4]>, Vec<(usize, usize)>) = if matches!(title.background, TitleBackground::Color { lines: Some(_), .. }) && !on_path {
+            backing::line_bands(&fonts, glyphs, &line_starts, vertical_active).into_iter().map(|(b, r)| ([b[0] + offset_x, b[1] + offset_y, b[2] + offset_x, b[3] + offset_y], r)).unzip()
         } else {
-            Vec::new()
+            (Vec::new(), Vec::new())
         };
         if self.layout_bounds_only {
             return TitleLayout::bounds_only([text_min_x+offset_x,text_min_y+offset_y,text_max_x+offset_x,text_max_y+offset_y],glyphs.len(),scale);
@@ -1554,7 +1618,7 @@ impl TitleRenderer {
                 colour_glyphs: Vec::new(),
                 path_units: None,
                 tracking_origins: Vec::new(),
-                line_boxes: Vec::new(), lines_vertical: false,
+                line_boxes: Vec::new(), lines_vertical: false, line_ranges: Vec::new(), line_poses: Vec::new(),
             };
         }
         if self.gpu_layout_only {
@@ -1577,13 +1641,15 @@ impl TitleRenderer {
             let exit_units=motion_units(glyphs,fx.motion.exit.map(|m|m.stagger).unwrap_or_default());
             let parents:Vec<_>=glyphs.iter().map(|g|g.parent).collect();
             let animated=self.gpu_motion.map(|(time,_)|klipp_core::title_motion::animator_poses(&fx.animators,&parents,font_px,time as f64)).unwrap_or_default();
-            // Each glyph drawn, for the spoken word's box (#2710).
+            // Each glyph drawn, for the spoken word's box (#2710), and each
+            // glyph's pose, for a backing per line's boxes (#3237).
             let mut placed:Vec<(usize,[i32;4],f32)>=Vec::new();
+            let mut glyph_poses:Vec<backing::GlyphPose>=Vec::new();
             for (i,(g,rest_g)) in posed.iter_mut().zip(glyphs).enumerate() {
                 // Spaces still count for selector indices but have no coverage
                 // to expand, blur or rotate.
                 if rest_g.width==0 || rest_g.height==0 {continue;}
-                let mut dx=0.0;let mut dy=0.0;let mut alpha=1.0;let mut clip=[i32::MIN,i32::MAX];let mut sigma=0.0;let mut radians=0.0;let mut colour=None;
+                let mut dx=0.0;let mut dy=0.0;let mut alpha=1.0;let mut clip=[i32::MIN,i32::MAX];let mut sigma=0.0;let mut radians=0.0;let mut colour=None;let mut posed_scale=1.0;
                 if let Some((time,window))=self.gpu_motion {
                     let (pe,_)=fx.motion.progress(time,window,enter_units[i]);
                     let (_,px)=fx.motion.progress(time,window,exit_units[i]);
@@ -1597,6 +1663,7 @@ impl TitleRenderer {
                     if alpha<=0.001 {alpha=0.0;}
                     dx=x1+x2+pose.dx;dy=y1+y2+pose.dy;
                     let scale=s1*s2*pose.scale;
+                    posed_scale=scale;
                     if (scale-1.0).abs()>0.001 {
                         g.key.px=(font_px*scale).max(1.0).copysign(g.key.px);
                         let m=fonts[g.font_index].font.metrics_indexed(g.key.glyph_index,g.key.px.abs());
@@ -1605,6 +1672,7 @@ impl TitleRenderer {
                     if c1||c2 {let top=(rest_g.y+offset_y) as i32;clip=[top,top+rest_g.height as i32];}
                 }
                 if let Some((time,amp,rate))=self.gpu_wave {dy+=(time*rate*std::f32::consts::TAU+i as f32*0.5).sin()*amp;}
+                glyph_poses.push(backing::GlyphPose{index:i,dx,dy,scale:posed_scale,alpha});
                 let source_size=[g.width as u32,g.height as u32];
                 if sigma>=0.5 {let pad=(sigma*2.5).ceil().max(1.0) as usize;g.width+=2*pad;g.height+=2*pad;}
                 if radians!=0.0 {
@@ -1709,7 +1777,9 @@ impl TitleRenderer {
                 source.font_px=tb.font_size*scale;
                 // One box per line (#3237): drawn from its boxes, `backing`
                 // their bounds.
-                if let Some(lines)=title.background_lines(&line_boxes,vertical_active,scale) {
+                // The lines as posed while the text moves (#3237).
+                let line_poses=if (self.gpu_motion.is_some() || self.gpu_wave.is_some()) && !line_boxes.is_empty() {let (rest,parents)=backing::rest_boxes(rest_glyphs,[offset_x,offset_y]);backing::line_poses(&line_ranges,&rest,&parents,&glyph_poses,vertical_active)} else {Vec::new()};
+                if let Some(lines)=title.background_lines(&line_boxes,&line_poses,vertical_active,scale) {
                     let b=lines.bounds();
                     let x0=(b[0].floor() as i32).max(0) as u32;let y0=(b[1].floor() as i32).max(0) as u32;
                     let x1=(b[2].ceil() as i32).clamp(0,width as i32) as u32;let y1=(b[3].ceil() as i32).clamp(0,height as i32) as u32;
@@ -1753,17 +1823,14 @@ impl TitleRenderer {
                 glyph_count:glyphs.len(), scale, glyph_colors:Vec::new(),glyph_coverages:Vec::new(),
                 glyph_index:Vec::new(),glyph_boxes:Vec::new(),glyph_parents:Vec::new(),pad:max_pad,
                 colour_glyphs:Vec::new(),path_units:None,tracking_origins:Vec::new(),
-                line_boxes, lines_vertical: vertical_active,
+                line_boxes, lines_vertical: vertical_active, line_ranges, line_poses: Vec::new(),
             };
         }
         // A staggered motion poses each glyph on its own from the
         // resting render, so it needs to know which glyph a pixel is.
-        let staggers = |m: Option<klipp_timeline::Motion>| m.is_some_and(|m| m.stagger != klipp_timeline::StaggerUnit::None);
         let fx = title.primary_fx();
         let animates = fx.animators.iter().any(|a| a.enabled);
-        // A wave bobs each glyph on its own too (#2069).
-        let waves = fx.loops.iter().any(|l| matches!(l, klipp_timeline::TitleLoop::Wave { .. }));
-        let tag_glyphs = time_secs.is_none() && (staggers(fx.motion.enter) || staggers(fx.motion.exit) || animates || waves || tracking::eligible(title));
+        let tag_glyphs = time_secs.is_none() && poses_its_glyphs(title);
         let mut glyph_index = if tag_glyphs { vec![GLYPH_NONE; mask_w * mask_h] } else { Vec::new() };
 
         // Rasterize glyphs into alpha mask. When the textbox has a
@@ -1776,6 +1843,9 @@ impl TitleRenderer {
         // Each posed glyph's coverage where an animator colours it.
         let mut animated_fills: Vec<(GlyphColorInfo, Vec<u8>)> = Vec::new();
         let mut word_backing = None;
+        // Each glyph's pose while the text moves, for a backing per line's
+        // boxes (#3237).
+        let mut glyph_poses: Vec<backing::GlyphPose> = Vec::new();
         match time_secs {
             Some(t) if fx.motion.is_active() || self.loop_wave.is_some() || animates => {
                 rasterize_to_mask_motion(
@@ -1787,6 +1857,7 @@ impl TitleRenderer {
                     &mut animated_fills,
                     &if animates { resolve_glyph_colors(title, glyphs, &tb.style_runs) } else { Vec::new() },
                     &mut word_backing,
+                    &mut glyph_poses,
                 );
             }
             _ => {
@@ -1949,7 +2020,8 @@ impl TitleRenderer {
             colour_glyphs,
             path_units: None,
             tracking_origins: tracking_origins.into_iter().map(|p| [p[0], p[1] + offset_y]).collect(),
-            line_boxes, lines_vertical: vertical_active,
+            line_poses: if glyph_poses.is_empty() || line_boxes.is_empty() { Vec::new() } else { { let (rest, parents) = backing::rest_boxes(glyphs, [offset_x, offset_y]); backing::line_poses(&line_ranges, &rest, &parents, &glyph_poses, vertical_active) } },
+            line_boxes, lines_vertical: vertical_active, line_ranges,
             word_backing,
         }
     }
@@ -2212,7 +2284,7 @@ impl TitleRenderer {
                 colour_glyphs: Vec::new(),
                 path_units: None,
                 tracking_origins: Vec::new(),
-                line_boxes: Vec::new(), lines_vertical: false,
+                line_boxes: Vec::new(), lines_vertical: false, line_ranges: Vec::new(), line_poses: Vec::new(),
             };
         }
 
@@ -2251,7 +2323,7 @@ impl TitleRenderer {
             return TitleLayout { word_backing: None,alpha_mask:Vec::new(),mask_w:roi[2],mask_h:roi[3],mask_x0:roi[0],mask_y0:roi[1],
                 text_top:text_min_y,text_bottom:text_max_y,text_left:text_min_x,text_right:text_max_x,glyph_count:glyphs.len(),scale,
                 glyph_colors:Vec::new(),glyph_coverages:Vec::new(),glyph_index:Vec::new(),glyph_boxes:Vec::new(),glyph_parents:Vec::new(),pad:max_pad,
-                colour_glyphs:Vec::new(),path_units:None,tracking_origins:Vec::new(), line_boxes: Vec::new(), lines_vertical: false};
+                colour_glyphs:Vec::new(),path_units:None,tracking_origins:Vec::new(), line_boxes: Vec::new(), lines_vertical: false, line_ranges: Vec::new(), line_poses: Vec::new()};
         }
         for (info,_) in &mut path_fills {
             info.mask_x-=crop_x0 as i32;info.mask_y-=crop_y0 as i32;
@@ -2292,7 +2364,7 @@ impl TitleRenderer {
             colour_glyphs: Vec::new(),
             path_units: Some(text_on_path::PathUnits { laid, length, resting: placed }),
             tracking_origins: Vec::new(),
-            line_boxes: Vec::new(), lines_vertical: false,
+            line_boxes: Vec::new(), lines_vertical: false, line_ranges: Vec::new(), line_poses: Vec::new(),
         }
     }
 
@@ -2326,7 +2398,7 @@ impl TitleRenderer {
             (0, h)
         } else {
             let (mut y0, mut y1) = ((layout.mask_y0 as usize).min(h), (layout.mask_y0 as usize + layout.mask_h as usize).min(h));
-            if let Some(lines) = title.background_lines(&layout.line_boxes, layout.lines_vertical, layout.scale) {
+            if let Some(lines) = title.background_lines(&layout.line_boxes, &layout.line_poses, layout.lines_vertical, layout.scale) {
                 // Per line (#3237): the boxes' own reach, the font's ascent
                 // above the ink included.
                 let b = lines.bounds();
@@ -2393,7 +2465,7 @@ impl TitleRenderer {
         let mask_y0 = layout.mask_y0 as usize;
         let alpha_mask = &layout.alpha_mask;
 
-        let lines = title.background_lines(&layout.line_boxes, layout.lines_vertical, scale);
+        let lines = title.background_lines(&layout.line_boxes, &layout.line_poses, layout.lines_vertical, scale);
         paint_backing(buf, title, [layout.text_left, layout.text_top, layout.text_right, layout.text_bottom], lines.as_ref(), width, height, scale);
         // The spoken word's box, where the title has no backing of its
         // own, as the GPU draws it there (#2710).
@@ -2787,7 +2859,7 @@ impl TitleRenderer {
         let rows = if y1 <= y0 { (0, 0) } else { (y0.clamp(0, height as i32) as u32, y1.clamp(0, height as i32) as u32) };
         self.last_rows = rows;
         self.last_blur = 0.0;
-        Some(TitleFrame::Glyphs { sprite, poses, rows })
+        Some(TitleFrame::Glyphs { sprite, poses, rows, backing: None })
     }
 
     /// [`Self::render_with_window`]'s frame in the cheapest exact form:
@@ -2824,11 +2896,21 @@ impl TitleRenderer {
     /// [`Self::render_with_time`] unrounded, in byte units.
     fn stack_with_time(&mut self, title: &TitleData, width: u32, height: u32, gpu: Option<&mut dyn AlphaMaskProcessor>, time_secs: f32) -> Vec<f32> {
         match self.frame_at(title, width, height, gpu, time_secs) {
-            TitleFrame::Placed { sprite, dx, dy, opacity, scale, anchor, under, shape, rows, .. } => {
-                pose_sprite(&sprite.pixels, width, height, dx, dy, opacity, scale, anchor, under, shape, rows)
+            TitleFrame::Placed { sprite, dx, dy, opacity, scale, anchor, under, shape, rows, backing, .. } => {
+                let mut out = pose_sprite(&sprite.pixels, width, height, dx, dy, opacity, scale, anchor, under, shape, rows);
+                if let Some((lines, color)) = &backing {
+                    backing::paint_under(&mut out, width, height, lines, *color);
+                }
+                out
             }
-            TitleFrame::Glyphs { sprite, poses, rows } => match &sprite.units {
-                Some(units) => pose_sprite_glyphs(&sprite.pixels, width, height, units, &poses, rows),
+            TitleFrame::Glyphs { sprite, poses, rows, backing } => match &sprite.units {
+                Some(units) => {
+                    let mut out = pose_sprite_glyphs(&sprite.pixels, width, height, units, &poses, rows);
+                    if let Some((lines, color)) = &backing {
+                        backing::paint_under(&mut out, width, height, lines, *color);
+                    }
+                    out
+                }
                 None => vec![0.0; (width as usize) * (height as usize) * 4],
             },
             TitleFrame::Rendered { pixels, .. } => pixels.to_stack(),
@@ -3195,9 +3277,13 @@ impl TitleRenderer {
                         }
                         if y1 <= y0 { (0, 0) } else { (y0.clamp(0, height as i32) as u32, y1.clamp(0, height as i32) as u32) }
                     };
+                    // A backing per line under the posed glyphs (#3237), and
+                    // the rows it reaches.
+                    let backing = posed_backing(title, &units, &poses, scale);
+                    let rows = widened(rows, backing.as_ref(), height);
                     self.last_rows = rows;
                     self.last_blur = 0.0;
-                    return TitleFrame::Glyphs { sprite, poses, rows };
+                    return TitleFrame::Glyphs { sprite, poses, rows, backing };
                 }
                 // Too many glyphs to pose: rastered, below.
             } else {
@@ -3282,9 +3368,16 @@ impl TitleRenderer {
                 let y1 = grown(rows.1).ceil() + 1.0 + reach;
                 (y0.clamp(0.0, height as f32) as u32, y1.clamp(0.0, height as f32) as u32)
             };
+            // A backing per line under the placed sprite (#3237): its
+            // glyphs moved and faded as the sprite is.
+            let backing = sprite.units.as_ref().and_then(|units| {
+                let pose = GlyphPose { dx: dx as f32, dy: dy as f32, scale: 1.0, alpha: opacity, anchor: (0.0, 0.0), clip: None, moved: [0; 4], rotation: 0.0 };
+                posed_backing(title, units, &vec![pose; units.boxes.len()], crate::frame_scale(width, height))
+            });
+            let rows = widened(rows, backing.as_ref(), height);
             self.last_rows = rows;
             self.last_blur = if blur > 0.5 { blur } else { 0.0 };
-            return TitleFrame::Placed { sprite, dx, dy, opacity, scale, anchor, under, blur: self.last_blur, shape, rows };
+            return TitleFrame::Placed { sprite, dx, dy, opacity, scale, anchor, under, blur: self.last_blur, shape, rows, backing };
             }
         }
         self.last_blur = 0.0;
@@ -3979,7 +4072,7 @@ impl TitleRenderer {
         let fx = title.primary_fx();
         let poses: Vec<text3d_render::Pose> = match time_secs {
             Some(t) if fx.motion.is_active() || fx.animators.iter().any(|a| a.enabled) => {
-                let units = UnitMap { x0: 0, y0: 0, w: 0, h: 0, index: Vec::new(), boxes: layout.glyph_boxes.clone(), parents: layout.glyph_parents.clone(), pad: 0, path: None, tracking_origins: Vec::new() };
+                let units = UnitMap { x0: 0, y0: 0, w: 0, h: 0, index: Vec::new(), boxes: layout.glyph_boxes.clone(), parents: layout.glyph_parents.clone(), pad: 0, path: None, tracking_origins: Vec::new(), line_boxes: Vec::new(), line_ranges: Vec::new(), lines_vertical: false };
                 let glyph = glyph_poses(&units, &fx.motion, &fx.animators, t, self.motion_window, em, (0.0, 0.0, 1.0), false);
                 solids
                     .iter()
@@ -7414,6 +7507,7 @@ fn rasterize_to_mask_motion(
     fills: &mut Vec<(GlyphColorInfo, Vec<u8>)>,
     base_colours: &[[u8; 4]],
     word_backing: &mut Option<([i32; 4], [u8; 4])>,
+    glyph_poses: &mut Vec<backing::GlyphPose>,
 ) {
     let enter_units = motion_units(glyphs, motion.enter.map(|m| m.stagger).unwrap_or_default());
     let exit_units = motion_units(glyphs, motion.exit.map(|m| m.stagger).unwrap_or_default());
@@ -7437,9 +7531,6 @@ fn rasterize_to_mask_motion(
         let (a2, dx2, dy2, s2, b2, c2) = motion.exit.map(|m| m.pose(px, base_font_px)).unwrap_or(rest);
         let pose = animated.get(i).copied().unwrap_or_default();
         let alpha = a1 * a2 * pose.alpha;
-        if alpha <= 0.001 {
-            continue;
-        }
         let wave_dy = match wave {
             Some((amp, rate)) => (time_secs * rate * std::f32::consts::TAU + i as f32 * 0.5).sin() * amp,
             None => 0.0,
@@ -7447,6 +7538,10 @@ fn rasterize_to_mask_motion(
         let dx = dx1 + dx2 + pose.dx;
         let dy = dy1 + dy2 + wave_dy + pose.dy;
         let scale = s1 * s2 * pose.scale;
+        glyph_poses.push(backing::GlyphPose { index: i, dx, dy, scale, alpha });
+        if alpha <= 0.001 {
+            continue;
+        }
         let sigma = b1.max(b2).max(pose.blur);
         let clip_to_rest = c1 || c2;
 

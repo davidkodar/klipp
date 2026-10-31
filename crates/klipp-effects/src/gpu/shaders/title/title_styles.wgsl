@@ -52,13 +52,16 @@ fn smooth_min(a:f32,b:f32,k:f32)->f32 {
     let h=max(k-abs(a-b),0.0)/k;
     return min(a,b)-k*0.5*(1.0+h-sqrt(1.0-h*(h-2.0)));
 }
+// Up to six boxes, how much each shows in stops 6 and 7, four to a
+// stop: the cover times how much the nearest box shows.
 fn line_boxes_cover(pos:vec2<f32>,count:u32,radius:f32,joined:bool)->f32 {
-    var d=0.0;
-    for(var k=0u;k<min(count,8u);k+=1u) {
+    var d=0.0;var nearest=0.0;var alpha=1.0;
+    for(var k=0u;k<min(count,6u);k+=1u) {
         let e=box_distance(pos,bitcast<vec4<f32>>(p.stops[k]),radius);
+        if k==0u || e<nearest {nearest=e;alpha=bitcast<f32>(p.stops[6u+k/4u][k%4u]);}
         if k==0u {d=e;} else if joined {d=smooth_min(d,e,radius);} else {d=min(d,e);}
     }
-    return clamp(0.5-d,0.0,1.0);
+    return clamp(0.5-d,0.0,1.0)*alpha;
 }
 fn rounded_rect(point:vec2<f32>,lo:vec2<f32>,hi:vec2<f32>,r:f32)->bool {
     if any(point<lo) || any(point>hi) {return false;}
@@ -924,6 +927,19 @@ fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgro
         var v=vec4<f32>(rgb,p.color.a*line_boxes_cover(pos,u32(p.offset_x),bitcast<f32>(p.x0),p.y0==1u));
         if p.offset_y==1 {let d=load_dst(i); if d.a>v.a {v=d;}}
         store_rgba(i,v);
+    } else if p.op==57u {
+        // A backing per line laid under what the stack layer holds (#3237):
+        // the glyphs posed from a resting render without it. Rows from y0,
+        // in working light, straight alpha.
+        let fy=y+p.y0;
+        let pos=vec2<f32>(f32(x)+0.5,f32(fy)+0.5);
+        let ba=p.color.a*line_boxes_cover(pos,u32(p.offset_x),bitcast<f32>(p.x0),p.offset_y==1);
+        if ba<=0.0 {return;}
+        let dst=fy*p.frame_width+x;
+        let d=load_dst(dst);
+        let rgb=matrix(vec3<f32>(linear(p.color.x),linear(p.color.y),linear(p.color.z)));
+        let a=d.a+ba*(1.0-d.a);
+        store_rgba(dst,vec4<f32>((d.rgb*d.a+rgb*ba*(1.0-d.a))/a,a));
     } else if p.op==17u {
         let pos=vec2<f32>(f32(x+p.x0),f32(y+p.y0));
         let inside=all(pos>=p.row0.xy)&&all(pos<p.row0.xy+p.row0.zw);
