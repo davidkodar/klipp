@@ -764,6 +764,23 @@ impl InspectorEditHost<'_> {
         match cmd {
             // Built-in effects
             AppCommand::AddBuiltinEffect { clip_id, ref effect } => {
+                // A frei0r plug-in by its installed id, or refused and said
+                // (#3200): a preset or paste from another machine can name
+                // one that isn't here, which used to pass the picture on.
+                let resolved;
+                let effect = match effect {
+                    klipp_effects::BuiltinEffect::Frei0r { type_id, params } => match klipp_effects::frei0r_effect::canonical_type_id(type_id) {
+                        Ok(type_id) => {
+                            resolved = klipp_effects::BuiltinEffect::Frei0r { type_id, params: params.clone() };
+                            &resolved
+                        }
+                        Err(why) => {
+                            self.state.toast.show(format!("The effect was not added: {why}"));
+                            return true;
+                        }
+                    },
+                    other => other,
+                };
                 if let Some(ramped) = self.effect_edits(*clip_id, &[klipp_timeline::EffectEdit::Add(effect)], "Add Effect", true) {
                     self.show_effect_edit(ramped);
                 }

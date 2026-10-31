@@ -4997,3 +4997,28 @@ fn a_poisoned_media_pool_is_still_read() {
     assert_eq!(media["items"].as_array().map(|a| a.len()), Some(1), "{media}");
     h.ok(json!({ "method": "timeline" }));
 }
+
+/// #3200: the socket's effect command takes a frei0r effect only by an
+/// installed plug-in's id, stored as that plug-in's own when its name is
+/// in another case or its folder another machine's; one no installed
+/// plug-in matches is refused, naming the installed nearest it. It used to
+/// be taken, listed on the clip, and the picture passed through.
+#[cfg(feature = "test-hooks")]
+#[test]
+fn a_frei0r_effect_is_added_only_by_an_installed_plug_ins_id() {
+    let mut h = harness();
+    klipp_effects::frei0r_effect::_register_named_for_test("/usr/lib/frei0r-1/klipp3200fx.so", "Klipp3200Fx");
+    let clip = h.sequence.read().unwrap().tracks.iter().flat_map(|t| t.clips.iter()).next().expect("a clip").id;
+    let add = |type_id: &str| json!({"method": "effect_command", "clip_id": clip.to_string(), "action": "add", "effect": {"type": "frei0r", "type_id": type_id, "params": []}});
+    let refused = h.call(add("frei0r:/usr/lib/frei0r-1/nothing3200.so:Nothing3200"));
+    assert_eq!(refused["ok"], json!(false), "{refused}");
+    let why = refused["error"].as_str().unwrap_or_default();
+    assert!(why.contains("is installed") && why.contains("klipp3200fx.so"), "{why}");
+    while h.cmd_rx.try_recv().is_ok() {}
+    h.ok(add("frei0r:/usr/lib64/frei0r-1/klipp3200fx.so:klipp3200fx"));
+    let stored = std::iter::from_fn(|| h.cmd_rx.try_recv().ok()).find_map(|c| match c {
+        klipp_core::AppCommand::AddBuiltinEffect { effect: klipp_effects::BuiltinEffect::Frei0r { type_id, .. }, .. } => Some(type_id),
+        _ => None,
+    });
+    assert_eq!(stored.as_deref(), Some("frei0r:/usr/lib/frei0r-1/klipp3200fx.so:Klipp3200Fx"), "stored as the plug-in's own id");
+}

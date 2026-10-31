@@ -99,6 +99,35 @@ pub enum FixAction {
 /// (state.media_pool, state.sequences, state.disabled_audio_plugins).
 /// stat()-ing media paths is the only I/O and it's bounded by the
 /// project's media count.
+/// The frei0r plug-ins `sequences` use that no installed plug-in is, by
+/// their ids, found as a render finds them (#3200): for saying so when a
+/// project opens, rather than leaving the effects to pass the picture on.
+pub(crate) fn missing_frei0r_plugins(sequences: &[klipp_timeline::Sequence]) -> Vec<String> {
+    let mut missing = std::collections::BTreeSet::new();
+    for clip in sequences.iter().flat_map(|s| s.all_clips()) {
+        let Ok(effects) = clip.picture_effects() else { continue };
+        for fx in effects {
+            if let klipp_effects::BuiltinEffect::Frei0r { type_id, .. } = &fx.effect {
+                if klipp_effects::frei0r_effect::lookup(type_id).is_none() {
+                    missing.insert(type_id.clone());
+                }
+            }
+        }
+    }
+    missing.into_iter().collect()
+}
+
+/// What opening a project says of its missing frei0r plug-ins, each by its
+/// name; `None` when none is.
+pub(crate) fn missing_frei0r_message(missing: &[String]) -> Option<String> {
+    let names: Vec<&str> = missing.iter().map(|id| id.rsplit(':').next().unwrap_or(id)).collect();
+    match names.as_slice() {
+        [] => None,
+        [one] => Some(format!("The frei0r plug-in {one} isn't installed here: its effect leaves the picture unchanged. Project Doctor lists it.")),
+        many => Some(format!("{} frei0r plug-ins aren't installed here ({}): their effects leave the picture unchanged. Project Doctor lists them.", many.len(), many.join(", "))),
+    }
+}
+
 pub fn show_project_doctor_dialog(
     ctx: &egui::Context,
     state: &mut AppState,
@@ -620,16 +649,10 @@ fn scan_project(state: &AppState) -> Vec<Finding> {
     // 2b. Frei0r plugin findings — walk every clip's builtin_effects
     //     list and flag `BuiltinEffect::Frei0r { type_id, .. }`
     //     entries whose plugin isn't currently installed. We use the
-    //     runtime registry (klipp_effects::frei0r_effect::registry_snapshot)
+    //     runtime registry (klipp_effects::frei0r_effect::lookup)
     //     rather than the on-disk cache so the result reflects what
     //     the user can actually run right now, including changes
     //     since the last Rescan.
-    let installed_frei0r: std::collections::HashSet<String> =
-        klipp_effects::frei0r_effect::registry_snapshot()
-            .into_iter()
-            .map(|info| info.type_id())
-            .collect();
-
     if let Some(seq) = active {
         for track in &seq.tracks {
             for clip in &track.clips {
@@ -638,7 +661,9 @@ fn scan_project(state: &AppState) -> Vec<Finding> {
                 let Ok(effects) = clip.picture_effects() else { continue };
                 for (effect_index, fx) in effects.iter().enumerate() {
                     if let klipp_effects::BuiltinEffect::Frei0r { type_id, .. } = &fx.effect {
-                        if installed_frei0r.contains(type_id) {
+                        // Found as a render finds it: by its file and its
+                        // name but for case wherever installed (#3200).
+                        if klipp_effects::frei0r_effect::lookup(type_id).is_some() {
                             continue;
                         }
                         findings.push(Finding {
@@ -782,6 +807,33 @@ mod tests {
         assert_eq!(serde_json::to_value(effects(&state)).unwrap(), serde_json::to_value(now).unwrap());
         assert_eq!(state.active_history().undo_count(), steps + 1);
         assert!(state.toast.message_for_test().is_some(), "the refusal is said");
+    }
+
+    /// #3200: a project made where frei0r lives in another folder, or
+    /// with a plug-in's name in another case, opens with its plug-ins
+    /// found; one this machine hasn't is named when it opens, once
+    /// however many clips use it.
+    #[test]
+    fn a_project_from_another_machine_names_only_the_plug_ins_missing_here() {
+        use klipp_effects::BuiltinEffect as E;
+        use klipp_timeline::test_clip::TestClip;
+        klipp_effects::frei0r_effect::_register_named_for_test("/usr/lib/frei0r-1/klipp3200here.so", "Klipp3200Here");
+        let t = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 25);
+        let with = |type_id: &str| TestClip::of(klipp_timeline::Clip::media(klipp_core::MediaId::new(), t(0.0), t(2.0), t(0.0), t(2.0))).effect(E::Frei0r { type_id: type_id.into(), params: Vec::new() }).build();
+        let mut state = AppState::default();
+        let v1 = state.sequences[0].tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
+        // As saved on a machine with frei0r in /usr/lib64 and in ~/.frei0r-1.
+        state.sequences[0].tracks[v1].clips.extend([
+            with("frei0r:/usr/lib64/frei0r-1/klipp3200here.so:klipp3200here"),
+            with("frei0r:/home/them/.frei0r-1/lib/klipp3200gone.so:Klipp3200Gone"),
+            with("frei0r:/home/them/.frei0r-1/lib/klipp3200gone.so:Klipp3200Gone"),
+        ]);
+        let missing = missing_frei0r_plugins(&state.sequences);
+        assert_eq!(missing, ["frei0r:/home/them/.frei0r-1/lib/klipp3200gone.so:Klipp3200Gone"], "the one here found, the missing one once");
+        let said = missing_frei0r_message(&missing).expect("said on open");
+        assert!(said.contains("Klipp3200Gone") && said.contains("Project Doctor"), "{said}");
+        assert_eq!(missing_frei0r_message(&[]), None);
+        assert_eq!(scan_project(&state).iter().filter(|f| f.category == "MISSING FREI0R PLUGIN").count(), 2, "the doctor lists the missing one's two effects, not the one found here");
     }
 
     fn err(cat: &str) -> Finding {
