@@ -329,6 +329,24 @@ impl Drop for MixThread {
 
 /// The mix thread loop — reads staging consumers, mixes, pushes to main.
 #[allow(clippy::too_many_arguments)]
+/// The mixer, locked (#3181): after a panic while it was held, as the
+/// panic left it with its unfinished block set back
+/// ([`klipp_audio::mixer::AudioMixer::recover_after_panic`]) and the lock
+/// cleared. It used to stay poisoned: every block after was silent, and
+/// every level, routing and volume change was dropped, until a restart.
+pub(crate) fn lock_mixer(mixer: &std::sync::Mutex<klipp_audio::mixer::AudioMixer>) -> std::sync::MutexGuard<'_, klipp_audio::mixer::AudioMixer> {
+    match mixer.lock() {
+        Ok(m) => m,
+        Err(poisoned) => {
+            let mut m = poisoned.into_inner();
+            m.recover_after_panic();
+            mixer.clear_poison();
+            warn!("the audio mixer panicked part way through a block; it was set back and goes on");
+            m
+        }
+    }
+}
+
 fn mix_loop(
     mut producer: AudioProducer,
     cmd_rx: Receiver<MixCommand>,
@@ -348,9 +366,7 @@ fn mix_loop(
     let spectrum_max_samples = (sample_rate as usize) * 2 * 2;
     debug!("Mix thread started");
     // The tracks' own effects run here, at the output's rate (#2560).
-    if let Ok(mut m) = mixer.lock() {
-        m.set_sample_rate(sample_rate);
-    }
+    lock_mixer(&mixer).set_sample_rate(sample_rate);
 
     // Flush-to-zero + denormals-are-zero on the SSE control register. At very
     // low sample magnitudes (silent input running through an EQ, reverb tail
@@ -472,9 +488,7 @@ fn mix_loop(
                     // that we're done — AudioOutput::notify_seek() will drain main.
                     // Also reset PDC delay lines so stale samples from before the
                     // seek don't bleed across the boundary.
-                    if let Ok(mut m) = mixer.lock() {
-                        m.reset_pdc_delay_lines();
-                    }
+                    lock_mixer(&mixer).reset_pdc_delay_lines();
                     ack.store(true, Ordering::Release);
                     debug!("Mix thread: flushed all staging buffers");
                 }
@@ -569,8 +583,9 @@ fn mix_loop(
         // routine. Holding the lock once across all three avoids
         // double-locking on the audio thread.
         let max_track_idx = lanes.iter().map(|(t, _)| *t).max().unwrap_or(0);
-        let mixed = match mixer.lock() {
-            Ok(mut m) => {
+        let mixed = {
+            let mut m = lock_mixer(&mixer);
+            {
                 m.ensure_tracks(max_track_idx + 1);
 
                 // Push any newly-advertised per-track latencies into
@@ -619,10 +634,6 @@ fn mix_loop(
                     .map(|&(track, i)| (track, track_buffers[i].as_slice()))
                     .collect();
                 m.mix(&refs)
-            }
-            Err(e) => {
-                warn!("Mix thread: mutex poisoned: {e}");
-                continue;
             }
         };
 
@@ -835,5 +846,35 @@ mod source_mix_tests {
         assert_eq!(start_frame_for(4.15, 4.0, 1000, 48_000), Some(1000 + 7200));
         assert_eq!(start_frame_for(4.0, 4.0, 1000, 48_000), None, "already started: opened under its clip");
         assert_eq!(start_frame_for(3.9, 4.0, 1000, 48_000), None);
+    }
+}
+
+#[cfg(test)]
+mod lock_tests {
+    use super::lock_mixer;
+
+    /// #3181: a panic while the mixer is locked (an effect's, a plugin's)
+    /// leaves it poisoned; locked again it is set back and the poison
+    /// cleared, and the next block sounds. It used to stay silent, and drop
+    /// every change, until a restart.
+    #[test]
+    fn a_panic_under_the_mixer_lock_does_not_silence_it() {
+        let mixer = std::sync::Mutex::new(klipp_audio::mixer::AudioMixer::new(1));
+        lock_mixer(&mixer).tracks[0].ramp_from = Some((0.2, 0.0));
+        let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _held = mixer.lock().unwrap();
+            panic!("an effect panicked part way through a block");
+        }));
+        assert!(caught.is_err() && mixer.is_poisoned());
+        {
+            let m = lock_mixer(&mixer);
+            assert_eq!(m.tracks[0].ramp_from, None, "no ramp from what the block didn't finish");
+        }
+        assert!(!mixer.is_poisoned(), "the poison cleared");
+        let block = vec![0.5f32; 256];
+        let out = lock_mixer(&mixer).mix(&[(0, block.as_slice())]);
+        assert!(out.iter().any(|s| s.abs() > 0.1), "the next block sounds");
+        lock_mixer(&mixer).tracks[0].volume = 0.5;
+        assert_eq!(lock_mixer(&mixer).tracks[0].volume, 0.5, "a level change is kept");
     }
 }

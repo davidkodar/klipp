@@ -3340,7 +3340,8 @@ impl PlaybackEngine {
                 && self.last_peak_time.elapsed() >= Duration::from_millis(33)
             {
                 self.last_peak_time = std::time::Instant::now();
-                if let Ok(mixer) = self.mixer.lock() {
+                {
+                    let mixer = crate::mix_thread::lock_mixer(&self.mixer);
                     let mut master_l = 0.0f32;
                     let mut master_r = 0.0f32;
                     for (i, track) in mixer.tracks.iter().enumerate() {
@@ -3731,7 +3732,8 @@ impl PlaybackEngine {
                 if let Some(track) = self.sequence.write().unwrap_or_else(|e| e.into_inner()).tracks.get_mut(track_index) {
                     track.volume = volume;
                 }
-                if let Ok(mut m) = self.mixer.lock() {
+                {
+                    let mut m = crate::mix_thread::lock_mixer(&self.mixer);
                     m.ensure_tracks(track_index + 1);
                     m.tracks[track_index].volume = volume;
                 }
@@ -3766,7 +3768,8 @@ impl PlaybackEngine {
                 if let Some(track) = self.sequence.write().unwrap_or_else(|e| e.into_inner()).tracks.get_mut(track_index) {
                     track.pan = pan;
                 }
-                if let Ok(mut m) = self.mixer.lock() {
+                {
+                    let mut m = crate::mix_thread::lock_mixer(&self.mixer);
                     m.ensure_tracks(track_index + 1);
                     m.tracks[track_index].pan = pan;
                 }
@@ -3777,7 +3780,8 @@ impl PlaybackEngine {
                     aout.0.set_master_volume(vol);
                 }
                 // Also keep mixer in sync for VU metering
-                if let Ok(mut m) = self.mixer.lock() {
+                {
+                    let mut m = crate::mix_thread::lock_mixer(&self.mixer);
                     m.master_volume = vol;
                 }
             }
@@ -3917,7 +3921,8 @@ impl PlaybackEngine {
                 }
             }
             AppCommand::SetPanLaw(law) => {
-                if let Ok(mut mixer) = self.mixer.lock() {
+                {
+                    let mut mixer = crate::mix_thread::lock_mixer(&self.mixer);
                     mixer.pan_law = law;
                 }
             }
@@ -4850,7 +4855,8 @@ impl PlaybackEngine {
         if now.iter().all(|a| !a) && was.iter().all(|a| !a) {
             return;
         }
-        if let Ok(mut m) = self.mixer.lock() {
+        {
+            let mut m = crate::mix_thread::lock_mixer(&self.mixer);
             m.ensure_tracks(seq.tracks.len());
             for (i, track) in seq.tracks.iter().enumerate() {
                 if now[i] || was.get(i).copied().unwrap_or(false) {
@@ -4931,7 +4937,7 @@ impl PlaybackEngine {
         use klipp_timeline::TrackParam;
         let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
         let overrides = self.automation_override.lock().map(|o| o.clone()).unwrap_or_default();
-        let Ok(mut m) = self.mixer.lock() else { return };
+        let mut m = crate::mix_thread::lock_mixer(&self.mixer);
         m.ensure_tracks(seq.tracks.len());
         for (i, (lane, track)) in m.tracks.iter_mut().zip(&seq.tracks).enumerate() {
             let set = |param: TrackParam| !track.automation.plays(param) && !overrides.contains_key(&(i, param));
@@ -4950,7 +4956,7 @@ impl PlaybackEngine {
     /// on the button (#2672).
     fn sync_track_switches(&self) {
         let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
-        let Ok(mut m) = self.mixer.lock() else { return };
+        let mut m = crate::mix_thread::lock_mixer(&self.mixer);
         m.ensure_tracks(seq.tracks.len());
         for (lane, track) in m.tracks.iter_mut().zip(&seq.tracks) {
             lane.muted = track.muted;
@@ -4972,7 +4978,8 @@ impl PlaybackEngine {
         self.sync_track_automation(&seq, heard_at);
         // Each track's own effects, on its summed clips before its fader
         // (#2560): the mix thread runs them, as the export does.
-        if let Ok(mut m) = self.mixer.lock() {
+        {
+            let mut m = crate::mix_thread::lock_mixer(&self.mixer);
             for (i, track) in seq.tracks.iter().enumerate().filter(|(_, t)| t.kind == klipp_timeline::TrackKind::Audio) {
                 m.set_track_inserts(i, &track.effects.audio, 8192);
             }
@@ -11420,7 +11427,8 @@ impl PlaybackEngine {
         }
         // Make sure the mixer's source track is silent regardless of
         // who owned audio last.
-        if let Ok(mut m) = self.mixer.lock() {
+        {
+            let mut m = crate::mix_thread::lock_mixer(&self.mixer);
             m.ensure_tracks(self.source_mixer_track_index + 1);
             m.tracks[self.source_mixer_track_index].held = true;
         }
@@ -11622,7 +11630,8 @@ impl PlaybackEngine {
                 self.ensure_mix_pipeline(consumer, track, latency_advertise);
                 // Mark the new track muted by default — Play takes care
                 // of unmuting on the actual handoff.
-                if let Ok(mut m) = self.mixer.lock() {
+                {
+                    let mut m = crate::mix_thread::lock_mixer(&self.mixer);
                     m.ensure_tracks(track + 1);
                     m.tracks[track].held = true;
                 }
@@ -11641,7 +11650,7 @@ impl PlaybackEngine {
     /// The hold is on the mixer (cpal-callback-safe atomics), so the
     /// switch is instant and glitch-free.
     fn set_source_audio_owner(&mut self, source_owns: bool) {
-        let Ok(mut m) = self.mixer.lock() else { return };
+        let mut m = crate::mix_thread::lock_mixer(&self.mixer);
         let n = m.tracks.len();
         for (i, t) in m.tracks.iter_mut().enumerate() {
             if i == self.source_mixer_track_index {
