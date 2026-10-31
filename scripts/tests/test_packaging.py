@@ -106,6 +106,40 @@ class ArchPackagingTests(unittest.TestCase):
         self.assertIn("GGML_NATIVE=OFF", env)
         self.assertIn("CFLAGS=-O2 -march=armv8-a", env)
 
+    def git_build_env(self, carch, rustflags):
+        """The environment a klipp-git build on `carch` hands cargo, as
+        makepkg runs it: CARCH set, its RUSTFLAGS given (or none)."""
+        self.env.pop("KLIPP_RELEASE_VERSION", None)
+        self.env.pop("CARGO_ENCODED_RUSTFLAGS", None)
+        self.env["CARCH"] = carch
+        if rustflags is None:
+            self.env.pop("RUSTFLAGS", None)
+        else:
+            self.env["RUSTFLAGS"] = rustflags
+        if not (self.root / "scripts").exists():
+            self.test_build_uses_the_directory_that_package_reads()
+        cargo = self.bin_dir / "cargo"
+        cargo.write_text('#!/bin/sh\nenv > "$startdir/build-env"\n')
+        result = self.run_function("build")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        env = (self.root / "packaging/build-env").read_text().splitlines()
+        return next((line.split("=", 1)[1] for line in env if line.startswith("RUSTFLAGS=")), None), env
+
+    def test_git_build_links_with_lld_keeping_makepkgs_rust_flags(self):
+        # makepkg's /etc/makepkg.conf.d/rust.conf, which replaces the
+        # Cargo config's flags (lld with them) for every package it builds.
+        makepkg = "-Cforce-frame-pointers=yes"
+        for carch in ("x86_64", "aarch64"):
+            with self.subTest(carch=carch):
+                rustflags, env = self.git_build_env(carch, makepkg)
+                self.assertEqual(rustflags, makepkg + " -C link-arg=-fuse-ld=lld")
+                self.assertFalse(any("target-cpu" in line for line in env if "RUSTFLAGS" in line), "no CPU of this machine's")
+                self.assertFalse(any(line.startswith("CARGO_ENCODED_RUSTFLAGS=") for line in env))
+                rustflags, _ = self.git_build_env(carch, None)
+                self.assertEqual(rustflags, "-C link-arg=-fuse-ld=lld", "lld without makepkg's flags too")
+                rustflags, _ = self.git_build_env(carch, "-C link-arg=-fuse-ld=mold")
+                self.assertEqual(rustflags, "-C link-arg=-fuse-ld=mold", "a linker already chosen is kept")
+
     def test_missing_required_icon_fails_packaging(self):
         (self.root / "assets/branding/klipp-refined/klipp-icon-32.png").unlink()
         result = self.run_function("package")
