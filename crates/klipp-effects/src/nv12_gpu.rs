@@ -60,11 +60,26 @@ pub(crate) struct ResidentPool {
     /// as in the GPU memory report.
     cap: usize,
     past: crate::gpu_memory::Made,
+    /// The memory pressure it last trimmed at (#3174).
+    pressure: u64,
     /// What it keeps, in the GPU memory report (#3174).
     gauge: crate::gpu_memory::Gauge,
 }
 
 impl ResidentPool {
+    /// The GPU ran out of memory since it last looked (#3174): the
+    /// buffers it keeps that nothing else holds are let go.
+    pub(crate) fn trim_if_pressed(&mut self) {
+        let now = crate::gpu_context::memory_pressure();
+        if now == self.pressure {
+            return;
+        }
+        self.pressure = now;
+        self.buffers.retain(|(b, _)| std::sync::Arc::strong_count(b) > 1);
+        let in_use = self.buffers.len() as u64;
+        self.gauge.report_holding(in_use * self.size, crate::gpu_memory::Holding { count: in_use, in_use, each: self.size, bytes_per_pixel: 4 });
+    }
+
     /// A queue's frames, the frames held while they are shown and a few
     /// in flight. Past it a buffer is made fresh, as before, and not kept.
     const CAP: usize = 24;
@@ -78,11 +93,12 @@ impl ResidentPool {
     /// A pool keeping at most `cap` buffers, reported as `held`, a buffer
     /// made past them as `past`.
     pub(crate) fn with_cap(label: &'static str, cap: usize, held: crate::gpu_memory::Held, past: crate::gpu_memory::Made) -> Self {
-        Self { label, size: 0, buffers: Vec::new(), takes: 0, cap, past, gauge: crate::gpu_memory::Gauge::new(held) }
+        Self { label, size: 0, buffers: Vec::new(), takes: 0, cap, past, pressure: crate::gpu_context::memory_pressure(), gauge: crate::gpu_memory::Gauge::new(held) }
     }
 
     /// A `size`-byte buffer nothing else holds: one kept, or one made.
     pub(crate) fn take(&mut self, device: &wgpu::Device, size: u64) -> std::sync::Arc<wgpu::Buffer> {
+        self.trim_if_pressed();
         if size != self.size {
             self.buffers.clear();
             self.size = size;

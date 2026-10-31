@@ -92,6 +92,13 @@ pub(super) struct FlowGpu {
 }
 
 impl FlowGpu {
+    /// Lets go of its kept pairs and drawn frame (#3174): the GPU ran out
+    /// of memory.
+    pub(super) fn let_go(&mut self) {
+        self.pairs.clear();
+        self.frame = None;
+    }
+
     /// What its kept pairs and drawn frame hold, reported (#3174).
     pub(super) fn report_memory(&mut self) {
         let pairs: u64 = self.pairs.iter().map(|p| p.bytes).sum();
@@ -531,6 +538,29 @@ mod tests {
     use crate::flow::tests::square_frame;
 
     const LUMA: [f32; 3] = [0.2126, 0.7152, 0.0722];
+
+    /// #3174: when the GPU runs out of memory, the next run's end lets go
+    /// of what the caches keep for reuse (the stack's layers, the flow
+    /// pairs, the neighbours kept), and the GPU memory report says so.
+    #[test]
+    fn running_out_of_memory_trims_the_caches() {
+        let Some(mut gpu) = gpu() else { return };
+        let held = |name: &str| crate::gpu_memory::snapshot().held.into_iter().find(|h| h.name == name).map_or(0, |h| h.bytes);
+        let make = |gpu: &GpuEffectsPipeline| std::sync::Arc::new(gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("test_layer"), size: 4096, usage: wgpu::BufferUsages::STORAGE, mapped_at_creation: false }));
+        gpu.stack_buf_size = 4096;
+        gpu.stack_layers = vec![make(&gpu), make(&gpu)];
+        gpu.stack_acc = Some(make(&gpu));
+        let neighbour = gpu.neighbour_buffer(4096);
+        drop(neighbour);
+        gpu.end_slot_run();
+        assert!(held("stack_layers") >= 3 * 4096 && held("neighbours") >= 4096, "kept before");
+        crate::gpu_context::note_memory_pressure();
+        gpu.end_slot_run();
+        assert!(gpu.stack_layers.is_empty() && gpu.stack_acc.is_none() && gpu.flow_gpu.as_ref().is_none_or(|f| f.pairs.is_empty()));
+        assert_eq!(gpu.neighbour_pool.lock().unwrap().kept(), 0, "the neighbours nothing holds let go");
+        gpu.end_slot_run();
+        assert_eq!(gpu.stack_layers.len(), 0, "a run without new pressure keeps what it has");
+    }
 
     fn gpu() -> Option<GpuEffectsPipeline> {
         let gpu = GpuEffectsPipeline::new();

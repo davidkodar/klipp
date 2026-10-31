@@ -356,6 +356,81 @@ pub fn note_out_of_memory() {
     OUT_OF_MEMORY_ERRORS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 }
 
+/// Times the GPU has run out of memory this session (#3174): the caches
+/// holding GPU memory let go of what they keep for reuse when it moves.
+static MEMORY_PRESSURE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// How many times the GPU has run out of memory this session: a cache
+/// that read another number when it last trimmed trims again.
+pub fn memory_pressure() -> u64 {
+    MEMORY_PRESSURE.load(std::sync::atomic::Ordering::Acquire)
+}
+
+/// The GPU ran out of memory: the caches trim. Public for tests.
+#[doc(hidden)]
+pub fn note_memory_pressure() {
+    MEMORY_PRESSURE.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+}
+
+/// How long after running out of memory the validation errors that follow
+/// are its doing (#3174): a buffer that failed to be made is then invalid
+/// wherever a pass binds it, for the frame or two still recording.
+pub const OUT_OF_MEMORY_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// What an error from the device means for the GPU stack (#3174).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Verdict {
+    /// Ran out of memory: the caches trim and the next frame tries again.
+    OutOfMemory,
+    /// One dropped command, or out of memory's doing: put up with.
+    Tolerated,
+    /// The device is gone, or the errors don't stop: GPU effects off.
+    Lost,
+}
+
+/// The device's errors as they come (#3174), kept apart by what they mean:
+/// running out of memory is this frame's, and what it leaves invalid
+/// for a moment after is too; a device that is gone is gone whatever
+/// came before; any other validation error is put up with until a run
+/// of them.
+#[derive(Debug, Default)]
+pub struct ErrorTally {
+    last_out_of_memory: Option<std::time::Instant>,
+    counted: u64,
+}
+
+/// Whether an error's text says the device itself is gone: wgpu reports
+/// each call on a lost device as a validation error (#3174), as it does a
+/// failed allocation wgpu-hal maps to a lost device.
+pub fn says_device_lost(text: &str) -> bool {
+    let t = text.to_ascii_lowercase();
+    t.contains("parent device is lost") || t.contains("device is lost") || t.contains("device lost")
+}
+
+impl ErrorTally {
+    /// An error at `now`: out of memory, or a validation error saying
+    /// `text`.
+    pub fn on_error(&mut self, out_of_memory: bool, text: &str, now: std::time::Instant) -> Verdict {
+        if says_device_lost(text) {
+            return Verdict::Lost;
+        }
+        if out_of_memory {
+            self.last_out_of_memory = Some(now);
+            return Verdict::OutOfMemory;
+        }
+        if self.last_out_of_memory.is_some_and(|at| now.duration_since(at) <= OUT_OF_MEMORY_GRACE) {
+            return Verdict::Tolerated;
+        }
+        self.counted += 1;
+        if self.counted > VALIDATION_ERRORS_TOLERATED { Verdict::Lost } else { Verdict::Tolerated }
+    }
+
+    /// Validation errors counted toward switching GPU effects off.
+    pub fn counted(&self) -> u64 {
+        self.counted
+    }
+}
+
 fn register_device_callbacks(
     device: &wgpu::Device,
 ) -> std::sync::Arc<std::sync::atomic::AtomicBool> {
@@ -363,37 +438,43 @@ fn register_device_callbacks(
     let device_lost = std::sync::Arc::new(AtomicBool::new(false));
     {
         let flag = device_lost.clone();
+        let tally = std::sync::Mutex::new(ErrorTally::default());
         device.on_uncaptured_error(Box::new(move |err| {
             // A validation error is one dropped command on a device that
             // is otherwise fine: the frame it was part of is wrong, the
             // next frame records afresh. It used to take the GPU away
             // for the rest of the session, and a 4K timeline then ran on
             // the CPU at five frames a second with nothing on screen to
-            // say why. Only a run of them, or memory or the device going,
-            // does that now.
-            if matches!(err, wgpu::Error::Validation { .. }) {
-                let n = VALIDATION_ERRORS.fetch_add(1, Ordering::SeqCst) + 1;
-                if n <= VALIDATION_ERRORS_TOLERATED {
-                    tracing::error!("WGPU_UNCAPTURED validation error {n} of {VALIDATION_ERRORS_TOLERATED} tolerated: {err}");
-                    tracing::error!("WGPU_UNCAPTURED debug:\n{err:#?}");
-                    return;
-                }
-                tracing::error!("WGPU_UNCAPTURED: {err} — the {n}th validation error, disabling GPU effects");
-            } else if matches!(err, wgpu::Error::OutOfMemory { .. }) {
-                // Out of memory is this frame's: it is counted and said,
-                // and the next frame tries the GPU again (#2394). It used
-                // to switch GPU effects off for the session, every later
-                // frame passed through ungraded, in an export too. GPU
-                // work never stands aside for it: the entries that pass a
-                // frame through would put ungraded frames in an export.
-                note_out_of_memory();
-                tracing::error!("WGPU_UNCAPTURED: {err} — out of GPU memory ({} this session); the next frame tries the GPU again", out_of_memory_errors());
-                return;
-            } else {
-                tracing::error!("WGPU_UNCAPTURED: {err} — disabling GPU effects");
-                tracing::error!("WGPU_UNCAPTURED debug:\n{err:#?}");
+            // say why. Only a run of them, or the device going, does that
+            // now. Out of memory is this frame's (#2394): counted, said,
+            // the caches told to trim, and the next frame tries the GPU
+            // again; what it leaves invalid for a moment after is its
+            // doing, not a run of errors (#3174). GPU work never stands
+            // aside for it: the entries that pass a frame through would
+            // put ungraded frames in an export.
+            let internal = matches!(err, wgpu::Error::Internal { .. });
+            let out_of_memory = matches!(err, wgpu::Error::OutOfMemory { .. });
+            let text = err.to_string();
+            let verdict = if internal { Verdict::Lost } else { tally.lock().unwrap_or_else(|e| e.into_inner()).on_error(out_of_memory, &text, std::time::Instant::now()) };
+            if !out_of_memory && !internal {
+                VALIDATION_ERRORS.fetch_add(1, Ordering::SeqCst);
             }
-            flag.store(true, Ordering::SeqCst);
+            match verdict {
+                Verdict::OutOfMemory => {
+                    note_out_of_memory();
+                    note_memory_pressure();
+                    tracing::error!("WGPU_UNCAPTURED: {err} — out of GPU memory ({} this session); the caches trim and the next frame tries the GPU again", out_of_memory_errors());
+                }
+                Verdict::Tolerated => {
+                    tracing::error!("WGPU_UNCAPTURED validation error, tolerated ({} of {VALIDATION_ERRORS_TOLERATED} counted): {err}", tally.lock().unwrap_or_else(|e| e.into_inner()).counted());
+                    tracing::error!("WGPU_UNCAPTURED debug:\n{err:#?}");
+                }
+                Verdict::Lost => {
+                    tracing::error!("WGPU_UNCAPTURED: {err} — the device is lost or the errors don't stop, disabling GPU effects");
+                    tracing::error!("WGPU_UNCAPTURED debug:\n{err:#?}");
+                    flag.store(true, Ordering::SeqCst);
+                }
+            }
         }));
     }
     {
@@ -411,3 +492,45 @@ fn register_device_callbacks(
     device_lost
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    /// #3174, the M1's case: out of memory, and the burst of validation
+    /// errors what failed to be made leaves after it, is put up with, the
+    /// caches told to trim; after the grace, a run of errors still turns
+    /// GPU effects off past 32.
+    #[test]
+    fn out_of_memory_and_its_errors_keep_the_gpu() {
+        let mut tally = ErrorTally::default();
+        let t0 = Instant::now();
+        assert_eq!(tally.on_error(true, "Not enough memory left.", t0), Verdict::OutOfMemory);
+        for i in 0..84 {
+            assert_eq!(tally.on_error(false, "In a set_bind_group command: Buffer with 'fx_a' label is invalid", t0 + Duration::from_millis(10 * i)), Verdict::Tolerated, "{i}");
+        }
+        assert_eq!(tally.counted(), 0, "none counted toward switching off");
+        let later = t0 + OUT_OF_MEMORY_GRACE + Duration::from_millis(900);
+        for i in 0..VALIDATION_ERRORS_TOLERATED {
+            assert_eq!(tally.on_error(false, "a validation error", later), Verdict::Tolerated, "{i}");
+        }
+        assert_eq!(tally.on_error(false, "a validation error", later), Verdict::Lost, "the 33rd past the grace");
+    }
+
+    /// #3174: a device that is gone is lost at once, the grace after
+    /// running out of memory or not: wgpu says each call on it is a
+    /// validation error, and wgpu-hal makes a lost device of an
+    /// allocation that fails for another reason than memory.
+    #[test]
+    fn a_lost_device_is_lost_even_just_after_out_of_memory() {
+        let t0 = Instant::now();
+        let mut tally = ErrorTally::default();
+        assert_eq!(tally.on_error(false, "Parent device is lost", t0), Verdict::Lost, "with nothing before");
+        let mut tally = ErrorTally::default();
+        assert_eq!(tally.on_error(true, "Not enough memory left.", t0), Verdict::OutOfMemory);
+        assert_eq!(tally.on_error(false, "In Queue::submit: Parent device is lost", t0 + Duration::from_millis(5)), Verdict::Lost, "within the grace");
+        assert!(says_device_lost("Validation Error: Device is lost"));
+        assert!(!says_device_lost("Buffer with 'fx_a' label is invalid"));
+    }
+}
