@@ -74,6 +74,8 @@ mod sweep_export;
 mod pixel_check_fractional;
 #[path = "../precomposition_sound.rs"]
 mod precomposition_sound;
+#[path = "../reversed_sound_shorter_than_its_picture.rs"]
+mod reversed_sound_shorter_than_its_picture;
 #[path = "../reverse_export.rs"]
 mod reverse_export;
 #[path = "../temporal_export_size.rs"]
