@@ -51,6 +51,11 @@ impl SequenceRevision {
 struct Current {
     sequence: Arc<Sequence>,
     revision: SequenceRevision,
+    /// What the viewer shows in place of `sequence` while an entry is
+    /// hovered in a browser (#3210): the sequence with it applied, made
+    /// for this revision and gone with it, so an edit ends it whatever
+    /// else happens. Never the document's: nothing saves or undoes it.
+    preview: Option<Arc<Sequence>>,
 }
 
 /// The sequence as it was when read: holds no lock.
@@ -90,6 +95,7 @@ impl DerefMut for SequenceWrite<'_> {
     fn deref_mut(&mut self) -> &mut Sequence {
         if !self.touched {
             self.current.revision = SequenceRevision::next();
+            self.current.preview = None;
             self.touched = true;
         }
         Arc::make_mut(&mut self.current.sequence)
@@ -98,7 +104,7 @@ impl DerefMut for SequenceWrite<'_> {
 
 impl SharedSequence {
     pub fn new(seq: Sequence) -> Self {
-        Self { current: Mutex::new(Current { sequence: Arc::new(seq), revision: SequenceRevision::next() }) }
+        Self { current: Mutex::new(Current { sequence: Arc::new(seq), revision: SequenceRevision::next(), preview: None }) }
     }
 
     fn lock(&self) -> MutexGuard<'_, Current> {
@@ -151,13 +157,62 @@ impl SharedSequence {
 
     /// Put `seq` in place whole: what a publish of an edited sequence does.
     pub fn replace(&self, seq: Sequence) {
-        *self.lock() = Current { sequence: Arc::new(seq), revision: SequenceRevision::next() };
+        *self.lock() = Current { sequence: Arc::new(seq), revision: SequenceRevision::next(), preview: None };
+    }
+
+    /// Show `preview` in place of the sequence (#3210), if the sequence is
+    /// still at `base`, the revision it was made from: one made from an
+    /// older sequence would show the edits since then undone. Whether it
+    /// was taken.
+    pub fn set_preview(&self, base: SequenceRevision, preview: Arc<Sequence>) -> bool {
+        let mut current = self.lock();
+        let taken = current.revision == base;
+        if taken {
+            current.preview = Some(preview);
+        }
+        taken
+    }
+
+    /// Show the sequence itself again. Whether a preview was up.
+    pub fn clear_preview(&self) -> bool {
+        self.lock().preview.take().is_some()
+    }
+
+    /// [`Self::snapshot_with_revision`], and the preview to show in its
+    /// place, if one is up.
+    pub fn view_with_revision(&self) -> (Arc<Sequence>, SequenceRevision, Option<Arc<Sequence>>) {
+        let current = self.lock();
+        (Arc::clone(&current.sequence), current.revision, current.preview.clone())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #3210: a preview is shown only for the revision it was made from,
+    /// and any change to the sequence, or a sequence put in whole, ends
+    /// it; the sequence itself is never changed by one.
+    #[test]
+    fn a_preview_lasts_only_as_long_as_the_sequence_it_was_made_from() {
+        let shared = SharedSequence::new(Sequence::new_default());
+        let base = shared.revision();
+        let mut previewed = Sequence::new_default();
+        previewed.name = "previewed".into();
+        let previewed = Arc::new(previewed);
+        assert!(shared.set_preview(base, Arc::clone(&previewed)));
+        let (seq, revision, preview) = shared.view_with_revision();
+        assert_eq!((revision, preview.map(|p| p.name.clone())), (base, Some("previewed".into())));
+        assert_ne!(seq.name, "previewed", "the sequence itself is as it was");
+        assert!(shared.clear_preview() && !shared.clear_preview(), "cleared once");
+        assert!(shared.set_preview(base, Arc::clone(&previewed)));
+        shared.write().unwrap().name = "edited".into();
+        assert!(shared.view_with_revision().2.is_none(), "an edit ends it");
+        assert!(!shared.set_preview(base, Arc::clone(&previewed)), "nor is one made before the edit taken");
+        assert!(shared.set_preview(shared.revision(), Arc::clone(&previewed)));
+        shared.replace(Sequence::new_default());
+        assert!(shared.view_with_revision().2.is_none(), "a sequence put in whole ends it");
+    }
 
     #[test]
     fn revisions_track_mutation_without_retaining_a_snapshot() {

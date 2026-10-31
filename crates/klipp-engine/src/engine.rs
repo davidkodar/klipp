@@ -1787,6 +1787,9 @@ pub struct PlaybackEngine {
     /// active clip's graph (so switching clips silently un-solos).
     /// The soloed node's output, by path (M3 step 16a).
     solo: Option<klipp_compose::InspectAt>,
+    /// The frame being drawn again without the preview up (#3210), the
+    /// GPU stack having declined it.
+    preview_declined: bool,
     /// What the viewer shows of the picture (#2758): the picture, or one
     /// channel of it in grey (`AppCommand::SetViewChannel`).
     view_channel: klipp_core::ViewChannel,
@@ -2889,6 +2892,7 @@ impl PlaybackEngine {
             node_sample: None,
             node_sample_since: None,
             solo: None,
+            preview_declined: false,
             view_channel: klipp_core::ViewChannel::Picture,
             fast_solo: None,
             visible_node_thumbs: std::collections::HashSet::new(),
@@ -4240,6 +4244,13 @@ impl PlaybackEngine {
             }
             AppCommand::StopSource => {
                 self.stop_source();
+            }
+            // A preview put up or taken down (#3210): the frame parked is
+            // drawn again with it or without it; playing, the next one is.
+            AppCommand::RefreshPreview => {
+                if self.state != PlaybackState::Playing {
+                    self.regrade_cached_frame();
+                }
             }
 
             AppCommand::SequenceUpdated => {

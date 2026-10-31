@@ -2054,6 +2054,14 @@ pub struct AppState {
     /// (#2945): when it was asked, and the raw skim frame (media, source
     /// seconds) to show for it if the engine doesn't draw it.
     pub timeline_skim_in_flight: Option<(std::time::Instant, Option<(MediaId, f64)>)>,
+    /// The entry a browser has hovered this frame, wanted on the viewer
+    /// (#3210): set while drawing, taken once the frame's commands are
+    /// sent.
+    pub(crate) hover_preview_wanted: Option<crate::app::hover_preview::PreviewWant>,
+    /// The entry hovered and whether its preview is up (#3210).
+    pub(crate) hover_preview: Option<crate::app::hover_preview::HoverPreview>,
+    /// Why the entry by this key can't be previewed, for its tooltip.
+    pub(crate) hover_preview_note: Option<(String, String)>,
     /// The newest timeline skim position asked for while one is in
     /// flight, sent when it is answered.
     pub timeline_skim_queued: Option<(Timecode, Option<(MediaId, f64)>)>,
@@ -4930,6 +4938,9 @@ impl Default for AppState {
             skim_decode_started_at: None,
             skim_queued_request: None,
             timeline_skim_in_flight: None,
+            hover_preview_wanted: None,
+            hover_preview: None,
+            hover_preview_note: None,
             timeline_skim_queued: None,
             timeline_skim_declined: false,
             skim_last_requested: None,

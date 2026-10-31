@@ -1538,6 +1538,10 @@ pub enum AppCommand {
     /// first edit inside it.
     EndHistoryBatchAs { label: String },
     SequenceUpdated,
+    /// The shared sequence's preview was set or cleared (#3210): an entry
+    /// hovered in a browser, shown on the frame without being applied.
+    /// The engine draws the frame again with it, or without it.
+    RefreshPreview,
     /// The sequence's aux buses or sends were changed in place, by the
     /// mixer (#2861): the app gives the engine the sequence and marks the
     /// project changed. The undo step, if any, is already pushed.

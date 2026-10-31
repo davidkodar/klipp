@@ -1203,6 +1203,17 @@ impl PlaybackEngine {
         tracing::debug!("the GPU stack's empty frame drawn ahead at {w}x{h} in {:.1} ms (drawn {})", t.elapsed().as_secs_f64() * 1000.0, drawn.is_some());
     }
 
+    /// The frame drawn without the preview that is up (#3210), the GPU
+    /// stack having declined it: a preview is drawn on the stack or not
+    /// at all, and the browser says it couldn't be.
+    fn present_without_preview(&mut self, primary: Option<HeldFrame>, stack_only: bool) -> bool {
+        self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner()).preview_skipped = true;
+        self.preview_declined = true;
+        let shown = self.present_frame_with(primary, stack_only);
+        self.preview_declined = false;
+        shown
+    }
+
     /// Render the timeline at the playhead and show it. `primary` is the
     /// primary decoder's frame (live or from the pre-grade cache), `None`
     /// when no media clip is under the primary decoder.
@@ -1239,7 +1250,13 @@ impl PlaybackEngine {
         }
         self.frame_phases.sync_ms = ms(t_frame);
         let t = Instant::now();
-        let (snapshot, revision) = self.sequence.snapshot_with_revision();
+        let (snapshot, revision, preview) = self.sequence.view_with_revision();
+        // An entry hovered in a browser (#3210): its sequence drawn in
+        // place of the document's, on the GPU stack only, and kept out of
+        // the caches and the fast paths, which know only the document's.
+        let preview = preview.filter(|_| !self.preview_declined);
+        let previewing = preview.is_some();
+        let snapshot = preview.unwrap_or(snapshot);
         self.frame_phases.snapshot_ms = ms(t);
         let primary_clip = primary.as_ref().and(self.v1_clip_id(&snapshot));
         // A still's one frame, shown wherever it is first (a parked seek
@@ -1298,7 +1315,7 @@ impl PlaybackEngine {
                 ((pw, ph) == (w, h)).then_some(published);
         }
 
-        let cache_key = if progress || stack_only || self.measure_only_clip.is_some() { None } else { self.render_cache_key(&seq, primary_clip, (w, h)) };
+        let cache_key = if progress || stack_only || previewing || self.measure_only_clip.is_some() { None } else { self.render_cache_key(&seq, primary_clip, (w, h)) };
         if let Some(key) = &cache_key {
             // The cached frame is 8-bit, so the display transform over it is
             // a table: no expansion to float on the way to the same bytes.
@@ -1349,7 +1366,7 @@ impl PlaybackEngine {
         // present, for the same bytes. Everything the blockers name —
         // a grade, an effect, a LUT, a tone map, a scope tap, node
         // thumbnails — still takes the full path.
-        if let Some(p) = primary.as_ref().filter(|_| !stack_only && self.measure_only_clip.is_none()) {
+        if let Some(p) = primary.as_ref().filter(|_| !stack_only && !previewing && self.measure_only_clip.is_none()) {
             let mut blockers = self.fast_path_blockers_for(super::FastPath::PausedPresent);
             blockers.extend(self.picture_shape_blocker((p.width, p.height)));
             if !blockers.is_empty() {
@@ -1376,7 +1393,7 @@ impl PlaybackEngine {
             }
         }
 
-        let inspect = self.inspect_request(&seq, primary_clip, solo_cut);
+        let inspect = if previewing { Default::default() } else { self.inspect_request(&seq, primary_clip, solo_cut) };
         let inspected = inspect.clip;
         let primary_ref = primary_clip.zip(primary.as_ref());
 
@@ -1430,12 +1447,18 @@ impl PlaybackEngine {
                 if !declines.is_empty() {
                     self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner()).set_declines(declines);
                 }
+                self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner()).preview_skipped = false;
                 return true;
+            }
+            if previewing {
+                return self.present_without_preview(primary, stack_only);
             }
             if stack_only {
                 return false;
             }
             self.note_composite_path("CPU (the stack declined, see the renderer's reason)");
+        } else if previewing {
+            return self.present_without_preview(primary, stack_only);
         } else if stack_only {
             return false;
         } else if !progress {

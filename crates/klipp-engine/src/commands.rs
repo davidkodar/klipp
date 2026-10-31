@@ -32,7 +32,7 @@ engine_commands!(
     AbandonNodeParamEdit, EndNodeParamEdit, EndScrub, LoadGlobalLut, LoadMediaFile, MediaDecodeChanged, Pause,
     PauseSource, Play, PlaySource, Quit, RenderNodeThumbsFromSource,
     RenderScopesForFrame, RenderScopeSnapshot, ResetEngine, ResetLufsMeter,
-    RenderRange, SampleNodeInput, SeekRelative, SeekSource, SeekTo, SequenceUpdated,
+    RenderRange, SampleNodeInput, SeekRelative, SeekSource, SeekTo, SequenceUpdated, RefreshPreview,
     SetActiveScopeModes, SetAntiClickFade, SetDeliveryTarget, SetClipChannelConfig, SetClipGain,
     SetClipPan, SetClipVolume, SetGlobalLutEnabled, SetGlobalLutOpacity, SetHdrMonitor,
     SetHdrReferenceOutput, SetInspectorMattePreviewTarget, SetMeasureOnlyClip, SetLoopPlayback,

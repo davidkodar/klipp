@@ -46,7 +46,7 @@ impl AppState {
     /// or title track's enabled clip there that has a picture (#1726),
     /// passing over one used only as a matte, which shapes the clip below
     /// rather than showing itself.
-    fn picture_under_playhead(&self) -> Option<ClipId> {
+    pub(crate) fn picture_under_playhead(&self) -> Option<ClipId> {
         let at = self.playhead;
         self.sequence()
             .tracks

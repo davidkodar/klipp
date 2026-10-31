@@ -422,7 +422,10 @@ pub fn show(
                                     state: &mut AppState,
                                     recent_effects: &mut Vec<String>| {
                     for (i, fx) in filtered.iter().enumerate() {
-                            let thumb = state.effect_thumbnails.get_texture(&fx.name);
+                            // A handle, not a borrow of the state the hover
+                            // preview below writes.
+                            let thumb = state.effect_thumbnails.get_texture(&fx.name).cloned();
+                            let thumb = thumb.as_ref();
                             let is_pending = state.effect_thumbnails.is_ofx_pending(&fx.name);
                             let supports_gpu = fx.supports_gpu(&state.available_plugins);
                             let temporal = fx.is_temporal(&state.available_plugins);
@@ -460,6 +463,11 @@ pub fn show(
                             // it contrast.
                             let is_fav = favorite_effects.iter().any(|n| n == &fx.name);
                             let card_hovered = resp.hovered();
+                            // Shown on the clip while hovered (#3210).
+                            let resp = match card_hovered.then(|| crate::app::hover_preview::want_effect(state, &fx.name, &fx.source)).flatten().and_then(|key| crate::app::hover_preview::note_for(state, &key)) {
+                                Some(note) => resp.on_hover_text(note),
+                                None => resp,
+                            };
                             let star_rect = if render_grid {
                                 egui::Rect::from_min_size(
                                     egui::pos2(resp.rect.min.x + 6.0, resp.rect.min.y + 6.0),

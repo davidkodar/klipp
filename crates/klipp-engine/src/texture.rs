@@ -262,6 +262,10 @@ pub struct FrameBuffer {
     /// The nodes the frame on screen didn't draw as asked (M4 step 10),
     /// with the frame they belong to: any newer frame has none of them.
     declines: (FrameStamp, Vec<klipp_nodes::Decline>),
+    /// Whether the last frame drawn while a preview was up (#3210) was
+    /// drawn without it: the GPU stack couldn't draw it, and a preview is
+    /// never drawn another way. The browser says so on the entry.
+    pub preview_skipped: bool,
 
     /// Advances on each complete thumbnail publication, including empty results.
     pub node_thumbs_gen: u64,
@@ -343,6 +347,7 @@ impl FrameBuffer {
             trail: std::collections::VecDeque::new(),
             gpu_output_queue: None,
             declines: Default::default(),
+            preview_skipped: false,
             gpu_output_frame: 0,
             node_thumbs_gen: 0,
             node_thumbnail_batch: None,

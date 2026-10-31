@@ -1674,6 +1674,9 @@ impl KlippApp {
         // 11. Send all commands
         klipp_engine::ui_stage::mark(klipp_engine::ui_stage::SEND_COMMANDS);
         self.send_commands(all_cmds);
+        // After the frame's own commands: a click applying the entry
+        // hovered lands before its preview comes down (#3210).
+        self.update_hover_preview();
         klipp_engine::ui_stage::mark(klipp_engine::ui_stage::POST_COMMANDS);
 
         // 11.5. Upload title overlay texture if a title property was changed this frame
