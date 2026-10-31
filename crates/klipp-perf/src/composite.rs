@@ -325,3 +325,145 @@ pub fn s14_hd_five_layers(cpu_only: bool) -> ScenarioResult {
         b
     })
 }
+
+/// Frames a second the busy scenario plays at, and its frame budget.
+const FILM_FPS: u32 = 24;
+const FILM_BUDGET: f64 = 1000.0 / FILM_FPS as f64;
+
+/// The Terminal Card over a busy UHD picture, played at 24 fps (#3179):
+/// a graded clip, a blurred half-opaque layer over it, music under
+/// them, and the card on top. Every frame of the card plays three
+/// times; the first pass warms up and the other two are measured, so
+/// the drift check compares the same frames played twice rather than
+/// the card's typing against its exit. Frames go into a viewer texture
+/// with nothing read back, the app's playing path, and each waits for
+/// the GPU, so a frame's time is its CPU side (building and encoding
+/// the work) plus the GPU's wait. The decoded pictures are already on
+/// the GPU, as the engine hands them over; decoding them is the
+/// decoders' threads' work and not in these times, and neither is the
+/// music's mix, which plays on the mixer's thread.
+pub fn s22_uhd_terminal_card_busy(cpu_only: bool) -> ScenarioResult {
+    let name = "s22_composite_uhd_terminal_card_busy_24fps";
+    let (w, h) = (3840u32, 2160u32);
+    let ctx = if cpu_only { None } else { GpuContext::shared() };
+    let film = |secs: f64| RationalTime::from_secs_f64(secs, FILM_FPS);
+    let Some(template) = klipp_timeline::composition_template::builtin_templates().into_iter().find(|t| t.name == "Terminal Card") else {
+        eprintln!("{name}: no \"Terminal Card\" among the shipped templates");
+        return summarise(name, w, h, &[], 0, FILM_BUDGET);
+    };
+    let Some(layout) = template.composition_for(w, h).cloned() else {
+        eprintln!("{name}: the Terminal Card has no UHD layout");
+        return summarise(name, w, h, &[], 0, FILM_BUDGET);
+    };
+    let card_secs = layout.total_duration().to_secs_f64();
+    let mut b = sequence(w, h, &[TrackKind::Video, TrackKind::Video, TrackKind::Video, TrackKind::Audio]);
+    let mut card = Clip::precomposition(layout.id, film(0.0), film(card_secs));
+    card.kind = ClipKind::TemplatePrecomposition { sequence_id: layout.id, template_instance: klipp_timeline::composition_template::instance_for(&template) };
+    b.seq.tracks[0].clips.push(card);
+    add_media(&mut b, 1, 0.0, card_secs + 1.0, w, h, ctx, None);
+    b.seq.tracks[1].clips[0].apply_effect_edits(&[klipp_timeline::EffectEdit::Add(&klipp_effects::BuiltinEffect::GaussianBlur { radius: 12.0 })]).expect("a blur is a placed edit").expect("the blur lands on the picture");
+    b.seq.tracks[1].clips[0].apply_effect_edits(&[klipp_timeline::EffectEdit::Add(&klipp_effects::BuiltinEffect::Opacity { value: 0.5 })]).expect("an opacity is a placed edit").expect("the opacity lands on the picture");
+    add_media(&mut b, 2, 0.0, card_secs + 1.0, w, h, ctx, Some(grade3()));
+    b.seq.tracks[3].clips.push(Clip { kind: ClipKind::Media { media_id: klipp_core::MediaId::new() }, ..Clip::gap(film(0.0), film(card_secs + 1.0)) });
+    b.seq.fps = klipp_core::Fps::film_24();
+    let Build { seq, mut src } = b;
+    let mut all = template.sequences.clone();
+    all.push(seq.clone());
+    let flat = klipp_timeline::flatten::flatten_sequence(&seq, &all);
+
+    let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
+    r.set_gpu_enabled(!cpu_only);
+    let texture = ctx.map(|ctx| {
+        ctx.device().create_texture(&wgpu::TextureDescriptor {
+            label: Some("perf_viewer"),
+            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::STORAGE_BINDING,
+            view_formats: &[],
+        })
+    });
+    // One frame: its CPU side, the GPU's wait, and whether any of it ran
+    // on the CPU instead.
+    let mut frame = |r: &mut Renderer, at: f64| -> (f64, f64, Vec<&'static str>) {
+        let scope = klipp_effects::residency::frame("viewer", at);
+        let t0 = Instant::now();
+        let mut whole_frame_on_cpu = cpu_only;
+        if !cpu_only {
+            let out = klipp_compose::DisplayDelivery { texture: texture.as_ref(), bytes: false };
+            whole_frame_on_cpu = r.render_display_on_gpu(&flat, film(at), w, h, &mut src, RenderOptions::default(), out).is_none();
+        }
+        if whole_frame_on_cpu {
+            let linear = r.render(&flat, film(at), w, h, &mut src, RenderOptions::default());
+            std::hint::black_box(klipp_effects::linear_f32_rgba_to_srgb_u8(&linear).len());
+        }
+        let cpu = t0.elapsed().as_secs_f64() * 1000.0;
+        let t1 = Instant::now();
+        if let Some(ctx) = ctx {
+            ctx.device().poll(wgpu::Maintain::Wait);
+        }
+        let gpu = t1.elapsed().as_secs_f64() * 1000.0;
+        drop(scope);
+        let mut fell: Vec<&'static str> = klipp_effects::residency::last_frame().events.iter().filter(|e| e.work == klipp_effects::residency::Work::Fallback).map(|e| e.feature).collect();
+        if whole_frame_on_cpu && !cpu_only {
+            fell.push("whole frame");
+        }
+        (cpu, gpu, fell)
+    };
+    let count = (card_secs * FILM_FPS as f64).floor() as usize;
+    let at = |i: usize| i as f64 / FILM_FPS as f64;
+    for i in 0..count {
+        frame(&mut r, at(i));
+    }
+    let (mut samples, mut cpus, mut gpus) = (Vec::new(), Vec::new(), Vec::new());
+    let (mut fallback_frames, mut features) = (0usize, std::collections::BTreeSet::new());
+    for _ in 0..2 {
+        for i in 0..count {
+            let (cpu, gpu, fell) = frame(&mut r, at(i));
+            samples.push(cpu + gpu);
+            cpus.push(cpu);
+            gpus.push(gpu);
+            if !fell.is_empty() {
+                fallback_frames += 1;
+                features.extend(fell);
+            }
+        }
+    }
+    let over: Vec<usize> = (0..samples.len()).filter(|&i| samples[i] > FILM_BUDGET).collect();
+    // Where in the card the dropped frames fall, and which side held them.
+    for &i in &over {
+        eprintln!("{name}: dropped at {:.3} s: CPU {:.1} ms, GPU wait {:.1} ms", at(i % count), cpus[i], gpus[i]);
+    }
+    let dropped_cpu_bound = over.iter().filter(|&&i| cpus[i] >= gpus[i]).count();
+    let median = |xs: &[f64]| {
+        let mut v = xs.to_vec();
+        v.sort_by(f64::total_cmp);
+        v.get(v.len() / 2).copied().unwrap_or(0.0)
+    };
+    let p90 = {
+        let mut v = samples.clone();
+        v.sort_by(f64::total_cmp);
+        v.get(((v.len() as f64 - 1.0) * 0.9).round() as usize).copied().unwrap_or(0.0)
+    };
+    let label = if fallback_frames > 0 { format!("{name} (CPU fallback {fallback_frames}/{})", samples.len()) } else { name.to_string() };
+    let mut result = summarise(&label, w, h, &samples, 0, FILM_BUDGET);
+    result.warmup_frames = count;
+    // The verdict is on the median: a 24 fps player keeps up when the
+    // typical frame fits, and the frames that do not are counted.
+    result.passed = result.settled && result.p50_ms <= FILM_BUDGET;
+    result.played = Some(crate::stats::Played {
+        fps: FILM_FPS as f64,
+        budget_ms: FILM_BUDGET,
+        p90_ms: p90,
+        dropped: over.len(),
+        dropped_cpu_bound,
+        dropped_gpu_bound: over.len() - dropped_cpu_bound,
+        cpu_p50_ms: median(&cpus),
+        gpu_p50_ms: median(&gpus),
+        fallback_frames,
+        fallback_features: features.into_iter().map(str::to_string).collect(),
+    });
+    result
+}

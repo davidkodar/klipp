@@ -49,6 +49,29 @@ pub struct ScenarioResult {
     /// reads it (#3073).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub gpu_mem_mb: Option<f64>,
+    /// A played run's frames against the frame rate's budget, where a
+    /// scenario plays one (#3179). Its verdict is on the median, not p99.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub played: Option<Played>,
+}
+
+/// A run played at a frame rate: what a viewer would see of it.
+#[derive(Debug, Clone, Serialize)]
+pub struct Played {
+    pub fps: f64,
+    pub budget_ms: f64,
+    pub p90_ms: f64,
+    /// Frames over the budget: the ones a player at `fps` would drop.
+    pub dropped: usize,
+    /// Of those, the ones whose CPU side (building and encoding the
+    /// frame's work) took longer than the GPU's wait for it.
+    pub dropped_cpu_bound: usize,
+    pub dropped_gpu_bound: usize,
+    pub cpu_p50_ms: f64,
+    pub gpu_p50_ms: f64,
+    /// Frames with any work done on the CPU instead of the GPU.
+    pub fallback_frames: usize,
+    pub fallback_features: Vec<String>,
 }
 
 /// Half-to-half drift beyond which a run is not a measurement.
@@ -141,6 +164,7 @@ pub fn summarise(
         settled,
         committed_at_utc: iso8601_now(),
         gpu_mem_mb: None,
+        played: None,
     }
 }
 
@@ -156,18 +180,28 @@ pub fn print_human(r: &ScenarioResult) {
     };
     println!(
         "{name:<40} {verdict}  p50={p50:6.2}ms  p99={p99:6.2}ms  sd={sd:5.2}ms  \
-         drift={drift:+6.1}%  budget_p99={budget:.1}ms  @ {w}x{h}  n={n}",
+         drift={drift:+6.1}%  budget_{on}={budget:.1}ms  @ {w}x{h}  n={n}",
         name = r.scenario,
         verdict = verdict,
         p50 = r.p50_ms,
         p99 = r.p99_ms,
         sd = r.stddev_ms,
         drift = r.drift_pct,
+        on = if r.played.is_some() { "p50" } else { "p99" },
         budget = r.budget_p99_ms,
         w = r.width,
         h = r.height,
         n = r.steady_frames,
     );
+    if let Some(p) = &r.played {
+        println!(
+            "{:>46}├─ at {:.0} fps: p90={:.2}ms worst={:.2}ms, {} of {} over {:.1}ms ({} CPU-bound, {} GPU-bound); \
+             CPU p50 {:.2}ms, GPU wait p50 {:.2}ms; CPU fallback frames {}{}",
+            "", p.fps, p.p90_ms, r.max_ms, p.dropped, r.steady_frames, p.budget_ms, p.dropped_cpu_bound, p.dropped_gpu_bound,
+            p.cpu_p50_ms, p.gpu_p50_ms, p.fallback_frames,
+            if p.fallback_features.is_empty() { String::new() } else { format!(" ({})", p.fallback_features.join(", ")) },
+        );
+    }
     if r.steady_frames == 0 {
         // Skipped, not unstable — saying "still moving" about zero
         // samples reads as a measurement problem when it is an absence.
