@@ -111,6 +111,11 @@ pub fn render_stem(snap: &SequenceSnapshot, go_on: &mut dyn FnMut(f32) -> bool) 
 /// to a `.tmp` beside it, then renamed, so a stem is whole or not there.
 pub fn write_stem(path: &std::path::Path, samples: &[f32]) -> std::io::Result<()> {
     if let Some(dir) = path.parent() {
+        // Never written through a link: the track's folder of a shared
+        // project's cache leading elsewhere.
+        if std::fs::symlink_metadata(dir).is_ok_and(|m| m.file_type().is_symlink()) {
+            return Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, format!("{} is a link", dir.display())));
+        }
         std::fs::create_dir_all(dir)?;
     }
     let tmp = path.with_extension("pcm.tmp");
@@ -124,6 +129,22 @@ pub fn write_stem(path: &std::path::Path, samples: &[f32]) -> std::io::Result<()
 
 #[cfg(test)]
 mod tests {
+    /// A stem is never written through a track folder that is a link.
+    #[test]
+    fn a_stem_is_never_written_through_a_link() {
+        let root = std::env::temp_dir().join(format!("klipp-stem-link-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let outside = root.join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::create_dir_all(root.join("stems")).unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("stems").join("t1")).unwrap();
+        assert!(write_stem(&root.join("stems").join("t1").join("k.pcm"), &[0.0; 4]).is_err());
+        assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 0, "nothing landed outside");
+        write_stem(&root.join("stems").join("t2").join("k.pcm"), &[0.5; 4]).expect("a real folder is written");
+        assert_eq!(std::fs::metadata(root.join("stems").join("t2").join("k.pcm")).unwrap().len(), 16);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     use super::*;
     use klipp_core::{AudioEffectInstance, MediaId, RationalTime};
     use klipp_timeline::{Clip, Track};

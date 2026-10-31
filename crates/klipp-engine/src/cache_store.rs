@@ -63,6 +63,24 @@ struct Entry {
 /// digits, `-` and `_`. Not empty, not absolute, no `.` or `..`: a
 /// namespace is joined onto the root and, cleared, removed with all it
 /// holds, so anything else could reach the root itself or outside it.
+/// Whether `root` or a folder from it down to `dir` is a link.
+fn linked(root: &Path, dir: &Path) -> bool {
+    let is_link = |p: &Path| std::fs::symlink_metadata(p).is_ok_and(|m| m.file_type().is_symlink());
+    let mut at = dir;
+    loop {
+        if is_link(at) {
+            return true;
+        }
+        if at == root {
+            return false;
+        }
+        match at.parent() {
+            Some(up) if up.starts_with(root) => at = up,
+            _ => return false,
+        }
+    }
+}
+
 pub fn valid_namespace(namespace: &str) -> bool {
     !namespace.is_empty()
         && namespace.split('/').all(|c| !c.is_empty() && c.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_'))
@@ -193,6 +211,11 @@ impl CacheStore {
         }
         let path = self.path(namespace, at);
         let dir = path.parent().expect("a frame is in its namespace's folder");
+        // Never written through a link: a folder of a shared project's
+        // cache that leads elsewhere would put the frame there.
+        if linked(&self.root, dir) {
+            return Err(PutRefused::Io(format!("{} leads out of the cache through a link", dir.display())));
+        }
         let write = || -> std::io::Result<()> {
             std::fs::create_dir_all(dir)?;
             let tmp = path.with_extension("klf.tmp");
@@ -387,6 +410,23 @@ mod tests {
         assert!(s.contains("freeze/t1", at(5, 0xa)) && s.contains("freeze/t1", at(5, 0xb)), "the older key kept");
         assert!(s.bytes("freeze/t1") > 0 && s.bytes("freeze/t1") == s.total_bytes());
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// A namespace folder that is a link to somewhere else is never
+    /// written through: refused, and nothing lands there.
+    #[test]
+    fn a_frame_is_never_written_through_a_link() {
+        let d = dir("link");
+        let outside = dir("link-outside");
+        std::fs::create_dir_all(d.join("freeze")).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::os::unix::fs::symlink(&outside, d.join("freeze").join("t1")).unwrap();
+        let mut s = CacheStore::open(&d, 1 << 30);
+        assert!(matches!(s.put("freeze/t1", at(5, 0xa), &frame(0.1)), Err(PutRefused::Io(_))));
+        assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 0, "nothing landed outside");
+        s.put("freeze/t2", at(5, 0xa), &frame(0.1)).expect("a real folder is written");
+        let _ = std::fs::remove_dir_all(&d);
+        let _ = std::fs::remove_dir_all(&outside);
     }
 
     /// Opened again, the store finds what it wrote; a write that never
