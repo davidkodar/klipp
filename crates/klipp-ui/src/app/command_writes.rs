@@ -23,6 +23,8 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::ShowPanel { .. }
         | AppCommand::InjectPointer(_)
         | AppCommand::InjectPanic { .. }
+        | AppCommand::SetFreezeFolder(_)
+        | AppCommand::SetFrozenTracks(_)
         | AppCommand::ShowMaskKeysOnTimeline { .. }
         | AppCommand::SetViewerOverlay { .. }
         | AppCommand::SetMulticamMode { .. }
