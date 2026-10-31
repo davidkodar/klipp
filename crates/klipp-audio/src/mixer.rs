@@ -119,8 +119,8 @@ impl TrackInserts {
     /// passed by or panicked. A panic is that block's: the chain is reset
     /// and runs again next block, until it has panicked
     /// [`INSERT_PANICS_TOLERATED`] times. Said once when it first panics
-    /// and once when it is passed by.
-    fn run(&mut self, buf: &mut [f32], ctx: &crate::dsp::AudioProcessContext, what: &str, panic_now: bool) -> bool {
+    /// and once when it is passed by, as `what` ("track", 2) names it.
+    fn run(&mut self, buf: &mut [f32], ctx: &crate::dsp::AudioProcessContext, what: (&str, usize), panic_now: bool) -> bool {
         if self.bypassed {
             return false;
         }
@@ -129,7 +129,7 @@ impl TrackInserts {
             chain.process(buf, ctx);
             // After writing, as a plugin's might: what it left is not heard.
             if panic_now {
-                panic!("{what}'s effects panicked (a test's)");
+                panic!("{} {}'s effects panicked (a test's)", what.0, what.1);
             }
         }));
         if ran.is_ok() {
@@ -139,9 +139,9 @@ impl TrackInserts {
         self.panics += 1;
         if self.panics >= INSERT_PANICS_TOLERATED {
             self.bypassed = true;
-            tracing::error!("{what}'s effects panicked {} times; they are passed by until an effect is added, removed, or turned on or off", self.panics);
+            tracing::error!("{} {}'s effects panicked {} times; they are passed by until an effect is added, removed, or turned on or off", what.0, what.1, self.panics);
         } else if self.panics == 1 {
-            tracing::warn!("{what}'s effects panicked; that block is played dry and they run again");
+            tracing::warn!("{} {}'s effects panicked; that block is played dry and they run again", what.0, what.1);
         }
         false
     }
@@ -202,6 +202,8 @@ pub struct AudioMixer {
     bus_scratch: Vec<Vec<f32>>,
     track_out: Vec<f32>,
     send_tap: Vec<f32>,
+    /// A bus's sum before its effects, put back when they panic (#3181).
+    bus_dry: Vec<f32>,
     /// Each track's further delay on its own way and on each send, after
     /// its fader (#2861): with `track_delay_lines` before it, they bring
     /// every way through the buses to master together ([`crate::routing::pdc_plan`]).
@@ -239,6 +241,7 @@ impl AudioMixer {
             bus_inserts: Vec::new(),
             bus_scratch: Vec::new(),
             track_out: Vec::new(),
+            bus_dry: Vec::new(),
             send_tap: Vec::new(),
             direct_delay_lines: Vec::new(),
             send_delay_lines: Vec::new(),
@@ -550,7 +553,7 @@ impl AudioMixer {
                     let panic_now = false;
                     inserted.clear();
                     inserted.extend_from_slice(buf);
-                    if inserts.run(&mut inserted, &crate::dsp::AudioProcessContext { sample_rate: self.sample_rate, channels: 2, clip_time_secs: 0.0 }, &format!("track {track_idx}"), panic_now) {
+                    if inserts.run(&mut inserted, &crate::dsp::AudioProcessContext { sample_rate: self.sample_rate, channels: 2, clip_time_secs: 0.0 }, ("track", track_idx), panic_now) {
                         inserted.as_slice()
                     } else {
                         buf
@@ -666,12 +669,13 @@ impl AudioMixer {
                 continue;
             }
             if let Some(inserts) = self.bus_inserts.get_mut(bus_idx).and_then(Option::as_mut) {
-                let mut dry = bus_buf[..frame_len].to_vec();
-                if !inserts.run(&mut bus_buf[..frame_len], &crate::dsp::AudioProcessContext { sample_rate: self.sample_rate, channels: 2, clip_time_secs: 0.0 }, &format!("bus {bus_idx}"), false) {
-                    // Played dry: what a panic left half-written is put back.
-                    bus_buf[..frame_len].copy_from_slice(&dry);
-                }
+                let dry = &mut self.bus_dry;
                 dry.clear();
+                dry.extend_from_slice(&bus_buf[..frame_len]);
+                if !inserts.run(&mut bus_buf[..frame_len], &crate::dsp::AudioProcessContext { sample_rate: self.sample_rate, channels: 2, clip_time_secs: 0.0 }, ("bus", bus_idx), false) {
+                    // Played dry: what a panic left half-written is put back.
+                    bus_buf[..frame_len].copy_from_slice(dry);
+                }
             }
             let gains = Self::pan_gains_for(bus.pan, self.pan_law);
             let dest = match bus.output {
