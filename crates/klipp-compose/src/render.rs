@@ -6751,15 +6751,7 @@ fn transition_at<'a>(seq: &Sequence, track: &'a Track, tr: &klipp_timeline::Tran
     if !a.enabled || !b.enabled {
         return None;
     }
-    let cut = b.timeline_in;
-    let (start, end) = match tr.alignment {
-        klipp_core::TransitionAlignment::Center => {
-            let half = klipp_core::RationalTime { value: tr.duration.value / 2, rate: tr.duration.rate };
-            (cut - half, cut + half)
-        }
-        klipp_core::TransitionAlignment::StartAtCut => (cut, cut + tr.duration),
-        klipp_core::TransitionAlignment::EndAtCut => (cut - tr.duration, cut),
-    };
+    let (start, end) = tr.span(b.timeline_in);
     if time < start || time >= end {
         return None;
     }

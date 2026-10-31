@@ -28,15 +28,7 @@ pub fn span(seq: &Sequence, clip: &Clip) -> (klipp_core::Timecode, klipp_core::T
 
 /// The sequence frames transition `tr` on `track` runs over.
 fn transition_span(track: &klipp_timeline::Track, tr: &klipp_timeline::Transition) -> Option<(klipp_core::Timecode, klipp_core::Timecode)> {
-    let cut = track.find_clip(tr.clip_b_id)?.timeline_in;
-    Some(match tr.alignment {
-        klipp_core::TransitionAlignment::Center => {
-            let half = klipp_core::RationalTime { value: tr.duration.value / 2, rate: tr.duration.rate };
-            (cut - half, cut + half)
-        }
-        klipp_core::TransitionAlignment::StartAtCut => (cut, cut + tr.duration),
-        klipp_core::TransitionAlignment::EndAtCut => (cut - tr.duration, cut),
-    })
+    Some(tr.span(track.find_clip(tr.clip_b_id)?.timeline_in))
 }
 
 /// The turn a clip's frames are decoded upright by: the clip's own when

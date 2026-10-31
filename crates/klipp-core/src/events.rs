@@ -1540,8 +1540,11 @@ pub enum AppCommand {
     SequenceUpdated,
     /// The shared sequence's preview was set or cleared (#3210): an entry
     /// hovered in a browser, shown on the frame without being applied.
-    /// The engine draws the frame again with it, or without it.
-    RefreshPreview,
+    /// The engine draws the frame again with it, or without it. With `at`,
+    /// it draws that time instead, as a timeline skim does, the playhead
+    /// left where it is (a transition, at its middle); without, any such
+    /// skim ends and the parked frame is drawn again.
+    RefreshPreview { at: Option<Timecode> },
     /// The sequence's aux buses or sends were changed in place, by the
     /// mixer (#2861): the app gives the engine the sequence and marks the
     /// project changed. The undo step, if any, is already pushed.

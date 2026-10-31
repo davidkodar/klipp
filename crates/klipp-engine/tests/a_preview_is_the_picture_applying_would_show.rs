@@ -13,6 +13,7 @@ use klipp_effects::BuiltinEffect;
 use klipp_engine::{FrameBuffer, PlaybackEngine};
 use klipp_media::{MediaItem, MediaPool};
 use klipp_timeline::{Clip, ClipKind, EffectEdit, Sequence, SharedSequence, Track, TrackKind};
+use klipp_core::{TransitionAlignment, TransitionId, TransitionKind};
 
 const W: u32 = 1920;
 const H: u32 = 1080;
@@ -104,12 +105,12 @@ fn a_preview_is_drawn_as_applying_it_would_and_leaves_nothing_behind() {
     let base = shared.revision();
     let previewed = frame(&|| {
         assert!(shared.set_preview(base, Arc::clone(&applied)), "the preview is taken");
-        cmd.send(AppCommand::RefreshPreview).unwrap();
+        cmd.send(AppCommand::RefreshPreview { at: None }).unwrap();
     });
     let skipped = fb.lock().unwrap().preview_skipped;
     let down = frame(&|| {
         assert!(shared.clear_preview());
-        cmd.send(AppCommand::RefreshPreview).unwrap();
+        cmd.send(AppCommand::RefreshPreview { at: None }).unwrap();
     });
     assert_eq!(serde_json::to_string(&*shared.snapshot()).unwrap(), doc, "the document's sequence is as it was");
     assert_eq!(shared.revision(), base, "and no edit was made");
@@ -199,7 +200,7 @@ fn a_preview_shows_within_a_frame_for_each_effect() {
             let g = common::generation(&fb);
             let t0 = std::time::Instant::now();
             assert!(shared.set_preview(shared.revision(), Arc::new(with.clone())));
-            cmd.send(AppCommand::RefreshPreview).unwrap();
+            cmd.send(AppCommand::RefreshPreview { at: None }).unwrap();
             let shown = common::wait_new(&fb, g, Duration::from_secs(10)).is_some();
             let ms = t0.elapsed().as_secs_f64() * 1000.0;
             if !warm && shown {
@@ -211,7 +212,7 @@ fn a_preview_shows_within_a_frame_for_each_effect() {
             }
             let g = common::generation(&fb);
             shared.clear_preview();
-            cmd.send(AppCommand::RefreshPreview).unwrap();
+            cmd.send(AppCommand::RefreshPreview { at: None }).unwrap();
             let _ = common::wait_new(&fb, g, Duration::from_secs(10));
         }
     }
@@ -224,4 +225,105 @@ fn a_preview_shows_within_a_frame_for_each_effect() {
     eprintln!("not drawn on the GPU stack, so not previewed: {skipped:?}");
     let over: Vec<_> = times.iter().filter(|t| t.0 > 1000.0 / 60.0).collect();
     eprintln!("over a 60 fps frame (16.7 ms): {over:?}");
+}
+
+/// #3210 PR 2: a transition previewed on a cut away from the playhead is
+/// drawn at its middle, as a timeline skim draws it, the playhead left
+/// parked: the picture the skim of the transition applied shows, not the
+/// cut. Taken down, the parked frame is shown again.
+#[test]
+fn a_transition_previewed_is_drawn_at_its_middle_as_applied() {
+    let Some(path) = hd() else {
+        eprintln!("skipping: no ffmpeg");
+        return;
+    };
+    let fps = Fps::new(FPS, 1);
+    let tc = |s: f64| common::frame_tc((s * f64::from(FPS)).round() as i64, fps);
+    let media = MediaId::new();
+    let mut pool = MediaPool::default();
+    pool.add(MediaItem {
+        id: media,
+        path: path.clone(),
+        kind: klipp_media::MediaItemKind::File,
+        resolution: Resolution { width: W, height: H },
+        is_still: false,
+        has_audio: false,
+        fps,
+        skim_file: Some(path.clone()),
+        ..MediaItem::new_synthetic_title(media, path.display().to_string(), tc(3.0), fps)
+    });
+    // One file cut in two, with handles either side of the cut at 1.2 s:
+    // a shows 0..1.2 of it, b 1.6..2.8.
+    let a = Clip { kind: ClipKind::Media { media_id: media }, source_in: tc(0.0), source_out: tc(1.2), ..Clip::gap(tc(0.0), tc(1.2)) };
+    let b = Clip { kind: ClipKind::Media { media_id: media }, source_in: tc(1.6), source_out: tc(2.8), ..Clip::gap(tc(1.2), tc(2.4)) };
+    let dissolve = klipp_timeline::Transition {
+        id: TransitionId::new(),
+        kind: TransitionKind::CrossDissolve,
+        duration: common::frame_tc(10, fps),
+        clip_a_id: a.id,
+        clip_b_id: b.id,
+        user_params: Default::default(),
+        alignment: TransitionAlignment::Center,
+    };
+    let mut v1 = Track::new("V1", TrackKind::Video);
+    v1.clips = vec![a, b];
+    let mut seq = Sequence::new_default();
+    seq.fps = fps;
+    seq.resolution = Resolution { width: W, height: H };
+    seq.tracks = vec![v1];
+    let mut with = seq.clone();
+    with.tracks[0].transitions.push(dissolve);
+    let (start, end) = dissolve.span(tc(1.2));
+    let middle = RationalTime { value: (start.value + end.value) / 2, rate: start.rate };
+    let with = Arc::new(with);
+
+    let shared = Arc::new(SharedSequence::new(seq.clone()));
+    let (cmd, cmd_rx) = crossbeam_channel::unbounded();
+    let (ev_tx, ev_rx) = crossbeam_channel::unbounded::<AppEvent>();
+    std::thread::spawn(move || while ev_rx.recv().is_ok() {});
+    let fb = Arc::new(Mutex::new(FrameBuffer::new(W, H)));
+    let engine = PlaybackEngine::new(
+        cmd_rx, ev_tx, Arc::clone(&fb), Arc::new(Mutex::new(FrameBuffer::new(W, H))),
+        Arc::clone(&shared), Arc::new(RwLock::new(pool)), Box::new(|| {}),
+        Arc::new(Mutex::new(None)), Arc::new(Mutex::new(klipp_engine::perf::PerfRing::default())),
+    );
+    let thread = std::thread::spawn(move || engine.run());
+    // A skim finds no frame in its budget when the machine is busy (the
+    // rest of the suite runs beside this) and draws nothing then, as the
+    // app does: asked again until it draws, as a pointer resting does.
+    let frame = |send: &dyn Fn()| -> Vec<u8> {
+        let g = common::generation(&fb);
+        let drawn = (0..10).any(|_| {
+            send();
+            common::wait_new(&fb, g, Duration::from_secs(3)).is_some()
+        });
+        assert!(drawn, "no frame was drawn in ten tries");
+        common::settle(&fb);
+        fb.lock().unwrap().latest_frame().0.to_vec()
+    };
+    let parked = frame(&|| cmd.send(AppCommand::SetPlayhead(tc(0.4))).unwrap());
+    // The cut's middle without the transition: one clip or the other.
+    let cut = frame(&|| cmd.send(AppCommand::SkimTimeline { time: middle }).unwrap());
+    let previewed = frame(&|| {
+        assert!(shared.set_preview(shared.revision(), Arc::clone(&with)));
+        cmd.send(AppCommand::RefreshPreview { at: Some(middle) }).unwrap();
+    });
+    let skipped = fb.lock().unwrap().preview_skipped;
+    assert!(shared.clear_preview());
+    let down = frame(&|| cmd.send(AppCommand::RefreshPreview { at: None }).unwrap());
+    // Applied for real: the skim there.
+    let applied = frame(&|| {
+        shared.replace((*with).clone());
+        cmd.send(AppCommand::SkimTimeline { time: middle }).unwrap();
+    });
+    let _ = cmd.send(AppCommand::Quit);
+    let _ = thread.join();
+    klipp_engine::video_decoder::wait_for_decode_threads(Duration::from_secs(10));
+
+    let (from_cut, versus_applied, after_down) = (mean_diff(&previewed, &cut), mean_diff(&previewed, &applied), mean_diff(&down, &parked));
+    eprintln!("transition previewed at its middle: {from_cut:.2} levels from the cut, {versus_applied:.3} from it applied; taken down {after_down:.3} from the parked frame; skipped {skipped}");
+    assert!(!skipped, "the GPU stack drew the preview");
+    assert!(from_cut > 1.0, "the preview shows the dissolve, not the cut: {from_cut:.2} levels apart");
+    assert!(versus_applied < 0.25, "the preview is the dissolve applied: {versus_applied:.3} levels apart");
+    assert!(after_down < 0.25, "taken down, the parked frame is back: {after_down:.3} levels apart");
 }

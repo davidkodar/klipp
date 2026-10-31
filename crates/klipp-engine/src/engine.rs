@@ -4247,11 +4247,20 @@ impl PlaybackEngine {
             }
             // A preview put up or taken down (#3210): the frame parked is
             // drawn again with it or without it; playing, the next one is.
-            AppCommand::RefreshPreview => {
-                if self.state != PlaybackState::Playing {
-                    self.regrade_cached_frame();
+            AppCommand::RefreshPreview { at } => match at {
+                Some(at) => {
+                    let shown = self.skim_timeline(at);
+                    if self.sequence.view_with_revision().2.is_some() {
+                        self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner()).preview_skipped = !shown;
+                    }
                 }
-            }
+                None => {
+                    self.end_skim();
+                    if self.state != PlaybackState::Playing {
+                        self.regrade_cached_frame();
+                    }
+                }
+            },
 
             AppCommand::SequenceUpdated => {
                 // A frozen frame's key reads the pool's media anew (#3207).

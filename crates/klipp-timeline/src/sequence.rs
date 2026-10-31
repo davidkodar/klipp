@@ -2248,6 +2248,21 @@ pub struct Transition {
     pub alignment: klipp_core::TransitionAlignment,
 }
 
+impl Transition {
+    /// The sequence time it runs over, from `cut`, the start of its
+    /// incoming clip, as its alignment places it.
+    pub fn span(&self, cut: Timecode) -> (Timecode, Timecode) {
+        match self.alignment {
+            klipp_core::TransitionAlignment::Center => {
+                let half = klipp_core::RationalTime { value: self.duration.value / 2, rate: self.duration.rate };
+                (cut - half, cut + half)
+            }
+            klipp_core::TransitionAlignment::StartAtCut => (cut, cut + self.duration),
+            klipp_core::TransitionAlignment::EndAtCut => (cut - self.duration, cut),
+        }
+    }
+}
+
 // TransitionKind is defined in klipp-core and re-exported here for backward compatibility.
 pub use klipp_core::TransitionKind;
 

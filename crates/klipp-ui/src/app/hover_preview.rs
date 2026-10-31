@@ -35,13 +35,23 @@ pub(crate) struct HoverPreview {
     pub playing: bool,
 }
 
+/// What [`previewed`] reads beside the sequence: the media, and the
+/// framing analysis a smooth cut is checked by.
+pub(super) struct PreviewContext<'a> {
+    pub pool: &'a klipp_media::MediaPool,
+    pub analysis: &'a crate::transcript::TranscriptSource,
+}
+
 /// `seq` with `cmds` applied, as their click applies them: a clip's added
 /// nodes through `graph_ops_edit`, its placed effects through
-/// `apply_effect_edits`. Or why they can't be shown so: a command that is
-/// no picture edit, a speed change (it moves the clip's frames, and the
-/// decoder with them), a refused edit.
-pub(super) fn previewed(seq: &klipp_timeline::Sequence, cmds: &[AppCommand]) -> Result<klipp_timeline::Sequence, String> {
+/// `apply_effect_edits`, a transition through `transition_edits`. With the
+/// time to show it at: a transition's middle, where the playhead seldom
+/// is; `None` for the frame parked. Or why they can't be shown so: a
+/// command that is no picture edit, a speed change (it moves the clip's
+/// frames, and the decoder with them), a refused edit.
+pub(super) fn previewed(seq: &klipp_timeline::Sequence, cmds: &[AppCommand], ctx: &PreviewContext<'_>) -> Result<(klipp_timeline::Sequence, Option<klipp_core::Timecode>), String> {
     let mut out = seq.clone();
+    let mut at = None;
     let ops: Vec<GraphOp> = cmds.iter().filter_map(path_commands::path_ops).flat_map(|(ops, _)| ops).collect();
     if !ops.is_empty() {
         let outcome = graph_ops::graph_ops_edit(&out, &ops).map_err(|(_, why)| why)?;
@@ -68,11 +78,31 @@ pub(super) fn previewed(seq: &klipp_timeline::Sequence, cmds: &[AppCommand]) -> 
                     None => return Err("the clip can't take this edit through its picture".into()),
                 }
             }
+            AppCommand::AddTransition { track_index, clip_a_id, clip_b_id, kind_id, duration_frames } => {
+                let made = transitions::transition_edits(&out, ctx.pool, ctx.analysis, *track_index, *clip_a_id, *clip_b_id, *kind_id, *duration_frames)?;
+                // Its edits are of the sequence alone; the pool beside
+                // them is a stand-in, never read and dropped after.
+                let mut sequences = vec![out];
+                let mut fps = sequences[0].fps;
+                let mut scratch = klipp_media::MediaPool::default();
+                let mut view = klipp_document::apply::DocumentView { sequences: &mut sequences, active: 0, media_pool: &mut scratch, fps: &mut fps };
+                for edit in &made.edits {
+                    view.apply_forward(edit);
+                }
+                out = sequences.remove(0);
+                let shown = out.tracks.get(*track_index).and_then(|t| t.transitions.iter().find(|x| x.clip_a_id == *clip_a_id && x.clip_b_id == *clip_b_id));
+                let cut = out.tracks.get(*track_index).and_then(|t| t.find_clip(*clip_b_id)).map(|c| c.timeline_in);
+                // Its middle, on a frame: the two pictures most mixed.
+                at = shown.zip(cut).map(|(t, cut)| {
+                    let (start, end) = t.span(cut);
+                    klipp_core::RationalTime { value: (start.value + end.value) / 2, rate: start.rate }
+                });
+            }
             cmd if path_commands::path_ops(cmd).is_some() => {}
             _ => return Err("it isn't a change to the clip's picture".into()),
         }
     }
-    Ok(out)
+    Ok((out, at))
 }
 
 /// What a frame does to the preview, [`step`] says.
@@ -134,11 +164,12 @@ impl KlippApp {
     /// draws and offered for the revision it was made from.
     fn put_preview_up(&mut self, want: &PreviewWant) {
         let (shown, base) = self.sequence.snapshot_with_revision();
-        match previewed(&shown, &want.cmds) {
-            Ok(seq) => {
+        let ctx = PreviewContext { pool: &self.state.media_pool, analysis: &self.transcript_source };
+        match previewed(&shown, &want.cmds, &ctx) {
+            Ok((seq, at)) => {
                 self.state.hover_preview_note = None;
                 if self.sequence.set_preview(base, Arc::new(seq)) {
-                    self.send_commands(vec![AppCommand::RefreshPreview]);
+                    self.send_commands(vec![AppCommand::RefreshPreview { at }]);
                 }
             }
             Err(why) => self.state.hover_preview_note = Some((want.key.clone(), why)),
@@ -147,7 +178,7 @@ impl KlippApp {
 
     fn take_preview_down(&mut self) {
         if self.sequence.clear_preview() {
-            self.send_commands(vec![AppCommand::RefreshPreview]);
+            self.send_commands(vec![AppCommand::RefreshPreview { at: None }]);
         }
     }
 }
@@ -171,6 +202,28 @@ pub(crate) fn want_effect(state: &mut AppState, name: &str, source: &crate::brow
     Some(key)
 }
 
+/// A transition card hovered in the Transitions browser: the transition
+/// on the cut out of the clip a preview goes on, into the next clip on its
+/// track, at the default length, as a double-click puts it there, wanted
+/// on the viewer at its middle. Its key; `None` with no clip, the reason
+/// noted when there is no cut after it.
+pub(crate) fn want_transition(state: &mut AppState, spec: &klipp_core::TransitionSpec) -> Option<String> {
+    let clip = state.selected_clip.or_else(|| state.picture_under_playhead())?;
+    let key = format!("transition:{}:{}", spec.string_key, clip.0);
+    let next = state.sequence().tracks.iter().enumerate().find_map(|(ti, t)| {
+        let at = t.clips.iter().position(|c| c.id == clip)?;
+        Some((ti, t.clips.get(at + 1).map(|c| c.id)))
+    });
+    match next {
+        Some((track_index, Some(clip_b_id))) => {
+            let cmds = vec![AppCommand::AddTransition { track_index, clip_a_id: clip, clip_b_id, kind_id: spec.kind_id, duration_frames: state.default_transition_frames }];
+            state.hover_preview_wanted = Some(PreviewWant { key: key.clone(), cmds });
+        }
+        _ => state.hover_preview_note = Some((key.clone(), "the clip has no cut after it on its track".into())),
+    }
+    Some(key)
+}
+
 /// The tooltip line for the entry by `key` when it can't be previewed.
 pub(crate) fn note_for(state: &AppState, key: &str) -> Option<String> {
     state.hover_preview_note.as_ref().filter(|(k, _)| k == key).map(|(_, why)| format!("Can't preview this one: {why}"))
@@ -180,6 +233,13 @@ pub(crate) fn note_for(state: &AppState, key: &str) -> Option<String> {
 mod tests {
     use super::*;
     use klipp_effects::BuiltinEffect;
+
+    /// [`previewed`] with `state`'s media and no analysis: the sequence
+    /// alone, and the time to show it at.
+    fn shown(state: &AppState, cmds: &[AppCommand]) -> Result<(klipp_timeline::Sequence, Option<klipp_core::Timecode>), String> {
+        let analysis = crate::transcript::TranscriptSource::default();
+        previewed(state.sequence(), cmds, &PreviewContext { pool: &state.media_pool, analysis: &analysis })
+    }
 
     fn timeline(clips: usize) -> (AppState, klipp_core::ClipId) {
         let mut state = AppState::default();
@@ -202,7 +262,7 @@ mod tests {
             let source = crate::browser::effect_registry::EffectSource::Builtin(effect.clone());
             let cmds = crate::browser::effects_tab::effect_commands_in(&state, &source, clip).expect("the commands");
             let before = serde_json::to_string(state.sequence()).unwrap();
-            let shown = previewed(state.sequence(), &cmds).expect("a preview");
+            let (shown, _) = shown(&state, &cmds).expect("a preview");
             assert_eq!(serde_json::to_string(state.sequence()).unwrap(), before, "the sequence previewed from is unchanged");
             // Applied as the click applies them: path edits through the
             // state, a placed effect through the clip's effect list.
@@ -263,12 +323,64 @@ mod tests {
         assert_eq!(s, Step::Nothing, "and it stays down while still hovered");
     }
 
+    /// #3210 PR 2: a transition previewed is the one the Transitions
+    /// browser puts on the cut, made by the same edits, and shown at its
+    /// middle; the sequence previewed from is unchanged. A clip with no
+    /// cut after it has nothing to preview.
+    #[test]
+    fn a_previewed_transition_is_the_one_applied_and_shown_at_its_middle() {
+        let mut state = AppState::default();
+        let tc = |s: f64| klipp_core::Timecode::from_secs_f64(s, 24);
+        // Two shots cut together, each from the middle of a ten-second
+        // file: handles either side for the overlap.
+        let mut shot = |from: f64| {
+            let id = klipp_core::MediaId::new();
+            let mut m = klipp_media::MediaItem::synthetic_for_test(std::path::PathBuf::from(format!("/media/{}.mp4", id.0)), None);
+            m.id = id;
+            m.duration = tc(10.0);
+            state.media_pool.add(m);
+            klipp_timeline::Clip::media(id, tc(from), tc(from + 2.0), tc(4.0), tc(6.0))
+        };
+        let (a, b) = (shot(0.0), shot(2.0));
+        let (a_id, b_id) = (a.id, b.id);
+        let mut track = klipp_timeline::Track::new("V1", klipp_timeline::TrackKind::Video);
+        track.clips = vec![a, b];
+        state.sequences[state.active_sequence_idx].tracks = vec![track];
+        state.selected_clip = Some(a_id);
+        let spec = klipp_core::spec_for_kind(klipp_core::TransitionKind::CrossDissolve);
+        let key = want_transition(&mut state, spec).expect("a clip to preview on");
+        let want = state.hover_preview_wanted.take().expect("a preview wanted");
+        assert_eq!(want.key, key);
+        let before = serde_json::to_string(state.sequence()).unwrap();
+        let (seq, at) = shown(&state, &want.cmds).expect("a preview");
+        assert_eq!(serde_json::to_string(state.sequence()).unwrap(), before, "the sequence previewed from is unchanged");
+        // The edits the browser's click applies, applied.
+        let analysis = crate::transcript::TranscriptSource::default();
+        let made = transitions::transition_edits(state.sequence(), &state.media_pool, &analysis, 0, a_id, b_id, spec.kind_id, state.default_transition_frames).expect("a transition");
+        let mut sequences = vec![state.sequence().clone()];
+        let (mut pool, mut fps) = (state.media_pool.clone(), sequences[0].fps);
+        let mut view = klipp_document::apply::DocumentView { sequences: &mut sequences, active: 0, media_pool: &mut pool, fps: &mut fps };
+        for edit in &made.edits {
+            view.apply_forward(edit);
+        }
+        let shape = |s: &klipp_timeline::Sequence| serde_json::to_value((&s.tracks[0].clips, s.tracks[0].transitions.iter().map(|t| (t.kind, t.duration, t.alignment, t.clip_a_id, t.clip_b_id)).collect::<Vec<_>>())).unwrap();
+        assert_eq!(shape(&seq), shape(&sequences[0]), "the previewed cut is the one applied");
+        let t = seq.tracks[0].transitions.first().expect("a transition on the cut");
+        let (start, end) = t.span(seq.tracks[0].clips[1].timeline_in);
+        let at = at.expect("a time to show it at");
+        assert!(start < at && at < end && (at.value - (start.value + end.value) / 2).abs() <= 1, "shown at {at:?}, its span {start:?}..{end:?}");
+        // The last clip: no cut after it.
+        state.selected_clip = Some(b_id);
+        let key = want_transition(&mut state, spec).expect("a clip");
+        assert!(state.hover_preview_wanted.is_none() && note_for(&state, &key).is_some_and(|n| n.contains("no cut after it")));
+    }
+
     #[test]
     fn a_speed_change_is_not_previewed() {
         let (state, clip) = timeline(1);
         let cmds = vec![AppCommand::AddBuiltinEffect { clip_id: clip, effect: BuiltinEffect::SpeedRamp { speed: 0.5, blend_mode: 2 } }];
-        assert!(previewed(state.sequence(), &cmds).unwrap_err().contains("speed"));
-        assert!(previewed(state.sequence(), &[AppCommand::Play]).is_err(), "nor anything but a picture edit");
+        assert!(shown(&state, &cmds).unwrap_err().contains("speed"));
+        assert!(shown(&state, &[AppCommand::Play]).is_err(), "nor anything but a picture edit");
     }
 
     /// The copy a preview is made on, measured on a long sequence: under
@@ -278,13 +390,13 @@ mod tests {
         let (state, clip) = timeline(2000);
         let source = crate::browser::effect_registry::EffectSource::Builtin(BuiltinEffect::GaussianBlur { radius: 12.0 });
         let cmds = crate::browser::effects_tab::effect_commands_in(&state, &source, clip).expect("the commands");
-        let _ = previewed(state.sequence(), &cmds).expect("a preview");
+        let _ = shown(&state, &cmds).expect("a preview");
         // The fastest of twenty: the suite runs beside it, and a mean
         // measures the machine's load as much as the copy.
         let fastest = (0..20)
             .map(|_| {
                 let t0 = Instant::now();
-                std::hint::black_box(previewed(state.sequence(), &cmds).expect("a preview"));
+                std::hint::black_box(shown(&state, &cmds).expect("a preview"));
                 t0.elapsed().as_secs_f64() * 1000.0
             })
             .fold(f64::INFINITY, f64::min);

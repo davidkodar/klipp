@@ -6,72 +6,17 @@ impl KlippApp {
     pub(super) fn handle_transition_commands(&mut self, cmd: &AppCommand, _needs_refresh: &mut bool) -> bool {
         match cmd {
             AppCommand::AddTransition { track_index, clip_a_id, clip_b_id, kind_id, duration_frames } => {
-                // Through the document's transition op, as the assistant
-                // adds one: the two clips must meet at a cut with handles
-                // for the overlap, it is one undo step, and on an audio
-                // track it is a crossfade. A picture transition crossfades
-                // the linked sound under it where it can, rather than
-                // dipping it to silence at the cut.
-                let seq = self.state.sequence();
-                let next_is_b = seq.tracks.get(*track_index).is_some_and(|t| {
-                    t.clips.iter().position(|c| c.id == *clip_a_id).and_then(|i| t.clips.get(i + 1)).map(|c| c.id) == Some(*clip_b_id)
-                });
-                if !next_is_b {
-                    self.state.toast.show("A transition goes between two clips next to each other on one track".to_string());
-                    return true;
-                }
-                let Some(spec) = klipp_core::spec_for_kind_id(*kind_id) else { return true };
-                // A smooth cut holds the picture still while it morphs, so
-                // it stays short: a third of a second at most (#2219).
-                let duration_frames = &if spec.kind == klipp_core::TransitionKind::SmoothCut {
-                    (*duration_frames).min(((seq.fps.as_f64() / 3.0).round() as u32).max(2))
-                } else {
-                    *duration_frames
-                };
-                let secs =*duration_frames as f64 / seq.fps.as_f64();
-                let op = klipp_document::ops::Op::Transition {
-                    clip_id: klipp_document::ops::ClipRef::Id(*clip_a_id),
-                    kind: spec.string_key.to_string(),
-                    secs,
-                    remove: false,
-                    pieces: None,
-                    color: None,
-                };
-                let fps = seq.fps.as_f64();
-                // With the framing analysis a smooth cut is checked by (#2219).
-                let analysis = &self.transcript_source;
-                let resolved = klipp_document::ops::resolve_with(seq, &self.state.media_pool, std::slice::from_ref(&op), analysis).map(|plan| (plan, *duration_frames));
-                // Not enough media for the length asked: the longest that
-                // fits, said so, rather than nothing (#918).
-                let resolved = resolved.or_else(|refusal| {
-                    // Two framings too unlike to morph are as unlike at
-                    // any length.
-                    if refusal.code == Some(klipp_document::ops::RefusalCode::FramingDiffers) {
-                        return Err(refusal);
-                    }
-                    let fits = |frames: u32| {
-                        let op = klipp_document::ops::Op::Transition {
-                            clip_id: klipp_document::ops::ClipRef::Id(*clip_a_id),
-                            kind: spec.string_key.to_string(),
-                            secs: frames as f64 / fps,
-                            remove: false,
-                            pieces: None,
-                            color: None,
-                        };
-                        klipp_document::ops::resolve_with(seq, &self.state.media_pool, std::slice::from_ref(&op), analysis).ok().map(|plan| (plan, frames))
-                    };
-                    (2..*duration_frames).rev().find_map(fits).ok_or(refusal)
-                });
-                match resolved {
-                    Ok((plan, frames)) => {
-                        let edits: Vec<EditCommand> = plan.steps.iter().map(|s| s.edit.clone()).collect();
+                let made = transition_edits(self.state.sequence(), &self.state.media_pool, &self.transcript_source, *track_index, *clip_a_id, *clip_b_id, *kind_id, *duration_frames);
+                match made {
+                    Ok(TransitionEdits { edits, frames, asked, string_key }) => {
                         self.apply_edits_as_one(&edits, "Add Transition");
-                        crate::browser::library_card::push_recent(&mut self.state.library_recent.transitions, spec.string_key);
-                        if frames < *duration_frames {
+                        crate::browser::library_card::push_recent(&mut self.state.library_recent.transitions, string_key);
+                        if frames < asked {
                             self.state.toast.show(format!("Shortened to {frames} frames: that is all the media there is past the cut"));
                         }
                     }
-                    Err(r) => self.state.toast.show(format!("No transition: {}. {}", r.why, capitalise(&r.hint))),
+                    Err(why) if why.is_empty() => {}
+                    Err(why) => self.state.toast.show(why),
                 }
                 true
             }
@@ -169,5 +114,68 @@ impl KlippApp {
             Ok(edit) => self.apply_edits_as_one(std::slice::from_ref(&edit), "Transition"),
             Err(r) => self.state.toast.show(format!("Transition unchanged: {}. {}", r.why, capitalise(&r.hint))),
         }
+    }
+}
+
+/// What [`transition_edits`] makes.
+pub(super) struct TransitionEdits {
+    pub edits: Vec<EditCommand>,
+    /// The frames it came to, and the frames asked for (a smooth cut's
+    /// already held to its third of a second).
+    pub frames: u32,
+    pub asked: u32,
+    pub string_key: &'static str,
+}
+
+/// The edits that put a transition of `kind_id` on the cut between
+/// `clip_a_id` and `clip_b_id` on track `track_index`, `duration_frames`
+/// long, or as long as the media past the cut allows. They go through the
+/// document's transition op, as the assistant adds one: the two clips
+/// must meet at a cut with handles for the overlap, it is one undo step,
+/// and on an audio track it is a crossfade. A picture transition
+/// crossfades the linked sound under it where it can, rather than
+/// dipping it to silence at the cut. Applied by the Transitions browser
+/// and, on a copy, by its preview (#3210). Or why there's none; empty
+/// for a kind that isn't known.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn transition_edits(seq: &klipp_timeline::Sequence, pool: &klipp_media::MediaPool, analysis: &crate::transcript::TranscriptSource, track_index: usize, clip_a_id: klipp_core::ClipId, clip_b_id: klipp_core::ClipId, kind_id: u8, duration_frames: u32) -> Result<TransitionEdits, String> {
+    let next_is_b = seq.tracks.get(track_index).is_some_and(|t| {
+        t.clips.iter().position(|c| c.id == clip_a_id).and_then(|i| t.clips.get(i + 1)).map(|c| c.id) == Some(clip_b_id)
+    });
+    if !next_is_b {
+        return Err("A transition goes between two clips next to each other on one track".to_string());
+    }
+    let Some(spec) = klipp_core::spec_for_kind_id(kind_id) else { return Err(String::new()) };
+    // A smooth cut holds the picture still while it morphs, so it stays
+    // short: a third of a second at most (#2219).
+    let asked = if spec.kind == klipp_core::TransitionKind::SmoothCut {
+        duration_frames.min(((seq.fps.as_f64() / 3.0).round() as u32).max(2))
+    } else {
+        duration_frames
+    };
+    let fps = seq.fps.as_f64();
+    let op = |frames: u32| klipp_document::ops::Op::Transition {
+        clip_id: klipp_document::ops::ClipRef::Id(clip_a_id),
+        kind: spec.string_key.to_string(),
+        secs: frames as f64 / fps,
+        remove: false,
+        pieces: None,
+        color: None,
+    };
+    // With the framing analysis a smooth cut is checked by (#2219).
+    let resolved = klipp_document::ops::resolve_with(seq, pool, std::slice::from_ref(&op(asked)), analysis).map(|plan| (plan, asked));
+    // Not enough media for the length asked: the longest that fits, said
+    // so, rather than nothing (#918).
+    let resolved = resolved.or_else(|refusal| {
+        // Two framings too unlike to morph are as unlike at any length.
+        if refusal.code == Some(klipp_document::ops::RefusalCode::FramingDiffers) {
+            return Err(refusal);
+        }
+        let fits = |frames: u32| klipp_document::ops::resolve_with(seq, pool, std::slice::from_ref(&op(frames)), analysis).ok().map(|plan| (plan, frames));
+        (2..asked).rev().find_map(fits).ok_or(refusal)
+    });
+    match resolved {
+        Ok((plan, frames)) => Ok(TransitionEdits { edits: plan.steps.iter().map(|s| s.edit.clone()).collect(), frames, asked, string_key: spec.string_key }),
+        Err(r) => Err(format!("No transition: {}. {}", r.why, capitalise(&r.hint))),
     }
 }
