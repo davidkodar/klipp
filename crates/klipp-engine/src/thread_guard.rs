@@ -14,6 +14,10 @@
 //! caller's supervisor (engine observing a disconnected channel,
 //! stopped flag, or missing frames) decides recovery policy.
 //!
+//! All of this needs a panic to unwind: the release profile sets
+//! `panic = "unwind"` for it (#3181), checked by a test below. Under
+//! `abort` a panic on any of these threads ended the app.
+//!
 //! [`catch_panic_once`] is the realtime-callback variant. cpal audio
 //! callbacks fire ~90 times per second; if the callback body keeps
 //! panicking, plain [`catch_panic`] would flood the log at that rate.
@@ -28,10 +32,16 @@ use std::sync::atomic::{AtomicBool, Ordering};
 /// with `thread_name` and return normally. Non-panic paths return
 /// unchanged.
 pub fn catch_panic(thread_name: &str, body: impl FnOnce()) {
-    if let Err(payload) = catch_unwind(AssertUnwindSafe(body)) {
-        let msg = panic_payload_message(&payload);
-        tracing::error!("thread '{thread_name}' panicked: {msg}");
-    }
+    caught_panic(thread_name, body);
+}
+
+/// [`catch_panic`], saying whether `body` panicked: for a supervisor
+/// that makes the thread's work again (#3181).
+pub fn caught_panic(thread_name: &str, body: impl FnOnce()) -> bool {
+    let Err(payload) = catch_unwind(AssertUnwindSafe(body)) else { return false };
+    let msg = panic_payload_message(&payload);
+    tracing::error!("thread '{thread_name}' panicked: {msg}");
+    true
 }
 
 /// Realtime variant of [`catch_panic`]. Swallows every panic, but only
@@ -61,6 +71,17 @@ fn panic_payload_message(payload: &Box<dyn std::any::Any + Send>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #3181: the guards here, and every other `catch_unwind`, work only
+    /// if a panic unwinds. Tests always unwind, whatever the profile says,
+    /// so this reads the profile the shipped app is built with.
+    #[test]
+    fn the_release_build_unwinds_a_panic() {
+        let manifest = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../Cargo.toml")).unwrap();
+        let release = manifest.split("\n[").find(|s| s.starts_with("profile.release]")).expect("a [profile.release]");
+        let panic: Vec<&str> = release.lines().map(str::trim).filter(|l| l.starts_with("panic")).collect();
+        assert_eq!(panic, ["panic = \"unwind\""], "the release profile's panic strategy");
+    }
 
     #[test]
     fn catch_panic_runs_body_when_no_panic() {

@@ -553,6 +553,9 @@ impl ClipStreams {
         self.shared = shared;
         let wants = &wants[..];
         crate::decode_budget::sample();
+        // A stream whose decoder ended with a panic is let go, and opened
+        // again below like any wanted stream not open (#3181).
+        self.streams.retain(|_, s| !s.dec().has_panicked());
         self.hand_on(wants, frame_secs, resolve);
         self.streams.retain(|id, _| wants.iter().any(|w| w.clip == *id && !w.reversed));
         // One no longer wanted is let go: opened, it is dropped on its own

@@ -298,7 +298,11 @@ impl Frei0rEffect {
         let inst = self.instance;
         let width = self.width;
         let height = self.height;
-        let _ = frei0r_guard!({
+        let ran = frei0r_guard!({
+            #[cfg(any(test, feature = "test-hooks"))]
+            if crate::PANIC_NEXT_UPDATE.swap(false, std::sync::atomic::Ordering::AcqRel) {
+                panic!("a plug-in's frame panicked (a test's)");
+            }
             unsafe {
                 update(
                     inst,
@@ -312,6 +316,11 @@ impl Frei0rEffect {
                 // dimensions to be ≤ 2048, this just documents the contract.
             let _ = (width, height);
         });
+        // A frame the plug-in panicked on is passed through as it came,
+        // not shown as the black it left (#3181).
+        if ran.is_err() {
+            return rgba_in.to_vec();
+        }
 
         // Convert plugin-native back to RGBA8888.
         match self.plugin.info.color_model {
@@ -406,6 +415,27 @@ pub mod temporal {
 
 #[cfg(test)]
 mod tests {
+    /// #3181: a plug-in frame that panics inside its guard is passed
+    /// through as it came, not shown as the black the unwritten output
+    /// was, and the next frame runs the plug-in again.
+    #[test]
+    fn a_plug_in_frame_that_panics_passes_through() {
+        let path = std::path::Path::new("/usr/lib/frei0r-1/invert0r.so");
+        let Some(info) = path.exists().then(|| crate::host::scan_library(path).into_iter().next()).flatten() else {
+            eprintln!("skipping: no invert0r installed");
+            return;
+        };
+        let plugin = std::sync::Arc::new(crate::Frei0rPlugin::open(&info.path.clone(), info).expect("opens"));
+        let effect = crate::Frei0rEffect::new(plugin, 16, 8).expect("an instance");
+        let frame: Vec<u8> = (0..16 * 8 * 4).map(|i| (i * 7 % 251) as u8).collect();
+        let inverted = effect.run(0.0, &frame);
+        assert_ne!(inverted, frame, "the plug-in runs");
+        crate::PANIC_NEXT_UPDATE.store(true, std::sync::atomic::Ordering::Release);
+        assert_eq!(effect.run(0.04, &frame), frame, "a panicked frame passes through");
+        assert!(!crate::PANIC_NEXT_UPDATE.load(std::sync::atomic::Ordering::Acquire), "it did panic");
+        assert_eq!(effect.run(0.08, &frame), inverted, "and the next frame runs the plug-in");
+    }
+
     use super::*;
 
     #[test]

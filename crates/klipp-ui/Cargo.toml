@@ -6,6 +6,8 @@ license.workspace = true
 
 [features]
 default = []
+# Panics a test injects into the running app (#3181).
+test-hooks = ["klipp-engine/test-hooks"]
 # Observe old inspector rows in headless tests; absent from ordinary builds.
 row-recorder = []
 # Pulls in the ort-backed BiRefNet implementation. With this on,

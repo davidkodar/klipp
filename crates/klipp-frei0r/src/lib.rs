@@ -31,6 +31,10 @@
 pub mod ffi;
 pub mod host;
 pub mod instance;
+/// A test's: the next plug-in frame panics inside its guard, as a plug-in
+/// wrapper's might (#3181). Test hooks only.
+#[cfg(any(test, feature = "test-hooks"))]
+pub static PANIC_NEXT_UPDATE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 mod library;
 pub mod tile;
 

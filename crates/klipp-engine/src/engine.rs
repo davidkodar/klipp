@@ -12,6 +12,8 @@ use klipp_compose::eval::eval_with_modifiers;
 use klipp_compose::eval::{resolve_clip_transform, ResolvedTransform};
 
 mod delivery;
+#[cfg(any(test, feature = "test-hooks"))]
+pub(crate) mod inject;
 mod render_job;
 mod seek_lead;
 mod reverse_gop;
@@ -3403,6 +3405,11 @@ impl PlaybackEngine {
         match cmd {
             AppCommand::Quit => return true,
 
+            #[cfg(feature = "test-hooks")]
+            AppCommand::InjectPanic { at } => self.inject_panic(&at),
+            #[cfg(not(feature = "test-hooks"))]
+            AppCommand::InjectPanic { .. } => warn!("inject_panic: this build has no test hooks"),
+
             AppCommand::LoadMediaFile { path, media_id } => {
                 self.load_file(path, media_id);
             }
@@ -5960,6 +5967,21 @@ impl PlaybackEngine {
         // without contending with the long read lock that follows.
         self.drain_param_changes();
         stage_drain_us = t_stage.elapsed().as_micros();
+        // A decoder that ended with a panic is opened again where the
+        // playhead is (#3181). It used to leave the picture stopped, and
+        // every seek with it, until a restart.
+        if self.v1_decoder.as_ref().is_some_and(VideoDecoder::has_panicked) {
+            warn!("the video decoder panicked; it is opened again at the playhead");
+            self.seek_in_sequence(self.playhead);
+        }
+        // A mix thread that ended (a panic past its block's catch) is made
+        // again, with the sound from the playhead (#3181): it was made again
+        // only when a new source started, and playing on stayed silent.
+        if self.mix_thread.as_ref().is_some_and(MixThread::is_finished) {
+            warn!("the audio mix thread had ended; it is made again with the sound from the playhead");
+            self.stop_all_audio();
+            self.start_all_audio(self.playhead);
+        }
         self.reconcile_audio_sources();
         self.warm_upcoming_titles();
         self.renderer.adopt_warm_titles();
@@ -7810,6 +7832,10 @@ impl PlaybackEngine {
     }
 
     fn seek_in_sequence_with_timeout(&mut self, tc: Timecode, grab_timeout: Duration) {
+        // A decoder that ended with a panic is opened again below (#3181).
+        if self.v1_decoder.as_ref().is_some_and(VideoDecoder::has_panicked) {
+            self.v1_decoder = None;
+        }
         self.retained_primary = None;
         // A preroll made for where the playhead was, or remembered as
         // failing there, is not for where it lands.

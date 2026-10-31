@@ -16,6 +16,11 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 dirs = { workspace = true }
 
+[features]
+# A panic a test injects into a plug-in's frame (#3181): never in a
+# release build.
+test-hooks = []
+
 [dev-dependencies]
 tracing-subscriber = { workspace = true }
 

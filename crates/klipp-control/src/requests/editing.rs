@@ -792,6 +792,14 @@ pub(crate) fn respond(
             send(AppCommand::ShowPanel { workspace, inspector_tab })
         }
         #[cfg(feature = "test-hooks")]
+        ControlCommand::InjectPanic { at } => {
+            const AT: [&str; 6] = ["job", "decoder", "effect", "mix", "mix_thread", "plugin"];
+            if !AT.contains(&at.as_str()) {
+                return Err(format!("no place {at:?}: {}", AT.join(", ")));
+            }
+            send(AppCommand::InjectPanic { at })
+        }
+        #[cfg(feature = "test-hooks")]
         ControlCommand::Pointer { steps } => {
             if let Some(why) = klipp_core::pointer::pointer_steps_fault(&steps) {
                 return Err(why);
