@@ -28,6 +28,10 @@ mod effect_keyframes;
 mod effect_node_anim;
 #[path = "../effect_render_scale.rs"]
 mod effect_render_scale;
+#[path = "../freeze_keys.rs"]
+mod freeze_keys;
+#[path = "../freeze_parity.rs"]
+mod freeze_parity;
 #[path = "../export_another_aspect.rs"]
 mod export_another_aspect;
 #[path = "../export_gpu_path_agrees.rs"]

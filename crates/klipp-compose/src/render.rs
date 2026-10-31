@@ -978,6 +978,13 @@ pub struct Renderer {
     /// What the tracks below composite to, while a clip that reads it is
     /// drawn in the stacking loop (#1746): a Clip Below's picture.
     below: Option<Arc<Vec<f32>>>,
+    /// The track whose layer [`Self::render_track_layer`] is drawing
+    /// (#3207): the stack is that track alone, returned before it is laid.
+    capture: Option<usize>,
+    /// Frozen tracks' layers for this frame, by track index (#3207): laid
+    /// in the track's place, with its clip's opacity and blend mode and
+    /// the track's opacity applied live, as a drawn layer's are.
+    frozen: HashMap<usize, Arc<Vec<f32>>>,
     /// What is below the clip the GPU stack is laying now (#2758): the
     /// composite so far, kept on the GPU for its run to read.
     stack_below: Option<klipp_effects::gpu::KeptPicture>,
@@ -1149,7 +1156,7 @@ struct Layer {
 /// the backing is what it stands out on, and the pass, measuring the
 /// layer, read the dark box round white words as dark text and lightened
 /// the picture into bright streaks at the halo's edge.
-fn contrast_protect(c: &Clip) -> u32 {
+pub(crate) fn contrast_protect(c: &Clip) -> u32 {
     match &c.kind {
         ClipKind::Title(td) if matches!(td.background, klipp_timeline::TitleBackground::None) => td.protect.code(),
         _ => 0,
@@ -1157,7 +1164,7 @@ fn contrast_protect(c: &Clip) -> u32 {
 }
 
 /// What a track contributes at the frame's time.
-enum TrackItem<'a> {
+pub(crate) enum TrackItem<'a> {
     Clip(&'a Clip),
     Transition {
         a: &'a Clip,
@@ -1204,6 +1211,8 @@ impl Renderer {
             matte_input: None,
             run_display: None,
             below: None,
+            capture: None,
+            frozen: HashMap::new(),
             stack_below: None,
             plan_misses: 0,
             spliced: klipp_nodes::NodeGraph::default(),
@@ -1421,6 +1430,61 @@ impl Renderer {
         self.render_inspected(seq, time, width, height, src, opts, Inspect::default()).0
     }
 
+    /// The layer `track` lays at `time`, as a frozen frame holds it (#3207,
+    /// [`crate::freeze`]): its clip or transition drawn with everything on
+    /// it, without its clip's opacity or blend mode, straight alpha, linear
+    /// in the working space. `None` when the track shows nothing there or
+    /// the frame stays live ([`crate::freeze::live_reason`]). `seq` is the
+    /// render copy, as for [`Self::render`].
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_track_layer(
+        &mut self,
+        seq: &Sequence,
+        track: usize,
+        time: Timecode,
+        width: u32,
+        height: u32,
+        src: &mut dyn FrameSource,
+    ) -> Option<Vec<f32>> {
+        if crate::freeze::live_reason(seq, track, time).is_some() || !seq.tracks.get(track).is_some_and(is_visual) {
+            return None;
+        }
+        self.capture = Some(track);
+        let pixels = self.render(seq, time, width, height, src, RenderOptions { keep_alpha: true, ..Default::default() });
+        self.capture = None;
+        (pixels.len() == (width as usize) * (height as usize) * 4).then_some(pixels)
+    }
+
+    /// [`Self::render_track_layer`] drawn on the GPU stack and brought back
+    /// once, as the freeze renders it (#3207). `None` when the stack
+    /// declines the layer (an OFX or frei0r plug-in, ...), the reason in
+    /// [`Self::last_decline`]: the CPU render draws it then.
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_track_layer_on_gpu(
+        &mut self,
+        seq: &Sequence,
+        track: usize,
+        time: Timecode,
+        width: u32,
+        height: u32,
+        src: &mut dyn FrameSource,
+    ) -> Option<Vec<f32>> {
+        if crate::freeze::live_reason(seq, track, time).is_some() || !seq.tracks.get(track).is_some_and(is_visual) {
+            return None;
+        }
+        self.capture = Some(track);
+        let pixels = self.render_linear_on_gpu(seq, time, width, height, src, RenderOptions { keep_alpha: true, ..Default::default() });
+        self.capture = None;
+        pixels
+    }
+
+    /// Lay `layers` (track index → a frozen frame, as
+    /// [`Self::render_track_layer`] draws it) in their tracks' places in
+    /// the frames rendered from now on, until set again (#3207).
+    pub fn set_frozen_layers(&mut self, layers: HashMap<usize, Arc<Vec<f32>>>) {
+        self.frozen = layers;
+    }
+
     /// [`render`](Self::render), also answering an [`Inspect`] request.
     /// The picture is the same either way, except that a soloed node or a
     /// matte view replaces the inspected clip's grade — the viewer shows
@@ -1452,7 +1516,8 @@ impl Renderer {
         // a fault somewhere above, said here, and a black frame of the
         // right size goes on rather than a buffer that crashes its reader.
         let whole = width as usize * height as usize * 4;
-        let out = if !self.allow_gpu && out.len() != whole {
+        // A captured track that draws nothing there is no fault (#3207).
+        let out = if !self.allow_gpu && out.len() != whole && self.capture.is_none() {
             tracing::error!("render gave {} values for a {width}x{height} frame, which takes {whole}; a black frame instead", out.len());
             vec![0.0; whole]
         } else {
@@ -2154,7 +2219,11 @@ impl Renderer {
         }
         // An empty frame is the clear canvas, graded and finished on the
         // GPU as any composite is (#2377).
-        let stack = stack(seq, time);
+        let mut stack = stack(seq, time);
+        // One track's layer, drawn as a frozen frame holds it (#3207).
+        if let Some(track) = self.capture {
+            stack.retain(|(i, _, _)| *i == track);
+        }
 
         // What a clip needs that the stack does not have.
         let blocker = |c: &Clip| -> Option<&'static str> {
@@ -2497,11 +2566,22 @@ impl Renderer {
                     }
                     let Some(p) = placed.get(slot) else { continue };
                     let opacity = p.opacity * track.opacity;
-                    if opacity <= 0.001 {
+                    if opacity <= 0.001 && self.capture.is_none() {
                         continue;
                     }
                     if let Err(why) = self.finish_placed(c, *slot, p.held.as_deref(), time, fps, width, height, &transforms, &mut stats) {
                         return self.gpu_stack_declines(why);
+                    }
+                    // A captured layer (#3207) is laid as drawn: at full
+                    // weight, Normal, every row, its opacity and blend left
+                    // for the frame it is laid in.
+                    if self.capture.is_some() {
+                        // Only the rows it covers: some routes write only those.
+                        let (y0, y1) = p.rows;
+                        if y1 > y0 && !self.executor.gpu_pipeline_or_init().is_some_and(|g| g.stack_blend_rows(*slot, 1.0, 0, y0, y1)) {
+                            return self.gpu_stack_declines("the blend pass failed");
+                        }
+                        continue;
                     }
                     let protect = contrast_protect(c);
                     let luma = klipp_color::linear::luma_coefs(self.working);
@@ -2529,10 +2609,11 @@ impl Renderer {
                     }
                 }
                 Item::Transition { slots, .. } => {
-                    if track.opacity <= 0.001 {
+                    if track.opacity <= 0.001 && self.capture.is_none() {
                         continue;
                     }
-                    if !self.executor.gpu_pipeline_or_init().is_some_and(|g| g.stack_blend(slots[2], track.opacity, 0)) {
+                    let opacity = if self.capture.is_some() { 1.0 } else { track.opacity };
+                    if !self.executor.gpu_pipeline_or_init().is_some_and(|g| g.stack_blend(slots[2], opacity, 0)) {
                         return self.gpu_stack_declines("the blend pass failed");
                     }
                 }
@@ -2547,8 +2628,9 @@ impl Renderer {
         }
 
         // ── 4. The timeline grade, as `render_stack` runs it: the
-        // composite graded as an adjustment layer over everything ──
-        if let Some(tg) = self.timeline_grade(seq) {
+        // composite graded as an adjustment layer over everything. Not a
+        // captured layer's (#3207): the frame it is laid in grades it ──
+        if let Some(tg) = self.timeline_grade(seq).filter(|_| self.capture.is_none()) {
             if let Err(why) = self.stack_adjust(&tg, 1.0, time, fps, width, height, &transforms, &mut stats) {
                 return self.gpu_stack_declines(why);
             }
@@ -2558,7 +2640,7 @@ impl Renderer {
         // The LUT goes over the composite while it is still straight
         // alpha, as `render_stack` applies it: the accumulator through
         // the chain and back.
-        if self.global_lut.is_some() {
+        if self.global_lut.is_some() && self.capture.is_none() {
             let t = Instant::now();
             let gpu = self.executor.gpu_pipeline_or_init()?;
             if !gpu.stack_acc_to_chain() {
@@ -3847,6 +3929,8 @@ impl Renderer {
         let title_shutter = std::mem::take(&mut self.title_shutter);
         let lut = self.global_lut.take();
         let inspect = std::mem::take(&mut self.inspect);
+        // The outer stack's, not the scene's (#3207).
+        let (capture, frozen) = (self.capture.take(), std::mem::take(&mut self.frozen));
         let (px_scale, hdr_peak, title_nits) = (self.px_scale, self.hdr_peak, self.title_nits);
         let (decline, declined_after_work, started) = (self.frame_decline, self.gpu_export_declined_after_work, self.stack_work_started);
         let composed = self.composite_on_gpu(scene, at, width, height, src, RenderOptions { keep_alpha: true, view_channel: klipp_core::ViewChannel::Picture, ..opts }).is_some();
@@ -3861,6 +3945,7 @@ impl Renderer {
             }
         }
         (self.px_scale, self.hdr_peak, self.title_nits) = (px_scale, hdr_peak, title_nits);
+        (self.capture, self.frozen) = (capture, frozen);
         (self.frame_decline, self.gpu_export_declined_after_work, self.stack_work_started) = (decline, declined_after_work, started);
         self.inspect = inspect;
         self.global_lut = lut;
@@ -3929,6 +4014,10 @@ impl Renderer {
         let fps = seq.fps.as_f64();
         // Bottom of the stack first.
         let mut stack = stack(seq, time);
+        // One track's layer, drawn as a frozen frame holds it (#3207).
+        if let Some(track) = self.capture {
+            stack.retain(|(i, _, _)| *i == track);
+        }
         // One clip alone for a measurement of it (#719): the clip, out of
         // a transition when it is one side of it, and nothing else.
         if let Some(only) = self.inspect.only {
@@ -3988,7 +4077,21 @@ impl Renderer {
         // which every layer may need first, nor a clip measured alone.
         let defers = |c: &Clip| !only && !matte_sources.contains(&c.id) && crate::resolve::reads_below(c);
         let mut deferred: HashSet<usize> = HashSet::new();
-        for (i, (_, track, item)) in stack.iter().enumerate() {
+        for (i, (index, track, item)) in stack.iter().enumerate() {
+            // A frozen track's layer (#3207), laid as a drawn one would be:
+            // its clip's opacity and blend, the track's opacity.
+            if let Some(frozen) = self.frozen.get(index).cloned().filter(|_| !only && self.capture.is_none()) {
+                let layer = match item {
+                    TrackItem::Clip(c) => {
+                        let (_, opacity) = clip_effects(c, time, fps, transforms.get(&c.id).copied(), self.pins.get(&c.id).copied());
+                        let opacity = opacity * self.pin_presence.get(&c.id).copied().unwrap_or(1.0);
+                        Layer { pixels: (*frozen).clone(), opacity: opacity * track.opacity, blend: c.blend_mode, split: reflection_split(c, time, fps, height, self.px_scale) }
+                    }
+                    TrackItem::Transition { .. } => Layer { pixels: (*frozen).clone(), opacity: track.opacity, blend: BlendMode::Normal, split: None },
+                };
+                layers.push(Some(layer));
+                continue;
+            }
             let layer = match item {
                 TrackItem::Clip(c) if matches!(c.kind, ClipKind::AdjustmentLayer) => None,
                 TrackItem::Clip(c) if defers(c) => {
@@ -4029,6 +4132,10 @@ impl Renderer {
                     .render_transition(a, b, *kind, *progress, params, *shutter, time, fps, width, height, src, &transforms, Some(&rendered))
                     .map(|pixels| Layer { pixels, opacity: track.opacity, blend: BlendMode::Normal, split: None });
             }
+        }
+        // The captured track's layer as drawn, before it is laid (#3207).
+        if self.capture.is_some() {
+            return layers.into_iter().flatten().next().map(|l| l.pixels).unwrap_or_default();
         }
 
         // Stencils mask every layer below them.
@@ -5229,6 +5336,10 @@ impl Renderer {
         let title_shutter = std::mem::take(&mut self.title_shutter);
         let lut = self.global_lut.take();
         let inspect = std::mem::take(&mut self.inspect);
+        // A frozen track or a captured one is the outer stack's (#3207):
+        // a scene's tracks have indices of their own.
+        let capture = self.capture.take();
+        let frozen = std::mem::take(&mut self.frozen);
         // The scene sets its own render scale, from its own resolution;
         // the parent's layers after it must go on with the parent's. A
         // scene stored at another size than its parent otherwise left
@@ -5237,6 +5348,8 @@ impl Renderer {
         let px_scale = self.px_scale;
         let surface = self.render_stack(scene, at, width, height, src, RenderOptions { keep_alpha: true, hdr_peak_nits: self.hdr_peak, ..Default::default() });
         self.px_scale = px_scale;
+        self.capture = capture;
+        self.frozen = frozen;
         self.inspect = inspect;
         self.global_lut = lut;
         self.shutter = shutter;
@@ -6566,12 +6679,12 @@ impl Renderer {
 }
 
 /// Video, text and subtitle tracks that are shown.
-fn is_visual(t: &Track) -> bool {
+pub(crate) fn is_visual(t: &Track) -> bool {
     matches!(t.kind, TrackKind::Video | TrackKind::Text | TrackKind::Subtitle) && !t.muted && t.visible
 }
 
 /// The clip, or the transition, a track shows at `time`.
-fn active_item<'a>(seq: &'a Sequence, track: &'a Track, time: Timecode) -> Option<TrackItem<'a>> {
+pub(crate) fn active_item<'a>(seq: &'a Sequence, track: &'a Track, time: Timecode) -> Option<TrackItem<'a>> {
     if let Some(item) = track.transitions.iter().find_map(|tr| transition_at(seq, track, tr, time)) {
         return Some(item);
     }

@@ -75,6 +75,7 @@ pub use picture_reads::{PictureEffect, PictureOfx};
 mod clip_kind;
 mod title_fields;
 mod title_template_file;
+pub mod canonical_hash;
 pub mod title_library;
 pub mod title_box;
 mod credits;

@@ -10,6 +10,7 @@ pub mod captions;
 pub mod colour_effects;
 pub mod eval;
 pub mod fault;
+pub mod freeze;
 pub mod inspect;
 mod title_shutter;
 mod ofx_node;

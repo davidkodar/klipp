@@ -364,9 +364,9 @@ mod tests {
     #[test]
     fn a_clip_hashes_alike_across_orders_and_with_any_modifier_key() {
         use klipp_core::{MediaId, ParamId, RationalTime};
-        use klipp_timeline::GradeAccess;
+        use crate::GradeAccess;
         let t = |s: f64| RationalTime::from_secs_f64(s, 24);
-        let base = klipp_timeline::Clip::media(MediaId::new(), t(0.0), t(2.0), t(0.0), t(2.0));
+        let base = crate::Clip::media(MediaId::new(), t(0.0), t(2.0), t(0.0), t(2.0));
         let ids: Vec<klipp_nodes::NodeId> = (1..=16u128).map(uuid::Uuid::from_u128).collect();
         let params = [ParamId::Opacity, ParamId::Scale, ParamId::Effect { effect_index: 0, param_name: "radius".into() }];
         let build = |forward: bool| {

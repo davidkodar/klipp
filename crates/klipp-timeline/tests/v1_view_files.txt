@@ -52,7 +52,7 @@ klipp-document/src/history.rs
 klipp-document/src/ops.rs
 klipp-document/src/qc.rs
 klipp-document/tests/placed_kind_ops.rs
-klipp-engine/src/canonical_hash.rs
+klipp-timeline/src/canonical_hash.rs
 klipp-engine/src/engine.rs
 klipp-engine/src/engine/view.rs
 klipp-engine/tests/clip_serde_rich.rs
