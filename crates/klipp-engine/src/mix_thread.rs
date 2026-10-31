@@ -229,6 +229,12 @@ impl MixThread {
     /// Number of samples currently sitting in the main ring buffer (the one
     /// cpal pulls from). The engine polls this after a seek to know when the
     /// pipeline has pre-filled enough to resume cpal without an underrun gap.
+    /// Whether the thread has ended (#3181): stopped, or gone with a panic
+    /// that got past the block it was mixing.
+    pub fn is_finished(&self) -> bool {
+        self.thread.as_ref().is_none_or(JoinHandle::is_finished)
+    }
+
     pub fn buffered_samples(&self) -> usize {
         self.main_buffered.load(Ordering::Acquire)
     }
@@ -327,8 +333,6 @@ impl Drop for MixThread {
     }
 }
 
-/// The mix thread loop — reads staging consumers, mixes, pushes to main.
-#[allow(clippy::too_many_arguments)]
 /// The mixer, locked (#3181): after a panic while it was held, as the
 /// panic left it with its unfinished block set back
 /// ([`klipp_audio::mixer::AudioMixer::recover_after_panic`]) and the lock
@@ -347,6 +351,8 @@ pub(crate) fn lock_mixer(mixer: &std::sync::Mutex<klipp_audio::mixer::AudioMixer
     }
 }
 
+/// The mix thread loop — reads staging consumers, mixes, pushes to main.
+#[allow(clippy::too_many_arguments)]
 fn mix_loop(
     mut producer: AudioProducer,
     cmd_rx: Receiver<MixCommand>,
@@ -585,7 +591,11 @@ fn mix_loop(
         let max_track_idx = lanes.iter().map(|(t, _)| *t).max().unwrap_or(0);
         let mixed = {
             let mut m = lock_mixer(&mixer);
-            {
+            // A panic in a block (an effect's, a plugin's) is that block's
+            // (#3181): the mixer is set back, the block is silence, and the
+            // thread goes on. It used to end the thread, and the session
+            // was silent until a restart.
+            let block = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 m.ensure_tracks(max_track_idx + 1);
 
                 // Push any newly-advertised per-track latencies into
@@ -634,6 +644,14 @@ fn mix_loop(
                     .map(|&(track, i)| (track, track_buffers[i].as_slice()))
                     .collect();
                 m.mix(&refs)
+            }));
+            match block {
+                Ok(mixed) => mixed,
+                Err(_) => {
+                    m.recover_after_panic();
+                    warn!("the audio mixer panicked in a block; it was set back, the block is silent, and it goes on");
+                    vec![0.0; chunk_samples]
+                }
             }
         };
 
@@ -852,6 +870,51 @@ mod source_mix_tests {
 #[cfg(test)]
 mod lock_tests {
     use super::lock_mixer;
+    use ringbuf::traits::{Consumer, Producer, Split};
+
+    /// #3181, the mix thread's own case: a track's effects panic in the
+    /// middle of playback, inside the mix. That block is silent, the
+    /// thread is still alive, and the next blocks reach the output with
+    /// sound. The panic used to end the thread, and nothing started it
+    /// again.
+    #[test]
+    fn a_panicking_effect_mid_playback_leaves_the_mix_thread_playing() {
+        let mixer = std::sync::Arc::new(std::sync::Mutex::new(klipp_audio::mixer::AudioMixer::new(1)));
+        let eq = klipp_core::AudioEffectInstance { effect_type: "eq".into(), enabled: true, wet_dry: 1.0, params: Vec::new() };
+        {
+            let mut m = lock_mixer(&mixer);
+            m.set_sample_rate(48_000);
+            m.set_track_inserts(0, std::slice::from_ref(&eq), super::MIX_CHUNK_SAMPLES);
+        }
+        let (mt, mut main) = super::MixThread::new(48_000, mixer.clone(), std::sync::Arc::new(crate::sync::MasterClock::new()), false);
+        let (mut staging, consumer) = ringbuf::HeapRb::<f32>::new(1 << 16).split();
+        mt.add_staging(0, consumer, Default::default(), Default::default());
+        // Reads what reaches the output for `for_ms`, feeding the track a
+        // tone: the loudest sample.
+        let mut play = |for_ms: u64| {
+            let until = std::time::Instant::now() + std::time::Duration::from_millis(for_ms);
+            let mut loudest = 0.0f32;
+            let mut out = vec![0.0f32; 4096];
+            while std::time::Instant::now() < until {
+                let tone: Vec<f32> = (0..2048).map(|i| if (i / 2) % 40 < 20 { 0.5 } else { -0.5 }).collect();
+                staging.push_slice(&tone);
+                let n = main.pop_slice(&mut out);
+                loudest = out[..n].iter().fold(loudest, |a, s| a.max(s.abs()));
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+            loudest
+        };
+        assert!(play(300) > 0.1, "it plays");
+        lock_mixer(&mixer).panic_in_inserts = Some(0);
+        let after = play(400);
+        assert!(lock_mixer(&mixer).panic_in_inserts.is_none(), "the effects did panic");
+        assert!(!mt.is_finished(), "the mix thread is alive");
+        assert!(after > 0.1, "and sound goes on after the panic: {after}");
+        // What the engine's backstop asks of a thread: ended, once it is.
+        let mut mt = mt;
+        mt.stop();
+        assert!(mt.is_finished());
+    }
 
     /// #3181: a panic while the mixer is locked (an effect's, a plugin's)
     /// leaves it poisoned; locked again it is set back and the poison

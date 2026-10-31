@@ -170,6 +170,10 @@ pub struct AudioMixer {
     pdc_total: u32,
     /// The largest block a delay line is sized for.
     max_block_samples: usize,
+    /// A test's: the track whose effects panic the next time they run,
+    /// as a plugin's might (#3181).
+    #[doc(hidden)]
+    pub panic_in_inserts: Option<usize>,
 }
 
 impl AudioMixer {
@@ -194,6 +198,7 @@ impl AudioMixer {
             send_delay_lines: Vec::new(),
             pdc_total: 0,
             max_block_samples: 4096,
+            panic_in_inserts: None,
         }
     }
 
@@ -486,6 +491,10 @@ impl AudioMixer {
             // fader (#2560).
             let buf = match self.track_inserts.get_mut(track_idx).and_then(Option::as_mut) {
                 Some(inserts) if heard => {
+                    if self.panic_in_inserts == Some(track_idx) {
+                        self.panic_in_inserts = None;
+                        panic!("track {track_idx}'s effects panicked (a test's)");
+                    }
                     inserted.clear();
                     inserted.extend_from_slice(buf);
                     inserts.chain.process(&mut inserted, &crate::dsp::AudioProcessContext { sample_rate: self.sample_rate, channels: 2, clip_time_secs: 0.0 });
