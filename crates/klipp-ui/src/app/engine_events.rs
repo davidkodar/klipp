@@ -387,6 +387,9 @@ impl KlippApp {
                     let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| path.display().to_string());
                     self.state.toast.show(format!("Could not import {name}: {error}"));
                 }
+                AppEvent::PlaybackGaveUp { what } => {
+                    self.state.toast.show(format!("{what} kept failing and was stopped. Move the playhead or play again to try once more."));
+                }
                 AppEvent::FrameReady => {
                     self.upload_frame_to_egui(ctx);
                     self.state.perf_frame_count += 1;

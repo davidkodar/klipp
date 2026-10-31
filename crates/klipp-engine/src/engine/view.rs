@@ -696,6 +696,9 @@ impl PlaybackEngine {
             .collect();
         let frame_secs = self.fps.frame_duration_secs();
         self.streams.sync(&wants, frame_secs, &|w: &Want| paths.get(&w.clip).cloned());
+        if self.streams.take_given_up() {
+            self.say_given_up("A layer's picture");
+        }
         let opened_late = late.iter().filter(|c| self.streams.has(**c)).count() as u64;
         super::STREAMS_OPENED_ON_SCREEN.fetch_add(opened_late, std::sync::atomic::Ordering::Relaxed);
     }

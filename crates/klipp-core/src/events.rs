@@ -4749,6 +4749,10 @@ pub enum AppEvent {
     // heap-allocated on the rare occasions a media file is loaded
     // (once per import, not per frame).
     MediaLoaded(Box<MediaLoadedPayload>),
+    /// The picture or the sound kept failing (a panic each time it was
+    /// made again) and is left off until the playhead is moved or played
+    /// (#3181): `what` names it, "The picture", "The sound".
+    PlaybackGaveUp { what: String },
     MediaLoadFailed {
         media_id: MediaId,
         /// The file that would not open, for saying so (#654).
