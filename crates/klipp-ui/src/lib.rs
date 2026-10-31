@@ -120,6 +120,7 @@ pub mod timeline;
 pub mod tracks_undo;
 pub mod edit_point;
 pub mod soc_info;
+pub mod hardware;
 pub mod ui_util;
 pub mod viewer_lut;
 pub mod widgets;

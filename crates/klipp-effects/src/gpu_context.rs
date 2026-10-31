@@ -196,9 +196,18 @@ impl GpuContext {
         Self { device, queue, device_lost, adapter_info: None }
     }
 
+    /// [`Self::from_existing`] with the adapter the device was made on,
+    /// so it can say its name, driver and backend as one it made does:
+    /// About names the graphics in use from it (#3223).
+    pub fn with_adapter_info(mut self, info: wgpu::AdapterInfo) -> Self {
+        self.adapter_info = Some(info);
+        self
+    }
+
     /// The adapter this context's device was made on: its name, driver
     /// and backend, so a result tied to one GPU and driver can say which.
-    /// `None` for a device handed in by [`Self::from_existing`].
+    /// `None` for a device handed in by [`Self::from_existing`] without
+    /// [`Self::with_adapter_info`].
     pub fn adapter_info(&self) -> Option<&wgpu::AdapterInfo> {
         self.adapter_info.as_ref()
     }
@@ -259,6 +268,13 @@ impl GpuContext {
                 None
             }
         }
+    }
+
+    /// The shared context when one has been made or installed, without
+    /// making one: what only reports on the GPU (About) is never what
+    /// brings the device up.
+    pub fn shared_if_made() -> Option<&'static GpuContext> {
+        SHARED.get()
     }
 
     /// Install a pre-built `GpuContext` as the process-wide shared
