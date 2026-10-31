@@ -45,11 +45,13 @@ uuid = { workspace = true }
 
 [features]
 # Panics a test injects into a running app (#3181), over the control
-# socket's `inject_panic`: never in a release build.
-test-hooks = ["klipp-audio/test-hooks", "dep:klipp-frei0r", "klipp-frei0r/test-hooks"]
+# socket's `inject_panic`, and a GPU held behind (#3174): never in a
+# release build.
+test-hooks = ["klipp-audio/test-hooks", "dep:klipp-frei0r", "klipp-frei0r/test-hooks", "klipp-effects/test-hooks"]
 
 [dev-dependencies]
 klipp-audio = { workspace = true, features = ["test-hooks"] }
+klipp-effects = { workspace = true, features = ["test-hooks"] }
 klipp-timeline = { workspace = true, features = ["test-clip"] }
 klipp-project = { workspace = true }
 tracing-subscriber = { workspace = true }

@@ -11,6 +11,8 @@ autotests = false
 # wgpu's own allocation totals in the GPU memory report (#3174): off in
 # a release, on for the measuring test.
 gpu-memory-report = ["wgpu/counters"]
+# Hooks a test sets in a running app (#3174): never in a release build.
+test-hooks = []
 
 [dependencies]
 klipp-presets = { workspace = true }
