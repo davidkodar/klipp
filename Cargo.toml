@@ -295,7 +295,11 @@ codegen-units = 8      # Smaller LLVM units to keep LTO from blowing its stack
 # fixed and we no longer need release-mode symbols.
 debug = "line-tables-only"
 strip = false
-panic = "abort"        # Smaller binary, no unwinding overhead
+# Unwind, not abort (#3181): the panic guards (thread_guard, the job and
+# socket-operation catches, the mixer's per-chain catch, the plug-in
+# wrappers) only work when a panic unwinds. Under abort any panic on any
+# thread ended the app, an unsaved edit with it.
+panic = "unwind"
 
 [profile.profiling]
 inherits = "release"

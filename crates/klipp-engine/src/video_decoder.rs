@@ -489,6 +489,9 @@ impl std::fmt::Display for DecoderError {
 pub struct VideoDecoder {
     frame_queue: SharedFrameQueue,
     decode_thread: Option<JoinHandle<()>>,
+    /// Set when the decode thread ended with a panic (#3181): its owner
+    /// opens the file again rather than waiting on frames that never come.
+    panicked: Arc<std::sync::atomic::AtomicBool>,
     decode_cmd_tx: Sender<DecodeCommand>,
     /// Set to true by the decode thread if VAAPI surfaces are actually produced
     pub hw_active: Arc<std::sync::atomic::AtomicBool>,
@@ -591,6 +594,8 @@ impl VideoDecoder {
         let hw_flag = hw_active.clone();
         let stop_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let stop_flag_clone = stop_flag.clone();
+        let panicked = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let panicked_clone = panicked.clone();
         let last_decode_us = Arc::new(std::sync::atomic::AtomicU32::new(0));
         let last_decode_us_clone = last_decode_us.clone();
         let last_decoded_pts = Arc::new(std::sync::atomic::AtomicU64::new(NO_PTS));
@@ -606,9 +611,11 @@ impl VideoDecoder {
                 // `wait_for_decode_threads` cannot return while this one
                 // is still inside ffmpeg's teardown.
                 let _alive = alive;
-                crate::thread_guard::catch_panic("klipp-vdec", || {
+                if crate::thread_guard::caught_panic("klipp-vdec", || {
                     decode_thread_main(path_owned, queue_clone, cmd_rx, hw_flag, stop_flag_clone, source_rotation, last_decode_us_clone, last_decoded_pts_clone, frames_decoded_clone, lease_id, decoding, source_fps.unwrap_or(30.0));
-                });
+                }) {
+                    panicked_clone.store(true, std::sync::atomic::Ordering::Release);
+                }
             })
             .map_err(|e| DecoderError::Open(format!("spawn thread: {e}")))?;
 
@@ -620,6 +627,7 @@ impl VideoDecoder {
             seek_epoch: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             last_seek_bits: std::sync::atomic::AtomicU64::new(u64::MAX),
             decode_thread: Some(thread),
+            panicked,
             decode_cmd_tx: cmd_tx,
             hw_active,
             stop_flag,
@@ -717,6 +725,12 @@ impl VideoDecoder {
 
     pub fn pause(&self) {
         let _ = self.decode_cmd_tx.send(DecodeCommand::Pause);
+    }
+
+    /// Whether the decode thread ended with a panic (#3181): no frame
+    /// comes from this decoder again.
+    pub fn has_panicked(&self) -> bool {
+        self.panicked.load(std::sync::atomic::Ordering::Acquire)
     }
 
     pub fn stop_detached(&mut self) {
@@ -2845,6 +2859,10 @@ fn decode_thread_main(
     let mut received_frame = ffmpeg_next::frame::Video::empty();
 
     loop {
+        #[cfg(any(test, feature = "test-hooks"))]
+        if crate::engine::inject::decoder_panics(&path) {
+            panic!("a video decoder thread panicked (a test's)");
+        }
         if stop_flag.load(std::sync::atomic::Ordering::Relaxed) {
             debug!("decode_thread: stop flag set, exiting");
             return;

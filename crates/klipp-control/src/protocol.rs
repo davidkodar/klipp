@@ -439,6 +439,15 @@ pub enum ControlCommand {
     Pointer {
         steps: Vec<klipp_core::pointer::PointerStep>,
     },
+    /// Panic once at `at` in the running app, to check the guard there
+    /// keeps it running (#3181): `job` (a background job), `decoder` (a
+    /// video decoder thread), `effect` (a track's audio effects; one
+    /// must have some), `mix` (an audio block, outside the effects),
+    /// `mix_thread` (the mix thread itself, which ends and is started
+    /// again) or `plugin` (a frei0r plug-in's next frame). Read what
+    /// happened in `log_tail`. Test hooks only (`test-hooks`).
+    #[cfg(feature = "test-hooks")]
+    InjectPanic { at: String },
     /// Timeline → Detect Scene Cuts for a clip (#616): its picture changes
     /// found in the background and the clip split there with its linked
     /// sound, one undoable edit. Returns at once; the split shows on the

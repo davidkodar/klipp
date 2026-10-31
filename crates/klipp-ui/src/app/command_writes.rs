@@ -22,6 +22,7 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::GoToTimecode
         | AppCommand::ShowPanel { .. }
         | AppCommand::InjectPointer(_)
+        | AppCommand::InjectPanic { .. }
         | AppCommand::ShowMaskKeysOnTimeline { .. }
         | AppCommand::SetViewerOverlay { .. }
         | AppCommand::SetMulticamMode { .. }

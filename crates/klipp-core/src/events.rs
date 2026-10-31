@@ -1582,6 +1582,10 @@ pub enum AppCommand {
     /// mouse's events (the control socket's `pointer`, test hooks only):
     /// the input only, never the document by itself.
     InjectPointer(Vec<crate::pointer::PointerStep>),
+    /// Panic once at `at` in the running app (the control socket's
+    /// `inject_panic`, test hooks only, #3181): `job`, `decoder`,
+    /// `effect`, `mix`, `mix_thread` or `plugin`.
+    InjectPanic { at: String },
     /// Open the Colour workspace on video track `track_id`'s own grade
     /// (#1408): the layout only, never the document.
     GradeTrackInColour { track_id: TrackId },

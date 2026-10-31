@@ -187,6 +187,7 @@ impl MixThread {
         // Small buffer = low latency for volume/pan/mute changes
         let buf_size = (sample_rate as usize) * 2 / 5;
         let (producer, consumer) = HeapRb::<f32>::new(buf_size).split();
+        MIX_THREADS_STARTED.fetch_add(1, Ordering::Relaxed);
 
         let (cmd_tx, cmd_rx) = crossbeam_channel::unbounded();
 
@@ -333,6 +334,15 @@ impl Drop for MixThread {
     }
 }
 
+/// Mix threads started in this process (#3181): one more each time an
+/// ended one is made again.
+static MIX_THREADS_STARTED: AtomicU64 = AtomicU64::new(0);
+
+/// How many mix threads this process has started.
+pub fn mix_threads_started() -> u64 {
+    MIX_THREADS_STARTED.load(Ordering::Relaxed)
+}
+
 /// The mixer, locked (#3181): after a panic while it was held, as the
 /// panic left it with its unfinished block set back
 /// ([`klipp_audio::mixer::AudioMixer::recover_after_panic`]) and the lock
@@ -446,6 +456,11 @@ fn mix_loop(
     let mut pdc_pushed: u32 = 0;
 
     loop {
+        // A test's (#3181): outside the block's catch, so the thread ends.
+        #[cfg(any(test, feature = "test-hooks"))]
+        if crate::engine::inject::mix_thread_panics(Arc::as_ptr(&mixer) as usize) {
+            panic!("the mix thread panicked outside a block (a test's)");
+        }
         // Publish current main-ring fill so the engine's pre-fill polling
         // (replacing the old hardcoded 15 ms sleep on seek) sees the latest
         // state on every iteration regardless of which branch we take below.
