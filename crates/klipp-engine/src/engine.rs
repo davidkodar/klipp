@@ -1641,6 +1641,13 @@ pub struct PlaybackEngine {
     freeze_size: Option<(u32, u32)>,
     /// Frozen frames read ahead while playing.
     frozen_reader: Option<crate::freeze::FrozenReader>,
+    /// Frozen sound tracks' stems (#3207): each track's stem file and the
+    /// media id its stand-in clip plays, and that id's file.
+    frozen_stems: HashMap<klipp_core::TrackId, (std::path::PathBuf, MediaId)>,
+    stem_media: HashMap<MediaId, std::path::PathBuf>,
+    /// The sequence as the sound plays it, made from a revision: see
+    /// [`PlaybackEngine::audio_sequence`].
+    audio_view: std::cell::RefCell<Option<(klipp_timeline::SequenceRevision, Arc<klipp_timeline::Sequence>)>>,
     /// The clip those two count for: another clip's decoder that panics
     /// has tries of its own, and is said of its own.
     decoder_panic_clip: Option<klipp_core::ClipId>,
@@ -2139,7 +2146,9 @@ type TrackAudioRow = (
 /// the clip plays in, so a crossfade's two clips are two sources.
 /// `pcm_cache` swaps in an item's conformed PCM file where one exists.
 /// `fadeable` is the media playback can crossfade, see [`fadeable_media`].
-fn audio_rows(seq: &klipp_timeline::Sequence, pool: &klipp_media::MediaPool, fadeable: &FadeableMedia, tc: Timecode, use_proxies: bool, pcm_cache: bool) -> Vec<TrackAudioRow> {
+/// `stems` are frozen tracks' stem files by the media id their stand-in
+/// clips play (#3207): such a clip is heard from its file, as it is.
+fn audio_rows(seq: &klipp_timeline::Sequence, pool: &klipp_media::MediaPool, fadeable: &FadeableMedia, tc: Timecode, use_proxies: bool, pcm_cache: bool, stems: &HashMap<MediaId, std::path::PathBuf>) -> Vec<TrackAudioRow> {
     let mut rows = Vec::new();
     let fades = can_fade(fadeable);
     for (track_idx, track) in seq.tracks.iter().enumerate() {
@@ -2153,6 +2162,11 @@ fn audio_rows(seq: &klipp_timeline::Sequence, pool: &klipp_media::MediaPool, fad
                 continue;
             }
             let Some(media_id) = clip.media_id() else { continue };
+            if let Some(stem) = stems.get(&media_id) {
+                let source_secs = klipp_compose::render::source_secs(clip, tc, seq.fps.as_f64());
+                rows.push((source_key(track_idx, sounding.lane), media_id, stem.clone(), source_secs, Vec::new(), Default::default()));
+                continue;
+            }
             let Some(item) = pool.get(&media_id) else { continue };
             if !item.has_audio {
                 continue;
@@ -2286,13 +2300,80 @@ fn sounding_for_key<'a>(seq: &'a klipp_timeline::Sequence, fadeable: &FadeableMe
 /// (#3181).
 pub(crate) const PANIC_RESTARTS: u32 = 3;
 
+/// The media id a stem file plays as: its path's, so a stem drawn again
+/// under a new key is a new source.
+pub(crate) fn stem_media_id(path: &std::path::Path) -> MediaId {
+    use std::hash::{Hash, Hasher};
+    let mut a = std::collections::hash_map::DefaultHasher::new();
+    ("klipp-stem", path).hash(&mut a);
+    let mut b = std::collections::hash_map::DefaultHasher::new();
+    (path, "klipp-stem").hash(&mut b);
+    MediaId(uuid::Uuid::from_u64_pair(a.finish(), b.finish()))
+}
+
+/// `seq` as its sound plays with the frozen tracks' `stems` (#3207): each
+/// such sound track holds one clip of its stem, from the start, as long
+/// as its clips and the longest tail their effects ring, and no inserts
+/// (the stem has been through them). Its fader, pan, sends, automation,
+/// mute and solo are as they were.
+pub(crate) fn audio_view_of(seq: &klipp_timeline::Sequence, stems: &HashMap<klipp_core::TrackId, (std::path::PathBuf, MediaId)>) -> klipp_timeline::Sequence {
+    let mut out = seq.clone();
+    for t in out.tracks.iter_mut().filter(|t| t.kind == klipp_timeline::TrackKind::Audio) {
+        let Some((_, media)) = stems.get(&t.id) else { continue };
+        let Some(end) = t.clips.iter().map(|c| c.timeline_out).max() else { continue };
+        let end = end + RationalTime::from_secs_f64(f64::from(klipp_audio::dsp::MAX_TAIL_SECS), end.rate.max(1));
+        let zero = RationalTime { value: 0, rate: end.rate };
+        t.clips = vec![klipp_timeline::Clip::media(*media, zero, end, zero, end)];
+        t.effects.audio.clear();
+    }
+    out
+}
+
 impl PlaybackEngine {
     /// Every audio source that should sound at `tc`, keyed by track and
     /// lane: see [`audio_rows`].
     fn audio_rows_at(&self, tc: Timecode) -> Vec<TrackAudioRow> {
-        let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
+        let seq = self.audio_sequence();
         let pool = self.media_pool.read().unwrap_or_else(|e| e.into_inner());
-        audio_rows(&seq, &pool, &self.fadeable_media, tc, self.use_proxies, false)
+        audio_rows(&seq, &pool, &self.fadeable_media, tc, self.use_proxies, false, &self.stem_media)
+    }
+
+    /// The sequence as its sound plays: with no frozen sound track, the
+    /// sequence; with some, [`audio_view_of`] it, made again only when
+    /// the sequence changes.
+    fn audio_sequence(&self) -> Arc<klipp_timeline::Sequence> {
+        let (seq, revision) = self.sequence.snapshot_with_revision();
+        if self.frozen_stems.is_empty() {
+            return seq;
+        }
+        let mut view = self.audio_view.borrow_mut();
+        match &*view {
+            Some((r, v)) if *r == revision => Arc::clone(v),
+            _ => {
+                let v = Arc::new(audio_view_of(&seq, &self.frozen_stems));
+                *view = Some((revision, Arc::clone(&v)));
+                v
+            }
+        }
+    }
+
+    /// The frozen sound tracks' stems from now on (#3207): the sound is
+    /// opened again where they change.
+    fn set_frozen_stems(&mut self, stems: Vec<(klipp_core::TrackId, std::path::PathBuf)>) {
+        let next: HashMap<klipp_core::TrackId, (std::path::PathBuf, MediaId)> = stems.into_iter().map(|(t, p)| {
+            let id = stem_media_id(&p);
+            (t, (p, id))
+        }).collect();
+        if next == self.frozen_stems {
+            return;
+        }
+        self.stem_media = next.values().map(|(p, id)| (*id, p.clone())).collect();
+        self.frozen_stems = next;
+        *self.audio_view.borrow_mut() = None;
+        if self.state == PlaybackState::Playing {
+            let at = self.playhead;
+            self.seek_all_audio_to_timecode(at);
+        }
     }
 
     /// Titles about to start get their resting render made ahead on the
@@ -2461,7 +2542,7 @@ impl PlaybackEngine {
             clip: (klipp_core::ClipId, Timecode, f64),
         }
         let tails: Vec<Tail> = {
-            let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
+            let seq = self.audio_sequence();
             let pool = self.media_pool.read().unwrap_or_else(|e| e.into_inner());
             let fps = seq.fps.as_f64();
             let mut tails = Vec::new();
@@ -2842,6 +2923,9 @@ impl PlaybackEngine {
             freeze_media: None,
             freeze_size: None,
             frozen_reader: None,
+            frozen_stems: HashMap::new(),
+            stem_media: HashMap::new(),
+            audio_view: std::cell::RefCell::new(None),
             decoder_panic_clip: None,
             mixer,
             lufs_readings,
@@ -3474,6 +3558,7 @@ impl PlaybackEngine {
                 self.frozen_tracks = tracks.into_iter().collect();
                 self.regrade_cached_frame();
             }
+            AppCommand::SetFrozenStems(stems) => self.set_frozen_stems(stems),
             #[cfg(not(feature = "test-hooks"))]
             AppCommand::InjectPanic { .. } => warn!("inject_panic: this build has no test hooks"),
 
@@ -4428,7 +4513,7 @@ impl PlaybackEngine {
         // Without this, a generator-only timeline plays at the engine's default 24fps
         // because self.fps is only updated by load_file() and generators never trigger it.
         {
-            let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
+            let seq = self.audio_sequence();
             self.fps = seq.fps;
         }
 
@@ -4442,7 +4527,7 @@ impl PlaybackEngine {
 
         // Check if no media clip exists at playhead but a title or generator clip does
         {
-            let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
+            let seq = self.audio_sequence();
             let has_media_clip = seq.tracks.iter()
                 .filter(|t| matches!(t.kind, klipp_timeline::TrackKind::Video | klipp_timeline::TrackKind::Text))
                 .any(|track| {
@@ -4559,7 +4644,7 @@ impl PlaybackEngine {
             }
         }
 
-        let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
+        let seq = self.audio_sequence();
         // Search video tracks in reverse — the last video track (bottom of panel)
         // is the compositing primary, matching pro NLE convention.
         let clip_info = seq.tracks.iter().enumerate().rev()
@@ -4884,9 +4969,9 @@ impl PlaybackEngine {
         let (mixed, buffered) = (mt.mixed_frames(), mt.buffered_samples());
         let heard = self.playhead.to_secs_f64() + mix_lead_secs(buffered, sample_rate);
         let soon = RationalTime::from_secs_f64(heard + OPEN_AHEAD_SECS, 48_000);
-        let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
+        let seq = self.audio_sequence();
         let pool = self.media_pool.read().unwrap_or_else(|e| e.into_inner());
-        audio_rows(&seq, &pool, &self.fadeable_media, soon, self.use_proxies, false)
+        audio_rows(&seq, &pool, &self.fadeable_media, soon, self.use_proxies, false, &self.stem_media)
             .into_iter()
             .filter(|row| row.0 < LANE_STRIDE && !now.iter().any(|n| n.0 == row.0 && n.1 == row.1))
             .filter_map(|mut row| {
@@ -4914,7 +4999,7 @@ impl PlaybackEngine {
         let (mixed, buffered) = (mt.mixed_frames(), mt.buffered_samples());
         let heard = self.playhead.to_secs_f64() + mix_lead_secs(buffered, sample_rate);
         let at = RationalTime::from_secs_f64(heard, 48_000);
-        let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
+        let seq = self.audio_sequence();
         for active in self.audio_sources.iter().filter(|a| a.track_index < LANE_STRIDE) {
             let Some(sounding) = sounding_for_key(&seq, &self.fadeable_media, active.track_index, active.starts_at.filter(|s| *s > at).unwrap_or(at)) else { continue };
             // One that rings on is fed silence past its out point and
@@ -5082,7 +5167,7 @@ impl PlaybackEngine {
     }
 
     fn sync_clip_volumes(&self) {
-        let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
+        let seq = self.audio_sequence();
         // A blade join's continuing sound takes no fade-in; the flag is
         // for the first source with a clip, as it always was.
         let mut contiguous = self.contiguous_audio.swap(false, std::sync::atomic::Ordering::Relaxed);
@@ -5753,6 +5838,9 @@ impl PlaybackEngine {
 
     /// Look up the PCM cache path for a media item.
     fn pcm_cache_path(&self, media_id: MediaId) -> Option<std::path::PathBuf> {
+        if let Some(stem) = self.stem_media.get(&media_id) {
+            return Some(stem.clone());
+        }
         let pool = self.media_pool.read().ok()?;
         let item = pool.get(&media_id)?;
         item.audio_cache.as_ref().map(|c| c.pcm_path.clone())
@@ -5767,7 +5855,7 @@ impl PlaybackEngine {
     /// [`audio_resync_needed`] so the video-contiguous and video-jump
     /// clip-advance paths share one decision.
     fn audio_needs_resync_at(&self, tc: Timecode) -> bool {
-        let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
+        let seq = self.audio_sequence();
         audio_resync_needed(
             &seq,
             &self.fadeable_media,
@@ -5871,7 +5959,7 @@ impl PlaybackEngine {
         // same-media clips with distinct effects would otherwise share
         // the first clip's chain and the user hears effect bleed.
         let chain_or_media_changed = {
-            let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
+            let seq = self.audio_sequence();
             self.audio_sources.iter().any(|active| {
                 if seq.tracks.get(key_track(active.track_index)).is_none() {
                     return false;
@@ -5905,7 +5993,7 @@ impl PlaybackEngine {
 
         // Compute per-track seek positions from the timeline
         let seek_positions: Vec<(usize, f64)> = {
-            let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
+            let seq = self.audio_sequence();
             self.audio_sources
                 .iter()
                 .filter_map(|active| {
@@ -7590,7 +7678,9 @@ impl PlaybackEngine {
         self.pre_seek_started = true;
         let generation = self.pre_seek_generation;
         let result_arc = self.pre_seek_result.clone();
-        let sequence = self.sequence.clone();
+        // As the sound plays it: frozen tracks from their stems (#3207).
+        let audio_seq = self.audio_sequence();
+        let stems = self.stem_media.clone();
         let media_pool = self.media_pool.clone();
         let sample_rate = self.cpal_sample_rate;
         let use_proxies = self.use_proxies;
@@ -7599,10 +7689,7 @@ impl PlaybackEngine {
 
         std::thread::spawn(move || crate::thread_guard::catch_panic("klipp-preseek", move || {
             let tc = RationalTime::from_secs_f64(target_secs, 24); // rate doesn't matter for lookup
-            let seq = match sequence.read() {
-                Ok(s) => s,
-                Err(_) => return,
-            };
+            let seq = audio_seq;
             let pool = match media_pool.read() {
                 Ok(p) => p,
                 Err(_) => return,
@@ -7618,7 +7705,7 @@ impl PlaybackEngine {
                 std::collections::HashMap<String, Vec<klipp_core::Keyframe>>,
             );
             let fadeable = fadeable_media(&pool);
-            let track_audio: Vec<PreSeekRow> = audio_rows(&seq, &pool, &fadeable, tc, use_proxies, true);
+            let track_audio: Vec<PreSeekRow> = audio_rows(&seq, &pool, &fadeable, tc, use_proxies, true, &stems);
             // The envelope each source plays from its first sample. The
             // feeder shapes sound as it fills its buffer, about two
             // seconds of it in the moment it runs below, so an envelope
@@ -7760,7 +7847,7 @@ impl PlaybackEngine {
                 self.sync_clip_volumes();
 
                 // 3. Seek video decoder (still needed — video wasn't pre-seeked)
-                let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
+                let seq = self.audio_sequence();
                 let clip_info = seq.tracks.iter()
                     .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
                     .find_map(|track| {
@@ -7840,7 +7927,7 @@ impl PlaybackEngine {
         // Cold seek fallback (no pre-seek available)
 
         // Find video clip at target position
-        let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
+        let seq = self.audio_sequence();
         let clip_info = seq.tracks.iter()
             .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
             .find_map(|track| {
@@ -7992,7 +8079,7 @@ impl PlaybackEngine {
         // decode. A title or generator there becomes the clip playback
         // starts from; the renderer draws whatever is on screen.
         {
-            let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
+            let seq = self.audio_sequence();
             let has_media_clip = seq.tracks.iter()
                 .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
                 .any(|track| {
@@ -8039,7 +8126,7 @@ impl PlaybackEngine {
             }
         }
 
-        let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
+        let seq = self.audio_sequence();
         // Search video tracks in reverse — last video track (bottom of panel) is primary.
         let clip_info = seq.tracks.iter().enumerate().rev()
             .filter(|(_, t)| t.kind == klipp_timeline::TrackKind::Video)
@@ -8216,7 +8303,7 @@ impl PlaybackEngine {
 
             // Check if any audio track has a clip here
             let has_audio = {
-                let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
+                let seq = self.audio_sequence();
                 seq.tracks.iter().any(|track| {
                     track.kind == klipp_timeline::TrackKind::Audio
                         && track.clip_at_timecode(tc).is_some()
@@ -8251,7 +8338,7 @@ impl PlaybackEngine {
                     if !self.quiet_seek && (!self.is_scrubbing || self.scrub_audio_enabled) {
                         if let Some(active) = self.audio_sources.first() {
                             let source_secs = {
-                                let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
+                                let seq = self.audio_sequence();
                                 seq.tracks.iter().find_map(|track| {
                                     let (_, clip) = track.clip_at_timecode(tc)?;
                                     Some(klipp_compose::render::source_secs(clip, tc, seq.fps.as_f64()))
@@ -14429,9 +14516,9 @@ mod audio_crossfade_schedule_tests {
     #[test]
     fn inside_the_window_both_clips_play_from_their_handles() {
         let (s, pool, am, bm) = timeline();
-        let outside = audio_rows(&s, &pool, &fadeable_media(&pool), tc(60), false, false);
+        let outside = audio_rows(&s, &pool, &fadeable_media(&pool), tc(60), false, false, &Default::default());
         assert_eq!(outside.len(), 1);
-        let before_cut = audio_rows(&s, &pool, &fadeable_media(&pool), tc(69), false, false);
+        let before_cut = audio_rows(&s, &pool, &fadeable_media(&pool), tc(69), false, false, &Default::default());
         assert_eq!(before_cut.len(), 2);
         let a = before_cut.iter().find(|r| r.1 == am).unwrap();
         let b = before_cut.iter().find(|r| r.1 == bm).unwrap();
@@ -14440,7 +14527,7 @@ mod audio_crossfade_schedule_tests {
         assert_eq!(key_track(b.0), 0);
         // B is three frames before its in point: its head, from source 45.
         assert!((b.3 - 45.0 / 24.0).abs() < 1e-9, "B from {}", b.3);
-        let after_cut = audio_rows(&s, &pool, &fadeable_media(&pool), tc(75), false, false);
+        let after_cut = audio_rows(&s, &pool, &fadeable_media(&pool), tc(75), false, false, &Default::default());
         let a = after_cut.iter().find(|r| r.1 == am).unwrap();
         // A three frames past its out point: its tail, source 99.
         assert!((a.3 - 99.0 / 24.0).abs() < 1e-9, "A from {}", a.3);
@@ -14459,7 +14546,7 @@ mod audio_crossfade_schedule_tests {
         let mut t2 = Track::new("A2", TrackKind::Audio);
         t2.clips.push(Clip { timeline_in: tc(0), timeline_out: tc(72), ..b });
         s.tracks.push(t2);
-        let heard = |s: &Sequence, pool: &klipp_media::MediaPool| audio_rows(s, pool, &fadeable_media(pool), tc(24), false, false).iter().map(|r| r.1).collect::<Vec<_>>();
+        let heard = |s: &Sequence, pool: &klipp_media::MediaPool| audio_rows(s, pool, &fadeable_media(pool), tc(24), false, false, &Default::default()).iter().map(|r| r.1).collect::<Vec<_>>();
         assert_eq!(heard(&s, &pool), vec![am, bm]);
         s.tracks[0].clips[0].speed = 2.0;
         assert_eq!(heard(&s, &pool), vec![am, bm], "the 2x clip heard, from its cache");
@@ -14476,8 +14563,8 @@ mod audio_crossfade_schedule_tests {
     #[test]
     fn the_incoming_source_keeps_its_key_after_the_window() {
         let (s, pool, _, bm) = timeline();
-        let in_window = audio_rows(&s, &pool, &fadeable_media(&pool), tc(70), false, false);
-        let after = audio_rows(&s, &pool, &fadeable_media(&pool), tc(100), false, false);
+        let in_window = audio_rows(&s, &pool, &fadeable_media(&pool), tc(70), false, false, &Default::default());
+        let after = audio_rows(&s, &pool, &fadeable_media(&pool), tc(100), false, false, &Default::default());
         let key = |rows: &[super::TrackAudioRow]| rows.iter().find(|r| r.1 == bm).unwrap().0;
         assert_eq!(key(&in_window), key(&after), "B would be reopened at full level as the window ends");
         // And its source carries on: nothing to resync past the window.
@@ -14492,10 +14579,10 @@ mod audio_crossfade_schedule_tests {
         // cut: one source at a time, neither clip extended, one key.
         let (s, mut pool, am, bm) = timeline();
         pool.get_mut(&bm).unwrap().audio_cache = None;
-        let before_cut = audio_rows(&s, &pool, &fadeable_media(&pool), tc(69), false, false);
+        let before_cut = audio_rows(&s, &pool, &fadeable_media(&pool), tc(69), false, false, &Default::default());
         assert_eq!(before_cut.len(), 1, "B would play at full level under A");
         assert_eq!(before_cut[0].1, am);
-        let after_cut = audio_rows(&s, &pool, &fadeable_media(&pool), tc(75), false, false);
+        let after_cut = audio_rows(&s, &pool, &fadeable_media(&pool), tc(75), false, false, &Default::default());
         assert_eq!(after_cut.len(), 1, "A would play on past its out point at full level");
         assert_eq!(after_cut[0].1, bm);
         assert!((after_cut[0].3 - 51.0 / 24.0).abs() < 1e-9, "B from {}", after_cut[0].3);
@@ -14509,8 +14596,8 @@ mod audio_crossfade_schedule_tests {
     fn a_plain_cut_keeps_one_source_key() {
         let (mut s, pool, am, bm) = timeline();
         s.tracks[0].transitions.clear();
-        let a = audio_rows(&s, &pool, &fadeable_media(&pool), tc(70), false, false);
-        let b = audio_rows(&s, &pool, &fadeable_media(&pool), tc(75), false, false);
+        let a = audio_rows(&s, &pool, &fadeable_media(&pool), tc(70), false, false, &Default::default());
+        let b = audio_rows(&s, &pool, &fadeable_media(&pool), tc(75), false, false, &Default::default());
         assert_eq!((a.len(), b.len()), (1, 1));
         assert_eq!((a[0].1, b[0].1), (am, bm));
         assert_eq!(a[0].0, b[0].0);
@@ -14526,7 +14613,7 @@ mod audio_crossfade_schedule_tests {
         let (mut s, pool, am, bm) = timeline();
         s.tracks[0].clips[0].fade_in_secs = 0.1;
         s.tracks[0].clips[1].fade_out_secs = 0.2;
-        let rows = audio_rows(&s, &pool, &fadeable_media(&pool), tc(69), false, false);
+        let rows = audio_rows(&s, &pool, &fadeable_media(&pool), tc(69), false, false, &Default::default());
         let envelope = |media: MediaId| {
             let key = rows.iter().find(|r| r.1 == media).unwrap().0;
             envelope_of(&s, &sounding_for_key(&s, &fadeable_media(&pool), key, tc(69)).unwrap(), tc(69))
@@ -14548,7 +14635,7 @@ mod audio_crossfade_schedule_tests {
         assert!((b.fade_out_secs - 0.2).abs() < 1e-6, "B's own fade out stays: {b:?}");
         // A clip in no crossfade plays its own envelope.
         s.tracks[0].transitions.clear();
-        let plain_cut = audio_rows(&s, &pool, &fadeable_media(&pool), tc(60), false, false);
+        let plain_cut = audio_rows(&s, &pool, &fadeable_media(&pool), tc(60), false, false, &Default::default());
         let plain = envelope_of(&s, &sounding_for_key(&s, &fadeable_media(&pool), plain_cut[0].0, tc(60)).unwrap(), tc(60));
         assert!((plain.source_in_secs - 1.0).abs() < 1e-9 && (plain.duration_secs - 3.0).abs() < 1e-9, "{plain:?}");
         assert!((plain.fade_in_secs - 0.1).abs() < 1e-6, "{plain:?}");
@@ -15760,5 +15847,82 @@ mod track_level_sync_tests {
         let m = engine.mixer.lock().unwrap();
         assert_eq!((m.tracks[0].volume, m.tracks[0].pan), (0.7, -0.4), "undone, heard");
         assert_eq!(m.tracks[1].volume, 0.9, "the automation's, untouched");
+    }
+}
+
+#[cfg(test)]
+mod frozen_sound_tests {
+    //! A frozen sound track (#3207) plays its stem: one clip of it from the
+    //! start, as long as its clips and the longest tail, no inserts, and
+    //! its fader, pan, sends and automation as they were.
+
+    use super::*;
+    use klipp_timeline::{Clip, Sequence, Track, TrackKind};
+
+    fn at(secs: f64) -> Timecode {
+        RationalTime::from_secs_f64(secs, 24)
+    }
+
+    fn project() -> (Sequence, klipp_media::MediaPool, klipp_core::TrackId, klipp_core::TrackId) {
+        let mut pool = klipp_media::MediaPool::new();
+        let mut item = klipp_media::MediaItem::synthetic_for_test("/tmp/voice.wav".into(), None);
+        item.video_codec.clear();
+        item.has_audio = true;
+        let media = pool.add(item);
+        let mut frozen = Track::new("A1", TrackKind::Audio);
+        frozen.clips = vec![Clip::media(media, at(1.0), at(3.0), at(0.0), at(2.0)), Clip::media(media, at(4.0), at(6.0), at(2.0), at(4.0))];
+        frozen.effects.audio = vec![klipp_core::AudioEffectInstance { effect_type: "reverb".into(), enabled: true, wet_dry: 1.0, params: vec![] }];
+        frozen.volume = 0.5;
+        frozen.pan = -0.25;
+        let mut live = Track::new("A2", TrackKind::Audio);
+        live.clips = vec![Clip::media(media, at(0.0), at(5.0), at(0.0), at(5.0))];
+        let (f, l) = (frozen.id, live.id);
+        let mut seq = Sequence::new_default();
+        seq.tracks = vec![frozen, live];
+        (seq, pool, f, l)
+    }
+
+    #[test]
+    fn a_frozen_sound_track_is_one_clip_of_its_stem_and_no_inserts() {
+        let (seq, _, f, l) = project();
+        let stem = std::path::PathBuf::from("/tmp/stems/a1/0123.pcm");
+        let id = stem_media_id(&stem);
+        let stems = HashMap::from([(f, (stem.clone(), id))]);
+        let view = audio_view_of(&seq, &stems);
+        let frozen = view.tracks.iter().find(|t| t.id == f).unwrap();
+        assert_eq!(frozen.clips.len(), 1);
+        let c = &frozen.clips[0];
+        assert_eq!(c.media_id(), Some(id));
+        assert_eq!(c.timeline_in.value, 0);
+        let tail = f64::from(klipp_audio::dsp::MAX_TAIL_SECS);
+        assert!((c.timeline_out.to_secs_f64() - (6.0 + tail)).abs() < 1e-6, "its clips and the longest tail: {:?}", c.timeline_out);
+        assert!((c.source_in.to_secs_f64() - 0.0).abs() < 1e-9 && c.source_out == c.timeline_out, "the stem from its start");
+        assert!(frozen.effects.audio.is_empty(), "the stem has been through the inserts");
+        assert_eq!((frozen.volume, frozen.pan), (0.5, -0.25), "fader and pan live");
+        let other = view.tracks.iter().find(|t| t.id == l).unwrap();
+        assert_eq!(other.clips.len(), 1);
+        assert_eq!(other.clips[0].timeline_out, at(5.0), "another track as it was");
+        assert_eq!(view.tracks.len(), seq.tracks.len());
+        assert!(audio_view_of(&seq, &HashMap::new()).tracks[0].clips.len() == 2, "no stems: as it was");
+    }
+
+    /// Its row plays the stem from where the playhead is on the timeline,
+    /// with no clip effects; the other track's row is as before.
+    #[test]
+    fn a_frozen_track_s_row_plays_its_stem_from_the_playhead() {
+        let (seq, pool, f, _) = project();
+        let stem = std::path::PathBuf::from("/tmp/stems/a1/0123.pcm");
+        let id = stem_media_id(&stem);
+        let view = audio_view_of(&seq, &HashMap::from([(f, (stem.clone(), id))]));
+        let rows = audio_rows(&view, &pool, &fadeable_media(&pool), at(4.5), false, false, &HashMap::from([(id, stem.clone())]));
+        let row = rows.iter().find(|r| r.1 == id).expect("the stem's row");
+        assert_eq!(row.2, stem);
+        assert!((row.3 - 4.5).abs() < 1e-6, "from the playhead's place: {}", row.3);
+        assert!(row.4.is_empty() && row.5.is_empty());
+        assert_eq!(rows.len(), 2, "the stem and the live track");
+        // In the gap between the clips the stem plays on: a reverb rings
+        // there.
+        assert!(audio_rows(&view, &pool, &fadeable_media(&pool), at(3.5), false, false, &HashMap::from([(id, stem.clone())])).iter().any(|r| r.1 == id));
+        assert_ne!(stem_media_id(&stem), stem_media_id(std::path::Path::new("/tmp/stems/a1/4567.pcm")), "a new stem is a new source");
     }
 }

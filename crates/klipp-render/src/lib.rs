@@ -66,6 +66,7 @@ pub mod banding;
 pub mod water;
 pub mod pixel_check;
 pub mod still;
+pub mod stem;
 #[cfg(test)]
 mod test_watchdog;
 

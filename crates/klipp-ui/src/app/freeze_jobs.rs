@@ -51,6 +51,11 @@ pub(crate) struct Tick {
     pub start: bool,
     /// Tracks whose job found the cache full.
     pub full: Vec<TrackId>,
+    /// The inputs changed this frame: stems no longer current must stop
+    /// playing at once.
+    pub changed: bool,
+    /// A stem was drawn: tell the engine the stems again.
+    pub stems: bool,
 }
 
 #[derive(Default)]
@@ -69,6 +74,10 @@ pub(crate) struct FreezeJobs {
     orders: HashMap<TrackId, (Vec<klipp_core::Timecode>, klipp_core::Fps, usize)>,
     /// What the engine was last told.
     told: Option<(Option<PathBuf>, Vec<TrackId>)>,
+    /// Frozen sound tracks' stems that are current, as the engine was
+    /// told them, and the file each stem job is drawing.
+    stems: Vec<(TrackId, PathBuf)>,
+    stem_pending: HashMap<TrackId, PathBuf>,
 }
 
 impl FreezeJobs {
@@ -82,6 +91,7 @@ impl FreezeJobs {
             job.cancel();
         }
         self.jobs.clear();
+        self.stem_pending.clear();
     }
 
     /// One frame's look at `inputs` (see the module's doc), at `now`.
@@ -117,6 +127,13 @@ impl FreezeJobs {
                 if tally.full {
                     out.full.push(track);
                 }
+                if let Some(path) = self.stem_pending.remove(&track) {
+                    if tally.stored > 0 {
+                        self.stems.retain(|(t, _)| *t != track);
+                        self.stems.push((track, path));
+                        out.stems = true;
+                    }
+                }
                 if let Some(s) = self.statuses.get_mut(&track) {
                     // Not reached, or not drawn: stale; reading other
                     // tracks: live.
@@ -145,7 +162,10 @@ impl FreezeJobs {
                     }
                 }
                 Some((seen, _)) if seen == inputs => {}
-                _ => self.seen = Some((inputs.clone(), now)),
+                _ => {
+                    self.seen = Some((inputs.clone(), now));
+                    out.changed = true;
+                }
             }
         }
 
@@ -208,6 +228,19 @@ impl KlippApp {
             let _ = self.cmd_tx.send(AppCommand::SetFreezeFolder(folder));
             let _ = self.cmd_tx.send(AppCommand::SetFrozenTracks(tracks));
         }
+        // A stem the change made stale stops playing at once (#3207): the
+        // track plays live until its stem is drawn again.
+        if tick.changed {
+            let pool = &self.state.media_pool;
+            let before = self.freeze_jobs.stems.len();
+            self.freeze_jobs.stems.retain(|(t, path)| inputs.tracks.contains(t) && stem_path(&seq, pool, inputs.folder.as_deref(), *t).ok().as_ref() == Some(path));
+            if self.freeze_jobs.stems.len() != before {
+                let _ = self.cmd_tx.send(AppCommand::SetFrozenStems(self.freeze_jobs.stems.clone()));
+            }
+        }
+        if tick.stems {
+            let _ = self.cmd_tx.send(AppCommand::SetFrozenStems(self.freeze_jobs.stems.clone()));
+        }
         if let Some(folder) = tick.open {
             self.freeze_jobs.open_store(folder, u64::from(self.prefs.media_cache.max_cache_size_gb) << 30);
         }
@@ -222,13 +255,15 @@ impl KlippApp {
     }
 
     fn start_freeze_jobs(&mut self, seq: &klipp_timeline::Sequence, inputs: &Inputs) {
+        let is_sound = |t: &TrackId| seq.tracks.iter().any(|x| x.id == *t && x.kind == klipp_timeline::TrackKind::Audio);
+        let (sound, pictures): (Vec<TrackId>, Vec<TrackId>) = inputs.tracks.iter().copied().partition(is_sound);
+        let mut statuses = self.start_stem_jobs(seq, inputs, &sound);
         let playhead = self.state.playhead;
         let pool = &self.state.media_pool;
         let fj = &mut self.freeze_jobs;
         let done = fj.done.get_or_insert_with(mpsc::channel).0.clone();
-        let mut statuses = HashMap::new();
         let Some((_, store)) = fj.store.clone().filter(|_| inputs.folder.is_some()) else {
-            for t in &inputs.tracks {
+            for t in &pictures {
                 let index = seq.tracks.iter().position(|x| x.id == *t);
                 let frames = index.map_or_else(Vec::new, |i| klipp_engine::freeze::track_frames(seq, i, playhead));
                 let stale = klipp_engine::freeze::spans(&frames, seq.fps);
@@ -239,7 +274,7 @@ impl KlippApp {
         };
         {
             let mut store = store.lock().unwrap_or_else(|e| e.into_inner());
-            for t in &inputs.tracks {
+            for t in &pictures {
                 store.pin(&klipp_engine::freeze::namespace(*t));
             }
             for t in fj.statuses.keys().filter(|t| !inputs.tracks.contains(t)) {
@@ -251,7 +286,7 @@ impl KlippApp {
         let seq_arc = Arc::new(seq.clone());
         let working = klipp_engine::video_decoder::working_colorspace();
         let fps = seq.fps.as_f64();
-        for t in &inputs.tracks {
+        for t in &pictures {
             let Some(index) = seq.tracks.iter().position(|x| x.id == *t) else { continue };
             let frames = klipp_engine::freeze::track_frames(seq, index, playhead);
             let previous = fj.statuses.get(t).and_then(|s| s.tally.clone());
@@ -269,27 +304,128 @@ impl KlippApp {
                 environment: inputs.environment,
                 media: Arc::clone(&media),
             };
-            let (files, done, track) = (Arc::clone(&files), done.clone(), *t);
-            // The job's id is known once it's made; its end reads it then.
-            let id: Arc<std::sync::OnceLock<JobId>> = Arc::default();
-            let id_at_end = Arc::clone(&id);
-            let job = klipp_engine::freeze::spawn_freeze(req, Arc::clone(&store), move || klipp_render::ExportFrameSource::shared(files, fps, working), move |tally| {
-                // A job with nothing to draw ends at once: its id is set
-                // as soon as `spawn_freeze` returns.
-                let started = Instant::now();
-                while id_at_end.get().is_none() && started.elapsed() < Duration::from_secs(1) {
-                    std::thread::sleep(Duration::from_millis(1));
-                }
-                if let Some(id) = id_at_end.get() {
-                    let _ = done.send((track, *id, tally));
-                }
-            });
+            let files = Arc::clone(&files);
+            let (id, end) = reported(done.clone(), *t);
+            let job = klipp_engine::freeze::spawn_freeze(req, Arc::clone(&store), move || klipp_render::ExportFrameSource::shared(files, fps, working), end);
             let _ = id.set(job.id());
             self.job_scheduler.submit(Arc::clone(&job) as Arc<dyn BackgroundJob>);
             fj.jobs.insert(*t, job);
         }
         fj.statuses = statuses;
     }
+
+    /// The frozen sound tracks (#3207): each stem current under its key is
+    /// told the engine; one not drawn is drawn by a job, played live until
+    /// it is. Their statuses.
+    fn start_stem_jobs(&mut self, seq: &klipp_timeline::Sequence, inputs: &Inputs, sound: &[TrackId]) -> HashMap<TrackId, FreezeStatus> {
+        let mut statuses = HashMap::new();
+        let mut current: Vec<(TrackId, PathBuf)> = Vec::new();
+        let done = self.freeze_jobs.done.get_or_insert_with(mpsc::channel).0.clone();
+        for t in sound {
+            let base = FreezeStatus { sound: true, frames: 1, ..Default::default() };
+            let path = match stem_path(seq, &self.state.media_pool, inputs.folder.as_deref(), *t) {
+                Err(_) if inputs.folder.is_none() => {
+                    statuses.insert(*t, FreezeStatus { unsaved: true, ..base });
+                    continue;
+                }
+                Err(why) => {
+                    statuses.insert(*t, FreezeStatus { live_reason: Some(why), tally: Some(FreezeTally::default()), ..base });
+                    continue;
+                }
+                Ok(path) => path,
+            };
+            if path.exists() {
+                current.push((*t, path));
+                statuses.insert(*t, FreezeStatus { tally: Some(FreezeTally { current: 1, reached: 1, ..Default::default() }), ..base });
+                continue;
+            }
+            let snap = match klipp_render::stem::stem_snapshot(seq, &[], &self.state.media_pool, *t) {
+                Ok(Some(snap)) => snap,
+                Ok(None) | Err(_) => {
+                    statuses.insert(*t, FreezeStatus { tally: Some(FreezeTally { failed: 1, ..Default::default() }), ..base });
+                    continue;
+                }
+            };
+            let name = seq.tracks.iter().find(|x| x.id == *t).map(|x| x.name.clone()).unwrap_or_default();
+            let (id, end) = reported(done.clone(), *t);
+            let into = path.clone();
+            let job = ThreadJob::spawn(format!("Freeze sound of {name}"), klipp_jobs::JobPriority::Background, klipp_jobs::ResourceClass::Cpu, move |pause, progress| {
+                let mut go_on = |p: f32| {
+                    pause.wait_while_paused();
+                    progress.set(p);
+                    !pause.is_cancelled()
+                };
+                let tally = match klipp_render::stem::render_stem(&snap, &mut go_on) {
+                    Ok(None) => FreezeTally { cancelled: true, ..Default::default() },
+                    Ok(Some(samples)) => match klipp_render::stem::write_stem(&into, &samples) {
+                        Ok(()) => {
+                            // Older stems of the track, under keys gone by.
+                            for e in std::fs::read_dir(into.parent().unwrap_or(&into)).into_iter().flatten().flatten() {
+                                if e.path() != into {
+                                    let _ = std::fs::remove_file(e.path());
+                                }
+                            }
+                            FreezeTally { stored: 1, reached: 1, ..Default::default() }
+                        }
+                        Err(e) => {
+                            tracing::warn!("freeze: the stem of {name} wasn't written: {e}");
+                            FreezeTally { failed: 1, reached: 1, ..Default::default() }
+                        }
+                    },
+                    Err(e) => {
+                        tracing::warn!("freeze: the stem of {name} wasn't drawn: {e}");
+                        FreezeTally { failed: 1, reached: 1, ..Default::default() }
+                    }
+                };
+                end(tally);
+            });
+            let _ = id.set(job.id());
+            self.job_scheduler.submit(Arc::clone(&job) as Arc<dyn BackgroundJob>);
+            let fj = &mut self.freeze_jobs;
+            fj.jobs.insert(*t, job);
+            fj.stem_pending.insert(*t, path);
+            statuses.insert(*t, FreezeStatus { progress: Some(0.0), ..base });
+        }
+        // Those current now, an undo's among them, played from their stems.
+        let fj = &mut self.freeze_jobs;
+        let as_set = |v: &[(TrackId, PathBuf)]| v.iter().cloned().collect::<std::collections::HashSet<_>>();
+        if as_set(&fj.stems) != as_set(&current) {
+            fj.stems = current;
+            let _ = self.cmd_tx.send(AppCommand::SetFrozenStems(fj.stems.clone()));
+        }
+        statuses
+    }
+}
+
+/// A job's end, reported on `done` for `track` with the job's id, which
+/// is set in the cell once the job is made: a job with nothing to do can
+/// end before then, so the end waits a moment for it.
+fn reported(done: mpsc::Sender<Finished>, track: TrackId) -> (Arc<std::sync::OnceLock<JobId>>, impl FnOnce(FreezeTally) + Send + 'static) {
+    let id: Arc<std::sync::OnceLock<JobId>> = Arc::default();
+    let at_end = Arc::clone(&id);
+    let end = move |tally: FreezeTally| {
+        let started = Instant::now();
+        while at_end.get().is_none() && started.elapsed() < Duration::from_secs(1) {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        if let Some(id) = at_end.get() {
+            let _ = done.send((track, *id, tally));
+        }
+    };
+    (id, end)
+}
+
+/// Where sound track `track`'s stem is kept under its current key
+/// (#3207): `<project>/cache/stems/<track>/<key>.pcm`; or why it plays
+/// live.
+fn stem_path(seq: &klipp_timeline::Sequence, pool: &klipp_media::MediaPool, folder: Option<&std::path::Path>, track: TrackId) -> Result<PathBuf, &'static str> {
+    let folder = folder.ok_or("the project isn't saved")?;
+    if let Some(why) = klipp_render::stem::live_reason(seq, track) {
+        return Err(why);
+    }
+    let media = |id: &klipp_core::MediaId| pool.get(id).map(klipp_engine::freeze::media_identity);
+    let key = klipp_render::stem::stem_key(seq, &[], track, &media).ok_or("it has no sound to freeze")?;
+    Ok(folder.join("stems").join(track.to_string()).join(format!("{key:016x}.pcm")))
 }
 
 #[cfg(test)]
@@ -430,5 +566,75 @@ mod tests {
         let s = &fj.statuses[&t];
         assert_eq!(s.stale, vec![(f(8), f(10)), (f(15), f(16))], "not reached (8, 9) and not drawn (15)");
         assert_eq!(s.live, vec![(f(12), f(14))]);
+    }
+
+    /// A change is said once, when first seen: the stems are checked then,
+    /// not every frame of a drag.
+    #[test]
+    fn a_change_is_said_when_first_seen() {
+        let shared = klipp_timeline::SharedSequence::new(klipp_timeline::Sequence::new_default());
+        let mut fj = FreezeJobs::default();
+        let t0 = Instant::now();
+        let a = inputs(None, revision(&shared), vec![TrackId::new()]);
+        assert!(fj.tick(&a, t0).changed);
+        assert!(!fj.tick(&a, t0 + SETTLE / 4).changed);
+        shared.replace(klipp_timeline::Sequence::new_default());
+        let b = inputs(None, revision(&shared), a.tracks.clone());
+        assert!(fj.tick(&b, t0 + SETTLE / 2).changed);
+        assert!(!fj.tick(&b, t0 + SETTLE).changed);
+    }
+
+    /// A stem job that drew its stem adds it to those told the engine;
+    /// one that failed doesn't.
+    #[test]
+    fn a_drawn_stem_is_told_the_engine() {
+        let shared = klipp_timeline::SharedSequence::new(klipp_timeline::Sequence::new_default());
+        let (t, u) = (TrackId::new(), TrackId::new());
+        let mut fj = FreezeJobs::default();
+        let a = inputs(None, revision(&shared), vec![t, u]);
+        let (tx, rx) = mpsc::channel();
+        fj.done = Some((tx.clone(), rx));
+        fj.started_for = Some(a.clone());
+        let job = |n: &'static str| ThreadJob::spawn(n, klipp_jobs::JobPriority::Background, klipp_jobs::ResourceClass::Cpu, |_, _| {});
+        let (jt, ju) = (job("t"), job("u"));
+        tx.send((t, jt.id(), FreezeTally { stored: 1, reached: 1, ..Default::default() })).unwrap();
+        tx.send((u, ju.id(), FreezeTally { failed: 1, reached: 1, ..Default::default() })).unwrap();
+        fj.jobs.insert(t, jt);
+        fj.jobs.insert(u, ju);
+        fj.stem_pending.insert(t, PathBuf::from("/p/cache/stems/t/1.pcm"));
+        fj.stem_pending.insert(u, PathBuf::from("/p/cache/stems/u/2.pcm"));
+        let tick = fj.tick(&a, Instant::now());
+        assert!(tick.stems);
+        assert_eq!(fj.stems, vec![(t, PathBuf::from("/p/cache/stems/t/1.pcm"))]);
+    }
+
+    /// A stem's place follows its key: an edit to the track moves it, the
+    /// fader doesn't; without a saved project, or with an outside plug-in,
+    /// there is none.
+    #[test]
+    fn a_stem_s_place_follows_its_sound() {
+        let mut pool = klipp_media::MediaPool::new();
+        let mut item = klipp_media::MediaItem::synthetic_for_test("/tmp/voice.wav".into(), None);
+        item.video_codec.clear();
+        let media = pool.add(item);
+        let at = |f: i64| klipp_core::Timecode { value: f, rate: 24 };
+        let mut track = klipp_timeline::Track::new("A1", klipp_timeline::TrackKind::Audio);
+        track.clips = vec![klipp_timeline::Clip::media(media, at(0), at(48), at(0), at(48))];
+        let id = track.id;
+        let mut seq = klipp_timeline::Sequence::new_default();
+        seq.tracks = vec![track];
+        let folder = std::path::Path::new("/p/cache");
+        let place = stem_path(&seq, &pool, Some(folder), id).unwrap();
+        assert!(place.starts_with("/p/cache/stems") && place.extension().is_some_and(|e| e == "pcm"), "{}", place.display());
+        let mut louder = seq.clone();
+        louder.tracks[0].volume = 0.3;
+        assert_eq!(stem_path(&louder, &pool, Some(folder), id).unwrap(), place, "the fader is live");
+        let mut trimmed = seq.clone();
+        trimmed.tracks[0].clips[0].timeline_out = at(24);
+        assert_ne!(stem_path(&trimmed, &pool, Some(folder), id).unwrap(), place, "a trim is a new stem");
+        assert!(stem_path(&seq, &pool, None, id).is_err(), "nowhere to keep it");
+        let mut outside = seq.clone();
+        outside.tracks[0].effects.audio = vec![klipp_core::AudioEffectInstance { effect_type: "clap:org.example.x".into(), enabled: true, wet_dry: 1.0, params: vec![] }];
+        assert!(stem_path(&outside, &pool, Some(folder), id).is_err());
     }
 }
