@@ -62,7 +62,8 @@
 pub mod alsa_quiet;
 pub mod analyse;
 pub use analyse::{analyse_into, analyse_media};
-pub mod canonical_hash;
+/// Moved to klipp-timeline, where the compositor keys frozen frames with it (#3207).
+pub use klipp_timeline::canonical_hash;
 pub mod node_thumbnails;
 pub mod audio_decoder;
 pub mod audio_input;

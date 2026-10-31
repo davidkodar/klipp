@@ -20,6 +20,7 @@ klipp-plugin      = { workspace = true }
 klipp-analysis    = { workspace = true }
 klipp-graph-format = { workspace = true }
 klipp-graph-lift  = { workspace = true }
+serde             = { workspace = true }
 serde_json        = { workspace = true }
 wgpu = { workspace = true }
 bytemuck = { workspace = true }
