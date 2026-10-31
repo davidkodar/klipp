@@ -2,6 +2,7 @@
 //! The jobs remain owned by those services, so reconnecting clients can
 //! read their latest known state by ID without relying on MCP session data.
 
+use crate::poison::Recover;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -97,7 +98,8 @@ pub(super) fn register_proxies(job_id: &str, media_ids: Vec<klipp_core::MediaId>
 fn proxies_job(ctx: &ControlContext, job_id: &str, media_ids: &[klipp_core::MediaId]) -> Value {
     let status = ctx.shared.proxies.lock().unwrap_or_else(|e| e.into_inner()).clone();
     let (mut done, mut share, mut failed, mut gone) = (0usize, 0.0f32, Vec::new(), 0usize);
-    if let Ok(pool) = ctx.media_pool.read() {
+    {
+        let pool = ctx.media_pool.read().recovered();
         for id in media_ids {
             let Some(item) = pool.get(id) else {
                 gone += 1;
@@ -275,7 +277,7 @@ pub(super) fn snapshot(ctx: &ControlContext) -> Vec<Value> {
             Submitted::Proxies { media_ids } => jobs.push(proxies_job(ctx, &operation_id, &media_ids)),
             Submitted::Import { path, analyze, project_identity: expected_project, media_id: known } => {
                 let project_changed = expected_project != project_identity(ctx);
-                let found = ctx.media_pool.read().ok().and_then(|pool| imported_item(&pool, known, &path));
+                let found = imported_item(&ctx.media_pool.read().recovered(), known, &path);
                 if let (None, Some(id)) = (known, found) {
                     note_imported(&operation_id, id);
                 }

@@ -1,5 +1,6 @@
 //! Cutting requests: selects, music and sound effects, beats, style profiles, cut points and cut preparation (#826).
 
+use crate::poison::Recover;
 #[allow(unused_imports)]
 use crate::*;
 
@@ -16,7 +17,7 @@ pub(crate) fn respond(
                 return read_in_batch("selects");
             }
             let id = klipp_core::MediaId(media_id.parse().map_err(|e| format!("media_id is not a uuid: {e}"))?);
-            let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+            let pool = ctx.media_pool.read().recovered();
             let item = pool.get(&id).ok_or_else(|| format!("no media item {}", id.0))?;
             let report = klipp_analysis::report::MediaAnalysis::load(&item.path);
             let Some(t) = report.transcript.as_ref() else {
@@ -67,7 +68,7 @@ pub(crate) fn respond(
                 return read_in_batch("find_moments");
             }
             let id = klipp_core::MediaId(media_id.parse().map_err(|e| format!("media_id is not a uuid: {e}"))?);
-            let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+            let pool = ctx.media_pool.read().recovered();
             let item = pool.get(&id).ok_or_else(|| format!("no media item {}", id.0))?;
             let report = klipp_analysis::report::MediaAnalysis::load(&item.path);
             let Some(t) = report.transcript.as_ref() else {
@@ -277,7 +278,7 @@ pub(crate) fn respond(
             }
             let id = klipp_core::MediaId(media_id.parse().map_err(|e| format!("media_id is not a uuid: {e}"))?);
             let (path, filename, has_audio, duration) = {
-                let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+                let pool = ctx.media_pool.read().recovered();
                 let item = pool.get(&id).ok_or_else(|| format!("no media item {}", id.0))?;
                 (item.path.clone(), item.filename.clone(), item.has_audio, item.duration.to_secs_f64())
             };
@@ -319,7 +320,7 @@ pub(crate) fn respond(
             }
             let id = klipp_core::MediaId(media_id.parse().map_err(|e| format!("media_id is not a uuid: {e}"))?);
             let (path, filename, dur, has_audio, item) = {
-                let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+                let pool = ctx.media_pool.read().recovered();
                 let item = pool.get(&id).ok_or_else(|| format!("no media item {}", id.0))?;
                 (item.path.clone(), item.filename.clone(), item.duration.to_secs_f64(), item.has_audio, item.clone())
             };
@@ -388,7 +389,7 @@ pub(crate) fn respond(
                 return read_in_batch("cut_points");
             }
             let id = klipp_core::MediaId(media_id.parse().map_err(|e| format!("media_id is not a uuid: {e}"))?);
-            let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+            let pool = ctx.media_pool.read().recovered();
             let item = pool.get(&id).ok_or_else(|| format!("no media item {}", id.0))?;
             let report = klipp_analysis::report::MediaAnalysis::load(&item.path);
             let dur = item.duration.to_secs_f64();

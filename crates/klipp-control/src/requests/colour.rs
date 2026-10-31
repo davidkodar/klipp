@@ -1,5 +1,6 @@
 //! Colour requests: looks, scene matching, grade chains and nodes, measuring, skin balance, grading to a target, scopes (#826).
 
+use crate::poison::Recover;
 #[allow(unused_imports)]
 use crate::*;
 
@@ -35,7 +36,7 @@ pub(crate) fn respond(
                 (Some(id), _) => {
                     let mid = klipp_core::MediaId(id.parse().map_err(|e| format!("media_id is not a uuid: {e}"))?);
                     let (path, filename, dur, prior) = {
-                        let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+                        let pool = ctx.media_pool.read().recovered();
                         let item = pool.get(&mid).ok_or_else(|| format!("no media item {}", mid.0))?;
                         (item.path.clone(), item.filename.clone(), item.duration.to_secs_f64(), item.log_prior())
                     };
@@ -100,7 +101,7 @@ pub(crate) fn respond(
                 (None, true) => {
                     let shots: Vec<(f64, f64, String)> = {
                         let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
-                        let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+                        let pool = ctx.media_pool.read().recovered();
                         picture_track(&seq).into_iter()
                             .flat_map(|t| t.clips.iter())
                             .filter(|c| is_picture_clip(c))
@@ -202,7 +203,7 @@ pub(crate) fn respond(
             use klipp_color::measure::{match_distance, LookTarget, MATCH_GOOD, MATCH_WARN, SCENE_SPLIT};
             let shots: Vec<(String, f64, f64, String)> = {
                 let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
-                let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+                let pool = ctx.media_pool.read().recovered();
                 picture_track(&seq).into_iter()
                     .flat_map(|t| t.clips.iter())
                     .filter(|c| is_picture_clip(c))
@@ -390,7 +391,7 @@ pub(crate) fn respond(
 
         ControlCommand::GradeChain { clip_id } => {
             let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
-            let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+            let pool = ctx.media_pool.read().recovered();
             let want = clip_id.as_deref().map(|s| s.parse::<uuid::Uuid>().map_err(|e| format!("clip_id is not a uuid: {e}"))).transpose()?;
             let clips: Vec<&klipp_timeline::Clip> = seq.tracks.iter()
                 .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
@@ -537,7 +538,7 @@ pub(crate) fn respond(
             let only = clip_of(&clip_id);
             let (mid, name) = {
                 let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
-                let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+                let pool = ctx.media_pool.read().recovered();
                 let id = klipp_core::ClipId(clip_id.parse().map_err(|e| format!("clip_id is not a uuid: {e}"))?);
                 let clip = seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == id).ok_or_else(|| format!("no clip {clip_id}"))?;
                 let item = clip.media_id().and_then(|m| pool.get(&m));
@@ -641,7 +642,7 @@ pub(crate) fn respond(
             }
             let shots: Vec<(String, f64, String)> = {
                 let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
-                let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+                let pool = ctx.media_pool.read().recovered();
                 let want: Vec<uuid::Uuid> = clip_id.iter().chain(&clips).map(|s| s.parse::<uuid::Uuid>().map_err(|e| format!("clip_id is not a uuid: {e}"))).collect::<Result<_, _>>()?;
                 // One clip asked for is found on whichever video track
                 // holds it; the whole pass takes the picture track.
@@ -1107,7 +1108,7 @@ pub(crate) fn respond(
             // The two midpoints, and a name for the reply — read, then let the lock go.
             let (t_mid, r_mid, t_name) = {
                 let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
-                let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+                let pool = ctx.media_pool.read().recovered();
                 let find = |id: klipp_core::ClipId| seq.tracks.iter().flat_map(|t| t.clips.iter()).find(move |cl| cl.id == id).cloned();
                 let tc = find(target_id).ok_or_else(|| format!("no clip with id {c}"))?;
                 let rc = find(ref_id).ok_or_else(|| format!("no clip with id {r}"))?;

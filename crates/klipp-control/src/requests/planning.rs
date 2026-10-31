@@ -1,5 +1,6 @@
 //! Planning requests: orientation, the brief, the edit plan, checks, and batches (#826).
 
+use crate::poison::Recover;
 #[allow(unused_imports)]
 use crate::*;
 
@@ -30,7 +31,7 @@ pub(crate) fn respond(
                 }
             };
             let (media, all_analysed, any_running) = {
-                let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+                let pool = ctx.media_pool.read().recovered();
                 // A size and rate only for a picture: a sound file read as
                 // 1920x1080 at 24 fps, the pool's defaults (#2492).
                 let media: Vec<serde_json::Value> = pool.all().map(|m| {
@@ -53,7 +54,7 @@ pub(crate) fn respond(
             };
             let (seq_text, clips, sequences) = {
                 let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
-                let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+                let pool = ctx.media_pool.read().recovered();
                 let clips: usize = seq.tracks.iter().map(|t| t.clips.len()).sum();
                 // The others named too: from the open one alone a reader
                 // took a four-sequence project for a one-sequence one.
@@ -121,7 +122,7 @@ pub(crate) fn respond(
                 return read_in_batch("edit_plan");
             }
             let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
-            let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+            let pool = ctx.media_pool.read().recovered();
             Ok(match &seq.edit_plan {
                 Some(p) => {
                     let ops = klipp_document::edit_plan::to_ops(p, &seq, &pool, seq.brief.as_ref());
@@ -143,7 +144,7 @@ pub(crate) fn respond(
             }
             let (old, brief, text, snapped) = {
                 let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
-                let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+                let pool = ctx.media_pool.read().recovered();
                 klipp_document::edit_plan::validate(&plan, &pool, seq.brief.as_ref())?;
                 // Cut on the bars: the bed's beats, read now, round every
                 // segment to whole bars and start the bed on its first beat.
@@ -206,7 +207,7 @@ pub(crate) fn respond(
             }
             let ops = {
                 let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
-                let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+                let pool = ctx.media_pool.read().recovered();
                 let Some(plan) = seq.edit_plan.as_ref() else {
                     return Err("there is no edit plan to build; propose one with set_edit_plan".into());
                 };
@@ -332,7 +333,7 @@ pub(crate) fn respond(
             if respelt && !new_spellings.is_empty() {
                 // Only when a transcript was made without them: one that
                 // already carries them is as good as it will get.
-                let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+                let pool = ctx.media_pool.read().recovered();
                 let lacking: Vec<String> = pool
                     .all()
                     // Only what this project has analysed: a transcript in
@@ -363,7 +364,7 @@ pub(crate) fn respond(
             // lock for a moment only; work out the times first, then let go.
             let (mut report, color_times, audio_media, to_read, banding_snapshot) = {
                 let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
-                let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+                let pool = ctx.media_pool.read().recovered();
                 let mut report = klipp_document::qc::check(&seq, &pool, &AnalysedTranscripts);
                 let lut = ctx.shared.project.lock().ok().and_then(|p| p.global_lut.clone());
                 klipp_document::qc::note_missing_global_lut(&mut report, lut.as_deref());
@@ -551,7 +552,7 @@ pub(crate) fn respond(
                 // review of one holds until the shot changes (#1932).
                 let named: Vec<String> = {
                     let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
-                    let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+                    let pool = ctx.media_pool.read().recovered();
                     let named = match seq.all_clips().find(|c| c.id == *clip) {
                         Some(c) => {
                             let basis = klipp_document::qc_review::colour_basis(&seq, &pool, c, *span, &colour_management(ctx));
@@ -1176,7 +1177,7 @@ fn brand_kit_sequence_ops(ctx: &ControlContext, found: &klipp_project::brand_kit
     let file = |name: &str| -> Result<std::path::PathBuf, String> { found.dir.as_ref().map(|d| d.join(name)).ok_or_else(|| format!("the kit's {name} has no folder to come from")) };
     // A kit's file as a media item, imported now when it isn't yet.
     let media = |path: &std::path::Path| -> Result<klipp_media::MediaItem, String> {
-        let known = |ctx: &ControlContext| ctx.media_pool.read().ok().and_then(|p| p.find_by_path(path).cloned()).filter(|m| m.resolution.width > 0);
+        let known = |ctx: &ControlContext| ctx.media_pool.read().recovered().find_by_path(path).cloned().filter(|m| m.resolution.width > 0);
         if let Some(m) = known(ctx) {
             return Ok(m);
         }

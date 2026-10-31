@@ -1,6 +1,7 @@
 //! Frame-exact cut evidence in sequence space. Analysis is stored in source
 //! time, so every suggestion is mapped through the clip that plays it.
 
+use crate::poison::Recover;
 use std::path::PathBuf;
 
 use klipp_core::Timecode;
@@ -86,7 +87,7 @@ pub(crate) fn prepare(
     let pool = ctx
         .media_pool
         .read()
-        .map_err(|_| "media pool lock poisoned")?;
+        .recovered();
     let fps = sequence.fps.as_f64();
     let fps_num = sequence.fps.num;
     let fps_den = sequence.fps.den;

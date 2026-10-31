@@ -1,5 +1,6 @@
 //! Requests about the session itself: ping, status, jobs and operations, the transport, and the clips on the timeline (#826).
 
+use crate::poison::Recover;
 #[allow(unused_imports)]
 use crate::*;
 
@@ -9,14 +10,11 @@ use crate::*;
 fn proxy_line(ctx: &ControlContext) -> serde_json::Value {
     let status = ctx.shared.proxies.lock().map(|s| s.clone()).unwrap_or_default();
     let shown: std::collections::HashSet<klipp_core::MediaId> = ctx.sequence.read().map(|seq| seq.tracks.iter().flat_map(|t| &t.clips).filter_map(|c| c.media_id()).collect()).unwrap_or_default();
-    let (videos, ready) = ctx
-        .media_pool
-        .read()
-        .map(|pool| {
-            let videos: Vec<&klipp_media::MediaItem> = shown.iter().filter_map(|id| pool.get(id)).filter(|m| !m.video_codec.is_empty() && !m.is_still).collect();
-            (videos.len(), videos.iter().filter(|m| m.proxy_ready).count())
-        })
-        .unwrap_or((0, 0));
+    let pool = ctx.media_pool.read().recovered();
+    let (videos, ready) = {
+        let videos: Vec<&klipp_media::MediaItem> = shown.iter().filter_map(|id| pool.get(id)).filter(|m| !m.video_codec.is_empty() && !m.is_still).collect();
+        (videos.len(), videos.iter().filter(|m| m.proxy_ready).count())
+    };
     let making = status.making.len();
     let text = match (status.use_proxies, ready) {
         (true, 0) => format!("Playback reads the originals: proxies are on, but none of the {videos} picture file(s) on the timeline has one yet (make_proxies)"),
@@ -106,7 +104,7 @@ pub(crate) fn respond(
             let fps = seq.fps.as_f64();
             let presented = fb.shown_presented().map(|t| t.to_secs_f64());
             let playing = ctx.shared.transport.lock().map(|t| t.playing).unwrap_or(false);
-            let media = ctx.media_pool.read().map(|p| p.all().count()).unwrap_or(0);
+            let media = ctx.media_pool.read().recovered().all().count();
             let mut text = status_text(&StatusFacts {
                 build: klipp_core::build_info::get(),
                 project: project.path.as_deref(),
@@ -271,7 +269,7 @@ pub(crate) fn respond(
                 return read_in_batch("list_clips");
             }
             let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
-            let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+            let pool = ctx.media_pool.read().recovered();
             // Each clip as the document has it: the engine's copy carries
             // its track's effects and its group's grade too (#846).
             list_clips(&seq.with_own_grades(), &pool, ctx.shared.revision(), &ClipFilter { full, track, from_secs, to_secs, media_id })
