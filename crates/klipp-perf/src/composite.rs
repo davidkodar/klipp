@@ -343,20 +343,32 @@ const FILM_BUDGET: f64 = 1000.0 / FILM_FPS as f64;
 /// decoders' threads' work and not in these times, and neither is the
 /// music's mix, which plays on the mixer's thread.
 pub fn s22_uhd_terminal_card_busy(cpu_only: bool) -> ScenarioResult {
-    let name = "s22_composite_uhd_terminal_card_busy_24fps";
-    let (w, h) = (3840u32, 2160u32);
+    terminal_card_busy("s22_composite_uhd_terminal_card_busy_24fps", (3840, 2160), cpu_only)
+}
+
+/// [`s22_uhd_terminal_card_busy`]'s UHD timeline drawn at the 1080p
+/// playback size, the viewer's frame while playing (#3205): its pictures
+/// handed over at 1080p, as the decoders make them at the default Max
+/// playback resolution, and its pixel-sized effects scaled to the frame.
+pub fn s22_uhd_terminal_card_busy_at_playback_size(cpu_only: bool) -> ScenarioResult {
+    terminal_card_busy("s22_composite_uhd_terminal_card_busy_24fps_played_at_1080p", (1920, 1080), cpu_only)
+}
+
+/// The Terminal Card's busy UHD timeline drawn `w` by `h`.
+fn terminal_card_busy(name: &str, (w, h): (u32, u32), cpu_only: bool) -> ScenarioResult {
+    let (sw, sh) = (3840u32, 2160u32);
     let ctx = if cpu_only { None } else { GpuContext::shared() };
     let film = |secs: f64| RationalTime::from_secs_f64(secs, FILM_FPS);
     let Some(template) = klipp_timeline::composition_template::builtin_templates().into_iter().find(|t| t.name == "Terminal Card") else {
         eprintln!("{name}: no \"Terminal Card\" among the shipped templates");
         return summarise(name, w, h, &[], 0, FILM_BUDGET);
     };
-    let Some(layout) = template.composition_for(w, h).cloned() else {
+    let Some(layout) = template.composition_for(sw, sh).cloned() else {
         eprintln!("{name}: the Terminal Card has no UHD layout");
         return summarise(name, w, h, &[], 0, FILM_BUDGET);
     };
     let card_secs = layout.total_duration().to_secs_f64();
-    let mut b = sequence(w, h, &[TrackKind::Video, TrackKind::Video, TrackKind::Video, TrackKind::Audio]);
+    let mut b = sequence(sw, sh, &[TrackKind::Video, TrackKind::Video, TrackKind::Video, TrackKind::Audio]);
     let mut card = Clip::precomposition(layout.id, film(0.0), film(card_secs));
     card.kind = ClipKind::TemplatePrecomposition { sequence_id: layout.id, template_instance: klipp_timeline::composition_template::instance_for(&template) };
     b.seq.tracks[0].clips.push(card);

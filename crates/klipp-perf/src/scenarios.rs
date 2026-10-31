@@ -109,6 +109,11 @@ pub const ALL: &[Scenario] = &[
         run: crate::composite::s22_uhd_terminal_card_busy,
     },
     Scenario {
+        name: "s22_composite_uhd_terminal_card_busy_24fps_played_at_1080p",
+        desc: "#3205: s22's UHD timeline drawn at the 1080p playback size, its pictures decoded at 1080p",
+        run: crate::composite::s22_uhd_terminal_card_busy_at_playback_size,
+    },
+    Scenario {
         name: "s20_flatten_1_instances",
         desc: "#3073: flatten 1 template instance(s)",
         run: crate::nesting::flatten_1,
