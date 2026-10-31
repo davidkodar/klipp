@@ -464,6 +464,7 @@ const FILES: &[&str] = &[
     include_str!("../../../assets/titles/up_next.klipptitle"),
     include_str!("../../../assets/titles/hook.klipptitle"),
     include_str!("../../../assets/titles/bold_caption.klipptitle"),
+    include_str!("../../../assets/titles/boxed_caption.klipptitle"),
     include_str!("../../../assets/titles/highlight.klipptitle"),
     include_str!("../../../assets/titles/question.klipptitle"),
     include_str!("../../../assets/titles/tip.klipptitle"),
@@ -609,12 +610,12 @@ mod tests {
     /// title, its fields published, on each frame.
     #[test]
     fn every_built_in_file_reads_and_makes_its_title() {
-        const ALL: [&str; 38] = [
+        const ALL: [&str; 39] = [
             "Name Bar", "Clean Line", "Broadcast", "Accent Block", "Pill", "Stacked", "Documentary", "Location",
             "Cinematic", "Impact", "Editorial", "Title Card", "Minimal", "Chapter", "Chapter Number", "Statement",
             "Quote", "Caption", "Subtitle", "Callout", "Note",
             "Credits Roll", "End Credits", "End Card", "Cast", "Thanks for Watching", "Up Next",
-            "Hook", "Bold Caption", "Highlight", "Question", "Tip", "Handle", "Subscribe",
+            "Hook", "Bold Caption", "Boxed Caption", "Highlight", "Question", "Tip", "Handle", "Subscribe",
             "Slate", "Timecode", "Watermark", "Label",
         ];
         assert_eq!(TITLES.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(), ALL);

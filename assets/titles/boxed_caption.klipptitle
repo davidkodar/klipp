@@ -1,0 +1,145 @@
+{
+  "category": "Social",
+  "data": {
+    "animation_type": "Static",
+    "background": {
+      "Color": {
+        "color": [
+          12,
+          12,
+          14,
+          215
+        ],
+        "lines": {
+          "gap": 0.0,
+          "radius": 12.0
+        },
+        "padding": 18.0
+      }
+    },
+    "next_object_id": 1,
+    "objects": [
+      {
+        "content": {
+          "TextBox": {
+            "alignment": "Center",
+            "ass_style_name": null,
+            "baseline_shift": 0.0,
+            "case_transform": "Uppercase",
+            "char_animation": null,
+            "chromatic_aberration_px": 0.0,
+            "color": [
+              255,
+              255,
+              255,
+              255
+            ],
+            "columns": 1,
+            "drop_cap_scale": 0.0,
+            "extrusion": null,
+            "font_name": "Inter",
+            "font_size": 56.0,
+            "font_style": "Regular",
+            "glitch_intensity": 0.0,
+            "gradient": null,
+            "line_spacing": 1.0,
+            "outline_write_on": 1.0,
+            "pattern_fill": null,
+            "pattern_fill_enabled": true,
+            "strikethrough": false,
+            "style_runs": [],
+            "text": "[A caption on\ntwo lines]",
+            "text_direction": "Ltr",
+            "text_path": null,
+            "texture_fill": null,
+            "tracking": 1.0,
+            "underline": false,
+            "vertical_layout": false,
+            "write_on": 1.0
+          }
+        },
+        "fx": {
+          "motion": {
+            "enter": {
+              "amount": null,
+              "anchor": null,
+              "delay_secs": 0.0,
+              "distance": 0.6,
+              "duration_secs": 0.35,
+              "easing": "OutCubic",
+              "kind": "Rise",
+              "stagger": "Line",
+              "stagger_secs": 0.25
+            },
+            "exit": {
+              "amount": null,
+              "anchor": null,
+              "delay_secs": 0.0,
+              "distance": 0.6,
+              "duration_secs": 0.2,
+              "easing": "InCubic",
+              "kind": "Fade",
+              "stagger": "None",
+              "stagger_secs": 0.05
+            }
+          },
+          "outlines": [
+            {
+              "color": [
+                0,
+                0,
+                0,
+                255
+              ],
+              "enabled": true,
+              "width": 6.0,
+              "width_keyframes": []
+            }
+          ]
+        },
+        "id": 0,
+        "locked": false,
+        "name": "Text 1",
+        "opacity": 1.0,
+        "opacity_keyframes": [],
+        "transform": {
+          "anchor_norm": {
+            "x": 0.5,
+            "y": 0.5
+          },
+          "anchor_x_keyframes": [],
+          "anchor_y_keyframes": [],
+          "center": {
+            "x": 0.5,
+            "y": 0.78
+          },
+          "center_x_keyframes": [],
+          "center_y_keyframes": [],
+          "rotation": 0.0,
+          "rotation_keyframes": [],
+          "size": {
+            "x": 1.0,
+            "y": 1.0
+          },
+          "size_x_keyframes": [],
+          "size_y_keyframes": []
+        },
+        "visible": true
+      }
+    ]
+  },
+  "design": {
+    "anchor": [
+      0.5,
+      0.78
+    ],
+    "fields": [
+      "Caption"
+    ],
+    "grow": true,
+    "preview": "[A caption on\ntwo lines]"
+  },
+  "format": 2,
+  "name": "Boxed Caption",
+  "written_by": "built-in"
+}

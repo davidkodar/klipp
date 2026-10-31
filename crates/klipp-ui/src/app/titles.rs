@@ -2261,15 +2261,27 @@ impl KlippApp {
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
-                            td.background = match bg_kind {
-                                1 => klipp_timeline::TitleBackground::Color { color: *color, padding: 20.0, lines: None },
-                                2 => klipp_timeline::TitleBackground::FullFrame { color: *color },
-                                _ => klipp_timeline::TitleBackground::None,
-                            };
+                            td.background = background_of_kind(&td.background, *bg_kind, *color);
                         }
                     }
                 }
                 if let Some(old) = old { self.push_title_undo(*clip_id, "Title Background", old); }
+                self.render_title_to_viewer(*clip_id);
+                self.sync_sequence_to_engine();
+                let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                self.state.dirty = true;
+                true
+            }
+            AppCommand::SetTitleBackgroundLines { clip_id, on, radius, gap, color } => {
+                let old = self.snapshot_title(*clip_id);
+                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
+                        if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
+                            td.background = background_per_line(&td.background, *on, *radius, *gap, *color);
+                        }
+                    }
+                }
+                if let Some(old) = old { self.push_title_undo(*clip_id, "Title Backing Lines", old); }
                 self.render_title_to_viewer(*clip_id);
                 self.sync_sequence_to_engine();
                 let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
@@ -3652,6 +3664,7 @@ pub(super) fn title_edit_clip_id(cmd: &AppCommand) -> Option<klipp_core::ClipId>
         | C::SetTitleVerticalAlign { clip_id, .. }
         | C::SetTitlePosition { clip_id, .. }
         | C::SetTitleBackground { clip_id, .. }
+        | C::SetTitleBackgroundLines { clip_id, .. }
         | C::SetTitleContrastProtect { clip_id, .. }
         | C::SetTitleShadow { clip_id, .. }
         | C::SetTitleGradient { clip_id, .. }
@@ -4192,6 +4205,58 @@ fn draw_text_path(td: &mut klipp_timeline::TitleData, text: Option<klipp_timelin
         set_text_path_layer(tb, id, 0, 0.0, 0, false);
     }
     id
+}
+
+/// A title's backing as the inspector's Background row sets it: 0 none,
+/// 1 a box (keeping its padding and, drawn per line, its lines, #3237), 2
+/// the full frame, in `color`.
+fn background_of_kind(was: &klipp_timeline::TitleBackground, kind: u8, color: [u8; 4]) -> klipp_timeline::TitleBackground {
+    use klipp_timeline::TitleBackground;
+    match kind {
+        1 => match was {
+            TitleBackground::Color { padding, lines, .. } => TitleBackground::Color { color, padding: *padding, lines: *lines },
+            _ => TitleBackground::Color { color, padding: 20.0, lines: None },
+        },
+        2 => TitleBackground::FullFrame { color },
+        _ => TitleBackground::None,
+    }
+}
+
+/// A title's backing drawn one box per line or not (#3237), its corners
+/// `radius` and its boxes `gap` apart, pixels at 1080p; a title with no
+/// box gets one in `color`.
+fn background_per_line(was: &klipp_timeline::TitleBackground, on: bool, radius: f32, gap: f32, color: [u8; 4]) -> klipp_timeline::TitleBackground {
+    use klipp_timeline::TitleBackground;
+    let (color, padding, padding_y) = match was {
+        TitleBackground::Color { color, padding, lines } => (*color, *padding, lines.and_then(|l| l.padding_y)),
+        _ => (color, 20.0, None),
+    };
+    let lines = on.then_some(klipp_timeline::LineBoxes { radius: radius.clamp(0.0, 200.0), gap: gap.clamp(-100.0, 200.0), padding_y });
+    TitleBackground::Color { color, padding, lines }
+}
+
+#[cfg(test)]
+mod background_tests {
+    use super::{background_of_kind, background_per_line};
+    use klipp_timeline::{LineBoxes, TitleBackground};
+
+    /// #3237: the inspector's Per line makes a box drawn per line, from no
+    /// backing in the colour given; its colour changed, it stays per line
+    /// with its padding; Box makes it one box again; the radius and gap
+    /// are kept as set.
+    #[test]
+    fn a_backing_goes_per_line_and_keeps_it_through_a_colour_change() {
+        let none = TitleBackground::None;
+        let per_line = background_per_line(&none, true, 10.0, 0.0, [1, 2, 3, 200]);
+        assert_eq!(per_line, TitleBackground::Color { color: [1, 2, 3, 200], padding: 20.0, lines: Some(LineBoxes { radius: 10.0, gap: 0.0, padding_y: None }) });
+        let recoloured = background_of_kind(&per_line, 1, [9, 9, 9, 120]);
+        assert_eq!(recoloured, TitleBackground::Color { color: [9, 9, 9, 120], padding: 20.0, lines: Some(LineBoxes { radius: 10.0, gap: 0.0, padding_y: None }) }, "a new colour keeps it per line");
+        let rounder = background_per_line(&recoloured, true, 24.0, 6.0, [0, 0, 0, 0]);
+        assert_eq!(rounder, TitleBackground::Color { color: [9, 9, 9, 120], padding: 20.0, lines: Some(LineBoxes { radius: 24.0, gap: 6.0, padding_y: None }) }, "its own colour kept, the radius and gap set");
+        let one_box = background_per_line(&rounder, false, 24.0, 6.0, [0, 0, 0, 0]);
+        assert_eq!(one_box, TitleBackground::Color { color: [9, 9, 9, 120], padding: 20.0, lines: None });
+        assert_eq!(background_of_kind(&rounder, 0, [0; 4]), TitleBackground::None);
+    }
 }
 
 #[cfg(test)]

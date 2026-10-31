@@ -5626,16 +5626,36 @@ fn show_title_editor(
         }
     }
 
-    // Background
+    // Background: none, one box round the text, a box per line (#3237),
+    // or the full frame.
     let bg_kind: u8 = match &td.background { klipp_timeline::TitleBackground::None => 0, klipp_timeline::TitleBackground::Color { .. } => 1, klipp_timeline::TitleBackground::FullFrame { .. } => 2 };
     let bg_color = match &td.background { klipp_timeline::TitleBackground::Color { color, .. } => *color, klipp_timeline::TitleBackground::FullFrame { color } => *color, _ => [0, 0, 0, 180] };
+    let per_line = match &td.background { klipp_timeline::TitleBackground::Color { lines, .. } => *lines, _ => None };
+    let shown = if per_line.is_some() { 3 } else { bg_kind };
     ui.horizontal(|ui| {
-        for (val, label) in [(0, "None"), (1, "Box"), (2, "Full")] {
-            if ui.selectable_label(bg_kind == val, label).clicked() && bg_kind != val {
-                cmds.push(AppCommand::SetTitleBackground { clip_id, bg_kind: val, color: bg_color });
+        for (val, label, tip) in [(0, "None", "No backing"), (1, "Box", "One box round the text"), (3, "Per line", "A box fitted to each line, as social-video captions are"), (2, "Full", "The whole frame filled behind the text")] {
+            if ui.selectable_label(shown == val, label).on_hover_text(tip).clicked() && shown != val {
+                // One command, one undo step: per line, or a box from one
+                // drawn per line, is the lines'; anything else the kind's.
+                let d = klipp_timeline::LineBoxes::default();
+                if val == 3 || (val == 1 && shown == 3) {
+                    cmds.push(AppCommand::SetTitleBackgroundLines { clip_id, on: val == 3, radius: d.radius, gap: d.gap, color: bg_color });
+                } else {
+                    cmds.push(AppCommand::SetTitleBackground { clip_id, bg_kind: val, color: bg_color });
+                }
             }
         }
     });
+    if let Some(lines) = per_line {
+        ui.horizontal(|ui| {
+            let (mut radius, mut gap) = (lines.radius, lines.gap.max(0.0));
+            let r = ui.add(egui::DragValue::new(&mut radius).range(0.0..=60.0).speed(0.2).prefix("Radius ").suffix(" px")).on_hover_text("The corners' radius, inside and out; 0 is square");
+            let g = ui.add(egui::DragValue::new(&mut gap).range(0.0..=60.0).speed(0.2).prefix("Gap ").suffix(" px")).on_hover_text("0 joins the boxes into one shape; more parts them");
+            if (r.changed() || g.changed()) && (radius != lines.radius || gap != lines.gap.max(0.0)) {
+                cmds.push(AppCommand::SetTitleBackgroundLines { clip_id, on: true, radius, gap, color: bg_color });
+            }
+        });
+    }
     if bg_kind > 0 {
         let mut bg_col = egui::Color32::from_rgba_premultiplied(bg_color[0], bg_color[1], bg_color[2], bg_color[3]);
         if ui.color_edit_button_srgba(&mut bg_col).changed() {

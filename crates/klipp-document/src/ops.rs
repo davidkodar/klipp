@@ -6952,7 +6952,8 @@ pub(crate) fn caption_title(text: &str, frame: klipp_core::Resolution) -> klipp_
 }
 
 /// `td` styled as a subtitle track's caption style says (#70): size,
-/// colour, face, weight, outline, backing, shadow and height, through the
+/// colour, face, weight, outline, backing (per line or not), shadow and
+/// height, through the
 /// same restyle a `style` op makes.
 pub fn apply_caption_style(td: &klipp_timeline::TitleData, s: &klipp_timeline::CaptionStyle) -> klipp_timeline::TitleData {
     let look = Look {
@@ -6965,6 +6966,8 @@ pub fn apply_caption_style(td: &klipp_timeline::TitleData, s: &klipp_timeline::C
         outline_color: Some(s.outline_color),
         backing: Some(s.backing),
         shadow: Some(if s.shadow { title_shadow(&ShadowSpec { x: None, y: None, blur: None, color: None, opacity: None }, 0).ok().flatten() } else { None }),
+        // Per line only with a backing to draw so (#3237).
+        typeset: Typesetting { backing_lines: Some(s.per_line.filter(|_| s.backing > 0.0)), ..Typesetting::default() },
         ..Look::default()
     };
     // No motion is asked for, so the length cannot refuse it.
@@ -17102,6 +17105,23 @@ mod tests {
         let plain = apply_caption_style(&caption_title("hi", klipp_core::Resolution::hd_1080()), &klipp_timeline::CaptionStyle::default());
         let klipp_timeline::TitleObjectContent::TextBox(tb) = &plain.objects[0].content else { panic!() };
         assert_eq!(tb.font_size, 40.0);
+    }
+
+    /// #3237: a caption style's backing per line goes on its captions,
+    /// the rest of the style with it; with no backing, the captions take
+    /// the rest of the style and no backing, not a refusal that dropped it.
+    #[test]
+    fn a_caption_styles_backing_per_line_goes_on_its_captions() {
+        let lines = klipp_timeline::LineBoxes { radius: 14.0, gap: 0.0, padding_y: Some(6.0) };
+        let cue = caption_title("a caption on\ntwo lines", klipp_core::Resolution::hd_1080());
+        let styled = apply_caption_style(&cue, &klipp_timeline::CaptionStyle { size: 52.0, per_line: Some(lines), ..Default::default() });
+        assert!(matches!(&styled.background, klipp_timeline::TitleBackground::Color { lines: Some(l), .. } if *l == lines), "{:?}", styled.background);
+        let klipp_timeline::TitleObjectContent::TextBox(tb) = &styled.objects[0].content else { panic!() };
+        assert_eq!(tb.font_size, 52.0, "and the rest of the style");
+        let bare = apply_caption_style(&cue, &klipp_timeline::CaptionStyle { size: 52.0, backing: 0.0, per_line: Some(lines), ..Default::default() });
+        assert_eq!(bare.background, klipp_timeline::TitleBackground::None, "no backing to draw per line");
+        let klipp_timeline::TitleObjectContent::TextBox(tb) = &bare.objects[0].content else { panic!() };
+        assert_eq!(tb.font_size, 52.0, "the rest of the style still goes on");
     }
 
     /// A talk, a second camera of it and a song, as each file's transcript

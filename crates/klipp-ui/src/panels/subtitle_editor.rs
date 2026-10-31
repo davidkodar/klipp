@@ -577,6 +577,21 @@ fn render_style_form(ui: &mut egui::Ui, st: &SubTrack, state: &mut AppState, cmd
             ui.label("Backing");
             ui.add(egui::Slider::new(&mut draft.backing, 0.0..=1.0).custom_formatter(|v, _| if v <= 0.0 { "none".into() } else { format!("{:.0}%", v * 100.0) }));
             ui.end_row();
+            // One box per line, as social-video captions are (#3237).
+            if draft.backing > 0.0 {
+                ui.label("");
+                ui.horizontal(|ui| {
+                    let mut per_line = draft.per_line.is_some();
+                    if ui.checkbox(&mut per_line, "Box per line").on_hover_text("A box fitted to each line, joined into one shape").changed() {
+                        draft.per_line = per_line.then(klipp_timeline::LineBoxes::default);
+                    }
+                    if let Some(lines) = draft.per_line.as_mut() {
+                        ui.add(egui::DragValue::new(&mut lines.radius).range(0.0..=60.0).speed(0.2).prefix("radius ").suffix(" px")).on_hover_text("The corners' radius, inside and out; 0 is square");
+                        ui.add(egui::DragValue::new(&mut lines.gap).range(0.0..=60.0).speed(0.2).prefix("gap ").suffix(" px")).on_hover_text("0 joins the boxes into one shape; more parts them");
+                    }
+                });
+                ui.end_row();
+            }
             ui.label("Shadow");
             ui.checkbox(&mut draft.shadow, "Soft drop shadow");
             ui.end_row();

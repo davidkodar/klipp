@@ -1451,11 +1451,15 @@ pub struct CaptionStyle {
     pub shadow: bool,
     /// The text's centre, down the frame, 0 (top) to 1 (bottom).
     pub y: f32,
+    /// The backing drawn one box per line (#3237), as social-video
+    /// captions are; `None` one box round each caption.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub per_line: Option<crate::LineBoxes>,
 }
 
 impl Default for CaptionStyle {
     fn default() -> Self {
-        Self { font: String::new(), size: 40.0, color: [255, 255, 255, 255], bold: false, outline: 2.0, outline_color: [0, 0, 0, 200], backing: 0.92, shadow: false, y: 0.88 }
+        Self { font: String::new(), size: 40.0, color: [255, 255, 255, 255], bold: false, outline: 2.0, outline_color: [0, 0, 0, 200], backing: 0.92, shadow: false, y: 0.88, per_line: None }
     }
 }
 
