@@ -1,5 +1,6 @@
 //! Editing requests: projects and sequences, clips appended, removed and selected, surfaces, plans and their application, fonts (#826).
 
+use crate::poison::Recover;
 #[allow(unused_imports)]
 use crate::*;
 
@@ -373,7 +374,7 @@ pub(crate) fn respond(
             }
             let id = klipp_core::MediaId(media_id.parse().map_err(|e| format!("media_id is not a uuid: {e}"))?);
             let (item, words, lists) = {
-                let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+                let pool = ctx.media_pool.read().recovered();
                 let item = pool.get(&id).ok_or_else(|| format!("no media item {}", id.0))?.clone();
                 let report = klipp_analysis::report::MediaAnalysis::load(&item.path);
                 let Some(t) = report.transcript else {
@@ -569,7 +570,7 @@ pub(crate) fn respond(
             let ids = clip_ids.iter().map(|c| existing_clip_id(ctx, c)).collect::<Result<Vec<_>, _>>()?;
             let (clips, skipped) = {
                 let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
-                let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+                let pool = ctx.media_pool.read().recovered();
                 klipp_render::normalize::clip_sounds(&seq, &pool, &ids)
             };
             if clips.is_empty() {
@@ -622,7 +623,7 @@ pub(crate) fn respond(
             // started (#685 review).
             {
                 let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
-                let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+                let pool = ctx.media_pool.read().recovered();
                 if let Some(why) = klipp_document::ops::scene_cut_refusal(&seq, &pool, id) {
                     return Err(format!("no scene cuts to find: {why}"));
                 }
@@ -669,7 +670,7 @@ pub(crate) fn respond(
             }
             let surface = {
                 let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
-                let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+                let pool = ctx.media_pool.read().recovered();
                 let clip = seq.tracks.iter().find_map(|t| t.find_clip(id)).ok_or_else(|| format!("no clip with id {clip_id}"))?;
                 if clip.media_id().and_then(|m| pool.get(&m)).is_none_or(|m| m.is_still) {
                     return Err("only a clip of moving footage from a file can be tracked".into());

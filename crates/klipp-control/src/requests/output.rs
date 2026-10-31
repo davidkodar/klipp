@@ -1,5 +1,6 @@
 //! Output requests: exports and subtitles, saving and opening, frame statistics, sheets, frames, performance and the log (#826).
 
+use crate::poison::Recover;
 #[allow(unused_imports)]
 use crate::*;
 
@@ -41,7 +42,7 @@ pub(crate) fn respond(
                     let mix = if spec.export.target_lufs.is_none() {
                         let snapshot = {
                             let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
-                            let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+                            let pool = ctx.media_pool.read().recovered();
                             klipp_render::SequenceSnapshot::from_sequence(&seq, &pool, &klipp_core::ExportSettings::default(), None, false, klipp_core::WorkingColorspace::Rec709Linear)
                                 .map_err(|e| format!("the mix could not be read: {e}"))?
                         };
@@ -83,7 +84,7 @@ pub(crate) fn respond(
             if seq.has_nothing_to_export() {
                 return Err("the timeline is empty: there is nothing to export. Place some clips first.".into());
             }
-            let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+            let pool = ctx.media_pool.read().recovered();
             let offline: Vec<String> = seq
                 .tracks
                 .iter()
@@ -533,7 +534,7 @@ pub(crate) fn respond(
                 return Err(format!("{path:?} exists: send overwrite true to replace it"));
             }
             let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?.clone();
-            let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?.clone();
+            let pool = ctx.media_pool.read().recovered().clone();
             let dropped: Vec<String> = match kind {
                 "fcpxml" => klipp_project::fcpxml::export_fcpxml(&seq, &pool, &out)?,
                 "edl" => klipp_project::fcpxml::export_edl(&seq, &pool, &out)?,
@@ -720,7 +721,7 @@ pub(crate) fn respond(
             // visible picture tracks, so each shot is seen once, or evenly.
             let (tiles, names): (Vec<f64>, Vec<String>) = {
                 let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
-                let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+                let pool = ctx.media_pool.read().recovered();
                 let end = seq.total_duration().to_secs_f64();
                 let (a, b) = (from_secs.unwrap_or(0.0).max(0.0), to_secs.unwrap_or(end).min(end));
                 if b <= a {
@@ -810,7 +811,7 @@ pub(crate) fn respond(
             // as "the viewer is at 0.000 s" (#657).
             {
                 let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
-                let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+                let pool = ctx.media_pool.read().recovered();
                 if let Some(missing) = offline_picture_at(&seq, &pool, target) {
                     return Err(format!("no frame at {secs:.3} s: {missing}; relink it (relink_media) or look at another time"));
                 }
@@ -868,7 +869,7 @@ pub(crate) fn respond(
                     // why: said by name, not as where the viewer stopped.
                     if !at_target {
                         let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
-                        let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+                        let pool = ctx.media_pool.read().recovered();
                         if let Some(why) = undecodable_picture_at(&seq, &pool, target) {
                             return Err(format!("no frame at {secs:.3} s: {why}"));
                         }
@@ -1295,7 +1296,7 @@ fn full_size_frame(ctx: &ControlContext, secs: f64, width: u32, height: u32) -> 
         all.push(seq.clone());
     }
     let lut = ctx.shared.project.lock().ok().and_then(|p| p.viewer_lut.clone());
-    let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+    let pool = ctx.media_pool.read().recovered();
     let mut snapshot = klipp_render::SequenceSnapshot::from_sequence_with_all(
         &seq,
         &all,

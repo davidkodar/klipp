@@ -1,5 +1,6 @@
 //! Analysis requests: analysing media, transcripts, screen text, redaction, sound effects, loudness and spectra, beat sheets, shots and excerpts (#826).
 
+use crate::poison::Recover;
 #[allow(unused_imports)]
 use crate::*;
 use klipp_timeline::GradeAccess;
@@ -23,7 +24,7 @@ pub(crate) fn respond(
             klipp_analysis::transcript::set_vocabulary(spellings);
             // And the language it is spoken in, when the brief names one (#531).
             klipp_analysis::transcript::set_language(language);
-            let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+            let pool = ctx.media_pool.read().recovered();
             let items: Vec<&klipp_media::MediaItem> = match media_id {
                 Some(id) => {
                     let id = klipp_core::MediaId(id.parse().map_err(|e| format!("media_id is not a uuid: {e}"))?);
@@ -108,7 +109,7 @@ pub(crate) fn respond(
             };
             let media = {
                 let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
-                let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+                let pool = ctx.media_pool.read().recovered();
                 let media = seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == clip).and_then(|c| c.media_id()).and_then(|m| pool.get(&m)).ok_or("track_subject needs a clip with a picture from a file")?;
                 if media.is_still || media.video_codec.is_empty() {
                     return Err("track_subject needs a video clip".into());
@@ -134,7 +135,7 @@ pub(crate) fn respond(
             if in_batch {
                 return read_in_batch("search_transcripts");
             }
-            let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+            let pool = ctx.media_pool.read().recovered();
             let mut hits = Vec::new();
             let max = max_hits.unwrap_or(50);
             for m in pool.all() {
@@ -164,7 +165,7 @@ pub(crate) fn respond(
                 return read_in_batch("screen_text");
             }
             let id = klipp_core::MediaId(media_id.parse().map_err(|e| format!("media_id is not a uuid: {e}"))?);
-            let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+            let pool = ctx.media_pool.read().recovered();
             let item = pool.get(&id).ok_or_else(|| format!("no media item {}", id.0))?;
             let report = klipp_analysis::report::MediaAnalysis::load(&item.path);
             let Some(st) = report.screentext else {
@@ -206,7 +207,7 @@ pub(crate) fn respond(
             if in_batch {
                 return read_in_batch("search_screen_text");
             }
-            let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+            let pool = ctx.media_pool.read().recovered();
             let mut hits = Vec::new();
             let max = max_hits.unwrap_or(50);
             'files: for m in pool.all() {
@@ -228,7 +229,7 @@ pub(crate) fn respond(
             }
             let wanted = klipp_analysis::visual::query(&query)?;
             let min = min_score.unwrap_or(0.2);
-            let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+            let pool = ctx.media_pool.read().recovered();
             let (mut hits, mut searched) = (Vec::new(), 0usize);
             for m in pool.all() {
                 let Some(v) = klipp_analysis::visual::load(&m.path) else { continue };
@@ -255,7 +256,7 @@ pub(crate) fn respond(
             use klipp_document::ops::{Anchor, ClipRef, Op, Transcripts as _};
             let ops: Vec<Op> = {
                 let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
-                let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+                let pool = ctx.media_pool.read().recovered();
                 let mut ops = Vec::new();
                 let mut cache: std::collections::HashMap<klipp_core::MediaId, Vec<klipp_document::ops::SensitiveText>> = std::collections::HashMap::new();
                 for t in seq.tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Video) {
@@ -327,7 +328,7 @@ pub(crate) fn respond(
             } else { whoosh };
             let (placements, ops) = {
                 let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
-                let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+                let pool = ctx.media_pool.read().recovered();
                 for (name, id) in [("whoosh", whoosh), ("click", click), ("riser", riser)] {
                     if let Some(id) = id {
                         let item = pool.get(&id).ok_or_else(|| format!("{name}: no media item {}; media ids are in list_media", id.0))?;
@@ -382,7 +383,7 @@ pub(crate) fn respond(
             }
             let snapshot = {
                 let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
-                let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+                let pool = ctx.media_pool.read().recovered();
                 klipp_render::SequenceSnapshot::from_sequence(&seq, &pool, &klipp_core::ExportSettings::default(), None, false, klipp_core::WorkingColorspace::Rec709Linear)
                     .map_err(|e| format!("the mix could not be read: {e}"))?
             };
@@ -469,7 +470,7 @@ pub(crate) fn respond(
             }
             let id = klipp_core::MediaId(media_id.parse().map_err(|e| format!("media_id is not a uuid: {e}"))?);
             let (path, filename, dur, has_audio) = {
-                let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+                let pool = ctx.media_pool.read().recovered();
                 let item = pool.get(&id).ok_or_else(|| format!("no media item {}", id.0))?;
                 (item.path.clone(), item.filename.clone(), item.duration.to_secs_f64(), item.has_audio)
             };
@@ -569,7 +570,7 @@ pub(crate) fn respond(
                 return read_in_batch("media_analysis");
             }
             let id = klipp_core::MediaId(media_id.parse().map_err(|e| format!("media_id is not a uuid: {e}"))?);
-            let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+            let pool = ctx.media_pool.read().recovered();
             let item = pool.get(&id).ok_or_else(|| format!("no media item {}", id.0))?;
             let report = klipp_analysis::report::MediaAnalysis::load(&item.path);
             let status = klipp_analysis::service::status(id).map(|s| s.state);
@@ -596,7 +597,7 @@ pub(crate) fn respond(
                 return read_in_batch("beat_sheet");
             }
             let id = klipp_core::MediaId(media_id.parse().map_err(|e| format!("media_id is not a uuid: {e}"))?);
-            let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+            let pool = ctx.media_pool.read().recovered();
             let item = pool.get(&id).ok_or_else(|| format!("no media item {}", id.0))?;
             let report = klipp_analysis::report::MediaAnalysis::load(&item.path);
             let status = klipp_analysis::service::status(id);
@@ -661,7 +662,7 @@ pub(crate) fn respond(
                 .filter(|s| matches!(s.state, klipp_analysis::service::State::Queued | klipp_analysis::service::State::Running))
                 .map(|s| s.filename)
                 .collect();
-            let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+            let pool = ctx.media_pool.read().recovered();
             let max = max_hits.unwrap_or(50);
             let mut hits = Vec::new();
             let object = object.map(|o| o.to_lowercase());
@@ -770,7 +771,7 @@ pub(crate) fn respond(
                 (None, _) => {
                     let snapshot = {
                         let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
-                        let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+                        let pool = ctx.media_pool.read().recovered();
                         klipp_render::SequenceSnapshot::from_sequence(&seq, &pool, &klipp_core::ExportSettings::default(), None, false, klipp_core::WorkingColorspace::Rec709Linear)
                             .map_err(|e| format!("the mix could not be read: {e}"))?
                     };
@@ -808,7 +809,7 @@ pub(crate) fn respond(
                 return read_in_batch("transcript");
             }
             let id = klipp_core::MediaId(media_id.parse().map_err(|e| format!("media_id is not a uuid: {e}"))?);
-            let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+            let pool = ctx.media_pool.read().recovered();
             let item = pool.get(&id).ok_or_else(|| format!("no media item {}", id.0))?;
             let report = klipp_analysis::report::MediaAnalysis::load(&item.path);
             let Some(t) = report.transcript else {
@@ -843,7 +844,7 @@ pub(crate) fn respond(
             // place on the timeline — read, then let the lock go for ffmpeg.
             let (tgt_path, tgt_src_in, ref_path, ref_src_in, ref_tl_in, tgt_name) = {
                 let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
-                let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+                let pool = ctx.media_pool.read().recovered();
                 let find = |id: klipp_core::ClipId| seq.tracks.iter().flat_map(|t| t.clips.iter()).find(move |cl| cl.id == id).cloned();
                 let tgt = find(tgt_id).ok_or_else(|| format!("no clip with id {c}"))?;
                 let refc = find(ref_id).ok_or_else(|| format!("no clip with id {r}"))?;
@@ -989,7 +990,7 @@ fn audition(ctx: &ControlContext, action: Option<&str>, media_id: Option<String>
             let cid = crate::lookups::clip_id(&id)?;
             let (path, name, src_from, src_to) = {
                 let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
-                let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+                let pool = ctx.media_pool.read().recovered();
                 let clip = seq.all_clips().find(|c| c.id == cid).ok_or_else(|| format!("no clip {id}"))?;
                 let item = clip.media_id().and_then(|m| pool.get(&m)).filter(|m| m.has_audio).ok_or_else(|| format!("clip {id} has no sound to play"))?;
                 let (t_in, t_out) = (clip.timeline_in.to_secs_f64(), clip.timeline_out.to_secs_f64());
@@ -1002,7 +1003,7 @@ fn audition(ctx: &ControlContext, action: Option<&str>, media_id: Option<String>
         AuditionSource::Mix { from, to } => {
             let snapshot = {
                 let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
-                let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+                let pool = ctx.media_pool.read().recovered();
                 klipp_render::SequenceSnapshot::from_sequence(&seq, &pool, &klipp_core::ExportSettings::default(), None, false, klipp_core::WorkingColorspace::Rec709Linear)
                     .map_err(|e| format!("the mix could not be read: {e}"))?
             };

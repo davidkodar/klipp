@@ -1,6 +1,7 @@
 //! Sending to the app and waiting for its answer: envelopes, acks, the undo
 //! fold, the status text, and the small helpers they share (#826).
 
+use crate::poison::Recover;
 #[allow(unused_imports)]
 use super::*;
 
@@ -13,10 +14,8 @@ pub(crate) fn imported_id(ctx: &ControlContext, path: &std::path::Path) -> Optio
 pub(crate) fn imported_id_within(ctx: &ControlContext, path: &std::path::Path, wait: std::time::Duration) -> Option<String> {
     let deadline = std::time::Instant::now() + wait;
     loop {
-        if let Ok(pool) = ctx.media_pool.read() {
-            if let Some(item) = pool.find_by_path(path) {
-                return Some(item.id.0.to_string());
-            }
+        if let Some(item) = ctx.media_pool.read().recovered().find_by_path(path) {
+            return Some(item.id.0.to_string());
         }
         if std::time::Instant::now() >= deadline {
             return None;

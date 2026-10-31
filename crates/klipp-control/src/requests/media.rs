@@ -1,5 +1,6 @@
 //! Media requests: the timeline view, the media pool, importing and relinking, multicam, and markers (#826).
 
+use crate::poison::Recover;
 #[allow(unused_imports)]
 use crate::*;
 
@@ -12,7 +13,7 @@ pub(crate) fn offline_media(ctx: &ControlContext) -> Option<serde_json::Value> {
     // socket reads the sequence first, and holding both the other way
     // round could deadlock against a writer.
     let offline: Vec<(klipp_core::MediaId, String)> = {
-        let pool = ctx.media_pool.read().ok()?;
+        let pool = ctx.media_pool.read().recovered();
         pool.all().filter(|m| m.offline).map(|m| (m.id, m.filename.clone())).collect()
     };
     if offline.is_empty() {
@@ -78,7 +79,7 @@ pub(crate) fn respond(
                 return read_in_batch("timeline");
             }
             let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
-            let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+            let pool = ctx.media_pool.read().recovered();
             if let Some(t) = track.filter(|t| *t >= seq.tracks.len()) {
                 return Err(format!("no track {t}: the sequence has {} (0 is the top)", seq.tracks.len()));
             }
@@ -104,7 +105,7 @@ pub(crate) fn respond(
             }
             let only = media_id.as_deref().map(|m| parse_uuid(m, "media_id").map(klipp_core::MediaId)).transpose()?;
             let wanted: Vec<klipp_media::relink::Wanted> = {
-                let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+                let pool = ctx.media_pool.read().recovered();
                 match only {
                     Some(id) => vec![klipp_media::relink::Wanted::from_item(pool.get(&id).ok_or_else(|| format!("no media item {}", id.0))?)],
                     None => pool.all().filter(|m| m.offline).map(klipp_media::relink::Wanted::from_item).collect(),
@@ -162,7 +163,7 @@ pub(crate) fn respond(
             // before relinking, by the rules a relink search uses: the
             // answer says whether it is the same clip.
             let wanted = {
-                let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+                let pool = ctx.media_pool.read().recovered();
                 klipp_media::relink::Wanted::from_item(pool.get(&id).ok_or_else(|| format!("no media item {}", id.0))?)
             };
             let verdict = klipp_media::relink::check_pick(&wanted, &p);
@@ -197,7 +198,7 @@ pub(crate) fn respond(
                 media_ids.iter().map(|m| parse_uuid(m, "media_id").map(klipp_core::MediaId)).collect::<Result<_, _>>()?
             };
             let (wanted, ready) = {
-                let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+                let pool = ctx.media_pool.read().recovered();
                 let mut wanted = Vec::new();
                 let mut ready = 0;
                 for id in ids {
@@ -246,7 +247,7 @@ pub(crate) fn respond(
         ControlCommand::TagMedia { media_id, add, remove } => {
             let id = klipp_core::MediaId(parse_uuid(&media_id, "media_id")?);
             let tags = {
-                let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+                let pool = ctx.media_pool.read().recovered();
                 pool.get(&id).ok_or_else(|| format!("no media item {}", id.0))?.tags.clone()
             };
             let mut commands = Vec::new();
@@ -263,7 +264,7 @@ pub(crate) fn respond(
         }
 
         ControlCommand::ListMedia => {
-            let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+            let pool = ctx.media_pool.read().recovered();
             Ok(json!({
                 "items": pool.all().map(|m| {
                     let artwork = (media_kind(m) == "audio" && !m.offline).then(|| klipp_media::artwork_size(&m.path)).flatten();
@@ -365,7 +366,7 @@ pub(crate) fn respond(
             }
             // A file already in the pool is not imported again: the second
             // copy would be a second id for the same footage.
-            let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+            let pool = ctx.media_pool.read().recovered();
             if let Some(item) = pool.find_by_path(&p) {
                 return Ok(json!({ "already_imported": true, "media_id": item.id.0.to_string(), "filename": item.filename }));
             }
@@ -423,7 +424,7 @@ pub(crate) fn respond(
                 return Err("a multicam needs two angles or more".into());
             }
             {
-                let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+                let pool = ctx.media_pool.read().recovered();
                 if let Some(missing) = ids.iter().find(|id| pool.get(id).is_none()) {
                     return Err(format!("no media item {}", missing.0));
                 }
@@ -507,7 +508,7 @@ pub(crate) fn respond(
 
         ControlCommand::ListMarkers => {
             let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
-            let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+            let pool = ctx.media_pool.read().recovered();
             let mut markers: Vec<serde_json::Value> = seq.markers.iter().map(|m| json!({
                 "scope": "sequence",
                 "marker_id": m.id.0.to_string(),

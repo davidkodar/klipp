@@ -1,6 +1,7 @@
 //! Plans: ops resolved against the document, the cut changes they predict,
 //! the project's generation, font warnings, and analysed transcripts (#826).
 
+use crate::poison::Recover;
 #[allow(unused_imports)]
 use super::*;
 
@@ -15,7 +16,7 @@ pub(crate) fn resolve_plan(ctx: &ControlContext, ops: &[klipp_document::ops::Op]
     // The engine's copy runs grade groups baked into their members; an op
     // changes a clip's own grade, and must not copy its group's into it.
     let seq = seq.with_own_grades();
-    let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+    let pool = ctx.media_pool.read().recovered();
     let ops = &with_recipes(&with_compositions(&with_templates(ops, template_dir().as_deref()), composition_dir().as_deref(), &project_sequence_ids(ctx, &seq))?, composition_dir().as_deref(), &pool);
     let plan = klipp_document::ops::resolve_with(&seq, &pool, ops, &AnalysedTranscripts).map_err(|r| format!("{r} (step {} refused; nothing applied)", r.step + 1))?;
     Ok((plan, revision))
@@ -32,7 +33,7 @@ pub(crate) fn resolve_plan_seeing(ctx: &ControlContext, ops: &[klipp_document::o
     let revision = ctx.shared.revision();
     let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
     let seq = seq.with_own_grades();
-    let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+    let pool = ctx.media_pool.read().recovered();
     let others = ctx.others.read().map_err(|_| "sequences lock poisoned")?.clone();
     let ops = &with_recipes(&with_compositions(&with_templates(ops, template_dir().as_deref()), composition_dir().as_deref(), &project_sequence_ids(ctx, &seq))?, composition_dir().as_deref(), &pool);
     let plan = klipp_document::ops::resolve_in(&seq, &others, &pool, ops, &AnalysedTranscripts).map_err(|r| format!("{r} (step {} refused; nothing applied)", r.step + 1))?;
@@ -336,7 +337,7 @@ pub(crate) fn title_templates(dir: Option<&std::path::Path>, compositions: Optio
 pub(crate) fn planned_cut_changes(ctx: &ControlContext, edits: &[klipp_document::history::EditCommand]) -> Result<serde_json::Value, String> {
     let before = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?.with_own_grades().into_owned();
     let mut sequences = vec![before.clone()];
-    let mut pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?.clone();
+    let mut pool = ctx.media_pool.read().recovered().clone();
     let mut fps = before.fps;
     {
         let mut view = klipp_document::apply::DocumentView { sequences: &mut sequences, active: 0, media_pool: &mut pool, fps: &mut fps };

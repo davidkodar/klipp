@@ -1,13 +1,14 @@
 //! Measuring and grading: faces and skin, shot spans, a clip's measures,
 //! looks and their targets, the mix's loudness, grade limits (#826).
 
+use crate::poison::Recover;
 #[allow(unused_imports)]
 use super::*;
 
 /// A media item's file and duration, by id.
 pub(crate) fn media_path_and_duration(ctx: &ControlContext, media_id: &str) -> Result<(std::path::PathBuf, f64), String> {
     let id = klipp_core::MediaId(media_id.parse().map_err(|e| format!("media_id is not a uuid: {e}"))?);
-    let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+    let pool = ctx.media_pool.read().recovered();
     let item = pool.get(&id).ok_or_else(|| format!("no media item {}", id.0))?;
     if item.offline || item.kind != klipp_media::MediaItemKind::File {
         return Err(format!("{} has no file to read", item.filename));
@@ -36,7 +37,7 @@ pub(crate) fn face_or_head_regions(framing: &klipp_analysis::framing::Framing, s
 /// model, each person's skin cluster, else the head's place in the box.
 pub(crate) fn skin_regions(ctx: &ControlContext, secs: f64, data: &[u8], w: u32, h: u32) -> Vec<[f32; 4]> {
     let seq = match ctx.sequence.read() { Ok(s) => s, Err(_) => return Vec::new() };
-    let pool = match ctx.media_pool.read() { Ok(p) => p, Err(_) => return Vec::new() };
+    let pool = ctx.media_pool.read().recovered();
     let tc = klipp_core::Timecode::from_secs_f64(secs.max(0.0), seq.fps.rate());
     let Some((clip, item)) = seq.tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Video && t.visible).find_map(|t| {
         let (_, c) = t.clip_at_timecode(tc)?;
@@ -98,7 +99,7 @@ const MIN_SKIN_PX: f32 = 24.0;
 /// alone as before.
 pub(crate) fn face_track(ctx: &ControlContext, clip_id: &str) -> Vec<klipp_document::ops::WindowKey> {
     let Ok(seq) = ctx.sequence.read() else { return Vec::new() };
-    let Ok(pool) = ctx.media_pool.read() else { return Vec::new() };
+    let pool = ctx.media_pool.read().recovered();
     let Ok(uuid) = clip_id.parse() else { return Vec::new() };
     let id = klipp_core::ClipId(uuid);
     let Some(clip) = seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == id) else { return Vec::new() };
@@ -336,7 +337,7 @@ pub(crate) fn measure_at(ctx: &ControlContext, secs: f64, only: Option<klipp_cor
 pub(crate) fn source_reading(ctx: &ControlContext, clip: klipp_core::ClipId, secs: f64) -> Option<klipp_color::measure::SourceReading> {
     let (path, at, prior, size) = {
         let seq = ctx.sequence.read().ok()?;
-        let pool = ctx.media_pool.read().ok()?;
+        let pool = ctx.media_pool.read().recovered();
         let c = seq.all_clips().find(|c| c.id == clip && is_picture_clip(c))?;
         let item = pool.get(&c.media_id()?)?;
         if item.offline || !item.path.exists() || !display_sdr(item) {
@@ -433,7 +434,8 @@ pub(crate) fn needs_source(found: &[klipp_color::measure::Finding], look: &klipp
 /// The measured clip's metadata: the isolated clip when requested, otherwise
 /// the visible picture at `secs`. An overlay must not supply a solo read's prior.
 pub(crate) fn log_prior_at(ctx: &ControlContext, secs: f64, only: Option<klipp_core::ClipId>) -> klipp_color::measure::LogPrior {
-    let (Ok(seq), Ok(pool)) = (ctx.sequence.read(), ctx.media_pool.read()) else { return Default::default() };
+    let Ok(seq) = ctx.sequence.read() else { return Default::default() };
+    let pool = ctx.media_pool.read().recovered();
     let tc = klipp_core::Timecode::from_secs_f64(secs.max(0.0), seq.fps.rate());
     let mut tracks = seq.tracks.iter()
         .filter(|t| t.kind == klipp_timeline::TrackKind::Video && t.visible);
@@ -735,7 +737,8 @@ pub(crate) fn merge_brief(current: &klipp_timeline::Brief, fields: &serde_json::
 /// graphics, the screen recording's; else the brief's, else neutral. See
 /// [`look_in`].
 pub(crate) fn look_for(ctx: &ControlContext, secs: f64) -> klipp_color::measure::LookTarget {
-    let (Ok(seq), Ok(pool)) = (ctx.sequence.read(), ctx.media_pool.read()) else { return klipp_color::measure::LookTarget::unbriefed() };
+    let Ok(seq) = ctx.sequence.read() else { return klipp_color::measure::LookTarget::unbriefed() };
+    let pool = ctx.media_pool.read().recovered();
     let tc = klipp_core::Timecode::from_secs_f64(secs.max(0.0), seq.fps.rate());
     look_in(&seq, &pool, tc, &|item| {
         // A still picture held on screen also "never changes", and a

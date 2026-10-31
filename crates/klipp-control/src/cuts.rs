@@ -1,6 +1,7 @@
 //! Cuts: selects, the pacing a style asks for, cut points, cuts to a
 //! budget, the music bed's beats and what to do next (#826).
 
+use crate::poison::Recover;
 #[allow(unused_imports)]
 use super::*;
 
@@ -487,15 +488,15 @@ pub(crate) fn bed_beats(path: &std::path::Path) -> Option<klipp_analysis::beats:
 impl Trail {
     pub(crate) fn read(ctx: &ControlContext, ops: &[klipp_document::ops::Op]) -> Trail {
         let Ok(seq) = ctx.sequence.read() else { return Trail::default() };
-        let pictures_placed = ctx.media_pool.read().is_ok_and(|pool| {
+        let pictures_placed = Some(ctx.media_pool.read().recovered()).is_some_and(|pool| {
             ops.iter().any(|o| match o {
                 klipp_document::ops::Op::Place { media_id, .. } => pool.get(media_id).is_some_and(|m| m.is_still || !m.video_codec.is_empty()),
                 _ => false,
             })
         });
         let clips = || seq.tracks.iter().flat_map(|t| t.clips.iter().map(move |c| (t, c)));
-        let pool = ctx.media_pool.read().ok();
-        let bed = pool.as_ref().and_then(|p| music_bed(&seq, p));
+        let pool = ctx.media_pool.read().recovered();
+        let bed = music_bed(&seq, &pool);
         Trail {
             pictures_placed,
             titled: clips().any(|(t, c)| t.kind == klipp_timeline::TrackKind::Text && matches!(c.kind, klipp_timeline::ClipKind::Title(_))),

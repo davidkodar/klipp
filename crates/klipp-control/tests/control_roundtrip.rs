@@ -4977,3 +4977,23 @@ fn a_brand_kits_intro_and_outro_open_and_close_the_piece() {
     let placed = edits.iter().filter(|e| format!("{e:?}").contains("Precomposition")).count();
     assert!(placed >= 2, "the intro and the outro placed as compositions: {placed}");
 }
+
+/// #3181: a panic while the media pool was held leaves its lock poisoned,
+/// and a whole pool behind it (writers replace items whole). The socket
+/// still reads it: the media is listed and the timeline answered. Each
+/// used to answer "media pool lock poisoned", or nothing, until a restart.
+#[test]
+fn a_poisoned_media_pool_is_still_read() {
+    let mut h = harness();
+    h.media_pool.write().unwrap().add(klipp_media::MediaItem::synthetic_for_test("/tmp/poisoned-pool-fixture.mov".into(), None));
+    let pool = h.media_pool.clone();
+    let _ = std::thread::spawn(move || {
+        let _held = pool.write().unwrap();
+        panic!("a writer panicked holding the pool (a test's)");
+    })
+    .join();
+    assert!(h.media_pool.is_poisoned());
+    let media = h.ok(json!({ "method": "list_media" }));
+    assert_eq!(media["items"].as_array().map(|a| a.len()), Some(1), "{media}");
+    h.ok(json!({ "method": "timeline" }));
+}

@@ -35,6 +35,7 @@ mod graph_request;
 mod envelope;
 mod grading;
 mod plans;
+mod poison;
 mod project_access;
 mod local_peer;
 mod cuts;
