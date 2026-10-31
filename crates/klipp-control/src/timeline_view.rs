@@ -87,6 +87,10 @@ pub(crate) fn timeline_text(
         if t.locked {
             head.push_str("  locked");
         }
+        // How far its frames are drawn (#3207).
+        if t.frozen {
+            let _ = write!(head, "  {}", klipp_engine::freeze::status(t.id).map_or_else(|| "frozen".to_string(), |s| s.describe()));
+        }
         // What the track does to every clip on it (#846), not repeated on
         // each clip below, which lists only its own.
         let fx = &t.effects;
@@ -421,6 +425,9 @@ pub(crate) fn list_clips(seq: &klipp_timeline::Sequence, pool: &klipp_media::Med
             } else if t.locked {
                 v["locked"] = json!(true);
             }
+            if t.frozen {
+                v["frozen"] = json!(klipp_engine::freeze::status(t.id).map_or_else(|| "frozen".to_string(), |s| s.describe()));
+            }
             v["clips"] = json!(clips);
             // The transitions between the clips listed (#711), in both
             // forms: there are few, and nothing else shows them.
@@ -689,5 +696,20 @@ mod tests {
             assert!(clip.get("name").is_none(), "no cut-short copy beside it: {clip}");
         }
     }
-}
 
+    /// #3207: a frozen track's line says how far its frames are drawn;
+    /// one frozen before any job has told says just "frozen".
+    #[test]
+    fn a_frozen_track_says_how_far_its_frames_are_drawn() {
+        let mut seq = klipp_timeline::Sequence::new_default();
+        seq.tracks[0].frozen = true;
+        let pool = klipp_media::MediaPool::new();
+        klipp_engine::freeze::set_statuses(Default::default());
+        assert!(timeline_text(&seq, &pool, None, 1, TimelineView::default()).contains("  frozen"));
+        let status = klipp_engine::freeze::FreezeStatus { frames: 240, progress: Some(0.5), ..Default::default() };
+        klipp_engine::freeze::set_statuses([(seq.tracks[0].id, status)].into());
+        let text = timeline_text(&seq, &pool, None, 1, TimelineView::default());
+        assert!(text.contains("frozen, drawing its frames: 50 % of 240"), "{text}");
+        klipp_engine::freeze::set_statuses(Default::default());
+    }
+}

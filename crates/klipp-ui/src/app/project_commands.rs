@@ -1232,6 +1232,15 @@ impl KlippApp {
                 self.state.dirty = true;
                 true
             }
+            // Only a video track freezes (#3207); its frames are drawn by
+            // the freeze jobs (`freeze_jobs`), which see the change.
+            AppCommand::SetTrackFrozen { track_id, frozen } => {
+                if let Some(track) = self.state.sequences[self.state.active_sequence_idx].tracks.iter_mut().find(|t| t.id == *track_id && t.kind == klipp_timeline::TrackKind::Video) {
+                    track.frozen = *frozen;
+                    self.state.dirty = true;
+                }
+                true
+            }
             // A track's colour (#922), shown on its header.
             AppCommand::SetTrackColourLabel { track_index, label } => {
                 if let Some(track) = self.state.sequence_mut().tracks.get_mut(*track_index) {

@@ -26,6 +26,7 @@ mod selection_removal;
 mod primary_block;
 mod export_banding;
 mod frame_glide;
+mod freeze_jobs;
 mod track_subject;
 mod project_io;
 mod unsaved;
@@ -697,6 +698,8 @@ pub struct KlippApp {
     /// to the app — dropped on exit; surviving subprocess jobs are
     /// killed by their `cancel()` impl on Drop.
     job_scheduler: Arc<klipp_jobs::JobScheduler>,
+    /// Frozen tracks' frames, drawn ahead (#3207).
+    freeze_jobs: freeze_jobs::FreezeJobs,
 }
 
 impl KlippApp {

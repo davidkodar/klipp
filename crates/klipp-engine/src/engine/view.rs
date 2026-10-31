@@ -235,7 +235,7 @@ pub(super) fn viewer_canvas(picture: (u32, u32), sequence: (u32, u32)) -> (u32, 
 /// drawn at the sequence's size: a 4K chain (126.6 MiB a buffer) under
 /// layer streams decoded at 1080p, each fitted up to it (#3205). Export
 /// and full-size grabs ask for their own size.
-pub(super) fn playback_canvas(primary: Option<(u32, u32)>, sequence: (u32, u32)) -> (u32, u32) {
+pub(crate) fn playback_canvas(primary: Option<(u32, u32)>, sequence: (u32, u32)) -> (u32, u32) {
     match primary {
         Some(p) => viewer_canvas(p, sequence),
         None => crate::video_decoder::playback_dimensions(sequence.0, sequence.1, 0),
@@ -248,7 +248,7 @@ pub(super) fn playback_canvas(primary: Option<(u32, u32)>, sequence: (u32, u32))
 /// motion on. Clip positions and pixel-sized effects follow the render
 /// size (`klipp_compose::render::render_scale`), so the reduced frame is
 /// the same picture, only coarser.
-pub(super) fn reduced_for_quality(size: (u32, u32), divisor: u8) -> (u32, u32) {
+pub(crate) fn reduced_for_quality(size: (u32, u32), divisor: u8) -> (u32, u32) {
     let (w, h) = size;
     if divisor <= 1 || h <= MIN_REDUCED_HEIGHT {
         return size;

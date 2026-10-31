@@ -42,6 +42,8 @@ pub fn label(cmd: &AppCommand) -> Option<&'static str> {
         AppCommand::UngroupClips { .. } | AppCommand::UngroupClip { .. } => "Ungroup",
         AppCommand::SetTrackLocked { locked: true, .. } => "Lock Track",
         AppCommand::SetTrackLocked { .. } => "Unlock Track",
+        AppCommand::SetTrackFrozen { frozen: true, .. } => "Freeze Track",
+        AppCommand::SetTrackFrozen { .. } => "Unfreeze Track",
         AppCommand::RenameTrack { .. } => "Rename Track",
         AppCommand::SetTrackSyncLock { on: true, .. } => "Sync Lock Track",
         AppCommand::SetTrackSyncLock { .. } => "Sync Unlock Track",

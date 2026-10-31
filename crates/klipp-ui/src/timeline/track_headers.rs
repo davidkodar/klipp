@@ -765,6 +765,19 @@ pub fn show(
                 cmds.push(AppCommand::SetTrackLocked { track_id, locked: !locked });
                 ui.close_menu();
             }
+            // Freeze (#3207): a video track played from frames drawn ahead.
+            let t = &state.sequence().tracks[track_idx];
+            if t.kind == klipp_timeline::TrackKind::Video {
+                let frozen = t.frozen;
+                let hint = klipp_engine::freeze::status(track_id).map_or_else(
+                    || "Draw this track's frames in the background and play it from them, so a heavy track stops costing playback. Edits draw the changed frames again.".to_string(),
+                    |s| s.describe(),
+                );
+                if menu_toggle(ui, "Freeze Track", "", frozen).on_hover_text(hint).clicked() {
+                    cmds.push(AppCommand::SetTrackFrozen { track_id, frozen: !frozen });
+                    ui.close_menu();
+                }
+            }
             if custom_height && ui.button("Reset Track Height").clicked() {
                 cmds.push(AppCommand::SetTrackCustomHeight { track_id, height: None });
                 ui.close_menu();

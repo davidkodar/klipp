@@ -207,7 +207,7 @@ exist until the plan runs.
   kind; every track below moves up by one. Refused while it holds clips
   unless `with_clips`, which takes them too and unlinks anything on
   another track from them. One undo step puts it back.
-- `set_track {track, visible?, language?, locked?, volume_db?, pan?, mute?, solo?}`: a track's own
+- `set_track {track, visible?, language?, locked?, frozen?, volume_db?, pan?, mute?, solo?}`: a track's own
   settings, one undo step. `volume_db` (+6 at most, -60 or below
   silence), `pan` (-1 left to 1 right), `mute` and `solo` are its mixer
   controls, as its fader and buttons set them; a solo turns every other
@@ -215,7 +215,15 @@ exist until the plan runs.
   (its eye), true shows them; `language` is a BCP 47 tag (`de`, `pt-br`;
   empty for none) a subtitle export tags its file with; `locked` true
   keeps every edit off its clips, so an insert or a cut leaves a music
-  bed whole, and false lets them be edited again. A translated caption track
+  bed whole, and false lets them be edited again. `frozen` true (a video
+  track) draws its frames in the background into the project's cache and
+  then plays it from them, so a heavy track (many effects, a large grade,
+  nested clips) stops costing playback; an edit to it draws the changed
+  frames again, and until they are drawn those play live. Its clip opacity
+  and blend stay live. The timeline shows how far it is drawn; frames
+  that read other tracks (an adjustment layer, Clip Below) always play
+  live. A project must be saved for its frames to be kept. Export is
+  always drawn live. A translated caption track
   starts hidden so two languages don't draw over each other: show it,
   and hide its source, to see it.
 - `track_automation {track, param?, mode?, keys?}`: an audio track's own

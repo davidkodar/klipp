@@ -89,18 +89,29 @@ fn project() -> Option<(Sequence, MediaPool)> {
     Some((flat, pool))
 }
 
-/// The process's own GPU memory, MB, from `nvidia-smi`.
-fn own_vram_mb() -> Option<f64> {
-    let o = std::process::Command::new("nvidia-smi").args(["--query-compute-apps=pid,used_memory", "--format=csv,noheader,nounits"]).output().ok()?;
-    let me = std::process::id().to_string();
-    let found: Vec<f64> = String::from_utf8_lossy(&o.stdout)
-        .lines()
-        .filter_map(|l| {
-            let mut f = l.split(',').map(str::trim);
-            (f.next()? == me).then(|| f.next()?.parse::<f64>().ok()).flatten()
-        })
-        .collect();
-    (!found.is_empty()).then(|| found.iter().sum())
+/// What Klipp holds on the GPU, MB, on any adapter: its caches' total,
+/// and wgpu's buffer and texture totals where the build counts them
+/// (`gpu-memory-report`).
+#[derive(Clone, Copy)]
+struct GpuMemory {
+    held_mb: f64,
+    driver_mb: Option<f64>,
+}
+
+impl std::fmt::Debug for GpuMemory {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:.0} MB held", self.held_mb)?;
+        match self.driver_mb {
+            Some(d) => write!(f, ", {d:.0} MB in wgpu's buffers and textures"),
+            None => Ok(()),
+        }
+    }
+}
+
+fn gpu_memory_now() -> GpuMemory {
+    let s = klipp_effects::gpu_memory::snapshot();
+    let mb = |b: u64| b as f64 / 1e6;
+    GpuMemory { held_mb: mb(s.held_total), driver_mb: s.driver.map(|d| mb(d.buffer_bytes + d.texture_bytes)) }
 }
 
 /// What a play showed.
@@ -117,7 +128,7 @@ struct Played {
     decoders: u32,
     /// The viewer's frame size while playing.
     size: (u32, u32),
-    vram_mb: Option<f64>,
+    memory: Option<GpuMemory>,
 }
 
 /// Play `seq` from half a second for `secs`, `frozen` the freeze folder and
@@ -144,11 +155,11 @@ fn play(seq: &Sequence, pool: &MediaPool, frozen: Option<(&std::path::Path, Trac
     common::settle(&fb);
     cmd.send(AppCommand::Play).unwrap();
     let since = Instant::now();
-    let mut vram = None;
+    let mut memory = None;
     while since.elapsed() < Duration::from_secs_f64(secs) {
         std::thread::sleep(Duration::from_millis(100));
-        if since.elapsed() > Duration::from_secs_f64(secs * 0.6) && vram.is_none() {
-            vram = own_vram_mb();
+        if since.elapsed() > Duration::from_secs_f64(secs * 0.6) && memory.is_none() {
+            memory = Some(gpu_memory_now());
         }
     }
     let size = {
@@ -177,7 +188,7 @@ fn play(seq: &Sequence, pool: &MediaPool, frozen: Option<(&std::path::Path, Trac
         frames: drawn.len(),
         decoders: open.get(open.len() / 2).copied().unwrap_or(0),
         size,
-        vram_mb: vram,
+        memory,
     }
 }
 
@@ -230,7 +241,9 @@ fn a_frozen_track_plays_from_its_frames_and_isnt_decoded() {
     eprintln!("MEASURE live: {live:?}");
     assert!(live.size.0 > 0 && live.frames > 10, "live played: {live:?}");
 
-    // Frozen at the size the viewer drew while playing.
+    // Frozen at the size the app freezes at: the size the viewer drew.
+    let size = klipp_engine::freeze::playback_size((W, H));
+    assert_eq!(size, live.size, "the app's freeze size is the size the viewer plays at");
     let folder = std::env::temp_dir().join(format!("klipp-frozen-folder-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&folder);
     let store = Arc::new(Mutex::new(klipp_engine::cache_store::CacheStore::open(&folder, 64 << 30)));
@@ -246,7 +259,7 @@ fn a_frozen_track_plays_from_its_frames_and_isnt_decoded() {
         track: 0,
         track_id,
         frames: frames.clone(),
-        size: live.size,
+        size,
         working,
         // As the engine plays: proxies on, its default.
         environment: klipp_engine::freeze::environment(working, true),
@@ -271,7 +284,7 @@ fn a_frozen_track_plays_from_its_frames_and_isnt_decoded() {
     assert!(frozen.frames > 10, "frozen played: {frozen:?}");
     assert!(frozen.decoders < live.decoders, "the frozen track's media isn't decoded: {} decoders frozen, {} live", frozen.decoders, live.decoders);
     assert!(frozen.frames + 3 >= live.frames, "no fewer frames drawn: {} frozen, {} live", frozen.frames, live.frames);
-    eprintln!("MEASURE GPU memory: {:?} MB live, {:?} MB frozen", live.vram_mb, frozen.vram_mb);
+    eprintln!("MEASURE GPU memory: {:?} live, {:?} frozen", live.memory, frozen.memory);
     eprintln!("MEASURE render thread per frame, median: {:.1} ms live, {:.1} ms frozen; whole frame {:.1} ms live, {:.1} ms frozen", live.render, frozen.render, live.total, frozen.total);
     // The frame on the GPU stack, the GPU waited for.
     let req_again = klipp_engine::freeze::FreezeRequest { seq: Arc::new(seq.clone()), sequences: Arc::new(vec![]), track: 0, track_id, frames: vec![], size: live.size, working, environment: klipp_engine::freeze::environment(working, true), media: Arc::new(klipp_engine::freeze::media_identities(&pool)) };

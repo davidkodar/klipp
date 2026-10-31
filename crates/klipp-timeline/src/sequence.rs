@@ -1480,6 +1480,10 @@ pub struct Track {
     pub pan: f32,
     #[serde(default)]
     pub locked: bool,
+    /// Frozen (#3207): played from frames drawn ahead into the project's
+    /// cache, where they are current, instead of drawn live.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub frozen: bool,
     /// Sync lock (#915): a ripple on another track moves this one's clips
     /// by the same amount, so what is above or below the edit stays in
     /// sync with it.
@@ -1765,6 +1769,7 @@ impl Track {
             record_armed: false,
             automation_lane_visible: None,
             automation_lane_track: false,
+            frozen: false,
             automation: Default::default(),
             automation_lane_height: None,
             effects: TrackEffects::default(),
@@ -5167,5 +5172,25 @@ mod mend_overlaps_tests {
         seq.tracks[s].clips = vec![sound];
         assert_eq!(seq.mend_overlaps(), 2);
         assert!(seq.tracks[s].find_clip(sound_id).unwrap().timeline_out.cmp(&at(473, 30)).is_eq());
+    }
+}
+
+#[cfg(test)]
+mod frozen_track_tests {
+    use super::*;
+
+    /// #3207: a track saved before freezing existed opens live; a live one
+    /// saves no `frozen`; a frozen one opens frozen.
+    #[test]
+    fn frozen_is_saved_only_when_on() {
+        let live = Track::new("V1", TrackKind::Video);
+        let json = serde_json::to_value(&live).unwrap();
+        assert!(json.get("frozen").is_none(), "a live track says nothing of it");
+        let back: Track = serde_json::from_value(json).unwrap();
+        assert!(!back.frozen, "an old project's track opens live");
+        let mut frozen = live.clone();
+        frozen.frozen = true;
+        let back: Track = serde_json::from_value(serde_json::to_value(&frozen).unwrap()).unwrap();
+        assert!(back.frozen);
     }
 }

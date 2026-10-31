@@ -937,7 +937,10 @@ pub enum Op {
     /// `locked` keeps its clips out of every edit, an insert's ripple and
     /// a cut among them, so a music bed stays whole (#2486); `volume_db`,
     /// `pan`, `mute` and `solo` set its mixer controls, as its fader and
-    /// buttons do, a solo turning the others' off (#3165). One undo step.
+    /// buttons do, a solo turning the others' off (#3165); `frozen` (a
+    /// video track) plays it from frames drawn ahead into the project's
+    /// cache, drawn again where an edit makes them stale (#3207). One undo
+    /// step.
     SetTrack {
         track: TrackRef,
         #[serde(default)]
@@ -946,6 +949,8 @@ pub enum Op {
         language: Option<String>,
         #[serde(default)]
         locked: Option<bool>,
+        #[serde(default)]
+        frozen: Option<bool>,
         #[serde(default)]
         volume_db: Option<f32>,
         #[serde(default)]
@@ -4779,8 +4784,9 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             join(seq, pool, i, ti, clip, *side)
         }
         Op::RemoveTrack { track, with_clips } => remove_track(seq, i, track, *with_clips),
-        Op::SetTrack { track, visible, language, locked, volume_db, pan, mute, solo } => {
-            set_track(seq, i, track, *visible, language.as_deref(), *locked, TrackMixSet { volume_db: *volume_db, pan: *pan, mute: *mute, solo: *solo })
+        Op::SetTrack { track, visible, language, locked, frozen, volume_db, pan, mute, solo } => {
+            let own = TrackOwnSet { visible: *visible, language: language.as_deref(), locked: *locked, frozen: *frozen };
+            set_track(seq, i, track, own, TrackMixSet { volume_db: *volume_db, pan: *pan, mute: *mute, solo: *solo })
         }
         Op::TrackAutomation { track, param, mode, keys } => track_automation(seq, i, track, *param, *mode, keys.as_deref()),
         Op::Split { clip_id: clip_ref, at } => {
@@ -5639,12 +5645,25 @@ struct TrackMixSet {
     solo: Option<bool>,
 }
 
-fn set_track(seq: &Sequence, i: usize, track: &TrackRef, visible: Option<bool>, language: Option<&str>, locked: Option<bool>, mix: TrackMixSet) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
+/// What [`Op::SetTrack`] sets on the track itself.
+#[derive(Clone, Copy)]
+struct TrackOwnSet<'a> {
+    visible: Option<bool>,
+    language: Option<&'a str>,
+    locked: Option<bool>,
+    frozen: Option<bool>,
+}
+
+fn set_track(seq: &Sequence, i: usize, track: &TrackRef, own: TrackOwnSet, mix: TrackMixSet) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
+    let TrackOwnSet { visible, language, locked, frozen } = own;
     let ti = resolve_track(seq, track, i)?;
     let t = &seq.tracks[ti];
     let mixes = mix.volume_db.is_some() || mix.pan.is_some() || mix.mute.is_some() || mix.solo.is_some();
-    if visible.is_none() && language.is_none() && locked.is_none() && !mixes {
-        return Err(refuse(i, "nothing to set", "give visible, language, locked, volume_db, pan, mute, solo or more than one"));
+    if visible.is_none() && language.is_none() && locked.is_none() && frozen.is_none() && !mixes {
+        return Err(refuse(i, "nothing to set", "give visible, language, locked, frozen, volume_db, pan, mute, solo or more than one"));
+    }
+    if frozen == Some(true) && t.kind != TrackKind::Video {
+        return Err(refuse(i, format!("track {ti} is a {:?} track", t.kind), "freeze a video track: sound and captions play live"));
     }
     // Its mixer controls, as the fader and its buttons set them (#3165).
     let mut mix_changes = Vec::new();
@@ -5680,7 +5699,7 @@ fn set_track(seq: &Sequence, i: usize, track: &TrackRef, visible: Option<bool>, 
             }
         }
     }
-    if visible.is_none() && language.is_none() && locked.is_none() {
+    if visible.is_none() && language.is_none() && locked.is_none() && frozen.is_none() {
         let what = if mixed.is_empty() { "as it was".to_string() } else { mixed.join(", ") };
         return Ok((format!("track {ti} {} {what}", quoted(&t.name)), EditCommand::SetTrackMix { changes: mix_changes }, Vec::new()));
     }
@@ -5701,6 +5720,10 @@ fn set_track(seq: &Sequence, i: usize, track: &TrackRef, visible: Option<bool>, 
     if let Some(l) = locked {
         new.locked = l;
         what.push(if l { "locked" } else { "unlocked" }.to_string());
+    }
+    if let Some(f) = frozen {
+        new.frozen = f;
+        what.push(if f { "frozen: its frames are drawn in the background, then it plays from them" } else { "live" }.to_string());
     }
     what.extend(mixed);
     let set = EditCommand::SetTrack { description: "Track", track_index: ti, old: Box::new(t.clone()), new: Box::new(new) };
@@ -21928,5 +21951,46 @@ mod frame_aligned_tests {
         let pic = v.iter().find(|c| c.id == first).unwrap();
         let sound = a.iter().find(|c| Some(c.id) == pic.linked_clip_id).unwrap();
         assert!(sound.timeline_out.cmp(&pic.timeline_out).is_eq(), "the sound ends with its picture: {:.6} and {:.6} s", secs(sound.timeline_out), secs(pic.timeline_out));
+    }
+}
+
+#[cfg(test)]
+mod freeze_track_tests {
+    //! `set_track frozen` (#3207): one undo step that freezes a video
+    //! track or plays it live again; a sound or caption track is refused.
+
+    use super::*;
+    use klipp_timeline::Track;
+
+    fn op(json: serde_json::Value) -> Op {
+        serde_json::from_value(json).expect("an op")
+    }
+
+    #[test]
+    fn a_video_track_is_frozen_and_played_live_again_in_one_step_each() {
+        let mut seq = Sequence::new_default();
+        seq.tracks = vec![Track::new("V1", TrackKind::Video), Track::new("A1", TrackKind::Audio), Track::new("S1", TrackKind::Subtitle)];
+        let pool = MediaPool::new();
+        let freeze = resolve(&seq, &pool, &[op(serde_json::json!({ "op": "set_track", "track": 0, "frozen": true }))]).unwrap();
+        assert_eq!(freeze.steps.len(), 1);
+        assert!(freeze.steps[0].what.contains("frozen"), "{}", freeze.steps[0].what);
+        let mut seqs = vec![seq.clone()];
+        let (mut p, mut f) = (pool.clone(), seq.fps);
+        let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut f };
+        view.apply_forward(&freeze.steps[0].edit);
+        assert!(view.sequences[0].tracks[0].frozen);
+        view.apply_inverse(&freeze.steps[0].edit);
+        assert!(!view.sequences[0].tracks[0].frozen, "undone, live again");
+
+        let mut frozen = seq.clone();
+        frozen.tracks[0].frozen = true;
+        let live = resolve(&frozen, &pool, &[op(serde_json::json!({ "op": "set_track", "track": 0, "frozen": false }))]).unwrap();
+        let EditCommand::SetTrack { new, .. } = &live.steps[0].edit else { panic!("{:?}", live.steps[0].edit) };
+        assert!(!new.frozen && live.steps[0].what.contains("live"), "{}", live.steps[0].what);
+
+        for t in [1, 2] {
+            let refused = resolve(&seq, &pool, &[op(serde_json::json!({ "op": "set_track", "track": t, "frozen": true }))]).unwrap_err();
+            assert!(refused.hint.contains("freeze a video track"), "track {t}: {refused:?}");
+        }
     }
 }

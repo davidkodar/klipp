@@ -147,8 +147,25 @@ impl ClipStream {
     }
 }
 
+/// The media an [`ExportFrameSource`] reads: borrowed for an export, or
+/// shared for a source a background job owns (#3207).
+enum Media<'a> {
+    Borrowed(&'a HashMap<MediaId, MediaFile>),
+    Shared(std::sync::Arc<HashMap<MediaId, MediaFile>>),
+}
+
+impl std::ops::Deref for Media<'_> {
+    type Target = HashMap<MediaId, MediaFile>;
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Media::Borrowed(m) => m,
+            Media::Shared(m) => m,
+        }
+    }
+}
+
 pub struct ExportFrameSource<'a> {
-    media: &'a HashMap<MediaId, MediaFile>,
+    media: Media<'a>,
     fps: f64,
     working: WorkingColorspace,
     streams: HashMap<ClipId, ClipStream>,
@@ -205,8 +222,19 @@ struct NeighbourSource {
 
 type NeighbourReader = klipp_media::frame_reader::SeekableFrameReader<Vec<f32>>;
 
+impl ExportFrameSource<'static> {
+    /// A source that owns its share of the media, for a job's own thread.
+    pub fn shared(media: std::sync::Arc<HashMap<MediaId, MediaFile>>, fps: f64, working: WorkingColorspace) -> Self {
+        Self::with_media(Media::Shared(media), fps, working)
+    }
+}
+
 impl<'a> ExportFrameSource<'a> {
     pub fn new(media: &'a HashMap<MediaId, MediaFile>, fps: f64, working: WorkingColorspace) -> Self {
+        Self::with_media(Media::Borrowed(media), fps, working)
+    }
+
+    fn with_media(media: Media<'a>, fps: f64, working: WorkingColorspace) -> Self {
         Self {
             media,
             fps,
@@ -377,7 +405,8 @@ impl FrameSource for ExportFrameSource<'_> {
         let file = self.media.get(media_id)?;
         self.used.insert(clip.id);
         if clip.is_reversed() {
-            return self.reversed_frame(clip, file, source_secs, width, height);
+            let file = file.clone();
+            return self.reversed_frame(clip, &file, source_secs, width, height);
         }
         if !self.streams.contains_key(&clip.id) {
             let s = self.open(clip, file, source_secs, width, height)?;

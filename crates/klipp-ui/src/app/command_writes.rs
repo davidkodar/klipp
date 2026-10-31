@@ -788,6 +788,7 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::StartSkimTranscode { .. }
         | AppCommand::RegenerateSkimTranscode { .. }
         | AppCommand::SetTrackLocked { .. }
+        | AppCommand::SetTrackFrozen { .. }
         | AppCommand::SetTrackCustomHeight { .. }
         | AppCommand::SetTrackAutomationLaneHeight { .. }
         | AppCommand::GroupClips { .. }

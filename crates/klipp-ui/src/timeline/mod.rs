@@ -1134,6 +1134,27 @@ mod menu_smoke_tests {
         assert!(sent.iter().any(|c| matches!(c, AppCommand::SetTrackLocked { track_id: t, locked: true } if *t == track_id)), "{sent:?}");
     }
 
+    /// #3207: a video track's header menu freezes it; a sound track's
+    /// has no Freeze Track.
+    #[test]
+    fn freezing_a_track_is_in_a_video_header_s_menu() {
+        let mut timeline = Timeline::new();
+        let v1 = timeline.state.sequences[0].tracks.iter().position(|t| t.kind == TrackKind::Video).unwrap();
+        let track_id = timeline.state.sequences[0].tracks[v1].id;
+        let at = timeline.header(TrackKind::Video);
+        timeline.right_click(at);
+        let drawn = timeline.frame(Vec::new());
+        let item = drawn.iter().find(|(t, _)| t == "Freeze Track").unwrap_or_else(|| panic!("Freeze Track in the header's menu: {drawn:?}")).1;
+        let sent = timeline.click(item);
+        assert!(sent.iter().any(|c| matches!(c, AppCommand::SetTrackFrozen { track_id: t, frozen: true } if *t == track_id)), "{sent:?}");
+
+        let mut timeline = Timeline::new();
+        let at = timeline.header(TrackKind::Audio);
+        timeline.right_click(at);
+        let drawn = timeline.frame(Vec::new());
+        assert!(!drawn.iter().any(|(t, _)| t == "Freeze Track"), "{drawn:?}");
+    }
+
     /// #239: a video clip whose file is there offers Track Subject, and
     /// clicking it asks for the subject's matte on that clip.
     #[test]
