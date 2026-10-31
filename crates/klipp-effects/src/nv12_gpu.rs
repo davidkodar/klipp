@@ -56,6 +56,8 @@ pub(crate) struct ResidentPool {
     /// Each buffer and the last take at which something else held it.
     buffers: Vec<(std::sync::Arc<wgpu::Buffer>, u64)>,
     takes: u64,
+    /// What it keeps, in the GPU memory report (#3174).
+    gauge: crate::gpu_memory::Gauge,
 }
 
 impl ResidentPool {
@@ -66,7 +68,7 @@ impl ResidentPool {
     const QUIET_TAKES: u64 = 4;
 
     pub(crate) fn new(label: &'static str) -> Self {
-        Self { label, size: 0, buffers: Vec::new(), takes: 0 }
+        Self { label, size: 0, buffers: Vec::new(), takes: 0, gauge: crate::gpu_memory::Gauge::new(crate::gpu_memory::Held::DecodedFrames) }
     }
 
     /// A `size`-byte buffer nothing else holds: one kept, or one made.
@@ -74,6 +76,7 @@ impl ResidentPool {
         if size != self.size {
             self.buffers.clear();
             self.size = size;
+            self.gauge.report_holding(0, crate::gpu_memory::Holding::default());
         }
         self.takes += 1;
         let now = self.takes;
@@ -94,7 +97,11 @@ impl ResidentPool {
         }));
         if self.buffers.len() < Self::CAP {
             self.buffers.push((std::sync::Arc::clone(&made), now));
+        } else {
+            crate::gpu_memory::made(crate::gpu_memory::Made::DecodedPastPool, size);
         }
+        let in_use = self.buffers.iter().filter(|(b, _)| std::sync::Arc::strong_count(b) > 1).count() as u64;
+        self.gauge.report_holding(self.buffers.len() as u64 * self.size, crate::gpu_memory::Holding { count: self.buffers.len() as u64, in_use, each: self.size, bytes_per_pixel: 4 });
         made
     }
 
@@ -696,6 +703,7 @@ impl GpuNv12Converter {
         let y_size = y_data.len() as u64;
         let uv_size = uv_data.len() as u64;
         let output_size = (dst_width * dst_height * 4) as u64;
+        crate::gpu_memory::note_decoded_frame(dst_width, dst_height);
 
         self.ensure_y_buf(y_size);
         self.ensure_uv_buf(uv_size);
@@ -826,6 +834,7 @@ impl GpuNv12Converter {
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         }));
+        crate::gpu_memory::made(crate::gpu_memory::Made::ConvertToLinear, linear_buf.size());
 
         let y_buf = self.y_buf.as_ref().unwrap();
         let uv_buf = self.uv_buf.as_ref().unwrap();
