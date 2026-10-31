@@ -175,7 +175,10 @@ pub(super) fn stretch(seq: &Sequence, pool: &MediaPool, i: usize, clip_ids: &[Cl
     // Each clip mapped through its run's stretch, on its track's grid.
     let mut replaced: Vec<(usize, Clip, Clip)> = Vec::new();
     for (ti, run) in &runs {
-        let grid = placement_grid(&seq.tracks[*ti], fps);
+        // A sound linked to a picture keeps to the picture's frames
+        // (#3230): on the samples its edges fell between them.
+        let linked = run.iter().any(|c| c.linked_clip_id.is_some());
+        let grid = if linked { fps } else { placement_grid(&seq.tracks[*ti], fps) };
         let a = anchor(run);
         let map = |t: Timecode| snap(a + (secs(t) - a) * f, grid);
         for c in run {

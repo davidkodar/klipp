@@ -90,7 +90,7 @@ pub use keyframe::{Handles, Interpolation, KeyEase, Keyframe, TitlePositionAxis,
 pub use events::{AppCommand, AppEvent, SubjectMatteUse, AudioParam, TitleFieldValue, CameraParam, ChapterSnapshot, ControlShared, DEFAULT_TRUE_PEAK_DBTP, CompositeFallback, ExportStatus, ExportTimings, ProjectStatus, ProxyStatus, RecentProjectSummary, SequenceSummary, VersionSummary, DeliveryOutput, TransportStatus, launch_identity_base, DEFAULT_MASTERING_PEAK_NITS, EncoderPreset, ExportAudioCodec, ExportFormat, ExportSettings, ExportVideoCodec, HdrMode, HdrMonitor, MASTERING_PEAK_CHOICES, MASTERING_PEAK_RANGE, MarkerColor, MarkerKind, ReviewStatus, MediaLoadedPayload, NodeSampleRefusal, OdtChoice, ParamChange, ProjectColour, RateControl, ScopeLut, SdrTransfer, SelectRange, ToneMapOp, Tool, TrackTarget, VideoParam, ViewerMode, ViewerOverlay, WipeClip};
 pub use export_preset::{ExportPreset, ExportPresetSettings, PresetId, ProxyResolution, builtin_presets, delivery_template_listing, delivery_templates, DeliveryTemplate};
 pub use id::{BinId, BusId, ClipId, GradeGroupId, GroupId, MarkerId, MediaId, SequenceId, TrackId, TransitionId};
-pub use time::{Fps, RationalTime, TimeRange, Timecode, TimecodeDisplay};
+pub use time::{whole_frames_within, Fps, RationalTime, TimeRange, Timecode, TimecodeDisplay};
 pub use modifier::{EvalContext, Extrapolation, Modifier, ModifierBlend, ModifierStack, ParamId, Waveform, evaluate_param};
 pub use snap::{GridInterval, SnapConfig, SnapTargetKind};
 pub use ofx_value::OfxValue;
@@ -103,7 +103,7 @@ pub use config::{
 };
 pub use gpu_vendor::GpuVendor;
 pub use working_colorspace::{grade_encoding, set_grade_encoding, GradeEncoding, WorkingColorspace};
-pub use shot::ShotMetadata;
+pub use shot::{ShotMetadata, StreamEnds};
 pub use logging::ClipLog;
 pub use field::Field;
 pub use smart_bin::{RuleOp, SmartBin, SmartRule};

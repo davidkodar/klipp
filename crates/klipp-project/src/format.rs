@@ -898,6 +898,8 @@ pub struct MediaItemJson {
     pub shot: klipp_core::ShotMetadata,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub truncated_from_secs: Option<f64>,
+    #[serde(default, skip_serializing_if = "klipp_core::StreamEnds::is_unknown")]
+    pub stream_ends: klipp_core::StreamEnds,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dolby_vision_profile: Option<u8>,
 }

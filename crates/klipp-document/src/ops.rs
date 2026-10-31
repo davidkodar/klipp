@@ -4623,9 +4623,12 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             let one = snap(1.0 / grid.as_f64(), grid).rescale_to(tl_in.rate).value;
             let mut frames = (end.value - tl_in.value).max(one);
             // Never past the end of the file: rounding up there is a frame
-            // the file does not have.
+            // the file does not have. Nor past its picture's last whole
+            // frame on a picture track, or its sound's on a sound one: the
+            // container may run on (#3230).
             if !item.is_still {
-                let room = (snap(media_dur, grid) - src_in).rescale_to(tl_in.rate).value;
+                let ends = item.stream_end_secs(seq.tracks[ti].kind != TrackKind::Audio);
+                let room = (klipp_core::whole_frames_within(ends, grid) - src_in).rescale_to(tl_in.rate).value;
                 frames = frames.min(room).max(one);
             }
             let value = tl_in.value.checked_add(frames).ok_or_else(|| refuse(i, "the placement exceeds the frame clock", "use an earlier start or shorter duration"))?;
@@ -10943,15 +10946,19 @@ fn retime(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, clip_id: ClipId,
     if let Some((pti, _, p)) = clip.linked_clip_id.and_then(|lid| find_clip(seq, lid)).filter(|(_, _, p)| matches!(p.kind, ClipKind::Media { .. })) {
         members.push((pti, p));
     }
-    // The speed changes, then the clips after them moved.
+    // The speed changes, then the clips after them moved. A linked clip
+    // that starts with this one ends with it too (#3230): its own source
+    // length, once off the frames, gave it another end, and the retime ran
+    // it over the next clip.
+    let clip_len = snap(secs(clip.source_out - clip.source_in) / speed.abs(), fps);
     let mut speeds = Vec::new();
     let mut ends = Vec::new();
     for &(mti, m) in &members {
         if seq.tracks[mti].locked {
             return Err(refuse(i, format!("track {mti} is locked"), "unlock it first"));
         }
-        let new_len_secs = secs(m.source_out - m.source_in) / speed.abs();
-        let new_out = m.timeline_in + snap(new_len_secs, fps);
+        let new_len = if m.timeline_in.cmp(&clip.timeline_in).is_eq() { clip_len } else { snap(secs(m.source_out - m.source_in) / speed.abs(), fps) };
+        let new_out = m.timeline_in + new_len;
         if new_out <= m.timeline_in + one_frame(fps) {
             return Err(refuse(i, "the clip would be shorter than a frame", "use a smaller speed"));
         }
@@ -21799,5 +21806,127 @@ mod effect_params_tests {
         assert!(effect("displace", r#"{"direction": "sideways"}"#).is_err());
         assert!(effect("displace", r#"{"seed": 1.5}"#).is_err());
         assert!(effect("displace", r#"{"amount": "lots"}"#).is_err());
+    }
+}
+
+#[cfg(test)]
+mod frame_aligned_tests {
+    //! #3230: a file whose container, picture and sound end apart, placed,
+    //! inserted, laid over, retimed and stretched on a 30 fps sequence:
+    //! every clip starts and ends on the sequence's frames, within its
+    //! picture, and no two clips on a track overlap.
+
+    use super::*;
+    use klipp_timeline::Track;
+
+    /// 15.79 s of container: 473.7 frames at 30, its picture 473.47 of them
+    /// (473 at 29.97), its sound a little less.
+    fn project() -> (Sequence, MediaPool, MediaId) {
+        let mut seq = Sequence::new_default();
+        seq.fps = Fps::new(30, 1);
+        // A 30 fps sequence that keeps its rate for a 29.97 file.
+        seq.first_clip_autoset.fps = false;
+        seq.tracks = vec![Track::new("V1", TrackKind::Video), Track::new("A1", TrackKind::Audio)];
+        let mut pool = MediaPool::new();
+        let mut item = klipp_media::MediaItem::synthetic_for_test("/tmp/longer.mp4".into(), None);
+        item.duration = Timecode { value: 473_700, rate: 30_000 };
+        item.fps = Fps::ntsc_29970();
+        item.video_codec = "h264".into();
+        item.has_audio = true;
+        item.stream_ends = klipp_core::StreamEnds { picture: Some(15.782433), sound: Some(15.765333) };
+        let media = pool.add(item);
+        (seq, pool, media)
+    }
+
+    fn place(media: MediaId, at: Anchor, insert: bool) -> Op {
+        Op::Place { media_id: media, track: TrackRef::Index(0), at, source_in: None, source_out: None, insert, with_audio: true, sync_source_secs: None }
+    }
+
+    /// `seq` after `ops`, each step applied.
+    fn after(seq: &Sequence, pool: &MediaPool, ops: &[Op]) -> Sequence {
+        let plan = resolve(seq, pool, ops).unwrap_or_else(|r| panic!("{r:?}"));
+        let mut seqs = vec![seq.clone()];
+        let (mut p, mut f) = (pool.clone(), seq.fps);
+        let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut f };
+        for step in &plan.steps {
+            view.apply_forward(&step.edit);
+        }
+        seqs.remove(0)
+    }
+
+    /// Every edge on a frame at 30, every clip within the picture's 473
+    /// frames of source, and no overlap on a track.
+    fn assert_aligned(seq: &Sequence, what: &str) {
+        let on_frame = |t: Timecode| ((t.to_secs_f64() * 30.0) - (t.to_secs_f64() * 30.0).round()).abs() < 1e-6;
+        for (ti, t) in seq.tracks.iter().enumerate() {
+            let mut clips: Vec<&Clip> = t.clips.iter().collect();
+            clips.sort_by_key(|c| c.timeline_in);
+            for c in &clips {
+                assert!(on_frame(c.timeline_in) && on_frame(c.timeline_out), "{what}: track {ti} clip at {:.6}-{:.6} s off the frames", secs(c.timeline_in), secs(c.timeline_out));
+                assert!(secs(c.source_out.max(c.source_in)) <= 473.0 / 30.0 + 1e-6, "{what}: track {ti} clip plays its source to {:.6} s, past the picture", secs(c.source_out));
+            }
+            for w in clips.windows(2) {
+                assert!(w[0].timeline_out <= w[1].timeline_in, "{what}: track {ti} overlaps at {:.6} s", secs(w[1].timeline_in));
+            }
+        }
+    }
+
+    #[test]
+    fn appended_clips_end_on_a_frame_within_the_picture_and_meet() {
+        let (seq, pool, media) = project();
+        let seq = after(&seq, &pool, &[place(media, Anchor::TrackEnd(TrackRef::Index(0)), false), place(media, Anchor::TrackEnd(TrackRef::Index(0)), false)]);
+        assert_aligned(&seq, "append");
+        let v = &seq.tracks[0].clips;
+        assert_eq!(v.len(), 2);
+        assert!(v[0].timeline_out.cmp(&Timecode { value: 473, rate: 30 }).is_eq(), "473 whole frames, not 474: {:?}", v[0].timeline_out);
+        assert!(v[1].timeline_in.cmp(&v[0].timeline_out).is_eq(), "the second starts where the first ends");
+        let a = &seq.tracks[1].clips;
+        assert!(a[0].timeline_out.cmp(&v[0].timeline_out).is_eq(), "the sound ends with its picture");
+    }
+
+    #[test]
+    fn an_insert_and_a_place_off_the_frames_stay_on_them() {
+        let (seq, pool, media) = project();
+        let two = after(&seq, &pool, &[place(media, Anchor::TrackEnd(TrackRef::Index(0)), false), place(media, Anchor::TrackEnd(TrackRef::Index(0)), false)]);
+        assert_aligned(&after(&two, &pool, &[place(media, Anchor::Secs(5.0), true)]), "insert");
+        // Off the frames asked for: placed on them.
+        assert_aligned(&after(&two, &pool, &[place(media, Anchor::Secs(40.0123), false)]), "a place after them");
+    }
+
+    /// A picture and its sound side by side whose sources differ by a part
+    /// of a frame, as a project saved before #3230 holds them: retimed,
+    /// they end on the same frame, the picture's.
+    #[test]
+    fn a_retimed_pair_ends_together_whatever_their_sources() {
+        let (mut seq, pool, media) = project();
+        let mut pic = Clip::media(media, Timecode { value: 0, rate: 30 }, Timecode { value: 300, rate: 30 }, Timecode { value: 0, rate: 30_000 }, Timecode { value: 300_000, rate: 30_000 });
+        let mut sound = Clip::media(media, Timecode { value: 0, rate: 30 }, Timecode { value: 300, rate: 30 }, Timecode { value: 0, rate: 30_000 }, Timecode { value: 300_600, rate: 30_000 });
+        pic.linked_clip_id = Some(sound.id);
+        sound.linked_clip_id = Some(pic.id);
+        let id = pic.id;
+        seq.tracks[0].clips = vec![pic];
+        seq.tracks[1].clips = vec![sound];
+        let slow = after(&seq, &pool, &[Op::Retime { clip_id: ClipRef::Id(id), speed: 0.5, fit: false, ripple: false, interpolation: None, length_secs: None, fit_range: false }]);
+        let (p, s) = (&slow.tracks[0].clips[0], &slow.tracks[1].clips[0]);
+        assert!(p.timeline_out.cmp(&Timecode { value: 600, rate: 30 }).is_eq(), "{:?}", p.timeline_out);
+        assert!(s.timeline_out.cmp(&p.timeline_out).is_eq(), "the sound ends with the picture: {:.6} and {:.6} s", secs(s.timeline_out), secs(p.timeline_out));
+    }
+
+    /// The issue's retime: reversed in place, no ripple, its linked sound
+    /// with it; it used to be refused as running over the next clip.
+    #[test]
+    fn a_retime_and_a_stretch_keep_the_linked_sound_on_the_picture_s_frames() {
+        let (seq, pool, media) = project();
+        let two = after(&seq, &pool, &[place(media, Anchor::TrackEnd(TrackRef::Index(0)), false), place(media, Anchor::TrackEnd(TrackRef::Index(0)), false)]);
+        let first = two.tracks[0].clips.iter().min_by_key(|c| c.timeline_in).unwrap().id;
+        let reversed = after(&two, &pool, &[Op::Retime { clip_id: ClipRef::Id(first), speed: -1.0, fit: false, ripple: false, interpolation: None, length_secs: None, fit_range: false }]);
+        assert_aligned(&reversed, "retime");
+        let stretch = Op::Stretch { clip_id: Some(ClipRef::Id(first)), clip_ids: vec![], to_secs: Some(10.01), end_at_secs: None, start_at_secs: None, speed: None, ripple: false, keep_pitch: true, interpolation: None };
+        let stretched = after(&two, &pool, &[stretch]);
+        assert_aligned(&stretched, "stretch");
+        let (v, a) = (&stretched.tracks[0].clips, &stretched.tracks[1].clips);
+        let pic = v.iter().find(|c| c.id == first).unwrap();
+        let sound = a.iter().find(|c| Some(c.id) == pic.linked_clip_id).unwrap();
+        assert!(sound.timeline_out.cmp(&pic.timeline_out).is_eq(), "the sound ends with its picture: {:.6} and {:.6} s", secs(sound.timeline_out), secs(pic.timeline_out));
     }
 }

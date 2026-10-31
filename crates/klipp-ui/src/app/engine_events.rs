@@ -148,6 +148,7 @@ impl KlippApp {
                         pixel_format,
                         shot,
                         truncated_from_secs,
+                        stream_ends,
                         dolby_vision_profile,
                     } = *payload;
                     let filename = path
@@ -222,6 +223,7 @@ impl KlippApp {
                         shot,
                         metadata_read: true,
                         truncated_from_secs,
+                        stream_ends,
                         dolby_vision_profile,
                         detected_log_format: Default::default(),
                         log_format_user_set: false,

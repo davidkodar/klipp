@@ -269,6 +269,10 @@ pub struct MediaItem {
     /// a copy cut short. `duration` is then what it holds.
     #[serde(default)]
     pub truncated_from_secs: Option<f64>,
+    /// Where its picture and its sound end (#3230), which a clip of the
+    /// whole file stops at.
+    #[serde(default, skip_serializing_if = "klipp_core::StreamEnds::is_unknown")]
+    pub stream_ends: klipp_core::StreamEnds,
     /// The Dolby Vision profile of its picture, when the file carries
     /// one; profile 5 is not shown right yet ([`crate::dolby_vision`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -310,6 +314,26 @@ pub struct MediaItem {
 }
 
 impl MediaItem {
+    /// How long a clip of the whole file runs on a sequence at `fps`
+    /// (#3230): whole frames of the sequence, ending at the last one its
+    /// picture fills (its sound's, for a file with no picture), never
+    /// past it. The container is as long as its longest stream; its
+    /// length, off the sequence's frames, had a placed clip overlap the
+    /// next one on its track.
+    pub fn placed_length(&self, fps: Fps) -> Timecode {
+        klipp_core::whole_frames_within(self.stream_end_secs(!self.video_codec.is_empty()), fps)
+    }
+
+    /// Where its picture (`picture`) or its sound ends, in seconds: the
+    /// probed end within the file's length, or the file's length where
+    /// there is none. An end a project file gives that isn't a time in the
+    /// file is not taken.
+    pub fn stream_end_secs(&self, picture: bool) -> f64 {
+        let end = if picture { self.stream_ends.picture } else { self.stream_ends.sound };
+        let whole = self.duration.to_secs_f64();
+        end.filter(|e| e.is_finite() && *e > 0.0).map_or(whole, |e| e.min(whole))
+    }
+
     /// What a probe of the file says of it, taken from `from`: the details
     /// a relink's re-probe replaces, given back when the relink is undone
     /// (#2327). What the person said of the item (rating, tags, notes,
@@ -344,6 +368,7 @@ impl MediaItem {
         self.shot = from.shot.clone();
         self.metadata_read = from.metadata_read;
         self.truncated_from_secs = from.truncated_from_secs;
+        self.stream_ends = from.stream_ends;
         self.dolby_vision_profile = from.dolby_vision_profile;
     }
 
@@ -463,6 +488,7 @@ impl MediaItem {
             shot: Default::default(),
             metadata_read: false,
             truncated_from_secs: None,
+            stream_ends: Default::default(),
             dolby_vision_profile: None,
             log: Default::default(),
             synced_audio: None,
@@ -737,6 +763,7 @@ mod subclip_tests {
             shot: Default::default(),
             metadata_read: false,
             truncated_from_secs: None,
+            stream_ends: Default::default(),
             dolby_vision_profile: None,
             log: Default::default(),
             synced_audio: None,
@@ -921,6 +948,7 @@ mod effective_rotation_tests {
             shot: Default::default(),
             metadata_read: false,
             truncated_from_secs: None,
+            stream_ends: Default::default(),
             dolby_vision_profile: None,
             log: Default::default(),
             synced_audio: None,
@@ -1085,6 +1113,7 @@ pub fn merge_reprobed(old: &MediaItem, fresh: &mut MediaItem) {
         shot: _,
         metadata_read: _,
         truncated_from_secs: _,
+        stream_ends: _,
         dolby_vision_profile: _,
         needs_reprobe: _,
         // What the user and the app said about it.
@@ -1207,6 +1236,7 @@ impl MediaItem {
             shot: Default::default(),
             metadata_read: false,
             truncated_from_secs: None,
+            stream_ends: Default::default(),
             dolby_vision_profile: None,
             log: Default::default(),
             synced_audio: None,
@@ -1475,7 +1505,7 @@ mod tests {
             sample_rate: _, audio_channels: _, is_still: _, fingerprint: _, cache_key: _, file_modified_at: _, media_created_at: _,
             colour_space: _, source_rotation: _, camera_make: _, camera_model: _, encoder: _, bit_depth: _,
             video_bitrate_kbps: _, audio_bitrate_kbps: _, color_primaries: _, color_transfer: _, pixel_format: _,
-            detected_log_format: _, shot: _, metadata_read: _, truncated_from_secs: _, dolby_vision_profile: _,
+            detected_log_format: _, shot: _, metadata_read: _, truncated_from_secs: _, stream_ends: _, dolby_vision_profile: _,
             // The person's, or the project's: kept.
             kind: _, default_source_in: _, default_source_out: _, rating: _, tags: _, user_notes: _, bin: _, bin_id: _,
             parent_media_id: _, added_at: _, color_label: _, log_format: _, log_format_user_set: _, log: _,
@@ -1497,5 +1527,34 @@ mod tests {
         to.take_probed_details(&from);
         assert_eq!((to.filename.as_str(), to.duration, to.video_codec.as_str(), to.file_size_bytes, to.metadata_read), ("other.mov", from.duration, "prores", 99, from.metadata_read));
         assert_eq!(to.rating, item.rating, "the person's kept");
+    }
+}
+
+#[cfg(test)]
+mod placed_length_tests {
+    use super::*;
+
+    /// #3230: a clip of the whole file runs the sequence's whole frames
+    /// within its picture, not the container's length; a file of sound
+    /// alone, within its sound.
+    #[test]
+    fn a_whole_file_runs_whole_frames_within_its_picture() {
+        let mut item = MediaItem::synthetic_for_test("a.mp4".into(), None);
+        item.duration = Timecode { value: 473_473, rate: 30_000 };
+        let at30 = Fps::new(30, 1);
+        assert_eq!(item.placed_length(at30), Timecode { value: 473, rate: 30 }, "the container's 15.782 s in whole frames at 30");
+        // The picture ends early; the sound runs on to the container's end.
+        item.stream_ends = klipp_core::StreamEnds { picture: Some(15.7157), sound: Some(15.782433) };
+        assert_eq!(item.placed_length(at30), Timecode { value: 471, rate: 30 }, "471.47 frames of picture hold 471");
+        item.video_codec.clear();
+        assert_eq!(item.placed_length(at30), Timecode { value: 473, rate: 30 }, "sound alone runs to the sound's end");
+        // A stream said to end past the file is held to the file; an end
+        // that is no time in it (a hostile project file) isn't taken.
+        item.stream_ends.sound = Some(99.0);
+        assert_eq!(item.placed_length(at30), Timecode { value: 473, rate: 30 });
+        for bad in [-5.0, 0.0, f64::NAN, f64::NEG_INFINITY, f64::INFINITY] {
+            item.stream_ends.sound = Some(bad);
+            assert_eq!(item.placed_length(at30), Timecode { value: 473, rate: 30 }, "{bad}");
+        }
     }
 }

@@ -44,6 +44,16 @@ impl Fps {
     }
 }
 
+/// The whole frames at `fps` that fit in `secs` (#3230), as a time at the
+/// frame rate's ticks: the length a clip of `secs` runs without its last
+/// frame reaching past them. A length within a thousandth of a frame of
+/// whole frames counts as whole: probed lengths are rounded.
+pub fn whole_frames_within(secs: f64, fps: Fps) -> Timecode {
+    let (num, den) = (fps.num.max(1), fps.den.max(1));
+    let frames = if secs.is_finite() && secs > 0.0 { (secs * f64::from(num) / f64::from(den) + 1e-3).floor() as i64 } else { 0 };
+    RationalTime { value: frames.saturating_mul(i64::from(den)), rate: num }
+}
+
 /// A time value stored as an exact rational number: value/rate seconds.
 /// When rate=24 and value=48, that represents exactly 2.0 seconds.
 /// When rate=16 and value=81, that represents 5.0625 seconds.
@@ -413,5 +423,26 @@ mod zero_tests {
         assert!(RationalTime::ZERO < t && neg < RationalTime::ZERO);
         assert_eq!(RationalTime::ZERO.cmp(&frame_zero), std::cmp::Ordering::Equal);
         assert_eq!(RationalTime::ZERO.max(t), t);
+    }
+}
+
+#[cfg(test)]
+mod whole_frames_tests {
+    use super::*;
+
+    /// #3230: 15.782433 s (473 frames at 29.97) holds 473 whole frames at
+    /// 30, not 473.47 rounded to 473 or up; a length that is whole frames
+    /// stays whole at an NTSC rate too.
+    #[test]
+    fn a_length_holds_the_whole_frames_that_fit_in_it() {
+        let at30 = Fps::new(30, 1);
+        assert_eq!(whole_frames_within(473_473.0 / 30_000.0, at30), RationalTime { value: 473, rate: 30 });
+        assert_eq!(whole_frames_within(15.79, at30), RationalTime { value: 473, rate: 30 }, "473.7 frames hold 473");
+        let ntsc = Fps::ntsc_29970();
+        assert_eq!(whole_frames_within(473.0 * 1001.0 / 30_000.0, ntsc), RationalTime { value: 473 * 1001, rate: 30_000 });
+        assert_eq!(whole_frames_within(0.0, at30).value, 0);
+        assert_eq!(whole_frames_within(f64::NAN, at30).value, 0);
+        // A length no file has, from a hostile project, doesn't overflow.
+        assert_eq!(whole_frames_within(1e300, ntsc).value, i64::MAX);
     }
 }

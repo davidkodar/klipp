@@ -1332,6 +1332,56 @@ impl Sequence {
         (!holes.is_empty()).then_some((p, holes))
     }
 
+    /// Clips that run over the next one on their track, ended before it
+    /// (#3230): an append once ended a clip at its file's length, off the
+    /// sequence's frames and over the next clip's first frame. The end goes
+    /// back to the last whole frame at or before it, or to the next clip's
+    /// start if that is earlier, and a clip linked to it that ended with
+    /// it goes too. The source is cut by as much as the clip plays of it.
+    /// How many clips were mended.
+    pub fn mend_overlaps(&mut self) -> usize {
+        let fps = self.fps;
+        let mut ends: Vec<(ClipId, Timecode, Timecode)> = Vec::new();
+        for t in &self.tracks {
+            let mut order: Vec<&Clip> = t.clips.iter().collect();
+            order.sort_by_key(|c| c.timeline_in);
+            for w in order.windows(2) {
+                let (a, b) = (w[0], w[1]);
+                if a.timeline_out <= b.timeline_in || b.timeline_in <= a.timeline_in {
+                    continue;
+                }
+                let on_frame = klipp_core::whole_frames_within(a.timeline_out.to_secs_f64(), fps);
+                let end = on_frame.min(b.timeline_in);
+                if end > a.timeline_in {
+                    ends.push((a.id, a.timeline_out, end));
+                }
+            }
+        }
+        let partners: Vec<(ClipId, Timecode, Timecode)> = ends
+            .iter()
+            .filter_map(|(id, old, new)| {
+                let (ti, ci) = self.find_clip(*id)?;
+                let lid = self.tracks[ti].clips[ci].linked_clip_id?;
+                let (pt, pc) = self.find_clip(lid)?;
+                let p = &self.tracks[pt].clips[pc];
+                (p.timeline_out.cmp(old).is_eq() && *new > p.timeline_in && !ends.iter().any(|(e, _, _)| *e == lid)).then_some((lid, *old, *new))
+            })
+            .collect();
+        let n = ends.len() + partners.len();
+        for (id, old, new) in ends.into_iter().chain(partners) {
+            let Some((ti, ci)) = self.find_clip(id) else { continue };
+            let c = &mut self.tracks[ti].clips[ci];
+            let cut = RationalTime::from_secs_f64((old - new).to_secs_f64() * c.speed.abs(), c.source_out.rate.max(1));
+            c.timeline_out = new;
+            if c.speed < 0.0 {
+                c.source_in += cut;
+            } else {
+                c.source_out -= cut;
+            }
+        }
+        n
+    }
+
     /// [`Self::primary_holes`] filled with gap clips; how many.
     pub fn fill_primary_holes(&mut self) -> usize {
         let Some((p, gaps)) = self.primary_holes() else { return 0 };
@@ -5033,5 +5083,89 @@ mod primary_holes_tests {
         #[cfg(debug_assertions)]
         seq.assert_primary_gapless();
         assert_eq!(seq.fill_primary_holes(), 0, "nothing left to fill");
+    }
+}
+
+#[cfg(test)]
+mod mend_overlaps_tests {
+    use super::*;
+
+    fn at(value: i64, rate: u32) -> Timecode {
+        Timecode { value, rate }
+    }
+
+    /// #3230 as saved: a clip appended at its file's length (473 frames at
+    /// 29.97, 15.782 s) on a 30 fps sequence runs over the next clip, which
+    /// starts on frame 473; its linked sound already ends there. Opened,
+    /// the clip ends where the next starts, its source cut by as much, and
+    /// nothing else changes.
+    #[test]
+    fn a_clip_saved_over_the_next_one_ends_where_it_starts() {
+        let mut seq = Sequence::new_default();
+        seq.fps = Fps::new(30, 1);
+        seq.tracks.clear();
+        seq.add_video_track("V1".into());
+        seq.add_audio_track("A1".into());
+        let media = MediaId::new();
+        let long = at(473_473, 30_000);
+        let frame_473 = at(473, 30);
+        let mut a = Clip::media(media, at(0, 30_000), long, at(0, 30_000), long);
+        let b = Clip::media(media, frame_473, at(600, 30), at(0, 30), at(127, 30));
+        let mut sound = Clip::media(media, at(0, 30), frame_473, at(0, 30), frame_473);
+        a.linked_clip_id = Some(sound.id);
+        sound.linked_clip_id = Some(a.id);
+        let (a_id, b_before) = (a.id, b.clone());
+        let v = seq.tracks.iter().position(|t| t.kind == TrackKind::Video).unwrap();
+        let s = seq.tracks.iter().position(|t| t.kind == TrackKind::Audio).unwrap();
+        seq.tracks[v].clips = vec![a, b];
+        seq.tracks[s].clips = vec![sound.clone()];
+
+        assert_eq!(seq.mend_overlaps(), 1, "the one clip over the next");
+        let a = seq.tracks[v].find_clip(a_id).unwrap();
+        assert!(a.timeline_out.cmp(&frame_473).is_eq(), "ends where the next starts: {:?}", a.timeline_out);
+        assert!((a.source_out.to_secs_f64() - 473.0 / 30.0).abs() < 1e-4, "its source cut by as much: {:?}", a.source_out);
+        assert_eq!((seq.tracks[v].clips[1].timeline_in, seq.tracks[v].clips[1].timeline_out, seq.tracks[v].clips[1].source_out), (b_before.timeline_in, b_before.timeline_out, b_before.source_out), "the next clip as it was");
+        assert_eq!((seq.tracks[s].clips[0].timeline_out, seq.tracks[s].clips[0].source_out), (sound.timeline_out, sound.source_out), "the sound, already on the frame, as it was");
+        assert_eq!(seq.mend_overlaps(), 0, "mended once");
+    }
+
+    /// A hostile project's times, far past any file, are mended without a
+    /// panic.
+    #[test]
+    fn absurd_saved_times_are_mended_without_a_panic() {
+        let mut seq = Sequence::new_default();
+        seq.fps = Fps::ntsc_29970();
+        seq.tracks.clear();
+        seq.add_video_track("V1".into());
+        let media = MediaId::new();
+        let mut a = Clip::media(media, at(0, 1), at(i64::MAX / 2, 7), at(0, 1), at(i64::MAX / 3, 3));
+        a.speed = 1e300;
+        let b = Clip::media(media, at(10, 1), at(i64::MAX / 2, 1), at(0, 1), at(1, 1));
+        seq.tracks[0].clips = vec![a, b];
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| seq.clone().mend_overlaps())).expect("no panic");
+    }
+
+    /// The clip's linked sound that ended with it is ended with it.
+    #[test]
+    fn a_linked_clip_that_ended_with_it_is_mended_too() {
+        let mut seq = Sequence::new_default();
+        seq.fps = Fps::new(30, 1);
+        seq.tracks.clear();
+        seq.add_video_track("V1".into());
+        seq.add_audio_track("A1".into());
+        let media = MediaId::new();
+        let long = at(473_473, 30_000);
+        let mut a = Clip::media(media, at(0, 30_000), long, at(0, 30_000), long);
+        let b = Clip::media(media, at(473, 30), at(600, 30), at(0, 30), at(127, 30));
+        let mut sound = Clip::media(media, at(0, 30_000), long, at(0, 30_000), long);
+        a.linked_clip_id = Some(sound.id);
+        sound.linked_clip_id = Some(a.id);
+        let sound_id = sound.id;
+        let v = seq.tracks.iter().position(|t| t.kind == TrackKind::Video).unwrap();
+        let s = seq.tracks.iter().position(|t| t.kind == TrackKind::Audio).unwrap();
+        seq.tracks[v].clips = vec![a, b];
+        seq.tracks[s].clips = vec![sound];
+        assert_eq!(seq.mend_overlaps(), 2);
+        assert!(seq.tracks[s].find_clip(sound_id).unwrap().timeline_out.cmp(&at(473, 30)).is_eq());
     }
 }

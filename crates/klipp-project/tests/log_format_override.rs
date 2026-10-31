@@ -78,6 +78,7 @@ fn make_media_item(path: PathBuf) -> MediaItem {
         shot: Default::default(),
         metadata_read: false,
         truncated_from_secs: None,
+        stream_ends: Default::default(),
         dolby_vision_profile: None,
         log: Default::default(),
         synced_audio: None,
