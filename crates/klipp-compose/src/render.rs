@@ -2878,8 +2878,9 @@ impl Renderer {
             ClipKind::Title(td) if title_motion_blur(c).is_some() && title_raster_moves(td).is_some() && shutter.is_some() && self.title_shutter_plan(c, td, clip_time, width, height).is_some() => {
                 // Its layers only move by their keys or fade at the shutter's
                 // instants: each drawn once, at the frame's time, and laid at
-                // each instant at its offset and alpha (#3160, #3170), as
-                // `motion_blurred` does on the CPU.
+                // each instant at its offset and alpha (#3160, #3170); one
+                // whose entrance or exit is live drawn alone at each (#3185);
+                // as `motion_blurred` does on the CPU.
                 let total = (c.timeline_out - c.timeline_in).to_secs_f64() as f32;
                 let times: Vec<f64> = self.title_shutter.get(&c.id).map(|s| s.iter().map(|&(_, t)| t).collect()).unwrap_or_default();
                 let placements = shutter.as_deref().unwrap_or_default();
@@ -2892,6 +2893,11 @@ impl Renderer {
                 let mut kept = Vec::with_capacity(layers.len());
                 for (k, layer) in layers.iter().enumerate() {
                     let at = self.executor.gpu_pipeline_or_init().and_then(|g| g.stack_title_kept_slot(k + 1)).ok_or("title motion blur")?;
+                    // A live layer is drawn at each instant, below.
+                    if layer.live {
+                        kept.push(at);
+                        continue;
+                    }
                     let mut single = layer.single.clone();
                     if matches!(single.objects[0].content, klipp_timeline::TitleObjectContent::TextBox(_)) {
                         single.background = backing.clone().unwrap_or_default();
@@ -2920,6 +2926,21 @@ impl Renderer {
                     laid.push((together, None));
                 }
                 for (k, placement) in placements.iter().enumerate() {
+                    // Each live layer drawn alone at this instant, from an
+                    // empty layer: some routes write only the rows they cover.
+                    for (i, layer) in layers.iter().enumerate().filter(|(_, l)| l.live) {
+                        let mut single = layer.single.clone();
+                        if matches!(single.objects[0].content, klipp_timeline::TitleObjectContent::TextBox(_)) {
+                            single.background = backing.clone().unwrap_or_default();
+                        }
+                        if !self.executor.gpu_pipeline_or_init().is_some_and(|g| g.stack_layer_clear(kept[i])) {
+                            return Err("title motion blur");
+                        }
+                        let (_, soft) = self.place_title_source_in_scene(&single, kept[i], width, height, times[k], total, td, Some(false)).ok_or("title motion blur")?;
+                        if !self.executor.gpu_pipeline_or_init().is_some_and(|g| g.stack_title_source_effects(kept[i], &soft)) {
+                            return Err("title motion blur");
+                        }
+                    }
                     let gpu = self.executor.gpu_pipeline_or_init().ok_or("title motion blur")?;
                     // Laid in encoded colour, taken to the working space once.
                     for (n, &(from, one)) in laid.iter().enumerate() {
@@ -5130,16 +5151,8 @@ impl Renderer {
     fn title_runs_at(&mut self, clip: &Clip, td: &klipp_timeline::TitleData, layers: &[crate::title_shutter::Layer], at: f64, width: u32, height: u32) -> Vec<(Vec<f32>, Option<usize>)> {
         residency::record("title.cpu_composition", "Title raster/placement and linear conversion on CPU", Work::Fallback);
         let total = (clip.timeline_out - clip.timeline_in).to_secs_f64() as f32;
-        let backing = matches!(td.background, klipp_timeline::TitleBackground::Color { .. }).then(|| td.background.clone());
-        let mut drawn: Vec<Vec<f32>> = layers.iter().map(|layer| {
-            let mut single = layer.single.clone();
-            if matches!(single.objects[0].content, klipp_timeline::TitleObjectContent::TextBox(_)) {
-                single.background = backing.clone().unwrap_or_default();
-            }
-            let mut adapter = self.gpu.as_mut().map(crate::synth::GpuAlphaMaskAdapter);
-            let gpu = adapter.as_mut().map(|a| a as &mut dyn klipp_title::AlphaMaskProcessor);
-            srgb_stack_to_linear(&self.titles.render_with_window_stack(&single, width, height, gpu, at as f32, Some(total)))
-        }).collect();
+        // A live layer is drawn at each instant instead, by `title_shifted_at`.
+        let mut drawn: Vec<Vec<f32>> = layers.iter().map(|layer| if layer.live { Vec::new() } else { self.title_layer_at(td, &layer.single, at, total, width, height) }).collect();
         crate::title_shutter::runs(layers).into_iter().map(|run| {
             if run.len() == 1 || !layers[run[0]].holds() {
                 return (std::mem::take(&mut drawn[run[0]]), Some(run[0]));
@@ -5152,13 +5165,31 @@ impl Renderer {
         }).collect()
     }
 
+    /// One planned layer of `td` drawn alone at `at`, in linear authored
+    /// light, straight: a text over the title's backing colour, if it has one.
+    fn title_layer_at(&mut self, td: &klipp_timeline::TitleData, single: &klipp_timeline::TitleData, at: f64, total: f32, width: u32, height: u32) -> Vec<f32> {
+        let mut single = single.clone();
+        if matches!(single.objects[0].content, klipp_timeline::TitleObjectContent::TextBox(_)) {
+            single.background = if matches!(td.background, klipp_timeline::TitleBackground::Color { .. }) { td.background.clone() } else { Default::default() };
+        }
+        let mut adapter = self.gpu.as_mut().map(crate::synth::GpuAlphaMaskAdapter);
+        let gpu = adapter.as_mut().map(|a| a as &mut dyn klipp_title::AlphaMaskProcessor);
+        srgb_stack_to_linear(&self.titles.render_with_window_stack(&single, width, height, gpu, at as f32, Some(total)))
+    }
+
     /// Shutter instant `k` of a planned title: its runs laid in order, each
-    /// layer at its offset and alpha there, then graded as
-    /// [`Self::title_pixels_at`] grades a sample.
+    /// layer at its offset and alpha there, a live one drawn there, then
+    /// graded as [`Self::title_pixels_at`] grades a sample.
     #[allow(clippy::too_many_arguments)]
-    fn title_shifted_at(&mut self, clip: &Clip, layers: &[crate::title_shutter::Layer], runs: &[(Vec<f32>, Option<usize>)], k: usize, t: f64, fps: f64, width: u32, height: u32) -> Vec<f32> {
+    fn title_shifted_at(&mut self, clip: &Clip, td: &klipp_timeline::TitleData, layers: &[crate::title_shutter::Layer], runs: &[(Vec<f32>, Option<usize>)], k: usize, t: f64, fps: f64, width: u32, height: u32) -> Vec<f32> {
+        let total = (clip.timeline_out - clip.timeline_in).to_secs_f64() as f32;
         let mut laid = vec![0.0f32; (width as usize) * (height as usize) * 4];
         for (picture, one) in runs {
+            if let Some(layer) = one.map(|i| &layers[i]).filter(|l| l.live) {
+                let drawn = self.title_layer_at(td, &layer.single, t, total, width, height);
+                crate::title_shutter::over_encoded(&mut laid, &drawn, 1.0);
+                continue;
+            }
             let (by, alpha) = one.map_or(([0.0; 2], 1.0), |i| (layers[i].offsets[k], layers[i].alphas[k]));
             if by.iter().all(|v| v.abs() < 1e-4) {
                 crate::title_shutter::over_encoded(&mut laid, picture, alpha);
@@ -6313,7 +6344,7 @@ impl Renderer {
                 (Some(base), _) => base.clone(),
                 (None, Some(td)) => {
                     let drawn = match (&laid_plan, &runs) {
-                        (Some(layers), Some(runs)) => self.title_shifted_at(clip, layers, runs, k, t, fps, width, height),
+                        (Some(layers), Some(runs)) => self.title_shifted_at(clip, td, layers, runs, k, t, fps, width, height),
                         _ => self.title_pixels_at(clip, td, t, fps, width, height),
                     };
                     self.effects_by(plan, clip, before, &before_blends, drawn, t, fps, width, height)
