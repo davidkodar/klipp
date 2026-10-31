@@ -169,3 +169,22 @@ mod tests {
         assert_eq!(civil_to_epoch(2024, 13, 1, 0, 0, 0), None);
     }
 }
+
+/// Where a file's picture and its sound end (#3230), in seconds from the
+/// first of its streams to start: either can stop short of the container,
+/// which is as long as its longest stream. `None` where the probe couldn't
+/// tell; the container's length stands in.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct StreamEnds {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub picture: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sound: Option<f64>,
+}
+
+impl StreamEnds {
+    pub fn is_unknown(&self) -> bool {
+        *self == Self::default()
+    }
+}

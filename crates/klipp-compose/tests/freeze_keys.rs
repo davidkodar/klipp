@@ -269,3 +269,33 @@ fn a_render_copys_precomposition_keys_alike_with_or_without_the_project() {
     let flat_edited = klipp_timeline::flatten::flatten_sequence(&seq, &[seq.clone(), edited]);
     assert_eq!(changed(&engine, &keys(&flat_edited, &[], &Env::default())), FIRST, "the scene's edit");
 }
+
+/// #3230: a project saved with a clip running over the next one, repaired
+/// on open. The repaired clip's frames key anew, so what was frozen of it
+/// is drawn again; the next clip's keep their keys; and the frame both
+/// claimed keys as the next clip's.
+#[test]
+fn a_repaired_overlap_keys_the_repaired_clip_anew_and_nothing_else() {
+    let mut seq = project();
+    seq.fps = klipp_core::Fps::new(24, 1);
+    // Clip A ends at its file's 2.0125 s, over B's first frame at 2.0.
+    seq.tracks[0].clips[0].timeline_out = Timecode { value: 60_375, rate: 30_000 };
+    seq.tracks[0].clips[0].source_out = Timecode { value: 60_375, rate: 30_000 };
+    let env = Env::default();
+    let at = |seq: &Sequence, t: f64| {
+        let (m, p) = (|_: &str| Some(env.media), |_: &str| Some(env.plugin));
+        slot_key(seq, 0, tc(t), &FreezeEnv { sequences: &[], media: &m, plugin: &p, environment: env.environment })
+    };
+    let before = keys(&seq, &[], &env);
+    assert_eq!(seq.mend_overlaps(), 1);
+    let after = keys(&seq, &[], &env);
+    assert!(before[..4].iter().zip(&after[..4]).all(|(a, b)| a != b), "A's frames key anew: {before:?} {after:?}");
+    assert_eq!(before[4..], after[4..], "B's frames keep their keys");
+    // The frame at 2.0 is B's alone now.
+    let b_only = {
+        let mut s = seq.clone();
+        s.tracks[0].clips.remove(0);
+        at(&s, 2.0)
+    };
+    assert_eq!(at(&seq, 2.0), b_only, "frame 48 keys as B's");
+}

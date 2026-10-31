@@ -11,8 +11,9 @@ impl KlippApp {
     /// framerate prompt has already been answered or skipped by the caller.
     pub(super) fn append_media_to_track(&mut self, media_id: &klipp_core::MediaId, track_index: &usize) {
                     if let Some(item) = self.state.media_pool.get(media_id).cloned() {
-                        let duration = item.duration;
                         self.adopt_first_clip_format(&item);
+                        // Whole frames of the sequence, within the picture (#3230).
+                        let duration = item.placed_length(self.state.sequences[self.state.active_sequence_idx].fps);
                         if let Some(track) = self.state.sequences[self.state.active_sequence_idx].tracks.get(*track_index) {
                             if track.magnetic_role == klipp_timeline::TrackRole::Primary {
                                 // Magnetic path: append via MagneticEditor
@@ -126,8 +127,10 @@ impl KlippApp {
         }
         let has_video = !item.video_codec.is_empty();
         self.adopt_first_clip_format(&item);
-        let start = klipp_core::Timecode { value: 0, rate: item.duration.rate };
-        let mut clip = klipp_timeline::Clip::media(media_id, start, item.duration, start, item.duration);
+        // Whole frames of the sequence, within the picture (#3230).
+        let len = item.placed_length(self.state.sequences[self.state.active_sequence_idx].fps);
+        let start = klipp_core::Timecode { value: 0, rate: len.rate };
+        let mut clip = klipp_timeline::Clip::media(media_id, start, len, start, len);
         clip.source_rotation = item.source_rotation;
         super::media::input_defaults_on(&mut clip, &item, self.state.project_default_input_format, self.state.project_default_input_lut.as_deref());
         // Its sound, as an append brings it (see `append_linked_audio`).
@@ -344,13 +347,13 @@ impl KlippApp {
         }
         let has_video = !item.video_codec.is_empty();
         let has_audio = item.has_audio;
-        let rate = item.duration.rate;
-        let source_in = klipp_core::Timecode { value: 0, rate };
-        let source_out = item.duration;
-        let end = start + item.duration;
         let seq_idx = self.state.active_sequence_idx;
-
         let autoset = self.adopt_first_clip_format(&item);
+        // Whole frames of the sequence, within the picture (#3230).
+        let len = item.placed_length(self.state.sequences[seq_idx].fps);
+        let source_in = klipp_core::Timecode { value: 0, rate: len.rate };
+        let source_out = len;
+        let end = start + len;
 
         let mut hist_video = None;
         let mut hist_audio = None;

@@ -579,6 +579,7 @@ fn load_project_as(dir: &Path, form: crate::FileForm, strict: bool) -> Result<Lo
             // a source may have changed while the project was closed.
             metadata_read: false,
             truncated_from_secs: item_json.truncated_from_secs,
+            stream_ends: item_json.stream_ends,
             dolby_vision_profile: item_json.dolby_vision_profile,
             log: item_json.log.clone(),
             synced_audio: item_json.synced_audio.clone(),

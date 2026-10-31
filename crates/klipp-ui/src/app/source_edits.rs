@@ -246,7 +246,8 @@ fn source_marks(state: &AppState, item: &klipp_media::MediaItem) -> Marks {
     Marks {
         source_in: secs(item.default_source_in),
         source_out: secs(item.default_source_out),
-        media_len: item.duration.to_secs_f64(),
+        // Its picture's whole frames on the sequence (#3230).
+        media_len: item.placed_length(seq.fps).to_secs_f64(),
         seq_in: secs(seq.in_point),
         seq_out: secs(seq.out_point),
         playhead: state.playhead.to_secs_f64(),
@@ -255,9 +256,19 @@ fn source_marks(state: &AppState, item: &klipp_media::MediaItem) -> Marks {
 
 /// `p` as timecode: the timeline in at the sequence's rate, the source
 /// range at the media's, the marks themselves where they are used
-/// unchanged so no rounding creeps in.
+/// unchanged so no rounding creeps in. The clip starts on a frame of the
+/// sequence and runs whole frames of it (#3230), its source as far as its
+/// speed takes that.
 fn placement_timecodes(state: &AppState, item: &klipp_media::MediaItem, p: &Placement) -> (Timecode, Timecode, Timecode, Timecode) {
-    let rate = state.sequence().fps.rate();
+    let fps = state.sequence().fps;
+    let mut p = *p;
+    let frame = 1.0 / fps.as_f64();
+    p.timeline_in = (p.timeline_in / frame).round() * frame;
+    let len = klipp_core::whole_frames_within(p.timeline_out - p.timeline_in, fps).to_secs_f64();
+    p.timeline_out = p.timeline_in + len;
+    p.source_out = p.source_in + len * p.speed;
+    let p = &p;
+    let rate = fps.rate();
     let src_rate = item.duration.rate;
     let exact = |secs: f64, marks: &[Option<Timecode>], rate: u32| {
         marks
@@ -410,5 +421,52 @@ mod advance_tests {
         assert_eq!(in2, out1, "the second starts where the first ends");
         assert_eq!(t2, t1, "on the same track");
         assert_eq!(state.playhead, out2, "the playhead at the second's end");
+    }
+}
+
+#[cfg(test)]
+mod frame_aligned_tests {
+    use super::{placement_timecodes, source_marks};
+    use klipp_core::{Fps, Timecode};
+
+    /// A file whose container (15.79 s) runs past its picture (473 frames
+    /// at 29.97, 15.782 s), for a 30 fps sequence.
+    fn setup() -> (crate::state::AppState, klipp_media::MediaItem) {
+        let mut state = crate::state::AppState::default();
+        state.sequences[0].fps = Fps::new(30, 1);
+        let mut item = klipp_media::MediaItem::synthetic_for_test("/tmp/longer.mp4".into(), None);
+        item.duration = Timecode { value: 473_700, rate: 30_000 };
+        item.fps = Fps::ntsc_29970();
+        item.stream_ends = klipp_core::StreamEnds { picture: Some(15.782433), sound: Some(15.765333) };
+        (state, item)
+    }
+
+    fn frames(t: Timecode) -> f64 {
+        t.to_secs_f64() * 30.0
+    }
+
+    fn on_frame(t: Timecode) -> bool {
+        (frames(t) - frames(t).round()).abs() < 1e-6
+    }
+
+    /// #3230: Insert or Overwrite of the whole source at a playhead between
+    /// frames starts on a frame and runs the picture's 473 whole frames,
+    /// its source no further.
+    #[test]
+    fn a_source_edit_lands_on_the_frames_within_the_picture() {
+        let (mut state, item) = setup();
+        state.playhead = Timecode { value: 46_369, rate: 30_000 };
+        let p = crate::source_edit::three_point(&source_marks(&state, &item));
+        let (t_in, t_out, s_in, s_out) = placement_timecodes(&state, &item, &p);
+        assert!(on_frame(t_in) && on_frame(t_out), "{:.6}-{:.6} s", t_in.to_secs_f64(), t_out.to_secs_f64());
+        assert!((frames(t_out) - frames(t_in) - 473.0).abs() < 1e-6, "473 frames: {}", frames(t_out) - frames(t_in));
+        assert!(s_out.to_secs_f64() - s_in.to_secs_f64() <= 473.0 / 30.0 + 1e-6, "the source within the picture: {:.6} s", s_out.to_secs_f64());
+
+        // Between sequence marks a part of a frame long: whole frames of it.
+        state.sequences[0].in_point = Some(Timecode { value: 60, rate: 30 });
+        state.sequences[0].out_point = Some(Timecode { value: 150_369, rate: 30_000 });
+        let p = crate::source_edit::three_point(&source_marks(&state, &item));
+        let (t_in, t_out, _, _) = placement_timecodes(&state, &item, &p);
+        assert!(on_frame(t_in) && on_frame(t_out), "{:.6}-{:.6} s", t_in.to_secs_f64(), t_out.to_secs_f64());
     }
 }

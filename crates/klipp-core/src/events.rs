@@ -4715,6 +4715,8 @@ pub struct MediaLoadedPayload {
     /// The duration the file's header claims, when the file holds less:
     /// a copy cut short. `duration` is then what it holds.
     pub truncated_from_secs: Option<f64>,
+    /// Where its picture and its sound end (#3230).
+    pub stream_ends: crate::StreamEnds,
     /// The Dolby Vision profile of its picture, when it carries one.
     pub dolby_vision_profile: Option<u8>,
 }

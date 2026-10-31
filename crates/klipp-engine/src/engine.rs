@@ -10993,6 +10993,9 @@ impl PlaybackEngine {
                 // MJPEG frame marked as an attached picture; read in stream
                 // order, it came last and the item took its codec and size.
                 let picture_stream = picture_stream_index(&format_ctx);
+                // Where the picture and the sound start and end (#3230).
+                let mut picture_span: Option<(f64, f64)> = None;
+                let mut sound_span: Option<(f64, f64)> = None;
                 for stream in format_ctx.streams() {
                     let params = stream.parameters();
                     let medium = params.medium();
@@ -11001,6 +11004,7 @@ impl PlaybackEngine {
                             if Some(stream.index()) != picture_stream {
                                 continue;
                             }
+                            picture_span = stream_span(&stream);
                             dolby_vision_profile = klipp_media::dolby_vision::stream_profile(&stream);
                             if let Some(warning) = klipp_media::dolby_vision::warning(dolby_vision_profile) {
                                 warn!("{:?}: {warning}", path.file_name().unwrap_or_default());
@@ -11039,6 +11043,9 @@ impl PlaybackEngine {
                         }
                         ffmpeg_next::media::Type::Audio => {
                             has_audio = true;
+                            if let Some((a, b)) = stream_span(&stream) {
+                                sound_span = Some(sound_span.map_or((a, b), |(a0, b0)| (a0.min(a), b0.max(b))));
+                            }
                             let decoder = ffmpeg_next::codec::context::Context::from_parameters(params)
                                 .and_then(|ctx| ctx.decoder().audio());
                             if let Ok(dec) = decoder {
@@ -11073,6 +11080,7 @@ impl PlaybackEngine {
                     None
                 };
                 let duration_secs = truncated_from_secs.map_or(duration_secs, |(end, _)| end);
+                let stream_ends = if is_still { klipp_core::StreamEnds::default() } else { stream_ends(picture_span, sound_span, duration_secs) };
                 let truncated_from_secs = truncated_from_secs.map(|(_, header)| header);
                 if let Some(header) = truncated_from_secs {
                     warn!("{:?} holds {duration_secs:.1} s of the {header:.1} s its header claims: the file is cut short", path.file_name().unwrap_or_default());
@@ -11282,6 +11290,7 @@ impl PlaybackEngine {
                         pixel_format: pixel_format_name,
                         shot,
                         truncated_from_secs,
+                        stream_ends,
                         dolby_vision_profile,
                     },
                 )));
@@ -15458,6 +15467,28 @@ mod report_floor_tests {
         engine.report_playhead();
         assert_eq!(said(&ev_rx), vec![3]);
     }
+}
+
+/// A stream's start and end in seconds, from its own start time and
+/// duration; `None` where the file doesn't say how long it is.
+fn stream_span(stream: &ffmpeg_next::format::stream::Stream) -> Option<(f64, f64)> {
+    let tb = stream.time_base();
+    let (len, start) = (stream.duration(), stream.start_time());
+    if tb.1 == 0 || len <= 0 || len == ffmpeg_next::ffi::AV_NOPTS_VALUE {
+        return None;
+    }
+    let start = if start == ffmpeg_next::ffi::AV_NOPTS_VALUE { 0 } else { start };
+    let unit = f64::from(tb.0) / f64::from(tb.1);
+    Some((start as f64 * unit, (start + len) as f64 * unit))
+}
+
+/// Where the picture and the sound end (#3230), from the first of them to
+/// start, as source times count; never past the file's `duration_secs`
+/// (a copy cut short holds less than its streams claim).
+fn stream_ends(picture: Option<(f64, f64)>, sound: Option<(f64, f64)>, duration_secs: f64) -> klipp_core::StreamEnds {
+    let first = [picture, sound].into_iter().flatten().map(|(a, _)| a).fold(f64::INFINITY, f64::min);
+    let end = |span: Option<(f64, f64)>| span.map(|(_, b)| (b - first).min(duration_secs)).filter(|e| e.is_finite() && *e > 0.0);
+    klipp_core::StreamEnds { picture: end(picture), sound: end(sound) }
 }
 
 /// A probed file's duration (#1910): counted in frames of its picture, or,

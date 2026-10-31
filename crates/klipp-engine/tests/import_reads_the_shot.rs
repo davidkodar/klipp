@@ -258,3 +258,29 @@ fn a_dolby_vision_profile_is_read_at_import() {
     }
     assert_eq!(import(&plain).dolby_vision_profile, None);
 }
+
+/// #3230: a file whose sound runs on past its picture (60 frames at 29.97,
+/// 2.002 s, under 2.5 s of sound) says where each ends; the container is
+/// as long as the sound, and a clip of the whole file stops at the picture.
+#[test]
+fn where_the_picture_and_the_sound_end_is_read_at_import() {
+    let out = scratch("longer-sound.mp4");
+    let made = std::process::Command::new("ffmpeg")
+        .args(["-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=s=64x64:r=30000/1001:d=2.002", "-f", "lavfi", "-i", "sine=f=440:d=2.5"])
+        .args(["-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac"])
+        .arg(&out)
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if !made {
+        return;
+    }
+    let p = import(&out);
+    let container = p.duration.to_secs_f64();
+    let picture = p.stream_ends.picture.expect("the picture's end");
+    let sound = p.stream_ends.sound.expect("the sound's end");
+    eprintln!("MEASURE container {container:.6} s, picture {picture:.6} s, sound {sound:.6} s");
+    assert!((picture - 60.0 * 1001.0 / 30000.0).abs() < 0.002, "60 frames at 29.97: {picture}");
+    assert!(sound > 2.45 && sound <= container + 1e-6, "the sound runs on: {sound} of {container}");
+    assert!(container - picture > 0.4, "the container is the sound's length: {container}");
+}

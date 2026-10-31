@@ -905,6 +905,13 @@ impl KlippApp {
         match klipp_project::load_project(path) {
             Ok((mut sequences, media_pool, color_settings, active_id, created_at, notes,
                 timeline_zoom, timeline_scroll_x, timeline_track_scale, title_assets)) => {
+                // A clip saved running over the next one on its track (an
+                // append ended it at its file's length, off the frames:
+                // #3230) ends before it; said once.
+                let overlaps: usize = sequences.iter_mut().map(|s| s.mend_overlaps()).sum();
+                if overlaps > 0 {
+                    tracing::warn!("{}: ended {overlaps} clip(s) that ran over the next one on their track", path.display());
+                }
                 // A primary track saved with holes in it (by an edit
                 // before #3060 that didn't fill them) gets gap clips, so
                 // no magnetic edit packs it; said once.
@@ -931,6 +938,9 @@ impl KlippApp {
                 if let Some(first) = mended.first() {
                     let more = if mended.len() > 1 { format!(" (and {} more)", mended.len() - 1) } else { String::new() };
                     self.state.toast.show(format!("The project's sends and buses were mended to play: {first}{more}"));
+                }
+                if overlaps > 0 {
+                    self.state.toast.show(format!("{overlaps} clip{} ran a part of a frame over the next clip on {}; {} now end{} where the next one starts", if overlaps == 1 { "" } else { "s" }, if overlaps == 1 { "its track" } else { "their tracks" }, if overlaps == 1 { "it" } else { "they" }, if overlaps == 1 { "s" } else { "" }));
                 }
                 if filled > 0 {
                     self.state.toast.show(format!("The primary track had {filled} empty stretch{} without a gap clip; gap clips now hold {}, so nothing moves on the next edit", if filled == 1 { "" } else { "es" }, if filled == 1 { "it" } else { "them" }));

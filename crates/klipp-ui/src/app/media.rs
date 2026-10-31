@@ -186,7 +186,6 @@ impl KlippApp {
                     }
                     self.suppress_fps_prompt = false;
                     if let Some(item) = self.state.media_pool.get(media_id).cloned() {
-                        let duration = item.duration;
                         let is_audio_only = item.video_codec.is_empty();
                         self.adopt_first_clip_format(&item);
 
@@ -201,25 +200,8 @@ impl KlippApp {
                         let track_index = self.state.sequences[self.state.active_sequence_idx]
                             .source_track(target_kind)
                             .unwrap_or(0);
-                        let appended_id = {
-                            let track = self.state.sequences[self.state.active_sequence_idx].tracks.get_mut(track_index);
-                            track.map(|t| t.append_clip(*media_id, duration))
-                        };
+                        let appended_id = append_whole_file(&mut self.state.sequences[self.state.active_sequence_idx], &item, track_index);
                         if let Some(clip_id) = appended_id {
-                            // The media's rotation belongs on the clip, as the
-                            // drag-and-drop path sets it. Without it a phone
-                            // clip plays upright — the viewer's decoder takes
-                            // rotation from the media item — and exports
-                            // sideways, because export takes it from the clip.
-                            if !is_audio_only {
-                                let rotation = item.source_rotation;
-                                if let Some(c) = self.state.sequences[self.state.active_sequence_idx]
-                                    .tracks[track_index]
-                                    .find_clip_mut(clip_id)
-                                {
-                                    c.source_rotation = rotation;
-                                }
-                            }
                             self.apply_input_defaults(clip_id, *media_id);
                             // The file's audio, linked to this clip. Without
                             // it the timeline is silent and so is every
@@ -408,10 +390,11 @@ impl KlippApp {
                                 value: (sel.range_out_secs * rate as f64).round() as i64,
                                 rate,
                             };
-                            let dur = src_out - src_in;
-                            (dur, Some(src_in), Some(src_out))
+                            let fps = self.state.sequences[self.state.active_sequence_idx].fps;
+                            // Never past the picture's last whole frame.
+                            placed_range(src_in, src_out.min(item.placed_length(fps)).max(src_in), fps)
                         } else {
-                            source_marks_range(&item)
+                            source_marks_range(&item, self.state.sequences[self.state.active_sequence_idx].fps)
                         };
 
                         let has_video = !item.video_codec.is_empty();
@@ -1110,6 +1093,7 @@ impl KlippApp {
                         shot: Default::default(),
                         metadata_read: false,
                         truncated_from_secs: None,
+                        stream_ends: Default::default(),
                         dolby_vision_profile: None,
                         log: Default::default(),
                         synced_audio: None,
@@ -2012,20 +1996,50 @@ pub(super) fn is_video_ext(path: &std::path::Path) -> bool {
     klipp_core::media_extensions::path_is_video(path)
 }
 
+/// The whole of `item` appended to track `track_index` of `seq`, as the
+/// Append command puts it down: after the track's last clip, for the
+/// sequence's whole frames within its picture (#3230), turned as the
+/// media is. The new clip, or `None` with no such track.
+///
+/// The media's rotation belongs on the clip, as the drag-and-drop path
+/// sets it. Without it a phone clip plays upright — the viewer's decoder
+/// takes rotation from the media item — and exports sideways, because
+/// export takes it from the clip.
+pub(super) fn append_whole_file(seq: &mut klipp_timeline::Sequence, item: &klipp_media::MediaItem, track_index: usize) -> Option<klipp_core::ClipId> {
+    let len = item.placed_length(seq.fps);
+    let track = seq.tracks.get_mut(track_index)?;
+    let clip_id = track.append_clip(item.id, len);
+    if !item.video_codec.is_empty() {
+        if let Some(c) = track.find_clip_mut(clip_id) {
+            c.source_rotation = item.source_rotation;
+        }
+    }
+    Some(clip_id)
+}
+
 /// What a pool clip puts on the timeline when no range was picked on its
 /// browser thumbnail: the In/Out marked in the source viewer, else the
 /// whole clip, as `(duration, source_in, source_out)`. The same rule as
 /// Insert and Overwrite; hover-skimming the tile never marks anything.
-pub(super) fn source_marks_range(item: &klipp_media::MediaItem) -> (Timecode, Option<Timecode>, Option<Timecode>) {
+/// Whole frames of the sequence at `fps`, within the picture (#3230).
+pub(super) fn source_marks_range(item: &klipp_media::MediaItem, fps: klipp_core::Fps) -> (Timecode, Option<Timecode>, Option<Timecode>) {
+    let whole = item.placed_length(fps);
     if item.default_source_in.is_none() && item.default_source_out.is_none() {
-        return (item.duration, None, None);
+        return (whole, None, None);
     }
     let raw_in = item.default_source_in.unwrap_or(Timecode { value: 0, rate: item.duration.rate });
-    let raw_out = item.default_source_out.unwrap_or(item.duration);
+    let raw_out = item.default_source_out.map_or(whole, |o| o.min(whole));
     if raw_in >= raw_out {
-        return (item.duration, None, None);
+        return (whole, None, None);
     }
-    (raw_out - raw_in, Some(raw_in), Some(raw_out))
+    placed_range(raw_in, raw_out, fps)
+}
+
+/// A source range placed on a sequence at `fps` (#3230): its length in
+/// whole frames of the sequence, the out moved in to end on the last.
+pub(super) fn placed_range(source_in: Timecode, source_out: Timecode, fps: klipp_core::Fps) -> (Timecode, Option<Timecode>, Option<Timecode>) {
+    let len = klipp_core::whole_frames_within((source_out - source_in).to_secs_f64(), fps);
+    (len, Some(source_in), Some(source_in + len))
 }
 
 /// A file that turns out to be in the pool already is not imported
@@ -2155,6 +2169,7 @@ mod source_marks_range_tests {
     use klipp_core::Timecode;
 
     fn t(secs: i64) -> Timecode { Timecode { value: secs * 30, rate: 30 } }
+    const FPS: klipp_core::Fps = klipp_core::Fps { num: 30, den: 1 };
 
     fn item(secs: i64) -> klipp_media::MediaItem {
         // Any item will do: only the duration and the marks are read.
@@ -2166,7 +2181,7 @@ mod source_marks_range_tests {
     /// Issue #261: an unmarked clip goes on whole.
     #[test]
     fn an_unmarked_clip_is_added_whole() {
-        assert_eq!(source_marks_range(&item(140)), (t(140), None, None));
+        assert_eq!(source_marks_range(&item(140), FPS), (t(140), None, None));
     }
 
     #[test]
@@ -2174,15 +2189,15 @@ mod source_marks_range_tests {
         let mut m = item(140);
         m.default_source_in = Some(t(10));
         m.default_source_out = Some(t(40));
-        assert_eq!(source_marks_range(&m), (t(30), Some(t(10)), Some(t(40))));
+        assert_eq!(source_marks_range(&m, FPS), (t(30), Some(t(10)), Some(t(40))));
 
         // Only an In: from there to the end.
         m.default_source_out = None;
-        assert_eq!(source_marks_range(&m), (t(130), Some(t(10)), Some(t(140))));
+        assert_eq!(source_marks_range(&m, FPS), (t(130), Some(t(10)), Some(t(140))));
 
         // Marks the wrong way round fall back to the whole clip.
         m.default_source_out = Some(t(5));
-        assert_eq!(source_marks_range(&m), (t(140), None, None));
+        assert_eq!(source_marks_range(&m, FPS), (t(140), None, None));
     }
 }
 
