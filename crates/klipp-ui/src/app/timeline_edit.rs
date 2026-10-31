@@ -1630,10 +1630,12 @@ pub(super) fn pip_offsets_for_corner(
 }
 
 /// A generator clip of `data` put at the playhead on `track_index`, or the
-/// first picture track (a new one at the top if there is none), five
-/// seconds long: as the Generators browser adds one and, on a copy of the
-/// sequence, its preview (#3210) shows it. Its id, its name, and where the
-/// playhead parks to show it, a little way in.
+/// picture track free over its five seconds there above every clip there
+/// (a new one at the top if none is), as the Generators browser adds one and, on a copy of
+/// the sequence, its preview (#3210) shows it. Put on the first picture
+/// track whatever was there, it overlapped the clip under the playhead
+/// and was hidden by it (#3243). Its id, its name, and where the playhead
+/// parks to show it, a little way in.
 pub(super) fn add_generator_clip(state: &mut AppState, track_index: Option<usize>, data: &klipp_core::GeneratorData) -> (klipp_core::ClipId, &'static str, klipp_core::Timecode) {
     let fps_rate = state.sequences[state.active_sequence_idx].fps.rate();
     let ph = state.playhead.rescale_to(fps_rate);
@@ -1661,12 +1663,15 @@ pub(super) fn add_generator_clip(state: &mut AppState, track_index: Option<usize
         klipp_core::GeneratorData::Star { .. } => "Star",
     };
     let seq = &mut state.sequences[state.active_sequence_idx];
+    // Free: a picture track above (before) every one with a clip there,
+    // the nearest to them taken.
+    let busy = |t: &klipp_timeline::Track| t.kind == klipp_timeline::TrackKind::Video && t.clips.iter().any(|c| c.timeline_in < timeline_out && ph < c.timeline_out);
+    let above = seq.tracks.iter().position(busy).unwrap_or(seq.tracks.len());
     let track_idx = track_index.unwrap_or_else(|| {
-        seq.tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video)
-            .unwrap_or_else(|| {
-                seq.tracks.insert(0, klipp_timeline::Track::new("Generator", klipp_timeline::TrackKind::Video));
-                0
-            })
+        seq.tracks[..above].iter().rposition(|t| t.kind == klipp_timeline::TrackKind::Video && !t.locked).unwrap_or_else(|| {
+            seq.tracks.insert(0, klipp_timeline::Track::new("Generator", klipp_timeline::TrackKind::Video));
+            0
+        })
     });
     let clip = klipp_timeline::Clip {
         id: klipp_core::ClipId::new(),
@@ -1686,6 +1691,40 @@ pub(super) fn add_generator_clip(state: &mut AppState, track_index: Option<usize
 #[cfg(test)]
 mod track_mix_tests {
     use crate::state::AppState;
+
+    /// #3243: a generator double-clicked over a clip under the playhead
+    /// goes on a track of its own at the top, where it is seen, not under
+    /// the clip on its track; a picture track free there above the clip
+    /// takes it, and one below it does not.
+    #[test]
+    fn a_generator_goes_where_it_is_seen() {
+        let tc = |s: f64| klipp_core::Timecode::from_secs_f64(s, 24);
+        let mut state = AppState::default();
+        let mut v1 = klipp_timeline::Track::new("V1", klipp_timeline::TrackKind::Video);
+        v1.clips = vec![klipp_timeline::Clip { kind: klipp_timeline::ClipKind::Media { media_id: klipp_core::MediaId::new() }, ..klipp_timeline::Clip::gap(tc(0.0), tc(10.0)) }];
+        state.sequences[state.active_sequence_idx].tracks = vec![v1];
+        state.playhead = tc(2.0);
+        let bars = klipp_core::GeneratorData::ColorBars;
+        let (clip, _, _) = super::add_generator_clip(&mut state, None, &bars);
+        let tracks = &state.sequences[state.active_sequence_idx].tracks;
+        assert_eq!(tracks.len(), 2, "a track of its own");
+        assert!(tracks[0].clips.iter().any(|c| c.id == clip) && tracks[1].clips.len() == 1, "on top, the clip under it untouched");
+        // That track is free from 8 s on: a later one goes there.
+        state.playhead = tc(8.0);
+        let (later, _, _) = super::add_generator_clip(&mut state, None, &bars);
+        let tracks = &state.sequences[state.active_sequence_idx].tracks;
+        assert_eq!(tracks.len(), 2, "no new track where one is free");
+        assert!(tracks[0].clips.iter().any(|c| c.id == later));
+        // A free track under a clip would hide it too.
+        let mut v2 = klipp_timeline::Track::new("V2", klipp_timeline::TrackKind::Video);
+        v2.clips = vec![klipp_timeline::Clip { kind: klipp_timeline::ClipKind::Media { media_id: klipp_core::MediaId::new() }, ..klipp_timeline::Clip::gap(tc(0.0), tc(10.0)) }];
+        state.sequences[state.active_sequence_idx].tracks = vec![v2, klipp_timeline::Track::new("V1", klipp_timeline::TrackKind::Video)];
+        state.playhead = tc(2.0);
+        let (over, _, _) = super::add_generator_clip(&mut state, None, &bars);
+        let tracks = &state.sequences[state.active_sequence_idx].tracks;
+        assert_eq!(tracks.len(), 3, "not on the free track under the clip");
+        assert!(tracks[0].clips.iter().any(|c| c.id == over));
+    }
 
     fn view(state: &mut AppState) -> klipp_document::apply::DocumentView<'_> {
         klipp_document::apply::DocumentView { sequences: &mut state.sequences, active: state.active_sequence_idx, media_pool: &mut state.media_pool, fps: &mut state.fps }

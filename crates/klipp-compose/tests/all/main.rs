@@ -10,6 +10,8 @@
 
 #[path = "../ab_wipe.rs"]
 mod ab_wipe;
+#[path = "../browser_starts_show.rs"]
+mod browser_starts_show;
 #[path = "../channel_view.rs"]
 mod channel_view;
 #[path = "../clip_below_render.rs"]

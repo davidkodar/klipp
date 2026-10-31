@@ -1974,6 +1974,15 @@ pub(crate) fn picture_effects(source: &EffectSource) -> Option<Vec<klipp_effects
     }
 }
 
+/// [`picture_effects`] as `state`'s sequence takes them, from the browser
+/// or a drop: starting values are authored at 1080p, and their pixel
+/// sizes go on at the sequence's height over 1080, so a 4K sequence's
+/// blur reads as the 1080p one does (#3243).
+pub(crate) fn starting_effects(state: &AppState, source: &EffectSource) -> Option<Vec<klipp_effects::BuiltinEffect>> {
+    let k = state.sequence().resolution.height.max(1) as f32 / 1080.0;
+    Some(picture_effects(source)?.into_iter().map(|e| e.at_render_scale(k)).collect())
+}
+
 /// The commands that put `source` on `clip_id`: its picture effects (a
 /// built-in effect, a look's every effect, a frei0r plug-in at its declared
 /// defaults) by path, after the clip's stack (M3 steps 14 and 19), or
@@ -1982,7 +1991,7 @@ pub(crate) fn picture_effects(source: &EffectSource) -> Option<Vec<klipp_effects
 pub(crate) fn effect_commands_in(state: &AppState, source: &EffectSource, clip_id: klipp_core::ClipId) -> Result<Vec<AppCommand>, String> {
     Ok(match source {
         EffectSource::Builtin(_) | EffectSource::Look(_) | EffectSource::Frei0r(_) => {
-            let effects = picture_effects(source).unwrap_or_default();
+            let effects = starting_effects(state, source).unwrap_or_default();
             let clip = state.sequence().tracks.iter().flat_map(|t| &t.clips).find(|c| c.id == clip_id).ok_or("the clip isn't in the sequence")?;
             return crate::inspector::stack_view::add_effects_command(state, clip, &effects);
         }
@@ -1999,6 +2008,21 @@ pub(crate) fn effect_commands_in(state: &AppState, source: &EffectSource, clip_i
 mod tests {
     use super::*;
     use crate::browser::effect_registry::{EffectEntry, EffectSource};
+
+    /// #3243: a start authored at 1080p goes on a 4K sequence at twice
+    /// its pixel sizes, so the blur reads as it does at 1080p; a ratio is
+    /// left as it is.
+    #[test]
+    fn starting_values_go_on_at_the_sequences_size() {
+        let mut state = AppState::default();
+        let blur = EffectSource::Builtin(klipp_effects::BuiltinEffect::GaussianBlur { radius: 12.0 });
+        let sharpen = EffectSource::Builtin(klipp_effects::BuiltinEffect::Sharpen { amount: 0.6 });
+        state.sequence_mut().resolution = klipp_core::Resolution { width: 1920, height: 1080 };
+        assert!(matches!(starting_effects(&state, &blur).unwrap()[..], [klipp_effects::BuiltinEffect::GaussianBlur { radius }] if radius == 12.0));
+        state.sequence_mut().resolution = klipp_core::Resolution { width: 3840, height: 2160 };
+        assert!(matches!(starting_effects(&state, &blur).unwrap()[..], [klipp_effects::BuiltinEffect::GaussianBlur { radius }] if radius == 24.0));
+        assert!(matches!(starting_effects(&state, &sharpen).unwrap()[..], [klipp_effects::BuiltinEffect::Sharpen { amount }] if amount == 0.6));
+    }
 
     fn make_ofx_entry(id: &str, name: &str) -> EffectEntry {
         EffectEntry {
