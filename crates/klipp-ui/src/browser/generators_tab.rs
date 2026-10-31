@@ -271,6 +271,11 @@ fn handle_card_interaction(
     tmpl: &GeneratorTemplate,
     resp: &egui::Response,
 ) {
+    // Shown where a double-click would put it while hovered (#3210).
+    if resp.hovered() {
+        let place = crate::app::hover_preview::Place::Generator(tmpl.data.clone());
+        crate::app::hover_preview::want_placed(state, &format!("generator:{}", tmpl.name.as_str()), place, crate::app::hover_preview::across(resp));
+    }
     if resp.clicked() {
         *selected = Some(tmpl.name.as_str().to_string());
     }
