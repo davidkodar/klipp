@@ -422,6 +422,18 @@ fn body(ui: &mut egui::Ui, theme: &KlippTheme, status: &Status<'_>) -> Option<Ab
                 ui.label(egui::RichText::new(klipp_core::build_info::format_utc(at)).size(13.0).color(theme.text_secondary));
             });
         }
+        // What it runs on, as Preferences and the system probe say it
+        // (#3223): a screenshot of this page is then enough for a report.
+        let hw = crate::hardware::hardware();
+        row(ui, "Processor", &mut |ui| {
+            ui.label(egui::RichText::new(&hw.cpu).size(13.0).color(theme.text_secondary));
+        });
+        row(ui, "Graphics", &mut |ui| {
+            ui.label(egui::RichText::new(&hw.gpu).size(13.0).color(theme.text_secondary));
+            if let Some(driver) = &hw.driver {
+                ui.label(egui::RichText::new(driver).size(12.0).color(theme.text_secondary));
+            }
+        });
         row(ui, "Licence", &mut |ui| {
             ui.label(egui::RichText::new("GPL-3.0, free and open source").size(13.0).color(theme.text_secondary));
         });
@@ -731,6 +743,26 @@ mod tests {
     }
 
     /// The dialog draws, in both themes, and asks for nothing by itself.
+    #[test]
+    fn it_shows_the_processor_and_graphics_as_detected() {
+        // #3223: the same reading as Preferences and the system probe.
+        let hw = crate::hardware::hardware();
+        let ctx = egui::Context::default();
+        let theme = KlippTheme::default();
+        let mut seen = Vec::new();
+        for frame in 0..3 {
+            let input = egui::RawInput { time: Some(frame as f64 * 0.4), screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, vec2(1600.0, 900.0))), ..Default::default() };
+            seen = probe::texts(&ctx.run(input, |ctx| {
+                show(ctx, &theme, &Status::Idle);
+            }));
+        }
+        let texts: Vec<&str> = seen.iter().map(|(t, _)| t.as_str()).collect();
+        for want in [Some(hw.cpu.as_str()), Some(hw.gpu.as_str()), hw.driver.as_deref()].into_iter().flatten() {
+            assert!(texts.contains(&want), "About doesn't show {want:?}: {texts:?}");
+        }
+        assert!(texts.contains(&"Processor") && texts.contains(&"Graphics"), "{texts:?}");
+    }
+
     #[test]
     fn it_draws() {
         for dark in [true, false] {

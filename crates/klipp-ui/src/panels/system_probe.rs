@@ -257,19 +257,8 @@ fn cpu_section() -> ReportSection {
             .unwrap_or_else(|_| "(unknown)".to_string()),
     ));
 
-    // /proc/cpuinfo model name, first occurrence.
-    let model = std::fs::read_to_string("/proc/cpuinfo")
-        .ok()
-        .and_then(|s| {
-            s.lines()
-                .find_map(|l| l.strip_prefix("model name"))
-                .and_then(|rest| rest.split(':').nth(1))
-                .map(|v| v.trim().to_string())
-        })
-        // arm64 has no `model name`: Apple Silicon is named from the
-        // device tree.
-        .or_else(crate::soc_info::cpu_name)
-        .unwrap_or_else(|| "(unknown)".to_string());
+    // As About and Preferences show it (#3223).
+    let model = crate::hardware::hardware().cpu;
     rows.push(("CPU model".into(), model));
 
     // Total memory from /proc/meminfo (MemTotal: kB).
@@ -293,7 +282,7 @@ fn cpu_section() -> ReportSection {
 
 #[cfg(feature = "ai-ort")]
 fn gpu_section() -> ReportSection {
-    let mut rows = Vec::new();
+    let mut rows = gpu_rows();
     let vendor = klipp_ml_ort::detect_gpu_vendor();
     rows.push(("Vendor".into(), format!("{vendor:?}")));
 
@@ -323,26 +312,6 @@ fn gpu_section() -> ReportSection {
     };
     rows.push(("Devices".into(), device_str));
 
-    // NVIDIA driver version when present.
-    if let Ok(driver) = std::fs::read_to_string("/proc/driver/nvidia/version") {
-        if let Some(line) = driver.lines().next() {
-            // The first line is verbose ("NVRM version: NVIDIA UNIX
-            // x86_64 Kernel Module 545.29.06"); pull out just the
-            // semver-ish version number.
-            let version = line
-                .split("Kernel Module")
-                .nth(1)
-                .map(|rest| {
-                    rest.split_whitespace()
-                        .next()
-                        .unwrap_or("")
-                        .to_string()
-                })
-                .unwrap_or_else(|| "(unparsed)".into());
-            rows.push(("NVIDIA driver".into(), version));
-        }
-    }
-
     ReportSection {
         title: "GPU".into(),
         rows,
@@ -353,11 +322,15 @@ fn gpu_section() -> ReportSection {
 fn gpu_section() -> ReportSection {
     ReportSection {
         title: "GPU".into(),
-        rows: vec![(
-            "Vendor".into(),
-            "(klipp-ml-ort feature off — GPU probe unavailable)".into(),
-        )],
+        rows: gpu_rows(),
     }
+}
+
+/// The GPU and the graphics in use, as About and Preferences show them
+/// (#3223).
+fn gpu_rows() -> Vec<(String, String)> {
+    let hw = crate::hardware::hardware();
+    vec![("Model".into(), hw.gpu), ("Driver".into(), hw.driver.unwrap_or_else(|| "(unknown)".into()))]
 }
 
 #[cfg(feature = "ai-ort")]
@@ -442,6 +415,19 @@ fn audio_section() -> ReportSection {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #3223: the probe's CPU and GPU are the reading About and
+    /// Preferences show.
+    #[test]
+    fn the_cpu_and_gpu_are_the_shared_reading() {
+        let hw = crate::hardware::hardware();
+        eprintln!("{hw:?}");
+        let row = |section: &ReportSection, key: &str| section.rows.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone());
+        assert_eq!(row(&cpu_section(), "CPU model"), Some(hw.cpu.clone()));
+        let gpu = gpu_section();
+        assert_eq!(row(&gpu, "Model"), Some(hw.gpu.clone()));
+        assert_eq!(row(&gpu, "Driver"), Some(hw.driver.clone().unwrap_or_else(|| "(unknown)".into())));
+    }
 
     #[test]
     fn report_text_has_all_sections() {

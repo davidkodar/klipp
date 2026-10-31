@@ -609,7 +609,8 @@ fn main() -> Result<()> {
                     let ctx = klipp_effects::gpu_context::GpuContext::from_existing(
                         std::sync::Arc::clone(&rs.device),
                         std::sync::Arc::clone(&rs.queue),
-                    );
+                    )
+                    .with_adapter_info(rs.adapter.get_info());
                     match klipp_effects::gpu_context::GpuContext::install_shared(ctx) {
                         Ok(()) => info!("GpuContext: installed eframe-wgpu device as shared"),
                         Err(_) => warn!(

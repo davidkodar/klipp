@@ -4599,99 +4599,18 @@ impl PreferencesPanel {
         // ── DETECTED HARDWARE section ──
         Self::section_header(ui, "DETECTED HARDWARE", theme);
 
-        // CPU
+        // CPU and GPU, read as About and the system probe read them (#3223).
+        let hw = crate::hardware::hardware();
         Self::setting_row(ui, "CPU", theme, |ui| {
-            let cpu_info = std::fs::read_to_string("/proc/cpuinfo").unwrap_or_default();
-            let model = cpu_info.lines()
-                .find(|l| l.starts_with("model name"))
-                .and_then(|l| l.split(':').nth(1))
-                .map(|s| s.trim().to_string())
-                // arm64 has no `model name`: Apple Silicon is named from
-                // the device tree.
-                .or_else(crate::soc_info::cpu_name)
-                .unwrap_or_else(|| "Unknown".into());
-            let display = crate::ui_util::elide(&model, 40);
-            ui.label(egui::RichText::new(display).color(theme.text_dim).size(11.0));
+            ui.label(egui::RichText::new(crate::ui_util::elide(&hw.cpu, 40)).color(theme.text_dim).size(11.0));
         });
-
-        // GPU — extract just the model name from lspci (e.g. "GeForce RTX 4080")
-        // GPU — model name + driver/CUDA info
-        {
-            let gpu_name = std::process::Command::new("sh")
-                .args(["-c", "lspci 2>/dev/null | grep -i 'vga\\|3d' | head -1 | sed 's/.*: //'"])
-                .output()
-                .ok()
-                .and_then(|o| String::from_utf8(o.stdout).ok())
-                .map(|s| {
-                    let s = s.trim().to_string();
-                    if let Some(start) = s.find('[') {
-                        if let Some(end) = s.find(']') {
-                            return s[start + 1..end].to_string();
-                        }
-                    }
-                    s
-                })
-                .filter(|s| !s.is_empty());
-            // A GPU on the chip (Apple Silicon) is no PCI device, so lspci
-            // has nothing: it is named from the device tree instead.
-            let soc_gpu = if gpu_name.is_none() { crate::soc_info::gpu() } else { None };
-            let gpu_name = gpu_name
-                .or_else(|| soc_gpu.as_ref().map(|g| g.name.clone()))
-                .unwrap_or_else(|| "Unknown".into());
-
-            // Detect driver + API info based on vendor
-            let driver_info = if gpu_name.to_lowercase().contains("nvidia") || gpu_name.to_lowercase().contains("geforce") || gpu_name.to_lowercase().contains("rtx") || gpu_name.to_lowercase().contains("gtx") {
-                // NVIDIA: get driver version + CUDA version
-                let driver = std::process::Command::new("sh")
-                    .args(["-c", "nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -1"])
-                    .output().ok()
-                    .and_then(|o| String::from_utf8(o.stdout).ok())
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| !s.is_empty());
-                let cuda = std::process::Command::new("sh")
-                    .args(["-c", "nvidia-smi 2>/dev/null | grep -oP 'CUDA Version: \\K[0-9.]+'"])
-                    .output().ok()
-                    .and_then(|o| String::from_utf8(o.stdout).ok())
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| !s.is_empty());
-                match (driver, cuda) {
-                    (Some(d), Some(c)) => format!("Driver {d}, CUDA {c}"),
-                    (Some(d), None) => format!("Driver {d}"),
-                    _ => String::new(),
-                }
-            } else if gpu_name.to_lowercase().contains("amd") || gpu_name.to_lowercase().contains("radeon") {
-                // AMD: check mesa/amdgpu driver
-                std::process::Command::new("sh")
-                    .args(["-c", "glxinfo 2>/dev/null | grep 'OpenGL version' | sed 's/.*: //' | head -1"])
-                    .output().ok()
-                    .and_then(|o| String::from_utf8(o.stdout).ok())
-                    .map(|s| format!("Mesa {}", s.trim()))
-                    .filter(|s| s.len() > 5)
-                    .unwrap_or_default()
-            } else if gpu_name.to_lowercase().contains("intel") {
-                // Intel: check mesa/i915 driver
-                std::process::Command::new("sh")
-                    .args(["-c", "glxinfo 2>/dev/null | grep 'OpenGL version' | sed 's/.*: //' | head -1"])
-                    .output().ok()
-                    .and_then(|o| String::from_utf8(o.stdout).ok())
-                    .map(|s| format!("Mesa {}", s.trim()))
-                    .filter(|s| s.len() > 5)
-                    .unwrap_or_default()
-            } else if let Some(gpu) = soc_gpu {
-                gpu.detail
-            } else {
-                String::new()
-            };
-
-            if driver_info.is_empty() {
-                Self::setting_row(ui, "GPU", theme, |ui| {
-                    ui.label(egui::RichText::new(&gpu_name).color(theme.text_dim).size(11.0));
-                });
-            } else {
-                Self::setting_row_with_subtitle(ui, "GPU", &driver_info, theme, |ui| {
-                    ui.label(egui::RichText::new(&gpu_name).color(theme.text_dim).size(11.0));
-                });
-            }
+        match &hw.driver {
+            Some(driver) => Self::setting_row_with_subtitle(ui, "GPU", driver, theme, |ui| {
+                ui.label(egui::RichText::new(&hw.gpu).color(theme.text_dim).size(11.0));
+            }),
+            None => Self::setting_row(ui, "GPU", theme, |ui| {
+                ui.label(egui::RichText::new(&hw.gpu).color(theme.text_dim).size(11.0));
+            }),
         }
 
         // Memory — show installed (rounded up to nearest power-of-2 stick size) + usable
@@ -5378,6 +5297,19 @@ mod layout_tests {
     /// rows.
     /// #1894: the Accounts page has the Freesound sign-in, whichever state
     /// the machine's keys put it in.
+    #[test]
+    fn the_about_page_shows_the_hardware_as_detected() {
+        // #3223: the same reading as About and the system probe.
+        let hw = crate::hardware::hardware();
+        let mut prefs = Preferences::default();
+        let d = tab(PrefsTab::About, &mut prefs);
+        let texts: Vec<&str> = d.texts.iter().map(|(s, _)| s.as_str()).collect();
+        let cpu = crate::ui_util::elide(&hw.cpu, 40);
+        for want in [Some(cpu.as_str()), Some(hw.gpu.as_str()), hw.driver.as_deref()].into_iter().flatten() {
+            assert!(texts.contains(&want), "Preferences doesn't show {want:?}: {texts:?}");
+        }
+    }
+
     #[test]
     fn the_accounts_page_has_the_freesound_sign_in() {
         let mut prefs = Preferences::default();
