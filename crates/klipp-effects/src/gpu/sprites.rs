@@ -106,6 +106,36 @@ impl GpuEffectsPipeline {
         true
     }
 
+    /// Layer `i` from a frozen track's frame (#3207): RGBA half floats, two
+    /// to a word as the frame store keeps them, linear in the working space
+    /// with straight alpha. Uploaded as they are, half the bytes of whole
+    /// floats and nothing widened on the CPU; widened here.
+    pub fn stack_layer_from_linear_f16(&mut self, i: usize, packed: &[u32]) -> bool {
+        if self.is_device_lost() || i >= self.stack_layers.len() {
+            return false;
+        }
+        let (width, height) = self.stack_dims;
+        let pixel_count = self.stack_pixel_count();
+        if packed.len() as u64 != pixel_count * 2 {
+            return false;
+        }
+        let layer = std::sync::Arc::clone(&self.stack_layers[i]);
+        let bytes = pixel_count * 8;
+        if self.stack_sprite_f16.as_ref().is_none_or(|b| b.size() < bytes) {
+            self.stack_sprite_f16 = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("stack_sprite_f16"),
+                size: bytes,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }));
+        }
+        let staged = self.stack_sprite_f16.as_ref().unwrap();
+        self.upload(staged, 0, bytemuck::cast_slice(packed));
+        self.write_params(&SpriteRowsParams { width, height, y0: 0, y1: height, to_working: self.authored_to_working });
+        self.stack_pass(&self.pipelines.frozen_from_f16_pipeline, staged, &layer, (width * height).div_ceil(WORKGROUP_SIZE), "stack_frozen_f16");
+        true
+    }
+
     pub fn stack_layer_from_srgb_u8(&mut self, i: usize, rgba: &[u8]) -> bool {
         let h = self.stack_dims.1;
         self.stack_layer_from_srgb_u8_rows(i, rgba, 0, h)
@@ -658,6 +688,7 @@ pub(super) const STACK_SPRITE_BYTES: u64 = 200 << 20;
 // u32, so it needs no f16 shader feature, and eight bytes a pixel
 // against the sixteen a linear f32 upload costs.
 pub(super) const SHADER_SPRITE_ROWS_F16: &str = gpu_shader!("title/sprite_rows_f16.wgsl");
+pub(super) const SHADER_FROZEN_FROM_F16: &str = gpu_shader!("layer/frozen_from_f16.wgsl");
 
 // A title's box of packed sRGB half floats into its place in a cleared
 // layer (#190): one invocation a box pixel.

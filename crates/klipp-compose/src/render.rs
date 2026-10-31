@@ -984,7 +984,7 @@ pub struct Renderer {
     /// Frozen tracks' layers for this frame, by track index (#3207): laid
     /// in the track's place, with its clip's opacity and blend mode and
     /// the track's opacity applied live, as a drawn layer's are.
-    frozen: HashMap<usize, Arc<Vec<f32>>>,
+    frozen: HashMap<usize, Arc<crate::freeze::FrozenLayer>>,
     /// What is below the clip the GPU stack is laying now (#2758): the
     /// composite so far, kept on the GPU for its run to read.
     stack_below: Option<klipp_effects::gpu::KeptPicture>,
@@ -1481,7 +1481,7 @@ impl Renderer {
     /// Lay `layers` (track index → a frozen frame, as
     /// [`Self::render_track_layer`] draws it) in their tracks' places in
     /// the frames rendered from now on, until set again (#3207).
-    pub fn set_frozen_layers(&mut self, layers: HashMap<usize, Arc<Vec<f32>>>) {
+    pub fn set_frozen_layers(&mut self, layers: HashMap<usize, Arc<crate::freeze::FrozenLayer>>) {
         self.frozen = layers;
     }
 
@@ -2262,8 +2262,27 @@ impl Renderer {
         let mut items: Vec<(&Track, Item)> = Vec::with_capacity(stack.len());
         let mut n_slots = 0usize;
         let mut sources: HashSet<ClipId> = HashSet::new();
+        // Frozen tracks' layers by the slot they fill (#3207): laid as they
+        // are, nothing of the live track drawn, so nothing it needs that
+        // the stack lacks declines the frame.
+        let mut frozen_slots: HashMap<usize, Arc<crate::freeze::FrozenLayer>> = HashMap::new();
         self.side_title_slots.clear();
-        for (_, track, item) in &stack {
+        for (index, track, item) in &stack {
+            if let Some(frozen) = self.frozen.get(index).cloned().filter(|_| self.capture.is_none()) {
+                match item {
+                    TrackItem::Clip(c) => {
+                        frozen_slots.insert(n_slots, frozen);
+                        items.push((track, Item::Clip { c, slot: n_slots }));
+                        n_slots += 1;
+                    }
+                    TrackItem::Transition { a, b, kind, progress, params, shutter } => {
+                        frozen_slots.insert(n_slots + 2, frozen);
+                        items.push((track, Item::Transition { a, b, kind: *kind, progress: *progress, params: *params, shutter: *shutter, slots: [n_slots, n_slots + 1, n_slots + 2] }));
+                        n_slots += 3;
+                    }
+                }
+                continue;
+            }
             match item {
                 TrackItem::Clip(c) => {
                     let _clip_residency = residency::clip(c.id.0);
@@ -2351,7 +2370,7 @@ impl Renderer {
         let scenes: Vec<(ClipId, Arc<Sequence>, Timecode)> = items
             .iter()
             .filter_map(|(_, item)| match item {
-                Item::Clip { c, .. } if matches!(c.kind, ClipKind::Precomposition { .. } | ClipKind::TemplatePrecomposition { .. }) => {
+                Item::Clip { c, slot } if !frozen_slots.contains_key(slot) && matches!(c.kind, ClipKind::Precomposition { .. } | ClipKind::TemplatePrecomposition { .. }) => {
                     c.precomp.clone().map(|scene| {
                         let at = precomposition_time(c, &scene, time, fps);
                         (c.id, scene, at)
@@ -2410,6 +2429,18 @@ impl Renderer {
         let mut slot_of_clip: HashMap<ClipId, usize> = HashMap::new();
         for (_, item) in &items {
             match item {
+                // A frozen layer (#3207): uploaded as it is, laid with its
+                // clip's opacity, as `place_layer` returns it for a drawn one.
+                Item::Clip { c, slot } if frozen_slots.contains_key(slot) => {
+                    if !self.executor.gpu_pipeline_or_init().is_some_and(|g| g.stack_layer_from_linear_f16(*slot, frozen_slots[slot].packed())) {
+                        return self.gpu_stack_declines("a frozen layer could not be uploaded");
+                    }
+                    let (_, opacity) = clip_effects(c, time, fps, transforms.get(&c.id).copied(), self.pins.get(&c.id).copied());
+                    let opacity = opacity * self.pin_presence.get(&c.id).copied().unwrap_or(1.0);
+                    placed.insert(*slot, Placed { opacity, rows: (0, height), held: None, split: reflection_split(c, time, fps, height, self.px_scale) });
+                    slot_of_clip.insert(c.id, *slot);
+                }
+                Item::Transition { slots, .. } if frozen_slots.contains_key(&slots[2]) => {}
                 Item::Clip { c, slot } => {
                     // One reading what is below it is laid as the stack
                     // reaches it, over what is there (#2758).
@@ -2466,6 +2497,9 @@ impl Renderer {
             // A transition's side is seen through its own matte before the
             // sides mix, as the CPU composite does (#718, #2668).
             if let Item::Transition { a, b, slots, .. } = item {
+                if frozen_slots.contains_key(&slots[2]) {
+                    continue;
+                }
                 for (side, slot) in [(a, slots[0]), (b, slots[1])] {
                     let Some(m) = self.matte_binding(side, time) else { continue };
                     let source = slot_of_clip.get(&m.source_clip_id).copied();
@@ -2505,6 +2539,14 @@ impl Renderer {
         // ── 2b. Each transition's sides mixed into its own buffer ──
         for (_, item) in &items {
             let Item::Transition { a, b, kind, progress, params, shutter, slots } = item else { continue };
+            // A frozen transition (#3207): its mix as it was frozen.
+            if let Some(frozen) = frozen_slots.get(&slots[2]) {
+                if !self.executor.gpu_pipeline_or_init().is_some_and(|g| g.stack_layer_from_linear_f16(slots[2], frozen.packed())) {
+                    return self.gpu_stack_declines("a frozen layer could not be uploaded");
+                }
+                placed.insert(slots[2], Placed { opacity: 1.0, rows: (0, height), held: None, split: None });
+                continue;
+            }
             let kind_id = klipp_core::spec_for_kind(*kind).kind_id as u32;
             let eased = if matches!(kind, klipp_core::TransitionKind::CrossDissolve) {
                 klipp_transitions::apply_easing(*progress, params.param0)
@@ -2569,8 +2611,11 @@ impl Renderer {
                     if opacity <= 0.001 && self.capture.is_none() {
                         continue;
                     }
-                    if let Err(why) = self.finish_placed(c, *slot, p.held.as_deref(), time, fps, width, height, &transforms, &mut stats) {
-                        return self.gpu_stack_declines(why);
+                    // A frozen layer is finished as it was frozen (#3207).
+                    if !frozen_slots.contains_key(slot) {
+                        if let Err(why) = self.finish_placed(c, *slot, p.held.as_deref(), time, fps, width, height, &transforms, &mut stats) {
+                            return self.gpu_stack_declines(why);
+                        }
                     }
                     // A captured layer (#3207) is laid as drawn: at full
                     // weight, Normal, every row, its opacity and blend left
@@ -4085,9 +4130,9 @@ impl Renderer {
                     TrackItem::Clip(c) => {
                         let (_, opacity) = clip_effects(c, time, fps, transforms.get(&c.id).copied(), self.pins.get(&c.id).copied());
                         let opacity = opacity * self.pin_presence.get(&c.id).copied().unwrap_or(1.0);
-                        Layer { pixels: (*frozen).clone(), opacity: opacity * track.opacity, blend: c.blend_mode, split: reflection_split(c, time, fps, height, self.px_scale) }
+                        Layer { pixels: frozen.to_linear(), opacity: opacity * track.opacity, blend: c.blend_mode, split: reflection_split(c, time, fps, height, self.px_scale) }
                     }
-                    TrackItem::Transition { .. } => Layer { pixels: (*frozen).clone(), opacity: track.opacity, blend: BlendMode::Normal, split: None },
+                    TrackItem::Transition { .. } => Layer { pixels: frozen.to_linear(), opacity: track.opacity, blend: BlendMode::Normal, split: None },
                 };
                 layers.push(Some(layer));
                 continue;

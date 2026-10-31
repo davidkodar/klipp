@@ -665,6 +665,7 @@ impl EffectPipelines {
         let alpha_form_pipeline = create_pipeline(&device, &pipeline_layout, "alpha_form", SHADER_ALPHA_FORM);
         let sprite_rows_pipeline = create_pipeline(&device, &pipeline_layout, "sprite_rows", SHADER_SPRITE_ROWS);
         let sprite_rows_f16_pipeline = create_pipeline(&device, &pipeline_layout, "sprite_rows_f16", SHADER_SPRITE_ROWS_F16);
+        let frozen_from_f16_pipeline = create_pipeline(&device, &pipeline_layout, "frozen_from_f16", SHADER_FROZEN_FROM_F16);
         let sprite_box_f16_pipeline = create_pipeline(&device, &pipeline_layout, "sprite_box_f16", SHADER_SPRITE_BOX_F16);
         let sprite_place_pipeline = create_pipeline(&device, &pipeline_layout, "sprite_place", SHADER_SPRITE_PLACE);
         let storage_entry = |binding: u32, read_only: bool| wgpu::BindGroupLayoutEntry {
@@ -850,6 +851,7 @@ impl EffectPipelines {
             alpha_form_pipeline,
             sprite_rows_pipeline,
             sprite_rows_f16_pipeline,
+            frozen_from_f16_pipeline,
             sprite_box_f16_pipeline,
             matte_extract_pipeline,
             mask_min_h_pipeline,

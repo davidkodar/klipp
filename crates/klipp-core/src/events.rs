@@ -1586,6 +1586,13 @@ pub enum AppCommand {
     /// `inject_panic`, test hooks only, #3181): `job`, `decoder`,
     /// `effect`, `mix`, `mix_thread` or `plugin`.
     InjectPanic { at: String },
+    /// Where frozen tracks' frames are stored (#3207): the project's cache
+    /// folder, `None` without a saved project. The engine reads frames
+    /// there; the app writes them.
+    SetFreezeFolder(Option<std::path::PathBuf>),
+    /// The tracks playback lays from their frozen frames where those are
+    /// current (#3207), by id; every other track is drawn live.
+    SetFrozenTracks(Vec<crate::TrackId>),
     /// Open the Colour workspace on video track `track_id`'s own grade
     /// (#1408): the layout only, never the document.
     GradeTrackInColour { track_id: TrackId },

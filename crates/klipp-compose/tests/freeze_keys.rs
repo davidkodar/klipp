@@ -244,3 +244,28 @@ fn an_edit_of_a_picture_truth_clips_picture_changes_its_keys() {
     most.tracks[0].clips[0].apply_picture_ops(&[GraphOp::SetMix { path, mix: Some(0.8) }]).unwrap();
     assert_eq!(changed(&before, &keys(&most, &[], &Env::default())), FIRST, "the picture-truth clip's mix");
 }
+
+/// On the render copy, a precomposition's key reads the scene laid in the
+/// clip: the engine, which has the render copy alone, and the freeze,
+/// which has the project's sequences too, key it alike; an edit of the
+/// scene still changes it.
+#[test]
+fn a_render_copys_precomposition_keys_alike_with_or_without_the_project() {
+    let scene = {
+        let mut s = Sequence::new_default();
+        s.tracks = vec![track("T1", TrackKind::Text, vec![title("Pre", 0.0, 4.0)])];
+        s
+    };
+    let mut seq = project();
+    seq.tracks[0].clips[0] = Clip::precomposition(scene.id, tc(0.0), tc(2.0));
+    let flat = klipp_timeline::flatten::flatten_sequence(&seq, &[seq.clone(), scene.clone()]);
+    let engine = keys(&flat, &[], &Env::default());
+    let freeze = keys(&flat, std::slice::from_ref(&scene), &Env::default());
+    assert_eq!(engine, freeze, "alike with or without the project's sequences");
+    let mut edited = scene.clone();
+    let id = edited.tracks[0].clips[0].id;
+    edited.tracks[0].clips[0] = title("Changed", 0.0, 4.0);
+    edited.tracks[0].clips[0].id = id;
+    let flat_edited = klipp_timeline::flatten::flatten_sequence(&seq, &[seq.clone(), edited]);
+    assert_eq!(changed(&engine, &keys(&flat_edited, &[], &Env::default())), FIRST, "the scene's edit");
+}

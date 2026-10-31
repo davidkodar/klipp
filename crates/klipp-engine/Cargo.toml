@@ -69,6 +69,10 @@ name = "all"
 path = "tests/all/main.rs"
 
 [[test]]
+name = "a_frozen_track_plays_from_its_frames"
+path = "tests/a_frozen_track_plays_from_its_frames.rs"
+
+[[test]]
 name = "stacked_stills_are_kept"
 path = "tests/stacked_stills_are_kept.rs"
 
