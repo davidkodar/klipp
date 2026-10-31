@@ -226,15 +226,15 @@ impl MixThread {
         )
     }
 
-    /// Number of samples currently sitting in the main ring buffer (the one
-    /// cpal pulls from). The engine polls this after a seek to know when the
-    /// pipeline has pre-filled enough to resume cpal without an underrun gap.
     /// Whether the thread has ended (#3181): stopped, or gone with a panic
     /// that got past the block it was mixing.
     pub fn is_finished(&self) -> bool {
         self.thread.as_ref().is_none_or(JoinHandle::is_finished)
     }
 
+    /// Number of samples currently sitting in the main ring buffer (the one
+    /// cpal pulls from). The engine polls this after a seek to know when the
+    /// pipeline has pre-filled enough to resume cpal without an underrun gap.
     pub fn buffered_samples(&self) -> usize {
         self.main_buffered.load(Ordering::Acquire)
     }
@@ -433,6 +433,8 @@ fn mix_loop(
     let mut stagings: Vec<StagingEntry> = Vec::new();
     // Per-track temporary buffer for reading from staging
     let chunk_samples = MIX_CHUNK_SAMPLES;
+    // A block's panic is said once a session, not once a block (#3181).
+    let mut said_block_panic = false;
     let mut drain_buf = vec![0.0f32; 8192];
     // Reused across loop iterations — the inner `Vec<f32>`s are resized to
     // `read_size` (never exceeds `chunk_samples`) before each pop_slice and
@@ -589,6 +591,9 @@ fn mix_loop(
         // routine. Holding the lock once across all three avoids
         // double-locking on the audio thread.
         let max_track_idx = lanes.iter().map(|(t, _)| *t).max().unwrap_or(0);
+        // What the mix would have made, for a block that panics: as long
+        // as the longest track's.
+        let block_len = lanes.iter().map(|&(_, i)| track_buffers[i].len()).max().unwrap_or(0);
         let mixed = {
             let mut m = lock_mixer(&mixer);
             // A panic in a block (an effect's, a plugin's) is that block's
@@ -649,8 +654,10 @@ fn mix_loop(
                 Ok(mixed) => mixed,
                 Err(_) => {
                     m.recover_after_panic();
-                    warn!("the audio mixer panicked in a block; it was set back, the block is silent, and it goes on");
-                    vec![0.0; chunk_samples]
+                    if !std::mem::replace(&mut said_block_panic, true) {
+                        warn!("the audio mixer panicked in a block; it was set back, the block is silent, and it goes on");
+                    }
+                    vec![0.0; block_len]
                 }
             }
         };
@@ -872,13 +879,13 @@ mod lock_tests {
     use super::lock_mixer;
     use ringbuf::traits::{Consumer, Producer, Split};
 
-    /// #3181, the mix thread's own case: a track's effects panic in the
-    /// middle of playback, inside the mix. That block is silent, the
+    /// #3181, the mix thread's own case: the mix panics, outside any
+    /// effects, in the middle of playback. That block is silent, the
     /// thread is still alive, and the next blocks reach the output with
     /// sound. The panic used to end the thread, and nothing started it
     /// again.
     #[test]
-    fn a_panicking_effect_mid_playback_leaves_the_mix_thread_playing() {
+    fn a_panic_in_the_mix_mid_playback_leaves_the_mix_thread_playing() {
         let mixer = std::sync::Arc::new(std::sync::Mutex::new(klipp_audio::mixer::AudioMixer::new(1)));
         let eq = klipp_core::AudioEffectInstance { effect_type: "eq".into(), enabled: true, wet_dry: 1.0, params: Vec::new() };
         {
@@ -905,9 +912,11 @@ mod lock_tests {
             loudest
         };
         assert!(play(300) > 0.1, "it plays");
-        lock_mixer(&mixer).panic_in_inserts = Some(0);
+        // Outside any effects: the block's own catch (a track's effects
+        // panicking are caught in the mix, klipp-audio's tests).
+        lock_mixer(&mixer).panic_in_mix = true;
         let after = play(400);
-        assert!(lock_mixer(&mixer).panic_in_inserts.is_none(), "the effects did panic");
+        assert!(!lock_mixer(&mixer).panic_in_mix, "the mix did panic");
         assert!(!mt.is_finished(), "the mix thread is alive");
         assert!(after > 0.1, "and sound goes on after the panic: {after}");
         // What the engine's backstop asks of a thread: ended, once it is.
