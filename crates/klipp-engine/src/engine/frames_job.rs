@@ -61,6 +61,32 @@ impl PlaybackEngine {
         Keying { media, environment: crate::freeze::environment(crate::video_decoder::working_colorspace(), self.use_proxies) }
     }
 
+    /// Whether the viewer shows the program frame, the one frames are
+    /// kept of: not a node soloed, one channel, a matte, the HDR picture,
+    /// the grade bypassed, a compare split, one clip measured alone, a
+    /// node's input sampled or its thumbnails drawn, nor a grade dragged
+    /// (each frame of the drag is new). Anything else is drawn live, as
+    /// the frame kept would show the program frame in its place. Also
+    /// while the inspector's matte tile is up, which reads each frame's
+    /// matte from its composite.
+    ///
+    /// Frames drawn ahead don't ask: they draw the program frame on their
+    /// own renderer, whatever the viewer shows.
+    pub(super) fn viewer_shows_program_frame(&self) -> bool {
+        !(self.in_node_param_edit
+            || self.solo.is_some()
+            || self.view_channel != klipp_core::ViewChannel::Picture
+            || self.matte_preview
+            || self.hdr_monitor.renders_hdr()
+            || self.bypass_color_grade
+            || self.compare_stabilization
+            || self.compare_effect_active
+            || self.measure_only_clip.is_some()
+            || self.node_sample.is_some()
+            || self.inspector_matte_preview_target.is_some()
+            || (self.state != super::PlaybackState::Playing && !self.visible_node_thumbs.is_empty()))
+    }
+
     /// The whole frame at `time` at `size`, when it is kept under its key:
     /// read ahead while playing. `None` with nothing kept, or turned off.
     pub(super) fn kept_frame(&mut self, seq: &Sequence, time: Timecode, size: (u32, u32)) -> Option<Arc<Vec<f32>>> {

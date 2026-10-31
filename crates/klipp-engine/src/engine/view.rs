@@ -1323,7 +1323,7 @@ impl PlaybackEngine {
         // A whole frame drawn ahead under its key (#3212): shown as it is,
         // nothing decoded or composed. Its key covers everything in it, so
         // a frame kept is current exactly as long as what it shows.
-        if !(progress || stack_only || previewing || self.measure_only_clip.is_some()) {
+        if !(progress || stack_only || previewing) && self.viewer_shows_program_frame() {
             if let Some(pixels) = self.kept_frame(&seq, self.playhead, (w, h)) {
                 super::FRAMES_SHOWN_KEPT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 self.show_rendered(Rendered { picture: Picture::Linear(pixels.as_ref().clone()), width: w, height: h, stats: None }, t_frame);

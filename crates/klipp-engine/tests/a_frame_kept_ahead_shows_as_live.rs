@@ -101,6 +101,10 @@ fn a_frame_kept_ahead_shows_as_the_live_frame() {
 
 mod common;
 
+/// The engine tests one at a time: frames shown from the cache are
+/// counted for the whole process.
+static ONE_ENGINE: Mutex<()> = Mutex::new(());
+
 /// A 4:4:4 FFV1 source, so no chroma is upsampled on the way: playback's
 /// decoder and the export's, which the frame cache draws with, upsample
 /// 4:2:0 chroma apart at hard colour edges.
@@ -120,6 +124,7 @@ fn source_444() -> Option<std::path::PathBuf> {
 /// live there within two levels.
 #[test]
 fn the_engine_shows_a_rendered_range_from_the_cache() {
+    let _one = ONE_ENGINE.lock().unwrap_or_else(|e| e.into_inner());
     let Some(src) = source_444() else {
         eprintln!("skipping: no ffmpeg");
         return;
@@ -157,5 +162,80 @@ fn the_engine_shows_a_rendered_range_from_the_cache() {
     // GPU, a kept one by the CPU's encoder; the frame itself keeps within
     // one level (`a_frame_kept_ahead_shows_as_the_live_frame`).
     assert!(worst <= 2, "{worst} levels from live");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// A frame kept ahead gives way to every view that isn't the program
+/// frame: with the range rendered and each view on, a parked frame is
+/// drawn live, not taken from the cache. With each view off again the
+/// kept frame is shown, so the cache was there to take.
+#[test]
+fn a_kept_frame_gives_way_to_every_other_view() {
+    let _one = ONE_ENGINE.lock().unwrap_or_else(|e| e.into_inner());
+    use klipp_core::AppCommand as C;
+    let Some(src) = source_444() else {
+        eprintln!("skipping: no ffmpeg");
+        return;
+    };
+    let p = common::Parked::start(src, W, H);
+    let root = std::env::temp_dir().join(format!("klipp-kept-views-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    p.send(C::SetFreezeFolder(Some(root.clone())));
+    let at = |f: i64| common::frame_tc(f, p.fps);
+    let park = |f: i64| {
+        let g = p.generation();
+        p.send(C::SeekTo(at(f)));
+        p.settle_after(g, std::time::Duration::from_secs(10));
+    };
+    park(6);
+    p.send(C::RenderRange { from: at(0), to: at(12) });
+    let store = klipp_engine::cache_store::shared_at(&root, 1 << 30);
+    let started = std::time::Instant::now();
+    while store.lock().unwrap().frames(NAMESPACE).len() < 12 {
+        assert!(started.elapsed() < std::time::Duration::from_secs(60), "the range was rendered");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let (clip, node) = (p.clip_id, p.exposure_node);
+    let node_at = || klipp_compose::inspect::grade_node(clip, node);
+    let views: Vec<(&str, Vec<C>, Vec<C>)> = vec![
+        ("a grade dragged", vec![C::BeginNodeParamEdit { clip_id: clip }], vec![C::EndNodeParamEdit { clip_id: clip }]),
+        ("a node soloed", vec![C::SetNodeSolo { at: Some(node_at()) }], vec![C::SetNodeSolo { at: None }]),
+        ("the alpha channel", vec![C::SetViewChannel { channel: klipp_core::ViewChannel::Alpha }], vec![C::SetViewChannel { channel: klipp_core::ViewChannel::Picture }]),
+        ("the matte", vec![C::SetMattePreview(true)], vec![C::SetMattePreview(false)]),
+        ("the HDR picture", vec![C::SetHdrMonitor(klipp_core::HdrMonitor::Preview)], vec![C::SetHdrMonitor(klipp_core::HdrMonitor::Off)]),
+        ("before the grade", vec![C::ToggleBeforeAfter], vec![C::ToggleBeforeAfter]),
+        ("the stabilisation split", vec![C::ToggleStabilizationCompare], vec![C::ToggleStabilizationCompare]),
+        ("a node's split", vec![C::SetSplitCompareNode { clip_id: Some(clip), path: Some(node_at().path) }], vec![C::SetSplitCompareNode { clip_id: None, path: None }]),
+        ("one clip measured", vec![C::SetMeasureOnlyClip(Some(clip))], vec![C::SetMeasureOnlyClip(None)]),
+        ("the inspector's matte tile", vec![C::SetInspectorMattePreviewTarget(Some(clip))], vec![C::SetInspectorMattePreviewTarget(None)]),
+        ("node thumbnails", vec![C::SetVisibleNodeThumbs { request: 1, clip_id: clip, at: vec![node_at()] }], vec![C::SetVisibleNodeThumbs { request: 2, clip_id: clip, at: vec![] }]),
+    ];
+    let mut frame = 5;
+    for (name, on, off) in views {
+        for c in on {
+            p.send(c);
+        }
+        let before = klipp_engine::frames_shown_kept();
+        park(frame);
+        frame = 11 - frame;
+        let shown = klipp_engine::frames_shown_kept() - before;
+        for c in off {
+            p.send(c);
+        }
+        // Off again, after what turning it off redraws: the kept frame.
+        let before = klipp_engine::frames_shown_kept();
+        park(frame);
+        frame = 11 - frame;
+        let back = klipp_engine::frames_shown_kept() - before;
+        eprintln!("MEASURE {name}: {shown} frames from the cache while on, {back} once off");
+        assert_eq!(shown, 0, "{name}: drawn live, not the kept frame");
+        assert!(back >= 1, "{name} off: the kept frame is shown again");
+    }
+    // A node's input sampled: the frame the sample asks for is drawn live.
+    let before = klipp_engine::frames_shown_kept();
+    let g = p.generation();
+    p.send(C::SampleNodeInput { clip_id: clip, node_id: node, at: node_at().path, nx: 0.5, ny: 0.5 });
+    p.settle_after(g, std::time::Duration::from_secs(10));
+    assert_eq!(klipp_engine::frames_shown_kept() - before, 0, "a node's input sampled: drawn live");
     let _ = std::fs::remove_dir_all(&root);
 }
