@@ -305,6 +305,71 @@ pub(crate) fn respond(
             Ok(v)
         }
 
+        ControlCommand::Spelling { action, word } => {
+            let action = action.as_deref().map(str::trim).unwrap_or("list").to_lowercase();
+            let word = || word.as_deref().map(str::trim).filter(|w| !w.is_empty()).ok_or_else(|| format!("spelling {action} needs the word"));
+            match action.as_str() {
+                "list" => {
+                    if in_batch {
+                        return read_in_batch("spelling");
+                    }
+                    let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+                    let pool = ctx.media_pool.read().recovered();
+                    let report = spelling_of(&seq, &pool, klipp_spelling::MAX_SUGGESTIONS);
+                    const SHOWN: usize = 200;
+                    let words: Vec<serde_json::Value> = report.misspellings.iter().take(SHOWN).map(|m| json!({
+                        "word": m.word,
+                        "clip_id": m.clip_id.0.to_string(),
+                        "track": m.track,
+                        "object": m.object.0,
+                        "start": m.start,
+                        "end": m.end,
+                        "at_secs": m.at_secs,
+                        "language": m.language,
+                        "suggestions": m.suggestions,
+                    })).collect();
+                    let n = report.misspellings.len();
+                    let mut v = json!({
+                        "misspellings": words,
+                        "missing": report.missing.iter().map(|m| m.say()).collect::<Vec<_>>(),
+                        "text": match n {
+                            0 => "no word in the titles or captions is marked".to_string(),
+                            1 => "1 word marked".to_string(),
+                            n => format!("{n} words marked"),
+                        },
+                    });
+                    if n > SHOWN {
+                        v["more"] = json!(n - SHOWN);
+                    }
+                    Ok(v)
+                }
+                "ignore" => {
+                    if in_batch {
+                        return Err("spelling ignore is its own undo step; send it on its own".into());
+                    }
+                    let word = word()?;
+                    if !klipp_spelling::personal::is_word(word) {
+                        return Err(format!("{word:?} is not one word"));
+                    }
+                    let mut brief = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?.brief.clone().unwrap_or_default();
+                    if klipp_spelling::Known::new(Some(&brief), []).contains(word) {
+                        return Ok(json!({ "text": format!("{word:?} is already taken as right in this project"), "changed": false }));
+                    }
+                    brief.vocabulary.push(word.to_string());
+                    let mut v = handle(ctx, ControlCommand::SetBrief { brief }, &mut None)?;
+                    v["text"] = json!(format!("{word:?} is taken as right in this project: it is on the brief's vocabulary"));
+                    Ok(v)
+                }
+                "learn" => {
+                    let word = word()?;
+                    let path = klipp_spelling::personal::default_path().ok_or("there is no config folder to keep the word list in")?;
+                    klipp_spelling::personal::learn(&path, word)?;
+                    Ok(json!({ "text": format!("{word:?} is on your word list, for every project"), "changed": false }))
+                }
+                other => Err(format!("spelling action {other:?}: give list, ignore or learn")),
+            }
+        }
+
         ControlCommand::SetBrief { mut brief } => {
             if in_batch {
                 return Err("set_brief is its own undo step; send it on its own".into());
@@ -368,6 +433,7 @@ pub(crate) fn respond(
                 let mut report = klipp_document::qc::check(&seq, &pool, &AnalysedTranscripts);
                 let lut = ctx.shared.project.lock().recovered().global_lut.clone();
                 klipp_document::qc::note_missing_global_lut(&mut report, lut.as_deref());
+                note_spelling(&mut report, &seq, &pool);
                 // What an 8-bit export renders, frozen here and sampled
                 // once the locks are let go (#2074).
                 let banding_snapshot = klipp_render::SequenceSnapshot::from_sequence(
@@ -928,6 +994,63 @@ fn note_loudness_drops(report: &mut klipp_document::qc::Report, seq: &klipp_time
     }
     // The worst first, then by time, as the check orders the rest.
     report.findings.sort_by(|a, b| a.severity.cmp(&b.severity).then(a.at_secs.unwrap_or(-1.0).total_cmp(&b.at_secs.unwrap_or(-1.0))));
+}
+
+/// The words a project takes as right (#3236): the brief's vocabulary
+/// and cast, its media's file names, the brand kits' names, and the
+/// person's own list.
+fn known_words(seq: &klipp_timeline::Sequence, pool: &klipp_media::MediaPool) -> klipp_spelling::Known {
+    let kits: Vec<String> = klipp_project::brand_kit::list(klipp_timeline::template_places::data_root().as_deref()).into_iter().map(|f| f.kit.name).collect();
+    let personal = klipp_spelling::personal::default_path().map(|p| klipp_spelling::personal::read(&p)).unwrap_or_default();
+    let files: Vec<String> = pool.all().map(|m| m.filename.clone()).collect();
+    klipp_spelling::Known::new(seq.brief.as_ref(), files.iter().chain(&kits).chain(&personal).map(String::as_str))
+}
+
+/// The sequence's spelling, against the system's dictionaries.
+fn spelling_of(seq: &klipp_timeline::Sequence, pool: &klipp_media::MediaPool, suggestions: usize) -> klipp_spelling::Report {
+    klipp_spelling::check_sequence(seq, &known_words(seq, pool), klipp_spelling::Dictionaries::shared(), &klipp_spelling::system_language(), suggestions)
+}
+
+/// The check's spelling findings (#3236): a warning for each word marked,
+/// once however often it is written, at its first place, the first 20;
+/// a note for each language with no dictionary.
+fn note_spelling(report: &mut klipp_document::qc::Report, seq: &klipp_timeline::Sequence, pool: &klipp_media::MediaPool) {
+    const LISTED: usize = 20;
+    let spelling = spelling_of(seq, pool, 1);
+    let mut seen: Vec<(&str, usize)> = Vec::new();
+    for m in &spelling.misspellings {
+        match seen.iter_mut().find(|(w, _)| *w == m.word) {
+            Some(s) => s.1 += 1,
+            None => seen.push((&m.word, 1)),
+        }
+    }
+    for (word, times) in seen.iter().take(LISTED) {
+        let m = spelling.misspellings.iter().find(|m| m.word == *word).expect("a word seen");
+        let more = if *times > 1 { format!(", {times} times") } else { String::new() };
+        report.findings.push(klipp_document::qc::Finding {
+            severity: klipp_document::qc::Severity::Warning,
+            rule: "spelling",
+            at_secs: Some(m.at_secs),
+            what: format!("{} is not a word the {} dictionary knows{more}", quoted(word), m.language),
+            hint: match m.suggestions.first() {
+                Some(s) => format!("Perhaps {}; if it is right, spelling ignore takes it for this project", quoted(s)),
+                None => "If it is right, spelling ignore takes it for this project".into(),
+            },
+        });
+        report.warnings += 1;
+    }
+    if seen.len() > LISTED {
+        report.findings.push(klipp_document::qc::Finding {
+            severity: klipp_document::qc::Severity::Note,
+            rule: "spelling",
+            at_secs: None,
+            what: format!("{} more words are marked", seen.len() - LISTED),
+            hint: "spelling lists them all".into(),
+        });
+    }
+    for missing in &spelling.missing {
+        report.findings.push(klipp_document::qc::Finding { severity: klipp_document::qc::Severity::Note, rule: "spelling_unchecked", at_secs: None, what: missing.say(), hint: "Its titles were not checked".into() });
+    }
 }
 
 /// The role a file's sound plays across the clips that play it (#1907).

@@ -917,6 +917,7 @@ fn handle(
             | ControlCommand::SetBrief { .. }
             | ControlCommand::ApplyBrandKit { .. }
             | ControlCommand::Check { .. }
+            | ControlCommand::Spelling { .. }
             | ControlCommand::ReviewFinding { .. }
             | ControlCommand::Batch { .. }
             | ControlCommand::Undo

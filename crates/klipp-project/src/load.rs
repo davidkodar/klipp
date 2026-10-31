@@ -1451,6 +1451,7 @@ fn load_clip_kind(c: &ClipJson, project_dir: &Path) -> ClipKind {
                     features: Vec::new(),
                     font_weight: None,
                     font_axes: Vec::new(),
+                    language: None,
                 };
                 let mut td = klipp_timeline::TitleData::single_text(tb);
                 if let Some(obj) = td.objects.first_mut() {

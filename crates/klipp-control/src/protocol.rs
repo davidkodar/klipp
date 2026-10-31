@@ -1868,6 +1868,19 @@ pub enum ControlCommand {
         #[serde(default)]
         min_severity: Option<String>,
     },
+    /// Spelling in the titles and captions (#3236). `list` (the default)
+    /// gives each word no dictionary and no project word knows, with
+    /// where it is, the language it was checked in and up to five
+    /// suggestions, and the languages with no dictionary. `ignore` takes
+    /// `word` as right in this project: it goes on the brief's vocabulary,
+    /// one undo step. `learn` adds it to the person's own word list, for
+    /// every project.
+    Spelling {
+        #[serde(default)]
+        action: Option<String>,
+        #[serde(default)]
+        word: Option<String>,
+    },
     /// Save a decision about one of check's findings, by the id check
     /// gave it (#1932): `accepted` keeps it on purpose and needs a
     /// `rationale`, `to_fix` notes it, `clear` takes the decision back.

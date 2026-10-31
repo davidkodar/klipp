@@ -343,6 +343,11 @@ pub struct Typeset {
     /// one box round the whole text. Needs a backing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub backing_lines: Option<BackingLinesSpec>,
+    /// The language the text is written in (#3236), a tag such as `de`
+    /// or `en-GB`, which its spelling is checked in; `""` takes its
+    /// track's or the brief's again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
 }
 
 /// `backing_lines`: on or off, or the boxes' shape.
@@ -12253,6 +12258,8 @@ struct Typesetting {
     protect: Option<klipp_timeline::ContrastProtect>,
     /// The backing per line (#3237): `Some(None)` one box round the text.
     backing_lines: Option<Option<klipp_timeline::LineBoxes>>,
+    /// The text's language (#3236): `Some(None)` its track's again.
+    language: Option<Option<String>>,
 }
 
 /// A [`MaterialSpec`] checked: a preset to start from (else the text's
@@ -13179,7 +13186,32 @@ fn typesetting(t: &Typeset, i: usize) -> Result<Typesetting, Refusal> {
         material: t.material.as_ref().map(|m| material_ask(m, i)).transpose()?,
         protect: t.protect,
         backing_lines: t.backing_lines.as_ref().map(|b| line_boxes(b, i)).transpose()?,
+        language: t.language.as_deref().map(|l| language_tag(l, i)).transpose()?,
     })
+}
+
+/// A text's language as asked (#3236): a tag of two or three letters and
+/// an optional two-letter region (`de`, `en-GB`, `pt_BR`), or empty for
+/// none of its own.
+fn language_tag(l: &str, i: usize) -> Result<Option<String>, Refusal> {
+    let l = l.trim();
+    if l.is_empty() {
+        return Ok(None);
+    }
+    let mut parts = l.split(['-', '_']);
+    let lang = parts.next().unwrap_or("");
+    let region = parts.next();
+    let ok = (2..=3).contains(&lang.len())
+        && lang.chars().all(|c| c.is_ascii_alphabetic())
+        && region.is_none_or(|r| r.len() == 2 && r.chars().all(|c| c.is_ascii_alphabetic()))
+        && parts.next().is_none();
+    if !ok {
+        return Err(refuse(i, format!("language {}", quoted(l)), "give a language tag such as de, sv or en-GB"));
+    }
+    Ok(Some(match region {
+        Some(r) => format!("{}-{}", lang.to_ascii_lowercase(), r.to_ascii_uppercase()),
+        None => lang.to_ascii_lowercase(),
+    }))
 }
 
 /// A backing's per-line boxes as asked (#3237): each size inside its
@@ -13302,6 +13334,9 @@ fn set_type(tb: &mut klipp_timeline::TextBox, t: &Typesetting) -> Result<(), Str
     }
     if let Some(u) = t.underline {
         tb.underline = u;
+    }
+    if let Some(l) = &t.language {
+        tb.language = l.clone();
     }
     Ok(())
 }
@@ -14694,6 +14729,32 @@ mod tests {
         assert!(matches!(&darker.background, klipp_timeline::TitleBackground::Color { lines: Some(_), .. }), "darker, still per line");
         let whole = restyle(&per_line, &look(serde_json::json!({ "typeset": { "backing_lines": false } })), 2.0).unwrap();
         assert!(matches!(&whole.background, klipp_timeline::TitleBackground::Color { lines: None, .. }), "one box again");
+    }
+
+    /// #3236: a title's text takes the language asked, as a tag in its
+    /// usual case; a restyle sets it or, with "", gives it back to the
+    /// track; what is not a tag is refused.
+    #[test]
+    fn a_titles_language_is_set_as_asked() {
+        let (seq, pool, ..) = fixture();
+        let title = |language: &str| {
+            let op: Op = serde_json::from_value(serde_json::json!({ "op": "title", "text": "Guten Morgen", "at": { "secs": 1.0 }, "secs": 2.0, "language": language })).unwrap();
+            resolve(&seq, &pool, &[op]).map(|plan| {
+                let EditCommand::AddTitleClip { clip, .. } = &plan.steps[0].edit else { panic!("a title clip") };
+                clip.title_data().unwrap().clone()
+            })
+        };
+        let td = title("de_at").unwrap();
+        assert_eq!(td.primary_text().unwrap().language.as_deref(), Some("de-AT"));
+        for bad in ["../en", "english", "en-GBR", "e"] {
+            let r = title(bad).unwrap_err();
+            assert!(r.why.contains("language") && r.hint.contains("en-GB"), "{bad}: {} / {}", r.why, r.hint);
+        }
+        let look = |language: &str| Look { typeset: typesetting(&serde_json::from_value(serde_json::json!({ "language": language })).unwrap(), 0).unwrap(), ..Default::default() };
+        let sv = restyle(&td, &look("sv"), 2.0).unwrap();
+        assert_eq!(sv.primary_text().unwrap().language.as_deref(), Some("sv"));
+        let back = restyle(&sv, &look(""), 2.0).unwrap();
+        assert_eq!(back.primary_text().unwrap().language, None, "its track's again");
     }
 
     /// #2734: a built-in template is laid out for the sequence's frame: on

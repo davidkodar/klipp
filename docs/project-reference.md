@@ -258,6 +258,12 @@ See [docs/src/ai-tools/models.md](../docs/src/ai-tools/models.md) for the full p
 
 ## Bundled Assets & Third-Party Credits
 
+### Spell checking
+
+- **spellbook** 0.4.2 by Michael Davis ([helix-editor/spellbook](https://github.com/helix-editor/spellbook)) — the Hunspell-compatible checker, vendored as `crates/klipp-spell` without its `unsafe` code. Licensed under **MPL-2.0**: every file under `crates/klipp-spell/src` (and its `build.rs` and `tests/legacy.rs`) carries the MPL notice, and the licence text is `crates/klipp-spell/LICENSE`. Klipp as a whole stays GPL-3.0-only; MPL-2.0 allows these files to be combined with it.
+- **Hunspell's test cases** — `crates/klipp-spell/tests/legacy`, from [Hunspell](https://github.com/hunspell/hunspell) by way of spellbook 0.4.2, used under Hunspell's **GPL-2.0-or-later** option (see that folder's `README.md`). Test data only; not in any build Klipp ships.
+- Klipp ships no dictionaries: it reads the Hunspell dictionaries installed on the system, each under its own licence.
+
 ### Update checking
 
 - **ureq** — HTTPS client, licensed under MIT or Apache-2.0.

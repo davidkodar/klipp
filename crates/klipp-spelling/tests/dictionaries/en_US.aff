@@ -1,0 +1,11 @@
+# A small English dictionary for Klipp's spelling tests (#3236),
+# written for them.
+SET UTF-8
+TRY esianrtolcdugmphbyfvkwzESIANRTOLCDUGMPHBYFVKWZ'
+WORDCHARS '
+REP 2
+REP teh the
+REP recieve receive
+
+SFX S Y 1
+SFX S 0 s .
