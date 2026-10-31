@@ -14572,6 +14572,70 @@ mod tests {
         assert!(tall < klipp_timeline::title_library::TALL_BAND_TOP - 0.05 && tall < wide, "up out of the band on 9:16: {tall} (16:9 {wide})");
     }
 
+    /// #2561: the Label template's box follows its text. Restyled right
+    /// aligned at the frame's right, or centred with a label of 35
+    /// characters, the box stayed where it was drawn and the text ran out
+    /// of it; the box is now fitted round the text, padded on every side.
+    /// Handle's and Subscribe's boxes, each round one text, likewise.
+    #[test]
+    fn the_label_templates_box_follows_its_text() {
+        let (seq, pool, ..) = fixture();
+        let placed = |template: &str, field: &str, text: &str| {
+            let data = klipp_timeline::title_library::builtin(template).map(|t| Box::new(t.data()));
+            let op = Op::Template { name: template.into(), at: Anchor::Secs(1.0), secs: Some(3.0), track: None, fields: serde_json::from_value(serde_json::json!({ field: text })).unwrap(), source: None, kind: None, data, composition: None };
+            let plan = resolve(&seq, &pool, &[op]).unwrap();
+            let EditCommand::AddTitleClip { clip, .. } = &plan.steps[0].edit else { panic!("a title clip") };
+            clip.title_data().unwrap().clone()
+        };
+        let label = |text: &str| placed("Label", "Label", text);
+        // The text's ink's and the box's extents, in pixels: x0, x1, y0,
+        // y1, each found by its own colour.
+        let extents = |td: &klipp_timeline::TitleData| {
+            let (w, h) = (1920u32, 1080u32);
+            let px = klipp_title::TitleRenderer::new().render(td, w, h);
+            let colour = |want: fn(&klipp_timeline::TitleObjectContent) -> Option<[u8; 4]>| td.objects.iter().find_map(|o| want(&o.content)).expect("the layer");
+            let ink = colour(|c| match c { klipp_timeline::TitleObjectContent::TextBox(tb) => Some(tb.color), _ => None });
+            let fill = colour(|c| match c { klipp_timeline::TitleObjectContent::Shape(s) => s.fill, _ => None });
+            let near = |p: &[u8], c: [u8; 4]| (0..3).all(|k| (p[k] as i32 - c[k] as i32).abs() < 40);
+            let (mut text, mut boxed) = ([i32::MAX, i32::MIN, i32::MAX, i32::MIN], [i32::MAX, i32::MIN, i32::MAX, i32::MIN]);
+            let grow = |e: &mut [i32; 4], x: i32, y: i32| *e = [e[0].min(x), e[1].max(x), e[2].min(y), e[3].max(y)];
+            for y in 0..h as i32 {
+                for x in 0..w as i32 {
+                    let i = ((y as u32 * w + x as u32) * 4) as usize;
+                    let p = &px[i..i + 4];
+                    if p[3] > 128 && near(p, ink) {
+                        grow(&mut text, x, y);
+                    } else if p[3] > 100 && near(p, fill) {
+                        grow(&mut boxed, x, y);
+                    }
+                }
+            }
+            (text, boxed)
+        };
+        let right = Look { align: Some(klipp_timeline::TextAlignment::Right), x: Some(0.975), ..Default::default() };
+        let centre = Look { align: Some(klipp_timeline::TextAlignment::Center), ..Default::default() };
+        let mid = Look { align: Some(klipp_timeline::TextAlignment::Center), x: Some(0.5), ..Default::default() };
+        let long = "A label of thirty-five characters!!";
+        for (name, td) in [
+            ("as placed", label("Breaking")),
+            ("right at x 0.975", restyle(&label("Breaking"), &right, 3.0).unwrap()),
+            // Centred where the label sits, near the left, the text runs
+            // off the frame's left edge, and the box with it.
+            ("centred, 35 characters", restyle(&label(long), &centre, 3.0).unwrap()),
+            ("centred mid-frame, 35 characters", restyle(&label(long), &mid, 3.0).unwrap()),
+            // The two other boxes drawn round one text, at a long text.
+            ("Handle, long", placed("Handle", "Handle", "@a.much.longer.handle.than.drawn")),
+            ("Subscribe, long", placed("Subscribe", "Button", "Subscribe and turn on the bell")),
+        ] {
+            let (text, boxed) = extents(&td);
+            assert!(text[0] < text[1] && boxed[0] < boxed[1], "{name}: text {text:?} and box {boxed:?} drawn");
+            let margins = [text[0] - boxed[0], boxed[1] - text[1], text[2] - boxed[2], boxed[3] - text[3]];
+            eprintln!("{name}: text {text:?}, box {boxed:?}, margins {margins:?}");
+            let at_edge = [text[0] == 0 && boxed[0] == 0, text[1] == 1919 && boxed[1] == 1919, false, false];
+            assert!(margins.iter().zip(at_edge).all(|(&m, edge)| m >= 12 || edge), "{name}: the text inside its box with room on every side (or both at the frame's edge): margins left, right, top, bottom {margins:?}");
+        }
+    }
+
     /// #2757: a template with a Duration placed for twice the time it
     /// was made over lays its motion over that time; a Duration given
     /// in fields wins.
