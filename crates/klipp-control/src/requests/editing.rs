@@ -536,6 +536,16 @@ pub(crate) fn respond(
             }
         }
 
+        ControlCommand::SetPlaybackQuality { quality } => {
+            let q = match quality.trim().to_ascii_lowercase().as_str() {
+                "full" => klipp_core::PlaybackQuality::Full,
+                "half" => klipp_core::PlaybackQuality::Half,
+                "quarter" => klipp_core::PlaybackQuality::Quarter,
+                other => return Err(format!("{other:?} is no playback quality: give full, half or quarter")),
+            };
+            send(AppCommand::SetPlaybackQuality(q))
+        }
+
         ControlCommand::ClearFrozen { frames, sound } => {
             let (frames, sound) = (frames != Some(false), sound != Some(false));
             if !frames && !sound {

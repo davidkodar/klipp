@@ -5039,3 +5039,20 @@ fn clear_frozen_asks_the_app_to_clear_what_it_names() {
     assert!(refused["error"].as_str().unwrap_or("").contains("nothing to clear"), "{refused}");
     assert_eq!(cleared(&h).len(), 2);
 }
+
+/// #3234: `set_playback_quality` asks the app for the size named, and
+/// refuses a word that is none; `perf` carries a diagnosis.
+#[test]
+fn playback_quality_is_set_by_name_and_perf_says_why() {
+    let mut h = harness();
+    h.ok(json!({ "method": "set_playback_quality", "quality": "Half" }));
+    let set: Vec<_> = h.sent.lock().unwrap().iter().filter_map(|c| match c {
+        klipp_core::AppCommand::SetPlaybackQuality(q) => Some(*q),
+        _ => None,
+    }).collect();
+    assert_eq!(set, vec![klipp_core::PlaybackQuality::Half]);
+    let refused = h.call(json!({ "method": "set_playback_quality", "quality": "tiny" }));
+    assert!(refused["error"].as_str().unwrap_or("").contains("full, half or quarter"), "{refused}");
+    let perf = h.ok(json!({ "method": "perf" }));
+    assert!(perf["diagnosis"]["cause"].as_str().is_some_and(|c| c.contains("not enough playback")), "{perf}");
+}

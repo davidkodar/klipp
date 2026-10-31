@@ -1997,6 +1997,9 @@ pub enum AppCommand {
     /// The open project's frozen frames and/or frozen sound cleared
     /// (#3207): their tracks played live again, one undo step.
     ClearFrozenCache { frames: bool, sound: bool },
+    /// The size frames are drawn at while playing (#3234), saved as the
+    /// preference, as its control in Preferences sets it.
+    SetPlaybackQuality(crate::PlaybackQuality),
     /// Scan cache directories and remove files not referenced by any media in the pool.
     CleanOrphanedCaches,
     /// Cache Manager (feature #78): clear a single cache category by wiping

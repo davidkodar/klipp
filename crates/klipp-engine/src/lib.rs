@@ -67,6 +67,7 @@ pub use klipp_timeline::canonical_hash;
 pub mod cache_store;
 pub mod freeze;
 pub mod track_cost;
+pub mod playback_health;
 pub mod node_thumbnails;
 pub mod audio_decoder;
 pub mod audio_input;

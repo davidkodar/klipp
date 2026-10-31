@@ -85,6 +85,14 @@ Read the latest known outcome of a queued write by its operation_id. Reports wai
 
 Frame timings: decode, grade, composite, total, drops, plus GPU->CPU readback counters, and presented_fps, the pictures shown per second over the last 2 s: it falls to null within 2 s of a pause, and stepping or scrubbing reads as a small rate. Use it to tell whether a change actually made playback faster.
 
+`diagnosis` answers "why is playback choppy?". Over the last ten seconds played at 1x, `health.dropping` is the share of frames not shown, and `health.sustained` is whether that is steady trouble (over 5 %, most seconds) rather than one hiccup. With trouble, `cause` says why in words with what was measured, and `fix` is the one that fits:
+- `freeze_track` names a track taking most of the frame (by GPU timestamps, or where the device has none, its frame drawn alone once, "measured once"): set_track frozen through klipp_apply.
+- `make_proxies` lists files whose decoding can't keep up: make proxies for them.
+- `use_proxies`: proxies exist but aren't played.
+- `playback_quality` gives a smaller size: klipp_set_playback_quality.
+
+Nothing is done for the person: ask before acting, since freezing costs disk and time and changes what is live. Without ten seconds of playback it says so.
+
 `picture_fallbacks` reports cumulative counts by feature and the latest viewer
 frame's timeline time, clip IDs, reasons and per-feature event counts. It catches
 CPU source work even when final composition succeeds on GPU. `preparation` events

@@ -796,6 +796,7 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::SetTrackFrozen { .. }
         | AppCommand::SetTrackLockWhileFrozen { .. }
         | AppCommand::ClearFrozenCache { .. }
+        | AppCommand::SetPlaybackQuality(_)
         | AppCommand::SetTrackCustomHeight { .. }
         | AppCommand::SetTrackAutomationLaneHeight { .. }
         | AppCommand::GroupClips { .. }

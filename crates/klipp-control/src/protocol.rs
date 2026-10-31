@@ -356,6 +356,9 @@ pub enum ControlCommand {
         track: Option<usize>,
     },
     RemoveClip { clip_id: String },
+    /// The size frames are drawn at while playing (#3234): "full", "half"
+    /// or "quarter" of the playback resolution; saved as the preference.
+    SetPlaybackQuality { quality: String },
     /// The open project's frozen frames and frozen sound cleared (#3207):
     /// the tracks frozen so in the open sequence played live again, one
     /// undo step, and the files removed. Each is cleared unless `false`.

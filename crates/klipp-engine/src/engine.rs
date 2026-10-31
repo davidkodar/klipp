@@ -1649,6 +1649,10 @@ pub struct PlaybackEngine {
     /// last asked for (#3207).
     track_gpu_ms: HashMap<klipp_core::TrackId, f64>,
     gpu_timing_at: Option<std::time::Instant>,
+    /// How playback keeps up (#3234), and each track's frame drawn alone
+    /// once where the device has no timestamps.
+    playback_record: crate::playback_health::Recorder,
+    measured_once: HashMap<klipp_core::TrackId, f32>,
     /// The sequence as the sound plays it, made from a revision: see
     /// [`PlaybackEngine::audio_sequence`].
     audio_view: std::cell::RefCell<Option<(klipp_timeline::SequenceRevision, Arc<klipp_timeline::Sequence>)>>,
@@ -2931,6 +2935,8 @@ impl PlaybackEngine {
             stem_media: HashMap::new(),
             track_gpu_ms: HashMap::new(),
             gpu_timing_at: None,
+            playback_record: Default::default(),
+            measured_once: HashMap::new(),
             audio_view: std::cell::RefCell::new(None),
             decoder_panic_clip: None,
             mixer,
@@ -3757,6 +3763,8 @@ impl PlaybackEngine {
             }
 
             AppCommand::SeekTo(tc) => {
+                // A seek isn't the playback the record was of (#3234).
+                self.playback_record.reset();
                 self.forgive_panics();
                 // A skim is over once the playhead moves or plays (#2945).
                 self.end_skim();
@@ -6163,6 +6171,7 @@ impl PlaybackEngine {
     #[allow(unused_assignments)]
     fn update_playback(&mut self) {
         let t_update = std::time::Instant::now();
+        self.record_playback(t_update);
         // Per-stage timing for pinpointing where the frame budget goes.
         // Each stage records its elapsed time; we emit one consolidated
         // line at the end when the total exceeds 5 ms (same threshold the

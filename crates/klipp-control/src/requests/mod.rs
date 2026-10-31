@@ -96,6 +96,6 @@ mod routing_tests {
         // 141 with template_packs and remove_template_pack (#2924), 148
         // with the brand kit's seven, 150 with generators and delivery
         // templates (#3095), 152 with alternatives (#3209).
-        assert_eq!(routed_all.len(), 152);
+        assert_eq!(routed_all.len(), 153);
     }
 }

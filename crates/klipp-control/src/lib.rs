@@ -857,6 +857,7 @@ fn handle(
             | ControlCommand::RemoveSequence { .. }
             | ControlCommand::AppendClip { .. }
             | ControlCommand::ClearFrozen { .. }
+            | ControlCommand::SetPlaybackQuality { .. }
             | ControlCommand::RemoveClip { .. }
             | ControlCommand::AttachAudio { .. }
             | ControlCommand::NormalizeClips { .. }
