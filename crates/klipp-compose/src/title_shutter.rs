@@ -4,7 +4,9 @@
 //! at its offset, sampled bilinearly, and its alpha there; a run of layers
 //! that does neither is laid once, as one. Drawing every layer again at
 //! every instant cost some 16 ms an instant at 4K; this costs a shift and
-//! a composite. A layer doing anything else at those instants (typing on,
+//! a composite. A rectangle's entrance or exit that only moves or fades it
+//! is laid the same way, at the offset and alpha klipp-title poses it at.
+//! A layer doing anything else at those instants (typing on, a text
 //! sliding in, a keyed scale or style) has the title drawn at each.
 //!
 //! The CPU and the GPU stack run the same arithmetic: `shift` is the
@@ -41,6 +43,13 @@ impl Layer {
 fn fades(l: &klipp_timeline::TitleLoop) -> bool {
     use klipp_timeline::TitleLoop as L;
     matches!(l, L::Blink { .. } | L::Pulse { .. } | L::Flicker { .. })
+}
+
+/// The entrances and exits that only move a shape or fade it: no scale,
+/// blur or clip at any progress. A shape moves as one, its stagger aside.
+fn moves_or_fades(kind: klipp_timeline::MotionKind) -> bool {
+    use klipp_timeline::MotionKind as K;
+    matches!(kind, K::Fade | K::Rise | K::Drop | K::SlideLeft | K::SlideRight | K::FlyLeft | K::FlyRight | K::FlyTop | K::FlyBottom | K::Bounce | K::Flicker | K::Typewriter)
 }
 
 /// How long a motion takes on `o`, its last unit's included: as
@@ -92,29 +101,42 @@ pub(crate) fn plan(td: &TitleData, at: f64, times: &[f64], window: f32, width: u
         if !still_otherwise {
             return None;
         }
-        // An entrance or exit: a whole-layer fade is an alpha; any other is
-        // laid only where it is at rest at every instant.
-        let whole_fade = |m: &klipp_timeline::Motion| m.kind == MotionKind::Fade && m.stagger == StaggerUnit::None;
+        // An entrance or exit: a whole-layer fade is an alpha, and on a
+        // rectangle one that only moves or fades it is an offset and an
+        // alpha; any other is laid only where it is at rest at every
+        // instant.
+        let rect = match &o.content {
+            TitleObjectContent::Shape(s) if matches!(s.kind, klipp_timeline::ShapeKind::Rectangle { .. }) => Some(s),
+            _ => None,
+        };
+        let laid = |m: &klipp_timeline::Motion| match rect {
+            Some(_) => moves_or_fades(m.kind),
+            None => m.kind == MotionKind::Fade && m.stagger == StaggerUnit::None,
+        };
         for &tk in times {
             let tk = tk as f32;
-            let enter_live = fx.motion.enter.as_ref().is_some_and(|m| !whole_fade(m) && tk < span(o, m));
-            let exit_live = fx.motion.exit.as_ref().is_some_and(|m| !whole_fade(m) && window - tk < span(o, m));
+            let enter_live = fx.motion.enter.as_ref().is_some_and(|m| !laid(m) && tk < span(o, m));
+            let exit_live = fx.motion.exit.as_ref().is_some_and(|m| !laid(m) && window - tk < span(o, m));
             if enter_live || exit_live {
                 return None;
             }
         }
+        // The motion's pose at `tk`, as klipp-title's `dress_layer` poses
+        // a shape: travelling in the layer's painted height, its offset
+        // rounded once. A text's is a fade's alpha alone.
+        let pose = |tk: f64| {
+            let (pe, px) = fx.motion.progress(tk as f32, Some(window), 0);
+            let unit = rect.and_then(|s| klipp_title::rect_layer_bounds(s, &t.evaluated_at(tk), width, height)).map_or(1.0, |(_, y0, _, y1)| y1.saturating_sub(y0) as f32);
+            let rest = (1.0, 0.0, 0.0, 1.0, 0.0, false);
+            let a = fx.motion.enter.as_ref().filter(|m| laid(m)).map_or(rest, |m| m.pose(pe, unit));
+            let b = fx.motion.exit.as_ref().filter(|m| laid(m)).map_or(rest, |m| m.pose(px, unit));
+            (a.0 * b.0, [(a.1 + b.1).round(), (a.2 + b.2).round()])
+        };
         let fading: Vec<klipp_timeline::TitleLoop> = fx.loops.clone();
         let alphas = times
             .iter()
             .map(|&tk| {
-                let (pe, px) = fx.motion.progress(tk as f32, Some(window), 0);
-                let mut a = o.evaluated_opacity(tk).clamp(0.0, 1.0);
-                if let Some(m) = fx.motion.enter.as_ref().filter(|m| whole_fade(m)) {
-                    a *= m.pose(pe, 1.0).0;
-                }
-                if let Some(m) = fx.motion.exit.as_ref().filter(|m| whole_fade(m)) {
-                    a *= m.pose(px, 1.0).0;
-                }
+                let mut a = o.evaluated_opacity(tk).clamp(0.0, 1.0) * pose(tk).0;
                 if !fading.is_empty() {
                     let geo = klipp_timeline::LoopGeometry { frame_w: width as f32, frame_h: height as f32, text_w: 1.0, text_h: 1.0, font_px: 1.0 };
                     a *= klipp_core::title_motion::eval_loops(&fading, tk as f32, Some(window), geo, [255, 255, 255, 255]).opacity;
@@ -127,7 +149,8 @@ pub(crate) fn plan(td: &TitleData, at: f64, times: &[f64], window: f32, width: u
             .iter()
             .map(|&tk| {
                 let b = t.evaluated_at(tk);
-                [(b.center.x - from.center.x) * width as f32, (b.center.y - from.center.y) * height as f32]
+                let moved = pose(tk).1;
+                [(b.center.x - from.center.x) * width as f32 + moved[0], (b.center.y - from.center.y) * height as f32 + moved[1]]
             })
             .collect();
         // The layer alone, its fades taken out: its entrance and exit (a
@@ -290,5 +313,47 @@ mod tests {
         faded.objects[0].fx_mut().motion = TitleMotion::enter(Motion::new(MotionKind::Fade).duration(1.0));
         let p = plan(&faded, 0.5, &times, 3.0, 100, 50).expect("a fade is an alpha");
         assert!(p[0].alphas[0] < p[0].alphas[2], "{:?}", p[0].alphas);
+    }
+
+    /// #3185: a rectangle sliding in or out, or rising, is laid at each
+    /// instant at the offset klipp-title poses it at: its travel in its
+    /// painted height, rounded, on top of its keyed move, and its alpha. A
+    /// text sliding in is still drawn at each, its glyphs placed apart.
+    #[test]
+    fn a_rectangle_sliding_in_or_out_is_laid_at_its_pose() {
+        use klipp_timeline::{Motion, MotionKind, ObjectTransform, Shape, ShapeKind, TitleMotion, TitlePosition};
+        let (w, h) = (200u32, 100u32);
+        let rect = Shape { kind: ShapeKind::Rectangle { corner_radius: 4.0 }, fill: Some([40, 60, 160, 255]), gradient: None, stroke: None, fit: None };
+        let mut td = TitleData::default();
+        td.objects.clear();
+        td.add_object(TitleObjectContent::Shape(rect.clone()), ObjectTransform { size: TitlePosition { x: 0.5, y: 0.4 }, center: TitlePosition { x: 0.5, y: 0.5 }, ..klipp_timeline::default_text_transform() });
+        let enter = Motion::new(MotionKind::SlideRight).duration(0.3);
+        let exit = Motion::exit(MotionKind::Rise).duration(0.3);
+        td.objects[0].fx_mut().motion = TitleMotion::both(enter, exit);
+        let (_, y0, _, y1) = klipp_title::rect_layer_bounds(&rect, &td.objects[0].transform, w, h).expect("painted");
+        let unit = (y1 - y0) as f32;
+        assert_eq!(unit, 40.0, "the painted height its motion travels in");
+        let fx = td.objects[0].fx().clone();
+        let posed = |tk: f64| {
+            let (pe, px) = fx.motion.progress(tk as f32, Some(3.0), 0);
+            let (a, b) = (enter.pose(pe, unit), exit.pose(px, unit));
+            (a.0 * b.0, [(a.1 + b.1).round(), (a.2 + b.2).round()])
+        };
+        for (at, times) in [(0.1, [0.09, 0.1, 0.11]), (2.85, [2.84, 2.85, 2.86])] {
+            let p = plan(&td, at, &times, 3.0, w, h).unwrap_or_else(|| panic!("laid at {at}"));
+            for (k, &tk) in times.iter().enumerate() {
+                let (alpha, offset) = posed(tk);
+                assert_eq!(p[0].offsets[k], offset, "at {tk}");
+                assert!((p[0].alphas[k] - alpha).abs() < 1e-6, "at {tk}: {} vs {alpha}", p[0].alphas[k]);
+            }
+            assert!(p[0].offsets[0] != p[0].offsets[2], "it moves across the shutter at {at}");
+            assert!(p[0].single.objects[0].fx().motion.enter.is_none(), "drawn at rest");
+        }
+        let mut text = TitleData::single_text(klipp_timeline::TextBox { text: "Go".into(), ..Default::default() });
+        text.objects[0].fx_mut().motion = TitleMotion::enter(enter);
+        assert!(plan(&text, 0.1, &[0.09, 0.1, 0.11], 3.0, w, h).is_none(), "a text sliding in");
+        let mut scaled = td.clone();
+        scaled.objects[0].fx_mut().motion = TitleMotion::enter(Motion::new(MotionKind::ScaleUp).duration(0.3));
+        assert!(plan(&scaled, 0.1, &[0.09, 0.1, 0.11], 3.0, w, h).is_none(), "a rectangle scaling up");
     }
 }
