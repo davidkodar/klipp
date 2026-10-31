@@ -393,4 +393,81 @@ mod tests {
         let _ = thread.join();
         crate::video_decoder::wait_for_decode_threads(Duration::from_secs(10));
     }
+
+    /// #3181: the decoder's tries are each clip's: a second clip whose
+    /// decoder panics too gets its own three and is said of its own. They
+    /// carried over, and the second clip got none and no word.
+    #[test]
+    fn a_second_clip_that_panics_gets_its_own_tries() {
+        let required = std::env::var_os("KLIPP_TEST_REQUIRE_GPU").is_some_and(|v| v == "1");
+        let (Some(a), Some(b)) = (source("first-clip"), source("second-clip")) else {
+            assert!(!required, "GPU required, and no ffmpeg to make the sources");
+            eprintln!("skipping: no ffmpeg");
+            return;
+        };
+        let fps = Fps::new(25, 1);
+        let tc = |f: i64| RationalTime { value: f * fps.den as i64, rate: fps.num };
+        let mut pool = MediaPool::default();
+        let mut track = Track::new("V1", TrackKind::Video);
+        for (i, path) in [&a, &b].into_iter().enumerate() {
+            let media = MediaId::new();
+            pool.add(MediaItem {
+                id: media,
+                path: path.clone(),
+                kind: klipp_media::MediaItemKind::File,
+                resolution: Resolution { width: 1920, height: 1080 },
+                ..MediaItem::new_synthetic_title(media, path.display().to_string(), tc(250), fps)
+            });
+            let at = 125 * i as i64;
+            track.clips.push(Clip { kind: ClipKind::Media { media_id: media }, source_in: tc(0), source_out: tc(125), ..Clip::gap(tc(at), tc(at + 125)) });
+        }
+        let mut seq = Sequence::new_default();
+        seq.fps = fps;
+        seq.resolution = Resolution { width: 1920, height: 1080 };
+        seq.tracks = vec![track];
+
+        let (cmd, cmd_rx) = crossbeam_channel::unbounded();
+        let (ev_tx, ev_rx) = crossbeam_channel::unbounded::<AppEvent>();
+        let gave_up = Arc::new(Mutex::new(Vec::<String>::new()));
+        let g = Arc::clone(&gave_up);
+        std::thread::spawn(move || {
+            while let Ok(ev) = ev_rx.recv() {
+                if let AppEvent::PlaybackGaveUp { what } = ev {
+                    g.lock().unwrap().push(what);
+                }
+            }
+        });
+        let fb = Arc::new(Mutex::new(FrameBuffer::new(1920, 1080)));
+        let engine = PlaybackEngine::new(
+            cmd_rx, ev_tx, Arc::clone(&fb), Arc::new(Mutex::new(FrameBuffer::new(1920, 1080))),
+            Arc::new(klipp_timeline::SharedSequence::new(seq)), Arc::new(RwLock::new(pool)), Box::new(|| {}),
+            Arc::new(Mutex::new(None)), Arc::new(Mutex::new(crate::perf::PerfRing::default())),
+        );
+        let thread = std::thread::spawn(move || engine.run());
+        let wait_for = |n: usize| {
+            let t0 = Instant::now();
+            while gave_up.lock().unwrap().len() < n && t0.elapsed() < Duration::from_secs(10) {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            gave_up.lock().unwrap().len()
+        };
+        super::arm_decoder(Some(a.clone()), true);
+        super::arm_decoder(Some(b.clone()), true);
+        cmd.send(AppCommand::SetPlayhead(tc(0))).unwrap();
+        std::thread::sleep(Duration::from_millis(500));
+        cmd.send(AppCommand::Play).unwrap();
+        assert_eq!(wait_for(1), 1, "the first clip is left off, and said");
+        let b_before = super::armed_decoder(&b).unwrap_or(0);
+        // On to the second clip by a refresh's seek, which forgives
+        // nothing: what it gets is the second clip's own.
+        cmd.send(AppCommand::SetPlayhead(tc(150))).unwrap();
+        assert_eq!(wait_for(2), 2, "the second clip is left off, and said of its own");
+        let tries = super::armed_decoder(&b).unwrap_or(0) - b_before;
+        assert!(tries >= 2, "the second clip had tries of its own: {tries}");
+        super::disarm_decoder(&a);
+        super::disarm_decoder(&b);
+        let _ = cmd.send(AppCommand::Quit);
+        let _ = thread.join();
+        crate::video_decoder::wait_for_decode_threads(Duration::from_secs(10));
+    }
 }
