@@ -215,12 +215,15 @@ exist until the plan runs.
   (its eye), true shows them; `language` is a BCP 47 tag (`de`, `pt-br`;
   empty for none) a subtitle export tags its file with; `locked` true
   keeps every edit off its clips, so an insert or a cut leaves a music
-  bed whole, and false lets them be edited again. `frozen` true (a video
-  track) draws its frames in the background into the project's cache and
-  then plays it from them, so a heavy track (many effects, a large grade,
-  nested clips) stops costing playback; an edit to it draws the changed
-  frames again, and until they are drawn those play live. Its clip opacity
-  and blend stay live. The timeline shows how far it is drawn; frames
+  bed whole, and false lets them be edited again. `frozen` true draws the
+  track in the background into the project's cache and then plays it
+  from that, so a heavy track (many effects, a large grade, nested clips,
+  a long insert chain) stops costing playback; an edit to it draws what
+  changed again, and until it is drawn that plays live. A video track's
+  clip opacity and blend stay live; an audio track's sound is drawn
+  through its clips' and its own effects, its fader, pan, sends, mute
+  and solo stay live, and one with a plug-in from outside Klipp plays
+  live. The timeline shows how far it is drawn; frames
   that read other tracks (an adjustment layer, Clip Below) always play
   live. A project must be saved for its frames to be kept. Export is
   always drawn live. `lock_while_frozen` true locks the track whenever it

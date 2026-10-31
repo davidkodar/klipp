@@ -25,6 +25,7 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::InjectPanic { .. }
         | AppCommand::SetFreezeFolder(_)
         | AppCommand::SetFrozenTracks(_)
+        | AppCommand::SetFrozenStems(_)
         | AppCommand::ShowMaskKeysOnTimeline { .. }
         | AppCommand::SetViewerOverlay { .. }
         | AppCommand::SetMulticamMode { .. }

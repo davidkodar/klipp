@@ -42,7 +42,7 @@ engine_commands!(
     SetScrubAudioEnabled, SetSdrTransfer, SetSourceMedia, SetSpeed,
     SetSplitCompareNode, SetTrackMute, SetTrackPan, SetTrackSolo, SetTrackVolume, OverrideTrackAutomation,
     SetUseProxies, SetViewChannel, SetVisibleNodeThumbs, StepSource, Stop, StopSource,
-    ToggleBeforeAfter, ToggleStabilizationCompare, InjectPanic, SetFreezeFolder, SetFrozenTracks
+    ToggleBeforeAfter, ToggleStabilizationCompare, InjectPanic, SetFreezeFolder, SetFrozenTracks, SetFrozenStems
 );
 
 /// A command's variant name, for saying which one went astray.

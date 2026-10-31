@@ -281,6 +281,11 @@ pub struct FreezeStatus {
     pub live: Vec<(Timecode, Timecode)>,
     /// Where its frames aren't drawn yet, or couldn't be: played live.
     pub stale: Vec<(Timecode, Timecode)>,
+    /// A sound track: frozen as one stem, `frames` 1 once it is drawn.
+    pub sound: bool,
+    /// Why it plays live though frozen, when nothing of it can be frozen
+    /// (a sound track with a plug-in from outside Klipp).
+    pub live_reason: Option<&'static str>,
 }
 
 /// How a frozen track stands, in one word: what its header shows.
@@ -300,6 +305,7 @@ impl FreezeStatus {
             return FreezeState::Drawing(p);
         }
         match &self.tally {
+            Some(_) if self.live_reason.is_some() => FreezeState::Stale,
             Some(t) if !self.unsaved && !t.full && t.failed == 0 && t.stored + t.current + t.live + t.empty >= self.frames => FreezeState::Current,
             _ => FreezeState::Stale,
         }
@@ -309,6 +315,17 @@ impl FreezeStatus {
     pub fn describe(&self) -> String {
         if self.unsaved {
             return "frozen, but played live until the project is saved: its frames are kept in the project".into();
+        }
+        if let Some(why) = self.live_reason {
+            return format!("frozen, but played live: {why}");
+        }
+        if self.sound {
+            return match (self.progress, &self.tally) {
+                (Some(p), _) => format!("frozen, drawing its sound: {:.0} %", p * 100.0),
+                (None, Some(t)) if t.stored + t.current > 0 => "frozen, its sound current".into(),
+                (None, Some(_)) => "frozen, but its sound couldn't be drawn: played live".into(),
+                (None, None) => "frozen, its sound waiting to be drawn".into(),
+            };
         }
         let mut out = match (self.progress, &self.tally) {
             (Some(p), _) => format!("frozen, drawing its frames: {:.0} % of {}", p * 100.0, self.frames),

@@ -1136,8 +1136,8 @@ mod menu_smoke_tests {
         assert!(sent.iter().any(|c| matches!(c, AppCommand::SetTrackLocked { track_id: t, locked: true } if *t == track_id)), "{sent:?}");
     }
 
-    /// #3207: a video track's header menu freezes it; a sound track's
-    /// has no Freeze Track.
+    /// #3207: a video track's header menu freezes it, and locks it while
+    /// frozen; a sound track's freezes it too.
     #[test]
     fn freezing_a_track_is_in_a_video_header_s_menu() {
         let mut timeline = Timeline::new();
@@ -1159,16 +1159,21 @@ mod menu_smoke_tests {
         let sent = timeline.click(item);
         assert!(sent.iter().any(|c| matches!(c, AppCommand::SetTrackLockWhileFrozen { track_id: t, on: true } if *t == track_id)), "{sent:?}");
 
+        // A sound track freezes too: its stem.
         let mut timeline = Timeline::new();
+        let a1 = timeline.state.sequences[0].tracks.iter().position(|t| t.kind == TrackKind::Audio).unwrap();
+        let track_id = timeline.state.sequences[0].tracks[a1].id;
         let at = timeline.header(TrackKind::Audio);
         timeline.right_click(at);
         let drawn = timeline.frame(Vec::new());
-        assert!(!drawn.iter().any(|(t, _)| t == "Freeze Track" || t == "Lock While Frozen"), "{drawn:?}");
+        let item = drawn.iter().find(|(t, _)| t == "Freeze Track").unwrap_or_else(|| panic!("Freeze Track in a sound header's menu: {drawn:?}")).1;
+        let sent = timeline.click(item);
+        assert!(sent.iter().any(|c| matches!(c, AppCommand::SetTrackFrozen { track_id: t, frozen: true } if *t == track_id)), "{sent:?}");
     }
 
     /// #3207: Freeze Track's key and palette entry act on the selected
-    /// clip's track: freezing it, or playing it live when it's frozen;
-    /// nothing without a clip on a video track selected.
+    /// clip's track, picture or sound: freezing it, or playing it live
+    /// when it's frozen; nothing without a clip selected.
     #[test]
     fn the_freeze_key_acts_on_the_selected_clip_s_track() {
         let mut state = crate::state::AppState::default();
@@ -1186,7 +1191,8 @@ mod menu_smoke_tests {
         state.sequences[0].tracks[v].frozen = true;
         assert!(matches!(freeze_marks::toggle_selected(&state), Some(AppCommand::SetTrackFrozen { frozen: false, .. })));
         state.selected_clip = Some(sound_id);
-        assert!(freeze_marks::toggle_selected(&state).is_none(), "a sound clip's track doesn't freeze");
+        let sound_track = state.sequences[0].tracks[a].id;
+        assert!(matches!(freeze_marks::toggle_selected(&state), Some(AppCommand::SetTrackFrozen { track_id: id, frozen: true }) if id == sound_track), "a sound clip's track freezes as a stem");
     }
 
     /// #239: a video clip whose file is there offers Track Subject, and

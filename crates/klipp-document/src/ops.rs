@@ -5668,8 +5668,8 @@ fn set_track(seq: &Sequence, i: usize, track: &TrackRef, own: TrackOwnSet, mix: 
     if visible.is_none() && language.is_none() && locked.is_none() && frozen.is_none() && lock_while_frozen.is_none() && !mixes {
         return Err(refuse(i, "nothing to set", "give visible, language, locked, frozen, lock_while_frozen, volume_db, pan, mute, solo or more than one"));
     }
-    if (frozen == Some(true) || lock_while_frozen.is_some()) && t.kind != TrackKind::Video {
-        return Err(refuse(i, format!("track {ti} is a {:?} track", t.kind), "freeze a video track: sound and captions play live"));
+    if (frozen == Some(true) || lock_while_frozen.is_some()) && !matches!(t.kind, TrackKind::Video | TrackKind::Audio) {
+        return Err(refuse(i, format!("track {ti} is a {:?} track", t.kind), "freeze a video or audio track: text and captions play live"));
     }
     // Its mixer controls, as the fader and its buttons set them (#3165).
     let mut mix_changes = Vec::new();
@@ -5734,7 +5734,7 @@ fn set_track(seq: &Sequence, i: usize, track: &TrackRef, own: TrackOwnSet, mix: 
     }
     if let Some(f) = frozen {
         new.set_frozen(f);
-        what.push(if f { "frozen: its frames are drawn in the background, then it plays from them" } else { "live" }.to_string());
+        what.push(if f { "frozen: drawn in the background, then played from what's drawn" } else { "live" }.to_string());
         if new.lock_while_frozen {
             what.push(if f { "locked" } else { "unlocked" }.to_string());
         }
@@ -21986,8 +21986,8 @@ mod frame_aligned_tests {
 
 #[cfg(test)]
 mod freeze_track_tests {
-    //! `set_track frozen` (#3207): one undo step that freezes a video
-    //! track or plays it live again; a sound or caption track is refused.
+    //! `set_track frozen` (#3207): one undo step that freezes a video or
+    //! sound track or plays it live again; a caption track is refused.
 
     use super::*;
     use klipp_timeline::Track;
@@ -22018,11 +22018,13 @@ mod freeze_track_tests {
         let EditCommand::SetTrack { new, .. } = &live.steps[0].edit else { panic!("{:?}", live.steps[0].edit) };
         assert!(!new.frozen && live.steps[0].what.contains("live"), "{}", live.steps[0].what);
 
-        for t in [1, 2] {
-            let refused = resolve(&seq, &pool, &[op(serde_json::json!({ "op": "set_track", "track": t, "frozen": true }))]).unwrap_err();
-            assert!(refused.hint.contains("freeze a video track"), "track {t}: {refused:?}");
-            assert!(resolve(&seq, &pool, &[op(serde_json::json!({ "op": "set_track", "track": t, "lock_while_frozen": true }))]).is_err());
-        }
+        // A sound track freezes too (its stem); a caption track doesn't.
+        let sound = resolve(&seq, &pool, &[op(serde_json::json!({ "op": "set_track", "track": 1, "frozen": true }))]).unwrap();
+        let EditCommand::SetTrack { new, .. } = &sound.steps[0].edit else { panic!() };
+        assert!(new.frozen);
+        let refused = resolve(&seq, &pool, &[op(serde_json::json!({ "op": "set_track", "track": 2, "frozen": true }))]).unwrap_err();
+        assert!(refused.hint.contains("freeze a video or audio track"), "{refused:?}");
+        assert!(resolve(&seq, &pool, &[op(serde_json::json!({ "op": "set_track", "track": 2, "lock_while_frozen": true }))]).is_err());
 
         // Locked while frozen, in the same step as the freeze: locked; the
         // thaw unlocks it.

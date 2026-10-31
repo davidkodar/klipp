@@ -1617,6 +1617,9 @@ pub enum AppCommand {
     /// The tracks playback lays from their frozen frames where those are
     /// current (#3207), by id; every other track is drawn live.
     SetFrozenTracks(Vec<crate::TrackId>),
+    /// Frozen sound tracks' stems (#3207), each current: the track plays
+    /// its stem in place of its clips and its inserts.
+    SetFrozenStems(Vec<(crate::TrackId, std::path::PathBuf)>),
     /// Open the Colour workspace on video track `track_id`'s own grade
     /// (#1408): the layout only, never the document.
     GradeTrackInColour { track_id: TrackId },

@@ -8,13 +8,13 @@ use crate::timeline::time_utils;
 use klipp_core::Timecode;
 use klipp_timeline::TrackKind;
 
-/// Freeze the selected clip's video track, or play it live again: what
-/// Freeze Track's key and palette entry do. `None` with no clip selected
-/// on a video track.
+/// Freeze the selected clip's track, picture or sound, or play it live
+/// again: what Freeze Track's key and palette entry do. `None` with no
+/// clip selected on such a track.
 pub fn toggle_selected(state: &AppState) -> Option<klipp_core::AppCommand> {
     let seq = state.sequence();
     let (ti, _) = seq.find_clip(state.selected_clip?)?;
-    let t = seq.tracks.get(ti).filter(|t| t.kind == TrackKind::Video)?;
+    let t = seq.tracks.get(ti).filter(|t| matches!(t.kind, TrackKind::Video | TrackKind::Audio))?;
     Some(klipp_core::AppCommand::SetTrackFrozen { track_id: t.id, frozen: !t.frozen })
 }
 

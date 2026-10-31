@@ -571,9 +571,11 @@ pub fn show(
         // button, in the accent once every frame is drawn, dim with a line
         // filling under the header while they're drawn, amber while some
         // play live; its tooltip says how far.
-        if track.frozen && track.kind == TrackKind::Video {
+        if track.frozen && matches!(track.kind, TrackKind::Video | TrackKind::Audio) {
+            // Left of a sound track's lane button.
+            let slot = if track.kind == TrackKind::Audio { 6.0 } else { 5.0 };
             let snow_rect = egui::Rect::from_min_size(
-                egui::pos2(track_rect.max.x - btn_size * 5.0 - 20.0, track_rect.center().y - btn_size / 2.0),
+                egui::pos2(track_rect.max.x - btn_size * slot - slot * 4.0, track_rect.center().y - btn_size / 2.0),
                 egui::vec2(btn_size, btn_size),
             );
             let snow_resp = ui.allocate_rect(snow_rect, egui::Sense::hover());
@@ -795,12 +797,13 @@ pub fn show(
                 cmds.push(AppCommand::SetTrackLocked { track_id, locked: !locked });
                 ui.close_menu();
             }
-            // Freeze (#3207): a video track played from frames drawn ahead.
+            // Freeze (#3207): a picture track played from frames drawn
+            // ahead, a sound track from its sound drawn ahead.
             let t = &state.sequence().tracks[track_idx];
-            if t.kind == klipp_timeline::TrackKind::Video {
+            if matches!(t.kind, klipp_timeline::TrackKind::Video | klipp_timeline::TrackKind::Audio) {
                 let frozen = t.frozen;
                 let hint = klipp_engine::freeze::status(track_id).map_or_else(
-                    || "Draw this track's frames in the background and play it from them, so a heavy track stops costing playback. Edits draw the changed frames again.".to_string(),
+                    || "Draw this track in the background and play it from what's drawn, so a heavy track stops costing playback. Edits draw what they change again.".to_string(),
                     |s| s.describe(),
                 );
                 if menu_toggle(ui, "Freeze Track", "Ctrl+Shift+F", frozen).on_hover_text(hint).clicked() {
