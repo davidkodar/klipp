@@ -1618,6 +1618,9 @@ pub struct PlaybackEngine {
     /// an edit's refresh does not open it again, nor say so again, until
     /// the person seeks or plays.
     decoder_given_up: bool,
+    /// The clip those two count for: another clip's decoder that panics
+    /// has tries of its own, and is said of its own.
+    decoder_panic_clip: Option<klipp_core::ClipId>,
     mixer: std::sync::Arc<std::sync::Mutex<klipp_audio::AudioMixer>>,
     lufs_readings: Option<std::sync::Arc<std::sync::Mutex<klipp_audio::LufsReadings>>>,
     lufs_reset: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
@@ -2803,6 +2806,7 @@ impl PlaybackEngine {
             decoder_restarts: 0,
             mix_restarts: 0,
             decoder_given_up: false,
+            decoder_panic_clip: None,
             mixer,
             lufs_readings,
             lufs_reset,
@@ -4348,6 +4352,7 @@ impl PlaybackEngine {
         self.decoder_restarts = 0;
         self.mix_restarts = 0;
         self.decoder_given_up = false;
+        self.decoder_panic_clip = None;
         self.streams.forgive_panics();
     }
 
@@ -6012,6 +6017,12 @@ impl PlaybackEngine {
         // playhead is (#3181). It used to leave the picture stopped, and
         // every seek with it, until a restart.
         if self.v1_decoder.as_ref().is_some_and(VideoDecoder::has_panicked) {
+            let clip = self.sequence.read().unwrap_or_else(|e| e.into_inner()).tracks.get(self.current_track_index).and_then(|t| t.clips.get(self.current_clip_index)).map(|c| c.id);
+            if clip != self.decoder_panic_clip {
+                self.decoder_panic_clip = clip;
+                self.decoder_restarts = 0;
+                self.decoder_given_up = false;
+            }
             if self.decoder_restarts < PANIC_RESTARTS {
                 self.decoder_restarts += 1;
                 warn!("the video decoder panicked; it is opened again at the playhead");
@@ -6020,7 +6031,6 @@ impl PlaybackEngine {
                 error!("the video decoder panicked {PANIC_RESTARTS} times over; it is not opened again until the playhead is moved or played");
                 self.v1_decoder = None;
                 // Nor is the clip opened as a layer's stream in its place.
-                let clip = self.sequence.read().unwrap_or_else(|e| e.into_inner()).tracks.get(self.current_track_index).and_then(|t| t.clips.get(self.current_clip_index)).map(|c| c.id);
                 if let Some(clip) = clip {
                     self.streams.give_up(clip);
                 }
