@@ -87,9 +87,12 @@ pub(crate) fn timeline_text(
         if t.locked {
             head.push_str("  locked");
         }
-        // How far its frames are drawn (#3207).
+        // How far its frames are drawn, and what playing it costs (#3207).
         if t.frozen {
             let _ = write!(head, "  {}", klipp_engine::freeze::status(t.id).map_or_else(|| "frozen".to_string(), |s| s.describe()));
+        }
+        if let Some(cost) = klipp_engine::track_cost::cost(t.id) {
+            let _ = write!(head, "  playing: {}", cost.describe());
         }
         // What the track does to every clip on it (#846), not repeated on
         // each clip below, which lists only its own.
@@ -428,6 +431,9 @@ pub(crate) fn list_clips(seq: &klipp_timeline::Sequence, pool: &klipp_media::Med
             if t.frozen {
                 v["frozen"] = json!(klipp_engine::freeze::status(t.id).map_or_else(|| "frozen".to_string(), |s| s.describe()));
             }
+            if let Some(cost) = klipp_engine::track_cost::cost(t.id) {
+                v["playing"] = json!({ "decoders": cost.decoders, "gpu_bytes": cost.gpu_bytes, "memory_bytes": cost.cpu_bytes });
+            }
             v["clips"] = json!(clips);
             // The transitions between the clips listed (#711), in both
             // forms: there are few, and nothing else shows them.
@@ -711,5 +717,19 @@ mod tests {
         let text = timeline_text(&seq, &pool, None, 1, TimelineView::default());
         assert!(text.contains("frozen, drawing its frames: 50 % of 240"), "{text}");
         klipp_engine::freeze::set_statuses(Default::default());
+    }
+
+    /// #3207: a track that costs something to play says what: its
+    /// decoders and their frames' memory.
+    #[test]
+    fn a_track_says_what_playing_it_costs() {
+        let seq = klipp_timeline::Sequence::new_default();
+        let pool = klipp_media::MediaPool::new();
+        let id = seq.tracks[0].id;
+        klipp_engine::track_cost::set_costs([(id, klipp_engine::track_cost::TrackCost { gpu_bytes: 3 << 29, cpu_bytes: 0, decoders: 2, gpu_ms: None })].into());
+        let text = timeline_text(&seq, &pool, None, 1, TimelineView::default());
+        assert!(text.contains("playing: 2 decoders, 1.5 GB on the GPU"), "{text}");
+        klipp_engine::track_cost::set_costs(Default::default());
+        assert!(!timeline_text(&seq, &pool, None, 1, TimelineView::default()).contains("playing:"));
     }
 }

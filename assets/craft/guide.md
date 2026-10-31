@@ -226,7 +226,8 @@ exist until the plan runs.
   live. The timeline shows how far it is drawn; frames
   that read other tracks (an adjustment layer, Clip Below) always play
   live. A project must be saved for its frames to be kept. Export is
-  always drawn live. `lock_while_frozen` true locks the track whenever it
+  always drawn live. `timeline` says what each track costs to play now
+  (`playing: 2 decoders, 1.2 GB on the GPU`), to tell which to freeze. `lock_while_frozen` true locks the track whenever it
   is frozen, so no edit makes its frames stale, and unlocks it when it
   plays live again. A translated caption track
   starts hidden so two languages don't draw over each other: show it,

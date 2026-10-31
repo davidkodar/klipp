@@ -1022,6 +1022,7 @@ impl GpuEffectsPipeline {
             frame_upload_count: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             batch: std::cell::RefCell::new(None),
             batching: std::cell::Cell::new(false),
+            timing: std::cell::RefCell::new(None),
             stack_params_ring,
             stack_params_slot: std::cell::Cell::new(0),
             scopes: None,

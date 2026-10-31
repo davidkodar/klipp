@@ -731,6 +731,34 @@ impl PlaybackEngine {
         }
         let opened_late = late.iter().filter(|c| self.streams.has(**c)).count() as u64;
         super::STREAMS_OPENED_ON_SCREEN.fetch_add(opened_late, std::sync::atomic::Ordering::Relaxed);
+        self.publish_track_costs();
+    }
+
+    /// Each track's GPU time (#3207): a frame a second timed, its times
+    /// taken once the GPU has them, never waited for.
+    fn time_track_gpu(&mut self) {
+        if let Some(ms) = self.renderer.take_track_gpu_ms() {
+            self.track_gpu_ms = ms;
+        }
+        if self.gpu_timing_at.is_none_or(|t| t.elapsed() >= std::time::Duration::from_secs(1)) {
+            self.gpu_timing_at = Some(std::time::Instant::now());
+            crate::track_cost::set_gpu_timed(self.renderer.gpu_times_tracks());
+            self.renderer.time_tracks_next_frame();
+        }
+    }
+
+    /// What each track's decoders hold now, for the timeline text and the
+    /// header (#3207): the clip streams, and the primary decoder's queue
+    /// at 16 bytes a pixel, on the GPU when its frames are there.
+    fn publish_track_costs(&self) {
+        let seq = self.sequence.snapshot();
+        let mut held = self.streams.held();
+        if let (Some(dec), Some(clip)) = (&self.v1_decoder, self.v1_clip_id(&seq)) {
+            let q = dec.frame_queue().lock().unwrap_or_else(|e| e.into_inner());
+            let (bytes, on_gpu) = q.front().map_or((0, false), |f| (u64::from(f.width) * u64::from(f.height) * 16 * q.len() as u64, f.gpu_source.is_some()));
+            held.push(if on_gpu { (clip, bytes, 0) } else { (clip, 0, bytes) });
+        }
+        crate::track_cost::set_costs(crate::track_cost::costs(&seq, held, &self.track_gpu_ms));
     }
 
     /// Wait, up to `timeout`, for every clip stream to hold its frame for
@@ -1077,6 +1105,7 @@ impl PlaybackEngine {
         // Frozen tracks laid from their frames where those are current (#3207).
         let frozen = self.frozen_layers_at(seq, time, width, height);
         self.renderer.set_frozen_layers(frozen);
+        self.time_track_gpu();
         let previous = self.previous_primary.take();
         let mut src = ViewerSource {
             primary,
@@ -1135,6 +1164,7 @@ impl PlaybackEngine {
         // Frozen tracks laid from their frames where those are current (#3207).
         let frozen = self.frozen_layers_at(seq, time, w, h);
         self.renderer.set_frozen_layers(frozen);
+        self.time_track_gpu();
         let previous = self.previous_primary.take();
         let mut src = ViewerSource {
             primary,

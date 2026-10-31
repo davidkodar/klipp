@@ -685,6 +685,8 @@ pub struct GpuEffectsPipeline {
     /// ring for the same reason).
     batch: std::cell::RefCell<Option<wgpu::CommandEncoder>>,
     batching: std::cell::Cell<bool>,
+    /// The frame being timed, and the last one's times (#3207).
+    timing: std::cell::RefCell<Option<timing::Timing>>,
     stack_params_ring: Vec<wgpu::Buffer>,
     stack_params_slot: std::cell::Cell<usize>,
     /// The waveform and parade scopes, made on first use: they share
@@ -2082,6 +2084,7 @@ mod output;
 use output::*;
 mod build;
 mod stack;
+pub mod timing;
 mod chain;
 mod effect_params;
 use effect_params::*;

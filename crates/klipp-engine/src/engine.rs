@@ -1645,6 +1645,10 @@ pub struct PlaybackEngine {
     /// media id its stand-in clip plays, and that id's file.
     frozen_stems: HashMap<klipp_core::TrackId, (std::path::PathBuf, MediaId)>,
     stem_media: HashMap<MediaId, std::path::PathBuf>,
+    /// Each track's GPU time from the last timed frame, and when one was
+    /// last asked for (#3207).
+    track_gpu_ms: HashMap<klipp_core::TrackId, f64>,
+    gpu_timing_at: Option<std::time::Instant>,
     /// The sequence as the sound plays it, made from a revision: see
     /// [`PlaybackEngine::audio_sequence`].
     audio_view: std::cell::RefCell<Option<(klipp_timeline::SequenceRevision, Arc<klipp_timeline::Sequence>)>>,
@@ -2925,6 +2929,8 @@ impl PlaybackEngine {
             frozen_reader: None,
             frozen_stems: HashMap::new(),
             stem_media: HashMap::new(),
+            track_gpu_ms: HashMap::new(),
+            gpu_timing_at: None,
             audio_view: std::cell::RefCell::new(None),
             decoder_panic_clip: None,
             mixer,

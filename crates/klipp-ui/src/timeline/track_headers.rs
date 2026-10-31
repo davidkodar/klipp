@@ -596,6 +596,10 @@ pub fn show(
                 ui.ctx().request_repaint_after(std::time::Duration::from_millis(250));
             }
             let said = status.map_or_else(|| "Frozen".to_string(), |s| s.describe());
+            let said = match klipp_engine::track_cost::cost(track.id) {
+                Some(c) => format!("{said}\nPlaying it now: {}.", c.describe()),
+                None => said,
+            };
             styled_tooltip(&snow_resp, theme, &said, None);
         }
 
@@ -806,6 +810,11 @@ pub fn show(
                     || "Draw this track in the background and play it from what's drawn, so a heavy track stops costing playback. Edits draw what they change again.".to_string(),
                     |s| s.describe(),
                 );
+                // What playing it costs now, to tell a heavy track by.
+                let hint = match klipp_engine::track_cost::cost(track_id) {
+                    Some(c) => format!("{hint}\nPlaying it now: {}.", c.describe()),
+                    None => hint,
+                };
                 if menu_toggle(ui, "Freeze Track", "Ctrl+Shift+F", frozen).on_hover_text(hint).clicked() {
                     cmds.push(AppCommand::SetTrackFrozen { track_id, frozen: !frozen });
                     ui.close_menu();
