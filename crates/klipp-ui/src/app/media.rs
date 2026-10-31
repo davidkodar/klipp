@@ -686,6 +686,31 @@ impl KlippApp {
                     self.state.toast.show(cleaned);
                     true
                 }
+                // The render cache is the engine's to clear, its index
+                // with it; a frozen category unfreezes its tracks (#3207).
+                AppCommand::ClearCacheCategory { path } if dirs::cache_dir().map(|d| d.join("klipp").join("render")).as_ref() == Some(path) => {
+                    let _ = self.cmd_tx.send(AppCommand::ClearRenderCacheAll);
+                    self.state.toast.show("Cleared the render cache");
+                    self.refresh_cache_categories();
+                    true
+                }
+                AppCommand::ClearFrozenCache { frames, sound } => {
+                    if *frames {
+                        self.clear_frozen(false);
+                    }
+                    if *sound {
+                        self.clear_frozen(true);
+                    }
+                    self.refresh_cache_categories();
+                    true
+                }
+                AppCommand::ClearCacheCategory { path } if self.freeze_cache_folder().is_some_and(|c| *path == c.join("freeze") || *path == c.join("stems")) => {
+                    let sound = path.ends_with("stems");
+                    self.clear_frozen(sound);
+                    self.state.toast.show(if sound { "Cleared the frozen sound: those tracks play live" } else { "Cleared the frozen frames: those tracks play live" });
+                    self.refresh_cache_categories();
+                    true
+                }
                 AppCommand::ClearCacheCategory { path } => {
                     // Wipe the directory then recreate it so later writes
                     // (proxy encoder, filmstrip writer, audio peaks writer,

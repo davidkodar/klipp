@@ -56,6 +56,8 @@ pub(crate) struct Tick {
     pub changed: bool,
     /// A stem was drawn: tell the engine the stems again.
     pub stems: bool,
+    /// A job ended: what is held changed.
+    pub ended: bool,
 }
 
 #[derive(Default)]
@@ -74,6 +76,9 @@ pub(crate) struct FreezeJobs {
     orders: HashMap<TrackId, (Vec<klipp_core::Timecode>, klipp_core::Fps, usize)>,
     /// What the engine was last told.
     told: Option<(Option<PathBuf>, Vec<TrackId>)>,
+    /// What frozen tracks hold of the cache budget, as the engine was last
+    /// told it.
+    reserved: Option<u64>,
     /// Frozen sound tracks' stems that are current, as the engine was
     /// told them, and the file each stem job is drawing.
     stems: Vec<(TrackId, PathBuf)>,
@@ -124,6 +129,7 @@ impl FreezeJobs {
                 if tally.cancelled || self.jobs.get(&track).map(|j| j.id()) != Some(id) {
                     continue;
                 }
+                out.ended = true;
                 if tally.full {
                     out.full.push(track);
                 }
@@ -203,6 +209,65 @@ impl FreezeJobs {
 }
 
 impl KlippApp {
+    /// The open project's cache folder, `<project>/cache`, where frozen
+    /// tracks keep what is drawn of them: `None` without a saved, writable
+    /// project.
+    pub(super) fn freeze_cache_folder(&self) -> Option<PathBuf> {
+        self.state.project_path.clone().filter(|p| !crate::project_paths::is_untitled(Some(p)) && self.read_only_project.as_ref() != Some(p)).map(|p| p.join("cache"))
+    }
+
+    /// The open project's frozen frames (`sound` false) or frozen sound
+    /// cleared (#3207): the tracks frozen so in the open sequence played
+    /// live again, one undo step, and the files removed.
+    pub(super) fn clear_frozen(&mut self, sound: bool) {
+        let kind = if sound { klipp_timeline::TrackKind::Audio } else { klipp_timeline::TrackKind::Video };
+        let idx = self.state.active_sequence_idx;
+        if let Some(step) = unfreeze_all(&mut self.state.sequences[idx], kind) {
+            self.state.push_history(step);
+            self.state.dirty = true;
+        }
+        let fj = &mut self.freeze_jobs;
+        fj.stop();
+        if let Some(cache) = self.freeze_cache_folder() {
+            let dir = cache.join(if sound { "stems" } else { "freeze" });
+            if sound {
+                self.freeze_jobs.stems.clear();
+                let _ = self.cmd_tx.send(AppCommand::SetFrozenStems(Vec::new()));
+            } else {
+                // The store forgets what it held; opened again when wanted.
+                self.freeze_jobs.store = None;
+                self.freeze_jobs.opening = None;
+            }
+            if let Err(e) = std::fs::remove_dir_all(&dir) {
+                if e.kind() != std::io::ErrorKind::NotFound {
+                    tracing::warn!("Clearing {}: {e}", dir.display());
+                }
+            }
+        }
+        self.freeze_jobs.started_for = None;
+        self.freeze_jobs.seen = None;
+        self.freeze_jobs.reserved = None;
+    }
+
+    /// Tell the engine what of the cache budget frozen tracks hold, when
+    /// it changed: their frames and stems are kept first, and the render
+    /// cache keeps to the rest (#3207). The frame store keeps to what the
+    /// stems leave.
+    fn reserve_for_frozen(&mut self, folder: Option<&std::path::Path>) {
+        let budget = u64::from(self.prefs.media_cache.max_cache_size_gb) << 30;
+        let stems = folder.map_or(0, |f| crate::cache_manager::scan_tree_size(&f.join("stems")).0);
+        let frames = self.freeze_jobs.store.as_ref().map_or(0, |(_, s)| {
+            let mut s = s.lock().unwrap_or_else(|e| e.into_inner());
+            s.set_cap(budget.saturating_sub(stems));
+            s.total_bytes()
+        });
+        let held = frames + stems;
+        if self.freeze_jobs.reserved != Some(held) {
+            self.freeze_jobs.reserved = Some(held);
+            let _ = self.cmd_tx.send(AppCommand::SetRenderCacheReserved(held));
+        }
+    }
+
     /// Keep the frozen tracks' frames drawn and the engine told (see the
     /// module's doc). Called every frame; costs a walk over the tracks
     /// while nothing changes.
@@ -214,7 +279,7 @@ impl KlippApp {
         if tracks.is_empty() && self.freeze_jobs.idle() {
             return;
         }
-        let folder = self.state.project_path.clone().filter(|p| !crate::project_paths::is_untitled(Some(p)) && self.read_only_project.as_ref() != Some(p)).map(|p| p.join("cache"));
+        let folder = self.freeze_cache_folder();
         let working = klipp_engine::video_decoder::working_colorspace();
         let inputs = Inputs {
             folder,
@@ -250,6 +315,10 @@ impl KlippApp {
         }
         if tick.start {
             self.start_freeze_jobs(&seq, &inputs);
+        }
+        // What they hold of the budget, again once jobs end or start.
+        if tick.start || tick.stems || tick.ended || self.freeze_jobs.reserved.is_none() {
+            self.reserve_for_frozen(inputs.folder.as_deref());
         }
         klipp_engine::freeze::set_statuses(self.freeze_jobs.statuses.clone());
     }
@@ -395,6 +464,19 @@ impl KlippApp {
         }
         statuses
     }
+}
+
+/// Every track of `kind` frozen in `seq` played live again, unlocked if it
+/// was locked while frozen: the undo step that does it, `None` with none
+/// frozen.
+fn unfreeze_all(seq: &mut klipp_timeline::Sequence, kind: klipp_timeline::TrackKind) -> Option<klipp_document::history::EditCommand> {
+    let mut edits = Vec::new();
+    for (ti, t) in seq.tracks.iter_mut().enumerate().filter(|(_, t)| t.frozen && t.kind == kind) {
+        let old = t.clone();
+        t.set_frozen(false);
+        edits.push(klipp_document::history::EditCommand::SetTrack { description: "Clear Freeze Cache", track_index: ti, old: Box::new(old), new: Box::new(t.clone()) });
+    }
+    (!edits.is_empty()).then_some(klipp_document::history::EditCommand::Batch(edits))
 }
 
 /// A job's end, reported on `done` for `track` with the job's id, which
@@ -636,5 +718,33 @@ mod tests {
         let mut outside = seq.clone();
         outside.tracks[0].effects.audio = vec![klipp_core::AudioEffectInstance { effect_type: "clap:org.example.x".into(), enabled: true, wet_dry: 1.0, params: vec![] }];
         assert!(stem_path(&outside, &pool, Some(folder), id).is_err());
+    }
+
+    /// Clearing the frozen frames plays the frozen video tracks live,
+    /// unlocking one locked while frozen, as one step named for it, which
+    /// undone freezes them again; the frozen sound tracks are left.
+    #[test]
+    fn clearing_frozen_frames_plays_those_tracks_live_in_one_step() {
+        use klipp_timeline::{Track, TrackKind};
+        let mut seq = klipp_timeline::Sequence::new_default();
+        let mut v1 = Track::new("V1", TrackKind::Video);
+        v1.set_lock_while_frozen(true);
+        v1.set_frozen(true);
+        let mut v2 = Track::new("V2", TrackKind::Video);
+        v2.frozen = true;
+        let mut a1 = Track::new("A1", TrackKind::Audio);
+        a1.frozen = true;
+        seq.tracks = vec![v1, v2, a1, Track::new("V3", TrackKind::Video)];
+        let before = seq.clone();
+        let step = unfreeze_all(&mut seq, TrackKind::Video).expect("a step");
+        assert_eq!(step.label(), "Clear Freeze Cache");
+        assert!(!seq.tracks[0].frozen && !seq.tracks[0].locked, "live, unlocked");
+        assert!(!seq.tracks[1].frozen);
+        assert!(seq.tracks[2].frozen, "the sound kept");
+        let mut seqs = vec![seq.clone()];
+        let (mut pool, mut fps) = (klipp_media::MediaPool::new(), seq.fps);
+        klipp_document::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut pool, fps: &mut fps }.apply_inverse(&step);
+        assert_eq!(serde_json::to_value(&seqs[0].tracks).unwrap(), serde_json::to_value(&before.tracks).unwrap(), "undone, frozen again");
+        assert!(unfreeze_all(&mut seq, TrackKind::Video).is_none(), "nothing frozen left");
     }
 }

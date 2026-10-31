@@ -112,6 +112,14 @@ Write the subtitle clips (the text clips when there are none) to an absolute pat
 
 Change a marker's label, note, colour or kind, by its id from klipp_list_markers. Mark a todo done by changing its kind or colour, rather than removing the note.
 
+## klipp_clear_frozen
+
+Clear the open project's frozen frames and frozen sound: the files a frozen track plays from, kept in the project's cache. The tracks frozen so in the open sequence play live again, as one undo step; undone, they are frozen again and drawn anew. A frozen track's state is in `timeline`. To unfreeze one track and keep its files, use set_track frozen false through klipp_apply.
+
+Arguments:
+- `frames`: Clear frozen video tracks' frames (default true)
+- `sound`: Clear frozen audio tracks' stems (default true)
+
 ## klipp_append_clip
 
 Append a media pool item to the end of the timeline as a new clip. A clip at a frame rate other than the project's is added without changing the project's rate.

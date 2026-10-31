@@ -3268,7 +3268,7 @@ impl PreferencesPanel {
         // ── LIMITS section ──
         Self::section_header(ui, "LIMITS", theme);
 
-        Self::setting_row_with_subtitle(ui, "Max cache size", "The render cache's cap: past it the least recently used frames go", theme, |ui| {
+        Self::setting_row_with_subtitle(ui, "Max cache size", "Frozen tracks' frames and sound are kept first; the render cache keeps to the rest, its least recently used frames going past it", theme, |ui| {
             let mut v = prefs.media_cache.max_cache_size_gb;
             if ui.add(egui::DragValue::new(&mut v).range(1..=500).speed(1.0).suffix(" GB")).changed() {
                 prefs.media_cache.max_cache_size_gb = v; *dirty = true;

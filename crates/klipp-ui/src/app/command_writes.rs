@@ -135,6 +135,8 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::CancelProxy { .. }
         | AppCommand::SetRenderCacheEnabled(..)
         | AppCommand::SetRenderCacheLimitGb(..)
+        | AppCommand::SetRenderCacheReserved(..)
+        | AppCommand::ClearRenderCacheAll
         | AppCommand::CleanOrphanedCaches
         | AppCommand::ClearCacheCategory { .. }
         | AppCommand::RefreshCacheManager
@@ -793,6 +795,7 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::SetTrackLocked { .. }
         | AppCommand::SetTrackFrozen { .. }
         | AppCommand::SetTrackLockWhileFrozen { .. }
+        | AppCommand::ClearFrozenCache { .. }
         | AppCommand::SetTrackCustomHeight { .. }
         | AppCommand::SetTrackAutomationLaneHeight { .. }
         | AppCommand::GroupClips { .. }
