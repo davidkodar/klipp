@@ -657,8 +657,33 @@ impl GpuEffectsPipeline {
     #[doc(hidden)]
     pub fn end_slot_run(&mut self) -> usize {
         let peak = self.slot_pool.end_run();
+        self.trim_if_pressed();
         self.report_memory(peak);
         peak
+    }
+
+    /// The GPU ran out of memory since the last run (#3174): what its
+    /// caches keep for reuse is let go, the slots, the stack's layers, the
+    /// titles' sprites, the flow pairs and the neighbours kept, and the
+    /// device waited on so it is freed before the next frame asks for
+    /// more. The chain's own buffers stay, the next frame needs them.
+    fn trim_if_pressed(&mut self) {
+        let now = crate::gpu_context::memory_pressure();
+        if now == self.pressure_seen {
+            return;
+        }
+        self.pressure_seen = now;
+        self.slot_pool.retain_keys(&[]);
+        self.stack_layers.clear();
+        self.stack_acc = None;
+        self.stack_buf_size = 0;
+        self.stack_sprites.clear();
+        if let Some(flow) = self.flow_gpu.as_mut() {
+            flow.let_go();
+        }
+        self.neighbour_pool.lock().unwrap_or_else(|e| e.into_inner()).trim_if_pressed();
+        let _ = self.device.poll(wgpu::Maintain::Wait);
+        tracing::warn!("GPU memory ran out: the effect caches let go of what they keep, and the next frame tries again");
     }
 
     /// What each of its caches holds now, into the GPU memory report

@@ -18,7 +18,7 @@ impl GpuEffectsPipeline {
     /// A buffer of `size` bytes for a neighbour decode: one kept, or made.
     /// Past [`NEIGHBOURS_IN_FLIGHT`] decodes not yet done, the GPU is
     /// waited on first.
-    fn neighbour_buffer(&self, size: u64) -> std::sync::Arc<wgpu::Buffer> {
+    pub(super) fn neighbour_buffer(&self, size: u64) -> std::sync::Arc<wgpu::Buffer> {
         use std::sync::atomic::Ordering;
         if self.neighbours_in_flight.load(Ordering::Acquire) >= NEIGHBOURS_IN_FLIGHT {
             let _ = self.device.poll(wgpu::Maintain::Wait);

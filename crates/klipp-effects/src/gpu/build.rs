@@ -1014,6 +1014,7 @@ impl GpuEffectsPipeline {
             memory_gauges: MemoryGauges::default(),
             neighbour_pool: std::sync::Mutex::new(crate::nv12_gpu::ResidentPool::with_cap("temporal_neighbour_kept", NEIGHBOURS_KEPT, crate::gpu_memory::Held::Neighbours, crate::gpu_memory::Made::Neighbour)),
             neighbours_in_flight: Default::default(),
+            pressure_seen: crate::gpu_context::memory_pressure(),
             device_lost,
             submit_count: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             frame_upload_count: Arc::new(std::sync::atomic::AtomicU64::new(0)),

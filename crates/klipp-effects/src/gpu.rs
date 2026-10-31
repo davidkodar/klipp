@@ -568,6 +568,8 @@ pub struct GpuEffectsPipeline {
     neighbour_pool: std::sync::Mutex<crate::nv12_gpu::ResidentPool>,
     /// Neighbour decodes submitted and not yet done on the GPU (#3174).
     neighbours_in_flight: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    /// The memory pressure its caches last trimmed at (#3174).
+    pressure_seen: u64,
     /// Whether anything has been blended into the accumulator yet.
     stack_acc_touched: bool,
     stack_dims: (u32, u32),
