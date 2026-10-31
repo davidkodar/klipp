@@ -567,6 +567,10 @@ impl KlippApp {
             if kb.is_action_pressed("freeze_frame", i) {
                 cmds.push(AppCommand::InsertFreezeFrame { duration_secs: 2.0 });
             }
+            // Freeze the selected clip's track, or play it live (#3207).
+            if kb.is_action_pressed("freeze_track", i) {
+                cmds.extend(crate::timeline::freeze_marks::toggle_selected(&self.state));
+            }
             // Toggle loop playback
             if kb.is_action_pressed("toggle_loop", i) {
                 cmds.push(AppCommand::ToggleLoopPlayback);

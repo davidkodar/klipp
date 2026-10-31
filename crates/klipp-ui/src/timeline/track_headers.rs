@@ -567,6 +567,36 @@ pub fn show(
             toggle_lock = Some(track_idx);
         }
 
+        // Frozen (#3207): a snowflake where an audio track has its lane
+        // button, in the accent once every frame is drawn, dim with a line
+        // filling under the header while they're drawn, amber while some
+        // play live; its tooltip says how far.
+        if track.frozen && track.kind == TrackKind::Video {
+            let snow_rect = egui::Rect::from_min_size(
+                egui::pos2(track_rect.max.x - btn_size * 5.0 - 20.0, track_rect.center().y - btn_size / 2.0),
+                egui::vec2(btn_size, btn_size),
+            );
+            let snow_resp = ui.allocate_rect(snow_rect, egui::Sense::hover());
+            let status = klipp_engine::freeze::status(track.id);
+            let state = status.as_ref().map_or(klipp_engine::freeze::FreezeState::Stale, |s| s.state());
+            let colour = match state {
+                klipp_engine::freeze::FreezeState::Current => theme.accent,
+                klipp_engine::freeze::FreezeState::Drawing(_) => theme.text_dim,
+                klipp_engine::freeze::FreezeState::Stale => theme.marker_warning,
+            };
+            Icon::Snowflake.image(12.0).tint(colour).paint_at(ui, snow_rect.shrink(2.0));
+            if let klipp_engine::freeze::FreezeState::Drawing(p) = state {
+                let y = track_rect.max.y - 2.0;
+                let full = egui::Rect::from_min_max(egui::pos2(track_rect.min.x, y), egui::pos2(track_rect.max.x, track_rect.max.y));
+                ui.painter().rect_filled(full, 0.0, theme.bg_raised);
+                let done = egui::Rect::from_min_max(full.min, egui::pos2(full.min.x + full.width() * p.clamp(0.0, 1.0), full.max.y));
+                ui.painter().rect_filled(done, 0.0, theme.accent);
+                ui.ctx().request_repaint_after(std::time::Duration::from_millis(250));
+            }
+            let said = status.map_or_else(|| "Frozen".to_string(), |s| s.describe());
+            styled_tooltip(&snow_resp, theme, &said, None);
+        }
+
         let track_role = track.magnetic_role.clone();
         let track_id = track.id;
         let track_kind = track.kind;
@@ -773,8 +803,16 @@ pub fn show(
                     || "Draw this track's frames in the background and play it from them, so a heavy track stops costing playback. Edits draw the changed frames again.".to_string(),
                     |s| s.describe(),
                 );
-                if menu_toggle(ui, "Freeze Track", "", frozen).on_hover_text(hint).clicked() {
+                if menu_toggle(ui, "Freeze Track", "Ctrl+Shift+F", frozen).on_hover_text(hint).clicked() {
                     cmds.push(AppCommand::SetTrackFrozen { track_id, frozen: !frozen });
+                    ui.close_menu();
+                }
+                let lock = t.lock_while_frozen;
+                if menu_toggle(ui, "Lock While Frozen", "", lock)
+                    .on_hover_text("Frozen, the track is locked so no edit makes its frames stale; played live again, it is unlocked")
+                    .clicked()
+                {
+                    cmds.push(AppCommand::SetTrackLockWhileFrozen { track_id, on: !lock });
                     ui.close_menu();
                 }
             }

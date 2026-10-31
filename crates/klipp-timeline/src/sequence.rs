@@ -1484,6 +1484,10 @@ pub struct Track {
     /// cache, where they are current, instead of drawn live.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub frozen: bool,
+    /// Locked while frozen (#3207): freezing locks the track, so no edit
+    /// makes its frames stale; playing it live again unlocks it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub lock_while_frozen: bool,
     /// Sync lock (#915): a ripple on another track moves this one's clips
     /// by the same amount, so what is above or below the edit stays in
     /// sync with it.
@@ -1673,6 +1677,24 @@ pub struct TrackMix {
 }
 
 impl Track {
+    /// Frozen or played live again (#3207), locked or unlocked with it
+    /// when it's [`Self::lock_while_frozen`].
+    pub fn set_frozen(&mut self, frozen: bool) {
+        self.frozen = frozen;
+        if self.lock_while_frozen {
+            self.locked = frozen;
+        }
+    }
+
+    /// [`Self::lock_while_frozen`] on or off; a frozen track locks or
+    /// unlocks with it at once.
+    pub fn set_lock_while_frozen(&mut self, on: bool) {
+        self.lock_while_frozen = on;
+        if self.frozen {
+            self.locked = on;
+        }
+    }
+
     /// Its volume, pan, mute and solo.
     pub fn mix(&self) -> TrackMix {
         TrackMix { volume: self.volume, pan: self.pan, muted: self.muted, solo: self.solo }
@@ -1770,6 +1792,7 @@ impl Track {
             automation_lane_visible: None,
             automation_lane_track: false,
             frozen: false,
+            lock_while_frozen: false,
             automation: Default::default(),
             automation_lane_height: None,
             effects: TrackEffects::default(),
@@ -5192,5 +5215,23 @@ mod frozen_track_tests {
         frozen.frozen = true;
         let back: Track = serde_json::from_value(serde_json::to_value(&frozen).unwrap()).unwrap();
         assert!(back.frozen);
+    }
+
+    /// Locked while frozen: a freeze locks the track and a thaw unlocks
+    /// it; turned on while frozen, it locks at once; off, a freeze leaves
+    /// the lock alone.
+    #[test]
+    fn a_track_locked_while_frozen_locks_and_unlocks_with_it() {
+        let mut t = Track::new("V1", TrackKind::Video);
+        t.set_frozen(true);
+        assert!(!t.locked, "not asked to lock");
+        t.set_lock_while_frozen(true);
+        assert!(t.locked, "frozen, and now locked while frozen");
+        t.set_frozen(false);
+        assert!(!t.frozen && !t.locked);
+        t.set_frozen(true);
+        assert!(t.locked);
+        t.set_lock_while_frozen(false);
+        assert!(!t.locked && t.frozen);
     }
 }

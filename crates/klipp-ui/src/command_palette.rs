@@ -310,6 +310,10 @@ pub fn build(state: &AppState) -> Vec<PaletteEntry> {
         action: PaletteAction::Cmd(AppCommand::CreateAdjustmentLayer), enabled: true });
     e.push(PaletteEntry { label: Cow::Borrowed("Create Multicam Clip"), shortcut: Cow::Borrowed(""),
         action: PaletteAction::Cmd(AppCommand::CreateMulticamClip), enabled: true });
+    // Freeze (#3207): the selected clip's track.
+    e.push(PaletteEntry { label: Cow::Borrowed("Freeze or Unfreeze Track of Selected Clip"), shortcut: Cow::Borrowed("Ctrl+Shift+F"),
+        action: PaletteAction::Custom(|state, cmds| cmds.extend(crate::timeline::freeze_marks::toggle_selected(state))),
+        enabled: crate::timeline::freeze_marks::toggle_selected(state).is_some() });
     e.push(PaletteEntry { label: Cow::Borrowed("Add Video Track"), shortcut: Cow::Borrowed(""),
         action: PaletteAction::Cmd(AppCommand::AddVideoTrack), enabled: true });
     e.push(PaletteEntry { label: Cow::Borrowed("Add Audio Track"), shortcut: Cow::Borrowed(""),

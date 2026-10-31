@@ -15,6 +15,7 @@ pub mod stacked;
 pub mod mask_lane;
 pub mod param_lane;
 pub mod markers;
+pub mod freeze_marks;
 pub mod auto_fit;
 
 use crate::state::AppState;
@@ -634,6 +635,7 @@ impl NewTimelinePanel {
             state.active_tool = klipp_core::Tool::Text;
         }
         markers::draw_lines(ui, tracks_rect, ruler_rect.left(), state, pps, scroll_x);
+        freeze_marks::draw(ui, tracks_rect, &old_timeline.frame_cache.track_rects, ruler_rect.left(), state, theme, pps, scroll_x);
         // A trim amount being typed for the selected edit points (#913).
         // A dynamic trim under way (#914): how far, and the keys.
         if let (Some(cut), None) = (state.dynamic_trim, &state.trim_entry) {
@@ -1149,10 +1151,42 @@ mod menu_smoke_tests {
         assert!(sent.iter().any(|c| matches!(c, AppCommand::SetTrackFrozen { track_id: t, frozen: true } if *t == track_id)), "{sent:?}");
 
         let mut timeline = Timeline::new();
+        let track_id = timeline.state.sequences[0].tracks[v1].id;
+        let at = timeline.header(TrackKind::Video);
+        timeline.right_click(at);
+        let drawn = timeline.frame(Vec::new());
+        let item = drawn.iter().find(|(t, _)| t == "Lock While Frozen").unwrap_or_else(|| panic!("Lock While Frozen in the header's menu: {drawn:?}")).1;
+        let sent = timeline.click(item);
+        assert!(sent.iter().any(|c| matches!(c, AppCommand::SetTrackLockWhileFrozen { track_id: t, on: true } if *t == track_id)), "{sent:?}");
+
+        let mut timeline = Timeline::new();
         let at = timeline.header(TrackKind::Audio);
         timeline.right_click(at);
         let drawn = timeline.frame(Vec::new());
-        assert!(!drawn.iter().any(|(t, _)| t == "Freeze Track"), "{drawn:?}");
+        assert!(!drawn.iter().any(|(t, _)| t == "Freeze Track" || t == "Lock While Frozen"), "{drawn:?}");
+    }
+
+    /// #3207: Freeze Track's key and palette entry act on the selected
+    /// clip's track: freezing it, or playing it live when it's frozen;
+    /// nothing without a clip on a video track selected.
+    #[test]
+    fn the_freeze_key_acts_on_the_selected_clip_s_track() {
+        let mut state = crate::state::AppState::default();
+        assert!(freeze_marks::toggle_selected(&state).is_none(), "nothing selected");
+        let v = state.sequences[0].tracks.iter().position(|t| t.kind == TrackKind::Video).unwrap();
+        let a = state.sequences[0].tracks.iter().position(|t| t.kind == TrackKind::Audio).unwrap();
+        let t = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 24);
+        let pic = Clip::media(klipp_core::MediaId::new(), t(0.0), t(2.0), t(0.0), t(2.0));
+        let sound = Clip::media(klipp_core::MediaId::new(), t(0.0), t(2.0), t(0.0), t(2.0));
+        let (pic_id, sound_id, track_id) = (pic.id, sound.id, state.sequences[0].tracks[v].id);
+        state.sequences[0].tracks[v].clips.push(pic);
+        state.sequences[0].tracks[a].clips.push(sound);
+        state.selected_clip = Some(pic_id);
+        assert!(matches!(freeze_marks::toggle_selected(&state), Some(AppCommand::SetTrackFrozen { track_id: id, frozen: true }) if id == track_id));
+        state.sequences[0].tracks[v].frozen = true;
+        assert!(matches!(freeze_marks::toggle_selected(&state), Some(AppCommand::SetTrackFrozen { frozen: false, .. })));
+        state.selected_clip = Some(sound_id);
+        assert!(freeze_marks::toggle_selected(&state).is_none(), "a sound clip's track doesn't freeze");
     }
 
     /// #239: a video clip whose file is there offers Track Subject, and

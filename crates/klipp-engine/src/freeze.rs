@@ -178,6 +178,12 @@ pub struct FreezeTally {
     pub on_cpu: usize,
     pub full: bool,
     pub cancelled: bool,
+    /// The frames gone through, in the request's order: those after are
+    /// still to draw (a full cache or a cancel stopped it).
+    pub reached: usize,
+    /// The frames that play live, and those that couldn't be drawn.
+    pub live_frames: Vec<Timecode>,
+    pub failed_frames: Vec<Timecode>,
 }
 
 impl FreezeRequest {
@@ -241,6 +247,25 @@ pub fn track_frames(seq: &Sequence, track: usize, from: Timecode) -> Vec<Timecod
     after.into_iter().chain(before).map(tc).collect()
 }
 
+/// `frames` (at the sequence's rate, as [`track_frames`] gives them) as
+/// spans of frames one after another: each from its first frame's start
+/// to its last frame's end.
+pub fn spans(frames: &[Timecode], fps: klipp_core::Fps) -> Vec<(Timecode, Timecode)> {
+    let step = i64::from(fps.den.max(1));
+    let mut v: Vec<i64> = frames.iter().map(|t| t.value).collect();
+    v.sort_unstable();
+    v.dedup();
+    let rate = frames.first().map_or(fps.num, |t| t.rate);
+    let mut out: Vec<(Timecode, Timecode)> = Vec::new();
+    for f in v {
+        match out.last_mut() {
+            Some((_, end)) if end.value == f => end.value = f + step,
+            _ => out.push((Timecode { value: f, rate }, Timecode { value: f + step, rate })),
+        }
+    }
+    out
+}
+
 /// How a frozen track stands (#3207), as its freeze job last told it.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct FreezeStatus {
@@ -252,9 +277,34 @@ pub struct FreezeStatus {
     pub tally: Option<FreezeTally>,
     /// Why nothing is frozen: no saved project to keep the frames in.
     pub unsaved: bool,
+    /// Where it plays live though frozen: frames that read other tracks.
+    pub live: Vec<(Timecode, Timecode)>,
+    /// Where its frames aren't drawn yet, or couldn't be: played live.
+    pub stale: Vec<(Timecode, Timecode)>,
+}
+
+/// How a frozen track stands, in one word: what its header shows.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum FreezeState {
+    /// Its frames being drawn: the share done.
+    Drawing(f32),
+    /// Every frame it can play frozen is drawn.
+    Current,
+    /// Frames waiting, not drawn or not kept: they play live.
+    Stale,
 }
 
 impl FreezeStatus {
+    pub fn state(&self) -> FreezeState {
+        if let Some(p) = self.progress {
+            return FreezeState::Drawing(p);
+        }
+        match &self.tally {
+            Some(t) if !self.unsaved && !t.full && t.failed == 0 && t.stored + t.current + t.live + t.empty >= self.frames => FreezeState::Current,
+            _ => FreezeState::Stale,
+        }
+    }
+
     /// The status in a few words, for the timeline text and the header.
     pub fn describe(&self) -> String {
         if self.unsaved {
@@ -317,17 +367,22 @@ pub fn spawn_freeze<S: FrameSource + 'static>(req: FreezeRequest, store: Arc<Mut
             match req.freeze_frame(&mut renderer, &store, *at, &mut src, &mut tally.on_cpu) {
                 FrameOutcome::Stored => tally.stored += 1,
                 FrameOutcome::Current => tally.current += 1,
-                FrameOutcome::Live(_) => tally.live += 1,
+                FrameOutcome::Live(_) => {
+                    tally.live += 1;
+                    tally.live_frames.push(*at);
+                }
                 FrameOutcome::Empty => tally.empty += 1,
                 FrameOutcome::Failed(why) => {
                     tracing::warn!("freeze: track {} at {:.3} s: {why}", req.track + 1, at.to_secs_f64());
                     tally.failed += 1;
+                    tally.failed_frames.push(*at);
                 }
                 FrameOutcome::Full => {
                     tally.full = true;
                     break;
                 }
             }
+            tally.reached = i + 1;
             progress.set((i + 1) as f32 / n as f32);
         }
         done(tally);
@@ -435,6 +490,7 @@ mod tests {
         job.join();
         let tally = rx.recv().unwrap();
         assert!(tally.cancelled && tally.stored < frames.len(), "{tally:?}");
+        assert_eq!(tally.reached, tally.stored, "gone through as far as it stored: the rest is still to draw");
         let ns = namespace(flat.tracks[0].id);
         let kept = s.lock().unwrap().frames(&ns);
         assert_eq!(kept.len(), tally.stored);
@@ -466,7 +522,9 @@ mod tests {
         assert!(held < 1.0, "not done while paused");
         job.resume();
         job.join();
-        assert_eq!(rx.recv().unwrap().stored, frames.len());
+        let tally = rx.recv().unwrap();
+        assert_eq!((tally.stored, tally.reached), (frames.len(), frames.len()));
+        assert!(tally.live_frames.is_empty() && tally.failed_frames.is_empty());
         let _ = std::fs::remove_dir_all(&d);
     }
 }
@@ -525,5 +583,33 @@ mod track_frames_tests {
         s.tally = Some(FreezeTally { stored: 5, full: true, ..Default::default() });
         assert!(s.describe().ends_with("the cache is full"), "{}", s.describe());
         assert!(FreezeStatus { unsaved: true, ..Default::default() }.describe().contains("until the project is saved"));
+    }
+
+    /// Frames one after another make one span, from the first frame's
+    /// start to the last one's end, in whatever order they come.
+    #[test]
+    fn frames_make_spans() {
+        let fps = Fps::ntsc_29970();
+        let f = |n: i64| Timecode { value: n * 1001, rate: 30_000 };
+        let s = spans(&[f(5), f(3), f(4), f(9), f(4)], fps);
+        assert_eq!(s, vec![(f(3), f(6)), (f(9), f(10))]);
+        assert!(spans(&[], fps).is_empty());
+    }
+
+    #[test]
+    fn a_status_is_drawing_current_or_stale() {
+        let drawing = FreezeStatus { frames: 10, progress: Some(0.3), ..Default::default() };
+        assert_eq!(drawing.state(), FreezeState::Drawing(0.3));
+        let done = FreezeStatus { frames: 10, tally: Some(FreezeTally { stored: 6, current: 2, live: 1, empty: 1, ..Default::default() }), ..Default::default() };
+        assert_eq!(done.state(), FreezeState::Current);
+        for stale in [
+            FreezeStatus { frames: 10, ..Default::default() },
+            FreezeStatus { frames: 10, tally: Some(FreezeTally { stored: 9, ..Default::default() }), ..Default::default() },
+            FreezeStatus { frames: 10, tally: Some(FreezeTally { stored: 9, failed: 1, ..Default::default() }), ..Default::default() },
+            FreezeStatus { frames: 10, tally: Some(FreezeTally { stored: 10, full: true, ..Default::default() }), ..Default::default() },
+            FreezeStatus { frames: 10, unsaved: true, ..Default::default() },
+        ] {
+            assert_eq!(stale.state(), FreezeState::Stale, "{stale:?}");
+        }
     }
 }

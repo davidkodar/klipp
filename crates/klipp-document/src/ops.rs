@@ -952,6 +952,8 @@ pub enum Op {
         #[serde(default)]
         frozen: Option<bool>,
         #[serde(default)]
+        lock_while_frozen: Option<bool>,
+        #[serde(default)]
         volume_db: Option<f32>,
         #[serde(default)]
         pan: Option<f32>,
@@ -4784,8 +4786,8 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             join(seq, pool, i, ti, clip, *side)
         }
         Op::RemoveTrack { track, with_clips } => remove_track(seq, i, track, *with_clips),
-        Op::SetTrack { track, visible, language, locked, frozen, volume_db, pan, mute, solo } => {
-            let own = TrackOwnSet { visible: *visible, language: language.as_deref(), locked: *locked, frozen: *frozen };
+        Op::SetTrack { track, visible, language, locked, frozen, lock_while_frozen, volume_db, pan, mute, solo } => {
+            let own = TrackOwnSet { visible: *visible, language: language.as_deref(), locked: *locked, frozen: *frozen, lock_while_frozen: *lock_while_frozen };
             set_track(seq, i, track, own, TrackMixSet { volume_db: *volume_db, pan: *pan, mute: *mute, solo: *solo })
         }
         Op::TrackAutomation { track, param, mode, keys } => track_automation(seq, i, track, *param, *mode, keys.as_deref()),
@@ -5652,17 +5654,18 @@ struct TrackOwnSet<'a> {
     language: Option<&'a str>,
     locked: Option<bool>,
     frozen: Option<bool>,
+    lock_while_frozen: Option<bool>,
 }
 
 fn set_track(seq: &Sequence, i: usize, track: &TrackRef, own: TrackOwnSet, mix: TrackMixSet) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
-    let TrackOwnSet { visible, language, locked, frozen } = own;
+    let TrackOwnSet { visible, language, locked, frozen, lock_while_frozen } = own;
     let ti = resolve_track(seq, track, i)?;
     let t = &seq.tracks[ti];
     let mixes = mix.volume_db.is_some() || mix.pan.is_some() || mix.mute.is_some() || mix.solo.is_some();
-    if visible.is_none() && language.is_none() && locked.is_none() && frozen.is_none() && !mixes {
-        return Err(refuse(i, "nothing to set", "give visible, language, locked, frozen, volume_db, pan, mute, solo or more than one"));
+    if visible.is_none() && language.is_none() && locked.is_none() && frozen.is_none() && lock_while_frozen.is_none() && !mixes {
+        return Err(refuse(i, "nothing to set", "give visible, language, locked, frozen, lock_while_frozen, volume_db, pan, mute, solo or more than one"));
     }
-    if frozen == Some(true) && t.kind != TrackKind::Video {
+    if (frozen == Some(true) || lock_while_frozen.is_some()) && t.kind != TrackKind::Video {
         return Err(refuse(i, format!("track {ti} is a {:?} track", t.kind), "freeze a video track: sound and captions play live"));
     }
     // Its mixer controls, as the fader and its buttons set them (#3165).
@@ -5699,7 +5702,7 @@ fn set_track(seq: &Sequence, i: usize, track: &TrackRef, own: TrackOwnSet, mix: 
             }
         }
     }
-    if visible.is_none() && language.is_none() && locked.is_none() && frozen.is_none() {
+    if visible.is_none() && language.is_none() && locked.is_none() && frozen.is_none() && lock_while_frozen.is_none() {
         let what = if mixed.is_empty() { "as it was".to_string() } else { mixed.join(", ") };
         return Ok((format!("track {ti} {} {what}", quoted(&t.name)), EditCommand::SetTrackMix { changes: mix_changes }, Vec::new()));
     }
@@ -5721,9 +5724,17 @@ fn set_track(seq: &Sequence, i: usize, track: &TrackRef, own: TrackOwnSet, mix: 
         new.locked = l;
         what.push(if l { "locked" } else { "unlocked" }.to_string());
     }
+    // Locked while frozen first, so a freeze in the same step locks it.
+    if let Some(on) = lock_while_frozen {
+        new.set_lock_while_frozen(on);
+        what.push(if on { "locked while frozen" } else { "not locked while frozen" }.to_string());
+    }
     if let Some(f) = frozen {
-        new.frozen = f;
+        new.set_frozen(f);
         what.push(if f { "frozen: its frames are drawn in the background, then it plays from them" } else { "live" }.to_string());
+        if new.lock_while_frozen {
+            what.push(if f { "locked" } else { "unlocked" }.to_string());
+        }
     }
     what.extend(mixed);
     let set = EditCommand::SetTrack { description: "Track", track_index: ti, old: Box::new(t.clone()), new: Box::new(new) };
@@ -21991,6 +22002,18 @@ mod freeze_track_tests {
         for t in [1, 2] {
             let refused = resolve(&seq, &pool, &[op(serde_json::json!({ "op": "set_track", "track": t, "frozen": true }))]).unwrap_err();
             assert!(refused.hint.contains("freeze a video track"), "track {t}: {refused:?}");
+            assert!(resolve(&seq, &pool, &[op(serde_json::json!({ "op": "set_track", "track": t, "lock_while_frozen": true }))]).is_err());
         }
+
+        // Locked while frozen, in the same step as the freeze: locked; the
+        // thaw unlocks it.
+        let both = resolve(&seq, &pool, &[op(serde_json::json!({ "op": "set_track", "track": 0, "frozen": true, "lock_while_frozen": true }))]).unwrap();
+        let EditCommand::SetTrack { new, .. } = &both.steps[0].edit else { panic!() };
+        assert!(new.frozen && new.locked && new.lock_while_frozen, "{}", both.steps[0].what);
+        let mut held = seq.clone();
+        held.tracks[0] = (**new).clone();
+        let thaw = resolve(&held, &pool, &[op(serde_json::json!({ "op": "set_track", "track": 0, "frozen": false }))]).unwrap();
+        let EditCommand::SetTrack { new, .. } = &thaw.steps[0].edit else { panic!() };
+        assert!(!new.frozen && !new.locked, "{}", thaw.steps[0].what);
     }
 }

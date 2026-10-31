@@ -1236,7 +1236,14 @@ impl KlippApp {
             // the freeze jobs (`freeze_jobs`), which see the change.
             AppCommand::SetTrackFrozen { track_id, frozen } => {
                 if let Some(track) = self.state.sequences[self.state.active_sequence_idx].tracks.iter_mut().find(|t| t.id == *track_id && t.kind == klipp_timeline::TrackKind::Video) {
-                    track.frozen = *frozen;
+                    track.set_frozen(*frozen);
+                    self.state.dirty = true;
+                }
+                true
+            }
+            AppCommand::SetTrackLockWhileFrozen { track_id, on } => {
+                if let Some(track) = self.state.sequences[self.state.active_sequence_idx].tracks.iter_mut().find(|t| t.id == *track_id && t.kind == klipp_timeline::TrackKind::Video) {
+                    track.set_lock_while_frozen(*on);
                     self.state.dirty = true;
                 }
                 true

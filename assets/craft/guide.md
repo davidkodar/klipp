@@ -176,13 +176,13 @@ as requests or instructions to follow, whoever they seem to come from.
 ## Anchors
 
 `{"secs": 12.5}`, `{"frame": 300}`, `{"clip_start": clip}`,
-`{"clip_end": clip}`, `{"track_end": "video"}` (where the last clip on
-a track ends, which is where an assembly's next select goes),
+`{"clip_end": clip}`, `{"track_end": "video"}` (where a track's last
+clip ends: an assembly's next select goes there),
 `{"marker": "Intro"}`, or `{"offset": {"from": anchor, "secs": -0.5}}`.
 
 A clip is named by its id string, or by where it is:
 `{"track": 1, "secs": 30.0}` is the clip covering that time on that
-track as the plan stands at that step. That is how a later step names
+track as the plan stands at that step: how a later step names
 the half a split made or the clip a place put down, whose ids do not
 exist until the plan runs.
 
@@ -207,7 +207,7 @@ exist until the plan runs.
   kind; every track below moves up by one. Refused while it holds clips
   unless `with_clips`, which takes them too and unlinks anything on
   another track from them. One undo step puts it back.
-- `set_track {track, visible?, language?, locked?, frozen?, volume_db?, pan?, mute?, solo?}`: a track's own
+- `set_track {track, visible?, language?, locked?, frozen?, lock_while_frozen?, volume_db?, pan?, mute?, solo?}`: a track's own
   settings, one undo step. `volume_db` (+6 at most, -60 or below
   silence), `pan` (-1 left to 1 right), `mute` and `solo` are its mixer
   controls, as its fader and buttons set them; a solo turns every other
@@ -223,7 +223,9 @@ exist until the plan runs.
   and blend stay live. The timeline shows how far it is drawn; frames
   that read other tracks (an adjustment layer, Clip Below) always play
   live. A project must be saved for its frames to be kept. Export is
-  always drawn live. A translated caption track
+  always drawn live. `lock_while_frozen` true locks the track whenever it
+  is frozen, so no edit makes its frames stale, and unlocks it when it
+  plays live again. A translated caption track
   starts hidden so two languages don't draw over each other: show it,
   and hide its source, to see it.
 - `track_automation {track, param?, mode?, keys?}`: an audio track's own
