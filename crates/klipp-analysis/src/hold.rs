@@ -25,7 +25,9 @@ pub fn install(f: Check) {
 
 /// Whether analysis should wait right now.
 pub fn held() -> bool {
-    check().lock().ok().and_then(|c| c.as_ref().map(|f| f())).unwrap_or(false)
+    // Called outside the lock: a check that panics leaves it usable.
+    let f = check().lock().unwrap_or_else(|e| e.into_inner()).clone();
+    f.is_some_and(|f| f())
 }
 
 const POLL: Duration = Duration::from_millis(100);

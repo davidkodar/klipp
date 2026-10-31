@@ -35,11 +35,11 @@ const KEEP: usize = 4;
 /// The pass for `item`, run now if no analyser has asked for it yet.
 pub(crate) fn get(ctx: &crate::AnalysisCtx, item: &klipp_media::MediaItem) -> Result<Arc<VideoPass>, String> {
     let key = crate::store::key_for(&item.path).ok_or("file not readable")?;
-    if let Some((_, p)) = cache().lock().map_err(|_| "video pass cache poisoned")?.iter().find(|(k, _)| *k == key) {
+    if let Some((_, p)) = cache().lock().unwrap_or_else(|e| e.into_inner()).iter().find(|(k, _)| *k == key) {
         return Ok(Arc::clone(p));
     }
     let pass = Arc::new(run(ctx, item)?);
-    let mut c = cache().lock().map_err(|_| "video pass cache poisoned")?;
+    let mut c = cache().lock().unwrap_or_else(|e| e.into_inner());
     c.retain(|(k, _)| *k != key);
     c.push((key, Arc::clone(&pass)));
     if c.len() > KEEP {
