@@ -274,6 +274,10 @@ fn frei0r_payload(node: &Node, key: &str, value: &Value) -> Result<Option<Value>
     };
     if key == "type_id" {
         let id = value.as_str().filter(|s| s.starts_with("frei0r:")).ok_or("type_id is a frei0r plug-in's id, frei0r:<path>:<name>")?;
+        // An installed plug-in's own id, or refused (#3200): one nothing
+        // renders used to be taken, and the picture passed through.
+        let id = klipp_effects::frei0r_effect::canonical_type_id(id)?;
+        let id = id.as_str();
         if id != type_id {
             // Another plug-in's values aren't this one's.
             params.clear();
@@ -402,11 +406,16 @@ mod tests {
 
     /// A frei0r node added by its registry id takes its plug-in and its
     /// values as typed writes of its entry; another plug-in drops the
-    /// values; a value that isn't one, or an id that isn't frei0r's, is
-    /// refused; any other effect is left to its own parameters.
+    /// values; a value that isn't one, or an id that isn't frei0r's or no
+    /// installed plug-in's (#3200), is refused, and one in another case
+    /// is stored as the plug-in's own; any other effect is left to its own
+    /// parameters.
     #[test]
     fn a_frei0r_nodes_plug_in_and_values_are_set_whole() {
         use klipp_effects::BuiltinEffect;
+        klipp_effects::frei0r_effect::_register_named_for_test("/usr/lib/frei0r-1/saturat0r.so", "saturat0r");
+        klipp_effects::frei0r_effect::_register_named_for_test("/x.so", "x");
+        klipp_effects::frei0r_effect::_register_named_for_test("/usr/lib/frei0r-1/klipp3200.so", "Klipp3200");
         let mut node = new_node("klipp.fx.frei0r", uuid::Uuid::new_v4(), None).unwrap();
         let set = |node: &Node, key: &str, value: Value| frei0r_payload(node, key, &value).map(|p| p.map(|p| serde_json::from_value::<BuiltinEffect>(p).unwrap()));
         let id = "frei0r:/usr/lib/frei0r-1/saturat0r.so:saturat0r";
@@ -420,6 +429,10 @@ mod tests {
         assert!(matches!(&other, BuiltinEffect::Frei0r { params, .. } if params.is_empty()), "another plug-in's values aren't kept");
         assert!(set(&node, "params", json!([0.25])).is_err(), "a bare number isn't a frei0r value");
         assert!(set(&node, "type_id", json!("saturat0r")).is_err(), "not a frei0r id");
+        let unknown = set(&node, "type_id", json!("frei0r:/usr/lib/frei0r-1/nothing3200.so:nothing3200")).unwrap_err();
+        assert!(unknown.contains("is installed") && unknown.contains("saturat0r"), "no installed plug-in's, the installed named: {unknown}");
+        let cased = set(&node, "type_id", json!("frei0r:/elsewhere/klipp3200.so:klipp3200")).unwrap().unwrap();
+        assert!(matches!(&cased, BuiltinEffect::Frei0r { type_id, .. } if type_id == "frei0r:/usr/lib/frei0r-1/klipp3200.so:Klipp3200"), "stored as the plug-in's own id: {cased:?}");
         let blur = new_node("klipp.fx.gaussian_blur", uuid::Uuid::new_v4(), None).unwrap();
         assert!(frei0r_payload(&blur, "type_id", &json!(id)).unwrap().is_none());
     }

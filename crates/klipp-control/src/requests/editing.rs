@@ -811,7 +811,12 @@ pub(crate) fn respond(
             use crate::protocol::EffectAction as A;
             let clip_id = existing_clip_id(ctx, &clip_id)?;
             let effect = || -> Result<klipp_effects::BuiltinEffect, String> {
-                serde_json::from_value(effect.clone().ok_or("this action carries an effect")?).map_err(|e| format!("the effect: {e}"))
+                let effect = serde_json::from_value(effect.clone().ok_or("this action carries an effect")?).map_err(|e| format!("the effect: {e}"))?;
+                // A frei0r plug-in by its installed id, or refused (#3200).
+                match effect {
+                    klipp_effects::BuiltinEffect::Frei0r { type_id, params } => Ok(klipp_effects::BuiltinEffect::Frei0r { type_id: klipp_effects::frei0r_effect::canonical_type_id(&type_id)?, params }),
+                    other => Ok(other),
+                }
             };
             // The inspector's drag key for the effect at this place.
             let key = format!("{clip_id:?}:builtin:{index}");

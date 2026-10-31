@@ -6052,6 +6052,11 @@ impl GraphExecutor {
             return input.to_vec();
         };
         let Some(plugin) = klipp_effects::frei0r_effect::plugin(type_id) else {
+            // Said once a plug-in, not each frame (#3200): it used to pass
+            // the picture on with nothing logged.
+            if klipp_effects::frei0r_effect::first_missing(type_id) {
+                tracing::warn!("frei0r: no installed plug-in is {type_id}; its node passes the picture on unchanged");
+            }
             self.run_frei0r_refused += 1;
             self.decline(node_id, NodeKind::Frei0r, crate::DeclineOutcome::PluginMissing, crate::decline::frei0r_name(type_id), "plug-in missing", format!("{type_id} isn't installed"));
             return input.to_vec();

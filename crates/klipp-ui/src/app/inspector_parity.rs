@@ -585,3 +585,24 @@ fn undoing_a_later_add_leaves_earlier_effects_ids_alone() {
     assert!(run.clip().picture_v2().unwrap().picture.graph.nodes.iter().any(|n| n.id == blur));
 }
 
+
+/// #3200: an effect added with a frei0r id no installed plug-in is (a
+/// preset or paste from another machine) is refused and said, the clip
+/// left as it was; one whose name is in another case, or whose folder is
+/// another machine's, is added as the installed plug-in's own id.
+#[test]
+fn a_frei0r_effect_is_added_only_by_an_installed_plug_ins_id() {
+    klipp_effects::frei0r_effect::_register_named_for_test("/usr/lib/frei0r-1/klipp3200ui.so", "Klipp3200Ui");
+    let tc = |s| klipp_core::RationalTime::from_secs_f64(s, 24);
+    let mut run = Run::new(klipp_timeline::Clip::media(klipp_core::MediaId::new(), tc(0.0), tc(2.0), tc(0.0), tc(2.0)));
+    let before = run.clip().picture_v2().unwrap();
+    run.apply(AppCommand::AddBuiltinEffect { clip_id: run.clip, effect: BuiltinEffect::Frei0r { type_id: "frei0r:/elsewhere/nothing3200.so:Nothing3200".into(), params: Vec::new() } });
+    assert_eq!(run.clip().picture_v2().unwrap(), before, "refused: the clip as it was");
+    assert!(run.state.toast.message_for_test().is_some_and(|m| m.contains("not added") && m.contains("klipp3200ui.so")), "said, naming what is installed: {:?}", run.state.toast.message_for_test());
+    run.apply(AppCommand::AddBuiltinEffect { clip_id: run.clip, effect: BuiltinEffect::Frei0r { type_id: "frei0r:/usr/lib64/frei0r-1/klipp3200ui.so:klipp3200ui".into(), params: Vec::new() } });
+    let added: Vec<String> = test_clip::effects(run.clip()).into_iter().filter_map(|e| match e {
+        BuiltinEffect::Frei0r { type_id, .. } => Some(type_id),
+        _ => None,
+    }).collect();
+    assert_eq!(added, ["frei0r:/usr/lib/frei0r-1/klipp3200ui.so:Klipp3200Ui"], "added as the installed plug-in's own id");
+}

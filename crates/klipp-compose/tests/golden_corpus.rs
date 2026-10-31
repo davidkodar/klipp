@@ -1801,6 +1801,56 @@ fn a_frei0r_plugin_draws_alike() {
     }
 }
 
+/// #3200: a frei0r effect whose id was written elsewhere still finds its
+/// plug-in, by its file and its name but for case (a project from a
+/// machine that installs frei0r in another folder); one no installed
+/// plug-in matches passes the picture on, said once and declined as
+/// missing, where it used to pass on with nothing said.
+#[test]
+fn a_frei0r_id_from_another_machine_finds_its_plug_in_and_a_missing_one_says_so() {
+    const FW: u32 = 64;
+    const FH: u32 = 40;
+    struct Ramp;
+    impl FrameSource for Ramp {
+        fn frame(&mut self, _c: &Clip, _s: f64, w: u32, h: u32) -> Option<SourceFrame> {
+            let px: Vec<f32> = (0..h).flat_map(|y| (0..w).flat_map(move |x| [x as f32 / w as f32, y as f32 / h as f32, 0.3, 1.0])).collect();
+            Some(SourceFrame { pixels: SourcePixels::Linear(Arc::new(px)), width: w, height: h, pts: None })
+        }
+    }
+    let with = |type_id: &str| {
+        let c = TestClip::of(media(0.0, 4.0)).effects(vec![BuiltinEffect::Frei0r { type_id: type_id.into(), params: Vec::new() }]).build();
+        let mut s = sequence(vec![track("V1", TrackKind::Video, vec![c])]);
+        s.resolution = klipp_core::Resolution { width: FW, height: FH };
+        s
+    };
+    let mut plain = sequence(vec![track("V1", TrackKind::Video, vec![media(0.0, 4.0)])]);
+    plain.resolution = klipp_core::Resolution { width: FW, height: FH };
+    let mut r = renderer(false, WorkingColorspace::Rec709Linear);
+    let opts = RenderOptions::default();
+    let before = r.render(&plain, tc(0.5), FW, FH, &mut Ramp, opts);
+    let moved = |out: &[f32]| out.iter().zip(&before).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
+
+    let gone = "frei0r:/nowhere/klipp-3200-gone.so:Gone3200";
+    for pass in 0..2 {
+        let (out, found) = r.render_inspected(&with(gone), tc(0.5), FW, FH, &mut Ramp, opts, Default::default());
+        assert_eq!(moved(&out), 0.0, "pass {pass}: the picture passed on");
+        assert!(found.declines.iter().any(|d| d.outcome == klipp_nodes::DeclineOutcome::PluginMissing), "pass {pass}: declined as missing: {:?}", found.declines);
+    }
+    assert!(!klipp_effects::frei0r_effect::first_missing(gone), "the render said it was missing");
+
+    let _ = klipp_effects::gpu_context::GpuContext::shared();
+    let plugins = klipp_frei0r::discover_frei0r_plugins();
+    let Some(info) = plugins.iter().find(|p| p.name.eq_ignore_ascii_case("invert0r")).cloned() else {
+        eprintln!("skipped the other machine's id: no frei0r invert0r plug-in is installed");
+        return;
+    };
+    klipp_effects::frei0r_effect::set_plugin_registry(plugins);
+    let file = info.path.file_name().unwrap().to_string_lossy().into_owned();
+    let elsewhere = format!("frei0r:/opt/another-machine/frei0r-1/{file}:{}", info.name.to_lowercase());
+    assert!(moved(&r.render(&with(&info.type_id()), tc(0.5), FW, FH, &mut Ramp, opts)) > 0.5, "its own id inverts");
+    assert!(moved(&r.render(&with(&elsewhere), tc(0.5), FW, FH, &mut Ramp, opts)) > 0.5, "{elsewhere} finds it and inverts");
+}
+
 /// `c` with its built-in effects taken off, through its picture.
 fn strip_effects(c: &mut Clip) {
     let n = klipp_timeline::test_clip::effects(c).len();

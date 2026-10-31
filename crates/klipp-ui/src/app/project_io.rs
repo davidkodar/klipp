@@ -1165,6 +1165,13 @@ impl KlippApp {
                 if !self.state.offline_media_ids.is_empty() {
                     self.state.show_relink_dialog = true;
                 }
+                // Frei0r plug-ins this machine hasn't (#3200): said, not
+                // left to pass the picture on unseen.
+                let missing = crate::panels::project_doctor::missing_frei0r_plugins(&self.state.sequences);
+                if let Some(said) = crate::panels::project_doctor::missing_frei0r_message(&missing) {
+                    tracing::warn!("{said} ({})", missing.join(", "));
+                    self.state.toast.show(said);
+                }
 
                 // Load grade stills (PNG sidecars in <project>/media/stills/).
                 // Reset comparison state — the previous project's selection is
