@@ -182,7 +182,11 @@ fn pump(s: &mut Service) {
                 // Below the editor's threads, and the decoder and model
                 // threads started from here inherit it.
                 klipp_jobs::lower_current_thread_priority(10);
-                let (done, failed) = run_all(&item, &ctx, force_transcript);
+                // A panic past the analysers' own catch (#3181) fails the
+                // item and still gives its place back: it used to leave
+                // `running` one up for good, and the queue a slot short.
+                let (done, failed) = caught(|| run_all(&item, &ctx, force_transcript))
+                    .unwrap_or_else(|why| (Vec::new(), vec![("analysis".to_string(), why)]));
                 let mut s = service().lock().unwrap_or_else(|e| e.into_inner());
                 s.running = s.running.saturating_sub(1);
                 if video {
@@ -217,9 +221,20 @@ fn pump(s: &mut Service) {
     }
 }
 
+/// `body`'s value, or what its panic said (#3181): an analyser that panics
+/// fails, said like any other failure, and the rest of the work goes on.
+fn caught<T>(body: impl FnOnce() -> T) -> Result<T, String> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(body)).map_err(|payload| {
+        let what = payload.downcast_ref::<&str>().map(|s| (*s).to_string()).or_else(|| payload.downcast_ref::<String>().cloned());
+        format!("it panicked: {}", what.as_deref().unwrap_or("no message"))
+    })
+}
+
 /// Every analyser that wants `item` and has no stored result, run in
 /// order; each result saved as it is made.
 fn run_all(item: &MediaItem, ctx: &AnalysisCtx, force_transcript: bool) -> (Vec<&'static str>, Vec<(String, String)>) {
+    #[cfg(test)]
+    assert!(!item.filename.starts_with("panics-in-run-all"), "the run panicked outside any analyser (a test's)");
     let mut done = Vec::new();
     let mut failed = Vec::new();
     let Some(key) = crate::store::key_for(&item.path) else {
@@ -248,7 +263,8 @@ fn run_all(item: &MediaItem, ctx: &AnalysisCtx, force_transcript: bool) -> (Vec<
             continue;
         }
         // Said as it goes: what is done so far, and what is running.
-        if let Ok(mut s) = service().lock() {
+        {
+            let mut s = service().lock().unwrap_or_else(|e| e.into_inner());
             if let Some(st) = s.statuses.get_mut(&item.id) {
                 st.done = done.clone();
                 st.current = Some(a.id());
@@ -257,10 +273,16 @@ fn run_all(item: &MediaItem, ctx: &AnalysisCtx, force_transcript: bool) -> (Vec<
         }
         crate::hold::wait();
         let t = std::time::Instant::now();
-        let run = crate::worker::run_analyser(a.as_ref(), item, ctx);
+        let run = caught(|| {
+            #[cfg(test)]
+            assert!(!item.filename.starts_with("panics-in-an-analyser"), "an analyser panicked (a test's)");
+            crate::worker::run_analyser(a.as_ref(), item, ctx)
+        })
+        .and_then(|r| r);
         let used = crate::providers::lines();
         if !used.is_empty() {
-            if let Ok(mut s) = service().lock() {
+            {
+                let mut s = service().lock().unwrap_or_else(|e| e.into_inner());
                 if let Some(st) = s.statuses.get_mut(&item.id) {
                     st.execution_providers = used;
                 }
@@ -399,6 +421,42 @@ mod queue_tests {
         assert!(st.nothing_ran.is_some() && st.done.is_empty(), "{st:?}");
     }
 
+    /// #3181: an item whose analysis panics fails, said as "it panicked",
+    /// and gives its place in the queue back, whether the panic is in an
+    /// analyser (the rest of them still run) or outside them. More items
+    /// than there are places run in turn: a place kept by a panic used to
+    /// stall the queue for good once both were lost.
+    #[test]
+    fn a_panicking_analysis_fails_and_gives_its_place_back() {
+        let dir = std::env::temp_dir().join(format!("klipp-analysis-panics-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for what in ["panics-in-an-analyser", "panics-in-run-all"] {
+            for n in 0..=MAX_RUNNING {
+                let path = dir.join(format!("{what}-{n}.mov"));
+                std::fs::write(&path, format!("not a film {n}")).unwrap();
+                let item = MediaItem::synthetic_for_test(path, None);
+                request(&item);
+                let until = std::time::Instant::now() + std::time::Duration::from_secs(20);
+                let st = loop {
+                    let st = status(item.id).unwrap();
+                    if !matches!(st.state, State::Queued | State::Running) || std::time::Instant::now() > until {
+                        break st;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                };
+                assert_eq!(st.state, State::Failed, "{what} {n}: {st:?}");
+                assert!(st.failed.iter().all(|(_, why)| why.contains("it panicked")), "{st:?}");
+                let ran = st.failed.len();
+                if what == "panics-in-an-analyser" {
+                    assert!(ran > 1, "each analyser ran and failed on its own: {st:?}");
+                } else {
+                    assert_eq!(ran, 1, "{st:?}");
+                }
+            }
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn cancel_one_queued_analysis_without_touching_other_work() {
         let mut service = Service { statuses: HashMap::new(), queue: Vec::new(), running: 1,
@@ -470,14 +528,15 @@ pub fn request_subject_matte(item: &MediaItem, model: crate::subject_matte::Matt
     let spawned = std::thread::Builder::new().name(format!("klipp-matte:{}", item.filename)).spawn(move || {
         klipp_jobs::lower_current_thread_priority(10);
         let mut progress = |done: usize, of: usize| {
-            if let Ok(mut s) = service().lock() {
+            {
+                let mut s = service().lock().unwrap_or_else(|e| e.into_inner());
                 if let Some((st, _)) = s.mattes.get_mut(&item.id) {
                     st.progress = Some(done as f32 / of.max(1) as f32);
                 }
             }
             !cancel.load(Ordering::Relaxed)
         };
-        let result = crate::subject_matte::run(&item, model, label.as_deref(), from_secs, to_secs, &mut progress);
+        let result = caught(|| crate::subject_matte::run(&item, model, label.as_deref(), from_secs, to_secs, &mut progress)).and_then(|r| r);
         let mut s = service().lock().unwrap_or_else(|e| e.into_inner());
         if let Some((st, _)) = s.mattes.get_mut(&item.id) {
             st.current = None;

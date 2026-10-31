@@ -39,7 +39,7 @@ impl KlippApp {
                 Err(why) => refused = Some(why),
                 Ok(None) => {}
                 Ok(Some((ops, label))) => {
-                    let project_identity = self.state.control_shared.project.lock().ok().map(|p| p.identity);
+                    let project_identity = Some(self.state.control_shared.project.lock().unwrap_or_else(|e| e.into_inner()).identity);
                     let now = self.state.control_shared.revision();
                     if let Some(want) = env.expected_project_identity.filter(|want| project_identity != Some(*want)) {
                         refused = Some(format!("the project changed since these ops were checked (expected identity {want}); check them again"));
@@ -69,7 +69,7 @@ impl KlippApp {
             // longer exists and nothing of it is applied.
             if !env.edits.is_empty() {
                 let now = self.state.control_shared.revision();
-                let project_identity = self.state.control_shared.project.lock().ok().map(|p| p.identity);
+                let project_identity = Some(self.state.control_shared.project.lock().unwrap_or_else(|e| e.into_inner()).identity);
                 if let Some(want) = env.expected_project_identity {
                     if project_identity != Some(want) {
                         refused = Some(format!("the project changed since this plan was made (expected identity {want}, current identity {}); plan again", project_identity.map_or_else(|| "unavailable".into(), |id| id.to_string())));
@@ -145,7 +145,8 @@ impl KlippApp {
                 // straight after it: the per-frame mirror had not run yet,
                 // and the project read as saved a moment after an edit.
                 let unsaved = self.is_unsaved();
-                if let Ok(mut project) = self.state.control_shared.project.lock() {
+                {
+                    let mut project = self.state.control_shared.project.lock().unwrap_or_else(|e| e.into_inner());
                     project.recent_projects = self.prefs.general.recent_projects.iter().map(crate::prefs::RecentProject::control_summary).collect();
                     project.path = self.state.project_path.clone();
                     project.dirty = unsaved;
@@ -337,7 +338,8 @@ impl KlippApp {
             .filter(|(i, _)| *i != self.state.active_sequence_idx)
             .map(|(_, s)| klipp_document::ops::Selects { content: klipp_document::clipboard::content_revision(s), sequence: std::sync::Arc::new(s.clone()) })
             .collect();
-        if let Ok(mut published) = self.state.control_others.write() {
+        {
+            let mut published = self.state.control_others.write().unwrap_or_else(|e| e.into_inner());
             *published = others;
             self.state.control_others_for = Some(key);
         }

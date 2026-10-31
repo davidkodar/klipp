@@ -366,7 +366,7 @@ pub(crate) fn respond(
                 let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
                 let pool = ctx.media_pool.read().recovered();
                 let mut report = klipp_document::qc::check(&seq, &pool, &AnalysedTranscripts);
-                let lut = ctx.shared.project.lock().ok().and_then(|p| p.global_lut.clone());
+                let lut = ctx.shared.project.lock().recovered().global_lut.clone();
                 klipp_document::qc::note_missing_global_lut(&mut report, lut.as_deref());
                 // What an 8-bit export renders, frozen here and sampled
                 // once the locks are let go (#2074).
@@ -731,7 +731,7 @@ pub(crate) fn respond(
         // the history names it, and what the next one would be.
         which @ (ControlCommand::Undo | ControlCommand::Redo) => {
             let undo = matches!(which, ControlCommand::Undo);
-            let labels = || ctx.shared.project.lock().map(|p| (p.undo.clone(), p.redo.clone())).unwrap_or_default();
+            let labels = || { let p = ctx.shared.project.lock().recovered(); (p.undo.clone(), p.redo.clone()) };
             let (was_undo, was_redo) = labels();
             let step = if undo { was_undo } else { was_redo };
             let mut v = send(if undo { AppCommand::Undo } else { AppCommand::Redo })?;

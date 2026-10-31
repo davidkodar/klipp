@@ -289,7 +289,7 @@ pub(crate) fn respond(
                 if name.is_empty() {
                     return Err("a template needs a name".into());
                 }
-                let project = ctx.shared.project.lock().map_err(|_| "project status lock poisoned")?;
+                let project = ctx.shared.project.lock().recovered();
                 let mut starter = Vec::new();
                 for wanted in &save.starter_sequences {
                     let Some(s) = project.sequences.iter().find(|s| s.name.eq_ignore_ascii_case(wanted.trim())) else {
@@ -431,7 +431,7 @@ pub(crate) fn respond(
             if in_batch {
                 return Err("rebuild_version is not part of a batch: send it on its own".into());
             }
-            let project = ctx.shared.project.lock().map_err(|_| "project status lock poisoned")?;
+            let project = ctx.shared.project.lock().recovered();
             let index = match sequence_id.as_deref() {
                 Some(id) => project.sequences.iter().position(|s| s.id == id).ok_or_else(|| format!("no sequence {id}"))?,
                 None => project.active_sequence,
@@ -458,7 +458,7 @@ pub(crate) fn respond(
         }
 
         ControlCommand::SwitchSequence { index, sequence_id } => {
-            let project = ctx.shared.project.lock().map_err(|_| "project status lock poisoned")?;
+            let project = ctx.shared.project.lock().recovered();
             let found = match (index, sequence_id.as_deref()) {
                 (Some(i), None) => (i < project.sequences.len()).then_some(i),
                 (None, Some(id)) => project.sequences.iter().position(|s| s.id == id),
@@ -476,7 +476,7 @@ pub(crate) fn respond(
             if in_batch {
                 return Err("duplicate_sequence is not part of a batch; send it on its own".into());
             }
-            let project = ctx.shared.project.lock().map_err(|_| "project status lock poisoned")?;
+            let project = ctx.shared.project.lock().recovered();
             let found = match (index, sequence_id.as_deref()) {
                 (Some(i), None) => (i < project.sequences.len()).then_some(i),
                 (None, Some(id)) => project.sequences.iter().position(|s| s.id == id),
@@ -504,7 +504,7 @@ pub(crate) fn respond(
         }
 
         ControlCommand::RemoveSequence { index, sequence_id, confirm } => {
-            let project = ctx.shared.project.lock().map_err(|_| "project status lock poisoned")?;
+            let project = ctx.shared.project.lock().recovered();
             let found = match (index, sequence_id.as_deref()) {
                 (Some(i), None) => (i < project.sequences.len()).then_some(i),
                 (None, Some(id)) => project.sequences.iter().position(|s| s.id == id),
@@ -1440,7 +1440,7 @@ fn save_composition_template(ctx: &ControlContext, ids: &[String], name: &str, c
     use klipp_timeline::composition_template::{template_from_scene, scene_from_clips, CompositionTemplateStore};
     let ids: Vec<klipp_core::ClipId> = ids.iter().map(|s| existing_clip_id(ctx, s)).collect::<Result<_, _>>()?;
     let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?.with_own_grades().into_owned();
-    let others: Vec<klipp_timeline::Sequence> = ctx.others.read().map_err(|_| "sequences lock poisoned")?.iter().map(|o| (*o.sequence).clone()).collect();
+    let others: Vec<klipp_timeline::Sequence> = ctx.others.read().recovered().iter().map(|o| (*o.sequence).clone()).collect();
     let mut all = others;
     all.push(seq.clone());
     let mut scene = scene_from_clips(&seq, &ids).ok_or("none of those clips is on the open sequence")?;

@@ -34,7 +34,7 @@ pub(crate) fn resolve_plan_seeing(ctx: &ControlContext, ops: &[klipp_document::o
     let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
     let seq = seq.with_own_grades();
     let pool = ctx.media_pool.read().recovered();
-    let others = ctx.others.read().map_err(|_| "sequences lock poisoned")?.clone();
+    let others = ctx.others.read().recovered().clone();
     let ops = &with_recipes(&with_compositions(&with_templates(ops, template_dir().as_deref()), composition_dir().as_deref(), &project_sequence_ids(ctx, &seq))?, composition_dir().as_deref(), &pool);
     let plan = klipp_document::ops::resolve_in(&seq, &others, &pool, ops, &AnalysedTranscripts).map_err(|r| format!("{r} (step {} refused; nothing applied)", r.step + 1))?;
     Ok((plan, revision))
@@ -92,9 +92,7 @@ pub(crate) fn template_store(dir: Option<&std::path::Path>) -> klipp_timeline::c
 /// as the UI last published them.
 fn project_sequence_ids(ctx: &ControlContext, open: &klipp_timeline::Sequence) -> Vec<klipp_core::SequenceId> {
     let mut ids = vec![open.id];
-    if let Ok(others) = ctx.others.read() {
-        ids.extend(others.iter().map(|o| o.sequence.id));
-    }
+    ids.extend(ctx.others.read().recovered().iter().map(|o| o.sequence.id));
     ids
 }
 
@@ -441,7 +439,8 @@ mod changes_by_id_tests {
 /// when a project is made, opened or saved, and a client that sees it
 /// move knows the timeline and the pool it was working on are gone.
 pub(crate) fn with_project_generation(ctx: &ControlContext, mut v: serde_json::Value) -> serde_json::Value {
-    if let (Some(obj), Ok(p)) = (v.as_object_mut(), ctx.shared.project.lock()) {
+    if let Some(obj) = v.as_object_mut() {
+        let p = ctx.shared.project.lock().recovered();
         obj.insert("project_generation".into(), json!(p.generation));
         obj.insert("project_identity".into(), json!(p.identity));
     }
@@ -460,7 +459,7 @@ pub(crate) fn png_size_if_whole(bytes: &[u8]) -> Option<(u32, u32)> {
 }
 
 pub(crate) fn project_status(ctx: &ControlContext) -> Result<klipp_core::ProjectStatus, String> {
-    Ok(ctx.shared.project.lock().map_err(|_| "project status lock poisoned")?.clone())
+    Ok(ctx.shared.project.lock().recovered().clone())
 }
 
 /// Wait for the UI to report a save or an open: its generation moves

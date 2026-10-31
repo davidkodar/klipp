@@ -515,7 +515,7 @@ fn add_one_track(ctx: &ControlContext, pick: MusicPick) -> Result<serde_json::Va
         duration_secs: 0.0, license: license.clone(), license_url,
         commercial_ok: true, preview_url, download_url, page_url, image_url: String::new(), tags: Vec::new(), pace: String::new(), original: None,
     };
-    let project = ctx.shared.project.lock().ok().and_then(|p| p.path.clone());
+    let project = ctx.shared.project.lock().recovered().path.clone();
     let bearer = if choice == "original" {
         // What the original is, from the library: a pick carries only
         // what a search printed.

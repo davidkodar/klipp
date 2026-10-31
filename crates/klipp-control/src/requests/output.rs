@@ -1209,7 +1209,7 @@ fn deliver(ctx: &ControlContext, outputs: &[crate::protocol::DeliveryAsk], overw
     }
     // The master's versions older than its cut, by the app's own reckoning.
     let stale: Vec<String> = {
-        let project = ctx.shared.project.lock().map_err(|_| "project status lock poisoned")?;
+        let project = ctx.shared.project.lock().recovered();
         project.sequences.iter().filter(|s| s.version.as_ref().is_some_and(|v| v.of == master_id && v.stale)).filter(|s| sent.iter().any(|o| has_aspect((s.width, s.height), o.aspect))).map(|s| s.name.clone()).collect()
     };
     let mut v = send(AppCommand::ExportDelivery { outputs: sent })?;
@@ -1291,11 +1291,11 @@ impl Drop for PutBackViewing<'_> {
 
 fn full_size_frame(ctx: &ControlContext, secs: f64, width: u32, height: u32) -> Result<klipp_render::still::Still, String> {
     let seq: klipp_timeline::Sequence = (*ctx.sequence.read().map_err(|_| "sequence lock poisoned")?).clone();
-    let mut all: Vec<klipp_timeline::Sequence> = ctx.others.read().map_err(|_| "sequences lock poisoned")?.iter().map(|s| (*s.sequence).clone()).collect();
+    let mut all: Vec<klipp_timeline::Sequence> = ctx.others.read().recovered().iter().map(|s| (*s.sequence).clone()).collect();
     if !all.iter().any(|s| s.id == seq.id) {
         all.push(seq.clone());
     }
-    let lut = ctx.shared.project.lock().ok().and_then(|p| p.viewer_lut.clone());
+    let lut = ctx.shared.project.lock().recovered().viewer_lut.clone();
     let pool = ctx.media_pool.read().recovered();
     let mut snapshot = klipp_render::SequenceSnapshot::from_sequence_with_all(
         &seq,

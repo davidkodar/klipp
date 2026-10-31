@@ -2120,7 +2120,8 @@ impl KlippApp {
     /// state, so every writer of those settings is covered.
     pub(super) fn publish_picture_transform(&self) {
         let now = picture_transform_text(self.state.global_lut_path.as_deref(), self.state.global_lut_enabled, self.state.global_lut_opacity, self.prefs.color.sdr_display_transfer, self.state.hdr_monitor);
-        if let Ok(mut project) = self.state.control_shared.project.lock() {
+        {
+            let mut project = self.state.control_shared.project.lock().unwrap_or_else(|e| e.into_inner());
             if project.picture_transform != now {
                 project.picture_transform = now;
             }
@@ -2147,7 +2148,8 @@ impl KlippApp {
     }
 
     pub(super) fn publish_global_lut(&self) {
-        if let Ok(mut project) = self.state.control_shared.project.lock() {
+        {
+            let mut project = self.state.control_shared.project.lock().unwrap_or_else(|e| e.into_inner());
             project.global_lut = self.state.global_lut_path.clone();
         }
     }

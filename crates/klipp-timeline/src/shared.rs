@@ -18,7 +18,11 @@
 //! The methods keep the shape of `RwLock`'s (`read`, `write`, `try_read`,
 //! `try_write`, results with a poison error the caller can recover from),
 //! so the code that used the lock reads the same. A poisoned lock is
-//! recovered at once: the snapshot itself cannot be half-written.
+//! recovered at once. That does not make the sequence whole: a writer
+//! changes it in place (through `Arc::make_mut`), and one that panicked
+//! part way through a change of several steps leaves it half changed.
+//! Readers then see that sequence until a writer replaces it; the
+//! engine's copy is replaced whole at the UI's next sync.
 
 use std::ops::{Deref, DerefMut};
 use std::sync::{Arc, LockResult, Mutex, MutexGuard, TryLockError, TryLockResult};
