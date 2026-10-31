@@ -122,7 +122,7 @@ pub use clip_kind::{
     TexturePresetId, TextureSource, TextureTileMode, TitleAnimationType,
     TitleAsset,
     LayerFx, LayerMask, LegacyTextFx, FxMigration,
-    ContrastProtect, TitleBackground, TitleData, TitleObject, TitleObjectContent, TitleObjectId, TitlePosition,
+    ContrastProtect, TitleBackground, LineBoxes, TitleData, TitleObject, TitleObjectContent, TitleObjectId, TitlePosition,
     TitleShadow, GeneratorData, ImageFit, ImageLayer};
 pub use brief::{Brief, CastMember, Feature, MotionAnchorSpec, ShadowSpec, TitleMotionSpec, TypeStyle};
 pub use review::{FindingReview, ReviewDecision};

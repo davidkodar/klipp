@@ -336,6 +336,44 @@ pub struct Typeset {
     /// picture. The whole title takes it; a new title is "auto".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub protect: Option<klipp_timeline::ContrastProtect>,
+    /// The backing drawn one box per line (#3237), each fitted to its
+    /// line, as social-video captions are: true for the default boxes
+    /// (joined, corners rounded), an object for their `radius`, `gap` (0
+    /// or less joins them) and `padding_y`, pixels at 1080p; false for
+    /// one box round the whole text. Needs a backing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backing_lines: Option<BackingLinesSpec>,
+}
+
+/// `backing_lines`: on or off, or the boxes' shape.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(untagged)]
+pub enum BackingLinesSpec {
+    On(bool),
+    Boxes(LineBoxesSpec),
+}
+
+/// Read as a boolean, else as the boxes' fields, so an object's own
+/// error (an unknown field) is the reply's.
+impl<'de> Deserialize<'de> for BackingLinesSpec {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        match serde_json::Value::deserialize(d)? {
+            serde_json::Value::Bool(b) => Ok(Self::On(b)),
+            v => serde_json::from_value::<LineBoxesSpec>(v).map(Self::Boxes).map_err(serde::de::Error::custom),
+        }
+    }
+}
+
+/// The boxes of a backing drawn per line, each left out at its default.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LineBoxesSpec {
+    #[serde(default)]
+    pub radius: Option<f32>,
+    #[serde(default)]
+    pub gap: Option<f32>,
+    #[serde(default)]
+    pub padding_y: Option<f32>,
 }
 /// "A name or an object" specs read so that an object's own error (an
 /// unknown field, a value of the wrong kind) is the reply's, not "did
@@ -6906,7 +6944,7 @@ pub(crate) fn caption_title(text: &str, frame: klipp_core::Resolution) -> klipp_
     // Composited in linear light, where an alpha of 0.72 leaves the
     // picture at half its brightness to the eye; 0.92 is what looks
     // like a three-quarters black.
-    td.background = klipp_timeline::TitleBackground::Color { color: [0, 0, 0, 235], padding: 12.0 };
+    td.background = klipp_timeline::TitleBackground::Color { color: [0, 0, 0, 235], padding: 12.0, lines: None };
     if let Some(o) = td.objects.first_mut() {
         o.transform.center = klipp_timeline::TitlePosition { x: 0.5, y };
     }
@@ -11959,8 +11997,8 @@ fn restyle(td: &klipp_timeline::TitleData, look: &Look, secs: f64) -> Result<kli
     if let Some(color) = look.full_frame {
         new.background = TitleBackground::FullFrame { color };
     } else if let Some(color) = look.backing_color {
-        let padding = match new.background { TitleBackground::Color { padding, .. } => padding, _ => BACKING_PADDING };
-        new.background = TitleBackground::Color { color, padding };
+        let (padding, lines) = match new.background { TitleBackground::Color { padding, lines, .. } => (padding, lines), _ => (BACKING_PADDING, None) };
+        new.background = TitleBackground::Color { color, padding, lines };
     } else if let Some(dark) = look.backing {
         new.background = if dark <= 0.0 {
             TitleBackground::None
@@ -11969,8 +12007,13 @@ fn restyle(td: &klipp_timeline::TitleData, look: &Look, secs: f64) -> Result<kli
             // picture's brightness to the eye. This is the alpha that
             // looks as dark as asked.
             let alpha = 1.0 - (1.0 - dark.min(1.0)).powf(2.2);
-            TitleBackground::Color { color: [0, 0, 0, (alpha * 255.0).round() as u8], padding: BACKING_PADDING }
+            // Kept per line when it was (#3237).
+            let lines = match &new.background { TitleBackground::Color { lines, .. } => *lines, _ => None };
+            TitleBackground::Color { color: [0, 0, 0, (alpha * 255.0).round() as u8], padding: BACKING_PADDING, lines }
         };
+    }
+    if let Some(lines) = look.typeset.backing_lines {
+        set_backing_lines(&mut new.background, lines)?;
     }
     Ok(new)
 }
@@ -12065,6 +12108,7 @@ fn style(
     if let Some(l) = &look.loop_effect { said.push(if matches!(l.to_lowercase().as_str(), "none" | "off") { "no loop".into() } else { format!("loop {l}") }); }
     if look.edge_fade.is_some() { said.push("edge fade".into()); }
     if let Some(p) = look.typeset.protect { said.push(format!("contrast protection {}", protect_name(p))); }
+    if let Some(l) = look.typeset.backing_lines { said.push(if l.is_some() { "a backing box per line".into() } else { "one backing box".into() }); }
     let first = targets.first().map(|(_, c)| secs(c.timeline_in)).unwrap_or(0.0);
     let last = targets.last().map(|(_, c)| secs(c.timeline_out)).unwrap_or(0.0);
     let what = format!("restyle {} title{} from {first:.2} to {last:.2} s: {}", edits.len(), if edits.len() == 1 { "" } else { "s" }, said.join(", "));
@@ -12204,6 +12248,8 @@ struct Typesetting {
     material: Option<Option<MaterialAsk>>,
     /// The title's contrast protection (#2734).
     protect: Option<klipp_timeline::ContrastProtect>,
+    /// The backing per line (#3237): `Some(None)` one box round the text.
+    backing_lines: Option<Option<klipp_timeline::LineBoxes>>,
 }
 
 /// A [`MaterialSpec`] checked: a preset to start from (else the text's
@@ -13129,7 +13175,41 @@ fn typesetting(t: &Typeset, i: usize) -> Result<Typesetting, Refusal> {
         three_d: t.three_d.as_ref().map(|d| three_d_ask(d, i)).transpose()?,
         material: t.material.as_ref().map(|m| material_ask(m, i)).transpose()?,
         protect: t.protect,
+        backing_lines: t.backing_lines.as_ref().map(|b| line_boxes(b, i)).transpose()?,
     })
+}
+
+/// A backing's per-line boxes as asked (#3237): each size inside its
+/// range, a gap from -100 (overlapping) to 200.
+fn line_boxes(b: &BackingLinesSpec, i: usize) -> Result<Option<klipp_timeline::LineBoxes>, Refusal> {
+    let spec = match b {
+        BackingLinesSpec::On(false) => return Ok(None),
+        BackingLinesSpec::On(true) => LineBoxesSpec::default(),
+        BackingLinesSpec::Boxes(s) => s.clone(),
+    };
+    let check = |name: &str, v: Option<f32>, lo: f32, hi: f32| match v {
+        Some(v) if !v.is_finite() || v < lo || v > hi => Err(refuse(i, format!("backing_lines {name} {v}"), format!("give {name} from {lo} to {hi}, pixels at 1080p"))),
+        _ => Ok(v),
+    };
+    let d = klipp_timeline::LineBoxes::default();
+    Ok(Some(klipp_timeline::LineBoxes {
+        radius: check("radius", spec.radius, 0.0, 200.0)?.unwrap_or(d.radius),
+        gap: check("gap", spec.gap, -100.0, 200.0)?.unwrap_or(d.gap),
+        padding_y: check("padding_y", spec.padding_y, 0.0, 200.0)?,
+    }))
+}
+
+/// `background` given its boxes per line as `lines` asks (#3237); refused
+/// when there is no backing to draw so.
+fn set_backing_lines(background: &mut klipp_timeline::TitleBackground, lines: Option<klipp_timeline::LineBoxes>) -> Result<(), String> {
+    match background {
+        klipp_timeline::TitleBackground::Color { lines: l, .. } => {
+            *l = lines;
+            Ok(())
+        }
+        _ if lines.is_none() => Ok(()),
+        _ => Err("backing_lines needs a backing to draw: give backing or backing_color too".into()),
+    }
 }
 
 /// A contrast protection as the ops name it.
@@ -13430,10 +13510,13 @@ fn title_op(seq: &Sequence, fps: Fps, i: usize, at: Timecode, a: TitleArgs) -> R
         td.background = TitleBackground::FullFrame { color };
     } else if let Some(bc) = a.backing_color {
         let color = parse_color(bc).ok_or_else(|| refuse(i, format!("\"{bc}\" is not a colour"), "write the backing colour as #rrggbb"))?;
-        td.background = TitleBackground::Color { color, padding: BACKING_PADDING };
+        td.background = TitleBackground::Color { color, padding: BACKING_PADDING, lines: None };
     } else if let Some(b) = a.backing {
         let alpha = (b.clamp(0.0, 1.0) * 255.0) as u8;
-        td.background = TitleBackground::Color { color: [0, 0, 0, alpha], padding: BACKING_PADDING };
+        td.background = TitleBackground::Color { color: [0, 0, 0, alpha], padding: BACKING_PADDING, lines: None };
+    }
+    if let Some(lines) = a.typeset.backing_lines {
+        set_backing_lines(&mut td.background, lines).map_err(|e| refuse(i, e, "give backing: 0.6, say, with it"))?;
     }
 
     let short: String = text.chars().take(24).collect();
@@ -14569,6 +14652,45 @@ mod tests {
         let look = Look { typeset: typesetting(&off, 0).unwrap(), ..Default::default() };
         assert_eq!(restyle(&always, &look, 3.0).unwrap().protect, klipp_timeline::ContrastProtect::Off);
         assert!(serde_json::from_value::<Typeset>(serde_json::json!({"protect": "sometimes"})).is_err(), "an unknown mode is refused");
+    }
+
+    /// #3237: a title made with a backing per line has it, the boxes'
+    /// shape as asked; a restyle of the backing's darkness keeps it per
+    /// line, and `backing_lines: false` makes it one box again; asked
+    /// for with no backing, or with a size out of range, it is refused.
+    #[test]
+    fn a_backing_is_drawn_per_line_as_asked() {
+        let (seq, pool, ..) = fixture();
+        let title = |extra: serde_json::Value| {
+            let mut op = serde_json::json!({ "op": "title", "text": "One\nTwo", "at": { "secs": 1.0 }, "secs": 2.0 });
+            op.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+            let op: Op = serde_json::from_value(op).unwrap();
+            resolve(&seq, &pool, &[op]).map(|plan| {
+                let EditCommand::AddTitleClip { clip, .. } = &plan.steps[0].edit else { panic!("a title clip") };
+                clip.title_data().unwrap().clone()
+            })
+        };
+        let td = title(serde_json::json!({ "backing": 0.6, "backing_lines": { "radius": 6, "gap": 4 } })).unwrap();
+        let klipp_timeline::TitleBackground::Color { lines, .. } = &td.background else { panic!("a backing") };
+        assert_eq!(*lines, Some(klipp_timeline::LineBoxes { radius: 6.0, gap: 4.0, padding_y: None }));
+        let td = title(serde_json::json!({ "backing": 0.6, "backing_lines": true })).unwrap();
+        assert!(matches!(&td.background, klipp_timeline::TitleBackground::Color { lines: Some(l), .. } if *l == klipp_timeline::LineBoxes::default()), "true: the default boxes");
+        let none = title(serde_json::json!({ "backing_lines": true })).unwrap_err();
+        assert!(none.why.contains("needs a backing"), "{}", none.why);
+        let big = title(serde_json::json!({ "backing": 0.6, "backing_lines": { "radius": 500 } })).unwrap_err();
+        assert!(big.why.contains("radius 500") && big.hint.contains("0 to 200"), "{} / {}", big.why, big.hint);
+        let unknown = serde_json::from_value::<Op>(serde_json::json!({ "op": "title", "text": "T", "at": { "secs": 1.0 }, "secs": 2.0, "backing": 0.6, "backing_lines": { "corner": 3 } })).unwrap_err();
+        assert!(unknown.to_string().contains("unknown field `corner`"), "{unknown}");
+
+        let per_line = title(serde_json::json!({ "backing": 0.6, "backing_lines": true })).unwrap();
+        let look = |extra: serde_json::Value| {
+            let t: Typeset = serde_json::from_value(extra.get("typeset").cloned().unwrap_or(serde_json::json!({}))).unwrap();
+            Look { typeset: typesetting(&t, 0).unwrap(), backing: extra.get("backing").and_then(|v| v.as_f64()).map(|v| v as f32), ..Default::default() }
+        };
+        let darker = restyle(&per_line, &look(serde_json::json!({ "backing": 0.8 })), 2.0).unwrap();
+        assert!(matches!(&darker.background, klipp_timeline::TitleBackground::Color { lines: Some(_), .. }), "darker, still per line");
+        let whole = restyle(&per_line, &look(serde_json::json!({ "typeset": { "backing_lines": false } })), 2.0).unwrap();
+        assert!(matches!(&whole.background, klipp_timeline::TitleBackground::Color { lines: None, .. }), "one box again");
     }
 
     /// #2734: a built-in template is laid out for the sequence's frame: on
@@ -19195,7 +19317,7 @@ mod tests {
         assert!(!fx.loops.is_empty(), "the pulse loop landed");
         // The panel stands its margin off the words, in pixels at 1080p:
         // 0.3 hugged the glyphs.
-        assert_eq!(td.background, klipp_timeline::TitleBackground::Color { color: [0, 0, 0, 102], padding: BACKING_PADDING }, "the backing panel landed");
+        assert_eq!(td.background, klipp_timeline::TitleBackground::Color { color: [0, 0, 0, 102], padding: BACKING_PADDING, lines: None }, "the backing panel landed");
         // Empty text is refused.
         assert!(resolve(&seq, &pool, &[Op::Title { text: "  ".into(), at: Anchor::Secs(0.5), secs: 2.0, track: None, x: None, y: None, size: None, color: None, font: None, bold: None, align: None, backing: None, backing_color: None, full_frame: None, outline: None, outline_color: None, glow: None, glow_color: None, gradient: None, animate: None, enter: None, exit: None, animate_secs: None, stagger: None, loop_effect: None, glitch: None, chromatic: None, roll_shape: None, edge_fade: None, style: None, over_faces: false, shadow: None, typeset: Default::default() }]).is_err());
     }

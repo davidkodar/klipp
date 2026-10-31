@@ -287,8 +287,8 @@ fn drawn_box(td: &klipp_timeline::TitleData, frame: klipp_core::Resolution) -> O
         let shadow = fx.shadows.iter().filter(|x| x.enabled).map(|x| x.offset_x.abs().max(x.offset_y.abs()) + x.blur).fold(0.0, f32::max);
         reach = reach.max(outline).max(glow).max(shadow);
     }
-    if let klipp_timeline::TitleBackground::Color { padding, .. } = td.background {
-        reach = reach.max(padding);
+    if let klipp_timeline::TitleBackground::Color { padding, lines, .. } = td.background {
+        reach = reach.max(padding).max(lines.and_then(|l| l.padding_y).unwrap_or(0.0));
     }
     // Pixels at 1080 on the frame's short side, as the renderer scales a
     // title's sizes.
@@ -2064,7 +2064,7 @@ mod tests {
         let at = |a: f64, td| Clip { id: klipp_core::ClipId::new(), kind: ClipKind::Title(td), source_in: tc(0.0), source_out: tc(2.0), ..Clip::gap(tc(a), tc(a + 2.0)) };
         text.clips.push(at(0.0, title(false, klipp_timeline::TitleBackground::None)));
         text.clips.push(at(2.0, title(true, klipp_timeline::TitleBackground::None)));
-        text.clips.push(at(4.0, title(false, klipp_timeline::TitleBackground::Color { color: [0, 0, 0, 200], padding: 8.0 })));
+        text.clips.push(at(4.0, title(false, klipp_timeline::TitleBackground::Color { color: [0, 0, 0, 200], padding: 8.0, lines: None })));
         text.clips.push(at(6.0, title(false, klipp_timeline::TitleBackground::FullFrame { color: [16, 20, 24, 255] })));
         seq.tracks.insert(0, text);
         let to_read = titles_to_read(&seq, &pool, 16);

@@ -457,7 +457,7 @@ fn title_post_and_grade_stay_resident_in_working_spaces() {
                 title.objects[0].opacity=0.6;
             }
             if variant>=16 {
-                title.background=klipp_timeline::TitleBackground::Color{color:[40,90,120,120],padding:24.0};
+                title.background=klipp_timeline::TitleBackground::Color{color:[40,90,120,120],padding:24.0,lines:None};
                 title.objects[0].opacity=0.6;
                 if variant==17 {let mut other=title.objects[0].clone();other.id=klipp_timeline::TitleObjectId(2);other.transform.center.y+=0.25;title.objects.push(other);}
             }

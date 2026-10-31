@@ -140,6 +140,32 @@ pub struct TitleTexture<'a> {
     pub tint: [u8; 4],
     pub mode: u32,
 }
+/// A title's backing drawn one box per line (#3237), as klipp-title's
+/// `BackingLines` holds it: each box `[x0, y0, x1, y1]` in frame pixels,
+/// their corners' radius, and whether they are joined into one shape.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TitleBackingLines {
+    pub rects: Vec<[f32; 4]>,
+    pub radius: f32,
+    pub joined: bool,
+}
+
+impl TitleBackingLines {
+    /// The boxes one shader pass draws; more go in passes of this many,
+    /// each keeping the most covered of it and those before.
+    pub const PER_PASS: usize = 8;
+}
+
+/// Up to [`TitleBackingLines::PER_PASS`] boxes as the shader's stops, each
+/// a box's corners as f32 bits.
+fn line_box_stops(rects: &[[f32; 4]]) -> [[u32; 4]; 8] {
+    let mut stops = [[0u32; 4]; 8];
+    for (stop, r) in stops.iter_mut().zip(rects) {
+        *stop = r.map(f32::to_bits);
+    }
+    stops
+}
+
 /// Face inputs independent of the coverage used by its style stack.
 #[derive(Clone, Debug)]
 pub struct TitleFace {
@@ -147,6 +173,9 @@ pub struct TitleFace {
     pub outline_cutoff: i32,
     pub write_cutoff: i32,
     pub backing: Option<([u32; 4], [u8; 4])>,
+    /// The backing drawn one box per line (#3237): `backing` is then their
+    /// bounds and colour.
+    pub backing_lines: Option<TitleBackingLines>,
     pub fill: Option<TitleFill>,
     pub rich_slot: Option<usize>,
     /// A layer holding the face's own coverage, when it differs from the
@@ -165,6 +194,7 @@ impl Default for TitleFace {
             outline_cutoff: i32::MAX,
             write_cutoff: i32::MAX,
             backing: None,
+            backing_lines: None,
             fill: None,
             rich_slot: None,
             face_slot: None,
@@ -1659,6 +1689,7 @@ impl GpuEffectsPipeline {
             outline_cutoff,
             write_cutoff,
             backing,
+            backing_lines,
             fill,
             rich_slot,
             face_slot,
@@ -1782,7 +1813,16 @@ impl GpuEffectsPipeline {
         let mut enc = self.encoder(Some("clear title style accumulation"));
         enc.clear_buffer(&s.composite, 0, None);
         self.submit(enc);
-        if let Some((rect, color)) = backing {
+        if let (Some(lines), Some((_, color))) = (&backing_lines, backing) {
+            let color = color.map(|v| v as f32 / 255.0);
+            for (n, chunk) in lines.rects.chunks(TitleBackingLines::PER_PASS).enumerate() {
+                self.write_params(&FillParams {
+                    base: StyleParams { op: 55, offset_x: chunk.len() as i32, offset_y: i32::from(n > 0), color, matrix: [[lines.radius, f32::from(u8::from(lines.joined)), 0.0, 0.0], [0.0; 4], [0.0; 4]], ..base },
+                    stops: line_box_stops(chunk),
+                });
+                self.stack_pass(&self.pipelines.title_style_pipeline, layer, &s.composite, (count as u32).div_ceil(WORKGROUP_SIZE), "title backing per line");
+            }
+        } else if let Some((rect, color)) = backing {
             pass(
                 17,
                 layer,
@@ -1952,7 +1992,26 @@ impl GpuEffectsPipeline {
         let mut enc = self.encoder(Some("clear title coverage seed"));
         enc.clear_buffer(layer, 0, None);
         self.submit(enc);
-        if let Some((rect, color)) = backing {
+        if let (Some(lines), Some((_, color))) = (&backing_lines, backing) {
+            for (n, chunk) in lines.rects.chunks(TitleBackingLines::PER_PASS).enumerate() {
+                self.write_params(&FillParams {
+                    base: StyleParams {
+                        width: fw,
+                        height: fh,
+                        frame_width: fw,
+                        op: 56,
+                        x0: lines.radius.to_bits(),
+                        y0: u32::from(lines.joined),
+                        offset_x: chunk.len() as i32,
+                        offset_y: i32::from(n > 0),
+                        color: color.map(|v| v as f32 / 255.0),
+                        matrix: self.authored_to_working,
+                    },
+                    stops: line_box_stops(chunk),
+                });
+                self.stack_pass(&self.pipelines.title_style_pipeline, &s.composite, layer, (fw * fh).div_ceil(WORKGROUP_SIZE), "title backing per line outside mask");
+            }
+        } else if let Some((rect, color)) = backing {
             self.write_params(&StyleParams {
                 width: fw,
                 height: fh,

@@ -32,7 +32,7 @@ impl FrameSource for Nothing {
 /// A card: a headline on a coloured backing.
 fn card(text: &str) -> Sequence {
     let mut td = TitleData::single_text(TextBox { text: text.into(), font_size: 120.0, ..Default::default() });
-    td.background = TitleBackground::Color { color: [30, 90, 200, 255], padding: 24.0 };
+    td.background = TitleBackground::Color { color: [30, 90, 200, 255], padding: 24.0, lines: None };
     let mut t = Track::new("T1", TrackKind::Text);
     t.clips = vec![Clip { kind: ClipKind::Title(td), ..Clip::gap(tc(0.0), tc(3.0)) }];
     let mut seq = Sequence::new_default();

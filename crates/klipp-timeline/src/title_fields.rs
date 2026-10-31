@@ -405,7 +405,7 @@ mod tests {
         let name = td.objects[0].id;
         let at = td.objects[0].transform.clone();
         let role = td.add_object(TitleObjectContent::TextBox(TextBox { text: "Director".into(), ..Default::default() }), at);
-        td.background = TitleBackground::Color { color: [20, 20, 20, 200], padding: 0.2 };
+        td.background = TitleBackground::Color { color: [20, 20, 20, 200], padding: 0.2, lines: None };
         let m = &mut td.objects[0].fx_mut().motion;
         m.enter = Some(Motion::new(MotionKind::Rise).duration(0.6).delay(0.1).stagger(StaggerUnit::Word, 0.08));
         m.exit = Some(Motion::new(MotionKind::Fade).duration(0.4).as_exit());
@@ -442,7 +442,7 @@ mod tests {
         };
         assert_eq!(text(&td, role).0, "Producer");
         assert_eq!(text(&td, name), ("Jane Doe".to_string(), [255, 200, 0, 255]));
-        assert_eq!(td.background, TitleBackground::Color { color: [0, 0, 120, 255], padding: 0.2 });
+        assert_eq!(td.background, TitleBackground::Color { color: [0, 0, 120, 255], padding: 0.2, lines: None });
         assert_eq!(td.objects[0].fx(), before.objects[0].fx(), "the motion untouched");
         assert!(td.set_field(0, &TitleFieldValue::Speed(2.0)).is_err(), "a text takes no speed");
     }
