@@ -44,6 +44,7 @@ pub fn label(cmd: &AppCommand) -> Option<&'static str> {
         AppCommand::SetTrackLocked { .. } => "Unlock Track",
         AppCommand::SetTrackFrozen { frozen: true, .. } => "Freeze Track",
         AppCommand::SetTrackFrozen { .. } => "Unfreeze Track",
+        AppCommand::SetTrackLockWhileFrozen { .. } => "Lock While Frozen",
         AppCommand::RenameTrack { .. } => "Rename Track",
         AppCommand::SetTrackSyncLock { on: true, .. } => "Sync Lock Track",
         AppCommand::SetTrackSyncLock { .. } => "Sync Unlock Track",

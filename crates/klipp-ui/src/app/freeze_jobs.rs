@@ -64,6 +64,9 @@ pub(crate) struct FreezeJobs {
     jobs: HashMap<TrackId, Arc<ThreadJob>>,
     done: Option<(mpsc::Sender<Finished>, mpsc::Receiver<Finished>)>,
     statuses: HashMap<TrackId, FreezeStatus>,
+    /// Each job's frames in the order it draws them, the sequence's rate,
+    /// and how many it had drawn when its stale spans were last worked out.
+    orders: HashMap<TrackId, (Vec<klipp_core::Timecode>, klipp_core::Fps, usize)>,
     /// What the engine was last told.
     told: Option<(Option<PathBuf>, Vec<TrackId>)>,
 }
@@ -115,6 +118,14 @@ impl FreezeJobs {
                     out.full.push(track);
                 }
                 if let Some(s) = self.statuses.get_mut(&track) {
+                    // Not reached, or not drawn: stale; reading other
+                    // tracks: live.
+                    if let Some((order, fps, _)) = self.orders.get(&track) {
+                        let mut stale: Vec<klipp_core::Timecode> = order.get(tally.reached..).unwrap_or(&[]).to_vec();
+                        stale.extend(tally.failed_frames.iter().copied());
+                        s.stale = klipp_engine::freeze::spans(&stale, *fps);
+                        s.live = klipp_engine::freeze::spans(&tally.live_frames, *fps);
+                    }
                     s.progress = None;
                     s.tally = Some(tally);
                 }
@@ -140,7 +151,17 @@ impl FreezeJobs {
 
         for (track, job) in &self.jobs {
             if let Some(s) = self.statuses.get_mut(track) {
-                s.progress = Some(job.progress());
+                let p = job.progress();
+                s.progress = Some(p);
+                // What it hasn't reached yet is stale, worked out again
+                // only as it moves on.
+                if let Some((order, fps, seen)) = self.orders.get_mut(track) {
+                    let done = ((p * order.len() as f32).round() as usize).min(order.len());
+                    if done != *seen {
+                        *seen = done;
+                        s.stale = klipp_engine::freeze::spans(&order[done..], *fps);
+                    }
+                }
             }
         }
         out
@@ -209,8 +230,9 @@ impl KlippApp {
         let Some((_, store)) = fj.store.clone().filter(|_| inputs.folder.is_some()) else {
             for t in &inputs.tracks {
                 let index = seq.tracks.iter().position(|x| x.id == *t);
-                let frames = index.map_or(0, |i| klipp_engine::freeze::track_frames(seq, i, playhead).len());
-                statuses.insert(*t, FreezeStatus { frames, unsaved: true, ..Default::default() });
+                let frames = index.map_or_else(Vec::new, |i| klipp_engine::freeze::track_frames(seq, i, playhead));
+                let stale = klipp_engine::freeze::spans(&frames, seq.fps);
+                statuses.insert(*t, FreezeStatus { frames: frames.len(), unsaved: true, stale, ..Default::default() });
             }
             fj.statuses = statuses;
             return;
@@ -233,7 +255,8 @@ impl KlippApp {
             let Some(index) = seq.tracks.iter().position(|x| x.id == *t) else { continue };
             let frames = klipp_engine::freeze::track_frames(seq, index, playhead);
             let previous = fj.statuses.get(t).and_then(|s| s.tally.clone());
-            statuses.insert(*t, FreezeStatus { frames: frames.len(), progress: Some(0.0), tally: previous, unsaved: false });
+            statuses.insert(*t, FreezeStatus { frames: frames.len(), progress: Some(0.0), tally: previous, ..Default::default() });
+            fj.orders.insert(*t, (frames.clone(), seq.fps, usize::MAX));
             let req = klipp_engine::freeze::FreezeRequest {
                 seq: Arc::clone(&seq_arc),
                 // As the engine keys: a precomposition's scene is on its clip.
@@ -367,5 +390,45 @@ mod tests {
         assert_eq!(s.tally.as_ref().map(|t| t.stored), Some(4), "the current job's tally, not the replaced one's");
         assert_eq!(s.progress, None);
         assert!(fj.jobs.is_empty());
+    }
+
+    /// While a job draws, the frames it hasn't reached are stale; once it
+    /// ends, those it never reached and those it couldn't draw are, and
+    /// those that read other tracks are live.
+    #[test]
+    fn stale_and_live_spans_follow_the_job() {
+        let shared = klipp_timeline::SharedSequence::new(klipp_timeline::Sequence::new_default());
+        let t = TrackId::new();
+        let fps = klipp_core::Fps::new(25, 1);
+        let f = |n: i64| klipp_core::Timecode { value: n, rate: 25 };
+        let order: Vec<klipp_core::Timecode> = (10..20).chain(0..10).map(f).collect();
+        let mut fj = FreezeJobs::default();
+        let a = inputs(None, revision(&shared), vec![t]);
+        let (tx, rx) = mpsc::channel();
+        fj.done = Some((tx.clone(), rx));
+        fj.started_for = Some(a.clone());
+        fj.orders.insert(t, (order.clone(), fps, usize::MAX));
+        fj.statuses.insert(t, FreezeStatus { frames: 20, progress: Some(0.0), ..Default::default() });
+        let (go_tx, go_rx) = mpsc::channel::<()>();
+        let job = ThreadJob::spawn("drawing", klipp_jobs::JobPriority::Background, klipp_jobs::ResourceClass::Cpu, move |_, progress| {
+            progress.set(0.5);
+            let _ = go_rx.recv();
+        });
+        let id = job.id();
+        fj.jobs.insert(t, Arc::clone(&job));
+        while job.progress() < 0.5 {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        fj.tick(&a, Instant::now());
+        assert_eq!(fj.statuses[&t].stale, vec![(f(0), f(10))], "the half not reached: frames 0-9");
+
+        go_tx.send(()).unwrap();
+        job.join();
+        let tally = FreezeTally { stored: 15, live: 2, failed: 1, reached: 18, live_frames: vec![f(12), f(13)], failed_frames: vec![f(15)], ..Default::default() };
+        tx.send((t, id, tally)).unwrap();
+        fj.tick(&a, Instant::now());
+        let s = &fj.statuses[&t];
+        assert_eq!(s.stale, vec![(f(8), f(10)), (f(15), f(16))], "not reached (8, 9) and not drawn (15)");
+        assert_eq!(s.live, vec![(f(12), f(14))]);
     }
 }

@@ -91,6 +91,7 @@ define_icons! {
     Minus           => "minus",
     Gear            => "gear",
     Lock            => "lock",
+    Snowflake       => "snowflake",
     LockOpen        => "lock-open",
     Eye             => "eye",
     EyeSlash        => "eye-slash",
