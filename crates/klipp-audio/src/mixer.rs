@@ -104,6 +104,47 @@ pub struct TrackInserts {
     /// the chain made again rather than its settings changed in place.
     shape: Vec<(String, bool)>,
     chain: crate::dsp::AudioEffectChain,
+    /// Times it panicked (#3181), and whether it is passed by for that:
+    /// a broken plugin costs its own track's effects, not the mix. Made
+    /// again when the effects change.
+    panics: u32,
+    bypassed: bool,
+}
+
+/// Panics a chain is let have before it is passed by.
+const INSERT_PANICS_TOLERATED: u32 = 3;
+
+impl TrackInserts {
+    /// The chain run on `buf` (#3181): `false`, `buf` left dry, when it is
+    /// passed by or panicked. A panic is that block's: the chain is reset
+    /// and runs again next block, until it has panicked
+    /// [`INSERT_PANICS_TOLERATED`] times. Said once when it first panics
+    /// and once when it is passed by.
+    fn run(&mut self, buf: &mut [f32], ctx: &crate::dsp::AudioProcessContext, what: &str, panic_now: bool) -> bool {
+        if self.bypassed {
+            return false;
+        }
+        let chain = &mut self.chain;
+        let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            chain.process(buf, ctx);
+            // After writing, as a plugin's might: what it left is not heard.
+            if panic_now {
+                panic!("{what}'s effects panicked (a test's)");
+            }
+        }));
+        if ran.is_ok() {
+            return true;
+        }
+        self.chain.reset();
+        self.panics += 1;
+        if self.panics >= INSERT_PANICS_TOLERATED {
+            self.bypassed = true;
+            tracing::error!("{what}'s effects panicked {} times; they are passed by until an effect is added, removed, or turned on or off", self.panics);
+        } else if self.panics == 1 {
+            tracing::warn!("{what}'s effects panicked; that block is played dry and they run again");
+        }
+        false
+    }
 }
 
 /// `slot`'s chain as `instances` say: made when there is none or its
@@ -118,7 +159,7 @@ fn set_inserts(slot: &mut Option<TrackInserts>, instances: &[klipp_core::AudioEf
     } else {
         let mut chain = crate::dsp::AudioEffectChain::from_instances(instances, sample_rate);
         chain.prepare(2);
-        *slot = Some(TrackInserts { shape, chain });
+        *slot = Some(TrackInserts { shape, chain, panics: 0, bypassed: false });
     }
 }
 
@@ -171,9 +212,14 @@ pub struct AudioMixer {
     /// The largest block a delay line is sized for.
     max_block_samples: usize,
     /// A test's: the track whose effects panic the next time they run,
-    /// as a plugin's might (#3181).
+    /// as a plugin's might, and a panic in the mix outside any effects
+    /// (#3181).
+    #[cfg(any(test, feature = "test-hooks"))]
     #[doc(hidden)]
     pub panic_in_inserts: Option<usize>,
+    #[cfg(any(test, feature = "test-hooks"))]
+    #[doc(hidden)]
+    pub panic_in_mix: bool,
 }
 
 impl AudioMixer {
@@ -198,7 +244,10 @@ impl AudioMixer {
             send_delay_lines: Vec::new(),
             pdc_total: 0,
             max_block_samples: 4096,
+            #[cfg(any(test, feature = "test-hooks"))]
             panic_in_inserts: None,
+            #[cfg(any(test, feature = "test-hooks"))]
+            panic_in_mix: false,
         }
     }
 
@@ -470,6 +519,10 @@ impl AudioMixer {
     /// pan, into the bus it feeds or master. A bus is never silenced by a
     /// track's solo: the soloed tracks' sends are heard through it.
     pub fn mix(&mut self, track_buffers: &[(usize, &[f32])]) -> Vec<f32> {
+        #[cfg(any(test, feature = "test-hooks"))]
+        if std::mem::take(&mut self.panic_in_mix) {
+            panic!("the mix panicked (a test's)");
+        }
         let frame_len = track_buffers.iter().map(|(_, b)| b.len()).max().unwrap_or(0);
         // Solo picks among the tracks that have the sound: a timeline
         // track soloed does not silence the source viewer's own.
@@ -491,14 +544,17 @@ impl AudioMixer {
             // fader (#2560).
             let buf = match self.track_inserts.get_mut(track_idx).and_then(Option::as_mut) {
                 Some(inserts) if heard => {
-                    if self.panic_in_inserts == Some(track_idx) {
-                        self.panic_in_inserts = None;
-                        panic!("track {track_idx}'s effects panicked (a test's)");
-                    }
+                    #[cfg(any(test, feature = "test-hooks"))]
+                    let panic_now = self.panic_in_inserts.take_if(|t| *t == track_idx).is_some();
+                    #[cfg(not(any(test, feature = "test-hooks")))]
+                    let panic_now = false;
                     inserted.clear();
                     inserted.extend_from_slice(buf);
-                    inserts.chain.process(&mut inserted, &crate::dsp::AudioProcessContext { sample_rate: self.sample_rate, channels: 2, clip_time_secs: 0.0 });
-                    inserted.as_slice()
+                    if inserts.run(&mut inserted, &crate::dsp::AudioProcessContext { sample_rate: self.sample_rate, channels: 2, clip_time_secs: 0.0 }, &format!("track {track_idx}"), panic_now) {
+                        inserted.as_slice()
+                    } else {
+                        buf
+                    }
                 }
                 _ => buf,
             };
@@ -610,7 +666,12 @@ impl AudioMixer {
                 continue;
             }
             if let Some(inserts) = self.bus_inserts.get_mut(bus_idx).and_then(Option::as_mut) {
-                inserts.chain.process(&mut bus_buf[..frame_len], &crate::dsp::AudioProcessContext { sample_rate: self.sample_rate, channels: 2, clip_time_secs: 0.0 });
+                let mut dry = bus_buf[..frame_len].to_vec();
+                if !inserts.run(&mut bus_buf[..frame_len], &crate::dsp::AudioProcessContext { sample_rate: self.sample_rate, channels: 2, clip_time_secs: 0.0 }, &format!("bus {bus_idx}"), false) {
+                    // Played dry: what a panic left half-written is put back.
+                    bus_buf[..frame_len].copy_from_slice(&dry);
+                }
+                dry.clear();
             }
             let gains = Self::pan_gains_for(bus.pan, self.pan_law);
             let dest = match bus.output {
@@ -656,6 +717,53 @@ mod tests {
         assert!(mixer.track_inserts[0].is_some(), "changed in place");
         mixer.set_track_inserts(0, &[], 4096);
         assert!(mixer.track_inserts[0].is_none(), "none left");
+    }
+
+    /// #3181: a track's effects that panic (a plugin's might) cost that
+    /// block its effects, not the mix: the track is heard dry, the other
+    /// track as ever, and the effects run again the next block. After
+    /// three panics they are passed by, dry with no panic, until they are
+    /// made again. A panic used to take the whole mix, and the mix thread.
+    #[test]
+    fn a_tracks_effects_that_panic_leave_it_dry_and_the_mix_playing() {
+        let insts = vec![klipp_core::AudioEffectInstance { effect_type: "compressor".into(), enabled: true, wet_dry: 1.0, params: vec![("threshold".into(), -24.0), ("ratio".into(), 4.0), ("makeup".into(), 6.0)] }];
+        let buf: Vec<f32> = (0..2048).map(|i| 0.4 * ((i / 2) as f32 * 0.05).sin()).collect();
+        let two = |dry0: bool| {
+            let mut m = AudioMixer::new(2);
+            m.set_sample_rate(48_000);
+            if !dry0 {
+                m.set_track_inserts(0, &insts, 4096);
+            }
+            m.set_track_inserts(1, &insts, 4096);
+            for t in &mut m.tracks {
+                t.ramp_from = Some((t.volume, t.pan));
+            }
+            m
+        };
+        let (mut mixer, mut dry, mut wet) = (two(false), two(true), two(false));
+        let same = |a: &[f32], b: &[f32]| a.len() == b.len() && a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-6);
+        let mut block = |mixer: &mut AudioMixer, panic: bool| {
+            mixer.panic_in_inserts = panic.then_some(0);
+            let out = mixer.mix(&[(0, &buf), (1, &buf)]);
+            (out, dry.mix(&[(0, &buf), (1, &buf)]), wet.mix(&[(0, &buf), (1, &buf)]))
+        };
+        let (out, d, w) = block(&mut mixer, false);
+        assert!(same(&out, &w) && !same(&out, &d), "its effects are heard");
+        for n in 1..=3 {
+            let (out, d, _) = block(&mut mixer, true);
+            assert!(same(&out, &d), "panic {n}: track 0 dry, track 1 with its effects");
+            assert_eq!(mixer.track_inserts[0].as_ref().unwrap().panics, n);
+            if n < 3 {
+                let (out, d, _) = block(&mut mixer, false);
+                assert!(!same(&out, &d), "panic {n}: and its effects run again the next block");
+            }
+        }
+        assert!(mixer.track_inserts[0].as_ref().unwrap().bypassed, "passed by after three");
+        let (out, d, _) = block(&mut mixer, false);
+        assert!(same(&out, &d), "passed by: dry with no panic");
+        mixer.set_track_inserts(0, &[], 4096);
+        mixer.set_track_inserts(0, &insts, 4096);
+        assert!(!mixer.track_inserts[0].as_ref().unwrap().bypassed, "made again, they run");
     }
 
     use super::*;

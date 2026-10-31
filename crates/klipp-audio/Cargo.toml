@@ -6,6 +6,8 @@ license.workspace = true
 
 [features]
 default = []
+# Hooks a test injects panics through (#3181): never in a release build.
+test-hooks = []
 kokoro = ["dep:klipp-ml-ort", "klipp-ml-ort/ort"]
 
 [dependencies]
