@@ -399,7 +399,8 @@ impl KlippApp {
     /// Tell the control socket how a save or an open went: it waits for
     /// the generation to move, and reads the path and the error then.
     fn note_project_event(&self, event: ProjectEvent, error: Option<String>) {
-        if let Ok(mut project) = self.state.control_shared.project.lock() {
+        {
+            let mut project = self.state.control_shared.project.lock().unwrap_or_else(|e| e.into_inner());
             if project_identity_moves(event, project.path.as_deref(), self.state.project_path.as_deref(), error.is_some()) {
                 project.identity += 1;
             }

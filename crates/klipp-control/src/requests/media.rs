@@ -21,7 +21,7 @@ pub(crate) fn offline_media(ctx: &ControlContext) -> Option<serde_json::Value> {
     }
     let used = {
         let seq = ctx.sequence.read().ok()?;
-        let others = ctx.others.read().ok()?;
+        let others = ctx.others.read().recovered();
         let ids: Vec<klipp_core::MediaId> = offline.iter().map(|(id, _)| *id).collect();
         offline_in_use(&ids, std::iter::once(&*seq).chain(others.iter().map(|s| &*s.sequence)))
     };

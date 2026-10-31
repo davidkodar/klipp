@@ -645,7 +645,10 @@ pub(crate) fn is_generated_picture(c: &klipp_timeline::Clip) -> bool {
 /// the global LUT with its switch and opacity, the viewer's output
 /// (#1976).
 pub(crate) fn colour_management(ctx: &ControlContext) -> String {
-    let (lut, after) = ctx.shared.project.lock().ok().map(|p| (p.global_lut.clone(), p.picture_transform.clone())).unwrap_or_default();
+    let (lut, after) = {
+        let p = ctx.shared.project.lock().recovered();
+        (p.global_lut.clone(), p.picture_transform.clone())
+    };
     colour_management_text(klipp_engine::video_decoder::working_colorspace(), klipp_core::grade_encoding(), lut.as_deref(), &after)
 }
 
