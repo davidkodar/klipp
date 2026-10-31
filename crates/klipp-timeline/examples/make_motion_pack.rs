@@ -12,7 +12,7 @@ use klipp_core::{ClipId, MediaId, RationalTime, Resolution, SequenceId, Template
 use klipp_effects::BuiltinEffect;
 use klipp_timeline::composition_template::{CompositionTemplate, LinkMap, NumberRange, SlotKind, TemplateBinding, TemplateParameter, TemplateSlot};
 use klipp_timeline::title_library::{self as lib, Fields, Layer, TitleTemplate};
-use klipp_timeline::{Clip, ClipKind, Easing, FontStyle, ImageFit, ImageLayer, MotionKind, ObjectTransform, Sequence, StaggerUnit, TextAlignment, TitleData, TitleMotion, TitleObjectContent, TitlePosition, Track, TrackKind};
+use klipp_timeline::{Clip, ClipKind, Easing, FontStyle, ImageFit, ImageLayer, LayerFx, Motion, MotionBlur, MotionKind, ObjectTransform, Sequence, Shape, ShapeKind, ShapeStroke, StaggerUnit, TextAlignment, TextBox, TextGlow, TitleData, TitleLoop, TitleMotion, TitleObjectContent, TitlePosition, Track, TrackKind};
 use uuid::Uuid;
 
 const SECS: f64 = 5.0;
@@ -460,6 +460,217 @@ fn opener() -> CompositionTemplate {
              linked("bars", format!("object:{bottom}.opacity"), [0.0, 1.0], LINEAR)])
 }
 
+/// A floating terminal command (#2886): /// This is deliberately ordinary title content: a dark rounded panel, a
+/// monospaced command line and a blinking cursor. The card enters and exits
+/// with eased motion, drifts a few pixels while held, and carries the same
+/// motion-blur path as any hand-built title. The stable object ids are used by
+/// the template bindings below.
+fn terminal_card_title() -> TitleData {
+    let mut title = TitleData::default();
+    title.objects.clear();
+    title.next_object_id = 0;
+    let card_transform = ObjectTransform {
+        center: TitlePosition { x: 0.5, y: 0.5 },
+        center_x_keyframes: eased(&[
+            (0.0, 0.44, Easing::OutCubic),
+            (0.16, 0.5, Easing::OutCubic),
+            (0.55, 0.5, Easing::InOutCubic),
+            (0.9, 0.505, Easing::InOutCubic),
+            (1.25, 0.49, Easing::OutCubic),
+        ]),
+        center_y_keyframes: eased(&[
+            (0.0, 0.52, Easing::OutCubic),
+            (0.16, 0.5, Easing::OutCubic),
+            (0.72, 0.497, Easing::InOutCubic),
+            (1.1, 0.503, Easing::InOutCubic),
+            (1.3, 0.5, Easing::OutCubic),
+        ]),
+        size: TitlePosition { x: 0.42, y: 0.22 },
+        rotation: 0.0,
+        anchor_norm: TitlePosition { x: 0.5, y: 0.5 },
+        size_x_keyframes: Vec::new(), size_y_keyframes: Vec::new(), rotation_keyframes: Vec::new(), anchor_x_keyframes: Vec::new(), anchor_y_keyframes: Vec::new(),
+    };
+    let mut card_fx = LayerFx {
+        motion: TitleMotion::both(
+            Motion::new(MotionKind::SlideRight)
+                .duration(0.16)
+                .easing(Easing::OutCubic)
+                .distance(0.7),
+            Motion::new(MotionKind::SlideLeft)
+                .duration(0.18)
+                .delay(0.05)
+                .easing(Easing::InCubic)
+                .distance(0.7),
+        ),
+        motion_blur: Some(MotionBlur {
+            enabled: true,
+            shutter_angle: 180.0,
+            shutter_angle_keyframes: Vec::new(),
+            samples: 8,
+        }),
+        glows: vec![TextGlow {
+            enabled: true,
+            color: [132, 96, 255, 170],
+            radius: 20.0,
+            radius_keyframes: Vec::new(),
+            intensity: 0.35,
+            intensity_keyframes: Vec::new(),
+        }],
+        ..LayerFx::default()
+    };
+    card_fx.loops.push(TitleLoop::Pulse {
+        rate_hz: 0.55,
+        min_opacity: 0.94,
+    });
+    let card_id = title.add_object(
+        TitleObjectContent::Shape(Shape {
+            kind: ShapeKind::Rectangle {
+                corner_radius: 24.0,
+            },
+            fill: Some([18, 17, 29, 244]),
+            gradient: None,
+            stroke: Some(ShapeStroke {
+                color: [115, 92, 190, 180],
+                width: 2.0,
+            }),
+            fit: None,
+        }),
+        card_transform,
+    );
+    if let Some(card) = title.object_mut(card_id) {
+        card.fx = Some(card_fx);
+    }
+
+    let command = TextBox {
+        text: "$ find invoice.pdf".into(),
+        font_size: 42.0,
+        font_name: "JetBrains Mono".into(),
+        color: [235, 231, 255, 255],
+        alignment: TextAlignment::Left,
+        ..TextBox::default()
+    };
+    let command_len = command.text.chars().count().max(1) as f32;
+    let text_transform = ObjectTransform {
+        center: TitlePosition { x: 0.5, y: 0.49 },
+        center_x_keyframes: Vec::new(),
+        center_y_keyframes: Vec::new(),
+        size: TitlePosition { x: 0.34, y: 0.08 },
+        rotation: 0.0,
+        anchor_norm: TitlePosition { x: 0.5, y: 0.5 },
+        size_x_keyframes: Vec::new(), size_y_keyframes: Vec::new(), rotation_keyframes: Vec::new(), anchor_x_keyframes: Vec::new(), anchor_y_keyframes: Vec::new(),
+    };
+    let text_fx = LayerFx {
+        motion: TitleMotion::both(
+            // Typewriter is a step per unit: without a stagger the whole
+            // line pops in at once. One character every 0.02 s makes the
+            // 0.34 s the parameter names.
+            Motion::new(MotionKind::Typewriter)
+                .duration(0.02)
+                .stagger(StaggerUnit::Char, 0.34 / command_len)
+                .easing(Easing::Linear),
+            Motion::new(MotionKind::Fade)
+                .duration(0.12)
+                .easing(Easing::InCubic),
+        ),
+        motion_blur: Some(MotionBlur {
+            enabled: true,
+            shutter_angle: 140.0,
+            shutter_angle_keyframes: Vec::new(),
+            samples: 6,
+        }),
+        glows: vec![TextGlow {
+            enabled: true,
+            color: [160, 132, 255, 150],
+            radius: 9.0,
+            radius_keyframes: Vec::new(),
+            intensity: 0.4,
+            intensity_keyframes: Vec::new(),
+        }],
+        ..LayerFx::default()
+    };
+    let command_id = title.add_object(TitleObjectContent::TextBox(command), text_transform);
+    if let Some(command_object) = title.object_mut(command_id) {
+        command_object.fx = Some(text_fx);
+    }
+
+    let cursor_transform = ObjectTransform {
+        center: TitlePosition { x: 0.63, y: 0.49 },
+        center_x_keyframes: Vec::new(),
+        center_y_keyframes: Vec::new(),
+        size: TitlePosition { x: 0.008, y: 0.065 },
+        rotation: 0.0,
+        anchor_norm: TitlePosition { x: 0.5, y: 0.5 },
+        size_x_keyframes: Vec::new(), size_y_keyframes: Vec::new(), rotation_keyframes: Vec::new(), anchor_x_keyframes: Vec::new(), anchor_y_keyframes: Vec::new(),
+    };
+    let cursor_fx = LayerFx {
+        loops: vec![TitleLoop::Blink {
+            rate_hz: 2.2,
+            duty: 0.5,
+        }],
+        ..LayerFx::default()
+    };
+    let cursor_id = title.add_object(
+        TitleObjectContent::Shape(Shape {
+            kind: ShapeKind::Rectangle { corner_radius: 2.0 },
+            fill: Some([184, 157, 255, 255]),
+            gradient: None,
+            stroke: None,
+            fit: None,
+        }),
+        cursor_transform,
+    );
+    if let Some(cursor) = title.object_mut(cursor_id) {
+        cursor.fx = Some(cursor_fx);
+    }
+    title
+}
+
+/// The keys of one moving value, each segment eased into its key by the
+/// named curve: the same handles the `camera` op and the curve editor
+/// write, so what the card does is what a person would key by hand.
+fn eased(keys: &[(f64, f32, Easing)]) -> Vec<klipp_core::Keyframe> {
+    let mut out: Vec<klipp_core::Keyframe> = keys
+        .iter()
+        .map(|(time_secs, value, _)| klipp_core::Keyframe {
+            time_secs: *time_secs,
+            value: *value,
+            interpolation: klipp_core::Interpolation::Linear,
+            tangent_out: (0.0, 0.0),
+            tangent_in: (0.0, 0.0),
+            handles: Default::default(),
+        })
+        .collect();
+    for (i, (_, _, easing)) in keys.iter().enumerate() {
+        let ease = match easing {
+            Easing::InCubic => klipp_core::keyframe::Ease::In,
+            Easing::OutCubic => klipp_core::keyframe::Ease::Out,
+            Easing::InOutCubic => klipp_core::keyframe::Ease::InOut,
+            _ => klipp_core::keyframe::Ease::Linear,
+        };
+        klipp_core::keyframe::ease_into(&mut out, i, ease);
+    }
+    out
+}
+
+fn terminal_card() -> CompositionTemplate {
+    let layouts = FRAMES.map(|(key, w, h)| scene(&format!("Terminal Card {key}"), w, h, vec![(TrackKind::Text, vec![titled("terminal", laid(terminal_card_title, "Cards", (0.5, 0.5), w, h), 0.0, SECS)])]));
+    let (card, command) = (object_index(&layouts[0], "terminal", 0), object_index(&layouts[0], "terminal", 1));
+    let choice = |label: &str, default: &str, choices: &[&str]| TemplateParameter { label: label.into(), default: TemplateValue::Enum(default.into()), range: None, choices: choices.iter().map(|c| c.to_string()).collect() };
+    let number = |label: &str, default: f64, min: f64, max: f64| TemplateParameter { label: label.into(), default: TemplateValue::Number(default), range: Some(NumberRange { min: Some(min), max: Some(max) }), choices: Vec::new() };
+    template("Terminal Card", "Cards", layouts.into_iter().collect(),
+        vec![("command_text", text_param("Command text", "$ find invoice.pdf")),
+             ("accent", TemplateParameter { label: "Accent color".into(), default: TemplateValue::Color([160.0 / 255.0, 132.0 / 255.0, 1.0, 1.0]), range: None, choices: Vec::new() }),
+             ("typing_speed", number("Typing speed", 0.34, 0.05, 2.0)),
+             ("entry_direction", choice("Entry direction", "right", &["left", "right"])),
+             ("float_amount", number("Float amount", 1.0, 0.0, 4.0))],
+        vec![],
+        vec![plain("command_text", format!("object:{command}.text")),
+             plain("accent", format!("object:{card}.fill_and_glow")),
+             plain("typing_speed", format!("object:{command}.motion.enter.duration_secs")),
+             plain("entry_direction", format!("object:{card}.motion.enter.direction")),
+             plain("float_amount", format!("object:{card}.float.keyframes"))])
+}
+
 fn main() {
     let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../assets/templates");
     std::fs::create_dir_all(&dir).expect("the templates folder");
@@ -477,6 +688,7 @@ fn main() {
         ("collage", collage()),
         ("stinger", stinger()),
         ("opener", opener()),
+        ("terminal_card", terminal_card()),
     ]
     .into_iter()
     .collect();
