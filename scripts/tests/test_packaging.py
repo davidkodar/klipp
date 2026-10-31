@@ -51,8 +51,10 @@ class ArchPackagingTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         for command, binary in (("klipp", "klipp-app"), ("klipp-mcp", "klipp-mcp")):
             link = self.stage / "usr/bin" / command
-            self.assertEqual(os.readlink(link), f"/usr/lib/klipp/{command}")
-            installed = self.stage / str(link.readlink()).lstrip("/")
+            # Relative, so the link holds wherever the package root is.
+            self.assertEqual(os.readlink(link), f"../lib/klipp/{command}")
+            installed = (link.parent / link.readlink()).resolve()
+            self.assertEqual(installed, (self.stage / f"usr/lib/klipp/{command}").resolve())
             self.assertEqual(installed.read_bytes(), (self.root / "target/release" / binary).read_bytes())
             self.assertTrue(os.access(installed, os.X_OK))
         self.assertTrue(os.access(self.stage / "usr/lib/klipp/klipp-hdr-out", os.X_OK))
@@ -74,8 +76,11 @@ class ArchPackagingTests(unittest.TestCase):
         self.assertTrue(os.access(self.stage / "usr/bin/klipp-update", os.X_OK))
         self.assertEqual(subprocess.check_output(["vercmp", "0.20.0rc.1", "0.20.0"], text=True).strip(), "-1")
 
-    def test_release_overrides_machine_specific_rust_and_native_flags(self):
+    def release_build_env(self, carch):
+        """The environment a release build on `carch` hands cargo, as
+        makepkg runs it: CARCH set, machine-specific flags inherited."""
         self.env["KLIPP_RELEASE_VERSION"] = "0.20.0"
+        self.env["CARCH"] = carch
         self.env["CARGO_ENCODED_RUSTFLAGS"] = "-Ctarget-cpu=native"
         self.env["GGML_NATIVE"] = "ON"
         self.test_build_uses_the_directory_that_package_reads()
@@ -83,12 +88,23 @@ class ArchPackagingTests(unittest.TestCase):
         cargo.write_text('#!/bin/sh\nenv > "$startdir/build-env"\n')
         result = self.run_function("build")
         self.assertEqual(result.returncode, 0, result.stderr)
-        env = (self.root / "packaging/build-env").read_text()
-        self.assertIn("target-cpu=x86-64", env)
+        env = (self.root / "packaging/build-env").read_text().splitlines()
+        rustflags = next(line for line in env if line.startswith("CARGO_ENCODED_RUSTFLAGS=")).split("=", 1)[1].split("\x1f")
+        return "\n".join(env), rustflags
+
+    def test_release_overrides_machine_specific_rust_and_native_flags(self):
+        env, rustflags = self.release_build_env("x86_64")
+        self.assertEqual(rustflags, ["-C", "link-arg=-fuse-ld=lld", "-C", "target-cpu=x86-64"])
         self.assertNotIn("target-cpu=native", env)
         self.assertIn("GGML_NATIVE=OFF", env)
         self.assertIn("GGML_AVX2=OFF", env)
         self.assertIn("CFLAGS=-O2 -march=x86-64 -mtune=generic", env)
+
+    def test_aarch64_release_links_with_lld_for_a_generic_cpu(self):
+        env, rustflags = self.release_build_env("aarch64")
+        self.assertEqual(rustflags, ["-C", "link-arg=-fuse-ld=lld", "-C", "target-cpu=generic"])
+        self.assertIn("GGML_NATIVE=OFF", env)
+        self.assertIn("CFLAGS=-O2 -march=armv8-a", env)
 
     def test_missing_required_icon_fails_packaging(self):
         (self.root / "assets/branding/klipp-refined/klipp-icon-32.png").unlink()
