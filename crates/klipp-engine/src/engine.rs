@@ -1614,6 +1614,10 @@ pub struct PlaybackEngine {
     /// that comes back every time would otherwise be met every tick.
     decoder_restarts: u32,
     mix_restarts: u32,
+    /// The decoder was left off for panicking too often: a loop's wrap or
+    /// an edit's refresh does not open it again, nor say so again, until
+    /// the person seeks or plays.
+    decoder_given_up: bool,
     mixer: std::sync::Arc<std::sync::Mutex<klipp_audio::AudioMixer>>,
     lufs_readings: Option<std::sync::Arc<std::sync::Mutex<klipp_audio::LufsReadings>>>,
     lufs_reset: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
@@ -2798,6 +2802,7 @@ impl PlaybackEngine {
             mix_thread: Some(mix_thread),
             decoder_restarts: 0,
             mix_restarts: 0,
+            decoder_given_up: false,
             mixer,
             lufs_readings,
             lufs_reset,
@@ -4325,6 +4330,12 @@ impl PlaybackEngine {
         false
     }
 
+    /// No decoder for the clip the playhead is on, and one is to be opened:
+    /// not while it is left off for panicking (#3181).
+    fn decoder_missing(&self) -> bool {
+        self.v1_decoder.is_none() && !self.decoder_given_up
+    }
+
     /// Tell the person that `what` kept failing and is left off until they
     /// move or play the playhead (#3181): a log line alone was not seen.
     fn say_given_up(&self, what: &str) {
@@ -4336,6 +4347,7 @@ impl PlaybackEngine {
     fn forgive_panics(&mut self) {
         self.decoder_restarts = 0;
         self.mix_restarts = 0;
+        self.decoder_given_up = false;
         self.streams.forgive_panics();
     }
 
@@ -6007,7 +6019,14 @@ impl PlaybackEngine {
             } else {
                 error!("the video decoder panicked {PANIC_RESTARTS} times over; it is not opened again until the playhead is moved or played");
                 self.v1_decoder = None;
-                self.say_given_up("The picture");
+                // Nor is the clip opened as a layer's stream in its place.
+                let clip = self.sequence.read().unwrap_or_else(|e| e.into_inner()).tracks.get(self.current_track_index).and_then(|t| t.clips.get(self.current_clip_index)).map(|c| c.id);
+                if let Some(clip) = clip {
+                    self.streams.give_up(clip);
+                }
+                if !std::mem::replace(&mut self.decoder_given_up, true) {
+                    self.say_given_up("The picture");
+                }
             }
         }
         // A mix thread that ended (a panic past its block's catch) is made
@@ -7680,7 +7699,7 @@ impl PlaybackEngine {
                 drop(seq);
 
                 let source_secs_for_clock = if let Some((idx, media_id, source_secs, timeline_in, clip_source_in, spd, rot)) = clip_info {
-                    let need_new = self.current_clip_index != idx || self.v1_decoder.is_none();
+                    let need_new = self.current_clip_index != idx || self.decoder_missing();
                     if need_new {
                         if let Some(path) = self.path_for_media(media_id) {
                             self.v1_decoder = None;
@@ -7761,7 +7780,7 @@ impl PlaybackEngine {
 
         // Handle media clip at loop target
         if let Some((idx, media_id, source_secs, timeline_in, clip_source_in, spd, rot)) = clip_info {
-            let need_new_decoder = self.current_clip_index != idx || self.v1_decoder.is_none();
+            let need_new_decoder = self.current_clip_index != idx || self.decoder_missing();
 
             if need_new_decoder {
                 if let Some(path) = self.path_for_media(media_id) {
@@ -7975,7 +7994,7 @@ impl PlaybackEngine {
             });
             let need_new_decoder = self.current_track_index != ti
                 || self.current_clip_index != idx
-                || self.v1_decoder.is_none()
+                || self.decoder_missing()
                 || !same_file;
             self.current_track_index = ti;
 

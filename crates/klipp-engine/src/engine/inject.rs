@@ -6,39 +6,58 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Mutex;
 
-/// The next pass of a video decoder thread's loop panics: any decoder's
-/// (`Some(None)`), or the one reading a file (`Some(Some(path))`, so a
-/// test's panic is not taken by another test's decoder).
-static DECODER: Mutex<Option<Option<PathBuf>>> = Mutex::new(None);
+/// Video decoders whose loop panics: any decoder's (`path` `None`), or the
+/// one reading a file, so a test's panic is not taken by another test's
+/// decoder; once, or each time it runs (a test's, until it disarms).
+struct ArmedDecoder {
+    path: Option<PathBuf>,
+    every_time: bool,
+    panics: u64,
+}
+static DECODERS: Mutex<Vec<ArmedDecoder>> = Mutex::new(Vec::new());
 static DECODER_ARMED: AtomicBool = AtomicBool::new(false);
-/// Armed for every time, not once: a decoder, or a mix thread, that
-/// panics each time it runs (a test's, until it disarms).
-static DECODER_STICKY: AtomicBool = AtomicBool::new(false);
+/// A mix thread that ends each time it starts (a test's, until it
+/// disarms).
 static MIX_STICKY: AtomicBool = AtomicBool::new(false);
-/// Panics given out, for a test to count its own.
-static DECODER_PANICS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// Mix thread panics given out, for a test to count its own.
 static MIX_PANICS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-pub(crate) fn arm_decoder(path: Option<PathBuf>) {
-    *DECODER.lock().unwrap_or_else(|e| e.into_inner()) = Some(path);
+pub(crate) fn arm_decoder(path: Option<PathBuf>, every_time: bool) {
+    let mut armed = DECODERS.lock().unwrap_or_else(|e| e.into_inner());
+    armed.retain(|a| a.path != path);
+    armed.push(ArmedDecoder { path, every_time, panics: 0 });
     DECODER_ARMED.store(true, Ordering::Release);
 }
 
-/// Whether the decoder reading `path` is to panic now, disarmed if so.
+/// Whether the decoder reading `path` is to panic now; one armed once is
+/// disarmed, one armed every time is counted.
 pub(crate) fn decoder_panics(path: &Path) -> bool {
     if !DECODER_ARMED.load(Ordering::Acquire) {
         return false;
     }
-    let mut armed = DECODER.lock().unwrap_or_else(|e| e.into_inner());
-    if armed.as_ref().is_some_and(|p| p.as_deref().is_none_or(|p| p == path)) {
-        if !DECODER_STICKY.load(Ordering::Acquire) {
-            *armed = None;
-            DECODER_ARMED.store(false, Ordering::Release);
-        }
-        DECODER_PANICS.fetch_add(1, Ordering::Relaxed);
-        return true;
+    let mut armed = DECODERS.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(i) = armed.iter().position(|a| a.path.as_deref().is_none_or(|p| p == path)) else { return false };
+    if armed[i].every_time {
+        armed[i].panics += 1;
+    } else {
+        armed.remove(i);
     }
-    false
+    DECODER_ARMED.store(!armed.is_empty(), Ordering::Release);
+    true
+}
+
+/// Whether a decoder of `path` is still armed, and how often one armed
+/// every time has panicked.
+#[cfg(test)]
+fn armed_decoder(path: &Path) -> Option<u64> {
+    DECODERS.lock().unwrap_or_else(|e| e.into_inner()).iter().find(|a| a.path.as_deref() == Some(path)).map(|a| a.panics)
+}
+
+#[cfg(test)]
+fn disarm_decoder(path: &Path) {
+    let mut armed = DECODERS.lock().unwrap_or_else(|e| e.into_inner());
+    armed.retain(|a| a.path.as_deref() != Some(path));
+    DECODER_ARMED.store(!armed.is_empty(), Ordering::Release);
 }
 /// The mix thread panics outside its block's catch, and ends: any mix
 /// thread's (1), or the one mixing with a mixer, by its address (so a
@@ -71,7 +90,7 @@ impl super::PlaybackEngine {
             "job" => {
                 klipp_jobs::ThreadJob::spawn("inject-panic", klipp_jobs::JobPriority::Background, klipp_jobs::ResourceClass::Cpu, |_, _| panic!("a job panicked (a test's)"));
             }
-            "decoder" => arm_decoder(None),
+            "decoder" => arm_decoder(None, false),
             "mix_thread" => arm_mix_thread(None),
             "mix" => crate::mix_thread::lock_mixer(&self.mixer).panic_in_mix = true,
             "effect" => {
@@ -104,8 +123,8 @@ mod tests {
     use crate::{FrameBuffer, PlaybackEngine};
 
     /// A 10-second 1080p25 test pattern, made once; `None` without ffmpeg.
-    fn source() -> Option<std::path::PathBuf> {
-        let out = std::env::temp_dir().join("klipp-decoder-panics-1080p25.mp4");
+    fn source(name: &str) -> Option<std::path::PathBuf> {
+        let out = std::env::temp_dir().join(format!("klipp-decoder-panics-{name}-1080p25.mp4"));
         if out.exists() {
             return Some(out);
         }
@@ -256,7 +275,7 @@ mod tests {
     #[test]
     fn a_decoder_that_panics_while_playing_is_opened_again() {
         let required = std::env::var_os("KLIPP_TEST_REQUIRE_GPU").is_some_and(|v| v == "1");
-        let Some(path) = source() else {
+        let Some(path) = source("reopen") else {
             assert!(!required, "GPU required, and no ffmpeg to make the source");
             eprintln!("skipping: no ffmpeg");
             return;
@@ -315,12 +334,12 @@ mod tests {
         assert!(wait_past(1.0, Duration::from_secs(10)) >= 1.0, "it plays");
 
         let opened = crate::video_decoder::decoders_opened();
-        super::arm_decoder(Some(path.clone()));
+        super::arm_decoder(Some(path.clone()), false);
         let t0 = Instant::now();
-        while super::DECODER_ARMED.load(std::sync::atomic::Ordering::Acquire) && t0.elapsed() < Duration::from_secs(5) {
+        while super::armed_decoder(&path).is_some() && t0.elapsed() < Duration::from_secs(5) {
             std::thread::sleep(Duration::from_millis(5));
         }
-        assert!(!super::DECODER_ARMED.load(std::sync::atomic::Ordering::Acquire), "the decoder did panic");
+        assert!(super::armed_decoder(&path).is_none(), "the decoder did panic");
         let then = playhead();
         let shown = fb.lock().unwrap().latest_generation();
         let reached = wait_past(then + 2.0, Duration::from_secs(10));
@@ -338,10 +357,9 @@ mod tests {
         cmd.send(AppCommand::Pause).unwrap();
         cmd.send(AppCommand::Play).unwrap();
         std::thread::sleep(Duration::from_millis(500));
-        let panics = || super::DECODER_PANICS.load(std::sync::atomic::Ordering::Relaxed);
+        let panics = || super::armed_decoder(&path).unwrap_or(0);
+        super::arm_decoder(Some(path.clone()), true);
         let before = panics();
-        super::DECODER_STICKY.store(true, std::sync::atomic::Ordering::Release);
-        super::arm_decoder(Some(path.clone()));
         let then = playhead();
         std::thread::sleep(Duration::from_secs(2));
         let at_two = panics();
@@ -350,10 +368,18 @@ mod tests {
         let reopened = at_two - before;
         assert!(reopened >= 2 && reopened <= crate::engine::PANIC_RESTARTS as u64 + 1, "opened {reopened} times");
         assert_eq!(*gave_up.lock().unwrap(), ["The picture"], "and the person is told, once");
+        // A refresh's seek (an edit's, an undo's: SetPlayhead, not the
+        // person's) does not open it again, nor say so again.
+        let given_up_at = panics();
+        for _ in 0..3 {
+            cmd.send(AppCommand::SetPlayhead(tc((playhead() * 25.0) as i64))).unwrap();
+            std::thread::sleep(Duration::from_millis(300));
+        }
+        assert_eq!(panics(), given_up_at, "a refresh's seek did not open it again");
+        assert_eq!(gave_up.lock().unwrap().len(), 1, "nor say so again");
+
         assert!(playhead() > then + 1.0, "the playhead goes on: {then:.2} s, then {:.2} s", playhead());
-        super::DECODER_STICKY.store(false, std::sync::atomic::Ordering::Release);
-        *super::DECODER.lock().unwrap() = None;
-        super::DECODER_ARMED.store(false, std::sync::atomic::Ordering::Release);
+        super::disarm_decoder(&path);
         let shown = fb.lock().unwrap().latest_generation();
         cmd.send(AppCommand::Pause).unwrap();
         std::thread::sleep(Duration::from_millis(200));
