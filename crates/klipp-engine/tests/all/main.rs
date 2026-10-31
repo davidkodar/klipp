@@ -8,6 +8,8 @@
 // per file here.
 #![allow(clippy::duplicate_mod)]
 
+#[path = "../a_frame_without_a_primary_plays_at_the_playback_size.rs"]
+mod a_frame_without_a_primary_plays_at_the_playback_size;
 #[path = "../a_large_jpeg_still_shows.rs"]
 mod a_large_jpeg_still_shows;
 #[path = "../a_live_drag_reaches.rs"]

@@ -228,6 +228,20 @@ pub(super) fn viewer_canvas(picture: (u32, u32), sequence: (u32, u32)) -> (u32, 
     if w > sw || h > sh { sequence } else { (w, h) }
 }
 
+/// The frame the viewer renders in: [`viewer_canvas`] around the primary
+/// decoder's picture when there is one, otherwise the sequence's size
+/// within the playback resolution, as a primary picture is decoded. A
+/// frame with no primary picture — a reversed clip, titles alone — was
+/// drawn at the sequence's size: a 4K chain (126.6 MiB a buffer) under
+/// layer streams decoded at 1080p, each fitted up to it (#3205). Export
+/// and full-size grabs ask for their own size.
+pub(super) fn playback_canvas(primary: Option<(u32, u32)>, sequence: (u32, u32)) -> (u32, u32) {
+    match primary {
+        Some(p) => viewer_canvas(p, sequence),
+        None => crate::video_decoder::playback_dimensions(sequence.0, sequence.1, 0),
+    }
+}
+
 /// The viewer's frame reduced for Playback Quality: `size` divided by
 /// `divisor`, kept even and the same shape, and never below [`MIN_REDUCED_HEIGHT`]
 /// lines — a quarter of a 480p sequence is not a picture anyone can judge
@@ -1040,7 +1054,7 @@ impl PlaybackEngine {
         }
         let full = {
             let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
-            (seq.resolution.width, seq.resolution.height)
+            playback_canvas(None, (seq.resolution.width, seq.resolution.height))
         };
         let (w, h) = reduced_for_quality(full, quality_divisor_for(PlaybackState::Playing, crate::video_decoder::playback_quality_divisor()));
         if w == 0 || h == 0 || self.empty_stack_warm == Some((w, h)) {
@@ -1113,10 +1127,7 @@ impl PlaybackEngine {
         let solo_cut = self.solo.as_ref().is_some_and(|at| cut_for_solo(&mut seq, at));
         self.frame_phases.frame_snapshot_ms = ms(t);
         let seq_size = (seq.resolution.width, seq.resolution.height);
-        let (w, h) = match &primary {
-            Some(p) => viewer_canvas((p.width, p.height), seq_size),
-            None => seq_size,
-        };
+        let (w, h) = playback_canvas(primary.as_ref().map(|p| (p.width, p.height)), seq_size);
         // Playback Quality applies while playing: a parked frame is for
         // judging, and renders full size.
         let (w, h) = reduced_for_quality((w, h), quality_divisor_for(self.state, crate::video_decoder::playback_quality_divisor()));

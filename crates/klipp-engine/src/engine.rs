@@ -2281,13 +2281,14 @@ impl PlaybackEngine {
             let pool = self.media_pool.read().unwrap_or_else(|e| e.into_inner());
             for (clip, td) in titles_starting(&seq, now, AHEAD_SECS) {
                 // The frame size the title is placed at: the frame
-                // the video under it is shown in, else the sequence's.
+                // the video under it is shown in, else the sequence's
+                // within the playback resolution (`playback_canvas`).
                 // That frame is sized from the picture as decoded —
                 // at most the playback resolution — not as the file
                 // holds it: warmed at the file's size, a 4K portrait
                 // clip's title was made for a frame it is never
                 // shown in.
-                let (w, h) = seq
+                let decoded = seq
                     .tracks
                     .iter()
                     .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
@@ -2295,14 +2296,13 @@ impl PlaybackEngine {
                         let (_, c) = t.clip_at_timecode(clip.timeline_in)?;
                         let item = pool.get(&c.media_id()?)?;
                         // The item's size is already upright.
-                        let decoded = crate::video_decoder::playback_dimensions(
+                        Some(crate::video_decoder::playback_dimensions(
                             item.resolution.width,
                             item.resolution.height,
                             0,
-                        );
-                        Some(view::viewer_canvas(decoded, (seq.resolution.width, seq.resolution.height)))
-                    })
-                    .unwrap_or((seq.resolution.width, seq.resolution.height));
+                        ))
+                    });
+                let (w, h) = view::playback_canvas(decoded, (seq.resolution.width, seq.resolution.height));
                 // Warmed for playback, so at Playback Quality's size.
                 let (w, h) = view::reduced_for_quality((w, h), crate::video_decoder::playback_quality_divisor());
                 if w == 0 || h == 0 {

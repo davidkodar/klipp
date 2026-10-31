@@ -2718,7 +2718,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              "The timeline's frame at a time as a PNG, the playhead kept. Details: klipp_guide topic frame_at.",
              json!({
                  "secs": { "type": "number" },
-                 "max_width": { "type": "integer", "description": "default 1280" },
+                 "max_width": { "type": "integer", "description": "≤1280 at playback size" },
                  "path": { "type": "string" },
                  "timeout_ms": { "type": "integer" },
                  "channel": { "type": "string" },
