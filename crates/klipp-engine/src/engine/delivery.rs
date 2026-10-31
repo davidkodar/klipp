@@ -93,7 +93,7 @@ impl PlaybackEngine {
         if revision != key.revision {
             return;
         }
-        let pan_law = self.mixer.lock().map(|m| m.pan_law).unwrap_or_default();
+        let pan_law = crate::mix_thread::lock_mixer(&self.mixer).pan_law;
         let settings = klipp_core::ExportSettings { target_lufs: Some(key.target_lufs), true_peak_dbtp: Some(key.ceiling_dbtp), pan_law, ..Default::default() };
         let snapshot = {
             let pool = self.media_pool.read().unwrap_or_else(|e| e.into_inner());

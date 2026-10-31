@@ -339,6 +339,29 @@ impl AudioMixer {
         }
     }
 
+    /// The mixer after a panic while it was locked (#3181): what a block
+    /// was part way through set back, so the next block starts clean, the
+    /// settings kept. Each delay line silent, no level or send ramping
+    /// from a value the block didn't finish, and each track's and bus's
+    /// effects reset; the scratch sums cleared.
+    pub fn recover_after_panic(&mut self) {
+        self.reset_pdc_delay_lines();
+        for t in &mut self.tracks {
+            t.ramp_from = None;
+            for send in &mut t.sends {
+                send.ramp_from = None;
+            }
+        }
+        for inserts in self.track_inserts.iter_mut().chain(self.bus_inserts.iter_mut()).flatten() {
+            inserts.chain.reset();
+        }
+        for b in &mut self.bus_scratch {
+            b.fill(0.0);
+        }
+        self.track_out.fill(0.0);
+        self.send_tap.fill(0.0);
+    }
+
     /// Reset every PDC delay line to silence. Called on transport
     /// seek so stale samples from before the seek don't bleed
     /// across the boundary.
@@ -1711,5 +1734,31 @@ mod tests {
         assert_eq!(mixer.tracks.len(), 5);
         assert_eq!(mixer.track_latency_samples.len(), 5);
         assert_eq!(mixer.track_delay_lines.len(), 5);
+    }
+}
+
+#[cfg(test)]
+mod recover_tests {
+    use super::AudioMixer;
+
+    /// #3181: set back after a panic, a track's effects start clean: a
+    /// reverb's tail from the block before doesn't ring on into silence.
+    #[test]
+    fn recovering_resets_the_tracks_effects() {
+        let reverb = klipp_core::AudioEffectInstance { effect_type: "reverb".into(), enabled: true, wet_dry: 1.0, params: vec![("room_size".into(), 0.9), ("wet".into(), 1.0)] };
+        let tail_after = |recover: bool| {
+            let mut m = AudioMixer::new(1);
+            m.set_sample_rate(48_000);
+            m.set_track_inserts(0, std::slice::from_ref(&reverb), 9600);
+            let loud = vec![0.8f32; 9600];
+            m.mix(&[(0, loud.as_slice())]);
+            if recover {
+                m.recover_after_panic();
+            }
+            let quiet = vec![0.0f32; 9600];
+            m.mix(&[(0, quiet.as_slice())]).iter().fold(0.0f32, |a, s| a.max(s.abs()))
+        };
+        assert!(tail_after(false) > 1e-3, "a reverb rings on: {}", tail_after(false));
+        assert!(tail_after(true) < 1e-6, "reset, it doesn't: {}", tail_after(true));
     }
 }
