@@ -656,6 +656,7 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::EndTitleObjectDrag { .. }
         | AppCommand::SetTitleArcStart { .. }
         | AppCommand::SetTitleBackground { .. }
+        | AppCommand::SetTitleBackgroundLines { .. }
         | AppCommand::SetTitleContrastProtect { .. }
         | AppCommand::SetTitleShadow { .. }
         | AppCommand::SetTitleShadows { .. }

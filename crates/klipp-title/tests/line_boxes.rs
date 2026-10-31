@@ -54,3 +54,14 @@ fn a_staggered_titles_boxes_go_under_its_posed_glyphs() {
         _ => panic!("a staggered title's glyphs posed"),
     }
 }
+
+/// #3237: the bundled Boxed Caption template draws its backing one box
+/// per line, a box for each of its two lines.
+#[test]
+fn the_boxed_caption_template_has_a_box_per_line() {
+    let t = klipp_timeline::title_library::builtin("Boxed Caption").expect("the Boxed Caption template");
+    let td = t.data();
+    assert!(matches!(&td.background, TitleBackground::Color { lines: Some(_), .. }), "{:?}", td.background);
+    let layout = klipp_title::TitleRenderer::new().render_layout_at_time(&td, 1920, 1080, None);
+    assert_eq!(layout.line_boxes.len(), 2, "a box for each line");
+}

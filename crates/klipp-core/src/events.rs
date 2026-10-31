@@ -2916,6 +2916,10 @@ pub enum AppCommand {
     /// below), set by the viewer's path-start handle (#1714).
     SetTitleArcStart { clip_id: ClipId, object_id: u32, start_angle: f32 },
     SetTitleBackground { clip_id: ClipId, bg_kind: u8, color: [u8; 4] },  // 0=None, 1=Color, 2=FullFrame
+    /// A title's box backing drawn one box per line or not (#3237): the
+    /// boxes' corner radius and the gap between them (0 joins them), in
+    /// pixels at 1080p. A title with no box gets one in `color`.
+    SetTitleBackgroundLines { clip_id: ClipId, on: bool, radius: f32, gap: f32, color: [u8; 4] },
     /// A title's contrast protection (#2734): 0 off, 1 auto, 2 always.
     SetTitleContrastProtect { clip_id: ClipId, mode: u8 },
     SetTitleShadow { clip_id: ClipId, enabled: bool, color: [u8; 4], offset_x: f32, offset_y: f32, blur: f32 },
