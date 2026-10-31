@@ -1608,6 +1608,12 @@ pub struct PlaybackEngine {
     audio_tails: Vec<ActiveAudioSource>,
     audio_output: Option<SendAudioOutput>,
     mix_thread: Option<MixThread>,
+    /// Restarts made since the person last sought or played (#3181): of
+    /// the decoder after a panic, and of the mix thread after it ended.
+    /// After [`PANIC_RESTARTS`] each is left as it is, said once: a panic
+    /// that comes back every time would otherwise be met every tick.
+    decoder_restarts: u32,
+    mix_restarts: u32,
     mixer: std::sync::Arc<std::sync::Mutex<klipp_audio::AudioMixer>>,
     lufs_readings: Option<std::sync::Arc<std::sync::Mutex<klipp_audio::LufsReadings>>>,
     lufs_reset: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
@@ -2238,6 +2244,10 @@ fn sounding_for_key<'a>(seq: &'a klipp_timeline::Sequence, fadeable: &FadeableMe
     klipp_timeline::crossfade::sounding_at_where(track, tc, &can_fade(fadeable)).into_iter().find(|s| s.lane == lane)
 }
 
+/// Restarts of what a panic ended, since the person last sought or played
+/// (#3181).
+pub(crate) const PANIC_RESTARTS: u32 = 3;
+
 impl PlaybackEngine {
     /// Every audio source that should sound at `tc`, keyed by track and
     /// lane: see [`audio_rows`].
@@ -2786,6 +2796,8 @@ impl PlaybackEngine {
             audio_tails: Vec::new(),
             audio_output,
             mix_thread: Some(mix_thread),
+            decoder_restarts: 0,
+            mix_restarts: 0,
             mixer,
             lufs_readings,
             lufs_reset,
@@ -3415,6 +3427,7 @@ impl PlaybackEngine {
             }
 
             AppCommand::Play => {
+                self.forgive_panics();
                 // A skim is over once the playhead moves or plays (#2945).
                 self.end_skim();
                 debug!("Play command received, state={:?}", self.state);
@@ -3597,6 +3610,7 @@ impl PlaybackEngine {
             }
 
             AppCommand::SeekTo(tc) => {
+                self.forgive_panics();
                 // A skim is over once the playhead moves or plays (#2945).
                 self.end_skim();
                 // Identity seek while paused: seeking to the position we're
@@ -4309,6 +4323,20 @@ impl PlaybackEngine {
         }
 
         false
+    }
+
+    /// Tell the person that `what` kept failing and is left off until they
+    /// move or play the playhead (#3181): a log line alone was not seen.
+    fn say_given_up(&self, what: &str) {
+        let _ = self.event_tx.send(AppEvent::PlaybackGaveUp { what: what.to_string() });
+    }
+
+    /// The person moved or played the playhead: what a panic ended may be
+    /// made again as many times as at first (#3181).
+    fn forgive_panics(&mut self) {
+        self.decoder_restarts = 0;
+        self.mix_restarts = 0;
+        self.streams.forgive_panics();
     }
 
     fn handle_play(&mut self) {
@@ -5605,7 +5633,8 @@ impl PlaybackEngine {
         // A mix thread that has ended (a panic past the block it mixed)
         // is made again with its output (#3181): it used to stay, and the
         // session was silent until a restart.
-        if self.mix_thread.as_ref().is_some_and(MixThread::is_finished) {
+        if self.mix_restarts < PANIC_RESTARTS && self.mix_thread.as_ref().is_some_and(MixThread::is_finished) {
+            self.mix_restarts += 1;
             warn!("the audio mix thread had ended; it is started again");
             self.mix_thread = None;
             self.audio_output = None;
@@ -5971,16 +6000,31 @@ impl PlaybackEngine {
         // playhead is (#3181). It used to leave the picture stopped, and
         // every seek with it, until a restart.
         if self.v1_decoder.as_ref().is_some_and(VideoDecoder::has_panicked) {
-            warn!("the video decoder panicked; it is opened again at the playhead");
-            self.seek_in_sequence(self.playhead);
+            if self.decoder_restarts < PANIC_RESTARTS {
+                self.decoder_restarts += 1;
+                warn!("the video decoder panicked; it is opened again at the playhead");
+                self.seek_in_sequence(self.playhead);
+            } else {
+                error!("the video decoder panicked {PANIC_RESTARTS} times over; it is not opened again until the playhead is moved or played");
+                self.v1_decoder = None;
+                self.say_given_up("The picture");
+            }
         }
         // A mix thread that ended (a panic past its block's catch) is made
         // again, with the sound from the playhead (#3181): it was made again
         // only when a new source started, and playing on stayed silent.
-        if self.mix_thread.as_ref().is_some_and(MixThread::is_finished) {
-            warn!("the audio mix thread had ended; it is made again with the sound from the playhead");
-            self.stop_all_audio();
-            self.start_all_audio(self.playhead);
+        if self.mix_restarts <= PANIC_RESTARTS && self.mix_thread.as_ref().is_some_and(MixThread::is_finished) {
+            if self.mix_restarts < PANIC_RESTARTS {
+                self.mix_restarts += 1;
+                warn!("the audio mix thread had ended; it is made again with the sound from the playhead");
+                self.stop_all_audio();
+                self.start_all_audio(self.playhead);
+            } else {
+                // Said once: past the limit, nothing more is tried.
+                self.mix_restarts += 1;
+                error!("the audio mix thread ended {PANIC_RESTARTS} times over; it is not made again until the playhead is moved or played");
+                self.say_given_up("The sound");
+            }
         }
         self.reconcile_audio_sources();
         self.warm_upcoming_titles();

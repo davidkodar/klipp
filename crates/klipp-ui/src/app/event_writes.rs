@@ -49,6 +49,7 @@ pub(crate) fn event_writes(event: &AppEvent) -> bool {
         | AppEvent::SourcePlaybackPaused
         | AppEvent::SourcePlayheadMoved(..)
         | AppEvent::MediaLoadFailed { .. }
+        | AppEvent::PlaybackGaveUp { .. }
         | AppEvent::FrameReady
         | AppEvent::ClipAppended { .. }
         | AppEvent::ClipRemoved { .. }

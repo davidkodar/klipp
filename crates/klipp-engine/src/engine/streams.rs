@@ -506,11 +506,17 @@ pub(crate) struct ClipStreams {
     /// OFX plug-ins' neighbour readers (#2013), by file and log format,
     /// kept across frames: the one read longest ago closed first.
     neighbours: Vec<(PathBuf, Option<klipp_core::LogFormat>, std::sync::Arc<std::sync::Mutex<klipp_media::frame_reader::SeekableFrameReader>>)>,
+    /// How often each clip's decoder panicked since the person last
+    /// sought or played (#3181): one that panicked [`super::PANIC_RESTARTS`]
+    /// times is not opened again until then.
+    panics: HashMap<ClipId, u32>,
+    /// A clip reached that since [`Self::take_given_up`] last asked.
+    given_up: bool,
 }
 
 impl ClipStreams {
     pub fn new() -> Self {
-        Self { streams: HashMap::new(), opening: HashMap::new(), reversed: HashMap::new(), rates: HashMap::new(), bytes: HashMap::new(), free_memory: crate::decode_budget::free_memory, vram: HashMap::new(), free_vram: crate::decode_budget::free_vram, reads: HashMap::new(), queue_frames: crate::video_decoder::frame_queue_size, capacity: crate::decode_budget::stream_capacity, gpu_headroom: crate::decode_budget::gpu_headroom, media: klipp_media::frame_reader::MediaReaders::new(klipp_compose::MEDIA_READERS), shared: HashMap::new(), neighbours: Vec::new() }
+        Self { streams: HashMap::new(), opening: HashMap::new(), reversed: HashMap::new(), rates: HashMap::new(), bytes: HashMap::new(), free_memory: crate::decode_budget::free_memory, vram: HashMap::new(), free_vram: crate::decode_budget::free_vram, reads: HashMap::new(), queue_frames: crate::video_decoder::frame_queue_size, capacity: crate::decode_budget::stream_capacity, gpu_headroom: crate::decode_budget::gpu_headroom, media: klipp_media::frame_reader::MediaReaders::new(klipp_compose::MEDIA_READERS), shared: HashMap::new(), neighbours: Vec::new(), panics: HashMap::new(), given_up: false }
     }
 
     /// The reader of `path`'s frames at any time for an OFX plug-in's
@@ -554,8 +560,30 @@ impl ClipStreams {
         let wants = &wants[..];
         crate::decode_budget::sample();
         // A stream whose decoder ended with a panic is let go, and opened
-        // again below like any wanted stream not open (#3181).
-        self.streams.retain(|_, s| !s.dec().has_panicked());
+        // again below like any wanted stream not open (#3181), until it
+        // has panicked too often.
+        let (panics, given_up) = (&mut self.panics, &mut self.given_up);
+        self.streams.retain(|id, s| {
+            if !s.dec().has_panicked() {
+                return true;
+            }
+            let n = panics.entry(*id).or_insert(0);
+            *n += 1;
+            if *n >= super::PANIC_RESTARTS {
+                *given_up = true;
+                tracing::error!("a layer's video decoder panicked {n} times over; it is not opened again until the playhead is moved or played");
+            } else {
+                tracing::warn!("a layer's video decoder panicked; it is opened again");
+            }
+            false
+        });
+        let still: Vec<Want>;
+        let wants = if self.panics.is_empty() {
+            wants
+        } else {
+            still = wants.iter().filter(|w| self.panics.get(&w.clip).is_none_or(|n| *n < super::PANIC_RESTARTS)).cloned().collect();
+            &still[..]
+        };
         self.hand_on(wants, frame_secs, resolve);
         self.streams.retain(|id, _| wants.iter().any(|w| w.clip == *id && !w.reversed));
         // One no longer wanted is let go: opened, it is dropped on its own
@@ -978,6 +1006,17 @@ impl ClipStreams {
         // A frame held from before its seek is not the one for here.
         let held = if s.seeking.is_some() { None } else { s.held.take() };
         s.decoder.take().map(|d| (d, held))
+    }
+
+    /// Whether a clip's decoder panicked too often since last asked
+    /// (#3181), for saying so once.
+    pub fn take_given_up(&mut self) -> bool {
+        std::mem::take(&mut self.given_up)
+    }
+
+    /// Clips whose decoders panicked too often may be opened again (#3181).
+    pub fn forgive_panics(&mut self) {
+        self.panics.clear();
     }
 
     pub fn clear(&mut self) {

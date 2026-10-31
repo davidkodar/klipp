@@ -11,6 +11,13 @@ use std::sync::Mutex;
 /// test's panic is not taken by another test's decoder).
 static DECODER: Mutex<Option<Option<PathBuf>>> = Mutex::new(None);
 static DECODER_ARMED: AtomicBool = AtomicBool::new(false);
+/// Armed for every time, not once: a decoder, or a mix thread, that
+/// panics each time it runs (a test's, until it disarms).
+static DECODER_STICKY: AtomicBool = AtomicBool::new(false);
+static MIX_STICKY: AtomicBool = AtomicBool::new(false);
+/// Panics given out, for a test to count its own.
+static DECODER_PANICS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static MIX_PANICS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 pub(crate) fn arm_decoder(path: Option<PathBuf>) {
     *DECODER.lock().unwrap_or_else(|e| e.into_inner()) = Some(path);
@@ -24,8 +31,11 @@ pub(crate) fn decoder_panics(path: &Path) -> bool {
     }
     let mut armed = DECODER.lock().unwrap_or_else(|e| e.into_inner());
     if armed.as_ref().is_some_and(|p| p.as_deref().is_none_or(|p| p == path)) {
-        *armed = None;
-        DECODER_ARMED.store(false, Ordering::Release);
+        if !DECODER_STICKY.load(Ordering::Acquire) {
+            *armed = None;
+            DECODER_ARMED.store(false, Ordering::Release);
+        }
+        DECODER_PANICS.fetch_add(1, Ordering::Relaxed);
         return true;
     }
     false
@@ -43,7 +53,14 @@ pub(crate) fn arm_mix_thread(mixer: Option<usize>) {
 /// if so.
 pub(crate) fn mix_thread_panics(mixer: usize) -> bool {
     let armed = MIX_THREAD.load(Ordering::Acquire);
-    (armed == 1 || armed == mixer) && MIX_THREAD.compare_exchange(armed, 0, Ordering::AcqRel, Ordering::Acquire).is_ok()
+    if armed != 1 && armed != mixer {
+        return false;
+    }
+    let panics = MIX_STICKY.load(Ordering::Acquire) || MIX_THREAD.compare_exchange(armed, 0, Ordering::AcqRel, Ordering::Acquire).is_ok();
+    if panics {
+        MIX_PANICS.fetch_add(1, Ordering::Relaxed);
+    }
+    panics
 }
 
 #[cfg(feature = "test-hooks")]
@@ -165,7 +182,15 @@ mod tests {
 
         let (cmd, cmd_rx) = crossbeam_channel::unbounded();
         let (ev_tx, ev_rx) = crossbeam_channel::unbounded::<AppEvent>();
-        std::thread::spawn(move || while ev_rx.recv().is_ok() {});
+        let gave_up = Arc::new(Mutex::new(Vec::<String>::new()));
+        let g = Arc::clone(&gave_up);
+        std::thread::spawn(move || {
+            while let Ok(ev) = ev_rx.recv() {
+                if let AppEvent::PlaybackGaveUp { what } = ev {
+                    g.lock().unwrap().push(what);
+                }
+            }
+        });
         let fb = Arc::new(Mutex::new(FrameBuffer::new(1920, 1080)));
         let engine = PlaybackEngine::new(
             cmd_rx, ev_tx, Arc::clone(&fb), Arc::new(Mutex::new(FrameBuffer::new(1920, 1080))),
@@ -191,6 +216,34 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         }
         assert!(crate::mix_thread::mix_threads_started() > started, "a mix thread is made again while playing");
+
+        // One that ends every time it starts is made again three times,
+        // then left until the person plays again.
+        cmd.send(AppCommand::Pause).unwrap();
+        cmd.send(AppCommand::Play).unwrap();
+        std::thread::sleep(Duration::from_millis(500));
+        let panics = || super::MIX_PANICS.load(std::sync::atomic::Ordering::Relaxed);
+        let before = panics();
+        super::MIX_STICKY.store(true, std::sync::atomic::Ordering::Release);
+        super::arm_mix_thread(Some(mixer));
+        std::thread::sleep(Duration::from_secs(2));
+        let at_two = panics();
+        std::thread::sleep(Duration::from_secs(1));
+        assert_eq!(panics(), at_two, "it stops being made again");
+        let made = at_two - before;
+        assert!(made >= 2 && made <= crate::engine::PANIC_RESTARTS as u64 + 1, "made again {made} times");
+        assert_eq!(*gave_up.lock().unwrap(), ["The sound"], "and the person is told, once");
+        super::MIX_STICKY.store(false, std::sync::atomic::Ordering::Release);
+        super::MIX_THREAD.store(0, std::sync::atomic::Ordering::Release);
+        cmd.send(AppCommand::Pause).unwrap();
+        std::thread::sleep(Duration::from_millis(200));
+        let started = crate::mix_thread::mix_threads_started();
+        cmd.send(AppCommand::Play).unwrap();
+        let t0 = Instant::now();
+        while crate::mix_thread::mix_threads_started() == started && t0.elapsed() < Duration::from_secs(5) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(crate::mix_thread::mix_threads_started() > started, "playing again makes it again");
         let _ = cmd.send(AppCommand::Quit);
         let _ = thread.join();
         crate::video_decoder::wait_for_decode_threads(Duration::from_secs(10));
@@ -230,10 +283,14 @@ mod tests {
         let (ev_tx, ev_rx) = crossbeam_channel::unbounded::<AppEvent>();
         let at = Arc::new(Mutex::new(0.0f64));
         let a = Arc::clone(&at);
+        let gave_up = Arc::new(Mutex::new(Vec::<String>::new()));
+        let g = Arc::clone(&gave_up);
         std::thread::spawn(move || {
             while let Ok(ev) = ev_rx.recv() {
-                if let AppEvent::PlayheadMoved(t) = ev {
-                    *a.lock().unwrap() = t.to_secs_f64();
+                match ev {
+                    AppEvent::PlayheadMoved(t) => *a.lock().unwrap() = t.to_secs_f64(),
+                    AppEvent::PlaybackGaveUp { what } => g.lock().unwrap().push(what),
+                    _ => {}
                 }
             }
         });
@@ -275,6 +332,37 @@ mod tests {
         }
         assert!(fb.lock().unwrap().latest_generation() > shown + 25, "and new frames are shown");
         assert!(crate::video_decoder::decoders_opened() > opened, "from a decoder opened again");
+
+        // One that panics every time it runs is opened again three times,
+        // then left; the playhead goes on, and playing again opens it.
+        cmd.send(AppCommand::Pause).unwrap();
+        cmd.send(AppCommand::Play).unwrap();
+        std::thread::sleep(Duration::from_millis(500));
+        let panics = || super::DECODER_PANICS.load(std::sync::atomic::Ordering::Relaxed);
+        let before = panics();
+        super::DECODER_STICKY.store(true, std::sync::atomic::Ordering::Release);
+        super::arm_decoder(Some(path.clone()));
+        let then = playhead();
+        std::thread::sleep(Duration::from_secs(2));
+        let at_two = panics();
+        std::thread::sleep(Duration::from_secs(1));
+        assert_eq!(panics(), at_two, "it stops being opened again");
+        let reopened = at_two - before;
+        assert!(reopened >= 2 && reopened <= crate::engine::PANIC_RESTARTS as u64 + 1, "opened {reopened} times");
+        assert_eq!(*gave_up.lock().unwrap(), ["The picture"], "and the person is told, once");
+        assert!(playhead() > then + 1.0, "the playhead goes on: {then:.2} s, then {:.2} s", playhead());
+        super::DECODER_STICKY.store(false, std::sync::atomic::Ordering::Release);
+        *super::DECODER.lock().unwrap() = None;
+        super::DECODER_ARMED.store(false, std::sync::atomic::Ordering::Release);
+        let shown = fb.lock().unwrap().latest_generation();
+        cmd.send(AppCommand::Pause).unwrap();
+        std::thread::sleep(Duration::from_millis(200));
+        cmd.send(AppCommand::Play).unwrap();
+        let t0 = Instant::now();
+        while fb.lock().unwrap().latest_generation() <= shown + 25 && t0.elapsed() < Duration::from_secs(10) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(fb.lock().unwrap().latest_generation() > shown + 25, "playing again shows frames");
         let _ = cmd.send(AppCommand::Quit);
         let _ = thread.join();
         crate::video_decoder::wait_for_decode_threads(Duration::from_secs(10));
