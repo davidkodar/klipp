@@ -36,16 +36,16 @@
           "anchor_x_keyframes": [],
           "anchor_y_keyframes": [],
           "center": {
-            "x": 0.17,
-            "y": 0.6
+            "x": 0.215,
+            "y": 0.62
           },
           "center_x_keyframes": [],
           "center_y_keyframes": [],
           "rotation": 0.0,
           "rotation_keyframes": [],
           "size": {
-            "x": 0.18,
-            "y": 0.012
+            "x": 0.27,
+            "y": 0.014
           },
           "size_x_keyframes": [],
           "size_y_keyframes": []
@@ -71,7 +71,7 @@
             "drop_cap_scale": 0.0,
             "extrusion": null,
             "font_name": "Bebas Neue",
-            "font_size": 130.0,
+            "font_size": 195.0,
             "font_style": "Regular",
             "glitch_intensity": 0.0,
             "gradient": null,
@@ -131,7 +131,7 @@
           "anchor_y_keyframes": [],
           "center": {
             "x": 0.08,
-            "y": 0.44
+            "y": 0.4
           },
           "center_x_keyframes": [],
           "center_y_keyframes": [],

@@ -752,15 +752,18 @@ pub enum OnPathSpec {
 /// A path for text: `layer` the path's layer id in the same title,
 /// `contour` which of its outlines, `offset` where on it the text sits
 /// (0..1, keyed by `offset_keys`), `align` which part of the text sits
-/// there (start, center, end), `flip` its other side.
+/// there (start, center, end), `flip` its other side. Left out, `offset`
+/// is where its alignment puts the text on the path: the start's for
+/// start, the middle for center, the end for end. It was the start for
+/// every alignment, and centred text hung half off the path (#2584).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PathSpec {
     pub layer: u32,
     #[serde(default)]
     pub contour: usize,
-    #[serde(default)]
-    pub offset: f32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub offset: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub offset_keys: Option<Vec<ValueKey>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -4071,7 +4074,7 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             }
             let mut td = klipp_timeline::TitleData::default();
             td.objects.clear();
-            place_title_inner(seq, fps, i, at, *held, track.as_ref(), td, "graphics", "", true)
+            place_title(seq, fps, i, at, *held, track.as_ref(), td, "graphics", "")
         }
         Op::VectorPath { clip_id, object_id, path, shape, color, stroke_width, x, y, w, h } => {
             let path = match (path, shape) {
@@ -12764,19 +12767,24 @@ fn motion_extras(t: &Typeset, i: usize) -> Result<(Option<Vec<klipp_core::title_
                 OnPathSpec::Off(s) if s.eq_ignore_ascii_case("none") => Ok(None),
                 OnPathSpec::Off(s) => Err(refuse(i, format!("on_path \"{s}\""), "give on_path {layer, contour?, offset?, offset_keys?, align?, flip?}, or \"none\"")),
                 OnPathSpec::Path(p) => {
-                    if !p.offset.is_finite() || !(0.0..=1.0).contains(&p.offset) {
-                        return Err(refuse(i, format!("a path offset {} is out of range", p.offset), "give offset from 0 (the path's start) to 1 (its end)"));
-                    }
                     let align = match p.align.as_deref().map(str::to_lowercase).as_deref() {
                         None | Some("start") => klipp_timeline::PathTextAlign::Start,
                         Some("center") | Some("centre") => klipp_timeline::PathTextAlign::Center,
                         Some("end") => klipp_timeline::PathTextAlign::End,
                         Some(other) => return Err(refuse(i, format!("\"{other}\" is not a path alignment"), "use start, center or end")),
                     };
+                    let offset = p.offset.unwrap_or(match align {
+                        klipp_timeline::PathTextAlign::Start => 0.0,
+                        klipp_timeline::PathTextAlign::Center => 0.5,
+                        klipp_timeline::PathTextAlign::End => 1.0,
+                    });
+                    if !offset.is_finite() || !(0.0..=1.0).contains(&offset) {
+                        return Err(refuse(i, format!("a path offset {offset} is out of range"), "give offset from 0 (the path's start) to 1 (its end)"));
+                    }
                     Ok(Some(klipp_timeline::TextPath::Layer {
                         layer: klipp_timeline::TitleObjectId(p.layer),
                         contour: p.contour,
-                        offset: p.offset,
+                        offset,
                         offset_keyframes: p.offset_keys.as_deref().map(|v| value_keys(v, -10.0, 10.0, "path offset", i)).transpose()?.unwrap_or_default(),
                         align,
                         flip: p.flip,
@@ -13493,20 +13501,14 @@ pub fn title_from_fields(seq: &Sequence, fields: &serde_json::Value, at_secs: f6
 
 /// Put `td` on the timeline at `at` for `secs`, on `track` or on a text
 /// track with room (one made when there is none): the edit, named `what`
-/// with `note` after where it went. The title op and a template's (#1139)
-/// place a title the one way.
+/// with `note` after where it went. The title op, a template's (#1139),
+/// a connector and the graphics op place a title the one way. One may run
+/// past the timeline's end and lengthen it, as a clip placed there does:
+/// an end title laid out longer than the last picture was refused (#2566).
 #[allow(clippy::too_many_arguments)]
 fn place_title(seq: &Sequence, fps: Fps, i: usize, at: Timecode, secs_held: f64, track: Option<&TrackRef>, td: klipp_timeline::TitleData, what: &str, note: &str) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
-    place_title_inner(seq, fps, i, at, secs_held, track, td, what, note, false)
-}
-
-#[allow(clippy::too_many_arguments)]
-fn place_title_inner(seq: &Sequence, fps: Fps, i: usize, at: Timecode, secs_held: f64, track: Option<&TrackRef>, td: klipp_timeline::TitleData, what: &str, note: &str, extend: bool) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
     let tl_in = at;
     let tl_out = tl_in + snap(secs_held, fps);
-    if !extend && tl_out > seq.total_duration() {
-        return Err(refuse(i, format!("it would run to {:.2} s, past the end of the timeline at {:.2} s", secs(tl_out), secs(seq.total_duration())), "start it earlier or hold it shorter"));
-    }
     let fits = |ti: usize| overlapping(seq, ti, tl_in, tl_out, None).is_none() && !seq.tracks[ti].locked;
     let existing = match track {
         Some(t) => {
@@ -15214,6 +15216,23 @@ mod tests {
         let plan = resolve(&seq, &pool, &[title(6.2)]).unwrap();
         let EditCommand::AddTitleClip { track_index, created_track, .. } = &plan.steps[0].edit else { panic!() };
         assert_eq!((*track_index, *created_track), (1, false), "after the card: the free text track");
+    }
+
+    /// #2566: a title may run past the timeline's end and lengthens it,
+    /// as a clip placed there does: an end title held ten seconds from
+    /// the last frame was refused ("past the end of the timeline"). A
+    /// template's placing goes the same way.
+    #[test]
+    fn a_title_may_run_past_the_end_and_lengthens_the_timeline() {
+        let (seq, pool, _, _, _) = fixture();
+        let end = secs(seq.total_duration());
+        let op: Op = serde_json::from_value(serde_json::json!({ "op": "title", "text": "THE END", "at": { "secs": end }, "secs": 10.0 })).unwrap();
+        let plan = resolve(&seq, &pool, &[op]).unwrap_or_else(|r| panic!("refused: {}", r.why));
+        let mut seqs = vec![seq.clone()];
+        applied(&mut seqs, &pool, &plan.steps[0].edit, false);
+        assert!((secs(seqs[0].total_duration()) - (end + 10.0)).abs() < 0.05, "the timeline runs to {:.2} s, not {:.2}", secs(seqs[0].total_duration()), end + 10.0);
+        applied(&mut seqs, &pool, &plan.steps[0].edit, true);
+        assert!((secs(seqs[0].total_duration()) - end).abs() < 1e-6, "undone, it is as long as it was");
     }
 
     /// #737: left-aligned titles of any length start at the x they are
