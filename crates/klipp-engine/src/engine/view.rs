@@ -1924,8 +1924,22 @@ mod playback_quality_tests {
 /// gets a key no other has had, made afresh after each change, so a frame
 /// of one state of it is never taken for another: salted per process, so
 /// it doesn't meet a file the disk cache kept from another run either.
+/// A clip's render hash: the clip as it serialises and its picture, which
+/// a picture-truth clip's own serde leaves out. Hashed as the clip alone,
+/// an edit of such a clip's picture (a grade node's mix) kept its key, and
+/// the frame cached before the edit was shown after it.
 fn clip_render_hash_of(clip: &Clip) -> u64 {
-    crate::canonical_hash::canonical_hash(clip).unwrap_or_else(|e| {
+    let hashed = || -> Result<u64, crate::canonical_hash::Error> {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        crate::canonical_hash::canonical_hash(clip)?.hash(&mut h);
+        if let Ok(p) = clip.picture_v2() {
+            crate::canonical_hash::canonical_hash(&p.picture)?.hash(&mut h);
+            crate::canonical_hash::canonical_hash(&p.versions)?.hash(&mut h);
+        }
+        Ok(h.finish())
+    };
+    hashed().unwrap_or_else(|e| {
         tracing::warn!("render cache: clip {} can't be hashed ({e}); its frames are kept for this state only", clip.id.0);
         static SALT: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
         static UNHASHABLE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -1935,6 +1949,55 @@ fn clip_render_hash_of(clip: &Clip) -> u64 {
         });
         salt ^ UNHASHABLE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     })
+}
+
+#[cfg(test)]
+mod picture_key_tests {
+    use super::*;
+    use klipp_graph_format::path::{NodePath, Root};
+    use klipp_graph_lift::ops::GraphOp;
+    use klipp_timeline::GradeAccess;
+
+    /// A picture-truth clip (its picture stored as the truth, which its own
+    /// serde leaves out) with a desaturating grade at `mix`, and the path
+    /// to the grade's node.
+    fn graded(mix: f32) -> (Clip, NodePath) {
+        let mut c = Clip { kind: klipp_timeline::ClipKind::Media { media_id: klipp_core::MediaId::new() }, ..Clip::gap(klipp_core::RationalTime { value: 0, rate: 24 }, klipp_core::RationalTime { value: 96, rate: 24 }) };
+        let mut g = klipp_nodes::NodeGraph::default();
+        let corrector = g.ensure_corrector();
+        for n in &mut g.nodes {
+            if n.id == corrector {
+                n.params.saturation = Some(0.0);
+            }
+        }
+        c.set_grade(g);
+        let group = c.picture_v2().unwrap().picture.graph.nodes.iter().find(|n| n.type_id.as_str() == klipp_graph_format::lifted::types::GROUP).unwrap().id;
+        let path = NodePath::new(Root::Clip { clip: c.id.0 }, [group, corrector]);
+        c.apply_picture_ops(&[GraphOp::SetMix { path: path.clone(), mix: Some(mix) }]).unwrap();
+        assert!(c.is_picture_truth());
+        (c, path)
+    }
+
+    /// A frame cached for a picture-truth clip is not shown after its
+    /// picture is edited through picture ops: the edit changes the key the
+    /// cache is looked up by. The key used to hash the clip's serde alone,
+    /// which leaves a picture-truth clip's picture out, so the frame of
+    /// the grade before the edit was found and shown.
+    #[test]
+    fn a_picture_edit_is_not_served_the_frame_cached_before_it() {
+        let dir = std::env::temp_dir().join(format!("klipp-render-cache-picture-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut cache = crate::render_cache::DiskRenderCache::new(dir.clone(), 1);
+        let (before, path) = graded(0.5);
+        let key = |c: &Clip| crate::render_cache::RenderCacheKey { clip_id: c.id, frame_number: 12, grade_hash: clip_render_hash_of(c), size: (8, 8) };
+        cache.put(&key(&before), &[7u8; 8 * 8 * 4], 8, 8);
+        assert!(cache.get(&key(&before)).is_some(), "cached");
+        let mut after = before.clone();
+        after.apply_picture_ops(&[GraphOp::SetMix { path, mix: Some(0.8) }]).unwrap();
+        assert_ne!(clip_render_hash_of(&after), clip_render_hash_of(&before), "the edit changes the clip's render hash");
+        assert!(cache.get(&key(&after)).is_none(), "the frame cached before the edit is not served after it");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
 
 #[cfg(test)]
