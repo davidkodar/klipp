@@ -443,7 +443,9 @@ fn build_copy_plan(
         let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "grade_file".to_string());
         let dst = collision_safe_name(&name, &mut used_grade);
         items.push(CopyItem { src: path.clone(), dst_name: dst.clone(), subfolder: "grade" });
-        node_file_new_paths.insert(path.clone(), options.dest_dir.join("media").join("grade").join(&dst));
+        // Relative to the project, so the folder can move: opened, the
+        // project resolves it against where it is.
+        node_file_new_paths.insert(path.clone(), Path::new("media").join("grade").join(&dst));
     }
 
     CopyPlan {
@@ -473,6 +475,26 @@ fn node_files(g: &NodeGraph) -> Vec<&PathBuf> {
         }
     }
     out
+}
+
+/// A grade's file path a collected project stores relative to itself,
+/// under its `media/` folder, resolved against `dir`; any other path,
+/// absolute or a library LUT's name, as it is.
+pub(crate) fn resolve_collected_grade_files(g: &mut NodeGraph, dir: &Path) {
+    let fix = |p: &mut PathBuf| {
+        if p.is_relative() && p.starts_with("media") {
+            *p = dir.join(&*p);
+        }
+    };
+    for n in &mut g.nodes {
+        let params = &mut n.params;
+        for p in [params.lut_path.as_mut(), params.matte_image_path.as_mut(), params.difference_key.as_mut().and_then(|d| d.plate_path.as_mut())].into_iter().flatten() {
+            fix(p);
+        }
+        if let Some(inner) = params.compound_subgraph.as_mut() {
+            resolve_collected_grade_files(inner, dir);
+        }
+    }
 }
 
 /// Point every file `g`'s nodes read at its copy, where it has one, in
