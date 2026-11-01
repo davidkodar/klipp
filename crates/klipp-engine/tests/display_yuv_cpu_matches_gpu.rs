@@ -84,7 +84,7 @@ fn the_display_converter_matches_the_nv12_shader() {
     let (y, u, v) = samples_8bit();
     let s = YuvSamples {
         y: &y, u: &u, v: &v, width: W, height: H,
-        chroma_shift_w: 1, chroma_shift_h: 1, bit_depth: 8,
+        chroma_shift_w: 1, chroma_shift_h: 1, bit_depth: 8, siting: Default::default(),
     };
     let cpu = yuv_to_linear_display(&s, W, H, 0, bt709_sdr(), WorkingColorspace::Rec709Linear);
     let gpu = gpu_linear(&mut conv, &y, &u, &v);
@@ -127,7 +127,7 @@ fn four_two_two_does_not_blend_chroma_rows() {
     }
     let s = YuvSamples {
         y: &y, u: &u, v: &v, width: w, height: h,
-        chroma_shift_w: 1, chroma_shift_h: 0, bit_depth: 8,
+        chroma_shift_w: 1, chroma_shift_h: 0, bit_depth: 8, siting: Default::default(),
     };
     let out = yuv_to_linear_display(&s, w, h, 0, bt709_sdr(), WorkingColorspace::Rec709Linear);
     let red_of = |row: usize| out[(row * w as usize) * 4];
@@ -152,7 +152,7 @@ fn rotation_turns_the_picture_not_just_the_dimensions() {
     let v = vec![128u16; ((w / 2) * (h / 2)).max(1) as usize];
     let s = YuvSamples {
         y: &y, u: &u, v: &v, width: w, height: h,
-        chroma_shift_w: 1, chroma_shift_h: 1, bit_depth: 8,
+        chroma_shift_w: 1, chroma_shift_h: 1, bit_depth: 8, siting: Default::default(),
     };
     let (dw, dh) = (h, w);
     let out = yuv_to_linear_display(&s, dw, dh, 90, bt709_sdr(), WorkingColorspace::Rec709Linear);

@@ -15,6 +15,8 @@ pub struct OwnedYuv {
     pub shift_w: u32,
     pub shift_h: u32,
     pub depth: u32,
+    /// Where the frame says its chroma sits (#3266).
+    pub siting: klipp_color::hdr::ChromaSiting,
 }
 
 impl OwnedYuv {
@@ -28,8 +30,28 @@ impl OwnedYuv {
             chroma_shift_w: self.shift_w,
             chroma_shift_h: self.shift_h,
             bit_depth: self.depth,
+            siting: self.siting,
         }
     }
+}
+
+/// Where a decoded frame says its chroma samples sit, its
+/// `chroma_location`, as every converter reconstructs it (#3266).
+pub fn chroma_siting(frame: &ffmpeg_next::frame::Video) -> klipp_color::hdr::ChromaSiting {
+    siting_of(frame.chroma_location())
+}
+
+fn siting_of(location: ffmpeg_next::util::chroma::Location) -> klipp_color::hdr::ChromaSiting {
+    use ffmpeg_next::util::chroma::Location as L;
+    klipp_color::hdr::ChromaSiting::from_av_location(match location {
+        L::Unspecified => 0,
+        L::Left => 1,
+        L::Center => 2,
+        L::TopLeft => 3,
+        L::Top => 4,
+        L::BottomLeft => 5,
+        L::Bottom => 6,
+    })
 }
 
 /// A Y'CbCr frame's own alpha plane, where it has one, into `out`'s
@@ -186,6 +208,7 @@ pub unsafe fn read_yuv_samples(frame: *const ffmpeg_next::ffi::AVFrame) -> Optio
         shift_w,
         shift_h,
         depth,
+        siting: siting_of((*frame).chroma_location.into()),
     })
 }
 

@@ -145,3 +145,66 @@ fn a_resized_exports_frame_is_the_same_picture() {
         }
     }
 }
+
+/// SMPTE bars in 4:2:0 FFV1, tagged BT.709 limited and sited at
+/// `location` (ffmpeg's name), once per siting and process. Still, so
+/// every frame is the same picture, with hard colour edges across and
+/// down (the bands at the foot).
+fn sited_bars(location: &str) -> Option<PathBuf> {
+    static WRITTEN: std::sync::Mutex<Vec<(String, Option<PathBuf>)>> = std::sync::Mutex::new(Vec::new());
+    let mut written = WRITTEN.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((_, path)) = written.iter().find(|(l, _)| l == location) {
+        return path.clone();
+    }
+    let path = klipp_testing::scratch::scratch_file("klipp-export-chroma", &format!("sited-{location}.mkv"));
+    let ok = std::process::Command::new("ffmpeg")
+        .args(["-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i"])
+        .arg(format!("smptebars=s={W}x{H}:r={FPS}:d=1"))
+        .args(["-vf", &format!("scale=out_color_matrix=bt709:out_range=tv:out_chroma_loc={location}:flags=accurate_rnd+full_chroma_int,format=yuv420p,setparams=colorspace=bt709:color_primaries=bt709:color_trc=bt709:range=tv:chroma_location={location}")])
+        .args(["-c:v", "ffv1"])
+        .arg(&path)
+        .status()
+        .is_ok_and(|s| s.success());
+    let path = ok.then_some(path);
+    written.push((location.to_string(), path.clone()));
+    path
+}
+
+/// ffmpeg's own R'G'B' of frame `n`, at the siting given, 8-bit.
+fn ffmpeg_rgb(path: &std::path::Path, n: u32, location: &str) -> Vec<i32> {
+    let out = std::process::Command::new("ffmpeg")
+        .args(["-nostdin", "-v", "error", "-i"])
+        .arg(path)
+        .args(["-vf", &format!("select=eq(n\\,{n}),scale=in_color_matrix=bt709:in_range=tv:in_chroma_loc={location}:flags=accurate_rnd+full_chroma_int+bilinear")])
+        .args(["-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"])
+        .output()
+        .expect("ffmpeg");
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    out.stdout.iter().map(|&v| v as i32).collect()
+}
+
+/// #3266: a 4:2:0 file's chroma is read where the file says it sits.
+/// Bars sited left, centre and top-left, through the export's frames
+/// (which take the tag off the file), are ffmpeg's conversion of the same
+/// file at the same siting within 2 levels at every sample, hard edges
+/// included. Read at left siting instead, the centre- and top-left-sited
+/// files are 57 or 58 levels off at the edges.
+#[test]
+fn a_files_chroma_location_is_read_where_it_says() {
+    for location in ["left", "center", "topleft"] {
+        let Some(path) = sited_bars(location) else {
+            eprintln!("skipping: ffmpeg could not write the source");
+            return;
+        };
+        let klipp = levels(&exported(&path, 0.4, W, H));
+        let reference = ffmpeg_rgb(&path, 10, location);
+        let rgb: Vec<i32> = klipp.chunks_exact(4).flat_map(|p| [p[0], p[1], p[2]]).collect();
+        let (worst, share) = apart(&rgb, &reference);
+        let (as_left, _) = apart(&rgb, &ffmpeg_rgb(&path, 10, "left"));
+        eprintln!("{location}: worst {worst} levels from ffmpeg at its siting ({:.2}% over 2); {as_left} from ffmpeg read as left", share * 100.0);
+        assert!(worst <= 2, "{location}: {worst} levels from ffmpeg's reading at that siting");
+        if location != "left" {
+            assert!(as_left > 20, "{location}: the fixture must tell its siting from left ({as_left} levels)");
+        }
+    }
+}
