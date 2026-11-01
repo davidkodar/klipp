@@ -506,6 +506,31 @@ pub(crate) fn respond(
             Ok(v)
         }
 
+        ControlCommand::PreviewTakes { clip_id, take, all, stop } => {
+            if in_batch {
+                return Err("preview_takes is not part of a batch".into());
+            }
+            if stop {
+                send(AppCommand::EndTakePreview)?;
+                return Ok(json!({ "text": "the take preview is ended: the timeline is the document's again" }));
+            }
+            let clip_id = clip_id.ok_or("preview_takes needs clip_id, or stop: true")?;
+            let id = klipp_core::ClipId(parse_uuid(&clip_id, "clip_id")?);
+            let seq = ctx.sequence.document();
+            let slot = seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == id).ok_or("no clip with that clip_id on the timeline")?;
+            let a = slot.audition.as_deref().ok_or("not an audition: the alternatives op's create makes one")?;
+            let from = match take.as_deref() {
+                Some(key) => Some(a.find(key).ok_or_else(|| format!("no take {key:?}: its takes are {}", a.takes.iter().map(|t| t.name.as_str()).collect::<Vec<_>>().join(", ")))?.id),
+                None => None,
+            };
+            let first = from.and_then(|f| a.takes.iter().find(|t| t.id == f)).or_else(|| a.active_take()).map(|t| t.name.clone()).unwrap_or_default();
+            send(AppCommand::PreviewTakes { clip_id: id, take: from, all })?;
+            Ok(json!({
+                "text": if all { format!("playing each of the {} takes in the slot in turn, from {first}; anything but a read ends it", a.takes.len()) } else { format!("playing {first} in the slot, round and round; anything but a read ends it") },
+                "takes": a.takes.len(),
+            }))
+        }
+
         ControlCommand::Alternatives { clip_id } => {
             let id = klipp_core::ClipId(parse_uuid(&clip_id, "clip_id")?);
             let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;

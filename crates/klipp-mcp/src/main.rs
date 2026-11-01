@@ -1429,6 +1429,14 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             let clip_id = arg_str(args, "clip_id")?;
             if action == "list" {
                 json!({ "method": "alternatives", "clip_id": clip_id })
+            } else if action == "preview" {
+                let mut v = json!({ "method": "preview_takes", "clip_id": clip_id });
+                for key in ["take", "all", "stop"] {
+                    if let Some(x) = args.get(key) {
+                        v[key] = x.clone();
+                    }
+                }
+                v
             } else {
                 let mut op = json!({ "op": "alternatives", "action": action, "clip_id": clip_id });
                 for key in ["takes", "take", "name", "ripple"] {
@@ -2653,14 +2661,16 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
                  "sync": { "type": "string", "enum": ["timecode", "audio", "timecode_then_audio"] }
              }), vec!["media_ids"]),
         tool("klipp_alternatives",
-             "Auditions: takes in one clip slot, switched in place: list, create, add, remove, rename, switch, finalize. Details: klipp_guide topic alternatives.",
+             "Auditions: takes in one clip slot, switched in place: list, create, add, remove, rename, switch, finalize, preview. Details: klipp_guide topic alternatives.",
              json!({
-                 "action": { "type": "string", "enum": ["list", "create", "add", "remove", "rename", "switch", "finalize"] },
+                 "action": { "type": "string", "enum": ["list", "create", "add", "remove", "rename", "switch", "finalize", "preview"] },
                  "clip_id": { "type": "string" },
                  "takes": { "type": "array", "items": { "type": "object" } },
                  "take": { "type": "string" },
                  "name": { "type": "string" },
-                 "ripple": { "type": "boolean" }
+                 "ripple": { "type": "boolean" },
+                 "all": { "type": "boolean" },
+                 "stop": { "type": "boolean" }
              }), vec!["action", "clip_id"]),
         tool("klipp_switch_angle",
              "Cut the multicam group in play to an angle, counted from 1, at at_secs or the playhead, as one undo step. Details: klipp_guide topic switch_angle.",
@@ -2904,6 +2914,9 @@ mod interface_tests {
             json!({"method": "apply", "ops": [{"op": "alternatives", "action": "switch", "clip_id": "c", "take": "Wide", "ripple": true}]})
         );
         assert!(tool_to_command("klipp_alternatives", &json!({"clip_id": "c"})).is_err(), "no action");
+        // #3209 PR 3: preview plays the takes in the slot, its own request.
+        assert_eq!(tool_to_command("klipp_alternatives", &json!({"action": "preview", "clip_id": "c", "all": true})).unwrap(), json!({"method": "preview_takes", "clip_id": "c", "all": true}));
+        assert_eq!(tool_to_command("klipp_alternatives", &json!({"action": "preview", "clip_id": "c", "stop": true})).unwrap(), json!({"method": "preview_takes", "clip_id": "c", "stop": true}));
         assert!(guide_topic("alternatives").unwrap().starts_with("## klipp_alternatives"));
         assert!(guide_topic("op.alternatives").unwrap().contains("ripple true"));
     }

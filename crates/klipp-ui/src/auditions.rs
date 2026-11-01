@@ -45,6 +45,194 @@ pub fn plan(seq: &klipp_timeline::Sequence, pool: &klipp_media::MediaPool, clip_
     Ok((plan.steps.into_iter().map(|s| s.edit).collect(), label.to_string()))
 }
 
+/// How far before and after its slot a take is played when previewed.
+pub const PREVIEW_ROLL_SECS: f64 = 2.0;
+
+/// `seq` with `take` in `clip_id`'s slot (#3209), as switching to it
+/// would make it, the clips after it moved as a switch moves them: what a
+/// preview of the take plays. `seq` itself, unchanged, for the take
+/// already in the slot.
+pub fn take_sequence(seq: &klipp_timeline::Sequence, pool: &klipp_media::MediaPool, clip_id: ClipId, take: klipp_core::TakeId, ripple: bool) -> Result<klipp_timeline::Sequence, String> {
+    let clip = seq.all_clips().find(|c| c.id == clip_id).ok_or("the clip is no longer in the sequence")?;
+    let audition = clip.audition.as_deref().ok_or("the clip is not an audition")?;
+    if audition.active == take {
+        return Ok(seq.clone());
+    }
+    let (edits, _) = plan(seq, pool, clip_id, &AuditionEdit::Switch { take, ripple })?;
+    let mut sequences = vec![seq.clone()];
+    let mut fps = seq.fps;
+    // The edits are of the sequence alone: the pool beside them is a
+    // stand-in, never read and dropped after.
+    let mut scratch = klipp_media::MediaPool::default();
+    let mut view = klipp_document::apply::DocumentView { sequences: &mut sequences, active: 0, media_pool: &mut scratch, fps: &mut fps };
+    for e in &edits {
+        view.apply_forward(e);
+    }
+    Ok(sequences.remove(0))
+}
+
+/// The time a take of `clip_id` plays over in `seq` (its preview's
+/// sequence): its slot and [`PREVIEW_ROLL_SECS`] either side, from 0.
+pub fn preview_range(seq: &klipp_timeline::Sequence, clip_id: ClipId) -> Option<(klipp_core::Timecode, klipp_core::Timecode)> {
+    let clip = seq.all_clips().find(|c| c.id == clip_id)?;
+    let rate = clip.timeline_in.rate;
+    let from = (clip.timeline_in.to_secs_f64() - PREVIEW_ROLL_SECS).max(0.0);
+    let to = clip.timeline_out.to_secs_f64() + PREVIEW_ROLL_SECS;
+    Some((klipp_core::Timecode::from_secs_f64(from, rate), klipp_core::Timecode::from_secs_f64(to, rate)))
+}
+
+/// A take preview's takes in the order they are stepped through, and the
+/// one to start on: the one asked for, else the one in the slot.
+pub fn preview_order(audition: &klipp_timeline::audition::Audition, start: Option<klipp_core::TakeId>) -> (Vec<klipp_core::TakeId>, usize) {
+    let order: Vec<klipp_core::TakeId> = audition.takes.iter().map(|t| t.id).collect();
+    let at = start.or(Some(audition.active)).and_then(|id| order.iter().position(|t| *t == id)).unwrap_or(0);
+    (order, at)
+}
+
+/// The take `by` steps from `index` among `len`, round from the last to
+/// the first and back.
+pub fn stepped(index: usize, len: usize, by: i32) -> usize {
+    if len == 0 {
+        return 0;
+    }
+    (index as i64 + i64::from(by)).rem_euclid(len as i64) as usize
+}
+
+/// An audition's takes being played in its slot (#3209): the engine is
+/// handed the sequence with the take in it in place of the document,
+/// which is kept beside it and given back when it ends.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TakePreview {
+    pub clip_id: ClipId,
+    /// The takes, in the order they are stepped through.
+    pub order: Vec<klipp_core::TakeId>,
+    pub index: usize,
+    /// Each take in turn, not the one round and round.
+    pub all: bool,
+    /// The time the take plays over, in its own sequence.
+    pub range: (klipp_core::Timecode, klipp_core::Timecode),
+    /// Where the playhead was, to go back to.
+    pub return_to: klipp_core::Timecode,
+}
+
+impl TakePreview {
+    pub fn take(&self) -> Option<klipp_core::TakeId> {
+        self.order.get(self.index).copied()
+    }
+}
+
+/// The commands a take preview stays up through: the transport, the
+/// selection, the panels, and its own. Anything else ends it first, so it
+/// sees and changes the document.
+pub fn keeps_take_preview(cmd: &AppCommand) -> bool {
+    matches!(
+        cmd,
+        AppCommand::Play
+            | AppCommand::Pause
+            | AppCommand::SeekTo(_)
+            | AppCommand::SeekRelative(_)
+            | AppCommand::SequenceUpdated
+            | AppCommand::SelectClip(_)
+            | AppCommand::OpenAuditionPicker { .. }
+            | AppCommand::PreviewTakes { .. }
+            | AppCommand::StepTakePreview { .. }
+            | AppCommand::PickPreviewedTake
+            | AppCommand::EndTakePreview
+            | AppCommand::ShowPanel { .. }
+    )
+}
+
+/// A preview of `clip_id`'s takes started, from `take`: its commands.
+pub fn start_preview(state: &mut crate::state::AppState, shared: &klipp_timeline::SharedSequence, clip_id: ClipId, take: Option<klipp_core::TakeId>, all: bool) -> Vec<AppCommand> {
+    let Some(audition) = state.sequence().all_clips().find(|c| c.id == clip_id).and_then(|c| c.audition.as_deref().cloned()) else {
+        state.toast.show("Not an audition: nothing to preview".to_string());
+        return Vec::new();
+    };
+    let (order, index) = preview_order(&audition, take);
+    // One already running keeps the playhead it came from.
+    let return_to = state.take_preview.as_ref().map_or(state.playhead, |p| p.return_to);
+    let range = (state.playhead, state.playhead);
+    state.take_preview = Some(TakePreview { clip_id, order, index, all, range, return_to });
+    show_take(state, shared)
+}
+
+/// The take the preview is on handed to the engine in place of the
+/// document, and played from the start of its range: the commands that
+/// do it. A take that can't be shown ends the preview, said in a toast.
+pub fn show_take(state: &mut crate::state::AppState, shared: &klipp_timeline::SharedSequence) -> Vec<AppCommand> {
+    let Some(p) = state.take_preview.clone() else { return Vec::new() };
+    let Some(take) = p.take() else { return Vec::new() };
+    // Made from the document, never from a take already standing in.
+    let made = take_sequence(state.sequence(), &state.media_pool, p.clip_id, take, state.ripple_enabled)
+        .and_then(|seq| preview_range(&seq, p.clip_id).map(|r| (seq, r)).ok_or_else(|| "the clip is no longer in the sequence".to_string()));
+    match made {
+        Ok((seq, range)) => {
+            shared.stand_in(seq, klipp_timeline::StandInFor { clip: p.clip_id, take });
+            if let Some(now) = state.take_preview.as_mut() {
+                now.range = range;
+            }
+            vec![AppCommand::SequenceUpdated, AppCommand::SeekTo(range.0), AppCommand::Play]
+        }
+        Err(why) => {
+            state.toast.show(format!("The take can't be previewed: {why}"));
+            end_preview(state, shared, true)
+        }
+    }
+}
+
+/// The take preview ended: the engine given the document back as it was,
+/// the playback paused and, with `go_back`, the playhead where it was.
+pub fn end_preview(state: &mut crate::state::AppState, shared: &klipp_timeline::SharedSequence, go_back: bool) -> Vec<AppCommand> {
+    let Some(p) = state.take_preview.take() else { return Vec::new() };
+    let mut cmds = vec![AppCommand::Pause];
+    if shared.end_stand_in() {
+        cmds.push(AppCommand::SequenceUpdated);
+    }
+    if go_back {
+        cmds.push(AppCommand::SeekTo(p.return_to));
+    }
+    cmds
+}
+
+/// Enter on a take preview: it ended, and the take playing put in the slot
+/// when it is not the one there.
+pub fn pick_previewed(state: &mut crate::state::AppState, shared: &klipp_timeline::SharedSequence) -> Vec<AppCommand> {
+    let picked = state.take_preview.as_ref().and_then(|p| p.take().map(|t| (p.clip_id, t)));
+    let mut cmds = end_preview(state, shared, false);
+    if let Some((clip_id, take)) = picked {
+        let active = state.sequence().all_clips().find(|c| c.id == clip_id).and_then(|c| c.audition.as_deref().map(|a| a.active));
+        if active != Some(take) {
+            cmds.push(AppCommand::EditAudition { clip_id, edit: AuditionEdit::Switch { take, ripple: state.ripple_enabled } });
+        }
+    }
+    cmds
+}
+
+/// Once a frame while a take is previewed: past the end of its range it
+/// plays the next take (with `all`; after the last it ends), or the same
+/// one again. Ended elsewhere (a change from the socket gives the engine
+/// the document), it is let go.
+pub fn follow_preview(state: &mut crate::state::AppState, shared: &klipp_timeline::SharedSequence) -> Vec<AppCommand> {
+    let Some(p) = state.take_preview.clone() else { return Vec::new() };
+    if shared.standing_in().is_none() {
+        state.take_preview = None;
+        return vec![AppCommand::Pause, AppCommand::SequenceUpdated];
+    }
+    if state.playback != klipp_engine::PlaybackState::Playing || state.playhead < p.range.1 {
+        return Vec::new();
+    }
+    if !p.all {
+        return vec![AppCommand::SeekTo(p.range.0)];
+    }
+    if p.index + 1 >= p.order.len() {
+        return end_preview(state, shared, true);
+    }
+    if let Some(now) = state.take_preview.as_mut() {
+        now.index += 1;
+    }
+    show_take(state, shared)
+}
+
 /// Whether `clip` can hold takes: what the op makes an audition of.
 pub fn can_hold_takes(clip: &Clip) -> bool {
     clip.audition.is_some() || matches!(clip.kind, klipp_timeline::ClipKind::Media { .. } | klipp_timeline::ClipKind::Title(_) | klipp_timeline::ClipKind::Generator(_) | klipp_timeline::ClipKind::Sequence { .. })
@@ -108,7 +296,7 @@ pub fn show_picker(ctx: &egui::Context, state: &mut crate::state::AppState) -> V
         .default_width(360.0)
         .show(ctx, |ui| {
             ui.label(egui::RichText::new(format!("{} takes in this slot. Click one to put it in.", a.takes.len())).weak());
-            egui::Grid::new(("audition_takes", clip_id.0)).num_columns(3).striped(true).show(ui, |ui| {
+            egui::Grid::new(("audition_takes", clip_id.0)).num_columns(4).striped(true).show(ui, |ui| {
                 for t in &a.takes {
                     let active = t.id == a.active;
                     let shown = t.clip.as_deref().unwrap_or(&clip);
@@ -131,14 +319,24 @@ pub fn show_picker(ctx: &egui::Context, state: &mut crate::state::AppState) -> V
                     if ui.selectable_label(active, format!("{}  {}", if active { "\u{25CF} In the slot" } else { "Put in" }, state.timecode_display().duration(length))).on_hover_text(if active { "The take on the timeline" } else { "Put this take in the slot: one undo step" }).clicked() && !active {
                         cmds.push(AppCommand::EditAudition { clip_id, edit: AuditionEdit::Switch { take: t.id, ripple } });
                     }
+                    let playing = state.take_preview.as_ref().is_some_and(|p| p.clip_id == clip_id && p.take() == Some(t.id));
+                    if ui.selectable_label(playing, "\u{25B6}").on_hover_text("Play this take in its slot, round and round, nothing changed").clicked() {
+                        cmds.push(AppCommand::PreviewTakes { clip_id, take: Some(t.id), all: false });
+                    }
                     if ui.add_enabled(!active, egui::Button::new("Remove")).on_disabled_hover_text("Put another take in first").clicked() {
                         cmds.push(AppCommand::EditAudition { clip_id, edit: AuditionEdit::Remove { take: t.id } });
                     }
                     ui.end_row();
                 }
             });
+            if state.take_preview.as_ref().is_some_and(|p| p.clip_id == clip_id) {
+                ui.label(egui::RichText::new("Playing in the slot: \u{2190} \u{2192} another take, Enter puts it in, Esc stops").weak());
+            }
             ui.separator();
             ui.horizontal(|ui| {
+                if ui.button("Preview All").on_hover_text("Play each take in its slot in turn, a little either side, nothing changed").clicked() {
+                    cmds.push(AppCommand::PreviewTakes { clip_id, take: a.takes.first().map(|t| t.id), all: true });
+                }
                 if ui.button("Add Copy").on_hover_text("A copy of the take in the slot, to vary").clicked() {
                     cmds.push(AppCommand::EditAudition { clip_id, edit: AuditionEdit::AddCopy });
                 }
@@ -150,6 +348,9 @@ pub fn show_picker(ctx: &egui::Context, state: &mut crate::state::AppState) -> V
         });
     if !open {
         state.audition_picker = None;
+        if state.take_preview.is_some() {
+            cmds.push(AppCommand::EndTakePreview);
+        }
     }
     cmds
 }
@@ -313,6 +514,90 @@ mod tests {
         assert!(matches!(&cmds[..], [AppCommand::EditAudition { edit: AuditionEdit::AddCopy, .. }]), "{cmds:?}");
         let cmds = click(&mut frame, &mut state, "Finalize");
         assert!(matches!(&cmds[..], [AppCommand::EditAudition { edit: AuditionEdit::Finalize, .. }, AppCommand::OpenAuditionPicker { clip_id: None }]), "{cmds:?}");
+    }
+
+    fn dbg_of(cmds: &[AppCommand]) -> Vec<String> {
+        cmds.iter().map(|c| format!("{c:?}")).collect()
+    }
+
+    /// #3209 PR 3: a take previewed is handed to the engine in place of
+    /// the document, which stays as it was, and so do its history and
+    /// whether it is saved; played through, each take follows the last
+    /// and the preview ends after the last, the document handed back and
+    /// the playhead where it was; one take plays round and round; Enter
+    /// ends it and puts the take in, one edit; a change from elsewhere
+    /// ends it.
+    #[test]
+    fn a_take_preview_plays_the_take_and_leaves_the_project_untouched() {
+        let (seq, pool, id, close) = fixture();
+        let mut state = crate::state::AppState::default();
+        state.sequences[0] = seq;
+        state.media_pool = pool;
+        for edit in [AuditionEdit::Create, AuditionEdit::AddMedia { media_ids: vec![close] }] {
+            let (edits, _) = plan(state.sequence(), &state.media_pool, id, &edit).unwrap();
+            let mut fps = state.fps;
+            let mut view = klipp_document::apply::DocumentView { sequences: &mut state.sequences, active: 0, media_pool: &mut state.media_pool, fps: &mut fps };
+            for e in &edits {
+                view.apply_forward(e);
+            }
+        }
+        state.dirty = false;
+        state.playhead = t(10.0);
+        let document = state.sequence().clone();
+        let shared = klipp_timeline::SharedSequence::new(document.clone());
+        let takes: Vec<_> = audition(&document, id).takes.iter().map(|t| t.id).collect();
+        let media_in_slot = |s: &Sequence| s.all_clips().find(|c| c.id == id).and_then(|c| c.media_id());
+        let wide = media_in_slot(&document);
+
+        // The file's take, the last of three, played through.
+        let cmds = start_preview(&mut state, &shared, id, Some(takes[2]), true);
+        assert_eq!(dbg_of(&cmds), dbg_of(&[AppCommand::SequenceUpdated, AppCommand::SeekTo(t(0.0)), AppCommand::Play]), "from 2 s before the slot, clamped to 0");
+        assert_eq!(state.take_preview.as_ref().unwrap().range, (t(0.0), t(6.0)), "the slot and 2 s after it");
+        assert_eq!(media_in_slot(&shared.snapshot()), Some(close), "the engine plays the take");
+        assert_eq!(media_in_slot(&shared.document()), wide, "the document beside it as it was");
+        assert_eq!(format!("{:?}", state.sequence()), format!("{document:?}"), "the app's document untouched");
+        assert!(!state.dirty && state.next_undo().is_none(), "nothing to save, nothing to undo");
+        assert_eq!(shared.standing_in(), Some(klipp_timeline::StandInFor { clip: id, take: takes[2] }));
+
+        // Before its end nothing happens; at it, the last take, it ends.
+        state.playback = klipp_engine::PlaybackState::Playing;
+        state.playhead = t(5.0);
+        assert!(follow_preview(&mut state, &shared).is_empty());
+        state.playhead = t(6.0);
+        assert_eq!(dbg_of(&follow_preview(&mut state, &shared)), dbg_of(&[AppCommand::Pause, AppCommand::SequenceUpdated, AppCommand::SeekTo(t(10.0))]), "back where the playhead was");
+        assert!(state.take_preview.is_none() && shared.standing_in().is_none());
+        assert_eq!(format!("{:?}", shared.snapshot()), format!("{document:?}"), "the document handed back as it was");
+
+        // Played through from the first, the second follows it.
+        start_preview(&mut state, &shared, id, Some(takes[0]), true);
+        state.playhead = t(6.0);
+        follow_preview(&mut state, &shared);
+        assert_eq!(state.take_preview.as_ref().and_then(TakePreview::take), Some(takes[1]));
+        end_preview(&mut state, &shared, true);
+
+        // One take, round and round.
+        start_preview(&mut state, &shared, id, Some(takes[2]), false);
+        state.playhead = t(6.0);
+        assert_eq!(dbg_of(&follow_preview(&mut state, &shared)), dbg_of(&[AppCommand::SeekTo(t(0.0))]));
+        assert_eq!(stepped(0, 3, -1), 2, "\u{2190} from the first is the last");
+        assert_eq!(stepped(2, 3, 1), 0);
+
+        // Enter: ended, and the take put in, one edit.
+        let cmds = pick_previewed(&mut state, &shared);
+        assert!(matches!(&cmds[..], [AppCommand::Pause, AppCommand::SequenceUpdated, AppCommand::EditAudition { edit: AuditionEdit::Switch { take, .. }, .. }] if *take == takes[2]), "{cmds:?}");
+        assert!(shared.standing_in().is_none());
+
+        // A change from elsewhere (the socket) ends it.
+        start_preview(&mut state, &shared, id, Some(takes[2]), false);
+        shared.write().unwrap().name = "edited over the socket".into();
+        assert_eq!(dbg_of(&follow_preview(&mut state, &shared)), dbg_of(&[AppCommand::Pause, AppCommand::SequenceUpdated]));
+        assert!(state.take_preview.is_none());
+
+        // What the preview stays up through, and what ends it.
+        assert!(keeps_take_preview(&AppCommand::Play) && keeps_take_preview(&AppCommand::SeekTo(t(1.0))));
+        for ends in [AppCommand::Undo, AppCommand::Redo, AppCommand::SetActiveSequence { sequence_idx: 0 }, AppCommand::EditAudition { clip_id: id, edit: AuditionEdit::Finalize }, AppCommand::Stop] {
+            assert!(!keeps_take_preview(&ends), "{ends:?} ends it");
+        }
     }
 
     /// The drop's target is the clip under the pointer that can hold
