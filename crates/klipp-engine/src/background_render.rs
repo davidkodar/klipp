@@ -78,6 +78,17 @@ impl CostLog {
     }
 }
 
+/// Whether to show a kept frame rather than draw it live: unless its
+/// last live draw (`live`) was as quick as loading a kept frame (`load`,
+/// once measured). On a machine where reading a frame costs more than
+/// drawing it, the frame cache only slows playback down (#3212).
+pub fn prefer_kept(live: Option<FrameCost>, load: Option<f32>) -> bool {
+    match (live, load) {
+        (Some(live), Some(load)) => live.ms > load,
+        _ => true,
+    }
+}
+
 /// The order heavy frames are drawn in: `heavy` (ticks, sorted, a frame
 /// `step` apart where they run on) grouped into ranges, the range nearest
 /// `playhead` first (the one ahead when two are as near), each from its
@@ -246,6 +257,17 @@ mod tests {
         assert_eq!(plan(&heavy, 10, 0, |t| t == 10 || t == 20), vec![0, 30]);
         // A gap of more than a frame splits ranges; the far one waits.
         assert_eq!(plan(&[0, 10, 50, 60], 10, 55, |_| false), vec![60, 50, 0, 10]);
+    }
+
+    /// A kept frame is shown unless drawing it live was as quick as
+    /// loading one; with either cost unknown, it is shown.
+    #[test]
+    fn a_kept_frame_is_shown_only_where_loading_beats_drawing_live() {
+        let live = |ms| Some(FrameCost { ms, late: ms > 41.7 });
+        assert!(prefer_kept(live(60.0), Some(12.0)), "live late, loading quicker");
+        assert!(!prefer_kept(live(17.0), Some(27.0)), "live quicker than loading (the M1's 4K FFV1)");
+        assert!(!prefer_kept(live(12.0), Some(12.0)), "as quick: live");
+        assert!(prefer_kept(None, Some(27.0)) && prefer_kept(live(17.0), None), "unknown: shown");
     }
 
     #[test]

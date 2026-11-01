@@ -177,6 +177,11 @@ fn measure_heavy_range_live_and_drawn_ahead() {
     assert!(wait_for(Duration::from_secs(300), || bg::state() == State::Done), "drawn: {:?}", bg::state());
     eprintln!("MEASURE drawn ahead in {:.1} s", since.elapsed().as_secs_f64());
     play("after drawing ahead");
+    let load = klipp_engine::frame_cache::load_costs();
+    eprintln!(
+        "MEASURE loading a kept frame, on the reading thread over {} frames: read {:.1} ms, LZ4 {:.1} ms, unpack {:.1} ms, to display bytes {:.1} ms, total {:.1} ms",
+        load.frames, load.read_ms, load.lz4_ms, load.unpack_ms, load.encode_ms, load.total_ms,
+    );
     bg::force_heavy(false);
     let _ = std::fs::remove_dir_all(&root);
     let _ = std::fs::remove_file(&src);

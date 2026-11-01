@@ -2008,6 +2008,9 @@ pub struct PlaybackEngine {
     background: background::Background,
     cost_log: crate::background_render::CostLog,
     frame_from_cache: bool,
+    /// Kept frames shown while playing, and their mean time, ms.
+    kept_shown: u64,
+    kept_present_ms: f32,
     /// Current grade hash for the active clip (cached to avoid recomputing per frame).
     current_grade_hash: u64,
     current_grade_clip_id: Option<klipp_core::ClipId>,
@@ -3028,6 +3031,8 @@ impl PlaybackEngine {
             background: background::Background::default(),
             cost_log: crate::background_render::CostLog::default(),
             frame_from_cache: false,
+            kept_shown: 0,
+            kept_present_ms: 0.0,
             current_grade_hash: 0,
             current_grade_clip_id: None,
             current_graph_arc: None,
