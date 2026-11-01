@@ -118,28 +118,24 @@ pub fn plan(heavy: &[i64], step: i64, playhead: i64, mut skip: impl FnMut(i64) -
 }
 
 /// Whether the computer runs on its battery, from the power supplies
-/// under `root` (`/sys/class/power_supply`): a mains or USB supply online
-/// means not; a battery discharging, or a supply offline beside a battery,
-/// means so. Nothing to read (a desktop, a sandbox) means not.
+/// under `root` (`/sys/class/power_supply`): its own battery discharging,
+/// and no mains or USB supply online. A device's battery (a wireless
+/// keyboard's, a mouse's, a headset's: `scope` Device) is no battery of
+/// the computer's; it reads discharging always, and USB-C ports read
+/// offline with nothing in them, so a desktop with one is on mains.
+/// Nothing to read (a desktop, a sandbox) means not.
 pub fn on_battery(root: &Path) -> bool {
     let read = |p: &Path, f: &str| std::fs::read_to_string(p.join(f)).map(|s| s.trim().to_string()).unwrap_or_default();
-    let (mut plugged, mut supply_off, mut battery, mut discharging) = (false, false, false, false);
+    let (mut plugged, mut discharging) = (false, false);
     for entry in std::fs::read_dir(root).into_iter().flatten().flatten() {
         let p = entry.path();
         match read(&p, "type").as_str() {
-            "Mains" | "USB" | "USB_PD" | "USB_C" => match read(&p, "online").as_str() {
-                "1" => plugged = true,
-                "0" => supply_off = true,
-                _ => {}
-            },
-            "Battery" => {
-                battery = true;
-                discharging |= read(&p, "status") == "Discharging";
-            }
+            "Mains" | "USB" | "USB_PD" | "USB_C" => plugged |= read(&p, "online") == "1",
+            "Battery" if read(&p, "scope") != "Device" => discharging |= read(&p, "status") == "Discharging",
             _ => {}
         }
     }
-    !plugged && battery && (discharging || supply_off)
+    discharging && !plugged
 }
 
 /// What the engine knows about now, for whether to draw ahead.
@@ -281,20 +277,49 @@ mod tests {
         }
     }
 
-    #[test]
-    fn the_battery_is_read_from_the_power_supplies() {
-        let root = std::env::temp_dir().join(format!("klipp-power-{}", std::process::id()));
+    /// A fresh fake `/sys/class/power_supply` named `name`.
+    fn supplies(name: &str) -> std::path::PathBuf {
+        let root = std::env::temp_dir().join(format!("klipp-power-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
-        assert!(!on_battery(&root), "nothing to read: not on battery");
-        supply(&root, "BAT0", &[("type", "Battery"), ("status", "Discharging")]);
-        assert!(on_battery(&root), "discharging");
-        supply(&root, "AC", &[("type", "Mains"), ("online", "1")]);
-        assert!(!on_battery(&root), "plugged in");
+        std::fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    #[test]
+    fn a_laptop_unplugged_is_on_battery_and_plugged_in_is_not() {
+        let root = supplies("laptop");
+        supply(&root, "BAT0", &[("type", "Battery"), ("scope", "System"), ("status", "Discharging")]);
         supply(&root, "AC", &[("type", "Mains"), ("online", "0")]);
-        supply(&root, "BAT0", &[("type", "Battery"), ("status", "Not charging")]);
-        assert!(on_battery(&root), "the supply offline beside a battery");
-        std::fs::remove_dir_all(root.join("BAT0")).unwrap();
-        assert!(!on_battery(&root), "no battery: a desktop's supply reads offline at times");
+        assert!(on_battery(&root), "unplugged");
+        supply(&root, "AC", &[("type", "Mains"), ("online", "1")]);
+        supply(&root, "BAT0", &[("type", "Battery"), ("status", "Charging")]);
+        assert!(!on_battery(&root), "plugged in");
+        supply(&root, "BAT0", &[("type", "Battery"), ("status", "Discharging")]);
+        assert!(!on_battery(&root), "plugged in though its battery reads discharging: a supply online wins");
+        std::fs::remove_dir_all(root.join("AC")).unwrap();
+        supply(&root, "ucsi-source-psy-USBC000:001", &[("type", "USB"), ("online", "1")]);
+        assert!(!on_battery(&root), "charging over USB-C");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A desktop with a wireless keyboard: its battery is the keyboard's,
+    /// always discharging, beside USB-C ports with nothing in them and no
+    /// mains supply listed (an M1 Mac mini). Not on battery.
+    #[test]
+    fn a_desktop_with_a_keyboards_battery_is_on_mains() {
+        let root = supplies("hid");
+        supply(&root, "hid-0000:004c:029c.0003-battery", &[("type", "Battery"), ("scope", "Device"), ("status", "Discharging")]);
+        supply(&root, "ucsi-source-psy-USBC000:001", &[("type", "USB"), ("online", "0")]);
+        supply(&root, "ucsi-source-psy-USBC000:002", &[("type", "USB"), ("online", "0")]);
+        assert!(!on_battery(&root));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_desktop_with_no_supplies_is_on_mains() {
+        let root = supplies("none");
+        assert!(!on_battery(&root), "an empty folder");
+        assert!(!on_battery(&root.join("missing")), "no folder at all");
         let _ = std::fs::remove_dir_all(&root);
     }
 
