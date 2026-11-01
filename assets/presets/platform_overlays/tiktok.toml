@@ -1,0 +1,22 @@
+# Where TikTok's player covers a vertical video (#3315). Each zone's
+# `rect` is [x, y, width, height] as a share of the frame, from its top
+# left. TikTok publishes no single pixel layout: these are the margins
+# creator and ad guides most often give for a 1080x1920 frame (220 px
+# top, 480 px bottom, 140 px right). Check a post against TikTok's own
+# preview; when the app's layout changes, change the numbers here.
+id = "tiktok"
+name = "TikTok"
+aspect = [9, 16]
+checked = "2026-11-01"
+
+[[zone]]
+label = "Tabs and search"
+rect = [0.0, 0.0, 1.0, 0.115]
+
+[[zone]]
+label = "Like, comment, share"
+rect = [0.87, 0.40, 0.13, 0.35]
+
+[[zone]]
+label = "Caption, handle and sound"
+rect = [0.0, 0.75, 0.87, 0.25]

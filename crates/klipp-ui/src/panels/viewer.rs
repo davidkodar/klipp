@@ -1226,6 +1226,7 @@ impl ViewerPanel {
         if ov.false_color { labels.push("FALSE COLOUR"); }
         if ov.focus_peaking { labels.push("FOCUS PEAKING"); }
         if ov.safe_areas { labels.push("SAFE AREAS"); }
+        if let Some(p) = ov.platform.and_then(crate::platform_overlays::by_id) { labels.push(p.name.as_str()); }
         if ov.grid { labels.push("GRID"); }
         // no badge for checkerboard
         if !labels.is_empty() {
@@ -2253,6 +2254,11 @@ impl ViewerPanel {
         // Safe area overlay: title safe (80%) and action safe (90%)
         if state.viewer_overlays.safe_areas {
             self.draw_safe_area_overlay(ui.painter(), state, &frame);
+        }
+
+        // Where a platform's player covers the picture (#3315).
+        if let Some(p) = state.viewer_overlays.platform.and_then(crate::platform_overlays::by_id) {
+            draw_platform_overlay(ui.painter(), p, frame.image_rect);
         }
 
         // Grid overlay: rule of thirds + center crosshair
@@ -6328,6 +6334,13 @@ impl ViewerPanel {
             // Shortcuts read from the bindings, so a rebind shows here.
             let key = |action: &str| kb.display_for(action);
             menu_toggle_value(ui, &mut state.viewer_overlays.safe_areas, "Safe Areas", &key("toggle_safe_areas"));
+            // One platform's player at a time (#3315); chosen again, off.
+            for p in crate::platform_overlays::all() {
+                let on = state.viewer_overlays.platform == Some(p.id.as_str());
+                if menu_toggle(ui, &format!("{} Player", p.name), "", on).clicked() {
+                    state.viewer_overlays.platform = (!on).then_some(p.id.as_str());
+                }
+            }
             menu_toggle_value(ui, &mut state.viewer_overlays.grid, "Grid", &key("toggle_grid_overlay"));
             menu_toggle_value(ui, &mut state.viewer_overlays.zebras, "Zebras", &key("toggle_zebra"));
             menu_toggle_value(ui, &mut state.viewer_overlays.false_color, "False Colour", &key("toggle_false_color"));
@@ -6755,6 +6768,33 @@ fn editor_title_geometry(
 
 /// A title layer as the viewer's editor draws it, its box hugging its
 /// text: where a test finds the handles it drags (#1714).
+/// Where `platform`'s player covers the picture in `image`: each zone a
+/// plain labelled outline (#3315). Laid out for the platform's own frame,
+/// fitted inside the picture and said so when the timeline is another
+/// shape, so a 9:16 player on a 16:9 cut shows where it would fall.
+fn draw_platform_overlay(painter: &egui::Painter, platform: &crate::platform_overlays::PlatformOverlay, image: egui::Rect) {
+    let frame = if platform.fits(image.width(), image.height()) {
+        image
+    } else {
+        let want = platform.aspect[0] as f32 / platform.aspect[1] as f32;
+        let size = if image.width() / image.height() > want { egui::vec2(image.height() * want, image.height()) } else { egui::vec2(image.width(), image.width() / want) };
+        egui::Rect::from_center_size(image.center(), size)
+    };
+    let colour = egui::Color32::from_rgba_unmultiplied(255, 255, 255, 170);
+    let font = egui::FontId::proportional(10.0);
+    if frame != image {
+        painter.rect_stroke(frame, 0.0, egui::Stroke::new(1.0_f32, colour));
+        painter.text(frame.left_top() + egui::vec2(4.0, -2.0), egui::Align2::LEFT_BOTTOM, format!("{} frame ({}:{})", platform.name, platform.aspect[0], platform.aspect[1]), font.clone(), colour);
+    }
+    for z in &platform.zones {
+        let [x, y, w, h] = z.rect;
+        let r = egui::Rect::from_min_size(frame.min + egui::vec2(x * frame.width(), y * frame.height()), egui::vec2(w * frame.width(), h * frame.height()));
+        painter.rect_filled(r, 0.0, egui::Color32::from_rgba_unmultiplied(0, 0, 0, 40));
+        painter.rect_stroke(r, 0.0, egui::Stroke::new(1.0_f32, colour));
+        painter.text(r.left_top() + egui::vec2(4.0, 2.0), egui::Align2::LEFT_TOP, &z.label, font.clone(), colour);
+    }
+}
+
 #[cfg(test)]
 pub(crate) fn shown_title_layer(
     title: &klipp_timeline::TitleData,

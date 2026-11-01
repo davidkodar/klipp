@@ -1,0 +1,22 @@
+# Where Instagram's player covers a Reel (#3315). Each zone's `rect` is
+# [x, y, width, height] as a share of the frame, from its top left. The
+# shares are the ones guides attribute to Meta's ads guidance for Reels:
+# keep the top 14% and the bottom 35% clear, 6% at each side. Check a post
+# against Instagram's own preview; when the layout changes, change the
+# numbers here.
+id = "instagram_reels"
+name = "Instagram Reels"
+aspect = [9, 16]
+checked = "2026-11-01"
+
+[[zone]]
+label = "Reels header and camera"
+rect = [0.0, 0.0, 1.0, 0.14]
+
+[[zone]]
+label = "Like, comment, share"
+rect = [0.86, 0.45, 0.14, 0.20]
+
+[[zone]]
+label = "Caption, handle and audio"
+rect = [0.0, 0.65, 1.0, 0.35]

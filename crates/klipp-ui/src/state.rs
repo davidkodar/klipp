@@ -3659,6 +3659,9 @@ pub struct ViewerOverlays {
     pub safe_areas: bool,
     pub grid: bool,
     pub checkerboard: bool,
+    /// Where a platform's player covers the picture (#3315), by the
+    /// platform's id (`crate::platform_overlays`); none by default.
+    pub platform: Option<&'static str>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
