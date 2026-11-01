@@ -426,12 +426,10 @@ impl KlippApp {
             app.prefs.playback.playback_quality,
         ));
         klipp_engine::audio_output::set_preferred_device(app.prefs.audio_hardware.output_device.clone());
-        // TODO: background_render pref — when true, pre-render complex timeline
-        // sections in a background thread. No background render system exists yet;
-        // logging the pref value here so it's exercised at startup.
-        if app.prefs.playback.background_render {
-            tracing::debug!("Background render enabled (not yet implemented)");
-        }
+        let _ = app.cmd_tx.send(AppCommand::SetBackgroundRender {
+            on: app.prefs.playback.background_render,
+            delay_secs: app.prefs.playback.background_render_delay_secs,
+        });
         // Sync LUT interpolation mode to engine
         let _ = app.cmd_tx.send(AppCommand::SetLutTetrahedral(
             app.prefs.color.lut_interpolation == crate::prefs::LutInterpolation::Tetrahedral,

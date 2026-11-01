@@ -225,16 +225,23 @@ impl CacheStore {
     /// Store `rgba` (straight alpha, linear, `at.size`) as `namespace`'s frame
     /// `at`, evicting the oldest unpinned frames over the cap.
     pub fn put(&mut self, namespace: &str, at: FrameAt, rgba: &[f32]) -> Result<(), PutRefused> {
-        self.put_as(namespace, at, rgba, false)
+        self.put_as(namespace, at, rgba, false, true)
     }
 
     /// [`Self::put`] a whole frame (#3212): in ten bits a channel where it
     /// is opaque and within the curve, as half floats otherwise.
     pub fn put_frame(&mut self, namespace: &str, at: FrameAt, rgba: &[f32]) -> Result<(), PutRefused> {
-        self.put_as(namespace, at, rgba, true)
+        self.put_as(namespace, at, rgba, true, true)
     }
 
-    fn put_as(&mut self, namespace: &str, at: FrameAt, rgba: &[f32], ten_bits: bool) -> Result<(), PutRefused> {
+    /// [`Self::put_frame`] only where it fits without evicting anything:
+    /// `Full` otherwise. Drawing ahead while idle never makes room by
+    /// letting go of frames it drew a moment before (#3212).
+    pub fn put_frame_within_cap(&mut self, namespace: &str, at: FrameAt, rgba: &[f32]) -> Result<(), PutRefused> {
+        self.put_as(namespace, at, rgba, true, false)
+    }
+
+    fn put_as(&mut self, namespace: &str, at: FrameAt, rgba: &[f32], ten_bits: bool, evict: bool) -> Result<(), PutRefused> {
         if !valid_namespace(namespace) {
             return Err(PutRefused::Namespace(namespace.to_owned()));
         }
@@ -257,7 +264,7 @@ impl CacheStore {
         };
         let packed = lz4_flex::compress_prepend_size(&payload);
         let needed = (HEADER + packed.len()) as u64;
-        if !self.room_for(namespace, needed) {
+        if !self.room_for(namespace, needed) || (!evict && self.total_bytes() + needed > self.cap_bytes) {
             return Err(PutRefused::Full);
         }
         let path = self.path(namespace, at);
@@ -505,6 +512,24 @@ mod tests {
         s.put("freeze/t1", at(5, 0xb), &frame(0.2)).unwrap();
         assert!(s.contains("freeze/t1", at(5, 0xa)) && s.contains("freeze/t1", at(5, 0xb)), "the older key kept");
         assert!(s.bytes("freeze/t1") > 0 && s.bytes("freeze/t1") == s.total_bytes());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// #3212: drawing ahead while idle stops at the cap rather than make
+    /// room: the frames it drew first stay. A range asked for lets the
+    /// oldest go, as before.
+    #[test]
+    fn a_frame_within_the_cap_never_evicts_and_a_range_frame_does() {
+        let d = dir("within-cap");
+        let mut s = CacheStore::open(&d, 1 << 30);
+        s.put_frame("frames", at(0, 1), &frame(0.1)).unwrap();
+        let one = s.total_bytes();
+        s.set_cap(one * 2);
+        s.put_frame_within_cap("frames", at(1, 1), &frame(0.2)).unwrap();
+        assert_eq!(s.put_frame_within_cap("frames", at(2, 1), &frame(0.3)), Err(PutRefused::Full), "full: refused");
+        assert!(s.contains("frames", at(0, 1)) && s.contains("frames", at(1, 1)), "nothing let go for it");
+        s.put_frame("frames", at(2, 1), &frame(0.3)).unwrap();
+        assert!(!s.contains("frames", at(0, 1)) && s.contains("frames", at(2, 1)), "a range frame lets the oldest go");
         let _ = std::fs::remove_dir_all(&d);
     }
 

@@ -114,6 +114,7 @@ impl PlaybackEngine {
     /// a parked frame is drawn at, in a background job of its own.
     pub(super) fn start_render_range(&mut self, from: RationalTime, to: RationalTime) {
         self.cancel_frames_job(false);
+        self.stop_background();
         if !self.frames_enabled {
             let _ = self.event_tx.send(AppEvent::RenderRangeFinished { rendered: 0, passed_over: 0, cancelled: false, note: Some("the render cache is turned off in Preferences".into()) });
             return;
@@ -132,7 +133,7 @@ impl PlaybackEngine {
         let working = crate::video_decoder::working_colorspace();
         let fps = seq.fps.as_f64();
         let total = frames.len();
-        let req = FrameRequest { seq, frames, sizes, working, keying: self.frame_keying() };
+        let req = FrameRequest { seq, frames, sizes, working, keying: self.frame_keying(), stop: None, evict: true };
         let (tx, done) = std::sync::mpsc::channel();
         let job = crate::frame_cache::spawn_frames(req, self.frames_store(), move || klipp_render::ExportFrameSource::shared(files, fps, working), move |t| {
             let _ = tx.send(t);
@@ -187,6 +188,7 @@ impl PlaybackEngine {
     /// Every frame kept let go, and the files an older render cache left
     /// beside them.
     pub(super) fn clear_render_cache_all(&mut self) {
+        self.stop_background();
         self.frames_store().lock().unwrap_or_else(|e| e.into_inner()).remove_namespace(NAMESPACE);
         let old = dirs::cache_dir().unwrap_or_default().join("klipp").join("render");
         for e in std::fs::read_dir(&old).into_iter().flatten().flatten() {

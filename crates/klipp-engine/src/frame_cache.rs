@@ -99,6 +99,13 @@ pub struct FrameRequest {
     pub sizes: Vec<(u32, u32)>,
     pub working: klipp_core::WorkingColorspace,
     pub keying: Keying,
+    /// Asked between frames: true stops the run, as a cancel does. What
+    /// stops drawing ahead on the person's input within a frame, without
+    /// waiting on the engine's loop.
+    pub stop: Option<Arc<dyn Fn() -> bool + Send + Sync>>,
+    /// Make room by letting go of the oldest frames kept (a range asked
+    /// for), or stop when full (drawing ahead while idle).
+    pub evict: bool,
 }
 
 /// What a run drew.
@@ -136,7 +143,9 @@ impl FrameRequest {
             Some(p) => p,
             None => renderer.render(&self.seq, at, w, h, src, klipp_compose::RenderOptions::default()),
         };
-        match store.lock().unwrap_or_else(|e| e.into_inner()).put_frame(NAMESPACE, place, &pixels) {
+        let mut store = store.lock().unwrap_or_else(|e| e.into_inner());
+        let put = if self.evict { store.put_frame(NAMESPACE, place, &pixels) } else { store.put_frame_within_cap(NAMESPACE, place, &pixels) };
+        match put {
             Ok(()) => FrameOutcome::Stored,
             Err(PutRefused::Full) => FrameOutcome::Full,
             Err(why) => FrameOutcome::Failed(why.to_string()),
@@ -160,7 +169,7 @@ pub fn spawn_frames<S: FrameSource + 'static>(req: FrameRequest, store: Arc<Mute
         'frames: for (i, at) in req.frames.iter().enumerate() {
             for size in &req.sizes {
                 pause.wait_while_paused();
-                if pause.is_cancelled() {
+                if pause.is_cancelled() || req.stop.as_ref().is_some_and(|stop| stop()) {
                     tally.cancelled = true;
                     break 'frames;
                 }

@@ -136,6 +136,7 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::GenerateProxy { .. }
         | AppCommand::CancelProxy { .. }
         | AppCommand::SetRenderCacheEnabled(..)
+        | AppCommand::SetBackgroundRender { .. }
         | AppCommand::SetRenderCacheLimitGb(..)
         | AppCommand::ClearRenderCacheAll
         | AppCommand::CleanOrphanedCaches

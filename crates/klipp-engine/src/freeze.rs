@@ -354,6 +354,11 @@ pub fn set_statuses(statuses: HashMap<TrackId, FreezeStatus>) {
     *STATUS.lock().unwrap_or_else(|e| e.into_inner()) = statuses;
 }
 
+/// Whether a frozen track's frames are being drawn now.
+pub fn any_drawing() -> bool {
+    STATUS.lock().unwrap_or_else(|e| e.into_inner()).values().any(|s| s.progress.is_some())
+}
+
 /// A frozen track's status; `None` for a track that isn't frozen.
 pub fn status(track: TrackId) -> Option<FreezeStatus> {
     STATUS.lock().unwrap_or_else(|e| e.into_inner()).get(&track).cloned()
