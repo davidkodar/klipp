@@ -1,0 +1,10 @@
+kind = "loudness_target"
+format_version = 1
+
+[[target]]
+name = "Cinema trailer"
+lufs = -24.0
+
+[[target]]
+name = "Loud social"
+lufs = -11.0
