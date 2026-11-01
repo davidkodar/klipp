@@ -407,9 +407,13 @@ impl ShapedLayout {
     /// pieces measured shaped: the source byte of each line's first
     /// character, past the first line, other than after a hard break.
     fn shaped_breaks(&self, faces: &[Face]) -> Vec<usize> {
-        use klipp_linebreak::{LinebreakData, Linebreaker, LINEBREAK_NONE};
+        use klipp_linebreak::{LinebreakData, Linebreaker, LINEBREAK_NONE, LINEBREAK_SOFT};
         let Some(max_width) = self.settings.max_width else { return Vec::new() };
-        let mask = LinebreakData::from_mask(self.settings.wrap_style == fontdue::layout::WrapStyle::Word, self.settings.wrap_hard_breaks, true);
+        let words = self.settings.wrap_style == fontdue::layout::WrapStyle::Word;
+        let mask = LinebreakData::from_mask(words, self.settings.wrap_hard_breaks, true);
+        // Thai, Lao, Khmer and Burmese put no spaces between words: a line
+        // may also break where the dictionaries find one begins (#3238).
+        let complex = if words { klipp_linebreak::complex_breaks(&self.source) } else { Vec::new() };
         let mut breaker = Linebreaker::new();
         let (mut current, mut start, mut prev, mut at_pos, mut at_idx) = (0.0f32, 0.0f32, LINEBREAK_NONE, 0.0f32, 0usize);
         // Each line as wide as the box less its paragraph's indents.
@@ -424,7 +428,10 @@ impl ShapedLayout {
         for &(a, b, px, face) in &self.pieces {
             let advances = shaped_advances(&faces[face], &self.source[a..b], px);
             for ((i, c), advance) in self.source[a..b].char_indices().zip(advances) {
-                let linebreak = breaker.next(c).mask(mask);
+                let mut linebreak = breaker.next(c).mask(mask);
+                if linebreak < LINEBREAK_SOFT && complex.binary_search(&(a + i)).is_ok() {
+                    linebreak = LINEBREAK_SOFT;
+                }
                 if linebreak >= prev {
                     prev = linebreak;
                     at_pos = current;
@@ -905,6 +912,31 @@ mod tests {
         let glyphs = lay(&faces, lam_alef, &[(0, lam_alef.len(), 0)], false);
         let lam = arabic.font.lookup_glyph_index('ل');
         assert!(!glyphs.is_empty() && glyphs.iter().all(|g| g.key.glyph_index != lam), "lam takes its form before alef: {:?}", glyphs.iter().map(|g| g.key.glyph_index).collect::<Vec<_>>());
+    }
+
+    /// #3238: Thai, written without spaces between words, wraps in a
+    /// narrow box, and only where a word begins: before, the line broke
+    /// nowhere and ran past the box. No line is wider than the box.
+    #[test]
+    fn thai_wraps_only_between_words() {
+        let thai = font("NotoSansThai-subset.ttf");
+        let faces = [Face::new(&thai, &[])];
+        let words = ["ภาษา", "ไทย", "ง่าย", "นิด", "เดียว", "สวัสดี", "ครับ"].repeat(2);
+        let text = words.concat();
+        let allowed: Vec<usize> = words.iter().scan(0, |at, w| { *at += w.len(); Some(*at) }).collect();
+        let width = 260.0;
+        let mut l = ShapedLayout::new();
+        l.reset(&LayoutSettings { max_width: Some(width), wrap_style: fontdue::layout::WrapStyle::Word, ..LayoutSettings::default() });
+        l.append(&faces, &text, (0, text.len(), 48.0, 0));
+        let lines = l.lines().expect("lines").clone();
+        assert!(lines.len() >= 3, "the Thai wraps: {} lines", lines.len());
+        let glyphs = l.glyphs();
+        for line in &lines {
+            let start = glyphs[line.glyph_start].byte_offset;
+            assert!(start == 0 || allowed.contains(&start), "a line starts inside a word, at byte {start} of {text}");
+            let right = glyphs[line.glyph_start..=line.glyph_end.min(glyphs.len() - 1)].iter().map(|g| g.x + g.width as f32).fold(0.0, f32::max);
+            assert!(right <= width + 1.0, "a line runs to {right}, past the box's {width}");
+        }
     }
 
     /// #1502: Devanagari forms a conjunct and reorders a vowel sign that
