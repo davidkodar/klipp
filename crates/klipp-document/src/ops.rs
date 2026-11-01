@@ -192,6 +192,10 @@ fn bind_step_refs(op: &Op, i: usize, made: &[Option<ClipId>]) -> Result<Op, Refu
     Ok(bound)
 }
 
+/// What a refit says of a picture never looked through for people: the
+/// app offers to look through it, by these words.
+pub const NOT_ANALYSED_FOR_PEOPLE: &str = "not analysed for people yet";
+
 /// Which neighbour a [`Op::Join`] closes the edit with.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -9800,11 +9804,11 @@ fn refit(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts, i: usi
                     // or not run yet) is not "no one": a refit of an
                     // interview said no one was found in it.
                     let why = if seen == 0 && !transcripts.framing_analysed(item) {
-                        "not analysed for people yet, so it stays centred (turn on Subject detection in Preferences, then refit)"
+                        format!("{NOT_ANALYSED_FOR_PEOPLE}, so it stays centred (turn on Subject detection in Preferences, then refit)")
                     } else if seen == 0 {
-                        "no one found in it"
+                        "no one found in it".into()
                     } else {
-                        "no subject held through it"
+                        "no subject held through it".into()
                     };
                     review.push((clip, format!("{name}: {why}"), "no subject"));
                     Vec::new()

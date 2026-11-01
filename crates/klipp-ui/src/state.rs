@@ -2877,6 +2877,9 @@ pub struct AppState {
     /// they are reframed (#2211), by sequence, so switching tabs meanwhile
     /// reframes the right one when it is next open.
     pub pending_refits: Vec<PendingRefit>,
+    /// A "Find people now" waiting for the detection model to be
+    /// downloaded before its sequence's files are looked through.
+    pub find_people: Option<klipp_core::SequenceId>,
     /// A delivery's exports still to queue (#2724), each its sequence's,
     /// in order, and the sequence to go back to when they are.
     pub pending_deliveries: Vec<PendingDelivery>,
@@ -5269,6 +5272,7 @@ impl Default for AppState {
             show_apply_brand_kit: false,
             apply_brand_kit: (String::new(), BrandKitParts::default()),
             pending_refits: Vec::new(),
+            find_people: None,
             pending_deliveries: Vec::new(),
             delivery_home: None,
             matched_follow_sync: false,

@@ -22,6 +22,9 @@ pub enum ToastAction {
     /// A clip slowed by a stretch: draw its in-between frames by optical
     /// flow (#3055).
     SmoothMotion(klipp_core::ClipId),
+    /// A refit left pictures centred that were never looked through for
+    /// people: look through them now, then refit the sequence.
+    FindPeople(klipp_core::SequenceId),
 }
 
 /// How long a toast with a button stays at least, so it can be reached.
