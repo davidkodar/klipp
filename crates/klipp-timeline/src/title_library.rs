@@ -326,6 +326,13 @@ pub fn weight(mut t: Text, w: u16) -> Text {
     t
 }
 
+/// `t` with a soft glow of `color`, `radius` pixels of a 1080-line frame
+/// wide at `intensity` (0 to 1).
+pub fn glowing(mut t: Text, color: [u8; 4], radius: f32, intensity: f32) -> Text {
+    t.fx.glows.push(crate::TextGlow { enabled: true, color, radius, radius_keyframes: Vec::new(), intensity, intensity_keyframes: Vec::new() });
+    t
+}
+
 /// A light fill from `top` to `bottom`: depth without a look of its own.
 pub fn graded(mut t: Text, top: [u8; 4], bottom: [u8; 4]) -> Text {
     t.tb.gradient = Some(crate::TextGradient { top_color: top, bottom_color: bottom, enabled: true, stops: Vec::new(), kind: Default::default(), stop_keyframes: Vec::new() });
