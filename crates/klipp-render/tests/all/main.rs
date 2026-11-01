@@ -20,6 +20,8 @@ mod audio_only_export;
 mod captions_608_export;
 #[path = "../clip_sources_reads_the_media.rs"]
 mod clip_sources_reads_the_media;
+#[path = "../export_reads_chroma_as_the_viewer.rs"]
+mod export_reads_chroma_as_the_viewer;
 #[path = "../banding_hint.rs"]
 mod banding_hint;
 #[path = "../codec_true_peak.rs"]

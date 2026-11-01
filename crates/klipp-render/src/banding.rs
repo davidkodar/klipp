@@ -17,6 +17,10 @@ pub const SAMPLE_WIDTH: u32 = 320;
 /// Fewer code values than this across a smooth run bands.
 const FEW_LEVELS: u32 = 20;
 
+/// The most one pixel may differ from the last, in codes, within a smooth
+/// run.
+const SMOOTH_STEP: u8 = 2;
+
 /// A smooth run in an 8-bit frame that bands: at `secs` on the timeline,
 /// `levels` code values in its widest channel over half the frame's
 /// width.
@@ -28,11 +32,12 @@ pub struct Banding {
 
 /// The fewest levels per half width a banding row of `rgba` (8-bit,
 /// `w`×`h`) shows, when at least a quarter of its rows band: a run longer
-/// than half the width where each pixel is within one code of the last in
-/// every channel, not flat (three values or more), whose widest channel
-/// changes by fewer than 20 values over half the frame's
-/// width. Texture (footage, grain) breaks the runs; a flat colour has no
-/// steps to see.
+/// than half the width where each pixel is within two codes of the last
+/// in every channel, not flat (three values or more), whose widest
+/// channel changes by fewer than 20 values over half the frame's width.
+/// Two, because a limited-range file's step of one luma code is 1.16
+/// codes of R'G'B' and rounds to two now and then (#3266). Texture
+/// (footage, grain) breaks the runs; a flat colour has no steps to see.
 pub fn bands(rgba: &[u8], w: usize, h: usize) -> Option<u32> {
     if w < 4 || h == 0 || rgba.len() < w * h * 4 {
         return None;
@@ -44,7 +49,7 @@ pub fn bands(rgba: &[u8], w: usize, h: usize) -> Option<u32> {
         let mut start = 0;
         let mut worst: Option<u32> = None;
         for x in 1..=w {
-            let smooth = x < w && px(x).iter().zip(px(x - 1)).all(|(a, b)| a.abs_diff(*b) <= 1);
+            let smooth = x < w && px(x).iter().zip(px(x - 1)).all(|(a, b)| a.abs_diff(*b) <= SMOOTH_STEP);
             if smooth {
                 continue;
             }

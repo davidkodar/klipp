@@ -14,19 +14,27 @@ const SEQ_FRAMES: u64 = FPS as u64 * 6;
 
 /// Three seconds of a steady 440 Hz tone at −12 dBFS: what sounds past
 /// the clip's out point is the clip's effects or a leak of the file.
+///
+/// Written once per process (#1700): both tests here run at once, and
+/// `ffmpeg -y` truncating the file while the other exported from it put
+/// that one's tail off by a silence.
 fn tone() -> Option<PathBuf> {
-    let ok = std::process::Command::new("ffmpeg").arg("-version").output().is_ok_and(|o| o.status.success());
-    if !ok {
-        return None;
-    }
-    let out = klipp_testing::scratch::scratch_file("klipp-effect-tails", "tone.wav");
-    std::process::Command::new("ffmpeg")
-        .args(["-nostdin", "-y", "-v", "error", "-f", "lavfi", "-i", "aevalsrc=0.25*sin(2*PI*440*t):s=48000:d=3", "-ac", "2", "-c:a", "pcm_f32le"])
-        .arg(&out)
-        .status()
-        .ok()?
-        .success()
-        .then_some(out)
+    static TONE: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
+    TONE.get_or_init(|| {
+        let ok = std::process::Command::new("ffmpeg").arg("-version").output().is_ok_and(|o| o.status.success());
+        if !ok {
+            return None;
+        }
+        let out = klipp_testing::scratch::scratch_file("klipp-effect-tails", "tone.wav");
+        std::process::Command::new("ffmpeg")
+            .args(["-nostdin", "-y", "-v", "error", "-f", "lavfi", "-i", "aevalsrc=0.25*sin(2*PI*440*t):s=48000:d=3", "-ac", "2", "-c:a", "pcm_f32le"])
+            .arg(&out)
+            .status()
+            .ok()?
+            .success()
+            .then_some(out)
+    })
+    .clone()
 }
 
 fn effect(kind: &str) -> klipp_core::AudioEffectInstance {

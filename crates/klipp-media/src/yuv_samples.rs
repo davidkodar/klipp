@@ -38,15 +38,7 @@ impl OwnedYuv {
 /// the three Y'CbCr planes only, so a ProRes 4444 with alpha came in
 /// opaque. Alpha is linear already, straight.
 pub fn keep_alpha_plane(frame: &ffmpeg_next::frame::Video, dst_w: u32, dst_h: u32, rotation: u32, out: &mut [f32]) {
-    use ffmpeg_next::format::Pixel as P;
-    let bits = match frame.format() {
-        P::YUVA420P | P::YUVA422P | P::YUVA444P => 8,
-        P::YUVA420P9LE | P::YUVA422P9LE | P::YUVA444P9LE => 9,
-        P::YUVA420P10LE | P::YUVA422P10LE | P::YUVA444P10LE => 10,
-        P::YUVA422P12LE | P::YUVA444P12LE => 12,
-        P::YUVA420P16LE | P::YUVA422P16LE | P::YUVA444P16LE => 16,
-        _ => return,
-    };
+    let Some(bits) = alpha_bits(frame) else { return };
     let (src_w, src_h) = (frame.width().max(1), frame.height().max(1));
     if dst_w == 0 || dst_h == 0 || out.len() < (dst_w * dst_h * 4) as usize {
         return;
@@ -76,6 +68,38 @@ pub fn keep_alpha_plane(frame: &ffmpeg_next::frame::Video, dst_w: u32, dst_h: u3
             px[3] = if turned { sample(r, c) } else { sample(c, r) };
         }
     });
+}
+
+/// The bit depth of a Y'CbCr frame's alpha plane, `None` without one.
+fn alpha_bits(frame: &ffmpeg_next::frame::Video) -> Option<u32> {
+    use ffmpeg_next::format::Pixel as P;
+    Some(match frame.format() {
+        P::YUVA420P | P::YUVA422P | P::YUVA444P => 8,
+        P::YUVA420P9LE | P::YUVA422P9LE | P::YUVA444P9LE => 9,
+        P::YUVA420P10LE | P::YUVA422P10LE | P::YUVA444P10LE => 10,
+        P::YUVA422P12LE | P::YUVA444P12LE => 12,
+        P::YUVA420P16LE | P::YUVA422P16LE | P::YUVA444P16LE => 16,
+        _ => return None,
+    })
+}
+
+/// A Y'CbCr frame's own alpha plane at the frame's size, 16-bit, `None`
+/// without one: the export's software decode, which converts the colour
+/// itself (#3266), keeps the alpha #3283 delivers.
+pub fn alpha_plane_u16(frame: &ffmpeg_next::frame::Video) -> Option<Vec<u16>> {
+    let bits = alpha_bits(frame)?;
+    let (w, h) = (frame.width() as usize, frame.height() as usize);
+    let (data, stride) = (frame.data(3), frame.stride(3));
+    let max = ((1u32 << bits) - 1) as f32;
+    let mut out = Vec::with_capacity(w * h);
+    for y in 0..h {
+        let row = &data[y * stride..];
+        for x in 0..w {
+            let v = if bits == 8 { f32::from(row[x]) } else { f32::from(u16::from_le_bytes([row[2 * x], row[2 * x + 1]])) };
+            out.push((v / max * 65535.0 + 0.5) as u16);
+        }
+    }
+    Some(out)
 }
 
 /// Read the Y, Cb and Cr samples of any software YUV frame — planar,

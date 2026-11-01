@@ -98,3 +98,66 @@ fn the_nv12_shader_reconstructs_chroma_where_h264_sites_it() {
     assert_eq!(apart(px(6), left), 0, "x=6 must read chroma column 3 exactly");
     assert_eq!(apart(px(8), right), 0, "x=8 must read chroma column 4 exactly");
 }
+
+/// Bars with hard colour edges, NV12 at `w`×`h`: luma and chroma both
+/// step, so a downscale that takes other pixels, or averages them in
+/// another light, shows.
+fn bars_nv12(w: u32, h: u32) -> (Vec<u8>, Vec<u8>) {
+    let bar = |x: u32| (x * 7 / w) as usize;
+    const Y: [u8; 7] = [180, 162, 131, 112, 84, 65, 35];
+    const UV: [[u8; 2]; 7] = [[44, 142], [156, 44], [72, 58], [184, 198], [100, 212], [212, 114], [128, 128]];
+    let y = (0..h).flat_map(|r| (0..w).map(move |x| Y[bar(x)].saturating_add(if r % 9 == 0 { 40 } else { 0 }))).collect();
+    let uv = (0..h / 2).flat_map(|_| (0..w / 2).flat_map(|cx| UV[bar(cx * 2)])).collect();
+    (y, uv)
+}
+
+/// #3266: the export's software decode resizes a frame with the CPU
+/// twins of the shaders' resize, `yuv_to_display_rgba64_downscaled` (the
+/// footprint average in linear light, #744) and `lanczos_upscale_rgba64`
+/// (Lanczos-3 on the encoded values, #2557), so a software-decoded file
+/// resizes as a hardware-decoded one does and as the viewer shows it.
+/// Shrunk at 2:1, 3:2 and 1.6:1, grown at 1.5 and 2 times, every pixel is
+/// within a level of the shader's.
+#[test]
+fn the_cpu_resize_is_the_decode_shaders() {
+    let Some(mut conv) = GpuNv12Converter::new() else {
+        if std::env::var_os("KLIPP_TEST_REQUIRE_GPU").is_some() {
+            panic!("KLIPP_TEST_REQUIRE_GPU is set and there is no GPU NV12 converter");
+        }
+        eprintln!("skipping: no GPU NV12 converter");
+        return;
+    };
+    let (sw, sh) = (96u32, 54u32);
+    let (y, uv) = bars_nv12(sw, sh);
+    let pm = pack_primaries_matrix(primaries_to_working_matrix(ColorPrimaries::Bt709, WorkingColorspace::Rec709Linear));
+    let ids = [color_ids::COLOR_RANGE_LIMITED, color_ids::MATRIX_BT709, color_ids::TRANSFER_BT709, 0];
+    let cs = klipp_core::SourceColorspace {
+        range: klipp_core::ColorRange::Limited,
+        matrix: klipp_core::ColorMatrix::Bt709,
+        transfer: klipp_core::ColorTransfer::Bt709,
+        primaries: ColorPrimaries::Bt709,
+    };
+    let y16: Vec<u16> = y.iter().map(|&v| v as u16).collect();
+    let u16s: Vec<u16> = uv.iter().step_by(2).map(|&v| v as u16).collect();
+    let v16s: Vec<u16> = uv.iter().skip(1).step_by(2).map(|&v| v as u16).collect();
+    let samples = klipp_color::hdr::YuvSamples { y: &y16, u: &u16s, v: &v16s, width: sw, height: sh, chroma_shift_w: 1, chroma_shift_h: 1, bit_depth: 8 };
+    for (dw, dh) in [(48u32, 27u32), (64, 36), (60, 34), (144, 81), (192, 108)] {
+        let shrinks = klipp_color::camera_log::resize_averages((sw, sh), (dw, dh));
+        assert_eq!(shrinks, dw < sw, "{dw}x{dh}");
+        let gpu = conv.convert_nv12_to_rgba(&y, &uv, sw, sh, sw, sw, dw, dh, 0, ids, pm);
+        let cpu = if shrinks {
+            klipp_color::camera_log::yuv_to_display_rgba64_downscaled(&samples, cs, None, dw, dh)
+        } else {
+            klipp_color::camera_log::lanczos_upscale_rgba64(&klipp_color::camera_log::yuv_to_display_rgba64(&samples, cs), (sw, sh), (dw, dh))
+        };
+        let mut worst = 0;
+        for i in 0..(dw * dh) as usize {
+            for c in 0..3 {
+                let cpu8 = (cpu[i * 4 + c] as f32 / 65535.0 * 255.0).round() as i32;
+                worst = worst.max((cpu8 - gpu[i * 4 + c] as i32).abs());
+            }
+        }
+        eprintln!("{sw}x{sh} → {dw}x{dh}: worst {worst} levels");
+        assert!(worst <= 1, "{dw}x{dh}: the CPU resize is {worst} levels from the shader's");
+    }
+}
