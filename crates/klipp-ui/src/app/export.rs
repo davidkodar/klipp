@@ -3776,14 +3776,20 @@ impl KlippApp {
                 include_skims,
                 create_zip,
                 delete_folder_after_zip,
+                mode,
             } => {
+                use klipp_project::consolidate::ConsolidateMode;
                 self.start_consolidation(
                     dest_dir.clone(),
                     *include_proxies,
                     *include_skims,
                     *create_zip,
                     *delete_folder_after_zip,
-                    klipp_project::consolidate::ConsolidateMode::Collect,
+                    match mode {
+                        klipp_core::CollectMode::All => ConsolidateMode::Collect,
+                        klipp_core::CollectMode::Used => ConsolidateMode::UsedOnly,
+                        klipp_core::CollectMode::Trimmed { handle_secs } => ConsolidateMode::Trimmed { handle_secs: *handle_secs },
+                    },
                 );
                 true
             }
