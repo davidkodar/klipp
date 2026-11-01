@@ -91,22 +91,36 @@ pub fn media_identities(pool: &klipp_media::MediaPool) -> HashMap<String, u64> {
     pool.all().map(|item| (item.id.to_string(), media_identity(item))).collect()
 }
 
-/// A plug-in's identity for a freeze key: a frei0r plug-in's file (path and
-/// modification time) and reported version, from the scanned registry;
-/// `None` when it isn't installed. An OFX plug-in by name only, for now.
+/// A plug-in's identity for a freeze key: its binary's file (path and
+/// modification time) and the version it reports, from the scanned
+/// registry, so a plug-in updated in place draws anew. A frei0r plug-in
+/// not installed has none; an OFX plug-in the host didn't find (#3301),
+/// its name.
 pub fn plugin_identity(id: &str) -> Option<u64> {
-    let mut h = std::collections::hash_map::DefaultHasher::new();
     if id.starts_with("frei0r:") {
         let info = klipp_effects::frei0r_effect::lookup(id)?;
-        return Some(frei0r_identity(&info.path, (info.major_version, info.minor_version)));
+        return Some(file_identity(&info.path, (info.major_version, info.minor_version)));
     }
-    id.hash(&mut h);
-    Some(h.finish())
+    let found = klipp_plugin::host::plugin_infos_cached().into_iter().find(|p| p.name == id);
+    Some(ofx_identity(id, found.as_ref().and_then(|p| p.binary.as_deref().map(|b| (b, p.version)))))
 }
 
-/// A frei0r plug-in's identity: its file (path and modification time)
+/// An OFX plug-in's identity: its binary's file and version where the
+/// host loaded it from one; its name otherwise.
+fn ofx_identity(id: &str, binary: Option<(&std::path::Path, (u32, u32))>) -> u64 {
+    match binary {
+        Some((path, (major, minor))) => file_identity(path, (major as i32, minor as i32)),
+        None => {
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            id.hash(&mut h);
+            h.finish()
+        }
+    }
+}
+
+/// A plug-in binary's identity: its file (path and modification time)
 /// and the version it reports.
-fn frei0r_identity(path: &std::path::Path, version: (i32, i32)) -> u64 {
+fn file_identity(path: &std::path::Path, version: (i32, i32)) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     path.hash(&mut h);
     std::fs::metadata(path).ok().and_then(|m| m.modified().ok()).and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_nanos()).hash(&mut h);
@@ -737,11 +751,26 @@ mod key_input_tests {
 
         let plugin = dir.join("glow.so");
         std::fs::write(&plugin, b"v1").unwrap();
-        let v1 = frei0r_identity(&plugin, (1, 0));
-        assert_ne!(frei0r_identity(&plugin, (1, 1)), v1, "a new version");
+        let v1 = file_identity(&plugin, (1, 0));
+        assert_ne!(file_identity(&plugin, (1, 1)), v1, "a new version");
         std::thread::sleep(std::time::Duration::from_millis(20));
         std::fs::write(&plugin, b"v1, rebuilt").unwrap();
-        assert_ne!(frei0r_identity(&plugin, (1, 0)), v1, "the file replaced");
+        assert_ne!(file_identity(&plugin, (1, 0)), v1, "the file replaced");
+
+        // #3301: an OFX plug-in keys by its bundle's binary and version as
+        // a frei0r one does, so an update in place draws anew; one the host
+        // didn't find keys by its name, as before.
+        let binary = dir.join("Blur.ofx");
+        std::fs::write(&binary, b"v2.0").unwrap();
+        let ofx = ofx_identity("com.example.Blur", Some((&binary, (2, 0))));
+        assert_ne!(ofx_identity("com.example.Blur", Some((&binary, (2, 1)))), ofx, "a new version");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(&binary, b"v2.0, rebuilt").unwrap();
+        let rebuilt = ofx_identity("com.example.Blur", Some((&binary, (2, 0))));
+        assert_ne!(rebuilt, ofx, "the binary replaced");
+        assert_eq!(rebuilt, ofx_identity("com.example.Blur", Some((&binary, (2, 0)))), "the same file, the same key");
+        assert_ne!(ofx_identity("com.example.Blur", None), rebuilt, "not found: by name");
+        assert_eq!(ofx_identity("com.example.Blur", None), ofx_identity("com.example.Blur", None));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
