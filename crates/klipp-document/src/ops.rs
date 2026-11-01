@@ -3125,6 +3125,12 @@ pub trait Transcripts {
     fn people(&self, _item: &klipp_media::MediaItem) -> Vec<(f64, [f32; 4])> {
         Vec::new()
     }
+    /// Whether `item` was looked through for faces and people at all: no
+    /// detections in a file not looked through says nothing about who is
+    /// in it. A host that cannot say counts every file as looked through.
+    fn framing_analysed(&self, _item: &klipp_media::MediaItem) -> bool {
+        true
+    }
     /// How much `item`'s picture moves between two of its times, as the
     /// mean frame-to-frame difference (the motion analyser's YDIF; 4 and
     /// up is a moving camera); `None` when it was not analysed.
@@ -9770,7 +9776,16 @@ fn refit(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts, i: usi
                 Some(track) if item.is_still => track.first().map(|(_, p)| (0.0, in_frame(*p))).into_iter().collect(),
                 Some(track) => track.iter().map(|(t, p)| (*t, in_frame(*p))).collect(),
                 None => {
-                    let why = if seen == 0 { "no one found in it (analyze it, or it has no people)" } else { "no subject held through it" };
+                    // Not looked through for people (subject detection off,
+                    // or not run yet) is not "no one": a refit of an
+                    // interview said no one was found in it.
+                    let why = if seen == 0 && !transcripts.framing_analysed(item) {
+                        "not analysed for people yet, so it stays centred (turn on Subject detection in Preferences, then refit)"
+                    } else if seen == 0 {
+                        "no one found in it"
+                    } else {
+                        "no subject held through it"
+                    };
                     review.push((clip, format!("{name}: {why}"), "no subject"));
                     Vec::new()
                 }
@@ -21309,6 +21324,27 @@ mod tests {
         let plan = resolve(&seq, &pool, &[Op::AddTrack { kind: "video".into(), name: None }]).unwrap();
         assert!(plan.steps[0].what.contains("as track 0") && plan.steps[0].what.contains("moves down"), "{}", plan.steps[0].what);
         let _ = media;
+    }
+
+    /// A picture not looked through for people is said to be that, with
+    /// how to have it looked through, not "no one found": a refit of an
+    /// interview with subject detection off said no one was in it.
+    #[test]
+    fn a_refit_says_a_picture_was_not_analysed_for_people() {
+        struct NotLooked;
+        impl Transcripts for NotLooked {
+            fn words(&self, _item: &klipp_media::MediaItem) -> Option<Vec<SpokenWord>> {
+                None
+            }
+            fn framing_analysed(&self, _item: &klipp_media::MediaItem) -> bool {
+                false
+            }
+        }
+        let (mut seq, pool, _, _, _) = fixture();
+        seq.resolution = klipp_core::Resolution { width: 1080, height: 1920 };
+        let plan = resolve_with(&seq, &pool, &[Op::Refit { markers: true, punch: None, keep: Vec::new() }], &NotLooked).unwrap();
+        let what = &plan.steps[0].what;
+        assert!(what.contains("not analysed for people") && what.contains("Subject detection") && !what.contains("no one found"), "{what}");
     }
 
     /// #2211: a wide edit refit to a tall frame. The picture with a face
