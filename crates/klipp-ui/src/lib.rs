@@ -83,6 +83,7 @@ pub mod graded_thumbs;
 pub mod icons;
 pub mod inspector;
 pub mod spelling;
+pub mod auditions;
 pub mod keybindings;
 pub mod welcome;
 mod keymap_presets;

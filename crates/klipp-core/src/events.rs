@@ -1,4 +1,4 @@
-use crate::id::{BinId, ClipId, GroupId, MarkerId, MediaId, TrackId};
+use crate::id::{BinId, ClipId, GroupId, MarkerId, MediaId, TakeId, TrackId};
 use crate::modifier::{Modifier, ParamId};
 use crate::time::{Fps, RationalTime, Timecode};
 use crate::types::Resolution;
@@ -996,6 +996,26 @@ pub enum AiToolsTaskTag {
     DetectObjects,
     /// Track a chosen object across the clip's frame range.
     TrackObject,
+}
+
+/// What the app asks of an audition (#3209), as the `alternatives` op
+/// does it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum AuditionEdit {
+    /// The clip made an audition: itself and a copy of it to vary.
+    Create,
+    /// A copy of the take in the slot added, to vary.
+    AddCopy,
+    /// Each file added as a take, from its start, as long as the slot;
+    /// the clip made an audition first when it is not one.
+    AddMedia { media_ids: Vec<MediaId> },
+    /// The take put in the slot; `ripple` moves what follows off the
+    /// primary storyline too.
+    Switch { take: TakeId, ripple: bool },
+    Rename { take: TakeId, name: String },
+    Remove { take: TakeId },
+    /// The take in the slot kept as a plain clip, the others dropped.
+    Finalize,
 }
 
 /// Where a freshly added clip should land relative to the timeline.
@@ -2278,6 +2298,11 @@ pub enum AppCommand {
     /// an ISO 639-1 code, or `None` to detect it per file. One undo step;
     /// transcripts detected in another language are made again.
     SetTranscriptLanguage { language: Option<String> },
+    /// An audition's edit on clip `clip_id` (#3209): the `alternatives`
+    /// op, one undo step; refused with why in a toast.
+    EditAudition { clip_id: ClipId, edit: AuditionEdit },
+    /// The audition picker for `clip_id`, or closed (`None`) (#3209).
+    OpenAuditionPicker { clip_id: Option<ClipId> },
     /// Take `word` as right in this project (#3236): it goes on the
     /// brief's vocabulary, one undo step.
     SpellingIgnore { word: String },

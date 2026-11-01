@@ -524,6 +524,12 @@ impl KeyBindings {
         // bindable in Preferences (#845).
         bind(&mut b, "paste_insert", vec![]);
         bind(&mut b, "duplicate_clip", vec![KeyCombo::ctrl("D")]);
+        // Auditions (#3209): no keys of Klipp's own, as Ctrl+Y and Y are
+        // Redo and the Text tool; the Final Cut layout gives them its.
+        bind(&mut b, "create_audition", vec![]);
+        bind(&mut b, "duplicate_as_audition", vec![]);
+        bind(&mut b, "finalize_audition", vec![]);
+        bind(&mut b, "open_audition", vec![]);
         bind(&mut b, "select_all", vec![KeyCombo::ctrl("A")]);
         bind(&mut b, "deselect_all", vec![KeyCombo::ctrl_shift("A")]);
         // The selected clip's track, all of it or from the playhead on or
@@ -830,6 +836,10 @@ impl KeyBindings {
             "copy_attributes" => "Copy Attributes",
             "paste_attributes" => "Paste Attributes",
             "duplicate_clip" => "Duplicate Clip",
+            "create_audition" => "Create Audition",
+            "duplicate_as_audition" => "Duplicate as Audition",
+            "finalize_audition" => "Finalize Audition",
+            "open_audition" => "Open Audition",
             "select_all" => "Select All",
             "deselect_all" => "Deselect All",
             "select_track_clips" => "Select All on Track",
@@ -974,7 +984,7 @@ impl KeyBindings {
     pub fn categories() -> &'static [(&'static str, &'static [&'static str])] {
         &[
             ("File", &["new_project", "open_project", "save_project", "save_project_as", "close_project", "import_media", "export", "preferences", "quit"]),
-            ("Edit", &["undo", "redo", "cut_clip", "copy_clip", "paste_clip", "paste_insert", "copy_attributes", "paste_attributes", "duplicate_clip", "select_all", "deselect_all", "select_track_clips", "select_track_forward", "select_track_backward", "select_forward", "select_backward", "delete_clip", "lift_clip", "split_at_playhead", "group_clips", "ungroup_clips"]),
+            ("Edit", &["undo", "redo", "cut_clip", "copy_clip", "paste_clip", "paste_insert", "copy_attributes", "paste_attributes", "duplicate_clip", "create_audition", "duplicate_as_audition", "finalize_audition", "open_audition", "select_all", "deselect_all", "select_track_clips", "select_track_forward", "select_track_backward", "select_forward", "select_backward", "delete_clip", "lift_clip", "split_at_playhead", "group_clips", "ungroup_clips"]),
             ("Tools", &["select_tool", "blade_tool", "range_tool", "trim_tool", "stretch_tool", "text_tool", "mask_tool"]),
             ("Timeline", &["add_default_transition", "add_audio_crossfade", "nudge_clips_back", "nudge_clips_forward", "nudge_clips_back_many", "nudge_clips_forward_many", "move_clips_up_a_track", "move_clips_down_a_track", "select_edit_point", "extend_edit", "play_around_edit", "trim_edit_back", "trim_edit_forward", "trim_edit_back_many", "trim_edit_forward_many", "insert_edit", "overwrite_edit", "fit_to_fill_edit", "place_on_top_edit", "replace_edit", "lift_edit", "extract_edit", "toggle_edit_mode", "ripple_trim_head", "ripple_trim_tail", "trim_out_to_playhead", "trim_in_to_playhead", "freeze_frame", "freeze_track"]),
             ("Navigation", &["next_edit_point", "prev_edit_point", "leave_compound", "next_marker", "prev_marker", "set_in_point", "set_out_point", "clear_in_point", "clear_out_point", "clear_in_out", "set_range_to_clip", "go_to_timecode", "match_frame_program_to_source", "match_frame_source_to_program"]),
