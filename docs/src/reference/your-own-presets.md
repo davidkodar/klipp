@@ -1,6 +1,6 @@
 # Making Your Own Presets
 
-Many of Klipp's lists come from plain text files: the generators, the project formats, the HDR Zones starting points, the delivery formats, the false-colour palettes, the "Animate letters" presets and the audio effect presets. Each list can take entries of your own, written in the same form as Klipp's.
+Many of Klipp's lists come from plain text files: the generators, the project formats, the HDR Zones starting points, the delivery formats, the false-colour palettes, the "Animate letters" presets, the audio effect presets and the loudness targets. Each list can take entries of your own, written in the same form as Klipp's.
 
 ## Where they go
 
@@ -15,6 +15,7 @@ Each kind has its own folder under `~/.config/klipp/presets/` (or `$XDG_CONFIG_H
 | False-colour palettes | `false_colour/` | the viewer's False Colour menu, Preferences |
 | "Animate letters" presets | `animators/` | Title tab → Animate letters |
 | Audio effect presets | `audio_effects/` | the audio effect's presets in the inspector |
+| Loudness targets | `loudness/` | every loudness Target list (see [Mixing](../audio/mixing.md)) |
 
 Every file starts with two lines that say what it holds: `kind` and `format_version`. Each entry follows as a `[[…]]` table.
 
@@ -97,6 +98,14 @@ The effect it's for, a name, a line saying what it does, and the effect's settin
 
 ```toml
 {{#include preset-examples/audio_effects.toml}}
+```
+
+## Loudness targets
+
+A name and an integrated loudness, from -70 to 0 LUFS. Yours are listed after the four standards (Web -14, Podcast -16, EBU R128 broadcast -23, ATSC A/85 -24), and never take the place of one: a name a standard already has is skipped, whatever its case.
+
+```toml
+{{#include preset-examples/loudness.toml}}
 ```
 
 Every example on this page is checked by a test that reads it as your own file would be read.

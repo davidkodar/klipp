@@ -116,7 +116,7 @@ Each text is checked in its own language: the one picked beside **Spelling** und
 
 ## Motion-Graphics Templates
 
-A composition saved as a template can expose fields — text, colours, speed — that stay editable on each use. Project templates and the assistant use them as well.
+A composition saved as a template can expose fields — text, colours, speed — that stay editable on each use. Project templates and the assistant use them as well. To make and share your own, see [Making Your Own Templates and Recipes](../reference/your-own-templates.md).
 
 ## Text Properties
 

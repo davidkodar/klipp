@@ -1,0 +1,29 @@
+{
+  "format_version": 2,
+  "id": "6f1c2a9e-5b7d-4e3a-9c0f-2d8b4a6e1f35",
+  "name": "Gentle Twirl",
+  "category": "Distort",
+  "kind": "recipe",
+  "composition_id": "00000000-0000-0000-0000-000000000000",
+  "parameters": {
+    "amount": {
+      "label": "Amount",
+      "default": { "type": "Number", "value": 45.0 },
+      "range": { "min": 0.0, "max": 360.0 }
+    },
+    "radius": {
+      "label": "Radius",
+      "default": { "type": "Number", "value": 0.3 },
+      "range": { "min": 0.0, "max": 1.0 }
+    }
+  },
+  "bindings": [
+    { "parameter": "amount", "property": "node:0.angle" },
+    { "parameter": "radius", "property": "node:0.radius" }
+  ],
+  "graph": {
+    "ops": [
+      { "op": "add", "after": { "anchor": "end" }, "type": "klipp.fx.warp", "params": { "mode": "twirl" }, "label": "Gentle Twirl" }
+    ]
+  }
+}

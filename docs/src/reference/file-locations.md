@@ -17,9 +17,22 @@ Quick reference for where Klipp stores its data on disk.
 | `themes/*.toml` | User-added themes |
 | `presets/color/*` | Saved grades |
 | `effect_presets/`, `hyperzoom_presets/` | Saved effect and hyperzoom presets |
-| `title_templates/*.klipptitle` | Titles you saved from the timeline |
+| `presets/<kind>/*.toml` | Your own entries in Klipp's lists: see [Making Your Own Presets](your-own-presets.md) |
 | `project_templates/` | Project templates, from **Save Project as Template...** |
 | `shared_library/` | The Shared Library: collections of files for every project |
+
+## User Data
+
+`~/.local/share/klipp/` (or `$KLIPP_DATA_DIR`)
+
+| Folder | Purpose |
+|---|---|
+| `title_templates/*.klipptitle` | Title templates you saved |
+| `templates/*.klipptemplate` | Motion-graphics templates and recipes you saved |
+| `template_assets/` | Pictures your templates use |
+| `packs/<name>/` | Installed template packs |
+
+See [Making Your Own Templates and Recipes](your-own-templates.md).
 
 `preferences.json` survives Klipp updates. If you delete it, Klipp regenerates it with default values on next launch.
 

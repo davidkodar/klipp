@@ -87,4 +87,5 @@
 - [Supported Formats](./reference/formats.md)
 - [File Locations](./reference/file-locations.md)
 - [Making Your Own Presets](./reference/your-own-presets.md)
+- [Making Your Own Templates and Recipes](./reference/your-own-templates.md)
 - [Troubleshooting](./reference/troubleshooting.md)

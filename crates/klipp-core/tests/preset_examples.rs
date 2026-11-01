@@ -18,3 +18,15 @@ fn the_guides_preset_examples_read() {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }
+
+/// The loudness targets' example (#3305): read after the standards, each
+/// target added, nothing skipped.
+#[test]
+fn the_guides_loudness_example_reads() {
+    let dir = std::env::temp_dir().join(format!("klipp-preset-example-loudness-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::copy(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/src/reference/preset-examples/loudness.toml"), dir.join("example.toml")).unwrap();
+    let (targets, skipped) = klipp_core::normalize::loudness_targets_in(Some(&dir));
+    assert_eq!((skipped, &targets[4..]), (Vec::<String>::new(), &[("Cinema trailer".to_string(), -24.0), ("Loud social".to_string(), -11.0)][..]));
+    std::fs::remove_dir_all(&dir).unwrap();
+}

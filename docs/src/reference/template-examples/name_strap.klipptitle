@@ -1,0 +1,28 @@
+{
+  "name": "Name Strap",
+  "category": "Lower Thirds",
+  "format": 2,
+  "design": {
+    "anchor": [0.08, 0.82],
+    "fields": ["Name", "Role"],
+    "accent": 0,
+    "preview": "Ada Lovelace"
+  },
+  "data": {
+    "objects": [
+      {
+        "id": 0,
+        "name": "Name",
+        "transform": { "center": { "x": 0.08, "y": 0.8 }, "size": { "x": 1.0, "y": 1.0 }, "rotation": 0.0, "anchor_norm": { "x": 0.0, "y": 0.5 } },
+        "content": { "TextBox": { "text": "Ada Lovelace", "font_size": 54.0, "font_name": "Inter", "font_style": "Bold", "color": [255, 255, 255, 255], "alignment": "Left" } }
+      },
+      {
+        "id": 1,
+        "name": "Role",
+        "transform": { "center": { "x": 0.08, "y": 0.86 }, "size": { "x": 1.0, "y": 1.0 }, "rotation": 0.0, "anchor_norm": { "x": 0.0, "y": 0.5 } },
+        "content": { "TextBox": { "text": "Mathematician", "font_size": 32.0, "font_name": "Inter", "font_style": "Regular", "color": [255, 255, 255, 200], "alignment": "Left" } }
+      }
+    ],
+    "next_object_id": 2
+  }
+}
