@@ -1,0 +1,13 @@
+format = 1
+name = "Harbour Studio"
+lower_third = { template = "Banner Lower Third" }
+end_screen = { template = "End Screen" }
+
+[colours]
+primary = "#ffffff"
+secondary = "#0b3d5c"
+accent = "#f2a541"
+
+[fonts]
+heading = "Work Sans"
+body = "Inter"
