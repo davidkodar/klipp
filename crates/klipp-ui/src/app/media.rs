@@ -428,8 +428,9 @@ impl KlippApp {
                                 hist_created_video_track_at = Some(0);
                                 Some(0usize)
                             } else {
-                                self.state.sequences[self.state.active_sequence_idx].tracks.iter()
-                                    .position(|t| t.kind == klipp_timeline::TrackKind::Video)
+                                // The main track, V1, unless the source is
+                                // patched elsewhere: not the top one.
+                                self.state.sequences[self.state.active_sequence_idx].source_track(klipp_timeline::TrackKind::Video)
                             };
                             let audio_track_idx = if *on_new_tracks {
                                 let seq = &mut self.state.sequences[self.state.active_sequence_idx];
@@ -439,9 +440,7 @@ impl KlippApp {
                                 hist_created_audio_track_at = Some(new_idx);
                                 Some(new_idx)
                             } else {
-                                match self.state.sequences[self.state.active_sequence_idx].tracks.iter()
-                                    .position(|t| t.kind == klipp_timeline::TrackKind::Audio)
-                                {
+                                match self.state.sequences[self.state.active_sequence_idx].source_track(klipp_timeline::TrackKind::Audio) {
                                     Some(i) => Some(i),
                                     None => {
                                         // Auto-create audio track to host the imported audio.
@@ -510,9 +509,7 @@ impl KlippApp {
                                     idx
                                 }
                             } else {
-                                self.state.sequences[self.state.active_sequence_idx].tracks.iter()
-                                    .position(|t| t.kind == target_kind)
-                                    .unwrap_or(0)
+                                self.state.sequences[self.state.active_sequence_idx].source_track(target_kind).unwrap_or(0)
                             };
                             if let Some(track) = self.state.sequences[self.state.active_sequence_idx].tracks.get_mut(track_idx) {
                                 let clip_id = track.append_clip(*media_id, use_duration);
