@@ -72,7 +72,7 @@ COLRV1_GLYPHS = [
     "composite_HARD_LIGHT", "composite_SOFT_LIGHT", "composite_DIFFERENCE", "composite_EXCLUSION",
     "composite_MULTIPLY", "composite_HSL_HUE", "composite_HSL_SATURATION", "composite_HSL_COLOR",
     "composite_HSL_LUMINOSITY", "foreground_color_linear_alpha_0.3", "foreground_color_radial_alpha_1",
-    "foreground_color_solid_alpha_1", "clip_box_center", "clip_shade_center", "inset_clipped_radial_reflect",
+    "foreground_color_solid_alpha_1", "clip_box_center", "inset_clipped_radial_reflect",
     "gradient_p2_skewed", "colored_circles_v1", "solid_colorline_alpha",
     "paint_glyph_nested_rotate_center_translate", "no_cycle_multi_colrglyph",
 ]
