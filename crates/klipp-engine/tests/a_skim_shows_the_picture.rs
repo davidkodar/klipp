@@ -173,11 +173,12 @@ fn a_skim_shows_titles_effects_and_transitions_as_parked() {
         // busy with other work that can pass, and the skim is left to the
         // raw frame as it should be. The next skim of the place, its
         // decoder open, is drawn: a few tries, then it is a failure.
+        // Tried again over a few seconds, not at once: under the full
+        // run a skim was refused five times in well under a second.
         let (mut composited, mut skim) = viewer.skim(frame);
-        for _ in 0..4 {
-            if composited {
-                break;
-            }
+        let t0 = Instant::now();
+        while !composited && t0.elapsed() < Duration::from_secs(5) {
+            std::thread::sleep(Duration::from_millis(250));
             (composited, skim) = viewer.skim(frame);
         }
         if !composited && !required {
@@ -199,4 +200,43 @@ fn a_skim_shows_titles_effects_and_transitions_as_parked() {
     let (_, rested) = viewer.skim(74);
     assert!(worst(&rising, &rested) > 100, "half way into its entrance the title is not where it rests");
     assert_eq!(klipp_engine::engine::SKIM_SOURCES_OFF_GPU.load(Ordering::Relaxed) - off_gpu, 0, "a skim source was read off the GPU");
+}
+
+/// A skim whose file's decoder doesn't open is left to the raw frame,
+/// and the viewer's trail says which file and why, not only that a
+/// source had no frame (the 0.3.0 run's refusals named no cause).
+#[test]
+fn a_skim_whose_file_does_not_open_says_which() {
+    let required = std::env::var_os("KLIPP_TEST_REQUIRE_GPU").is_some_and(|v| v == "1");
+    let fps = Fps::new(common::FPS, 1);
+    // There, but no video: its decoder doesn't open.
+    let gone = std::env::temp_dir().join(format!("klipp-skim-not-video-{}.mp4", std::process::id()));
+    std::fs::write(&gone, b"not a video").unwrap();
+    let mut pool = MediaPool::default();
+    let id = MediaId::new();
+    pool.add(MediaItem {
+        id,
+        path: gone.clone(),
+        kind: klipp_media::MediaItemKind::File,
+        resolution: Resolution { width: W, height: H },
+        skim_file: Some(gone.clone()),
+        ..MediaItem::new_synthetic_title(id, gone.display().to_string(), tc(50), fps)
+    });
+    let mut v1 = Track::new("V1", TrackKind::Video);
+    v1.clips = vec![shot(id, 0, 50)];
+    let mut seq = Sequence::new_default();
+    seq.fps = fps;
+    seq.resolution = Resolution { width: W, height: H };
+    seq.tracks = vec![v1];
+    let viewer = Viewer::start(seq, pool);
+    let (composited, _) = viewer.skim(10);
+    assert!(!composited, "nothing to draw it from");
+    let trail = viewer.fb.lock().unwrap().trail().join("\n");
+    if !trail.contains("skim at") && !required {
+        eprintln!("UNVERIFIED: no GPU stack here");
+        return;
+    }
+    let name = gone.file_name().unwrap().to_string_lossy().into_owned();
+    let _ = std::fs::remove_file(&gone);
+    assert!(trail.contains(&format!("{name} didn't open")), "{trail}");
 }
