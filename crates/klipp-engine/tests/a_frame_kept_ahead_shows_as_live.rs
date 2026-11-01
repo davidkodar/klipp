@@ -222,10 +222,12 @@ fn a_kept_frame_gives_way_to_every_other_view() {
         for c in off {
             p.send(c);
         }
-        // Off again, after what turning it off redraws: the kept frame.
+        // Off again, after what turning it off redraws: the kept frame. A
+        // step then a step back, as the frame reader reads a parked
+        // frame's neighbours ahead and never on the engine's thread.
         let before = klipp_engine::frames_shown_kept();
         park(frame);
-        frame = 11 - frame;
+        park(11 - frame);
         let back = klipp_engine::frames_shown_kept() - before;
         eprintln!("MEASURE {name}: {shown} frames from the cache while on, {back} once off");
         assert_eq!(shown, 0, "{name}: drawn live, not the kept frame");

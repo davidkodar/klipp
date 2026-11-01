@@ -27,6 +27,14 @@ const FORMAT_RGBA_F16: u32 = 1;
 /// bits each through [`encode10`]'s curve, a word a pixel. 23 % smaller
 /// than half floats after LZ4 on grainy footage, and no display level off.
 const FORMAT_RGB10: u32 = 2;
+/// Set in the format word when the pixels are compressed as chunks of
+/// their own, decompressed side by side (#3212): one LZ4 block over a 4K
+/// frame took 16 ms on one core, more than a frame's share of 24 fps once
+/// the rest of a read is added.
+const CHUNKED: u32 = 0x100;
+/// Chunks a frame is compressed in, and the most a file may claim.
+const CHUNKS: usize = 16;
+const MAX_CHUNKS: usize = 64;
 
 /// The curve a whole frame's linear values take into ten bits (#3212):
 /// sRGB's to 1, then a log segment to 16, so highlights past 1 are kept.
@@ -69,7 +77,7 @@ pub struct FrameAt {
 }
 
 impl FrameAt {
-    fn file_name(&self) -> String {
+    pub fn file_name(&self) -> String {
         format!("{:010}_{:016x}_{}x{}.klf", self.tick, self.key, self.size.0, self.size.1)
     }
 
@@ -262,7 +270,8 @@ impl CacheStore {
             }
             (FORMAT_RGBA_F16, halves)
         };
-        let packed = lz4_flex::compress_prepend_size(&payload);
+        let packed = compress_chunks(&payload);
+        let format = format | CHUNKED;
         let needed = (HEADER + packed.len()) as u64;
         if !self.room_for(namespace, needed) || (!evict && self.total_bytes() + needed > self.cap_bytes) {
             return Err(PutRefused::Full);
@@ -400,10 +409,63 @@ impl CacheStore {
 /// it isn't there, the namespace isn't one, or the file doesn't read as a
 /// frame of that size: drawn live then.
 pub fn read_stored(root: &Path, namespace: &str, at: FrameAt) -> Option<Vec<f32>> {
+    read_stored_timed(root, namespace, at).map(|(pixels, _)| pixels)
+}
+
+/// A frame as read for the screen: a ten-bit frame's words as stored, for
+/// [`ten_bit_display`]; any other unpacked to linear light.
+pub enum Stored {
+    TenBit(Vec<u8>),
+    Linear(Vec<f32>),
+}
+
+/// [`read_stored_timed`], a ten-bit frame left as its words: what the
+/// frame reader encodes for the screen through a table (#3212).
+pub fn read_stored_for_screen(root: &Path, namespace: &str, at: FrameAt) -> Option<(Stored, ReadTimes)> {
     if !valid_namespace(namespace) {
         return None;
     }
-    read_frame(&root.join(namespace).join(at.file_name()), at.size)
+    let ms = |t: std::time::Instant| t.elapsed().as_secs_f32() * 1000.0;
+    let t = std::time::Instant::now();
+    let data = std::fs::read(root.join(namespace).join(at.file_name())).ok()?;
+    let read_ms = ms(t);
+    let t = std::time::Instant::now();
+    let (format, raw) = parse_raw(&data, at.size)?;
+    let lz4_ms = ms(t);
+    if format == FORMAT_RGB10 {
+        return Some((Stored::TenBit(raw), ReadTimes { read_ms, lz4_ms, unpack_ms: 0.0 }));
+    }
+    let t = std::time::Instant::now();
+    let pixels = unpack(format, &raw);
+    Some((Stored::Linear(pixels), ReadTimes { read_ms, lz4_ms, unpack_ms: ms(t) }))
+}
+
+/// A ten-bit frame's words straight to display bytes: each code's display
+/// value (`display`, of its linear light) from a table of the 1024, then
+/// dithered and quantised as the display encode does it, so the bytes are
+/// the encode's own ([`klipp_color::display::per_channel_display`]).
+pub fn ten_bit_display(words: &[u8], display: impl Fn(f32) -> f32) -> Vec<u8> {
+    use klipp_color::display::{dither_at, quantise};
+    use rayon::prelude::*;
+    let table: Vec<f32> = (0..1024).map(|c| display(decode10(c))).collect();
+    let mut out = vec![0u8; words.len()];
+    out.par_chunks_exact_mut(4).zip(words.par_chunks_exact(4)).enumerate().for_each(|(i, (o, b))| {
+        let w = u32::from_le_bytes([b[0], b[1], b[2], b[3]]);
+        let n = dither_at(i);
+        o[0] = quantise(table[(w & 1023) as usize], n, 255.0) as u8;
+        o[1] = quantise(table[((w >> 10) & 1023) as usize], n, 255.0) as u8;
+        o[2] = quantise(table[((w >> 20) & 1023) as usize], n, 255.0) as u8;
+        o[3] = 255;
+    });
+    out
+}
+
+/// [`read_stored`], with what each part of the read took.
+pub fn read_stored_timed(root: &Path, namespace: &str, at: FrameAt) -> Option<(Vec<f32>, ReadTimes)> {
+    if !valid_namespace(namespace) {
+        return None;
+    }
+    read_frame_timed(&root.join(namespace).join(at.file_name()), at.size)
 }
 
 /// Whether `namespace`'s frame `at` is stored under `root`, by its file
@@ -424,29 +486,136 @@ pub fn read_stored_packed(root: &Path, namespace: &str, at: FrameAt) -> Option<V
 }
 
 fn read_frame(path: &Path, size: (u32, u32)) -> Option<Vec<f32>> {
-    let (format, raw) = read_raw(path, size)?;
-    Some(match format {
-        FORMAT_RGB10 => raw
-            .chunks_exact(4)
-            .flat_map(|b| {
+    read_frame_timed(path, size).map(|(pixels, _)| pixels)
+}
+
+/// What reading a frame took, ms: the file, LZ4, and the unpack to
+/// linear light (#3212).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct ReadTimes {
+    pub read_ms: f32,
+    pub lz4_ms: f32,
+    pub unpack_ms: f32,
+}
+
+fn read_frame_timed(path: &Path, size: (u32, u32)) -> Option<(Vec<f32>, ReadTimes)> {
+    let ms = |t: std::time::Instant| t.elapsed().as_secs_f32() * 1000.0;
+    let t = std::time::Instant::now();
+    let data = std::fs::read(path).ok()?;
+    let read_ms = ms(t);
+    let t = std::time::Instant::now();
+    let (format, raw) = parse_raw(&data, size)?;
+    let lz4_ms = ms(t);
+    let t = std::time::Instant::now();
+    let pixels = unpack(format, &raw);
+    Some((pixels, ReadTimes { read_ms, lz4_ms, unpack_ms: ms(t) }))
+}
+
+/// A ten-bit code's linear light, for each of the 1024: the unpack reads
+/// a table rather than raising a power three times a pixel, which at 4K
+/// took 160 ms a frame.
+static DECODE10: std::sync::LazyLock<Vec<f32>> = std::sync::LazyLock::new(|| (0..1024).map(decode10).collect());
+
+/// A ten-bit frame's words, to linear RGBA.
+pub fn unpack_ten_bit(words: &[u8]) -> Vec<f32> {
+    unpack(FORMAT_RGB10, words)
+}
+
+/// Pixels as stored, to straight-alpha linear RGBA, in parallel.
+fn unpack(format: u32, raw: &[u8]) -> Vec<f32> {
+    use rayon::prelude::*;
+    match format {
+        FORMAT_RGB10 => {
+            let lut = &*DECODE10;
+            let mut out = vec![0.0f32; raw.len()];
+            out.par_chunks_exact_mut(4).zip(raw.par_chunks_exact(4)).for_each(|(o, b)| {
                 let w = u32::from_le_bytes([b[0], b[1], b[2], b[3]]);
-                [decode10(w), decode10(w >> 10), decode10(w >> 20), 1.0]
-            })
-            .collect(),
-        _ => raw.chunks_exact(2).map(|b| half::f16::from_bits(u16::from_le_bytes([b[0], b[1]])).to_f32()).collect(),
-    })
+                o[0] = lut[(w & 1023) as usize];
+                o[1] = lut[((w >> 10) & 1023) as usize];
+                o[2] = lut[((w >> 20) & 1023) as usize];
+                o[3] = 1.0;
+            });
+            out
+        }
+        _ => {
+            let mut out = vec![0.0f32; raw.len() / 2];
+            out.par_iter_mut().zip(raw.par_chunks_exact(2)).for_each(|(o, b)| *o = half::f16::from_bits(u16::from_le_bytes([b[0], b[1]])).to_f32());
+            out
+        }
+    }
 }
 
 /// A frame file's format and pixels, decompressed: little-endian half
 /// floats, or ten-bit words. `None` when the file isn't a frame of `size`
 /// in a format known (checked before anything is allocated for it).
 fn read_raw(path: &Path, size: (u32, u32)) -> Option<(u32, Vec<u8>)> {
-    let data = std::fs::read(path).ok()?;
+    parse_raw(&std::fs::read(path).ok()?, size)
+}
+
+/// The byte ranges of `len` bytes cut into `n` chunks, a pixel's eight
+/// bytes never split.
+fn chunk_ranges(len: usize, n: usize) -> Vec<std::ops::Range<usize>> {
+    let per = len.div_ceil(n.max(1)).div_ceil(8) * 8;
+    (0..n).map(|i| (i * per).min(len)..((i + 1) * per).min(len)).collect()
+}
+
+/// `payload` as [`CHUNKS`] LZ4 blocks side by side: their count, each
+/// one's compressed length, then the blocks.
+fn compress_chunks(payload: &[u8]) -> Vec<u8> {
+    use rayon::prelude::*;
+    let blocks: Vec<Vec<u8>> = chunk_ranges(payload.len(), CHUNKS).into_par_iter().map(|r| lz4_flex::block::compress(&payload[r])).collect();
+    let mut out = Vec::with_capacity(4 + 4 * blocks.len() + blocks.iter().map(Vec::len).sum::<usize>());
+    out.extend_from_slice(&(blocks.len() as u32).to_le_bytes());
+    for b in &blocks {
+        out.extend_from_slice(&(b.len() as u32).to_le_bytes());
+    }
+    for b in &blocks {
+        out.extend_from_slice(b);
+    }
+    out
+}
+
+/// [`compress_chunks`]'s blocks back into `expected` bytes, side by side;
+/// `None` for a count, a length or a block that doesn't add up, checked
+/// before anything is decompressed.
+fn decompress_chunks(data: &[u8], expected: usize) -> Option<Vec<u8>> {
+    use rayon::prelude::*;
+    let n = u32::from_le_bytes(data.get(..4)?.try_into().ok()?) as usize;
+    if n == 0 || n > MAX_CHUNKS {
+        return None;
+    }
+    let lengths: Vec<usize> = (0..n).map(|i| data.get(4 + 4 * i..8 + 4 * i).map(|b| u32::from_le_bytes(b.try_into().unwrap()) as usize)).collect::<Option<_>>()?;
+    let body = data.get(4 + 4 * n..)?;
+    if lengths.iter().try_fold(0usize, |a, l| a.checked_add(*l))? != body.len() {
+        return None;
+    }
+    let mut out = vec![0u8; expected];
+    let ranges = chunk_ranges(expected, n);
+    let mut blocks = Vec::with_capacity(n);
+    let mut at = 0;
+    for l in &lengths {
+        blocks.push(&body[at..at + l]);
+        at += l;
+    }
+    let mut slices: Vec<&mut [u8]> = Vec::with_capacity(n);
+    let mut rest = out.as_mut_slice();
+    for r in &ranges {
+        let (head, tail) = rest.split_at_mut(r.len());
+        slices.push(head);
+        rest = tail;
+    }
+    let whole = slices.into_par_iter().zip(blocks.into_par_iter()).all(|(dst, block)| lz4_flex::block::decompress_into(block, dst).is_ok_and(|got| got == dst.len()));
+    whole.then_some(out)
+}
+
+fn parse_raw(data: &[u8], size: (u32, u32)) -> Option<(u32, Vec<u8>)> {
     if data.len() < HEADER || &data[..4] != MAGIC {
         return None;
     }
     let word = |i: usize| u32::from_le_bytes(data[i..i + 4].try_into().unwrap());
     let (format, w, h) = (word(4), word(8), word(12));
+    let chunked = format & CHUNKED != 0;
+    let format = format & !CHUNKED;
     let bytes_a_pixel = match format {
         FORMAT_RGBA_F16 => 8,
         FORMAT_RGB10 => 4,
@@ -456,6 +625,9 @@ fn read_raw(path: &Path, size: (u32, u32)) -> Option<(u32, Vec<u8>)> {
         return None;
     }
     let expected = (w as usize) * (h as usize) * bytes_a_pixel;
+    if chunked {
+        return decompress_chunks(&data[HEADER..], expected).map(|raw| (format, raw));
+    }
     // The prepended size must match the frame, before anything is
     // allocated for it.
     let claimed = u32::from_le_bytes(data.get(HEADER..HEADER + 4)?.try_into().ok()?) as usize;
@@ -735,6 +907,104 @@ mod tests {
             assert!(!path.exists(), "{name}: removed");
         }
         assert!(s.get("freeze/t1", at(1, 1)).is_some(), "the good frame still read");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// #3212: a ten-bit frame encoded for the screen through the table is
+    /// byte for byte what the display encode makes of its linear light.
+    #[test]
+    fn a_ten_bit_frame_through_the_table_is_the_display_encodes_bytes() {
+        use klipp_core::{SdrTransfer, ToneMapOp, WorkingColorspace};
+        let d = dir("ten-bit-screen");
+        let mut s = CacheStore::open(&d, 1 << 30);
+        let pixels: Vec<f32> = (0..64 * 32).flat_map(|i| [(i % 97) as f32 / 60.0, (i / 64) as f32 / 31.0, 0.003 * (i % 7) as f32, 1.0]).collect();
+        let a = FrameAt { tick: 1, key: 1, size: (64, 32) };
+        s.put_frame("frames", a, &pixels).unwrap();
+        let Some((Stored::TenBit(words), _)) = read_stored_for_screen(&d, "frames", a) else { panic!("kept in ten bits") };
+        for tone in [ToneMapOp::None, ToneMapOp::Hable] {
+            let display = klipp_color::display::per_channel_display(tone, WorkingColorspace::Rec709Linear, SdrTransfer::Srgb).unwrap();
+            let want = klipp_color::display::display_transform_ws_dithered_to(&unpack_ten_bit(&words), tone, WorkingColorspace::Rec709Linear, SdrTransfer::Srgb);
+            assert_eq!(ten_bit_display(&words, display), want, "{tone:?}");
+        }
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// #3212: a frame compressed in chunks reads back whole; one written
+    /// as a single block before them still reads; and a chunked file whose
+    /// count, lengths or blocks don't add up is refused and removed.
+    #[test]
+    fn chunked_frames_read_back_and_a_bad_chunk_table_is_refused() {
+        let d = dir("chunks");
+        let mut s = CacheStore::open(&d, 1 << 30);
+        // Big enough for every chunk to hold pixels.
+        let big = |seed: f32| -> Vec<f32> { (0..64 * 32).flat_map(|i| [seed + (i % 97) as f32 / 200.0, 0.5, (i / 64) as f32 / 40.0, 1.0]).collect() };
+        let a = FrameAt { tick: 1, key: 1, size: (64, 32) };
+        s.put_frame("frames", a, &big(0.1)).unwrap();
+        let path = d.join("frames").join(a.file_name());
+        let good = std::fs::read(&path).unwrap();
+        assert_eq!(u32::from_le_bytes(good[4..8].try_into().unwrap()) & CHUNKED, CHUNKED, "written in chunks");
+        let back = s.get("frames", a).unwrap();
+        assert!(back.iter().zip(big(0.1)).all(|(x, y)| (x - y).abs() < 2e-3), "read back whole");
+
+        // A single block, as files were written before chunks.
+        let (format, raw) = parse_raw(&good, a.size).unwrap();
+        let mut old = good[..HEADER].to_vec();
+        old[4..8].copy_from_slice(&format.to_le_bytes());
+        old.extend_from_slice(&lz4_flex::compress_prepend_size(&raw));
+        let o = FrameAt { tick: 2, ..a };
+        std::fs::write(d.join("frames").join(o.file_name()), &old).unwrap();
+        let mut s = CacheStore::open(&d, 1 << 30);
+        assert_eq!(s.get("frames", o), Some(back.clone()), "a single block still reads");
+
+        let n = u32::from_le_bytes(good[HEADER..HEADER + 4].try_into().unwrap()) as usize;
+        let table = HEADER + 4;
+        let mut cases: Vec<(&str, Vec<u8>)> = Vec::new();
+        let mut none = good.clone();
+        none[HEADER..HEADER + 4].copy_from_slice(&0u32.to_le_bytes());
+        cases.push(("no chunks", none));
+        let mut many = good.clone();
+        many[HEADER..HEADER + 4].copy_from_slice(&(MAX_CHUNKS as u32 + 1).to_le_bytes());
+        cases.push(("more chunks than allowed", many));
+        let mut long = good.clone();
+        let first = u32::from_le_bytes(long[table..table + 4].try_into().unwrap());
+        long[table..table + 4].copy_from_slice(&(first + 1).to_le_bytes());
+        cases.push(("lengths that don't add up to the body", long));
+        let mut swapped = good.clone();
+        let second = u32::from_le_bytes(swapped[table + 4..table + 8].try_into().unwrap());
+        if n > 1 && first != second {
+            swapped[table..table + 4].copy_from_slice(&second.to_le_bytes());
+            swapped[table + 4..table + 8].copy_from_slice(&first.to_le_bytes());
+            cases.push(("blocks cut in the wrong places", swapped));
+        }
+        let mut huge = good.clone();
+        huge[table..table + 4].copy_from_slice(&u32::MAX.to_le_bytes());
+        cases.push(("a block that claims 4 GB", huge));
+        // Whole, well-made chunk tables only the checks themselves refuse:
+        // more chunks than allowed, and bytes after the last block.
+        let chunks_of = |n: usize, trailing: &[u8]| {
+            let blocks: Vec<Vec<u8>> = chunk_ranges(raw.len(), n).into_iter().map(|r| lz4_flex::block::compress(&raw[r])).collect();
+            let mut f = good[..HEADER].to_vec();
+            f.extend_from_slice(&(n as u32).to_le_bytes());
+            for b in &blocks {
+                f.extend_from_slice(&(b.len() as u32).to_le_bytes());
+            }
+            for b in &blocks {
+                f.extend_from_slice(b);
+            }
+            f.extend_from_slice(trailing);
+            f
+        };
+        assert!(parse_raw(&chunks_of(MAX_CHUNKS, &[]), a.size).is_some(), "as many chunks as allowed: read");
+        cases.push(("one chunk more than allowed, each whole", chunks_of(MAX_CHUNKS + 1, &[])));
+        cases.push(("bytes after the last block", chunks_of(CHUNKS, b"extra")));
+        for (i, (name, bytes)) in cases.into_iter().enumerate() {
+            let b = FrameAt { tick: 10 + i as i64, ..a };
+            let path = d.join("frames").join(b.file_name());
+            std::fs::write(&path, bytes).unwrap();
+            let mut s = CacheStore::open(&d, 1 << 30);
+            assert!(s.get("frames", b).is_none(), "{name}: refused");
+            assert!(!path.exists(), "{name}: removed");
+        }
         let _ = std::fs::remove_dir_all(&d);
     }
 }

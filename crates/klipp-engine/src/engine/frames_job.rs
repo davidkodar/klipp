@@ -17,7 +17,7 @@ use crate::frame_cache::{FrameRequest, FramesTally, Keying, NAMESPACE};
 const PROGRESS_EVERY: Duration = Duration::from_millis(250);
 
 /// Frames read ahead while playing.
-const READ_AHEAD: i64 = 3;
+const READ_AHEAD: i64 = 4;
 
 /// A job drawing frames ahead, and how it ends.
 pub(crate) struct FramesJob {
@@ -89,7 +89,11 @@ impl PlaybackEngine {
 
     /// The whole frame at `time` at `size`, when it is kept under its key:
     /// read ahead while playing. `None` with nothing kept, or turned off.
-    pub(super) fn kept_frame(&mut self, seq: &Sequence, time: Timecode, size: (u32, u32)) -> Option<Arc<Vec<f32>>> {
+    ///
+    /// Its display bytes, made on the reading thread: nothing is read,
+    /// unpacked or encoded here. Not taken where drawing it live is as
+    /// quick as loading it ([`crate::background_render::prefer_kept`]).
+    pub(super) fn kept_frame(&mut self, seq: &Sequence, time: Timecode, size: (u32, u32)) -> Option<Vec<u8>> {
         if !self.frames_enabled {
             return None;
         }
@@ -97,16 +101,25 @@ impl PlaybackEngine {
         if self.frames_store().lock().unwrap_or_else(|e| e.into_inner()).bytes(NAMESPACE) == 0 {
             return None;
         }
+        let rate = seq.fps.rate();
+        let frame = i64::from(seq.fps.den).max(1);
+        let tick = time.rescale_to(rate).value.div_euclid(frame) * frame;
+        if !crate::background_render::prefer_kept(self.cost_log.get(tick), self.kept_cost_ms()) {
+            return None;
+        }
         let keying = self.frame_keying();
+        let encode = crate::frame_cache::DisplayEncode { tone: self.tone_map_op, working: crate::video_decoder::working_colorspace(), transfer: self.sdr_transfer };
         let reader = self.frames_reader.get_or_insert_with(crate::frame_cache::FrameReader::new);
-        if self.state == super::PlaybackState::Playing {
-            let step = (i64::from(time.rate) * i64::from(seq.fps.den)).checked_div(i64::from(seq.fps.num)).unwrap_or(1).max(1);
-            for k in 1..=READ_AHEAD {
-                let next = RationalTime { value: time.value + step * k, rate: time.rate };
-                reader.ask(&root, keying.place(seq, next, size));
+        // Playing, the frames ahead; parked, this one and its neighbours,
+        // for the next step either way.
+        let ahead: Vec<i64> = if self.state == super::PlaybackState::Playing { (0..=READ_AHEAD).collect() } else { vec![0, 1, -1] };
+        for k in ahead {
+            let at = RationalTime { value: tick + frame * k, rate };
+            if at.value >= 0 {
+                reader.ask(&root, keying.place(seq, at, size), encode);
             }
         }
-        reader.take(&root, keying.place(seq, time, size))
+        reader.take(keying.place(seq, RationalTime { value: tick, rate }, size), encode)
     }
 
     /// Render `from..to` ahead into the frame cache, replacing a job under

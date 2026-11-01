@@ -62,9 +62,19 @@ fn power_root() -> std::path::PathBuf {
 impl PlaybackEngine {
     /// Record what the frame just shown cost, while playing: a frame from
     /// the frame cache costs nothing.
-    pub(super) fn record_frame_cost(&mut self, render_ms: f32) {
+    ///
+    /// A frame's cost is its whole time on the engine's thread, live or
+    /// from the cache, so the two compare: a kept frame's goes to
+    /// [`Self::kept_cost_ms`], not the log.
+    pub(super) fn record_frame_cost(&mut self, total_ms: f32) {
         let from_cache = std::mem::take(&mut self.frame_from_cache);
-        if self.state != PlaybackState::Playing || from_cache {
+        if self.state != PlaybackState::Playing {
+            return;
+        }
+        if from_cache {
+            let k = 1.0 / (self.kept_shown.min(29) + 1) as f32;
+            self.kept_present_ms += (total_ms - self.kept_present_ms) * k;
+            self.kept_shown += 1;
             return;
         }
         let fps = self.fps.as_f64();
@@ -74,7 +84,20 @@ impl PlaybackEngine {
         let rate = self.fps.rate();
         let step = i64::from(self.fps.den).max(1);
         let tick = self.playhead.rescale_to(rate).value.div_euclid(step) * step;
-        self.cost_log.record(tick, render_ms, (1000.0 / fps) as f32);
+        self.cost_log.record(tick, total_ms, (1000.0 / fps) as f32);
+    }
+
+    /// What showing a kept frame costs, ms, once measured: its time on
+    /// the engine's thread, or the reading thread's per frame where that
+    /// is longer (it can keep only so far ahead).
+    pub(super) fn kept_cost_ms(&self) -> Option<f32> {
+        let read = crate::frame_cache::load_costs();
+        let shown = (self.kept_shown > 0).then_some(self.kept_present_ms);
+        let read = (read.frames > 0).then_some(read.total_ms);
+        match (shown, read) {
+            (Some(a), Some(b)) => Some(a.max(b)),
+            (a, b) => a.or(b),
+        }
     }
 
     /// The frames to draw ahead: those whose last playback was late, and
@@ -84,11 +107,14 @@ impl PlaybackEngine {
         let rate = seq.fps.rate();
         let step = i64::from(seq.fps.den).max(1);
         let half = (500.0 / seq.fps.as_f64()) as f32;
-        let mut ticks: BTreeSet<i64> = self.cost_log.late().collect();
+        // Only where loading is quicker than drawing live, once known.
+        let load = self.kept_cost_ms();
+        let quicker = |ms: f32| load.is_none_or(|load| ms > load);
+        let mut ticks: BTreeSet<i64> = self.cost_log.late().filter(|t| self.cost_log.get(*t).is_some_and(|c| quicker(c.ms))).collect();
         let forced = bg::forced_heavy();
         for track in seq.tracks.iter().filter(|t| matches!(t.kind, klipp_timeline::TrackKind::Video | klipp_timeline::TrackKind::Text) && t.visible) {
             let ms = self.measured_once.get(&track.id).copied().or_else(|| crate::track_cost::cost(track.id).and_then(|c| c.gpu_ms));
-            if !forced && ms.is_none_or(|ms| ms <= half) {
+            if !forced && ms.is_none_or(|ms| ms <= half || !quicker(ms)) {
                 continue;
             }
             for clip in &track.clips {
@@ -256,6 +282,7 @@ impl PlaybackEngine {
 #[cfg(test)]
 mod tests {
     use std::sync::{Arc, Mutex, RwLock};
+    use std::time::{Duration, Instant};
 
     use klipp_core::{MediaId, RationalTime};
     use klipp_timeline::{Clip, Track, TrackKind};
@@ -305,10 +332,47 @@ mod tests {
         e.record_frame_cost(60.0);
         assert!(e.cost_log.get(tc(7).value).is_none(), "from the cache: costs nothing");
         assert!(!e.frame_from_cache, "the mark is taken");
+        assert_eq!((e.kept_shown, e.kept_present_ms), (1, 60.0), "its time goes to the kept frames' cost");
         e.state = PlaybackState::Paused;
         e.playhead = tc(8);
         e.record_frame_cost(60.0);
         assert!(e.cost_log.get(tc(8).value).is_none(), "parked: not playback's cost");
+    }
+
+    /// A kept frame is handed over once the reading thread has it, never
+    /// read on the engine's thread; and not at all where its frame drew
+    /// live quicker than a kept frame loads.
+    #[test]
+    fn a_kept_frame_is_taken_when_read_and_only_where_loading_beats_live() {
+        let mut e = engine(vec![track("V1", 0, 24)]);
+        let root = std::env::temp_dir().join(format!("klipp-kept-take-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        e.freeze_folder = Some(root.clone());
+        let seq = e.sequence.snapshot();
+        let size = (16, 8);
+        let at = e.frame_keying().place(&seq, tc(3), size);
+        let pixels: Vec<f32> = (0..16 * 8).flat_map(|i| [i as f32 / 128.0, 0.5, 0.25, 1.0]).collect();
+        e.frames_store().lock().unwrap().put_frame(crate::frame_cache::NAMESPACE, at, &pixels).unwrap();
+        let take = |e: &mut PlaybackEngine| {
+            let start = Instant::now();
+            loop {
+                if let Some(bytes) = e.kept_frame(&seq, tc(3), size) {
+                    return Some(bytes);
+                }
+                if start.elapsed() > Duration::from_secs(2) {
+                    return None;
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        };
+        assert_eq!(take(&mut e).map(|b| b.len()), Some(16 * 8 * 4), "read ahead, then handed over");
+        e.cost_log.record(tc(3).value, 5.0, 41.7);
+        e.kept_shown = 1;
+        e.kept_present_ms = 20.0;
+        assert!(take(&mut e).is_none(), "drawn live in 5 ms, a kept frame costs 20: live");
+        e.cost_log.record(tc(3).value, 50.0, 41.7);
+        assert!(take(&mut e).is_some(), "drawn live in 50 ms: the kept frame");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// Heavy: the frames played late, and every frame of a track measured
@@ -325,6 +389,25 @@ mod tests {
         assert_eq!(e.heavy_ticks(&seq), [2, 10, 11, 12].map(|f| tc(f).value).to_vec());
         e.measured_once.insert(costly, 20.0);
         assert_eq!(e.heavy_ticks(&seq), vec![tc(2).value], "20 ms is under half of 41.7");
+    }
+
+    /// Drawing ahead leaves out a late frame, or a costly track's, where
+    /// loading a kept frame costs as much as drawing it live: there the
+    /// cache would only slow playback down.
+    #[test]
+    fn a_frame_quicker_live_than_loaded_is_not_drawn_ahead() {
+        let v1 = track("V1", 10, 12);
+        let costly = v1.id;
+        let mut e = engine(vec![v1]);
+        e.measured_once.insert(costly, 30.0);
+        e.cost_log.record(tc(2).value, 50.0, 41.7);
+        e.cost_log.record(tc(3).value, 90.0, 41.7);
+        let seq = e.sequence.snapshot();
+        assert_eq!(e.heavy_ticks(&seq), [2, 3, 10, 11].map(|f| tc(f).value).to_vec(), "loading not measured yet");
+        e.kept_shown = 1;
+        e.kept_present_ms = 60.0;
+        assert!(e.kept_cost_ms().is_some_and(|c| c >= 60.0), "the kept frames shown, or the reading thread where slower");
+        assert_eq!(e.heavy_ticks(&seq), vec![tc(3).value], "only the frame dearer live than the 60 ms a kept one costs");
     }
 
     /// A frame is cheap already with nothing on it, or with every track

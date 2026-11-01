@@ -23,29 +23,104 @@ use crate::cache_store::{CacheStore, FrameAt, PutRefused};
 /// The store's namespace for whole frames.
 pub const NAMESPACE: &str = "frames";
 
-/// Frames read ahead of playback: a thread reads and decodes the frames
-/// the engine asks for next. Holds the last few it read.
-pub struct FrameReader {
-    ask: std::sync::mpsc::Sender<(std::path::PathBuf, FrameAt)>,
-    ready: Arc<Mutex<VecDeque<(FrameAt, Arc<Vec<f32>>)>>>,
+/// How a kept frame is put on screen: the SDR display encode's settings.
+/// A frame read ahead under other settings isn't the one asked for.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DisplayEncode {
+    pub tone: klipp_core::ToneMapOp,
+    pub working: klipp_core::WorkingColorspace,
+    pub transfer: klipp_core::SdrTransfer,
 }
 
-/// Frames a [`FrameReader`] keeps.
-const KEPT: usize = 12;
+impl DisplayEncode {
+    /// A stored frame's display bytes: a ten-bit one through a table where
+    /// the encode works channel by channel, as the encode makes them.
+    pub fn bytes(&self, stored: crate::cache_store::Stored) -> Vec<u8> {
+        use crate::cache_store::Stored;
+        let encode = |linear: &[f32]| klipp_color::display::display_transform_ws_dithered_to(linear, self.tone, self.working, self.transfer);
+        match (stored, klipp_color::display::per_channel_display(self.tone, self.working, self.transfer)) {
+            (Stored::TenBit(words), Some(display)) => crate::cache_store::ten_bit_display(&words, display),
+            (Stored::TenBit(words), None) => encode(&crate::cache_store::unpack_ten_bit(&words)),
+            (Stored::Linear(linear), _) => encode(&linear),
+        }
+    }
+}
+
+/// What loading a kept frame took, ms, a running mean over the frames
+/// read: the parts on the reading thread, and their sum.
+#[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize)]
+pub struct LoadCosts {
+    pub read_ms: f32,
+    pub lz4_ms: f32,
+    pub unpack_ms: f32,
+    pub encode_ms: f32,
+    pub total_ms: f32,
+    pub frames: u64,
+}
+
+static LOAD_COSTS: Mutex<LoadCosts> = Mutex::new(LoadCosts { read_ms: 0.0, lz4_ms: 0.0, unpack_ms: 0.0, encode_ms: 0.0, total_ms: 0.0, frames: 0 });
+
+/// What loading a kept frame has taken, over the frames read so far.
+pub fn load_costs() -> LoadCosts {
+    *LOAD_COSTS.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+fn record_load(t: crate::cache_store::ReadTimes, encode_ms: f32) {
+    let mut c = LOAD_COSTS.lock().unwrap_or_else(|e| e.into_inner());
+    // A running mean that settles on the last thirty or so frames.
+    let k = 1.0 / (c.frames.min(29) + 1) as f32;
+    let mix = |old: f32, new: f32| old + (new - old) * k;
+    c.read_ms = mix(c.read_ms, t.read_ms);
+    c.lz4_ms = mix(c.lz4_ms, t.lz4_ms);
+    c.unpack_ms = mix(c.unpack_ms, t.unpack_ms);
+    c.encode_ms = mix(c.encode_ms, encode_ms);
+    c.total_ms = mix(c.total_ms, t.read_ms + t.lz4_ms + t.unpack_ms + encode_ms);
+    c.frames += 1;
+}
+
+/// A frame read ahead, ready to show: its display bytes.
+struct Ready {
+    at: FrameAt,
+    encode: DisplayEncode,
+    bytes: Vec<u8>,
+}
+
+/// Frames read ahead of playback (#3212): a thread reads each frame
+/// asked for, decompresses and unpacks it and encodes it for the screen,
+/// so the engine's thread only takes the bytes. A frame not ready when
+/// it is wanted is drawn live: nothing is read on the engine's thread.
+pub struct FrameReader {
+    ask: std::sync::mpsc::Sender<(std::path::PathBuf, FrameAt, DisplayEncode)>,
+    ready: Arc<Mutex<VecDeque<Ready>>>,
+}
+
+/// Frames a [`FrameReader`] keeps ready.
+const KEPT: usize = 8;
 
 impl FrameReader {
     pub fn new() -> Self {
-        let (ask, asked) = std::sync::mpsc::channel::<(std::path::PathBuf, FrameAt)>();
-        let ready: Arc<Mutex<VecDeque<(FrameAt, Arc<Vec<f32>>)>>> = Arc::default();
+        let (ask, asked) = std::sync::mpsc::channel::<(std::path::PathBuf, FrameAt, DisplayEncode)>();
+        let ready: Arc<Mutex<VecDeque<Ready>>> = Arc::default();
         let held = Arc::clone(&ready);
         let _ = std::thread::Builder::new().name("klipp-frame-read".into()).spawn(move || {
-            while let Ok((root, at)) = asked.recv() {
-                if held.lock().unwrap_or_else(|e| e.into_inner()).iter().any(|(a, _)| *a == at) {
-                    continue;
-                }
-                if let Some(pixels) = crate::cache_store::read_stored(&root, NAMESPACE, at) {
+            while let Ok(first) = asked.recv() {
+                // The asks since the last frame, latest last: one read
+                // each, the oldest dropped when they pile up behind.
+                let mut asks = vec![first];
+                asks.extend(asked.try_iter());
+                let mut seen = std::collections::HashSet::new();
+                let mut wanted: Vec<_> = asks.into_iter().rev().filter(|(_, at, _)| seen.insert(*at)).take(KEPT).collect();
+                wanted.reverse();
+                for (root, at, encode) in wanted {
+                    if held.lock().unwrap_or_else(|e| e.into_inner()).iter().any(|r| r.at == at && r.encode == encode) {
+                        continue;
+                    }
+                    let Some((stored, times)) = crate::cache_store::read_stored_for_screen(&root, NAMESPACE, at) else { continue };
+                    let t = std::time::Instant::now();
+                    let bytes = encode.bytes(stored);
+                    record_load(times, t.elapsed().as_secs_f32() * 1000.0);
                     let mut held = held.lock().unwrap_or_else(|e| e.into_inner());
-                    held.push_back((at, Arc::new(pixels)));
+                    held.push_back(Ready { at, encode, bytes });
                     while held.len() > KEPT {
                         held.pop_front();
                     }
@@ -55,15 +130,17 @@ impl FrameReader {
         FrameReader { ask, ready }
     }
 
-    /// Read frame `at` ahead.
-    pub fn ask(&self, root: &std::path::Path, at: FrameAt) {
-        let _ = self.ask.send((root.to_path_buf(), at));
+    /// Read frame `at` ahead, for the screen as `encode` puts it there.
+    pub fn ask(&self, root: &std::path::Path, at: FrameAt, encode: DisplayEncode) {
+        let _ = self.ask.send((root.to_path_buf(), at, encode));
     }
 
-    /// Frame `at`: read ahead, or read now.
-    pub fn take(&self, root: &std::path::Path, at: FrameAt) -> Option<Arc<Vec<f32>>> {
-        let found = self.ready.lock().unwrap_or_else(|e| e.into_inner()).iter().find(|(a, _)| *a == at).map(|(_, p)| Arc::clone(p));
-        found.or_else(|| crate::cache_store::read_stored(root, NAMESPACE, at).map(Arc::new))
+    /// Frame `at`'s display bytes, when read ahead under `encode`: taken,
+    /// not copied. `None` when it isn't ready yet.
+    pub fn take(&self, at: FrameAt, encode: DisplayEncode) -> Option<Vec<u8>> {
+        let mut held = self.ready.lock().unwrap_or_else(|e| e.into_inner());
+        let i = held.iter().position(|r| r.at == at && r.encode == encode)?;
+        held.remove(i).map(|r| r.bytes)
     }
 }
 

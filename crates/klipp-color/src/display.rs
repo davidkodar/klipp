@@ -890,6 +890,19 @@ fn export_pixels<T: Copy + Default + Send + Sync>(
 /// the export round a picture the same way (#2072).
 pub use klipp_effects::dither::{dither_at, quantise};
 
+/// A channel's display value (0 to 1, before quantising) from its linear
+/// light, where [`display_transform_ws_dithered_to`] works channel by
+/// channel: a BT.709 working space and a tone map of each channel alone
+/// (not ACES, which mixes them). `None` otherwise. With [`dither_at`] and
+/// [`quantise`] it gives the same bytes, so a picture whose channels take
+/// few values can be encoded through a table.
+pub fn per_channel_display(tone_map_op: ToneMapOp, working_space: klipp_core::WorkingColorspace, transfer: klipp_core::SdrTransfer) -> Option<impl Fn(f32) -> f32 + Sync + Send + Copy> {
+    if working_space != klipp_core::WorkingColorspace::Rec709Linear || tone_map_op == ToneMapOp::Aces || ToBt709::for_working_space(working_space).is_some() {
+        return None;
+    }
+    Some(move |v: f32| encode_sdr(tone_map(v.max(0.0), tone_map_op), transfer))
+}
+
 impl ExportDisplay {
     /// The transform over an RGBA frame, each channel quantised by `q`.
     ///
@@ -921,6 +934,34 @@ impl ExportDisplay {
 
 #[cfg(test)]
 mod tests {
+
+    /// #3212: the per-channel display value, dithered and quantised as the
+    /// encode does it, gives the encode's own bytes, for each per-channel
+    /// tone map and both transfers; ACES and a wider working space have
+    /// none.
+    #[test]
+    fn the_per_channel_display_value_gives_the_encodes_bytes() {
+        use klipp_core::{SdrTransfer, WorkingColorspace};
+        let frame: Vec<f32> = (0..4096).flat_map(|i| [i as f32 / 2000.0, (i % 300) as f32 / 150.0, 0.02, 1.0]).collect();
+        for tone in [ToneMapOp::None, ToneMapOp::Reinhard, ToneMapOp::Hable] {
+            for transfer in [SdrTransfer::Srgb, SdrTransfer::Bt1886] {
+                let f = per_channel_display(tone, WorkingColorspace::Rec709Linear, transfer).expect("per channel");
+                let want = display_transform_ws_dithered_to(&frame, tone, WorkingColorspace::Rec709Linear, transfer);
+                let got: Vec<u8> = frame
+                    .chunks_exact(4)
+                    .enumerate()
+                    .flat_map(|(i, p)| {
+                        let n = dither_at(i);
+                        [quantise(f(p[0]), n, 255.0) as u8, quantise(f(p[1]), n, 255.0) as u8, quantise(f(p[2]), n, 255.0) as u8, quantise(p[3], 0.0, 255.0) as u8]
+                    })
+                    .collect();
+                assert_eq!(got, want, "{tone:?} {transfer:?}");
+            }
+        }
+        assert!(per_channel_display(ToneMapOp::Aces, WorkingColorspace::Rec709Linear, SdrTransfer::Srgb).is_none());
+        assert!(per_channel_display(ToneMapOp::None, WorkingColorspace::Bt2020Linear, SdrTransfer::Srgb).is_none());
+        assert!(per_channel_display(ToneMapOp::None, WorkingColorspace::AcesCG, SdrTransfer::Srgb).is_none());
+    }
     use super::*;
 
     fn approx(a: f32, b: f32, tol: f32) -> bool {
