@@ -101,6 +101,7 @@
   "title.TextBox.font_weight": "CpuCached #2335",
   "title.TextBox.glitch_intensity": "Conditional #2335",
   "title.TextBox.gradient": "Conditional #2335",
+  "title.TextBox.language": "Conditional #3236",
   "title.TextBox.last_line": "CpuCached #2335",
   "title.TextBox.legacy_fx": "Conditional #1465",
   "title.TextBox.line_spacing": "CpuCached #2335",
