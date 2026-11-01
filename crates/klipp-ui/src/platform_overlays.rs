@@ -51,6 +51,21 @@ pub fn by_id(id: &str) -> Option<&'static PlatformOverlay> {
     all().iter().find(|p| p.id == id)
 }
 
+/// Every overlay in the viewer menu's order for a sequence whose brief
+/// names `platform`: those its destination lists first (#3307), in the
+/// destination's order, then the rest.
+pub fn menu_order(platform: &str) -> Vec<&'static PlatformOverlay> {
+    let platform = platform.trim();
+    let first: &[String] = klipp_core::project_formats::formats()
+        .iter()
+        .filter_map(|f| f.destination.as_ref())
+        .find(|d| !platform.is_empty() && d.platform.trim().eq_ignore_ascii_case(platform))
+        .map_or(&[], |d| d.overlays.as_slice());
+    let mut out: Vec<&'static PlatformOverlay> = first.iter().filter_map(|id| by_id(id)).collect();
+    out.extend(all().iter().filter(|p| !first.contains(&p.id)));
+    out
+}
+
 impl PlatformOverlay {
     /// Whether a frame `width` by `height` has the shape this overlay is
     /// laid out for, within 1%.
@@ -86,5 +101,23 @@ mod tests {
             }
         }
         assert!(by_id("tiktok").is_some_and(|p| p.fits(1080.0, 1920.0) && !p.fits(1920.0, 1080.0)));
+    }
+
+    /// A sequence made for a destination lists that destination's
+    /// overlays first, the rest after; with none, or one Klipp doesn't
+    /// know, the menu's own order. Every destination's overlay is one
+    /// there is.
+    #[test]
+    fn a_destinations_overlays_come_first_in_the_menu() {
+        let ids = |platform: &str| menu_order(platform).iter().map(|p| p.id.as_str()).collect::<Vec<_>>();
+        let own: Vec<&str> = all().iter().map(|p| p.id.as_str()).collect();
+        assert_eq!(ids("youtube shorts, instagram reels, tiktok"), ["youtube_shorts", "instagram_reels", "tiktok", "youtube"]);
+        assert_eq!(ids("YouTube"), own);
+        assert_eq!(ids(""), own);
+        assert_eq!(ids("Podcast"), own);
+        for d in klipp_core::project_formats::formats().iter().filter_map(|f| f.destination.as_ref()) {
+            assert!(d.overlays.iter().all(|id| by_id(id).is_some()), "{}: {:?} names an overlay there isn't", d.platform, d.overlays);
+            assert_eq!(menu_order(&d.platform).len(), all().len(), "{}: each overlay once", d.platform);
+        }
     }
 }
