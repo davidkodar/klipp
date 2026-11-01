@@ -19,16 +19,24 @@ fn tmp(name: &str) -> PathBuf {
 
 /// Ten frames at 25 fps, frame n a flat grey of 20 + 20n, with B-frames
 /// and one keyframe, so reading it backward means decoding out of order.
+///
+/// Written once per process, as `clip_sources_reads_the_media`'s ramp
+/// (#1700): both tests here run at once, and `ffmpeg -y` truncating the
+/// file while the other exported from it gave that one black frames.
 fn ramp_source() -> Option<PathBuf> {
-    let path = tmp("ramp.mp4");
-    let ok = std::process::Command::new("ffmpeg")
-        .args(["-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i"])
-        .arg(format!("color=c=black:s={W}x{H}:r=25:d=0.4,geq=lum='20+20*N':cb=128:cr=128"))
-        .args(["-c:v", "libx264", "-bf", "2", "-g", "250", "-pix_fmt", "yuv420p"])
-        .arg(&path)
-        .status()
-        .is_ok_and(|s| s.success());
-    ok.then_some(path)
+    static RAMP: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
+    RAMP.get_or_init(|| {
+        let path = tmp("ramp.mp4");
+        let ok = std::process::Command::new("ffmpeg")
+            .args(["-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i"])
+            .arg(format!("color=c=black:s={W}x{H}:r=25:d=0.4,geq=lum='20+20*N':cb=128:cr=128"))
+            .args(["-c:v", "libx264", "-bf", "2", "-g", "250", "-pix_fmt", "yuv420p"])
+            .arg(&path)
+            .status()
+            .is_ok_and(|s| s.success());
+        ok.then_some(path)
+    })
+    .clone()
 }
 
 /// The mean luma (limited range code) of every frame of `path`.

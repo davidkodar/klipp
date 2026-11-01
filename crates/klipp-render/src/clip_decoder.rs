@@ -119,10 +119,6 @@ pub struct RenderDecoder {
     scaler: ffmpeg_next::software::scaling::Context,
     /// HW download scaler (raw sws context for NV12→RGBA after GPU download).
     hw_scaler: Option<*mut ffmpeg_next::ffi::SwsContext>,
-    /// The source's Y'CbCr matrix and range, resolved from its stream tags
-    /// the same way the viewer resolves them (untagged HD is BT.709).
-    yuv_matrix: klipp_core::ColorMatrix,
-    yuv_range: klipp_core::ColorRange,
     /// The source's resolved colourspace, before any camera log format.
     source_cs: klipp_core::SourceColorspace,
     log_format: Option<klipp_core::LogFormat>,
@@ -330,8 +326,6 @@ impl RenderDecoder {
             t_rotate: std::time::Duration::ZERO,
             scaler,
             hw_scaler: None,
-            yuv_matrix,
-            yuv_range,
             scene: SceneSource::for_colourspace(source_cs, klipp_core::WorkingColorspace::Rec709Linear),
             source_cs,
             log_format: None,
@@ -564,8 +558,7 @@ impl RenderDecoder {
                     &mut self.hw_scaler,
                     scale_w,
                     scale_h,
-                    self.yuv_matrix,
-                    self.yuv_range,
+                    self.source_cs,
                 )
             } {
                 rgba
@@ -595,25 +588,17 @@ impl RenderDecoder {
     /// the GPU, resized and rotated in the same pass.
     ///
     /// `None` whenever this is not the right route, and the caller falls
-    /// back to downloading and converting with swscale: no converter (no
+    /// back to downloading and converting on the CPU: no converter (no
     /// usable GPU, or software decode), a frame that does not download as
     /// NV12 or P010, or a scene-referred source — camera
     /// log and PQ/HLG have their own tested path through
     /// `scene_referred_frame` and packed codes, and this shader's code
     /// output is not wired up here.
     ///
-    /// **This changes the export's chroma upsampling.** The shader takes
-    /// 4:2:0 chroma nearest-neighbour; swscale interpolated it. On the
-    /// user's footage that is a median difference of 0 levels and a worst
-    /// of 21, on the 0.01% of samples that sit on a sharp saturated edge.
-    /// It is a deliberate trade and arguably the right way round: the
-    /// viewer has always shown this shader's nearest-neighbour chroma, so
-    /// before this the viewer and the export disagreed, and now they do
-    /// not. Proper bilinear chroma would be better than either, but it
-    /// belongs in the shader *and* its CPU twin together —
-    /// `sw_decode_parity` holds them to one code of each other — so it is
-    /// a change to the viewer's picture, not to the export's, and it is
-    /// not this function's to make.
+    /// Chroma is reconstructed as the viewer's decoders reconstruct it:
+    /// this is the viewer's own shader, bilinear at
+    /// `klipp_color::hdr::chroma_taps`' siting, and the software path's
+    /// converter (`klipp_rgba64`) uses the same taps (#3266).
     ///
     /// SAFETY: `decoded` must be a valid decoded frame.
     unsafe fn hw_frame_on_gpu(
@@ -781,11 +766,22 @@ impl RenderDecoder {
         true
     }
 
-    /// Scale a decoded frame using the software scaler.
+    /// A software-decoded frame as RGBA64 at the scaled size: converted by
+    /// Klipp's own Y'CbCr converter, as the viewer's software decode does,
+    /// and only resized by swscale (#3266). swscale converting the colour
+    /// too reconstructed 4:2:0 and 4:2:2 chroma at its own phase, so at a
+    /// hard colour edge the export differed from the viewer by up to 255
+    /// levels, and so did a kept or frozen frame. What Klipp's reader
+    /// does not take (RGB, palette, grey) still goes through swscale.
     fn scale_frame_sw(
         &mut self,
         decoded: &ffmpeg_next::util::frame::Video,
     ) -> Result<Vec<u16>, RenderError> {
+        let (scale_w, scale_h) = (self.scaler.output().width, self.scaler.output().height);
+        // SAFETY: `decoded` is a valid decoded frame.
+        if let Some(rgba) = unsafe { klipp_rgba64(decoded.as_ptr(), Some(decoded), self.source_cs, scale_w, scale_h) } {
+            return Ok(rgba);
+        }
         let mut rgba_frame = ffmpeg_next::util::frame::Video::empty();
         self.scaler
             .run(decoded, &mut rgba_frame)
@@ -1000,9 +996,9 @@ unsafe fn download_hw_frame(
     sws_ctx: &mut Option<*mut ffmpeg_next::ffi::SwsContext>,
     target_w: u32,
     target_h: u32,
-    yuv_matrix: klipp_core::ColorMatrix,
-    yuv_range: klipp_core::ColorRange,
+    source_cs: klipp_core::SourceColorspace,
 ) -> Option<Vec<u16>> {
+    let (yuv_matrix, yuv_range) = (source_cs.matrix, source_cs.range);
     use ffmpeg_next::ffi::*;
 
     let t_start = std::time::Instant::now();
@@ -1018,6 +1014,14 @@ unsafe fn download_hw_frame(
         return None;
     }
     let t_transfer = t_start.elapsed();
+
+    // The downloaded NV12 or P010 through Klipp's converter, as the
+    // software decode's frames go (#3266); swscale below only for what
+    // it does not read.
+    if let Some(rgba) = klipp_rgba64(sw_frame, None, source_cs, target_w, target_h) {
+        av_frame_free(&mut (sw_frame as *mut _));
+        return Some(rgba);
+    }
 
     let src_w = (*sw_frame).width as u32;
     let src_h = (*sw_frame).height as u32;
@@ -1099,6 +1103,45 @@ unsafe fn download_hw_frame(
         (t_start.elapsed() - t_transfer).as_secs_f64() * 1000.0,
     );
     Some(out)
+}
+
+/// A software Y'CbCr frame as RGBA64 at `target_w`×`target_h` by Klipp's
+/// converter (`klipp_color::camera_log::yuv_to_display_rgba64`), the
+/// chroma reconstruction the viewer's decoders use, then shrunk or grown
+/// by the CPU twins of the decode shaders' resize, so the export resizes
+/// a software-decoded file as it does a hardware-decoded one. `alpha_from` carries a ProRes 4444 or FFV1 alpha plane
+/// (#3283). `None` when Klipp's reader does not take the format.
+///
+/// SAFETY: `frame` must be a valid software frame.
+unsafe fn klipp_rgba64(
+    frame: *const ffmpeg_next::ffi::AVFrame,
+    alpha_from: Option<&ffmpeg_next::util::frame::Video>,
+    source_cs: klipp_core::SourceColorspace,
+    target_w: u32,
+    target_h: u32,
+) -> Option<Vec<u16>> {
+    let yuv = klipp_media::yuv_samples::read_yuv_samples(frame)?;
+    let samples = yuv.samples();
+    let alpha = alpha_from.and_then(klipp_media::yuv_samples::alpha_plane_u16);
+    let from = (samples.width.max(1), samples.height.max(1));
+    // Smaller on a side: the decode shaders' footprint average, so the
+    // export shrinks a software-decoded file as it shrinks a hardware-
+    // decoded one and as the viewer does.
+    if klipp_color::camera_log::resize_averages(from, (target_w, target_h)) {
+        return Some(klipp_color::camera_log::yuv_to_display_rgba64_downscaled(&samples, source_cs, alpha.as_deref(), target_w, target_h));
+    }
+    let mut rgba = klipp_color::camera_log::yuv_to_display_rgba64(&samples, source_cs);
+    if let Some(alpha) = alpha {
+        for (px, a) in rgba.chunks_exact_mut(4).zip(alpha) {
+            px[3] = a;
+        }
+    }
+    if from == (target_w, target_h) {
+        return Some(rgba);
+    }
+    // Larger: the shaders' Lanczos-3 on the encoded values. swscale
+    // growing RGBA64 put a wobble of a few codes into flat areas.
+    Some(klipp_color::camera_log::lanczos_upscale_rgba64(&rgba, from, (target_w, target_h)))
 }
 
 /// RGBA64LE rows (`stride` bytes apart) → packed `u16` samples.

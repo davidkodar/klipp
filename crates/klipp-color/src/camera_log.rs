@@ -891,20 +891,7 @@ pub fn yuv_to_linear_display(
 
     let (src_w, src_h) = (s.width.max(1), s.height.max(1));
     let (dst_w, dst_h) = (dst_w.max(1), dst_h.max(1));
-    let (cw, ch) = (s.chroma_width() as usize, s.chroma_height() as usize);
-
-    // Range constants, general over bit depth. Limited range is 16/219
-    // luma and 128/224 chroma *scaled* to the depth, which is what the
-    // 10-bit converter's 64/876/512/896 are at four times 8-bit.
-    let max = ((1u32 << s.bit_depth) - 1) as f32;
-    let (y_off, y_inv, uv_off, uv_inv) = match cs.range {
-        ColorRange::Limited => {
-            let k = (max + 1.0) / 256.0;
-            (16.0 * k, 1.0 / (219.0 * k), 128.0 * k, 1.0 / (224.0 * k))
-        }
-        ColorRange::Full => (0.0, 1.0 / max, max * 0.5 + 0.5, 1.0 / max),
-    };
-    let (cv_r, cu_b, cu_g, cv_g) = matrix_coefficients(cs.matrix);
+    let signal = DisplaySignal::new(s, cs);
     let eotf = EotfLut::new(cs.transfer);
     let pm = primaries_to_working_matrix(cs.primaries, ws);
     let identity = matches!(ws, WorkingColorspace::Rec709Linear)
@@ -939,22 +926,8 @@ pub fn yuv_to_linear_display(
                     (sx.min(src_w - 1)) as usize,
                     (sy.min(src_h - 1)) as usize,
                 );
-                let (x0, x1, tx) = chroma_taps(sx, s.chroma_shift_w, cw, ChromaAxis::CoSited);
-                let (y0, y1, ty) = chroma_taps(sy, s.chroma_shift_h, ch, ChromaAxis::Between);
-                let lerp2 = |p: &[u16]| {
-                    let at = |x: usize, yy: usize| p[yy * cw + x] as f32;
-                    let top = at(x0, y0) + (at(x1, y0) - at(x0, y0)) * tx;
-                    let bot = at(x0, y1) + (at(x1, y1) - at(x0, y1)) * tx;
-                    top + (bot - top) * ty
-                };
-                let yv = (s.y[sy * src_w as usize + sx] as f32 - y_off) * y_inv;
-                let u = (lerp2(s.u) - uv_off) * uv_inv;
-                let v = (lerp2(s.v) - uv_off) * uv_inv;
-                let (r, g, b) = (
-                    eotf.lookup(yv + cv_r * v),
-                    eotf.lookup(yv + cu_g * u + cv_g * v),
-                    eotf.lookup(yv + cu_b * u),
-                );
+                let [r, g, b] = signal.at(s, sx, sy);
+                let (r, g, b) = (eotf.lookup(r), eotf.lookup(g), eotf.lookup(b));
                 let (r, g, b) = if identity {
                     (r, g, b)
                 } else {
@@ -971,6 +944,226 @@ pub fn yuv_to_linear_display(
                 row[o + 3] = 1.0;
             }
         });
+    out
+}
+
+/// A Y'CbCr source pixel's display signal, R'G'B' 0 to 1 before any
+/// transfer: chroma reconstructed by [`chroma_taps`], the range and the
+/// matrix applied. The one arithmetic [`yuv_to_linear_display`] and
+/// [`yuv_to_display_rgba64`] share, so the viewer's software decode and
+/// the export's read a file's colour the same way (#3266).
+struct DisplaySignal {
+    cw: usize,
+    ch: usize,
+    y_off: f32,
+    y_inv: f32,
+    uv_off: f32,
+    uv_inv: f32,
+    coefficients: (f32, f32, f32, f32),
+}
+
+impl DisplaySignal {
+    fn new(s: &crate::hdr::YuvSamples, cs: SourceColorspace) -> Self {
+        // Range constants, general over bit depth. Limited range is 16/219
+        // luma and 128/224 chroma *scaled* to the depth, which is what the
+        // 10-bit converter's 64/876/512/896 are at four times 8-bit.
+        let max = ((1u32 << s.bit_depth) - 1) as f32;
+        let (y_off, y_inv, uv_off, uv_inv) = match cs.range {
+            ColorRange::Limited => {
+                let k = (max + 1.0) / 256.0;
+                (16.0 * k, 1.0 / (219.0 * k), 128.0 * k, 1.0 / (224.0 * k))
+            }
+            ColorRange::Full => (0.0, 1.0 / max, max * 0.5 + 0.5, 1.0 / max),
+        };
+        Self {
+            cw: s.chroma_width() as usize,
+            ch: s.chroma_height() as usize,
+            y_off,
+            y_inv,
+            uv_off,
+            uv_inv,
+            coefficients: matrix_coefficients(cs.matrix),
+        }
+    }
+
+    #[inline]
+    fn at(&self, s: &crate::hdr::YuvSamples, sx: usize, sy: usize) -> [f32; 3] {
+        let cw = self.cw;
+        let (x0, x1, tx) = chroma_taps(sx, s.chroma_shift_w, cw, ChromaAxis::CoSited);
+        let (y0, y1, ty) = chroma_taps(sy, s.chroma_shift_h, self.ch, ChromaAxis::Between);
+        let lerp2 = |p: &[u16]| {
+            let at = |x: usize, yy: usize| p[yy * cw + x] as f32;
+            let top = at(x0, y0) + (at(x1, y0) - at(x0, y0)) * tx;
+            let bot = at(x0, y1) + (at(x1, y1) - at(x0, y1)) * tx;
+            top + (bot - top) * ty
+        };
+        let (cv_r, cu_b, cu_g, cv_g) = self.coefficients;
+        let yv = (s.y[sy * s.width.max(1) as usize + sx] as f32 - self.y_off) * self.y_inv;
+        let u = (lerp2(s.u) - self.uv_off) * self.uv_inv;
+        let v = (lerp2(s.v) - self.uv_off) * self.uv_inv;
+        [yv + cv_r * v, yv + cu_g * u + cv_g * v, yv + cu_b * u]
+    }
+}
+
+/// Y'CbCr → display-encoded RGBA64 at the source's own size, as swscale's
+/// RGBA64LE output lays it out (opaque; the caller keeps an alpha plane):
+/// what the export's software decode hands on to its resize, rotation and
+/// `klipp_render`'s `rgba64_to_linear`. Chroma is reconstructed as
+/// the viewer's decoders reconstruct it, which swscale cannot be told to
+/// do (#3266). Rows in parallel, as [`yuv_to_linear_display`].
+pub fn yuv_to_display_rgba64(s: &crate::hdr::YuvSamples, cs: SourceColorspace) -> Vec<u16> {
+    use rayon::prelude::*;
+
+    let (w, h) = (s.width.max(1) as usize, s.height.max(1) as usize);
+    let signal = DisplaySignal::new(s, cs);
+    let mut out = vec![0u16; w * h * 4];
+    out.par_chunks_exact_mut(w * 4).enumerate().for_each(|(sy, row)| {
+        let sy = sy.min(h - 1);
+        for sx in 0..w {
+            let rgb = signal.at(s, sx, sy);
+            let o = sx * 4;
+            for (c, v) in rgb.iter().enumerate() {
+                row[o + c] = (v.clamp(0.0, 1.0) * 65535.0 + 0.5) as u16;
+            }
+            row[o + 3] = u16::MAX;
+        }
+    });
+    out
+}
+
+/// The source pixels a downscale averages for output pixel `d` of `dst`
+/// on an axis of `src`: the CPU twin of `resize_body.wgsl`'s
+/// `resize_footprint`, `resize_samples` and `resize_tap`, in the same f32
+/// arithmetic, so the two take the same pixels, at most 8 a side.
+#[inline]
+fn footprint_taps(d: u32, dst: u32, src: u32) -> impl Iterator<Item = usize> {
+    let span = src as f32 / dst as f32;
+    let x0 = d as f32 * span;
+    let n = ((span - 0.001).ceil() as u32).clamp(1, 8);
+    (0..n).map(move |i| ((x0 + (i as f32 + 0.5) / n as f32 * span) as u32).min(src - 1) as usize)
+}
+
+/// Whether a resize from `src` to `dst` averages on either side, as the
+/// decode shaders decide it: more than one sample across a footprint.
+pub fn resize_averages(src: (u32, u32), dst: (u32, u32)) -> bool {
+    let n = |s: u32, d: u32| ((s as f32 / d.max(1) as f32 - 0.001).ceil() as u32).clamp(1, 8);
+    n(src.0, dst.0) > 1 || n(src.1, dst.1) > 1
+}
+
+/// Y'CbCr → display-encoded RGBA64 at a smaller `dst_w`×`dst_h`: the CPU
+/// twin of the decode shaders' downscale (#744, `resize_body.wgsl`), for
+/// the export's software decode (#3266). Each output pixel is the mean,
+/// in linear light, of the grid of samples the shader spreads over its
+/// footprint, then encoded back for the RGBA64 hand-off. A sample is
+/// quantised to 16 bits and decoded with `srgb_to_linear`, as that
+/// hand-off decodes the export's frames, so a pixel averaged over one
+/// sample is the same-size path's pixel. `alpha` is the file's alpha
+/// plane at its own size (16-bit), averaged the same way; without one the
+/// frame is opaque. Rows in parallel.
+pub fn yuv_to_display_rgba64_downscaled(s: &crate::hdr::YuvSamples, cs: SourceColorspace, alpha: Option<&[u16]>, dst_w: u32, dst_h: u32) -> Vec<u16> {
+    use rayon::prelude::*;
+
+    let (src_w, src_h) = (s.width.max(1), s.height.max(1));
+    let (dst_w, dst_h) = (dst_w.max(1), dst_h.max(1));
+    let signal = DisplaySignal::new(s, cs);
+    let code = |v: f32| (v.clamp(0.0, 1.0) * 65535.0 + 0.5) as u16;
+    // Each 16-bit code's linear value, `srgb_to_linear` of it: the same
+    // numbers, looked up rather than worked out 25 million times a 4K
+    // frame.
+    static DECODE: std::sync::OnceLock<Vec<f32>> = std::sync::OnceLock::new();
+    let table = DECODE.get_or_init(|| (0..=u16::MAX).map(|c| crate::transfer::srgb_to_linear(c as f32 / 65535.0)).collect());
+    let linear = |v: f32| table[code(v) as usize];
+    let cols: Vec<Vec<usize>> = (0..dst_w).map(|dx| footprint_taps(dx, dst_w, src_w).collect()).collect();
+    let mut out = vec![0u16; dst_w as usize * dst_h as usize * 4];
+    out.par_chunks_exact_mut(dst_w as usize * 4).enumerate().for_each(|(dy, row)| {
+        let rows: Vec<usize> = footprint_taps(dy as u32, dst_h, src_h).collect();
+        for (dx, xs) in cols.iter().enumerate() {
+            let (mut acc, mut a) = ([0.0f32; 3], 0.0f32);
+            for &sy in &rows {
+                for &sx in xs {
+                    let rgb = signal.at(s, sx, sy);
+                    for c in 0..3 {
+                        acc[c] += linear(rgb[c]);
+                    }
+                    a += alpha.map_or(1.0, |p| p[sy * src_w as usize + sx] as f32 / 65535.0);
+                }
+            }
+            let n = (rows.len() * xs.len()) as f32;
+            let o = dx * 4;
+            for c in 0..3 {
+                row[o + c] = code(crate::transfer::linear_to_srgb(acc[c] / n));
+            }
+            row[o + 3] = code(a / n);
+        }
+    });
+    out
+}
+
+/// Lanczos-3 at distance `x`, as `resize_body.wgsl`'s `lanczos3`.
+#[inline]
+fn lanczos3(x: f32) -> f32 {
+    let ax = x.abs();
+    if ax < 0.00001 {
+        return 1.0;
+    }
+    if ax >= 3.0 {
+        return 0.0;
+    }
+    let px = std::f32::consts::PI * ax;
+    3.0 * px.sin() * (px / 3.0).sin() / (px * px)
+}
+
+/// The six source pixels round output pixel `d`'s centre on an upscaled
+/// axis and their normalised Lanczos-3 weights, as the shader's
+/// `resize_lanczos` takes them.
+fn lanczos_taps(d: u32, dst: u32, src: u32) -> [(usize, f32); 6] {
+    let span = src as f32 / dst as f32;
+    let c = d as f32 * span + span * 0.5 - 0.5;
+    let i0 = c.floor() as i32;
+    let mut taps = [(0usize, 0.0f32); 6];
+    let mut total = 0.0;
+    for (k, t) in taps.iter_mut().enumerate() {
+        let i = i0 + k as i32 - 2;
+        let w = lanczos3(c - i as f32);
+        *t = (i.clamp(0, src as i32 - 1) as usize, w);
+        total += w;
+    }
+    for t in &mut taps {
+        t.1 /= total;
+    }
+    taps
+}
+
+/// Display-encoded RGBA64 grown to `dst`: the CPU twin of the decode
+/// shaders' upscale (#2557, `resize_body.wgsl`'s `resize_lanczos`),
+/// Lanczos-3 over the 6×6 source pixels round each output pixel's centre,
+/// normalised, on the encoded values, the ringing held to the encoded
+/// range (#3266). Done in two passes, which is the shader's product of
+/// weights to rounding; rows in parallel. Alpha is filtered alike.
+pub fn lanczos_upscale_rgba64(rgba: &[u16], src: (u32, u32), dst: (u32, u32)) -> Vec<u16> {
+    use rayon::prelude::*;
+
+    let (sw, sh) = (src.0.max(1), src.1.max(1));
+    let (dw, dh) = (dst.0.max(1), dst.1.max(1));
+    let cols: Vec<[(usize, f32); 6]> = (0..dw).map(|dx| lanczos_taps(dx, dw, sw)).collect();
+    // Across first: each source row at the output width, unclamped.
+    let mut across = vec![0.0f32; sh as usize * dw as usize * 4];
+    across.par_chunks_exact_mut(dw as usize * 4).enumerate().for_each(|(sy, row)| {
+        let src_row = &rgba[sy * sw as usize * 4..(sy + 1) * sw as usize * 4];
+        for (dx, taps) in cols.iter().enumerate() {
+            for c in 0..4 {
+                row[dx * 4 + c] = taps.iter().map(|&(x, w)| src_row[x * 4 + c] as f32 * w).sum();
+            }
+        }
+    });
+    let mut out = vec![0u16; dw as usize * dh as usize * 4];
+    out.par_chunks_exact_mut(dw as usize * 4).enumerate().for_each(|(dy, row)| {
+        let taps = lanczos_taps(dy as u32, dh, sh);
+        for (i, v) in row.iter_mut().enumerate() {
+            let sum: f32 = taps.iter().map(|&(y, w)| across[y * dw as usize * 4 + i] * w).sum();
+            *v = (sum / 65535.0).clamp(0.0, 1.0).mul_add(65535.0, 0.5) as u16;
+        }
+    });
     out
 }
 
