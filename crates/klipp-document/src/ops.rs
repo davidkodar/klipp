@@ -1231,6 +1231,15 @@ pub enum Op {
         #[serde(skip)]
         composition: Option<Box<PlacedComposition>>,
     },
+    /// A placed title template's fields (#3249), by label as the template
+    /// op takes them (its texts, colours such as Accent, fonts, pictures,
+    /// Speed, Size, Duration): set as the inspector's template fields set
+    /// them, one undo step. An unknown field, a value of the wrong kind or
+    /// out of its range is refused.
+    TitleFields {
+        clip_id: ClipRef,
+        fields: std::collections::BTreeMap<String, serde_json::Value>,
+    },
     /// A placed template's macro control (#2757): `control` (by name or
     /// label) set to `value`; or one `target` it drives (`object:<i>.<number>`)
     /// unlinked (keeping its value), relinked (from where it is, nothing
@@ -2580,7 +2589,7 @@ pub const OP_NAMES: &[&str] = &[
     "slip", "slide", "pin", "role", "match", "matte", "format", "stabilize", "reframe", "zoom", "pan", "follow", "refit", "highlight",
     "ramp", "freeze", "grade_group", "remove_grade_group", "look", "qualify", "zones", "retime", "mark", "stretch", "replace", "alternatives", "track_audio", "clip_audio", "clean_audio",
     "transition", "style", "title", "compose", "camera", "crop", "generator", "depth", "label", "motion_blur",
-    "strobe", "remove_silences", "auto_colour", "set_length", "over_edits", "template", "template_link", "recipe", "edit_from_selects", "opacity_mask",
+    "strobe", "remove_silences", "auto_colour", "set_length", "over_edits", "template", "title_fields", "template_link", "recipe", "edit_from_selects", "opacity_mask",
 ];
 
 pub use klipp_timeline::ShadowSpec;
@@ -4501,23 +4510,7 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             let td = data.as_deref().cloned().ok_or_else(|| refuse(i, format!("there is no title template \"{name}\""), "title_templates lists the built-in and saved templates"))?;
             // A built-in laid out for the sequence's frame (#2734).
             let mut td = klipp_timeline::title_library::for_frame(td, seq.resolution.width, seq.resolution.height);
-            for (label, v) in fields {
-                let Some(index) = td.field_named(label) else {
-                    let labels: Vec<String> = td.live_fields().into_iter().map(|(_, f, _)| f.label.clone()).collect();
-                    return Err(refuse(i, format!("\"{name}\" has no field \"{label}\""), format!("its fields are {}", labels.join(", "))));
-                };
-                let value = match (td.field_value(index), v) {
-                    (Some(V::Text(_)), serde_json::Value::String(s)) => V::Text(s.clone()),
-                    (Some(V::Colour(_)), serde_json::Value::String(s)) => V::Colour(parse_color(s).ok_or_else(|| refuse(i, format!("\"{s}\" is not a colour"), "write a colour as #rrggbb or #rrggbbaa"))?),
-                    (Some(V::Speed(_)), serde_json::Value::Number(n)) => V::Speed(n.as_f64().unwrap_or(1.0) as f32),
-                    (Some(V::Size(_)), serde_json::Value::Number(n)) => V::Size(n.as_f64().unwrap_or(1.0) as f32),
-                    (Some(V::Font(_)), serde_json::Value::String(s)) => V::Font(s.clone()),
-                    (Some(V::Duration(_)), serde_json::Value::Number(n)) => V::Duration(n.as_f64().unwrap_or(1.0) as f32),
-                    (Some(V::Picture(_)), serde_json::Value::String(s)) => V::Picture(s.clone()),
-                    _ => return Err(refuse(i, format!("\"{label}\" can't take {v}"), "give a text, font or picture as words, a colour as #rrggbb, the speed, size and duration (seconds) as numbers")),
-                };
-                td.set_field(index, &value).map_err(|e| refuse(i, e, "title_templates lists each template's fields"))?;
-            }
+            set_title_fields(&mut td, &quoted(name), fields, i)?;
             if !held.is_finite() || *held < 0.2 {
                 return Err(refuse(i, format!("{held} s is too short"), "hold it at least a fraction of a second"));
             }
@@ -4544,6 +4537,23 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
         Op::SetText { clip_id, text } => {
             let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
             set_text(seq, pool, i, ti, clip, text)
+        }
+        Op::TitleFields { clip_id, fields } => {
+            let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
+            let Some(old) = clip.title_data() else {
+                return Err(refuse(i, format!("{} is not a title", clip_name(seq, pool, clip)), "name a placed title template's clip"));
+            };
+            if seq.tracks[ti].locked {
+                return Err(refuse(i, format!("track {ti} is locked"), "unlock it first"));
+            }
+            if fields.is_empty() {
+                return Err(refuse(i, "no fields to set", "give fields by label, as title_templates lists them"));
+            }
+            let name = clip_name(seq, pool, clip);
+            let mut new = old.clone();
+            set_title_fields(&mut new, &name, fields, i)?;
+            let what = format!("{name}: {} set", fields.keys().map(|k| quoted(k)).collect::<Vec<_>>().join(", "));
+            Ok((what, EditCommand::EditTitle { clip_id: clip.id, description: "Edit Template Fields", old_data: old.clone(), new_data: new }, vec![clip.id]))
         }
         Op::TemplateLink { clip_id, control, target, action, value } => {
             let (_, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
@@ -7547,6 +7557,41 @@ fn place_composition(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, at: T
 
 /// New words for a title or a caption: the clip's first text box takes
 /// them, and nothing else about it changes.
+/// `fields` set on the title `td` (`who` in a refusal) by label, as
+/// the template op places a template and `title_fields` edits a placed
+/// one (#3249), through the field setter the inspector uses: each value
+/// read as its field's kind, Speed, Size and Duration held to their
+/// ranges, refused rather than clamped.
+fn set_title_fields(td: &mut klipp_timeline::TitleData, who: &str, fields: &std::collections::BTreeMap<String, serde_json::Value>, i: usize) -> Result<(), Refusal> {
+    use klipp_core::TitleFieldValue as V;
+    let number = |label: &str, n: &serde_json::Number, range: std::ops::RangeInclusive<f32>, what: &str| -> Result<f32, Refusal> {
+        let v = n.as_f64().unwrap_or(f64::NAN) as f32;
+        if range.contains(&v) {
+            Ok(v)
+        } else {
+            Err(refuse(i, format!("\"{label}\" {v} is out of range"), format!("{what} runs {} to {}", range.start(), range.end())))
+        }
+    };
+    for (label, v) in fields {
+        let Some(index) = td.field_named(label) else {
+            let labels: Vec<String> = td.live_fields().into_iter().map(|(_, f, _)| f.label.clone()).collect();
+            return Err(refuse(i, format!("{who} has no field \"{label}\""), format!("its fields are {}", labels.join(", "))));
+        };
+        let value = match (td.field_value(index), v) {
+            (Some(V::Text(_)), serde_json::Value::String(s)) => V::Text(s.clone()),
+            (Some(V::Colour(_)), serde_json::Value::String(s)) => V::Colour(parse_color(s).ok_or_else(|| refuse(i, format!("\"{s}\" is not a colour"), "write a colour as #rrggbb or #rrggbbaa"))?),
+            (Some(V::Speed(_)), serde_json::Value::Number(n)) => V::Speed(number(label, n, klipp_timeline::TITLE_SPEED_RANGE, "speed")?),
+            (Some(V::Size(_)), serde_json::Value::Number(n)) => V::Size(number(label, n, klipp_timeline::TITLE_SIZE_RANGE, "size")?),
+            (Some(V::Font(_)), serde_json::Value::String(s)) => V::Font(s.clone()),
+            (Some(V::Duration(_)), serde_json::Value::Number(n)) => V::Duration(number(label, n, klipp_timeline::TITLE_DURATION_RANGE, "a duration, in seconds,")?),
+            (Some(V::Picture(_)), serde_json::Value::String(s)) => V::Picture(s.clone()),
+            _ => return Err(refuse(i, format!("\"{label}\" can't take {v}"), "give a text, font or picture as words, a colour as #rrggbb, the speed, size and duration (seconds) as numbers")),
+        };
+        td.set_field(index, &value).map_err(|e| refuse(i, e, "title_templates lists each template's fields"))?;
+    }
+    Ok(())
+}
+
 fn set_text(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, text: &str) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
     let Some(old) = clip.title_data() else {
         return Err(refuse(i, format!("{} is not a title or a caption", clip_name(seq, pool, clip)), "name a clip on a text or subtitle track"));
@@ -14565,6 +14610,37 @@ mod tests {
         // Asking one secondary for both is refused with what to do.
         let err = resolve(&seq, &pool, &[op(Some(20.0), Some(0.8))]).unwrap_err();
         assert!(format!("{err:?}").contains("either turns the hue"), "{err:?}");
+    }
+
+    /// #3249: a placed title template's fields set by label, as the
+    /// template op sets them, one undo step back to the title as placed;
+    /// an unknown field, a value of the wrong kind or out of range, no
+    /// fields, or a clip that isn't a title is refused.
+    #[test]
+    fn title_fields_edits_a_placed_templates_fields() {
+        use klipp_core::TitleFieldValue as V;
+        let (mut seq, pool, ..) = fixture();
+        let mut td = klipp_timeline::TitleData::single_text(klipp_timeline::TextBox { text: "Label".into(), ..Default::default() });
+        td.objects[0].fx_mut().motion.enter = Some(klipp_core::title_motion::Motion::new(klipp_core::title_motion::MotionKind::Rise).duration(0.6));
+        td.published = td.default_fields();
+        let clip = Clip { kind: ClipKind::Title(td.clone()), ..Clip::gap(RationalTime::from_secs_f64(0.0, 24), RationalTime::from_secs_f64(2.0, 24)) };
+        let id = clip.id;
+        let mut track = klipp_timeline::Track::new("T1", klipp_timeline::TrackKind::Text);
+        track.clips = vec![clip];
+        seq.tracks.push(track);
+        let op = |fields: serde_json::Value| Op::TitleFields { clip_id: ClipRef::Id(id), fields: serde_json::from_value(fields).unwrap() };
+        let plan = resolve(&seq, &pool, &[op(serde_json::json!({ "text 1 colour": "#3366ff", "Speed": 0.5 }))]).unwrap();
+        let EditCommand::EditTitle { old_data, new_data, .. } = &plan.steps[0].edit else { panic!("one title edit: {:?}", plan.steps[0].edit) };
+        assert_eq!((new_data.field_value(1), new_data.field_value(2)), (Some(V::Colour([0x33, 0x66, 0xff, 255])), Some(V::Speed(0.5))));
+        assert_eq!(old_data, &td, "undone, the title as placed");
+        let why = |fields: serde_json::Value| resolve(&seq, &pool, &[op(fields)]).unwrap_err().to_string();
+        assert!(why(serde_json::json!({ "Accent": "#ffffff" })).contains("its fields are Text 1, Text 1 colour, Speed"));
+        assert!(why(serde_json::json!({ "Speed": "fast" })).contains("can't take"));
+        assert!(why(serde_json::json!({ "Speed": 9.0 })).contains("out of range"), "a speed of 9, refused, not clamped");
+        assert!(why(serde_json::json!({})).contains("no fields"));
+        let media = seq.tracks.iter().flat_map(|t| &t.clips).find(|c| matches!(c.kind, ClipKind::Media { .. })).unwrap().id;
+        let not = Op::TitleFields { clip_id: ClipRef::Id(media), fields: serde_json::from_value(serde_json::json!({ "Speed": 1.0 })).unwrap() };
+        assert!(resolve(&seq, &pool, &[not]).unwrap_err().to_string().contains("is not a title"));
     }
 
     /// A saved template placed by the template op (#1139): its fields set
