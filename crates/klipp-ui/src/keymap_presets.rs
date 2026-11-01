@@ -712,6 +712,7 @@ pub(crate) const FINAL_CUT: &[(&str, &[&str])] = &[
     ("clear_in_out", &["Alt+X"]), // Clear Selected Ranges
     ("clear_in_point", &["Alt+I"]), // Clear Range Start
     ("clear_out_point", &["Alt+O"]), // Clear Range End
+    ("create_audition", &["Ctrl+Y"]), // Create Audition
     ("copy_clip", &["Ctrl+C"]), // Copy
     ("create_title", &[]), // Connect Default Title
     ("cut_clip", &["Ctrl+X"]), // Cut
@@ -796,6 +797,9 @@ pub(crate) const FINAL_CUT: &[(&str, &[&str])] = &[
     ("undo", &["Ctrl+Z"]), // Undo Change
     ("zoom_in", &["Ctrl+="]), // Zoom In
     ("zoom_out", &["Ctrl+-"]), // Zoom Out
+    ("duplicate_as_audition", &["Alt+Y"]), // Audition: Duplicate as Audition
+    ("finalize_audition", &["Shift+Alt+Y"]), // Finalize Audition
+    ("open_audition", &["Y"]), // Open Audition
 ];
 
 /// Final Cut Pro's keys for commands Klipp lacks.
@@ -834,7 +838,6 @@ pub(crate) const FINAL_CUT_TAKEN: &[&str] = &[
     "Alt+U", // Show/Hide 2-Up When Trimming
     "Alt+V", // Paste as Connected
     "Alt+W", // Insert Gap
-    "Alt+Y", // Audition: Duplicate as Audition
     "Alt+\\", // Trim to Selection
     "C", // Select Clip
     "Ctrl+1", // Go to Browser
@@ -908,7 +911,6 @@ pub(crate) const FINAL_CUT_TAKEN: &[&str] = &[
     "Ctrl+Shift+S", // Subtitles
     "Ctrl+Shift+X", // Remove Attributes
     "Ctrl+Shift+Y", // Audition: Duplicate from Original
-    "Ctrl+Y", // Create Audition
     "Ctrl+]", // Timeline History Forward
     "Ctrl+`", // Show/Hide Sidebar
     "E", // Append to Storyline
@@ -938,7 +940,6 @@ pub(crate) const FINAL_CUT_TAKEN: &[&str] = &[
     "Shift+Alt+Tab", // Previous Text
     "Shift+Alt+V", // Paste Keyframes
     "Shift+Alt+X", // Cut Keyframes
-    "Shift+Alt+Y", // Finalize Audition
     "Shift+Alt+Z", // Vertical Zoom to Fit
     "Shift+ArrowDown", // Extend Selection Down
     "Shift+ArrowLeft", // Go Back 10 Frames
@@ -961,7 +962,6 @@ pub(crate) const FINAL_CUT_TAKEN: &[&str] = &[
     "Shift+]", // Select Right Audio Edge
     "U", // Unrate
     "V", // Enable/Disable Clip
-    "Y", // Open Audition
     "Z", // Zoom Tool
     "[", // Select Left Edge
     "]", // Select Right Edge

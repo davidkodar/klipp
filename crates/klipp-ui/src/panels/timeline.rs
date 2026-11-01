@@ -3228,7 +3228,19 @@ impl TimelinePanel {
                         let drop_mode = state.sequence().tracks.get(track_idx).map_or(state.edit_mode, |t| {
                             crate::app::placement::media_drop_mode(t, at, state.edit_mode, ui.input(|i| i.modifiers.command))
                         });
-                        if group.len() == 1 {
+                        // Alt held over a clip: the files go into it as takes
+                        // (#3209), not onto the track.
+                        let audition = ui.input(|i| i.modifiers.alt).then(|| state.sequence().tracks.get(track_idx).and_then(|t| crate::auditions::drop_target(t, secs))).flatten();
+                        if let Some(target) = audition {
+                            let r = state.sequence().tracks[track_idx].clips.iter().find(|c| c.id == target).map(|c| {
+                                let x = |t: Timecode| content_rect.left() + t.to_secs_f64() as f32 * state.timeline_zoom - state.timeline_scroll_x;
+                                egui::Rect::from_x_y_ranges(x(c.timeline_in)..=x(c.timeline_out), track_rect.y_range())
+                            });
+                            if let Some(r) = r {
+                                painter.rect_stroke(r, 2.0, egui::Stroke::new(2.0_f32, tt.accent));
+                                painter.text(egui::pos2(r.left() + 4.0, track_rect.top() + 2.0), egui::Align2::LEFT_TOP, "Add to Audition", egui::FontId::proportional(11.0), tt.accent);
+                            }
+                        } else if group.len() == 1 {
                             let x = content_rect.left() + at.to_secs_f64() as f32 * state.timeline_zoom - state.timeline_scroll_x;
                             painter.vline(x, track_rect.y_range(), egui::Stroke::new(2.0_f32, tt.marker_info));
                             let hint = match drop_mode {
@@ -3242,7 +3254,9 @@ impl TimelinePanel {
                             state.dragging_media = None;
                             state.dragging_media_group.clear();
                             tracing::info!("Media drop: {} item(s) ({:?}) -> track {} ({}) at {:.3}s", group.len(), drag_media_id, track_idx, track_name, at.to_secs_f64());
-                            if group.len() == 1 {
+                            if let Some(clip_id) = audition {
+                                cmds.push(AppCommand::EditAudition { clip_id, edit: klipp_core::AuditionEdit::AddMedia { media_ids: group } });
+                            } else if group.len() == 1 {
                                 cmds.push(media_drop_command(drag_media_id, track_idx, at, drop_mode));
                             } else {
                                 cmds.push(AppCommand::AppendMediaBatchToTrack {
@@ -6272,7 +6286,7 @@ impl TimelinePanel {
                 if max_text_width > 10.0 {
                     let text_pos = egui::pos2(clip_rect.left() + 22.0, clip_rect.center().y);
                     let text = title_data.text();
-                    let truncated = truncate_text(clip.label(&text), max_text_width, font_size);
+                    let truncated = truncate_text(&crate::auditions::label_with_take(clip, clip.label(&text)), max_text_width, font_size);
                     let font = egui::FontId::proportional(font_size);
                     let shadow_color = egui::Color32::from_rgba_premultiplied(0, 0, 0, 200);
                     for &(dx, dy) in &[(-1.0f32, 0.0f32), (1.0, 0.0), (0.0, -1.0), (0.0, 1.0)] {
@@ -6295,7 +6309,8 @@ impl TimelinePanel {
             } else if let Some(media) = clip.media_id().and_then(|mid| state.media_pool.get(&mid)) {
                 let is_audio_clip = matches!(track_kind, TrackKind::Audio);
                 let font_size = if is_audio_clip { 10.0 } else { 11.0 };
-                let name = clip.label(&media.filename);
+                // An audition's take in the slot named after it (#3209).
+                let name = crate::auditions::label_with_take(clip, clip.label(&media.filename));
                 let label = if is_offline {
                     format!("\u{26A0} offline: {name}")
                 } else {
@@ -6443,6 +6458,9 @@ impl TimelinePanel {
             painter.circle_filled(dot_pos, 3.5, egui::Color32::from_rgba_unmultiplied(0, 0, 0, 120));
             painter.circle_filled(dot_pos, 2.5, tt.accent);
         }
+
+        // An audition's badge, its count of takes (#3209) — top-left.
+        crate::auditions::draw_badge(painter, clip, clip_rect, tt.accent, tt.text_on_accent);
 
         // Group badge [G] — bottom-left
         if clip.group_id.is_some() && clip_rect.width() > 30.0 {
@@ -8493,8 +8511,8 @@ impl TimelinePanel {
             }
         }
 
-        // Double-click: open compound clips, and open a multicam clip in
-        // multicam mode (#1844).
+        // Double-click: open an audition's takes (#3209), compound clips,
+        // and open a multicam clip in multicam mode (#1844).
         if track_response.double_clicked() {
             if let Some(pos) = track_response.interact_pointer_pos {
                 let dbl_hit: Option<(klipp_core::ClipId, bool, bool)> = {
@@ -8502,8 +8520,12 @@ impl TimelinePanel {
                     self.hit_test_clip_body(clips_slice, content_rect, track_rect, zoom, scroll, track_height, pos)
                         .map(|(_, hit_clip)| (hit_clip.id, matches!(hit_clip.kind, klipp_timeline::ClipKind::Sequence { .. }), hit_clip.multicam_group.is_some()))
                 };
+                let is_audition = dbl_hit.and_then(|(id, ..)| state.sequence().all_clips().find(|c| c.id == id)).is_some_and(|c| c.audition.is_some());
                 if let Some((hit_clip_id, is_seq, is_multicam)) = dbl_hit {
-                    if is_seq {
+                    // An audition opens its takes (#3209).
+                    if is_audition {
+                        cmds.push(AppCommand::OpenAuditionPicker { clip_id: Some(hit_clip_id) });
+                    } else if is_seq {
                         cmds.push(AppCommand::OpenCompoundClip { clip_id: hit_clip_id });
                     } else if is_multicam {
                         cmds.push(AppCommand::SetMulticamMode { on: true, open: Some(hit_clip_id) });
@@ -9439,6 +9461,47 @@ impl TimelinePanel {
                     if has_multi_for_compound && ui.button("Save as Template\u{2026}").on_hover_text("Save these clips as a template: placed as one clip, its texts, colours and media changeable").clicked() {
                         cmds.push(AppCommand::SaveSelectionAsTemplate);
                         ui.close_menu();
+                    }
+                    // Auditions (#3209): several takes in this slot.
+                    if crate::auditions::can_hold_takes(&clip) {
+                        ui.menu_rows("Audition", |ui| {
+                            let audition = |edit| AppCommand::EditAudition { clip_id, edit };
+                            if clip.audition.is_none() {
+                                if ui.add(egui::Button::new("Create Audition").shortcut_text(kb.display_for("create_audition"))).on_hover_text("Hold several takes in this slot: this clip, and a copy of it to vary").clicked() {
+                                    cmds.push(audition(klipp_core::AuditionEdit::Create));
+                                    ui.close_menu();
+                                }
+                            } else {
+                                if ui.add(egui::Button::new("Takes\u{2026}").shortcut_text(kb.display_for("open_audition"))).on_hover_text("The takes in this slot: put one in, rename or remove").clicked() {
+                                    cmds.push(AppCommand::OpenAuditionPicker { clip_id: Some(clip_id) });
+                                    ui.close_menu();
+                                }
+                                if ui.add(egui::Button::new("Duplicate as Audition").shortcut_text(kb.display_for("duplicate_as_audition"))).on_hover_text("Add a copy of the take in the slot, to vary").clicked() {
+                                    cmds.push(audition(klipp_core::AuditionEdit::AddCopy));
+                                    ui.close_menu();
+                                }
+                                if ui.add(egui::Button::new("Finalize Audition").shortcut_text(kb.display_for("finalize_audition"))).on_hover_text("Keep the take in the slot as a plain clip and drop the others").clicked() {
+                                    cmds.push(audition(klipp_core::AuditionEdit::Finalize));
+                                    ui.close_menu();
+                                }
+                            }
+                            // A file as a take, from its start, as long as the slot.
+                            ui.menu_rows("Add Take From Bin", |ui| {
+                                let max_h = (ui.ctx().screen_rect().height() * 0.70).max(240.0);
+                                egui::ScrollArea::vertical().id_salt(("audition_from_bin", clip_id.0)).max_height(max_h).show(ui, |ui| {
+                                    let entries: Vec<(klipp_core::MediaId, String)> = state.media_pool.all().map(|m| (m.id, m.filename.clone())).collect();
+                                    if entries.is_empty() {
+                                        ui.label(egui::RichText::new("(no media in bin)").small().italics());
+                                    }
+                                    for (mid, name) in entries {
+                                        if ui.button(name).clicked() {
+                                            cmds.push(audition(klipp_core::AuditionEdit::AddMedia { media_ids: vec![mid] }));
+                                            ui.close_menu();
+                                        }
+                                    }
+                                });
+                            });
+                        });
                     }
                     // Multicam bundles the video clips at the playhead.
                     if is_video_track && ui.button("Create Multicam Clip").clicked() {

@@ -754,6 +754,8 @@ mod menu_smoke_tests {
         shapes: Vec<egui::epaint::ClippedShape>,
         /// The window's height.
         height: f32,
+        /// The keys held down through each frame.
+        modifiers: egui::Modifiers,
     }
 
     impl Timeline {
@@ -768,7 +770,7 @@ mod menu_smoke_tests {
             state.sequences[0].tracks[v1].clips.push(Clip::media(media, zero, long, zero, long));
             let mut old = crate::panels::timeline::TimelinePanel::default();
             old.embedded = true;
-            Self { ctx: egui::Context::default(), state, panel: NewTimelinePanel::default(), old, time: 0.0, sent: Vec::new(), shapes: Vec::new(), height: 600.0 }
+            Self { ctx: egui::Context::default(), state, panel: NewTimelinePanel::default(), old, time: 0.0, sent: Vec::new(), shapes: Vec::new(), height: 600.0, modifiers: egui::Modifiers::NONE }
         }
 
         /// One frame with `events`: the text drawn, with where.
@@ -779,6 +781,7 @@ mod menu_smoke_tests {
                 screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1000.0, self.height))),
                 time: Some(self.time),
                 events,
+                modifiers: self.modifiers,
                 ..Default::default()
             };
             let (theme, kb) = (KlippTheme::default(), crate::keybindings::KeyBindings::default());
@@ -1222,6 +1225,86 @@ mod menu_smoke_tests {
         sent.extend(std::mem::take(&mut timeline.sent));
         let _ = std::fs::remove_dir_all(&dir);
         assert!(sent.iter().any(|c| matches!(c, AppCommand::TrackSubject { clip_id, model, into: Some(klipp_core::SubjectMatteUse::Grade) } if *clip_id == id && model == "subject")), "{sent:?}");
+    }
+
+    /// #3209: a clip's menu makes it an audition; once one, it shows a
+    /// badge with its count of takes and names the take in its slot, its
+    /// menu offers the takes, Duplicate as Audition and Finalize, and a
+    /// double-click opens its takes.
+    #[test]
+    fn a_clips_menu_makes_an_audition_and_the_clip_shows_its_takes() {
+        let mut timeline = Timeline::new();
+        timeline.height = 1400.0;
+        let v1 = timeline.state.sequences[0].tracks.iter().position(|t| matches!(t.kind, TrackKind::Video)).unwrap();
+        let id = timeline.state.sequences[0].tracks[v1].clips[0].id;
+        let drawn = timeline.frame(Vec::new());
+        let at = drawn.into_iter().find(|(t, _)| t == "smoke.mov").expect("the clip is drawn").1;
+        timeline.right_click(at);
+        let drawn = timeline.open_submenus(&["Link & Group", "Audition"]);
+        assert!(!drawn.iter().any(|(t, _)| t.starts_with("Finalize")), "no Finalize on a plain clip");
+        let item = drawn.iter().find(|(t, _)| t == "Create Audition").unwrap_or_else(|| panic!("Create Audition in the menu: {drawn:?}")).1;
+        let sent = timeline.click(item);
+        assert!(sent.iter().any(|c| matches!(c, AppCommand::EditAudition { clip_id, edit: klipp_core::AuditionEdit::Create } if *clip_id == id)), "{sent:?}");
+
+        // As the app applies it.
+        let (edits, _) = crate::auditions::plan(timeline.state.sequence(), &timeline.state.media_pool, id, &klipp_core::AuditionEdit::Create).unwrap();
+        let mut fps = timeline.state.fps;
+        let mut view = klipp_document::apply::DocumentView { sequences: &mut timeline.state.sequences, active: 0, media_pool: &mut timeline.state.media_pool, fps: &mut fps };
+        for e in &edits {
+            view.apply_forward(e);
+        }
+        timeline.frame(Vec::new());
+        let drawn = timeline.frame(Vec::new());
+        assert!(drawn.iter().any(|(t, _)| t == "\u{25B8}2"), "the badge counts two takes: {drawn:?}");
+        let at = drawn.iter().find(|(t, _)| t == "smoke.mov \u{00b7} Take 1").expect("the take in the slot named").1;
+        timeline.right_click(at);
+        let drawn = timeline.open_submenus(&["Link & Group", "Audition"]);
+        let lacking: Vec<&str> = ["Takes\u{2026}", "Duplicate as Audition", "Finalize Audition", "Add Take From Bin"].into_iter().filter(|i| !drawn.iter().any(|(t, _)| t == i)).collect();
+        assert!(lacking.is_empty(), "{lacking:?} in {drawn:?}");
+        timeline.frame(vec![egui::Event::Key { key: egui::Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE }]);
+        timeline.frame(Vec::new());
+        let button = |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+        // Both clicks in one frame: the harness's clock steps past egui's
+        // double-click time between frames.
+        timeline.frame(vec![egui::Event::PointerMoved(at)]);
+        let mut sent = Vec::new();
+        timeline.frame(vec![button(true), button(false), button(true), button(false)]);
+        sent.append(&mut timeline.sent);
+        timeline.frame(Vec::new());
+        sent.append(&mut timeline.sent);
+        assert!(sent.iter().any(|c| matches!(c, AppCommand::OpenAuditionPicker { clip_id: Some(c) } if *c == id)), "a double-click opens its takes: {sent:?}");
+    }
+
+    /// #3209: a pool file let go over a clip with Alt held goes into it as
+    /// a take, not onto the track.
+    #[test]
+    fn an_alt_drop_onto_a_clip_adds_the_file_as_a_take() {
+        let mut timeline = Timeline::new();
+        let media = timeline.state.media_pool.all().next().expect("the clip").id;
+        let v1 = timeline.state.sequences[0].tracks.iter().position(|t| matches!(t.kind, TrackKind::Video)).unwrap();
+        let id = timeline.state.sequences[0].tracks[v1].clips[0].id;
+        timeline.frame(Vec::new());
+        timeline.frame(Vec::new());
+        let rect = timeline.old.frame_cache.track_rects.iter().find(|(i, _, _)| *i == v1).expect("V1 drawn").2;
+        let x = rect.left() + 5.0 * timeline.state.timeline_zoom - timeline.state.timeline_scroll_x;
+        let at = egui::pos2(x, rect.center().y);
+        let start = egui::pos2(x, 590.0);
+        timeline.modifiers = egui::Modifiers::ALT;
+        let mut sent = Vec::new();
+        timeline.frame(vec![egui::Event::PointerMoved(start), egui::Event::PointerButton { pos: start, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::ALT }]);
+        timeline.state.dragging_media = Some(media);
+        sent.append(&mut timeline.sent);
+        let mut hinted = false;
+        for k in 1..=6 {
+            let p = egui::pos2(x, start.y + (at.y - start.y) * k as f32 / 6.0);
+            hinted |= timeline.frame(vec![egui::Event::PointerMoved(p)]).iter().any(|(t, _)| t == "Add to Audition");
+            sent.append(&mut timeline.sent);
+        }
+        timeline.frame(vec![egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::ALT }]);
+        sent.append(&mut timeline.sent);
+        assert!(hinted, "the drop says what it will do");
+        assert!(sent.iter().any(|c| matches!(c, AppCommand::EditAudition { clip_id, edit: klipp_core::AuditionEdit::AddMedia { media_ids } } if *clip_id == id && media_ids == &vec![media])), "{sent:?}");
+        assert!(!sent.iter().any(|c| matches!(c, AppCommand::PlaceMedia { .. })), "not placed on the track: {sent:?}");
     }
 
     /// #73: the same menu offers Cut Out Subject, which asks for the

@@ -95,6 +95,12 @@ Copy effects, colour grades, or transform settings from one clip to others:
 
 Select clips and choose **Timeline → Create Compound Clip**. Double-click a compound clip to edit inside it; **Ctrl+↑** leaves it. Changes inside are reflected everywhere it is used.
 
+## Auditions
+
+An audition holds several takes in one clip's place: other shots, other ranges of a file, or copies of the clip with a different grade, effect or title text. Right-click a clip and choose **Link & Group → Audition → Create Audition**: the clip becomes its first take and a copy of it the second. **Add Take From Bin** adds a file, and a file dragged from the media pool onto a clip with **Alt** held goes into it as a take.
+
+An audition shows its count of takes on a badge, and the name of the take on the timeline after its own. Double-click it, or choose **Link & Group → Audition → Takes…**, to see its takes: click one to put it in, rename them, remove the ones you don't want, or **Finalize** to keep the take on the timeline as a plain clip. On the main storyline the clips after it move to fit a longer or shorter take; elsewhere they move only with Ripple on. Each change is one undo step. The Final Cut Pro keyboard layout gives these its keys (Y, Ctrl+Y, Alt+Y, Shift+Alt+Y); in Klipp's own layout they have none until you set them.
+
 ## Multicam Clips
 
 Select synced angles in the browser and choose **Create Multicam Clip** (Alt+C). Cut between angles with **1**–**9** while playing, or from **Clip → Switch Angle**; **Clip → Multicam Sound** picks where the sound comes from. See [Source Viewer](../ui/source-viewer.md#multicam-angles).

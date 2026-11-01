@@ -1092,6 +1092,10 @@ impl KlippApp {
         if self.state.show_title_find {
             cmds.extend(crate::panels::title_find_dialog::show_title_find_dialog(ctx, &mut self.state));
         }
+        // An audition's takes (#3209).
+        if self.state.audition_picker.is_some() {
+            cmds.extend(crate::auditions::show_picker(ctx, &mut self.state));
+        }
         // Check spelling in titles (#3236).
         if self.state.show_spelling_dialog {
             cmds.extend(crate::panels::spelling_dialog::show_spelling_dialog(ctx, &mut self.state));

@@ -552,6 +552,22 @@ impl KlippApp {
                     cmds.push(AppCommand::DuplicateClip { clip_id });
                 }
             }
+            // Auditions (#3209), on the selected clip.
+            if let Some(clip_id) = self.state.selected_clip {
+                let audition = |edit| AppCommand::EditAudition { clip_id, edit };
+                if kb.is_action_pressed("create_audition", i) {
+                    cmds.push(audition(klipp_core::AuditionEdit::Create));
+                }
+                if kb.is_action_pressed("duplicate_as_audition", i) {
+                    cmds.push(audition(klipp_core::AuditionEdit::AddCopy));
+                }
+                if kb.is_action_pressed("finalize_audition", i) {
+                    cmds.push(audition(klipp_core::AuditionEdit::Finalize));
+                }
+                if kb.is_action_pressed("open_audition", i) {
+                    cmds.push(AppCommand::OpenAuditionPicker { clip_id: Some(clip_id) });
+                }
+            }
             // Split at playhead
             if kb.is_action_pressed("split_at_playhead", i) {
                 cmds.extend(self.state.split_at_playhead_commands());

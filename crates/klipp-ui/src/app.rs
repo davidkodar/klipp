@@ -199,6 +199,7 @@ mod linked_audio;
 mod camera;
 mod transition_keys;
 mod transcription;
+mod audition_commands;
 mod locks;
 mod storyline;
 mod clip_moves;

@@ -58,6 +58,12 @@
     "Ctrl+C"
    ]
   },
+  "create_audition": {
+   "command": "Create Audition",
+   "keys": [
+    "Ctrl+Y"
+   ]
+  },
   "create_title": {
    "command": "Connect Default Title",
    "keys": [],
@@ -82,6 +88,12 @@
     "Ctrl+Shift+A"
    ]
   },
+  "duplicate_as_audition": {
+   "command": "Audition: Duplicate as Audition",
+   "keys": [
+    "Alt+Y"
+   ]
+  },
   "export": {
    "command": "Share to Default Destination",
    "keys": [
@@ -102,6 +114,12 @@
     "Backspace"
    ],
    "note": "Same FCP command as delete_clip: Delete on a timeline range selection removes it and closes the gap. FCP has no separate in/out extract command; binding both Klipp actions to one key is the caller's call."
+  },
+  "finalize_audition": {
+   "command": "Finalize Audition",
+   "keys": [
+    "Shift+Alt+Y"
+   ]
   },
   "fit_to_window": {
    "command": "Zoom to Fit",
@@ -286,6 +304,12 @@
    "command": "Nudge Right Many",
    "keys": [
     "Shift+."
+   ]
+  },
+  "open_audition": {
+   "command": "Open Audition",
+   "keys": [
+    "Y"
    ]
   },
   "open_project": {
@@ -710,12 +734,6 @@
    ]
   },
   {
-   "command": "Audition: Duplicate as Audition",
-   "keys": [
-    "Alt+Y"
-   ]
-  },
-  {
    "command": "Audition: Duplicate from Original",
    "keys": [
     "Ctrl+Shift+Y"
@@ -743,12 +761,6 @@
    "command": "Connect to Primary Storyline - Backtimed",
    "keys": [
     "Shift+Q"
-   ]
-  },
-  {
-   "command": "Create Audition",
-   "keys": [
-    "Ctrl+Y"
    ]
   },
   {
@@ -791,12 +803,6 @@
    "command": "Extend Selection Up",
    "keys": [
     "Shift+ArrowUp"
-   ]
-  },
-  {
-   "command": "Finalize Audition",
-   "keys": [
-    "Shift+Alt+Y"
    ]
   },
   {
@@ -869,12 +875,6 @@
    "command": "Nudge Up",
    "keys": [
     "Alt+ArrowUp"
-   ]
-  },
-  {
-   "command": "Open Audition",
-   "keys": [
-    "Y"
    ]
   },
   {
