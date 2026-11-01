@@ -188,6 +188,10 @@ impl MixThread {
         let buf_size = (sample_rate as usize) * 2 / 5;
         let (producer, consumer) = HeapRb::<f32>::new(buf_size).split();
         MIX_THREADS_STARTED.fetch_add(1, Ordering::Relaxed);
+        #[cfg(test)]
+        if Arc::as_ptr(&mixer) as usize == WATCHED_MIXER.load(Ordering::Acquire) {
+            WATCHED_STARTS.fetch_add(1, Ordering::AcqRel);
+        }
 
         let (cmd_tx, cmd_rx) = crossbeam_channel::unbounded();
 
@@ -337,6 +341,14 @@ impl Drop for MixThread {
 /// Mix threads started in this process (#3181): one more each time an
 /// ended one is made again.
 static MIX_THREADS_STARTED: AtomicU64 = AtomicU64::new(0);
+
+/// The mixer a test counts the mix threads of, by address, and how many
+/// it has started: one engine's alone, while other tests' engines start
+/// their own in the same process.
+#[cfg(test)]
+pub(crate) static WATCHED_MIXER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+#[cfg(test)]
+pub(crate) static WATCHED_STARTS: AtomicU64 = AtomicU64::new(0);
 
 /// How many mix threads this process has started.
 pub fn mix_threads_started() -> u64 {
