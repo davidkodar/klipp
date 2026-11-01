@@ -557,7 +557,7 @@ impl KlippApp {
                 true
             }
             AppCommand::CreateProject {
-                name, location, fps_num, fps_den, width, height, sequence_name, template, hdr, brand_kit,
+                name, location, fps_num, fps_den, width, height, sequence_name, template, hdr, brand_kit, destination,
             } => {
                 let project_dir = location.join(format!("{name}.klipp"));
                 if !self.start_new_project(name, sequence_name, (*fps_num, *fps_den), (*width, *height), template.as_deref(), &project_dir, *hdr) {
@@ -567,6 +567,9 @@ impl KlippApp {
                 // The kit's look in the new sequence, before its first save.
                 if let Some(kit) = brand_kit {
                     self.apply_brand_kit(kit, crate::state::BrandKitParts::default());
+                }
+                if let Some(d) = destination {
+                    set_destination(self.state.sequence_mut(), d);
                 }
                 // Save immediately so the .klipp directory is created. The
                 // projects root is the user's to choose in Preferences: a
@@ -1478,3 +1481,32 @@ mod track_tests {
     }
 }
 
+
+/// A destination's platform, loudness and captions in `seq`'s brief, and
+/// its picture as the delivery's (#3307); the rest of a brief a template
+/// brought is kept.
+fn set_destination(seq: &mut klipp_timeline::Sequence, d: &klipp_core::project_formats::Destination) {
+    let (w, h) = (seq.resolution.width, seq.resolution.height);
+    let brief = seq.brief.get_or_insert_with(Default::default);
+    brief.platform = d.platform.clone();
+    brief.loudness_lufs = d.loudness_lufs;
+    brief.captions = d.captions;
+    (brief.width, brief.height) = (Some(w), Some(h));
+}
+
+#[cfg(test)]
+mod destination_tests {
+    /// #3307: a destination fills the new sequence's brief: platform,
+    /// loudness, captions and the delivery's size; what else a brief says
+    /// stays.
+    #[test]
+    fn a_destination_fills_the_brief() {
+        let mut seq = klipp_timeline::Sequence::new_default();
+        (seq.resolution.width, seq.resolution.height) = (1080, 1920);
+        seq.brief = Some(klipp_timeline::Brief { title: "Launch".into(), ..Default::default() });
+        let shorts = klipp_core::project_formats::format_named("YouTube Shorts / Reels / TikTok").and_then(|f| f.destination.clone()).unwrap();
+        super::set_destination(&mut seq, &shorts);
+        let b = seq.brief.unwrap();
+        assert_eq!((b.title.as_str(), b.platform.as_str(), b.loudness_lufs, b.captions, b.width, b.height), ("Launch", "YouTube Shorts, Instagram Reels, TikTok", Some(-14.0), true, Some(1080), Some(1920)));
+    }
+}

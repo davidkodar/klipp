@@ -249,7 +249,8 @@ pub(crate) fn respond(
                 None => None,
             };
             let from_template = template.is_some();
-            send_envelope(ctx, vec![AppCommand::CreateProject { name, location, fps_num, fps_den, width, height, sequence_name, template, hdr, brand_kit: None }], false)?;
+            let destination = format.and_then(|f| f.destination.clone());
+            send_envelope(ctx, vec![AppCommand::CreateProject { name, location, fps_num, fps_den, width, height, sequence_name, template, hdr, brand_kit: None, destination }], false)?;
             let after = wait_for_project_event(ctx, before.generation, 60_000)?;
             if let Some(e) = after.last_error {
                 return Err(e);
@@ -343,7 +344,7 @@ pub(crate) fn respond(
             let formats: Vec<serde_json::Value> = klipp_core::project_formats::formats()
                 .iter()
                 .enumerate()
-                .map(|(i, f)| json!({ "name": f.name, "width": f.width, "height": f.height, "rates": f.rates, "hdr": f.hdr, "source": if i < built_in { "built-in" } else { "yours" } }))
+                .map(|(i, f)| json!({ "name": f.name, "width": f.width, "height": f.height, "rates": f.rates, "hdr": f.hdr, "destination": f.destination, "source": if i < built_in { "built-in" } else { "yours" } }))
                 .collect();
             Ok(json!({ "templates": templates, "formats": formats, "formats_skipped": klipp_core::project_formats::skipped_formats(), "text": text }))
         }

@@ -1498,6 +1498,8 @@ pub enum AppCommand {
         hdr: bool,
         /// A brand kit whose look the new sequence takes (#2722).
         brand_kit: Option<String>,
+        /// Where it goes (#3307): put in the new sequence's brief.
+        destination: Option<crate::project_formats::Destination>,
     },
     /// The look the viewer shows through, on screen only, or none (#466).
     SetProjectViewingLut { path: Option<PathBuf> },
