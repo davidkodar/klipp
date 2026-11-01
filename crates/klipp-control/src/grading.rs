@@ -469,7 +469,7 @@ mod look_tests {
         let mut v = klipp_timeline::Track::new("V1", klipp_timeline::TrackKind::Video);
         v.clips.push(klipp_timeline::Clip::media(camera, tc(0.0), tc(4.0), tc(0.0), tc(4.0)));
         let mut ui = klipp_timeline::Clip::media(camera, tc(4.0), tc(8.0), tc(0.0), tc(4.0));
-        ui.role = klipp_core::ClipRole::Graphics;
+        ui.role = Some(klipp_core::roles::RoleRef::of("titles"));
         v.clips.push(ui);
         v.clips.push(klipp_timeline::Clip::media(app, tc(8.0), tc(12.0), tc(0.0), tc(4.0)));
         seq.tracks = vec![v];
@@ -767,7 +767,7 @@ pub(crate) fn look_in(seq: &klipp_timeline::Sequence, pool: &klipp_media::MediaP
     }
     let top = seq.tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Video).find_map(|t| t.clip_at_timecode(tc)).map(|(_, c)| c);
     if let Some(c) = top {
-        let screen = c.role == klipp_core::ClipRole::Graphics || c.media_id().and_then(|id| pool.get(&id)).is_some_and(screen_recording);
+        let screen = c.role.as_ref().is_some_and(|r| r.is("titles")) || c.media_id().and_then(|id| pool.get(&id)).is_some_and(screen_recording);
         if screen {
             return LookTarget::preset("screencast").expect("the screencast preset exists");
         }

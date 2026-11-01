@@ -12,6 +12,10 @@ pub struct MediaPool {
     /// The saved smart bins: rules that gather clips.
     #[serde(default)]
     pub smart_bins: Vec<klipp_core::SmartBin>,
+    /// The project's roles (#3211): what its clips' roles are, named and
+    /// coloured.
+    #[serde(default)]
+    pub roles: klipp_core::roles::RoleSet,
 }
 
 impl MediaPool {

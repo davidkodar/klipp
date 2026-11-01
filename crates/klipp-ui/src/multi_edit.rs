@@ -120,7 +120,7 @@ pub fn copy_to(cmd: &AppCommand, primary: &Clip, other: &mut Clip) -> bool {
         // only records them.
         AppCommand::BeginAudioChainDrag { .. } | AppCommand::EndAudioChainDrag { .. } => true,
         AppCommand::SetClipRole { .. } => {
-            other.role = primary.role;
+            other.role = primary.role.clone();
             other.role_source = primary.role_source;
             true
         }

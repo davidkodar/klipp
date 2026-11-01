@@ -1306,7 +1306,8 @@ mod grade_limit_tests {
 #[cfg(test)]
 mod sound_role_tests {
     use super::{sound_json, sound_role};
-    use klipp_core::{ClipRole, MediaId, RationalTime};
+    use klipp_core::roles::RoleRef;
+    use klipp_core::{MediaId, RationalTime};
     use klipp_timeline::{Clip, Sequence, Track, TrackKind};
 
     /// A picture on V1 and its sound on A1, linked both ways.
@@ -1329,15 +1330,15 @@ mod sound_role_tests {
     #[test]
     fn a_role_set_on_either_half_is_the_pairs_role() {
         let mut seq = pair();
-        seq.tracks[1].clips[0].role = ClipRole::Music;
+        seq.tracks[1].clips[0].role = Some(RoleRef::of("music"));
         let sound = &seq.tracks[1].clips[0];
-        assert_eq!(sound_role(&seq, sound), ClipRole::Music, "set on the sound half");
+        assert_eq!(sound_role(&seq, sound), Some(RoleRef::of("music")), "set on the sound half");
         let mut v = serde_json::json!({});
         sound_json(&seq, sound, false, &mut v);
         assert_eq!(v["sound"]["role"], "music", "and reported: {v}");
 
         let mut seq = pair();
-        seq.tracks[0].clips[0].role = ClipRole::Ambience;
-        assert_eq!(sound_role(&seq, &seq.tracks[1].clips[0]), ClipRole::Ambience, "set on the picture");
+        seq.tracks[0].clips[0].role = RoleRef::parse("effects.ambience");
+        assert_eq!(sound_role(&seq, &seq.tracks[1].clips[0]), RoleRef::parse("effects.ambience"), "set on the picture");
     }
 }

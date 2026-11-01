@@ -12415,12 +12415,13 @@ impl TimelinePanel {
         let is_being_dragged = self.dragging_clip.as_ref()
             .is_some_and(|d| d.clip_id == clip.id);
 
-        // Use per-clip role color for audio clips (and B-Roll/Graphics video clips).
+        // Use per-clip role color for audio clips (and a picture in the
+        // Titles role, #3211).
         let theme_colors = theme();
-        let role_color = theme_colors.clip_role_color(clip.role);
+        let role_color = theme_colors.role_color(&state.media_pool.roles, clip.role.as_ref());
         let use_role_color = match track_kind {
             TrackKind::Audio => true,
-            _ => matches!(clip.role, klipp_timeline::ClipRole::BRoll | klipp_timeline::ClipRole::Graphics),
+            _ => clip.role.as_ref().is_some_and(|r| r.is("titles")),
         };
         // The clip's own colour label (#920) wins over the colour its
         // track, role or kind would give it; offline still shows as such.

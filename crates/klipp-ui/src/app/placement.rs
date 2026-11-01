@@ -534,7 +534,7 @@ impl KlippApp {
                 matte_choke_keyframes: clip.matte_choke_keyframes.clone(),
                 clip_markers: clip.clip_markers.clone(),
                 frame_glide: None,
-                role: clip.role,
+                role: clip.role.clone(),
                 role_source: clip.role_source,
                 matched_to: None,
                 speed: clip.speed,

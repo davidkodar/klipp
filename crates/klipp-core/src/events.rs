@@ -3826,7 +3826,7 @@ pub enum AppCommand {
     SetEffectKeyframeInterpolation { clip_id: ClipId, effect_index: usize, param_name: String, keyframe_index: usize, interpolation: crate::keyframe::Interpolation },
 
     // Clip role
-    SetClipRole { clip_id: ClipId, role: crate::ClipRole },
+    SetClipRole { clip_id: ClipId, role: Option<crate::roles::RoleRef> },
     /// How far back a clip sits for the sequence camera (`Clip::depth`).
     /// Undoable; a drag of the value is one undo step.
     SetClipDepth { clip_id: ClipId, depth: f32 },

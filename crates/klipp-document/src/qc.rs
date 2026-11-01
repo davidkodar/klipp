@@ -789,7 +789,7 @@ pub fn check(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts) ->
     for t in &seq.tracks {
         for m in t.clips.iter().filter(|m| is_heard(seq, pool, t, m)) {
             let Some(item) = m.media_id().and_then(|id| pool.get(&id)) else { continue };
-            if sound_role(seq, m) != klipp_core::ClipRole::Music && transcripts.library_role(item) != Some(klipp_core::ClipRole::Music) {
+            if !sound_role(seq, m).is_some_and(|r| r.is("music")) && transcripts.library_role(item) != Some(klipp_core::ClipRole::Music) {
                 continue;
             }
             let Some(read) = transcripts.beats(item) else {
@@ -923,14 +923,14 @@ pub fn check(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts) ->
             // a bed is music, an effect or a room's air is neither speech
             // nor music, whichever of a pair carries the role (#777).
             let role = sound_role(seq, c);
-            if role == klipp_core::ClipRole::Music {
+            if role.as_ref().is_some_and(|r| r.is("music")) {
                 musics.push(c);
                 continue;
             }
             let words = cache.entry(media_id).or_insert_with(|| transcripts.words(item));
             let (s_in, s_out) = (secs(c.source_in), secs(c.source_out));
             let inside: Vec<&SpokenWord> = words.as_deref().unwrap_or(&[]).iter().filter(|w| w.end_secs > s_in && w.start_secs < s_out).collect();
-            if not_speech(role) {
+            if not_speech(role.as_ref()) {
                 // Its transcript is what the recogniser made of the noise:
                 // said once, so the words in the clip summaries are read
                 // for what they are.
@@ -1585,7 +1585,7 @@ mod tests {
         let bed = pool.add(item);
         let mut a = Track::new("A1", TrackKind::Audio);
         let mut music = Clip::media(bed, tc(0.0), tc(8.0), tc(0.0), tc(8.0));
-        music.role = klipp_core::ClipRole::Music;
+        music.role = klipp_core::roles::RoleRef::parse("music");
         a.clips.push(music);
         seq.tracks.push(a);
         let title = |text: &str, from: f64, to: f64| Clip { id: klipp_core::ClipId::new(), kind: ClipKind::Title(klipp_timeline::TitleData::single_text(klipp_timeline::TextBox { text: text.into(), ..Default::default() })), source_in: tc(0.0), source_out: tc(to - from), ..Clip::gap(tc(from), tc(to)) };
@@ -2021,7 +2021,7 @@ mod tests {
         for side in [0, 1] {
             let mut marked = seq.clone();
             for c in marked.tracks[side].clips.iter_mut() {
-                c.role = klipp_core::ClipRole::Ambience;
+                c.role = klipp_core::roles::RoleRef::parse("effects.ambience");
             }
             let found = rules(&check(&marked, &pool, &Spoken(talk)));
             assert!(!found.contains(&"music_level"), "role on track {side}: {found:?}");

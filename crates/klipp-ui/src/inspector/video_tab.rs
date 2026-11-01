@@ -4,7 +4,7 @@ use crate::theme::KlippTheme;
 use crate::widgets::role_pill;
 use crate::widgets::scrubby_param::KeyframeState;
 use super::rows::{param_row, switch};
-use klipp_core::{AppCommand, ClipRole, Timecode, VideoParam};
+use klipp_core::{AppCommand, Timecode, VideoParam};
 use klipp_effects::BuiltinEffect;
 use klipp_timeline::Clip;
 
@@ -191,7 +191,7 @@ fn show_bin_media_video(
         matte_choke_keyframes: Vec::new(),
         clip_markers: Vec::new(),
         frame_glide: None,
-        role: klipp_core::ClipRole::default(),
+        role: None,
         role_source: klipp_core::RoleSource::Unset,
         matched_to: None,
         speed: 1.0,
@@ -245,7 +245,7 @@ fn show_clip_video(
     let pad = 14.0;
 
     // ── ROLE ──
-    show_role_section(ui, theme, clip, cmds);
+    show_role_section(ui, theme, &state.media_pool.roles, clip, cmds);
 
     ui.add_space(8.0);
 
@@ -3738,7 +3738,7 @@ fn show_behaviors_section(ui: &mut egui::Ui, theme: &KlippTheme, clip: &Clip, cm
     });
 }
 
-fn show_role_section(ui: &mut egui::Ui, theme: &KlippTheme, clip: &Clip, cmds: &mut Vec<AppCommand>) {
+fn show_role_section(ui: &mut egui::Ui, theme: &KlippTheme, roles: &klipp_core::roles::RoleSet, clip: &Clip, cmds: &mut Vec<AppCommand>) {
     let clip_id = clip.id;
     section_card(ui, "ROLE", theme, |ui| {
         ui.add_space(8.0);
@@ -3750,11 +3750,14 @@ fn show_role_section(ui: &mut egui::Ui, theme: &KlippTheme, clip: &Clip, cmds: &
             .show(ui, |ui| {
                 ui.horizontal_wrapped(|ui| {
                     ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
-                    for &role in ClipRole::all() {
-                        let color = theme.clip_role_color(role);
-                        let is_active = clip.role == role;
-                        if role_pill::role_pill(ui, theme, role.label(), color, is_active) {
-                            cmds.push(AppCommand::SetClipRole { clip_id, role });
+                    // The main roles as pills (#3211); a sub-role is chosen
+                    // in the Audio tab's list.
+                    for role in roles.roles.iter().map(|r| klipp_core::roles::RoleRef::of(&r.id)) {
+                        let color = theme.role_color(roles, Some(&role));
+                        let is_active = clip.role.as_ref().is_some_and(|r| r.main() == role.main());
+                        let name = roles.label(&role).unwrap_or_default();
+                        if role_pill::role_pill(ui, theme, &name, color, is_active) {
+                            cmds.push(AppCommand::SetClipRole { clip_id, role: (!is_active).then_some(role) });
                         }
                     }
                 });

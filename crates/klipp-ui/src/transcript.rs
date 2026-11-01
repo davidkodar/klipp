@@ -345,7 +345,7 @@ mod tests {
 
     /// A word heard from `clip`: its id and its timeline span.
     fn w_in(clip: &(klipp_core::ClipId, f64, f64), start: f64, end: f64, text: &str) -> HeardWord {
-        HeardWord { start, end, text: text.into(), after_cut: false, clip_id: clip.0, media_id: klipp_core::MediaId::new(), role: klipp_core::ClipRole::Dialogue, clip_in: clip.1, clip_out: clip.2 }
+        HeardWord { start, end, text: text.into(), after_cut: false, clip_id: clip.0, media_id: klipp_core::MediaId::new(), role: Some(klipp_core::roles::RoleRef::of("dialogue")), clip_in: clip.1, clip_out: clip.2 }
     }
 
     /// One clip, 0-10 s, with a pause before "Next".

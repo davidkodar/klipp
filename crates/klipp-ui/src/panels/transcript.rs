@@ -486,7 +486,7 @@ mod correction_tests {
         let clip = klipp_timeline::Clip::media(media, tc(4), tc(8), tc(10), tc(14));
         let clip_id = clip.id;
         state.sequences[0].tracks[0].clips.push(clip);
-        let word = klipp_document::ops::HeardWord { start: 5.0, end: 5.5, text: "matchy".into(), after_cut: false, clip_id, media_id: media, role: klipp_core::ClipRole::Dialogue, clip_in: 4.0, clip_out: 8.0 };
+        let word = klipp_document::ops::HeardWord { start: 5.0, end: 5.5, text: "matchy".into(), after_cut: false, clip_id, media_id: media, role: Some(klipp_core::roles::RoleRef::of("dialogue")), clip_in: 4.0, clip_out: 8.0 };
         let Some(AppCommand::CorrectTranscriptWord { media_id, source_secs, text }) = correction_for(&state, &word, " Omarchy ") else { panic!("a correction") };
         assert_eq!((media_id, text.as_str()), (media, "Omarchy"));
         assert!((source_secs - 11.25).abs() < 1e-9, "the word's middle, 1.25 s into the clip, is 11.25 s into its media: {source_secs}");
