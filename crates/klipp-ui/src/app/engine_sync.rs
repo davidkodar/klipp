@@ -187,6 +187,21 @@ impl KlippApp {
         // sequence or take the shared RwLock's write lock on the slider path.
         let mut node_param_scrub = false;
         for cmd in cmds {
+            // Every way a clip is put down, logged as it arrives: a
+            // placement that did nothing left no trace to find it by.
+            if matches!(
+                &cmd,
+                AppCommand::ImportMediaLinked { .. }
+                    | AppCommand::AppendClip { .. }
+                    | AppCommand::AppendClipToTrack { .. }
+                    | AppCommand::AppendMediaBatchToTrack { .. }
+                    | AppCommand::PlaceMedia { .. }
+                    | AppCommand::InsertEdit
+                    | AppCommand::OverwriteEdit
+                    | AppCommand::InsertSourceAtPlayhead
+            ) {
+                tracing::info!("placement: {cmd:?}");
+            }
             // A path drag the command doesn't belong to is closed as its own
             // step before any handler runs (M3 step 2).
             self.state.before_dispatch(&cmd);
