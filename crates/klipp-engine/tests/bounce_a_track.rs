@@ -20,6 +20,35 @@ mod common;
 const W: u32 = 320;
 const H: u32 = 180;
 
+/// A bounce's job, cancelled and joined when let go, a failing test's
+/// included: a test that panicked before its `join` left the thread in
+/// ffmpeg while the binary exited, and the process died in `exit()`
+/// (#3355).
+struct Joined(Arc<klipp_jobs::ThreadJob>);
+
+impl Drop for Joined {
+    fn drop(&mut self) {
+        use klipp_jobs::BackgroundJob;
+        self.0.cancel();
+        self.0.join();
+    }
+}
+
+impl std::ops::Deref for Joined {
+    type Target = klipp_jobs::ThreadJob;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+/// [`bounce::spawn_bounce`] from `files`, its result sent to `tx`, held
+/// by a [`Joined`].
+fn spawn(req: BounceRequest, files: Arc<HashMap<MediaId, MediaFile>>, tx: std::sync::mpsc::Sender<BounceResult>) -> Joined {
+    Joined(bounce::spawn_bounce(req, move || klipp_render::ExportFrameSource::shared(files, 24.0, WorkingColorspace::Rec709Linear), move |r| {
+        let _ = tx.send(r);
+    }))
+}
+
 fn tc(f: i64) -> RationalTime {
     RationalTime::from_frames(f, 24)
 }
@@ -105,9 +134,7 @@ fn bounce(t: &Timeline, format: BounceFormat, name: &str) -> BounceResult {
     let req = BounceRequest { seq: Arc::new(flat), track: 0, first, end, size: (W, H), working: WorkingColorspace::Rec709Linear, format, path, sound: Some(sound) };
     let files = Arc::new(t.files.clone());
     let (tx, rx) = std::sync::mpsc::channel();
-    let job = bounce::spawn_bounce(req, move || klipp_render::ExportFrameSource::shared(files, 24.0, WorkingColorspace::Rec709Linear), move |r| {
-        let _ = tx.send(r);
-    });
+    let job = spawn(req, files, tx);
     let result = rx.recv_timeout(Duration::from_secs(300)).expect("the bounce finished");
     // Its thread ended, so nothing of it is closing down as the test
     // binary exits.
@@ -305,9 +332,7 @@ fn measure_bounce_at_1080p_and_4k() {
         let files = Arc::new(files);
         let (tx, rx) = std::sync::mpsc::channel();
         let started = std::time::Instant::now();
-        let job = bounce::spawn_bounce(req, move || klipp_render::ExportFrameSource::shared(files, 24.0, WorkingColorspace::Rec709Linear), move |r| {
-            let _ = tx.send(r);
-        });
+        let job = spawn(req, files, tx);
         let r = rx.recv_timeout(Duration::from_secs(900)).expect("finished");
         job.join();
         let secs = started.elapsed().as_secs_f64();
@@ -319,6 +344,31 @@ fn measure_bounce_at_1080p_and_4k() {
             120.0 / secs, secs * 12.0, bytes as f64 / 1e6, estimate as f64 / 1e6, bytes as f64 * 12.0 / 1e9,
         );
     }
+}
+
+/// A test that fails while its bounce runs leaves no thread behind: the
+/// job is cancelled and joined as the failing test unwinds, before the
+/// binary can exit under it.
+#[test]
+fn a_bounce_let_go_by_a_failing_test_has_ended() {
+    use klipp_jobs::BackgroundJob;
+    let Some((pic, tone)) = sources() else {
+        eprintln!("skipping: no ffmpeg");
+        return;
+    };
+    let t = timeline(&pic, &tone, None);
+    let flat = klipp_timeline::flatten::flatten_sequence(&t.seq, &[]);
+    let path = klipp_testing::scratch::scratch_dir("klipp-bounce-failing").join("failing.mov");
+    let req = BounceRequest { seq: Arc::new(flat), track: 0, first: 0, end: 30, size: (W, H), working: WorkingColorspace::Rec709Linear, format: BounceFormat::ProRes4444, path, sound: None };
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let job = spawn(req, Arc::new(t.files.clone()), tx);
+    let thread = Arc::clone(&job.0);
+    let failed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+        let _job = job;
+        panic!("a test failing while its bounce runs");
+    }));
+    assert!(failed.is_err());
+    assert!(thread.is_done(), "the bounce's thread ended as the failing test unwound");
 }
 
 /// Cancelled, a bounce leaves no file, partial or whole, says so, and its
@@ -337,9 +387,7 @@ fn a_cancelled_bounce_leaves_no_file_and_its_thread_ends() {
     let req = BounceRequest { seq: Arc::new(flat), track: 0, first: 0, end: 30, size: (W, H), working: WorkingColorspace::Rec709Linear, format: BounceFormat::ProRes4444, path: path.clone(), sound: None };
     let files = Arc::new(t.files.clone());
     let (tx, rx) = std::sync::mpsc::channel();
-    let job = bounce::spawn_bounce(req, move || klipp_render::ExportFrameSource::shared(files, 24.0, WorkingColorspace::Rec709Linear), move |r| {
-        let _ = tx.send(r);
-    });
+    let job = spawn(req, files, tx);
     job.cancel();
     let r = rx.recv_timeout(Duration::from_secs(60)).expect("it ends");
     job.join();
