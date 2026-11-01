@@ -56,6 +56,9 @@ struct Open {
 #[derive(Default)]
 pub(crate) struct SkimPool {
     open: Vec<Open>,
+    /// Why the last position's source wasn't there (no skim file, or its
+    /// decoder didn't open), for the skim's note.
+    failed_open: Option<String>,
 }
 
 impl SkimPool {
@@ -80,7 +83,12 @@ impl SkimPool {
             while self.open.len() >= SKIM_DECODERS {
                 self.open.remove(0);
             }
-            let decoder = VideoDecoder::open(path, 0).map_err(|e| tracing::debug!("skim: cannot open {}: {e}", path.display())).ok()?;
+            let decoder = VideoDecoder::open(path, 0)
+                .map_err(|e| {
+                    tracing::debug!("skim: cannot open {}: {e}", path.display());
+                    self.failed_open = Some(format!("{} didn't open: {e}", path.file_name().unwrap_or_default().to_string_lossy()));
+                })
+                .ok()?;
             self.open.push(Open { path: path.to_path_buf(), decoder, last: None });
             true
         };
@@ -173,7 +181,10 @@ impl SkimSource {
         for layer in klipp_compose::active_layers(seq, time) {
             for c in &layer.clips {
                 let Some(media) = c.media_id() else { continue };
-                let path = files.get(&media)?;
+                let Some(path) = files.get(&media) else {
+                    pool.failed_open = Some(format!("{} has no skim file", c.id.0));
+                    return None;
+                };
                 let secs = klipp_compose::render::source_secs(c, layer.at, layer.fps);
                 let frame = match decoded.iter().find(|(p, s, _)| p == path && (s - secs).abs() < PTS_SLACK) {
                     Some((_, _, f)) => f.clone(),
@@ -242,7 +253,16 @@ impl super::PlaybackEngine {
         let snapshot = preview.unwrap_or(snapshot);
         let seq = klipp_compose::frame_snapshot(&snapshot, time);
         let files: HashMap<MediaId, PathBuf> = self.media_pool.read().unwrap_or_else(|e| e.into_inner()).all().filter_map(|m| Some((m.id, skim_file(m)?))).collect();
-        let Some(mut src) = SkimSource::gather(&seq, time, &files, &mut self.skim_pool) else { return refused(self, "a source with no skim file, or no frame in time") };
+        self.skim_pool.failed_open = None;
+        let Some(mut src) = SkimSource::gather(&seq, time, &files, &mut self.skim_pool) else {
+            // Which it was, when a decoder didn't open (the 0.3.0 run saw
+            // this skim refused at once, five times, with no cause).
+            let why = match self.skim_pool.failed_open.take() {
+                Some(e) => format!("a source with no skim file, or no frame in time: {e}"),
+                None => "a source with no skim file, or no frame in time".to_string(),
+            };
+            return refused(self, &why);
+        };
         let (w, h) = skim_size(seq.resolution.width, seq.resolution.height);
         self.renderer.set_working_colorspace(crate::video_decoder::working_colorspace());
         self.renderer.set_grade_encoding(klipp_core::grade_encoding());

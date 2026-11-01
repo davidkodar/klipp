@@ -280,7 +280,12 @@ mod tests {
         }
         assert!(plays.load(std::sync::atomic::Ordering::Acquire) > played, "the Play was read");
         let panics = || super::MIX_PANICS.load(std::sync::atomic::Ordering::Relaxed);
-        let before = panics();
+        // Counted as this engine's threads made, not panics: a thread the
+        // Pause and Play replaced may still be ending when the panic is
+        // armed, and its panic is no making again (the full run saw one:
+        // "5 times"); and other tests' engines make their own.
+        crate::mix_thread::WATCHED_MIXER.store(mixer, std::sync::atomic::Ordering::Release);
+        let made_before = crate::mix_thread::WATCHED_STARTS.load(std::sync::atomic::Ordering::Acquire);
         super::MIX_STICKY.store(true, std::sync::atomic::Ordering::Release);
         super::arm_mix_thread(Some(mixer));
         let t0 = Instant::now();
@@ -290,8 +295,9 @@ mod tests {
         let at_two = panics();
         std::thread::sleep(Duration::from_secs(1));
         assert_eq!(panics(), at_two, "it stops being made again");
-        let made = at_two - before;
-        assert!(made >= 2 && made <= crate::engine::PANIC_RESTARTS as u64 + 1, "made again {made} times");
+        let made = crate::mix_thread::WATCHED_STARTS.load(std::sync::atomic::Ordering::Acquire) - made_before;
+        crate::mix_thread::WATCHED_MIXER.store(0, std::sync::atomic::Ordering::Release);
+        assert!(made >= 2 && made <= crate::engine::PANIC_RESTARTS as _, "made again {made} times");
         assert_eq!(*gave_up.lock().unwrap(), ["The sound"], "and the person is told, once");
         super::MIX_STICKY.store(false, std::sync::atomic::Ordering::Release);
         super::MIX_THREAD.store(0, std::sync::atomic::Ordering::Release);
