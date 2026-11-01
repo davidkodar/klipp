@@ -113,10 +113,19 @@ pub fn show_picker(ctx: &egui::Context, state: &mut crate::state::AppState) -> V
                     let active = t.id == a.active;
                     let shown = t.clip.as_deref().unwrap_or(&clip);
                     let secs = (shown.timeline_out - shown.timeline_in).to_secs_f64();
-                    let mut name = t.name.clone();
-                    let edit = ui.add(egui::TextEdit::singleline(&mut name).desired_width(140.0).id(egui::Id::new(("take_name", t.id.to_string()))));
-                    if edit.lost_focus() && name.trim() != t.name && !name.trim().is_empty() {
-                        cmds.push(AppCommand::EditAudition { clip_id, edit: AuditionEdit::Rename { take: t.id, name: name.trim().to_string() } });
+                    // The name being typed is kept across frames until the
+                    // field is left, which renames the take.
+                    let field = egui::Id::new(("take_name", t.id.to_string()));
+                    let typed = field.with("typed");
+                    let mut name: String = ui.data_mut(|d| d.get_temp(typed)).unwrap_or_else(|| t.name.clone());
+                    let edit = ui.add(egui::TextEdit::singleline(&mut name).desired_width(140.0).id(field));
+                    if edit.lost_focus() {
+                        ui.data_mut(|d| d.remove::<String>(typed));
+                        if name.trim() != t.name && !name.trim().is_empty() {
+                            cmds.push(AppCommand::EditAudition { clip_id, edit: AuditionEdit::Rename { take: t.id, name: name.trim().to_string() } });
+                        }
+                    } else if edit.has_focus() {
+                        ui.data_mut(|d| d.insert_temp(typed, name));
                     }
                     let length = klipp_core::Timecode::from_secs_f64(secs, fps);
                     if ui.selectable_label(active, format!("{}  {}", if active { "\u{25CF} In the slot" } else { "Put in" }, state.timecode_display().duration(length))).on_hover_text(if active { "The take on the timeline" } else { "Put this take in the slot: one undo step" }).clicked() && !active {
@@ -230,6 +239,22 @@ mod tests {
         assert_eq!(audition(&seq, id).takes[1].clip.as_ref().and_then(|c| c.media_id()), Some(close));
     }
 
+    type Drawn = (Vec<AppCommand>, Vec<(String, egui::Pos2)>);
+
+    /// A click on the text starting `label`, pressed in a frame and let
+    /// go in the next: what either sent.
+    fn click(frame: &mut impl FnMut(&mut crate::state::AppState, Vec<egui::Event>) -> Drawn, state: &mut crate::state::AppState, label: &str) -> Vec<AppCommand> {
+        // A window is laid out unseen in its first frame.
+        frame(state, Vec::new());
+        let (_, texts) = frame(state, Vec::new());
+        let at = texts.iter().find(|(t, _)| t.starts_with(label)).map(|(_, p)| *p).unwrap_or_else(|| panic!("no {label:?}: {texts:?}"));
+        let mut cmds = Vec::new();
+        for pressed in [true, false] {
+            cmds.extend(frame(state, vec![egui::Event::PointerMoved(at), egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() }]).0);
+        }
+        cmds
+    }
+
     /// #3209's picker: each take listed, the one in the slot marked and
     /// not removable; a click on another puts it in the slot (with the
     /// timeline's ripple); Remove, Add Copy and Finalize send their edits;
@@ -251,7 +276,7 @@ mod tests {
         let second = audition(state.sequence(), id).takes[1].id;
         let ctx = egui::Context::default();
         let mut clock = 0.0;
-        let mut frame = |state: &mut crate::state::AppState, events: Vec<egui::Event>| {
+        let mut frame = |state: &mut crate::state::AppState, events: Vec<egui::Event>| -> Drawn {
             clock += 0.1;
             let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(900.0, 700.0))), time: Some(clock), events, ..Default::default() };
             let mut cmds = Vec::new();
@@ -262,23 +287,31 @@ mod tests {
             }).collect();
             (cmds, texts)
         };
-        let mut click = |state: &mut crate::state::AppState, label: &str| {
-            // A window is laid out unseen in its first frame.
-            frame(state, Vec::new());
-            let (_, texts) = frame(state, Vec::new());
-            let at = texts.iter().find(|(t, _)| t.starts_with(label)).map(|(_, p)| *p).unwrap_or_else(|| panic!("no {label:?}: {texts:?}"));
-            let mut cmds = Vec::new();
-            for pressed in [true, false] {
-                cmds.extend(frame(state, vec![egui::Event::PointerMoved(at), egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() }]).0);
-            }
-            cmds
-        };
-        let cmds = click(&mut state, "Put in");
+        let cmds = click(&mut frame, &mut state, "Put in");
         assert!(matches!(&cmds[..], [AppCommand::EditAudition { clip_id, edit: AuditionEdit::Switch { take, ripple: true } }] if *clip_id == id && *take == second), "{cmds:?}");
-        assert!(click(&mut state, "\u{25CF} In the slot").is_empty(), "the take in the slot is not switched to");
-        let cmds = click(&mut state, "Add Copy");
+        assert!(click(&mut frame, &mut state, "\u{25CF} In the slot").is_empty(), "the take in the slot is not switched to");
+        // A take renamed: its field clicked, a name typed a key a frame,
+        // then a click elsewhere.
+        let cmds = click(&mut frame, &mut state, "Take 2");
+        assert!(cmds.is_empty());
+        let key = |key| egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers: Default::default() };
+        frame(&mut state, vec![key(egui::Key::End)]);
+        for _ in 0..8 {
+            frame(&mut state, vec![key(egui::Key::Backspace)]);
+        }
+        let mut cmds = Vec::new();
+        for c in ["W", "i", "d", "e"] {
+            cmds.extend(frame(&mut state, vec![egui::Event::Text(c.into())]).0);
+        }
+        assert!(cmds.is_empty(), "nothing renamed while typing: {cmds:?}");
+        let away = egui::pos2(880.0, 680.0);
+        for pressed in [true, false] {
+            cmds.extend(frame(&mut state, vec![egui::Event::PointerMoved(away), egui::Event::PointerButton { pos: away, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() }]).0);
+        }
+        assert!(matches!(&cmds[..], [AppCommand::EditAudition { edit: AuditionEdit::Rename { take, name }, .. }] if *take == second && name == "Wide"), "{cmds:?}");
+        let cmds = click(&mut frame, &mut state, "Add Copy");
         assert!(matches!(&cmds[..], [AppCommand::EditAudition { edit: AuditionEdit::AddCopy, .. }]), "{cmds:?}");
-        let cmds = click(&mut state, "Finalize");
+        let cmds = click(&mut frame, &mut state, "Finalize");
         assert!(matches!(&cmds[..], [AppCommand::EditAudition { edit: AuditionEdit::Finalize, .. }, AppCommand::OpenAuditionPicker { clip_id: None }]), "{cmds:?}");
     }
 
