@@ -1497,7 +1497,9 @@ mod upscale_tests {
         if out.exists() {
             return Some(out);
         }
-        let part = out.with_extension("part.mp4");
+        // This call's own scratch name: the tests here, and other test
+        // processes, build the chart at once on a cold temp dir.
+        let part = out.with_extension(format!("{}-{}.part.mp4", std::process::id(), uuid::Uuid::new_v4().simple()));
         let ok = std::process::Command::new("ffmpeg")
             .args(["-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=s=1920x1080:r=25:d=6", "-vf", "loop=loop=149:size=1:start=0,hue=s=0", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-g", "25"])
             .arg(&part)
@@ -1513,7 +1515,9 @@ mod upscale_tests {
         if out.exists() {
             return Some(out);
         }
-        let part = out.with_extension("part.mp4");
+        // This call's own scratch name: the tests here, and other test
+        // processes, build the chart at once on a cold temp dir.
+        let part = out.with_extension(format!("{}-{}.part.mp4", std::process::id(), uuid::Uuid::new_v4().simple()));
         let ok = std::process::Command::new("ffmpeg")
             .args(["-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=s=1920x1080:r=25:d=6", "-vf", "loop=loop=149:size=1:start=0,hue=s=0,format=yuv420p10le"])
             .args(["-c:v", "libx265", "-preset", "ultrafast", "-x265-params", "keyint=25:log-level=error"])

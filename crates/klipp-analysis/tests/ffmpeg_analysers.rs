@@ -6,7 +6,15 @@ use klipp_analysis::{audio, shots, AnalysisCtx, Analyser};
 use klipp_analysis::motion;
 use std::path::PathBuf;
 
+/// Written once per process: the two tests that read it run at once, and
+/// `ffmpeg -y` rewriting the file while the other analysed it gave that
+/// one a short or broken clip.
 fn synthetic_clip() -> Option<PathBuf> {
+    static CLIP: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
+    CLIP.get_or_init(write_synthetic_clip).clone()
+}
+
+fn write_synthetic_clip() -> Option<PathBuf> {
     let ctx = AnalysisCtx::default();
     if !ctx.ffmpeg_available() {
         eprintln!("skipping: no ffmpeg");

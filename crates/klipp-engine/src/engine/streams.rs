@@ -1123,13 +1123,17 @@ mod tests {
         if out.exists() {
             return Some(out);
         }
+        // Written beside it and renamed whole into place: ten tests here
+        // build it at once on a cold temp dir, and written in place one
+        // test read the file while another was still writing it.
+        let partial = out.with_extension(format!("{}-{}.mkv", std::process::id(), uuid::Uuid::new_v4().simple()));
         let ok = std::process::Command::new("ffmpeg")
             .args(["-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=s=64x36:r=25:d=2", "-c:v", "ffv1"])
-            .arg(&out)
+            .arg(&partial)
             .status()
             .ok()?
             .success();
-        ok.then_some(out)
+        (ok && std::fs::rename(&partial, &out).is_ok()).then_some(out)
     }
 
     /// Waits, as a test ends however it ends, for the decoders it opened

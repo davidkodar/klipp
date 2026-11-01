@@ -110,10 +110,13 @@ fn encoded(name: &str, width: u32, height: u32, tags: &str, fps: Fps, codec: &[&
 /// returned `None` and so skipped a test that then read as a pass. Each
 /// writer renames a whole file into place, and they all write the same
 /// bytes, so the last rename wins harmlessly.
+///
+/// Named by a fresh UUID, not a counter: in the `all` binary each test
+/// file has its own copy of this module and so its own counter, and two
+/// files building one fixture (the 4K pan, the HEVC ramp) handed out the
+/// same "unshared" name, one ffmpeg truncating the other's file (#3289).
 pub fn unshared(out: &std::path::Path, ext: &str) -> PathBuf {
-    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    out.with_extension(format!("{}-{n}.{ext}", std::process::id()))
+    out.with_extension(format!("{}-{}.{ext}", std::process::id(), uuid::Uuid::new_v4().simple()))
 }
 
 pub const PQ_TAGS: &str = "colorspace=bt2020nc:color_primaries=bt2020:color_trc=smpte2084";

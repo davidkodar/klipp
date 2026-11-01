@@ -29,12 +29,21 @@ fn ffmpeg(args: &[&str], out: &std::path::Path) -> bool {
 }
 
 /// A 4:4:4 FFV1 picture and a 440 Hz tone, two seconds each.
+///
+/// Written once per process: the tests here run at once, and `ffmpeg -y`
+/// rewriting the files while another test bounced from them gave that
+/// one a short or broken source.
 fn sources() -> Option<(std::path::PathBuf, std::path::PathBuf)> {
-    let dir = klipp_testing::scratch::scratch_dir("klipp-bounce");
-    let (pic, tone) = (dir.join("pic.mkv"), dir.join("tone.wav"));
-    let ok = ffmpeg(&["-f", "lavfi", "-i", &format!("testsrc2=s={W}x{H}:r=24:d=2"), "-c:v", "ffv1", "-pix_fmt", "yuv444p"], &pic)
-        && ffmpeg(&["-f", "lavfi", "-i", "sine=f=440:d=2:r=48000", "-ac", "2", "-c:a", "pcm_s16le"], &tone);
-    ok.then_some((pic, tone))
+    static SOURCES: std::sync::OnceLock<Option<(std::path::PathBuf, std::path::PathBuf)>> = std::sync::OnceLock::new();
+    SOURCES
+        .get_or_init(|| {
+            let dir = klipp_testing::scratch::scratch_dir("klipp-bounce");
+            let (pic, tone) = (dir.join("pic.mkv"), dir.join("tone.wav"));
+            let ok = ffmpeg(&["-f", "lavfi", "-i", &format!("testsrc2=s={W}x{H}:r=24:d=2"), "-c:v", "ffv1", "-pix_fmt", "yuv444p"], &pic)
+                && ffmpeg(&["-f", "lavfi", "-i", "sine=f=440:d=2:r=48000", "-ac", "2", "-c:a", "pcm_s16le"], &tone);
+            ok.then_some((pic, tone))
+        })
+        .clone()
 }
 
 fn file(path: &std::path::Path, secs: f64) -> MediaFile {
