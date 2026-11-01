@@ -1,10 +1,12 @@
 Copyright 2022 The Noto Project Authors (https://github.com/notofonts/arabic)
 Copyright 2022 The Noto Project Authors (https://github.com/notofonts/devanagari)
 Copyright 2024 The Noto Project Authors (https://github.com/notofonts/hebrew)
+Copyright 2022 The Noto Project Authors (https://github.com/notofonts/thai)
 
 NotoSansArabic-subset.ttf, NotoSansDevanagari-subset.ttf and NotoSansHebrew-subset.ttf
 are subsets of Noto Sans Arabic, Noto Sans Devanagari and Noto Sans Hebrew Regular,
-cut to the few letters the shaping tests set.
+cut to the few letters the shaping tests set. NotoSansThai-subset.ttf is a subset of
+Noto Sans Thai Regular 2.002, cut to the letters of the word-break tests.
 
 This Font Software is licensed under the SIL Open Font License, Version 1.1.
 This license is copied below, and is also available with a FAQ at:

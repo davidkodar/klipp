@@ -6806,6 +6806,18 @@ fn justify_lines(
     last: LastLineAlign,
 ) {
     let seen = |g: &fontdue::layout::GlyphPosition| !g.parent.is_whitespace();
+    // A gap opens at a run of spaces and, in Thai, Lao, Khmer and Burmese,
+    // which put none between words, where a word begins (#3238): a line
+    // of those had no gap, and was left unjustified. Once per word: a
+    // cluster's marks follow its letter.
+    let complex = klipp_linebreak::complex_breaks(text);
+    let opens = |g: &fontdue::layout::GlyphPosition, last: &mut Option<usize>| {
+        let at = complex.binary_search(&g.byte_offset).is_ok() && *last != Some(g.byte_offset);
+        if at {
+            *last = Some(g.byte_offset);
+        }
+        at
+    };
     for line in lines {
         let start = line.glyph_start;
         let end = line.glyph_end.min(glyphs.len().saturating_sub(1));
@@ -6835,11 +6847,11 @@ fn justify_lines(
             continue;
         }
         let mut gaps = 0usize;
-        let mut in_gap = false;
+        let (mut in_gap, mut last) = (false, Some(glyphs[first].byte_offset));
         for g in &glyphs[first..=final_] {
             if !seen(g) {
                 in_gap = true;
-            } else if in_gap {
+            } else if opens(g, &mut last) || in_gap {
                 gaps += 1;
                 in_gap = false;
             }
@@ -6849,11 +6861,11 @@ fn justify_lines(
             continue;
         }
         let step = extra / gaps as f32;
-        let (mut k, mut in_gap) = (0usize, false);
+        let (mut k, mut in_gap, mut last) = (0usize, false, Some(glyphs[first].byte_offset));
         for g in &mut glyphs[first..=end] {
             if !seen(g) {
                 in_gap = true;
-            } else if in_gap {
+            } else if opens(g, &mut last) || in_gap {
                 k += 1;
                 in_gap = false;
             }
@@ -13523,6 +13535,48 @@ mod fading_layers_tests {
                 colour.max((a[3] - b[3]).abs())
             }).fold(0.0, f32::max);
             assert!(worst <= 1.5, "at {t}: cached layers differ from raster by {worst} levels");
+        }
+    }
+}
+
+#[cfg(test)]
+mod complex_justify_tests {
+    use super::*;
+    use shaping::{Face, LoadedFont, ShapedLayout};
+
+    /// #3238: a justified line of Thai, which has no spaces, spreads to
+    /// its box at its word boundaries; before, it had no gap to widen and
+    /// stayed set from the left. The letters of a word stay together.
+    #[test]
+    fn a_justified_thai_line_fills_its_box() {
+        let path = format!("{}/tests/fonts/NotoSansThai-subset.ttf", env!("CARGO_MANIFEST_DIR"));
+        let thai = LoadedFont::new(std::borrow::Cow::Owned(std::fs::read(path).unwrap())).unwrap();
+        let faces = [Face::new(&thai, &[])];
+        let words = ["ภาษา", "ไทย", "ง่าย", "นิด", "เดียว", "สวัสดี", "ครับ"].repeat(2);
+        let text = words.concat();
+        let width = 300.0;
+        let mut l = ShapedLayout::new();
+        l.reset(&fontdue::layout::LayoutSettings { max_width: Some(width), wrap_style: fontdue::layout::WrapStyle::Word, ..Default::default() });
+        l.append(&faces, &text, (0, text.len(), 48.0, 0));
+        let lines = l.lines().expect("lines").clone();
+        assert!(lines.len() >= 2, "the Thai wraps: {} lines", lines.len());
+        let before = l.glyphs().clone();
+        let mut glyphs = before.clone();
+        justify_lines(&mut glyphs, &lines, &text, width, LastLineAlign::Left);
+        let line = &lines[0];
+        let span = |g: &[fontdue::layout::GlyphPosition]| g[line.glyph_start..=line.glyph_end].iter().filter(|g| g.width > 0).map(|g| g.x + g.width as f32).fold(0.0, f32::max);
+        let (was, now) = (span(&before), span(&glyphs));
+        assert!(was < width - 5.0, "the first line was set short of the box: {was}");
+        assert!((now - (width - line.right)).abs() <= 1.0, "the justified line ends at {now}, not the box's {width}");
+        // A word's letters moved together: within a word, each glyph moved
+        // by the same as the word's first.
+        let starts = klipp_linebreak::complex_breaks(&text);
+        let word_of = |at: usize| starts.iter().filter(|&&s| s <= at).count();
+        let moved: Vec<(usize, f32)> = (line.glyph_start..=line.glyph_end).map(|i| (word_of(glyphs[i].byte_offset), glyphs[i].x - before[i].x)).collect();
+        for pair in moved.windows(2) {
+            if pair[0].0 == pair[1].0 {
+                assert!((pair[0].1 - pair[1].1).abs() < 1e-3, "a word's letters moved apart: {moved:?}");
+            }
         }
     }
 }
