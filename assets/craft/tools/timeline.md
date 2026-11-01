@@ -123,6 +123,30 @@ Set the size frames are drawn at while playing, as Preferences > Playback sets i
 Arguments:
 - `quality`: full, half or quarter of the playback resolution
 
+## klipp_bounce_track
+
+Bounce a picture track to a media file, as the Track menu's Bounce to Media File does.
+- **What is drawn:** the track alone at the sequence's full size, from its first clip to its last, with its transparency. Gaps between clips are transparent and silent.
+- **Baked in:** the track's effects and each clip's opacity.
+- **Not baked:** the track's opacity and the clips' blend mode, which carry over to the new track and clip.
+- **Sound:** the sound linked to its clips goes in too, unless `sound` is false.
+
+The file is kept in the project's media folder (`media/bounces`), so the project must be saved. Once it is written, as one undo step: a clip of it is placed on a new track above, with its sound on a new track linked to it; the original is hidden and its linked sound silenced. Undo leaves the file.
+
+Highlights above white are clipped; grade before bouncing. The file is display-referred, as an export is.
+
+Bouncing is SDR only for now: an HDR or wide-gamut project is refused, saying why. Also refused, saying why:
+- a track whose frames read other tracks (an adjustment layer, a matte, a caption track);
+- clips that blend in different ways;
+- linked sound through a plug-in from outside Klipp.
+
+Disk: ProRes 4444 is up to about 2 GB a minute at 1080p24 and 8 GB at 4K, less for a simple picture. FFV1 is lossless and its size follows the picture. Time: on an RTX 4080 a minute of 1080p bounces in about a minute and a half, of 4K in under five.
+
+Arguments:
+- `track`: the track's index or name
+- `format`: prores4444 (default, plays in other editors) or ffv1 (lossless, larger)
+- `sound`: false leaves the linked sound out; the default puts it in
+
 ## klipp_set_background_render
 
 Turn drawing heavy frames ahead while idle on or off, and set the seconds idle before it starts, as Preferences > Playback sets them, and save them. On (the default), Klipp draws the frames that play late into the render cache after a pause, on mains power only, and stops on any input. What is left out stays as it is. klipp_render_status says how it stands; klipp_perf's `diagnosis` offers it as the last fix.

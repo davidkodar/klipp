@@ -819,6 +819,12 @@ pub fn show(
                     cmds.push(AppCommand::SetTrackFrozen { track_id, frozen: !frozen });
                     ui.close_menu();
                 }
+                if t.kind == klipp_timeline::TrackKind::Video
+                    && ui.button("Bounce to Media File…").on_hover_text("Draw this track alone into a ProRes 4444 or FFV1 file with its transparency and sound, and put a clip of it on a new track above, the original hidden. One undo takes it back").clicked()
+                {
+                    cmds.push(AppCommand::OpenBounceDialog { track_id });
+                    ui.close_menu();
+                }
                 let lock = t.lock_while_frozen;
                 if menu_toggle(ui, "Lock While Frozen", "", lock)
                     .on_hover_text("Frozen, the track is locked so no edit makes its frames stale; played live again, it is unlocked")

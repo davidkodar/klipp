@@ -359,6 +359,17 @@ pub enum ControlCommand {
     /// The size frames are drawn at while playing (#3234): "full", "half"
     /// or "quarter" of the playback resolution; saved as the preference.
     SetPlaybackQuality { quality: String },
+    /// Bounce a picture track to a media file (#3264): `track` by index or
+    /// name; `format` "prores4444" (default) or "ffv1"; `sound` (default
+    /// true) its linked sound in the file. The clip of it goes on a new
+    /// track above, the original hidden, as one undo step once written.
+    BounceTrack {
+        track: serde_json::Value,
+        #[serde(default)]
+        format: Option<String>,
+        #[serde(default)]
+        sound: Option<bool>,
+    },
     /// Drawing heavy frames ahead while idle on or off, and the seconds
     /// idle before it starts (1 to 60); saved as the preferences (#3212).
     /// What is left out stays as it is.

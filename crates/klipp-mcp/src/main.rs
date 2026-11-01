@@ -54,7 +54,7 @@ static PENDING_WRITE_GENERATION: std::sync::atomic::AtomicU64 =
 const WRITE_TOOLS: &[&str] = &[
     "klipp_graph", "klipp_import_timeline", "klipp_alternatives",
     "klipp_play", "klipp_pause", "klipp_stop", "klipp_seek",
-    "klipp_append_clip", "klipp_clear_frozen", "klipp_set_playback_quality", "klipp_set_background_render", "klipp_remove_clip", "klipp_attach_audio", "klipp_normalize", "klipp_set_append_audio", "klipp_select_clip",
+    "klipp_append_clip", "klipp_clear_frozen", "klipp_set_playback_quality", "klipp_set_background_render", "klipp_bounce_track", "klipp_remove_clip", "klipp_attach_audio", "klipp_normalize", "klipp_set_append_audio", "klipp_select_clip",
     "klipp_add_node", "klipp_remove_node", "klipp_connect_nodes",
     "klipp_set_node_param", "klipp_toggle_node", "klipp_set_log_format",
     "klipp_generator", "klipp_undo", "klipp_redo", "klipp_batch", "klipp_export", "klipp_export_subtitles", "klipp_import_subtitles", "klipp_translate_captions", "klipp_apply",
@@ -605,6 +605,16 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             v
         }
         "klipp_set_playback_quality" => json!({ "method": "set_playback_quality", "quality": arg_str(args, "quality")? }),
+        "klipp_bounce_track" => {
+            let mut v = json!({ "method": "bounce_track", "track": args.get("track").cloned().unwrap_or(Value::Null) });
+            if let Some(f) = args.get("format").and_then(Value::as_str) {
+                v["format"] = json!(f);
+            }
+            if let Some(s) = args.get("sound").and_then(Value::as_bool) {
+                v["sound"] = json!(s);
+            }
+            v
+        }
         "klipp_set_background_render" => {
             let mut v = json!({ "method": "set_background_render" });
             if let Some(on) = args.get("on").and_then(Value::as_bool) {
@@ -2187,6 +2197,10 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              "Draw frames full, half or quarter size while playing; saved as the preference. Details: klipp_guide topic set_playback_quality.",
              json!({ "quality": { "type": "string", "enum": ["full", "half", "quarter"] } }),
              vec!["quality"]),
+        tool("klipp_bounce_track",
+             "Bounce a track to a media file with alpha. Details: klipp_guide topic bounce_track.",
+             json!({ "track": { "type": ["integer", "string"] }, "format": { "type": "string" }, "sound": { "type": "boolean" } }),
+             vec!["track"]),
         tool("klipp_set_background_render",
              "Drawing heavy frames ahead while idle: on or off, and its delay; saved. Details: klipp_guide topic set_background_render.",
              json!({ "on": { "type": "boolean" }, "delay_secs": { "type": "number" } }),

@@ -279,6 +279,7 @@ impl KlippApp {
                 initial_scheduler_policy,
             ),
             freeze_jobs: Default::default(),
+            bounces: Default::default(),
             playback_note_looked: None,
         };
         // Analysis waits while the person is playing, scrubbing or has

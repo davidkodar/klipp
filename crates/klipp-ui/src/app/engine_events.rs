@@ -296,6 +296,8 @@ impl KlippApp {
                     self.refresh_spans_beside(&span_path);
                     // A recorded take lands where it was punched in (#114).
                     self.place_take(media_id);
+                    // A bounced track's file, placed as it replaces (#3264).
+                    self.place_bounce(media_id);
                     if !saves_alike {
                         self.state.dirty = true;
                     }

@@ -5057,6 +5057,33 @@ fn playback_quality_is_set_by_name_and_perf_says_why() {
     assert!(perf["diagnosis"]["cause"].as_str().is_some_and(|c| c.contains("not enough playback")), "{perf}");
 }
 
+/// #3264: `bounce_track` asks the app to bounce a track named by index
+/// or name, ProRes 4444 with its sound unless told otherwise; a format
+/// that is none, a track that isn't there, and one that can't be bounced
+/// are refused, saying why, before anything is asked.
+#[test]
+fn a_track_is_bounced_by_name_and_one_that_cant_be_is_refused() {
+    let mut h = harness();
+    let v1 = h.sequence.read().unwrap().tracks[0].id;
+    h.ok(json!({ "method": "bounce_track", "track": "V1" }));
+    h.ok(json!({ "method": "bounce_track", "track": 0, "format": "ffv1", "sound": false }));
+    let asked: Vec<_> = h.sent.lock().unwrap().iter().filter_map(|c| match c {
+        klipp_core::AppCommand::BounceTrack { track_id, format, sound } => Some((*track_id, *format, *sound)),
+        _ => None,
+    }).collect();
+    assert_eq!(asked, vec![(v1, klipp_core::BounceFormat::ProRes4444, true), (v1, klipp_core::BounceFormat::Ffv1, false)]);
+    let format = h.call(json!({ "method": "bounce_track", "track": "V1", "format": "h264" }));
+    assert!(format["error"].as_str().unwrap_or("").contains("prores4444 or ffv1"), "{format}");
+    let missing = h.call(json!({ "method": "bounce_track", "track": "V9" }));
+    assert!(missing["error"].as_str().unwrap_or("").contains("no track"), "{missing}");
+    let mut seq = (*h.sequence.snapshot()).clone();
+    seq.tracks[0].kind = klipp_timeline::TrackKind::Audio;
+    h.sequence.replace(seq);
+    let sound = h.call(json!({ "method": "bounce_track", "track": "V1" }));
+    assert!(sound["error"].as_str().unwrap_or("").contains("only a picture track"), "{sound}");
+    assert_eq!(h.sent.lock().unwrap().iter().filter(|c| matches!(c, klipp_core::AppCommand::BounceTrack { .. })).count(), 2, "nothing asked for a refusal");
+}
+
 /// #3212: `render_status` reads the strip over the ruler in seconds with
 /// drawing ahead's state; `set_background_render` sends what it is given
 /// and keeps the rest as it is, and refuses nothing to set or a delay out
