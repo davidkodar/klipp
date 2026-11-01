@@ -89,6 +89,25 @@ pub fn load(path: &std::path::Path) -> Option<Visual> {
     crate::store::load(&key, ID, VERSION).and_then(|v| serde_json::from_value(v).ok())
 }
 
+/// [`load`], kept: a file's samples are read from the store once and
+/// kept while the file is unchanged (its store key holds its size and
+/// time). A file not looked at yet is asked again next time.
+pub fn load_kept(path: &std::path::Path) -> Option<std::sync::Arc<Visual>> {
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex, OnceLock};
+    static KEPT: OnceLock<Mutex<HashMap<String, Arc<Visual>>>> = OnceLock::new();
+    let key = crate::store::key_for(path)?;
+    let kept = KEPT.get_or_init(Default::default);
+    if let Some(v) = kept.lock().ok().and_then(|k| k.get(&key).cloned()) {
+        return Some(v);
+    }
+    let v = Arc::new(load(path)?);
+    if let Ok(mut k) = kept.lock() {
+        k.insert(key, v.clone());
+    }
+    Some(v)
+}
+
 /// Where the model's files are.
 pub struct ModelPaths {
     pub vision: std::path::PathBuf,

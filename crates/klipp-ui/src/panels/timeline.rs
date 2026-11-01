@@ -11927,8 +11927,9 @@ impl TimelinePanel {
 
     /// Draw small colored ticks at the top edge of clips at marker positions.
     /// A strip along the clip's foot under each span that shows the same
-    /// frames as another clip (#3272), named on hover; a click goes to
-    /// the other use.
+    /// frames as another clip (#3272), or dashed in another colour where a
+    /// different file looks the same, named on hover; a click goes to the
+    /// other use. The same frames are drawn over a likeness.
     fn draw_reuse_strip(&self, ui: &mut egui::Ui, painter: &egui::Painter, clip_rect: egui::Rect, clip: &klipp_timeline::Clip, state: &AppState, cmds: &mut Vec<AppCommand>) {
         if !state.show_reused_footage {
             return;
@@ -11941,14 +11942,27 @@ impl TimelinePanel {
         let seq = state.sequence();
         let fps = seq.fps.as_f64().max(1.0);
         let x = |frame: i64| clip_rect.min.x + (((frame as f64 / fps - start) / dur) as f32 * clip_rect.width()).clamp(0.0, clip_rect.width());
-        let colour = theme().marker_info;
-        for (i, m) in marks.iter().enumerate() {
+        let tt = theme();
+        let mut order: Vec<(usize, &klipp_document::reuse::Mark)> = marks.iter().enumerate().collect();
+        order.sort_by_key(|(_, m)| m.kind == klipp_document::reuse::Kind::SameFrames);
+        for (i, m) in order {
             let (x0, x1) = (x(m.from), x(m.to));
             if x1 - x0 < 1.0 {
                 continue;
             }
             let strip = egui::Rect::from_min_max(egui::pos2(x0, clip_rect.max.y - 3.0), egui::pos2(x1, clip_rect.max.y));
-            painter.rect_filled(strip, 0.0, colour);
+            match m.kind {
+                klipp_document::reuse::Kind::SameFrames => {
+                    painter.rect_filled(strip, 0.0, tt.marker_info);
+                }
+                klipp_document::reuse::Kind::LooksSame => {
+                    let mut dash = x0;
+                    while dash < x1 {
+                        painter.rect_filled(egui::Rect::from_min_max(egui::pos2(dash, strip.min.y), egui::pos2((dash + 4.0).min(x1), strip.max.y)), 0.0, tt.accent);
+                        dash += 7.0;
+                    }
+                }
+            }
             let hit = egui::Rect::from_min_max(egui::pos2(x0, clip_rect.max.y - 5.0), strip.max);
             let resp = ui.interact(hit, ui.id().with(("reuse_strip", clip.id, i)), egui::Sense::click());
             if resp.clicked() {
@@ -17502,12 +17516,17 @@ mod files_drop_tests {
     }
 }
 
-/// "Also used in <name> on <track> at <time>", the compound named when
-/// the other use is inside one, and how many more uses there are.
+/// "Also used in <name> on <track> at <time>", or "Looks the same as",
+/// the compound named when the other use is inside one, and how many
+/// more uses there are.
 fn reuse_tooltip(m: &klipp_document::reuse::Mark, seq: &klipp_timeline::Sequence) -> String {
     let track = seq.tracks.get(m.partner_track).map_or("another track", |t| t.name.as_str());
     let at = seq.timecode_display().position_secs(m.partner_frame as f64 / seq.fps.as_f64().max(1.0));
-    let mut s = format!("Also used in {} on {track} at {at}", m.partner_name);
+    let how = match m.kind {
+        klipp_document::reuse::Kind::SameFrames => "Also used in",
+        klipp_document::reuse::Kind::LooksSame => "Looks the same as",
+    };
+    let mut s = format!("{how} {} on {track} at {at}", m.partner_name);
     if m.partner_inside {
         s.push_str(" (inside a compound)");
     }
@@ -17529,11 +17548,13 @@ mod tests {
         let mut seq = klipp_timeline::Sequence::new_default();
         seq.fps = klipp_core::Fps::film_24();
         seq.tracks = vec![klipp_timeline::Track::new("V1", klipp_timeline::TrackKind::Video), klipp_timeline::Track::new("B-roll", klipp_timeline::TrackKind::Video)];
-        let mut m = klipp_document::reuse::Mark { from: 0, to: 24, partner: ClipId::new(), partner_track: 1, partner_frame: 48, partner_name: "stock.mov".into(), partner_inside: false, more: 0 };
+        let mut m = klipp_document::reuse::Mark { kind: klipp_document::reuse::Kind::SameFrames, from: 0, to: 24, partner: ClipId::new(), partner_track: 1, partner_frame: 48, partner_name: "stock.mov".into(), partner_inside: false, more: 0 };
         let at = seq.timecode_display().position_secs(2.0);
         assert_eq!(reuse_tooltip(&m, &seq), format!("Also used in stock.mov on B-roll at {at}\nClick to go there"));
         (m.partner_inside, m.more) = (true, 2);
         assert_eq!(reuse_tooltip(&m, &seq), format!("Also used in stock.mov on B-roll at {at} (inside a compound), and 2 more\nClick to go there"));
+        (m.kind, m.partner_inside, m.more) = (klipp_document::reuse::Kind::LooksSame, false, 0);
+        assert_eq!(reuse_tooltip(&m, &seq), format!("Looks the same as stock.mov on B-roll at {at}\nClick to go there"));
     }
 
     /// #2378: a volume lane is on a fader law in dB. Unity at 80% up,
