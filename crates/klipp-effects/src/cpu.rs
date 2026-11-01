@@ -123,7 +123,64 @@ fn round(v: f32) -> i32 {
 }
 
 /// One horizontal then one vertical box pass of radius `r`.
+/// The radius from which a box is slid along each row and column instead
+/// of summed afresh at every pixel (#3176): the sum's cost no longer grows
+/// with the radius. Below it the window is small enough to sum directly,
+/// and the pictures stay what they were to the bit. The GPU's box passes
+/// change over at the same radius (`blur/blur_h.wgsl`).
+pub(crate) const BOX_SLIDES_FROM: i32 = 8;
+
+/// A box of radius `r` slid along `row` (`n` pixels) into `out`: the
+/// window seeded once, its edges clamped as [`box_blur`]'s are, then a
+/// pixel in and a pixel out per step. At a light wrap's widest, a sigma
+/// of 3200 pixels, summing every pixel's window took 30 s a frame.
+fn slide_box(row: &[f32], out: &mut [f32], n: usize, r: i64) {
+    let px = |i: i64| -> [f64; 4] {
+        let i = i.clamp(0, n as i64 - 1) as usize * 4;
+        [row[i] as f64, row[i + 1] as f64, row[i + 2] as f64, row[i + 3] as f64]
+    };
+    let last = n as i64 - 1;
+    // The window at 0: the edge repeated `r` times on the left, and on the
+    // right as far as the window reaches past the row.
+    let (left, right) = (r as f64, (r - last).max(0) as f64);
+    let (first, end) = (px(0), px(last));
+    let mut sum: [f64; 4] = std::array::from_fn(|c| first[c] * left + end[c] * right);
+    for k in 0..=r.min(last) {
+        let q = px(k);
+        (0..4).for_each(|c| sum[c] += q[c]);
+    }
+    let inv = 1.0 / (2 * r + 1) as f64;
+    for x in 0..n {
+        (0..4).for_each(|c| out[x * 4 + c] = (sum[c] * inv) as f32);
+        let (inn, gone) = (px(x as i64 + r + 1), px(x as i64 - r));
+        (0..4).for_each(|c| sum[c] += inn[c] - gone[c]);
+    }
+}
+
+/// `p` (`w`×`h`) with its rows and columns swapped.
+fn transpose(p: &[f32], w: usize, h: usize) -> Vec<f32> {
+    let mut out = vec![0.0f32; p.len()];
+    out.par_chunks_exact_mut(h * 4).enumerate().for_each(|(x, col)| {
+        for y in 0..h {
+            col[y * 4..y * 4 + 4].copy_from_slice(&p[(y * w + x) * 4..(y * w + x) * 4 + 4]);
+        }
+    });
+    out
+}
+
+/// [`slide_box`] along every row of `p`.
+fn slide_rows(p: &[f32], w: usize, r: i64) -> Vec<f32> {
+    let mut out = vec![0.0f32; p.len()];
+    out.par_chunks_exact_mut(w * 4).zip(p.par_chunks_exact(w * 4)).for_each(|(o, row)| slide_box(row, o, w, r));
+    out
+}
+
 fn box_blur(p: &[f32], w: u32, h: u32, r: i32) -> Vec<f32> {
+    if r >= BOX_SLIDES_FROM && w > 0 && h > 0 {
+        let (w, h) = (w as usize, h as usize);
+        let rows = slide_rows(p, w, r as i64);
+        return transpose(&slide_rows(&transpose(&rows, w, h), h, r as i64), h, w);
+    }
     let inv = 1.0 / (2 * r + 1) as f32;
     let horizontal = each_pixel(p, w, h, |x, y, f| {
         let mut s = [0.0f32; 4];
@@ -1431,4 +1488,28 @@ pub(crate) fn focus_blur_mix(u: f32, band: f32) -> f32 {
     let d = (u - 0.5).abs() * 2.0;
     let t = ((d - band) / (1.0 - band).max(0.001)).clamp(0.0, 1.0);
     t * t * (3.0 - 2.0 * t)
+}
+
+#[cfg(test)]
+mod box_slide_tests {
+    /// Slid, a box gives what summing every pixel's window gives, to
+    /// float rounding: windows inside the frame, reaching past one edge,
+    /// and wider than the frame both ways (#3176).
+    #[test]
+    fn a_slid_box_is_the_summed_one() {
+        let (w, h) = (37u32, 23u32);
+        let p: Vec<f32> = (0..w * h * 4).map(|i| ((i * 7919) % 101) as f32 / 100.0).collect();
+        let summed = |r: i32| {
+            let at = |x: i32, y: i32, c: usize| p[((y.clamp(0, h as i32 - 1) as u32 * w + x.clamp(0, w as i32 - 1) as u32) * 4) as usize + c];
+            let n = (2 * r + 1) as f32;
+            let rows: Vec<f32> = (0..h as i32).flat_map(|y| (0..w as i32).flat_map(move |x| (0..4).map(move |c| (-r..=r).map(|d| at(x + d, y, c)).sum::<f32>() / n))).collect();
+            let at_row = |x: i32, y: i32, c: usize| rows[((y.clamp(0, h as i32 - 1) as u32 * w + x as u32) * 4) as usize + c];
+            (0..h as i32).flat_map(|y| (0..w as i32).flat_map(move |x| (0..4).map(move |c| (-r..=r).map(|d| at_row(x, y + d, c)).sum::<f32>() / n))).collect::<Vec<f32>>()
+        };
+        for r in [super::BOX_SLIDES_FROM, 15, 30, 100] {
+            let slid = super::box_blur(&p, w, h, r);
+            let worst = slid.iter().zip(summed(r)).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
+            assert!(worst < 1e-4, "radius {r}: {worst}");
+        }
+    }
 }
