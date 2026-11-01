@@ -433,6 +433,7 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::PasteClipsFrom { .. }
         | AppCommand::DuplicateClip { .. }
         | AppCommand::EditAudition { .. }
+        | AppCommand::PickPreviewedTake
         | AppCommand::PasteAttributes { .. }
         | AppCommand::SetClipEnabled { .. }
         | AppCommand::SetClipSolo { .. }
@@ -531,6 +532,9 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::SetTranscriptLanguage { .. }
         | AppCommand::SpellingLearn { .. }
         | AppCommand::OpenAuditionPicker { .. }
+        | AppCommand::PreviewTakes { .. }
+        | AppCommand::StepTakePreview { .. }
+        | AppCommand::EndTakePreview
         | AppCommand::SetNodeParam { .. }
         | AppCommand::PrinterLight { .. }
         | AppCommand::BeginNodeParamEdit { .. }

@@ -190,6 +190,12 @@ impl KlippApp {
             // A path drag the command doesn't belong to is closed as its own
             // step before any handler runs (M3 step 2).
             self.state.before_dispatch(&cmd);
+            // A take previewed in its slot (#3209) gives way to anything
+            // but the transport and its own commands: they see the
+            // document.
+            if self.state.take_preview.is_some() && !crate::auditions::keeps_take_preview(&cmd) {
+                self.end_take_preview(false);
+            }
             if self.handle_node_thumbnail_request(&cmd) { continue; }
             // Several clips selected and the Inspector's clip edited: the
             // others take the change too (#843).

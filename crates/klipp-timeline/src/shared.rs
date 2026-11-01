@@ -56,6 +56,26 @@ struct Current {
     /// for this revision and gone with it, so an edit ends it whatever
     /// else happens. Never the document's: nothing saves or undoes it.
     preview: Option<Arc<Sequence>>,
+    /// While a take of an audition is previewed (#3209): the document,
+    /// kept here while `sequence` is the copy with the take in its slot,
+    /// which the engine draws and plays as it does any sequence. What
+    /// writes a file reads [`SharedSequence::document`]; a change ends it
+    /// first, so an edit is always the document's.
+    stand_in: Option<StandIn>,
+}
+
+#[derive(Debug)]
+struct StandIn {
+    document: Arc<Sequence>,
+    what: StandInFor,
+}
+
+/// What a stand-in sequence shows (#3209): a take of the audition in a
+/// clip's slot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StandInFor {
+    pub clip: klipp_core::ClipId,
+    pub take: klipp_core::TakeId,
 }
 
 /// The sequence as it was when read: holds no lock.
@@ -96,6 +116,7 @@ impl DerefMut for SequenceWrite<'_> {
         if !self.touched {
             self.current.revision = SequenceRevision::next();
             self.current.preview = None;
+            debug_assert!(self.current.stand_in.is_none(), "a stand-in is ended before a write");
             self.touched = true;
         }
         Arc::make_mut(&mut self.current.sequence)
@@ -104,7 +125,7 @@ impl DerefMut for SequenceWrite<'_> {
 
 impl SharedSequence {
     pub fn new(seq: Sequence) -> Self {
-        Self { current: Mutex::new(Current { sequence: Arc::new(seq), revision: SequenceRevision::next(), preview: None }) }
+        Self { current: Mutex::new(Current { sequence: Arc::new(seq), revision: SequenceRevision::next(), preview: None, stand_in: None }) }
     }
 
     fn lock(&self) -> MutexGuard<'_, Current> {
@@ -141,23 +162,68 @@ impl SharedSequence {
         }
     }
 
-    /// The sequence for a change. Waits only for another writer.
+    /// The sequence for a change. Waits only for another writer. A take
+    /// previewed in its slot is ended first: the change is the
+    /// document's.
     pub fn write(&self) -> LockResult<SequenceWrite<'_>> {
-        Ok(SequenceWrite { current: self.lock(), touched: false })
+        let mut current = self.lock();
+        end_stand_in(&mut current);
+        Ok(SequenceWrite { current, touched: false })
     }
 
     /// [`Self::write`], or `WouldBlock` while another writer has it.
     pub fn try_write(&self) -> TryLockResult<SequenceWrite<'_>> {
-        match self.current.try_lock() {
-            Ok(g) => Ok(SequenceWrite { current: g, touched: false }),
-            Err(TryLockError::Poisoned(e)) => Ok(SequenceWrite { current: e.into_inner(), touched: false }),
-            Err(TryLockError::WouldBlock) => Err(TryLockError::WouldBlock),
-        }
+        let mut current = match self.current.try_lock() {
+            Ok(g) => g,
+            Err(TryLockError::Poisoned(e)) => e.into_inner(),
+            Err(TryLockError::WouldBlock) => return Err(TryLockError::WouldBlock),
+        };
+        end_stand_in(&mut current);
+        Ok(SequenceWrite { current, touched: false })
     }
 
     /// Put `seq` in place whole: what a publish of an edited sequence does.
+    /// It is the document, so a take previewed is ended with it.
     pub fn replace(&self, seq: Sequence) {
-        *self.lock() = Current { sequence: Arc::new(seq), revision: SequenceRevision::next(), preview: None };
+        *self.lock() = Current { sequence: Arc::new(seq), revision: SequenceRevision::next(), preview: None, stand_in: None };
+    }
+
+    /// Hand the engine `seq` in place of the document while a take is
+    /// previewed (#3209), keeping the document beside it; previewing
+    /// another take keeps the same document. Its revision.
+    pub fn stand_in(&self, seq: Sequence, what: StandInFor) -> SequenceRevision {
+        let mut current = self.lock();
+        let document = match current.stand_in.take() {
+            Some(s) => s.document,
+            None => Arc::clone(&current.sequence),
+        };
+        current.sequence = Arc::new(seq);
+        current.revision = SequenceRevision::next();
+        current.preview = None;
+        current.stand_in = Some(StandIn { document, what });
+        current.revision
+    }
+
+    /// The document back in place of the take previewed, under a revision
+    /// of its own, so what drew the take draws it again. Whether a take
+    /// was previewed.
+    pub fn end_stand_in(&self) -> bool {
+        end_stand_in(&mut self.lock())
+    }
+
+    /// The take previewed in its slot, if one is.
+    pub fn standing_in(&self) -> Option<StandInFor> {
+        self.lock().stand_in.as_ref().map(|s| s.what)
+    }
+
+    /// The document: what a save, an export or anything else writing a
+    /// file reads, never a take previewed in its slot.
+    pub fn document(&self) -> Arc<Sequence> {
+        let current = self.lock();
+        match &current.stand_in {
+            Some(s) => Arc::clone(&s.document),
+            None => Arc::clone(&current.sequence),
+        }
     }
 
     /// Show `preview` in place of the sequence (#3210), if the sequence is
@@ -186,6 +252,14 @@ impl SharedSequence {
     }
 }
 
+fn end_stand_in(current: &mut Current) -> bool {
+    let Some(s) = current.stand_in.take() else { return false };
+    current.sequence = s.document;
+    current.revision = SequenceRevision::next();
+    current.preview = None;
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -212,6 +286,46 @@ mod tests {
         assert!(shared.set_preview(shared.revision(), Arc::clone(&previewed)));
         shared.replace(Sequence::new_default());
         assert!(shared.view_with_revision().2.is_none(), "a sequence put in whole ends it");
+    }
+
+    /// #3209: a take stood in shows in place of the document, which is
+    /// kept whole beside it and is what `document` gives; previewing
+    /// another keeps the same document; ending gives it back as it was,
+    /// under a new revision; a write ends it first and changes the
+    /// document, never the take; a publish ends it.
+    #[test]
+    fn a_take_stands_in_for_the_document_until_ended_or_written() {
+        let mut doc = Sequence::new_default();
+        doc.name = "document".into();
+        let shared = SharedSequence::new(doc);
+        let before = shared.revision();
+        let take = |name: &str| {
+            let mut s = Sequence::new_default();
+            s.name = name.into();
+            s
+        };
+        let what = StandInFor { clip: klipp_core::ClipId::new(), take: klipp_core::TakeId::new() };
+        let r = shared.stand_in(take("take 2"), what);
+        assert_ne!(r, before);
+        assert_eq!(shared.snapshot().name, "take 2", "the engine draws the take");
+        assert_eq!(shared.document().name, "document", "a save reads the document");
+        assert_eq!(shared.standing_in(), Some(what));
+        shared.stand_in(take("take 3"), what);
+        assert_eq!(shared.document().name, "document", "the same document under the next take");
+        assert!(shared.end_stand_in());
+        assert_eq!(shared.snapshot().name, "document");
+        assert!(shared.revision() != r && shared.revision() != before, "a revision of its own");
+        assert!(!shared.end_stand_in(), "nothing to end");
+
+        shared.stand_in(take("take 2"), what);
+        shared.write().unwrap().name = "edited".into();
+        assert_eq!(shared.standing_in(), None, "a write ends it");
+        assert_eq!(shared.snapshot().name, "edited");
+        assert_eq!(shared.document().name, "edited", "and changes the document");
+
+        shared.stand_in(take("take 2"), what);
+        shared.replace(take("published"));
+        assert_eq!((shared.standing_in(), shared.document().name.as_str()), (None, "published"));
     }
 
     #[test]

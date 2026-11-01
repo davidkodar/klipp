@@ -2328,6 +2328,18 @@ pub enum AppCommand {
     EditAudition { clip_id: ClipId, edit: AuditionEdit },
     /// The audition picker for `clip_id`, or closed (`None`) (#3209).
     OpenAuditionPicker { clip_id: Option<ClipId> },
+    /// Play an audition's takes in its slot (#3209), each over its slot
+    /// and a little either side, nothing in the project changed: from
+    /// `take` (the one in the slot when `None`), each in turn with `all`,
+    /// else that one round and round.
+    PreviewTakes { clip_id: ClipId, take: Option<TakeId>, all: bool },
+    /// The take preview moved `by` takes, round from the last to the first.
+    StepTakePreview { by: i32 },
+    /// The take previewed put in the slot, one undo step, and the preview
+    /// ended.
+    PickPreviewedTake,
+    /// The take preview ended, the document back as it was.
+    EndTakePreview,
     /// Take `word` as right in this project (#3236): it goes on the
     /// brief's vocabulary, one undo step.
     SpellingIgnore { word: String },

@@ -498,6 +498,15 @@ pub fn check(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts) ->
         add(Severity::Error, "empty", None, "there is no picture on the timeline".into(), "Place the piece first");
     }
 
+    // Auditions left with their takes (#3209): the take in each slot is
+    // what is delivered; the rest are kept but not seen.
+    for c in seq.tracks.iter().flat_map(|t| t.clips.iter()) {
+        if let Some(a) = c.audition.as_deref().filter(|a| a.takes.len() > 1) {
+            let name = a.active_take().map_or_else(String::new, |t| format!(" ({})", quoted(&t.name)));
+            add(Severity::Note, "audition", Some(secs(c.timeline_in)), format!("an audition of {} takes: the one in its slot{name} is what is exported", a.takes.len()), "Finalize it once the take is chosen, or leave it to choose later");
+        }
+    }
+
     // Media that is not there.
     for t in &seq.tracks {
         for c in t.clips.iter().filter(|c| c.enabled) {

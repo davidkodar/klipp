@@ -213,15 +213,17 @@ Arguments:
 
 ## klipp_alternatives
 
-Auditions: takes held in one clip slot, switched in place, one undo step each. action list reads the slot's takes: each take's id, name, length, what it shows, its source range, whether it has sound, which is in the slot, and what differs from that one (media, range, length, speed, effects, grade, title, sound level). create, add, remove, rename, switch and finalize are the alternatives op, as klipp_apply runs it; see that op for what each does, and for ripple off the primary storyline.
+Auditions: takes held in one clip slot, switched in place, one undo step each. action list reads the slot's takes: each take's id, name, length, what it shows, its source range, whether it has sound, which is in the slot, and what differs from that one (media, range, length, speed, effects, grade, title, sound level). create, add, remove, rename, switch and finalize are the alternatives op, as klipp_apply runs it; see that op for what each does, and for ripple off the primary storyline. preview plays the takes in the slot, picture and sound, over the slot and 2 s either side, nothing in the project changed: take (the one in the slot when left out) round and round, or with all each in turn; stop ends it. While it plays, klipp_frame_at and screenshots show the take and every reply carries previewing {clip, take}: the timeline read is that take's. Anything but a read, a seek or play/pause ends it first and then acts on the document, so an edit is never made to a preview. Offer the person the takes this way, then switch to the one they pick.
 
 Arguments:
-- `action`: list, create, add, remove, rename, switch or finalize
+- `action`: list, create, add, remove, rename, switch, finalize or preview
 - `clip_id`: the slot's clip
 - `takes`: for create and add: each {media_id, from, to, name} a stretch of a pool file, or {} a copy of the clip to vary
-- `take`: for remove, rename and switch: a take's name or id
+- `take`: for remove, rename, switch and preview: a take's name or id
 - `name`: for rename, the new name; for create, the first take's
 - `ripple`: for switch off the primary storyline, move the clips after it
+- `all`: for preview, each take in turn
+- `stop`: for preview, end it
 
 ## klipp_apply
 
