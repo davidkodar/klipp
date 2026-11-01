@@ -2670,6 +2670,9 @@ pub enum AppCommand {
 
     // Built-in effects
     AddBuiltinEffect { clip_id: ClipId, effect: klipp_effects::BuiltinEffect },
+    /// A LUT preset on a clip as its look (#3255): the `look` op, the
+    /// LUT in the clip's grade replacing any look there, one undo step.
+    ApplyClipLut { clip_id: ClipId, lut_path: PathBuf, name: String },
     RemoveBuiltinEffect { clip_id: ClipId, index: usize },
     ToggleBuiltinEffectEnabled { clip_id: ClipId, index: usize },
     UpdateBuiltinEffect { clip_id: ClipId, index: usize, effect: klipp_effects::BuiltinEffect },

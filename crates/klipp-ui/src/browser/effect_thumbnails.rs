@@ -241,6 +241,13 @@ impl ThumbnailRenderer {
                         let out = klipp_effects::apply_effects(effects, linear, frame.width, frame.height);
                         klipp_effects::linear_f32_rgba_to_srgb_u8(&out)
                     }
+                    // A LUT preset (#3255): the reference through its file.
+                    EffectSource::LutLook(path) => {
+                        let Ok(lut) = klipp_color::load_lut(path) else { continue };
+                        let mut rgba = frame.rgba.clone();
+                        klipp_color::apply_3d_lut_tetrahedral(&mut rgba, &lut, 1.0);
+                        rgba
+                    }
                     EffectSource::Ofx(plugin_id) => {
                         apply_ofx_visual_proxy(&frame, plugin_id)
                     }

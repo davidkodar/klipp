@@ -14,6 +14,22 @@ use std::path::{Path, PathBuf};
 /// How a project names a file inside the bundled LUT library.
 pub const BUNDLED_LUT_PREFIX: &str = "bundled:";
 
+/// The bundled LUT library's folders and what each holds, in the order
+/// they are listed: the Effects browser's LUTs, the Colour tab's presets
+/// and the socket's looks are these (#3255).
+pub const BUNDLED_LUT_FOLDERS: [(&str, &str); 7] = [
+    ("film-bw", "Film B&W"),
+    ("film-slide", "Film Slide"),
+    ("film-negative", "Film Negative"),
+    ("film-print", "Film Print"),
+    ("film-instant", "Film Instant"),
+    ("fuji-xtrans", "Fuji X-Trans"),
+    // A camera's log or flat profile to normal: on normal footage they
+    // lift its blacks (#2769). The folder keeps its old name, which saved
+    // grades point into.
+    ("cinematic", "Camera conversion (log footage)"),
+];
+
 /// The bundled LUT library: next to the executable in an install, else
 /// in a checkout the executable sits inside (`target/release/klipp-app`
 /// under the repository), else in the source tree the build came from.

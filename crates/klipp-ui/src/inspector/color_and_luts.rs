@@ -4,6 +4,10 @@ use crate::state::AppState;
 use crate::theme::KlippTheme;
 use klipp_core::AppCommand;
 
+/// What the Timeline LUT is, under its heading: the one LUT here that
+/// exports carry, apart from a clip's own.
+pub(crate) const TIMELINE_LUT_HINT: &str = "Over the whole timeline, in every export. The viewing LUT (Colour Management) and the calibration LUT (Preferences) are on screen only.";
+
 /// Cache for LUT preview thumbnails, stored in egui context data.
 #[derive(Clone, Default)]
 struct LutPreviewCache(std::collections::HashMap<std::path::PathBuf, egui::TextureHandle>);
@@ -188,9 +192,13 @@ pub(crate) fn show_color_and_luts(
         }); });
         });
 
-        // Global LUT
-        section_card(ui, "GLOBAL LUT", None, theme, |ui| {
+        // The Timeline LUT (the project's global LUT): over the whole
+        // picture, in every export. The viewing and calibration LUTs are
+        // the screen's alone (#3255).
+        section_card(ui, "TIMELINE LUT", None, theme, |ui| {
         ui.horizontal(|ui| { ui.add_space(12.0); ui.vertical(|ui| {
+        ui.label(egui::RichText::new(TIMELINE_LUT_HINT).size(10.0).color(theme.text_dim));
+        ui.add_space(2.0);
         if let Some(path) = &state.global_lut_path {
             let filename = path.file_name()
                 .map(|n| n.to_string_lossy().to_string())
@@ -236,43 +244,36 @@ pub(crate) fn show_color_and_luts(
         }); });
         });
 
-        // Bundled LUT Presets
+        // Bundled LUT Presets (#3255): each put on the selected clip as its
+        // look, in its grade, one undo step, as its card in the Effects
+        // browser and the socket's look put it. The project's LUT above is
+        // another thing.
         section_card(ui, "LUT PRESETS", None, theme, |ui| {
         let luts_dir = find_bundled_luts_dir();
+        let selected = state.selected_clip.and_then(|id| state.sequence().all_clips().find(|c| c.id == id));
+        // The LUT the selected clip's look is, its stored name (a bundled
+        // one is saved as `bundled:…`) resolved to the file.
+        let on_clip: Vec<std::path::PathBuf> = selected
+            .map(|c| c.grade().nodes.iter().filter(|n| n.kind == klipp_nodes::NodeKind::Lut3D).filter_map(|n| n.params.lut_path.as_ref()).map(|p| klipp_core::assets::resolve_lut_path(&p.to_string_lossy(), luts_dir.as_deref())).collect())
+            .unwrap_or_default();
+        if selected.is_none() {
+            ui.label(egui::RichText::new("Select a clip to put a LUT on it.").size(10.0).color(theme.text_dim));
+        }
         if let Some(ref base) = luts_dir {
-            let categories = [
-                ("film-bw", "Film B&W"),
-                ("film-slide", "Film Slide"),
-                ("film-negative", "Film Negative"),
-                ("film-print", "Film Print"),
-                ("film-instant", "Film Instant"),
-                ("fuji-xtrans", "Fuji X-Trans"),
-                // A camera's log or flat profile to normal: on normal footage they
-                // lift its blacks (#2769). The folder keeps its old name, which
-                // saved grades point into.
-                ("cinematic", "Camera conversion (log footage)"),
-            ];
-            for (dir_name, label) in &categories {
+            for (dir_name, label) in &crate::browser::effect_registry::LUT_PRESET_FOLDERS {
                 let cat_dir = base.join(dir_name);
                 if !cat_dir.exists() { continue; }
                 let id = egui::Id::new(format!("lut_preset_{dir_name}"));
                 egui::CollapsingHeader::new(*label)
                     .id_salt(id)
                     .show(ui, |ui| {
-                        let mut entries: Vec<_> = std::fs::read_dir(&cat_dir)
-                            .into_iter().flatten()
-                            .filter_map(|e| e.ok())
-                            .filter(|e| e.path().extension()
-                                .is_some_and(|ext| ext == "cube" || ext == "3dl" || ext == "csp"))
-                            .collect();
-                        entries.sort_by_key(|e| e.file_name());
+                        let entries = crate::browser::effect_registry::lut_files(&cat_dir);
                         let ctx = ui.ctx().clone();
-                        for entry in entries {
-                            let path = entry.path();
+                        for path in entries {
                             let name = path.file_stem()
                                 .map(|s| s.to_string_lossy().to_string())
                                 .unwrap_or_default();
-                            let is_active = state.global_lut_path.as_ref() == Some(&path);
+                            let is_active = on_clip.contains(&path);
                             let thumb_size = 32.0;
                             let row_h = thumb_size + 4.0;
                             let (rect, resp) = ui.allocate_exact_size(
@@ -324,11 +325,10 @@ pub(crate) fn show_color_and_luts(
                                 egui::FontId::proportional(11.0),
                                 text_color,
                             );
+                            let resp = resp.on_hover_text(if selected.is_some() { "Make this LUT the selected clip's look, in its grade" } else { "Select a clip to put this LUT on it" });
                             if resp.clicked() {
-                                if is_active {
-                                    cmds.push(AppCommand::ClearGlobalLut);
-                                } else {
-                                    cmds.push(AppCommand::LoadGlobalLut { path });
+                                if let Some(clip) = selected {
+                                    cmds.push(crate::browser::effect_registry::lut_command(clip.id, &path));
                                 }
                             }
                         }

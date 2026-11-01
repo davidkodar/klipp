@@ -2125,7 +2125,7 @@ impl KlippApp {
             if project.picture_transform != now {
                 project.picture_transform = now;
             }
-            project.viewer_lut = self.state.global_lut_path.clone().filter(|_| self.state.global_lut_enabled).map(|p| (p, self.state.global_lut_opacity));
+            project.viewer_lut = self.state.timeline_lut().map(|p| (p, self.state.global_lut_opacity));
         }
     }
 
@@ -2307,6 +2307,19 @@ impl KlippApp {
                 self.state.looks.push(look);
                 self.state.dirty = true;
                 self.state.toast.show(format!("Saved Look \"{label}\""));
+                true
+            }
+            // A LUT preset as the clip's look (#3255): the look op, as the
+            // socket's look runs it, one undo step.
+            AppCommand::ApplyClipLut { clip_id, lut_path, name } => {
+                let op = crate::browser::effect_registry::lut_look_op(*clip_id, lut_path, name);
+                match klipp_document::ops::resolve(self.state.sequence(), &self.state.media_pool, &[op]) {
+                    Ok(plan) => {
+                        let edits: Vec<_> = plan.steps.into_iter().map(|s| s.edit).collect();
+                        self.apply_edits_as_one(&edits, "Look");
+                    }
+                    Err(r) => self.state.toast.show(r.why),
+                }
                 true
             }
             AppCommand::ApplyLook { look_id, clip_ids, append } => {

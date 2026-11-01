@@ -159,6 +159,20 @@ pub(super) fn previewed(seq: &klipp_timeline::Sequence, want: &PreviewWant, ctx:
                 span = shown.zip(cut).map(|(t, cut)| t.span(cut));
                 at = span.map(|(start, end)| klipp_core::RationalTime { value: (start.value + end.value) / 2, rate: start.rate });
             }
+            // A LUT preset as the clip's look (#3255): the look op's edit,
+            // as its click applies it.
+            AppCommand::ApplyClipLut { clip_id, lut_path, name } => {
+                let op = crate::browser::effect_registry::lut_look_op(*clip_id, lut_path, name);
+                let plan = klipp_document::ops::resolve(&out, ctx.pool, &[op]).map_err(|r| r.why)?;
+                let mut sequences = vec![out];
+                let mut fps = sequences[0].fps;
+                let mut scratch = klipp_media::MediaPool::default();
+                let mut view = klipp_document::apply::DocumentView { sequences: &mut sequences, active: 0, media_pool: &mut scratch, fps: &mut fps };
+                for step in &plan.steps {
+                    view.apply_forward(&step.edit);
+                }
+                out = sequences.remove(0);
+            }
             cmd if path_commands::path_ops(cmd).is_some() => {}
             _ => return Err("it isn't a change to the clip's picture".into()),
         }
@@ -353,7 +367,7 @@ pub(crate) fn want_effect(state: &mut AppState, name: &str, source: &crate::brow
 /// [`want_effect`] on `clip` when given.
 pub(crate) fn want_effect_on(state: &mut AppState, name: &str, source: &crate::browser::effect_registry::EffectSource, clip: Option<klipp_core::ClipId>, across: Option<f32>) -> Option<String> {
     use crate::browser::effect_registry::EffectSource;
-    if !matches!(source, EffectSource::Builtin(_) | EffectSource::Look(_) | EffectSource::Frei0r(_)) {
+    if !matches!(source, EffectSource::Builtin(_) | EffectSource::Look(_) | EffectSource::Frei0r(_) | EffectSource::LutLook(_)) {
         return None;
     }
     let clip = clip.or(state.selected_clip).or_else(|| state.picture_under_playhead())?;
@@ -413,6 +427,7 @@ pub(crate) fn note_for(state: &AppState, key: &str) -> Option<String> {
 mod tests {
     use super::*;
     use klipp_effects::BuiltinEffect;
+    use klipp_timeline::GradeAccess;
 
     /// [`previewed`] with `state`'s media and no analysis: the sequence
     /// alone, and the time to show it at.
@@ -467,6 +482,38 @@ mod tests {
             let clip_json = |s: &klipp_timeline::Sequence| serde_json::to_value(&s.tracks[0].clips[0]).unwrap();
             assert_eq!(clip_json(&shown), clip_json(applying.sequence()), "{effect:?}: the previewed clip is the applied one");
         }
+    }
+
+    /// #3255: a LUT preset hovered is the clip with that LUT as its look,
+    /// as its click's look op makes it, and the sequence previewed from is
+    /// as it was.
+    #[test]
+    fn a_previewed_lut_preset_is_the_clips_look_as_applied() {
+        let Some(base) = klipp_core::assets::bundled_luts_dir() else {
+            eprintln!("skipping: no bundled LUTs");
+            return;
+        };
+        let path = crate::browser::effect_registry::lut_files(&base.join("film-bw")).into_iter().next().expect("a black-and-white preset");
+        let (state, clip) = timeline(2);
+        let source = crate::browser::effect_registry::EffectSource::LutLook(path.clone());
+        let cmds = crate::browser::effects_tab::effect_commands_in(&state, &source, clip).expect("the commands");
+        assert!(matches!(&cmds[..], [AppCommand::ApplyClipLut { clip_id, lut_path, .. }] if *clip_id == clip && *lut_path == path), "{cmds:?}");
+        let before = serde_json::to_string(state.sequence()).unwrap();
+        let (shown, _) = shown(&state, &cmds).expect("a preview");
+        assert_eq!(serde_json::to_string(state.sequence()).unwrap(), before, "the sequence previewed from is unchanged");
+        let lut_of = |s: &klipp_timeline::Sequence| s.all_clips().find(|c| c.id == clip).and_then(|c| c.grade().nodes.iter().find(|n| n.kind == klipp_nodes::NodeKind::Lut3D).and_then(|n| n.params.lut_path.clone())).map(|p| klipp_core::assets::resolve_lut_path(&p.to_string_lossy(), Some(base)));
+        assert_eq!(lut_of(&shown), Some(path.clone()), "the LUT in the clip's grade");
+        let op = klipp_document::ops::Op::Look { clip_id: Some(klipp_document::ops::ClipRef::Id(clip)), on: None, lut_path: path.display().to_string(), name: None, opacity: None, remove: false };
+        let plan = klipp_document::ops::resolve(state.sequence(), &state.media_pool, &[op]).unwrap();
+        let mut seqs = vec![state.sequence().clone()];
+        let (mut pool, mut fps) = (klipp_media::MediaPool::default(), seqs[0].fps);
+        let mut view = klipp_document::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut pool, fps: &mut fps };
+        for step in &plan.steps {
+            view.apply_forward(&step.edit);
+        }
+        // Node for node, by kind and settings: the ids are made new each time.
+        let grade = |s: &klipp_timeline::Sequence| s.all_clips().find(|c| c.id == clip).unwrap().grade().nodes.iter().map(|n| (n.kind, serde_json::to_value(&n.params).unwrap())).collect::<Vec<_>>();
+        assert_eq!(grade(&shown), grade(&seqs[0]), "the previewed grade is the applied one");
     }
 
     /// The hover's frames: an entry goes up only after its dwell, so a
