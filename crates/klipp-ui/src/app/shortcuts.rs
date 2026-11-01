@@ -881,6 +881,16 @@ impl KlippApp {
             if kb.is_action_pressed("place_on_top_edit", i) {
                 cmds.push(AppCommand::PlaceOnTopEdit);
             }
+            // Append to the end of the main track: the clips selected in
+            // the media pool, in its order, else the source viewer's, as
+            // Add to End of Timeline puts each (Final Cut's E).
+            if kb.is_action_pressed("append_edit", i) {
+                let appended = self.state.append_targets();
+                if appended.is_empty() {
+                    self.state.toast.show("Select a clip in the media pool, or load one in the source viewer, to append it");
+                }
+                cmds.extend(appended.into_iter().map(|media_id| AppCommand::ImportMediaLinked { media_id, on_new_tracks: false }));
+            }
             if kb.is_action_pressed("replace_edit", i) {
                 cmds.push(AppCommand::ReplaceEdit);
             }

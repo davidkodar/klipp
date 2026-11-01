@@ -7904,3 +7904,18 @@ mod switch_sequence_tests {
         assert!(!state.switch_sequence(1, false), "already shown");
     }
 }
+
+impl AppState {
+    /// What Append to End puts on the timeline: the media pool's selected
+    /// clips by name, as the pool lists them first, else the clip in the
+    /// source viewer.
+    pub(crate) fn append_targets(&self) -> Vec<MediaId> {
+        let mut picked: Vec<&klipp_media::MediaItem> = self.media_pool.all().filter(|m| self.selected_media_ids.contains(&m.id)).collect();
+        picked.sort_by(|a, b| a.filename.to_lowercase().cmp(&b.filename.to_lowercase()).then_with(|| a.id.0.cmp(&b.id.0)));
+        let selected: Vec<MediaId> = picked.into_iter().map(|m| m.id).collect();
+        if !selected.is_empty() {
+            return selected;
+        }
+        self.source_media_id.into_iter().collect()
+    }
+}
