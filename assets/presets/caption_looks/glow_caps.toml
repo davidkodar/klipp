@@ -1,0 +1,23 @@
+# Glow Caps (#3304): heavy capitals in a light colour with a soft glow of
+# the same colour, each word appearing as it is said. The colour is one of
+# three; the glow's amount scales its radius and strength.
+id = "glow_caps"
+name = "Glow Caps"
+motion = "typewriter"
+font = "Montserrat"
+weight = 800
+caps = true
+outline = 0.0
+glow = { radius = 18.0, intensity = 0.85 }
+
+[[colour]]
+name = "Ice"
+colour = "#d8f1ff"
+
+[[colour]]
+name = "Peach"
+colour = "#ffe0c8"
+
+[[colour]]
+name = "Mint"
+colour = "#d6ffe8"

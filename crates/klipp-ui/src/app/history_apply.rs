@@ -15,11 +15,13 @@ impl KlippApp {
         for e in edits {
             self.apply_edit_forward(e);
         }
-        // A title placed in a face Klipp's catalogue has is fetched (#2734).
-        crate::missing_fonts::fetch_for(edits.iter().filter_map(|e| match e {
-            EditCommand::AddTitleClip { clip, .. } => clip.title_data(),
-            _ => None,
-        }));
+        // A title placed in a face Klipp's catalogue has is fetched (#2734),
+        // captions placed in a batch too (#3304).
+        let mut placed = Vec::new();
+        for e in edits {
+            placed_titles(e, &mut placed);
+        }
+        crate::missing_fonts::fetch_for(placed);
         // One step, or the open batch's edits (a socket or agent batch).
         self.state.push_edits_as_one(edits, label);
         self.state.dirty = true;
@@ -124,5 +126,31 @@ impl KlippApp {
     pub(super) fn apply_edit_forward(&mut self, cmd: &EditCommand) {
         let effects = self.document_view().apply_forward(cmd);
         self.run_document_effects(effects);
+    }
+}
+
+/// The titles `e` places, in its batches and named steps too.
+fn placed_titles<'a>(e: &'a EditCommand, out: &mut Vec<&'a klipp_timeline::TitleData>) {
+    match e {
+        EditCommand::AddTitleClip { clip, .. } | EditCommand::LegacyAppendClip { clip, .. } => out.extend(clip.title_data()),
+        EditCommand::Batch(edits) => edits.iter().for_each(|e| placed_titles(e, out)),
+        EditCommand::Named { edit, .. } => placed_titles(edit, out),
+        _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Captions come as appended clips in a named batch; their titles are
+    /// found there, so a face they name is fetched.
+    #[test]
+    fn titles_placed_in_a_named_batch_are_found() {
+        let title = |t: &str| klipp_timeline::Clip { kind: klipp_timeline::ClipKind::Title(klipp_timeline::TitleData::single_text(klipp_timeline::TextBox { text: t.into(), ..Default::default() })), ..klipp_timeline::Clip::gap(klipp_core::RationalTime::from_secs_f64(0.0, 24), klipp_core::RationalTime::from_secs_f64(1.0, 24)) };
+        let batch = EditCommand::Named { label: "Captions".into(), edit: Box::new(EditCommand::Batch(vec![EditCommand::LegacyAppendClip { clip: title("a"), track_index: 0 }, EditCommand::LegacyAppendClip { clip: title("b"), track_index: 0 }])) };
+        let mut found = Vec::new();
+        placed_titles(&batch, &mut found);
+        assert_eq!(found.iter().filter_map(|t| t.primary_text().map(|b| b.text.as_str())).collect::<Vec<_>>(), ["a", "b"]);
     }
 }

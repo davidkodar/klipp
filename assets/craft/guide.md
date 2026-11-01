@@ -255,7 +255,7 @@ exist until the plan runs.
   last, once the speech is where it will stay: a trim afterwards does
   not move them, and `replace: true` makes them again. They say what the transcript says, mishearings and
   all: read them, and correct a cue with `set_text`.
-  `animate {style?, words_per_screen?, active_color?, amount?, position?, emphasis?, emphasis_color?, font?, outline?}`
+  `animate {style?, words_per_screen?, active_color?, amount?, position?, emphasis?, emphasis_color?, font?, outline?, look?, look_colour?, glow?}`
   makes animated captions for short-form video: one line of a few words
   at a time (`words_per_screen` 1 to 5, 3 when left out), the word being
   spoken shown by `style`: `pop` (it grows, the default), `highlight`
@@ -268,7 +268,12 @@ exist until the plan runs.
   words set in `emphasis_color` wherever they are said; `font` and
   `outline` (pixels of a 1080-line frame) set the type. Each is an
   animator keyed at the words' times, so `replace: true` after a
-  corrected transcript times them again.
+  corrected transcript times them again. `look` takes a ready-made
+  look: `glow_caps` is heavy capitals in Montserrat (fetched on first
+  use) with a soft glow, each word appearing as it is said;
+  `look_colour` picks its colour (Ice, the default, Peach or Mint) and
+  `glow` 0 to 3 its glow (1 as designed, 0 none). Other fields given
+  with a look change it.
 - `audio {clip_id, volume_db?, gain_db?, pan?, fade_in?, fade_out?}`:
   a clip's sound. Volume and pre-fader gain in decibels, pan from -1
   (left) to 1, fades in seconds; what you leave out stays as it is.

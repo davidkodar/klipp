@@ -3556,6 +3556,7 @@ dependencies = [
  "klipp-plugin",
  "serde",
  "serde_json",
+ "toml",
  "tracing",
  "uuid",
 ]
