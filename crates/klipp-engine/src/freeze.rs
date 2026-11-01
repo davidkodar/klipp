@@ -542,8 +542,20 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
         job.pause();
-        std::thread::sleep(std::time::Duration::from_millis(100));
-        let held = job.progress();
+        // The frame in hand is finished first, however long the machine
+        // takes over it: under load that was past the 100 ms this once
+        // waited (#3289). So the progress is read once it has held still,
+        // and then must stay so.
+        let mut held = job.progress();
+        let t0 = std::time::Instant::now();
+        loop {
+            std::thread::sleep(std::time::Duration::from_millis(150));
+            let now = job.progress();
+            if now == held || t0.elapsed() > std::time::Duration::from_secs(10) {
+                break;
+            }
+            held = now;
+        }
         std::thread::sleep(std::time::Duration::from_millis(300));
         assert_eq!(job.progress(), held, "no frame drawn while paused");
         assert!(held < 1.0, "not done while paused");
