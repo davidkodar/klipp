@@ -53,21 +53,29 @@ pub fn keep_alpha_plane(frame: &ffmpeg_next::frame::Video, dst_w: u32, dst_h: u3
     }
     let (data, stride) = (frame.data(3), frame.stride(3));
     let max = ((1u32 << bits) - 1) as f32;
-    for dy in 0..dst_h {
-        for dx in 0..dst_w {
-            // The source pixel as `yuv_to_linear_display` takes it.
-            let (sx, sy) = match rotation {
-                90 => (dy * src_w / dst_h, (dst_w - 1 - dx) * src_h / dst_w),
-                180 => ((dst_w - 1 - dx) * src_w / dst_w, (dst_h - 1 - dy) * src_h / dst_h),
-                270 => ((dst_h - 1 - dy) * src_w / dst_h, dx * src_h / dst_w),
-                _ => (dx * src_w / dst_w, dy * src_h / dst_h),
-            };
-            let (sx, sy) = (sx.min(src_w - 1) as usize, sy.min(src_h - 1) as usize);
-            let row = &data[sy * stride..];
-            let v = if bits == 8 { f32::from(row[sx]) } else { f32::from(u16::from_le_bytes([row[2 * sx], row[2 * sx + 1]])) };
-            out[((dy * dst_w + dx) * 4 + 3) as usize] = v / max;
+    // The source pixel as `yuv_to_linear_display` takes it: each output
+    // column maps to one source column (or, turned 90° or 270°, one source
+    // row) and each output row to one source row (or column), so the maps
+    // are made once, not divided out a pixel at a time.
+    let (cols, rows): (Vec<u32>, Vec<u32>) = match rotation {
+        90 => ((0..dst_w).map(|dx| (dst_w - 1 - dx) * src_h / dst_w).collect(), (0..dst_h).map(|dy| dy * src_w / dst_h).collect()),
+        180 => ((0..dst_w).map(|dx| (dst_w - 1 - dx) * src_w / dst_w).collect(), (0..dst_h).map(|dy| (dst_h - 1 - dy) * src_h / dst_h).collect()),
+        270 => ((0..dst_w).map(|dx| dx * src_h / dst_w).collect(), (0..dst_h).map(|dy| (dst_h - 1 - dy) * src_w / dst_h).collect()),
+        _ => ((0..dst_w).map(|dx| dx * src_w / dst_w).collect(), (0..dst_h).map(|dy| dy * src_h / dst_h).collect()),
+    };
+    let turned = matches!(rotation, 90 | 270);
+    let sample = |sx: u32, sy: u32| {
+        let (sx, sy) = (sx.min(src_w - 1) as usize, sy.min(src_h - 1) as usize);
+        let row = &data[sy * stride..];
+        let v = if bits == 8 { f32::from(row[sx]) } else { f32::from(u16::from_le_bytes([row[2 * sx], row[2 * sx + 1]])) };
+        v / max
+    };
+    use rayon::prelude::*;
+    out[..(dst_w * dst_h * 4) as usize].par_chunks_exact_mut(dst_w as usize * 4).zip(rows.par_iter()).for_each(|(line, &r)| {
+        for (px, &c) in line.chunks_exact_mut(4).zip(&cols) {
+            px[3] = if turned { sample(r, c) } else { sample(c, r) };
         }
-    }
+    });
 }
 
 /// Read the Y, Cb and Cr samples of any software YUV frame — planar,
@@ -155,6 +163,81 @@ pub unsafe fn read_yuv_samples(frame: *const ffmpeg_next::ffi::AVFrame) -> Optio
         shift_h,
         depth,
     })
+}
+
+#[cfg(test)]
+mod alpha_plane_tests {
+    use super::keep_alpha_plane;
+    use ffmpeg_next::format::Pixel;
+
+    /// A YUVA 4:4:4 10-bit frame whose alpha codes vary across and down.
+    fn frame(w: u32, h: u32) -> ffmpeg_next::frame::Video {
+        let mut f = ffmpeg_next::frame::Video::new(Pixel::YUVA444P10LE, w, h);
+        let stride = f.stride(3);
+        let plane = f.data_mut(3);
+        for y in 0..h as usize {
+            for x in 0..w as usize {
+                let code = ((x * 37 + y * 101) % 1024) as u16;
+                plane[y * stride + 2 * x..y * stride + 2 * x + 2].copy_from_slice(&code.to_le_bytes());
+            }
+        }
+        f
+    }
+
+    /// The alpha a pixel takes, worked out a pixel at a time as the Y'CbCr
+    /// decode maps it.
+    fn by_pixel(f: &ffmpeg_next::frame::Video, dst_w: u32, dst_h: u32, rotation: u32) -> Vec<f32> {
+        let (src_w, src_h) = (f.width(), f.height());
+        let (data, stride) = (f.data(3), f.stride(3));
+        let mut out = Vec::new();
+        for dy in 0..dst_h {
+            for dx in 0..dst_w {
+                let (sx, sy) = match rotation {
+                    90 => (dy * src_w / dst_h, (dst_w - 1 - dx) * src_h / dst_w),
+                    180 => ((dst_w - 1 - dx) * src_w / dst_w, (dst_h - 1 - dy) * src_h / dst_h),
+                    270 => ((dst_h - 1 - dy) * src_w / dst_h, dx * src_h / dst_w),
+                    _ => (dx * src_w / dst_w, dy * src_h / dst_h),
+                };
+                let at = sy.min(src_h - 1) as usize * stride + 2 * sx.min(src_w - 1) as usize;
+                out.push(f32::from(u16::from_le_bytes([data[at], data[at + 1]])) / 1023.0);
+            }
+        }
+        out
+    }
+
+    /// The alpha plane lands where the picture does: as worked out a
+    /// pixel at a time, at each turn, at the frame's size and scaled.
+    #[test]
+    fn the_alpha_plane_is_read_where_the_picture_lands() {
+        let f = frame(37, 21);
+        for rotation in [0, 90, 180, 270] {
+            for (dw, dh) in [(37, 21), (21, 37), (18, 10), (10, 18)] {
+                let mut out = vec![0.0f32; (dw * dh * 4) as usize];
+                keep_alpha_plane(&f, dw, dh, rotation, &mut out);
+                let got: Vec<f32> = out.chunks_exact(4).map(|p| p[3]).collect();
+                assert_eq!(got, by_pixel(&f, dw, dh, rotation), "turned {rotation} at {dw}x{dh}");
+            }
+        }
+    }
+
+    /// Measured: the alpha plane of a 4K frame.
+    #[test]
+    #[ignore]
+    fn measure_a_4k_alpha_plane() {
+        let f = frame(3840, 2160);
+        let mut out = vec![0.0f32; 3840 * 2160 * 4];
+        keep_alpha_plane(&f, 3840, 2160, 0, &mut out);
+        let start = std::time::Instant::now();
+        for _ in 0..10 {
+            keep_alpha_plane(&f, 3840, 2160, 0, &mut out);
+        }
+        let mapped = start.elapsed().as_secs_f64() * 100.0;
+        let start = std::time::Instant::now();
+        for _ in 0..10 {
+            std::hint::black_box(by_pixel(&f, 3840, 2160, 0));
+        }
+        eprintln!("MEASURE a 4K alpha plane: {mapped:.2} ms mapped and side by side, {:.2} ms a pixel at a time", start.elapsed().as_secs_f64() * 100.0);
+    }
 }
 
 #[cfg(test)]

@@ -546,6 +546,30 @@ pub(crate) fn respond(
             send(AppCommand::SetPlaybackQuality(q))
         }
 
+        ControlCommand::BounceTrack { track, format, sound } => {
+            let format = match format.as_deref() {
+                None => klipp_core::BounceFormat::default(),
+                Some(word) => klipp_core::BounceFormat::from_word(word).ok_or_else(|| format!("{word:?} is no bounce format: give prores4444 or ffv1"))?,
+            };
+            let (track_id, refusal) = {
+                let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+                let index = seq.tracks.iter().enumerate().position(|(i, t)| match &track {
+                    serde_json::Value::Number(n) => n.as_u64() == Some(i as u64),
+                    serde_json::Value::String(s) => s.parse::<usize>().ok() == Some(i) || t.name.eq_ignore_ascii_case(s.trim()),
+                    _ => false,
+                });
+                let Some(index) = index else {
+                    let names: Vec<String> = seq.tracks.iter().enumerate().map(|(i, t)| format!("{i} \"{}\"", t.name)).collect();
+                    return Err(format!("no track {track}; the tracks are {}", names.join(", ")));
+                };
+                (seq.tracks[index].id, klipp_engine::bounce::refusal(&seq, index, klipp_engine::video_decoder::working_colorspace()))
+            };
+            if let Some(why) = refusal {
+                return Err(format!("that track can't be bounced: {why}"));
+            }
+            send(AppCommand::BounceTrack { track_id, format, sound: sound != Some(false) })
+        }
+
         ControlCommand::SetBackgroundRender { on, delay_secs } => {
             if on.is_none() && delay_secs.is_none() {
                 return Err("nothing to set: give on, delay_secs or both".into());

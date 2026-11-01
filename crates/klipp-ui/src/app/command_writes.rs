@@ -28,6 +28,10 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::SetFrozenStems(_)
         | AppCommand::SetPlaybackQuality(_)
         | AppCommand::DismissPlaybackNote { .. }
+        // A dialog, and a job whose clip is placed as its own step when
+        // the file is written (#3264).
+        | AppCommand::OpenBounceDialog { .. }
+        | AppCommand::BounceTrack { .. }
         | AppCommand::ShowMaskKeysOnTimeline { .. }
         | AppCommand::SetViewerOverlay { .. }
         | AppCommand::SetMulticamMode { .. }

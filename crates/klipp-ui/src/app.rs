@@ -27,6 +27,7 @@ mod primary_block;
 mod export_banding;
 mod frame_glide;
 mod freeze_jobs;
+mod bounce;
 mod playback_note;
 mod track_subject;
 mod project_io;
@@ -702,6 +703,8 @@ pub struct KlippApp {
     job_scheduler: Arc<klipp_jobs::JobScheduler>,
     /// Frozen tracks' frames, drawn ahead (#3207).
     freeze_jobs: freeze_jobs::FreezeJobs,
+    /// Tracks being bounced to media files, and the dialog (#3264).
+    bounces: bounce::Bounces,
     /// When the playback note last looked at the diagnosis (#3234).
     playback_note_looked: Option<std::time::Instant>,
 }

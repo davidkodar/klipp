@@ -69,8 +69,27 @@ Each track header shows its name (double-click to rename), lock, mute and solo, 
 - **Show automation lane** — the track's volume and pan keys, drawn and edited in a lane under it
 - **Set as Primary** — the track the cut is built on
 - On subtitle tracks, the **Language**, **Translate Captions**, and show or hide
+- On video tracks, **Bounce to Media File…** (see below)
 
 Drag a header to reorder tracks.
+
+### Bounce to Media File
+
+**Bounce to Media File…** draws a video track alone into a file and puts a clip of it in the track's place. A heavy track becomes one clip, which plays like any other and opens in other editors.
+- **What goes in:** the track from its first clip to its last, at the sequence's full size, with its transparency. Gaps between clips stay transparent and silent.
+- **Baked in:** the track's effects and each clip's opacity.
+- **Kept editable:** the track's opacity and the clips' blend mode, which carry over to the new track and clip.
+- **Sound:** the sound linked to its clips goes in too, unless you turn it off in the dialog.
+
+Choose **ProRes 4444** (the default: plays in other editors, up to about 2 GB a minute at 1080p) or **FFV1** (lossless and larger). The file is kept in the project's `media/bounces` folder, so save the project first.
+
+When it is written, the clip goes on a new track above, with its sound on a new track linked to it; the original track is hidden and its linked sound silenced. One undo takes all of it back and leaves the file.
+
+**Highlights above white are clipped; grade before bouncing.** The file is display-referred, as an export is.
+
+Bouncing is SDR only for now: an HDR or wide-gamut project says why it can't. Also refused, saying why:
+- a track whose frames read other tracks (an adjustment layer, a matte, captions);
+- clips that blend in different ways.
 
 ## Track Automation
 

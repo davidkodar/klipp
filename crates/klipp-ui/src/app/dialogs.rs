@@ -1044,6 +1044,11 @@ impl KlippApp {
             }
         }
 
+        // Bounce to Media File (#3264).
+        if let Some(cmd) = self.show_bounce_dialog(ctx) {
+            cmds.push(cmd);
+        }
+
         // 4c1a-bis. Frame-rate mismatch prompt. When the user drops a clip
         // whose fps differs from the active sequence's (and the sequence
         // already has clips), the append handler defers and opens this

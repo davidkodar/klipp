@@ -626,12 +626,16 @@ impl Encoder {
                         }
                         ExportVideoCodec::ProRes4444 => {
                             video_opts.set("profile", "4");
+                            // Slices side by side on every core: on one,
+                            // 4:4:4 with alpha took 150 ms a 1080p frame.
+                            video_opts.set("threads", "auto");
                         }
                         ExportVideoCodec::Ffv1 => {
                             // Version 3: slices coded side by side, each
                             // with a CRC, so a damaged file says so.
                             video_opts.set("level", "3");
                             video_opts.set("slicecrc", "1");
+                            video_opts.set("threads", "auto");
                         }
                         ExportVideoCodec::DNxHD115 => {
                             video_ctx.set_bit_rate(115_000_000);

@@ -85,6 +85,10 @@ name = "media_with_alpha_plays_transparent"
 path = "tests/media_with_alpha_plays_transparent.rs"
 
 [[test]]
+name = "bounce_a_track"
+path = "tests/bounce_a_track.rs"
+
+[[test]]
 name = "a_take_stands_in_for_the_document"
 path = "tests/a_take_stands_in_for_the_document.rs"
 

@@ -731,6 +731,49 @@ pub struct HdrAdvice {
     pub suggest: Option<ExportVideoCodec>,
 }
 
+/// The file a track is bounced to (#3264).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum BounceFormat {
+    /// ProRes 4444 with alpha in a .mov: plays in other editors.
+    #[default]
+    ProRes4444,
+    /// FFV1, lossless 16-bit RGB with alpha, in a .mkv: larger, nothing lost.
+    Ffv1,
+}
+
+impl BounceFormat {
+    pub fn codec(&self) -> ExportVideoCodec {
+        match self {
+            Self::ProRes4444 => ExportVideoCodec::ProRes4444,
+            Self::Ffv1 => ExportVideoCodec::Ffv1,
+        }
+    }
+
+    pub fn container(&self) -> ExportFormat {
+        match self {
+            Self::ProRes4444 => ExportFormat::Mov,
+            Self::Ffv1 => ExportFormat::Mkv,
+        }
+    }
+
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::ProRes4444 => "ProRes 4444",
+            Self::Ffv1 => "FFV1 (lossless)",
+        }
+    }
+
+    /// The word the socket takes: `prores4444` or `ffv1`.
+    pub fn from_word(word: &str) -> Option<Self> {
+        match word.trim().to_ascii_lowercase().as_str() {
+            "prores4444" | "prores" => Some(Self::ProRes4444),
+            "ffv1" => Some(Self::Ffv1),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ExportVideoCodec {
     H264,
@@ -3599,6 +3642,13 @@ pub enum AppCommand {
     SetTrackFrozen { track_id: TrackId, frozen: bool },
     /// Lock a track while it's frozen, or not (#3207).
     SetTrackLockWhileFrozen { track_id: TrackId, on: bool },
+    /// Open the Bounce to Media File dialog for a track (#3264).
+    OpenBounceDialog { track_id: TrackId },
+    /// Bounce a track to a media file (#3264): drawn alone at full size
+    /// with its alpha, and its linked sound when `sound`, in `format`; the
+    /// clip of it placed on a new track above, the original hidden, as one
+    /// undo step once the file is written.
+    BounceTrack { track_id: TrackId, format: BounceFormat, sound: bool },
 
     /// Set (or clear) a track's custom pixel height. `None` restores the
     /// kind's default height. Height is clamped to (32.0, 300.0).

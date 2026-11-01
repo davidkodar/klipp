@@ -119,7 +119,8 @@ pub fn unshared(out: &std::path::Path, ext: &str) -> PathBuf {
 pub const PQ_TAGS: &str = "colorspace=bt2020nc:color_primaries=bt2020:color_trc=smpte2084";
 pub const SDR_TAGS: &str = "colorspace=bt709:color_primaries=bt709:color_trc=bt709";
 
-fn exposure_graph(stops: f32) -> NodeGraph {
+/// A grade of one Exposure node at `stops`.
+pub fn exposure_graph(stops: f32) -> NodeGraph {
     let node = |kind, params| Node {
         id: NodeId::new_v4(), kind, label: format!("{kind:?}"), enabled: true, params,
         keyframes: Default::default(), output_link: None, input_links: vec![],

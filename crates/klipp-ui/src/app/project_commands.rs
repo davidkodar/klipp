@@ -1241,6 +1241,18 @@ impl KlippApp {
                 }
                 true
             }
+            // A track bounced to a media file (#3264): the dialog, then the
+            // job, whose clip is placed when its file is written.
+            AppCommand::OpenBounceDialog { track_id } => {
+                self.open_bounce_dialog(*track_id);
+                true
+            }
+            AppCommand::BounceTrack { track_id, format, sound } => {
+                if let Err(why) = self.start_bounce(*track_id, *format, *sound) {
+                    self.state.toast.show(format!("Can't bounce: {why}"));
+                }
+                true
+            }
             AppCommand::SetTrackLockWhileFrozen { track_id, on } => {
                 if let Some(track) = self.state.sequences[self.state.active_sequence_idx].tracks.iter_mut().find(|t| t.id == *track_id && matches!(t.kind, klipp_timeline::TrackKind::Video | klipp_timeline::TrackKind::Audio)) {
                     track.set_lock_while_frozen(*on);

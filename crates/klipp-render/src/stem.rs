@@ -90,6 +90,50 @@ pub fn stem_snapshot(seq: &Sequence, all_sequences: &[Sequence], pool: &MediaPoo
     Ok(Some(snap))
 }
 
+/// The sound linked to video track `video`'s clips, alone (#3264): every
+/// audio clip linked to one of them, on its own track, each track as a
+/// stem hears it ([`alone`]: unity, centred, no automation, sends or
+/// buses), the rest silent. `None` when nothing is linked. What a bounced
+/// track's file carries for sound.
+pub fn linked_sound_snapshot(seq: &Sequence, all_sequences: &[Sequence], pool: &MediaPool, video: TrackId) -> Result<Option<SequenceSnapshot>, RenderError> {
+    let Some(v) = seq.tracks.iter().find(|t| t.id == video) else { return Ok(None) };
+    let ids: std::collections::HashSet<klipp_core::ClipId> = v.clips.iter().map(|c| c.id).collect();
+    let linked = |c: &klipp_timeline::Clip| c.linked_clip_id.is_some_and(|l| ids.contains(&l)) || v.clips.iter().any(|vc| vc.linked_clip_id == Some(c.id));
+    let mut tracks = Vec::new();
+    for t in seq.tracks.iter().filter(|t| t.kind == TrackKind::Audio) {
+        let clips: Vec<_> = t.clips.iter().filter(|c| linked(c)).cloned().collect();
+        if clips.is_empty() {
+            continue;
+        }
+        let Some(mut one) = alone(seq, t.id) else { continue };
+        one.tracks[0].clips = clips;
+        tracks.push(one.tracks.remove(0));
+    }
+    if tracks.is_empty() {
+        return Ok(None);
+    }
+    let mut only = seq.clone();
+    only.tracks = tracks;
+    only.buses.clear();
+    let settings = klipp_core::ExportSettings::default();
+    let mut snap = SequenceSnapshot::from_sequence_with_all(&only, all_sequences, pool, &settings, None, false, klipp_core::WorkingColorspace::Rec709Linear)?;
+    snap.pan_law = klipp_core::PanLaw::default();
+    Ok(Some(snap))
+}
+
+/// Why the sound linked to video track `video` can't go into a bounced
+/// file, or `None` if it can: a plug-in from outside Klipp on a linked
+/// clip or its track.
+pub fn linked_sound_refusal(seq: &Sequence, video: TrackId) -> Option<&'static str> {
+    let v = seq.tracks.iter().find(|t| t.id == video)?;
+    let linked = |c: &klipp_timeline::Clip| c.linked_clip_id.is_some_and(|l| v.clips.iter().any(|vc| vc.id == l)) || v.clips.iter().any(|vc| vc.linked_clip_id == Some(c.id));
+    seq.tracks
+        .iter()
+        .filter(|t| t.kind == TrackKind::Audio && t.clips.iter().any(linked))
+        .find_map(|t| live_reason(seq, t.id))
+        .filter(|r| *r != "not a sound track")
+}
+
 /// Render the stem of `snap` ([`stem_snapshot`]): interleaved stereo f32
 /// at its rate, unclipped, from the timeline's start to the track's end, a
 /// frame at a time in order. `go_on` hears the share done before each
