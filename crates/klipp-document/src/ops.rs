@@ -6843,7 +6843,8 @@ fn cues_from_words(words: &[HeardWord], max_chars: usize, max_lines: usize, soun
         .iter()
         .filter_map(|(ws, _)| {
             let (a, b) = (ws.first()?, ws.last()?);
-            Some(Cue { start: a.start, end: b.end, text: ws.iter().map(|w| w.text.as_str()).collect::<Vec<_>>().join(" ") })
+            // No space put between two Thai, Lao, Khmer or Burmese words.
+            Some(Cue { start: a.start, end: b.end, text: klipp_linebreak::join_words(ws.iter().map(|w| w.text.as_str())) })
         })
         .collect();
     // A cue that would be up for less than a moment, its words' times
@@ -6892,14 +6893,18 @@ pub(crate) fn wrap_lines(text: &str, max_chars: usize, max_lines: usize) -> Stri
     let lines_needed = total.div_ceil(max_chars).clamp(2, max_lines);
     let target = total.div_ceil(lines_needed);
     let mut lines: Vec<String> = vec![String::new()];
-    for word in text.split_whitespace() {
+    // Words between spaces, and in Thai, Lao, Khmer and Burmese, which put
+    // none between words, the words the dictionaries find (#3238): a cue
+    // of those was one word, never wrapped. They join with no space.
+    for (word, spaced) in klipp_linebreak::spaced_words(text) {
         let more_lines = lines.len() < lines_needed;
         let cur = lines.last_mut().expect("one line at least");
         let len = cur.chars().count();
-        if len > 0 && len + 1 + word.chars().count() > target.max(1) + 3 && more_lines {
+        let gap = usize::from(spaced);
+        if len > 0 && len + gap + word.chars().count() > target.max(1) + 3 && more_lines {
             lines.push(word.to_string());
         } else {
-            if len > 0 {
+            if len > 0 && spaced {
                 cur.push(' ');
             }
             cur.push_str(word);
@@ -7031,7 +7036,7 @@ fn captions(
             let timed: Vec<TimedWord> = words.iter().map(|w| TimedWord { text: w.text.trim().to_string(), start: w.start, end: w.end }).filter(|w| !w.text.is_empty()).collect();
             screens(&timed, anim.words_per_screen, sound_ends).into_iter().map(|s| {
                 let td = animated_caption(&s, anim, seq.resolution.width, seq.resolution.height);
-                let text = s.words.iter().map(|w| w.text.as_str()).collect::<Vec<_>>().join(" ");
+                let text = klipp_linebreak::join_words(s.words.iter().map(|w| w.text.as_str()));
                 (Cue { start: s.start, end: s.end, text }, Some(td))
             }).collect()
         }
@@ -17098,6 +17103,40 @@ mod tests {
         let paused = say("We walk down to the harbour every single morning.", 0.0, 2.0);
         let cues = cues_from_words(&paused, 20, 2, 30.0);
         assert_eq!(cues.last().unwrap().text, "morning.", "{cues:?}");
+    }
+
+    /// #3238: Thai heard word by word is captioned with no space put
+    /// between its words, as Thai is written, and a long cue wraps only
+    /// where a word begins: before, the words were joined with spaces,
+    /// and a cue of unspaced Thai never wrapped.
+    #[test]
+    fn thai_captions_join_without_spaces_and_wrap_between_words() {
+        let (clip_id, media_id) = (ClipId::new(), MediaId::new());
+        let thai = ["ภาษา", "ไทย", "ง่าย", "นิด", "เดียว", "สวัสดี", "ครับ"];
+        let words: Vec<HeardWord> = thai
+            .iter()
+            .enumerate()
+            .map(|(k, w)| {
+                let start = k as f64 * 0.3;
+                HeardWord { start, end: start + 0.25, text: (*w).into(), after_cut: k == 0, clip_id, media_id, role: Default::default(), clip_in: 0.0, clip_out: 60.0 }
+            })
+            .collect();
+        let cues = cues_from_words(&words, 12, 2, 30.0);
+        let joined: String = cues.iter().map(|c| c.text.replace('\n', "")).collect();
+        assert_eq!(joined, thai.concat(), "every word, in order, no space put in: {cues:?}");
+        assert!(cues.iter().all(|c| !c.text.contains(' ')), "{cues:?}");
+        let allowed: Vec<usize> = thai.iter().scan(0, |at, w| { *at += w.len(); Some(*at) }).collect();
+        let wrapped = wrap_lines(&thai.concat(), 12, 3);
+        assert!(wrapped.contains('\n'), "a long Thai cue wraps: {wrapped}");
+        let mut at = 0;
+        for line in wrapped.split('\n') {
+            if at > 0 {
+                assert!(allowed.contains(&at), "a line starts inside a word at byte {at}: {wrapped}");
+            }
+            at += line.len();
+        }
+        // English cues are as before.
+        assert_eq!(wrap_lines("We walk down to the harbour", 12, 3), "We walk down\nto the\nharbour");
     }
 
     /// #2710: animated captions are a few words at a time, the word being

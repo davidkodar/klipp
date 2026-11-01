@@ -16,6 +16,8 @@ publish = false
 # with nothing but a sequence in memory.
 
 [dependencies]
+# Word boundaries in caption text written without spaces (#3238).
+klipp-linebreak = { path = "../klipp-linebreak" }
 klipp-graph-lift = { workspace = true }
 klipp-core = { workspace = true }
 klipp-timeline = { workspace = true }

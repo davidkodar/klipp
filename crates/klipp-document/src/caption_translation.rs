@@ -178,12 +178,14 @@ pub fn spread(text: &str, weights: &[usize]) -> Vec<String> {
     if n <= 1 {
         return vec![text.trim().to_string(); n];
     }
-    let words: Vec<&str> = text.split_whitespace().collect();
+    // A translation into Thai, Lao, Khmer or Burmese has no spaces between
+    // words: they are found by the dictionaries and joined with none (#3238).
+    let words = klipp_linebreak::spaced_words(text);
     let total_weight: usize = weights.iter().sum::<usize>().max(1);
-    let total_chars: usize = words.iter().map(|w| w.chars().count() + 1).sum();
+    let total_chars: usize = words.iter().map(|(w, _)| w.chars().count() + 1).sum();
     let mut out = vec![String::new(); n];
     let (mut piece, mut done_chars, mut weight_so_far) = (0, 0usize, weights[0]);
-    for (wi, word) in words.iter().enumerate() {
+    for (wi, &(word, spaced)) in words.iter().enumerate() {
         let words_left = words.len() - wi;
         let pieces_left = n - piece;
         // Move on when this piece has its share, or when each piece left
@@ -194,7 +196,7 @@ pub fn spread(text: &str, weights: &[usize]) -> Vec<String> {
             piece += 1;
             weight_so_far += weights[piece];
         }
-        if !out[piece].is_empty() {
+        if !out[piece].is_empty() && spaced {
             out[piece].push(' ');
         }
         out[piece].push_str(word);
@@ -378,6 +380,12 @@ mod tests {
         let lopsided = spread("eins zwei drei vier fünf sechs sieben acht", &[30, 5]);
         assert!(lopsided[0].split(' ').count() > lopsided[1].split(' ').count(), "{lopsided:?}");
         assert_eq!(lopsided.join(" "), "eins zwei drei vier fünf sechs sieben acht");
+        // #3238: a translation into Thai, with no spaces, spreads by its
+        // words too, and no space is put into it.
+        let thai = "ภาษาไทยง่ายนิดเดียวสวัสดีครับ";
+        let pieces = spread(thai, &[10, 10]);
+        assert!(pieces.iter().all(|p| !p.is_empty() && !p.contains(' ')), "{pieces:?}");
+        assert_eq!(pieces.concat(), thai);
     }
 
     #[test]
