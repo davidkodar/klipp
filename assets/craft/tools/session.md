@@ -90,6 +90,7 @@ Frame timings: decode, grade, composite, total, drops, plus GPU->CPU readback co
 - `make_proxies` lists files whose decoding can't keep up: make proxies for them.
 - `use_proxies`: proxies exist but aren't played.
 - `playback_quality` gives a smaller size: klipp_set_playback_quality.
+- `render_ahead`, last, at quarter size already and with drawing ahead off: turn it on with klipp_set_background_render.
 
 Nothing is done for the person: ask before acting, since freezing costs disk and time and changes what is live. Without ten seconds of playback it says so. The person sees the same suggestion in a note at the viewer's foot while playing, once per project, unless they turned it off in Preferences > Playback.
 
@@ -100,6 +101,15 @@ are bounded cache misses, not per-frame fallbacks. Nonzero `overflow` means the
 bounded report could not retain every detail. Paused viewers retain their last
 sample; export activity cannot replace it. Use the readback counters alongside
 these events: no readbacks alone does not prove GPU-resident picture processing.
+
+## klipp_render_status
+
+Where the timeline stands in the render cache, and what drawing ahead while idle is doing. Klipp records what each frame cost as it played; a frame that played late is heavy, and so is every frame of a track measured at over half a frame's time. After a pause with nothing done, on mains power, it draws the heavy frames into the cache, nearest the playhead first, and playback then shows them without composing. Any key or click stops it within a frame; it starts again after the pause. Export always renders live.
+
+- `drawing_ahead`: `state` (off, on_battery, waiting, drawing with `done` and `total`, stopped by input, done, full), `on`, `delay_secs`, and the whole frames kept now with their `bytes`. `says` puts the state in words.
+- `ranges`: spans in seconds, each `rendered` (shown from the cache), `heavy` (heavy to play and not rendered) or `stale` (rendered, but what is there changed since). Light frames not rendered aren't listed.
+
+The same spans are the strip along the top of the timeline ruler: green, amber, and dashed. Turn drawing ahead on or off with klipp_set_background_render; Render In to Out renders a range now.
 
 ## klipp_record
 

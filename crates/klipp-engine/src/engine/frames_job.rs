@@ -215,36 +215,112 @@ impl PlaybackEngine {
     }
 
     /// What the timeline shows of the frames kept at the size playback
-    /// draws: each clip's share, and the spans over the ruler.
+    /// draws (#3212): each clip's share, and the spans over the ruler,
+    /// rendered, heavy or stale. Worked out on a thread of its own, as a
+    /// stored frame's current key costs a hash of the frame; again only
+    /// when the sequence, the frames kept or the costs change.
     pub(super) fn update_render_cache_ranges(&mut self) {
-        let seq = self.sequence.snapshot();
+        let (seq, revision) = self.sequence.snapshot_with_revision();
         let size = crate::freeze::playback_size((seq.resolution.width, seq.resolution.height));
-        let mut ticks: Vec<i64> = self.frames_store().lock().unwrap_or_else(|e| e.into_inner()).frames(NAMESPACE).into_iter().filter(|a| a.size == size).map(|a| a.tick).collect();
-        ticks.sort_unstable();
-        ticks.dedup();
-        let ticks_per_frame = i64::from(seq.fps.den).max(1);
-        let mut ranges = Vec::new();
-        let mut status = Vec::new();
-        for track in seq.tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Video) {
-            for clip in &track.clips {
-                let (a, b) = (clip.timeline_in.rescale_to(seq.fps.rate()).value, clip.timeline_out.rescale_to(seq.fps.rate()).value);
-                let total = ((b - a) / ticks_per_frame).max(1) as u32;
-                let inside: Vec<i64> = ticks.iter().copied().filter(|t| (a..b).contains(t)).collect();
-                if !inside.is_empty() {
-                    ranges.push((clip.id, inside.len() as u32, total));
-                }
-                status.extend(crate::texture::render_spans(a, b, &inside, ticks_per_frame));
+        let (all, bytes) = {
+            let store = self.frames_store();
+            let store = store.lock().unwrap_or_else(|e| e.into_inner());
+            (store.frames(NAMESPACE), store.bytes(NAMESPACE))
+        };
+        crate::background_render::set_summary(|m| {
+            m.frames = all.len();
+            m.bytes = bytes;
+        });
+        let inputs = (revision, all.len(), bytes, self.cost_log.generation());
+        if self.status_inputs == Some(inputs) {
+            return;
+        }
+        self.status_inputs = Some(inputs);
+        let kept: Vec<crate::cache_store::FrameAt> = all.into_iter().filter(|a| a.size == size).collect();
+        let heavy = self.heavy_ticks(&seq);
+        let keying = self.frame_keying();
+        let fb = Arc::clone(&self.frame_buffer);
+        let generation = STATUS_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+        let _ = std::thread::Builder::new().name("klipp-render-status".into()).spawn(move || {
+            let (status, ranges) = render_status(&seq, &kept, &heavy, &keying, size);
+            if STATUS_GENERATION.load(std::sync::atomic::Ordering::Relaxed) == generation {
+                let mut fb = fb.lock().unwrap_or_else(|e| e.into_inner());
+                fb.render_status = status;
+                fb.render_cache_ranges = ranges;
+            }
+        });
+    }
+}
+
+/// The last status asked for: an older one finishing later is dropped.
+static STATUS_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// How the timeline stands in the frame cache: `kept` (frames at `size`)
+/// rendered where kept under the frame's current key, stale where kept
+/// under another only, and the `heavy` frames not kept; with each video
+/// clip's share of frames rendered.
+pub(crate) fn render_status(seq: &Sequence, kept: &[crate::cache_store::FrameAt], heavy: &[i64], keying: &Keying, size: (u32, u32)) -> (Vec<crate::texture::RenderSpan>, Vec<(klipp_core::ClipId, u32, u32)>) {
+    use crate::texture::SpanStatus;
+    let rate = seq.fps.rate();
+    let step = i64::from(seq.fps.den).max(1);
+    let end = seq.total_duration().rescale_to(rate).value;
+    let mut current = std::collections::HashMap::new();
+    let mut by_tick: std::collections::BTreeMap<i64, SpanStatus> = std::collections::BTreeMap::new();
+    for at in kept.iter().filter(|a| (0..end).contains(&a.tick)) {
+        let key = *current.entry(at.tick).or_insert_with(|| keying.place(seq, RationalTime { value: at.tick, rate }, size).key);
+        let status = if at.key == key { SpanStatus::Rendered } else { SpanStatus::Stale };
+        let slot = by_tick.entry(at.tick).or_insert(status);
+        if status == SpanStatus::Rendered {
+            *slot = status;
+        }
+    }
+    for &t in heavy {
+        by_tick.entry(t).or_insert(SpanStatus::Heavy);
+    }
+    let rendered: Vec<i64> = by_tick.iter().filter(|(_, s)| **s == SpanStatus::Rendered).map(|(t, _)| *t).collect();
+    let mut ranges = Vec::new();
+    for track in seq.tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Video) {
+        for clip in &track.clips {
+            let (a, b) = (clip.timeline_in.rescale_to(rate).value, clip.timeline_out.rescale_to(rate).value);
+            let inside = rendered.iter().filter(|t| (a..b).contains(*t)).count() as u32;
+            if inside > 0 {
+                ranges.push((clip.id, inside, ((b - a) / step).max(1) as u32));
             }
         }
-        let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
-        fb.render_cache_ranges = ranges;
-        fb.render_status = status;
     }
+    let frames: Vec<(i64, SpanStatus)> = by_tick.into_iter().collect();
+    (crate::texture::status_spans(&frames, step), ranges)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A frame kept under its current key reads rendered, one kept under
+    /// another only stale, a heavy frame not kept heavy, and nothing past
+    /// the sequence's end; a clip's share counts its rendered frames.
+    #[test]
+    fn kept_frames_read_rendered_or_stale_by_their_key_and_heavy_ones_not_kept_heavy() {
+        use crate::texture::{RenderSpan, SpanStatus};
+        let tc = |f: i64| RationalTime::from_frames(f, 24);
+        let mut track = klipp_timeline::Track::new("V1", klipp_timeline::TrackKind::Video);
+        track.clips = vec![klipp_timeline::Clip::media(klipp_core::MediaId::new(), tc(0), tc(10), tc(0), tc(10))];
+        let clip = track.clips[0].id;
+        let mut seq = Sequence::new_default();
+        seq.fps = klipp_core::Fps::film_24();
+        seq.tracks = vec![track];
+        let keying = Keying { media: Arc::default(), environment: 1 };
+        let size = (8, 8);
+        let now = |f: i64| keying.place(&seq, tc(f), size);
+        let old = |f: i64| crate::cache_store::FrameAt { key: now(f).key ^ 1, ..now(f) };
+        // 0-2 current, 3 kept twice (current wins), 4-5 old only, 12 past the end.
+        let kept = [now(0), now(1), now(2), old(3), now(3), old(4), old(5), now(12)];
+        let heavy: Vec<i64> = (4..8).map(|f| tc(f).value).collect();
+        let (spans, ranges) = render_status(&seq, &kept, &heavy, &keying, size);
+        let span = |a: i64, b: i64, status| RenderSpan { from: tc(a).value, to: tc(b).value, status };
+        assert_eq!(spans, vec![span(0, 4, SpanStatus::Rendered), span(4, 6, SpanStatus::Stale), span(6, 8, SpanStatus::Heavy)]);
+        assert_eq!(ranges, vec![(clip, 4, 10)]);
+    }
 
     #[test]
     fn a_range_is_walked_a_frame_at_a_time_from_frame_boundaries() {

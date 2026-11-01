@@ -2011,6 +2011,9 @@ pub struct PlaybackEngine {
     /// Kept frames shown while playing, and their mean time, ms.
     kept_shown: u64,
     kept_present_ms: f32,
+    /// What the ruler's status was last worked out from: the sequence,
+    /// the frames kept and their bytes, the costs' generation.
+    status_inputs: Option<(klipp_timeline::SequenceRevision, usize, u64, u64)>,
     /// Current grade hash for the active clip (cached to avoid recomputing per frame).
     current_grade_hash: u64,
     current_grade_clip_id: Option<klipp_core::ClipId>,
@@ -3033,6 +3036,7 @@ impl PlaybackEngine {
             frame_from_cache: false,
             kept_shown: 0,
             kept_present_ms: 0.0,
+            status_inputs: None,
             current_grade_hash: 0,
             current_grade_clip_id: None,
             current_graph_arc: None,

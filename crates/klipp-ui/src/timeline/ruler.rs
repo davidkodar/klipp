@@ -106,10 +106,10 @@ fn ticks(pps: f32, scroll_px: f32, width: f32, duration_secs: f64) -> Vec<(f64, 
         .collect()
 }
 
-/// The render status strip along the ruler's top (#924): where graded
-/// clips are in the render cache and ready to play, and where they still
-/// need rendering. A span to render is drawn over a cached one, so a
-/// moment shows ready only when every graded clip there is.
+/// The render status strip along the ruler's top (#3212): green where
+/// frames are rendered and play from the cache, amber where they are
+/// heavy to play and not rendered, and dashed where what was rendered
+/// has changed since (stale). Light frames not rendered show nothing.
 pub fn draw_render_status(
     painter: &Painter,
     ruler_rect: Rect,
@@ -119,22 +119,47 @@ pub fn draw_render_status(
     ticks_per_sec: f64,
     theme: &KlippTheme,
 ) {
+    use klipp_engine::texture::SpanStatus;
     if spans.is_empty() || ticks_per_sec <= 0.0 {
         return;
     }
     // Along the top: the foot is where the marker flags point (#946 review).
     let strip = Rect::from_min_max(ruler_rect.min, Pos2::new(ruler_rect.max.x, ruler_rect.min.y + 3.0));
     let x_of = |ticks: i64| ruler_rect.min.x + (ticks as f64 / ticks_per_sec) as f32 * pps - scroll_offset_px;
-    for cached in [true, false] {
-        let colour = if cached { theme.marker_success } else { theme.marker_error };
-        for span in spans.iter().filter(|s| s.cached == cached) {
-            let (x1, x2) = (x_of(span.from).max(strip.min.x), x_of(span.to).min(strip.max.x));
-            if x2 > x1 {
-                painter.rect_filled(Rect::from_min_max(Pos2::new(x1, strip.min.y), Pos2::new(x2, strip.max.y)), 0.0, colour);
+    for span in spans {
+        let (x1, x2) = (x_of(span.from).max(strip.min.x), x_of(span.to).min(strip.max.x));
+        if x2 <= x1 {
+            continue;
+        }
+        let at = |a: f32, b: f32| Rect::from_min_max(Pos2::new(a, strip.min.y), Pos2::new(b, strip.max.y));
+        match span.status {
+            SpanStatus::Rendered => {
+                painter.rect_filled(at(x1, x2), 0.0, theme.marker_success);
+            }
+            SpanStatus::Heavy => {
+                painter.rect_filled(at(x1, x2), 0.0, theme.marker_warning);
+            }
+            SpanStatus::Stale => {
+                // Dashes from the span's own start, so they keep still as
+                // the timeline scrolls.
+                let start = x_of(span.from);
+                let first = ((x1 - start) / STALE_DASH_PERIOD).floor();
+                let mut x = start + first * STALE_DASH_PERIOD;
+                while x < x2 {
+                    let (a, b) = (x.max(x1), (x + STALE_DASH).min(x2));
+                    if b > a {
+                        painter.rect_filled(at(a, b), 0.0, theme.marker_success.gamma_multiply(0.6));
+                    }
+                    x += STALE_DASH_PERIOD;
+                }
             }
         }
     }
 }
+
+/// A stale span's dashes: this long, this far apart start to start.
+const STALE_DASH: f32 = 4.0;
+const STALE_DASH_PERIOD: f32 = 7.0;
 
 /// Draw the adaptive timeline ruler.
 ///
@@ -245,5 +270,43 @@ mod tick_tests {
         }
         assert_eq!(format_time_label(1.999_999_9, 2.0), "0:02");
         assert_eq!(format_time_label(59.999_999, 1.0), "1:00");
+    }
+}
+
+#[cfg(test)]
+mod render_status_tests {
+    use klipp_engine::texture::{RenderSpan, SpanStatus};
+
+    use super::*;
+
+    /// The strip's fills over `spans`, at 100 px a second and 100 ticks a
+    /// second: each fill's left, right and colour.
+    fn fills(spans: &[RenderSpan], theme: &KlippTheme) -> Vec<(f32, f32, Color32)> {
+        let ctx = egui::Context::default();
+        let out = ctx.run(egui::RawInput::default(), |ctx| {
+            let painter = ctx.layer_painter(egui::LayerId::background());
+            draw_render_status(&painter, Rect::from_min_size(Pos2::ZERO, egui::vec2(1000.0, 20.0)), 100.0, 0.0, spans, 100.0, theme);
+        });
+        out.shapes
+            .iter()
+            .filter_map(|s| match &s.shape {
+                egui::Shape::Rect(r) => Some((r.rect.left(), r.rect.right(), r.fill)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Rendered frames read green, heavy ones amber, stale ones as dashes
+    /// with gaps; a frame neither shows nothing.
+    #[test]
+    fn rendered_heavy_and_stale_each_read_their_own_way() {
+        let theme = KlippTheme::default();
+        let span = |from, to, status| RenderSpan { from, to, status };
+        let got = fills(&[span(0, 100, SpanStatus::Rendered), span(200, 300, SpanStatus::Heavy), span(400, 500, SpanStatus::Stale)], &theme);
+        assert!(got.contains(&(0.0, 100.0, theme.marker_success)), "{got:?}");
+        assert!(got.contains(&(200.0, 300.0, theme.marker_warning)), "{got:?}");
+        let dashes: Vec<_> = got.iter().filter(|(a, _, _)| *a >= 400.0).collect();
+        assert!(dashes.len() >= 10 && dashes.iter().all(|(a, b, c)| b - a <= STALE_DASH && *c != theme.marker_success), "dashes, dimmer: {dashes:?}");
+        assert!(!got.iter().any(|(a, b, _)| *b > 100.0 && *a < 200.0), "nothing between them");
     }
 }

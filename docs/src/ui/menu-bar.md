@@ -87,7 +87,7 @@ The menus and their items. Shortcuts are Klipp's default keymap; a different pre
 | Lift Edit / Extract Edit | ; / ' | Remove the in–out range, leaving or closing the gap |
 | Freeze Frame | Alt+H | Hold the frame under the playhead |
 | Join Through Edit at Playhead | — | Rejoin a clip split at the playhead |
-| Render In to Out / Render Timeline / Render Selection | — | Render graded clips into the render cache |
+| Render In to Out / Render Timeline / Render Selection | — | Render whole frames, layers and transitions included, into the render cache |
 | Clear Render Cache In to Out / Clear Render Cache | — | Drop rendered frames |
 | Detect Scene Cuts | — | Split the selected clip where its picture cuts |
 | Add Adjustment Layer | — | An effects layer over the tracks below |

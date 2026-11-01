@@ -359,6 +359,15 @@ pub enum ControlCommand {
     /// The size frames are drawn at while playing (#3234): "full", "half"
     /// or "quarter" of the playback resolution; saved as the preference.
     SetPlaybackQuality { quality: String },
+    /// Drawing heavy frames ahead while idle on or off, and the seconds
+    /// idle before it starts (1 to 60); saved as the preferences (#3212).
+    /// What is left out stays as it is.
+    SetBackgroundRender {
+        #[serde(default)]
+        on: Option<bool>,
+        #[serde(default)]
+        delay_secs: Option<f32>,
+    },
     /// The open project's frozen frames and frozen sound cleared (#3207):
     /// the tracks frozen so in the open sequence played live again, one
     /// undo step, and the files removed. Each is cleared unless `false`.
@@ -602,6 +611,11 @@ pub enum ControlCommand {
     },
     /// Latest performance sample plus a short rolling average.
     Perf,
+    /// How drawing heavy frames ahead while idle stands (#3212): its
+    /// state, whether it is on and after what delay, the frames kept and
+    /// their bytes, and the timeline's spans rendered, heavy or stale, in
+    /// seconds.
+    RenderStatus,
 
     /// The timeline as text a model reads: tracks top first, every clip
     /// with its range in seconds and frames, what it is, its grade and

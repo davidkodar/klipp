@@ -30,6 +30,12 @@ A clip's menu offers **Show Keys on Clip**: any keyed parameter of its effects, 
 
 The playhead is a vertical line marking the current position. Click the ruler or the track area to move it. During playback it moves smoothly against the master clock.
 
+## Render Status
+
+A thin strip along the top of the ruler shows where the timeline stands in the render cache: **green** where frames are rendered and play from the cache, **amber** where they are heavy to play and not rendered, and **dashed** where something rendered has changed since and plays live until it is rendered again. Light frames that aren't rendered show nothing.
+
+While you pause, Klipp renders the heavy parts ahead on its own (Preferences > Playback, **Render heavy parts while idle**), and **Render In to Out** renders a range now. Exports always render live, from the media.
+
 ## Magnetic Timeline
 
 Clips in Klipp's timeline close up by default: moving or deleting a clip ripples the clips after it, and insert, overwrite, slip, slide, roll and replace edits keep the edit continuous. The **RIPPLE** button turns gap-closing off. See [Magnetic Timeline](../editing/magnetic-timeline.md).

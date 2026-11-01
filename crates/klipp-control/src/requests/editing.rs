@@ -546,6 +546,17 @@ pub(crate) fn respond(
             send(AppCommand::SetPlaybackQuality(q))
         }
 
+        ControlCommand::SetBackgroundRender { on, delay_secs } => {
+            if on.is_none() && delay_secs.is_none() {
+                return Err("nothing to set: give on, delay_secs or both".into());
+            }
+            if let Some(d) = delay_secs.filter(|d| !(1.0..=60.0).contains(d)) {
+                return Err(format!("delay_secs {d} is outside 1 to 60 seconds"));
+            }
+            let now = klipp_engine::background_render::summary();
+            send(AppCommand::SetBackgroundRender { on: on.unwrap_or(now.on), delay_secs: delay_secs.unwrap_or(now.delay_secs) })
+        }
+
         ControlCommand::ClearFrozen { frames, sound } => {
             let (frames, sound) = (frames != Some(false), sound != Some(false));
             if !frames && !sound {

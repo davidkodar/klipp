@@ -194,7 +194,8 @@ pub fn decide(m: &Moment) -> Decision {
 }
 
 /// How drawing ahead stands, for the timeline and the socket.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
 pub enum State {
     #[default]
     Off,
@@ -211,14 +212,49 @@ pub enum State {
     Full,
 }
 
-static STATE: Mutex<State> = Mutex::new(State::Off);
+impl State {
+    /// In a few words, for the timeline text and the socket.
+    pub fn describe(&self) -> String {
+        match self {
+            State::Off => "off".into(),
+            State::OnBattery => "off on battery: it draws ahead on mains power".into(),
+            State::Waiting => "waiting for a pause".into(),
+            State::Drawing { done, total } => format!("drawing frame {done} of {total}"),
+            State::Stopped => "stopped by input: it starts again after a pause".into(),
+            State::Done => "every heavy frame drawn".into(),
+            State::Full => "the cache is full: a larger Max cache size in Preferences holds more".into(),
+        }
+    }
+}
+
+/// Drawing ahead as the engine last set it: for the socket and the UI.
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize)]
+pub struct Summary {
+    #[serde(flatten)]
+    pub state: State,
+    pub on: bool,
+    pub delay_secs: f32,
+    /// Whole frames kept now, and their bytes on disk.
+    pub frames: usize,
+    pub bytes: u64,
+}
+
+static SUMMARY: Mutex<Summary> = Mutex::new(Summary { state: State::Off, on: false, delay_secs: 2.0, frames: 0, bytes: 0 });
+
+pub fn set_summary(f: impl FnOnce(&mut Summary)) {
+    f(&mut SUMMARY.lock().unwrap_or_else(|e| e.into_inner()));
+}
+
+pub fn summary() -> Summary {
+    *SUMMARY.lock().unwrap_or_else(|e| e.into_inner())
+}
 
 pub fn set_state(s: State) {
-    *STATE.lock().unwrap_or_else(|e| e.into_inner()) = s;
+    set_summary(|m| m.state = s);
 }
 
 pub fn state() -> State {
-    *STATE.lock().unwrap_or_else(|e| e.into_inner())
+    summary().state
 }
 
 static FORCE_HEAVY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);

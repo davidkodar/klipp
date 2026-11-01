@@ -54,7 +54,7 @@ static PENDING_WRITE_GENERATION: std::sync::atomic::AtomicU64 =
 const WRITE_TOOLS: &[&str] = &[
     "klipp_graph", "klipp_import_timeline", "klipp_alternatives",
     "klipp_play", "klipp_pause", "klipp_stop", "klipp_seek",
-    "klipp_append_clip", "klipp_clear_frozen", "klipp_set_playback_quality", "klipp_remove_clip", "klipp_attach_audio", "klipp_normalize", "klipp_set_append_audio", "klipp_select_clip",
+    "klipp_append_clip", "klipp_clear_frozen", "klipp_set_playback_quality", "klipp_set_background_render", "klipp_remove_clip", "klipp_attach_audio", "klipp_normalize", "klipp_set_append_audio", "klipp_select_clip",
     "klipp_add_node", "klipp_remove_node", "klipp_connect_nodes",
     "klipp_set_node_param", "klipp_toggle_node", "klipp_set_log_format",
     "klipp_generator", "klipp_undo", "klipp_redo", "klipp_batch", "klipp_export", "klipp_export_subtitles", "klipp_import_subtitles", "klipp_translate_captions", "klipp_apply",
@@ -605,6 +605,16 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             v
         }
         "klipp_set_playback_quality" => json!({ "method": "set_playback_quality", "quality": arg_str(args, "quality")? }),
+        "klipp_set_background_render" => {
+            let mut v = json!({ "method": "set_background_render" });
+            if let Some(on) = args.get("on").and_then(Value::as_bool) {
+                v["on"] = json!(on);
+            }
+            if let Some(d) = args.get("delay_secs").and_then(Value::as_f64) {
+                v["delay_secs"] = json!(d);
+            }
+            v
+        }
         "klipp_clear_frozen" => {
             let mut v = json!({ "method": "clear_frozen" });
             for key in ["frames", "sound"] {
@@ -768,6 +778,7 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             v
         }
         "klipp_perf" => json!({ "method": "perf" }),
+        "klipp_render_status" => json!({ "method": "render_status" }),
         "klipp_log_tail" => {
             let mut v = json!({ "method": "log_tail" });
             if let Some(n) = args.get("lines").and_then(|v| v.as_u64()) {
@@ -2168,6 +2179,10 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              "Set the size frames are drawn at while playing: full, half or quarter of the playback resolution; saved as the preference. Details: klipp_guide topic set_playback_quality.",
              json!({ "quality": { "type": "string", "enum": ["full", "half", "quarter"] } }),
              vec!["quality"]),
+        tool("klipp_set_background_render",
+             "Drawing heavy frames ahead while idle: on or off, and its delay; saved. Details: klipp_guide topic set_background_render.",
+             json!({ "on": { "type": "boolean" }, "delay_secs": { "type": "number" } }),
+             vec![]),
         tool("klipp_clear_frozen",
              "Clear the open project's frozen frames and sound; their tracks play live again, one undo step. Details: klipp_guide topic clear_frozen.",
              json!({ "frames": { "type": "boolean" }, "sound": { "type": "boolean" } }),
@@ -2308,6 +2323,9 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              vec![]),
         tool("klipp_perf",
              "Frame timings, presented_fps over the last 2 s, and why playback drops frames with the fix that fits. Details: klipp_guide topic perf.",
+             json!({}), vec![]),
+        tool("klipp_render_status",
+             "Rendered, heavy and stale spans, and drawing ahead's state. Details: klipp_guide topic render_status.",
              json!({}), vec![]),
         tool("klipp_log_tail",
              "Tail of Klipp's debug log. Details: klipp_guide topic log_tail.",
