@@ -185,6 +185,7 @@ fn video_codec_name(c: ExportVideoCodec) -> &'static str {
         ExportVideoCodec::Av1 => "av1",
         ExportVideoCodec::Vp9 => "vp9",
         ExportVideoCodec::Gif => "gif",
+        ExportVideoCodec::Ffv1 => "ffv1",
     }
 }
 

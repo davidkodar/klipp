@@ -65,6 +65,7 @@ fn settings(out: &Path) -> ExportSettings {
         audio_bitrate_kbps: None, video_bitrate_kbps: None, rate_control: RateControl::Crf,
         burn_in_subtitles: false, embed_subtitles: false, target_lufs: None, true_peak_dbtp: None, embed_chapters: false, captions_608: false, hdr10plus: false,
         bit_depth: 8, hdr_mode: HdrMode::Sdr, tone_map_op: ToneMapOp::Hable, odt: OdtChoice::MatchViewer,
+        alpha: false,
         mastering_peak_nits: DEFAULT_MASTERING_PEAK_NITS,
     }
 }

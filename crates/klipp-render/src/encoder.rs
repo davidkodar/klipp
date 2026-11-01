@@ -244,6 +244,7 @@ fn software_video_encoder(codec: &ExportVideoCodec) -> &'static str {
         ExportVideoCodec::H265 => "libx265",
         ExportVideoCodec::Av1 => "libsvtav1",
         ExportVideoCodec::ProRes422 | ExportVideoCodec::ProRes422HQ | ExportVideoCodec::ProRes4444 => "prores_ks",
+        ExportVideoCodec::Ffv1 => "ffv1",
         ExportVideoCodec::DNxHD115 | ExportVideoCodec::DNxHD145 => "dnxhd",
         ExportVideoCodec::Vp9 => "libvpx-vp9",
         ExportVideoCodec::Gif => "gif",
@@ -549,7 +550,13 @@ impl Encoder {
                     // 16-bit word); software encoders take planar YUV420P10LE.
                     let want_10bit = settings.bit_depth == 10;
                     let pix_fmt = match settings.video_codec {
+                        // Alpha as a plane of its own, straight (#3264).
+                        ExportVideoCodec::ProRes4444 if settings.writes_alpha() => ffmpeg_next::format::Pixel::YUVA444P10LE,
                         ExportVideoCodec::ProRes4444 => ffmpeg_next::format::Pixel::YUV444P10LE,
+                        // Lossless RGB at 16 bits: no matrix to round
+                        // through on the way back in.
+                        ExportVideoCodec::Ffv1 if settings.writes_alpha() => ffmpeg_next::format::Pixel::GBRAP16LE,
+                        ExportVideoCodec::Ffv1 => ffmpeg_next::format::Pixel::GBRP16LE,
                         ExportVideoCodec::ProRes422 | ExportVideoCodec::ProRes422HQ => {
                             ffmpeg_next::format::Pixel::YUV422P10LE
                         }
@@ -619,6 +626,12 @@ impl Encoder {
                         }
                         ExportVideoCodec::ProRes4444 => {
                             video_opts.set("profile", "4");
+                        }
+                        ExportVideoCodec::Ffv1 => {
+                            // Version 3: slices coded side by side, each
+                            // with a CRC, so a damaged file says so.
+                            video_opts.set("level", "3");
+                            video_opts.set("slicecrc", "1");
                         }
                         ExportVideoCodec::DNxHD115 => {
                             video_ctx.set_bit_rate(115_000_000);
@@ -1528,7 +1541,7 @@ impl Encoder {
     /// Whether the output format holds more than 8 bits per sample.
     pub fn is_deep(&self) -> bool {
         use ffmpeg_next::format::Pixel as P;
-        matches!(self.frame_format, P::P010LE | P::YUV420P10LE | P::YUV422P10LE | P::YUV444P10LE)
+        matches!(self.frame_format, P::P010LE | P::YUV420P10LE | P::YUV422P10LE | P::YUV444P10LE | P::YUVA444P10LE | P::GBRP16LE | P::GBRAP16LE)
     }
 
     /// Encode one 16-bit display-encoded RGBA frame (`width * height * 4`
@@ -2232,6 +2245,7 @@ mod tests {
             audio_bitrate_kbps: Some(128), video_bitrate_kbps: None, rate_control: klipp_core::RateControl::Crf,
             burn_in_subtitles: true, embed_subtitles: false, target_lufs: None, true_peak_dbtp: None, embed_chapters: false, captions_608: false, hdr10plus: false,
             bit_depth: 0, hdr_mode: klipp_core::HdrMode::Sdr, tone_map_op: klipp_core::ToneMapOp::Hable,
+            alpha: false,
             odt: klipp_core::OdtChoice::MatchViewer,
             mastering_peak_nits: klipp_core::DEFAULT_MASTERING_PEAK_NITS }
     }

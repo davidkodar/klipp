@@ -122,6 +122,7 @@ fn main() {
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(0),
+        alpha: false,
         hdr_mode: HdrMode::Sdr,
         tone_map_op: ToneMapOp::Hable,
         odt: OdtChoice::MatchViewer,

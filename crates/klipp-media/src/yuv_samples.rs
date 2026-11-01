@@ -32,6 +32,44 @@ impl OwnedYuv {
     }
 }
 
+/// A Y'CbCr frame's own alpha plane, where it has one, into `out`'s
+/// alpha at `dst_w`×`dst_h`, turned by `rotation` (0, 90, 180 or 270) as
+/// the Y'CbCr decode turns the picture (#3264). The native decode reads
+/// the three Y'CbCr planes only, so a ProRes 4444 with alpha came in
+/// opaque. Alpha is linear already, straight.
+pub fn keep_alpha_plane(frame: &ffmpeg_next::frame::Video, dst_w: u32, dst_h: u32, rotation: u32, out: &mut [f32]) {
+    use ffmpeg_next::format::Pixel as P;
+    let bits = match frame.format() {
+        P::YUVA420P | P::YUVA422P | P::YUVA444P => 8,
+        P::YUVA420P9LE | P::YUVA422P9LE | P::YUVA444P9LE => 9,
+        P::YUVA420P10LE | P::YUVA422P10LE | P::YUVA444P10LE => 10,
+        P::YUVA422P12LE | P::YUVA444P12LE => 12,
+        P::YUVA420P16LE | P::YUVA422P16LE | P::YUVA444P16LE => 16,
+        _ => return,
+    };
+    let (src_w, src_h) = (frame.width().max(1), frame.height().max(1));
+    if dst_w == 0 || dst_h == 0 || out.len() < (dst_w * dst_h * 4) as usize {
+        return;
+    }
+    let (data, stride) = (frame.data(3), frame.stride(3));
+    let max = ((1u32 << bits) - 1) as f32;
+    for dy in 0..dst_h {
+        for dx in 0..dst_w {
+            // The source pixel as `yuv_to_linear_display` takes it.
+            let (sx, sy) = match rotation {
+                90 => (dy * src_w / dst_h, (dst_w - 1 - dx) * src_h / dst_w),
+                180 => ((dst_w - 1 - dx) * src_w / dst_w, (dst_h - 1 - dy) * src_h / dst_h),
+                270 => ((dst_h - 1 - dy) * src_w / dst_h, dx * src_h / dst_w),
+                _ => (dx * src_w / dst_w, dy * src_h / dst_h),
+            };
+            let (sx, sy) = (sx.min(src_w - 1) as usize, sy.min(src_h - 1) as usize);
+            let row = &data[sy * stride..];
+            let v = if bits == 8 { f32::from(row[sx]) } else { f32::from(u16::from_le_bytes([row[2 * sx], row[2 * sx + 1]])) };
+            out[((dy * dst_w + dx) * 4 + 3) as usize] = v / max;
+        }
+    }
+}
+
 /// Read the Y, Cb and Cr samples of any software YUV frame — planar,
 /// semi-planar (NV12, P010) or packed, 8 to 16 bits, any subsampling —
 /// using the pixel format's descriptor, so ProRes 4:2:2 / 4:4:4, 12-bit
