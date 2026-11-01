@@ -934,12 +934,20 @@ impl Sequence {
     // ═══════════════════════════════════════════════════════════════════
 
     /// The track a source edit lays `kind` on (#915): the one patched for
-    /// it, else the first track of the kind.
+    /// it; else, for a picture, the main track (the primary video track,
+    /// else the lowest), for anything else the first track of the kind.
     pub fn source_track(&self, kind: TrackKind) -> Option<usize> {
-        self.tracks
-            .iter()
-            .position(|t| t.kind == kind && t.source_patch)
-            .or_else(|| self.tracks.iter().position(|t| t.kind == kind))
+        let patched = self.tracks.iter().position(|t| t.kind == kind && t.source_patch);
+        match kind {
+            // With none patched, the picture goes on the main track, V1:
+            // the primary, else the lowest. The first in the list is the
+            // top one, and Add to End of Timeline put a clip on Video 2
+            // with V1 empty.
+            TrackKind::Video => patched
+                .or_else(|| self.primary_track_index().filter(|&i| self.tracks[i].kind == TrackKind::Video))
+                .or_else(|| self.tracks.iter().rposition(|t| t.kind == TrackKind::Video)),
+            _ => patched.or_else(|| self.tracks.iter().position(|t| t.kind == kind)),
+        }
     }
 
     /// Patch the source to `track_index`, taking the patch off every
@@ -4527,7 +4535,7 @@ mod tests {
             Track::new("A1", TrackKind::Audio),
             Track::new("A2", TrackKind::Audio),
         ];
-        assert_eq!(seq.source_track(TrackKind::Video), Some(0), "no patch: the first of the kind");
+        assert_eq!(seq.source_track(TrackKind::Video), Some(1), "no patch: the main track, V1 (the lowest), not the top one");
         seq.patch_source_to(1);
         seq.patch_source_to(3);
         assert_eq!((seq.source_track(TrackKind::Video), seq.source_track(TrackKind::Audio)), (Some(1), Some(3)));
@@ -5249,5 +5257,31 @@ mod frozen_track_tests {
         assert!(t.locked);
         t.set_lock_while_frozen(false);
         assert!(!t.locked && t.frozen);
+    }
+}
+
+#[cfg(test)]
+mod source_track_tests {
+    use super::*;
+
+    /// With nothing patched, a picture goes on the main track, V1, not on
+    /// the top video track the list starts with; sound on the first audio
+    /// track; a patched track wins either way.
+    #[test]
+    fn an_unpatched_picture_goes_on_the_main_track() {
+        let mut seq = Sequence::new_default();
+        seq.add_video_track("Video 2".into());
+        // V1, the lowest video track: below the new one in the list.
+        let v1 = seq.tracks.iter().rposition(|t| t.kind == TrackKind::Video).unwrap();
+        let top = seq.tracks.iter().position(|t| t.kind == TrackKind::Video).unwrap();
+        assert_ne!(top, v1, "Video 2 sits above V1 in the list");
+        for t in &mut seq.tracks {
+            t.source_patch = false;
+        }
+        assert_eq!(seq.source_track(TrackKind::Video), Some(v1), "V1, not the top track");
+        let a1 = seq.tracks.iter().position(|t| t.kind == TrackKind::Audio).unwrap();
+        assert_eq!(seq.source_track(TrackKind::Audio), Some(a1));
+        seq.patch_source_to(top);
+        assert_eq!(seq.source_track(TrackKind::Video), Some(top), "a patch wins");
     }
 }
