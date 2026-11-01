@@ -1013,7 +1013,7 @@ impl KlippApp {
                 let grading_title = self.state.grading_title(clip_id);
                 let elsewhere = stand_in.is_none().then(|| self.state.colour_elsewhere_hint()).flatten();
                 // A graded piece of a split shot, offering its grade to the
-                // rest (off unless the preference is on).
+                // rest (unless the preference is turned off).
                 let shot_pieces = (self.prefs.color.offer_grade_to_shot_pieces && stand_in.is_none())
                     .then(|| super::grade_edits::shot_pieces_offer(&self.state.sequences[seq_idx], clip_id))
                     .flatten();

@@ -67,7 +67,7 @@ A shot split in pieces is still one shot. When you've graded one piece, right-cl
 
 Pieces count as one shot when they sit side by side on the same track, from the same file, at the same speed, with the file's range carrying straight on. A piece you graded yourself keeps its grade.
 
-To have the Colour page offer this under its header whenever the graded clip has ungraded pieces, turn on **Preferences → Colour → Offer grade for split shots**. It's off by default.
+The Colour page also offers it under its header, "Split shot — Apply to the other pieces", whenever the graded clip has ungraded pieces. Nothing changes until you click it. To hide the offer, turn off **Preferences → Colour → Offer grade for split shots**.
 
 ## LUTs
 

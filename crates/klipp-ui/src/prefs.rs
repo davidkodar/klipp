@@ -1718,8 +1718,9 @@ pub struct ColorPrefs {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub node_add_recents: Vec<String>,
     /// Offer, on the Colour page, to give a graded piece's grade to the
-    /// other ungraded pieces of its split shot. Off unless turned on.
-    #[serde(default)]
+    /// other ungraded pieces of its split shot. The offer applies nothing
+    /// until clicked; on unless turned off.
+    #[serde(default = "default_true")]
     pub offer_grade_to_shot_pieces: bool,
 }
 
@@ -1748,7 +1749,7 @@ impl Default for ColorPrefs {
             port_snap_radius_px: default_port_snap_radius(),
             printer_point: default_printer_point(),
             node_add_recents: Vec::new(),
-            offer_grade_to_shot_pieces: false,
+            offer_grade_to_shot_pieces: true,
         }
     }
 }
@@ -3258,6 +3259,16 @@ mod tests {
         let json = serde_json::to_string(&palette).expect("serialize");
         let restored: FalseColorPalette = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(palette, restored);
+    }
+
+    #[test]
+    fn the_split_shot_grade_offer_is_on_unless_turned_off() {
+        assert!(ColorPrefs::default().offer_grade_to_shot_pieces);
+        // A prefs file from before it has it on too.
+        let old: ColorPrefs = serde_json::from_str("{}").unwrap();
+        assert!(old.offer_grade_to_shot_pieces);
+        let off: ColorPrefs = serde_json::from_str(r#"{"offer_grade_to_shot_pieces": false}"#).unwrap();
+        assert!(!off.offer_grade_to_shot_pieces);
     }
 
     #[test]
