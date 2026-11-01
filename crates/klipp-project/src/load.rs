@@ -775,6 +775,11 @@ fn load_project_as(dir: &Path, form: crate::FileForm, strict: bool) -> Result<Lo
         seq.set_root_blends(root, &blends).map_err(|e| format!("This project's sequence {sid} can't keep its grade's mix: {e}"))?;
     }
 
+    // A collected project's grade files, stored relative to it.
+    for seq in &mut sequences {
+        seq.edit_each_grade(|g| crate::consolidate::resolve_collected_grade_files(g, dir));
+    }
+
     info!(
         "Project loaded from {:?} ({} sequence(s), {} title asset(s))",
         dir,
@@ -1603,7 +1608,10 @@ fn load_looks_as(dir: &Path, form: crate::FileForm) -> Vec<Look> {
         // is not read, and the file is left alone (#993, #1089).
         match read_to_string_capped(&path, MAX_INPUT_FILE_BYTES) {
             Ok(text) => match read_look(&text, form) {
-                Ok(look) => out.push(look),
+                Ok(mut look) => {
+                    look.edit_grade(|g| crate::consolidate::resolve_collected_grade_files(g, dir));
+                    out.push(look)
+                }
                 Err(why) => warn!("Leaving Look {:?} as it is: {why}", path),
             },
             Err(e) => warn!("Failed to read Look {:?}: {e}", path),

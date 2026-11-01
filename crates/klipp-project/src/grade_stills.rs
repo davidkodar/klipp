@@ -269,7 +269,12 @@ fn save_grade_stills_as(
 /// Read the stills index and decode every PNG. Missing files are skipped
 /// with a warning rather than failing the whole load.
 pub fn load_grade_stills(project_dir: &Path) -> Vec<GradeStillData> {
-    load_grade_stills_as(project_dir, crate::FileForm::Revision2)
+    let mut stills = load_grade_stills_as(project_dir, crate::FileForm::Revision2);
+    // A collected project's grade files, stored relative to it.
+    for g in stills.iter_mut().filter_map(|s| s.grade.as_mut()) {
+        crate::consolidate::resolve_collected_grade_files(g, project_dir);
+    }
+    stills
 }
 
 /// Today's v1 stills reader, kept only to prove the one-time conversion
