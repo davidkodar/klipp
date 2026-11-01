@@ -9,7 +9,8 @@ group before the target node; names and labels are not IDs.
 Use the catalog's type IDs, parameter keys, choice labels and port keys. The
 catalog describes types; it does not promise every operation can currently be
 saved in every context. If a read reports omissions, read a narrower path. Missing
-parameters can mean defaults; omitted details do not mean an empty node.
+parameters can mean defaults; omitted details do not mean an empty node. A node's
+`mask_channel_set` says whether its mask channel is stored, not the default.
 
 ## Chain or branch
 

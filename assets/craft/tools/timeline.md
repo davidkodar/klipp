@@ -104,6 +104,10 @@ Arguments:
 
 Prepare a frame-exact cut in a bounded TIMELINE range. Maps source pauses, word and sentence edges, shot changes, and settled screen reveals through trims and retiming onto sequence frames. Returns ranked candidates with evidence and uncertainty, relevant clips, linked sound, locks, handles, revision and project identity. Give the editing intent and an optional target moment. This only reads; choose a frame, plan the cut, and apply with its revision precondition. If ambiguous, inspect a contact sheet or audio excerpt first.
 
+## klipp_import_subtitles
+
+Read a subtitle file at an absolute path onto a new subtitle track: .srt, .vtt, .ass, .ssa, TTML (.ttml, .dfxp, .xml, .itt), .scc or .stl.
+
 ## klipp_export_subtitles
 
 Write the subtitle clips (the text clips when there are none) to an absolute path, in the format its extension names: .srt, .vtt, .ass, .ssa, .ttml (IMSC), .scc (608) or .stl (EBU). format, if given, must match the extension.
@@ -287,3 +291,4 @@ Arguments:
 - `max_width`: Downscale to this width (default 1280)
 - `path`: Where to write the PNG; omit for a temp file
 - `timeout_ms`: How long to wait for that frame (default 3000)
+- `wait_for_new_frame`: Wait for a frame rendered after the last change. Defaults to true when a change was made since the last screenshot, so 'change then look' captures the result, not the old frame.
