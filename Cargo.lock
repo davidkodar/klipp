@@ -3582,6 +3582,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "skrifa",
  "toml",
  "tracing",
  "ttf-parser 0.25.1",
@@ -5953,6 +5954,16 @@ name = "siphasher"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b2aa850e253778c88a04c3d7323b043aeda9d3e30d5971937c1855769763678e"
+
+[[package]]
+name = "skrifa"
+version = "0.46.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d4febebda507fb889c545a37a135517769d1391941013561292897961d1887d6"
+dependencies = [
+ "bytemuck",
+ "read-fonts",
+]
 
 [[package]]
 name = "slab"

@@ -36,6 +36,7 @@ mod backing;
 pub use backing::{backing_lines, BackingLines};
 use backing::BackgroundLines;
 mod colour;
+mod colr;
 pub mod raster;
 pub use raster::BoxRaster;
 mod fallback;
