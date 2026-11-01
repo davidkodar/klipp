@@ -1327,7 +1327,7 @@ impl KlippApp {
         // single edit (and the `palette_anchors_present` test there
         // catches accidental removals).
         if self.state.show_command_palette {
-            use crate::command_palette::{build as build_palette, dispatch_dialog, PaletteAction};
+            use crate::command_palette::{build as build_palette, dispatch_dialog, show_layout_keys, PaletteAction};
 
             // Modal scrim — match the AI Models dialog so the
             // palette has the same "this layer is the active one"
@@ -1352,7 +1352,8 @@ impl KlippApp {
                     }
                 });
 
-            let entries = build_palette(&self.state);
+            let mut entries = build_palette(&self.state);
+            show_layout_keys(&mut entries, &self.key_bindings);
             let query = self.state.command_palette_query.to_lowercase();
             let filtered_idx: Vec<usize> = entries
                 .iter()
