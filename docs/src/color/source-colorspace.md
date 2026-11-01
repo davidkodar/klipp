@@ -31,9 +31,13 @@ To override:
 
 The override is per clip, saved in the project, and one undo step. New clips take the project's input format and input LUT from the Colour Management page.
 
+## Chroma Siting
+
+In 4:2:0 and 4:2:2 files the colour samples cover more than one pixel, and the file says where they sit: left (H.264 and HEVC's default), centre (MPEG-1 and JPEG), top-left or top. Klipp reconstructs chroma at the position the file gives, in the viewer, in exports and on the GPU and CPU alike, so colour edges stay where they were shot. A file that says nothing is read as left-sited.
+
 ## Why YUV420P10LE Bypasses libswscale
 
-Camera log sources almost always record as `yuv420p10le` — 10-bit YUV with chroma subsampled. Klipp normally uses libswscale to convert codec output to RGBA for the GPU pipeline, but **libswscale's RGBA64LE output for 10-bit log YUV is channel-clamped junk** — the high bits get truncated to 8-bit before scaling, regardless of `sws_setColorspaceDetails`.
+Camera log sources almost always record as `yuv420p10le` — 10-bit YUV with chroma subsampled. Klipp converts Y'CbCr with its own converters (the GPU decode shaders and their CPU twins) rather than libswscale, and **libswscale's RGBA64LE output for 10-bit log YUV is channel-clamped junk** — the high bits get truncated to 8-bit before scaling, regardless of `sws_setColorspaceDetails`.
 
 Klipp bypasses libswscale entirely for `yuv420p10le` sources via a direct decoder that:
 

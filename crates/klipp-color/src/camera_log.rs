@@ -14,7 +14,7 @@
 //! vendor doesn't publish a closed-form curve (Blackmagic, GoPro)
 //! we use a reasonable approximation flagged in the docstring.
 
-use crate::hdr::{chroma_taps, ChromaAxis};
+use crate::hdr::chroma_taps;
 use klipp_core::{
     ColorMatrix, ColorPrimaries, ColorRange, ColorTransfer, SourceColorspace,
     WorkingColorspace,
@@ -740,6 +740,7 @@ pub fn yuv420p10le_to_linear(
     dst_h: u32,
     cs: SourceColorspace,
     ws: WorkingColorspace,
+    siting: crate::hdr::ChromaSiting,
 ) -> Vec<f32> {
     let (cv_r, cu_b, cu_g, cv_g) = matrix_coefficients(cs.matrix);
     // 10-bit range constants. Limited: Y 64..940 / UV 64..960.
@@ -796,13 +797,13 @@ pub fn yuv420p10le_to_linear(
             // Nearest-neighbour resize: map output row to source row.
             let sy = (dy * src_h_us / dst_h_us).min(src_h_us - 1);
             let y_row_off = sy * y_stride;
-            // Chroma is reconstructed at H.264 4:2:0 siting, through the
+            // Chroma is reconstructed at the file's siting, through the
             // same `chroma_taps` the scene-referred converter and the
             // decode shaders use — one definition, so this cannot drift
             // from them. Vertical taps are per-row, so they are resolved
             // once out here rather than per pixel.
             let (cy0, cy1, ty) =
-                chroma_taps(sy, 1, src_h_us.div_ceil(2), ChromaAxis::Between);
+                chroma_taps(sy, 1, src_h_us.div_ceil(2), siting.v);
             let u_row0 = cy0 * u_stride;
             let u_row1 = cy1 * u_stride;
             let v_row0 = cy0 * v_stride;
@@ -810,7 +811,7 @@ pub fn yuv420p10le_to_linear(
             for dx in 0..dst_w_us {
                 let sx = (dx * src_w_us / dst_w_us).min(src_w_us - 1);
                 let (cx0, cx1, tx) =
-                    chroma_taps(sx, 1, src_w_us.div_ceil(2), ChromaAxis::CoSited);
+                    chroma_taps(sx, 1, src_w_us.div_ceil(2), siting.h);
                 let yo = y_row_off + sx * 2;
                 let y_raw = u16::from_le_bytes([y_data[yo], y_data[yo + 1]]) & 0x3FF;
                 // Bilinear over the four taps, per plane.
@@ -989,8 +990,8 @@ impl DisplaySignal {
     #[inline]
     fn at(&self, s: &crate::hdr::YuvSamples, sx: usize, sy: usize) -> [f32; 3] {
         let cw = self.cw;
-        let (x0, x1, tx) = chroma_taps(sx, s.chroma_shift_w, cw, ChromaAxis::CoSited);
-        let (y0, y1, ty) = chroma_taps(sy, s.chroma_shift_h, self.ch, ChromaAxis::Between);
+        let (x0, x1, tx) = chroma_taps(sx, s.chroma_shift_w, cw, s.siting.h);
+        let (y0, y1, ty) = chroma_taps(sy, s.chroma_shift_h, self.ch, s.siting.v);
         let lerp2 = |p: &[u16]| {
             let at = |x: usize, yy: usize| p[yy * cw + x] as f32;
             let top = at(x0, y0) + (at(x1, y0) - at(x0, y0)) * tx;
@@ -1190,6 +1191,7 @@ pub fn yuv420p10le_to_linear_bt709(
         y_stride, u_stride, v_stride,
         src_w, src_h, dst_w, dst_h,
         cs, WorkingColorspace::Rec709Linear,
+        crate::hdr::ChromaSiting::default(),
     )
 }
 
@@ -1215,6 +1217,7 @@ pub fn yuv420p10le_to_linear_acescg(
         y_stride, u_stride, v_stride,
         src_w, src_h, dst_w, dst_h,
         cs, WorkingColorspace::AcesCG,
+        crate::hdr::ChromaSiting::default(),
     )
 }
 
@@ -1251,7 +1254,7 @@ mod tests {
             primaries: ColorPrimaries::Bt709,
         };
         let out = yuv420p10le_to_linear(
-            &y, &u, &v, w * 2, w, w, w as u32, h as u32, w as u32, h as u32, cs, WorkingColorspace::Rec709Linear,
+            &y, &u, &v, w * 2, w, w, w as u32, h as u32, w as u32, h as u32, cs, WorkingColorspace::Rec709Linear, Default::default(),
         );
         assert_eq!(out.len(), w * h * 4);
         assert!((out[0] - 1.0).abs() < 1e-3, "clipped white decodes as white, got {}", out[0]);

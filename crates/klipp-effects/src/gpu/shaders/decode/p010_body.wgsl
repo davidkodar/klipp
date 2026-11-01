@@ -24,6 +24,12 @@ struct Params {
     transfer_id: u32,
     primaries_id: u32,
     write_linear: u32,
+    // Where the file's chroma sits: what each axis takes off s / 2, 0
+    // co-sited or 0.25 between (`klipp_color::hdr::ChromaSiting`, #3266).
+    chroma_off_x: f32,
+    chroma_off_y: f32,
+    _pad0: u32,
+    _pad1: u32,
     primaries_row0: vec4<f32>,
     primaries_row1: vec4<f32>,
     primaries_row2: vec4<f32>,
@@ -63,8 +69,8 @@ fn display_working_at(sx: u32, sy: u32) -> vec3<f32> {
     let y_10 = f32(load_u16_le_y(sy * params.y_stride + sx * 2u) >> 6u);
     let cw = (params.src_width + 1u) / 2u;
     let ch = (params.src_height + 1u) / 2u;
-    let fx = clamp(f32(sx) * 0.5, 0.0, f32(cw - 1u));
-    let fy = clamp(f32(sy) * 0.5 - 0.25, 0.0, f32(ch - 1u));
+    let fx = clamp(f32(sx) * 0.5 - params.chroma_off_x, 0.0, f32(cw - 1u));
+    let fy = clamp(f32(sy) * 0.5 - params.chroma_off_y, 0.0, f32(ch - 1u));
     let x0 = u32(floor(fx));
     let y0 = u32(floor(fy));
     let x1 = min(x0 + 1u, cw - 1u);
@@ -171,8 +177,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // identical to the CPU twin.
     let cw = (params.src_width + 1u) / 2u;
     let ch = (params.src_height + 1u) / 2u;
-    let fx = clamp(f32(sx) * 0.5, 0.0, f32(cw - 1u));
-    let fy = clamp(f32(sy) * 0.5 - 0.25, 0.0, f32(ch - 1u));
+    let fx = clamp(f32(sx) * 0.5 - params.chroma_off_x, 0.0, f32(cw - 1u));
+    let fy = clamp(f32(sy) * 0.5 - params.chroma_off_y, 0.0, f32(ch - 1u));
     let x0 = u32(floor(fx));
     let y0 = u32(floor(fy));
     let x1 = min(x0 + 1u, cw - 1u);

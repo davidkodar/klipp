@@ -33,6 +33,9 @@
 use tracing::{info, warn};
 
 pub struct GpuP010Converter {
+    /// Where the frames' chroma sits, as the shader takes it: set per
+    /// frame by [`Self::set_chroma_offsets`] (#3266).
+    chroma_offsets: [f32; 2],
     device: std::sync::Arc<wgpu::Device>,
     queue: std::sync::Arc<wgpu::Queue>,
     pipeline: wgpu::ComputePipeline,
@@ -119,6 +122,9 @@ struct P010Params {
     transfer_id: u32,
     primaries_id: u32,
     write_linear: u32,
+    /// As `Nv12Params::chroma_offsets`.
+    chroma_offsets: [f32; 2],
+    _pad: [u32; 2],
     primaries_matrix: [[f32; 4]; 3],
 }
 
@@ -156,6 +162,15 @@ pub(crate) fn p010_shader() -> &'static str {
 }
 
 impl GpuP010Converter {
+    /// Where the next frames' chroma sits, the file's `chroma_location`
+    /// as `klipp_color::hdr::ChromaSiting::shader_offsets` gives it
+    /// (`[horizontal, vertical]`, each 0 or 0.25): every conversion until
+    /// the next call reconstructs chroma there (#3266). Left, H.264's
+    /// default, until it is set.
+    pub fn set_chroma_offsets(&mut self, offsets: [f32; 2]) {
+        self.chroma_offsets = offsets;
+    }
+
     /// How many GPU-resident output buffers the converter keeps to hand
     /// out again (#2107). For tests.
     #[doc(hidden)]
@@ -276,6 +291,7 @@ impl GpuP010Converter {
             device,
             queue,
             pipeline, bind_group_layout,
+            chroma_offsets: [0.0, 0.25],
             y_buf: None, uv_buf: None, output_buf: None, staging_buf: None,
             hdr_buf: None, hdr_staging_buf: None, hdr_dummy_buf, linear_dummy_buf,
             params_buf,
@@ -391,6 +407,8 @@ impl GpuP010Converter {
             transfer_id: color_ids[2],
             primaries_id: color_ids[3],
             write_linear: 0,
+            chroma_offsets: self.chroma_offsets,
+            _pad: [0; 2],
             primaries_matrix,
         };
         self.queue.write_buffer(&self.params_buf, 0, bytemuck::bytes_of(&params));
@@ -554,6 +572,8 @@ impl GpuP010Converter {
             transfer_id: color_ids[2],
             primaries_id: color_ids[3],
             write_linear: 0,
+            chroma_offsets: self.chroma_offsets,
+            _pad: [0; 2],
             primaries_matrix,
         };
         self.queue.write_buffer(&self.params_buf, 0, bytemuck::bytes_of(&params));
@@ -670,6 +690,8 @@ impl GpuP010Converter {
             transfer_id: color_ids[2],
             primaries_id: color_ids[3],
             write_linear: 1,
+            chroma_offsets: self.chroma_offsets,
+            _pad: [0; 2],
             primaries_matrix,
         };
         self.queue.write_buffer(&self.params_buf, 0, bytemuck::bytes_of(&params));

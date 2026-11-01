@@ -610,6 +610,7 @@ fn display_referred_linear(
             h,
             cs,
             working,
+            crate::yuv_samples::chroma_siting(frame),
         ));
     }
     // SAFETY: as above.

@@ -140,7 +140,7 @@ fn the_cpu_resize_is_the_decode_shaders() {
     let y16: Vec<u16> = y.iter().map(|&v| v as u16).collect();
     let u16s: Vec<u16> = uv.iter().step_by(2).map(|&v| v as u16).collect();
     let v16s: Vec<u16> = uv.iter().skip(1).step_by(2).map(|&v| v as u16).collect();
-    let samples = klipp_color::hdr::YuvSamples { y: &y16, u: &u16s, v: &v16s, width: sw, height: sh, chroma_shift_w: 1, chroma_shift_h: 1, bit_depth: 8 };
+    let samples = klipp_color::hdr::YuvSamples { y: &y16, u: &u16s, v: &v16s, width: sw, height: sh, chroma_shift_w: 1, chroma_shift_h: 1, bit_depth: 8 , siting: Default::default()};
     for (dw, dh) in [(48u32, 27u32), (64, 36), (60, 34), (144, 81), (192, 108)] {
         let shrinks = klipp_color::camera_log::resize_averages((sw, sh), (dw, dh));
         assert_eq!(shrinks, dw < sw, "{dw}x{dh}");
@@ -159,5 +159,73 @@ fn the_cpu_resize_is_the_decode_shaders() {
         }
         eprintln!("{sw}x{sh} → {dw}x{dh}: worst {worst} levels");
         assert!(worst <= 1, "{dw}x{dh}: the CPU resize is {worst} levels from the shader's");
+    }
+}
+
+/// #3266: the decode shaders reconstruct chroma where the file says it
+/// sits. At each siting (left, centre, top-left, top), the NV12 and P010
+/// shaders' frame of bars with hard edges across and down is within a
+/// level of `yuv_to_display_rgba64` at that siting, the CPU converter the
+/// software decode and the export use; and the shader told centre does
+/// not draw what it draws at left.
+#[test]
+fn the_shaders_take_a_files_chroma_siting() {
+    use klipp_color::hdr::ChromaSiting;
+    use klipp_effects::p010_gpu::GpuP010Converter;
+    let (Some(mut nv12), Some(mut p010)) = (GpuNv12Converter::new(), GpuP010Converter::new()) else {
+        if std::env::var_os("KLIPP_TEST_REQUIRE_GPU").is_some() {
+            panic!("KLIPP_TEST_REQUIRE_GPU is set and there is no GPU converter");
+        }
+        eprintln!("skipping: no GPU converter");
+        return;
+    };
+    let (w, h) = (96u32, 54u32);
+    // Bars across, and a hard band change down every 9 rows.
+    let (mut y, uv) = bars_nv12(w, h);
+    for (i, v) in y.iter_mut().enumerate() {
+        if (i as u32 / w / 9) % 2 == 1 {
+            *v = v.saturating_sub(30);
+        }
+    }
+    let uv: Vec<u8> = uv.chunks_exact(2).enumerate().flat_map(|(i, p)| if (i as u32 / (w / 2) * 2 / 9) % 2 == 1 { [p[1], p[0]] } else { [p[0], p[1]] }).collect();
+    let pm = pack_primaries_matrix(primaries_to_working_matrix(ColorPrimaries::Bt709, WorkingColorspace::Rec709Linear));
+    let cs = klipp_core::SourceColorspace {
+        range: klipp_core::ColorRange::Limited,
+        matrix: klipp_core::ColorMatrix::Bt709,
+        transfer: klipp_core::ColorTransfer::Bt709,
+        primaries: ColorPrimaries::Bt709,
+    };
+    let y16: Vec<u16> = y.iter().map(|&v| v as u16).collect();
+    let u16s: Vec<u16> = uv.iter().step_by(2).map(|&v| v as u16).collect();
+    let v16s: Vec<u16> = uv.iter().skip(1).step_by(2).map(|&v| v as u16).collect();
+    // The same picture at 10 bits, for P010: each code four times over.
+    let y10: Vec<u16> = y16.iter().map(|&v| v << 2).collect();
+    let (u10, v10): (Vec<u16>, Vec<u16>) = (u16s.iter().map(|&v| v << 2).collect(), v16s.iter().map(|&v| v << 2).collect());
+    let yb: Vec<u8> = y10.iter().flat_map(|s| (s << 6).to_le_bytes()).collect();
+    let uvb: Vec<u8> = u10.iter().zip(&v10).flat_map(|(a, b)| [(a << 6).to_le_bytes(), (b << 6).to_le_bytes()]).flatten().collect();
+    let to8 = |cpu: &[u16]| cpu.iter().map(|&c| (c as f32 / 65535.0 * 255.0).round() as i32).collect::<Vec<_>>();
+    let apart = |a: &[i32], b: &[u8]| a.chunks_exact(4).zip(b.chunks_exact(4)).map(|(a, b)| (0..3).map(|c| (a[c] - b[c] as i32).abs()).max().unwrap()).max().unwrap();
+    let mut at_left = None;
+    for (name, location) in [("left", 1), ("centre", 2), ("top-left", 3), ("top", 4)] {
+        let siting = ChromaSiting::from_av_location(location);
+        let s8 = klipp_color::hdr::YuvSamples { y: &y16, u: &u16s, v: &v16s, width: w, height: h, chroma_shift_w: 1, chroma_shift_h: 1, bit_depth: 8, siting };
+        let s10 = klipp_color::hdr::YuvSamples { y: &y10, u: &u10, v: &v10, width: w, height: h, chroma_shift_w: 1, chroma_shift_h: 1, bit_depth: 10, siting };
+        nv12.set_chroma_offsets(siting.shader_offsets());
+        p010.set_chroma_offsets(siting.shader_offsets());
+        let ids = [color_ids::COLOR_RANGE_LIMITED, color_ids::MATRIX_BT709, color_ids::TRANSFER_BT709, 0];
+        let g8 = nv12.convert_nv12_to_rgba(&y, &uv, w, h, w, w, w, h, 0, ids, pm);
+        let g10 = p010.convert_p010_to_rgba(&yb, &uvb, w, h, w * 2, w * 2, w, h, 0, ids, pm);
+        let (c8, c10) = (to8(&klipp_color::camera_log::yuv_to_display_rgba64(&s8, cs)), to8(&klipp_color::camera_log::yuv_to_display_rgba64(&s10, cs)));
+        let (d8, d10) = (apart(&c8, &g8), apart(&c10, &g10));
+        eprintln!("{name}: NV12 {d8} levels, P010 {d10} levels from the CPU");
+        assert!(d8 <= 1 && d10 <= 1, "{name}: the shaders are {d8} (NV12) and {d10} (P010) levels from the CPU converter");
+        match &at_left {
+            None => at_left = Some(g8),
+            Some(left) if name == "centre" => {
+                let moved = left.chunks_exact(4).zip(g8.chunks_exact(4)).map(|(a, b)| (0..3).map(|c| (a[c] as i32 - b[c] as i32).abs()).max().unwrap()).max().unwrap();
+                assert!(moved > 20, "centre siting drew what left does ({moved} levels apart)");
+            }
+            _ => {}
+        }
     }
 }

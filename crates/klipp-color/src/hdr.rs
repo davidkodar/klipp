@@ -740,6 +740,8 @@ pub struct YuvSamples<'a> {
     pub chroma_shift_w: u32,
     pub chroma_shift_h: u32,
     pub bit_depth: u32,
+    /// Where the file says its chroma samples sit (#3266).
+    pub siting: ChromaSiting,
 }
 
 impl YuvSamples<'_> {
@@ -760,11 +762,12 @@ impl YuvSamples<'_> {
     /// zero pixels where an interpolating one ramped over two.
     /// Interpolating reconstructs what the encoder sampled.
     ///
-    /// Siting follows H.264/HEVC `chroma_sample_loc_type = 0`, the
-    /// default for everything Klipp decodes: a chroma sample sits on the
-    /// same column as the even luma sample, and vertically *between* the
-    /// two luma rows. So the horizontal coordinate divides exactly while
-    /// the vertical one carries a quarter-sample offset. Dropping that
+    /// Siting is the file's own, [`Self::siting`]. Untagged, it follows
+    /// H.264/HEVC `chroma_sample_loc_type = 0`, the default for most of
+    /// what Klipp decodes: a chroma sample sits on the same column as the
+    /// even luma sample, and vertically *between* the two luma rows. So
+    /// the horizontal coordinate divides exactly while the vertical one
+    /// carries a quarter-sample offset. Dropping that
     /// offset shifts chroma half a sample up the frame, which reads as
     /// colour fringing along one side of every horizontal edge — the
     /// failure this is easiest to introduce and hardest to see.
@@ -774,8 +777,8 @@ impl YuvSamples<'_> {
     /// weights collapse onto the one sample.
     pub fn chroma_at(&self, sx: usize, sy: usize) -> (f32, f32) {
         let (cw, ch) = (self.chroma_width() as usize, self.chroma_height() as usize);
-        let (x0, x1, tx) = chroma_taps(sx, self.chroma_shift_w, cw, ChromaAxis::CoSited);
-        let (y0, y1, ty) = chroma_taps(sy, self.chroma_shift_h, ch, ChromaAxis::Between);
+        let (x0, x1, tx) = chroma_taps(sx, self.chroma_shift_w, cw, self.siting.h);
+        let (y0, y1, ty) = chroma_taps(sy, self.chroma_shift_h, ch, self.siting.v);
         let at = |p: &[u16], x: usize, y: usize| p[y * cw + x] as f32;
         let lerp2 = |p: &[u16]| {
             let top = at(p, x0, y0) + (at(p, x1, y0) - at(p, x0, y0)) * tx;
@@ -796,6 +799,49 @@ pub enum ChromaAxis {
     /// The chroma sample sits midway *between* the luma samples it
     /// covers — 4:2:0's vertical axis.
     Between,
+}
+
+/// Where a file's chroma samples sit on each axis, from its
+/// `chroma_location` (ffmpeg's `AVChromaLocation`, H.264/HEVC
+/// `chroma_sample_loc_type`). Every converter, CPU and GPU, reconstructs
+/// chroma there (#3266), so a centre-sited file (MPEG-1, JPEG) or a
+/// top-left-sited one is not read a quarter of a chroma sample off.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ChromaSiting {
+    pub h: ChromaAxis,
+    pub v: ChromaAxis,
+}
+
+impl Default for ChromaSiting {
+    /// Left: what H.264, HEVC and MPEG-2 mean when a file says nothing,
+    /// and what Klipp read every file as before it read the tag.
+    fn default() -> Self {
+        Self { h: ChromaAxis::CoSited, v: ChromaAxis::Between }
+    }
+}
+
+impl ChromaSiting {
+    /// From an `AVChromaLocation`: 1 left, 2 center, 3 top-left, 4 top,
+    /// 5 bottom-left, 6 bottom; 0 (unspecified) and anything else is
+    /// left. The two bottom positions, a whole luma row down, are rare
+    /// and read as between the rows, the nearest siting there is.
+    pub fn from_av_location(location: i32) -> Self {
+        use ChromaAxis::{Between, CoSited};
+        match location {
+            2 | 6 => Self { h: Between, v: Between },
+            3 => Self { h: CoSited, v: CoSited },
+            4 => Self { h: Between, v: CoSited },
+            _ => Self::default(),
+        }
+    }
+
+    /// The shaders' chroma offsets, horizontal and vertical: what each
+    /// axis takes off `s / 2` for a 4:2:0 plane, 0 co-sited or 0.25
+    /// between, as [`chroma_taps`] works it out.
+    pub fn shader_offsets(self) -> [f32; 2] {
+        let off = |a: ChromaAxis| if a == ChromaAxis::Between { 0.25 } else { 0.0 };
+        [off(self.h), off(self.v)]
+    }
 }
 
 /// The two chroma samples to blend along one axis, and the weight of the
@@ -1256,7 +1302,7 @@ mod chroma_siting_tests {
         let (u, v) = (vec![0u16, 400], vec![0u16, 400]);
         let s = YuvSamples {
             y: &y, u: &u, v: &v, width: 4, height: 1,
-            chroma_shift_w: 1, chroma_shift_h: 0, bit_depth: 10,
+            chroma_shift_w: 1, chroma_shift_h: 0, bit_depth: 10, siting: Default::default(),
         };
         let at = |x| s.chroma_at(x, 0).0;
         assert_eq!(at(0), 0.0, "x=0 sits on chroma column 0");
@@ -1277,13 +1323,46 @@ mod chroma_siting_tests {
         let (u, v) = (vec![0u16, 400], vec![0u16, 400]);
         let s = YuvSamples {
             y: &y, u: &u, v: &v, width: 1, height: 4,
-            chroma_shift_w: 0, chroma_shift_h: 1, bit_depth: 10,
+            chroma_shift_w: 0, chroma_shift_h: 1, bit_depth: 10, siting: Default::default(),
         };
         let at = |row| s.chroma_at(0, row).0;
         assert_eq!(at(0), 0.0, "row 0 is above the first chroma centre and clamps");
         assert_eq!(at(1), 100.0, "row 1 is 3/4 chroma row 0 and 1/4 row 1");
         assert_eq!(at(2), 300.0, "row 2 is 1/4 chroma row 0 and 3/4 row 1");
         assert_eq!(at(3), 400.0, "row 3 is below the last chroma centre and clamps");
+    }
+
+    /// #3266: a file's `chroma_location` moves its taps. Centre-sited
+    /// (MPEG-1, JPEG) chroma sits between the columns too, so the even
+    /// columns blend 3:1 where left-sited ones read a sample exactly;
+    /// top-left-sited chroma sits on the even rows, read exactly, where
+    /// left-sited chroma blends 3:1.
+    #[test]
+    fn a_files_chroma_location_moves_the_taps() {
+        use ChromaAxis::{Between, CoSited};
+        let y = flat_luma(4);
+        let (u, v) = (vec![0u16, 400], vec![0u16, 400]);
+        let across = |siting| YuvSamples { y: &y, u: &u, v: &v, width: 4, height: 1, chroma_shift_w: 1, chroma_shift_h: 0, bit_depth: 10, siting };
+        let down = |siting| YuvSamples { y: &y, u: &u, v: &v, width: 1, height: 4, chroma_shift_w: 0, chroma_shift_h: 1, bit_depth: 10, siting };
+        let row = |s: YuvSamples| (0..4).map(|x| s.chroma_at(x, 0).0).collect::<Vec<_>>();
+        let col = |s: YuvSamples| (0..4).map(|y| s.chroma_at(0, y).0).collect::<Vec<_>>();
+        let centre = ChromaSiting::from_av_location(2);
+        assert_eq!(centre, ChromaSiting { h: Between, v: Between });
+        assert_eq!(row(across(ChromaSiting::default())), vec![0.0, 200.0, 400.0, 400.0], "left-sited");
+        assert_eq!(row(across(centre)), vec![0.0, 100.0, 300.0, 400.0], "centre-sited");
+        let top_left = ChromaSiting::from_av_location(3);
+        assert_eq!(top_left, ChromaSiting { h: CoSited, v: CoSited });
+        assert_eq!(col(down(ChromaSiting::default())), vec![0.0, 100.0, 300.0, 400.0], "left-sited, between the rows");
+        assert_eq!(col(down(top_left)), vec![0.0, 200.0, 400.0, 400.0], "top-left-sited, on the even rows");
+        assert_eq!(ChromaSiting::from_av_location(4), ChromaSiting { h: Between, v: CoSited }, "top");
+        for untagged in [0, 1, 5, 7, -1] {
+            let want = if untagged == 5 { ChromaSiting { h: CoSited, v: Between } } else { ChromaSiting::default() };
+            assert_eq!(ChromaSiting::from_av_location(untagged), want, "{untagged}");
+        }
+        assert_eq!(ChromaSiting::from_av_location(6), centre, "bottom reads as centre");
+        assert_eq!(ChromaSiting::default().shader_offsets(), [0.0, 0.25]);
+        assert_eq!(centre.shader_offsets(), [0.25, 0.25]);
+        assert_eq!(top_left.shader_offsets(), [0.0, 0.0]);
     }
 
     /// The reconstruction is the whole point. Nearest sampling repeats
@@ -1295,7 +1374,7 @@ mod chroma_siting_tests {
         let (u, v) = (vec![0u16, 400], vec![0u16, 400]);
         let s = YuvSamples {
             y: &y, u: &u, v: &v, width: 4, height: 1,
-            chroma_shift_w: 1, chroma_shift_h: 0, bit_depth: 10,
+            chroma_shift_w: 1, chroma_shift_h: 0, bit_depth: 10, siting: Default::default(),
         };
         let vals: Vec<f32> = (0..4).map(|x| s.chroma_at(x, 0).0).collect();
         let between = vals.iter().filter(|c| **c > 1.0 && **c < 399.0).count();
@@ -1312,7 +1391,7 @@ mod chroma_siting_tests {
         let (u, v) = (vec![10u16, 20, 30, 40], vec![40u16, 30, 20, 10]);
         let s = YuvSamples {
             y: &y, u: &u, v: &v, width: 4, height: 1,
-            chroma_shift_w: 0, chroma_shift_h: 0, bit_depth: 10,
+            chroma_shift_w: 0, chroma_shift_h: 0, bit_depth: 10, siting: Default::default(),
         };
         for x in 0..4 {
             assert_eq!(s.chroma_at(x, 0), (u[x] as f32, v[x] as f32), "x={x} must be exact");
@@ -1336,7 +1415,7 @@ mod deep_code_tests {
     }
 
     fn samples<'a>(y: &'a [u16], c: &'a [u16], depth: u32) -> YuvSamples<'a> {
-        YuvSamples { y, u: c, v: c, width: y.len() as u32, height: 1, chroma_shift_w: 0, chroma_shift_h: 0, bit_depth: depth }
+        YuvSamples { y, u: c, v: c, width: y.len() as u32, height: 1, chroma_shift_w: 0, chroma_shift_h: 0, bit_depth: depth , siting: Default::default()}
     }
 
     /// The 10-bit codes as they were made before #1226, kept verbatim:
@@ -1433,7 +1512,7 @@ mod deep_code_tests {
             let n = (w * h) as usize;
             let y: Vec<u16> = (0..n).map(|i| (i % (1 << depth)) as u16).collect();
             let c = vec![1u16 << (depth - 1); n / 2];
-            let s = YuvSamples { y: &y, u: &c, v: &c, width: w, height: h, chroma_shift_w: 1, chroma_shift_h: 0, bit_depth: depth };
+            let s = YuvSamples { y: &y, u: &c, v: &c, width: w, height: h, chroma_shift_w: 1, chroma_shift_h: 0, bit_depth: depth , siting: Default::default()};
             let _ = hdr_code_lut16(t);
             let mut best = (f64::MAX, f64::MAX);
             for _ in 0..5 {

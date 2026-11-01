@@ -59,7 +59,7 @@ fn cpu_codes_match_the_p010_shader() {
     };
     let (y, u, v) = pattern_10bit();
     let (yb, uvb) = p010_bytes(&y, &u, &v);
-    let samples = YuvSamples { y: &y, u: &u, v: &v, width: W, height: H, chroma_shift_w: 1, chroma_shift_h: 1, bit_depth: 10 };
+    let samples = YuvSamples { y: &y, u: &u, v: &v, width: W, height: H, chroma_shift_w: 1, chroma_shift_h: 1, bit_depth: 10 , siting: Default::default()};
     let pm = pack_primaries_matrix(primaries_to_working_matrix(ColorPrimaries::Bt2020, WorkingColorspace::Rec709Linear));
     let cases = [
         ("PQ limited", [color_ids::COLOR_RANGE_LIMITED, color_ids::MATRIX_BT2020_NCL, color_ids::TRANSFER_PQ, 0]),
@@ -92,7 +92,7 @@ fn cpu_codes_match_the_nv12_shader() {
     );
     let yb: Vec<u8> = y.iter().map(|s| *s as u8).collect();
     let uvb: Vec<u8> = u.iter().zip(&v).flat_map(|(a, b)| [*a as u8, *b as u8]).collect();
-    let samples = YuvSamples { y: &y, u: &u, v: &v, width: W, height: H, chroma_shift_w: 1, chroma_shift_h: 1, bit_depth: 8 };
+    let samples = YuvSamples { y: &y, u: &u, v: &v, width: W, height: H, chroma_shift_w: 1, chroma_shift_h: 1, bit_depth: 8 , siting: Default::default()};
     let pm = pack_primaries_matrix(primaries_to_working_matrix(ColorPrimaries::SGamut3Cine, WorkingColorspace::Rec709Linear));
     let ids = [color_ids::COLOR_RANGE_LIMITED, color_ids::MATRIX_BT709, color_ids::TRANSFER_SLOG3, 0];
     for (dw, dh, rot) in [(W, H, 0u32), (W / 2, H / 2, 90)] {
@@ -112,7 +112,7 @@ fn chroma_422_uses_full_height_chroma() {
     // Row 0 neutral, row 1 strongly red (V high).
     let u = vec![512u16; 4];
     let v = vec![512, 512, 800, 800];
-    let s = YuvSamples { y: &y, u: &u, v: &v, width: w, height: h, chroma_shift_w: 1, chroma_shift_h: 0, bit_depth: 10 };
+    let s = YuvSamples { y: &y, u: &u, v: &v, width: w, height: h, chroma_shift_w: 1, chroma_shift_h: 0, bit_depth: 10 , siting: Default::default()};
     let ids = [color_ids::COLOR_RANGE_LIMITED, color_ids::MATRIX_BT709, color_ids::TRANSFER_SLOG3, 0];
     let codes = yuv_to_hdr_codes(&s, w, h, 0, ids);
     let codes = codes.packed10().expect("10-bit codes");

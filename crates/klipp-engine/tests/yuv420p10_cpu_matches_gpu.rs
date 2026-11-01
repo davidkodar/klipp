@@ -109,7 +109,7 @@ fn the_planar_10bit_converter_matches_the_p010_shader() {
     let cpu = yuv420p10le_to_linear(
         &yp, &up, &vp,
         (W * 2) as usize, (W / 2 * 2) as usize, (W / 2 * 2) as usize,
-        W, H, W, H, cs, ws,
+        W, H, W, H, cs, ws, Default::default(),
     );
     let gpu = gpu_linear(&mut conv, &yb, &uvb, ids, pm);
     assert_eq!(cpu.len(), gpu.len(), "sizes differ");
@@ -175,7 +175,7 @@ fn the_fixture_can_see_a_siting_regression() {
     let (y, u, v) = samples();
     let s = YuvSamples {
         y: &y, u: &u, v: &v, width: W, height: H,
-        chroma_shift_w: 1, chroma_shift_h: 1, bit_depth: 10,
+        chroma_shift_w: 1, chroma_shift_h: 1, bit_depth: 10, siting: Default::default(),
     };
     let cw = s.chroma_width() as usize;
 

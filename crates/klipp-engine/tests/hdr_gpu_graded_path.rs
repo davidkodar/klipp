@@ -329,7 +329,7 @@ fn a_deep_source_seeded_on_the_gpu_grades_like_the_cpu_path() {
     let y: Vec<u16> = (0..n).map(|i| (256 + i * (3760 - 256) / (n - 1)) as u16).collect();
     let u: Vec<u16> = (0..n).map(|i| (1800 + (i % W as usize) * 8) as u16).collect();
     let v: Vec<u16> = (0..n).map(|i| (2300 - (i / W as usize) * 12) as u16).collect();
-    let s = YuvSamples { y: &y, u: &u, v: &v, width: W, height: H, chroma_shift_w: 0, chroma_shift_h: 0, bit_depth: 12 };
+    let s = YuvSamples { y: &y, u: &u, v: &v, width: W, height: H, chroma_shift_w: 0, chroma_shift_h: 0, bit_depth: 12 , siting: Default::default()};
     let ids = [color_ids::COLOR_RANGE_LIMITED, color_ids::MATRIX_BT2020_NCL, color_ids::TRANSFER_PQ, color_ids::PRIMARIES_BT2020];
     let codes = std::sync::Arc::new(yuv_to_hdr_codes(&s, W, H, 0, ids));
     assert!(matches!(*codes, SceneCodes::Deep16(_)));

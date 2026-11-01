@@ -13,6 +13,9 @@ use tracing::{info, warn};
 /// can extend the lifetime across threads without cloning the
 /// underlying wgpu handles.
 pub struct GpuNv12Converter {
+    /// Where the frames' chroma sits, as the shader takes it: set per
+    /// frame by [`Self::set_chroma_offsets`] (#3266).
+    chroma_offsets: [f32; 2],
     device: std::sync::Arc<wgpu::Device>,
     queue: std::sync::Arc<wgpu::Queue>,
     pipeline: wgpu::ComputePipeline,
@@ -186,6 +189,10 @@ struct Nv12Params {
     /// 8-bit RGB here costs real precision, because YUV→RGB is a
     /// matrix and its output does not fit back into 8 bits.
     write_linear: u32,
+    /// Where the file's chroma sits, `[horizontal, vertical]`: what each
+    /// axis takes off `s / 2` (#3266, `ChromaSiting::shader_offsets`).
+    chroma_offsets: [f32; 2],
+    _pad: [u32; 2],
     /// Source-primaries → working-space matrix, packed as 3 rows ×
     /// vec4 (12 floats). Row 0 is dotted against (R, G, B, _) to
     /// produce out.R, etc.
@@ -258,6 +265,15 @@ pub(crate) fn nv12_shader() -> &'static str {
 }
 
 impl GpuNv12Converter {
+    /// Where the next frames' chroma sits, the file's `chroma_location`
+    /// as `klipp_color::hdr::ChromaSiting::shader_offsets` gives it
+    /// (`[horizontal, vertical]`, each 0 or 0.25): every conversion until
+    /// the next call reconstructs chroma there (#3266). Left, H.264's
+    /// default, until it is set.
+    pub fn set_chroma_offsets(&mut self, offsets: [f32; 2]) {
+        self.chroma_offsets = offsets;
+    }
+
     /// How many GPU-resident output buffers the converter keeps to hand
     /// out again (#2107). For tests.
     #[doc(hidden)]
@@ -414,6 +430,7 @@ impl GpuNv12Converter {
             queue,
             pipeline,
             bind_group_layout,
+            chroma_offsets: [0.0, 0.25],
             y_buf: None,
             uv_buf: None,
             output_buf: None,
@@ -571,6 +588,8 @@ impl GpuNv12Converter {
             transfer_id: color_ids[2],
             primaries_id: color_ids[3],
             write_linear: 0,
+            chroma_offsets: self.chroma_offsets,
+            _pad: [0; 2],
             primaries_matrix,
         };
         self.queue
@@ -762,6 +781,8 @@ impl GpuNv12Converter {
             transfer_id: color_ids[2],
             primaries_id: color_ids[3],
             write_linear: 0,
+            chroma_offsets: self.chroma_offsets,
+            _pad: [0; 2],
             primaries_matrix,
         };
         self.queue
@@ -880,6 +901,8 @@ impl GpuNv12Converter {
             transfer_id: color_ids[2],
             primaries_id: color_ids[3],
             write_linear: 1,
+            chroma_offsets: self.chroma_offsets,
+            _pad: [0; 2],
             primaries_matrix,
         };
         self.queue.write_buffer(&self.params_buf, 0, bytemuck::bytes_of(&params));

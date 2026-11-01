@@ -681,8 +681,13 @@ impl RenderDecoder {
         // Post-rotation dimensions: the shader maps each output pixel back
         // through the rotation itself, so this is the frame the renderer
         // asked for and no separate pass is needed.
+        // Where the file's chroma sits (#3266), off the decoded frame:
+        // the download copies the pixels and not the tags.
+        let offsets = klipp_media::yuv_samples::chroma_siting(decoded).shader_offsets();
         let buf = if ten_bit {
-            gpu.p010.as_mut()?.convert_p010_to_linear_on_gpu(
+            let p010 = gpu.p010.as_mut()?;
+            p010.set_chroma_offsets(offsets);
+            p010.convert_p010_to_linear_on_gpu(
                 y,
                 uv,
                 src_w,
@@ -696,7 +701,9 @@ impl RenderDecoder {
                 primaries,
             )
         } else {
-            gpu.nv12.as_mut()?.convert_nv12_to_linear_on_gpu(
+            let nv12 = gpu.nv12.as_mut()?;
+            nv12.set_chroma_offsets(offsets);
+            nv12.convert_nv12_to_linear_on_gpu(
                 y,
                 uv,
                 src_w,

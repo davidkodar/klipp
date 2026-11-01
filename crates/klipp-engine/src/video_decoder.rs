@@ -2157,6 +2157,9 @@ pub(crate) struct SemiPlanar<'a> {
     pub height: u32,
     pub y_stride: u32,
     pub uv_stride: u32,
+    /// Where the file's chroma sits, as the shaders take it
+    /// (`ChromaSiting::shader_offsets`, #3266).
+    pub chroma_offsets: [f32; 2],
 }
 
 /// The GPU's YUV converters, NV12 and P010, as one: a frame downloaded
@@ -2172,12 +2175,15 @@ pub(crate) trait SemiPlanarGpu {
 
 impl SemiPlanarGpu for klipp_effects::p010_gpu::GpuP010Converter {
     fn on_gpu(&mut self, f: &SemiPlanar, out: (u32, u32), rotation: u32, ids: [u32; 4], pm: [[f32; 4]; 3]) -> klipp_effects::p010_gpu::P010GpuOutput {
+        self.set_chroma_offsets(f.chroma_offsets);
         self.convert_p010_on_gpu(f.y, f.uv, f.width, f.height, f.y_stride, f.uv_stride, out.0, out.1, rotation, ids, pm)
     }
     fn hdr_codes(&mut self, f: &SemiPlanar, out: (u32, u32), rotation: u32, ids: [u32; 4], pm: [[f32; 4]; 3]) -> Option<Vec<u32>> {
+        self.set_chroma_offsets(f.chroma_offsets);
         self.convert_p010_hdr_codes(f.y, f.uv, f.width, f.height, f.y_stride, f.uv_stride, out.0, out.1, rotation, ids, pm)
     }
     fn to_rgba(&mut self, f: &SemiPlanar, out: (u32, u32), rotation: u32, ids: [u32; 4], pm: [[f32; 4]; 3]) -> Vec<u8> {
+        self.set_chroma_offsets(f.chroma_offsets);
         self.convert_p010_to_rgba(f.y, f.uv, f.width, f.height, f.y_stride, f.uv_stride, out.0, out.1, rotation, ids, pm)
     }
     fn device(&self) -> Arc<wgpu::Device> {
@@ -2190,12 +2196,15 @@ impl SemiPlanarGpu for klipp_effects::p010_gpu::GpuP010Converter {
 
 impl SemiPlanarGpu for klipp_effects::nv12_gpu::GpuNv12Converter {
     fn on_gpu(&mut self, f: &SemiPlanar, out: (u32, u32), rotation: u32, ids: [u32; 4], pm: [[f32; 4]; 3]) -> klipp_effects::p010_gpu::P010GpuOutput {
+        self.set_chroma_offsets(f.chroma_offsets);
         self.convert_nv12_on_gpu(f.y, f.uv, f.width, f.height, f.y_stride, f.uv_stride, out.0, out.1, rotation, ids, pm)
     }
     fn hdr_codes(&mut self, f: &SemiPlanar, out: (u32, u32), rotation: u32, ids: [u32; 4], pm: [[f32; 4]; 3]) -> Option<Vec<u32>> {
+        self.set_chroma_offsets(f.chroma_offsets);
         self.convert_nv12_hdr_codes(f.y, f.uv, f.width, f.height, f.y_stride, f.uv_stride, out.0, out.1, rotation, ids, pm)
     }
     fn to_rgba(&mut self, f: &SemiPlanar, out: (u32, u32), rotation: u32, ids: [u32; 4], pm: [[f32; 4]; 3]) -> Vec<u8> {
+        self.set_chroma_offsets(f.chroma_offsets);
         self.convert_nv12_to_rgba(f.y, f.uv, f.width, f.height, f.y_stride, f.uv_stride, out.0, out.1, rotation, ids, pm)
     }
     fn device(&self) -> Arc<wgpu::Device> {
@@ -2402,7 +2411,7 @@ unsafe fn download_hw_frame(
             let uv_data = std::slice::from_raw_parts((*sw_frame).data[1], uv_data_len);
 
             let t_p010 = std::time::Instant::now();
-            let (linear, gpu_source, hdr) = semi_planar_frame(converter, &SemiPlanar { y: y_data, uv: uv_data, width: src_w, height: src_h, y_stride, uv_stride }, (out_w, out_h), source_rotation, source_cs, &PERF_LINEAR_ENCODE_US);
+            let (linear, gpu_source, hdr) = semi_planar_frame(converter, &SemiPlanar { y: y_data, uv: uv_data, width: src_w, height: src_h, y_stride, uv_stride, chroma_offsets: klipp_media::yuv_samples::chroma_siting(hw_frame).shader_offsets() }, (out_w, out_h), source_rotation, source_cs, &PERF_LINEAR_ENCODE_US);
             // Reuse the NV12 perf bucket — the meaning is identical
             // (GPU YUV→RGBA encode time per frame).
             PERF_NV12_CONV_US.fetch_add(t_p010.elapsed().as_micros() as u64, Ordering::Relaxed);
@@ -2449,7 +2458,7 @@ unsafe fn download_hw_frame(
             let uv_data = std::slice::from_raw_parts((*sw_frame).data[1], uv_data_len);
 
             let t_nv12 = std::time::Instant::now();
-            let (linear, gpu_source, hdr) = semi_planar_frame(converter, &SemiPlanar { y: y_data, uv: uv_data, width: src_w, height: src_h, y_stride, uv_stride }, (out_w, out_h), source_rotation, source_cs, &PERF_LINEAR_ENCODE_US);
+            let (linear, gpu_source, hdr) = semi_planar_frame(converter, &SemiPlanar { y: y_data, uv: uv_data, width: src_w, height: src_h, y_stride, uv_stride, chroma_offsets: klipp_media::yuv_samples::chroma_siting(hw_frame).shader_offsets() }, (out_w, out_h), source_rotation, source_cs, &PERF_LINEAR_ENCODE_US);
             PERF_NV12_CONV_US.fetch_add(t_nv12.elapsed().as_micros() as u64, Ordering::Relaxed);
 
             av_frame_free(&mut (sw_frame as *mut _));
@@ -3439,7 +3448,7 @@ fn sw_frame_on_gpu(
     r.scaler.run(frame, &mut r.out).map_err(|e| warn!("sw_frame_on_gpu: repack failed: {e}")).ok()?;
     let source_cs = frame_colorspace(frame, cs_baseline);
     let out = playback_dimensions(w, h, source_rotation);
-    let planes = SemiPlanar { y: r.out.data(0), uv: r.out.data(1), width: w, height: h, y_stride: r.out.stride(0) as u32, uv_stride: r.out.stride(1) as u32 };
+    let planes = SemiPlanar { y: r.out.data(0), uv: r.out.data(1), width: w, height: h, y_stride: r.out.stride(0) as u32, uv_stride: r.out.stride(1) as u32, chroma_offsets: klipp_media::yuv_samples::chroma_siting(frame).shader_offsets() };
     let (data, gpu_source, hdr) = semi_planar_frame(converter, &planes, out, source_rotation, source_cs, &LINEAR_US);
     log_first_resident_delivery(gpu_source.is_some(), if packed == Pixel::NV12 { "nv12_software" } else { "p010_software" });
     Some(LinearFrame {
@@ -3540,6 +3549,7 @@ fn convert_sw_frame(
             src_w, src_h, dst_w, dst_h,
             source_cs,
             working_colorspace(),
+            klipp_media::yuv_samples::chroma_siting(received_frame),
         );
         let (final_w, final_h) = if source_rotation == 90 || source_rotation == 270 {
             (dst_h, dst_w)
