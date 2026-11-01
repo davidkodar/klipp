@@ -119,6 +119,16 @@ Set the size frames are drawn at while playing, as Preferences > Playback sets i
 Arguments:
 - `quality`: full, half or quarter of the playback resolution
 
+## klipp_set_background_render
+
+Turn drawing heavy frames ahead while idle on or off, and set the seconds idle before it starts, as Preferences > Playback sets them, and save them. On (the default), Klipp draws the frames that play late into the render cache after a pause, on mains power only, and stops on any input. What is left out stays as it is. klipp_render_status says how it stands; klipp_perf's `diagnosis` offers it as the last fix.
+
+It costs disk, per minute drawn at 24 fps: about 0.5 GB at full size for clean footage, 7.2 GB with light grain and 9.8 GB with heavy grain; at half size 0.1, 1.8 and 2.5 GB; at quarter size about 0.03 to 0.6 GB. It stops when the cache is full rather than let go of what it drew.
+
+Arguments:
+- `on`: true draws heavy frames ahead while idle, false stops and keeps it off
+- `delay_secs`: seconds with nothing done before it starts, 1 to 60
+
 ## klipp_clear_frozen
 
 Clear the open project's frozen frames and frozen sound: the files a frozen track plays from, kept in the project's cache. The tracks frozen so in the open sequence play live again, as one undo step; undone, they are frozen again and drawn anew. A frozen track's state is in `timeline`. To unfreeze one track and keep its files, use set_track frozen false through klipp_apply.

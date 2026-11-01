@@ -985,6 +985,20 @@ pub(crate) fn respond(
             Ok(v)
         }
 
+        ControlCommand::RenderStatus => {
+            if in_batch {
+                return read_in_batch("render_status");
+            }
+            let summary = klipp_engine::background_render::summary();
+            let ticks_per_sec = f64::from(ctx.sequence.read().map_err(|_| "sequence lock poisoned")?.fps.rate().max(1));
+            let spans = ctx.frame_buffer.lock().map_err(|_| "frame buffer lock poisoned")?.render_status.clone();
+            let ranges: Vec<serde_json::Value> = spans
+                .iter()
+                .map(|s| json!({ "from_secs": s.from as f64 / ticks_per_sec, "to_secs": s.to as f64 / ticks_per_sec, "status": s.status }))
+                .collect();
+            Ok(json!({ "drawing_ahead": summary, "says": summary.state.describe(), "ranges": ranges }))
+        }
+
         ControlCommand::Perf => {
             if in_batch {
                 return read_in_batch("perf");

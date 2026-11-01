@@ -156,6 +156,8 @@ pub struct Parked {
     /// The person's input as the UI reports it: `touch_input` is a key
     /// pressed or a click.
     pub foreground: Arc<klipp_jobs::ForegroundActivity>,
+    /// The sequence the engine plays: replaced, an edit as the UI makes it.
+    pub sequence: Arc<klipp_timeline::SharedSequence>,
 }
 
 impl Parked {
@@ -264,9 +266,10 @@ impl Parked {
         });
         let fb = Arc::new(Mutex::new(FrameBuffer::new(width, height)));
         let perf = Arc::new(Mutex::new(PerfRing::default()));
+        let sequence = Arc::new(klipp_timeline::SharedSequence::new(seq));
         let mut engine = PlaybackEngine::new(
             cmd_rx, ev_tx, Arc::clone(&fb), Arc::new(Mutex::new(FrameBuffer::new(width, height))),
-            Arc::new(klipp_timeline::SharedSequence::new(seq)), Arc::new(RwLock::new(pool)), Box::new(|| {}),
+            Arc::clone(&sequence), Arc::new(RwLock::new(pool)), Box::new(|| {}),
             Arc::new(Mutex::new(None)), Arc::clone(&perf),
         );
         engine.set_neighbour_hold(hold);
@@ -274,7 +277,7 @@ impl Parked {
         engine.set_foreground_activity(Arc::clone(&foreground));
         let params = engine.param_change_queue();
         let thread = Some(std::thread::spawn(move || engine.run()));
-        let parked = Self { cmd, fb, playhead, fps, perf, params, thread, clip_id, source_node, exposure_node, foreground };
+        let parked = Self { cmd, fb, playhead, fps, perf, params, thread, clip_id, source_node, exposure_node, foreground, sequence };
 
         parked.send(AppCommand::SetPlayhead(tc(10)));
         let g = parked.generation();
@@ -285,6 +288,11 @@ impl Parked {
 
     pub fn send(&self, c: AppCommand) {
         self.cmd.send(c).unwrap();
+    }
+
+    /// The strip over the ruler as the engine last worked it out (#3212).
+    pub fn render_status(&self) -> Vec<klipp_engine::texture::RenderSpan> {
+        self.fb.lock().unwrap().render_status.clone()
     }
 
     /// The playhead the engine last reported, as a frame number.

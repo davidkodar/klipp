@@ -145,6 +145,8 @@ pub struct Inputs {
     pub proxies_on: bool,
     /// Playback quality's divisor: 1 full, 2 half, 4 quarter.
     pub quality: u8,
+    /// Whether heavy frames are drawn ahead while idle (#3212).
+    pub render_ahead: bool,
 }
 
 /// The fix to offer.
@@ -155,6 +157,8 @@ pub enum Fix {
     MakeProxies { media: Vec<MediaId> },
     UseProxies,
     PlaybackQuality { divisor: u8 },
+    /// Draw the heavy frames ahead while idle (#3212).
+    RenderAhead,
 }
 
 impl Fix {
@@ -166,6 +170,7 @@ impl Fix {
             Fix::MakeProxies { .. } => "make_proxies",
             Fix::UseProxies => "use_proxies",
             Fix::PlaybackQuality { .. } => "playback_quality",
+            Fix::RenderAhead => "render_ahead",
         }
     }
 }
@@ -239,11 +244,13 @@ pub fn diagnose(i: &Inputs) -> Option<Diagnosis> {
             return Some(Diagnosis { health: i.health, cause: format!("decoding takes {decode:.0} ms a frame, of {budget:.0} ms, and the proxies made aren't played"), fix: Some(Fix::UseProxies) });
         }
     }
-    // 3. No one cause: a smaller frame, while there is one smaller.
+    // 3. No one cause: a smaller frame, while there is one smaller; then
+    // the heavy frames drawn ahead while idle, when that is off.
     let frame = decode.max(i.render_ms);
     let fix = match i.quality {
         0 | 1 => Some(Fix::PlaybackQuality { divisor: 2 }),
         2 | 3 => Some(Fix::PlaybackQuality { divisor: 4 }),
+        _ if !i.render_ahead => Some(Fix::RenderAhead),
         _ => None,
     };
     Some(Diagnosis { health: i.health, cause: format!("frames take {frame:.0} ms, of the {budget:.0} ms a frame has, with no one cause"), fix })
@@ -308,6 +315,7 @@ pub fn diagnose_now(seq: &klipp_timeline::Sequence, pool: &klipp_media::MediaPoo
         media,
         proxies_on: s.proxies_on,
         quality: crate::video_decoder::playback_quality_divisor(),
+        render_ahead: crate::background_render::summary().on,
     })
 }
 
@@ -420,8 +428,10 @@ mod tests {
         i.quality = 2;
         assert_eq!(diagnose(&i).unwrap().fix, Some(Fix::PlaybackQuality { divisor: 4 }));
         i.quality = 4;
+        assert_eq!(diagnose(&i).unwrap().fix, Some(Fix::RenderAhead), "quarter already: drawing ahead, last");
+        i.render_ahead = true;
         let d = diagnose(&i).unwrap();
-        assert_eq!(d.fix, None, "quarter already: nothing to offer");
+        assert_eq!(d.fix, None, "quarter already and drawing ahead: nothing to offer");
         assert!(d.cause.contains("no one cause"));
         i.health = seconds(&[(24.0, 24.0); 10]);
         assert!(diagnose(&i).is_none(), "no trouble, no diagnosis");

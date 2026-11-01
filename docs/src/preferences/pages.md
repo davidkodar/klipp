@@ -5,7 +5,8 @@ The preference pages not covered on their own pages: [General](./general.md), [S
 ## Playback
 
 - **Playback quality** — full, half or quarter resolution while playing
-- **Background render** — pre-render complex sections in the background; **Background performance**: defer (recommended), balanced or max throughput
+- **Render heavy parts while idle** — after a pause (**Start after**, 2 seconds by default), draws the frames that played late, or belong to a track too heavy to play, into the render cache, nearest the playhead first, so they play smoothly. On mains power only; any key or click stops it. It costs disk, per minute drawn at 24 fps: about 0.5 GB at full size for clean footage, 7.2 GB with light grain and 9.8 GB with heavy grain; at half size 0.1, 1.8 and 2.5 GB; at quarter size about 0.03 to 0.6 GB. It stops when the cache is full rather than let go of what it drew
+- **Background performance** — how other background work yields: defer (recommended), balanced or max throughput
 - **Optimised playback** — auto (recommended), always the original media, or always the optimised media
 - **Pre-roll duration**, **JKL speed steps**, **Loop playback by default**, **Dim UI during playback**
 - **Audio scrubbing** — play audio while dragging the playhead

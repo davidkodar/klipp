@@ -126,6 +126,22 @@ fn heavy_frames_are_drawn_while_idle_and_input_stops_them_within_a_frame() {
     p.send(C::ClearRenderCacheAll);
     std::thread::sleep(delay * 3);
     assert_eq!((stored(), bg::state()), (0, State::Off), "off");
+
+    // The ruler: a range rendered reads rendered, the rest heavy; an edit
+    // that changes what is in its frames turns it stale.
+    use klipp_engine::texture::SpanStatus;
+    let tick = |f: i64| common::frame_tc(f, p.fps).value;
+    p.send(C::RenderRange { from: common::frame_tc(0, p.fps), to: common::frame_tc(12, p.fps) });
+    let reads = |want: &[(i64, i64, SpanStatus)]| {
+        let want: Vec<_> = want.iter().map(|&(a, b, s)| (tick(a), tick(b), s)).collect();
+        wait_for(Duration::from_secs(15), || p.render_status().iter().map(|s| (s.from, s.to, s.status)).collect::<Vec<_>>() == want)
+    };
+    let end = total as i64;
+    assert!(reads(&[(0, 12, SpanStatus::Rendered), (12, end, SpanStatus::Heavy)]), "rendered then heavy: {:?}", p.render_status());
+    let mut edited = (*p.sequence.snapshot()).clone();
+    edited.tracks[0].opacity = 0.5;
+    p.sequence.replace(edited);
+    assert!(reads(&[(0, 12, SpanStatus::Stale), (12, end, SpanStatus::Heavy)]), "stale after the edit: {:?}", p.render_status());
     bg::force_heavy(false);
     let _ = std::fs::remove_dir_all(&root);
 }

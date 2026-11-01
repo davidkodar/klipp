@@ -702,6 +702,14 @@ impl KlippApp {
                     }
                     true
                 }
+                // Kept as the preference, then on to the engine (#3212):
+                // from the socket, or the playback note's button.
+                AppCommand::SetBackgroundRender { on, delay_secs } => {
+                    self.prefs.playback.background_render = *on;
+                    self.prefs.playback.background_render_delay_secs = *delay_secs;
+                    self.prefs_dirty = true;
+                    false
+                }
                 AppCommand::SetPlaybackQuality(q) => {
                     self.prefs.playback.playback_quality = *q;
                     self.prefs_dirty = true;

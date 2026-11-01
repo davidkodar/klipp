@@ -78,48 +78,37 @@ impl GpuOutputSnapshot {
     }
 }
 
-/// A span of the timeline the render status strip draws (#924): a graded
-/// clip's frames from `from` to `to` (timeline ticks, `to` exclusive),
-/// in the render cache or not.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// How a span of the timeline stands in the frame cache (#3212).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SpanStatus {
+    /// Kept under its current key: shown from the cache.
+    Rendered,
+    /// Heavy to play and not kept.
+    Heavy,
+    /// Kept under an older key only: what is there has changed since.
+    Stale,
+}
+
+/// A span of the timeline the strip over the ruler draws: frames from
+/// `from` to `to` (timeline ticks, `to` exclusive) and how they stand.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub struct RenderSpan {
     pub from: i64,
     pub to: i64,
-    pub cached: bool,
+    pub status: SpanStatus,
 }
 
-/// A clip's spans from `start` to `end` (ticks), given its cached frames
-/// in order: a run of frames `ticks_per_frame` apart is one cached span,
-/// and what lies between runs is to render.
-pub fn render_spans(start: i64, end: i64, cached: &[i64], ticks_per_frame: i64) -> Vec<RenderSpan> {
+/// Frames' statuses (ticks in order, a frame `ticks_per_frame` long) as
+/// spans: frames on end with one status are one span.
+pub fn status_spans(frames: &[(i64, SpanStatus)], ticks_per_frame: i64) -> Vec<RenderSpan> {
     let step = ticks_per_frame.max(1);
-    let mut spans = Vec::new();
-    let mut cursor = start;
-    let mut run: Option<(i64, i64)> = None;
-    for &f in cached.iter().filter(|&&f| f >= start && f < end) {
-        run = match run {
-            Some((a, b)) if f <= b => Some((a, b.max(f + step))),
-            Some((a, b)) => {
-                if a > cursor {
-                    spans.push(RenderSpan { from: cursor, to: a, cached: false });
-                }
-                spans.push(RenderSpan { from: a, to: b, cached: true });
-                cursor = b;
-                Some((f, f + step))
-            }
-            None => Some((f, f + step)),
-        };
-    }
-    if let Some((a, b)) = run {
-        if a > cursor {
-            spans.push(RenderSpan { from: cursor, to: a, cached: false });
+    let mut spans: Vec<RenderSpan> = Vec::new();
+    for &(at, status) in frames {
+        match spans.last_mut() {
+            Some(last) if last.status == status && at <= last.to => last.to = last.to.max(at + step),
+            _ => spans.push(RenderSpan { from: at, to: at + step, status }),
         }
-        let b = b.min(end);
-        spans.push(RenderSpan { from: a, to: b, cached: true });
-        cursor = b;
-    }
-    if cursor < end {
-        spans.push(RenderSpan { from: cursor, to: end, cached: false });
     }
     spans
 }
@@ -190,8 +179,8 @@ pub struct FrameBuffer {
     /// Render cache status per clip: (clip_id, cached_frame_count, total_frame_count).
     /// Updated periodically by the engine for timeline visualization.
     pub render_cache_ranges: Vec<(klipp_core::ClipId, u32, u32)>,
-    /// What the strip over the ruler shows (#924): spans of graded clips,
-    /// in timeline ticks, cached or still to render.
+    /// What the strip over the ruler shows (#3212): where frames are
+    /// rendered, heavy and not rendered, or stale, in timeline ticks.
     pub render_status: Vec<RenderSpan>,
     // ── Double-buffer: engine writes to pending, UI swaps into data ──
     pub pending_data: Vec<u8>,
@@ -685,7 +674,7 @@ fn rate_in_window(times: impl Iterator<Item = std::time::Instant>, now: std::tim
 
 #[cfg(test)]
 mod tests {
-    use super::{render_spans, RenderSpan};
+    use super::{status_spans, RenderSpan};
 
     #[test]
     fn the_rate_is_the_intervals_in_the_window_over_their_span() {
@@ -730,34 +719,19 @@ mod tests {
         assert_eq!(fb.presented_times.back().unwrap().1, at(999));
     }
 
-    fn span(from: i64, to: i64, cached: bool) -> RenderSpan {
-        RenderSpan { from, to, cached }
-    }
-
-    /// A clip with cached runs reads as cached spans with what lies
-    /// between them to render (#924).
+    /// Frames on end with one status read as one span, a gap or another
+    /// status starting the next (#3212).
     #[test]
-    fn cached_runs_and_the_gaps_between_them() {
-        // Frames are 1001 ticks apart (NTSC); the clip is ten frames.
-        let cached = [2002, 3003, 4004, 7007];
+    fn frames_on_end_with_one_status_are_one_span() {
+        use super::SpanStatus::{Heavy, Rendered, Stale};
+        let span = |from, to, status| RenderSpan { from, to, status };
+        // Frames 1001 ticks apart (NTSC).
+        let frames = [(0, Rendered), (1001, Rendered), (2002, Heavy), (3003, Heavy), (6006, Heavy), (7007, Stale)];
         assert_eq!(
-            render_spans(0, 10010, &cached, 1001),
-            vec![span(0, 2002, false), span(2002, 5005, true), span(5005, 7007, false), span(7007, 8008, true), span(8008, 10010, false)]
+            status_spans(&frames, 1001),
+            vec![span(0, 2002, Rendered), span(2002, 4004, Heavy), span(6006, 7007, Heavy), span(7007, 8008, Stale)]
         );
-    }
-
-    #[test]
-    fn nothing_cached_is_all_to_render_and_everything_cached_is_one_span() {
-        assert_eq!(render_spans(100, 110, &[], 1), vec![span(100, 110, false)]);
-        let all: Vec<i64> = (100..110).collect();
-        assert_eq!(render_spans(100, 110, &all, 1), vec![span(100, 110, true)]);
-    }
-
-    /// Frames outside the clip, from a cache of the clip at another
-    /// position, are not counted.
-    #[test]
-    fn frames_outside_the_clip_are_ignored() {
-        assert_eq!(render_spans(10, 20, &[0, 5, 12, 25], 1), vec![span(10, 12, false), span(12, 13, true), span(13, 20, false)]);
+        assert!(status_spans(&[], 1).is_empty());
     }
 
     /// Two frames written before the UI swaps must get distinct, rising

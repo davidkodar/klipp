@@ -103,7 +103,7 @@ impl PlaybackEngine {
     /// The frames to draw ahead: those whose last playback was late, and
     /// every frame of a track whose measured cost is over half a frame's
     /// time, at the sequence's rate.
-    fn heavy_ticks(&self, seq: &Sequence) -> Vec<i64> {
+    pub(super) fn heavy_ticks(&self, seq: &Sequence) -> Vec<i64> {
         let rate = seq.fps.rate();
         let step = i64::from(seq.fps.den).max(1);
         let half = (500.0 / seq.fps.as_f64()) as f32;
@@ -267,6 +267,10 @@ impl PlaybackEngine {
     }
 
     pub(super) fn set_background_render(&mut self, on: bool, delay: Duration) {
+        bg::set_summary(|m| {
+            m.on = on;
+            m.delay_secs = delay.as_secs_f32();
+        });
         // Sent on every preferences save: said only when it changes.
         if (on, delay) != (self.background.on, self.background.delay) {
             tracing::info!("Drawing ahead while idle: {} after {:.1} s", if on { "on" } else { "off" }, delay.as_secs_f64());

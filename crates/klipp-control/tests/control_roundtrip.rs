@@ -5057,6 +5057,43 @@ fn playback_quality_is_set_by_name_and_perf_says_why() {
     assert!(perf["diagnosis"]["cause"].as_str().is_some_and(|c| c.contains("not enough playback")), "{perf}");
 }
 
+/// #3212: `render_status` reads the strip over the ruler in seconds with
+/// drawing ahead's state; `set_background_render` sends what it is given
+/// and keeps the rest as it is, and refuses nothing to set or a delay out
+/// of range.
+#[test]
+fn render_status_reads_the_ruler_and_drawing_ahead_is_set() {
+    use klipp_engine::texture::{RenderSpan, SpanStatus};
+    let mut h = harness();
+    let rate = i64::from(h.sequence.read().unwrap().fps.rate());
+    h.frame_buffer.lock().unwrap().render_status = vec![
+        RenderSpan { from: 0, to: rate, status: SpanStatus::Rendered },
+        RenderSpan { from: 2 * rate, to: 3 * rate, status: SpanStatus::Stale },
+    ];
+    let status = h.ok(json!({ "method": "render_status" }));
+    assert_eq!(status["ranges"], json!([
+        { "from_secs": 0.0, "to_secs": 1.0, "status": "rendered" },
+        { "from_secs": 2.0, "to_secs": 3.0, "status": "stale" },
+    ]), "{status}");
+    assert!(status["drawing_ahead"]["state"].is_string() && status["says"].is_string(), "{status}");
+
+    klipp_engine::background_render::set_summary(|m| {
+        m.on = true;
+        m.delay_secs = 2.0;
+    });
+    h.ok(json!({ "method": "set_background_render", "delay_secs": 5.0 }));
+    h.ok(json!({ "method": "set_background_render", "on": false }));
+    let set: Vec<_> = h.sent.lock().unwrap().iter().filter_map(|c| match c {
+        klipp_core::AppCommand::SetBackgroundRender { on, delay_secs } => Some((*on, *delay_secs)),
+        _ => None,
+    }).collect();
+    assert_eq!(set, vec![(true, 5.0), (false, 2.0)], "what is left out stays as the engine has it");
+    let nothing = h.call(json!({ "method": "set_background_render" }));
+    assert!(nothing["error"].as_str().unwrap_or("").contains("nothing to set"), "{nothing}");
+    let far = h.call(json!({ "method": "set_background_render", "delay_secs": 600.0 }));
+    assert!(far["error"].as_str().unwrap_or("").contains("1 to 60"), "{far}");
+}
+
 /// Spelling over the socket (#3236): the list names what it marked and
 /// what it could not check, whatever dictionaries this machine has; an
 /// ignored word goes on the brief's vocabulary as one undo step (that a

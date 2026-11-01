@@ -8621,6 +8621,10 @@ pub(crate) fn playback_fix_action(fix: &klipp_engine::playback_health::Fix) -> (
         Fix::UseProxies => ("Play from proxies".into(), vec![AppCommand::SetUseProxies(true)]),
         Fix::PlaybackQuality { divisor } if *divisor >= 4 => ("Quarter size".into(), vec![AppCommand::SetPlaybackQuality(klipp_core::PlaybackQuality::Quarter)]),
         Fix::PlaybackQuality { .. } => ("Half size".into(), vec![AppCommand::SetPlaybackQuality(klipp_core::PlaybackQuality::Half)]),
+        Fix::RenderAhead => (
+            "Render ahead while idle".into(),
+            vec![AppCommand::SetBackgroundRender { on: true, delay_secs: klipp_engine::background_render::summary().delay_secs }],
+        ),
     }
 }
 
@@ -8712,5 +8716,8 @@ mod playback_note_tests {
         let (label, cmds) = playback_fix_action(&Fix::PlaybackQuality { divisor: 4 });
         assert_eq!(label, "Quarter size");
         assert!(matches!(cmds.as_slice(), [AppCommand::SetPlaybackQuality(klipp_core::PlaybackQuality::Quarter)]));
+        let (label, cmds) = playback_fix_action(&Fix::RenderAhead);
+        assert_eq!(label, "Render ahead while idle");
+        assert!(matches!(cmds.as_slice(), [AppCommand::SetBackgroundRender { on: true, .. }]));
     }
 }

@@ -858,6 +858,7 @@ fn handle(
             | ControlCommand::AppendClip { .. }
             | ControlCommand::ClearFrozen { .. }
             | ControlCommand::SetPlaybackQuality { .. }
+            | ControlCommand::SetBackgroundRender { .. }
             | ControlCommand::RemoveClip { .. }
             | ControlCommand::AttachAudio { .. }
             | ControlCommand::NormalizeClips { .. }
@@ -940,6 +941,7 @@ fn handle(
             | ControlCommand::TimelineSheet { .. }
             | ControlCommand::FrameAt { .. }
             | ControlCommand::Perf
+            | ControlCommand::RenderStatus
             | ControlCommand::LogTail { .. }
         ) => requests::output::respond(ctx, cmd, collect),
     }
