@@ -1326,6 +1326,7 @@ impl PlaybackEngine {
         if !(progress || stack_only || previewing) && self.viewer_shows_program_frame() {
             if let Some(pixels) = self.kept_frame(&seq, self.playhead, (w, h)) {
                 super::FRAMES_SHOWN_KEPT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                self.frame_from_cache = true;
                 self.show_rendered(Rendered { picture: Picture::Linear(pixels.as_ref().clone()), width: w, height: h, stats: None }, t_frame);
                 return true;
             }
@@ -1748,6 +1749,7 @@ impl PlaybackEngine {
             _ => false,
         };
         let (streams_gpu, streams_software) = crate::decode_budget::counts();
+        self.record_frame_cost(phases.render_ms + phases.sync_ms);
         if let Ok(mut ring) = self.perf_ring.lock() {
             ring.push(crate::perf::PerfSample {
                 timestamp: Instant::now(),

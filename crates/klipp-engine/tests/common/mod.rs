@@ -153,6 +153,9 @@ pub struct Parked {
     pub clip_id: ClipId,
     pub source_node: NodeId,
     pub exposure_node: NodeId,
+    /// The person's input as the UI reports it: `touch_input` is a key
+    /// pressed or a click.
+    pub foreground: Arc<klipp_jobs::ForegroundActivity>,
 }
 
 impl Parked {
@@ -267,9 +270,11 @@ impl Parked {
             Arc::new(Mutex::new(None)), Arc::clone(&perf),
         );
         engine.set_neighbour_hold(hold);
+        let foreground = klipp_jobs::ForegroundActivity::new();
+        engine.set_foreground_activity(Arc::clone(&foreground));
         let params = engine.param_change_queue();
         let thread = Some(std::thread::spawn(move || engine.run()));
-        let parked = Self { cmd, fb, playhead, fps, perf, params, thread, clip_id, source_node, exposure_node };
+        let parked = Self { cmd, fb, playhead, fps, perf, params, thread, clip_id, source_node, exposure_node, foreground };
 
         parked.send(AppCommand::SetPlayhead(tc(10)));
         let g = parked.generation();

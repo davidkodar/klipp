@@ -37,7 +37,7 @@ engine_commands!(
     SetClipPan, SetClipVolume, SetGlobalLutEnabled, SetGlobalLutOpacity, SetHdrMonitor,
     SetHdrReferenceOutput, SetInspectorMattePreviewTarget, SetMeasureOnlyClip, SetLoopPlayback,
     SetLutTetrahedral, SetMasterVolume, SetMattePreview, SetNodeSolo, SetPanLaw,
-    SetPlayhead, SetRenderCacheEnabled, SetRenderCacheLimitGb, ClearRenderCacheAll, SetScopeBloom, SetScopeLowPass, SetScopeLut,
+    SetPlayhead, SetRenderCacheEnabled, SetBackgroundRender, SetRenderCacheLimitGb, ClearRenderCacheAll, SetScopeBloom, SetScopeLowPass, SetScopeLut,
     SetScopeRenderMode, SetScopeSettings, SetScopeSizes, SetScopesVisible,
     SetScrubAudioEnabled, SetSdrTransfer, SetSourceMedia, SetSpeed,
     SetSplitCompareNode, SetTrackMute, SetTrackPan, SetTrackSolo, SetTrackVolume, OverrideTrackAutomation,

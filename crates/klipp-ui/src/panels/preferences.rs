@@ -795,10 +795,26 @@ impl PreferencesPanel {
             },
         );
 
-        Self::setting_row_with_subtitle(ui, "Background render", "Pre-render complex sections in background", theme, |ui| {
-            let mut val = prefs.playback.background_render;
-            if ui.add(Switch::new(&mut val, theme)).changed() {
-                prefs.playback.background_render = val;
+        Self::setting_row_with_subtitle(
+            ui,
+            "Render heavy parts while idle",
+            "After a pause, draws the parts of the timeline too heavy to play smoothly into the render cache, nearest the playhead first. Only on mains power, and any key or click stops it. \
+             Disk per minute drawn, at 24 fps: about 0.5 GB at full size for clean footage, 7.2 GB with light grain and 9.8 GB with heavy grain; \
+             at half size 0.1, 1.8 and 2.5 GB; at quarter size about 0.03 to 0.6 GB",
+            theme,
+            |ui| {
+                let mut val = prefs.playback.background_render;
+                if ui.add(Switch::new(&mut val, theme)).changed() {
+                    prefs.playback.background_render = val;
+                    *dirty = true;
+                }
+            },
+        );
+
+        Self::setting_row_with_subtitle(ui, "Start after", "Seconds with nothing done before heavy parts are drawn", theme, |ui| {
+            let mut v = prefs.playback.background_render_delay_secs;
+            if ui.add_enabled(prefs.playback.background_render, egui::DragValue::new(&mut v).range(1.0..=60.0).speed(0.1).suffix(" s").fixed_decimals(1)).changed() {
+                prefs.playback.background_render_delay_secs = v;
                 *dirty = true;
             }
         });
@@ -4915,7 +4931,6 @@ mod layout_tests {
         "B-Roll",
         "BEHAVIOR",
         "Background performance",
-        "Background render",
         "Backup versions to keep",
         "Buffer size",
         "Built",
@@ -5047,6 +5062,8 @@ mod layout_tests {
         "Reload on external edit",
         "Remember collapsed sections",
         "Render cache",
+        // "Background render" before it did something (#3212).
+        "Render heavy parts while idle",
         "Reset all preferences",
         "Reset window layout",
         "Ruler height",

@@ -73,6 +73,10 @@ name = "a_frame_kept_ahead_shows_as_live"
 path = "tests/a_frame_kept_ahead_shows_as_live.rs"
 
 [[test]]
+name = "drawing_ahead_while_idle"
+path = "tests/drawing_ahead_while_idle.rs"
+
+[[test]]
 name = "frame_format_sizes"
 path = "tests/frame_format_sizes.rs"
 

@@ -707,6 +707,10 @@ impl KlippApp {
             ));
             let _ = self.cmd_tx.send(AppCommand::SetSdrTransfer(self.prefs.color.sdr_display_transfer));
             let _ = self.cmd_tx.send(AppCommand::SetRenderCacheLimitGb(self.prefs.media_cache.max_cache_size_gb));
+            let _ = self.cmd_tx.send(AppCommand::SetBackgroundRender {
+                on: self.prefs.playback.background_render,
+                delay_secs: self.prefs.playback.background_render_delay_secs,
+            });
             // Push the background-performance pref into the live
             // scheduler so user changes take effect immediately
             // (without waiting for the next app launch).

@@ -294,9 +294,13 @@ pub struct PlaybackPrefs {
     /// project, again only for another fix or clearly worse (#3234).
     #[serde(default)]
     pub playback_notes_shown: std::collections::BTreeMap<String, PlaybackNoteShown>,
-    /// Pre-render complex sections in background.
+    /// Draw the heavy parts of the timeline ahead while idle, on mains
+    /// power (#3212).
     #[serde(default = "default_true")]
     pub background_render: bool,
+    /// Seconds with nothing done before drawing ahead starts.
+    #[serde(default = "default_background_render_delay")]
+    pub background_render_delay_secs: f32,
     /// How aggressively background work (skim transcode, filmstrip
     /// generation, audio conform) yields when the user is playing /
     /// scrubbing / interacting. The default is the "editor stays
@@ -323,6 +327,10 @@ pub struct PlaybackPrefs {
 }
 fn default_pre_roll() -> f32 { 2.0 }
 fn default_jkl_step() -> f32 { 2.0 }
+
+fn default_background_render_delay() -> f32 {
+    klipp_engine::background_render::DEFAULT_DELAY.as_secs_f32()
+}
 
 fn default_skim_resolution() -> u32 {
     // What skimming has always actually delivered. The cap used to be
@@ -982,6 +990,7 @@ impl Default for PlaybackPrefs {
             suggest_playback_fixes: true,
             playback_notes_shown: Default::default(),
             background_render: true,
+            background_render_delay_secs: default_background_render_delay(),
             background_performance: BackgroundPerformance::default(),
             optimised_playback: OptimisedPlayback::default(),
             pre_roll_duration: default_pre_roll(),
@@ -2190,6 +2199,19 @@ mod tests {
         old.as_object_mut().unwrap().remove("playback_notes_shown");
         let old: PlaybackPrefs = serde_json::from_value(old).unwrap();
         assert!(old.suggest_playback_fixes && old.playback_notes_shown.is_empty());
+    }
+
+    /// #3212: drawing ahead is on by default, after two idle seconds, and
+    /// a preferences file from before the delay keeps the default.
+    #[test]
+    fn drawing_ahead_is_on_after_two_seconds_by_default() {
+        let p = PlaybackPrefs::default();
+        assert!(p.background_render);
+        assert_eq!(p.background_render_delay_secs, 2.0);
+        let mut old = serde_json::to_value(PlaybackPrefs { background_render_delay_secs: 9.0, ..PlaybackPrefs::default() }).unwrap();
+        assert_eq!(serde_json::from_value::<PlaybackPrefs>(old.clone()).unwrap().background_render_delay_secs, 9.0, "kept");
+        old.as_object_mut().unwrap().remove("background_render_delay_secs");
+        assert_eq!(serde_json::from_value::<PlaybackPrefs>(old).unwrap().background_render_delay_secs, 2.0);
     }
 
     use super::*;

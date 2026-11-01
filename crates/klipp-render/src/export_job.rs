@@ -62,6 +62,30 @@ pub struct ExportJob {
     pub analyser: Option<crate::Analyser>,
 }
 
+static EXPORTS_RUNNING: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Exports running now, in this process: work that wants the GPU to
+/// itself, so nothing is drawn ahead meanwhile (#3212).
+pub fn exports_running() -> usize {
+    EXPORTS_RUNNING.load(Ordering::Relaxed)
+}
+
+/// Counts an export as running while it lives.
+struct Running(&'static std::sync::atomic::AtomicUsize);
+
+impl Running {
+    fn start(count: &'static std::sync::atomic::AtomicUsize) -> Self {
+        count.fetch_add(1, Ordering::Relaxed);
+        Running(count)
+    }
+}
+
+impl Drop for Running {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
 impl ExportJob {
     /// Run the export. Blocks until complete, cancelled, or error.
     /// Called from a background thread.
@@ -72,6 +96,7 @@ impl ExportJob {
     }
 
     pub fn run(self) -> Result<(), RenderError> {
+        let _running = Running::start(&EXPORTS_RUNNING);
         let partial_path = partial_path_for(&self.output_path);
         let result = self.run_to_partial();
         // A failed render leaves no `.partial` behind — except the one
@@ -1350,6 +1375,20 @@ impl LoudnessAnalysis {
 mod tests {
     use super::*;
     use crate::snapshot::*;
+
+    /// An export counts as running for as long as it lives, however it
+    /// ends: what keeps drawing ahead off the GPU meanwhile (#3212).
+    #[test]
+    fn an_export_counts_as_running_while_it_lives() {
+        static COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let a = Running::start(&COUNT);
+        let b = Running::start(&COUNT);
+        assert_eq!(COUNT.load(Ordering::Relaxed), 2);
+        drop(a);
+        assert_eq!(COUNT.load(Ordering::Relaxed), 1);
+        drop(b);
+        assert_eq!(COUNT.load(Ordering::Relaxed), 0, "both let go");
+    }
 
     fn make_test_snapshot() -> SequenceSnapshot {
         SequenceSnapshot {

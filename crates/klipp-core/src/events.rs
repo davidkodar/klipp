@@ -1985,6 +1985,9 @@ pub enum AppCommand {
     /// Begin timeline scrubbing — engine may switch to proxy decode for speed.
     /// Enable or disable the smart render cache.
     SetRenderCacheEnabled(bool),
+    /// Draw heavy frames ahead while idle, on mains power, after
+    /// `delay_secs` with nothing done (#3212).
+    SetBackgroundRender { on: bool, delay_secs: f32 },
     /// The render cache's size cap in GB (the cache preferences' Max
     /// cache size): past it the least recently used frames go, at once
     /// when it shrinks.

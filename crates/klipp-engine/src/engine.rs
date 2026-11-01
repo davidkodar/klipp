@@ -15,6 +15,7 @@ mod delivery;
 #[cfg(any(test, feature = "test-hooks"))]
 pub(crate) mod inject;
 mod frames_job;
+mod background;
 mod seek_lead;
 mod reverse_gop;
 mod skim_render;
@@ -2001,6 +2002,12 @@ pub struct PlaybackEngine {
     frames_job: Option<frames_job::FramesJob>,
     frames_enabled: bool,
     cache_budget_gb: u32,
+    /// Heavy frames drawn ahead while idle (#3212), what frames cost as
+    /// they played, and whether the frame being finished came from the
+    /// frame cache (costing nothing).
+    background: background::Background,
+    cost_log: crate::background_render::CostLog,
+    frame_from_cache: bool,
     /// Current grade hash for the active clip (cached to avoid recomputing per frame).
     current_grade_hash: u64,
     current_grade_clip_id: Option<klipp_core::ClipId>,
@@ -3018,6 +3025,9 @@ impl PlaybackEngine {
             frames_job: None,
             frames_enabled: true,
             cache_budget_gb: 20,
+            background: background::Background::default(),
+            cost_log: crate::background_render::CostLog::default(),
+            frame_from_cache: false,
             current_grade_hash: 0,
             current_grade_clip_id: None,
             current_graph_arc: None,
@@ -3315,6 +3325,7 @@ impl PlaybackEngine {
             }
             // Frames drawn ahead in their job (#3212): progress and end.
             self.poll_frames_job();
+            self.tick_background();
             if self.state == PlaybackState::Playing {
                 // Playback already produces fresh frames at full res
                 // every tick; the drag-recovery flag isn't needed here.
@@ -3960,6 +3971,9 @@ impl PlaybackEngine {
                 debug!("Cache cap {gb} GB");
             }
             AppCommand::ClearRenderCacheAll => self.clear_render_cache_all(),
+            AppCommand::SetBackgroundRender { on, delay_secs } => {
+                self.set_background_render(on, Duration::from_secs_f32(delay_secs.clamp(0.0, 600.0)));
+            }
             AppCommand::SetRenderCacheEnabled(enabled) => {
                 self.frames_enabled = enabled;
                 if !enabled {
