@@ -276,3 +276,39 @@ fn a_size_held_for_a_moment_is_not_the_windows() {
     assert!(!maximized.held(false, 5.0) && !maximized.held(false, 5.5), "unmaximised for a moment");
     assert!(!maximized.held(true, 5.8), "maximised again before it held");
 }
+
+/// A toast while the small-screen note is up stands above it, not on it:
+/// drawn over it, both read as nothing. With no note it sits where it did.
+#[test]
+fn a_toast_stands_above_the_small_screen_note() {
+    let mut state = AppState { small_screen_note: Some(80), ..Default::default() };
+    let theme = KlippTheme::default();
+    let ctx = egui::Context::default();
+    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1366.0, 768.0));
+    let mut toast = crate::widgets::toast::ToastState::default();
+    toast.visible_duration = 5.0;
+    toast.show("Clip placed on Video 2");
+    let mut shown = Vec::new();
+    for k in 0..4 {
+        let out = ctx.run(input(screen, Vec::new(), 0.5 + k as f64 * 0.2), |ctx| {
+            crate::welcome::show_small_screen_note(ctx, &mut state, &theme);
+            let top = ctx.memory(|m| m.area_rect(egui::Id::new(crate::welcome::SMALL_SCREEN_NOTE_ID))).map(|r| r.top());
+            let _ = toast.render(ctx, &theme, top);
+        });
+        shown = texts(&out);
+    }
+    let rect = |t: &str| shown.iter().find(|(s, _)| s == t).unwrap_or_else(|| panic!("{t}: {shown:?}")).1;
+    let (note, said) = (rect("Small screen \u{2014} interface set to 80%"), rect("Clip placed on Video 2"));
+    assert!(said.bottom() <= note.top(), "the toast {said:?} above the note {note:?}");
+    // No note: where a toast always went.
+    let ctx = egui::Context::default();
+    let mut alone = Vec::new();
+    for k in 0..4 {
+        let out = ctx.run(input(screen, Vec::new(), 0.5 + k as f64 * 0.2), |ctx| {
+            let _ = toast.render(ctx, &theme, None);
+        });
+        alone = texts(&out);
+    }
+    let low = alone.iter().find(|(s, _)| s == "Clip placed on Video 2").expect("drawn").1;
+    assert!(low.bottom() > said.bottom(), "lower without the note: {low:?} vs {said:?}");
+}

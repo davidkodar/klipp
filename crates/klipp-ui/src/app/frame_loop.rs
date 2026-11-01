@@ -1847,7 +1847,8 @@ impl KlippApp {
         // check; the dismissal set is consulted up front so each tip
         // ever fires at most once, persisted to prefs.
         self.maybe_fire_first_time_tips();
-        if let Some(action) = self.state.toast.render(ctx, &self.theme) {
+        let note_top = self.state.small_screen_note.and(ctx.memory(|m| m.area_rect(egui::Id::new(crate::welcome::SMALL_SCREEN_NOTE_ID)))).map(|r| r.top());
+        if let Some(action) = self.state.toast.render(ctx, &self.theme, note_top) {
             self.toast_action(action);
         }
         self.state.toast.cleanup();
