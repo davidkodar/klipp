@@ -298,7 +298,10 @@ mod tests {
         if out.exists() {
             return Some(out);
         }
-        let partial = out.with_extension(format!("{}.mkv", std::process::id()));
+        // A scratch name of this call's own: two tests here build the
+        // file at once on a cold temp dir, and under one name one ffmpeg
+        // truncated the other's.
+        let partial = out.with_extension(format!("{}-{}.mkv", std::process::id(), uuid::Uuid::new_v4().simple()));
         let ok = std::process::Command::new("ffmpeg")
             .args(["-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=s=1280x720:r=25:d=6", "-c:v", "ffv1"])
             .arg(&partial)
