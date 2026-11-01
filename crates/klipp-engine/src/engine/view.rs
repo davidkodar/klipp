@@ -971,7 +971,7 @@ impl PlaybackEngine {
             sequences: &[],
             media: &lookup,
             plugin: &crate::freeze::plugin_identity,
-            environment: crate::freeze::environment(crate::video_decoder::working_colorspace(), self.use_proxies),
+            environment: crate::freeze::environment(crate::video_decoder::working_colorspace(), self.use_proxies, self.draw_settings()),
         };
         seq.tracks
             .iter()

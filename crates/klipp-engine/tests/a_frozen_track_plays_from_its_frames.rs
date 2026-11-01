@@ -271,8 +271,9 @@ fn a_frozen_track_plays_from_its_frames_and_isnt_decoded() {
         frames: frames.clone(),
         size,
         working,
+        draw: klipp_engine::freeze::DrawSettings::current(true),
         // As the engine plays: proxies on, its default.
-        environment: klipp_engine::freeze::environment(working, true),
+        environment: klipp_engine::freeze::environment(working, true, klipp_engine::freeze::DrawSettings::current(true)),
         media: Arc::new(klipp_engine::freeze::media_identities(&pool)),
     };
     let started = Instant::now();
@@ -300,7 +301,7 @@ fn a_frozen_track_plays_from_its_frames_and_isnt_decoded() {
     eprintln!("MEASURE GPU memory: {:?} live, {:?} frozen", live.memory, frozen.memory);
     eprintln!("MEASURE render thread per frame, median: {:.1} ms live, {:.1} ms frozen; whole frame {:.1} ms live, {:.1} ms frozen", live.render, frozen.render, live.total, frozen.total);
     // The frame on the GPU stack, the GPU waited for.
-    let req_again = klipp_engine::freeze::FreezeRequest { seq: Arc::new(seq.clone()), sequences: Arc::new(vec![]), track: 0, track_id, frames: vec![], size: live.size, working, environment: klipp_engine::freeze::environment(working, true), media: Arc::new(klipp_engine::freeze::media_identities(&pool)) };
+    let req_again = klipp_engine::freeze::FreezeRequest { seq: Arc::new(seq.clone()), sequences: Arc::new(vec![]), track: 0, track_id, frames: vec![], size: live.size, working, draw: klipp_engine::freeze::DrawSettings::current(true), environment: klipp_engine::freeze::environment(working, true, klipp_engine::freeze::DrawSettings::current(true)), media: Arc::new(klipp_engine::freeze::media_identities(&pool)) };
     let gpu_live = stack_cost(&seq, files, live.size, None);
     let gpu_frozen = stack_cost(&seq, files, live.size, Some((&folder, track_id, &req_again)));
     eprintln!("MEASURE frame on the GPU stack, GPU waited for, median: {gpu_live:.1} ms live (its decode included), {gpu_frozen:.1} ms frozen");

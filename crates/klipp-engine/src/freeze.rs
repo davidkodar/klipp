@@ -21,12 +21,38 @@ use klipp_timeline::Sequence;
 
 use crate::cache_store::{CacheStore, FrameAt, PutRefused};
 
-/// The render environment a frozen frame's key takes (#3207): the
-/// working space and whether proxies are drawn. The freeze and playback
-/// both key by it, so a frame frozen in one space is never laid in another.
-pub fn environment(working: klipp_core::WorkingColorspace, use_proxies: bool) -> u64 {
+/// How frames are drawn past the working space: the grade's encoding,
+/// and whether LUTs are looked up tetrahedrally or trilinearly (the
+/// viewer's choice; export always tetrahedral). A renderer drawing frames
+/// to keep draws with the viewer's, and the key takes them (#3265): a
+/// frame kept under the other encoding or lookup is another picture.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct DrawSettings {
+    pub encoding: klipp_core::GradeEncoding,
+    pub lut_tetrahedral: bool,
+}
+
+impl DrawSettings {
+    /// The project's grade encoding, with the viewer's LUT lookup.
+    pub fn current(lut_tetrahedral: bool) -> Self {
+        Self { encoding: klipp_core::grade_encoding(), lut_tetrahedral }
+    }
+
+    /// `renderer` set to draw so.
+    pub fn apply(&self, renderer: &mut klipp_compose::Renderer) {
+        renderer.set_grade_encoding(self.encoding);
+        renderer.set_lut_tetrahedral(self.lut_tetrahedral);
+    }
+}
+
+/// The render environment a frozen or kept frame's key takes (#3207):
+/// the working space, whether proxies are drawn, and how the frame is
+/// drawn past that ([`DrawSettings`]). The freeze, drawing ahead and
+/// playback all key by it, so a frame drawn in one is never shown in
+/// another.
+pub fn environment(working: klipp_core::WorkingColorspace, use_proxies: bool, draw: DrawSettings) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
-    (format!("{working:?}"), use_proxies).hash(&mut h);
+    (format!("{working:?}"), use_proxies, draw).hash(&mut h);
     h.finish()
 }
 
@@ -72,13 +98,20 @@ pub fn plugin_identity(id: &str) -> Option<u64> {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     if id.starts_with("frei0r:") {
         let info = klipp_effects::frei0r_effect::lookup(id)?;
-        info.path.hash(&mut h);
-        std::fs::metadata(&info.path).ok().and_then(|m| m.modified().ok()).and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_nanos()).hash(&mut h);
-        (info.major_version, info.minor_version).hash(&mut h);
-    } else {
-        id.hash(&mut h);
+        return Some(frei0r_identity(&info.path, (info.major_version, info.minor_version)));
     }
+    id.hash(&mut h);
     Some(h.finish())
+}
+
+/// A frei0r plug-in's identity: its file (path and modification time)
+/// and the version it reports.
+fn frei0r_identity(path: &std::path::Path, version: (i32, i32)) -> u64 {
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    path.hash(&mut h);
+    std::fs::metadata(path).ok().and_then(|m| m.modified().ok()).and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_nanos()).hash(&mut h);
+    version.hash(&mut h);
+    h.finish()
 }
 
 /// Frozen frames read ahead of playback (#3207): a thread reads and
@@ -145,6 +178,8 @@ pub struct FreezeRequest {
     pub frames: Vec<Timecode>,
     pub size: (u32, u32),
     pub working: klipp_core::WorkingColorspace,
+    /// How its frames are drawn, as `environment` takes it.
+    pub draw: DrawSettings,
     pub environment: u64,
     pub media: Arc<HashMap<String, u64>>,
 }
@@ -381,6 +416,7 @@ pub fn spawn_freeze<S: FrameSource + 'static>(req: FreezeRequest, store: Arc<Mut
             let mut renderer = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
             renderer.set_gpu_enabled(true);
             renderer.set_working_colorspace(req.working);
+            req.draw.apply(&mut renderer);
             let mut tally = FreezeTally::default();
             let n = req.frames.len().max(1);
             for (i, at) in req.frames.iter().enumerate() {
@@ -458,7 +494,7 @@ mod tests {
     }
 
     fn request_for(flat: &Sequence, frames: Vec<Timecode>) -> FreezeRequest {
-        FreezeRequest { seq: Arc::new(flat.clone()), sequences: Arc::new(vec![]), track: 0, track_id: flat.tracks[0].id, frames, size: (W, H), working: klipp_core::WorkingColorspace::Rec709Linear, environment: 1, media: Arc::new(HashMap::new()) }
+        FreezeRequest { seq: Arc::new(flat.clone()), sequences: Arc::new(vec![]), track: 0, track_id: flat.tracks[0].id, frames, size: (W, H), working: klipp_core::WorkingColorspace::Rec709Linear, draw: DrawSettings::current(true), environment: 1, media: Arc::new(HashMap::new()) }
     }
 
     fn store(name: &str) -> (Arc<Mutex<CacheStore>>, std::path::PathBuf) {
@@ -650,5 +686,62 @@ mod track_frames_tests {
         ] {
             assert_eq!(stale.state(), FreezeState::Stale, "{stale:?}");
         }
+    }
+}
+
+#[cfg(test)]
+mod key_input_tests {
+    use super::*;
+    use klipp_core::{GradeEncoding, WorkingColorspace};
+
+    /// #3265: the environment a frozen or kept frame's key takes moves
+    /// with each thing that changes how a frame is drawn: the working
+    /// space, proxies, the grade's encoding and the LUT lookup.
+    #[test]
+    fn the_environment_moves_with_each_way_a_frame_is_drawn() {
+        let draw = DrawSettings { encoding: GradeEncoding::Bt1886, lut_tetrahedral: true };
+        let base = environment(WorkingColorspace::Rec709Linear, true, draw);
+        assert_eq!(base, environment(WorkingColorspace::Rec709Linear, true, draw), "the same inputs, the same key");
+        let others = [
+            ("working space", environment(WorkingColorspace::AcesCG, true, draw)),
+            ("proxies", environment(WorkingColorspace::Rec709Linear, false, draw)),
+            ("grade encoding", environment(WorkingColorspace::Rec709Linear, true, DrawSettings { encoding: GradeEncoding::AcesCct, ..draw })),
+            ("LUT lookup", environment(WorkingColorspace::Rec709Linear, true, DrawSettings { lut_tetrahedral: false, ..draw })),
+        ];
+        for (what, key) in others {
+            assert_ne!(key, base, "{what} leaves the environment as it was");
+        }
+    }
+
+    /// #3265: a media item's identity moves with its file rewritten in
+    /// place (same path, new content), its proxy and its log format; a
+    /// frei0r plug-in's with its version and its file.
+    #[test]
+    fn a_file_or_plugin_changed_in_place_keys_anew() {
+        let dir = std::env::temp_dir().join(format!("klipp-key-inputs-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("shot.mov");
+        std::fs::write(&path, b"first take").unwrap();
+        let mut item = klipp_media::MediaItem::synthetic_for_test(path.clone(), None);
+        let first = media_identity(&item);
+        assert_eq!(first, media_identity(&item));
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(&path, b"a second, longer take").unwrap();
+        let rewritten = media_identity(&item);
+        assert_ne!(rewritten, first, "the file rewritten at its path");
+        item.proxy_path = Some(dir.join("shot.proxy.mov"));
+        let proxied = media_identity(&item);
+        assert_ne!(proxied, rewritten, "a proxy");
+        item.log_format = klipp_core::LogFormat::Linear;
+        assert_ne!(media_identity(&item), proxied, "a log format");
+
+        let plugin = dir.join("glow.so");
+        std::fs::write(&plugin, b"v1").unwrap();
+        let v1 = frei0r_identity(&plugin, (1, 0));
+        assert_ne!(frei0r_identity(&plugin, (1, 1)), v1, "a new version");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(&plugin, b"v1, rebuilt").unwrap();
+        assert_ne!(frei0r_identity(&plugin, (1, 0)), v1, "the file replaced");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
