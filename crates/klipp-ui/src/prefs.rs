@@ -198,6 +198,10 @@ pub struct GeneralPrefs {
     /// before it reads as no, so nobody's window changes.
     #[serde(default)]
     pub open_maximized: bool,
+    /// The project format New Project last made a project from, by name
+    /// (#3307): it opens on that one.
+    #[serde(default)]
+    pub last_project_format: Option<String>,
     /// Explicit opt-in to background release checks. The original setting
     /// defaulted on, so its serialized value cannot establish user consent.
     #[serde(default, rename = "automatic_update_checks_opt_in")]
@@ -955,6 +959,7 @@ impl Default for GeneralPrefs {
         Self {
             show_welcome: true,
             open_maximized: true,
+            last_project_format: None,
             auto_save_interval_secs: 300,
             check_for_updates: false,
             update_checks_answered: false,

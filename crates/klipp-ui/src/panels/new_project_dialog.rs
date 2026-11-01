@@ -48,6 +48,9 @@ pub struct NewProjectDialog {
     /// takes (#2722).
     pub brand_kits: Vec<String>,
     pub brand_kit: Option<String>,
+    /// The format a project was just made from, by name, for the app to
+    /// remember (#3307).
+    pub made_from: Option<String>,
 }
 
 /// The brand kits there are, by name: the user's, then the starters.
@@ -77,6 +80,14 @@ impl NewProjectDialog {
             needs: None,
             brand_kits: brand_kit_names(),
             brand_kit: None,
+            made_from: None,
+        }
+    }
+
+    /// Open on the format named `name` when there is one by that name.
+    pub fn pick_format_named(&mut self, name: Option<&str>) {
+        if let Some(i) = name.and_then(|n| formats().iter().position(|f| f.name == n)) {
+            self.apply_format(i);
         }
     }
 
@@ -497,6 +508,7 @@ impl NewProjectDialog {
                                 brand_kit: self.brand_kit.clone(),
                                 destination: formats().get(self.template_idx).filter(|_| self.user_template.is_none()).and_then(|f| f.destination.clone()),
                             });
+                            self.made_from = formats().get(self.template_idx).filter(|_| self.user_template.is_none()).map(|f| f.name.clone());
                             close = true;
                         }
 
@@ -830,6 +842,17 @@ mod template_tests {
             [AppCommand::CreateProject { width: 1080, height: 1920, fps_num: 30, destination: Some(d), .. }] => assert!(d.captions && d.platform.contains("TikTok"), "{d:?}"),
             other => panic!("{other:?}"),
         }
+        // And remembered (#3307): the format made from is handed over, and
+        // a dialog reset and told it opens on it; a name no format has
+        // leaves it on Match first clip.
+        assert_eq!(dialog.made_from.as_deref(), Some("YouTube Shorts / Reels / TikTok"));
+        let mut again = NewProjectDialog::new(None);
+        again.reset(None);
+        again.pick_format_named(dialog.made_from.as_deref());
+        assert_eq!((formats()[again.template_idx].name.as_str(), again.resolved_resolution(), again.resolved_fps()), ("YouTube Shorts / Reels / TikTok", (1080, 1920), (30, 1)));
+        again.reset(None);
+        again.pick_format_named(Some("Gone"));
+        assert_eq!(again.template_idx, 0);
     }
 
     /// #618: New Project lists the user's templates; chosen, one shows

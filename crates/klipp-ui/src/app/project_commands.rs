@@ -259,11 +259,7 @@ impl KlippApp {
                     self.state.unsaved_dialog_action = UnsavedAction::OpenNewProjectDialog;
                     return true;
                 }
-                let root = self.projects_root();
-                self.new_project_dialog.reset(Some(&root));
-                let templates = self.project_templates_dir();
-                self.new_project_dialog.load_templates(&templates);
-                self.state.show_new_project_dialog = true;
+                self.open_new_project_dialog();
                 true
             }
             AppCommand::CloseProject => {
@@ -579,7 +575,7 @@ impl KlippApp {
                 tracing::info!("Created new project at {:?}", project_dir);
                 true
             }
-            AppCommand::NewUntitledProject { fps_num, fps_den, width, height, template, hdr } => {
+            AppCommand::NewUntitledProject { fps_num, fps_den, width, height, template, hdr, destination } => {
                 // Unsaved and Untitled: written on its first real edit or a
                 // save, and closed untouched it leaves nothing (#1864). A
                 // template's copied media waits in the cache till then.
@@ -593,6 +589,9 @@ impl KlippApp {
                 let untitled = crate::project_paths::UNTITLED;
                 if !self.start_new_project(untitled, untitled, (*fps_num, *fps_den), (*width, *height), template.as_deref(), &staging, *hdr) {
                     return true;
+                }
+                if let Some(d) = destination {
+                    set_destination(self.state.sequence_mut(), d);
                 }
                 self.state.project_path = Some(PathBuf::from(crate::project_paths::UNTITLED));
                 self.untitled_staging = Some(staging);
@@ -1481,6 +1480,18 @@ mod track_tests {
     }
 }
 
+
+impl KlippApp {
+    /// New Project, fresh, on the format picked last time (#3307).
+    pub(super) fn open_new_project_dialog(&mut self) {
+        let root = self.projects_root();
+        self.new_project_dialog.reset(Some(&root));
+        self.new_project_dialog.pick_format_named(self.prefs.general.last_project_format.as_deref());
+        let templates = self.project_templates_dir();
+        self.new_project_dialog.load_templates(&templates);
+        self.state.show_new_project_dialog = true;
+    }
+}
 
 /// A destination's platform, loudness and captions in `seq`'s brief, and
 /// its picture as the delivery's (#3307); the rest of a brief a template

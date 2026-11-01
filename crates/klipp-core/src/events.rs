@@ -1521,6 +1521,8 @@ pub enum AppCommand {
         height: u32,
         template: Option<PathBuf>,
         hdr: bool,
+        /// Where it goes (#3307): put in the new sequence's brief.
+        destination: Option<crate::project_formats::Destination>,
     },
     /// Keep the open project's structure as a project template called
     /// `name` (#618): its sequences' formats and tracks, its bins and

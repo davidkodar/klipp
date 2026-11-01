@@ -1366,13 +1366,7 @@ impl KlippApp {
     fn take_unsaved_action(&mut self, action: UnsavedAction, discarded: bool) {
         match action {
             UnsavedAction::NewProject => self.do_new_project(),
-            UnsavedAction::OpenNewProjectDialog => {
-                let root = self.projects_root();
-                self.new_project_dialog.reset(Some(&root));
-                let templates = self.project_templates_dir();
-                self.new_project_dialog.load_templates(&templates);
-                self.state.show_new_project_dialog = true;
-            }
+            UnsavedAction::OpenNewProjectDialog => self.open_new_project_dialog(),
             UnsavedAction::OpenProject(p) => self.do_open_project(&p),
             UnsavedAction::OpenFromAnotherEditor(p) => self.open_from_another_editor_now(&p, uuid::Uuid::nil()),
             UnsavedAction::CloseProject => self.do_close_project(),
