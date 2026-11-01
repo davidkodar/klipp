@@ -440,7 +440,9 @@ fn build_copy_plan(
         let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "grade_file".to_string());
         let dst = collision_safe_name(&name, &mut used_grade);
         items.push(CopyItem { src: path.clone(), dst_name: dst.clone(), subfolder: "grade" });
-        node_file_new_paths.insert(path.clone(), options.dest_dir.join("media").join("grade").join(&dst));
+        // Relative to the project, so the folder can move (#3241): opened,
+        // the project resolves it against where it is.
+        node_file_new_paths.insert(path.clone(), Path::new("media").join("grade").join(&dst));
     }
 
     CopyPlan {
@@ -472,6 +474,26 @@ pub(crate) fn node_files(g: &NodeGraph) -> Vec<&PathBuf> {
         }
     }
     out
+}
+
+/// A grade's file path a collected project stores relative to itself,
+/// under its `media/` folder (#3241), resolved against `dir`; any other
+/// path, absolute or a library LUT's name, as it is.
+pub(crate) fn resolve_collected_grade_files(g: &mut NodeGraph, dir: &Path) {
+    let fix = |p: &mut PathBuf| {
+        if p.is_relative() && p.starts_with("media") {
+            *p = dir.join(&*p);
+        }
+    };
+    for n in &mut g.nodes {
+        let params = &mut n.params;
+        for p in [params.lut_path.as_mut(), params.matte_image_path.as_mut(), params.difference_key.as_mut().and_then(|d| d.plate_path.as_mut())].into_iter().flatten() {
+            fix(p);
+        }
+        if let Some(inner) = params.compound_subgraph.as_mut() {
+            resolve_collected_grade_files(inner, dir);
+        }
+    }
 }
 
 /// Each file a title draws: a text layer's texture, a picture layer's
@@ -726,6 +748,15 @@ pub fn consolidate_project(
     if let Err(e) = execute_copy_plan(&plan, &options.dest_dir, progress.as_ref()) {
         let _ = std::fs::remove_dir_all(&options.dest_dir);
         return Err(e);
+    }
+
+    // Each whole copy's analysis results come along (#3241); a cut file's
+    // don't fit it.
+    let cache = klipp_media::disk_cache::analysis_dir();
+    for item in media_pool.all() {
+        if let Some(name) = plan.media_new_paths.get(&item.id).and_then(|p| p.file_name()).and_then(|n| n.to_str()) {
+            crate::collect_analysis::carry_out(&cache, &item.path, &options.dest_dir, name);
+        }
     }
 
     // Remap MediaPool and sequences to use the new paths.
