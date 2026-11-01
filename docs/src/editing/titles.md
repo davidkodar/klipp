@@ -112,6 +112,8 @@ As you type a title, a template's text or a caption, words no dictionary knows a
 
 Each text is checked in its own language: the one picked beside **Spelling** under its text, else its subtitle track's, else the brief's, else your system's. Klipp uses the Hunspell dictionaries installed on your system (`hunspell-en_us`, `hunspell-de` and so on, as your distribution names them); a language with none is left unmarked. **Preferences → General → Check spelling while typing** turns the underlines off.
 
+**Check Spelling in Titles…** (Edit menu, command palette) lists every marked word in the sequence's titles and captions, or every sequence's, in order; click one to go to it. For the one picked it offers what it might have been: **Change** it there, **Change All** wherever it is written (whole words, as written, keeping the text's styling; one undo step), **Skip** it this time, **Ignore in This Project** or **Add to Dictionary**.
+
 ## Motion-Graphics Templates
 
 A composition saved as a template can expose fields — text, colours, speed — that stay editable on each use. Project templates and the assistant use them as well.

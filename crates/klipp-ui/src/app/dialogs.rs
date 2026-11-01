@@ -1092,6 +1092,10 @@ impl KlippApp {
         if self.state.show_title_find {
             cmds.extend(crate::panels::title_find_dialog::show_title_find_dialog(ctx, &mut self.state));
         }
+        // Check spelling in titles (#3236).
+        if self.state.show_spelling_dialog {
+            cmds.extend(crate::panels::spelling_dialog::show_spelling_dialog(ctx, &mut self.state));
+        }
 
         // Apply Brand Kit (#2722).
         if self.state.show_apply_brand_kit {

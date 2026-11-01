@@ -3116,6 +3116,9 @@ pub struct AppState {
     pub title_find_replace: String,
     pub title_find_project: bool,
     pub title_find_selected: Option<usize>,
+    /// Check Spelling in Titles (#3236): open, and its own state.
+    pub show_spelling_dialog: bool,
+    pub spelling_dialog: crate::panels::spelling_dialog::SpellingDialog,
     pub batch_rename_ids: Vec<MediaId>,
     pub batch_rename_mode: crate::app::BatchRenameMode,
     pub batch_rename_find: String,
@@ -5343,6 +5346,8 @@ impl Default for AppState {
             title_find_replace: String::new(),
             title_find_project: false,
             title_find_selected: None,
+            show_spelling_dialog: false,
+            spelling_dialog: Default::default(),
             batch_rename_ids: Vec::new(),
             batch_rename_mode: crate::app::BatchRenameMode::FindReplace,
             batch_rename_find: String::new(),
