@@ -537,15 +537,31 @@ fn linear_convert(
     );
     let colour = SourceColour::from_stream(format_ctx, stream_index, log_format);
     Box::new(move |frame: &ffmpeg_next::frame::Video, w: u32, h: u32| {
-        if let Some(linear) =
+        if let Some(mut linear) =
             unsafe { colour.scene_referred_linear(frame.as_ptr(), w, h, working) }
         {
+            crate::yuv_samples::keep_alpha_plane(frame, w, h, 0, &mut linear);
             return Ok(linear);
         }
-        if let Some(linear) = display_referred_linear(&colour, frame, w, h, working) {
+        if let Some(mut linear) = display_referred_linear(&colour, frame, w, h, working) {
+            crate::yuv_samples::keep_alpha_plane(frame, w, h, 0, &mut linear);
             return Ok(linear);
         }
         // What is left has no Y'CbCr to read: RGB, palette, greyscale.
+        // Deeper than eight bits (FFV1's 16-bit RGB, #3264), read at 16 so
+        // a lossless file comes back with nothing lost.
+        if let Some(deep) = deep_rgb_linear(frame, w, h)? {
+            let mut out = deep;
+            if let Some(m) = to_working {
+                out.chunks_exact_mut(4).for_each(|px| {
+                    let c = klipp_color::primaries::matrix3_mul_vec(m, [px[0], px[1], px[2]]);
+                    px[0] = c[0];
+                    px[1] = c[1];
+                    px[2] = c[2];
+                });
+            }
+            return Ok(out);
+        }
         let rgba = swscale_rgba(frame, w, h)?;
         let mut out: Vec<f32> = rgba
             .iter()
@@ -1033,6 +1049,32 @@ pub unsafe fn stream_colour_baseline(
         p.width.max(1) as u32,
         p.height.max(1) as u32,
     )
+}
+
+/// An RGB frame deeper than eight bits in linear light (sRGB decoded,
+/// alpha as it is), through swscale at 16 bits; `None` for one of eight
+/// bits or fewer, or with Y'CbCr samples.
+fn deep_rgb_linear(frame: &ffmpeg_next::frame::Video, dst_w: u32, dst_h: u32) -> Result<Option<Vec<f32>>, String> {
+    use ffmpeg_next::format::Pixel as P;
+    use ffmpeg_next::software::scaling;
+    if !matches!(frame.format(), P::GBRP10LE | P::GBRP12LE | P::GBRP16LE | P::GBRAP10LE | P::GBRAP12LE | P::GBRAP16LE | P::RGB48LE | P::RGBA64LE) {
+        return Ok(None);
+    }
+    let (fmt, w, h) = (frame.format(), frame.width(), frame.height());
+    let mut scaler = scaling::Context::get(fmt, w, h, P::RGBA64LE, dst_w, dst_h, scaling::Flags::BILINEAR)
+        .map_err(|e| format!("swscale has no path from {fmt:?} {w}x{h} to RGBA64 {dst_w}x{dst_h}: {e}"))?;
+    let mut rgba = ffmpeg_next::frame::Video::empty();
+    scaler.run(frame, &mut rgba).map_err(|e| format!("swscale failed converting {fmt:?} {w}x{h} to RGBA64: {e}"))?;
+    let (rw, rh, stride) = (rgba.width() as usize, rgba.height() as usize, rgba.stride(0));
+    let data = rgba.data(0);
+    let mut out = Vec::with_capacity(rw * rh * 4);
+    for y in 0..rh {
+        for px in data[y * stride..y * stride + rw * 8].chunks_exact(8) {
+            let v = |i: usize| f32::from(u16::from_le_bytes([px[2 * i], px[2 * i + 1]])) / 65535.0;
+            out.extend_from_slice(&[klipp_color::transfer::srgb_to_linear(v(0)), klipp_color::transfer::srgb_to_linear(v(1)), klipp_color::transfer::srgb_to_linear(v(2)), v(3)]);
+        }
+    }
+    Ok(Some(out))
 }
 
 /// Plain swscale to RGBA at the requested size.

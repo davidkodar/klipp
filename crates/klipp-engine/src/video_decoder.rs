@@ -3501,7 +3501,7 @@ fn convert_sw_frame(
             // `playback_dimensions` already returns the rotated extent,
             // and the converter rotates as it samples, so the frame it
             // hands back is the right way up at the right size.
-            let linear = klipp_color::camera_log::yuv_to_linear_display(
+            let mut linear = klipp_color::camera_log::yuv_to_linear_display(
                 &yuv.samples(),
                 dst_w,
                 dst_h,
@@ -3509,6 +3509,8 @@ fn convert_sw_frame(
                 source_cs,
                 working_colorspace(),
             );
+            // A file with alpha (ProRes 4444, #3264) keeps it.
+            klipp_media::yuv_samples::keep_alpha_plane(received_frame, dst_w, dst_h, rot, &mut linear);
             return Some(LinearFrame {
                 pts: RationalTime::zero(),
                 width: dst_w,

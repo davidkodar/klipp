@@ -358,6 +358,12 @@ pub struct ExportSettings {
     /// 10-bit encode for H.264/H.265. Other codecs ignore this (ProRes is
     /// always 10-bit, DNxHD is 8-bit). #65 baseline.
     pub bit_depth: u8,
+    /// Keep the frames' alpha in the file (#3264), where the codec holds
+    /// one ([`ExportVideoCodec::holds_alpha`]): straight, not multiplied
+    /// in. Off, a frame's transparent parts are written as they composite
+    /// over black, as every export did.
+    #[serde(default)]
+    pub alpha: bool,
     /// HDR transfer characteristic. Defaults to SDR (BT.709). When 10-bit
     /// encode is active, HLG/PQ write BT.2020 primaries + matching transfer.
     pub hdr_mode: HdrMode,
@@ -426,6 +432,7 @@ impl Default for ExportSettings {
             captions_608: false,
             hdr10plus: false,
             bit_depth: 0,
+            alpha: false,
             hdr_mode: HdrMode::default(),
             tone_map_op: ToneMapOp::default(),
             odt: OdtChoice::default(),
@@ -444,6 +451,12 @@ impl ExportSettings {
     /// Why this container cannot be written with these codecs, or `None`
     /// when it can. Checked before an encode starts, so a bad pair fails
     /// with this sentence instead of FFmpeg's "Invalid argument".
+    /// Whether the file carries the frames' alpha: asked for, and the
+    /// codec holds one.
+    pub fn writes_alpha(&self) -> bool {
+        self.alpha && self.video_codec.holds_alpha()
+    }
+
     pub fn container_problem(&self) -> Option<String> {
         if !self.format.holds_video(self.video_codec) {
             return Some(format!(
@@ -646,8 +659,9 @@ impl ExportFormat {
         use ExportVideoCodec as V;
         match self {
             Self::Mp4 => matches!(codec, V::H264 | V::H265 | V::Av1 | V::Vp9),
+            // FFV1 is Matroska's: `codec != V::Gif` below takes it.
             Self::Mkv => codec != V::Gif,
-            Self::Mov => !matches!(codec, V::Av1 | V::Vp9 | V::Gif),
+            Self::Mov => !matches!(codec, V::Av1 | V::Vp9 | V::Gif | V::Ffv1),
             Self::WebM => matches!(codec, V::Vp9 | V::Av1),
             Self::Gif => codec == V::Gif,
             // No picture is written, so the video codec is not used.
@@ -731,6 +745,9 @@ pub enum ExportVideoCodec {
     /// Animated GIF — two-pass palette workflow inside the encoder.
     /// CPU-only, no audio/subtitles, no HDR.
     Gif,
+    /// FFV1, lossless, 16-bit RGB (#3264): for a round trip back into an
+    /// edit with nothing lost. Matroska only.
+    Ffv1,
 }
 
 impl ExportVideoCodec {
@@ -743,6 +760,7 @@ impl ExportVideoCodec {
             Self::Av1 => "libsvtav1",
             Self::Vp9 => "libvpx-vp9",
             Self::Gif => "gif",
+            Self::Ffv1 => "ffv1",
         }
     }
 
@@ -758,6 +776,7 @@ impl ExportVideoCodec {
             Self::Av1 => "AV1",
             Self::Vp9 => "VP9",
             Self::Gif => "GIF (animated)",
+            Self::Ffv1 => "FFV1 (lossless)",
         }
     }
 
@@ -773,6 +792,7 @@ impl ExportVideoCodec {
             Self::Av1 => "CPU — next-gen, best compression, slow encode",
             Self::Vp9 => "CPU — web video (YouTube, WebM)",
             Self::Gif => "CPU only — animated GIF, 256-colour palette",
+            Self::Ffv1 => "CPU only — lossless, very large files, Matroska",
         }
     }
 
@@ -784,7 +804,7 @@ impl ExportVideoCodec {
         match self {
             Self::H264 | Self::H265 | Self::Av1 => bit_depth != 10,
             Self::Vp9 | Self::DNxHD115 | Self::DNxHD145 => true,
-            Self::ProRes422 | Self::ProRes422HQ | Self::ProRes4444 | Self::Gif => false,
+            Self::ProRes422 | Self::ProRes422HQ | Self::ProRes4444 | Self::Gif | Self::Ffv1 => false,
         }
     }
 
@@ -833,7 +853,7 @@ impl ExportVideoCodec {
             }),
             // The standard HDR deliveries, and ProRes the standard HDR
             // mastering format. Nothing to warn about.
-            Self::H265 | Self::Av1 | Self::ProRes422 | Self::ProRes422HQ | Self::ProRes4444 => None,
+            Self::H265 | Self::Av1 | Self::ProRes422 | Self::ProRes422HQ | Self::ProRes4444 | Self::Ffv1 => None,
             // Not offered an HDR delivery by the export dialog today —
             // DNxHD 115/145 are 8-bit, GIF is palettised. Answered
             // anyway so the advice does not depend on the UI's gating.
@@ -874,10 +894,15 @@ impl ExportVideoCodec {
             Self::ProRes422 | Self::ProRes422HQ | Self::ProRes4444 | Self::DNxHD115 | Self::DNxHD145 => ExportFormat::Mov,
             Self::Vp9 => ExportFormat::WebM,
             Self::Gif => ExportFormat::Gif,
+            Self::Ffv1 => ExportFormat::Mkv,
         }
     }
 
-
+    /// Whether the codec can carry an alpha channel: ProRes 4444 and FFV1
+    /// (#3264).
+    pub fn holds_alpha(&self) -> bool {
+        matches!(self, Self::ProRes4444 | Self::Ffv1)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

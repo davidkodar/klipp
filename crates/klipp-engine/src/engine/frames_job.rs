@@ -241,7 +241,7 @@ impl PlaybackEngine {
         let keying = self.frame_keying();
         let generation = STATUS_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
         let fb = Arc::clone(&self.frame_buffer);
-        let worker = self.status_worker.get_or_insert_with(|| spawn_status_worker(fb));
+        let worker = self.status_worker.get_or_insert_with(|| spawn_status_worker(fb, Arc::default()));
         let _ = worker.send(StatusAsk { seq, kept, heavy, keying, size, generation });
     }
 }
@@ -260,13 +260,14 @@ pub(crate) struct StatusAsk {
 /// each from the latest ask, the asks that came meanwhile skipped. On a
 /// large cache a pass can outlast a second; a thread an ask would run
 /// them side by side.
-fn spawn_status_worker(fb: Arc<Mutex<crate::texture::FrameBuffer>>) -> std::sync::mpsc::Sender<StatusAsk> {
+/// `passes` counts the passes made, for a test to count its own worker's.
+fn spawn_status_worker(fb: Arc<Mutex<crate::texture::FrameBuffer>>, passes: Arc<std::sync::atomic::AtomicU64>) -> std::sync::mpsc::Sender<StatusAsk> {
     let (tx, rx) = std::sync::mpsc::channel::<StatusAsk>();
     let _ = std::thread::Builder::new().name("klipp-render-status".into()).spawn(move || {
         while let Ok(first) = rx.recv() {
             let ask = rx.try_iter().last().unwrap_or(first);
             let (status, ranges) = render_status(&ask.seq, &ask.kept, &ask.heavy, &ask.keying, ask.size);
-            STATUS_PASSES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            passes.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             if STATUS_GENERATION.load(std::sync::atomic::Ordering::Relaxed) == ask.generation {
                 let mut fb = fb.lock().unwrap_or_else(|e| e.into_inner());
                 fb.render_status = status;
@@ -276,9 +277,6 @@ fn spawn_status_worker(fb: Arc<Mutex<crate::texture::FrameBuffer>>) -> std::sync
     });
     tx
 }
-
-/// Passes the status worker has made, for tests.
-static STATUS_PASSES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// The last status asked for: an older one finishing later is dropped.
 static STATUS_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -365,8 +363,8 @@ mod tests {
         let keying = || Keying { media: Arc::default(), environment: 1 };
         let size = (8, 8);
         let fb = Arc::new(Mutex::new(crate::texture::FrameBuffer::new(4, 4)));
-        let before = STATUS_PASSES.load(std::sync::atomic::Ordering::Relaxed);
-        let worker = spawn_status_worker(Arc::clone(&fb));
+        let passes: Arc<std::sync::atomic::AtomicU64> = Arc::default();
+        let worker = spawn_status_worker(Arc::clone(&fb), Arc::clone(&passes));
         let ask = |n: i64| {
             let kept = (0..n).map(|f| keying().place(&seq, tc(f), size)).collect();
             let generation = STATUS_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
@@ -376,7 +374,7 @@ mod tests {
         let held = fb.lock().unwrap();
         ask(1);
         let start = std::time::Instant::now();
-        while STATUS_PASSES.load(std::sync::atomic::Ordering::Relaxed) == before {
+        while passes.load(std::sync::atomic::Ordering::Relaxed) == 0 {
             assert!(start.elapsed() < std::time::Duration::from_secs(5), "the first pass made");
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
@@ -391,7 +389,7 @@ mod tests {
             assert!(start.elapsed() < std::time::Duration::from_secs(5), "the last ask shown: {:?}", fb.lock().unwrap().render_status);
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
-        let passes = STATUS_PASSES.load(std::sync::atomic::Ordering::Relaxed) - before;
+        let passes = passes.load(std::sync::atomic::Ordering::Relaxed);
         assert!(passes <= 2, "{passes} passes for 50 asks");
     }
 

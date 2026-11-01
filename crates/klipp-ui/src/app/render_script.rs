@@ -273,6 +273,7 @@ mod render_script_tests {
             true_peak_dbtp: None,
             embed_chapters: false, captions_608: false, hdr10plus: false,
             bit_depth: 0,
+            alpha: false,
             hdr_mode: klipp_core::HdrMode::Sdr,
             tone_map_op: klipp_core::ToneMapOp::Hable,
             odt: klipp_core::OdtChoice::MatchViewer,

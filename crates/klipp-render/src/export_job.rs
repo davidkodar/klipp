@@ -1435,6 +1435,7 @@ mod tests {
                 audio_bitrate_kbps: None, video_bitrate_kbps: None, rate_control: klipp_core::RateControl::Crf,
                 burn_in_subtitles: true, embed_subtitles: false, target_lufs: None, true_peak_dbtp: None, embed_chapters: false, captions_608: false, hdr10plus: false,
                 bit_depth: 0, hdr_mode: klipp_core::HdrMode::Sdr, tone_map_op: klipp_core::ToneMapOp::Hable,
+                alpha: false,
                 odt: klipp_core::OdtChoice::MatchViewer,
                 mastering_peak_nits: klipp_core::DEFAULT_MASTERING_PEAK_NITS },
             snapshot: make_test_snapshot(),

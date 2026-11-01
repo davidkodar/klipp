@@ -88,6 +88,7 @@ fn settings(out: &Path) -> ExportSettings {
         captions_608: false,
         hdr10plus: false,
         bit_depth: 0,
+        alpha: false,
         hdr_mode: HdrMode::Sdr,
         tone_map_op: ToneMapOp::Hable,
         odt: OdtChoice::MatchViewer,

@@ -8,6 +8,8 @@
 // per file here.
 #![allow(clippy::duplicate_mod)]
 
+#[path = "../alpha_codecs_round_trip.rs"]
+mod alpha_codecs_round_trip;
 #[path = "../an_export_without_gpu_planes_composites_on_the_gpu.rs"]
 mod an_export_without_gpu_planes_composites_on_the_gpu;
 #[path = "../a_timeline_frame_at_full_size.rs"]

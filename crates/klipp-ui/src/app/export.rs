@@ -579,6 +579,7 @@ pub(super) fn build_export_settings(
         captions_608: dialog.captions_608 && matches!(dialog.video_codec, klipp_core::ExportVideoCodec::H264 | klipp_core::ExportVideoCodec::H265),
         hdr10plus: dialog.hdr10plus && dialog.video_codec == klipp_core::ExportVideoCodec::H265,
         bit_depth: dialog.bit_depth,
+        alpha: false,
         hdr_mode: dialog.hdr_mode,
         tone_map_op: dialog.tone_map_op,
         odt: dialog.odt,
