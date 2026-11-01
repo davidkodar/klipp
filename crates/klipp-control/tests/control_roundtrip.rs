@@ -5092,6 +5092,60 @@ fn footage_used_twice_is_reported_and_checked() {
     assert_eq!(reuse(&checked).and_then(|f| f["severity"].as_str().map(String::from)).as_deref(), Some("warning"), "a stock-heavy delivery: {checked}");
 }
 
+/// #3272: two files whose stored picture samples look the same (the
+/// second shows the first's pictures 6 s later) are a `looks_same` pair
+/// in `reuse_report` and a `looks_same` note in `check`; without the
+/// second file's samples, the report says it wasn't compared.
+#[test]
+fn files_that_look_the_same_are_reported_and_checked() {
+    let mut h = harness();
+    struct CacheGuard { previous: Option<std::ffi::OsString>, path: std::path::PathBuf }
+    impl Drop for CacheGuard {
+        fn drop(&mut self) {
+            match &self.previous {
+                Some(old) => std::env::set_var("XDG_CACHE_HOME", old),
+                None => std::env::remove_var("XDG_CACHE_HOME"),
+            }
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
+    }
+    let cache = CacheGuard { previous: std::env::var_os("XDG_CACHE_HOME"), path: std::env::temp_dir().join(format!("klipp-looks-same-test-{}", klipp_core::MediaId::new().0)) };
+    std::fs::create_dir_all(&cache.path).unwrap();
+    std::env::set_var("XDG_CACHE_HOME", &cache.path);
+    let e = |k: usize| (0..16).map(|i| if i == k { 127 } else { 0 }).collect::<Vec<i8>>();
+    let samples = |which: &dyn Fn(usize) -> Vec<i8>| klipp_analysis::visual::Visual { every_secs: 2.0, samples: (0..10).map(|k| klipp_analysis::visual::Sample { secs: k as f64 * 2.0, e: which(k) }).collect() };
+    let mut ids = Vec::new();
+    for (name, look, fingerprint) in [("first.mov", samples(&|k| e(k)), 1), ("second.mov", samples(&|k| if k >= 3 { e(k - 3) } else { e(14) }), 2)] {
+        let path = cache.path.join(name);
+        std::fs::write(&path, name).unwrap();
+        let key = klipp_analysis::store::key_for(&path).unwrap();
+        let mut item = klipp_media::MediaItem::synthetic_for_test(path, None);
+        (item.fingerprint, item.fps) = (Some(fingerprint), klipp_core::Fps::film_24());
+        ids.push((h.media_pool.write().unwrap().add(item), key, look));
+    }
+    let tc = |f: i64| klipp_core::RationalTime::from_frames(f, 24);
+    let mut seq = (*h.sequence.snapshot()).clone();
+    seq.fps = klipp_core::Fps::film_24();
+    let mut track = klipp_timeline::Track::new("V1", klipp_timeline::TrackKind::Video);
+    track.clips = vec![klipp_timeline::Clip::media(ids[0].0, tc(0), tc(240), tc(0), tc(240)), klipp_timeline::Clip::media(ids[1].0, tc(480), tc(720), tc(144), tc(384))];
+    seq.tracks = vec![track];
+    seq.brief = None;
+    h.sequence.replace(seq);
+    let rules = |c: &serde_json::Value| c["findings"].as_array().unwrap().iter().filter_map(|f| f["rule"].as_str().map(String::from)).collect::<Vec<_>>();
+    assert!(!rules(&h.ok(json!({ "method": "check" }))).contains(&"looks_same_unchecked".to_string()), "no file looked at: the check says nothing of it");
+    klipp_analysis::store::save(&ids[0].1, klipp_analysis::visual::ID, klipp_analysis::visual::VERSION, &serde_json::to_value(&ids[0].2).unwrap()).unwrap();
+    let r = h.ok(json!({ "method": "reuse_report" }));
+    assert_eq!((r["count"].as_u64(), r["looks_same"].as_str()), (Some(0), Some("not all compared: 1 of the 2 files used haven't been looked at for picture search yet")), "{r}");
+    assert!(r["next"].as_str().is_some_and(|n| n.contains("download_models")), "{r}");
+    assert!(rules(&h.ok(json!({ "method": "check" }))).contains(&"looks_same_unchecked".to_string()), "one file looked at, one not: said");
+    klipp_analysis::store::save(&ids[1].1, klipp_analysis::visual::ID, klipp_analysis::visual::VERSION, &serde_json::to_value(&ids[1].2).unwrap()).unwrap();
+    let r = h.ok(json!({ "method": "reuse_report" }));
+    assert_eq!((r["count"].as_u64(), r["looks_same"].as_str(), r["pairs"][0]["kind"].as_str(), r["pairs"][0]["secs"].as_f64(), r["pairs"][0]["score"].as_f64()), (Some(1), Some("compared"), Some("looks_same"), Some(10.0), Some(1.0)), "{r}");
+    assert!(r["text"].as_str().unwrap().contains("looks the same as"), "{r}");
+    let checked = rules(&h.ok(json!({ "method": "check" })));
+    assert!(checked.contains(&"looks_same".to_string()) && !checked.iter().any(|r| r == "reused_footage" || r == "looks_same_unchecked"), "{checked:?}");
+}
+
 /// #3264: `bounce_track` asks the app to bounce a track named by index
 /// or name, ProRes 4444 with its sound unless told otherwise; a format
 /// that is none, a track that isn't there, and one that can't be bounced

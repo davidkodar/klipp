@@ -2643,7 +2643,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              "Build the approved edit plan onto the timeline: a dry run unless apply is true, then one undo step. Details: klipp_guide topic build_edit_plan.",
              json!({ "apply": { "type": "boolean" }, "detail": { "type": "boolean" } }), vec![]),
         tool("klipp_reuse_report",
-             "Where the timeline uses the same footage twice. Details: klipp_guide topic reuse_report.",
+             "Where the timeline uses the same footage twice, or two files that look the same. Details: klipp_guide topic reuse_report.",
              json!({}), vec![]),
         tool("klipp_check",
              "Read-only checks of the cut against craft and the brief, each with where, why and the fix. Details: klipp_guide topic check.",

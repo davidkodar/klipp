@@ -11,13 +11,15 @@ use klipp_document::reuse::Report;
 use super::KlippApp;
 
 /// What the marks were worked out for: the engine's copy changes revision
-/// with each edit and sequence switch, and media read later can bring a
-/// fingerprint.
+/// with each edit and sequence switch, media read later can bring a
+/// fingerprint, and an analysis finishing can bring a file's picture
+/// samples.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Key {
     pub revision: klipp_timeline::SequenceRevision,
     pub sequence: usize,
     pub media: usize,
+    pub analysis: u64,
 }
 
 #[derive(Default)]
@@ -70,7 +72,7 @@ impl KlippApp {
             self.reuse_marks = ReuseMarks::default();
             return;
         }
-        let key = Key { revision: self.sequence.revision(), sequence: self.state.active_sequence_idx, media: self.state.media_pool.len() };
+        let key = Key { revision: self.sequence.revision(), sequence: self.state.active_sequence_idx, media: self.state.media_pool.len(), analysis: self.state.analysis_generation };
         let state = &self.state;
         let found = self.reuse_marks.tick(key, || {
             let sequences = state.sequences.clone();
@@ -81,7 +83,10 @@ impl KlippApp {
                 .name("klipp-reuse-marks".into())
                 .spawn(move || {
                     let Some(seq) = sequences.get(active) else { return };
-                    let _ = tx.send(klipp_document::reuse::find(seq, &sequences, &pool));
+                    let looks = klipp_document::reuse::looks_of(seq, &sequences, &pool, |path| {
+                        klipp_analysis::visual::load_kept(path).map(|v| klipp_document::reuse::Look { every_secs: v.every_secs, samples: v.samples.iter().map(|s| (s.secs, s.e.clone())).collect() })
+                    });
+                    let _ = tx.send(klipp_document::reuse::find_with(seq, &sequences, &pool, Some(&looks)));
                 })
                 .ok()
                 .map(|_| rx)
@@ -100,7 +105,7 @@ mod tests {
     use super::*;
 
     fn key(n: usize) -> Key {
-        Key { revision: klipp_timeline::SharedSequence::new(klipp_timeline::Sequence::new_default()).revision(), sequence: 0, media: n }
+        Key { revision: klipp_timeline::SharedSequence::new(klipp_timeline::Sequence::new_default()).revision(), sequence: 0, media: n, analysis: 0 }
     }
 
     /// One look at a time; what changed while it ran is looked at once,

@@ -425,14 +425,23 @@ pub(crate) fn respond(
             }
             let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
             let pool = ctx.media_pool.read().recovered();
-            let report = klipp_document::reuse::find(&seq, &others_of(ctx), &pool);
-            let pairs: Vec<serde_json::Value> = report.pairs.iter().map(|p| json!({ "kind": "same_frames", "a": p.a, "b": p.b, "secs": p.secs })).collect();
-            Ok(json!({
+            let others = others_of(ctx);
+            let looks = looks_of(&seq, &others, &pool);
+            let report = klipp_document::reuse::find_with(&seq, &others, &pool, Some(&looks));
+            let pairs: Vec<serde_json::Value> = report.pairs.iter().map(|p| json!({ "kind": p.kind, "a": p.a, "b": p.b, "secs": p.secs, "score": p.score.map(|v| (v * 1000.0).round() / 1000.0) })).collect();
+            let mut out = json!({
                 "text": report.text(),
                 "count": pairs.len(),
                 "pairs": pairs,
-                "looks_same": "shots that look the same from different files are not matched yet: only the same frames of one file",
-            }))
+                "looks_same": match &report.looks_unchecked {
+                    None => "compared".to_string(),
+                    Some(why) => format!("not all compared: {why}"),
+                },
+            });
+            if report.looks_unchecked.is_some() {
+                out["next"] = json!("To compare files that look the same, download the picture-search model (klipp_analyze download_models) and analyze the media.");
+            }
+            Ok(out)
         }
 
         ControlCommand::Check { color, loudness, min_severity } => {
@@ -450,7 +459,8 @@ pub(crate) fn respond(
                 let lut = ctx.shared.project.lock().recovered().global_lut.clone();
                 klipp_document::qc::note_missing_global_lut(&mut report, lut.as_deref());
                 note_spelling(&mut report, &seq, &pool);
-                note_reuse(&mut report, &seq, &others_of(ctx), &pool);
+                let others = others_of(ctx);
+                note_reuse(&mut report, &seq, &others, &pool, &looks_of(&seq, &others, &pool));
                 // What an 8-bit export renders, frozen here and sampled
                 // once the locks are let go (#2074).
                 let banding_snapshot = klipp_render::SequenceSnapshot::from_sequence(
@@ -913,23 +923,44 @@ pub(crate) fn others_of(ctx: &crate::ControlContext) -> Vec<klipp_timeline::Sequ
     ctx.others.read().recovered().iter().map(|o| (*o.sequence).clone()).collect()
 }
 
-/// Footage the timeline uses twice (#3272), a note each pair, or a
-/// warning where the brief says reuse matters (a stock-heavy delivery).
-fn note_reuse(report: &mut klipp_document::qc::Report, seq: &klipp_timeline::Sequence, others: &[klipp_timeline::Sequence], pool: &klipp_media::MediaPool) {
+/// The picture samples of the files `seq` and `others` use, as far as
+/// they have been looked at (`klipp_analysis::visual`).
+pub(crate) fn looks_of(seq: &klipp_timeline::Sequence, others: &[klipp_timeline::Sequence], pool: &klipp_media::MediaPool) -> klipp_document::reuse::Looks {
+    klipp_document::reuse::looks_of(seq, others, pool, |path| {
+        klipp_analysis::visual::load_kept(path).map(|v| klipp_document::reuse::Look { every_secs: v.every_secs, samples: v.samples.iter().map(|s| (s.secs, s.e.clone())).collect() })
+    })
+}
+
+/// Footage the timeline uses twice (#3272), and files that look the same,
+/// a note each pair, or a warning where the brief says reuse matters (a
+/// stock-heavy delivery). Files left uncompared are a note when some
+/// were compared; when none have been looked at, nothing is said.
+fn note_reuse(report: &mut klipp_document::qc::Report, seq: &klipp_timeline::Sequence, others: &[klipp_timeline::Sequence], pool: &klipp_media::MediaPool, looks: &klipp_document::reuse::Looks) {
     use klipp_document::qc::{Finding, Severity};
+    use klipp_document::reuse::Kind;
     let warns = seq.brief.as_ref().is_some_and(|b| b.reused_footage_warns);
-    let clock = klipp_document::review::clock;
-    for p in klipp_document::reuse::find(seq, others, pool).pairs {
+    let found = klipp_document::reuse::find_with(seq, others, pool, Some(looks));
+    for p in &found.pairs {
         report.findings.push(Finding {
             severity: if warns { Severity::Warning } else { Severity::Note },
-            rule: "reused_footage",
+            rule: match p.kind {
+                Kind::SameFrames => "reused_footage",
+                Kind::LooksSame => "looks_same",
+            },
             at_secs: Some(p.a.timeline.0),
-            what: format!("{} at {} shows the same frames as {} at {} ({:.1} s)", p.a.name, clock(p.a.timeline.0), p.b.name, clock(p.b.timeline.0), p.secs),
-            hint: "fine where it is meant; a licensed stock clip may count each use".into(),
+            what: p.what(),
+            hint: match p.kind {
+                Kind::SameFrames => "fine where it is meant; a licensed stock clip may count each use",
+                Kind::LooksSame => "two files of one shot, a re-export or the same stock clip from two places; fine where it is meant",
+            }
+            .into(),
         });
         if warns {
             report.warnings += 1;
         }
+    }
+    if let Some(why) = found.looks_unchecked.filter(|_| !looks.of.is_empty()) {
+        report.findings.push(Finding { severity: Severity::Note, rule: "looks_same_unchecked", at_secs: None, what: format!("shots that look the same in different files were not all compared: {why}"), hint: "analyze the rest of the media for picture search".into() });
     }
 }
 

@@ -30,9 +30,9 @@ A clip's menu offers **Show Keys on Clip**: any keyed parameter of its effects, 
 
 A thin strip along the bottom of a video clip marks a span that shows the same frames of a file as another clip in the sequence, including a clip inside a compound or nested sequence. Hover over the strip to see where the other use is: its file, track and time. Click the strip to select that clip and move the playhead to it. Only the overlap is marked: two clips that use different parts of one file don't get a strip. A clip that holds or repeats its own frames doesn't count either.
 
-The check matches frames of the same file: the same file imported twice counts, but two different files of a similar shot don't. Turn the strips off with **Show reused footage** in the timeline's ⋯ menu.
+A dashed strip in another colour marks a span where a different file looks the same: a re-export, a duplicate download, or the same stock shot from two sources. This needs both files analyzed with the Picture Search model, the same analysis **Find by Picture** uses (download the model in **AI Models**, then analyze the media). Their pictures must match closely for at least 4 seconds. The same file imported twice counts as the same frames. Turn the strips off with **Show reused footage** in the timeline's ⋯ menu.
 
-**Window → Delivery Check** lists each reused span as a note. For a piece where reuse matters, such as stock footage licensed per use, turn on **Treat reused footage as warnings**. The setting is saved in the sequence's brief.
+**Window → Delivery Check** lists each reused span, and each pair of files that look the same, as a note. For a piece where reuse matters, such as stock footage licensed per use, turn on **Treat reused footage as warnings**. The setting is saved in the sequence's brief.
 
 ## Playhead
 
