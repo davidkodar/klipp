@@ -3638,6 +3638,7 @@ dependencies = [
  "klipp-plugin",
  "klipp-project",
  "klipp-render",
+ "klipp-spelling",
  "klipp-timeline",
  "klipp-title",
  "klipp-transitions",

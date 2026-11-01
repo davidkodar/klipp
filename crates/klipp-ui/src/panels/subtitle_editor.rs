@@ -706,12 +706,37 @@ fn render_row(
             };
 
             let avail = ui.available_width();
-            let resp = ui.add(
-                egui::TextEdit::multiline(&mut text_to_show)
-                    .desired_rows(2)
-                    .desired_width(avail)
-                    .font(egui::TextStyle::Body),
+            // Its misspelt words underlined in the track's language, a
+            // right-click on one offering what it might have been (#3236).
+            let language = crate::spelling::language_of(state.sequence(), row.clip_id, None);
+            let (out, respelt) = crate::spelling::show(
+                ui,
+                &state.spelling,
+                &mut text_to_show,
+                |e| e.desired_rows(2).desired_width(avail),
+                &language,
+                egui::TextStyle::Body.resolve(ui.style()),
+                ui.visuals().text_color(),
+                ui.visuals().error_fg_color,
+                cmds,
             );
+            let resp = out.response;
+            if let Some(respelt) = respelt {
+                // In the row being typed in, as typing is; in another, its
+                // text set straight away.
+                if was_editing {
+                    text_to_show = respelt;
+                } else {
+                    cmds.push(AppCommand::UpdateTitleData {
+                        clip_id: row.clip_id,
+                        text: respelt,
+                        font_size: row.font_size,
+                        font_name: row.font_name.clone(),
+                        font_style: row.font_style_u8,
+                        color: row.color,
+                    });
+                }
+            }
 
             // Row click = select + seek
             if resp.gained_focus() {

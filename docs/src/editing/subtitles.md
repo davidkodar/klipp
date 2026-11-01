@@ -25,3 +25,4 @@ A subtitle track's header menu sets its **Language**, which is written to subtit
 - **File → Export Subtitles...** writes a track as SRT, WebVTT, ASS, SSA, TTML (IMSC 1.1 Text), SCC (CEA-608) or EBU-STL.
 - The export settings can **burn subtitles into the video**, or carry them as **closed captions in the video (CEA-608)** for H.264 and H.265 exports.
 - Find and replace reaches subtitles too: **Find and Replace in Titles…** with the subtitles included.
+- Misspelt words are underlined in the Subtitle Editor, checked in the track's language; right-click one for suggestions (see [Titles](titles.md#spelling)).

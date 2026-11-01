@@ -1483,6 +1483,9 @@ impl KlippApp {
         self.poll_aaf_reading(ctx);
         self.keep_brief_with_transcription();
         self.follow_transcriptions();
+        // The words the project knows, for the editors' spelling (#3236).
+        self.state.spelling.enabled = self.prefs.general.check_spelling;
+        self.state.spelling.follow_project(self.state.sequence().brief.as_ref(), &self.state.media_pool);
 
         // History panel
         if self.state.show_history_panel {

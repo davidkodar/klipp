@@ -239,6 +239,10 @@ pub struct GeneralPrefs {
     /// Remember which inspector sections are collapsed across restarts.
     #[serde(default = "default_true")]
     pub remember_inspector_layout: bool,
+    /// Whether the text editors underline misspelt words (#3236). On
+    /// unless turned off.
+    #[serde(default = "default_true")]
+    pub check_spelling: bool,
     /// Names of inspector sections that are collapsed (persisted when remember_inspector_layout is true).
     #[serde(default)]
     pub collapsed_sections: Vec<String>,
@@ -951,6 +955,7 @@ impl Default for GeneralPrefs {
             last_format_rate: None,
             recent_projects: Vec::new(),
             remember_inspector_layout: true,
+            check_spelling: true,
             collapsed_sections: Vec::new(),
             startup_behavior: StartupBehavior::default(),
             dismissed_tips: std::collections::HashSet::new(),

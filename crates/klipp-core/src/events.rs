@@ -2275,6 +2275,15 @@ pub enum AppCommand {
     /// an ISO 639-1 code, or `None` to detect it per file. One undo step;
     /// transcripts detected in another language are made again.
     SetTranscriptLanguage { language: Option<String> },
+    /// Take `word` as right in this project (#3236): it goes on the
+    /// brief's vocabulary, one undo step.
+    SpellingIgnore { word: String },
+    /// Take `word` as right in every project (#3236): it goes on the
+    /// person's own word list, which no undo takes back.
+    SpellingLearn { word: String },
+    /// The language a title's texts are written in, for their spelling
+    /// (#3236): a tag such as `de`, or `None` for the track's.
+    SetTitleLanguage { clip_id: ClipId, language: Option<String> },
     /// Read the picture the node at `at` receives, at `(nx, ny)` (0..=1
     /// over the frame) of the parked frame: the qualifier eyedropper's and
     /// the Hue-Sat picker's sample. `at` names the node by path, in a
