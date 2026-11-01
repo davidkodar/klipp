@@ -45,6 +45,41 @@ height = 2160
 rates = [[25, 1], [30000, 1001]]
 hdr = true
 
+# Destinations (#3307): a format for where the piece goes. Besides the
+# picture and rate, a project made from one puts the platform, its
+# loudness and whether it is captioned in the sequence's brief, which
+# the Delivery Check and the export read. Its overlays are the viewer's
+# outlines of where those platforms' buttons and captions sit, by id.
+
+[[format]]
+name = "YouTube"
+width = 1920
+height = 1080
+rates = [[30, 1], [25, 1], [24, 1], [60, 1]]
+destination = { platform = "YouTube", loudness_lufs = -14.0, overlays = ["youtube"] }
+
+[[format]]
+name = "YouTube Shorts / Reels / TikTok"
+width = 1080
+height = 1920
+rates = [[30, 1], [60, 1]]
+destination = { platform = "YouTube Shorts, Instagram Reels, TikTok", loudness_lufs = -14.0, captions = true, overlays = ["youtube_shorts", "instagram_reels", "tiktok"] }
+
+[[format]]
+name = "Square post"
+width = 1080
+height = 1080
+rates = [[30, 1]]
+destination = { platform = "Instagram feed", loudness_lufs = -14.0, captions = true }
+
+# Sound with a still or a waveform over it.
+[[format]]
+name = "Podcast"
+width = 1920
+height = 1080
+rates = [[30, 1]]
+destination = { platform = "Podcast", loudness_lufs = -16.0 }
+
 [[size]]
 name = "720p HD"
 width = 1280

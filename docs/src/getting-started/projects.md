@@ -17,6 +17,7 @@ A project's menu pins it to the top, renames, duplicates, shows it in the file m
 
 - **Name** and **Location**
 - **Resolution** and **Frame rate**, or **Match first clip** to take them from the first clip added
+- Or a destination from the same list: **YouTube**, **YouTube Shorts / Reels / TikTok**, **Square post** or **Podcast**. It sets the size and frame rate. It also writes the platform, its loudness target (-14 LUFS, or -16 for a podcast) and whether captions are expected into the sequence's brief. **Window → Delivery Check** and the export then follow the brief.
 - With a template, the template's fields, and whether to **include starter content**
 
 A project is a `.klipp` directory; see [Project Format](../reference/project-format.md). A project can also be opened from inside its folder.

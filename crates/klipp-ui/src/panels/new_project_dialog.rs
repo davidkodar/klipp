@@ -495,6 +495,7 @@ impl NewProjectDialog {
                                 template: self.chosen_template().map(|(p, _)| p.clone()),
                                 hdr: self.user_template.is_none() && formats().get(self.template_idx).is_some_and(|f| f.hdr),
                                 brand_kit: self.brand_kit.clone(),
+                                destination: formats().get(self.template_idx).filter(|_| self.user_template.is_none()).and_then(|f| f.destination.clone()),
                             });
                             close = true;
                         }
@@ -812,7 +813,23 @@ mod template_tests {
         click(&ctx, at(&texts, "HDR UHD (HLG / PQ)"), &mut run);
         let (_, texts) = frame(&ctx, Vec::new(), &mut run);
         let cmds = click(&ctx, at(&texts, "Create Project"), &mut run);
-        assert!(matches!(&cmds[..], [AppCommand::CreateProject { width: 3840, height: 2160, fps_num: 25, fps_den: 1, hdr: true, template: None, .. }]), "{cmds:?}");
+        assert!(matches!(&cmds[..], [AppCommand::CreateProject { width: 3840, height: 2160, fps_num: 25, fps_den: 1, hdr: true, template: None, destination: None, .. }]), "{cmds:?}");
+        // #3307: a destination chosen from the same list carries its
+        // platform to the new project.
+        let mut dialog = NewProjectDialog::new(None);
+        dialog.project_name = "Clip".into();
+        let mut run = |ctx: &egui::Context, cmds: &mut Vec<AppCommand>| dialog.show(ctx, &mut open, &theme, cmds);
+        frame(&ctx, Vec::new(), &mut run);
+        let (_, texts) = frame(&ctx, Vec::new(), &mut run);
+        click(&ctx, at(&texts, "Match first clip"), &mut run);
+        let (_, texts) = frame(&ctx, Vec::new(), &mut run);
+        click(&ctx, at(&texts, "YouTube Shorts / Reels / TikTok"), &mut run);
+        let (_, texts) = frame(&ctx, Vec::new(), &mut run);
+        let cmds = click(&ctx, at(&texts, "Create Project"), &mut run);
+        match &cmds[..] {
+            [AppCommand::CreateProject { width: 1080, height: 1920, fps_num: 30, destination: Some(d), .. }] => assert!(d.captions && d.platform.contains("TikTok"), "{d:?}"),
+            other => panic!("{other:?}"),
+        }
     }
 
     /// #618: New Project lists the user's templates; chosen, one shows

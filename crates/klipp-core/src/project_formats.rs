@@ -26,6 +26,28 @@ pub struct Format {
     /// Graded in a wide-gamut space for HLG or PQ delivery.
     #[serde(default)]
     pub hdr: bool,
+    /// Where the piece goes, for a destination (#3307): what a project
+    /// made from it puts in its sequence's brief, which the Delivery
+    /// Check and the export read.
+    #[serde(default)]
+    pub destination: Option<Destination>,
+}
+
+/// A platform a format is for: its name, the loudness it plays at, and
+/// whether its pieces are captioned.
+#[derive(Debug, Clone, PartialEq, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Destination {
+    pub platform: String,
+    /// Integrated loudness, LUFS.
+    #[serde(default)]
+    pub loudness_lufs: Option<f32>,
+    #[serde(default)]
+    pub captions: bool,
+    /// The viewer overlays of where its interface covers the picture
+    /// (#3315), by id: lowercase letters, digits and `_`.
+    #[serde(default)]
+    pub overlays: Vec<String>,
 }
 
 #[derive(serde::Deserialize)]
@@ -79,6 +101,19 @@ fn presets_fault(formats: &[Format], sizes: &[Size], rates: &[FrameRate]) -> Opt
         .or_else(|| names(rates.iter().map(|r| r.name.as_str()).collect(), "rate"))
         .or_else(|| formats.iter().find(|f| !side(f.width, f.height)).map(|f| format!("\"{}\": its picture is 1 to {MAX_SIDE} pixels a side", f.name)))
         .or_else(|| formats.iter().find(|f| f.rates.is_empty() || !f.rates.iter().all(|r| rate(*r))).map(|f| format!("\"{}\": it is made at one rate or more, none of nothing", f.name)))
+        .or_else(|| {
+            formats.iter().find_map(|f| {
+                let d = f.destination.as_ref()?;
+                let id = |o: &String| !o.is_empty() && o.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_');
+                if d.platform.trim().is_empty() {
+                    Some(format!("\"{}\": its destination names a platform", f.name))
+                } else if let Some(o) = d.overlays.iter().find(|o| !id(o)) {
+                    Some(format!("\"{}\": overlay \"{o}\" is an id of lowercase letters, digits and _", f.name))
+                } else {
+                    d.loudness_lufs.filter(|l| !(-40.0..=0.0).contains(l)).map(|_| format!("\"{}\": its loudness is -40 to 0 LUFS", f.name))
+                }
+            })
+        })
         .or_else(|| sizes.iter().find(|s| !side(s.width, s.height)).map(|s| format!("\"{}\": its picture is 1 to {MAX_SIDE} pixels a side", s.name)))
         .or_else(|| rates.iter().find(|r| !rate(r.rate)).map(|r| format!("\"{}\": a rate of nothing", r.name)))
 }
@@ -93,7 +128,7 @@ fn read_presets(text: &str) -> Result<Presets, String> {
     }
     // What the dialogs do, besides the presets: take the first clip's
     // picture and rate, or a size typed in.
-    let first = Format { name: "Match first clip".into(), width: 0, height: 0, rates: Vec::new(), hdr: false };
+    let first = Format { name: "Match first clip".into(), width: 0, height: 0, rates: Vec::new(), hdr: false, destination: None };
     let automatic = ("Automatic (from first clip)".to_string(), 0, 0);
     Ok(Presets {
         built_in: formats.len() + 1,
@@ -212,10 +247,33 @@ mod tests {
             ("[[format]]\nname = \"Still\"\nwidth = 64\nheight = 64\nrates = []\n", "one rate or more"),
             ("[[rate]]\nname = \"Zero\"\nrate = [25, 0]\n", "a rate of nothing"),
             ("[[size]]\nname = \"X\"\nwidth = 64\nheight = 64\ncolour = 1\n", "unknown field"),
+            ("[[format]]\nname = \"Loud\"\nwidth = 64\nheight = 64\nrates = [[30, 1]]\ndestination = { platform = \"web\", loudness_lufs = 6.0 }\n", "-40 to 0 LUFS"),
+            ("[[format]]\nname = \"Nowhere\"\nwidth = 64\nheight = 64\nrates = [[30, 1]]\ndestination = { platform = \" \" }\n", "names a platform"),
+            ("[[format]]\nname = \"Path\"\nwidth = 64\nheight = 64\nrates = [[30, 1]]\ndestination = { platform = \"web\", overlays = [\"../x\"] }\n", "is an id"),
         ] {
             let why = read_presets(&file(body)).err().unwrap_or_default();
             assert!(why.contains(says), "{body}: {why}");
         }
+    }
+
+    /// #3307: the destinations come after the other formats (whose places
+    /// stay), each with its picture, rate, loudness and captions.
+    #[test]
+    fn the_destinations_set_their_platform() {
+        let got: Vec<(&str, u32, u32, Rate, &str, Option<f32>, bool, Vec<&str>)> = formats()
+            .iter()
+            .filter_map(|f| f.destination.as_ref().map(|d| (f.name.as_str(), f.width, f.height, f.rates[0], d.platform.as_str(), d.loudness_lufs, d.captions, d.overlays.iter().map(String::as_str).collect())))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                ("YouTube", 1920, 1080, (30, 1), "YouTube", Some(-14.0), false, vec!["youtube"]),
+                ("YouTube Shorts / Reels / TikTok", 1080, 1920, (30, 1), "YouTube Shorts, Instagram Reels, TikTok", Some(-14.0), true, vec!["youtube_shorts", "instagram_reels", "tiktok"]),
+                ("Square post", 1080, 1080, (30, 1), "Instagram feed", Some(-14.0), true, vec![]),
+                ("Podcast", 1920, 1080, (30, 1), "Podcast", Some(-16.0), false, vec![]),
+            ]
+        );
+        assert_eq!(formats().iter().position(|f| f.destination.is_some()), Some(7), "after the six formats there were and Match first clip");
     }
 
     /// A file dropped in a person's project formats folder lists its
@@ -239,8 +297,8 @@ mod tests {
         file("g.toml", "[[size]]\nname = \"Mine\"\nwidth = 64\nheight = 64\n");
         let (presets, skipped) = presets_in(std::slice::from_ref(&dir));
         let names: Vec<&str> = presets.formats.iter().map(|f| f.name.as_str()).collect();
-        assert_eq!(names, ["Match first clip", "HD 1080p", "UHD 4K", "DCI 4K (cinema)", "Vertical (social)", "Square (social)", "HDR UHD (HLG / PQ)", "Studio 50p"]);
-        assert_eq!(presets.built_in, 7);
+        assert_eq!(names, ["Match first clip", "HD 1080p", "UHD 4K", "DCI 4K (cinema)", "Vertical (social)", "Square (social)", "HDR UHD (HLG / PQ)", "YouTube", "YouTube Shorts / Reels / TikTok", "Square post", "Podcast", "Studio 50p"]);
+        assert_eq!(presets.built_in, 11);
         assert_eq!(presets.sizes.len(), 10, "the sizes are Klipp's");
         let said = |what: &str| assert!(skipped.iter().any(|s| s.contains(what)), "{what}: {skipped:?}");
         said("b.toml: project_formats entry 1: unknown field");
