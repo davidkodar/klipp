@@ -720,15 +720,18 @@ fn a_linked_side_folder_stops_preflight() {
     }
 }
 
-/// Give each effect payload of each clip's stored picture a key no
-/// effect has: the clip's fields can't hold it, so the picture then
-/// disagrees with them (as a picture the fields read back otherwise
-/// would, #1270's LUT path).
+/// Give each effect node of each clip's stored picture a slot of the
+/// clip's list it isn't at: the picture still reads as written now (the
+/// load's upgrade, #3318, reads each entry as its effect and writes it
+/// so, which a key no effect has, the spoil this was, no longer
+/// survives), but the clip's fields give the node its own slot again,
+/// so the picture disagrees with them (as a picture the fields read back
+/// otherwise would, #1270's LUT path).
 fn spoil_stored_picture(dir: &Path) {
     fn walk(v: &mut Value) -> usize {
         match v {
             Value::Object(m) if m.get("type_id") == Some(&json!("klipp.legacy.effect")) => {
-                m["legacy"]["payload"]["spoiled"] = json!(true);
+                m.insert("label".into(), json!("spoiled"));
                 1
             }
             Value::Object(m) => m.values_mut().map(walk).sum(),
@@ -750,24 +753,29 @@ fn spoil_stored_picture(dir: &Path) {
     std::fs::write(&path, serde_json::to_string_pretty(&v).unwrap()).unwrap();
 }
 
-/// The strict loader refuses a clip whose stored picture its fields don't
-/// give again, in any build (the plain loader, in a release build, would
-/// log it and lift the clip anew), so the run's proof catches it: the run
-/// stops and rolls back, and the dry run reports it unproven.
+/// A clip whose stored picture its fields don't give again stops the
+/// conversion before it is written: the dry run names the part of the
+/// picture the conversion would drop, and the run refuses with both
+/// projects as they were. (The strict loader, which the run's proof
+/// reads with, refuses such a picture too; the next test.)
 #[test]
-fn a_stored_picture_that_disagrees_fails_the_proof() {
+fn a_stored_picture_that_disagrees_stops_the_conversion() {
     let r = root("disagree");
     let (a, b) = (plain(&r, "A"), plain(&r, "B"));
     spoil_stored_picture(&b);
     let before = all(&[&a, &b]);
     let s = settings(&r, vec![a.clone(), b.clone()], vec![], "2026-10-07");
     let dry = step4::dry_run(&s, &r.join("out"), "test", &reload, None).unwrap();
-    let proven: Vec<_> = dry.projects.iter().map(|p| (p.dir.clone(), p.proven.is_ok())).collect();
-    assert_eq!(proven, vec![(a.clone(), true), (b.clone(), false)], "{}", dry.text());
-    assert!(dry.projects[1].proven.as_ref().unwrap_err().contains("differs"), "{}", dry.text());
-    let err = step4::run(&s, &approved(&s), &ok, &hooks(NO_CRASH, NO_FAIL)).unwrap_err();
-    assert!(matches!(&err, RunError::RolledBack(why) if why.contains("the app's loader refuses it")), "{err:?}");
-    assert_eq!(all(&[&a, &b]), before, "both rolled back");
+    let text = dry.text();
+    assert!(text.contains(&format!("STOP {}", b.display())) && text.contains("unlift loses part of its picture") && text.contains("NOT ready"), "{text}");
+    assert!(dry.projects.iter().all(|p| p.dir != b), "{text}");
+    // Its preflight stops on it, so no run can be approved; one asked
+    // with that preflight's hash is refused.
+    let m = step4::preflight(&s);
+    assert!(m.stops.iter().any(|x| x.contains("B.klipp") && x.contains("unlift loses part")), "{:?}", m.stops);
+    let err = step4::run(&s, &m.hash(), &ok, &hooks(NO_CRASH, NO_FAIL)).unwrap_err();
+    assert!(matches!(&err, RunError::Refused(_)), "{err:?}");
+    assert_eq!(all(&[&a, &b]), before, "neither written");
     let _ = std::fs::remove_dir_all(&r);
 }
 
