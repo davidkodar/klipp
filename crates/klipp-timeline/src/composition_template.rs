@@ -1439,7 +1439,8 @@ pub fn candidates(scene: &Sequence) -> Vec<Candidate> {
 
 /// The numbers a control can drive in `scene` (#2757), by label and
 /// property: each title layer's size, tracking and line spacing (text),
-/// opacity, position, rotation and motion lengths. Named after the
+/// opacity, position, rotation, motion lengths and its first glow's
+/// radius and strength (#3304). Named after the
 /// layer, the way `candidates` names it ("Text 1 size").
 pub fn number_targets(scene: &Sequence) -> Vec<(String, String)> {
     use crate::TitleObjectContent;
@@ -1459,6 +1460,7 @@ pub fn number_targets(scene: &Sequence) -> Vec<(String, String)> {
         paths.extend([("opacity", "opacity"), ("x", "x"), ("y", "y"), ("rotation", "rotation")]);
         if o.fx().motion.enter.is_some() { paths.push(("entrance length", "motion.enter.duration_secs")); }
         if o.fx().motion.exit.is_some() { paths.push(("exit length", "motion.exit.duration_secs")); }
+        if !o.fx().glows.is_empty() { paths.extend([("glow", "glow.radius"), ("glow strength", "glow.intensity")]); }
         out.extend(paths.into_iter().map(|(name, path)| (format!("{label} {name}"), format!("object:{i}.{path}"))));
         i += 1;
     }
@@ -1638,6 +1640,7 @@ pub fn builtin_templates() -> Vec<CompositionTemplate> {
         include_str!("../../../assets/templates/stinger.klipptemplate"),
         include_str!("../../../assets/templates/opener.klipptemplate"),
         include_str!("../../../assets/templates/terminal_card.klipptemplate"),
+        include_str!("../../../assets/templates/glow_caps.klipptemplate"),
     ];
     FILES
         .iter()

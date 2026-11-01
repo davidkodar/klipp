@@ -36,3 +36,15 @@ keys = [
     { on = "start", at = "start", value = 0.0 },
     { on = "start", at = "entrance", value = 1.0 },
 ]
+
+# Glow Caps' entrance (#3304): each word grows into place from small, a
+# little past and back, one after another.
+[[preset]]
+id = "pop_in_words"
+name = "Pop in words"
+selector = { unit = "Word", easing = "out_back" }
+props = { scale = 0.3, opacity = 0.0 }
+keys = [
+    { on = "start", at = "start", value = 0.0 },
+    { on = "start", at = "entrance", value = 1.0 },
+]

@@ -213,6 +213,19 @@ pub enum FeedbackKind {
     NoPreview,
 }
 
+/// What an empty preview says, from the engine's reason it has none
+/// (#3328): the picture graph's own nodes aren't previewed yet, and a node
+/// can be out of this frame's picture.
+fn empty_preview_text(reason: &str) -> Option<&'static str> {
+    if reason.contains("only grade nodes are inspected") {
+        Some("No preview for picture nodes yet")
+    } else if reason.contains("doesn't run in this frame's picture") {
+        Some("Not in this frame")
+    } else {
+        None
+    }
+}
+
 impl FeedbackKind {
     fn glyph(self) -> &'static str {
         match self { Self::Failed => "\u{2715}", Self::Declined => "!", Self::NoPreview => "\u{2013}" }
@@ -2423,6 +2436,15 @@ impl NodeGraphV2Panel {
                     // the TextureHandle's destructor runs.
                     if let Some((_, old)) = thumb_output.as_ref().and_then(|at| self.output_thumbs.remove(at)) {
                         deferred_drops.push(old);
+                    }
+                    // A preview the engine said it can't make: why, in
+                    // the node, rather than a blank (#3328).
+                    if let Some(text) = self.node_feedback.get(&node_id).filter(|f| f.kind == FeedbackKind::NoPreview).and_then(|f| empty_preview_text(&f.reason)) {
+                        let cell = body_rect.shrink(4.0 * zoom);
+                        if cell.is_positive() && zoom > 0.45 {
+                            let galley = painter.layout(text.to_string(), egui::FontId::proportional((10.0 * zoom).max(8.0)), theme.text_dim, cell.width());
+                            painter.galley(cell.center() - galley.size() * 0.5, galley, theme.text_dim);
+                        }
                     }
                 }
             }
@@ -6274,3 +6296,16 @@ mod editing_tests {
     }
 }
 
+
+#[cfg(test)]
+mod empty_preview_tests {
+    /// #3328: the engine's reasons for no preview, as an empty preview
+    /// says them; any other reason leaves it blank, with the badge.
+    #[test]
+    fn an_empty_preview_says_why() {
+        let picture = "a1b2 isn't the clip's grade group; only grade nodes are inspected";
+        assert_eq!(super::empty_preview_text(picture), Some("No preview for picture nodes yet"));
+        assert_eq!(super::empty_preview_text("a1b2 doesn't run in this frame's picture"), Some("Not in this frame"));
+        assert_eq!(super::empty_preview_text("the render failed"), None);
+    }
+}

@@ -344,3 +344,53 @@ fn every_built_in_template_draws_on_the_gpu_in_every_frame() {
         }
     }
 }
+
+/// #3304: Glow Caps placed with its colour set and its glow at full or
+/// none, drawn at rest on the stack and on the CPU path alike: the words
+/// in the colour chosen, and the glow lighting round them only with the
+/// glow up. Set in the bundled face: Montserrat is fetched on use, and
+/// the colour and glow are what this measures.
+#[test]
+fn glow_caps_takes_its_colour_and_glow_on_both_routes() {
+    let t = klipp_timeline::composition_template::builtin_templates().into_iter().find(|t| t.name == "Glow Caps").expect("shipped");
+    let peach = [0xff as f32 / 255.0, 0xe0 as f32 / 255.0, 0xc8 as f32 / 255.0, 1.0];
+    let draw = |glow: f64| -> Option<(usize, usize)> {
+        let mut layout = t.composition_for(W, H).unwrap().clone();
+        for td in layout.tracks.iter_mut().flat_map(|t| t.clips.iter_mut()).filter_map(|c| match &mut c.kind { ClipKind::Title(td) => Some(td), _ => None }) {
+            for o in &mut td.objects {
+                if let klipp_timeline::TitleObjectContent::TextBox(tb) = &mut o.content {
+                    tb.font_name = String::new();
+                }
+            }
+        }
+        let mut instance = klipp_timeline::composition_template::instance_for(&t);
+        instance.overrides.insert("colour".into(), klipp_core::TemplateValue::Color(peach));
+        instance.overrides.insert("glow".into(), klipp_core::TemplateValue::Number(glow));
+        let secs = layout.total_duration().to_secs_f64();
+        let mut clip = Clip::precomposition(layout.id, tc(0.0), tc(secs));
+        clip.kind = ClipKind::TemplatePrecomposition { sequence_id: layout.id, template_instance: instance };
+        let seq = outer(clip, &layout);
+        let at = tc(3.0);
+        let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
+        r.set_gpu_enabled(true);
+        let (stack, _) = r.render_display_u8_on_gpu(&seq, at, W, H, &mut Nothing, RenderOptions::default())?;
+        assert_eq!(klipp_effects::residency::last_frame().fallback_count(), 0, "on the GPU");
+        let mut cpu = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
+        cpu.set_gpu_enabled(false);
+        let want = klipp_effects::linear_f32_rgba_to_srgb_u8(&cpu.render(&seq, at, W, H, &mut Nothing, RenderOptions::default()));
+        let worst = stack.iter().zip(&want).map(|(a, b)| (*a as i32 - *b as i32).abs()).max().unwrap_or(0);
+        assert!(worst <= 3, "glow {glow}: the stack differs from the CPU path by {worst} levels");
+        // Peach ink: red full, blue well under it; and anything lit.
+        let ink = stack.chunks(4).filter(|p| p[0] > 240 && p[2] > 170 && p[2] < 215).count();
+        let lit = stack.chunks(4).filter(|p| p[0] > 24).count();
+        Some((ink, lit))
+    };
+    let Some((ink, bare)) = draw(0.0) else {
+        assert!(!required(), "required, but the GPU stack declined Glow Caps");
+        eprintln!("UNVERIFIED: no GPU stack");
+        return;
+    };
+    let (_, glowing) = draw(1.0).unwrap();
+    assert!(ink > 200, "the words in the colour chosen: {ink} pixels");
+    assert!(glowing > bare * 3 / 2, "the glow lights round the words: {bare} bare, {glowing} glowing");
+}

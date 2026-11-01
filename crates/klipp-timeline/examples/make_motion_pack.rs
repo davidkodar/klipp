@@ -221,6 +221,32 @@ fn word_reveal() -> CompositionTemplate {
              linked("size", format!("object:{o}.size"), [100.0, 180.0], LINEAR)])
 }
 
+/// Heavy light capitals with a soft glow of their colour, the words
+/// popping in one after another (#3304): Glow Caps as a title.
+const ICE: [u8; 4] = [0xd8, 0xf1, 0xff, 255];
+
+fn glow_caps_title() -> TitleData {
+    let face = lib::weight(lib::upper(lib::face("Say it bright", "Montserrat", FontStyle::Bold, 130.0, ICE, TextAlignment::Center), 0.0), 800);
+    lib::layers(vec![lib::text_at(
+        lib::moved(lib::glowing(face, ICE, 18.0, 0.85),
+            TitleMotion::both(lib::enter(MotionKind::ScaleUp, 0.4, Easing::OutBack).stagger(StaggerUnit::Word, 0.12), lib::fade_out(0.3))),
+        0.5, 0.5, 0.5,
+    )])
+}
+
+fn glow_caps() -> CompositionTemplate {
+    let layouts = FRAMES.map(|(key, w, h)| scene(&format!("Glow Caps {key}"), w, h, vec![(TrackKind::Text, vec![titled("glow_caps", laid(glow_caps_title, "Kinetic", (0.5, 0.5), w, h), 0.0, SECS)])]));
+    let o = object_index(&layouts[0], "glow_caps", 0);
+    let colour = TemplateParameter { label: "Colour".into(), default: TemplateValue::Color(ICE.map(|c| c as f32 / 255.0)), range: None, choices: Vec::new() };
+    template("Glow Caps", "Kinetic", layouts.into_iter().collect(),
+        vec![("headline", text_param("Headline", "Say it bright")), ("colour", colour), ("glow", control("Glow", 0.5)), ("pace", control("Pace", 0.4))],
+        vec![],
+        vec![plain("headline", format!("object:{o}.text")),
+             plain("colour", format!("object:{o}.fill_and_glow")),
+             linked("glow", format!("object:{o}.glow.radius"), [0.0, 36.0], LINEAR),
+             linked("pace", format!("object:{o}.motion.enter.duration_secs"), [0.2, 0.8], LINEAR)])
+}
+
 /// Two lines, the first wiped on above a bar that draws out under it, the
 /// second rising after.
 fn line_wipe_title() -> TitleData {
@@ -677,6 +703,7 @@ fn main() {
     let all: BTreeMap<&str, CompositionTemplate> = [
         ("split_screen", split_screen()),
         ("word_reveal", word_reveal()),
+        ("glow_caps", glow_caps()),
         ("line_wipe", line_wipe()),
         ("number_card", number_card()),
         ("countdown", countdown()),
