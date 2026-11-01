@@ -115,6 +115,8 @@ pub(super) struct ExportDialogState {
     /// The output path last suggested, while it is not changed: it is
     /// suggested again for the sequence the export is opened on.
     pub(super) suggested_path: Option<String>,
+    /// The sequence and size the preset was last fitted to.
+    pub(super) fitted_for: Option<(usize, u32, u32)>,
     /// Range selection for export.
     /// - 0 = Full timeline
     /// - 1 = Marked in/out range
@@ -213,6 +215,7 @@ impl Default for ExportDialogState {
             confirm_overwrite: false,
             overwrite_without_asking: false,
             suggested_path: None,
+            fitted_for: None,
             range_mode: 0,
             range_picked: false,
             form_export: false,
@@ -663,6 +666,22 @@ pub(super) fn apply_spec_to_dialog(dialog: &mut ExportDialogState, spec: &klipp_
     }
 }
 
+/// The preset the export form takes for a sequence of `size`, or `None`
+/// to keep `current`: kept while its picture is the sequence's shape (or
+/// it follows the sequence's own size); else the delivery template's
+/// preset for the sequence's shape, where there is one. A 9:16 version
+/// opened the form on the 16:9 preset the main cut was exported with.
+pub(super) fn preset_for_shape(current: Option<&ExportPreset>, size: (u32, u32)) -> Option<String> {
+    let same_shape = |(w, h): (u32, u32), (a, b): (u32, u32)| (w as u64 * b as u64).abs_diff(h as u64 * a as u64) * 100 <= (w as u64 * b as u64).max(1);
+    if size.0 == 0 || size.1 == 0 {
+        return None;
+    }
+    if current.is_some_and(|p| p.settings.resolution.is_none_or(|r| same_shape((r.width, r.height), size))) {
+        return None;
+    }
+    klipp_core::delivery_templates().iter().find(|t| same_shape(size, t.aspect)).map(|t| t.preset.clone())
+}
+
 pub(super) fn apply_preset_to_dialog(dialog: &mut ExportDialogState, settings: &ExportPresetSettings) {
     dialog.format = settings.format;
     // A preset saved before the container rules may hold a pair FFmpeg
@@ -899,6 +918,7 @@ impl KlippApp {
                         }
                     }
                 }
+                self.fit_preset_to_sequence();
                 true
             }
             // The sequence exported, once nothing stands in the way: media
@@ -1285,6 +1305,30 @@ impl KlippApp {
     /// An output path before the form is shown, so an export can never
     /// start with an empty name (that wrote `.partial` into the working
     /// directory). Where `default_export_path` says (#2941).
+    /// The preset chosen for the sequence open now, when the one selected
+    /// is another shape ([`preset_for_shape`]); once for each sequence and
+    /// size, so a preset of another shape picked on purpose (to box a
+    /// picture in) stays.
+    pub(super) fn fit_preset_to_sequence(&mut self) {
+        let res = self.state.sequence().resolution;
+        let key = (self.state.active_sequence_idx, res.width, res.height);
+        // Nothing chosen yet (the last preset is restored after the form's
+        // defaults): nothing to fit, and the fit waits for it.
+        if self.export_dialog.fitted_for == Some(key) || self.export_dialog.selected_preset_id.is_none() {
+            return;
+        }
+        self.export_dialog.fitted_for = Some(key);
+        let all_presets = builtin_presets();
+        let custom = &self.prefs.export.custom_presets;
+        let current = self.export_dialog.selected_preset_id.as_ref().and_then(|id| all_presets.iter().chain(custom.iter()).find(|p| &p.id == id));
+        if let Some(id) = preset_for_shape(current, (res.width, res.height)) {
+            if let Some(preset) = all_presets.iter().find(|p| p.id == id) {
+                apply_preset_to_dialog(&mut self.export_dialog, &preset.settings);
+                self.export_dialog.selected_preset_id = Some(id);
+            }
+        }
+    }
+
     pub(super) fn prepare_export_defaults(&mut self) {
         // Named again for the sequence open now while the name is still
         // the one suggested: it followed the first sequence exported.
@@ -1304,6 +1348,7 @@ impl KlippApp {
         if generate {
             self.export_dialog.suggested_path = Some(self.export_dialog.output_path.clone());
         }
+        self.fit_preset_to_sequence();
     }
 
     /// The export settings form: presets, output, codec, audio, range
@@ -4223,6 +4268,23 @@ mod export_prefs_tests {
     /// #1816, #2941: a new export goes to the preferences' folder while it
     /// is there; else a saved project's own folder, named after it; else
     /// the Videos folder, named after the sequence for a project not saved.
+    #[test]
+    fn the_export_preset_follows_the_sequences_shape() {
+        let presets = klipp_core::builtin_presets();
+        let named = |n: &str| presets.iter().find(|p| p.name == n).unwrap_or_else(|| panic!("{n}"));
+        let youtube = named("YouTube 1080p");
+        let vertical = named("Shorts, Reels, TikTok 9:16");
+        // A 9:16 sequence opened on the 16:9 preset: the 9:16 one.
+        assert_eq!(super::preset_for_shape(Some(youtube), (1080, 1920)).as_deref(), Some(vertical.id.as_str()));
+        // A preset of the sequence's shape stays, at another size too.
+        assert_eq!(super::preset_for_shape(Some(youtube), (3840, 2160)), None);
+        assert_eq!(super::preset_for_shape(Some(vertical), (720, 1280)), None);
+        // Back on a 16:9 sequence, the 16:9 template's preset.
+        assert!(super::preset_for_shape(Some(vertical), (1920, 1080)).is_some_and(|id| presets.iter().any(|p| p.id == id && p.settings.resolution.is_some_and(|r| r.width * 9 == r.height * 16))));
+        // A shape no template has: the preset stays.
+        assert_eq!(super::preset_for_shape(Some(youtube), (2048, 858)), None);
+    }
+
     #[test]
     fn a_new_export_goes_where_the_project_is() {
         let dir = Dir::new();
