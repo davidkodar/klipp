@@ -63,13 +63,17 @@ Circle, linear gradient and freeform masks limit a correction to part of the fra
 
 ## LUTs
 
-Klipp ships 304 LUTs: film emulation (negative, print, slide, instant, black and white, Fuji X-Trans) under MIT, and a set of cinematic looks. Apply one from a LUT node or the Colour tab's LUT presets. 3D `.cube` LUTs and 1D tables and shapers (`.cube` 1D, CSP) load. User LUTs in `~/.config/klipp/luts/` appear automatically.
+Klipp ships 304 LUTs: film emulation (negative, print, slide, instant, black and white, Fuji X-Trans) under MIT, and a set of cinematic looks. Apply one to a clip from the **LUTs** category of the Effects browser (hover a card to see it on the clip first) or the Colour tab's LUT presets: it becomes the clip's look, a 3D LUT in its grade, and another preset replaces it, one undo step each. A LUT node in the grade does the same by hand. 3D `.cube` LUTs and 1D tables and shapers (`.cube` 1D, CSP) load. User LUTs in `~/.config/klipp/luts/` appear automatically.
 
 **Bake Grade as 3D LUT (.cube)** (command palette, or **Bake Grade** in the Colour tab) writes the clip's grade as a LUT.
 
+## Timeline LUT
+
+The Colour tab's **Timeline LUT** is one LUT file over the whole picture, after every clip's grade, with its own opacity and on/off switch. It is part of the project and every export applies it.
+
 ## Viewing LUT
 
-A project's viewing LUT, set in **Colour Management**, is applied to the viewer only — not to the export. The scopes can read before or after it.
+A project's viewing LUT, set in **Colour Management**, and the calibration LUT in Preferences are applied to the viewer only, never to an export. The scopes can read before or after the viewing LUT.
 
 ## Grade Library, Versions and Flags
 

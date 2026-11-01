@@ -589,6 +589,7 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::ReorderEffect { .. }
         | AppCommand::SetEffectParam { .. }
         | AppCommand::AddBuiltinEffect { .. }
+        | AppCommand::ApplyClipLut { .. }
         | AppCommand::RemoveBuiltinEffect { .. }
         | AppCommand::ToggleBuiltinEffectEnabled { .. }
         | AppCommand::UpdateBuiltinEffect { .. }

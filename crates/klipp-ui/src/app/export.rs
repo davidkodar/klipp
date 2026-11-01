@@ -1146,7 +1146,7 @@ impl KlippApp {
             &self.state.media_pool,
             settings,
             // The confirmation dialogs used to drop the LUT here.
-            self.state.global_lut_path.clone().filter(|_| self.state.global_lut_enabled),
+            self.state.timeline_lut(),
             use_marked,
             self.state.project_working_colorspace,
         );
@@ -1239,7 +1239,7 @@ impl KlippApp {
                 &self.state.sequences,
                 &self.state.media_pool,
                 &job_settings,
-                self.state.global_lut_path.clone().filter(|_| self.state.global_lut_enabled),
+                self.state.timeline_lut(),
                 false,
                 self.state.project_working_colorspace,
             );
@@ -2238,7 +2238,7 @@ impl KlippApp {
                     &self.state.sequences,
                     &self.state.media_pool,
                     &settings,
-                    self.state.global_lut_path.clone().filter(|_| self.state.global_lut_enabled),
+                    self.state.timeline_lut(),
                     use_marked,
                     self.state.project_working_colorspace,
                 );
@@ -3446,7 +3446,7 @@ impl KlippApp {
             &self.state.sequences,
             &self.state.media_pool,
             &settings,
-            self.state.global_lut_path.clone().filter(|_| self.state.global_lut_enabled),
+            self.state.timeline_lut(),
             false,
             self.state.project_working_colorspace,
         );
@@ -3943,7 +3943,7 @@ impl KlippApp {
                     &self.state.sequences,
                     &self.state.media_pool,
                     &settings,
-                    self.state.global_lut_path.clone().filter(|_| self.state.global_lut_enabled),
+                    self.state.timeline_lut(),
                     false,
                     self.state.project_working_colorspace,
                 );

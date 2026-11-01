@@ -5573,6 +5573,12 @@ impl AppState {
     pub fn sequence(&self) -> &Sequence {
         &self.sequences[self.active_sequence_idx]
     }
+    /// The LUT every export puts over the whole picture: the Timeline LUT,
+    /// while it is on. The viewing and calibration LUTs are the screen's
+    /// and never in it (#3255).
+    pub fn timeline_lut(&self) -> Option<PathBuf> {
+        self.global_lut_path.clone().filter(|_| self.global_lut_enabled)
+    }
     /// How the active sequence shows a position on its clock, and reads
     /// one back. Use `.position()` for a place on the timeline and
     /// `.duration()` for a length — drop-frame applies to the first and

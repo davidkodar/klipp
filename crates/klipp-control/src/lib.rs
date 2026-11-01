@@ -601,6 +601,30 @@ mod look_name_tests {
         assert!(pick_look(&looks, "film-print/kodak").unwrap_err().contains("matches 2 looks"));
         assert!(pick_look(&looks, "nothing/here").is_err());
     }
+
+    /// #3255: every LUT the Effects browser and the Colour tab offer is a
+    /// look the socket puts on a clip by the name `looks` lists, the same
+    /// file; a person's own .cube is taken by its path.
+    #[test]
+    fn every_bundled_lut_preset_is_a_look_by_its_listed_name() {
+        let base = klipp_core::assets::bundled_luts_dir().expect("the bundled LUT library");
+        let mut seen = 0;
+        for (dir, _) in klipp_core::assets::BUNDLED_LUT_FOLDERS {
+            let Ok(entries) = std::fs::read_dir(base.join(dir)) else { continue };
+            for path in entries.filter_map(|e| e.ok().map(|e| e.path())).filter(|p| p.extension().is_some_and(|x| x == "cube" || x == "3dl" || x == "csp")) {
+                let stem = path.file_stem().unwrap().to_string_lossy().to_string();
+                let (got, name) = super::resolve_look(&format!("{dir}/{stem}")).unwrap_or_else(|e| panic!("{dir}/{stem}: {e}"));
+                assert_eq!((got, name), (path.clone(), stem));
+                seen += 1;
+            }
+        }
+        assert!(seen > 20, "the library's presets, {seen} found");
+        let own = std::env::temp_dir().join(format!("klipp-own-look-{}.cube", std::process::id()));
+        std::fs::write(&own, "LUT_3D_SIZE 2\n0 0 0\n1 0 0\n0 1 0\n1 1 0\n0 0 1\n1 0 1\n0 1 1\n1 1 1\n").unwrap();
+        let got = super::resolve_look(&own.to_string_lossy());
+        std::fs::remove_file(&own).ok();
+        assert_eq!(got.unwrap().0, own, "a person's own LUT by its path");
+    }
 }
 
 #[cfg(test)]

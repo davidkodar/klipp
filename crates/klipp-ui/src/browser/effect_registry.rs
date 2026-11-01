@@ -8,6 +8,9 @@ pub enum EffectSource {
     Builtin(klipp_effects::BuiltinEffect),
     /// A one-click look: several built-in effects applied together.
     Look(Vec<klipp_effects::BuiltinEffect>),
+    /// A LUT preset (#3255): the file, put in the clip's grade as its look
+    /// by the `look` op, as the socket's look puts it.
+    LutLook(std::path::PathBuf),
     Ofx(String),   // plugin identifier
     Audio(String), // audio effect type_id (e.g. "eq", "compressor")
     /// External LADSPA plugin. Holds the full discovered metadata so the
@@ -80,7 +83,7 @@ impl EffectEntry {
     /// - **Audio / LADSPA** are CPU-only.
     pub fn supports_gpu(&self, ofx_plugins: &[klipp_plugin::OfxPluginInfo]) -> bool {
         match &self.source {
-            EffectSource::Builtin(_) | EffectSource::Look(_) => true,
+            EffectSource::Builtin(_) | EffectSource::Look(_) | EffectSource::LutLook(_) => true,
             EffectSource::Ofx(id) => ofx_plugins
                 .iter()
                 .find(|p| &p.name == id)
@@ -247,6 +250,9 @@ impl EffectRegistry {
                 grouping: "Looks".into(),
             },
         ]);
+        // The bundled LUT presets (#3255): each a 3D LUT on the clip, one
+        // undo step, previewed on hover as any effect is.
+        effects.extend(lut_presets(klipp_core::assets::bundled_luts_dir()));
         // The built-in audio effects, one row each from their table.
         effects.extend(klipp_core::audio_effect_registry::AUDIO_EFFECTS.iter().map(|spec| EffectEntry {
             name: spec.name.into(),
@@ -1209,5 +1215,113 @@ mod tests {
         let reg = EffectRegistry::new();
         let glow = reg.effects.iter().find(|e| e.name == "Glow").expect("Glow is listed");
         assert!(matches!(glow.source, EffectSource::Builtin(klipp_effects::BuiltinEffect::Glow { threshold, .. }) if threshold == 0.6));
+    }
+}
+
+pub use klipp_core::assets::BUNDLED_LUT_FOLDERS as LUT_PRESET_FOLDERS;
+
+/// The LUT files in a preset folder, by name.
+pub fn lut_files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().is_some_and(|ext| ext == "cube" || ext == "3dl" || ext == "csp"))
+        .collect();
+    files.sort();
+    files
+}
+
+/// What an `ApplyClipLut` does: the look op on the clip, as the socket's
+/// look runs it, so the app, its hover preview and the socket give the
+/// clip the same grade.
+pub fn lut_look_op(clip_id: klipp_core::ClipId, path: &std::path::Path, name: &str) -> klipp_document::ops::Op {
+    klipp_document::ops::Op::Look { clip_id: Some(klipp_document::ops::ClipRef::Id(clip_id)), on: None, lut_path: path.display().to_string(), name: Some(name.to_string()), opacity: None, remove: false }
+}
+
+/// The command a preset's click sends: the LUT on `clip_id` as its look.
+pub fn lut_command(clip_id: klipp_core::ClipId, path: &std::path::Path) -> klipp_core::AppCommand {
+    klipp_core::AppCommand::ApplyClipLut { clip_id, lut_path: path.to_path_buf(), name: path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default() }
+}
+
+/// The LUT presets under `base` as browser entries, each folder its group.
+pub fn lut_presets(base: Option<&std::path::Path>) -> Vec<EffectEntry> {
+    let Some(base) = base else { return Vec::new() };
+    LUT_PRESET_FOLDERS
+        .iter()
+        .flat_map(|(dir, label)| {
+            lut_files(&base.join(dir)).into_iter().map(move |path| EffectEntry {
+                name: path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default(),
+                category: EffectCategory::Luts,
+                source: EffectSource::LutLook(path),
+                source_label: "LUT",
+                description: format!("{label}: the clip's look, in its grade"),
+                grouping: (*label).into(),
+            })
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod lut_preset_tests {
+    use super::*;
+
+    /// #3255: the bundled LUT presets are in the Effects browser, each
+    /// grouped under its folder; one clicked on a clip is that LUT as the
+    /// clip's look, which changes its picture (a black-and-white preset
+    /// over a red picture renders it grey) and leaves the project's LUT
+    /// alone.
+    #[test]
+    fn a_lut_preset_is_the_clips_look_not_the_projects_lut() {
+        let Some(base) = klipp_core::assets::bundled_luts_dir() else {
+            eprintln!("skipping: no bundled LUTs");
+            return;
+        };
+        let presets = lut_presets(Some(base));
+        assert!(presets.len() > 10, "the presets listed: {}", presets.len());
+        assert!(presets.iter().all(|e| e.category == EffectCategory::Luts && matches!(e.source, EffectSource::LutLook(_))));
+        assert!(presets.iter().any(|e| e.grouping == "Film B&W") && presets.iter().any(|e| e.grouping == "Camera conversion (log footage)"));
+        assert!(EffectRegistry::new().effects.iter().any(|e| e.category == EffectCategory::Luts), "in the browser's registry");
+
+        let tc = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 25);
+        let card = klipp_timeline::Clip::media(klipp_core::MediaId::new(), tc(0.0), tc(2.0), tc(0.0), tc(2.0));
+        let id = card.id;
+        let mut state = crate::state::AppState::default();
+        let mut v1 = klipp_timeline::Track::new("V1", klipp_timeline::TrackKind::Video);
+        v1.clips = vec![card];
+        state.sequence_mut().tracks = vec![v1];
+        let bw = presets.iter().find(|e| e.grouping == "Film B&W").expect("a black-and-white preset");
+        let cmds = crate::browser::effects_tab::effect_commands_in(&state, &bw.source, id).unwrap();
+        let [klipp_core::AppCommand::ApplyClipLut { clip_id, lut_path, name }] = &cmds[..] else { panic!("{cmds:?}") };
+        // As the app applies it.
+        let op = lut_look_op(*clip_id, lut_path, name);
+        let plan = klipp_document::ops::resolve(state.sequence(), &state.media_pool, &[op]).unwrap();
+        let mut seqs = vec![state.sequence().clone()];
+        let (mut pool, mut fps) = (klipp_media::MediaPool::default(), seqs[0].fps);
+        let mut view = klipp_document::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut pool, fps: &mut fps };
+        for step in &plan.steps {
+            view.apply_forward(&step.edit);
+        }
+        // The clip's picture: red, in linear light.
+        struct Red;
+        impl klipp_compose::FrameSource for Red {
+            fn frame(&mut self, _: &klipp_timeline::Clip, _: f64, w: u32, h: u32) -> Option<klipp_compose::SourceFrame> {
+                let px = [0.8f32, 0.02, 0.02, 1.0].repeat((w * h) as usize);
+                Some(klipp_compose::SourceFrame { pixels: klipp_compose::SourcePixels::Linear(std::sync::Arc::new(px)), width: w, height: h, pts: None })
+            }
+        }
+        let centre = |seq: &klipp_timeline::Sequence| {
+            let flat = klipp_timeline::flatten::flatten_sequence(seq, std::slice::from_ref(seq));
+            let mut r = klipp_compose::Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
+            r.set_gpu_enabled(false);
+            let px = r.render(&flat, tc(1.0), 32, 18, &mut Red, klipp_compose::RenderOptions::default());
+            let i = (9 * 32 + 16) * 4;
+            [px[i], px[i + 1], px[i + 2]]
+        };
+        let before = centre(state.sequence());
+        let after = centre(&seqs[0]);
+        assert!(before[0] > before[1] * 4.0, "red before: {before:?}");
+        assert!((after[0] - after[1]).abs() < 0.05 && (after[1] - after[2]).abs() < 0.05, "grey with the black-and-white look: {after:?}");
+        assert_eq!(state.global_lut_path, None, "the project's LUT left alone");
     }
 }

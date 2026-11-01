@@ -37,7 +37,7 @@ impl KlippApp {
             seq,
             &self.state.media_pool,
             &klipp_core::ExportSettings::default(),
-            self.state.global_lut_path.clone().filter(|_| self.state.global_lut_enabled),
+            self.state.timeline_lut(),
             false,
             self.state.project_working_colorspace,
         );

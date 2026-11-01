@@ -38,6 +38,8 @@ Apply a bundled 3D LUT after the grade on a picture clip, as one undo step. Choo
 
 This standalone tool takes `name` (a bundled name or an absolute `.cube` path), for example `{"clip_id":"CLIP_ID","name":"fuji_xtrans_iii_classic_chrome","opacity":0.25}` with a real timeline clip ID. The `look` op inside klipp_plan/klipp_apply instead requires `lut_path`; its optional `name` is only a display label. It does not resolve library names. See topic `op.look` for a place+look batch using `@0`.
 
+The bundled looks are the LUTs the person sees under Effects → LUTs and in the Colour tab's LUT presets: one they put on a clip there is this look on it, in its grade, and get_grade shows it. The Colour tab's Timeline LUT (a file over the whole picture, exported) and the viewing LUT in Colour Management (on screen only, never exported) are not looks and this tool does not change them.
+
 Arguments:
 - `name`: a look name from klipp_looks, or an absolute .cube path
 - `on`: instead of clip_id: "timeline", {"group": name, "stage": "post" (default) or "pre"}, or {"track": index or kind, "from"?, "to"?} for every picture clip of a track, with "itself": true for the track's own grade

@@ -170,7 +170,7 @@ impl KlippApp {
                 &state.sequences,
                 &state.media_pool,
                 settings,
-                state.global_lut_path.clone().filter(|_| state.global_lut_enabled),
+                state.timeline_lut(),
                 false,
                 state.project_working_colorspace,
             )
@@ -199,6 +199,27 @@ mod tests {
         (p.key, p.found) = (Some(key), None);
         p.running = Some(Running { key, answer, snapshot: empty(), stop: stop.clone() });
         (tx, stop)
+    }
+
+    /// #3255: what an export renders with, taken from the app as every
+    /// export takes it. The project's viewing LUT never gets in, on its
+    /// own or beside the Timeline LUT; the Timeline LUT does while on.
+    #[test]
+    fn the_viewing_lut_never_reaches_an_export() {
+        let mut state = crate::state::AppState::default();
+        let export_lut = |state: &crate::state::AppState| {
+            klipp_export::RenderSnapshot::from_sequence_with_all(state.sequence(), &state.sequences, &state.media_pool, &eight(), state.timeline_lut(), false, state.project_working_colorspace)
+                .unwrap()
+                .sequence_snapshot
+                .global_lut_path
+        };
+        state.project_viewing_lut = Some("/luts/monitor.cube".into());
+        assert_eq!(export_lut(&state), None, "a viewing LUT alone");
+        state.global_lut_path = Some("/luts/timeline.cube".into());
+        state.global_lut_enabled = false;
+        assert_eq!(export_lut(&state), None, "the Timeline LUT switched off");
+        state.global_lut_enabled = true;
+        assert_eq!(export_lut(&state), Some("/luts/timeline.cube".into()), "the Timeline LUT, not the viewing one");
     }
 
     /// A check's answer reaches the dialog and the jobs of its sequence,

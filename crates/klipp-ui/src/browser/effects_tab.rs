@@ -20,6 +20,9 @@ pub enum EffectCategory {
     All,
     /// One-click combinations of built-in effects.
     Looks,
+    /// The bundled LUT presets (#3255), each put on the clip as its own
+    /// 3D LUT effect.
+    Luts,
     Blur,
     Color,
     Stylize,
@@ -198,9 +201,10 @@ pub fn show(
                 // ── VIDEO FX section ──
                 sidebar_section_header(ui, theme, Some(Icon::FilmStrip), "Video FX");
 
-                let video_categories: [(EffectCategory, &str, Option<Icon>); 9] = [
+                let video_categories: [(EffectCategory, &str, Option<Icon>); 10] = [
                     (EffectCategory::All, "All", Some(Icon::List)),
                     (EffectCategory::Looks, "Looks", Some(Icon::Star)),
+                    (EffectCategory::Luts, "LUTs", Some(Icon::FilmStrip)),
                     // No drop/blur icon — leaving blank reads cleaner than
                     // a wrong-fit stand-in. TODO: bespoke blur glyph.
                     (EffectCategory::Blur, "Blur", None),
@@ -605,6 +609,9 @@ pub fn show(
                                             type_id: plugin.type_id(),
                                         });
                                     }
+                                    // A LUT preset is put on by a click, as
+                                    // the clip's look; it has no drop.
+                                    EffectSource::LutLook(_) => {}
                                     EffectSource::Clap(plugin) => {
                                         // CLAP also rides the audio-effect
                                         // drop target. type_id = "clap:{plugin_id}".
@@ -629,7 +636,8 @@ pub fn show(
                                             EffectSource::Audio(_)
                                             | EffectSource::Ladspa(_)
                                             | EffectSource::Lv2(_)
-                                            | EffectSource::Clap(_) => {
+                                            | EffectSource::Clap(_)
+                                            | EffectSource::LutLook(_) => {
                                                 unreachable!()
                                             }
                                         };
@@ -950,6 +958,7 @@ fn effect_list_row(
         EffectSource::Lv2(_) => "LV2",
         EffectSource::Clap(_) => "CLAP",
         EffectSource::Look(_) => "Look",
+        EffectSource::LutLook(_) => "LUT",
     };
     let star_reserve = 30.0;
     let badge_y = rect.center().y - 8.0;
@@ -1020,7 +1029,7 @@ fn category_color(cat: EffectCategory, theme: &KlippTheme) -> egui::Color32 {
         EffectCategory::Distort => egui::Color32::from_rgb(0xe8, 0x50, 0x20),
         EffectCategory::Light => egui::Color32::from_rgb(0xf0, 0xd0, 0x60),
         EffectCategory::Film => egui::Color32::from_rgb(0xc8, 0x9a, 0x5a),
-        EffectCategory::Looks => theme.accent,
+        EffectCategory::Looks | EffectCategory::Luts => theme.accent,
         EffectCategory::AudioAll => egui::Color32::from_rgb(0x60, 0xc0, 0x80),
         EffectCategory::AudioEQ => egui::Color32::from_rgb(0x2d, 0x6f, 0xa8),
         EffectCategory::AudioDynamics => egui::Color32::from_rgb(0x3a, 0x8c, 0x6e),
@@ -1624,6 +1633,7 @@ pub fn category_label(fx: &crate::browser::effect_registry::EffectEntry) -> &'st
         EffectCategory::Light => "Light",
         EffectCategory::Film => "Film",
         EffectCategory::Looks => "Looks",
+        EffectCategory::Luts => "LUT",
         EffectCategory::AudioEQ => "EQ",
         EffectCategory::AudioDynamics => "Dynamics",
         EffectCategory::AudioReverb => "Reverb",
@@ -1703,7 +1713,7 @@ fn paint_effect_preview(
         EffectCategory::Keying => {
             painter.rect_filled(rect, 0.0, egui::Color32::from_rgb(0x0a, 0x30, 0x0a));
         }
-        EffectCategory::Film | EffectCategory::Looks => {
+        EffectCategory::Film | EffectCategory::Looks | EffectCategory::Luts => {
             painter.rect_filled(rect, 0.0, dim);
         }
         EffectCategory::Light => {
@@ -1995,6 +2005,7 @@ pub(crate) fn effect_commands_in(state: &AppState, source: &EffectSource, clip_i
             let clip = state.sequence().tracks.iter().flat_map(|t| &t.clips).find(|c| c.id == clip_id).ok_or("the clip isn't in the sequence")?;
             return crate::inspector::stack_view::add_effects_command(state, clip, &effects);
         }
+        EffectSource::LutLook(path) => vec![crate::browser::effect_registry::lut_command(clip_id, path)],
         EffectSource::Ofx(plugin_name) => vec![AppCommand::AddEffect { clip_id, plugin_name: plugin_name.clone() }],
         EffectSource::Audio(type_id) => vec![AppCommand::AddAudioEffect { clip_id, effect_type: type_id.clone() }],
         EffectSource::Ladspa(plugin) => vec![AppCommand::AddAudioEffect { clip_id, effect_type: format!("ladspa:{}:{}", plugin.path.display(), plugin.label) }],

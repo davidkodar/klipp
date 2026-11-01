@@ -74,7 +74,7 @@ The revision goes up only when a change would be *misread* by a build that knows
 `project.json` carries:
 
 - Active sequence ID (restored on load)
-- Per-sequence colour state (working colourspace, ODT, global LUT)
+- Per-sequence colour state (working colourspace, ODT, Timeline LUT)
 - Per-sequence track header width, scroll positions
 - Project notes
 - Last UI state (timeline zoom, scroll)
