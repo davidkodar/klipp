@@ -156,7 +156,7 @@ fn scenes_deep_park_complete_in_seconds_as_export_draws_them() {
             Arc::new(klipp_timeline::SharedSequence::new(flat)), Arc::new(RwLock::new(pool.clone())), Box::new(|| {}),
             Arc::new(Mutex::new(None)), Arc::new(Mutex::new(klipp_engine::perf::PerfRing::default())),
         );
-        let thread = std::thread::spawn(move || engine.run());
+        let thread = engine.spawn();
         // As frame_at asks: paused, then the time, then the frame at it
         // marked complete.
         cmd.send(AppCommand::Pause).unwrap();

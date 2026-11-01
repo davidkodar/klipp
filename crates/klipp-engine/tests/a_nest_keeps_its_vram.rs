@@ -118,7 +118,7 @@ fn a_nest_of_scenes_costs_little_a_level() {
         Arc::clone(&shared), Arc::new(RwLock::new(pool)), Box::new(|| {}),
         Arc::new(Mutex::new(None)), Arc::new(Mutex::new(klipp_engine::perf::PerfRing::default())),
     );
-    let thread = std::thread::spawn(move || engine.run());
+    let thread = engine.spawn();
     cmd.send(AppCommand::Pause).unwrap();
 
     // Each depth parked complete, at a frame of its own so it is drawn

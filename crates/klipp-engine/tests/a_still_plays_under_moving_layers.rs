@@ -82,7 +82,7 @@ fn a_still_over_a_moving_gradient_is_presented_every_frame() {
         Arc::new(klipp_timeline::SharedSequence::new(seq)), Arc::new(RwLock::new(pool)), Box::new(|| {}),
         Arc::new(Mutex::new(None)), Arc::new(Mutex::new(klipp_engine::perf::PerfRing::default())),
     );
-    let thread = std::thread::spawn(move || engine.run());
+    let thread = engine.spawn();
 
     cmd.send(AppCommand::SetPlayhead(tc(2))).unwrap();
     common::settle(&fb);

@@ -101,7 +101,7 @@ fn viewer(scene: &Scene, frames: &[i64]) -> Result<Vec<Shown>, String> {
         Arc::new(Mutex::new(None)),
         Arc::new(Mutex::new(klipp_engine::perf::PerfRing::default())),
     );
-    let thread = std::thread::spawn(move || engine.run());
+    let thread = engine.spawn();
     let generation = |fb: &Mutex<FrameBuffer>| fb.lock().map_or(0, |f| f.latest_generation());
     let mut out = Vec::new();
     for &f in frames {

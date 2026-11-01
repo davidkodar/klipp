@@ -61,7 +61,7 @@ struct Engine {
     cmd: crossbeam_channel::Sender<AppCommand>,
     fb: Arc<Mutex<FrameBuffer>>,
     seq: Arc<klipp_timeline::SharedSequence>,
-    thread: Option<std::thread::JoinHandle<()>>,
+    thread: Option<klipp_engine::RunningEngine>,
 }
 
 impl Engine {
@@ -163,7 +163,7 @@ fn a_node_bypassed_while_paused_is_shown_at_once() {
         Arc::clone(&seq), Arc::new(RwLock::new(pool)), Box::new(|| {}),
         Arc::new(Mutex::new(None)), Arc::new(Mutex::new(klipp_engine::perf::PerfRing::default())),
     );
-    let thread = Some(std::thread::spawn(move || engine.run()));
+    let thread = Some(engine.spawn());
     let e = Engine { cmd, fb, seq, thread };
     let g = e.generation();
     e.cmd.send(AppCommand::SetPlayhead(common::frame_tc(10, fps))).unwrap();

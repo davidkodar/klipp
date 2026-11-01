@@ -25,7 +25,7 @@ fn import(path: &Path) -> MediaLoadedPayload {
         Arc::new(klipp_timeline::SharedSequence::new(Sequence::new_default())), Arc::new(RwLock::new(MediaPool::default())), Box::new(|| {}),
         Arc::new(Mutex::new(None)), Arc::new(Mutex::new(PerfRing::default())),
     );
-    let thread = std::thread::spawn(move || engine.run());
+    let thread = engine.spawn();
     let media_id = MediaId::new();
     cmd.send(AppCommand::LoadMediaFile { path: path.to_path_buf(), media_id }).unwrap();
     let deadline = std::time::Instant::now() + Duration::from_secs(20);

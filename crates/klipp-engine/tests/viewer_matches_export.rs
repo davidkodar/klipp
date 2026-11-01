@@ -267,7 +267,7 @@ fn exported_frame(path: &Path, n: i64) -> Vec<u8> {
 struct Viewer {
     cmd: crossbeam_channel::Sender<AppCommand>,
     fb: Arc<Mutex<FrameBuffer>>,
-    thread: Option<std::thread::JoinHandle<()>>,
+    thread: Option<klipp_engine::RunningEngine>,
 }
 
 impl Viewer {
@@ -300,7 +300,7 @@ impl Viewer {
             Arc::new(Mutex::new(None)),
             Arc::new(Mutex::new(klipp_engine::perf::PerfRing::default())),
         );
-        let thread = std::thread::spawn(move || engine.run());
+        let thread = engine.spawn();
         // Drain events: the engine must not block on a full channel. Which
         // frame is on screen comes from the frame buffer, with the frame.
         std::thread::spawn(move || while ev_rx.recv().is_ok() {});

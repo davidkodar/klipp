@@ -27,6 +27,15 @@ pub(crate) struct FramesJob {
     progress_at: Instant,
 }
 
+/// A job let go is cancelled and its thread waited for, the frame in hand
+/// finished: an engine that has stopped leaves no job drawing (#3287).
+impl Drop for FramesJob {
+    fn drop(&mut self) {
+        self.job.cancel();
+        self.job.join();
+    }
+}
+
 /// The frames from `from` to `to` (ticks at the sequence's rate) a frame
 /// apart, from the first frame at or after `from`.
 pub(crate) fn frames_between(from: i64, to: i64, ticks_per_frame: i64, rate: u32) -> Vec<Timecode> {

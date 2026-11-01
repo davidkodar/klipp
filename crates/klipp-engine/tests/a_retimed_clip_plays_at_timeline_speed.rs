@@ -85,7 +85,7 @@ fn a_clip_at_half_speed_plays_at_the_timelines_rate() {
         Arc::new(klipp_timeline::SharedSequence::new(seq)), Arc::new(RwLock::new(pool)), Box::new(|| {}),
         Arc::new(Mutex::new(None)), Arc::new(Mutex::new(klipp_engine::perf::PerfRing::default())),
     );
-    let thread = std::thread::spawn(move || engine.run());
+    let thread = engine.spawn();
     cmd.send(AppCommand::SetPlayhead(tc(1.0))).unwrap();
     common::settle(&fb);
     std::thread::sleep(Duration::from_millis(300));

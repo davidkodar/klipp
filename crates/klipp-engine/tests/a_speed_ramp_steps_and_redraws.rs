@@ -35,7 +35,7 @@ struct Engine {
     fb: Arc<Mutex<FrameBuffer>>,
     seq: Arc<klipp_timeline::SharedSequence>,
     playhead: Arc<Mutex<Option<RationalTime>>>,
-    thread: Option<std::thread::JoinHandle<()>>,
+    thread: Option<klipp_engine::RunningEngine>,
 }
 
 impl Engine {
@@ -142,7 +142,7 @@ fn parked_at_frame_5(seq: Sequence, pool: MediaPool) -> Engine {
         Arc::clone(&seq), Arc::new(RwLock::new(pool)), Box::new(|| {}),
         Arc::new(Mutex::new(None)), Arc::new(Mutex::new(klipp_engine::perf::PerfRing::default())),
     );
-    let thread = Some(std::thread::spawn(move || engine.run()));
+    let thread = Some(engine.spawn());
     let e = Engine { cmd, fb, seq, playhead, thread };
     let g = e.generation();
     e.cmd.send(AppCommand::SetPlayhead(tc(5))).unwrap();

@@ -217,7 +217,7 @@ mod tests {
             Arc::new(Mutex::new(None)), Arc::new(Mutex::new(crate::perf::PerfRing::default())),
         );
         let mixer = Arc::as_ptr(&engine.mixer) as usize;
-        let thread = std::thread::spawn(move || engine.run());
+        let thread = engine.spawn();
         cmd.send(AppCommand::SetPlayhead(tc(0))).unwrap();
         std::thread::sleep(Duration::from_millis(500));
         cmd.send(AppCommand::Play).unwrap();
@@ -319,7 +319,7 @@ mod tests {
             Arc::new(klipp_timeline::SharedSequence::new(seq)), Arc::new(RwLock::new(pool)), Box::new(|| {}),
             Arc::new(Mutex::new(None)), Arc::new(Mutex::new(crate::perf::PerfRing::default())),
         );
-        let thread = std::thread::spawn(move || engine.run());
+        let thread = engine.spawn();
         let playhead = || *at.lock().unwrap();
         let wait_past = |secs: f64, limit: Duration| {
             let t0 = Instant::now();
@@ -447,7 +447,7 @@ mod tests {
             Arc::new(klipp_timeline::SharedSequence::new(seq)), Arc::new(RwLock::new(pool)), Box::new(|| {}),
             Arc::new(Mutex::new(None)), Arc::new(Mutex::new(crate::perf::PerfRing::default())),
         );
-        let thread = std::thread::spawn(move || engine.run());
+        let thread = engine.spawn();
         let wait_for = |n: usize| {
             let t0 = Instant::now();
             while gave_up.lock().unwrap().len() < n && t0.elapsed() < Duration::from_secs(10) {

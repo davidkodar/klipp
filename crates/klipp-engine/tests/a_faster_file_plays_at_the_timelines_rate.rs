@@ -76,7 +76,7 @@ fn a_thirty_fps_file_shows_one_picture_per_timeline_frame() {
         Arc::new(klipp_timeline::SharedSequence::new(seq)), Arc::new(RwLock::new(pool)), Box::new(|| {}),
         Arc::new(Mutex::new(None)), Arc::new(Mutex::new(klipp_engine::perf::PerfRing::default())),
     );
-    let thread = std::thread::spawn(move || engine.run());
+    let thread = engine.spawn();
     // Parked on a timeline frame, the twelfth.
     cmd.send(AppCommand::SetPlayhead(RationalTime { value: 12 * 1001, rate: fps.rate() })).unwrap();
     common::settle(&fb);

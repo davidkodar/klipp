@@ -92,7 +92,7 @@ fn skimming_ten_clips_holds_a_few_decoders_and_lets_them_go() {
         Arc::new(klipp_timeline::SharedSequence::new(seq)), Arc::new(RwLock::new(pool)), Box::new(|| {}),
         Arc::new(Mutex::new(None)), Arc::new(Mutex::new(klipp_engine::perf::PerfRing::default())),
     );
-    let thread = std::thread::spawn(move || engine.run());
+    let thread = engine.spawn();
     cmd.send(AppCommand::Pause).unwrap();
     cmd.send(AppCommand::SeekTo(tc(0))).unwrap();
     common::settle(&fb);

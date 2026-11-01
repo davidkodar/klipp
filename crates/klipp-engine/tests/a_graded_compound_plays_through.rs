@@ -73,7 +73,7 @@ fn furthest_played(graded: bool, goal: f64) -> f64 {
         Arc::new(klipp_timeline::SharedSequence::new(flat)), Arc::new(RwLock::new(pool)), Box::new(|| {}),
         Arc::new(Mutex::new(None)), Arc::new(Mutex::new(klipp_engine::perf::PerfRing::default())),
     );
-    let thread = std::thread::spawn(move || engine.run());
+    let thread = engine.spawn();
     // A look inside the compound first: an engine's first composite
     // builds its GPU pipelines, near a second here, which would have the
     // clock past the end before the cut's first frame showed. The app has

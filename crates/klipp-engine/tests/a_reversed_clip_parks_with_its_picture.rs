@@ -74,7 +74,7 @@ fn parked_mean(path: &std::path::Path, speed: f64, len: f64, secs: f64) -> f64 {
         Arc::new(klipp_timeline::SharedSequence::new(seq)), Arc::new(RwLock::new(pool)), Box::new(|| {}),
         Arc::new(Mutex::new(None)), Arc::new(Mutex::new(klipp_engine::perf::PerfRing::default())),
     );
-    let thread = std::thread::spawn(move || engine.run());
+    let thread = engine.spawn();
     let g = common::generation(&fb);
     cmd.send(AppCommand::SetPlayhead(tc(secs))).unwrap();
     assert!(common::wait_new(&fb, g, Duration::from_secs(30)).is_some(), "no frame was drawn at {secs} s");

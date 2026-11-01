@@ -115,7 +115,7 @@ fn tc(secs: f64) -> RationalTime {
 struct Running {
     cmd: crossbeam_channel::Sender<AppCommand>,
     fb: Arc<Mutex<FrameBuffer>>,
-    thread: std::thread::JoinHandle<()>,
+    thread: klipp_engine::RunningEngine,
 }
 
 /// An engine on `clips` of the 4K source, one track.
@@ -147,7 +147,7 @@ fn start(video: &std::path::Path, clips: Vec<Clip>) -> Running {
         Arc::new(klipp_timeline::SharedSequence::new(seq)), Arc::new(RwLock::new(pool)), Box::new(|| {}),
         Arc::new(Mutex::new(None)), Arc::new(Mutex::new(klipp_engine::perf::PerfRing::default())),
     );
-    let thread = std::thread::spawn(move || engine.run());
+    let thread = engine.spawn();
     Running { cmd, fb, thread }
 }
 

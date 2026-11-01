@@ -374,39 +374,44 @@ pub fn status(track: TrackId) -> Option<FreezeStatus> {
 pub fn spawn_freeze<S: FrameSource + 'static>(req: FreezeRequest, store: Arc<Mutex<CacheStore>>, source: impl FnOnce() -> S + Send + 'static, done: impl FnOnce(FreezeTally) + Send + 'static) -> Arc<ThreadJob> {
     let name = format!("Freeze track {}", req.track + 1);
     ThreadJob::spawn(name, JobPriority::Background, ResourceClass::GpuMixed, move |pause, progress| {
-        let mut src = source();
-        let mut renderer = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
-        renderer.set_gpu_enabled(true);
-        renderer.set_working_colorspace(req.working);
-        let mut tally = FreezeTally::default();
-        let n = req.frames.len().max(1);
-        for (i, at) in req.frames.iter().enumerate() {
-            pause.wait_while_paused();
-            if pause.is_cancelled() {
-                tally.cancelled = true;
-                break;
-            }
-            match req.freeze_frame(&mut renderer, &store, *at, &mut src, &mut tally.on_cpu) {
-                FrameOutcome::Stored => tally.stored += 1,
-                FrameOutcome::Current => tally.current += 1,
-                FrameOutcome::Live(_) => {
-                    tally.live += 1;
-                    tally.live_frames.push(*at);
-                }
-                FrameOutcome::Empty => tally.empty += 1,
-                FrameOutcome::Failed(why) => {
-                    tracing::warn!("freeze: track {} at {:.3} s: {why}", req.track + 1, at.to_secs_f64());
-                    tally.failed += 1;
-                    tally.failed_frames.push(*at);
-                }
-                FrameOutcome::Full => {
-                    tally.full = true;
+        // Told once its decoders and renderer are let go: a caller that
+        // waits on it and exits doesn't race them closing down (#3287).
+        let tally = {
+            let mut src = source();
+            let mut renderer = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
+            renderer.set_gpu_enabled(true);
+            renderer.set_working_colorspace(req.working);
+            let mut tally = FreezeTally::default();
+            let n = req.frames.len().max(1);
+            for (i, at) in req.frames.iter().enumerate() {
+                pause.wait_while_paused();
+                if pause.is_cancelled() {
+                    tally.cancelled = true;
                     break;
                 }
+                match req.freeze_frame(&mut renderer, &store, *at, &mut src, &mut tally.on_cpu) {
+                    FrameOutcome::Stored => tally.stored += 1,
+                    FrameOutcome::Current => tally.current += 1,
+                    FrameOutcome::Live(_) => {
+                        tally.live += 1;
+                        tally.live_frames.push(*at);
+                    }
+                    FrameOutcome::Empty => tally.empty += 1,
+                    FrameOutcome::Failed(why) => {
+                        tracing::warn!("freeze: track {} at {:.3} s: {why}", req.track + 1, at.to_secs_f64());
+                        tally.failed += 1;
+                        tally.failed_frames.push(*at);
+                    }
+                    FrameOutcome::Full => {
+                        tally.full = true;
+                        break;
+                    }
+                }
+                tally.reached = i + 1;
+                progress.set((i + 1) as f32 / n as f32);
             }
-            tally.reached = i + 1;
-            progress.set((i + 1) as f32 / n as f32);
-        }
+            tally
+        };
         done(tally);
     })
 }

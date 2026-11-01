@@ -76,7 +76,7 @@ fn play_sequence(seq: Sequence, pool: MediaPool, from: f64, secs: f64) -> Option
     // decides it by installing its own.
     let _ = klipp_effects::gpu_context::GpuContext::shared();
     engine.prewarm_gpu();
-    let thread = std::thread::spawn(move || engine.run());
+    let thread = engine.spawn();
     // `KLIPP_WARM`: play it once first, so what is measured is a second
     // Play in a process that has drawn the section before.
     if std::env::var_os("KLIPP_WARM").is_some() {

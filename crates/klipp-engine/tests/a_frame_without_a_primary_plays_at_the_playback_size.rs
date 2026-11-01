@@ -112,7 +112,7 @@ fn a_frame_without_a_primary_is_drawn_at_the_playback_size() {
         Arc::new(klipp_timeline::SharedSequence::new(seq)), Arc::new(RwLock::new(pool)), Box::new(|| {}),
         Arc::new(Mutex::new(None)), Arc::new(Mutex::new(klipp_engine::perf::PerfRing::default())),
     );
-    let thread = std::thread::spawn(move || engine.run());
+    let thread = engine.spawn();
 
     // Parked: the frame frame_at returns without a max_width. Waited
     // for, not settled on alone: the buffer starts out empty at 4K.
