@@ -254,3 +254,25 @@ fn every_side_panel_scrolls_to_its_end() {
         }
     }
 }
+
+/// A window shrunk for a moment, as for a file dialog, and back is not a
+/// small window: its size counts only once it has held for
+/// `SETTLE_SECS`, so Auto keeps the interface's size and says nothing,
+/// and the window is not saved as unmaximised for the next start. A size
+/// that holds counts.
+#[test]
+fn a_size_held_for_a_moment_is_not_the_windows() {
+    use super::appearance::{Settling, SETTLE_SECS};
+    let mut size = Settling::default();
+    let (full, small) = ((1920u32, 1080u32), (850u32, 600u32));
+    assert!(!size.held(full, 10.0), "a size is new when first seen");
+    assert!(size.held(full, 10.0 + SETTLE_SECS), "and counts once it holds");
+    assert!(!size.held(small, 20.0), "the file dialog's moment");
+    assert!(!size.held(small, 20.0 + SETTLE_SECS * 0.5), "still a moment");
+    assert!(!size.held(full, 20.0 + SETTLE_SECS * 0.6), "back before it held: the full size is seen again, new");
+    assert!(size.held(full, 20.0 + SETTLE_SECS * 1.7), "and counts once it holds again");
+    assert!(!size.held(small, 30.0) && size.held(small, 30.0 + SETTLE_SECS), "a small size that holds counts");
+    let mut maximized = Settling::default();
+    assert!(!maximized.held(false, 5.0) && !maximized.held(false, 5.5), "unmaximised for a moment");
+    assert!(!maximized.held(true, 5.8), "maximised again before it held");
+}
