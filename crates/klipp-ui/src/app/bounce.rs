@@ -39,6 +39,11 @@ pub(crate) struct BounceDialog {
     /// it can't.
     pub has_sound: bool,
     pub sound_refusal: Option<&'static str>,
+    /// The sequence's rate, and the bytes free where the file goes, read
+    /// when the dialog opens: whether there is room, for the format and
+    /// sound chosen.
+    pub fps: f64,
+    pub free: Option<u64>,
 }
 
 /// A bounce under way.
@@ -134,6 +139,8 @@ impl KlippApp {
             size: (seq.resolution.width, seq.resolution.height),
             has_sound,
             sound_refusal,
+            fps: seq.fps.as_f64(),
+            free: self.bounce_folder().ok().and_then(|f| crate::inspector::info_tab::disk_free_bytes(&f)),
         });
     }
 
@@ -187,6 +194,12 @@ impl KlippApp {
                     ui.label(egui::RichText::new("The file is kept in the project's media folder. A clip of it goes on a new track above, and the original is hidden. One undo takes it back.").weak());
                 }
             }
+            // Room for it, for the format and sound chosen now.
+            let room = bounce::room_refusal(dlg.free, bounce::disk_needed(dlg.format, dlg.size, dlg.frames, dlg.fps, dlg.sound && dlg.has_sound));
+            if let (None, Some(why)) = (&dlg.refusal, &room) {
+                ui.add_space(8.0);
+                ui.label(egui::RichText::new(format!("Can't bounce: {why}.")).color(ui.visuals().warn_fg_color));
+            }
             ui.add_space(16.0);
             ui.horizontal(|ui| {
                 if ui.button(if dlg.refusal.is_some() { "Close" } else { "Cancel" }).clicked() {
@@ -194,7 +207,7 @@ impl KlippApp {
                 }
                 if dlg.refusal.is_none() {
                     ui.add_space(8.0);
-                    if ui.button(egui::RichText::new("Bounce").strong()).clicked() {
+                    if ui.add_enabled(room.is_none(), egui::Button::new(egui::RichText::new("Bounce").strong())).clicked() {
                         send = Some(AppCommand::BounceTrack { track_id: dlg.track_id, format: dlg.format, sound: dlg.sound && dlg.has_sound });
                         close = true;
                     }
@@ -227,8 +240,12 @@ impl KlippApp {
         let sound_snap = if sound { klipp_render::stem::linked_sound_snapshot(&seq, &[], pool, track_id).map_err(|e| format!("its sound couldn't be read: {e}"))? } else { None };
         let name = seq.tracks[index].name.clone();
         let with_sound = sound_snap.is_some();
+        let needed = bounce::disk_needed(format, (seq.resolution.width, seq.resolution.height), end - first, seq.fps.as_f64(), with_sound);
+        if let Some(why) = bounce::room_refusal(crate::inspector::info_tab::disk_free_bytes(&folder), needed) {
+            return Err(why);
+        }
         let stamp = chrono::Local::now().format("%Y-%m-%d %H-%M-%S");
-        let path = folder.join(format!("{} {stamp}.{}", file_name_of(&name), format.container().extension()));
+        let path = bounce::unique_path(&folder, &format!("{} {stamp}", file_name_of(&name)), format.container().extension());
         let files: Arc<HashMap<MediaId, klipp_render::MediaFile>> = Arc::new(pool.all().map(|i| (i.id, klipp_render::MediaFile::of(i))).collect());
         let fps = seq.fps.as_f64();
         let at = |f: i64| RationalTime { value: f * i64::from(seq.fps.den), rate: seq.fps.num };

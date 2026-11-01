@@ -89,6 +89,39 @@ pub fn estimate_bytes(format: BounceFormat, size: (u32, u32), frames: i64) -> Op
     }
 }
 
+/// How many bytes a bounce must have room for before it starts: ProRes
+/// 4444's estimate ([`estimate_bytes`]), or for FFV1 half its frames
+/// uncompressed (16-bit RGBA), and its sound as 24-bit stereo PCM, with a
+/// tenth more and 512 MB to spare.
+pub fn disk_needed(format: BounceFormat, size: (u32, u32), frames: i64, fps: f64, sound: bool) -> u64 {
+    let frames = frames.max(0) as u64;
+    let picture = estimate_bytes(format, size, frames as i64).unwrap_or(u64::from(size.0) * u64::from(size.1) * 8 * frames / 2);
+    let sound = if sound && fps > 0.0 { (frames as f64 / fps * 48_000.0 * 2.0 * 3.0) as u64 } else { 0 };
+    (picture + sound) + (picture + sound) / 10 + (512 << 20)
+}
+
+/// Why a bounce needing `needed` bytes can't start with `free` bytes free
+/// where its file goes; `None` when there is room, or when the free space
+/// couldn't be read (the bounce then stops if the disk fills, its partial
+/// file removed).
+pub fn room_refusal(free: Option<u64>, needed: u64) -> Option<String> {
+    let gb = |b: u64| b as f64 / 1e9;
+    let free = free?;
+    (free < needed).then(|| format!("not enough disk: it needs about {:.1} GB and {:.1} GB is free where the project keeps it", gb(needed), gb(free)))
+}
+
+/// `folder/stem.ext`, or `folder/stem 2.ext`, `stem 3.ext`, … when that
+/// file, or a bounce writing it, is there already: two bounces of one
+/// track in one second never write the same file.
+pub fn unique_path(folder: &std::path::Path, stem: &str, ext: &str) -> PathBuf {
+    let taken = |p: &std::path::Path| p.exists() || klipp_render::partial_path_for(p).exists();
+    let first = folder.join(format!("{stem}.{ext}"));
+    if !taken(&first) {
+        return first;
+    }
+    (2..).map(|n| folder.join(format!("{stem} {n}.{ext}"))).find(|p| !taken(p)).expect("a free name")
+}
+
 /// What a bounce is asked to do.
 pub struct BounceRequest {
     /// The render copy (`flatten_sequence`).
@@ -244,4 +277,55 @@ fn run<S: FrameSource>(req: &BounceRequest, source: impl FnOnce() -> S, pause: &
         return fail(format!("the file couldn't be put in place: {e}"), written);
     }
     BounceResult { path: Some(req.path.clone()), frames: written, cancelled: false, error: None }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A bounce refuses before it starts when the free space where its
+    /// file goes is under what it needs, saying how much of each; with
+    /// room, or with the free space unread, it goes ahead.
+    #[test]
+    fn a_bounce_without_room_is_refused_before_it_starts() {
+        let needed = disk_needed(BounceFormat::ProRes4444, (1920, 1080), 24 * 60, 24.0, true);
+        let free = |gb: f64| Some((gb * 1e9) as u64);
+        let why = room_refusal(free(1.0), needed).expect("a gigabyte isn't room for a minute of 1080p ProRes 4444");
+        assert!(why.contains("not enough disk") && why.contains("1.0 GB is free"), "{why}");
+        assert_eq!(room_refusal(free(50.0), needed), None, "room");
+        assert_eq!(room_refusal(None, needed), None, "free space unread: it goes ahead");
+    }
+
+    /// FFV1's size follows the picture: it is given room for half its
+    /// frames uncompressed, and the sound is counted, with the margin.
+    #[test]
+    fn ffv1_is_given_room_for_half_its_frames_uncompressed() {
+        let frames = 240;
+        let raw = 1920u64 * 1080 * 8 * frames as u64;
+        let needed = disk_needed(BounceFormat::Ffv1, (1920, 1080), frames, 24.0, false);
+        assert_eq!(needed, raw / 2 + raw / 2 / 10 + (512 << 20));
+        let with_sound = disk_needed(BounceFormat::Ffv1, (1920, 1080), frames, 24.0, true);
+        let sound = 10 * 48_000 * 2 * 3;
+        assert!(with_sound >= needed + sound && with_sound <= needed + sound * 11 / 10 + 1, "ten seconds of 24-bit stereo counted");
+        assert!(disk_needed(BounceFormat::ProRes4444, (1920, 1080), frames, 24.0, false) < needed, "ProRes 4444 needs less");
+    }
+
+    /// Two bounces of one track in one second get two names: the second
+    /// takes " 2", the third " 3", and a bounce still writing holds its
+    /// name too.
+    #[test]
+    fn a_name_taken_gets_a_number() {
+        let dir = std::env::temp_dir().join(format!("klipp-bounce-names-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let first = unique_path(&dir, "V1 2026-11-01 12-00-00", "mov");
+        assert_eq!(first, dir.join("V1 2026-11-01 12-00-00.mov"));
+        std::fs::write(&first, b"one").unwrap();
+        let second = unique_path(&dir, "V1 2026-11-01 12-00-00", "mov");
+        assert_eq!(second, dir.join("V1 2026-11-01 12-00-00 2.mov"));
+        std::fs::write(klipp_render::partial_path_for(&second), b"writing").unwrap();
+        assert_eq!(unique_path(&dir, "V1 2026-11-01 12-00-00", "mov"), dir.join("V1 2026-11-01 12-00-00 3.mov"), "a bounce writing the second holds its name");
+        assert_eq!(unique_path(&dir, "V1 2026-11-01 12-00-00", "mkv"), dir.join("V1 2026-11-01 12-00-00.mkv"), "another format, its own name");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

@@ -89,7 +89,8 @@ When it is written, the clip goes on a new track above, with its sound on a new 
 
 Bouncing is SDR only for now: an HDR or wide-gamut project says why it can't. Also refused, saying why:
 - a track whose frames read other tracks (an adjustment layer, a matte, captions);
-- clips that blend in different ways.
+- clips that blend in different ways;
+- not enough free disk for the file.
 
 ## Track Automation
 
