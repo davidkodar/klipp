@@ -786,10 +786,13 @@ mod template_tests {
     #[test]
     fn the_formats_are_named_for_their_purpose_and_never_repeat() {
         let names: Vec<_> = formats().iter().map(|f| f.name.as_str()).collect();
-        assert_eq!(names, ["Match first clip", "HD 1080p", "UHD 4K", "DCI 4K (cinema)", "Vertical (social)", "Square (social)", "HDR UHD (HLG / PQ)"]);
+        assert_eq!(names, ["Match first clip", "HD 1080p", "UHD 4K", "DCI 4K (cinema)", "Vertical (social)", "Square (social)", "HDR UHD (HLG / PQ)", "YouTube", "YouTube Shorts / Reels / TikTok", "Square post", "Podcast"]);
+        // A destination (#3307) is its own format though its picture and
+        // rate are another's: it also sets where the piece goes, its
+        // loudness and captions ("Square post" beside "Square (social)").
         for (i, a) in formats().iter().enumerate() {
             for b in &formats()[i + 1..] {
-                let same_picture = (a.width, a.height, a.hdr) == (b.width, b.height, b.hdr);
+                let same_picture = (a.width, a.height, a.hdr) == (b.width, b.height, b.hdr) && a.destination == b.destination;
                 let shared_rate = a.rates.iter().any(|r| b.rates.contains(r)) || (a.rates.is_empty() && b.rates.is_empty());
                 assert!(!(same_picture && shared_rate), "{} and {} are the same format", a.name, b.name);
             }
