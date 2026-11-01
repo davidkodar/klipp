@@ -6476,7 +6476,13 @@ fn cut_range(seq: &Sequence, pool: &MediaPool, i: usize, from: Timecode, to: Tim
     let open: Vec<usize> = if scope.is_empty() {
         (0..seq.tracks.len()).filter(|&t| !seq.tracks[t].locked).collect()
     } else {
-        let tracks = cut_tracks_of(seq, scope, from);
+        let mut tracks = cut_tracks_of(seq, scope, from);
+        // The captions are of what is said: a cut of the speech takes its
+        // stretch out of them too, or every caption after it runs late
+        // by the cut's length, past the picture's end (unlocked ones).
+        let captions: Vec<usize> = (0..seq.tracks.len()).filter(|&t| seq.tracks[t].kind == TrackKind::Subtitle && !seq.tracks[t].locked && !tracks.contains(&t)).collect();
+        tracks.extend(captions);
+        tracks.sort_unstable();
         if let Some(&ti) = tracks.iter().find(|&&ti| seq.tracks[ti].locked) {
             let name = &seq.tracks[ti].name;
             return Err(refuse(i, format!("{name} is locked, and what the cut takes is on it or linked to it"), format!("unlock {name}")));
@@ -20753,6 +20759,34 @@ mod tests {
         let ids: Vec<ClipId> = seqs[0].tracks[0].clips.iter().map(|c| c.id).collect();
         assert_eq!(ids, vec![a, b]);
         assert_eq!(seqs[0].tracks[0].clips[1].timeline_in, tc(4.0));
+    }
+
+    /// A cut scoped to the speech's clips, as the transcript's Cut Words
+    /// makes, takes its stretch out of the subtitle track too: the cue it
+    /// crosses is split and the cue after it moves up. Cut from picture and
+    /// sound alone, the captions ran late by the cut's length, past the
+    /// picture's end.
+    #[test]
+    fn a_cut_of_the_speech_closes_up_the_captions_too() {
+        let (mut seq, pool, _, a, _) = fixture();
+        let cue = |from: f64, to: f64, text: &str| {
+            let mut c = Clip::gap(tc(from), tc(to));
+            c.kind = ClipKind::Title(klipp_timeline::TitleData::single_text(klipp_timeline::TextBox { text: text.into(), ..Default::default() }));
+            c
+        };
+        let mut subs = Track::new("Subtitle 1", TrackKind::Subtitle);
+        subs.clips = vec![cue(2.0, 4.0, "first"), cue(5.0, 7.0, "second")];
+        seq.tracks.push(subs);
+        let plan = resolve(&seq, &pool, &[Op::Cut { from: Anchor::Secs(3.0), to: Anchor::Secs(4.0), tracks_of: vec![ClipRef::Id(a)] }]).unwrap();
+        let mut seqs = vec![seq.clone()];
+        let (mut p, mut fps) = (pool.clone(), seq.fps);
+        let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps };
+        for s in &plan.steps {
+            view.apply_forward(&s.edit);
+        }
+        let subs = seqs[0].tracks.iter().find(|t| t.kind == TrackKind::Subtitle).unwrap();
+        let spans: Vec<(Timecode, Timecode)> = subs.clips.iter().filter(|c| c.title_data().is_some()).map(|c| (c.timeline_in, c.timeline_out)).collect();
+        assert_eq!(spans, vec![(tc(2.0), tc(3.0)), (tc(4.0), tc(6.0))], "the first cue cut short, the second a second earlier");
     }
 
     /// An L-cut: the sound of the first shot runs on under the second.
