@@ -25,7 +25,7 @@ The Animated GIF preset is a palette at its own rate (15 fps), so it is checked 
 | Vimeo 1080p | h264 | 1920x1080 | yuv420p | 4:2:0 | tv | bt709 / bt709 / bt709 | 218 | 98.6 / 97.3 | 59.0 | 95.0 / 90.0 | pass |
 | Twitter/X | h264 | 1280x720 | yuv420p | 4:2:0 | tv | bt709 / bt709 / bt709 | 220 | 98.3 / 96.9 | 52.0 | 90.0 / 80.0 | pass |
 | Instagram Square | h264 | 1080x1080 | yuv420p | 4:2:0 | tv | bt709 / bt709 / bt709 | 222 | 98.2 / 97.3 | 58.6 | 90.0 / 80.0 | pass |
-| Instagram Vertical | h264 | 1080x1920 | yuv420p | 4:2:0 | tv | bt709 / bt709 / bt709 | 220 | 97.9 / 97.3 | 62.0 | 90.0 / 80.0 | pass |
+| Shorts, Reels, TikTok 9:16 | h264 | 1080x1920 | yuv420p | 4:2:0 | tv | bt709 / bt709 / bt709 | 220 | 97.9 / 97.3 | 62.0 | 90.0 / 80.0 | pass |
 | ProRes 422 | prores | 1920x1080 | yuv422p10le | 4:2:2 | tv | bt709 / bt709 / bt709 | 873 | 98.3 / 97.3 | 55.2 | 98.0 / 95.0 | pass |
 | DNxHD 115 | dnxhd | 1920x1080 | yuv422p | 4:2:2 | tv | bt709 / bt709 / bt709 | 218 | 98.7 / 97.3 | 57.6 | 98.0 / 95.0 | pass |
 | H.265 4K | hevc | 3840x2160 | yuv420p | 4:2:0 | tv | bt709 / bt709 / bt709 | 218 | 99.7 / 98.4 | 52.0 | 93.0 / 85.0 | pass |
