@@ -1128,6 +1128,28 @@ pub enum ControlCommand {
     /// compound clips included, with both sides' clips, tracks, timeline
     /// and source spans in seconds. Changes nothing.
     ReuseReport,
+    /// Collect Project (#3241). `dry_run`: what a collect would copy (files,
+    /// bytes, what is left out or offline) and what it can't carry, each
+    /// with where the project uses it. `verify`: a collected folder at
+    /// that absolute path checked on its own paths and against its
+    /// manifest. Else: the open project collected into `dest`, an absolute
+    /// path that doesn't exist yet, by the app, in the background.
+    CollectProject {
+        #[serde(default)]
+        dest: Option<String>,
+        /// "all" (the default), "used" or "trimmed".
+        #[serde(default)]
+        mode: Option<String>,
+        /// A trimmed collect's handles, s (1 when left out).
+        #[serde(default)]
+        handle_secs: Option<f64>,
+        #[serde(default)]
+        proxies: bool,
+        #[serde(default)]
+        dry_run: bool,
+        #[serde(default)]
+        verify: Option<String>,
+    },
 
     // ── Delivery ──────────────────────────────────────────────────
     /// Render the active sequence to `path` with the app's default export

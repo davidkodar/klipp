@@ -444,6 +444,13 @@ pub(crate) fn respond(
             Ok(out)
         }
 
+        ControlCommand::CollectProject { dest, mode, handle_secs, proxies, dry_run, verify } => {
+            if in_batch {
+                return read_in_batch("collect_project");
+            }
+            collect_project(ctx, dest, mode, handle_secs, proxies, dry_run, verify)
+        }
+
         ControlCommand::Check { color, loudness, min_severity } => {
             if in_batch {
                 return read_in_batch("check");
@@ -1446,3 +1453,89 @@ fn watermark(logo: &klipp_project::brand_kit::Logo) -> klipp_document::brand_kit
     klipp_document::brand_kit_ops::Watermark { left, top, margin: logo.margin, scale: logo.scale, opacity: logo.opacity }
 }
 
+
+/// A plug-in as the hosts on this machine find it, for the collect
+/// report (#3241): LV2 and CLAP by their lookups, LADSPA by its file and
+/// label, frei0r by its file, OFX by the plug-ins found.
+fn describe_plugin(id: &str) -> Option<klipp_project::collect_report::Described> {
+    use klipp_project::collect_report::Described;
+    if let Some(uri) = id.strip_prefix("lv2:") {
+        return klipp_audio::lv2::lookup_by_uri(uri).map(|p| Described { name: p.name, version: None, file: None });
+    }
+    if let Some(cid) = id.strip_prefix("clap:") {
+        return klipp_audio::clap::lookup_by_id(cid).map(|p| Described { name: p.name, version: Some(p.version), file: Some(p.bundle_path.display().to_string()) });
+    }
+    if let Some(rest) = id.strip_prefix("ladspa:") {
+        let (path, label) = rest.rsplit_once(':')?;
+        return klipp_audio::ladspa::discover_ladspa_plugins_cached(Some(&klipp_media::disk_cache::cache_base_dir())).into_iter().find(|p| p.path.to_string_lossy() == path && p.label == label).map(|p| Described { name: p.name, version: None, file: Some(path.to_string()) });
+    }
+    if id.starts_with("frei0r:") {
+        return klipp_effects::frei0r_effect::lookup(id).map(|p| Described { name: p.name, version: Some(format!("{}.{}", p.major_version, p.minor_version)), file: Some(p.path.display().to_string()) });
+    }
+    klipp_plugin::host::plugin_infos_cached().into_iter().find(|p| p.name == id).map(|p| Described { name: p.name, version: Some(format!("{}.{}", p.version.0, p.version.1)), file: None })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn collect_project(ctx: &crate::ControlContext, dest: Option<String>, mode: Option<String>, handle_secs: Option<f64>, proxies: bool, dry_run: bool, verify: Option<String>) -> Result<serde_json::Value, String> {
+    use klipp_project::{collect_verify, consolidate};
+    let absolute = |p: &str, what: &str| {
+        let p = std::path::PathBuf::from(p);
+        if p.is_absolute() { Ok(p) } else { Err(format!("{what} must be an absolute path (got {})", p.display())) }
+    };
+    if let Some(dir) = verify {
+        let dir = absolute(&dir, "verify")?;
+        let manifest = collect_verify::verify(&dir)?;
+        let recheck = collect_verify::reverify(&dir);
+        return Ok(json!({
+            "verified": manifest.verified() && recheck.as_ref().is_ok_and(|w| w.is_empty()),
+            "resources": manifest.resources.len(),
+            "failures": manifest.failures(),
+            "changed_since_collected": recheck.unwrap_or_else(|e| vec![e]),
+        }));
+    }
+    let (core_mode, mode) = match mode.as_deref().unwrap_or("all") {
+        "all" => (klipp_core::CollectMode::All, consolidate::ConsolidateMode::Collect),
+        "used" => (klipp_core::CollectMode::Used, consolidate::ConsolidateMode::UsedOnly),
+        "trimmed" => {
+            let h = handle_secs.unwrap_or(1.0);
+            if !(h.is_finite() && (0.0..=60.0).contains(&h)) {
+                return Err(format!("handle_secs {h}: give 0 to 60"));
+            }
+            (klipp_core::CollectMode::Trimmed { handle_secs: h }, consolidate::ConsolidateMode::Trimmed { handle_secs: h })
+        }
+        other => return Err(format!("mode {other:?}: give all, used or trimmed")),
+    };
+    if dry_run {
+        let seq = (*ctx.sequence.snapshot()).clone();
+        let mut sequences = vec![seq];
+        sequences.extend(others_of(ctx));
+        let pool = ctx.media_pool.read().recovered().clone();
+        let fonts_left_out: Vec<(String, String)> = klipp_project::project_fonts::fonts_used(&sequences)
+            .into_iter()
+            .filter(|f| !klipp_title::bundled::BUNDLED.iter().any(|b| b.family.eq_ignore_ascii_case(f)))
+            .filter_map(|family| klipp_title::collect::font_files(&family).err().map(|why| (family, why)))
+            .collect();
+        let options = consolidate::ConsolidateOptions { dest_dir: std::path::PathBuf::new(), include_proxies: proxies, include_skims: false, mode, looks: Vec::new(), fonts: Vec::new() };
+        let summary = consolidate::summarise(&pool, &sequences, &Default::default(), &options);
+        let report = klipp_project::collect_report::report(&sequences, &pool, &fonts_left_out, &describe_plugin);
+        return Ok(json!({
+            "files": summary.files,
+            "bytes": summary.bytes,
+            "trimmed": summary.trimmed,
+            "left_out": summary.left_out,
+            "offline": summary.offline,
+            "cannot_carry": report,
+            "note": "the timeline, input and viewing LUTs and the Looks' files are counted when it runs",
+        }));
+    }
+    let dest = absolute(dest.as_deref().ok_or("give dest, the folder to collect into, or dry_run or verify")?, "dest")?;
+    if std::fs::symlink_metadata(&dest).is_ok() {
+        return Err(format!("{} exists already: give a folder that doesn't", dest.display()));
+    }
+    send_envelope(ctx, vec![AppCommand::ConsolidateProject { dest_dir: dest.clone(), include_proxies: proxies, include_skims: false, create_zip: false, delete_folder_after_zip: false, mode: core_mode }], false)?;
+    Ok(json!({
+        "started": true,
+        "dest": dest,
+        "next": format!("collect_project with verify {} once it is done: the check and its manifest are written last", dest.display()),
+    }))
+}
