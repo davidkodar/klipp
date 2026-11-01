@@ -178,6 +178,13 @@ impl GpuP010Converter {
         self.resident_rgba.kept()
     }
 
+    /// Keep buffers for `frames` its stream's reader holds besides the
+    /// queue (`ResidentPool::keep_for`).
+    pub fn keep_resident_for(&mut self, frames: usize) {
+        self.resident_rgba.keep_for(frames);
+        self.resident_codes.keep_for(frames);
+    }
+
     /// Create a new GPU P010 converter. Shares the process-wide
     /// `GpuContext` — see `GpuNv12Converter::new` for the rationale.
     pub fn new() -> Option<Self> {

@@ -66,7 +66,9 @@ impl ReverseGop {
     /// frames it decodes; 30 fps until then.
     pub fn new(decoder: VideoDecoder, capacity: usize, start: f64) -> Self {
         decoder.pause();
-        Self { decoder, frame_secs: 1.0 / 30.0, frames: Vec::new(), filling: None, capacity: capacity.max(8), guessed_for: None, start: start.max(0.0), last_given: None, measured: None, target: None, ahead: false }
+        let capacity = capacity.max(8);
+        decoder.reader_holds(capacity);
+        Self { decoder, frame_secs: 1.0 / 30.0, frames: Vec::new(), filling: None, capacity, guessed_for: None, start: start.max(0.0), last_given: None, measured: None, target: None, ahead: false }
     }
 
     /// Reading `decoder`'s source backward, frames of `bytes` each held in
@@ -85,6 +87,7 @@ impl ReverseGop {
     pub fn learn_free(&mut self, free: Option<f64>) {
         if let (Some(bytes), Some(free)) = (self.guessed_for, free) {
             self.capacity = Self::capacity_for(bytes, Some(free)).max(8);
+            self.decoder.reader_holds(self.capacity);
             self.guessed_for = None;
         }
     }
