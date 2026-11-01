@@ -79,6 +79,7 @@ pub mod startup_timer;
 pub mod piece_transition;
 pub mod quote;
 pub mod time;
+pub mod roles;
 pub mod audio_effect_registry;
 pub mod transition_registry;
 pub mod types;
