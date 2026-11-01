@@ -1,0 +1,22 @@
+# Where YouTube's player covers a Short (#3315). Each zone's `rect` is
+# [x, y, width, height] as a share of the frame, from its top left.
+# YouTube publishes no single pixel layout: these are the margins guides
+# most often give for a 1080x1920 frame (672 px bottom, 192 px right,
+# about 120 px top). Check a Short against YouTube's own preview; when the
+# layout changes, change the numbers here.
+id = "youtube_shorts"
+name = "YouTube Shorts"
+aspect = [9, 16]
+checked = "2026-11-01"
+
+[[zone]]
+label = "Search and menu"
+rect = [0.0, 0.0, 1.0, 0.0625]
+
+[[zone]]
+label = "Like, dislike, comment, share, remix"
+rect = [0.822, 0.35, 0.178, 0.30]
+
+[[zone]]
+label = "Title, channel, subscribe and sound"
+rect = [0.0, 0.65, 1.0, 0.35]

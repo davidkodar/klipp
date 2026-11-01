@@ -1,0 +1,22 @@
+# Where YouTube's player covers a widescreen video (#3315): its title bar
+# when the controls show, and the progress bar and controls along the
+# bottom. Each zone's `rect` is [x, y, width, height] as a share of the
+# frame, from its top left, as the desktop player lays them out; captions
+# sit just above the controls. Check against YouTube's own player; when
+# its layout changes, change the numbers here.
+id = "youtube"
+name = "YouTube"
+aspect = [16, 9]
+checked = "2026-11-01"
+
+[[zone]]
+label = "Title and menu"
+rect = [0.0, 0.0, 1.0, 0.10]
+
+[[zone]]
+label = "Captions"
+rect = [0.10, 0.72, 0.80, 0.14]
+
+[[zone]]
+label = "Progress bar and controls"
+rect = [0.0, 0.88, 1.0, 0.12]

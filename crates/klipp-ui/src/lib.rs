@@ -94,6 +94,7 @@ pub mod multi_edit;
 pub mod multicam_grid;
 pub mod navigation;
 pub mod panels;
+pub mod platform_overlays;
 pub mod picture_mattes;
 pub mod mask_edit;
 pub mod mask_tracks;
