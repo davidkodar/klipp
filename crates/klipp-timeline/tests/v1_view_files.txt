@@ -14,6 +14,8 @@ klipp-compose/tests/disabled_transform.rs
 klipp-compose/tests/effect_keyframes.rs
 klipp-compose/tests/effect_node_anim.rs
 klipp-compose/tests/effect_render_scale.rs
+# The frame-key guard (#3265): it names every v1 picture field, and its sweeps build clips with fixed effect ids.
+klipp-compose/tests/frame_keys_cover_the_picture.rs
 klipp-compose/tests/effects_follow_grade.rs
 klipp-compose/tests/golden_corpus.rs
 klipp-compose/tests/gpu_composite.rs

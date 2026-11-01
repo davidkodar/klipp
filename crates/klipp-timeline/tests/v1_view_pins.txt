@@ -12,9 +12,11 @@
 # in 12f with the lists.
 # Raised for #891: Clip::grade_nodes reads a grade node's kind and key tracks from its legacy record (LEGACY_NODE) to list grade tracks in the curve editor.
 # Raised for #2758/#2757 (reviewed): graph_model.rs tells legacy effect and node params apart by type id (LEGACY_EFFECT 4, LEGACY_NODE 3) for colour, text, alias and clean-plate writes; graph_prepare.rs writes a saved node's whole entry with SetPayload; resolve.rs reads the entry of a Transform beside the chain (LEGACY_TRANSFORM, legacy); composition_template.rs's recipe_from_nodes reads legacy-typed nodes' entries (LEGACY_EFFECT 2, LEGACY_NODE 2, legacy); crop_cover_shape.rs builds its fixture with push_effect (2).
+# Raised for #3265 (frame_keys_cover_the_picture.rs): its field guard names every ClipPictureFields (4) and PictureView (2) field so a new one must be keyed or said why not; its sweeps set effects with set_effects (3), since an effect added by picture op takes a fresh id each build and the keys of two builds would differ.
+# Raised for #3318 (effect_params.rs): a load upgrades a stored effect by reading the node's legacy entry (legacy 1), and its test builds such a node (LEGACY_EFFECT 1).
 builtin_effects 110
 builtin_effects_enabled 39
-ClipPictureFields 18
+ClipPictureFields 22
 ClipPictureParts 13
 delift 38
 edit_effect_keyframes 19
@@ -43,7 +45,7 @@ effect_param_keyframes 2
 effects_state 5
 insert_effect 10
 insert_effect_with_id 2
-LEGACY_EFFECT 90
+LEGACY_EFFECT 91
 LEGACY_OFX 44
 move_builtin_effect 15
 move_effect 10
@@ -52,7 +54,7 @@ opacity_keyframes 26
 own_effects 1
 ParamId::Effect 49
 param_modifiers 52
-PictureView 16
+PictureView 18
 push_effect 83
 refresh_effect_ids 3
 remove_builtin_effect 11
@@ -65,7 +67,7 @@ restore_effects_state 6
 set_effect_enabled 22
 set_effect_list 49
 set_effect_list_with_ids 7
-set_effects 6
+set_effects 9
 # Raised from 11: #1534's OFX node tests set their plug-ins through the
 # list; they move to TestClip with the OFX arm.
 set_ofx_effects 17
@@ -101,7 +103,7 @@ LegacyClipAnim 15
 MissingLegacy 5
 SetPayload 25
 SetPayloadAt 17
-legacy 169
+legacy 170
 legacy_flags 44
 LEGACY_NODE 60
 LEGACY_GRADE 24
