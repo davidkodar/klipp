@@ -61,6 +61,14 @@ Circle, linear gradient and freeform masks limit a correction to part of the fra
 - **Match** captures a reference frame and matches the clip's colour to it.
 - Scenes can be matched to a hero shot, and looks derived from a reference; see [Colour Check](#colour-check).
 
+## Split Shots
+
+A shot split in pieces is still one shot. When you've graded one piece, right-click it and choose **Colour → Apply Grade to All Pieces of This Shot**. Its grade goes on the other pieces that have no grade of their own, as one undo step.
+
+Pieces count as one shot when they sit side by side on the same track, from the same file, at the same speed, with the file's range carrying straight on. A piece you graded yourself keeps its grade.
+
+To have the Colour page offer this under its header whenever the graded clip has ungraded pieces, turn on **Preferences → Colour → Offer grade for split shots**. It's off by default.
+
 ## LUTs
 
 Klipp ships 304 LUTs: film emulation (negative, print, slide, instant, black and white, Fuji X-Trans) under MIT, and a set of cinematic looks. Apply one to a clip from the **LUTs** category of the Effects browser (hover a card to see it on the clip first) or the Colour tab's LUT presets: it becomes the clip's look, a 3D LUT in its grade, and another preset replaces it, one undo step each. A LUT node in the grade does the same by hand. 3D `.cube` LUTs and 1D tables and shapers (`.cube` 1D, CSP) load. User LUTs in `~/.config/klipp/luts/` appear automatically.

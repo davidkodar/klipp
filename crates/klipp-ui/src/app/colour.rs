@@ -1997,6 +1997,22 @@ impl KlippApp {
                 self.state.toast.show(told);
                 true
             }
+            AppCommand::ApplyGradeToShotPieces { clip_id } => {
+                let seq = &self.state.sequences[self.state.active_sequence_idx];
+                let Some(clip) = seq.all_clips().find(|c| c.id == *clip_id) else { return true };
+                let targets = seq.ungraded_shot_pieces(*clip_id);
+                if targets.is_empty() {
+                    self.state.toast.show("No other ungraded pieces of this shot");
+                    return true;
+                }
+                let labels = klipp_timeline::grade_node_labels(&seq.node_labels, clip.id);
+                let GradeApplied { edits, labels, .. } = apply_grade(seq, clip.grade(), &labels, &targets, false);
+                let n = edits.len();
+                let edits: Vec<_> = edits.into_iter().chain(labels).collect();
+                self.apply_edits_as_one(&edits, "Apply Grade to Shot Pieces");
+                self.state.toast.show(format!("Applied the grade to {n} other piece{} of this shot", if n == 1 { "" } else { "s" }));
+                true
+            }
             AppCommand::ToggleGradeStillCompare => {
                 self.state.grade_still_compare = !self.state.grade_still_compare;
                 // One wipe at a time.

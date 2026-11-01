@@ -42,7 +42,7 @@ The bundled looks are the LUTs the person sees under Effects → LUTs and in the
 
 Arguments:
 - `name`: a look name from klipp_looks, or an absolute .cube path
-- `on`: instead of clip_id: "timeline", {"group": name, "stage": "post" (default) or "pre"}, or {"track": index or kind, "from"?, "to"?} for every picture clip of a track, with "itself": true for the track's own grade
+- `on`: instead of clip_id: "timeline", "shot" (with clip_id alone: its grade on the other ungraded pieces of its split shot), {"group": name, "stage": "post" (default) or "pre"}, or {"track": index or kind, "from"?, "to"?} for every picture clip of a track, with "itself": true for the track's own grade
 
 ## klipp_looks
 

@@ -95,6 +95,20 @@ pub(crate) fn elsewhere_hint(ui: &mut egui::Ui, theme: &crate::theme::KlippTheme
     .inner
 }
 
+/// The header's offer for a graded piece of a split shot: "Apply to the
+/// other N pieces of this shot". `true` when it is clicked.
+pub(crate) fn shot_pieces_hint(ui: &mut egui::Ui, theme: &crate::theme::KlippTheme, n: usize) -> bool {
+    ui.horizontal(|ui| {
+        ui.add_space(12.0);
+        ui.label(egui::RichText::new("Split shot —").size(crate::theme::type_scale::CAPTION).color(theme.text_dim));
+        let text = if n == 1 { "Apply to the other piece".to_string() } else { format!("Apply to the other {n} pieces") };
+        ui.link(egui::RichText::new(text).size(crate::theme::type_scale::CAPTION))
+            .on_hover_text("Give this grade to the ungraded pieces of the same shot, as one undo step")
+            .clicked()
+    })
+    .inner
+}
+
 impl super::KlippApp {
     /// "Go to it" from the Colour page's header: the playhead moved onto
     /// the clip, which the page then grades.

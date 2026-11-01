@@ -1012,6 +1012,11 @@ impl KlippApp {
                 // Which clip is graded, and a selection elsewhere (#2952).
                 let grading_title = self.state.grading_title(clip_id);
                 let elsewhere = stand_in.is_none().then(|| self.state.colour_elsewhere_hint()).flatten();
+                // A graded piece of a split shot, offering its grade to the
+                // rest (off unless the preference is on).
+                let shot_pieces = (self.prefs.color.offer_grade_to_shot_pieces && stand_in.is_none())
+                    .then(|| super::grade_edits::shot_pieces_offer(&self.state.sequences[seq_idx], clip_id))
+                    .flatten();
                 let clip = self.state.sequences[seq_idx].tracks.iter_mut()
                     .find_map(|t| t.find_clip_mut(clip_id));
                 if let Some(clip) = clip {
@@ -1024,6 +1029,11 @@ impl KlippApp {
                     if let Some(elsewhere) = elsewhere {
                         if super::colour_target::elsewhere_hint(ui, &theme) {
                             self.colour_go_to = Some(elsewhere);
+                        }
+                    }
+                    if let Some(n) = shot_pieces {
+                        if super::colour_target::shot_pieces_hint(ui, &theme, n) {
+                            all_cmds.push(AppCommand::ApplyGradeToShotPieces { clip_id });
                         }
                     }
 

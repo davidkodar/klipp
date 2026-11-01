@@ -1717,6 +1717,10 @@ pub struct ColorPrefs {
     /// kept across sessions.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub node_add_recents: Vec<String>,
+    /// Offer, on the Colour page, to give a graded piece's grade to the
+    /// other ungraded pieces of its split shot. Off unless turned on.
+    #[serde(default)]
+    pub offer_grade_to_shot_pieces: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -1744,6 +1748,7 @@ impl Default for ColorPrefs {
             port_snap_radius_px: default_port_snap_radius(),
             printer_point: default_printer_point(),
             node_add_recents: Vec::new(),
+            offer_grade_to_shot_pieces: false,
         }
     }
 }

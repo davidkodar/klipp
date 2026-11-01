@@ -9034,6 +9034,15 @@ impl TimelinePanel {
                             cmds.push(AppCommand::MatchClipToColorReference { clip_id });
                             ui.close_menu();
                         }
+                        // The rest of a split shot, graded alike in one step.
+                        let pieces = state.sequence().ungraded_shot_pieces(clip_id).len();
+                        if !clip.grade_is_identity()
+                            && pieces > 0
+                            && ui.button("Apply Grade to All Pieces of This Shot").on_hover_text(format!("Give this grade to the {pieces} other ungraded piece{} of this shot", if pieces == 1 { "" } else { "s" })).clicked()
+                        {
+                            cmds.push(AppCommand::ApplyGradeToShotPieces { clip_id });
+                            ui.close_menu();
+                        }
                         // Wipe the graded clip against this one (#899).
                         if state.show_color_panel
                             && viewed.is_some_and(|v| v != clip_id)

@@ -1333,6 +1333,8 @@ pub enum Op {
         #[serde(default)]
         clip_id: Option<ClipRef>,
         /// The timeline or a grade group's grade instead of a clip's.
+        /// "shot", with `clip_id` and nothing else, puts that clip's grade
+        /// on the other pieces of its split shot that have none.
         #[serde(default)]
         on: Option<GradeOn>,
         #[serde(default)]
@@ -4388,6 +4390,24 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
                 let one = Op::Grade { clip_id: None, on: None, exposure: *exposure, contrast: *contrast, saturation: *saturation, temperature: *temperature, tint: *tint, lift: *lift, gamma: *gamma, gain: *gain, highlights: *highlights, shadows: *shadows, vibrance: *vibrance, reset: *reset, from: from.clone() };
                 grade_op(seq, pool, fps, i, target, &one)
             })
+        }
+        Op::Grade { clip_id, on: Some(GradeOn::Named(n)), exposure, contrast, saturation, temperature, tint, lift, gamma, gain, highlights, shadows, vibrance, reset, from } if n.eq_ignore_ascii_case("shot") => {
+            let Some(clip_id) = clip_id else {
+                return Err(refuse(i, "no clip was named for its shot", "give clip_id: the graded piece of the shot"));
+            };
+            let knobs = [exposure, contrast, saturation, temperature, tint, lift, gamma, gain, highlights, shadows, vibrance];
+            if knobs.iter().any(|k| k.is_some()) || *reset || from.is_some() {
+                return Err(refuse(i, "on: \"shot\" copies the clip's grade as it is", "grade the clip first, then give its clip_id with on: \"shot\" alone"));
+            }
+            let (_, _, source) = resolve_clip(seq, fps, clip_id, i)?;
+            let pieces: Vec<&Clip> = seq.ungraded_shot_pieces(source.id).into_iter().filter_map(|id| seq.all_clips().find(|c| c.id == id)).collect();
+            if pieces.is_empty() {
+                return Err(refuse(i, format!("{} has no other ungraded pieces", clip_name(seq, pool, source)), "a shot's pieces sit side by side on one track, its range carrying on in the same file"));
+            }
+            let edits: Vec<EditCommand> = pieces.iter().map(|p| EditCommand::SetNodeGraph { clip_id: p.id, old_graph: p.grade().clone(), new_graph: source.grade().clone() }).collect();
+            let n = edits.len();
+            let what = format!("grade the {n} other piece{} of {}'s shot as it is graded", if n == 1 { "" } else { "s" }, clip_name(seq, pool, source));
+            Ok((what, EditCommand::Batch(edits), pieces.iter().map(|p| p.id).collect()))
         }
         Op::Grade { clip_id, on, .. } => {
             let target = grade_target(seq, pool, fps, i, clip_id.as_ref(), on.as_ref(), "grade")?;
@@ -15607,6 +15627,40 @@ mod tests {
         assert_eq!(clips[1].grade(), clips[0].grade(), "the same grade");
         let both: Vec<Op> = serde_json::from_str(&format!(r#"[{{"op":"grade","clip_id":"{}","from":"{}","exposure":0.2}}]"#, b.0, a.0)).unwrap();
         assert!(resolve(&view.sequences[0], view.media_pool, &both).unwrap_err().why.contains("takes no knobs"));
+    }
+
+    /// A split shot's grade put on its other ungraded pieces in one step,
+    /// the next clip, cut further on in the file, left alone; knobs
+    /// alongside refused.
+    #[test]
+    fn a_grade_goes_on_the_other_pieces_of_its_shot() {
+        let (mut seq, pool, _, a, b) = fixture();
+        // The next clip jumps on in the file: a cut, not more of the shot.
+        seq.tracks[0].clips[1].source_in = tc(5.0);
+        seq.tracks[0].clips[1].source_out = tc(9.0);
+        let cut = {
+            let c = &seq.tracks[0].clips[0];
+            assert_eq!(c.id, a);
+            klipp_core::Timecode::from_secs_f64((c.timeline_in.to_secs_f64() + c.timeline_out.to_secs_f64()) / 2.0, c.timeline_in.rate)
+        };
+        let (left, right) = seq.tracks[0].split_at(a, cut).unwrap();
+        let graded = resolve(&seq, &pool, &[Op::Grade { clip_id: Some(ClipRef::Id(left.id)), on: None, exposure: Some(0.5), contrast: None, saturation: None, temperature: None, tint: None, lift: None, gamma: None, gain: None, highlights: None, shadows: None, vibrance: None, reset: false, from: None }]).unwrap();
+        let mut seqs = vec![seq.clone()];
+        let mut p = pool.clone();
+        let mut fps = seq.fps;
+        let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps };
+        view.apply_forward(&graded.steps[0].edit);
+        let shot: Vec<Op> = serde_json::from_str(&format!(r#"[{{"op":"grade","clip_id":"{}","on":"shot"}}]"#, left.id.0)).unwrap();
+        let plan = resolve(&view.sequences[0], view.media_pool, &shot).unwrap();
+        assert_eq!(plan.steps.len(), 1, "one step");
+        view.apply_forward(&plan.steps[0].edit);
+        let clip = |id: ClipId| view.sequences[0].all_clips().find(|c| c.id == id).unwrap().clone();
+        assert_eq!(clip(right.id).grade(), clip(left.id).grade(), "the other piece takes the grade");
+        assert!(clip(b).grade_is_identity(), "a clip whose range jumps on is left alone");
+        // Nothing left to grade, and knobs with it, are both refused.
+        assert!(resolve(&view.sequences[0], view.media_pool, &shot).unwrap_err().why.contains("no other ungraded pieces"));
+        let knobs: Vec<Op> = serde_json::from_str(&format!(r#"[{{"op":"grade","clip_id":"{}","on":"shot","exposure":0.2}}]"#, left.id.0)).unwrap();
+        assert!(resolve(&view.sequences[0], view.media_pool, &knobs).unwrap_err().why.contains("as it is"));
     }
 
     /// #1918: a dissolve between two clips drawn from their own time (a

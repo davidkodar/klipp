@@ -490,7 +490,7 @@ impl PreferencesPanel {
             PrefsTab::Proxy => &["proxy", "auto-generate", "resolution", "proxy cache", "transcode"],
             PrefsTab::Accounts => &["accounts", "account", "freesound", "sign in", "sign-in", "login", "log in", "sign out", "original", "originals", "sound effects", "oauth"],
             PrefsTab::ExternalTools => &["external tools", "external app", "handoff", "round-trip", "round trip", "gimp", "krita", "audacity", "kdenlive", "editor", "image editor", "audio editor", "video editor"],
-            PrefsTab::Color => &["color", "working space", "rec.709", "lut", "calibration", "monitor", "interpolation", "scopes", "vectorscope", "skin angle"],
+            PrefsTab::Color => &["color", "working space", "rec.709", "lut", "calibration", "monitor", "interpolation", "scopes", "vectorscope", "skin angle", "split shot", "pieces"],
             PrefsTab::Export => &["export", "encoder", "h.264", "h.265", "prores", "colour space", "color space", "audio sample rate", "overwrite", "parallel render"],
             PrefsTab::Title => &["title", "font", "size", "alignment", "duration", "safe area", "text"],
             PrefsTab::Timeline => &["timeline", "clip colours", "clip colors", "clip gap", "trim handle", "track height", "waveform", "fit", "assistant"],
@@ -3900,6 +3900,21 @@ impl PreferencesPanel {
                         *dirty = true;
                     }
                 });
+            },
+        );
+
+        Self::section_header(ui, "GRADING", theme);
+        Self::setting_row_with_subtitle(
+            ui,
+            "Offer grade for split shots",
+            "After grading one piece of a split shot, offer to give its grade to the other pieces",
+            theme,
+            |ui| {
+                let mut val = prefs.color.offer_grade_to_shot_pieces;
+                if ui.add(Switch::new(&mut val, theme)).changed() {
+                    prefs.color.offer_grade_to_shot_pieces = val;
+                    *dirty = true;
+                }
             },
         );
     }
