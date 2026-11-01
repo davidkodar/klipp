@@ -138,7 +138,10 @@ Highlights above white are clipped; grade before bouncing. The file is display-r
 Bouncing is SDR only for now: an HDR or wide-gamut project is refused, saying why. Also refused, saying why:
 - a track whose frames read other tracks (an adjustment layer, a matte, a caption track);
 - clips that blend in different ways;
-- linked sound through a plug-in from outside Klipp.
+- linked sound through a plug-in from outside Klipp;
+- not enough free disk where the project keeps it, for the estimate and a margin (FFV1 is given room for half its frames uncompressed).
+
+Two bounces of one track never overwrite each other: a name already taken gets " 2", " 3" and so on.
 
 Disk: ProRes 4444 is up to about 2 GB a minute at 1080p24 and 8 GB at 4K, less for a simple picture. FFV1 is lossless and its size follows the picture. Time: on an RTX 4080 a minute of 1080p bounces in about a minute and a half, of 4K in under five.
 
