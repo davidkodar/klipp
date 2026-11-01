@@ -114,6 +114,10 @@ pub struct OfxPluginInfo {
     /// during Describe. Drives the on-thumbnail GPU/CPU badge in the
     /// effects browser. Mirrors `OfxPlugin::supports_opengl`.
     pub supports_opengl: bool,
+    /// The bundle's binary it was loaded from: with its version, what a
+    /// cached or frozen frame keys it by (#3301). `None` for one made in a
+    /// test.
+    pub binary: Option<std::path::PathBuf>,
     /// It asks for frames at other times (`OfxImageEffectPropTemporalClipAccess`),
     /// as it declared: mirrors `OfxPlugin::temporal`, which the render
     /// path reads.
@@ -142,6 +146,10 @@ pub struct OfxPlugin {
     pub supports_opencl: bool,
     /// Whether this plugin supports OpenGL rendering.
     pub supports_opengl: bool,
+    /// The bundle's binary it was loaded from: with its version, what a
+    /// cached or frozen frame keys it by (#3301). `None` for one made in a
+    /// test.
+    pub binary: Option<std::path::PathBuf>,
     /// It asks for frames at other times (`OfxImageEffectPropTemporalClipAccess`).
     pub temporal: bool,
     /// Its render thread safety is "unsafe": no two of its renders at once,
@@ -192,6 +200,7 @@ impl OfxPlugin {
             supported_contexts: self.supported_contexts.clone(),
             description: self.description.clone(),
             supports_opengl: self.supports_opengl,
+            binary: self.binary.clone(),
             temporal: self.temporal,
         }
     }
@@ -523,6 +532,7 @@ impl OfxHostRuntime {
                 supports_cuda: false,
                 supports_opencl: false,
                 supports_opengl: false,
+                binary: Some(binary.to_path_buf()),
                 temporal: false,
                 unsafe_threads: false,
                 sequential_render: false,
@@ -565,6 +575,7 @@ impl OfxHostRuntime {
             supports_cuda: false,
             supports_opencl: false,
             supports_opengl: false,
+            binary: None,
             temporal: false,
             unsafe_threads: false,
             sequential_render: false,
