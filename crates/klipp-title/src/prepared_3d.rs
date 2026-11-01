@@ -305,6 +305,7 @@ impl TitleRenderer {
             line_boxes: Vec::new(),
             line_ranges: Vec::new(),
             lines_vertical: false,
+            text_box: [layout.text_left, layout.text_top, layout.text_right, layout.text_bottom],
         };
         let id = self.next_cache_id;
         self.next_cache_id = self.next_cache_id.wrapping_add(1);
