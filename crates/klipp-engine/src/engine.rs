@@ -2049,6 +2049,10 @@ pub struct PlaybackEngine {
     status_inputs: Option<(klipp_timeline::SequenceRevision, usize, u64, u64)>,
     /// Set by a [`RunningEngine`] let go: the loop ends as on Quit.
     stop_requested: Arc<std::sync::atomic::AtomicBool>,
+    /// How long the end of [`Self::run`] waits for decode threads still
+    /// finishing; `None` for the app's second (see
+    /// [`Self::set_straggler_wait`]).
+    straggler_wait: Option<Duration>,
     /// The thread working the status out, started with the first ask.
     status_worker: Option<std::sync::mpsc::Sender<frames_job::StatusAsk>>,
     /// Current grade hash for the active clip (cached to avoid recomputing per frame).
@@ -3076,6 +3080,7 @@ impl PlaybackEngine {
             status_inputs: None,
             status_worker: None,
             stop_requested: Arc::default(),
+            straggler_wait: None,
             current_grade_hash: 0,
             current_grade_clip_id: None,
             current_graph_arc: None,
@@ -3221,21 +3226,33 @@ impl PlaybackEngine {
 
     /// Run on a thread of its own, stopped and joined when the handle is
     /// let go: see [`RunningEngine`].
-    pub fn spawn(self) -> RunningEngine {
+    pub fn spawn(mut self) -> RunningEngine {
+        // A test's engine waits longer for its decoders' threads: one left
+        // running into the test binary's exit takes the process down.
+        self.straggler_wait.get_or_insert(Duration::from_secs(10));
         let stop = Arc::clone(&self.stop_requested);
         RunningEngine { stop, thread: Some(std::thread::spawn(move || self.run())) }
     }
 
+    /// How long the end of [`Self::run`] waits for decode threads still
+    /// finishing: a second unless set; [`Self::spawn`] waits ten.
+    pub fn set_straggler_wait(&mut self, wait: Duration) {
+        self.straggler_wait = Some(wait);
+    }
+
     pub fn run(self) {
+        let self_wait = self.straggler_wait;
         // `run_inner` consumes `self`, so by the time it returns every
         // resource the engine owned — including its GPU pipelines — has
         // been dropped. Only then is it safe to tell the UI it may exit.
         self.run_inner();
         // Its decoders' threads that were slow to stop, joined too: their
-        // converters hold GPU pipelines (#3287).
-        let left = crate::video_decoder::join_stragglers(Duration::from_secs(10));
+        // converters hold GPU pipelines (#3287). The app waits a second, so
+        // a decoder hung at Quit doesn't hold the app open.
+        let wait = self_wait.unwrap_or(Duration::from_secs(1));
+        let left = crate::video_decoder::join_stragglers(wait);
         if left > 0 {
-            warn!("Engine stopped with {left} decode thread(s) still finishing");
+            warn!("Engine stopped with {left} decode thread(s) still finishing after {wait:?}");
         }
         ENGINE_SHUTDOWN_COMPLETE.store(true, Ordering::Release);
         info!("Engine thread stopped — teardown complete");
