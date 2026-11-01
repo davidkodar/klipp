@@ -5064,10 +5064,14 @@ impl Renderer {
         let own: Vec<_> = clip.picture_effects().ok()?.into_iter().filter(|e| e.enabled && !klipp_effects::is_identity_effect(&e.effect)).collect();
         let kind = std::mem::discriminant::<BuiltinEffect>;
         let mut next = 0;
+        // A clip measured alone has an effect drawn outside its picture (a
+        // shadow, a reflection) stood in for by an identity Opacity (#2475):
+        // that stand-in is the effect, showing the picture it is given.
+        let stand_in = |o: &BuiltinEffect, f: &BuiltinEffect| klipp_effects::draws_outside_the_picture(o) && matches!(f, BuiltinEffect::Opacity { value } if *value == 1.0);
         let nodes: Vec<Option<NodeId>> = fx
             .iter()
             .map(|f| {
-                let i = (next..own.len()).find(|&i| kind(&own[i].effect) == kind(f))?;
+                let i = (next..own.len()).find(|&i| kind(&own[i].effect) == kind(f) || stand_in(&own[i].effect, f))?;
                 next = i + 1;
                 Some(own[i].node)
             })
