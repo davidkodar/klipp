@@ -33,7 +33,7 @@ With a clip selected, the viewer draws handles to move, scale and rotate it, and
 From the **View** menu or the viewer's options menu:
 
 - **Safe Areas** (Alt+S) — title-safe and action-safe guides.
-- **YouTube / YouTube Shorts / Instagram Reels / TikTok Player** — where that platform's player covers the picture (its buttons, caption and handle, progress bar), as labelled outlines; one at a time, off until chosen. On a timeline of another shape the outlines sit in the platform's frame, fitted in the picture. The numbers are approximate, from published creator guidance, and live in `assets/presets/platform_overlays/`, one file a platform.
+- **YouTube / YouTube Shorts / Instagram Reels / TikTok Player** — where that platform's player covers the picture (its buttons, caption and handle, progress bar), as labelled outlines; one at a time, off until chosen. A project made for a destination in New Project lists that destination's players first. On a timeline of another shape the outlines sit in the platform's frame, fitted in the picture. The numbers are approximate, from published creator guidance, and live in `assets/presets/platform_overlays/`, one file a platform.
 - **Grid** (Alt+G) — a rule-of-thirds grid.
 - **Zebras** (Alt+Z) — stripes over overexposed areas.
 - **False Colour** (Alt+F) — luminance mapped to colours for exposure; the palette is chosen and edited under **View → Palette**.
