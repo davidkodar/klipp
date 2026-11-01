@@ -368,7 +368,11 @@ impl KlippApp {
                         return true;
                     }
                     self.suppress_fps_prompt = false;
-                    if let Some(item) = self.state.media_pool.get(media_id).cloned() {
+                    let Some(item) = self.state.media_pool.get(media_id).cloned() else {
+                        self.state.toast.show("That clip is no longer in the media pool");
+                        return true;
+                    };
+                    {
                         // Accumulate everything this gesture mutates so a
                         // single ctrl+z can revert it as one atomic unit.
                         let mut hist_video: Option<(klipp_timeline::Clip, usize)> = None;
@@ -534,7 +538,13 @@ impl KlippApp {
                             }
                         }
 
-                        if hist_video.is_some() || hist_audio.is_some() {
+                        if hist_video.is_none() && hist_audio.is_none() {
+                            // Never nothing and no word: a gesture that
+                            // put nothing down says so.
+                            let kind = if has_video { "video" } else { "audio" };
+                            tracing::info!("placement: {} not placed, no {kind} track", item.filename);
+                            self.state.toast.show(format!("Couldn't place '{}': the timeline has no {kind} track to put it on", item.filename));
+                        } else {
                             self.state.active_history_mut().push(crate::history::HistoryEntry {
                                 command: crate::history::EditCommand::LinkedImport {
                                     video: hist_video,

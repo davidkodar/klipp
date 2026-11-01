@@ -1072,10 +1072,14 @@ impl KlippApp {
                     FrameRateMismatchChoice::DontChange => Some(None),
                     FrameRateMismatchChoice::Cancel => None,
                 };
+                tracing::info!("placement: frame-rate question answered {choice:?}");
                 if let Some(change_to) = change_to {
                     cmds.extend(self.state.answer_rate_question(seq_idx, change_to));
                     self.suppress_fps_prompt = true;
                     cmds.push(pending);
+                } else {
+                    // Closed: the clip is not placed, and that is said.
+                    self.state.toast.show("Not placed: the frame-rate question was closed");
                 }
             }
         }
