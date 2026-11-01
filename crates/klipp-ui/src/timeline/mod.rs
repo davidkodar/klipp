@@ -628,6 +628,10 @@ impl NewTimelinePanel {
             state.active_tool = klipp_core::Tool::Select;
         }
         crate::ui_util::allocate_clipped_ui(ui, tracks_rect, |ui| {
+            // A clip let go on the ruler or the camera's lane, above the
+            // top track, goes on a new video track (see the panel's
+            // `drop_above`).
+            old_timeline.drop_above = Some(egui::Rect::from_min_max(ruler_rect.min, egui::pos2(ruler_rect.max.x, tracks_rect.min.y)));
             let old_cmds = old_timeline.show(ui, state, kb);
             cmds.extend(old_cmds);
         });
@@ -1305,6 +1309,39 @@ mod menu_smoke_tests {
         assert!(hinted, "the drop says what it will do");
         assert!(sent.iter().any(|c| matches!(c, AppCommand::EditAudition { clip_id, edit: klipp_core::AuditionEdit::AddMedia { media_ids } } if *clip_id == id && media_ids == &vec![media])), "{sent:?}");
         assert!(!sent.iter().any(|c| matches!(c, AppCommand::PlaceMedia { .. })), "not placed on the track: {sent:?}");
+    }
+
+    /// A pool file let go above the top video track, on the ruler or just
+    /// over V1, goes on a new video track, as one let go below the audio
+    /// tracks goes on a new track there.
+    #[test]
+    fn a_drop_above_the_top_video_track_makes_a_video_track() {
+        for above in [6.0f32, 20.0] {
+            let mut timeline = Timeline::new();
+            let media = timeline.state.media_pool.all().next().expect("the clip").id;
+            let v1 = timeline.state.sequences[0].tracks.iter().position(|t| matches!(t.kind, TrackKind::Video)).unwrap();
+            let videos = |t: &Timeline| t.state.sequences[0].tracks.iter().filter(|t| t.kind == TrackKind::Video).count();
+            let before = videos(&timeline);
+            timeline.frame(Vec::new());
+            timeline.frame(Vec::new());
+            let top = timeline.old.frame_cache.track_rects.iter().map(|(_, _, r)| r.top()).fold(f32::MAX, f32::min);
+            let rect = timeline.old.frame_cache.track_rects.iter().find(|(i, _, _)| *i == v1).expect("V1 drawn").2;
+            let x = rect.left() + 30.0;
+            let at = egui::pos2(x, top - above);
+            let start = egui::pos2(x, 590.0);
+            let mut sent = Vec::new();
+            timeline.frame(vec![egui::Event::PointerMoved(start), egui::Event::PointerButton { pos: start, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE }]);
+            timeline.state.dragging_media = Some(media);
+            for k in 1..=6 {
+                let p = egui::pos2(x, start.y + (at.y - start.y) * k as f32 / 6.0);
+                timeline.frame(vec![egui::Event::PointerMoved(p)]);
+                sent.append(&mut timeline.sent);
+            }
+            timeline.frame(vec![egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE }]);
+            sent.append(&mut timeline.sent);
+            let placed = sent.iter().any(|c| matches!(c, AppCommand::AppendClipToTrack { media_id, .. } if *media_id == media));
+            assert!(placed && videos(&timeline) == before + 1, "{above} px above the top track: a new video track and the clip on it ({} video tracks, sent {sent:?})", videos(&timeline));
+        }
     }
 
     /// #73: the same menu offers Cut Out Subject, which asks for the
