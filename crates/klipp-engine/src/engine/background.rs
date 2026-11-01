@@ -454,6 +454,44 @@ mod tests {
         assert!(stop.load(Ordering::Acquire) && started.elapsed() < Duration::from_secs(5), "dropping it stopped it and waited");
     }
 
+    /// A decode thread still finishing past the engine's wait doesn't hold
+    /// its end: the engine stops when the wait is up, the thread kept for
+    /// later (#3287). The app's wait is a second, so a decoder hung at
+    /// Quit doesn't hold the app open.
+    #[test]
+    fn a_decode_thread_past_the_wait_doesnt_hold_the_engines_end() {
+        let (cmd, cmd_rx) = crossbeam_channel::unbounded();
+        let (ev_tx, _ev_rx) = crossbeam_channel::unbounded();
+        let fb = || Arc::new(Mutex::new(crate::texture::FrameBuffer::new(16, 16)));
+        let mut e = PlaybackEngine::new(
+            cmd_rx, ev_tx, fb(), fb(),
+            Arc::new(klipp_timeline::SharedSequence::new(Sequence::new_default())), Arc::new(RwLock::new(klipp_media::MediaPool::new())), Box::new(|| {}),
+            Arc::new(Mutex::new(None)), Arc::new(Mutex::new(crate::perf::PerfRing::default())),
+        );
+        e.set_straggler_wait(Duration::from_millis(50));
+        let running = e.spawn();
+        crate::video_decoder::keep_straggler(std::thread::spawn(|| std::thread::sleep(Duration::from_secs(3))));
+        let start = Instant::now();
+        cmd.send(klipp_core::AppCommand::Quit).unwrap();
+        assert!(running.join().is_ok());
+        assert!(start.elapsed() < Duration::from_secs(1), "stopped once its wait was up: {:?}", start.elapsed());
+
+        // Run as the app runs it, its wait not set: a second.
+        let (cmd, cmd_rx) = crossbeam_channel::unbounded();
+        let (ev_tx, _ev_rx) = crossbeam_channel::unbounded();
+        let e = PlaybackEngine::new(
+            cmd_rx, ev_tx, fb(), fb(),
+            Arc::new(klipp_timeline::SharedSequence::new(Sequence::new_default())), Arc::new(RwLock::new(klipp_media::MediaPool::new())), Box::new(|| {}),
+            Arc::new(Mutex::new(None)), Arc::new(Mutex::new(crate::perf::PerfRing::default())),
+        );
+        let app = std::thread::spawn(move || e.run());
+        crate::video_decoder::keep_straggler(std::thread::spawn(|| std::thread::sleep(Duration::from_secs(4))));
+        let start = Instant::now();
+        cmd.send(klipp_core::AppCommand::Quit).unwrap();
+        assert!(app.join().is_ok());
+        assert!(start.elapsed() < Duration::from_secs(2), "the app's engine waits a second: {:?}", start.elapsed());
+    }
+
     /// A frame is cheap already with nothing on it, or with every track
     /// on it frozen and current there; a stale or live span isn't.
     #[test]
