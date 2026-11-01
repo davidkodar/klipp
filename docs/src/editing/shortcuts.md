@@ -90,6 +90,7 @@ The tables below are the **Klipp** layout.
 | Overwrite Edit | `.` |
 | Fit to Fill | `Shift+F11` |
 | Place on Top | `F12` |
+| Append to End | none (`E` in the Final Cut layout) |
 | Replace Edit | `Shift+F12` |
 | Lift Edit | `;` |
 | Extract Edit | `'` |

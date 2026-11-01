@@ -389,3 +389,23 @@ fn the_open_source_editor_layout_is_offered_and_its_keys_work() {
         assert!(on.iter().any(|a| a == action), "{key} runs {action}: {on:?}");
     }
 }
+
+/// Final Cut's E appends: in its layout E runs Append to End, which puts
+/// the media pool's selected clips on the timeline by name, as the pool
+/// lists them first,
+/// else the source viewer's clip.
+#[test]
+fn final_cuts_e_appends_the_selection() {
+    let kb = KeyBindings::from_preset(KeymapPreset::FinalCut);
+    let ctx = egui::Context::default();
+    let e = KeyCombo::parse("E").unwrap();
+    assert!(fired(&ctx, &kb, &e).iter().any(|a| a == "append_edit"), "E: {:?}", fired(&ctx, &kb, &e));
+    let mut state = crate::state::AppState::default();
+    let item = |n: &str| klipp_media::MediaItem::synthetic_for_test(format!("/tmp/{n}.mov").into(), None);
+    let (a, b, c) = (state.media_pool.add(item("a")), state.media_pool.add(item("b")), state.media_pool.add(item("c")));
+    assert!(state.append_targets().is_empty(), "nothing selected or loaded");
+    state.source_media_id = Some(b);
+    assert_eq!(state.append_targets(), [b], "the source viewer's clip");
+    state.selected_media_ids = [c, a].into_iter().collect();
+    assert_eq!(state.append_targets(), [a, c], "the pool's selection, by name");
+}
