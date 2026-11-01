@@ -17,15 +17,17 @@ use klipp_media::{MediaItem, MediaPool};
 use klipp_timeline::{Clip, ClipKind, Sequence, Track, TrackKind};
 
 /// What a composited skim has to keep up, per architecture. On x86_64,
-/// every position composited, at the raw skim's pace within its 5%
-/// spread. A Mac mini M1 under Asahi (aarch64) decodes the skim file in
+/// the raw skim's pace within its 5% spread, and every position but
+/// two composited: a position the stack cannot draw within the 60 ms it
+/// waits is left to the raw frame, as the engine means it to be, and
+/// under a loaded machine (a full parallel suite) one was (#3289). A Mac mini M1 under Asahi (aarch64) decodes the skim file in
 /// software, having no hardware video decode, and the step back just
 /// after the turn at the clip's end takes it past the 60 ms a position
 /// waits, so that position is left to the raw frame, as the engine
 /// means it to be: 1 or 2 of 50 there, composited at 0.66 to 0.82 of the
 /// raw pace, debug and optimised builds alike.
 #[cfg(not(target_arch = "aarch64"))]
-const LEFT_TO_RAW_AT_MOST: usize = 0;
+const LEFT_TO_RAW_AT_MOST: usize = 2;
 #[cfg(target_arch = "aarch64")]
 const LEFT_TO_RAW_AT_MOST: usize = 3;
 #[cfg(not(target_arch = "aarch64"))]

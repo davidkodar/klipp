@@ -202,11 +202,16 @@ mod tests {
         let (cmd, cmd_rx) = crossbeam_channel::unbounded();
         let (ev_tx, ev_rx) = crossbeam_channel::unbounded::<AppEvent>();
         let gave_up = Arc::new(Mutex::new(Vec::<String>::new()));
-        let g = Arc::clone(&gave_up);
+        let plays = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (g, p) = (Arc::clone(&gave_up), Arc::clone(&plays));
         std::thread::spawn(move || {
             while let Ok(ev) = ev_rx.recv() {
-                if let AppEvent::PlaybackGaveUp { what } = ev {
-                    g.lock().unwrap().push(what);
+                match ev {
+                    AppEvent::PlaybackGaveUp { what } => g.lock().unwrap().push(what),
+                    AppEvent::PlaybackStarted => {
+                        p.fetch_add(1, std::sync::atomic::Ordering::Release);
+                    }
+                    _ => {}
                 }
             }
         });
@@ -238,14 +243,30 @@ mod tests {
 
         // One that ends every time it starts is made again three times,
         // then left until the person plays again.
+        //
+        // Waited on, not slept on (#3289): the Play forgives the panics
+        // so far, and under load a Play the engine had not yet read when
+        // the sticky panic was armed forgave the first of its restarts,
+        // which made it again twice too often. So the Play is in hand —
+        // this engine said it started, which it says after forgiving —
+        // before the panic is armed, and the count is read once the person
+        // was told it was left.
+        let played = plays.load(std::sync::atomic::Ordering::Acquire);
         cmd.send(AppCommand::Pause).unwrap();
         cmd.send(AppCommand::Play).unwrap();
-        std::thread::sleep(Duration::from_millis(500));
+        let t0 = Instant::now();
+        while plays.load(std::sync::atomic::Ordering::Acquire) == played && t0.elapsed() < Duration::from_secs(10) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(plays.load(std::sync::atomic::Ordering::Acquire) > played, "the Play was read");
         let panics = || super::MIX_PANICS.load(std::sync::atomic::Ordering::Relaxed);
         let before = panics();
         super::MIX_STICKY.store(true, std::sync::atomic::Ordering::Release);
         super::arm_mix_thread(Some(mixer));
-        std::thread::sleep(Duration::from_secs(2));
+        let t0 = Instant::now();
+        while gave_up.lock().unwrap().is_empty() && t0.elapsed() < Duration::from_secs(20) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
         let at_two = panics();
         std::thread::sleep(Duration::from_secs(1));
         assert_eq!(panics(), at_two, "it stops being made again");
