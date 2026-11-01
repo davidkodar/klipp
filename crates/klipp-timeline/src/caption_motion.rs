@@ -99,6 +99,28 @@ pub struct CaptionAnimation {
     /// The outline's width in pixels of a 1080-line frame.
     #[serde(default = "default_outline")]
     pub outline: f32,
+    /// The words' colour; white when none is given.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text_color: Option<[u8; 4]>,
+    /// The weight, 100 to 900; bold when none is given.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub weight: Option<u16>,
+    /// Set in capitals, whatever the transcript's case.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub caps: bool,
+    /// A soft glow round the words (#3304).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub glow: Option<CaptionGlow>,
+}
+
+/// A caption's glow: its colour, its blur radius in pixels of a
+/// 1080-line frame, and its strength, 0 to 1.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CaptionGlow {
+    pub color: [u8; 4],
+    pub radius: f32,
+    pub intensity: f32,
 }
 
 fn default_words() -> u8 {
@@ -129,6 +151,10 @@ impl Default for CaptionAnimation {
             emphasis_color: default_emphasis(),
             font: None,
             outline: default_outline(),
+            text_color: None,
+            weight: None,
+            caps: false,
+            glow: None,
         }
     }
 }
@@ -206,7 +232,9 @@ pub fn animated_caption(screen: &CaptionScreen, anim: &CaptionAnimation, width: 
         font_size: if tall { 84.0 } else { 64.0 },
         font_name: anim.font.clone().unwrap_or_else(|| "Inter".into()),
         font_style: crate::FontStyle::Bold,
-        color: [255, 255, 255, 255],
+        font_weight: anim.weight,
+        case_transform: if anim.caps { crate::TextCase::Uppercase } else { crate::TextCase::default() },
+        color: anim.text_color.unwrap_or([255, 255, 255, 255]),
         alignment: TextAlignment::Center,
         ..Default::default()
     };
@@ -224,6 +252,10 @@ pub fn animated_caption(screen: &CaptionScreen, anim: &CaptionAnimation, width: 
     let mut td = TitleData::single_text(tb);
     let fx = td.objects[0].fx_mut();
     fx.outlines.push(TextOutline { color: [0, 0, 0, 255], width: anim.outline.max(0.0), enabled: anim.outline > 0.0, width_keyframes: Vec::new() });
+    if let Some(g) = anim.glow {
+        let radius = g.radius.max(0.0);
+        fx.glows.push(crate::TextGlow { enabled: radius > 0.0, color: g.color, radius, radius_keyframes: Vec::new(), intensity: g.intensity.clamp(0.0, 1.0), intensity_keyframes: Vec::new() });
+    }
     fx.animators.push(word_animator(screen, anim));
     let o = &mut td.objects[0];
     // Low on a tall frame it stays clear of the band and the buttons at

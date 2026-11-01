@@ -140,17 +140,45 @@ fn captions_form(ui: &mut egui::Ui, state: &mut AppState) {
         // shown (#2710).
         ui.horizontal_wrapped(|ui| {
             ui.label("Style");
+            let looks = klipp_timeline::caption_looks::all();
+            let look = form.look.and_then(klipp_timeline::caption_looks::by_id);
             egui::ComboBox::from_id_salt("captions_style")
-                .selected_text(form.animated.map_or("Plain", |m| m.label()))
+                .selected_text(look.map(|l| l.name.as_str()).unwrap_or(form.animated.map_or("Plain", |m| m.label())))
                 .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut form.animated, None, "Plain");
+                    if ui.selectable_label(form.animated.is_none(), "Plain").clicked() {
+                        (form.animated, form.look) = (None, None);
+                    }
                     for m in klipp_timeline::CaptionMotion::ALL {
-                        ui.selectable_value(&mut form.animated, Some(m), m.label());
+                        if ui.selectable_label(form.look.is_none() && form.animated == Some(m), m.label()).clicked() {
+                            (form.animated, form.look) = (Some(m), None);
+                        }
+                    }
+                    // Ready-made looks (#3304): a style with its face,
+                    // case, glow and colours.
+                    ui.separator();
+                    for l in looks {
+                        if ui.selectable_label(form.look == Some(l.id.as_str()), &l.name).clicked() {
+                            (form.animated, form.look) = (Some(l.motion), Some(l.id.as_str()));
+                            form.look_colour = l.colour(None).map(|c| c.name.clone()).unwrap_or_default();
+                        }
                     }
                 });
             if form.animated.is_some() {
                 ui.label("Words on screen");
                 ui.add(egui::DragValue::new(&mut form.words_per_screen).range(1..=5));
+            }
+            if let Some(look) = look {
+                ui.label("Colour");
+                egui::ComboBox::from_id_salt("captions_look_colour").selected_text(form.look_colour.as_str()).show_ui(ui, |ui| {
+                    for c in &look.colours {
+                        ui.selectable_value(&mut form.look_colour, c.name.clone(), &c.name);
+                    }
+                });
+                if look.glow.is_some() {
+                    ui.label("Glow");
+                    ui.add(egui::Slider::new(&mut form.glow, 0.0..=3.0).fixed_decimals(1));
+                }
+            } else if form.animated.is_some() {
                 ui.label("Spoken word");
                 let [r, g, b, a] = form.active_color;
                 let mut c = egui::Color32::from_rgba_unmultiplied(r, g, b, a);
@@ -189,11 +217,20 @@ fn captions_form(ui: &mut egui::Ui, state: &mut AppState) {
     } else {
         (None, None)
     };
-    let animate = form.animated.map(|m| klipp_document::ops::AnimateSpec {
-        style: Some(m.name().to_string()),
-        words_per_screen: Some(form.words_per_screen),
-        active_color: Some(format!("#{:02x}{:02x}{:02x}", form.active_color[0], form.active_color[1], form.active_color[2])),
-        ..Default::default()
+    let animate = form.animated.map(|m| match form.look {
+        Some(look) => klipp_document::ops::AnimateSpec {
+            look: Some(look.to_string()),
+            look_colour: Some(form.look_colour.clone()).filter(|c| !c.is_empty()),
+            glow: Some(form.glow),
+            words_per_screen: Some(form.words_per_screen),
+            ..Default::default()
+        },
+        None => klipp_document::ops::AnimateSpec {
+            style: Some(m.name().to_string()),
+            words_per_screen: Some(form.words_per_screen),
+            active_color: Some(format!("#{:02x}{:02x}{:02x}", form.active_color[0], form.active_color[1], form.active_color[2])),
+            ..Default::default()
+        },
     });
     let op = Op::Captions { track, from, to, max_chars: form.max_chars, max_lines: form.max_lines, replace: form.replace, animate };
     state.pending_doc_ops.push(crate::state::DocOpsRequest { label: "Captions from transcript".to_string(), ops: vec![op], independent: false });

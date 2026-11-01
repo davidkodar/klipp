@@ -3623,12 +3623,17 @@ pub struct CaptionsForm {
     pub animated: Option<klipp_timeline::CaptionMotion>,
     pub words_per_screen: u8,
     pub active_color: [u8; 4],
+    /// A ready-made look (#3304), by its id, with one of its colours by
+    /// name and its glow's amount; `None` for a style alone.
+    pub look: Option<&'static str>,
+    pub look_colour: String,
+    pub glow: f32,
 }
 
 impl Default for CaptionsForm {
     fn default() -> Self {
         let anim = klipp_timeline::CaptionAnimation::default();
-        Self { max_chars: 42, max_lines: 2, in_out_only: false, replace: false, animated: None, words_per_screen: anim.words_per_screen, active_color: anim.active_color }
+        Self { max_chars: 42, max_lines: 2, in_out_only: false, replace: false, animated: None, words_per_screen: anim.words_per_screen, active_color: anim.active_color, look: None, look_colour: String::new(), glow: 1.0 }
     }
 }
 

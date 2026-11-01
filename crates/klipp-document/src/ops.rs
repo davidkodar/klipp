@@ -7150,12 +7150,37 @@ pub struct AnimateSpec {
     /// The outline's width in pixels of a 1080-line frame; 0 for none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub outline: Option<f32>,
+    /// A ready-made look by id (#3304), e.g. glow_caps: its motion,
+    /// face, case and glow; the fields above given with it change it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub look: Option<String>,
+    /// One of the look's colours by name; its first when left out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub look_colour: Option<String>,
+    /// How much the look glows, 0 (none) to 3; 1 as designed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub glow: Option<f32>,
 }
 
 /// `a` checked and made the caption look it names.
 fn caption_animation(a: &AnimateSpec, i: usize) -> Result<klipp_timeline::CaptionAnimation, Refusal> {
-    use klipp_timeline::{CaptionAnimation, CaptionMotion, CaptionPlace};
+    use klipp_timeline::{caption_looks, CaptionAnimation, CaptionMotion, CaptionPlace};
     let mut out = CaptionAnimation::default();
+    if let Some(id) = &a.look {
+        let names = || caption_looks::all().iter().map(|l| l.id.as_str()).collect::<Vec<_>>().join(", ");
+        let look = caption_looks::by_id(id).ok_or_else(|| refuse(i, format!("\"{id}\" is not a caption look"), format!("use {}", names())))?;
+        let colour = look.colour(a.look_colour.as_deref()).ok_or_else(|| {
+            let offered = look.colours.iter().map(|c| c.name.as_str()).collect::<Vec<_>>().join(", ");
+            refuse(i, format!("{} has no colour \"{}\"", look.name, a.look_colour.as_deref().unwrap_or_default()), format!("use {offered}"))
+        })?;
+        let glow = a.glow.unwrap_or(1.0);
+        if !glow.is_finite() || !(0.0..=3.0).contains(&glow) {
+            return Err(refuse(i, format!("glow {glow} is out of range"), "give a glow from 0 to 3, 1 as designed"));
+        }
+        out = look.animation(colour, glow);
+    } else if a.look_colour.is_some() || a.glow.is_some() {
+        return Err(refuse(i, "a look colour or glow without a look", "name the look, e.g. look: glow_caps"));
+    }
     if let Some(name) = &a.style {
         out.style = CaptionMotion::ALL.into_iter().find(|m| m.name().eq_ignore_ascii_case(name.trim()))
             .ok_or_else(|| refuse(i, format!("\"{name}\" is not a caption style"), "use pop, highlight, karaoke, bounce, box or typewriter"))?;
@@ -7193,7 +7218,9 @@ fn caption_animation(a: &AnimateSpec, i: usize) -> Result<klipp_timeline::Captio
         out.outline = v;
     }
     out.emphasis = a.emphasis.clone().unwrap_or_default();
-    out.font = a.font.clone().filter(|f| !f.trim().is_empty());
+    if let Some(f) = a.font.clone().filter(|f| !f.trim().is_empty()) {
+        out.font = Some(f);
+    }
     Ok(out)
 }
 
@@ -17099,6 +17126,37 @@ mod tests {
         assert!(why(serde_json::json!({"words_per_screen": 9})).contains("1 to 5"));
         assert!(why(serde_json::json!({"active_color": "gold"})).contains("#rrggbb"));
         assert!(serde_json::from_value::<Op>(serde_json::json!({"op": "captions", "animate": {"speed": 2}})).is_err(), "an unknown field is refused");
+    }
+
+    /// #3304: a caption look by id gives the captions its face, weight,
+    /// capitals and glow in the colour chosen, the glow scaled by its
+    /// amount; a field given with it changes it, and a look, colour or
+    /// glow that isn't one is refused, naming those there are.
+    #[test]
+    fn a_caption_look_gives_its_face_case_and_glow() {
+        let (seq, pool, _, _, _) = fixture();
+        let op = |animate: serde_json::Value| -> Op { serde_json::from_value(serde_json::json!({"op": "captions", "animate": animate})).unwrap() };
+        let plan = resolve_with(&seq, &pool, &[op(serde_json::json!({"look": "glow_caps", "look_colour": "Peach", "glow": 2.0, "words_per_screen": 2}))], &Spoken).unwrap();
+        let first = plan_caption(&plan, 0);
+        let klipp_timeline::TitleObjectContent::TextBox(tb) = &first.objects[0].content else { panic!("a text box") };
+        assert_eq!((tb.font_name.as_str(), tb.font_weight, tb.case_transform), ("Montserrat", Some(800), klipp_timeline::TextCase::Uppercase));
+        assert_eq!((tb.color, tb.text.as_str()), ([0xff, 0xe0, 0xc8, 255], "Nobody is"), "the colour chosen, two words a screen");
+        let fx = first.objects[0].fx();
+        let glow = fx.glows.first().expect("a glow");
+        assert_eq!((glow.color, glow.radius), (tb.color, 36.0), "in the chosen colour, at twice its radius");
+        assert!(!fx.outlines.iter().any(|o| o.enabled), "the look has no outline");
+
+        let plain = resolve_with(&seq, &pool, &[op(serde_json::json!({"look": "glow_caps", "glow": 0.0, "font": "Inter"}))], &Spoken).unwrap();
+        let first = plan_caption(&plain, 0);
+        let klipp_timeline::TitleObjectContent::TextBox(tb) = &first.objects[0].content else { panic!("a text box") };
+        assert_eq!((tb.font_name.as_str(), tb.color), ("Inter", [0xd8, 0xf1, 0xff, 255]), "a font given changes the look's; its first colour");
+        assert!(first.objects[0].fx().glows.is_empty(), "glow 0: none");
+
+        let why = |a: serde_json::Value| resolve_with(&seq, &pool, &[op(a)], &Spoken).unwrap_err().to_string();
+        assert!(why(serde_json::json!({"look": "neon"})).contains("glow_caps"));
+        assert!(why(serde_json::json!({"look": "glow_caps", "look_colour": "red"})).contains("Ice, Peach, Mint"));
+        assert!(why(serde_json::json!({"look": "glow_caps", "glow": 5.0})).contains("0 to 3"));
+        assert!(why(serde_json::json!({"glow": 1.0})).contains("name the look"));
     }
 
     #[test]
