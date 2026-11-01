@@ -164,8 +164,9 @@ fn stored_pictures(v2: &serde_json::Value) -> HashMap<(String, String), klipp_ti
                     continue;
                 };
                 // Its effects' values held in their maps, as a lift holds
-                // them (M3-2); a picture that can't be is lifted again.
-                if klipp_graph_lift::effect_params::picture_into_memory(&mut picture).is_err() {
+                // them (M3-2), each entry first as its effect writes it now;
+                // a picture that can't be is lifted again.
+                if klipp_graph_lift::effect_params::picture_upgraded_entries(&mut picture).is_err() || klipp_graph_lift::effect_params::picture_into_memory(&mut picture).is_err() {
                     continue;
                 }
                 // A version's mix and mask channel come off its body: the

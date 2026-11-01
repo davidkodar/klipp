@@ -588,6 +588,32 @@ pub fn each_effect_node(graph: &mut Graph, f: &mut dyn FnMut(&mut Node) -> Resul
     Ok(())
 }
 
+/// A stored picture's effect entries as the effect writes them now: each
+/// read as its effect (whose fields read older forms: a yes/no saved
+/// where a number is now, a field added since at its default) and
+/// written again. A picture saved before an effect's fields changed is
+/// then what lifting the clip gives, and is kept at load, not lifted
+/// again: a Reflection saved with `submerge` a yes or no, before its water
+/// fields, differed from its lift (#3302). An entry that doesn't read as
+/// an effect is left for the lift to judge.
+pub fn picture_upgraded_entries(picture: &mut ClipPicture) -> Result<(), String> {
+    each_effect_node(&mut picture.graph, &mut upgrade_entry)
+}
+
+/// [`picture_upgraded_entries`] for one node.
+pub fn upgrade_entry(n: &mut Node) -> Result<(), String> {
+    if !is_effect(n) || in_memory(n) {
+        return Ok(());
+    }
+    let Some(legacy) = n.legacy.as_mut() else { return Ok(()) };
+    if let Ok(effect) = serde_json::from_value::<klipp_effects::BuiltinEffect>(legacy.payload.clone()) {
+        if let Ok(entry) = serde_json::to_value(effect) {
+            legacy.payload = entry;
+        }
+    }
+    Ok(())
+}
+
 /// A picture's effect nodes held in memory ([`into_memory`]).
 pub fn picture_into_memory(picture: &mut ClipPicture) -> Result<(), String> {
     each_effect_node(&mut picture.graph, &mut into_memory)
@@ -646,6 +672,35 @@ mod tests {
         // The luma key among them (#1638), displace (#2702), reflection
         // (#2707), the surface pin, the warp and the gradient map (#2758).
         assert_eq!(n, 72, "every described effect");
+    }
+
+    /// #3302: a picture saved before an effect's fields changed is read as
+    /// the effect writes it now. A Reflection saved with `submerge` a yes
+    /// or no, and without the water fields added since, holds the values a
+    /// lift of the clip gives: `submerge` a number, the new fields at their
+    /// defaults. It differed from its lift at load, and was dropped.
+    #[test]
+    fn an_effect_saved_before_its_fields_changed_is_read_as_written_now() {
+        let now = match (effect_types().find(|t| t.tag == "reflection").unwrap().sample)() {
+            klipp_effects::BuiltinEffect::Reflection { waterline, gap, ripple_amount, ripple_size, ripple_speed, breakup, smear, fade, opacity, darken, contact, blend, tint, tint_amount, ripple_from, seed, time, .. } => klipp_effects::BuiltinEffect::Reflection {
+                waterline, gap, ripple_amount, ripple_size, ripple_speed, breakup, smear, fade, opacity, darken, contact, blend, tint, tint_amount, ripple_from, seed, time,
+                tint_auto: false, darken_auto: false, water: [0, 0, 0], water_key: 0, submerge: 1.0,
+            },
+            _ => unreachable!(),
+        };
+        let mut old = serde_json::to_value(&now).unwrap();
+        let fields = old.as_object_mut().unwrap();
+        for added in ["tint_auto", "darken_auto", "water", "water_key"] {
+            fields.remove(added);
+        }
+        fields.insert("submerge".into(), serde_json::json!(true));
+        let node = |entry: Value| -> Node { serde_json::from_value(serde_json::json!({"id": uuid::Uuid::nil(), "type_id": types::LEGACY_EFFECT, "label": "", "legacy": {"slot": 0, "payload": entry}})).unwrap() };
+        let mut saved = node(old);
+        upgrade_entry(&mut saved).unwrap();
+        into_memory(&mut saved).unwrap();
+        let mut written = node(serde_json::to_value(&now).unwrap());
+        into_memory(&mut written).unwrap();
+        assert_eq!(saved.params, written.params, "the old entry holds what one written now holds");
     }
 
     /// A frei0r plug-in is stored as `klipp.frei0r` (picture revision 4):
