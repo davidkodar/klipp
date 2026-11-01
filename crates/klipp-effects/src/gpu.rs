@@ -41,6 +41,9 @@ mod record;
 pub use record::{converts_inside, slots_needed, EffectRecording, Recorded};
 mod thumbs;
 pub use thumbs::{ChainThumbs, MAX_CHAIN_THUMBS};
+mod ten_bit;
+pub use ten_bit::TenBitDisplay;
+pub use ten_bit::codes as ten_bit_codes;
 
 /// sRGB → linear-light (IEC 61966-2-1).
 #[inline]
@@ -2309,6 +2312,12 @@ mod display_dither_rule_tests {
             assert!(shader.contains(wgsl), "{name} lacks the dither");
             assert!(shader.contains("let d = dither_at(idx);"), "{name} does not dither its pixels");
         }
+        // The kept frame's encode (#3300) takes the same hash, with its
+        // float steps made exact.
+        let ten_bit = super::ten_bit::SHADER_TEN_BIT_DISPLAY;
+        assert!(ten_bit.contains(wgsl), "SHADER_TEN_BIT_DISPLAY lacks the dither");
+        assert!(ten_bit.contains(&format!("index ^ 0x{DITHER_SECOND_DRAW:08x}u")) && ten_bit.contains("let d = exact_dither(idx);"), "SHADER_TEN_BIT_DISPLAY does not dither its pixels as the CPU does");
+        assert_eq!(2.3283064365386963e-10f32, 1.0 / u32::MAX as f32, "the scale is the CPU's divisor's");
     }
 }
 
@@ -2514,6 +2523,7 @@ pub fn shader_sources() -> Vec<(&'static str, &'static str)> {
         ("SHADER_CORNER_PIN", SHADER_CORNER_PIN),
         ("SHADER_CHROMA_KEY", SHADER_CHROMA_KEY),
         ("SHADER_LINEAR_TO_DISPLAY_U8", SHADER_LINEAR_TO_DISPLAY_U8),
+        ("SHADER_TEN_BIT_DISPLAY", ten_bit::SHADER_TEN_BIT_DISPLAY),
         ("SHADER_HDR_NIT_MAP", SHADER_HDR_NIT_MAP),
         ("SHADER_LINEAR_TO_U8", SHADER_LINEAR_TO_U8),
         ("SHADER_U8_TO_LINEAR", SHADER_U8_TO_LINEAR),

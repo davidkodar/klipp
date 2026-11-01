@@ -44,6 +44,19 @@ impl DisplayEncode {
             (Stored::Linear(linear), _) => encode(&linear),
         }
     }
+
+    /// [`Self::bytes`], a ten-bit frame of `size` made on the GPU where
+    /// `gpu` is there and can (#3300): the same bytes. Whether the GPU
+    /// made them.
+    pub fn bytes_on(&self, stored: crate::cache_store::Stored, size: (u32, u32), gpu: Option<&mut klipp_effects::gpu::TenBitDisplay>) -> (Vec<u8>, bool) {
+        use crate::cache_store::Stored;
+        if let (Stored::TenBit(words), Some(gpu), Some(display)) = (&stored, gpu, klipp_color::display::per_channel_display(self.tone, self.working, self.transfer)) {
+            if let Some(bytes) = crate::cache_store::ten_bit_display_on_gpu(gpu, words, size, display) {
+                return (bytes, true);
+            }
+        }
+        (self.bytes(stored), false)
+    }
 }
 
 /// What loading a kept frame took, ms, a running mean over the frames
@@ -56,16 +69,18 @@ pub struct LoadCosts {
     pub encode_ms: f32,
     pub total_ms: f32,
     pub frames: u64,
+    /// Of `frames`, those whose display bytes the GPU made (#3300).
+    pub on_gpu: u64,
 }
 
-static LOAD_COSTS: Mutex<LoadCosts> = Mutex::new(LoadCosts { read_ms: 0.0, lz4_ms: 0.0, unpack_ms: 0.0, encode_ms: 0.0, total_ms: 0.0, frames: 0 });
+static LOAD_COSTS: Mutex<LoadCosts> = Mutex::new(LoadCosts { read_ms: 0.0, lz4_ms: 0.0, unpack_ms: 0.0, encode_ms: 0.0, total_ms: 0.0, frames: 0, on_gpu: 0 });
 
 /// What loading a kept frame has taken, over the frames read so far.
 pub fn load_costs() -> LoadCosts {
     *LOAD_COSTS.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-fn record_load(t: crate::cache_store::ReadTimes, encode_ms: f32) {
+fn record_load(t: crate::cache_store::ReadTimes, encode_ms: f32, on_gpu: bool) {
     let mut c = LOAD_COSTS.lock().unwrap_or_else(|e| e.into_inner());
     // A running mean that settles on the last thirty or so frames.
     let k = 1.0 / (c.frames.min(29) + 1) as f32;
@@ -76,6 +91,50 @@ fn record_load(t: crate::cache_store::ReadTimes, encode_ms: f32) {
     c.encode_ms = mix(c.encode_ms, encode_ms);
     c.total_ms = mix(c.total_ms, t.read_ms + t.lz4_ms + t.unpack_ms + encode_ms);
     c.frames += 1;
+    c.on_gpu += u64::from(on_gpu);
+}
+
+/// Whether the GPU or the CPU makes a reader's display bytes (#3300):
+/// the GPU's round trip (the words up, the bytes back) is quicker than
+/// the CPU's table on a slow CPU with a near GPU (about 20 ms against a
+/// few on an M1) and slower on a fast desktop (22 ms against 5 on a
+/// 4080 machine, under load). Each is timed on the first frames and the
+/// quicker kept, by its best time (the GPU's first frame makes its
+/// buffers).
+#[derive(Debug, Default)]
+pub(crate) struct EncodeChoice {
+    gpu_ms: Vec<f32>,
+    cpu_ms: Vec<f32>,
+}
+
+/// Frames each way timed before choosing.
+const TIMED: usize = 3;
+
+impl EncodeChoice {
+    /// Whether to try the GPU for the next frame.
+    pub(crate) fn try_gpu(&self) -> bool {
+        if self.gpu_ms.len() < TIMED {
+            return true;
+        }
+        if self.cpu_ms.len() < TIMED {
+            return false;
+        }
+        let best = |v: &[f32]| v.iter().copied().fold(f32::MAX, f32::min);
+        best(&self.gpu_ms) < best(&self.cpu_ms)
+    }
+
+    /// What a frame took, and where.
+    pub(crate) fn timed(&mut self, ms: f32, on_gpu: bool) {
+        let v = if on_gpu { &mut self.gpu_ms } else { &mut self.cpu_ms };
+        if v.len() < TIMED {
+            v.push(ms);
+        }
+    }
+
+    /// The GPU couldn't: the CPU's from now on.
+    pub(crate) fn gpu_failed(&mut self) {
+        self.gpu_ms = vec![f32::MAX; TIMED];
+    }
 }
 
 /// A frame read ahead, ready to show: its display bytes.
@@ -90,8 +149,11 @@ struct Ready {
 /// so the engine's thread only takes the bytes. A frame not ready when
 /// it is wanted is drawn live: nothing is read on the engine's thread.
 pub struct FrameReader {
-    ask: std::sync::mpsc::Sender<(std::path::PathBuf, FrameAt, DisplayEncode)>,
+    /// Let go on drop, which ends the thread: joined then, since it may
+    /// hold the GPU (#3287).
+    ask: Option<std::sync::mpsc::Sender<(std::path::PathBuf, FrameAt, DisplayEncode)>>,
     ready: Arc<Mutex<VecDeque<Ready>>>,
+    thread: Option<std::thread::JoinHandle<()>>,
 }
 
 /// Frames a [`FrameReader`] keeps ready.
@@ -102,7 +164,11 @@ impl FrameReader {
         let (ask, asked) = std::sync::mpsc::channel::<(std::path::PathBuf, FrameAt, DisplayEncode)>();
         let ready: Arc<Mutex<VecDeque<Ready>>> = Arc::default();
         let held = Arc::clone(&ready);
-        let _ = std::thread::Builder::new().name("klipp-frame-read".into()).spawn(move || {
+        let thread = std::thread::Builder::new().name("klipp-frame-read".into()).spawn(move || {
+            // The GPU's encode, made at the first frame that wants it;
+            // none where there's no GPU, and the CPU's encode then.
+            let mut gpu: Option<Option<klipp_effects::gpu::TenBitDisplay>> = None;
+            let mut choice = EncodeChoice::default();
             while let Ok(first) = asked.recv() {
                 // The asks since the last frame, latest last: one read
                 // each, the oldest dropped when they pile up behind.
@@ -117,8 +183,19 @@ impl FrameReader {
                     }
                     let Some((stored, times)) = crate::cache_store::read_stored_for_screen(&root, NAMESPACE, at) else { continue };
                     let t = std::time::Instant::now();
-                    let bytes = encode.bytes(stored);
-                    record_load(times, t.elapsed().as_secs_f32() * 1000.0);
+                    let ten_bit = matches!(stored, crate::cache_store::Stored::TenBit(_));
+                    let gpu = gpu.get_or_insert_with(|| klipp_effects::gpu_context::GpuContext::shared().and_then(klipp_effects::gpu::TenBitDisplay::new));
+                    let tried = choice.try_gpu() && gpu.is_some();
+                    let (bytes, on_gpu) = encode.bytes_on(stored, at.size, gpu.as_mut().filter(|_| tried));
+                    let ms = t.elapsed().as_secs_f32() * 1000.0;
+                    if ten_bit {
+                        if tried && !on_gpu {
+                            choice.gpu_failed();
+                        } else {
+                            choice.timed(ms, on_gpu);
+                        }
+                    }
+                    record_load(times, ms, on_gpu);
                     let mut held = held.lock().unwrap_or_else(|e| e.into_inner());
                     held.push_back(Ready { at, encode, bytes });
                     while held.len() > KEPT {
@@ -127,12 +204,14 @@ impl FrameReader {
                 }
             }
         });
-        FrameReader { ask, ready }
+        FrameReader { ask: Some(ask), ready, thread: thread.ok() }
     }
 
     /// Read frame `at` ahead, for the screen as `encode` puts it there.
     pub fn ask(&self, root: &std::path::Path, at: FrameAt, encode: DisplayEncode) {
-        let _ = self.ask.send((root.to_path_buf(), at, encode));
+        if let Some(ask) = &self.ask {
+            let _ = ask.send((root.to_path_buf(), at, encode));
+        }
     }
 
     /// Frame `at`'s display bytes, when read ahead under `encode`: taken,
@@ -141,6 +220,15 @@ impl FrameReader {
         let mut held = self.ready.lock().unwrap_or_else(|e| e.into_inner());
         let i = held.iter().position(|r| r.at == at && r.encode == encode)?;
         held.remove(i).map(|r| r.bytes)
+    }
+}
+
+impl Drop for FrameReader {
+    fn drop(&mut self) {
+        self.ask = None;
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
     }
 }
 
@@ -272,4 +360,35 @@ pub fn spawn_frames<S: FrameSource + 'static>(req: FrameRequest, store: Arc<Mute
         };
         done(tally);
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// #3300: the GPU is timed first, then the CPU; the quicker is kept,
+    /// by its best time, and a GPU that can't is given up.
+    #[test]
+    fn the_quicker_encode_is_kept() {
+        let mut slow_gpu = EncodeChoice::default();
+        for ms in [40.0, 22.0, 21.0] {
+            assert!(slow_gpu.try_gpu());
+            slow_gpu.timed(ms, true);
+        }
+        for ms in [6.0, 5.0, 5.5] {
+            assert!(!slow_gpu.try_gpu(), "the CPU timed next");
+            slow_gpu.timed(ms, false);
+        }
+        assert!(!slow_gpu.try_gpu(), "a fast CPU keeps its encode");
+        let mut quick_gpu = EncodeChoice::default();
+        for ms in [40.0, 4.0, 4.5] {
+            quick_gpu.timed(ms, true);
+        }
+        for ms in [20.0, 19.0, 21.0] {
+            quick_gpu.timed(ms, false);
+        }
+        assert!(quick_gpu.try_gpu(), "a slow CPU hands it to the GPU, its first frame's 40 ms aside");
+        quick_gpu.gpu_failed();
+        assert!(!quick_gpu.try_gpu());
+    }
 }

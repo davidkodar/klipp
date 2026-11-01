@@ -245,7 +245,13 @@ fn look_matches(a: &Look, b: &Look, a_used: &[(f64, f64)], b_used: &[(f64, f64)]
     if sa.is_empty() || sb.is_empty() {
         return Vec::new();
     }
-    let cos = |i: usize, j: usize| sa[i].1.iter().zip(sb[j].1).map(|(x, y)| *x as i32 * *y as i32).sum::<i32>() as f32 / (sa[i].2 * sb[j].2);
+    // Samples of different lengths (another model's) aren't alike at all.
+    let cos = |i: usize, j: usize| {
+        if sa[i].1.len() != sb[j].1.len() {
+            return 0.0;
+        }
+        sa[i].1.iter().zip(sb[j].1).map(|(x, y)| *x as i32 * *y as i32).sum::<i32>() as f32 / (sa[i].2 * sb[j].2)
+    };
     let nearest = |t: f64| -> usize {
         let k = sb.partition_point(|s| s.0 < t);
         match (k.checked_sub(1), (k < sb.len()).then_some(k)) {
@@ -679,6 +685,16 @@ mod tests {
         let looks = Looks { of: HashMap::from([(fa, look(10, |k| e(if k == 2 { 1 } else { k }, 0))), (fb, look(10, |k| e(if k >= 8 { k - 8 } else { 14 }, 0)))]) };
         let r = find_with(&seq(vec![vec![a.clone(), b]]), &[], &pool(&[(fa, 1, false), (fb, 2, false)]), Some(&looks));
         assert_eq!(looks_marks(&r, &a).iter().map(|m| (m.0, m.1)).collect::<Vec<_>>(), [(0, 96)]);
+    }
+
+    /// Samples of another length (another model's) are never alike, not
+    /// compared over the shorter one.
+    #[test]
+    fn samples_of_another_length_are_not_compared() {
+        let (s, p, mut looks, a, b) = two_files(|k| if k >= 3 { e(k - 3, 0) } else { e(14, 0) });
+        let longer: Look = Look { every_secs: 2.0, samples: looks.of[&b.media_id().unwrap()].samples.iter().map(|(t, v)| (*t, v.iter().copied().chain([0i8; 16]).collect())).collect() };
+        looks.of.insert(b.media_id().unwrap(), Arc::new(longer));
+        assert!(looks_marks(&find_with(&s, &[], &p, Some(&looks)), &a).is_empty());
     }
 
     /// Only what the timeline shows is compared: the second clip moved to
