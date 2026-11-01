@@ -896,6 +896,8 @@ impl eframe::App for KlippApp {
         self.tick_meters_and_skims(ctx);
         let all_cmds = self.draw_window(ctx);
         let has_quit = self.dispatch_commands(ctx, all_cmds);
+        // After the commands, which may have queued a harness's steps.
+        self.pointer.keep_awake(ctx);
         self.finish_frame(ctx, has_quit);
 
         // Log slow UI ticks. 25 ms is a conservative threshold — at 60 fps
