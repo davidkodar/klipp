@@ -211,7 +211,22 @@ pub(super) fn same_shape((aw, ah): (u32, u32), (bw, bh): (u32, u32)) -> bool {
 /// Rendered at the picture's size, a portrait phone clip in a landscape
 /// sequence made a portrait frame: titles over it were laid out to its
 /// width, and nothing said the export would differ.
+///
+/// Never smaller than the sequence within the playback resolution: a
+/// 720p clip on V1 of a 4K sequence drew the whole stack at 1280x720,
+/// the 4K layers above it with it (#3218). The fast paths, which show
+/// the decoded picture as it is, step aside for such a picture
+/// (`picture_frame_blocker`), so the frame is the same size whichever
+/// path draws it.
 pub(super) fn viewer_canvas(picture: (u32, u32), sequence: (u32, u32)) -> (u32, u32) {
+    let around = picture_canvas(picture, sequence);
+    let cap = crate::video_decoder::playback_dimensions(sequence.0, sequence.1, 0);
+    if cap.0 >= around.0 && cap.1 >= around.1 { cap } else { around }
+}
+
+/// [`viewer_canvas`] from the picture alone: its own size, or a frame of
+/// the sequence's shape around it.
+fn picture_canvas(picture: (u32, u32), sequence: (u32, u32)) -> (u32, u32) {
     let ((pw, ph), (sw, sh)) = (picture, sequence);
     if same_shape(picture, sequence) {
         return picture;
@@ -226,6 +241,15 @@ pub(super) fn viewer_canvas(picture: (u32, u32), sequence: (u32, u32)) -> (u32, 
     // Never beyond the sequence itself: a 4K portrait picture would
     // otherwise want a frame 6827 pixels wide.
     if w > sw || h > sh { sequence } else { (w, h) }
+}
+
+/// Why a fast path, which shows `picture` as decoded, cannot stand in
+/// for the renderer's frame of it: see `PlaybackEngine::picture_frame_blocker`.
+pub(super) fn picture_frame_blocker(picture: (u32, u32), sequence: (u32, u32)) -> Option<&'static str> {
+    if !same_shape(picture, sequence) {
+        return Some("picture is not the sequence's shape");
+    }
+    (viewer_canvas(picture, sequence) != picture).then_some("picture is smaller than the viewer's frame")
 }
 
 /// The frame the viewer renders in: [`viewer_canvas`] around the primary
@@ -1369,7 +1393,7 @@ impl PlaybackEngine {
         // thumbnails — still takes the full path.
         if let Some(p) = primary.as_ref().filter(|_| !stack_only && !previewing && self.measure_only_clip.is_none()) {
             let mut blockers = self.fast_path_blockers_for(super::FastPath::PausedPresent);
-            blockers.extend(self.picture_shape_blocker((p.width, p.height)));
+            blockers.extend(self.picture_frame_blocker((p.width, p.height)));
             if !blockers.is_empty() {
                 tracing::debug!("paused present: full path because {}", blockers.join(", "));
             }
@@ -1956,6 +1980,29 @@ mod effect_comparison_tests {
 #[cfg(test)]
 mod playback_quality_tests {
     use super::*;
+
+    /// #3218: a 720p picture on V1 of a 4K sequence set the frame the
+    /// whole stack was drawn in. The frame is the sequence within the
+    /// playback resolution, and the fast paths step aside for the
+    /// picture, so neither path draws it at 1280x720.
+    #[test]
+    fn a_small_picture_does_not_shrink_the_viewer_frame() {
+        let uhd = (3840, 2160);
+        let cap = crate::video_decoder::playback_dimensions(uhd.0, uhd.1, 0);
+        assert!(cap.0 > 1280 && cap.1 > 720, "the playback cap {cap:?} is above 720p");
+        assert_eq!(viewer_canvas((1280, 720), uhd), cap);
+        assert_eq!(picture_frame_blocker((1280, 720), uhd), Some("picture is smaller than the viewer's frame"));
+        // A picture decoded at the cap is the frame, and shown as it is.
+        assert_eq!(viewer_canvas(cap, uhd), cap);
+        assert_eq!(picture_frame_blocker(cap, uhd), None);
+        // Never beyond the sequence: a 720p sequence is drawn at 720p.
+        assert_eq!(viewer_canvas((1280, 720), (1280, 720)), (1280, 720));
+        assert_eq!(picture_frame_blocker((1280, 720), (1280, 720)), None);
+        // A picture of another shape is still barred in the sequence's.
+        let portrait = viewer_canvas((720, 1280), uhd);
+        assert!(same_shape(portrait, uhd) && portrait.0 >= cap.0, "{portrait:?}");
+        assert_eq!(picture_frame_blocker((720, 1280), uhd), Some("picture is not the sequence's shape"));
+    }
 
     #[test]
     fn half_and_quarter_keep_the_shape_and_stop_at_a_watchable_size() {

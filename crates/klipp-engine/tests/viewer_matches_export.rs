@@ -1513,6 +1513,26 @@ fn a_height_keyed_apart_is_drawn_alike_in_the_viewer_and_the_export() {
     ]);
 }
 
+/// A picture smaller than the sequence on V1 (#3218): the viewer drew
+/// its frame, and every layer over it, at the picture's size. Parked,
+/// with the clip alone, the fast paths would show it as decoded; it is
+/// the sequence's frame, the picture filling it, as the export has it.
+#[test]
+fn a_small_clip_fills_the_viewers_frame_as_the_export_does() {
+    let _decoders = decoders_at_speed();
+    if !ffmpeg_ok() {
+        eprintln!("skipping: no ffmpeg");
+        return;
+    }
+    let t = one_clip_timeline("small.mkv", (W / 2, H / 2), 0);
+    fits_alike(&t, &[
+        ("left", W / 8, H / 2, Expect::Red),
+        ("right", W - W / 8, H / 2, Expect::Blue),
+        ("top left", W / 8, H / 8, Expect::Red),
+        ("bottom right", W - W / 8, H - H / 8, Expect::Blue),
+    ]);
+}
+
 /// A picture wider than the sequence is letterboxed by both.
 #[test]
 fn a_wide_clip_is_letterboxed_in_the_viewer_and_the_export_alike() {

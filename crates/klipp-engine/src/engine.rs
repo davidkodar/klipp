@@ -6660,7 +6660,7 @@ impl PlaybackEngine {
         // byte-identical.
         if let Some(ref gpu) = gpu_source {
             let mut blockers = self.direct_present_blockers();
-            blockers.extend(self.picture_shape_blocker((final_w, final_h)));
+            blockers.extend(self.picture_frame_blocker((final_w, final_h)));
             // Log only on change: per-frame this would be 60 lines a
             // second, but the transition is exactly what you want to see
             // when asking why playback is slower than it should be. The
@@ -9213,12 +9213,14 @@ impl PlaybackEngine {
     /// Why a fast path cannot present `picture`, a frame it holds: a
     /// picture of another shape from the sequence's is barred by the
     /// renderer, in a frame of the sequence's shape, and the plain present
-    /// would show it bare. Asked of the frame itself, not the media pool,
-    /// whose size is a fallback when the file's could not be read.
-    fn picture_shape_blocker(&self, picture: (u32, u32)) -> Option<&'static str> {
+    /// would show it bare; a picture smaller than the viewer's frame
+    /// (`view::viewer_canvas`) is scaled up to it by the renderer, and
+    /// the plain present would show a smaller frame (#3218). Asked of the
+    /// frame itself, not the media pool, whose size is a fallback when
+    /// the file's could not be read.
+    fn picture_frame_blocker(&self, picture: (u32, u32)) -> Option<&'static str> {
         let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
-        let sequence = (seq.resolution.width, seq.resolution.height);
-        (!view::same_shape(picture, sequence)).then_some("picture is not the sequence's shape")
+        view::picture_frame_blocker(picture, (seq.resolution.width, seq.resolution.height))
     }
 
     /// Whether the only things standing between the decoder and the
@@ -9800,7 +9802,7 @@ impl PlaybackEngine {
             return false;
         };
         let mut blockers = self.fast_path_blockers_for(mode);
-        blockers.extend(self.picture_shape_blocker((width, height)));
+        blockers.extend(self.picture_frame_blocker((width, height)));
         // A slider step below a heavy node whose output the renderer holds
         // for this frame (#1863): the clip's effects all run at its source,
         // so its grade with its source node is the whole picture, and the
