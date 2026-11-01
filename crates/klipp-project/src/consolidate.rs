@@ -116,6 +116,10 @@ pub struct ConsolidateResult {
     pub files_trimmed: usize,
     /// Font families copied in (#3009); one left out is in `warnings`.
     pub fonts_copied: Vec<String>,
+    /// The copy checked (#3241): every resource it refers to and where it
+    /// leads, as written to its `collect_manifest.json`; `Err` when it
+    /// couldn't be checked.
+    pub verification: Result<crate::collect_verify::Manifest, String>,
 }
 
 /// Errors that can abort consolidation before completion.
@@ -465,7 +469,7 @@ fn build_copy_plan(
 /// The files a graph's nodes read: LUTs, external mattes and
 /// difference-key plates, in the graph and in every graph a Compound node
 /// in it holds (#1042).
-fn node_files(g: &NodeGraph) -> Vec<&PathBuf> {
+pub(crate) fn node_files(g: &NodeGraph) -> Vec<&PathBuf> {
     let mut out = Vec::new();
     for n in &g.nodes {
         let p = &n.params;
@@ -806,7 +810,14 @@ pub fn consolidate_project(
         return Err(ConsolidateError::SaveFailed(e));
     }
 
+    // Checked against the copy alone, and the manifest written beside it.
+    let verification = crate::collect_verify::verify_and_write(&options.dest_dir);
+    match &verification {
+        Ok(m) => plan.warnings.extend(m.failures()),
+        Err(e) => plan.warnings.push(format!("The copy could not be checked: {e}")),
+    }
     Ok(ConsolidateResult {
+        verification,
         files_copied: files_total,
         offline_skipped: plan.offline_skipped,
         warnings: plan.warnings,

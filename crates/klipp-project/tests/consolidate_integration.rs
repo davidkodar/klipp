@@ -693,6 +693,65 @@ fn a_collected_download_keeps_its_credit() {
     let _ = std::fs::remove_dir_all(&dest);
 }
 
+/// #3241: a collected copy is checked on its own paths, and the manifest
+/// written beside it. A reference left at the original fails although
+/// the original is still there, as do a `..` path out of the folder and a
+/// file inside it that is a link out; checked again, a changed file and
+/// a manifest naming a path out of the folder are said.
+#[test]
+fn a_collected_copy_is_verified_on_its_own_paths() {
+    use klipp_project::collect_verify::{reverify, verify, Status, MANIFEST};
+    let source_dir = tmp_path("vf_src");
+    std::fs::create_dir_all(&source_dir).unwrap();
+    save_project_with_color(&source_dir, &[Sequence::new_default()], &MediaPool::new(), &ColorSettings::default(), None, None, "").unwrap();
+    let media_dir = tmp_path("vf_media");
+    std::fs::create_dir_all(&media_dir).unwrap();
+    let original = media_dir.join("clip_a.mp4");
+    std::fs::write(&original, b"fake media a").unwrap();
+    let mut pool = MediaPool::new();
+    pool.add(make_media_item(original.clone()));
+    let dest = tmp_path("vf_dest");
+    let result = run_consolidate(&source_dir, &pool, dest.clone()).unwrap();
+    let manifest = result.verification.expect("checked");
+    assert!(manifest.verified(), "{:?}", manifest.failures());
+    let media = manifest.resources.iter().find(|r| r.kind == "media").expect("the media listed");
+    assert_eq!((media.path.as_str(), media.size, media.status), ("media/clip_a.mp4", 12, Status::Collected));
+    assert_eq!(media.sha256.as_deref().map(str::len), Some(64));
+    assert!(dest.join(MANIFEST).is_file());
+    assert_eq!(reverify(&dest).unwrap(), Vec::<String>::new());
+
+    let set_path = |p: &str| {
+        let file = dest.join("media").join("manifest.json");
+        let mut v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+        v["items"][0]["path"] = serde_json::json!(p);
+        std::fs::write(&file, v.to_string()).unwrap();
+    };
+    let status = || verify(&dest).unwrap().resources.iter().find(|r| r.kind == "media").unwrap().status;
+    set_path(original.to_str().unwrap());
+    assert_eq!(status(), Status::Outside, "the original, still there, is not the copy");
+    set_path(&format!("../{}/clip_a.mp4", media_dir.file_name().unwrap().to_str().unwrap()));
+    assert_eq!(status(), Status::Outside, "a .. path out of the folder");
+    set_path("media/clip_a.mp4");
+    assert_eq!(status(), Status::Collected);
+    let copy = dest.join("media/clip_a.mp4");
+    std::fs::remove_file(&copy).unwrap();
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(&original, &copy).unwrap();
+        assert_eq!(status(), Status::Outside, "a link inside the folder that leads out");
+        std::fs::remove_file(&copy).unwrap();
+    }
+    std::fs::write(&copy, b"fake media A").unwrap();
+    assert_eq!(reverify(&dest).unwrap(), vec!["media/clip_a.mp4: changed since it was collected".to_string()]);
+    let hostile = r#"{"format":1,"resources":[{"id":"x","kind":"media","path":"../../etc/passwd","size":1,"status":"collected"}]}"#;
+    std::fs::write(dest.join(MANIFEST), hostile).unwrap();
+    assert_eq!(reverify(&dest).unwrap(), vec!["../../etc/passwd: not a path inside the folder".to_string()]);
+
+    for d in [&source_dir, &media_dir, &dest] {
+        let _ = std::fs::remove_dir_all(d);
+    }
+}
+
 /// A collected folder moved elsewhere, with the originals gone as on
 /// another machine, keeps its grades' files: a clip's LUT and matte and a
 /// Look's LUT are read from inside the folder where it now is, not from
