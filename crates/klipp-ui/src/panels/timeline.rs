@@ -864,6 +864,10 @@ struct TrackKeyDrag {
 pub struct TimelinePanel {
     /// When true, skip internal toolbar/headers/status rendering (embedded in new shell)
     pub embedded: bool,
+    /// The band above the top track a clip may be let go in to make a new
+    /// video track: the shell's ruler and camera lane when embedded, set by
+    /// it each frame; else this panel's own ruler.
+    pub drop_above: Option<egui::Rect>,
     /// The Colour page's strip of shots: clicks select, and no drag
     /// starts an edit — no trim, fade, move, slip or slide (#323).
     pub select_only: bool,
@@ -3995,7 +3999,7 @@ impl TimelinePanel {
         &mut self,
         ui: &mut egui::Ui,
         state: &mut AppState,
-        _layout: &TimelineLayout,
+        layout: &TimelineLayout,
         cmds: &mut Vec<AppCommand>,
     ) {
         // Media drag released outside any track — auto-create track if enabled
@@ -4016,7 +4020,13 @@ impl TimelinePanel {
                 // Only a release over the timeline: above its tracks means
                 // the space above them in this panel, not the media pool
                 // or anything else higher up the window (#2621).
-                let over_timeline = ui.input(|i| i.pointer.hover_pos()).filter(|p| ui.clip_rect().contains(*p));
+                // The ruler and the space under it count as above the
+                // tracks: the tracks' own area starts at the top track, and
+                // a clip let go there did nothing, while one let go below
+                // the audio tracks made a track.
+                let clip = ui.clip_rect();
+                let above = self.drop_above.unwrap_or(layout.ruler_rect);
+                let over_timeline = ui.input(|i| i.pointer.hover_pos()).filter(|p| clip.contains(*p) || above.contains(*p));
                 if state.auto_create_tracks {
                     if let Some(cursor_pos) = over_timeline {
                         let is_audio_only = state.media_pool.get(&drag_media_id)
