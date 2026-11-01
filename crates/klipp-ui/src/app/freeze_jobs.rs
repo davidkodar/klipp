@@ -33,6 +33,8 @@ pub(crate) struct Inputs {
     pub revision: klipp_timeline::SequenceRevision,
     pub tracks: Vec<TrackId>,
     pub size: (u32, u32),
+    /// How the frames are drawn, as `environment` takes it.
+    pub draw: klipp_engine::freeze::DrawSettings,
     pub environment: u64,
 }
 
@@ -206,6 +208,12 @@ impl FreezeJobs {
 }
 
 impl KlippApp {
+    /// How a frozen track's frames are drawn, as the viewer draws: the
+    /// project's grade encoding and the LUT lookup the preferences choose.
+    fn freeze_draw(&self) -> klipp_engine::freeze::DrawSettings {
+        klipp_engine::freeze::DrawSettings::current(self.prefs.color.lut_interpolation == crate::prefs::LutInterpolation::Tetrahedral)
+    }
+
     /// The open project's cache folder, `<project>/cache`, where frozen
     /// tracks keep what is drawn of them: `None` without a saved, writable
     /// project.
@@ -287,7 +295,8 @@ impl KlippApp {
             revision: self.sequence.revision(),
             tracks,
             size: klipp_engine::freeze::playback_size((seq.resolution.width, seq.resolution.height)),
-            environment: klipp_engine::freeze::environment(working, self.state.use_proxies),
+            draw: self.freeze_draw(),
+            environment: klipp_engine::freeze::environment(working, self.state.use_proxies, self.freeze_draw()),
         };
         let tick = self.freeze_jobs.tick(&inputs, Instant::now());
         if let Some((folder, tracks)) = tick.tell {
@@ -371,6 +380,7 @@ impl KlippApp {
                 frames,
                 size: inputs.size,
                 working,
+                draw: inputs.draw,
                 environment: inputs.environment,
                 media: Arc::clone(&media),
             };
@@ -544,7 +554,7 @@ mod tests {
     }
 
     fn inputs(folder: Option<&str>, revision: klipp_timeline::SequenceRevision, tracks: Vec<TrackId>) -> Inputs {
-        Inputs { folder: folder.map(PathBuf::from), revision, tracks, size: (960, 540), environment: 7 }
+        Inputs { folder: folder.map(PathBuf::from), revision, tracks, size: (960, 540), draw: klipp_engine::freeze::DrawSettings::current(true), environment: 7 }
     }
 
     fn ready_store(fj: &mut FreezeJobs, folder: &str) {

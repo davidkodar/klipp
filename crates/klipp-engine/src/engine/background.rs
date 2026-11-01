@@ -256,7 +256,7 @@ impl PlaybackEngine {
         let (flag, fg, started) = (Arc::clone(&stop), self.foreground_activity.clone(), Instant::now());
         let asks: Arc<dyn Fn() -> bool + Send + Sync> = Arc::new(move || flag.load(Ordering::Relaxed) || fg.as_ref().is_some_and(|f| f.is_playing() || f.is_scrubbing() || f.time_since_input() < started.elapsed()));
         let total = frames.len();
-        let req = FrameRequest { seq: Arc::clone(seq), frames, sizes, working, keying: self.frame_keying(), stop: Some(asks), evict: false };
+        let req = FrameRequest { seq: Arc::clone(seq), frames, sizes, working, draw: self.draw_settings(), keying: self.frame_keying(), stop: Some(asks), evict: false };
         let (tx, done) = std::sync::mpsc::channel();
         let job = crate::frame_cache::spawn_frames(req, self.frames_store(), move || klipp_render::ExportFrameSource::shared(files, fps, working), move |t| {
             let _ = tx.send(t);

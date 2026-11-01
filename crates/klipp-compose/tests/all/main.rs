@@ -54,6 +54,8 @@ mod surface_shade_render;
 mod reflection_render;
 #[path = "../a_layer_of_another_size_is_left_out.rs"]
 mod a_layer_of_another_size_is_left_out;
+#[path = "../frame_keys_cover_the_picture.rs"]
+mod frame_keys_cover_the_picture;
 #[path = "../grade_cpu_gpu_parity.rs"]
 mod grade_cpu_gpu_parity;
 #[path = "../grade_keys_render.rs"]

@@ -81,7 +81,7 @@ fn a_frame_kept_ahead_shows_as_the_live_frame() {
     let store = Mutex::new(klipp_engine::cache_store::CacheStore::open(&root, 1 << 30));
     for (name, seq, secs) in cases() {
         let at = tc(secs);
-        let req = FrameRequest { seq: Arc::new(seq.clone()), frames: vec![at], sizes: vec![(W, H)], working: WorkingColorspace::Rec709Linear, keying: Keying { media: Arc::default(), environment: 7 }, stop: None, evict: true };
+        let req = FrameRequest { seq: Arc::new(seq.clone()), frames: vec![at], sizes: vec![(W, H)], working: WorkingColorspace::Rec709Linear, draw: klipp_engine::freeze::DrawSettings::current(true), keying: Keying { media: Arc::default(), environment: 7 }, stop: None, evict: true };
         assert_eq!(req.draw(&mut renderer(), &store, at, (W, H), &mut Pictures), FrameOutcome::Stored, "{name}");
         assert_eq!(req.draw(&mut renderer(), &store, at, (W, H), &mut Pictures), FrameOutcome::Current, "{name}: kept already");
         let place = req.keying.place(&seq, at, (W, H));

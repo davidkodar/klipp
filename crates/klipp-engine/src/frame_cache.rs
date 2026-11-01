@@ -263,6 +263,8 @@ pub struct FrameRequest {
     /// differs.
     pub sizes: Vec<(u32, u32)>,
     pub working: klipp_core::WorkingColorspace,
+    /// How its frames are drawn, as the keying's environment takes it.
+    pub draw: crate::freeze::DrawSettings,
     pub keying: Keying,
     /// Asked between frames: true stops the run, as a cancel does. What
     /// stops drawing ahead on the person's input within a frame, without
@@ -331,6 +333,7 @@ pub fn spawn_frames<S: FrameSource + 'static>(req: FrameRequest, store: Arc<Mute
             let mut renderer = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
             renderer.set_gpu_enabled(true);
             renderer.set_working_colorspace(req.working);
+            req.draw.apply(&mut renderer);
             let mut tally = FramesTally::default();
             let n = req.frames.len().max(1);
             'frames: for (i, at) in req.frames.iter().enumerate() {

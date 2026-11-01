@@ -67,7 +67,13 @@ impl PlaybackEngine {
                 m
             }
         };
-        Keying { media, environment: crate::freeze::environment(crate::video_decoder::working_colorspace(), self.use_proxies) }
+        Keying { media, environment: crate::freeze::environment(crate::video_decoder::working_colorspace(), self.use_proxies, self.draw_settings()) }
+    }
+
+    /// How the viewer draws past the working space, as frames kept for it
+    /// are drawn and keyed.
+    pub(super) fn draw_settings(&self) -> crate::freeze::DrawSettings {
+        crate::freeze::DrawSettings::current(self.color_pipeline.use_tetrahedral)
     }
 
     /// Whether the viewer shows the program frame, the one frames are
@@ -81,8 +87,13 @@ impl PlaybackEngine {
     ///
     /// Frames drawn ahead don't ask: they draw the program frame on their
     /// own renderer, whatever the viewer shows.
+    ///
+    /// Nor while a Timeline LUT is on (#3265): frames are drawn ahead
+    /// without it, and one kept showed the picture without the LUT. They
+    /// stay right for when it is off again.
     pub(super) fn viewer_shows_program_frame(&self) -> bool {
         !(self.in_node_param_edit
+            || self.color_pipeline.applies()
             || self.solo.is_some()
             || self.view_channel != klipp_core::ViewChannel::Picture
             || self.matte_preview
@@ -155,7 +166,7 @@ impl PlaybackEngine {
         let working = crate::video_decoder::working_colorspace();
         let fps = seq.fps.as_f64();
         let total = frames.len();
-        let req = FrameRequest { seq, frames, sizes, working, keying: self.frame_keying(), stop: None, evict: true };
+        let req = FrameRequest { seq, frames, sizes, working, draw: self.draw_settings(), keying: self.frame_keying(), stop: None, evict: true };
         let (tx, done) = std::sync::mpsc::channel();
         let job = crate::frame_cache::spawn_frames(req, self.frames_store(), move || klipp_render::ExportFrameSource::shared(files, fps, working), move |t| {
             let _ = tx.send(t);
@@ -330,6 +341,30 @@ pub(crate) fn render_status(seq: &Sequence, kept: &[crate::cache_store::FrameAt]
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #3265: while a Timeline LUT is on, the viewer draws live, never a
+    /// kept frame: frames are drawn ahead without the LUT, and one kept
+    /// showed the picture without it. Switched on with no LUT loaded, it
+    /// applies nothing, and kept frames are shown.
+    #[test]
+    fn a_timeline_lut_on_shows_no_kept_frame() {
+        let sequence = Arc::new(klipp_timeline::SharedSequence::new(Sequence::new_default()));
+        let (_cmd_tx, cmd_rx) = crossbeam_channel::unbounded();
+        let (ev_tx, _ev_rx) = crossbeam_channel::unbounded();
+        let fb = || Arc::new(Mutex::new(crate::texture::FrameBuffer::new(16, 16)));
+        let mut engine = crate::PlaybackEngine::new(
+            cmd_rx, ev_tx, fb(), fb(),
+            sequence, Arc::new(std::sync::RwLock::new(klipp_media::MediaPool::new())), Box::new(|| {}),
+            Arc::new(Mutex::new(None)), Arc::new(Mutex::new(crate::perf::PerfRing::default())),
+        );
+        assert!(engine.viewer_shows_program_frame(), "nothing on: kept frames may show");
+        engine.color_pipeline.enabled = true;
+        assert!(engine.viewer_shows_program_frame(), "on with no LUT loaded applies nothing");
+        engine.color_pipeline.global_lut = Some(klipp_color::lut::LutData::identity(2));
+        assert!(!engine.viewer_shows_program_frame(), "a Timeline LUT on: drawn live");
+        engine.color_pipeline.enabled = false;
+        assert!(engine.viewer_shows_program_frame(), "switched off again");
+    }
 
     /// A frame kept under its current key reads rendered, one kept under
     /// another only stale, a heavy frame not kept heavy, and nothing past
