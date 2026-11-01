@@ -3779,6 +3779,14 @@ impl GraphExecutor {
             .remove(&result_node_id)
             .ok_or(ExecutorError::MissingNodeOutput)?;
         let result = Arc::try_unwrap(result_arc).unwrap_or_else(|a| (*a).clone());
+        // The result is the GPU-resident Source's placeholder, passed on by
+        // nothing but bypasses (an identity grade run for its previews): no
+        // frame, and none kept on the GPU. The caller runs it again with
+        // the source on the CPU, as for a tap; given back empty, the clip
+        // drew black, or as a layer of no size.
+        if result.is_empty() && gpu_resident_source && self.output_on_gpu.is_none() {
+            return Err(ExecutorError::CpuSourceRequired);
+        }
 
         let tapped_vec =
             tapped_output.map(|a| Arc::try_unwrap(a).unwrap_or_else(|a| (*a).clone()));
