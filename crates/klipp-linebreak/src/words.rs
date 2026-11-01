@@ -59,6 +59,64 @@ pub fn word_starts(text: &str) -> Vec<usize> {
     starts
 }
 
+/// The words of `text`, each with whether a space came before it: the
+/// runs between spaces, those of [`is_complex`] scripts cut further where
+/// [`complex_breaks`] finds a word beginning, those pieces with no space
+/// before them. Joined again by their flags, they give the text with its
+/// spaces collapsed to one.
+pub fn spaced_words(text: &str) -> Vec<(&str, bool)> {
+    /// The run `from..to` of `text`, cut at `breaks`.
+    fn push<'t>(text: &'t str, breaks: &[usize], (from, to): (usize, usize), spaced: bool, out: &mut Vec<(&'t str, bool)>) {
+        let mut at = from;
+        for &b in breaks.iter().filter(|&&b| b > from && b < to) {
+            out.push((&text[at..b], at == from && spaced));
+            at = b;
+        }
+        out.push((&text[at..to], at == from && spaced));
+    }
+    let breaks = complex_breaks(text);
+    let mut out = Vec::new();
+    let mut spaced = false;
+    let mut start = None;
+    for (i, c) in text.char_indices() {
+        match (c.is_whitespace(), start) {
+            (true, Some(s)) => {
+                push(text, &breaks, (s, i), spaced, &mut out);
+                start = None;
+                spaced = true;
+            }
+            (true, None) => spaced = !out.is_empty(),
+            (false, None) => start = Some(i),
+            (false, Some(_)) => {}
+        }
+    }
+    if let Some(s) = start {
+        push(text, &breaks, (s, text.len()), spaced, &mut out);
+    }
+    if let Some(first) = out.first_mut() {
+        first.1 = false;
+    }
+    out
+}
+
+/// `words` joined into text: by a space, except between two words of the
+/// scripts that put none between words (Thai, Lao, Khmer, Burmese).
+pub fn join_words<'a>(words: impl IntoIterator<Item = &'a str>) -> String {
+    let mut out = String::new();
+    for w in words {
+        let w = w.trim();
+        if w.is_empty() {
+            continue;
+        }
+        let glued = out.chars().next_back().is_some_and(is_complex) && w.chars().next().is_some_and(is_complex);
+        if !out.is_empty() && !glued {
+            out.push(' ');
+        }
+        out.push_str(w);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -99,6 +157,22 @@ mod tests {
             assert!(!breaks.is_empty(), "{lang}: {text} found no word in it");
             assert!(breaks.iter().all(|b| allowed.contains(b)), "{lang}: {:?} splits a word of {known:?}", words(&text, &breaks));
         }
+    }
+
+    /// Words between spaces come with a space before them; the words
+    /// cut out of a Thai run come with none, and join back as they were.
+    #[test]
+    fn spaced_words_keep_where_the_spaces_were() {
+        assert_eq!(spaced_words("  two   words "), [("two", false), ("words", true)]);
+        let text = "Klipp ภาษาไทยง่าย ok";
+        let words = spaced_words(text);
+        assert_eq!(words.first(), Some(&("Klipp", false)));
+        assert_eq!(words.last(), Some(&("ok", true)));
+        let thai: Vec<_> = words[1..words.len() - 1].to_vec();
+        assert!(thai.len() >= 2 && thai[0].1 && thai[1..].iter().all(|w| !w.1), "{thai:?}");
+        let rejoined: String = words.iter().map(|(w, s)| if *s { format!(" {w}") } else { w.to_string() }).collect();
+        assert_eq!(rejoined, text);
+        assert_eq!(join_words(["ภาษา", "ไทย", "is", "Thai"]), "ภาษาไทย is Thai");
     }
 
     /// Other text, and the edges of a complex run, keep the breaks they
