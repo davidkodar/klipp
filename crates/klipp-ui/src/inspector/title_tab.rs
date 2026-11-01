@@ -751,8 +751,9 @@ fn motion_row(
 /// A motion-graphics template's fields (#1139): each live published field
 /// of `td` as one control, its text in a box, its colour in a swatch, its
 /// speed on a slider, each change one `SetTitleField` (a slider's drag one
-/// step when it ends). Whether there was any field to draw.
-pub fn template_fields(ui: &mut egui::Ui, theme: &KlippTheme, clip_id: klipp_core::ClipId, td: &klipp_timeline::TitleData, cmds: &mut Vec<AppCommand>) -> bool {
+/// step when it ends). A text's misspelt words are underlined in
+/// `language` (#3236). Whether there was any field to draw.
+pub fn template_fields(ui: &mut egui::Ui, theme: &KlippTheme, clip_id: klipp_core::ClipId, td: &klipp_timeline::TitleData, spell: &crate::spelling::SpellCheck, language: &str, cmds: &mut Vec<AppCommand>) -> bool {
     use klipp_core::TitleFieldValue as V;
     let fields = td.live_fields();
     if fields.is_empty() {
@@ -766,10 +767,25 @@ pub fn template_fields(ui: &mut egui::Ui, theme: &KlippTheme, clip_id: klipp_cor
             V::Text(text) => {
                 ui.label(field.label.as_str());
                 let mut edited = text.clone();
-                let r = ui.add(egui::TextEdit::multiline(&mut edited).desired_rows(1).desired_width(f32::INFINITY).id_salt(("template_text", clip_id, index)));
-                if r.changed() && edited != text {
+                let mut spell_cmds = Vec::new();
+                let (_, respelt) = crate::spelling::show(
+                    ui,
+                    spell,
+                    &mut edited,
+                    |e| e.desired_rows(1).desired_width(f32::INFINITY).id_salt(("template_text", clip_id, index)),
+                    language,
+                    egui::TextStyle::Body.resolve(ui.style()),
+                    ui.visuals().text_color(),
+                    theme.marker_error,
+                    &mut spell_cmds,
+                );
+                if let Some(respelt) = respelt {
+                    edited = respelt;
+                }
+                if edited != text {
                     set(V::Text(edited), true);
                 }
+                cmds.extend(spell_cmds);
             }
             V::Colour(c) => {
                 ui.horizontal(|ui| {
@@ -1820,7 +1836,7 @@ mod template_field_tests {
             let mut cmds = Vec::new();
             let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(360.0, 600.0))), time: Some(clock), events, ..Default::default() };
             let out = ctx.run(input, |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| assert!(template_fields(ui, &theme, id, &td, &mut cmds)));
+                egui::CentralPanel::default().show(ctx, |ui| assert!(template_fields(ui, &theme, id, &td, &crate::spelling::SpellCheck::default(), "en", &mut cmds)));
             });
             let texts: Vec<(String, egui::Rect)> = out.shapes.iter().filter_map(|s| match &s.shape {
                 egui::Shape::Text(t) => Some((t.galley.text().to_owned(), t.visual_bounding_rect())),

@@ -3329,6 +3329,8 @@ pub struct AppState {
     pub recent_fonts: Vec<String>,
     /// The font picker's previews, each family in its own face.
     pub font_previews: crate::inspector::font_picker::FontPreviews,
+    /// What the text editors underline as misspelt (#3236).
+    pub spelling: crate::spelling::SpellCheck,
     /// The missing-fonts dialog, while it is open (#1720).
     pub missing_fonts_dialog: Option<crate::missing_fonts::MissingFontsDialog>,
 
@@ -5454,6 +5456,7 @@ impl Default for AppState {
             favourite_fonts: Vec::new(),
             recent_fonts: Vec::new(),
             font_previews: Default::default(),
+            spelling: Default::default(),
             missing_fonts_dialog: None,
             pending_title_data: None,
             focus_title_text: 0,

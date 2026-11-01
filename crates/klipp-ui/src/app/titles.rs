@@ -2288,6 +2288,20 @@ impl KlippApp {
                 self.state.dirty = true;
                 true
             }
+            AppCommand::SetTitleLanguage { clip_id, language } => {
+                let old = self.snapshot_title(*clip_id);
+                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
+                        if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
+                            crate::spelling::set_language(td, language.as_deref());
+                        }
+                    }
+                }
+                if let Some(old) = old { self.push_title_undo(*clip_id, "Title Language", old); }
+                self.sync_sequence_to_engine();
+                self.state.dirty = true;
+                true
+            }
             AppCommand::SetTitleContrastProtect { clip_id, mode } => {
                 let old = self.snapshot_title(*clip_id);
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
@@ -3665,6 +3679,7 @@ pub(super) fn title_edit_clip_id(cmd: &AppCommand) -> Option<klipp_core::ClipId>
         | C::SetTitlePosition { clip_id, .. }
         | C::SetTitleBackground { clip_id, .. }
         | C::SetTitleBackgroundLines { clip_id, .. }
+        | C::SetTitleLanguage { clip_id, .. }
         | C::SetTitleContrastProtect { clip_id, .. }
         | C::SetTitleShadow { clip_id, .. }
         | C::SetTitleGradient { clip_id, .. }

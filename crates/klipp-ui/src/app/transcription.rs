@@ -178,6 +178,29 @@ impl KlippApp {
                 self.state.toast.show(format!("Transcribing {} again with {with}\u{2026}", item.filename));
                 true
             }
+            AppCommand::SpellingIgnore { word } => {
+                let word = word.trim();
+                let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                let old = seq.brief.clone();
+                let Some(brief) = crate::spelling::ignored(old.as_ref(), word) else { return true };
+                seq.brief = Some(brief.clone());
+                self.state.push_history(crate::history::EditCommand::SetBrief { old: old.map(Box::new), new: Some(Box::new(brief)) });
+                self.state.dirty = true;
+                self.apply_brief_to_transcription();
+                self.state.toast.show(format!("\u{201c}{word}\u{201d} is taken as right in this project"));
+                true
+            }
+            AppCommand::SpellingLearn { word } => {
+                let learnt = klipp_spelling::personal::default_path().ok_or_else(|| "there is no config folder to keep the word list in".to_string()).and_then(|p| klipp_spelling::personal::learn(&p, word));
+                match learnt {
+                    Ok(()) => {
+                        self.state.spelling.personal_changed();
+                        self.state.toast.show(format!("\u{201c}{}\u{201d} is added to your dictionary", word.trim()));
+                    }
+                    Err(e) => self.state.toast.show(e),
+                }
+                true
+            }
             AppCommand::SetTranscriptLanguage { language } => {
                 let language = language.as_deref().map(str::trim).filter(|l| !l.is_empty()).map(str::to_lowercase);
                 let seq = &mut self.state.sequences[self.state.active_sequence_idx];

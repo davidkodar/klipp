@@ -584,7 +584,7 @@ impl NewInspectorPanel {
                                     // A template's fields first, the rest
                                     // folded away (#1139): simple first.
                                     let td = clip.title_data().expect("a title");
-                                    if title_tab::template_fields(ui, theme, clip.id, td, &mut cmds) {
+                                    if title_tab::template_fields(ui, theme, clip.id, td, &state.spelling, &crate::spelling::language_of(state.sequence(), clip.id, None), &mut cmds) {
                                         ui.add_space(4.0);
                                         egui::CollapsingHeader::new("All settings")
                                             .id_salt(("title_all_settings", clip.id))
@@ -2040,24 +2040,35 @@ fn show_title_pinned_core_textbox(
     //    inputs; .frame(false) on the TextEdit drops its default
     //    border so the outer Frame is the only visual chrome.
     let mut text_buf = tb.text.clone();
-    let text_resp = egui::Frame::none()
+    // Its misspelt words underlined, a right-click on one offering what
+    // it might have been (#3236).
+    let language = crate::spelling::language_of(state.sequence(), clip_id, None);
+    let (text_resp, respelt) = egui::Frame::none()
         .fill(theme.bg_raised)
         .rounding(4.0)
         .inner_margin(egui::Margin::symmetric(8.0, 6.0))
         .show(ui, |ui| {
-            ui.add(
-                egui::TextEdit::multiline(&mut text_buf)
-                    .desired_width(f32::INFINITY)
-                    .desired_rows(2)
-                    .frame(false)
-                    .font(egui::FontId::proportional(13.0)),
-            )
+            let (out, respelt) = crate::spelling::show(
+                ui,
+                &state.spelling,
+                &mut text_buf,
+                |e| e.desired_width(f32::INFINITY).desired_rows(2).frame(false),
+                &language,
+                egui::FontId::proportional(13.0),
+                ui.visuals().text_color(),
+                theme.marker_error,
+                cmds,
+            );
+            (out.response, respelt)
         })
         .inner;
     if state.focus_title_text > 0 && !text_resp.has_focus() {
         text_resp.request_focus();
     }
-    if text_resp.changed() {
+    if let Some(respelt) = respelt {
+        text_buf = respelt;
+    }
+    if text_resp.changed() || text_buf != tb.text {
         cmds.push(AppCommand::UpdateTitleData {
             clip_id,
             text: text_buf,
@@ -2068,6 +2079,16 @@ fn show_title_pinned_core_textbox(
         });
     }
     ui.add_space(8.0);
+    // The language its spelling is checked in (#3236).
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new("Spelling").small().color(theme.text_dim));
+        let track = state.sequence().tracks.iter().find(|t| t.clips.iter().any(|c| c.id == clip_id));
+        let inherited = track.and_then(|t| t.language.clone()).or_else(|| state.sequence().brief.as_ref().and_then(|b| b.language.clone())).unwrap_or_else(klipp_spelling::system_language);
+        if let Some(language) = crate::spelling::language_picker(ui, ("title_language", clip_id.0), &state.spelling, tb.language.as_deref(), &inherited) {
+            cmds.push(AppCommand::SetTitleLanguage { clip_id, language });
+        }
+    });
+    ui.add_space(4.0);
 
     // 2. Font ComboBox + size DragValue. Over a selection the font
     //    picked sets the selection's (#1505), as its size does.

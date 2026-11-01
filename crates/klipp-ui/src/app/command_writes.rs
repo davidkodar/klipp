@@ -527,6 +527,7 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::CorrectTranscriptWord { .. }
         | AppCommand::RetranscribeClip { .. }
         | AppCommand::SetTranscriptLanguage { .. }
+        | AppCommand::SpellingLearn { .. }
         | AppCommand::SetNodeParam { .. }
         | AppCommand::PrinterLight { .. }
         | AppCommand::BeginNodeParamEdit { .. }
@@ -656,6 +657,8 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::SetTitleArcStart { .. }
         | AppCommand::SetTitleBackground { .. }
         | AppCommand::SetTitleBackgroundLines { .. }
+        | AppCommand::SetTitleLanguage { .. }
+        | AppCommand::SpellingIgnore { .. }
         | AppCommand::SetTitleContrastProtect { .. }
         | AppCommand::SetTitleShadow { .. }
         | AppCommand::SetTitleShadows { .. }

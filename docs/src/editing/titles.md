@@ -106,6 +106,12 @@ Text can follow a drawn path, posed glyph by glyph as it travels. **3D text** ex
 
 **Find and Replace in Titles…** (command palette) searches the titles, and the subtitles if you like, in the sequence or every sequence; replace one match or all, one undo step per sequence. When a project names fonts this computer lacks, Klipp lists them with the titles that use them and lets you replace each everywhere; a font left missing keeps its name, so installing it brings the look back.
 
+## Spelling
+
+As you type a title, a template's text or a caption, words no dictionary knows are underlined in red, in the inspector, the Subtitle Editor and on the viewer while you edit there. Right-click one for what it might have been, **Ignore in This Project** (the word goes on the brief's vocabulary and is saved with the project; Undo takes it back) or **Add to Dictionary** (every project, kept in `~/.config/klipp/dictionary.txt`). Names in the brief's cast and vocabulary, words of your media's file names, numbers, web addresses, @handles and #tags are not marked.
+
+Each text is checked in its own language: the one picked beside **Spelling** under its text, else its subtitle track's, else the brief's, else your system's. Klipp uses the Hunspell dictionaries installed on your system (`hunspell-en_us`, `hunspell-de` and so on, as your distribution names them); a language with none is left unmarked. **Preferences → General → Check spelling while typing** turns the underlines off.
+
 ## Motion-Graphics Templates
 
 A composition saved as a template can expose fields — text, colours, speed — that stay editable on each use. Project templates and the assistant use them as well.

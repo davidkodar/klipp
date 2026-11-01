@@ -1878,6 +1878,37 @@ impl ViewerPanel {
         if hit.hovered() {
             ui.ctx().set_cursor_icon(egui::CursorIcon::Text);
         }
+        // ── Spelling (#3236): a right-click on a misspelt word, its menu ──
+        let language = crate::spelling::language_of(state.sequence(), clip_id, Some(obj.id));
+        let marks = state.spelling.marks(ui.ctx(), &state.viewer_text_edit_buffer, &language);
+        let target_id = edit_id.with("spelling_target");
+        if hit.secondary_clicked() {
+            let target = hit.interact_pointer_pos().and_then(|p| index_at(&state.viewer_char_positions, view.unplace(p))).and_then(|ci| {
+                let text = &state.viewer_text_edit_buffer;
+                let (start, end) = crate::spelling::mark_at(&marks, char_to_byte(text, ci))?;
+                let word = text[start..end].to_string();
+                Some(crate::spelling::Target { start, end, suggestions: state.spelling.suggestions(&word, &language), word })
+            });
+            ui.data_mut(|d| match &target {
+                Some(t) => d.insert_temp(target_id, t.clone()),
+                None => d.remove::<crate::spelling::Target>(target_id),
+            });
+        }
+        if let Some(target) = ui.data(|d| d.get_temp::<crate::spelling::Target>(target_id)) {
+            let text = state.viewer_text_edit_buffer.clone();
+            let mut respelt = None;
+            hit.context_menu(|ui| {
+                if let Some(choice) = crate::spelling::menu(ui, &target) {
+                    respelt = crate::spelling::act(choice, &target, &text, cmds);
+                }
+            });
+            if let Some(respelt) = respelt {
+                state.viewer_text_edit_buffer = respelt;
+            }
+            if !hit.context_menu_opened() && !hit.secondary_clicked() {
+                ui.data_mut(|d| d.remove::<crate::spelling::Target>(target_id));
+            }
+        }
         // A title the Text tool has just made: all of its text, so the
         // first key typed replaces the placeholder (#1713).
         if std::mem::take(&mut state.viewer_text_edit_select_all) {
@@ -1956,6 +1987,16 @@ impl ViewerPanel {
                 let r = egui::Rect::from_min_max(to_screen(cp.x, cp.y), to_screen(cp.x + across, cp.y + down));
                 painter.rect_filled(r, 0.0, fill);
             }
+        }
+        // Each misspelt word underlined, under its glyphs' line (#3236);
+        // a vertical one beside its column.
+        for cp in positions.iter().filter(|cp| marks.iter().any(|&(a, b)| cp.byte_offset >= a && cp.byte_offset < b)) {
+            let (from, to) = if cp.vertical {
+                ((cp.x + cp.height, cp.y), (cp.x + cp.height, cp.y + cp.advance))
+            } else {
+                ((cp.x, cp.y + cp.height * 0.95), (cp.x + cp.advance, cp.y + cp.height * 0.95))
+            };
+            painter.line_segment([to_screen(from.0, from.1), to_screen(to.0, to.1)], egui::Stroke::new(2.0_f32, theme.marker_error));
         }
         if let Some([a, b]) = caret_ends(positions, state.viewer_text_cursor) {
             let t = ui.input(|i| i.time);

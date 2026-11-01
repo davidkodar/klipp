@@ -165,3 +165,23 @@ fn hostile_dictionaries_are_refused_with_why() {
     std::fs::File::options().write(true).open(dir.join("xx_XX.aff")).unwrap().set_len(dictionaries::MAX_AFF_BYTES + 1).unwrap();
     assert!(refused(dir).contains("more than"));
 }
+
+#[test]
+fn the_installed_dictionaries_are_listed_and_read_off_the_caller() {
+    let dir = pair("listed", b"SET UTF-8\n", b"1\nword\n");
+    std::fs::write(dir.join("not a tag.aff"), b"").unwrap();
+    std::fs::write(dir.join("fr_FR.aff"), b"SET UTF-8\n").unwrap(); // no word list
+    let shared: &'static Dictionaries = Box::leak(Box::new(Dictionaries::in_dirs(vec![dir, fixtures()], None)));
+    assert_eq!(shared.installed(), ["en_US", "sv_SE", "xx_XX"]);
+    // Not read yet: none, and it is read meanwhile; then it is there.
+    assert!(shared.ready("sv").is_none());
+    let start = std::time::Instant::now();
+    let d = loop {
+        if let Some(d) = shared.ready("sv") {
+            break d;
+        }
+        assert!(start.elapsed().as_secs() < 10, "never read");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    };
+    assert!(d.expect("read").checker.check("hamnen"));
+}

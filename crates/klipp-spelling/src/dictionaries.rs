@@ -58,13 +58,15 @@ pub struct Dictionaries {
     /// first choice for a tag without one.
     region: Option<String>,
     loaded: Mutex<HashMap<String, Result<Arc<Dictionary>, Missing>>>,
+    /// The languages being read on a thread of their own ([`Self::ready`]).
+    loading: Mutex<HashSet<String>>,
 }
 
 impl Dictionaries {
     /// Looked for in `dirs`, in order, a region-less tag preferring
     /// `region`.
     pub fn in_dirs(dirs: Vec<PathBuf>, region: Option<String>) -> Self {
-        Self { dirs, region, loaded: Mutex::new(HashMap::new()) }
+        Self { dirs, region, loaded: Mutex::new(HashMap::new()), loading: Mutex::new(HashSet::new()) }
     }
 
     /// The system's: [`system_dirs`], and the region of `LANG`.
@@ -91,6 +93,46 @@ impl Dictionaries {
         }
         self.loaded.lock().unwrap_or_else(|e| e.into_inner()).insert(key, found.clone());
         found
+    }
+
+    /// The dictionary for `language` if it has been read; else `None`,
+    /// and it is read on a thread of its own, so a caller drawing a frame
+    /// never waits for a file to parse. Asked again once read, it is
+    /// there.
+    pub fn ready(&'static self, language: &str) -> Option<Result<Arc<Dictionary>, Missing>> {
+        let key = language.trim().to_ascii_lowercase().replace('_', "-");
+        if let Some(found) = self.loaded.lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
+            return Some(found.clone());
+        }
+        if self.loading.lock().unwrap_or_else(|e| e.into_inner()).insert(key.clone()) {
+            let spawned = std::thread::Builder::new().name("spelling-dictionary".into()).spawn(move || {
+                let _ = self.get(&key);
+                self.loading.lock().unwrap_or_else(|e| e.into_inner()).remove(&key);
+            });
+            if spawned.is_err() {
+                return Some(self.get(language));
+            }
+        }
+        None
+    }
+
+    /// The dictionaries installed, by file stem (`de_DE`, `en_GB`), each
+    /// once, in order: what a language picker offers.
+    pub fn installed(&self) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        for dir in &self.dirs {
+            let Ok(entries) = std::fs::read_dir(dir) else { continue };
+            for e in entries.flatten() {
+                let name = e.file_name().to_string_lossy().to_string();
+                let Some(stem) = name.strip_suffix(".aff") else { continue };
+                // Only a name a tag could be made into, with its word list.
+                if file_stems(stem, None).is_some() && dir.join(format!("{stem}.dic")).is_file() && !out.iter().any(|s| s == stem) {
+                    out.push(stem.to_string());
+                }
+            }
+        }
+        out.sort();
+        out
     }
 
     fn read(&self, tag: &str) -> Result<Arc<Dictionary>, Missing> {

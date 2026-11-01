@@ -51,6 +51,7 @@ klipp-audio-search = { workspace = true }
 klipp-ml-candle = { workspace = true }
 klipp-ml-ort = { workspace = true, optional = true }
 klipp-title = { workspace = true }
+klipp-spelling = { workspace = true }
 klipp-project = { workspace = true }
 klipp-graph-lift = { workspace = true }
 klipp-graph-format = { workspace = true }

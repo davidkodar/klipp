@@ -750,6 +750,13 @@ impl PreferencesPanel {
             }
         });
 
+        // Spelling in titles and captions (#3236).
+        Self::setting_row(ui, "Check spelling while typing", theme, |ui| {
+            if ui.add(Switch::new(&mut prefs.general.check_spelling, theme)).on_hover_text("Underline words no installed dictionary knows, in titles, templates and captions").changed() {
+                *dirty = true;
+            }
+        });
+
     }
 
     fn show_playback(
