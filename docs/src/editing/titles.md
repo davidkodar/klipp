@@ -92,7 +92,7 @@ A title layer's position, opacity, text colour, size, tracking and line spacing,
 - Vertical text set in columns, with vertical forms and sideways runs.
 - Superscript, subscript, underline and strikethrough as style runs on a selection.
 - Paragraphs justified, and text aligned within its box; line breaks chosen by shaped width, avoiding one-word last lines.
-- A glyph a font lacks falls back to a font that has it. Colour emoji and colour fonts are drawn: bitmap glyphs (CBDT, as Noto Color Emoji has them, and sbix, as Apple's fonts do) and layered vector glyphs (COLR version 0). A font with several kinds draws its vector glyphs first.
+- A glyph a font lacks falls back to a font that has it. Colour emoji and colour fonts are drawn: bitmap glyphs (CBDT, as Noto Color Emoji has them, and sbix, as Apple's fonts do) and vector glyphs (COLR versions 0 and 1: layers, gradients, transforms and blend modes). A font with several kinds draws its vector glyphs first.
 
 ## Fills, Blends and Masks
 
