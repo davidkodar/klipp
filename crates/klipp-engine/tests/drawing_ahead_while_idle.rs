@@ -195,8 +195,8 @@ fn measure_heavy_range_live_and_drawn_ahead() {
     play("after drawing ahead");
     let load = klipp_engine::frame_cache::load_costs();
     eprintln!(
-        "MEASURE loading a kept frame, on the reading thread over {} frames: read {:.1} ms, LZ4 {:.1} ms, unpack {:.1} ms, to display bytes {:.1} ms, total {:.1} ms",
-        load.frames, load.read_ms, load.lz4_ms, load.unpack_ms, load.encode_ms, load.total_ms,
+        "MEASURE loading a kept frame, on the reading thread over {} frames ({} encoded on the GPU): read {:.1} ms, LZ4 {:.1} ms, unpack {:.1} ms, to display bytes {:.1} ms, total {:.1} ms",
+        load.frames, load.on_gpu, load.read_ms, load.lz4_ms, load.unpack_ms, load.encode_ms, load.total_ms,
     );
     bg::force_heavy(false);
     let _ = std::fs::remove_dir_all(&root);

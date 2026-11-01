@@ -460,6 +460,14 @@ pub fn ten_bit_display(words: &[u8], display: impl Fn(f32) -> f32) -> Vec<u8> {
     out
 }
 
+/// [`ten_bit_display`] on the GPU (#3300): the same bytes, bit for bit,
+/// from a table of the 1024 codes made here as that one is. `None` when
+/// the GPU can't: the CPU's then.
+pub fn ten_bit_display_on_gpu(gpu: &mut klipp_effects::gpu::TenBitDisplay, words: &[u8], size: (u32, u32), display: impl Fn(f32) -> f32) -> Option<Vec<u8>> {
+    let codes = klipp_effects::gpu::ten_bit_codes(|c| display(decode10(c)));
+    gpu.encode(words, size.0, size.1, &codes)
+}
+
 /// [`read_stored`], with what each part of the read took.
 pub fn read_stored_timed(root: &Path, namespace: &str, at: FrameAt) -> Option<(Vec<f32>, ReadTimes)> {
     if !valid_namespace(namespace) {

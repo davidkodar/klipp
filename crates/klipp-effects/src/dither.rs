@@ -90,6 +90,21 @@ pub fn quantise(v: f32, dither: f32, scale: f32) -> f32 {
     (x + 0.5 + d).clamp(0.0, scale)
 }
 
+/// [`quantise`] split where its dither goes on: the value on `scale`'s
+/// code values, clamped, and whether it is dithered. `quantise` is
+/// `(x + 0.5 + dither if dithered).clamp(0, scale)`; a NaN is 0 and
+/// undithered, which is what a cast of `quantise`'s NaN gives. What a
+/// table of codes made once hands the GPU (#3300).
+pub fn quantise_parts(v: f32, scale: f32) -> (f32, bool) {
+    if v.is_nan() {
+        return (0.0, false);
+    }
+    let v = v.clamp(0.0, 1.0);
+    let x = v * scale;
+    let on_code = (x - x.round()).abs() < ON_CODE_TOLERANCE;
+    (x, !(v <= 0.0 || v >= 1.0 || on_code))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

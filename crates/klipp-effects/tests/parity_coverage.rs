@@ -161,6 +161,7 @@ const SHADERS: &[(&str, Cover)] = &[
     ("SHADER_CORNER_PIN", EVERY_EFFECT),
     ("SHADER_CHROMA_KEY", EVERY_EFFECT),
     ("SHADER_LINEAR_TO_DISPLAY_U8", Test("klipp-engine/tests/hdr_monitor_gpu_matches_cpu.rs", "the_preview_encode_matches_the_cpu")),
+    ("SHADER_TEN_BIT_DISPLAY", Test("klipp-engine/tests/ten_bit_gpu_matches_cpu.rs", "the_gpus_ten_bit_encode_is_the_cpu_tables")),
     ("SHADER_HDR_NIT_MAP", Test("klipp-engine/tests/hdr_monitor_gpu_matches_cpu.rs", "the_nit_map_matches_the_cpu")),
     ("SHADER_LINEAR_TO_U8", Test("klipp-engine/tests/grade_to_texture_identity.rs", "encode_grade_to_texture_matches_cpu")),
     ("SHADER_U8_TO_LINEAR", Test("klipp-engine/tests/gpu_u8_to_linear_bridge.rs", "u8_to_linear_gpu_matches_cpu_exactly")),
