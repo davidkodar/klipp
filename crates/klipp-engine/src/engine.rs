@@ -2014,6 +2014,8 @@ pub struct PlaybackEngine {
     /// What the ruler's status was last worked out from: the sequence,
     /// the frames kept and their bytes, the costs' generation.
     status_inputs: Option<(klipp_timeline::SequenceRevision, usize, u64, u64)>,
+    /// The thread working the status out, started with the first ask.
+    status_worker: Option<std::sync::mpsc::Sender<frames_job::StatusAsk>>,
     /// Current grade hash for the active clip (cached to avoid recomputing per frame).
     current_grade_hash: u64,
     current_grade_clip_id: Option<klipp_core::ClipId>,
@@ -3037,6 +3039,7 @@ impl PlaybackEngine {
             kept_shown: 0,
             kept_present_ms: 0.0,
             status_inputs: None,
+            status_worker: None,
             current_grade_hash: 0,
             current_grade_clip_id: None,
             current_graph_arc: None,

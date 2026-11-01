@@ -239,18 +239,46 @@ impl PlaybackEngine {
         let kept: Vec<crate::cache_store::FrameAt> = all.into_iter().filter(|a| a.size == size).collect();
         let heavy = self.heavy_ticks(&seq);
         let keying = self.frame_keying();
-        let fb = Arc::clone(&self.frame_buffer);
         let generation = STATUS_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-        let _ = std::thread::Builder::new().name("klipp-render-status".into()).spawn(move || {
-            let (status, ranges) = render_status(&seq, &kept, &heavy, &keying, size);
-            if STATUS_GENERATION.load(std::sync::atomic::Ordering::Relaxed) == generation {
+        let fb = Arc::clone(&self.frame_buffer);
+        let worker = self.status_worker.get_or_insert_with(|| spawn_status_worker(fb));
+        let _ = worker.send(StatusAsk { seq, kept, heavy, keying, size, generation });
+    }
+}
+
+/// What the ruler's status is worked out from, at one moment.
+pub(crate) struct StatusAsk {
+    seq: Arc<Sequence>,
+    kept: Vec<crate::cache_store::FrameAt>,
+    heavy: Vec<i64>,
+    keying: Keying,
+    size: (u32, u32),
+    generation: u64,
+}
+
+/// The one thread that works out the ruler's status: a pass at a time,
+/// each from the latest ask, the asks that came meanwhile skipped. On a
+/// large cache a pass can outlast a second; a thread an ask would run
+/// them side by side.
+fn spawn_status_worker(fb: Arc<Mutex<crate::texture::FrameBuffer>>) -> std::sync::mpsc::Sender<StatusAsk> {
+    let (tx, rx) = std::sync::mpsc::channel::<StatusAsk>();
+    let _ = std::thread::Builder::new().name("klipp-render-status".into()).spawn(move || {
+        while let Ok(first) = rx.recv() {
+            let ask = rx.try_iter().last().unwrap_or(first);
+            let (status, ranges) = render_status(&ask.seq, &ask.kept, &ask.heavy, &ask.keying, ask.size);
+            STATUS_PASSES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if STATUS_GENERATION.load(std::sync::atomic::Ordering::Relaxed) == ask.generation {
                 let mut fb = fb.lock().unwrap_or_else(|e| e.into_inner());
                 fb.render_status = status;
                 fb.render_cache_ranges = ranges;
             }
-        });
-    }
+        }
+    });
+    tx
 }
+
+/// Passes the status worker has made, for tests.
+static STATUS_PASSES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// The last status asked for: an older one finishing later is dropped.
 static STATUS_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -320,6 +348,51 @@ mod tests {
         let span = |a: i64, b: i64, status| RenderSpan { from: tc(a).value, to: tc(b).value, status };
         assert_eq!(spans, vec![span(0, 4, SpanStatus::Rendered), span(4, 6, SpanStatus::Stale), span(6, 8, SpanStatus::Heavy)]);
         assert_eq!(ranges, vec![(clip, 4, 10)]);
+    }
+
+    /// The status is worked out a pass at a time, from the latest ask: 50
+    /// asks while a pass is held up make two passes, not 50 side by side,
+    /// and the ruler shows the last.
+    #[test]
+    fn the_status_worker_takes_the_latest_ask_and_skips_the_rest() {
+        let tc = |f: i64| RationalTime::from_frames(f, 24);
+        let mut track = klipp_timeline::Track::new("V1", klipp_timeline::TrackKind::Video);
+        track.clips = vec![klipp_timeline::Clip::media(klipp_core::MediaId::new(), tc(0), tc(60), tc(0), tc(60))];
+        let mut seq = Sequence::new_default();
+        seq.fps = klipp_core::Fps::film_24();
+        seq.tracks = vec![track];
+        let seq = Arc::new(seq);
+        let keying = || Keying { media: Arc::default(), environment: 1 };
+        let size = (8, 8);
+        let fb = Arc::new(Mutex::new(crate::texture::FrameBuffer::new(4, 4)));
+        let before = STATUS_PASSES.load(std::sync::atomic::Ordering::Relaxed);
+        let worker = spawn_status_worker(Arc::clone(&fb));
+        let ask = |n: i64| {
+            let kept = (0..n).map(|f| keying().place(&seq, tc(f), size)).collect();
+            let generation = STATUS_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+            worker.send(StatusAsk { seq: Arc::clone(&seq), kept, heavy: vec![], keying: keying(), size, generation }).unwrap();
+        };
+        // The first pass held up writing its result, then 49 more asks.
+        let held = fb.lock().unwrap();
+        ask(1);
+        let start = std::time::Instant::now();
+        while STATUS_PASSES.load(std::sync::atomic::Ordering::Relaxed) == before {
+            assert!(start.elapsed() < std::time::Duration::from_secs(5), "the first pass made");
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        for n in 2..=50 {
+            ask(n);
+        }
+        drop(held);
+        let start = std::time::Instant::now();
+        let last = crate::texture::RenderSpan { from: 0, to: tc(50).value, status: crate::texture::SpanStatus::Rendered };
+        while fb.lock().unwrap().render_status != vec![last] {
+            assert!(start.elapsed() < std::time::Duration::from_secs(5), "the last ask shown: {:?}", fb.lock().unwrap().render_status);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let passes = STATUS_PASSES.load(std::sync::atomic::Ordering::Relaxed) - before;
+        assert!(passes <= 2, "{passes} passes for 50 asks");
     }
 
     #[test]
