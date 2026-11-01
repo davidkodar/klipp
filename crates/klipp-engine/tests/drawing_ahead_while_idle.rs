@@ -27,6 +27,11 @@ fn source() -> Option<std::path::PathBuf> {
 }
 
 /// Wait until `ok`, up to `limit`; whether it came.
+/// Held for each test's whole run: both drive the one background-render
+/// state and frame cache this process has, so run together (as
+/// `--include-ignored` does) one saw the other's frames drawn.
+static ONE_AT_A_TIME: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 fn wait_for(limit: Duration, mut ok: impl FnMut() -> bool) -> bool {
     let start = Instant::now();
     while !ok() {
@@ -40,6 +45,7 @@ fn wait_for(limit: Duration, mut ok: impl FnMut() -> bool) -> bool {
 
 #[test]
 fn heavy_frames_are_drawn_while_idle_and_input_stops_them_within_a_frame() {
+    let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
     let Some(src) = source() else {
         eprintln!("skipping: no ffmpeg");
         return;
@@ -152,6 +158,7 @@ fn heavy_frames_are_drawn_while_idle_and_input_stops_them_within_a_frame() {
 #[test]
 #[ignore]
 fn measure_heavy_range_live_and_drawn_ahead() {
+    let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
     let (w, h, secs) = (3840u32, 2160u32, 3u32);
     let src = std::env::temp_dir().join(format!("klipp-idle-4k-{}.mkv", std::process::id()));
     let made = std::process::Command::new("ffmpeg")
