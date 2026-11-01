@@ -18,7 +18,7 @@ use std::path::Path;
 const ALLOWED: &[(&str, usize, &str)] = &[
     ("klipp-ui/src/inspector/grade_view.rs", 1, "a grade node's stored parameter fields, reached through its grade group"),
     ("klipp-ui/src/panels/node_graph_v2/picture.rs", 5, "grade kinds and parameters only; native rejects effect node types; a plug-in node's own name (an OFX entry, #1724); a new effect's defaults for Reset and Replace, built fresh (#1745)"),
-    ("klipp-graph-lift/src/effect_params.rs", 12, "the tag, the writer (into_entry, into_stored, entry_of), into_memory, and the plug-ins' stored forms (frei0r, OFX) and their tests"),
+    ("klipp-graph-lift/src/effect_params.rs", 14, "the tag, the writer (into_entry, into_stored, entry_of), into_memory, the plug-ins' stored forms (frei0r, OFX) and their tests, and upgrade_entry, the load's read of a stored entry as written now, on the stored form before into_memory (#3318)"),
     ("klipp-graph-lift/src/lift.rs", 2, "the lift, on the stored form, before into_memory; a grade compound's subgraph (#1391)"),
     ("klipp-graph-lift/src/delift.rs", 1, "a grade compound's params, to put its subgraph back (#1391)"),
     ("klipp-graph-lift/src/placed.rs", 3, "12b-0's bridge on the stored record (deleted in 12f): an entry's tag, a plug-in's flag and values"),
