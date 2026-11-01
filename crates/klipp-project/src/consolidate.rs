@@ -482,10 +482,26 @@ fn node_files(g: &NodeGraph) -> Vec<&PathBuf> {
 /// untrusted: only a path of plain names is, never one with `..` or a
 /// root that could lead out of the folder. Any other path, absolute or a
 /// library LUT's name, is left as it is.
+/// Whether `g` holds a grade file a collected project stores relative to
+/// itself: what [`resolve_collected_grade_files`] would resolve. Asked
+/// first, so a graph with none is never edited, and a clip's stored
+/// picture stays as it was saved.
+pub(crate) fn has_collected_grade_files(g: &NodeGraph) -> bool {
+    g.nodes.iter().any(|n| {
+        let p = &n.params;
+        [p.lut_path.as_ref(), p.matte_image_path.as_ref(), p.difference_key.as_ref().and_then(|d| d.plate_path.as_ref())].into_iter().flatten().any(|p| collected_grade_file(p))
+            || p.compound_subgraph.as_ref().is_some_and(has_collected_grade_files)
+    })
+}
+
+/// A path of plain names under `media/grade`.
+fn collected_grade_file(p: &Path) -> bool {
+    p.components().all(|c| matches!(c, std::path::Component::Normal(_))) && p.starts_with("media/grade")
+}
+
 pub(crate) fn resolve_collected_grade_files(g: &mut NodeGraph, dir: &Path) {
     let fix = |p: &mut PathBuf| {
-        let plain = p.components().all(|c| matches!(c, std::path::Component::Normal(_)));
-        if plain && p.starts_with("media/grade") {
+        if collected_grade_file(p) {
             *p = dir.join(&*p);
         }
     };

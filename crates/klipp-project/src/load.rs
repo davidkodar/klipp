@@ -777,7 +777,9 @@ fn load_project_as(dir: &Path, form: crate::FileForm, strict: bool) -> Result<Lo
 
     // A collected project's grade files, stored relative to it.
     for seq in &mut sequences {
-        seq.edit_each_grade(|g| crate::consolidate::resolve_collected_grade_files(g, dir));
+        if seq.grades().into_iter().any(crate::consolidate::has_collected_grade_files) {
+            seq.edit_each_grade(|g| crate::consolidate::resolve_collected_grade_files(g, dir));
+        }
     }
 
     info!(
@@ -1609,7 +1611,9 @@ fn load_looks_as(dir: &Path, form: crate::FileForm) -> Vec<Look> {
         match read_to_string_capped(&path, MAX_INPUT_FILE_BYTES) {
             Ok(text) => match read_look(&text, form) {
                 Ok(mut look) => {
-                    look.edit_grade(|g| crate::consolidate::resolve_collected_grade_files(g, dir));
+                    if crate::consolidate::has_collected_grade_files(look.grade()) {
+                        look.edit_grade(|g| crate::consolidate::resolve_collected_grade_files(g, dir));
+                    }
                     out.push(look)
                 }
                 Err(why) => warn!("Leaving Look {:?} as it is: {why}", path),
