@@ -868,6 +868,14 @@ pub(super) fn next_free_name(original: &std::path::Path, taken: impl Fn(&std::pa
 /// the dialog chose: `<stem>_<marker label>.<ext>` beside it, or
 /// `<stem>_segment_<n>` for the bookends and unnamed markers; each name
 /// once, and `[n/total]` after it in the queue.
+/// The markers an export between markers is cut by: every one but the
+/// to-do notes. A note to check something is not a range to deliver: a
+/// 9:16 version's reframe notes were counted, and would each have been
+/// a file of their own.
+pub(super) fn segment_markers(markers: &[klipp_timeline::Marker]) -> Vec<klipp_timeline::Marker> {
+    markers.iter().filter(|m| m.kind != klipp_core::MarkerKind::ToDo).cloned().collect()
+}
+
 pub(super) fn segment_outputs(segments: &[(u64, u64, String)], base_path: &std::path::Path) -> Vec<(std::path::PathBuf, String)> {
     let ext = base_path.extension().and_then(|e| e.to_str()).unwrap_or("mp4").to_string();
     let base_dir = base_path.parent().unwrap_or(std::path::Path::new("."));
@@ -1247,13 +1255,14 @@ impl KlippApp {
         // ignoring boundary-inference entirely. This is the more predictable
         // shape — point markers scattered next to explicit ranges would
         // otherwise produce surprising extra segments.
-        let has_range_markers = seq.markers.iter().any(|m| m.duration.is_some());
+        let markers = segment_markers(&seq.markers);
+        let has_range_markers = markers.iter().any(|m| m.duration.is_some());
 
         let segments: Vec<(u64, u64, String)> = if has_range_markers {
-            build_range_marker_segments(&seq.markers, fps)
+            build_range_marker_segments(&markers, fps)
         } else {
             build_inferred_marker_segments(
-                &seq.markers,
+                &markers,
                 fps,
                 timecode_to_frame(&seq.total_duration(), fps),
                 self.export_dialog.include_pre_marker_segment,
@@ -2004,7 +2013,7 @@ impl KlippApp {
                     ui.radio_value(&mut self.export_dialog.range_mode, 2, label);
                 });
                 // Marker-range multi-export: one file per segment between markers.
-                let marker_count = self.state.sequences[self.state.active_sequence_idx].markers.len();
+                let marker_count = segment_markers(&self.state.sequences[self.state.active_sequence_idx].markers).len();
                 let markers_enabled = marker_count > 0;
                 ui.add_enabled_ui(markers_enabled, |ui| {
                     let label = if marker_count > 0 {
@@ -3277,6 +3286,24 @@ mod export_rule_tests {
         assert_eq!(next_free_name(Path::new("/out/film.mp4"), |p| taken.iter().any(|t| t == p)), PathBuf::from("/out/film_3.mp4"));
         assert_eq!(next_free_name(Path::new("/out/film"), |_| false), PathBuf::from("/out/film_1"));
         assert_eq!(next_free_name(Path::new("/out/film.mp4"), |_| true), PathBuf::from("/out/film.mp4"), "nothing free: the original, so the warning comes again");
+    }
+
+    #[test]
+    fn to_do_notes_are_no_ranges_to_export() {
+        let marker = |at: i64, kind: klipp_core::MarkerKind, len: Option<i64>| klipp_timeline::Marker {
+            id: klipp_core::MarkerId::new(),
+            position: klipp_core::Timecode::from_frames(at, 25),
+            label: String::new(),
+            color: klipp_core::MarkerColor::Orange,
+            duration: len.map(|l| klipp_core::Timecode::from_frames(l, 25)),
+            comment: String::new(),
+            kind,
+            review: None,
+        };
+        let notes = [marker(0, klipp_core::MarkerKind::ToDo, Some(50)), marker(100, klipp_core::MarkerKind::ToDo, Some(50))];
+        assert!(super::segment_markers(&notes).is_empty(), "a reframe's notes: nothing to cut by");
+        let mixed = [notes[0].clone(), marker(200, klipp_core::MarkerKind::Chapter, None), marker(300, klipp_core::MarkerKind::None, None)];
+        assert_eq!(super::segment_markers(&mixed).len(), 2, "the chapter and the plain marker");
     }
 
     #[test]
