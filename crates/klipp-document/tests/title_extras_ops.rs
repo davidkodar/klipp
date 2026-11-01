@@ -166,7 +166,7 @@ fn wrong_values_are_refused_with_the_choices() {
         json!([op])
     };
     for (extra, says) in [
-        (json!({"animators":[{"preset":"twirl"}]}), "wave, random_fade_in, spin_in"),
+        (json!({"animators":[{"preset":"twirl"}]}), "wave, random_fade_in, spin_in, pop_in_words"),
         (json!({"animators":[{"unit":"glyph"}]}), "char, word or line"),
         (json!({"animators":[{"shape":"zigzag"}]}), "ramp_up"),
         (json!({"animators":[{"order":"sideways"}]}), "centre or random"),

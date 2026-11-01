@@ -1,0 +1,1124 @@
+{
+  "format_version": 2,
+  "id": "6b74c1d4-848b-5bbe-bbce-69c9430e51ab",
+  "name": "Glow Caps",
+  "category": "Kinetic",
+  "composition_id": "489d79a7-5968-53e5-adc6-1dd222e5a42d",
+  "parameters": {
+    "colour": {
+      "label": "Colour",
+      "default": {
+        "type": "Color",
+        "value": [
+          0.84705883,
+          0.94509804,
+          1.0,
+          1.0
+        ]
+      }
+    },
+    "glow": {
+      "label": "Glow",
+      "default": {
+        "type": "Number",
+        "value": 0.5
+      },
+      "range": {
+        "min": 0.0,
+        "max": 1.0
+      }
+    },
+    "headline": {
+      "label": "Headline",
+      "default": {
+        "type": "Text",
+        "value": "Say it bright"
+      }
+    },
+    "pace": {
+      "label": "Pace",
+      "default": {
+        "type": "Number",
+        "value": 0.4
+      },
+      "range": {
+        "min": 0.0,
+        "max": 1.0
+      }
+    }
+  },
+  "bindings": [
+    {
+      "parameter": "headline",
+      "property": "object:0.text"
+    },
+    {
+      "parameter": "colour",
+      "property": "object:0.fill_and_glow"
+    },
+    {
+      "parameter": "glow",
+      "property": "object:0.glow.radius",
+      "link": {
+        "to": [
+          0.0,
+          36.0
+        ],
+        "curve": "linear"
+      }
+    },
+    {
+      "parameter": "pace",
+      "property": "object:0.motion.enter.duration_secs",
+      "link": {
+        "to": [
+          0.2,
+          0.8
+        ],
+        "curve": "linear"
+      }
+    }
+  ],
+  "written_by": "",
+  "sequences": [
+    {
+      "id": "489d79a7-5968-53e5-adc6-1dd222e5a42d",
+      "name": "Glow Caps wide",
+      "fps": {
+        "num": 24,
+        "den": 1
+      },
+      "resolution": {
+        "width": 1920,
+        "height": 1080
+      },
+      "first_clip_autoset": {
+        "resolution": true,
+        "fps": true
+      },
+      "tracks": [
+        {
+          "id": "59d75c68-1d8f-4117-9a7e-ae31fb1810bd",
+          "name": "T 1",
+          "kind": "Text",
+          "clips": [
+            {
+              "id": "a3c4fe6d-c126-543f-8758-c905c9ff571a",
+              "kind": {
+                "type": "title",
+                "objects": [
+                  {
+                    "id": 0,
+                    "name": "Text 1",
+                    "transform": {
+                      "center": {
+                        "x": 0.5,
+                        "y": 0.5
+                      },
+                      "center_x_keyframes": [],
+                      "center_y_keyframes": [],
+                      "size_x_keyframes": [],
+                      "size_y_keyframes": [],
+                      "size": {
+                        "x": 1.0,
+                        "y": 1.0
+                      },
+                      "rotation": 0.0,
+                      "rotation_keyframes": [],
+                      "anchor_norm": {
+                        "x": 0.5,
+                        "y": 0.5
+                      },
+                      "anchor_x_keyframes": [],
+                      "anchor_y_keyframes": []
+                    },
+                    "visible": true,
+                    "locked": false,
+                    "opacity": 1.0,
+                    "opacity_keyframes": [],
+                    "content": {
+                      "TextBox": {
+                        "text": "Say it bright",
+                        "font_size": 130.0,
+                        "font_name": "Montserrat",
+                        "font_style": "Bold",
+                        "color": [
+                          216,
+                          241,
+                          255,
+                          255
+                        ],
+                        "alignment": "Center",
+                        "gradient": null,
+                        "pattern_fill": null,
+                        "pattern_fill_enabled": true,
+                        "tracking": 0.0,
+                        "line_spacing": 1.0,
+                        "write_on": 1.0,
+                        "extrusion": null,
+                        "text_path": null,
+                        "char_animation": null,
+                        "texture_fill": null,
+                        "style_runs": [],
+                        "ass_style_name": null,
+                        "underline": false,
+                        "strikethrough": false,
+                        "case_transform": "Uppercase",
+                        "baseline_shift": 0.0,
+                        "outline_write_on": 1.0,
+                        "chromatic_aberration_px": 0.0,
+                        "glitch_intensity": 0.0,
+                        "drop_cap_scale": 0.0,
+                        "columns": 1,
+                        "vertical_layout": false,
+                        "text_direction": "Ltr",
+                        "font_weight": 800
+                      }
+                    },
+                    "fx": {
+                      "motion": {
+                        "enter": {
+                          "kind": "ScaleUp",
+                          "duration_secs": 0.4,
+                          "delay_secs": 0.0,
+                          "easing": "OutBack",
+                          "stagger": "Word",
+                          "stagger_secs": 0.12,
+                          "distance": 0.6,
+                          "amount": null,
+                          "anchor": null
+                        },
+                        "exit": {
+                          "kind": "Fade",
+                          "duration_secs": 0.3,
+                          "delay_secs": 0.0,
+                          "easing": "InCubic",
+                          "stagger": "None",
+                          "stagger_secs": 0.05,
+                          "distance": 0.6,
+                          "amount": null,
+                          "anchor": null
+                        }
+                      },
+                      "glows": [
+                        {
+                          "enabled": true,
+                          "color": [
+                            216,
+                            241,
+                            255,
+                            255
+                          ],
+                          "radius": 18.0,
+                          "radius_keyframes": [],
+                          "intensity": 0.85,
+                          "intensity_keyframes": []
+                        }
+                      ]
+                    }
+                  }
+                ],
+                "next_object_id": 1,
+                "animation_type": "Static",
+                "background": "None",
+                "published": [
+                  {
+                    "label": "Size",
+                    "kind": {
+                      "Size": {
+                        "factor": 1.0,
+                        "anchor": {
+                          "x": 0.5,
+                          "y": 0.5
+                        },
+                        "base": [
+                          {
+                            "object": 0,
+                            "center": {
+                              "x": 0.5,
+                              "y": 0.5
+                            },
+                            "size": {
+                              "x": 1.0,
+                              "y": 1.0
+                            },
+                            "font_size": 130.0
+                          }
+                        ]
+                      }
+                    }
+                  },
+                  {
+                    "label": "Speed",
+                    "kind": {
+                      "Speed": {
+                        "factor": 1.0,
+                        "base": [
+                          {
+                            "object": 0,
+                            "enter": {
+                              "duration_secs": 0.4,
+                              "delay_secs": 0.0,
+                              "stagger_secs": 0.12
+                            },
+                            "exit": {
+                              "duration_secs": 0.3,
+                              "delay_secs": 0.0,
+                              "stagger_secs": 0.05
+                            }
+                          }
+                        ]
+                      }
+                    }
+                  }
+                ],
+                "protect": "auto"
+              },
+              "timeline_in": {
+                "value": 0,
+                "rate": 24
+              },
+              "timeline_out": {
+                "value": 120,
+                "rate": 24
+              },
+              "source_in": {
+                "value": 0,
+                "rate": 24
+              },
+              "source_out": {
+                "value": 120,
+                "rate": 24
+              },
+              "node_graph": {
+                "nodes": [
+                  {
+                    "id": "514a2a55-eddd-490c-85cb-978b7fdc08cc",
+                    "kind": "Source",
+                    "label": "Source",
+                    "enabled": true,
+                    "params": {},
+                    "keyframes": {
+                      "tracks": []
+                    },
+                    "output_link": null,
+                    "input_links": []
+                  },
+                  {
+                    "id": "cdb9bd11-0d03-43db-9fa8-43e195b6157f",
+                    "kind": "Corrector",
+                    "label": "Corrector",
+                    "enabled": true,
+                    "params": {},
+                    "keyframes": {
+                      "tracks": []
+                    },
+                    "output_link": null,
+                    "input_links": []
+                  },
+                  {
+                    "id": "f779edb4-cb2f-42eb-89ea-6dd95eb9cfd8",
+                    "kind": "Output",
+                    "label": "Output",
+                    "enabled": true,
+                    "params": {},
+                    "keyframes": {
+                      "tracks": []
+                    },
+                    "output_link": null,
+                    "input_links": []
+                  }
+                ],
+                "edges": [
+                  {
+                    "from_node": "514a2a55-eddd-490c-85cb-978b7fdc08cc",
+                    "from_port": 0,
+                    "to_node": "cdb9bd11-0d03-43db-9fa8-43e195b6157f",
+                    "to_port": 0
+                  },
+                  {
+                    "from_node": "cdb9bd11-0d03-43db-9fa8-43e195b6157f",
+                    "from_port": 0,
+                    "to_node": "f779edb4-cb2f-42eb-89ea-6dd95eb9cfd8",
+                    "to_port": 0
+                  }
+                ],
+                "output_node_id": "f779edb4-cb2f-42eb-89ea-6dd95eb9cfd8",
+                "node_positions": {
+                  "cdb9bd11-0d03-43db-9fa8-43e195b6157f": {
+                    "x": 220.0,
+                    "y": 0.0
+                  },
+                  "514a2a55-eddd-490c-85cb-978b7fdc08cc": {
+                    "x": 0.0,
+                    "y": 0.0
+                  },
+                  "f779edb4-cb2f-42eb-89ea-6dd95eb9cfd8": {
+                    "x": 440.0,
+                    "y": 0.0
+                  }
+                }
+              },
+              "effects": [],
+              "builtin_effects": [],
+              "builtin_effects_enabled": [],
+              "opacity_keyframes": [],
+              "transform_pos_x_keyframes": [],
+              "transform_pos_y_keyframes": [],
+              "transform_scale_keyframes": [],
+              "transform_rotation_keyframes": [],
+              "effect_keyframes": {},
+              "grade_versions": [],
+              "active_grade_version": null,
+              "linked_clip_id": null,
+              "linked_title_asset_id": null,
+              "group_id": null,
+              "magnetic_anchor": null,
+              "gain": 1.0,
+              "volume": 1.0,
+              "pan": 0.0,
+              "fade_in_secs": 0.0,
+              "fade_out_secs": 0.0,
+              "fade_in_curve": "Linear",
+              "fade_out_curve": "Linear",
+              "channel_config": "Default",
+              "volume_keyframes": [],
+              "pan_keyframes": [],
+              "gain_keyframes": [],
+              "clip_markers": [],
+              "role": "Dialogue",
+              "speed": 1.0,
+              "speed_keyframes": [],
+              "keep_pitch": false,
+              "source_rotation": 0,
+              "enabled": true,
+              "solo": false,
+              "blend_mode": "Normal",
+              "consumed_as_matte": false,
+              "transform_link": null,
+              "multicam_angle": 0,
+              "audio_effect_keyframes": {},
+              "track_points": []
+            }
+          ],
+          "transitions": [],
+          "opacity": 1.0,
+          "volume": 1.0,
+          "muted": false,
+          "solo": false,
+          "visible": true,
+          "pan": 0.0,
+          "locked": false,
+          "sync_lock": false,
+          "targeted": true,
+          "source_patch": false,
+          "magnetic_role": "Free",
+          "storyline_anchor": null,
+          "colour_label": 0,
+          "channel_waveforms": false,
+          "source_file": null,
+          "record_armed": false
+        }
+      ],
+      "in_point": null,
+      "out_point": null,
+      "markers": [],
+      "last_playhead": null,
+      "drop_frame": false
+    },
+    {
+      "id": "69d75bbb-18ef-526a-91ef-60be059c1c06",
+      "name": "Glow Caps tall",
+      "fps": {
+        "num": 24,
+        "den": 1
+      },
+      "resolution": {
+        "width": 1080,
+        "height": 1920
+      },
+      "first_clip_autoset": {
+        "resolution": true,
+        "fps": true
+      },
+      "tracks": [
+        {
+          "id": "974b7e04-b1e9-4df0-903c-e2f4b98e31d7",
+          "name": "T 1",
+          "kind": "Text",
+          "clips": [
+            {
+              "id": "a3c4fe6d-c126-543f-8758-c905c9ff571a",
+              "kind": {
+                "type": "title",
+                "objects": [
+                  {
+                    "id": 0,
+                    "name": "Text 1",
+                    "transform": {
+                      "center": {
+                        "x": 0.5,
+                        "y": 0.5
+                      },
+                      "center_x_keyframes": [],
+                      "center_y_keyframes": [],
+                      "size_x_keyframes": [],
+                      "size_y_keyframes": [],
+                      "size": {
+                        "x": 0.72,
+                        "y": 1.0
+                      },
+                      "rotation": 0.0,
+                      "rotation_keyframes": [],
+                      "anchor_norm": {
+                        "x": 0.5,
+                        "y": 0.5
+                      },
+                      "anchor_x_keyframes": [],
+                      "anchor_y_keyframes": []
+                    },
+                    "visible": true,
+                    "locked": false,
+                    "opacity": 1.0,
+                    "opacity_keyframes": [],
+                    "content": {
+                      "TextBox": {
+                        "text": "Say it bright",
+                        "font_size": 162.5,
+                        "font_name": "Montserrat",
+                        "font_style": "Bold",
+                        "color": [
+                          216,
+                          241,
+                          255,
+                          255
+                        ],
+                        "alignment": "Center",
+                        "gradient": null,
+                        "pattern_fill": null,
+                        "pattern_fill_enabled": true,
+                        "tracking": 0.0,
+                        "line_spacing": 1.0,
+                        "write_on": 1.0,
+                        "extrusion": null,
+                        "text_path": null,
+                        "char_animation": null,
+                        "texture_fill": null,
+                        "style_runs": [],
+                        "ass_style_name": null,
+                        "underline": false,
+                        "strikethrough": false,
+                        "case_transform": "Uppercase",
+                        "baseline_shift": 0.0,
+                        "outline_write_on": 1.0,
+                        "chromatic_aberration_px": 0.0,
+                        "glitch_intensity": 0.0,
+                        "drop_cap_scale": 0.0,
+                        "columns": 1,
+                        "vertical_layout": false,
+                        "text_direction": "Ltr",
+                        "font_weight": 800
+                      }
+                    },
+                    "fx": {
+                      "motion": {
+                        "enter": {
+                          "kind": "ScaleUp",
+                          "duration_secs": 0.4,
+                          "delay_secs": 0.0,
+                          "easing": "OutBack",
+                          "stagger": "Word",
+                          "stagger_secs": 0.12,
+                          "distance": 0.6,
+                          "amount": null,
+                          "anchor": null
+                        },
+                        "exit": {
+                          "kind": "Fade",
+                          "duration_secs": 0.3,
+                          "delay_secs": 0.0,
+                          "easing": "InCubic",
+                          "stagger": "None",
+                          "stagger_secs": 0.05,
+                          "distance": 0.6,
+                          "amount": null,
+                          "anchor": null
+                        }
+                      },
+                      "glows": [
+                        {
+                          "enabled": true,
+                          "color": [
+                            216,
+                            241,
+                            255,
+                            255
+                          ],
+                          "radius": 18.0,
+                          "radius_keyframes": [],
+                          "intensity": 0.85,
+                          "intensity_keyframes": []
+                        }
+                      ]
+                    }
+                  }
+                ],
+                "next_object_id": 1,
+                "animation_type": "Static",
+                "background": "None",
+                "published": [
+                  {
+                    "label": "Size",
+                    "kind": {
+                      "Size": {
+                        "factor": 1.0,
+                        "anchor": {
+                          "x": 0.5,
+                          "y": 0.5
+                        },
+                        "base": [
+                          {
+                            "object": 0,
+                            "center": {
+                              "x": 0.5,
+                              "y": 0.5
+                            },
+                            "size": {
+                              "x": 0.72,
+                              "y": 1.0
+                            },
+                            "font_size": 162.5
+                          }
+                        ]
+                      }
+                    }
+                  },
+                  {
+                    "label": "Speed",
+                    "kind": {
+                      "Speed": {
+                        "factor": 1.0,
+                        "base": [
+                          {
+                            "object": 0,
+                            "enter": {
+                              "duration_secs": 0.4,
+                              "delay_secs": 0.0,
+                              "stagger_secs": 0.12
+                            },
+                            "exit": {
+                              "duration_secs": 0.3,
+                              "delay_secs": 0.0,
+                              "stagger_secs": 0.05
+                            }
+                          }
+                        ]
+                      }
+                    }
+                  }
+                ],
+                "protect": "auto"
+              },
+              "timeline_in": {
+                "value": 0,
+                "rate": 24
+              },
+              "timeline_out": {
+                "value": 120,
+                "rate": 24
+              },
+              "source_in": {
+                "value": 0,
+                "rate": 24
+              },
+              "source_out": {
+                "value": 120,
+                "rate": 24
+              },
+              "node_graph": {
+                "nodes": [
+                  {
+                    "id": "c8cac07d-d773-4640-bf3c-18ad5dc66efe",
+                    "kind": "Source",
+                    "label": "Source",
+                    "enabled": true,
+                    "params": {},
+                    "keyframes": {
+                      "tracks": []
+                    },
+                    "output_link": null,
+                    "input_links": []
+                  },
+                  {
+                    "id": "5280afcc-e3de-4fa2-9735-514adc986397",
+                    "kind": "Corrector",
+                    "label": "Corrector",
+                    "enabled": true,
+                    "params": {},
+                    "keyframes": {
+                      "tracks": []
+                    },
+                    "output_link": null,
+                    "input_links": []
+                  },
+                  {
+                    "id": "fb9e136d-db2e-443e-a62e-952d5a957f37",
+                    "kind": "Output",
+                    "label": "Output",
+                    "enabled": true,
+                    "params": {},
+                    "keyframes": {
+                      "tracks": []
+                    },
+                    "output_link": null,
+                    "input_links": []
+                  }
+                ],
+                "edges": [
+                  {
+                    "from_node": "c8cac07d-d773-4640-bf3c-18ad5dc66efe",
+                    "from_port": 0,
+                    "to_node": "5280afcc-e3de-4fa2-9735-514adc986397",
+                    "to_port": 0
+                  },
+                  {
+                    "from_node": "5280afcc-e3de-4fa2-9735-514adc986397",
+                    "from_port": 0,
+                    "to_node": "fb9e136d-db2e-443e-a62e-952d5a957f37",
+                    "to_port": 0
+                  }
+                ],
+                "output_node_id": "fb9e136d-db2e-443e-a62e-952d5a957f37",
+                "node_positions": {
+                  "c8cac07d-d773-4640-bf3c-18ad5dc66efe": {
+                    "x": 0.0,
+                    "y": 0.0
+                  },
+                  "fb9e136d-db2e-443e-a62e-952d5a957f37": {
+                    "x": 440.0,
+                    "y": 0.0
+                  },
+                  "5280afcc-e3de-4fa2-9735-514adc986397": {
+                    "x": 220.0,
+                    "y": 0.0
+                  }
+                }
+              },
+              "effects": [],
+              "builtin_effects": [],
+              "builtin_effects_enabled": [],
+              "opacity_keyframes": [],
+              "transform_pos_x_keyframes": [],
+              "transform_pos_y_keyframes": [],
+              "transform_scale_keyframes": [],
+              "transform_rotation_keyframes": [],
+              "effect_keyframes": {},
+              "grade_versions": [],
+              "active_grade_version": null,
+              "linked_clip_id": null,
+              "linked_title_asset_id": null,
+              "group_id": null,
+              "magnetic_anchor": null,
+              "gain": 1.0,
+              "volume": 1.0,
+              "pan": 0.0,
+              "fade_in_secs": 0.0,
+              "fade_out_secs": 0.0,
+              "fade_in_curve": "Linear",
+              "fade_out_curve": "Linear",
+              "channel_config": "Default",
+              "volume_keyframes": [],
+              "pan_keyframes": [],
+              "gain_keyframes": [],
+              "clip_markers": [],
+              "role": "Dialogue",
+              "speed": 1.0,
+              "speed_keyframes": [],
+              "keep_pitch": false,
+              "source_rotation": 0,
+              "enabled": true,
+              "solo": false,
+              "blend_mode": "Normal",
+              "consumed_as_matte": false,
+              "transform_link": null,
+              "multicam_angle": 0,
+              "audio_effect_keyframes": {},
+              "track_points": []
+            }
+          ],
+          "transitions": [],
+          "opacity": 1.0,
+          "volume": 1.0,
+          "muted": false,
+          "solo": false,
+          "visible": true,
+          "pan": 0.0,
+          "locked": false,
+          "sync_lock": false,
+          "targeted": true,
+          "source_patch": false,
+          "magnetic_role": "Free",
+          "storyline_anchor": null,
+          "colour_label": 0,
+          "channel_waveforms": false,
+          "source_file": null,
+          "record_armed": false
+        }
+      ],
+      "in_point": null,
+      "out_point": null,
+      "markers": [],
+      "last_playhead": null,
+      "drop_frame": false
+    },
+    {
+      "id": "9e833d7b-7167-5525-9dc2-b5787cd9d27b",
+      "name": "Glow Caps square",
+      "fps": {
+        "num": 24,
+        "den": 1
+      },
+      "resolution": {
+        "width": 1080,
+        "height": 1080
+      },
+      "first_clip_autoset": {
+        "resolution": true,
+        "fps": true
+      },
+      "tracks": [
+        {
+          "id": "6c1d8373-7dfb-4723-b55d-a5d48bc1bc54",
+          "name": "T 1",
+          "kind": "Text",
+          "clips": [
+            {
+              "id": "a3c4fe6d-c126-543f-8758-c905c9ff571a",
+              "kind": {
+                "type": "title",
+                "objects": [
+                  {
+                    "id": 0,
+                    "name": "Text 1",
+                    "transform": {
+                      "center": {
+                        "x": 0.5,
+                        "y": 0.5
+                      },
+                      "center_x_keyframes": [],
+                      "center_y_keyframes": [],
+                      "size_x_keyframes": [],
+                      "size_y_keyframes": [],
+                      "size": {
+                        "x": 0.9,
+                        "y": 1.0
+                      },
+                      "rotation": 0.0,
+                      "rotation_keyframes": [],
+                      "anchor_norm": {
+                        "x": 0.5,
+                        "y": 0.5
+                      },
+                      "anchor_x_keyframes": [],
+                      "anchor_y_keyframes": []
+                    },
+                    "visible": true,
+                    "locked": false,
+                    "opacity": 1.0,
+                    "opacity_keyframes": [],
+                    "content": {
+                      "TextBox": {
+                        "text": "Say it bright",
+                        "font_size": 143.0,
+                        "font_name": "Montserrat",
+                        "font_style": "Bold",
+                        "color": [
+                          216,
+                          241,
+                          255,
+                          255
+                        ],
+                        "alignment": "Center",
+                        "gradient": null,
+                        "pattern_fill": null,
+                        "pattern_fill_enabled": true,
+                        "tracking": 0.0,
+                        "line_spacing": 1.0,
+                        "write_on": 1.0,
+                        "extrusion": null,
+                        "text_path": null,
+                        "char_animation": null,
+                        "texture_fill": null,
+                        "style_runs": [],
+                        "ass_style_name": null,
+                        "underline": false,
+                        "strikethrough": false,
+                        "case_transform": "Uppercase",
+                        "baseline_shift": 0.0,
+                        "outline_write_on": 1.0,
+                        "chromatic_aberration_px": 0.0,
+                        "glitch_intensity": 0.0,
+                        "drop_cap_scale": 0.0,
+                        "columns": 1,
+                        "vertical_layout": false,
+                        "text_direction": "Ltr",
+                        "font_weight": 800
+                      }
+                    },
+                    "fx": {
+                      "motion": {
+                        "enter": {
+                          "kind": "ScaleUp",
+                          "duration_secs": 0.4,
+                          "delay_secs": 0.0,
+                          "easing": "OutBack",
+                          "stagger": "Word",
+                          "stagger_secs": 0.12,
+                          "distance": 0.6,
+                          "amount": null,
+                          "anchor": null
+                        },
+                        "exit": {
+                          "kind": "Fade",
+                          "duration_secs": 0.3,
+                          "delay_secs": 0.0,
+                          "easing": "InCubic",
+                          "stagger": "None",
+                          "stagger_secs": 0.05,
+                          "distance": 0.6,
+                          "amount": null,
+                          "anchor": null
+                        }
+                      },
+                      "glows": [
+                        {
+                          "enabled": true,
+                          "color": [
+                            216,
+                            241,
+                            255,
+                            255
+                          ],
+                          "radius": 18.0,
+                          "radius_keyframes": [],
+                          "intensity": 0.85,
+                          "intensity_keyframes": []
+                        }
+                      ]
+                    }
+                  }
+                ],
+                "next_object_id": 1,
+                "animation_type": "Static",
+                "background": "None",
+                "published": [
+                  {
+                    "label": "Size",
+                    "kind": {
+                      "Size": {
+                        "factor": 1.0,
+                        "anchor": {
+                          "x": 0.5,
+                          "y": 0.5
+                        },
+                        "base": [
+                          {
+                            "object": 0,
+                            "center": {
+                              "x": 0.5,
+                              "y": 0.5
+                            },
+                            "size": {
+                              "x": 0.9,
+                              "y": 1.0
+                            },
+                            "font_size": 143.0
+                          }
+                        ]
+                      }
+                    }
+                  },
+                  {
+                    "label": "Speed",
+                    "kind": {
+                      "Speed": {
+                        "factor": 1.0,
+                        "base": [
+                          {
+                            "object": 0,
+                            "enter": {
+                              "duration_secs": 0.4,
+                              "delay_secs": 0.0,
+                              "stagger_secs": 0.12
+                            },
+                            "exit": {
+                              "duration_secs": 0.3,
+                              "delay_secs": 0.0,
+                              "stagger_secs": 0.05
+                            }
+                          }
+                        ]
+                      }
+                    }
+                  }
+                ],
+                "protect": "auto"
+              },
+              "timeline_in": {
+                "value": 0,
+                "rate": 24
+              },
+              "timeline_out": {
+                "value": 120,
+                "rate": 24
+              },
+              "source_in": {
+                "value": 0,
+                "rate": 24
+              },
+              "source_out": {
+                "value": 120,
+                "rate": 24
+              },
+              "node_graph": {
+                "nodes": [
+                  {
+                    "id": "ad4982bf-991e-4cb7-994c-cd39bcf75545",
+                    "kind": "Source",
+                    "label": "Source",
+                    "enabled": true,
+                    "params": {},
+                    "keyframes": {
+                      "tracks": []
+                    },
+                    "output_link": null,
+                    "input_links": []
+                  },
+                  {
+                    "id": "270a9c1d-d5d1-4463-8137-e4fcf381c4eb",
+                    "kind": "Corrector",
+                    "label": "Corrector",
+                    "enabled": true,
+                    "params": {},
+                    "keyframes": {
+                      "tracks": []
+                    },
+                    "output_link": null,
+                    "input_links": []
+                  },
+                  {
+                    "id": "0b557a86-4898-4197-a1a4-b45af3bc1b7c",
+                    "kind": "Output",
+                    "label": "Output",
+                    "enabled": true,
+                    "params": {},
+                    "keyframes": {
+                      "tracks": []
+                    },
+                    "output_link": null,
+                    "input_links": []
+                  }
+                ],
+                "edges": [
+                  {
+                    "from_node": "ad4982bf-991e-4cb7-994c-cd39bcf75545",
+                    "from_port": 0,
+                    "to_node": "270a9c1d-d5d1-4463-8137-e4fcf381c4eb",
+                    "to_port": 0
+                  },
+                  {
+                    "from_node": "270a9c1d-d5d1-4463-8137-e4fcf381c4eb",
+                    "from_port": 0,
+                    "to_node": "0b557a86-4898-4197-a1a4-b45af3bc1b7c",
+                    "to_port": 0
+                  }
+                ],
+                "output_node_id": "0b557a86-4898-4197-a1a4-b45af3bc1b7c",
+                "node_positions": {
+                  "ad4982bf-991e-4cb7-994c-cd39bcf75545": {
+                    "x": 0.0,
+                    "y": 0.0
+                  },
+                  "0b557a86-4898-4197-a1a4-b45af3bc1b7c": {
+                    "x": 440.0,
+                    "y": 0.0
+                  },
+                  "270a9c1d-d5d1-4463-8137-e4fcf381c4eb": {
+                    "x": 220.0,
+                    "y": 0.0
+                  }
+                }
+              },
+              "effects": [],
+              "builtin_effects": [],
+              "builtin_effects_enabled": [],
+              "opacity_keyframes": [],
+              "transform_pos_x_keyframes": [],
+              "transform_pos_y_keyframes": [],
+              "transform_scale_keyframes": [],
+              "transform_rotation_keyframes": [],
+              "effect_keyframes": {},
+              "grade_versions": [],
+              "active_grade_version": null,
+              "linked_clip_id": null,
+              "linked_title_asset_id": null,
+              "group_id": null,
+              "magnetic_anchor": null,
+              "gain": 1.0,
+              "volume": 1.0,
+              "pan": 0.0,
+              "fade_in_secs": 0.0,
+              "fade_out_secs": 0.0,
+              "fade_in_curve": "Linear",
+              "fade_out_curve": "Linear",
+              "channel_config": "Default",
+              "volume_keyframes": [],
+              "pan_keyframes": [],
+              "gain_keyframes": [],
+              "clip_markers": [],
+              "role": "Dialogue",
+              "speed": 1.0,
+              "speed_keyframes": [],
+              "keep_pitch": false,
+              "source_rotation": 0,
+              "enabled": true,
+              "solo": false,
+              "blend_mode": "Normal",
+              "consumed_as_matte": false,
+              "transform_link": null,
+              "multicam_angle": 0,
+              "audio_effect_keyframes": {},
+              "track_points": []
+            }
+          ],
+          "transitions": [],
+          "opacity": 1.0,
+          "volume": 1.0,
+          "muted": false,
+          "solo": false,
+          "visible": true,
+          "pan": 0.0,
+          "locked": false,
+          "sync_lock": false,
+          "targeted": true,
+          "source_patch": false,
+          "magnetic_role": "Free",
+          "storyline_anchor": null,
+          "colour_label": 0,
+          "channel_waveforms": false,
+          "source_file": null,
+          "record_armed": false
+        }
+      ],
+      "in_point": null,
+      "out_point": null,
+      "markers": [],
+      "last_playhead": null,
+      "drop_frame": false
+    }
+  ],
+  "formats": {
+    "square": "9e833d7b-7167-5525-9dc2-b5787cd9d27b",
+    "tall": "69d75bbb-18ef-526a-91ef-60be059c1c06"
+  }
+}

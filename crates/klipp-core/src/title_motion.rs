@@ -2142,6 +2142,13 @@ mod animator_tests {
                 props: AnimatorProps { rotation: 360.0, scale: 0.4, opacity: 0.0, ..Default::default() },
                 ..Default::default()
             },
+            // #3304, written as a file from the start.
+            "pop_in_words" => Animator {
+                name: "Pop in words".into(),
+                selector: RangeSelector { unit: SelectUnit::Word, start_keyframes: vec![key(0.0, 0.0), key(entrance, 1.0)], easing: Easing::OutBack, ..Default::default() },
+                props: AnimatorProps { scale: 0.3, opacity: 0.0, ..Default::default() },
+                ..Default::default()
+            },
             _ => return None,
         })
     }
@@ -2150,7 +2157,7 @@ mod animator_tests {
     /// placed on a long clip, a short one and one of no length (#2887).
     #[test]
     fn the_animator_presets_read_as_they_were() {
-        assert_eq!(animator_preset_ids(), ["wave", "random_fade_in", "spin_in"]);
+        assert_eq!(animator_preset_ids(), ["wave", "random_fade_in", "spin_in", "pop_in_words"]);
         for clip in [4.0, 0.5, 0.0, 30.0] {
             for id in animator_preset_ids() {
                 assert_eq!(animator_preset(id, clip), as_written(id, clip), "{id} on a {clip} s clip");
