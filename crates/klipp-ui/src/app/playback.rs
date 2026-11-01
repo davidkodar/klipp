@@ -181,6 +181,11 @@ impl KlippApp {
                 self.prefs_dirty = true;
                 true
             }
+            AppCommand::SetShowReusedFootage(val) => {
+                apply_show_reused_footage(&mut self.prefs, &mut self.state, *val);
+                self.prefs_dirty = true;
+                true
+            }
             AppCommand::SetMasterMute(muted) => {
                 self.state.master_muted = *muted;
                 let effective = if self.state.master_muted { 0.0 } else { self.state.master_volume };

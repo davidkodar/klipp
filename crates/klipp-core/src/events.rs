@@ -2789,6 +2789,9 @@ pub enum AppCommand {
     /// `prefs.editing.multicam_show_angles` ↔
     /// `state.multicam_show_angles`.
     SetMulticamShowAngles(bool),
+    /// Whether clips show a strip where they use the same frames as
+    /// another clip (#3272). Mirrors `prefs.editing.show_reused_footage`.
+    SetShowReusedFootage(bool),
     SetRippleEnabled(bool),
     /// Whether appending a clip also brings its audio (source patching).
     SetAppendBringsAudio(bool),

@@ -216,6 +216,7 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::SetDefaultTransitionFrames(..)
         | AppCommand::SetShiftStepFrames(..)
         | AppCommand::SetMulticamShowAngles(..)
+        | AppCommand::SetShowReusedFootage(..)
         | AppCommand::SetRippleEnabled(..)
         | AppCommand::SetAppendBringsAudio(..)
         | AppCommand::RefineFilmstrip { .. }

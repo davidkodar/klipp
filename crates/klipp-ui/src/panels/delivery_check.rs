@@ -27,6 +27,8 @@ pub enum DeliveryAction {
     Run { request: Value, check: bool },
     /// Put the playhead here, in timeline seconds.
     Seek(f64),
+    /// Set the brief's "reused footage is a warning" (#3272).
+    ReuseWarns(bool),
 }
 
 /// A finding still counted: open, or marked to fix.
@@ -228,7 +230,8 @@ impl DeliveryCheckPanel {
         self.running_check.is_some() || self.running_review
     }
 
-    pub fn show(&mut self, ctx: &egui::Context, theme: &KlippTheme, tools: bool, open: &mut bool) -> DeliveryAction {
+    /// `reuse_warns`: the brief's `reused_footage_warns`, shown as a switch.
+    pub fn show(&mut self, ctx: &egui::Context, theme: &KlippTheme, tools: bool, reuse_warns: bool, open: &mut bool) -> DeliveryAction {
         let mut action = DeliveryAction::None;
         egui::Window::new("Delivery Check")
             .open(open)
@@ -243,6 +246,10 @@ impl DeliveryCheckPanel {
                     return;
                 }
                 self.header(ui, theme, &mut action);
+                let mut warns = reuse_warns;
+                if ui.checkbox(&mut warns, "Treat reused footage as warnings").on_hover_text("Footage shown twice in this sequence is a note; for a stock-heavy piece, make it a warning. Saved in the brief.").changed() {
+                    action = DeliveryAction::ReuseWarns(warns);
+                }
                 if let Some(e) = &self.error {
                     ui.label(egui::RichText::new(e).size(type_scale::BODY).color(theme.marker_error));
                 }
@@ -542,11 +549,11 @@ mod tests {
             let mut seen = Vec::new();
             let _ = ctx.run(egui::RawInput::default(), |ctx| {
                 let mut open = true;
-                p.show(ctx, &theme, true, &mut open);
+                p.show(ctx, &theme, true, false, &mut open);
             });
             let out = ctx.run(egui::RawInput::default(), |ctx| {
                 let mut open = true;
-                p.show(ctx, &theme, true, &mut open);
+                p.show(ctx, &theme, true, false, &mut open);
             });
             for shape in out.shapes {
                 collect_text(&shape.shape, &mut seen);

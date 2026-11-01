@@ -66,6 +66,10 @@ pub struct Brief {
     /// Whether it has music under it.
     #[serde(default)]
     pub music: bool,
+    /// Footage used twice is a warning in the check, not a note (#3272):
+    /// for a stock-heavy delivery, where each use may be licensed.
+    #[serde(default)]
+    pub reused_footage_warns: bool,
     #[serde(default)]
     pub cast: Vec<CastMember>,
     /// What it shows, ranked: the features a promo walks through.

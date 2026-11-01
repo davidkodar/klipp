@@ -98,7 +98,7 @@ mod routing_tests {
         // templates (#3095), 152 with alternatives (#3209), 154 with
         // spelling (#3236), 156 with render_status and
         // set_background_render (#3212), 157 with preview_takes (#3209),
-        // 158 with bounce_track (#3264).
-        assert_eq!(routed_all.len(), 158);
+        // 158 with bounce_track (#3264), 159 with reuse_report (#3272).
+        assert_eq!(routed_all.len(), 159);
     }
 }

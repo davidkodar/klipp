@@ -792,6 +792,9 @@ pub struct EditingPrefs {
     /// Show angle numbers overlay on multicam clips in timeline.
     #[serde(default = "default_true")]
     pub multicam_show_angles: bool,
+    /// Mark spans of clips that show the same frames as another clip.
+    #[serde(default = "default_true")]
+    pub show_reused_footage: bool,
     /// Default tracker search region radius in pixels.
     #[serde(default = "default_track_search_radius")]
     pub track_search_radius: u32,
@@ -864,6 +867,7 @@ impl Default for EditingPrefs {
             magnetic_timeline: true,
             multicam_sync_method: MulticamSyncMethod::default(),
             multicam_show_angles: true,
+            show_reused_footage: true,
             track_search_radius: default_track_search_radius(),
             track_patch_size: default_track_patch_size(),
             track_loss_threshold: default_track_threshold(),

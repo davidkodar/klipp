@@ -63,6 +63,7 @@ pub(crate) mod hover_preview;
 mod colour_workspace;
 mod caption_translation;
 mod delivery_check;
+mod reuse_marks;
 mod main_layout;
 mod dialogs;
 mod control_bridge;
@@ -385,6 +386,8 @@ pub struct KlippApp {
     /// The answer of the request the Delivery Check window sent, and
     /// whether it was the check itself.
     delivery_reply: Option<(bool, std::sync::mpsc::Receiver<Result<serde_json::Value, String>>)>,
+    /// The look for footage used twice (#3272): see `reuse_marks`.
+    reuse_marks: reuse_marks::ReuseMarks,
     /// The caption translation running (#2213), its answer to come.
     translation: Option<caption_translation::Pending>,
     /// The Sound Over Time window's own state: the reading in hand or

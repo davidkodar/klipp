@@ -53,6 +53,11 @@ pub(super) fn apply_shift_step_frames(prefs: &mut crate::prefs::Preferences, sta
     state.shift_step_frames = val;
 }
 
+pub(super) fn apply_show_reused_footage(prefs: &mut crate::prefs::Preferences, state: &mut AppState, val: bool) {
+    prefs.editing.show_reused_footage = val;
+    state.show_reused_footage = val;
+}
+
 pub(super) fn apply_multicam_show_angles(prefs: &mut crate::prefs::Preferences, state: &mut AppState, val: bool) {
     prefs.editing.multicam_show_angles = val;
     state.multicam_show_angles = val;
