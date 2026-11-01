@@ -2206,7 +2206,7 @@ pub(super) fn starting_role_on(clip: &mut klipp_timeline::Clip, media: &klipp_me
         return;
     }
     if let Some((role, source)) = media.starting_role() {
-        clip.role = role;
+        clip.role = klipp_core::roles::RoleRef::from_legacy(role);
         clip.role_source = source;
     }
 }

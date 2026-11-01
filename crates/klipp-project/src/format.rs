@@ -350,6 +350,12 @@ fn default_visible() -> bool { true }
 
 fn default_rate() -> u32 { 24 }
 
+/// A clip's `role_id`, present: a role, or none for `null` or text that
+/// isn't one.
+fn role_id<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Option<klipp_core::roles::RoleRef>>, D::Error> {
+    klipp_core::roles::read_lenient(d).map(Some)
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ClipJson {
     pub id: String,
@@ -453,7 +459,13 @@ pub struct ClipJson {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effect_keyframes: Option<std::collections::HashMap<String, Vec<klipp_core::Keyframe>>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// The clip's role as files before roles were data wrote it (#3211):
+    /// absent for Dialogue. Read, never written now.
     pub role: Option<klipp_core::ClipRole>,
+    /// The clip's role (#3211): absent in files before it, `null` for a
+    /// clip with none, read leniently.
+    #[serde(default, deserialize_with = "role_id", skip_serializing_if = "Option::is_none")]
+    pub role_id: Option<Option<klipp_core::roles::RoleRef>>,
     #[serde(default, skip_serializing_if = "klipp_core::RoleSource::is_unset")]
     pub role_source: klipp_core::RoleSource,
     /// The shot the clip is kept matched to (#2236). Absent when none.
@@ -798,6 +810,10 @@ pub struct MediaManifestJson {
     /// The saved smart bins, as they are.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub smart_bins: Vec<klipp_core::SmartBin>,
+    /// The project's roles (#3211); absent in files before them, and then
+    /// the built-in ones.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub roles: Option<klipp_core::roles::RoleSet>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -1137,6 +1153,7 @@ mod tests {
             clip_markers: None,
             effect_keyframes: None,
             role: None,
+            role_id: None,
             role_source: Default::default(),
             matched_to: None,
             param_modifiers: None,
@@ -1214,7 +1231,7 @@ mod tests {
             matte_feather_keyframes: None, matte_choke_keyframes: None,
             clip_markers: None,
             effect_keyframes: None,
-            role: None, role_source: Default::default(), matched_to: None, param_modifiers: None,
+            role: None, role_id: None, role_source: Default::default(), matched_to: None, param_modifiers: None,
             speed: None, speed_keyframes: None, keep_pitch: None, hold: None,
             source_rotation: None, enabled: None,
             audio_effects: None,
@@ -1421,7 +1438,7 @@ mod tests {
             transform_scale_keyframes: None, transform_scale_y_keyframes: None, transform_rotation_keyframes: None, transform_tilt_x_keyframes: None, transform_tilt_y_keyframes: None, frame_glide: None,
             matte_feather_keyframes: None, matte_choke_keyframes: None,
             clip_markers: None, effect_keyframes: None,
-            role: None, role_source: Default::default(), matched_to: None, param_modifiers: None,
+            role: None, role_id: None, role_source: Default::default(), matched_to: None, param_modifiers: None,
             speed: None, speed_keyframes: None, keep_pitch: None, hold: None,
             source_rotation: None, enabled: None,
             audio_effects: None,

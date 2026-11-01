@@ -3,11 +3,12 @@
 //! clip, never over a role set by hand.
 
 use super::*;
+use klipp_core::roles::RoleRef;
 
 /// The open sequence's clips whose file's sound proposes a sure role they
 /// do not have, as (clip, old role, new role): on unlocked audio tracks,
 /// with a role neither set by hand nor proposed before.
-pub(crate) fn role_proposals(seq: &klipp_timeline::Sequence, pool: &klipp_media::MediaPool) -> Vec<(klipp_core::ClipId, klipp_core::ClipRole, klipp_core::ClipRole)> {
+pub(crate) fn role_proposals(seq: &klipp_timeline::Sequence, pool: &klipp_media::MediaPool) -> Vec<(klipp_core::ClipId, Option<RoleRef>, Option<RoleRef>)> {
     seq.tracks
         .iter()
         .filter(|t| t.kind == klipp_timeline::TrackKind::Audio && !t.locked)
@@ -15,7 +16,8 @@ pub(crate) fn role_proposals(seq: &klipp_timeline::Sequence, pool: &klipp_media:
         .filter(|c| c.role_source == klipp_core::RoleSource::Unset)
         .filter_map(|c| {
             let p = c.media_id().and_then(|m| pool.get(&m)).and_then(|m| m.audio_role).filter(|p| p.confident)?;
-            (p.role != c.role).then_some((c.id, c.role, p.role))
+            let proposed = RoleRef::from_legacy(p.role);
+            (proposed != c.role).then(|| (c.id, c.role.clone(), proposed))
         })
         .collect()
 }
@@ -23,10 +25,10 @@ pub(crate) fn role_proposals(seq: &klipp_timeline::Sequence, pool: &klipp_media:
 /// The undo step that sets `clip_id`'s role to `role` by hand, keeping
 /// the old role and where it came from to put back (#2229); none when the
 /// clip is not in the sequence or already has that role by hand.
-pub(crate) fn hand_role_edit(seq: &klipp_timeline::Sequence, clip_id: klipp_core::ClipId, role: klipp_core::ClipRole) -> Option<EditCommand> {
+pub(crate) fn hand_role_edit(seq: &klipp_timeline::Sequence, clip_id: klipp_core::ClipId, role: Option<RoleRef>) -> Option<EditCommand> {
     let clip = seq.all_clips().find(|c| c.id == clip_id)?;
     (clip.role != role || clip.role_source != klipp_core::RoleSource::ByHand)
-        .then_some(EditCommand::SetClipRole { clip_id, old: clip.role, new: role, old_source: clip.role_source })
+        .then(|| EditCommand::SetClipRole { clip_id, old: clip.role.clone(), new: role, old_source: clip.role_source })
 }
 
 impl KlippApp {
@@ -57,6 +59,10 @@ mod tests {
     use super::*;
     use klipp_core::{ClipRole, RoleProposal, RoleSource};
 
+    fn r(s: &str) -> Option<RoleRef> {
+        RoleRef::parse(s)
+    }
+
     /// A sure label is proposed for a clip whose role was never set; not
     /// for one set by hand, one proposed before, one on a locked track or
     /// one whose label is unsure. Undone, the clip stays as it was and is
@@ -79,7 +85,7 @@ mod tests {
         let quiet = klipp_timeline::Clip::media(room, tc(8.0), tc(12.0), tc(0.0), tc(4.0));
         let id = fresh.id;
         seq.tracks[audio].clips = vec![fresh, by_hand, quiet];
-        assert_eq!(role_proposals(&seq, &pool), vec![(id, ClipRole::Dialogue, ClipRole::Music)]);
+        assert_eq!(role_proposals(&seq, &pool), vec![(id, None, r("music"))]);
 
         let edit = EditCommand::ProposeClipRoles { changes: role_proposals(&seq, &pool) };
         let mut seqs = vec![seq];
@@ -87,10 +93,10 @@ mod tests {
         let mut view = klipp_document::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut pool, fps: &mut fps };
         view.apply_forward(&edit);
         let clip = |seqs: &[klipp_timeline::Sequence]| seqs[0].tracks[audio].clips[0].clone();
-        assert_eq!((clip(&seqs).role, clip(&seqs).role_source), (ClipRole::Music, RoleSource::Proposed));
+        assert_eq!((clip(&seqs).role, clip(&seqs).role_source), (r("music"), RoleSource::Proposed));
         let mut view = klipp_document::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut pool, fps: &mut fps };
         view.apply_inverse(&edit);
-        assert_eq!(clip(&seqs).role, ClipRole::Dialogue, "undone");
+        assert_eq!(clip(&seqs).role, None, "undone");
         assert!(role_proposals(&seqs[0], &pool).is_empty(), "and not proposed again");
 
         seqs[0].tracks[audio].locked = true;
@@ -115,15 +121,15 @@ mod tests {
         };
         let mut fresh = klipp_timeline::Clip::media(song, tc(0.0), tc(4.0), tc(0.0), tc(4.0));
         placed(&pool, &mut fresh);
-        assert_eq!((fresh.role, fresh.role_source), (ClipRole::Music, RoleSource::Unset), "no speech heard yet: music");
+        assert_eq!((fresh.role.clone(), fresh.role_source), (r("music"), RoleSource::Unset), "no speech heard yet: music");
         let mut by_hand = klipp_timeline::Clip::media(song, tc(4.0), tc(8.0), tc(0.0), tc(4.0));
-        (by_hand.role, by_hand.role_source) = (ClipRole::SFX, RoleSource::ByHand);
+        (by_hand.role, by_hand.role_source) = (r("effects"), RoleSource::ByHand);
         placed(&pool, &mut by_hand);
-        assert_eq!((by_hand.role, by_hand.role_source), (ClipRole::SFX, RoleSource::ByHand), "a hand-set role stays");
+        assert_eq!((by_hand.role.clone(), by_hand.role_source), (r("effects"), RoleSource::ByHand), "a hand-set role stays");
         let picture = pool.add(klipp_media::MediaItem::synthetic_for_test("/tmp/shot.mov".into(), None));
         let mut shot = klipp_timeline::Clip::media(picture, tc(0.0), tc(4.0), tc(0.0), tc(4.0));
         placed(&pool, &mut shot);
-        assert_eq!((shot.role, shot.role_source), (ClipRole::Dialogue, RoleSource::Unset), "a file with a picture");
+        assert_eq!((shot.role, shot.role_source), (None, RoleSource::Unset), "a file with a picture: no role");
 
         // Heard as speech: the clip placed before is proposed Dialogue, the
         // hand-set one is not, and one placed now starts as Dialogue.
@@ -132,10 +138,10 @@ mod tests {
         let audio = seq.tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Audio).unwrap();
         let id = fresh.id;
         seq.tracks[audio].clips = vec![fresh, by_hand];
-        assert_eq!(role_proposals(&seq, &pool), vec![(id, ClipRole::Music, ClipRole::Dialogue)]);
+        assert_eq!(role_proposals(&seq, &pool), vec![(id, r("music"), r("dialogue"))]);
         let mut voice = klipp_timeline::Clip::media(song, tc(8.0), tc(12.0), tc(0.0), tc(4.0));
         placed(&pool, &mut voice);
-        assert_eq!((voice.role, voice.role_source), (ClipRole::Dialogue, RoleSource::Proposed));
+        assert_eq!((voice.role, voice.role_source), (r("dialogue"), RoleSource::Proposed));
     }
 
     /// A role chosen in the inspector or a menu is one undo step (#2229):
@@ -148,23 +154,23 @@ mod tests {
         let mut seq = klipp_timeline::Sequence::new_default();
         let audio = seq.tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Audio).unwrap();
         let mut clip = klipp_timeline::Clip::media(song, tc(0.0), tc(4.0), tc(0.0), tc(4.0));
-        clip.role = ClipRole::Music;
+        clip.role = r("music");
         clip.role_source = RoleSource::Proposed;
         let id = clip.id;
         seq.tracks[audio].clips = vec![clip];
-        assert!(hand_role_edit(&seq, klipp_core::ClipId::new(), ClipRole::Foley).is_none(), "no such clip");
+        assert!(hand_role_edit(&seq, klipp_core::ClipId::new(), r("effects.foley")).is_none(), "no such clip");
 
-        let edit = hand_role_edit(&seq, id, ClipRole::Foley).expect("a step");
+        let edit = hand_role_edit(&seq, id, r("effects.foley")).expect("a step");
         let mut seqs = vec![seq];
         let mut fps = klipp_core::Fps::new(24, 1);
-        let at = |seqs: &[klipp_timeline::Sequence]| (seqs[0].tracks[audio].clips[0].role, seqs[0].tracks[audio].clips[0].role_source);
+        let at = |seqs: &[klipp_timeline::Sequence]| (seqs[0].tracks[audio].clips[0].role.clone(), seqs[0].tracks[audio].clips[0].role_source);
         let mut view = klipp_document::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut pool, fps: &mut fps };
         view.apply_forward(&edit);
-        assert_eq!(at(&seqs), (ClipRole::Foley, RoleSource::ByHand));
-        assert!(hand_role_edit(&seqs[0], id, ClipRole::Foley).is_none(), "the same role by hand again is no step");
-        assert!(hand_role_edit(&seqs[0], id, ClipRole::Music).is_some(), "another one is");
+        assert_eq!(at(&seqs), (r("effects.foley"), RoleSource::ByHand));
+        assert!(hand_role_edit(&seqs[0], id, r("effects.foley")).is_none(), "the same role by hand again is no step");
+        assert!(hand_role_edit(&seqs[0], id, r("music")).is_some(), "another one is");
         let mut view = klipp_document::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut pool, fps: &mut fps };
         view.apply_inverse(&edit);
-        assert_eq!(at(&seqs), (ClipRole::Music, RoleSource::Proposed), "undone");
+        assert_eq!(at(&seqs), (r("music"), RoleSource::Proposed), "undone");
     }
 }

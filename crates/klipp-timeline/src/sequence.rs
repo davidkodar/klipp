@@ -1864,7 +1864,7 @@ impl Track {
             matte_choke_keyframes: Vec::new(),
             clip_markers: Vec::new(),
             frame_glide: None,
-            role: ClipRole::default(),
+            role: None,
             role_source: klipp_core::RoleSource::Unset,
             matched_to: None,
             speed: 1.0,
@@ -2177,7 +2177,7 @@ impl Track {
             clip_markers: markers_a,
             // A glide is the whole clip's move: each piece keeps its share of the keys (#611).
             frame_glide: None,
-            role: clip.role,
+            role: clip.role.clone(),
             role_source: clip.role_source,
             matched_to: None,
             speed: clip.speed,
@@ -2260,7 +2260,7 @@ impl Track {
             clip_markers: markers_b,
             // A glide is the whole clip's move: each piece keeps its share of the keys (#611).
             frame_glide: None,
-            role: clip.role,
+            role: clip.role.clone(),
             role_source: clip.role_source,
             matched_to: None,
             speed: clip.speed,
@@ -2731,9 +2731,10 @@ pub struct Clip {
     /// for a clip without one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub frame_glide: Option<crate::frame_glide::FrameGlide>,
-    /// Content role — determines timeline color coding.
-    #[serde(default)]
-    pub role: ClipRole,
+    /// The clip's role (#3211), `None` for none: what the roles index,
+    /// role lanes and stems go by, and its colour on the timeline.
+    #[serde(default, deserialize_with = "klipp_core::roles::read_lenient", skip_serializing_if = "Option::is_none")]
+    pub role: Option<klipp_core::roles::RoleRef>,
     /// Whether the role was set by hand or proposed from the sound
     /// (#2216).
     #[serde(default, skip_serializing_if = "klipp_core::RoleSource::is_unset")]
@@ -3275,7 +3276,7 @@ impl Clip {
             matte_choke_keyframes: Vec::new(),
             clip_markers: Vec::new(),
             frame_glide: None,
-            role: ClipRole::default(),
+            role: None,
             role_source: klipp_core::RoleSource::Unset,
             matched_to: None,
             speed: 1.0,
@@ -3394,7 +3395,7 @@ impl Clip {
             matte_choke_keyframes: Vec::new(),
             clip_markers: Vec::new(),
             frame_glide: None,
-            role: ClipRole::default(),
+            role: None,
             role_source: klipp_core::RoleSource::Unset,
             matched_to: None,
             speed: 1.0,
@@ -3502,7 +3503,7 @@ impl Clip {
             matte_choke_keyframes: Vec::new(),
             clip_markers: Vec::new(),
             frame_glide: None,
-            role: ClipRole::default(),
+            role: None,
             role_source: klipp_core::RoleSource::Unset,
             matched_to: None,
             speed: 1.0,
@@ -4138,13 +4139,13 @@ mod tests {
     #[test]
     fn split_keeps_where_the_role_came_from() {
         let mut c = make_clip(0, 96, 0, 96);
-        c.role = ClipRole::Music;
+        c.role = klipp_core::roles::RoleRef::parse("music.score");
         c.role_source = klipp_core::RoleSource::ByHand;
         let id = c.id;
         let mut track = make_track(vec![c]);
         let (a, b) = track.split_at(id, tc(48)).expect("split");
         for half in [&a, &b] {
-            assert_eq!((half.role, half.role_source), (ClipRole::Music, klipp_core::RoleSource::ByHand));
+            assert_eq!((half.role.as_ref().map(|r| r.as_str()), half.role_source), (Some("music.score"), klipp_core::RoleSource::ByHand));
         }
     }
 

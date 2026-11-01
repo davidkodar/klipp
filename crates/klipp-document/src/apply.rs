@@ -275,14 +275,14 @@ impl DocumentView<'_> {
             }
             EditCommand::SetClipRole { clip_id, old, old_source, .. } => {
                 if let Some(c) = self.sequences[self.active].tracks.iter_mut().flat_map(|t| t.clips.iter_mut()).find(|c| c.id == *clip_id) {
-                    c.role = *old;
+                    c.role = old.clone();
                     c.role_source = *old_source;
                 }
             }
             EditCommand::ProposeClipRoles { changes } => {
                 for (clip_id, old, _) in changes {
                     if let Some(c) = self.sequences[self.active].tracks.iter_mut().flat_map(|t| t.clips.iter_mut()).find(|c| c.id == *clip_id) {
-                        c.role = *old;
+                        c.role = old.clone();
                     }
                 }
             }
@@ -701,6 +701,10 @@ impl DocumentView<'_> {
             EditCommand::CreateBin { bin } => {
                 self.media_pool.bins.retain(|b| b.id != bin.id);
             }
+            EditCommand::SetRoles { old, .. } => {
+                self.media_pool.roles = (**old).clone();
+                effects.sync_media_pool = true;
+            }
             EditCommand::MoveMediaToBin { media_id, from_bin, from_bin_id, .. } => {
                 // Undo: restore to original bin (both legacy string and bin_id)
                 if let Some(item) = self.media_pool.get_mut(media_id) {
@@ -1024,14 +1028,14 @@ impl DocumentView<'_> {
             }
             EditCommand::SetClipRole { clip_id, new, .. } => {
                 if let Some(c) = self.sequences[self.active].tracks.iter_mut().flat_map(|t| t.clips.iter_mut()).find(|c| c.id == *clip_id) {
-                    c.role = *new;
+                    c.role = new.clone();
                     c.role_source = klipp_core::RoleSource::ByHand;
                 }
             }
             EditCommand::ProposeClipRoles { changes } => {
                 for (clip_id, _, new) in changes {
                     if let Some(c) = self.sequences[self.active].tracks.iter_mut().flat_map(|t| t.clips.iter_mut()).find(|c| c.id == *clip_id) {
-                        c.role = *new;
+                        c.role = new.clone();
                         c.role_source = klipp_core::RoleSource::Proposed;
                     }
                 }
@@ -1448,6 +1452,10 @@ impl DocumentView<'_> {
             EditCommand::RemoveMediaFromPool { item, .. } => {
                 // Redo delete: remove again
                 self.media_pool.remove(&item.id);
+                effects.sync_media_pool = true;
+            }
+            EditCommand::SetRoles { new, .. } => {
+                self.media_pool.roles = (**new).clone();
                 effects.sync_media_pool = true;
             }
             EditCommand::CreateBin { bin } => {

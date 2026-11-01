@@ -287,18 +287,30 @@ exist until the plan runs.
   another clip is heard over it, and moves there and back over half a
   second. Set the music's own volume first and place the speech first:
   the duck is written as keyframes from what is on the timeline then.
-  It comes down for speech only: not for clips marked music, sfx,
-  ambience, foley or broll, nor for any set twelve decibels or more
+  It comes down for speech only: not for clips in the music or effects
+  roles (any of their sub-roles), nor for any set twelve decibels or more
   under the music (a camera's street sound under a bed). A clip whose
   file is transcribed is speech where its words are, not along its
   whole length, and a lone word the transcriber was unsure of is not
-  speech; a clip marked voiceover is speech throughout.
+  speech; a clip in `dialogue.narration` is speech throughout.
 - `match {clip_id, keep?}`: start and end a title, effect or sound with the clip under it; `keep` keeps it so as the shot is edited.
-- `role {clip_id, role}`: what a clip is to the mix and the checks:
-  dialogue, voiceover, music, sfx, ambience, foley, broll or graphics.
-  Mark a camera's own sound `ambience` (or the shot `broll`) when it
-  runs under music, so a `duck` does not take it for speech; narration
-  is marked dialogue when `narrate` places it.
+- `role {clip_id, role}`: what a clip is to the mix, the checks and
+  export: one of the project's roles, a main role or `main.sub` —
+  built in are `dialogue` (`.interview`, `.narration`), `music`
+  (`.score`, `.source`), `effects` (`.foley`, `.ambience`), `titles` and
+  `subtitles` — or its label, or `none`. The old names still work (sfx
+  is effects, ambience effects.ambience, voiceover dialogue.narration,
+  graphics titles, broll effects.ambience). Mark a camera's own sound
+  `effects.ambience` when it runs under music, so a `duck` does not take
+  it for speech; narration is marked dialogue when `narrate` places it.
+  `list_clips` lists the project's roles with their labels and colours.
+- `roles {add?: [{name, under?}], rename?: [{role, name}], colour?: [{role, colour}], remove?: [role]}`:
+  the project's roles changed, one undo step: a role added (a sub-role
+  `under` a main role; its id made from the name), renamed (its id
+  stays, so clips keep it), given a colour (`#rrggbb`; `null` for the
+  palette's) or taken out (its clips fall back to its main role, or to
+  none). The five built-in main roles can't be taken out. The reply
+  lists every role.
 - `label {clip_id, name?, colour?}`: the clip's own name on the
   timeline, shown in place of its media's (a blank name gives the
   media's back), and its colour: none, red, orange, yellow, green, blue

@@ -611,6 +611,9 @@ fn load_project_as(dir: &Path, form: crate::FileForm, strict: bool) -> Result<Lo
     }
 
     media_pool.smart_bins = manifest.smart_bins.clone();
+    // Read as someone else's file may write it: checked, the built-in
+    // roles always there.
+    media_pool.roles = manifest.roles.clone().map(klipp_core::roles::RoleSet::checked).unwrap_or_default();
 
     // Migration: if items have bin (String) but no bin_id, create bins and assign IDs
     let items_needing_migration: Vec<(klipp_core::MediaId, String)> = media_pool.all()
@@ -1134,7 +1137,7 @@ fn load_clip(c: &ClipJson, project_dir: &Path, effects_by_clip: &HashMap<&str, V
                 comment: m.comment.clone(),
             }).collect()
         }).unwrap_or_default(),
-        role: c.role.unwrap_or_default(),
+        role: clip_role(c),
         role_source: c.role_source,
         matched_to: c.matched_to,
         speed: c.speed.unwrap_or(1.0),
@@ -1615,6 +1618,18 @@ fn load_looks_as(dir: &Path, form: crate::FileForm) -> Vec<Look> {
     out
 }
 
+/// `c`'s role (#3211): as written now; else as a file before roles were
+/// data wrote it, where nothing written was Dialogue, set or proposed,
+/// and nothing said for a clip whose role was never set.
+fn clip_role(c: &ClipJson) -> Option<klipp_core::roles::RoleRef> {
+    match (&c.role_id, c.role) {
+        (Some(now), _) => now.clone(),
+        (None, Some(old)) => klipp_core::roles::RoleRef::from_legacy(old),
+        (None, None) if !c.role_source.is_unset() => Some(klipp_core::roles::RoleRef::of("dialogue")),
+        (None, None) => None,
+    }
+}
+
 #[cfg(test)]
 mod guard_tests {
     /// A file's effect values past their range, or not numbers (#2995):
@@ -1635,3 +1650,4 @@ mod guard_tests {
         assert_eq!(radii, [hi, 0.0, 0.0]);
     }
 }
+

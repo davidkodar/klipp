@@ -421,7 +421,7 @@ pub(crate) fn music_bed<'a>(seq: &'a klipp_timeline::Sequence, pool: &klipp_medi
         .flat_map(|t| t.clips.iter())
         .filter_map(|c| {
             let item = pool.get(&c.media_id()?)?;
-            let music = sound_role(seq, c) == klipp_core::ClipRole::Music
+            let music = sound_role(seq, c).is_some_and(|r| r.is("music"))
                 || klipp_audio_search::library_source(&item.path) == Some(klipp_audio_search::Source::JamendoMusic);
             music.then(|| (c, item.path.clone()))
         })

@@ -348,18 +348,16 @@ impl KlippTheme {
     }
 
     /// Return the theme color for a clip role.
-    pub fn clip_role_color(&self, role: klipp_timeline::ClipRole) -> Color32 {
-        use klipp_timeline::ClipRole;
-        match role {
-            ClipRole::Dialogue => self.role_dialogue,
-            ClipRole::Music => self.role_music,
-            ClipRole::SFX => self.role_sfx,
-            ClipRole::Ambience => self.role_ambience,
-            ClipRole::Foley => self.role_foley,
-            ClipRole::Voiceover => self.role_voiceover,
-            ClipRole::BRoll => self.role_broll,
-            ClipRole::Graphics => self.role_graphics,
+    /// The colour `role` is drawn in (#3211): the one chosen for it in
+    /// `roles`, else the palette's role colour at its main role's place;
+    /// a clip with no role the palette's neutral one.
+    pub fn role_color(&self, roles: &klipp_core::roles::RoleSet, role: Option<&klipp_core::roles::RoleRef>) -> Color32 {
+        let Some(role) = role else { return self.role_broll };
+        if let Some([r, g, b, a]) = roles.colour(role) {
+            return Color32::from_rgba_unmultiplied(r, g, b, a);
         }
+        let palette = [self.role_dialogue, self.role_music, self.role_sfx, self.role_graphics, self.role_voiceover, self.role_ambience, self.role_foley];
+        roles.palette_slot(role).map_or(self.role_broll, |i| palette[i % palette.len()])
     }
 
     /// True iff this palette is the light-mode variant (text_primary

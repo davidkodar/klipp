@@ -1542,11 +1542,28 @@ pub enum Op {
     /// else moves (#458). Its linked sound and theirs go with it. Refused
     /// where a neighbour would run out of its file or of its length.
     Slide { clip_id: ClipRef, secs: f64 },
-    /// What a clip is to the mix and the checks: "dialogue", "music",
-    /// "sfx", "ambience", "foley", "voiceover", "broll" or "graphics". A
-    /// music bed and a sound effect are told from speech by this, so
-    /// they are never taken for speech and speech is never ducked.
+    /// What a clip is to the mix, the checks and export (#3211): one of
+    /// the project's roles, `main` or `main.sub` ("dialogue",
+    /// "dialogue.interview", "music.score", "effects.foley"), its label,
+    /// one of the old names (sfx, ambience, foley, voiceover, graphics),
+    /// or "none". A music bed and a sound effect are told from speech by
+    /// this, so they are never taken for speech and speech is never
+    /// ducked.
     Role { clip_id: ClipRef, role: String },
+    /// The project's roles changed (#3211): roles added (`under` a main
+    /// role for a sub-role), renamed, given a colour (`#rrggbb`, or none
+    /// for the palette's) or taken out, in that order; the built-in main
+    /// roles stay. The reply lists them all.
+    Roles {
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        add: Vec<RoleAdd>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        rename: Vec<RoleRename>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        colour: Vec<RoleColour>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        remove: Vec<String>,
+    },
     /// Give a clip the start and length of the clip under it (#2236): the
     /// one it overlaps most on the nearest track below that has one, else
     /// above. With `keep` it stays matched, following the shot's trims,
@@ -2572,12 +2589,38 @@ pub enum GradientShape {
     Radial { center: [f32; 2], inner: f32, outer: f32 },
 }
 
+/// A role the `roles` op adds: its name, and the main role it is a
+/// sub-role of.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RoleAdd {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub under: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RoleRename {
+    pub role: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RoleColour {
+    pub role: String,
+    /// `#rrggbb`; none for the palette's.
+    #[serde(default)]
+    pub colour: Option<String>,
+}
+
 /// Serialized operation tags accepted by `Op`. Keep this in sync with the
 /// variants; the test below catches additions and renames.
 pub const OP_NAMES: &[&str] = &[
     "graphics", "vector_path", "connector", "place", "add_track", "remove_track", "set_track", "track_automation", "aux_bus", "send", "trim", "j_cut", "l_cut", "split", "join", "remove", "move", "cut",
     "captions", "audio", "volume", "duck", "lower_third", "set_text", "grade", "effect", "redact",
-    "slip", "slide", "pin", "role", "match", "matte", "format", "stabilize", "reframe", "zoom", "pan", "follow", "refit", "highlight",
+    "slip", "slide", "pin", "role", "roles", "match", "matte", "format", "stabilize", "reframe", "zoom", "pan", "follow", "refit", "highlight",
     "ramp", "freeze", "grade_group", "remove_grade_group", "look", "qualify", "zones", "retime", "mark", "stretch", "replace", "alternatives", "track_audio", "clip_audio", "clean_audio",
     "transition", "style", "title", "compose", "camera", "crop", "generator", "depth", "label", "motion_blur",
     "strobe", "remove_silences", "auto_colour", "set_length", "over_edits", "template", "template_link", "recipe", "edit_from_selects", "opacity_mask",
@@ -4050,21 +4093,37 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
             slip(seq, pool, fps, i, ti, clip, *by)
         }
+        Op::Roles { add, rename, colour, remove } => {
+            let mut set = pool.roles.clone();
+            for a in add {
+                set.add(a.under.as_deref().map(str::trim), &a.name).map_err(|why| refuse(i, why, "name it something not there yet, under one of the main roles"))?;
+            }
+            for r in rename {
+                let at = klipp_core::roles::RoleRef::parse(&r.role).filter(|x| set_has(&set, x)).ok_or_else(|| refuse(i, format!("\"{}\" is not a role", r.role), roles_hint(&set)))?;
+                set.rename(&at, &r.name).map_err(|why| refuse(i, why, "give a name"))?;
+            }
+            for c in colour {
+                let at = klipp_core::roles::RoleRef::parse(&c.role).filter(|x| set_has(&set, x)).ok_or_else(|| refuse(i, format!("\"{}\" is not a role", c.role), roles_hint(&set)))?;
+                let rgba = match &c.colour {
+                    Some(hex) => Some(parse_color(hex).ok_or_else(|| refuse(i, format!("\"{hex}\" is not a colour"), "write a colour as #rrggbb, or none for the palette's"))?),
+                    None => None,
+                };
+                set.set_colour(&at, rgba).map_err(|why| refuse(i, why, roles_hint(&set)))?;
+            }
+            for r in remove {
+                let at = klipp_core::roles::RoleRef::parse(r).filter(|x| set_has(&set, x)).ok_or_else(|| refuse(i, format!("\"{r}\" is not a role"), roles_hint(&set)))?;
+                set.remove(&at).map_err(|why| refuse(i, why, "take out a role you added"))?;
+            }
+            let listed: Vec<String> = set.listed().iter().filter_map(|r| set.label(r).map(|l| format!("{r} ({l})"))).collect();
+            let what = format!("roles: {}", listed.join(", "));
+            Ok((what, EditCommand::SetRoles { old: Box::new(pool.roles.clone()), new: Box::new(set) }, Vec::new()))
+        }
         Op::Role { clip_id, role } => {
             let (_, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
-            let new = match role.trim().to_lowercase().as_str() {
-                "dialogue" | "speech" => klipp_core::ClipRole::Dialogue,
-                "music" => klipp_core::ClipRole::Music,
-                "sfx" | "effects" | "effect" => klipp_core::ClipRole::SFX,
-                "ambience" | "atmos" => klipp_core::ClipRole::Ambience,
-                "foley" => klipp_core::ClipRole::Foley,
-                "voiceover" | "vo" => klipp_core::ClipRole::Voiceover,
-                "broll" | "b-roll" => klipp_core::ClipRole::BRoll,
-                "graphics" | "title" => klipp_core::ClipRole::Graphics,
-                other => return Err(refuse(i, format!("\"{other}\" is not a role"), "use dialogue, music, sfx, ambience, foley, voiceover, broll or graphics")),
-            };
-            let what = format!("{} is {}", clip_name(seq, pool, clip), role.trim().to_lowercase());
-            Ok((what, EditCommand::SetClipRole { clip_id: clip.id, old: clip.role, new, old_source: clip.role_source }, vec![clip.id]))
+            let new = role_named(&pool.roles, role).map_err(|hint| refuse(i, format!("\"{}\" is not a role", role.trim()), hint))?;
+            let said = new.as_ref().and_then(|r| pool.roles.label(r)).unwrap_or_else(|| "no role".into());
+            let what = format!("{} is {said}", clip_name(seq, pool, clip));
+            Ok((what, EditCommand::SetClipRole { clip_id: clip.id, old: clip.role.clone(), new, old_source: clip.role_source }, vec![clip.id]))
         }
         Op::Match { clip_id, keep } => {
             let (_, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
@@ -4725,7 +4784,7 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             // to the check until a role op said otherwise (#797).
             let library = transcripts.library_role(item);
             if let Some(role) = library {
-                clip.role = role;
+                clip.role = klipp_core::roles::RoleRef::from_legacy(role);
                 // Proposed, not chosen: a hand-set role still replaces it,
                 // and the sound's own label is not offered again (#2216).
                 clip.role_source = klipp_core::RoleSource::Proposed;
@@ -4733,7 +4792,7 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             // A sound-only file is Music until its sound is heard (#2953).
             let starting = library.is_none().then(|| item.starting_role()).flatten();
             if let Some((role, source)) = starting {
-                clip.role = role;
+                clip.role = klipp_core::roles::RoleRef::from_legacy(role);
                 clip.role_source = source;
             }
             // The sound with the picture, linked both ways, on the first
@@ -5271,14 +5330,59 @@ pub(crate) fn sound_settings_clip<'a>(seq: &'a Sequence, clip: &'a Clip) -> &'a 
 /// addressed, the picture or its sound, so either can say the pair is
 /// ambience; read from one side only, a beach's wind marked ambience on
 /// its picture was speech to the check (#777).
-pub(crate) fn sound_role(seq: &Sequence, clip: &Clip) -> klipp_core::ClipRole {
-    if clip.role != klipp_core::ClipRole::Dialogue { clip.role } else { sound_settings_clip(seq, clip).role }
+pub(crate) fn sound_role(seq: &Sequence, clip: &Clip) -> Option<klipp_core::roles::RoleRef> {
+    match &clip.role {
+        Some(r) if !r.is_speech() => Some(r.clone()),
+        own => sound_settings_clip(seq, clip).role.clone().or_else(|| own.clone()),
+    }
 }
 
-/// Whether `role` says a sound is not speech: music, effects, ambience,
-/// foley, B-roll. A duck and the check's speech rules pass it by.
-pub(crate) fn not_speech(role: klipp_core::ClipRole) -> bool {
-    matches!(role, klipp_core::ClipRole::Music | klipp_core::ClipRole::SFX | klipp_core::ClipRole::Ambience | klipp_core::ClipRole::Foley | klipp_core::ClipRole::BRoll)
+/// Whether `role` says a sound is not speech: music or effects, any of
+/// their sub-roles. A duck and the check's speech rules pass it by; a
+/// clip with no role may be speech.
+pub(crate) fn not_speech(role: Option<&klipp_core::roles::RoleRef>) -> bool {
+    role.is_some_and(|r| r.is("music") || r.is("effects"))
+}
+
+/// Whether `roles` has `role` itself, sub-role and all.
+fn set_has(roles: &klipp_core::roles::RoleSet, role: &klipp_core::roles::RoleRef) -> bool {
+    roles.resolve(role).as_ref() == Some(role)
+}
+
+fn roles_hint(roles: &klipp_core::roles::RoleSet) -> String {
+    let all: Vec<String> = roles.listed().iter().map(|r| r.to_string()).collect();
+    format!("use one of the project's roles: {}", all.join(", "))
+}
+
+/// The role `name` says in `roles` (#3211): a role by its id or its
+/// label, `main` or `main.sub`, or one of the names roles had before
+/// they were data; `None` for "none". Why not, listing them, otherwise.
+pub(crate) fn role_named(roles: &klipp_core::roles::RoleSet, name: &str) -> Result<Option<klipp_core::roles::RoleRef>, String> {
+    use klipp_core::roles::RoleRef;
+    let n = name.trim().to_lowercase();
+    let old = match n.as_str() {
+        "none" => return Ok(None),
+        "speech" => Some("dialogue"),
+        "sfx" | "effect" => Some("effects"),
+        "ambience" | "atmos" | "broll" | "b-roll" => Some("effects.ambience"),
+        "foley" => Some("effects.foley"),
+        "voiceover" | "vo" => Some("dialogue.narration"),
+        "graphics" | "title" => Some("titles"),
+        _ => None,
+    };
+    let by_label = || {
+        roles.roles.iter().find_map(|r| {
+            if r.name.eq_ignore_ascii_case(&n) {
+                return Some(RoleRef::of(&r.id));
+            }
+            r.subs.iter().find(|s| format!("{} › {}", r.name, s.name).eq_ignore_ascii_case(&n) || format!("{}.{}", r.name, s.name).eq_ignore_ascii_case(&n)).and_then(|s| RoleRef::parse(&format!("{}.{}", r.id, s.id)))
+        })
+    };
+    let found = old.and_then(RoleRef::parse).or_else(|| RoleRef::parse(&n)).filter(|r| roles.resolve(r).as_ref() == Some(r)).or_else(by_label);
+    found.map(Some).ok_or_else(|| {
+        let all: Vec<String> = roles.roles.iter().flat_map(|r| std::iter::once(r.id.clone()).chain(r.subs.iter().map(move |s| format!("{}.{}", r.id, s.id)))).collect();
+        format!("use one of the project's roles: {}, or none", all.join(", "))
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -5400,7 +5504,7 @@ fn duck(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, music: &Clip, by_
         // at -15 under music at -3 ducked it for 100 s, #457). A hundredth
         // of a dB takes the rounding of two levels set in dB.
         let quiet = s.volume * s.gain <= music_level * db_to_linear(-12.0 + 0.01);
-        !quiet && !not_speech(sound_role(seq, c))
+        !quiet && !not_speech(sound_role(seq, c).as_ref())
     };
     // Where speech is heard over the music, merged where the gaps are
     // too short to come up and go down again, or shorter than the bridge:
@@ -5417,8 +5521,9 @@ fn duck(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, music: &Clip, by_
             continue;
         }
         let whole = vec![(secs(c.timeline_in), secs(c.timeline_out))];
-        let spans = match (c.role, c.media_id().and_then(|id| pool.get(&id))) {
-            (klipp_core::ClipRole::Voiceover, _) | (_, None) => whole,
+        let narration = c.role.as_ref().is_some_and(|r| r.as_str() == "dialogue.narration");
+        let spans = match (narration, c.media_id().and_then(|id| pool.get(&id))) {
+            (true, _) | (_, None) => whole,
             (_, Some(item)) => {
                 let said = words.entry(item.id).or_insert_with(|| transcripts.words(item));
                 spoken_spans(c, said.as_deref(), fps).unwrap_or(whole)
@@ -6435,7 +6540,7 @@ pub struct HeardWord {
     /// The file it is heard from.
     pub media_id: MediaId,
     /// What that clip's sound is (dialogue, music, …).
-    pub role: klipp_core::ClipRole,
+    pub role: Option<klipp_core::roles::RoleRef>,
     /// Where that clip starts and ends on the timeline, in seconds: what
     /// lies outside is not this word's pause but whatever the timeline
     /// puts there.
@@ -6761,7 +6866,7 @@ pub fn heard_words(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcrip
                     continue;
                 }
                 at.push(start);
-                out.push(HeardWord { start, end, text: text.to_string(), after_cut: first, clip_id: clip.id, media_id: *media_id, role: clip.role, clip_in: t_in, clip_out: t_out });
+                out.push(HeardWord { start, end, text: text.to_string(), after_cut: first, clip_id: clip.id, media_id: *media_id, role: clip.role.clone(), clip_in: t_in, clip_out: t_out });
                 first = false;
             }
         }
@@ -7010,8 +7115,7 @@ fn captions(
     }
     // Speech only: a song's lyrics or a sound effect's transcript is not
     // what is said (#2416).
-    let speech = |r: klipp_core::ClipRole| !matches!(r, klipp_core::ClipRole::Music | klipp_core::ClipRole::SFX | klipp_core::ClipRole::Ambience | klipp_core::ClipRole::Foley);
-    let words: Vec<HeardWord> = heard_words(seq, pool, transcripts).into_iter().filter(|w| w.start >= from_s && w.start < to_s && speech(w.role)).collect();
+    let words: Vec<HeardWord> = heard_words(seq, pool, transcripts).into_iter().filter(|w| w.start >= from_s && w.start < to_s && !not_speech(w.role.as_ref())).collect();
     if words.is_empty() {
         return Err(refuse(i, "no transcribed speech is heard on the timeline there", "captions come from the transcripts: run analyze and wait for it, and place the speech first"));
     }
@@ -15861,7 +15965,7 @@ mod tests {
         mute.video_codec = "hevc".into();
         mute.has_audio = false;
         let mute = pool.add(mute);
-        seq.tracks[0].clips[1].role = klipp_core::ClipRole::BRoll;
+        seq.tracks[0].clips[1].role = klipp_core::roles::RoleRef::parse("effects.ambience");
         let before = seq.clone();
 
         // b shows 4-8 s; the other file is 6 s long, so it starts at 0.
@@ -15876,7 +15980,7 @@ mod tests {
             assert_eq!(c.media_id(), Some(other), "track {}", t.name);
             assert_eq!((c.timeline_in, c.timeline_out, c.source_in, c.source_out), (tc(4.0), tc(8.0), tc(0.0), tc(4.0)), "track {}", t.name);
         }
-        assert_eq!(view.sequences[0].tracks[0].clips[1].role, klipp_core::ClipRole::BRoll, "its settings stay");
+        assert_eq!(view.sequences[0].tracks[0].clips[1].role, klipp_core::roles::RoleRef::parse("effects.ambience"), "its settings stay");
         assert_eq!(view.sequences[0].tracks[0].clips[1].id, b, "the same clip");
         view.apply_inverse(&plan.steps[0].edit);
         for (t, was) in view.sequences[0].tracks.iter().zip(&before.tracks) {
@@ -16641,22 +16745,22 @@ mod tests {
             let role = match &plan.steps[0].edit {
                 // Proposed, not set by hand (#2216).
                 EditCommand::LegacyAppendClip { clip, .. } => {
-                    let source = if clip.role == klipp_core::ClipRole::default() { klipp_core::RoleSource::Unset } else { klipp_core::RoleSource::Proposed };
+                    let source = if clip.role.is_none() { klipp_core::RoleSource::Unset } else { klipp_core::RoleSource::Proposed };
                     assert_eq!(clip.role_source, source);
-                    clip.role
+                    clip.role.clone()
                 }
                 other => panic!("{other:?}"),
             };
             (role, plan.steps[0].what.clone())
         };
         let (role, what) = placed(song);
-        assert_eq!(role, klipp_core::ClipRole::Music);
+        assert_eq!(role, klipp_core::roles::RoleRef::parse("music"));
         assert!(what.contains("marked music"), "{what}");
         let (role, what) = placed(whip);
-        assert_eq!(role, klipp_core::ClipRole::SFX);
+        assert_eq!(role, klipp_core::roles::RoleRef::parse("effects"));
         assert!(what.contains("marked sfx"), "{what}");
         let (role, what) = placed(media);
-        assert_eq!(role, klipp_core::ClipRole::Dialogue);
+        assert_eq!(role, None, "a file with a picture: no role");
         assert!(!what.contains("marked"), "{what}");
     }
 
@@ -16679,18 +16783,18 @@ mod tests {
         let placed = |id: MediaId| {
             let plan = resolve(&seq, &pool, &[place(id)]).unwrap_or_else(|r| panic!("refused: {}", r.why));
             match &plan.steps[0].edit {
-                EditCommand::LegacyAppendClip { clip, .. } => (clip.role, clip.role_source, plan.steps[0].what.clone()),
+                EditCommand::LegacyAppendClip { clip, .. } => (clip.role.clone(), clip.role_source, plan.steps[0].what.clone()),
                 other => panic!("{other:?}"),
             }
         };
         let (role, source, what) = placed(song);
-        assert_eq!((role, source), (klipp_core::ClipRole::Music, klipp_core::RoleSource::Unset));
+        assert_eq!((role, source), (klipp_core::roles::RoleRef::parse("music"), klipp_core::RoleSource::Unset));
         assert!(what.contains("marked music (sound only"), "{what}");
         let (role, source, what) = placed(voice);
-        assert_eq!((role, source), (klipp_core::ClipRole::Dialogue, klipp_core::RoleSource::Proposed));
+        assert_eq!((role, source), (klipp_core::roles::RoleRef::parse("dialogue"), klipp_core::RoleSource::Proposed));
         assert!(what.contains("marked dialogue (from its sound)"), "{what}");
         let (role, source, _) = placed(media);
-        assert_eq!((role, source), (klipp_core::ClipRole::Dialogue, klipp_core::RoleSource::Unset), "a file with a picture");
+        assert_eq!((role, source), (None, klipp_core::RoleSource::Unset), "a file with a picture: no role");
     }
 
     /// #794: an effect on the timeline goes on every picture clip in one
@@ -17128,6 +17232,82 @@ mod tests {
         assert!(serde_json::from_value::<Op>(serde_json::json!({"op": "captions", "animate": {"speed": 2}})).is_err(), "an unknown field is refused");
     }
 
+    /// #3211: a clip's role is named by its id, its label, an old name or
+    /// none, against the project's roles; one it hasn't is refused,
+    /// listing those it has. Set, the clip has it by hand; undone, it
+    /// has its old one back.
+    #[test]
+    fn a_clip_is_given_one_of_the_projects_roles() {
+        let (seq, mut pool, _, a, _) = fixture();
+        pool.roles.add(Some("dialogue"), "Panel").unwrap();
+        let set = |pool: &MediaPool, role: &str| resolve(&seq, pool, &[Op::Role { clip_id: ClipRef::Id(a), role: role.into() }]);
+        let new_role = |pool: &MediaPool, role: &str| match set(pool, role).unwrap_or_else(|r| panic!("{role}: {}", r.why)).steps[0].edit.clone() {
+            EditCommand::SetClipRole { new, .. } => new.map(|r| r.to_string()),
+            other => panic!("{other:?}"),
+        };
+        for (said, is) in [("dialogue.interview", Some("dialogue.interview")), ("Dialogue › Panel", Some("dialogue.panel")), ("music", Some("music")), ("SFX", Some("effects")), ("voiceover", Some("dialogue.narration")), ("ambience", Some("effects.ambience")), ("broll", Some("effects.ambience")), ("none", None)] {
+            assert_eq!(new_role(&pool, said).as_deref(), is, "{said}");
+        }
+        let why = set(&pool, "trailer").unwrap_err();
+        assert!(why.hint.contains("dialogue.panel") && why.hint.contains("subtitles"), "{}", why.hint);
+        assert!(set(&pool, "music.jingle").is_err(), "a sub-role the project hasn't");
+
+        let plan = set(&pool, "music.score").unwrap();
+        assert!(plan.steps[0].what.contains("Music › Score"), "{}", plan.steps[0].what);
+        let mut seqs = vec![seq.clone()];
+        let mut fps = seq.fps;
+        let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut pool, fps: &mut fps };
+        view.apply_forward(&plan.steps[0].edit);
+        let clip = view.sequences[0].all_clips().find(|c| c.id == a).unwrap().clone();
+        assert_eq!((clip.role.map(|r| r.to_string()), clip.role_source), (Some("music.score".into()), klipp_core::RoleSource::ByHand));
+        view.apply_inverse(&plan.steps[0].edit);
+        assert_eq!(view.sequences[0].all_clips().find(|c| c.id == a).unwrap().role, None, "undone");
+    }
+
+    /// #3211: the roles op adds, renames, colours and takes out the
+    /// project's roles as one undo step, listing them; what it can't do
+    /// is refused, saying why, and leaves the roles as they were.
+    #[test]
+    fn the_roles_op_edits_the_projects_roles_in_one_step() {
+        let (seq, mut pool, ..) = fixture();
+        let op = |v: serde_json::Value| -> Op {
+            let mut o = v.as_object().unwrap().clone();
+            o.insert("op".into(), "roles".into());
+            serde_json::from_value(serde_json::Value::Object(o)).unwrap()
+        };
+        let plan = resolve(&seq, &pool, &[op(serde_json::json!({
+            "add": [{"name": "Trailer"}, {"name": "French", "under": "subtitles"}],
+            "rename": [{"role": "music.source", "name": "Source Music"}],
+            "colour": [{"role": "titles", "colour": "#ff8800"}],
+            "remove": ["effects.foley"],
+        }))]).unwrap();
+        let what = &plan.steps[0].what;
+        assert!(what.contains("trailer (Trailer)") && what.contains("subtitles.french (Subtitles › French)") && what.contains("Music › Source Music") && !what.contains("foley"), "{what}");
+        let before = pool.roles.clone();
+        let mut seqs = vec![seq.clone()];
+        let mut fps = seq.fps;
+        let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut pool, fps: &mut fps };
+        let effects = view.apply_forward(&plan.steps[0].edit);
+        assert!(effects.sync_media_pool);
+        let roles = view.media_pool.roles.clone();
+        assert_eq!(roles.colour(&klipp_core::roles::RoleRef::of("titles")), Some([0xff, 0x88, 0x00, 255]));
+        assert_eq!(roles.resolve(&klipp_core::roles::RoleRef::parse("effects.foley").unwrap()).map(|r| r.to_string()).as_deref(), Some("effects"), "taken out: its clips fall back");
+        view.apply_inverse(&plan.steps[0].edit);
+        assert_eq!(view.media_pool.roles, before, "one undo step");
+
+        for (v, says) in [
+            (serde_json::json!({"remove": ["dialogue"]}), "built in"),
+            (serde_json::json!({"add": [{"name": "Music"}]}), "already"),
+            (serde_json::json!({"add": [{"name": "X", "under": "nope"}]}), "no role"),
+            (serde_json::json!({"rename": [{"role": "nope", "name": "Y"}]}), "not a role"),
+            (serde_json::json!({"colour": [{"role": "music", "colour": "red"}]}), "#rrggbb"),
+        ] {
+            let r = resolve(&seq, &pool, &[op(v.clone())]).unwrap_err();
+            assert!(r.why.contains(says) || r.hint.contains(says), "{v}: {} / {}", r.why, r.hint);
+        }
+        assert_eq!(pool.roles, before);
+    }
+
     /// #3304: a caption look by id gives the captions its face, weight,
     /// capitals and glow in the colour chosen, the glow scaled by its
     /// amount; a field given with it changes it, and a look, colour or
@@ -17305,7 +17485,7 @@ mod tests {
         camera_sound.linked_clip_id = Some(angle.id);
         angle.linked_clip_id = Some(camera_sound.id);
         let mut music = Clip::media(song, tc(0.0), tc(8.0), tc(0.0), tc(8.0));
-        music.role = klipp_core::ClipRole::Music;
+        music.role = klipp_core::roles::RoleRef::parse("music");
         // B-roll over the talk, placed without its sound (volume 0), and
         // a transcribed file on a muted track: neither is heard.
         let broll_media = add("/tmp/broll.mov", true);
@@ -17337,7 +17517,7 @@ mod tests {
         assert_eq!(of(camera), "", "the angle whose sound the group does not play is not heard");
         assert_eq!(of(song), "la la la la.", "the song is heard, as music");
         assert_eq!(of(broll_media), "", "a muted picture and a muted track are not heard");
-        assert!(heard.iter().filter(|w| w.media_id == song).all(|w| w.role == klipp_core::ClipRole::Music));
+        assert!(heard.iter().filter(|w| w.media_id == song).all(|w| w.role == klipp_core::roles::RoleRef::parse("music")));
 
         let plan = resolve_with(&seq, &pool, &[Op::Captions { track: None, from: None, to: None, max_chars: 42, max_lines: 2, replace: false, animate: None }], &Heard).unwrap();
         let mut seqs = vec![seq.clone()];
@@ -17487,10 +17667,32 @@ mod tests {
         // Marked ambience at full level: not speech either.
         let mut marked = seq.clone();
         for c in marked.tracks.iter_mut().flat_map(|t| t.clips.iter_mut()).filter(|c| c.id != music_id) {
-            c.role = klipp_core::ClipRole::Ambience;
+            c.role = klipp_core::roles::RoleRef::parse("effects.ambience");
         }
         assert!(duck(&marked).is_err());
         let _ = a;
+    }
+
+    /// #3211: a clip an old project marked B-roll opens as ambience, so
+    /// its sound still doesn't duck the music, as it didn't before roles
+    /// were data; read from the saved form, as a project opens it.
+    #[test]
+    fn an_old_b_roll_clip_does_not_duck_the_music() {
+        let (mut seq, pool, media, ..) = fixture();
+        let mut music_track = Track::new("A2", TrackKind::Audio);
+        let music = Clip::media(media, tc(0.0), tc(10.0), tc(0.0), tc(10.0));
+        let music_id = music.id;
+        music_track.clips = vec![music];
+        seq.tracks.push(music_track);
+        let duck = |seq: &Sequence| resolve(seq, &pool, &[Op::Duck { clip_id: ClipRef::Id(music_id), by_db: 9.0, fade_secs: 0.5, bridge_secs: 2.0 }]);
+        assert!(duck(&seq).is_ok(), "with no role, its sound may be speech");
+        for c in seq.tracks.iter_mut().flat_map(|t| t.clips.iter_mut()).filter(|c| c.id != music_id) {
+            let mut saved = serde_json::to_value(&*c).unwrap();
+            saved["role"] = "BRoll".into();
+            *c = serde_json::from_value(saved).unwrap();
+            assert_eq!(c.role.as_ref().map(|r| r.as_str()), Some("effects.ambience"));
+        }
+        assert!(duck(&seq).unwrap_err().why.contains("no speech"), "old B-roll is not ducked under");
     }
 
     /// A duck follows the words (#457): over camera sound with a
@@ -17525,7 +17727,7 @@ mod tests {
         // A voiceover is speech from end to end, transcript or not.
         let mut vo = seq.clone();
         for c in vo.tracks[1].clips.iter_mut() {
-            c.role = klipp_core::ClipRole::Voiceover;
+            c.role = klipp_core::roles::RoleRef::parse("dialogue.narration");
         }
         assert!(duck(&vo, &Said(vec![])).unwrap().steps[0].what.contains("0.00-8.00"));
     }

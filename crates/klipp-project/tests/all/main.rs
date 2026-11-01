@@ -156,3 +156,5 @@ mod working_colorspace_round_trip;
 mod zero_mix_round_trip;
 #[path = "../old_ids_open.rs"]
 mod old_ids_open;
+#[path = "../roles_round_trip.rs"]
+mod roles_round_trip;

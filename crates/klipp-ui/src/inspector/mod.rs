@@ -227,7 +227,7 @@ impl NewInspectorPanel {
                 let bar_rect = egui::Rect::from_min_size(
                     banner_rect.min, egui::vec2(4.0, banner_h),
                 );
-                let role_color = theme.clip_role_color(clip.role);
+                let role_color = theme.role_color(&state.media_pool.roles, clip.role.as_ref());
                 ui.painter().rect_filled(bar_rect, 0.0, role_color);
 
                 // Text — dark colors for readability on amber background
@@ -471,7 +471,7 @@ impl NewInspectorPanel {
                             let dialogue_track = state.sequence().tracks.iter().enumerate()
                                 .find(|(_, t)| {
                                     t.kind == klipp_timeline::TrackKind::Audio
-                                        && t.clips.iter().any(|c| c.role == klipp_core::ClipRole::Dialogue)
+                                        && t.clips.iter().any(|c| c.role.as_ref().is_some_and(|r| r.is_speech()))
                                 })
                                 .map(|(i, _)| i);
                             let first_audio = track_infos.first().map(|ti| ti.index);
@@ -513,7 +513,7 @@ impl NewInspectorPanel {
                             matte_feather_keyframes: Vec::new(), matte_choke_keyframes: Vec::new(),
                             clip_markers: Vec::new(),
                             frame_glide: None,
-                            role: klipp_core::ClipRole::default(),
+                            role: None,
                             role_source: klipp_core::RoleSource::Unset,
                             matched_to: None,
                             speed: 1.0,
