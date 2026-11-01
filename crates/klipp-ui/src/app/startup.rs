@@ -136,6 +136,7 @@ impl KlippApp {
             colour_tool_reply: None,
             delivery_check: Default::default(),
             delivery_reply: None,
+            reuse_marks: Default::default(),
             translation: None,
             sound_over_time: Default::default(),
             pointer: Default::default(),
@@ -390,6 +391,7 @@ impl KlippApp {
         }
         app.state.magnetic_timeline_enabled = app.prefs.editing.magnetic_timeline;
         app.state.multicam_show_angles = app.prefs.editing.multicam_show_angles;
+        app.state.show_reused_footage = app.prefs.editing.show_reused_footage;
         app.state.auto_create_tracks = app.prefs.editing.auto_create_tracks;
         app.state.default_transition_frames = app.prefs.editing.default_transition_frames;
         app.state.shift_step_frames = app.prefs.editing.shift_step_frames;

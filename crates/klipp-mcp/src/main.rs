@@ -1348,6 +1348,7 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             "apply": args.get("apply").and_then(|v| v.as_bool()).unwrap_or(false),
             "detail": args.get("detail").and_then(|v| v.as_bool()).unwrap_or(false),
         }),
+        "klipp_reuse_report" => json!({ "method": "reuse_report" }),
         "klipp_check" => json!({ "method": "check", "color": args.get("color").and_then(|v| v.as_bool()).unwrap_or(false), "loudness": args.get("loudness").and_then(|v| v.as_bool()).unwrap_or(false), "min_severity": args.get("min_severity").and_then(|v| v.as_str()) }),
         "klipp_spelling" => {
             let mut v = json!({ "method": "spelling", "action": args.get("action").and_then(Value::as_str).unwrap_or("list") });
@@ -2641,6 +2642,9 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
         tool("klipp_build_edit_plan",
              "Build the approved edit plan onto the timeline: a dry run unless apply is true, then one undo step. Details: klipp_guide topic build_edit_plan.",
              json!({ "apply": { "type": "boolean" }, "detail": { "type": "boolean" } }), vec![]),
+        tool("klipp_reuse_report",
+             "Where the timeline uses the same footage twice. Details: klipp_guide topic reuse_report.",
+             json!({}), vec![]),
         tool("klipp_check",
              "Read-only checks of the cut against craft and the brief, each with where, why and the fix. Details: klipp_guide topic check.",
              json!({ "color": { "type": "boolean" }, "loudness": { "type": "boolean" }, "min_severity": { "type": "string", "enum": ["error", "warning", "note"] } }), vec![]),

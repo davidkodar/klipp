@@ -419,6 +419,22 @@ pub(crate) fn respond(
             Ok(v)
         }
 
+        ControlCommand::ReuseReport => {
+            if in_batch {
+                return read_in_batch("reuse_report");
+            }
+            let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+            let pool = ctx.media_pool.read().recovered();
+            let report = klipp_document::reuse::find(&seq, &others_of(ctx), &pool);
+            let pairs: Vec<serde_json::Value> = report.pairs.iter().map(|p| json!({ "kind": "same_frames", "a": p.a, "b": p.b, "secs": p.secs })).collect();
+            Ok(json!({
+                "text": report.text(),
+                "count": pairs.len(),
+                "pairs": pairs,
+                "looks_same": "shots that look the same from different files are not matched yet: only the same frames of one file",
+            }))
+        }
+
         ControlCommand::Check { color, loudness, min_severity } => {
             if in_batch {
                 return read_in_batch("check");
@@ -434,6 +450,7 @@ pub(crate) fn respond(
                 let lut = ctx.shared.project.lock().recovered().global_lut.clone();
                 klipp_document::qc::note_missing_global_lut(&mut report, lut.as_deref());
                 note_spelling(&mut report, &seq, &pool);
+                note_reuse(&mut report, &seq, &others_of(ctx), &pool);
                 // What an 8-bit export renders, frozen here and sampled
                 // once the locks are let go (#2074).
                 let banding_snapshot = klipp_render::SequenceSnapshot::from_sequence(
@@ -888,6 +905,31 @@ pub(crate) fn respond(
         }
 
         _ => Err("internal: a request was routed to the wrong area".into()),
+    }
+}
+
+/// The other sequences, those a compound clip may open.
+pub(crate) fn others_of(ctx: &crate::ControlContext) -> Vec<klipp_timeline::Sequence> {
+    ctx.others.read().recovered().iter().map(|o| (*o.sequence).clone()).collect()
+}
+
+/// Footage the timeline uses twice (#3272), a note each pair, or a
+/// warning where the brief says reuse matters (a stock-heavy delivery).
+fn note_reuse(report: &mut klipp_document::qc::Report, seq: &klipp_timeline::Sequence, others: &[klipp_timeline::Sequence], pool: &klipp_media::MediaPool) {
+    use klipp_document::qc::{Finding, Severity};
+    let warns = seq.brief.as_ref().is_some_and(|b| b.reused_footage_warns);
+    let clock = klipp_document::review::clock;
+    for p in klipp_document::reuse::find(seq, others, pool).pairs {
+        report.findings.push(Finding {
+            severity: if warns { Severity::Warning } else { Severity::Note },
+            rule: "reused_footage",
+            at_secs: Some(p.a.timeline.0),
+            what: format!("{} at {} shows the same frames as {} at {} ({:.1} s)", p.a.name, clock(p.a.timeline.0), p.b.name, clock(p.b.timeline.0), p.secs),
+            hint: "fine where it is meant; a licensed stock clip may count each use".into(),
+        });
+        if warns {
+            report.warnings += 1;
+        }
     }
 }
 

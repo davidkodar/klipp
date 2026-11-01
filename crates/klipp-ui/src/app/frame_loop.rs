@@ -694,6 +694,7 @@ impl KlippApp {
             // lines without behavioural change.
             self.state.magnetic_timeline_enabled = self.prefs.editing.magnetic_timeline;
             self.state.multicam_show_angles = self.prefs.editing.multicam_show_angles;
+            self.state.show_reused_footage = self.prefs.editing.show_reused_footage;
             // Sync engine statics
             klipp_engine::video_decoder::set_hardware_decode(self.prefs.system.hardware_decode);
             klipp_engine::video_decoder::set_optimised_playback_mode(
@@ -778,6 +779,7 @@ impl KlippApp {
         self.poll_project_copy();
         self.poll_fetched_fonts();
         self.keep_frozen_tracks();
+        self.keep_reuse_marks(ctx);
         self.poll_bounces();
         self.keep_playback_note();
         self.write_untitled_on_first_edit();
@@ -1285,7 +1287,8 @@ impl KlippApp {
         // closed; the answer is there when it opens again.
         if self.state.show_delivery_check {
             let mut open = self.state.show_delivery_check;
-            let action = self.delivery_check.show(ctx, &self.theme, self.local_control.is_some(), &mut open);
+            let warns = self.state.sequence().brief.as_ref().is_some_and(|b| b.reused_footage_warns);
+            let action = self.delivery_check.show(ctx, &self.theme, self.local_control.is_some(), warns, &mut open);
             self.state.show_delivery_check = open;
             self.act_on_delivery_check(action);
         }

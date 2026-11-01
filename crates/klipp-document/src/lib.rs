@@ -33,6 +33,7 @@ pub mod generators;
 pub mod ops;
 pub mod brand_kit_ops;
 pub mod qc;
+pub mod reuse;
 pub mod qc_geometry;
 pub mod qc_review;
 pub mod shorts;

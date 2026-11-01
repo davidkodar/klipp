@@ -26,6 +26,14 @@ Clips on the timeline display:
 
 A clip's menu offers **Show Keys on Clip**: any keyed parameter of its effects, grade or title layers drawn as a line on the clip, where keys are clicked, Alt+clicked to add, dragged in time and value, and deleted with Delete.
 
+### Reused Footage
+
+A thin strip along the bottom of a video clip marks a span that shows the same frames of a file as another clip in the sequence, including a clip inside a compound or nested sequence. Hover over the strip to see where the other use is: its file, track and time. Click the strip to select that clip and move the playhead to it. Only the overlap is marked: two clips that use different parts of one file don't get a strip. A clip that holds or repeats its own frames doesn't count either.
+
+The check matches frames of the same file: the same file imported twice counts, but two different files of a similar shot don't. Turn the strips off with **Show reused footage** in the timeline's ⋯ menu.
+
+**Window → Delivery Check** lists each reused span as a note. For a piece where reuse matters, such as stock footage licensed per use, turn on **Treat reused footage as warnings**. The setting is saved in the sequence's brief.
+
 ## Playhead
 
 The playhead is a vertical line marking the current position. Click the ruler or the track area to move it. During playback it moves smoothly against the master clock.

@@ -268,6 +268,9 @@ fn draw_group(group: Group, ui: &mut egui::Ui, state: &mut AppState, theme: &Kli
                 if ui.checkbox(&mut state.append_brings_audio.clone(), "Appended clips bring their audio").clicked() {
                     cmds.push(AppCommand::SetAppendBringsAudio(!state.append_brings_audio));
                 }
+                if ui.checkbox(&mut state.show_reused_footage.clone(), "Show reused footage").on_hover_text("A strip under spans that show the same frames as another clip").clicked() {
+                    cmds.push(AppCommand::SetShowReusedFootage(!state.show_reused_footage));
+                }
                 ui.separator();
                 if ui.add(egui::Button::new("Find in Timeline\u{2026}").shortcut_text(kb.display_for("focus_panel_search"))).clicked() {
                     state.focus_search_request = Some(crate::state::PanelKind::Timeline);

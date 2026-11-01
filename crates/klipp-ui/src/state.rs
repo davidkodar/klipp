@@ -1849,6 +1849,12 @@ pub struct AppState {
     pub magnetic_timeline_enabled: bool,
     /// Whether multicam angle badges/cut list are drawn on timeline clips (synced from prefs).
     pub multicam_show_angles: bool,
+    /// Clips show a strip where they use the same frames as another clip
+    /// (#3272); mirrors `prefs.editing.show_reused_footage`.
+    pub show_reused_footage: bool,
+    /// Those spans, by clip on the active sequence's tracks, as the last
+    /// finished look over the timeline found them (`app::reuse_marks`).
+    pub reuse_marks: std::sync::Arc<std::collections::HashMap<ClipId, Vec<klipp_document::reuse::Mark>>>,
     pub fullscreen_viewer: bool,
     pub fullscreen_changed: bool,
 
@@ -4886,6 +4892,8 @@ impl Default for AppState {
             edit_mode: klipp_timeline::magnetic::EditMode::default(),
             magnetic_timeline_enabled: true,
             multicam_show_angles: true,
+            show_reused_footage: true,
+            reuse_marks: Default::default(),
             fullscreen_viewer: false,
             fullscreen_changed: false,
             clipboard: None,

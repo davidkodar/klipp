@@ -5057,6 +5057,41 @@ fn playback_quality_is_set_by_name_and_perf_says_why() {
     assert!(perf["diagnosis"]["cause"].as_str().is_some_and(|c| c.contains("not enough playback")), "{perf}");
 }
 
+/// #3272: `reuse_report` lists two clips showing the same frames of one
+/// file; `check` lists them as a note, or a warning when the brief says
+/// reuse matters.
+#[test]
+fn footage_used_twice_is_reported_and_checked() {
+    let mut h = harness();
+    let id = klipp_core::MediaId::new();
+    let mut item = klipp_media::MediaItem::synthetic_for_test("/footage/stock.mov".into(), None);
+    (item.id, item.fingerprint) = (id, Some(42));
+    item.fps = klipp_core::Fps::film_24();
+    h.media_pool.write().unwrap().add(item);
+    let tc = |f: i64| klipp_core::RationalTime::from_frames(f, 24);
+    let mut seq = (*h.sequence.snapshot()).clone();
+    seq.fps = klipp_core::Fps::film_24();
+    let mut track = klipp_timeline::Track::new("V1", klipp_timeline::TrackKind::Video);
+    track.clips = vec![klipp_timeline::Clip::media(id, tc(0), tc(48), tc(0), tc(48)), klipp_timeline::Clip::media(id, tc(100), tc(148), tc(24), tc(72))];
+    seq.tracks = vec![track];
+    seq.brief = None;
+    h.sequence.replace(seq.clone());
+    let r = h.ok(json!({ "method": "reuse_report" }));
+    assert_eq!(r["count"], 1, "{r}");
+    let pair = &r["pairs"][0];
+    let mut starts = [pair["a"]["timeline"][0].as_f64().unwrap(), pair["b"]["timeline"][0].as_f64().unwrap()];
+    starts.sort_by(f64::total_cmp);
+    assert_eq!((pair["kind"].as_str(), pair["secs"].as_f64(), starts), (Some("same_frames"), Some(1.0), [1.0, 100.0 / 24.0]), "source 1–2 s is in both clips: {r}");
+    assert!(r["text"].as_str().unwrap().contains("shows the same frames as"), "{r}");
+    let reuse = |r: &serde_json::Value| r["findings"].as_array().unwrap().iter().find(|f| f["rule"] == "reused_footage").cloned();
+    let checked = h.ok(json!({ "method": "check" }));
+    assert_eq!(reuse(&checked).and_then(|f| f["severity"].as_str().map(String::from)).as_deref(), Some("note"), "{checked}");
+    seq.brief = Some(klipp_timeline::Brief { reused_footage_warns: true, ..Default::default() });
+    h.sequence.replace(seq);
+    let checked = h.ok(json!({ "method": "check" }));
+    assert_eq!(reuse(&checked).and_then(|f| f["severity"].as_str().map(String::from)).as_deref(), Some("warning"), "a stock-heavy delivery: {checked}");
+}
+
 /// #3264: `bounce_track` asks the app to bounce a track named by index
 /// or name, ProRes 4444 with its sound unless told otherwise; a format
 /// that is none, a track that isn't there, and one that can't be bounced

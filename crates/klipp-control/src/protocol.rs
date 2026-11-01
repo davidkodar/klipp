@@ -1123,6 +1123,11 @@ pub enum ControlCommand {
     /// sent, so a bad one refuses the whole batch and nothing happens.
     /// Reads inside a batch are refused; a batch is for writes.
     Batch { commands: Vec<ControlCommand> },
+    /// Where the timeline uses the same footage twice (#3272): each pair
+    /// of picture clips showing the same frames of one file, nested and
+    /// compound clips included, with both sides' clips, tracks, timeline
+    /// and source spans in seconds. Changes nothing.
+    ReuseReport,
 
     // ── Delivery ──────────────────────────────────────────────────
     /// Render the active sequence to `path` with the app's default export

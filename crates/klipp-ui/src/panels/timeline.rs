@@ -11926,6 +11926,40 @@ impl TimelinePanel {
     }
 
     /// Draw small colored ticks at the top edge of clips at marker positions.
+    /// A strip along the clip's foot under each span that shows the same
+    /// frames as another clip (#3272), named on hover; a click goes to
+    /// the other use.
+    fn draw_reuse_strip(&self, ui: &mut egui::Ui, painter: &egui::Painter, clip_rect: egui::Rect, clip: &klipp_timeline::Clip, state: &AppState, cmds: &mut Vec<AppCommand>) {
+        if !state.show_reused_footage {
+            return;
+        }
+        let Some(marks) = state.reuse_marks.get(&clip.id) else { return };
+        let (start, dur) = (clip.timeline_in.to_secs_f64(), clip.duration().to_secs_f64());
+        if dur <= 0.0 || clip_rect.width() < 4.0 {
+            return;
+        }
+        let seq = state.sequence();
+        let fps = seq.fps.as_f64().max(1.0);
+        let x = |frame: i64| clip_rect.min.x + (((frame as f64 / fps - start) / dur) as f32 * clip_rect.width()).clamp(0.0, clip_rect.width());
+        let colour = theme().marker_info;
+        for (i, m) in marks.iter().enumerate() {
+            let (x0, x1) = (x(m.from), x(m.to));
+            if x1 - x0 < 1.0 {
+                continue;
+            }
+            let strip = egui::Rect::from_min_max(egui::pos2(x0, clip_rect.max.y - 3.0), egui::pos2(x1, clip_rect.max.y));
+            painter.rect_filled(strip, 0.0, colour);
+            let hit = egui::Rect::from_min_max(egui::pos2(x0, clip_rect.max.y - 5.0), strip.max);
+            let resp = ui.interact(hit, ui.id().with(("reuse_strip", clip.id, i)), egui::Sense::click());
+            if resp.clicked() {
+                cmds.push(AppCommand::SelectClip(Some(m.partner)));
+                cmds.push(AppCommand::CenterTimelineOnClip(m.partner));
+                cmds.push(AppCommand::SeekTo(klipp_core::Timecode::from_secs_f64(m.partner_frame as f64 / fps, seq.fps.rate())));
+            }
+            resp.on_hover_text(reuse_tooltip(m, seq));
+        }
+    }
+
     fn draw_clip_markers(
         &self,
         painter: &egui::Painter,
@@ -12189,6 +12223,7 @@ impl TimelinePanel {
                 let clip = &state.sequence().tracks[track_idx].clips[clip_index];
                 // ── Per-clip markers ──
                 self.draw_clip_markers(painter, clip_rect, clip);
+                self.draw_reuse_strip(ui, painter, clip_rect, clip, state, cmds);
                 // ── Speed ramp overlay ──
                 self.draw_speed_overlay(painter, clip_rect, clip);
                 self.draw_clip_badges(ui, painter, clip_rect, clip, state, track_kind, clip_is_title, is_offline, border_color, border_width, cmds);
@@ -17467,9 +17502,39 @@ mod files_drop_tests {
     }
 }
 
+/// "Also used in <name> on <track> at <time>", the compound named when
+/// the other use is inside one, and how many more uses there are.
+fn reuse_tooltip(m: &klipp_document::reuse::Mark, seq: &klipp_timeline::Sequence) -> String {
+    let track = seq.tracks.get(m.partner_track).map_or("another track", |t| t.name.as_str());
+    let at = seq.timecode_display().position_secs(m.partner_frame as f64 / seq.fps.as_f64().max(1.0));
+    let mut s = format!("Also used in {} on {track} at {at}", m.partner_name);
+    if m.partner_inside {
+        s.push_str(" (inside a compound)");
+    }
+    if m.more > 0 {
+        s.push_str(&format!(", and {} more", m.more));
+    }
+    s.push_str("\nClick to go there");
+    s
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The strip's hover names the other use: file, track and time, the
+    /// compound when it is inside one, and the uses past it.
+    #[test]
+    fn the_reuse_tooltip_names_the_other_use() {
+        let mut seq = klipp_timeline::Sequence::new_default();
+        seq.fps = klipp_core::Fps::film_24();
+        seq.tracks = vec![klipp_timeline::Track::new("V1", klipp_timeline::TrackKind::Video), klipp_timeline::Track::new("B-roll", klipp_timeline::TrackKind::Video)];
+        let mut m = klipp_document::reuse::Mark { from: 0, to: 24, partner: ClipId::new(), partner_track: 1, partner_frame: 48, partner_name: "stock.mov".into(), partner_inside: false, more: 0 };
+        let at = seq.timecode_display().position_secs(2.0);
+        assert_eq!(reuse_tooltip(&m, &seq), format!("Also used in stock.mov on B-roll at {at}\nClick to go there"));
+        (m.partner_inside, m.more) = (true, 2);
+        assert_eq!(reuse_tooltip(&m, &seq), format!("Also used in stock.mov on B-roll at {at} (inside a compound), and 2 more\nClick to go there"));
+    }
 
     /// #2378: a volume lane is on a fader law in dB. Unity at 80% up,
     /// +6 dB at the top, -20 dB still well up the lane (it was 5% from the
