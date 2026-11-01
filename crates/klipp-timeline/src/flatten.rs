@@ -84,6 +84,8 @@ fn layer_number(o: &crate::TitleObject, path: &str) -> Option<f64> {
         "rotation" => o.transform.rotation as f64,
         "motion.enter.duration_secs" => o.fx().motion.enter.as_ref()?.duration_secs as f64,
         "motion.exit.duration_secs" => o.fx().motion.exit.as_ref()?.duration_secs as f64,
+        "glow.radius" => o.fx().glows.first()?.radius as f64,
+        "glow.intensity" => o.fx().glows.first()?.intensity as f64,
         _ => return None,
     })
 }
@@ -103,6 +105,8 @@ fn set_layer_number(o: &mut crate::TitleObject, path: &str, v: f64) {
         ("rotation", _) => o.transform.rotation = v,
         ("motion.enter.duration_secs", _) => if let Some(m) = o.fx_mut().motion.enter.as_mut() { m.duration_secs = v.max(0.01) },
         ("motion.exit.duration_secs", _) => if let Some(m) = o.fx_mut().motion.exit.as_mut() { m.duration_secs = v.max(0.01) },
+        ("glow.radius", _) => if let Some(g) = o.fx_mut().glows.first_mut() { g.radius = v.max(0.0) },
+        ("glow.intensity", _) => if let Some(g) = o.fx_mut().glows.first_mut() { g.intensity = v.clamp(0.0, 1.0) },
         _ => {}
     }
 }
@@ -138,7 +142,7 @@ pub fn validate_template_instance(instance: &klipp_core::TemplateInstance, seque
             use crate::TitleObjectContent as C;
             match (path, value) {
                 ("text", klipp_core::TemplateValue::Text(_)) if matches!(target.content, C::TextBox(_)) => {}
-                ("fill_and_glow", klipp_core::TemplateValue::Color(_)) if matches!(target.content, C::Shape(_)) => {}
+                ("fill_and_glow", klipp_core::TemplateValue::Color(_)) if matches!(target.content, C::Shape(_) | C::TextBox(_)) => {}
                 ("color", klipp_core::TemplateValue::Color(_)) if matches!(target.content, C::TextBox(_) | C::Shape(_)) => {}
                 ("font", klipp_core::TemplateValue::Text(_)) if matches!(target.content, C::TextBox(_)) => {}
                 ("picture", klipp_core::TemplateValue::Text(_)) if matches!(target.content, C::Image(_)) => {}
@@ -212,7 +216,11 @@ fn apply_template_instance(sequence: &mut Sequence, instance: &klipp_core::Templ
                             (color[2].clamp(0.0, 1.0) * 255.0) as u8,
                             (color[3].clamp(0.0, 1.0) * 255.0) as u8,
                         ];
-                        if let crate::TitleObjectContent::Shape(shape) = &mut target.content { shape.fill = Some(rgba); }
+                        match &mut target.content {
+                            crate::TitleObjectContent::Shape(shape) => shape.fill = Some(rgba),
+                            crate::TitleObjectContent::TextBox(tb) => tb.color = rgba,
+                            _ => {}
+                        }
                         if let Some(glow) = target.fx_mut().glows.first_mut() { glow.color = rgba; }
                     }
                     ("motion.enter.duration_secs", klipp_core::TemplateValue::Number(seconds)) => {
