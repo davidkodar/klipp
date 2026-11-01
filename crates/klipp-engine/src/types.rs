@@ -713,12 +713,21 @@ impl FrameQueue {
         self.capacity
     }
 
-    /// Keep the frames at or after `secs`, stamped with `epoch` — a
-    /// forward seek that the decoder answers by decoding on, for which
-    /// the frames already decoded past the new target are still right.
-    /// Returns how many remain.
+    /// Keep the frames for `secs` on, stamped with `epoch` — a forward
+    /// seek that the decoder answers by decoding on, for which the frames
+    /// already decoded are still right: the last picture at or before
+    /// `secs`, the one on show then, and every one after it. Returns how
+    /// many remain.
+    ///
+    /// The one on show can have begun well before `secs` (#3289): a file
+    /// at another rate than the timeline's begins its frame for timeline
+    /// frame 21 (0.84 s at 25 fps) at 0.833 s if it is 30 fps. Kept only
+    /// from `secs`, that frame went, and the next one, 0.867 s, was
+    /// shown parked where export shows 0.833 s.
     pub fn keep_from(&mut self, secs: f64, epoch: u64) -> usize {
-        self.frames.retain(|f| !f.is_eof && f.pts_secs() >= secs);
+        let on_show = self.frames.iter().filter(|f| !f.is_eof).map(LinearFrame::pts_secs).filter(|&p| p <= secs).fold(None, |a: Option<f64>, p| Some(a.map_or(p, |a| a.max(p))));
+        let from = on_show.unwrap_or(secs);
+        self.frames.retain(|f| !f.is_eof && f.pts_secs() >= from);
         for f in &mut self.frames {
             f.seek_epoch = epoch;
         }
@@ -869,5 +878,48 @@ mod readback_cost {
             before + 1,
             "ensure_cpu_data must record the readback it performed",
         );
+    }
+}
+
+#[cfg(test)]
+mod keep_from_tests {
+    use super::*;
+
+    fn at(secs: f64) -> LinearFrame {
+        let mut f = DecodedFrame { pts: RationalTime::zero(), width: 1, height: 1, data: vec![0; 4], is_eof: false }.to_linear();
+        f.pts = RationalTime::from_secs_f64(secs, 30_000);
+        f
+    }
+
+    /// #3289: a forward seek decoded on keeps the frame on show at the
+    /// target, however early it began, and those after it: 30 fps frames
+    /// for timeline frame 21 at 25 fps (0.84 s) keep 0.833 s, not only
+    /// 0.867 s on. At the timeline's own rate the frame at the target is
+    /// the first kept, as before; with nothing at or before it, all
+    /// after it are.
+    #[test]
+    fn a_seek_decoded_on_keeps_the_frame_on_show() {
+        let mut q = FrameQueue::new(16);
+        for n in 22..30 {
+            q.push(at(n as f64 / 30.0));
+        }
+        let kept = q.keep_from(0.84 + 1e-3, 7);
+        assert_eq!(kept, 5, "25 to 29");
+        let first = q.pop().unwrap();
+        assert!((first.pts_secs() - 25.0 / 30.0).abs() < 1e-3, "the frame on show at 0.84 s: {}", first.pts_secs());
+        assert_eq!(first.seek_epoch, 7);
+
+        let mut q = FrameQueue::new(16);
+        for n in 18..24 {
+            q.push(at(n as f64 / 25.0));
+        }
+        assert_eq!(q.keep_from(21.0 / 25.0 + 1e-3, 1), 3, "21 to 23");
+        assert!((q.pop().unwrap().pts_secs() - 0.84).abs() < 1e-3);
+
+        let mut q = FrameQueue::new(16);
+        for n in 30..33 {
+            q.push(at(n as f64 / 30.0));
+        }
+        assert_eq!(q.keep_from(0.84, 1), 3, "nothing before: all after");
     }
 }
