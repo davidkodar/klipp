@@ -120,6 +120,15 @@ impl SpellCheck {
         self.installed.get_or_init(|| self.dicts.installed().into_iter().map(|stem| stem.replace('_', "-")).collect())
     }
 
+    /// Why `language` is not checked, once its dictionary has been looked
+    /// for and none read; `None` while it is read, or when it was.
+    pub fn missing(&self, language: &str) -> Option<klipp_spelling::Missing> {
+        match self.dicts.ready(language) {
+            Some(Err(m)) => Some(m),
+            _ => None,
+        }
+    }
+
     /// What `word` might have been in `language`, likeliest first.
     pub fn suggestions(&self, word: &str, language: &str) -> Vec<String> {
         match self.dicts.ready(language) {
@@ -127,6 +136,58 @@ impl SpellCheck {
             _ => Vec::new(),
         }
     }
+}
+
+/// A word marked somewhere in the titles and captions, for the Check
+/// Spelling dialog (#3236): its sequence, title, text layer, bytes, the
+/// word, its language, where the title starts and the line it is on.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Found {
+    pub sequence: usize,
+    pub clip_id: klipp_core::ClipId,
+    pub object: klipp_timeline::TitleObjectId,
+    pub start: usize,
+    pub end: usize,
+    pub word: String,
+    pub language: String,
+    pub at_secs: f64,
+    pub line: String,
+}
+
+/// Every word marked in `scope`'s sequences, in timeline order within
+/// each, and the languages not checked (said once each). A language
+/// still being read adds nothing yet: the next frame has it.
+pub fn find_all(spell: &SpellCheck, ctx: &egui::Context, sequences: &[klipp_timeline::Sequence], scope: &[usize]) -> (Vec<Found>, Vec<String>) {
+    let fallback = klipp_spelling::system_language();
+    let (mut out, mut missing) = (Vec::new(), Vec::new());
+    for &si in scope {
+        let Some(seq) = sequences.get(si) else { continue };
+        let mut here = Vec::new();
+        for track in &seq.tracks {
+            for clip in &track.clips {
+                let Some(td) = clip.title_data() else { continue };
+                for o in &td.objects {
+                    let klipp_timeline::TitleObjectContent::TextBox(tb) = &o.content else { continue };
+                    let language = klipp_spelling::language_of(tb, track, seq.brief.as_ref(), &fallback);
+                    if let Some(m) = spell.missing(&language) {
+                        let said = m.say();
+                        if !missing.contains(&said) {
+                            missing.push(said);
+                        }
+                        continue;
+                    }
+                    for &(start, end) in spell.marks(ctx, &tb.text, &language).iter() {
+                        let line_start = tb.text[..start].rfind('\n').map_or(0, |i| i + 1);
+                        let line_end = tb.text[end..].find('\n').map_or(tb.text.len(), |i| end + i);
+                        here.push(Found { sequence: si, clip_id: clip.id, object: o.id, start, end, word: tb.text[start..end].to_string(), language: language.clone(), at_secs: clip.timeline_in.to_secs_f64(), line: tb.text[line_start..line_end].to_string() });
+                    }
+                }
+            }
+        }
+        here.sort_by(|a, b| a.at_secs.total_cmp(&b.at_secs).then(a.start.cmp(&b.start)));
+        out.extend(here);
+    }
+    (out, missing)
 }
 
 /// The brief with `word` on its vocabulary: what Ignore in This Project
@@ -343,7 +404,7 @@ pub fn show(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     #[test]
@@ -358,7 +419,7 @@ mod tests {
 
     /// The small test dictionaries klipp-spelling keeps, read before the
     /// first frame.
-    fn test_spelling() -> SpellCheck {
+    pub(crate) fn test_spelling() -> SpellCheck {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../klipp-spelling/tests/dictionaries");
         let dicts: &'static Dictionaries = Box::leak(Box::new(Dictionaries::in_dirs(vec![dir], None)));
         let start = std::time::Instant::now();

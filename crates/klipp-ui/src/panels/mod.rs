@@ -8,6 +8,7 @@ pub mod project_doctor;
 pub mod system_probe;
 pub mod batch_rename_dialog;
 pub mod title_find_dialog;
+pub mod spelling_dialog;
 pub mod brand_kit_dialog;
 pub mod brand_kits_page;
 pub mod cache_manager;
