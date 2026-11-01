@@ -288,7 +288,8 @@ impl KlippApp {
                         let root = self.projects_root();
                         // A name not yet taken there, so accepting the
                         // offer never lands on another project.
-                        let name = crate::project_paths::free_project_name(&root, crate::project_paths::UNTITLED);
+                        let written = self.unnamed_project.clone().filter(|w| self.state.project_path.as_ref() == Some(w));
+                        let name = crate::project_paths::offered_name(&root, written.as_deref());
                         crate::file_dialog::spawn(move || {
                             rfd::FileDialog::new()
                                 .set_title("Save Project")
@@ -351,6 +352,11 @@ impl KlippApp {
                     return true;
                 }
                 self.do_save_project(&path);
+                // Saved under the name it was written with: named now, and
+                // not asked again.
+                if self.unnamed_project.as_ref() == Some(&path) && self.state.project_path.as_ref() == Some(&path) {
+                    self.unnamed_project = None;
+                }
                 true
             }
             AppCommand::CloseProjectNow { save, discard_changes, expected_identity } => {
