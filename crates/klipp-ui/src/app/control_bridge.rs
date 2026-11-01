@@ -229,7 +229,13 @@ impl KlippApp {
                         let why: Vec<String> = refused.iter().map(said).collect();
                         toast.push_str(&format!("; {} not done: {}", refused.len(), why.join("; ")));
                     }
-                    self.state.toast.show(toast);
+                    // A refit that left pictures never looked through for
+                    // people offers to look through them.
+                    let sequence = self.state.sequences[self.state.active_sequence_idx].id;
+                    match super::aspect_version::find_people_offer(&ops, &what, sequence) {
+                        Some(action) => self.state.toast.show_with_action(toast, "Find people now", action),
+                        None => self.state.toast.show(toast),
+                    }
                 }
                 Ok((_, refused)) => {
                     let why: Vec<String> = refused.iter().map(said).collect();

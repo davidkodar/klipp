@@ -8,6 +8,7 @@ impl KlippApp {
         self.sync_system_theme(ctx);
         self.drain_control_inbox();
         self.apply_analysis_markers();
+        self.advance_find_people();
         self.advance_refits();
         self.advance_brand_kit();
         self.advance_deliveries();

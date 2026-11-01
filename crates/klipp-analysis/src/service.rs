@@ -96,6 +96,9 @@ struct Service {
     /// Items an on-demand "Transcribe clip" queued: run the speech
     /// analyser for these even when automatic transcription is off.
     force_transcript: std::collections::HashSet<MediaId>,
+    /// Items an on-demand "Find people now" queued: run subject detection
+    /// for these even when it is off in preferences.
+    force_framing: std::collections::HashSet<MediaId>,
     /// The subject matte passes (#239), by media: their status and the
     /// flag that stops them.
     mattes: HashMap<MediaId, (Status, std::sync::Arc<std::sync::atomic::AtomicBool>)>,
@@ -103,7 +106,7 @@ struct Service {
 
 fn service() -> &'static Mutex<Service> {
     static S: OnceLock<Mutex<Service>> = OnceLock::new();
-    S.get_or_init(|| Mutex::new(Service { statuses: HashMap::new(), queue: Vec::new(), running: 0, running_video: 0, ctx: AnalysisCtx::default(), completed: Vec::new(), force_transcript: std::collections::HashSet::new(), mattes: HashMap::new() }))
+    S.get_or_init(|| Mutex::new(Service { statuses: HashMap::new(), queue: Vec::new(), running: 0, running_video: 0, ctx: AnalysisCtx::default(), completed: Vec::new(), force_transcript: std::collections::HashSet::new(), force_framing: std::collections::HashSet::new(), mattes: HashMap::new() }))
 }
 
 /// Ask for `item` to be analysed. Returns at once with its state;
@@ -160,6 +163,26 @@ pub fn request_transcription(item: &MediaItem) -> Status {
     st
 }
 
+/// Look for the people in one file now — "Find people now" after a refit
+/// left it centred. Runs subject detection for this item even when it is
+/// off in preferences, without touching the other analysers or the
+/// preference; a file already looked through is not looked through again. The item appears in
+/// `take_completed()` when it is done.
+pub fn request_framing(item: &MediaItem) -> Status {
+    let mut s = service().lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(st) = s.statuses.get(&item.id) {
+        if matches!(st.state, State::Queued | State::Running) {
+            return st.clone();
+        }
+    }
+    s.force_framing.insert(item.id);
+    let st = Status::new(item, State::Queued, "analysis");
+    s.statuses.insert(item.id, st.clone());
+    s.queue.push(item.clone());
+    pump(&mut s);
+    st
+}
+
 /// Start queued work while there is room.
 fn pump(s: &mut Service) {
     while s.running < MAX_RUNNING {
@@ -176,6 +199,7 @@ fn pump(s: &mut Service) {
         }
         let ctx = s.ctx.clone();
         let force_transcript = s.force_transcript.remove(&item.id);
+        let force_framing = s.force_framing.remove(&item.id);
         std::thread::Builder::new()
             .name(format!("klipp-analysis:{}", item.filename))
             .spawn(move || {
@@ -185,7 +209,7 @@ fn pump(s: &mut Service) {
                 // A panic past the analysers' own catch (#3181) fails the
                 // item and still gives its place back: it used to leave
                 // `running` one up for good, and the queue a slot short.
-                let (done, failed) = caught(|| run_all(&item, &ctx, force_transcript))
+                let (done, failed) = caught(|| run_all(&item, &ctx, force_transcript, force_framing))
                     .unwrap_or_else(|why| (Vec::new(), vec![("analysis".to_string(), why)]));
                 let mut s = service().lock().unwrap_or_else(|e| e.into_inner());
                 s.running = s.running.saturating_sub(1);
@@ -232,7 +256,7 @@ fn caught<T>(body: impl FnOnce() -> T) -> Result<T, String> {
 
 /// Every analyser that wants `item` and has no stored result, run in
 /// order; each result saved as it is made.
-fn run_all(item: &MediaItem, ctx: &AnalysisCtx, force_transcript: bool) -> (Vec<&'static str>, Vec<(String, String)>) {
+fn run_all(item: &MediaItem, ctx: &AnalysisCtx, force_transcript: bool, force_framing: bool) -> (Vec<&'static str>, Vec<(String, String)>) {
     #[cfg(test)]
     assert!(!item.filename.starts_with("panics-in-run-all"), "the run panicked outside any analyser (a test's)");
     let mut done = Vec::new();
@@ -249,6 +273,12 @@ fn run_all(item: &MediaItem, ctx: &AnalysisCtx, force_transcript: bool) -> (Vec<
         list.push(Box::new(crate::transcript::TranscriptAnalyser));
     }
     let _ = force_transcript;
+    // "Find people now" forces subject detection in the same way.
+    #[cfg(feature = "framing")]
+    if force_framing && !list.iter().any(|a| a.id() == crate::framing::ID) {
+        list.push(Box::new(crate::framing::FramingAnalyser));
+    }
+    let _ = force_framing;
     for a in list {
         if !a.wants(item) {
             continue;
@@ -330,7 +360,7 @@ pub fn all() -> Vec<Status> {
 /// Run every analyser for `item` on this thread and return the report;
 /// for tests and tools, not the app.
 pub fn run_now(item: &MediaItem, ctx: &AnalysisCtx) -> Result<crate::report::MediaAnalysis, String> {
-    let (_, failed) = run_all(item, ctx, false);
+    let (_, failed) = run_all(item, ctx, false, false);
     if let Some((id, why)) = failed.first() {
         return Err(format!("{id}: {why}"));
     }
@@ -461,7 +491,7 @@ mod queue_tests {
     fn cancel_one_queued_analysis_without_touching_other_work() {
         let mut service = Service { statuses: HashMap::new(), queue: Vec::new(), running: 1,
             running_video: 0, ctx: AnalysisCtx::default(), completed: Vec::new(),
-            force_transcript: std::collections::HashSet::new(), mattes: HashMap::new() };
+            force_transcript: std::collections::HashSet::new(), force_framing: std::collections::HashSet::new(), mattes: HashMap::new() };
         let first = MediaItem::new_synthetic_title(MediaId::new(), "first".into(),
             klipp_core::Timecode::from_frames(24, 24), klipp_core::Fps::new(24, 1));
         let second = MediaItem::new_synthetic_title(MediaId::new(), "second".into(),
@@ -481,7 +511,7 @@ mod queue_tests {
 
     #[test]
     fn prioritize_and_cancel_preserve_running_work_and_reject_invalid_ids() {
-        let mut s = Service { statuses: HashMap::new(), queue: Vec::new(), running: 1, running_video: 1, ctx: AnalysisCtx::default(), completed: Vec::new(), force_transcript: std::collections::HashSet::new(), mattes: HashMap::new() };
+        let mut s = Service { statuses: HashMap::new(), queue: Vec::new(), running: 1, running_video: 1, ctx: AnalysisCtx::default(), completed: Vec::new(), force_transcript: std::collections::HashSet::new(), force_framing: std::collections::HashSet::new(), mattes: HashMap::new() };
         for i in 0..22 {
             let item = MediaItem::new_synthetic_title(MediaId::new(), format!("take{i}"), klipp_core::Timecode::from_frames(24, 24), klipp_core::Fps::new(24, 1));
             s.statuses.insert(item.id, Status::new(&item, State::Queued, "analysis"));
