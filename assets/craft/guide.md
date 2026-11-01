@@ -300,7 +300,7 @@ exist until the plan runs.
   (`.score`, `.source`), `effects` (`.foley`, `.ambience`), `titles` and
   `subtitles` — or its label, or `none`. The old names still work (sfx
   is effects, ambience effects.ambience, voiceover dialogue.narration,
-  graphics titles, broll none). Mark a camera's own sound
+  graphics titles, broll effects.ambience). Mark a camera's own sound
   `effects.ambience` when it runs under music, so a `duck` does not take
   it for speech; narration is marked dialogue when `narrate` places it.
   `list_clips` lists the project's roles with their labels and colours.

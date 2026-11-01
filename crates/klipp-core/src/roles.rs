@@ -92,8 +92,9 @@ impl RoleRef {
         RoleRef(self.main().to_string())
     }
 
-    /// The role an old project's clip role is now; `None` for B-roll,
-    /// a picture with no role of its own.
+    /// The role an old project's clip role is now. B-roll is ambience:
+    /// its sound was never taken for speech, so a duck still passes it
+    /// by and a project's mix stays as it was.
     pub fn from_legacy(role: ClipRole) -> Option<RoleRef> {
         let id = match role {
             ClipRole::Dialogue => "dialogue",
@@ -103,7 +104,7 @@ impl RoleRef {
             ClipRole::Foley => "effects.foley",
             ClipRole::Ambience => "effects.ambience",
             ClipRole::Graphics => "titles",
-            ClipRole::BRoll => return None,
+            ClipRole::BRoll => "effects.ambience",
         };
         Some(RoleRef(id.into()))
     }
@@ -116,7 +117,7 @@ impl std::fmt::Display for RoleRef {
 }
 
 /// Read as written now, or as an old project wrote a clip's role
-/// (`"Voiceover"`); B-roll, which has no role now, isn't one.
+/// (`"Voiceover"`).
 impl<'de> Deserialize<'de> for RoleRef {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         let text = String::deserialize(d)?;
@@ -129,7 +130,7 @@ impl<'de> Deserialize<'de> for RoleRef {
 }
 
 /// A clip's role as saved, read leniently: a role, an old one, or none
-/// for B-roll, nothing written, or text that isn't a role, so a project
+/// for nothing written or text that isn't a role, so a project
 /// never fails to open over one clip's role.
 pub fn read_lenient<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<RoleRef>, D::Error> {
     let text = Option::<serde_json::Value>::deserialize(d)?;
@@ -438,8 +439,8 @@ mod tests {
             assert_eq!(read(&format!("\"{old}\"")).unwrap().as_str(), now, "{old}");
             assert_eq!(RoleRef::from_legacy(serde_json::from_str(&format!("\"{old}\"")).unwrap()).unwrap().as_str(), now);
         }
-        assert!(RoleRef::from_legacy(ClipRole::BRoll).is_none());
-        assert!(read("\"BRoll\"").is_err(), "B-roll is no role now");
+        assert_eq!(RoleRef::from_legacy(ClipRole::BRoll).map(|r| r.to_string()).as_deref(), Some("effects.ambience"));
+        assert_eq!(read("\"BRoll\"").unwrap().as_str(), "effects.ambience", "B-roll's sound is ambience, as it was never speech");
         assert!(read("\"no such role!\"").is_err());
         let d = r("dialogue.interview");
         assert_eq!(read(&serde_json::to_string(&d).unwrap()).unwrap(), d);

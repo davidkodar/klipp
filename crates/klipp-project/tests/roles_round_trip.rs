@@ -79,9 +79,9 @@ fn a_file_from_before_roles_were_data_opens_with_the_roles_now() {
             (Some("dialogue.narration".into()), RoleSource::ByHand),
             (Some("dialogue".into()), RoleSource::ByHand),
             (None, RoleSource::Unset),
-            (None, RoleSource::ByHand),
+            (Some("effects.ambience".into()), RoleSource::ByHand),
         ],
-        "Voiceover is narration; nothing written but set was Dialogue; never set is none; B-roll is none",
+        "Voiceover is narration; nothing written but set was Dialogue; never set is none; B-roll is ambience",
     );
     let _ = std::fs::remove_dir_all(&dir);
 }

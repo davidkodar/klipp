@@ -5361,10 +5361,10 @@ pub(crate) fn role_named(roles: &klipp_core::roles::RoleSet, name: &str) -> Resu
     use klipp_core::roles::RoleRef;
     let n = name.trim().to_lowercase();
     let old = match n.as_str() {
-        "none" | "broll" | "b-roll" => return Ok(None),
+        "none" => return Ok(None),
         "speech" => Some("dialogue"),
         "sfx" | "effect" => Some("effects"),
-        "ambience" | "atmos" => Some("effects.ambience"),
+        "ambience" | "atmos" | "broll" | "b-roll" => Some("effects.ambience"),
         "foley" => Some("effects.foley"),
         "voiceover" | "vo" => Some("dialogue.narration"),
         "graphics" | "title" => Some("titles"),
@@ -17245,7 +17245,7 @@ mod tests {
             EditCommand::SetClipRole { new, .. } => new.map(|r| r.to_string()),
             other => panic!("{other:?}"),
         };
-        for (said, is) in [("dialogue.interview", Some("dialogue.interview")), ("Dialogue › Panel", Some("dialogue.panel")), ("music", Some("music")), ("SFX", Some("effects")), ("voiceover", Some("dialogue.narration")), ("ambience", Some("effects.ambience")), ("broll", None), ("none", None)] {
+        for (said, is) in [("dialogue.interview", Some("dialogue.interview")), ("Dialogue › Panel", Some("dialogue.panel")), ("music", Some("music")), ("SFX", Some("effects")), ("voiceover", Some("dialogue.narration")), ("ambience", Some("effects.ambience")), ("broll", Some("effects.ambience")), ("none", None)] {
             assert_eq!(new_role(&pool, said).as_deref(), is, "{said}");
         }
         let why = set(&pool, "trailer").unwrap_err();
@@ -17671,6 +17671,28 @@ mod tests {
         }
         assert!(duck(&marked).is_err());
         let _ = a;
+    }
+
+    /// #3211: a clip an old project marked B-roll opens as ambience, so
+    /// its sound still doesn't duck the music, as it didn't before roles
+    /// were data; read from the saved form, as a project opens it.
+    #[test]
+    fn an_old_b_roll_clip_does_not_duck_the_music() {
+        let (mut seq, pool, media, ..) = fixture();
+        let mut music_track = Track::new("A2", TrackKind::Audio);
+        let music = Clip::media(media, tc(0.0), tc(10.0), tc(0.0), tc(10.0));
+        let music_id = music.id;
+        music_track.clips = vec![music];
+        seq.tracks.push(music_track);
+        let duck = |seq: &Sequence| resolve(seq, &pool, &[Op::Duck { clip_id: ClipRef::Id(music_id), by_db: 9.0, fade_secs: 0.5, bridge_secs: 2.0 }]);
+        assert!(duck(&seq).is_ok(), "with no role, its sound may be speech");
+        for c in seq.tracks.iter_mut().flat_map(|t| t.clips.iter_mut()).filter(|c| c.id != music_id) {
+            let mut saved = serde_json::to_value(&*c).unwrap();
+            saved["role"] = "BRoll".into();
+            *c = serde_json::from_value(saved).unwrap();
+            assert_eq!(c.role.as_ref().map(|r| r.as_str()), Some("effects.ambience"));
+        }
+        assert!(duck(&seq).unwrap_err().why.contains("no speech"), "old B-roll is not ducked under");
     }
 
     /// A duck follows the words (#457): over camera sound with a
