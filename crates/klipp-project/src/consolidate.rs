@@ -753,6 +753,15 @@ pub fn consolidate_project(
         return Err(e);
     }
 
+    // Each whole copy's analysis results come along (#3241); a cut file's
+    // don't fit it.
+    let cache = klipp_media::disk_cache::analysis_dir();
+    for item in media_pool.all() {
+        if let Some(name) = plan.media_new_paths.get(&item.id).and_then(|p| p.file_name()).and_then(|n| n.to_str()) {
+            crate::collect_analysis::carry_out(&cache, &item.path, &options.dest_dir, name);
+        }
+    }
+
     // Remap MediaPool and sequences to use the new paths.
     let new_pool = remap_media_pool(media_pool, &plan);
     let new_seqs = remap_sequences(sequences, &plan);

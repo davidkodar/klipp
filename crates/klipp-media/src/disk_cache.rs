@@ -87,6 +87,13 @@ pub fn set_cache_dir_overrides(filmstrip: Option<PathBuf>, audio: Option<PathBuf
     *AUDIO_CACHE_DIR_OVERRIDE.lock().unwrap_or_else(|e| e.into_inner()) = audio;
 }
 
+/// Where analysis results live, by media cache key: `<cache>/analysis/`.
+/// `klipp_analysis::store` writes there; a collected project carries a
+/// file's folder and brings it back on open (#3241).
+pub fn analysis_dir() -> PathBuf {
+    cache_base_dir().join("analysis")
+}
+
 /// Base cache directory: `~/.cache/klipp/`.
 pub fn cache_base_dir() -> PathBuf {
     dirs::cache_dir()

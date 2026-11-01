@@ -780,6 +780,11 @@ fn load_project_as(dir: &Path, form: crate::FileForm, strict: bool) -> Result<Lo
         seq.edit_each_grade(|g| crate::consolidate::resolve_collected_grade_files(g, dir));
     }
 
+    // A collected project's analysis results, back in the cache under
+    // the keys its files have here (#3241).
+    let files: Vec<&Path> = media_pool.all().filter(|i| i.kind == MediaItemKind::File && !i.offline).map(|i| i.path.as_path()).collect();
+    crate::collect_analysis::bring_in(dir, &klipp_media::disk_cache::analysis_dir(), &files);
+
     info!(
         "Project loaded from {:?} ({} sequence(s), {} title asset(s))",
         dir,

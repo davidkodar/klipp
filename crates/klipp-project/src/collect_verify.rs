@@ -153,6 +153,23 @@ pub fn verify(dir: &Path) -> Result<Manifest, String> {
             resources.push(resource(&root, "grade".into(), "grade file", file));
         }
     }
+    // The analysis results it carries (#3241), file by file.
+    let mut stack = vec![root.join(crate::collect_analysis::FOLDER)];
+    let mut carried = Vec::new();
+    while let Some(d) = stack.pop() {
+        for e in std::fs::read_dir(&d).into_iter().flatten().flatten() {
+            match e.file_type() {
+                Ok(t) if t.is_dir() => stack.push(e.path()),
+                Ok(t) if t.is_file() => carried.push(e.path()),
+                _ => {}
+            }
+        }
+    }
+    carried.sort();
+    for f in carried {
+        let id = f.strip_prefix(&root).map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
+        resources.push(resource(&root, id, "analysis", &f));
+    }
     // The fonts it carries: files, not references.
     if let Ok(entries) = std::fs::read_dir(root.join("fonts")) {
         let mut fonts: Vec<PathBuf> = entries.flatten().map(|e| e.path()).filter(|p| p.is_file()).collect();
