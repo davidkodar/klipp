@@ -1,0 +1,7 @@
+kind = "generator_entry"
+format_version = 1
+
+[[generator]]
+name = "Studio Grey"
+category = "Backgrounds"
+data = { SolidColor = { color = [118, 118, 118, 255] } }

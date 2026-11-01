@@ -86,4 +86,5 @@
 - [Project Format](./reference/project-format.md)
 - [Supported Formats](./reference/formats.md)
 - [File Locations](./reference/file-locations.md)
+- [Making Your Own Presets](./reference/your-own-presets.md)
 - [Troubleshooting](./reference/troubleshooting.md)
