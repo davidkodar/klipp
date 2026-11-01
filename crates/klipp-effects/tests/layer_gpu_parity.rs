@@ -103,6 +103,13 @@ fn rounded_and_grouped_spills_match_cpu_on_gpu() {
     ] {
         compare(&mut gpu, &p, w, h, &effects);
     }
+    // Glows wide enough that each box is slid along a whole row or
+    // column from one seed, past the frame's edges at the widest
+    // (#3176).
+    for radius in [0.5, 2.0, 50.0] {
+        compare(&mut gpu, &p, w, h, &[E::OuterGlow { radius, intensity: 0.8, color: [250, 150, 50] }]);
+        compare(&mut gpu, &p, w, h, &[shadow.clone(), E::OuterGlow { radius, intensity: 0.8, color: [250, 150, 50] }]);
+    }
     // Transparent RGB and alpha below the bbox threshold survive corners.
     let empty = vec![0.0005; p.len()];
     compare(
