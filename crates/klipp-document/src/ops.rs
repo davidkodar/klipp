@@ -9791,7 +9791,9 @@ fn refit(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts, i: usi
             new.push(klipp_timeline::Marker {
                 id: klipp_core::MarkerId::new(),
                 position: clip.timeline_in,
-                label: "Reframe: check subject".into(),
+                // Says what it is on the ruler: a note to look at a
+                // shot the reframe left centred, not a mark of the cut.
+                label: "Check framing: left centred".into(),
                 color: klipp_core::MarkerColor::Orange,
                 duration: Some(clip.timeline_out - clip.timeline_in),
                 comment: why.clone(),
@@ -21350,7 +21352,7 @@ mod tests {
         let Some(EditCommand::SetMarkers { old, new }) = edits.iter().find(|e| matches!(e, EditCommand::SetMarkers { .. })) else { panic!("a review marker") };
         assert_eq!(new.len(), old.len() + 1);
         let marker = new.last().unwrap();
-        assert_eq!((marker.label.as_str(), marker.position, marker.duration), ("Reframe: check subject", tc(4.0), Some(tc(4.0))));
+        assert_eq!((marker.label.as_str(), marker.position, marker.duration), ("Check framing: left centred", tc(4.0), Some(tc(4.0))));
 
         let mut seqs = vec![seq.clone()];
         let (mut p, mut fps) = (pool.clone(), seq.fps);
