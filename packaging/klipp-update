@@ -24,6 +24,16 @@ valid_version() {
     [[ $1 =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z]+(\.[0-9A-Za-z]+)*)?$ ]]
 }
 
+# The machine's arch, as its packages name it. On the loopback test path
+# KLIPP_UPDATE_TEST_ARCH stands in for it, to test another arch's package.
+machine_arch() {
+    if test_base && [[ -n ${KLIPP_UPDATE_TEST_ARCH:-} ]]; then
+        echo "$KLIPP_UPDATE_TEST_ARCH"
+    else
+        uname -m
+    fi
+}
+
 # Where to download from. KLIPP_UPDATE_TEST_BASE_URL is for testing the
 # updater against a local fixture release only: it must be a loopback
 # address, and the shipped default never sets it.
@@ -86,7 +96,7 @@ fetch() {
 # Download release $1 into directory $2, verify it and install it.
 # Returns non-zero on any failure or a no, with the reason printed.
 install_release() {
-    local version=$1 dir=$2 base key verified pkgver file want got found size answer
+    local version=$1 dir=$2 base key verified pkgver arch file want got found size answer
     base=$(base_url) || return 1
     key=$(release_key)
     if [[ -z $key ]]; then
@@ -99,7 +109,14 @@ install_release() {
     fi
     # Arch versions can't hold a hyphen: 0.1.0-rc.3 is packaged as 0.1.0rc.3.
     pkgver=${version//-/}
-    file="klipp-${pkgver}-1-x86_64.pkg.tar.zst"
+    arch=$(machine_arch)
+    case $arch in
+        x86_64|aarch64) ;;
+        *)
+            echo "No Klipp package is published for $arch. Nothing was installed." >&2
+            return 1
+            ;;
+    esac
     echo "Downloading Klipp $version…"
     if ! fetch "$base/v$version/SHA256SUMS" "$dir/SHA256SUMS"; then
         echo "Could not download Klipp $version. Check your connection and try again." >&2
@@ -117,6 +134,14 @@ install_release() {
     fi
     if ! grep -qxF "Trusted comment: klipp $version" <<<"$verified"; then
         echo "The release's signature is not for Klipp $version. Nothing was installed." >&2
+        return 1
+    fi
+    # This machine's package, by name from the signed sums: the extension
+    # is the one its arch's makepkg writes (zst on x86_64, xz on Arch Linux
+    # ARM), read rather than guessed, and only those two are taken.
+    file=$(awk -v p="klipp-${pkgver}-1-${arch}.pkg.tar." '{ n = $2; sub(/^\*/, "", n) } n == p "zst" || n == p "xz" { print n; exit }' "$dir/SHA256SUMS")
+    if [[ -z $file ]]; then
+        echo "The release's SHA256SUMS has no checksum for the $arch package of Klipp $version." >&2
         return 1
     fi
     if ! fetch "$base/v$version/$file" "$dir/$file"; then
