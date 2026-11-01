@@ -60,6 +60,12 @@ pub fn catch_panic_once(thread_name: &str, logged: &AtomicBool, body: impl FnOnc
     }
 }
 
+/// Run `body`, and the panic's message if it panicked, logging nothing:
+/// for a caller that says it its own way (the engine's frame render).
+pub fn panic_of(body: impl FnOnce()) -> Option<String> {
+    catch_unwind(AssertUnwindSafe(body)).err().map(|payload| panic_payload_message(&payload))
+}
+
 fn panic_payload_message(payload: &Box<dyn std::any::Any + Send>) -> String {
     payload
         .downcast_ref::<&str>()

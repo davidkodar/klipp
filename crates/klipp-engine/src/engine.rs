@@ -1622,6 +1622,8 @@ pub struct PlaybackEngine {
     /// that comes back every time would otherwise be met every tick.
     decoder_restarts: u32,
     mix_restarts: u32,
+    /// Frames whose render panicked and were left (see `present_frame_with`).
+    present_panics: u64,
     /// The decoder was left off for panicking too often: a loop's wrap or
     /// an edit's refresh does not open it again, nor say so again, until
     /// the person seeks or plays.
@@ -2935,6 +2937,7 @@ impl PlaybackEngine {
             mix_thread: Some(mix_thread),
             decoder_restarts: 0,
             mix_restarts: 0,
+            present_panics: 0,
             decoder_given_up: false,
             freeze_folder: None,
             frozen_tracks: std::collections::HashSet::new(),

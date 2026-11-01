@@ -587,6 +587,9 @@ pub struct Inspection {
     /// frame with any that [`fails`](klipp_nodes::Decline::fails).
     pub declines: Vec<klipp_nodes::Decline>,
     pub stats: RenderStats,
+    /// Layers left out of the frame for being another size than it (see
+    /// `render_stack`): each is a bug upstream, named in the log.
+    pub wrong_size_layers: usize,
 }
 
 /// Where the GPU stack's display frame goes: `texture` an `Rgba8Unorm`
@@ -4302,6 +4305,29 @@ impl Renderer {
             };
             let Some(mut layer) = layer else { continue };
             if layer.opacity <= 0.001 {
+                continue;
+            }
+            // A layer of another size than the frame is left out, and said
+            // so, rather than laid: moved in as the composite, a reflection
+            // above it split the composite past its end and the engine
+            // thread died ("mid > len"); blended, it zipped short and drew
+            // part of the frame wrong.
+            let want = (width as usize) * (height as usize) * 4;
+            if layer.pixels.len() != want {
+                let what = match item {
+                    TrackItem::Clip(c) => {
+                        let kind = match &c.kind {
+                            ClipKind::Media { .. } => "media",
+                            ClipKind::Title(_) => "title",
+                            ClipKind::Generator(_) => "generator",
+                            _ => "nested or other",
+                        };
+                        format!("clip {} ({kind}, speed {})", c.id.0, c.speed)
+                    }
+                    TrackItem::Transition { a, b, .. } => format!("the transition from clip {} to {}", a.id.0, b.id.0),
+                };
+                tracing::warn!("{what} on track {i}: a layer of {} values for a {width}x{height} frame ({want}); left out of the frame", layer.pixels.len());
+                self.found.wrong_size_layers += 1;
                 continue;
             }
             let t = Instant::now();

@@ -295,3 +295,7 @@ path = "tests/a_cut_in_one_file_decodes_on.rs"
 [[test]]
 name = "opening_a_project_shows_its_frame"
 path = "tests/opening_a_project_shows_its_frame.rs"
+
+[[test]]
+name = "a_reflection_over_reversed_clips_regrades"
+path = "tests/a_reflection_over_reversed_clips_regrades.rs"

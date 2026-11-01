@@ -22,6 +22,24 @@ static MIX_STICKY: AtomicBool = AtomicBool::new(false);
 /// Mix thread panics given out, for a test to count its own.
 static MIX_PANICS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
+/// Frame renders still to panic (a test's), and the engine's, by its
+/// frame buffer's address (0: any engine's), so a test's panic is not
+/// taken by another test's engine.
+static PRESENT: AtomicUsize = AtomicUsize::new(0);
+static PRESENT_ENGINE: AtomicUsize = AtomicUsize::new(0);
+
+pub(crate) fn arm_present(engine: usize, frames: usize) {
+    PRESENT_ENGINE.store(engine, Ordering::Release);
+    PRESENT.store(frames, Ordering::Release);
+}
+
+/// Whether this frame's render, `engine`'s, is to panic, one fewer to go
+/// if so.
+pub(crate) fn present_panics(engine: usize) -> bool {
+    let armed = PRESENT_ENGINE.load(Ordering::Acquire);
+    (armed == 0 || armed == engine) && PRESENT.fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| n.checked_sub(1)).is_ok()
+}
+
 pub(crate) fn arm_decoder(path: Option<PathBuf>, every_time: bool) {
     let mut armed = DECODERS.lock().unwrap_or_else(|e| e.into_inner());
     armed.retain(|a| a.path != path);
@@ -91,6 +109,7 @@ impl super::PlaybackEngine {
                 klipp_jobs::ThreadJob::spawn("inject-panic", klipp_jobs::JobPriority::Background, klipp_jobs::ResourceClass::Cpu, |_, _| panic!("a job panicked (a test's)"));
             }
             "decoder" => arm_decoder(None, false),
+            "present" => arm_present(0, 1),
             "mix_thread" => arm_mix_thread(None),
             "mix" => crate::mix_thread::lock_mixer(&self.mixer).panic_in_mix = true,
             "effect" => {
@@ -114,6 +133,7 @@ impl super::PlaybackEngine {
 #[cfg(test)]
 mod tests {
     use std::sync::{Arc, Mutex, RwLock};
+    use std::sync::atomic::Ordering;
     use std::time::{Duration, Instant};
 
     use klipp_core::*;
@@ -284,6 +304,75 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         }
         assert!(crate::mix_thread::mix_threads_started() > started, "playing again makes it again");
+        let _ = cmd.send(AppCommand::Quit);
+        let _ = thread.join();
+        crate::video_decoder::wait_for_decode_threads(Duration::from_secs(10));
+    }
+
+    /// A frame whose render panics is left and the engine goes on: two
+    /// parked frames panic in their render, and the next park is drawn.
+    /// Before, a paused regrade that panicked (a layer of another size
+    /// under a reflection, "mid > len") ended the engine thread, and the
+    /// picture stayed frozen until the app was restarted.
+    #[test]
+    fn a_frame_whose_render_panics_is_left_and_the_engine_goes_on() {
+        let required = std::env::var_os("KLIPP_TEST_REQUIRE_GPU").is_some_and(|v| v == "1");
+        let Some(path) = source("present") else {
+            assert!(!required, "GPU required, and no ffmpeg to make the source");
+            eprintln!("skipping: no ffmpeg");
+            return;
+        };
+        let fps = Fps::new(25, 1);
+        let tc = |f: i64| RationalTime { value: f * fps.den as i64, rate: fps.num };
+        let media = MediaId::new();
+        let mut pool = MediaPool::default();
+        pool.add(MediaItem {
+            id: media,
+            path: path.clone(),
+            kind: klipp_media::MediaItemKind::File,
+            resolution: Resolution { width: 1920, height: 1080 },
+            ..MediaItem::new_synthetic_title(media, path.display().to_string(), tc(250), fps)
+        });
+        let mut seq = Sequence::new_default();
+        seq.fps = fps;
+        seq.resolution = Resolution { width: 1920, height: 1080 };
+        let mut track = Track::new("V1", TrackKind::Video);
+        track.clips = vec![Clip { kind: ClipKind::Media { media_id: media }, source_in: tc(0), source_out: tc(250), ..Clip::gap(tc(0), tc(250)) }];
+        seq.tracks = vec![track];
+        let (cmd, cmd_rx) = crossbeam_channel::unbounded();
+        let (ev_tx, ev_rx) = crossbeam_channel::unbounded::<AppEvent>();
+        std::thread::spawn(move || while ev_rx.recv().is_ok() {});
+        let fb = Arc::new(Mutex::new(FrameBuffer::new(1920, 1080)));
+        let engine = PlaybackEngine::new(
+            cmd_rx, ev_tx, Arc::clone(&fb), Arc::new(Mutex::new(FrameBuffer::new(1920, 1080))),
+            Arc::new(klipp_timeline::SharedSequence::new(seq)), Arc::new(RwLock::new(pool)), Box::new(|| {}),
+            Arc::new(Mutex::new(None)), Arc::new(Mutex::new(crate::perf::PerfRing::default())),
+        );
+        let thread = engine.spawn();
+        let generation = || fb.lock().unwrap().latest_generation();
+        let drawn_after = |g: u64, limit: Duration| {
+            let t0 = Instant::now();
+            while generation() == g && t0.elapsed() < limit {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            generation() != g
+        };
+        let g = generation();
+        cmd.send(AppCommand::SetPlayhead(tc(10))).unwrap();
+        assert!(drawn_after(g, Duration::from_secs(30)), "the first park is drawn");
+        std::thread::sleep(Duration::from_millis(300));
+
+        super::arm_present(Arc::as_ptr(&fb) as usize, 2);
+        cmd.send(AppCommand::SetPlayhead(tc(20))).unwrap();
+        let t0 = Instant::now();
+        while super::PRESENT.load(Ordering::Acquire) > 0 && t0.elapsed() < Duration::from_secs(10) {
+            cmd.send(AppCommand::SetPlayhead(tc(20 + t0.elapsed().as_millis() as i64 / 100 % 5))).unwrap();
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        assert_eq!(super::PRESENT.load(Ordering::Acquire), 0, "both frames' renders panicked");
+        let g = generation();
+        cmd.send(AppCommand::SetPlayhead(tc(40))).unwrap();
+        assert!(drawn_after(g, Duration::from_secs(30)), "the engine draws the next park after frames whose render panicked");
         let _ = cmd.send(AppCommand::Quit);
         let _ = thread.join();
         crate::video_decoder::wait_for_decode_threads(Duration::from_secs(10));

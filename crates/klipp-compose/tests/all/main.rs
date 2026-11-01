@@ -52,6 +52,8 @@ mod grade_compound_render;
 mod surface_shade_render;
 #[path = "../reflection_render.rs"]
 mod reflection_render;
+#[path = "../a_layer_of_another_size_is_left_out.rs"]
+mod a_layer_of_another_size_is_left_out;
 #[path = "../grade_cpu_gpu_parity.rs"]
 mod grade_cpu_gpu_parity;
 #[path = "../grade_keys_render.rs"]
