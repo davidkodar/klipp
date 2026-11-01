@@ -24,6 +24,9 @@ pub fn small_screen_note_now(state: &mut AppState, prefs: &mut crate::prefs::App
     true
 }
 
+/// The small-screen note's area, whose top a toast keeps above.
+pub const SMALL_SCREEN_NOTE_ID: &str = "klipp_small_screen_note";
+
 /// The note that Auto made the interface smaller for a small window
 /// (#2944), at the foot of the editor while `state.small_screen_note` is
 /// set: the size chosen and a way to change it, there and then, or to
@@ -33,7 +36,7 @@ pub fn show_small_screen_note(ctx: &egui::Context, state: &mut AppState, theme: 
     let screen = ctx.screen_rect();
     let open_id = egui::Id::new("klipp_small_screen_sizes");
     let mut sizes_open = ctx.data(|d| d.get_temp::<bool>(open_id)).unwrap_or(false);
-    egui::Area::new(egui::Id::new("klipp_small_screen_note"))
+    egui::Area::new(egui::Id::new(SMALL_SCREEN_NOTE_ID))
         .order(egui::Order::Foreground)
         .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -(crate::theme::STATUSBAR_HEIGHT + 12.0)))
         .constrain_to(screen)
