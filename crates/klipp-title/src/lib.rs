@@ -1283,7 +1283,14 @@ impl TitleRenderer {
             let mut chunks: Vec<String> = Vec::new();
             let mut buffer = String::new();
             let mut chunk_count = 0usize;
-            for ch in resolved_text.chars() {
+            // Text with no spaces between words (Thai, Lao, Khmer,
+            // Burmese) splits before a word the dictionaries find (#3238).
+            let dictionary = klipp_linebreak::complex_breaks(&resolved_text);
+            for (at, ch) in resolved_text.char_indices() {
+                if chunk_count >= chunk_chars && chunks.len() + 1 < columns_n && dictionary.binary_search(&at).is_ok() {
+                    chunks.push(std::mem::take(&mut buffer));
+                    chunk_count = 0;
+                }
                 buffer.push(ch);
                 chunk_count += 1;
                 if chunk_count >= chunk_chars && ch.is_whitespace()
@@ -1585,7 +1592,7 @@ impl TitleRenderer {
             let last = |m: &Option<klipp_timeline::Motion>| match m.map(|m| m.stagger).unwrap_or_default() {
                 klipp_timeline::StaggerUnit::None => 0,
                 klipp_timeline::StaggerUnit::Line => tb.text.lines().count().max(1) - 1,
-                klipp_timeline::StaggerUnit::Word => tb.text.split_whitespace().count().max(1) - 1,
+                klipp_timeline::StaggerUnit::Word => word_count(&tb.text).max(1) - 1,
                 klipp_timeline::StaggerUnit::Char => tb.text.chars().filter(|c| !c.is_whitespace()).count().max(1) - 1,
             };
             let in_motion = [0, last(&posed_fx.motion.enter), last(&posed_fx.motion.exit)].into_iter().any(|unit| {
@@ -1640,7 +1647,7 @@ impl TitleRenderer {
             let enter_units=motion_units(glyphs,fx.motion.enter.map(|m|m.stagger).unwrap_or_default());
             let exit_units=motion_units(glyphs,fx.motion.exit.map(|m|m.stagger).unwrap_or_default());
             let parents:Vec<_>=glyphs.iter().map(|g|g.parent).collect();
-            let animated=self.gpu_motion.map(|(time,_)|klipp_core::title_motion::animator_poses(&fx.animators,&parents,font_px,time as f64)).unwrap_or_default();
+            let animated=self.gpu_motion.map(|(time,_)|klipp_core::title_motion::animator_poses_with(&fx.animators,&parents,&complex_word_starts(&parents),font_px,time as f64)).unwrap_or_default();
             // Each glyph drawn, for the spoken word's box (#2710), and each
             // glyph's pose, for a backing per line's boxes (#3237).
             let mut placed:Vec<(usize,[i32;4],f32)>=Vec::new();
@@ -2123,7 +2130,7 @@ impl TitleRenderer {
                 let enter_units=motion_units(glyphs,fx.motion.enter.map(|m|m.stagger).unwrap_or_default());
                 let exit_units=motion_units(glyphs,fx.motion.exit.map(|m|m.stagger).unwrap_or_default());
                 let parents:Vec<_>=glyphs.iter().map(|g|g.parent).collect();
-                let poses=klipp_core::title_motion::animator_poses(&fx.animators,&parents,tb.font_size*scale,time as f64);
+                let poses=klipp_core::title_motion::animator_poses_with(&fx.animators,&parents,&complex_word_starts(&parents),tb.font_size*scale,time as f64);
                 for i in 0..glyphs.len() {
                     let (enter,_)=fx.motion.progress(time,window,enter_units[i]);
                     let (_,exit)=fx.motion.progress(time,window,exit_units[i]);
@@ -2960,7 +2967,7 @@ impl TitleRenderer {
                 match m.stagger {
                     klipp_timeline::StaggerUnit::None => 0.0,
                     klipp_timeline::StaggerUnit::Line => text.lines().count().max(1) as f32,
-                    klipp_timeline::StaggerUnit::Word => text.split_whitespace().count().max(1) as f32,
+                    klipp_timeline::StaggerUnit::Word => word_count(text).max(1) as f32,
                     klipp_timeline::StaggerUnit::Char => text.chars().filter(|c| !c.is_whitespace()).count().max(1) as f32,
                 }
             };
@@ -5729,7 +5736,30 @@ pub const MAX_POSED_GLYPHS: usize = 256;
 /// Which unit each glyph belongs to for `unit`: the line, word or
 /// non-space character it is in, counted as `motion_units` counts them.
 pub fn units_of(parents: &[char], unit: klipp_timeline::StaggerUnit) -> Vec<usize> {
-    klipp_core::title_motion::units_of(parents, unit)
+    klipp_core::title_motion::units_of_with(parents, unit, &complex_word_starts(parents))
+}
+
+/// The glyphs, by their characters `parents` in order, at which a word
+/// begins inside Thai, Lao, Khmer or Burmese, which put no spaces between
+/// words (#3238): their word stagger, word animators and the word an
+/// animator backs go word by word, not the whole run as one word.
+pub(crate) fn complex_word_starts(parents: &[char]) -> Vec<usize> {
+    if !parents.iter().copied().any(klipp_linebreak::is_complex) {
+        return Vec::new();
+    }
+    let text: String = parents.iter().collect();
+    let mut glyph_at = std::collections::HashMap::with_capacity(parents.len());
+    let mut byte = 0;
+    for (i, c) in parents.iter().enumerate() {
+        glyph_at.entry(byte).or_insert(i);
+        byte += c.len_utf8();
+    }
+    klipp_linebreak::complex_breaks(&text).into_iter().filter_map(|b| glyph_at.get(&b).copied()).collect()
+}
+
+/// How many words `text` has, counted as [`units_of`] counts them.
+fn word_count(text: &str) -> usize {
+    klipp_linebreak::word_starts(text).len()
 }
 
 /// Every glyph's pose at `time_secs` for a staggered motion: the
@@ -5752,7 +5782,7 @@ fn glyph_poses(
     let rest = (1.0, 0.0, 0.0, 1.0, 0.0, false);
     let pad = units.pad as f32;
     // The animators' pose of each glyph, on top of the motion's (#1510).
-    let animated = klipp_core::title_motion::animator_poses(animators, &units.parents, font_px, time_secs as f64);
+    let animated = klipp_core::title_motion::animator_poses_with(animators, &units.parents, &complex_word_starts(&units.parents), font_px, time_secs as f64);
     units
         .boxes
         .iter()
@@ -7526,7 +7556,7 @@ fn rasterize_to_mask_motion(
     // The animators' pose of each glyph (#1510); a colour one fills
     // every glyph in its own posed colour.
     let parents: Vec<char> = glyphs.iter().map(|g| g.parent).collect();
-    let animated = klipp_core::title_motion::animator_poses(animators, &parents, base_font_px, time_secs as f64);
+    let animated = klipp_core::title_motion::animator_poses_with(animators, &parents, &complex_word_starts(&parents), base_font_px, time_secs as f64);
     let colours = animators.iter().any(|a| a.enabled && a.props.paints());
     // Each glyph drawn: its index, posed box in frame pixels and alpha,
     // for the spoken word's box (#2710).
@@ -7649,7 +7679,7 @@ fn rasterize_to_mask_motion(
 /// box, as a caption's spoken word is one word; drawn as the title's
 /// backing on both paths.
 pub(crate) fn word_box(parents: &[char], poses: &[klipp_core::title_motion::UnitPose], placed: &[(usize, [i32; 4], f32)], font_px: f32) -> Option<([i32; 4], [u8; 4])> {
-    let words = klipp_core::title_motion::units_of(parents, klipp_core::title_motion::StaggerUnit::Word);
+    let words = units_of(parents, klipp_core::title_motion::StaggerUnit::Word);
     let mut best: Option<(usize, [u8; 4], f32)> = None;
     for &(i, _, alpha) in placed {
         let Some((colour, mix)) = poses.get(i).and_then(|p| p.backing) else { continue };
@@ -13543,6 +13573,39 @@ mod fading_layers_tests {
 mod complex_justify_tests {
     use super::*;
     use shaping::{Face, LoadedFont, ShapedLayout};
+
+    /// #3238: Thai's words, which no space marks, are word units for a
+    /// staggered motion, a word animator and the word count: each known
+    /// word one unit, its letters together, as an English word is.
+    #[test]
+    fn thai_words_are_word_units() {
+        let words = ["ภาษา", "ไทย", "ง่าย", "นิด", "เดียว"];
+        let text = format!("{} Klipp", words.concat());
+        let parents: Vec<char> = text.chars().collect();
+        let units = units_of(&parents, klipp_timeline::StaggerUnit::Word);
+        let mut expected = Vec::new();
+        for (k, w) in words.iter().enumerate() {
+            expected.extend(std::iter::repeat_n(k, w.chars().count()));
+        }
+        expected.push(words.len() - 1); // the space stays with the word before
+        expected.extend(std::iter::repeat_n(words.len(), "Klipp".len()));
+        assert_eq!(units, expected, "each Thai word is one unit, then Klipp");
+        assert_eq!(word_count(&text), words.len() + 1);
+        // English alone is as before.
+        let latin: Vec<char> = "two words".chars().collect();
+        assert_eq!(units_of(&latin, klipp_timeline::StaggerUnit::Word), klipp_core::title_motion::units_of(&latin, klipp_timeline::StaggerUnit::Word));
+        // A word animator weighs the Thai words one by one: the first word
+        // fully, the last not at all.
+        let mut a = klipp_core::title_motion::Animator::default();
+        a.selector.unit = klipp_core::title_motion::SelectUnit::Word;
+        a.selector.start = 0.0;
+        a.selector.end = 1.0 / (words.len() + 1) as f32;
+        a.props.dy = 10.0;
+        let poses = klipp_core::title_motion::animator_poses_with(&[a], &parents, &complex_word_starts(&parents), 40.0, 0.0);
+        assert!(poses[0].dy.abs() > 0.0 && poses[3].dy.abs() > 0.0, "the first word moves: {:?}", &poses[..4]);
+        let last = words[..4].iter().map(|w| w.chars().count()).sum::<usize>();
+        assert!(poses[last].is_rest(), "the fifth word stays: {:?}", poses[last]);
+    }
 
     /// #3238: a justified line of Thai, which has no spaces, spreads to
     /// its box at its word boundaries; before, it had no gap to widen and

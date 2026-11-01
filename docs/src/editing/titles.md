@@ -92,7 +92,7 @@ A title layer's position, opacity, text colour, size, tracking and line spacing,
 - Vertical text set in columns, with vertical forms and sideways runs.
 - Superscript, subscript, underline and strikethrough as style runs on a selection.
 - Paragraphs justified, and text aligned within its box; line breaks chosen by shaped width, avoiding one-word last lines.
-- Thai, Lao, Khmer and Burmese, written without spaces between words, wrap and justify between words, found with dictionaries.
+- Thai, Lao, Khmer and Burmese, written without spaces between words, wrap, justify, split into columns and keep a paragraph's last words together between words, found with dictionaries; a motion or animator by word takes those words one by one.
 - A glyph a font lacks falls back to a font that has it; colour emoji are drawn.
 
 ## Fills, Blends and Masks

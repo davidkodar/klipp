@@ -1121,10 +1121,16 @@ impl Animator {
 /// glyphs whose characters are `parents` (in layout order), at a font of
 /// `font_px`: one per glyph. The one evaluation both render paths use.
 pub fn animator_poses(animators: &[Animator], parents: &[char], font_px: f32, time_secs: f64) -> Vec<UnitPose> {
+    animator_poses_with(animators, parents, &[], font_px, time_secs)
+}
+
+/// [`animator_poses`] with the glyphs that begin a word where no space
+/// marks it (see [`units_of_with`]).
+pub fn animator_poses_with(animators: &[Animator], parents: &[char], word_starts: &[usize], font_px: f32, time_secs: f64) -> Vec<UnitPose> {
     let mut poses = vec![UnitPose::default(); parents.len()];
     // Each glyph's weight under `selector`, by the unit it is in.
     let weigh = |selector: &RangeSelector| -> Vec<f32> {
-        let units = units_of(parents, selector.unit.stagger());
+        let units = units_of_with(parents, selector.unit.stagger(), word_starts);
         let n = units.iter().zip(parents).filter(|(_, c)| !c.is_whitespace()).map(|(u, _)| u + 1).max().unwrap_or(0);
         let weights = selector.weights(n, time_secs);
         units.iter().map(|&u| weights.get(u).copied().unwrap_or(0.0)).collect()
@@ -1148,10 +1154,18 @@ pub fn animator_poses(animators: &[Animator], parents: &[char], font_px: f32, ti
 /// Which unit each glyph belongs to for `unit`: the line, word or
 /// non-space character it is in, by its character in `parents`.
 pub fn units_of(parents: &[char], unit: StaggerUnit) -> Vec<usize> {
+    units_of_with(parents, unit, &[])
+}
+
+/// [`units_of`], a word also beginning at each glyph of `word_starts`
+/// (sorted): where Thai, Lao, Khmer or Burmese, which put no spaces
+/// between words, begin one (#3238). Found by the caller, which has the
+/// dictionaries; a word otherwise begins after a space.
+pub fn units_of_with(parents: &[char], unit: StaggerUnit, word_starts: &[usize]) -> Vec<usize> {
     let mut out = Vec::with_capacity(parents.len());
     let (mut line, mut word, mut ch) = (0usize, 0usize, 0usize);
     let mut in_word = false;
-    for &c in parents {
+    for (i, &c) in parents.iter().enumerate() {
         if c == '\n' {
             line += 1;
             in_word = false;
@@ -1160,7 +1174,7 @@ pub fn units_of(parents: &[char], unit: StaggerUnit) -> Vec<usize> {
         }
         if c.is_whitespace() {
             in_word = false;
-        } else if !in_word {
+        } else if !in_word || word_starts.binary_search(&i).is_ok() {
             in_word = true;
             word += 1;
         }
