@@ -2655,7 +2655,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
                  "sync": { "type": "string", "enum": ["timecode", "audio", "timecode_then_audio"] }
              }), vec!["media_ids"]),
         tool("klipp_alternatives",
-             "Auditions: takes in one clip slot, switched in place: list, create, add, remove, rename, switch, finalize, preview. Details: klipp_guide topic alternatives.",
+             "Auditions: takes in one clip slot, switched in place; action names what to do. Details: klipp_guide topic alternatives.",
              json!({
                  "action": { "type": "string", "enum": ["list", "create", "add", "remove", "rename", "switch", "finalize", "preview"] },
                  "clip_id": { "type": "string" },
