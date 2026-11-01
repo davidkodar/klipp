@@ -752,6 +752,49 @@ fn a_collected_copy_is_verified_on_its_own_paths() {
     }
 }
 
+/// A collected folder moved elsewhere, with the originals gone as on
+/// another machine, keeps its grades' files: a clip's LUT and matte and a
+/// Look's LUT are read from inside the folder where it now is, not from
+/// the place it was collected to.
+#[test]
+fn a_moved_collected_folder_keeps_its_grade_files() {
+    use klipp_nodes::{Node, NodeGraph, NodeId, NodeKind, NodeParams};
+    let (source_dir, outside, dest, moved) = (tmp_path("gp_src"), tmp_path("gp_outside"), tmp_path("gp_dst"), tmp_path("gp_moved"));
+    std::fs::create_dir_all(&source_dir).unwrap();
+    std::fs::create_dir_all(&outside).unwrap();
+    let (clip_lut, look_lut, mask) = (outside.join("clip.cube"), outside.join("look.cube"), outside.join("mask.png"));
+    for f in [&clip_lut, &look_lut, &mask] {
+        std::fs::write(f, b"grade file").unwrap();
+    }
+    let node = |kind, params| Node { id: NodeId::new_v4(), kind, label: String::new(), enabled: true, params, keyframes: Default::default(), output_link: None, input_links: Vec::new() };
+    let mut clip_graph = NodeGraph::default();
+    clip_graph.nodes.push(node(NodeKind::Lut3D, NodeParams { lut_path: Some(clip_lut.clone()), ..Default::default() }));
+    clip_graph.nodes.push(node(NodeKind::ExternalMatte, NodeParams { matte_image_path: Some(mask.clone()), ..Default::default() }));
+    let mut look_graph = NodeGraph::default();
+    look_graph.nodes.push(node(NodeKind::Lut3D, NodeParams { lut_path: Some(look_lut.clone()), ..Default::default() }));
+    let look = klipp_timeline::Look { id: uuid::Uuid::new_v4(), name: "Warm".into(), node_graph: look_graph };
+    let mut seq = Sequence::new_default();
+    let mut clip = klipp_timeline::Clip::gap(RationalTime::from_frames(0, 24), RationalTime::from_frames(24, 24));
+    clip.set_grade(clip_graph);
+    seq.tracks[0].clips.push(clip);
+    save_project_with_color(&source_dir, std::slice::from_ref(&seq), &MediaPool::new(), &ColorSettings::default(), None, None, "").unwrap();
+    let options = ConsolidateOptions { dest_dir: dest.clone(), include_proxies: false, include_skims: false, mode: Default::default(), looks: vec![look], fonts: Vec::new() };
+    consolidate_project(&source_dir, &MediaPool::new(), std::slice::from_ref(&seq), &ColorSettings::default(), options, None).unwrap();
+
+    std::fs::remove_dir_all(&outside).unwrap();
+    std::fs::rename(&dest, &moved).unwrap();
+    let (seqs, ..) = load_project(&moved).unwrap();
+    let files = |g: &NodeGraph| g.nodes.iter().flat_map(|n| [n.params.lut_path.clone(), n.params.matte_image_path.clone()]).flatten().collect::<Vec<_>>();
+    let mut read: Vec<PathBuf> = seqs.iter().flat_map(|s| s.all_clips()).flat_map(|c| files(c.own_grade())).collect();
+    read.extend(klipp_project::load_looks(&moved).iter().flat_map(|l| files(l.grade())));
+    assert_eq!(read.len(), 3, "{read:?}");
+    for p in &read {
+        assert!(p.starts_with(&moved) && p.is_file(), "{} isn't in the moved folder", p.display());
+    }
+    let _ = std::fs::remove_dir_all(&source_dir);
+    let _ = std::fs::remove_dir_all(&moved);
+}
+
 /// #3241: every file a title draws comes along, not only the first text's
 /// texture: a second text's texture and a picture layer's image; and the
 /// default input and viewing LUTs with the timeline's. The copy verifies

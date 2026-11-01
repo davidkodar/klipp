@@ -775,7 +775,7 @@ fn load_project_as(dir: &Path, form: crate::FileForm, strict: bool) -> Result<Lo
         seq.set_root_blends(root, &blends).map_err(|e| format!("This project's sequence {sid} can't keep its grade's mix: {e}"))?;
     }
 
-    // A collected project's grade files, stored relative to it (#3241).
+    // A collected project's grade files, stored relative to it.
     for seq in &mut sequences {
         seq.edit_each_grade(|g| crate::consolidate::resolve_collected_grade_files(g, dir));
     }

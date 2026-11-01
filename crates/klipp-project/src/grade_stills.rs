@@ -270,7 +270,7 @@ fn save_grade_stills_as(
 /// with a warning rather than failing the whole load.
 pub fn load_grade_stills(project_dir: &Path) -> Vec<GradeStillData> {
     let mut stills = load_grade_stills_as(project_dir, crate::FileForm::Revision2);
-    // A collected project's grade files, stored relative to it (#3241).
+    // A collected project's grade files, stored relative to it.
     for g in stills.iter_mut().filter_map(|s| s.grade.as_mut()) {
         crate::consolidate::resolve_collected_grade_files(g, project_dir);
     }

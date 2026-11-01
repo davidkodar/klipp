@@ -440,8 +440,8 @@ fn build_copy_plan(
         let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "grade_file".to_string());
         let dst = collision_safe_name(&name, &mut used_grade);
         items.push(CopyItem { src: path.clone(), dst_name: dst.clone(), subfolder: "grade" });
-        // Relative to the project, so the folder can move (#3241): opened,
-        // the project resolves it against where it is.
+        // Relative to the project, so the folder can move: opened, the
+        // project resolves it against where it is.
         node_file_new_paths.insert(path.clone(), Path::new("media").join("grade").join(&dst));
     }
 
@@ -477,11 +477,14 @@ pub(crate) fn node_files(g: &NodeGraph) -> Vec<&PathBuf> {
 }
 
 /// A grade's file path a collected project stores relative to itself,
-/// under its `media/` folder (#3241), resolved against `dir`; any other
-/// path, absolute or a library LUT's name, as it is.
+/// under its `media/grade/` folder, resolved against `dir`. The file is
+/// untrusted: only a path of plain names is, never one with `..` or a
+/// root that could lead out of the folder. Any other path, absolute or a
+/// library LUT's name, is left as it is.
 pub(crate) fn resolve_collected_grade_files(g: &mut NodeGraph, dir: &Path) {
     let fix = |p: &mut PathBuf| {
-        if p.is_relative() && p.starts_with("media") {
+        let plain = p.components().all(|c| matches!(c, std::path::Component::Normal(_)));
+        if plain && p.starts_with("media/grade") {
             *p = dir.join(&*p);
         }
     };
@@ -1328,5 +1331,25 @@ mod tests {
 
         std::fs::remove_dir_all(&src).ok();
         std::fs::remove_file(&zip_path).ok();
+    }
+}
+
+#[cfg(test)]
+mod collected_grade_file_tests {
+    use super::*;
+
+    /// A collected project's own grade file resolves into its folder; a
+    /// hostile one climbing out with `..`, one elsewhere in `media/`, an
+    /// absolute path and a library name are left as they are.
+    #[test]
+    fn only_a_plain_path_under_media_grade_resolves() {
+        let dir = Path::new("/projects/collected.klipp");
+        let mut g = NodeGraph::default();
+        for lut in ["media/grade/look.cube", "media/../../etc/passwd", "media/grade/../../../etc/passwd", "media/proxies/x.cube", "/abs/look.cube", "Rec709.cube"] {
+            g.nodes.push(klipp_nodes::Node { id: klipp_nodes::NodeId::new_v4(), kind: klipp_nodes::NodeKind::Lut3D, label: String::new(), enabled: true, params: klipp_nodes::NodeParams { lut_path: Some(lut.into()), ..Default::default() }, keyframes: Default::default(), output_link: None, input_links: Vec::new() });
+        }
+        resolve_collected_grade_files(&mut g, dir);
+        let got: Vec<String> = g.nodes.iter().filter_map(|n| n.params.lut_path.as_ref()).map(|p| p.to_string_lossy().into_owned()).collect();
+        assert_eq!(got, ["/projects/collected.klipp/media/grade/look.cube", "media/../../etc/passwd", "media/grade/../../../etc/passwd", "media/proxies/x.cube", "/abs/look.cube", "Rec709.cube"]);
     }
 }
