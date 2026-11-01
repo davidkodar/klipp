@@ -420,6 +420,10 @@ pub struct KlippApp {
     /// worked out for, so it is set once per change rather than every
     /// frame (and never fights a zoom made another way).
     ui_scale_applied: Option<(u32, u32, u32)>,
+    /// The window's size, and whether it is maximised, each counting once
+    /// it holds (`appearance::Settling`).
+    size_settling: appearance::Settling<(u32, u32)>,
+    maximized_settling: appearance::Settling<bool>,
     /// The files a filmstrip refinement pass is running for; see
     /// `AppCommand::RefineFilmstrip`.
     filmstrip_refining: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<MediaId>>>,
