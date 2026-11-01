@@ -1723,6 +1723,41 @@ fn faster_footage_plays_the_file_frame_the_export_shows() {
     assert!(worst <= 3, "the viewer shows another frame of the file than the export: {worst} levels");
 }
 
+/// #3289: parked one frame on, onto a timeline frame whose file frame
+/// began before it, the viewer shows the export's frame of the file. A
+/// 30 fps source in the 25 fps sequence: timeline frame 21 is 0.84 s, and
+/// the file's frame on show then began at 0.833 s. Parked first at 20,
+/// the decoder has decoded on past it, so the move to 21 is answered from
+/// its queue, which kept only frames from 0.84 s on and showed 0.867 s,
+/// a frame of the file late (7 levels on this source's red).
+#[test]
+fn a_park_one_frame_on_shows_the_file_frame_begun_before_it() {
+    let _decoders = decoders_at_speed();
+    if !ffmpeg_ok() {
+        eprintln!("skipping: no ffmpeg");
+        return;
+    }
+    let id = MediaId::new();
+    let files = HashMap::from([(id, rgb_source_at("thirty-step.mkv", (W, H), 30, "mod(N*7,200)+30", "90", "90"))]);
+    let mut seq = Sequence::new_default();
+    seq.fps = Fps::new(FPS as u32, 1);
+    seq.resolution = Resolution { width: W, height: H };
+    let mut v1 = Track::new("V1", TrackKind::Video);
+    v1.clips = vec![media_clip(id, 0, LEN, 0)];
+    seq.tracks = vec![v1];
+    let t = Timeline { seq, files, coded: HashMap::new() };
+    let out = exported(&t);
+    let viewer = Viewer::start(&t);
+    let mut worst = 0;
+    for (from, to) in [(20, 21), (16, 17), (6, 7)] {
+        let _ = viewer.frame_at(from);
+        // The decoder runs on past the parked frame before it pauses.
+        std::thread::sleep(Duration::from_millis(300));
+        worst = worst.max(compare(&format!("parked {from} then {to:3}"), &viewer.frame_at(to), &exported_frame(&out, to)));
+    }
+    assert!(worst <= 3, "parked one frame on, the viewer shows another frame of the file than the export: {worst} levels");
+}
+
 /// A lossless 10-bit PQ clip (BT.2020, ST 2084) at the sequence's size:
 /// luma ramping across the frame from 1 to about 2000 nits, a bright
 /// square in the middle for a glow to spread from, neutral chroma. Two

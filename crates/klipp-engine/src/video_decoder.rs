@@ -525,10 +525,19 @@ pub struct VideoDecoder {
 /// [`VideoDecoder::last_decoded_pts`] when there is no frame.
 const NO_PTS: u64 = u64::MAX;
 
-/// How far before a seek target a queued frame may lie and still be the
-/// frame for it: the rounding between a timeline time and a stream
+/// How far past a seek target a queued frame may lie and still be the
+/// frame at it: the rounding between a timeline time and a stream
 /// timestamp, well under any frame.
 const SEEK_PTS_SLACK: f64 = 1e-3;
+
+/// Whether a frame decoded towards a seek target is skipped: it is if
+/// it ends before the target, a whole file frame before it or more. The
+/// first frame kept is then the one on show at the target, however early
+/// it began (#3289): a fixed 50 ms skipped a 10 fps file's frame for the
+/// target, which began up to 100 ms before it, and the next was shown.
+fn skipped_before_seek(pts: f64, target: f64, source_fps: f64) -> bool {
+    pts + 1.0 / source_fps.max(1.0) <= target + SEEK_PTS_SLACK
+}
 
 fn publish_pts(slot: &std::sync::atomic::AtomicU64, pts: Option<f64>) {
     slot.store(pts.map_or(NO_PTS, f64::to_bits), std::sync::atomic::Ordering::Relaxed);
@@ -677,7 +686,7 @@ impl VideoDecoder {
         let mut queue = self.frame_queue.lock().unwrap_or_else(|e| e.into_inner());
         let (oldest, queued) = (queue.oldest_pts_secs(), queue.len());
         let decode_on = seek_is_just_ahead(last, oldest, secs);
-        let kept = if decode_on { queue.keep_from(secs - SEEK_PTS_SLACK, epoch) } else { queue.clear(); 0 };
+        let kept = if decode_on { queue.keep_from(secs + SEEK_PTS_SLACK, epoch) } else { queue.clear(); 0 };
         drop(queue);
         debug!(
             "VideoDecoder::seek {secs:.3}s: last decoded {last:?}, queued {queued} from {oldest:?} → {} (kept {kept}, epoch {epoch})",
@@ -1971,6 +1980,25 @@ fn hw_transfer_cap_dimensions(src_w: u32, src_h: u32) -> (u32, u32) {
 }
 
 #[cfg(test)]
+mod seek_skip_tests {
+    use super::skipped_before_seek;
+
+    /// #3289: decoding towards a target, a frame is skipped only once it
+    /// ends before the target, so the first kept is the one on show:
+    /// 10 fps frames for 0.84 s keep 0.8 s and skip 0.7 s; a 4 fps frame
+    /// 60 ms early, which a fixed 50 ms skipped, is kept; 30 fps frames
+    /// keep 0.833 s and skip 0.8 s; at the timeline's rate the frame at
+    /// the target is kept and the one a whole frame before it is not.
+    #[test]
+    fn the_frame_on_show_at_the_target_is_kept() {
+        assert!(skipped_before_seek(0.7, 0.84, 10.0) && !skipped_before_seek(0.8, 0.84, 10.0));
+        assert!(!skipped_before_seek(0.74, 0.80, 4.0), "a 4 fps frame 60 ms early is on show");
+        assert!(skipped_before_seek(24.0 / 30.0, 0.84, 30.0) && !skipped_before_seek(25.0 / 30.0, 0.84, 30.0));
+        assert!(!skipped_before_seek(0.84, 0.84, 25.0) && skipped_before_seek(0.80, 0.84, 25.0));
+    }
+}
+
+#[cfg(test)]
 mod straggler_tests {
     use super::*;
 
@@ -3021,7 +3049,7 @@ fn decode_thread_main(
                 // from its keyframe for every step. The requester kept
                 // the queued frames past the target; frames decoded
                 // since then are restamped here.
-                let kept = frame_queue.lock().unwrap_or_else(|e| e.into_inner()).keep_from(secs - SEEK_PTS_SLACK, epoch);
+                let kept = frame_queue.lock().unwrap_or_else(|e| e.into_inner()).keep_from(secs + SEEK_PTS_SLACK, epoch);
                 debug!("decode_thread: seek to {secs:.3}s by decoding on from {:.3}s, {kept} queued (epoch {epoch})", last_pts_secs.unwrap_or(0.0));
                 seek_target = Some(secs);
                 eof_sent = false;
@@ -3108,7 +3136,7 @@ fn decode_thread_main(
                     }
                     let (secs, decode_on) = still_seek(still, secs, decode_on, &mut still_at);
                     if decode_on {
-                        let kept = frame_queue.lock().unwrap_or_else(|e| e.into_inner()).keep_from(secs - SEEK_PTS_SLACK, epoch);
+                        let kept = frame_queue.lock().unwrap_or_else(|e| e.into_inner()).keep_from(secs + SEEK_PTS_SLACK, epoch);
                         debug!("decode_thread: seek to {secs:.3}s by decoding on, {kept} queued (epoch {epoch}) (in drain)");
                         seek_target = Some(secs);
                         eof_sent = false;
@@ -3167,7 +3195,7 @@ fn decode_thread_main(
             last_pts_secs = Some(pts_secs);
             publish_pts(&last_decoded_pts, last_pts_secs);
             if let Some(target) = seek_target {
-                if pts_secs < target - 0.05 {
+                if skipped_before_seek(pts_secs, target, source_fps) {
                     continue; // skip this frame, try next
                 }
                 seek_target = None;
