@@ -189,11 +189,12 @@ class PackageUpdateTests(unittest.TestCase):
         self.server.server_close()
         self.temp.cleanup()
 
-    def sums(self, digest, signed_by=None, comment=None):
+    def sums(self, digest, signed_by=None, comment=None, extra=""):
         """The release's sums for a package of `digest`, signed by the test's
-        key or `signed_by`, its trusted comment naming the version."""
+        key or `signed_by`, its trusted comment naming the version, with
+        `extra` lines."""
         sums = self.release / "SHA256SUMS"
-        sums.write_text(f"{digest}  {self.FILE}\nabc  klipp-0.1.0-rc.9-source.tar.gz\n")
+        sums.write_text(f"{digest}  {self.FILE}\nabc  klipp-0.1.0-rc.9-source.tar.gz\n{extra}")
         minisign_sign(signed_by or self.secret, sums, comment or f"klipp {self.VERSION}")
 
     def run_update(self, answer="y\n\n", version=None):
@@ -296,6 +297,31 @@ class PackageUpdateTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0, holds)
             self.assertEqual(calls, [], holds)
             self.assertIn(f'holds "{holds}"', result.stderr)
+        self.assert_nothing_left()
+
+    def test_each_arch_installs_its_own_package_from_the_sums(self):
+        # An aarch64 package as Arch Linux ARM writes it, beside the x86_64
+        # one: each machine takes its own, by name from the signed sums.
+        arm = "klipp-0.1.0rc.9-1-aarch64.pkg.tar.xz"
+        arm_package = b"an aarch64 package, pacman is stubbed"
+        (self.release / arm).write_bytes(arm_package)
+        self.sums(hashlib.sha256(self.package).hexdigest(), extra=f"{hashlib.sha256(arm_package).hexdigest()}  {arm}\n")
+        for arch, file in (("aarch64", arm), ("x86_64", self.FILE)):
+            self.env["KLIPP_UPDATE_TEST_ARCH"] = arch
+            result, calls = self.run_update()
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue(calls[3].endswith("/" + file), (arch, calls))
+        self.assert_nothing_left()
+
+    def test_an_arch_without_a_package_installs_nothing(self):
+        # A release with only the x86_64 package, as 0.2.0 was, on aarch64;
+        # and an arch no package is made for.
+        for arch, said in (("aarch64", "no checksum for the aarch64 package"), ("riscv64", "No Klipp package is published for riscv64")):
+            self.env["KLIPP_UPDATE_TEST_ARCH"] = arch
+            result, calls = self.run_update()
+            self.assertNotEqual(result.returncode, 0, arch)
+            self.assertEqual(calls, [], arch)
+            self.assertIn(said, result.stderr)
         self.assert_nothing_left()
 
     def test_a_release_without_the_package_fails_cleanly(self):
