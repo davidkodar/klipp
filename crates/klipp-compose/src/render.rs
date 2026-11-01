@@ -5398,6 +5398,15 @@ impl Renderer {
                 }
                 self.planned_nodes.insert(clip.id, nodes);
                 self.planned_blends = blends;
+                // Measured alone, the clip is its own picture (#2475), on
+                // the plan's route as on the CPU's: an effect drawn outside
+                // it stands in as an identity, its node showing the picture
+                // it is given.
+                if self.inspect.only == Some(clip.id) {
+                    for e in fx.iter_mut().filter(|e| klipp_effects::draws_outside_the_picture(e)) {
+                        *e = BuiltinEffect::Opacity { value: 1.0 };
+                    }
+                }
                 fx
             }
             Err(e) => {
