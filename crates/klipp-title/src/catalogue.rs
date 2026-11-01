@@ -165,6 +165,12 @@ pub(crate) fn fetched_one() {
 /// Fetch `family` into its folder under `root`: each file and its licence
 /// from its address, checked against its size and SHA-256 before it is
 /// kept, a file already there at its size left. Returns its folder.
+///
+/// A finished fetch is counted for the whole process ([`fetches`]), and
+/// every renderer in it drops what it has drawn: a test that finishes one
+/// belongs in a test binary of its own (`tests/catalogue_fetch_checks.rs`,
+/// `tests/fetched_face_redraw.rs`), or it makes the renderers of the tests
+/// beside it draw again (#3262).
 pub fn fetch_in(root: &Path, family: &CatalogueFamily, cancel: &AtomicBool) -> Result<PathBuf, String> {
     let dir = family.dir_in(root);
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
@@ -260,7 +266,6 @@ pub fn note_fonts_added() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::{Read, Write};
 
     /// The catalogue as shipped: every family named once, tagged, with its
     /// licence, every file by an address pinned to one commit, with a size
@@ -378,60 +383,9 @@ mod tests {
         }
     }
 
-    /// Serves `body` once per request on a local port.
-    fn serve(body: Vec<u8>, requests: usize) -> u16 {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = listener.local_addr().unwrap().port();
-        std::thread::spawn(move || {
-            for _ in 0..requests {
-                let Ok((mut s, _)) = listener.accept() else { break };
-                let _ = s.read(&mut [0u8; 4096]);
-                let _ = s.write_all(format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).as_bytes());
-                let _ = s.write_all(&body);
-            }
-        });
-        port
-    }
-
     fn sha(bytes: &[u8]) -> String {
         use sha2::Digest;
         hex::encode(sha2::Sha256::digest(bytes))
-    }
-
-    /// A fetch keeps a file only when its hash is the catalogue's, the
-    /// licence beside the font; a file that does not match is refused and
-    /// nothing is kept.
-    #[test]
-    fn a_fetch_checks_every_file_and_keeps_its_licence() {
-        let font = crate::bundled::BUNDLED[0].bytes.to_vec();
-        let licence = b"SIL Open Font License 1.1".to_vec();
-        let family = |font_url: String, licence_url: String, font_sha: String| CatalogueFamily {
-            name: "Test Face".into(),
-            style: vec!["sans".into()],
-            mood: vec!["test".into()],
-            scripts: vec!["latin".into()],
-            licence: "OFL-1.1".into(),
-            licence_url,
-            licence_sha256: sha(&licence),
-            licence_size: licence.len() as u64,
-            files: vec![CatalogueFile { name: "TestFace.ttf".into(), url: font_url, sha256: font_sha, size: font.len() as u64 }],
-        };
-        let root = std::env::temp_dir().join(format!("klipp-font-fetch-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        let (fp, lp) = (serve(font.clone(), 1), serve(licence.clone(), 1));
-        let good = family(format!("http://127.0.0.1:{fp}/TestFace.ttf"), format!("http://127.0.0.1:{lp}/OFL.txt"), sha(&font));
-        assert!(!is_fetched_in(&root, &good));
-        let dir = fetch_in(&root, &good, &AtomicBool::new(false)).unwrap();
-        assert!(is_fetched_in(&root, &good));
-        assert_eq!(std::fs::read(dir.join("TestFace.ttf")).unwrap(), font);
-        assert_eq!(std::fs::read(dir.join("OFL.txt")).unwrap(), licence, "the licence beside it");
-
-        let other = root.join("other");
-        let (fp, lp) = (serve(font.clone(), 1), serve(licence.clone(), 1));
-        let bad = family(format!("http://127.0.0.1:{fp}/TestFace.ttf"), format!("http://127.0.0.1:{lp}/OFL.txt"), "0".repeat(64));
-        assert!(fetch_in(&other, &bad, &AtomicBool::new(false)).is_err(), "a file that does not match is refused");
-        assert!(!is_fetched_in(&other, &bad) && !bad.dir_in(&other).join("TestFace.ttf").exists(), "and not kept");
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// A title set in a fetched catalogue family is drawn in it: the
