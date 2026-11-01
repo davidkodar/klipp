@@ -2367,3 +2367,46 @@ fn an_inspected_log_clip_draws_as_it_does_uninspected() {
         }
     }
 }
+
+/// #3328: a scene-referred clip's display step previews in the node
+/// editor: the picture's scene-to-display node is the step its run
+/// splices before the output, on the GPU and the CPU, and the preview is
+/// the clip's displayed picture, not its scene light. A clip it doesn't
+/// run on (SDR) says so.
+#[test]
+fn the_display_step_previews_where_it_runs() {
+    use klipp_graph_format::path::{NodePath, Root};
+    let log = media(0.0, 2.0);
+    let sdr = media(0.0, 2.0);
+    for (label, c, scene) in [("S-Log3", log.clone(), true), ("SDR", sdr.clone(), false)] {
+        let seq = sequence(vec![vec![c.clone()]]);
+        let clip = seq.tracks[0].clips[0].clone();
+        let picture = clip.picture_v2().unwrap();
+        let Some(step) = picture.picture.graph.nodes.iter().find(|n| n.type_id.as_str() == klipp_graph_format::lifted::types::SCENE_TO_DISPLAY) else {
+            panic!("{label}: no scene-to-display node in the picture");
+        };
+        let at = klipp_compose::InspectAt::out(NodePath::new(Root::Clip { clip: clip.id.0 }, [step.id]));
+        for gpu in [false, true] {
+            let mut src = if scene { Flat::default().slog3(&c, 420) } else { Flat::default() };
+            let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
+            r.set_gpu_enabled(gpu);
+            let thumbs = [at.clone()].into_iter().collect();
+            let (shown, found) = r.render_inspected(&seq, tc(1.0), W, H, &mut src, RenderOptions::default(), Inspect { clip: Some(clip.id), only: Some(clip.id), thumbs: Some(thumbs), ..Default::default() });
+            let mut again = if scene { Flat::default().slog3(&c, 420) } else { Flat::default() };
+            let plain = r.render(&seq, tc(1.0), W, H, &mut again, RenderOptions::default());
+            let worst = shown.iter().zip(&plain).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
+            assert!(worst <= 1e-3, "{label} gpu {gpu}: the inspected frame differs from the plain one by {worst}");
+            let why = found.unavailable.iter().find(|(a, _)| *a == at).map(|(_, w)| w.clone());
+            match (scene, found.thumbs.get(&at)) {
+                (true, Some(t)) => {
+                    assert_eq!(t.len(), 192 * 108 * 4, "{label} gpu {gpu}: a whole preview");
+                    // The displayed grey, as the viewer shows it.
+                    let want = (klipp_color::hdr::hdr_display_tonemap(0.18, klipp_color::hdr::LOG_DISPLAY_EXPOSURE).powf(1.0 / 2.2) * 255.0) as i32;
+                    assert!((t[0] as i32 - want).abs() <= 12, "{label} gpu {gpu}: {} against about {want}", t[0]);
+                }
+                (false, None) => assert!(why.as_deref().is_some_and(|w| w.contains("doesn't run")), "{label} gpu {gpu}: {why:?} all {:?}", found.unavailable),
+                (s, t) => panic!("{label} gpu {gpu}: scene {s}, preview {:?}, {why:?}", t.map(|t| t[0])),
+            }
+        }
+    }
+}
