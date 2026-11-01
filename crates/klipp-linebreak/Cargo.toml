@@ -7,3 +7,7 @@ license = "MIT OR Apache-2.0 OR Zlib"
 description = "fontdue 0.9.3's Unicode line-break opportunities, unchanged, so title text can be broken by shaped widths at exactly the places fontdue breaks it"
 
 [dependencies]
+# Word boundaries inside Thai, Lao, Khmer and Burmese text, which puts no
+# spaces between words (#3238): ICU4X's dictionary segmenter with its
+# bundled dictionaries, no LSTM models. Unicode-3.0.
+icu_segmenter = { version = "=2.3.0", default-features = false, features = ["compiled_data"] }
