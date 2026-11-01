@@ -739,7 +739,7 @@ exist until the plan runs.
   above them, or right of a vertical column). Runs may not overlap; words the title lacks are refused.
   Animators move part of the text unit by unit, over the entrance and
   exit: `animators` is a list (in place of any the text had, `[]`
-  clears them), each a `preset` (`wave`, `random_fade_in`, `spin_in`)
+  clears them), each a `preset` (`wave`, `random_fade_in`, `spin_in`, `pop_in_words`)
   with any field over it, or the fields alone. What it picks: `unit`
   (char, word, line), `start` and `end` (0 to 1, fractions of the
   units) moved by `offset` (-1 to 1), each keyed by `start_keys`,
@@ -884,6 +884,11 @@ exist until the plan runs.
   Terminal Card is one: a command typed onto a floating dark card, its
   `command_text`, `accent` colour, `typing_speed`, `entry_direction`
   (left or right) and `float_amount` its parameters.
+  Glow Caps is another: heavy capitals in Montserrat (fetched on first
+  use) with a soft glow of their colour, the words popping in one after
+  another; `headline`, `colour` (its words and glow), `glow` (0 none to
+  1 full) and `pace` (0 quick to 1 slow) its parameters. For captions in
+  that look, use the captions op's `look: glow_caps`.
   A built-in is laid out for the sequence's frame: on 9:16 a lower
   third or caption sits above the bottom fifth and clear of the right
   edge's buttons, a corner mark goes to the top, and a centred opener
