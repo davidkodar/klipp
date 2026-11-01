@@ -97,7 +97,7 @@ mod routing_tests {
         // with the brand kit's seven, 150 with generators and delivery
         // templates (#3095), 152 with alternatives (#3209), 154 with
         // spelling (#3236), 156 with render_status and
-        // set_background_render (#3212).
-        assert_eq!(routed_all.len(), 156);
+        // set_background_render (#3212), 157 with preview_takes (#3209).
+        assert_eq!(routed_all.len(), 157);
     }
 }

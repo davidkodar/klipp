@@ -5137,3 +5137,51 @@ fn spelling_lists_and_an_ignored_word_goes_on_the_brief() {
         assert!(reply["error"].as_str().is_some_and(|e| e.contains(why)), "{req}: {reply}");
     }
 }
+
+/// #3209 PR 3: while a take is previewed in its slot, a read stays on it
+/// and says so (`previewing`); an export ends it first and writes the
+/// document, never the take; a save, and any write, ends it first too.
+#[test]
+fn a_take_preview_gives_way_to_an_export_and_a_save() {
+    let mut h = harness();
+    {
+        let mut seq = h.sequence.write().unwrap();
+        let mut track = klipp_timeline::Track::new("Text 1", klipp_timeline::TrackKind::Text);
+        let (zero, two) = (klipp_core::Timecode::from_secs_f64(0.0, 24), klipp_core::Timecode::from_secs_f64(2.0, 24));
+        let td = klipp_timeline::TitleData::single_text(klipp_timeline::TextBox { text: "Opening".into(), ..Default::default() });
+        track.clips.push(klipp_timeline::Clip { kind: klipp_timeline::ClipKind::Title(td), ..klipp_timeline::Clip::gap(zero, two) });
+        seq.tracks.push(track);
+    }
+    let document_clips = h.sequence.read().unwrap().tracks.iter().flat_map(|t| &t.clips).filter(|c| !c.kind.is_gap()).count();
+    assert!(document_clips > 0, "the document has clips");
+    let what = klipp_timeline::StandInFor { clip: klipp_core::ClipId::new(), take: klipp_core::TakeId::new() };
+    // The take previewed: told apart from the document by having no clips.
+    let stand_in = |h: &Harness| {
+        let mut take = (*h.sequence.snapshot()).clone();
+        for t in &mut take.tracks {
+            t.clips.clear();
+        }
+        h.sequence.stand_in(take, what);
+    };
+    stand_in(&h);
+    let r = h.ok(json!({ "method": "status" }));
+    assert_eq!(r["previewing"]["take"], json!(what.take.to_string()), "a read says what it read: {r}");
+    assert_eq!(h.sequence.standing_in(), Some(what), "a read leaves it up");
+
+    let dir = std::env::temp_dir().join(format!("klipp-preview-export-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let r = h.ok(json!({ "method": "export_timeline", "path": dir.join("cut.edl") }));
+    assert_eq!(r["clips"], json!(document_clips), "the document's clips written, not the take's: {r}");
+    assert!(r.get("previewing").is_none(), "{r}");
+    assert_eq!(h.sequence.standing_in(), None, "an export ends it first");
+
+    stand_in(&h);
+    let _ = h.call(json!({ "method": "save_project", "path": dir.join("cut") }));
+    assert_eq!(h.sequence.standing_in(), None, "a save ends it first");
+    assert_eq!(h.sequence.snapshot().tracks.iter().flat_map(|t| &t.clips).filter(|c| !c.kind.is_gap()).count(), document_clips, "the document handed back");
+
+    stand_in(&h);
+    let _ = h.call(json!({ "method": "rename_sequence", "name": "Cut" }));
+    assert_eq!(h.sequence.standing_in(), None, "an edit ends it first");
+    let _ = std::fs::remove_dir_all(&dir);
+}

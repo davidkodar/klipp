@@ -1801,6 +1801,21 @@ pub enum ControlCommand {
     /// length, what it shows and what differs from the take in the slot.
     /// The edits to them are the `alternatives` op.
     Alternatives { clip_id: String },
+    /// Play an audition's takes in their slot (#3209), nothing in the
+    /// project changed: from `take` (name or id; the one in the slot when
+    /// left out), each in turn with `all`, else that one round and round;
+    /// `stop` ends the preview. While it plays, frame_at and screenshots
+    /// show it, and replies carry `previewing`; anything else ends it.
+    PreviewTakes {
+        #[serde(default)]
+        clip_id: Option<String>,
+        #[serde(default)]
+        take: Option<String>,
+        #[serde(default)]
+        all: bool,
+        #[serde(default)]
+        stop: bool,
+    },
     /// Sync pool items onto one clock and lay them out as a multicam at
     /// the playhead (seek first), each angle on tracks of its own: what
     /// Create Synced Multicam does. `sync` is "timecode", "audio" or

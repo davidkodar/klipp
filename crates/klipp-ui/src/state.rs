@@ -3120,6 +3120,8 @@ pub struct AppState {
     pub show_spelling_dialog: bool,
     /// The audition whose takes the picker shows (#3209).
     pub audition_picker: Option<ClipId>,
+    /// The audition's takes being played in its slot (#3209).
+    pub take_preview: Option<crate::auditions::TakePreview>,
     pub spelling_dialog: crate::panels::spelling_dialog::SpellingDialog,
     pub batch_rename_ids: Vec<MediaId>,
     pub batch_rename_mode: crate::app::BatchRenameMode,
@@ -5350,6 +5352,7 @@ impl Default for AppState {
             title_find_selected: None,
             show_spelling_dialog: false,
             audition_picker: None,
+            take_preview: None,
             spelling_dialog: Default::default(),
             batch_rename_ids: Vec::new(),
             batch_rename_mode: crate::app::BatchRenameMode::FindReplace,

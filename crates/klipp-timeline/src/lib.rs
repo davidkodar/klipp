@@ -110,7 +110,7 @@ pub mod track_automation;
 pub mod routing;
 pub use routing::{AuxBus, AuxSend};
 pub use surface::{PinFit, PinLoss, Surface, SurfaceKey, SurfacePin, TrackState};
-pub use shared::{SequenceRead, SequenceRevision, SequenceWrite, SharedSequence};
+pub use shared::{SequenceRead, SequenceRevision, SequenceWrite, SharedSequence, StandInFor};
 
 pub use klipp_core::title_motion::{Animator, AnimatorProps, RangeSelector, SelectOrder, SelectShape, SelectUnit, UnitPose, CrawlDirection, CubicBezier, EdgeFade, Easing, LoopGeometry, LoopPose, Motion, MotionKind, ScrollDirection, StaggerUnit, TitleLoop, TitleMotion};
 pub use klipp_core::layer_mask::LayerMaskKind;

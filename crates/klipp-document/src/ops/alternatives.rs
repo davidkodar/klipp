@@ -554,6 +554,21 @@ mod tests {
         assert_eq!(timeline(&seq), before, "the take in the slot stays as it was");
     }
 
+    /// #3209: the check notes an audition left with its takes, naming the
+    /// take that is exported; finalized, it is gone.
+    #[test]
+    fn the_check_notes_an_audition_left_with_its_takes() {
+        let (mut seq, pool, [a, ..]) = fixture();
+        let notes = |seq: &Sequence| crate::qc::check(seq, &pool, &crate::ops::NoTranscripts).findings.into_iter().filter(|f| f.rule == "audition").collect::<Vec<_>>();
+        assert!(notes(&seq).is_empty());
+        run(&mut seq, &pool, op(AlternativesAction::Create, a)).unwrap();
+        let found = notes(&seq);
+        assert_eq!(found.len(), 1);
+        assert!(found[0].severity == crate::qc::Severity::Note && found[0].what.contains("2 takes") && found[0].what.contains("Take 1"), "{}", found[0].what);
+        run(&mut seq, &pool, op(AlternativesAction::Finalize, a)).unwrap();
+        assert!(notes(&seq).is_empty());
+    }
+
     /// #3209: what renders, and so what exports, is the take in the slot,
     /// on a sequence of its own and inside a compound clip: a red card
     /// with a blue take draws red, and switched, blue.

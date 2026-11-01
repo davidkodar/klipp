@@ -322,6 +322,12 @@ fn serve_connection(stream: UnixStream, ctx: ControlContext) {
                 let key = req.idempotency_key;
                 let fingerprint = serde_json::to_value(&req.command).unwrap_or_default();
                 let graph_write = matches!(&req.command, ControlCommand::GraphOps { .. });
+                // A take previewed in its slot (#3209) gives way to anything
+                // but a read: the request then sees and changes the
+                // document, as a person's edit does.
+                if !keeps_preview(&req.command) && ctx.sequence.end_stand_in() {
+                    tracing::info!("audition preview ended by a control request");
+                }
                 let run = || match handle(&ctx, req.command, &mut None) {
                     Ok(v) if graph_write && v["accepted"] == false => Response::graph_refused(id, v),
                     Ok(v) => Response::ok(id, with_project_generation(&ctx, v)),
@@ -765,6 +771,32 @@ mod respond_local_tests {
 
 /// `collect` is `Some` inside a batch: writes are gathered there instead
 /// of being sent, so the batch goes to the UI whole or not at all.
+/// The requests a take previewed in its slot stays up through (#3209):
+/// reads of the timeline, the transport, and the picture. Anything else
+/// ends it first.
+fn keeps_preview(cmd: &ControlCommand) -> bool {
+    matches!(
+        cmd,
+        ControlCommand::Ping
+            | ControlCommand::OperationStatus { .. }
+            | ControlCommand::JobStatus { .. }
+            | ControlCommand::Status
+            | ControlCommand::ListClips { .. }
+            | ControlCommand::ListMedia
+            | ControlCommand::ListMarkers
+            | ControlCommand::Timeline { .. }
+            | ControlCommand::Brief
+            | ControlCommand::Alternatives { .. }
+            | ControlCommand::PreviewTakes { .. }
+            | ControlCommand::FrameAt { .. }
+            | ControlCommand::Screenshot { .. }
+            | ControlCommand::WindowScreenshot { .. }
+            | ControlCommand::Play
+            | ControlCommand::Pause
+            | ControlCommand::Seek { .. }
+    )
+}
+
 fn handle(
     ctx: &ControlContext,
     cmd: ControlCommand,
@@ -845,6 +877,7 @@ fn handle(
             | ControlCommand::UpdateMarker { .. }
             | ControlCommand::RemoveMarker { .. }
             | ControlCommand::Alternatives { .. }
+            | ControlCommand::PreviewTakes { .. }
         ) => requests::media::respond(ctx, cmd, collect),
         cmd @ (ControlCommand::NewProject { .. }
             | ControlCommand::ProjectTemplates { .. }

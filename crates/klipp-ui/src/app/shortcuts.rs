@@ -12,6 +12,25 @@ impl KlippApp {
         if self.state.stretch_offered && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::S)) {
             self.state.stretch_requested = true;
         }
+        // An audition's takes playing in their slot (#3209): ←/→ step
+        // through them, Enter puts the one playing in, Esc leaves; these
+        // keys are the preview's, not their bindings', while it runs.
+        if self.state.take_preview.is_some() && !ctx.wants_keyboard_input() {
+            let mut cmds = Vec::new();
+            for (key, cmd) in [
+                (egui::Key::ArrowLeft, AppCommand::StepTakePreview { by: -1 }),
+                (egui::Key::ArrowRight, AppCommand::StepTakePreview { by: 1 }),
+                (egui::Key::Enter, AppCommand::PickPreviewedTake),
+                (egui::Key::Escape, AppCommand::EndTakePreview),
+            ] {
+                if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, key)) {
+                    cmds.push(cmd);
+                }
+            }
+            if !cmds.is_empty() {
+                return cmds;
+            }
+        }
         // An editor layout's one command on a key is two Klipp actions
         // here: the one the selection does not mean sits this frame out
         // (#2934, `keybindings::resolved`).

@@ -443,6 +443,11 @@ pub(crate) fn with_project_generation(ctx: &ControlContext, mut v: serde_json::V
         let p = ctx.shared.project.lock().recovered();
         obj.insert("project_generation".into(), json!(p.generation));
         obj.insert("project_identity".into(), json!(p.identity));
+        // A take of an audition previewed in its slot (#3209): what this
+        // reply read is that take in place of the document's.
+        if let Some(what) = ctx.sequence.standing_in() {
+            obj.insert("previewing".into(), json!({ "clip": what.clip.0.to_string(), "take": what.take.to_string() }));
+        }
     }
     v
 }
