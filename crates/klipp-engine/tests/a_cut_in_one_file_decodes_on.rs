@@ -136,7 +136,7 @@ fn play(files: &[PathBuf], tracks: &[Vec<Shot>]) -> Pass {
         Arc::new(klipp_timeline::SharedSequence::new(seq)), Arc::new(RwLock::new(pool)), Box::new(|| {}),
         Arc::new(Mutex::new(None)), Arc::new(Mutex::new(klipp_engine::perf::PerfRing::default())),
     );
-    let thread = std::thread::spawn(move || engine.run());
+    let thread = engine.spawn();
     let g = common::generation(&fb);
     cmd.send(AppCommand::SetPlayhead(tc(0))).unwrap();
     common::wait_new(&fb, g, Duration::from_secs(10));

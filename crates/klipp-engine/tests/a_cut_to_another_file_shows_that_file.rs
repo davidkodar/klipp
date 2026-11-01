@@ -74,7 +74,7 @@ fn a_cut_to_another_file_shows_that_file_from_its_first_frame() {
         Arc::new(klipp_timeline::SharedSequence::new(seq)), Arc::new(RwLock::new(pool)), Box::new(|| {}),
         Arc::new(Mutex::new(None)), Arc::new(Mutex::new(klipp_engine::perf::PerfRing::default())),
     );
-    let thread = std::thread::spawn(move || engine.run());
+    let thread = engine.spawn();
 
     cmd.send(AppCommand::SetPlayhead(common::frame_tc(2, fps))).unwrap();
     // The parked frame waited for, not timed: a loaded machine is slower,

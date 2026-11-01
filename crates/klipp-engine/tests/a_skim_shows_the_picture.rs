@@ -46,7 +46,7 @@ struct Viewer {
     cmd: crossbeam_channel::Sender<AppCommand>,
     events: crossbeam_channel::Receiver<AppEvent>,
     fb: Arc<Mutex<FrameBuffer>>,
-    thread: Option<std::thread::JoinHandle<()>>,
+    thread: Option<klipp_engine::RunningEngine>,
 }
 
 impl Viewer {
@@ -59,7 +59,7 @@ impl Viewer {
             Arc::new(klipp_timeline::SharedSequence::new(seq)), Arc::new(RwLock::new(pool)), Box::new(|| {}),
             Arc::new(Mutex::new(None)), Arc::new(Mutex::new(klipp_engine::perf::PerfRing::default())),
         );
-        let thread = Some(std::thread::spawn(move || engine.run()));
+        let thread = Some(engine.spawn());
         cmd.send(AppCommand::Pause).unwrap();
         Self { cmd, events, fb, thread }
     }

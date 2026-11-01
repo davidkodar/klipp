@@ -12,7 +12,6 @@
 mod common;
 
 use std::sync::{Arc, Mutex, RwLock};
-use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use crossbeam_channel::Sender;
@@ -40,7 +39,7 @@ struct Running {
     cmd: Sender<AppCommand>,
     fb: Arc<Mutex<FrameBuffer>>,
     furthest: Arc<Mutex<f64>>,
-    thread: JoinHandle<()>,
+    thread: klipp_engine::RunningEngine,
 }
 
 /// A fresh engine on the strobe: nothing drawn yet, its GPU stack cold;
@@ -85,7 +84,7 @@ fn start(video: &std::path::Path, prewarm: bool) -> Running {
     );
     let mut engine = engine;
     engine.set_prewarm_empty_stack(prewarm);
-    let thread = std::thread::spawn(move || engine.run());
+    let thread = engine.spawn();
     Running { cmd, fb, furthest, thread }
 }
 

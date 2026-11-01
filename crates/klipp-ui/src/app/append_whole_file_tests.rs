@@ -50,7 +50,7 @@ fn probed(path: &Path) -> klipp_media::MediaItem {
         Arc::new(Mutex::new(None)),
         Arc::new(Mutex::new(klipp_engine::perf::PerfRing::default())),
     );
-    let thread = std::thread::spawn(move || engine.run());
+    let thread = engine.spawn();
     let media_id = MediaId::new();
     cmd.send(AppCommand::LoadMediaFile { path: path.to_path_buf(), media_id }).unwrap();
     let p = loop {

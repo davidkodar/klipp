@@ -104,7 +104,7 @@ fn the_document_comes_back_whole_after_a_take_stood_in() {
     let mut engine = engine;
     let foreground = klipp_jobs::ForegroundActivity::new();
     engine.set_foreground_activity(Arc::clone(&foreground));
-    let thread = std::thread::spawn(move || engine.run());
+    let thread = engine.spawn();
     let generation = || fb.lock().unwrap().latest_generation();
     let frame = || fb.lock().unwrap().latest_frame().0.to_vec();
     // A frame newer than `since`, settled: the generation still for a

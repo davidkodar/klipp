@@ -103,7 +103,7 @@ pub mod video_decoder;
 // Phase 4G move. Down-stream crates can also import directly from
 // `klipp_effects::composite::*`.
 pub use klipp_effects::composite::{composite_layers, CompositeLayer};
-pub use engine::{detect_rotation_from_path, engine_stage_name, generate_filmstrip_incremental, generate_filmstrip_range, FilmstripOutcome, generate_thumbnail, generate_thumbnail_at_size, generate_thumbnail_at_size_with_rotation, generate_thumbnail_non_black, generate_thumbnail_at_size_non_black, frames_shown_kept, frozen_counts, is_frame_black, seq_write_holder_name, seq_write_holder_set, ui_stage, EngineStage, PlaybackEngine, PlaybackState, SeqWriteHolder, SequentialFrameDecoder, ENGINE_STAGE, ENGINE_TICK, ENGINE_SHUTDOWN_COMPLETE, PREGRADE_DISPLAYS_MADE, SEQ_WRITE_HOLDER, UI_STAGE, UI_TICK, UI_WANTS_FRAMES};
+pub use engine::{detect_rotation_from_path, engine_stage_name, generate_filmstrip_incremental, generate_filmstrip_range, FilmstripOutcome, generate_thumbnail, generate_thumbnail_at_size, generate_thumbnail_at_size_with_rotation, generate_thumbnail_non_black, generate_thumbnail_at_size_non_black, frames_shown_kept, frozen_counts, is_frame_black, seq_write_holder_name, seq_write_holder_set, ui_stage, EngineStage, PlaybackEngine, PlaybackState, RunningEngine, SeqWriteHolder, SequentialFrameDecoder, ENGINE_STAGE, ENGINE_TICK, ENGINE_SHUTDOWN_COMPLETE, PREGRADE_DISPLAYS_MADE, SEQ_WRITE_HOLDER, UI_STAGE, UI_TICK, UI_WANTS_FRAMES};
 pub use frame::{CpuFrame, CpuFrameRef, Frame, FrameRef, GpuFrame, GpuFrameRef};
 pub use texture::{FrameBuffer, GpuOutputSnapshot, SharedFrameBuffer};
 pub use types::{realise_linear_from_gpu, realise_srgb_u8_from_gpu, AudioRingBuf, DecodedFrame, FrameQueue, SharedFrameQueue, CPU_READBACK_COUNT, CPU_READBACK_US};

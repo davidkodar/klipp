@@ -21,7 +21,7 @@ struct Engine {
     /// The engine's thread, joined when the test is done: left running,
     /// it was still freeing its GPU objects when the test binary exited
     /// and the driver was torn down under it, a SIGSEGV (#567).
-    thread: Option<std::thread::JoinHandle<()>>,
+    thread: Option<klipp_engine::RunningEngine>,
     /// Every playhead the engine reported, and when.
     moves: Arc<Mutex<Vec<(Instant, f64)>>>,
     /// When each PlaybackPaused came.
@@ -49,7 +49,7 @@ impl Engine {
             Arc::new(klipp_timeline::SharedSequence::new(seq)), Arc::new(RwLock::new(pool)), Box::new(|| {}),
             Arc::new(Mutex::new(None)), Arc::new(Mutex::new(klipp_engine::perf::PerfRing::default())),
         );
-        let thread = Some(std::thread::spawn(move || engine.run()));
+        let thread = Some(engine.spawn());
         Engine { cmd, thread, moves, paused }
     }
 

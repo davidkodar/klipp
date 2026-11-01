@@ -93,7 +93,7 @@ fn a_cut_on_another_track_never_takes_the_prerolled_shot() {
         Arc::new(klipp_timeline::SharedSequence::new(seq)), Arc::new(RwLock::new(pool)), Box::new(|| {}),
         Arc::new(Mutex::new(None)), Arc::new(Mutex::new(klipp_engine::perf::PerfRing::default())),
     );
-    let thread = std::thread::spawn(move || engine.run());
+    let thread = engine.spawn();
 
     cmd.send(AppCommand::SetPlayhead(tc(0.0))).unwrap();
     common::settle(&fb);

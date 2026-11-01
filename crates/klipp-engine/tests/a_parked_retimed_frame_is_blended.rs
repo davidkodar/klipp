@@ -81,7 +81,7 @@ fn parked(path: &std::path::Path, speed: f64, blend_mode: u32) -> Vec<u8> {
         Arc::new(klipp_timeline::SharedSequence::new(seq)), Arc::new(RwLock::new(pool)), Box::new(|| {}),
         Arc::new(Mutex::new(None)), Arc::new(Mutex::new(klipp_engine::perf::PerfRing::default())),
     );
-    let thread = std::thread::spawn(move || engine.run());
+    let thread = engine.spawn();
     let g = common::generation(&fb);
     cmd.send(AppCommand::SetPlayhead(tc(1.0))).unwrap();
     assert!(common::wait_new(&fb, g, Duration::from_secs(30)).is_some(), "no frame was drawn at 1 s");

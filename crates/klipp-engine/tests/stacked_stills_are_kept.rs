@@ -126,7 +126,7 @@ fn play(layers: u32, chain: Chain, frames: usize) -> Option<Vec<klipp_engine::pe
         Arc::new(klipp_timeline::SharedSequence::new(seq)), Arc::new(RwLock::new(pool)), Box::new(|| {}),
         Arc::new(Mutex::new(None)), Arc::clone(&ring),
     );
-    let thread = std::thread::spawn(move || engine.run());
+    let thread = engine.spawn();
     cmd.send(AppCommand::SetPlayhead(tc(30))).unwrap();
     common::settle(&fb);
     let parked = ring.lock().unwrap().iter_chronological().count();

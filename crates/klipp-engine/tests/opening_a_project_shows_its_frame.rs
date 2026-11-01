@@ -56,7 +56,7 @@ fn opens_onto_a_picture(src: &std::path::Path, size: (u32, u32), from: i64) {
         Arc::clone(&shared), Arc::clone(&pool_shared), Box::new(|| {}),
         Arc::new(Mutex::new(None)), Arc::new(Mutex::new(klipp_engine::perf::PerfRing::default())),
     );
-    let thread = std::thread::spawn(move || engine.run());
+    let thread = engine.spawn();
     std::thread::sleep(Duration::from_millis(300));
 
     for open in 0..2 {

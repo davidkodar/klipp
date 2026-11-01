@@ -1494,6 +1494,39 @@ pub fn seq_write_holder_name(v: u64) -> &'static str {
 /// 33 MB at 4K and the readout does not need one.
 pub(crate) const NIT_MAP_STEP: u32 = 4;
 
+/// The engine running on a thread of its own ([`PlaybackEngine::spawn`]),
+/// stopped and joined when let go, a panicking test's included: a thread
+/// left running past `main` drops its GPU resources and decoders while
+/// `exit()` tears the driver down, and the process dies (#3287).
+pub struct RunningEngine {
+    pub(crate) stop: Arc<std::sync::atomic::AtomicBool>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl RunningEngine {
+    /// Stop the engine, as Quit does, and wait for its thread, its
+    /// decoders' threads joined too.
+    pub fn join(mut self) -> std::thread::Result<()> {
+        self.stop_and_join()
+    }
+
+    /// Whether its thread has ended.
+    pub fn is_finished(&self) -> bool {
+        self.thread.as_ref().is_none_or(|t| t.is_finished())
+    }
+
+    fn stop_and_join(&mut self) -> std::thread::Result<()> {
+        self.stop.store(true, Ordering::Release);
+        self.thread.take().map_or(Ok(()), |t| t.join())
+    }
+}
+
+impl Drop for RunningEngine {
+    fn drop(&mut self) {
+        let _ = self.stop_and_join();
+    }
+}
+
 pub struct PlaybackEngine {
     cmd_rx: Receiver<AppCommand>,
     event_tx: Sender<AppEvent>,
@@ -2014,6 +2047,8 @@ pub struct PlaybackEngine {
     /// What the ruler's status was last worked out from: the sequence,
     /// the frames kept and their bytes, the costs' generation.
     status_inputs: Option<(klipp_timeline::SequenceRevision, usize, u64, u64)>,
+    /// Set by a [`RunningEngine`] let go: the loop ends as on Quit.
+    stop_requested: Arc<std::sync::atomic::AtomicBool>,
     /// The thread working the status out, started with the first ask.
     status_worker: Option<std::sync::mpsc::Sender<frames_job::StatusAsk>>,
     /// Current grade hash for the active clip (cached to avoid recomputing per frame).
@@ -3040,6 +3075,7 @@ impl PlaybackEngine {
             kept_present_ms: 0.0,
             status_inputs: None,
             status_worker: None,
+            stop_requested: Arc::default(),
             current_grade_hash: 0,
             current_grade_clip_id: None,
             current_graph_arc: None,
@@ -3183,11 +3219,24 @@ impl PlaybackEngine {
         self.renderer.executor().prewarm_gpu();
     }
 
+    /// Run on a thread of its own, stopped and joined when the handle is
+    /// let go: see [`RunningEngine`].
+    pub fn spawn(self) -> RunningEngine {
+        let stop = Arc::clone(&self.stop_requested);
+        RunningEngine { stop, thread: Some(std::thread::spawn(move || self.run())) }
+    }
+
     pub fn run(self) {
         // `run_inner` consumes `self`, so by the time it returns every
         // resource the engine owned — including its GPU pipelines — has
         // been dropped. Only then is it safe to tell the UI it may exit.
         self.run_inner();
+        // Its decoders' threads that were slow to stop, joined too: their
+        // converters hold GPU pipelines (#3287).
+        let left = crate::video_decoder::join_stragglers(Duration::from_secs(10));
+        if left > 0 {
+            warn!("Engine stopped with {left} decode thread(s) still finishing");
+        }
         ENGINE_SHUTDOWN_COMPLETE.store(true, Ordering::Release);
         info!("Engine thread stopped — teardown complete");
     }
@@ -3242,6 +3291,10 @@ impl PlaybackEngine {
                 Ok(cmd) => commands.push(cmd),
                 Err(crossbeam_channel::RecvTimeoutError::Timeout) => {}
                 Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
+            }
+            if self.stop_requested.load(Ordering::Acquire) {
+                info!("Engine thread shutting down: its owner let it go");
+                return;
             }
             // Idle time waiting for a command is not work; counting it made
             // every idle paused tick (a 16 ms timeout) log as "slow".

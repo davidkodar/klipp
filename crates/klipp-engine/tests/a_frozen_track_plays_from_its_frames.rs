@@ -146,7 +146,7 @@ fn play(seq: &Sequence, pool: &MediaPool, frozen: Option<(&std::path::Path, Trac
     );
     let _ = klipp_effects::gpu_context::GpuContext::shared();
     engine.prewarm_gpu();
-    let thread = std::thread::spawn(move || engine.run());
+    let thread = engine.spawn();
     if let Some((folder, track)) = frozen {
         cmd.send(AppCommand::SetFreezeFolder(Some(folder.to_path_buf()))).unwrap();
         cmd.send(AppCommand::SetFrozenTracks(vec![track])).unwrap();

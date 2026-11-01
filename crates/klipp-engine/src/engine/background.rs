@@ -25,6 +25,16 @@ pub(crate) struct Run {
     total: usize,
 }
 
+/// A run let go is stopped and its thread waited for, the frame in hand
+/// finished: an engine that has stopped leaves no job drawing (#3287).
+impl Drop for Run {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        self.job.cancel();
+        self.job.join();
+    }
+}
+
 /// Drawing ahead's state on the engine.
 pub(crate) struct Background {
     pub on: bool,
@@ -412,6 +422,36 @@ mod tests {
         e.kept_present_ms = 60.0;
         assert!(e.kept_cost_ms().is_some_and(|c| c >= 60.0), "the kept frames shown, or the reading thread where slower");
         assert_eq!(e.heavy_ticks(&seq), vec![tc(3).value], "only the frame dearer live than the 60 ms a kept one costs");
+    }
+
+    /// An engine on its own thread stops and is joined when its handle is
+    /// let go or joined, with no Quit sent (#3287): a test that fails
+    /// before its Quit leaves no engine running past its end.
+    #[test]
+    fn a_running_engine_let_go_stops_and_is_joined() {
+        // Its command sender held, as an owner's is: the loop runs on.
+        let live = || {
+            let (cmd, cmd_rx) = crossbeam_channel::unbounded();
+            let (ev_tx, _ev_rx) = crossbeam_channel::unbounded();
+            let fb = || Arc::new(Mutex::new(crate::texture::FrameBuffer::new(16, 16)));
+            let e = PlaybackEngine::new(
+                cmd_rx, ev_tx, fb(), fb(),
+                Arc::new(klipp_timeline::SharedSequence::new(Sequence::new_default())), Arc::new(RwLock::new(klipp_media::MediaPool::new())), Box::new(|| {}),
+                Arc::new(Mutex::new(None)), Arc::new(Mutex::new(crate::perf::PerfRing::default())),
+            );
+            (cmd, e.spawn())
+        };
+        let start = Instant::now();
+        let (_cmd, running) = live();
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(!running.is_finished(), "running until let go");
+        assert!(running.join().is_ok(), "joined, no Quit sent");
+        assert!(start.elapsed() < Duration::from_secs(5), "promptly");
+        let (_cmd, running) = live();
+        let stop = Arc::clone(&running.stop);
+        let started = Instant::now();
+        drop(running);
+        assert!(stop.load(Ordering::Acquire) && started.elapsed() < Duration::from_secs(5), "dropping it stopped it and waited");
     }
 
     /// A frame is cheap already with nothing on it, or with every track

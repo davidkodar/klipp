@@ -146,7 +146,7 @@ fn ask(p: Pick) -> Option<Result<[f32; 3], NodeSampleRefusal>> {
         Arc::new(klipp_timeline::SharedSequence::new(engine_copy)), Arc::new(RwLock::new(pool)), Box::new(|| {}),
         Arc::new(Mutex::new(None)), Arc::new(Mutex::new(klipp_engine::perf::PerfRing::default())),
     );
-    let thread = std::thread::spawn(move || engine.run());
+    let thread = engine.spawn();
     // The pick reads the parked frame, so it waits for that frame and for
     // the picture to settle, not for a time: a loaded machine took longer
     // than the 1.5 s this slept, and the pick found nothing to read (#1828).

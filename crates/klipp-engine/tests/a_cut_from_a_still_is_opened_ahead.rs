@@ -90,7 +90,7 @@ fn play(tracks: Vec<Track>, pool: MediaPool, fps: Fps) {
         Arc::new(klipp_timeline::SharedSequence::new(seq)), Arc::new(RwLock::new(pool)), Box::new(|| {}),
         Arc::new(Mutex::new(None)), Arc::new(Mutex::new(klipp_engine::perf::PerfRing::default())),
     );
-    let thread = std::thread::spawn(move || engine.run());
+    let thread = engine.spawn();
     cmd.send(AppCommand::SetPlayhead(common::frame_tc(5, fps))).unwrap();
     common::settle(&fb);
     *furthest.lock().unwrap() = 0.0;

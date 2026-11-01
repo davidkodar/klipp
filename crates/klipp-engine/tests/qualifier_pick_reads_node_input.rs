@@ -79,7 +79,7 @@ fn pick_after(graph: NodeGraph, node: NodeId, placed: bool, wait: Duration) -> O
         Arc::new(klipp_timeline::SharedSequence::new(seq)), Arc::new(RwLock::new(pool)), Box::new(|| {}),
         Arc::new(Mutex::new(None)), Arc::new(Mutex::new(klipp_engine::perf::PerfRing::default())),
     );
-    let thread = std::thread::spawn(move || engine.run());
+    let thread = engine.spawn();
     cmd.send(AppCommand::SetPlayhead(tc(20))).unwrap();
     // Parked, and the first composite's pipelines built (or not yet).
     std::thread::sleep(wait);

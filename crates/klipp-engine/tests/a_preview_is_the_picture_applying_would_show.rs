@@ -91,7 +91,7 @@ fn a_preview_is_drawn_as_applying_it_would_and_leaves_nothing_behind() {
         Arc::clone(&shared), Arc::new(RwLock::new(pool)), Box::new(|| {}),
         Arc::new(Mutex::new(None)), Arc::new(Mutex::new(klipp_engine::perf::PerfRing::default())),
     );
-    let thread = std::thread::spawn(move || engine.run());
+    let thread = engine.spawn();
     // The frame drawn after `send`, once settled.
     let frame = |send: &dyn Fn()| -> Vec<u8> {
         let g = common::generation(&fb);
@@ -182,7 +182,7 @@ fn a_preview_shows_within_a_frame_for_each_effect() {
         Arc::clone(&shared), Arc::new(RwLock::new(pool)), Box::new(|| {}),
         Arc::new(Mutex::new(None)), Arc::new(Mutex::new(klipp_engine::perf::PerfRing::default())),
     );
-    let thread = std::thread::spawn(move || engine.run());
+    let thread = engine.spawn();
     let g = common::generation(&fb);
     cmd.send(AppCommand::SetPlayhead(tc(1.0))).unwrap();
     assert!(common::wait_new(&fb, g, Duration::from_secs(30)).is_some(), "no frame was drawn");
@@ -291,7 +291,7 @@ fn a_transition_previewed_is_drawn_at_its_middle_as_applied() {
         Arc::clone(&shared), Arc::new(RwLock::new(pool)), Box::new(|| {}),
         Arc::new(Mutex::new(None)), Arc::new(Mutex::new(klipp_engine::perf::PerfRing::default())),
     );
-    let thread = std::thread::spawn(move || engine.run());
+    let thread = engine.spawn();
     // A skim finds no frame in its budget when the machine is busy (the
     // rest of the suite runs beside this) and draws nothing then, as the
     // app does: asked again until it draws, as a pointer resting does.
@@ -382,7 +382,7 @@ fn a_placed_generator_previewed_is_drawn_as_applied() {
         Arc::clone(&shared), Arc::new(RwLock::new(pool)), Box::new(|| {}),
         Arc::new(Mutex::new(None)), Arc::new(Mutex::new(klipp_engine::perf::PerfRing::default())),
     );
-    let thread = std::thread::spawn(move || engine.run());
+    let thread = engine.spawn();
     // A skim finds no frame in its budget on a busy machine and draws
     // nothing: asked again until it draws.
     let frame = |send: &dyn Fn()| -> Vec<u8> {

@@ -85,7 +85,7 @@ fn a_composited_skim_of_a_4k_clip_keeps_the_raw_skims_pace() {
         Arc::new(klipp_timeline::SharedSequence::new(seq)), Arc::new(RwLock::new(pool)), Box::new(|| {}),
         Arc::new(Mutex::new(None)), Arc::new(Mutex::new(klipp_engine::perf::PerfRing::default())),
     );
-    let thread = std::thread::spawn(move || engine.run());
+    let thread = engine.spawn();
     cmd.send(AppCommand::Pause).unwrap();
     let skim_at = |f: i64| -> bool {
         cmd.send(AppCommand::SkimTimeline { time: tc(f) }).unwrap();

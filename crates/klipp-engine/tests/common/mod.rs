@@ -150,7 +150,7 @@ pub struct Parked {
     pub fps: Fps,
     perf: Arc<Mutex<PerfRing>>,
     params: Arc<ArrayQueue<ParamChange>>,
-    thread: Option<std::thread::JoinHandle<()>>,
+    thread: Option<klipp_engine::RunningEngine>,
     pub clip_id: ClipId,
     pub source_node: NodeId,
     pub exposure_node: NodeId,
@@ -277,7 +277,7 @@ impl Parked {
         let foreground = klipp_jobs::ForegroundActivity::new();
         engine.set_foreground_activity(Arc::clone(&foreground));
         let params = engine.param_change_queue();
-        let thread = Some(std::thread::spawn(move || engine.run()));
+        let thread = Some(engine.spawn());
         let parked = Self { cmd, fb, playhead, fps, perf, params, thread, clip_id, source_node, exposure_node, foreground, sequence };
 
         parked.send(AppCommand::SetPlayhead(tc(10)));

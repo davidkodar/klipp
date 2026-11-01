@@ -736,7 +736,11 @@ impl VideoDecoder {
     pub fn stop_detached(&mut self) {
         self.stop_flag.store(true, std::sync::atomic::Ordering::Relaxed);
         let _ = self.decode_cmd_tx.send(DecodeCommand::Stop);
-        self.decode_thread.take();
+        // Not waited for, but kept to be joined before the process ends
+        // ([`join_stragglers`], #3287).
+        if let Some(thread) = self.decode_thread.take() {
+            keep_straggler(thread);
+        }
     }
 
     pub fn stop(&mut self) {
@@ -751,12 +755,54 @@ impl VideoDecoder {
                     return;
                 }
                 if start.elapsed() > Duration::from_millis(500) {
-                    warn!("decode_thread: join timed out, detaching");
-                    break;
+                    // Not waited for here, so whoever stops the decoder
+                    // isn't held up; kept to be joined before the process
+                    // ends ([`join_stragglers`]), or its GPU work would be
+                    // dropped in a driver already tearing down (#3287).
+                    warn!("decode_thread: join timed out, left to finish");
+                    keep_straggler(thread);
+                    return;
                 }
                 std::thread::sleep(Duration::from_millis(10));
             }
         }
+    }
+}
+
+/// Decode threads that outlived their decoder's stop (see
+/// [`VideoDecoder::stop`]), still finishing.
+static STRAGGLERS: std::sync::Mutex<Vec<JoinHandle<()>>> = std::sync::Mutex::new(Vec::new());
+/// Decode threads ever kept so, for tests.
+static STRAGGLERS_KEPT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn keep_straggler(thread: JoinHandle<()>) {
+    STRAGGLERS_KEPT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    STRAGGLERS.lock().unwrap_or_else(|e| e.into_inner()).push(thread);
+}
+
+/// Wait, up to `limit`, for the decode threads left finishing when their
+/// decoders stopped: the engine does at its end, so an engine that has
+/// stopped has let go of every GPU resource its decoders made. Those not
+/// done by then are kept. How many are left.
+pub fn join_stragglers(limit: Duration) -> usize {
+    join_from(&STRAGGLERS, limit)
+}
+
+fn join_from(list: &std::sync::Mutex<Vec<JoinHandle<()>>>, limit: Duration) -> usize {
+    let start = std::time::Instant::now();
+    loop {
+        let mut left = list.lock().unwrap_or_else(|e| e.into_inner());
+        let (done, waiting): (Vec<_>, Vec<_>) = std::mem::take(&mut *left).into_iter().partition(|t| t.is_finished());
+        *left = waiting;
+        let n = left.len();
+        drop(left);
+        for t in done {
+            let _ = t.join();
+        }
+        if n == 0 || start.elapsed() >= limit {
+            return n;
+        }
+        std::thread::sleep(Duration::from_millis(10));
     }
 }
 
@@ -1922,6 +1968,50 @@ fn max_playback_width() -> u32 {
 /// work is worse than no setting.
 fn hw_transfer_cap_dimensions(src_w: u32, src_h: u32) -> (u32, u32) {
     playback_dimensions(src_w, src_h, 0)
+}
+
+#[cfg(test)]
+mod straggler_tests {
+    use super::*;
+
+    /// A thread left finishing is waited for, up to the limit: joined when
+    /// it ends in time, left and counted when it doesn't (#3287). On a list
+    /// of its own: engines stopping in other tests join the process's.
+    #[test]
+    fn a_decode_thread_slow_to_stop_is_joined_before_the_end() {
+        let list = std::sync::Mutex::new(Vec::new());
+        let slow = || std::thread::spawn(|| std::thread::sleep(Duration::from_millis(300)));
+        list.lock().unwrap().push(slow());
+        let start = std::time::Instant::now();
+        assert_eq!(join_from(&list, Duration::from_secs(5)), 0, "joined in time");
+        assert!(start.elapsed() >= Duration::from_millis(250), "it waited for it");
+        list.lock().unwrap().push(slow());
+        assert_eq!(join_from(&list, Duration::from_millis(20)), 1, "not done in 20 ms: kept, counted");
+        assert_eq!(join_from(&list, Duration::from_secs(5)), 0, "and joined later");
+    }
+
+    /// A decoder stopped without waiting keeps its thread to be joined
+    /// before the end, and it is (#3287).
+    #[test]
+    fn a_decoder_stopped_without_waiting_is_joined_before_the_end() {
+        let path = std::env::temp_dir().join(format!("klipp-straggler-{}.mkv", std::process::id()));
+        let made = std::process::Command::new("ffmpeg")
+            .args(["-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=s=64x36:r=24:d=1", "-c:v", "ffv1"])
+            .arg(&path)
+            .status()
+            .is_ok_and(|s| s.success());
+        if !made {
+            eprintln!("skipping: no ffmpeg");
+            return;
+        }
+        let mut decoder = VideoDecoder::open(&path, 0).expect("opens");
+        let before = STRAGGLERS_KEPT.load(std::sync::atomic::Ordering::Relaxed);
+        decoder.stop_detached();
+        assert!(STRAGGLERS_KEPT.load(std::sync::atomic::Ordering::Relaxed) > before, "its thread kept, not forgotten");
+        drop(decoder);
+        assert_eq!(join_stragglers(Duration::from_secs(10)), 0, "and joined");
+        let _ = std::fs::remove_file(&path);
+    }
 }
 
 #[cfg(test)]

@@ -101,7 +101,7 @@ fn a_strobe_played_over_and_over_keeps_its_vram() {
         Arc::new(klipp_timeline::SharedSequence::new(seq)), Arc::new(RwLock::new(pool)), Box::new(|| {}),
         Arc::new(Mutex::new(None)), Arc::new(Mutex::new(klipp_engine::perf::PerfRing::default())),
     );
-    let thread = std::thread::spawn(move || engine.run());
+    let thread = engine.spawn();
     let opened_before = klipp_engine::engine::streams_opened();
     let end = (4 * PIECES - 2) as f64 / fps.as_f64();
     let mut settled: Vec<f64> = Vec::new();

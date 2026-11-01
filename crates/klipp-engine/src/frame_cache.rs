@@ -237,35 +237,39 @@ impl FrameRequest {
 /// progress is the share of frames gone through.
 pub fn spawn_frames<S: FrameSource + 'static>(req: FrameRequest, store: Arc<Mutex<CacheStore>>, source: impl FnOnce() -> S + Send + 'static, done: impl FnOnce(FramesTally) + Send + 'static) -> Arc<ThreadJob> {
     ThreadJob::spawn("Render frames ahead", JobPriority::Background, ResourceClass::GpuMixed, move |pause, progress| {
-        let mut src = source();
-        let mut renderer = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
-        renderer.set_gpu_enabled(true);
-        renderer.set_working_colorspace(req.working);
-        let mut tally = FramesTally::default();
-        let n = req.frames.len().max(1);
-        'frames: for (i, at) in req.frames.iter().enumerate() {
-            for size in &req.sizes {
-                pause.wait_while_paused();
-                if pause.is_cancelled() || req.stop.as_ref().is_some_and(|stop| stop()) {
-                    tally.cancelled = true;
-                    break 'frames;
-                }
-                match req.draw(&mut renderer, &store, *at, *size, &mut src) {
-                    FrameOutcome::Stored => tally.stored += 1,
-                    FrameOutcome::Current => tally.current += 1,
-                    FrameOutcome::Failed(why) => {
-                        tracing::warn!("frames ahead: at {:.3} s: {why}", at.to_secs_f64());
-                        tally.failed += 1;
-                    }
-                    FrameOutcome::Full => {
-                        tally.full = true;
+        // Told once its decoders and renderer are let go (#3287).
+        let tally = {
+            let mut src = source();
+            let mut renderer = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
+            renderer.set_gpu_enabled(true);
+            renderer.set_working_colorspace(req.working);
+            let mut tally = FramesTally::default();
+            let n = req.frames.len().max(1);
+            'frames: for (i, at) in req.frames.iter().enumerate() {
+                for size in &req.sizes {
+                    pause.wait_while_paused();
+                    if pause.is_cancelled() || req.stop.as_ref().is_some_and(|stop| stop()) {
+                        tally.cancelled = true;
                         break 'frames;
                     }
+                    match req.draw(&mut renderer, &store, *at, *size, &mut src) {
+                        FrameOutcome::Stored => tally.stored += 1,
+                        FrameOutcome::Current => tally.current += 1,
+                        FrameOutcome::Failed(why) => {
+                            tracing::warn!("frames ahead: at {:.3} s: {why}", at.to_secs_f64());
+                            tally.failed += 1;
+                        }
+                        FrameOutcome::Full => {
+                            tally.full = true;
+                            break 'frames;
+                        }
+                    }
                 }
+                tally.reached = i + 1;
+                progress.set((i + 1) as f32 / n as f32);
             }
-            tally.reached = i + 1;
-            progress.set((i + 1) as f32 / n as f32);
-        }
+            tally
+        };
         done(tally);
     })
 }
