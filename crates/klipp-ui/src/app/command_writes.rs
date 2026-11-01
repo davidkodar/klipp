@@ -940,6 +940,7 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::DeleteGradeStill { .. }
         | AppCommand::ApplyGradeFromStill { .. }
         | AppCommand::ApplyGradeFromLibrary { .. }
+        | AppCommand::ApplyGradeToShotPieces { .. }
         | AppCommand::AddAudioEffectKeyframe { .. }
         | AppCommand::RemoveAudioEffectKeyframe { .. }
         | AppCommand::MoveAudioEffectKeyframe { .. }

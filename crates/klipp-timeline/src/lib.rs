@@ -69,6 +69,7 @@ pub use node_labels::{carry_node_labels, grade_group_id, grade_node_labels, rema
 pub use grade_roots::{grade_node_for_run, lowered_grade};
 pub use grade_access::{Grade, GradeAccess, GradeSlot};
 mod render_gates;
+mod shot_pieces;
 pub use effect_slots::{EffectId, EffectList, EffectsState};
 pub use other_effect_slots::{OfxEffects, TrackEffectList};
 mod picture_reads;
