@@ -635,6 +635,10 @@ pub(super) fn media_drop_edits(
         Some(t) if t.locked => return Err("That track is locked"),
         Some(_) => {}
     }
+    // The first clip of an empty timeline starts it, wherever along it the
+    // clip was let go: a drop a little to the right put it at frame 6, and
+    // the export opened on six black frames.
+    let at = if seq.tracks.iter().all(|t| t.clips.iter().all(|c| c.kind.is_gap())) { klipp_core::Timecode { value: 0, rate: at.rate } } else { at };
     // The clip and its sound laid out on empty copies of the tracks, the
     // sound going to the track it is patched to, then pasted onto the
     // track it was dropped on.
@@ -767,6 +771,28 @@ mod media_drop_tests {
     fn span(seq: &Sequence, id: ClipId) -> (klipp_core::Timecode, klipp_core::Timecode) {
         let c = seq.all_clips().find(|c| c.id == id).expect("on the timeline");
         (c.timeline_in, c.timeline_out)
+    }
+
+    /// The first clip let go on an empty timeline starts at 0, with its
+    /// sound under it, wherever along the track it was let go; on a
+    /// timeline with a clip, a drop stays where it was let go.
+    #[test]
+    fn the_first_clip_dropped_on_an_empty_timeline_starts_it() {
+        let (full, _) = timeline();
+        let mut empty = full.clone();
+        for track in &mut empty.tracks {
+            track.clips.clear();
+        }
+        let vi = track_of(&empty, TrackKind::Video);
+        for mode in [PasteMode::Insert, PasteMode::Overwrite] {
+            let (edits, placed) = media_drop_edits(&empty, dropped(), vi, Some(None), t(3), mode, "Drop").expect("placed");
+            let after = run(&empty, &edits, true);
+            assert_eq!(span(&after, placed).0, t(0), "{mode:?}: at the start");
+            let sound = after.tracks[vi].find_clip(placed).unwrap().linked_clip_id.expect("its sound");
+            assert_eq!(span(&after, sound).0, t(0), "its sound under it");
+        }
+        let (edits, placed) = media_drop_edits(&full, dropped(), vi, Some(None), t(20), PasteMode::Overwrite, "Drop").expect("placed");
+        assert_eq!(span(&run(&full, &edits, true), placed).0, t(20), "a timeline with clips: where it was let go");
     }
 
     /// #2549: a clip let go on the cut between the first and second
