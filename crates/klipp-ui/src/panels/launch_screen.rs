@@ -226,10 +226,10 @@ impl TemplateEntry {
     /// project is edited or saved (#1864).
     fn create(&self, rate: Option<crate::panels::new_project_dialog::Rate>) -> AppCommand {
         match (&self.source, self.format()) {
-            (TemplateSource::User(path), _) => AppCommand::NewUntitledProject { fps_num: 0, fps_den: 0, width: 0, height: 0, template: Some(path.clone()), hdr: false },
+            (TemplateSource::User(path), _) => AppCommand::NewUntitledProject { fps_num: 0, fps_den: 0, width: 0, height: 0, template: Some(path.clone()), hdr: false, destination: None },
             (TemplateSource::BuiltIn(_), Some(f)) => {
                 let (fps_num, fps_den) = crate::panels::new_project_dialog::format_rate(f, rate).unwrap_or((0, 0));
-                AppCommand::NewUntitledProject { fps_num, fps_den, width: f.width, height: f.height, template: None, hdr: f.hdr }
+                AppCommand::NewUntitledProject { fps_num, fps_den, width: f.width, height: f.height, template: None, hdr: f.hdr, destination: f.destination.clone() }
             }
             (TemplateSource::BuiltIn(_), None) => AppCommand::NewProject,
         }
@@ -3014,11 +3014,14 @@ mod tests {
         let press = |screen: &mut LaunchScreen, at: egui::Pos2| click_with(&ctx, screen, &recent, Some(&folder), at, egui::PointerButton::Primary);
 
         let cmds = press(&mut screen, at(&shapes, "Vertical (social)"));
-        assert!(matches!(&cmds[..], [AppCommand::NewUntitledProject { width: 1080, height: 1920, fps_num: 30, fps_den: 1, template: None, hdr: false }]), "{cmds:?}");
+        assert!(matches!(&cmds[..], [AppCommand::NewUntitledProject { width: 1080, height: 1920, fps_num: 30, fps_den: 1, template: None, hdr: false, destination: None }]), "{cmds:?}");
         let cmds = press(&mut screen, at(&shapes, "HDR UHD (HLG / PQ)"));
         assert!(matches!(&cmds[..], [AppCommand::NewUntitledProject { width: 3840, height: 2160, fps_num: 25, fps_den: 1, hdr: true, .. }]), "{cmds:?}");
         let cmds = press(&mut screen, at(&shapes, "Weekly Series"));
         assert!(matches!(&cmds[..], [AppCommand::NewUntitledProject { template: Some(p), .. }] if p.parent() == Some(templates.as_path())), "{cmds:?}");
+        // #3307: a destination here carries its platform too.
+        let cmds = press(&mut screen, at(&shapes, "Podcast"));
+        assert!(matches!(&cmds[..], [AppCommand::NewUntitledProject { width: 1920, destination: Some(d), .. }] if d.loudness_lufs == Some(-16.0)), "{cmds:?}");
         assert_eq!(std::fs::read_dir(&folder).unwrap().count(), 0, "nothing is written");
 
         // HD's rate menu: 23.976 chosen, HD is made at it, and UHD, which

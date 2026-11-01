@@ -986,6 +986,10 @@ impl KlippApp {
         // 4c1. New Project dialog
         if self.state.show_new_project_dialog {
             self.new_project_dialog.show(ctx, &mut self.state.show_new_project_dialog, &self.theme, cmds);
+            if let Some(name) = self.new_project_dialog.made_from.take() {
+                self.prefs.general.last_project_format = Some(name);
+                self.prefs_dirty = true;
+            }
         }
         // Save Project as Template (#618): what it will keep, said up front.
         if let Some(mut dlg) = self.state.save_template_dialog.take() {
