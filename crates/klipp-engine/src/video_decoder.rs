@@ -775,7 +775,7 @@ static STRAGGLERS: std::sync::Mutex<Vec<JoinHandle<()>>> = std::sync::Mutex::new
 /// Decode threads ever kept so, for tests.
 static STRAGGLERS_KEPT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-fn keep_straggler(thread: JoinHandle<()>) {
+pub(crate) fn keep_straggler(thread: JoinHandle<()>) {
     STRAGGLERS_KEPT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     STRAGGLERS.lock().unwrap_or_else(|e| e.into_inner()).push(thread);
 }
