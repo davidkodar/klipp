@@ -1,0 +1,8 @@
+kind = "hdr_zones_preset"
+format_version = 1
+
+[[preset]]
+name = "Gentle shadow lift"
+description = "Opens the shadows a third of a stop and warms them a little."
+exposure = { shadow = 0.33 }
+tint = [{ zone = "shadow", hue = 30.0, amount = 0.1 }]

@@ -1,0 +1,15 @@
+kind = "project_formats"
+format_version = 1
+
+[[format]]
+name = "Studio 50p"
+width = 1920
+height = 1080
+rates = [[50, 1], [25, 1]]
+
+[[format]]
+name = "Vimeo Showcase"
+width = 3840
+height = 2160
+rates = [[24, 1]]
+destination = { platform = "Vimeo", loudness_lufs = -16.0 }

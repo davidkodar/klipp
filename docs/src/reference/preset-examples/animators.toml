@@ -1,0 +1,12 @@
+kind = "animator_preset"
+format_version = 1
+
+[[preset]]
+id = "rise_in"
+name = "Rise in"
+selector = { end = 0.2, shape = "Smooth" }
+props = { dy = 0.5, opacity = 0.0 }
+keys = [
+    { on = "offset", at = "start", value = -0.2 },
+    { on = "offset", at = "entrance", value = 1.0 },
+]

@@ -1,0 +1,8 @@
+kind = "audio_effect_preset"
+format_version = 1
+
+[[preset]]
+effect = "voice_isolation"
+name = "Background down 6 dB"
+description = "Lowers the background by 6 dB and leaves most of the room."
+params = { reduction = 6.0 }

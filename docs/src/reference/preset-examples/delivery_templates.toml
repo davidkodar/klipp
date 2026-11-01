@@ -1,0 +1,8 @@
+kind = "delivery_template"
+format_version = 1
+
+[[template]]
+name = "Client review 4:5"
+aspect = [4, 5]
+suffix = "review-4x5"
+preset = "00000000-0000-4000-a000-000000000001"

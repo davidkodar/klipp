@@ -1,0 +1,15 @@
+kind = "false_colour_palette"
+format_version = 1
+
+[[palette]]
+name = "Three bands"
+
+[[palette.stop]]
+luma = [0, 20]
+color = [0, 0, 255]
+label = "Too dark"
+
+[[palette.stop]]
+luma = [235, 255]
+color = [255, 0, 0]
+label = "Too bright"
