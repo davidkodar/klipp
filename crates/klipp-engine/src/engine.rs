@@ -6363,7 +6363,7 @@ impl PlaybackEngine {
                 // engine tick), allocating ~8 GB/s of RGBA for content that only needs to
                 // update at 24-30 Hz. When the frame hasn't changed, just update the playhead
                 // for smooth UI display and skip the expensive render work.
-                let current_frame = self.playhead.value;
+                let current_frame = self.playhead_frame();
                 if Some(current_frame) == self.last_synth_frame_rendered {
                     self.report_playhead();
                     (self.repaint_cb)();
@@ -7539,6 +7539,15 @@ impl PlaybackEngine {
     /// picture clip starting under it takes over as a seek there would;
     /// the end of the timeline stops; otherwise the frame is drawn once
     /// per new frame, whatever other tracks show there.
+    /// The sequence frame the playhead is in. Not `playhead.value`: that
+    /// counts the rate's ticks, and at 29.97 (30000 a second, 1001 a
+    /// frame) every engine tick was a new value: a reversed clip, drawn
+    /// on the clock, was drawn again about 140 times a second, and each
+    /// counted as a frame shown (#3221).
+    fn playhead_frame(&self) -> i64 {
+        self.playhead.rescale_to(self.fps.rate()).value.div_euclid(i64::from(self.fps.den.max(1)))
+    }
+
     fn tick_clock_only(&mut self, clock_secs: f64) {
         let secs = self.clip_timeline_start.to_secs_f64() + (clock_secs - self.clip_source_start).max(0.0);
         self.playhead = RationalTime::from_secs_f64(secs, self.fps.rate());
@@ -7607,7 +7616,7 @@ impl PlaybackEngine {
             }
             return;
         }
-        let frame = self.playhead.value;
+        let frame = self.playhead_frame();
         if Some(frame) != self.last_synth_frame_rendered {
             self.last_synth_frame_rendered = Some(frame);
             self.present_frame(None);

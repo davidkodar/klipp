@@ -459,6 +459,9 @@ pub enum DecodeCommand {
     /// the frames before the time too, as reading a source backward does
     /// (#3118).
     SeekFromKeyframe(f64, u64),
+    /// The frames the stream's reader holds besides the queue: the GPU
+    /// converters keep buffers for them too (#3221).
+    ReaderHolds(usize),
     Pause,
     Resume,
     Stop,
@@ -734,6 +737,14 @@ impl VideoDecoder {
 
     pub fn pause(&self) {
         let _ = self.decode_cmd_tx.send(DecodeCommand::Pause);
+    }
+
+    /// Say that the reader holds up to `frames` of this decoder's frames
+    /// besides its queue, as a reversed clip's window does: the frames'
+    /// GPU buffers are kept for it and handed out again, not made fresh
+    /// past the pool for every frame (#3221).
+    pub fn reader_holds(&self, frames: usize) {
+        let _ = self.decode_cmd_tx.send(DecodeCommand::ReaderHolds(frames));
     }
 
     /// Whether the decode thread ended with a panic (#3181): no frame
@@ -2984,6 +2995,8 @@ fn decode_thread_main(
     // We must drain frames before retrying.
     let mut pending_packet: Option<ffmpeg_next::Packet> = None;
     let mut received_frame = ffmpeg_next::frame::Video::empty();
+    // Frames the reader holds besides the queue (`DecodeCommand::ReaderHolds`).
+    let mut reader_holds = 0usize;
 
     loop {
         #[cfg(any(test, feature = "test-hooks"))]
@@ -2993,6 +3006,14 @@ fn decode_thread_main(
         if stop_flag.load(std::sync::atomic::Ordering::Relaxed) {
             debug!("decode_thread: stop flag set, exiting");
             return;
+        }
+        // Each pass, as the 10-bit converter is made on the first frame
+        // that needs it.
+        if let Some(c) = gpu_nv12.as_mut() {
+            c.keep_resident_for(reader_holds);
+        }
+        if let Some(c) = gpu_p010.as_mut() {
+            c.keep_resident_for(reader_holds);
         }
 
         // Drain the entire pending queue first, coalescing
@@ -3016,6 +3037,7 @@ fn decode_thread_main(
                 DecodeCommand::SeekFromKeyframe(secs, epoch) => {
                     latest_seek = Some((secs, epoch, false, true));
                 }
+                DecodeCommand::ReaderHolds(n) => reader_holds = n,
                 DecodeCommand::Pause => paused = true,
                 DecodeCommand::Resume => {
                     paused = false;
@@ -3118,6 +3140,7 @@ fn decode_thread_main(
                         DecodeCommand::SeekFromKeyframe(secs, epoch) => {
                             latest_inner_seek = Some((secs, epoch, false, true));
                         }
+                        DecodeCommand::ReaderHolds(n) => reader_holds = n,
                         DecodeCommand::Pause => { paused = true; inner_break = true; break; }
                         DecodeCommand::Resume => { paused = false; eof_sent = false; }
                         DecodeCommand::Stop => { inner_return = true; break; }

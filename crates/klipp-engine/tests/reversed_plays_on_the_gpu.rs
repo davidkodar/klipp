@@ -263,6 +263,35 @@ fn a_reversed_4k_long_gop_clip_plays_at_speed_on_the_gpu() {
     assert_eq!(fell, (0, 0, 0), "no picture fallbacks, engine readbacks or effect downloads while it played (picture, engine, effects)");
 }
 
+/// Reversed at 29.97, each timeline frame is drawn and counted once, and
+/// the window's frames are written into buffers kept for them (#3221).
+/// The clock-only path redrew on every new tick of the playhead's rate
+/// (1001 to a frame), about 140 presents a second that `presented_fps`
+/// counted as frames shown; and past the decoder's 24 kept buffers, each
+/// frame of the window was a fresh GPU allocation, 775 MB in a second.
+#[test]
+fn reversed_each_frame_is_shown_once_from_kept_buffers() {
+    let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(video) = ready() else { return };
+    let past_pool = || klipp_effects::gpu_memory::snapshot().made.iter().find(|(name, _, _)| *name == "decoded_past_pool").map_or(0, |m| m.2);
+    let r = start(&video, vec![clip_at(MediaId::new(), -1.0, 0.0, 8.0)]);
+    let g = common::generation(&r.fb);
+    r.cmd.send(AppCommand::SetPlayhead(tc(0.5))).unwrap();
+    common::wait_new(&r.fb, g, Duration::from_secs(20));
+    common::settle(&r.fb);
+    let before = past_pool();
+    r.cmd.send(AppCommand::Play).unwrap();
+    std::thread::sleep(Duration::from_secs(4));
+    let shown = r.fb.lock().unwrap().presented_fps(Instant::now(), Duration::from_secs(2));
+    let made = past_pool() - before;
+    r.cmd.send(AppCommand::Pause).unwrap();
+    stop(r);
+    eprintln!("reversed 4K: presented_fps {shown:?}, {made} buffers made past the pool");
+    let shown = shown.expect("frames shown while playing");
+    assert!(shown <= FPS.as_f64() * 1.1, "{shown:.1} frames shown a second at {:.2} fps", FPS.as_f64());
+    assert_eq!(made, 0, "decoded frames made past the pool while reversed played");
+}
+
 #[test]
 fn at_a_tenth_reversed_only_the_frames_due_are_made() {
     let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
