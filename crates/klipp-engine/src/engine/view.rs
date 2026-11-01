@@ -1230,6 +1230,33 @@ impl PlaybackEngine {
     /// paths could show, because the stack presents it without the
     /// readback and the UI upload they pay.
     pub(super) fn present_frame_with(&mut self, primary: Option<HeldFrame>, stack_only: bool) -> bool {
+        // A frame whose render panics is left, and the engine goes on: a
+        // layer of the wrong size under a reflection panicked here once,
+        // on a paused regrade, and the engine thread was gone, the app's
+        // picture frozen until it was restarted. Said the first time and
+        // every 300th after, as a frame that panics each time is drawn
+        // 60 times a second.
+        let mut shown = false;
+        #[cfg(any(test, feature = "test-hooks"))]
+        let engine = Arc::as_ptr(&self.frame_buffer) as usize;
+        let panic = crate::thread_guard::panic_of(|| {
+            #[cfg(any(test, feature = "test-hooks"))]
+            if super::inject::present_panics(engine) {
+                panic!("a frame's render panicked (a test's)");
+            }
+            shown = self.present_frame_unguarded(primary, stack_only);
+        });
+        if let Some(why) = panic {
+            self.present_panics += 1;
+            if self.present_panics % 300 == 1 {
+                tracing::error!("the frame at {:.3} s panicked in its render ({why}); left, the engine goes on ({} such frames)", self.playhead.to_secs_f64(), self.present_panics);
+            }
+            self.note_view(format!("the frame's render panicked: {why}"));
+        }
+        shown
+    }
+
+    fn present_frame_unguarded(&mut self, primary: Option<HeldFrame>, stack_only: bool) -> bool {
         // A preview up at a time of its own (#3210), parked: that time is
         // the frame, drawn as its skim, never the playhead's under it.
         if let Some(at) = self.preview_at.filter(|_| self.state != PlaybackState::Playing && !self.preview_declined) {
