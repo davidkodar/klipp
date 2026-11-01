@@ -751,3 +751,45 @@ fn a_collected_copy_is_verified_on_its_own_paths() {
         let _ = std::fs::remove_dir_all(d);
     }
 }
+
+/// #3241: every file a title draws comes along, not only the first text's
+/// texture: a second text's texture and a picture layer's image; and the
+/// default input and viewing LUTs with the timeline's. The copy verifies
+/// with each of them inside it.
+#[test]
+fn collect_brings_every_file_a_title_draws_and_every_lut() {
+    let source_dir = tmp_path("tf_src");
+    let outside = tmp_path("tf_outside");
+    let dest = tmp_path("tf_dst");
+    std::fs::create_dir_all(&source_dir).unwrap();
+    std::fs::create_dir_all(&outside).unwrap();
+    let (tex, img, view) = (outside.join("grain.png"), outside.join("logo.png"), outside.join("view.cube"));
+    for f in [&tex, &img, &view] {
+        std::fs::write(f, b"file").unwrap();
+    }
+    let text = |id: u32, texture: Option<&std::path::Path>| {
+        let mut content = serde_json::json!({ "text": "Hi", "font_size": 40.0, "font_name": "Inter", "font_style": "Regular", "color": [255, 255, 255, 255], "alignment": "Left" });
+        if let Some(t) = texture {
+            content["texture_fill"] = serde_json::json!({ "enabled": true, "source": { "File": t.to_str().unwrap() } });
+        }
+        serde_json::json!({ "id": id, "transform": { "center": { "x": 0.5, "y": 0.5 }, "size": { "x": 1.0, "y": 1.0 }, "rotation": 0.0, "anchor_norm": { "x": 0.5, "y": 0.5 } }, "content": { "TextBox": content } })
+    };
+    let mut image = text(2, None);
+    image["content"] = serde_json::json!({ "Image": { "path": img.to_str().unwrap() } });
+    let td: klipp_timeline::TitleData = serde_json::from_value(serde_json::json!({ "objects": [text(0, None), text(1, Some(&tex)), image], "next_object_id": 3 })).unwrap();
+    let mut seq = Sequence::new_default();
+    let mut clip = klipp_timeline::Clip::gap(RationalTime::from_frames(0, 24), RationalTime::from_frames(24, 24));
+    clip.kind = klipp_timeline::ClipKind::Title(td);
+    seq.tracks[0].clips.push(clip);
+    let colour = ColorSettings { viewing_lut: Some(view.clone()), ..Default::default() };
+    save_project_with_color(&source_dir, std::slice::from_ref(&seq), &MediaPool::new(), &colour, None, None, "").unwrap();
+    let options = ConsolidateOptions { dest_dir: dest.clone(), include_proxies: false, include_skims: false, mode: Default::default(), looks: Vec::new(), fonts: Vec::new() };
+    let result = consolidate_project(&source_dir, &MediaPool::new(), std::slice::from_ref(&seq), &colour, options, None).unwrap();
+    let manifest = result.verification.expect("checked");
+    assert!(manifest.verified(), "{:?}", manifest.failures());
+    let kinds: Vec<(&str, &str)> = manifest.resources.iter().map(|r| (r.kind.as_str(), r.path.as_str())).collect();
+    assert!(kinds.contains(&("title file", "media/textures/grain.png")) && kinds.contains(&("title file", "media/textures/logo.png")) && kinds.contains(&("lut", "media/luts/view.cube")), "{kinds:?}");
+    for d in [&source_dir, &outside, &dest] {
+        let _ = std::fs::remove_dir_all(d);
+    }
+}

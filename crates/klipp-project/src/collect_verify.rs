@@ -132,14 +132,16 @@ pub fn verify(dir: &Path) -> Result<Manifest, String> {
     }
     // What the sequences, the colour settings and the Looks read.
     let (sequences, _, colour, ..) = crate::load::load_project(&root)?;
-    if let Some(lut) = &colour.global_lut_path {
-        resources.push(resource(&root, "timeline".into(), "lut", lut));
+    for (lut, which) in [(&colour.global_lut_path, "timeline"), (&colour.default_input_lut, "default input"), (&colour.viewing_lut, "viewing")] {
+        if let Some(lut) = lut {
+            resources.push(resource(&root, which.into(), "lut", lut));
+        }
     }
     for seq in &sequences {
         for clip in seq.tracks.iter().flat_map(|t| &t.clips) {
             if let klipp_timeline::ClipKind::Title(td) = &clip.kind {
-                if let Some(tex) = td.texture_fill_path() {
-                    resources.push(resource(&root, clip.id.0.to_string(), "texture", Path::new(&tex)));
+                for file in crate::consolidate::title_files(td) {
+                    resources.push(resource(&root, clip.id.0.to_string(), "title file", Path::new(&file)));
                 }
             }
         }
