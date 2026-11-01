@@ -150,6 +150,8 @@ mod title_metal_gpu;
 mod title_contrast_protect;
 #[path = "../title_line_boxes_motion.rs"]
 mod title_line_boxes_motion;
+#[path = "../title_whole_box_motion.rs"]
+mod title_whole_box_motion;
 #[path = "../title_line_boxes.rs"]
 mod title_line_boxes;
 #[path = "../title_backing_box.rs"]
