@@ -112,6 +112,9 @@ pub(super) struct ExportDialogState {
     /// The export preferences say to overwrite a file already there
     /// without asking (`OverwriteMode::Always`); set as the dialog opens.
     pub(super) overwrite_without_asking: bool,
+    /// The output path last suggested, while it is not changed: it is
+    /// suggested again for the sequence the export is opened on.
+    pub(super) suggested_path: Option<String>,
     /// Range selection for export.
     /// - 0 = Full timeline
     /// - 1 = Marked in/out range
@@ -209,6 +212,7 @@ impl Default for ExportDialogState {
             audio_bitrate: 128,
             confirm_overwrite: false,
             overwrite_without_asking: false,
+            suggested_path: None,
             range_mode: 0,
             range_picked: false,
             form_export: false,
@@ -369,8 +373,11 @@ pub(super) fn export_progress(ui: &mut egui::Ui, job: &klipp_export::RenderJob, 
 /// Where an export goes when nothing names a file (#2941): the folder the
 /// preferences name while it is there, else the saved project's own folder,
 /// else the Videos folder (made at export when it is not there yet); named
-/// after the saved project, or, for one not saved yet, after the sequence.
-pub(super) fn default_export_path(prefs_dir: Option<&std::path::Path>, project: Option<&std::path::Path>, sequence: &str, ext: &str) -> PathBuf {
+/// after the saved project, or, for one not saved yet, after its first
+/// sequence. Another sequence of it, a version, adds its own name: a 9:16
+/// version exported after the main cut took the main cut's name, and its
+/// file would have gone over the main cut's.
+pub(super) fn default_export_path(prefs_dir: Option<&std::path::Path>, project: Option<&std::path::Path>, sequence: &str, version: Option<&str>, ext: &str) -> PathBuf {
     let saved = project.filter(|p| !crate::project_paths::is_untitled(Some(p)) && p.parent().is_some_and(|d| d.is_dir()));
     let dir = prefs_dir
         .filter(|d| d.is_dir())
@@ -382,7 +389,22 @@ pub(super) fn default_export_path(prefs_dir: Option<&std::path::Path>, project: 
         .map(|s| s.to_string_lossy().to_string())
         .filter(|s| !s.trim().is_empty())
         .unwrap_or_else(|| sanitise_filename(sequence));
+    let stem = match version {
+        // "9:16" reads as "9-16", not "9_16".
+        Some(v) => format!("{stem} {}", sanitise_filename(&v.replace(':', "-"))),
+        None => stem,
+    };
     dir.join(format!("{stem}.{ext}"))
+}
+
+/// What the form says under the output file when a file of that name is
+/// already there: Export asks before writing over it, unless the
+/// preferences say to write over without asking.
+pub(super) fn existing_file_note(path: &str, without_asking: bool) -> Option<&'static str> {
+    if path.trim().is_empty() || !std::path::Path::new(path).is_file() {
+        return None;
+    }
+    Some(if without_asking { "A file of this name is there, and will be written over." } else { "A file of this name is there: Export asks before writing over it." })
 }
 
 /// The user's Videos folder, where it is not set up yet as `~/Videos`.
@@ -1264,13 +1286,24 @@ impl KlippApp {
     /// start with an empty name (that wrote `.partial` into the working
     /// directory). Where `default_export_path` says (#2941).
     pub(super) fn prepare_export_defaults(&mut self) {
-        if self.export_dialog.output_path.trim().is_empty() {
-            let path = default_export_path(self.prefs.export.default_output_dir.as_deref(), self.state.project_path.as_deref(), &self.state.sequence().name, self.export_dialog.format.extension());
+        // Named again for the sequence open now while the name is still
+        // the one suggested: it followed the first sequence exported.
+        let stem = |p: &str| std::path::Path::new(p).with_extension("");
+        // The extension follows the format chosen; the name is the point.
+        let suggested = self.export_dialog.suggested_path.as_deref().is_some_and(|s| stem(s) == stem(&self.export_dialog.output_path));
+        let generate = self.export_dialog.output_path.trim().is_empty() || suggested;
+        if generate {
+            let first = self.state.sequences.first().map(|s| s.name.clone()).unwrap_or_default();
+            let version = (self.state.active_sequence_idx > 0).then(|| self.state.sequence().name.clone());
+            let path = default_export_path(self.prefs.export.default_output_dir.as_deref(), self.state.project_path.as_deref(), &first, version.as_deref(), self.export_dialog.format.extension());
             self.export_dialog.output_path = path.to_string_lossy().to_string();
         }
         let (path, without_asking) = apply_overwrite_mode(self.prefs.export.overwrite_mode, &self.export_dialog.output_path);
         self.export_dialog.output_path = path;
         self.export_dialog.overwrite_without_asking = without_asking;
+        if generate {
+            self.export_dialog.suggested_path = Some(self.export_dialog.output_path.clone());
+        }
     }
 
     /// The export settings form: presets, output, codec, audio, range
@@ -1339,6 +1372,12 @@ impl KlippApp {
                             }
                         });
                         ui.end_row();
+                        // Said before Export, not only at it.
+                        if let Some(note) = existing_file_note(&self.export_dialog.output_path, self.export_dialog.overwrite_without_asking) {
+                            ui.label("");
+                            ui.label(egui::RichText::new(note).small().color(ui.visuals().warn_fg_color));
+                            ui.end_row();
+                        }
 
                         // Auto-update file extension when format changes
                         let old_ext = self.export_dialog.format.extension();
@@ -4190,14 +4229,24 @@ mod export_prefs_tests {
         let project = dir.path().join("Holiday.klipp");
         std::fs::write(&project, "{}").unwrap();
         let videos = dirs::video_dir().unwrap_or_else(|| dirs::home_dir().unwrap().join("Videos"));
-        assert_eq!(default_export_path(None, Some(&project), "Main Sequence", "mp4"), dir.path().join("Holiday.mp4"), "saved: beside the project, named after it");
+        assert_eq!(default_export_path(None, Some(&project), "Main Sequence", None, "mp4"), dir.path().join("Holiday.mp4"), "saved: beside the project, named after it");
         let unsaved = std::path::Path::new(crate::project_paths::UNTITLED);
-        assert_eq!(default_export_path(None, Some(unsaved), "Main Sequence", "mp4"), videos.join("Main Sequence.mp4"), "not saved: Videos, after the sequence");
-        assert_eq!(default_export_path(None, None, "a/b", "mov"), videos.join("a_b.mov"), "no project: the sequence's name, made a file name");
+        assert_eq!(default_export_path(None, Some(unsaved), "Main Sequence", None, "mp4"), videos.join("Main Sequence.mp4"), "not saved: Videos, after the sequence");
+        assert_eq!(default_export_path(None, None, "a/b", None, "mov"), videos.join("a_b.mov"), "no project: the sequence's name, made a file name");
         let chosen = dir.path().join("exports");
         std::fs::create_dir_all(&chosen).unwrap();
-        assert_eq!(default_export_path(Some(&chosen), Some(&project), "Main Sequence", "mp4"), chosen.join("Holiday.mp4"), "the preferences' folder first");
-        assert_eq!(default_export_path(Some(&dir.path().join("gone")), Some(&project), "Main Sequence", "mp4"), dir.path().join("Holiday.mp4"), "a preferences' folder not there: as unset");
+        assert_eq!(default_export_path(Some(&chosen), Some(&project), "Main Sequence", None, "mp4"), chosen.join("Holiday.mp4"), "the preferences' folder first");
+        assert_eq!(default_export_path(Some(&dir.path().join("gone")), Some(&project), "Main Sequence", None, "mp4"), dir.path().join("Holiday.mp4"), "a preferences' folder not there: as unset");
+        // A version, another sequence of the project, is named after it too,
+        // so its file does not go over the main cut's.
+        assert_eq!(default_export_path(None, Some(&project), "Main Sequence", Some("9:16"), "mp4"), dir.path().join("Holiday 9-16.mp4"), "saved: the project and the version");
+        assert_eq!(default_export_path(None, Some(unsaved), "Untitled", Some("9:16"), "mp4"), videos.join("Untitled 9-16.mp4"), "not saved: the first sequence and the version");
+        // A file already there is said under the name.
+        let there = dir.path().join("Holiday.mp4");
+        std::fs::write(&there, b"x").unwrap();
+        assert!(existing_file_note(&there.to_string_lossy(), false).is_some_and(|n| n.contains("asks")));
+        assert!(existing_file_note(&there.to_string_lossy(), true).is_some_and(|n| n.contains("written over")));
+        assert_eq!(existing_file_note(&dir.path().join("Holiday 9-16.mp4").to_string_lossy(), false), None);
     }
 
     /// #1816: with the file already there, Ask keeps the name and asks,
