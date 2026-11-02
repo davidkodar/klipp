@@ -146,9 +146,9 @@ fn sequence(tracks: Vec<Vec<Clip>>) -> Sequence {
 /// of two layers is obvious in the result.
 ///
 /// `on_gpu` decides which shape it arrives in, and that matters: the
-/// export's frames are always `SourcePixels::Gpu` now — a hardware
-/// decode seeds from NV12 and a software one from the scaler's samples —
-/// so a CPU-only fixture cannot reach the identity pass-through at all.
+/// export's frames are mostly `SourcePixels::Gpu` — a hardware decode
+/// seeds from NV12 and a software one from the scaler's samples — but a
+/// reversed clip's are read backwards into memory, `SourcePixels::Linear`.
 #[derive(Default)]
 struct Flat {
     colours: HashMap<ClipId, [u8; 3]>,
@@ -201,8 +201,8 @@ impl Flat {
         self
     }
 
-    /// The same fixture with its frames arriving on the GPU, as the
-    /// export's do.
+    /// The same fixture with its frames arriving on the GPU, as most of
+    /// the export's do.
     fn clone_for_gpu(&self) -> Self {
         Flat { colours: self.colours.clone(), scene: self.scene.clone(), scene_matrix: self.scene_matrix.clone(), on_gpu: true }
     }
@@ -504,6 +504,30 @@ fn an_ungraded_clip_agrees_with_the_renderer() {
         got.iter().any(|&v| v > 40),
         "the fixture rendered black, so agreement proves nothing"
     );
+}
+
+/// An ungraded frame decoded to memory — a reversed clip's, read
+/// backwards on the CPU — is uploaded and exported on the GPU as the
+/// renderer draws it. It was refused: every reversed frame of an export
+/// went down the CPU composite while playback kept it on the GPU (#3220).
+#[test]
+fn an_ungraded_frame_in_memory_exports_on_the_gpu() {
+    let c = media(0.0, 1.0);
+    let seq = sequence(vec![vec![c.clone()]]);
+    let mut src = Flat::default().with(&c, [46, 128, 230]);
+    let mut r = renderer();
+    let Some((planes, _)) = r.render_yuv420_on_gpu(&seq, tc(0.5), W, H, &mut src, RenderOptions::default(), plain_target()) else {
+        if r.last_decline() == Some("the GPU pipeline was unavailable") {
+            no_gpu("no usable GPU");
+            return;
+        }
+        panic!("the GPU path refused a frame in memory: {:?}", r.last_decline());
+    };
+    let want = cpu_luma(&seq, 0.5, &mut src);
+    let got = &planes[..want.len()];
+    let worst = got.iter().zip(&want).map(|(g, w)| (*g as i32 - *w as i32).abs()).max().unwrap_or(0);
+    assert!(worst <= 1, "luma differs from the renderer by {worst} levels");
+    assert!(got.iter().any(|&v| v > 40), "the fixture rendered black, so agreement proves nothing");
 }
 
 /// A BT.2020 project's delivery, whose display transform is a basis

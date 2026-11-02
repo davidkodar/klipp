@@ -7,13 +7,13 @@
 
 **A native video editor for Linux.**
 
-[Website](https://davidkodar.github.io/klipp/) · [Download 0.2.0](https://github.com/davidkodar/klipp/releases/tag/v0.2.0) · [Discussions](https://github.com/davidkodar/klipp/discussions)
+[Website](https://davidkodar.github.io/klipp/) · [Download 0.3.0](https://github.com/davidkodar/klipp/releases/tag/v0.3.0) · [Discussions](https://github.com/davidkodar/klipp/discussions)
 
 Edit on a magnetic timeline, grade in scene-linear colour, and automate workflows with local AI tools and an MCP-compatible assistant.
 
 **Early release · Vulkan GPU required · Arch package or source · GPL-3.0-only**
 
-Klipp is still young, but it works end to end: import, edit, grade, titles, sound and export. Keep copies of work you care about: the project format can still change between 0.x releases. Broad plugin compatibility, reliability hardening, and AMD/Intel GPU validation are ongoing. The latest release, [0.2.0](https://github.com/davidkodar/klipp/releases/tag/v0.2.0), is out as a signed Arch package.
+Klipp is still young, but it works end to end: import, edit, grade, titles, sound and export. Keep copies of work you care about: the project format can still change between 0.x releases. Broad plugin compatibility, reliability hardening, and AMD/Intel GPU validation are ongoing. The latest release, [0.3.0](https://github.com/davidkodar/klipp/releases/tag/v0.3.0), is out as signed Arch packages for x86_64 and aarch64.
 
 [![Klipp Edit page with a harbour shot in the viewer, the media pool, and a timeline of titles, video, music, ambience and voice tracks](website/assets/edit.webp)](website/assets/edit.webp)
 
@@ -23,20 +23,22 @@ Klipp is still young, but it works end to end: import, edit, grade, titles, soun
 
 ## Create, finish, deliver
 
-- **Edit:** magnetic multitrack editing, ripple and insert edits, synced multicam, a selects timeline, transitions, speed ramps and optical-flow slow motion, a curve editor for keyframes, and transcript-based cuts.
+- **Edit:** magnetic multitrack editing, ripple and insert edits, synced multicam, a selects timeline, transitions, speed ramps and optical-flow slow motion, stretching a clip to a new length, a curve editor for keyframes, and transcript-based cuts. Auditions keep several takes in one clip slot and play each in place; hover over an effect, transition or title to preview it on the clip; reuse markers show footage used twice.
 - **Picture:** one node graph per clip for effects, mattes, keys, transforms, LUTs and OFX/frei0r plug-ins, composited on the GPU.
 - **Grade:** a scene-linear ACEScg pipeline, camera-log decoding, colour wheels and curves, RGB and 3D qualifiers, a grade library shared across projects, GPU scopes, and SDR/HDR delivery including HDR10+.
-- **Titles:** OpenType text with complex scripts, vertical text, variable and colour fonts, animators and per-glyph motions, extruded 3D text, rolling credits, and a template library.
-- **Mix:** multitrack audio with recorded track automation, EQ and dynamics, voice isolation, loudness and true-peak delivery, and dual-system sound sync.
+- **Titles:** OpenType text with complex scripts, vertical text, variable and colour fonts, animators and per-glyph motions, extruded 3D text, rolling credits, spell checking against your system's dictionaries, and a template library with ready-made looks such as Glow Caps.
+- **Mix:** multitrack audio with recorded track automation, aux buses and sends, EQ and dynamics, voice isolation, loudness and true-peak delivery, and dual-system sound sync.
 - **Captions:** SRT, VTT, ASS, IMSC/TTML, SCC and EBU-STL in and out, captions embedded as CEA-608, and on-device translation.
-- **Automate:** analyse footage, propose an edit plan, assemble a sequence, check it, and export through the control socket and an MCP server with over 120 tools.
+- **Deliver:** start a project from a destination (YouTube, Shorts/Reels/TikTok, a square post or a podcast) that sets its size, loudness, captions and delivery check; outline a platform's player in the viewer; keep your logo, fonts, intro and outro as a brand kit.
+- **Play heavy work smoothly:** freeze a heavy track to play it from a stored result, bounce it to a media file with its transparency, and let Klipp draw late frames ahead while you're idle.
+- **Automate:** analyse footage, propose an edit plan, assemble a sequence, check it, and export through the control socket and an MCP server with 145 tools.
 - **Exchange:** move an edit to and from other editors as OTIO, FCPXML, EDL or AAF (through OpenTimelineIO), import FCP7 XML and MLT, and export Kdenlive. The edit comes across (clips, cuts and timing, and markers where the format has them); grades, most effects and most titles don't, and every import lists what it carried and what it left out. Your own work is saved as a `.klipp` project.
 
 Explore the [feature reference](docs/project-reference.md#features) and [user guide](docs/src/SUMMARY.md).
 
 ## How it is built and tested
 
-Klipp is written in Rust as a 42-crate workspace. Pictures are processed on the GPU through Vulkan, with a CPU path kept as a reference to check the GPU against. [ARCHITECTURE.md](ARCHITECTURE.md) maps the crates, the threading model, the main subsystems, and where things tend to break.
+Klipp is written in Rust as a 45-crate workspace. Pictures are processed on the GPU through Vulkan, with a CPU path kept as a reference to check the GPU against. [ARCHITECTURE.md](ARCHITECTURE.md) maps the crates, the threading model, the main subsystems, and where things tend to break.
 
 - **Over 8,000 automated tests** across 39 crates; run one crate's with `cargo test -p <crate>`.
 - **CPU/GPU parity tests** render the same frames both ways and compare the pixels, for effects, transitions, keys, grades and the compositor.
@@ -46,18 +48,18 @@ Klipp is written in Rust as a 42-crate workspace. Pictures are processed on the 
 
 ## Try Klipp
 
-The primary target is **x86_64 Arch Linux and Arch-based distributions with a working Vulkan driver**. A Vulkan 1.1 GPU is required; integrated GPUs are supported in principle, with broader hardware validation ongoing. Other distributions are less tested.
+The primary target is **x86_64 Arch Linux and Arch-based distributions with a working Vulkan driver**. A Vulkan 1.1 GPU is required; integrated GPUs are supported in principle, with broader hardware validation ongoing. Other distributions are less tested. Arch Linux ARM on aarch64, including Apple Silicon under Asahi Linux, has its own package and is tested on an M1.
 
-To install it, download `klipp-0.2.0-1-x86_64.pkg.tar.zst`, `SHA256SUMS` and `SHA256SUMS.minisig` from the [release page](https://github.com/davidkodar/klipp/releases/tag/v0.2.0), then check the signature and install:
+To install it, download `klipp-0.3.0-1-x86_64.pkg.tar.zst` (on aarch64, `klipp-0.3.0-1-aarch64.pkg.tar.xz`), `SHA256SUMS` and `SHA256SUMS.minisig` from the [release page](https://github.com/davidkodar/klipp/releases/tag/v0.3.0), then check the signature and install:
 
 ```bash
 sudo pacman -S --needed minisign
 minisign -Vm SHA256SUMS -P RWTo4I7A4g6VVGz6+mMUh6yQBtX+bdtyftItQmb1Kxf/rtUrNeGAXBvM
 sha256sum -c --ignore-missing SHA256SUMS
-sudo pacman -U klipp-0.2.0-1-x86_64.pkg.tar.zst
+sudo pacman -U klipp-0.3.0-1-x86_64.pkg.tar.zst
 ```
 
-The `minisign` line must end with `Trusted comment: klipp 0.2.0`.
+The `minisign` line must end with `Trusted comment: klipp 0.3.0`.
 
 Later versions install from Klipp itself: Help → About Klipp → Check for updates downloads the new package and installs it only when its signature checks out.
 

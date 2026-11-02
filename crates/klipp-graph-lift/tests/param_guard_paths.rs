@@ -23,6 +23,8 @@ const GUARDED: &[(&str, &str, &str, usize)] = &[
     // The render's read of an effect node, and the edits' guard.
     ("klipp-graph-lift/src/effect_params.rs", "pub fn effect(", "guard_entry(", 1),
     ("klipp-graph-lift/src/effect_params.rs", "pub fn guard_params(", "guard_entry(", 1),
+    // A stored effect read as written now at load (#3318).
+    ("klipp-graph-lift/src/effect_params.rs", "pub fn upgrade_entry(", "guard_effect(", 1),
     // The graph ops: a value, a payload, a new node, keys.
     ("klipp-graph-lift/src/ops.rs", "fn set_param(", "guard_params(", 1),
     ("klipp-graph-lift/src/ops.rs", "fn set_payload(", "guard_params(", 1),
@@ -47,6 +49,8 @@ const GUARDED: &[(&str, &str, &str, usize)] = &[
 const READERS: &[(&str, usize)] = &[
     // The validation the ops run after the guard.
     ("klipp-graph-lift/src/ops.rs", 1),
+    // The load's upgrade of a stored effect, guarded above.
+    ("klipp-graph-lift/src/effect_params.rs", 1),
     ("klipp-project/src/load.rs", 1),
     ("klipp-compose/src/resolve.rs", 1),
     // A frei0r plug-in's parameters.

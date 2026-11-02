@@ -169,6 +169,7 @@ impl TitleRenderer {
             line_boxes: Vec::new(),
             line_ranges: Vec::new(),
             lines_vertical: false,
+            text_box: u.text_box,
         };
         let mut poses = glyph_poses(
             &placed,

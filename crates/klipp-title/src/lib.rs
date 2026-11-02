@@ -36,6 +36,7 @@ mod backing;
 pub use backing::{backing_lines, BackingLines};
 use backing::BackgroundLines;
 mod colour;
+mod colr;
 pub mod raster;
 pub use raster::BoxRaster;
 mod fallback;
@@ -195,6 +196,10 @@ pub struct UnitMap {
     pub line_boxes: Vec<[f32; 4]>,
     pub line_ranges: Vec<(usize, usize)>,
     pub lines_vertical: bool,
+    /// The text's resting bounds, left, top, right, bottom in frame
+    /// pixels: what a whole-text backing is drawn round under the posed
+    /// glyphs (#3261).
+    pub text_box: [f32; 4],
 }
 
 impl UnitMap {
@@ -235,7 +240,7 @@ impl UnitMap {
                 index[i] = best.1;
             }
         }
-        Self { x0, y0, w, h, index, boxes: layout.glyph_boxes.clone(), parents: layout.glyph_parents.clone(), pad: layout.pad, path: layout.path_units.clone(), tracking_origins: layout.tracking_origins.clone(), line_boxes: layout.line_boxes.clone(), line_ranges: layout.line_ranges.clone(), lines_vertical: layout.lines_vertical }
+        Self { x0, y0, w, h, index, boxes: layout.glyph_boxes.clone(), parents: layout.glyph_parents.clone(), pad: layout.pad, path: layout.path_units.clone(), tracking_origins: layout.tracking_origins.clone(), line_boxes: layout.line_boxes.clone(), line_ranges: layout.line_ranges.clone(), lines_vertical: layout.lines_vertical, text_box: [layout.text_left, layout.text_top, layout.text_right, layout.text_bottom] }
     }
 
     /// The glyph at frame pixel `(x, y)`, if any.
@@ -471,10 +476,11 @@ fn poses_its_glyphs(title: &TitleData) -> bool {
     staggers(fx.motion.enter) || staggers(fx.motion.exit) || fx.animators.iter().any(|a| a.enabled) || waves || tracking::eligible(title)
 }
 
-/// Whether a backing per line goes under a title's posed glyphs rather
-/// than into its resting render (#3237).
+/// Whether a backing goes under a title's posed glyphs rather than into
+/// its resting render: one per line (#3237), or one round the whole text
+/// (#3261), which would otherwise be cut up with the glyphs.
 fn lines_go_under(title: &TitleData) -> bool {
-    matches!(title.background, TitleBackground::Color { lines: Some(_), color, .. } if color[3] > 0) && poses_its_glyphs(title)
+    matches!(title.background, TitleBackground::Color { color, .. } if color[3] > 0) && poses_its_glyphs(title)
 }
 
 /// `rows` widened to those `backing` reaches, in a frame `height` tall.
@@ -492,8 +498,20 @@ fn widened(rows: (u32, u32), backing: Option<&(BackingLines, [u8; 4])>, height: 
 /// The backing per line under a frame of `title` whose glyphs `poses`
 /// places from the resting render `units` maps (#3237), and its colour.
 fn posed_backing(title: &TitleData, units: &UnitMap, poses: &[GlyphPose], scale: f32) -> Option<(BackingLines, [u8; 4])> {
-    let TitleBackground::Color { color, .. } = &title.background else { return None };
-    if !lines_go_under(title) || units.line_boxes.is_empty() {
+    let TitleBackground::Color { color, padding, lines } = &title.background else { return None };
+    if !lines_go_under(title) {
+        return None;
+    }
+    // One box round the whole text (#3261): where the resting render draws
+    // it, whole and still, showing as much as the most visible glyph.
+    if lines.is_none() {
+        let pad = padding * scale;
+        let b = units.text_box;
+        let rect = [((b[0] - pad) as i32).max(0) as f32, ((b[1] - pad) as i32).max(0) as f32, (b[2] + pad) as i32 as f32, (b[3] + pad) as i32 as f32];
+        let alpha = poses.iter().map(|p| p.alpha).fold(0.0f32, f32::max);
+        return Some((BackingLines { rects: vec![rect], alphas: vec![alpha], radius: 0.0, joined: false }, *color));
+    }
+    if units.line_boxes.is_empty() {
         return None;
     }
     let rest: Vec<[f32; 4]> = units.boxes.iter().map(|b| b.map(|v| v as f32)).collect();
@@ -4072,7 +4090,7 @@ impl TitleRenderer {
         let fx = title.primary_fx();
         let poses: Vec<text3d_render::Pose> = match time_secs {
             Some(t) if fx.motion.is_active() || fx.animators.iter().any(|a| a.enabled) => {
-                let units = UnitMap { x0: 0, y0: 0, w: 0, h: 0, index: Vec::new(), boxes: layout.glyph_boxes.clone(), parents: layout.glyph_parents.clone(), pad: 0, path: None, tracking_origins: Vec::new(), line_boxes: Vec::new(), line_ranges: Vec::new(), lines_vertical: false };
+                let units = UnitMap { x0: 0, y0: 0, w: 0, h: 0, index: Vec::new(), boxes: layout.glyph_boxes.clone(), parents: layout.glyph_parents.clone(), pad: 0, path: None, tracking_origins: Vec::new(), line_boxes: Vec::new(), line_ranges: Vec::new(), lines_vertical: false, text_box: [layout.text_left, layout.text_top, layout.text_right, layout.text_bottom] };
                 let glyph = glyph_poses(&units, &fx.motion, &fx.animators, t, self.motion_window, em, (0.0, 0.0, 1.0), false);
                 solids
                     .iter()
@@ -6806,6 +6824,18 @@ fn justify_lines(
     last: LastLineAlign,
 ) {
     let seen = |g: &fontdue::layout::GlyphPosition| !g.parent.is_whitespace();
+    // A gap opens at a run of spaces and, in Thai, Lao, Khmer and Burmese,
+    // which put none between words, where a word begins (#3238): a line
+    // of those had no gap, and was left unjustified. Once per word: a
+    // cluster's marks follow its letter.
+    let complex = klipp_linebreak::complex_breaks(text);
+    let opens = |g: &fontdue::layout::GlyphPosition, last: &mut Option<usize>| {
+        let at = complex.binary_search(&g.byte_offset).is_ok() && *last != Some(g.byte_offset);
+        if at {
+            *last = Some(g.byte_offset);
+        }
+        at
+    };
     for line in lines {
         let start = line.glyph_start;
         let end = line.glyph_end.min(glyphs.len().saturating_sub(1));
@@ -6835,11 +6865,11 @@ fn justify_lines(
             continue;
         }
         let mut gaps = 0usize;
-        let mut in_gap = false;
+        let (mut in_gap, mut last) = (false, Some(glyphs[first].byte_offset));
         for g in &glyphs[first..=final_] {
             if !seen(g) {
                 in_gap = true;
-            } else if in_gap {
+            } else if opens(g, &mut last) || in_gap {
                 gaps += 1;
                 in_gap = false;
             }
@@ -6849,11 +6879,11 @@ fn justify_lines(
             continue;
         }
         let step = extra / gaps as f32;
-        let (mut k, mut in_gap) = (0usize, false);
+        let (mut k, mut in_gap, mut last) = (0usize, false, Some(glyphs[first].byte_offset));
         for g in &mut glyphs[first..=end] {
             if !seen(g) {
                 in_gap = true;
-            } else if in_gap {
+            } else if opens(g, &mut last) || in_gap {
                 k += 1;
                 in_gap = false;
             }
@@ -13523,6 +13553,48 @@ mod fading_layers_tests {
                 colour.max((a[3] - b[3]).abs())
             }).fold(0.0, f32::max);
             assert!(worst <= 1.5, "at {t}: cached layers differ from raster by {worst} levels");
+        }
+    }
+}
+
+#[cfg(test)]
+mod complex_justify_tests {
+    use super::*;
+    use shaping::{Face, LoadedFont, ShapedLayout};
+
+    /// #3238: a justified line of Thai, which has no spaces, spreads to
+    /// its box at its word boundaries; before, it had no gap to widen and
+    /// stayed set from the left. The letters of a word stay together.
+    #[test]
+    fn a_justified_thai_line_fills_its_box() {
+        let path = format!("{}/tests/fonts/NotoSansThai-subset.ttf", env!("CARGO_MANIFEST_DIR"));
+        let thai = LoadedFont::new(std::borrow::Cow::Owned(std::fs::read(path).unwrap())).unwrap();
+        let faces = [Face::new(&thai, &[])];
+        let words = ["ภาษา", "ไทย", "ง่าย", "นิด", "เดียว", "สวัสดี", "ครับ"].repeat(2);
+        let text = words.concat();
+        let width = 300.0;
+        let mut l = ShapedLayout::new();
+        l.reset(&fontdue::layout::LayoutSettings { max_width: Some(width), wrap_style: fontdue::layout::WrapStyle::Word, ..Default::default() });
+        l.append(&faces, &text, (0, text.len(), 48.0, 0));
+        let lines = l.lines().expect("lines").clone();
+        assert!(lines.len() >= 2, "the Thai wraps: {} lines", lines.len());
+        let before = l.glyphs().clone();
+        let mut glyphs = before.clone();
+        justify_lines(&mut glyphs, &lines, &text, width, LastLineAlign::Left);
+        let line = &lines[0];
+        let span = |g: &[fontdue::layout::GlyphPosition]| g[line.glyph_start..=line.glyph_end].iter().filter(|g| g.width > 0).map(|g| g.x + g.width as f32).fold(0.0, f32::max);
+        let (was, now) = (span(&before), span(&glyphs));
+        assert!(was < width - 5.0, "the first line was set short of the box: {was}");
+        assert!((now - (width - line.right)).abs() <= 1.0, "the justified line ends at {now}, not the box's {width}");
+        // A word's letters moved together: within a word, each glyph moved
+        // by the same as the word's first.
+        let starts = klipp_linebreak::complex_breaks(&text);
+        let word_of = |at: usize| starts.iter().filter(|&&s| s <= at).count();
+        let moved: Vec<(usize, f32)> = (line.glyph_start..=line.glyph_end).map(|i| (word_of(glyphs[i].byte_offset), glyphs[i].x - before[i].x)).collect();
+        for pair in moved.windows(2) {
+            if pair[0].0 == pair[1].0 {
+                assert!((pair[0].1 - pair[1].1).abs() < 1e-3, "a word's letters moved apart: {moved:?}");
+            }
         }
     }
 }

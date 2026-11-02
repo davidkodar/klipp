@@ -116,6 +116,9 @@ fn node_of(seq: &Sequence, clip: ClipId, at: &InspectAt) -> Result<(NodeId, bool
                     Some(klipp_graph_format::lifted::types::GROUP) if *node == grade_group => running
                         .and_then(|g| g.input_of(g.output_node_id, 0).map(|n| (n, false)))
                         .ok_or_else(|| "the clip's grade gives no picture".into()),
+                    // The display step the run splices before its output
+                    // (#3328); a clip it doesn't run on says so.
+                    Some(klipp_graph_format::lifted::types::SCENE_TO_DISPLAY) => Ok((crate::render::display_step_id(clip), false)),
                     Some(klipp_graph_format::types::LEGACY_EFFECT) if at.port.as_str() == "out" => Ok((*node, false)),
                     Some(klipp_graph_format::types::LEGACY_EFFECT) => Err(format!("an effect has no output {}", at.port)),
                     Some(klipp_graph_format::types::LEGACY_OFX) => Err("a plug-in effect runs outside the grade and can't be inspected yet".into()),

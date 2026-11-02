@@ -15,7 +15,7 @@ The **Preset** menu fills in the settings for a delivery. Pick **Custom** to set
 | Vimeo 1080p | MP4 | H.264, CRF 16 | 1920×1080 | AAC 256 kbps | — |
 | Twitter/X | MP4 | H.264, CRF 23 | 1280×720 | AAC 128 kbps | — |
 | Instagram Square | MP4 | H.264, CRF 20 | 1080×1080 | AAC 192 kbps | — |
-| Instagram Vertical | MP4 | H.264, CRF 20 | 1080×1920 | AAC 192 kbps | — |
+| Shorts, Reels, TikTok 9:16 | MP4 | H.264, CRF 20 | 1080×1920 | AAC 192 kbps | — |
 | ProRes 422 | MOV | ProRes 422 | Sequence | PCM 24-bit | — |
 | HEVC Main10 master | MP4 | H.265 10-bit, CRF 16, Slow | Sequence | AAC 320 kbps | — |
 | DNxHD 115 | MOV | DNxHD 115 Mbps | 1920×1080 | PCM 24-bit | — |

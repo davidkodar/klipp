@@ -169,6 +169,11 @@ impl FrameReader {
             // none where there's no GPU, and the CPU's encode then.
             let mut gpu: Option<Option<klipp_effects::gpu::TenBitDisplay>> = None;
             let mut choice = EncodeChoice::default();
+            // The GPU's first frame makes its buffers and pipeline: timed
+            // for the choice, never counted as what loading costs, or
+            // playback would draw live for the next thirty frames on its
+            // account.
+            let mut gpu_warm = false;
             while let Ok(first) = asked.recv() {
                 // The asks since the last frame, latest last: one read
                 // each, the oldest dropped when they pile up behind.
@@ -195,7 +200,11 @@ impl FrameReader {
                             choice.timed(ms, on_gpu);
                         }
                     }
-                    record_load(times, ms, on_gpu);
+                    if on_gpu && !gpu_warm {
+                        gpu_warm = true;
+                    } else {
+                        record_load(times, ms, on_gpu);
+                    }
                     let mut held = held.lock().unwrap_or_else(|e| e.into_inner());
                     held.push_back(Ready { at, encode, bytes });
                     while held.len() > KEPT {

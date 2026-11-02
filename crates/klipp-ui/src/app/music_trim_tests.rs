@@ -112,7 +112,7 @@ fn the_note_offers_undo_trim() {
     let run = |events: Vec<egui::Event>| {
         let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200.0, 800.0))), events, ..Default::default() };
         let mut clicked = None;
-        let out = ctx.run(input, |ctx| clicked = toast.render(ctx, &theme));
+        let out = ctx.run(input, |ctx| clicked = toast.render(ctx, &theme, None));
         let texts: Vec<(String, egui::Pos2)> = out.shapes.iter().filter_map(|s| match &s.shape {
             egui::Shape::Text(t) => Some((t.galley.text().to_owned(), t.pos + t.galley.size() / 2.0)),
             _ => None,
