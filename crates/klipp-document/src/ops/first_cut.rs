@@ -314,6 +314,41 @@ pub fn ops(seq: &Sequence, changes: &[Change], exclude: &[usize], music: Option<
     out
 }
 
+/// The tracks a First Cut of `changes` but `exclude` makes of `before`
+/// (the sequence as it was): what taking a change back, or putting it
+/// back, swaps in, as one step.
+pub fn tracks_without(before: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts, changes: &[Change], exclude: &[usize], music: Option<&MediaId>) -> Result<Vec<klipp_timeline::Track>, Refusal> {
+    let plan = resolve_with(before, pool, &ops(before, changes, exclude, music), transcripts)?;
+    let mut seqs = vec![before.clone()];
+    let mut pool = pool.clone();
+    let mut fps = before.fps;
+    let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut pool, fps: &mut fps };
+    for step in &plan.steps {
+        view.apply_forward(&step.edit);
+    }
+    Ok(seqs.remove(0).tracks)
+}
+
+/// Where change `at` of `changes` is on the timeline once those not in
+/// `exclude` are made, in seconds: its place as it was, less the cuts
+/// kept before it. What a click on a change goes to.
+pub fn now_at(changes: &[Change], exclude: &[usize], at: usize) -> f64 {
+    let Some(this) = changes.get(at) else { return 0.0 };
+    let mut taken: Vec<(f64, f64)> = changes.iter().enumerate().filter(|(i, c)| *i != at && !exclude.contains(i) && c.kind.cuts() && c.from_secs < this.from_secs).map(|(_, c)| (c.from_secs, c.to_secs.min(this.from_secs))).collect();
+    taken.sort_by(|a, b| a.0.total_cmp(&b.0));
+    // Cuts that overlap are one stretch, counted once.
+    let mut removed = 0.0;
+    let mut reach = f64::NEG_INFINITY;
+    for (a, b) in taken {
+        let a = a.max(reach);
+        if b > a {
+            removed += b - a;
+        }
+        reach = reach.max(b);
+    }
+    (this.from_secs - removed).max(0.0)
+}
+
 /// The changes as a numbered list, one a line: what `exclude` counts.
 pub fn listed(changes: &[Change]) -> String {
     changes.iter().enumerate().map(|(i, c)| format!("{i}: {}", c.what)).collect::<Vec<_>>().join("\n")
@@ -451,6 +486,31 @@ mod tests {
         // The cuts latest first, so neither moves the other.
         let first = serde_json::to_value(&ops(&seq, &changes, &[], None)[0]).unwrap();
         assert_eq!(first["from"]["frame"], 169);
+    }
+
+    #[test]
+    fn a_change_taken_back_is_the_cut_without_it() {
+        let (seq, pool) = talking();
+        let changes = plan(&seq, &pool, &Talk, &Steps { punch: false, captions: false, ..Steps::default() });
+        // The last pause taken back: the tracks the op with it excluded makes.
+        // Compared by each clip's place and source: a split's pieces get
+        // new ids each time.
+        let shape = |tracks: &[Track]| tracks.iter().map(|t| t.clips.iter().map(|c| [c.timeline_in, c.timeline_out, c.source_in, c.source_out].map(|t| (secs(t) * 25.0).round() as i64)).collect::<Vec<_>>()).collect::<Vec<_>>();
+        let back = tracks_without(&seq, &pool, &Talk, &changes, &[3], None).unwrap();
+        assert_eq!(shape(&back), shape(&applied(&seq, &pool, first_cut(vec![3])).tracks));
+        // Everything taken back: the sequence as it was.
+        assert_eq!(shape(&tracks_without(&seq, &pool, &Talk, &changes, &[0, 1, 2, 3], None).unwrap()), shape(&seq.tracks));
+    }
+
+    #[test]
+    fn a_change_is_found_where_the_cuts_before_it_moved_it() {
+        let (seq, pool) = talking();
+        let changes = plan(&seq, &pool, &Talk, &Steps::default());
+        // The last pause, at 6.75 s as it was: the retake and the "um"
+        // before it (0 to 3.3 s, the first pause inside them) moved it up.
+        assert!((now_at(&changes, &[], 3) - 3.45).abs() < 1e-9, "{}", now_at(&changes, &[], 3));
+        // With the retake taken back, only the pause and the "um" did.
+        assert!((now_at(&changes, &[0], 3) - (6.75 - 1.1 - 0.3)).abs() < 1e-9, "{}", now_at(&changes, &[0], 3));
     }
 
     #[test]

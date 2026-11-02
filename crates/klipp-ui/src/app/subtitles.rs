@@ -52,9 +52,39 @@ pub(super) fn youtube_chapter_entries(markers: &[klipp_timeline::Marker]) -> Vec
     entries
 }
 
+/// What exporting a chapter list came to: how many chapters, what would keep
+/// them from showing on YouTube, and how many markers weren't chapters.
+pub(super) fn youtube_chapters_message(entries: &[(f64, String)], left_out: usize, duration_secs: f64) -> String {
+    use klipp_document::publish_kit::{chapter_warnings, Chapter};
+    let plural = if entries.len() == 1 { "" } else { "s" };
+    let mut msg = format!("Exported {} chapter{plural}.", entries.len());
+    let chapters: Vec<Chapter> = entries.iter().map(|(secs, label)| Chapter { secs: *secs, label: label.clone() }).collect();
+    for warning in chapter_warnings(&chapters, duration_secs) {
+        msg.push(' ');
+        msg.push_str(&warning);
+    }
+    if left_out > 0 {
+        let (plural, verb) = if left_out == 1 { ("", "isn't") } else { ("s", "aren't") };
+        msg.push_str(&format!(" {left_out} marker{plural} {verb} of kind Chapter and left out."));
+    }
+    msg
+}
+
 #[cfg(test)]
 mod youtube_chapter_tests {
     use super::*;
+
+    /// #3430: three chapters with the last under 10 s says so; fewer than
+    /// three says that; a list YouTube shows says only how many.
+    #[test]
+    fn the_chapter_lists_message_says_what_youtube_would_not_show() {
+        let entry = |secs: f64| (secs, "Part".to_string());
+        let short = youtube_chapters_message(&[entry(0.0), entry(15.0), entry(30.0)], 0, 38.9);
+        assert!(short.starts_with("Exported 3 chapters.") && short.contains("under 10 s"), "{short}");
+        assert!(youtube_chapters_message(&[entry(0.0)], 0, 60.0).contains("from 3"));
+        assert_eq!(youtube_chapters_message(&[entry(0.0), entry(15.0), entry(30.0)], 0, 60.0), "Exported 3 chapters.");
+        assert!(youtube_chapters_message(&[entry(0.0), entry(15.0), entry(30.0)], 2, 60.0).ends_with("2 markers aren't of kind Chapter and left out."));
+    }
 
     fn marker(secs: f64, label: &str, kind: klipp_core::MarkerKind) -> klipp_timeline::Marker {
         klipp_timeline::Marker {
