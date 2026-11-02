@@ -3826,7 +3826,7 @@ pub enum AppCommand {
     SetEffectKeyframeInterpolation { clip_id: ClipId, effect_index: usize, param_name: String, keyframe_index: usize, interpolation: crate::keyframe::Interpolation },
 
     // Clip role
-    SetClipRole { clip_id: ClipId, role: crate::ClipRole },
+    SetClipRole { clip_id: ClipId, role: Option<crate::roles::RoleRef> },
     /// How far back a clip sits for the sequence camera (`Clip::depth`).
     /// Undoable; a drag of the value is one undo step.
     SetClipDepth { clip_id: ClipId, depth: f32 },
@@ -4182,6 +4182,10 @@ pub enum AppCommand {
     /// Put the library's grade `name` on `clip_ids`: in place of each one's
     /// grade, or after it with `append`, as one undo step.
     ApplyGradeFromLibrary { name: String, clip_ids: Vec<ClipId>, append: bool },
+    /// Put `clip_id`'s grade on the other pieces of its shot that have no
+    /// grade of their own (the neighbours a split left, carrying on in the
+    /// same file), as one undo step.
+    ApplyGradeToShotPieces { clip_id: ClipId },
     /// Take `name` out of the grade library.
     DeleteGradeFromLibrary { name: String },
     /// Label the library's grade `name` with the camera and profile it

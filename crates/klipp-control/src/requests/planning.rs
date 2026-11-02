@@ -523,7 +523,7 @@ pub(crate) fn respond(
                         // cleaners among them — on the picture clip, so they
                         // are read there (#725).
                         let fixes = if heard { AudioFixes::on(&sound_owner(&seq, c).audio_effects) } else { AudioFixes::ALL };
-                        let used = if heard { SoundUse::of(c.role) } else { SoundUse::Unheard };
+                        let used = if heard { SoundUse::of_role(c.role.as_ref()) } else { SoundUse::Unheard };
                         match audio_media.iter_mut().find(|m| m.0 == item.path) {
                             Some(m) => {
                                 m.3 = m.3.and(fixes);
@@ -1052,7 +1052,7 @@ fn note_loudness_drops(report: &mut klipp_document::qc::Report, seq: &klipp_time
             let (i, o) = (c.timeline_in.to_secs_f64(), c.timeline_out.to_secs_f64());
             (c.fade_in_secs > 0.0 && over(i, i + f64::from(c.fade_in_secs)))
                 || (c.fade_out_secs > 0.0 && over(o - f64::from(c.fade_out_secs), o))
-                || (matches!(c.role, klipp_core::ClipRole::Dialogue | klipp_core::ClipRole::Voiceover) && c.media_id().and_then(|id| pool.get(&id)).is_some_and(|m| m.has_audio) && over(i, o))
+                || (c.role.as_ref().is_some_and(|r| r.is_speech()) && c.media_id().and_then(|id| pool.get(&id)).is_some_and(|m| m.has_audio) && over(i, o))
         })
     };
     for (from, to, lufs, median) in loudness_drops(&rows, STEP, &excused) {
@@ -1138,12 +1138,22 @@ enum SoundUse {
 }
 
 impl SoundUse {
-    fn of(role: klipp_core::ClipRole) -> Self {
+    /// What a clip of `role` plays its file's sound as (#3211): music and
+    /// effects, by sub-role, designed; anything else speech.
+    fn of_role(role: Option<&klipp_core::roles::RoleRef>) -> Self {
         use klipp_core::ClipRole as R;
-        match role {
-            R::Music | R::SFX | R::Ambience | R::Foley => Self::Designed(role),
+        match role.map(|r| (r.main(), r.sub())) {
+            Some(("music", _)) => Self::Designed(R::Music),
+            Some(("effects", Some("ambience"))) => Self::Designed(R::Ambience),
+            Some(("effects", Some("foley"))) => Self::Designed(R::Foley),
+            Some(("effects", _)) => Self::Designed(R::SFX),
             _ => Self::Speech,
         }
+    }
+
+    #[cfg(test)]
+    fn of(role: klipp_core::ClipRole) -> Self {
+        Self::of_role(klipp_core::roles::RoleRef::from_legacy(role).as_ref())
     }
 
     /// Two clips of one file: speech in either is speech.

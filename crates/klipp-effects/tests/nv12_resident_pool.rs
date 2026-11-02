@@ -64,3 +64,30 @@ fn p010_frames_let_go_are_written_into_kept_buffers() {
         assert!(held.iter().all(|h| !std::sync::Arc::ptr_eq(h, &next)), "frame {n} written into a buffer still held");
     }
 }
+
+/// A reader that holds a window of frames besides the queue — a reversed
+/// clip's group of pictures (#3221) — has buffers kept for them: once
+/// the first window is let go, the next is written into its buffers, and
+/// none is made past the pool. Kept for the queue alone, 36 of each 60
+/// were made fresh every window.
+#[test]
+fn a_window_held_by_the_reader_is_written_into_kept_buffers() {
+    let Some(mut c) = GpuNv12Converter::new() else {
+        assert_ne!(std::env::var("KLIPP_TEST_REQUIRE_GPU").as_deref(), Ok("1"), "GPU required");
+        eprintln!("unverified: no GPU");
+        return;
+    };
+    const WINDOW: usize = 60;
+    c.keep_resident_for(WINDOW);
+    let past_pool = || {
+        klipp_effects::gpu_memory::snapshot().made.iter().find(|(name, _, _)| *name == "decoded_past_pool").map_or(0, |m| m.2)
+    };
+    let before = past_pool();
+    for window in 0..3u8 {
+        let held: Vec<_> = (0..WINDOW as u8).map(|n| convert(&mut c, n.wrapping_add(window))).collect();
+        drop(held);
+    }
+    assert_eq!(past_pool() - before, 0, "buffers made past the pool for windows of {WINDOW}");
+    let kept = c.resident_buffers_kept();
+    assert!(kept <= WINDOW + 8, "{kept} buffers for windows of {WINDOW}");
+}

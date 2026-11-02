@@ -192,6 +192,10 @@ fn bind_step_refs(op: &Op, i: usize, made: &[Option<ClipId>]) -> Result<Op, Refu
     Ok(bound)
 }
 
+/// What a refit says of a picture never looked through for people: the
+/// app offers to look through it, by these words.
+pub const NOT_ANALYSED_FOR_PEOPLE: &str = "not analysed for people yet";
+
 /// Which neighbour a [`Op::Join`] closes the edit with.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -1231,6 +1235,15 @@ pub enum Op {
         #[serde(skip)]
         composition: Option<Box<PlacedComposition>>,
     },
+    /// A placed title template's fields (#3249), by label as the template
+    /// op takes them (its texts, colours such as Accent, fonts, pictures,
+    /// Speed, Size, Duration): set as the inspector's template fields set
+    /// them, one undo step. An unknown field, a value of the wrong kind or
+    /// out of its range is refused.
+    TitleFields {
+        clip_id: ClipRef,
+        fields: std::collections::BTreeMap<String, serde_json::Value>,
+    },
     /// A placed template's macro control (#2757): `control` (by name or
     /// label) set to `value`; or one `target` it drives (`object:<i>.<number>`)
     /// unlinked (keeping its value), relinked (from where it is, nothing
@@ -1333,6 +1346,8 @@ pub enum Op {
         #[serde(default)]
         clip_id: Option<ClipRef>,
         /// The timeline or a grade group's grade instead of a clip's.
+        /// "shot", with `clip_id` and nothing else, puts that clip's grade
+        /// on the other pieces of its split shot that have none.
         #[serde(default)]
         on: Option<GradeOn>,
         #[serde(default)]
@@ -1542,11 +1557,28 @@ pub enum Op {
     /// else moves (#458). Its linked sound and theirs go with it. Refused
     /// where a neighbour would run out of its file or of its length.
     Slide { clip_id: ClipRef, secs: f64 },
-    /// What a clip is to the mix and the checks: "dialogue", "music",
-    /// "sfx", "ambience", "foley", "voiceover", "broll" or "graphics". A
-    /// music bed and a sound effect are told from speech by this, so
-    /// they are never taken for speech and speech is never ducked.
+    /// What a clip is to the mix, the checks and export (#3211): one of
+    /// the project's roles, `main` or `main.sub` ("dialogue",
+    /// "dialogue.interview", "music.score", "effects.foley"), its label,
+    /// one of the old names (sfx, ambience, foley, voiceover, graphics),
+    /// or "none". A music bed and a sound effect are told from speech by
+    /// this, so they are never taken for speech and speech is never
+    /// ducked.
     Role { clip_id: ClipRef, role: String },
+    /// The project's roles changed (#3211): roles added (`under` a main
+    /// role for a sub-role), renamed, given a colour (`#rrggbb`, or none
+    /// for the palette's) or taken out, in that order; the built-in main
+    /// roles stay. The reply lists them all.
+    Roles {
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        add: Vec<RoleAdd>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        rename: Vec<RoleRename>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        colour: Vec<RoleColour>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        remove: Vec<String>,
+    },
     /// Give a clip the start and length of the clip under it (#2236): the
     /// one it overlaps most on the nearest track below that has one, else
     /// above. With `keep` it stays matched, following the shot's trims,
@@ -2572,15 +2604,41 @@ pub enum GradientShape {
     Radial { center: [f32; 2], inner: f32, outer: f32 },
 }
 
+/// A role the `roles` op adds: its name, and the main role it is a
+/// sub-role of.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RoleAdd {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub under: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RoleRename {
+    pub role: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RoleColour {
+    pub role: String,
+    /// `#rrggbb`; none for the palette's.
+    #[serde(default)]
+    pub colour: Option<String>,
+}
+
 /// Serialized operation tags accepted by `Op`. Keep this in sync with the
 /// variants; the test below catches additions and renames.
 pub const OP_NAMES: &[&str] = &[
     "graphics", "vector_path", "connector", "place", "add_track", "remove_track", "set_track", "track_automation", "aux_bus", "send", "trim", "j_cut", "l_cut", "split", "join", "remove", "move", "cut",
     "captions", "audio", "volume", "duck", "lower_third", "set_text", "grade", "effect", "redact",
-    "slip", "slide", "pin", "role", "match", "matte", "format", "stabilize", "reframe", "zoom", "pan", "follow", "refit", "highlight",
+    "slip", "slide", "pin", "role", "roles", "match", "matte", "format", "stabilize", "reframe", "zoom", "pan", "follow", "refit", "highlight",
     "ramp", "freeze", "grade_group", "remove_grade_group", "look", "qualify", "zones", "retime", "mark", "stretch", "replace", "alternatives", "track_audio", "clip_audio", "clean_audio",
     "transition", "style", "title", "compose", "camera", "crop", "generator", "depth", "label", "motion_blur",
-    "strobe", "remove_silences", "auto_colour", "set_length", "over_edits", "template", "template_link", "recipe", "edit_from_selects", "opacity_mask",
+    "strobe", "remove_silences", "auto_colour", "set_length", "over_edits", "template", "title_fields", "template_link", "recipe", "edit_from_selects", "opacity_mask",
 ];
 
 pub use klipp_timeline::ShadowSpec;
@@ -3124,6 +3182,12 @@ pub trait Transcripts {
     /// handheld shot sweeps a band no title should sit in.
     fn people(&self, _item: &klipp_media::MediaItem) -> Vec<(f64, [f32; 4])> {
         Vec::new()
+    }
+    /// Whether `item` was looked through for faces and people at all: no
+    /// detections in a file not looked through says nothing about who is
+    /// in it. A host that cannot say counts every file as looked through.
+    fn framing_analysed(&self, _item: &klipp_media::MediaItem) -> bool {
+        true
     }
     /// How much `item`'s picture moves between two of its times, as the
     /// mean frame-to-frame difference (the motion analyser's YDIF; 4 and
@@ -4050,21 +4114,37 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
             slip(seq, pool, fps, i, ti, clip, *by)
         }
+        Op::Roles { add, rename, colour, remove } => {
+            let mut set = pool.roles.clone();
+            for a in add {
+                set.add(a.under.as_deref().map(str::trim), &a.name).map_err(|why| refuse(i, why, "name it something not there yet, under one of the main roles"))?;
+            }
+            for r in rename {
+                let at = klipp_core::roles::RoleRef::parse(&r.role).filter(|x| set_has(&set, x)).ok_or_else(|| refuse(i, format!("\"{}\" is not a role", r.role), roles_hint(&set)))?;
+                set.rename(&at, &r.name).map_err(|why| refuse(i, why, "give a name"))?;
+            }
+            for c in colour {
+                let at = klipp_core::roles::RoleRef::parse(&c.role).filter(|x| set_has(&set, x)).ok_or_else(|| refuse(i, format!("\"{}\" is not a role", c.role), roles_hint(&set)))?;
+                let rgba = match &c.colour {
+                    Some(hex) => Some(parse_color(hex).ok_or_else(|| refuse(i, format!("\"{hex}\" is not a colour"), "write a colour as #rrggbb, or none for the palette's"))?),
+                    None => None,
+                };
+                set.set_colour(&at, rgba).map_err(|why| refuse(i, why, roles_hint(&set)))?;
+            }
+            for r in remove {
+                let at = klipp_core::roles::RoleRef::parse(r).filter(|x| set_has(&set, x)).ok_or_else(|| refuse(i, format!("\"{r}\" is not a role"), roles_hint(&set)))?;
+                set.remove(&at).map_err(|why| refuse(i, why, "take out a role you added"))?;
+            }
+            let listed: Vec<String> = set.listed().iter().filter_map(|r| set.label(r).map(|l| format!("{r} ({l})"))).collect();
+            let what = format!("roles: {}", listed.join(", "));
+            Ok((what, EditCommand::SetRoles { old: Box::new(pool.roles.clone()), new: Box::new(set) }, Vec::new()))
+        }
         Op::Role { clip_id, role } => {
             let (_, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
-            let new = match role.trim().to_lowercase().as_str() {
-                "dialogue" | "speech" => klipp_core::ClipRole::Dialogue,
-                "music" => klipp_core::ClipRole::Music,
-                "sfx" | "effects" | "effect" => klipp_core::ClipRole::SFX,
-                "ambience" | "atmos" => klipp_core::ClipRole::Ambience,
-                "foley" => klipp_core::ClipRole::Foley,
-                "voiceover" | "vo" => klipp_core::ClipRole::Voiceover,
-                "broll" | "b-roll" => klipp_core::ClipRole::BRoll,
-                "graphics" | "title" => klipp_core::ClipRole::Graphics,
-                other => return Err(refuse(i, format!("\"{other}\" is not a role"), "use dialogue, music, sfx, ambience, foley, voiceover, broll or graphics")),
-            };
-            let what = format!("{} is {}", clip_name(seq, pool, clip), role.trim().to_lowercase());
-            Ok((what, EditCommand::SetClipRole { clip_id: clip.id, old: clip.role, new, old_source: clip.role_source }, vec![clip.id]))
+            let new = role_named(&pool.roles, role).map_err(|hint| refuse(i, format!("\"{}\" is not a role", role.trim()), hint))?;
+            let said = new.as_ref().and_then(|r| pool.roles.label(r)).unwrap_or_else(|| "no role".into());
+            let what = format!("{} is {said}", clip_name(seq, pool, clip));
+            Ok((what, EditCommand::SetClipRole { clip_id: clip.id, old: clip.role.clone(), new, old_source: clip.role_source }, vec![clip.id]))
         }
         Op::Match { clip_id, keep } => {
             let (_, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
@@ -4383,6 +4463,24 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
                 grade_op(seq, pool, fps, i, target, &one)
             })
         }
+        Op::Grade { clip_id, on: Some(GradeOn::Named(n)), exposure, contrast, saturation, temperature, tint, lift, gamma, gain, highlights, shadows, vibrance, reset, from } if n.eq_ignore_ascii_case("shot") => {
+            let Some(clip_id) = clip_id else {
+                return Err(refuse(i, "no clip was named for its shot", "give clip_id: the graded piece of the shot"));
+            };
+            let knobs = [exposure, contrast, saturation, temperature, tint, lift, gamma, gain, highlights, shadows, vibrance];
+            if knobs.iter().any(|k| k.is_some()) || *reset || from.is_some() {
+                return Err(refuse(i, "on: \"shot\" copies the clip's grade as it is", "grade the clip first, then give its clip_id with on: \"shot\" alone"));
+            }
+            let (_, _, source) = resolve_clip(seq, fps, clip_id, i)?;
+            let pieces: Vec<&Clip> = seq.ungraded_shot_pieces(source.id).into_iter().filter_map(|id| seq.all_clips().find(|c| c.id == id)).collect();
+            if pieces.is_empty() {
+                return Err(refuse(i, format!("{} has no other ungraded pieces", clip_name(seq, pool, source)), "a shot's pieces sit side by side on one track, its range carrying on in the same file"));
+            }
+            let edits: Vec<EditCommand> = pieces.iter().map(|p| EditCommand::SetNodeGraph { clip_id: p.id, old_graph: p.grade().clone(), new_graph: source.grade().clone() }).collect();
+            let n = edits.len();
+            let what = format!("grade the {n} other piece{} of {}'s shot as it is graded", if n == 1 { "" } else { "s" }, clip_name(seq, pool, source));
+            Ok((what, EditCommand::Batch(edits), pieces.iter().map(|p| p.id).collect()))
+        }
         Op::Grade { clip_id, on, .. } => {
             let target = grade_target(seq, pool, fps, i, clip_id.as_ref(), on.as_ref(), "grade")?;
             grade_op(seq, pool, fps, i, target, op)
@@ -4501,23 +4599,7 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             let td = data.as_deref().cloned().ok_or_else(|| refuse(i, format!("there is no title template \"{name}\""), "title_templates lists the built-in and saved templates"))?;
             // A built-in laid out for the sequence's frame (#2734).
             let mut td = klipp_timeline::title_library::for_frame(td, seq.resolution.width, seq.resolution.height);
-            for (label, v) in fields {
-                let Some(index) = td.field_named(label) else {
-                    let labels: Vec<String> = td.live_fields().into_iter().map(|(_, f, _)| f.label.clone()).collect();
-                    return Err(refuse(i, format!("\"{name}\" has no field \"{label}\""), format!("its fields are {}", labels.join(", "))));
-                };
-                let value = match (td.field_value(index), v) {
-                    (Some(V::Text(_)), serde_json::Value::String(s)) => V::Text(s.clone()),
-                    (Some(V::Colour(_)), serde_json::Value::String(s)) => V::Colour(parse_color(s).ok_or_else(|| refuse(i, format!("\"{s}\" is not a colour"), "write a colour as #rrggbb or #rrggbbaa"))?),
-                    (Some(V::Speed(_)), serde_json::Value::Number(n)) => V::Speed(n.as_f64().unwrap_or(1.0) as f32),
-                    (Some(V::Size(_)), serde_json::Value::Number(n)) => V::Size(n.as_f64().unwrap_or(1.0) as f32),
-                    (Some(V::Font(_)), serde_json::Value::String(s)) => V::Font(s.clone()),
-                    (Some(V::Duration(_)), serde_json::Value::Number(n)) => V::Duration(n.as_f64().unwrap_or(1.0) as f32),
-                    (Some(V::Picture(_)), serde_json::Value::String(s)) => V::Picture(s.clone()),
-                    _ => return Err(refuse(i, format!("\"{label}\" can't take {v}"), "give a text, font or picture as words, a colour as #rrggbb, the speed, size and duration (seconds) as numbers")),
-                };
-                td.set_field(index, &value).map_err(|e| refuse(i, e, "title_templates lists each template's fields"))?;
-            }
+            set_title_fields(&mut td, &quoted(name), fields, i)?;
             if !held.is_finite() || *held < 0.2 {
                 return Err(refuse(i, format!("{held} s is too short"), "hold it at least a fraction of a second"));
             }
@@ -4544,6 +4626,23 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
         Op::SetText { clip_id, text } => {
             let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
             set_text(seq, pool, i, ti, clip, text)
+        }
+        Op::TitleFields { clip_id, fields } => {
+            let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
+            let Some(old) = clip.title_data() else {
+                return Err(refuse(i, format!("{} is not a title", clip_name(seq, pool, clip)), "name a placed title template's clip"));
+            };
+            if seq.tracks[ti].locked {
+                return Err(refuse(i, format!("track {ti} is locked"), "unlock it first"));
+            }
+            if fields.is_empty() {
+                return Err(refuse(i, "no fields to set", "give fields by label, as title_templates lists them"));
+            }
+            let name = clip_name(seq, pool, clip);
+            let mut new = old.clone();
+            set_title_fields(&mut new, &name, fields, i)?;
+            let what = format!("{name}: {} set", fields.keys().map(|k| quoted(k)).collect::<Vec<_>>().join(", "));
+            Ok((what, EditCommand::EditTitle { clip_id: clip.id, description: "Edit Template Fields", old_data: old.clone(), new_data: new }, vec![clip.id]))
         }
         Op::TemplateLink { clip_id, control, target, action, value } => {
             let (_, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
@@ -4725,7 +4824,7 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             // to the check until a role op said otherwise (#797).
             let library = transcripts.library_role(item);
             if let Some(role) = library {
-                clip.role = role;
+                clip.role = klipp_core::roles::RoleRef::from_legacy(role);
                 // Proposed, not chosen: a hand-set role still replaces it,
                 // and the sound's own label is not offered again (#2216).
                 clip.role_source = klipp_core::RoleSource::Proposed;
@@ -4733,7 +4832,7 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             // A sound-only file is Music until its sound is heard (#2953).
             let starting = library.is_none().then(|| item.starting_role()).flatten();
             if let Some((role, source)) = starting {
-                clip.role = role;
+                clip.role = klipp_core::roles::RoleRef::from_legacy(role);
                 clip.role_source = source;
             }
             // The sound with the picture, linked both ways, on the first
@@ -5271,14 +5370,59 @@ pub(crate) fn sound_settings_clip<'a>(seq: &'a Sequence, clip: &'a Clip) -> &'a 
 /// addressed, the picture or its sound, so either can say the pair is
 /// ambience; read from one side only, a beach's wind marked ambience on
 /// its picture was speech to the check (#777).
-pub(crate) fn sound_role(seq: &Sequence, clip: &Clip) -> klipp_core::ClipRole {
-    if clip.role != klipp_core::ClipRole::Dialogue { clip.role } else { sound_settings_clip(seq, clip).role }
+pub(crate) fn sound_role(seq: &Sequence, clip: &Clip) -> Option<klipp_core::roles::RoleRef> {
+    match &clip.role {
+        Some(r) if !r.is_speech() => Some(r.clone()),
+        own => sound_settings_clip(seq, clip).role.clone().or_else(|| own.clone()),
+    }
 }
 
-/// Whether `role` says a sound is not speech: music, effects, ambience,
-/// foley, B-roll. A duck and the check's speech rules pass it by.
-pub(crate) fn not_speech(role: klipp_core::ClipRole) -> bool {
-    matches!(role, klipp_core::ClipRole::Music | klipp_core::ClipRole::SFX | klipp_core::ClipRole::Ambience | klipp_core::ClipRole::Foley | klipp_core::ClipRole::BRoll)
+/// Whether `role` says a sound is not speech: music or effects, any of
+/// their sub-roles. A duck and the check's speech rules pass it by; a
+/// clip with no role may be speech.
+pub(crate) fn not_speech(role: Option<&klipp_core::roles::RoleRef>) -> bool {
+    role.is_some_and(|r| r.is("music") || r.is("effects"))
+}
+
+/// Whether `roles` has `role` itself, sub-role and all.
+fn set_has(roles: &klipp_core::roles::RoleSet, role: &klipp_core::roles::RoleRef) -> bool {
+    roles.resolve(role).as_ref() == Some(role)
+}
+
+fn roles_hint(roles: &klipp_core::roles::RoleSet) -> String {
+    let all: Vec<String> = roles.listed().iter().map(|r| r.to_string()).collect();
+    format!("use one of the project's roles: {}", all.join(", "))
+}
+
+/// The role `name` says in `roles` (#3211): a role by its id or its
+/// label, `main` or `main.sub`, or one of the names roles had before
+/// they were data; `None` for "none". Why not, listing them, otherwise.
+pub(crate) fn role_named(roles: &klipp_core::roles::RoleSet, name: &str) -> Result<Option<klipp_core::roles::RoleRef>, String> {
+    use klipp_core::roles::RoleRef;
+    let n = name.trim().to_lowercase();
+    let old = match n.as_str() {
+        "none" => return Ok(None),
+        "speech" => Some("dialogue"),
+        "sfx" | "effect" => Some("effects"),
+        "ambience" | "atmos" | "broll" | "b-roll" => Some("effects.ambience"),
+        "foley" => Some("effects.foley"),
+        "voiceover" | "vo" => Some("dialogue.narration"),
+        "graphics" | "title" => Some("titles"),
+        _ => None,
+    };
+    let by_label = || {
+        roles.roles.iter().find_map(|r| {
+            if r.name.eq_ignore_ascii_case(&n) {
+                return Some(RoleRef::of(&r.id));
+            }
+            r.subs.iter().find(|s| format!("{} › {}", r.name, s.name).eq_ignore_ascii_case(&n) || format!("{}.{}", r.name, s.name).eq_ignore_ascii_case(&n)).and_then(|s| RoleRef::parse(&format!("{}.{}", r.id, s.id)))
+        })
+    };
+    let found = old.and_then(RoleRef::parse).or_else(|| RoleRef::parse(&n)).filter(|r| roles.resolve(r).as_ref() == Some(r)).or_else(by_label);
+    found.map(Some).ok_or_else(|| {
+        let all: Vec<String> = roles.roles.iter().flat_map(|r| std::iter::once(r.id.clone()).chain(r.subs.iter().map(move |s| format!("{}.{}", r.id, s.id)))).collect();
+        format!("use one of the project's roles: {}, or none", all.join(", "))
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -5400,7 +5544,7 @@ fn duck(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, music: &Clip, by_
         // at -15 under music at -3 ducked it for 100 s, #457). A hundredth
         // of a dB takes the rounding of two levels set in dB.
         let quiet = s.volume * s.gain <= music_level * db_to_linear(-12.0 + 0.01);
-        !quiet && !not_speech(sound_role(seq, c))
+        !quiet && !not_speech(sound_role(seq, c).as_ref())
     };
     // Where speech is heard over the music, merged where the gaps are
     // too short to come up and go down again, or shorter than the bridge:
@@ -5417,8 +5561,9 @@ fn duck(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, music: &Clip, by_
             continue;
         }
         let whole = vec![(secs(c.timeline_in), secs(c.timeline_out))];
-        let spans = match (c.role, c.media_id().and_then(|id| pool.get(&id))) {
-            (klipp_core::ClipRole::Voiceover, _) | (_, None) => whole,
+        let narration = c.role.as_ref().is_some_and(|r| r.as_str() == "dialogue.narration");
+        let spans = match (narration, c.media_id().and_then(|id| pool.get(&id))) {
+            (true, _) | (_, None) => whole,
             (_, Some(item)) => {
                 let said = words.entry(item.id).or_insert_with(|| transcripts.words(item));
                 spoken_spans(c, said.as_deref(), fps).unwrap_or(whole)
@@ -6435,7 +6580,7 @@ pub struct HeardWord {
     /// The file it is heard from.
     pub media_id: MediaId,
     /// What that clip's sound is (dialogue, music, …).
-    pub role: klipp_core::ClipRole,
+    pub role: Option<klipp_core::roles::RoleRef>,
     /// Where that clip starts and ends on the timeline, in seconds: what
     /// lies outside is not this word's pause but whatever the timeline
     /// puts there.
@@ -6476,7 +6621,13 @@ fn cut_range(seq: &Sequence, pool: &MediaPool, i: usize, from: Timecode, to: Tim
     let open: Vec<usize> = if scope.is_empty() {
         (0..seq.tracks.len()).filter(|&t| !seq.tracks[t].locked).collect()
     } else {
-        let tracks = cut_tracks_of(seq, scope, from);
+        let mut tracks = cut_tracks_of(seq, scope, from);
+        // The captions are of what is said: a cut of the speech takes its
+        // stretch out of them too, or every caption after it runs late
+        // by the cut's length, past the picture's end (unlocked ones).
+        let captions: Vec<usize> = (0..seq.tracks.len()).filter(|&t| seq.tracks[t].kind == TrackKind::Subtitle && !seq.tracks[t].locked && !tracks.contains(&t)).collect();
+        tracks.extend(captions);
+        tracks.sort_unstable();
         if let Some(&ti) = tracks.iter().find(|&&ti| seq.tracks[ti].locked) {
             let name = &seq.tracks[ti].name;
             return Err(refuse(i, format!("{name} is locked, and what the cut takes is on it or linked to it"), format!("unlock {name}")));
@@ -6761,7 +6912,7 @@ pub fn heard_words(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcrip
                     continue;
                 }
                 at.push(start);
-                out.push(HeardWord { start, end, text: text.to_string(), after_cut: first, clip_id: clip.id, media_id: *media_id, role: clip.role, clip_in: t_in, clip_out: t_out });
+                out.push(HeardWord { start, end, text: text.to_string(), after_cut: first, clip_id: clip.id, media_id: *media_id, role: clip.role.clone(), clip_in: t_in, clip_out: t_out });
                 first = false;
             }
         }
@@ -7010,8 +7161,7 @@ fn captions(
     }
     // Speech only: a song's lyrics or a sound effect's transcript is not
     // what is said (#2416).
-    let speech = |r: klipp_core::ClipRole| !matches!(r, klipp_core::ClipRole::Music | klipp_core::ClipRole::SFX | klipp_core::ClipRole::Ambience | klipp_core::ClipRole::Foley);
-    let words: Vec<HeardWord> = heard_words(seq, pool, transcripts).into_iter().filter(|w| w.start >= from_s && w.start < to_s && speech(w.role)).collect();
+    let words: Vec<HeardWord> = heard_words(seq, pool, transcripts).into_iter().filter(|w| w.start >= from_s && w.start < to_s && !not_speech(w.role.as_ref())).collect();
     if words.is_empty() {
         return Err(refuse(i, "no transcribed speech is heard on the timeline there", "captions come from the transcripts: run analyze and wait for it, and place the speech first"));
     }
@@ -7547,6 +7697,41 @@ fn place_composition(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, at: T
 
 /// New words for a title or a caption: the clip's first text box takes
 /// them, and nothing else about it changes.
+/// `fields` set on the title `td` (`who` in a refusal) by label, as
+/// the template op places a template and `title_fields` edits a placed
+/// one (#3249), through the field setter the inspector uses: each value
+/// read as its field's kind, Speed, Size and Duration held to their
+/// ranges, refused rather than clamped.
+fn set_title_fields(td: &mut klipp_timeline::TitleData, who: &str, fields: &std::collections::BTreeMap<String, serde_json::Value>, i: usize) -> Result<(), Refusal> {
+    use klipp_core::TitleFieldValue as V;
+    let number = |label: &str, n: &serde_json::Number, range: std::ops::RangeInclusive<f32>, what: &str| -> Result<f32, Refusal> {
+        let v = n.as_f64().unwrap_or(f64::NAN) as f32;
+        if range.contains(&v) {
+            Ok(v)
+        } else {
+            Err(refuse(i, format!("\"{label}\" {v} is out of range"), format!("{what} runs {} to {}", range.start(), range.end())))
+        }
+    };
+    for (label, v) in fields {
+        let Some(index) = td.field_named(label) else {
+            let labels: Vec<String> = td.live_fields().into_iter().map(|(_, f, _)| f.label.clone()).collect();
+            return Err(refuse(i, format!("{who} has no field \"{label}\""), format!("its fields are {}", labels.join(", "))));
+        };
+        let value = match (td.field_value(index), v) {
+            (Some(V::Text(_)), serde_json::Value::String(s)) => V::Text(s.clone()),
+            (Some(V::Colour(_)), serde_json::Value::String(s)) => V::Colour(parse_color(s).ok_or_else(|| refuse(i, format!("\"{s}\" is not a colour"), "write a colour as #rrggbb or #rrggbbaa"))?),
+            (Some(V::Speed(_)), serde_json::Value::Number(n)) => V::Speed(number(label, n, klipp_timeline::TITLE_SPEED_RANGE, "speed")?),
+            (Some(V::Size(_)), serde_json::Value::Number(n)) => V::Size(number(label, n, klipp_timeline::TITLE_SIZE_RANGE, "size")?),
+            (Some(V::Font(_)), serde_json::Value::String(s)) => V::Font(s.clone()),
+            (Some(V::Duration(_)), serde_json::Value::Number(n)) => V::Duration(number(label, n, klipp_timeline::TITLE_DURATION_RANGE, "a duration, in seconds,")?),
+            (Some(V::Picture(_)), serde_json::Value::String(s)) => V::Picture(s.clone()),
+            _ => return Err(refuse(i, format!("\"{label}\" can't take {v}"), "give a text, font or picture as words, a colour as #rrggbb, the speed, size and duration (seconds) as numbers")),
+        };
+        td.set_field(index, &value).map_err(|e| refuse(i, e, "title_templates lists each template's fields"))?;
+    }
+    Ok(())
+}
+
 fn set_text(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, text: &str) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
     let Some(old) = clip.title_data() else {
         return Err(refuse(i, format!("{} is not a title or a caption", clip_name(seq, pool, clip)), "name a clip on a text or subtitle track"));
@@ -9764,7 +9949,16 @@ fn refit(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts, i: usi
                 Some(track) if item.is_still => track.first().map(|(_, p)| (0.0, in_frame(*p))).into_iter().collect(),
                 Some(track) => track.iter().map(|(t, p)| (*t, in_frame(*p))).collect(),
                 None => {
-                    let why = if seen == 0 { "no one found in it (analyze it, or it has no people)" } else { "no subject held through it" };
+                    // Not looked through for people (subject detection off,
+                    // or not run yet) is not "no one": a refit of an
+                    // interview said no one was found in it.
+                    let why = if seen == 0 && !transcripts.framing_analysed(item) {
+                        format!("{NOT_ANALYSED_FOR_PEOPLE}, so it stays centred (turn on Subject detection in Preferences, then refit)")
+                    } else if seen == 0 {
+                        "no one found in it".into()
+                    } else {
+                        "no subject held through it".into()
+                    };
                     review.push((clip, format!("{name}: {why}"), "no subject"));
                     Vec::new()
                 }
@@ -9785,7 +9979,9 @@ fn refit(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts, i: usi
             new.push(klipp_timeline::Marker {
                 id: klipp_core::MarkerId::new(),
                 position: clip.timeline_in,
-                label: "Reframe: check subject".into(),
+                // Says what it is on the ruler: a note to look at a
+                // shot the reframe left centred, not a mark of the cut.
+                label: "Check framing: left centred".into(),
                 color: klipp_core::MarkerColor::Orange,
                 duration: Some(clip.timeline_out - clip.timeline_in),
                 comment: why.clone(),
@@ -14567,6 +14763,37 @@ mod tests {
         assert!(format!("{err:?}").contains("either turns the hue"), "{err:?}");
     }
 
+    /// #3249: a placed title template's fields set by label, as the
+    /// template op sets them, one undo step back to the title as placed;
+    /// an unknown field, a value of the wrong kind or out of range, no
+    /// fields, or a clip that isn't a title is refused.
+    #[test]
+    fn title_fields_edits_a_placed_templates_fields() {
+        use klipp_core::TitleFieldValue as V;
+        let (mut seq, pool, ..) = fixture();
+        let mut td = klipp_timeline::TitleData::single_text(klipp_timeline::TextBox { text: "Label".into(), ..Default::default() });
+        td.objects[0].fx_mut().motion.enter = Some(klipp_core::title_motion::Motion::new(klipp_core::title_motion::MotionKind::Rise).duration(0.6));
+        td.published = td.default_fields();
+        let clip = Clip { kind: ClipKind::Title(td.clone()), ..Clip::gap(RationalTime::from_secs_f64(0.0, 24), RationalTime::from_secs_f64(2.0, 24)) };
+        let id = clip.id;
+        let mut track = klipp_timeline::Track::new("T1", klipp_timeline::TrackKind::Text);
+        track.clips = vec![clip];
+        seq.tracks.push(track);
+        let op = |fields: serde_json::Value| Op::TitleFields { clip_id: ClipRef::Id(id), fields: serde_json::from_value(fields).unwrap() };
+        let plan = resolve(&seq, &pool, &[op(serde_json::json!({ "text 1 colour": "#3366ff", "Speed": 0.5 }))]).unwrap();
+        let EditCommand::EditTitle { old_data, new_data, .. } = &plan.steps[0].edit else { panic!("one title edit: {:?}", plan.steps[0].edit) };
+        assert_eq!((new_data.field_value(1), new_data.field_value(2)), (Some(V::Colour([0x33, 0x66, 0xff, 255])), Some(V::Speed(0.5))));
+        assert_eq!(old_data, &td, "undone, the title as placed");
+        let why = |fields: serde_json::Value| resolve(&seq, &pool, &[op(fields)]).unwrap_err().to_string();
+        assert!(why(serde_json::json!({ "Accent": "#ffffff" })).contains("its fields are Text 1, Text 1 colour, Speed"));
+        assert!(why(serde_json::json!({ "Speed": "fast" })).contains("can't take"));
+        assert!(why(serde_json::json!({ "Speed": 9.0 })).contains("out of range"), "a speed of 9, refused, not clamped");
+        assert!(why(serde_json::json!({})).contains("no fields"));
+        let media = seq.tracks.iter().flat_map(|t| &t.clips).find(|c| matches!(c.kind, ClipKind::Media { .. })).unwrap().id;
+        let not = Op::TitleFields { clip_id: ClipRef::Id(media), fields: serde_json::from_value(serde_json::json!({ "Speed": 1.0 })).unwrap() };
+        assert!(resolve(&seq, &pool, &[not]).unwrap_err().to_string().contains("is not a title"));
+    }
+
     /// A saved template placed by the template op (#1139): its fields set
     /// by label (any case), each value by its kind, the title on a text
     /// track with room; a label it doesn't have, a value of the wrong kind,
@@ -15586,6 +15813,40 @@ mod tests {
         assert!(resolve(&view.sequences[0], view.media_pool, &both).unwrap_err().why.contains("takes no knobs"));
     }
 
+    /// A split shot's grade put on its other ungraded pieces in one step,
+    /// the next clip, cut further on in the file, left alone; knobs
+    /// alongside refused.
+    #[test]
+    fn a_grade_goes_on_the_other_pieces_of_its_shot() {
+        let (mut seq, pool, _, a, b) = fixture();
+        // The next clip jumps on in the file: a cut, not more of the shot.
+        seq.tracks[0].clips[1].source_in = tc(5.0);
+        seq.tracks[0].clips[1].source_out = tc(9.0);
+        let cut = {
+            let c = &seq.tracks[0].clips[0];
+            assert_eq!(c.id, a);
+            klipp_core::Timecode::from_secs_f64((c.timeline_in.to_secs_f64() + c.timeline_out.to_secs_f64()) / 2.0, c.timeline_in.rate)
+        };
+        let (left, right) = seq.tracks[0].split_at(a, cut).unwrap();
+        let graded = resolve(&seq, &pool, &[Op::Grade { clip_id: Some(ClipRef::Id(left.id)), on: None, exposure: Some(0.5), contrast: None, saturation: None, temperature: None, tint: None, lift: None, gamma: None, gain: None, highlights: None, shadows: None, vibrance: None, reset: false, from: None }]).unwrap();
+        let mut seqs = vec![seq.clone()];
+        let mut p = pool.clone();
+        let mut fps = seq.fps;
+        let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps };
+        view.apply_forward(&graded.steps[0].edit);
+        let shot: Vec<Op> = serde_json::from_str(&format!(r#"[{{"op":"grade","clip_id":"{}","on":"shot"}}]"#, left.id.0)).unwrap();
+        let plan = resolve(&view.sequences[0], view.media_pool, &shot).unwrap();
+        assert_eq!(plan.steps.len(), 1, "one step");
+        view.apply_forward(&plan.steps[0].edit);
+        let clip = |id: ClipId| view.sequences[0].all_clips().find(|c| c.id == id).unwrap().clone();
+        assert_eq!(clip(right.id).grade(), clip(left.id).grade(), "the other piece takes the grade");
+        assert!(clip(b).grade_is_identity(), "a clip whose range jumps on is left alone");
+        // Nothing left to grade, and knobs with it, are both refused.
+        assert!(resolve(&view.sequences[0], view.media_pool, &shot).unwrap_err().why.contains("no other ungraded pieces"));
+        let knobs: Vec<Op> = serde_json::from_str(&format!(r#"[{{"op":"grade","clip_id":"{}","on":"shot","exposure":0.2}}]"#, left.id.0)).unwrap();
+        assert!(resolve(&view.sequences[0], view.media_pool, &knobs).unwrap_err().why.contains("as it is"));
+    }
+
     /// #1918: a dissolve between two clips drawn from their own time (a
     /// generator, a title), which have no footage past their cut, is
     /// planned and applied, and undone as one step, with either on either
@@ -15861,7 +16122,7 @@ mod tests {
         mute.video_codec = "hevc".into();
         mute.has_audio = false;
         let mute = pool.add(mute);
-        seq.tracks[0].clips[1].role = klipp_core::ClipRole::BRoll;
+        seq.tracks[0].clips[1].role = klipp_core::roles::RoleRef::parse("effects.ambience");
         let before = seq.clone();
 
         // b shows 4-8 s; the other file is 6 s long, so it starts at 0.
@@ -15876,7 +16137,7 @@ mod tests {
             assert_eq!(c.media_id(), Some(other), "track {}", t.name);
             assert_eq!((c.timeline_in, c.timeline_out, c.source_in, c.source_out), (tc(4.0), tc(8.0), tc(0.0), tc(4.0)), "track {}", t.name);
         }
-        assert_eq!(view.sequences[0].tracks[0].clips[1].role, klipp_core::ClipRole::BRoll, "its settings stay");
+        assert_eq!(view.sequences[0].tracks[0].clips[1].role, klipp_core::roles::RoleRef::parse("effects.ambience"), "its settings stay");
         assert_eq!(view.sequences[0].tracks[0].clips[1].id, b, "the same clip");
         view.apply_inverse(&plan.steps[0].edit);
         for (t, was) in view.sequences[0].tracks.iter().zip(&before.tracks) {
@@ -16641,22 +16902,22 @@ mod tests {
             let role = match &plan.steps[0].edit {
                 // Proposed, not set by hand (#2216).
                 EditCommand::LegacyAppendClip { clip, .. } => {
-                    let source = if clip.role == klipp_core::ClipRole::default() { klipp_core::RoleSource::Unset } else { klipp_core::RoleSource::Proposed };
+                    let source = if clip.role.is_none() { klipp_core::RoleSource::Unset } else { klipp_core::RoleSource::Proposed };
                     assert_eq!(clip.role_source, source);
-                    clip.role
+                    clip.role.clone()
                 }
                 other => panic!("{other:?}"),
             };
             (role, plan.steps[0].what.clone())
         };
         let (role, what) = placed(song);
-        assert_eq!(role, klipp_core::ClipRole::Music);
+        assert_eq!(role, klipp_core::roles::RoleRef::parse("music"));
         assert!(what.contains("marked music"), "{what}");
         let (role, what) = placed(whip);
-        assert_eq!(role, klipp_core::ClipRole::SFX);
+        assert_eq!(role, klipp_core::roles::RoleRef::parse("effects"));
         assert!(what.contains("marked sfx"), "{what}");
         let (role, what) = placed(media);
-        assert_eq!(role, klipp_core::ClipRole::Dialogue);
+        assert_eq!(role, None, "a file with a picture: no role");
         assert!(!what.contains("marked"), "{what}");
     }
 
@@ -16679,18 +16940,18 @@ mod tests {
         let placed = |id: MediaId| {
             let plan = resolve(&seq, &pool, &[place(id)]).unwrap_or_else(|r| panic!("refused: {}", r.why));
             match &plan.steps[0].edit {
-                EditCommand::LegacyAppendClip { clip, .. } => (clip.role, clip.role_source, plan.steps[0].what.clone()),
+                EditCommand::LegacyAppendClip { clip, .. } => (clip.role.clone(), clip.role_source, plan.steps[0].what.clone()),
                 other => panic!("{other:?}"),
             }
         };
         let (role, source, what) = placed(song);
-        assert_eq!((role, source), (klipp_core::ClipRole::Music, klipp_core::RoleSource::Unset));
+        assert_eq!((role, source), (klipp_core::roles::RoleRef::parse("music"), klipp_core::RoleSource::Unset));
         assert!(what.contains("marked music (sound only"), "{what}");
         let (role, source, what) = placed(voice);
-        assert_eq!((role, source), (klipp_core::ClipRole::Dialogue, klipp_core::RoleSource::Proposed));
+        assert_eq!((role, source), (klipp_core::roles::RoleRef::parse("dialogue"), klipp_core::RoleSource::Proposed));
         assert!(what.contains("marked dialogue (from its sound)"), "{what}");
         let (role, source, _) = placed(media);
-        assert_eq!((role, source), (klipp_core::ClipRole::Dialogue, klipp_core::RoleSource::Unset), "a file with a picture");
+        assert_eq!((role, source), (None, klipp_core::RoleSource::Unset), "a file with a picture: no role");
     }
 
     /// #794: an effect on the timeline goes on every picture clip in one
@@ -17128,6 +17389,82 @@ mod tests {
         assert!(serde_json::from_value::<Op>(serde_json::json!({"op": "captions", "animate": {"speed": 2}})).is_err(), "an unknown field is refused");
     }
 
+    /// #3211: a clip's role is named by its id, its label, an old name or
+    /// none, against the project's roles; one it hasn't is refused,
+    /// listing those it has. Set, the clip has it by hand; undone, it
+    /// has its old one back.
+    #[test]
+    fn a_clip_is_given_one_of_the_projects_roles() {
+        let (seq, mut pool, _, a, _) = fixture();
+        pool.roles.add(Some("dialogue"), "Panel").unwrap();
+        let set = |pool: &MediaPool, role: &str| resolve(&seq, pool, &[Op::Role { clip_id: ClipRef::Id(a), role: role.into() }]);
+        let new_role = |pool: &MediaPool, role: &str| match set(pool, role).unwrap_or_else(|r| panic!("{role}: {}", r.why)).steps[0].edit.clone() {
+            EditCommand::SetClipRole { new, .. } => new.map(|r| r.to_string()),
+            other => panic!("{other:?}"),
+        };
+        for (said, is) in [("dialogue.interview", Some("dialogue.interview")), ("Dialogue › Panel", Some("dialogue.panel")), ("music", Some("music")), ("SFX", Some("effects")), ("voiceover", Some("dialogue.narration")), ("ambience", Some("effects.ambience")), ("broll", Some("effects.ambience")), ("none", None)] {
+            assert_eq!(new_role(&pool, said).as_deref(), is, "{said}");
+        }
+        let why = set(&pool, "trailer").unwrap_err();
+        assert!(why.hint.contains("dialogue.panel") && why.hint.contains("subtitles"), "{}", why.hint);
+        assert!(set(&pool, "music.jingle").is_err(), "a sub-role the project hasn't");
+
+        let plan = set(&pool, "music.score").unwrap();
+        assert!(plan.steps[0].what.contains("Music › Score"), "{}", plan.steps[0].what);
+        let mut seqs = vec![seq.clone()];
+        let mut fps = seq.fps;
+        let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut pool, fps: &mut fps };
+        view.apply_forward(&plan.steps[0].edit);
+        let clip = view.sequences[0].all_clips().find(|c| c.id == a).unwrap().clone();
+        assert_eq!((clip.role.map(|r| r.to_string()), clip.role_source), (Some("music.score".into()), klipp_core::RoleSource::ByHand));
+        view.apply_inverse(&plan.steps[0].edit);
+        assert_eq!(view.sequences[0].all_clips().find(|c| c.id == a).unwrap().role, None, "undone");
+    }
+
+    /// #3211: the roles op adds, renames, colours and takes out the
+    /// project's roles as one undo step, listing them; what it can't do
+    /// is refused, saying why, and leaves the roles as they were.
+    #[test]
+    fn the_roles_op_edits_the_projects_roles_in_one_step() {
+        let (seq, mut pool, ..) = fixture();
+        let op = |v: serde_json::Value| -> Op {
+            let mut o = v.as_object().unwrap().clone();
+            o.insert("op".into(), "roles".into());
+            serde_json::from_value(serde_json::Value::Object(o)).unwrap()
+        };
+        let plan = resolve(&seq, &pool, &[op(serde_json::json!({
+            "add": [{"name": "Trailer"}, {"name": "French", "under": "subtitles"}],
+            "rename": [{"role": "music.source", "name": "Source Music"}],
+            "colour": [{"role": "titles", "colour": "#ff8800"}],
+            "remove": ["effects.foley"],
+        }))]).unwrap();
+        let what = &plan.steps[0].what;
+        assert!(what.contains("trailer (Trailer)") && what.contains("subtitles.french (Subtitles › French)") && what.contains("Music › Source Music") && !what.contains("foley"), "{what}");
+        let before = pool.roles.clone();
+        let mut seqs = vec![seq.clone()];
+        let mut fps = seq.fps;
+        let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut pool, fps: &mut fps };
+        let effects = view.apply_forward(&plan.steps[0].edit);
+        assert!(effects.sync_media_pool);
+        let roles = view.media_pool.roles.clone();
+        assert_eq!(roles.colour(&klipp_core::roles::RoleRef::of("titles")), Some([0xff, 0x88, 0x00, 255]));
+        assert_eq!(roles.resolve(&klipp_core::roles::RoleRef::parse("effects.foley").unwrap()).map(|r| r.to_string()).as_deref(), Some("effects"), "taken out: its clips fall back");
+        view.apply_inverse(&plan.steps[0].edit);
+        assert_eq!(view.media_pool.roles, before, "one undo step");
+
+        for (v, says) in [
+            (serde_json::json!({"remove": ["dialogue"]}), "built in"),
+            (serde_json::json!({"add": [{"name": "Music"}]}), "already"),
+            (serde_json::json!({"add": [{"name": "X", "under": "nope"}]}), "no role"),
+            (serde_json::json!({"rename": [{"role": "nope", "name": "Y"}]}), "not a role"),
+            (serde_json::json!({"colour": [{"role": "music", "colour": "red"}]}), "#rrggbb"),
+        ] {
+            let r = resolve(&seq, &pool, &[op(v.clone())]).unwrap_err();
+            assert!(r.why.contains(says) || r.hint.contains(says), "{v}: {} / {}", r.why, r.hint);
+        }
+        assert_eq!(pool.roles, before);
+    }
+
     /// #3304: a caption look by id gives the captions its face, weight,
     /// capitals and glow in the colour chosen, the glow scaled by its
     /// amount; a field given with it changes it, and a look, colour or
@@ -17305,7 +17642,7 @@ mod tests {
         camera_sound.linked_clip_id = Some(angle.id);
         angle.linked_clip_id = Some(camera_sound.id);
         let mut music = Clip::media(song, tc(0.0), tc(8.0), tc(0.0), tc(8.0));
-        music.role = klipp_core::ClipRole::Music;
+        music.role = klipp_core::roles::RoleRef::parse("music");
         // B-roll over the talk, placed without its sound (volume 0), and
         // a transcribed file on a muted track: neither is heard.
         let broll_media = add("/tmp/broll.mov", true);
@@ -17337,7 +17674,7 @@ mod tests {
         assert_eq!(of(camera), "", "the angle whose sound the group does not play is not heard");
         assert_eq!(of(song), "la la la la.", "the song is heard, as music");
         assert_eq!(of(broll_media), "", "a muted picture and a muted track are not heard");
-        assert!(heard.iter().filter(|w| w.media_id == song).all(|w| w.role == klipp_core::ClipRole::Music));
+        assert!(heard.iter().filter(|w| w.media_id == song).all(|w| w.role == klipp_core::roles::RoleRef::parse("music")));
 
         let plan = resolve_with(&seq, &pool, &[Op::Captions { track: None, from: None, to: None, max_chars: 42, max_lines: 2, replace: false, animate: None }], &Heard).unwrap();
         let mut seqs = vec![seq.clone()];
@@ -17487,10 +17824,32 @@ mod tests {
         // Marked ambience at full level: not speech either.
         let mut marked = seq.clone();
         for c in marked.tracks.iter_mut().flat_map(|t| t.clips.iter_mut()).filter(|c| c.id != music_id) {
-            c.role = klipp_core::ClipRole::Ambience;
+            c.role = klipp_core::roles::RoleRef::parse("effects.ambience");
         }
         assert!(duck(&marked).is_err());
         let _ = a;
+    }
+
+    /// #3211: a clip an old project marked B-roll opens as ambience, so
+    /// its sound still doesn't duck the music, as it didn't before roles
+    /// were data; read from the saved form, as a project opens it.
+    #[test]
+    fn an_old_b_roll_clip_does_not_duck_the_music() {
+        let (mut seq, pool, media, ..) = fixture();
+        let mut music_track = Track::new("A2", TrackKind::Audio);
+        let music = Clip::media(media, tc(0.0), tc(10.0), tc(0.0), tc(10.0));
+        let music_id = music.id;
+        music_track.clips = vec![music];
+        seq.tracks.push(music_track);
+        let duck = |seq: &Sequence| resolve(seq, &pool, &[Op::Duck { clip_id: ClipRef::Id(music_id), by_db: 9.0, fade_secs: 0.5, bridge_secs: 2.0 }]);
+        assert!(duck(&seq).is_ok(), "with no role, its sound may be speech");
+        for c in seq.tracks.iter_mut().flat_map(|t| t.clips.iter_mut()).filter(|c| c.id != music_id) {
+            let mut saved = serde_json::to_value(&*c).unwrap();
+            saved["role"] = "BRoll".into();
+            *c = serde_json::from_value(saved).unwrap();
+            assert_eq!(c.role.as_ref().map(|r| r.as_str()), Some("effects.ambience"));
+        }
+        assert!(duck(&seq).unwrap_err().why.contains("no speech"), "old B-roll is not ducked under");
     }
 
     /// A duck follows the words (#457): over camera sound with a
@@ -17525,7 +17884,7 @@ mod tests {
         // A voiceover is speech from end to end, transcript or not.
         let mut vo = seq.clone();
         for c in vo.tracks[1].clips.iter_mut() {
-            c.role = klipp_core::ClipRole::Voiceover;
+            c.role = klipp_core::roles::RoleRef::parse("dialogue.narration");
         }
         assert!(duck(&vo, &Said(vec![])).unwrap().steps[0].what.contains("0.00-8.00"));
     }
@@ -20755,6 +21114,34 @@ mod tests {
         assert_eq!(seqs[0].tracks[0].clips[1].timeline_in, tc(4.0));
     }
 
+    /// A cut scoped to the speech's clips, as the transcript's Cut Words
+    /// makes, takes its stretch out of the subtitle track too: the cue it
+    /// crosses is split and the cue after it moves up. Cut from picture and
+    /// sound alone, the captions ran late by the cut's length, past the
+    /// picture's end.
+    #[test]
+    fn a_cut_of_the_speech_closes_up_the_captions_too() {
+        let (mut seq, pool, _, a, _) = fixture();
+        let cue = |from: f64, to: f64, text: &str| {
+            let mut c = Clip::gap(tc(from), tc(to));
+            c.kind = ClipKind::Title(klipp_timeline::TitleData::single_text(klipp_timeline::TextBox { text: text.into(), ..Default::default() }));
+            c
+        };
+        let mut subs = Track::new("Subtitle 1", TrackKind::Subtitle);
+        subs.clips = vec![cue(2.0, 4.0, "first"), cue(5.0, 7.0, "second")];
+        seq.tracks.push(subs);
+        let plan = resolve(&seq, &pool, &[Op::Cut { from: Anchor::Secs(3.0), to: Anchor::Secs(4.0), tracks_of: vec![ClipRef::Id(a)] }]).unwrap();
+        let mut seqs = vec![seq.clone()];
+        let (mut p, mut fps) = (pool.clone(), seq.fps);
+        let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps };
+        for s in &plan.steps {
+            view.apply_forward(&s.edit);
+        }
+        let subs = seqs[0].tracks.iter().find(|t| t.kind == TrackKind::Subtitle).unwrap();
+        let spans: Vec<(Timecode, Timecode)> = subs.clips.iter().filter(|c| c.title_data().is_some()).map(|c| (c.timeline_in, c.timeline_out)).collect();
+        assert_eq!(spans, vec![(tc(2.0), tc(3.0)), (tc(4.0), tc(6.0))], "the first cue cut short, the second a second earlier");
+    }
+
     /// An L-cut: the sound of the first shot runs on under the second.
     /// V 0-10 s over A 0-11 s, V2 10-20 s over A2 11-20 s, each pair linked.
     fn lcut_fixture() -> (Sequence, MediaPool, [ClipId; 4]) {
@@ -21277,6 +21664,27 @@ mod tests {
         let _ = media;
     }
 
+    /// A picture not looked through for people is said to be that, with
+    /// how to have it looked through, not "no one found": a refit of an
+    /// interview with subject detection off said no one was in it.
+    #[test]
+    fn a_refit_says_a_picture_was_not_analysed_for_people() {
+        struct NotLooked;
+        impl Transcripts for NotLooked {
+            fn words(&self, _item: &klipp_media::MediaItem) -> Option<Vec<SpokenWord>> {
+                None
+            }
+            fn framing_analysed(&self, _item: &klipp_media::MediaItem) -> bool {
+                false
+            }
+        }
+        let (mut seq, pool, _, _, _) = fixture();
+        seq.resolution = klipp_core::Resolution { width: 1080, height: 1920 };
+        let plan = resolve_with(&seq, &pool, &[Op::Refit { markers: true, punch: None, keep: Vec::new() }], &NotLooked).unwrap();
+        let what = &plan.steps[0].what;
+        assert!(what.contains("not analysed for people") && what.contains("Subject detection") && !what.contains("no one found"), "{what}");
+    }
+
     /// #2211: a wide edit refit to a tall frame. The picture with a face
     /// in it follows the face; the one with no one in it stays centred,
     /// is named for review and marked; the sound under them is left alone;
@@ -21316,7 +21724,7 @@ mod tests {
         let Some(EditCommand::SetMarkers { old, new }) = edits.iter().find(|e| matches!(e, EditCommand::SetMarkers { .. })) else { panic!("a review marker") };
         assert_eq!(new.len(), old.len() + 1);
         let marker = new.last().unwrap();
-        assert_eq!((marker.label.as_str(), marker.position, marker.duration), ("Reframe: check subject", tc(4.0), Some(tc(4.0))));
+        assert_eq!((marker.label.as_str(), marker.position, marker.duration), ("Check framing: left centred", tc(4.0), Some(tc(4.0))));
 
         let mut seqs = vec![seq.clone()];
         let (mut p, mut fps) = (pool.clone(), seq.fps);

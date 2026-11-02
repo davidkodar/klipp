@@ -5,6 +5,133 @@ Each release lists what changed for people using Klipp. Versions follow
 
 ## Unreleased
 
+## 0.3.0 — 2026-11-02
+
+This release adds auditions, several takes in one clip slot; freezing and
+bouncing heavy tracks; background rendering while the editor is idle;
+previews of effects, transitions and titles while their card is hovered;
+spell checking of titles and captions; aux buses; brand kits; and
+stretching a clip's content to a new length. New Project starts from a
+destination, and the viewer can outline what a platform's player covers.
+Klipp also builds and runs on aarch64 Linux, including Apple Silicon under
+Asahi, with its own package.
+
+### Added
+
+- Auditions: keep several takes of a shot in one clip slot (other files,
+  ranges, speeds, grades, effects or title text), switch between them on
+  the timeline, and play each in its slot to choose. Clips connected to
+  the slot stay in place.
+- Stretch: drag a clip's top corner, or give the Speed dialog a length or
+  fit to fill, to stretch its content to a new length, its keyframes,
+  grade keys and markers with it. Where a trim runs out of media, a
+  stretch is offered instead.
+- Freeze a track: a heavy picture or sound track is drawn once in the
+  background and played from the stored result, its fader, pan, sends,
+  mute and solo still live. Frozen frames stay in the project folder and
+  can be cleared from the Cache Manager.
+- Bounce a track to one media file with its transparency and linked
+  sound, placed above the original as one undo step.
+- Background render: after a short idle delay, frames that played late
+  are drawn into the cache, nearest the playhead first, on mains power
+  only. Any input stops it, and the ruler shows what is cached.
+- Hover previews: an effect or transition card previews on the clip or
+  the cut while hovered, and a title or generator card where it would be
+  placed. Any card can be scrubbed.
+- Reuse markers: a strip under a clip marks frames the timeline shows
+  twice, and a dashed strip two files whose pictures look the same. Hover
+  names the other use and a click goes there; Delivery Check lists each
+  pair.
+- Destinations: New Project offers platform destinations beside its
+  formats, each setting the picture size, frame rate, loudness and
+  captions. The viewer can outline where a platform's player covers the
+  picture, the destination's platforms first.
+- Brand kits: a logo, colours, fonts, intro and outro kept for every
+  project and shared as a file, with three built in. Apply Brand Kit puts
+  them on a sequence and its captions.
+- Spell check: misspelt words are underlined in the title and caption
+  editors, and Check Spelling in Titles walks through each one, with the
+  dictionaries installed on the system, in each text's own language.
+- Glow Caps, a ready-made caption look with its own entrance, also as a
+  title template. A title's backing can be one box per line, and the
+  Terminal Card ships as a composition template.
+- Aux buses and track sends, shown in the mixer and heard in playback and
+  in export.
+- After grading one piece of a split shot, the Colour page offers to give
+  its grade to the other pieces in one step; the clip's Colour menu has
+  the same.
+- A refit that leaves pictures centred because they were never looked
+  through for people offers to find the people now.
+- Append to End, on Shift+F10 and in the Timeline menu. The viewer's
+  timecode can be typed into, with Go to Timecode on Ctrl+J, and Set Range
+  to Clip is in the Mark menu.
+- Import a folder with its subfolders, into bins if asked.
+- ProRes 4444 and FFV1 keep alpha, written and read back.
+- When playback keeps dropping frames, the viewer says why and what would
+  help.
+- Your own presets, generators, project and delivery formats, loudness
+  targets, title templates and recipes are read from files beside Klipp's
+  own and carried in template packs, with a guide to making each.
+- Assistant tools for stretch, mark, aux buses and sends, bounce,
+  auditions, reuse reports, background render, frozen tracks, previews of
+  browser entries and grades on split shots.
+- aarch64 Linux: Klipp builds and runs on aarch64, tested on Apple
+  Silicon (M1) under Asahi Linux, with a release package of its own.
+
+### Changed
+
+- The bundled LUT presets are a clip's look, from the Effects browser or
+  the Colour tab; the project-wide LUT is called the Timeline LUT, and the
+  viewing LUT never reaches an export.
+- A multi-selection drags as one block, Delete and Lift take every
+  selected clip in one undo step, and the primary track stays gapless.
+- Snapping is the same for moves, trims, the playhead and drops, and names
+  the clip it snaps to; moves read in timecode, and Escape cancels a drag.
+- The command palette shows the keys of the layout in use.
+- Track volume, pan, mute and solo are undo steps.
+- An export is named after its sequence version, and the export form can
+  take a preset in the sequence's shape.
+- Titles' glow, shadow, outline, blur and motion blur are drawn on the
+  GPU, and GPU caches let go when memory runs out.
+- Music search finds a named instrument, without vocals if asked, and
+  sound effect search shows more than one uploader's.
+- The update check and its installer pick the package for the machine's
+  arch.
+- About shows the processor and graphics in use.
+
+### Fixed
+
+- A crash in an audio effect, a decoder or an analysis no longer silences
+  playback or ends the engine: the part is reopened, and left off after
+  repeated crashes.
+- Full-range sources show and export at their code values, chroma is
+  placed where the file says it sits, and software-decoded files export
+  in the viewer's colours.
+- A reversed clip plays its sound to its end and draws each frame once.
+- Place on Top puts a sound-only source on an audio track, an appended
+  clip goes on V1, a clip dropped above the top track gets a new track,
+  and an empty timeline starts with the first clip.
+- Captions close up when a cut takes words out of the speech.
+- A collected project keeps its grade files when its folder moves, and
+  to-do markers are left out of an export between markers.
+- Saved clips that overlapped are mended when the project opens.
+- The UI's symbols draw on every machine.
+- A machine with no VAAPI driver tries it once a session, not at every
+  clip open.
+
+### Known limits
+
+- Tested on NVIDIA GPUs and on Apple M1 under Asahi; reports from AMD and
+  Intel are welcome (#2747).
+- Bouncing refuses HDR and wide-gamut projects, and clips highlights
+  above white.
+- Spell checking needs Hunspell dictionaries installed for the languages
+  you write in.
+- Some LV2 and CLAP plug-ins lose internal state, such as a loaded file or
+  sample, on save and reopen (#1191).
+- Dolby Vision profile 5 clips are flagged at import, but their colours
+  are not converted yet (#1224).
+
 ## 0.2.0 — 2026-10-29
 
 This release adds the Composite page, where a clip's picture is built as a

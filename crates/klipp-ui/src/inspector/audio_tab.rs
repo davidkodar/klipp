@@ -466,22 +466,25 @@ fn show_clip_audio(
         ui.add_space(10.0);
         ui.horizontal(|ui| {
             ui.add_space(14.0);
-            let current_role = clip.role;
-            let role_color = theme.clip_role_color(current_role);
+            let roles = &state.media_pool.roles;
+            let current_role = clip.role.clone();
+            let role_color = theme.role_color(roles, current_role.as_ref());
 
             // Green status dot
             let (dot_rect, _) = ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
             ui.painter().circle_filled(dot_rect.center(), 4.0, role_color);
 
-            let mut new_role = current_role;
+            let mut new_role = current_role.clone();
+            let label = |r: Option<&klipp_core::roles::RoleRef>| r.and_then(|r| roles.label(r)).unwrap_or_else(|| "No Role".into());
             egui::ComboBox::from_id_salt("clip_role")
-                .selected_text(current_role.label())
-                .width(120.0)
+                .selected_text(label(current_role.as_ref()))
+                .width(160.0)
                 .show_ui(ui, |ui| {
-                    for &role in klipp_core::ClipRole::all() {
-                        let rc = theme.clip_role_color(role);
-                        let text = egui::RichText::new(role.label()).color(rc);
-                        ui.selectable_value(&mut new_role, role, text);
+                    ui.selectable_value(&mut new_role, None, "No Role");
+                    for role in roles.listed() {
+                        let rc = theme.role_color(roles, Some(&role));
+                        let text = egui::RichText::new(label(Some(&role))).color(rc);
+                        ui.selectable_value(&mut new_role, Some(role), text);
                     }
                 });
             if new_role != current_role {
@@ -491,14 +494,14 @@ fn show_clip_audio(
         // What the sound was heard as (#2216), when that is not the role
         // it has: a sure label is applied by itself, an unsure one is
         // offered here.
-        let heard = clip.media_id().and_then(|m| state.media_pool.get(&m)).and_then(|m| m.audio_role).filter(|p| p.role != clip.role);
+        let heard = clip.media_id().and_then(|m| state.media_pool.get(&m)).and_then(|m| m.audio_role).filter(|p| klipp_core::roles::RoleRef::from_legacy(p.role) != clip.role);
         if let Some(p) = heard {
             ui.add_space(2.0);
             ui.horizontal(|ui| {
                 ui.add_space(14.0);
                 ui.label(egui::RichText::new(format!("Sounds like {} ({:.0}%)", p.role.label(), p.confidence * 100.0)).small().weak());
                 if ui.small_button("Use as role").on_hover_text("Set the clip's role to what its sound was classified as").clicked() {
-                    cmds.push(AppCommand::SetClipRole { clip_id, role: p.role });
+                    cmds.push(AppCommand::SetClipRole { clip_id, role: klipp_core::roles::RoleRef::from_legacy(p.role) });
                 }
             });
         }
