@@ -210,8 +210,8 @@ pub enum EditCommand {
     /// Set by hand: a proposal from the sound never replaces it (#2216).
     SetClipRole {
         clip_id: ClipId,
-        old: klipp_core::ClipRole,
-        new: klipp_core::ClipRole,
+        old: Option<klipp_core::roles::RoleRef>,
+        new: Option<klipp_core::roles::RoleRef>,
         /// Where the old role came from, put back on undo.
         old_source: klipp_core::RoleSource,
     },
@@ -221,7 +221,7 @@ pub enum EditCommand {
     /// Roles proposed from what clips' sound is (#2216), as (clip, old,
     /// new). Undone, each clip keeps its old role and stays proposed, so
     /// it is not proposed again.
-    ProposeClipRoles { changes: Vec<(ClipId, klipp_core::ClipRole, klipp_core::ClipRole)> },
+    ProposeClipRoles { changes: Vec<(ClipId, Option<klipp_core::roles::RoleRef>, Option<klipp_core::roles::RoleRef>)> },
     /// The sequence's picture size and rate, as (resolution, fps).
     SetSequenceFormat { old: (Resolution, Fps), new: (Resolution, Fps) },
     /// The sequence's markers, the whole list either side: a marker
@@ -471,6 +471,8 @@ pub enum EditCommand {
         item: klipp_media::MediaItem,
         clip_count: usize,
     },
+    /// The project's roles changed (#3211).
+    SetRoles { old: Box<klipp_core::roles::RoleSet>, new: Box<klipp_core::roles::RoleSet> },
     /// A bin made in the media pool: undo takes it away, redo puts it
     /// back.
     CreateBin {
@@ -880,6 +882,7 @@ impl EditCommand {
             EditCommand::SetProjectColour { .. }
             | EditCommand::SetMediaLogFormat { .. }
             | EditCommand::CreateBin { .. }
+            | EditCommand::SetRoles { .. }
             | EditCommand::MoveMediaToBin { .. }
             | EditCommand::SetMediaTags { .. }
             | EditCommand::SetMediaRating { .. }
@@ -957,6 +960,7 @@ impl EditCommand {
             EditCommand::AddMediaToPool { .. } => "Import Media",
             EditCommand::RemoveMediaFromPool { .. } => "Remove Media",
             EditCommand::CreateBin { .. } => "New Bin",
+            EditCommand::SetRoles { .. } => "Edit Roles",
             EditCommand::MoveMediaToBin { .. } => "Move to Bin",
             EditCommand::SetMediaTags { .. } => "Set Tags",
             EditCommand::SetMediaRating { .. } => "Set Rating",

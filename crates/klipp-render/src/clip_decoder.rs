@@ -967,6 +967,10 @@ unsafe fn try_init_cuda(codec_ctx_ptr: *mut ffmpeg_next::ffi::AVCodecContext) ->
 unsafe fn try_init_vaapi(codec_ctx_ptr: *mut ffmpeg_next::ffi::AVCodecContext) -> bool {
     use ffmpeg_next::ffi::*;
 
+    // Failed on every node once: it fails the same way at every open.
+    if GpuVendor::vaapi_unavailable() {
+        return false;
+    }
     let device_type = av_hwdevice_find_type_by_name(c"vaapi".as_ptr());
     if device_type == AVHWDeviceType::AV_HWDEVICE_TYPE_NONE {
         return false;
@@ -992,6 +996,9 @@ unsafe fn try_init_vaapi(codec_ctx_ptr: *mut ffmpeg_next::ffi::AVCodecContext) -
             av_buffer_unref(&mut hw_device_ctx);
             return true;
         }
+    }
+    if GpuVendor::mark_vaapi_unavailable() {
+        info!("Hardware decode: no VAAPI connection on any render node but NVIDIA's; decoding in software, without trying VAAPI again this session");
     }
     false
 }

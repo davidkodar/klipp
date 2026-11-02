@@ -2,6 +2,33 @@
 
 use super::*;
 
+/// How long a window's size, or its being maximised, holds before the
+/// interface follows it. A file dialog, or the compositor making room for
+/// one, can shrink the window for a moment: Auto made the interface 80%
+/// for it, put up the small-screen note, and saved the window as not
+/// maximised for the next start.
+pub(crate) const SETTLE_SECS: f64 = 1.5;
+
+/// A value that counts once it has held for [`SETTLE_SECS`].
+#[derive(Default)]
+pub(crate) struct Settling<T> {
+    seen: Option<(T, f64)>,
+}
+
+impl<T: PartialEq + Copy> Settling<T> {
+    /// Whether `value`, seen at `now` (seconds), has held for
+    /// [`SETTLE_SECS`] since it was first seen.
+    pub(crate) fn held(&mut self, value: T, now: f64) -> bool {
+        match self.seen {
+            Some((v, since)) if v == value => now - since >= SETTLE_SECS,
+            _ => {
+                self.seen = Some((value, now));
+                false
+            }
+        }
+    }
+}
+
 impl KlippApp {
     /// Apply the interface size: a View menu choice is saved first, then
     /// the preference is set on the context whenever it or the screen
@@ -20,10 +47,15 @@ impl KlippApp {
         // and what keeps this key the same once the zoom is set.
         // Whether the window is maximised, kept for the next start (#2944);
         // not in the first seconds, while the start's own maximise lands.
+        let now = ctx.input(|i| i.time);
         if let Some(maximized) = ctx.input(|i| (i.time > 3.0).then(|| i.viewport().maximized).flatten()) {
             if maximized != self.prefs.general.open_maximized {
-                self.prefs.general.open_maximized = maximized;
-                let _ = self.prefs.save();
+                if self.maximized_settling.held(maximized, now) {
+                    self.prefs.general.open_maximized = maximized;
+                    let _ = self.prefs.save();
+                } else {
+                    ctx.request_repaint_after(std::time::Duration::from_secs_f64(SETTLE_SECS));
+                }
             }
         }
         // The window, not the monitor (#2944): a small window on a large
@@ -33,6 +65,13 @@ impl KlippApp {
         self.state.small_window = size.x < SMALL_WINDOW.x || size.y < SMALL_WINDOW.y;
         let key = (pct, size.x.round() as u32, size.y.round() as u32);
         if self.ui_scale_applied == Some(key) {
+            return;
+        }
+        // A new size waits until it holds, but the first one, at the start,
+        // and a size chosen in the View menu apply at once.
+        let chosen = self.ui_scale_applied.is_none_or(|(applied, _, _)| applied != pct);
+        if !chosen && !self.size_settling.held((key.1, key.2), now) {
+            ctx.request_repaint_after(std::time::Duration::from_secs_f64(SETTLE_SECS));
             return;
         }
         self.ui_scale_applied = Some(key);

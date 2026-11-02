@@ -345,6 +345,12 @@
    ],
    "note": "Connect edits the source above the primary storyline at the playhead without moving anything, as Place on Top does. Klipp connect_clip (attach an existing timeline clip) is a different action."
   },
+  "append_edit": {
+   "command": "Append to Storyline",
+   "keys": [
+    "E"
+   ]
+  },
   "play_in_to_out": {
    "command": "Play Selection",
    "keys": [
@@ -725,12 +731,6 @@
    "command": "Minimize",
    "keys": [
     "Ctrl+M"
-   ]
-  },
-  {
-   "command": "Append to Storyline",
-   "keys": [
-    "E"
    ]
   },
   {

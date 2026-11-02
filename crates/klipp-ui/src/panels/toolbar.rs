@@ -804,6 +804,14 @@ impl ToolbarPanel {
             if ui.add(egui::Button::new("Overwrite Edit").shortcut_text(kb.display_for("overwrite_edit"))).clicked() { cmds.push(AppCommand::OverwriteEdit); ui.close_menu(); }
             if ui.add(egui::Button::new("Fit to Fill").shortcut_text(kb.display_for("fit_to_fill_edit"))).clicked() { cmds.push(AppCommand::FitToFillEdit); ui.close_menu(); }
             if ui.add(egui::Button::new("Place on Top").shortcut_text(kb.display_for("place_on_top_edit"))).clicked() { cmds.push(AppCommand::PlaceOnTopEdit); ui.close_menu(); }
+            if ui.add(egui::Button::new("Append to End").shortcut_text(kb.display_for("append_edit"))).on_hover_text("The clips selected in the media pool, else the source, at the end of the main track").clicked() {
+                let targets = state.append_targets();
+                if targets.is_empty() {
+                    state.toast.show("Select a clip in the media pool, or load one in the source viewer, to append it");
+                }
+                cmds.extend(targets.into_iter().map(|media_id| AppCommand::ImportMediaLinked { media_id, on_new_tracks: false }));
+                ui.close_menu();
+            }
             if ui.add(egui::Button::new("Replace Edit").shortcut_text(kb.display_for("replace_edit"))).clicked() { cmds.push(AppCommand::ReplaceEdit); ui.close_menu(); }
             if ui.button("Ripple Overwrite").on_hover_text("Replace the clip under the playhead with the source's marked range; what follows moves by the change in length").clicked() { cmds.push(AppCommand::RippleOverwriteEdit); ui.close_menu(); }
             if ui.button("Lift Edit").clicked() { cmds.push(AppCommand::LiftEdit); ui.close_menu(); }

@@ -412,12 +412,11 @@ fn the_pictures_own_nodes_answer_their_thumbnails() {
         let (frame, _) = draw(&seq, gpu, Inspect::default());
         let finished = klipp_nodes::executor::downsample_to_thumb_u8(&frame, W, H, klipp_nodes::executor::THUMB_W, klipp_nodes::executor::THUMB_H);
         assert_eq!(found.thumbs.get(&placement), Some(&finished), "gpu {gpu}: {:?}", unavailable(&placement));
-        match found.thumbs.get(&gamma) {
-            Some(e) => assert_ne!(Some(e), g, "gpu {gpu}: the effect shows the picture after it"),
-            // On the CPU the effects of an inspected clip run apart from
-            // its grade (#1274): unavailable then, and said, never blank.
-            None => assert!(unavailable(&gamma).is_some(), "gpu {gpu}: {:?}", found.unavailable),
-        }
+        // The effect shows the picture after it, on the GPU's chain and on
+        // the CPU's kernels alike (#3328).
+        let e = found.thumbs.get(&gamma);
+        assert!(e.is_some(), "gpu {gpu}: {:?}", unavailable(&gamma));
+        assert_ne!(e, g, "gpu {gpu}: the effect shows the picture after it");
     }
 }
 
@@ -583,4 +582,35 @@ fn a_frame_blend_and_a_denoise_after_it_are_each_inspected() {
     assert!(found.scope_tap.is_none(), "a tap on a blend that doesn't run");
     let why = found.unavailable.iter().find(|(a, _)| *a == at).map(|(_, w)| w.clone()).expect("said to be unavailable");
     assert!(why.contains("doesn't run"), "{why}");
+}
+
+
+/// #3328: each effect of a clip's stack previews the picture after it, in
+/// turn (a gamma, then a film grain, on a reversed clip), on the GPU and
+/// on the CPU; inspecting them leaves the frame as it is drawn.
+#[test]
+fn each_effect_of_the_stack_previews_the_picture_after_it() {
+    let grain = klipp_effects::BuiltinEffect::FilmGrain { amount: 0.5, size: 1.0, color: 0, shadows: 0.5, seed: 3 };
+    let (seq, id, _) = sequence(NodeGraph::default(), None);
+    let mut seq = seq;
+    let clip = seq.tracks[0].clips.iter_mut().find(|c| c.id == id).unwrap();
+    let mut c = TestClip::of(clip.clone()).effects([klipp_effects::BuiltinEffect::Gamma { gamma: 1.6 }, grain]).build();
+    c.speed = -1.0;
+    *clip = c;
+    let seq = seq.baked_for_render().into_owned();
+    let clip = seq.tracks[0].clips.iter().find(|c| c.id == id).unwrap();
+    let picture = clip.picture_v2().unwrap();
+    let at = |n| InspectAt::out(NodePath::new(Root::Clip { clip: id.0 }, [n]));
+    let source = at(picture.picture.graph.nodes.iter().find(|n| n.type_id.as_str() == klipp_graph_format::lifted::types::SOURCE).unwrap().id);
+    let effects: Vec<InspectAt> = clip.picture_effects().unwrap().iter().map(|e| at(e.node)).collect();
+    assert_eq!(effects.len(), 2);
+    for gpu in [false, true] {
+        let thumbs = effects.iter().cloned().chain([source.clone()]).collect();
+        let (shown, found) = draw(&seq, gpu, Inspect { clip: Some(id), only: Some(id), thumbs: Some(thumbs), ..Default::default() });
+        let (s, first, second) = (found.thumbs.get(&source), found.thumbs.get(&effects[0]), found.thumbs.get(&effects[1]));
+        assert!(first.is_some() && second.is_some(), "gpu {gpu}: {:?}", found.unavailable);
+        assert_ne!(first, s, "gpu {gpu}: the gamma changes the source");
+        assert_ne!(second, first, "gpu {gpu}: the grain changes what the gamma gave");
+        close(&format!("gpu {gpu}: the frame inspected"), &shown, &plain(&seq, gpu));
+    }
 }

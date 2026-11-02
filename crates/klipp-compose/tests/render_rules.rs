@@ -2367,3 +2367,32 @@ fn an_inspected_log_clip_draws_as_it_does_uninspected() {
         }
     }
 }
+
+/// What drawing a paused, inspected log clip costs at 1080p on the GPU,
+/// its identity grade run for its source's preview (#3328). Measured, not
+/// a check: `--ignored --nocapture`.
+#[test]
+#[ignore]
+fn measure_an_inspected_identity_grade_on_the_gpu() {
+    use klipp_graph_format::path::{NodePath, Root};
+    let (w, h) = (1920u32, 1080u32);
+    let log = media(0.0, 2.0);
+    let seq = sequence(vec![vec![log.clone()]]);
+    let source = log.picture_v2().unwrap().picture.graph.nodes.iter().find(|n| n.type_id.as_str() == klipp_graph_format::lifted::types::SOURCE).unwrap().id;
+    let at = klipp_compose::InspectAt::out(NodePath::new(Root::Clip { clip: log.id.0 }, [source]));
+    let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
+    r.set_gpu_enabled(true);
+    let mut run = |thumbs: bool| {
+        let inspect = Inspect { clip: Some(log.id), only: Some(log.id), thumbs: thumbs.then(|| [at.clone()].into_iter().collect()), ..Default::default() };
+        let t = std::time::Instant::now();
+        let (frame, _) = r.render_inspected(&seq, tc(1.0), w, h, &mut Flat::default().slog3(&log, 420), RenderOptions::default(), inspect);
+        assert_eq!(frame.len(), (w * h * 4) as usize);
+        t.elapsed().as_secs_f64() * 1000.0
+    };
+    for thumbs in [false, true] {
+        run(thumbs);
+        let ms: Vec<f64> = (0..10).map(|_| run(thumbs)).collect();
+        let best = ms.iter().copied().fold(f64::MAX, f64::min);
+        eprintln!("MEASURE 1080p log clip, inspected, preview asked {thumbs}: best {best:.1} ms, mean {:.1} ms", ms.iter().sum::<f64>() / ms.len() as f64);
+    }
+}

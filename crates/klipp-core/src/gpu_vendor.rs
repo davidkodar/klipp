@@ -112,13 +112,58 @@ impl GpuVendor {
     pub fn should_try_vaapi(self) -> bool {
         matches!(self, GpuVendor::Amd | GpuVendor::Intel | GpuVendor::Unknown)
     }
+
+    /// Whether a VAAPI connection already failed on every render node in
+    /// this process, so a decoder doesn't try it again.
+    pub fn vaapi_unavailable() -> bool {
+        VAAPI_FAILED.has_failed()
+    }
+
+    /// A VAAPI connection failed on every render node: not tried again
+    /// this session. `true` the first time, for the one line that says so.
+    pub fn mark_vaapi_unavailable() -> bool {
+        VAAPI_FAILED.fail()
+    }
 }
+
+/// A failure that holds for the rest of the process once seen. A machine
+/// whose GPU has no VAAPI driver (Asahi) failed the connection the same
+/// way at every clip open, an error line each time.
+#[derive(Debug, Default)]
+pub struct FailedOnce(std::sync::atomic::AtomicBool);
+
+impl FailedOnce {
+    pub const fn new() -> Self {
+        Self(std::sync::atomic::AtomicBool::new(false))
+    }
+
+    pub fn has_failed(&self) -> bool {
+        self.0.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Record the failure: `true` the first time only.
+    pub fn fail(&self) -> bool {
+        !self.0.swap(true, std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+static VAAPI_FAILED: FailedOnce = FailedOnce::new();
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::fs;
     use std::path::PathBuf;
+
+    #[test]
+    fn a_failure_is_kept_and_said_once() {
+        let vaapi = FailedOnce::new();
+        assert!(!vaapi.has_failed(), "tried at first");
+        assert!(vaapi.fail(), "the first failure is said");
+        assert!(vaapi.has_failed(), "and not tried again");
+        assert!(!vaapi.fail(), "a later one is not said again");
+        assert!(vaapi.has_failed());
+    }
 
     fn write_vendor(base: &std::path::Path, card: u32, vendor_id: &str) {
         let card_dir = base.join(format!("card{card}")).join("device");
