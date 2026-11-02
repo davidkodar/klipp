@@ -911,6 +911,7 @@ pub fn load_otio(path: &Path) -> Result<ImportResult, OtioImportError> {
         brief: None,
         edit_plan: None,
         reviews: Vec::new(),
+        covers: Vec::new(),
         awaiting_refit: false,
         version_of: None,
     };

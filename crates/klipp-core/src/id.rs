@@ -47,3 +47,5 @@ klipp_id!(BusId);
 // A take of an audition (#3209): one of the alternatives a clip's slot
 // on the timeline holds.
 klipp_id!(TakeId);
+// A sequence's cover (#3311): a frame of it, with text, as its thumbnail.
+klipp_id!(CoverId);

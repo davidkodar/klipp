@@ -877,6 +877,7 @@ pub fn frame_snapshot(seq: &Sequence, time: Timecode) -> Sequence {
         brief: None,
         edit_plan: None,
         reviews: Vec::new(),
+        covers: Vec::new(),
         awaiting_refit: false,
         version_of: None,
     }

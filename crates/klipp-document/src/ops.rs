@@ -264,6 +264,7 @@ pub enum Edge {
 mod stretch;
 pub use stretch::{plays_at_speed, stretch_at, stretch_range, StretchTo};
 mod alternatives;
+mod cover;
 pub mod first_cut;
 pub use alternatives::{AlternativesAction, TakeSpec};
 
@@ -1961,6 +1962,30 @@ pub enum Op {
         #[serde(default)]
         clear: bool,
     },
+    /// A cover (#3311), the video's thumbnail: a frame of the sequence
+    /// (`at`) with words over it (`title`: the text, or the title op's
+    /// fields; an empty text takes them away), at a platform's `size`,
+    /// `crop` showing part of the frame. Without `cover` it makes one;
+    /// with it, changes that one, or with `remove` takes it out. One undo
+    /// step.
+    Cover {
+        #[serde(default)]
+        cover: Option<String>,
+        #[serde(default)]
+        remove: bool,
+        #[serde(default)]
+        name: Option<String>,
+        #[serde(default)]
+        at: Option<Anchor>,
+        #[serde(default)]
+        size: Option<String>,
+        #[serde(default)]
+        crop: Option<klipp_timeline::cover::CoverCrop>,
+        #[serde(default)]
+        title: Option<serde_json::Value>,
+        #[serde(default)]
+        with_titles: Option<bool>,
+    },
     /// Auditions (#3209): a clip's slot holding several takes, switched in
     /// place. `create` makes the clip the first take and adds `takes` (a
     /// copy of the clip to vary when none are given); `add` adds `takes`;
@@ -2670,7 +2695,7 @@ pub struct RoleColour {
 pub const OP_NAMES: &[&str] = &[
     "graphics", "vector_path", "connector", "place", "add_track", "remove_track", "set_track", "track_automation", "aux_bus", "send", "trim", "j_cut", "l_cut", "split", "join", "remove", "move", "cut",
     "captions", "audio", "volume", "duck", "lower_third", "set_text", "grade", "effect", "redact",
-    "slip", "slide", "pin", "role", "roles", "match", "matte", "format", "stabilize", "reframe", "zoom", "pan", "follow", "refit", "highlight",
+    "slip", "slide", "pin", "role", "roles", "cover", "match", "matte", "format", "stabilize", "reframe", "zoom", "pan", "follow", "refit", "highlight",
     "ramp", "freeze", "grade_group", "remove_grade_group", "look", "qualify", "zones", "retime", "mark", "stretch", "replace", "alternatives", "track_audio", "clip_audio", "clean_audio",
     "transition", "style", "title", "compose", "camera", "crop", "generator", "depth", "label", "motion_blur",
     "strobe", "remove_silences", "first_cut", "auto_colour", "set_length", "over_edits", "template", "title_fields", "template_link", "recipe", "edit_from_selects", "opacity_mask",
@@ -4436,6 +4461,13 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             };
             Ok((what, EditCommand::SetRange { old_in: seq.in_point, old_out: seq.out_point, new_in, new_out }, vec![]))
         }
+        Op::Cover { cover: named, remove, name, at, size, crop, title, with_titles } => cover::cover(
+            seq,
+            fps,
+            i,
+            named.as_deref(),
+            cover::CoverArgs { remove: *remove, name: name.as_deref(), at: at.as_ref(), size: size.as_deref(), crop: *crop, title: title.as_ref(), with_titles: *with_titles },
+        ),
         Op::Alternatives { action, clip_id, takes, take, name, ripple } => alternatives::alternatives(seq, pool, fps, i, *action, clip_id, takes, take.as_deref(), name.as_deref(), *ripple),
         Op::Retime { clip_id, speed, fit, ripple, interpolation, length_secs, fit_range } => {
             let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
@@ -17077,6 +17109,54 @@ mod tests {
         bare.role_source = klipp_core::RoleSource::ByHand;
         view.apply_forward(&EditCommand::LegacyAppendClip { clip: bare.clone(), track_index: 1 });
         assert_eq!(view.sequences[0].all_clips().find(|c| c.id == bare.id).unwrap().role, None, "none by hand stays none");
+    }
+
+    /// #3311: the cover op makes a cover at a frame, of the sequence's
+    /// shape unless a size is named, its words a title laid out on the
+    /// cover's frame; changes one named by id or name; takes one out; and
+    /// refuses a size Klipp hasn't, a frame past the end, a new cover with
+    /// no frame and a crop on a sequence whose camera moves. Each is one
+    /// undo step.
+    #[test]
+    fn the_cover_op_makes_changes_and_takes_out_covers() {
+        let (mut seq, pool, _, _, _) = fixture();
+        let one = |seq: &Sequence, v: serde_json::Value| resolve(seq, &pool, &[serde_json::from_value(v).unwrap()]);
+        let covers = |plan: &Plan| match &plan.steps[0].edit {
+            EditCommand::SetCovers { new, .. } => new.clone(),
+            other => panic!("{other:?}"),
+        };
+        let made = one(&seq, serde_json::json!({ "op": "cover", "at": { "secs": 2.0 }, "name": "Hook", "title": { "text": "Big News", "size": 140 } })).unwrap();
+        assert!(made.steps[0].what.contains("made") && made.steps[0].what.contains("Big News"), "{}", made.steps[0].what);
+        let c = covers(&made).remove(0);
+        assert_eq!((c.at_secs, c.size.as_str(), c.name.as_str()), (2.0, "youtube", "Hook"));
+        let td = c.text.clone().expect("words");
+        assert_eq!(td.primary_text().map(|t| t.text.as_str()), Some("Big News"));
+        seq.covers = vec![c.clone()];
+
+        let changed = one(&seq, serde_json::json!({ "op": "cover", "cover": "hook", "size": "square", "crop": { "zoom": 2.0, "x": 0.0 }, "title": "" })).unwrap();
+        let c2 = covers(&changed).remove(0);
+        assert_eq!((c2.id, c2.size.as_str(), c2.crop.x, c2.crop.zoom, c2.text.is_none()), (c.id, "square", 0.25, 2.0, true), "by name, the crop kept inside, the words taken away");
+        let by_id = one(&seq, serde_json::json!({ "op": "cover", "cover": c.id.to_string()[..8].to_string(), "remove": true })).unwrap();
+        assert!(covers(&by_id).is_empty());
+
+        let why = |v: serde_json::Value| one(&seq, v).unwrap_err().why;
+        assert!(why(serde_json::json!({ "op": "cover", "at": { "secs": 1.0 }, "size": "poster" })).contains("not a cover size"));
+        assert!(why(serde_json::json!({ "op": "cover", "at": { "secs": 99.0 } })).contains("past the sequence's end"));
+        assert!(why(serde_json::json!({ "op": "cover", "name": "x" })).contains("needs at"));
+        assert!(why(serde_json::json!({ "op": "cover", "cover": "nope", "remove": true })).contains("no cover"));
+        let mut moving = seq.clone();
+        moving.camera.zoom_keyframes = vec![klipp_core::Keyframe { time_secs: 0.0, value: 1.5, interpolation: Default::default(), tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() }];
+        let err = one(&moving, serde_json::json!({ "op": "cover", "cover": "Hook", "crop": { "zoom": 2.0 } })).unwrap_err();
+        assert!(err.why.contains("camera move"), "{}", err.why);
+
+        let mut seqs = vec![seq.clone()];
+        let mut fps = seq.fps;
+        let mut pool2 = pool.clone();
+        let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut pool2, fps: &mut fps };
+        view.apply_forward(&by_id.steps[0].edit);
+        assert!(view.sequences[0].covers.is_empty());
+        view.apply_inverse(&by_id.steps[0].edit);
+        assert_eq!(view.sequences[0].covers, vec![c], "undone");
     }
 
     /// #794: an effect on the timeline goes on every picture clip in one

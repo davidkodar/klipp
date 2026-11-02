@@ -168,6 +168,9 @@ pub struct SequenceJson {
     /// there are none, which is every project saved before there could be.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub reviews: Vec<klipp_timeline::FindingReview>,
+    /// The sequence's covers (#3311); made sound as they are read.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub covers: Vec<klipp_timeline::cover::Cover>,
     /// An aspect version still to be reframed (#2231). Absent when not,
     /// which is every sequence once reframed.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]

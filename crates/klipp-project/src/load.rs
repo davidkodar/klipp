@@ -945,6 +945,7 @@ fn load_sequence_from_json(
         brief: seq_json.brief.clone(),
         edit_plan: seq_json.edit_plan.clone(),
         reviews: seq_json.reviews.clone(),
+        covers: klipp_timeline::cover::checked(seq_json.covers.clone()),
         awaiting_refit: seq_json.awaiting_refit,
         version_of: seq_json.version_of,
         camera: seq_json.camera.clone(),
