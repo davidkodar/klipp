@@ -2877,6 +2877,9 @@ pub struct AppState {
     /// they are reframed (#2211), by sequence, so switching tabs meanwhile
     /// reframes the right one when it is next open.
     pub pending_refits: Vec<PendingRefit>,
+    /// A "Find people now" waiting for the detection model to be
+    /// downloaded before its sequence's files are looked through.
+    pub find_people: Option<klipp_core::SequenceId>,
     /// A delivery's exports still to queue (#2724), each its sequence's,
     /// in order, and the sequence to go back to when they are.
     pub pending_deliveries: Vec<PendingDelivery>,
@@ -5269,6 +5272,7 @@ impl Default for AppState {
             show_apply_brand_kit: false,
             apply_brand_kit: (String::new(), BrandKitParts::default()),
             pending_refits: Vec::new(),
+            find_people: None,
             pending_deliveries: Vec::new(),
             delivery_home: None,
             matched_follow_sync: false,
@@ -7902,5 +7906,20 @@ mod switch_sequence_tests {
             state.sequences[1].last_playhead = None;
         }
         assert!(!state.switch_sequence(1, false), "already shown");
+    }
+}
+
+impl AppState {
+    /// What Append to End puts on the timeline: the media pool's selected
+    /// clips by name, as the pool lists them first, else the clip in the
+    /// source viewer.
+    pub(crate) fn append_targets(&self) -> Vec<MediaId> {
+        let mut picked: Vec<&klipp_media::MediaItem> = self.media_pool.all().filter(|m| self.selected_media_ids.contains(&m.id)).collect();
+        picked.sort_by(|a, b| a.filename.to_lowercase().cmp(&b.filename.to_lowercase()).then_with(|| a.id.0.cmp(&b.id.0)));
+        let selected: Vec<MediaId> = picked.into_iter().map(|m| m.id).collect();
+        if !selected.is_empty() {
+            return selected;
+        }
+        self.source_media_id.into_iter().collect()
     }
 }

@@ -254,3 +254,61 @@ fn every_side_panel_scrolls_to_its_end() {
         }
     }
 }
+
+/// A window shrunk for a moment, as for a file dialog, and back is not a
+/// small window: its size counts only once it has held for
+/// `SETTLE_SECS`, so Auto keeps the interface's size and says nothing,
+/// and the window is not saved as unmaximised for the next start. A size
+/// that holds counts.
+#[test]
+fn a_size_held_for_a_moment_is_not_the_windows() {
+    use super::appearance::{Settling, SETTLE_SECS};
+    let mut size = Settling::default();
+    let (full, small) = ((1920u32, 1080u32), (850u32, 600u32));
+    assert!(!size.held(full, 10.0), "a size is new when first seen");
+    assert!(size.held(full, 10.0 + SETTLE_SECS), "and counts once it holds");
+    assert!(!size.held(small, 20.0), "the file dialog's moment");
+    assert!(!size.held(small, 20.0 + SETTLE_SECS * 0.5), "still a moment");
+    assert!(!size.held(full, 20.0 + SETTLE_SECS * 0.6), "back before it held: the full size is seen again, new");
+    assert!(size.held(full, 20.0 + SETTLE_SECS * 1.7), "and counts once it holds again");
+    assert!(!size.held(small, 30.0) && size.held(small, 30.0 + SETTLE_SECS), "a small size that holds counts");
+    let mut maximized = Settling::default();
+    assert!(!maximized.held(false, 5.0) && !maximized.held(false, 5.5), "unmaximised for a moment");
+    assert!(!maximized.held(true, 5.8), "maximised again before it held");
+}
+
+/// A toast while the small-screen note is up stands above it, not on it:
+/// drawn over it, both read as nothing. With no note it sits where it did.
+#[test]
+fn a_toast_stands_above_the_small_screen_note() {
+    let mut state = AppState { small_screen_note: Some(80), ..Default::default() };
+    let theme = KlippTheme::default();
+    let ctx = egui::Context::default();
+    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1366.0, 768.0));
+    let mut toast = crate::widgets::toast::ToastState::default();
+    toast.visible_duration = 5.0;
+    toast.show("Clip placed on Video 2");
+    let mut shown = Vec::new();
+    for k in 0..4 {
+        let out = ctx.run(input(screen, Vec::new(), 0.5 + k as f64 * 0.2), |ctx| {
+            crate::welcome::show_small_screen_note(ctx, &mut state, &theme);
+            let top = ctx.memory(|m| m.area_rect(egui::Id::new(crate::welcome::SMALL_SCREEN_NOTE_ID))).map(|r| r.top());
+            let _ = toast.render(ctx, &theme, top);
+        });
+        shown = texts(&out);
+    }
+    let rect = |t: &str| shown.iter().find(|(s, _)| s == t).unwrap_or_else(|| panic!("{t}: {shown:?}")).1;
+    let (note, said) = (rect("Small screen \u{2014} interface set to 80%"), rect("Clip placed on Video 2"));
+    assert!(said.bottom() <= note.top(), "the toast {said:?} above the note {note:?}");
+    // No note: where a toast always went.
+    let ctx = egui::Context::default();
+    let mut alone = Vec::new();
+    for k in 0..4 {
+        let out = ctx.run(input(screen, Vec::new(), 0.5 + k as f64 * 0.2), |ctx| {
+            let _ = toast.render(ctx, &theme, None);
+        });
+        alone = texts(&out);
+    }
+    let low = alone.iter().find(|(s, _)| s == "Clip placed on Video 2").expect("drawn").1;
+    assert!(low.bottom() > said.bottom(), "lower without the note: {low:?} vs {said:?}");
+}

@@ -102,13 +102,12 @@ impl KlippApp {
 
     /// The source's picture on the nearest video track above the patched
     /// one that is free over its span, or on a new track on top. Its sound
-    /// is left out: what is under it keeps its own.
+    /// is left out: what is under it keeps its own. A source that is sound
+    /// only, music or an effect, goes on the nearest audio track below the
+    /// patched one that is free over its span, or a new one at the foot:
+    /// it was refused, and the music a person had loaded went nowhere.
     fn place_on_top_edit(&mut self) {
         let Some((mid, item)) = self.editable_source() else { return };
-        if item.video_codec.is_empty() {
-            self.state.toast.show("Place on Top lays a picture; this source is sound only");
-            return;
-        }
         self.adopt_first_clip_format(&item);
         let id = place_on_top(&mut self.state, mid, &item);
         self.finish_source_edit(id);
@@ -298,16 +297,32 @@ fn place_on_top(state: &mut AppState, mid: MediaId, item: &klipp_media::MediaIte
     let (t_in, t_out, s_in, s_out) = placement_timecodes(state, item, &p);
     let seq_idx = state.active_sequence_idx;
     let seq = &state.sequences[seq_idx];
-    let dest = match place_on_top_track(seq, t_in, t_out) {
-        Some(i) => i,
-        None => {
-            let n = seq.tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Video).count();
-            state.sequences[seq_idx].add_video_track(format!("Video {}", n + 1));
-            0
+    let sound_only = item.video_codec.is_empty();
+    let dest = if sound_only {
+        match place_sound_on_top_track(seq, t_in, t_out) {
+            Some(i) => i,
+            None => {
+                let n = seq.tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Audio).count();
+                state.sequences[seq_idx].add_audio_track(format!("Audio {}", n + 1));
+                state.sequences[seq_idx].tracks.len() - 1
+            }
+        }
+    } else {
+        match place_on_top_track(seq, t_in, t_out) {
+            Some(i) => i,
+            None => {
+                let n = seq.tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Video).count();
+                state.sequences[seq_idx].add_video_track(format!("Video {}", n + 1));
+                0
+            }
         }
     };
     let mut clip = klipp_timeline::Clip::media(mid, t_in, t_out, s_in, s_out);
-    clip.source_rotation = item.source_rotation;
+    if sound_only {
+        super::media::starting_role_on(&mut clip, item);
+    } else {
+        clip.source_rotation = item.source_rotation;
+    }
     let id = clip.id;
     KlippApp::overwrite_insert_clip_on_track(&mut state.sequences[seq_idx].tracks[dest], clip);
     advance_past(state, id);
@@ -340,6 +355,21 @@ pub(super) fn place_on_top_track(seq: &klipp_timeline::Sequence, t_in: klipp_cor
         .unwrap_or(seq.tracks.len());
     let free = |t: &klipp_timeline::Track| t.kind == TrackKind::Video && !t.locked && !t.clips.iter().any(|c| !c.kind.is_gap() && c.timeline_in < t_out && t_in < c.timeline_out);
     (0..base).rev().find(|&i| free(&seq.tracks[i]))
+}
+
+/// Where Place on Top lays a sound-only source over `t_in..t_out`: the
+/// nearest audio track below the patched one (the first, with none
+/// patched), the patched one included, that is free over that span; or
+/// `None` for a new track at the foot.
+pub(super) fn place_sound_on_top_track(seq: &klipp_timeline::Sequence, t_in: klipp_core::Timecode, t_out: klipp_core::Timecode) -> Option<usize> {
+    use klipp_timeline::TrackKind;
+    let base = seq
+        .tracks
+        .iter()
+        .position(|t| t.kind == TrackKind::Audio && t.source_patch)
+        .or_else(|| seq.tracks.iter().position(|t| t.kind == TrackKind::Audio))?;
+    let free = |t: &klipp_timeline::Track| t.kind == TrackKind::Audio && !t.locked && !t.clips.iter().any(|c| !c.kind.is_gap() && c.timeline_in < t_out && t_in < c.timeline_out);
+    (base..seq.tracks.len()).find(|&i| free(&seq.tracks[i]))
 }
 
 #[cfg(test)]
@@ -421,6 +451,33 @@ mod advance_tests {
         assert_eq!(in2, out1, "the second starts where the first ends");
         assert_eq!(t2, t1, "on the same track");
         assert_eq!(state.playhead, out2, "the playhead at the second's end");
+    }
+
+    /// A sound-only source, music, laid by Place on Top: on the first audio
+    /// track while it is free there, then on a new audio track at the foot
+    /// over sound already placed; never on a video track. It was refused,
+    /// and the music went nowhere.
+    #[test]
+    fn place_on_top_lays_music_on_an_audio_track() {
+        let mut state = AppState::default();
+        let mut music = klipp_media::MediaItem::synthetic_for_test("/tmp/place-on-top-music.mp3".into(), None);
+        music.duration = Timecode::from_secs_f64(4.0, 24);
+        music.video_codec = String::new();
+        music.has_audio = true;
+        let mid = state.media_pool.add(music.clone());
+        let audio_tracks = |state: &AppState| state.sequence().tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Audio).count();
+        let before = audio_tracks(&state);
+        state.playhead = Timecode::from_secs_f64(0.0, 24);
+        let first = place_on_top(&mut state, mid, &music);
+        let track_of = |state: &AppState, id: ClipId| state.sequence().tracks.iter().find(|t| t.find_clip(id).is_some()).map(|t| t.kind);
+        assert_eq!(track_of(&state, first), Some(klipp_timeline::TrackKind::Audio), "on an audio track");
+        assert_eq!(audio_tracks(&state), before.max(1), "the free audio track used, none made while one is free");
+        // Over it, from the same time: a new audio track at the foot.
+        state.playhead = Timecode::from_secs_f64(0.0, 24);
+        let second = place_on_top(&mut state, mid, &music);
+        assert_eq!(track_of(&state, second), Some(klipp_timeline::TrackKind::Audio));
+        assert_eq!(audio_tracks(&state), before.max(1) + 1, "a new audio track for the overlap");
+        assert_eq!(state.sequence().tracks.last().and_then(|t| t.find_clip(second)).map(|c| c.id), Some(second), "at the foot");
     }
 }
 

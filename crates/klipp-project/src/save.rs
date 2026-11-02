@@ -278,6 +278,7 @@ fn project_files(
             parent_id: b.parent_id.map(|p| p.to_string()),
         }).collect(),
         smart_bins: media_pool.smart_bins.clone(),
+        roles: (media_pool.roles != klipp_core::roles::RoleSet::built_in()).then(|| media_pool.roles.clone()),
     };
     let manifest_json = serde_json::to_string_pretty(&manifest)
         .map_err(|e| format!("Failed to serialize media manifest: {e}"))?;
@@ -607,7 +608,8 @@ fn clip_to_json(c: &klipp_timeline::Clip, project_dir: &Path) -> ClipJson {
             }).collect())
         },
         effect_keyframes,
-        role: if c.role == klipp_core::ClipRole::default() { None } else { Some(c.role) },
+        role: None,
+        role_id: (c.role.is_some() || !c.role_source.is_unset()).then(|| c.role.clone()),
         role_source: c.role_source,
         matched_to: c.matched_to,
         param_modifiers,

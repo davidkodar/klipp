@@ -93,7 +93,7 @@ A title layer's position, opacity, text colour, size, tracking and line spacing,
 - Superscript, subscript, underline and strikethrough as style runs on a selection.
 - Paragraphs justified, and text aligned within its box; line breaks chosen by shaped width, avoiding one-word last lines.
 - Thai, Lao, Khmer and Burmese, written without spaces between words, wrap and justify between words, found with dictionaries.
-- A glyph a font lacks falls back to a font that has it; colour emoji are drawn.
+- A glyph a font lacks falls back to a font that has it. Colour emoji and colour fonts are drawn: bitmap glyphs (CBDT, as Noto Color Emoji has them, and sbix, as Apple's fonts do) and layered vector glyphs (COLR version 0). A font with several kinds draws its vector glyphs first.
 
 ## Fills, Blends and Masks
 
