@@ -264,6 +264,7 @@ pub enum Edge {
 mod stretch;
 pub use stretch::{plays_at_speed, stretch_at, stretch_range, StretchTo};
 mod alternatives;
+pub mod first_cut;
 pub use alternatives::{AlternativesAction, TakeSpec};
 
 /// How a title's text is set, for `title` and `style` (#1686): its
@@ -2522,6 +2523,36 @@ pub enum Op {
         #[serde(default)]
         smooth_cut: bool,
     },
+    /// First Cut (#3308): a talking-head rough cut as one undo step, made of
+    /// the edits this list has. Wherever a clip is heard speaking, its
+    /// pauses (`silences`, by `tightness`: gentle, normal or tight), filler
+    /// words (`fillers`, by the transcript's language) and retakes
+    /// (`retakes`: a line said again within three sentences keeps its last
+    /// take) are cut from every unlocked track; then every other piece of
+    /// a shot is pushed in (`punch`, refit's punch), captions are made
+    /// from the transcript (`captions`, where there are none), and `music`
+    /// (a media id) goes under on a new audio track, ducked. Its reply
+    /// lists the changes, numbered: `exclude` leaves those out, so the
+    /// same op on the sequence as it was takes one change back. Refused
+    /// where no clip is heard speaking.
+    FirstCut {
+        #[serde(default = "default_true")]
+        silences: bool,
+        #[serde(default = "default_true")]
+        fillers: bool,
+        #[serde(default = "default_true")]
+        retakes: bool,
+        #[serde(default = "default_true")]
+        punch: bool,
+        #[serde(default = "default_true")]
+        captions: bool,
+        #[serde(default)]
+        music: Option<MediaId>,
+        #[serde(default)]
+        tightness: first_cut::Tightness,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        exclude: Vec<usize>,
+    },
     /// A starting grade for each of `clips` (one or a selection): its
     /// exposure, white balance and contrast measured over three frames of
     /// the shot and its primaries moved toward neutral (or the brief's
@@ -2638,7 +2669,7 @@ pub const OP_NAMES: &[&str] = &[
     "slip", "slide", "pin", "role", "roles", "match", "matte", "format", "stabilize", "reframe", "zoom", "pan", "follow", "refit", "highlight",
     "ramp", "freeze", "grade_group", "remove_grade_group", "look", "qualify", "zones", "retime", "mark", "stretch", "replace", "alternatives", "track_audio", "clip_audio", "clean_audio",
     "transition", "style", "title", "compose", "camera", "crop", "generator", "depth", "label", "motion_blur",
-    "strobe", "remove_silences", "auto_colour", "set_length", "over_edits", "template", "title_fields", "template_link", "recipe", "edit_from_selects", "opacity_mask",
+    "strobe", "remove_silences", "first_cut", "auto_colour", "set_length", "over_edits", "template", "title_fields", "template_link", "recipe", "edit_from_selects", "opacity_mask",
 ];
 
 pub use klipp_timeline::ShadowSpec;
@@ -3952,6 +3983,20 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
         Op::RemoveSilences { clip_id, from, to, min_silence, padding, ripple, smooth_cut } => {
             let (ops, what) = remove_silences_ops(seq, pool, fps, i, transcripts, clip_id, from.as_ref(), to.as_ref(), *min_silence, *padding, *ripple, *smooth_cut)?;
             as_one_step(seq, pool, i, transcripts, &ops, "Remove Silences", what)
+        }
+        Op::FirstCut { silences, fillers, retakes, punch, captions, music, tightness, exclude } => {
+            let steps = first_cut::Steps { silences: *silences, fillers: *fillers, retakes: *retakes, punch: *punch, captions: *captions, music: *music, tightness: *tightness };
+            let changes = first_cut::plan(seq, pool, transcripts, &steps);
+            if changes.is_empty() {
+                return Err(refuse(i, "no clip is heard speaking", "First Cut cuts speech: put a clip with speech on the timeline, and transcribe or analyze it"));
+            }
+            if let Some(bad) = exclude.iter().find(|&&x| x >= changes.len()) {
+                return Err(refuse(i, format!("there is no change {bad}"), format!("exclude counts the changes from 0 to {}", changes.len() - 1)));
+            }
+            let ops = first_cut::ops(seq, &changes, exclude, music.as_ref());
+            let kept = changes.len() - exclude.len();
+            let what = format!("First Cut: {kept} of {} changes\n{}", changes.len(), first_cut::listed(&changes));
+            as_one_step(seq, pool, i, transcripts, &ops, "First Cut", what)
         }
         Op::SetLength { clips, frames, keep, ripple } => {
             let (ops, what) = set_length_ops(seq, fps, i, clips, *frames, *keep, *ripple)?;

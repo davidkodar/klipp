@@ -866,6 +866,16 @@ exist until the plan runs.
 - `remove_silences {clip_id, from?, to?, min_silence?, padding?, ripple?, smooth_cut?}`:
   the measured pauses taken out of a clip (its file's sound analysed),
   each but its padding; one undo.
+- `first_cut {silences?, fillers?, retakes?, punch?, captions?, music?, tightness?, exclude?}`:
+  a talking-head rough cut as one undo step, made of the ops above.
+  Wherever a clip is heard speaking, its pauses (tightness gentle,
+  normal or tight), filler words and retakes (a line said again within
+  three sentences keeps its last take) are cut from every unlocked
+  track. Then every other piece of a shot is pushed in (refit's punch),
+  captions come from the transcript where there are none, and `music` (a
+  media id) goes under on a new audio track, ducked. The reply numbers
+  the changes; `exclude` leaves those out, so the same op on the
+  sequence as it was takes one change back. Analyze the speech first.
 - `auto_colour {clips, strength?}`: a starting grade for each clip:
   exposure, white balance and contrast measured and set toward neutral
   (or the brief's look); a flat shot's contrast stretched within a
