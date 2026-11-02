@@ -19,7 +19,7 @@
 //! the chain's buffer, nothing read back. Its key alone names the pair
 //! there; whether its motion was followed is read from its count without
 //! waiting, by the frame after.
-use super::{poll_until_mapped, GpuEffectsPipeline};
+use super::GpuEffectsPipeline;
 use crate::flow::{self, Interpolated};
 use wgpu::util::DeviceExt;
 
@@ -375,8 +375,8 @@ impl GpuEffectsPipeline {
             let _ = tx.send(r);
         });
         let mut readback = self.readbacks.begin(frame_bytes);
-        if !matches!(poll_until_mapped(&device, &rx), Ok(Ok(()))) {
-            self.mark_device_lost("flow readback failed");
+        if !self.wait_mapped(&staging, &rx, "flow readback") {
+            self.flow_gpu.as_mut().expect("made above").frame = Some((kept_bytes, out, staging));
             return None;
         }
         readback.succeeded = true;

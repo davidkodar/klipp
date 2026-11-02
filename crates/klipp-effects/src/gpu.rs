@@ -688,6 +688,14 @@ pub struct GpuEffectsPipeline {
     /// ring for the same reason).
     batch: std::cell::RefCell<Option<wgpu::CommandEncoder>>,
     batching: std::cell::Cell<bool>,
+    /// The next readback fails as a timed-out one would: a test's way
+    /// to make one frame fail (#3406).
+    fail_next_readback: std::cell::Cell<bool>,
+    /// Readbacks failed since the last that worked, stack frames failed
+    /// since the last that didn't, and whether this frame has (#3406).
+    failed_readbacks_in_row: std::cell::Cell<u32>,
+    failed_frames_in_row: std::cell::Cell<u32>,
+    frame_failed: std::cell::Cell<bool>,
     /// The frame being timed, and the last one's times (#3207).
     timing: std::cell::RefCell<Option<timing::Timing>>,
     stack_params_ring: Vec<wgpu::Buffer>,
@@ -794,6 +802,16 @@ impl Drop for WorkgroupCapForTest {
 /// but short enough that a genuine hang gets flagged before the
 /// engine watchdog notices.
 pub const MAP_POLL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// How many stack frames may fail in a row before the GPU is turned off
+/// for the session (#3406): a device failing every one would otherwise
+/// cost [`MAP_POLL_TIMEOUT`] a frame for as long as it plays. A frame
+/// counts once, however many of its readbacks fail.
+pub const FAILED_FRAMES_TO_TURN_OFF: u32 = 3;
+
+/// The same for readbacks outside a stack frame, which have no frame to
+/// count by: three frames' worth of readbacks.
+pub const FAILED_READBACKS_TO_TURN_OFF: u32 = 9;
 
 /// Fine-grained "inside which GPU call" marker, parallel to the
 /// engine's `ENGINE_STAGE` waypoint. The grade-path stall we chase
@@ -1018,7 +1036,9 @@ impl GpuEffectsPipeline {
         // a pipeline rebuilt after a transient error gets a fresh
         // start; a genuinely dead device re-flags on the next error.
         let device_lost = ctx.device_lost_flag();
-        device_lost.store(false, Ordering::SeqCst);
+        if crate::gpu_context::gpu_turned_off().is_none() {
+            device_lost.store(false, Ordering::SeqCst);
+        }
         Self::build_from_device_queue(ctx.device(), ctx.queue(), device_lost)
     }
 
@@ -1062,14 +1082,51 @@ impl GpuEffectsPipeline {
         self.device_lost.load(Ordering::SeqCst)
     }
 
-    /// Mark the pipeline dead. Intended for internal call sites that
-    /// observe a sync failure (e.g. `download()` when `map_async`
-    /// returns Err) that wgpu's async callbacks may not have flagged
-    /// yet.
-    fn mark_device_lost(&self, ctx: &str) {
-        if !self.device_lost.swap(true, Ordering::SeqCst) {
-            error!("GPU effects: {ctx} — disabling GPU effects");
+    /// The next readback fails as one the GPU never finished would: for
+    /// a test of what the frame after a failed one does (#3406).
+    #[doc(hidden)]
+    pub fn fail_next_readback(&self) {
+        self.fail_next_readback.set(true);
+    }
+
+    /// Wait for `staging`'s map. A map that fails costs this frame only
+    /// (#3406): the map is called off, so the buffer is free for the
+    /// next frame, and the GPU stays on. A device that is really lost
+    /// says so through its own callback, which turns the GPU off; so do
+    /// [`FAILED_FRAMES_TO_TURN_OFF`] failed frames in a row, or
+    /// [`FAILED_READBACKS_TO_TURN_OFF`] failed readbacks.
+    pub(crate) fn wait_mapped(
+        &self,
+        staging: &wgpu::Buffer,
+        rx: &std::sync::mpsc::Receiver<Result<(), wgpu::BufferAsyncError>>,
+        what: &str,
+    ) -> bool {
+        let result = if self.fail_next_readback.take() {
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+        } else {
+            poll_until_mapped(&self.device, rx)
+        };
+        if matches!(result, Ok(Ok(()))) {
+            self.failed_readbacks_in_row.set(0);
+            return true;
         }
+        staging.unmap();
+        let readbacks = self.failed_readbacks_in_row.get() + 1;
+        self.failed_readbacks_in_row.set(readbacks);
+        if !self.frame_failed.replace(true) {
+            self.failed_frames_in_row.set(self.failed_frames_in_row.get() + 1);
+        }
+        let frames = self.failed_frames_in_row.get();
+        if frames < FAILED_FRAMES_TO_TURN_OFF && readbacks < FAILED_READBACKS_TO_TURN_OFF {
+            tracing::warn!("GPU effects: {what} map_async failed: {result:?}; this frame falls back, the next one tries the GPU again");
+            return false;
+        }
+        let why = format!("{frames} GPU frames and {readbacks} readbacks failed in a row, the last {what}: {result:?}");
+        self.device_lost.store(true, Ordering::SeqCst);
+        if crate::gpu_context::turn_gpu_off(why.clone()) {
+            error!("GPU effects: {why} — disabling GPU effects");
+        }
+        false
     }
 
     /// Ensure GPU buffers are large enough for the frame.
@@ -1575,24 +1632,15 @@ impl GpuEffectsPipeline {
         });
 
         mark_gpu_stage(GpuStage::FlushChain);
-        let result = match poll_until_mapped(&self.device, &rx) {
-            Ok(Ok(())) => {
-                let data = buffer_slice.get_mapped_range();
-                let result = read(&data);
-                drop(data);
-                staging.unmap();
-                readback.succeeded = true;
-                Some(result)
-            }
-            other => {
-                // `map_async` signalled an error (or the channel dropped
-                // without delivering one). That means the GPU state is
-                // suspect: either the buffer wasn't mapped or the device
-                // is on its way out. Flip the lost flag so subsequent
-                // calls short-circuit before they touch the device.
-                self.mark_device_lost(&format!("buffer map_async failed: {other:?}"));
-                None
-            }
+        let result = if self.wait_mapped(staging, &rx, "buffer") {
+            let data = buffer_slice.get_mapped_range();
+            let result = read(&data);
+            drop(data);
+            staging.unmap();
+            readback.succeeded = true;
+            Some(result)
+        } else {
+            None
         };
         mark_gpu_stage(GpuStage::Idle);
         result

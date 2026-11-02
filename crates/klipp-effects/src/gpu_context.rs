@@ -368,6 +368,21 @@ pub fn validation_errors() -> u64 {
     VALIDATION_ERRORS.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+/// Why the GPU was turned off for this session on a device that never
+/// reported itself lost (#3406). Set once; it stays off from then on.
+static GPU_TURNED_OFF: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// Why the GPU was turned off for this session, if it was.
+pub fn gpu_turned_off() -> Option<&'static str> {
+    GPU_TURNED_OFF.get().map(String::as_str)
+}
+
+/// Turn the GPU off for this session, once. `true` the first time, for
+/// the one line that says so.
+pub(crate) fn turn_gpu_off(why: String) -> bool {
+    GPU_TURNED_OFF.set(why).is_ok()
+}
+
 /// Out-of-memory errors the device reported this session (#2394).
 static OUT_OF_MEMORY_ERRORS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
