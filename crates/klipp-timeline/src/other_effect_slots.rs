@@ -133,7 +133,10 @@ mod tests {
         ] {
             let seq: Sequence = serde_json::from_str(bytes).unwrap();
             let written: serde_json::Value = serde_json::from_str(&serde_json::to_string(&seq).unwrap()).unwrap();
-            assert_eq!(written, serde_json::from_str::<serde_json::Value>(bytes).unwrap());
+            // The clip's role is written as a project role's id since #3348:
+            // the old name these bytes hold reads as it, and is written so.
+            let now = bytes.replace(r#""role":"Dialogue""#, r#""role":"dialogue""#);
+            assert_eq!(written, serde_json::from_str::<serde_json::Value>(&now).unwrap());
             let track = &seq.tracks[0];
             assert_eq!(track.effects.video_effects_enabled(), flags);
             let clip = &track.clips[0];

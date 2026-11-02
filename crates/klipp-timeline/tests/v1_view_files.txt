@@ -80,6 +80,8 @@ klipp-graph-lift/src/to_v2_tests.rs
 klipp-graph-lift/src/unlift.rs
 klipp-graph-lift/src/v1/modifier.rs
 klipp-graph-lift/tests/effect_entry_readers.rs
+# Collect's report (#3241): a track's frei0r effects, which only the v1 view reads (a track's effects have no picture graph yet).
+klipp-project/src/collect_report.rs
 klipp-project/src/grade_stills.rs
 klipp-project/src/load.rs
 klipp-project/src/mlt_import.rs

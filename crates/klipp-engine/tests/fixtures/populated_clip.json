@@ -210,7 +210,7 @@
       }
     ]
   },
-  "role": "Dialogue",
+  "role": "dialogue",
   "param_modifiers": {
     "Opacity": {
       "modifiers": []
