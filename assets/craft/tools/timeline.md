@@ -112,6 +112,25 @@ Read a subtitle file at an absolute path onto a new subtitle track: .srt, .vtt, 
 
 Write the subtitle clips (the text clips when there are none) to an absolute path, in the format its extension names: .srt, .vtt, .ass, .ssa, .ttml (IMSC), .scc (608) or .stl (EBU). format, if given, must match the extension.
 
+## klipp_publish_kit
+
+What a video needs beside it to publish: chapters, a description, tags and its caption files, as plain text. Nothing is uploaded, and it changes nothing in the project. It only runs when asked.
+
+Without `path` it reads back a draft and writes nothing. With `path`, the video's absolute path, it writes `film.chapters.txt`, `film.description.txt`, `film.tags.txt` and the subtitle tracks' SRT files beside it. A file already there stops it, nothing written, unless `overwrite` is true.
+
+Chapters come from the markers of kind Chapter. With none, they are proposed from the pauses in the speech. Klipp writes no prose, so its description and tags are only drafts put together from the brief and the words heard, and proposed chapters and drafts are written with `.draft` in the name (`film.description.draft.txt`). The reply says which are drafts with `chapters_from`, `description_is_draft` and `tags_are_draft`.
+
+Do better than the draft: read it and the transcript, then call again with `path` and your own `chapters` (each `secs`, `label`), `description` and `tags`; those are written without `.draft`. Show the person the text before calling it done.
+
+Arguments:
+- `path`: The video's absolute path. Left out, nothing is written.
+- `from_secs`, `to_secs`: The exported range, timeline seconds; chapter times start from `from_secs`. A range writes no captions, since those are the whole sequence's.
+- `chapters`, `description` (at most 5000 characters), `tags` (at most 15): Your text in place of the draft.
+- `captions`: Write the subtitle tracks' files (default true). Translate a language first with klipp_translate_captions.
+- `overwrite`: Replace files already there (default false).
+
+`warnings` says what would keep a chapter list from showing on YouTube: under 3 chapters, the first not at 0:00, one under 10 s. These are reported and not fixed.
+
 ## klipp_update_marker
 
 Change a marker's label, note, colour or kind, by its id from klipp_list_markers. Mark a todo done by changing its kind or colour, rather than removing the note.

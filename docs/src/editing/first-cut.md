@@ -38,7 +38,23 @@ Pauses, filler words and retakes are found in the transcript and the measured
 sound. The dialog names any clips with speech that aren't transcribed yet, and
 **Transcribe them** does that first.
 
+## Taking one change back
+
+After a First Cut, the **First Cut changes** panel lists every change it made,
+with its time: each pause, filler word and retake, and the punch-in, captions
+and music. Click a change to go to it on the timeline.
+
+Untick a change to take just that one back; tick it again to put it back. Each
+is its own undo step. The cut is made again without the changes you untick,
+from the timeline as it was before First Cut, so the rest stays exactly as it
+was.
+
+Once you edit the timeline after First Cut, the list can't be changed any more,
+since swapping the cut would lose your edit. Undo still takes First Cut back.
+The list is kept until Klipp closes; it isn't saved with the project.
+
 ## With an assistant
 
 The assistant's `first_cut` operation makes the same cut from the same
-choices. Its reply lists each change, numbered.
+choices. Its reply lists each change, numbered, and `exclude` leaves changes
+out, as unticking them does.

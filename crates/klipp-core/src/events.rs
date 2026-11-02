@@ -5628,6 +5628,20 @@ pub struct ControlShared {
     /// (#2758): a frame read that views a channel or a node puts this
     /// back afterwards.
     pub viewing: std::sync::Mutex<ViewerShows>,
+    /// The window's size in points at the last window capture, set before
+    /// the capture is written.
+    pub window_view: std::sync::Mutex<Option<WindowView>>,
+}
+
+/// A window's size in the points its input is measured in, and the
+/// interface size that makes them differ from the system's. The Auto
+/// interface size depends on the window's size, so a harness can't work
+/// this out from the compositor's numbers.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct WindowView {
+    pub width_points: f32,
+    pub height_points: f32,
+    pub zoom: f32,
 }
 
 /// The viewer's channel and the node it shows in place of the finished

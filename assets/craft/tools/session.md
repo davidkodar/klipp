@@ -181,7 +181,7 @@ Arguments:
 
 ## klipp_window_screenshot
 
-The whole Klipp window as the person sees it, panels and dialogs included, as a PNG (1600 wide by default): for checking a layout, a panel or a dialog. The viewer in it is drawn through its monitor LUT and overlays, so measure colour with klipp_screenshot or klipp_frame_stats, never from this.
+The whole Klipp window as the person sees it, panels and dialogs included, as a PNG (1600 wide by default): for checking a layout, a panel or a dialog. The viewer in it is drawn through its monitor LUT and overlays, so measure colour with klipp_screenshot or klipp_frame_stats, never from this. The reply gives the image's `width` and `height`, and the window's `width_points`, `height_points` and `zoom`: the interface size changes with the window, so window positions are in points, not the desktop's numbers. A position in the image is `x * width_points / width`, `y * height_points / height`.
 
 ## klipp_orient
 
