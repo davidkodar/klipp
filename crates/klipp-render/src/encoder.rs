@@ -140,7 +140,14 @@ fn hardware_video_encoders(codec: &ExportVideoCodec, width: u32, height: u32, wa
         ExportVideoCodec::Av1 => &["av1_nvenc", "av1_amf", "av1_vaapi"],
         _ => &[],
     };
-    names.iter().copied().filter(|name| ffmpeg_next::encoder::find_by_name(name).is_some()).collect()
+    names.iter().copied().filter(|name| encoder_can_exist_here(name) && ffmpeg_next::encoder::find_by_name(name).is_some()).collect()
+}
+
+/// AMD ships AMF's runtime for x86-64 only. FFmpeg may still list the
+/// encoder elsewhere, and opening it there only logs that the library is
+/// missing (#3407).
+fn encoder_can_exist_here(name: &str) -> bool {
+    cfg!(target_arch = "x86_64") || !name.ends_with("_amf")
 }
 
 /// Every encoder a render tries for `codec`, best first: each hardware
@@ -2416,6 +2423,17 @@ mod tests {
             let only = video_encoder_attempts(&ExportVideoCodec::H264, w, h, deep, &nodes);
             assert_eq!(only.iter().map(|a| a.name).collect::<Vec<_>>(), ["libx264"], "{w}x{h} 10-bit={deep}");
         }
+    }
+
+    #[test]
+    fn amf_is_only_tried_where_its_runtime_can_exist() {
+        ffmpeg_next::init().unwrap();
+        for codec in [ExportVideoCodec::H264, ExportVideoCodec::H265, ExportVideoCodec::Av1] {
+            let has_amf = hardware_video_encoders(&codec, 1920, 1080, false).iter().any(|n| n.ends_with("_amf"));
+            assert!(cfg!(target_arch = "x86_64") || !has_amf, "{codec:?}");
+        }
+        assert_eq!(encoder_can_exist_here("h264_amf"), cfg!(target_arch = "x86_64"));
+        assert!(encoder_can_exist_here("h264_nvenc") && encoder_can_exist_here("h264_vaapi"));
     }
 
     /// #555: AMF was given NVENC's options, `rc vbr` and `preset p5`,

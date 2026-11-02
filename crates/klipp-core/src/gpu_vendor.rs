@@ -113,6 +113,21 @@ impl GpuVendor {
         matches!(self, GpuVendor::Amd | GpuVendor::Intel | GpuVendor::Unknown)
     }
 
+    /// What a decoder logs, once, when VAAPI did not open and it goes on in
+    /// software.
+    pub const VAAPI_FALLBACK_LINE: &'static str =
+        "Hardware decode: no VAAPI connection opened on this machine; decoding in software, without trying VAAPI again this session";
+
+    /// What startup can say about VAAPI without opening a connection:
+    /// where the first clip will try it, or that there is nowhere to.
+    pub fn vaapi_startup_line(nodes: &[std::path::PathBuf]) -> String {
+        if nodes.is_empty() {
+            return "Hardware decode: no render node for VAAPI on this machine".to_owned();
+        }
+        let nodes: Vec<String> = nodes.iter().map(|n| n.display().to_string()).collect();
+        format!("Hardware decode: the first clip tries VAAPI on {}", nodes.join(", "))
+    }
+
     /// Whether a VAAPI connection already failed on every render node in
     /// this process, so a decoder doesn't try it again.
     pub fn vaapi_unavailable() -> bool {
@@ -258,6 +273,15 @@ mod tests {
         write_vendor(&base, 1, "0x1002");
         assert_eq!(GpuVendor::detect_in(&base), GpuVendor::Amd);
         let _ = fs::remove_dir_all(&base);
+    }
+
+    /// #3407: startup names what the machine has, and does not call VAAPI
+    /// available before anything has opened it.
+    #[test]
+    fn startup_says_where_vaapi_will_be_tried() {
+        let nodes = [std::path::PathBuf::from("/dev/dri/renderD128"), std::path::PathBuf::from("/dev/dri/renderD129")];
+        assert_eq!(GpuVendor::vaapi_startup_line(&nodes), "Hardware decode: the first clip tries VAAPI on /dev/dri/renderD128, /dev/dri/renderD129");
+        assert_eq!(GpuVendor::vaapi_startup_line(&[]), "Hardware decode: no render node for VAAPI on this machine");
     }
 
     #[test]

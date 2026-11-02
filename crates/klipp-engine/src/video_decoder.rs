@@ -1805,7 +1805,7 @@ pub(crate) unsafe fn try_init_vaapi(codec_ctx_ptr: *mut ffmpeg_next::ffi::AVCode
     }
 
     if klipp_core::GpuVendor::mark_vaapi_unavailable() {
-        info!("Hardware decode: no VAAPI connection on any render node but NVIDIA's; decoding in software, without trying VAAPI again this session");
+        info!("{}", klipp_core::GpuVendor::VAAPI_FALLBACK_LINE);
     }
     false
 }
