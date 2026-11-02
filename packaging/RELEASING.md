@@ -31,12 +31,41 @@ script does not replace that gate and does not publish or create tags.
    Builds can take significant time and disk space. Set CARGO_BUILD_JOBS to limit
    compiler concurrency. The script uses disk-backed compiler scratch.
 
+   A build with no aarch64 package in the output directory makes an x86_64-only
+   release and says so (step 3a adds it).
+
    Rust and Whisper's native C/C++ backend target baseline x86-64, with host
    AVX/AVX2/FMA optimizations disabled. Vulkan handles GPU-specific execution.
    This is an Arch package using Arch runtime libraries, not a universal Linux
    binary. Do not use CachyOS-specific or CPU-v3/v4 libraries as the public build
    environment. Rebuild and retest when Arch changes required library ABIs.
 
+3a. **aarch64**, on the Mac mini (Arch Linux ARM under Asahi), with the same
+   PKGBUILD dependencies and the same tag pushed, from an up-to-date clone with
+   a clean tracked tree:
+
+   ```bash
+   git fetch --tags origin
+   CARGO_BUILD_JOBS=4 python3 scripts/release.py build v0.20.0 --output target/releases/0.20.0-aarch64
+   ```
+
+   On aarch64 the script makes the same clean clone of the tag and runs the same
+   `makepkg --cleanbuild`, whose aarch64 branch links with lld for a portable
+   ARMv8-A baseline (GNU ld ran the 16 GB machine out of memory). It checks and
+   leaves only `klipp-<pkgver>-1-aarch64.pkg.tar.xz` (Arch Linux ARM's PKGEXT),
+   with no sums or source archive. Test it there, then copy it into the x86_64
+   build's output directory and list it:
+
+   ```bash
+   python3 scripts/release.py sums target/releases/0.20.0
+   ```
+
+   The x86_64 build and `sums` accept exactly one
+   `klipp-<pkgver>-1-x86_64.pkg.tar.zst` and at most one
+   `klipp-<pkgver>-1-aarch64.pkg.tar.xz`. Each must hold the name, version and
+   arch its file name says (read from its `.PKGINFO` with bsdtar), and any other
+   klipp package in the directory is refused. `sums` refuses a release that is
+   signed already: remove `SHA256SUMS.minisig` and sign again after it.
 4. Install the candidate on test systems. Verify launch, import, audio/video
    playback, save/reopen and export. Test AMD and NVIDIA hardware before claiming
    both are validated; a portable CPU build alone does not establish GPU support.
@@ -53,15 +82,15 @@ script does not replace that gate and does not publish or create tags.
    lists. The script then verifies the signature with the `RELEASE_KEY` in
    `packaging/klipp-update`, as the updater will, and refuses (removing the
    signature) when it does not match, or when no key is set there yet.
-6. Create a **draft** GitHub Release from the existing tag, attach the package,
-   source archive, checksums and signatures, and write notes including supported
+6. Create a **draft** GitHub Release from the existing tag, attach the packages
+   (both arches when there are both), source archive, checksums and signatures, and write notes including supported
    systems and known limitations. Mark prereleases as such. Do not upload a
    machine-optimized developer build as a release asset.
 
    ```bash
    gh release create v0.20.0-rc.1 --verify-tag --draft --prerelease \
      --title 'Klipp 0.20.0-rc.1' --notes-file release-notes.md \
-     target/releases/0.20.0-rc.1/*.pkg.tar.zst \
+     target/releases/0.20.0-rc.1/*.pkg.tar.* \
      target/releases/0.20.0-rc.1/*-source.tar.gz \
      target/releases/0.20.0-rc.1/SHA256SUMS \
      target/releases/0.20.0-rc.1/SHA256SUMS.minisig
@@ -140,7 +169,8 @@ now include Klipp. Follow Arch's full-upgrade policy; do not use `pacman -Sy kli
 
 For a standalone download before configuring the repository: verify the detached
 signature against the independently verified public key, fully update Arch, then
-install the downloaded package using `sudo pacman -U ./klipp-VERSION-1-x86_64.pkg.tar.zst`.
+install the downloaded package using `sudo pacman -U ./klipp-VERSION-1-x86_64.pkg.tar.zst`
+(on aarch64, `./klipp-VERSION-1-aarch64.pkg.tar.xz`).
 Installing a file does **not** automatically configure a repository.
 
 ## In the app
@@ -233,7 +263,7 @@ a failure, check with the network off.
 `KLIPP_UPDATE_TEST_BASE_URL` points `klipp-update VERSION` at a local fixture
 release instead of GitHub, for testing the helper itself. It accepts only a
 loopback `http://` address (`http://127.0.0.1:8000`), serving
-`v<VERSION>/klipp-<pkgver>-1-x86_64.pkg.tar.zst`, `v<VERSION>/SHA256SUMS` and
+`v<VERSION>/klipp-<pkgver>-1-x86_64.pkg.tar.zst` (or the aarch64 `.pkg.tar.xz`), `v<VERSION>/SHA256SUMS` and
 `v<VERSION>/SHA256SUMS.minisig`. Nothing in Klipp sets it. With it, and only
 with it, `KLIPP_UPDATE_TEST_PUBLIC_KEY` replaces the release key, so a fixture
 can be signed by a key made for the test (`minisign -G -W`); without the test
