@@ -820,13 +820,13 @@ pub fn apply_linked_import_forward(
     }
     if let Some((clip, ti)) = video {
         if let Some(track) = seq.tracks.get_mut(*ti) {
-            track.clips.push(clip.clone());
+            track.clips.push(track.with_starting_role(clip.clone()));
             track.sort_clips();
         }
     }
     if let Some((clip, ti)) = audio {
         if let Some(track) = seq.tracks.get_mut(*ti) {
-            track.clips.push(clip.clone());
+            track.clips.push(track.with_starting_role(clip.clone()));
             track.sort_clips();
         }
     }

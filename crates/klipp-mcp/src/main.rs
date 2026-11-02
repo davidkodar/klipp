@@ -1710,7 +1710,7 @@ fn op_entries() -> Vec<OpEntry> {
 /// for every op, and where one op's full entry is.
 fn ops_overview(fields_only: bool) -> String {
     let mut out = String::from(if fields_only { "## Ops: their fields\n\n" } else { "## Ops\n\n" });
-    out.push_str("Fields marked ? may be left out. One op in full, with its limits and examples: topic `op.<name>` (op.title, op.place).\n\n");
+    out.push_str("Fields marked ? may be left out. One op in full, with its limits and examples: topic `op.<name>` (op.place).\n\n");
     for e in op_entries() {
         if fields_only {
             out.push_str(&format!("- `{}`\n", e.signature));

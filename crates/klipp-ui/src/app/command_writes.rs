@@ -767,6 +767,7 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::SetTrackAutomationMode { .. }
         | AppCommand::SetTrackAutomationKeys { .. }
         | AppCommand::SetTrackLanguage { .. }
+        | AppCommand::SetTrackRole { .. }
         | AppCommand::SetTrackTargeted { .. }
         | AppCommand::TargetTrackFromBadge { .. }
         | AppCommand::SetTrackSourcePatch { .. }

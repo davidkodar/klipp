@@ -6481,6 +6481,9 @@ impl TimelinePanel {
                 egui::FontId::proportional(10.0), tt.text_primary);
         }
 
+        // The clip's role (#3211) — bottom-left, past a group's badge.
+        crate::role_badge::draw(painter, &tt, &state.media_pool.roles, clip, clip_rect);
+
         // Multicam indicators (gated by multicam_show_angles pref synced to state)
         if state.multicam_show_angles && clip.multicam_group.is_some() && clip_rect.width() > 20.0 {
             // Angle badge (top-right corner) — positioned left of FX/lock badges

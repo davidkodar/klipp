@@ -939,6 +939,35 @@ mod menu_smoke_tests {
         assert!(!menu.iter().any(|t| t.starts_with("Automation:")), "a video track has no automation: {menu:?}");
     }
 
+    /// A track header's Role for New Clips menu sets the role clips put
+    /// on it start with (#3211), offering the project's roles and
+    /// sub-roles, and names the one set.
+    #[test]
+    fn a_tracks_menu_sets_its_role_for_new_clips() {
+        let mut timeline = Timeline::new();
+        let track_id = timeline.state.sequences[0].tracks.iter().find(|t| t.kind == TrackKind::Audio).unwrap().id;
+        let at = timeline.header(TrackKind::Audio);
+        let menu = timeline.right_click(at);
+        let item = timeline.frame(Vec::new()).into_iter().find(|(t, _)| t == "Role for New Clips").unwrap_or_else(|| panic!("the track's menu has its role: {menu:?}")).1;
+        timeline.frame(vec![egui::Event::PointerMoved(item)]);
+        let drawn = timeline.frame(vec![egui::Event::PointerMoved(item)]);
+        assert!(drawn.iter().any(|(t, _)| t.trim_start() == "Effects › Foley"), "sub-roles offered: {drawn:?}");
+        let at = drawn.iter().find(|(t, _)| t.trim_start() == "Dialogue").unwrap_or_else(|| panic!("a role to pick: {drawn:?}")).1;
+        let button = |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+        timeline.frame(vec![egui::Event::PointerMoved(at)]);
+        timeline.frame(vec![egui::Event::PointerMoved(at), button(true)]);
+        timeline.frame(vec![button(false)]);
+        let want = klipp_core::roles::RoleRef::parse("dialogue");
+        assert!(timeline.sent.iter().any(|c| matches!(c, AppCommand::SetTrackRole { track_id: t, role } if *t == track_id && *role == want)), "{:?}", timeline.sent);
+        for _ in 0..2 {
+            timeline.frame(vec![egui::Event::Key { key: egui::Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE }]);
+        }
+        timeline.state.sequences[0].tracks.iter_mut().find(|t| t.id == track_id).unwrap().role = want;
+        let at = timeline.header(TrackKind::Audio);
+        let menu = timeline.right_click(at);
+        assert!(menu.iter().any(|t| t == "Role for New Clips: Dialogue"), "{menu:?}");
+    }
+
     /// A subtitle track header's Language menu sets the track's language
     /// (#2223); a video track's has none.
     #[test]

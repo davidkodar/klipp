@@ -87,6 +87,10 @@ pub(crate) fn timeline_text(
         if t.locked {
             head.push_str("  locked");
         }
+        // The role clips put on it start with (#3211).
+        if let Some(r) = &t.role {
+            let _ = write!(head, "  new clips {r}");
+        }
         // How far its frames are drawn, and what playing it costs (#3207).
         if t.frozen {
             let _ = write!(head, "  {}", klipp_engine::freeze::status(t.id).map_or_else(|| "frozen".to_string(), |s| s.describe()));
@@ -428,6 +432,9 @@ pub(crate) fn list_clips(seq: &klipp_timeline::Sequence, pool: &klipp_media::Med
             } else if t.locked {
                 v["locked"] = json!(true);
             }
+            if let Some(r) = &t.role {
+                v["role"] = json!(r.as_str());
+            }
             if t.frozen {
                 v["frozen"] = json!(klipp_engine::freeze::status(t.id).map_or_else(|| "frozen".to_string(), |s| s.describe()));
             }
@@ -710,6 +717,19 @@ mod tests {
             assert_eq!(clip["text"].as_str(), Some(words), "full {full}: {clip}");
             assert!(clip.get("name").is_none(), "no cut-short copy beside it: {clip}");
         }
+    }
+
+    /// #3211: a track with a role for new clips says it, in the text and
+    /// in list_clips; one without says nothing of it.
+    #[test]
+    fn a_tracks_role_for_new_clips_is_listed() {
+        let mut seq = klipp_timeline::Sequence::new_default();
+        seq.tracks[1].role = klipp_core::roles::RoleRef::parse("music.score");
+        let pool = klipp_media::MediaPool::new();
+        let text = timeline_text(&seq, &pool, None, 1, TimelineView::default());
+        assert_eq!(text.matches("new clips music.score").count(), 1, "{text}");
+        let v = list_clips(&seq, &pool, 0, &ClipFilter { full: false, track: None, from_secs: None, to_secs: None, media_id: None }).unwrap();
+        assert_eq!((v["tracks"][0].get("role"), v["tracks"][1]["role"].as_str()), (None, Some("music.score")), "{v}");
     }
 
     /// #3207: a frozen track's line says how far its frames are drawn;

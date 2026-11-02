@@ -1063,6 +1063,13 @@ impl KlippApp {
                 }
                 true
             }
+            AppCommand::SetTrackRole { track_id, role } => {
+                if let Some(t) = self.state.sequences[self.state.active_sequence_idx].tracks.iter_mut().find(|t| t.id == *track_id) {
+                    t.role = role.clone();
+                    self.state.dirty = true;
+                }
+                true
+            }
             AppCommand::SetTrackAutomationKeys { track_index, param, keys } => {
                 if let Some(t) = self.state.sequences[self.state.active_sequence_idx].tracks.get_mut(*track_index) {
                     t.automation.lanes.insert(*param, keys.clone());
