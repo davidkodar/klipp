@@ -1315,6 +1315,15 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             v
         }
         "klipp_import_subtitles" => json!({ "method": "import_subtitles", "path": arg_str(args, "path")? }),
+        "klipp_covers" => {
+            let mut v = json!({ "method": "covers" });
+            for key in ["cover", "path"] {
+                if let Some(s) = args.get(key).and_then(Value::as_str) {
+                    v[key] = json!(s);
+                }
+            }
+            v
+        }
         "klipp_translate_captions" => {
             let mut v = json!({ "method": "translate_captions", "to": arg_str(args, "to")?, "download_models": args.get("download_models").and_then(Value::as_bool).unwrap_or(false) });
             for key in ["track", "from", "glossary"] {
@@ -2542,6 +2551,9 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
         tool("klipp_export_subtitles",
              "Write the subtitle clips to a subtitle file. Details: klipp_guide topic export_subtitles.",
              json!({ "path": { "type": "string" }, "format": { "type": "string" } }), vec!["path"]),
+        tool("klipp_covers",
+             "The sequence's covers (thumbnails) and their sizes; with path, one written as PNG or JPEG. Details: klipp_guide topic covers.",
+             json!({ "cover": { "type": "string" }, "path": { "type": "string" } }), vec![]),
         tool("klipp_translate_captions",
              "Translate a subtitle track onto a new one under it. Details: klipp_guide topic translate_captions.",
              json!({ "to": { "type": "string" }, "from": { "type": "string" }, "track": { "type": "integer" }, "glossary": { "type": "object", "additionalProperties": { "type": "string" } }, "download_models": { "type": "boolean" } }), vec!["to"]),
@@ -3649,6 +3661,8 @@ mod project_change_notice_tests {
         assert!(tool_to_command("klipp_translate_captions", &json!({})).is_err(), "to is needed");
         assert_eq!(tool_to_command("klipp_export_subtitles", &json!({ "path": "/a/b.vtt", "format": "vtt" })).unwrap(), json!({ "method": "export_subtitles", "path": "/a/b.vtt", "format": "vtt" }));
         assert_eq!(tool_to_command("klipp_export_subtitles", &json!({ "path": "/a/b.srt" })).unwrap(), json!({ "method": "export_subtitles", "path": "/a/b.srt" }));
+        assert_eq!(tool_to_command("klipp_covers", &json!({})).unwrap(), json!({ "method": "covers" }));
+        assert_eq!(tool_to_command("klipp_covers", &json!({ "cover": "Hook", "path": "/a/c.jpg" })).unwrap(), json!({ "method": "covers", "cover": "Hook", "path": "/a/c.jpg" }));
     }
 
 #[cfg(test)]

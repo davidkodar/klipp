@@ -31,7 +31,7 @@ thiserror      = { workspace = true }
 # An analysis an export runs is kept as its asset's JSON (M4 step 9).
 serde_json     = { workspace = true }
 # The shared offline pixel-check routes write PNG references.
-image          = { version = "0.25", default-features = false, features = ["png"] }
+image          = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 
 [dev-dependencies]
 klipp-document = { workspace = true }

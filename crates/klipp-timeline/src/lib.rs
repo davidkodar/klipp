@@ -84,6 +84,7 @@ mod credits;
 pub mod caption_motion;
 pub mod caption_looks;
 pub mod composition_template;
+pub mod cover;
 pub mod template_places;
 pub use caption_motion::{animated_caption, CaptionAnimation, CaptionGlow, CaptionMotion, CaptionPlace};
 pub use klipp_core::text3d;

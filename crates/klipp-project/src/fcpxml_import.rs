@@ -771,6 +771,7 @@ pub fn parse_fcpxml(xml: &str) -> Result<ImportResult, FcpxmlImportError> {
                 brief: None,
                 edit_plan: None,
                 reviews: Vec::new(),
+                covers: Vec::new(),
                 awaiting_refit: false,
                 version_of: None,
             };
@@ -898,6 +899,7 @@ pub fn parse_fcpxml(xml: &str) -> Result<ImportResult, FcpxmlImportError> {
         brief: None,
         edit_plan: None,
         reviews: Vec::new(),
+        covers: Vec::new(),
         awaiting_refit: false,
         version_of: None,
     };

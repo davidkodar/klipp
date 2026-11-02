@@ -424,6 +424,7 @@ pub fn parse_xmeml(xml: &str) -> Result<ImportResult, String> {
         brief: None,
         edit_plan: None,
         reviews: Vec::new(),
+        covers: Vec::new(),
         awaiting_refit: false,
         version_of: None,
     };

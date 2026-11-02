@@ -1263,6 +1263,16 @@ pub enum ControlCommand {
         #[serde(default)]
         format: Option<String>,
     },
+    /// The sequence's covers (#3311) and the sizes a cover is made at; with
+    /// `path` (absolute, .png, .jpg or .jpeg), `cover` (its id or name; the
+    /// only one when left out) drawn at its size and written there, a
+    /// JPEG's quality stepped down to fit the size's file limit.
+    Covers {
+        #[serde(default)]
+        cover: Option<String>,
+        #[serde(default)]
+        path: Option<String>,
+    },
     /// Read an SRT, WebVTT, ASS/SSA, TTML (DFXP, IMSC, iTT), SCC or EBU-STL
     /// file onto a new subtitle track of the active sequence, as the app's
     /// Import Subtitles does (#1516).

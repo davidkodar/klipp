@@ -296,6 +296,20 @@ exist until the plan runs.
   whole length, and a lone word the transcriber was unsure of is not
   speech; a clip in `dialogue.narration` is speech throughout.
 - `match {clip_id, keep?}`: start and end a title, effect or sound with the clip under it; `keep` keeps it so as the shot is edited.
+- `cover {cover?, remove?, name?, at?, size?, crop?, title?, with_titles?}`:
+  a cover, the video's thumbnail, one undo step. Without `cover` it makes
+  one at `at`, its frame; with `cover` (its id, the start of its id, or
+  its name) it changes that one, or with `remove` takes it out. `size` is
+  a cover size (youtube 1280×720 under 2 MB, vertical 1080×1920,
+  instagram_feed 1080×1350, square 1080×1080), by default the one of the
+  sequence's shape. `crop {x, y, zoom}` shows part of the frame, its
+  centre as a share across and down, zoom 1 to 8; refused on a sequence
+  with a camera move of its own. `title` is the words: their text, or
+  the title op's fields without at, secs or track (`{text, style, size,
+  y, backing}`), laid out on the cover's frame; the brief's `heading`
+  style when it names none; an empty text takes them away. The
+  sequence's own titles and captions are hidden unless `with_titles`.
+  klipp_covers lists them and writes one as PNG or JPEG.
 - `role {clip_id, role}`: what a clip is to the mix, the checks and
   export: one of the project's roles, a main role or `main.sub` —
   built in are `dialogue` (`.interview`, `.narration`), `music`

@@ -205,6 +205,8 @@ pub enum EditCommand {
     SetEditPlan { old: Option<Box<klipp_timeline::EditPlan>>, new: Option<Box<klipp_timeline::EditPlan>> },
     /// The sequence's reviews of the check's findings, replaced whole (#1932).
     SetReviews { old: Vec<klipp_timeline::FindingReview>, new: Vec<klipp_timeline::FindingReview> },
+    /// The sequence's covers, replaced whole (#3311).
+    SetCovers { old: Vec<klipp_timeline::cover::Cover>, new: Vec<klipp_timeline::cover::Cover> },
     /// A clip's role: dialogue, music, effects… what the mix and the
     /// checks treat it as.
     /// Set by hand: a proposal from the sound never replaces it (#2216).
@@ -910,6 +912,7 @@ impl EditCommand {
             EditCommand::SetBrief { .. } => "Set Brief",
             EditCommand::SetEditPlan { .. } => "Set Edit Plan",
             EditCommand::SetReviews { .. } => "Review Finding",
+            EditCommand::SetCovers { .. } => "Cover",
             EditCommand::SetClipRole { .. } => "Set Clip Role",
             EditCommand::SetClipMatch { new: Some(_), .. } => "Keep Matched",
             EditCommand::SetClipMatch { new: None, .. } => "Stop Keeping Matched",
