@@ -19,7 +19,7 @@ The menus and their items. Shortcuts are Klipp's default keymap; a different pre
 | Import Timeline | — | Kdenlive, EDL, OpenTimelineIO or FCPXML into the open project |
 | Export... | Ctrl+E | Open the export settings |
 | Export Subtitles... | — | Write a subtitle track as SRT, WebVTT, ASS, SSA, TTML (IMSC), SCC or EBU-STL |
-| Export YouTube Chapters | — | Write the markers as a chapter list |
+| Export YouTube Chapters | — | Write the Chapter-kind markers as a chapter list |
 | Save Render Script | — | Write the export as a shell script |
 | Export Timeline | — | FCPXML, Kdenlive, EDL, OpenTimelineIO or AAF |
 | Export Metadata Sheet | — | Clip metadata as CSV or ALE |

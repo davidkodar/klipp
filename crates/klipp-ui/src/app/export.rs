@@ -4084,17 +4084,8 @@ impl KlippApp {
                 //       once an `arboard`-style helper lives in the workspace.
                 let path = path.clone();
                 let seq = &self.state.sequences[self.state.active_sequence_idx];
-                // Sequence markers only — auto-sorted by position on add.
-                let mut entries: Vec<(f64, String)> = seq.markers.iter()
-                    .map(|m| (m.position.to_secs_f64(), m.label.clone()))
-                    .collect();
-                // YouTube requires the first chapter at 0:00. If the earliest
-                // marker is more than half a second in (or there are no
-                // markers at all), prepend a synthetic "Intro" at 0:00.
-                let needs_intro = entries.first().map(|(s, _)| *s > 0.5).unwrap_or(true);
-                if needs_intro {
-                    entries.insert(0, (0.0, "Intro".to_string()));
-                }
+                let entries = youtube_chapter_entries(&seq.markers);
+                let left_out = seq.markers.iter().filter(|m| m.kind != klipp_core::MarkerKind::Chapter).count();
                 let content = generate_youtube_chapters(&entries);
                 match std::fs::write(&path, &content) {
                     Ok(_) => {
@@ -4105,6 +4096,10 @@ impl KlippApp {
                             msg.push_str(
                                 " Note: YouTube requires at least 3 chapters to display the chapter list.",
                             );
+                        }
+                        if left_out > 0 {
+                            let (plural, verb) = if left_out == 1 { ("", "isn't") } else { ("s", "aren't") };
+                            msg.push_str(&format!(" {left_out} marker{plural} {verb} of kind Chapter and left out."));
                         }
                         self.state.toast.show(msg);
                     }

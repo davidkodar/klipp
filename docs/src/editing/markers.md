@@ -39,7 +39,7 @@ Review comments travel as timecoded markers:
 
 ## Chapters
 
-MP4, MKV and MOV exports carry chapters taken from markers whose kind is **Chapter**. **File → Export YouTube Chapters** (also in the Markers panel) writes the markers as chapter timestamps for a video description.
+MP4, MKV and MOV exports carry chapters taken from markers whose kind is **Chapter**. **File → Export YouTube Chapters** (also in the Markers panel) writes those same Chapter markers as chapter timestamps for a video description.
 
 ## Clip Markers and Source Markers
 
