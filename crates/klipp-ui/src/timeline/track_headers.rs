@@ -773,6 +773,29 @@ pub fn show(
                     }
                 });
             }
+            // The role clips put on the track start with (#3211); the
+            // clips already there keep theirs.
+            {
+                let current = state.sequence().tracks[track_idx].role.clone();
+                let roles = &state.media_pool.roles;
+                let label = match current.as_ref().and_then(|r| roles.label(r)) {
+                    Some(name) => format!("Role for New Clips: {name}"),
+                    None => "Role for New Clips".to_string(),
+                };
+                ui.menu_rows(label, |ui| {
+                    let mut pick = |ui: &mut egui::Ui, text: &str, role: Option<klipp_core::roles::RoleRef>| {
+                        if menu_toggle(ui, text, "", current == role).clicked() {
+                            cmds.push(AppCommand::SetTrackRole { track_id, role });
+                            ui.close_menu();
+                        }
+                    };
+                    pick(ui, "None", None);
+                    for role in roles.listed() {
+                        let name = roles.label(&role).unwrap_or_else(|| role.to_string());
+                        pick(ui, &name, Some(role));
+                    }
+                });
+            }
             // How the track's own volume and pan keys play and record
             // (#2306), as the mixer strip's mode button sets it.
             if track_kind == TrackKind::Audio {

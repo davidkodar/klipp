@@ -269,6 +269,9 @@ pub struct TrackJson {
     /// A subtitle track's language, BCP 47 (#2223).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub language: Option<String>,
+    /// The role new clips on the track start with (#3211).
+    #[serde(default, deserialize_with = "klipp_core::roles::read_lenient", skip_serializing_if = "Option::is_none")]
+    pub role: Option<klipp_core::roles::RoleRef>,
     /// Imported subtitle source, relative to the project when possible.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_file: Option<String>,
@@ -1290,6 +1293,7 @@ mod tests {
                 source_file: None,
                 caption_style: None,
                 language: None,
+                role: None,
                 custom_height: None,
                 colour_label: 0,
                 channel_waveforms: false,
@@ -1344,6 +1348,7 @@ mod tests {
             source_file: None,
             caption_style: None,
             language: None,
+            role: None,
             custom_height: None,
             colour_label: 0,
             channel_waveforms: false,
@@ -1385,6 +1390,7 @@ mod tests {
             source_file: None,
             caption_style: None,
             language: None,
+            role: None,
             custom_height: None,
             colour_label: 0,
             channel_waveforms: false,

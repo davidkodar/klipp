@@ -145,6 +145,9 @@ pub struct TemplateTrack {
     /// A subtitle track's language (#2223).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub language: Option<String>,
+    /// The role new clips on the track start with (#3211).
+    #[serde(default, deserialize_with = "klipp_core::roles::read_lenient", skip_serializing_if = "Option::is_none")]
+    pub role: Option<klipp_core::roles::RoleRef>,
 }
 
 /// An empty bin, under the bin at `parent` in the template's list.
@@ -264,6 +267,7 @@ impl ProjectTemplate {
                         colour_label: t.colour_label,
                         caption_style: t.caption_style.clone(),
                         language: t.language.clone(),
+                        role: t.role.clone(),
                     })
                     .collect(),
             })
@@ -425,6 +429,7 @@ impl ProjectTemplate {
                         track.colour_label = t.colour_label;
                         track.caption_style = t.caption_style.clone();
                         track.language = t.language.clone();
+                        track.role = t.role.clone();
                         track
                     })
                     .collect();

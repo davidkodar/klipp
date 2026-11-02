@@ -1114,17 +1114,17 @@ impl DocumentView<'_> {
                     if let Some(id) = track_id {
                         track.id = *id;
                     }
-                    track.clips.push(clip.clone());
+                    track.clips.push(track.with_starting_role(clip.clone()));
                     let idx = (*track_index).min(seq.tracks.len());
                     seq.tracks.insert(idx, track);
                 } else if let Some(track) = seq.tracks.get_mut(*track_index) {
-                    track.clips.push(clip.clone());
+                    track.clips.push(track.with_starting_role(clip.clone()));
                     track.sort_clips();
                 }
             }
             EditCommand::LegacyAppendClip { clip, track_index } => {
                 if let Some(track) = self.sequences[self.active].tracks.get_mut(*track_index) {
-                    track.clips.push(clip.clone());
+                    track.clips.push(track.with_starting_role(clip.clone()));
                     track.sort_clips();
                 }
             }

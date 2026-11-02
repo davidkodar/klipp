@@ -163,6 +163,9 @@ impl Sequence {
         }
 
         let track = &mut self.tracks[track_index];
+        // The role the track starts its clips with (#3211), kept in the
+        // edit so a redo makes the same clip.
+        let clip = track.with_starting_role(clip);
         track.clips.push(clip.clone());
         track.sort_clips();
 
@@ -276,7 +279,7 @@ impl Sequence {
             }
         }
         if let Some(track) = self.tracks.get_mut(edit.track_index) {
-            track.clips.push(edit.clip.clone());
+            track.clips.push(track.with_starting_role(edit.clip.clone()));
         }
         for track in &mut self.tracks {
             track.sort_clips();

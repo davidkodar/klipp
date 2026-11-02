@@ -1525,6 +1525,10 @@ pub struct Track {
     /// known.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub language: Option<String>,
+    /// The role new clips placed on this track start with (#3211); the
+    /// clip's own role is what counts, so changing it changes no clip.
+    #[serde(default, deserialize_with = "klipp_core::roles::read_lenient", skip_serializing_if = "Option::is_none")]
+    pub role: Option<klipp_core::roles::RoleRef>,
     /// Magnetic role of this track. Defaults to Free — backward compatible.
     #[serde(default)]
     pub magnetic_role: TrackRole,
@@ -1689,6 +1693,32 @@ pub struct TrackMix {
 }
 
 impl Track {
+    /// The role a clip put on this track starts with (#3211): the
+    /// track's own, else Subtitles on a subtitle track and Titles for a
+    /// title. `None` when the clip has a role already or had none set
+    /// by hand, which a default never replaces.
+    pub fn starting_role(&self, clip: &Clip) -> Option<klipp_core::roles::RoleRef> {
+        use klipp_core::roles::RoleRef;
+        if clip.role.is_some() || clip.role_source != klipp_core::RoleSource::Unset {
+            return None;
+        }
+        self.role.clone().or_else(|| match (self.kind, &clip.kind) {
+            (TrackKind::Subtitle, _) => Some(RoleRef::of("subtitles")),
+            (_, ClipKind::Title(_)) => Some(RoleRef::of("titles")),
+            _ => None,
+        })
+    }
+
+    /// `clip` with the role this track starts it with, proposed: a role
+    /// set by hand still replaces it.
+    pub fn with_starting_role(&self, mut clip: Clip) -> Clip {
+        if let Some(role) = self.starting_role(&clip) {
+            clip.role = Some(role);
+            clip.role_source = klipp_core::RoleSource::Proposed;
+        }
+        clip
+    }
+
     /// Frozen or played live again (#3207), locked or unlocked with it
     /// when it's [`Self::lock_while_frozen`].
     pub fn set_frozen(&mut self, frozen: bool) {
@@ -1789,6 +1819,7 @@ impl Track {
             locked: false,
             caption_style: None,
             language: None,
+            role: None,
             magnetic_role: TrackRole::Free,
             storyline_anchor: None,
             custom_height: None,
@@ -5284,5 +5315,48 @@ mod source_track_tests {
         assert_eq!(seq.source_track(TrackKind::Audio), Some(a1));
         seq.patch_source_to(top);
         assert_eq!(seq.source_track(TrackKind::Video), Some(top), "a patch wins");
+    }
+}
+
+#[cfg(test)]
+mod starting_role_tests {
+    use super::*;
+    use klipp_core::roles::RoleRef;
+    use klipp_core::RoleSource;
+
+    fn media(from: f64) -> Clip {
+        let t = |s: f64| Timecode::from_secs_f64(s, 25);
+        Clip::media(MediaId::new(), t(from), t(from + 2.0), t(0.0), t(2.0))
+    }
+
+    /// #3211: a clip put on a track starts with the track's role,
+    /// proposed; with none, a title is Titles and a caption on a subtitle
+    /// track Subtitles. A clip with a role keeps it, and one whose role
+    /// was set to none by hand stays none. An insert edit keeps the role
+    /// it gave, so its redo makes the same clip.
+    #[test]
+    fn a_track_starts_its_clips_with_its_role() {
+        let mut music = Track::new("A1", TrackKind::Audio);
+        music.role = RoleRef::parse("music.score");
+        let given = music.with_starting_role(media(0.0));
+        assert_eq!((given.role.clone(), given.role_source), (RoleRef::parse("music.score"), RoleSource::Proposed));
+
+        let mut own = media(0.0);
+        own.role = RoleRef::parse("dialogue");
+        assert_eq!(music.with_starting_role(own).role, RoleRef::parse("dialogue"), "a clip's own role stays");
+        let mut cleared = media(0.0);
+        cleared.role_source = RoleSource::ByHand;
+        assert_eq!(music.with_starting_role(cleared).role, None, "none set by hand stays none");
+
+        let title = Clip { kind: ClipKind::Title(crate::TitleData::single_text(crate::TextBox { text: "Hi".into(), ..Default::default() })), ..media(0.0) };
+        assert_eq!(Track::new("T1", TrackKind::Text).with_starting_role(title.clone()).role, RoleRef::parse("titles"));
+        assert_eq!(Track::new("S1", TrackKind::Subtitle).with_starting_role(title).role, RoleRef::parse("subtitles"));
+        assert_eq!(Track::new("V1", TrackKind::Video).with_starting_role(media(0.0)).role, None, "a picture with no track role: none");
+
+        let mut seq = Sequence::new_default();
+        seq.tracks = vec![music];
+        let edit = seq.insert_edit(0, media(0.0), Timecode::from_secs_f64(0.0, 25)).expect("inserted");
+        assert_eq!(edit.clip.role, RoleRef::parse("music.score"), "the edit keeps the role it gave");
+        assert_eq!(seq.tracks[0].clips[0].role, RoleRef::parse("music.score"));
     }
 }

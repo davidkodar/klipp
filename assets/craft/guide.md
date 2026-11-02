@@ -211,8 +211,10 @@ exist until the plan runs.
   kind; every track below moves up by one. Refused while it holds clips
   unless `with_clips`, which takes them too and unlinks anything on
   another track from them. One undo step puts it back.
-- `set_track {track, visible?, language?, locked?, frozen?, lock_while_frozen?, volume_db?, pan?, mute?, solo?}`: a track's own
-  settings, one undo step. `volume_db` (+6 at most, -60 or below
+- `set_track {track, visible?, language?, role?, locked?, frozen?, lock_while_frozen?, volume_db?, pan?, mute?, solo?}`: a track's own
+  settings, one undo step. `role` (as `role` names one, `none` for
+  none) is the role clips put on the track start with; the clips
+  already there keep theirs. `volume_db` (+6 at most, -60 or below
   silence), `pan` (-1 left to 1 right), `mute` and `solo` are its mixer
   controls, as its fader and buttons set them; a solo turns every other
   track's off. `visible` false hides its picture or captions
@@ -303,6 +305,12 @@ exist until the plan runs.
   graphics titles, broll effects.ambience). Mark a camera's own sound
   `effects.ambience` when it runs under music, so a `duck` does not take
   it for speech; narration is marked dialogue when `narrate` places it.
+  A clip put on a track starts with the track's role (`set_track
+  role`), else a title is `titles`, a caption on a subtitle track
+  `subtitles`, a library's music and effects theirs, and a sound-only
+  file `music` until its sound is heard (speech then `dialogue`). Each
+  is a default: `role` replaces it, and a role set by hand, `none`
+  among them, is never changed for one.
   `list_clips` lists the project's roles with their labels and colours.
 - `roles {add?: [{name, under?}], rename?: [{role, name}], colour?: [{role, colour}], remove?: [role]}`:
   the project's roles changed, one undo step: a role added (a sub-role

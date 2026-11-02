@@ -260,6 +260,30 @@ fn magnetic_roles_and_anchors_come_back() {
     assert_eq!(anchor.offset, tc(10));
 }
 
+/// #3211: the role a track starts its clips with comes back; a track
+/// with none writes none; one a hostile or newer file names that isn't
+/// a role reads as none, and the project still opens.
+#[test]
+fn a_tracks_role_for_new_clips_comes_back() {
+    let mut seq = Sequence::new_default();
+    seq.tracks[1].role = klipp_core::roles::RoleRef::parse("music.score");
+    let back = round_trip("track-role", seq);
+    assert_eq!(back.tracks[1].role, klipp_core::roles::RoleRef::parse("music.score"));
+    assert_eq!(back.tracks[0].role, None);
+
+    let dir = project_dir("track-role-hostile");
+    save_project_with_color(&dir, &[Sequence::new_default()], &MediaPool::new(), &ColorSettings::default(), None, None, "").unwrap();
+    let p = dir.join("project.json");
+    let mut v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
+    assert!(v["sequences"][0]["tracks"][0].get("role").is_none(), "none written for none");
+    v["sequences"][0]["tracks"][0]["role"] = serde_json::json!("../../Etc.Passwd.x");
+    v["sequences"][0]["tracks"][1]["role"] = serde_json::json!({ "deep": [1, 2, 3] });
+    std::fs::write(&p, serde_json::to_string_pretty(&v).unwrap()).unwrap();
+    let (seqs, ..) = load_project(&dir).unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!((seqs[0].tracks[0].role.clone(), seqs[0].tracks[1].role.clone()), (None, None));
+}
+
 /// A file written before roles were saved carries none. Such a sequence
 /// gets what a new one gets — first video track Primary, first audio
 /// track Connected — instead of every track silently becoming Free.

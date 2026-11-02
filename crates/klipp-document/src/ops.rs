@@ -992,7 +992,9 @@ pub enum Op {
     /// `pan`, `mute` and `solo` set its mixer controls, as its fader and
     /// buttons do, a solo turning the others' off (#3165); `frozen` (a
     /// video track) plays it from frames drawn ahead into the project's
-    /// cache, drawn again where an edit makes them stale (#3207). One undo
+    /// cache, drawn again where an edit makes them stale (#3207); `role`
+    /// (as the role op names one, "none" for none) is the role clips put
+    /// on it start with, changing no clip already there (#3211). One undo
     /// step.
     SetTrack {
         track: TrackRef,
@@ -1000,6 +1002,8 @@ pub enum Op {
         visible: Option<bool>,
         #[serde(default)]
         language: Option<String>,
+        #[serde(default)]
+        role: Option<String>,
         #[serde(default)]
         locked: Option<bool>,
         #[serde(default)]
@@ -4874,8 +4878,17 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
                 // and the sound's own label is not offered again (#2216).
                 clip.role_source = klipp_core::RoleSource::Proposed;
             }
+            // A track's role is the one clips placed on it start with
+            // (#3211), proposed like a library's: a role set by hand still
+            // replaces it, and the sound's own label is not offered over it.
+            let from_track = |ti: usize| seq.tracks.get(ti).and_then(|t| t.role.as_ref()).and_then(|r| pool.roles.resolve(r));
+            let track_role = library.is_none().then(|| from_track(ti)).flatten();
+            if let Some(role) = &track_role {
+                clip.role = Some(role.clone());
+                clip.role_source = klipp_core::RoleSource::Proposed;
+            }
             // A sound-only file is Music until its sound is heard (#2953).
-            let starting = library.is_none().then(|| item.starting_role()).flatten();
+            let starting = (library.is_none() && track_role.is_none()).then(|| item.starting_role()).flatten();
             if let Some((role, source)) = starting {
                 clip.role = klipp_core::roles::RoleRef::from_legacy(role);
                 clip.role_source = source;
@@ -4910,6 +4923,10 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
                     }
                 }
                 let mut a = Clip::media(*media_id, tl_in, tl_out, src_in, src_out);
+                if let Some(role) = from_track(ati) {
+                    a.role = Some(role);
+                    a.role_source = klipp_core::RoleSource::Proposed;
+                }
                 a.linked_clip_id = Some(clip.id);
                 clip.linked_clip_id = Some(a.id);
                 audio = Some((a, ati));
@@ -4923,6 +4940,7 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             let sound_note = match library {
                 Some(klipp_core::ClipRole::Music) => format!("{sound_note}, marked music (from the music library)"),
                 Some(klipp_core::ClipRole::SFX) => format!("{sound_note}, marked sfx (from the effects library)"),
+                _ if track_role.is_some() => format!("{sound_note}, marked {} (its track's role)", track_role.as_ref().and_then(|r| pool.roles.label(r)).unwrap_or_default().to_lowercase()),
                 _ => match starting {
                     Some((role, klipp_core::RoleSource::Proposed)) => format!("{sound_note}, marked {} (from its sound)", role.label().to_lowercase()),
                     Some((role, _)) => format!("{sound_note}, marked {} (sound only, until its sound is heard)", role.label().to_lowercase()),
@@ -4999,9 +5017,9 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             join(seq, pool, i, ti, clip, *side)
         }
         Op::RemoveTrack { track, with_clips } => remove_track(seq, i, track, *with_clips),
-        Op::SetTrack { track, visible, language, locked, frozen, lock_while_frozen, volume_db, pan, mute, solo } => {
-            let own = TrackOwnSet { visible: *visible, language: language.as_deref(), locked: *locked, frozen: *frozen, lock_while_frozen: *lock_while_frozen };
-            set_track(seq, i, track, own, TrackMixSet { volume_db: *volume_db, pan: *pan, mute: *mute, solo: *solo })
+        Op::SetTrack { track, visible, language, role, locked, frozen, lock_while_frozen, volume_db, pan, mute, solo } => {
+            let own = TrackOwnSet { visible: *visible, language: language.as_deref(), role: role.as_deref(), locked: *locked, frozen: *frozen, lock_while_frozen: *lock_while_frozen };
+            set_track(seq, &pool.roles, i, track, own, TrackMixSet { volume_db: *volume_db, pan: *pan, mute: *mute, solo: *solo })
         }
         Op::TrackAutomation { track, param, mode, keys } => track_automation(seq, i, track, *param, *mode, keys.as_deref()),
         Op::Split { clip_id: clip_ref, at } => {
@@ -5911,18 +5929,19 @@ struct TrackMixSet {
 struct TrackOwnSet<'a> {
     visible: Option<bool>,
     language: Option<&'a str>,
+    role: Option<&'a str>,
     locked: Option<bool>,
     frozen: Option<bool>,
     lock_while_frozen: Option<bool>,
 }
 
-fn set_track(seq: &Sequence, i: usize, track: &TrackRef, own: TrackOwnSet, mix: TrackMixSet) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
-    let TrackOwnSet { visible, language, locked, frozen, lock_while_frozen } = own;
+fn set_track(seq: &Sequence, roles: &klipp_core::roles::RoleSet, i: usize, track: &TrackRef, own: TrackOwnSet, mix: TrackMixSet) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
+    let TrackOwnSet { visible, language, role, locked, frozen, lock_while_frozen } = own;
     let ti = resolve_track(seq, track, i)?;
     let t = &seq.tracks[ti];
     let mixes = mix.volume_db.is_some() || mix.pan.is_some() || mix.mute.is_some() || mix.solo.is_some();
-    if visible.is_none() && language.is_none() && locked.is_none() && frozen.is_none() && lock_while_frozen.is_none() && !mixes {
-        return Err(refuse(i, "nothing to set", "give visible, language, locked, frozen, lock_while_frozen, volume_db, pan, mute, solo or more than one"));
+    if visible.is_none() && language.is_none() && role.is_none() && locked.is_none() && frozen.is_none() && lock_while_frozen.is_none() && !mixes {
+        return Err(refuse(i, "nothing to set", "give visible, language, role, locked, frozen, lock_while_frozen, volume_db, pan, mute, solo or more than one"));
     }
     if (frozen == Some(true) || lock_while_frozen.is_some()) && !matches!(t.kind, TrackKind::Video | TrackKind::Audio) {
         return Err(refuse(i, format!("track {ti} is a {:?} track", t.kind), "freeze a video or audio track: text and captions play live"));
@@ -5961,7 +5980,7 @@ fn set_track(seq: &Sequence, i: usize, track: &TrackRef, own: TrackOwnSet, mix: 
             }
         }
     }
-    if visible.is_none() && language.is_none() && locked.is_none() && frozen.is_none() && lock_while_frozen.is_none() {
+    if visible.is_none() && language.is_none() && role.is_none() && locked.is_none() && frozen.is_none() && lock_while_frozen.is_none() {
         let what = if mixed.is_empty() { "as it was".to_string() } else { mixed.join(", ") };
         return Ok((format!("track {ti} {} {what}", quoted(&t.name)), EditCommand::SetTrackMix { changes: mix_changes }, Vec::new()));
     }
@@ -5978,6 +5997,11 @@ fn set_track(seq: &Sequence, i: usize, track: &TrackRef, own: TrackOwnSet, mix: 
         }
         what.push(if l.is_empty() { "no language".to_string() } else { format!("in {l}") });
         new.language = (!l.is_empty()).then_some(l);
+    }
+    if let Some(r) = role {
+        new.role = role_named(roles, r).map_err(|hint| refuse(i, format!("\"{}\" is not a role", r.trim()), hint))?;
+        let said = new.role.as_ref().and_then(|r| roles.label(r)).unwrap_or_else(|| "none".into());
+        what.push(format!("new clips' role {said}"));
     }
     if let Some(l) = locked {
         new.locked = l;
@@ -17002,6 +17026,57 @@ mod tests {
         assert!(what.contains("marked dialogue (from its sound)"), "{what}");
         let (role, source, _) = placed(media);
         assert_eq!((role, source), (None, klipp_core::RoleSource::Unset), "a file with a picture: no role");
+    }
+
+    /// #3211: set_track role is the role clips placed on the track start
+    /// with, by id, label or none, an unknown one refused. A placed clip
+    /// takes it, proposed, over what its sound was heard as, and the sound
+    /// laid under a picture takes its own track's.
+    #[test]
+    fn a_placed_clip_starts_with_its_tracks_role() {
+        let (mut seq, mut pool, media, _, _) = fixture();
+        let one = |seq: &Sequence, pool: &MediaPool, v: serde_json::Value| resolve(seq, pool, &[serde_json::from_value(v).unwrap()]);
+        let set = |seq: &Sequence, pool: &MediaPool, role: &str| match one(seq, pool, serde_json::json!({ "op": "set_track", "track": 1, "role": role })).map(|p| p.steps[0].edit.clone()) {
+            Ok(EditCommand::SetTrack { new, .. }) => Ok(new.role.clone()),
+            Ok(other) => panic!("{other:?}"),
+            Err(r) => Err(r.why),
+        };
+        assert_eq!(set(&seq, &pool, "Music › Score"), Ok(klipp_core::roles::RoleRef::parse("music.score")));
+        assert_eq!(set(&seq, &pool, "none"), Ok(None));
+        assert!(set(&seq, &pool, "nope").unwrap_err().contains("not a role"));
+
+        seq.tracks[1].role = klipp_core::roles::RoleRef::parse("music");
+        let mut voice = klipp_media::MediaItem::synthetic_for_test("/tmp/voice.mp3".into(), None);
+        voice.duration = tc(30.0);
+        voice.video_codec = String::new();
+        voice.audio_role = Some(klipp_core::RoleProposal { role: klipp_core::ClipRole::Dialogue, confidence: 0.9, confident: true });
+        let voice = pool.add(voice);
+        let plan = one(&seq, &pool, serde_json::json!({ "op": "place", "media_id": voice.0.to_string(), "track": 1, "at": { "track_end": 1 }, "source_in": 0.0, "source_out": 1.0, "with_audio": false })).unwrap();
+        let EditCommand::LegacyAppendClip { clip, .. } = &plan.steps[0].edit else { panic!("{:?}", plan.steps[0].edit) };
+        assert_eq!((clip.role.clone(), clip.role_source), (klipp_core::roles::RoleRef::parse("music"), klipp_core::RoleSource::Proposed));
+        assert!(plan.steps[0].what.contains("marked music (its track's role)"), "{}", plan.steps[0].what);
+
+        seq.tracks[1].role = klipp_core::roles::RoleRef::parse("effects.ambience");
+        let plan = one(&seq, &pool, serde_json::json!({ "op": "place", "media_id": media.0.to_string(), "track": 0, "at": { "track_end": 0 }, "source_in": 0.0, "source_out": 1.0, "with_audio": true })).unwrap();
+        let EditCommand::LinkedImport { video: Some((picture, _)), audio: Some((sound, 1)), .. } = &plan.steps[0].edit else { panic!("{:?}", plan.steps[0].edit) };
+        assert_eq!(picture.role, None, "a picture track with no role: none");
+        assert_eq!(sound.role, klipp_core::roles::RoleRef::parse("effects.ambience"), "the sound takes its own track's");
+
+        // Any clip put on a track takes its role as the edit is applied,
+        // the app's own edits too; undone, the clip is gone.
+        let mut bare = Clip::media(media, tc(20.0), tc(21.0), tc(0.0), tc(1.0));
+        let append = EditCommand::LegacyAppendClip { clip: bare.clone(), track_index: 1 };
+        let mut seqs = vec![seq.clone()];
+        let mut fps = seq.fps;
+        let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut pool, fps: &mut fps };
+        view.apply_forward(&append);
+        let placed = view.sequences[0].all_clips().find(|c| c.id == bare.id).unwrap().clone();
+        assert_eq!((placed.role, placed.role_source), (klipp_core::roles::RoleRef::parse("effects.ambience"), klipp_core::RoleSource::Proposed));
+        view.apply_inverse(&append);
+        assert!(view.sequences[0].all_clips().all(|c| c.id != bare.id), "undone");
+        bare.role_source = klipp_core::RoleSource::ByHand;
+        view.apply_forward(&EditCommand::LegacyAppendClip { clip: bare.clone(), track_index: 1 });
+        assert_eq!(view.sequences[0].all_clips().find(|c| c.id == bare.id).unwrap().role, None, "none by hand stays none");
     }
 
     /// #794: an effect on the timeline goes on every picture clip in one
