@@ -3127,6 +3127,13 @@ pub struct AppState {
     pub title_find_selected: Option<usize>,
     /// Check Spelling in Titles (#3236): open, and its own state.
     pub show_spelling_dialog: bool,
+    /// First Cut (#3308): a clip with speech is on the timeline, the
+    /// Preferences switch for its button, the dialog open, and its
+    /// choices, kept for the session.
+    pub first_cut_speech: bool,
+    pub show_first_cut_button: bool,
+    pub show_first_cut_dialog: bool,
+    pub first_cut_choices: crate::first_cut::Choices,
     /// The audition whose takes the picker shows (#3209).
     pub audition_picker: Option<ClipId>,
     /// The audition's takes being played in its slot (#3209).
@@ -5371,6 +5378,10 @@ impl Default for AppState {
             title_find_project: false,
             title_find_selected: None,
             show_spelling_dialog: false,
+            first_cut_speech: false,
+            show_first_cut_button: true,
+            show_first_cut_dialog: false,
+            first_cut_choices: crate::first_cut::Choices::default(),
             audition_picker: None,
             take_preview: None,
             spelling_dialog: Default::default(),
