@@ -772,7 +772,13 @@ pub fn template_fields(ui: &mut egui::Ui, theme: &KlippTheme, clip_id: klipp_cor
                     ui,
                     spell,
                     &mut edited,
-                    |e| e.desired_rows(1).desired_width(f32::INFINITY).id_salt(("template_text", clip_id, index)),
+                    // Enter keeps the field, as a one-line field's would,
+                    // with no line added; Shift+Enter starts a new line.
+                    // Enter in a name added a line, the field below moved
+                    // down from under the next click, and the typing after
+                    // it went to the editor's keys: pages switched,
+                    // playback started, In and Out were set.
+                    |e| e.desired_rows(1).desired_width(f32::INFINITY).id_salt(("template_text", clip_id, index)).return_key(egui::KeyboardShortcut::new(egui::Modifiers::SHIFT, egui::Key::Enter)),
                     language,
                     egui::TextStyle::Body.resolve(ui.style()),
                     ui.visuals().text_color(),
@@ -1863,6 +1869,47 @@ mod template_field_tests {
         assert!(dones.len() >= 2, "steps sent: {sent:?}");
         assert!(dones[..dones.len() - 1].iter().all(|d| !d), "under way: {dones:?}");
         assert_eq!(dones.last(), Some(&true), "the end is done: {dones:?}");
+    }
+
+    /// Enter in a template's text field keeps it, as in a one-line field,
+    /// and adds no line, so the fields below stay where they were;
+    /// Shift+Enter starts a new line.
+    #[test]
+    fn enter_keeps_a_template_text_field_and_shift_enter_adds_a_line() {
+        let (s, id) = state();
+        let td = title(&s, id);
+        let ctx = egui::Context::default();
+        let theme = KlippTheme::default();
+        let mut clock = 0.0;
+        let mut frame = |events: Vec<egui::Event>| {
+            clock += 0.1;
+            let mut cmds = Vec::new();
+            let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(360.0, 600.0))), time: Some(clock), events, ..Default::default() };
+            let out = ctx.run(input, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| assert!(template_fields(ui, &theme, id, &td, &crate::spelling::SpellCheck::default(), "en", &mut cmds)));
+            });
+            let texts: Vec<(String, egui::Rect)> = out.shapes.iter().filter_map(|s| match &s.shape {
+                egui::Shape::Text(t) => Some((t.galley.text().to_owned(), t.visual_bounding_rect())),
+                _ => None,
+            }).collect();
+            (cmds, texts)
+        };
+        frame(Vec::new());
+        let (_, texts) = frame(Vec::new());
+        let label = texts.iter().find(|(t, _)| t == "Text 1").expect("the field's label").1;
+        // The box under its label.
+        let at = egui::pos2(label.center().x + 40.0, label.bottom() + 12.0);
+        let button = |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+        frame(vec![egui::Event::PointerMoved(at), button(true)]);
+        frame(vec![button(false)]);
+        let focused = || ctx.memory(|m| m.focused());
+        let field = focused().expect("the click gives the field the keys");
+        let key = |modifiers| vec![egui::Event::Key { key: egui::Key::Enter, physical_key: None, pressed: true, repeat: false, modifiers }];
+        let (sent, _) = frame(key(egui::Modifiers::NONE));
+        assert!(!sent.iter().any(|c| matches!(c, AppCommand::SetTitleField { value: klipp_core::TitleFieldValue::Text(t), .. } if t.contains('\n'))), "Enter added no line: {sent:?}");
+        assert_eq!(focused(), Some(field), "the field keeps the keys after Enter");
+        let (sent, _) = frame(key(egui::Modifiers::SHIFT));
+        assert!(sent.iter().any(|c| matches!(c, AppCommand::SetTitleField { value: klipp_core::TitleFieldValue::Text(t), .. } if t.contains('\n'))), "Shift+Enter added a line: {sent:?}");
     }
 }
 

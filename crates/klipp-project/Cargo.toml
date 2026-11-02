@@ -8,6 +8,7 @@ license.workspace = true
 autotests = false
 
 [dependencies]
+sha2 = { workspace = true }
 klipp-core = { workspace = true }
 klipp-graph-lift = { workspace = true }
 # A template's starter content names the plug-ins its clips run (#618).

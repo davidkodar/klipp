@@ -14,6 +14,7 @@
 # Raised for #2758/#2757 (reviewed): graph_model.rs tells legacy effect and node params apart by type id (LEGACY_EFFECT 4, LEGACY_NODE 3) for colour, text, alias and clean-plate writes; graph_prepare.rs writes a saved node's whole entry with SetPayload; resolve.rs reads the entry of a Transform beside the chain (LEGACY_TRANSFORM, legacy); composition_template.rs's recipe_from_nodes reads legacy-typed nodes' entries (LEGACY_EFFECT 2, LEGACY_NODE 2, legacy); crop_cover_shape.rs builds its fixture with push_effect (2).
 # Raised for #3265 (frame_keys_cover_the_picture.rs): its field guard names every ClipPictureFields (4) and PictureView (2) field so a new one must be keyed or said why not; its sweeps set effects with set_effects (3), since an effect added by picture op takes a fresh id each build and the keys of two builds would differ.
 # Raised for #3318 (effect_params.rs): a load upgrades a stored effect by reading the node's legacy entry (legacy 1), and its test builds such a node (LEGACY_EFFECT 1).
+# Raised for #3344 and #3342: the guard on a load's upgrade of a stored effect reads the node's legacy entry (legacy 1) and its test builds such a node (LEGACY_EFFECT 1); step_run.rs checks the report says "unlift loses part of its picture" (unlift 2).
 builtin_effects 110
 builtin_effects_enabled 39
 ClipPictureFields 22
@@ -45,7 +46,7 @@ effect_param_keyframes 2
 effects_state 5
 insert_effect 10
 insert_effect_with_id 2
-LEGACY_EFFECT 91
+LEGACY_EFFECT 92
 LEGACY_OFX 44
 move_builtin_effect 15
 move_effect 10
@@ -82,7 +83,7 @@ transform_scale_keyframes 21
 transform_scale_y_keyframes 8
 transform_tilt_x_keyframes 8
 transform_tilt_y_keyframes 9
-unlift 27
+unlift 29
 video_effects 16
 video_effects_enabled 8
 video_param_keyframes 8
@@ -103,7 +104,7 @@ LegacyClipAnim 15
 MissingLegacy 5
 SetPayload 25
 SetPayloadAt 17
-legacy 170
+legacy 171
 legacy_flags 44
 LEGACY_NODE 60
 LEGACY_GRADE 24

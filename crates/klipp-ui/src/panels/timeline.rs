@@ -864,6 +864,10 @@ struct TrackKeyDrag {
 pub struct TimelinePanel {
     /// When true, skip internal toolbar/headers/status rendering (embedded in new shell)
     pub embedded: bool,
+    /// The band above the top track a clip may be let go in to make a new
+    /// video track: the shell's ruler and camera lane when embedded, set by
+    /// it each frame; else this panel's own ruler.
+    pub drop_above: Option<egui::Rect>,
     /// The Colour page's strip of shots: clicks select, and no drag
     /// starts an edit — no trim, fade, move, slip or slide (#323).
     pub select_only: bool,
@@ -3995,7 +3999,7 @@ impl TimelinePanel {
         &mut self,
         ui: &mut egui::Ui,
         state: &mut AppState,
-        _layout: &TimelineLayout,
+        layout: &TimelineLayout,
         cmds: &mut Vec<AppCommand>,
     ) {
         // Media drag released outside any track — auto-create track if enabled
@@ -4016,7 +4020,13 @@ impl TimelinePanel {
                 // Only a release over the timeline: above its tracks means
                 // the space above them in this panel, not the media pool
                 // or anything else higher up the window (#2621).
-                let over_timeline = ui.input(|i| i.pointer.hover_pos()).filter(|p| ui.clip_rect().contains(*p));
+                // The ruler and the space under it count as above the
+                // tracks: the tracks' own area starts at the top track, and
+                // a clip let go there did nothing, while one let go below
+                // the audio tracks made a track.
+                let clip = ui.clip_rect();
+                let above = self.drop_above.unwrap_or(layout.ruler_rect);
+                let over_timeline = ui.input(|i| i.pointer.hover_pos()).filter(|p| clip.contains(*p) || above.contains(*p));
                 if state.auto_create_tracks {
                     if let Some(cursor_pos) = over_timeline {
                         let is_audio_only = state.media_pool.get(&drag_media_id)
@@ -9024,6 +9034,15 @@ impl TimelinePanel {
                             cmds.push(AppCommand::MatchClipToColorReference { clip_id });
                             ui.close_menu();
                         }
+                        // The rest of a split shot, graded alike in one step.
+                        let pieces = state.sequence().ungraded_shot_pieces(clip_id).len();
+                        if !clip.grade_is_identity()
+                            && pieces > 0
+                            && ui.button("Apply Grade to All Pieces of This Shot").on_hover_text(format!("Give this grade to the {pieces} other ungraded piece{} of this shot", if pieces == 1 { "" } else { "s" })).clicked()
+                        {
+                            cmds.push(AppCommand::ApplyGradeToShotPieces { clip_id });
+                            ui.close_menu();
+                        }
                         // Wipe the graded clip against this one (#899).
                         if state.show_color_panel
                             && viewed.is_some_and(|v| v != clip_id)
@@ -12415,12 +12434,13 @@ impl TimelinePanel {
         let is_being_dragged = self.dragging_clip.as_ref()
             .is_some_and(|d| d.clip_id == clip.id);
 
-        // Use per-clip role color for audio clips (and B-Roll/Graphics video clips).
+        // Use per-clip role color for audio clips (and a picture in the
+        // Titles role, #3211).
         let theme_colors = theme();
-        let role_color = theme_colors.clip_role_color(clip.role);
+        let role_color = theme_colors.role_color(&state.media_pool.roles, clip.role.as_ref());
         let use_role_color = match track_kind {
             TrackKind::Audio => true,
-            _ => matches!(clip.role, klipp_timeline::ClipRole::BRoll | klipp_timeline::ClipRole::Graphics),
+            _ => clip.role.as_ref().is_some_and(|r| r.is("titles")),
         };
         // The clip's own colour label (#920) wins over the colour its
         // track, role or kind would give it; offline still shows as such.

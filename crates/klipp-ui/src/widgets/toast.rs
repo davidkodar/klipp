@@ -22,6 +22,9 @@ pub enum ToastAction {
     /// A clip slowed by a stretch: draw its in-between frames by optical
     /// flow (#3055).
     SmoothMotion(klipp_core::ClipId),
+    /// A refit left pictures centred that were never looked through for
+    /// people: look through them now, then refit the sequence.
+    FindPeople(klipp_core::SequenceId),
 }
 
 /// How long a toast with a button stays at least, so it can be reached.
@@ -56,8 +59,11 @@ impl ToastState {
     }
 
     /// Render the toast if active. Call every frame from the top-level
-    /// update. Its button's action, when it was clicked.
-    pub fn render(&self, ctx: &egui::Context, theme: &KlippTheme) -> Option<ToastAction> {
+    /// update. Its button's action, when it was clicked. `above`, the top
+    /// of a note that stays at the foot of the window (the small-screen
+    /// note), lifts the toast clear of it: drawn on it, both were
+    /// unreadable.
+    pub fn render(&self, ctx: &egui::Context, theme: &KlippTheme, above: Option<f32>) -> Option<ToastAction> {
         let (msg, appear) = match (&self.message, self.appear_time) {
             (Some(m), Some(t)) => (m, t),
             _ => return None,
@@ -91,10 +97,11 @@ impl ToastState {
             0.0
         };
 
+        let lift = above.map_or(40.0, |top| (ctx.screen_rect().bottom() - top + 8.0).max(40.0));
         egui::Area::new(egui::Id::new("klipp_toast"))
             .anchor(
                 egui::Align2::CENTER_BOTTOM,
-                egui::vec2(0.0, -40.0 - y_offset),
+                egui::vec2(0.0, -lift - y_offset),
             )
             .order(egui::Order::Foreground)
             .show(ctx, |ui| {

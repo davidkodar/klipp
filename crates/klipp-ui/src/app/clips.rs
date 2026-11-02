@@ -752,7 +752,7 @@ impl KlippApp {
                 AppCommand::SetClipRole { clip_id, role } => {
                     // One undo step, and a role chosen by hand wins over the
                     // sound's (#2216, #2229).
-                    if let Some(edit) = super::audio_roles::hand_role_edit(self.state.sequence(), *clip_id, *role) {
+                    if let Some(edit) = super::audio_roles::hand_role_edit(self.state.sequence(), *clip_id, role.clone()) {
                         self.apply_edits_as_one(&[edit], "Set Clip Role");
                     }
                     true
@@ -1959,7 +1959,7 @@ pub(super) fn duplicate_after(clip: &klipp_timeline::Clip) -> klipp_timeline::Cl
         matte_choke_keyframes: clip.matte_choke_keyframes.clone(),
         clip_markers: clip.clip_markers.clone(),
         frame_glide: None,
-        role: clip.role,
+        role: clip.role.clone(),
         role_source: clip.role_source,
         matched_to: None,
         speed: clip.speed,
