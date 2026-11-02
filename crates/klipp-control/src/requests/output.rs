@@ -1351,9 +1351,6 @@ fn publish_kit(ctx: &ControlContext, ask: PublishKitAsk, send: &mut dyn FnMut(Ap
     } else if ranged {
         skipped = Some("Captions weren't written: they would hold the whole sequence's cues, not this range's.");
         false
-    } else if caption_files.iter().any(|f| !kit::stays_beside(&f.path, &video)) {
-        skipped = Some("Captions weren't written: a subtitle track's language isn't a plain code, and would name a file somewhere else.");
-        false
     } else {
         true
     };
