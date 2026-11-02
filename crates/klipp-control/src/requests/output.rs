@@ -1317,6 +1317,8 @@ fn has_aspect(size: (u32, u32), aspect: (u32, u32)) -> bool {
 fn apply_export_preset(settings: &mut klipp_core::ExportSettings, name: &str) -> Result<String, String> {
     let presets = klipp_core::builtin_presets();
     let wanted = name.trim().to_lowercase();
+    // The 9:16 preset's name before it was named for where it goes.
+    let wanted = if wanted == "instagram vertical" { "shorts, reels, tiktok 9:16".to_string() } else { wanted };
     let Some(p) = presets.iter().find(|p| p.name.to_lowercase() == wanted || p.id == name.trim()) else {
         let names: Vec<&str> = presets.iter().map(|p| p.name.as_str()).collect();
         return Err(format!("no export preset {name:?}; the presets are {}", names.join(", ")));

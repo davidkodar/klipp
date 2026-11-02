@@ -134,6 +134,15 @@ impl ResidentPool {
         made
     }
 
+    /// Keep room for `frames` held by the stream's reader besides its
+    /// queue's: a reversed clip's window holds its whole group of
+    /// pictures while the one before is decoded (#3221). Past the queue's
+    /// 24, each was made fresh, 2.6 GB of one-off 1080p buffers in two
+    /// short reversed plays.
+    pub(crate) fn keep_for(&mut self, frames: usize) {
+        self.cap = Self::CAP + frames;
+    }
+
     /// How many buffers it keeps. For tests.
     pub(crate) fn kept(&self) -> usize {
         self.buffers.len()
@@ -279,6 +288,13 @@ impl GpuNv12Converter {
     #[doc(hidden)]
     pub fn resident_buffers_kept(&self) -> usize {
         self.resident_rgba.kept()
+    }
+
+    /// Keep buffers for `frames` its stream's reader holds besides the
+    /// queue (`ResidentPool::keep_for`).
+    pub fn keep_resident_for(&mut self, frames: usize) {
+        self.resident_rgba.keep_for(frames);
+        self.resident_codes.keep_for(frames);
     }
 
     /// Create a new GPU NV12 converter. Shares the process-wide

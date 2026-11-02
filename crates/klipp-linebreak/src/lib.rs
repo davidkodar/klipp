@@ -11,6 +11,9 @@
 #![forbid(unsafe_code)]
 
 mod tables;
+mod words;
+
+pub use words::{complex_breaks, is_complex, word_starts};
 
 use crate::tables::*;
 

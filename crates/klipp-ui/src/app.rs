@@ -420,6 +420,10 @@ pub struct KlippApp {
     /// worked out for, so it is set once per change rather than every
     /// frame (and never fights a zoom made another way).
     ui_scale_applied: Option<(u32, u32, u32)>,
+    /// The window's size, and whether it is maximised, each counting once
+    /// it holds (`appearance::Settling`).
+    size_settling: appearance::Settling<(u32, u32)>,
+    maximized_settling: appearance::Settling<bool>,
     /// The files a filmstrip refinement pass is running for; see
     /// `AppCommand::RefineFilmstrip`.
     filmstrip_refining: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<MediaId>>>,
@@ -896,6 +900,8 @@ impl eframe::App for KlippApp {
         self.tick_meters_and_skims(ctx);
         let all_cmds = self.draw_window(ctx);
         let has_quit = self.dispatch_commands(ctx, all_cmds);
+        // After the commands, which may have queued a harness's steps.
+        self.pointer.keep_awake(ctx);
         self.finish_frame(ctx, has_quit);
 
         // Log slow UI ticks. 25 ms is a conservative threshold — at 60 fps
