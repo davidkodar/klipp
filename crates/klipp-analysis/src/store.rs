@@ -5,7 +5,7 @@
 use std::path::{Path, PathBuf};
 
 pub fn analysis_dir() -> PathBuf {
-    klipp_media::disk_cache::cache_base_dir().join("analysis")
+    klipp_media::disk_cache::analysis_dir()
 }
 
 /// The media file's cache key, or `None` when the file is not there.
