@@ -483,7 +483,7 @@ impl PreferencesPanel {
             PrefsTab::System => &["system", "gpu", "hardware", "decode", "threads", "frame queue", "playback resolution", "nvdec", "vaapi", "cuda"],
             PrefsTab::Playback => &["playback", "quality", "background render", "pre-roll", "jkl", "speed", "loop"],
             PrefsTab::MediaCache => &["cache", "thumbnail", "waveform", "render cache", "cache size", "transcode", "clear cache"],
-            PrefsTab::Editing => &["editing", "snap", "zoom", "playhead", "magnetic", "timeline", "transition", "duration", "multicam", "angle", "sync", "tracking", "tracker", "search radius"],
+            PrefsTab::Editing => &["editing", "snap", "zoom", "playhead", "magnetic", "timeline", "transition", "duration", "multicam", "angle", "sync", "tracking", "tracker", "search radius", "first cut", "rough cut"],
             PrefsTab::FileBrowser => &["file browser", "browser", "files", "thumbnail", "thumb", "skim", "skimming", "hover", "sort", "filter", "favorites", "pinned", "folders"],
             PrefsTab::Audio => &["audio", "pan law", "fade", "curve", "loudness", "normalize", "peak hold", "anti-click", "mixing"],
             PrefsTab::AudioHardware => &["audio hardware", "output device", "sample rate", "buffer size", "monitoring", "pipewire", "alsa"],
@@ -1079,6 +1079,20 @@ impl PreferencesPanel {
                 }
             });
         });
+
+        Self::setting_row_with_subtitle(
+            ui,
+            "First Cut button",
+            "Show the timeline's First Cut button while a clip with speech is on the timeline. Edit → First Cut is there either way.",
+            theme,
+            |ui| {
+                let mut val = prefs.editing.show_first_cut_button;
+                if ui.add(Switch::new(&mut val, theme)).changed() {
+                    prefs.editing.show_first_cut_button = val;
+                    *dirty = true;
+                }
+            },
+        );
 
         Self::setting_row_with_subtitle(
             ui,

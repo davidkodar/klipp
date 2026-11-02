@@ -204,8 +204,8 @@ impl GpuEffectsPipeline {
         slice.map_async(wgpu::MapMode::Read, move |r| { let _ = tx.send(r); });
 
         mark_gpu_stage(GpuStage::FlushChain);
-        let result = match poll_until_mapped(&self.device, &rx) {
-            Ok(Ok(())) => {
+        let result = match self.wait_mapped(staging, &rx, "flush_chain") {
+            true => {
                 let t_mapped = t_submit.elapsed();
                 let data = slice.get_mapped_range();
                 let result = mapped_bytes_to_f32(&data, pixel_count * 4);
@@ -220,10 +220,7 @@ impl GpuEffectsPipeline {
                 readback.succeeded = true;
                 result
             }
-            other => {
-                self.mark_device_lost(&format!("flush_chain map_async failed: {other:?}"));
-                vec![0.0f32; pixel_count * 4]
-            }
+            false => vec![0.0f32; pixel_count * 4],
         };
         mark_gpu_stage(GpuStage::Idle);
         result

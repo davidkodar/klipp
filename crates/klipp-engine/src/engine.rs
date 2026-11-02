@@ -5386,12 +5386,8 @@ impl PlaybackEngine {
             fb.scope_preview.clear();
             fb.scope_preview_w = 0;
             fb.scope_preview_h = 0;
-            fb.pending_data.clear();
-            fb.pending_width = 0;
-            fb.pending_height = 0;
-            fb.pending_ready = false;
+            fb.drop_pending();
             fb.render_cache_ranges.clear();
-            fb.generation = fb.generation.wrapping_add(1);
         }
 
         info!("Engine reset to idle (project unloaded)");

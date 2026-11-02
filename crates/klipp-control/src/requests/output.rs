@@ -435,7 +435,7 @@ pub(crate) fn respond(
             Ok(v)
         }
 
-        ControlCommand::Covers { cover, path, propose } => covers(ctx, cover.as_deref(), path.as_deref(), propose),
+        ControlCommand::Covers { cover, path, propose, overwrite } => covers(ctx, cover.as_deref(), path.as_deref(), propose, overwrite),
 
         ControlCommand::TranslateCaptions { track, to, from, download_models, glossary } => {
             use klipp_document::caption_translation as ct;
@@ -1021,7 +1021,7 @@ pub(crate) fn respond(
             let avg = ring.averages(60);
             // Why playback drops frames, if it does, and what would help
             // (#3234): over the last ten seconds played at 1x.
-            let diagnosis = {
+            let mut diagnosis = {
                 let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
                 let pool = ctx.media_pool.read().recovered();
                 let samples = (seq.fps.as_f64() * klipp_engine::playback_health::WINDOW as f64).ceil() as usize;
@@ -1032,6 +1032,9 @@ pub(crate) fn respond(
                     None => json!({ "health": health, "cause": "playback keeps up" }),
                 }
             };
+            if let Some(why) = klipp_effects::gpu_context::gpu_turned_off() {
+                diagnosis["gpu_turned_off"] = json!(why);
+            }
             Ok(json!({
                 "presented_fps": presented_fps,
                 "diagnosis": diagnosis,
@@ -1385,6 +1388,9 @@ impl Drop for PutBackViewing<'_> {
 /// A cover as a reply lists it: its id, name, frame, size, crop and words.
 fn cover_json(c: &klipp_timeline::cover::Cover) -> serde_json::Value {
     let mut v = json!({ "id": c.id.to_string(), "at_secs": c.at_secs, "size": c.size });
+    if let Some(s) = klipp_core::cover_sizes::by_id(&c.size) {
+        v["size_name"] = json!(s.name);
+    }
     if !c.name.is_empty() {
         v["name"] = json!(c.name);
     }
@@ -1401,7 +1407,7 @@ fn cover_json(c: &klipp_timeline::cover::Cover) -> serde_json::Value {
 }
 
 /// [`ControlCommand::Covers`]: the covers and sizes, or one cover written.
-fn covers(ctx: &ControlContext, named: Option<&str>, path: Option<&str>, propose: bool) -> Result<serde_json::Value, String> {
+fn covers(ctx: &ControlContext, named: Option<&str>, path: Option<&str>, propose: bool, overwrite: bool) -> Result<serde_json::Value, String> {
     use klipp_render::still::{encode, StillFormat};
     let list: Vec<klipp_timeline::cover::Cover> = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?.covers.clone();
     let Some(path) = path else {
@@ -1422,6 +1428,7 @@ fn covers(ctx: &ControlContext, named: Option<&str>, path: Option<&str>, propose
         return Err(format!("a cover's path must be absolute (got {path:?})"));
     }
     let format = StillFormat::of_path(&p).ok_or_else(|| format!("{path:?} names no picture format; end it .png, .jpg or .jpeg"))?;
+    may_replace(&p, overwrite)?;
     let c = match named {
         Some(n) => klipp_timeline::cover::find(&list, n).map(|k| &list[k]).ok_or_else(|| format!("no cover {n:?}; covers lists them"))?,
         None if list.len() == 1 => &list[0],
@@ -1431,7 +1438,7 @@ fn covers(ctx: &ControlContext, named: Option<&str>, path: Option<&str>, propose
     let size = klipp_core::cover_sizes::by_id(&c.size).ok_or_else(|| format!("the cover's size {:?} is not one Klipp knows", c.size))?;
     let still = cover_frame(ctx, c, size.width, size.height)?;
     let (bytes, quality) = encode(&still, format, size.max_bytes)?;
-    let part = p.with_extension("klipp-part");
+    let part = p.with_file_name(format!("{}.klipp-part", p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()));
     std::fs::write(&part, &bytes).and_then(|_| std::fs::rename(&part, &p)).map_err(|e| format!("couldn't write {path:?}: {e}"))?;
     Ok(json!({ "path": path, "bytes": bytes.len(), "width": size.width, "height": size.height, "quality": quality, "cover": cover_json(c) }))
 }

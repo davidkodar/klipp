@@ -799,6 +799,11 @@ pub struct EditingPrefs {
     /// Mark spans of clips that show the same frames as another clip.
     #[serde(default = "default_true")]
     pub show_reused_footage: bool,
+    /// The timeline's First Cut button (#3308), shown only while a clip
+    /// with speech is on the timeline; off hides it. Edit → First Cut is
+    /// there either way.
+    #[serde(default = "default_true")]
+    pub show_first_cut_button: bool,
     /// Default tracker search region radius in pixels.
     #[serde(default = "default_track_search_radius")]
     pub track_search_radius: u32,
@@ -872,6 +877,7 @@ impl Default for EditingPrefs {
             multicam_sync_method: MulticamSyncMethod::default(),
             multicam_show_angles: true,
             show_reused_footage: true,
+            show_first_cut_button: true,
             track_search_radius: default_track_search_radius(),
             track_patch_size: default_track_patch_size(),
             track_loss_threshold: default_track_threshold(),
@@ -3297,6 +3303,17 @@ mod tests {
         assert!(old.offer_grade_to_shot_pieces);
         let off: ColorPrefs = serde_json::from_str(r#"{"offer_grade_to_shot_pieces": false}"#).unwrap();
         assert!(!off.offer_grade_to_shot_pieces);
+    }
+
+    #[test]
+    fn the_first_cut_button_is_on_unless_turned_off() {
+        assert!(EditingPrefs::default().show_first_cut_button);
+        // A prefs file from before it has it on too: it shows only with
+        // speech on the timeline.
+        let old: EditingPrefs = serde_json::from_str("{}").unwrap();
+        assert!(old.show_first_cut_button);
+        let off: EditingPrefs = serde_json::from_str(r#"{"show_first_cut_button": false}"#).unwrap();
+        assert!(!off.show_first_cut_button);
     }
 
     #[test]

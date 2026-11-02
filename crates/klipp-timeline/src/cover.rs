@@ -19,6 +19,10 @@ pub const MAX_NAME_CHARS: usize = 80;
 /// How far in a cover's crop goes.
 pub const MAX_ZOOM: f32 = 8.0;
 
+/// The latest frame a cover can be at, in seconds: a day. A file's frame
+/// past it is no sequence's, and would overflow the frame clock.
+pub const MAX_AT_SECS: f64 = 86_400.0;
+
 /// One cover: a frame of the sequence, the part of it shown, the text
 /// over it, and the size it is made at.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -75,9 +79,10 @@ impl CoverCrop {
 impl Cover {
     /// This cover as a file may have written it, made sound: its name
     /// cut to length and stripped of control characters, its crop
-    /// clamped. `None` for one whose frame isn't a time.
+    /// clamped. `None` for one whose frame isn't a time up to
+    /// [`MAX_AT_SECS`].
     pub fn checked(self) -> Option<Cover> {
-        if !self.at_secs.is_finite() || self.at_secs < 0.0 {
+        if !self.at_secs.is_finite() || !(0.0..=MAX_AT_SECS).contains(&self.at_secs) {
             return None;
         }
         let name: String = self.name.trim().chars().filter(|c| !c.is_control()).take(MAX_NAME_CHARS).collect();
@@ -172,7 +177,7 @@ mod tests {
         let odd = odd.checked().unwrap();
         assert!(odd.name.starts_with("ab") && odd.name.chars().count() == MAX_NAME_CHARS, "{}", odd.name);
         assert_eq!(odd.size, "etc");
-        assert!(cover(f64::NAN).checked().is_none() && cover(-1.0).checked().is_none());
+        assert!(cover(f64::NAN).checked().is_none() && cover(-1.0).checked().is_none() && cover(1e300).checked().is_none());
 
         let twice = cover(2.0);
         let mut many = vec![twice.clone(), twice];

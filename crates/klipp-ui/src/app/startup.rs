@@ -211,6 +211,7 @@ impl KlippApp {
             last_graded_playhead: None,
             graded_positions: std::collections::HashMap::new(),
             colour_go_to: None,
+            first_cut_gate_key: None,
             browser_before_workspace: None,
             dock_before_composite: None,
             node_browser_borrow: Default::default(),
@@ -395,6 +396,7 @@ impl KlippApp {
         app.state.magnetic_timeline_enabled = app.prefs.editing.magnetic_timeline;
         app.state.multicam_show_angles = app.prefs.editing.multicam_show_angles;
         app.state.show_reused_footage = app.prefs.editing.show_reused_footage;
+        app.state.show_first_cut_button = app.prefs.editing.show_first_cut_button;
         app.state.auto_create_tracks = app.prefs.editing.auto_create_tracks;
         app.state.default_transition_frames = app.prefs.editing.default_transition_frames;
         app.state.shift_step_frames = app.prefs.editing.shift_step_frames;

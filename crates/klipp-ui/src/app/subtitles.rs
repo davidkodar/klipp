@@ -36,9 +36,64 @@ pub(super) fn generate_youtube_chapters(entries: &[(f64, String)]) -> String {
         .join("\n")
 }
 
+/// A chapter list's entries: the markers of kind Chapter, as the chapters
+/// embedded in an export are; other kinds are workflow notes. YouTube
+/// requires the first chapter at 0:00, so when the earliest is more than
+/// half a second in, or there are none, a synthetic "Intro" comes first.
+pub(super) fn youtube_chapter_entries(markers: &[klipp_timeline::Marker]) -> Vec<(f64, String)> {
+    // Sequence markers are sorted by position on add.
+    let mut entries: Vec<(f64, String)> = markers.iter()
+        .filter(|m| m.kind == klipp_core::MarkerKind::Chapter)
+        .map(|m| (m.position.to_secs_f64(), m.label.clone()))
+        .collect();
+    if entries.first().map(|(s, _)| *s > 0.5).unwrap_or(true) {
+        entries.insert(0, (0.0, "Intro".to_string()));
+    }
+    entries
+}
+
 #[cfg(test)]
 mod youtube_chapter_tests {
     use super::*;
+
+    fn marker(secs: f64, label: &str, kind: klipp_core::MarkerKind) -> klipp_timeline::Marker {
+        klipp_timeline::Marker {
+            id: klipp_core::MarkerId::new(),
+            position: klipp_core::Timecode::from_secs_f64(secs, 25),
+            label: label.to_string(),
+            color: klipp_core::MarkerColor::Orange,
+            duration: None,
+            comment: String::new(),
+            kind,
+            review: None,
+        }
+    }
+
+    /// Only Chapter markers become chapters, whatever other kinds sit
+    /// between them, untyped ones included.
+    #[test]
+    fn only_chapter_markers_become_chapters() {
+        use klipp_core::MarkerKind as K;
+        let markers = [
+            marker(0.0, "Start", K::Chapter),
+            marker(10.0, "Fix this", K::ToDo),
+            marker(20.0, "Untyped", K::None),
+            marker(30.0, "Middle", K::Chapter),
+            marker(40.0, "A note", K::Comment),
+        ];
+        assert_eq!(youtube_chapter_entries(&markers), [(0.0, "Start".to_string()), (30.0, "Middle".to_string())]);
+    }
+
+    /// The first chapter is at 0:00: an Intro comes first when the earliest
+    /// Chapter marker is later, or when only other kinds exist.
+    #[test]
+    fn an_intro_comes_first_when_no_chapter_starts_the_list() {
+        use klipp_core::MarkerKind as K;
+        let intro = (0.0, "Intro".to_string());
+        assert_eq!(youtube_chapter_entries(&[marker(0.0, "Note", K::ToDo), marker(5.0, "Part", K::Chapter)]), [intro.clone(), (5.0, "Part".to_string())]);
+        assert_eq!(youtube_chapter_entries(&[marker(0.0, "Note", K::None)]), std::slice::from_ref(&intro));
+        assert_eq!(youtube_chapter_entries(&[]), [intro]);
+    }
 
     #[test]
     fn format_youtube_chapter_time_under_one_hour() {

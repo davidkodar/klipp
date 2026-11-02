@@ -84,6 +84,7 @@ mod event_writes;
 mod graph_dock;
 pub(crate) mod colour_target;
 mod music_trim;
+mod first_cut_dialog;
 #[cfg(test)]
 mod music_trim_tests;
 #[cfg(test)]
@@ -520,6 +521,9 @@ pub struct KlippApp {
     /// "Go to it" clicked in the Colour page's header (#2952), taken
     /// at the next frame's follow.
     colour_go_to: Option<klipp_core::ClipId>,
+    /// What First Cut's gate was worked out for: the sequence, its cut
+    /// and the analysis (#3308).
+    first_cut_gate_key: Option<(klipp_core::SequenceId, u64, u64)>,
     /// Browser visibility before a workspace borrowed its width,
     /// restored on leaving.
     ///
