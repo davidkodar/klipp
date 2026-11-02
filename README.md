@@ -23,13 +23,15 @@ Klipp is still young, but it works end to end: import, edit, grade, titles, soun
 
 ## Create, finish, deliver
 
-- **Edit:** magnetic multitrack editing, ripple and insert edits, synced multicam, a selects timeline, transitions, speed ramps and optical-flow slow motion, a curve editor for keyframes, and transcript-based cuts.
+- **Edit:** magnetic multitrack editing, ripple and insert edits, synced multicam, a selects timeline, transitions, speed ramps and optical-flow slow motion, stretching a clip to a new length, a curve editor for keyframes, and transcript-based cuts. Auditions keep several takes in one clip slot and play each in place; hover over an effect, transition or title to preview it on the clip; reuse markers show footage used twice.
 - **Picture:** one node graph per clip for effects, mattes, keys, transforms, LUTs and OFX/frei0r plug-ins, composited on the GPU.
 - **Grade:** a scene-linear ACEScg pipeline, camera-log decoding, colour wheels and curves, RGB and 3D qualifiers, a grade library shared across projects, GPU scopes, and SDR/HDR delivery including HDR10+.
-- **Titles:** OpenType text with complex scripts, vertical text, variable and colour fonts, animators and per-glyph motions, extruded 3D text, rolling credits, and a template library.
-- **Mix:** multitrack audio with recorded track automation, EQ and dynamics, voice isolation, loudness and true-peak delivery, and dual-system sound sync.
+- **Titles:** OpenType text with complex scripts, vertical text, variable and colour fonts, animators and per-glyph motions, extruded 3D text, rolling credits, spell checking against your system's dictionaries, and a template library with ready-made looks such as Glow Caps.
+- **Mix:** multitrack audio with recorded track automation, aux buses and sends, EQ and dynamics, voice isolation, loudness and true-peak delivery, and dual-system sound sync.
 - **Captions:** SRT, VTT, ASS, IMSC/TTML, SCC and EBU-STL in and out, captions embedded as CEA-608, and on-device translation.
-- **Automate:** analyse footage, propose an edit plan, assemble a sequence, check it, and export through the control socket and an MCP server with over 120 tools.
+- **Deliver:** start a project from a destination (YouTube, Shorts/Reels/TikTok, a square post or a podcast) that sets its size, loudness, captions and delivery check; outline a platform's player in the viewer; keep your logo, fonts, intro and outro as a brand kit.
+- **Play heavy work smoothly:** freeze a heavy track to play it from a stored result, bounce it to a media file with its transparency, and let Klipp draw late frames ahead while you're idle.
+- **Automate:** analyse footage, propose an edit plan, assemble a sequence, check it, and export through the control socket and an MCP server with 145 tools.
 - **Exchange:** move an edit to and from other editors as OTIO, FCPXML, EDL or AAF (through OpenTimelineIO), import FCP7 XML and MLT, and export Kdenlive. The edit comes across (clips, cuts and timing, and markers where the format has them); grades, most effects and most titles don't, and every import lists what it carried and what it left out. Your own work is saved as a `.klipp` project.
 
 Explore the [feature reference](docs/project-reference.md#features) and [user guide](docs/src/SUMMARY.md).
