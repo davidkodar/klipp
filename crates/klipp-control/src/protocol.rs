@@ -190,6 +190,14 @@ impl ControlCommand {
     }
 }
 
+/// A chapter a client wrote for a publish kit (#3312).
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct KitChapter {
+    pub secs: f64,
+    pub label: String,
+}
+
 /// One output of a delivery (#2724): its aspect ("16:9", "9:16", "1:1"
 /// or "4:5"), the file it is written to, and its preset and loudness.
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
@@ -1252,6 +1260,32 @@ pub enum ControlCommand {
         /// Maximum wait, default one hour. Timeout does not cancel work.
         #[serde(default)]
         timeout_ms: Option<u64>,
+    },
+    /// A publish kit (#3312): chapters, a description and tags for an
+    /// export, Klipp's drafts unless given here. Without `path`, only read
+    /// back. With `path`, the video's absolute path, written beside it as
+    /// plain text with the subtitle tracks' SRT files; a file there already
+    /// is replaced only with `overwrite`. Nothing is uploaded.
+    PublishKit {
+        #[serde(default)]
+        path: Option<String>,
+        /// The exported range, timeline seconds; the whole sequence when
+        /// left out.
+        #[serde(default)]
+        from_secs: Option<f64>,
+        #[serde(default)]
+        to_secs: Option<f64>,
+        #[serde(default)]
+        chapters: Option<Vec<KitChapter>>,
+        #[serde(default)]
+        description: Option<String>,
+        #[serde(default)]
+        tags: Option<Vec<String>>,
+        /// The subtitle tracks' files too (the default) or not.
+        #[serde(default)]
+        captions: Option<bool>,
+        #[serde(default)]
+        overwrite: bool,
     },
     /// Write the sequence's subtitle clips (its text clips where it has
     /// none) as a subtitle file, in the format the path's extension names:

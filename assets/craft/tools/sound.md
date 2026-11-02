@@ -40,6 +40,7 @@ Narration from text, made on the machine. voice is a manifest id; the default is
 
 Arguments:
 - `fit_secs`: seconds the take must last
+- `variation`: Piper: 0 flat to 2
 
 ## klipp_search_music
 
@@ -51,6 +52,7 @@ A search ranks the same candidates whatever its limit, so the best match is firs
 
 Arguments:
 - `commercial_only`: only tracks whose licence allows commercial use
+- `edits_only`: no ND
 - `instrumental`: only instrumental tracks, for a promo with its own titles
 - `listen`: hear previews (at most 5): the first this-many, or [track_id, …]; tempo, beat and energy, nothing imported
 

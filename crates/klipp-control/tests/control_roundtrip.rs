@@ -5370,3 +5370,80 @@ fn a_take_preview_gives_way_to_an_export_and_a_save() {
     assert_eq!(h.sequence.standing_in(), None, "an edit ends it first");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// #3312: `publish_kit`. Read back it writes nothing, and says what is a
+/// draft; written, marker chapters and a client's text carry no `.draft` and
+/// Klipp's own do; a file there stops it, kept, until `overwrite`; a track's
+/// language that would name a file elsewhere gets no captions asked for; a
+/// bad path or a client's bad chapters are refused before anything is done.
+#[test]
+fn a_publish_kit_reads_back_writes_beside_the_video_and_keeps_what_is_there() {
+    let mut h = harness();
+    let dir = std::env::temp_dir().join(format!("klipp-kit-socket-{}", klipp_core::MediaId::new().0));
+    std::fs::create_dir_all(&dir).unwrap();
+    let video = dir.join("film.mp4");
+    let video_path = video.to_str().unwrap();
+    let marker = |at: i64, label: &str, kind| klipp_timeline::Marker { id: klipp_core::MarkerId::new(), position: klipp_core::Timecode::from_frames(at, 25), label: label.into(), color: klipp_core::MarkerColor::Orange, duration: None, comment: String::new(), kind, review: None };
+    let mut seq = (*h.sequence.snapshot()).clone();
+    seq.markers = vec![marker(0, "Start", klipp_core::MarkerKind::Chapter), marker(250, "A note", klipp_core::MarkerKind::ToDo)];
+    seq.brief = Some(klipp_timeline::Brief { title: "Film".into(), vocabulary: vec!["Klipp".into()], ..Default::default() });
+    h.sequence.replace(seq);
+
+    let read = h.ok(json!({ "method": "publish_kit" }));
+    assert_eq!((read["chapters_from"].as_str(), read["chapters_text"].as_str()), (Some("chapter_markers"), Some("0:00:00 Start")), "{read}");
+    assert_eq!((read["description_is_draft"].as_bool(), read["tags_are_draft"].as_bool(), read["uploaded"].as_bool()), (Some(true), Some(true), Some(false)), "{read}");
+    assert_eq!(read["tags"], json!(["Klipp"]));
+    assert!(read["warnings"][0].as_str().unwrap().contains("from 3"), "{read}");
+    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0, "a read writes nothing");
+
+    let wrote = h.ok(json!({ "method": "publish_kit", "path": video_path }));
+    assert_eq!(wrote["files"].as_array().map(Vec::len), Some(3), "{wrote}");
+    assert_eq!(std::fs::read_to_string(dir.join("film.chapters.txt")).unwrap(), "0:00:00 Start\n");
+    assert!(std::fs::read_to_string(dir.join("film.description.draft.txt")).unwrap().starts_with("Film"));
+    assert_eq!(std::fs::read_to_string(dir.join("film.tags.draft.txt")).unwrap(), "Klipp\n");
+
+    let again = h.call(json!({ "method": "publish_kit", "path": video_path }));
+    assert_eq!(again["ok"], json!(false), "{again}");
+    assert!(again["error"].as_str().unwrap().contains("overwrite"), "{again}");
+
+    let mine = h.ok(json!({ "method": "publish_kit", "path": video_path, "overwrite": true, "description": "My words.", "tags": ["one", "two"], "chapters": [{"secs": 0.0, "label": "Open"}, {"secs": 30.0, "label": "End"}] }));
+    assert_eq!((mine["description_is_draft"].as_bool(), mine["chapters_from"].as_str()), (Some(false), Some("given")), "{mine}");
+    assert_eq!(std::fs::read_to_string(dir.join("film.description.txt")).unwrap(), "My words.\n");
+    assert_eq!(std::fs::read_to_string(dir.join("film.tags.txt")).unwrap(), "one, two\n");
+
+    let mut seq = (*h.sequence.snapshot()).clone();
+    for language in ["de", "../../evil"] {
+        let mut t = klipp_timeline::Track::new("Subs", klipp_timeline::TrackKind::Subtitle);
+        t.language = Some(language.into());
+        t.clips.push(klipp_timeline::Clip::gap(klipp_core::Timecode::from_frames(0, 25), klipp_core::Timecode::from_frames(25, 25)));
+        seq.tracks.push(t);
+    }
+    h.sequence.replace(seq);
+    let hostile = h.ok(json!({ "method": "publish_kit", "path": video_path, "overwrite": true }));
+    assert!(hostile["captions_skipped"].as_str().unwrap().contains("plain code"), "{hostile}");
+    assert!(h.cmd_rx.try_recv().is_err(), "no captions asked for");
+
+    let mut seq = (*h.sequence.snapshot()).clone();
+    seq.tracks.last_mut().unwrap().language = Some("fr".into());
+    h.sequence.replace(seq);
+    let captioned = h.ok(json!({ "method": "publish_kit", "path": video_path, "overwrite": true }));
+    assert!(matches!(h.cmd_rx.recv_timeout(std::time::Duration::from_secs(5)), Ok(klipp_core::AppCommand::ExportSubtitles { .. })));
+    assert!(captioned["files"].to_string().contains("film.de.srt") && captioned["files"].to_string().contains("film.fr.srt"), "{captioned}");
+    let ranged = h.ok(json!({ "method": "publish_kit", "path": video_path, "overwrite": true, "from_secs": 0.0, "to_secs": 5.0 }));
+    assert!(ranged["captions_skipped"].as_str().unwrap().contains("range"), "{ranged}");
+
+    for (request, why) in [
+        (json!({ "method": "publish_kit", "path": "film.mp4" }), "absolute"),
+        (json!({ "method": "publish_kit", "path": dir.to_str().unwrap() }), "folder"),
+        (json!({ "method": "publish_kit", "path": dir.join("gone/film.mp4").to_str().unwrap() }), "no such folder"),
+        (json!({ "method": "publish_kit", "chapters": [{"secs": -1.0, "label": "A"}] }), "in order"),
+        (json!({ "method": "publish_kit", "description": "x".repeat(5001) }), "5000"),
+        (json!({ "method": "publish_kit", "from_secs": 9.0, "to_secs": 3.0 }), "range"),
+    ] {
+        let r = h.call(request.clone());
+        assert_eq!(r["ok"], json!(false), "{request}: {r}");
+        assert!(r["error"].as_str().unwrap().contains(why), "{request}: {r}");
+    }
+    assert!(h.cmd_rx.try_recv().is_err(), "a refused call sends nothing");
+    let _ = std::fs::remove_dir_all(&dir);
+}
