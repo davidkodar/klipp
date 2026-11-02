@@ -1291,10 +1291,11 @@ mod sound_role_tests {
 
     /// #1907: a designed sound's rumble and hiss are notes on its
     /// character, not faults to clean; under speech they stay warnings with
-    /// their fix, and a mains hum is a warning in any role.
+    /// their fix, and a mains hum is a warning in any role. An old B-roll
+    /// clip opens as ambience (#3348), so its sound is read as ambience.
     #[test]
     fn a_designed_sounds_low_end_is_a_note_not_a_fault() {
-        for role in [R::Music, R::SFX, R::Ambience, R::Foley] {
+        for role in [R::Music, R::SFX, R::Ambience, R::Foley, R::BRoll] {
             for what in [RUMBLE, HISS] {
                 let f = sound_finding(1.0, "catalyst.mp3", what, "clean_audio ... else wind", SoundUse::of(role));
                 assert_eq!(f.severity, "note", "{role:?} {what}");
@@ -1302,7 +1303,7 @@ mod sound_role_tests {
             }
             assert_eq!(sound_finding(1.0, "x.wav", HUM, "clean_audio hum", SoundUse::of(role)).severity, "warning", "hum in {role:?}");
         }
-        for role in [R::Dialogue, R::Voiceover, R::BRoll] {
+        for role in [R::Dialogue, R::Voiceover] {
             let f = sound_finding(1.0, "interview.wav", RUMBLE, "clean_audio with voice", SoundUse::of(role));
             assert_eq!((f.severity, f.hint.as_str()), ("warning", "clean_audio with voice"), "{role:?}");
         }
