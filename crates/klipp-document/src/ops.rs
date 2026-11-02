@@ -192,6 +192,10 @@ fn bind_step_refs(op: &Op, i: usize, made: &[Option<ClipId>]) -> Result<Op, Refu
     Ok(bound)
 }
 
+/// What a refit says of a picture never looked through for people: the
+/// app offers to look through it, by these words.
+pub const NOT_ANALYSED_FOR_PEOPLE: &str = "not analysed for people yet";
+
 /// Which neighbour a [`Op::Join`] closes the edit with.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -1231,6 +1235,15 @@ pub enum Op {
         #[serde(skip)]
         composition: Option<Box<PlacedComposition>>,
     },
+    /// A placed title template's fields (#3249), by label as the template
+    /// op takes them (its texts, colours such as Accent, fonts, pictures,
+    /// Speed, Size, Duration): set as the inspector's template fields set
+    /// them, one undo step. An unknown field, a value of the wrong kind or
+    /// out of its range is refused.
+    TitleFields {
+        clip_id: ClipRef,
+        fields: std::collections::BTreeMap<String, serde_json::Value>,
+    },
     /// A placed template's macro control (#2757): `control` (by name or
     /// label) set to `value`; or one `target` it drives (`object:<i>.<number>`)
     /// unlinked (keeping its value), relinked (from where it is, nothing
@@ -1333,6 +1346,8 @@ pub enum Op {
         #[serde(default)]
         clip_id: Option<ClipRef>,
         /// The timeline or a grade group's grade instead of a clip's.
+        /// "shot", with `clip_id` and nothing else, puts that clip's grade
+        /// on the other pieces of its split shot that have none.
         #[serde(default)]
         on: Option<GradeOn>,
         #[serde(default)]
@@ -2623,7 +2638,7 @@ pub const OP_NAMES: &[&str] = &[
     "slip", "slide", "pin", "role", "roles", "match", "matte", "format", "stabilize", "reframe", "zoom", "pan", "follow", "refit", "highlight",
     "ramp", "freeze", "grade_group", "remove_grade_group", "look", "qualify", "zones", "retime", "mark", "stretch", "replace", "alternatives", "track_audio", "clip_audio", "clean_audio",
     "transition", "style", "title", "compose", "camera", "crop", "generator", "depth", "label", "motion_blur",
-    "strobe", "remove_silences", "auto_colour", "set_length", "over_edits", "template", "template_link", "recipe", "edit_from_selects", "opacity_mask",
+    "strobe", "remove_silences", "auto_colour", "set_length", "over_edits", "template", "title_fields", "template_link", "recipe", "edit_from_selects", "opacity_mask",
 ];
 
 pub use klipp_timeline::ShadowSpec;
@@ -3167,6 +3182,12 @@ pub trait Transcripts {
     /// handheld shot sweeps a band no title should sit in.
     fn people(&self, _item: &klipp_media::MediaItem) -> Vec<(f64, [f32; 4])> {
         Vec::new()
+    }
+    /// Whether `item` was looked through for faces and people at all: no
+    /// detections in a file not looked through says nothing about who is
+    /// in it. A host that cannot say counts every file as looked through.
+    fn framing_analysed(&self, _item: &klipp_media::MediaItem) -> bool {
+        true
     }
     /// How much `item`'s picture moves between two of its times, as the
     /// mean frame-to-frame difference (the motion analyser's YDIF; 4 and
@@ -4442,6 +4463,24 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
                 grade_op(seq, pool, fps, i, target, &one)
             })
         }
+        Op::Grade { clip_id, on: Some(GradeOn::Named(n)), exposure, contrast, saturation, temperature, tint, lift, gamma, gain, highlights, shadows, vibrance, reset, from } if n.eq_ignore_ascii_case("shot") => {
+            let Some(clip_id) = clip_id else {
+                return Err(refuse(i, "no clip was named for its shot", "give clip_id: the graded piece of the shot"));
+            };
+            let knobs = [exposure, contrast, saturation, temperature, tint, lift, gamma, gain, highlights, shadows, vibrance];
+            if knobs.iter().any(|k| k.is_some()) || *reset || from.is_some() {
+                return Err(refuse(i, "on: \"shot\" copies the clip's grade as it is", "grade the clip first, then give its clip_id with on: \"shot\" alone"));
+            }
+            let (_, _, source) = resolve_clip(seq, fps, clip_id, i)?;
+            let pieces: Vec<&Clip> = seq.ungraded_shot_pieces(source.id).into_iter().filter_map(|id| seq.all_clips().find(|c| c.id == id)).collect();
+            if pieces.is_empty() {
+                return Err(refuse(i, format!("{} has no other ungraded pieces", clip_name(seq, pool, source)), "a shot's pieces sit side by side on one track, its range carrying on in the same file"));
+            }
+            let edits: Vec<EditCommand> = pieces.iter().map(|p| EditCommand::SetNodeGraph { clip_id: p.id, old_graph: p.grade().clone(), new_graph: source.grade().clone() }).collect();
+            let n = edits.len();
+            let what = format!("grade the {n} other piece{} of {}'s shot as it is graded", if n == 1 { "" } else { "s" }, clip_name(seq, pool, source));
+            Ok((what, EditCommand::Batch(edits), pieces.iter().map(|p| p.id).collect()))
+        }
         Op::Grade { clip_id, on, .. } => {
             let target = grade_target(seq, pool, fps, i, clip_id.as_ref(), on.as_ref(), "grade")?;
             grade_op(seq, pool, fps, i, target, op)
@@ -4560,23 +4599,7 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             let td = data.as_deref().cloned().ok_or_else(|| refuse(i, format!("there is no title template \"{name}\""), "title_templates lists the built-in and saved templates"))?;
             // A built-in laid out for the sequence's frame (#2734).
             let mut td = klipp_timeline::title_library::for_frame(td, seq.resolution.width, seq.resolution.height);
-            for (label, v) in fields {
-                let Some(index) = td.field_named(label) else {
-                    let labels: Vec<String> = td.live_fields().into_iter().map(|(_, f, _)| f.label.clone()).collect();
-                    return Err(refuse(i, format!("\"{name}\" has no field \"{label}\""), format!("its fields are {}", labels.join(", "))));
-                };
-                let value = match (td.field_value(index), v) {
-                    (Some(V::Text(_)), serde_json::Value::String(s)) => V::Text(s.clone()),
-                    (Some(V::Colour(_)), serde_json::Value::String(s)) => V::Colour(parse_color(s).ok_or_else(|| refuse(i, format!("\"{s}\" is not a colour"), "write a colour as #rrggbb or #rrggbbaa"))?),
-                    (Some(V::Speed(_)), serde_json::Value::Number(n)) => V::Speed(n.as_f64().unwrap_or(1.0) as f32),
-                    (Some(V::Size(_)), serde_json::Value::Number(n)) => V::Size(n.as_f64().unwrap_or(1.0) as f32),
-                    (Some(V::Font(_)), serde_json::Value::String(s)) => V::Font(s.clone()),
-                    (Some(V::Duration(_)), serde_json::Value::Number(n)) => V::Duration(n.as_f64().unwrap_or(1.0) as f32),
-                    (Some(V::Picture(_)), serde_json::Value::String(s)) => V::Picture(s.clone()),
-                    _ => return Err(refuse(i, format!("\"{label}\" can't take {v}"), "give a text, font or picture as words, a colour as #rrggbb, the speed, size and duration (seconds) as numbers")),
-                };
-                td.set_field(index, &value).map_err(|e| refuse(i, e, "title_templates lists each template's fields"))?;
-            }
+            set_title_fields(&mut td, &quoted(name), fields, i)?;
             if !held.is_finite() || *held < 0.2 {
                 return Err(refuse(i, format!("{held} s is too short"), "hold it at least a fraction of a second"));
             }
@@ -4603,6 +4626,23 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
         Op::SetText { clip_id, text } => {
             let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
             set_text(seq, pool, i, ti, clip, text)
+        }
+        Op::TitleFields { clip_id, fields } => {
+            let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
+            let Some(old) = clip.title_data() else {
+                return Err(refuse(i, format!("{} is not a title", clip_name(seq, pool, clip)), "name a placed title template's clip"));
+            };
+            if seq.tracks[ti].locked {
+                return Err(refuse(i, format!("track {ti} is locked"), "unlock it first"));
+            }
+            if fields.is_empty() {
+                return Err(refuse(i, "no fields to set", "give fields by label, as title_templates lists them"));
+            }
+            let name = clip_name(seq, pool, clip);
+            let mut new = old.clone();
+            set_title_fields(&mut new, &name, fields, i)?;
+            let what = format!("{name}: {} set", fields.keys().map(|k| quoted(k)).collect::<Vec<_>>().join(", "));
+            Ok((what, EditCommand::EditTitle { clip_id: clip.id, description: "Edit Template Fields", old_data: old.clone(), new_data: new }, vec![clip.id]))
         }
         Op::TemplateLink { clip_id, control, target, action, value } => {
             let (_, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
@@ -6581,7 +6621,13 @@ fn cut_range(seq: &Sequence, pool: &MediaPool, i: usize, from: Timecode, to: Tim
     let open: Vec<usize> = if scope.is_empty() {
         (0..seq.tracks.len()).filter(|&t| !seq.tracks[t].locked).collect()
     } else {
-        let tracks = cut_tracks_of(seq, scope, from);
+        let mut tracks = cut_tracks_of(seq, scope, from);
+        // The captions are of what is said: a cut of the speech takes its
+        // stretch out of them too, or every caption after it runs late
+        // by the cut's length, past the picture's end (unlocked ones).
+        let captions: Vec<usize> = (0..seq.tracks.len()).filter(|&t| seq.tracks[t].kind == TrackKind::Subtitle && !seq.tracks[t].locked && !tracks.contains(&t)).collect();
+        tracks.extend(captions);
+        tracks.sort_unstable();
         if let Some(&ti) = tracks.iter().find(|&&ti| seq.tracks[ti].locked) {
             let name = &seq.tracks[ti].name;
             return Err(refuse(i, format!("{name} is locked, and what the cut takes is on it or linked to it"), format!("unlock {name}")));
@@ -7651,6 +7697,41 @@ fn place_composition(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, at: T
 
 /// New words for a title or a caption: the clip's first text box takes
 /// them, and nothing else about it changes.
+/// `fields` set on the title `td` (`who` in a refusal) by label, as
+/// the template op places a template and `title_fields` edits a placed
+/// one (#3249), through the field setter the inspector uses: each value
+/// read as its field's kind, Speed, Size and Duration held to their
+/// ranges, refused rather than clamped.
+fn set_title_fields(td: &mut klipp_timeline::TitleData, who: &str, fields: &std::collections::BTreeMap<String, serde_json::Value>, i: usize) -> Result<(), Refusal> {
+    use klipp_core::TitleFieldValue as V;
+    let number = |label: &str, n: &serde_json::Number, range: std::ops::RangeInclusive<f32>, what: &str| -> Result<f32, Refusal> {
+        let v = n.as_f64().unwrap_or(f64::NAN) as f32;
+        if range.contains(&v) {
+            Ok(v)
+        } else {
+            Err(refuse(i, format!("\"{label}\" {v} is out of range"), format!("{what} runs {} to {}", range.start(), range.end())))
+        }
+    };
+    for (label, v) in fields {
+        let Some(index) = td.field_named(label) else {
+            let labels: Vec<String> = td.live_fields().into_iter().map(|(_, f, _)| f.label.clone()).collect();
+            return Err(refuse(i, format!("{who} has no field \"{label}\""), format!("its fields are {}", labels.join(", "))));
+        };
+        let value = match (td.field_value(index), v) {
+            (Some(V::Text(_)), serde_json::Value::String(s)) => V::Text(s.clone()),
+            (Some(V::Colour(_)), serde_json::Value::String(s)) => V::Colour(parse_color(s).ok_or_else(|| refuse(i, format!("\"{s}\" is not a colour"), "write a colour as #rrggbb or #rrggbbaa"))?),
+            (Some(V::Speed(_)), serde_json::Value::Number(n)) => V::Speed(number(label, n, klipp_timeline::TITLE_SPEED_RANGE, "speed")?),
+            (Some(V::Size(_)), serde_json::Value::Number(n)) => V::Size(number(label, n, klipp_timeline::TITLE_SIZE_RANGE, "size")?),
+            (Some(V::Font(_)), serde_json::Value::String(s)) => V::Font(s.clone()),
+            (Some(V::Duration(_)), serde_json::Value::Number(n)) => V::Duration(number(label, n, klipp_timeline::TITLE_DURATION_RANGE, "a duration, in seconds,")?),
+            (Some(V::Picture(_)), serde_json::Value::String(s)) => V::Picture(s.clone()),
+            _ => return Err(refuse(i, format!("\"{label}\" can't take {v}"), "give a text, font or picture as words, a colour as #rrggbb, the speed, size and duration (seconds) as numbers")),
+        };
+        td.set_field(index, &value).map_err(|e| refuse(i, e, "title_templates lists each template's fields"))?;
+    }
+    Ok(())
+}
+
 fn set_text(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, text: &str) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
     let Some(old) = clip.title_data() else {
         return Err(refuse(i, format!("{} is not a title or a caption", clip_name(seq, pool, clip)), "name a clip on a text or subtitle track"));
@@ -9868,7 +9949,16 @@ fn refit(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts, i: usi
                 Some(track) if item.is_still => track.first().map(|(_, p)| (0.0, in_frame(*p))).into_iter().collect(),
                 Some(track) => track.iter().map(|(t, p)| (*t, in_frame(*p))).collect(),
                 None => {
-                    let why = if seen == 0 { "no one found in it (analyze it, or it has no people)" } else { "no subject held through it" };
+                    // Not looked through for people (subject detection off,
+                    // or not run yet) is not "no one": a refit of an
+                    // interview said no one was found in it.
+                    let why = if seen == 0 && !transcripts.framing_analysed(item) {
+                        format!("{NOT_ANALYSED_FOR_PEOPLE}, so it stays centred (turn on Subject detection in Preferences, then refit)")
+                    } else if seen == 0 {
+                        "no one found in it".into()
+                    } else {
+                        "no subject held through it".into()
+                    };
                     review.push((clip, format!("{name}: {why}"), "no subject"));
                     Vec::new()
                 }
@@ -9889,7 +9979,9 @@ fn refit(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts, i: usi
             new.push(klipp_timeline::Marker {
                 id: klipp_core::MarkerId::new(),
                 position: clip.timeline_in,
-                label: "Reframe: check subject".into(),
+                // Says what it is on the ruler: a note to look at a
+                // shot the reframe left centred, not a mark of the cut.
+                label: "Check framing: left centred".into(),
                 color: klipp_core::MarkerColor::Orange,
                 duration: Some(clip.timeline_out - clip.timeline_in),
                 comment: why.clone(),
@@ -14671,6 +14763,37 @@ mod tests {
         assert!(format!("{err:?}").contains("either turns the hue"), "{err:?}");
     }
 
+    /// #3249: a placed title template's fields set by label, as the
+    /// template op sets them, one undo step back to the title as placed;
+    /// an unknown field, a value of the wrong kind or out of range, no
+    /// fields, or a clip that isn't a title is refused.
+    #[test]
+    fn title_fields_edits_a_placed_templates_fields() {
+        use klipp_core::TitleFieldValue as V;
+        let (mut seq, pool, ..) = fixture();
+        let mut td = klipp_timeline::TitleData::single_text(klipp_timeline::TextBox { text: "Label".into(), ..Default::default() });
+        td.objects[0].fx_mut().motion.enter = Some(klipp_core::title_motion::Motion::new(klipp_core::title_motion::MotionKind::Rise).duration(0.6));
+        td.published = td.default_fields();
+        let clip = Clip { kind: ClipKind::Title(td.clone()), ..Clip::gap(RationalTime::from_secs_f64(0.0, 24), RationalTime::from_secs_f64(2.0, 24)) };
+        let id = clip.id;
+        let mut track = klipp_timeline::Track::new("T1", klipp_timeline::TrackKind::Text);
+        track.clips = vec![clip];
+        seq.tracks.push(track);
+        let op = |fields: serde_json::Value| Op::TitleFields { clip_id: ClipRef::Id(id), fields: serde_json::from_value(fields).unwrap() };
+        let plan = resolve(&seq, &pool, &[op(serde_json::json!({ "text 1 colour": "#3366ff", "Speed": 0.5 }))]).unwrap();
+        let EditCommand::EditTitle { old_data, new_data, .. } = &plan.steps[0].edit else { panic!("one title edit: {:?}", plan.steps[0].edit) };
+        assert_eq!((new_data.field_value(1), new_data.field_value(2)), (Some(V::Colour([0x33, 0x66, 0xff, 255])), Some(V::Speed(0.5))));
+        assert_eq!(old_data, &td, "undone, the title as placed");
+        let why = |fields: serde_json::Value| resolve(&seq, &pool, &[op(fields)]).unwrap_err().to_string();
+        assert!(why(serde_json::json!({ "Accent": "#ffffff" })).contains("its fields are Text 1, Text 1 colour, Speed"));
+        assert!(why(serde_json::json!({ "Speed": "fast" })).contains("can't take"));
+        assert!(why(serde_json::json!({ "Speed": 9.0 })).contains("out of range"), "a speed of 9, refused, not clamped");
+        assert!(why(serde_json::json!({})).contains("no fields"));
+        let media = seq.tracks.iter().flat_map(|t| &t.clips).find(|c| matches!(c.kind, ClipKind::Media { .. })).unwrap().id;
+        let not = Op::TitleFields { clip_id: ClipRef::Id(media), fields: serde_json::from_value(serde_json::json!({ "Speed": 1.0 })).unwrap() };
+        assert!(resolve(&seq, &pool, &[not]).unwrap_err().to_string().contains("is not a title"));
+    }
+
     /// A saved template placed by the template op (#1139): its fields set
     /// by label (any case), each value by its kind, the title on a text
     /// track with room; a label it doesn't have, a value of the wrong kind,
@@ -15688,6 +15811,40 @@ mod tests {
         assert_eq!(clips[1].grade(), clips[0].grade(), "the same grade");
         let both: Vec<Op> = serde_json::from_str(&format!(r#"[{{"op":"grade","clip_id":"{}","from":"{}","exposure":0.2}}]"#, b.0, a.0)).unwrap();
         assert!(resolve(&view.sequences[0], view.media_pool, &both).unwrap_err().why.contains("takes no knobs"));
+    }
+
+    /// A split shot's grade put on its other ungraded pieces in one step,
+    /// the next clip, cut further on in the file, left alone; knobs
+    /// alongside refused.
+    #[test]
+    fn a_grade_goes_on_the_other_pieces_of_its_shot() {
+        let (mut seq, pool, _, a, b) = fixture();
+        // The next clip jumps on in the file: a cut, not more of the shot.
+        seq.tracks[0].clips[1].source_in = tc(5.0);
+        seq.tracks[0].clips[1].source_out = tc(9.0);
+        let cut = {
+            let c = &seq.tracks[0].clips[0];
+            assert_eq!(c.id, a);
+            klipp_core::Timecode::from_secs_f64((c.timeline_in.to_secs_f64() + c.timeline_out.to_secs_f64()) / 2.0, c.timeline_in.rate)
+        };
+        let (left, right) = seq.tracks[0].split_at(a, cut).unwrap();
+        let graded = resolve(&seq, &pool, &[Op::Grade { clip_id: Some(ClipRef::Id(left.id)), on: None, exposure: Some(0.5), contrast: None, saturation: None, temperature: None, tint: None, lift: None, gamma: None, gain: None, highlights: None, shadows: None, vibrance: None, reset: false, from: None }]).unwrap();
+        let mut seqs = vec![seq.clone()];
+        let mut p = pool.clone();
+        let mut fps = seq.fps;
+        let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps };
+        view.apply_forward(&graded.steps[0].edit);
+        let shot: Vec<Op> = serde_json::from_str(&format!(r#"[{{"op":"grade","clip_id":"{}","on":"shot"}}]"#, left.id.0)).unwrap();
+        let plan = resolve(&view.sequences[0], view.media_pool, &shot).unwrap();
+        assert_eq!(plan.steps.len(), 1, "one step");
+        view.apply_forward(&plan.steps[0].edit);
+        let clip = |id: ClipId| view.sequences[0].all_clips().find(|c| c.id == id).unwrap().clone();
+        assert_eq!(clip(right.id).grade(), clip(left.id).grade(), "the other piece takes the grade");
+        assert!(clip(b).grade_is_identity(), "a clip whose range jumps on is left alone");
+        // Nothing left to grade, and knobs with it, are both refused.
+        assert!(resolve(&view.sequences[0], view.media_pool, &shot).unwrap_err().why.contains("no other ungraded pieces"));
+        let knobs: Vec<Op> = serde_json::from_str(&format!(r#"[{{"op":"grade","clip_id":"{}","on":"shot","exposure":0.2}}]"#, left.id.0)).unwrap();
+        assert!(resolve(&view.sequences[0], view.media_pool, &knobs).unwrap_err().why.contains("as it is"));
     }
 
     /// #1918: a dissolve between two clips drawn from their own time (a
@@ -20957,6 +21114,34 @@ mod tests {
         assert_eq!(seqs[0].tracks[0].clips[1].timeline_in, tc(4.0));
     }
 
+    /// A cut scoped to the speech's clips, as the transcript's Cut Words
+    /// makes, takes its stretch out of the subtitle track too: the cue it
+    /// crosses is split and the cue after it moves up. Cut from picture and
+    /// sound alone, the captions ran late by the cut's length, past the
+    /// picture's end.
+    #[test]
+    fn a_cut_of_the_speech_closes_up_the_captions_too() {
+        let (mut seq, pool, _, a, _) = fixture();
+        let cue = |from: f64, to: f64, text: &str| {
+            let mut c = Clip::gap(tc(from), tc(to));
+            c.kind = ClipKind::Title(klipp_timeline::TitleData::single_text(klipp_timeline::TextBox { text: text.into(), ..Default::default() }));
+            c
+        };
+        let mut subs = Track::new("Subtitle 1", TrackKind::Subtitle);
+        subs.clips = vec![cue(2.0, 4.0, "first"), cue(5.0, 7.0, "second")];
+        seq.tracks.push(subs);
+        let plan = resolve(&seq, &pool, &[Op::Cut { from: Anchor::Secs(3.0), to: Anchor::Secs(4.0), tracks_of: vec![ClipRef::Id(a)] }]).unwrap();
+        let mut seqs = vec![seq.clone()];
+        let (mut p, mut fps) = (pool.clone(), seq.fps);
+        let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps };
+        for s in &plan.steps {
+            view.apply_forward(&s.edit);
+        }
+        let subs = seqs[0].tracks.iter().find(|t| t.kind == TrackKind::Subtitle).unwrap();
+        let spans: Vec<(Timecode, Timecode)> = subs.clips.iter().filter(|c| c.title_data().is_some()).map(|c| (c.timeline_in, c.timeline_out)).collect();
+        assert_eq!(spans, vec![(tc(2.0), tc(3.0)), (tc(4.0), tc(6.0))], "the first cue cut short, the second a second earlier");
+    }
+
     /// An L-cut: the sound of the first shot runs on under the second.
     /// V 0-10 s over A 0-11 s, V2 10-20 s over A2 11-20 s, each pair linked.
     fn lcut_fixture() -> (Sequence, MediaPool, [ClipId; 4]) {
@@ -21479,6 +21664,27 @@ mod tests {
         let _ = media;
     }
 
+    /// A picture not looked through for people is said to be that, with
+    /// how to have it looked through, not "no one found": a refit of an
+    /// interview with subject detection off said no one was in it.
+    #[test]
+    fn a_refit_says_a_picture_was_not_analysed_for_people() {
+        struct NotLooked;
+        impl Transcripts for NotLooked {
+            fn words(&self, _item: &klipp_media::MediaItem) -> Option<Vec<SpokenWord>> {
+                None
+            }
+            fn framing_analysed(&self, _item: &klipp_media::MediaItem) -> bool {
+                false
+            }
+        }
+        let (mut seq, pool, _, _, _) = fixture();
+        seq.resolution = klipp_core::Resolution { width: 1080, height: 1920 };
+        let plan = resolve_with(&seq, &pool, &[Op::Refit { markers: true, punch: None, keep: Vec::new() }], &NotLooked).unwrap();
+        let what = &plan.steps[0].what;
+        assert!(what.contains("not analysed for people") && what.contains("Subject detection") && !what.contains("no one found"), "{what}");
+    }
+
     /// #2211: a wide edit refit to a tall frame. The picture with a face
     /// in it follows the face; the one with no one in it stays centred,
     /// is named for review and marked; the sound under them is left alone;
@@ -21518,7 +21724,7 @@ mod tests {
         let Some(EditCommand::SetMarkers { old, new }) = edits.iter().find(|e| matches!(e, EditCommand::SetMarkers { .. })) else { panic!("a review marker") };
         assert_eq!(new.len(), old.len() + 1);
         let marker = new.last().unwrap();
-        assert_eq!((marker.label.as_str(), marker.position, marker.duration), ("Reframe: check subject", tc(4.0), Some(tc(4.0))));
+        assert_eq!((marker.label.as_str(), marker.position, marker.duration), ("Check framing: left centred", tc(4.0), Some(tc(4.0))));
 
         let mut seqs = vec![seq.clone()];
         let (mut p, mut fps) = (pool.clone(), seq.fps);

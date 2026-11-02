@@ -111,6 +111,20 @@ pub fn first_write(path: Option<&Path>, dirty: bool, root: &Path) -> Option<Path
     (is_untitled(path) && dirty).then(|| root.join(format!("{}.klipp", free_project_name(root, UNTITLED))))
 }
 
+/// The name Save offers for a project not named yet: the name it was
+/// written under on its first edit (`written`, in `root`), which is the
+/// name the status bar shows; else a free "Untitled" in `root`. It offered
+/// "Untitled 2" for a project shown as Untitled.klipp, the name taken by
+/// the project itself.
+pub fn offered_name(root: &Path, written: Option<&Path>) -> String {
+    written
+        .filter(|w| w.parent() == Some(root))
+        .and_then(|w| w.file_stem())
+        .map(|s| s.to_string_lossy().into_owned())
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| free_project_name(root, UNTITLED))
+}
+
 /// The projects directly in `dir`, newest first: each `.klipp` folder
 /// holding a project, auto-saves left out (they open from their project).
 pub fn projects_in(dir: &Path) -> Vec<RecentProject> {
@@ -476,6 +490,12 @@ mod tests {
         assert_eq!(first_write(untitled, true, &root), Some(root.join("Untitled.klipp")));
         project(&root, "Untitled");
         assert_eq!(first_write(untitled, true, &root), Some(root.join("Untitled 2.klipp")), "a free name");
+        // Save offers the name the project was written under, not the next
+        // free one, which its own folder had taken.
+        let written = root.join("Untitled.klipp");
+        assert_eq!(offered_name(&root, Some(&written)), "Untitled");
+        assert_eq!(offered_name(&root, None), "Untitled 2", "never written: a free name");
+        assert_eq!(offered_name(&root, Some(&std::path::PathBuf::from("/elsewhere/Film.klipp"))), "Untitled 2", "not in the projects folder: a free name there");
         assert_eq!(first_write(Some(&root.join("Trip.klipp")), true, &root), None, "a project with a folder");
         assert_eq!(first_write(None, true, &root), None, "no project");
         let _ = std::fs::remove_dir_all(&root);

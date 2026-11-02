@@ -7,13 +7,13 @@
 
 **A native video editor for Linux.**
 
-[Website](https://davidkodar.github.io/klipp/) · [Download 0.2.0](https://github.com/davidkodar/klipp/releases/tag/v0.2.0) · [Discussions](https://github.com/davidkodar/klipp/discussions)
+[Website](https://davidkodar.github.io/klipp/) · [Download 0.3.0](https://github.com/davidkodar/klipp/releases/tag/v0.3.0) · [Discussions](https://github.com/davidkodar/klipp/discussions)
 
 Edit on a magnetic timeline, grade in scene-linear colour, and automate workflows with local AI tools and an MCP-compatible assistant.
 
 **Early release · Vulkan GPU required · Arch package or source · GPL-3.0-only**
 
-Klipp is still young, but it works end to end: import, edit, grade, titles, sound and export. Keep copies of work you care about: the project format can still change between 0.x releases. Broad plugin compatibility, reliability hardening, and AMD/Intel GPU validation are ongoing. The latest release, [0.2.0](https://github.com/davidkodar/klipp/releases/tag/v0.2.0), is out as a signed Arch package.
+Klipp is still young, but it works end to end: import, edit, grade, titles, sound and export. Keep copies of work you care about: the project format can still change between 0.x releases. Broad plugin compatibility, reliability hardening, and AMD/Intel GPU validation are ongoing. The latest release, [0.3.0](https://github.com/davidkodar/klipp/releases/tag/v0.3.0), is out as signed Arch packages for x86_64 and aarch64.
 
 [![Klipp Edit page with a harbour shot in the viewer, the media pool, and a timeline of titles, video, music, ambience and voice tracks](website/assets/edit.webp)](website/assets/edit.webp)
 
@@ -36,7 +36,7 @@ Explore the [feature reference](docs/project-reference.md#features) and [user gu
 
 ## How it is built and tested
 
-Klipp is written in Rust as a 42-crate workspace. Pictures are processed on the GPU through Vulkan, with a CPU path kept as a reference to check the GPU against. [ARCHITECTURE.md](ARCHITECTURE.md) maps the crates, the threading model, the main subsystems, and where things tend to break.
+Klipp is written in Rust as a 45-crate workspace. Pictures are processed on the GPU through Vulkan, with a CPU path kept as a reference to check the GPU against. [ARCHITECTURE.md](ARCHITECTURE.md) maps the crates, the threading model, the main subsystems, and where things tend to break.
 
 - **Over 8,000 automated tests** across 39 crates; run one crate's with `cargo test -p <crate>`.
 - **CPU/GPU parity tests** render the same frames both ways and compare the pixels, for effects, transitions, keys, grades and the compositor.
@@ -46,18 +46,18 @@ Klipp is written in Rust as a 42-crate workspace. Pictures are processed on the 
 
 ## Try Klipp
 
-The primary target is **x86_64 Arch Linux and Arch-based distributions with a working Vulkan driver**. A Vulkan 1.1 GPU is required; integrated GPUs are supported in principle, with broader hardware validation ongoing. Other distributions are less tested.
+The primary target is **x86_64 Arch Linux and Arch-based distributions with a working Vulkan driver**. A Vulkan 1.1 GPU is required; integrated GPUs are supported in principle, with broader hardware validation ongoing. Other distributions are less tested. Arch Linux ARM on aarch64, including Apple Silicon under Asahi Linux, has its own package and is tested on an M1.
 
-To install it, download `klipp-0.2.0-1-x86_64.pkg.tar.zst`, `SHA256SUMS` and `SHA256SUMS.minisig` from the [release page](https://github.com/davidkodar/klipp/releases/tag/v0.2.0), then check the signature and install:
+To install it, download `klipp-0.3.0-1-x86_64.pkg.tar.zst` (on aarch64, `klipp-0.3.0-1-aarch64.pkg.tar.xz`), `SHA256SUMS` and `SHA256SUMS.minisig` from the [release page](https://github.com/davidkodar/klipp/releases/tag/v0.3.0), then check the signature and install:
 
 ```bash
 sudo pacman -S --needed minisign
 minisign -Vm SHA256SUMS -P RWTo4I7A4g6VVGz6+mMUh6yQBtX+bdtyftItQmb1Kxf/rtUrNeGAXBvM
 sha256sum -c --ignore-missing SHA256SUMS
-sudo pacman -U klipp-0.2.0-1-x86_64.pkg.tar.zst
+sudo pacman -U klipp-0.3.0-1-x86_64.pkg.tar.zst
 ```
 
-The `minisign` line must end with `Trusted comment: klipp 0.2.0`.
+The `minisign` line must end with `Trusted comment: klipp 0.3.0`.
 
 Later versions install from Klipp itself: Help → About Klipp → Check for updates downloads the new package and installs it only when its signature checks out.
 

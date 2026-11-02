@@ -116,6 +116,10 @@ pub struct ConsolidateResult {
     pub files_trimmed: usize,
     /// Font families copied in (#3009); one left out is in `warnings`.
     pub fonts_copied: Vec<String>,
+    /// The copy checked (#3241): every resource it refers to and where it
+    /// leads, as written to its `collect_manifest.json`; `Err` when it
+    /// couldn't be checked.
+    pub verification: Result<crate::collect_verify::Manifest, String>,
 }
 
 /// Errors that can abort consolidation before completion.
@@ -443,7 +447,9 @@ fn build_copy_plan(
         let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "grade_file".to_string());
         let dst = collision_safe_name(&name, &mut used_grade);
         items.push(CopyItem { src: path.clone(), dst_name: dst.clone(), subfolder: "grade" });
-        node_file_new_paths.insert(path.clone(), options.dest_dir.join("media").join("grade").join(&dst));
+        // Relative to the project, so the folder can move: opened, the
+        // project resolves it against where it is.
+        node_file_new_paths.insert(path.clone(), Path::new("media").join("grade").join(&dst));
     }
 
     CopyPlan {
@@ -463,7 +469,7 @@ fn build_copy_plan(
 /// The files a graph's nodes read: LUTs, external mattes and
 /// difference-key plates, in the graph and in every graph a Compound node
 /// in it holds (#1042).
-fn node_files(g: &NodeGraph) -> Vec<&PathBuf> {
+pub(crate) fn node_files(g: &NodeGraph) -> Vec<&PathBuf> {
     let mut out = Vec::new();
     for n in &g.nodes {
         let p = &n.params;
@@ -473,6 +479,45 @@ fn node_files(g: &NodeGraph) -> Vec<&PathBuf> {
         }
     }
     out
+}
+
+/// A grade's file path a collected project stores relative to itself,
+/// under its `media/grade/` folder, resolved against `dir`. The file is
+/// untrusted: only a path of plain names is, never one with `..` or a
+/// root that could lead out of the folder. Any other path, absolute or a
+/// library LUT's name, is left as it is.
+/// Whether `g` holds a grade file a collected project stores relative to
+/// itself: what [`resolve_collected_grade_files`] would resolve. Asked
+/// first, so a graph with none is never edited, and a clip's stored
+/// picture stays as it was saved.
+pub(crate) fn has_collected_grade_files(g: &NodeGraph) -> bool {
+    g.nodes.iter().any(|n| {
+        let p = &n.params;
+        [p.lut_path.as_ref(), p.matte_image_path.as_ref(), p.difference_key.as_ref().and_then(|d| d.plate_path.as_ref())].into_iter().flatten().any(|p| collected_grade_file(p))
+            || p.compound_subgraph.as_ref().is_some_and(has_collected_grade_files)
+    })
+}
+
+/// A path of plain names under `media/grade`.
+fn collected_grade_file(p: &Path) -> bool {
+    p.components().all(|c| matches!(c, std::path::Component::Normal(_))) && p.starts_with("media/grade")
+}
+
+pub(crate) fn resolve_collected_grade_files(g: &mut NodeGraph, dir: &Path) {
+    let fix = |p: &mut PathBuf| {
+        if collected_grade_file(p) {
+            *p = dir.join(&*p);
+        }
+    };
+    for n in &mut g.nodes {
+        let params = &mut n.params;
+        for p in [params.lut_path.as_mut(), params.matte_image_path.as_mut(), params.difference_key.as_mut().and_then(|d| d.plate_path.as_mut())].into_iter().flatten() {
+            fix(p);
+        }
+        if let Some(inner) = params.compound_subgraph.as_mut() {
+            resolve_collected_grade_files(inner, dir);
+        }
+    }
 }
 
 /// Point every file `g`'s nodes read at its copy, where it has one, in
@@ -781,7 +826,14 @@ pub fn consolidate_project(
         return Err(ConsolidateError::SaveFailed(e));
     }
 
+    // Checked against the copy alone, and the manifest written beside it.
+    let verification = crate::collect_verify::verify_and_write(&options.dest_dir);
+    match &verification {
+        Ok(m) => plan.warnings.extend(m.failures()),
+        Err(e) => plan.warnings.push(format!("The copy could not be checked: {e}")),
+    }
     Ok(ConsolidateResult {
+        verification,
         files_copied: files_total,
         offline_skipped: plan.offline_skipped,
         warnings: plan.warnings,
@@ -1261,5 +1313,25 @@ mod tests {
 
         std::fs::remove_dir_all(&src).ok();
         std::fs::remove_file(&zip_path).ok();
+    }
+}
+
+#[cfg(test)]
+mod collected_grade_file_tests {
+    use super::*;
+
+    /// A collected project's own grade file resolves into its folder; a
+    /// hostile one climbing out with `..`, one elsewhere in `media/`, an
+    /// absolute path and a library name are left as they are.
+    #[test]
+    fn only_a_plain_path_under_media_grade_resolves() {
+        let dir = Path::new("/projects/collected.klipp");
+        let mut g = NodeGraph::default();
+        for lut in ["media/grade/look.cube", "media/../../etc/passwd", "media/grade/../../../etc/passwd", "media/proxies/x.cube", "/abs/look.cube", "Rec709.cube"] {
+            g.nodes.push(klipp_nodes::Node { id: klipp_nodes::NodeId::new_v4(), kind: klipp_nodes::NodeKind::Lut3D, label: String::new(), enabled: true, params: klipp_nodes::NodeParams { lut_path: Some(lut.into()), ..Default::default() }, keyframes: Default::default(), output_link: None, input_links: Vec::new() });
+        }
+        resolve_collected_grade_files(&mut g, dir);
+        let got: Vec<String> = g.nodes.iter().filter_map(|n| n.params.lut_path.as_ref()).map(|p| p.to_string_lossy().into_owned()).collect();
+        assert_eq!(got, ["/projects/collected.klipp/media/grade/look.cube", "media/../../etc/passwd", "media/grade/../../../etc/passwd", "media/proxies/x.cube", "/abs/look.cube", "Rec709.cube"]);
     }
 }

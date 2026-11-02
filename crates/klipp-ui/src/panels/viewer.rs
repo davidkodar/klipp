@@ -6335,7 +6335,9 @@ impl ViewerPanel {
             let key = |action: &str| kb.display_for(action);
             menu_toggle_value(ui, &mut state.viewer_overlays.safe_areas, "Safe Areas", &key("toggle_safe_areas"));
             // One platform's player at a time (#3315); chosen again, off.
-            for p in crate::platform_overlays::all() {
+            // The sequence's destination's first, still off (#3307).
+            let platform = state.sequence().brief.as_ref().map_or("", |b| b.platform.as_str());
+            for p in crate::platform_overlays::menu_order(platform) {
                 let on = state.viewer_overlays.platform == Some(p.id.as_str());
                 if menu_toggle(ui, &format!("{} Player", p.name), "", on).clicked() {
                     state.viewer_overlays.platform = (!on).then_some(p.id.as_str());

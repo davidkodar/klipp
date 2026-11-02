@@ -4182,6 +4182,10 @@ pub enum AppCommand {
     /// Put the library's grade `name` on `clip_ids`: in place of each one's
     /// grade, or after it with `append`, as one undo step.
     ApplyGradeFromLibrary { name: String, clip_ids: Vec<ClipId>, append: bool },
+    /// Put `clip_id`'s grade on the other pieces of its shot that have no
+    /// grade of their own (the neighbours a split left, carrying on in the
+    /// same file), as one undo step.
+    ApplyGradeToShotPieces { clip_id: ClipId },
     /// Take `name` out of the grade library.
     DeleteGradeFromLibrary { name: String },
     /// Label the library's grade `name` with the camera and profile it
