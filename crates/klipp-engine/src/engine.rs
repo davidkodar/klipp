@@ -2837,16 +2837,7 @@ impl PlaybackEngine {
         };
         info!("PlaybackEngine: cpal sample rate = {cpal_sample_rate}");
 
-        // Probe VAAPI availability once
-        let use_hw_decode = {
-            let _t = klipp_core::startup_timer::LogTimer::new("engine: VAAPI probe");
-            unsafe {
-                use ffmpeg_next::ffi::*;
-                let device_type = av_hwdevice_find_type_by_name(c"vaapi".as_ptr());
-                device_type != AVHWDeviceType::AV_HWDEVICE_TYPE_NONE
-            }
-        };
-        info!("PlaybackEngine: VAAPI available = {use_hw_decode}");
+        info!("{}", klipp_core::GpuVendor::vaapi_startup_line(&klipp_core::GpuVendor::vaapi_nodes()));
 
         // Create audio output eagerly so skim audio works without playing a clip first.
         let mixer = std::sync::Arc::new(std::sync::Mutex::new(klipp_audio::AudioMixer::new(0)));
