@@ -223,7 +223,9 @@ impl KlippApp {
                     let label = label_for(plan.steps.len());
                     let edits: Vec<EditCommand> = plan.steps.iter().map(|s| s.edit.clone()).collect();
                     self.apply_edits_as_one(&edits, &label);
-                    let what: Vec<&str> = plan.steps.iter().map(|s| s.what.as_str()).collect();
+                    // A step's first line: First Cut's reply goes on to list
+                    // every change, which a toast can't hold.
+                    let what: Vec<&str> = plan.steps.iter().map(|s| s.what.lines().next().unwrap_or_default()).collect();
                     let mut toast = format!("{label}: {}", what.join("; "));
                     if !refused.is_empty() {
                         let why: Vec<String> = refused.iter().map(said).collect();
