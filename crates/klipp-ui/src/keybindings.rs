@@ -569,6 +569,8 @@ impl KeyBindings {
         bind(&mut b, "fit_to_fill_edit", vec![KeyCombo::shift("F11")]);
         bind(&mut b, "place_on_top_edit", vec![KeyCombo::new("F12")]);
         bind(&mut b, "replace_edit", vec![KeyCombo::shift("F12")]);
+        // Append to End beside them; E in the Final Cut layout.
+        bind(&mut b, "append_edit", vec![KeyCombo::shift("F10")]);
         bind(&mut b, "lift_edit", vec![KeyCombo::new(";")]);
         bind(&mut b, "extract_edit", vec![KeyCombo::new("'")]);
         bind(&mut b, "toggle_edit_mode", vec![KeyCombo::shift("W")]);
