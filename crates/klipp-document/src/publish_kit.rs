@@ -302,13 +302,6 @@ pub fn write_beside(video: &Path, files: &[KitFile], overwrite: bool) -> Result<
     Ok(paths)
 }
 
-/// Whether a caption file stays beside `video`. A track's language names its
-/// file, and a project can come from anywhere: a language holding a path
-/// would write somewhere else.
-pub fn stays_beside(file: &Path, video: &Path) -> bool {
-    file.parent() == video.parent() && file.file_name().is_some()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -447,25 +440,5 @@ mod tests {
         write_beside(&video, &kit(), true).unwrap();
         assert_eq!(std::fs::read_to_string(&there).unwrap(), "Text\n");
         std::fs::remove_dir_all(dir).unwrap();
-    }
-
-    /// A project's track language can hold anything: `subtitle_export::files`
-    /// makes it part of a file's name, and such a file doesn't stay beside.
-    #[test]
-    fn a_hostile_track_language_is_caught() {
-        use klipp_timeline::{Clip, Sequence, Track, TrackKind};
-        let video = Path::new("/out/film.mp4");
-        assert!(stays_beside(Path::new("/out/film.de.srt"), video));
-        let mut seq = Sequence::new_default();
-        seq.tracks.clear();
-        for language in ["de", "../../evil"] {
-            let mut t = Track::new("T", TrackKind::Subtitle);
-            t.language = Some(language.to_string());
-            t.clips.push(Clip::gap(Timecode::from_frames(0, 25), Timecode::from_frames(25, 25)));
-            seq.tracks.push(t);
-        }
-        let files = crate::subtitle_export::files(&seq, &video.with_extension("srt"));
-        assert!(stays_beside(&files[0].path, video), "{:?}", files[0].path);
-        assert!(!stays_beside(&files[1].path, video), "{:?}", files[1].path);
     }
 }

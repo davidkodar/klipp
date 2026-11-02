@@ -33,6 +33,16 @@ pub struct SubtitleFile {
     pub language: Option<String>,
 }
 
+/// Whether a track's language can name a file: a language code, or a short
+/// tag like one. Anything else counts as no language, and the file goes by
+/// its track's place among them.
+fn is_plain_code(language: &str) -> bool {
+    !language.is_empty() && language.len() <= MOST_LANGUAGE_BYTES && language.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
+/// The longest language tag that names a file.
+const MOST_LANGUAGE_BYTES: usize = 35;
+
 /// The files an export of `seq`'s captions to `path` writes.
 pub fn files(seq: &Sequence, path: &Path) -> Vec<SubtitleFile> {
     let subtitle: Vec<usize> = seq.tracks.iter().enumerate().filter(|(_, t)| t.kind == TrackKind::Subtitle && !t.clips.is_empty()).map(|(i, _)| i).collect();
@@ -40,7 +50,7 @@ pub fn files(seq: &Sequence, path: &Path) -> Vec<SubtitleFile> {
         let text = seq.tracks.iter().enumerate().filter(|(_, t)| t.kind == TrackKind::Text).map(|(i, _)| i).collect();
         return vec![SubtitleFile { path: path.to_path_buf(), tracks: text, language: None }];
     }
-    let language = |i: usize| seq.tracks[i].language.clone().filter(|l| !l.trim().is_empty());
+    let language = |i: usize| seq.tracks[i].language.clone().filter(|l| is_plain_code(l));
     if let [only] = subtitle[..] {
         return vec![SubtitleFile { path: path.to_path_buf(), tracks: vec![only], language: language(only) }];
     }
@@ -107,6 +117,28 @@ mod tests {
         assert_eq!(f.iter().map(|f| f.tracks.clone()).collect::<Vec<_>>(), [vec![0], vec![1], vec![2]]);
         let s = seq(vec![track(TrackKind::Subtitle, Some("de"), 1), track(TrackKind::Subtitle, Some("de"), 1)]);
         assert_eq!(names(&files(&s, Path::new("/out/film.srt"))), ["film.1.srt", "film.2.srt"]);
+    }
+
+    /// A language names a file only as a plain code; anything else counts
+    /// as no language, and that file goes by its place, in the same folder.
+    #[test]
+    fn only_a_plain_code_names_a_file() {
+        let at_most = "x".repeat(MOST_LANGUAGE_BYTES);
+        for plain in ["de", "pt-BR", "zh_Hans", at_most.as_str()] {
+            let s = seq(vec![track(TrackKind::Subtitle, Some("en"), 1), track(TrackKind::Subtitle, Some(plain), 1)]);
+            let f = files(&s, Path::new("/out/film.srt"));
+            assert_eq!(names(&f)[1], format!("film.{plain}.srt"));
+            assert_eq!(f[1].language.as_deref(), Some(plain));
+        }
+        let too_long = "x".repeat(MOST_LANGUAGE_BYTES + 1);
+        for other in ["", "  ", "../up", "a/b", "/abs", "a\\b", "a b", "a.b", "é", too_long.as_str()] {
+            let s = seq(vec![track(TrackKind::Subtitle, Some("en"), 1), track(TrackKind::Subtitle, Some(other), 1)]);
+            let f = files(&s, Path::new("/out/film.srt"));
+            assert_eq!(f[1].path, Path::new("/out/film.2.srt"), "{other:?}");
+            assert_eq!(f[1].language, None, "{other:?}");
+            let one = files(&seq(vec![track(TrackKind::Subtitle, Some(other), 1)]), Path::new("/out/film.srt"));
+            assert_eq!(one[0].language, None, "{other:?}");
+        }
     }
 
     /// With no subtitle track, every text track into the one file, with no
