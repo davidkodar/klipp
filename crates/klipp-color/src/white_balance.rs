@@ -234,8 +234,14 @@ pub fn white_balance_for_lab_shift(rgb: [f32; 3], da: f32, db: f32, ws: WorkingC
         if det.abs() < 1e-6 {
             break;
         }
-        t = (t + (ea * dbdg - eb * dadg) / det).clamp(-100.0, 100.0);
-        g = (g + (eb * dadt - ea * dbdt) / det).clamp(-100.0, 100.0);
+        let wanted_t = t + (ea * dbdg - eb * dadg) / det;
+        let next_t = wanted_t.clamp(-100.0, 100.0);
+        // A temperature at its end can't reach the b* asked for. Tint then
+        // answers for a* alone: left to solve for both, it made up what
+        // temperature couldn't with a strong pink or green (#3425).
+        let step_g = if next_t != wanted_t && dadg.abs() > 1e-6 { ea / dadg } else { (eb * dadt - ea * dbdt) / det };
+        t = next_t;
+        g = (g + step_g).clamp(-100.0, 100.0);
     }
     (t, g)
 }
@@ -251,6 +257,20 @@ pub fn white_balance_to_neutralise(rgb: [f32; 3], ws: WorkingColorspace) -> (f32
 mod tests {
     use super::*;
     use WorkingColorspace::*;
+
+    /// #3425: more b* than temperature can give. It stops at its end and
+    /// a* still lands where asked, by a tint no larger than a* needs.
+    #[test]
+    fn a_temperature_at_its_end_leaves_tint_to_answer_for_a_alone() {
+        let rgb = [0.05, 0.13, 0.17];
+        let (a0, _) = lab_ab(rgb);
+        let ws = WorkingColorspace::Rec709Linear;
+        let (t, g) = white_balance_for_lab_shift(rgb, 8.7, 200.0, ws);
+        assert_eq!(t, 100.0);
+        let m = white_balance_matrix(t, g, ws).unwrap();
+        let (a, _) = lab_ab(m.map(|row| row[0] * rgb[0] + row[1] * rgb[1] + row[2] * rgb[2]));
+        assert!((a - (a0 + 8.7)).abs() < 0.5, "a* {a} for {} at tint {g}", a0 + 8.7);
+    }
 
     fn apply(m: &[[f32; 3]; 3], c: [f32; 3]) -> [f32; 3] {
         m.map(|row| row[0] * c[0] + row[1] * c[1] + row[2] * c[2])
