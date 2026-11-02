@@ -1128,6 +1128,10 @@ pub enum ControlCommand {
     /// compound clips included, with both sides' clips, tracks, timeline
     /// and source spans in seconds. Changes nothing.
     ReuseReport,
+    /// The Pace Strip's hints (#3313): a slow hook, dead air, shots long
+    /// for the destination in which nothing moves or speaks, and text too
+    /// briefly to read, each with its span in seconds. Changes nothing.
+    Pace,
     /// Collect Project (#3241). `dry_run`: what a collect would copy (files,
     /// bytes, what is left out or offline) and what it can't carry, each
     /// with where the project uses it. `verify`: a collected folder at

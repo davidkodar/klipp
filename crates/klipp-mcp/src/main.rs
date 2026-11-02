@@ -1349,6 +1349,7 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             "detail": args.get("detail").and_then(|v| v.as_bool()).unwrap_or(false),
         }),
         "klipp_reuse_report" => json!({ "method": "reuse_report" }),
+        "klipp_pace" => json!({ "method": "pace" }),
         "klipp_collect_project" => {
             let mut v = json!({ "method": "collect_project" });
             for key in ["dest", "mode", "handle_secs", "proxies", "dry_run", "verify"] {
@@ -2656,6 +2657,9 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              json!({ "dest": { "type": "string" }, "mode": { "type": "string", "enum": ["all", "used", "trimmed"] }, "handle_secs": { "type": "number" }, "proxies": { "type": "boolean" }, "dry_run": { "type": "boolean" }, "verify": { "type": "string" } }), vec![]),
         tool("klipp_reuse_report",
              "Where the timeline uses the same footage twice, or two files that look the same. Details: klipp_guide topic reuse_report.",
+             json!({}), vec![]),
+        tool("klipp_pace",
+             "Pace hints: a slow hook, dead air, long still shots and text too brief to read. Details: klipp_guide topic pace.",
              json!({}), vec![]),
         tool("klipp_check",
              "Read-only checks of the cut against craft and the brief, each with where, why and the fix. Details: klipp_guide topic check.",

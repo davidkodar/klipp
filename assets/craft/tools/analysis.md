@@ -42,6 +42,19 @@ Arguments:
 
 Read-only pre-export checks: black/flash frames, uncovered jump cuts, titles spanning cuts or too short, captions under lower thirds, cuts inside words, unducked music, mismatched picture/audio ends, offline media; brief length/size/captions/cast/music. With screen beat sheets: cuts during changes, short reading holds, titles over changing screens (suggests hold windows), flat cadence; cuts to settled screens are not jump cuts. With plans: missing brief features or under-three-second coverage, approved plans unbuilt or drifted. Each finding gives where, why and the fix; fix errors and weigh warnings before klipp_export. Slower: color true renders a frame a top-track shot for clipping, crushed blacks, dullness, oversaturation and skin-line drift; loudness true meters the mix: its integrated loudness and true peak (an error for overs that would be delivered, or for a brief's target the export can't reach under the ceiling; a warning for a mix far from the target), and sections far under the rest. The colour findings come grouped by shot, a fix given once. min_severity warning (or error) lists only findings at that severity or above; the counts still count every finding, and below_floor says how many were left out. Words in titles and captions no dictionary knows are warnings (rule spelling); a language with no dictionary installed is a note. Footage used twice is a note (rule reused_footage), and so are two files that look the same (rule looks_same); both are warnings when the brief's reused_footage_warns is set. klipp_reuse_report lists them.
 
+## klipp_pace
+
+Where the cut may lose its viewer: the hints the Pace Strip shows. They are hints, never errors, and the tool changes nothing.
+
+- `hook`: nothing changes in the first 3 s (no cut, no title, no words, and no movement where motion is analysed).
+- `dead_air`: over a second where nothing is heard at all. Music and ambience count as heard, and a file whose sound isn't analysed counts as heard throughout.
+- `long_shot`: a shot longer than the destination's limit in which nothing moves (by the motion analysis) and nothing is said.
+- `brief_text`: text on screen too briefly to read, as the check's `title_short` and `too_short_to_read` find it.
+
+`hook` and `long_shot` need a destination: the brief's platform. Vertical (Shorts, Reels, TikTok) allows 4 s, a feed post 6 s and YouTube 10 s. A piece with no destination gets neither. `destination` says which applies.
+
+- `marks`: each has `kind`, `from_secs`, `to_secs`, `what` and `hint`, in time order.
+
 ## klipp_reuse_report
 
 Where the timeline uses the same footage twice: "did I use anything twice?". Each pair is two picture clips showing the same frames of one file, wherever they sit: on a track, inside a compound clip, or inside a precomposition. Holds, speed ramps and reversed clips count by the frames they really show. One file imported twice counts once (by its fingerprint). Stills aren't footage, and a clip that shows a frame twice itself isn't counted against itself.
