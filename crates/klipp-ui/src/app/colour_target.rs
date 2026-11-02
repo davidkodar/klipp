@@ -53,6 +53,15 @@ impl AppState {
         format!("Grading: {name} · V{n}")
     }
 
+    /// A clip picked on the Colour page is the one graded (#2952), so no
+    /// earlier selection is waiting elsewhere: also when it was the
+    /// selected clip already, as the one the page had chosen (#3426).
+    pub(crate) fn colour_clip_picked(&mut self) {
+        if self.active_workspace == crate::state::Workspace::Color {
+            self.colour_elsewhere = None;
+        }
+    }
+
     /// The clip the header's "Go to it" goes to: the selection the page
     /// passed over, or the graded clip itself when the playhead has left
     /// it (a gap keeps the last one graded).

@@ -112,3 +112,27 @@ fn a_selection_elsewhere_is_one_click_away() {
     assert_eq!(state.grade_at_playhead(), Some(later), "the page grades it there");
     assert_eq!(state.colour_elsewhere_hint(), None);
 }
+
+/// #3426: the page chose the clip at the playhead, with another selected.
+/// A click on the chosen clip changes no selection, and is still the
+/// choice that ends the hint.
+#[test]
+fn a_click_on_the_graded_clip_clears_the_hint() {
+    let Cut { mut state, lower, later, .. } = cut();
+    state.selected_clip = Some(later);
+    assert_eq!(to_colour_page(&mut state), Some(lower));
+    assert_eq!(state.colour_elsewhere_hint(), Some(later));
+    state.colour_clip_picked();
+    assert_eq!(state.colour_elsewhere_hint(), None);
+}
+
+/// Picking on another page leaves what the Colour page remembers.
+#[test]
+fn a_pick_on_another_page_keeps_the_hint() {
+    let Cut { mut state, later, .. } = cut();
+    state.selected_clip = Some(later);
+    to_colour_page(&mut state);
+    state.active_workspace = Workspace::Edit;
+    state.colour_clip_picked();
+    assert_eq!(state.colour_elsewhere, Some(later));
+}
