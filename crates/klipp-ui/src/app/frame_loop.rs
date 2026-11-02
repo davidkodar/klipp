@@ -1132,6 +1132,7 @@ impl KlippApp {
         self.show_modal_dialogs(ctx, &mut all_cmds);
         self.refresh_first_cut_gate();
         self.show_first_cut_dialog(ctx, &mut all_cmds);
+        self.show_first_cut_panel(ctx, &mut all_cmds);
 
         klipp_engine::ui_stage::mark(klipp_engine::ui_stage::RENDER_PANELS);
         let typing_before = ctx.memory(|m| m.focused().is_some());

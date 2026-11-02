@@ -988,6 +988,7 @@ fn handle(
         cmd @ (ControlCommand::Export { .. }
             | ControlCommand::ExportStatus { .. }
             | ControlCommand::ExportSubtitles { .. }
+            | ControlCommand::PublishKit { .. }
             | ControlCommand::ImportSubtitles { .. }
             | ControlCommand::TranslateCaptions { .. }
             | ControlCommand::ImportTimeline { .. }

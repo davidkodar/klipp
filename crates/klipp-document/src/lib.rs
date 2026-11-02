@@ -41,5 +41,6 @@ pub mod shorts;
 pub mod review;
 pub mod sound_design;
 pub mod subject_path;
+pub mod publish_kit;
 pub mod subtitle_export;
 pub mod title_style;

@@ -99,7 +99,8 @@ mod routing_tests {
         // spelling (#3236), 156 with render_status and
         // set_background_render (#3212), 157 with preview_takes (#3209),
         // 158 with bounce_track (#3264), 159 with reuse_report (#3272),
-        // 160 with collect_project (#3241), 161 with pace (#3313).
-        assert_eq!(routed_all.len(), 161);
+        // 160 with collect_project (#3241), 161 with publish_kit (#3312),
+        // 162 with pace (#3313).
+        assert_eq!(routed_all.len(), 162);
     }
 }

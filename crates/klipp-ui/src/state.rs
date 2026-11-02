@@ -3134,6 +3134,9 @@ pub struct AppState {
     pub show_first_cut_button: bool,
     pub show_first_cut_dialog: bool,
     pub first_cut_choices: crate::first_cut::Choices,
+    /// The First Cut made last, its changes listed in the panel.
+    pub first_cut_session: Option<crate::first_cut::Session>,
+    pub show_first_cut_panel: bool,
     /// The audition whose takes the picker shows (#3209).
     pub audition_picker: Option<ClipId>,
     /// The audition's takes being played in its slot (#3209).
@@ -5382,6 +5385,8 @@ impl Default for AppState {
             show_first_cut_button: true,
             show_first_cut_dialog: false,
             first_cut_choices: crate::first_cut::Choices::default(),
+            first_cut_session: None,
+            show_first_cut_panel: false,
             audition_picker: None,
             take_preview: None,
             spelling_dialog: Default::default(),

@@ -400,6 +400,13 @@ pub(crate) fn respond(
             Ok(json!({ "jobs": jobs, "finished": finished, "succeeded": succeeded, "timed_out": wait && !finished }))
         }
 
+        ControlCommand::PublishKit { path, from_secs, to_secs, chapters, description, tags, captions, overwrite } => {
+            if in_batch {
+                return if path.is_some() { Err("publish_kit writes files: send it on its own".into()) } else { read_in_batch("publish_kit") };
+            }
+            publish_kit(ctx, PublishKitAsk { path, from_secs, to_secs, chapters, description, tags, captions, overwrite }, &mut send)
+        }
+
         ControlCommand::ExportSubtitles { path, format } => {
             let p = std::path::PathBuf::from(&path);
             if !p.is_absolute() {
@@ -1232,6 +1239,138 @@ fn delivery_size(frame: (u32, u32), aspect: (u32, u32)) -> (u32, u32) {
     let (a, b) = (aspect.0.max(1) as f64, aspect.1.max(1) as f64);
     let even = |v: f64| ((v / 2.0).round() as u32).max(1) * 2;
     if a <= b { (even(short), even(short * b / a)) } else { (even(short * a / b), even(short)) }
+}
+
+/// What a client asked of a publish kit.
+struct PublishKitAsk {
+    path: Option<String>,
+    from_secs: Option<f64>,
+    to_secs: Option<f64>,
+    chapters: Option<Vec<crate::protocol::KitChapter>>,
+    description: Option<String>,
+    tags: Option<Vec<String>>,
+    captions: Option<bool>,
+    overwrite: bool,
+}
+
+/// A publish kit read back, or written beside a video (#3312). The text is
+/// plain files and nothing leaves the machine.
+fn publish_kit(ctx: &ControlContext, ask: PublishKitAsk, send: &mut dyn FnMut(AppCommand) -> Result<serde_json::Value, String>) -> Result<serde_json::Value, String> {
+    use klipp_document::publish_kit as kit;
+    let video = match &ask.path {
+        Some(path) => {
+            let p = std::path::PathBuf::from(path);
+            if !p.is_absolute() || p.file_stem().is_none() {
+                return Err(format!("path must be the video's absolute path (got {path:?})"));
+            }
+            if p.is_dir() {
+                return Err(format!("{path} is a folder: give the video's path"));
+            }
+            if !p.parent().is_some_and(std::path::Path::is_dir) {
+                return Err(format!("{path}: no such folder"));
+            }
+            Some(p)
+        }
+        None => None,
+    };
+    if let Some(d) = &ask.description {
+        if d.chars().count() > kit::MOST_DESCRIPTION_CHARS {
+            return Err(format!("the description is over {} characters", kit::MOST_DESCRIPTION_CHARS));
+        }
+    }
+    if ask.tags.as_ref().is_some_and(|t| t.len() > kit::MOST_TAGS) {
+        return Err(format!("at most {} tags", kit::MOST_TAGS));
+    }
+    let given = ask.chapters.map(|c| kit::given_chapters(c.into_iter().map(|c| (c.secs, c.label)).collect())).transpose()?;
+
+    let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+    let ranged = ask.from_secs.is_some() || ask.to_secs.is_some();
+    let from = ask.from_secs.unwrap_or(0.0);
+    let to = ask.to_secs.unwrap_or_else(|| seq.total_duration().to_secs_f64());
+    if !from.is_finite() || !to.is_finite() || from < 0.0 || (ranged && to <= from) {
+        return Err(format!("the range {from}..{to} s is not one: give from_secs before to_secs"));
+    }
+    let words = {
+        let pool = ctx.media_pool.read().recovered();
+        kit::heard_speech(&seq, &pool, &plans::AnalysedTranscripts, from, to)
+    };
+    let (chapters, source) = match given {
+        Some(c) => (c, kit::ChapterSource::Given),
+        None => {
+            let marked = kit::chapters_from_markers(&seq.markers, from, to);
+            if marked.is_empty() { (kit::propose_chapters(&words, from, to), kit::ChapterSource::Proposed) } else { (marked, kit::ChapterSource::Markers) }
+        }
+    };
+    let brief = seq.brief.as_ref();
+    let description_draft = ask.description.is_none();
+    let description = ask.description.unwrap_or_else(|| kit::description_draft(brief, &chapters, &words));
+    let tags_draft = ask.tags.is_none();
+    let tags = match ask.tags {
+        Some(t) => kit::tidy_tags(t),
+        None => kit::tags_draft(brief, &words),
+    };
+    let warnings = kit::chapter_warnings(&chapters, to - from);
+    let mut reply = json!({
+        "chapters": chapters.iter().map(|c| json!({ "secs": c.secs, "label": c.label })).collect::<Vec<_>>(),
+        "chapters_from": source.name(),
+        "chapters_text": kit::chapters_text(&chapters),
+        "description": description,
+        "description_is_draft": description_draft,
+        "tags": tags,
+        "tags_are_draft": tags_draft,
+        "warnings": warnings,
+        "uploaded": false,
+    });
+    let Some(video) = video else {
+        reply["text"] = json!(format!("A draft of {} chapter(s) and {} tag(s), put together from the brief, the markers and the words heard. Nothing was written.", chapters.len(), tags.len()));
+        reply["next"] = json!("Rewrite what's marked draft, then call publish_kit with path, and chapters, description and tags as you wrote them.");
+        return Ok(reply);
+    };
+
+    let chapters_contents = kit::chapters_text(&chapters);
+    let files: Vec<kit::KitFile> = [
+        ("chapters", source == kit::ChapterSource::Proposed, chapters_contents),
+        ("description", description_draft, description),
+        ("tags", tags_draft, tags.join(", ")),
+    ]
+    .into_iter()
+    .filter(|(_, _, contents)| !contents.trim().is_empty())
+    .map(|(part, draft, contents)| kit::KitFile { part, draft, contents })
+    .collect();
+
+    // The captions are only the whole sequence's: the exporter writes every
+    // cue, so a range gets none rather than the wrong ones.
+    let stem = video.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    let srt = video.with_file_name(format!("{stem}.srt"));
+    let has_captions = seq.tracks.iter().any(|t| t.kind == klipp_timeline::TrackKind::Subtitle && !t.clips.is_empty());
+    let caption_files = klipp_document::subtitle_export::files(&seq, &srt);
+    drop(seq);
+    let mut skipped = None;
+    let write_captions = if !ask.captions.unwrap_or(true) || !has_captions {
+        false
+    } else if ranged {
+        skipped = Some("Captions weren't written: they would hold the whole sequence's cues, not this range's.");
+        false
+    } else {
+        true
+    };
+    if write_captions && !ask.overwrite {
+        if let Some(there) = caption_files.iter().find(|f| f.path.exists()) {
+            return Err(format!("{} exists: send overwrite true to replace it", there.path.display()));
+        }
+    }
+    let written = kit::write_beside(&video, &files, ask.overwrite)?;
+    let mut written: Vec<String> = written.iter().map(|p| p.display().to_string()).collect();
+    if write_captions {
+        send(AppCommand::ExportSubtitles { path: srt })?;
+        written.extend(caption_files.iter().map(|f| f.path.display().to_string()));
+    }
+    reply["files"] = json!(written);
+    if let Some(why) = skipped {
+        reply["captions_skipped"] = json!(why);
+    }
+    reply["text"] = json!(format!("Wrote {} file(s) beside the video. A name with .draft in it holds Klipp's own draft: read it before publishing. Nothing was uploaded.", written.len()));
+    Ok(reply)
 }
 
 /// Every format of a delivery (#2724) checked, then sent to the app,

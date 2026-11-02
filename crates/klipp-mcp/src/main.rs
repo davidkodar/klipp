@@ -1349,6 +1349,15 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             "detail": args.get("detail").and_then(|v| v.as_bool()).unwrap_or(false),
         }),
         "klipp_reuse_report" => json!({ "method": "reuse_report" }),
+        "klipp_publish_kit" => {
+            let mut v = json!({ "method": "publish_kit" });
+            for key in ["path", "from_secs", "to_secs", "chapters", "description", "tags", "captions", "overwrite"] {
+                if let Some(x) = args.get(key) {
+                    v[key] = x.clone();
+                }
+            }
+            v
+        }
         "klipp_pace" => json!({ "method": "pace" }),
         "klipp_collect_project" => {
             let mut v = json!({ "method": "collect_project" });
@@ -2157,7 +2166,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
     let mut tools = vec![
         tool("klipp_guide",
              "Read this first: how to work in Klipp as an agent, the craft reference and the recipes. A tool's details are under its name as the topic. Every write takes an optional idempotency_key: on a lost reply, retry the identical call with the same key.",
-             json!({ "topic": { "type": "string", "description": "guide (default), graph (read before graph edits), craft, recipes, abilities (what a person can do here, for answering them when they ask), ops, op.<name>, all, an area (session-tools, timeline-tools, analysis-tools, colour-tools, sound-tools), or a tool's name (find_shots) for its details" } }),
+             json!({ "topic": { "type": "string", "description": "guide (default), graph (read before graph edits), craft, recipes, abilities (what a person can do here), ops, op.<name>, all, an area (session-tools, timeline-tools, analysis-tools, colour-tools, sound-tools), or a tool's name (find_shots) for its details" } }),
              vec![]),
         tool("klipp_status",
              "App status, MCP build and catalog mismatch warnings. Read-only. Details: klipp_guide topic status.",
@@ -2427,7 +2436,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              json!({ "max_width": { "type": "integer" }, "frames": { "type": "integer" }, "cols": { "type": "integer" }, "path": { "type": "string" } }), vec![]),
         tool("klipp_narrate",
              "Create local narration and import the take; apply true places it on a Voice track. Details: klipp_guide topic narrate.",
-             json!({ "text": { "type": "string" }, "at_secs": { "type": "number" }, "voice": { "type": "string" }, "speed": { "type": "number" }, "pause_secs": { "type": "number" }, "fit_secs": { "type": "number" }, "variation": { "type": "number", "description": "Piper: 0 flat to 2" }, "download_models": { "type": "boolean" }, "apply": { "type": "boolean" }, "path": { "type": "string" } }), vec!["text"]),
+             json!({ "text": { "type": "string" }, "at_secs": { "type": "number" }, "voice": { "type": "string" }, "speed": { "type": "number" }, "pause_secs": { "type": "number" }, "fit_secs": { "type": "number" }, "variation": { "type": "number" }, "download_models": { "type": "boolean" }, "apply": { "type": "boolean" }, "path": { "type": "string" } }), vec!["text"]),
         tool("klipp_record",
              "Record the screen (focused window, screen, monitor or region), imported into the pool. Details: klipp_guide topic record.",
              json!({ "secs": { "type": "number" }, "target": { "type": "string" }, "fps": { "type": "integer" }, "path": { "type": "string" }, "import": { "type": "boolean" },
@@ -2543,6 +2552,9 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
         tool("klipp_export_subtitles",
              "Write the subtitle clips to a subtitle file. Details: klipp_guide topic export_subtitles.",
              json!({ "path": { "type": "string" }, "format": { "type": "string" } }), vec!["path"]),
+        tool("klipp_publish_kit",
+             "Text to publish beside an export. Details: klipp_guide topic publish_kit.",
+             json!({ "path": { "type": "string" }, "from_secs": { "type": "number" }, "to_secs": { "type": "number" }, "chapters": { "type": "array" }, "description": { "type": "string" }, "tags": { "type": "array" }, "captions": { "type": "boolean" }, "overwrite": { "type": "boolean" } }), vec![]),
         tool("klipp_translate_captions",
              "Translate a subtitle track onto a new one under it. Details: klipp_guide topic translate_captions.",
              json!({ "to": { "type": "string" }, "from": { "type": "string" }, "track": { "type": "integer" }, "glossary": { "type": "object", "additionalProperties": { "type": "string" } }, "download_models": { "type": "boolean" } }), vec!["to"]),
@@ -2587,7 +2599,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              json!({ "media_id": { "type": "string" } }), vec!["media_id"]),
         tool("klipp_search_music",
              "Search royalty-free music on Jamendo by mood or genre, with licences. Details: klipp_guide topic search_music.",
-             json!({ "query": { "type": "string" }, "limit": { "type": "integer" }, "commercial_only": { "type": "boolean" }, "instrumental": { "type": "boolean" }, "edits_only": { "type": "boolean", "description": "no ND" }, "licences": { "type": "array", "items": { "type": "string", "enum": klipp_control::LICENCE_FAMILIES } }, "listen": { "oneOf": [{ "type": "integer" }, { "type": "array", "items": { "type": "string" } }] } }), vec!["query"]),
+             json!({ "query": { "type": "string" }, "limit": { "type": "integer" }, "commercial_only": { "type": "boolean" }, "instrumental": { "type": "boolean" }, "edits_only": { "type": "boolean" }, "licences": { "type": "array", "items": { "type": "string", "enum": klipp_control::LICENCE_FAMILIES } }, "listen": { "oneOf": [{ "type": "integer" }, { "type": "array", "items": { "type": "string" } }] } }), vec!["query"]),
         tool("klipp_search_sfx",
              "Search royalty-free sound effects on Freesound by keyword, with licences. Details: klipp_guide topic search_sfx.",
              json!({ "query": { "type": "string" }, "limit": { "type": "integer" }, "max_secs": { "type": "number" }, "commercial_only": { "type": "boolean" }, "listen": { "oneOf": [{ "type": "integer" }, { "type": "array", "items": { "type": "string" } }] } }), vec!["query"]),
@@ -3710,6 +3722,8 @@ mod catalogue_trim_tests {
     /// Each argument whose words moved: its tool, its name, and the words,
     /// as they were in the catalogue.
     const MOVED: &[(&str, &str, &str)] = &[
+        ("klipp_narrate", "variation", "Piper: 0 flat to 2"),
+        ("klipp_search_music", "edits_only", "no ND"),
         ("klipp_status", "expected_catalog_fingerprint", "Fingerprint from tools/list _meta; warns on mismatch."),
         ("klipp_list_clips", "from_secs", "Only clips that end after this"),
         ("klipp_list_clips", "full", "Every field (default false)"),
