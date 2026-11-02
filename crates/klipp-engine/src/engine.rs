@@ -9806,6 +9806,14 @@ impl PlaybackEngine {
     /// the linear floats encoded after it; here it is the graph on the GPU
     /// and display bytes back.
     fn regrade_parked_on_gpu_for(&mut self, mode: FastPath) -> bool {
+        // HDR monitoring reads the light of the frame shown (its nits
+        // under the pointer): a settled frame is drawn where it is
+        // measured. A drag's steps stay here; its release is a paused
+        // present, measured.
+        if mode == FastPath::PausedPresent && self.hdr_monitor.renders_hdr() {
+            debug!("gpu regrade ({mode:?}): HDR monitoring measures the settled frame");
+            return false;
+        }
         let Some((pixels, width, height)) = self.parked_pregrade().cloned() else {
             debug!("gpu regrade ({mode:?}): no parked pre-grade");
             return false;

@@ -15,6 +15,7 @@
 # Raised for #3265 (frame_keys_cover_the_picture.rs): its field guard names every ClipPictureFields (4) and PictureView (2) field so a new one must be keyed or said why not; its sweeps set effects with set_effects (3), since an effect added by picture op takes a fresh id each build and the keys of two builds would differ.
 # Raised for #3318 (effect_params.rs): a load upgrades a stored effect by reading the node's legacy entry (legacy 1), and its test builds such a node (LEGACY_EFFECT 1).
 # Raised for #3344 and #3342: the guard on a load's upgrade of a stored effect reads the node's legacy entry (legacy 1) and its test builds such a node (LEGACY_EFFECT 1); step_run.rs checks the report says "unlift loses part of its picture" (unlift 2).
+# Raised for #3333 (Collect's report): it lists the frei0r plug-ins a track's own effects need, read with video_effects (1), as a track's effects have no picture graph yet.
 builtin_effects 110
 builtin_effects_enabled 39
 ClipPictureFields 22
@@ -84,7 +85,7 @@ transform_scale_y_keyframes 8
 transform_tilt_x_keyframes 8
 transform_tilt_y_keyframes 9
 unlift 29
-video_effects 16
+video_effects 17
 video_effects_enabled 8
 video_param_keyframes 8
 video_param_value 16

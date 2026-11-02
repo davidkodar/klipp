@@ -22,6 +22,17 @@ fn a_populated_clip_serialises_and_hashes_as_before() {
     assert!(canonical_bytes(&clip).unwrap() == CANONICAL, "the clip's canonical bytes");
 }
 
+/// A clip saved before project roles (#3348) wrote its role as the old
+/// name; it reads as the same clip, with the same render key.
+#[test]
+fn a_clip_saved_with_the_old_role_name_reads_the_same() {
+    let old = JSON.replace(r#""role": "dialogue""#, r#""role": "Dialogue""#);
+    assert_ne!(old, JSON, "the fixture names its role");
+    let (then, now): (Clip, Clip) = (serde_json::from_str(&old).unwrap(), serde_json::from_str(JSON).unwrap());
+    assert!(canonical_bytes(&then).unwrap() == canonical_bytes(&now).unwrap());
+    assert_eq!(serde_json::to_value(&then).unwrap(), serde_json::to_value(&now).unwrap());
+}
+
 /// The lifted picture a clip may hold is no part of what it is: its JSON
 /// and its render key are the same whether or not it has been lifted.
 #[test]

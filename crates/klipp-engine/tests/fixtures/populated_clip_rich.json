@@ -386,7 +386,7 @@
   "pan_keyframes": [],
   "gain_keyframes": [],
   "clip_markers": [],
-  "role": "Dialogue",
+  "role": "dialogue",
   "speed": 1.0,
   "speed_keyframes": [],
   "keep_pitch": false,
