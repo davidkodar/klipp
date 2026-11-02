@@ -44,6 +44,9 @@ use super::{logical_to_physical_rounded, DeviceId, WaylandError, WindowId};
 
 type WaylandDispatcher = calloop::Dispatcher<'static, WaylandSource<WinitState>, WinitState>;
 
+/// KLIPP PATCH: how long a pending frame callback may hold a redraw back.
+const FRAME_CALLBACK_MAX_WAIT: Duration = Duration::from_millis(100);
+
 /// The Wayland event loop.
 pub struct EventLoop<T: 'static> {
     /// Has `run` or `run_on_demand` been called or a call to `pump_events` that starts the loop
@@ -272,7 +275,8 @@ impl<T: 'static> EventLoop<T> {
                         Some(wait_deadline.saturating_duration_since(start))
                     },
                 };
-                min_timeout(control_flow_timeout, timeout)
+                // KLIPP PATCH: wake when a held redraw is due, see below.
+                min_timeout(self.held_redraw_timeout(start), min_timeout(control_flow_timeout, timeout))
             };
 
             // NOTE Ideally we should flush as the last thing we do before polling
@@ -326,6 +330,29 @@ impl<T: 'static> EventLoop<T> {
         };
 
         self.single_iteration(&mut callback, cause);
+    }
+
+    /// KLIPP PATCH: how long the loop may sleep before a redraw held back by
+    /// a pending frame callback is due. Holding it back schedules nothing,
+    /// so without this the redraw waited for whatever event came next: on
+    /// a compositor that sends no callbacks for a window, that could be
+    /// tens of seconds. `None` when no redraw is held, so a window with
+    /// nothing to draw never wakes the loop.
+    fn held_redraw_timeout(&mut self, now: Instant) -> Option<Duration> {
+        self.with_state(|state| {
+            let requests = state.window_requests.get_mut();
+            state
+                .windows
+                .get_mut()
+                .iter()
+                .filter(|(id, _)| {
+                    requests.get(*id).is_some_and(|r| r.redraw_requested.load(Ordering::Relaxed))
+                })
+                .filter_map(|(_, window)| {
+                    window.lock().unwrap().frame_callback_wait_left(FRAME_CALLBACK_MAX_WAIT, now)
+                })
+                .min()
+        })
     }
 
     fn single_iteration<F>(&mut self, callback: &mut F, cause: StartCause)
@@ -491,7 +518,7 @@ impl<T: 'static> EventLoop<T> {
                 // looked hung. Painting anyway gives the compositor damage
                 // to render, and the callback follows.
                 if window.frame_callback_state() == FrameCallbackState::Requested {
-                    if !window.frame_callback_stale(std::time::Duration::from_millis(100)) {
+                    if !window.frame_callback_stale(FRAME_CALLBACK_MAX_WAIT) {
                         return None;
                     }
                     tracing::debug!("frame callback pending over 100 ms; redrawing without it");

@@ -168,6 +168,19 @@ pub struct WindowState {
     frame: Option<WinitFrame>,
 }
 
+/// KLIPP PATCH: see [`WindowState::frame_callback_wait_left`].
+fn frame_callback_wait_left(
+    state: FrameCallbackState,
+    requested_at: Option<Instant>,
+    max: Duration,
+    now: Instant,
+) -> Option<Duration> {
+    if state != FrameCallbackState::Requested {
+        return None;
+    }
+    Some(requested_at?.checked_add(max)?.saturating_duration_since(now))
+}
+
 impl WindowState {
     /// Create new window state.
     pub fn new(
@@ -264,6 +277,14 @@ impl WindowState {
     pub fn frame_callback_stale(&self, max: Duration) -> bool {
         self.frame_callback_state == FrameCallbackState::Requested
             && self.frame_callback_requested_at.is_some_and(|t| t.elapsed() > max)
+    }
+
+    /// KLIPP PATCH: how long a redraw held back by the pending frame
+    /// callback has left to wait at `now`; `None` when no callback is
+    /// pending. The event loop sleeps no longer than this while a redraw
+    /// is held.
+    pub fn frame_callback_wait_left(&self, max: Duration, now: Instant) -> Option<Duration> {
+        frame_callback_wait_left(self.frame_callback_state, self.frame_callback_requested_at, max, now)
     }
 
     /// Request a frame callback if we don't have one for this window in flight.
@@ -1234,5 +1255,38 @@ fn into_sctk_adwaita_config(theme: Option<Theme>) -> sctk_adwaita::FrameConfig {
         Some(Theme::Light) => sctk_adwaita::FrameConfig::light(),
         Some(Theme::Dark) => sctk_adwaita::FrameConfig::dark(),
         None => sctk_adwaita::FrameConfig::auto(),
+    }
+}
+
+// KLIPP PATCH
+#[cfg(test)]
+mod frame_callback_wait_tests {
+    use super::*;
+
+    const MAX: Duration = Duration::from_millis(100);
+
+    /// A held redraw sleeps only for what is left of the bound, and not at
+    /// all once it is overdue.
+    #[test]
+    fn a_pending_callback_bounds_the_sleep() {
+        let t = Instant::now();
+        let left = |elapsed| {
+            frame_callback_wait_left(FrameCallbackState::Requested, Some(t), MAX, t + elapsed)
+        };
+        assert_eq!(left(Duration::ZERO), Some(MAX));
+        assert_eq!(left(Duration::from_millis(30)), Some(Duration::from_millis(70)));
+        assert_eq!(left(MAX), Some(Duration::ZERO));
+        assert_eq!(left(Duration::from_secs(30)), Some(Duration::ZERO));
+    }
+
+    /// With no callback pending nothing is held back, so nothing bounds the
+    /// sleep and an idle window stays asleep.
+    #[test]
+    fn no_pending_callback_leaves_the_sleep_alone() {
+        let t = Instant::now();
+        for state in [FrameCallbackState::None, FrameCallbackState::Received] {
+            assert_eq!(frame_callback_wait_left(state, Some(t), MAX, t), None);
+        }
+        assert_eq!(frame_callback_wait_left(FrameCallbackState::Requested, None, MAX, t), None);
     }
 }
