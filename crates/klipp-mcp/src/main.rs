@@ -1325,6 +1325,9 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             if args.get("propose").and_then(Value::as_bool) == Some(true) {
                 v["propose"] = json!(true);
             }
+            if args.get("overwrite").and_then(Value::as_bool) == Some(true) {
+                v["overwrite"] = json!(true);
+            }
             v
         }
         "klipp_translate_captions" => {
@@ -2555,8 +2558,8 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              "Write the subtitle clips to a subtitle file. Details: klipp_guide topic export_subtitles.",
              json!({ "path": { "type": "string" }, "format": { "type": "string" } }), vec!["path"]),
         tool("klipp_covers",
-             "Covers (thumbnails) and sizes; propose suggests frames; path writes one as PNG or JPEG. Details: klipp_guide topic covers.",
-             json!({ "cover": { "type": "string" }, "path": { "type": "string" }, "propose": { "type": "boolean" } }), vec![]),
+             "Covers (thumbnails) and sizes; propose suggests frames; path writes one. Details: klipp_guide topic covers.",
+             json!({ "cover": { "type": "string" }, "path": { "type": "string" }, "propose": { "type": "boolean" }, "overwrite": { "type": "boolean" } }), vec![]),
         tool("klipp_translate_captions",
              "Translate a subtitle track onto a new one under it. Details: klipp_guide topic translate_captions.",
              json!({ "to": { "type": "string" }, "from": { "type": "string" }, "track": { "type": "integer" }, "glossary": { "type": "object", "additionalProperties": { "type": "string" } }, "download_models": { "type": "boolean" } }), vec!["to"]),
@@ -3666,7 +3669,7 @@ mod project_change_notice_tests {
         assert_eq!(tool_to_command("klipp_export_subtitles", &json!({ "path": "/a/b.srt" })).unwrap(), json!({ "method": "export_subtitles", "path": "/a/b.srt" }));
         assert_eq!(tool_to_command("klipp_covers", &json!({})).unwrap(), json!({ "method": "covers" }));
         assert_eq!(tool_to_command("klipp_covers", &json!({ "propose": true })).unwrap(), json!({ "method": "covers", "propose": true }));
-        assert_eq!(tool_to_command("klipp_covers", &json!({ "cover": "Hook", "path": "/a/c.jpg" })).unwrap(), json!({ "method": "covers", "cover": "Hook", "path": "/a/c.jpg" }));
+        assert_eq!(tool_to_command("klipp_covers", &json!({ "cover": "Hook", "path": "/a/c.jpg", "overwrite": true })).unwrap(), json!({ "method": "covers", "cover": "Hook", "path": "/a/c.jpg", "overwrite": true }));
     }
 
 #[cfg(test)]

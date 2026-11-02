@@ -11,6 +11,11 @@ impl GpuEffectsPipeline {
         // Whatever the last frame left goes to the queue; this frame's
         // passes record into one encoder from here.
         self.stack_end();
+        // The frame before this one, if it had no failed readback, ends
+        // any run of failed frames (#3406).
+        if !self.frame_failed.replace(false) {
+            self.failed_frames_in_row.set(0);
+        }
         self.title_metal_shots.clear();
         self.batching.set(true);
         self.stack_params_slot.set(0);

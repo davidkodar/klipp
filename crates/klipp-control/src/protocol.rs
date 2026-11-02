@@ -1267,7 +1267,8 @@ pub enum ControlCommand {
     /// with `propose` frames proposed for one; with
     /// `path` (absolute, .png, .jpg or .jpeg), `cover` (its id or name; the
     /// only one when left out) drawn at its size and written there, a
-    /// JPEG's quality stepped down to fit the size's file limit.
+    /// JPEG's quality stepped down to fit the size's file limit; a file
+    /// there is replaced only with `overwrite`.
     Covers {
         #[serde(default)]
         cover: Option<String>,
@@ -1277,6 +1278,8 @@ pub enum ControlCommand {
         /// moments, each at the sharpest frame near it.
         #[serde(default)]
         propose: bool,
+        #[serde(default)]
+        overwrite: bool,
     },
     /// Read an SRT, WebVTT, ASS/SSA, TTML (DFXP, IMSC, iTT), SCC or EBU-STL
     /// file onto a new subtitle track of the active sequence, as the app's

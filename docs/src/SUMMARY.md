@@ -33,6 +33,7 @@
 - [Subtitles & Captions](./editing/subtitles.md)
 - [Stabilization](./editing/stabilization.md)
 - [Scene Detection](./editing/scene-detection.md)
+- [First Cut](./editing/first-cut.md)
 - [Keyboard Shortcuts](./editing/shortcuts.md)
 
 # Audio

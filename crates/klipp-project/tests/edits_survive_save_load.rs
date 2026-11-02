@@ -308,12 +308,15 @@ fn a_sequences_covers_come_back() {
     let mut timeless = odd.clone();
     timeless["id"] = serde_json::json!(klipp_core::CoverId::new());
     timeless["at_secs"] = serde_json::json!(-3.0);
-    v["sequences"][0]["covers"].as_array_mut().unwrap().extend([odd, timeless]);
+    let mut endless = odd.clone();
+    endless["id"] = serde_json::json!(klipp_core::CoverId::new());
+    endless["at_secs"] = serde_json::json!(1e300);
+    v["sequences"][0]["covers"].as_array_mut().unwrap().extend([odd, timeless, endless]);
     std::fs::write(&p, serde_json::to_string_pretty(&v).unwrap()).unwrap();
     let (seqs, ..) = load_project(&dir).unwrap();
     let _ = std::fs::remove_dir_all(&dir);
     let covers = &seqs[0].covers;
-    assert_eq!(covers.len(), 2, "the timeless one dropped");
+    assert_eq!(covers.len(), 2, "the timeless and the endless one dropped");
     let odd = &covers[1];
     assert!(odd.name.chars().count() <= klipp_timeline::cover::MAX_NAME_CHARS && !odd.name.contains('\u{0}'));
     assert_eq!(odd.size, "etcpasswd");

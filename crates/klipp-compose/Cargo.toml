@@ -58,6 +58,18 @@ name = "track_gpu_time"
 path = "tests/track_gpu_time.rs"
 
 [[test]]
+name = "gpu_failing_every_frame_turns_off"
+path = "tests/gpu_failing_every_frame_turns_off.rs"
+
+[[test]]
+name = "gpu_failing_readbacks_outside_a_frame_turn_off"
+path = "tests/gpu_failing_readbacks_outside_a_frame_turn_off.rs"
+
+[[test]]
+name = "a_failed_gpu_frame_costs_that_frame"
+path = "tests/a_failed_gpu_frame_costs_that_frame.rs"
+
+[[test]]
 name = "effect_param_stress"
 path = "tests/effect_param_stress.rs"
 
