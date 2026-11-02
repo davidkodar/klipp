@@ -38,7 +38,7 @@ Arguments:
 
 ## klipp_covers
 
-The open sequence's covers, its thumbnails, made with the cover op: each one's id, name, frame (`at_secs`), size, crop and words; and the sizes a cover is made at, with each one's picture and the largest file its platform takes. With `path` (absolute, ending .png, .jpg or .jpeg) it writes `cover` (its id, the start of its id, or its name; the only one when left out) instead. It is drawn as the export draws that frame, at its size, its crop and words over it, the sequence's own titles and captions hidden unless the cover keeps them. A JPEG steps its quality down from 95 to 60 until it fits under the size's limit, and the reply says the quality it took. Refused: a path that isn't absolute, a PNG over the limit (write a JPEG instead), and a JPEG over it even at 60.
+The open sequence's covers, its thumbnails, made with the cover op: each one's id, name, frame (`at_secs`), size, crop and words; and the sizes a cover is made at, with each one's picture and the largest file its platform takes. With `path` (absolute, ending .png, .jpg or .jpeg) it writes `cover` (its id, the start of its id, or its name; the only one when left out) instead. It is drawn as the export draws that frame, at its size, its crop and words over it, the sequence's own titles and captions hidden unless the cover keeps them. A JPEG steps its quality down from 95 to 60 until it fits under the size's limit, and the reply says the quality it took. A file already at `path` is replaced only with `overwrite` true. Refused: a path that isn't absolute, a folder, an existing file without `overwrite`, a PNG over the limit (write a JPEG instead), and a JPEG over it even at 60.
 
 ## klipp_export_status
 
