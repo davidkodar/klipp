@@ -639,10 +639,13 @@ impl SequenceSnapshot {
                 if end <= start {
                     continue;
                 }
+                // Named as the chapter list names it: a chapter with no
+                // title shows as a blank line in a player's menu.
+                let title = if title.trim().is_empty() { format!("Chapter {}", out.len() + 1) } else { title.clone() };
                 out.push(klipp_core::ChapterSnapshot {
                     start_ms: start,
                     end_ms: end,
-                    title: title.clone(),
+                    title,
                 });
             }
             out
@@ -1174,6 +1177,21 @@ mod tests {
         assert_eq!(snap.chapters[0].start_ms, 5_000, "15s - 10s zone start = 5000ms");
         assert_eq!(snap.chapters[0].end_ms, 20_000, "clamped to zone duration");
         assert_eq!(snap.chapters[0].title, "Inside");
+    }
+
+    /// #3430: a chapter marker with no label is named as the chapter list
+    /// names it, not written as an empty title; a label is kept.
+    #[test]
+    fn an_unlabelled_chapter_gets_a_title() {
+        let mut seq = make_sequence_with_length_secs(60.0);
+        seq.markers.push(make_marker_at_secs(0.0, ""));
+        seq.markers.push(make_marker_at_secs(20.0, "Named"));
+        seq.markers.push(make_marker_at_secs(40.0, "  "));
+        let mut settings = make_settings();
+        settings.embed_chapters = true;
+        let pool = MediaPool::new();
+        let snap = SequenceSnapshot::from_sequence(&seq, &pool, &settings, None, false, klipp_core::WorkingColorspace::default()).unwrap();
+        assert_eq!(snap.chapters.iter().map(|c| c.title.as_str()).collect::<Vec<_>>(), ["Chapter 1", "Named", "Chapter 3"]);
     }
 
     #[test]

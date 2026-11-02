@@ -4089,18 +4089,7 @@ impl KlippApp {
                 let content = generate_youtube_chapters(&entries);
                 match std::fs::write(&path, &content) {
                     Ok(_) => {
-                        let chapter_count = entries.len();
-                        let plural = if chapter_count == 1 { "" } else { "s" };
-                        let mut msg = format!("Exported {chapter_count} chapter{plural}.");
-                        if chapter_count < 3 {
-                            msg.push_str(
-                                " Note: YouTube requires at least 3 chapters to display the chapter list.",
-                            );
-                        }
-                        if left_out > 0 {
-                            let (plural, verb) = if left_out == 1 { ("", "isn't") } else { ("s", "aren't") };
-                            msg.push_str(&format!(" {left_out} marker{plural} {verb} of kind Chapter and left out."));
-                        }
+                        let msg = youtube_chapters_message(&entries, left_out, seq.total_duration().to_secs_f64());
                         self.state.toast.show(msg);
                     }
                     Err(e) => {
