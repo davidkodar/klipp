@@ -6,8 +6,8 @@
 //! button shows only while a clip with speech is on the timeline, and a
 //! switch in Preferences hides it. Edit → First Cut… is always there.
 
-use klipp_core::MediaId;
-use klipp_document::ops::first_cut::Tightness;
+use klipp_core::{MediaId, SequenceId};
+use klipp_document::ops::first_cut::{Change, Steps, Tightness};
 use klipp_document::ops::{Op, Transcripts};
 use klipp_media::MediaPool;
 use klipp_timeline::{ClipKind, Sequence, TrackKind};
@@ -47,9 +47,55 @@ impl Choices {
         }
     }
 
+    /// The plan's steps for these choices.
+    pub fn steps(&self) -> Steps {
+        Steps { silences: self.silences, fillers: self.fillers, retakes: self.retakes, punch: self.punch, captions: self.captions, music: self.music, tightness: self.tightness }
+    }
+
     /// Whether any step is chosen.
     pub fn any(&self) -> bool {
         self.silences || self.fillers || self.retakes || self.punch || self.captions || self.music.is_some()
+    }
+}
+
+/// A First Cut just made, kept so its changes can be taken back one at
+/// a time: the sequence it was made on, as it was, its changes, those
+/// taken back, and the undo step that made the cut as it stands. Held
+/// in memory with the history, not saved: after a reopen, Undo remains.
+#[derive(Debug, Clone)]
+pub struct Session {
+    pub sequence: SequenceId,
+    pub before: Sequence,
+    pub music: Option<MediaId>,
+    pub changes: Vec<Change>,
+    pub excluded: Vec<usize>,
+    pub stamp: u64,
+}
+
+impl Session {
+    /// Whether a change can still be taken back or put back: its sequence
+    /// is open and the last step in the history is First Cut's own. An
+    /// edit since, or an undo, would be lost by swapping the cut.
+    pub fn editable(&self, open: SequenceId, last_step: Option<u64>) -> bool {
+        self.sequence == open && last_step == Some(self.stamp)
+    }
+
+    /// Whether change `i` is in the cut.
+    pub fn kept(&self, i: usize) -> bool {
+        !self.excluded.contains(&i)
+    }
+
+    /// The changes left out once `i` is flipped.
+    pub fn flipped(&self, i: usize) -> Vec<usize> {
+        let mut out = self.excluded.clone();
+        match out.iter().position(|&x| x == i) {
+            Some(at) => {
+                out.remove(at);
+            }
+            None => out.push(i),
+        }
+        out.sort_unstable();
+        out
     }
 }
 
@@ -112,6 +158,19 @@ mod tests {
         assert_eq!((music, punch), (Some(bed), false));
         let none = Choices { silences: false, fillers: false, retakes: false, punch: false, captions: false, music: None, tightness: Tightness::Gentle };
         assert!(!none.any() && Choices::default().any());
+    }
+
+    #[test]
+    fn a_change_can_be_flipped_only_while_first_cut_is_the_last_step() {
+        let seq = Sequence::new_default();
+        let s = Session { sequence: seq.id, before: seq.clone(), music: None, changes: Vec::new(), excluded: vec![2], stamp: 7 };
+        assert!(s.editable(seq.id, Some(7)));
+        assert!(!s.editable(seq.id, Some(8)), "edited since");
+        assert!(!s.editable(seq.id, None), "undone");
+        assert!(!s.editable(SequenceId::new(), Some(7)), "another sequence open");
+        assert_eq!(s.flipped(3), vec![2, 3]);
+        assert_eq!(s.flipped(2), Vec::<usize>::new());
+        assert!(s.kept(3) && !s.kept(2));
     }
 
     #[test]
