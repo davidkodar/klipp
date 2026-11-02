@@ -1,4 +1,10 @@
-//! Frames proposed for a cover (#3311): the sequence's markers first, a
+//! A sequence's covers (#3311), drawn and proposed, for the app and the
+//! control socket alike.
+//!
+//! A cover is drawn by the export renderer
+//! ([`klipp_timeline::cover::cover_sequence`]).
+//!
+//! Frames proposed for a cover: the sequence's markers first, a
 //! Best Take or a chapter before the rest; then frames with a face, by the
 //! face's size, how squarely it faces the camera and the detector's
 //! confidence, from the framing analysis; then, for shots with nobody in
@@ -8,19 +14,110 @@
 //! can't tell.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 use klipp_core::{MarkerKind, MediaId};
 use klipp_timeline::{Clip, ClipKind, Sequence, TrackKind};
 
+use crate::still::Still;
+
+/// How the project draws its pictures: the viewer's LUT and its strength,
+/// the working space and the grade's encoding.
+#[derive(Debug, Clone)]
+pub struct Look {
+    pub lut: Option<(PathBuf, f32)>,
+    pub working: klipp_core::WorkingColorspace,
+    pub grade_encoding: klipp_core::GradeEncoding,
+}
+
+/// `seq` frozen for the export renderer, beside the project's other
+/// sequences `all` (`seq` in place of one with its id), drawn as `look`
+/// says.
+pub fn snapshot(seq: &Sequence, all: &[Sequence], pool: &klipp_media::MediaPool, look: &Look) -> Result<crate::SequenceSnapshot, String> {
+    let mut every: Vec<Sequence> = all.iter().filter(|s| s.id != seq.id).cloned().collect();
+    every.push(seq.clone());
+    let mut snapshot = crate::SequenceSnapshot::from_sequence_with_all(seq, &every, pool, &klipp_core::ExportSettings::default(), look.lut.as_ref().map(|(p, _)| p.clone()), false, look.working)
+        .map_err(|e| e.to_string())?;
+    snapshot.grade_encoding = look.grade_encoding;
+    if let Some((_, opacity)) = look.lut {
+        snapshot.video.global_lut_opacity = opacity;
+    }
+    Ok(snapshot)
+}
+
+/// `cover` of `seq` drawn at its size, `width` × `height`.
+pub fn draw(seq: &Sequence, all: &[Sequence], pool: &klipp_media::MediaPool, look: &Look, cover: &klipp_timeline::cover::Cover, width: u32, height: u32) -> Result<Still, String> {
+    let drawn = klipp_timeline::cover::cover_sequence(seq, cover, width, height)?;
+    let snap = snapshot(&drawn, all, pool, look)?;
+    crate::still::timeline_still(&snap, cover.at_secs, width, height).map_err(|e| format!("no cover at {:.3} s: {e}", cover.at_secs))
+}
+
+/// The frames proposed for a cover of `seq`, each moved to the sharpest
+/// frame near it, best first, with how sharp it is; and the names of the
+/// files whose framing analysis isn't there, which propose no faces.
+/// `analysis` reads a file's stored analysis.
+pub fn proposals(
+    seq: &Sequence,
+    all: &[Sequence],
+    pool: &klipp_media::MediaPool,
+    look: &Look,
+    analysis: &dyn Fn(&std::path::Path) -> klipp_analysis::report::MediaAnalysis,
+) -> Result<(Vec<(Proposal, Option<f32>)>, Vec<String>), String> {
+    let mut ids: Vec<MediaId> = seq.tracks.iter().filter(|t| t.kind == TrackKind::Video).flat_map(|t| &t.clips).filter_map(|c| c.media_id()).collect();
+    ids.sort_by_key(|m| m.0);
+    ids.dedup();
+    let mut seen = HashMap::new();
+    let mut unread = Vec::new();
+    for id in ids {
+        let Some(item) = pool.get(&id) else { continue };
+        let report = analysis(&item.path);
+        if report.framing.is_none() {
+            unread.push(item.filename.clone());
+        }
+        seen.insert(id, Seen::of(&report));
+    }
+    let found = propose(seq, &seen);
+    if found.is_empty() {
+        return Ok((Vec::new(), unread));
+    }
+    // Small frames near each, measured; the sharpest kept.
+    let width = 320;
+    let height = ((width as f64 * seq.resolution.height as f64 / seq.resolution.width.max(1) as f64).round() as u32).max(2) & !1;
+    let snap = snapshot(seq, all, pool, look)?;
+    let times: Vec<Vec<f64>> = found.iter().map(tries).collect();
+    let flat: Vec<f64> = times.iter().flatten().copied().collect();
+    let stills = crate::still::timeline_stills(&snap, &flat, width, height);
+    let mut measured = stills.iter().map(|s| s.as_ref().ok().map(|s| sharpness(&s.rgba, s.width, s.height)));
+    let mut out: Vec<(Proposal, Option<f32>)> = Vec::new();
+    for (mut p, ts) in found.into_iter().zip(times) {
+        let best = ts.iter().map(|t| (*t, measured.next().flatten())).max_by(|a, b| a.1.unwrap_or(0.0).total_cmp(&b.1.unwrap_or(0.0)));
+        let sharp = best.and_then(|(t, s)| {
+            p.at_secs = t;
+            s
+        });
+        out.push((p, sharp));
+    }
+    // Faces and still moments weighed by how sharp they are against the
+    // sharpest; markers stay where they were put.
+    let top = out.iter().filter(|(p, _)| p.shot.is_some()).filter_map(|(_, s)| *s).fold(0.0_f32, f32::max);
+    if top > 0.0 {
+        for (p, s) in out.iter_mut().filter(|(p, _)| p.shot.is_some()) {
+            p.score *= 0.5 + 0.5 * s.unwrap_or(0.0) / top;
+        }
+    }
+    out.sort_by(|a, b| b.0.score.total_cmp(&a.0.score));
+    Ok((out, unread))
+}
+
 /// The most frames proposed.
-pub(crate) const MAX_PROPOSALS: usize = 12;
+pub const MAX_PROPOSALS: usize = 12;
 
 /// How far either way a proposal is moved for a sharper frame, in seconds.
-pub(crate) const SHARPEST_WITHIN: f64 = 0.5;
+pub const SHARPEST_WITHIN: f64 = 0.5;
 
 /// What a file's analysis gives the proposals.
 #[derive(Debug, Clone, Default)]
-pub(crate) struct Seen {
+pub struct Seen {
     /// Where each shot after the first starts, seconds of the file.
     pub shot_starts: Vec<f64>,
     /// Sampled frames: seconds of the file, and each face as a box and
@@ -31,7 +128,7 @@ pub(crate) struct Seen {
 }
 
 impl Seen {
-    pub(crate) fn of(report: &klipp_analysis::report::MediaAnalysis) -> Seen {
+    pub fn of(report: &klipp_analysis::report::MediaAnalysis) -> Seen {
         Seen {
             shot_starts: report.shots.as_ref().map(|s| s.boundaries.clone()).unwrap_or_default(),
             samples: report.framing.as_ref().map(|f| f.samples.iter().map(|s| (s.secs, s.faces.clone())).collect()).unwrap_or_default(),
@@ -47,7 +144,7 @@ impl Seen {
 /// A frame proposed: where, why, how good, and the shot it is from
 /// (none for a marker's).
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct Proposal {
+pub struct Proposal {
     pub at_secs: f64,
     pub why: String,
     pub score: f32,
@@ -61,7 +158,7 @@ pub(crate) struct Proposal {
 /// face a third of the frame's height or more is full marks) and how
 /// squarely it faces the camera, from where the nose sits between the
 /// eyes.
-pub(crate) fn face_score(f: &klipp_analysis::framing::FaceBox) -> f32 {
+pub fn face_score(f: &klipp_analysis::framing::FaceBox) -> f32 {
     let size = ((f.w * f.h).max(0.0).sqrt() / 0.33).min(1.0);
     let frontal = match f.landmarks.as_slice() {
         [right, left, nose, ..] => {
@@ -94,7 +191,7 @@ fn covered(seq: &Sequence, track: usize, secs: f64) -> bool {
 /// The frames proposed for `seq`'s cover, best first, before they are
 /// moved for sharpness: at most [`MAX_PROPOSALS`], never two from one
 /// shot, nor two within a second of each other.
-pub(crate) fn propose(seq: &Sequence, seen: &HashMap<MediaId, Seen>) -> Vec<Proposal> {
+pub fn propose(seq: &Sequence, seen: &HashMap<MediaId, Seen>) -> Vec<Proposal> {
     let end = seq.total_duration().to_secs_f64();
     let mut all: Vec<Proposal> = Vec::new();
     for m in &seq.markers {
@@ -168,7 +265,7 @@ pub(crate) fn propose(seq: &Sequence, seen: &HashMap<MediaId, Seen>) -> Vec<Prop
 /// How sharp a picture is: the variance of its luma's Laplacian, over
 /// `rgba` `width` × `height`. Higher is sharper; a blurred or flat frame
 /// is near 0.
-pub(crate) fn sharpness(rgba: &[u8], width: u32, height: u32) -> f32 {
+pub fn sharpness(rgba: &[u8], width: u32, height: u32) -> f32 {
     let (w, h) = (width as usize, height as usize);
     if w < 3 || h < 3 || rgba.len() < w * h * 4 {
         return 0.0;
@@ -192,7 +289,7 @@ pub(crate) fn sharpness(rgba: &[u8], width: u32, height: u32) -> f32 {
 
 /// The times tried for a sharper frame near `p`: itself, then a quarter
 /// and a half second either way, inside its room.
-pub(crate) fn tries(p: &Proposal) -> Vec<f64> {
+pub fn tries(p: &Proposal) -> Vec<f64> {
     if p.shot.is_none() {
         return vec![p.at_secs];
     }

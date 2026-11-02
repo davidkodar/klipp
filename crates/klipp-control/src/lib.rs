@@ -49,7 +49,6 @@ mod operations;
 mod cut_prep;
 mod jobs;
 mod json_path;
-mod cover_proposals;
 /// Project and media text inside a reply's words: one quoted value.
 pub(crate) use klipp_core::quote::{quoted, word};
 

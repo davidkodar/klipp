@@ -1436,100 +1436,37 @@ fn covers(ctx: &ControlContext, named: Option<&str>, path: Option<&str>, propose
     Ok(json!({ "path": path, "bytes": bytes.len(), "width": size.width, "height": size.height, "quality": quality, "cover": cover_json(c) }))
 }
 
-/// `cover` drawn by the export renderer at `width` × `height`: the
-/// sequence at that size with the cover's crop and words.
+/// How the project draws its pictures, as the export renderer is told.
+fn look(ctx: &ControlContext) -> klipp_render::cover::Look {
+    klipp_render::cover::Look { lut: ctx.shared.project.lock().recovered().viewer_lut.clone(), working: klipp_engine::video_decoder::working_colorspace(), grade_encoding: klipp_core::grade_encoding() }
+}
+
+/// The open sequence and the project's others.
+fn sequences(ctx: &ControlContext) -> Result<(klipp_timeline::Sequence, Vec<klipp_timeline::Sequence>), String> {
+    let seq: klipp_timeline::Sequence = (*ctx.sequence.read().map_err(|_| "sequence lock poisoned")?).clone();
+    let all = ctx.others.read().recovered().iter().map(|s| (*s.sequence).clone()).collect();
+    Ok((seq, all))
+}
+
+/// `cover` drawn by the export renderer at `width` × `height`.
 fn cover_frame(ctx: &ControlContext, cover: &klipp_timeline::cover::Cover, width: u32, height: u32) -> Result<klipp_render::still::Still, String> {
-    let seq: klipp_timeline::Sequence = (*ctx.sequence.read().map_err(|_| "sequence lock poisoned")?).clone();
-    let drawn = klipp_timeline::cover::cover_sequence(&seq, cover, width, height)?;
-    let snapshot = render_snapshot(ctx, &drawn)?;
-    klipp_render::still::timeline_still(&snapshot, cover.at_secs, width, height).map_err(|e| format!("no cover at {:.3} s: {e}", cover.at_secs))
+    let (seq, all) = sequences(ctx)?;
+    let pool = ctx.media_pool.read().recovered().clone();
+    klipp_render::cover::draw(&seq, &all, &pool, &look(ctx), cover, width, height)
 }
 
-/// `seq` frozen for the export renderer, beside the project's other
-/// sequences (`seq` in place of the open one), with the viewer's LUT and
-/// the project's grade encoding.
-fn render_snapshot(ctx: &ControlContext, seq: &klipp_timeline::Sequence) -> Result<klipp_render::SequenceSnapshot, String> {
-    let mut all: Vec<klipp_timeline::Sequence> = ctx.others.read().recovered().iter().map(|s| (*s.sequence).clone()).collect();
-    all.retain(|s| s.id != seq.id);
-    all.push(seq.clone());
-    let lut = ctx.shared.project.lock().recovered().viewer_lut.clone();
-    let pool = ctx.media_pool.read().recovered();
-    let mut snapshot = klipp_render::SequenceSnapshot::from_sequence_with_all(
-        seq,
-        &all,
-        &pool,
-        &klipp_core::ExportSettings::default(),
-        lut.as_ref().map(|(p, _)| p.clone()),
-        false,
-        klipp_engine::video_decoder::working_colorspace(),
-    )
-    .map_err(|e| e.to_string())?;
-    drop(pool);
-    snapshot.grade_encoding = klipp_core::grade_encoding();
-    if let Some((_, opacity)) = lut {
-        snapshot.video.global_lut_opacity = opacity;
-    }
-    Ok(snapshot)
-}
-
-/// The frames proposed for a cover of the open sequence, each moved to
-/// the sharpest frame near it, best first; and the files whose framing
-/// analysis isn't there, which proposes no faces from them.
-fn cover_proposals(ctx: &ControlContext) -> Result<(Vec<(crate::cover_proposals::Proposal, Option<f32>)>, Vec<String>), String> {
-    use crate::cover_proposals::{propose, sharpness, tries, Seen};
-    let seq: klipp_timeline::Sequence = (*ctx.sequence.read().map_err(|_| "sequence lock poisoned")?).clone();
-    let files: Vec<(klipp_core::MediaId, std::path::PathBuf, String)> = {
-        let pool = ctx.media_pool.read().recovered();
-        let mut ids: Vec<klipp_core::MediaId> = seq.tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Video).flat_map(|t| &t.clips).filter_map(|c| c.media_id()).collect();
-        ids.sort_by_key(|m| m.0);
-        ids.dedup();
-        ids.into_iter().filter_map(|m| pool.get(&m).map(|i| (m, i.path.clone(), i.filename.clone()))).collect()
-    };
-    let mut seen = std::collections::HashMap::new();
-    let mut unread = Vec::new();
-    for (id, path, name) in files {
-        let report = klipp_analysis::report::MediaAnalysis::load(&path);
-        if report.framing.is_none() {
-            unread.push(name);
-        }
-        seen.insert(id, Seen::of(&report));
-    }
-    let proposals = propose(&seq, &seen);
-    if proposals.is_empty() {
-        return Ok((Vec::new(), unread));
-    }
-    // Small frames near each, measured; the sharpest kept.
-    let width = 320;
-    let height = ((width as f64 * seq.resolution.height as f64 / seq.resolution.width.max(1) as f64).round() as u32).max(2) & !1;
-    let snapshot = render_snapshot(ctx, &seq)?;
-    let times: Vec<Vec<f64>> = proposals.iter().map(tries).collect();
-    let flat: Vec<f64> = times.iter().flatten().copied().collect();
-    let stills = klipp_render::still::timeline_stills(&snapshot, &flat, width, height);
-    let mut measured = stills.iter().map(|s| s.as_ref().ok().map(|s| sharpness(&s.rgba, s.width, s.height)));
-    let mut out: Vec<(crate::cover_proposals::Proposal, Option<f32>)> = Vec::new();
-    for (mut p, ts) in proposals.into_iter().zip(times) {
-        let best = ts.iter().map(|t| (*t, measured.next().flatten())).max_by(|a, b| a.1.unwrap_or(0.0).total_cmp(&b.1.unwrap_or(0.0)));
-        let sharp = best.and_then(|(t, s)| {
-            p.at_secs = t;
-            s
-        });
-        out.push((p, sharp));
-    }
-    // Faces and still moments weighed by how sharp they are against the
-    // sharpest; markers stay where they were put.
-    let top = out.iter().filter(|(p, _)| p.shot.is_some()).filter_map(|(_, s)| *s).fold(0.0_f32, f32::max);
-    if top > 0.0 {
-        for (p, s) in out.iter_mut().filter(|(p, _)| p.shot.is_some()) {
-            p.score *= 0.5 + 0.5 * s.unwrap_or(0.0) / top;
-        }
-    }
-    out.sort_by(|a, b| b.0.score.total_cmp(&a.0.score));
-    Ok((out, unread))
+/// The frames proposed for a cover of the open sequence.
+fn cover_proposals(ctx: &ControlContext) -> Result<(Vec<(klipp_render::cover::Proposal, Option<f32>)>, Vec<String>), String> {
+    let (seq, all) = sequences(ctx)?;
+    let pool = ctx.media_pool.read().recovered().clone();
+    klipp_render::cover::proposals(&seq, &all, &pool, &look(ctx), &|p| klipp_analysis::report::MediaAnalysis::load(p))
 }
 
 fn full_size_frame(ctx: &ControlContext, secs: f64, width: u32, height: u32) -> Result<klipp_render::still::Still, String> {
-    let seq: klipp_timeline::Sequence = (*ctx.sequence.read().map_err(|_| "sequence lock poisoned")?).clone();
-    let snapshot = render_snapshot(ctx, &seq)?;
+    let (seq, all) = sequences(ctx)?;
+    let pool = ctx.media_pool.read().recovered();
+    let snapshot = klipp_render::cover::snapshot(&seq, &all, &pool, &look(ctx))?;
+    drop(pool);
     klipp_render::still::timeline_still(&snapshot, secs, width, height).map_err(|e| format!("no frame at {secs:.3} s: {e}"))
 }
 
