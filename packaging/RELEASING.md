@@ -69,6 +69,26 @@ script does not replace that gate and does not publish or create tags.
 4. Install the candidate on test systems. Verify launch, import, audio/video
    playback, save/reopen and export. Test AMD and NVIDIA hardware before claiming
    both are validated; a portable CPU build alone does not establish GPU support.
+4a. **Soak test** the installed candidate on an NVIDIA machine, for 20–30
+   minutes. Short test processes don't show slow growth; a release app left
+   running does (#3404: in 0.3.0, each hardware decoder held a CUDA context of
+   its own, and an idle Klipp with drawing ahead on reached 5 GB and enough
+   GPU channels that other programs couldn't use the GPU).
+
+   Open a heavy project with drawing ahead on, and leave it idle long enough
+   to draw. Then play, open and close projects, freeze a track, bounce one
+   and export, while this samples it every few seconds:
+
+   ```bash
+   python3 scripts/soak_sample.py --pid "$(pgrep -x klipp-app)" --minutes 30 --out soak.csv
+   ```
+
+   It writes the process's GPU memory (nvidia-smi), open `/dev/nvidia*`
+   handles, resident memory and threads to `soak.csv`. At the end it compares
+   each one's floor over the last third of the run with the first third. A
+   job's peak comes and goes, but a floor that keeps climbing fails the check
+   (exit 1) and blocks the release until it is understood. Keep `soak.csv`
+   with the release's notes.
 5. Sign the checksums with the release key (see "The release key" below), on
    the machine that holds it:
 
