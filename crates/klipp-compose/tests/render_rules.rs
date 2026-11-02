@@ -2335,3 +2335,64 @@ fn a_caption_on_a_lower_thirds_line_is_drawn_below_it() {
     let below = r.render(&moved, tc(2.0), 320, 180, &mut src, RenderOptions::default());
     assert!(shown == below, "the frame shows the caption below the lower third");
 }
+
+/// A scene-referred clip inspected for its node previews, as the node
+/// editor asks while paused, draws as it does uninspected on the GPU and
+/// the CPU: its identity grade's run, Source straight into Output, gives
+/// its picture, not the GPU chain's empty placeholder (drawn black, or a
+/// layer of no size). Under a Reflection, that layer keeps its size.
+#[test]
+fn an_inspected_log_clip_draws_as_it_does_uninspected() {
+    use klipp_graph_format::path::{NodePath, Root};
+    let reflection = BuiltinEffect::Reflection {
+        waterline: 0.5, gap: 0.0, ripple_amount: 0.0, ripple_size: 60.0, ripple_speed: 0.0, breakup: 0.0, smear: 0.0, fade: 0.0, opacity: 1.0, darken: 0.0, contact: 0.0,
+        blend: 0, tint: [0, 0, 0], tint_amount: 0.0, tint_auto: false, darken_auto: false, water: [0, 0, 0], water_key: 0, submerge: 0.0, ripple_from: 0, seed: 0, time: 0.0,
+    };
+    let log = media(0.0, 2.0);
+    let top = TestClip::of(media(0.0, 2.0)).effects([reflection]).build();
+    for (label, seq) in [("alone", sequence(vec![vec![log.clone()]])), ("under a reflection", sequence(vec![vec![log.clone()], vec![top]]))] {
+        let source = log.picture_v2().unwrap().picture.graph.nodes.iter().find(|n| n.type_id.as_str() == klipp_graph_format::lifted::types::SOURCE).unwrap().id;
+        let at = klipp_compose::InspectAt::out(NodePath::new(Root::Clip { clip: log.id.0 }, [source]));
+        for gpu in [false, true] {
+            let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
+            r.set_gpu_enabled(gpu);
+            let plain = r.render(&seq, tc(1.0), W, H, &mut Flat::default().slog3(&log, 420), RenderOptions::default());
+            let thumbs = [at.clone()].into_iter().collect();
+            let (shown, found) = r.render_inspected(&seq, tc(1.0), W, H, &mut Flat::default().slog3(&log, 420), RenderOptions::default(), Inspect { clip: Some(log.id), only: Some(log.id), thumbs: Some(thumbs), ..Default::default() });
+            assert_eq!(found.wrong_size_layers, 0, "{label} gpu {gpu}: a layer of another size");
+            assert!(found.thumbs.contains_key(&at), "{label} gpu {gpu}: the source's preview: {:?}", found.unavailable);
+            assert_eq!(shown.len(), plain.len(), "{label} gpu {gpu}");
+            let worst = shown.iter().zip(&plain).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
+            assert!(worst <= 1e-3, "{label} gpu {gpu}: inspected differs from the plain frame by {worst} (centre {:?})", &shown[(9 * W as usize + 16) * 4..][..3]);
+        }
+    }
+}
+
+/// What drawing a paused, inspected log clip costs at 1080p on the GPU,
+/// its identity grade run for its source's preview (#3328). Measured, not
+/// a check: `--ignored --nocapture`.
+#[test]
+#[ignore]
+fn measure_an_inspected_identity_grade_on_the_gpu() {
+    use klipp_graph_format::path::{NodePath, Root};
+    let (w, h) = (1920u32, 1080u32);
+    let log = media(0.0, 2.0);
+    let seq = sequence(vec![vec![log.clone()]]);
+    let source = log.picture_v2().unwrap().picture.graph.nodes.iter().find(|n| n.type_id.as_str() == klipp_graph_format::lifted::types::SOURCE).unwrap().id;
+    let at = klipp_compose::InspectAt::out(NodePath::new(Root::Clip { clip: log.id.0 }, [source]));
+    let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
+    r.set_gpu_enabled(true);
+    let mut run = |thumbs: bool| {
+        let inspect = Inspect { clip: Some(log.id), only: Some(log.id), thumbs: thumbs.then(|| [at.clone()].into_iter().collect()), ..Default::default() };
+        let t = std::time::Instant::now();
+        let (frame, _) = r.render_inspected(&seq, tc(1.0), w, h, &mut Flat::default().slog3(&log, 420), RenderOptions::default(), inspect);
+        assert_eq!(frame.len(), (w * h * 4) as usize);
+        t.elapsed().as_secs_f64() * 1000.0
+    };
+    for thumbs in [false, true] {
+        run(thumbs);
+        let ms: Vec<f64> = (0..10).map(|_| run(thumbs)).collect();
+        let best = ms.iter().copied().fold(f64::MAX, f64::min);
+        eprintln!("MEASURE 1080p log clip, inspected, preview asked {thumbs}: best {best:.1} ms, mean {:.1} ms", ms.iter().sum::<f64>() / ms.len() as f64);
+    }
+}

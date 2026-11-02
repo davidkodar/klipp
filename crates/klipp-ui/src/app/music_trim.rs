@@ -116,6 +116,7 @@ impl super::KlippApp {
                     Err(r) => self.state.toast.show(format!("Smooth motion not set: {}", r.why)),
                 }
             }
+            crate::widgets::toast::ToastAction::FindPeople(sequence) => self.find_people_now(sequence),
         }
     }
 }

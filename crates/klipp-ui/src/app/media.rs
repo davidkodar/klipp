@@ -368,7 +368,11 @@ impl KlippApp {
                         return true;
                     }
                     self.suppress_fps_prompt = false;
-                    if let Some(item) = self.state.media_pool.get(media_id).cloned() {
+                    let Some(item) = self.state.media_pool.get(media_id).cloned() else {
+                        self.state.toast.show("That clip is no longer in the media pool");
+                        return true;
+                    };
+                    {
                         // Accumulate everything this gesture mutates so a
                         // single ctrl+z can revert it as one atomic unit.
                         let mut hist_video: Option<(klipp_timeline::Clip, usize)> = None;
@@ -424,8 +428,9 @@ impl KlippApp {
                                 hist_created_video_track_at = Some(0);
                                 Some(0usize)
                             } else {
-                                self.state.sequences[self.state.active_sequence_idx].tracks.iter()
-                                    .position(|t| t.kind == klipp_timeline::TrackKind::Video)
+                                // The main track, V1, unless the source is
+                                // patched elsewhere: not the top one.
+                                self.state.sequences[self.state.active_sequence_idx].source_track(klipp_timeline::TrackKind::Video)
                             };
                             let audio_track_idx = if *on_new_tracks {
                                 let seq = &mut self.state.sequences[self.state.active_sequence_idx];
@@ -435,9 +440,7 @@ impl KlippApp {
                                 hist_created_audio_track_at = Some(new_idx);
                                 Some(new_idx)
                             } else {
-                                match self.state.sequences[self.state.active_sequence_idx].tracks.iter()
-                                    .position(|t| t.kind == klipp_timeline::TrackKind::Audio)
-                                {
+                                match self.state.sequences[self.state.active_sequence_idx].source_track(klipp_timeline::TrackKind::Audio) {
                                     Some(i) => Some(i),
                                     None => {
                                         // Auto-create audio track to host the imported audio.
@@ -506,9 +509,7 @@ impl KlippApp {
                                     idx
                                 }
                             } else {
-                                self.state.sequences[self.state.active_sequence_idx].tracks.iter()
-                                    .position(|t| t.kind == target_kind)
-                                    .unwrap_or(0)
+                                self.state.sequences[self.state.active_sequence_idx].source_track(target_kind).unwrap_or(0)
                             };
                             if let Some(track) = self.state.sequences[self.state.active_sequence_idx].tracks.get_mut(track_idx) {
                                 let clip_id = track.append_clip(*media_id, use_duration);
@@ -534,7 +535,13 @@ impl KlippApp {
                             }
                         }
 
-                        if hist_video.is_some() || hist_audio.is_some() {
+                        if hist_video.is_none() && hist_audio.is_none() {
+                            // Never nothing and no word: a gesture that
+                            // put nothing down says so.
+                            let kind = if has_video { "video" } else { "audio" };
+                            tracing::info!("placement: {} not placed, no {kind} track", item.filename);
+                            self.state.toast.show(format!("Couldn't place '{}': the timeline has no {kind} track to put it on", item.filename));
+                        } else {
                             self.state.active_history_mut().push(crate::history::HistoryEntry {
                                 command: crate::history::EditCommand::LinkedImport {
                                     video: hist_video,
