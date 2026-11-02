@@ -1119,6 +1119,13 @@ pub fn show(
 // Inspector LUFS meter widget
 // ═══════════════════════════════════════════════════════════════════
 
+/// The inspector meter's bar height for `avail` points of room: up to
+/// 120, and never under 40, so a panel with no height left still lays out
+/// a meter rather than a negative size, which egui refuses (#3461).
+fn inspector_meter_height(avail: f32) -> f32 {
+    (avail - 70.0).clamp(40.0, 120.0)
+}
+
 pub fn draw_inspector_meter(
     ui: &mut egui::Ui,
     theme: &KlippTheme,
@@ -1128,7 +1135,7 @@ pub fn draw_inspector_meter(
     ui.add_space(8.0);
 
     let avail = ui.available_rect_before_wrap();
-    let meter_h = 120.0_f32.min(avail.height() - 70.0);
+    let meter_h = inspector_meter_height(avail.height());
     let total_h = meter_h + 64.0; // bar + gap + 3 rows of text
     let (rect, _) = ui.allocate_exact_size(egui::vec2(avail.width().min(220.0), total_h), egui::Sense::hover());
 
@@ -1537,5 +1544,21 @@ mod tests {
         assert!((vol_to_db(1.0) - 0.0).abs() < 0.01);
         assert!((vol_to_db(2.0) - 6.02).abs() < 0.1);
         assert!((vol_to_db(0.5) - (-6.02)).abs() < 0.1);
+    }
+}
+
+#[cfg(test)]
+mod inspector_meter_tests {
+    use super::inspector_meter_height;
+
+    /// #3461: with no room left the meter keeps a positive height; with
+    /// room it is capped at 120.
+    #[test]
+    fn the_inspector_meter_never_gets_a_negative_height() {
+        assert_eq!(inspector_meter_height(0.0), 40.0);
+        assert_eq!(inspector_meter_height(-50.0), 40.0);
+        assert_eq!(inspector_meter_height(150.0), 80.0);
+        assert_eq!(inspector_meter_height(1000.0), 120.0);
+        assert!(inspector_meter_height(0.0) + 64.0 > 0.0);
     }
 }
