@@ -195,6 +195,10 @@ pub struct UnitMap {
     pub line_boxes: Vec<[f32; 4]>,
     pub line_ranges: Vec<(usize, usize)>,
     pub lines_vertical: bool,
+    /// The text's resting bounds, left, top, right, bottom in frame
+    /// pixels: what a whole-text backing is drawn round under the posed
+    /// glyphs (#3261).
+    pub text_box: [f32; 4],
 }
 
 impl UnitMap {
@@ -235,7 +239,7 @@ impl UnitMap {
                 index[i] = best.1;
             }
         }
-        Self { x0, y0, w, h, index, boxes: layout.glyph_boxes.clone(), parents: layout.glyph_parents.clone(), pad: layout.pad, path: layout.path_units.clone(), tracking_origins: layout.tracking_origins.clone(), line_boxes: layout.line_boxes.clone(), line_ranges: layout.line_ranges.clone(), lines_vertical: layout.lines_vertical }
+        Self { x0, y0, w, h, index, boxes: layout.glyph_boxes.clone(), parents: layout.glyph_parents.clone(), pad: layout.pad, path: layout.path_units.clone(), tracking_origins: layout.tracking_origins.clone(), line_boxes: layout.line_boxes.clone(), line_ranges: layout.line_ranges.clone(), lines_vertical: layout.lines_vertical, text_box: [layout.text_left, layout.text_top, layout.text_right, layout.text_bottom] }
     }
 
     /// The glyph at frame pixel `(x, y)`, if any.
@@ -471,10 +475,11 @@ fn poses_its_glyphs(title: &TitleData) -> bool {
     staggers(fx.motion.enter) || staggers(fx.motion.exit) || fx.animators.iter().any(|a| a.enabled) || waves || tracking::eligible(title)
 }
 
-/// Whether a backing per line goes under a title's posed glyphs rather
-/// than into its resting render (#3237).
+/// Whether a backing goes under a title's posed glyphs rather than into
+/// its resting render: one per line (#3237), or one round the whole text
+/// (#3261), which would otherwise be cut up with the glyphs.
 fn lines_go_under(title: &TitleData) -> bool {
-    matches!(title.background, TitleBackground::Color { lines: Some(_), color, .. } if color[3] > 0) && poses_its_glyphs(title)
+    matches!(title.background, TitleBackground::Color { color, .. } if color[3] > 0) && poses_its_glyphs(title)
 }
 
 /// `rows` widened to those `backing` reaches, in a frame `height` tall.
@@ -492,8 +497,20 @@ fn widened(rows: (u32, u32), backing: Option<&(BackingLines, [u8; 4])>, height: 
 /// The backing per line under a frame of `title` whose glyphs `poses`
 /// places from the resting render `units` maps (#3237), and its colour.
 fn posed_backing(title: &TitleData, units: &UnitMap, poses: &[GlyphPose], scale: f32) -> Option<(BackingLines, [u8; 4])> {
-    let TitleBackground::Color { color, .. } = &title.background else { return None };
-    if !lines_go_under(title) || units.line_boxes.is_empty() {
+    let TitleBackground::Color { color, padding, lines } = &title.background else { return None };
+    if !lines_go_under(title) {
+        return None;
+    }
+    // One box round the whole text (#3261): where the resting render draws
+    // it, whole and still, showing as much as the most visible glyph.
+    if lines.is_none() {
+        let pad = padding * scale;
+        let b = units.text_box;
+        let rect = [((b[0] - pad) as i32).max(0) as f32, ((b[1] - pad) as i32).max(0) as f32, (b[2] + pad) as i32 as f32, (b[3] + pad) as i32 as f32];
+        let alpha = poses.iter().map(|p| p.alpha).fold(0.0f32, f32::max);
+        return Some((BackingLines { rects: vec![rect], alphas: vec![alpha], radius: 0.0, joined: false }, *color));
+    }
+    if units.line_boxes.is_empty() {
         return None;
     }
     let rest: Vec<[f32; 4]> = units.boxes.iter().map(|b| b.map(|v| v as f32)).collect();
@@ -4072,7 +4089,7 @@ impl TitleRenderer {
         let fx = title.primary_fx();
         let poses: Vec<text3d_render::Pose> = match time_secs {
             Some(t) if fx.motion.is_active() || fx.animators.iter().any(|a| a.enabled) => {
-                let units = UnitMap { x0: 0, y0: 0, w: 0, h: 0, index: Vec::new(), boxes: layout.glyph_boxes.clone(), parents: layout.glyph_parents.clone(), pad: 0, path: None, tracking_origins: Vec::new(), line_boxes: Vec::new(), line_ranges: Vec::new(), lines_vertical: false };
+                let units = UnitMap { x0: 0, y0: 0, w: 0, h: 0, index: Vec::new(), boxes: layout.glyph_boxes.clone(), parents: layout.glyph_parents.clone(), pad: 0, path: None, tracking_origins: Vec::new(), line_boxes: Vec::new(), line_ranges: Vec::new(), lines_vertical: false, text_box: [layout.text_left, layout.text_top, layout.text_right, layout.text_bottom] };
                 let glyph = glyph_poses(&units, &fx.motion, &fx.animators, t, self.motion_window, em, (0.0, 0.0, 1.0), false);
                 solids
                     .iter()
