@@ -96,11 +96,119 @@ impl KlippApp {
         if transcribe {
             cmds.extend(untranscribed.iter().map(|&(media_id, _)| AppCommand::TranscribeClip { media_id }));
         }
-        if run {
-            self.state.pending_doc_ops.push(crate::state::DocOpsRequest { label: "First Cut".into(), ops: vec![c.op()], independent: false });
-        }
         if run || cancel || !open {
             self.state.show_first_cut_dialog = false;
+        }
+        if run {
+            self.make_first_cut(&c);
+        }
+    }
+
+    /// The cut made as one undo step, and kept with the sequence as it was
+    /// so the panel can take its changes back one at a time.
+    fn make_first_cut(&mut self, choices: &crate::first_cut::Choices) {
+        use klipp_document::ops::first_cut;
+        self.transcript_source.sync(self.state.analysis_generation);
+        let before = self.state.sequence().clone();
+        let changes = first_cut::plan(&before, &self.state.media_pool, &self.transcript_source, &choices.steps());
+        if changes.is_empty() {
+            self.state.toast.show("First Cut: no clip is heard speaking. Transcribe or analyze its sound first.");
+            return;
+        }
+        let ops = first_cut::ops(&before, &changes, &[], choices.music.as_ref());
+        let plan = match klipp_document::ops::resolve_with(&before, &self.state.media_pool, &ops, &self.transcript_source) {
+            Ok(plan) => plan,
+            Err(r) => {
+                self.state.toast.show(format!("First Cut: not done, {}", r.why));
+                return;
+            }
+        };
+        let edits: Vec<EditCommand> = plan.steps.into_iter().map(|s| s.edit).collect();
+        self.apply_edits_as_one(&edits, "First Cut");
+        let Some(stamp) = self.state.active_history().undo_stamped().last().map(|(s, _)| s) else { return };
+        let n = changes.len();
+        self.state.first_cut_session = Some(crate::first_cut::Session { sequence: before.id, before, music: choices.music, changes, excluded: Vec::new(), stamp });
+        self.state.show_first_cut_panel = true;
+        self.state.toast.show(format!("First Cut: {n} changes, each listed in the First Cut panel"));
+    }
+
+    /// Change `i` taken back, or put back: the cut made again from the
+    /// sequence as it was without the changes left out, swapped in as one
+    /// undo step. Refused once the sequence was edited since.
+    fn flip_first_cut_change(&mut self, i: usize) {
+        let Some(session) = self.state.first_cut_session.clone() else { return };
+        let last = self.state.active_history().undo_stamped().last().map(|(s, _)| s);
+        if !session.editable(self.state.sequence().id, last) {
+            self.state.toast.show("Edited since First Cut: use Undo to take it back");
+            return;
+        }
+        let excluded = session.flipped(i);
+        self.transcript_source.sync(self.state.analysis_generation);
+        let new = match klipp_document::ops::first_cut::tracks_without(&session.before, &self.state.media_pool, &self.transcript_source, &session.changes, &excluded, session.music.as_ref()) {
+            Ok(tracks) => tracks,
+            Err(r) => {
+                self.state.toast.show(format!("First Cut: not changed, {}", r.why));
+                return;
+            }
+        };
+        let old = self.state.sequence().tracks.clone();
+        let label = if excluded.contains(&i) { "First Cut: change taken back" } else { "First Cut: change put back" };
+        self.apply_edits_as_one(&[EditCommand::SetTracks { description: "First Cut", old, new }], label);
+        let Some(stamp) = self.state.active_history().undo_stamped().last().map(|(s, _)| s) else { return };
+        if let Some(s) = self.state.first_cut_session.as_mut() {
+            s.excluded = excluded;
+            s.stamp = stamp;
+        }
+    }
+
+    /// The First Cut panel: each change with its time, ticked while it is
+    /// in the cut. A click goes to it; unticking takes it back.
+    pub(super) fn show_first_cut_panel(&mut self, ctx: &egui::Context, cmds: &mut Vec<AppCommand>) {
+        let Some(session) = self.state.first_cut_session.clone() else { return };
+        if !self.state.show_first_cut_panel {
+            return;
+        }
+        let last = self.state.active_history().undo_stamped().last().map(|(s, _)| s);
+        let editable = session.editable(self.state.sequence().id, last);
+        let rate = self.state.sequence().fps.num.max(1);
+        let (mut open, mut flip, mut go) = (true, None, None);
+        egui::Window::new("First Cut changes")
+            .collapsible(true)
+            .resizable(true)
+            .default_width(360.0)
+            .open(&mut open)
+            .show(ctx, |ui| {
+                if !editable {
+                    ui.weak("Edited since: use Undo to take the First Cut back.");
+                    ui.add_space(4.0);
+                }
+                egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
+                    for (i, change) in session.changes.iter().enumerate() {
+                        ui.horizontal(|ui| {
+                            let mut kept = session.kept(i);
+                            if ui.add_enabled(editable, egui::Checkbox::without_text(&mut kept)).on_hover_text("Untick to take this change back").changed() {
+                                flip = Some(i);
+                            }
+                            let text = if session.kept(i) { egui::RichText::new(&change.what) } else { egui::RichText::new(&change.what).weak() };
+                            if change.kind.cuts() {
+                                if ui.link(text).on_hover_text("Go to it").clicked() {
+                                    go = Some(klipp_document::ops::first_cut::now_at(&session.changes, &session.excluded, i));
+                                }
+                            } else {
+                                ui.label(text);
+                            }
+                        });
+                    }
+                });
+            });
+        if !open {
+            self.state.show_first_cut_panel = false;
+        }
+        if let Some(at) = go {
+            cmds.push(AppCommand::SeekTo(klipp_core::Timecode::from_secs_f64(at, rate)));
+        }
+        if let Some(i) = flip {
+            self.flip_first_cut_change(i);
         }
     }
 }
