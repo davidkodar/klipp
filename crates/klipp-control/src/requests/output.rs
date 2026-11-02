@@ -4,6 +4,10 @@ use crate::poison::Recover;
 #[allow(unused_imports)]
 use crate::*;
 
+#[cfg(test)]
+#[path = "covers_tests.rs"]
+mod covers_tests;
+
 pub(crate) fn respond(
     ctx: &ControlContext,
     cmd: ControlCommand,
@@ -437,6 +441,8 @@ pub(crate) fn respond(
             v["files"] = json!(files.iter().map(|f| json!({ "path": f.path.display().to_string(), "tracks": f.tracks, "language": f.language })).collect::<Vec<_>>());
             Ok(v)
         }
+
+        ControlCommand::Covers { cover, path, overwrite } => covers(ctx, cover.as_deref(), path.as_deref(), overwrite),
 
         ControlCommand::TranslateCaptions { track, to, from, download_models, glossary } => {
             use klipp_document::caption_translation as ct;
@@ -1516,6 +1522,83 @@ impl Drop for PutBackViewing<'_> {
             tracing::warn!("frame_at could not put the viewer's channel and node back: {e}");
         }
     }
+}
+
+/// A cover as a reply lists it: its id, name, frame, size, crop and words.
+fn cover_json(c: &klipp_timeline::cover::Cover) -> serde_json::Value {
+    let mut v = json!({ "id": c.id.to_string(), "at_secs": c.at_secs, "size": c.size });
+    if let Some(s) = klipp_core::cover_sizes::by_id(&c.size) {
+        v["size_name"] = json!(s.name);
+    }
+    if !c.name.is_empty() {
+        v["name"] = json!(c.name);
+    }
+    if !c.crop.is_whole() {
+        v["crop"] = json!(c.crop);
+    }
+    if let Some(text) = c.text.as_ref().and_then(|t| t.primary_text()) {
+        v["text"] = json!(text.text);
+    }
+    if c.with_titles {
+        v["with_titles"] = json!(true);
+    }
+    v
+}
+
+/// [`ControlCommand::Covers`]: the covers and sizes, or one cover written.
+fn covers(ctx: &ControlContext, named: Option<&str>, path: Option<&str>, overwrite: bool) -> Result<serde_json::Value, String> {
+    use klipp_render::still::{encode, StillFormat};
+    let list: Vec<klipp_timeline::cover::Cover> = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?.covers.clone();
+    let Some(path) = path else {
+        let sizes: Vec<serde_json::Value> = klipp_core::cover_sizes::all().iter().map(|s| json!({ "id": s.id, "name": s.name, "width": s.width, "height": s.height, "max_bytes": s.max_bytes })).collect();
+        return Ok(json!({ "covers": list.iter().map(cover_json).collect::<Vec<_>>(), "sizes": sizes }));
+    };
+    let p = std::path::PathBuf::from(path);
+    if !p.is_absolute() {
+        return Err(format!("a cover's path must be absolute (got {path:?})"));
+    }
+    let format = StillFormat::of_path(&p).ok_or_else(|| format!("{path:?} names no picture format; end it .png, .jpg or .jpeg"))?;
+    may_replace(&p, overwrite)?;
+    let c = match named {
+        Some(n) => klipp_timeline::cover::find(&list, n).map(|k| &list[k]).ok_or_else(|| format!("no cover {n:?}; covers lists them"))?,
+        None if list.len() == 1 => &list[0],
+        None if list.is_empty() => return Err("the sequence has no covers; make one with the cover op".into()),
+        None => return Err(format!("the sequence has {} covers; give cover, its id or name", list.len())),
+    };
+    let size = klipp_core::cover_sizes::by_id(&c.size).ok_or_else(|| format!("the cover's size {:?} is not one Klipp knows", c.size))?;
+    let still = cover_frame(ctx, c, size.width, size.height)?;
+    let (bytes, quality) = encode(&still, format, size.max_bytes)?;
+    let part = p.with_file_name(format!("{}.klipp-part", p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()));
+    std::fs::write(&part, &bytes).and_then(|_| std::fs::rename(&part, &p)).map_err(|e| format!("couldn't write {path:?}: {e}"))?;
+    Ok(json!({ "path": path, "bytes": bytes.len(), "width": size.width, "height": size.height, "quality": quality, "cover": cover_json(c) }))
+}
+
+/// `cover` drawn by the export renderer at `width` × `height`: the
+/// sequence at that size with the cover's crop and words.
+fn cover_frame(ctx: &ControlContext, cover: &klipp_timeline::cover::Cover, width: u32, height: u32) -> Result<klipp_render::still::Still, String> {
+    let seq: klipp_timeline::Sequence = (*ctx.sequence.read().map_err(|_| "sequence lock poisoned")?).clone();
+    let drawn = klipp_timeline::cover::cover_sequence(&seq, cover, width, height)?;
+    let mut all: Vec<klipp_timeline::Sequence> = ctx.others.read().recovered().iter().map(|s| (*s.sequence).clone()).collect();
+    all.retain(|s| s.id != seq.id);
+    all.push(drawn.clone());
+    let lut = ctx.shared.project.lock().recovered().viewer_lut.clone();
+    let pool = ctx.media_pool.read().recovered();
+    let mut snapshot = klipp_render::SequenceSnapshot::from_sequence_with_all(
+        &drawn,
+        &all,
+        &pool,
+        &klipp_core::ExportSettings::default(),
+        lut.as_ref().map(|(p, _)| p.clone()),
+        false,
+        klipp_engine::video_decoder::working_colorspace(),
+    )
+    .map_err(|e| e.to_string())?;
+    drop(pool);
+    snapshot.grade_encoding = klipp_core::grade_encoding();
+    if let Some((_, opacity)) = lut {
+        snapshot.video.global_lut_opacity = opacity;
+    }
+    klipp_render::still::timeline_still(&snapshot, cover.at_secs, width, height).map_err(|e| format!("no cover at {:.3} s: {e}", cover.at_secs))
 }
 
 fn full_size_frame(ctx: &ControlContext, secs: f64, width: u32, height: u32) -> Result<klipp_render::still::Still, String> {

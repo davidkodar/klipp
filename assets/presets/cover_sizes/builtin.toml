@@ -1,0 +1,33 @@
+# The sizes a cover (#3311), a video's thumbnail, is exported at: its
+# picture in pixels and, where the platform has one, the largest file it
+# takes. The first is the one a new cover starts with unless the frame's
+# shape matches another better.
+
+[[size]]
+id = "youtube"
+name = "YouTube thumbnail"
+width = 1280
+height = 720
+max_bytes = 2_000_000
+checked = "2026-11-02"
+
+[[size]]
+id = "vertical"
+name = "Shorts, Reels, TikTok cover"
+width = 1080
+height = 1920
+checked = "2026-11-02"
+
+[[size]]
+id = "instagram_feed"
+name = "Instagram feed cover"
+width = 1080
+height = 1350
+checked = "2026-11-02"
+
+[[size]]
+id = "square"
+name = "Square"
+width = 1080
+height = 1080
+checked = "2026-11-02"

@@ -18787,6 +18787,7 @@ mod compound_filmstrip_tests {
             brief: None,
             edit_plan: None,
             reviews: Vec::new(),
+            covers: Vec::new(),
             awaiting_refit: false,
             version_of: None,
         }

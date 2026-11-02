@@ -98,8 +98,8 @@ fn shown_at(seq: &Sequence, t: f64) -> Option<&Clip> {
         .find_map(|tr| tr.clips.iter().find(|c| is_picture(c) && secs(c.timeline_in) <= t && t < secs(c.timeline_out)))
 }
 
-/// A clip's file second as a timeline second, for a clip at its own speed;
-/// `None` for a retimed one, whose file times don't land one to one.
+/// Whether a clip plays at its own speed, so its file seconds land one to
+/// one on the timeline; a retimed clip's don't.
 fn at_speed(c: &Clip) -> bool {
     (c.speed - 1.0).abs() < 1e-6 && c.speed_keyframes.is_empty() && c.hold.is_none() && !c.is_reversed()
 }

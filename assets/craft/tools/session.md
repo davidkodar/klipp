@@ -36,6 +36,10 @@ Arguments:
 - `target_lufs`: Loudness target: -14 web, -23 broadcast; default the brief's
 - `true_peak_dbtp`: True-peak ceiling, -10 to 0 (default -1)
 
+## klipp_covers
+
+The open sequence's covers, its thumbnails, made with the cover op: each one's id, name, frame (`at_secs`), size, crop and words; and the sizes a cover is made at, with each one's picture and the largest file its platform takes. With `path` (absolute, ending .png, .jpg or .jpeg) it writes `cover` (its id, the start of its id, or its name; the only one when left out) instead. It is drawn as the export draws that frame, at its size, its crop and words over it, the sequence's own titles and captions hidden unless the cover keeps them. A JPEG steps its quality down from 95 to 60 until it fits under the size's limit, and the reply says the quality it took. A file already at `path` is replaced only with `overwrite` true. Refused: a path that isn't absolute, a folder, an existing file without `overwrite`, a PNG over the limit (write a JPEG instead), and a JPEG over it even at 60.
+
 ## klipp_export_status
 
 Every render job Klipp knows: status (queued, rendering, complete, failed, cancelled), progress 0 to 1, frames, stage, error, loudness result. Also where its time goes, kept once it ends: hardware (the codec's acceleration), encoder and audio_encoder (the encoders opened, e.g. h264_nvenc, aac), compositing (GPU, or CPU and why, with how many frames), and timings: per frame render_ms (decode_ms and convert_ms inside it), pad_ms, encode_ms and audio_ms, gpu_composited and cpu_composited with each fallback's reason, and loudness_verify_secs and loudness_trials for the loudness fit before the render. With wait true, waits for job_id or all currently known jobs. Returns finished, succeeded and timed_out; failed or cancelled is not success. Timeout does not cancel renders.

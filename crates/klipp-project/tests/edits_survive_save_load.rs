@@ -284,6 +284,45 @@ fn a_tracks_role_for_new_clips_comes_back() {
     assert_eq!((seqs[0].tracks[0].role.clone(), seqs[0].tracks[1].role.clone()), (None, None));
 }
 
+/// #3311: a sequence's covers come back whole; a file's cover whose
+/// frame isn't a time is dropped, and one with an odd name, size or crop
+/// comes back made sound, the project still opening.
+#[test]
+fn a_sequences_covers_come_back() {
+    use klipp_timeline::cover::{Cover, CoverCrop};
+    let mut seq = Sequence::new_default();
+    let cover = Cover { id: klipp_core::CoverId::new(), name: "Hook".into(), at_secs: 1.5, size: "youtube".into(), crop: CoverCrop { x: 0.4, y: 0.5, zoom: 1.5 }, text: Some(TitleData::single_text(TextBox { text: "Big".into(), ..Default::default() })), with_titles: true };
+    seq.covers = vec![cover.clone()];
+    let back = round_trip("covers", seq.clone());
+    assert_eq!(back.covers, vec![cover]);
+
+    let dir = project_dir("covers-hostile");
+    save_project_with_color(&dir, &[seq], &MediaPool::new(), &ColorSettings::default(), None, None, "").unwrap();
+    let p = dir.join("project.json");
+    let mut v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
+    let mut odd = v["sequences"][0]["covers"][0].clone();
+    odd["id"] = serde_json::json!(klipp_core::CoverId::new());
+    odd["name"] = serde_json::json!(format!("x{}", "\u{0}y".repeat(300)));
+    odd["size"] = serde_json::json!("../../../etc/passwd");
+    odd["crop"] = serde_json::json!({ "x": -5.0, "y": 9.0, "zoom": 1e9 });
+    let mut timeless = odd.clone();
+    timeless["id"] = serde_json::json!(klipp_core::CoverId::new());
+    timeless["at_secs"] = serde_json::json!(-3.0);
+    let mut endless = odd.clone();
+    endless["id"] = serde_json::json!(klipp_core::CoverId::new());
+    endless["at_secs"] = serde_json::json!(1e300);
+    v["sequences"][0]["covers"].as_array_mut().unwrap().extend([odd, timeless, endless]);
+    std::fs::write(&p, serde_json::to_string_pretty(&v).unwrap()).unwrap();
+    let (seqs, ..) = load_project(&dir).unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+    let covers = &seqs[0].covers;
+    assert_eq!(covers.len(), 2, "the timeless and the endless one dropped");
+    let odd = &covers[1];
+    assert!(odd.name.chars().count() <= klipp_timeline::cover::MAX_NAME_CHARS && !odd.name.contains('\u{0}'));
+    assert_eq!(odd.size, "etcpasswd");
+    assert_eq!((odd.crop.zoom, odd.crop.x, odd.crop.y), (klipp_timeline::cover::MAX_ZOOM, 0.5 / klipp_timeline::cover::MAX_ZOOM, 1.0 - 0.5 / klipp_timeline::cover::MAX_ZOOM));
+}
+
 /// A file written before roles were saved carries none. Such a sequence
 /// gets what a new one gets — first video track Primary, first audio
 /// track Connected — instead of every track silently becoming Free.

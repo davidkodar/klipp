@@ -60,6 +60,7 @@ impl KlippApp {
             brief: None,
             edit_plan: None,
             reviews: Vec::new(),
+            covers: Vec::new(),
             awaiting_refit: false,
             version_of: None,
         };
@@ -764,6 +765,7 @@ mod compound_clip_cycle_tests {
             brief: None,
             edit_plan: None,
             reviews: Vec::new(),
+            covers: Vec::new(),
             awaiting_refit: false,
             version_of: None,
         }

@@ -14,6 +14,8 @@ mod alpha_codecs_round_trip;
 mod an_export_without_gpu_planes_composites_on_the_gpu;
 #[path = "../a_timeline_frame_at_full_size.rs"]
 mod a_timeline_frame_at_full_size;
+#[path = "../a_cover_is_its_frame_cropped_with_its_words.rs"]
+mod a_cover_is_its_frame_cropped_with_its_words;
 #[path = "../audio_only_export.rs"]
 mod audio_only_export;
 #[path = "../captions_608_export.rs"]
