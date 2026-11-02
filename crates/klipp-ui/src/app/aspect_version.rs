@@ -73,11 +73,17 @@ pub(super) fn request_framing(seq: &klipp_timeline::Sequence, pool: &klipp_media
     if !klipp_analysis::subject_detection_enabled() {
         return Vec::new();
     }
+    framing_of_pictures(seq, pool, klipp_analysis::service::request)
+}
+
+/// Each file `seq` shows a picture of asked for with `ask`: the files
+/// still being analysed.
+fn framing_of_pictures(seq: &klipp_timeline::Sequence, pool: &klipp_media::MediaPool, ask: fn(&klipp_media::MediaItem) -> klipp_analysis::service::Status) -> Vec<klipp_core::MediaId> {
     let mut waiting = Vec::new();
     let pictures = seq.tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Video && !t.locked).flat_map(|t| &t.clips);
     for id in pictures.filter_map(|c| c.media_id()) {
         let Some(item) = pool.get(&id).filter(|m| m.resolution.width > 0 && !waiting.contains(&id)) else { continue };
-        let status = klipp_analysis::service::request(item);
+        let status = ask(item);
         if matches!(status.state, klipp_analysis::service::State::Queued | klipp_analysis::service::State::Running) {
             waiting.push(id);
         }
@@ -85,7 +91,75 @@ pub(super) fn request_framing(seq: &klipp_timeline::Sequence, pool: &klipp_media
     waiting
 }
 
+/// The toast button a refit's report earns: "Find people now" when it
+/// left a picture centred that was never looked through for people.
+/// `ops` the request, `what` its steps' reports.
+pub(super) fn find_people_offer(ops: &[klipp_document::ops::Op], what: &[&str], sequence: klipp_core::SequenceId) -> Option<crate::widgets::toast::ToastAction> {
+    let refit = ops.iter().any(|o| matches!(o, klipp_document::ops::Op::Refit { .. }));
+    (refit && what.iter().any(|w| w.contains(klipp_document::ops::NOT_ANALYSED_FOR_PEOPLE))).then_some(crate::widgets::toast::ToastAction::FindPeople(sequence))
+}
+
+/// What a "Find people now" waiting on the detection model does next.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum FindPeopleNext {
+    /// The model is there: look through the files.
+    Run,
+    /// Its consent dialog or download is still going.
+    Wait,
+    /// Declined or failed: nothing to look with.
+    Drop,
+}
+
+/// Given whether the model is there and where its download stands.
+pub(super) fn find_people_next(model_ready: bool, download: &crate::model_download::ModelDownloadState) -> FindPeopleNext {
+    use crate::model_download::ModelDownloadState as D;
+    match download {
+        _ if model_ready => FindPeopleNext::Run,
+        D::Consenting { .. } | D::Downloading { .. } | D::Completed { .. } => FindPeopleNext::Wait,
+        D::Idle | D::Failed { .. } => FindPeopleNext::Drop,
+    }
+}
+
+/// Whether the detection model is downloaded.
+fn people_model_ready() -> bool {
+    klipp_analysis::framing::model_path().is_some()
+}
+
 impl KlippApp {
+    /// "Find people now" from a refit's toast: the detection model asked
+    /// for (its consent dialog) when it is not downloaded, then the
+    /// sequence's files looked through for people, subject detection off
+    /// or not, and the sequence refit when that is done, as one step.
+    pub(super) fn find_people_now(&mut self, sequence: klipp_core::SequenceId) {
+        self.state.find_people = Some(sequence);
+        if !people_model_ready() {
+            self.request_model_download(klipp_analysis::framing::MODEL_ID);
+        }
+        self.advance_find_people();
+    }
+
+    /// A "Find people now" taken on once its model is there.
+    pub(super) fn advance_find_people(&mut self) {
+        let Some(id) = self.state.find_people else { return };
+        match find_people_next(people_model_ready(), &self.state.model_download) {
+            FindPeopleNext::Wait => {}
+            FindPeopleNext::Drop => {
+                self.state.find_people = None;
+                self.state.toast.show("People not looked for: the detection model is not downloaded");
+            }
+            FindPeopleNext::Run => {
+                self.state.find_people = None;
+                let Some(seq) = self.state.sequences.iter_mut().find(|s| s.id == id) else { return };
+                let waiting = framing_of_pictures(seq, &self.state.media_pool, klipp_analysis::service::request_framing);
+                seq.awaiting_refit = true;
+                let name = seq.name.clone();
+                self.state.pending_refits.retain(|p| p.sequence != id);
+                self.state.toast.show(format!("{name}: finding the people in {} file{}; it is refit when that is done", waiting.len(), if waiting.len() == 1 { "" } else { "s" }));
+                self.state.pending_refits.push(crate::state::PendingRefit { sequence: id, waiting, keep: Vec::new() });
+            }
+        }
+    }
+
     /// Reframe each aspect version whose files are analysed, once it is
     /// the sequence open; one whose sequence was deleted is let go.
     pub(super) fn advance_refits(&mut self) {
@@ -380,6 +454,30 @@ mod tests {
     /// #2724: a delivery exports 16:9 from the master itself, 9:16 from
     /// the version there is, and 1:1 from one made now; a version made
     /// before the master's cut changed is named, and kept as it is.
+    #[test]
+    fn a_refit_that_left_pictures_unanalysed_offers_to_find_people() {
+        use crate::widgets::toast::ToastAction;
+        let id = klipp_core::SequenceId::new();
+        let refit = [klipp_document::ops::Op::Refit { markers: true, punch: None, keep: Vec::new() }];
+        let said = format!("Refit: talk.mov: {}, so it stays centred", klipp_document::ops::NOT_ANALYSED_FOR_PEOPLE);
+        assert_eq!(find_people_offer(&refit, &[&said], id), Some(ToastAction::FindPeople(id)));
+        // No one found in an analysed picture is no reason to look again.
+        assert_eq!(find_people_offer(&refit, &["Refit: talk.mov: no one found in it"], id), None);
+        // Nor is another op's report, whatever it says.
+        let other: [klipp_document::ops::Op; 0] = [];
+        assert_eq!(find_people_offer(&other, &[&said], id), None);
+    }
+
+    #[test]
+    fn find_people_waits_for_the_model_and_lets_go_when_declined() {
+        use crate::model_download::ModelDownloadState as D;
+        assert_eq!(find_people_next(true, &D::Idle), FindPeopleNext::Run);
+        assert_eq!(find_people_next(false, &D::Failed { entry_label: "RF-DETR".into(), error: "offline".into() }), FindPeopleNext::Drop);
+        // The consent dialog closed without a download is a no.
+        assert_eq!(find_people_next(false, &D::Idle), FindPeopleNext::Drop);
+        assert_eq!(find_people_next(false, &D::Completed { entry_label: "RF-DETR".into(), path: "/m".into() }), FindPeopleNext::Wait);
+    }
+
     #[test]
     fn a_delivery_uses_the_master_its_versions_or_new_ones() {
         let mut state = crate::state::AppState::default();

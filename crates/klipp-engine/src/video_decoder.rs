@@ -459,6 +459,9 @@ pub enum DecodeCommand {
     /// the frames before the time too, as reading a source backward does
     /// (#3118).
     SeekFromKeyframe(f64, u64),
+    /// The frames the stream's reader holds besides the queue: the GPU
+    /// converters keep buffers for them too (#3221).
+    ReaderHolds(usize),
     Pause,
     Resume,
     Stop,
@@ -734,6 +737,14 @@ impl VideoDecoder {
 
     pub fn pause(&self) {
         let _ = self.decode_cmd_tx.send(DecodeCommand::Pause);
+    }
+
+    /// Say that the reader holds up to `frames` of this decoder's frames
+    /// besides its queue, as a reversed clip's window does: the frames'
+    /// GPU buffers are kept for it and handed out again, not made fresh
+    /// past the pool for every frame (#3221).
+    pub fn reader_holds(&self, frames: usize) {
+        let _ = self.decode_cmd_tx.send(DecodeCommand::ReaderHolds(frames));
     }
 
     /// Whether the decode thread ended with a panic (#3181): no frame
@@ -1749,6 +1760,10 @@ fn open_hardware_to_first_frame(path: &Path, try_cuvid: bool) -> Result<OpenedDe
 pub(crate) unsafe fn try_init_vaapi(codec_ctx_ptr: *mut ffmpeg_next::ffi::AVCodecContext) -> bool {
     use ffmpeg_next::ffi::*;
 
+    // Failed on every node once: it fails the same way at every open.
+    if klipp_core::GpuVendor::vaapi_unavailable() {
+        return false;
+    }
     let device_type = av_hwdevice_find_type_by_name(c"vaapi".as_ptr());
     if device_type == AVHWDeviceType::AV_HWDEVICE_TYPE_NONE {
         warn!("VAAPI: device type not found");
@@ -1779,7 +1794,9 @@ pub(crate) unsafe fn try_init_vaapi(codec_ctx_ptr: *mut ffmpeg_next::ffi::AVCode
         }
     }
 
-    warn!("Hardware decode: VAAPI init failed on every render node but NVIDIA's");
+    if klipp_core::GpuVendor::mark_vaapi_unavailable() {
+        info!("Hardware decode: no VAAPI connection on any render node but NVIDIA's; decoding in software, without trying VAAPI again this session");
+    }
     false
 }
 
@@ -2984,6 +3001,8 @@ fn decode_thread_main(
     // We must drain frames before retrying.
     let mut pending_packet: Option<ffmpeg_next::Packet> = None;
     let mut received_frame = ffmpeg_next::frame::Video::empty();
+    // Frames the reader holds besides the queue (`DecodeCommand::ReaderHolds`).
+    let mut reader_holds = 0usize;
 
     loop {
         #[cfg(any(test, feature = "test-hooks"))]
@@ -2993,6 +3012,14 @@ fn decode_thread_main(
         if stop_flag.load(std::sync::atomic::Ordering::Relaxed) {
             debug!("decode_thread: stop flag set, exiting");
             return;
+        }
+        // Each pass, as the 10-bit converter is made on the first frame
+        // that needs it.
+        if let Some(c) = gpu_nv12.as_mut() {
+            c.keep_resident_for(reader_holds);
+        }
+        if let Some(c) = gpu_p010.as_mut() {
+            c.keep_resident_for(reader_holds);
         }
 
         // Drain the entire pending queue first, coalescing
@@ -3016,6 +3043,7 @@ fn decode_thread_main(
                 DecodeCommand::SeekFromKeyframe(secs, epoch) => {
                     latest_seek = Some((secs, epoch, false, true));
                 }
+                DecodeCommand::ReaderHolds(n) => reader_holds = n,
                 DecodeCommand::Pause => paused = true,
                 DecodeCommand::Resume => {
                     paused = false;
@@ -3118,6 +3146,7 @@ fn decode_thread_main(
                         DecodeCommand::SeekFromKeyframe(secs, epoch) => {
                             latest_inner_seek = Some((secs, epoch, false, true));
                         }
+                        DecodeCommand::ReaderHolds(n) => reader_holds = n,
                         DecodeCommand::Pause => { paused = true; inner_break = true; break; }
                         DecodeCommand::Resume => { paused = false; eof_sent = false; }
                         DecodeCommand::Stop => { inner_return = true; break; }

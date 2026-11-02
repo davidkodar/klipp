@@ -15,6 +15,10 @@ fontdue = "0.9"
 # features. Pure Rust; both forbid unsafe code.
 harfrust = "=0.13.3"
 read-fonts = { version = "=0.43.3", default-features = false }
+# COLR v0 and v1 colour glyphs (#3238): their paint graphs walked, the
+# glyphs they clip to drawn as outlines. The release on read-fonts 0.43,
+# so it shares ours; MIT or Apache-2.0, forbids unsafe code.
+skrifa = { version = "=0.46.2", default-features = false, features = ["std"] }
 # A variable font's instance outlines and advances (#1504): fontdue
 # draws only a face's default instance. Already in the lockfile;
 # forbids unsafe code.

@@ -75,7 +75,7 @@ fn rich() -> Sequence {
     stencil.matte_stencil = Some(serde_json::from_value(json!({ "channel": "Alpha", "invert": false, "feather_px": 2.0, "choke_px": 0.0 })).unwrap());
 
     let mut music_clip = Clip::media(music, t(0.0), t(14.0), t(0.0), t(14.0));
-    music_clip.role = klipp_core::ClipRole::Music;
+    music_clip.role = klipp_core::roles::RoleRef::parse("music");
 
     let track = |name: &str, kind, clips: Vec<Clip>| {
         let mut tr = Track::new(name, kind);
