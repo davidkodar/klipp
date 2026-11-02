@@ -5,6 +5,14 @@ Each release lists what changed for people using Klipp. Versions follow
 
 ## Unreleased
 
+## 0.3.1 — 2026-11-02
+
+### Fixed
+
+- Hardware decoding on NVIDIA shares one CUDA context: each decoder used
+  to make its own, and with drawing ahead on, Klipp could hold enough GPU
+  memory and channels that other programs couldn't start on the GPU.
+
 ## 0.3.0 — 2026-11-02
 
 This release adds auditions, several takes in one clip slot; freezing and
