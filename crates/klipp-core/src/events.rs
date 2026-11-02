@@ -1213,6 +1213,15 @@ pub enum PreviewEntry {
     Generator(String),
 }
 
+/// What Collect Project copies (#3241), as `klipp_project`'s mode.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum CollectMode {
+    #[default]
+    All,
+    Used,
+    Trimmed { handle_secs: f64 },
+}
+
 #[derive(Debug, Clone)]
 pub enum AppCommand {
     /// A batch of graph ops on one picture, applied as one undo step named
@@ -1874,6 +1883,9 @@ pub enum AppCommand {
         /// After a successful zip, remove the consolidated folder. Ignored
         /// when `create_zip` is false.
         delete_folder_after_zip: bool,
+        /// What is copied (#3241): the whole pool, what the sequences use,
+        /// or that cut to what they use with handles.
+        mode: CollectMode,
     },
     /// Create a new empty subtitle clip at the given timeline position on
     /// the first Subtitle/Text track (creates a Subtitle track if none exists).

@@ -131,6 +131,22 @@ Arguments:
 
 Make proxies, light copies playback reads in place of heavy originals (4K, camera codecs), as the media pool's Generate Proxy does: for media_ids, or every picture file on the timeline when none are given; a file with its proxy made already is left be. It runs as a job of kind proxies: follow it with klipp_job_status (files done of all, the share transcoded); a failed file is named with why. use_proxies true has playback read a file's proxy where it has one, false the originals; export always reads the originals. klipp_status says which playback reads, and how many files on the timeline have a proxy.
 
+## klipp_collect_project
+
+Collect Project: the open project copied, with what it uses, into a folder that stands on its own, to hand on or archive.
+
+- `dry_run: true`: what a collect would copy (`files`, `bytes`, `trimmed`, the media `left_out` as unused and the `offline`), and `cannot_carry`: each thing a folder can't hold, with where the project uses it (`used_in`). That covers outside audio and picture plug-ins (LV2, CLAP, LADSPA, frei0r, OFX) with their name, version and file as this machine has them, models fetched on request, offline media, and fonts whose licence or absence keeps them out. Nothing is written. Tell the person what the other machine will need.
+- `dest`: an absolute path that doesn't exist yet. The app collects there in the background (`started`). `mode` is `all` (the whole pool, the default), `used` (what the sequences use) or `trimmed` (that, cut to what is used, with `handle_secs` of handles, 1 by default); `proxies: true` copies ready proxies too. What it copies:
+  - the media;
+  - the files titles draw;
+  - the timeline, input and viewing LUTs;
+  - grade files, Looks and stills;
+  - the titles' fonts where their licence allows;
+  - each file's analysis results.
+
+  It then checks the copy and writes `collect_manifest.json` beside it.
+- `verify`: a collected folder, by absolute path, checked on its own paths. Every file it refers to must resolve inside it on its canonical path; an original still reachable elsewhere doesn't count. It is also checked against its manifest for files changed since. `verified`, `failures` and `changed_since_collected` say how it stands. Use it after a collect has finished, and before handing a folder on.
+
 ## klipp_save_project
 
 Save the project: to an absolute path (a folder ending in .klipp, made if needed), or where it was last saved when no path is given. Save before a long piece of work and when you are done, so the user can carry on by hand. klipp_status says where the project is saved and whether it has unsaved changes.

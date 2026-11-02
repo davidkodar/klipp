@@ -1349,6 +1349,15 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             "detail": args.get("detail").and_then(|v| v.as_bool()).unwrap_or(false),
         }),
         "klipp_reuse_report" => json!({ "method": "reuse_report" }),
+        "klipp_collect_project" => {
+            let mut v = json!({ "method": "collect_project" });
+            for key in ["dest", "mode", "handle_secs", "proxies", "dry_run", "verify"] {
+                if let Some(x) = args.get(key) {
+                    v[key] = x.clone();
+                }
+            }
+            v
+        }
         "klipp_check" => json!({ "method": "check", "color": args.get("color").and_then(|v| v.as_bool()).unwrap_or(false), "loudness": args.get("loudness").and_then(|v| v.as_bool()).unwrap_or(false), "min_severity": args.get("min_severity").and_then(|v| v.as_str()) }),
         "klipp_spelling" => {
             let mut v = json!({ "method": "spelling", "action": args.get("action").and_then(Value::as_str).unwrap_or("list") });
@@ -2642,6 +2651,9 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
         tool("klipp_build_edit_plan",
              "Build the approved edit plan onto the timeline: a dry run unless apply is true, then one undo step. Details: klipp_guide topic build_edit_plan.",
              json!({ "apply": { "type": "boolean" }, "detail": { "type": "boolean" } }), vec![]),
+        tool("klipp_collect_project",
+             "Collect Project: dry_run says what it copies and can't carry; dest collects; verify checks a collected folder. Details: klipp_guide topic collect_project.",
+             json!({ "dest": { "type": "string" }, "mode": { "type": "string", "enum": ["all", "used", "trimmed"] }, "handle_secs": { "type": "number" }, "proxies": { "type": "boolean" }, "dry_run": { "type": "boolean" }, "verify": { "type": "string" } }), vec![]),
         tool("klipp_reuse_report",
              "Where the timeline uses the same footage twice, or two files that look the same. Details: klipp_guide topic reuse_report.",
              json!({}), vec![]),

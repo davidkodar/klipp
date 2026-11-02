@@ -5146,6 +5146,75 @@ fn files_that_look_the_same_are_reported_and_checked() {
     assert!(checked.contains(&"looks_same".to_string()) && !checked.iter().any(|r| r == "reused_footage" || r == "looks_same_unchecked"), "{checked:?}");
 }
 
+/// #3241: `collect_project`. A dry run says what it copies and what it
+/// can't carry with where it's used (an outside plug-in not installed
+/// here, an offline file); a collect asks the app with its mode; a
+/// collected folder verifies, and one changed since doesn't; a relative
+/// or existing destination, an unknown mode and handles out of range are
+/// refused before anything is asked.
+#[test]
+fn a_project_is_collected_dry_run_first_and_verified_after() {
+    let mut h = harness();
+    let base = std::env::temp_dir().join(format!("klipp-collect-socket-{}", klipp_core::MediaId::new().0));
+    std::fs::create_dir_all(&base).unwrap();
+    let id = klipp_core::MediaId::new();
+    let mut item = klipp_media::MediaItem::synthetic_for_test(base.join("gone.mov"), None);
+    (item.id, item.offline) = (id, true);
+    h.media_pool.write().unwrap().add(item);
+    let tc = |f: i64| klipp_core::RationalTime::from_frames(f, 24);
+    let mut seq = (*h.sequence.snapshot()).clone();
+    let mut clip = klipp_timeline::Clip::media(id, tc(0), tc(24), tc(0), tc(24));
+    clip.name = Some("Interview".into());
+    clip.audio_effects = vec![klipp_core::AudioEffectInstance { effect_type: "lv2:urn:example:nowhere".into(), enabled: true, wet_dry: 1.0, params: Vec::new() }];
+    seq.tracks[0].clips = vec![clip];
+    h.sequence.replace(seq);
+
+    let dry = h.ok(json!({ "method": "collect_project", "dry_run": true, "mode": "used" }));
+    let needs = dry["cannot_carry"].as_array().unwrap();
+    let need = |kind: &str| needs.iter().find(|d| d["need"] == kind).cloned().unwrap_or_else(|| panic!("{kind}: {dry}"));
+    assert_eq!((need("audio_plugin")["id"].as_str(), need("audio_plugin")["detail"].as_str()), (Some("lv2:urn:example:nowhere"), Some("not installed here")));
+    assert!(need("offline_media")["used_in"][0].as_str().unwrap().ends_with("clip Interview"), "{dry}");
+    assert_eq!(dry["offline"].as_array().map(Vec::len), Some(1), "{dry}");
+
+    let dest = base.join("collected");
+    h.ok(json!({ "method": "collect_project", "dest": dest, "mode": "trimmed", "handle_secs": 2.0 }));
+    let asked: Vec<_> = h.sent.lock().unwrap().iter().filter_map(|c| match c {
+        klipp_core::AppCommand::ConsolidateProject { dest_dir, mode, .. } => Some((dest_dir.clone(), *mode)),
+        _ => None,
+    }).collect();
+    assert_eq!(asked, vec![(dest.clone(), klipp_core::CollectMode::Trimmed { handle_secs: 2.0 })]);
+    for (req, says) in [
+        (json!({ "method": "collect_project", "dest": "relative/x" }), "absolute"),
+        (json!({ "method": "collect_project", "dest": base }), "exists already"),
+        (json!({ "method": "collect_project", "dest": dest, "mode": "some" }), "all, used or trimmed"),
+        (json!({ "method": "collect_project", "dest": dest, "mode": "trimmed", "handle_secs": 99.0 }), "0 to 60"),
+        (json!({ "method": "collect_project" }), "give dest"),
+    ] {
+        let r = h.call(req.clone());
+        assert!(r["error"].as_str().unwrap_or("").contains(says), "{req}: {r}");
+    }
+    assert_eq!(h.sent.lock().unwrap().iter().filter(|c| matches!(c, klipp_core::AppCommand::ConsolidateProject { .. })).count(), 1, "nothing asked for a refusal");
+
+    // A folder a collect made, checked; then a file in it changed.
+    let (source, folder) = (base.join("source.klipp"), base.join("handed_on"));
+    std::fs::create_dir_all(&source).unwrap();
+    let take = base.join("take.mov");
+    std::fs::write(&take, b"picture").unwrap();
+    let mut pool = klipp_media::MediaPool::new();
+    pool.add(klipp_media::MediaItem::synthetic_for_test(take, None));
+    let seqs = [klipp_timeline::Sequence::new_default()];
+    klipp_project::save_project_with_color(&source, &seqs, &pool, &Default::default(), None, None, "").unwrap();
+    let options = klipp_project::consolidate::ConsolidateOptions { dest_dir: folder.clone(), include_proxies: false, include_skims: false, mode: Default::default(), looks: Vec::new(), fonts: Vec::new() };
+    klipp_project::consolidate::consolidate_project(&source, &pool, &seqs, &Default::default(), options, None).unwrap();
+    let checked = h.ok(json!({ "method": "collect_project", "verify": folder }));
+    assert_eq!((checked["verified"].as_bool(), checked["failures"].as_array().map(Vec::len)), (Some(true), Some(0)), "{checked}");
+    std::fs::write(folder.join("media/take.mov"), b"changed").unwrap();
+    let checked = h.ok(json!({ "method": "collect_project", "verify": folder }));
+    assert_eq!(checked["verified"], false, "{checked}");
+    assert!(checked["changed_since_collected"][0].as_str().unwrap().contains("changed since it was collected"), "{checked}");
+    let _ = std::fs::remove_dir_all(&base);
+}
+
 /// #3264: `bounce_track` asks the app to bounce a track named by index
 /// or name, ProRes 4444 with its sound unless told otherwise; a format
 /// that is none, a track that isn't there, and one that can't be bounced

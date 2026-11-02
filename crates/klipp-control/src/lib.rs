@@ -977,6 +977,7 @@ fn handle(
             | ControlCommand::ApplyBrandKit { .. }
             | ControlCommand::Check { .. }
             | ControlCommand::ReuseReport
+            | ControlCommand::CollectProject { .. }
             | ControlCommand::Spelling { .. }
             | ControlCommand::ReviewFinding { .. }
             | ControlCommand::Batch { .. }
