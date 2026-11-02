@@ -3473,7 +3473,7 @@ fn list_clips_reads_the_sound_back() {
     sound.linked_clip_id = Some(picture.id);
     picture.volume = 10f32.powf(-14.0 / 20.0);
     picture.fade_out_secs = 0.5;
-    picture.role = klipp_core::ClipRole::Ambience;
+    picture.role = klipp_core::roles::RoleRef::parse("effects.ambience");
     picture.audio_effects = vec![klipp_core::AudioEffectInstance { effect_type: "denoiser".into(), enabled: true, wet_dry: 1.0, params: vec![("wind".into(), 1.0)] }];
     let sound_id = sound.id;
     {
@@ -3489,7 +3489,7 @@ fn list_clips_reads_the_sound_back() {
     let r = h.ok(json!({ "method": "list_clips" }));
     let clip = r["tracks"].as_array().unwrap().iter().flat_map(|t| t["clips"].as_array().unwrap().iter()).find(|c| c["clip_id"] == sound_id.0.to_string()).unwrap_or_else(|| panic!("{r}")).clone();
     let s = &clip["sound"];
-    assert_eq!((s["volume_db"].as_f64(), s["fade_out_secs"].as_f64(), s["role"].as_str()), (Some(-14.0), Some(0.5), Some("ambience")), "{clip}");
+    assert_eq!((s["volume_db"].as_f64(), s["fade_out_secs"].as_f64(), s["role"].as_str()), (Some(-14.0), Some(0.5), Some("effects.ambience")), "{clip}");
     assert_eq!(s["effects"], json!(["denoiser"]));
 }
 
@@ -3568,7 +3568,7 @@ fn audio_spectrum_does_not_judge_music_by_the_dialogue_rules() {
     {
         let fps = h.sequence.read().unwrap().fps;
         let mut clip = klipp_timeline::Clip::media(media, klipp_core::Timecode::from_secs_f64(0.0, fps.num), klipp_core::Timecode::from_secs_f64(20.0, fps.num), klipp_core::Timecode::from_secs_f64(0.0, fps.num), klipp_core::Timecode::from_secs_f64(20.0, fps.num));
-        clip.role = klipp_core::ClipRole::Music;
+        clip.role = Some(klipp_core::roles::RoleRef::of("music"));
         let mut seq = h.sequence.write().unwrap();
         if !seq.tracks.iter().any(|t| t.kind == klipp_timeline::TrackKind::Audio) {
             seq.tracks.push(klipp_timeline::Track::new("A1", klipp_timeline::TrackKind::Audio));
@@ -3712,7 +3712,7 @@ fn check_warns_on_a_section_well_under_the_rest() {
     let time = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 30);
     let bed = |fade_out: f32| {
         let mut c = klipp_timeline::Clip::media(media, time(0.0), time(20.0), time(0.0), time(20.0));
-        c.role = klipp_core::ClipRole::Music;
+        c.role = Some(klipp_core::roles::RoleRef::of("music"));
         c.fade_out_secs = fade_out;
         let mut track = klipp_timeline::Track::new("A1", klipp_timeline::TrackKind::Audio);
         track.clips = vec![c];
