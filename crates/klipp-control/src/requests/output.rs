@@ -1583,12 +1583,12 @@ fn covers(ctx: &ControlContext, named: Option<&str>, path: Option<&str>, propose
 }
 
 /// How the project draws its pictures, as the export renderer is told.
-fn look(ctx: &ControlContext) -> klipp_render::cover::Look {
+pub(super) fn look(ctx: &ControlContext) -> klipp_render::cover::Look {
     klipp_render::cover::Look { lut: ctx.shared.project.lock().recovered().viewer_lut.clone(), working: klipp_engine::video_decoder::working_colorspace(), grade_encoding: klipp_core::grade_encoding() }
 }
 
 /// The open sequence and the project's others.
-fn sequences(ctx: &ControlContext) -> Result<(klipp_timeline::Sequence, Vec<klipp_timeline::Sequence>), String> {
+pub(super) fn sequences(ctx: &ControlContext) -> Result<(klipp_timeline::Sequence, Vec<klipp_timeline::Sequence>), String> {
     let seq: klipp_timeline::Sequence = (*ctx.sequence.read().map_err(|_| "sequence lock poisoned")?).clone();
     let all = ctx.others.read().recovered().iter().map(|s| (*s.sequence).clone()).collect();
     Ok((seq, all))

@@ -464,6 +464,68 @@ pub fn legibility(title: &TitleToRead, picture: &[u8], width: usize, height: usi
     })
 }
 
+/// How wide a phone's feed shows a cover, in pixels: what its words are
+/// read at (#3311).
+pub const PHONE_FEED_W: u32 = 320;
+
+/// The least cap height a cover's words have at [`PHONE_FEED_W`], in
+/// pixels, to be read at a glance.
+pub const SMALLEST_CAP_PX: f32 = 9.0;
+
+/// A typeface's capitals as a share of its size.
+const CAP_SHARE: f32 = 0.7;
+
+/// The cap height of `cover`'s smallest words when it is shown
+/// [`PHONE_FEED_W`] wide, in pixels, with their size in points; `None`
+/// for a cover without words or of a size Klipp hasn't.
+pub fn cap_at_phone(cover: &klipp_timeline::cover::Cover) -> Option<(f32, f32)> {
+    let size = klipp_core::cover_sizes::by_id(&cover.size)?;
+    let points = cover
+        .text
+        .as_ref()?
+        .objects
+        .iter()
+        .filter(|o| o.visible)
+        .filter_map(|o| match &o.content {
+            klipp_timeline::TitleObjectContent::TextBox(tb) if !tb.text.trim().is_empty() => Some(tb.font_size),
+            _ => None,
+        })
+        .min_by(f32::total_cmp)?;
+    let pixels = points * klipp_core::title_motion::frame_scale(size.width as f32, size.height as f32);
+    Some((CAP_SHARE * pixels * PHONE_FEED_W as f32 / size.width as f32, points))
+}
+
+/// What makes `cover` hard to read on a phone (#3311): words whose
+/// capitals are under [`SMALLEST_CAP_PX`] at a feed's width, and words
+/// with too little contrast with `picture`, the cover drawn without them
+/// at that width (RGBA8, width, height; none for words on a backing).
+/// Warnings, never errors: a cover is still written.
+pub fn cover_readability(cover: &klipp_timeline::cover::Cover, picture: Option<(&[u8], usize, usize)>) -> Vec<Finding> {
+    let Some(td) = cover.text.as_ref() else { return Vec::new() };
+    let name = if cover.name.is_empty() { format!("the cover at {:.2} s", cover.at_secs) } else { format!("cover \u{201c}{}\u{201d}", cover.name) };
+    let mut found = Vec::new();
+    if let Some((cap, points)) = cap_at_phone(cover).filter(|(cap, _)| *cap < SMALLEST_CAP_PX) {
+        found.push(Finding {
+            severity: Severity::Warning,
+            rule: "cover_words_small",
+            at_secs: Some(cover.at_secs),
+            what: format!("{name}'s words are {cap:.1} px tall on a phone's feed, under the {SMALLEST_CAP_PX:.0} px they are read at"),
+            hint: format!("Make them size {:.0} or more, with fewer words if they don't fit", (points * SMALLEST_CAP_PX / cap).ceil()),
+        });
+    }
+    let size = klipp_core::cover_sizes::by_id(&cover.size);
+    let rect = size.and_then(|s| crate::ops::title_box(td, klipp_core::Resolution { width: s.width, height: s.height }));
+    if let (Some((rgba, w, h)), Some(tb), Some(rect)) = (picture, td.primary_text(), rect) {
+        let helped = td.objects.iter().filter(|o| o.visible).map(|o| o.fx()).any(|fx| fx.shadows.iter().any(|s| s.enabled && s.color[3] >= 96) || fx.outlines.iter().any(|o| o.enabled));
+        let read = TitleToRead { label: name, at_secs: cover.at_secs, under: klipp_core::ClipId::nil(), rect, fill: tb.color, helped };
+        if let Some(mut f) = legibility(&read, rgba, w, h) {
+            f.rule = "cover_hard_to_read";
+            found.push(f);
+        }
+    }
+    found
+}
+
 /// Check `seq` against its brief and the craft's rules.
 pub fn check(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts) -> Report {
     let mut f: Vec<Finding> = Vec::new();
@@ -1077,6 +1139,28 @@ fn shown_pieces(seq: &Sequence, c: &Clip) -> Vec<(f64, f64, f64, f64)> {
 
 #[cfg(test)]
 mod tests {
+    /// #3311: a cover's words are measured at a phone feed's width: 120
+    /// points on a 1280×720 cover read, 50 don't, and the finding says
+    /// the size to give them; a vertical cover's short side sets the
+    /// scale; no words, nothing to measure.
+    #[test]
+    fn a_covers_words_are_measured_at_a_phones_width() {
+        let words = |points: f32| klipp_timeline::TitleData::single_text(klipp_timeline::TextBox { text: "Big".into(), font_size: points, ..Default::default() });
+        let mut c = klipp_timeline::cover::Cover { id: klipp_core::CoverId::new(), name: String::new(), at_secs: 1.0, size: "youtube".into(), crop: Default::default(), text: Some(words(120.0)), with_titles: false };
+        let (cap, points) = cap_at_phone(&c).unwrap();
+        assert!((cap - 0.7 * 120.0 * (720.0 / 1080.0) * 0.25).abs() < 1e-3 && points == 120.0, "{cap}");
+        assert!(cap >= SMALLEST_CAP_PX);
+        c.text = Some(words(50.0));
+        assert!(cap_at_phone(&c).unwrap().0 < SMALLEST_CAP_PX);
+        let found = cover_readability(&c, None);
+        assert_eq!(found.iter().map(|f| f.rule).collect::<Vec<_>>(), vec!["cover_words_small"]);
+        assert!(found[0].hint.contains("size 78"), "{}", found[0].hint);
+        c.size = "vertical".into();
+        let (tall, _) = cap_at_phone(&c).unwrap();
+        assert!((tall - 0.7 * 50.0 * (1080.0 / 1080.0) * (320.0 / 1080.0)).abs() < 1e-3, "{tall}");
+        c.text = None;
+        assert!(cap_at_phone(&c).is_none());
+    }
 
     /// A global LUT that is not on disk is an error `check` names; one
     /// that is there, or none at all, is nothing (#1019).

@@ -54,4 +54,17 @@ fn a_cover_is_its_frame_cropped_with_its_words() {
     assert_eq!(both[0].as_ref().unwrap(), &worded, "the first of two is the one drawn alone");
     let [r, g, b] = px(&worded, 4, 4);
     assert!(r < 30 && g < 30 && b > 220, "the bar still under them: {:?}", [r, g, b]);
+
+    // Read on a phone: white words over the blue bar read, over the
+    // white bar they don't; at 120 points they are big enough.
+    let look = cover::Look { lut: None, working: WorkingColorspace::Rec709Linear, grade_encoding: GradeEncoding::Bt1886 };
+    let pool = klipp_media::MediaPool::new();
+    let rules = |c: &Cover| {
+        let under = cover::under_words(&seq, std::slice::from_ref(&seq), &pool, &look, c, klipp_document::qc::PHONE_FEED_W).unwrap().expect("words to read");
+        klipp_document::qc::cover_readability(c, Some((&under.rgba, under.width as usize, under.height as usize))).iter().map(|f| f.rule).collect::<Vec<_>>()
+    };
+    assert!(rules(&cover).is_empty(), "{:?}", rules(&cover));
+    let mut on_white = cover.clone();
+    on_white.crop.x = 0.5 / 7.0;
+    assert_eq!(rules(&on_white), vec!["cover_hard_to_read"]);
 }

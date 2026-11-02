@@ -599,6 +599,29 @@ pub(crate) fn respond(
                     }),
                 }
             }
+            // Each cover's words as a phone shows them (#3311): their
+            // size, and their contrast with the picture under them.
+            let (cover_seq, others) = super::output::sequences(ctx)?;
+            if !cover_seq.covers.is_empty() {
+                let pool = ctx.media_pool.read().recovered().clone();
+                let look = super::output::look(ctx);
+                for c in &cover_seq.covers {
+                    match klipp_render::cover::under_words(&cover_seq, &others, &pool, &look, c, klipp_document::qc::PHONE_FEED_W) {
+                        Ok(under) => {
+                            let found = klipp_document::qc::cover_readability(c, under.as_ref().map(|s| (&s.rgba[..], s.width as usize, s.height as usize)));
+                            report.warnings += found.iter().filter(|f| f.severity == klipp_document::qc::Severity::Warning).count();
+                            report.findings.extend(found);
+                        }
+                        Err(e) => report.findings.push(klipp_document::qc::Finding {
+                            severity: klipp_document::qc::Severity::Note,
+                            rule: "cover_hard_to_read",
+                            at_secs: Some(c.at_secs),
+                            what: format!("a cover's words weren't read against its picture ({e})"),
+                            hint: "Look at the cover at a phone's size".into(),
+                        }),
+                    }
+                }
+            }
             // Every shot read in Lab against the brief's look (or the
             // neutral one, or the screen recording's), faces and all.
             // (severity, secs, what, hint, id): the id names the finding for
