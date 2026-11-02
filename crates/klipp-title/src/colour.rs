@@ -13,12 +13,11 @@
 //! shadows and glows go round it as round a letter; the face draws its
 //! colours where the text fill would draw.
 //!
-//! COLR v0 glyphs are drawn too (`colr.rs`): each at a size from a
-//! ladder of sizes at or above the one asked for, made a strike, and
+//! COLR v0 and v1 glyphs are drawn too (`colr.rs`): each at a size from
+//! a ladder of sizes at or above the one asked for, made a strike, and
 //! scaled to the size as a bitmap strike is. The text's own colour in a
-//! COLR glyph (palette index 0xFFFF) is black for now, as FreeType draws
-//! it by default. COLR v1 glyphs are not drawn yet: a font with only them
-//! draws its outlines, where it has any, in the text colour.
+//! COLR glyph (palette index 0xFFFF) is black for now, as FreeType and
+//! Skia draw it by default.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -93,7 +92,7 @@ impl ColourFormat {
 
     /// Whether Klipp draws this kind yet.
     fn drawn(self) -> bool {
-        matches!(self, Self::ColrV0 | Self::Sbix | Self::Cbdt)
+        matches!(self, Self::ColrV1 | Self::ColrV0 | Self::Sbix | Self::Cbdt)
     }
 }
 
@@ -156,8 +155,12 @@ impl ColourBitmaps {
         let strike = if let Some(s) = strikes.get(&(gid, index)) {
             Arc::clone(s)
         } else {
-            if let ColourFormat::ColrV0 = self.format {
-                let drawn = crate::colr::draw(data, gid, f32::from(ppem), skrifa::color::ColorGlyphFormat::ColrV0, COLR_FOREGROUND)?;
+            if let Some(colr) = match self.format {
+                ColourFormat::ColrV1 => Some(skrifa::color::ColorGlyphFormat::ColrV1),
+                ColourFormat::ColrV0 => Some(skrifa::color::ColorGlyphFormat::ColrV0),
+                ColourFormat::Sbix | ColourFormat::Cbdt => None,
+            } {
+                let drawn = crate::colr::draw(data, gid, f32::from(ppem), colr, COLR_FOREGROUND)?;
                 let strike = Arc::new(ColourStrike { index, width: drawn.width, height: drawn.height, bearing: [drawn.left, drawn.top], rgba: Arc::new(drawn.rgba) });
                 keep_strike(&mut strikes, (gid, index), &strike);
                 return Some(scaled(strike, px, ppem));
@@ -381,11 +384,26 @@ mod tests {
             let drawn = colr.glyph(&data, cmap('A'), px).unwrap();
             let golden = std::fs::read(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("tests/goldens/KlippTestColrV0-A-{px}.rgba"))).unwrap();
             let top = (source.ymin + source.height as f32) as i32;
-            let (worst, mean) = crate::colr::tests::against_golden(drawn.width, drawn.height, source.xmin as i32, top, &drawn.rgba, &golden);
+            let (worst, mean, _) = crate::colr::tests::against_golden(drawn.width, drawn.height, source.xmin as i32, top, &drawn.rgba, &golden);
             eprintln!("COLR v0 through the strike path at {px} px: worst {worst}, mean {mean:.3}");
             assert!(mean < 6.0, "at {px} px: mean {mean:.3} levels from FreeType");
         }
         assert!(colr.source(&data, cmap('B'), 48.0).is_none(), "no colour layers, an outline");
+    }
+
+    /// A COLR v1 font draws its paint graphs through the strike path: a
+    /// gradient glyph comes out in its gradient's colours.
+    #[test]
+    fn a_colr_v1_glyph_is_a_colour_glyph() {
+        let data = font("test_glyphs-glyf_colr_1.ttf");
+        assert_eq!(format_of(&data), Some(ColourFormat::ColrV1));
+        let colr = ColourBitmaps::of(&data).unwrap();
+        let index: serde_json::Value = serde_json::from_slice(&std::fs::read(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/goldens/colrv1/origins.json")).unwrap()).unwrap();
+        let code = index["origins"]["sweep_0_360_pad_narrow"][2].as_u64().unwrap() as u32;
+        let gid = FontRef::from_index(&data, 0).unwrap().cmap().unwrap().map_codepoint(code).unwrap().to_u32() as u16;
+        let drawn = colr.glyph(&data, gid, 64.0).unwrap();
+        let hues: std::collections::BTreeSet<u8> = drawn.rgba.chunks_exact(4).filter(|p| p[3] > 200).map(|p| (p[0] / 64) * 16 + (p[1] / 64) * 4 + p[2] / 64).collect();
+        assert!(hues.len() >= 4, "a sweep of several colours, not one: {hues:?}");
     }
 
     /// A glyph the strike has no bitmap for, the font's `.notdef`, is no

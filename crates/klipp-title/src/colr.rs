@@ -7,9 +7,10 @@
 //! outline of the glyph it names, filled with its palette colour (the
 //! text's own for palette index 0xFFFF) and laid over the layers below,
 //! in sRGB as FreeType and the browsers blend them. COLR v1's gradients
-//! and its other composite modes are not drawn yet: a fill with one of
-//! them, and a layer merged by a mode other than source over, draw as if
-//! absent.
+//! (linear, two-point radial and sweep, padded, repeated or reflected,
+//! their stops blended premultiplied) and its 28 composite modes (the
+//! Porter-Duff operators and the W3C blend modes) are drawn as Skia draws
+//! them.
 
 use skrifa::color::{Brush, ColorGlyphFormat, ColorPainter, CompositeMode, Transform};
 use skrifa::instance::{LocationRef, Size};
@@ -47,7 +48,10 @@ pub(crate) fn draw(data: &[u8], gid: u16, px: f32, format: ColorGlyphFormat, for
         return None;
     }
     let font = FontRef::from_index(data, 0).ok()?;
-    let glyph = font.color_glyphs().get_with_format(GlyphId::new(gid.into()), format)?;
+    let glyphs = font.color_glyphs();
+    let id = GlyphId::new(gid.into());
+    // A COLR v1 font may keep some glyphs in its version 0 list.
+    let glyph = glyphs.get_with_format(id, format).or_else(|| matches!(format, ColorGlyphFormat::ColrV1).then(|| glyphs.get_with_format(id, ColorGlyphFormat::ColrV0)).flatten())?;
     let upem = font.head().ok()?.units_per_em();
     let scale = px / f32::from(upem.max(1));
     let location = LocationRef::default();
@@ -347,7 +351,7 @@ impl ColorPainter for Canvas<'_> {
 
     fn push_clip_box(&mut self, clip_box: BoundingBox<f32>) {
         let place = self.place();
-        let contour = box_contour(&clip_box, &self.top_transform()).into_iter().map(|(x, y)| place(x, y)).collect();
+        let contour: Vec<(f32, f32)> = box_contour(&clip_box, &self.top_transform()).into_iter().map(|(x, y)| place(x, y)).collect();
         self.push_mask(Some(vec![contour]));
     }
 
@@ -358,12 +362,40 @@ impl ColorPainter for Canvas<'_> {
     }
 
     fn fill(&mut self, brush: Brush<'_>) {
-        let Brush::Solid { palette_index, alpha } = brush else { return };
-        let src = self.colour(palette_index, alpha);
+        let paint = match brush {
+            Brush::Solid { palette_index, alpha } => Paint::Solid(self.colour(palette_index, alpha)),
+            Brush::LinearGradient { p0, p1, color_stops, extend } => match self.stops(color_stops) {
+                Some(stops) => Paint::Linear { p0: (p0.x, p0.y), p1: (p1.x, p1.y), stops, extend },
+                None => return,
+            },
+            Brush::RadialGradient { c0, r0, c1, r1, color_stops, extend } => match self.stops(color_stops) {
+                Some(stops) => Paint::Radial { c0: (c0.x, c0.y), r0, c1: (c1.x, c1.y), r1, stops, extend },
+                None => return,
+            },
+            Brush::SweepGradient { c0, start_angle, end_angle, color_stops, extend } => match self.stops(color_stops) {
+                Some(stops) => Paint::Sweep { c0: (c0.x, c0.y), start: start_angle, end: end_angle, stops, extend },
+                None => return,
+            },
+        };
+        // A pixel's centre back in the glyph's units, for a gradient.
+        let to_glyph = invert(&compose(&Transform { xx: self.scale, yx: 0.0, xy: 0.0, yy: -self.scale, dx: -(self.left as f32), dy: self.top as f32 }, &self.top_transform()));
+        let (width, mask) = (self.width, self.clips.last().cloned().flatten());
         let Some(layer) = self.layers.last_mut() else { return };
-        match self.clips.last() {
-            Some(Some(mask)) => layer.iter_mut().zip(mask).for_each(|(d, &m)| over(d, src.map(|v| v * m))),
-            _ => layer.iter_mut().for_each(|d| over(d, src)),
+        for (i, d) in layer.iter_mut().enumerate() {
+            let m = mask.as_ref().map_or(1.0, |m| m[i]);
+            if m <= 0.0 {
+                continue;
+            }
+            let src = match (&paint, to_glyph) {
+                (Paint::Solid(c), _) => *c,
+                (_, Some(t)) => {
+                    let (x, y) = apply(&t, (i % width) as f32 + 0.5, (i / width) as f32 + 0.5);
+                    paint.at(x, y)
+                }
+                // A transform that flattens the plane: nothing to show.
+                (_, None) => continue,
+            };
+            over(d, src.map(|v| v * m));
         }
     }
 
@@ -376,13 +408,231 @@ impl ColorPainter for Canvas<'_> {
             return;
         }
         let top = self.layers.pop().unwrap_or_default();
-        if composite_mode != CompositeMode::SrcOver {
-            return;
-        }
         if let Some(under) = self.layers.last_mut() {
-            under.iter_mut().zip(top).for_each(|(d, s)| over(d, s));
+            under.iter_mut().zip(top).for_each(|(d, s)| *d = composite(composite_mode, s, *d));
         }
     }
+}
+
+impl Canvas<'_> {
+    /// A gradient's stops in premultiplied colour, by offset; `None` for
+    /// none.
+    fn stops(&self, stops: &[skrifa::color::ColorStop]) -> Option<Vec<(f32, [f32; 4])>> {
+        let mut out: Vec<(f32, [f32; 4])> = stops.iter().map(|s| (s.offset, self.colour(s.palette_index, s.alpha))).collect();
+        out.sort_by(|a, b| a.0.total_cmp(&b.0));
+        (!out.is_empty()).then_some(out)
+    }
+}
+
+/// What a fill lays: a colour, or a gradient in the glyph's units.
+enum Paint {
+    Solid([f32; 4]),
+    Linear { p0: (f32, f32), p1: (f32, f32), stops: Vec<(f32, [f32; 4])>, extend: skrifa::color::Extend },
+    Radial { c0: (f32, f32), r0: f32, c1: (f32, f32), r1: f32, stops: Vec<(f32, [f32; 4])>, extend: skrifa::color::Extend },
+    Sweep { c0: (f32, f32), start: f32, end: f32, stops: Vec<(f32, [f32; 4])>, extend: skrifa::color::Extend },
+}
+
+impl Paint {
+    /// The colour, premultiplied, at `(x, y)` in the glyph's units.
+    fn at(&self, x: f32, y: f32) -> [f32; 4] {
+        match self {
+            Self::Solid(c) => *c,
+            Self::Linear { p0, p1, stops, extend } => {
+                let (dx, dy) = (p1.0 - p0.0, p1.1 - p0.1);
+                let len = dx * dx + dy * dy;
+                if len <= f32::EPSILON {
+                    return stops.last().map_or([0.0; 4], |s| s.1);
+                }
+                line_colour(stops, *extend, ((x - p0.0) * dx + (y - p0.1) * dy) / len)
+            }
+            Self::Radial { c0, r0, c1, r1, stops, extend } => match conical_t((x, y), *c0, *r0, *c1, *r1) {
+                Some(t) => line_colour(stops, *extend, t),
+                None => [0.0; 4],
+            },
+            Self::Sweep { c0, start, end, stops, extend } => {
+                // In the glyph's units y is up, so the angle counted
+                // anticlockwise there is the clockwise one skrifa gives
+                // for a canvas whose y runs down.
+                let angle = (-(y - c0.1)).atan2(x - c0.0).to_degrees().rem_euclid(360.0);
+                if (end - start).abs() <= f32::EPSILON {
+                    // Coincident angles: the first stop before, the last
+                    // after, padded; nothing between to blend.
+                    let first = stops.first().map_or([0.0; 4], |s| s.1);
+                    let last = stops.last().map_or([0.0; 4], |s| s.1);
+                    return match extend {
+                        skrifa::color::Extend::Pad => if angle < *start { first } else { last },
+                        _ => [0.0; 4],
+                    };
+                }
+                line_colour(stops, *extend, (angle - start) / (end - start))
+            }
+        }
+    }
+}
+
+/// The colour line `stops` at `t`, extended past its ends by `extend`.
+fn line_colour(stops: &[(f32, [f32; 4])], extend: skrifa::color::Extend, t: f32) -> [f32; 4] {
+    use skrifa::color::Extend;
+    let t = match extend {
+        Extend::Repeat => t - t.floor(),
+        Extend::Reflect => {
+            let u = t.rem_euclid(2.0);
+            if u > 1.0 { 2.0 - u } else { u }
+        }
+        _ => t.clamp(0.0, 1.0),
+    };
+    let Some(&(first_at, first)) = stops.first() else { return [0.0; 4] };
+    if t <= first_at {
+        return first;
+    }
+    for pair in stops.windows(2) {
+        let ((a, ca), (b, cb)) = (pair[0], pair[1]);
+        if t <= b {
+            let k = if b - a <= f32::EPSILON { 1.0 } else { (t - a) / (b - a) };
+            // Straight colours blended, then premultiplied, as Skia
+            // blends a COLR v1 colour line.
+            let un = |p: [f32; 4]| if p[3] > 0.0 { [p[0] / p[3], p[1] / p[3], p[2] / p[3], p[3]] } else { [0.0; 4] };
+            let (sa, sb) = (un(ca), un(cb));
+            let m: [f32; 4] = std::array::from_fn(|c| sa[c] + (sb[c] - sa[c]) * k);
+            return [m[0] * m[3], m[1] * m[3], m[2] * m[3], m[3]];
+        }
+    }
+    stops.last().map_or([0.0; 4], |s| s.1)
+}
+
+/// Where `p` lies on the two-point conical gradient from circle `c0`,
+/// `r0` to circle `c1`, `r1`: the largest `t` whose circle, of a radius
+/// not below zero, passes through it; `None` where none does.
+fn conical_t(p: (f32, f32), c0: (f32, f32), r0: f32, c1: (f32, f32), r1: f32) -> Option<f32> {
+    let (cdx, cdy, dr) = (c1.0 - c0.0, c1.1 - c0.1, r1 - r0);
+    let (pdx, pdy) = (p.0 - c0.0, p.1 - c0.1);
+    let a = cdx * cdx + cdy * cdy - dr * dr;
+    let b = pdx * cdx + pdy * cdy + r0 * dr;
+    let c = pdx * pdx + pdy * pdy - r0 * r0;
+    let valid = |t: f32| t.is_finite() && r0 + t * dr >= 0.0;
+    if a.abs() <= 1e-6 * (cdx * cdx + cdy * cdy + dr * dr).max(1.0) {
+        let t = c / (2.0 * b);
+        return valid(t).then_some(t);
+    }
+    let disc = b * b - a * c;
+    if disc < 0.0 {
+        return None;
+    }
+    let root = disc.sqrt();
+    let (t1, t2) = ((b + root) / a, (b - root) / a);
+    let (hi, lo) = if t1 > t2 { (t1, t2) } else { (t2, t1) };
+    if valid(hi) {
+        Some(hi)
+    } else if valid(lo) {
+        Some(lo)
+    } else {
+        None
+    }
+}
+
+/// `t`'s inverse; `None` for a transform that flattens the plane.
+fn invert(t: &Transform) -> Option<Transform> {
+    let det = t.xx * t.yy - t.xy * t.yx;
+    if det.abs() <= f32::EPSILON * 1e-3 || !det.is_finite() {
+        return None;
+    }
+    let (xx, xy, yx, yy) = (t.yy / det, -t.xy / det, -t.yx / det, t.xx / det);
+    Some(Transform { xx, yx, xy, yy, dx: -(xx * t.dx + xy * t.dy), dy: -(yx * t.dx + yy * t.dy) })
+}
+
+/// Layer `s` merged onto `d` by `mode`, both premultiplied: the
+/// Porter-Duff operators, and the W3C blend modes laid source over.
+fn composite(mode: CompositeMode, s: [f32; 4], d: [f32; 4]) -> [f32; 4] {
+    use CompositeMode as M;
+    let (sa, da) = (s[3], d[3]);
+    let pd = |fs: f32, fd: f32| -> [f32; 4] { std::array::from_fn(|c| (s[c] * fs + d[c] * fd).min(1.0)) };
+    match mode {
+        M::Clear => [0.0; 4],
+        M::Src => s,
+        M::Dest => d,
+        M::SrcOver => pd(1.0, 1.0 - sa),
+        M::DestOver => pd(1.0 - da, 1.0),
+        M::SrcIn => pd(da, 0.0),
+        M::DestIn => pd(0.0, sa),
+        M::SrcOut => pd(1.0 - da, 0.0),
+        M::DestOut => pd(0.0, 1.0 - sa),
+        M::SrcAtop => pd(da, 1.0 - sa),
+        M::DestAtop => pd(1.0 - da, sa),
+        M::Xor => pd(1.0 - da, 1.0 - sa),
+        M::Plus => pd(1.0, 1.0),
+        _ => {
+            // Straight colours for the blend, then the W3C formula: the
+            // blend where both are, each alone where only it is.
+            let un = |p: [f32; 4]| -> [f32; 3] { if p[3] > 0.0 { [p[0] / p[3], p[1] / p[3], p[2] / p[3]] } else { [0.0; 3] } };
+            let (cs, cb) = (un(s), un(d));
+            let b = blend(mode, cs, cb);
+            let mut out = [0.0; 4];
+            for c in 0..3 {
+                out[c] = (s[c] * (1.0 - da) + d[c] * (1.0 - sa) + sa * da * b[c]).clamp(0.0, 1.0);
+            }
+            out[3] = sa + da - sa * da;
+            out
+        }
+    }
+}
+
+/// The W3C blend `mode` of source `cs` over backdrop `cb`, straight
+/// colours 0 to 1.
+fn blend(mode: CompositeMode, cs: [f32; 3], cb: [f32; 3]) -> [f32; 3] {
+    use CompositeMode as M;
+    let each = |f: fn(f32, f32) -> f32| -> [f32; 3] { std::array::from_fn(|c| f(cs[c], cb[c])) };
+    let hard = |s: f32, b: f32| if s <= 0.5 { b * 2.0 * s } else { let s2 = 2.0 * s - 1.0; b + s2 - b * s2 };
+    match mode {
+        M::Screen => each(|s, b| s + b - s * b),
+        M::Overlay => each(|s, b| if b <= 0.5 { s * 2.0 * b } else { let b2 = 2.0 * b - 1.0; s + b2 - s * b2 }),
+        M::Darken => each(f32::min),
+        M::Lighten => each(f32::max),
+        M::ColorDodge => each(|s, b| if b <= 0.0 { 0.0 } else if s >= 1.0 { 1.0 } else { (b / (1.0 - s)).min(1.0) }),
+        M::ColorBurn => each(|s, b| if b >= 1.0 { 1.0 } else if s <= 0.0 { 0.0 } else { 1.0 - ((1.0 - b) / s).min(1.0) }),
+        M::HardLight => std::array::from_fn(|c| hard(cs[c], cb[c])),
+        M::SoftLight => each(|s, b| {
+            if s <= 0.5 {
+                b - (1.0 - 2.0 * s) * b * (1.0 - b)
+            } else {
+                let d = if b <= 0.25 { ((16.0 * b - 12.0) * b + 4.0) * b } else { b.sqrt() };
+                b + (2.0 * s - 1.0) * (d - b)
+            }
+        }),
+        M::Difference => each(|s, b| (s - b).abs()),
+        M::Exclusion => each(|s, b| s + b - 2.0 * s * b),
+        M::Multiply => each(|s, b| s * b),
+        M::HslHue => set_lum(set_sat(cs, sat(cb)), lum(cb)),
+        M::HslSaturation => set_lum(set_sat(cb, sat(cs)), lum(cb)),
+        M::HslColor => set_lum(cs, lum(cb)),
+        M::HslLuminosity => set_lum(cb, lum(cs)),
+        _ => cs,
+    }
+}
+
+fn lum(c: [f32; 3]) -> f32 {
+    0.3 * c[0] + 0.59 * c[1] + 0.11 * c[2]
+}
+
+fn sat(c: [f32; 3]) -> f32 {
+    c[0].max(c[1]).max(c[2]) - c[0].min(c[1]).min(c[2])
+}
+
+fn set_lum(c: [f32; 3], l: f32) -> [f32; 3] {
+    let d = l - lum(c);
+    let c = c.map(|v| v + d);
+    let (l, n, x) = (lum(c), c[0].min(c[1]).min(c[2]), c[0].max(c[1]).max(c[2]));
+    c.map(|v| {
+        let v = if n < 0.0 && l - n > f32::EPSILON { l + (v - l) * l / (l - n) } else { v };
+        if x > 1.0 && x - l > f32::EPSILON { l + (v - l) * (1.0 - l) / (x - l) } else { v }
+    })
+}
+
+fn set_sat(c: [f32; 3], s: f32) -> [f32; 3] {
+    let (max, min) = (c[0].max(c[1]).max(c[2]), c[0].min(c[1]).min(c[2]));
+    if max - min <= f32::EPSILON {
+        return [0.0; 3];
+    }
+    c.map(|v| (v - min) * s / (max - min))
 }
 
 /// `src` laid over `dst`, both premultiplied.
@@ -394,9 +644,38 @@ fn over(dst: &mut [f32; 4], src: [f32; 4]) {
 }
 
 /// The coverage, 0 to 1, of `contours` (raster pixels, y down) over a
-/// `width` x `height` raster, non-zero: each pixel's signed area
-/// accumulated along each edge, then summed along the raster.
+/// `width` x `height` raster, non-zero, taken on a finer grid (an eighth
+/// of a pixel each way for a small raster, a quarter or a half for a
+/// larger one) and averaged. Taken on whole pixels, two contours of
+/// opposite winding meeting inside a pixel cancelled there: a circle of
+/// four wedges, as COLR test fonts draw them, had cracks along its middle
+/// where Skia's has none.
 fn coverage(contours: &[Vec<(f32, f32)>], width: usize, height: usize) -> Vec<f32> {
+    let n = match width * height {
+        p if p <= 256 * 256 => 8,
+        p if p <= 512 * 512 => 4,
+        p if p <= 1024 * 1024 => 2,
+        _ => 1,
+    };
+    if n == 1 {
+        return row_coverage(contours, width, height);
+    }
+    let fine: Vec<Vec<(f32, f32)>> = contours.iter().map(|c| c.iter().map(|&(x, y)| (x * n as f32, y * n as f32)).collect()).collect();
+    let (fw, cells) = (width * n, (n * n) as f32);
+    let grid = row_coverage(&fine, fw, height * n);
+    let mut out = vec![0.0f32; width * height];
+    for (fy, row) in grid.chunks_exact(fw).enumerate() {
+        let line = &mut out[(fy / n) * width..(fy / n + 1) * width];
+        for (fx, v) in row.iter().enumerate() {
+            line[fx / n] += v / cells;
+        }
+    }
+    out
+}
+
+/// [`coverage`] on whole rows: each pixel's signed area accumulated along
+/// each edge, then summed along the raster.
+fn row_coverage(contours: &[Vec<(f32, f32)>], width: usize, height: usize) -> Vec<f32> {
     let mut acc = vec![0.0f32; width * height + width + 2];
     let w = width as f32;
     for contour in contours {
@@ -498,9 +777,10 @@ pub(crate) mod tests {
     }
 
     /// The worst and the mean difference, by channel of straight RGBA,
-    /// between a raster and a FreeType reference, each placed by its own
-    /// origin and nothing where either has no pixel.
-    pub(crate) fn against_golden(width: usize, height: usize, left: i32, top: i32, straight: &[u8], golden: &[u8]) -> (u8, f64) {
+    /// between a raster and a reference, each placed by its own origin
+    /// and nothing where either has no pixel, and the share of pixels off
+    /// by more than 64 levels in some channel.
+    pub(crate) fn against_golden(width: usize, height: usize, left: i32, top: i32, straight: &[u8], golden: &[u8]) -> (u8, f64, f64) {
         let head = |i: usize| i32::from_le_bytes(golden[i * 4..i * 4 + 4].try_into().unwrap());
         let (gw, gh, gl, gt) = (head(0) as usize, head(1) as usize, head(2), head(3));
         let gpx = &golden[16..];
@@ -514,21 +794,25 @@ pub(crate) mod tests {
         };
         let (x0, x1) = (left.min(gl), (left + width as i32).max(gl + gw as i32));
         let (y0, y1) = ((top - height as i32).min(gt - gh as i32), top.max(gt));
-        let (mut worst, mut sum, mut n) = (0u8, 0u64, 0u64);
+        let (mut worst, mut sum, mut n, mut far, mut pixels) = (0u8, 0u64, 0u64, 0u64, 0u64);
         for y in y0..y1 {
             for x in x0..x1 {
                 let (a, b) = (at(straight, width, height, left, top, x, y), at(gpx, gw, gh, gl, gt, x, y));
                 // Colour where neither is clear; coverage everywhere.
                 let channels = if a[3] > 16 && b[3] > 16 { 0..4 } else { 3..4 };
+                let mut pixel_worst = 0;
                 for c in channels {
                     let d = a[c].abs_diff(b[c]);
-                    worst = worst.max(d);
+                    pixel_worst = pixel_worst.max(d);
                     sum += u64::from(d);
                     n += 1;
                 }
+                worst = worst.max(pixel_worst);
+                far += u64::from(pixel_worst > 64);
+                pixels += 1;
             }
         }
-        (worst, sum as f64 / n.max(1) as f64)
+        (worst, sum as f64 / n.max(1) as f64, far as f64 / pixels.max(1) as f64)
     }
 
     fn straight(premultiplied: &[u8]) -> Vec<u8> {
@@ -552,10 +836,39 @@ pub(crate) mod tests {
         for px in [24, 64, 150] {
             let r = draw(&font, gid, px as f32, ColorGlyphFormat::ColrV0, [0, 0, 0, 255]).expect("drawn");
             let golden = test_file(&format!("goldens/KlippTestColrV0-A-{px}.rgba"));
-            let (worst, mean) = against_golden(r.width, r.height, r.left, r.top, &straight(&r.rgba), &golden);
+            let (worst, mean, _) = against_golden(r.width, r.height, r.left, r.top, &straight(&r.rgba), &golden);
             eprintln!("COLR v0 at {px} px: worst {worst}, mean {mean:.3} levels from FreeType");
             assert!(worst <= 12 && mean < 1.0, "at {px} px: worst {worst}, mean {mean:.3}");
         }
+    }
+
+    /// COLR v1 glyphs, one or more for each kind of paint (each gradient
+    /// and extend, sweeps with coincident stops and angles, transforms,
+    /// all 28 composite modes, the text's colour, clip boxes, nested
+    /// glyphs), are drawn as Skia draws them, in the same place (#3238).
+    #[test]
+    fn colr_v1_glyphs_are_drawn_as_skia_draws_them() {
+        let index: serde_json::Value = serde_json::from_slice(&test_file("goldens/colrv1/origins.json")).unwrap();
+        let font = test_file(&format!("fonts/{}", index["font"].as_str().unwrap()));
+        let px = index["px"].as_f64().unwrap() as f32;
+        let mut failures = Vec::new();
+        for (name, o) in index["origins"].as_object().unwrap() {
+            let (left, top, code) = (o[0].as_i64().unwrap() as i32, o[1].as_i64().unwrap() as i32, o[2].as_u64().unwrap() as u32);
+            let png = image::open(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("tests/goldens/colrv1/{name}.png"))).unwrap().to_rgba8();
+            let mut golden: Vec<u8> = [png.width() as i32, png.height() as i32, left, top].iter().flat_map(|v| v.to_le_bytes()).collect();
+            golden.extend_from_slice(png.as_raw());
+            let gid = gid_of(&font, char::from_u32(code).unwrap());
+            let (worst, mean, far) = match draw(&font, gid, px, ColorGlyphFormat::ColrV1, [0, 0, 0, 255]) {
+                Some(r) => against_golden(r.width, r.height, r.left, r.top, &straight(&r.rgba), &golden),
+                // Drawn as nothing: held to an empty raster.
+                None => against_golden(0, 0, 0, 0, &[], &golden),
+            };
+            eprintln!("{name:55} worst {worst:3} mean {mean:6.3} far {:.4}", far);
+            if mean > 2.5 || far > 0.01 {
+                failures.push(format!("{name}: mean {mean:.3}, {:.2}% of pixels far off", far * 100.0));
+            }
+        }
+        assert!(failures.is_empty(), "{failures:#?}");
     }
 
     /// A glyph with no COLR record, and one past the font's glyphs, draw
@@ -565,7 +878,8 @@ pub(crate) mod tests {
         let font = test_file("fonts/KlippTestColrV0.ttf");
         assert!(draw(&font, gid_of(&font, 'B'), 64.0, ColorGlyphFormat::ColrV0, [0, 0, 0, 255]).is_none());
         assert!(draw(&font, 4000, 64.0, ColorGlyphFormat::ColrV0, [0, 0, 0, 255]).is_none());
-        assert!(draw(&font, gid_of(&font, 'A'), 64.0, ColorGlyphFormat::ColrV1, [0, 0, 0, 255]).is_none());
+        // Asked for as COLR v1, a glyph in the version 0 list draws as that.
+        assert!(draw(&font, gid_of(&font, 'A'), 64.0, ColorGlyphFormat::ColrV1, [0, 0, 0, 255]).is_some());
     }
 
     /// A font arrives with a shared project, so its COLR and CPAL tables
@@ -573,18 +887,30 @@ pub(crate) mod tests {
     /// something or nothing, within the raster's limits, and never panic.
     #[test]
     fn a_damaged_colr_table_never_panics() {
-        let good = test_file("fonts/KlippTestColrV0.ttf");
-        let gid = gid_of(&good, 'A');
-        let records = FontRef::from_index(&good, 0).unwrap().table_directory.table_records().to_vec();
-        for tag in [b"COLR", b"CPAL"] {
-            let record = records.iter().find(|r| r.tag() == skrifa::raw::types::Tag::new(tag)).unwrap();
-            let (start, len) = (record.offset() as usize, record.length() as usize);
-            for fill in [0xFFu8, 0x00, 0x7F] {
-                for from in [2, 4, 8, 14, len / 2] {
-                    let mut bad = good.clone();
-                    bad[start + from.min(len)..start + len].fill(fill);
-                    if let Some(r) = draw(&bad, gid, 64.0, ColorGlyphFormat::ColrV0, [0, 0, 0, 255]) {
-                        assert!(r.width * r.height <= MAX_PIXELS && r.rgba.len() == r.width * r.height * 4);
+        let v1_glyph = |data: &[u8], name: &str| {
+            let index: serde_json::Value = serde_json::from_slice(&test_file("goldens/colrv1/origins.json")).unwrap();
+            gid_of(data, char::from_u32(index["origins"][name][2].as_u64().unwrap() as u32).unwrap())
+        };
+        let v0 = test_file("fonts/KlippTestColrV0.ttf");
+        let v1 = test_file("fonts/test_glyphs-glyf_colr_1.ttf");
+        let cases = [
+            (v0.clone(), vec![gid_of(&v0, 'A')], ColorGlyphFormat::ColrV0),
+            (v1.clone(), ["sweep_0_360_pad_narrow", "composite_HSL_HUE", "paint_glyph_nested_rotate_center_translate", "no_cycle_multi_colrglyph"].map(|n| v1_glyph(&v1, n)).to_vec(), ColorGlyphFormat::ColrV1),
+        ];
+        for (good, gids, format) in cases {
+            let records = FontRef::from_index(&good, 0).unwrap().table_directory.table_records().to_vec();
+            for tag in [b"COLR", b"CPAL"] {
+                let record = records.iter().find(|r| r.tag() == skrifa::raw::types::Tag::new(tag)).unwrap();
+                let (start, len) = (record.offset() as usize, record.length() as usize);
+                for fill in [0xFFu8, 0x00, 0x7F] {
+                    for from in [2, 4, 8, 14, len / 3, len / 2] {
+                        let mut bad = good.clone();
+                        bad[start + from.min(len)..start + len].fill(fill);
+                        for &gid in &gids {
+                            if let Some(r) = draw(&bad, gid, 64.0, format, [0, 0, 0, 255]) {
+                                assert!(r.width * r.height <= MAX_PIXELS && r.rgba.len() == r.width * r.height * 4);
+                            }
+                        }
                     }
                 }
             }
