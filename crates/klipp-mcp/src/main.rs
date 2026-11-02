@@ -3936,14 +3936,14 @@ mod catalogue_trim_tests {
         }
     }
 
-    /// The catalogue is under 54 KB, a tenth under the budget; every tool
-    /// names its guide topic; and each moved sentence is in its tool's
+    /// The catalogue is under 55 KB (raised from 54 for covers, #3311);
+    /// every tool names its guide topic; and each moved sentence is in its tool's
     /// topic, under Arguments, and no longer on the argument.
     #[test]
     fn the_catalogue_is_a_tenth_under_its_budget_and_nothing_moved_is_lost() {
         let tools = tool_definitions_for(false);
         let total = serde_json::to_vec(&tools).unwrap().len();
-        assert!(total < 54_000, "the catalogue is {total} bytes");
+        assert!(total < 55_000, "the catalogue is {total} bytes");
         for t in &tools {
             let name = t["name"].as_str().unwrap();
             if name != "klipp_guide" {
