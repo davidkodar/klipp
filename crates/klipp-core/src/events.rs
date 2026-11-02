@@ -1904,9 +1904,9 @@ pub enum AppCommand {
     ExportKdenlive { path: PathBuf },
     /// Export sequence as CMX 3600 EDL for broad NLE interchange.
     ExportEdl { path: PathBuf },
-    /// Export sequence markers as YouTube-compatible chapter text
-    /// ("H:MM:SS Label" per line, with a synthetic "Intro" at 0:00 when
-    /// the first marker is after the start).
+    /// Export the sequence's Chapter markers as YouTube-compatible chapter
+    /// text ("H:MM:SS Label" per line, with a synthetic "Intro" at 0:00
+    /// when the first is after the start).
     ExportYouTubeChapters { path: PathBuf },
     /// Render a review copy of the active sequence to `path`, its round
     /// and timecode burned in, with a comment template beside it (#2214).
