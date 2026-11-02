@@ -691,6 +691,8 @@ pub struct GpuEffectsPipeline {
     /// The next readback fails as a timed-out one would: a test's way
     /// to make one frame fail (#3406).
     fail_next_readback: std::cell::Cell<bool>,
+    /// Readbacks failed since the last that worked (#3406).
+    failed_readbacks_in_row: std::cell::Cell<u32>,
     /// The frame being timed, and the last one's times (#3207).
     timing: std::cell::RefCell<Option<timing::Timing>>,
     stack_params_ring: Vec<wgpu::Buffer>,
@@ -797,6 +799,11 @@ impl Drop for WorkgroupCapForTest {
 /// but short enough that a genuine hang gets flagged before the
 /// engine watchdog notices.
 pub const MAP_POLL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// How many readbacks may fail in a row before the GPU is turned off for
+/// the session (#3406): a device failing every one would otherwise cost
+/// [`MAP_POLL_TIMEOUT`] a frame for as long as it plays.
+pub const FAILED_READBACKS_TO_TURN_OFF: u32 = 3;
 
 /// Fine-grained "inside which GPU call" marker, parallel to the
 /// engine's `ENGINE_STAGE` waypoint. The grade-path stall we chase
@@ -1021,7 +1028,9 @@ impl GpuEffectsPipeline {
         // a pipeline rebuilt after a transient error gets a fresh
         // start; a genuinely dead device re-flags on the next error.
         let device_lost = ctx.device_lost_flag();
-        device_lost.store(false, Ordering::SeqCst);
+        if crate::gpu_context::gpu_turned_off().is_none() {
+            device_lost.store(false, Ordering::SeqCst);
+        }
         Self::build_from_device_queue(ctx.device(), ctx.queue(), device_lost)
     }
 
@@ -1075,7 +1084,9 @@ impl GpuEffectsPipeline {
     /// Wait for `staging`'s map. A map that fails costs this frame only
     /// (#3406): the map is called off, so the buffer is free for the
     /// next frame, and the GPU stays on. A device that is really lost
-    /// says so through its own callback, which turns the GPU off.
+    /// says so through its own callback, which turns the GPU off; so do
+    /// [`FAILED_READBACKS_TO_TURN_OFF`] failures in a row, each of which
+    /// may have waited out [`MAP_POLL_TIMEOUT`].
     pub(crate) fn wait_mapped(
         &self,
         staging: &wgpu::Buffer,
@@ -1088,10 +1099,21 @@ impl GpuEffectsPipeline {
             poll_until_mapped(&self.device, rx)
         };
         if matches!(result, Ok(Ok(()))) {
+            self.failed_readbacks_in_row.set(0);
             return true;
         }
         staging.unmap();
-        tracing::warn!("GPU effects: {what} map_async failed: {result:?}; this frame falls back, the next one tries the GPU again");
+        let failed = self.failed_readbacks_in_row.get() + 1;
+        self.failed_readbacks_in_row.set(failed);
+        if failed < FAILED_READBACKS_TO_TURN_OFF {
+            tracing::warn!("GPU effects: {what} map_async failed: {result:?}; this frame falls back, the next one tries the GPU again");
+            return false;
+        }
+        let why = format!("{failed} GPU readbacks failed in a row, the last {what}: {result:?}");
+        self.device_lost.store(true, Ordering::SeqCst);
+        if crate::gpu_context::turn_gpu_off(why.clone()) {
+            error!("GPU effects: {why} — disabling GPU effects");
+        }
         false
     }
 

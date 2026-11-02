@@ -1023,6 +1023,7 @@ impl GpuEffectsPipeline {
             batch: std::cell::RefCell::new(None),
             batching: std::cell::Cell::new(false),
             fail_next_readback: std::cell::Cell::new(false),
+            failed_readbacks_in_row: std::cell::Cell::new(0),
             timing: std::cell::RefCell::new(None),
             stack_params_ring,
             stack_params_slot: std::cell::Cell::new(0),
