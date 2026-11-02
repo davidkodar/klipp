@@ -5374,8 +5374,9 @@ fn a_take_preview_gives_way_to_an_export_and_a_save() {
 /// #3312: `publish_kit`. Read back it writes nothing, and says what is a
 /// draft; written, marker chapters and a client's text carry no `.draft` and
 /// Klipp's own do; a file there stops it, kept, until `overwrite`; a track's
-/// language that would name a file elsewhere gets no captions asked for; a
-/// bad path or a client's bad chapters are refused before anything is done.
+/// language that isn't a plain code leaves its file named by place, in the
+/// folder; a bad path or a client's bad chapters are refused before anything
+/// is done.
 #[test]
 fn a_publish_kit_reads_back_writes_beside_the_video_and_keeps_what_is_there() {
     let mut h = harness();
@@ -5419,9 +5420,11 @@ fn a_publish_kit_reads_back_writes_beside_the_video_and_keeps_what_is_there() {
         seq.tracks.push(t);
     }
     h.sequence.replace(seq);
-    let hostile = h.ok(json!({ "method": "publish_kit", "path": video_path, "overwrite": true }));
-    assert!(hostile["captions_skipped"].as_str().unwrap().contains("plain code"), "{hostile}");
-    assert!(h.cmd_rx.try_recv().is_err(), "no captions asked for");
+    let odd = h.ok(json!({ "method": "publish_kit", "path": video_path, "overwrite": true }));
+    assert!(matches!(h.cmd_rx.recv_timeout(std::time::Duration::from_secs(5)), Ok(klipp_core::AppCommand::ExportSubtitles { .. })));
+    let named = |r: &Value| r["files"].as_array().unwrap().iter().map(|f| f.as_str().unwrap().to_string()).collect::<Vec<_>>();
+    assert!(named(&odd).iter().all(|f| std::path::Path::new(f).parent() == Some(dir.as_path())), "{odd}");
+    assert!(named(&odd).iter().any(|f| f.ends_with("film.2.srt")), "{odd}");
 
     let mut seq = (*h.sequence.snapshot()).clone();
     seq.tracks.last_mut().unwrap().language = Some("fr".into());
