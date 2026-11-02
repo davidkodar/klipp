@@ -27,6 +27,8 @@ klipp-media = { workspace = true }
 klipp-nodes = { workspace = true }
 klipp-effects = { workspace = true }
 tracing = { workspace = true }
+# The Pace Strip's limits file (#3313), as klipp-core reads its presets.
+toml = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 

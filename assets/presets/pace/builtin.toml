@@ -1,0 +1,24 @@
+# The Pace Strip's limits by destination (#3313): a sequence whose brief
+# names a platform here gets its hook and long-shot hints; one with no
+# destination gets neither. `platforms` are matched in the brief's
+# platform, any case, the first entry that matches winning: so the
+# vertical platforms come before YouTube. A shot longer than
+# `long_shot_secs` in which nothing moves or speaks is long.
+
+[[destination]]
+id = "vertical"
+platforms = ["shorts", "reels", "tiktok"]
+long_shot_secs = 4.0
+checked = "2026-11-02"
+
+[[destination]]
+id = "feed"
+platforms = ["instagram feed", "square post", "feed"]
+long_shot_secs = 6.0
+checked = "2026-11-02"
+
+[[destination]]
+id = "youtube"
+platforms = ["youtube"]
+long_shot_secs = 10.0
+checked = "2026-11-02"

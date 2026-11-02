@@ -374,6 +374,19 @@ impl KlippApp {
             .map_err(|e| format!("decode: {e}"))
     }
 
+    /// [`Self::decode_clip_representative_frame`] through the clip's grade,
+    /// as the shot looks on the timeline (#3425): a match is to the
+    /// reference as graded. `less_match` leaves out its Color Match node.
+    fn graded_clip_frame(&mut self, clip_id: klipp_core::ClipId, less_match: bool) -> Result<(Vec<u8>, u32, u32), String> {
+        let (bytes, w, h) = Self::decode_clip_representative_frame(&self.state, clip_id)?;
+        let seq = &self.state.sequences[self.state.active_sequence_idx];
+        let clip = seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == clip_id).ok_or_else(|| "clip not found".to_string())?;
+        let mid = (clip.timeline_out.to_secs_f64() - clip.timeline_in.to_secs_f64()) * 0.5;
+        self.scope_executor.set_render_scale(h as f32 / seq.resolution.height.max(1) as f32);
+        let graded = graded_frame(&mut self.scope_executor, &bytes, (w, h), clip.grade(), mid, less_match)?;
+        Ok((graded, w, h))
+    }
+
     /// Follow a window through its clip on a worker (#238): the window
     /// tracker run from the reference frame forward and back, within the
     /// clip's part of the file, its move, size and turn sent back in
@@ -1536,7 +1549,7 @@ impl KlippApp {
             }
             AppCommand::UseClipAsColorMatchReference { clip_id } => {
                 let clip_id = *clip_id;
-                match Self::decode_clip_representative_frame(&self.state, clip_id) {
+                match self.graded_clip_frame(clip_id, false) {
                     Ok((bytes, w, h)) => {
                         self.state.color_match_reference = Some((bytes, w, h));
                         self.state.color_match_reference_clip = Some(clip_id);
@@ -1558,7 +1571,8 @@ impl KlippApp {
                     );
                     return true;
                 };
-                let source_bytes = match Self::decode_clip_representative_frame(&self.state, clip_id) {
+                // The shot as it looks now, less the match this replaces.
+                let source_bytes = match self.graded_clip_frame(clip_id, true) {
                     Ok((b, _, _)) => b,
                     Err(e) => {
                         self.state.toast.show(format!("Couldn't read target clip: {e}"));
@@ -1572,29 +1586,13 @@ impl KlippApp {
                     tint: result.tint_adjust,
                     saturation: result.saturation_adjust,
                 };
-                let mut applied = false;
-                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
-                    if let Some(clip) = track.find_clip_mut(clip_id) {
-                        let node_id = clip.edit_grade(|g| g.ensure_color_match());
-                        clip.edit_grade(|graph| {
-                            if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == node_id) {
-                                node.params.color_match = Some(settings);
-                                node.enabled = true;
-                                applied = true;
-                            }
-                        });
-                        break;
-                    }
-                }
-                if applied {
-                    *needs_refresh = true;
-                    self.state.toast.show(format!(
-                        "Matched clip to reference: exp {:+.2}, temp {:+.0}, tint {:+.0}, sat {:.2}×",
-                        settings.exposure, settings.temperature, settings.tint, settings.saturation
-                    ));
-                } else {
-                    self.state.toast.show("Target clip not found in active sequence");
-                }
+                // Through the graph editor's own write, one undo step
+                // (#3425): written in place, undo took back the edit before.
+                self.with_clip_graph_mut_at(clip_id, &[], needs_refresh, |graph| write_color_match(graph, settings));
+                self.state.toast.show(format!(
+                    "Matched clip to reference: exp {:+.2}, temp {:+.0}, tint {:+.0}, sat {:.2}×",
+                    settings.exposure, settings.temperature, settings.tint, settings.saturation
+                ));
                 true
             }
             AppCommand::ApplyColorMatch { clip_id, node_id } => {
@@ -3173,6 +3171,44 @@ fn push_node(graph: &mut klipp_nodes::NodeGraph, kind: klipp_nodes::NodeKind, id
 }
 
 #[cfg(test)]
+mod match_frame_tests {
+    use super::{graded_frame, write_color_match};
+    use klipp_core::ColorMatchSettings;
+    use klipp_nodes::{GraphExecutor, NodeGraph};
+
+    const DARKER: ColorMatchSettings = ColorMatchSettings { exposure: -2.0, temperature: 0.0, tint: 0.0, saturation: 1.0 };
+
+    /// #3425: the match reads a reference as graded, so its grade changes
+    /// the answer; the shot being matched is read less its last match, so
+    /// matching again doesn't build on it.
+    #[test]
+    fn a_frame_is_read_through_the_grade_less_the_match_when_asked() {
+        let frame: Vec<u8> = (0..16 * 16).flat_map(|_| [150, 120, 90, 255]).collect();
+        let mut ex = GraphExecutor::new_cpu_only();
+        let plain = graded_frame(&mut ex, &frame, (16, 16), &NodeGraph::default(), 0.0, false).unwrap();
+        let mut graph = NodeGraph::default();
+        write_color_match(&mut graph, DARKER);
+        let graded = graded_frame(&mut ex, &frame, (16, 16), &graph, 0.0, false).unwrap();
+        assert!(graded[0] < plain[0] - 20, "{} against {}", graded[0], plain[0]);
+        let exposure = klipp_color::color_match::match_colors(&plain, &graded).exposure_adjust;
+        assert!(exposure < -0.5, "the reference's grade is in the match: {exposure}");
+        assert_eq!(graded_frame(&mut ex, &frame, (16, 16), &graph, 0.0, true).unwrap(), plain);
+    }
+
+    /// A second match replaces the first, on the one node.
+    #[test]
+    fn matching_again_keeps_one_color_match_node() {
+        let mut graph = NodeGraph::default();
+        write_color_match(&mut graph, DARKER);
+        let later = ColorMatchSettings { exposure: 1.0, ..DARKER };
+        write_color_match(&mut graph, later);
+        let nodes: Vec<_> = graph.nodes.iter().filter(|n| n.kind == klipp_nodes::NodeKind::ColorMatch).collect();
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].params.color_match, Some(later));
+    }
+}
+
+#[cfg(test)]
 mod add_node_tests {
     use super::{add_node_path, push_node, KlippApp};
     use klipp_nodes::{Node, NodeGraph, NodeId, NodeKind};
@@ -3530,6 +3566,27 @@ pub(super) fn write_node_settings(graph: &mut klipp_nodes::NodeGraph, cmd: &AppC
         _ => {}
     }
     true
+}
+
+/// A frame through `graph`, at `secs` into its clip; with `less_match`, its
+/// Color Match node passed over.
+fn graded_frame(executor: &mut klipp_nodes::GraphExecutor, frame: &[u8], (w, h): (u32, u32), graph: &klipp_nodes::NodeGraph, secs: f64, less_match: bool) -> Result<Vec<u8>, String> {
+    let mut graph = graph.clone();
+    if less_match {
+        for node in graph.nodes.iter_mut().filter(|n| n.kind == klipp_nodes::NodeKind::ColorMatch) {
+            node.enabled = false;
+        }
+    }
+    executor.execute(frame, &graph, w, h, secs, 0, None, None).map(|(graded, _)| graded).map_err(|e| format!("grade: {e}"))
+}
+
+/// Put `settings` on `graph`'s Color Match node, made if it has none.
+fn write_color_match(graph: &mut klipp_nodes::NodeGraph, settings: klipp_core::ColorMatchSettings) {
+    let id = graph.ensure_color_match();
+    if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == id) {
+        node.params.color_match = Some(settings);
+        node.enabled = true;
+    }
 }
 
 /// A graph edit as the colour dispatch lands it: `mutate` run on the graph
