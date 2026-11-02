@@ -628,20 +628,29 @@ fn a_reflection_previews_on_the_cpu_and_the_gpu() {
     let (seq, id, _) = sequence(NodeGraph::default(), None);
     let mut seq = seq;
     let clip = seq.tracks[0].clips.iter_mut().find(|c| c.id == id).unwrap();
-    *clip = TestClip::of(clip.clone()).effects([klipp_effects::BuiltinEffect::Gamma { gamma: 1.6 }, reflection]).build();
+    // Shrunk to the frame's upper part, leaving the reflection room below.
+    let shrink = klipp_effects::BuiltinEffect::Transform { position_x: 0.0, position_y: -4.5, scale_x: 0.5, scale_y: 0.5, rotation: 0.0, anchor_x: 0.5, anchor_y: 0.5, rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0, focal_ref: None };
+    *clip = TestClip::of(clip.clone()).effects([klipp_effects::BuiltinEffect::Gamma { gamma: 1.6 }, shrink, reflection]).build();
     let seq = seq.baked_for_render().into_owned();
     let clip = seq.tracks[0].clips.iter().find(|c| c.id == id).unwrap();
     let at = |n| InspectAt::out(NodePath::new(Root::Clip { clip: id.0 }, [n]));
     let effects: Vec<InspectAt> = clip.picture_effects().unwrap().iter().map(|e| at(e.node)).collect();
+    let mut shown = Vec::new();
     for gpu in [false, true] {
         let (_, found) = draw(&seq, gpu, Inspect { clip: Some(id), only: Some(id), thumbs: Some(effects.iter().cloned().collect()), ..Default::default() });
-        // Both preview; a full-frame picture leaves the reflection no room
-        // to show, and on the CPU the clip measured alone draws none (#2475):
-        // its preview is the picture it is given.
+        // Both preview; the clip measured alone draws no reflection (#2475),
+        // on either path: its preview is the picture it is given, the
+        // gamma's.
         for (i, e) in effects.iter().enumerate() {
             assert!(found.thumbs.contains_key(e), "gpu {gpu}: effect {i}: {:?}", found.unavailable);
         }
+        shown.push(found.thumbs.get(&effects[1]).cloned());
     }
+    let (cpu, gpu) = (shown[0].as_ref().unwrap(), shown[1].as_ref().unwrap());
+    let worst = cpu.iter().zip(gpu).map(|(a, b)| a.abs_diff(*b)).max().unwrap_or(0);
+    // The same picture, to the level (measured 0; the reflection drawn on
+    // the GPU alone made them 3 apart).
+    assert!(worst <= 1, "the CPU's and the GPU's reflection previews differ by {worst} levels");
 }
 
 
