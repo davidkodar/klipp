@@ -13,7 +13,7 @@
 mod tables;
 mod words;
 
-pub use words::{complex_breaks, is_complex, word_starts};
+pub use words::{complex_breaks, is_complex, join_words, spaced_words, word_starts};
 
 use crate::tables::*;
 

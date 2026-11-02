@@ -3145,6 +3145,7 @@ dependencies = [
  "klipp-effects",
  "klipp-graph-format",
  "klipp-graph-lift",
+ "klipp-linebreak",
  "klipp-media",
  "klipp-nodes",
  "klipp-plugin",
