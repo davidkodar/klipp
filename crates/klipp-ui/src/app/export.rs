@@ -2147,6 +2147,8 @@ impl KlippApp {
                 if self.deliver_section(ui, cmds) {
                     self.state.show_export_dialog = false;
                 }
+                // The video's thumbnail (#3311), where it fits or asked for.
+                self.cover_section(ui, cmds);
                 let _ = in_dialog;
     }
 
@@ -3990,6 +3992,11 @@ impl KlippApp {
                     self.state.dirty = true;
                 }
                 self.state.subtitle_editor.style_draft = None;
+                true
+            }
+            AppCommand::ShowCoverSection { shown } => {
+                self.prefs.export.cover_section = if *shown { crate::prefs::CoverShow::Shown } else { crate::prefs::CoverShow::Hidden };
+                self.prefs_dirty = true;
                 true
             }
             AppCommand::ExportSubtitles { path } => {

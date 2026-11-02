@@ -189,6 +189,7 @@ impl KlippApp {
             water_measuring: Default::default(),
             proxy_event_rx,
             export_dialog: ExportDialogState::default(),
+            covers_panel: Default::default(),
             prefs,
             prefs_dirty: false,
             key_bindings,
