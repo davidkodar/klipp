@@ -1760,6 +1760,10 @@ fn open_hardware_to_first_frame(path: &Path, try_cuvid: bool) -> Result<OpenedDe
 pub(crate) unsafe fn try_init_vaapi(codec_ctx_ptr: *mut ffmpeg_next::ffi::AVCodecContext) -> bool {
     use ffmpeg_next::ffi::*;
 
+    // Failed on every node once: it fails the same way at every open.
+    if klipp_core::GpuVendor::vaapi_unavailable() {
+        return false;
+    }
     let device_type = av_hwdevice_find_type_by_name(c"vaapi".as_ptr());
     if device_type == AVHWDeviceType::AV_HWDEVICE_TYPE_NONE {
         warn!("VAAPI: device type not found");
@@ -1790,7 +1794,9 @@ pub(crate) unsafe fn try_init_vaapi(codec_ctx_ptr: *mut ffmpeg_next::ffi::AVCode
         }
     }
 
-    warn!("Hardware decode: VAAPI init failed on every render node but NVIDIA's");
+    if klipp_core::GpuVendor::mark_vaapi_unavailable() {
+        info!("Hardware decode: no VAAPI connection on any render node but NVIDIA's; decoding in software, without trying VAAPI again this session");
+    }
     false
 }
 
