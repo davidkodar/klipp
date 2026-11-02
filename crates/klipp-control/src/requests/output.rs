@@ -1021,7 +1021,7 @@ pub(crate) fn respond(
             let avg = ring.averages(60);
             // Why playback drops frames, if it does, and what would help
             // (#3234): over the last ten seconds played at 1x.
-            let diagnosis = {
+            let mut diagnosis = {
                 let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
                 let pool = ctx.media_pool.read().recovered();
                 let samples = (seq.fps.as_f64() * klipp_engine::playback_health::WINDOW as f64).ceil() as usize;
@@ -1032,6 +1032,9 @@ pub(crate) fn respond(
                     None => json!({ "health": health, "cause": "playback keeps up" }),
                 }
             };
+            if let Some(why) = klipp_effects::gpu_context::gpu_turned_off() {
+                diagnosis["gpu_turned_off"] = json!(why);
+            }
             Ok(json!({
                 "presented_fps": presented_fps,
                 "diagnosis": diagnosis,

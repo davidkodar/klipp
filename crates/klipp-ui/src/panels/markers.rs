@@ -132,7 +132,7 @@ impl MarkersPanel {
                             });
                             if ui
                                 .small_button("\u{2B07} YouTube Chapters")
-                                .on_hover_text("Export markers as YouTube chapter timestamps")
+                                .on_hover_text("Export Chapter-kind markers as YouTube chapter timestamps")
                                 .clicked()
                             {
                                 crate::file_dialog::spawn(move || {

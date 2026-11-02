@@ -99,10 +99,11 @@ enum Group {
     Linked,
     Marker,
     Title,
+    FirstCut,
     Context,
 }
 
-const GROUPS: [Group; 10] = [Group::Tools, Group::EditMode, Group::Ripple, Group::Snap, Group::Skim, Group::Options, Group::Linked, Group::Marker, Group::Title, Group::Context];
+const GROUPS: [Group; 11] = [Group::Tools, Group::EditMode, Group::Ripple, Group::Snap, Group::Skim, Group::Options, Group::Linked, Group::Marker, Group::Title, Group::FirstCut, Group::Context];
 const SEPARATOR_AFTER: [Group; 3] = [Group::Tools, Group::Ripple, Group::Linked];
 
 /// The Ripple switch's tooltip. Ripple governs trims only: Delete
@@ -319,6 +320,17 @@ fn draw_group(group: Group, ui: &mut egui::Ui, state: &mut AppState, theme: &Kli
             styled_tooltip(&resp, theme, "Add Title", Some(&kb.display_for("create_title")));
             if resp.clicked() {
                 cmds.push(AppCommand::AddTitleAtPlayhead { over_clip: None });
+            }
+        }
+        Group::FirstCut => {
+            // ── First Cut (#3308): only while a clip with speech is on
+            // the timeline, and not switched off in Preferences ──
+            if crate::first_cut::button_shown(state.first_cut_speech, state.show_first_cut_button) {
+                let resp = ui.add(egui::Button::new(egui::RichText::new("First Cut").size(crate::theme::type_scale::CAPTION)).min_size(egui::vec2(0.0, btn)));
+                styled_tooltip(&resp, theme, "A rough cut of what is said, as one undo step: pauses, filler words and retakes out, punch-ins and captions in", None);
+                if resp.clicked() {
+                    state.show_first_cut_dialog = true;
+                }
             }
         }
         Group::Context => {
@@ -716,5 +728,44 @@ mod tests {
     fn the_ripple_tooltip_speaks_only_of_trimming() {
         assert_eq!(super::ripple_tip(true), "Ripple on: trimming closes the gap.");
         assert_eq!(super::ripple_tip(false), "Ripple off: trimming leaves a gap. Use Lift (Shift+Delete) to remove a clip and leave its gap.");
+    }
+
+    /// The text the toolbar draws for `state`, in a wide window so no
+    /// group folds away.
+    fn drawn(state: &mut crate::state::AppState) -> String {
+        fn append(shape: &egui::epaint::Shape, text: &mut String) {
+            match shape {
+                egui::epaint::Shape::Text(t) => {
+                    text.push_str(&t.galley.job.text);
+                    text.push('\n');
+                }
+                egui::epaint::Shape::Vec(shapes) => shapes.iter().for_each(|s| append(s, text)),
+                _ => {}
+            }
+        }
+        let ctx = egui::Context::default();
+        let (theme, kb) = (crate::theme::KlippTheme::default(), crate::keybindings::KeyBindings::default());
+        let input = || egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(2400.0, 60.0))), ..Default::default() };
+        let mut text = String::new();
+        for _ in 0..3 {
+            let output = ctx.run(input(), |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| super::show(ui, state, &theme, &mut Vec::new(), &kb));
+            });
+            text.clear();
+            output.shapes.iter().for_each(|s| append(&s.shape, &mut text));
+        }
+        text
+    }
+
+    /// First Cut (#3308) shows on the timeline only while a clip with
+    /// speech is there, and not once switched off in Preferences.
+    #[test]
+    fn the_first_cut_button_shows_only_with_speech_and_the_switch_on() {
+        let mut state = crate::state::AppState::default();
+        assert!(!drawn(&mut state).contains("First Cut"), "no speech, no button");
+        state.first_cut_speech = true;
+        assert!(drawn(&mut state).contains("First Cut"));
+        state.show_first_cut_button = false;
+        assert!(!drawn(&mut state).contains("First Cut"), "switched off in Preferences");
     }
 }

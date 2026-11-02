@@ -94,19 +94,15 @@ impl GpuEffectsPipeline {
         // keeps the queue non-empty with continuous egui submits.
         // `poll_until_mapped` drives the map callback via Poll until
         // it fires (or times out at 2 s).
-        let result = match poll_until_mapped(&self.device, &rx) {
-            Ok(Ok(())) => {
-                let data = slice.get_mapped_range();
-                let result = data.to_vec();
-                drop(data);
-                staging.unmap();
-                readback.succeeded = true;
-                Some(result)
-            }
-            other => {
-                self.mark_device_lost(&format!("bridge_u8 map_async failed: {other:?}"));
-                None
-            }
+        let result = if self.wait_mapped(staging, &rx, "bridge_u8") {
+            let data = slice.get_mapped_range();
+            let result = data.to_vec();
+            drop(data);
+            staging.unmap();
+            readback.succeeded = true;
+            Some(result)
+        } else {
+            None
         };
         mark_gpu_stage(GpuStage::Idle);
         result
@@ -1310,18 +1306,13 @@ impl GpuEffectsPipeline {
         let (tx, rx) = std::sync::mpsc::channel();
         self.flush();
         slice.map_async(wgpu::MapMode::Read, move |r| { let _ = tx.send(r); });
-        match poll_until_mapped(&self.device, &rx) {
-            Ok(Ok(())) => {
-                let bytes = slice.get_mapped_range().to_vec();
-                staging.unmap();
-                if let Some(attempt) = &mut readback { attempt.succeeded = true; }
-                Some(Some(bytes))
-            }
-            other => {
-                self.mark_device_lost(&format!("display_u8 map_async failed: {other:?}"));
-                None
-            }
+        if !self.wait_mapped(staging, &rx, "display_u8") {
+            return None;
         }
+        let bytes = slice.get_mapped_range().to_vec();
+        staging.unmap();
+        if let Some(attempt) = &mut readback { attempt.succeeded = true; }
+        Some(Some(bytes))
     }
 
     /// Dispatch-only display step of a scene-referred clip (phase 2b M2,

@@ -695,6 +695,7 @@ impl KlippApp {
             self.state.magnetic_timeline_enabled = self.prefs.editing.magnetic_timeline;
             self.state.multicam_show_angles = self.prefs.editing.multicam_show_angles;
             self.state.show_reused_footage = self.prefs.editing.show_reused_footage;
+            self.state.show_first_cut_button = self.prefs.editing.show_first_cut_button;
             // Sync engine statics
             klipp_engine::video_decoder::set_hardware_decode(self.prefs.system.hardware_decode);
             klipp_engine::video_decoder::set_optimised_playback_mode(
@@ -1129,6 +1130,8 @@ impl KlippApp {
         // The keys in effect, for the tooltips that name them (#2933).
         crate::keybindings::publish(ctx, &self.key_bindings);
         self.show_modal_dialogs(ctx, &mut all_cmds);
+        self.refresh_first_cut_gate();
+        self.show_first_cut_dialog(ctx, &mut all_cmds);
 
         klipp_engine::ui_stage::mark(klipp_engine::ui_stage::RENDER_PANELS);
         let typing_before = ctx.memory(|m| m.focused().is_some());

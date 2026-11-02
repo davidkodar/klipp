@@ -448,6 +448,17 @@ impl FrameBuffer {
         self.pending_ready = true;
     }
 
+    /// Drop the pending frame, as a project closing does, under a new
+    /// generation: past that frame's too, so the number still only rises
+    /// when no swap had caught up with it (#3411).
+    pub fn drop_pending(&mut self) {
+        self.generation = self.next_pending_generation();
+        self.pending_data.clear();
+        self.pending_width = 0;
+        self.pending_height = 0;
+        self.pending_ready = false;
+    }
+
     /// Generation for a newly written pending frame: one past the newest
     /// frame *either* buffer holds.
     ///
@@ -762,6 +773,23 @@ mod tests {
     }
 
     use super::*;
+
+    /// #3411: frames written with no swap, then a reset. The generation
+    /// fell back to one past the last swap, so later frames came to the
+    /// number a waiter had kept from before the reset.
+    #[test]
+    fn a_dropped_frame_leaves_the_generation_rising() {
+        let mut fb = FrameBuffer::new(2, 2);
+        for _ in 0..3 {
+            fb.write_frame(vec![1; 16], 2, 2);
+        }
+        let before = fb.latest_generation();
+        fb.drop_pending();
+        assert!(!fb.pending_ready);
+        assert!(fb.latest_generation() > before, "a reset must not take the generation back");
+        fb.write_frame(vec![2; 16], 2, 2);
+        assert!(fb.latest_generation() > before + 1);
+    }
 
     #[test]
     fn write_frame_swap_exchanges_buffers() {
