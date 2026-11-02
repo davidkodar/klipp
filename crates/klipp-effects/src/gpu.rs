@@ -688,6 +688,9 @@ pub struct GpuEffectsPipeline {
     /// ring for the same reason).
     batch: std::cell::RefCell<Option<wgpu::CommandEncoder>>,
     batching: std::cell::Cell<bool>,
+    /// The next readback fails as a timed-out one would: a test's way
+    /// to make one frame fail (#3406).
+    fail_next_readback: std::cell::Cell<bool>,
     /// The frame being timed, and the last one's times (#3207).
     timing: std::cell::RefCell<Option<timing::Timing>>,
     stack_params_ring: Vec<wgpu::Buffer>,
@@ -1062,14 +1065,34 @@ impl GpuEffectsPipeline {
         self.device_lost.load(Ordering::SeqCst)
     }
 
-    /// Mark the pipeline dead. Intended for internal call sites that
-    /// observe a sync failure (e.g. `download()` when `map_async`
-    /// returns Err) that wgpu's async callbacks may not have flagged
-    /// yet.
-    fn mark_device_lost(&self, ctx: &str) {
-        if !self.device_lost.swap(true, Ordering::SeqCst) {
-            error!("GPU effects: {ctx} — disabling GPU effects");
+    /// The next readback fails as one the GPU never finished would: for
+    /// a test of what the frame after a failed one does (#3406).
+    #[doc(hidden)]
+    pub fn fail_next_readback(&self) {
+        self.fail_next_readback.set(true);
+    }
+
+    /// Wait for `staging`'s map. A map that fails costs this frame only
+    /// (#3406): the map is called off, so the buffer is free for the
+    /// next frame, and the GPU stays on. A device that is really lost
+    /// says so through its own callback, which turns the GPU off.
+    pub(crate) fn wait_mapped(
+        &self,
+        staging: &wgpu::Buffer,
+        rx: &std::sync::mpsc::Receiver<Result<(), wgpu::BufferAsyncError>>,
+        what: &str,
+    ) -> bool {
+        let result = if self.fail_next_readback.take() {
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+        } else {
+            poll_until_mapped(&self.device, rx)
+        };
+        if matches!(result, Ok(Ok(()))) {
+            return true;
         }
+        staging.unmap();
+        tracing::warn!("GPU effects: {what} map_async failed: {result:?}; this frame falls back, the next one tries the GPU again");
+        false
     }
 
     /// Ensure GPU buffers are large enough for the frame.
@@ -1575,24 +1598,15 @@ impl GpuEffectsPipeline {
         });
 
         mark_gpu_stage(GpuStage::FlushChain);
-        let result = match poll_until_mapped(&self.device, &rx) {
-            Ok(Ok(())) => {
-                let data = buffer_slice.get_mapped_range();
-                let result = read(&data);
-                drop(data);
-                staging.unmap();
-                readback.succeeded = true;
-                Some(result)
-            }
-            other => {
-                // `map_async` signalled an error (or the channel dropped
-                // without delivering one). That means the GPU state is
-                // suspect: either the buffer wasn't mapped or the device
-                // is on its way out. Flip the lost flag so subsequent
-                // calls short-circuit before they touch the device.
-                self.mark_device_lost(&format!("buffer map_async failed: {other:?}"));
-                None
-            }
+        let result = if self.wait_mapped(staging, &rx, "buffer") {
+            let data = buffer_slice.get_mapped_range();
+            let result = read(&data);
+            drop(data);
+            staging.unmap();
+            readback.succeeded = true;
+            Some(result)
+        } else {
+            None
         };
         mark_gpu_stage(GpuStage::Idle);
         result
