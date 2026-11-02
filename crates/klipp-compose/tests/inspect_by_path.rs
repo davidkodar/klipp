@@ -617,9 +617,8 @@ fn each_effect_of_the_stack_previews_the_picture_after_it() {
 
 /// #3328: a clip with an effect drawn on the placed layer (a Reflection,
 /// after the clip's move): the effects before it preview on the CPU and
-/// the GPU, the CPU's list carrying the clip's opacity besides; the
-/// Reflection previews on the GPU. On the CPU it is drawn apart from the
-/// clip's effects and has none yet.
+/// the GPU; the Reflection too, on the CPU as the identity that stands in
+/// for it when the clip is measured alone (#2475).
 #[test]
 fn a_reflection_previews_on_the_cpu_and_the_gpu() {
     let reflection = klipp_effects::BuiltinEffect::Reflection {
@@ -636,13 +635,41 @@ fn a_reflection_previews_on_the_cpu_and_the_gpu() {
     let effects: Vec<InspectAt> = clip.picture_effects().unwrap().iter().map(|e| at(e.node)).collect();
     for gpu in [false, true] {
         let (_, found) = draw(&seq, gpu, Inspect { clip: Some(id), only: Some(id), thumbs: Some(effects.iter().cloned().collect()), ..Default::default() });
-        assert!(found.thumbs.contains_key(&effects[0]), "gpu {gpu}: the gamma: {:?}", found.unavailable);
-        if gpu {
-            // A full-frame picture leaves the reflection no room to show:
-            // its preview is there, the same picture.
-            assert!(found.thumbs.contains_key(&effects[1]), "the reflection: {:?}", found.unavailable);
-        } else {
-            assert!(found.unavailable.iter().any(|(a, _)| *a == effects[1]), "on the CPU the reflection says it has none: {:?}", found.unavailable);
+        // Both preview; a full-frame picture leaves the reflection no room
+        // to show, and on the CPU the clip measured alone draws none (#2475):
+        // its preview is the picture it is given.
+        for (i, e) in effects.iter().enumerate() {
+            assert!(found.thumbs.contains_key(e), "gpu {gpu}: effect {i}: {:?}", found.unavailable);
         }
+    }
+}
+
+
+/// #3328: a title's picture nodes preview as a clip's do, on the GPU and
+/// the CPU: its source the title as drawn (white text, which the gamma
+/// leaves as it is), its effect, Placement and Output; its display step,
+/// a title being display-referred, says it doesn't run.
+#[test]
+fn a_titles_picture_nodes_preview() {
+    let td = klipp_timeline::title_library::builtin("Watermark").expect("a built-in title").data();
+    let clip = TestClip::of(Clip { kind: ClipKind::Title(td), ..Clip::gap(tc(0.0), tc(2.0)) }).effect(klipp_effects::BuiltinEffect::Gamma { gamma: 1.6 }).build();
+    let id = clip.id;
+    let mut seq = Sequence::new_default();
+    let mut track = Track::new("V1", TrackKind::Video);
+    track.clips = vec![clip];
+    seq.tracks = vec![track];
+    let seq = seq.baked_for_render().into_owned();
+    let picture = seq.tracks[0].clips[0].picture_v2().unwrap();
+    let ats: Vec<(String, InspectAt)> = picture.picture.graph.nodes.iter().map(|n| (n.type_id.as_str().to_string(), InspectAt::out(NodePath::new(Root::Clip { clip: id.0 }, [n.id])))).collect();
+    let of = |t: &str| ats.iter().find(|(x, _)| x == t).map(|(_, a)| a.clone()).unwrap();
+    for gpu in [false, true] {
+        let (_, found) = draw(&seq, gpu, Inspect { clip: Some(id), only: Some(id), thumbs: Some(ats.iter().map(|(_, a)| a.clone()).collect()), ..Default::default() });
+        for (t, a) in &ats {
+            let display = t == klipp_graph_format::lifted::types::SCENE_TO_DISPLAY;
+            assert_eq!(found.thumbs.contains_key(a), !display, "gpu {gpu}: {t}: {:?}", found.unavailable);
+            assert!(!display || found.unavailable.iter().any(|(x, _)| x == a), "gpu {gpu}: the display step says why");
+        }
+        let source = found.thumbs.get(&of(klipp_graph_format::lifted::types::SOURCE)).unwrap();
+        assert!(source.chunks_exact(4).any(|p| p[3] > 0), "gpu {gpu}: the source preview shows the title");
     }
 }
