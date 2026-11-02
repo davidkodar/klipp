@@ -1263,7 +1263,8 @@ pub enum ControlCommand {
         #[serde(default)]
         format: Option<String>,
     },
-    /// The sequence's covers (#3311) and the sizes a cover is made at; with
+    /// The sequence's covers (#3311) and the sizes a cover is made at, and
+    /// with `propose` frames proposed for one; with
     /// `path` (absolute, .png, .jpg or .jpeg), `cover` (its id or name; the
     /// only one when left out) drawn at its size and written there, a
     /// JPEG's quality stepped down to fit the size's file limit.
@@ -1272,6 +1273,10 @@ pub enum ControlCommand {
         cover: Option<String>,
         #[serde(default)]
         path: Option<String>,
+        /// Frames proposed for a cover besides: markers, faces, still
+        /// moments, each at the sharpest frame near it.
+        #[serde(default)]
+        propose: bool,
     },
     /// Read an SRT, WebVTT, ASS/SSA, TTML (DFXP, IMSC, iTT), SCC or EBU-STL
     /// file onto a new subtitle track of the active sequence, as the app's
