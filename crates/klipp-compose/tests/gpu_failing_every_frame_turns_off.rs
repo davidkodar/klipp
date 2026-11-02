@@ -1,6 +1,6 @@
 //! A GPU failing frame after frame is turned off for the session (#3406):
-//! three failed readbacks in a row do it, and one that works between them
-//! starts the count again.
+//! three failed frames in a row do it, a frame counts once however many
+//! of its readbacks fail, and a good frame starts the count again.
 //!
 //! Its own binary: the GPU stays off for the rest of the process.
 
@@ -63,6 +63,17 @@ fn three_failed_frames_in_a_row_turn_the_gpu_off_and_a_good_one_resets_the_count
         return;
     }
 
+    // One frame with three failed readbacks is one failed frame.
+    let pixels = (SIZE.0 * SIZE.1) as usize;
+    let gpu = r.executor().gpu_pipeline_mut().expect("the stack's GPU pipeline");
+    assert!(gpu.stack_begin(SIZE.0, SIZE.1, 1));
+    for _ in 0..3 {
+        gpu.fail_next_readback();
+        gpu.flush_chain_and_download_linear(true, pixels);
+    }
+    assert_eq!(klipp_effects::gpu_context::gpu_turned_off(), None, "one frame failed, however many readbacks");
+    assert!(draw(&mut r, false), "the frame after it: {:?}", r.last_decline());
+
     // Two failed, one good, two failed: never three in a row.
     for fail in [true, true, false, true, true] {
         assert_eq!(draw(&mut r, fail), !fail, "failing {fail}: {:?}", r.last_decline());
@@ -74,7 +85,7 @@ fn three_failed_frames_in_a_row_turn_the_gpu_off_and_a_good_one_resets_the_count
         assert!(!draw(&mut r, true));
     }
     let why = klipp_effects::gpu_context::gpu_turned_off().expect("off after three in a row");
-    assert!(why.contains("3 GPU readbacks failed in a row"), "{why}");
+    assert!(why.contains("3 GPU frames"), "{why}");
     assert!(!draw(&mut r, false), "the next frame stays off the GPU");
     assert_eq!(r.last_decline(), Some("the GPU stack would not start"));
 

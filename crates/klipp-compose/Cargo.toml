@@ -62,6 +62,10 @@ name = "gpu_failing_every_frame_turns_off"
 path = "tests/gpu_failing_every_frame_turns_off.rs"
 
 [[test]]
+name = "gpu_failing_readbacks_outside_a_frame_turn_off"
+path = "tests/gpu_failing_readbacks_outside_a_frame_turn_off.rs"
+
+[[test]]
 name = "a_failed_gpu_frame_costs_that_frame"
 path = "tests/a_failed_gpu_frame_costs_that_frame.rs"
 
