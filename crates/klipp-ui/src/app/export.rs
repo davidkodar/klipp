@@ -159,6 +159,10 @@ pub(super) struct ExportDialogState {
     /// (MP4/MKV/MOV only — ignored for WebM). Opt-in; default false.
     pub(super) embed_chapters: bool,
     pub(super) normalize_loudness: bool,
+    /// The sequence and brief loudness the form last took (#3429).
+    pub(super) loudness_fitted_for: Option<(klipp_core::SequenceId, Option<u32>)>,
+    /// The target selected came from a brief, not a person or a preset.
+    pub(super) loudness_from_brief: bool,
     /// 0=YouTube/Spotify (-14), 1=Podcast (-16), 2=EBU R128 (-23), 3=ATSC A/85 (-24), 4=Custom
     pub(super) loudness_preset: u8,
     pub(super) custom_lufs: f32,
@@ -235,6 +239,8 @@ impl Default for ExportDialogState {
             captions_608: false, hdr10plus: false,
             embed_chapters: false,
             normalize_loudness: false,
+            loudness_fitted_for: None,
+            loudness_from_brief: false,
             loudness_preset: 0,
             custom_lufs: -14.0,
             custom_true_peak: klipp_core::DEFAULT_TRUE_PEAK_DBTP,
@@ -715,22 +721,53 @@ pub(super) fn apply_preset_to_dialog(dialog: &mut ExportDialogState, settings: &
         Some(_) => 0, // Unknown fps — fall back to Sequence
         None => 0,
     };
+    // Whatever it says now is the preset's, not a brief's.
+    dialog.loudness_from_brief = false;
     match settings.target_lufs {
-        Some(lufs) => {
-            dialog.normalize_loudness = true;
-            dialog.loudness_preset = match lufs as i32 {
-                -14 => 0,
-                -16 => 1,
-                -23 => 2,
-                -24 => 3,
-                _ => {
-                    dialog.custom_lufs = lufs;
-                    dialog.custom_true_peak = settings.true_peak_dbtp.unwrap_or(klipp_core::DEFAULT_TRUE_PEAK_DBTP);
-                    4
-                }
-            };
-        }
+        Some(lufs) => select_loudness(dialog, lufs, settings.true_peak_dbtp),
         None => { dialog.normalize_loudness = false; }
+    }
+}
+
+/// The form set to normalise to `lufs`: one of its named targets when it is
+/// one, else its custom one.
+fn select_loudness(dialog: &mut ExportDialogState, lufs: f32, true_peak: Option<f32>) {
+    dialog.normalize_loudness = true;
+    dialog.loudness_preset = match lufs as i32 {
+        -14 => 0,
+        -16 => 1,
+        -23 => 2,
+        -24 => 3,
+        _ => {
+            dialog.custom_lufs = lufs;
+            dialog.custom_true_peak = true_peak.unwrap_or(klipp_core::DEFAULT_TRUE_PEAK_DBTP);
+            4
+        }
+    };
+}
+
+/// The form takes a sequence's brief loudness (#3429), which a destination
+/// sets and playback is already heard at: once for each sequence and
+/// loudness, so unticking Normalize afterwards stays. A target the form
+/// already has, from a preset or a spec, stays; a target taken from one
+/// brief doesn't pass to a sequence whose brief names none.
+pub(super) fn fit_loudness_to_brief(dialog: &mut ExportDialogState, sequence: klipp_core::SequenceId, brief_lufs: Option<f32>) {
+    let key = (sequence, brief_lufs.map(f32::to_bits));
+    if dialog.loudness_fitted_for == Some(key) {
+        return;
+    }
+    dialog.loudness_fitted_for = Some(key);
+    match brief_lufs {
+        Some(lufs) if !dialog.normalize_loudness || dialog.loudness_from_brief => {
+            select_loudness(dialog, lufs, None);
+            dialog.loudness_from_brief = true;
+        }
+        // Another sequence's brief doesn't speak for this one.
+        None if dialog.loudness_from_brief => {
+            dialog.normalize_loudness = false;
+            dialog.loudness_from_brief = false;
+        }
+        _ => {}
     }
 }
 
@@ -923,6 +960,9 @@ impl KlippApp {
                         let custom = &self.prefs.export.custom_presets;
                         if let Some(preset) = all_presets.iter().chain(custom.iter()).find(|p| &p.id == last_id) {
                             apply_preset_to_dialog(&mut self.export_dialog, &preset.settings);
+                            // The brief's loudness is asked again: this may
+                            // have cleared what it just set.
+                            self.export_dialog.loudness_fitted_for = None;
                         }
                     }
                 }
@@ -1319,6 +1359,16 @@ impl KlippApp {
     /// size, so a preset of another shape picked on purpose (to box a
     /// picture in) stays.
     pub(super) fn fit_preset_to_sequence(&mut self) {
+        self.fit_preset_to_shape();
+        // After the preset, whose own target it mustn't override.
+        let (id, lufs) = {
+            let seq = self.state.sequence();
+            (seq.id, seq.brief.as_ref().and_then(|b| b.loudness_lufs))
+        };
+        fit_loudness_to_brief(&mut self.export_dialog, id, lufs);
+    }
+
+    fn fit_preset_to_shape(&mut self) {
         let res = self.state.sequence().resolution;
         let key = (self.state.active_sequence_idx, res.width, res.height);
         // Nothing chosen yet (the last preset is restored after the form's
@@ -1334,6 +1384,7 @@ impl KlippApp {
             if let Some(preset) = all_presets.iter().find(|p| p.id == id) {
                 apply_preset_to_dialog(&mut self.export_dialog, &preset.settings);
                 self.export_dialog.selected_preset_id = Some(id);
+                self.export_dialog.loudness_fitted_for = None;
             }
         }
     }
@@ -2907,6 +2958,90 @@ mod marker_export_tests {
         // 1.5 seconds at 30 fps -> frame 45
         let tc = RationalTime { value: 45, rate: 30 };
         assert_eq!(timecode_to_frame(&tc, 30.0), 45);
+    }
+}
+
+#[cfg(test)]
+mod brief_loudness_tests {
+    use super::*;
+
+    /// #3429: the form takes the loudness a brief asks for, as a named target
+    /// or a custom one, so what's exported is what playback was heard at.
+    #[test]
+    fn the_form_takes_the_briefs_loudness() {
+        let id = klipp_core::SequenceId::new();
+        let mut d = ExportDialogState::default();
+        fit_loudness_to_brief(&mut d, id, Some(-14.0));
+        assert_eq!(dialog_target_lufs(&d), Some(-14.0));
+        let mut d = ExportDialogState::default();
+        fit_loudness_to_brief(&mut d, id, Some(-19.0));
+        assert_eq!(dialog_target_lufs(&d), Some(-19.0));
+    }
+
+    /// With no loudness in the brief the form is as it was.
+    #[test]
+    fn no_brief_loudness_leaves_the_form_alone() {
+        let mut d = ExportDialogState::default();
+        fit_loudness_to_brief(&mut d, klipp_core::SequenceId::new(), None);
+        assert!(!d.normalize_loudness);
+    }
+
+    /// Unticking Normalize stays, for this sequence and loudness; another
+    /// sequence, or a new loudness in the brief, takes its own.
+    #[test]
+    fn a_person_can_turn_it_off() {
+        let (a, b) = (klipp_core::SequenceId::new(), klipp_core::SequenceId::new());
+        let mut d = ExportDialogState::default();
+        fit_loudness_to_brief(&mut d, a, Some(-14.0));
+        d.normalize_loudness = false;
+        fit_loudness_to_brief(&mut d, a, Some(-14.0));
+        assert_eq!(dialog_target_lufs(&d), None, "stays off");
+        fit_loudness_to_brief(&mut d, a, Some(-16.0));
+        assert_eq!(dialog_target_lufs(&d), Some(-16.0), "a new loudness");
+        d.normalize_loudness = false;
+        fit_loudness_to_brief(&mut d, b, Some(-23.0));
+        assert_eq!(dialog_target_lufs(&d), Some(-23.0), "another sequence");
+    }
+
+    /// A preset restored as the form opens may clear the brief's target, and
+    /// the form asks again after it; one with its own target keeps it.
+    #[test]
+    fn the_briefs_loudness_survives_a_restored_preset() {
+        let id = klipp_core::SequenceId::new();
+        let plain = ExportPresetSettings { target_lufs: None, ..klipp_core::builtin_presets()[0].settings.clone() };
+        let mut d = ExportDialogState::default();
+        fit_loudness_to_brief(&mut d, id, Some(-14.0));
+        apply_preset_to_dialog(&mut d, &plain);
+        d.loudness_fitted_for = None;
+        fit_loudness_to_brief(&mut d, id, Some(-14.0));
+        assert_eq!(dialog_target_lufs(&d), Some(-14.0));
+        let own = ExportPresetSettings { target_lufs: Some(-23.0), ..plain };
+        apply_preset_to_dialog(&mut d, &own);
+        d.loudness_fitted_for = None;
+        fit_loudness_to_brief(&mut d, id, Some(-14.0));
+        assert_eq!(dialog_target_lufs(&d), Some(-23.0), "the preset's own");
+    }
+
+    /// A brief's target doesn't pass to a sequence whose brief names none,
+    /// but one a preset chose isn't the brief's to take away.
+    #[test]
+    fn a_briefs_target_stays_with_its_sequence() {
+        let (a, b) = (klipp_core::SequenceId::new(), klipp_core::SequenceId::new());
+        let mut d = ExportDialogState::default();
+        fit_loudness_to_brief(&mut d, a, Some(-14.0));
+        fit_loudness_to_brief(&mut d, b, None);
+        assert_eq!(dialog_target_lufs(&d), None);
+        let mut d = ExportDialogState { normalize_loudness: true, loudness_preset: 2, ..Default::default() };
+        fit_loudness_to_brief(&mut d, a, None);
+        assert_eq!(dialog_target_lufs(&d), Some(-23.0));
+    }
+
+    /// A target the form already has, from a preset or spec, stays.
+    #[test]
+    fn a_target_already_chosen_stays() {
+        let mut d = ExportDialogState { normalize_loudness: true, loudness_preset: 2, ..Default::default() };
+        fit_loudness_to_brief(&mut d, klipp_core::SequenceId::new(), Some(-14.0));
+        assert_eq!(dialog_target_lufs(&d), Some(-23.0));
     }
 }
 
