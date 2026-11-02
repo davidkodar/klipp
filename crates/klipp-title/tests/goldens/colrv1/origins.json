@@ -1,0 +1,306 @@
+{
+"font": "test_glyphs-glyf_colr_1.ttf",
+"origins": {
+"clip_box_center": [
+10,
+38,
+986116
+],
+"colored_circles_v1": [
+5,
+48,
+986625
+],
+"composite_CLEAR": [
+-2,
+50,
+985600
+],
+"composite_COLOR_BURN": [
+-2,
+50,
+985618
+],
+"composite_COLOR_DODGE": [
+-2,
+50,
+985617
+],
+"composite_DARKEN": [
+-2,
+50,
+985615
+],
+"composite_DEST": [
+-2,
+50,
+985602
+],
+"composite_DEST_ATOP": [
+-2,
+50,
+985610
+],
+"composite_DEST_IN": [
+-2,
+50,
+985606
+],
+"composite_DEST_OUT": [
+-2,
+50,
+985608
+],
+"composite_DEST_OVER": [
+-2,
+50,
+985604
+],
+"composite_DIFFERENCE": [
+-2,
+50,
+985621
+],
+"composite_EXCLUSION": [
+-2,
+50,
+985622
+],
+"composite_HARD_LIGHT": [
+-2,
+50,
+985619
+],
+"composite_HSL_COLOR": [
+-2,
+50,
+985626
+],
+"composite_HSL_HUE": [
+-2,
+50,
+985624
+],
+"composite_HSL_LUMINOSITY": [
+-2,
+50,
+985627
+],
+"composite_HSL_SATURATION": [
+-2,
+50,
+985625
+],
+"composite_LIGHTEN": [
+-2,
+50,
+985616
+],
+"composite_MULTIPLY": [
+-2,
+50,
+985623
+],
+"composite_OVERLAY": [
+-2,
+50,
+985614
+],
+"composite_PLUS": [
+-2,
+50,
+985612
+],
+"composite_SCREEN": [
+-2,
+50,
+985613
+],
+"composite_SOFT_LIGHT": [
+-2,
+50,
+985620
+],
+"composite_SRC": [
+-2,
+50,
+985601
+],
+"composite_SRC_ATOP": [
+-2,
+50,
+985609
+],
+"composite_SRC_IN": [
+-2,
+50,
+985605
+],
+"composite_SRC_OUT": [
+-2,
+50,
+985607
+],
+"composite_SRC_OVER": [
+-2,
+50,
+985603
+],
+"composite_XOR": [
+-2,
+50,
+985611
+],
+"foreground_color_linear_alpha_0.3": [
+2,
+48,
+985857
+],
+"foreground_color_radial_alpha_1": [
+2,
+48,
+985858
+],
+"foreground_color_solid_alpha_1": [
+2,
+48,
+985862
+],
+"gradient_p2_skewed": [
+2,
+48,
+986368
+],
+"inset_clipped_radial_reflect": [
+2,
+46,
+986122
+],
+"linear_gradient_extend_mode_pad": [
+-2,
+50,
+984320
+],
+"linear_gradient_extend_mode_reflect": [
+-2,
+50,
+984322
+],
+"linear_gradient_extend_mode_repeat": [
+-2,
+50,
+984321
+],
+"linear_repeat_0_1": [
+2,
+48,
+983296
+],
+"no_cycle_multi_colrglyph": [
+-2,
+50,
+987648
+],
+"paint_glyph_nested_rotate_center_translate": [
+-2,
+50,
+988173
+],
+"radial_contained_gradient_extend_mode_pad": [
+-2,
+50,
+984323
+],
+"radial_contained_gradient_extend_mode_reflect": [
+-2,
+50,
+984325
+],
+"radial_contained_gradient_extend_mode_repeat": [
+-2,
+50,
+984324
+],
+"radial_horizontal_gradient_extend_mode_pad": [
+-2,
+50,
+984326
+],
+"radial_horizontal_gradient_extend_mode_reflect": [
+-2,
+50,
+984328
+],
+"radial_horizontal_gradient_extend_mode_repeat": [
+-2,
+50,
+984327
+],
+"rotate_25_center_500.0_500.0": [
+10,
+39,
+984578
+],
+"scale_0.5_1.5_center_500.0_500.0": [
+10,
+45,
+983808
+],
+"skew_-10_20_center_500.0_500.0": [
+9,
+39,
+984836
+],
+"solid_colorline_alpha": [
+-2,
+50,
+987136
+],
+"sweep_-45_45_repeat_narrow": [
+-2,
+50,
+983583
+],
+"sweep_0_360_pad_narrow": [
+-2,
+50,
+983552
+],
+"sweep_270_440_pad_wide": [
+-2,
+50,
+983597
+],
+"sweep_60_300_reflect_wide": [
+-2,
+50,
+983601
+],
+"sweep_90_0_repeat_narrow": [
+-2,
+50,
+983579
+],
+"sweep_coincident_angles_forward_linen_gray_pad": [
+-2,
+50,
+987907
+],
+"sweep_coincident_stops_forward_blue_red_pad": [
+-2,
+50,
+987916
+],
+"transform_matrix_0.9659_0.2588_-0.2588_0.9659_0_0": [
+3,
+44,
+985090
+],
+"translate_200_200": [
+10,
+48,
+985349
+]
+},
+"px": 48
+}

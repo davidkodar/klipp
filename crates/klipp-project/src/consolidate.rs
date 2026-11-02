@@ -116,6 +116,10 @@ pub struct ConsolidateResult {
     pub files_trimmed: usize,
     /// Font families copied in (#3009); one left out is in `warnings`.
     pub fonts_copied: Vec<String>,
+    /// The copy checked (#3241): every resource it refers to and where it
+    /// leads, as written to its `collect_manifest.json`; `Err` when it
+    /// couldn't be checked.
+    pub verification: Result<crate::collect_verify::Manifest, String>,
 }
 
 /// Errors that can abort consolidation before completion.
@@ -200,6 +204,8 @@ struct CopyPlan {
     texture_new_paths: HashMap<String, PathBuf>,
     /// New LUT path, if the original was present and exists on disk.
     lut_new_path: Option<PathBuf>,
+    input_lut_new_path: Option<PathBuf>,
+    viewing_lut_new_path: Option<PathBuf>,
     /// A file a grade node reads → its new absolute path (#1016).
     node_file_new_paths: HashMap<PathBuf, PathBuf>,
     offline_skipped: Vec<String>,
@@ -344,59 +350,50 @@ fn build_copy_plan(
         }
     }
 
-    // Global LUT
-    let lut_new_path = match &color_settings.global_lut_path {
+    // The colour settings' LUTs: the timeline's, the default input and
+    // the viewing LUT.
+    let mut lut = |path: &Option<PathBuf>, what: &str| match path {
         Some(lut) if lut.exists() && is_symlinked_leaf(lut) => {
-            warnings.push(format!(
-                "Refused symlinked global LUT (potential exfiltration): {}",
-                lut.display()
-            ));
+            warnings.push(format!("Refused symlinked {what} (potential exfiltration): {}", lut.display()));
             None
         }
         Some(lut) if lut.exists() => {
-            let lname = lut
-                .file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_else(|| "project.cube".to_string());
+            let lname = lut.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "project.cube".to_string());
             let dst = collision_safe_name(&lname, &mut used_lut);
-            items.push(CopyItem {
-                src: lut.clone(),
-                dst_name: dst.clone(),
-                subfolder: "luts",
-            });
+            items.push(CopyItem { src: lut.clone(), dst_name: dst.clone(), subfolder: "luts" });
             Some(options.dest_dir.join("media").join("luts").join(&dst))
         }
         Some(lut) => {
-            warnings.push(format!(
-                "Global LUT not found on disk, skipped: {}",
-                lut.display()
-            ));
+            warnings.push(format!("{} not found on disk, skipped: {}", capitalise(what), lut.display()));
             None
         }
         None => None,
     };
+    let lut_new_path = lut(&color_settings.global_lut_path, "global LUT");
+    let input_lut_new_path = lut(&color_settings.default_input_lut, "default input LUT");
+    let viewing_lut_new_path = lut(&color_settings.viewing_lut, "viewing LUT");
 
-    // Title texture fills — dedupe by source path so the same texture used
-    // by many title clips is only copied once.
+    // The files titles draw: each text layer's texture and each picture
+    // layer's image, once each however many titles use them.
     for seq in sequences {
         for track in &seq.tracks {
             for clip in &track.clips {
                 if let ClipKind::Title(td) = &clip.kind {
-                    let tex_owned = td.texture_fill_path();
-                    if let Some(tex) = tex_owned.as_deref() {
+                    for tex_owned in title_files(td) {
+                        let tex = tex_owned.as_str();
                         if texture_new_paths.contains_key(tex) {
                             continue;
                         }
                         let p = Path::new(tex);
                         if !p.exists() {
                             warnings.push(format!(
-                                "Title texture not found on disk, skipped: {tex}"
+                                "Title file not found on disk, skipped: {tex}"
                             ));
                             continue;
                         }
                         if is_symlinked_leaf(p) {
                             warnings.push(format!(
-                                "Refused symlinked title texture (potential exfiltration): {tex}"
+                                "Refused symlinked title file (potential exfiltration): {tex}"
                             ));
                             continue;
                         }
@@ -455,6 +452,8 @@ fn build_copy_plan(
         skim_new_paths,
         texture_new_paths,
         lut_new_path,
+        input_lut_new_path,
+        viewing_lut_new_path,
         node_file_new_paths,
         offline_skipped,
         warnings,
@@ -465,7 +464,7 @@ fn build_copy_plan(
 /// The files a graph's nodes read: LUTs, external mattes and
 /// difference-key plates, in the graph and in every graph a Compound node
 /// in it holds (#1042).
-fn node_files(g: &NodeGraph) -> Vec<&PathBuf> {
+pub(crate) fn node_files(g: &NodeGraph) -> Vec<&PathBuf> {
     let mut out = Vec::new();
     for n in &g.nodes {
         let p = &n.params;
@@ -514,6 +513,40 @@ pub(crate) fn resolve_collected_grade_files(g: &mut NodeGraph, dir: &Path) {
             resolve_collected_grade_files(inner, dir);
         }
     }
+}
+
+/// Each file a title draws: a text layer's texture, a picture layer's
+/// image (#3241).
+pub(crate) fn title_files(td: &klipp_timeline::TitleData) -> Vec<String> {
+    let mut out = Vec::new();
+    for o in &td.objects {
+        match &o.content {
+            klipp_timeline::TitleObjectContent::TextBox(tb) => out.extend(tb.texture_fill.as_ref().and_then(|t| t.file_path()).map(str::to_string)),
+            klipp_timeline::TitleObjectContent::Image(img) => out.push(img.path.clone()),
+            _ => {}
+        }
+    }
+    out
+}
+
+/// Each file path a title draws, to change in place.
+fn for_each_title_file(td: &mut klipp_timeline::TitleData, mut f: impl FnMut(&mut String)) {
+    for o in &mut td.objects {
+        match &mut o.content {
+            klipp_timeline::TitleObjectContent::TextBox(tb) => {
+                if let Some(p) = tb.texture_fill.as_mut().and_then(|t| t.file_path_mut()) {
+                    f(p);
+                }
+            }
+            klipp_timeline::TitleObjectContent::Image(img) => f(&mut img.path),
+            _ => {}
+        }
+    }
+}
+
+fn capitalise(s: &str) -> String {
+    let mut c = s.chars();
+    c.next().map(|first| first.to_uppercase().chain(c).collect()).unwrap_or_default()
 }
 
 /// Point every file `g`'s nodes read at its copy, where it has one, in
@@ -664,17 +697,11 @@ fn remap_sequences(original: &[Sequence], plan: &CopyPlan) -> Vec<Sequence> {
         for track in &mut seq.tracks {
             for clip in &mut track.clips {
                 if let ClipKind::Title(td) = &mut clip.kind {
-                    if let Some(orig) = td.texture_fill_path() {
-                        if let Some(new) = plan.texture_new_paths.get(&orig) {
-                            if let Some(tb) = td.primary_text_mut() {
-                                if let Some(t) = tb.texture_fill.as_mut() {
-                                    if let Some(p) = t.file_path_mut() {
-                                        *p = new.to_string_lossy().to_string();
-                                    }
-                                }
-                            }
+                    for_each_title_file(td, |p| {
+                        if let Some(new) = plan.texture_new_paths.get(p.as_str()) {
+                            *p = new.to_string_lossy().to_string();
                         }
-                    }
+                    });
                 }
             }
         }
@@ -742,6 +769,15 @@ pub fn consolidate_project(
         return Err(e);
     }
 
+    // Each whole copy's analysis results come along (#3241); a cut file's
+    // don't fit it.
+    let cache = klipp_media::disk_cache::analysis_dir();
+    for item in media_pool.all() {
+        if let Some(name) = plan.media_new_paths.get(&item.id).and_then(|p| p.file_name()).and_then(|n| n.to_str()) {
+            crate::collect_analysis::carry_out(&cache, &item.path, &options.dest_dir, name);
+        }
+    }
+
     // Remap MediaPool and sequences to use the new paths.
     let new_pool = remap_media_pool(media_pool, &plan);
     let new_seqs = remap_sequences(sequences, &plan);
@@ -773,6 +809,8 @@ pub fn consolidate_project(
     // project names, so it can be relinked rather than lost: the open
     // path keeps a missing LUT for the same reason (#1019).
     new_color.global_lut_path = plan.lut_new_path.clone().or_else(|| color_settings.global_lut_path.clone());
+    new_color.default_input_lut = plan.input_lut_new_path.clone().or_else(|| color_settings.default_input_lut.clone());
+    new_color.viewing_lut = plan.viewing_lut_new_path.clone().or_else(|| color_settings.viewing_lut.clone());
 
     // Save the consolidated project in the destination directory. The
     // existing save_project_with_color_and_backups automatically relativises
@@ -822,7 +860,14 @@ pub fn consolidate_project(
         return Err(ConsolidateError::SaveFailed(e));
     }
 
+    // Checked against the copy alone, and the manifest written beside it.
+    let verification = crate::collect_verify::verify_and_write(&options.dest_dir);
+    match &verification {
+        Ok(m) => plan.warnings.extend(m.failures()),
+        Err(e) => plan.warnings.push(format!("The copy could not be checked: {e}")),
+    }
     Ok(ConsolidateResult {
+        verification,
         files_copied: files_total,
         offline_skipped: plan.offline_skipped,
         warnings: plan.warnings,

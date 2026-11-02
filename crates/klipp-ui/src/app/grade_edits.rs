@@ -77,6 +77,14 @@ pub(super) fn apply_grade(
     GradeApplied { edits, refused, labels }
 }
 
+/// How many other pieces of its shot the Colour page offers `clip`'s
+/// grade to: only once it has a grade, and only when there are some.
+pub(crate) fn shot_pieces_offer(seq: &klipp_timeline::Sequence, clip: klipp_core::ClipId) -> Option<usize> {
+    let graded = seq.all_clips().find(|c| c.id == clip).is_some_and(|c| !c.grade_is_identity());
+    let n = if graded { seq.ungraded_shot_pieces(clip).len() } else { 0 };
+    (n > 0).then_some(n)
+}
+
 /// One line for a toast out of the reasons targets were passed over.
 pub(super) fn refusals_line(refused: &[klipp_nodes::CannotAppend]) -> String {
     refused.iter().map(|r| r.to_string()).collect::<Vec<_>>().join("; ")
@@ -348,6 +356,57 @@ mod grade_still_tests {
         let EditCommand::SetNodeGraph { new_graph, .. } = &edits[0] else { panic!("a graph edit") };
         assert!(own.iter().all(|id| new_graph.nodes.iter().any(|n| n.id == *id)), "the clip's own nodes stay");
         assert!(new_graph.nodes.iter().any(|n| n.kind == klipp_nodes::NodeKind::Lut3D), "the look is added");
+    }
+
+    fn graded(c: &mut Clip) {
+        c.edit_grade(|g| {
+            let id = g.ensure_corrector();
+            g.nodes.iter_mut().find(|n| n.id == id).unwrap().params.exposure = Some(0.7);
+        });
+        assert!(!c.grade_is_identity());
+    }
+
+    #[test]
+    fn a_split_shot_s_grade_goes_on_its_other_ungraded_pieces_as_one_step() {
+        let mut seq = Sequence::new_default();
+        let shot = Clip::media(klipp_core::MediaId::new(), t(0), t(9), t(10), t(19));
+        let other = clip(9, 12);
+        let id = shot.id;
+        seq.tracks[0].clips = vec![shot, other.clone()];
+        let (a, rest) = seq.tracks[0].split_at(id, t(3)).unwrap();
+        let (b, c) = seq.tracks[0].split_at(rest.id, t(6)).unwrap();
+        // The middle piece graded: the other two are its shot, the next
+        // source's clip is not.
+        graded(seq.tracks[0].find_clip_mut(b.id).unwrap());
+        let mut pieces = seq.ungraded_shot_pieces(b.id);
+        pieces.sort_by_key(|p| seq.all_clips().position(|c| c.id == *p));
+        assert_eq!(pieces, vec![a.id, c.id]);
+        assert_eq!(shot_pieces_offer(&seq, b.id), Some(2));
+        assert_eq!(shot_pieces_offer(&seq, a.id), None, "an ungraded piece offers nothing");
+
+        let grade = seq.all_clips().find(|x| x.id == b.id).unwrap().grade().clone();
+        let GradeApplied { edits, .. } = apply_grade(&seq, &grade, &[], &pieces, false);
+        let (after, undone) = apply(seq.clone(), &edits);
+        let clip_of = |s: &Sequence, id| s.all_clips().find(|x| x.id == id).unwrap().clone();
+        assert!(!clip_of(&after, a.id).grade_is_identity() && !clip_of(&after, c.id).grade_is_identity());
+        assert!(clip_of(&after, other.id).grade_is_identity(), "another source's clip is left alone");
+        assert!(clip_of(&undone, a.id).grade_is_identity() && clip_of(&undone, c.id).grade_is_identity(), "one undo takes it off both");
+    }
+
+    #[test]
+    fn a_piece_with_its_own_grade_or_past_a_gap_is_not_offered_the_grade() {
+        let mut seq = Sequence::new_default();
+        let media = klipp_core::MediaId::new();
+        let shot = Clip::media(media, t(0), t(6), t(0), t(6));
+        let id = shot.id;
+        // The same file again after a gap, its range carrying on.
+        let later = Clip::media(media, t(7), t(9), t(6), t(8));
+        seq.tracks[0].clips = vec![shot, later];
+        let (a, b) = seq.tracks[0].split_at(id, t(3)).unwrap();
+        graded(seq.tracks[0].find_clip_mut(a.id).unwrap());
+        assert_eq!(seq.ungraded_shot_pieces(a.id), vec![b.id]);
+        graded(seq.tracks[0].find_clip_mut(b.id).unwrap());
+        assert!(seq.ungraded_shot_pieces(a.id).is_empty(), "a graded piece keeps its grade");
     }
 
     /// The edits applied, then undone, as the app's one step does.

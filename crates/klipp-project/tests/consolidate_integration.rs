@@ -693,6 +693,65 @@ fn a_collected_download_keeps_its_credit() {
     let _ = std::fs::remove_dir_all(&dest);
 }
 
+/// #3241: a collected copy is checked on its own paths, and the manifest
+/// written beside it. A reference left at the original fails although
+/// the original is still there, as do a `..` path out of the folder and a
+/// file inside it that is a link out; checked again, a changed file and
+/// a manifest naming a path out of the folder are said.
+#[test]
+fn a_collected_copy_is_verified_on_its_own_paths() {
+    use klipp_project::collect_verify::{reverify, verify, Status, MANIFEST};
+    let source_dir = tmp_path("vf_src");
+    std::fs::create_dir_all(&source_dir).unwrap();
+    save_project_with_color(&source_dir, &[Sequence::new_default()], &MediaPool::new(), &ColorSettings::default(), None, None, "").unwrap();
+    let media_dir = tmp_path("vf_media");
+    std::fs::create_dir_all(&media_dir).unwrap();
+    let original = media_dir.join("clip_a.mp4");
+    std::fs::write(&original, b"fake media a").unwrap();
+    let mut pool = MediaPool::new();
+    pool.add(make_media_item(original.clone()));
+    let dest = tmp_path("vf_dest");
+    let result = run_consolidate(&source_dir, &pool, dest.clone()).unwrap();
+    let manifest = result.verification.expect("checked");
+    assert!(manifest.verified(), "{:?}", manifest.failures());
+    let media = manifest.resources.iter().find(|r| r.kind == "media").expect("the media listed");
+    assert_eq!((media.path.as_str(), media.size, media.status), ("media/clip_a.mp4", 12, Status::Collected));
+    assert_eq!(media.sha256.as_deref().map(str::len), Some(64));
+    assert!(dest.join(MANIFEST).is_file());
+    assert_eq!(reverify(&dest).unwrap(), Vec::<String>::new());
+
+    let set_path = |p: &str| {
+        let file = dest.join("media").join("manifest.json");
+        let mut v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+        v["items"][0]["path"] = serde_json::json!(p);
+        std::fs::write(&file, v.to_string()).unwrap();
+    };
+    let status = || verify(&dest).unwrap().resources.iter().find(|r| r.kind == "media").unwrap().status;
+    set_path(original.to_str().unwrap());
+    assert_eq!(status(), Status::Outside, "the original, still there, is not the copy");
+    set_path(&format!("../{}/clip_a.mp4", media_dir.file_name().unwrap().to_str().unwrap()));
+    assert_eq!(status(), Status::Outside, "a .. path out of the folder");
+    set_path("media/clip_a.mp4");
+    assert_eq!(status(), Status::Collected);
+    let copy = dest.join("media/clip_a.mp4");
+    std::fs::remove_file(&copy).unwrap();
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(&original, &copy).unwrap();
+        assert_eq!(status(), Status::Outside, "a link inside the folder that leads out");
+        std::fs::remove_file(&copy).unwrap();
+    }
+    std::fs::write(&copy, b"fake media A").unwrap();
+    assert_eq!(reverify(&dest).unwrap(), vec!["media/clip_a.mp4: changed since it was collected".to_string()]);
+    let hostile = r#"{"format":1,"resources":[{"id":"x","kind":"media","path":"../../etc/passwd","size":1,"status":"collected"}]}"#;
+    std::fs::write(dest.join(MANIFEST), hostile).unwrap();
+    assert_eq!(reverify(&dest).unwrap(), vec!["../../etc/passwd: not a path inside the folder".to_string()]);
+
+    for d in [&source_dir, &media_dir, &dest] {
+        let _ = std::fs::remove_dir_all(d);
+    }
+}
+
 /// A collected folder moved elsewhere, with the originals gone as on
 /// another machine, keeps its grades' files: a clip's LUT and matte and a
 /// Look's LUT are read from inside the folder where it now is, not from
@@ -733,5 +792,111 @@ fn a_moved_collected_folder_keeps_its_grade_files() {
         assert!(p.starts_with(&moved) && p.is_file(), "{} isn't in the moved folder", p.display());
     }
     let _ = std::fs::remove_dir_all(&source_dir);
+    let _ = std::fs::remove_dir_all(&moved);
+}
+
+/// #3241: every file a title draws comes along, not only the first text's
+/// texture: a second text's texture and a picture layer's image; and the
+/// default input and viewing LUTs with the timeline's. The copy verifies
+/// with each of them inside it.
+#[test]
+fn collect_brings_every_file_a_title_draws_and_every_lut() {
+    let source_dir = tmp_path("tf_src");
+    let outside = tmp_path("tf_outside");
+    let dest = tmp_path("tf_dst");
+    std::fs::create_dir_all(&source_dir).unwrap();
+    std::fs::create_dir_all(&outside).unwrap();
+    let (tex, img, view) = (outside.join("grain.png"), outside.join("logo.png"), outside.join("view.cube"));
+    for f in [&tex, &img, &view] {
+        std::fs::write(f, b"file").unwrap();
+    }
+    let text = |id: u32, texture: Option<&std::path::Path>| {
+        let mut content = serde_json::json!({ "text": "Hi", "font_size": 40.0, "font_name": "Inter", "font_style": "Regular", "color": [255, 255, 255, 255], "alignment": "Left" });
+        if let Some(t) = texture {
+            content["texture_fill"] = serde_json::json!({ "enabled": true, "source": { "File": t.to_str().unwrap() } });
+        }
+        serde_json::json!({ "id": id, "transform": { "center": { "x": 0.5, "y": 0.5 }, "size": { "x": 1.0, "y": 1.0 }, "rotation": 0.0, "anchor_norm": { "x": 0.5, "y": 0.5 } }, "content": { "TextBox": content } })
+    };
+    let mut image = text(2, None);
+    image["content"] = serde_json::json!({ "Image": { "path": img.to_str().unwrap() } });
+    let td: klipp_timeline::TitleData = serde_json::from_value(serde_json::json!({ "objects": [text(0, None), text(1, Some(&tex)), image], "next_object_id": 3 })).unwrap();
+    let mut seq = Sequence::new_default();
+    let mut clip = klipp_timeline::Clip::gap(RationalTime::from_frames(0, 24), RationalTime::from_frames(24, 24));
+    clip.kind = klipp_timeline::ClipKind::Title(td);
+    seq.tracks[0].clips.push(clip);
+    let colour = ColorSettings { viewing_lut: Some(view.clone()), ..Default::default() };
+    save_project_with_color(&source_dir, std::slice::from_ref(&seq), &MediaPool::new(), &colour, None, None, "").unwrap();
+    let options = ConsolidateOptions { dest_dir: dest.clone(), include_proxies: false, include_skims: false, mode: Default::default(), looks: Vec::new(), fonts: Vec::new() };
+    let result = consolidate_project(&source_dir, &MediaPool::new(), std::slice::from_ref(&seq), &colour, options, None).unwrap();
+    let manifest = result.verification.expect("checked");
+    assert!(manifest.verified(), "{:?}", manifest.failures());
+    let kinds: Vec<(&str, &str)> = manifest.resources.iter().map(|r| (r.kind.as_str(), r.path.as_str())).collect();
+    assert!(kinds.contains(&("title file", "media/textures/grain.png")) && kinds.contains(&("title file", "media/textures/logo.png")) && kinds.contains(&("lut", "media/luts/view.cube")), "{kinds:?}");
+    for d in [&source_dir, &outside, &dest] {
+        let _ = std::fs::remove_dir_all(d);
+    }
+}
+
+/// #3241: the collected folder moved elsewhere, with every original gone
+/// as on another machine, opens with nothing offline: its media, a title's
+/// picture and texture, a grade's LUT and the viewing LUT all read from
+/// inside it, and it verifies and checks again where it now is.
+#[test]
+fn a_collected_folder_moved_away_from_its_originals_opens_whole() {
+    use klipp_nodes::{Node, NodeGraph, NodeId, NodeKind, NodeParams};
+    let (source_dir, outside, dest, moved) = (tmp_path("mv_src"), tmp_path("mv_outside"), tmp_path("mv_dst"), tmp_path("mv_moved"));
+    std::fs::create_dir_all(&source_dir).unwrap();
+    std::fs::create_dir_all(&outside).unwrap();
+    let (media, tex, img, lut, view) = (outside.join("take.mp4"), outside.join("grain.png"), outside.join("logo.png"), outside.join("look.cube"), outside.join("view.cube"));
+    for f in [&media, &tex, &img, &lut, &view] {
+        std::fs::write(f, b"file").unwrap();
+    }
+    let mut pool = MediaPool::new();
+    let item = make_media_item(media.clone());
+    let media_id = item.id;
+    pool.add(item);
+    let text = serde_json::json!({ "id": 0, "transform": { "center": { "x": 0.5, "y": 0.5 }, "size": { "x": 1.0, "y": 1.0 }, "rotation": 0.0, "anchor_norm": { "x": 0.5, "y": 0.5 } }, "content": { "TextBox": { "text": "Hi", "font_size": 40.0, "font_name": "Inter", "font_style": "Regular", "color": [255, 255, 255, 255], "alignment": "Left", "texture_fill": { "enabled": true, "source": { "File": tex.to_str().unwrap() } } } } });
+    let mut image = text.clone();
+    image["id"] = serde_json::json!(1);
+    image["content"] = serde_json::json!({ "Image": { "path": img.to_str().unwrap() } });
+    let td: klipp_timeline::TitleData = serde_json::from_value(serde_json::json!({ "objects": [text, image], "next_object_id": 2 })).unwrap();
+    let mut seq = Sequence::new_default();
+    let t = |f| RationalTime::from_frames(f, 24);
+    let mut shot = klipp_timeline::Clip::media(media_id, t(0), t(24), t(0), t(24));
+    let mut grade = NodeGraph::default();
+    grade.nodes.push(Node { id: NodeId::new_v4(), kind: NodeKind::Lut3D, label: String::new(), enabled: true, params: NodeParams { lut_path: Some(lut.clone()), ..Default::default() }, keyframes: Default::default(), output_link: None, input_links: Vec::new() });
+    shot.set_grade(grade);
+    seq.tracks[0].clips.push(shot);
+    let mut title = klipp_timeline::Clip::gap(t(24), t(48));
+    title.kind = klipp_timeline::ClipKind::Title(td);
+    seq.tracks[0].clips.push(title);
+    let colour = ColorSettings { viewing_lut: Some(view.clone()), ..Default::default() };
+    save_project_with_color(&source_dir, std::slice::from_ref(&seq), &pool, &colour, None, None, "").unwrap();
+    let options = ConsolidateOptions { dest_dir: dest.clone(), include_proxies: false, include_skims: false, mode: Default::default(), looks: Vec::new(), fonts: Vec::new() };
+    let result = consolidate_project(&source_dir, &pool, std::slice::from_ref(&seq), &colour, options, None).unwrap();
+    assert!(result.verification.as_ref().is_ok_and(|m| m.verified()), "{:?}", result.verification.map(|m| m.failures()));
+
+    // Another machine: the originals gone, the folder somewhere else.
+    std::fs::remove_dir_all(&outside).unwrap();
+    std::fs::remove_dir_all(&source_dir).unwrap();
+    std::fs::rename(&dest, &moved).unwrap();
+    let (seqs, pool, colour, ..) = load_project(&moved).unwrap();
+    let root = moved.canonicalize().unwrap();
+    let inside = |p: &std::path::Path| p.canonicalize().is_ok_and(|r| r.starts_with(&root));
+    assert!(pool.all().all(|i| !i.offline && inside(&i.path)), "media offline or outside");
+    assert!(colour.viewing_lut.as_deref().is_some_and(inside), "{:?}", colour.viewing_lut);
+    let clips: Vec<_> = seqs.iter().flat_map(|s| s.all_clips()).collect();
+    let luts: Vec<std::path::PathBuf> = clips.iter().map(|c| c.own_grade()).flat_map(|g| g.nodes.iter().filter_map(|n| n.params.lut_path.clone()).collect::<Vec<_>>()).collect();
+    assert!(!luts.is_empty() && luts.iter().all(|p| inside(p)), "{luts:?}");
+    let title_files: Vec<String> = clips.iter().filter_map(|c| match &c.kind { klipp_timeline::ClipKind::Title(td) => Some(td), _ => None }).flat_map(|td| td.objects.iter().filter_map(|o| match &o.content {
+        klipp_timeline::TitleObjectContent::Image(i) => Some(i.path.clone()),
+        klipp_timeline::TitleObjectContent::TextBox(tb) => tb.texture_fill.as_ref().and_then(|t| t.file_path()).map(str::to_string),
+        _ => None,
+    }).collect::<Vec<_>>()).collect();
+    assert_eq!(title_files.len(), 2, "{title_files:?}");
+    assert!(title_files.iter().all(|p| inside(std::path::Path::new(p))), "{title_files:?}");
+    let again = klipp_project::collect_verify::verify(&moved).unwrap();
+    assert!(again.verified(), "{:?}", again.failures());
+    assert_eq!(klipp_project::collect_verify::reverify(&moved).unwrap(), Vec::<String>::new());
     let _ = std::fs::remove_dir_all(&moved);
 }

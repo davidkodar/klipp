@@ -110,6 +110,10 @@ fn cases() -> Vec<(&'static str, BuiltinEffect)> {
             ghost_intensity: 0.4, chromatic_aberration: 0.3,
         }),
         ("LightWrap", LightWrap { width: 6.0, intensity: 0.5, softness: 0.5 }),
+        // Boxes slid along the rows and columns (#3176); the widest's
+        // reach far past the frame's edges.
+        ("LightWrap", LightWrap { width: 40.0, intensity: 0.5, softness: 2.0 }),
+        ("LightWrap", LightWrap { width: 400.0, intensity: 0.5, softness: 8.0 }),
         ("AnamorphicStreak", AnamorphicStreak { threshold: 0.7, length: 60.0, intensity: 0.6, tint: 0.5 }),
         ("FilmHalation", FilmHalation { threshold: 0.6, radius: 6.0, intensity: 0.5, hue: 0.05 }),
         ("Invert", Invert { mix: 0.7 }),
@@ -317,6 +321,47 @@ fn every_effect_matches_between_cpu_and_gpu() {
         }
     }
     assert!(failures.is_empty(), "{failures:#?}");
+}
+
+/// At its widest (a width of 400 and a softness of 8, a sigma of 3200
+/// pixels) a light wrap costs about what a narrow one does, on the GPU
+/// and the CPU, and so does an outer glow on the GPU: their boxes are
+/// slid, not summed at every pixel (#3176).
+/// Summed, the widest took 30 s a frame on the CPU and ran past the GPU's
+/// job time limit.
+#[test]
+fn the_widest_light_wrap_costs_what_a_narrow_one_does() {
+    let (w, h) = (1920u32, 1080u32);
+    let input = checker(w, h);
+    let narrow = [BuiltinEffect::LightWrap { width: 20.0, intensity: 0.5, softness: 1.0 }];
+    let widest = [BuiltinEffect::LightWrap { width: 400.0, intensity: 0.5, softness: 8.0 }];
+    let time = |f: &mut dyn FnMut() -> Vec<f32>| {
+        let _ = f();
+        let t = std::time::Instant::now();
+        let out = f();
+        (t.elapsed().as_secs_f64() * 1000.0, out)
+    };
+    let (cpu_narrow, _) = time(&mut || apply_effects(&narrow, input.clone(), w, h));
+    let (cpu_widest, cpu) = time(&mut || apply_effects(&widest, input.clone(), w, h));
+    eprintln!("CPU light wrap at 1080p: narrow {cpu_narrow:.0} ms, widest {cpu_widest:.0} ms");
+    assert!(cpu_widest < cpu_narrow * 3.0 + 200.0, "the widest took {cpu_widest:.0} ms on the CPU, the narrow {cpu_narrow:.0} ms");
+    let Some(mut gpu) = GpuEffectsPipeline::new() else {
+        eprintln!("skipping the GPU: none");
+        return;
+    };
+    let (gpu_narrow, _) = time(&mut || gpu.apply_effects(&narrow, &input, w, h));
+    let (gpu_widest, on_gpu) = time(&mut || gpu.apply_effects(&widest, &input, w, h));
+    eprintln!("GPU light wrap at 1080p: narrow {gpu_narrow:.1} ms, widest {gpu_widest:.1} ms");
+    assert!(gpu_widest < gpu_narrow * 3.0 + 50.0, "the widest took {gpu_widest:.1} ms on the GPU, the narrow {gpu_narrow:.1} ms");
+    let (worst, _) = diff(&cpu, &on_gpu);
+    assert!(worst <= 1, "the widest differs by {worst} levels between the CPU and the GPU");
+    // An outer glow at its widest, 0.3 of the frame, through the layer's
+    // own boxes.
+    let glow = |radius| [BuiltinEffect::OuterGlow { radius, intensity: 0.8, color: [250, 150, 50] }];
+    let (glow_narrow, _) = time(&mut || gpu.apply_effects(&glow(0.01), &input, w, h));
+    let (glow_widest, _) = time(&mut || gpu.apply_effects(&glow(0.3), &input, w, h));
+    eprintln!("GPU outer glow at 1080p: narrow {glow_narrow:.1} ms, widest {glow_widest:.1} ms");
+    assert!(glow_widest < glow_narrow * 3.0 + 50.0, "the widest glow took {glow_widest:.1} ms on the GPU, the narrow {glow_narrow:.1} ms");
 }
 
 /// What the two interpolations mean: both read the LUT exactly on its

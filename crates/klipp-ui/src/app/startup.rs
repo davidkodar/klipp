@@ -160,6 +160,8 @@ impl KlippApp {
             multicam_grid: None,
             multi_edit: None,
             ui_scale_applied: None,
+            size_settling: Default::default(),
+            maximized_settling: Default::default(),
             filmstrip_refining: Default::default(),
             filmstrip_rx,
             relink_check_tx,
