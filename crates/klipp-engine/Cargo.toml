@@ -293,6 +293,10 @@ name = "a_strobe_keeps_its_vram"
 path = "tests/a_strobe_keeps_its_vram.rs"
 
 [[test]]
+name = "decoders_share_one_cuda_context"
+path = "tests/decoders_share_one_cuda_context.rs"
+
+[[test]]
 name = "a_cut_in_one_file_decodes_on"
 path = "tests/a_cut_in_one_file_decodes_on.rs"
 
