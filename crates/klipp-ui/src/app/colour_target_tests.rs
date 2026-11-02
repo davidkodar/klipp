@@ -118,9 +118,9 @@ fn a_selection_elsewhere_is_one_click_away() {
 /// choice that ends the hint.
 #[test]
 fn a_click_on_the_graded_clip_clears_the_hint() {
-    let Cut { mut state, lower, later, .. } = cut();
+    let Cut { mut state, upper, later, .. } = cut();
     state.selected_clip = Some(later);
-    assert_eq!(to_colour_page(&mut state), Some(lower));
+    assert_eq!(to_colour_page(&mut state), Some(upper), "the top clip at the playhead");
     assert_eq!(state.colour_elsewhere_hint(), Some(later));
     state.colour_clip_picked();
     assert_eq!(state.colour_elsewhere_hint(), None);
