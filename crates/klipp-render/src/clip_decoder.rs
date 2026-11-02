@@ -947,11 +947,15 @@ unsafe fn try_init_cuda(codec_ctx_ptr: *mut ffmpeg_next::ffi::AVCodecContext) ->
     }
 
     let mut hw_device_ctx: *mut AVBufferRef = std::ptr::null_mut();
+    // The GPU's primary context, shared across the process, as the
+    // playback decoders take it: a CUDA context per export, freeze or
+    // drawing-ahead decoder took GPU channels of its own.
+    let options: ffmpeg_next::Dictionary = [("primary_ctx", "1")].iter().collect();
     let ret = av_hwdevice_ctx_create(
         &mut hw_device_ctx,
         device_type,
         std::ptr::null(),
-        std::ptr::null_mut(),
+        options.as_mut_ptr(),
         0,
     );
     if ret < 0 {
