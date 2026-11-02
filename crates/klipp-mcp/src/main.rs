@@ -1373,6 +1373,7 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             }
             v
         }
+        "klipp_pace" => json!({ "method": "pace" }),
         "klipp_collect_project" => {
             let mut v = json!({ "method": "collect_project" });
             for key in ["dest", "mode", "handle_secs", "proxies", "dry_run", "verify"] {
@@ -2259,7 +2260,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              json!({ "clip_id": { "type": "string" } }),
              vec!["clip_id"]),
         tool("klipp_normalize",
-             "Bring clips to a loudness or peak target by their gain, as one undo step; the media is not changed. Details: klipp_guide topic normalize.",
+             "Bring clips to a loudness or peak target by their gain; the media is not changed. Details: klipp_guide topic normalize.",
              json!({
                  "clip_ids": { "type": "array", "items": { "type": "string" } },
                  "mode": { "type": "string", "enum": ["loudness", "peak"] },
@@ -2273,7 +2274,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              json!({ "clip_id": { "type": "string", "description": "From klipp_list_clips" } }),
              vec!["clip_id"]),
         tool("klipp_detect_scene_cuts",
-             "Split a clip at the hard cuts in its picture, as one undo step. Details: klipp_guide topic detect_scene_cuts.",
+             "Split a clip at the hard cuts in its picture. Details: klipp_guide topic detect_scene_cuts.",
              json!({ "clip_id": { "type": "string", "description": "The clip to split" } }),
              vec!["clip_id"]),
         tool("klipp_track_surface",
@@ -2464,7 +2465,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              "The mix's loudness over a stretch, step by step, as the export mixes it. Details: klipp_guide topic mix_loudness.",
              json!({ "from_secs": { "type": "number" }, "to_secs": { "type": "number" }, "step_secs": { "type": "number" } }), vec![]),
         tool("klipp_auto_sfx",
-             "Preview sound design for the cut; apply true commits it as one undo step. Details: klipp_guide topic auto_sfx.",
+             "Preview sound design for the cut; apply true commits it. Details: klipp_guide topic auto_sfx.",
              json!({ "whoosh": { "type": "string" }, "click": { "type": "string" }, "riser": { "type": "string" }, "on": { "type": "string", "enum": ["cuts", "transitions", "stylised"] }, "apply": { "type": "boolean" } }), vec![]),
         tool("klipp_auto_redact",
              "Pixelate the sensitive screen text where the timeline shows it; a dry run unless apply is true. Details: klipp_guide topic auto_redact.",
@@ -2628,7 +2629,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              "Freesound sign-in, for original sounds. Details: klipp_guide topic freesound_sign_in.",
              json!({ "code": { "type": "string" }, "sign_out": { "type": "boolean" } }), vec![]),
         tool("klipp_match_grade",
-             "Match picture clips to a reference by scope measurements, as one undo step. Details: klipp_guide topic match_grade.",
+             "Match picture clips to a reference by scope measurements. Details: klipp_guide topic match_grade.",
              json!({ "clip_id": { "type": "string", "description": "the shot to grade" }, "reference_clip_id": { "type": "string" }, "secs": { "type": "number" }, "reference_secs": { "type": "number" } }),
              vec!["clip_id", "reference_clip_id"]),
         tool("klipp_align_audio",
@@ -2657,7 +2658,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              "The bundled looks (3D LUTs) by category: the names klipp_look takes. Details: klipp_guide topic looks.",
              json!({ "category": { "type": "string" } }), vec![]),
         tool("klipp_look",
-             "Apply a bundled 3D LUT after the grade on a clip, the timeline or a grade group, as one undo step; remove clears it. Details: klipp_guide topic look.",
+             "Apply a bundled 3D LUT after the grade on a clip, the timeline or a grade group; remove clears it. Details: klipp_guide topic look.",
              json!({ "clip_id": { "type": "string" }, "on": { }, "name": { "type": "string" }, "opacity": { "type": "number" }, "remove": { "type": "boolean" } }),
              vec![]),
         tool("klipp_orient",
@@ -2667,13 +2668,13 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              "The brief: what the piece is for. Read it before you plan. Details: klipp_guide topic brief.",
              json!({}), vec![]),
         tool("klipp_set_brief",
-             "Replace the project brief as one undo step. With merge true, change only supplied fields; null clears a field. Details: klipp_guide topic set_brief.",
+             "Replace the project brief. With merge true, change only supplied fields; null clears a field. Details: klipp_guide topic set_brief.",
              json!({ "brief": { "type": "object" }, "merge": { "type": "boolean" } }), vec!["brief"]),
         tool("klipp_edit_plan",
              "The edit plan as text and JSON, whether it is approved, and its ops. Details: klipp_guide topic edit_plan.",
              json!({}), vec![]),
         tool("klipp_set_edit_plan",
-             "Propose a paper edit for the user's approval, as one undo step. Details: klipp_guide topic set_edit_plan.",
+             "Propose a paper edit for the user's approval. Details: klipp_guide topic set_edit_plan.",
              json!({ "plan": { "type": "object" } }), vec!["plan"]),
         tool("klipp_approve_edit_plan",
              "Mark the edit plan approved, one undo step, only once the user said to build it. Details: klipp_guide topic approve_edit_plan.",
@@ -2686,6 +2687,9 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              json!({ "dest": { "type": "string" }, "mode": { "type": "string", "enum": ["all", "used", "trimmed"] }, "handle_secs": { "type": "number" }, "proxies": { "type": "boolean" }, "dry_run": { "type": "boolean" }, "verify": { "type": "string" } }), vec![]),
         tool("klipp_reuse_report",
              "Where the timeline uses the same footage twice, or two files that look the same. Details: klipp_guide topic reuse_report.",
+             json!({}), vec![]),
+        tool("klipp_pace",
+             "Pace hints on the cut. Details: klipp_guide topic pace.",
              json!({}), vec![]),
         tool("klipp_check",
              "Read-only checks of the cut against craft and the brief, each with where, why and the fix. Details: klipp_guide topic check.",
@@ -2727,7 +2731,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
                  "stop": { "type": "boolean" }
              }), vec!["action", "clip_id"]),
         tool("klipp_switch_angle",
-             "Cut the multicam group in play to an angle, counted from 1, at at_secs or the playhead, as one undo step. Details: klipp_guide topic switch_angle.",
+             "Cut the multicam group in play to an angle, counted from 1, at at_secs or the playhead. Details: klipp_guide topic switch_angle.",
              json!({
                  "angle": { "type": "integer", "minimum": 1 },
                  "at_secs": { "type": "number" }

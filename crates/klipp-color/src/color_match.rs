@@ -23,6 +23,8 @@ struct LabStats {
     a_mean: f32,
     b_mean: f32,
     chroma_mean: f32,
+    /// How far a and b sit from their means: root mean square.
+    chroma_spread: f32,
     /// Mean colour, linear BT.709.
     linear_mean: [f32; 3],
 }
@@ -52,8 +54,22 @@ pub fn match_colors(
         klipp_core::WorkingColorspace::Rec709Linear,
     );
 
-    // Chroma ratio → saturation multiplier
-    let saturation_adjust = if src.chroma_mean > 0.5 {
+    // Saturation: what is left to do once exposure and white balance have
+    // done theirs, the ratio of how far colours spread around the average
+    // then. A ratio of plain chroma counted a reference's cast twice, and
+    // took a cool shot matched to an orange one to more than twice the
+    // saturation (#3425). A flat source has no spread to scale, so its
+    // chroma it is.
+    let gain = 2f32.powf(exposure_adjust.clamp(-3.0, 3.0));
+    let matrix = crate::white_balance::white_balance_matrix(temperature_adjust, tint_adjust, klipp_core::WorkingColorspace::Rec709Linear);
+    let balanced = lab_stats(linear_samples(source_rgba).map(|c| {
+        let c = c.map(|v| v * gain);
+        let c = matrix.map_or(c, |m| m.map(|row| row[0] * c[0] + row[1] * c[1] + row[2] * c[2]));
+        c.map(|v| v.clamp(0.0, 1.0))
+    }));
+    let saturation_adjust = if balanced.chroma_spread > 0.5 {
+        ref_.chroma_spread / balanced.chroma_spread
+    } else if src.chroma_mean > 0.5 {
         ref_.chroma_mean / src.chroma_mean
     } else {
         1.0 // source is nearly achromatic, don't boost
@@ -68,32 +84,38 @@ pub fn match_colors(
 }
 
 fn rgba_to_lab_stats(rgba: &[u8]) -> LabStats {
+    lab_stats(linear_samples(rgba))
+}
+
+/// Every 4th pixel, for performance, as linear BT.709.
+fn linear_samples(rgba: &[u8]) -> impl Iterator<Item = [f32; 3]> + '_ {
+    rgba.chunks_exact(4).step_by(4).map(|px| [px[0], px[1], px[2]].map(|v| srgb_decode(v as f32 / 255.0)))
+}
+
+fn lab_stats(samples: impl Iterator<Item = [f32; 3]>) -> LabStats {
     let mut l_sum = 0.0f64;
     let mut a_sum = 0.0f64;
     let mut b_sum = 0.0f64;
     let mut chroma_sum = 0.0f64;
+    let mut ab_square_sum = 0.0f64;
     let mut linear_sum = [0.0f64; 3];
     let mut count = 0u64;
 
-    // Sample every 4th pixel for performance
-    for chunk in rgba.chunks_exact(4).step_by(4) {
-        let r = chunk[0] as f32 / 255.0;
-        let g = chunk[1] as f32 / 255.0;
-        let b = chunk[2] as f32 / 255.0;
-
-        let (l, la, lb) = rgb_to_lab(r, g, b);
-        for (acc, v) in linear_sum.iter_mut().zip([r, g, b]) {
-            *acc += srgb_decode(v) as f64;
+    for c in samples {
+        let (l, la, lb) = linear_to_lab(c[0], c[1], c[2]);
+        for (acc, v) in linear_sum.iter_mut().zip(c) {
+            *acc += v as f64;
         }
         l_sum += l as f64;
         a_sum += la as f64;
         b_sum += lb as f64;
         chroma_sum += (la * la + lb * lb).sqrt() as f64;
+        ab_square_sum += (la * la + lb * lb) as f64;
         count += 1;
     }
 
     if count == 0 {
-        return LabStats { l_mean: 50.0, a_mean: 0.0, b_mean: 0.0, chroma_mean: 0.0, linear_mean: [0.18; 3] };
+        return LabStats { l_mean: 50.0, a_mean: 0.0, b_mean: 0.0, chroma_mean: 0.0, chroma_spread: 0.0, linear_mean: [0.18; 3] };
     }
 
     let n = count as f64;
@@ -102,6 +124,7 @@ fn rgba_to_lab_stats(rgba: &[u8]) -> LabStats {
         a_mean: (a_sum / n) as f32,
         b_mean: (b_sum / n) as f32,
         chroma_mean: (chroma_sum / n) as f32,
+        chroma_spread: (ab_square_sum / n - (a_sum / n).powi(2) - (b_sum / n).powi(2)).max(0.0).sqrt() as f32,
         linear_mean: linear_sum.map(|v| (v / n) as f32),
     }
 }
@@ -111,6 +134,7 @@ fn srgb_decode(v: f32) -> f32 {
 }
 
 /// sRGB → CIE XYZ (D65) → CIE Lab
+#[cfg(test)]
 fn rgb_to_lab(r: f32, g: f32, b: f32) -> (f32, f32, f32) {
     linear_to_lab(srgb_decode(r), srgb_decode(g), srgb_decode(b))
 }
@@ -218,6 +242,28 @@ mod tests {
         let r = match_colors(&source, &reference);
         assert!((r.temperature_adjust - 30.0).abs() < 3.0, "temperature {}", r.temperature_adjust);
         assert!((r.tint_adjust + 10.0).abs() < 3.0, "tint {}", r.tint_adjust);
+    }
+
+    /// #3425: a reference that is the source through a warm white balance.
+    /// Its plain chroma is far more, all of it the cast; the colours spread
+    /// about as before, so little is left for saturation to do.
+    #[test]
+    fn a_reference_s_cast_is_not_counted_as_saturation() {
+        let m = crate::white_balance::white_balance_matrix(60.0, 0.0, klipp_core::WorkingColorspace::Rec709Linear).unwrap();
+        let enc = |v: f32| ((if v <= 0.003_130_8 { 12.92 * v } else { 1.055 * v.powf(1.0 / 2.4) - 0.055 }).clamp(0.0, 1.0) * 255.0).round() as u8;
+        // Five, as every 4th pixel is read: four would read as one.
+        let colours = [[110u8, 122, 116], [122, 110, 116], [116, 116, 128], [116, 122, 108], [120, 120, 112]];
+        let source: Vec<u8> = colours.iter().cycle().take(800).flat_map(|c| [c[0], c[1], c[2], 255]).collect();
+        let reference: Vec<u8> = colours.iter().cycle().take(800).flat_map(|c| {
+            let lin = c.map(|v| srgb_decode(v as f32 / 255.0));
+            let out = m.map(|row| enc(row[0] * lin[0] + row[1] * lin[1] + row[2] * lin[2]));
+            [out[0], out[1], out[2], 255]
+        }).collect();
+        let (src, refr) = (rgba_to_lab_stats(&source), rgba_to_lab_stats(&reference));
+        assert!(refr.chroma_mean / src.chroma_mean > 1.5, "a real cast: {} over {}", refr.chroma_mean, src.chroma_mean);
+        let r = match_colors(&source, &reference);
+        assert!((r.temperature_adjust - 60.0).abs() < 10.0, "the cast is the white balance's: {}", r.temperature_adjust);
+        assert!((r.saturation_adjust - 1.0).abs() < 0.3, "saturation {}", r.saturation_adjust);
     }
 
     #[test]

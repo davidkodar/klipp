@@ -419,6 +419,17 @@ pub(crate) fn respond(
             Ok(v)
         }
 
+        ControlCommand::Pace => {
+            if in_batch {
+                return read_in_batch("pace");
+            }
+            let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+            let pool = ctx.media_pool.read().recovered();
+            let marks = klipp_document::pace::marks(&seq, &pool, &AnalysedTranscripts);
+            let destination = klipp_document::pace::destination_of(&seq).map(|d| json!({ "id": d.id, "long_shot_secs": d.long_shot_secs }));
+            let text = if marks.is_empty() { "No pace hints.".to_string() } else { marks.iter().map(|m| format!("{:.2}-{:.2} s: {}", m.from_secs, m.to_secs, m.what)).collect::<Vec<_>>().join("\n") };
+            Ok(json!({ "count": marks.len(), "marks": marks, "destination": destination, "text": text }))
+        }
         ControlCommand::ReuseReport => {
             if in_batch {
                 return read_in_batch("reuse_report");
@@ -1031,6 +1042,10 @@ pub(crate) fn colour_lines(findings: &[(&str, f64, &str, &str)]) -> String {
     }
     out
 }
+
+#[cfg(test)]
+#[path = "pace_tests.rs"]
+mod pace_tests;
 
 #[cfg(test)]
 mod colour_lines_tests {
