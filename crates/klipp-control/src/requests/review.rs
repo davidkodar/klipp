@@ -232,18 +232,15 @@ pub(crate) fn respond(
                 return Err("path must be absolute".into());
             }
             let _ = std::fs::remove_file(&path);
+            *ctx.shared.window_view.lock().unwrap_or_else(|e| e.into_inner()) = None;
             send(AppCommand::CaptureWindow { path: path.clone(), max_width: Some(max_width.unwrap_or(1600)) })?;
             // Written by the UI on the frame after it asks egui; waited for
             // until it is there and whole.
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
             loop {
                 if let Some((width, height)) = std::fs::read(&path).ok().as_deref().and_then(png_size_if_whole) {
-                    return Ok(json!({
-                        "path": path.to_string_lossy(),
-                        "width": width,
-                        "height": height,
-                        "note": "The window as drawn: the viewer through its monitor LUT and overlays. Measure colour with screenshot or frame_stats, not this.",
-                    }));
+                    let view = *ctx.shared.window_view.lock().unwrap_or_else(|e| e.into_inner());
+                    return Ok(window_capture_reply(&path, width, height, view));
                 }
                 if std::time::Instant::now() >= deadline {
                     return Err("the window was not captured within 5 s (is the window shown?)".into());
@@ -391,5 +388,52 @@ pub(crate) fn respond(
         }
 
         _ => Err("internal: a request was routed to the wrong area".into()),
+    }
+}
+
+/// A window capture's reply: the image, and the window's size in points
+/// with its interface size, since a pointer's window coordinates are in
+/// points and the image's scale differs from them.
+fn window_capture_reply(path: &std::path::Path, width: u32, height: u32, view: Option<klipp_core::WindowView>) -> serde_json::Value {
+    let mut reply = json!({
+        "path": path.to_string_lossy(),
+        "width": width,
+        "height": height,
+        "note": "The window as drawn: the viewer through its monitor LUT and overlays. Measure colour with screenshot or frame_stats, not this.",
+    });
+    if let Some(v) = view {
+        let tenth = |x: f32| f64::from((x * 10.0).round()) / 10.0;
+        reply["width_points"] = json!(tenth(v.width_points));
+        reply["height_points"] = json!(tenth(v.height_points));
+        reply["zoom"] = json!(f64::from((v.zoom * 100.0).round()) / 100.0);
+    }
+    reply
+}
+
+#[cfg(test)]
+mod window_capture_reply_tests {
+    use super::*;
+
+    /// The reply says the window's size in points, so an image coordinate
+    /// converts to a window point: 1536×864 at 90% is 1706.7×960 points,
+    /// not the compositor's numbers.
+    #[test]
+    fn the_reply_gives_the_window_in_points_and_its_zoom() {
+        let view = klipp_core::WindowView { width_points: 1536.0 / 0.9, height_points: 864.0 / 0.9, zoom: 0.9 };
+        let r = window_capture_reply(std::path::Path::new("/tmp/w.png"), 1600, 900, Some(view));
+        assert_eq!(r["width"], 1600);
+        assert_eq!(r["height"], 900);
+        assert_eq!(r["width_points"], 1706.7);
+        assert_eq!(r["height_points"], 960.0);
+        assert_eq!(r["zoom"], 0.9);
+    }
+
+    /// With no size known the reply says nothing of points, rather than
+    /// giving a stale or zero size to convert by.
+    #[test]
+    fn no_size_known_leaves_the_points_out() {
+        let r = window_capture_reply(std::path::Path::new("/tmp/w.png"), 1600, 900, None);
+        assert!(r.get("width_points").is_none() && r.get("height_points").is_none() && r.get("zoom").is_none());
+        assert_eq!(r["width"], 1600);
     }
 }

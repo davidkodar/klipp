@@ -409,6 +409,8 @@ impl KlippApp {
             return;
         };
         self.state.window_capture = None;
+        let size = ctx.input(|i| i.screen_rect().size());
+        *self.state.control_shared.window_view.lock().unwrap_or_else(|e| e.into_inner()) = Some(klipp_core::WindowView { width_points: size.x, height_points: size.y, zoom: ctx.zoom_factor() });
         let [w, h] = image.size;
         let rgba: Vec<u8> = image.pixels.iter().flat_map(|p| p.to_array()).collect();
         let Some(mut img) = image::RgbaImage::from_raw(w as u32, h as u32, rgba) else { return };
