@@ -1115,6 +1115,10 @@ unsafe extern "C" fn vaapi_get_format(
 }
 
 /// Try to initialize CUDA (NVDEC) on the codec context. Returns true if successful.
+/// ffmpeg's CUDA device option for the GPU's primary context: one CUDA
+/// context for the whole process, however many decoders are open.
+pub const PRIMARY_CONTEXT: [(&str, &str); 1] = [("primary_ctx", "1")];
+
 /// CUDA works for all codecs on NVIDIA GPUs including AV1/VP9 (unlike VAAPI which
 /// has broken av_hwframe_transfer for AV1 via nvidia-vaapi-driver).
 pub(crate) unsafe fn try_init_cuda(codec_ctx_ptr: *mut ffmpeg_next::ffi::AVCodecContext) -> bool {
@@ -1127,11 +1131,17 @@ pub(crate) unsafe fn try_init_cuda(codec_ctx_ptr: *mut ffmpeg_next::ffi::AVCodec
     }
 
     let mut hw_device_ctx: *mut AVBufferRef = std::ptr::null_mut();
+    // The GPU's primary context, which the driver shares across the
+    // process, not a CUDA context of this decoder's own: each of those
+    // takes its own GPU channels and memory, and a session's decoders
+    // (the timeline's, skimming's, drawing ahead's) ran the GPU out of
+    // channels, so no other process could make a device.
+    let options: ffmpeg_next::Dictionary = PRIMARY_CONTEXT.iter().collect();
     let ret = av_hwdevice_ctx_create(
         &mut hw_device_ctx,
         device_type,
         std::ptr::null(), // auto-detect device
-        std::ptr::null_mut(),
+        options.as_mut_ptr(),
         0,
     );
     if ret < 0 {
