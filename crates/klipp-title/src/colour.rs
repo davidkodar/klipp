@@ -13,8 +13,12 @@
 //! shadows and glows go round it as round a letter; the face draws its
 //! colours where the text fill would draw.
 //!
-//! COLR (v0 and v1) colour glyphs are not drawn yet: a font with only
-//! them draws its outlines, where it has any, in the text colour.
+//! COLR v0 glyphs are drawn too (`colr.rs`): each at a size from a
+//! ladder of sizes at or above the one asked for, made a strike, and
+//! scaled to the size as a bitmap strike is. The text's own colour in a
+//! COLR glyph (palette index 0xFFFF) is black for now, as FreeType draws
+//! it by default. COLR v1 glyphs are not drawn yet: a font with only them
+//! draws its outlines, where it has any, in the text colour.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -89,7 +93,7 @@ impl ColourFormat {
 
     /// Whether Klipp draws this kind yet.
     fn drawn(self) -> bool {
-        matches!(self, Self::Sbix | Self::Cbdt)
+        matches!(self, Self::ColrV0 | Self::Sbix | Self::Cbdt)
     }
 }
 
@@ -143,16 +147,21 @@ impl ColourBitmaps {
             return None;
         }
         let font = FontRef::from_index(data, 0).ok()?;
-        let ppems: Vec<u16> = match self.format {
-            ColourFormat::Cbdt => font.cblc().ok()?.bitmap_sizes().iter().map(|s| s.ppem_y() as u16).collect(),
-            ColourFormat::Sbix => font.sbix().ok()?.strikes().iter().map(|s| s.map_or(0, |s| s.ppem())).collect(),
-            ColourFormat::ColrV1 | ColourFormat::ColrV0 => return None,
+        let (index, ppem) = match self.format {
+            ColourFormat::Cbdt => nearest_strike(&font.cblc().ok()?.bitmap_sizes().iter().map(|s| s.ppem_y() as u16).collect::<Vec<_>>(), px)?,
+            ColourFormat::Sbix => nearest_strike(&font.sbix().ok()?.strikes().iter().map(|s| s.map_or(0, |s| s.ppem())).collect::<Vec<_>>(), px)?,
+            ColourFormat::ColrV0 | ColourFormat::ColrV1 => colr_size(px),
         };
-        let (index, ppem) = nearest_strike(&ppems, px)?;
         let mut strikes = self.strikes.lock().unwrap_or_else(|e| e.into_inner());
         let strike = if let Some(s) = strikes.get(&(gid, index)) {
             Arc::clone(s)
         } else {
+            if let ColourFormat::ColrV0 = self.format {
+                let drawn = crate::colr::draw(data, gid, f32::from(ppem), skrifa::color::ColorGlyphFormat::ColrV0, COLR_FOREGROUND)?;
+                let strike = Arc::new(ColourStrike { index, width: drawn.width, height: drawn.height, bearing: [drawn.left, drawn.top], rgba: Arc::new(drawn.rgba) });
+                keep_strike(&mut strikes, (gid, index), &strike);
+                return Some(scaled(strike, px, ppem));
+            }
             let (png, bearing) = match self.format {
                 ColourFormat::Cbdt => {
                     let cblc = font.cblc().ok()?;
@@ -202,27 +211,46 @@ impl ColourBitmaps {
                 bearing,
                 rgba: Arc::new(image.into_raw()),
             });
-            if strikes.len() >= CACHE_CAP
-                || strikes.values().map(|s| s.rgba.len()).sum::<usize>() + strike.rgba.len()
-                    > 64 << 20
-            {
-                strikes.clear();
-            }
-            if strike.rgba.len() <= 64 << 20 {
-                strikes.insert((gid, index), Arc::clone(&strike));
-            }
+            keep_strike(&mut strikes, (gid, index), &strike);
             strike
         };
-        let scale = px / f32::from(ppem.max(1));
-        let width = ((strike.width as f32 * scale).round() as usize).max(1);
-        let height = ((strike.height as f32 * scale).round() as usize).max(1);
-        Some(ColourSource {
-            xmin: (strike.bearing[0] as f32 * scale).round(),
-            ymin: (strike.bearing[1] as f32 * scale).round() - height as f32,
-            width,
-            height,
-            strike,
-        })
+        Some(scaled(strike, px, ppem))
+    }
+}
+
+/// The text's own colour in a COLR glyph, for now: opaque black.
+const COLR_FOREGROUND: [u8; 4] = [0, 0, 0, 255];
+
+/// The size a COLR glyph is drawn at for `px`, and its step on the ladder:
+/// the first of 16 px times the fourth roots of two at or above `px`, at
+/// most 1536. A title growing on screen draws each step once, each frame
+/// scaling the nearest down, as a bitmap font's strikes are.
+fn colr_size(px: f32) -> (usize, u16) {
+    let step = (4.0 * (px.max(16.0) / 16.0).log2()).ceil().clamp(0.0, 26.0) as usize;
+    (step, (16.0 * 2f32.powf(step as f32 / 4.0)).round().min(1536.0) as u16)
+}
+
+/// `strike` kept, under `key`, the cache emptied first when it is full.
+fn keep_strike(strikes: &mut HashMap<(u16, usize), Arc<ColourStrike>>, key: (u16, usize), strike: &Arc<ColourStrike>) {
+    if strikes.len() >= CACHE_CAP || strikes.values().map(|s| s.rgba.len()).sum::<usize>() + strike.rgba.len() > 64 << 20 {
+        strikes.clear();
+    }
+    if strike.rgba.len() <= 64 << 20 {
+        strikes.insert(key, Arc::clone(strike));
+    }
+}
+
+/// `strike`, drawn at `ppem`, laid out at `px`.
+fn scaled(strike: Arc<ColourStrike>, px: f32, ppem: u16) -> ColourSource {
+    let scale = px / f32::from(ppem.max(1));
+    let width = ((strike.width as f32 * scale).round() as usize).max(1);
+    let height = ((strike.height as f32 * scale).round() as usize).max(1);
+    ColourSource {
+        xmin: (strike.bearing[0] as f32 * scale).round(),
+        ymin: (strike.bearing[1] as f32 * scale).round() - height as f32,
+        width,
+        height,
+        strike,
     }
 }
 
@@ -336,6 +364,28 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// A COLR v0 font draws its colour glyphs: drawn at the ladder's step
+    /// at or above the size and scaled to it, close to FreeType's drawing
+    /// at the size itself, and placed as FreeType places it (#3238). Its
+    /// glyph with no colour layers falls back to its outline.
+    #[test]
+    fn a_colr_v0_glyph_is_a_colour_glyph() {
+        let data = font("KlippTestColrV0.ttf");
+        assert_eq!(format_of(&data), Some(ColourFormat::ColrV0));
+        let colr = ColourBitmaps::of(&data).unwrap();
+        let cmap = |c: char| FontRef::from_index(&data, 0).unwrap().cmap().unwrap().map_codepoint(c).unwrap().to_u32() as u16;
+        for px in [24.0f32, 64.0, 150.0] {
+            let source = colr.source(&data, cmap('A'), px).unwrap();
+            let drawn = colr.glyph(&data, cmap('A'), px).unwrap();
+            let golden = std::fs::read(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("tests/goldens/KlippTestColrV0-A-{px}.rgba"))).unwrap();
+            let top = (source.ymin + source.height as f32) as i32;
+            let (worst, mean) = crate::colr::tests::against_golden(drawn.width, drawn.height, source.xmin as i32, top, &drawn.rgba, &golden);
+            eprintln!("COLR v0 through the strike path at {px} px: worst {worst}, mean {mean:.3}");
+            assert!(mean < 6.0, "at {px} px: mean {mean:.3} levels from FreeType");
+        }
+        assert!(colr.source(&data, cmap('B'), 48.0).is_none(), "no colour layers, an outline");
     }
 
     /// A glyph the strike has no bitmap for, the font's `.notdef`, is no
