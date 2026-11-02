@@ -112,6 +112,11 @@ pub(super) struct ExportDialogState {
     /// The export preferences say to overwrite a file already there
     /// without asking (`OverwriteMode::Always`); set as the dialog opens.
     pub(super) overwrite_without_asking: bool,
+    /// The output path last suggested, while it is not changed: it is
+    /// suggested again for the sequence the export is opened on.
+    pub(super) suggested_path: Option<String>,
+    /// The sequence and size the preset was last fitted to.
+    pub(super) fitted_for: Option<(usize, u32, u32)>,
     /// Range selection for export.
     /// - 0 = Full timeline
     /// - 1 = Marked in/out range
@@ -209,6 +214,8 @@ impl Default for ExportDialogState {
             audio_bitrate: 128,
             confirm_overwrite: false,
             overwrite_without_asking: false,
+            suggested_path: None,
+            fitted_for: None,
             range_mode: 0,
             range_picked: false,
             form_export: false,
@@ -369,8 +376,11 @@ pub(super) fn export_progress(ui: &mut egui::Ui, job: &klipp_export::RenderJob, 
 /// Where an export goes when nothing names a file (#2941): the folder the
 /// preferences name while it is there, else the saved project's own folder,
 /// else the Videos folder (made at export when it is not there yet); named
-/// after the saved project, or, for one not saved yet, after the sequence.
-pub(super) fn default_export_path(prefs_dir: Option<&std::path::Path>, project: Option<&std::path::Path>, sequence: &str, ext: &str) -> PathBuf {
+/// after the saved project, or, for one not saved yet, after its first
+/// sequence. Another sequence of it, a version, adds its own name: a 9:16
+/// version exported after the main cut took the main cut's name, and its
+/// file would have gone over the main cut's.
+pub(super) fn default_export_path(prefs_dir: Option<&std::path::Path>, project: Option<&std::path::Path>, sequence: &str, version: Option<&str>, ext: &str) -> PathBuf {
     let saved = project.filter(|p| !crate::project_paths::is_untitled(Some(p)) && p.parent().is_some_and(|d| d.is_dir()));
     let dir = prefs_dir
         .filter(|d| d.is_dir())
@@ -382,7 +392,22 @@ pub(super) fn default_export_path(prefs_dir: Option<&std::path::Path>, project: 
         .map(|s| s.to_string_lossy().to_string())
         .filter(|s| !s.trim().is_empty())
         .unwrap_or_else(|| sanitise_filename(sequence));
+    let stem = match version {
+        // "9:16" reads as "9-16", not "9_16".
+        Some(v) => format!("{stem} {}", sanitise_filename(&v.replace(':', "-"))),
+        None => stem,
+    };
     dir.join(format!("{stem}.{ext}"))
+}
+
+/// What the form says under the output file when a file of that name is
+/// already there: Export asks before writing over it, unless the
+/// preferences say to write over without asking.
+pub(super) fn existing_file_note(path: &str, without_asking: bool) -> Option<&'static str> {
+    if path.trim().is_empty() || !std::path::Path::new(path).is_file() {
+        return None;
+    }
+    Some(if without_asking { "A file of this name is there, and will be written over." } else { "A file of this name is there: Export asks before writing over it." })
 }
 
 /// The user's Videos folder, where it is not set up yet as `~/Videos`.
@@ -641,6 +666,22 @@ pub(super) fn apply_spec_to_dialog(dialog: &mut ExportDialogState, spec: &klipp_
     }
 }
 
+/// The preset the export form takes for a sequence of `size`, or `None`
+/// to keep `current`: kept while its picture is the sequence's shape (or
+/// it follows the sequence's own size); else the delivery template's
+/// preset for the sequence's shape, where there is one. A 9:16 version
+/// opened the form on the 16:9 preset the main cut was exported with.
+pub(super) fn preset_for_shape(current: Option<&ExportPreset>, size: (u32, u32)) -> Option<String> {
+    let same_shape = |(w, h): (u32, u32), (a, b): (u32, u32)| (w as u64 * b as u64).abs_diff(h as u64 * a as u64) * 100 <= (w as u64 * b as u64).max(1);
+    if size.0 == 0 || size.1 == 0 {
+        return None;
+    }
+    if current.is_some_and(|p| p.settings.resolution.is_none_or(|r| same_shape((r.width, r.height), size))) {
+        return None;
+    }
+    klipp_core::delivery_templates().iter().find(|t| same_shape(size, t.aspect)).map(|t| t.preset.clone())
+}
+
 pub(super) fn apply_preset_to_dialog(dialog: &mut ExportDialogState, settings: &ExportPresetSettings) {
     dialog.format = settings.format;
     // A preset saved before the container rules may hold a pair FFmpeg
@@ -827,6 +868,14 @@ pub(super) fn next_free_name(original: &std::path::Path, taken: impl Fn(&std::pa
 /// the dialog chose: `<stem>_<marker label>.<ext>` beside it, or
 /// `<stem>_segment_<n>` for the bookends and unnamed markers; each name
 /// once, and `[n/total]` after it in the queue.
+/// The markers an export between markers is cut by: every one but the
+/// to-do notes. A note to check something is not a range to deliver: a
+/// 9:16 version's reframe notes were counted, and would each have been
+/// a file of their own.
+pub(super) fn segment_markers(markers: &[klipp_timeline::Marker]) -> Vec<klipp_timeline::Marker> {
+    markers.iter().filter(|m| m.kind != klipp_core::MarkerKind::ToDo).cloned().collect()
+}
+
 pub(super) fn segment_outputs(segments: &[(u64, u64, String)], base_path: &std::path::Path) -> Vec<(std::path::PathBuf, String)> {
     let ext = base_path.extension().and_then(|e| e.to_str()).unwrap_or("mp4").to_string();
     let base_dir = base_path.parent().unwrap_or(std::path::Path::new("."));
@@ -877,6 +926,7 @@ impl KlippApp {
                         }
                     }
                 }
+                self.fit_preset_to_sequence();
                 true
             }
             // The sequence exported, once nothing stands in the way: media
@@ -1205,13 +1255,14 @@ impl KlippApp {
         // ignoring boundary-inference entirely. This is the more predictable
         // shape — point markers scattered next to explicit ranges would
         // otherwise produce surprising extra segments.
-        let has_range_markers = seq.markers.iter().any(|m| m.duration.is_some());
+        let markers = segment_markers(&seq.markers);
+        let has_range_markers = markers.iter().any(|m| m.duration.is_some());
 
         let segments: Vec<(u64, u64, String)> = if has_range_markers {
-            build_range_marker_segments(&seq.markers, fps)
+            build_range_marker_segments(&markers, fps)
         } else {
             build_inferred_marker_segments(
-                &seq.markers,
+                &markers,
                 fps,
                 timecode_to_frame(&seq.total_duration(), fps),
                 self.export_dialog.include_pre_marker_segment,
@@ -1263,14 +1314,50 @@ impl KlippApp {
     /// An output path before the form is shown, so an export can never
     /// start with an empty name (that wrote `.partial` into the working
     /// directory). Where `default_export_path` says (#2941).
+    /// The preset chosen for the sequence open now, when the one selected
+    /// is another shape ([`preset_for_shape`]); once for each sequence and
+    /// size, so a preset of another shape picked on purpose (to box a
+    /// picture in) stays.
+    pub(super) fn fit_preset_to_sequence(&mut self) {
+        let res = self.state.sequence().resolution;
+        let key = (self.state.active_sequence_idx, res.width, res.height);
+        // Nothing chosen yet (the last preset is restored after the form's
+        // defaults): nothing to fit, and the fit waits for it.
+        if self.export_dialog.fitted_for == Some(key) || self.export_dialog.selected_preset_id.is_none() {
+            return;
+        }
+        self.export_dialog.fitted_for = Some(key);
+        let all_presets = builtin_presets();
+        let custom = &self.prefs.export.custom_presets;
+        let current = self.export_dialog.selected_preset_id.as_ref().and_then(|id| all_presets.iter().chain(custom.iter()).find(|p| &p.id == id));
+        if let Some(id) = preset_for_shape(current, (res.width, res.height)) {
+            if let Some(preset) = all_presets.iter().find(|p| p.id == id) {
+                apply_preset_to_dialog(&mut self.export_dialog, &preset.settings);
+                self.export_dialog.selected_preset_id = Some(id);
+            }
+        }
+    }
+
     pub(super) fn prepare_export_defaults(&mut self) {
-        if self.export_dialog.output_path.trim().is_empty() {
-            let path = default_export_path(self.prefs.export.default_output_dir.as_deref(), self.state.project_path.as_deref(), &self.state.sequence().name, self.export_dialog.format.extension());
+        // Named again for the sequence open now while the name is still
+        // the one suggested: it followed the first sequence exported.
+        let stem = |p: &str| std::path::Path::new(p).with_extension("");
+        // The extension follows the format chosen; the name is the point.
+        let suggested = self.export_dialog.suggested_path.as_deref().is_some_and(|s| stem(s) == stem(&self.export_dialog.output_path));
+        let generate = self.export_dialog.output_path.trim().is_empty() || suggested;
+        if generate {
+            let first = self.state.sequences.first().map(|s| s.name.clone()).unwrap_or_default();
+            let version = (self.state.active_sequence_idx > 0).then(|| self.state.sequence().name.clone());
+            let path = default_export_path(self.prefs.export.default_output_dir.as_deref(), self.state.project_path.as_deref(), &first, version.as_deref(), self.export_dialog.format.extension());
             self.export_dialog.output_path = path.to_string_lossy().to_string();
         }
         let (path, without_asking) = apply_overwrite_mode(self.prefs.export.overwrite_mode, &self.export_dialog.output_path);
         self.export_dialog.output_path = path;
         self.export_dialog.overwrite_without_asking = without_asking;
+        if generate {
+            self.export_dialog.suggested_path = Some(self.export_dialog.output_path.clone());
+        }
+        self.fit_preset_to_sequence();
     }
 
     /// The export settings form: presets, output, codec, audio, range
@@ -1339,6 +1426,12 @@ impl KlippApp {
                             }
                         });
                         ui.end_row();
+                        // Said before Export, not only at it.
+                        if let Some(note) = existing_file_note(&self.export_dialog.output_path, self.export_dialog.overwrite_without_asking) {
+                            ui.label("");
+                            ui.label(egui::RichText::new(note).small().color(ui.visuals().warn_fg_color));
+                            ui.end_row();
+                        }
 
                         // Auto-update file extension when format changes
                         let old_ext = self.export_dialog.format.extension();
@@ -1920,7 +2013,7 @@ impl KlippApp {
                     ui.radio_value(&mut self.export_dialog.range_mode, 2, label);
                 });
                 // Marker-range multi-export: one file per segment between markers.
-                let marker_count = self.state.sequences[self.state.active_sequence_idx].markers.len();
+                let marker_count = segment_markers(&self.state.sequences[self.state.active_sequence_idx].markers).len();
                 let markers_enabled = marker_count > 0;
                 ui.add_enabled_ui(markers_enabled, |ui| {
                     let label = if marker_count > 0 {
@@ -3196,6 +3289,24 @@ mod export_rule_tests {
     }
 
     #[test]
+    fn to_do_notes_are_no_ranges_to_export() {
+        let marker = |at: i64, kind: klipp_core::MarkerKind, len: Option<i64>| klipp_timeline::Marker {
+            id: klipp_core::MarkerId::new(),
+            position: klipp_core::Timecode::from_frames(at, 25),
+            label: String::new(),
+            color: klipp_core::MarkerColor::Orange,
+            duration: len.map(|l| klipp_core::Timecode::from_frames(l, 25)),
+            comment: String::new(),
+            kind,
+            review: None,
+        };
+        let notes = [marker(0, klipp_core::MarkerKind::ToDo, Some(50)), marker(100, klipp_core::MarkerKind::ToDo, Some(50))];
+        assert!(super::segment_markers(&notes).is_empty(), "a reframe's notes: nothing to cut by");
+        let mixed = [notes[0].clone(), marker(200, klipp_core::MarkerKind::Chapter, None), marker(300, klipp_core::MarkerKind::None, None)];
+        assert_eq!(super::segment_markers(&mixed).len(), 2, "the chapter and the plain marker");
+    }
+
+    #[test]
     fn marker_segments_are_named_by_their_markers_once_each() {
         let segments = vec![(0, 10, "start".to_string()), (10, 20, "Intro: take 2".to_string()), (20, 30, "Intro: take 2".to_string()), (30, 40, "end".to_string())];
         let out = segment_outputs(&segments, Path::new("/out/film.mov"));
@@ -4191,19 +4302,46 @@ mod export_prefs_tests {
     /// is there; else a saved project's own folder, named after it; else
     /// the Videos folder, named after the sequence for a project not saved.
     #[test]
+    fn the_export_preset_follows_the_sequences_shape() {
+        let presets = klipp_core::builtin_presets();
+        let named = |n: &str| presets.iter().find(|p| p.name == n).unwrap_or_else(|| panic!("{n}"));
+        let youtube = named("YouTube 1080p");
+        let vertical = named("Shorts, Reels, TikTok 9:16");
+        // A 9:16 sequence opened on the 16:9 preset: the 9:16 one.
+        assert_eq!(super::preset_for_shape(Some(youtube), (1080, 1920)).as_deref(), Some(vertical.id.as_str()));
+        // A preset of the sequence's shape stays, at another size too.
+        assert_eq!(super::preset_for_shape(Some(youtube), (3840, 2160)), None);
+        assert_eq!(super::preset_for_shape(Some(vertical), (720, 1280)), None);
+        // Back on a 16:9 sequence, the 16:9 template's preset.
+        assert!(super::preset_for_shape(Some(vertical), (1920, 1080)).is_some_and(|id| presets.iter().any(|p| p.id == id && p.settings.resolution.is_some_and(|r| r.width * 9 == r.height * 16))));
+        // A shape no template has: the preset stays.
+        assert_eq!(super::preset_for_shape(Some(youtube), (2048, 858)), None);
+    }
+
+    #[test]
     fn a_new_export_goes_where_the_project_is() {
         let dir = Dir::new();
         let project = dir.path().join("Holiday.klipp");
         std::fs::write(&project, "{}").unwrap();
         let videos = dirs::video_dir().unwrap_or_else(|| dirs::home_dir().unwrap().join("Videos"));
-        assert_eq!(default_export_path(None, Some(&project), "Main Sequence", "mp4"), dir.path().join("Holiday.mp4"), "saved: beside the project, named after it");
+        assert_eq!(default_export_path(None, Some(&project), "Main Sequence", None, "mp4"), dir.path().join("Holiday.mp4"), "saved: beside the project, named after it");
         let unsaved = std::path::Path::new(crate::project_paths::UNTITLED);
-        assert_eq!(default_export_path(None, Some(unsaved), "Main Sequence", "mp4"), videos.join("Main Sequence.mp4"), "not saved: Videos, after the sequence");
-        assert_eq!(default_export_path(None, None, "a/b", "mov"), videos.join("a_b.mov"), "no project: the sequence's name, made a file name");
+        assert_eq!(default_export_path(None, Some(unsaved), "Main Sequence", None, "mp4"), videos.join("Main Sequence.mp4"), "not saved: Videos, after the sequence");
+        assert_eq!(default_export_path(None, None, "a/b", None, "mov"), videos.join("a_b.mov"), "no project: the sequence's name, made a file name");
         let chosen = dir.path().join("exports");
         std::fs::create_dir_all(&chosen).unwrap();
-        assert_eq!(default_export_path(Some(&chosen), Some(&project), "Main Sequence", "mp4"), chosen.join("Holiday.mp4"), "the preferences' folder first");
-        assert_eq!(default_export_path(Some(&dir.path().join("gone")), Some(&project), "Main Sequence", "mp4"), dir.path().join("Holiday.mp4"), "a preferences' folder not there: as unset");
+        assert_eq!(default_export_path(Some(&chosen), Some(&project), "Main Sequence", None, "mp4"), chosen.join("Holiday.mp4"), "the preferences' folder first");
+        assert_eq!(default_export_path(Some(&dir.path().join("gone")), Some(&project), "Main Sequence", None, "mp4"), dir.path().join("Holiday.mp4"), "a preferences' folder not there: as unset");
+        // A version, another sequence of the project, is named after it too,
+        // so its file does not go over the main cut's.
+        assert_eq!(default_export_path(None, Some(&project), "Main Sequence", Some("9:16"), "mp4"), dir.path().join("Holiday 9-16.mp4"), "saved: the project and the version");
+        assert_eq!(default_export_path(None, Some(unsaved), "Untitled", Some("9:16"), "mp4"), videos.join("Untitled 9-16.mp4"), "not saved: the first sequence and the version");
+        // A file already there is said under the name.
+        let there = dir.path().join("Holiday.mp4");
+        std::fs::write(&there, b"x").unwrap();
+        assert!(existing_file_note(&there.to_string_lossy(), false).is_some_and(|n| n.contains("asks")));
+        assert!(existing_file_note(&there.to_string_lossy(), true).is_some_and(|n| n.contains("written over")));
+        assert_eq!(existing_file_note(&dir.path().join("Holiday 9-16.mp4").to_string_lossy(), false), None);
     }
 
     /// #1816: with the file already there, Ask keeps the name and asks,

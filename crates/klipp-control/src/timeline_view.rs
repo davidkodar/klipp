@@ -468,7 +468,13 @@ pub(crate) fn list_clips(seq: &klipp_timeline::Sequence, pool: &klipp_media::Med
             Some(v)
         })
         .collect();
-    let mut reply = json!({ "fps": fps, "revision": revision, "tracks": tracks });
+    // The project's roles (#3211), each with its label and any colour
+    // chosen for it: what a clip's `role` names.
+    let roles: Vec<serde_json::Value> = pool.roles.listed().iter().map(|r| {
+        let colour = pool.roles.colour(r).map(|[r, g, b, _]| format!("#{r:02x}{g:02x}{b:02x}"));
+        json!({ "role": r.as_str(), "label": pool.roles.label(r), "colour": colour })
+    }).collect();
+    let mut reply = json!({ "fps": fps, "revision": revision, "tracks": tracks, "roles": roles });
     if !f.full {
         reply["note"] = json!("short form: pass full true for source ranges, frames, blend, grade group and file paths; get_grade for a clip's grade");
     }
@@ -483,11 +489,11 @@ pub(crate) fn music_reason(ctx: &ControlContext, path: &std::path::Path, id: kli
         return Some("a library track");
     }
     let seq = ctx.sequence.read().ok()?;
-    let roles: Vec<klipp_core::ClipRole> = seq.tracks.iter().flat_map(|t| t.clips.iter())
+    let roles: Vec<Option<klipp_core::roles::RoleRef>> = seq.tracks.iter().flat_map(|t| t.clips.iter())
         .filter(|c| c.media_id() == Some(id))
         .map(|c| sound_role(&seq, c))
         .collect();
-    (!roles.is_empty() && roles.iter().all(|r| *r == klipp_core::ClipRole::Music)).then_some("its clips play as music")
+    (!roles.is_empty() && roles.iter().all(|r| r.as_ref().is_some_and(|r| r.is("music")))).then_some("its clips play as music")
 }
 
 /// What `c`'s sound is, by its role: its own when one was set, else
@@ -495,8 +501,11 @@ pub(crate) fn music_reason(ctx: &ControlContext, path: &std::path::Path, id: kli
 /// read it (#777). The Inspector sets a role on the clip selected, which
 /// may be the sound half of a linked pair; read from the picture only,
 /// that role was lost to the music bed and the sound report (#862).
-pub(crate) fn sound_role(seq: &klipp_timeline::Sequence, c: &klipp_timeline::Clip) -> klipp_core::ClipRole {
-    if c.role != klipp_core::ClipRole::default() { c.role } else { sound_owner(seq, c).role }
+pub(crate) fn sound_role(seq: &klipp_timeline::Sequence, c: &klipp_timeline::Clip) -> Option<klipp_core::roles::RoleRef> {
+    match &c.role {
+        Some(r) if !r.is_speech() => Some(r.clone()),
+        own => sound_owner(seq, c).role.clone().or_else(|| own.clone()),
+    }
 }
 
 /// The clip a sound's settings live on: the picture an audio clip is
@@ -533,7 +542,7 @@ pub(crate) fn sound_json(seq: &klipp_timeline::Sequence, c: &klipp_timeline::Cli
     put("fade_in_secs", json!((c.fade_in_secs * 1000.0).round() / 1000.0), c.fade_in_secs > 0.0);
     put("fade_out_secs", json!((c.fade_out_secs * 1000.0).round() / 1000.0), c.fade_out_secs > 0.0);
     put("volume_keys", json!(c.volume_keyframes.len()), !c.volume_keyframes.is_empty());
-    put("role", json!(format!("{role:?}").to_lowercase()), role != klipp_core::ClipRole::default());
+    put("role", json!(role.as_ref().map(|r| r.as_str())), role.is_some());
     let effects: Vec<&str> = c.audio_effects.iter().filter(|e| e.enabled).map(|e| e.effect_type.as_str()).collect();
     put("effects", json!(effects), !effects.is_empty());
     if !sound.is_empty() {

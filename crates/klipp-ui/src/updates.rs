@@ -28,21 +28,30 @@ struct Asset {
     name: String,
 }
 
-/// The release package's file name for `version`, as the release
-/// publishes it: Arch versions can't hold a hyphen, so 0.1.0-rc.3 is
-/// packaged as 0.1.0rc.3. `klipp-update` builds the same name.
-fn package_file(version: &Version) -> String {
-    format!("klipp-{}-1-x86_64.pkg.tar.zst", version.to_string().replace('-', ""))
+/// The release package for `version` on `arch` among a release's
+/// `assets`: `klipp-<version>-1-<arch>.pkg.tar.` with the extension that
+/// arch's makepkg writes (zst on x86_64, xz on Arch Linux ARM), found in
+/// the list rather than guessed. Arch versions can't hold a hyphen, so
+/// 0.1.0-rc.3 is packaged as 0.1.0rc.3. `klipp-update` picks the same file
+/// from the signed sums.
+fn package_asset<'a>(assets: &'a [Asset], version: &Version, arch: &str) -> Option<&'a str> {
+    let prefix = format!("klipp-{}-1-{arch}.pkg.tar.", version.to_string().replace('-', ""));
+    assets.iter().map(|a| a.name.as_str()).find(|name| name.strip_prefix(&prefix).is_some_and(|ext| matches!(ext, "zst" | "xz")))
 }
 
-/// Whether the release of `version` carries its package, the sums
-/// `klipp-update` checks it against and their signature (#2684): without
-/// all three the updater refuses it, so it isn't offered.
+/// Whether the release of `version` carries its package for this
+/// machine's arch, the sums `klipp-update` checks it against and their
+/// signature (#2684): without all three the updater refuses it, so it
+/// isn't offered.
 fn has_package(releases: &[Release], version: &Version) -> bool {
+    has_package_for(releases, version, std::env::consts::ARCH)
+}
+
+/// [`has_package`] for `arch`.
+fn has_package_for(releases: &[Release], version: &Version, arch: &str) -> bool {
     let tag = format!("v{version}");
-    let file = package_file(version);
     releases.iter().filter(|r| r.tag_name == tag).any(|r| {
-        [file.as_str(), "SHA256SUMS", "SHA256SUMS.minisig"].iter().all(|want| r.assets.iter().any(|a| a.name == *want))
+        package_asset(&r.assets, version, arch).is_some() && ["SHA256SUMS", "SHA256SUMS.minisig"].iter().all(|want| r.assets.iter().any(|a| a.name == *want))
     })
 }
 
@@ -873,8 +882,6 @@ mod tests {
     #[test]
     fn a_package_install_downloads_the_release_package() {
         let rc = Version::parse("0.1.0-rc.2").unwrap();
-        assert_eq!(package_file(&rc), "klipp-0.1.0rc.2-1-x86_64.pkg.tar.zst");
-        assert_eq!(package_file(&Version::parse("0.2.0").unwrap()), "klipp-0.2.0-1-x86_64.pkg.tar.zst");
         let releases: Vec<Release> = serde_json::from_str(
             r#"[{"tag_name":"v0.1.0-rc.2","draft":false,"prerelease":true,"assets":[
                     {"name":"klipp-0.1.0-rc.2-source.tar.gz"},{"name":"klipp-0.1.0rc.2-1-x86_64.pkg.tar.zst"},{"name":"SHA256SUMS"},{"name":"SHA256SUMS.minisig"}]},
@@ -884,10 +891,11 @@ mod tests {
                     {"name":"klipp-0.1.0rc.5-1-x86_64.pkg.tar.zst"},{"name":"SHA256SUMS"}]}]"#,
         )
         .unwrap();
-        assert!(has_package(&releases, &rc));
-        assert!(!has_package(&releases, &Version::parse("0.1.0-rc.3").unwrap()), "sums but no package");
-        assert!(!has_package(&releases, &Version::parse("0.1.0-rc.4").unwrap()), "no assets");
-        assert!(!has_package(&releases, &Version::parse("0.1.0-rc.5").unwrap()), "unsigned: the updater would refuse it");
+        assert!(has_package_for(&releases, &rc, "x86_64"));
+        assert!(!has_package_for(&releases, &Version::parse("0.1.0-rc.3").unwrap(), "x86_64"), "sums but no package");
+        assert!(!has_package_for(&releases, &Version::parse("0.1.0-rc.4").unwrap(), "x86_64"), "no assets");
+        assert!(!has_package_for(&releases, &Version::parse("0.1.0-rc.5").unwrap(), "x86_64"), "unsigned: the updater would refuse it");
+        assert!(!has_package_for(&releases, &rc, "aarch64"), "an x86_64 package is not offered on aarch64");
 
         let mut updates = available(Installation::ArchRelease);
         let check = updates.result.as_mut().unwrap();
@@ -901,6 +909,26 @@ mod tests {
         assert_eq!(stable.updater_args(), Some(Vec::new()), "a stable release comes from the repository");
         stable.result.as_mut().unwrap().repository = false;
         assert_eq!(stable.status(), Status::Available { version: "0.20.0".into(), notes: format!("{RELEASES}/tag/v0.20.0"), install: Install::Download, error: None, testing: None }, "no package, no repository");
+    }
+
+    /// Each arch finds its own package by name in the release's list, with
+    /// the extension its makepkg writes; another arch's, an unknown
+    /// extension or a near name is not it.
+    #[test]
+    fn each_arch_finds_its_own_package_in_the_release() {
+        let assets = |names: &[&str]| names.iter().map(|n| Asset { name: (*n).to_owned() }).collect::<Vec<_>>();
+        let v = Version::parse("0.3.0").unwrap();
+        let both = assets(&["klipp-0.3.0-source.tar.gz", "klipp-0.3.0-1-x86_64.pkg.tar.zst", "klipp-0.3.0-1-aarch64.pkg.tar.xz", "SHA256SUMS", "SHA256SUMS.minisig"]);
+        assert_eq!(package_asset(&both, &v, "x86_64"), Some("klipp-0.3.0-1-x86_64.pkg.tar.zst"));
+        assert_eq!(package_asset(&both, &v, "aarch64"), Some("klipp-0.3.0-1-aarch64.pkg.tar.xz"));
+        // 0.2.0 shipped x86_64 only.
+        let old = assets(&["klipp-0.2.0-1-x86_64.pkg.tar.zst", "SHA256SUMS", "SHA256SUMS.minisig"]);
+        let v2 = Version::parse("0.2.0").unwrap();
+        assert_eq!(package_asset(&old, &v2, "aarch64"), None);
+        assert_eq!(package_asset(&old, &v2, "x86_64"), Some("klipp-0.2.0-1-x86_64.pkg.tar.zst"));
+        let odd = assets(&["klipp-0.3.0-1-aarch64.pkg.tar.xz.sig", "klipp-0.3.0-1-aarch64.pkg.tar.gz", "klipp-0.3.0-2-aarch64.pkg.tar.xz", "klipp-git-0.3.0-1-aarch64.pkg.tar.xz"]);
+        assert_eq!(package_asset(&odd, &v, "aarch64"), None, "{odd:?}");
+        assert_eq!(package_asset(&assets(&["klipp-0.3.0rc.1-1-aarch64.pkg.tar.xz"]), &Version::parse("0.3.0-rc.1").unwrap(), "aarch64"), Some("klipp-0.3.0rc.1-1-aarch64.pkg.tar.xz"));
     }
 
     /// The status follows the check: idle, checking while it runs, then

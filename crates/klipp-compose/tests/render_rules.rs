@@ -2335,3 +2335,107 @@ fn a_caption_on_a_lower_thirds_line_is_drawn_below_it() {
     let below = r.render(&moved, tc(2.0), 320, 180, &mut src, RenderOptions::default());
     assert!(shown == below, "the frame shows the caption below the lower third");
 }
+
+/// A scene-referred clip inspected for its node previews, as the node
+/// editor asks while paused, draws as it does uninspected on the GPU and
+/// the CPU: its identity grade's run, Source straight into Output, gives
+/// its picture, not the GPU chain's empty placeholder (drawn black, or a
+/// layer of no size). Under a Reflection, that layer keeps its size.
+#[test]
+fn an_inspected_log_clip_draws_as_it_does_uninspected() {
+    use klipp_graph_format::path::{NodePath, Root};
+    let reflection = BuiltinEffect::Reflection {
+        waterline: 0.5, gap: 0.0, ripple_amount: 0.0, ripple_size: 60.0, ripple_speed: 0.0, breakup: 0.0, smear: 0.0, fade: 0.0, opacity: 1.0, darken: 0.0, contact: 0.0,
+        blend: 0, tint: [0, 0, 0], tint_amount: 0.0, tint_auto: false, darken_auto: false, water: [0, 0, 0], water_key: 0, submerge: 0.0, ripple_from: 0, seed: 0, time: 0.0,
+    };
+    let log = media(0.0, 2.0);
+    let top = TestClip::of(media(0.0, 2.0)).effects([reflection]).build();
+    for (label, seq) in [("alone", sequence(vec![vec![log.clone()]])), ("under a reflection", sequence(vec![vec![log.clone()], vec![top]]))] {
+        let source = log.picture_v2().unwrap().picture.graph.nodes.iter().find(|n| n.type_id.as_str() == klipp_graph_format::lifted::types::SOURCE).unwrap().id;
+        let at = klipp_compose::InspectAt::out(NodePath::new(Root::Clip { clip: log.id.0 }, [source]));
+        for gpu in [false, true] {
+            let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
+            r.set_gpu_enabled(gpu);
+            let plain = r.render(&seq, tc(1.0), W, H, &mut Flat::default().slog3(&log, 420), RenderOptions::default());
+            let thumbs = [at.clone()].into_iter().collect();
+            let (shown, found) = r.render_inspected(&seq, tc(1.0), W, H, &mut Flat::default().slog3(&log, 420), RenderOptions::default(), Inspect { clip: Some(log.id), only: Some(log.id), thumbs: Some(thumbs), ..Default::default() });
+            assert_eq!(found.wrong_size_layers, 0, "{label} gpu {gpu}: a layer of another size");
+            assert!(found.thumbs.contains_key(&at), "{label} gpu {gpu}: the source's preview: {:?}", found.unavailable);
+            assert_eq!(shown.len(), plain.len(), "{label} gpu {gpu}");
+            let worst = shown.iter().zip(&plain).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
+            assert!(worst <= 1e-3, "{label} gpu {gpu}: inspected differs from the plain frame by {worst} (centre {:?})", &shown[(9 * W as usize + 16) * 4..][..3]);
+        }
+    }
+}
+
+/// What drawing a paused, inspected log clip costs at 1080p on the GPU,
+/// its identity grade run for its source's preview (#3328). Measured, not
+/// a check: `--ignored --nocapture`.
+#[test]
+#[ignore]
+fn measure_an_inspected_identity_grade_on_the_gpu() {
+    use klipp_graph_format::path::{NodePath, Root};
+    let (w, h) = (1920u32, 1080u32);
+    let log = media(0.0, 2.0);
+    let seq = sequence(vec![vec![log.clone()]]);
+    let source = log.picture_v2().unwrap().picture.graph.nodes.iter().find(|n| n.type_id.as_str() == klipp_graph_format::lifted::types::SOURCE).unwrap().id;
+    let at = klipp_compose::InspectAt::out(NodePath::new(Root::Clip { clip: log.id.0 }, [source]));
+    let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
+    r.set_gpu_enabled(true);
+    let mut run = |thumbs: bool| {
+        let inspect = Inspect { clip: Some(log.id), only: Some(log.id), thumbs: thumbs.then(|| [at.clone()].into_iter().collect()), ..Default::default() };
+        let t = std::time::Instant::now();
+        let (frame, _) = r.render_inspected(&seq, tc(1.0), w, h, &mut Flat::default().slog3(&log, 420), RenderOptions::default(), inspect);
+        assert_eq!(frame.len(), (w * h * 4) as usize);
+        t.elapsed().as_secs_f64() * 1000.0
+    };
+    for thumbs in [false, true] {
+        run(thumbs);
+        let ms: Vec<f64> = (0..10).map(|_| run(thumbs)).collect();
+        let best = ms.iter().copied().fold(f64::MAX, f64::min);
+        eprintln!("MEASURE 1080p log clip, inspected, preview asked {thumbs}: best {best:.1} ms, mean {:.1} ms", ms.iter().sum::<f64>() / ms.len() as f64);
+    }
+}
+
+/// #3328: a scene-referred clip's display step previews in the node
+/// editor: the picture's scene-to-display node is the step its run
+/// splices before the output, on the GPU and the CPU, and the preview is
+/// the clip's displayed picture, not its scene light. A clip it doesn't
+/// run on (SDR) says so.
+#[test]
+fn the_display_step_previews_where_it_runs() {
+    use klipp_graph_format::path::{NodePath, Root};
+    let log = media(0.0, 2.0);
+    let sdr = media(0.0, 2.0);
+    for (label, c, scene) in [("S-Log3", log.clone(), true), ("SDR", sdr.clone(), false)] {
+        let seq = sequence(vec![vec![c.clone()]]);
+        let clip = seq.tracks[0].clips[0].clone();
+        let picture = clip.picture_v2().unwrap();
+        let Some(step) = picture.picture.graph.nodes.iter().find(|n| n.type_id.as_str() == klipp_graph_format::lifted::types::SCENE_TO_DISPLAY) else {
+            panic!("{label}: no scene-to-display node in the picture");
+        };
+        let at = klipp_compose::InspectAt::out(NodePath::new(Root::Clip { clip: clip.id.0 }, [step.id]));
+        for gpu in [false, true] {
+            let mut src = if scene { Flat::default().slog3(&c, 420) } else { Flat::default() };
+            let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
+            r.set_gpu_enabled(gpu);
+            let thumbs = [at.clone()].into_iter().collect();
+            let (shown, found) = r.render_inspected(&seq, tc(1.0), W, H, &mut src, RenderOptions::default(), Inspect { clip: Some(clip.id), only: Some(clip.id), thumbs: Some(thumbs), ..Default::default() });
+            let mut again = if scene { Flat::default().slog3(&c, 420) } else { Flat::default() };
+            let plain = r.render(&seq, tc(1.0), W, H, &mut again, RenderOptions::default());
+            let worst = shown.iter().zip(&plain).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
+            assert!(worst <= 1e-3, "{label} gpu {gpu}: the inspected frame differs from the plain one by {worst}");
+            let why = found.unavailable.iter().find(|(a, _)| *a == at).map(|(_, w)| w.clone());
+            match (scene, found.thumbs.get(&at)) {
+                (true, Some(t)) => {
+                    assert_eq!(t.len(), 192 * 108 * 4, "{label} gpu {gpu}: a whole preview");
+                    // The displayed grey, as the viewer shows it.
+                    let want = (klipp_color::hdr::hdr_display_tonemap(0.18, klipp_color::hdr::LOG_DISPLAY_EXPOSURE).powf(1.0 / 2.2) * 255.0) as i32;
+                    assert!((t[0] as i32 - want).abs() <= 12, "{label} gpu {gpu}: {} against about {want}", t[0]);
+                }
+                (false, None) => assert!(why.as_deref().is_some_and(|w| w.contains("doesn't run")), "{label} gpu {gpu}: {why:?} all {:?}", found.unavailable),
+                (s, t) => panic!("{label} gpu {gpu}: scene {s}, preview {:?}, {why:?}", t.map(|t| t[0])),
+            }
+        }
+    }
+}

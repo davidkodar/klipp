@@ -412,12 +412,11 @@ fn the_pictures_own_nodes_answer_their_thumbnails() {
         let (frame, _) = draw(&seq, gpu, Inspect::default());
         let finished = klipp_nodes::executor::downsample_to_thumb_u8(&frame, W, H, klipp_nodes::executor::THUMB_W, klipp_nodes::executor::THUMB_H);
         assert_eq!(found.thumbs.get(&placement), Some(&finished), "gpu {gpu}: {:?}", unavailable(&placement));
-        match found.thumbs.get(&gamma) {
-            Some(e) => assert_ne!(Some(e), g, "gpu {gpu}: the effect shows the picture after it"),
-            // On the CPU the effects of an inspected clip run apart from
-            // its grade (#1274): unavailable then, and said, never blank.
-            None => assert!(unavailable(&gamma).is_some(), "gpu {gpu}: {:?}", found.unavailable),
-        }
+        // The effect shows the picture after it, on the GPU's chain and on
+        // the CPU's kernels alike (#3328).
+        let e = found.thumbs.get(&gamma);
+        assert!(e.is_some(), "gpu {gpu}: {:?}", unavailable(&gamma));
+        assert_ne!(e, g, "gpu {gpu}: the effect shows the picture after it");
     }
 }
 
@@ -583,4 +582,103 @@ fn a_frame_blend_and_a_denoise_after_it_are_each_inspected() {
     assert!(found.scope_tap.is_none(), "a tap on a blend that doesn't run");
     let why = found.unavailable.iter().find(|(a, _)| *a == at).map(|(_, w)| w.clone()).expect("said to be unavailable");
     assert!(why.contains("doesn't run"), "{why}");
+}
+
+
+/// #3328: each effect of a clip's stack previews the picture after it, in
+/// turn (a gamma, then a film grain, on a reversed clip), on the GPU and
+/// on the CPU; inspecting them leaves the frame as it is drawn.
+#[test]
+fn each_effect_of_the_stack_previews_the_picture_after_it() {
+    let grain = klipp_effects::BuiltinEffect::FilmGrain { amount: 0.5, size: 1.0, color: 0, shadows: 0.5, seed: 3 };
+    let (seq, id, _) = sequence(NodeGraph::default(), None);
+    let mut seq = seq;
+    let clip = seq.tracks[0].clips.iter_mut().find(|c| c.id == id).unwrap();
+    let mut c = TestClip::of(clip.clone()).effects([klipp_effects::BuiltinEffect::Gamma { gamma: 1.6 }, grain]).build();
+    c.speed = -1.0;
+    *clip = c;
+    let seq = seq.baked_for_render().into_owned();
+    let clip = seq.tracks[0].clips.iter().find(|c| c.id == id).unwrap();
+    let picture = clip.picture_v2().unwrap();
+    let at = |n| InspectAt::out(NodePath::new(Root::Clip { clip: id.0 }, [n]));
+    let source = at(picture.picture.graph.nodes.iter().find(|n| n.type_id.as_str() == klipp_graph_format::lifted::types::SOURCE).unwrap().id);
+    let effects: Vec<InspectAt> = clip.picture_effects().unwrap().iter().map(|e| at(e.node)).collect();
+    assert_eq!(effects.len(), 2);
+    for gpu in [false, true] {
+        let thumbs = effects.iter().cloned().chain([source.clone()]).collect();
+        let (shown, found) = draw(&seq, gpu, Inspect { clip: Some(id), only: Some(id), thumbs: Some(thumbs), ..Default::default() });
+        let (s, first, second) = (found.thumbs.get(&source), found.thumbs.get(&effects[0]), found.thumbs.get(&effects[1]));
+        assert!(first.is_some() && second.is_some(), "gpu {gpu}: {:?}", found.unavailable);
+        assert_ne!(first, s, "gpu {gpu}: the gamma changes the source");
+        assert_ne!(second, first, "gpu {gpu}: the grain changes what the gamma gave");
+        close(&format!("gpu {gpu}: the frame inspected"), &shown, &plain(&seq, gpu));
+    }
+}
+
+/// #3328: a clip with an effect drawn on the placed layer (a Reflection,
+/// after the clip's move): the effects before it preview on the CPU and
+/// the GPU; the Reflection too, on the CPU as the identity that stands in
+/// for it when the clip is measured alone (#2475).
+#[test]
+fn a_reflection_previews_on_the_cpu_and_the_gpu() {
+    let reflection = klipp_effects::BuiltinEffect::Reflection {
+        waterline: 0.5, gap: 0.0, ripple_amount: 0.0, ripple_size: 60.0, ripple_speed: 0.0, breakup: 0.0, smear: 0.0, fade: 0.0, opacity: 1.0, darken: 0.0, contact: 0.0,
+        blend: 0, tint: [0, 0, 0], tint_amount: 0.0, tint_auto: false, darken_auto: false, water: [0, 0, 0], water_key: 0, submerge: 0.0, ripple_from: 0, seed: 0, time: 0.0,
+    };
+    let (seq, id, _) = sequence(NodeGraph::default(), None);
+    let mut seq = seq;
+    let clip = seq.tracks[0].clips.iter_mut().find(|c| c.id == id).unwrap();
+    // Shrunk to the frame's upper part, leaving the reflection room below.
+    let shrink = klipp_effects::BuiltinEffect::Transform { position_x: 0.0, position_y: -4.5, scale_x: 0.5, scale_y: 0.5, rotation: 0.0, anchor_x: 0.5, anchor_y: 0.5, rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0, focal_ref: None };
+    *clip = TestClip::of(clip.clone()).effects([klipp_effects::BuiltinEffect::Gamma { gamma: 1.6 }, shrink, reflection]).build();
+    let seq = seq.baked_for_render().into_owned();
+    let clip = seq.tracks[0].clips.iter().find(|c| c.id == id).unwrap();
+    let at = |n| InspectAt::out(NodePath::new(Root::Clip { clip: id.0 }, [n]));
+    let effects: Vec<InspectAt> = clip.picture_effects().unwrap().iter().map(|e| at(e.node)).collect();
+    let mut shown = Vec::new();
+    for gpu in [false, true] {
+        let (_, found) = draw(&seq, gpu, Inspect { clip: Some(id), only: Some(id), thumbs: Some(effects.iter().cloned().collect()), ..Default::default() });
+        // Both preview; the clip measured alone draws no reflection (#2475),
+        // on either path: its preview is the picture it is given, the
+        // gamma's.
+        for (i, e) in effects.iter().enumerate() {
+            assert!(found.thumbs.contains_key(e), "gpu {gpu}: effect {i}: {:?}", found.unavailable);
+        }
+        shown.push(found.thumbs.get(&effects[1]).cloned());
+    }
+    let (cpu, gpu) = (shown[0].as_ref().unwrap(), shown[1].as_ref().unwrap());
+    let worst = cpu.iter().zip(gpu).map(|(a, b)| a.abs_diff(*b)).max().unwrap_or(0);
+    // The same picture, to the level (measured 0; the reflection drawn on
+    // the GPU alone made them 3 apart).
+    assert!(worst <= 1, "the CPU's and the GPU's reflection previews differ by {worst} levels");
+}
+
+
+/// #3328: a title's picture nodes preview as a clip's do, on the GPU and
+/// the CPU: its source the title as drawn (white text, which the gamma
+/// leaves as it is), its effect, Placement and Output; its display step,
+/// a title being display-referred, says it doesn't run.
+#[test]
+fn a_titles_picture_nodes_preview() {
+    let td = klipp_timeline::title_library::builtin("Watermark").expect("a built-in title").data();
+    let clip = TestClip::of(Clip { kind: ClipKind::Title(td), ..Clip::gap(tc(0.0), tc(2.0)) }).effect(klipp_effects::BuiltinEffect::Gamma { gamma: 1.6 }).build();
+    let id = clip.id;
+    let mut seq = Sequence::new_default();
+    let mut track = Track::new("V1", TrackKind::Video);
+    track.clips = vec![clip];
+    seq.tracks = vec![track];
+    let seq = seq.baked_for_render().into_owned();
+    let picture = seq.tracks[0].clips[0].picture_v2().unwrap();
+    let ats: Vec<(String, InspectAt)> = picture.picture.graph.nodes.iter().map(|n| (n.type_id.as_str().to_string(), InspectAt::out(NodePath::new(Root::Clip { clip: id.0 }, [n.id])))).collect();
+    let of = |t: &str| ats.iter().find(|(x, _)| x == t).map(|(_, a)| a.clone()).unwrap();
+    for gpu in [false, true] {
+        let (_, found) = draw(&seq, gpu, Inspect { clip: Some(id), only: Some(id), thumbs: Some(ats.iter().map(|(_, a)| a.clone()).collect()), ..Default::default() });
+        for (t, a) in &ats {
+            let display = t == klipp_graph_format::lifted::types::SCENE_TO_DISPLAY;
+            assert_eq!(found.thumbs.contains_key(a), !display, "gpu {gpu}: {t}: {:?}", found.unavailable);
+            assert!(!display || found.unavailable.iter().any(|(x, _)| x == a), "gpu {gpu}: the display step says why");
+        }
+        let source = found.thumbs.get(&of(klipp_graph_format::lifted::types::SOURCE)).unwrap();
+        assert!(source.chunks_exact(4).any(|p| p[3] > 0), "gpu {gpu}: the source preview shows the title");
+    }
 }

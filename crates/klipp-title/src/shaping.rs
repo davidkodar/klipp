@@ -407,9 +407,13 @@ impl ShapedLayout {
     /// pieces measured shaped: the source byte of each line's first
     /// character, past the first line, other than after a hard break.
     fn shaped_breaks(&self, faces: &[Face]) -> Vec<usize> {
-        use klipp_linebreak::{LinebreakData, Linebreaker, LINEBREAK_NONE};
+        use klipp_linebreak::{LinebreakData, Linebreaker, LINEBREAK_NONE, LINEBREAK_SOFT};
         let Some(max_width) = self.settings.max_width else { return Vec::new() };
-        let mask = LinebreakData::from_mask(self.settings.wrap_style == fontdue::layout::WrapStyle::Word, self.settings.wrap_hard_breaks, true);
+        let words = self.settings.wrap_style == fontdue::layout::WrapStyle::Word;
+        let mask = LinebreakData::from_mask(words, self.settings.wrap_hard_breaks, true);
+        // Thai, Lao, Khmer and Burmese put no spaces between words: a line
+        // may also break where the dictionaries find one begins (#3238).
+        let complex = if words { klipp_linebreak::complex_breaks(&self.source) } else { Vec::new() };
         let mut breaker = Linebreaker::new();
         let (mut current, mut start, mut prev, mut at_pos, mut at_idx) = (0.0f32, 0.0f32, LINEBREAK_NONE, 0.0f32, 0usize);
         // Each line as wide as the box less its paragraph's indents.
@@ -424,7 +428,10 @@ impl ShapedLayout {
         for &(a, b, px, face) in &self.pieces {
             let advances = shaped_advances(&faces[face], &self.source[a..b], px);
             for ((i, c), advance) in self.source[a..b].char_indices().zip(advances) {
-                let linebreak = breaker.next(c).mask(mask);
+                let mut linebreak = breaker.next(c).mask(mask);
+                if linebreak < LINEBREAK_SOFT && complex.binary_search(&(a + i)).is_ok() {
+                    linebreak = LINEBREAK_SOFT;
+                }
                 if linebreak >= prev {
                     prev = linebreak;
                     at_pos = current;
@@ -444,7 +451,8 @@ impl ShapedLayout {
             }
         }
         if self.paragraphs.min_last_words > 1 {
-            balance_last_lines(&mut starts, &chars, self.paragraphs.min_last_words as usize, width(false));
+            let dictionary: Vec<bool> = bytes.iter().map(|b| complex.binary_search(b).is_ok()).collect();
+            balance_last_lines(&mut starts, &chars, &dictionary, self.paragraphs.min_last_words as usize, width(false));
         }
         // As source bytes: where the character a line starts with is.
         let end = self.pieces.last().map_or(0, |p| p.1);
@@ -744,9 +752,12 @@ fn set_tabs(glyphs: &mut [GlyphPosition], paragraphs: &Paragraphs, first: usize,
 /// line above, if the line still fits `width` and the line above keeps a
 /// word. `starts` are the characters soft-broken lines start at, in
 /// order; `chars` every character with its advance.
-fn balance_last_lines(starts: &mut [usize], chars: &[(char, f32)], min_words: usize, width: f32) {
+fn balance_last_lines(starts: &mut [usize], chars: &[(char, f32)], dictionary: &[bool], min_words: usize, width: f32) {
     let space = |i: usize| chars[i].0.is_whitespace();
-    let words = |from: usize, to: usize| (from..to).filter(|&i| !space(i) && (i == from || space(i - 1))).count();
+    // A word begins after a space, or where the dictionaries find one in
+    // text written without spaces (#3238).
+    let begins = |i: usize| dictionary.get(i).copied().unwrap_or(false);
+    let words = |from: usize, to: usize| (from..to).filter(|&i| !space(i) && (i == from || space(i - 1) || begins(i))).count();
     for k in 0..starts.len() {
         let s = starts[k];
         // The paragraph's end: its line break, or the text's end.
@@ -762,7 +773,7 @@ fn balance_last_lines(starts: &mut [usize], chars: &[(char, f32)], min_words: us
         // paragraph, or the paragraph's start.
         let para = (0..s).rev().find(|&i| chars[i].0 == '\n').map_or(0, |i| i + 1);
         let above = if k > 0 && starts[k - 1] >= para { starts[k - 1] } else { para };
-        let word_starts: Vec<usize> = (above + 1..s).filter(|&i| !space(i) && space(i - 1)).collect();
+        let word_starts: Vec<usize> = (above + 1..s).filter(|&i| !space(i) && (space(i - 1) || begins(i))).collect();
         let Some(&from) = word_starts.iter().rev().nth(min_words - have - 1).or(word_starts.first()) else { continue };
         let last = (from..end).rev().find(|&i| !space(i)).map_or(from, |i| i + 1);
         let wide: f32 = chars[from..last].iter().map(|c| c.1).sum();
@@ -905,6 +916,50 @@ mod tests {
         let glyphs = lay(&faces, lam_alef, &[(0, lam_alef.len(), 0)], false);
         let lam = arabic.font.lookup_glyph_index('ل');
         assert!(!glyphs.is_empty() && glyphs.iter().all(|g| g.key.glyph_index != lam), "lam takes its form before alef: {:?}", glyphs.iter().map(|g| g.key.glyph_index).collect::<Vec<_>>());
+    }
+
+    /// #3238: Thai, written without spaces between words, wraps in a
+    /// narrow box, and only where a word begins: before, the line broke
+    /// nowhere and ran past the box. No line is wider than the box.
+    #[test]
+    fn thai_wraps_only_between_words() {
+        let thai = font("NotoSansThai-subset.ttf");
+        let faces = [Face::new(&thai, &[])];
+        let words = ["ภาษา", "ไทย", "ง่าย", "นิด", "เดียว", "สวัสดี", "ครับ"].repeat(2);
+        let text = words.concat();
+        let allowed: Vec<usize> = words.iter().scan(0, |at, w| { *at += w.len(); Some(*at) }).collect();
+        let width = 260.0;
+        let mut l = ShapedLayout::new();
+        l.reset(&LayoutSettings { max_width: Some(width), wrap_style: fontdue::layout::WrapStyle::Word, ..LayoutSettings::default() });
+        l.append(&faces, &text, (0, text.len(), 48.0, 0));
+        let lines = l.lines().expect("lines").clone();
+        assert!(lines.len() >= 3, "the Thai wraps: {} lines", lines.len());
+        let glyphs = l.glyphs();
+        for line in &lines {
+            let start = glyphs[line.glyph_start].byte_offset;
+            assert!(start == 0 || allowed.contains(&start), "a line starts inside a word, at byte {start} of {text}");
+            let right = glyphs[line.glyph_start..=line.glyph_end.min(glyphs.len() - 1)].iter().map(|g| g.x + g.width as f32).fold(0.0, f32::max);
+            assert!(right <= width + 1.0, "a line runs to {right}, past the box's {width}");
+        }
+    }
+
+    /// #3238: a paragraph's last line short of its words takes words up
+    /// from the line above, counted where the dictionaries find them in
+    /// text without spaces, as words after spaces are: one Thai word left
+    /// alone takes the word before it down.
+    #[test]
+    fn a_lone_thai_word_takes_the_one_before_it_down() {
+        // Six "words" of three letters, two lines: the second line holds
+        // only the last word.
+        let chars: Vec<(char, f32)> = std::iter::repeat_n(('ก', 10.0), 18).collect();
+        let dictionary: Vec<bool> = (0..18).map(|i| i > 0 && i % 3 == 0).collect();
+        let mut starts = vec![15];
+        balance_last_lines(&mut starts, &chars, &dictionary, 2, 200.0);
+        assert_eq!(starts, [12], "the last line starts a word earlier");
+        // Without the dictionary there is one word, and nothing to move.
+        let mut alone = vec![15];
+        balance_last_lines(&mut alone, &chars, &[false; 18], 2, 200.0);
+        assert_eq!(alone, [15]);
     }
 
     /// #1502: Devanagari forms a conjunct and reorders a vowel sign that

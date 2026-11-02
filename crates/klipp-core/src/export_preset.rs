@@ -288,7 +288,7 @@ pub fn builtin_presets() -> Vec<ExportPreset> {
         },
         ExportPreset {
             id: "00000000-0000-4000-a000-000000000006".into(),
-            name: "Instagram Vertical".into(),
+            name: "Shorts, Reels, TikTok 9:16".into(),
             built_in: true,
             settings: ExportPresetSettings {
                 format: ExportFormat::Mp4,
@@ -663,7 +663,7 @@ mod tests {
     #[test]
     fn web_presets_normalise_and_masters_do_not() {
         for p in builtin_presets() {
-            let web = ["YouTube", "Vimeo", "Twitter", "Instagram", "Web"].iter().any(|w| p.name.contains(w));
+            let web = ["YouTube", "Vimeo", "Twitter", "Instagram", "Shorts", "Web"].iter().any(|w| p.name.contains(w));
             if web {
                 assert_eq!(p.settings.target_lufs, Some(WEB_LOUDNESS_LUFS), "{}", p.name);
             } else if !p.name.contains("Broadcast") {

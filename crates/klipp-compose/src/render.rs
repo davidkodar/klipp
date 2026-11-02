@@ -1581,6 +1581,14 @@ impl Renderer {
                 self.found.thumbs.insert(at, thumb.clone());
             }
         }
+        // A preview asked of a node that nothing in the frame ran (an
+        // identity grade's display step, its grade never run) is said, not
+        // left blank (#3328).
+        for at in std::mem::take(&mut self.resolved.thumb_of).into_values().flatten() {
+            if !self.found.thumbs.contains_key(&at) && !self.found.unavailable.iter().any(|(a, _)| *a == at) {
+                self.found.unavailable.push((at, "it doesn't run in this frame's picture".into()));
+            }
+        }
         // The frame is done: a plug-in instance not rendered near it since
         // goes (`PluginInstances::end_frame`).
         self.instances.end_frame((time.to_secs_f64() * seq.fps.as_f64()).round() as i64);
@@ -2051,7 +2059,11 @@ impl Renderer {
                             klipp_effects::color_wgsl::pack_primaries_matrix(*source_to_working),
                         )
                 }
-                GradeInput::Cpu(_) => return Single::Refused("an identity grade of a frame not on the GPU"),
+                // A frame decoded to memory — a reversed clip's, read
+                // backwards on the CPU — goes up as it is: refused, every
+                // reversed frame of an export was composited on the CPU
+                // while playback kept it on the GPU (#3220).
+                GradeInput::Cpu(pixels) => self.allow_gpu && self.executor.prime_chain_from_linear(pixels, width, height),
             };
             if !seeded || !self.executor.take_seeded_input_as_output() {
                 return Single::Refused("the source could not seed the chain");
@@ -4676,6 +4688,9 @@ impl Renderer {
         }
         if let Some(t) = hdr.filter(|_| !displayed) {
             self.display_render(&mut pixels, t);
+            // Drawn here rather than in a run, the step previews here
+            // (#3328): the picture it gives.
+            self.preview_display_step(clip, &pixels, width, height);
         }
         // Its OFX plug-ins, each a node of its own after the grade, a
         // temporal one reading the clip's source at its other frames.
@@ -4725,7 +4740,26 @@ impl Renderer {
         if fx.is_empty() {
             return Ok(pixels);
         }
-        self.splice_effects_only(clip, fx, blends);
+        // An inspected clip's effects keep their picture nodes' ids here,
+        // as in the grade's run, and the previews asked of them are taken
+        // in this run (#3328): on the GPU's chain where it runs, else by
+        // the CPU's.
+        let nodes = self.effect_nodes(clip, fx);
+        let in_run = |id: &NodeId| nodes.iter().flatten().flatten().any(|n| n == id);
+        // An effect dropped from the run as an identity shows the effect
+        // before it in this run (#1314).
+        let fed: Vec<(NodeId, NodeId)> = self.identity_feeds.get(&clip.id).into_iter().flatten().filter_map(|(n, feed)| match feed {
+            crate::resolve::IdentityFeed::Node(f) if in_run(f) => Some((*n, *f)),
+            _ => None,
+        }).collect();
+        let wanted: Option<HashSet<NodeId>> = (self.inspect.clip == Some(clip.id))
+            .then(|| self.resolved.thumbs.as_ref().map(|asked| {
+                let own = nodes.iter().flatten().flatten().copied().filter(|id| asked.contains(id));
+                own.chain(fed.iter().filter(|(n, _)| asked.contains(n)).map(|(_, f)| *f)).collect::<HashSet<_>>()
+            }))
+            .flatten()
+            .filter(|w: &HashSet<NodeId>| !w.is_empty());
+        self.splice_effects_only(clip, fx, blends, nodes.as_deref());
         let t = Instant::now();
         let frame = grade_frame(clip_time, fps);
         // The pixels go straight into the chain, not copied on the CPU for
@@ -4736,24 +4770,31 @@ impl Renderer {
         let source_at = clip.source_secs_at(clip_time, fps);
         let run = self.in_context(clip, clip_time, fps, source_at, None, &mut klipp_nodes::frame_context::NoSources, |r, ctx| {
             let spliced = std::mem::take(&mut r.spliced);
+            let thumbs = wanted.as_ref();
             let run = match r.executor.prime_chain_from_linear(&pixels, width, height) {
-                true => match r.executor.execute_linear_with_context(&[], &spliced, width, height, clip_time, frame, None, None, None, ctx) {
+                true => match r.executor.execute_linear_with_context(&[], &spliced, width, height, clip_time, frame, None, None, thumbs, ctx) {
                     Err(klipp_nodes::executor::ExecutorError::CpuSourceRequired) => {
-                        r.executor.execute_linear_with_context(&pixels, &spliced, width, height, clip_time, frame, None, None, None, ctx)
+                        r.executor.execute_linear_with_context(&pixels, &spliced, width, height, clip_time, frame, None, None, thumbs, ctx)
                     }
                     run => run,
                 },
-                false => r.executor.execute_linear_with_context(&pixels, &spliced, width, height, clip_time, frame, None, None, None, ctx),
+                false => r.executor.execute_linear_with_context(&pixels, &spliced, width, height, clip_time, frame, None, None, thumbs, ctx),
             };
             r.spliced = spliced;
-            run.map(|(out, tap, _)| (out, tap))
+            run
         });
         self.found.stats.effects_ms += ms_since(t);
         match run {
-            Ok((out, _)) if self.executor.last_run_effects_complete() && out.len() == pixels.len() => {
+            Ok((out, _, thumbs)) if self.executor.last_run_effects_complete() && out.len() == pixels.len() => {
                 // Only a run that is kept: one the CPU takes again notes
                 // the retry's.
                 self.note_declines(clip.id);
+                for (node, bytes) in thumbs {
+                    let fed_from = fed.iter().filter(|(_, f)| *f == node).map(|(n, _)| *n);
+                    for at in std::iter::once(node).chain(fed_from).flat_map(|n| self.resolved.thumb_of.get(&n).cloned().unwrap_or_default()) {
+                        self.found.thumbs.insert(at, bytes.clone());
+                    }
+                }
                 Ok(out)
             }
             Ok(_) => Err(pixels),
@@ -4806,7 +4847,7 @@ impl Renderer {
         if !self.executor.prime_chain_from_gpu_linear_buffer(&buffer, width, height) {
             return false;
         }
-        self.splice_effects_only(clip, &planned, &blends);
+        self.splice_effects_only(clip, &planned, &blends, None);
         self.executor.request_output_on_gpu();
         let clip_time = eval_clip_time(clip, time);
         let run = self.executor.execute_linear(&[], &self.spliced, width, height, clip_time, grade_frame(clip_time, fps), None, None);
@@ -4837,7 +4878,9 @@ impl Renderer {
     ///
     /// The run has no grade: a mask from the grade can't be given here
     /// (bypassed, said); one from beside the chain reads this run's source.
-    fn splice_effects_only(&mut self, clip: &Clip, fx: &[BuiltinEffect], blends: &[Option<crate::resolve::Blend>]) {
+    /// `ids`, when given, are the picture's nodes the effects came from,
+    /// one each (#3328): an inspection names them so.
+    fn splice_effects_only(&mut self, clip: &Clip, fx: &[BuiltinEffect], blends: &[Option<crate::resolve::Blend>], ids: Option<&[Option<NodeId>]>) {
         self.executor.set_working_colorspace(self.working);
         self.executor.set_render_scale(self.px_scale);
         // A tracked window drawn in the plan follows the clip's points.
@@ -4845,7 +4888,8 @@ impl Renderer {
         self.spliced.clone_from(&self.passthrough);
         let source = self.spliced.nodes.iter().find(|n| n.kind == klipp_nodes::NodeKind::Source).map(|n| n.id);
         let base = clip.id.0.as_u128() ^ (0x00ef_fec8_u128 << 64);
-        let unavailable = splice_blended(&mut self.spliced, fx, blends, |i| klipp_nodes::NodeId::from_u128(base ^ i as u128), source, None);
+        let id = |i: usize| ids.and_then(|ids| ids.get(i).copied().flatten()).unwrap_or_else(|| klipp_nodes::NodeId::from_u128(base ^ i as u128));
+        let unavailable = splice_blended(&mut self.spliced, fx, blends, id, source, None);
         self.masks_unavailable(clip, unavailable);
     }
 
@@ -4987,6 +5031,7 @@ impl Renderer {
         // A media source too (#1746): its frame is the render's to read.
         let frei0r = klipp_effects::runs_only_as_a_node(fx);
         if (!plan && !blended && !frei0r) || fx.is_empty() {
+            self.effect_previews_on_cpu(clip, fx, &pixels, clip_time, fps, width, height);
             return self.effects_analysed(clip, fx, pixels, clip_time, fps, width, height);
         }
         if !plan && frei0r {
@@ -5003,6 +5048,92 @@ impl Renderer {
                 }
                 self.cpu_kernel_run();
                 self.on_cpu_executor(|r| r.run_effects_plan(clip, fx, blends, back, clip_time, fps, width, height)).unwrap_or_else(|back| back)
+            }
+        }
+    }
+
+    /// The picture's nodes `fx` came from, one each (#3328): as the plan
+    /// placed them, else the one run of the clip's own enabled effects of
+    /// the same kinds in order. `None` when they can't be told.
+    fn effect_nodes(&self, clip: &Clip, fx: &[BuiltinEffect]) -> Option<Vec<Option<NodeId>>> {
+        if let Some(planned) = self.planned_nodes.get(&clip.id).filter(|n| n.len() == fx.len()) {
+            return Some(planned.clone());
+        }
+        // The clip's own enabled effects, each matched in order to the next
+        // of its kind in `fx`: a list split around the move (the part
+        // before, or after it), or one with an effect the render added (a
+        // clip's opacity), which matches none.
+        // An identity effect is dropped from the run (#1314): it takes no
+        // place here, or the effect after it would be named for it.
+        let own: Vec<_> = clip.picture_effects().ok()?.into_iter().filter(|e| e.enabled && !klipp_effects::is_identity_effect(&e.effect)).collect();
+        let kind = std::mem::discriminant::<BuiltinEffect>;
+        let mut next = 0;
+        // A clip measured alone has an effect drawn outside its picture (a
+        // shadow, a reflection) stood in for by an identity Opacity (#2475):
+        // that stand-in is the effect, showing the picture it is given.
+        let stand_in = |o: &BuiltinEffect, f: &BuiltinEffect| klipp_effects::draws_outside_the_picture(o) && matches!(f, BuiltinEffect::Opacity { value } if *value == 1.0);
+        let nodes: Vec<Option<NodeId>> = fx
+            .iter()
+            .map(|f| {
+                let i = (next..own.len()).find(|&i| kind(&own[i].effect) == kind(f) || stand_in(&own[i].effect, f))?;
+                next = i + 1;
+                Some(own[i].node)
+            })
+            .collect();
+        nodes.iter().any(Option::is_some).then_some(nodes)
+    }
+
+    /// The preview of `clip`'s display step, where it is drawn apart from
+    /// a run, when the node editor asks for it (#3328).
+    fn preview_display_step(&mut self, clip: &Clip, pixels: &[f32], width: u32, height: u32) {
+        let id = display_step_id(clip.id);
+        if self.inspect.clip != Some(clip.id) || !self.resolved.thumbs.as_ref().is_some_and(|t| t.contains(&id)) {
+            return;
+        }
+        let bytes = klipp_nodes::executor::downsample_to_thumb_u8(pixels, width, height, klipp_nodes::executor::THUMB_W, klipp_nodes::executor::THUMB_H);
+        for at in self.resolved.thumb_of.get(&id).cloned().unwrap_or_default() {
+            self.found.unavailable.retain(|(a, _)| *a != at);
+            self.found.thumbs.insert(at, bytes.clone());
+        }
+    }
+
+    /// The previews asked of an inspected clip's effects where the CPU
+    /// kernels run them (#3328), the GPU's chain not running them: each
+    /// effect's picture, the effects before it applied in turn on a copy,
+    /// so the frame drawn is the kernels' own.
+    #[allow(clippy::too_many_arguments)]
+    fn effect_previews_on_cpu(&mut self, clip: &Clip, fx: &[BuiltinEffect], pixels: &[f32], clip_time: f64, fps: f64, width: u32, height: u32) {
+        if self.inspect.clip != Some(clip.id) || fx.is_empty() {
+            return;
+        }
+        let Some(nodes) = self.effect_nodes(clip, fx) else { return };
+        let Some(asked) = self.resolved.thumbs.clone() else { return };
+        // An identity effect, dropped from the run, shows the effect before
+        // it (#1314): each run effect's identities after it in the clip.
+        let mut identities: HashMap<NodeId, Vec<NodeId>> = HashMap::new();
+        let mut before: Option<NodeId> = None;
+        for e in clip.picture_effects().unwrap_or_default().into_iter().filter(|e| e.enabled) {
+            if klipp_effects::is_identity_effect(&e.effect) {
+                if let Some(b) = before {
+                    identities.entry(b).or_default().push(e.node);
+                }
+            } else {
+                before = Some(e.node);
+            }
+        }
+        let mut acc = pixels.to_vec();
+        for (i, effect) in fx.iter().enumerate() {
+            acc = self.effects_analysed(clip, std::slice::from_ref(effect), acc, clip_time, fps, width, height);
+            let Some(id) = nodes[i] else { continue };
+            let shown: Vec<NodeId> = std::iter::once(id).chain(identities.get(&id).cloned().unwrap_or_default()).filter(|n| asked.contains(n)).collect();
+            if shown.is_empty() {
+                continue;
+            }
+            let bytes = klipp_nodes::executor::downsample_to_thumb_u8(&acc, width, height, klipp_nodes::executor::THUMB_W, klipp_nodes::executor::THUMB_H);
+            for n in shown {
+                for at in self.resolved.thumb_of.get(&n).cloned().unwrap_or_default() {
+                    self.found.thumbs.insert(at, bytes.clone());
+                }
             }
         }
     }
@@ -5271,6 +5402,15 @@ impl Renderer {
                 }
                 self.planned_nodes.insert(clip.id, nodes);
                 self.planned_blends = blends;
+                // Measured alone, the clip is its own picture (#2475), on
+                // the plan's route as on the CPU's: an effect drawn outside
+                // it stands in as an identity, its node showing the picture
+                // it is given.
+                if self.inspect.only == Some(clip.id) {
+                    for e in fx.iter_mut().filter(|e| klipp_effects::draws_outside_the_picture(e)) {
+                        *e = BuiltinEffect::Opacity { value: 1.0 };
+                    }
+                }
                 fx
             }
             Err(e) => {
@@ -7210,10 +7350,16 @@ fn picture_source_nodes(clip: &Clip) -> (Option<NodeId>, Option<NodeId>) {
 
 /// `clip`'s display step as a plan node (step 11c), with an id fixed per
 /// clip so the executor's cached plan holds across frames.
+/// The id the display step spliced into `clip`'s run takes: what an
+/// inspection of the picture's scene-to-display node names (#3328).
+pub(crate) fn display_step_id(clip: ClipId) -> klipp_nodes::NodeId {
+    klipp_nodes::NodeId::from_u128(clip.0.as_u128() ^ (0x0011_c5d0_u128 << 64))
+}
+
 fn scene_to_display_node(clip: &Clip, step: klipp_color::hdr::SceneToDisplay) -> klipp_nodes::Node {
-    use klipp_nodes::{Node, NodeId, NodeKind, NodeParams};
+    use klipp_nodes::{Node, NodeKind, NodeParams};
     Node {
-        id: NodeId::from_u128(clip.id.0.as_u128() ^ (0x0011_c5d0_u128 << 64)),
+        id: display_step_id(clip.id),
         kind: NodeKind::SceneToDisplay,
         label: String::new(),
         enabled: true,
