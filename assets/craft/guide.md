@@ -901,6 +901,13 @@ exist until the plan runs.
   refused until `kind` (`title` or `composition`) says which. Left
   without `secs`, a title holds 3 s and a composition its own length
   (its whole entrance, hold and exit).
+- `title_fields {clip_id, fields}`: a placed title template's fields,
+  by label as the template op takes them (`{"Accent": "#3366ff",
+  "Speed": 1.5}`): its texts and their colours, the accent, fonts,
+  pictures, Speed, Size and Duration, as klipp_title_templates lists
+  them. Set as the inspector's template fields set them, one undo step.
+  An unknown field (the reply names the fields there are), a value of
+  the wrong kind, or a Speed, Size or Duration out of range is refused.
 - `template_link {clip_id, control?, target?, action?, value?}`: a placed
   template's macro control. `control` (by name or label) with `value`
   moves it, and every number it drives follows its range and curve.

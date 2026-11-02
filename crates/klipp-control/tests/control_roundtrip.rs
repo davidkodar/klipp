@@ -4689,7 +4689,7 @@ fn an_export_of_another_shape_says_it_is_letterboxed() {
         assert!(matches!(h.cmd_rx.recv_timeout(std::time::Duration::from_secs(5)), Ok(klipp_core::AppCommand::ExportSequence { .. })));
         r["export"]["frame_warning"].clone()
     };
-    let vertical = export("Instagram Vertical");
+    let vertical = export("Shorts, Reels, TikTok 9:16");
     let said = vertical.as_str().unwrap_or_default();
     assert!(said.contains("1920x1080") && said.contains("1080x1920") && said.contains("above and below") && said.contains("format op"), "{vertical}");
     assert!(export("Instagram Square").as_str().unwrap_or_default().contains("above and below"), "square: a wide picture letterboxed");

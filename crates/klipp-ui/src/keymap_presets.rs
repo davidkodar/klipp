@@ -757,6 +757,7 @@ pub(crate) const FINAL_CUT: &[(&str, &[&str])] = &[
     ("paste_attributes", &["Ctrl+Shift+V"]), // Paste Attributes
     ("paste_insert", &["Ctrl+V"]), // Paste Insert at Playhead
     ("place_on_top_edit", &["Q"]), // Connect to Primary Storyline
+    ("append_edit", &["E"]), // Append to Storyline
     ("play_in_to_out", &["/"]), // Play Selection
     ("play_pause", &["Space"]), // Play/Pause
     ("preferences", &["Ctrl+,"]), // Settings
@@ -913,7 +914,6 @@ pub(crate) const FINAL_CUT_TAKEN: &[&str] = &[
     "Ctrl+Shift+Y", // Audition: Duplicate from Original
     "Ctrl+]", // Timeline History Forward
     "Ctrl+`", // Show/Hide Sidebar
-    "E", // Append to Storyline
     "F", // Favorite
     "G", // Toggle Storyline Mode
     "H", // Hand Tool
