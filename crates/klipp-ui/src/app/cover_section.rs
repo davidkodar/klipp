@@ -24,7 +24,8 @@ impl KlippApp {
     /// What finished on the section's threads: pictures drawn, frames
     /// proposed, files written.
     fn poll_covers(&mut self, ctx: &egui::Context) {
-        while let Ok((id, k, drawn)) = self.covers_panel.drawn_rx.try_recv() {
+        while let Ok((id, k, drawn, findings)) = self.covers_panel.drawn_rx.try_recv() {
+            self.covers_panel.findings.insert(id, findings);
             match drawn {
                 Ok(still) => {
                     let image = egui::ColorImage::from_rgba_unmultiplied([still.width as usize, still.height as usize], &still.rgba);
@@ -65,7 +66,11 @@ impl KlippApp {
         let (w, h) = thumb_size(&cover);
         let _ = std::thread::Builder::new().name("cover-draw".into()).spawn(move || {
             let drawn = klipp_render::cover::draw(&seq, &all, &pool, &look, &cover, w, h);
-            let _ = tx.send((cover.id, k, drawn));
+            // Read as a phone shows it: the words' size, and their
+            // contrast with the picture drawn without them.
+            let under = klipp_render::cover::under_words(&seq, &all, &pool, &look, &cover, klipp_document::qc::PHONE_FEED_W).ok().flatten();
+            let findings = klipp_document::qc::cover_readability(&cover, under.as_ref().map(|s| (&s.rgba[..], s.width as usize, s.height as usize))).into_iter().map(|f| format!("{}. {}", f.what, f.hint)).collect();
+            let _ = tx.send((cover.id, k, drawn, findings));
             ctx.request_repaint();
         });
     }
@@ -185,6 +190,9 @@ impl KlippApp {
                 if ui.selectable_label(selected, label(c)).clicked() {
                     self.covers_panel.selected = Some(c.id);
                     self.covers_panel.words = c.text.as_ref().and_then(|t| t.primary_text()).map(|t| t.text.clone()).unwrap_or_default();
+                }
+                for f in self.covers_panel.findings.get(&c.id).into_iter().flatten() {
+                    ui.label(egui::RichText::new(format!("\u{26A0} {f}")).small().color(ui.visuals().warn_fg_color));
                 }
                 if selected {
                     ui.horizontal(|ui| {

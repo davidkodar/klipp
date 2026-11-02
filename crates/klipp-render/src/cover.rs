@@ -52,6 +52,21 @@ pub fn draw(seq: &Sequence, all: &[Sequence], pool: &klipp_media::MediaPool, loo
     crate::still::timeline_still(&snap, cover.at_secs, width, height).map_err(|e| format!("no cover at {:.3} s: {e}", cover.at_secs))
 }
 
+/// `cover` drawn without its words, `width` wide (a phone's feed, for
+/// the readability check): the picture its words are read against.
+/// `None` for a cover without words, or with words on a backing, which
+/// carries its own contrast.
+pub fn under_words(seq: &Sequence, all: &[Sequence], pool: &klipp_media::MediaPool, look: &Look, cover: &klipp_timeline::cover::Cover, width: u32) -> Result<Option<Still>, String> {
+    let Some(td) = cover.text.as_ref() else { return Ok(None) };
+    if !matches!(td.background, klipp_timeline::TitleBackground::None) {
+        return Ok(None);
+    }
+    let Some(size) = klipp_core::cover_sizes::by_id(&cover.size) else { return Ok(None) };
+    let height = (((width as f64 * size.height as f64 / size.width as f64).round() as u32).max(2)) & !1;
+    let bare = klipp_timeline::cover::Cover { text: None, ..cover.clone() };
+    draw(seq, all, pool, look, &bare, width, height).map(Some)
+}
+
 /// The frames proposed for a cover of `seq`, each moved to the sharpest
 /// frame near it, best first, with how sharp it is; and the names of the
 /// files whose framing analysis isn't there, which propose no faces.

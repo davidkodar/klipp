@@ -79,6 +79,10 @@ pub struct Proposed {
     pub why: String,
 }
 
+/// A cover drawn on a thread: which, for what (its [`key`]), the
+/// picture, and what makes it hard to read on a phone.
+pub type Drawn = (CoverId, u64, Result<klipp_render::still::Still, String>, Vec<String>);
+
 /// What the section keeps between frames: the cover being changed, its
 /// words as typed, whether covers are compared, the pictures drawn, and
 /// the work on other threads.
@@ -88,8 +92,10 @@ pub struct CoverPanel {
     pub compare: bool,
     pub thumbs: HashMap<CoverId, (u64, egui::TextureHandle)>,
     pub asked: HashMap<CoverId, u64>,
-    pub drawn_tx: Sender<(CoverId, u64, Result<klipp_render::still::Still, String>)>,
-    pub drawn_rx: Receiver<(CoverId, u64, Result<klipp_render::still::Still, String>)>,
+    pub drawn_tx: Sender<Drawn>,
+    pub drawn_rx: Receiver<Drawn>,
+    /// What makes each cover hard to read on a phone, as drawn last.
+    pub findings: HashMap<CoverId, Vec<String>>,
     pub proposals: Option<Vec<Proposed>>,
     pub proposing: Option<Receiver<Result<(Vec<Proposed>, Vec<String>), String>>>,
     pub notes_tx: Sender<String>,
@@ -100,7 +106,7 @@ impl Default for CoverPanel {
     fn default() -> Self {
         let (drawn_tx, drawn_rx) = channel();
         let (notes_tx, notes_rx) = channel();
-        Self { selected: None, words: String::new(), compare: false, thumbs: HashMap::new(), asked: HashMap::new(), drawn_tx, drawn_rx, proposals: None, proposing: None, notes_tx, notes_rx }
+        Self { selected: None, words: String::new(), compare: false, thumbs: HashMap::new(), asked: HashMap::new(), drawn_tx, drawn_rx, findings: HashMap::new(), proposals: None, proposing: None, notes_tx, notes_rx }
     }
 }
 
