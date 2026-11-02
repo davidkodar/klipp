@@ -3061,8 +3061,9 @@ mod interface_tests {
         // their fields alone, and each op in full on its own.
         let ops = guide_topic("ops").unwrap();
         let index = guide_topic("ops_index").unwrap();
-        // The index grew past 6,000 with the alternatives op (#3209).
-        assert!(ops.len() < 20_000 && index.len() < 6_200, "ops {} bytes, ops_index {}", ops.len(), index.len());
+        // The index grew past 6,000 with the alternatives op (#3209), and
+        // past 6,200 with first_cut's eight fields (#3308).
+        assert!(ops.len() < 20_000 && index.len() < 6_400, "ops {} bytes, ops_index {}", ops.len(), index.len());
         assert!(ops.starts_with("## Ops\n") && ops.contains("`place {media_id, track, at"), "the guide's op list");
         assert!(ops.contains("Ops run in order"), "with what holds for every op");
         assert!(!ops.contains("## Batches"), "and nothing of the guide's next part");
