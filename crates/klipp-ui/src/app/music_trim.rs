@@ -82,8 +82,8 @@ impl super::KlippApp {
         let Some(edits) = trim_edits(self.state.sequence(), clip) else { return };
         self.apply_edits_as_one(&edits, LABEL);
         let Some(stamp) = self.state.active_history().undo_stamped().last().map(|(s, _)| s) else { return };
-        let kind = match self.state.sequence().all_clips().find(|c| c.id == clip).map(|c| c.role) {
-            Some(klipp_core::ClipRole::Music) => "Music",
+        let kind = match self.state.sequence().all_clips().find(|c| c.id == clip).and_then(|c| c.role.clone()) {
+            Some(r) if r.is("music") => "Music",
             _ => "Sound",
         };
         self.state.toast.show_with_action(note(kind), "Undo trim", crate::widgets::toast::ToastAction::UndoStep(stamp));
@@ -116,6 +116,7 @@ impl super::KlippApp {
                     Err(r) => self.state.toast.show(format!("Smooth motion not set: {}", r.why)),
                 }
             }
+            crate::widgets::toast::ToastAction::FindPeople(sequence) => self.find_people_now(sequence),
         }
     }
 }

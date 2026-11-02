@@ -23,6 +23,18 @@ impl PointerPlayer {
         self.steps.extend(steps.iter().cloned());
     }
 
+    /// Keeps frames coming while steps wait, asked inside the frame's
+    /// pass. The request `play` makes comes before the pass begins, and
+    /// an unfocused window — a harness's headless output — drew only on
+    /// events, at 0.3–2.5 frames a second: a queued click played a
+    /// minute late, then several at once. Pointer, key and text steps
+    /// all wait in the one queue.
+    pub(crate) fn keep_awake(&self, ctx: &egui::Context) {
+        if !self.steps.is_empty() {
+            ctx.request_repaint();
+        }
+    }
+
     /// This frame's events from the front step, added to `raw`; a
     /// timeline point resolved by `timeline_point` (seconds, track).
     pub(crate) fn play(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput, timeline_point: impl Fn(f64, usize) -> Option<egui::Pos2>) {
@@ -160,6 +172,35 @@ mod tests {
         assert_eq!(key(&raws[1]), Some((egui::Key::Delete, false, true)));
         assert!(raws[2].events.contains(&egui::Event::Text("Hi".into())));
         assert_eq!(key(&raws[3]), None, "no such key");
+    }
+
+    /// Steps waiting keep frames coming whatever the window's focus: a
+    /// pass with a step queued, of any kind, asks for the next frame at
+    /// once, and with the queue played out a pass asks for none.
+    #[test]
+    fn waiting_steps_ask_for_the_next_frame() {
+        let ctx = egui::Context::default();
+        let mut p = PointerPlayer::default();
+        let pass = |p: &PointerPlayer| {
+            let _ = ctx.run(egui::RawInput { focused: false, ..Default::default() }, |ctx| p.keep_awake(ctx));
+            ctx.has_requested_repaint()
+        };
+        // Settle egui's own repaints from the first passes.
+        for _ in 0..3 {
+            pass(&p);
+        }
+        assert!(!pass(&p), "nothing queued, nothing asked");
+        for step in [serde_json::json!({"action": "click", "at": {"screen": {"x": 1.0, "y": 1.0}}}), serde_json::json!({"action": "key", "key": "A"}), serde_json::json!({"action": "text", "text": "x"})] {
+            p.queue(&[serde_json::from_value(step.clone()).unwrap()]);
+            assert!(pass(&p), "{step} waiting");
+            while !p.steps.is_empty() {
+                let _ = frame(&mut p, &ctx);
+            }
+            for _ in 0..3 {
+                pass(&p);
+            }
+            assert!(!pass(&p), "{step} played");
+        }
     }
 
     /// A button pressed with Shift and not yet let go keeps Shift held in

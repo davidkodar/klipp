@@ -386,6 +386,8 @@ fn audio_decode_thread(
                         chain.reset();
                     }
                 }
+                // Video only.
+                DecodeCommand::ReaderHolds(_) => {}
                 DecodeCommand::Pause => paused = true,
                 DecodeCommand::Resume => {
                     paused = false;

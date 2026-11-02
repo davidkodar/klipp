@@ -563,6 +563,10 @@ impl klipp_document::ops::Transcripts for AnalysedTranscripts {
     fn faces(&self, item: &klipp_media::MediaItem) -> Vec<(f64, [f32; 4])> {
         klipp_analysis::report::MediaAnalysis::load(&item.path).framing.map(|f| f.samples.iter().flat_map(|s| face_or_head_regions(&f, s).into_iter().map(move |b| (s.secs, b))).collect()).unwrap_or_default()
     }
+
+    fn framing_analysed(&self, item: &klipp_media::MediaItem) -> bool {
+        klipp_analysis::report::MediaAnalysis::load(&item.path).framing.is_some()
+    }
     /// As the compositor places the clip, keys and picture-truth lanes
     /// included (#1909).
     fn placement(&self, clip: &klipp_timeline::Clip, clip_secs: f64, fps: f64) -> Option<klipp_timeline::surface::Placement> {

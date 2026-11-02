@@ -606,7 +606,10 @@ pub fn upgrade_entry(n: &mut Node) -> Result<(), String> {
         return Ok(());
     }
     let Some(legacy) = n.legacy.as_mut() else { return Ok(()) };
-    if let Ok(effect) = serde_json::from_value::<klipp_effects::BuiltinEffect>(legacy.payload.clone()) {
+    if let Ok(mut effect) = serde_json::from_value::<klipp_effects::BuiltinEffect>(legacy.payload.clone()) {
+        // A file's numbers, held to the effect's ranges as every other
+        // read of a stored effect is (#2995).
+        klipp_effects::registry::guard_effect(&mut effect);
         if let Ok(entry) = serde_json::to_value(effect) {
             legacy.payload = entry;
         }
@@ -701,6 +704,22 @@ mod tests {
         let mut written = node(serde_json::to_value(&now).unwrap());
         into_memory(&mut written).unwrap();
         assert_eq!(saved.params, written.params, "the old entry holds what one written now holds");
+    }
+
+    /// A stored effect read as written now at load is held to its ranges
+    /// as every other read of a file's effect is (#2995): a value far past
+    /// a field's range in someone else's file comes in at its edge.
+    #[test]
+    fn an_upgraded_entry_from_a_file_is_held_to_its_ranges() {
+        let ty = klipp_effects::registry::effect_type("reflection").unwrap();
+        let desc = ty.desc.params.iter().find(|d| d.hard().is_some() && d.index.is_none() && !d.derived).expect("a field with a range");
+        let (_, hi) = desc.hard().unwrap();
+        let mut entry = serde_json::to_value((ty.sample)()).unwrap();
+        entry[desc.field] = serde_json::json!(1e30);
+        let mut n: Node = serde_json::from_value(serde_json::json!({"id": uuid::Uuid::nil(), "type_id": types::LEGACY_EFFECT, "label": "", "legacy": {"slot": 0, "payload": entry}})).unwrap();
+        upgrade_entry(&mut n).unwrap();
+        let held = n.legacy.as_ref().unwrap().payload[desc.field].as_f64().unwrap();
+        assert!(held <= f64::from(hi) + 1e-6, "{}: {held} past {hi}", desc.field);
     }
 
     /// A frei0r plug-in is stored as `klipp.frei0r` (picture revision 4):

@@ -39,6 +39,7 @@ use std::borrow::Cow;
 use klipp_core::AppCommand;
 use klipp_core::events::AiToolsTaskTag;
 
+use crate::keybindings::{KeyBindings, KeymapPreset};
 use crate::state::AppState;
 
 /// What to do when the user activates a palette entry.
@@ -1097,6 +1098,50 @@ fn import_commands(picked: Vec<std::path::PathBuf>) -> Vec<AppCommand> {
     picked.into_iter().map(|path| AppCommand::ImportMedia { path }).collect()
 }
 
+/// Palette entries whose wording differs from the keymap action's
+/// label. Every other entry finds its action by that label.
+const PALETTE_ACTIONS: &[(&str, &str)] = &[
+    ("Open Project…", "open_project"),
+    ("Save Project As…", "save_project_as"),
+    ("Import Media…", "import_media"),
+    ("Export…", "export"),
+    ("Preferences…", "preferences"),
+    ("Paste", "paste_clip"),
+    ("Paste Attributes…", "paste_attributes"),
+    ("Ungroup Clip", "ungroup_clips"),
+    ("Freeze or Unfreeze Track of Selected Clip", "freeze_track"),
+    ("Add Title", "create_title"),
+    ("Match Frame Reverse", "match_frame_source_to_program"),
+    ("Fit Timeline to Window", "fit_to_window"),
+    ("Toggle Effects Browser", "toggle_browser_panel"),
+    ("Toggle Curve Editor", "toggle_keyframe_editor"),
+    ("Focus Search in Current Panel", "focus_panel_search"),
+    ("Toggle Performance Overlay", "toggle_perf_overlay"),
+    ("Toggle Zebras", "toggle_zebra"),
+    ("Toggle Grid Overlay", "toggle_grid_overlay"),
+    ("Frame Grab (Save PNG)", "extract_frame_to_file"),
+    ("AI: Run Inference (Active Task)", "ai_run_inference"),
+];
+
+/// Show each entry's key from the layout in use, not Klipp's: an action
+/// the layout leaves unbound shows none. Entries with no keymap action
+/// keep the key written above.
+pub fn show_layout_keys(entries: &mut [PaletteEntry], kb: &KeyBindings) {
+    let actions: Vec<String> = KeymapPreset::Klipp.bindings().into_keys().collect();
+    let by_label: std::collections::HashMap<&str, &str> =
+        actions.iter().map(|a| (KeyBindings::action_label(a), a.as_str())).collect();
+    for e in entries {
+        let action = PALETTE_ACTIONS
+            .iter()
+            .find(|(l, _)| *l == e.label)
+            .map(|(_, a)| *a)
+            .or_else(|| by_label.get(e.label.as_ref()).copied());
+        if let Some(action) = action {
+            e.shortcut = Cow::Owned(kb.display_for(action));
+        }
+    }
+}
+
 /// Resolve a [`DialogKind`] into `AppCommand`s by surfacing the
 /// matching system file picker. Blocks until the user picks or
 /// cancels, so callers run it through `file_dialog::spawn`, off the
@@ -1328,6 +1373,36 @@ mod tests {
         "Hum Removal — 50 Hz",
         "Hum Removal — 60 Hz",
     ];
+
+    fn key_of(entries: &[PaletteEntry], label: &str) -> String {
+        entries.iter().find(|e| e.label == label).map(|e| e.shortcut.to_string()).unwrap()
+    }
+
+    #[test]
+    fn the_palette_shows_the_layout_s_keys() {
+        use crate::keybindings::{KeyBindings, KeymapPreset};
+        let state = AppState::default();
+        let mut entries = build(&state);
+        show_layout_keys(&mut entries, &KeyBindings::from_preset(KeymapPreset::FinalCut));
+        // Final Cut gives Ctrl+T to transitions and no key to a title.
+        assert_eq!(key_of(&entries, "Add Title"), "");
+        assert_eq!(key_of(&entries, "Undo"), "Ctrl+Z");
+        let mut entries = build(&state);
+        show_layout_keys(&mut entries, &KeyBindings::defaults());
+        assert_eq!(key_of(&entries, "Add Title"), "Ctrl+T");
+        // A palette label with no keymap action keeps its own key.
+        assert_eq!(key_of(&entries, "Find Next"), "Enter");
+    }
+
+    #[test]
+    fn every_renamed_palette_entry_names_a_real_action() {
+        let actions = crate::keybindings::KeymapPreset::Klipp.bindings();
+        let entries = build(&AppState::default());
+        for (label, action) in PALETTE_ACTIONS {
+            assert!(actions.contains_key(*action), "{action} is not a keymap action");
+            assert!(entries.iter().any(|e| e.label == *label), "no palette entry {label}");
+        }
+    }
 
     #[test]
     fn palette_anchors_present() {
