@@ -14,7 +14,7 @@ Places the source range at the playhead, replacing whatever was there. No rippli
 - **Fit to Fill** (Shift+F11) retimes the source range to fill the timeline's in–out range.
 - **Place on Top** (F12) puts it on the first free track above the playhead.
 - **Replace** (Shift+F12) swaps the clip under the playhead for it, keeping its span.
-- **Append to End** (Timeline menu; E in the Final Cut layout) puts the clips selected in the media pool, or else the source, at the end of the main track, as Add to End of Timeline does.
+- **Append to End** (Shift+F10, or E in the Final Cut layout; also in the Timeline menu) puts the clips selected in the media pool, or else the source, at the end of the main track, as Add to End of Timeline does.
 
 With an out point set and no in point, an edit is backtimed: it ends at the out point. See [Magnetic Timeline](./magnetic-timeline.md#three--and-four-point-editing).
 

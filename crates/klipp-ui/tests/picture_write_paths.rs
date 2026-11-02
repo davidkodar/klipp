@@ -33,8 +33,9 @@ const KNOWN: &[(&str, &str, usize)] = &[
     // and stage grades, the opacity gradient #2704) and their tests (the
     // zones placed for their source and the foliage key, #2767, among
     // them), and the test that a grade change undoes exactly on a
-    // picture-truth clip (#2459).
-    ("klipp-document/src/ops.rs", "SetNodeGraph", 28),
+    // picture-truth clip (#2459), and a split shot's grade copied whole
+    // onto its other pieces (on: "shot"), as `from` copies one (#3390).
+    ("klipp-document/src/ops.rs", "SetNodeGraph", 29),
     // A drag left open, closed on the state alone (M3 step 2). The list
     // handlers and their drags go through the picture (M4 step 12c-5).
     ("klipp-ui/src/app/effects.rs", "EditBuiltinEffect", 2),
