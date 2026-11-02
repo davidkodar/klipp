@@ -614,3 +614,35 @@ fn each_effect_of_the_stack_previews_the_picture_after_it() {
         close(&format!("gpu {gpu}: the frame inspected"), &shown, &plain(&seq, gpu));
     }
 }
+
+/// #3328: a clip with an effect drawn on the placed layer (a Reflection,
+/// after the clip's move): the effects before it preview on the CPU and
+/// the GPU, the CPU's list carrying the clip's opacity besides; the
+/// Reflection previews on the GPU. On the CPU it is drawn apart from the
+/// clip's effects and has none yet.
+#[test]
+fn a_reflection_previews_on_the_cpu_and_the_gpu() {
+    let reflection = klipp_effects::BuiltinEffect::Reflection {
+        waterline: 0.5, gap: 0.0, ripple_amount: 0.0, ripple_size: 60.0, ripple_speed: 0.0, breakup: 0.0, smear: 0.0, fade: 0.0, opacity: 1.0, darken: 0.0, contact: 0.0,
+        blend: 0, tint: [0, 0, 0], tint_amount: 0.0, tint_auto: false, darken_auto: false, water: [0, 0, 0], water_key: 0, submerge: 0.0, ripple_from: 0, seed: 0, time: 0.0,
+    };
+    let (seq, id, _) = sequence(NodeGraph::default(), None);
+    let mut seq = seq;
+    let clip = seq.tracks[0].clips.iter_mut().find(|c| c.id == id).unwrap();
+    *clip = TestClip::of(clip.clone()).effects([klipp_effects::BuiltinEffect::Gamma { gamma: 1.6 }, reflection]).build();
+    let seq = seq.baked_for_render().into_owned();
+    let clip = seq.tracks[0].clips.iter().find(|c| c.id == id).unwrap();
+    let at = |n| InspectAt::out(NodePath::new(Root::Clip { clip: id.0 }, [n]));
+    let effects: Vec<InspectAt> = clip.picture_effects().unwrap().iter().map(|e| at(e.node)).collect();
+    for gpu in [false, true] {
+        let (_, found) = draw(&seq, gpu, Inspect { clip: Some(id), only: Some(id), thumbs: Some(effects.iter().cloned().collect()), ..Default::default() });
+        assert!(found.thumbs.contains_key(&effects[0]), "gpu {gpu}: the gamma: {:?}", found.unavailable);
+        if gpu {
+            // A full-frame picture leaves the reflection no room to show:
+            // its preview is there, the same picture.
+            assert!(found.thumbs.contains_key(&effects[1]), "the reflection: {:?}", found.unavailable);
+        } else {
+            assert!(found.unavailable.iter().any(|(a, _)| *a == effects[1]), "on the CPU the reflection says it has none: {:?}", found.unavailable);
+        }
+    }
+}
