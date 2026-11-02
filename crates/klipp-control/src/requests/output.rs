@@ -442,7 +442,7 @@ pub(crate) fn respond(
             Ok(v)
         }
 
-        ControlCommand::Covers { cover, path, overwrite } => covers(ctx, cover.as_deref(), path.as_deref(), overwrite),
+        ControlCommand::Covers { cover, path, propose, overwrite } => covers(ctx, cover.as_deref(), path.as_deref(), propose, overwrite),
 
         ControlCommand::TranslateCaptions { track, to, from, download_models, glossary } => {
             use klipp_document::caption_translation as ct;
@@ -1546,12 +1546,21 @@ fn cover_json(c: &klipp_timeline::cover::Cover) -> serde_json::Value {
 }
 
 /// [`ControlCommand::Covers`]: the covers and sizes, or one cover written.
-fn covers(ctx: &ControlContext, named: Option<&str>, path: Option<&str>, overwrite: bool) -> Result<serde_json::Value, String> {
+fn covers(ctx: &ControlContext, named: Option<&str>, path: Option<&str>, propose: bool, overwrite: bool) -> Result<serde_json::Value, String> {
     use klipp_render::still::{encode, StillFormat};
     let list: Vec<klipp_timeline::cover::Cover> = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?.covers.clone();
     let Some(path) = path else {
         let sizes: Vec<serde_json::Value> = klipp_core::cover_sizes::all().iter().map(|s| json!({ "id": s.id, "name": s.name, "width": s.width, "height": s.height, "max_bytes": s.max_bytes })).collect();
-        return Ok(json!({ "covers": list.iter().map(cover_json).collect::<Vec<_>>(), "sizes": sizes }));
+        let mut v = json!({ "covers": list.iter().map(cover_json).collect::<Vec<_>>(), "sizes": sizes });
+        if propose {
+            let (proposals, unread) = cover_proposals(ctx)?;
+            v["proposals"] = json!(proposals.iter().map(|(p, sharp)| json!({ "at_secs": (p.at_secs * 1000.0).round() / 1000.0, "why": p.why, "score": (p.score * 100.0).round() / 100.0, "sharpness": sharp.map(|s| s.round()) })).collect::<Vec<_>>());
+            if !unread.is_empty() {
+                v["no_framing_analysis"] = json!(unread);
+            }
+            v["not_judged"] = json!("whether eyes are open, and expression");
+        }
+        return Ok(v);
     };
     let p = std::path::PathBuf::from(path);
     if !p.is_absolute() {
@@ -1573,57 +1582,37 @@ fn covers(ctx: &ControlContext, named: Option<&str>, path: Option<&str>, overwri
     Ok(json!({ "path": path, "bytes": bytes.len(), "width": size.width, "height": size.height, "quality": quality, "cover": cover_json(c) }))
 }
 
-/// `cover` drawn by the export renderer at `width` × `height`: the
-/// sequence at that size with the cover's crop and words.
-fn cover_frame(ctx: &ControlContext, cover: &klipp_timeline::cover::Cover, width: u32, height: u32) -> Result<klipp_render::still::Still, String> {
+/// How the project draws its pictures, as the export renderer is told.
+fn look(ctx: &ControlContext) -> klipp_render::cover::Look {
+    klipp_render::cover::Look { lut: ctx.shared.project.lock().recovered().viewer_lut.clone(), working: klipp_engine::video_decoder::working_colorspace(), grade_encoding: klipp_core::grade_encoding() }
+}
+
+/// The open sequence and the project's others.
+fn sequences(ctx: &ControlContext) -> Result<(klipp_timeline::Sequence, Vec<klipp_timeline::Sequence>), String> {
     let seq: klipp_timeline::Sequence = (*ctx.sequence.read().map_err(|_| "sequence lock poisoned")?).clone();
-    let drawn = klipp_timeline::cover::cover_sequence(&seq, cover, width, height)?;
-    let mut all: Vec<klipp_timeline::Sequence> = ctx.others.read().recovered().iter().map(|s| (*s.sequence).clone()).collect();
-    all.retain(|s| s.id != seq.id);
-    all.push(drawn.clone());
-    let lut = ctx.shared.project.lock().recovered().viewer_lut.clone();
-    let pool = ctx.media_pool.read().recovered();
-    let mut snapshot = klipp_render::SequenceSnapshot::from_sequence_with_all(
-        &drawn,
-        &all,
-        &pool,
-        &klipp_core::ExportSettings::default(),
-        lut.as_ref().map(|(p, _)| p.clone()),
-        false,
-        klipp_engine::video_decoder::working_colorspace(),
-    )
-    .map_err(|e| e.to_string())?;
-    drop(pool);
-    snapshot.grade_encoding = klipp_core::grade_encoding();
-    if let Some((_, opacity)) = lut {
-        snapshot.video.global_lut_opacity = opacity;
-    }
-    klipp_render::still::timeline_still(&snapshot, cover.at_secs, width, height).map_err(|e| format!("no cover at {:.3} s: {e}", cover.at_secs))
+    let all = ctx.others.read().recovered().iter().map(|s| (*s.sequence).clone()).collect();
+    Ok((seq, all))
+}
+
+/// `cover` drawn by the export renderer at `width` × `height`.
+fn cover_frame(ctx: &ControlContext, cover: &klipp_timeline::cover::Cover, width: u32, height: u32) -> Result<klipp_render::still::Still, String> {
+    let (seq, all) = sequences(ctx)?;
+    let pool = ctx.media_pool.read().recovered().clone();
+    klipp_render::cover::draw(&seq, &all, &pool, &look(ctx), cover, width, height)
+}
+
+/// The frames proposed for a cover of the open sequence.
+fn cover_proposals(ctx: &ControlContext) -> Result<(Vec<(klipp_render::cover::Proposal, Option<f32>)>, Vec<String>), String> {
+    let (seq, all) = sequences(ctx)?;
+    let pool = ctx.media_pool.read().recovered().clone();
+    klipp_render::cover::proposals(&seq, &all, &pool, &look(ctx), &|p| klipp_analysis::report::MediaAnalysis::load(p))
 }
 
 fn full_size_frame(ctx: &ControlContext, secs: f64, width: u32, height: u32) -> Result<klipp_render::still::Still, String> {
-    let seq: klipp_timeline::Sequence = (*ctx.sequence.read().map_err(|_| "sequence lock poisoned")?).clone();
-    let mut all: Vec<klipp_timeline::Sequence> = ctx.others.read().recovered().iter().map(|s| (*s.sequence).clone()).collect();
-    if !all.iter().any(|s| s.id == seq.id) {
-        all.push(seq.clone());
-    }
-    let lut = ctx.shared.project.lock().recovered().viewer_lut.clone();
+    let (seq, all) = sequences(ctx)?;
     let pool = ctx.media_pool.read().recovered();
-    let mut snapshot = klipp_render::SequenceSnapshot::from_sequence_with_all(
-        &seq,
-        &all,
-        &pool,
-        &klipp_core::ExportSettings::default(),
-        lut.as_ref().map(|(p, _)| p.clone()),
-        false,
-        klipp_engine::video_decoder::working_colorspace(),
-    )
-    .map_err(|e| e.to_string())?;
+    let snapshot = klipp_render::cover::snapshot(&seq, &all, &pool, &look(ctx))?;
     drop(pool);
-    snapshot.grade_encoding = klipp_core::grade_encoding();
-    if let Some((_, opacity)) = lut {
-        snapshot.video.global_lut_opacity = opacity;
-    }
     klipp_render::still::timeline_still(&snapshot, secs, width, height).map_err(|e| format!("no frame at {secs:.3} s: {e}"))
 }
 

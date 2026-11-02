@@ -1301,7 +1301,8 @@ pub enum ControlCommand {
         #[serde(default)]
         format: Option<String>,
     },
-    /// The sequence's covers (#3311) and the sizes a cover is made at; with
+    /// The sequence's covers (#3311) and the sizes a cover is made at, and
+    /// with `propose` frames proposed for one; with
     /// `path` (absolute, .png, .jpg or .jpeg), `cover` (its id or name; the
     /// only one when left out) drawn at its size and written there, a
     /// JPEG's quality stepped down to fit the size's file limit; a file
@@ -1311,6 +1312,10 @@ pub enum ControlCommand {
         cover: Option<String>,
         #[serde(default)]
         path: Option<String>,
+        /// Frames proposed for a cover besides: markers, faces, still
+        /// moments, each at the sharpest frame near it.
+        #[serde(default)]
+        propose: bool,
         #[serde(default)]
         overwrite: bool,
     },

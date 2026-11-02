@@ -27,7 +27,7 @@ fn cover(name: &str) -> klipp_timeline::cover::Cover {
 
 #[test]
 fn covers_are_listed_and_an_export_that_cant_be_written_is_refused() {
-    let ask = |ctx: &ControlContext, cover: Option<&str>, path: Option<&str>| respond(ctx, ControlCommand::Covers { cover: cover.map(str::to_string), path: path.map(str::to_string), overwrite: false }, &mut None);
+    let ask = |ctx: &ControlContext, cover: Option<&str>, path: Option<&str>| respond(ctx, ControlCommand::Covers { cover: cover.map(str::to_string), path: path.map(str::to_string), propose: false, overwrite: false }, &mut None);
     let two = context(vec![cover("Hook"), cover("Calm")]);
     let listed = ask(&two, None, None).unwrap();
     assert_eq!(listed["covers"].as_array().map(Vec::len), Some(2), "{listed}");

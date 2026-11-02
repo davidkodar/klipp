@@ -46,6 +46,12 @@ fn a_cover_is_its_frame_cropped_with_its_words() {
     let white = bright(&worded);
     let total = (worded.width * worded.height) as usize;
     assert!(white > 200 && white < total / 4, "the words show, at their size: {white} of {total} pixels white");
+    // Several frames by one renderer are each the frame drawn alone.
+    let drawn_seq = cover_sequence(&seq, &cover, 640, 360).unwrap();
+    let snap = SequenceSnapshot::from_sequence_with_all(&drawn_seq, std::slice::from_ref(&drawn_seq), &klipp_media::MediaPool::new(), &ExportSettings::default(), None, false, WorkingColorspace::Rec709Linear).unwrap();
+    let both = still::timeline_stills(&snap, &[1.0, 0.5], 640, 360);
+    assert_eq!(both.len(), 2);
+    assert_eq!(both[0].as_ref().unwrap(), &worded, "the first of two is the one drawn alone");
     let [r, g, b] = px(&worded, 4, 4);
     assert!(r < 30 && g < 30 && b > 220, "the bar still under them: {:?}", [r, g, b]);
 }
