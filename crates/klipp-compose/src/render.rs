@@ -2051,7 +2051,11 @@ impl Renderer {
                             klipp_effects::color_wgsl::pack_primaries_matrix(*source_to_working),
                         )
                 }
-                GradeInput::Cpu(_) => return Single::Refused("an identity grade of a frame not on the GPU"),
+                // A frame decoded to memory — a reversed clip's, read
+                // backwards on the CPU — goes up as it is: refused, every
+                // reversed frame of an export was composited on the CPU
+                // while playback kept it on the GPU (#3220).
+                GradeInput::Cpu(pixels) => self.allow_gpu && self.executor.prime_chain_from_linear(pixels, width, height),
             };
             if !seeded || !self.executor.take_seeded_input_as_output() {
                 return Single::Refused("the source could not seed the chain");
