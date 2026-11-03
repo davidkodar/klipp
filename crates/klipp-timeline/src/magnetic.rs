@@ -2437,12 +2437,22 @@ mod tests {
         let mut seq = make_sequence(&[(0, 48), (48, 96), (96, 144)]);
         let ids: Vec<ClipId> = seq.tracks[0].clips.iter().map(|c| c.id).collect();
         seq.tracks[0].transitions = vec![transition(ids[0], ids[1]), transition(ids[1], ids[2])];
-        let pairs = |s: &Sequence| s.tracks[0].transitions.iter().map(|t| (t.clip_a_id, t.clip_b_id)).collect::<Vec<_>>();
+        // In any order: transitions are kept in the order of their ids.
+        let pairs = |s: &Sequence| {
+            let mut p = s.tracks[0].transitions.iter().map(|t| (t.clip_a_id.0.as_u128(), t.clip_b_id.0.as_u128())).collect::<Vec<_>>();
+            p.sort();
+            p
+        };
+        let sorted = |mut v: Vec<(ClipId, ClipId)>| {
+            let mut p = v.drain(..).map(|(a, b)| (a.0.as_u128(), b.0.as_u128())).collect::<Vec<_>>();
+            p.sort();
+            p
+        };
         let before = pairs(&seq);
 
         let blade = MagneticEditor::blade(&mut seq, ids[1], tc(72)).unwrap();
         let MagneticEditCommand::Blade { left_clip, right_clip, .. } = &blade.command else { panic!("a blade") };
-        let cut = vec![(ids[0], left_clip.id), (right_clip.id, ids[2])];
+        let cut = sorted(vec![(ids[0], left_clip.id), (right_clip.id, ids[2])]);
         assert_eq!(pairs(&seq), cut, "into the left piece, out of the right");
         MagneticEditor::apply_inverse(&mut seq, &blade.command);
         assert_eq!(pairs(&seq), before, "undone");
