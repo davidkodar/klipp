@@ -5,6 +5,9 @@ use crate::theme::KlippTheme;
 use crate::widgets::tooltip::styled_tooltip;
 use klipp_core::AppCommand;
 
+/// The menu bar's height: what floating panels stay below.
+pub const MENU_BAR_HEIGHT: f32 = 40.0;
+
 pub struct ToolbarPanel {
     pub logo_texture: Option<egui::TextureHandle>,
 }
@@ -978,15 +981,16 @@ impl ToolbarPanel {
                 state.show_markers_panel = true;
                 ui.close_menu();
             }
-            if ui.button("Delete Marker").clicked() {
-                // Delete the marker at/nearest playhead
+            let (at_playhead, any) = marker_deletes(state.sequence(), state.playhead);
+            if ui.add_enabled(at_playhead, egui::Button::new("Delete Marker")).clicked() {
+                // Delete the marker at the playhead
                 let ph = state.playhead;
                 if let Some(marker) = state.sequence().markers.iter().find(|m| m.position == ph) {
                     cmds.push(AppCommand::RemoveMarker { marker_id: marker.id });
                 }
                 ui.close_menu();
             }
-            if ui.button("Delete All Markers").clicked() {
+            if ui.add_enabled(any, egui::Button::new("Delete All Markers")).clicked() {
                 let ids: Vec<_> = state.sequence().markers.iter().map(|m| m.id).collect();
                 for id in ids { cmds.push(AppCommand::RemoveMarker { marker_id: id }); }
                 ui.close_menu();
@@ -1535,7 +1539,7 @@ mod graph_menu_tests {
                     time += 0.1;
                     let mut cmds = Vec::new();
                     let output = ctx.run(egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1920.0, 1080.0))), time: Some(time), events, ..Default::default() }, |ctx| {
-                        egui::TopBottomPanel::top("toolbar").exact_height(40.0).show(ctx, |ui| {
+                        egui::TopBottomPanel::top("toolbar").exact_height(MENU_BAR_HEIGHT).show(ctx, |ui| {
                             cmds = panel.show(ui, state, &[], &KlippTheme::default(), &crate::keybindings::KeyBindings::default());
                         });
                     });
@@ -1691,7 +1695,7 @@ pub(crate) mod narrow_bar_tests {
         for i in 0..3 {
             let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, 700.0))), time: Some(f64::from(i) * 0.1), ..Default::default() };
             let output = ctx.run(input, |ctx| {
-                egui::TopBottomPanel::top("toolbar").exact_height(40.0).show(ctx, |ui| {
+                egui::TopBottomPanel::top("toolbar").exact_height(MENU_BAR_HEIGHT).show(ctx, |ui| {
                     panel.show(ui, &mut state, &[], &KlippTheme::default(), &crate::keybindings::KeyBindings::default());
                 });
             });
@@ -1746,7 +1750,7 @@ pub(crate) mod narrow_bar_tests {
         let mut frame = |state: &mut AppState, events| {
             time += 0.1;
             let output = ctx.run(egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1920.0, 1080.0))), time: Some(time), events, ..Default::default() }, |ctx| {
-                egui::TopBottomPanel::top("toolbar").exact_height(40.0).show(ctx, |ui| {
+                egui::TopBottomPanel::top("toolbar").exact_height(MENU_BAR_HEIGHT).show(ctx, |ui| {
                     panel.show(ui, state, &[], &KlippTheme::default(), &crate::keybindings::KeyBindings::default());
                 });
             });
@@ -1788,7 +1792,7 @@ pub(crate) mod narrow_bar_tests {
         let mut frame = |state: &mut AppState, events| {
             time += 0.1;
             ctx.run(egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, 1080.0))), time: Some(time), events, ..Default::default() }, |ctx| {
-                egui::TopBottomPanel::top("toolbar").exact_height(40.0).show(ctx, |ui| {
+                egui::TopBottomPanel::top("toolbar").exact_height(MENU_BAR_HEIGHT).show(ctx, |ui| {
                     panel.show(ui, state, &[], &theme, &crate::keybindings::KeyBindings::default());
                 });
             })
@@ -1861,7 +1865,7 @@ mod menu_row_tests {
         let mut frame = |state: &mut AppState, events| {
             time += 0.1;
             let output = ctx.run(egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1920.0, 1080.0))), time: Some(time), events, ..Default::default() }, |ctx| {
-                egui::TopBottomPanel::top("toolbar").exact_height(40.0).show(ctx, |ui| {
+                egui::TopBottomPanel::top("toolbar").exact_height(MENU_BAR_HEIGHT).show(ctx, |ui| {
                     panel.show(ui, state, &[], &KlippTheme::default(), &crate::keybindings::KeyBindings::default());
                 });
             });
@@ -1902,7 +1906,7 @@ mod assistant_setup_menu_tests {
         let mut frame = |state: &mut AppState, events| {
             time += 0.1;
             let output = ctx.run(egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1920.0, 1080.0))), time: Some(time), events, ..Default::default() }, |ctx| {
-                egui::TopBottomPanel::top("toolbar").exact_height(40.0).show(ctx, |ui| {
+                egui::TopBottomPanel::top("toolbar").exact_height(MENU_BAR_HEIGHT).show(ctx, |ui| {
                     panel.show(ui, state, &[], &KlippTheme::default(), &crate::keybindings::KeyBindings::default());
                 });
             });
@@ -1920,5 +1924,26 @@ mod assistant_setup_menu_tests {
         frame(&mut state, vec![button(at, false)]);
         assert!(state.show_assistant_setup);
         assert!(state.dialog_open(), "a dialog: the app behind it takes no shortcuts");
+    }
+}
+
+/// Whether Mark's two delete items have anything to delete: a marker at
+/// `playhead`, and any marker (#3428).
+fn marker_deletes(seq: &klipp_timeline::Sequence, playhead: klipp_core::RationalTime) -> (bool, bool) {
+    (seq.markers.iter().any(|m| m.position == playhead), !seq.markers.is_empty())
+}
+
+#[cfg(test)]
+mod marker_delete_tests {
+    use super::marker_deletes;
+
+    #[test]
+    fn the_delete_items_need_a_marker_to_delete() {
+        let at = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 24);
+        let mut seq = klipp_timeline::Sequence::new_default();
+        assert_eq!(marker_deletes(&seq, at(1.0)), (false, false));
+        seq.markers.push(klipp_timeline::Marker { id: klipp_core::MarkerId::new(), position: at(1.0), label: String::new(), color: klipp_core::MarkerColor::Blue, duration: None, comment: String::new(), kind: Default::default(), review: None });
+        assert_eq!(marker_deletes(&seq, at(1.0)), (true, true));
+        assert_eq!(marker_deletes(&seq, at(2.0)), (false, true));
     }
 }

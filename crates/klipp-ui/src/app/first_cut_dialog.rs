@@ -173,6 +173,7 @@ impl KlippApp {
         let rate = self.state.sequence().fps.num.max(1);
         let (mut open, mut flip, mut go) = (true, None, None);
         egui::Window::new("First Cut changes")
+            .constrain_to(crate::widgets::below_menu_bar(ctx))
             .collapsible(true)
             .resizable(true)
             .default_width(360.0)
