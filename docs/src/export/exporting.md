@@ -62,7 +62,7 @@ The list only shows transforms that suit the delivery and the project's working 
 
 - **Audio codec** — AAC, MP3, Opus, FLAC, PCM 16-bit, PCM 24-bit, or **No audio**. Klipp writes a stereo mix.
 - **Audio bitrate** — 128, 192, 256 or 320 kbps, for AAC, MP3 and Opus.
-- **Loudness** — tick **Normalize** and pick a target: YouTube / Spotify (−14 LUFS), Podcast (−16), EBU R128 (−23), ATSC A/85 (−24), or a custom value from −30 to −5 LUFS. The render measures the mix first, sets the gain to reach the target, and holds the true peak at −1 dBTP (−2 dBTP for ATSC A/85) with a limiter when the gain would push peaks past it; when the limiter holds the level down, the gain is fitted again by the loudness measured in the file. The render queue shows the loudness measured in the written file. Playback is heard at the loudness the export will deliver.
+- **Loudness** — tick **Normalize** and pick a target: YouTube / Spotify (−14 LUFS), Podcast (−16), EBU R128 (−23), ATSC A/85 (−24), or a custom value from −30 to −5 LUFS. The render measures the mix first, sets the gain to reach the target, and holds the true peak at −1 dBTP (−2 dBTP for ATSC A/85) with a limiter when the gain would push peaks past it; when the limiter holds the level down, the gain is fitted again by the loudness measured in the file. The render queue shows the loudness measured in the written file. Playback is heard at the loudness the export will deliver. A sequence whose brief names a loudness, as a destination does, starts with that target ticked; untick it to export as mixed.
 
 GIF files carry no audio, so these controls are disabled for GIF.
 
