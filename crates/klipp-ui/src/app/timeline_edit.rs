@@ -470,25 +470,12 @@ impl KlippApp {
                 }
                 // Close gap: remove empty space on a track by shifting downstream clips left
                 AppCommand::CloseGap { track_index, gap_start, gap_end } => {
-                    let ti = *track_index;
-                    let start = *gap_start;
-                    let end = *gap_end;
-                    let gap_dur = end - start;
-                    if let Some(track) = self.state.sequences[self.state.active_sequence_idx].tracks.get_mut(ti) {
-                        // Remove any explicit Gap clips in this range
-                        track.clips.retain(|c| {
-                            !(matches!(c.kind, klipp_timeline::ClipKind::Gap)
-                              && c.timeline_in >= start && c.timeline_out <= end)
-                        });
-                        // Shift all clips that start at or after gap_end left by gap duration
-                        for c in track.clips.iter_mut() {
-                            if c.timeline_in >= end {
-                                c.timeline_in -= gap_dur;
-                                c.timeline_out -= gap_dur;
-                            }
-                        }
-                        track.sort_clips();
-                        self.state.dirty = true;
+                    // On the linked clips' tracks too, or not at all:
+                    // closed on one track alone, each later pair went out
+                    // of sync.
+                    match self.state.sequences[self.state.active_sequence_idx].close_gap(*track_index, *gap_start, *gap_end) {
+                        Ok(_) => self.state.dirty = true,
+                        Err(why) => self.state.toast.show(format!("Gap not closed: {why}")),
                     }
                     self.sync_sequence_to_engine();
                     true

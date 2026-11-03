@@ -1319,6 +1319,52 @@ impl Sequence {
         self.tracks.iter_mut().flat_map(|t| t.clips.iter_mut())
     }
 
+    /// The gap from `start` to `end` on track `ti` taken out: the clips
+    /// from `end` on move up by its length, and gap clips inside it go. A
+    /// clip that moves takes its linked partner's sync with it, so the gap
+    /// closes on the partner's track too, and on its partners' in turn.
+    /// Refused, changing nothing, where one of those tracks has something
+    /// in the gap other than a gap clip, or is locked: closing the one
+    /// track alone left each later pair out of sync. The tracks closed.
+    pub fn close_gap(&mut self, ti: usize, start: Timecode, end: Timecode) -> Result<Vec<usize>, String> {
+        if end <= start || ti >= self.tracks.len() {
+            return Err("no gap there".into());
+        }
+        let len = end - start;
+        let in_gap = |c: &Clip| !c.kind.is_gap() && c.timeline_in < end && c.timeline_out > start;
+        let mut tracks = vec![ti];
+        let mut k = 0;
+        while k < tracks.len() {
+            let t = tracks[k];
+            for c in self.tracks[t].clips.iter().filter(|c| c.timeline_in >= end) {
+                let Some(pt) = c.linked_clip_id.and_then(|p| self.tracks.iter().position(|tr| tr.clips.iter().any(|x| x.id == p))) else { continue };
+                if !tracks.contains(&pt) {
+                    tracks.push(pt);
+                }
+            }
+            k += 1;
+        }
+        for &t in &tracks {
+            let track = &self.tracks[t];
+            if track.locked {
+                return Err(format!("{} is locked: closing the gap there too, to keep its clips in sync with {}, can't be done", track.name, self.tracks[ti].name));
+            }
+            if track.clips.iter().any(in_gap) {
+                return Err(format!("{} has a clip in the gap: closing it on {} alone would put the linked clips after it out of sync", track.name, self.tracks[ti].name));
+            }
+        }
+        for &t in &tracks {
+            let track = &mut self.tracks[t];
+            track.clips.retain(|c| !(c.kind.is_gap() && c.timeline_in >= start && c.timeline_out <= end));
+            for c in track.clips.iter_mut().filter(|c| c.timeline_in >= end) {
+                c.timeline_in -= len;
+                c.timeline_out -= len;
+            }
+            track.sort_clips();
+        }
+        Ok(tracks)
+    }
+
     /// The gap clips the primary track needs to hold no holes (#3060): one
     /// for each stretch between its start and its last clip that no clip
     /// covers, with the primary's index. The primary is gapless by rule;
@@ -5407,5 +5453,51 @@ mod append_from_tests {
         assert_eq!(at(v, picture), Some((25.0, 29.0)));
         assert_eq!(at(a, sound), Some((25.0, 29.0)), "the sound under its picture, not at 0 s");
         assert_eq!(at(a, later), Some((29.0, 30.0)), "never over what is there");
+    }
+}
+
+#[cfg(test)]
+mod close_gap_tests {
+    use super::*;
+
+    fn pair(seq: &mut Sequence, v: usize, a: usize, from: f64, to: f64) -> (ClipId, ClipId) {
+        let t = |s: f64| Timecode::from_secs_f64(s, 25);
+        let media = MediaId::new();
+        let mut picture = Clip::media(media, t(from), t(to), t(0.0), t(to - from));
+        let mut sound = Clip::media(media, t(from), t(to), t(0.0), t(to - from));
+        picture.linked_clip_id = Some(sound.id);
+        sound.linked_clip_id = Some(picture.id);
+        let ids = (picture.id, sound.id);
+        seq.tracks[v].clips.push(picture);
+        seq.tracks[a].clips.push(sound);
+        ids
+    }
+
+    /// A gap closed on the picture track closes on the sound track too, so
+    /// a later pair stays in sync; where the sound track has a clip in the
+    /// gap (the sound of a picture deleted alone), it is refused and
+    /// nothing moves.
+    #[test]
+    fn a_gap_closes_on_the_linked_track_too_or_not_at_all() {
+        let t = |s: f64| Timecode::from_secs_f64(s, 25);
+        let mut seq = Sequence::new_default();
+        let v = seq.tracks.iter().position(|t| t.kind == TrackKind::Video).unwrap();
+        let a = seq.tracks.iter().position(|t| t.kind == TrackKind::Audio).unwrap();
+        pair(&mut seq, v, a, 0.0, 2.0);
+        let (picture, sound) = pair(&mut seq, v, a, 4.0, 6.0);
+        let at = |s: &Sequence, id: ClipId| s.all_clips().find(|c| c.id == id).map(|c| c.timeline_in).unwrap();
+
+        let mut closed = seq.clone();
+        assert_eq!(closed.close_gap(v, t(2.0), t(4.0)), Ok(vec![v, a]));
+        assert_eq!((at(&closed, picture), at(&closed, sound)), (t(2.0), t(2.0)), "both up, in sync");
+
+        // The deleted picture's sound still sits in the gap on A1.
+        let media = MediaId::new();
+        seq.tracks[a].clips.push(Clip::media(media, t(2.0), t(4.0), t(0.0), t(2.0)));
+        seq.tracks[a].sort_clips();
+        let before = serde_json::to_value(&seq).unwrap();
+        let why = seq.close_gap(v, t(2.0), t(4.0)).unwrap_err();
+        assert!(why.contains("in the gap"), "{why}");
+        assert_eq!(serde_json::to_value(&seq).unwrap(), before, "nothing moved");
     }
 }

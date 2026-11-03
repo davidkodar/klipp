@@ -1496,15 +1496,30 @@ impl KlippApp {
                     true
                 }
                 AppCommand::CloseAllGaps { track_index } => {
-                    let closed = self.state.sequence_mut().tracks.get_mut(*track_index).filter(|t| !t.locked).map(crate::selection::close_all_gaps).unwrap_or(0);
+                    // Each gap as Close Gap closes it, on the linked clips'
+                    // tracks too, last first so the earlier ones stay where
+                    // they are; one that would put pairs out of sync is left.
+                    let ti = *track_index;
+                    let gaps = self.state.sequence().tracks.get(ti).filter(|t| !t.locked).map(crate::selection::gaps).unwrap_or_default();
+                    let (mut closed, mut left) = (0, None);
+                    for (start, end) in gaps.into_iter().rev() {
+                        match self.state.sequence_mut().close_gap(ti, start, end) {
+                            Ok(_) => closed += 1,
+                            Err(why) => left = left.or(Some(why)),
+                        }
+                    }
                     if closed > 0 {
                         self.state.dirty = true;
                         self.sync_sequence_to_engine();
                     }
-                    self.state.toast.show(match closed {
-                        0 => "No gaps to close on that track".to_string(),
+                    let done = match closed {
+                        0 => "No gaps closed on that track".to_string(),
                         1 => "Closed 1 gap".to_string(),
                         n => format!("Closed {n} gaps"),
+                    };
+                    self.state.toast.show(match left {
+                        Some(why) => format!("{done}; one or more left: {why}"),
+                        None => done,
                     });
                     true
                 }
