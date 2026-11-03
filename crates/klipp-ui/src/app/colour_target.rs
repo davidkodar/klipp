@@ -38,6 +38,14 @@ impl AppState {
         Some(graded)
     }
 
+    /// Whether the page should look again for the clip to grade: the
+    /// playhead has moved since `last`, or nothing is selected any more, as
+    /// after Escape (#3451), which would otherwise leave the page with no
+    /// clip until the next move. A selection of several is left alone.
+    pub(crate) fn grade_needs_following(&self, last: Option<Timecode>) -> bool {
+        last != Some(self.playhead) || (self.selected_clip.is_none() && self.selected_clips.is_empty())
+    }
+
     /// `clip` on a video track of the sequence, with that track's index.
     fn picture_clip(&self, clip: ClipId) -> Option<(usize, &klipp_timeline::Clip)> {
         self.sequence().tracks.iter().enumerate()

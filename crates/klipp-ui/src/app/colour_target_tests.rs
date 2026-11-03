@@ -112,3 +112,22 @@ fn a_selection_elsewhere_is_one_click_away() {
     assert_eq!(state.grade_at_playhead(), Some(later), "the page grades it there");
     assert_eq!(state.colour_elsewhere_hint(), None);
 }
+
+/// Escape leaves nothing selected with the playhead where it was: the page
+/// looks again and goes on grading the clip there, and a selection, of one
+/// clip or of several, stays until the playhead moves.
+#[test]
+fn escape_keeps_the_page_on_the_clip_at_the_playhead() {
+    let Cut { mut state, upper, later, .. } = cut();
+    let here = Some(state.playhead);
+    state.selected_clip = None;
+    state.selected_clips.clear();
+    assert!(state.grade_needs_following(here));
+    assert_eq!(state.grade_at_playhead(), Some(upper));
+    assert_eq!(state.selected_clip, Some(upper));
+    assert!(!state.grade_needs_following(here), "settled");
+    state.selected_clip = None;
+    state.selected_clips = vec![upper, later];
+    assert!(!state.grade_needs_following(here), "several selected are left alone");
+    assert!(state.grade_needs_following(None), "the page was just opened");
+}
