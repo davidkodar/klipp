@@ -4016,11 +4016,18 @@ impl TimelinePanel {
                 // the whole group then goes on it (what does not fit is
                 // skipped with a toast).
                 let group = state.dragging_media_group.clone();
+                // One item goes where it was let go, as on a track (#2549):
+                // appended, it landed at the new track's start, 0:00.
+                let pointer = ui.input(|i| i.pointer.hover_pos());
+                let at = pointer.map(|p| {
+                    let secs = ((p.x - layout.content_rect.left() + state.timeline_scroll_x) / state.timeline_zoom.max(1e-6)) as f64;
+                    Self::media_drop_time(state, secs, state.timeline_zoom, ui.input(|i| i.modifiers.shift))
+                });
                 let append_group = |track_index: usize| -> AppCommand {
-                    if group.len() > 1 {
-                        AppCommand::AppendMediaBatchToTrack { media_ids: group.clone(), track_index }
-                    } else {
-                        AppCommand::AppendClipToTrack { media_id: drag_media_id, track_index }
+                    match at {
+                        Some(at) if group.len() <= 1 => media_drop_command(drag_media_id, track_index, at, klipp_timeline::magnetic::EditMode::Overwrite),
+                        _ if group.len() > 1 => AppCommand::AppendMediaBatchToTrack { media_ids: group.clone(), track_index },
+                        _ => AppCommand::AppendClipToTrack { media_id: drag_media_id, track_index },
                     }
                 };
                 // Only a release over the timeline: above its tracks means

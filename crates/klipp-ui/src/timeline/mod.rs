@@ -1833,7 +1833,8 @@ mod menu_smoke_tests {
     }
 
     /// A video file released below the last track makes a new video
-    /// track and goes on it, not on the track that was there (#2662).
+    /// track and goes on it, not on the track that was there (#2662),
+    /// where it was let go: appended, it landed at 0:00.
     #[test]
     fn a_video_released_below_the_tracks_goes_on_the_new_track() {
         let mut timeline = Timeline::new();
@@ -1848,13 +1849,17 @@ mod menu_smoke_tests {
         timeline.frame(vec![egui::Event::PointerMoved(below), egui::Event::PointerButton { pos: below, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE }]);
         let seq = &timeline.state.sequences[0];
         assert_eq!(seq.tracks.len(), tracks + 1, "one track made");
-        let target = timeline.sent.iter().find_map(|c| match c {
-            AppCommand::AppendClipToTrack { track_index, .. } => Some(*track_index),
+        let placed = timeline.sent.iter().find_map(|c| match c {
+            AppCommand::PlaceMedia { drop: klipp_core::events::ClipDrop::OnTrackAt { track_index, at, .. }, .. } => Some((*track_index, *at)),
             _ => None,
         });
-        let target = target.unwrap_or_else(|| panic!("no append: {:?}", timeline.sent));
+        let (target, at) = placed.unwrap_or_else(|| panic!("nothing placed: {:?}", timeline.sent));
         let track = &seq.tracks[target];
         assert!(matches!(track.kind, TrackKind::Video) && track.clips.is_empty(), "the clip goes on the new track, not {}", track.name);
+        let content_left = timeline.old.frame_cache.track_rects.last().unwrap().2.left();
+        let want = f64::from((below.x - content_left + timeline.state.timeline_scroll_x) / timeline.state.timeline_zoom);
+        assert!(want > 1.0, "the drop is well past the start: {want}");
+        assert!((at.to_secs_f64() - want).abs() < 0.5, "at the drop time {want:.2} s, not {:.2} s", at.to_secs_f64());
     }
 
     /// #2981: a pool clip let go over the middle of a clip on V2 edits
