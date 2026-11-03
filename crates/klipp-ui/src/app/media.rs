@@ -455,9 +455,14 @@ impl KlippApp {
                             };
 
                             if let (Some(vi), Some(ai)) = (video_track_idx, audio_track_idx) {
-                                let video_clip_id = self.state.sequences[self.state.active_sequence_idx].tracks[vi].append_clip(*media_id, use_duration);
+                                // Both at the end of the whole timeline,
+                                // side by side (#3448): each at its own
+                                // track's end put the sound under some
+                                // other picture.
+                                let end = self.state.sequences[self.state.active_sequence_idx].total_duration();
+                                let video_clip_id = self.state.sequences[self.state.active_sequence_idx].tracks[vi].append_clip_from(*media_id, use_duration, end);
                                 apply_range(&mut self.state.sequences[self.state.active_sequence_idx].tracks[vi], video_clip_id);
-                                let audio_clip_id = self.state.sequences[self.state.active_sequence_idx].tracks[ai].append_clip(*media_id, use_duration);
+                                let audio_clip_id = self.state.sequences[self.state.active_sequence_idx].tracks[ai].append_clip_from(*media_id, use_duration, end);
                                 apply_range(&mut self.state.sequences[self.state.active_sequence_idx].tracks[ai], audio_clip_id);
 
                                 if let Some(vc) = self.state.sequences[self.state.active_sequence_idx].tracks[vi].find_clip_mut(video_clip_id) {
@@ -511,8 +516,9 @@ impl KlippApp {
                             } else {
                                 self.state.sequences[self.state.active_sequence_idx].source_track(target_kind).unwrap_or(0)
                             };
+                            let end = self.state.sequences[self.state.active_sequence_idx].total_duration();
                             if let Some(track) = self.state.sequences[self.state.active_sequence_idx].tracks.get_mut(track_idx) {
-                                let clip_id = track.append_clip(*media_id, use_duration);
+                                let clip_id = track.append_clip_from(*media_id, use_duration, end);
                                 apply_range(track, clip_id);
                                 if has_video {
                                     if let Some(c) = track.find_clip_mut(clip_id) {
