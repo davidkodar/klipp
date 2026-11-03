@@ -1487,11 +1487,12 @@ impl KlippApp {
 
                         ui.label("Video codec:");
                         let prev_codec = self.export_dialog.video_codec;
+                        let gpu_encoder = klipp_core::GpuVendor::gpu_encoder_likely();
                         egui::ComboBox::from_id_salt("export_vcodec")
                             .selected_text(self.export_dialog.video_codec.label())
                             .show_ui(ui, |ui| {
-                                ui.selectable_value(&mut self.export_dialog.video_codec, ExportVideoCodec::H264, "\u{26A1} H.264 — GPU accelerated");
-                                ui.selectable_value(&mut self.export_dialog.video_codec, ExportVideoCodec::H265, "\u{26A1} H.265 — GPU accelerated, best quality/size");
+                                ui.selectable_value(&mut self.export_dialog.video_codec, ExportVideoCodec::H264, if gpu_encoder { "\u{26A1} H.264 — GPU accelerated" } else { "H.264" });
+                                ui.selectable_value(&mut self.export_dialog.video_codec, ExportVideoCodec::H265, if gpu_encoder { "\u{26A1} H.265 — GPU accelerated, best quality/size" } else { "H.265 — best quality/size" });
                                 ui.separator();
                                 ui.selectable_value(&mut self.export_dialog.video_codec, ExportVideoCodec::Av1, "AV1 — next-gen, best compression");
                                 ui.selectable_value(&mut self.export_dialog.video_codec, ExportVideoCodec::Vp9, "VP9 — web video (YouTube, WebM)");
@@ -1511,7 +1512,7 @@ impl KlippApp {
                         ui.label("");
                         ui.colored_label(
                             self.theme.text_dim,
-                            self.export_dialog.video_codec.hint_at_depth(self.export_dialog.bit_depth),
+                            self.export_dialog.video_codec.hint_on(self.export_dialog.bit_depth, gpu_encoder),
                         );
                         ui.end_row();
 
