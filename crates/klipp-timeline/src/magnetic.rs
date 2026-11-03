@@ -1833,9 +1833,11 @@ impl MagneticEditor {
                 remove_command,
                 insert_command,
             } => {
-                // Undo: reverse insert then reverse remove
-                Self::apply_inverse(sequence, insert_command);
-                Self::apply_inverse(sequence, remove_command);
+                // Undo: reverse insert then reverse remove, in place: the
+                // clip goes back by its position, and the repack, not a
+                // sort by the times it was moved to, sets its times.
+                Self::apply_inverse_in_place(sequence, insert_command);
+                Self::apply_inverse_in_place(sequence, remove_command);
                 repack_primary(sequence);
             }
             MagneticEditCommand::InsertGap {
@@ -2161,8 +2163,8 @@ impl MagneticEditor {
                 remove_command,
                 insert_command,
             } => {
-                Self::apply_forward(sequence, remove_command);
-                Self::apply_forward(sequence, insert_command);
+                Self::apply_forward_in_place(sequence, remove_command);
+                Self::apply_forward_in_place(sequence, insert_command);
                 repack_primary(sequence);
             }
             MagneticEditCommand::InsertGap {
