@@ -558,8 +558,9 @@ fn random_edits_keep_the_editing_cores_invariants() {
                 continue;
             }
             let (repro, why) = shrink(run_steps, &broken, &dir);
+            let far = if why.amount.is_finite() { format!(" ({:.3} out)", why.amount) } else { String::new() };
             let text = format!(
-                "seed {seed}: NEW: {} broken at step {} of {}: {}\n{}",
+                "seed {seed}: NEW: {} broken at step {} of {}{far}: {}\n{}",
                 why.invariant,
                 why.step + 1,
                 repro.len(),
