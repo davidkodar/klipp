@@ -6636,7 +6636,21 @@ pub fn keep_angle_cuts(seq: &mut Sequence, clip_id: ClipId, secs: f64) -> Option
 }
 
 #[allow(clippy::too_many_arguments)]
+/// [`trim_range_at`], its edit recording the clip's times as they are
+/// written: reckoned at the sample, the copy it worked on had them
+/// rescaled, and an undo gave the same times back at another rate.
 fn trim_range(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, ti: usize, ci: usize, clip: &Clip, edge: Edge, target: Timecode, ripple: bool) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
+    let (what, mut edit, ids) = trim_range_at(seq, pool, fps, i, ti, ci, clip, edge, target, ripple)?;
+    if let EditCommand::LegacyTrimClip { old_source_in, old_source_out, old_timeline_in, old_timeline_out, .. }
+    | EditCommand::LegacyRippleTrimClip { old_source_in, old_source_out, old_timeline_in, old_timeline_out, .. } = &mut edit
+    {
+        (*old_source_in, *old_source_out, *old_timeline_in, *old_timeline_out) = (clip.source_in, clip.source_out, clip.timeline_in, clip.timeline_out);
+    }
+    Ok((what, edit, ids))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn trim_range_at(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, ti: usize, ci: usize, clip: &Clip, edge: Edge, target: Timecode, ripple: bool) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
     // A sound trimmed to the sample is reckoned at the sample: its source
     // edge moves by the samples its timeline edge does, not by the
     // nearest frame (#1588). Only where its times are whole samples, so

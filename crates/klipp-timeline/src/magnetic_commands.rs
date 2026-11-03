@@ -97,6 +97,10 @@ pub enum MagneticEditCommand {
         /// Put back by its time instead, among clips still at the times
         /// before the move, it went in front of the wrong clip.
         insert_index: usize,
+        /// Every primary clip's span before the move, as it was written:
+        /// the undo gives them back exactly. Repacked instead, a time came
+        /// back right but written at another rate.
+        primary_before: Vec<(ClipId, RationalTime, RationalTime)>,
     },
     InsertGap {
         gap_clip: Clip,
