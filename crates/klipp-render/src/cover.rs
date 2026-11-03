@@ -45,8 +45,40 @@ pub fn snapshot(seq: &Sequence, all: &[Sequence], pool: &klipp_media::MediaPool,
     Ok(snapshot)
 }
 
-/// `cover` of `seq` drawn at its size, `width` × `height`.
-pub fn draw(seq: &Sequence, all: &[Sequence], pool: &klipp_media::MediaPool, look: &Look, cover: &klipp_timeline::cover::Cover, width: u32, height: u32) -> Result<Still, String> {
+/// `cover` with the crop it is drawn with: its own when one was chosen, else
+/// what fills `width` × `height` with the top picture at its frame, on the
+/// best face its file's framing analysis saw there, else on the middle. A
+/// sequence with a camera move of its own keeps it: the crop would replace it.
+fn filling(seq: &Sequence, pool: &klipp_media::MediaPool, cover: &klipp_timeline::cover::Cover, width: u32, height: u32, analysis: &dyn Fn(&std::path::Path) -> klipp_analysis::report::MediaAnalysis) -> klipp_timeline::cover::Cover {
+    let mut out = cover.clone();
+    if cover.crop.is_some() || !seq.camera.is_still() {
+        return out;
+    }
+    let at = klipp_core::RationalTime::from_secs_f64(cover.at_secs, seq.fps.rate());
+    let top = seq.tracks.iter().filter(|t| t.kind == TrackKind::Video && t.visible).flat_map(|t| &t.clips).find(|c| c.media_id().is_some() && c.timeline_in <= at && at < c.timeline_out);
+    let Some((clip, item)) = top.and_then(|c| Some((c, pool.get(&c.media_id()?)?))) else { return out };
+    let aspect = item.resolution.width as f32 / item.resolution.height.max(1) as f32;
+    let needed = klipp_timeline::cover::fill_crop(aspect, width, height, (0.5, 0.5));
+    if needed.is_whole() {
+        return out;
+    }
+    let file_secs = clip.source_time_for_sequence_time(at, seq.fps.as_f64()).map_or(0.0, |t| t.to_secs_f64());
+    let face = analysis(&item.path).framing.and_then(|f| {
+        let sample = f.people_at(file_secs, FACE_WITHIN_SECS)?;
+        sample.faces.iter().max_by(|a, b| face_score(a).total_cmp(&face_score(b))).map(|b| (b.x + b.w / 2.0, b.y + b.h / 2.0))
+    });
+    out.crop = Some(klipp_timeline::cover::fill_crop(aspect, width, height, face.unwrap_or((0.5, 0.5))));
+    out
+}
+
+/// How near a cover's frame a sampled frame's face counts, in seconds.
+const FACE_WITHIN_SECS: f64 = 1.0;
+
+/// `cover` of `seq` drawn at its size, `width` × `height`. `analysis` reads
+/// a file's stored analysis, for the face a cover with no crop centres on.
+#[allow(clippy::too_many_arguments)]
+pub fn draw(seq: &Sequence, all: &[Sequence], pool: &klipp_media::MediaPool, look: &Look, cover: &klipp_timeline::cover::Cover, width: u32, height: u32, analysis: &dyn Fn(&std::path::Path) -> klipp_analysis::report::MediaAnalysis) -> Result<Still, String> {
+    let cover = &filling(seq, pool, cover, width, height, analysis);
     let drawn = klipp_timeline::cover::cover_sequence(seq, cover, width, height)?;
     let snap = snapshot(&drawn, all, pool, look)?;
     crate::still::timeline_still(&snap, cover.at_secs, width, height).map_err(|e| format!("no cover at {:.3} s: {e}", cover.at_secs))

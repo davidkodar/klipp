@@ -291,7 +291,7 @@ fn a_tracks_role_for_new_clips_comes_back() {
 fn a_sequences_covers_come_back() {
     use klipp_timeline::cover::{Cover, CoverCrop};
     let mut seq = Sequence::new_default();
-    let cover = Cover { id: klipp_core::CoverId::new(), name: "Hook".into(), at_secs: 1.5, size: "youtube".into(), crop: CoverCrop { x: 0.4, y: 0.5, zoom: 1.5 }, text: Some(TitleData::single_text(TextBox { text: "Big".into(), ..Default::default() })), with_titles: true };
+    let cover = Cover { id: klipp_core::CoverId::new(), name: "Hook".into(), at_secs: 1.5, size: "youtube".into(), crop: Some(CoverCrop { x: 0.4, y: 0.5, zoom: 1.5 }), text: Some(TitleData::single_text(TextBox { text: "Big".into(), ..Default::default() })), with_titles: true };
     seq.covers = vec![cover.clone()];
     let back = round_trip("covers", seq.clone());
     assert_eq!(back.covers, vec![cover]);
@@ -318,9 +318,10 @@ fn a_sequences_covers_come_back() {
     let covers = &seqs[0].covers;
     assert_eq!(covers.len(), 2, "the timeless and the endless one dropped");
     let odd = &covers[1];
+    let crop = odd.crop.unwrap();
     assert!(odd.name.chars().count() <= klipp_timeline::cover::MAX_NAME_CHARS && !odd.name.contains('\u{0}'));
     assert_eq!(odd.size, "etcpasswd");
-    assert_eq!((odd.crop.zoom, odd.crop.x, odd.crop.y), (klipp_timeline::cover::MAX_ZOOM, 0.5 / klipp_timeline::cover::MAX_ZOOM, 1.0 - 0.5 / klipp_timeline::cover::MAX_ZOOM));
+    assert_eq!((crop.zoom, crop.x, crop.y), (klipp_timeline::cover::MAX_ZOOM, 0.5 / klipp_timeline::cover::MAX_ZOOM, 1.0 - 0.5 / klipp_timeline::cover::MAX_ZOOM));
 }
 
 /// A file written before roles were saved carries none. Such a sequence
