@@ -5217,6 +5217,22 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
                 let mut skip = vec![ti];
                 skip.extend(partner.map(|(pti, _, _)| pti));
                 skip.extend(angles.iter().map(|(t, _)| *t));
+                // A clip that closes up takes its linked partner's sync with
+                // it: one left on a track that stays is refused, as moving
+                // it alone is, not put out of sync with nothing said.
+                let closing: Vec<usize> = (0..seq.tracks.len()).filter(|t| skip.contains(t) || (seq.tracks[*t].sync_lock && !seq.tracks[*t].locked)).collect();
+                for &t in &closing {
+                    for c in seq.tracks[t].clips.iter().filter(|c| c.timeline_in >= clip.timeline_out && !gone.contains(&c.id)) {
+                        let Some((pt, _, p)) = c.linked_clip_id.and_then(|pid| find_clip(seq, pid)) else { continue };
+                        if !closing.contains(&pt) && !gone.contains(&p.id) {
+                            return Err(refuse(
+                                i,
+                                format!("closing the gap would move {} on track {t} and leave its linked clip {} on track {pt}, out of sync", clip_name(seq, pool, c), clip_name(seq, pool, p)),
+                                format!("turn on sync lock for track {pt} so it closes up too, or remove with ripple: false"),
+                            ));
+                        }
+                    }
+                }
                 let shifts = sync_lock_shifts(seq, i, &skip, clip.timeline_out, clip.timeline_in - clip.timeline_out)?;
                 if !shifts.is_empty() {
                     with = format!("{with}, {} sync-locked track(s) with it", shifts.len());
@@ -21181,6 +21197,20 @@ mod tests {
         }
         assert_eq!(seqs[0].tracks[0].clips.len(), 2);
         assert_eq!(seqs[0].tracks[0].clips[1].timeline_in, tc(4.0));
+    }
+
+    /// A ripple remove that would close up a track under linked clips
+    /// whose partners stay is refused, saying which and what to do; with
+    /// the partner removed as well, both tracks close up and it goes.
+    #[test]
+    fn a_ripple_remove_that_would_leave_partners_behind_is_refused() {
+        let (seq, pool, _, ia, _) = fixture();
+        let sound = seq.tracks[0].find_clip(ia).unwrap().linked_clip_id.unwrap();
+        let remove = |linked: bool| Op::Remove { clip_id: ClipRef::Id(sound), ripple: true, linked };
+        let r = resolve(&seq, &pool, &[remove(false)]).unwrap_err();
+        assert!(r.why.contains("out of sync") && r.hint.contains("sync lock"), "{} / {}", r.why, r.hint);
+        assert!(resolve(&seq, &pool, &[remove(true)]).is_ok(), "the pair goes, both tracks close up");
+        assert!(resolve(&seq, &pool, &[Op::Remove { clip_id: ClipRef::Id(sound), ripple: false, linked: false }]).is_ok(), "a lift moves nothing");
     }
 
     /// A clip whose linked partner can't move with it (into another clip
