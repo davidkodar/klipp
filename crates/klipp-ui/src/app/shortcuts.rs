@@ -60,7 +60,7 @@ impl KlippApp {
             }
             _ => {}
         }
-        self.shortcuts_ctrl_global(ctx, &mut cmds);
+        self.shortcuts_ctrl_global(ctx, ctx.wants_keyboard_input(), &mut cmds);
         match scope {
             KeyScope::CtrlOnly | KeyScope::Nothing | KeyScope::AppOnly => return cmds,
             KeyScope::GradeCanvas => {
@@ -158,9 +158,12 @@ impl KlippApp {
         });
     }
 
-    fn shortcuts_ctrl_global(&mut self, ctx: &egui::Context, cmds: &mut Vec<AppCommand>) {
+    /// The Ctrl keys that work wherever the keyboard is. A field with the
+    /// keys keeps those it has a use of its own for (`field_owns`).
+    fn shortcuts_ctrl_global(&mut self, ctx: &egui::Context, field_focused: bool, cmds: &mut Vec<AppCommand>) {
         self.shortcuts_app(ctx, cmds);
         let kb = self.key_bindings.clone();
+        let free = |action: &str| !(field_focused && field_owns(action));
         ctx.input(|i| {
             // Ctrl+J: the program timecode opened to type a time (#3130),
             // from anywhere a Ctrl key reaches.
@@ -219,15 +222,15 @@ impl KlippApp {
                 cmds.push(AppCommand::CloseProject);
             }
             // Ctrl+Z — Undo, Ctrl+Shift+Z or Ctrl+Y — Redo
-            if kb.is_action_pressed("undo", i) {
+            if free("undo") && kb.is_action_pressed("undo", i) {
                 cmds.push(AppCommand::Undo);
             }
-            if kb.is_action_pressed("redo", i) {
+            if free("redo") && kb.is_action_pressed("redo", i) {
                 cmds.push(AppCommand::Redo);
             }
 
             // Group selected clips
-            if !self.state.node_canvas_focused() && kb.is_action_pressed("group_clips", i) {
+            if !self.state.node_canvas_focused() && free("group_clips") && kb.is_action_pressed("group_clips", i) {
                 let mut ids = self.state.selected_clips.clone();
                 if let Some(primary) = self.state.selected_clip {
                     if !ids.contains(&primary) {
@@ -239,7 +242,7 @@ impl KlippApp {
                 }
             }
             // Ungroup
-            if !self.state.node_canvas_focused() && kb.is_action_pressed("ungroup_clips", i) {
+            if !self.state.node_canvas_focused() && free("ungroup_clips") && kb.is_action_pressed("ungroup_clips", i) {
                 if let Some(primary) = self.state.selected_clip {
                     let gid = self.state.sequences[self.state.active_sequence_idx].tracks.iter()
                         .flat_map(|t| t.clips.iter())
@@ -1427,6 +1430,15 @@ pub(crate) fn field_keys_held(held: bool, typing_before: bool, typing_now: bool,
         return false;
     }
     held || (typing_before && !typing_now)
+}
+
+/// The Ctrl actions a text or number field with the keys keeps (W4): its
+/// own undo and redo of what is typed, and Ctrl+G and Ctrl+Shift+G, which
+/// would group the timeline's clips while the user types. Save, Export
+/// and the rest still work from a field; Select All is a timeline key,
+/// and does not reach it then.
+pub(super) fn field_owns(action: &str) -> bool {
+    matches!(action, "undo" | "redo" | "group_clips" | "ungroup_clips")
 }
 
 pub(super) fn key_scope(state: &crate::state::AppState, text_editing: bool) -> KeyScope {
