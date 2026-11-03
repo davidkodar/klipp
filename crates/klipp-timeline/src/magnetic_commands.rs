@@ -93,6 +93,10 @@ pub enum MagneticEditCommand {
         clip_id: ClipId,
         remove_command: Box<MagneticEditCommand>,
         insert_command: Box<MagneticEditCommand>,
+        /// Where among the primary's clips it went: a redo puts it there.
+        /// Put back by its time instead, among clips still at the times
+        /// before the move, it went in front of the wrong clip.
+        insert_index: usize,
     },
     InsertGap {
         gap_clip: Clip,
@@ -125,6 +129,9 @@ pub enum MagneticEditCommand {
         /// the two stay in sync: its track, and it before and after;
         /// none after when the trim took all of it.
         partner: Option<(usize, Clip, Option<Clip>)>,
+        /// The transitions on that sound, taken out with it when the trim
+        /// took all of it.
+        partner_transitions: Vec<crate::Transition>,
     },
     TrimTail {
         clip_id: ClipId,

@@ -46,8 +46,6 @@ use serde_json::{json, Value};
 const KNOWN: &[(&str, fn(&Broken, &str) -> bool)] = &[
     // Undo or redo giving back a time at another rate, the same time.
     ("R8", |b, _| b.invariant.ends_with("(a time written at another rate)")),
-    // A slide leaving a pair out of sync.
-    ("R10", |b, last| b.invariant == SYNC && last == "Slide"),
 ];
 
 const SYNC: &str = "linked pairs in sync";
