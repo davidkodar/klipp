@@ -8,7 +8,7 @@ fn default_fade_ms() -> u32 { 500 }
 /// The preferences file's revision. A file below it has the one-time
 /// migrations of `Preferences::migrate_to_revision` run on load; a file
 /// at it is read as written, so a value chosen after the migration stays.
-pub const PREFS_REVISION: u32 = 2;
+pub const PREFS_REVISION: u32 = 3;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Preferences {
@@ -919,7 +919,9 @@ pub struct ExportPrefs {
     pub post_export_command: String,
 }
 fn default_export_sr() -> u32 { 48000 }
-fn default_parallel_jobs() -> usize { 2 }
+/// One render at a time: two at once each ran at about 0.6x, so the first
+/// file came nearly twice as late; queued, each finishes sooner (P38).
+fn default_parallel_jobs() -> usize { 1 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum OverwriteMode {
@@ -1181,6 +1183,16 @@ impl Preferences {
             if let Some(tl) = root.get_mut("timeline").and_then(|v| v.as_object_mut()) {
                 if tl.get("max_track_height").and_then(|v| v.as_f64()) == Some(200.0) {
                     tl.insert("max_track_height".into(), serde_json::Value::from(default_max_track_h()));
+                }
+            }
+        }
+        if revision < 3 {
+            // Two renders at once was the default, and every file saved
+            // it: one at a time is now (P38), the first file ready about
+            // twice as soon. A 2 set after this revision is kept.
+            if let Some(export) = root.get_mut("export").and_then(|v| v.as_object_mut()) {
+                if export.get("parallel_render_jobs").and_then(|v| v.as_u64()) == Some(2) {
+                    export.insert("parallel_render_jobs".into(), serde_json::Value::from(default_parallel_jobs()));
                 }
             }
         }
@@ -3350,10 +3362,11 @@ mod tests {
     // ── #62 / #63 / #65 — export pipeline features ─────────────────────────
 
     #[test]
-    fn parallel_render_default_is_two() {
-        // #62: safe default — 2 parallel jobs on every system.
+    fn parallel_render_default_is_one() {
+        // P38: one job at a time, so the first file is ready soonest; more
+        // is a choice in Preferences.
         let p = ExportPrefs::default();
-        assert_eq!(p.parallel_render_jobs, 2);
+        assert_eq!(p.parallel_render_jobs, 1);
     }
 
     #[test]
@@ -3399,7 +3412,7 @@ mod tests {
             "proxy": { "auto_generate_on_import": true, "proxy_resolution": "Half" }
         }"#;
         let prefs: Preferences = serde_json::from_str(json).expect("deserialize");
-        assert_eq!(prefs.export.parallel_render_jobs, 2);
+        assert_eq!(prefs.export.parallel_render_jobs, 1, "the default, one at a time (P38)");
         assert!(prefs.export.post_export_command.is_empty());
     }
 
@@ -3547,6 +3560,23 @@ mod revision_tests {
         current["audio"]["default_fade_duration_ms"] = 0.into();
         assert_eq!(Preferences::from_json_str(&current.to_string()).audio.default_fade_duration_ms, 0, "at the revision, nothing moves");
         assert_eq!(Preferences::default().revision, PREFS_REVISION, "a fresh install is at the revision");
+    }
+
+    /// P38: an old file's saved 2 renders at once (the old default, which
+    /// every file wrote) becomes one at a time, once; another number is
+    /// kept, and a 2 in a file at the revision stands.
+    #[test]
+    fn an_old_two_renders_at_once_becomes_one() {
+        assert_eq!(old_file(|v| v["export"]["parallel_render_jobs"] = 2.into()).export.parallel_render_jobs, 1);
+        assert_eq!(old_file(|v| v["export"]["parallel_render_jobs"] = 4.into()).export.parallel_render_jobs, 4, "a number chosen is kept");
+        let at_two = old_file(|v| {
+            v["export"]["parallel_render_jobs"] = 2.into();
+            v["revision"] = 2.into();
+        });
+        assert_eq!(at_two.export.parallel_render_jobs, 1, "a revision-2 file is moved too");
+        let mut current = serde_json::to_value(Preferences::default()).unwrap();
+        current["export"]["parallel_render_jobs"] = 2.into();
+        assert_eq!(Preferences::from_json_str(&current.to_string()).export.parallel_render_jobs, 2, "at the revision, a 2 set later stands");
     }
 
     /// The title size's old default, 48, never sized a title (they were

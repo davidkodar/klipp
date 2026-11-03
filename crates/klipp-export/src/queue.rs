@@ -194,7 +194,7 @@ impl RenderQueue {
             jobs: Vec::new(),
             snapshots: Vec::new(),
             active_jobs: Vec::new(),
-            max_parallel: 2,
+            max_parallel: 1,
             analyser: None,
         }
     }
@@ -693,7 +693,7 @@ mod tests {
         assert_eq!(q.queued_count(), 0);
         assert!(!q.has_active_job());
         assert!(q.active_job_progress().is_none());
-        assert_eq!(q.max_parallel, 2, "documented NVENC-session default");
+        assert_eq!(q.max_parallel, 1, "one render at a time by default (P38)");
     }
 
     #[test]

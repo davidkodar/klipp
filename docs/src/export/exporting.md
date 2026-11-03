@@ -99,7 +99,7 @@ An assistant can list the specs and check the timeline or a file against one too
 
 ## Render Queue
 
-Both **Export** and **Add to Queue** put the render in the render queue. **Export** also closes the settings and opens the queue, and asks before overwriting an existing file. The queue runs two jobs at once by default. Change this with **Parallel render jobs** (1 to 8) in the export preferences.
+Both **Export** and **Add to Queue** put the render in the render queue. **Export** also closes the settings and opens the queue, and asks before overwriting an existing file. The queue runs one job at a time by default, so the first file is ready soonest; two at once take about as long in all, but each finishes later. Change this with **Parallel render jobs** (1 to 8) in the export preferences.
 
 For each job the queue shows progress, the estimated time remaining, render speed, the hardware used to decode and encode, and a **Cancel** button. Rendering runs in the background, so you can keep editing. The file is written under a temporary `.partial` name, and a cancelled render removes it.
 
