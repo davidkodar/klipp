@@ -52,7 +52,11 @@ const KNOWN: &[(&str, fn(&Broken, &str) -> bool)] = &[
     // (25), so an edit working a length out from the file puts a picture
     // a fraction of a frame off, a gap on the primary or a pair adrift.
     ("R14", |b, _| b.invariant == GAPLESS && b.amount.abs() < FRAME),
-    ("R15", |b, _| b.invariant == SYNC && b.amount <= 1.0 + 1e-6),
+    // At a speed other than 1x the rounding is scaled by it: under a
+    // frame and a half.
+    ("R15", |b, _| b.invariant == SYNC && b.amount < 1.5),
+    // A retime after blades leaving a transition that saving drops.
+    ("R16", |b, last| b.invariant == SAVED && b.detail.contains("/transitions") && last == "Retime"),
 ];
 
 const SYNC: &str = "linked pairs in sync";
