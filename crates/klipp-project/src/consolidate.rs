@@ -94,6 +94,11 @@ pub struct ConsolidateSummary {
     pub left_out: Vec<String>,
     /// Media that cannot be copied because it is offline.
     pub offline: Vec<String>,
+    /// Each file it copies, by where it is now, for a person to see what
+    /// leaves the machine in the folder (SEC1).
+    pub copies: Vec<String>,
+    /// What it will not carry, and why: a file named that is not media.
+    pub warnings: Vec<String>,
 }
 
 /// Progress callback signature: `(files_done, files_total, current_filename)`.
@@ -227,6 +232,7 @@ fn build_copy_plan(
     only: Option<&HashSet<MediaId>>,
     cut: &HashSet<PathBuf>,
     still_grades: &[&NodeGraph],
+    project_dir: Option<&Path>,
 ) -> CopyPlan {
     let mut items: Vec<CopyItem> = Vec::new();
     let mut used_primary: HashSet<String> = HashSet::new();
@@ -244,6 +250,13 @@ fn build_copy_plan(
     let mut left_out: Vec<String> = Vec::new();
     // A file several items share (a subclip and its parent) is copied once.
     let mut copied_paths: HashMap<PathBuf, PathBuf> = HashMap::new();
+    // Only what is media, a LUT or a picture is carried (SEC1): a shared
+    // project can name any file on the machine, and the folder collected
+    // is handed on. Klipp's own folders may be hidden.
+    let trusted_folders = klipp_media::media_check::trusted_roots(project_dir);
+    let trusted: Vec<&Path> = trusted_folders.iter().map(|p| p.as_path()).collect();
+    let media_ok = |p: &Path| klipp_media::media_check::media_file_check(p, &trusted);
+    let lut_ok = |p: &Path| klipp_media::media_check::lut_file_check(p, &trusted);
 
     // Primary media
     for item in media_pool.all() {
@@ -261,7 +274,7 @@ fn build_copy_plan(
             media_new_paths.insert(item.id, dst.clone());
             continue;
         }
-        if item.offline || !item.path.exists() {
+        if item.offline || !item.path.exists() || media_pool.refused.contains_key(&item.id) {
             offline_skipped.push(item.path.display().to_string());
             continue;
         }
@@ -276,6 +289,11 @@ fn build_copy_plan(
                 "Refused symlinked media source (potential exfiltration): {}",
                 item.path.display()
             ));
+            offline_skipped.push(item.path.display().to_string());
+            continue;
+        }
+        if let Err(why) = media_ok(&item.path) {
+            warnings.push(format!("Not collected, {why}: {}", item.path.display()));
             offline_skipped.push(item.path.display().to_string());
             continue;
         }
@@ -301,6 +319,8 @@ fn build_copy_plan(
                         "Refused symlinked proxy (potential exfiltration): {}",
                         proxy.display()
                     ));
+                } else if let Some(why) = (item.proxy_ready && proxy.exists()).then(|| media_ok(proxy).err()).flatten() {
+                    warnings.push(format!("Proxy not collected, {why}: {}", proxy.display()));
                 } else if item.proxy_ready && proxy.exists() {
                     let pname = proxy
                         .file_name()
@@ -329,6 +349,8 @@ fn build_copy_plan(
                             "Refused symlinked skim (potential exfiltration): {}",
                             skim.display()
                         ));
+                    } else if let Err(why) = media_ok(skim) {
+                        warnings.push(format!("Skim not collected, {why}: {}", skim.display()));
                     } else {
                     let sname = skim
                         .file_name()
@@ -355,6 +377,10 @@ fn build_copy_plan(
     let mut lut = |path: &Option<PathBuf>, what: &str| match path {
         Some(lut) if lut.exists() && is_symlinked_leaf(lut) => {
             warnings.push(format!("Refused symlinked {what} (potential exfiltration): {}", lut.display()));
+            None
+        }
+        Some(lut) if lut.exists() && lut_ok(lut).is_err() => {
+            warnings.push(format!("{} not collected, {}: {}", capitalise(what), lut_ok(lut).err().unwrap_or_default(), lut.display()));
             None
         }
         Some(lut) if lut.exists() => {
@@ -397,6 +423,10 @@ fn build_copy_plan(
                             ));
                             continue;
                         }
+                        if let Err(why) = media_ok(p) {
+                            warnings.push(format!("Title file not collected, {why}: {tex}"));
+                            continue;
+                        }
                         let tname = p
                             .file_name()
                             .map(|n| n.to_string_lossy().to_string())
@@ -435,6 +465,11 @@ fn build_copy_plan(
         }
         if is_symlinked_leaf(path) {
             warnings.push(format!("Refused symlinked file a grade reads (potential exfiltration): {}", path.display()));
+            continue;
+        }
+        // A LUT, a matte or a plate: by what it is.
+        if let Err(why) = lut_ok(path).or_else(|_| media_ok(path)) {
+            warnings.push(format!("File a grade reads not collected, {why}: {}", path.display()));
             continue;
         }
         let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "grade_file".to_string());
@@ -739,7 +774,7 @@ pub fn consolidate_project(
     // copied whole below instead.
     let mut cut_warnings = Vec::new();
     let cuts = match options.mode {
-        ConsolidateMode::Trimmed { handle_secs } => cut_used_files(media_pool, sequences, handle_secs, &options.dest_dir, progress.as_ref(), &mut cut_warnings),
+        ConsolidateMode::Trimmed { handle_secs } => cut_used_files(media_pool, sequences, handle_secs, &options.dest_dir, progress.as_ref(), &mut cut_warnings, Some(source_project_dir)),
         _ => HashMap::new(),
     };
     // A file with a clip no cut of it holds is copied whole instead: it
@@ -758,7 +793,7 @@ pub fn consolidate_project(
     // go with the project, and their grades read files like any other.
     let mut stills = crate::grade_stills::load_grade_stills(source_project_dir);
     let still_grades: Vec<&NodeGraph> = stills.iter().filter_map(|s| s.grade.as_ref()).collect();
-    let mut plan = build_copy_plan(media_pool, sequences, color_settings, &options, used.as_ref(), &cut_paths, &still_grades);
+    let mut plan = build_copy_plan(media_pool, sequences, color_settings, &options, used.as_ref(), &cut_paths, &still_grades, Some(source_project_dir));
     plan.warnings.extend(cut_warnings);
     let files_trimmed = cuts.len();
 
@@ -888,9 +923,10 @@ fn cut_used_files(
     dest_dir: &Path,
     progress: Option<&ProgressFn>,
     warnings: &mut Vec<String>,
+    project_dir: Option<&Path>,
 ) -> HashMap<PathBuf, Vec<crate::consolidate_trim::Segment>> {
     use crate::consolidate_trim as trim;
-    let planned = trim_candidates(pool, sequences, handle_secs);
+    let planned = trim_candidates(pool, sequences, handle_secs, project_dir);
     let total: usize = planned.iter().map(|(_, r)| r.len()).sum();
     let mut done = 0;
     let mut names: HashSet<String> = HashSet::new();
@@ -932,12 +968,16 @@ fn cut_used_files(
 
 /// The used files worth cutting, each with its used stretches: one item
 /// of the file stands for it (its probe facts are the file's).
-fn trim_candidates<'a>(pool: &'a MediaPool, sequences: &[Sequence], handle_secs: f64) -> Vec<(&'a MediaItem, Vec<crate::consolidate_trim::Range>)> {
+fn trim_candidates<'a>(pool: &'a MediaPool, sequences: &[Sequence], handle_secs: f64, project_dir: Option<&Path>) -> Vec<(&'a MediaItem, Vec<crate::consolidate_trim::Range>)> {
     use crate::consolidate_trim as trim;
     let mut out: Vec<(&MediaItem, Vec<trim::Range>)> = trim::used_ranges(pool, sequences, handle_secs)
         .into_iter()
         .filter_map(|(path, ranges)| {
-            let item = pool.all().find(|m| m.path == path && !m.offline && m.path.exists() && !is_symlinked_leaf(&m.path) && trim::can_cut(m))?;
+            let trusted_folders = klipp_media::media_check::trusted_roots(project_dir);
+            let trusted: Vec<&Path> = trusted_folders.iter().map(|p| p.as_path()).collect();
+            // Only media is cut and carried (SEC1).
+            let item = pool.all().find(|m| m.path == path && !m.offline && !pool.refused.contains_key(&m.id) && m.path.exists() && !is_symlinked_leaf(&m.path) && trim::can_cut(m))?;
+            klipp_media::media_check::media_file_check(&item.path, &trusted).ok()?;
             trim::worth_trimming(&ranges, item.duration.to_secs_f64()).then_some((item, ranges))
         })
         .collect();
@@ -947,14 +987,16 @@ fn trim_candidates<'a>(pool: &'a MediaPool, sequences: &[Sequence], handle_secs:
 
 /// What [`consolidate_project`] will copy with these options, said before
 /// it runs (#77). Reads file sizes; writes nothing.
-pub fn summarise(media_pool: &MediaPool, sequences: &[Sequence], color_settings: &ColorSettings, options: &ConsolidateOptions) -> ConsolidateSummary {
+/// `project_dir`, the open project's folder, where its own media may be
+/// though it is in a hidden folder.
+pub fn summarise(media_pool: &MediaPool, sequences: &[Sequence], color_settings: &ColorSettings, options: &ConsolidateOptions, project_dir: Option<&Path>) -> ConsolidateSummary {
     let used = (options.mode != ConsolidateMode::Collect).then(|| crate::consolidate_trim::used_media(media_pool, sequences));
     let candidates = match options.mode {
-        ConsolidateMode::Trimmed { handle_secs } => trim_candidates(media_pool, sequences, handle_secs),
+        ConsolidateMode::Trimmed { handle_secs } => trim_candidates(media_pool, sequences, handle_secs, project_dir),
         _ => Vec::new(),
     };
     let cut: HashSet<PathBuf> = candidates.iter().map(|(m, _)| m.path.clone()).collect();
-    let plan = build_copy_plan(media_pool, sequences, color_settings, options, used.as_ref(), &cut, &[]);
+    let plan = build_copy_plan(media_pool, sequences, color_settings, options, used.as_ref(), &cut, &[], project_dir);
     let size = |p: &Path| std::fs::metadata(p).map(|m| m.len()).unwrap_or(0);
     let mut bytes: u64 = plan.items.iter().map(|i| size(&i.src)).sum();
     let mut files = plan.items.len();
@@ -964,7 +1006,9 @@ pub fn summarise(media_pool: &MediaPool, sequences: &[Sequence], color_settings:
         bytes += (size(&item.path) as f64 * share.min(1.0)) as u64;
         files += ranges.len();
     }
-    ConsolidateSummary { files, bytes, trimmed: candidates.len(), left_out: plan.left_out, offline: plan.offline_skipped }
+    let mut copies: Vec<String> = plan.items.iter().map(|i| i.src.display().to_string()).collect();
+    copies.extend(candidates.iter().map(|(m, _)| m.path.display().to_string()));
+    ConsolidateSummary { files, bytes, trimmed: candidates.len(), left_out: plan.left_out, offline: plan.offline_skipped, copies, warnings: plan.warnings }
 }
 
 /// Stream a folder into a zip archive at `zip_path` using stored (no-compression)

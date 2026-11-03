@@ -489,6 +489,9 @@ fn load_project_as(dir: &Path, form: crate::FileForm, strict: bool) -> Result<Lo
 
     // Reconstruct media pool — resolve stored paths (relative or absolute) to absolute
     let mut media_pool = MediaPool::new();
+    // Where media may sit in a hidden folder: the project's own, Klipp's.
+    let trusted_folders = klipp_media::media_check::trusted_roots(Some(dir));
+    let trusted: Vec<&Path> = trusted_folders.iter().map(|p| p.as_path()).collect();
     for item_json in &manifest.items {
         // Older manifests omitted the kind even for reusable title assets.
         // The project-owned asset with the same id is their discriminator.
@@ -510,12 +513,18 @@ fn load_project_as(dir: &Path, form: crate::FileForm, strict: bool) -> Result<Lo
         // A file that lists other inputs (a playlist, a concat list) is
         // not media, whatever its name: offline, never handed to ffmpeg.
         let listed = kind == MediaItemKind::File && path.exists() && klipp_media::is_input_list(&path);
-        let offline = kind == MediaItemKind::File && (!path.exists() || listed);
+        // A project can name any file on the machine (SEC1): one that is
+        // not a picture, sound or still, or one in a hidden folder, stays
+        // offline with why, and is never read or collected.
+        let refused = (kind == MediaItemKind::File && path.exists() && !listed).then(|| klipp_media::media_check::media_file_check(&path, &trusted).err()).flatten();
+        let offline = kind == MediaItemKind::File && (!path.exists() || listed || refused.is_some());
         // The file's own fingerprint where it is there, else as stored, for
         // a relink to tell the same content (#2790).
         let fingerprint = if kind != MediaItemKind::File { None } else if offline { item_json.fingerprint } else { klipp_media::relink::fingerprint(&path) };
         if listed {
             warn!("Media file is a playlist or a list of other files, not media; marking offline: {:?}", path);
+        } else if let Some(why) = &refused {
+            warn!("Media entry {:?} is kept offline: {why}", path);
         } else if offline {
             warn!("Media file not found, marking offline: {:?}", path);
         }
@@ -595,6 +604,9 @@ fn load_project_as(dir: &Path, form: crate::FileForm, strict: bool) -> Result<Lo
         // IDT seed on next clip-add. Cheap (no I/O — pure
         // string/bit-depth heuristic) and idempotent.
         media_item.detected_log_format = media_item.detect_log_format();
+        if let Some(why) = refused {
+            media_pool.refused.insert(media_item.id, why);
+        }
         media_pool.add(media_item);
     }
 

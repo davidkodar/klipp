@@ -1318,7 +1318,7 @@ impl KlippApp {
                             fonts: Vec::new(),
                         };
                         let color = klipp_project::ColorSettings { global_lut_path: self.state.global_lut_path.clone(), ..Default::default() };
-                        let summary = klipp_project::consolidate::summarise(&self.state.media_pool, &self.state.sequences, &color, &options);
+                        let summary = klipp_project::consolidate::summarise(&self.state.media_pool, &self.state.sequences, &color, &options, self.state.project_path.as_deref());
                         self.state.consolidate_summary = Some((key, summary));
                     }
                     if let Some((_, s)) = &self.state.consolidate_summary {
@@ -1331,6 +1331,18 @@ impl KlippApp {
                             said.push_str(&format!("; {} unused left out", s.left_out.len()));
                         }
                         ui.label(said).on_hover_text(if s.left_out.is_empty() { String::new() } else { format!("Left out:\n{}", s.left_out.join("\n")) });
+                        // Each file that leaves the machine in the folder,
+                        // by name, and what it will not carry (SEC1).
+                        egui::CollapsingHeader::new(format!("Files it copies ({})", s.copies.len())).id_salt("collect_copies").show(ui, |ui| {
+                            egui::ScrollArea::vertical().max_height(160.0).show(ui, |ui| {
+                                for path in &s.copies {
+                                    ui.label(egui::RichText::new(path).small());
+                                }
+                            });
+                        });
+                        for why in &s.warnings {
+                            ui.colored_label(self.theme.marker_warning, egui::RichText::new(format!("\u{26A0} {why}")).small());
+                        }
                     }
                     ui.add_space(4.0);
 

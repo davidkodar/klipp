@@ -565,6 +565,7 @@ fn paint_usage_badges(
 fn draw_info_icon_with_tooltip(
     ui: &mut egui::Ui,
     item: &klipp_media::MediaItem,
+    refused: Option<&str>,
     thumb_rect: egui::Rect,
     theme: &KlippTheme,
 ) {
@@ -608,6 +609,9 @@ fn draw_info_icon_with_tooltip(
     // over a small Vec. This dramatically reduces the LLVM IR that LTO
     // has to digest at release link time.
     let rows = build_info_tooltip_rows(item);
+    // Why it is kept offline though it is there (SEC1), and what to do.
+    let refused = refused.map(klipp_media::media_check::refused_hint);
+    let warn = theme.marker_warning;
     let path_string = item.path.display().to_string();
     let title = item.filename.clone();
     let is_subclip = item.parent_media_id.is_some();
@@ -633,6 +637,9 @@ fn draw_info_icon_with_tooltip(
                         .color(text_primary)
                         .strong(),
                 );
+                if let Some(hint) = &refused {
+                    ui.label(egui::RichText::new(hint).size(10.0).color(warn));
+                }
                 if is_subclip {
                     ui.label(
                         egui::RichText::new("Subclip")
@@ -1419,7 +1426,7 @@ fn render_grid_view(
             // Pulls from the canonical MediaItem in the pool because the
             // grid's `item` is a denormalised `MediaRow` snapshot.
             if let Some(media_item) = state.media_pool.get(&item.id) {
-                draw_info_icon_with_tooltip(ui, media_item, thumb_rect, theme);
+                draw_info_icon_with_tooltip(ui, media_item, state.media_pool.refused.get(&media_item.id).map(String::as_str), thumb_rect, theme);
             }
 
             // Hover skim (grid view: white scrubber line over thumbnail)
