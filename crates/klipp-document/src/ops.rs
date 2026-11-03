@@ -6612,8 +6612,19 @@ fn trim_range(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, ti: usize, c
         }
     };
     if ripple {
-        let shifted: Vec<(ClipId, Timecode, Timecode)> =
+        let mut shifted: Vec<(ClipId, Timecode, Timecode)> =
             seq.tracks[ti].clips[ci + 1..].iter().map(|c| (c.id, c.timeline_in, c.timeline_out)).collect();
+        // The sound linked to each later picture moves with it (#3449),
+        // so everything after the edit stays in sync; on a locked track
+        // it stays, as the track does.
+        let partners: Vec<(ClipId, Timecode, Timecode)> = seq.tracks[ti].clips[ci + 1..]
+            .iter()
+            .filter_map(|c| c.linked_clip_id)
+            .filter(|p| *p != *clip_id && !shifted.iter().any(|s| s.0 == *p))
+            .filter_map(|p| seq.tracks.iter().enumerate().filter(|(k, t)| *k != ti && !t.locked).find_map(|(_, t)| t.find_clip(p)))
+            .map(|c| (c.id, c.timeline_in, c.timeline_out))
+            .collect();
+        shifted.extend(partners);
         let delta = new_tl_out - clip.timeline_out;
         // The earlier neighbour must not be run into by a head trim
         // that makes the clip longer (it cannot: the start stays).
@@ -17704,6 +17715,27 @@ mod tests {
         assert_eq!(pool.roles, before);
     }
 
+    /// #3449: a ripple trim of a picture's end moves the later pictures
+    /// and the sound linked to each, which stays under them, whether its
+    /// own sound is trimmed with it or not; undo puts them all back.
+    #[test]
+    fn a_ripple_trim_keeps_the_later_sound_under_its_picture() {
+        for linked in [false, true] {
+            let (seq, mut pool, _, ia, ib) = fixture();
+            let plan = resolve(&seq, &pool, &[Op::Trim { clip_id: ClipRef::Id(ia), edge: Edge::Out, to: Anchor::Secs(3.0), ripple: true, linked }]).unwrap();
+            let mut seqs = vec![seq.clone()];
+            let mut fps = seq.fps;
+            let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut pool, fps: &mut fps };
+            view.apply_forward(&plan.steps[0].edit);
+            let span = |s: &Sequence, id: ClipId| s.all_clips().find(|c| c.id == id).map(|c| (secs(c.timeline_in), secs(c.timeline_out))).unwrap();
+            let sound = seq.tracks[0].find_clip(ib).unwrap().linked_clip_id.unwrap();
+            assert_eq!(span(&view.sequences[0], ib), (3.0, 7.0), "linked {linked}: the later picture closes up");
+            assert_eq!(span(&view.sequences[0], sound), (3.0, 7.0), "linked {linked}: its sound with it");
+            view.apply_inverse(&plan.steps[0].edit);
+            assert_eq!((span(&view.sequences[0], ib), span(&view.sequences[0], sound)), ((4.0, 8.0), (4.0, 8.0)), "linked {linked}: undone");
+        }
+    }
+
     /// #3304: a caption look by id gives the captions its face, weight,
     /// capitals and glow in the colour chosen, the glow scaled by its
     /// amount; a field given with it changes it, and a look, colour or
@@ -21754,10 +21786,11 @@ mod tests {
         assert_eq!(v[3].timeline_in, tc(5.0), "b moved a second later");
         assert_eq!(seqs[0].tracks[1].clips[2].timeline_in, tc(5.0), "and its audio with it (its own audio was split too)");
 
-        // A ripple out trim of a by a second: b closes up.
+        // A ripple out trim of a by a second: b closes up, and the sound
+        // linked to b with it (#3449).
         let plan = resolve(&seq, &pool, &[Op::Trim { clip_id: ClipRef::Id(a), edge: Edge::Out, to: Anchor::Secs(3.0), ripple: true, linked: false }]).unwrap();
         let after = &plan.steps[0].after;
-        assert_eq!(after.len(), 2);
+        assert_eq!(after.len(), 3, "{after:?}");
         assert!((after[1].timeline_in_secs - 3.0).abs() < 1e-9, "{after:?}");
         // A ripple head trim keeps the start and shortens from the front.
         let plan = resolve(&seq, &pool, &[Op::Trim { clip_id: ClipRef::Id(b), edge: Edge::In, to: Anchor::Secs(5.0), ripple: true, linked: false }]).unwrap();
