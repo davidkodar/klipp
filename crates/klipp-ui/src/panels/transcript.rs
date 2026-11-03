@@ -73,7 +73,7 @@ impl TranscriptPanel {
         let mut cmds = Vec::new();
         self.refresh(state, source);
         let mut open = state.show_transcript_panel;
-        let window = egui::Window::new("Transcript")
+        let window = crate::widgets::window("Transcript")
             .constrain_to(crate::widgets::below_menu_bar(ctx))
             .open(&mut open)
             .default_width(460.0)
@@ -333,7 +333,7 @@ impl TranscriptPanel {
         let Some((i, buf)) = self.correcting.as_mut() else { return };
         let i = *i;
         let mut done: Option<bool> = None;
-        egui::Window::new("Correct Word")
+        crate::widgets::window("Correct Word")
             .id(egui::Id::new("transcript_correct_word"))
             .collapsible(false)
             .resizable(false)

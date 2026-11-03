@@ -9672,7 +9672,7 @@ impl TimelinePanel {
         let Some(rename) = self.renaming_clip.as_mut().filter(|r| r.track_idx == track_idx) else { return };
         let mut done: Option<bool> = None;
         let title = if rename.clip_ids.len() > 1 { format!("Rename {} Clips", rename.clip_ids.len()) } else { "Rename Clip".to_string() };
-        egui::Window::new(title)
+        crate::widgets::window(title)
             .id(egui::Id::new("timeline_clip_rename"))
             .collapsible(false)
             .resizable(false)

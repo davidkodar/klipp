@@ -220,7 +220,7 @@ pub fn show_dialog(ctx: &egui::Context, state: &mut AppState, theme: &crate::the
     let Some(mut dialog) = state.missing_fonts_dialog.take() else { return Vec::new() };
     let mut cmds = Vec::new();
     let mut open = true;
-    egui::Window::new("Missing fonts").collapsible(false).resizable(false).open(&mut open).show(ctx, |ui| {
+    crate::widgets::window("Missing fonts").collapsible(false).resizable(false).open(&mut open).show(ctx, |ui| {
         ui.label("These fonts are not installed. Their titles draw in a fallback until they are, or until you pick a replacement.");
         ui.add_space(6.0);
         let mut done = Vec::new();

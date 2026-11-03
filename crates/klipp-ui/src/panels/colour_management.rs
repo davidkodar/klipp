@@ -55,7 +55,7 @@ pub fn summary(state: &AppState) -> String {
 
 /// The window around the page.
 pub fn show_window(ctx: &egui::Context, state: &mut AppState, theme: &KlippTheme, calibration: Option<&std::path::Path>, open: &mut bool, cmds: &mut Vec<AppCommand>) {
-    egui::Window::new("Colour Management")
+    crate::widgets::window("Colour Management")
         .open(open)
         .collapsible(false)
         .resizable(false)

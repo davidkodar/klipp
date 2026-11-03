@@ -622,7 +622,7 @@ impl Steps {
 /// A window in the middle of the screen, in front, as Klipp's other
 /// dialogs are.
 fn centred(title: &str, id: &str) -> egui::Window<'static> {
-    egui::Window::new(title.to_owned())
+    crate::widgets::window(title.to_owned())
         .id(egui::Id::new(id))
         .collapsible(false)
         .resizable(false)
@@ -1116,8 +1116,10 @@ mod tests {
     #[test]
     fn there_is_no_updates_window() {
         let source = include_str!("updates.rs");
-        let window = ["Window::new(\"Klipp ", "updates\")"].concat();
-        assert!(!source.contains(&window));
+        for opened in ["Window::new(\"Klipp ", "window(\"Klipp "] {
+            let window = [opened, "updates\")"].concat();
+            assert!(!source.contains(&window));
+        }
         let mut prefs = checking();
         for installation in [Installation::ArchRelease, Installation::ArchSource, Installation::Source] {
             let mut updates = available(installation);

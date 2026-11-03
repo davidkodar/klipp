@@ -83,7 +83,7 @@ impl SequenceSettingsDialog {
                 if resp.clicked() { open = false; }
             });
 
-        egui::Window::new("Sequence Settings")
+        crate::widgets::window("Sequence Settings")
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))

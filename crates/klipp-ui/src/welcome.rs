@@ -186,7 +186,7 @@ pub fn show_welcome(ctx: &egui::Context, state: &mut AppState, kb: &KeyBindings,
         return actions;
     }
     let mut open = true;
-    egui::Window::new("Welcome to Klipp")
+    crate::widgets::window("Welcome to Klipp")
         .id(egui::Id::new("klipp_welcome"))
         .collapsible(false)
         .resizable(false)

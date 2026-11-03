@@ -102,7 +102,7 @@ pub fn show_dialog(ctx: &egui::Context, state: &mut crate::state::AppState) -> V
     let Some(mut dialog) = state.music_fit_dialog.take() else { return Vec::new() };
     let mut open = true;
     let (mut plan, mut apply, mut cancel) = (false, false, false);
-    egui::Window::new("Fit Music to Length")
+    crate::widgets::window("Fit Music to Length")
         .collapsible(false)
         .resizable(false)
         .open(&mut open)

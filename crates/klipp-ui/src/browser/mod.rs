@@ -4311,7 +4311,7 @@ impl BrowserPanel {
         let Some(mut bin) = self.smart_bin_editor.take() else { return };
         let mut open = true;
         let mut done: Option<bool> = None; // Some(true) = save, Some(false) = cancel
-        egui::Window::new("Smart Bin")
+        crate::widgets::window("Smart Bin")
             .id(egui::Id::new("smart_bin_editor"))
             .open(&mut open)
             .collapsible(false)

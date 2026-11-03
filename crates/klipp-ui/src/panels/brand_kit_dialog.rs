@@ -43,7 +43,7 @@ pub fn show(ctx: &egui::Context, state: &mut AppState) -> Option<(String, BrandK
     let has = listed.iter().find(|k| k.name == *name).map_or([false; 5], |k| k.has);
     let mut open = true;
     let mut apply = None;
-    egui::Window::new("Apply Brand Kit")
+    crate::widgets::window("Apply Brand Kit")
         .open(&mut open)
         .collapsible(false)
         .resizable(false)

@@ -43,7 +43,7 @@ impl FrameRateMismatchDialog {
                 }
             });
 
-        egui::Window::new("Change Project Frame Rate?")
+        crate::widgets::window("Change Project Frame Rate?")
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))

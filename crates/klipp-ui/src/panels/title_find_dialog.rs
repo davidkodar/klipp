@@ -14,7 +14,7 @@ pub fn show_title_find_dialog(ctx: &egui::Context, state: &mut AppState) -> Vec<
     let scope: Vec<usize> = if state.title_find_project { (0..state.sequences.len()).collect() } else { vec![state.active_sequence_idx] };
     let matches: Vec<(usize, TextMatch)> = scope.iter().flat_map(|&i| find_in_titles(&state.sequences[i], &state.title_find).into_iter().map(move |m| (i, m))).collect();
     let mut open = state.show_title_find;
-    egui::Window::new("Find and Replace in Titles")
+    crate::widgets::window("Find and Replace in Titles")
         .open(&mut open)
         .collapsible(false)
         .resizable(true)
