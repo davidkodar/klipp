@@ -1549,6 +1549,14 @@ fn render_grid_view(
             }
             if card_resp.drag_stopped() {
                 state.browser_drag_start = None;
+                // A range is kept only when its swipe ends on its own tile:
+                // one that ran on to the timeline or another panel was a
+                // drag that missed, and its range (17 s to the end of a
+                // 22 s clip) shortened the next add (W7).
+                let ended = ui.ctx().input(|i| i.pointer.interact_pos().or(i.pointer.latest_pos()));
+                if !ended.is_some_and(|p| card_rect.contains(p)) && state.browser_range_selection.as_ref().is_some_and(|r| r.media_id == item.id) {
+                    state.browser_range_selection = None;
+                }
             }
 
             // Persistent range overlay
@@ -2797,6 +2805,52 @@ mod pool_style_tests {
         cmds.extend(frame(&mut state, Vec::new()).1);
         assert!(cmds.iter().any(|c| matches!(c, AppCommand::ImportMediaLinked { media_id, .. } if *media_id == id)), "{cmds:?}");
         assert!(state.browser_range_selection.is_some(), "the add it is for still has it");
+    }
+
+    /// W7: a range swiped on a thumbnail is kept only when the swipe ends
+    /// on its own tile. One that runs on past the tile, as a drag meant for
+    /// the timeline does, leaves no range for the next add to be cut to.
+    #[test]
+    fn a_swipe_that_leaves_its_tile_leaves_no_range() {
+        let mut state = AppState::default();
+        let mut m = item("A001_C002.mov", "h264", "aac");
+        m.duration = klipp_core::RationalTime::from_secs_f64(22.0, 25);
+        let id = state.media_pool.add(m);
+        let mut panel = crate::browser::BrowserPanel { browser_view_mode: BrowserViewMode::Grid, ..Default::default() };
+        let ctx = egui::Context::default();
+        let theme = KlippTheme::default();
+        let mut frame = |state: &mut AppState, events: Vec<egui::Event>| {
+            let mut tab = crate::layout_state::BrowserTab::Media;
+            let (mut pinned, mut ratio) = (false, 0.5);
+            let out = ctx.run(egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(700.0, 900.0))), events, ..Default::default() }, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| { panel.show(ui, state, &theme, &mut tab, &mut pinned, &mut ratio); });
+            });
+            out.shapes.iter().filter_map(|s| match &s.shape {
+                egui::Shape::Text(t) => Some((t.galley.text().to_string(), t.pos + t.galley.size() / 2.0)),
+                _ => None,
+            }).collect::<Vec<(String, egui::Pos2)>>()
+        };
+        let press = |pos, pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+        frame(&mut state, Vec::new());
+        let name = frame(&mut state, Vec::new()).iter().find(|(t, _)| t == "A001_C002.mov").unwrap().1;
+        // On the thumbnail, above the card's name.
+        let on_thumb = egui::pos2(name.x, name.y - 30.0);
+        let swipe = |state: &mut AppState, to: egui::Pos2, frame: &mut dyn FnMut(&mut AppState, Vec<egui::Event>) -> Vec<(String, egui::Pos2)>| {
+            frame(state, vec![egui::Event::PointerMoved(on_thumb)]);
+            frame(state, vec![press(on_thumb, true)]);
+            frame(state, vec![egui::Event::PointerMoved(on_thumb + egui::vec2(12.0, 0.0))]);
+            frame(state, vec![egui::Event::PointerMoved(on_thumb + egui::vec2(24.0, 0.0))]);
+            frame(state, vec![egui::Event::PointerMoved(to)]);
+            frame(state, vec![press(to, false)]);
+            frame(state, vec![egui::Event::PointerGone]);
+        };
+        // Within the tile: the range stays.
+        swipe(&mut state, on_thumb + egui::vec2(30.0, 0.0), &mut frame);
+        assert!(state.browser_range_selection.as_ref().is_some_and(|r| r.media_id == id), "a swipe on its tile keeps its range");
+        state.browser_range_selection = None;
+        // Level past the tile's right end, on to another panel: none.
+        swipe(&mut state, egui::pos2(690.0, on_thumb.y), &mut frame);
+        assert!(state.browser_range_selection.is_none(), "a swipe ending off its tile left {:?}", state.browser_range_selection);
     }
 
     /// A card's caption reads as the list's columns do, and only rates
