@@ -258,6 +258,48 @@ pub struct Token {
     pub p: f32,
 }
 
+/// Each token's text, from its bytes. A token is pieces of the model's
+/// vocabulary, not of the text, and a character can be split across two (聴
+/// is three bytes): decoded alone each piece came out as a replacement mark.
+/// A character's start is held for the token that finishes it, which then
+/// carries it; bytes nothing finishes are one mark, as anything invalid is.
+pub(crate) fn token_texts(tokens: &[&[u8]]) -> Vec<String> {
+    let mut held: Vec<u8> = Vec::new();
+    let mut texts: Vec<String> = tokens
+        .iter()
+        .map(|bytes| {
+            held.extend_from_slice(bytes);
+            let mut text = String::new();
+            loop {
+                match std::str::from_utf8(&held) {
+                    Ok(whole) => {
+                        text.push_str(whole);
+                        held.clear();
+                        break;
+                    }
+                    Err(e) => {
+                        let (good, rest) = held.split_at(e.valid_up_to());
+                        text.push_str(std::str::from_utf8(good).unwrap_or_default());
+                        let Some(bad) = e.error_len() else {
+                            held = rest.to_vec();
+                            break;
+                        };
+                        text.push(char::REPLACEMENT_CHARACTER);
+                        held = rest[bad..].to_vec();
+                    }
+                }
+            }
+            text
+        })
+        .collect();
+    if !held.is_empty() {
+        if let Some(last) = texts.last_mut() {
+            last.push(char::REPLACEMENT_CHARACTER);
+        }
+    }
+    texts
+}
+
 /// Whisper's tokens are word pieces; a piece that begins with a space
 /// begins a word. Special tokens (`[_BEG_]`, `<|en|>`) are not words.
 pub fn group_words(tokens: &[Token]) -> Vec<Word> {
@@ -905,10 +947,10 @@ fn transcribe(model_id: &str, model: &std::path::Path, audio: &[f32], duration_s
             continue;
         }
         segments.push(Segment { start_secs: t0, end_secs: t1, text: text.trim().to_string() });
-        for j in 0..seg.n_tokens() {
-            let Some(tok) = seg.get_token(j) else { continue };
+        let segment_tokens: Vec<_> = (0..seg.n_tokens()).filter_map(|j| seg.get_token(j)).collect();
+        let bytes: Vec<&[u8]> = segment_tokens.iter().map(|t| t.to_bytes().unwrap_or_default()).collect();
+        for (tok, text) in segment_tokens.iter().zip(token_texts(&bytes)) {
             let d = tok.token_data();
-            let text = tok.to_str_lossy().map(|c| c.into_owned()).unwrap_or_default();
             // The aligned time when there is one: where the token is
             // said. Its end is the next token's start, settled below.
             let (t0, t1) = if d.t_dtw >= 0 { (d.t_dtw as f64 / 100.0, f64::NAN) } else { (d.t0 as f64 / 100.0, d.t1 as f64 / 100.0) };
@@ -1082,6 +1124,24 @@ pub fn is_speech(text: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A character split across two tokens is whole in the second, and the
+    /// words hold it; an ending nothing finishes, or a bad byte, is one mark.
+    #[test]
+    fn a_character_split_between_tokens_survives() {
+        let line = "ご視聴ありがとう".as_bytes();
+        let split = line.iter().position(|b| *b == 0xE8).unwrap() + 1;
+        let (a, rest) = line.split_at(split);
+        let (b, c) = rest.split_at(1);
+        let texts = token_texts(&[b" ", a, b, c]);
+        assert_eq!(texts.concat().trim(), "ご視聴ありがとう", "{texts:?}");
+        assert!(!texts.concat().contains(char::REPLACEMENT_CHARACTER));
+        let tokens: Vec<Token> = texts.iter().enumerate().map(|(i, text)| tok(text, i as f64, i as f64 + 1.0, 0.9)).collect();
+        assert_eq!(group_words(&tokens)[0].text, "ご視聴ありがとう");
+        assert_eq!(token_texts(&[b"ok", &[0xE8, 0x81]]), ["ok", "\u{FFFD}"]);
+        assert_eq!(token_texts(&[b"a\xFFb"]), ["a\u{FFFD}b"]);
+        assert_eq!(token_texts(&[b"plain", b" words"]), ["plain", " words"]);
+    }
 
     fn tok(text: &str, t0: f64, t1: f64, p: f32) -> Token {
         Token { text: text.into(), t0, t1, p }
