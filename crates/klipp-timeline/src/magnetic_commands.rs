@@ -58,6 +58,11 @@ pub enum MagneticEditCommand {
         disconnected_storylines: Vec<(usize, MagneticAnchor)>,
         /// Linked clip that was also removed (e.g. audio partner).
         removed_linked_clip: Option<(Clip, usize)>,
+        /// The transitions that joined a removed clip, taken out with it,
+        /// by track; and the fades they dipped on the clips left, by clip,
+        /// which end (`true` for its out) and how long.
+        removed_transitions: Vec<(usize, crate::Transition)>,
+        undipped: Vec<(ClipId, bool, f32)>,
     },
     Lift {
         removed_clip: Clip,
