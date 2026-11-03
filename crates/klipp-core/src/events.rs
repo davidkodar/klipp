@@ -823,6 +823,18 @@ impl ExportVideoCodec {
         }
     }
 
+    /// [`Self::hint_at_depth`] for a machine with or without a GPU that can
+    /// encode (#3431): without one, H.264 and H.265 are made on the CPU.
+    pub fn hint_on(&self, bit_depth: u8, gpu_encoder: bool) -> &'static str {
+        match (self, bit_depth) {
+            _ if gpu_encoder => self.hint_at_depth(bit_depth),
+            (Self::H264, 10) => self.hint_at_depth(bit_depth),
+            (Self::H264, _) => "CPU \u{2014} fast, universal",
+            (Self::H265, _) => "CPU \u{2014} best quality/size",
+            _ => self.hint_at_depth(bit_depth),
+        }
+    }
+
     pub fn hint(&self) -> &'static str {
         match self {
             Self::H264 => "GPU accelerated \u{26A1} — fast, universal",
@@ -6064,6 +6076,20 @@ pub enum WipeClip {
 
 #[cfg(test)]
 mod project_switch_tests {
+    /// #3431: no form says "GPU accelerated" where nothing can encode on
+    /// the GPU, and where something can, it reads as before.
+    #[test]
+    fn a_codec_hint_follows_the_machine() {
+        use crate::events::ExportVideoCodec;
+        for codec in [ExportVideoCodec::H264, ExportVideoCodec::H265] {
+            assert!(!codec.hint_on(8, false).contains("GPU"), "{codec:?}");
+            assert_eq!(codec.hint_on(8, true), codec.hint());
+        }
+        assert!(!ExportVideoCodec::H265.hint_on(10, false).contains("GPU"));
+        assert_eq!(ExportVideoCodec::H264.hint_on(10, false), ExportVideoCodec::H264.hint_at_depth(10));
+        assert_eq!(ExportVideoCodec::Vp9.hint_on(8, false), ExportVideoCodec::Vp9.hint());
+    }
+
     use super::ProjectStatus;
     #[test]
     fn project_switch_preserves_unsaved_work_and_checks_identity() {

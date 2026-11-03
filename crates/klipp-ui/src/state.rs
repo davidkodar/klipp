@@ -13,6 +13,9 @@ fn later(sequence: Option<u64>, project: Option<u64>) -> Option<crate::history::
 }
 use klipp_core::{AudioParam, ClipId, Fps, MediaId, SequenceId, Timecode, Tool, TrackId, TransitionId, VideoParam, ViewerMode};
 use klipp_engine::PlaybackState;
+
+/// How long before a clip whose skim audio would not start is asked again.
+const SKIM_AUDIO_RETRY: std::time::Duration = std::time::Duration::from_secs(1);
 use klipp_media::{MediaPool, ThumbnailCache};
 use klipp_timeline::Sequence;
 use std::path::PathBuf;
@@ -2164,6 +2167,8 @@ pub struct AppState {
     pub recent_files_snapshot: Vec<std::path::PathBuf>,
     /// Time of last audio skim decode dispatch (throttle to prevent starvation).
     pub skim_last_audio_dispatch: std::time::Instant,
+    /// The clip whose skim audio last would not start, and when (#3432).
+    pub skim_audio_refused: Option<(klipp_core::MediaId, std::time::Instant)>,
 
     // Video stabilization analysis state
     /// Clips whose per-frame light is being measured for Deflicker.
@@ -5015,6 +5020,7 @@ impl Default for AppState {
             file_browser_auto_refresh: true,
             recent_files_snapshot: Vec::new(),
             skim_last_audio_dispatch: std::time::Instant::now(),
+            skim_audio_refused: None,
             deflicker_in_progress: std::collections::HashSet::new(),
             deflicker_progress: std::collections::HashMap::new(),
             stabilization_in_progress: std::collections::HashSet::new(),
@@ -6200,6 +6206,26 @@ impl AppState {
     /// Returns `None` when no clip is selected, or the selected clip
     /// id no longer exists in the active sequence (in which case
     /// the cache is also cleared).
+    /// Whether a hover may start skim audio for `media`: no session yet, and
+    /// not refused a moment ago. A clip with no audio cache yet refuses, and
+    /// asking again each frame wrote a warning every few milliseconds; it is
+    /// asked again in a second, as the cache may have come by then (#3432).
+    pub fn skim_audio_may_start(&self, media: klipp_core::MediaId) -> bool {
+        self.skim_audio_session.is_none()
+            && !self.skim_audio_refused.is_some_and(|(m, at)| m == media && at.elapsed() < SKIM_AUDIO_RETRY)
+    }
+
+    /// The clips a command on "the selection" means: those picked together,
+    /// else the one clip a plain click selects, which isn't among them
+    /// (#3432).
+    pub fn selection_or_clip(&self) -> Vec<ClipId> {
+        if self.selected_clips.is_empty() {
+            self.selected_clip.into_iter().collect()
+        } else {
+            self.selected_clips.clone()
+        }
+    }
+
     pub fn selected_clip_loc(&self) -> Option<(usize, &klipp_timeline::Clip)> {
         let cid = self.selected_clip?;
         find_clip_cached(self.sequence(), cid, &self.selected_clip_loc_cache)
@@ -7937,5 +7963,38 @@ impl AppState {
             return selected;
         }
         self.source_media_id.into_iter().collect()
+    }
+}
+
+#[cfg(test)]
+mod selection_and_skim_tests {
+    use super::*;
+
+    /// #3432: one clip picked with a plain click is the selection to
+    /// Export's "Selected clips"; several picked together are.
+    #[test]
+    fn a_plain_click_is_a_selection_of_one() {
+        let (one, two) = (ClipId::new(), ClipId::new());
+        let mut state = AppState::default();
+        assert!(state.selection_or_clip().is_empty());
+        state.selected_clip = Some(one);
+        assert_eq!(state.selection_or_clip(), vec![one]);
+        state.selected_clips = vec![one, two];
+        assert_eq!(state.selection_or_clip(), vec![one, two]);
+    }
+
+    /// #3432: a clip whose audio refused isn't asked again each frame,
+    /// but is in a while, and another clip is at once.
+    #[test]
+    fn a_refused_clip_waits_before_skim_audio_is_tried_again() {
+        let (media, other) = (MediaId::new(), MediaId::new());
+        let mut state = AppState::default();
+        assert!(state.skim_audio_may_start(media));
+        state.skim_audio_refused = Some((media, std::time::Instant::now()));
+        assert!(!state.skim_audio_may_start(media), "asked again at once");
+        assert!(state.skim_audio_may_start(other));
+        let earlier = std::time::Instant::now().checked_sub(SKIM_AUDIO_RETRY * 2).unwrap();
+        state.skim_audio_refused = Some((media, earlier));
+        assert!(state.skim_audio_may_start(media), "asked again after a while");
     }
 }

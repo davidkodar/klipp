@@ -1848,11 +1848,19 @@ impl Track {
     }
 
     pub fn append_clip(&mut self, media_id: MediaId, source_duration: Timecode) -> ClipId {
+        self.append_clip_from(media_id, source_duration, Timecode { value: 0, rate: source_duration.rate })
+    }
+
+    /// [`Track::append_clip`], but at `not_before` when the track ends
+    /// earlier: the end of the whole timeline, where Add to End of
+    /// Timeline puts a picture and its sound together (#3448).
+    pub fn append_clip_from(&mut self, media_id: MediaId, source_duration: Timecode, not_before: Timecode) -> ClipId {
         let timeline_in = self
             .clips
             .last()
             .map(|c| c.timeline_out)
-            .unwrap_or(Timecode { value: 0, rate: source_duration.rate });
+            .unwrap_or(Timecode { value: 0, rate: source_duration.rate })
+            .max(not_before);
         // Rescale to source rate for frame-accurate timeline arithmetic
         let timeline_in = if timeline_in.rate != source_duration.rate {
             timeline_in.rescale_to(source_duration.rate)
@@ -5363,5 +5371,31 @@ mod starting_role_tests {
         let edit = seq.insert_edit(0, media(0.0), Timecode::from_secs_f64(0.0, 25)).expect("inserted");
         assert_eq!(edit.clip.role, RoleRef::parse("music.score"), "the edit keeps the role it gave");
         assert_eq!(seq.tracks[0].clips[0].role, RoleRef::parse("music.score"));
+    }
+}
+
+#[cfg(test)]
+mod append_from_tests {
+    use super::*;
+
+    /// #3448: a picture and its sound appended from the timeline's end
+    /// start together, however much shorter the sound's track is; a
+    /// track that runs past that point appends at its own end.
+    #[test]
+    fn a_picture_and_its_sound_go_to_the_timelines_end_together() {
+        let t = |s: f64| Timecode::from_secs_f64(s, 25);
+        let mut seq = Sequence::new_default();
+        let v = seq.tracks.iter().position(|t| t.kind == TrackKind::Video).unwrap();
+        let a = seq.tracks.iter().position(|t| t.kind == TrackKind::Audio).unwrap();
+        seq.tracks[v].clips.push(Clip::media(MediaId::new(), t(0.0), t(25.0), t(0.0), t(25.0)));
+        let end = seq.total_duration();
+        let media = MediaId::new();
+        let picture = seq.tracks[v].append_clip_from(media, t(4.0), end);
+        let sound = seq.tracks[a].append_clip_from(media, t(4.0), end);
+        let later = seq.tracks[a].append_clip_from(media, t(1.0), t(10.0));
+        let at = |ti: usize, id: ClipId| seq.tracks[ti].find_clip(id).map(|c| (c.timeline_in.to_secs_f64(), c.timeline_out.to_secs_f64()));
+        assert_eq!(at(v, picture), Some((25.0, 29.0)));
+        assert_eq!(at(a, sound), Some((25.0, 29.0)), "the sound under its picture, not at 0 s");
+        assert_eq!(at(a, later), Some((29.0, 30.0)), "never over what is there");
     }
 }

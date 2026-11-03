@@ -1861,18 +1861,17 @@ fn handle_hover_skim(
 
     // Audio skimming: dispatch Start or Update (throttled)
     if state.audio_skimming_enabled {
-        let is_new_session = state.skim_audio_session.is_none();
         // Throttle updates: 80ms minimum between dispatches
         let elapsed = state.skim_last_audio_dispatch.elapsed().as_millis() as u64;
 
-        if is_new_session {
+        if state.skim_audio_may_start(item.id) {
             state.skim_last_audio_dispatch = std::time::Instant::now();
             cmds.push(AppCommand::BrowserSkimAudioStart {
                 media_id: item.id,
                 source_path: item.path.clone(),
                 time_secs: skim_time,
             });
-        } else if elapsed >= 16 {
+        } else if state.skim_audio_session.is_some() && elapsed >= 16 {
             state.skim_last_audio_dispatch = std::time::Instant::now();
             cmds.push(AppCommand::BrowserSkimAudioUpdate {
                 media_id: item.id,

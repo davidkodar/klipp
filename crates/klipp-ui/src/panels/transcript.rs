@@ -74,6 +74,7 @@ impl TranscriptPanel {
         self.refresh(state, source);
         let mut open = state.show_transcript_panel;
         let window = egui::Window::new("Transcript")
+            .constrain_to(crate::widgets::below_menu_bar(ctx))
             .open(&mut open)
             .default_width(460.0)
             .default_height(520.0)
