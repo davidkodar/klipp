@@ -5228,10 +5228,13 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
                 // it alone is, not put out of sync with nothing said.
                 // `linked: false` edits the one track on purpose, as asked.
                 let closing: Vec<usize> = (0..seq.tracks.len()).filter(|t| skip.contains(t) || (seq.tracks[*t].sync_lock && !seq.tracks[*t].locked)).collect();
+                // Whether a clip moves: on a track that closes up, from the
+                // gap on. A pair straddling it moves on one side only.
+                let moves = |t: usize, c: &Clip| closing.contains(&t) && c.timeline_in >= clip.timeline_out && !gone.contains(&c.id);
                 for &t in closing.iter().filter(|_| *linked) {
-                    for c in seq.tracks[t].clips.iter().filter(|c| c.timeline_in >= clip.timeline_out && !gone.contains(&c.id)) {
+                    for c in seq.tracks[t].clips.iter().filter(|c| moves(t, c)) {
                         let Some((pt, _, p)) = c.linked_clip_id.and_then(|pid| find_clip(seq, pid)) else { continue };
-                        if !closing.contains(&pt) && !gone.contains(&p.id) {
+                        if !moves(pt, p) && !gone.contains(&p.id) {
                             return Err(refuse(
                                 i,
                                 format!("closing the gap would move {} on track {t} and leave its linked clip {} on track {pt}, out of sync", clip_name(seq, pool, c), clip_name(seq, pool, p)),
