@@ -5125,7 +5125,7 @@ pub enum AppEvent {
     /// A multicam's angles were put on one clock (see
     /// `AppCommand::CreateSyncedMulticam`), for the sequence and playhead
     /// the request was made at.
-    MulticamSyncReady { plan: crate::MulticamPlan, sequence_id: crate::SequenceId, at_secs: f64 },
+    MulticamSyncReady { plan: crate::MulticamPlan, media_ids: Vec<MediaId>, sequence_id: crate::SequenceId, at_secs: f64 },
     AudioSyncComplete {
         clip_id: ClipId,
         offset_samples: i64,
@@ -5634,6 +5634,10 @@ pub struct ControlShared {
     pub viewer_compare: std::sync::Mutex<Option<String>>,
     /// Proxies as the UI last saw them (#2478).
     pub proxies: std::sync::Mutex<ProxyStatus>,
+    /// Multicam syncs the app could not make: the files asked for, why and
+    /// when, until the socket puts them on their jobs.
+    #[allow(clippy::type_complexity)]
+    pub failed_multicams: std::sync::Mutex<Vec<(Vec<MediaId>, String, std::time::Instant)>>,
     /// What the viewer shows of the picture, as the UI last saw it
     /// (#2758): a frame read that views a channel or a node puts this
     /// back afterwards.

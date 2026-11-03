@@ -215,6 +215,9 @@ pub struct AnglePlacement {
     pub is_reference: bool,
 }
 
+/// How a plan's note of the angles it couldn't place begins.
+const PLACED_AT_START: &str = "Placed at the start for you to line up:";
+
 /// What syncing a multicam found: a place for every angle, and what the
 /// editor should know about it.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -227,6 +230,17 @@ impl MulticamPlan {
     /// Angles actually put on the shared clock.
     pub fn synced(&self) -> usize {
         self.placements.iter().filter(|p| p.method.is_some()).count()
+    }
+
+    /// Why a plan with too few angles on the clock isn't placed: its notes,
+    /// less the one that says what is placed, since nothing is.
+    pub fn why_not_placed(&self) -> String {
+        let why: Vec<&str> = self.notes.iter().map(String::as_str).filter(|n| !n.starts_with(PLACED_AT_START)).collect();
+        if why.is_empty() {
+            "Could not put two angles on one clock".to_string()
+        } else {
+            format!("Could not put two angles on one clock: {}", why.join("; "))
+        }
     }
 }
 
@@ -466,7 +480,7 @@ pub fn plan_multicam(
     let origin = if origin.is_finite() { origin } else { 0.0 };
     let unsynced: Vec<&str> = angles.iter().zip(&start).filter(|(_, s)| s.is_none()).map(|(a, _)| a.name.as_str()).collect();
     if !unsynced.is_empty() {
-        notes.push(format!("Placed at the start for you to line up: {}", unsynced.join(", ")));
+        notes.push(format!("{PLACED_AT_START} {}", unsynced.join(", ")));
     }
 
     let placements = angles
@@ -486,6 +500,19 @@ pub fn plan_multicam(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A plan with too few angles on the clock places nothing, so the reason
+    /// given for it doesn't say any were placed; one that is placed says so.
+    #[test]
+    fn a_plan_not_placed_does_not_claim_a_placement() {
+        let angles = vec![angle("A", None, 60.0, true), angle("B", None, 60.0, true)];
+        let plan = plan_multicam(&angles, MulticamSync::Audio, |_, _| AudioMatch::TooLittleOverlap);
+        assert!(plan.synced() < 2);
+        assert!(plan.notes.iter().any(|n| n.starts_with(PLACED_AT_START)), "{:?}", plan.notes);
+        let why = plan.why_not_placed();
+        assert!(why.contains("too little") && !why.contains("Placed"), "{why}");
+        assert_eq!(MulticamPlan::default().why_not_placed(), "Could not put two angles on one clock");
+    }
 
     #[test]
     fn a_timecode_reads_as_seconds_at_its_rate_and_drop_frame_stays_on_the_clock() {

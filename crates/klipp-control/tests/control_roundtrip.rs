@@ -2020,6 +2020,39 @@ fn sync_job_completes_only_after_its_multicam_group_appears() {
     assert!(done["jobs"][0]["result"]["group_id"].as_str().is_some());
 }
 
+/// A sync that fails ends its job with why, whether the app says so while
+/// the request is still waiting for its reply, before the job exists, or
+/// later, once its sound has been compared.
+#[test]
+fn a_failed_multicam_sync_ends_its_job_with_why() {
+    let mut h = harness();
+    let (first, second, third) = {
+        let mut pool = h.media_pool.write().unwrap();
+        (pool.add(klipp_media::MediaItem::synthetic_for_test("/tmp/fail-one.mov".into(), None)),
+         pool.add(klipp_media::MediaItem::synthetic_for_test("/tmp/fail-two.mov".into(), None)),
+         pool.add(klipp_media::MediaItem::synthetic_for_test("/tmp/fail-three.mov".into(), None)))
+    };
+    let queued = h.ok(json!({"method":"create_multicam", "media_ids":[first.0.to_string(), second.0.to_string()]}));
+    let job_id = queued["job_id"].as_str().expect("sync has a job ID").to_owned();
+    assert_eq!(h.ok(json!({"method":"job_status","job_id":job_id}))["jobs"][0]["state"], "running");
+    let say = |h: &Harness, ids: Vec<klipp_core::MediaId>, why: &str| {
+        h.shared.failed_multicams.lock().unwrap().push((ids, why.to_string(), std::time::Instant::now()));
+    };
+    say(&h, vec![second, first], "they share no clear sound");
+    let done = h.ok(json!({"method":"job_status","job_id":job_id}));
+    assert_eq!(done["jobs"][0]["state"], "failed");
+    assert_eq!(done["jobs"][0]["error"], "they share no clear sound");
+    // Before its job exists, and only for the files it names.
+    say(&h, vec![first, third], "not two online video clips");
+    let other = h.ok(json!({"method":"create_multicam", "media_ids":[second.0.to_string(), third.0.to_string()]}));
+    let other = other["job_id"].as_str().unwrap().to_owned();
+    assert_eq!(h.ok(json!({"method":"job_status","job_id":other}))["jobs"][0]["state"], "running", "other files");
+    let early = h.ok(json!({"method":"create_multicam", "media_ids":[third.0.to_string(), first.0.to_string()]}));
+    let early = h.ok(json!({"method":"job_status","job_id":early["job_id"]}));
+    assert_eq!(early["jobs"][0]["state"], "failed");
+    assert_eq!(early["jobs"][0]["error"], "not two online video clips");
+}
+
 /// #711: a transition reads back. The timeline text and `list_clips`
 /// (both forms) show it on its cut: kind, length in seconds and frames,
 /// the stretch it covers by its alignment, its two clips and its id. An
