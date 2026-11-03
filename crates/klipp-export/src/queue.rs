@@ -199,6 +199,12 @@ impl RenderQueue {
         }
     }
 
+    /// Whether a job still queued or rendering writes to `path`: a second
+    /// job there would write over the file as it is made.
+    pub fn writes_to(&self, path: &std::path::Path) -> bool {
+        self.jobs.iter().any(|j| matches!(j.status, RenderJobStatus::Queued | RenderJobStatus::Rendering) && j.output_path == path)
+    }
+
     /// Jobs started from now on run a missing analysis with `analyser`.
     pub fn set_analyser(&mut self, analyser: klipp_render::Analyser) {
         self.analyser = Some(analyser);
@@ -597,6 +603,19 @@ mod tests {
     //! `cancel_job`, `remove_job`, `clear_completed`, `kill_active`,
     //! `queued_count`, `has_active_job`, `active_job_progress`.
     use super::*;
+
+    /// Only a job still to finish holds its path.
+    #[test]
+    fn a_path_is_taken_while_its_job_is_queued_or_rendering() {
+        let mut q = RenderQueue::new();
+        let path = PathBuf::from("/tmp/klipp-test-fake.mp4");
+        assert!(!q.writes_to(&path));
+        for (status, taken) in [(RenderJobStatus::Queued, true), (RenderJobStatus::Rendering, true), (RenderJobStatus::Complete, false), (RenderJobStatus::Failed, false)] {
+            q.jobs = vec![fake_job(status)];
+            assert_eq!(q.writes_to(&path), taken, "{:?}", q.jobs[0].status);
+        }
+        assert!(!q.writes_to(std::path::Path::new("/tmp/other.mp4")));
+    }
 
     fn fake_job(status: RenderJobStatus) -> RenderJob {
         RenderJob {

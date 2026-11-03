@@ -109,6 +109,9 @@ pub(super) struct ExportDialogState {
     pub(super) audio_codec: ExportAudioCodec,
     pub(super) audio_bitrate: u32,
     pub(super) confirm_overwrite: bool,
+    /// The question is Add to Queue's: Overwrite queues the job rather
+    /// than exporting.
+    pub(super) confirm_overwrite_queue: bool,
     /// The export preferences say to overwrite a file already there
     /// without asking (`OverwriteMode::Always`); set as the dialog opens.
     pub(super) overwrite_without_asking: bool,
@@ -217,6 +220,7 @@ impl Default for ExportDialogState {
             audio_codec: ExportAudioCodec::Aac,
             audio_bitrate: 128,
             confirm_overwrite: false,
+            confirm_overwrite_queue: false,
             overwrite_without_asking: false,
             suggested_path: None,
             fitted_for: None,
@@ -901,6 +905,17 @@ pub(super) fn next_free_name(original: &std::path::Path, taken: impl Fn(&std::pa
         .unwrap_or_else(|| original.to_path_buf())
 }
 
+/// Where a job meant for `wanted` writes: there, unless a job still
+/// queued or rendering writes there (`queued`); then the first free
+/// `name_N` beside it, neither on disk nor queued. Two jobs on one path
+/// wrote over a finished export with a broken one.
+pub(super) fn queue_path(wanted: &std::path::Path, queued: impl Fn(&std::path::Path) -> bool, on_disk: impl Fn(&std::path::Path) -> bool) -> std::path::PathBuf {
+    if !queued(wanted) {
+        return wanted.to_path_buf();
+    }
+    next_free_name(wanted, |c| queued(c) || on_disk(c))
+}
+
 /// Each marker segment's file and the label its job shows, from the path
 /// the dialog chose: `<stem>_<marker label>.<ext>` beside it, or
 /// `<stem>_segment_<n>` for the bookends and unnamed markers; each name
@@ -1264,6 +1279,16 @@ impl KlippApp {
     /// banding check unless that ran for this edit (#2074): checked once
     /// no render runs, never beside one.
     fn queue_job(&mut self, path: PathBuf, settings: klipp_core::ExportSettings, label: String, snap: klipp_export::RenderSnapshot) -> uuid::Uuid {
+        // Never two jobs on one file: the later one goes beside it.
+        let wanted = path;
+        let path = queue_path(&wanted, |p| self.state.render_queue.writes_to(p), |p| p.exists());
+        let name = |p: &std::path::Path| p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        let label = if path == wanted {
+            label
+        } else {
+            self.state.toast.show(format!("Another export is writing {}: this one goes to {}", name(&wanted), name(&path)));
+            if label == name(&wanted) { name(&path) } else { label }
+        };
         // A folder named in the path and not there yet is made, as the
         // default one (the Videos folder) may not be (#2941).
         if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty() && !d.exists()) {
@@ -2372,45 +2397,14 @@ impl KlippApp {
                 .on_disabled_hover_text(disabled_reason)
                 .clicked()
             {
-                if self.ask_matte_gaps() {
-                    return;
-                }
+                // A file already there is asked about, as Export asks.
                 let path = PathBuf::from(&self.export_dialog.output_path);
-                let settings = build_export_settings(&self.export_dialog, self.prefs.audio.pan_law);
-                let use_marked = self.export_dialog.range_mode == 1;
-                let mut snapshot = klipp_export::RenderSnapshot::from_sequence_with_all(
-                    &self.state.sequences[self.state.active_sequence_idx],
-                    &self.state.sequences,
-                    &self.state.media_pool,
-                    &settings,
-                    self.state.timeline_lut(),
-                    use_marked,
-                    self.state.project_working_colorspace,
-                );
-                if self.export_dialog.range_mode == 2 {
-                    if let Ok(ref mut snap) = snapshot {
-                        let seq = &self.state.sequences[self.state.active_sequence_idx];
-                        snap.sequence_snapshot.export_range = selected_clips_frame_range(&self.state.selected_clips, seq, snap.sequence_snapshot.fps);
-                    }
+                if path.exists() && !self.export_dialog.overwrite_without_asking {
+                    self.export_dialog.confirm_overwrite = true;
+                    self.export_dialog.confirm_overwrite_queue = true;
+                } else {
+                    self.queue_from_dialog();
                 }
-                if let Ok(ref mut snap) = snapshot {
-                    snap.sequence_snapshot.video.global_lut_opacity = self.state.global_lut_opacity;
-                }
-                let label = path.file_name()
-                    .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or_else(|| "Render".into());
-                match snapshot {
-                    Ok(snap) => {
-                        self.queue_job(path, settings, label, snap);
-                    }
-                    Err(e) => {
-                        tracing::error!("Failed to create render snapshot: {e}");
-                    }
-                }
-                self.state.show_export_dialog = false;
-                self.state.show_render_queue = true;
-                self.prefs.export.last_preset_id = self.export_dialog.selected_preset_id.clone();
-                self.prefs_dirty = true;
             }
             // The primary action, and the only thing in the row painted
             // with the accent.
@@ -2454,6 +2448,7 @@ impl KlippApp {
                 let path = PathBuf::from(&self.export_dialog.output_path);
                 if path.exists() && !self.export_dialog.overwrite_without_asking {
                     self.export_dialog.confirm_overwrite = true;
+                    self.export_dialog.confirm_overwrite_queue = false;
                 } else {
                     self.state.show_export_dialog = false;
                     self.prefs.export.last_preset_id = self.export_dialog.selected_preset_id.clone();
@@ -2465,6 +2460,50 @@ impl KlippApp {
                 }
             }
         });
+    }
+
+    /// The export page's settings queued as a render: Add to Queue, or
+    /// its Overwrite once a file already there was asked about.
+    fn queue_from_dialog(&mut self) {
+        if self.ask_matte_gaps() {
+            return;
+        }
+        let path = PathBuf::from(&self.export_dialog.output_path);
+        let settings = build_export_settings(&self.export_dialog, self.prefs.audio.pan_law);
+        let use_marked = self.export_dialog.range_mode == 1;
+        let mut snapshot = klipp_export::RenderSnapshot::from_sequence_with_all(
+            &self.state.sequences[self.state.active_sequence_idx],
+            &self.state.sequences,
+            &self.state.media_pool,
+            &settings,
+            self.state.timeline_lut(),
+            use_marked,
+            self.state.project_working_colorspace,
+        );
+        if self.export_dialog.range_mode == 2 {
+            if let Ok(ref mut snap) = snapshot {
+                let seq = &self.state.sequences[self.state.active_sequence_idx];
+                snap.sequence_snapshot.export_range = selected_clips_frame_range(&self.state.selected_clips, seq, snap.sequence_snapshot.fps);
+            }
+        }
+        if let Ok(ref mut snap) = snapshot {
+            snap.sequence_snapshot.video.global_lut_opacity = self.state.global_lut_opacity;
+        }
+        let label = path.file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "Render".into());
+        match snapshot {
+            Ok(snap) => {
+                self.queue_job(path, settings, label, snap);
+            }
+            Err(e) => {
+                tracing::error!("Failed to create render snapshot: {e}");
+            }
+        }
+        self.state.show_export_dialog = false;
+        self.state.show_render_queue = true;
+        self.prefs.export.last_preset_id = self.export_dialog.selected_preset_id.clone();
+        self.prefs_dirty = true;
     }
 
     pub(super) fn show_export_dialog(&mut self, ctx: &egui::Context) -> Vec<AppCommand> {
@@ -2531,16 +2570,21 @@ impl KlippApp {
                     ui.horizontal(|ui| {
                         if ui.button("Cancel").clicked() {
                             self.export_dialog.confirm_overwrite = false;
+                            self.export_dialog.confirm_overwrite_queue = false;
                         }
                         if ui.button("Overwrite").clicked() {
                             self.export_dialog.confirm_overwrite = false;
-                            self.state.show_export_dialog = false;
-                            self.prefs.export.last_preset_id = self.export_dialog.selected_preset_id.clone();
-                            self.prefs_dirty = true;
-                            self.export_dialog.form_export = true;
-                            cmds.push(AppCommand::ExportSequence {
-                                settings: build_export_settings(&self.export_dialog, self.prefs.audio.pan_law),
-                            });
+                            if std::mem::take(&mut self.export_dialog.confirm_overwrite_queue) {
+                                self.queue_from_dialog();
+                            } else {
+                                self.state.show_export_dialog = false;
+                                self.prefs.export.last_preset_id = self.export_dialog.selected_preset_id.clone();
+                                self.prefs_dirty = true;
+                                self.export_dialog.form_export = true;
+                                cmds.push(AppCommand::ExportSequence {
+                                    settings: build_export_settings(&self.export_dialog, self.prefs.audio.pan_law),
+                                });
+                            }
                         }
                     });
                 });
@@ -3422,6 +3466,20 @@ mod export_rule_tests {
         assert_eq!(next_free_name(Path::new("/out/film.mp4"), |p| taken.iter().any(|t| t == p)), PathBuf::from("/out/film_3.mp4"));
         assert_eq!(next_free_name(Path::new("/out/film"), |_| false), PathBuf::from("/out/film_1"));
         assert_eq!(next_free_name(Path::new("/out/film.mp4"), |_| true), PathBuf::from("/out/film.mp4"), "nothing free: the original, so the warning comes again");
+    }
+
+    /// Two jobs never write one file: a second job for a path a queued or
+    /// rendering job writes goes to the first name free on disk and in the
+    /// queue; a path no job writes is kept, even where a file is there
+    /// (that is the overwrite question's).
+    #[test]
+    fn a_second_job_for_one_path_goes_beside_it() {
+        let queued = [PathBuf::from("/out/film.mp4"), PathBuf::from("/out/film_1.mp4")];
+        let on_disk = [PathBuf::from("/out/film.mp4"), PathBuf::from("/out/film_2.mp4")];
+        let q = |p: &Path| queued.iter().any(|t| t == p);
+        let d = |p: &Path| on_disk.iter().any(|t| t == p);
+        assert_eq!(super::queue_path(Path::new("/out/film.mp4"), q, d), PathBuf::from("/out/film_3.mp4"));
+        assert_eq!(super::queue_path(Path::new("/out/film_2.mp4"), q, d), PathBuf::from("/out/film_2.mp4"), "no job writes there");
     }
 
     #[test]
