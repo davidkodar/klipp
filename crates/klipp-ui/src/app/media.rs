@@ -119,6 +119,12 @@ impl KlippApp {
                             }]);
                         }
                         klipp_core::events::ClipDrop::AtPlayhead => {
+                            // As a drop: it placed the first clip at the
+                            // project's rate without asking.
+                            if self.maybe_prompt_framerate_mismatch(media_id, cmd.clone()) {
+                                return true;
+                            }
+                            self.suppress_fps_prompt = false;
                             self.place_media_at_playhead(*media_id);
                         }
                         klipp_core::events::ClipDrop::AppendToTrack { track_index } => {
