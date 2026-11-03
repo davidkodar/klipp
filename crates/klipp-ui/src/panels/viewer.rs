@@ -6818,12 +6818,16 @@ fn draw_platform_overlay(painter: &egui::Painter, platform: &crate::platform_ove
         painter.rect_stroke(frame, 0.0, egui::Stroke::new(1.0_f32, colour));
         painter.text(frame.left_top() + egui::vec2(4.0, -2.0), egui::Align2::LEFT_BOTTOM, format!("{} frame ({}:{})", platform.name, platform.aspect[0], platform.aspect[1]), font.clone(), colour);
     }
+    // Each zone's label wrapped to its zone and kept in the picture: a
+    // narrow zone at an edge ran its label off the picture (P45).
+    let inside = painter.with_clip_rect(frame.intersect(painter.clip_rect()));
     for z in &platform.zones {
         let [x, y, w, h] = z.rect;
         let r = egui::Rect::from_min_size(frame.min + egui::vec2(x * frame.width(), y * frame.height()), egui::vec2(w * frame.width(), h * frame.height()));
         painter.rect_filled(r, 0.0, egui::Color32::from_rgba_unmultiplied(0, 0, 0, 40));
         painter.rect_stroke(r, 0.0, egui::Stroke::new(1.0_f32, colour));
-        painter.text(r.left_top() + egui::vec2(4.0, 2.0), egui::Align2::LEFT_TOP, &z.label, font.clone(), colour);
+        let galley = painter.layout(z.label.clone(), font.clone(), colour, (r.width() - 8.0).max(24.0));
+        inside.galley(r.left_top() + egui::vec2(4.0, 2.0), galley, colour);
     }
 }
 
