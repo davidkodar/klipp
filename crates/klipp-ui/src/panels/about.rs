@@ -55,7 +55,7 @@ pub(crate) fn show(ctx: &egui::Context, theme: &KlippTheme, status: &Status<'_>)
         .stroke(Stroke::new(1.0_f32, theme.border))
         .rounding(ROUND)
         .inner_margin(0.0);
-    egui::Window::new("About Klipp")
+    crate::widgets::window("About Klipp")
         .title_bar(false)
         .collapsible(false)
         .resizable(false)

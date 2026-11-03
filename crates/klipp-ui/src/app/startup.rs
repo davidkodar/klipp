@@ -138,6 +138,7 @@ impl KlippApp {
             delivery_reply: None,
             reuse_marks: Default::default(),
             translation: None,
+            translation_consent: None,
             sound_over_time: Default::default(),
             pointer: Default::default(),
             narrate: Default::default(),

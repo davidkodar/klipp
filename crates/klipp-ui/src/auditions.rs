@@ -288,7 +288,7 @@ pub fn show_picker(ctx: &egui::Context, state: &mut crate::state::AppState) -> V
     let ripple = state.ripple_enabled;
     let fps = state.sequence().fps.rate();
     let mut open = true;
-    egui::Window::new("Takes")
+    crate::widgets::window("Takes")
         .id(egui::Id::new(("audition_picker", clip_id.0)))
         .open(&mut open)
         .collapsible(false)

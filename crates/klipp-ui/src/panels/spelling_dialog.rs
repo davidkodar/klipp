@@ -31,7 +31,7 @@ pub fn show_spelling_dialog(ctx: &egui::Context, state: &mut AppState) -> Vec<Ap
     let dialog = &state.spelling_dialog;
     let found: Vec<Found> = found.into_iter().filter(|f| !dialog.skipped.iter().any(|(c, o, s, w)| *c == f.clip_id && *o == f.object.0 && *s == f.start && *w == f.word)).collect();
     let mut open = state.show_spelling_dialog;
-    egui::Window::new("Check Spelling in Titles")
+    crate::widgets::window("Check Spelling in Titles")
         .open(&mut open)
         .collapsible(false)
         .resizable(true)

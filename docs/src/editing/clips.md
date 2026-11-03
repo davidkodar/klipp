@@ -57,6 +57,9 @@ Press **B** for the Blade tool and click a clip to split it there, or press **Ct
 **Clip → Speed...** sets the clip's speed and reverse:
 
 - Constant speed — preset percentages or a custom value; the clip's length changes to match
+- A length instead of a speed, typed in seconds or as a timecode
+- **Fill to the next clip** — the speed that makes the clip end where the next clip on its track starts
+- **Fit to the marked range** — the clip goes on the timeline's marks: it starts at the In point and ends at the Out point, at the speed that takes, with its linked sound. Whatever is under the range is written over in overwrite mode, or pushed along in insert mode. Undo puts it all back in one step.
 - Speed keys, in the Video tab's speed rows
 - **Keep pitch** for the sound
 
@@ -104,7 +107,7 @@ An audition shows its count of takes on a badge, and the name of the take on the
 
 ## Multicam Clips
 
-Select synced angles in the browser and choose **Create Multicam Clip** (Alt+C). Cut between angles with **1**–**9** while playing, or from **Clip → Switch Angle**; **Clip → Multicam Sound** picks where the sound comes from. See [Source Viewer](../ui/source-viewer.md#multicam-angles).
+Select the angles in the Media browser, right-click and choose **Create Synced Multicam**: it puts them on one clock by timecode or sound and lays them out at the playhead. For clips already stacked on the timeline, put the playhead on them and choose **Create Multicam Clip** (Alt+C). Cut between angles with **1**–**9** while playing, or from **Clip → Switch Angle**; **Clip → Multicam Sound** picks where the sound comes from. See [Source Viewer](../ui/source-viewer.md#multicam-angles).
 
 ## Clip Properties
 

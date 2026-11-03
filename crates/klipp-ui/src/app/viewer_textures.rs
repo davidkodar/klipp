@@ -362,7 +362,7 @@ impl KlippApp {
             }
             let w = fb.width as usize;
             let h = fb.height as usize;
-            if fb.data.len() != w * h * 4 {
+            if !source_frame_to_upload(w, h, fb.data.len()) {
                 fb.dirty = false;
                 return;
             }
@@ -736,3 +736,21 @@ mod empty_texture_tests {
         assert!(slot.is_some(), "the next real frame shows");
     }
 }
+
+/// Whether the Source viewer's buffer holds a picture to upload: one of
+/// its size. Emptied (0x0) when a project opens (#3470), it has nothing
+/// to show, and asking for an image of it logged an error each time.
+fn source_frame_to_upload(width: usize, height: usize, bytes: usize) -> bool {
+    width > 0 && height > 0 && bytes == width * height * 4
+}
+
+#[cfg(test)]
+mod source_frame_tests {
+    #[test]
+    fn an_emptied_source_buffer_is_not_uploaded() {
+        assert!(!super::source_frame_to_upload(0, 0, 0), "emptied on open: nothing to show");
+        assert!(!super::source_frame_to_upload(4, 2, 10), "the wrong size");
+        assert!(super::source_frame_to_upload(4, 2, 32));
+    }
+}
+

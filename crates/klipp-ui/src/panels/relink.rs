@@ -63,7 +63,19 @@ struct Row {
     choice: Option<usize>,
 }
 
+/// Whether the Relink dialog has done its work: nothing is offline and
+/// no search or plan is under way. It says "All media is online" then,
+/// and closes.
+pub fn all_relinked(offline: usize, idle: bool) -> bool {
+    offline == 0 && idle
+}
+
 impl RelinkPanel {
+    /// No search running and no plan waiting to be applied.
+    pub fn idle(&self) -> bool {
+        self.scan.is_none() && self.plan.is_none()
+    }
+
     /// Search `dir` for every offline item in the pool when the dialog
     /// next draws, replacing any search already running.
     pub fn request_scan(&mut self, dir: PathBuf) {
@@ -436,4 +448,17 @@ fn browse_button(ui: &mut egui::Ui, state: &AppState, media_id: klipp_core::Medi
             .map(|new_path| vec![AppCommand::RelinkMediaByHand { media_id, new_path }])
             .unwrap_or_default()
     });
+}
+
+#[cfg(test)]
+mod all_relinked_tests {
+    /// The dialog closes once nothing is offline, not while a search or
+    /// a plan is still under way, and not while media is offline.
+    #[test]
+    fn the_dialog_closes_once_all_media_is_online() {
+        assert!(super::all_relinked(0, true));
+        assert!(!super::all_relinked(0, false), "a search or plan under way");
+        assert!(!super::all_relinked(2, true), "media still offline");
+        assert!(super::RelinkPanel::default().idle());
+    }
 }

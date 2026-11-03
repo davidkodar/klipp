@@ -453,7 +453,7 @@ impl KlippApp {
         let mut choice = None;
         let mut cancelled = false;
         let mut open = true;
-        egui::Window::new("Project In Use")
+        crate::widgets::window("Project In Use")
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
@@ -1180,9 +1180,9 @@ impl KlippApp {
                     .filter(|item| item.offline)
                     .map(|item| item.id)
                     .collect();
-                if !self.state.offline_media_ids.is_empty() {
-                    self.state.show_relink_dialog = true;
-                }
+                // Shown for this project's offline media only: one left
+                // open from the project before was carried over.
+                self.state.show_relink_dialog = !self.state.offline_media_ids.is_empty();
                 // Frei0r plug-ins this machine hasn't (#3200): said, not
                 // left to pass the picture on unseen.
                 let missing = crate::panels::project_doctor::missing_frei0r_plugins(&self.state.sequences);
@@ -1287,7 +1287,7 @@ impl KlippApp {
             .map(|s| s.to_string_lossy().to_string())
             .unwrap_or_else(|| "Untitled".to_string());
 
-        egui::Window::new("Save Changes?")
+        crate::widgets::window("Save Changes?")
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])

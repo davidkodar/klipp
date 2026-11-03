@@ -266,7 +266,7 @@ pub use stretch::{plays_at_speed, stretch_at, stretch_range, StretchTo};
 mod alternatives;
 mod cover;
 pub mod first_cut;
-pub use alternatives::{AlternativesAction, TakeSpec};
+pub use alternatives::{take_fits_track, AlternativesAction, TakeSpec};
 
 /// How a title's text is set, for `title` and `style` (#1686): its
 /// weight, a variable font's axes, OpenType features, a justified
@@ -2026,9 +2026,10 @@ pub enum Op {
         /// place of `speed` (#3115). The clip keeps its direction.
         #[serde(default)]
         length_secs: Option<f64>,
-        /// The clip made as long as the sequence's marked range (its in
-        /// and out points), the speed worked out, in place of `speed`
-        /// (#3115).
+        /// The clip put on the sequence's marked range (its in and out
+        /// points), as the Speed dialog's Fit to the marked range does
+        /// (P53): from In to Out, the speed worked out, its linked sound
+        /// with it, over what is there, or with `ripple` pushing it along.
         #[serde(default)]
         fit_range: bool,
         /// Move the clips after it on its track, and on its linked sound's,
@@ -4482,15 +4483,33 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
                     None => Err(refuse(i, format!("{} already repeats the nearest frame", clip_name(seq, pool, clip)), "give interpolation blend or flow, or a speed")),
                 };
             }
+            // On the marks (P53): as the Speed dialog's Fit to the marked
+            // range, the clip and its sound put from In to Out, over what
+            // is there, or with `ripple` pushing it along.
+            if *fit_range {
+                let (Some(a), Some(b)) = (seq.in_point, seq.out_point) else {
+                    return Err(refuse(i, "the sequence has no marked range", "mark an in and an out point first, or give length_secs"));
+                };
+                let mode = if *ripple { crate::clipboard::PasteMode::Insert } else { crate::clipboard::PasteMode::Overwrite };
+                let Some(done) = crate::clipboard::on_marks(seq, clip.id, mode, clip.is_reversed()) else {
+                    return Err(refuse(i, format!("{} can't be put on the marked range", clip_name(seq, pool, clip)), "a clip with a speed ramp can't; nor, with ripple, past a locked track"));
+                };
+                let placed = done.sequence.all_clips().find(|c| c.id == done.clip).map_or(1.0, |c| c.speed.abs());
+                let edits = crate::clipboard::track_edits(seq, &done.sequence, &done.touched, "Fit to Marked Range");
+                let what = format!("{} put on the marked range, {:.2}-{:.2} s, at {:.0}%{}", clip_name(seq, pool, clip), secs(a), secs(b), placed * 100.0, if *ripple { ", what was there pushed along" } else { ", over what was there" });
+                let edit = EditCommand::Named { label: "Fit to Marked Range".into(), edit: Box::new(EditCommand::Batch(edits)) };
+                // The frames between, for the clip as it is on the marks.
+                let on = done.sequence.all_clips().find(|c| c.id == done.clip).expect("placed");
+                let frames = interpolation.as_deref().map(|how| interpolation_edit(&done.sequence, pool, i, on, how)).transpose()?.flatten();
+                return match frames {
+                    Some((how, frames)) => Ok((format!("{what}; {how}"), EditCommand::Batch(vec![edit, frames]), vec![done.clip])),
+                    None => Ok((what, edit, vec![done.clip])),
+                };
+            }
             let speed = if *fit {
                 fit_speed(seq, pool, i, ti, clip)?
             } else if let Some(len) = length_secs {
                 speed_for_length(seq, pool, i, clip, *len)?
-            } else if *fit_range {
-                let (Some(a), Some(b)) = (seq.in_point, seq.out_point) else {
-                    return Err(refuse(i, "the sequence has no marked range", "mark an in and an out point first, or give length_secs"));
-                };
-                speed_for_length(seq, pool, i, clip, secs(b) - secs(a))?
             } else {
                 *speed
             };
@@ -21999,6 +22018,34 @@ mod tests {
         let fill = 1920.0 / 607.5;
         let got: Vec<f32> = ids.iter().map(|id| (scale(*id) / fill * 100.0).round() / 100.0).collect();
         assert_eq!(got, [1.0, 1.0, 1.2, 1.0], "the short piece is not pushed in on its own");
+    }
+
+    /// P53: retime's fit_range puts the clip on the marks, as the Speed
+    /// dialog does: from In to Out with its sound, over what is there, or
+    /// with ripple pushing it along.
+    #[test]
+    fn fit_range_puts_the_clip_on_the_marks() {
+        let (mut seq, pool, _, a, _) = fixture();
+        seq.in_point = Some(tc(6.0));
+        seq.out_point = Some(tc(14.0));
+        let op = |ripple| Op::Retime { clip_id: ClipRef::Id(a), speed: 0.0, fit: false, ripple, interpolation: None, length_secs: None, fit_range: true };
+        let spans = |s: &Sequence, ti: usize| -> Vec<(f64, f64)> { s.tracks[ti].clips.iter().filter(|c| !c.kind.is_gap()).map(|c| (secs(c.timeline_in), secs(c.timeline_out))).collect() };
+        let run = |ripple| {
+            let plan = resolve(&seq, &pool, &[op(ripple)]).unwrap();
+            let mut seqs = vec![seq.clone()];
+            let (mut p, mut fps) = (pool.clone(), seq.fps);
+            let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps };
+            view.apply_forward(&plan.steps[0].edit);
+            (seqs.remove(0), plan.steps[0].what.clone())
+        };
+        let (over, what) = run(false);
+        assert_eq!(spans(&over, 0), vec![(4.0, 6.0), (6.0, 14.0)], "the second clip written over from 6 s: {what}");
+        assert_eq!(spans(&over, 1), vec![(4.0, 6.0), (6.0, 14.0)], "the sound with it");
+        assert!(what.contains("50%"), "{what}");
+        let (pushed, _) = run(true);
+        assert_eq!(spans(&pushed, 0), vec![(4.0, 6.0), (6.0, 14.0), (14.0, 16.0)], "the rest pushed along");
+        seq.out_point = None;
+        assert!(resolve(&seq, &pool, &[op(false)]).unwrap_err().why.contains("no marked range"));
     }
 
     /// #2211: a wide edit refit to a tall frame. The picture with a face

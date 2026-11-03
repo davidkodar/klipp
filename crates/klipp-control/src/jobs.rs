@@ -42,7 +42,7 @@ enum Submitted {
     /// was imported from, the job read "probing" for the rest of the
     /// session.
     Import { path: std::path::PathBuf, analyze: bool, project_identity: u64, media_id: Option<klipp_core::MediaId> },
-    Sync { media_ids: Vec<String>, existing_groups: Vec<String>, project_identity: u64 },
+    Sync { media_ids: Vec<String>, existing_groups: Vec<String>, project_identity: u64, failed: Option<String> },
     /// Proxies asked for (#2478): done as each file's proxy is ready.
     Proxies { media_ids: Vec<klipp_core::MediaId> },
 }
@@ -131,7 +131,34 @@ fn proxies_job(ctx: &ControlContext, job_id: &str, media_ids: &[klipp_core::Medi
 
 pub(super) fn register_sync(ctx: &ControlContext, operation_id: &str, media_ids: Vec<String>, existing_groups: Vec<String>) {
     submitted().lock().unwrap_or_else(|e| e.into_inner()).insert(operation_id.to_owned(),
-        Submitted::Sync { media_ids, existing_groups, project_identity: project_identity(ctx) });
+        Submitted::Sync { media_ids, existing_groups, project_identity: project_identity(ctx), failed: None });
+}
+
+/// What the app has said about syncs that failed (`failed_multicams`), put
+/// on their jobs. Without this a job read "running" for good, since only a
+/// new group on the timeline ended it. A failure is kept a few seconds for
+/// its job: the app can refuse while the request that asked is still
+/// waiting for its reply, before the job exists.
+fn claim_multicam_failures(ctx: &ControlContext) {
+    let sorted = |mut ids: Vec<String>| { ids.sort(); ids };
+    let mut said = ctx.shared.failed_multicams.lock().unwrap_or_else(|e| e.into_inner());
+    if said.is_empty() {
+        return;
+    }
+    let mut jobs = submitted().lock().unwrap_or_else(|e| e.into_inner());
+    said.retain(|(ids, why, at)| {
+        let these = sorted(ids.iter().map(|id| id.0.to_string()).collect());
+        let mut claimed = false;
+        for work in jobs.values_mut() {
+            if let Submitted::Sync { media_ids, failed, .. } = work {
+                if failed.is_none() && sorted(media_ids.clone()) == these {
+                    *failed = Some(why.clone());
+                    claimed = true;
+                }
+            }
+        }
+        !claimed && at.elapsed() < Duration::from_secs(5)
+    });
 }
 
 fn now_ms() -> u128 {
@@ -267,6 +294,7 @@ pub(super) fn snapshot(ctx: &ControlContext) -> Vec<Value> {
             "error": t.error, "artifact": null, "result": t.result,
         })
     }));
+    claim_multicam_failures(ctx);
     let submitted: Vec<_> = submitted().lock().unwrap_or_else(|e| e.into_inner())
         .iter().map(|(id, work)| (id.clone(), work.clone())).collect();
     for (operation_id, work) in submitted {
@@ -296,7 +324,7 @@ pub(super) fn snapshot(ctx: &ControlContext) -> Vec<Value> {
                         "analysis_job_id":if analyze { Some(id) } else { None } })),
                 }));
             }
-            Submitted::Sync { media_ids, existing_groups, project_identity: expected_project } => {
+            Submitted::Sync { media_ids, existing_groups, project_identity: expected_project, failed } => {
                 let project_changed = expected_project != project_identity(ctx);
                 let group = ctx.sequence.read().ok().and_then(|sequence| {
                     let mut groups = HashMap::<String, Vec<String>>::new();
@@ -309,7 +337,9 @@ pub(super) fn snapshot(ctx: &ControlContext) -> Vec<Value> {
                         && media_ids.iter().all(|id| members.contains(id))).map(|(group, _)| group)
                 });
                 let state = if project_changed { "unavailable" } else if refused { "failed" } else if group.is_some() { "completed" }
+                    else if failed.is_some() { "failed" }
                     else if operation.as_ref().is_some_and(|status| status["state"] == "queued") { "queued" } else { "running" };
+                let error = error.or(failed);
                 jobs.push(json!({
                     "job_id":operation_id, "kind":"sync", "state":state,
                     "phase":if state == "completed" { "multicam_group_ready" } else if state == "unavailable" { "project_changed" }

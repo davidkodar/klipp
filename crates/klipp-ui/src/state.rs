@@ -679,6 +679,20 @@ impl AppState {
     /// Ask the engine for the timeline's picture at `time` for a skim
     /// (#2945), or queue it behind the one in flight. `raw` is the raw
     /// skim frame shown if the engine doesn't draw it.
+    /// The engine answered a timeline skim: drawn by it (`composited`),
+    /// the Program viewer now shows a skim frame, to go back to the
+    /// playhead's when the skim ends. Only a raw frame said so, so after
+    /// a drawn one the viewer kept the skimmed frame once the pointer
+    /// left. Not drawn: the clip's raw frame to ask for instead.
+    pub fn timeline_skim_shown(&mut self, composited: bool) -> Option<(MediaId, f64)> {
+        let raw = self.timeline_skim_in_flight.take().and_then(|(_, raw)| raw);
+        self.timeline_skim_declined = !composited;
+        if composited {
+            self.program_skim_active = true;
+        }
+        raw.filter(|_| !composited)
+    }
+
     /// What belongs to the project being left and must not be carried
     /// into the next: a gap or transition selected in it (the inspector
     /// went on showing them), the multicam angle view (a new project's
@@ -1913,6 +1927,9 @@ pub struct AppState {
     pub speed_dialog_content_secs: f64,
     /// The lengths the dialog offers to fit the clip to (#3115).
     pub speed_dialog_fit: crate::speed_dialog::FitTargets,
+    /// Fit to the marked range was chosen (P53): Apply puts the clip on
+    /// the marks, unless the speed was changed again since.
+    pub speed_dialog_on_marks: bool,
 
     // Source viewer
     pub source_media_id: Option<MediaId>,
@@ -4951,6 +4968,7 @@ impl Default for AppState {
             speed_dialog_ripple_before: true,
             speed_dialog_content_secs: 0.0,
             speed_dialog_fit: Default::default(),
+            speed_dialog_on_marks: false,
             source_media_id: None,
             source_playhead: Timecode::zero(),
             source_seek_dispatch_at: None,
@@ -5649,6 +5667,7 @@ impl AppState {
         self.speed_dialog_keep_pitch = keep;
         self.speed_dialog_content_secs = crate::speed_dialog::content_secs(self.sequence(), clip_id).unwrap_or(0.0);
         self.speed_dialog_fit = crate::speed_dialog::fit_targets(self.sequence(), clip_id);
+        self.speed_dialog_on_marks = false;
         self.speed_dialog_ripple_before = self.speed_dialog_ripple;
         self.show_speed_dialog = true;
     }
@@ -6076,7 +6095,13 @@ impl AppState {
         for f in &fills {
             let _ = view.apply_forward(f);
         }
-        EditCommand::Batch(std::iter::once(command).chain(fills).collect())
+        // Under the edit's own name: an unnamed batch reads "Add Clips",
+        // which a trim or a move that left a hole was called.
+        let (label, edit) = match command {
+            EditCommand::Named { label, edit } => (label, *edit),
+            other => (other.label().to_string(), other),
+        };
+        EditCommand::Named { label, edit: Box::new(EditCommand::Batch(std::iter::once(edit).chain(fills).collect())) }
     }
 
     /// The active sequence's tracks as recorded, taken now if it has none
@@ -6327,6 +6352,24 @@ mod tests {
     use super::{
         borrow_released_by_hand, browser_borrow_for, BrowserBorrow, Workspace,
     };
+
+    /// A skim the engine drew marks the Program viewer as showing a skim
+    /// frame, so the frame's cleanup puts the playhead's back when the
+    /// skim ends; a raw one asks for the clip's frame instead.
+    #[test]
+    fn a_drawn_timeline_skim_is_put_back_when_it_ends() {
+        use klipp_core::{MediaId, Timecode};
+        let mut state = super::AppState::default();
+        let mut cmds = Vec::new();
+        state.request_timeline_skim(&mut cmds, Timecode::from_secs_f64(16.4, 24), None);
+        assert_eq!(state.timeline_skim_shown(true), None);
+        assert!(state.program_skim_active, "the viewer shows a skim frame to put back");
+        let media = MediaId::new();
+        state.program_skim_active = false;
+        state.request_timeline_skim(&mut cmds, Timecode::from_secs_f64(16.4, 24), Some((media, 3.0)));
+        assert_eq!(state.timeline_skim_shown(false), Some((media, 3.0)), "not drawn: the clip's frame is asked for");
+        assert!(state.timeline_skim_in_flight.is_none());
+    }
 
     /// Opening another project forgets the old one's selected gap and
     /// transition, the multicam angle view and a platform overlay (P31,

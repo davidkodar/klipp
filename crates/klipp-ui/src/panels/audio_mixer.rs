@@ -1095,16 +1095,10 @@ pub fn show(
         }
     }
 
-    // Write back track data
-    let seq = &mut state.sequences[state.active_sequence_idx];
-    for (i, (_, _, _, vol, pan, muted, solo, _)) in track_data.iter().enumerate() {
-        if i < seq.tracks.len() {
-            seq.tracks[i].volume = *vol;
-            seq.tracks[i].pan = *pan;
-            seq.tracks[i].muted = *muted;
-            seq.tracks[i].solo = *solo;
-        }
-    }
+    // A strip's level, pan, mute and solo reach the track only through
+    // the commands it sent, whose handlers record the undo step and mark
+    // the project unsaved. Writing them here first left the handlers
+    // nothing to record.
     state.master_volume = master_vol;
 
     // Clear clip indicator on reset
@@ -1314,6 +1308,31 @@ mod tests {
             let (_, cmds) = mixer_frame(&ctx, &mut state, panel_h, Some((at, false)));
             assert!(cmds.iter().any(|c| matches!(c, AppCommand::SetTrackMute { muted: true, .. })), "{panel_h} px: the mute is clicked: {cmds:?}");
         }
+    }
+
+    /// A strip's mute is one undo step and leaves the project unsaved, as
+    /// the track header's is: the strip only sends the change, and the
+    /// command's handler records it. The strip wrote the new value into
+    /// the track first, so the handler found nothing to record.
+    #[test]
+    fn a_strip_mute_is_an_undo_step() {
+        let ctx = egui::Context::default();
+        let mut state = AppState::default();
+        mixer_frame(&ctx, &mut state, 260.0, None);
+        let (shapes, _) = mixer_frame(&ctx, &mut state, 260.0, None);
+        let at = shown_whole(&shapes, "M")[0].center();
+        mixer_frame(&ctx, &mut state, 260.0, Some((at, true)));
+        let (_, cmds) = mixer_frame(&ctx, &mut state, 260.0, Some((at, false)));
+        let steps = state.active_history().undo_count();
+        state.dirty = false;
+        // What the app's handler does with the command.
+        for c in &cmds {
+            if let AppCommand::SetTrackMute { track_index, muted } = c {
+                state.set_track_mix([*track_index], "Mute Track", |_, t| t.muted = *muted);
+            }
+        }
+        assert_eq!(state.active_history().undo_count(), steps + 1, "one undo step: {cmds:?}");
+        assert!(state.dirty, "the project is unsaved");
     }
 
     /// #2861: every track strip shows its Sends whole at the panel's

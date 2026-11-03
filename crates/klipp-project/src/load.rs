@@ -857,6 +857,8 @@ fn load_sequence_from_json(
             track.visible = t.visible;
             track.pan = t.pan;
             track.locked = t.locked;
+            track.frozen = t.frozen;
+            track.lock_while_frozen = t.lock_while_frozen;
             track.sync_lock = t.sync_lock;
             track.targeted = t.targeted;
             track.source_patch = t.source_patch;

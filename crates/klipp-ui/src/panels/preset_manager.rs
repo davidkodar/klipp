@@ -33,7 +33,7 @@ pub fn show_preset_manager_dialog(
     let built_ins = klipp_core::builtin_presets();
 
     let mut open = true;
-    egui::Window::new("Export Presets")
+    crate::widgets::window("Export Presets")
         .open(&mut open)
         .collapsible(false)
         .resizable(true)

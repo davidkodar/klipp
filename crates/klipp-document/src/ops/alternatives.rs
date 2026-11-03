@@ -47,6 +47,17 @@ pub struct TakeSpec {
 /// The longest name a take is given.
 const NAME_MAX: usize = 80;
 
+/// Whether `item` can be a take in a slot on a track of `kind`: a picture
+/// track's slot needs a file with a picture, a sound track's a file with
+/// sound. Offered otherwise, the slot would hold nothing it can play.
+pub fn take_fits_track(kind: TrackKind, item: &klipp_media::MediaItem) -> bool {
+    if kind == TrackKind::Audio {
+        item.has_audio
+    } else {
+        !item.has_audio || !item.video_codec.is_empty()
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn alternatives(
     seq: &Sequence,
@@ -193,6 +204,10 @@ fn take_of(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, ti: usize, clip
     let Some(item) = pool.get(&media_id) else {
         return Err(refuse(i, format!("no media {media_id} in the pool"), "give a media_id list_media shows"));
     };
+    if !take_fits_track(seq.tracks[ti].kind, item) {
+        let (has, track, wants) = if seq.tracks[ti].kind == TrackKind::Audio { ("no sound", "sound", "a file with sound") } else { ("sound only", "picture", "a file with a picture") };
+        return Err(refuse(i, format!("{} has {has}, and this slot is on a {track} track", item.filename), format!("give {wants}")));
+    }
     let duration = item.duration.to_secs_f64();
     let from = spec.from.unwrap_or(0.0);
     let to = spec.to.unwrap_or_else(|| (from + secs(clip.timeline_out - clip.timeline_in)).min(if duration > 0.0 { duration } else { f64::INFINITY }));
@@ -396,6 +411,33 @@ mod tests {
 
     fn op(action: AlternativesAction, clip: ClipId) -> Op {
         alt(action, clip, Vec::new(), None, None, false)
+    }
+
+    /// A file of sound alone can't be a take on a picture track, whether
+    /// the audition is being made or added to, and the reason names it; it
+    /// can on a sound track, where a silent picture can't.
+    #[test]
+    fn a_take_needs_what_its_track_plays() {
+        let (mut seq, mut pool, ids) = fixture();
+        let mut song = klipp_media::MediaItem::synthetic_for_test("/tmp/song.mp3".into(), None);
+        (song.duration, song.video_codec, song.has_audio, song.filename) = (tc(20.0), String::new(), true, "song.mp3".into());
+        let song = pool.add(song);
+        let mut silent = klipp_media::MediaItem::synthetic_for_test("/tmp/silent.mov".into(), None);
+        (silent.duration, silent.video_codec, silent.has_audio) = (tc(20.0), "hevc".into(), false);
+        let silent = pool.add(silent);
+        let spec = |media_id| vec![TakeSpec { media_id: Some(media_id), ..Default::default() }];
+        for action in [AlternativesAction::Create, AlternativesAction::Add] {
+            if action == AlternativesAction::Add {
+                run(&mut seq, &pool, op(AlternativesAction::Create, ids[0])).unwrap();
+            }
+            let no = run(&mut seq, &pool, alt(action, ids[0], spec(song), None, None, false)).unwrap_err();
+            assert!(no.why.contains("song.mp3") && no.why.contains("sound only"), "{}", no.why);
+        }
+        run(&mut seq, &pool, alt(AlternativesAction::Add, ids[0], spec(silent), None, None, false)).expect("a silent picture on a picture track");
+        let sound = seq.tracks[1].clips[1].id;
+        let no = run(&mut seq, &pool, alt(AlternativesAction::Create, sound, spec(silent), None, None, false)).unwrap_err();
+        assert!(no.why.contains("no sound"), "{}", no.why);
+        run(&mut seq, &pool, alt(AlternativesAction::Create, sound, spec(song), None, None, false)).expect("sound on a sound track");
     }
 
     fn alt(action: AlternativesAction, clip: ClipId, takes: Vec<TakeSpec>, take: Option<&str>, name: Option<&str>, ripple: bool) -> Op {

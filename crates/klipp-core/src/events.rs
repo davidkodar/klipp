@@ -2074,6 +2074,11 @@ pub enum AppCommand {
     CreateSubclipFromZone { source_media_id: MediaId, name: Option<String> },
 
     // Sequence markers
+    /// The marked range set from a key, a menu or a button: each point
+    /// set (`Some(Some)`), cleared (`Some(None)`) or left (`None`), as one
+    /// undo step. A drag's moves of the marks send the two below, and
+    /// record their one step when the drag ends.
+    MarkRange { in_point: Option<Option<RationalTime>>, out_point: Option<Option<RationalTime>> },
     SetSequenceInPoint(RationalTime),
     /// The sequence's range set to a clip's span, one step (#3127): the
     /// selected clip, else the one under the playhead.
@@ -4716,8 +4721,10 @@ pub enum AppCommand {
     /// new subtitle track under it carries them, as one undo step (#2213).
     /// The brief's names and vocabulary are kept as written, and each
     /// `glossary` term (source, translation) comes out as its translation
-    /// (#2429).
-    TranslateCaptions { track_id: TrackId, source: String, target: String, job_id: String, glossary: Vec<(String, String)> },
+    /// (#2429). `download`: the model may be fetched when it is missing,
+    /// as an agent's `download_models` says; without it the person is
+    /// asked first, with its size, source, checksum and licence.
+    TranslateCaptions { track_id: TrackId, source: String, target: String, job_id: String, glossary: Vec<(String, String)>, download: bool },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -5125,7 +5132,7 @@ pub enum AppEvent {
     /// A multicam's angles were put on one clock (see
     /// `AppCommand::CreateSyncedMulticam`), for the sequence and playhead
     /// the request was made at.
-    MulticamSyncReady { plan: crate::MulticamPlan, sequence_id: crate::SequenceId, at_secs: f64 },
+    MulticamSyncReady { plan: crate::MulticamPlan, media_ids: Vec<MediaId>, sequence_id: crate::SequenceId, at_secs: f64 },
     AudioSyncComplete {
         clip_id: ClipId,
         offset_samples: i64,
@@ -5634,6 +5641,10 @@ pub struct ControlShared {
     pub viewer_compare: std::sync::Mutex<Option<String>>,
     /// Proxies as the UI last saw them (#2478).
     pub proxies: std::sync::Mutex<ProxyStatus>,
+    /// Multicam syncs the app could not make: the files asked for, why and
+    /// when, until the socket puts them on their jobs.
+    #[allow(clippy::type_complexity)]
+    pub failed_multicams: std::sync::Mutex<Vec<(Vec<MediaId>, String, std::time::Instant)>>,
     /// What the viewer shows of the picture, as the UI last saw it
     /// (#2758): a frame read that views a channel or a node puts this
     /// back afterwards.

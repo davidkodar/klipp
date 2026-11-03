@@ -24,6 +24,21 @@ impl crate::state::AppState {
         }
     }
 
+    /// The marked range set as a key, a menu or a button asks (`Some(Some)`
+    /// a point set, `Some(None)` cleared, `None` left), as one undo step
+    /// when it changed. Mark → Set In Point and the timeline's range items
+    /// used to set it with no step, while the I and O keys made one.
+    pub fn mark_range(&mut self, in_point: Option<Option<Timecode>>, out_point: Option<Option<Timecode>>) {
+        let seq = &mut self.sequences[self.active_sequence_idx];
+        let (old_in, old_out) = (seq.in_point, seq.out_point);
+        let (new_in, new_out) = (in_point.unwrap_or(old_in), out_point.unwrap_or(old_out));
+        if (new_in, new_out) == (old_in, old_out) {
+            return;
+        }
+        seq.in_point = new_in;
+        seq.out_point = new_out;
+        self.push_history(EditCommand::SetRange { old_in, old_out, new_in, new_out });
+    }
 }
 
 impl KlippApp {
@@ -487,6 +502,11 @@ impl KlippApp {
                         }
                         None => self.state.toast.show("No clip to mark: select one, or put the playhead on one"),
                     }
+                    true
+                }
+                AppCommand::MarkRange { in_point, out_point } => {
+                    self.state.mark_range(*in_point, *out_point);
+                    self.sync_sequence_to_engine();
                     true
                 }
                 AppCommand::SetSequenceInPoint(tc) => {
@@ -1448,9 +1468,17 @@ impl KlippApp {
             }
         };
 
+        // One undo step, "Freeze Frame": the cut, the clips moved along
+        // and the still. The move was not recorded, and the still alone
+        // was "Append Clip", so undo left the clips moved.
+        let owns_batch = !self.state.active_history_mut().is_batching();
+        if owns_batch {
+            self.state.active_history_mut().begin_batch();
+        }
+
         // 5. Blade any clip under the playhead on that track so the freeze
-        //    inserts cleanly between halves. blade_clip_at pushes its own
-        //    undo entry.
+        //    inserts cleanly between halves; the blade's edit joins the
+        //    step.
         let clip_under_ph = self.state.sequences[seq_idx].tracks[track_idx]
             .clip_at_timecode(ph)
             .map(|(_, c)| c.id);
@@ -1465,6 +1493,8 @@ impl KlippApp {
                 }
             }
         }
+
+        let after_blade = self.state.sequences[seq_idx].tracks.clone();
 
         // 6. Ripple: shift every clip on the target track that starts at or
         //    after the playhead by +duration so the freeze has a gap to land
@@ -1496,18 +1526,18 @@ impl KlippApp {
             ..klipp_timeline::Clip::gap(ph, timeline_out)
         };
         let clip_id = clip.id;
-        let clip_for_history = clip.clone();
         {
             let seq = &mut self.state.sequences[seq_idx];
             seq.tracks[track_idx].clips.push(clip);
             seq.tracks[track_idx].sort_clips();
         }
 
-        // 8. Undo entry for the insertion. The blade already pushed its own.
-        self.state.push_history(EditCommand::LegacyAppendClip {
-                clip: clip_for_history,
-                track_index: track_idx,
-            });
+        // 8. The move and the still, after the cut, in the same step.
+        let new = self.state.sequences[seq_idx].tracks.clone();
+        self.state.push_history(EditCommand::SetTracks { description: "Freeze Frame", old: after_blade, new });
+        if owns_batch {
+            self.state.active_history_mut().end_batch_as("Freeze Frame");
+        }
 
         // 9. Finalize.
         self.state.selected_clip = Some(clip_id);
@@ -1778,3 +1808,31 @@ mod track_mix_tests {
         assert!(!state.sequence().tracks[0].muted);
     }
 }
+
+#[cfg(test)]
+mod mark_range_tests {
+    use crate::state::AppState;
+
+    /// Marks set from a menu or a button are an undo step each, as the
+    /// I and O keys' are; one that changes nothing is none; undone, the
+    /// range is as it was.
+    #[test]
+    fn a_mark_set_from_a_menu_is_an_undo_step() {
+        let t = |s: f64| klipp_core::Timecode::from_secs_f64(s, 24);
+        let mut s = AppState::default();
+        let steps = s.active_history().undo_count();
+        s.mark_range(Some(Some(t(2.0))), None);
+        s.mark_range(None, Some(Some(t(6.0))));
+        assert_eq!(s.active_history().undo_count(), steps + 2);
+        assert_eq!((s.sequence().in_point, s.sequence().out_point), (Some(t(2.0)), Some(t(6.0))));
+        s.mark_range(Some(Some(t(2.0))), None);
+        assert_eq!(s.active_history().undo_count(), steps + 2, "nothing changed: no step");
+        s.mark_range(Some(None), Some(None));
+        assert_eq!((s.sequence().in_point, s.sequence().out_point), (None, None));
+        let undone = s.take_undo().expect("the clear").command;
+        let active = s.active_sequence_idx;
+        klipp_document::apply::DocumentView { sequences: &mut s.sequences, active, media_pool: &mut s.media_pool, fps: &mut s.fps }.apply_inverse(&undone);
+        assert_eq!((s.sequence().in_point, s.sequence().out_point), (Some(t(2.0)), Some(t(6.0))), "undone in one step");
+    }
+}
+

@@ -34,7 +34,7 @@ impl KlippApp {
         let speech = self.state.first_cut_speech;
         let mut c = self.state.first_cut_choices.clone();
         let (mut open, mut run, mut cancel, mut transcribe) = (true, false, false, false);
-        egui::Window::new("First Cut")
+        crate::widgets::window("First Cut")
             .collapsible(false)
             .resizable(false)
             .open(&mut open)
@@ -183,7 +183,7 @@ impl KlippApp {
         // At the top right under the menus, clear of the menu bar and the
         // Media panel (#3445).
         let screen = ctx.screen_rect();
-        egui::Window::new("First Cut changes")
+        crate::widgets::window("First Cut changes")
             .constrain_to(crate::widgets::below_menu_bar(ctx))
             .collapsible(true)
             .resizable(true)

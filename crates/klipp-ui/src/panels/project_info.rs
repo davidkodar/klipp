@@ -8,7 +8,7 @@ pub fn show_project_info(
     theme: &KlippTheme,
     open: &mut bool,
 ) {
-    egui::Window::new("Project Info")
+    crate::widgets::window("Project Info")
         .open(open)
         .collapsible(false)
         .resizable(false)

@@ -32,7 +32,7 @@ pub fn show_workspace_manager_dialog(
     let min_h = 320.0_f32.min(screen.height() - 40.0);
 
     let mut open = true;
-    egui::Window::new("Workspace Layouts")
+    crate::widgets::window("Workspace Layouts")
         .open(&mut open)
         .collapsible(false)
         .resizable(true)

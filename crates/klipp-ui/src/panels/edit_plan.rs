@@ -22,7 +22,7 @@ pub fn show_edit_plan(ctx: &egui::Context, state: &AppState, theme: &KlippTheme,
     let mut action = PlanAction::None;
     let seq = state.sequence();
     let target = seq.brief.as_ref().and_then(|b| b.target_secs);
-    egui::Window::new("Edit Plan")
+    crate::widgets::window("Edit Plan")
         .open(open)
         .default_size([460.0, 480.0])
         .min_width(280.0)

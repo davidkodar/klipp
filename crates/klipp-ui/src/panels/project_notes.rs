@@ -11,7 +11,7 @@ pub fn show_project_notes(
     theme: &KlippTheme,
     open: &mut bool,
 ) {
-    egui::Window::new("Project Notes")
+    crate::widgets::window("Project Notes")
         .open(open)
         .default_size([340.0, 400.0])
         .min_width(200.0)

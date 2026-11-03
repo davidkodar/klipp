@@ -60,7 +60,7 @@ pub fn show_dialog(ctx: &egui::Context, state: &mut crate::state::AppState) -> V
     let Some(mut w) = state.visual_search.take() else { return Vec::new() };
     let mut out = Vec::new();
     let mut open = true;
-    egui::Window::new("Find by Picture").open(&mut open).default_width(460.0).resizable(true).show(ctx, |ui| {
+    crate::widgets::window("Find by Picture").open(&mut open).default_width(460.0).resizable(true).show(ctx, |ui| {
         ui.label(egui::RichText::new("Describe what is in the shot: \u{201c}a dog on a beach\u{201d}, \u{201c}close-up of hands\u{201d}. Searched on this machine, over footage analysed with the Picture Search model.").small().weak());
         ui.add_space(4.0);
         let mut go = false;

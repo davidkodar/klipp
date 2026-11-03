@@ -506,8 +506,8 @@ impl KlippApp {
                     tracing::warn!("Media sync failed for {:?}: {}", video_id, error);
                     self.state.toast.show(format!("Sync failed: {error}"));
                 }
-                AppEvent::MulticamSyncReady { plan, sequence_id, at_secs } => {
-                    self.apply_multicam_plan(plan, sequence_id, at_secs);
+                AppEvent::MulticamSyncReady { plan, media_ids, sequence_id, at_secs } => {
+                    self.apply_multicam_plan(plan, &media_ids, sequence_id, at_secs);
                 }
                 AppEvent::AudioSyncComplete { clip_id, offset_samples, ref_timeline_in_secs } => {
                     self.apply_audio_sync_result(clip_id, offset_samples, ref_timeline_in_secs);

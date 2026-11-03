@@ -31,7 +31,7 @@ pub fn show_cache_manager_dialog(
     let mut open = state.show_cache_manager;
     let mut close_requested = false;
 
-    egui::Window::new("Cache Manager")
+    crate::widgets::window("Cache Manager")
         .collapsible(false)
         .resizable(false)
         .default_size([560.0, 420.0])
