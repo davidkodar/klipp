@@ -329,7 +329,10 @@ pub fn show(
     // keyboard, where Ctrl+A selects its text. The browser draws before
     // the inspector, so consuming the key here would steal it from the
     // title text field.
+    // Nor behind a dialog that keeps the keys: Ctrl+A in New Project
+    // selected the whole pool behind it (P45).
     if !ui.ctx().wants_keyboard_input()
+        && !state.dialog_open()
         && ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::A))
     {
         state.selected_media_ids = all_ordered_ids.iter().copied().collect();
