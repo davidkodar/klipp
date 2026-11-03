@@ -214,6 +214,13 @@ pub fn retakes(words: &[SpokenWord]) -> Vec<(f64, f64, String)> {
     out
 }
 
+/// Whether cutting `from..to` (timeline seconds) takes a whole frame: a cut
+/// goes to whole frames inward, so a shorter one takes nothing. What is left
+/// of a pause at a cut already made is that short.
+fn takes_a_frame(from: f64, to: f64, rate: f64) -> bool {
+    ((to * rate) + 1e-6).floor() > ((from * rate) - 1e-6).ceil()
+}
+
 /// `t` (seconds) as m:ss.
 fn at(t: f64) -> String {
     let t = t.max(0.0);
@@ -231,6 +238,7 @@ pub fn plan(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts, ste
     }
     let mut all: Vec<Change> = Vec::new();
     let (min_pause, padding) = steps.tightness.pause();
+    let rate = seq.fps.as_f64();
     for s in speaking {
         let (s_in, s_out) = (secs(s.clip.source_in), secs(s.clip.source_out));
         let (t_in, t_out) = (secs(s.clip.timeline_in), secs(s.clip.timeline_out));
@@ -239,7 +247,8 @@ pub fn plan(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts, ste
         if steps.silences {
             for &(a, b) in transcripts.silences(s.item).iter().filter(|(a, b)| b - a >= min_pause) {
                 let (from, to) = (tl(a + padding), tl(b - padding));
-                if to - from > 1e-3 {
+                // Shorter than this would read "0.0 s pause".
+                if takes_a_frame(from, to, rate) && to - from >= 0.05 {
                     cuts.push(Change { kind: Kind::Silence, from_secs: from, to_secs: to, what: format!("{:.1} s pause at {}", to - from, at(from)) });
                 }
             }
@@ -248,7 +257,7 @@ pub fn plan(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts, ste
             let words = klipp_core::lang::words(transcripts.language(s.item).as_deref()).ok();
             for w in s.words.iter().filter(|w| words.as_ref().is_some_and(|l| l.is_filler(&w.text))) {
                 let (from, to) = (tl(w.start_secs), tl(w.end_secs));
-                if to - from > 1e-3 {
+                if takes_a_frame(from, to, rate) {
                     cuts.push(Change { kind: Kind::Filler, from_secs: from, to_secs: to, what: format!("\"{}\" at {}", w.text.trim(), at(from)) });
                 }
             }
@@ -256,7 +265,7 @@ pub fn plan(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts, ste
         if steps.retakes {
             for (a, b, line) in retakes(&s.words) {
                 let (from, to) = (tl(a), tl(b));
-                if to - from > 1e-3 {
+                if takes_a_frame(from, to, rate) {
                     cuts.push(Change { kind: Kind::Retake, from_secs: from, to_secs: to, what: format!("earlier take of \"{line}\" at {}", at(from)) });
                 }
             }
@@ -593,6 +602,21 @@ mod tests {
         assert_eq!(two("We went to the river.", "After lunch that day we went to the river."), 0, "said later in another line");
         assert_eq!(two("The wizard is the AI.", "The wizard is the AI."), 1);
         assert_eq!(two("The wizard is really the AI.", "The wizard is truly the AI."), 1, "a word changed");
+    }
+
+    /// Run again on a cut timeline, what is left of a pause at each cut is
+    /// less than a frame: nothing to cut, and no "0.0 s pause" listed.
+    #[test]
+    fn a_second_run_lists_nothing_at_the_cuts() {
+        let (seq, pool) = talking();
+        let cut = applied(&seq, &pool, first_cut(Vec::new()));
+        let again = plan(&cut, &pool, &Talk, &Steps { punch: false, captions: false, ..Steps::default() });
+        let rate = cut.fps.as_f64();
+        for c in &again {
+            let frames = ((c.to_secs * rate) + 1e-6).floor() - ((c.from_secs * rate) - 1e-6).ceil();
+            assert!(frames >= 1.0, "less than a frame: {c:?}");
+            assert!(!c.what.contains("0.0 s"), "{c:?}");
+        }
     }
 
     /// "Um, so, uh, let me show you": fillers that start between frames.
