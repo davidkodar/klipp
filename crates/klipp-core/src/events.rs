@@ -4716,8 +4716,10 @@ pub enum AppCommand {
     /// new subtitle track under it carries them, as one undo step (#2213).
     /// The brief's names and vocabulary are kept as written, and each
     /// `glossary` term (source, translation) comes out as its translation
-    /// (#2429).
-    TranslateCaptions { track_id: TrackId, source: String, target: String, job_id: String, glossary: Vec<(String, String)> },
+    /// (#2429). `download`: the model may be fetched when it is missing,
+    /// as an agent's `download_models` says; without it the person is
+    /// asked first, with its size, source, checksum and licence.
+    TranslateCaptions { track_id: TrackId, source: String, target: String, job_id: String, glossary: Vec<(String, String)>, download: bool },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

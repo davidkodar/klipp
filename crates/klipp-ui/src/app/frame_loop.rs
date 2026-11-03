@@ -1304,6 +1304,9 @@ impl KlippApp {
         if self.translation.is_some() {
             self.take_translation(ctx);
         }
+        if self.translation_consent.is_some() {
+            self.show_translation_consent(ctx);
+        }
 
         // Sound Over Time window: a whole file's sound at once.
         if self.state.show_sound_over_time {

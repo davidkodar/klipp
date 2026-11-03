@@ -900,7 +900,7 @@ mod menu_smoke_tests {
         timeline.frame(vec![egui::Event::PointerMoved(at)]);
         timeline.frame(vec![egui::Event::PointerMoved(at), button(true)]);
         timeline.frame(vec![button(false)]);
-        assert!(timeline.sent.iter().any(|c| matches!(c, AppCommand::TranslateCaptions { track_id: t, source, target, .. } if *t == track_id && source == "en" && target == "de")), "{:?}", timeline.sent);
+        assert!(timeline.sent.iter().any(|c| matches!(c, AppCommand::TranslateCaptions { track_id: t, source, target, download: false, .. } if *t == track_id && source == "en" && target == "de")), "{:?}", timeline.sent);
         // A track without captions doesn't offer it.
         for _ in 0..2 {
             timeline.frame(vec![egui::Event::Key { key: egui::Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE }]);

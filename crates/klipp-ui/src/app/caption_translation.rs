@@ -22,11 +22,41 @@ pub(super) struct Pending {
     rx: std::sync::mpsc::Receiver<Result<Vec<tr::Line>, String>>,
 }
 
+/// A translation asked for whose model is not downloaded: held until the
+/// person agrees to fetch it, as every model download is asked first.
+pub(super) struct Consent {
+    track_id: klipp_core::TrackId,
+    source: String,
+    target: String,
+    job_id: String,
+    glossary: Vec<(String, String)>,
+    entries: Vec<klipp_ml::manifest::ModelEntry>,
+}
+
+/// What the question says of each file to fetch: its name and size,
+/// where it comes from, its SHA-256 and its licence, as the other model
+/// downloads say.
+pub(super) fn consent_lines(entries: &[klipp_ml::manifest::ModelEntry]) -> Vec<(String, Vec<(&'static str, String)>)> {
+    entries
+        .iter()
+        .map(|e| {
+            let rows = vec![
+                ("Size", crate::model_download::fmt_bytes(e.size_bytes)),
+                ("Source", e.sources.first().map(|s| s.url.clone()).unwrap_or_else(|| "(none)".into())),
+                ("SHA-256", e.sha256.clone()),
+                ("Licence", e.license.clone()),
+            ];
+            (e.display_name.clone(), rows)
+        })
+        .collect()
+}
+
 impl KlippApp {
     /// The captions on `track_id`, as whole sentences, translated from
-    /// `source` into `target` as job `job_id`; the pair's model fetched
-    /// first when it is not downloaded yet.
-    pub(super) fn translate_captions(&mut self, track_id: klipp_core::TrackId, source: &str, target: &str, job_id: &str, glossary: &[(String, String)]) {
+    /// `source` into `target` as job `job_id`. The pair's model is
+    /// fetched first when it is not downloaded yet, only with `download`
+    /// (an agent's `download_models`); else the person is asked first.
+    pub(super) fn translate_captions(&mut self, track_id: klipp_core::TrackId, source: &str, target: &str, job_id: &str, glossary: &[(String, String)], download: bool) {
         let language = tr::language_name(target).to_string();
         // Refused before it starts, the job is still kept, failed with
         // why: an agent was given its id.
@@ -42,6 +72,20 @@ impl KlippApp {
         if captions.is_empty() {
             return refuse(self, "that track has no captions to translate");
         }
+        // A model not downloaded is fetched only once the person agrees:
+        // the track's menu fetched 300 MB without a word.
+        if !download {
+            if let Some(pair) = tr::pair(source, target) {
+                match tr::missing(&pair) {
+                    Ok(entries) if !entries.is_empty() => {
+                        self.translation_consent = Some(Consent { track_id, source: source.into(), target: target.into(), job_id: job_id.into(), glossary: glossary.to_vec(), entries });
+                        return;
+                    }
+                    Ok(_) => {}
+                    Err(why) => return refuse(self, &why),
+                }
+            }
+        }
         let sentences = ct::sentences(&captions);
         // The brief's names and terms, and the glossary's, kept through
         // the model as placeholders it copies (#2429).
@@ -53,6 +97,57 @@ impl KlippApp {
                 self.translation = Some(Pending { job_id: job_id.to_string(), track_id, language, code: target.to_string(), sentences, kept, rx });
             }
             Err(why) => refuse(self, &why),
+        }
+    }
+
+    /// The question before a translation's model is fetched: each file's
+    /// size, source, SHA-256 and licence; Download and translate, or
+    /// Cancel, which fetches nothing.
+    pub(super) fn show_translation_consent(&mut self, ctx: &egui::Context) {
+        let Some(ask) = &self.translation_consent else { return };
+        let total: u64 = ask.entries.iter().map(|e| e.size_bytes).sum();
+        let lines = consent_lines(&ask.entries);
+        let language = tr::language_name(&ask.target);
+        let (mut go, mut cancel) = (false, false);
+        crate::widgets::window("Download Translation Model")
+            .collapsible(false)
+            .resizable(false)
+            .order(egui::Order::Foreground)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.set_min_width(420.0);
+                ui.label(format!("Translating into {language} needs its model, not downloaded yet. Nothing is fetched unless you choose Download."));
+                for (name, rows) in &lines {
+                    ui.add_space(8.0);
+                    ui.strong(name);
+                    egui::Grid::new(("translation_consent", name)).num_columns(2).spacing([16.0, 4.0]).show(ui, |ui| {
+                        for (label, value) in rows {
+                            ui.label(format!("{label}:"));
+                            if *label == "SHA-256" {
+                                ui.label(egui::RichText::new(crate::model_download::shorten_hash(value)).monospace().small()).on_hover_text(value);
+                            } else {
+                                ui.label(value);
+                            }
+                            ui.end_row();
+                        }
+                    });
+                }
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Cancel").clicked() {
+                        cancel = true;
+                    }
+                    if ui.button(format!("Download ({}) and translate", crate::model_download::fmt_bytes(total))).clicked() {
+                        go = true;
+                    }
+                });
+            });
+        if cancel {
+            self.translation_consent = None;
+        } else if go {
+            if let Some(ask) = self.translation_consent.take() {
+                self.translate_captions(ask.track_id, &ask.source, &ask.target, &ask.job_id, &ask.glossary, true);
+            }
         }
     }
 
@@ -138,5 +233,26 @@ fn status_line(j: &tr::jobs::Job) -> String {
         "downloading" => format!("Downloading the {} translation model {pct}%", j.language),
         "translating" => format!("Translating into {} {}/{}", j.language, j.done, j.total),
         _ => format!("Translating into {}…", j.language),
+    }
+}
+
+#[cfg(test)]
+mod consent_tests {
+    use klipp_ml_candle::translation as tr;
+
+    /// The question names each file's size, source, SHA-256 and licence,
+    /// as the other model downloads do (P28).
+    #[test]
+    fn the_question_says_size_source_checksum_and_licence() {
+        let pair = tr::pair("en", "de").expect("an en→de pair");
+        let manifest = klipp_ml::manifest::load_effective().expect("the manifest");
+        let entry = manifest.get(&pair.model_id()).cloned().expect("its model");
+        let lines = super::consent_lines(std::slice::from_ref(&entry));
+        let (name, rows) = &lines[0];
+        assert_eq!(name, &entry.display_name);
+        let labels: Vec<&str> = rows.iter().map(|(l, _)| *l).collect();
+        assert_eq!(labels, ["Size", "Source", "SHA-256", "Licence"]);
+        assert!(rows.iter().all(|(_, v)| !v.is_empty() && v != "(none)"), "{rows:?}");
+        assert_eq!(rows[2].1, entry.sha256);
     }
 }

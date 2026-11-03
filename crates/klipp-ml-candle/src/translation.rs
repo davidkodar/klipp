@@ -199,6 +199,18 @@ impl Unigram {
     }
 }
 
+/// The files of `pair`'s model not in the model cache yet: what a
+/// translation would download, for the person to agree to first.
+pub fn missing(pair: &Pair) -> Result<Vec<klipp_ml::manifest::ModelEntry>, String> {
+    let manifest = klipp_ml::manifest::load_effective().map_err(|e| format!("model manifest: {e:?}"))?;
+    let cache = klipp_ml::cache::ModelCache::open().map_err(|e| format!("model cache: {e:?}"))?;
+    [pair.model_id(), pair.tokenizer_id()]
+        .into_iter()
+        .map(|id| manifest.get(&id).cloned().ok_or_else(|| format!("no manifest entry {id}")))
+        .filter(|e| e.as_ref().map_or(true, |e| !cache.path_for(e).is_file()))
+        .collect()
+}
+
 /// The paths of `pair`'s model and tokenizer in the model cache,
 /// downloaded first when `download` allows and they are not there yet.
 pub fn ensure_pair(pair: &Pair, download: bool) -> Result<(std::path::PathBuf, std::path::PathBuf), String> {
