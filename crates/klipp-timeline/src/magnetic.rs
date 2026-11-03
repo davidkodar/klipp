@@ -142,8 +142,31 @@ fn insert_or_split(sequence: &mut Sequence, track_index: usize, clip: &Clip, spl
     track.clips.insert(pos, clip.clone());
 }
 
+/// The rate every edge of `clips` is a whole number of ticks at: the
+/// least common multiple of their rates, while it stays under
+/// [`MAX_COMMON_RATE`]; `None` past it.
+fn common_rate(clips: &[Clip]) -> Option<u32> {
+    fn gcd(a: u64, b: u64) -> u64 {
+        if b == 0 { a } else { gcd(b, a % b) }
+    }
+    clips.iter().flat_map(|c| [c.timeline_in.rate, c.timeline_out.rate]).try_fold(1u64, |acc, r| {
+        let r = u64::from(r.max(1));
+        let l = acc / gcd(acc, r) * r;
+        (l <= MAX_COMMON_RATE).then_some(l)
+    }).map(|l| l as u32)
+}
+
+/// The finest rate [`repack_primary`] works at: well past any frame or
+/// sample rate's multiples.
+const MAX_COMMON_RATE: u64 = 1 << 28;
+
 /// Repack all clip positions on the primary track so they are gapless,
 /// starting from frame 0. Returns RippleRecords for any clips that moved.
+///
+/// Reckoned at a rate every clip's edges are whole ticks at (#3450):
+/// clips placed before the sequence's rate changed keep the old rate,
+/// and a cursor rounded to one of the rates left a gap of a fraction of
+/// a frame between clips at the other.
 fn repack_primary(sequence: &mut Sequence) -> Vec<RippleRecord> {
     let primary_idx = match sequence.primary_track_index() {
         Some(i) => i,
@@ -151,19 +174,24 @@ fn repack_primary(sequence: &mut Sequence) -> Vec<RippleRecord> {
     };
     let track = &mut sequence.tracks[primary_idx];
     let mut records = Vec::new();
-    let rate = if let Some(first) = track.clips.first() {
-        first.timeline_in.rate
-    } else {
+    let Some(first) = track.clips.first() else {
         return Vec::new();
     };
+    let common = common_rate(&track.clips);
+    let rate = common.unwrap_or(first.timeline_in.rate);
     let mut cursor = RationalTime::from_frames(0, rate);
     for clip in &mut track.clips {
         let old_in = clip.timeline_in;
         let old_out = clip.timeline_out;
-        let dur = old_out - old_in;
-        let new_in = cursor.rescale_to(old_in.rate);
-        let new_out = new_in + dur;
-        if new_in != old_in || new_out != old_out {
+        // At the common rate both are exact; without one, as before.
+        let (new_in, new_out) = match common {
+            Some(r) => (cursor, cursor + (old_out.rescale_to(r) - old_in.rescale_to(r))),
+            None => {
+                let new_in = cursor.rescale_to(old_in.rate);
+                (new_in, new_in + (old_out - old_in))
+            }
+        };
+        if !new_in.cmp(&old_in).is_eq() || !new_out.cmp(&old_out).is_eq() {
             records.push(RippleRecord {
                 clip_id: clip.id,
                 old_in,
@@ -2262,6 +2290,33 @@ mod tests {
             MagneticEditor::apply_forward(&mut seq, &done.command);
             assert_eq!(spans(&seq), spans(&after), "{what}: redone");
         }
+    }
+
+    /// #3450: clips placed at 30 fps and at 23.976 fps (24000 ticks a
+    /// second) after the rate changed close up exactly when one between
+    /// them goes: no fraction of a frame left between them.
+    #[test]
+    fn a_ripple_delete_closes_up_clips_at_two_rates_exactly() {
+        let at = |v: i64, rate: u32| RationalTime { value: v, rate };
+        let mut seq = make_sequence(&[(0, 48)]);
+        let first = &mut seq.tracks[0].clips[0];
+        (first.timeline_in, first.timeline_out) = (at(0, 30), at(31, 30));
+        let piece = |from: RationalTime, ticks: i64| {
+            let mut c = media_clip(0, 1);
+            (c.timeline_in, c.timeline_out) = (from, from + at(ticks, 24000));
+            c
+        };
+        // 31/30 s is 24800/24000: then two 23.976 frames, then one more.
+        let b = piece(at(24800, 24000), 1001);
+        let c = piece(b.timeline_out, 1001);
+        let d = piece(c.timeline_out, 1001);
+        let gone = b.id;
+        seq.tracks[0].clips.extend([b, c, d]);
+        seq.assert_primary_gapless();
+        MagneticEditor::ripple_delete(&mut seq, gone);
+        seq.assert_primary_gapless();
+        let ends: Vec<f64> = seq.tracks[0].clips.iter().map(|c| c.timeline_out.to_secs_f64()).collect();
+        assert!((ends[2] - (31.0 / 30.0 + 2002.0 / 24000.0)).abs() < 1e-12, "{ends:?}");
     }
 
     /// #2967: a picture moved on the primary track takes its linked sound
