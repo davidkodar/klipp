@@ -113,6 +113,18 @@ impl GpuVendor {
         matches!(self, GpuVendor::Amd | GpuVendor::Intel | GpuVendor::Unknown)
     }
 
+    /// Whether this machine has a GPU of a make that encodes video: what
+    /// the export form can say before anything has tried to open an encoder
+    /// (#3431). Apple's, under Asahi, reads as Unknown and doesn't.
+    pub fn gpu_encoder_likely() -> bool {
+        static LIKELY: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *LIKELY.get_or_init(|| Self::gpu_encoder_among(&Self::render_nodes()))
+    }
+
+    fn gpu_encoder_among(nodes: &[(std::path::PathBuf, Self)]) -> bool {
+        nodes.iter().any(|(_, vendor)| matches!(vendor, GpuVendor::Nvidia | GpuVendor::Amd | GpuVendor::Intel))
+    }
+
     /// What a decoder logs, once, when VAAPI did not open and it goes on in
     /// software.
     pub const VAAPI_FALLBACK_LINE: &'static str =
@@ -282,6 +294,17 @@ mod tests {
         let nodes = [std::path::PathBuf::from("/dev/dri/renderD128"), std::path::PathBuf::from("/dev/dri/renderD129")];
         assert_eq!(GpuVendor::vaapi_startup_line(&nodes), "Hardware decode: the first clip tries VAAPI on /dev/dri/renderD128, /dev/dri/renderD129");
         assert_eq!(GpuVendor::vaapi_startup_line(&[]), "Hardware decode: no render node for VAAPI on this machine");
+    }
+
+    /// #3431: an NVIDIA, AMD or Intel GPU may encode; none, or one of a make
+    /// not known here, as Apple's under Asahi, is the CPU's work.
+    #[test]
+    fn a_gpu_encoder_is_likely_only_with_a_known_make_of_gpu() {
+        let node = |v| (std::path::PathBuf::from("/dev/dri/renderD128"), v);
+        assert!(GpuVendor::gpu_encoder_among(&[node(GpuVendor::Nvidia)]));
+        assert!(GpuVendor::gpu_encoder_among(&[node(GpuVendor::Unknown), node(GpuVendor::Amd)]));
+        assert!(!GpuVendor::gpu_encoder_among(&[node(GpuVendor::Unknown)]));
+        assert!(!GpuVendor::gpu_encoder_among(&[]));
     }
 
     #[test]
