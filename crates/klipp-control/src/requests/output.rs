@@ -1019,11 +1019,15 @@ pub(crate) fn respond(
             }
             // Measured over the last two seconds of published pictures, so
             // a reader sees the rate played, not only the rate asked for.
+            // Only while playing: after a pause the window would hold time
+            // with no pictures in it, and read as a rate that falls.
+            let playing = ctx.shared.transport.lock().map(|t| t.playing).unwrap_or(false);
             let presented_fps = ctx
                 .frame_buffer
                 .lock()
                 .map_err(|_| "frame buffer lock poisoned")?
-                .presented_fps(std::time::Instant::now(), std::time::Duration::from_secs(2));
+                .presented_fps(std::time::Instant::now(), std::time::Duration::from_secs(2))
+                .filter(|_| playing);
             let ring = ctx.perf_ring.lock().map_err(|_| "perf ring lock poisoned")?;
             let latest = ring.latest().cloned();
             let avg = ring.averages(60);
