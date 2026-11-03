@@ -1551,6 +1551,8 @@ fn collect_project(ctx: &crate::ControlContext, dest: Option<String>, mode: Opti
             "trimmed": summary.trimmed,
             "left_out": summary.left_out,
             "offline": summary.offline,
+            "copies": summary.copies,
+            "not_collected": summary.warnings,
             "cannot_carry": report,
             "note": "the timeline, input and viewing LUTs and the Looks' files are counted when it runs",
         }));
