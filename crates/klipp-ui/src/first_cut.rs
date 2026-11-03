@@ -59,35 +59,50 @@ impl Choices {
 }
 
 /// A First Cut just made, kept so its changes can be taken back one at
-/// a time: the sequence it was made on, as it was, its changes, those
-/// taken back, and the undo step that made the cut as it stands. Held
-/// in memory with the history, not saved: after a reopen, Undo remains.
+/// a time: the sequence it was made on, as it was, its changes, and for
+/// each of First Cut's own undo steps, where it sits in the history (its
+/// depth) and the changes it leaves out. Undo and Redo give a step a new
+/// stamp, so a step is known by its depth and its "First Cut" label; the
+/// panel follows whichever is in force (#3444). Held in memory with the
+/// history, not saved: after a reopen, Undo remains.
 #[derive(Debug, Clone)]
 pub struct Session {
     pub sequence: SequenceId,
     pub before: Sequence,
     pub music: Option<MediaId>,
     pub changes: Vec<Change>,
-    pub excluded: Vec<usize>,
-    pub stamp: u64,
+    pub steps: Vec<(usize, Vec<usize>)>,
 }
 
 impl Session {
-    /// Whether a change can still be taken back or put back: its sequence
-    /// is open and the last step in the history is First Cut's own. An
-    /// edit since, or an undo, would be lost by swapping the cut.
-    pub fn editable(&self, open: SequenceId, last_step: Option<u64>) -> bool {
-        self.sequence == open && last_step == Some(self.stamp)
+    /// The changes the step in force leaves out, while it is one of First
+    /// Cut's own on the sequence open: `depth` is the undo count and
+    /// `top` the label of the step on top. `None` after an edit of
+    /// another kind, or an undo past the cut: swapping the cut then would
+    /// lose it.
+    pub fn in_force(&self, open: SequenceId, depth: usize, top: Option<&str>) -> Option<&[usize]> {
+        if self.sequence != open || !top.is_some_and(|l| l.starts_with("First Cut")) {
+            return None;
+        }
+        self.steps.iter().find(|(d, _)| *d == depth).map(|(_, out)| out.as_slice())
     }
 
-    /// Whether change `i` is in the cut.
-    pub fn kept(&self, i: usize) -> bool {
-        !self.excluded.contains(&i)
+    /// A step of First Cut's own made at `depth`, leaving out `excluded`;
+    /// those above it went with the redo it cleared.
+    pub fn record(&mut self, depth: usize, excluded: Vec<usize>) {
+        self.steps.retain(|(d, _)| *d < depth);
+        self.steps.push((depth, excluded));
     }
 
-    /// The changes left out once `i` is flipped.
-    pub fn flipped(&self, i: usize) -> Vec<usize> {
-        let mut out = self.excluded.clone();
+    /// The changes the panel shows left out: the step in force's, else
+    /// the last one made.
+    pub fn shown<'a>(&'a self, in_force: Option<&'a [usize]>) -> &'a [usize] {
+        in_force.or_else(|| self.steps.last().map(|(_, out)| out.as_slice())).unwrap_or(&[])
+    }
+
+    /// The changes left out of `excluded` once `i` is flipped.
+    pub fn flipped(excluded: &[usize], i: usize) -> Vec<usize> {
+        let mut out = excluded.to_vec();
         match out.iter().position(|&x| x == i) {
             Some(at) => {
                 out.remove(at);
@@ -160,17 +175,32 @@ mod tests {
         assert!(!none.any() && Choices::default().any());
     }
 
+    /// The panel follows the history: after an undo back to First Cut's
+    /// own step its changes are as that step made them, and still
+    /// changeable; after an edit of another kind, or an undo past the
+    /// cut, they are not (#3444).
     #[test]
-    fn a_change_can_be_flipped_only_while_first_cut_is_the_last_step() {
+    fn the_panel_follows_undo_and_redo() {
         let seq = Sequence::new_default();
-        let s = Session { sequence: seq.id, before: seq.clone(), music: None, changes: Vec::new(), excluded: vec![2], stamp: 7 };
-        assert!(s.editable(seq.id, Some(7)));
-        assert!(!s.editable(seq.id, Some(8)), "edited since");
-        assert!(!s.editable(seq.id, None), "undone");
-        assert!(!s.editable(SequenceId::new(), Some(7)), "another sequence open");
-        assert_eq!(s.flipped(3), vec![2, 3]);
-        assert_eq!(s.flipped(2), Vec::<usize>::new());
-        assert!(s.kept(3) && !s.kept(2));
+        let mut s = Session { sequence: seq.id, before: seq.clone(), music: None, changes: Vec::new(), steps: Vec::new() };
+        s.record(5, Vec::new());
+        // A change taken back: one step more.
+        s.record(6, Session::flipped(&[], 2));
+        assert_eq!(s.in_force(seq.id, 6, Some("First Cut: change taken back")), Some(&[2][..]));
+        // Undone: back to the full cut, changeable.
+        assert_eq!(s.in_force(seq.id, 5, Some("First Cut")), Some(&[][..]));
+        // Redone: the change out again.
+        assert_eq!(s.in_force(seq.id, 6, Some("First Cut: change taken back")), Some(&[2][..]));
+        // Another change from the full cut: the step above it is gone.
+        s.record(6, Session::flipped(&[], 3));
+        assert_eq!(s.in_force(seq.id, 6, Some("First Cut: change taken back")), Some(&[3][..]));
+        assert_eq!(s.steps.len(), 2);
+        assert!(s.in_force(seq.id, 7, Some("Move Clip")).is_none(), "edited since");
+        assert!(s.in_force(seq.id, 4, Some("Place Clip")).is_none(), "undone past the cut");
+        assert!(s.in_force(SequenceId::new(), 6, Some("First Cut")).is_none(), "another sequence open");
+        assert_eq!(s.shown(None), &[3], "locked, the last made is shown");
+        assert_eq!(Session::flipped(&[2], 3), vec![2, 3]);
+        assert_eq!(Session::flipped(&[2], 2), Vec::<usize>::new());
     }
 
     #[test]

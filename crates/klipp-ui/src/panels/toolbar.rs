@@ -511,6 +511,9 @@ impl ToolbarPanel {
             if ui.button("Find and Replace in Titles\u{2026}").on_hover_text("Find words across every title, and replace them in one step").clicked() { state.show_title_find = true; ui.close_menu(); }
             if ui.button("Check Spelling in Titles\u{2026}").on_hover_text("Every misspelt word in the titles and captions, one by one").clicked() { state.show_spelling_dialog = true; ui.close_menu(); }
             if ui.button("First Cut\u{2026}").on_hover_text("A rough cut of what is said: pauses, filler words and retakes out, punch-ins and captions in, as one undo step").clicked() { state.show_first_cut_dialog = true; ui.close_menu(); }
+            // The last First Cut's changes, to take any back one at a time
+            // once its panel was closed (#3445).
+            if ui.add_enabled(state.first_cut_session.is_some(), egui::Button::new("First Cut Changes")).on_hover_text("The last First Cut's changes, each one to take back or put back").clicked() { state.show_first_cut_panel = true; ui.close_menu(); }
             ui.separator();
             if ui.add_enabled(state.selected_clip.is_some(), egui::Button::new("Cut").shortcut_text(kb.display_for("cut_clip"))).clicked() {
                 if let Some(clip_id) = state.selected_clip {
