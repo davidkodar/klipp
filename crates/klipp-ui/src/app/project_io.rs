@@ -309,6 +309,9 @@ impl KlippApp {
         self.state.offline_media_ids.clear();
         self.state.pending_skim_transcodes.clear();
         self.state.source_media_id = None;
+        // Its changes are this project's (#3428).
+        self.state.first_cut_session = None;
+        self.state.show_first_cut_panel = false;
         self.state.project_path = None;
         self.state.project_notes = String::new();
         self.state.last_import_report = None;

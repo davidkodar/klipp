@@ -184,6 +184,7 @@ impl KlippApp {
         // Media panel (#3445).
         let screen = ctx.screen_rect();
         egui::Window::new("First Cut changes")
+            .constrain_to(crate::widgets::below_menu_bar(ctx))
             .collapsible(true)
             .resizable(true)
             .default_width(360.0)

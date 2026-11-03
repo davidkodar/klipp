@@ -3,10 +3,16 @@ use crate::icons::Icon;
 use crate::state::{AppState, PanelKind};
 use klipp_core::{AppCommand, MarkerColor, MarkerId, MarkerKind, RationalTime};
 
+/// How wide "+ Range" and the remove button are together, in a marker's row.
+const LABEL_ROW_BUTTONS: f32 = 90.0;
+
 #[derive(Default)]
 pub struct MarkersPanel {
     editing_label: Option<MarkerId>,
     label_buf: String,
+    /// A field just opened takes the keyboard on its first frame (#3428).
+    /// Without it, typing reached the app's shortcuts: M added a marker.
+    focus_field: bool,
     /// Which marker (if any) currently has its comment field
     /// expanded for editing. Mirrors `editing_label` for the
     /// new comment surface.
@@ -50,12 +56,14 @@ impl MarkersPanel {
             if let Some(m) = state.sequence().markers.iter().find(|m| m.id == id) {
                 self.editing_label = Some(id);
                 self.label_buf = m.label.clone();
+                self.focus_field = true;
                 self.search_query.clear();
             }
         }
         let mut open = state.show_markers_panel;
 
         let response = egui::Window::new("Markers")
+            .constrain_to(crate::widgets::below_menu_bar(ctx))
             .open(&mut open)
             .default_width(280.0)
             .default_height(300.0)
@@ -231,7 +239,12 @@ impl MarkersPanel {
 
                             // Label (inline edit)
                             if self.editing_label == Some(*id) {
-                                let resp = ui.text_edit_singleline(&mut self.label_buf);
+                                // Room left for the buttons on the row's right.
+                                let width = (ui.available_width() - LABEL_ROW_BUTTONS).max(60.0);
+                                let resp = ui.add(egui::TextEdit::singleline(&mut self.label_buf).desired_width(width));
+                                if std::mem::take(&mut self.focus_field) {
+                                    resp.request_focus();
+                                }
                                 if resp.lost_focus() || ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                                     cmds.push(AppCommand::UpdateMarkerLabel {
                                         marker_id: *id,
@@ -251,6 +264,7 @@ impl MarkersPanel {
                                         }),
                                 );
                                 if resp.double_clicked() {
+                                    self.focus_field = true;
                                     self.editing_label = Some(*id);
                                     self.label_buf = label.clone();
                                 }
@@ -330,6 +344,9 @@ impl MarkersPanel {
                                         .hint_text("Comment / note\u{2026}")
                                         .font(egui::FontId::proportional(11.0)),
                                 );
+                                if std::mem::take(&mut self.focus_field) {
+                                    resp.request_focus();
+                                }
                                 // Commit on lost focus. Multi-line
                                 // TextEdit consumes Enter for newlines
                                 // (intended), so we don't gate on
@@ -369,6 +386,7 @@ impl MarkersPanel {
                                 )
                                 .on_hover_text(comment.as_str());
                                 if resp.double_clicked() {
+                                    self.focus_field = true;
                                     self.editing_comment = Some(*id);
                                     self.comment_buf = comment.clone();
                                 }
@@ -413,6 +431,39 @@ fn format_timecode_short(secs: f64) -> String {
     let m = (secs / 60.0) as u32;
     let s = secs % 60.0;
     format!("{:02}:{:05.2}", m, s)
+}
+
+#[cfg(test)]
+mod window_tests {
+    use super::*;
+
+    fn frame(ctx: &egui::Context, panel: &mut MarkersPanel, state: &mut AppState) {
+        let raw = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200.0, 800.0))),
+            ..Default::default()
+        };
+        let _ = ctx.run(raw, |ctx| {
+            panel.show(ctx, state);
+        });
+    }
+
+    /// #3428: the window opens below the menu bar, and its label field
+    /// has the keyboard as soon as it opens, so typing isn't shortcuts.
+    #[test]
+    fn the_panel_opens_below_the_menus_with_its_label_field_focused() {
+        let mut state = AppState { show_markers_panel: true, ..Default::default() };
+        let marker = klipp_timeline::Marker { id: klipp_core::MarkerId::new(), position: RationalTime::from_secs_f64(1.0, 24), label: String::new(), color: klipp_core::MarkerColor::Blue, duration: None, comment: String::new(), kind: Default::default(), review: None };
+        let id = marker.id;
+        state.sequences[0].markers.push(marker);
+        state.edit_marker_request = Some(id);
+        let (ctx, mut panel) = (egui::Context::default(), MarkersPanel::default());
+        frame(&ctx, &mut panel, &mut state);
+        assert!(ctx.memory(|m| m.focused()).is_some(), "the field takes the keyboard");
+        assert!(ctx.wants_keyboard_input(), "shortcuts stand aside");
+        frame(&ctx, &mut panel, &mut state);
+        let rect = ctx.memory(|m| m.area_rect(egui::Id::new("Markers"))).expect("shown");
+        assert!(rect.min.y >= crate::panels::toolbar::MENU_BAR_HEIGHT, "{rect:?}");
+    }
 }
 
 #[cfg(test)]
