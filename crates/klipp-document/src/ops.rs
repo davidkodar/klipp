@@ -1209,7 +1209,9 @@ pub enum Op {
     /// A title template, built-in (#1724) or saved (#1139), by `name`, at
     /// `at` for `secs`, its published `fields` set by label: a text as its
     /// words, a colour as #rrggbb, the speed and size as numbers (1 as
-    /// made). title_templates lists the templates and their fields.
+    /// made). title_templates lists the templates and their fields. On a
+    /// composition template, a label ending in `?` is set only when the
+    /// template has it.
     Template {
         name: String,
         at: Anchor,
@@ -7799,9 +7801,16 @@ fn place_composition(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, at: T
     let tl_out = snap(secs(at) + held, fps).max(tl_in + one_frame(fps));
     let mut overrides = std::collections::BTreeMap::new();
     let mut media_slots = std::collections::BTreeMap::new();
-    for (key, v) in fields {
+    for (raw, v) in fields {
+        // A label ending in "?" is set only when the template has it: a
+        // brand kit's accent and heading font (P42), which a template of
+        // the person's own may not take.
+        let (key, optional) = match raw.trim().strip_suffix('?') {
+            Some(k) => (k.trim(), true),
+            None => (raw.trim(), false),
+        };
         // A media slot, filled with a media item by its id (#2757).
-        if let Some((slot, def)) = t.slots.iter().find(|(n, d)| n.eq_ignore_ascii_case(key.trim()) || d.label.eq_ignore_ascii_case(key.trim())) {
+        if let Some((slot, def)) = t.slots.iter().find(|(n, d)| n.eq_ignore_ascii_case(key) || d.label.eq_ignore_ascii_case(key)) {
             if def.kind != klipp_timeline::composition_template::SlotKind::Media {
                 return Err(refuse(i, format!("\"{key}\" is a {:?} slot, which a template does not fill yet", def.kind), "fill it on the Composite page"));
             }
@@ -7811,7 +7820,11 @@ fn place_composition(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, at: T
             media_slots.insert(slot.clone(), id.0.to_string());
             continue;
         }
-        let (pname, p) = t.parameters.iter().find(|(n, p)| n.eq_ignore_ascii_case(key.trim()) || p.label.eq_ignore_ascii_case(key.trim())).ok_or_else(|| {
+        let found = t.parameters.iter().find(|(n, p)| n.eq_ignore_ascii_case(key) || p.label.eq_ignore_ascii_case(key));
+        if found.is_none() && optional {
+            continue;
+        }
+        let (pname, p) = found.ok_or_else(|| {
             let names: Vec<&str> = t.parameters.values().map(|p| p.label.as_str()).chain(t.slots.values().map(|d| d.label.as_str())).collect();
             refuse(i, format!("\"{}\" has no parameter \"{key}\"", t.name), if names.is_empty() { "it has no parameters".to_string() } else { format!("its parameters are {}", names.join(", ")) })
         })?;
@@ -15349,6 +15362,27 @@ mod tests {
             let layout = view.sequences.iter().find(|s| s.id == placed).expect("its layout copied in");
             assert_eq!((layout.resolution.width, layout.resolution.height), (w, h));
         }
+    }
+
+    /// P42: a brand kit's accent and heading font, sent as fields that
+    /// end in "?", set the Hook Card's hook line; a template without such
+    /// a parameter takes the rest and is not refused.
+    #[test]
+    fn a_kits_look_restyles_its_intro() {
+        let hook = klipp_timeline::composition_template::builtin_templates().into_iter().find(|t| t.name == "Hook Card").unwrap();
+        let (seq, pool, ..) = fixture();
+        let missing = klipp_timeline::composition_template::missing_sequences(&hook, std::slice::from_ref(&seq));
+        let fields: std::collections::BTreeMap<String, serde_json::Value> = [("Accent?", "#ef233c"), ("Heading font?", "Oswald"), ("Logo size?", "big")].into_iter().map(|(k, v)| (k.to_string(), serde_json::json!(v))).collect();
+        let op = Op::Template { name: hook.name.clone(), at: Anchor::Secs(0.0), secs: None, track: None, fields, source: None, kind: None, data: None, composition: Some(Box::new(PlacedComposition { template: hook.clone(), missing })) };
+        let plan = resolve(&seq, &pool, &[op]).unwrap_or_else(|r| panic!("{}", r.why));
+        let mut seqs = vec![seq.clone()];
+        let (mut p, mut fps) = (pool.clone(), seq.fps);
+        let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps };
+        view.apply_forward(&plan.steps[0].edit);
+        let instance = view.sequences[0].all_clips().find_map(|c| match &c.kind { ClipKind::TemplatePrecomposition { template_instance, .. } => Some(template_instance.clone()), _ => None }).expect("placed");
+        assert_eq!(instance.overrides.get("heading_font"), Some(&klipp_core::TemplateValue::Text("Oswald".into())));
+        let Some(klipp_core::TemplateValue::Color(c)) = instance.overrides.get("accent") else { panic!("the accent set: {:?}", instance.overrides) };
+        assert!((c[0] - 239.0 / 255.0).abs() < 1e-3 && (c[1] - 35.0 / 255.0).abs() < 1e-3, "{c:?}");
     }
 
     /// #2757: a composition template placed with no `secs` holds for the

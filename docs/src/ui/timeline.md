@@ -77,6 +77,7 @@ Each track header shows its name (double-click to rename), lock, mute and solo, 
 - **Show automation lane** — the track's volume and pan keys, drawn and edited in a lane under it
 - **Set as Primary** — the track the cut is built on
 - On subtitle tracks, the **Language**, **Translate Captions**, and show or hide
+- **Freeze Track** (Ctrl+Shift+F) — draws the track in the background and plays it from what's drawn, so a heavy track stops costing playback; edits draw what they change again. It costs disk: about 10 to 20 GB per minute of 1080p, counted against **Max cache size** in Preferences. Past that, the rest plays live and Klipp says so.
 - On video tracks, **Bounce to Media File…** (see below)
 
 Drag a header to reorder tracks.

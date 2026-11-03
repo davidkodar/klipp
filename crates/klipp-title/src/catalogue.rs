@@ -129,6 +129,56 @@ pub fn fonts_dir() -> PathBuf {
         .unwrap_or_else(|| dirs::data_dir().unwrap_or_else(|| PathBuf::from(".")).join("klipp").join("fonts"))
 }
 
+/// The catalogue's families that the built-in templates and the starter
+/// brand kits set their text in, shipped with the app (P41): each file
+/// and its licence as the catalogue pins them, so nothing is fetched when
+/// a built-in is first used. All SIL Open Font License.
+const SHIPPED: &[(&str, &[(&str, &[u8])])] = &[
+    ("Anton", &[("Anton-Regular.ttf", include_bytes!("../../../assets/fonts/catalogue/anton/Anton-Regular.ttf")), ("OFL.txt", include_bytes!("../../../assets/fonts/catalogue/anton/OFL.txt"))]),
+    ("Cormorant Garamond", &[("CormorantGaramond-Italic[wght].ttf", include_bytes!("../../../assets/fonts/catalogue/cormorant-garamond/CormorantGaramond-Italic[wght].ttf")), ("CormorantGaramond[wght].ttf", include_bytes!("../../../assets/fonts/catalogue/cormorant-garamond/CormorantGaramond[wght].ttf")), ("OFL.txt", include_bytes!("../../../assets/fonts/catalogue/cormorant-garamond/OFL.txt"))]),
+    ("DM Serif Display", &[("DMSerifDisplay-Italic.ttf", include_bytes!("../../../assets/fonts/catalogue/dm-serif-display/DMSerifDisplay-Italic.ttf")), ("DMSerifDisplay-Regular.ttf", include_bytes!("../../../assets/fonts/catalogue/dm-serif-display/DMSerifDisplay-Regular.ttf")), ("OFL.txt", include_bytes!("../../../assets/fonts/catalogue/dm-serif-display/OFL.txt"))]),
+    ("Lora", &[("Lora-Italic[wght].ttf", include_bytes!("../../../assets/fonts/catalogue/lora/Lora-Italic[wght].ttf")), ("Lora[wght].ttf", include_bytes!("../../../assets/fonts/catalogue/lora/Lora[wght].ttf")), ("OFL.txt", include_bytes!("../../../assets/fonts/catalogue/lora/OFL.txt"))]),
+    ("Manrope", &[("Manrope[wght].ttf", include_bytes!("../../../assets/fonts/catalogue/manrope/Manrope[wght].ttf")), ("OFL.txt", include_bytes!("../../../assets/fonts/catalogue/manrope/OFL.txt"))]),
+    ("Montserrat", &[("Montserrat-Italic[wght].ttf", include_bytes!("../../../assets/fonts/catalogue/montserrat/Montserrat-Italic[wght].ttf")), ("Montserrat[wght].ttf", include_bytes!("../../../assets/fonts/catalogue/montserrat/Montserrat[wght].ttf")), ("OFL.txt", include_bytes!("../../../assets/fonts/catalogue/montserrat/OFL.txt"))]),
+    ("Oswald", &[("OFL.txt", include_bytes!("../../../assets/fonts/catalogue/oswald/OFL.txt")), ("Oswald[wght].ttf", include_bytes!("../../../assets/fonts/catalogue/oswald/Oswald[wght].ttf"))]),
+    ("Playfair Display", &[("OFL.txt", include_bytes!("../../../assets/fonts/catalogue/playfair-display/OFL.txt")), ("PlayfairDisplay-Italic[wght].ttf", include_bytes!("../../../assets/fonts/catalogue/playfair-display/PlayfairDisplay-Italic[wght].ttf")), ("PlayfairDisplay[wght].ttf", include_bytes!("../../../assets/fonts/catalogue/playfair-display/PlayfairDisplay[wght].ttf"))]),
+    ("Work Sans", &[("OFL.txt", include_bytes!("../../../assets/fonts/catalogue/work-sans/OFL.txt")), ("WorkSans-Italic[wght].ttf", include_bytes!("../../../assets/fonts/catalogue/work-sans/WorkSans-Italic[wght].ttf")), ("WorkSans[wght].ttf", include_bytes!("../../../assets/fonts/catalogue/work-sans/WorkSans[wght].ttf"))]),
+];
+
+/// Whether `name` ships with the app.
+pub fn shipped(name: &str) -> bool {
+    SHIPPED.iter().any(|(n, _)| n.eq_ignore_ascii_case(name))
+}
+
+/// The shipped families put in place under `root`, as a fetch puts them:
+/// each file not there at its size written. They are then fetched as far
+/// as everything else knows, so no network is asked for them. Returns how
+/// many files were written.
+pub fn install_shipped_in(root: &Path) -> Result<usize, String> {
+    let mut written = 0;
+    for (name, files) in SHIPPED {
+        let Some(family) = family(name) else { continue };
+        let dir = family.dir_in(root);
+        std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        for (file, bytes) in *files {
+            let target = dir.join(file);
+            if std::fs::metadata(&target).is_ok_and(|m| m.len() == bytes.len() as u64) {
+                continue;
+            }
+            let partial = dir.join(format!("{file}.partial"));
+            std::fs::write(&partial, bytes).map_err(|e| format!("{}: {e}", partial.display()))?;
+            std::fs::rename(&partial, &target).map_err(|e| format!("{}: {e}", target.display()))?;
+            written += 1;
+        }
+    }
+    Ok(written)
+}
+
+/// [`install_shipped_in`] under [`fonts_dir`].
+pub fn install_shipped() -> Result<usize, String> {
+    install_shipped_in(&fonts_dir())
+}
+
 /// Whether `family` is fetched under `root`: every file there. A fetch
 /// writes each to a partial file and renames it only once its hash is
 /// checked, so a file there is whole.
@@ -266,6 +316,26 @@ pub fn note_fonts_added() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// P41: the shipped families are put in place as a fetch would, each
+    /// file whole and its licence beside it, so they count as fetched with
+    /// no network; a second time writes nothing.
+    #[test]
+    fn the_shipped_fonts_are_put_in_place_without_a_fetch() {
+        let root = std::env::temp_dir().join(format!("klipp-shipped-fonts-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let written = install_shipped_in(&root).unwrap();
+        assert!(written >= SHIPPED.len() * 2, "{written} files");
+        for (name, _) in SHIPPED {
+            let family = family(name).unwrap_or_else(|| panic!("{name} is in the catalogue"));
+            assert!(is_fetched_in(&root, family), "{name} counts as fetched");
+            assert!(family.dir_in(&root).join(family.licence_file()).is_file(), "{name}'s licence beside it");
+            assert!(fetched_faces_in(&root, name).is_some_and(|f| !f.is_empty()), "{name}'s faces are found");
+        }
+        assert_eq!(install_shipped_in(&root).unwrap(), 0, "nothing written again");
+        assert!(shipped("anton") && !shipped("Cinzel"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     /// The catalogue as shipped: every family named once, tagged, with its
     /// licence, every file by an address pinned to one commit, with a size

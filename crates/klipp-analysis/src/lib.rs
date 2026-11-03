@@ -52,6 +52,7 @@ pub mod screentext;
 pub mod subject_matte;
 #[cfg(feature = "audio_role")]
 pub mod audio_role;
+pub mod speech_check;
 #[cfg(feature = "visual")]
 pub mod visual;
 
@@ -255,6 +256,7 @@ pub fn analysers() -> Vec<Box<dyn Analyser>> {
     v.push(Box::new(audio_role::AudioRoleAnalyser));
     #[cfg(feature = "visual")]
     v.push(Box::new(visual::VisualAnalyser));
+    v.push(Box::new(speech_check::SpeechCheckAnalyser));
     v
 }
 
@@ -314,28 +316,54 @@ pub fn is_licensed_audio(path: &Path) -> bool {
 }
 
 /// Which hardware decoder ffmpeg is asked for, chosen once: the first of
-/// the well-known ones this ffmpeg lists. `KLIPP_ANALYSIS_HWACCEL` names
-/// one, or `0`/`none` for software decoding. When the driver refuses, ffmpeg
-/// itself falls back to software decoding, so a wrong guess costs a
-/// warning, not a failure.
+/// the well-known ones this ffmpeg lists and can open a device for, since
+/// a build lists what it was compiled with, not what the machine has: on a
+/// machine with no such driver every file's pass tried it and failed first.
+/// `KLIPP_ANALYSIS_HWACCEL` names one, as named, or `0`/`none` for software
+/// decoding.
 pub fn hwaccel_name(ffmpeg: &Path) -> Option<String> {
     static CHOSEN: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
     CHOSEN
         .get_or_init(|| {
             let env = std::env::var("KLIPP_ANALYSIS_HWACCEL").ok();
             let listed = std::process::Command::new(ffmpeg).args(["-hide_banner", "-hwaccels"]).output().map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default();
-            pick_hwaccel(&listed, env.as_deref())
+            pick_hwaccel(&listed, env.as_deref(), |name| hw_device_opens(ffmpeg, name))
         })
         .clone()
 }
 
-/// The choice from what ffmpeg lists and what the environment says.
-pub fn pick_hwaccel(listed: &str, env: Option<&str>) -> Option<String> {
+/// Whether ffmpeg can open `name`'s device on this machine. A driver that
+/// hangs counts as no.
+fn hw_device_opens(ffmpeg: &Path, name: &str) -> bool {
+    let spawned = std::process::Command::new(ffmpeg)
+        .args(["-hide_banner", "-loglevel", "quiet", "-init_hw_device", &format!("{name}=probe"), "-f", "lavfi", "-i", "nullsrc=s=16x16:d=0.04", "-frames:v", "1", "-f", "null", "-"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+    let Ok(mut child) = spawned else { return false };
+    let started = std::time::Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return status.success(),
+            Ok(None) if started.elapsed() < std::time::Duration::from_secs(5) => std::thread::sleep(std::time::Duration::from_millis(10)),
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return false;
+            }
+        }
+    }
+}
+
+/// The choice from what ffmpeg lists, what the environment says, and which
+/// devices `opens`.
+pub fn pick_hwaccel(listed: &str, env: Option<&str>, opens: impl Fn(&str) -> bool) -> Option<String> {
     let available: Vec<&str> = listed.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with("Hardware")).collect();
     match env.map(str::trim) {
         Some("0") | Some("none") | Some("off") => None,
         Some(name) if !name.is_empty() => Some(name.to_string()),
-        _ => ["cuda", "vaapi", "videotoolbox", "qsv"].iter().find(|w| available.contains(w)).map(|w| w.to_string()),
+        _ => ["cuda", "vaapi", "videotoolbox", "qsv"].iter().find(|w| available.contains(w) && opens(w)).map(|w| w.to_string()),
     }
 }
 
@@ -540,12 +568,21 @@ mod hwaccel_tests {
     #[test]
     fn the_first_known_decoder_listed_is_taken_unless_the_environment_says() {
         let listed = "Hardware acceleration methods:\nvdpau\ncuda\nvaapi\nvulkan\n";
-        assert_eq!(pick_hwaccel(listed, None).as_deref(), Some("cuda"));
-        assert_eq!(pick_hwaccel("Hardware acceleration methods:\nvaapi\n", None).as_deref(), Some("vaapi"));
-        assert_eq!(pick_hwaccel("Hardware acceleration methods:\nvdpau\n", None), None);
-        assert_eq!(pick_hwaccel(listed, Some("0")), None);
-        assert_eq!(pick_hwaccel(listed, Some("none")), None);
-        assert_eq!(pick_hwaccel(listed, Some("vulkan")).as_deref(), Some("vulkan"));
+        assert_eq!(pick_hwaccel(listed, None, |_| true).as_deref(), Some("cuda"));
+        assert_eq!(pick_hwaccel("Hardware acceleration methods:\nvaapi\n", None, |_| true).as_deref(), Some("vaapi"));
+        assert_eq!(pick_hwaccel("Hardware acceleration methods:\nvdpau\n", None, |_| true), None);
+        assert_eq!(pick_hwaccel(listed, Some("0"), |_| true), None);
+        assert_eq!(pick_hwaccel(listed, Some("none"), |_| true), None);
+        assert_eq!(pick_hwaccel(listed, Some("vulkan"), |_| false).as_deref(), Some("vulkan"));
+    }
+
+    /// A build lists what it was compiled with: one this machine can't open
+    /// a device for is passed over, to the next or to software decoding.
+    #[test]
+    fn a_decoder_whose_device_will_not_open_is_passed_over() {
+        let listed = "Hardware acceleration methods:\nvdpau\ncuda\nvaapi\n";
+        assert_eq!(pick_hwaccel(listed, None, |name| name == "vaapi").as_deref(), Some("vaapi"));
+        assert_eq!(pick_hwaccel(listed, None, |_| false), None);
     }
 }
 

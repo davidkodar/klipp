@@ -153,6 +153,12 @@ fn title_edit_time(state: &AppState) -> klipp_core::Timecode {
     klipp_core::RationalTime::from_secs_f64(state.playhead_smooth_secs.max(0.0), state.playhead.rate)
 }
 
+/// Whether title clip `clip` is on screen at `at`: from its first frame
+/// to before its end.
+fn title_on_screen(clip: &klipp_timeline::Clip, at: klipp_core::Timecode) -> bool {
+    clip.timeline_in <= at && at < clip.timeline_out
+}
+
 /// The canvas of title clip `clip` drawn at `image_rect` at the playhead
 /// (#2014), or why its contents can't be edited there.
 pub(crate) fn title_view_of(state: &AppState, clip: &klipp_timeline::Clip, image_rect: egui::Rect) -> Result<TitleView, klipp_compose::eval::NotFollowed> {
@@ -1231,7 +1237,7 @@ impl ViewerPanel {
         // no badge for checkerboard
         if !labels.is_empty() {
             let label = labels.join(" + ");
-            let badge_pos = egui::pos2(image_rect.max.x - 8.0, image_rect.min.y + 12.0);
+            let badge_pos = overlay_badge_pos(image_rect, state.hdr_monitor);
             let badge_color = egui::Color32::from_rgb(0xff, 0x40, 0x40);
             // Shadow
             painter.text(
@@ -2363,17 +2369,14 @@ impl ViewerPanel {
         cmds: &mut Vec<AppCommand>,
     ) {
         use klipp_core::HdrMonitor;
-        const H: f32 = 22.0;
         let label = match state.hdr_monitor {
             HdrMonitor::Off => "HDR: off",
             HdrMonitor::Preview => "HDR: preview",
             HdrMonitor::FalseColour => "HDR: false colour",
         };
-        let width = if state.hdr_monitor == HdrMonitor::Off { 78.0 } else { 118.0 };
-        let btn = egui::Rect::from_min_size(
-            egui::pos2(image_rect.max.x - width - 8.0, image_rect.min.y + 8.0),
-            egui::vec2(width, H),
-        );
+        const H: f32 = HDR_BUTTON_H;
+        let btn = hdr_button_rect(image_rect, state.hdr_monitor);
+        let width = btn.width();
         let resp = ui.interact(btn, ui.id().with("hdr_monitor"), egui::Sense::click());
         let on = state.hdr_monitor.renders_hdr();
         let bg = if on { theme.accent } else { theme.bg_raised.gamma_multiply(0.9) };
@@ -4307,6 +4310,12 @@ impl ViewerPanel {
         let Some(clip) = state.sequence().tracks.iter()
             .flat_map(|t| t.clips.iter()).find(|c| c.id == clip_id) else { return };
         let Some(title) = clip.title_data() else { return };
+        // Its layers' boxes only while the title is on screen: with the
+        // playhead past it the viewer shows another picture, and the boxes
+        // were drawn over it (P30). A drag under way goes on.
+        if state.title_object_drag.is_none() && !title_on_screen(clip, title_edit_time(state)) {
+            return;
+        }
         let raw_title = title.clone();
         let time = (state.playhead_smooth_secs - clip.timeline_in.to_secs_f64()).max(0.0);
         let resolution = state.sequence().resolution;
@@ -6775,6 +6784,26 @@ fn editor_title_geometry(
 /// plain labelled outline (#3315). Laid out for the platform's own frame,
 /// fitted inside the picture and said so when the timeline is another
 /// shape, so a 9:16 player on a 16:9 cut shows where it would fall.
+/// The height of the HDR monitor's button and of the two rows under it
+/// while monitoring.
+const HDR_BUTTON_H: f32 = 22.0;
+
+/// The HDR monitor's button, at the picture's top right.
+fn hdr_button_rect(image: egui::Rect, mode: klipp_core::HdrMonitor) -> egui::Rect {
+    let width = if mode == klipp_core::HdrMonitor::Off { 78.0 } else { 118.0 };
+    egui::Rect::from_min_size(egui::pos2(image.max.x - width - 8.0, image.min.y + 8.0), egui::vec2(width, HDR_BUTTON_H))
+}
+
+/// Where the overlays' badge (SAFE AREAS, a platform's name…) sits: under
+/// the HDR monitor's button, and while monitoring, under the two rows it
+/// shows below it. It was in the button's place, and the button covered
+/// it (P22).
+fn overlay_badge_pos(image: egui::Rect, mode: klipp_core::HdrMonitor) -> egui::Pos2 {
+    let button = hdr_button_rect(image, mode);
+    let below = if mode.renders_hdr() { button.max.y + 8.0 + 2.0 * HDR_BUTTON_H } else { button.max.y };
+    egui::pos2(image.max.x - 8.0, below + 10.0)
+}
+
 fn draw_platform_overlay(painter: &egui::Painter, platform: &crate::platform_overlays::PlatformOverlay, image: egui::Rect) {
     let frame = if platform.fits(image.width(), image.height()) {
         image
@@ -6789,12 +6818,16 @@ fn draw_platform_overlay(painter: &egui::Painter, platform: &crate::platform_ove
         painter.rect_stroke(frame, 0.0, egui::Stroke::new(1.0_f32, colour));
         painter.text(frame.left_top() + egui::vec2(4.0, -2.0), egui::Align2::LEFT_BOTTOM, format!("{} frame ({}:{})", platform.name, platform.aspect[0], platform.aspect[1]), font.clone(), colour);
     }
+    // Each zone's label wrapped to its zone and kept in the picture: a
+    // narrow zone at an edge ran its label off the picture (P45).
+    let inside = painter.with_clip_rect(frame.intersect(painter.clip_rect()));
     for z in &platform.zones {
         let [x, y, w, h] = z.rect;
         let r = egui::Rect::from_min_size(frame.min + egui::vec2(x * frame.width(), y * frame.height()), egui::vec2(w * frame.width(), h * frame.height()));
         painter.rect_filled(r, 0.0, egui::Color32::from_rgba_unmultiplied(0, 0, 0, 40));
         painter.rect_stroke(r, 0.0, egui::Stroke::new(1.0_f32, colour));
-        painter.text(r.left_top() + egui::vec2(4.0, 2.0), egui::Align2::LEFT_TOP, &z.label, font.clone(), colour);
+        let galley = painter.layout(z.label.clone(), font.clone(), colour, (r.width() - 8.0).max(24.0));
+        inside.galley(r.left_top() + egui::vec2(4.0, 2.0), galley, colour);
     }
 }
 
@@ -8807,3 +8840,35 @@ mod playback_note_tests {
         assert!(matches!(cmds.as_slice(), [AppCommand::SetBackgroundRender { on: true, .. }]));
     }
 }
+
+#[cfg(test)]
+mod overlay_badge_tests {
+    /// P22: the overlays' badge sits clear of the HDR monitor's button,
+    /// whichever width the button has.
+    #[test]
+    fn the_overlay_badge_is_clear_of_the_hdr_button() {
+        let image = egui::Rect::from_min_size(egui::pos2(100.0, 50.0), egui::vec2(1280.0, 720.0));
+        for mode in [klipp_core::HdrMonitor::Off, klipp_core::HdrMonitor::Preview, klipp_core::HdrMonitor::FalseColour] {
+            let badge = super::overlay_badge_pos(image, mode);
+            let button = super::hdr_button_rect(image, mode);
+            // While monitoring, two rows of the button's height under it.
+            let stack = if mode.renders_hdr() { button.max.y + 8.0 + 2.0 * super::HDR_BUTTON_H } else { button.max.y };
+            assert!(badge.y - 6.0 > stack, "{mode:?}: the badge's text at {} meets the HDR controls ending at {stack}", badge.y);
+            assert!(image.contains(badge));
+        }
+    }
+}
+
+#[cfg(test)]
+mod title_on_screen_tests {
+    /// P30: a title's layer boxes are drawn only while it is on screen.
+    #[test]
+    fn a_title_is_on_screen_from_its_start_to_before_its_end() {
+        let t = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 24);
+        let td = klipp_timeline::TitleData::single_text(klipp_timeline::TextBox { text: "Hi".into(), ..Default::default() });
+        let clip = klipp_timeline::Clip { kind: klipp_timeline::ClipKind::Title(td), source_in: t(0.0), source_out: t(2.0), ..klipp_timeline::Clip::gap(t(2.0), t(4.0)) };
+        assert!(super::title_on_screen(&clip, t(2.0)) && super::title_on_screen(&clip, t(3.9)));
+        assert!(!super::title_on_screen(&clip, t(1.0)) && !super::title_on_screen(&clip, t(4.0)), "outside it, no boxes");
+    }
+}
+

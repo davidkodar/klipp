@@ -830,7 +830,7 @@ pub fn show(
             if matches!(t.kind, klipp_timeline::TrackKind::Video | klipp_timeline::TrackKind::Audio) {
                 let frozen = t.frozen;
                 let hint = klipp_engine::freeze::status(track_id).map_or_else(
-                    || "Draw this track in the background and play it from what's drawn, so a heavy track stops costing playback. Edits draw what they change again.".to_string(),
+                    || "Draw this track in the background and play it from what's drawn, so a heavy track stops costing playback. Edits draw what they change again. It costs disk: about 10 to 20 GB per minute of 1080p, counted against Max cache size in Preferences; past that, the rest plays live.".to_string(),
                     |s| s.describe(),
                 );
                 // What playing it costs now, to tell a heavy track by.

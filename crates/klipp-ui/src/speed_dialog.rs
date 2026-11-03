@@ -51,6 +51,30 @@ pub fn fit_targets(seq: &Sequence, clip_id: ClipId) -> FitTargets {
 /// op's `fit_range` uses too, so the dialog and an assistant agree.
 pub use klipp_document::clipboard::{on_marks as fit_on_marks, OnMarks};
 
+/// The commands the dialog's Apply sends for `clip`: only what changed,
+/// and the speed and Keep Pitch together as one undo step, "Clip Speed"
+/// (P54). It sent the speed unchanged too, an empty step, and Keep Pitch
+/// as a step of its own.
+pub fn apply_commands(clip: &klipp_timeline::Clip, speed: f64, keep_pitch: bool, ripple: bool) -> Vec<klipp_core::AppCommand> {
+    use klipp_core::AppCommand;
+    let clip_id = clip.id;
+    // The dialog holds a percentage: the clip's own speed comes back
+    // from it to within rounding.
+    let speed_changes = (speed - clip.speed).abs() > 1e-6;
+    let pitch_changes = keep_pitch != clip.keep_pitch;
+    match (speed_changes, pitch_changes) {
+        (true, true) => vec![
+            AppCommand::BeginHistoryBatch,
+            AppCommand::SetClipSpeed { clip_id, speed, ripple },
+            AppCommand::SetClipKeepPitch { clip_id, keep_pitch },
+            AppCommand::EndHistoryBatchAs { label: "Clip Speed".into() },
+        ],
+        (true, false) => vec![AppCommand::SetClipSpeed { clip_id, speed, ripple }],
+        (false, true) => vec![AppCommand::SetClipKeepPitch { clip_id, keep_pitch }],
+        (false, false) => Vec::new(),
+    }
+}
+
 /// A length typed into the dialog: seconds ("4", "4 s", "4.5") or a
 /// timecode as the sequence counts it ("00:00:04:00").
 pub fn parse_length(input: &str, tc: TimecodeDisplay) -> Option<f64> {
@@ -142,6 +166,20 @@ mod tests {
 
         seq.out_point = None;
         assert!(fit_on_marks(&seq, id, PasteMode::Overwrite, false).is_none(), "no marked range");
+    }
+
+    /// P54: Apply sends what changed: nothing for nothing, Keep Pitch
+    /// alone with no speed step, both in one "Clip Speed" step.
+    #[test]
+    fn apply_sends_only_what_changed() {
+        use klipp_core::AppCommand as C;
+        let (seq, id) = seq();
+        let clip = seq.all_clips().find(|c| c.id == id).unwrap().clone();
+        assert!(apply_commands(&clip, 1.0, false, false).is_empty(), "nothing changed");
+        assert!(matches!(apply_commands(&clip, 1.0, true, false).as_slice(), [C::SetClipKeepPitch { keep_pitch: true, .. }]), "the pitch alone");
+        assert!(matches!(apply_commands(&clip, 0.5, false, true).as_slice(), [C::SetClipSpeed { ripple: true, .. }]));
+        let both = apply_commands(&clip, 0.5, true, false);
+        assert!(matches!(both.as_slice(), [C::BeginHistoryBatch, C::SetClipSpeed { .. }, C::SetClipKeepPitch { .. }, C::EndHistoryBatchAs { label }] if label == "Clip Speed"), "{both:?}");
     }
 
     #[test]

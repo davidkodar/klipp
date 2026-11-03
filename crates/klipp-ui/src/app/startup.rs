@@ -71,6 +71,15 @@ impl KlippApp {
         // the saved layout is what the user actually last chose.
         let (restore_browser, restore_inspector) = (layout.browser_visible, layout.inspector_visible);
 
+        // The fonts the built-in templates and starter kits use ship with
+        // the app (P41): put in the fonts folder, so a built-in never
+        // fetches one. Written only when not there at its size.
+        match klipp_title::catalogue::install_shipped() {
+            Ok(0) => {}
+            Ok(n) => tracing::info!("{n} shipped font files put in the fonts folder"),
+            Err(e) => tracing::warn!("the shipped fonts could not be put in place: {e}"),
+        }
+
         // Heavy field inits — extracted from the struct literal so we can
         // measure each one independently for STARTUP_PERF.
         let title_renderer_ui = {

@@ -827,7 +827,7 @@ const LIMITER_KNEE_DB: f32 = 1.3;
 /// an encode of the sound alone and a decode (#1930): seconds for a
 /// long mix, no picture. The delivery is the best trial measured. And
 /// how far past the arithmetic gain the corrections may take it.
-const LIMITED_GAIN_PASSES: usize = 5;
+const LIMITED_GAIN_PASSES: usize = 8;
 const LIMITED_GAIN_EXTRA_DB: f32 = 3.0;
 /// The least loudness a dB of gain is taken to buy when the next gain is
 /// stepped by the slope two trials measured (#2361): through a limiter a
@@ -840,6 +840,9 @@ const MIN_LOUDNESS_SLOPE: f32 = 0.25;
 /// transients (a whoosh, a hi-hat) run further over their samples than
 /// the margin allows for (#781).
 const LIMITER_CEILING_MARGIN_MAX_DB: f32 = 4.5;
+/// How much wider than the margin that capped the gain a margin given back
+/// stays, so the gain can still take up a loudness shortfall.
+const MARGIN_OVER_CAP_DB: f32 = 0.1;
 /// Taken off with each correction on top of the overshoot measured, so
 /// the next pass lands under the ceiling rather than on it.
 const LIMITER_OVERSHOOT_PAD_DB: f32 = 0.05;
@@ -882,12 +885,14 @@ fn fit_limited(
         lufs: f32,
     }
     let (mut gain_db, mut margin_db) = (arithmetic_gain_db, LIMITER_CEILING_MARGIN_DB);
-    // No gain at or above one a trial found over the ceiling: the loudness
-    // can't climb back to a peak already measured (#1930). A lossy codec's
-    // overshoot moves a few tenths with any change to what it encodes, so
-    // one trial over only through the codec doesn't set it; a second does
-    // (#2361).
-    let mut gain_cap = f32::INFINITY;
+    // No gain at or above one a trial found over the ceiling, at that margin
+    // or a narrower one: the loudness can't climb back to a peak already
+    // measured (#1930). A wider margin holds the peaks lower, so it can take
+    // the gain, or the fit stopped with the loudness short and the ceiling
+    // unused. A lossy codec's overshoot moves a few tenths with any change
+    // to what it encodes, so one trial over only through the codec doesn't
+    // set it; a second does (#2361).
+    let mut gain_cap: Option<(f32, f32)> = None;
     let mut codec_overs = 0;
     // Whether the extra-gain limit held a step back, for the note.
     let mut held_by_extra = false;
@@ -942,7 +947,7 @@ fn fit_limited(
                 codec_overs += 1;
             }
             if mixed > 0.0 || codec_overs > 1 {
-                gain_cap = gain_cap.min(gain_db);
+                gain_cap = Some((gain_cap.map_or(gain_db, |(gain, at)| if margin_db > at + 1e-3 { gain_db } else { gain.min(gain_db) }), margin_db));
             }
             let now = (ceiling_dbtp - margin_db).min(trial.limiter_input_peak_dbfs());
             let wanted = ceiling_dbtp - (now - over - pad);
@@ -957,15 +962,19 @@ fn fit_limited(
             // more than the limiter can take without pumping, nor back to a
             // gain found over. A margin widened by an earlier trial gives
             // back what this one measured under the ceiling, past the pad,
-            // so the limiter stops taking loudness it needn't (#2361).
+            // so the limiter stops taking loudness it needn't (#2361), but
+            // stays wider than the margin that capped the gain: at that one
+            // the gain can't climb, and the loudness stays short.
+            let room = -over - LIMITER_OVERSHOOT_PAD_DB - if coded.is_some() { CODEC_OVERSHOOT_PAD_DB } else { 0.0 };
+            if shortfall > 0.0 && room > 0.0 && margin_db > LIMITER_CEILING_MARGIN_DB {
+                let keep = gain_cap.map_or(LIMITER_CEILING_MARGIN_DB, |(_, at)| at + MARGIN_OVER_CAP_DB);
+                margin_db = (margin_db - room).max(keep).min(margin_db);
+            }
             let step = shortfall / slope.unwrap_or(1.0);
             let extra = arithmetic_gain_db + LIMITED_GAIN_EXTRA_DB;
             held_by_extra = gain_db + step > extra;
-            gain_db = (gain_db + step).min(extra).min(gain_cap - LIMITER_OVERSHOOT_PAD_DB);
-            let room = -over - LIMITER_OVERSHOOT_PAD_DB - if coded.is_some() { CODEC_OVERSHOOT_PAD_DB } else { 0.0 };
-            if shortfall > 0.0 && room > 0.0 && margin_db > LIMITER_CEILING_MARGIN_DB {
-                margin_db = (margin_db - room).max(LIMITER_CEILING_MARGIN_DB);
-            }
+            let cap = gain_cap.filter(|(_, at)| margin_db <= at + 1e-3).map_or(f32::INFINITY, |(gain, _)| gain - LIMITER_OVERSHOOT_PAD_DB);
+            gain_db = (gain_db + step).min(extra).min(cap);
         }
         // Back where a trial was: one under the ceiling would measure the
         // same, so the fit is as near as it gets. One over may have been
@@ -1698,6 +1707,54 @@ mod tests {
         }
         let lufs = fitted.measured_lufs().unwrap();
         assert!((lufs - target).abs() < 0.15 && fit.note.is_none(), "{lufs:.2} LUFS against {target}: {fit:?}");
+    }
+
+    /// An encode that rings over the ceiling twice caps the gain only at
+    /// that margin or narrower: a wider one holds the peaks lower and can
+    /// take the gain, so the fit reaches the target with the ceiling kept.
+    /// It used to stop short of it with room left under the ceiling, its
+    /// report blaming the trial limit: -14.7 against -14 on a voice with
+    /// music under it.
+    #[test]
+    fn a_codec_overshoot_leaves_room_for_a_wider_margin_to_use() {
+        let sr = 48000u32;
+        // Talk-like bursts over a bed, loud enough at the target that the
+        // limiter works, and how far each encode rings over the mix.
+        for (bed, voice, on, target, ringing) in [(0.06f32, 0.25f32, 0.35f32, -10.0f32, 1.2f32), (0.04, 0.3, 0.2, -12.0, 1.2), (0.08, 0.2, 0.5, -9.0, 1.2)] {
+            let mix: Vec<f32> = (0..sr as usize * 6)
+                .flat_map(|i| {
+                    let t = i as f32 / sr as f32;
+                    let tau = std::f32::consts::TAU;
+                    let talk = if (t * 3.0).fract() < on { voice * (tau * 180.0 * t).sin() + voice / 2.0 * (tau * 2300.0 * t).sin() } else { 0.0 };
+                    let v = bed * (tau * 330.0 * t).sin() + talk;
+                    [v, v]
+                })
+                .collect();
+            let mut plain = DeliveryChain::limited_by(sr, target, 0.0, false, -1.0, LIMITER_CEILING_MARGIN_DB);
+            plain.process(&mut mix.clone());
+            let arithmetic = target - plain.measured_lufs().unwrap();
+            let mut encoded = Vec::new();
+            let fit = fit_limited(sr, target, -1.0, arithmetic, "test", |trial, n| {
+                for block in mix.chunks(3200) {
+                    trial.process(&mut block.to_vec());
+                }
+                // As an encode's peak moves a little with each trial.
+                let n = n.unwrap_or(1);
+                let peak = trial.measured_true_peak_dbtp().unwrap() + ringing + [0.0, 0.25, -0.1, 0.2, -0.2, 0.1, 0.0, 0.15][n % 8];
+                encoded.push((trial.measured_lufs().unwrap(), peak));
+                Ok(Some(peak))
+            })
+            .unwrap()
+            .expect("a measured trial");
+            let mut fitted = DeliveryChain::limited_by(sr, target, fit.gain_db, true, -1.0, fit.margin_db);
+            for block in mix.chunks(3200) {
+                fitted.process(&mut block.to_vec());
+            }
+            let lufs = fitted.measured_lufs().unwrap();
+            assert!((lufs - target).abs() <= 0.3, "{lufs:.2} LUFS against {target}: {fit:?}");
+            let kept = encoded.iter().any(|(l, peak)| (l - lufs).abs() < 0.01 && *peak <= -1.0);
+            assert!(kept, "the delivery was not a trial under the ceiling: {encoded:?}");
+        }
     }
 
     /// #1930: with no trial measuring a loudness, the fit gives no gain

@@ -5,6 +5,25 @@
   "category": "Social",
   "composition_id": "739851d4-3b9d-5bf3-9b04-0f0b7279d4e7",
   "parameters": {
+    "accent": {
+      "label": "Accent",
+      "default": {
+        "type": "Color",
+        "value": [
+          1.0,
+          1.0,
+          1.0,
+          1.0
+        ]
+      }
+    },
+    "heading_font": {
+      "label": "Heading font",
+      "default": {
+        "type": "Text",
+        "value": "DM Serif Display"
+      }
+    },
     "handle": {
       "label": "Handle",
       "default": {
@@ -39,6 +58,14 @@
     }
   },
   "bindings": [
+    {
+      "parameter": "accent",
+      "property": "object:2.color"
+    },
+    {
+      "parameter": "heading_font",
+      "property": "object:2.font"
+    },
     {
       "parameter": "photo",
       "property": "object:1.picture"

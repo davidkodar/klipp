@@ -99,6 +99,50 @@ fn install_native_crash_handler() {
     }
 }
 
+/// The variable that caps glibc's malloc arenas, and the cap. By default a
+/// process gets an arena per thread, up to eight per core, and each holds on
+/// to what was freed in it: a session held hundreds of MB more after its
+/// project closed than with two arenas, at the same playback rate.
+#[cfg(target_os = "linux")]
+const ARENA_VAR: &str = "MALLOC_ARENA_MAX";
+#[cfg(target_os = "linux")]
+const ARENA_CAP: &str = "2";
+
+/// This program over again, with the arguments it was given and arenas capped.
+#[cfg(target_os = "linux")]
+fn capped_command(
+    program: &std::path::Path,
+    mut args: impl Iterator<Item = std::ffi::OsString>,
+) -> std::process::Command {
+    use std::os::unix::process::CommandExt;
+    let mut command = std::process::Command::new(program);
+    if let Some(arg0) = args.next() {
+        command.arg0(arg0);
+    }
+    command.args(args).env(ARENA_VAR, ARENA_CAP);
+    command
+}
+
+/// Start over with arenas capped, before any thread or file: glibc reads the
+/// variable only as a process starts. The variable being set is what ends
+/// this, so one a person set themselves is theirs to keep. `exec` replaces
+/// this process, same pid and streams; should it fail, the app runs uncapped.
+/// It goes by the real path because the process takes its name from what it
+/// was exec'd as, and `/proc/self/exe` would rename it `exe` for everything
+/// that finds the app by name.
+#[cfg(target_os = "linux")]
+fn cap_malloc_arenas() {
+    use std::os::unix::process::CommandExt;
+    if std::env::var_os(ARENA_VAR).is_some() {
+        return;
+    }
+    let error = match std::env::current_exe() {
+        Ok(program) => capped_command(&program, std::env::args_os()).exec(),
+        Err(error) => error,
+    };
+    eprintln!("Klipp: could not cap malloc arenas: {error}");
+}
+
 fn main() -> Result<()> {
     // A worker, started by the app itself for native analysis code
     // (#640, #689): it does its one job and exits, before any of the app
@@ -106,6 +150,8 @@ fn main() -> Result<()> {
     if let Some(code) = klipp_ui::cli::worker() {
         std::process::exit(code);
     }
+    #[cfg(target_os = "linux")]
+    cap_malloc_arenas();
     // Anchor T0 for STARTUP_PERF measurements as the very first thing in main.
     mark_process_start();
 
@@ -678,5 +724,27 @@ fn ui_present_mode() -> eframe::egui_wgpu::wgpu::PresentMode {
         Ok("immediate") => PresentMode::Immediate,
         Ok("auto_vsync") => PresentMode::AutoVsync,
         _ => PresentMode::AutoNoVsync,
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod arena_cap_tests {
+    use super::*;
+    use std::ffi::{OsStr, OsString};
+    use std::path::Path;
+
+    /// The start over runs this program under the name it was given, with
+    /// every argument as it came, and the variable that ends the start over.
+    #[test]
+    fn the_start_over_keeps_the_arguments_and_sets_the_cap() {
+        let args = ["klipp", "--open", "a b.klipp"].map(OsString::from);
+        let command = capped_command(Path::new("/opt/klipp/klipp-app"), args.into_iter());
+        assert_eq!(command.get_program(), OsStr::new("/opt/klipp/klipp-app"));
+        assert_eq!(
+            command.get_args().collect::<Vec<_>>(),
+            ["--open", "a b.klipp"]
+        );
+        let envs: Vec<_> = command.get_envs().collect();
+        assert_eq!(envs, [(OsStr::new(ARENA_VAR), Some(OsStr::new(ARENA_CAP)))]);
     }
 }

@@ -72,6 +72,36 @@ pub fn intro_ops(seq: &Sequence, intro: &Bookend, length_secs: f64) -> Result<Ve
     ops(out)
 }
 
+/// `intro_ops`, the intro taking the kit's look.
+fn intro_ops_styled(seq: &Sequence, intro: &Bookend, length_secs: f64, parts: &SequenceParts) -> Result<Vec<Op>, String> {
+    let mut out = intro_ops(seq, intro, length_secs)?;
+    if let Some(last) = out.pop() {
+        let v = serde_json::to_value(&last).map_err(|e| format!("a brand kit op: {e}"))?;
+        out.extend(ops(vec![styled(v, parts)])?);
+    }
+    Ok(out)
+}
+
+/// A template bookend given the kit's accent and heading font, each only
+/// where the template has one: a kit restyles its intro and outro, which
+/// came out the same whatever the kit.
+fn styled(mut v: serde_json::Value, parts: &SequenceParts) -> serde_json::Value {
+    if v["op"] != "template" {
+        return v;
+    }
+    let mut fields = serde_json::Map::new();
+    if let Some(a) = &parts.accent {
+        fields.insert("Accent?".into(), json!(a));
+    }
+    if let Some(f) = &parts.heading_font {
+        fields.insert("Heading font?".into(), json!(f));
+    }
+    if !fields.is_empty() {
+        v["fields"] = serde_json::Value::Object(fields);
+    }
+    v
+}
+
 /// The ops that close a piece ending at `end_secs` with `outro`.
 pub fn outro_ops(end_secs: f64, outro: &Bookend) -> Result<Vec<Op>, String> {
     ops(vec![bookend(outro, end_secs)])
@@ -84,6 +114,11 @@ pub struct SequenceParts {
     pub intro: Option<(Bookend, f64)>,
     pub outro: Option<(Bookend, f64)>,
     pub watermark: Option<(Watermark, MediaId, (u32, u32))>,
+    /// The kit's accent colour (#rrggbb) and heading font, which its
+    /// intro and outro take where their template has an accent or a
+    /// heading font to set (P42).
+    pub accent: Option<String>,
+    pub heading_font: Option<String>,
 }
 
 /// The ops that put `parts` on `seq`: the intro first, the rest moved on,
@@ -93,11 +128,11 @@ pub fn sequence_ops(seq: &Sequence, parts: &SequenceParts) -> Result<Vec<Op>, St
     let mut out = Vec::new();
     let mut total = end;
     if let Some((b, len)) = &parts.intro {
-        out.extend(intro_ops(seq, b, *len)?);
+        out.extend(intro_ops_styled(seq, b, *len, parts)?);
         total += len;
     }
     if let Some((b, len)) = &parts.outro {
-        out.extend(outro_ops(total, b)?);
+        out.extend(ops(vec![styled(bookend(b, total), parts)])?);
         total += len;
     }
     if let Some((mark, media, size)) = &parts.watermark {
@@ -190,6 +225,8 @@ mod tests {
             intro: Some((Bookend::Template("Card".into()), 3.0)),
             outro: Some((Bookend::Media(outro), 2.0)),
             watermark: Some((Watermark { left: false, top: false, margin: 0.03, scale: 0.1, opacity: 0.8 }, MediaId::new(), (200, 100))),
+            accent: Some("#ef233c".into()),
+            heading_font: Some("Oswald".into()),
         };
         let ops: Vec<serde_json::Value> = sequence_ops(&seq, &parts).unwrap().iter().map(|o| serde_json::to_value(o).unwrap()).collect();
         let secs = |v: &serde_json::Value| v["secs"].as_f64().unwrap();
@@ -197,6 +234,8 @@ mod tests {
         assert!((secs(&ops[0]["to"]) - 3.0).abs() < 1e-6, "{}", ops[0]);
         assert_eq!((ops[1]["op"].as_str(), ops[1]["name"].as_str()), (Some("template"), Some("Card")));
         assert!(secs(&ops[1]["at"]).abs() < 1e-6);
+        // P42: the kit's accent and heading font, where the template has them.
+        assert_eq!((ops[1]["fields"]["Accent?"].as_str(), ops[1]["fields"]["Heading font?"].as_str()), (Some("#ef233c"), Some("Oswald")), "{}", ops[1]);
         assert_eq!(ops[2]["media_id"].as_str(), Some(outro.0.to_string().as_str()));
         assert!((secs(&ops[2]["at"]) - 13.0).abs() < 1e-6, "{}", ops[2]);
         let logo = ops.iter().find(|o| o["op"] == "place" && o["media_id"].as_str() != Some(outro.0.to_string().as_str())).unwrap();
