@@ -6408,6 +6408,26 @@ pub fn trim_at_linked(seq: &Sequence, pool: &MediaPool, clip_id: ClipId, edge: E
 
 #[allow(clippy::too_many_arguments)]
 fn resolve_trim(seq: &Sequence, pool: &MediaPool, i: usize, clip_id: ClipId, edge: Edge, target: Timecode, ripple: bool, linked: bool) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
+    // A ripple off the primary moves later clips whose pictures may sit
+    // on the primary; with no trim there to move them too, they would
+    // stay while their sound moved. Refused, as a remove that would leave
+    // partners behind is.
+    if ripple {
+        let (ti, ci, clip) = resolve_clip(seq, seq.fps, &ClipRef::Id(clip_id), i)?;
+        let primary = seq.primary_track_index();
+        let partner_on_primary = linked && clip.linked_clip_id.and_then(|lid| find_clip(seq, lid)).is_some_and(|(pti, _, _)| Some(pti) == primary);
+        if Some(ti) != primary && !partner_on_primary {
+            for c in &seq.tracks[ti].clips[ci + 1..] {
+                if let Some((pti, _, p)) = c.linked_clip_id.and_then(|lid| find_clip(seq, lid)).filter(|(pti, _, _)| Some(*pti) == primary) {
+                    return Err(refuse(
+                        i,
+                        format!("rippling track {ti} would move {} and leave its linked clip {} on the primary track {pti}, out of sync", clip_name(seq, pool, c), clip_name(seq, pool, p)),
+                        "trim without ripple, or trim the clips on the primary track",
+                    ));
+                }
+            }
+        }
+    }
     let (what, edit, ids) = resolve_trim_pair(seq, pool, i, clip_id, edge, target, ripple, linked)?;
     if !ripple {
         return Ok((what, edit, ids));
@@ -6686,12 +6706,16 @@ fn trim_range(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, ti: usize, c
             seq.tracks[ti].clips[ci + 1..].iter().map(|c| (c.id, c.timeline_in, c.timeline_out)).collect();
         // The sound linked to each later picture moves with it (#3449),
         // so everything after the edit stays in sync; on a locked track
-        // it stays, as the track does.
+        // it stays, as the track does. Not on the primary: one picture
+        // moved there alone runs into the clips around it; the primary's
+        // own trim moves its later clips, and a trim that would leave
+        // them is refused before this (`resolve_trim`).
+        let primary = seq.primary_track_index();
         let partners: Vec<(ClipId, Timecode, Timecode)> = seq.tracks[ti].clips[ci + 1..]
             .iter()
             .filter_map(|c| c.linked_clip_id)
             .filter(|p| *p != *clip_id && !shifted.iter().any(|s| s.0 == *p))
-            .filter_map(|p| seq.tracks.iter().enumerate().filter(|(k, t)| *k != ti && !t.locked).find_map(|(_, t)| t.find_clip(p)))
+            .filter_map(|p| seq.tracks.iter().enumerate().filter(|(k, t)| *k != ti && !t.locked && Some(*k) != primary).find_map(|(_, t)| t.find_clip(p)))
             .map(|c| (c.id, c.timeline_in, c.timeline_out))
             .collect();
         shifted.extend(partners);
@@ -21303,6 +21327,37 @@ mod tests {
         }
         assert_eq!(seqs[0].tracks[0].clips.len(), 2);
         assert_eq!(seqs[0].tracks[0].clips[1].timeline_in, tc(4.0));
+    }
+
+    /// A ripple trim off the primary that would move a sound whose picture
+    /// is on the primary is refused: the picture can't move there alone
+    /// without running into its neighbours, and left, it is out of sync.
+    /// Without ripple it trims; a trim of the picture itself ripples both.
+    #[test]
+    fn a_ripple_trim_that_would_leave_a_primary_picture_is_refused() {
+        let (mut seq, pool, media, _, _) = fixture();
+        let fps = seq.fps;
+        let mut primary = Sequence::new_default();
+        primary.fps = fps;
+        let p = primary.primary_track_index().unwrap();
+        let a = primary.tracks.iter().position(|t| t.kind == TrackKind::Audio).unwrap();
+        let mut picture = Clip::media(media, tc(0.0), tc(4.0), tc(0.0), tc(4.0));
+        let lone = Clip::media(media, tc(0.0), tc(2.0), tc(0.0), tc(2.0));
+        let mut sound = Clip::media(media, tc(4.0), tc(8.0), tc(4.0), tc(8.0));
+        let mut later = Clip::media(media, tc(4.0), tc(8.0), tc(4.0), tc(8.0));
+        later.linked_clip_id = Some(sound.id);
+        sound.linked_clip_id = Some(later.id);
+        let (lone_id, later_id) = (lone.id, later.id);
+        picture.linked_clip_id = None;
+        primary.tracks[p].clips = vec![picture, later];
+        primary.tracks[a].clips = vec![lone, sound];
+        seq = primary;
+        let trim = |id: ClipId, ripple: bool| Op::Trim { clip_id: ClipRef::Id(id), edge: Edge::Out, to: Anchor::Secs(1.0), ripple, linked: true };
+        let r = resolve(&seq, &pool, &[trim(lone_id, true)]).unwrap_err();
+        assert!(r.why.contains("primary") && r.why.contains("out of sync"), "{}", r.why);
+        assert!(resolve(&seq, &pool, &[trim(lone_id, false)]).is_ok(), "no ripple: nothing else moves");
+        let first = seq.tracks[p].clips[0].id;
+        assert!(resolve(&seq, &pool, &[Op::Trim { clip_id: ClipRef::Id(first), edge: Edge::Out, to: Anchor::Secs(3.0), ripple: true, linked: true }]).is_ok(), "the primary's own trim moves {later_id:?} and its sound");
     }
 
     /// A ripple remove that would close up a track under linked clips

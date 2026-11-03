@@ -52,9 +52,6 @@ const KNOWN: &[(&str, fn(&Broken, &str) -> bool)] = &[
     // on frames; a pair's sync off by up to a frame of the file.
     ("R6", |b, _| b.invariant == GAPLESS && b.amount.abs() < FRAME),
     ("R7", |b, _| b.invariant == SYNC && b.amount <= 1.0 + 1e-6),
-    // A primary clip starting a frame or more before the one before it
-    // ends: two over each other.
-    ("R9", |b, _| b.invariant == GAPLESS && b.amount <= -FRAME),
     // A slide leaving a pair out of sync.
     ("R10", |b, last| b.invariant == SYNC && last == "Slide"),
 ];
