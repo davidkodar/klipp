@@ -409,3 +409,20 @@ fn final_cuts_e_appends_the_selection() {
     state.selected_media_ids = [c, a].into_iter().collect();
     assert_eq!(state.append_targets(), [a, c], "the pool's selection, by name");
 }
+
+/// W4: a text or number field with the keys keeps them wherever the
+/// pointer is: no timeline key fires (the Ctrl keys only, so Ctrl+A is
+/// the field's Select All), and of those its own undo and redo and the
+/// clip grouping keys are the field's, while Save and Export still work.
+#[test]
+fn a_field_with_the_keys_keeps_them() {
+    use super::shortcuts::{key_scope, KeyScope};
+    let state = crate::state::AppState { project_path: Some(crate::project_paths::UNTITLED.into()), active_panel: Some(crate::state::PanelKind::Timeline), ..Default::default() };
+    assert_eq!(key_scope(&state, true), KeyScope::CtrlOnly, "typing: the Ctrl keys only, though the timeline was clicked last");
+    for owned in ["undo", "redo", "group_clips", "ungroup_clips"] {
+        assert!(super::shortcuts::field_owns(owned), "{owned}");
+    }
+    for app_wide in ["save_project", "export", "command_palette", "close_project"] {
+        assert!(!super::shortcuts::field_owns(app_wide), "{app_wide}");
+    }
+}

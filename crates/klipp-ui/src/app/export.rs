@@ -410,6 +410,26 @@ pub(super) fn default_export_path(prefs_dir: Option<&std::path::Path>, project: 
     dir.join(format!("{stem}.{ext}"))
 }
 
+/// What an export's file name says after the project's or first
+/// sequence's: for a version of the sequence, its own name with the
+/// master's taken off the front ("9:16", where "Untitled 9:16" made
+/// "Untitled Untitled 9-16"); for the master, the shape of the export
+/// when it is not the timeline's, so its 9:16 file is not named as its
+/// 16:9 one (W8).
+pub(super) fn export_version_suffix(first: &str, active: Option<&str>, timeline: (u32, u32), export: (u32, u32)) -> Option<String> {
+    if let Some(name) = active {
+        let own = name.strip_prefix(first).map(str::trim).filter(|rest| !rest.is_empty() && !first.trim().is_empty());
+        return Some(own.unwrap_or(name).to_string());
+    }
+    let ratio = |(w, h): (u32, u32)| w as f64 / h.max(1) as f64;
+    if timeline.0 == 0 || timeline.1 == 0 || export.0 == 0 || export.1 == 0 || (ratio(export) / ratio(timeline) - 1.0).abs() <= 0.015 {
+        return None;
+    }
+    fn gcd(a: u32, b: u32) -> u32 { if b == 0 { a } else { gcd(b, a % b) } }
+    let g = gcd(export.0, export.1).max(1);
+    Some(format!("{}:{}", export.0 / g, export.1 / g))
+}
+
 /// What the form says under the output file when a file of that name is
 /// already there: Export asks before writing over it, unless the
 /// preferences say to write over without asking.
@@ -982,6 +1002,9 @@ impl KlippApp {
                     }
                 }
                 self.fit_preset_to_sequence();
+                // Named again for the preset restored, while the name is
+                // still the one suggested (W8).
+                self.suggest_output_path();
                 true
             }
             // The sequence exported, once nothing stands in the way: media
@@ -1415,15 +1438,28 @@ impl KlippApp {
     }
 
     pub(super) fn prepare_export_defaults(&mut self) {
-        // Named again for the sequence open now while the name is still
-        // the one suggested: it followed the first sequence exported.
+        // The preset fitted first: the name follows its shape.
+        self.fit_preset_to_sequence();
+        self.suggest_output_path();
+    }
+
+    /// The output file named again while the name is still the one
+    /// suggested (or empty): for the sequence open now, which it followed
+    /// from the first sequence exported, and for the shape of the preset
+    /// chosen, so a 9:16 export of a 16:9 timeline is not named as the
+    /// 16:9 one and written over it (W8). A name of the user's own stays.
+    pub(super) fn suggest_output_path(&mut self) {
         let stem = |p: &str| std::path::Path::new(p).with_extension("");
         // The extension follows the format chosen; the name is the point.
         let suggested = self.export_dialog.suggested_path.as_deref().is_some_and(|s| stem(s) == stem(&self.export_dialog.output_path));
         let generate = self.export_dialog.output_path.trim().is_empty() || suggested;
         if generate {
             let first = self.state.sequences.first().map(|s| s.name.clone()).unwrap_or_default();
-            let version = (self.state.active_sequence_idx > 0).then(|| self.state.sequence().name.clone());
+            let seq = self.state.sequence();
+            let active = (self.state.active_sequence_idx > 0).then(|| seq.name.clone());
+            let shape = (seq.resolution.width, seq.resolution.height);
+            let size = klipp_core::ExportSettings { resolution: dialog_settings(&self.export_dialog).resolution, ..Default::default() }.output_size(shape.0, shape.1);
+            let version = export_version_suffix(&first, active.as_deref(), shape, size);
             let path = default_export_path(self.prefs.export.default_output_dir.as_deref(), self.state.project_path.as_deref(), &first, version.as_deref(), self.export_dialog.format.extension());
             self.export_dialog.output_path = path.to_string_lossy().to_string();
         }
@@ -1433,7 +1469,6 @@ impl KlippApp {
         if generate {
             self.export_dialog.suggested_path = Some(self.export_dialog.output_path.clone());
         }
-        self.fit_preset_to_sequence();
     }
 
     /// The export settings form: presets, output, codec, audio, range
@@ -1448,42 +1483,42 @@ impl KlippApp {
             ui.horizontal(|ui| { ui.add_space(12.0); ui.vertical(|ui| add(ui)); });
         };
         section_card(ui, "OUTPUT", None, &theme, |ui| { indent(ui, &mut |ui| {
-                // Preset selector
-                ui.horizontal_wrapped(|ui| {
-                    ui.label("Preset:");
-                    let selected_label = self.export_dialog.selected_preset_id.as_ref()
-                        .and_then(|id| all_presets.iter().find(|p| &p.id == id))
-                        .map(preset_label)
-                        .unwrap_or_else(|| "Custom".to_string());
-                    egui::ComboBox::from_id_salt("export_preset")
-                        .selected_text(selected_label)
-                        .width(0.0)
-                        .wrap_mode(egui::TextWrapMode::Extend)
-                        .show_ui(ui, |ui| {
-                            if ui.selectable_label(self.export_dialog.selected_preset_id.is_none(), "Custom").clicked() {
-                                self.export_dialog.selected_preset_id = None;
-                            }
-                            ui.separator();
-                            for preset in all_presets {
-                                let label = preset_label(preset);
-                                let is_selected = self.export_dialog.selected_preset_id.as_ref() == Some(&preset.id);
-                                if ui.selectable_label(is_selected, &label).clicked() {
-                                    self.export_dialog.selected_preset_id = Some(preset.id.clone());
-                                    apply_preset_to_dialog(&mut self.export_dialog, &preset.settings);
-                                }
-                            }
-                        });
-                    if ui.button("Save as Preset").clicked() {
-                        self.export_dialog.show_save_preset = true;
-                        self.export_dialog.save_preset_name.clear();
+                // Preset selector: the chosen preset's name never moves
+                // what is under it (W4: a long name wrapped Manage… onto a
+                // row of its own and the Output file field moved down).
+                let selected_label = self.export_dialog.selected_preset_id.as_ref()
+                    .and_then(|id| all_presets.iter().find(|p| &p.id == id))
+                    .map(preset_label)
+                    .unwrap_or_else(|| "Custom".to_string());
+                let mut picked = false;
+                let (save, manage) = preset_row(ui, &selected_label, |ui| {
+                    if ui.selectable_label(self.export_dialog.selected_preset_id.is_none(), "Custom").clicked() {
+                        self.export_dialog.selected_preset_id = None;
                     }
-                    // Opens the preset manager (#45) in a separate modal
-                    // so the user can delete, rename, duplicate, or
-                    // import/export user presets.
-                    if ui.button("\u{2699} Manage\u{2026}").on_hover_text("Manage export presets").clicked() {
-                        self.state.show_preset_manager = true;
+                    ui.separator();
+                    for preset in all_presets {
+                        let label = preset_label(preset);
+                        let is_selected = self.export_dialog.selected_preset_id.as_ref() == Some(&preset.id);
+                        if ui.selectable_label(is_selected, &label).clicked() {
+                            self.export_dialog.selected_preset_id = Some(preset.id.clone());
+                            apply_preset_to_dialog(&mut self.export_dialog, &preset.settings);
+                            picked = true;
+                        }
                     }
                 });
+                if picked {
+                    self.suggest_output_path();
+                }
+                if save {
+                    self.export_dialog.show_save_preset = true;
+                    self.export_dialog.save_preset_name.clear();
+                }
+                // Opens the preset manager (#45) in a separate modal
+                // so the user can delete, rename, duplicate, or
+                // import/export user presets.
+                if manage {
+                    self.state.show_preset_manager = true;
+                }
                 ui.add_space(4.0);
 
                 grid("export_grid_output").show(ui, |ui| {
@@ -1505,7 +1540,7 @@ impl KlippApp {
                         // Said before Export, not only at it.
                         if let Some(note) = existing_file_note(&self.export_dialog.output_path, self.export_dialog.overwrite_without_asking) {
                             ui.label("");
-                            ui.label(egui::RichText::new(note).small().color(ui.visuals().warn_fg_color));
+                            warn_note(ui, egui::RichText::new(note).small());
                             ui.end_row();
                         }
 
@@ -1597,7 +1632,7 @@ impl KlippApp {
                         // never a setting changed.
                         if let Some(hint) = self.export_dialog.banding.hint_for(self.banding_key(), self.export_dialog.video_codec, self.export_dialog.bit_depth) {
                             ui.label("");
-                            ui.label(egui::RichText::new(format!("\u{26A0} {hint}")).small().color(ui.visuals().warn_fg_color));
+                            warn_note(ui, egui::RichText::new(format!("\u{26A0} {hint}")).small());
                             ui.end_row();
                         }
 
@@ -1610,7 +1645,7 @@ impl KlippApp {
                         };
                         if let Some(warning) = shape {
                             ui.label("");
-                            ui.label(egui::RichText::new(format!("\u{26A0} {warning}")).small().color(ui.visuals().warn_fg_color));
+                            warn_note(ui, egui::RichText::new(format!("\u{26A0} {warning}")).small());
                             ui.end_row();
                         }
 
@@ -2785,6 +2820,36 @@ pub(super) fn follow_project_odt(odt: &mut klipp_core::OdtChoice, delivery: &mut
     if project.is_pq() {
         *delivery = klipp_core::HdrMode::Pq;
     }
+}
+
+/// The export form's Preset row: the menu of presets, its button as
+/// wide as the row allows with a long name cut short, and Save as Preset
+/// and Manage… on a row of their own, so the rows under it stay where
+/// they are whichever preset is chosen (W4). Whether Save and Manage were
+/// clicked.
+fn preset_row(ui: &mut egui::Ui, selected: &str, menu: impl FnOnce(&mut egui::Ui)) -> (bool, bool) {
+    ui.horizontal(|ui| {
+        ui.label("Preset:");
+        egui::ComboBox::from_id_salt("export_preset")
+            .selected_text(selected)
+            .width((ui.available_width() - 8.0).clamp(80.0, 320.0))
+            .truncate()
+            .show_ui(ui, menu);
+    });
+    ui.horizontal(|ui| {
+        let save = ui.button("Save as Preset").clicked();
+        let manage = ui.button("\u{2699} Manage\u{2026}").on_hover_text("Manage export presets").clicked();
+        (save, manage)
+    })
+    .inner
+}
+
+/// A warning under a field of the export form, wrapped to the form's
+/// width: one line long enough ran past the panel's edge, and widened the
+/// form so its other notes were cut off too (W8).
+fn warn_note(ui: &mut egui::Ui, text: egui::RichText) {
+    let colour = ui.visuals().warn_fg_color;
+    ui.add(egui::Label::new(text.color(colour)).wrap());
 }
 
 fn output_transform_menu(ui: &mut egui::Ui, odt: &mut klipp_core::OdtChoice, delivery: klipp_core::HdrMode, working: klipp_core::WorkingColorspace) {
@@ -4526,6 +4591,72 @@ mod export_prefs_tests {
         assert!(existing_file_note(&there.to_string_lossy(), false).is_some_and(|n| n.contains("asks")));
         assert!(existing_file_note(&there.to_string_lossy(), true).is_some_and(|n| n.contains("written over")));
         assert_eq!(existing_file_note(&dir.path().join("Holiday 9-16.mp4").to_string_lossy(), false), None);
+    }
+
+    /// W8: a version of the sequence is named by its own part of its name,
+    /// not the master's twice ("Untitled Untitled 9-16.mp4"), and a 9:16
+    /// export of the 16:9 master is named by its shape, so it does not
+    /// take the 16:9 file's name and write over it.
+    #[test]
+    fn an_export_in_another_shape_has_a_name_of_its_own() {
+        let videos = dirs::video_dir().unwrap_or_else(|| dirs::home_dir().unwrap().join("Videos"));
+        let unsaved = std::path::Path::new(crate::project_paths::UNTITLED);
+        let name = |active: Option<&str>, export: (u32, u32)| {
+            let version = export_version_suffix("Untitled", active, (1920, 1080), export);
+            default_export_path(None, Some(unsaved), "Untitled", version.as_deref(), "mp4")
+        };
+        assert_eq!(name(Some("Untitled 9:16"), (1080, 1920)), videos.join("Untitled 9-16.mp4"), "the version's own part");
+        assert_eq!(name(Some("Teaser"), (1920, 1080)), videos.join("Untitled Teaser.mp4"), "another sequence, by its name");
+        assert_eq!(name(None, (1080, 1920)), videos.join("Untitled 9-16.mp4"), "the master at 9:16");
+        assert_eq!(name(None, (1080, 1350)), videos.join("Untitled 4-5.mp4"), "the master at 4:5");
+        assert_eq!(name(None, (3840, 2160)), videos.join("Untitled.mp4"), "the master's shape at another size: its own name");
+        assert_eq!(name(None, (1920, 1080)), videos.join("Untitled.mp4"));
+    }
+
+    /// W4: the Output file field stays where it is whichever preset is
+    /// chosen; a long preset name wrapped Manage… onto a row of its own
+    /// and the field moved down under the pointer.
+    #[test]
+    fn the_preset_s_name_moves_nothing_under_it() {
+        let ctx = egui::Context::default();
+        let below = |selected: &str| {
+            let mut at = 0.0;
+            let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(330.0, 400.0))), ..Default::default() };
+            let _ = ctx.run(input, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    super::preset_row(ui, selected, |_| {});
+                    at = ui.label("Output file:").rect.top();
+                });
+            });
+            at
+        };
+        let short = below("Custom");
+        assert_eq!(below("Shorts, Reels, TikTok 9:16"), short);
+        assert_eq!(below("A preset of my own with a very long name indeed, longer than the panel"), short);
+    }
+
+    /// W8: a warning under a field wraps inside the form instead of
+    /// running past its edge.
+    #[test]
+    fn a_warning_wraps_inside_the_form() {
+        let ctx = egui::Context::default();
+        let mut right = 0.0;
+        let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(330.0, 400.0))), ..Default::default() };
+        let _ = ctx.run(input, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                egui::Grid::new("w").num_columns(2).show(ui, |ui| {
+                    ui.label("Video codec:");
+                    ui.label("H.264");
+                    ui.end_row();
+                    ui.label("");
+                    let warning = klipp_core::ExportSettings { resolution: Some(klipp_core::Resolution { width: 1080, height: 1920 }), ..Default::default() }.shape_warning(1920, 1080).unwrap();
+                    super::warn_note(ui, egui::RichText::new(warning).small());
+                    right = ui.min_rect().right();
+                    ui.end_row();
+                });
+            });
+        });
+        assert!(right <= 330.0, "the warning runs to {right}, past the form's 330");
     }
 
     /// #1816: with the file already there, Ask keeps the name and asks,
