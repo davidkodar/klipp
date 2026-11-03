@@ -736,7 +736,9 @@ impl KlippApp {
                         }
                     }
                 }
-                if let Some(old) = old { self.push_title_undo(*clip_id, "Edit Title Text", old); }
+                if let Some(old) = old {
+                    self.push_title_undo(*clip_id, super::title_handles::text_edit_name(&self.state, *clip_id), old);
+                }
                 self.render_title_to_viewer(*clip_id);
                 self.sync_sequence_to_engine();
                 let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
@@ -2034,7 +2036,7 @@ impl KlippApp {
                     }
                 }
                 if let Some(old) = old {
-                    self.push_title_undo(*clip_id, "Edit Title Text", old);
+                    self.push_title_undo(*clip_id, super::title_handles::text_edit_name(&self.state, *clip_id), old);
                 }
                 self.render_title_to_viewer(*clip_id);
                 self.sync_sequence_to_engine();
