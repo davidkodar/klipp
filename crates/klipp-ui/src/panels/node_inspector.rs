@@ -3893,10 +3893,16 @@ impl NodeInspectorPanel {
 
             // Preset dropdown
             let combo_id = format!("tool_preset_{:?}", tool);
+            let mut deleted = None;
             egui::ComboBox::from_id_salt(&combo_id)
                 .selected_text("Select...")
                 .width(130.0)
                 .show_ui(ui, |ui| {
+                    // None saved yet: say so, and how one is made. The
+                    // list opened on nothing and read as broken.
+                    if presets.is_empty() {
+                        ui.label(egui::RichText::new("No presets for this tool yet.\nSave (\u{1F4BE}) keeps its settings as one.").size(10.0).color(theme.text_dim));
+                    }
                     let mut apply_idx = None;
                     for (i, preset) in presets.iter().enumerate() {
                         if ui.selectable_label(false, &preset.name).clicked() {
@@ -3919,13 +3925,18 @@ impl NodeInspectorPanel {
                                 }
                             }
                             if let Some(name) = to_delete {
-                                let _ = presets::delete_tool_preset(tool, &name);
-                                // Can't modify presets here (immutable ref via menu_button)
-                                // — removal deferred below
+                                if presets::delete_tool_preset(tool, &name).is_ok() {
+                                    deleted = Some(name);
+                                }
                             }
                         });
                     }
                 });
+            // Out of the list once its file is gone: it stayed offered
+            // until the next start.
+            if let Some(name) = deleted {
+                presets.retain(|p| p.name != name);
+            }
 
             // Save button
             if ui.small_button("\u{1F4BE}").on_hover_text("Save current settings as preset").clicked() {
@@ -6038,5 +6049,48 @@ fn key_mixer_inputs(ui: &mut egui::Ui, params: &mut NodeParams, node_id: NodeId,
             ]);
         }
         mixer.inputs[port] = input;
+    }
+}
+
+#[cfg(test)]
+mod tool_presets {
+    use super::*;
+
+    /// The texts one frame of the Wheels preset bar draws, with where.
+    fn frame(ctx: &egui::Context, panel: &mut NodeInspectorPanel, graph: &mut NodeGraph, time: f64, events: Vec<egui::Event>) -> Vec<(String, egui::Pos2)> {
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(420.0, 600.0))),
+            time: Some(time),
+            events,
+            ..Default::default()
+        };
+        let theme = KlippTheme::default();
+        let mut cmds = Vec::new();
+        let out = ctx.run(input, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| panel.show_tool_preset_bar(ui, &ToolScope::Wheels, graph, ClipId::new(), &mut cmds, &theme));
+        });
+        out.shapes
+            .iter()
+            .filter_map(|s| match &s.shape {
+                egui::Shape::Text(t) => Some((t.galley.text().to_string(), t.pos + t.galley.size() / 2.0)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// With none saved, the dropdown says so and how to make one; it
+    /// opened on nothing, which read as broken.
+    #[test]
+    fn an_empty_preset_list_says_how_to_save_one() {
+        let ctx = egui::Context::default();
+        let mut panel = NodeInspectorPanel { wheels_presets: Vec::new(), ..Default::default() };
+        let mut graph = NodeGraph::default();
+        let drawn = frame(&ctx, &mut panel, &mut graph, 0.0, Vec::new());
+        let at = drawn.iter().find(|(t, _)| t == "Select...").unwrap_or_else(|| panic!("the dropdown is drawn: {drawn:?}")).1;
+        let button = |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+        frame(&ctx, &mut panel, &mut graph, 0.1, vec![egui::Event::PointerMoved(at), button(true)]);
+        frame(&ctx, &mut panel, &mut graph, 0.2, vec![button(false)]);
+        let open = frame(&ctx, &mut panel, &mut graph, 0.3, Vec::new());
+        assert!(open.iter().any(|(t, _)| t.starts_with("No presets for this tool yet.")), "the open list says none are saved: {open:?}");
     }
 }
