@@ -7,6 +7,17 @@ use crate::widgets::waveform;
 use klipp_core::{AppCommand, AudioParam, Timecode};
 use klipp_timeline::{ChannelConfig, Clip, FadeCurve};
 
+/// The clip whose audio effects `clip`'s sound plays through: a picture's
+/// linked sound clip on an audio track, else the clip itself. The mix
+/// reads a sound clip's own chain and leaves out its picture's sound, so
+/// an effect put on the picture was never heard.
+pub fn effects_clip<'a>(seq: &'a klipp_timeline::Sequence, clip: &'a Clip) -> &'a Clip {
+    clip.linked_clip_id
+        .filter(|_| seq.tracks.iter().any(|t| t.kind == klipp_timeline::TrackKind::Video && t.clips.iter().any(|c| c.id == clip.id)))
+        .and_then(|lid| seq.tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Audio).flat_map(|t| &t.clips).find(|c| c.id == lid))
+        .unwrap_or(clip)
+}
+
 /// Find peak levels for the clip's audio. If the clip is on a video track
 /// with a linked audio clip, use the audio track's peaks.
 pub fn find_clip_peak_levels(clip: &Clip, track_idx: usize, state: &AppState) -> (f32, f32) {
@@ -815,11 +826,14 @@ fn show_clip_audio(
             .stroke(egui::Stroke::NONE)
             .shadow(egui::Shadow::NONE)
             .show(ui, |ui| {
-                let clip_timeline_in_secs = clip.timeline_in.to_secs_f64();
-                let clip_rate = clip.timeline_in.rate;
+                // A picture's effects are its linked sound clip's, which
+                // the mix plays them on.
+                let fx = effects_clip(state.sequence(), clip);
+                let clip_timeline_in_secs = fx.timeline_in.to_secs_f64();
+                let clip_rate = fx.timeline_in.rate;
                 super::audio_fx_inspector::show_content(
-                    ui, theme, clip_id,
-                    &clip.audio_effects, &clip.audio_effect_keyframes,
+                    ui, theme, fx.id,
+                    &fx.audio_effects, &fx.audio_effect_keyframes,
                     clip_time_secs, clip_timeline_in_secs, clip_rate,
                     &state.ladspa_plugins, cmds,
                     keyframe_tolerance,
@@ -1385,5 +1399,34 @@ mod clip_audio_tests {
             _ => None,
         }).collect();
         assert_eq!(set, vec![(clip.id, 0.5)], "Enter set the volume typed, on this clip: {cmds:?}");
+    }
+}
+
+#[cfg(test)]
+mod effects_clip_tests {
+    use super::effects_clip;
+    use klipp_core::{MediaId, RationalTime};
+    use klipp_timeline::{Clip, Sequence, Track, TrackKind};
+
+    /// A picture's audio effects go on its linked sound clip, which the
+    /// mix plays them on; a picture with no sound clip, and a sound clip,
+    /// keep their own.
+    #[test]
+    fn a_pictures_effects_go_on_its_sound_clip() {
+        let t = |s: f64| RationalTime::from_secs_f64(s, 24);
+        let media = MediaId::new();
+        let mut picture = Clip::media(media, t(0.0), t(4.0), t(0.0), t(4.0));
+        let mut sound = Clip::media(media, t(0.0), t(4.0), t(0.0), t(4.0));
+        (picture.linked_clip_id, sound.linked_clip_id) = (Some(sound.id), Some(picture.id));
+        let alone = Clip::media(media, t(4.0), t(8.0), t(0.0), t(4.0));
+        let mut v = Track::new("V1", TrackKind::Video);
+        v.clips = vec![picture.clone(), alone.clone()];
+        let mut a = Track::new("A1", TrackKind::Audio);
+        a.clips = vec![sound.clone()];
+        let mut seq = Sequence::new_default();
+        seq.tracks = vec![v, a];
+        assert_eq!(effects_clip(&seq, &picture).id, sound.id);
+        assert_eq!(effects_clip(&seq, &sound).id, sound.id, "a sound clip keeps its own");
+        assert_eq!(effects_clip(&seq, &alone).id, alone.id, "no sound clip: the picture's own sound");
     }
 }

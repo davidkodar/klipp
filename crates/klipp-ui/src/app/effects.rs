@@ -145,6 +145,10 @@ impl KlippApp {
 
             // Audio DSP effects
             AppCommand::AddAudioEffect { clip_id, ref effect_type } => {
+                // On a picture with its sound on an audio track, the
+                // effect goes on that sound clip, which the mix plays.
+                let seq = &self.state.sequences[self.state.active_sequence_idx];
+                let clip_id = &seq.all_clips().find(|c| c.id == *clip_id).map_or(*clip_id, |c| crate::inspector::audio_tab::effects_clip(seq, c).id);
                 // Audio effects are edited in the Audio inspector. Switch to
                 // that surface as soon as the user adds one from the browser,
                 // a drop, or another command so the new chain entry and its
