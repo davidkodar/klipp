@@ -5653,6 +5653,10 @@ pub struct ControlShared {
     /// The window's size in points at the last window capture, set before
     /// the capture is written.
     pub window_view: std::sync::Mutex<Option<WindowView>>,
+    /// The test hook's pointer steps still to play, as of the end of the
+    /// last frame: a `pointer` request answers once they have, so what is
+    /// read after it is what the steps did.
+    pub pointer_steps: std::sync::atomic::AtomicUsize,
 }
 
 /// A window's size in the points its input is measured in, and the

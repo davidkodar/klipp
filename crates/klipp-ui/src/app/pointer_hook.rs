@@ -23,6 +23,11 @@ impl PointerPlayer {
         self.steps.extend(steps.iter().cloned());
     }
 
+    /// The steps still to play, the one playing among them.
+    pub(crate) fn pending(&self) -> usize {
+        self.steps.len()
+    }
+
     /// Keeps frames coming while steps wait, asked inside the frame's
     /// pass. The request `play` makes comes before the pass begins, and
     /// an unfocused window — a harness's headless output — drew only on
@@ -118,6 +123,24 @@ mod tests {
         let mut raw = egui::RawInput::default();
         p.play(ctx, &mut raw, |secs, track| Some(egui::pos2(100.0 + secs as f32 * 10.0, 50.0 + track as f32 * 40.0)));
         raw
+    }
+
+    /// The steps still to play count down a frame at a time, a step held
+    /// for frames counting until its last; none once the last has played,
+    /// which a `pointer` request waits for before it answers (W7).
+    #[test]
+    fn the_steps_left_count_down_to_none() {
+        let steps: Vec<PointerStep> = serde_json::from_value(serde_json::json!([
+            {"action": "press", "at": {"screen": {"x": 5.0, "y": 6.0}}},
+            {"action": "wait", "frames": 3},
+            {"action": "release"}
+        ]))
+        .unwrap();
+        let ctx = egui::Context::default();
+        let mut p = PointerPlayer::default();
+        p.queue(&steps);
+        let left: Vec<usize> = (0..6).map(|_| { frame(&mut p, &ctx); p.pending() }).collect();
+        assert_eq!(left, [2, 2, 2, 1, 0, 0]);
     }
 
     /// Steps play one a frame, each where it says: a press on a timeline

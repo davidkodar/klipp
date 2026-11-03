@@ -3858,6 +3858,8 @@ impl KlippApp {
             }
             AppCommand::InjectPointer(steps) => {
                 self.pointer.queue(steps);
+                // Said at once, so the request waits from its answer on.
+                self.state.control_shared.pointer_steps.store(self.pointer.pending(), std::sync::atomic::Ordering::SeqCst);
                 true
             }
             AppCommand::ShowPanel { workspace, inspector_tab } => {

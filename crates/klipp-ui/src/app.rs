@@ -909,6 +909,9 @@ impl eframe::App for KlippApp {
         let has_quit = self.dispatch_commands(ctx, all_cmds);
         // After the commands, which may have queued a harness's steps.
         self.pointer.keep_awake(ctx);
+        // The steps left once this frame's commands have run: none means
+        // the last one's frame is done, and its `pointer` request answers.
+        self.state.control_shared.pointer_steps.store(self.pointer.pending(), std::sync::atomic::Ordering::SeqCst);
         self.finish_frame(ctx, has_quit);
 
         // Log slow UI ticks. 25 ms is a conservative threshold — at 60 fps
