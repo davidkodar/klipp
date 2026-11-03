@@ -1,7 +1,9 @@
 # Fonts Klipp fetches on request (#2732): open-licence families, each file
 # by its address in the google/fonts repository (pinned to one commit), its
-# size and SHA-256. No font is kept in the repository: a fetched one goes to
-# the user's data folder with its licence beside it.
+# size and SHA-256. A fetched one goes to the user's data folder with its
+# licence beside it; it is fetched only once the person agrees. The families
+# the built-in templates and starter brand kits use ship with the app, the
+# same files in assets/fonts/catalogue/ (see klipp-title's catalogue::SHIPPED).
 #
 # style: what it is (serif, display, condensed, grotesque, rounded, script,
 # handwritten, mono, ...); mood: what it suits; scripts: the writing
