@@ -1408,7 +1408,10 @@ fn titles_result_strip(
 /// next to place, and the command that places it. As a double-click on a
 /// title card adds it and, on a copy of the sequence, its preview (#3210)
 /// shows it.
-pub(crate) fn place_title(state: &mut AppState, data: klipp_timeline::TitleData) -> AppCommand {
+pub(crate) fn place_title(state: &mut AppState, mut data: klipp_timeline::TitleData) -> AppCommand {
+    // Clear of the player the sequence is made for, as the template op
+    // places it (P23).
+    klipp_document::ops::lift_above_player(state.sequence(), &mut data);
     state.pending_title_data = Some(data);
     let ph = state.playhead;
     let seq = &mut state.sequences[state.active_sequence_idx];

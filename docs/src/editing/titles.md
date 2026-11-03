@@ -17,6 +17,8 @@ Every way in lands the same: the title becomes the selection, the inspector open
 
 A new text track is made on top when no existing one has room.
 
+In a sequence made for a destination, such as YouTube, a design from the Library is placed clear of the player's controls along the bottom of the frame: a lower third that would sit under YouTube's progress bar is lifted above it. The viewer's platform overlay shows where the player covers the picture.
+
 ## Editing on the Picture
 
 Double-click a title in the viewer to edit its text where it is. The caret and the selection are drawn on the engine's own render, so what you see while typing is the title itself: the face, the shadows, the fill. Click or drag on the text to place the caret or select; Esc, or a click elsewhere in the viewer, finishes. A double-click beside the text edits the first text layer.

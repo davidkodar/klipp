@@ -4700,6 +4700,8 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             // A built-in laid out for the sequence's frame (#2734).
             let mut td = klipp_timeline::title_library::for_frame(td, seq.resolution.width, seq.resolution.height);
             set_title_fields(&mut td, &quoted(name), fields, i)?;
+            // Clear of the player the sequence is made for (P23).
+            lift_above_player(seq, &mut td);
             if !held.is_finite() || *held < 0.2 {
                 return Err(refuse(i, format!("{held} s is too short"), "hold it at least a fraction of a second"));
             }
@@ -7776,6 +7778,29 @@ fn label_name(label: &str) -> String {
 /// the sequences it needs copied in first; its parameters set from
 /// `fields` by name or label. One step.
 #[allow(clippy::too_many_arguments)]
+/// `td` lifted until it ends above the player of the platform `seq` is
+/// made for, along the frame's bottom (YouTube's progress bar and
+/// controls): a built-in lower third sat under them (P23). Never past the
+/// frame's top margin; nothing without a destination's player.
+pub fn lift_above_player(seq: &Sequence, td: &mut klipp_timeline::TitleData) {
+    const GAP: f32 = 0.02;
+    let Some(platform) = seq.brief.as_ref().map(|b| b.platform.as_str()) else { return };
+    let Some(player) = klipp_core::platform_overlays::player_for(platform, seq.resolution.width, seq.resolution.height) else { return };
+    let Some([x, y, w, h]) = klipp_timeline::title_box::title_box(td, seq.resolution) else { return };
+    let Some(limit) = player.clear_above(x, x + w) else { return };
+    let over = (y + h) - (limit - GAP);
+    if over <= 0.0 {
+        return;
+    }
+    let by = over.min((y - 0.05).max(0.0));
+    for o in &mut td.objects {
+        o.transform.center.y -= by;
+        for k in &mut o.transform.center_y_keyframes {
+            k.value -= by;
+        }
+    }
+}
+
 fn place_composition(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, at: Timecode, held: Option<f64>, track: Option<&TrackRef>, fields: &std::collections::BTreeMap<String, serde_json::Value>, placed: &PlacedComposition) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
     let t = &placed.template;
     // Its layout for this sequence's frame (#2757): tall, square or wide.
@@ -15343,6 +15368,32 @@ mod tests {
             let layout = view.sequences.iter().find(|s| s.id == placed).expect("its layout copied in");
             assert_eq!((layout.resolution.width, layout.resolution.height), (w, h));
         }
+    }
+
+    /// P23: a built-in lower third placed in a YouTube sequence ends above
+    /// the player's progress bar and controls (from 88% down); in a
+    /// sequence made for no destination it stays where it is made.
+    #[test]
+    fn a_lower_third_keeps_clear_of_the_players_controls() {
+        let youtube = klipp_core::project_formats::formats().iter().filter_map(|f| f.destination.as_ref()).find(|d| d.overlays.iter().any(|o| o == "youtube")).map(|d| d.platform.clone()).expect("a YouTube destination");
+        let accent = klipp_timeline::title_library::builtin("Accent Block").expect("the built-in").data();
+        let placed = |platform: Option<&str>| {
+            let (mut seq, pool, ..) = fixture();
+            seq.resolution = klipp_core::Resolution { width: 1920, height: 1080 };
+            seq.brief = platform.map(|p| klipp_timeline::Brief { platform: p.to_string(), ..Default::default() });
+            let op = Op::Template { name: "Accent Block".into(), at: Anchor::Secs(0.0), secs: Some(3.0), track: None, fields: Default::default(), source: None, kind: None, data: Some(Box::new(accent.clone())), composition: None };
+            let plan = resolve(&seq, &pool, &[op]).unwrap_or_else(|r| panic!("{}", r.why));
+            let mut seqs = vec![seq.clone()];
+            let (mut p, mut fps) = (pool.clone(), seq.fps);
+            let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps };
+            view.apply_forward(&plan.steps[0].edit);
+            let td = view.sequences[0].all_clips().find_map(|c| c.title_data().filter(|t| t.template.is_some()).cloned()).expect("placed");
+            klipp_timeline::title_box::title_box(&td, seq.resolution).expect("a box")
+        };
+        let mine = placed(Some(&youtube));
+        assert!(mine[1] + mine[3] <= 0.88 - 0.019, "it ends at {:.3}, over the controls from 0.88", mine[1] + mine[3]);
+        let free = placed(None);
+        assert!(free[1] + free[3] > 0.88, "the built-in sits low where nothing covers it: {:.3}", free[1] + free[3]);
     }
 
     /// #2757: a composition template placed with no `secs` holds for the
