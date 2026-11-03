@@ -10344,7 +10344,13 @@ impl PlaybackEngine {
     /// timeline's. From Idle or Stopped this parks the engine, as a seek
     /// from the UI does, so the edits after it render too.
     fn show_edit_at_playhead(&mut self) {
-        let ph = self.playhead;
+        // The timeline shrunk under it: on its last frame, not past its end
+        // in the black there.
+        let ph = on_the_timeline(self.playhead, self.sequence_duration(), self.fps);
+        if ph != self.playhead {
+            self.playhead = ph;
+            self.report_jump(ph);
+        }
         self.quiet_seek = true;
         self.seek_in_sequence(ph);
         self.quiet_seek = false;
@@ -12973,6 +12979,16 @@ pub fn generate_thumbnail_at_size_with_rotation(
     }
 }
 
+
+/// Where a parked playhead belongs on a timeline ending at `end`: where it
+/// is, or past the end, on the last frame.
+fn on_the_timeline(playhead: Timecode, end: Timecode, fps: klipp_core::Fps) -> Timecode {
+    if playhead < end {
+        return playhead;
+    }
+    let last = (end.to_secs_f64() - fps.frame_duration_secs()).max(0.0);
+    RationalTime::from_secs_f64(last, fps.rate())
+}
 
 /// Check if an RGBA frame is effectively black (< 5% average brightness).
 /// Samples ~64 evenly spaced pixels for speed.
@@ -15657,6 +15673,59 @@ mod track_switch_tests {
         engine.handle_command(AppCommand::BeginScrub);
         engine.scrub_audio_enabled = false;
         assert!(engine.sound_muted(), "a scrub with its sound off");
+    }
+
+    /// The timeline shrunk under a parked playhead: it goes to the last
+    /// frame, not past the end in the black there. Undo lengthening the
+    /// timeline again leaves it where it is, and an edit that leaves it on
+    /// the timeline doesn't move it.
+    #[test]
+    fn a_timeline_shrunk_under_the_playhead_leaves_it_on_the_last_frame() {
+        let timeline = |secs: &[i64]| {
+            let mut seq = klipp_timeline::Sequence::new_default();
+            let rate = seq.fps.rate();
+            let at = |s: i64| RationalTime::from_secs_f64(s as f64, rate);
+            let mut track = klipp_timeline::Track::new("V1", klipp_timeline::TrackKind::Video);
+            track.clips = secs.windows(2).map(|w| klipp_timeline::Clip::media(MediaId::new(), at(w[0]), at(w[1]), at(0), at(w[1] - w[0]))).collect();
+            seq.tracks = vec![track];
+            seq
+        };
+        let long = timeline(&[0, 5, 10]);
+        let (mut engine, shared) = engine(long.clone());
+        let (rate, frame) = (engine.fps.rate(), engine.fps.frame_duration_secs());
+        let secs = |s: f64| RationalTime::from_secs_f64(s, rate);
+        engine.state = PlaybackState::Paused;
+        engine.note_layout_change(true);
+        engine.playhead = secs(9.5);
+
+        let mut short = long.clone();
+        short.tracks[0].clips.pop();
+        shared.replace(short);
+        engine.handle_command(AppCommand::SequenceUpdated);
+        let last = secs(5.0 - frame);
+        assert_eq!(engine.playhead, last, "on the last frame");
+
+        shared.replace(long.clone());
+        engine.handle_command(AppCommand::SequenceUpdated);
+        assert_eq!(engine.playhead, last, "undo leaves it there");
+
+        let mut trimmed = long;
+        trimmed.tracks[0].clips[1].timeline_out = secs(8.0);
+        shared.replace(trimmed);
+        engine.handle_command(AppCommand::SequenceUpdated);
+        assert_eq!(engine.playhead, last, "still on the timeline");
+    }
+
+    /// Past the end or on it, the last frame; an empty timeline, its start.
+    #[test]
+    fn a_playhead_past_the_end_belongs_on_the_last_frame() {
+        let fps = klipp_core::Fps::new(30, 1);
+        let at = |f: i64| RationalTime::from_frames(f, 30);
+        assert_eq!(on_the_timeline(at(10), at(30), fps), at(10));
+        assert_eq!(on_the_timeline(at(29), at(30), fps), at(29));
+        assert_eq!(on_the_timeline(at(30), at(30), fps), at(29));
+        assert_eq!(on_the_timeline(at(90), at(30), fps), at(29));
+        assert_eq!(on_the_timeline(at(90), at(0), fps), at(0));
     }
 
     /// #2672: a muted track stays silent once the timeline takes the
