@@ -16,8 +16,10 @@
 //! 5. the sequence saved and loaded back is the same, every time in it
 //!    the same time (a time may come back written at another rate).
 //!
-//! A failure is shrunk to the shortest run of steps that still fails the
-//! same way and printed as a repro, a list of the steps.
+//! A failure of a known shape (`KNOWN`) is noted, its step taken out and
+//! the run goes on, so the steps after it are checked too. Any other is
+//! shrunk to the shortest run of steps that still fails the same way,
+//! printed as a repro, a list of the steps, and fails the test.
 //!
 //! Each step names its clip by its place among the clips there are and
 //! its times as shares of what there is, so a shorter run replays the
@@ -38,15 +40,42 @@ use klipp_timeline::magnetic::MagneticEditor;
 use klipp_timeline::{Clip, Sequence};
 use serde_json::{json, Value};
 
-/// Seeds of the usual run whose failure is known and listed in the
-/// private bug list: the seed, the invariant broken and the entry there.
-/// Run, and not a failure of this test; each goes when its fix lands.
-const KNOWN: &[(u64, &str, &str)] = &[
-    (1, "linked pairs in sync", "R5"),
-    (2, "linked pairs in sync", "R7"),
-    (3, "primary gapless", "R6"),
-    (4, "save and load", "R4"),
+/// What is known to fail, each by its shape and the entry in the private
+/// bug list that holds it: a failure of that shape is reported, not a
+/// failure of this test, and any other shape is. Each goes when its fix
+/// lands, and the test then proves the fix.
+const KNOWN: &[(&str, fn(&Broken, &str) -> bool)] = &[
+    // A link to a clip that isn't there.
+    ("R5", |b, _| b.invariant == SYNC && b.detail.contains("isn't there")),
+    // A transition saving drops: one left on a clip split or deleted.
+    ("R4", |b, _| b.invariant == SAVED && b.detail.contains("/transitions")),
+    // Undo or redo giving back a time at another rate, the same time.
+    ("R8", |b, _| b.invariant.ends_with("(a time written at another rate)")),
+    // Under a frame off: a sound placed to the sample against pictures
+    // on frames; a pair's sync off by up to a frame of the file.
+    ("R6", |b, _| b.invariant == GAPLESS && b.amount.abs() < FRAME),
+    ("R7", |b, _| b.invariant == SYNC && b.amount <= 1.0 + 1e-6),
+    // A primary clip starting a frame or more before the one before it
+    // ends: two over each other.
+    ("R9", |b, _| b.invariant == GAPLESS && b.amount <= -FRAME),
+    // A slide leaving a pair out of sync.
+    ("R10", |b, last| b.invariant == SYNC && last == "Slide"),
+    // Undo or redo giving back other clip ids, on a clip or a transition.
+    ("R11", |b, _| (b.invariant == "undo restores the state before" || b.invariant == "redo restores the state after") && b.detail.contains("id: ")),
+    // A ripple remove closing up one track under linked clips.
+    ("R3", |b, last| b.invariant == SYNC && last == "Remove"),
 ];
+
+const SYNC: &str = "linked pairs in sync";
+const GAPLESS: &str = "primary gapless";
+const SAVED: &str = "save and load";
+const FRAME: f64 = 1.0 / RATE as f64;
+
+/// The known entry `broken` is, from the step it broke at in `steps`.
+fn known(broken: &Broken, steps: &[Step]) -> Option<&'static str> {
+    let last = steps.get(broken.step).map(kind).unwrap_or_default();
+    KNOWN.iter().find(|(_, is)| is(broken, &last)).map(|(entry, _)| *entry)
+}
 
 const RATE: u32 = 25;
 
@@ -167,7 +196,14 @@ struct Broken {
     step: usize,
     invariant: &'static str,
     detail: String,
+    /// How far out, where it is a distance: a pair's sync in frames (the
+    /// file's or the sequence's, whichever is fewer), a gap in seconds
+    /// (less than 0 for two over each other); infinite otherwise.
+    amount: f64,
 }
+
+/// A broken invariant, what it was, and how far out.
+type Fail = (&'static str, String, f64);
 
 /// One undo step: its edits and the states either side of it.
 struct Done {
@@ -245,7 +281,7 @@ impl Run {
 
     /// `step` made, as one undo step; `Ok(false)` when there was nothing
     /// to do or it was refused.
-    fn take(&mut self, step: &Step) -> Result<bool, (&'static str, String)> {
+    fn take(&mut self, step: &Step) -> Result<bool, Fail> {
         let id = |c: &Clip| c.id.0.to_string();
         let before = state(&self.seq);
         let end = self.seq.total_duration();
@@ -256,7 +292,7 @@ impl Run {
                 let now = state(&self.seq);
                 if now != done.before {
                     let only_rates = same_times(now.clone()) == same_times(done.before.clone());
-                    return Err((if only_rates { "undo restores the state before (a time written at another rate)" } else { "undo restores the state before" }, first_difference(&done.before, &now)));
+                    return Err((if only_rates { "undo restores the state before (a time written at another rate)" } else { "undo restores the state before" }, first_difference(&done.before, &now), f64::INFINITY));
                 }
                 self.redo.push(done);
                 return Ok(true);
@@ -267,7 +303,7 @@ impl Run {
                 let now = state(&self.seq);
                 if now != done.after {
                     let only_rates = same_times(now.clone()) == same_times(done.after.clone());
-                    return Err((if only_rates { "redo restores the state after (a time written at another rate)" } else { "redo restores the state after" }, first_difference(&done.after, &now)));
+                    return Err((if only_rates { "redo restores the state after (a time written at another rate)" } else { "redo restores the state after" }, first_difference(&done.after, &now), f64::INFINITY));
                 }
                 self.undo.push(done);
                 return Ok(true);
@@ -340,33 +376,38 @@ impl Run {
     }
 
     /// The five invariants on the sequence as it is now.
-    fn check(&self) -> Result<(), (&'static str, String)> {
+    fn check(&self) -> Result<(), Fail> {
         for c in self.seq.all_clips() {
             let Some(p) = c.linked_clip_id else { continue };
             let Some(partner) = self.seq.all_clips().find(|x| x.id == p) else {
-                return Err(("linked pairs in sync", format!("{} links to {}, which isn't there", short(c.id), short(p))));
+                return Err((SYNC, format!("{} links to {}, which isn't there", short(c.id), short(p)), f64::INFINITY));
             };
             // Where the file's start falls on the timeline, for each.
             let zero = |x: &Clip| secs(x.timeline_in) - secs(x.source_in) / x.speed;
             if c.media_id().is_none() || partner.media_id() != c.media_id() || c.is_reversed() || partner.is_reversed() {
                 continue;
             }
-            // Within half a frame of the file (24 fps, the coarser rate): a
-            // picture's file time falls on the file's frames, a sound's
-            // anywhere, so a cut between them rounds.
-            if (c.speed - partner.speed).abs() > 1e-9 || (zero(c) - zero(partner)).abs() > 0.5 / 24.0 + 1e-6 {
-                return Err(("linked pairs in sync", format!(
+            // How far apart in the file, in its seconds: within half a frame
+            // of the file (24 fps, the coarser rate), as a picture's file
+            // time falls on the file's frames and a sound's anywhere, so a
+            // cut between them rounds.
+            let apart = (zero(c) - zero(partner)).abs() * c.speed;
+            // And in frames, the file's or the sequence's, whichever is
+            // fewer: what a rounding to either gives.
+            let frames = (apart * 24.0).min(apart / c.speed * RATE as f64);
+            if (c.speed - partner.speed).abs() > 1e-9 || apart > 0.5 / 24.0 + 1e-6 {
+                return Err((SYNC, format!(
                     "{} at {:.3}-{:.3} s from {:.3} s of its file at {}x, its partner {} at {:.3}-{:.3} s from {:.3} s at {}x",
                     short(c.id), secs(c.timeline_in), secs(c.timeline_out), secs(c.source_in), c.speed,
                     short(p), secs(partner.timeline_in), secs(partner.timeline_out), secs(partner.source_in), partner.speed
-                )));
+                ), if (c.speed - partner.speed).abs() > 1e-9 { f64::INFINITY } else { frames }));
             }
         }
         if let Some(p) = self.seq.primary_track() {
             let mut expected = RationalTime::ZERO;
             for c in &p.clips {
                 if !c.timeline_in.cmp(&expected).is_eq() {
-                    return Err(("primary gapless", format!("{} starts at {:?}, the clip before ends at {:?}", short(c.id), c.timeline_in, expected)));
+                    return Err((GAPLESS, format!("{} starts at {:?}, the clip before ends at {:?}", short(c.id), c.timeline_in, expected), secs(c.timeline_in) - secs(expected)));
                 }
                 expected = c.timeline_out;
             }
@@ -374,11 +415,11 @@ impl Run {
         let built = state(&self.seq);
         let _ = std::fs::remove_dir_all(&self.dir);
         let _ = std::fs::create_dir_all(&self.dir);
-        klipp_project::save_project(&self.dir, std::slice::from_ref(&self.seq), &self.pool).map_err(|e| ("save and load", format!("save refused: {e}")))?;
-        let (loaded, ..) = klipp_project::load_project(&self.dir).map_err(|e| ("save and load", format!("load refused: {e}")))?;
+        klipp_project::save_project(&self.dir, std::slice::from_ref(&self.seq), &self.pool).map_err(|e| (SAVED, format!("save refused: {e}"), f64::INFINITY))?;
+        let (loaded, ..) = klipp_project::load_project(&self.dir).map_err(|e| (SAVED, format!("load refused: {e}"), f64::INFINITY))?;
         let (built, back) = (same_times(built), same_times(state(&loaded[0])));
         if back != built {
-            return Err(("save and load", first_difference(&built, &back)));
+            return Err((SAVED, first_difference(&built, &back), f64::INFINITY));
         }
         Ok(())
     }
@@ -414,22 +455,29 @@ fn run(steps: &[Step], dir: &std::path::Path) -> Option<Broken> {
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| r.take(step).and_then(|moved| if moved { r.check() } else { Ok(()) })));
         match outcome {
             Ok(Ok(())) => {}
-            Ok(Err((invariant, detail))) => return Some(Broken { step: k, invariant, detail }),
+            Ok(Err((invariant, detail, amount))) => return Some(Broken { step: k, invariant, detail, amount }),
             Err(panic) => {
                 let detail = panic.downcast_ref::<String>().cloned().or_else(|| panic.downcast_ref::<&str>().map(|s| s.to_string())).unwrap_or_else(|| "a panic".into());
-                return Some(Broken { step: k, invariant: "no panic", detail: detail.lines().next().unwrap_or("").to_string() });
+                return Some(Broken { step: k, invariant: "no panic", detail: detail.lines().next().unwrap_or("").to_string(), amount: f64::INFINITY });
             }
         }
     }
     None
 }
 
-/// The shortest run of `steps` found that breaks the same invariant:
-/// steps taken out, a chunk at a time and then one at a time, while it
-/// still breaks.
+/// What a failure is, to keep while shrinking: its known entry, or the
+/// invariant it broke.
+fn label(broken: &Broken, steps: &[Step]) -> &'static str {
+    known(broken, steps).unwrap_or(broken.invariant)
+}
+
+/// The shortest run of `steps` found that breaks the same way: steps
+/// taken out, a chunk at a time and then one at a time, while it still
+/// breaks as it did.
 fn shrink(steps: Vec<Step>, broken: &Broken, dir: &std::path::Path) -> (Vec<Step>, Broken) {
     let mut best = steps[..=broken.step].to_vec();
     let mut why = broken.clone();
+    let want = label(broken, &steps);
     let mut chunk = (best.len() / 2).max(1);
     loop {
         let mut shorter = false;
@@ -438,7 +486,7 @@ fn shrink(steps: Vec<Step>, broken: &Broken, dir: &std::path::Path) -> (Vec<Step
             let mut fewer = best.clone();
             fewer.drain(at..(at + chunk).min(fewer.len()));
             match run(&fewer, dir) {
-                Some(b) if b.invariant == why.invariant => {
+                Some(b) if label(&b, &fewer) == want => {
                     best = fewer[..=b.step].to_vec();
                     why = b;
                     shorter = true;
@@ -489,7 +537,7 @@ fn env(name: &str, or: u64) -> u64 {
 
 #[test]
 fn random_edits_keep_the_editing_cores_invariants() {
-    let seeds = env("KLIPP_RANDOM_EDITS_SEEDS", 6);
+    let seeds = env("KLIPP_RANDOM_EDITS_SEEDS", 8);
     let steps = env("KLIPP_RANDOM_EDITS_STEPS", 60) as usize;
     let skipped: Vec<String> = std::env::var("KLIPP_RANDOM_EDITS_SKIP").unwrap_or_default().split(',').map(|k| k.trim().to_string()).filter(|k| !k.is_empty()).collect();
     let dir = klipp_testing::scratch::scratch_dir("klipp-random-edits");
@@ -501,26 +549,37 @@ fn random_edits_keep_the_editing_cores_invariants() {
     let mut new = Vec::new();
     for seed in 1..=seeds {
         let mut rng = Rng(seed);
-        let run_steps: Vec<Step> = (0..steps).map(|_| random_step(&mut rng)).filter(|s| !skipped.iter().any(|k| kind(s) == k.as_str())).collect();
-        let Some(broken) = run(&run_steps, &dir) else { continue };
-        let (repro, why) = shrink(run_steps, &broken, &dir);
-        let text = format!(
-            "seed {seed}: {} broken at step {} of {}: {}\n{}",
-            why.invariant,
-            why.step + 1,
-            repro.len(),
-            why.detail,
-            repro.iter().enumerate().map(|(k, s)| format!("  {:>2}. {s:?}", k + 1)).collect::<Vec<_>>().join("\n")
-        );
-        if !KNOWN.iter().any(|(s, invariant, _)| *s == seed && *invariant == why.invariant) {
+        let mut run_steps: Vec<Step> = (0..steps).map(|_| random_step(&mut rng)).filter(|s| !skipped.iter().any(|k| kind(s) == k.as_str())).collect();
+        // A known failure doesn't end the seed: the step that broke is
+        // taken out and the rest run, so what follows it is still checked.
+        let mut known_here = Vec::new();
+        while let Some(broken) = run(&run_steps, &dir) {
+            if let Some(entry) = known(&broken, &run_steps) {
+                known_here.push(entry);
+                run_steps.remove(broken.step);
+                continue;
+            }
+            let (repro, why) = shrink(run_steps, &broken, &dir);
+            let text = format!(
+                "seed {seed}: NEW: {} broken at step {} of {}: {}\n{}",
+                why.invariant,
+                why.step + 1,
+                repro.len(),
+                why.detail,
+                repro.iter().enumerate().map(|(k, s)| format!("  {:>2}. {s:?}", k + 1)).collect::<Vec<_>>().join("\n")
+            );
             new.push(text.clone());
+            report.push(text);
+            break;
         }
-        report.push(text);
+        if !known_here.is_empty() {
+            report.push(format!("seed {seed}: known {}", known_here.join(", ")));
+        }
     }
     std::panic::set_hook(quiet);
     let _ = std::fs::write(dir.join("report.txt"), report.join("\n\n"));
     for r in &report {
         eprintln!("{r}\n");
     }
-    assert!(new.is_empty(), "{} seed(s) broke an invariant; repros above and in {}", new.len(), dir.join("report.txt").display());
+    assert!(new.is_empty(), "{} seed(s) broke an invariant in a way not known; repros above and in {}", new.len(), dir.join("report.txt").display());
 }

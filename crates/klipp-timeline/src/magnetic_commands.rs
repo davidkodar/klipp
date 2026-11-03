@@ -117,8 +117,9 @@ pub enum MagneticEditCommand {
         rippled_clips: Vec<RippleRecord>,
         cascaded_clips: Vec<CascadeRecord>,
         /// The linked sound's head trimmed with the picture's, so
-        /// the two stay in sync: before and after.
-        partner: Option<(Clip, Clip)>,
+        /// the two stay in sync: its track, and it before and after;
+        /// none after when the trim took all of it.
+        partner: Option<(usize, Clip, Option<Clip>)>,
     },
     TrimTail {
         clip_id: ClipId,
