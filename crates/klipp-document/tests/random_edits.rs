@@ -46,10 +46,6 @@ use serde_json::{json, Value};
 const KNOWN: &[(&str, fn(&Broken, &str) -> bool)] = &[
     // Undo or redo giving back a time at another rate, the same time.
     ("R8", |b, _| b.invariant.ends_with("(a time written at another rate)")),
-    // Under a frame off: a sound placed to the sample against pictures
-    // on frames; a pair's sync off by up to a frame of the file.
-    ("R6", |b, _| b.invariant == GAPLESS && b.amount.abs() < FRAME),
-    ("R7", |b, _| b.invariant == SYNC && b.amount <= 1.0 + 1e-6),
     // A slide leaving a pair out of sync.
     ("R10", |b, last| b.invariant == SYNC && last == "Slide"),
 ];
@@ -57,7 +53,6 @@ const KNOWN: &[(&str, fn(&Broken, &str) -> bool)] = &[
 const SYNC: &str = "linked pairs in sync";
 const GAPLESS: &str = "primary gapless";
 const SAVED: &str = "save and load";
-const FRAME: f64 = 1.0 / RATE as f64;
 
 /// The known entry `broken` is, from the step it broke at in `steps`.
 fn known(broken: &Broken, steps: &[Step]) -> Option<&'static str> {

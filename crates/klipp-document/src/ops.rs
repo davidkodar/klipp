@@ -4837,7 +4837,11 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             let autoset = if picture { seq.first_clip_format(item.resolution, item.fps).filter(|(old, new)| old != new) } else { None };
             let fps = autoset.map(|(_, (_, f))| f).unwrap_or(fps);
             // A sound on an audio track by the sample; the rest by the frame.
-            let grid = placement_grid(t, fps);
+            // An insert by the frame wherever it goes: it cuts and moves
+            // every track by its start and length, pictures with it, and a
+            // picture cut or moved by a fraction of a frame left the
+            // primary with a gap under a frame and its pairs out of sync.
+            let grid = if *insert { fps } else { placement_grid(t, fps) };
             // Stills have no file end, but their authored time must
             // still fit the integer frame clock (including NTSC ticks).
             let max_frames = i64::MAX / i64::from(grid.den.max(1));
