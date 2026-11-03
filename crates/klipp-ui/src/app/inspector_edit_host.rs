@@ -895,8 +895,11 @@ impl InspectorEditHost<'_> {
                 // is folded into it, so one undo takes both back.
                 let history = self.state.active_history_mut();
                 let folded = history.merge_into_last(|last| match last {
-                    EditCommand::PictureEdit { clip_id: c, description: "Add Effect", edit } if *c == *clip_id => {
+                    EditCommand::PictureEdit { clip_id: c, description, edit } if *c == *clip_id && *description == "Add Effect" => {
                         edit.after = after.clone();
+                        // Named as the drag it is: an opacity drag that
+                        // added its effect read "Add Effect" (P35).
+                        *description = "Edit Effect";
                         true
                     }
                     _ => false,
@@ -1053,6 +1056,22 @@ mod tests {
         assert_eq!(clip(&state).picture_v2().unwrap(), before, "one undo takes back every tick");
         history(&mut state, true);
         assert_eq!(clip(&state).picture_v2().unwrap(), after);
+    }
+
+    /// P35: a drag whose first move added its effect (the Opacity row on
+    /// a clip without one) is one undo step named as a drag, not "Add
+    /// Effect".
+    #[test]
+    fn a_drag_that_added_its_effect_is_named_as_a_drag() {
+        let (mut state, id) = fixture(&[]);
+        let side = Recorder::default();
+        let key = format!("{id:?}:builtin:0");
+        run(&mut state, &side, AppCommand::AddBuiltinEffect { clip_id: id, effect: E::Opacity { value: 1.0 } });
+        run(&mut state, &side, AppCommand::BeginEffectDrag { key: key.clone(), clip_id: id, effect_index: 0, old_effect: E::Opacity { value: 1.0 } });
+        run(&mut state, &side, AppCommand::UpdateBuiltinEffect { clip_id: id, index: 0, effect: E::Opacity { value: 0.6 } });
+        run(&mut state, &side, AppCommand::EndEffectDrag { key, clip_id: id, effect_index: 0, new_effect: E::Opacity { value: 0.6 } });
+        assert_eq!(state.active_history().undo_count(), 1, "the add and the drag, one step");
+        assert_eq!(state.active_history().undo_label(), Some("Edit Effect"));
     }
 
     #[test]
