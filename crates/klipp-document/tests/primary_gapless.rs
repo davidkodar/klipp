@@ -113,9 +113,9 @@ fn a_clip_slowed_into_a_gap_clip_takes_its_room() {
 }
 
 /// #3115: a retime fitted to fill runs over the gap clip to the next
-/// shot, not to the gap clip's start; `length_secs` and `fit_range` set
-/// the clip's length and work out the speed; two ways at once are
-/// refused.
+/// shot, not to the gap clip's start; `length_secs` sets the clip's
+/// length and works out the speed, and `fit_range` puts it on the marks,
+/// from In to Out (P53); two ways at once are refused.
 #[test]
 fn a_retime_fits_to_the_next_shot_a_length_or_the_marked_range() {
     let (mut seq, pool, ids) = with_a_gap();
@@ -133,8 +133,12 @@ fn a_retime_fits_to_the_next_shot_a_length_or_the_marked_range() {
 
     seq.in_point = Some(t(1.0));
     seq.out_point = Some(t(4.5));
-    let ranged = holds("the marked range's length", seq.clone(), pool.clone(), serde_json::json!({ "op": "retime", "clip_id": id(0), "fit_range": true, "ripple": true }));
-    assert_eq!(first(&ranged).timeline_out, t(3.5), "3.5 s, the range's length, from where it starts");
+    let ranged = holds("on the marked range", seq.clone(), pool.clone(), serde_json::json!({ "op": "retime", "clip_id": id(0), "fit_range": true, "ripple": true }));
+    // On the marks, a clip of its own there: from In to Out, 2 s of
+    // source over 3.5 s.
+    let on = ranged.tracks[p].clips.iter().find(|c| !c.kind.is_gap() && c.timeline_in == t(1.0)).expect("a clip on the In point");
+    assert_eq!(on.timeline_out, t(4.5), "it ends on the Out point");
+    assert!((on.speed - 2.0 / 3.5).abs() < 1e-9, "{}", on.speed);
 
     for (op, why) in [
         (serde_json::json!({ "op": "retime", "clip_id": id(0), "fit": true, "length_secs": 3.0 }), "more than one"),
@@ -197,8 +201,8 @@ fn mark_sets_the_range_a_retime_can_fit_to() {
     for s in &plan.steps {
         let _ = view.apply_forward(&s.edit);
     }
-    let first = view.sequences[0].tracks[p].clips.iter().find(|c| c.id == ids[0]).unwrap();
-    assert_eq!(first.timeline_out, t(3.0), "fitted to the 3 s range the mark set");
+    let on = view.sequences[0].tracks[p].clips.iter().find(|c| !c.kind.is_gap() && c.timeline_in == t(0.0)).expect("a clip on the In point");
+    assert_eq!(on.timeline_out, t(3.0), "put on the 0-3 s range the mark set");
 
     for bad in [serde_json::json!({ "op": "mark" }), serde_json::json!({ "op": "mark", "from": { "secs": 3.0 }, "to": { "secs": 1.0 } }), serde_json::json!({ "op": "mark", "clip_id": id(0), "clear": true })] {
         let op: Op = serde_json::from_value(bad.clone()).unwrap();

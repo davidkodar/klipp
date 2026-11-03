@@ -47,6 +47,10 @@ pub fn fit_targets(seq: &Sequence, clip_id: ClipId) -> FitTargets {
     FitTargets { to_next, range }
 }
 
+/// Fit to the marked range (P53): the document's, which the `retime`
+/// op's `fit_range` uses too, so the dialog and an assistant agree.
+pub use klipp_document::clipboard::{on_marks as fit_on_marks, OnMarks};
+
 /// A length typed into the dialog: seconds ("4", "4 s", "4.5") or a
 /// timecode as the sequence counts it ("00:00:04:00").
 pub fn parse_length(input: &str, tc: TimecodeDisplay) -> Option<f64> {
@@ -101,6 +105,43 @@ mod tests {
         assert_eq!(fit_targets(&seq, id).range, Some(9.5));
         let last = seq.tracks[seq.primary_track_index().unwrap()].clips[2].id;
         assert_eq!(fit_targets(&seq, last).to_next, None, "nothing follows the last shot");
+    }
+
+    /// P53: fitted to the marked range, the clip goes on the marks: it
+    /// starts at In and ends at Out at the speed that takes, its sound
+    /// with it. Over another clip, Overwrite lays it over; Insert pushes
+    /// what is there along by the range.
+    #[test]
+    fn fit_to_the_marked_range_puts_the_clip_on_the_marks() {
+        use klipp_document::clipboard::PasteMode;
+        use klipp_timeline::{Track, TrackKind};
+        let (mut seq, id) = seq();
+        let p = seq.primary_track_index().unwrap();
+        // Its sound linked under it.
+        let mut sound = Clip::media(MediaId::new(), t(0.0), t(4.0), t(14.8), t(18.8));
+        sound.linked_clip_id = Some(id);
+        seq.tracks[p].clips[0].linked_clip_id = Some(sound.id);
+        let mut a1 = Track::new("A1", TrackKind::Audio);
+        a1.clips.push(sound);
+        seq.tracks.push(a1);
+        let ai = seq.tracks.len() - 1;
+        // The range 10 to 18 s: 8 s, over the shot at 10-14 s.
+        seq.in_point = Some(t(10.0));
+        seq.out_point = Some(t(18.0));
+        let span = |s: &Sequence, ti: usize| -> Vec<(f64, f64)> { s.tracks[ti].clips.iter().filter(|c| !c.kind.is_gap()).map(|c| (c.timeline_in.to_secs_f64(), c.timeline_out.to_secs_f64())).collect() };
+
+        let over = fit_on_marks(&seq, id, PasteMode::Overwrite, false).expect("fitted");
+        let placed = over.sequence.all_clips().find(|c| c.id == over.clip).unwrap();
+        assert_eq!((placed.timeline_in, placed.timeline_out), (t(10.0), t(18.0)), "on the marks");
+        assert!((placed.speed - 0.5).abs() < 1e-9, "4 s of source over 8 s: half speed, {}", placed.speed);
+        assert_eq!(span(&over.sequence, p), vec![(10.0, 18.0)], "laid over the shot at 10 s, its old place empty");
+        assert_eq!(span(&over.sequence, ai), vec![(10.0, 18.0)], "its sound with it");
+
+        let pushed = fit_on_marks(&seq, id, PasteMode::Insert, false).expect("fitted");
+        assert_eq!(span(&pushed.sequence, p), vec![(10.0, 18.0), (18.0, 22.0)], "the shot pushed along by 8 s");
+
+        seq.out_point = None;
+        assert!(fit_on_marks(&seq, id, PasteMode::Overwrite, false).is_none(), "no marked range");
     }
 
     #[test]
