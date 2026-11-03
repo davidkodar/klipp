@@ -72,6 +72,27 @@ pub struct Session {
     pub music: Option<MediaId>,
     pub changes: Vec<Change>,
     pub steps: Vec<(usize, Vec<usize>)>,
+    /// What a step that was on found nothing of, said in the panel
+    /// ("No filler words or retakes found"): it had said nothing at all.
+    pub notes: Vec<String>,
+}
+
+/// The lines saying which of the chosen cuts found nothing in `changes`:
+/// filler words and retakes together, pauses on their own.
+pub fn found_nothing(choices: &Choices, changes: &[Change]) -> Vec<String> {
+    use klipp_document::ops::first_cut::Kind;
+    let none = |k: Kind| !changes.iter().any(|c| c.kind == k);
+    let mut out = Vec::new();
+    match (choices.fillers && none(Kind::Filler), choices.retakes && none(Kind::Retake)) {
+        (true, true) => out.push("No filler words or retakes found".to_string()),
+        (true, false) => out.push("No filler words found".to_string()),
+        (false, true) => out.push("No retakes found".to_string()),
+        (false, false) => {}
+    }
+    if choices.silences && none(Kind::Silence) {
+        out.push("No pauses long enough to cut".to_string());
+    }
+    out
 }
 
 impl Session {
@@ -85,6 +106,15 @@ impl Session {
             return None;
         }
         self.steps.iter().find(|(d, _)| *d == depth).map(|(_, out)| out.as_slice())
+    }
+
+    /// Whether one of First Cut's own steps is still in the history of
+    /// `open`, by Undo or by Redo: `label_at` gives the label of the step
+    /// at a depth, either side of where the history is. None once an edit
+    /// after an undo past the cut has taken the redo away, and the panel
+    /// closes then rather than stand stale over the inspector (FC7).
+    pub fn reachable<'a>(&self, open: SequenceId, label_at: impl Fn(usize) -> Option<&'a str>) -> bool {
+        self.sequence == open && self.steps.iter().any(|(d, _)| label_at(*d).is_some_and(|l| l.starts_with("First Cut")))
     }
 
     /// A step of First Cut's own made at `depth`, leaving out `excluded`;
@@ -153,6 +183,35 @@ pub fn untranscribed(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcr
 
 #[cfg(test)]
 mod tests {
+    use klipp_document::ops::first_cut::Kind;
+
+    /// FC7: the panel stays while one of First Cut's steps is there to
+    /// Undo or Redo to, and goes once an edit after an undo past it has
+    /// taken it away; on another sequence it is not this one's to judge.
+    #[test]
+    fn a_first_cut_step_is_reachable_until_its_redo_is_gone() {
+        let seq = Sequence::new_default();
+        let mut s = Session { sequence: seq.id, before: seq.clone(), music: None, changes: Vec::new(), steps: Vec::new(), notes: Vec::new() };
+        s.record(3, Vec::new());
+        let labels = |l: &'static [&'static str]| move |d: usize| l.get(d.wrapping_sub(1)).copied();
+        assert!(s.reachable(seq.id, labels(&["Place Clip", "Place Clip", "First Cut"])), "in force");
+        assert!(s.reachable(seq.id, labels(&["Place Clip", "Place Clip", "First Cut", "Move Clip"])), "under an edit: Undo reaches it");
+        assert!(!s.reachable(seq.id, labels(&["Place Clip", "Place Clip", "Move Clip"])), "an edit took its place: gone");
+        assert!(!s.reachable(klipp_core::SequenceId::new(), labels(&["Place Clip", "Place Clip", "First Cut"])));
+    }
+
+    /// The panel says when a cut that was asked for found nothing:
+    /// filler words and retakes together, only those that were on.
+    #[test]
+    fn the_panel_says_what_found_nothing() {
+        let change = |kind| Change { kind, from_secs: 1.0, to_secs: 2.0, what: String::new() };
+        let on = Choices::default();
+        assert_eq!(found_nothing(&on, &[change(Kind::Silence)]), ["No filler words or retakes found"]);
+        assert_eq!(found_nothing(&on, &[change(Kind::Silence), change(Kind::Filler)]), ["No retakes found"]);
+        assert!(found_nothing(&Choices { fillers: false, retakes: false, ..on.clone() }, &[change(Kind::Silence)]).is_empty(), "not asked for, not said");
+        assert_eq!(found_nothing(&on, &[change(Kind::Filler), change(Kind::Retake)]), ["No pauses long enough to cut"]);
+    }
+
     use super::*;
 
     #[test]
@@ -182,7 +241,7 @@ mod tests {
     #[test]
     fn the_panel_follows_undo_and_redo() {
         let seq = Sequence::new_default();
-        let mut s = Session { sequence: seq.id, before: seq.clone(), music: None, changes: Vec::new(), steps: Vec::new() };
+        let mut s = Session { sequence: seq.id, before: seq.clone(), music: None, changes: Vec::new(), steps: Vec::new(), notes: Vec::new() };
         s.record(5, Vec::new());
         // A change taken back: one step more.
         s.record(6, Session::flipped(&[], 2));
