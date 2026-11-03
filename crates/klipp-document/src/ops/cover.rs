@@ -70,7 +70,7 @@ pub(crate) fn cover(seq: &Sequence, fps: Fps, i: usize, named: Option<&str>, a: 
                 return Err(refuse(i, "a new cover needs at, its frame", "give at, as {\"secs\": 12.4} or a marker's time"));
             }
             let size = a.size.map(str::to_string).or_else(|| cover_sizes::for_frame(seq.resolution.width, seq.resolution.height).map(|s| s.id.clone())).unwrap_or_default();
-            Cover { id: klipp_core::CoverId::new(), name: String::new(), at_secs: 0.0, size, crop: CoverCrop::default(), text: None, with_titles: false }
+            Cover { id: klipp_core::CoverId::new(), name: String::new(), at_secs: 0.0, size, crop: None, text: None, with_titles: false }
         }
     };
     if let Some(n) = a.name {
@@ -90,7 +90,7 @@ pub(crate) fn cover(seq: &Sequence, fps: Fps, i: usize, named: Option<&str>, a: 
     let size = cover_sizes::by_id(&c.size).ok_or_else(|| refuse(i, format!("{:?} is not a cover size", c.size), format!("the sizes are {}", sizes())))?;
     c.size = size.id.clone();
     if let Some(crop) = a.crop {
-        c.crop = crop.clamped();
+        c.crop = Some(crop.clamped());
     }
     if let Some(on) = a.with_titles {
         c.with_titles = on;
@@ -103,8 +103,10 @@ pub(crate) fn cover(seq: &Sequence, fps: Fps, i: usize, named: Option<&str>, a: 
 
     let label = if c.name.is_empty() { c.id.to_string() } else { format!("{} ({})", quoted(&c.name), c.id) };
     let mut said = vec![format!("{} {}×{}", size.name, size.width, size.height), format!("at {:.2} s", c.at_secs)];
-    if !c.crop.is_whole() {
-        said.push(format!("cropped to {:.0}% at {:.2}, {:.2}", 100.0 / c.crop.zoom, c.crop.x, c.crop.y));
+    match c.crop {
+        Some(crop) if crop.is_whole() => said.push("the whole frame".to_string()),
+        Some(crop) => said.push(format!("cropped to {:.0}% at {:.2}, {:.2}", 100.0 / crop.zoom, crop.x, crop.y)),
+        None => {}
     }
     if let Some(td) = &c.text {
         said.push(format!("with {}", quoted(&td.primary_text().map(|t| t.text.clone()).unwrap_or_default())));

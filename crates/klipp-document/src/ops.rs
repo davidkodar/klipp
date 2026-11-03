@@ -17370,7 +17370,7 @@ mod tests {
 
         let changed = one(&seq, serde_json::json!({ "op": "cover", "cover": "hook", "size": "square", "crop": { "zoom": 2.0, "x": 0.0 }, "title": "" })).unwrap();
         let c2 = covers(&changed).remove(0);
-        assert_eq!((c2.id, c2.size.as_str(), c2.crop.x, c2.crop.zoom, c2.text.is_none()), (c.id, "square", 0.25, 2.0, true), "by name, the crop kept inside, the words taken away");
+        assert_eq!((c2.id, c2.size.as_str(), c2.crop.unwrap().x, c2.crop.unwrap().zoom, c2.text.is_none()), (c.id, "square", 0.25, 2.0, true), "by name, the crop kept inside, the words taken away");
         let by_id = one(&seq, serde_json::json!({ "op": "cover", "cover": c.id.to_string()[..8].to_string(), "remove": true })).unwrap();
         assert!(covers(&by_id).is_empty());
 

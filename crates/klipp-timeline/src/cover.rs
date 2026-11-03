@@ -3,7 +3,8 @@
 //! is drawn by the export renderer as the sequence itself at the cover's
 //! size, its crop a still camera on the picture and its text on a track
 //! of its own out of the camera's reach, so what is exported is the frame
-//! the export would draw.
+//! the export would draw. With no crop chosen it fills its size, the
+//! picture cropped rather than barred ([`fill_crop`]).
 
 use serde::{Deserialize, Serialize};
 
@@ -34,8 +35,10 @@ pub struct Cover {
     pub at_secs: f64,
     /// A [`klipp_core::cover_sizes`] id.
     pub size: String,
-    #[serde(default, skip_serializing_if = "CoverCrop::is_whole")]
-    pub crop: CoverCrop,
+    /// The crop chosen, the whole frame included. `None` for none chosen:
+    /// the cover fills its size, [`fill_crop`] on the picture at its frame.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub crop: Option<CoverCrop>,
     /// The words over the picture, laid out as a title is.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text: Option<TitleData>,
@@ -87,7 +90,7 @@ impl Cover {
         }
         let name: String = self.name.trim().chars().filter(|c| !c.is_control()).take(MAX_NAME_CHARS).collect();
         let size: String = self.size.trim().chars().filter(|c| c.is_ascii_alphanumeric() || *c == '_').take(32).collect();
-        Some(Cover { name, size, crop: self.crop.clamped(), ..self })
+        Some(Cover { name, size, crop: self.crop.map(CoverCrop::clamped), ..self })
     }
 }
 
@@ -114,6 +117,25 @@ pub fn checked(covers: Vec<Cover>) -> Vec<Cover> {
     out
 }
 
+/// The crop that fills a `width` × `height` cover with a picture of `aspect`
+/// (its width over its height), which the frame fits whole with bars beside
+/// it: the camera in until the picture reaches both edges, on `focus` (a share
+/// of the picture across and down) along the side with picture to spare.
+pub fn fill_crop(aspect: f32, width: u32, height: u32, focus: (f32, f32)) -> CoverCrop {
+    let frame = width as f32 / height.max(1) as f32;
+    if !aspect.is_finite() || aspect <= 0.0 || (aspect / frame - 1.0).abs() < 0.01 {
+        return CoverCrop::default();
+    }
+    // A hair over, so a rounded edge leaves no line of bar.
+    let over = 1.002;
+    let crop = if aspect > frame {
+        CoverCrop { x: focus.0, y: 0.5, zoom: aspect / frame * over }
+    } else {
+        CoverCrop { x: 0.5, y: focus.1, zoom: frame / aspect * over }
+    };
+    crop.clamped()
+}
+
 /// What the export renderer draws for `cover` of `source`: the sequence
 /// at `width` × `height`, its own titles and captions hidden unless the
 /// cover keeps them, the crop as a camera held still on the frame, and
@@ -121,7 +143,7 @@ pub fn checked(covers: Vec<Cover>) -> Vec<Cover> {
 /// camera doesn't reach it. An error for a crop on a sequence with a
 /// camera move of its own, which the crop would replace.
 pub fn cover_sequence(source: &Sequence, cover: &Cover, width: u32, height: u32) -> Result<Sequence, String> {
-    let crop = cover.crop.clamped();
+    let crop = cover.crop.unwrap_or_default().clamped();
     if !crop.is_whole() && !source.camera.is_still() {
         return Err("the sequence has a camera move of its own; a cover of it shows the frame as its camera has it, so leave the crop out".into());
     }
@@ -164,7 +186,7 @@ mod tests {
     use super::*;
 
     fn cover(at: f64) -> Cover {
-        Cover { id: CoverId::new(), name: "A".into(), at_secs: at, size: "youtube".into(), crop: CoverCrop::default(), text: None, with_titles: false }
+        Cover { id: CoverId::new(), name: "A".into(), at_secs: at, size: "youtube".into(), crop: None, text: None, with_titles: false }
     }
 
     /// A crop stays inside the frame and in range; a cover from a file
@@ -193,6 +215,36 @@ mod tests {
         assert_eq!(kept.iter().filter(|c| c.at_secs == 2.0).count(), 2, "the copy dropped, the other cover at 2 s kept");
     }
 
+    /// A crop chosen is kept, the whole frame too, apart from none chosen; a
+    /// file from before, with none written, has none chosen.
+    #[test]
+    fn a_chosen_whole_frame_is_told_from_no_crop() {
+        let mut c = cover(1.0);
+        let none: Cover = serde_json::from_str(&serde_json::to_string(&c).unwrap()).unwrap();
+        assert_eq!(none.crop, None);
+        c.crop = Some(CoverCrop::default());
+        let whole: Cover = serde_json::from_str(&serde_json::to_string(&c).unwrap()).unwrap();
+        assert_eq!(whole.crop, Some(CoverCrop::default()));
+        assert_eq!(whole.checked().unwrap().crop, Some(CoverCrop::default()));
+    }
+
+    /// 16:9 into tall and square goes in by the shapes' ratio, along the
+    /// picture to the focus, held so the part shown stays on the picture;
+    /// tall into wide the other way; the same shape needs nothing.
+    #[test]
+    fn a_crop_fills_the_size_on_the_focus() {
+        let wide = 16.0 / 9.0;
+        let tall = fill_crop(wide, 1080, 1920, (0.2, 0.9));
+        assert!((tall.zoom - wide * 16.0 / 9.0 * 1.002).abs() < 1e-3, "{tall:?}");
+        assert!((tall.x - 0.2).abs() < 1e-5 && tall.y == 0.5, "across only: {tall:?}");
+        let edge = fill_crop(wide, 1080, 1080, (0.0, 0.5));
+        assert!((edge.x - 0.5 / edge.zoom).abs() < 1e-5, "stays on the picture: {edge:?}");
+        let across = fill_crop(9.0 / 16.0, 1280, 720, (0.5, 0.25));
+        assert!(across.x == 0.5 && (across.y - 0.25).abs() < 1e-5 && across.zoom > 3.0, "{across:?}");
+        assert!(fill_crop(wide, 1280, 720, (0.1, 0.1)).is_whole());
+        assert!(fill_crop(0.0, 1280, 720, (0.1, 0.1)).is_whole());
+    }
+
     /// The cover's sequence is the source at the cover's size, its titles
     /// hidden unless kept, the crop a still camera, and the text on a
     /// track of its own at depth 0 over the cover's frame. A crop on a
@@ -202,7 +254,7 @@ mod tests {
         let mut source = Sequence::new_default();
         source.tracks.insert(0, Track::new("Text 1", TrackKind::Text));
         let mut c = cover(2.0);
-        c.crop = CoverCrop { x: 0.6, y: 0.4, zoom: 2.0 };
+        c.crop = Some(CoverCrop { x: 0.6, y: 0.4, zoom: 2.0 });
         c.text = Some(crate::TitleData::single_text(crate::TextBox { text: "Big News".into(), ..Default::default() }));
         let seq = cover_sequence(&source, &c, 1280, 720).unwrap();
         assert_eq!((seq.resolution.width, seq.resolution.height), (1280, 720));
@@ -222,7 +274,7 @@ mod tests {
         let mut moving = source.clone();
         moving.camera.zoom_keyframes = seq.camera.zoom_keyframes.clone();
         assert!(cover_sequence(&moving, &c, 1280, 720).unwrap_err().contains("camera move"));
-        c.crop = CoverCrop::default();
+        c.crop = None;
         assert_eq!(cover_sequence(&moving, &c, 1280, 720).unwrap().camera, moving.camera, "its own camera kept");
     }
 }
