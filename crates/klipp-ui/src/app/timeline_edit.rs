@@ -1448,9 +1448,17 @@ impl KlippApp {
             }
         };
 
+        // One undo step, "Freeze Frame": the cut, the clips moved along
+        // and the still. The move was not recorded, and the still alone
+        // was "Append Clip", so undo left the clips moved.
+        let owns_batch = !self.state.active_history_mut().is_batching();
+        if owns_batch {
+            self.state.active_history_mut().begin_batch();
+        }
+
         // 5. Blade any clip under the playhead on that track so the freeze
-        //    inserts cleanly between halves. blade_clip_at pushes its own
-        //    undo entry.
+        //    inserts cleanly between halves; the blade's edit joins the
+        //    step.
         let clip_under_ph = self.state.sequences[seq_idx].tracks[track_idx]
             .clip_at_timecode(ph)
             .map(|(_, c)| c.id);
@@ -1465,6 +1473,8 @@ impl KlippApp {
                 }
             }
         }
+
+        let after_blade = self.state.sequences[seq_idx].tracks.clone();
 
         // 6. Ripple: shift every clip on the target track that starts at or
         //    after the playhead by +duration so the freeze has a gap to land
@@ -1496,18 +1506,18 @@ impl KlippApp {
             ..klipp_timeline::Clip::gap(ph, timeline_out)
         };
         let clip_id = clip.id;
-        let clip_for_history = clip.clone();
         {
             let seq = &mut self.state.sequences[seq_idx];
             seq.tracks[track_idx].clips.push(clip);
             seq.tracks[track_idx].sort_clips();
         }
 
-        // 8. Undo entry for the insertion. The blade already pushed its own.
-        self.state.push_history(EditCommand::LegacyAppendClip {
-                clip: clip_for_history,
-                track_index: track_idx,
-            });
+        // 8. The move and the still, after the cut, in the same step.
+        let new = self.state.sequences[seq_idx].tracks.clone();
+        self.state.push_history(EditCommand::SetTracks { description: "Freeze Frame", old: after_blade, new });
+        if owns_batch {
+            self.state.active_history_mut().end_batch_as("Freeze Frame");
+        }
 
         // 9. Finalize.
         self.state.selected_clip = Some(clip_id);
