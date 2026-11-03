@@ -47,8 +47,6 @@ use serde_json::{json, Value};
 const KNOWN: &[(&str, fn(&Broken, &str) -> bool)] = &[
     // Undo or redo giving back a time at another rate, the same time.
     ("R8", |b, _| b.invariant.ends_with("(a time written at another rate)")),
-    // A retime after blades leaving a transition that saving drops.
-    ("R16", |b, last| b.invariant == SAVED && b.detail.contains("/transitions") && last == "Retime"),
 ];
 
 const SYNC: &str = "linked pairs in sync";
@@ -427,7 +425,13 @@ impl Run {
         let (loaded, ..) = klipp_project::load_project(&self.dir).map_err(|e| (SAVED, format!("load refused: {e}"), f64::INFINITY))?;
         let (built, back) = (same_times(built), same_times(state(&loaded[0])));
         if back != built {
-            return Err((SAVED, first_difference(&built, &back), f64::INFINITY));
+            // Which transitions a save would drop: one naming a clip not on
+            // its track.
+            let lost: Vec<String> = self.seq.tracks.iter().enumerate().flat_map(|(ti, t)| t.transitions.iter().filter(move |x| !t.clips.iter().any(|c| c.id == x.clip_a_id) || !t.clips.iter().any(|c| c.id == x.clip_b_id)).map(move |x| {
+                let on = |id: ClipId| self.seq.tracks.iter().position(|tr| tr.clips.iter().any(|c| c.id == id)).map_or("gone".to_string(), |k| format!("on track {k}"));
+                format!("track {ti}: {}→{} ({}, {})", short(x.clip_a_id), short(x.clip_b_id), on(x.clip_a_id), on(x.clip_b_id))
+            })).collect();
+            return Err((SAVED, first_difference(&built, &back) + &format!("\n      lost transitions: {}", lost.join("; ")), f64::INFINITY));
         }
         Ok(())
     }
