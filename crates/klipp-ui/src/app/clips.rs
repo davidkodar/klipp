@@ -458,6 +458,9 @@ impl KlippApp {
                         self.state.selected_gap = None;
                     }
                     self.state.selected_clip = *id;
+                    if id.is_some() {
+                        self.state.colour_clip_picked();
+                    }
                     if let Some(clip_id) = *id {
                         let seq = &self.state.sequences[self.state.active_sequence_idx];
                         let title = seq.tracks.iter()
@@ -480,8 +483,6 @@ impl KlippApp {
                         } else if newly_selected
                             && self.state.active_workspace == crate::state::Workspace::Color
                         {
-                            // A clip picked here is the one graded (#2952).
-                            self.state.colour_elsewhere = None;
                             // On the Colour page the viewer and the scopes
                             // must show the shot whose grade the panel is
                             // editing. Selecting a clip the playhead is not
