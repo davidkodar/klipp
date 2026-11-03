@@ -62,8 +62,6 @@ const KNOWN: &[(&str, fn(&Broken, &str) -> bool)] = &[
     ("R10", |b, last| b.invariant == SYNC && last == "Slide"),
     // Undo or redo giving back other clip ids, on a clip or a transition.
     ("R11", |b, _| (b.invariant == "undo restores the state before" || b.invariant == "redo restores the state after") && b.detail.contains("id: ")),
-    // A primary ripple head trim leaving the sound.
-    ("R1", |b, last| b.invariant == SYNC && last == "PrimaryTrimHead"),
     // A move leaving its partner.
     ("R2", |b, last| b.invariant == SYNC && last == "Move"),
     // A ripple remove closing up one track under linked clips.
