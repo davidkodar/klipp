@@ -89,6 +89,11 @@ pub(super) fn alternatives(
             if !matches!(clip.kind, ClipKind::Media { .. } | ClipKind::Title(_) | ClipKind::Generator(_) | ClipKind::Sequence { .. }) {
                 return Err(refuse(i, format!("{label} is not a clip that holds takes"), "make an audition of a media, title, generator or compound clip"));
             }
+            // A take's clips hold no audition of their own, and a saved one
+            // loses it (R18): a switch would store the partner as a take.
+            if let Some((_, _, partner)) = sound_of(seq, clip).filter(|(_, _, p)| p.audition.is_some()) {
+                return Err(refuse(i, format!("{label} is linked to {}, which already holds takes", clip_name(seq, pool, partner)), "finalize that audition first, or add takes to it"));
+            }
             let first = Take { id: TakeId::new(), name: name_or(name, "Take 1", i)?, clip: None, sound: Vec::new() };
             let mut a = Audition { active: first.id, takes: vec![first] };
             let specs: &[TakeSpec] = if takes.is_empty() { &[TakeSpec { media_id: None, from: None, to: None, name: None }] } else { takes };
@@ -194,6 +199,7 @@ fn take_of(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, ti: usize, clip
         copy.id = ClipId::new();
         let sound = sound_of(seq, clip).map(|(sti, _, s)| {
             let mut s = s.clone();
+            s.audition = None;
             s.id = ClipId::new();
             s.linked_clip_id = Some(copy.id);
             (seq.tracks[sti].id, s)
@@ -248,10 +254,21 @@ fn switch(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, ti: usize, clip:
     };
     let len = stored.timeline_out - stored.timeline_in;
     let new_out = clip.timeline_in + len;
+    // A sound's slot going to a take with no picture leaves its picture on
+    // the timeline, no longer linked: it was taken off, a gap in its place.
+    let partner = sound_of(seq, clip);
+    let kept_picture = partner.filter(|(pti, ..)| seq.tracks[ti].kind == TrackKind::Audio && seq.tracks[*pti].kind != TrackKind::Audio && to.sound.is_empty());
     // The take leaving the slot, stored as it stands, its sound with it.
-    let old_sound = sound_of(seq, clip);
+    let old_sound = partner.filter(|_| kept_picture.is_none());
+    // A project from before such a pair was refused: its takes would go.
+    if let Some((_, _, partner)) = old_sound.filter(|(_, _, p)| p.audition.is_some()) {
+        return Err(refuse(i, format!("{label} is linked to {}, which holds takes of its own", clip_name(seq, pool, partner)), "finalize that audition first"));
+    }
     let mut leaving = clip.clone();
     leaving.audition = None;
+    if kept_picture.is_some() {
+        leaving.linked_clip_id = None;
+    }
     let mut audition = a.clone();
     for t in &mut audition.takes {
         if t.id == a.active {
@@ -271,7 +288,7 @@ fn switch(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, ti: usize, clip:
     incoming.magnetic_anchor = clip.magnetic_anchor.clone();
     incoming.audition = Some(Box::new(audition));
     let mut sound_in: Vec<(usize, Clip)> = Vec::new();
-    for (track_id, s) in &to.sound {
+    for (k, (track_id, s)) in to.sound.iter().enumerate() {
         let sti = seq
             .tracks
             .iter()
@@ -284,6 +301,11 @@ fn switch(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, ti: usize, clip:
         }
         // Where it lay against its picture (a J or L cut) is kept.
         let mut s = s.clone();
+        // The partner keeps the id on the timeline, as the slot does: a
+        // transition or anchor on it stays good (R20), and the pieces of a
+        // bladed audition, whose takes hold the same ids, never put one id
+        // on the timeline twice (R22).
+        s.id = old_sound.filter(|_| k == 0).map_or_else(ClipId::new, |(_, _, o)| o.id);
         let (off, slen) = (s.timeline_in - stored.timeline_in, s.timeline_out - s.timeline_in);
         s.timeline_in = clip.timeline_in + off;
         s.timeline_out = s.timeline_in + slen;
@@ -299,6 +321,12 @@ fn switch(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, ti: usize, clip:
     let mut without = seq.clone();
     if let Some((sti, sci, _)) = old_sound {
         without.tracks[sti].clips.remove(sci);
+    }
+    if let Some((pti, pci, _)) = kept_picture {
+        without.tracks[pti].clips[pci].linked_clip_id = None;
+        if let Some(here) = without.tracks[ti].clips.iter_mut().find(|c| c.id == clip.id) {
+            here.linked_clip_id = None;
+        }
     }
     let Some((_, _, here)) = find_clip(&without, clip.id) else { return Err(refuse(i, "no such clip", "name a clip on the timeline")) };
     let Rippled { moves, ids: moved, later, delta, partners } = ripple_after(&without, pool, fps, i, &[(ti, here, new_out)], rippling, "switch").map_err(|mut r| {
@@ -343,7 +371,16 @@ fn switch(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, ti: usize, clip:
     }
     let mut edits = Vec::new();
     if let Some((sti, sci, s)) = old_sound {
+        // With nothing coming in under its id, what joins it goes with it.
+        if sound_in.is_empty() {
+            edits.extend(transitions_removed_with(seq, &[s.id]));
+        }
         edits.push(EditCommand::LegacyRemoveClip { clip: s.clone(), track_index: sti, position: sci });
+    }
+    if let Some((_, _, picture)) = kept_picture {
+        let mut unlinked = picture.clone();
+        unlinked.linked_clip_id = None;
+        edits.push(EditCommand::ReplaceClip { description: "Switch Take", old: Box::new(picture.clone()), new: Box::new(unlinked) });
     }
     edits.push(EditCommand::ReplaceClip { description: "Switch Take", old: Box::new(clip.clone()), new: Box::new(incoming) });
     let mut ids = vec![clip.id];
@@ -411,6 +448,124 @@ mod tests {
 
     fn op(action: AlternativesAction, clip: ClipId) -> Op {
         alt(action, clip, Vec::new(), None, None, false)
+    }
+
+    /// R20: a switch brings in the take's sound under the id of the sound it
+    /// replaces, so a crossfade on that sound still has both its clips, on
+    /// the way there and back; from a sound slot, the picture keeps its id too.
+    #[test]
+    fn a_switch_leaves_transitions_on_the_linked_clip_good() {
+        for on_sound in [false, true] {
+            let (mut seq, pool, ids) = fixture();
+            let shot = if on_sound { seq.tracks[0].clips[0].linked_clip_id.unwrap() } else { ids[0] };
+            let partner = find_clip(&seq, shot).unwrap().2.linked_clip_id.unwrap();
+            let next = find_clip(&seq, partner).map(|(ti, _, _)| seq.tracks[ti].clips[1].id).unwrap();
+            let ti = find_clip(&seq, partner).unwrap().0;
+            seq.tracks[ti].transitions.push(klipp_timeline::Transition { id: klipp_core::TransitionId::new(), kind: klipp_timeline::TransitionKind::CrossDissolve, duration: tc(0.5), clip_a_id: partner, clip_b_id: next, user_params: Default::default(), alignment: Default::default() });
+            run(&mut seq, &pool, op(AlternativesAction::Create, shot)).unwrap();
+            for _ in 0..2 {
+                let take = find_clip(&seq, shot).unwrap().2.audition.as_ref().unwrap().takes.iter().find(|t| t.clip.is_some()).unwrap().id.to_string();
+                run(&mut seq, &pool, alt(AlternativesAction::Switch, shot, Vec::new(), Some(&take), None, false)).unwrap();
+                let here = &seq.tracks[ti];
+                assert!(here.clips.iter().any(|c| c.id == partner), "on_sound {on_sound}: the partner kept its id");
+                assert_eq!(find_clip(&seq, shot).unwrap().2.linked_clip_id, Some(partner));
+                assert_eq!(find_clip(&seq, partner).unwrap().2.linked_clip_id, Some(shot));
+            }
+        }
+    }
+
+    /// A sound's slot switched to a take from another file leaves its picture
+    /// where it is, no longer linked, with its transition: it went off the
+    /// timeline, a gap in its place. Undone, the pair is back as it was. A
+    /// silent file on a picture's slot takes the sound off, and a crossfade on
+    /// that sound goes with it, which undo gives back.
+    #[test]
+    fn a_take_never_takes_the_picture_off_the_timeline() {
+        let (mut seq, mut pool, ids) = fixture();
+        let other = media(&mut pool, "/tmp/other.wav", 10.0);
+        let sound = seq.tracks[0].clips[0].linked_clip_id.unwrap();
+        seq.tracks[0].transitions.push(klipp_timeline::Transition { id: klipp_core::TransitionId::new(), kind: klipp_timeline::TransitionKind::CrossDissolve, duration: tc(0.5), clip_a_id: ids[0], clip_b_id: ids[1], user_params: Default::default(), alignment: Default::default() });
+        let file = TakeSpec { media_id: Some(other), from: Some(0.0), to: Some(2.0), name: None };
+        run(&mut seq, &pool, alt(AlternativesAction::Create, sound, vec![file], None, None, false)).unwrap();
+        let before = serde_json::to_value(&seq).unwrap();
+        let take = find_clip(&seq, sound).unwrap().2.audition.as_ref().unwrap().takes.iter().find(|t| t.clip.is_some()).unwrap().id.to_string();
+        let (_, edit) = run(&mut seq, &pool, alt(AlternativesAction::Switch, sound, Vec::new(), Some(&take), None, false)).unwrap();
+        let picture = find_clip(&seq, ids[0]).expect("the picture is still there").2;
+        assert_eq!((picture.linked_clip_id, secs(picture.timeline_in), secs(picture.timeline_out)), (None, 0.0, 4.0));
+        assert_eq!(seq.tracks[0].clips.len(), 3, "and no gap");
+        assert_eq!(find_clip(&seq, sound).unwrap().2.linked_clip_id, None);
+        assert_eq!(seq.tracks[0].transitions.len(), 1);
+        undo(&mut seq, &pool, &edit);
+        assert_eq!(serde_json::to_value(&seq).unwrap(), before, "undo gives the pair back");
+
+        let (mut seq, mut pool, _) = fixture();
+        let silent = {
+            let mut item = klipp_media::MediaItem::synthetic_for_test("/tmp/silent.mov".into(), None);
+            item.duration = tc(10.0);
+            item.video_codec = "hevc".into();
+            item.has_audio = false;
+            pool.add(item)
+        };
+        let shot = seq.tracks[0].clips[0].id;
+        let (sound, next) = (seq.tracks[0].clips[0].linked_clip_id.unwrap(), seq.tracks[1].clips[1].id);
+        seq.tracks[1].transitions.push(klipp_timeline::Transition { id: klipp_core::TransitionId::new(), kind: klipp_timeline::TransitionKind::CrossDissolve, duration: tc(0.5), clip_a_id: sound, clip_b_id: next, user_params: Default::default(), alignment: Default::default() });
+        let spec = TakeSpec { media_id: Some(silent), from: Some(0.0), to: Some(4.0), name: None };
+        run(&mut seq, &pool, alt(AlternativesAction::Create, shot, vec![spec], None, None, false)).unwrap();
+        let before = serde_json::to_value(&seq).unwrap();
+        let take = find_clip(&seq, shot).unwrap().2.audition.as_ref().unwrap().takes.iter().find(|t| t.clip.is_some()).unwrap().id.to_string();
+        let (_, edit) = run(&mut seq, &pool, alt(AlternativesAction::Switch, shot, Vec::new(), Some(&take), None, false)).unwrap();
+        assert!(seq.tracks[1].transitions.is_empty(), "the crossfade went with the sound");
+        assert!(find_clip(&seq, shot).is_some());
+        undo(&mut seq, &pool, &edit);
+        assert_eq!(serde_json::to_value(&seq).unwrap(), before, "undo gives both back");
+    }
+
+    /// R22: the pieces of a bladed audition hold the same takes. Both switched
+    /// to the same take, each has its own sound under it, not one id twice.
+    #[test]
+    fn the_pieces_of_a_bladed_audition_switch_apart() {
+        let (mut seq, pool, ids) = fixture();
+        run(&mut seq, &pool, op(AlternativesAction::Create, ids[0])).unwrap();
+        // A magnetic track's blade, which gives both pieces the takes.
+        seq.tracks[0].magnetic_role = TrackRole::Primary;
+        crate::blade::blade_linked(&mut seq, 0, ids[0], tc(2.0), |k| k == 0).unwrap();
+        let pieces: Vec<ClipId> = seq.tracks[0].clips.iter().take(2).map(|c| c.id).collect();
+        for piece in &pieces {
+            let take = find_clip(&seq, *piece).unwrap().2.audition.as_ref().unwrap().takes.iter().find(|t| t.clip.is_some()).unwrap().id.to_string();
+            run(&mut seq, &pool, alt(AlternativesAction::Switch, *piece, Vec::new(), Some(&take), None, true)).unwrap();
+        }
+        let mut seen = std::collections::HashSet::new();
+        assert!(seq.tracks.iter().flat_map(|t| &t.clips).all(|c| seen.insert(c.id)), "an id on the timeline twice");
+        for piece in &pieces {
+            let (_, _, picture) = find_clip(&seq, *piece).unwrap();
+            let (_, _, sound) = find_clip(&seq, picture.linked_clip_id.unwrap()).unwrap();
+            assert_eq!(sound.linked_clip_id, Some(*piece));
+            assert_eq!(sound.timeline_in, picture.timeline_in, "in sync");
+        }
+    }
+
+    /// R18: a take's clips hold no audition, as a saved one comes back with
+    /// none. Both of a linked pair can't become auditions; from a project
+    /// that has it, a copy's sound leaves its takes behind, and a switch that
+    /// would lose them is refused.
+    #[test]
+    fn a_linked_pair_holds_one_audition() {
+        let (mut seq, pool, ids) = fixture();
+        let sound = seq.tracks[0].clips[0].linked_clip_id.unwrap();
+        run(&mut seq, &pool, op(AlternativesAction::Create, sound)).unwrap();
+        let refused = run(&mut seq, &pool, op(AlternativesAction::Create, ids[0])).unwrap_err();
+        assert!(refused.why.contains("already holds takes"), "{}", refused.why);
+        // As such a project has it.
+        let (mut seq, pool, ids) = fixture();
+        run(&mut seq, &pool, op(AlternativesAction::Create, ids[0])).unwrap();
+        let held = find_clip(&seq, ids[0]).unwrap().2.audition.clone();
+        seq.tracks[1].clips[0].audition = held;
+        run(&mut seq, &pool, alt(AlternativesAction::Add, ids[0], vec![TakeSpec::default()], None, None, false)).unwrap();
+        let a = find_clip(&seq, ids[0]).unwrap().2.audition.clone().unwrap();
+        assert!(a.stored_clips().all(|c| c.audition.is_none()), "a take's clip holds no audition");
+        let take = a.takes.iter().find(|t| t.clip.is_some()).unwrap().id.to_string();
+        let refused = run(&mut seq, &pool, alt(AlternativesAction::Switch, ids[0], Vec::new(), Some(&take), None, false)).unwrap_err();
+        assert!(refused.why.contains("holds takes of its own"), "{}", refused.why);
     }
 
     /// A file of sound alone can't be a take on a picture track, whether
