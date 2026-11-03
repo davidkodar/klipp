@@ -5270,12 +5270,14 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
                         moving.extend(track.clips.iter().filter(|c| c.timeline_in >= clip.timeline_out).map(|c| (t, c)));
                     }
                     moving.retain(|(_, c)| !gone.contains(&c.id));
-                    for &(t, c) in &moving {
+                    for &(_, c) in &moving {
                         let Some((pt, _, p)) = c.linked_clip_id.and_then(|pid| find_clip(seq, pid)) else { continue };
-                        if !gone.contains(&p.id) && !moving.iter().any(|(_, m)| m.id == p.id) {
+                        // A locked track stays as the person locked it: a
+                        // partner there is theirs to leave.
+                        if !gone.contains(&p.id) && !seq.tracks[pt].locked && !moving.iter().any(|(_, m)| m.id == p.id) {
                             return Err(refuse(
                                 i,
-                                format!("closing the gap would move {} on track {t} and leave its linked clip {} on track {pt}, out of sync", clip_name(seq, pool, c), clip_name(seq, pool, p)),
+                                format!("closing the gap would move {} and leave its linked clip {}, out of sync", clip_name(seq, pool, c), clip_name(seq, pool, p)),
                                 format!("turn on sync lock for track {pt} so it closes up too, remove with ripple: false, or give linked: false to close up this track alone"),
                             ));
                         }
@@ -5351,7 +5353,7 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
                     if let Some(c) = overlapping(seq, pti, p_in, p_out, Some(p.id)) {
                         return Err(refuse(
                             i,
-                            format!("its linked clip would overlap {} at {:.2}-{:.2} s on track {pti}", clip_name(seq, pool, c), secs(c.timeline_in), secs(c.timeline_out)),
+                            format!("its linked clip would overlap {} at {:.2}-{:.2} s", clip_name(seq, pool, c), secs(c.timeline_in), secs(c.timeline_out)),
                             "make room on that track first, or give linked: false to move this clip alone",
                         ));
                     }
