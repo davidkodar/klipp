@@ -44,8 +44,6 @@ use serde_json::{json, Value};
 /// failure of this test, and any other shape is. Each goes when its fix
 /// lands, and the test then proves the fix.
 const KNOWN: &[(&str, fn(&Broken, &str) -> bool)] = &[
-    // Undo or redo giving back a time at another rate, the same time.
-    ("R8", |b, _| b.invariant.ends_with("(a time written at another rate)")),
 ];
 
 const SYNC: &str = "linked pairs in sync";
@@ -67,6 +65,9 @@ fn edit_kinds(edits: &[EditCommand]) -> String {
         match e {
             EditCommand::Batch(v) => v.iter().map(name).collect::<Vec<_>>().join(" "),
             EditCommand::Magnetic(m) => format!("Magnetic:{}", format!("{m:?}").split([' ', '{', '(']).next().unwrap_or("")),
+            EditCommand::LegacyTrimClip { old_source_in, new_source_in, .. } | EditCommand::LegacyRippleTrimClip { old_source_in, new_source_in, .. } => {
+                format!("{}(source_in {old_source_in:?} -> {new_source_in:?})", format!("{e:?}").split([' ', '{']).next().unwrap_or(""))
+            }
             other => format!("{other:?}").split([' ', '{', '(']).next().unwrap_or("").to_string(),
         }
     }
@@ -558,7 +559,8 @@ fn random_edits_keep_the_editing_cores_invariants() {
     std::panic::set_hook(Box::new(|_| {}));
     let mut report = Vec::new();
     let mut new = Vec::new();
-    for seed in 1..=seeds {
+    let first = env("KLIPP_RANDOM_EDITS_FIRST", 1);
+    for seed in first..first + seeds {
         let mut rng = Rng(seed);
         let mut run_steps: Vec<Step> = (0..steps).map(|_| random_step(&mut rng)).filter(|s| !skipped.iter().any(|k| kind(s) == k.as_str())).collect();
         // A known failure doesn't end the seed: the step that broke is
