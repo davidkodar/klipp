@@ -58,8 +58,6 @@ const KNOWN: &[(&str, fn(&Broken, &str) -> bool)] = &[
     ("R9", |b, _| b.invariant == GAPLESS && b.amount <= -FRAME),
     // A slide leaving a pair out of sync.
     ("R10", |b, last| b.invariant == SYNC && last == "Slide"),
-    // Undo or redo giving back other clip ids, on a clip or a transition.
-    ("R11", |b, _| (b.invariant == "undo restores the state before" || b.invariant == "redo restores the state after") && b.detail.contains("id: ")),
     // A ripple remove closing up one track under linked clips.
     ("R3", |b, last| b.invariant == SYNC && last == "Remove"),
 ];

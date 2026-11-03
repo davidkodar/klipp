@@ -1665,7 +1665,17 @@ impl MagneticEditor {
     // ───────────────────────────────────────────────────────────────
     // 20. apply_inverse
     // ───────────────────────────────────────────────────────────────
+    /// Undo `command`. Each track is left in time order, as the edit found
+    /// it: a position put back alone left a clip out of its order.
     pub fn apply_inverse(sequence: &mut Sequence, command: &MagneticEditCommand) {
+        Self::apply_inverse_in_place(sequence, command);
+        for track in &mut sequence.tracks {
+            track.sort_clips();
+            track.sort_transitions();
+        }
+    }
+
+    fn apply_inverse_in_place(sequence: &mut Sequence, command: &MagneticEditCommand) {
         match command {
             MagneticEditCommand::InsertPrimary {
                 inserted_clip,
@@ -1982,7 +1992,16 @@ impl MagneticEditor {
     // ───────────────────────────────────────────────────────────────
     // 21. apply_forward
     // ───────────────────────────────────────────────────────────────
+    /// Redo `command`, each track left in time order as the edit left it.
     pub fn apply_forward(sequence: &mut Sequence, command: &MagneticEditCommand) {
+        Self::apply_forward_in_place(sequence, command);
+        for track in &mut sequence.tracks {
+            track.sort_clips();
+            track.sort_transitions();
+        }
+    }
+
+    fn apply_forward_in_place(sequence: &mut Sequence, command: &MagneticEditCommand) {
         match command {
             MagneticEditCommand::InsertPrimary {
                 inserted_clip,

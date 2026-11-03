@@ -1974,6 +1974,16 @@ impl Track {
             .find(|(_, c)| tc >= c.timeline_in && tc < c.timeline_out)
     }
 
+    /// The transitions in one order, that of the cuts they sit on (where
+    /// their outgoing clip ends), so an edit and its undo give back the
+    /// order they found: a transition taken off and put back went to the
+    /// end.
+    pub fn sort_transitions(&mut self) {
+        let clips = &self.clips;
+        let cut = |id: ClipId| clips.iter().find(|c| c.id == id).map(|c| c.timeline_out);
+        self.transitions.sort_by_cached_key(|t| (cut(t.clip_a_id), t.id.0.as_u128()));
+    }
+
     pub fn sort_clips(&mut self) {
         self.clips.sort_by_key(|c| c.timeline_in);
     }

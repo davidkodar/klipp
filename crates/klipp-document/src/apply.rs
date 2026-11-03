@@ -810,6 +810,7 @@ impl DocumentView<'_> {
                     if let Some(prev) = replaced {
                         track.transitions.push(*prev);
                     }
+                    track.sort_transitions();
                     if let Some(c) = track.clips.iter_mut().find(|c| c.id == *clip_a_id) {
                         c.fade_out_secs = *old_fade_out_a;
                     }
@@ -827,6 +828,8 @@ impl DocumentView<'_> {
                 if let Some(track) = self.sequences[self.active].tracks.get_mut(*track_index) {
                     track.transitions.retain(|t| t.id != transition.id);
                     track.transitions.push(*transition);
+                    // Back where it was among the others, not at the end.
+                    track.sort_transitions();
                     if let Some(c) = track.clips.iter_mut().find(|c| c.id == transition.clip_a_id) {
                         c.fade_out_secs = *old_fade_out_a;
                     }
@@ -1583,6 +1586,7 @@ impl DocumentView<'_> {
                 if let Some(track) = self.sequences[self.active].tracks.get_mut(*track_index) {
                     track.transitions.retain(|t| !(t.clip_a_id == *clip_a_id && t.clip_b_id == *clip_b_id));
                     track.transitions.push(*transition);
+                    track.sort_transitions();
                     // An audio track's transition is the crossfade itself:
                     // fading the clips as well would dip the join.
                     if track.kind != klipp_timeline::TrackKind::Audio {
