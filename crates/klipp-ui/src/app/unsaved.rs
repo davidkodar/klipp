@@ -69,6 +69,15 @@ impl crate::state::AppState {
         self.recorded_tracks = self.sequences.iter().map(|s| (s.id, s.tracks.iter().map(|t| t.id).collect())).collect();
     }
 
+    /// What changed since the last save is not the person's (analysis
+    /// results): the project as it now is counts as the saved one, still
+    /// clean, the change written by the next save.
+    pub(crate) fn keep_saved(&mut self) {
+        self.saved_digest = self.project_digest_now();
+        self.dirty = false;
+        self.unsaved = false;
+    }
+
     /// Settle a raised hint now: unsaved exactly when the project differs
     /// from the one last loaded or saved. Whether there was one to settle.
     pub(crate) fn settle_unsaved(&mut self) -> bool {
