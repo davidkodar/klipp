@@ -1561,7 +1561,13 @@ impl KlippApp {
             }
         }
 
-        // Relink dialog
+        // Relink dialog. Closed once nothing is offline and no search or
+        // plan is under way: left open saying all media is online, it
+        // kept the keys, so no shortcut reached the app.
+        if self.state.show_relink_dialog && crate::panels::relink::all_relinked(self.state.media_pool.all().filter(|m| m.offline).count(), self.relink_panel.idle()) {
+            self.state.show_relink_dialog = false;
+            self.state.toast.show("All media is online");
+        }
         if self.state.show_relink_dialog {
             let mut open = true;
             egui::Window::new("Relink Offline Media")

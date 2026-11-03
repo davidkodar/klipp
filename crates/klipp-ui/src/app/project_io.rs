@@ -1179,9 +1179,9 @@ impl KlippApp {
                     .filter(|item| item.offline)
                     .map(|item| item.id)
                     .collect();
-                if !self.state.offline_media_ids.is_empty() {
-                    self.state.show_relink_dialog = true;
-                }
+                // Shown for this project's offline media only: one left
+                // open from the project before was carried over.
+                self.state.show_relink_dialog = !self.state.offline_media_ids.is_empty();
                 // Frei0r plug-ins this machine hasn't (#3200): said, not
                 // left to pass the picture on unseen.
                 let missing = crate::panels::project_doctor::missing_frei0r_plugins(&self.state.sequences);
