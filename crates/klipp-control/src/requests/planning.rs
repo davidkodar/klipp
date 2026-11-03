@@ -1438,7 +1438,8 @@ fn brand_kit_sequence_ops(ctx: &ControlContext, found: &klipp_project::brand_kit
             _ => Err("the kit's intro or outro is neither a template nor a file".into()),
         }
     };
-    let mut found_parts = SequenceParts::default();
+    // Its intro and outro take its accent and heading font (P42).
+    let mut found_parts = SequenceParts { accent: kit.colours.accent.clone(), heading_font: kit.fonts.heading.clone(), ..SequenceParts::default() };
     if wants("intro") {
         match &kit.intro {
             Some(b) => {
