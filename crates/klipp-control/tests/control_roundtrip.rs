@@ -3891,6 +3891,22 @@ fn perf_reports_no_presented_rate_once_paused() {
     assert_eq!(h.ok(json!({ "method": "perf" }))["presented_fps"], Value::Null);
 }
 
+/// Played backwards no new frame is shown, so the frame on screen stays
+/// where it started while the playhead runs back: status says the playhead
+/// while playing, and the frame on screen once paused.
+#[test]
+fn status_follows_the_playhead_while_playing() {
+    use klipp_core::{RationalTime, Timecode, TransportStatus};
+    let mut h = harness();
+    h.frame_buffer.lock().unwrap().set_presented(RationalTime::from_frames(250, 25), true);
+    *h.shared.transport.lock().unwrap() = TransportStatus { playhead: Some(Timecode::from_frames(100, 25)), playing: true };
+    let status = h.ok(json!({ "method": "status" }));
+    assert_eq!(status["playhead_secs"], json!(4.0));
+    assert_eq!(status["playhead_frame"], json!(4 * status["fps"].as_f64().unwrap() as i64));
+    h.shared.transport.lock().unwrap().playing = false;
+    assert_eq!(h.ok(json!({ "method": "status" }))["playhead_secs"], json!(10.0));
+}
+
 /// #1850: perf splits the viewer frame's time into its phases around the
 /// render, averaged over the last frames, so a slow stretch can be read
 /// apart on a running app.
