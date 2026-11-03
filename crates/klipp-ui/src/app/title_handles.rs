@@ -19,6 +19,14 @@ pub(super) fn snapshot_title(state: &AppState, clip_id: ClipId) -> Option<klipp_
         .cloned()
 }
 
+/// The step typing in `clip_id` makes: a caption's, on a subtitle track,
+/// or a title's (P55: a misspelt word put right in a caption was named
+/// as a title's).
+pub(super) fn text_edit_name(state: &AppState, clip_id: ClipId) -> &'static str {
+    let on_captions = state.sequence().tracks.iter().any(|t| t.kind == klipp_timeline::TrackKind::Subtitle && t.find_clip(clip_id).is_some());
+    if on_captions { crate::history::CAPTION_TEXT } else { crate::history::TITLE_TEXT }
+}
+
 /// Records a title edit from `old` to the clip's title now, one step,
 /// unless a handle drag on the clip is open: that drag's end is its step.
 /// Keystrokes in a typing burst merge into one step too.
@@ -30,13 +38,13 @@ pub(super) fn push_title_undo(state: &mut AppState, clip_id: ClipId, description
     if old == new {
         return;
     }
-    if description == "Edit Title Text" && state.active_history_mut().try_coalesce_title_text(clip_id, &old, &new) {
+    if crate::history::is_text_edit(description) && state.active_history_mut().try_coalesce_title_text(clip_id, &old, &new) {
         return;
     }
     state.active_history_mut().push(crate::history::HistoryEntry {
         command: crate::history::EditCommand::EditTitle { clip_id, description, old_data: old, new_data: new },
     });
-    if description == "Edit Title Text" {
+    if crate::history::is_text_edit(description) {
         state.active_history_mut().note_title_text_edit(clip_id);
     }
 }
@@ -163,6 +171,32 @@ mod tests {
         v.state.selected_title_object = Some((id, first));
         v.frame(Vec::new());
         (v, id)
+    }
+
+    /// Typing in a caption is named as a caption's, a title's as a
+    /// title's, and a caption's keystrokes in a burst are still one step.
+    #[test]
+    fn a_caption_s_text_is_named_as_a_caption_s() {
+        let (mut v, title_id) = viewer(&[("Hello", (0.5, 0.5), 0.0)]);
+        let mut caption = v.state.sequences[0].all_clips().find(|c| c.id == title_id).unwrap().clone();
+        caption.id = ClipId::new();
+        let caption_id = caption.id;
+        let mut track = klipp_timeline::Track::new("Captions", klipp_timeline::TrackKind::Subtitle);
+        track.clips.push(caption);
+        v.state.sequences[0].tracks.push(track);
+        assert_eq!(text_edit_name(&v.state, title_id), "Edit Title Text");
+        assert_eq!(text_edit_name(&v.state, caption_id), "Edit Caption Text");
+        let depth = v.state.undo_depth();
+        for typed in ["Hellp", "Help"] {
+            let old = snapshot_title(&v.state, caption_id).unwrap();
+            let clip = v.state.sequences[0].all_clips_mut().find(|c| c.id == caption_id).unwrap();
+            let klipp_timeline::ClipKind::Title(td) = &mut clip.kind else { unreachable!() };
+            if let TitleObjectContent::TextBox(tb) = &mut td.objects[0].content { tb.text = typed.into(); }
+            let name = text_edit_name(&v.state, caption_id);
+            push_title_undo(&mut v.state, caption_id, name, old);
+        }
+        assert_eq!(v.state.undo_depth(), depth + 1, "the burst is one step");
+        assert_eq!(v.state.active_history().undo_label(), Some("Edit Caption Text"));
     }
 
     fn title(v: &Viewer, id: ClipId) -> TitleData {
