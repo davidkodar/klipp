@@ -533,7 +533,7 @@ impl crate::state::AppState {
             changed = true;
         }
         // The role the sound proposes for the file's clips (#2216).
-        let proposal = report.audio_role.as_ref().and_then(|r| r.proposal());
+        let proposal = report.role_proposal();
         if item.audio_role != proposal {
             item.audio_role = proposal;
             changed = true;

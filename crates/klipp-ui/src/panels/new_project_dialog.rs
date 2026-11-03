@@ -196,14 +196,15 @@ impl NewProjectDialog {
                             .color(theme.text_secondary),
                     );
                     ui.add_space(40.0 * control_scale);
+                    // Where it goes, as words, not a field: a field that
+                    // took no typing looked editable (P45). Browse
+                    // changes it; all of it on hover.
                     let loc_str = self.location.to_string_lossy().to_string();
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.location.to_string_lossy().to_string())
-                            .desired_width(230.0 * control_scale)
-                            .interactive(false)
-                            .text_color(theme.text_dim),
-                    );
-                    let _ = loc_str; // consumed above
+                    ui.add_sized(
+                        [230.0 * control_scale, 20.0 * control_scale],
+                        egui::Label::new(egui::RichText::new(&loc_str).color(theme.text_secondary)).truncate(),
+                    )
+                    .on_hover_text(&loc_str);
                     let picker = egui::Id::new("new-project-location");
                     if ui.button("Browse...").clicked() {
                         let start = self.location.clone();

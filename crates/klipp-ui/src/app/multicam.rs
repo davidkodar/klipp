@@ -68,7 +68,8 @@ impl KlippApp {
         let command = match steps.len() {
             0 => return,
             1 => steps.remove(0),
-            _ => EditCommand::Batch(steps),
+            // Named: an unnamed batch reads "Add Clips" (P50).
+            _ => EditCommand::Named { label: "Multicam Sound".into(), edit: Box::new(EditCommand::Batch(steps)) },
         };
         self.state.push_history(command);
         self.state.toast.show(format!("Multicam sound: {}", sound.label()));
@@ -220,8 +221,9 @@ impl KlippApp {
             self.refresh_placement_snapshot(seq_idx, entry);
         }
         if !entries.is_empty() {
+            // Named: an unnamed batch reads "Add Clips" (P50).
             self.state.active_history_mut().push(crate::history::HistoryEntry {
-                command: crate::history::EditCommand::Batch(entries),
+                command: crate::history::EditCommand::Named { label: "Create Multicam".into(), edit: Box::new(crate::history::EditCommand::Batch(entries)) },
             });
         }
         let by = |m| plan.placements.iter().filter(|p| p.method == Some(m)).count();

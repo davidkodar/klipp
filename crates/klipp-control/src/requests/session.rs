@@ -203,7 +203,7 @@ pub(crate) fn respond(
                     "unsaved_changes_from": if project.dirty { project.changed_by.clone().or(Some("edits".into())) } else { None },
                 },
                 "tracks": seq.tracks.len(),
-                "clips": seq.tracks.iter().map(|t| t.clips.len()).sum::<usize>(),
+                "clips": placed_clips(&seq),
                 "fps": fps,
                 "resolution": { "width": seq.resolution.width, "height": seq.resolution.height },
                 "duration_secs": seq.total_duration().to_secs_f64(),
@@ -278,3 +278,22 @@ pub(crate) fn respond(
         _ => Err("internal: a request was routed to the wrong area".into()),
     }
 }
+
+/// The clips on `seq`'s tracks, for status: gap clips hold the primary's
+/// empty room and are no clips anyone placed (P54), so they don't count.
+fn placed_clips(seq: &klipp_timeline::Sequence) -> usize {
+    seq.tracks.iter().map(|t| t.clips.iter().filter(|c| !c.kind.is_gap()).count()).sum()
+}
+
+#[cfg(test)]
+mod placed_clips_tests {
+    #[test]
+    fn a_gap_clip_is_not_counted() {
+        let t = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 24);
+        let mut seq = klipp_timeline::Sequence::new_default();
+        let p = seq.primary_track_index().unwrap();
+        seq.tracks[p].clips = vec![klipp_timeline::Clip::media(klipp_core::MediaId::new(), t(0.0), t(2.0), t(0.0), t(2.0)), klipp_timeline::Clip::gap(t(2.0), t(3.0))];
+        assert_eq!(super::placed_clips(&seq), 1);
+    }
+}
+

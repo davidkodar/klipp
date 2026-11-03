@@ -67,7 +67,7 @@ Klipp reads them when it starts and again after you save one. Yours are listed b
 
 ## Motion-graphics templates
 
-**Make one:** build the composition from clips and titles, select them and choose **Save as Template…** from their menu. Then choose its fields: the texts, colours, numbers and media that change each time it is used. Its file is a `.klipptemplate` like a recipe's, carrying the composition in `sequences`, with each field a `parameter` bound to a property inside it (for example `object:0.text`). Klipp's own, in the Library's Templates, are good starting points: open one, change it and save it as your own.
+**Make one:** build the composition from clips and titles, select them and choose **Save as Template…** from their menu. Then choose its fields: the texts, colours, numbers and media that change each time it is used. Name a colour field **Accent** and a text field bound to a font **Heading font**, and a brand kit that uses the template as its intro or outro fills them with its own. Its file is a `.klipptemplate` like a recipe's, carrying the composition in `sequences`, with each field a `parameter` bound to a property inside it (for example `object:0.text`). Klipp's own, in the Library's Templates, are good starting points: open one, change it and save it as your own.
 
 ## Brand kits
 
@@ -84,8 +84,8 @@ A project takes a kit when it is made (New Project), or later with **Apply Brand
 **Make one:** in **Preferences → Brand Kits**. **Import…** adds a kit someone shared as a `.klippbrand` file, and **Export…** writes yours as one. Klipp's three starter kits are read-only; change a copy.
 
 **The file:** a kit is a folder, `~/.local/share/klipp/brand_kits/<name>/`, holding `kit.toml` and the files it names, such as its logo or an intro clip.
-- `colours` are `#rrggbb`: the primary is what titles take, and the accent is what a title template's accent layer takes.
-- `fonts` are a heading family and a body family.
+- `colours` are `#rrggbb`: the primary is what titles take, and the accent is what a title template's accent layer takes. An intro or outro template with an **Accent** field takes it too.
+- `fonts` are a heading family and a body family. An intro or outro template with a **Heading font** field is set in the heading family.
 - `lower_third`, `end_screen`, `intro` and `outro` name templates, by name. An intro or outro can be a clip in the kit's folder instead.
 - `logo` names a picture in the folder, with its corner, margin, width and opacity.
 

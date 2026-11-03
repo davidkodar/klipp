@@ -52,6 +52,10 @@ Four families ship inside Klipp, under the SIL Open Font License, so a title loo
 
 They appear at the top of the font picker with any fonts found on the system. New text starts in Inter.
 
+The built-in templates and starter brand kits are set in nine more families, which also ship with Klipp under the SIL Open Font License, so nothing is downloaded when one is first used: Anton, Cormorant Garamond, DM Serif Display, Lora, Manrope, Montserrat, Oswald, Playfair Display and Work Sans. They come from the Google Fonts collection, each with its licence beside it in `assets/fonts/catalogue/`.
+
+Klipp's font catalogue has more open-licence families. A title, project or template set in one that isn't on this computer asks before downloading it: **Download Fonts** lists each family, its licence and its size, and the titles show a stand-in face until it arrives, or if you choose **Not now**.
+
 ## Motion
 
 Each text layer has an entrance and an exit, set in the inspector's **Motion** group:

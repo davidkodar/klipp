@@ -99,7 +99,8 @@ fn brand_kit_ops(state: &crate::state::AppState, pending: &PendingBrandKit) -> R
             _ => Err("its intro or outro is neither a template nor a file".into()),
         }
     };
-    let mut found = SequenceParts::default();
+    // Its intro and outro take its accent and heading font (P42).
+    let mut found = SequenceParts { accent: kit.colours.accent.clone(), heading_font: kit.fonts.heading.clone(), ..SequenceParts::default() };
     if parts.intro {
         found.intro = kit.intro.as_ref().map(bookend).transpose()?;
     }

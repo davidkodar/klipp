@@ -692,7 +692,7 @@ impl KlippApp {
         if self.state.skim_transcoding.contains(&media_id) {
             return;
         }
-        if let Some(item) = self.state.media_pool.get(&media_id) {
+        if let Some(item) = self.state.media_pool.get(&media_id).filter(|item| has_picture_to_skim(item)) {
             let duration_secs = item.duration.to_secs_f64();
             if let Some(existing) = item.skim_file.as_ref().filter(|p| p.exists()) {
                 if skim_file_is_complete(existing, duration_secs) {
@@ -1560,6 +1560,26 @@ impl KlippApp {
                 }
             }
         }
+    }
+}
+
+/// Whether a file has a picture a skim transcode can make: a sound-only
+/// file sent to the video encoder only failed, once a file, with ffmpeg's
+/// exit 234 in the log. Its skim sound comes from its audio cache.
+fn has_picture_to_skim(item: &klipp_media::MediaItem) -> bool {
+    !item.video_codec.is_empty()
+}
+
+#[cfg(test)]
+mod skim_picture_tests {
+    /// A file with a picture is transcoded for skimming; one of sound alone
+    /// isn't.
+    #[test]
+    fn a_sound_only_file_has_no_skim_transcode() {
+        let mut item = klipp_media::MediaItem::synthetic_for_test("/tmp/a.mov".into(), None);
+        assert!(super::has_picture_to_skim(&item));
+        item.video_codec.clear();
+        assert!(!super::has_picture_to_skim(&item));
     }
 }
 

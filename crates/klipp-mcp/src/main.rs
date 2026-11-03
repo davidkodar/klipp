@@ -2374,7 +2374,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              }),
              vec![]),
         tool("klipp_perf",
-             "Frame timings, presented_fps over the last 2 s, and why playback drops frames with the fix that fits. Details: klipp_guide topic perf.",
+             "Frame timings, presented_fps over the last 2 s while playing, and why playback drops frames with the fix that fits. Details: klipp_guide topic perf.",
              json!({}), vec![]),
         tool("klipp_render_status",
              "Rendered, heavy and stale spans, and drawing ahead's state. Details: klipp_guide topic render_status.",

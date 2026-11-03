@@ -22,6 +22,14 @@ impl KlippApp {
             placed_titles(e, &mut placed);
         }
         crate::missing_fonts::fetch_for(placed);
+        // A template's compositions come in with it, a sequence for each
+        // frame shape, and opened no tab each: a brand kit's intro and
+        // outro opened six (P43). Double-clicking the clip opens one.
+        for e in edits {
+            for id in added_sequences(e) {
+                self.state.closed_sequence_tabs.insert(id);
+            }
+        }
         // One step, or the open batch's edits (a socket or agent batch).
         self.state.push_edits_as_one(edits, label);
         self.state.dirty = true;
@@ -154,3 +162,29 @@ mod tests {
         assert_eq!(found.iter().filter_map(|t| t.primary_text().map(|b| b.text.as_str())).collect::<Vec<_>>(), ["a", "b"]);
     }
 }
+
+/// The sequences `edit` brings into the project: a template's
+/// compositions, copied in with it.
+fn added_sequences(edit: &EditCommand) -> Vec<klipp_core::SequenceId> {
+    match edit {
+        EditCommand::AddSequences { sequences } => sequences.iter().map(|s| s.id).collect(),
+        EditCommand::Named { edit, .. } => added_sequences(edit),
+        EditCommand::Batch(edits) => edits.iter().flat_map(added_sequences).collect(),
+        _ => Vec::new(),
+    }
+}
+
+#[cfg(test)]
+mod added_sequences_tests {
+    use crate::history::EditCommand;
+    /// P43: the compositions a template brings, however deep in its step.
+    #[test]
+    fn a_templates_compositions_are_found_in_its_step() {
+        let (a, b) = (klipp_timeline::Sequence::new_default(), klipp_timeline::Sequence::new_default());
+        let ids = vec![a.id, b.id];
+        let step = EditCommand::Named { label: "Template".into(), edit: Box::new(EditCommand::Batch(vec![EditCommand::AddSequences { sequences: vec![a, b] }])) };
+        assert_eq!(super::added_sequences(&step), ids);
+        assert!(super::added_sequences(&EditCommand::Batch(Vec::new())).is_empty());
+    }
+}
+

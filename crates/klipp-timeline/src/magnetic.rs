@@ -511,6 +511,34 @@ impl MagneticEditor {
         // Remove the clip
         sequence.tracks[track_idx].clips.remove(clip_idx);
 
+        // The transitions joining it or its linked clip go with them: left,
+        // they named a clip no longer there, and saving dropped them. The
+        // dip one wrote on the clip it joined goes too: a fade at that end
+        // as long as the transition (within half a frame); a fade of
+        // another length is the person's own and stays.
+        let gone_ids = [Some(removed_clip.id), removed_linked_clip.as_ref().map(|(c, _)| c.id)];
+        let slack = (0.5 / sequence.fps.as_f64().max(1.0)) as f32 + 1e-4;
+        let mut removed_transitions = Vec::new();
+        let mut undipped = Vec::new();
+        for (ti, track) in sequence.tracks.iter_mut().enumerate() {
+            let (going, staying): (Vec<_>, Vec<_>) = track.transitions.drain(..).partition(|t| gone_ids.contains(&Some(t.clip_a_id)) || gone_ids.contains(&Some(t.clip_b_id)));
+            track.transitions = staying;
+            for t in going {
+                let dip = t.duration.to_secs_f64() as f32;
+                for c in track.clips.iter_mut() {
+                    if c.id == t.clip_a_id && (c.fade_out_secs - dip).abs() <= slack {
+                        undipped.push((c.id, true, c.fade_out_secs));
+                        c.fade_out_secs = 0.0;
+                    }
+                    if c.id == t.clip_b_id && (c.fade_in_secs - dip).abs() <= slack {
+                        undipped.push((c.id, false, c.fade_in_secs));
+                        c.fade_in_secs = 0.0;
+                    }
+                }
+                removed_transitions.push((ti, t));
+            }
+        }
+
         // Clear any third-party clips with `linked_clip_id` pointing
         // at the deleted clip (or its just-removed linked partner).
         // The explicit pair-removal above handles symmetric A↔B
@@ -603,6 +631,8 @@ impl MagneticEditor {
                 disconnected_clips,
                 disconnected_storylines,
                 removed_linked_clip,
+                removed_transitions,
+                undipped,
             },
         }
     }
@@ -776,6 +806,8 @@ impl MagneticEditor {
             disconnected_clips: Vec::new(),
             disconnected_storylines: Vec::new(),
             removed_linked_clip: None,
+            removed_transitions: Vec::new(),
+            undipped: Vec::new(),
         };
         let insert_cmd = MagneticEditCommand::InsertPrimary {
             inserted_clip: sequence.tracks[primary_idx].clips[insert_idx].clone(),
@@ -935,6 +967,13 @@ impl MagneticEditor {
         sequence.tracks[track_idx]
             .clips
             .insert(clip_idx, left_clip.clone());
+        // A transition out of the clip is out of its right piece now; the
+        // left keeps the clip's id, and a transition into it.
+        for t in &mut sequence.tracks[track_idx].transitions {
+            if t.clip_a_id == clip_id {
+                t.clip_a_id = right_clip.id;
+            }
+        }
 
         #[cfg(debug_assertions)]
         if sequence.tracks[track_idx].magnetic_role == TrackRole::Primary {
@@ -1687,6 +1726,8 @@ impl MagneticEditor {
                 disconnected_clips,
                 disconnected_storylines,
                 removed_linked_clip,
+                removed_transitions,
+                undipped,
             } => {
                 // Undo cascades
                 for cr in cascaded_clips.iter().rev() {
@@ -1716,6 +1757,18 @@ impl MagneticEditor {
                 for (ti2, anchor) in disconnected_storylines {
                     sequence.tracks[*ti2].magnetic_role = TrackRole::ConnectedStoryline;
                     sequence.tracks[*ti2].storyline_anchor = Some(anchor.clone());
+                }
+                // The transitions taken out with it, and the dips they wrote
+                for (ti2, t) in removed_transitions {
+                    if let Some(track) = sequence.tracks.get_mut(*ti2) {
+                        track.transitions.push(*t);
+                    }
+                }
+                for (cid, out, secs) in undipped {
+                    if let Some((ti2, ci2)) = sequence.find_clip(*cid) {
+                        let c = &mut sequence.tracks[ti2].clips[ci2];
+                        if *out { c.fade_out_secs = *secs } else { c.fade_in_secs = *secs }
+                    }
                 }
             }
             MagneticEditCommand::Lift {
@@ -1807,6 +1860,11 @@ impl MagneticEditor {
                 sequence.tracks[*track_index]
                     .clips
                     .insert(pos, original_clip.clone());
+                for t in &mut sequence.tracks[*track_index].transitions {
+                    if t.clip_a_id == right_clip.id {
+                        t.clip_a_id = original_clip.id;
+                    }
+                }
             }
             MagneticEditCommand::TrimHead {
                 clip_id,
@@ -2000,10 +2058,24 @@ impl MagneticEditor {
                 disconnected_clips,
                 disconnected_storylines,
                 removed_linked_clip,
+                removed_transitions,
+                undipped,
                 ..
             } => {
                 // Remove clip
                 sequence.tracks[*track_index].remove_clip(removed_clip.id);
+                // And the transitions that joined it, and their dips
+                for (ti2, t) in removed_transitions {
+                    if let Some(track) = sequence.tracks.get_mut(*ti2) {
+                        track.transitions.retain(|x| x.id != t.id);
+                    }
+                }
+                for (cid, out, _) in undipped {
+                    if let Some((ti2, ci2)) = sequence.find_clip(*cid) {
+                        let c = &mut sequence.tracks[ti2].clips[ci2];
+                        if *out { c.fade_out_secs = 0.0 } else { c.fade_in_secs = 0.0 }
+                    }
+                }
                 // Remove linked
                 if let Some((linked, lt_idx)) = removed_linked_clip {
                     sequence.tracks[*lt_idx].remove_clip(linked.id);
@@ -2105,6 +2177,11 @@ impl MagneticEditor {
                 sequence.tracks[*track_index]
                     .clips
                     .insert(pos, left_clip.clone());
+                for t in &mut sequence.tracks[*track_index].transitions {
+                    if t.clip_a_id == original_clip.id {
+                        t.clip_a_id = right_clip.id;
+                    }
+                }
             }
             MagneticEditCommand::TrimHead {
                 clip_id,
@@ -2303,6 +2380,47 @@ mod tests {
             awaiting_refit: false,
             version_of: None,
         }
+    }
+
+    /// A transition on a clip's cuts follows a blade to the piece now at
+    /// that cut, and goes with a ripple delete of a clip it joins, its
+    /// dip on the clip left taken off; undo and redo of each put it back
+    /// and take it again.
+    #[test]
+    fn transitions_follow_a_blade_and_go_with_a_ripple_delete() {
+        let transition = |a: ClipId, b: ClipId| crate::Transition {
+            id: klipp_core::TransitionId::new(),
+            kind: crate::TransitionKind::CrossDissolve,
+            duration: tc(12),
+            clip_a_id: a,
+            clip_b_id: b,
+            user_params: Default::default(),
+            alignment: klipp_core::TransitionAlignment::Center,
+        };
+        let mut seq = make_sequence(&[(0, 48), (48, 96), (96, 144)]);
+        let ids: Vec<ClipId> = seq.tracks[0].clips.iter().map(|c| c.id).collect();
+        seq.tracks[0].transitions = vec![transition(ids[0], ids[1]), transition(ids[1], ids[2])];
+        let pairs = |s: &Sequence| s.tracks[0].transitions.iter().map(|t| (t.clip_a_id, t.clip_b_id)).collect::<Vec<_>>();
+        let before = pairs(&seq);
+
+        let blade = MagneticEditor::blade(&mut seq, ids[1], tc(72)).unwrap();
+        let MagneticEditCommand::Blade { left_clip, right_clip, .. } = &blade.command else { panic!("a blade") };
+        let cut = vec![(ids[0], left_clip.id), (right_clip.id, ids[2])];
+        assert_eq!(pairs(&seq), cut, "into the left piece, out of the right");
+        MagneticEditor::apply_inverse(&mut seq, &blade.command);
+        assert_eq!(pairs(&seq), before, "undone");
+        MagneticEditor::apply_forward(&mut seq, &blade.command);
+        assert_eq!(pairs(&seq), cut, "redone");
+        MagneticEditor::apply_inverse(&mut seq, &blade.command);
+
+        seq.tracks[0].clips[0].fade_out_secs = 0.5;
+        let delete = MagneticEditor::ripple_delete(&mut seq, ids[1]);
+        assert!(seq.tracks[0].transitions.is_empty(), "both went with the clip they joined");
+        assert_eq!(seq.tracks[0].clips[0].fade_out_secs, 0.0, "the dip it wrote, gone");
+        MagneticEditor::apply_inverse(&mut seq, &delete.command);
+        assert_eq!((pairs(&seq).len(), seq.tracks[0].clips[0].fade_out_secs), (2, 0.5), "undone");
+        MagneticEditor::apply_forward(&mut seq, &delete.command);
+        assert!(seq.tracks[0].transitions.is_empty(), "redone");
     }
 
     /// A ripple head trim that takes more than its picture's linked sound

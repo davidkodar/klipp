@@ -159,7 +159,9 @@ pub fn picker(
             if field.clicked() {
                 search.request_focus();
             }
-            egui::ScrollArea::vertical().max_height(320.0).id_salt(("font_picker_list", id)).show(ui, |ui| {
+            // At least about ten rows: in the inspector's own scroll the
+            // list was given what height was left, and showed two (P30).
+            egui::ScrollArea::vertical().max_height(320.0).min_scrolled_height(240.0).id_salt(("font_picker_list", id)).show(ui, |ui| {
                 for (title, list) in sections(families, favourites, recents, &mem.search) {
                     ui.label(egui::RichText::new(title).size(crate::theme::type_scale::CAPTION).color(theme.text_dim));
                     for family in list {

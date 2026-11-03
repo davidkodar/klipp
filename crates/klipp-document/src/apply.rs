@@ -809,9 +809,9 @@ impl DocumentView<'_> {
                     }
                 }
             }
-            EditCommand::RetargetTransition { track_index, transition_id, old_a, .. } => {
+            EditCommand::RetargetTransition { track_index, transition_id, old_a, old_b, .. } => {
                 if let Some(t) = self.sequences[self.active].tracks.get_mut(*track_index).and_then(|t| t.transitions.iter_mut().find(|t| t.id == *transition_id)) {
-                    t.clip_a_id = *old_a;
+                    (t.clip_a_id, t.clip_b_id) = (*old_a, *old_b);
                 }
             }
             EditCommand::RemoveTransition { track_index, transition, old_fade_out_a, old_fade_in_b } => {
@@ -1575,9 +1575,9 @@ impl DocumentView<'_> {
                     }
                 }
             }
-            EditCommand::RetargetTransition { track_index, transition_id, new_a, .. } => {
+            EditCommand::RetargetTransition { track_index, transition_id, new_a, new_b, .. } => {
                 if let Some(t) = self.sequences[self.active].tracks.get_mut(*track_index).and_then(|t| t.transitions.iter_mut().find(|t| t.id == *transition_id)) {
-                    t.clip_a_id = *new_a;
+                    (t.clip_a_id, t.clip_b_id) = (*new_a, *new_b);
                 }
             }
             EditCommand::RemoveTransition { track_index, transition, .. } => {

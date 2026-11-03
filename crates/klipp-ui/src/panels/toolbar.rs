@@ -712,13 +712,14 @@ impl ToolbarPanel {
                 ui.close_menu();
             }
             if has_clip {
-                let is_multicam = state.sequence().all_clips()
+                let group = state.sequence().all_clips()
                     .find(|c| c.id == state.selected_clip.unwrap())
-                    .and_then(|c| c.multicam_group)
-                    .is_some();
-                if is_multicam {
+                    .and_then(|c| c.multicam_group);
+                if let Some(group) = group {
                     ui.menu_rows("Switch Angle", |ui| {
-                        for angle in 1..=9_usize {
+                        // The group's own angles: three listed for three, not
+                        // always nine (P50).
+                        for angle in multicam_angles(state.sequence(), group) {
                             let label = format!("Angle {angle}");
                             if ui.add(egui::Button::new(&label).shortcut_text(kb.display_for(&format!("multicam_angle_{angle}")))).clicked() {
                                 cmds.push(AppCommand::SwitchMulticamAngle { angle });
@@ -1930,10 +1931,37 @@ mod assistant_setup_menu_tests {
     }
 }
 
+/// The angles of multicam group `group`, counted from 1 as Switch Angle
+/// and its keys count them.
+fn multicam_angles(seq: &klipp_timeline::Sequence, group: klipp_core::GroupId) -> Vec<usize> {
+    let mut out: Vec<usize> = seq.all_clips().filter(|c| c.multicam_group == Some(group)).map(|c| c.multicam_angle as usize + 1).collect();
+    out.sort_unstable();
+    out.dedup();
+    out
+}
+
 /// Whether Mark's two delete items have anything to delete: a marker at
 /// `playhead`, and any marker (#3428).
 fn marker_deletes(seq: &klipp_timeline::Sequence, playhead: klipp_core::RationalTime) -> (bool, bool) {
     (seq.markers.iter().any(|m| m.position == playhead), !seq.markers.is_empty())
+}
+
+#[cfg(test)]
+mod multicam_angle_tests {
+    /// P50: Switch Angle lists the group's angles, three for three.
+    #[test]
+    fn switch_angle_lists_the_groups_own_angles() {
+        let t = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 24);
+        let mut seq = klipp_timeline::Sequence::new_default();
+        let group = klipp_core::GroupId::new();
+        for (ti, angle) in [(0, 0u8), (0, 2), (0, 1)] {
+            let mut c = klipp_timeline::Clip::media(klipp_core::MediaId::new(), t(angle as f64), t(angle as f64 + 1.0), t(0.0), t(1.0));
+            c.multicam_group = Some(group);
+            c.multicam_angle = angle;
+            seq.tracks[ti].clips.push(c);
+        }
+        assert_eq!(super::multicam_angles(&seq, group), vec![1, 2, 3]);
+    }
 }
 
 #[cfg(test)]

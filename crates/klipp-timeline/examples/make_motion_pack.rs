@@ -182,6 +182,11 @@ fn object_index(layout: &Sequence, clip: &str, k: usize) -> usize {
     panic!("{clip} is in the layout")
 }
 
+/// A colour a brand kit's accent sets (P42), `rgb` as made.
+fn colour_param(label: &str, rgb: [u8; 3]) -> TemplateParameter {
+    TemplateParameter { label: label.into(), default: TemplateValue::Color([rgb[0] as f32 / 255.0, rgb[1] as f32 / 255.0, rgb[2] as f32 / 255.0, 1.0]), range: None, choices: Vec::new() }
+}
+
 fn text_param(label: &str, default: &str) -> TemplateParameter {
     TemplateParameter { label: label.into(), default: TemplateValue::Text(default.into()), range: None, choices: Vec::new() }
 }
@@ -356,10 +361,12 @@ fn hook() -> CompositionTemplate {
     let picture = clip_index(&layouts[0], "hook.wide.picture.clip");
     let (dim, line) = (object_index(&layouts[0], "hook.wide", 0), object_index(&layouts[0], "hook.wide", 1));
     template("Hook Card", "Social", layouts.into_iter().collect(),
-        vec![("line", text_param("Hook line", "Wait for the last one")), ("dim", control("Dim", 0.7))],
+        vec![("line", text_param("Hook line", "Wait for the last one")), ("dim", control("Dim", 0.7)),
+             ("accent", colour_param("Accent", [255, 214, 10])), ("heading_font", text_param("Heading font", lib::POSTER))],
         vec![("slot_1", "Picture")],
         vec![plain("slot_1", format!("clip:{picture}.media")), plain("line", format!("object:{line}.text")),
-             linked("dim", format!("object:{dim}.opacity"), [0.0, 0.8], LINEAR)])
+             linked("dim", format!("object:{dim}.opacity"), [0.0, 0.8], LINEAR),
+             plain("accent", format!("object:{line}.color")), plain("heading_font", format!("object:{line}.font"))])
 }
 
 /// A photo, a closing line and a handle.
@@ -381,10 +388,12 @@ fn end_card() -> CompositionTemplate {
     let layouts = FRAMES.map(|(key, w, h)| scene(&format!("End Screen {key}"), w, h, vec![(TrackKind::Text, vec![titled("end", laid(end_card_title, "Utility", (0.5, 0.5), w, h), 0.0, SECS)])]));
     let (pic, message, handle) = (object_index(&layouts[0], "end", 1), object_index(&layouts[0], "end", 2), object_index(&layouts[0], "end", 3));
     template("End Screen", "Social", layouts.into_iter().collect(),
-        vec![("photo", text_param("Photo", "")), ("message", text_param("Message", "Thanks for watching")), ("handle", text_param("Handle", "@yourhandle")), ("size", control("Size", 0.5))],
+        vec![("photo", text_param("Photo", "")), ("message", text_param("Message", "Thanks for watching")), ("handle", text_param("Handle", "@yourhandle")), ("size", control("Size", 0.5)),
+             ("accent", colour_param("Accent", [255, 255, 255])), ("heading_font", text_param("Heading font", lib::HEADING))],
         vec![],
         vec![plain("photo", format!("object:{pic}.picture")), plain("message", format!("object:{message}.text")), plain("handle", format!("object:{handle}.text")),
-             linked("size", format!("object:{message}.size"), [56.0, 96.0], LINEAR)])
+             linked("size", format!("object:{message}.size"), [56.0, 96.0], LINEAR),
+             plain("accent", format!("object:{message}.color")), plain("heading_font", format!("object:{message}.font"))])
 }
 
 /// A name bar with a square photo at its left.
