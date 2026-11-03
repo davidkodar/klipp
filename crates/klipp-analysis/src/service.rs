@@ -93,9 +93,12 @@ struct Service {
     /// Items whose analysis finished since the host last asked, so it
     /// can read the results once rather than poll every item.
     completed: Vec<MediaId>,
-    /// Items an on-demand "Transcribe clip" queued: run the speech
-    /// analyser for these even when automatic transcription is off.
+    /// Items an on-demand "Transcribe clip" asked for: their speech
+    /// analyser runs next, even when automatic transcription is off.
     force_transcript: std::collections::HashSet<MediaId>,
+    /// The asked-for transcript under way: one at a time, as each loads
+    /// the model and the machine's threads.
+    transcribing_asked: Option<MediaId>,
     /// Items an on-demand "Find people now" queued: run subject detection
     /// for these even when it is off in preferences.
     force_framing: std::collections::HashSet<MediaId>,
@@ -106,7 +109,7 @@ struct Service {
 
 fn service() -> &'static Mutex<Service> {
     static S: OnceLock<Mutex<Service>> = OnceLock::new();
-    S.get_or_init(|| Mutex::new(Service { statuses: HashMap::new(), queue: Vec::new(), running: 0, running_video: 0, ctx: AnalysisCtx::default(), completed: Vec::new(), force_transcript: std::collections::HashSet::new(), force_framing: std::collections::HashSet::new(), mattes: HashMap::new() }))
+    S.get_or_init(|| Mutex::new(Service { statuses: HashMap::new(), queue: Vec::new(), running: 0, running_video: 0, ctx: AnalysisCtx::default(), completed: Vec::new(), force_transcript: std::collections::HashSet::new(), force_framing: std::collections::HashSet::new(), transcribing_asked: None, mattes: HashMap::new() }))
 }
 
 /// Ask for `item` to be analysed. Returns at once with its state;
@@ -145,22 +148,51 @@ pub fn request(item: &MediaItem) -> Status {
 /// Transcribe one clip now — the on-demand "Transcribe clip" action. Runs
 /// the speech analyser for this item even when automatic transcription is
 /// switched off, without touching the other analysers or the global
-/// preference. The item appears in `take_completed()` when it is done. A
-/// no-op if a run for the item is already in flight, or if the clip has no
-/// sound to transcribe.
+/// preference. The item appears in `take_completed()` when it is done.
+/// A person asked and is watching, so it goes first: the speech analyser
+/// is the next one to run for the item, the item ahead of the queue and
+/// past the place kept for one file with a picture. An item already queued
+/// or running is moved up, not left to reach its transcript in its turn.
 pub fn request_transcription(item: &MediaItem) -> Status {
     let mut s = service().lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(st) = s.statuses.get(&item.id) {
-        if matches!(st.state, State::Queued | State::Running) {
-            return st.clone();
-        }
-    }
-    s.force_transcript.insert(item.id);
-    let st = Status::new(item, State::Queued, "analysis");
-    s.statuses.insert(item.id, st.clone());
-    s.queue.push(item.clone());
+    let st = ask_transcription(&mut s, item);
     pump(&mut s);
     st
+}
+
+fn ask_transcription(s: &mut Service, item: &MediaItem) -> Status {
+    s.force_transcript.insert(item.id);
+    match s.statuses.get(&item.id).filter(|st| matches!(st.state, State::Queued | State::Running)).cloned() {
+        Some(st) => st,
+        None => {
+            let st = Status::new(item, State::Queued, "analysis");
+            s.statuses.insert(item.id, st.clone());
+            s.queue.push(item.clone());
+            st
+        }
+    }
+}
+
+/// Why `media_id`'s asked-for transcript hasn't started, in words: the
+/// editor in use, the passes before it, or the file before it. `None` when
+/// nothing can be said.
+pub fn why_waiting(media_id: MediaId) -> Option<String> {
+    let held = crate::hold::held();
+    why_waiting_in(&service().lock().unwrap_or_else(|e| e.into_inner()), media_id, held)
+}
+
+fn why_waiting_in(s: &Service, media_id: MediaId, held: bool) -> Option<String> {
+    if held {
+        return Some("it starts when playback stops and the controls are left for a moment".into());
+    }
+    let st = s.statuses.get(&media_id)?;
+    if let (State::Running, Some(current)) = (&st.state, st.current) {
+        return Some(format!("finishing its {current} pass"));
+    }
+    let id = media_id.0.to_string();
+    let mut running = s.statuses.values().filter(|o| o.state == State::Running && o.media_id != id).map(|o| o.filename.as_str()).collect::<Vec<_>>();
+    running.sort_unstable();
+    (!running.is_empty()).then(|| format!("after {}", running.join(", ")))
 }
 
 /// Look for the people in one file now — "Find people now" after a refit
@@ -183,12 +215,28 @@ pub fn request_framing(item: &MediaItem) -> Status {
     st
 }
 
+/// The queued item to start next: an asked-for transcript first, whatever
+/// holds the place for a file with a picture, one at a time; then the
+/// first of the rest there is room for.
+fn next_to_start(s: &Service) -> Option<usize> {
+    let asked = |i: &MediaItem| s.force_transcript.contains(&i.id);
+    if s.transcribing_asked.is_none() {
+        if let Some(pos) = s.queue.iter().position(asked) {
+            return Some(pos);
+        }
+    }
+    let video_full = s.running_video >= MAX_VIDEO_RUNNING;
+    s.queue.iter().position(|i| !asked(i) && !(video_full && has_video(i)))
+}
+
 /// Start queued work while there is room.
 fn pump(s: &mut Service) {
     while s.running < MAX_RUNNING {
-        let video_full = s.running_video >= MAX_VIDEO_RUNNING;
-        let Some(pos) = s.queue.iter().position(|i| !(video_full && has_video(i))) else { break };
+        let Some(pos) = next_to_start(s) else { break };
         let item = s.queue.remove(pos);
+        if s.force_transcript.contains(&item.id) {
+            s.transcribing_asked = Some(item.id);
+        }
         let video = has_video(&item);
         s.running += 1;
         if video {
@@ -198,7 +246,6 @@ fn pump(s: &mut Service) {
             st.state = State::Running;
         }
         let ctx = s.ctx.clone();
-        let force_transcript = s.force_transcript.remove(&item.id);
         let force_framing = s.force_framing.remove(&item.id);
         std::thread::Builder::new()
             .name(format!("klipp-analysis:{}", item.filename))
@@ -209,7 +256,7 @@ fn pump(s: &mut Service) {
                 // A panic past the analysers' own catch (#3181) fails the
                 // item and still gives its place back: it used to leave
                 // `running` one up for good, and the queue a slot short.
-                let (done, failed) = caught(|| run_all(&item, &ctx, force_transcript, force_framing))
+                let (done, failed) = caught(|| run_all(&item, &ctx, force_framing))
                     .unwrap_or_else(|why| (Vec::new(), vec![("analysis".to_string(), why)]));
                 let mut s = service().lock().unwrap_or_else(|e| e.into_inner());
                 s.running = s.running.saturating_sub(1);
@@ -217,8 +264,13 @@ fn pump(s: &mut Service) {
                     s.running_video = s.running_video.saturating_sub(1);
                 }
                 let any_done = !done.is_empty();
+                if s.transcribing_asked == Some(item.id) {
+                    s.transcribing_asked = None;
+                }
+                // Asked for as the last analyser ended: run again for it.
+                let asked_again = s.force_transcript.contains(&item.id);
                 if let Some(st) = s.statuses.get_mut(&item.id) {
-                    st.state = if failed.is_empty() { State::Done } else { State::Failed };
+                    st.state = if asked_again { State::Queued } else if failed.is_empty() { State::Done } else { State::Failed };
                     st.done = done;
                     st.failed = failed;
                     st.current = None;
@@ -226,6 +278,9 @@ fn pump(s: &mut Service) {
                 }
                 if any_done {
                     s.completed.push(item.id);
+                }
+                if asked_again {
+                    s.queue.insert(0, item);
                 }
                 pump(&mut s);
                 // Nothing left to analyse: give the models back. A
@@ -256,7 +311,7 @@ fn caught<T>(body: impl FnOnce() -> T) -> Result<T, String> {
 
 /// Every analyser that wants `item` and has no stored result, run in
 /// order; each result saved as it is made.
-fn run_all(item: &MediaItem, ctx: &AnalysisCtx, force_transcript: bool, force_framing: bool) -> (Vec<&'static str>, Vec<(String, String)>) {
+fn run_all(item: &MediaItem, ctx: &AnalysisCtx, force_framing: bool) -> (Vec<&'static str>, Vec<(String, String)>) {
     #[cfg(test)]
     assert!(!item.filename.starts_with("panics-in-run-all"), "the run panicked outside any analyser (a test's)");
     let mut done = Vec::new();
@@ -265,22 +320,28 @@ fn run_all(item: &MediaItem, ctx: &AnalysisCtx, force_transcript: bool, force_fr
         failed.push(("store".to_string(), format!("{} is not readable", item.path.display())));
         return (done, failed);
     };
-    // The on-demand transcribe forces the speech analyser in even when
-    // automatic transcription is off; otherwise the enabled set is used.
     let mut list = analysers();
-    #[cfg(feature = "transcript")]
-    if force_transcript && !list.iter().any(|a| a.id() == crate::transcript::ID) {
-        list.push(Box::new(crate::transcript::TranscriptAnalyser));
-    }
-    let _ = force_transcript;
     // "Find people now" forces subject detection in the same way.
     #[cfg(feature = "framing")]
     if force_framing && !list.iter().any(|a| a.id() == crate::framing::ID) {
         list.push(Box::new(crate::framing::FramingAnalyser));
     }
     let _ = force_framing;
-    for a in list {
+    while !list.is_empty() {
+        // Asked for before this run or during it: next, even when automatic
+        // transcription is off, once no other asked-for one is under way.
+        // Still waiting when the list ends, the item runs again for it.
+        {
+            let mut s = service().lock().unwrap_or_else(|e| e.into_inner());
+            if s.transcribing_asked.is_none_or(|id| id == item.id) && s.force_transcript.remove(&item.id) {
+                s.transcribing_asked = Some(item.id);
+                drop(s);
+                transcript_first(&mut list);
+            }
+        }
+        let a = list.remove(0);
         if !a.wants(item) {
+            asked_transcript_over(a.as_ref(), item);
             continue;
         }
         // A file asked to be transcribed again (#531) is, however fresh.
@@ -290,6 +351,7 @@ fn run_all(item: &MediaItem, ctx: &AnalysisCtx, force_transcript: bool, force_fr
         let redo = false;
         if !redo && crate::has_fresh(a.as_ref(), &key) {
             done.push(a.id());
+            asked_transcript_over(a.as_ref(), item);
             continue;
         }
         // Said as it goes: what is done so far, and what is running.
@@ -297,6 +359,7 @@ fn run_all(item: &MediaItem, ctx: &AnalysisCtx, force_transcript: bool, force_fr
             let mut s = service().lock().unwrap_or_else(|e| e.into_inner());
             if let Some(st) = s.statuses.get_mut(&item.id) {
                 st.done = done.clone();
+                st.failed = failed.clone();
                 st.current = Some(a.id());
                 st.current_since = Some(std::time::Instant::now());
             }
@@ -332,8 +395,38 @@ fn run_all(item: &MediaItem, ctx: &AnalysisCtx, force_transcript: bool, force_fr
                 failed.push((a.id().to_string(), e));
             }
         }
+        asked_transcript_over(a.as_ref(), item);
     }
     (done, failed)
+}
+
+/// The speech analyser at the front of `list`, added if it isn't in it.
+fn transcript_first(list: &mut Vec<Box<dyn crate::Analyser>>) {
+    #[cfg(feature = "transcript")]
+    {
+        let speech = match list.iter().position(|a| a.id() == crate::transcript::ID) {
+            Some(at) => list.remove(at),
+            None => Box::new(crate::transcript::TranscriptAnalyser),
+        };
+        list.insert(0, speech);
+    }
+    #[cfg(not(feature = "transcript"))]
+    let _ = list;
+}
+
+/// `a` has had its turn: if it was the asked-for transcript, the next one
+/// asked for can start, with the rest of this item's analysers going on.
+fn asked_transcript_over(a: &dyn crate::Analyser, item: &MediaItem) {
+    #[cfg(feature = "transcript")]
+    if a.id() == crate::transcript::ID {
+        let mut s = service().lock().unwrap_or_else(|e| e.into_inner());
+        if s.transcribing_asked == Some(item.id) {
+            s.transcribing_asked = None;
+            pump(&mut s);
+        }
+    }
+    #[cfg(not(feature = "transcript"))]
+    let _ = (a, item);
 }
 
 /// A result saved while the rest of an item's analysis runs on: a
@@ -374,7 +467,7 @@ pub fn all() -> Vec<Status> {
 /// Run every analyser for `item` on this thread and return the report;
 /// for tests and tools, not the app.
 pub fn run_now(item: &MediaItem, ctx: &AnalysisCtx) -> Result<crate::report::MediaAnalysis, String> {
-    let (_, failed) = run_all(item, ctx, false, false);
+    let (_, failed) = run_all(item, ctx, false);
     if let Some((id, why)) = failed.first() {
         return Err(format!("{id}: {why}"));
     }
@@ -506,7 +599,7 @@ mod queue_tests {
     #[cfg(feature = "transcript")]
     #[test]
     fn a_saved_transcript_is_said_before_the_rest_is_done() {
-        let mut s = Service { statuses: HashMap::new(), queue: Vec::new(), running: 1, running_video: 1, ctx: AnalysisCtx::default(), completed: Vec::new(), force_transcript: std::collections::HashSet::new(), force_framing: std::collections::HashSet::new(), mattes: HashMap::new() };
+        let mut s = Service { statuses: HashMap::new(), queue: Vec::new(), running: 1, running_video: 1, ctx: AnalysisCtx::default(), completed: Vec::new(), force_transcript: std::collections::HashSet::new(), force_framing: std::collections::HashSet::new(), transcribing_asked: None, mattes: HashMap::new() };
         let id = MediaId::new();
         note_saved(&mut s, id, crate::shots::ID);
         assert!(s.completed.is_empty(), "shots wait for the rest");
@@ -515,11 +608,86 @@ mod queue_tests {
         assert_eq!(s.completed, vec![id]);
     }
 
+    fn idle_service() -> Service {
+        Service { statuses: HashMap::new(), queue: Vec::new(), running: 0, running_video: 0, ctx: AnalysisCtx::default(), completed: Vec::new(), force_transcript: std::collections::HashSet::new(), force_framing: std::collections::HashSet::new(), transcribing_asked: None, mattes: HashMap::new() }
+    }
+
+    fn queued(s: &mut Service, name: &str) -> MediaItem {
+        let item = MediaItem::synthetic_for_test(format!("/tmp/{name}.mov").into(), None);
+        s.statuses.insert(item.id, Status::new(&item, State::Queued, "analysis"));
+        s.queue.push(item.clone());
+        item
+    }
+
+    /// A transcript asked for goes ahead of the queue and past the place
+    /// held for one file with a picture, one at a time; the rest wait for
+    /// that place as before.
+    #[test]
+    fn an_asked_for_transcript_starts_ahead_of_the_queue() {
+        let mut s = idle_service();
+        s.running = 1;
+        s.running_video = 1;
+        let first = queued(&mut s, "first");
+        let second = queued(&mut s, "second");
+        let third = queued(&mut s, "third");
+        assert!(has_video(&first), "a film");
+        assert_eq!(next_to_start(&s), None, "the picture's place is taken");
+        ask_transcription(&mut s, &third);
+        assert_eq!(s.queue.len(), 3, "not queued twice");
+        assert_eq!(next_to_start(&s), Some(2));
+        ask_transcription(&mut s, &second);
+        s.transcribing_asked = Some(third.id);
+        assert_eq!(next_to_start(&s), None, "one transcript at a time");
+        s.running_video = 0;
+        assert_eq!(next_to_start(&s), Some(0), "the rest, in order, skipping the one that waits its turn");
+    }
+
+    /// Asked for while the item runs, the request is kept for the run to
+    /// take up: it used to be dropped, and with automatic transcription
+    /// off the run ended with no transcript.
+    #[test]
+    fn asking_while_it_runs_is_not_dropped() {
+        let mut s = idle_service();
+        let item = queued(&mut s, "running");
+        s.queue.clear();
+        s.statuses.get_mut(&item.id).unwrap().state = State::Running;
+        assert_eq!(ask_transcription(&mut s, &item).state, State::Running);
+        assert!(s.force_transcript.contains(&item.id));
+        assert!(s.queue.is_empty(), "it isn't started a second time");
+    }
+
+    #[cfg(feature = "transcript")]
+    #[test]
+    fn the_transcript_comes_first_whether_it_was_listed_or_not() {
+        let mut list: Vec<Box<dyn crate::Analyser>> = vec![Box::new(crate::shots::ShotsAnalyser), Box::new(crate::transcript::TranscriptAnalyser)];
+        transcript_first(&mut list);
+        assert_eq!(list.iter().map(|a| a.id()).collect::<Vec<_>>(), [crate::transcript::ID, crate::shots::ID]);
+        let mut list: Vec<Box<dyn crate::Analyser>> = vec![Box::new(crate::shots::ShotsAnalyser)];
+        transcript_first(&mut list);
+        assert_eq!(list.iter().map(|a| a.id()).collect::<Vec<_>>(), [crate::transcript::ID, crate::shots::ID]);
+    }
+
+    /// The wait is said with its reason.
+    #[test]
+    fn why_a_transcript_waits_is_said() {
+        let mut s = idle_service();
+        let item = queued(&mut s, "asked");
+        assert_eq!(why_waiting_in(&s, item.id, false), None);
+        assert!(why_waiting_in(&s, item.id, true).unwrap().contains("playback stops"));
+        let other = queued(&mut s, "other");
+        s.statuses.get_mut(&other.id).unwrap().state = State::Running;
+        assert_eq!(why_waiting_in(&s, item.id, false).unwrap(), "after other.mov");
+        let st = s.statuses.get_mut(&item.id).unwrap();
+        st.state = State::Running;
+        st.current = Some("shots");
+        assert_eq!(why_waiting_in(&s, item.id, false).unwrap(), "finishing its shots pass");
+    }
+
     #[test]
     fn cancel_one_queued_analysis_without_touching_other_work() {
         let mut service = Service { statuses: HashMap::new(), queue: Vec::new(), running: 1,
             running_video: 0, ctx: AnalysisCtx::default(), completed: Vec::new(),
-            force_transcript: std::collections::HashSet::new(), force_framing: std::collections::HashSet::new(), mattes: HashMap::new() };
+            force_transcript: std::collections::HashSet::new(), force_framing: std::collections::HashSet::new(), transcribing_asked: None, mattes: HashMap::new() };
         let first = MediaItem::new_synthetic_title(MediaId::new(), "first".into(),
             klipp_core::Timecode::from_frames(24, 24), klipp_core::Fps::new(24, 1));
         let second = MediaItem::new_synthetic_title(MediaId::new(), "second".into(),
@@ -539,7 +707,7 @@ mod queue_tests {
 
     #[test]
     fn prioritize_and_cancel_preserve_running_work_and_reject_invalid_ids() {
-        let mut s = Service { statuses: HashMap::new(), queue: Vec::new(), running: 1, running_video: 1, ctx: AnalysisCtx::default(), completed: Vec::new(), force_transcript: std::collections::HashSet::new(), force_framing: std::collections::HashSet::new(), mattes: HashMap::new() };
+        let mut s = Service { statuses: HashMap::new(), queue: Vec::new(), running: 1, running_video: 1, ctx: AnalysisCtx::default(), completed: Vec::new(), force_transcript: std::collections::HashSet::new(), force_framing: std::collections::HashSet::new(), transcribing_asked: None, mattes: HashMap::new() };
         for i in 0..22 {
             let item = MediaItem::new_synthetic_title(MediaId::new(), format!("take{i}"), klipp_core::Timecode::from_frames(24, 24), klipp_core::Fps::new(24, 1));
             s.statuses.insert(item.id, Status::new(&item, State::Queued, "analysis"));

@@ -33,6 +33,9 @@ pub fn label(cmd: &AppCommand) -> Option<&'static str> {
         AppCommand::CloseAllGaps { .. } => "Close All Gaps",
         AppCommand::SetClipKeepPitch { .. } => "Keep Pitch",
         AppCommand::InsertGapOnTrack { .. } => "Insert Gap",
+        // A generator added was no undo step (P65).
+        AppCommand::CreateGeneratorClip { .. } => "Add Generator",
+        AppCommand::CreateAdjustmentLayer => "Add Adjustment Layer",
         AppCommand::SetClipEnabled { enabled: true, .. } => "Enable Clip",
         AppCommand::SetClipEnabled { .. } => "Disable Clip",
         AppCommand::SetClipSolo { .. } => "Solo Clip",

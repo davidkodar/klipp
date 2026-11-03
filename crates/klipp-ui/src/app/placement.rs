@@ -1048,6 +1048,42 @@ mod rate_question_tests {
         assert!(older.first_clip_rate_question(Fps { num: 50, den: 1 }).is_some(), "a project saved before asks as it did");
     }
 
+    /// A click beside the question leaves it up: it closed it, and the clip
+    /// wasn't placed. Cancel and Escape are the ways to say no, and the
+    /// project may be asked again.
+    #[test]
+    fn a_click_beside_the_question_leaves_it_up() {
+        let (state, first, _) = project();
+        let (media_fps, sequence_fps) = state.rate_question(&first).expect("asked");
+        let mut dialog = FrameRateMismatchDialog { sequence_idx: 0, media_fps, sequence_fps, pending_cmd: AppCommand::AppendClip { media_id: first } };
+        let ctx = egui::Context::default();
+        let mut run = |events: Vec<egui::Event>| {
+            let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200.0, 800.0))), events, ..Default::default() };
+            let mut choice = None;
+            let out = ctx.run(input, |ctx| choice = dialog.show(ctx));
+            let texts: Vec<String> = out.shapes.iter().filter_map(|s| match &s.shape {
+                egui::Shape::Text(t) => Some(t.galley.text().to_owned()),
+                _ => None,
+            }).collect();
+            (texts, choice)
+        };
+        run(Vec::new());
+        run(Vec::new());
+        let beside = egui::pos2(40.0, 40.0);
+        let press = |pressed| egui::Event::PointerButton { pos: beside, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+        assert_eq!(run(vec![egui::Event::PointerMoved(beside), press(true)]).1, None);
+        let (_, closed) = run(vec![press(false)]);
+        let (shown, later) = run(Vec::new());
+        assert_eq!((closed, later), (None, None), "a click beside it answers nothing");
+        assert!(shown.iter().any(|t| t == "Don't Change"), "still up: {shown:?}");
+
+        let escape = egui::Event::Key { key: egui::Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE };
+        assert_eq!(run(vec![escape]).1, Some(FrameRateMismatchChoice::Cancel));
+        let (_, choice) = asked(&state, &first, "Cancel");
+        assert_eq!(choice, Some(FrameRateMismatchChoice::Cancel));
+        assert!(state.rate_question(&first).is_some(), "not answered: it may ask again");
+    }
+
     /// Change answers too: the rate changes, and a clip of a third rate
     /// asks nothing after.
     #[test]

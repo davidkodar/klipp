@@ -3685,7 +3685,7 @@ impl TimelinePanel {
         track_idx: usize,
         _track_kind: TrackKind,
         track_rect: egui::Rect,
-        _content_rect: egui::Rect,
+        content_rect: egui::Rect,
         painter: &egui::Painter,
         cmds: &mut Vec<AppCommand>,
     ) {
@@ -3703,7 +3703,11 @@ impl TimelinePanel {
                     if !any_down {
                         if let Some(crate::drag_drop::DragPayload::Generator { name, data }) = state.drag_drop.end() {
                             crate::browser::library_card::push_recent(&mut state.library_recent.generators, &name);
-                            cmds.push(AppCommand::CreateGeneratorClip { track_index: Some(track_idx), data });
+                            // Where it was let go, snapped as media is (P65:
+                            // it went in at the playhead).
+                            let secs = ((pos.x - content_rect.left() + state.timeline_scroll_x) / state.timeline_zoom.max(1e-6)) as f64;
+                            let at = Self::media_drop_time(state, secs, state.timeline_zoom, ui.input(|i| i.modifiers.shift));
+                            cmds.push(AppCommand::CreateGeneratorClip { track_index: Some(track_idx), at: Some(at), data });
                             state.toast.show(format!("\"{}\" generator added to timeline", name));
                         }
                     }
@@ -3983,7 +3987,9 @@ impl TimelinePanel {
                 if !on_any_track && content_rect.contains(cursor_pos) {
                     if let Some(crate::drag_drop::DragPayload::Generator { name, data }) = state.drag_drop.end() {
                             crate::browser::library_card::push_recent(&mut state.library_recent.generators, &name);
-                        cmds.push(AppCommand::CreateGeneratorClip { track_index: None, data });
+                        let secs = ((cursor_pos.x - content_rect.left() + state.timeline_scroll_x) / state.timeline_zoom.max(1e-6)) as f64;
+                        let at = Self::media_drop_time(state, secs, state.timeline_zoom, ui.input(|i| i.modifiers.shift));
+                        cmds.push(AppCommand::CreateGeneratorClip { track_index: None, at: Some(at), data });
                         state.toast.show(format!("\"{}\" generator added to timeline", name));
                     }
                 } else if !on_any_track {

@@ -7280,14 +7280,17 @@ fn cues_from_words(words: &[HeardWord], max_chars: usize, max_lines: usize, soun
         }
     }
     // Held a moment past the last word, at least long enough to read,
-    // and never into the next cue.
+    // and never into the next cue, nor past the cut its last word is before:
+    // it ran on into the next shot.
     let n = cues.len();
     for k in 0..n {
         // The last cue ends with the sound: a caption held past it would
         // make the timeline longer than the piece.
         let next = if k + 1 < n { cues[k + 1].start } else { sound_ends };
+        let last_word = words.iter().rfind(|w| (w.end - cues[k].end).abs() < 1e-9);
+        let cut = last_word.map_or(f64::MAX, |w| w.clip_out);
         let want = (cues[k].end + 0.2).max(cues[k].start + 1.0);
-        cues[k].end = want.min(next).max(cues[k].start);
+        cues[k].end = want.min(next).min(cut).max(cues[k].start);
         cues[k].text = wrap_lines(&cues[k].text, max_chars, max_lines);
     }
     cues

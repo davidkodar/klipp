@@ -1986,8 +1986,9 @@ pub enum AppCommand {
     ApplyMotionPreset { clip_id: ClipId, preset: String },
     /// Create an adjustment layer at the playhead on the top video track.
     CreateAdjustmentLayer,
-    /// Create a generator clip on a video track at the playhead.
-    CreateGeneratorClip { track_index: Option<usize>, data: crate::GeneratorData },
+    /// Create a generator clip on a video track at `at`, or the playhead
+    /// when it has none (a drop on the timeline says where, P65).
+    CreateGeneratorClip { track_index: Option<usize>, at: Option<crate::Timecode>, data: crate::GeneratorData },
     /// Update a generator clip's data (color, gradient, etc.).
     UpdateGeneratorData { clip_id: ClipId, data: crate::GeneratorData },
     /// Capture the current viewer frame and insert a freeze-frame generator
@@ -5652,6 +5653,10 @@ pub struct ControlShared {
     /// The window's size in points at the last window capture, set before
     /// the capture is written.
     pub window_view: std::sync::Mutex<Option<WindowView>>,
+    /// The test hook's pointer steps still to play, as of the end of the
+    /// last frame: a `pointer` request answers once they have, so what is
+    /// read after it is what the steps did.
+    pub pointer_steps: std::sync::atomic::AtomicUsize,
 }
 
 /// A window's size in the points its input is measured in, and the

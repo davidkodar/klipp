@@ -283,6 +283,7 @@ fn handle_card_interaction(
         crate::browser::library_card::push_recent(&mut state.library_recent.generators, tmpl.name.as_str());
         cmds.push(AppCommand::CreateGeneratorClip {
             track_index: None,
+            at: None,
             data: tmpl.data.clone(),
         });
         state.toast.show(format!("\"{}\" generator added to timeline", tmpl.name.as_str()));
@@ -712,15 +713,8 @@ fn gen_result_strip(
         rect.max.y,
         egui::Stroke::new(1.0_f32, theme.border),
     );
-    ui.painter().text(
-        egui::pos2(rect.min.x + 12.0, rect.center().y),
-        egui::Align2::LEFT_CENTER,
-        format!("{} Generators", count),
-        egui::FontId::proportional(11.0),
-        theme.text_secondary,
-    );
-
     let dropdown_w = 116.0;
+    crate::browser::library_card::paint_count(ui, theme, rect, dropdown_w, count, &format!("{count} Generators"));
     let dropdown_rect = egui::Rect::from_min_max(
         egui::pos2(rect.max.x - dropdown_w - 8.0, rect.min.y + 1.0),
         egui::pos2(rect.max.x - 8.0, rect.max.y - 1.0),
@@ -738,4 +732,32 @@ fn gen_result_strip(
                 }
             });
     });
+}
+
+#[cfg(test)]
+mod result_strip_tests {
+    use super::*;
+
+    /// P66: the count left of Sort never runs under it; at the pool's
+    /// width "16 Generators" overprinted "Sort: A→Z".
+    #[test]
+    fn the_count_stays_clear_of_sort() {
+        for width in [180.0, 260.0, 400.0] {
+            let ctx = egui::Context::default();
+            let theme = KlippTheme::default();
+            let mut sort = EffectSort::NameAsc;
+            let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, 200.0))), ..Default::default() };
+            let out = ctx.run(input, |ctx| {
+                egui::CentralPanel::default().frame(egui::Frame::none()).show(ctx, |ui| gen_result_strip(ui, &theme, 16, &mut sort));
+            });
+            let rects: Vec<(String, egui::Rect)> = out.shapes.iter().filter_map(|s| match &s.shape {
+                egui::Shape::Text(t) => Some((t.galley.text().to_string(), egui::Rect::from_min_size(t.pos, t.galley.size()))),
+                _ => None,
+            }).collect();
+            let sort_left = rects.iter().find(|(t, _)| t.starts_with("Sort")).map(|(_, r)| r.left()).expect("Sort is drawn");
+            if let Some((t, r)) = rects.iter().find(|(t, _)| t.starts_with("16")) {
+                assert!(r.right() <= sort_left, "at {width}: {t:?} runs to {} under Sort at {sort_left}", r.right());
+            }
+        }
+    }
 }

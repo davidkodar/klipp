@@ -127,10 +127,14 @@ impl TranscriptPanel {
                     egui::RichText::new(format!("{} clip(s) on the timeline have no transcript yet.", self.untranscribed.len()))
                         .color(theme.text_secondary),
                 );
-                if ui.button("Transcribe").on_hover_text("Run speech-to-text on them now, whatever the preference").clicked() {
+                let asked = self.untranscribed.iter().all(|m| state.transcribing.contains(m));
+                if ui.add_enabled(!asked, egui::Button::new("Transcribe")).on_hover_text("Run speech-to-text on them now, whatever the preference").clicked() {
                     cmds.extend(self.untranscribed.iter().map(|&media_id| AppCommand::TranscribeClip { media_id }));
                 }
             });
+            if let Some(line) = &state.status_transcription {
+                ui.label(egui::RichText::new(line).color(theme.text_secondary));
+            }
             ui.separator();
         }
         if self.words.is_empty() {
