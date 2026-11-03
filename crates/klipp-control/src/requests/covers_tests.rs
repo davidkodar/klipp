@@ -22,7 +22,7 @@ fn context(covers: Vec<klipp_timeline::cover::Cover>) -> ControlContext {
 }
 
 fn cover(name: &str) -> klipp_timeline::cover::Cover {
-    klipp_timeline::cover::Cover { id: klipp_core::CoverId::new(), name: name.into(), at_secs: 1.0, size: "youtube".into(), crop: Default::default(), text: None, with_titles: false }
+    klipp_timeline::cover::Cover { id: klipp_core::CoverId::new(), name: name.into(), at_secs: 1.0, size: "youtube".into(), crop: None, text: None, with_titles: false }
 }
 
 #[test]

@@ -1538,8 +1538,8 @@ fn cover_json(c: &klipp_timeline::cover::Cover) -> serde_json::Value {
     if !c.name.is_empty() {
         v["name"] = json!(c.name);
     }
-    if !c.crop.is_whole() {
-        v["crop"] = json!(c.crop);
+    if let Some(crop) = c.crop {
+        v["crop"] = json!(crop);
     }
     if let Some(text) = c.text.as_ref().and_then(|t| t.primary_text()) {
         v["text"] = json!(text.text);
@@ -1603,7 +1603,7 @@ fn sequences(ctx: &ControlContext) -> Result<(klipp_timeline::Sequence, Vec<klip
 fn cover_frame(ctx: &ControlContext, cover: &klipp_timeline::cover::Cover, width: u32, height: u32) -> Result<klipp_render::still::Still, String> {
     let (seq, all) = sequences(ctx)?;
     let pool = ctx.media_pool.read().recovered().clone();
-    klipp_render::cover::draw(&seq, &all, &pool, &look(ctx), cover, width, height)
+    klipp_render::cover::draw(&seq, &all, &pool, &look(ctx), cover, width, height, &|p| klipp_analysis::report::MediaAnalysis::load(p))
 }
 
 /// The frames proposed for a cover of the open sequence.
