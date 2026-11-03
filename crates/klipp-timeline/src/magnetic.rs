@@ -785,6 +785,8 @@ impl MagneticEditor {
             "move_primary: clip must be on primary track"
         );
 
+        let primary_before: Vec<(ClipId, RationalTime, RationalTime)> = sequence.tracks[primary_idx].clips.iter().map(|c| (c.id, c.timeline_in, c.timeline_out)).collect();
+
         // Find target index before removal
         let target_idx = sequence.tracks[primary_idx]
             .clips
@@ -841,6 +843,7 @@ impl MagneticEditor {
                 remove_command: Box::new(remove_cmd),
                 insert_command: Box::new(insert_cmd),
                 insert_index: insert_idx,
+                primary_before,
             },
         }
     }
@@ -1864,14 +1867,19 @@ impl MagneticEditor {
                 clip_id: _,
                 remove_command,
                 insert_command,
+                primary_before,
                 ..
             } => {
                 // Undo: reverse insert then reverse remove, in place: the
                 // clip goes back by its position, and the repack, not a
-                // sort by the times it was moved to, sets its times.
+                // sort by the times it was moved to, sets its times; then
+                // each takes back its span exactly as it was written.
                 Self::apply_inverse_in_place(sequence, insert_command);
                 Self::apply_inverse_in_place(sequence, remove_command);
                 repack_primary(sequence);
+                for (id, tin, tout) in primary_before {
+                    sequence.set_clip_position(*id, *tin, *tout);
+                }
             }
             MagneticEditCommand::InsertGap {
                 gap_clip,
@@ -2627,6 +2635,8 @@ mod tests {
         assert_eq!(after.last().map(|c| c.0), Some(first), "to the end");
         MagneticEditor::apply_inverse(&mut seq, &moved.command);
         assert_eq!(order(&seq), before, "undone");
+        let rates = |s: &Sequence| s.tracks[0].clips.iter().map(|c| (c.timeline_in.rate, c.timeline_out.rate)).collect::<Vec<_>>();
+        assert_eq!(rates(&seq), rates(&make_sequence(&[(0, 48), (48, 96), (96, 120)])), "each time written as it was");
         MagneticEditor::apply_forward(&mut seq, &moved.command);
         assert_eq!(order(&seq), after, "redone");
     }
