@@ -104,7 +104,7 @@ An audition shows its count of takes on a badge, and the name of the take on the
 
 ## Multicam Clips
 
-Select synced angles in the browser and choose **Create Multicam Clip** (Alt+C). Cut between angles with **1**–**9** while playing, or from **Clip → Switch Angle**; **Clip → Multicam Sound** picks where the sound comes from. See [Source Viewer](../ui/source-viewer.md#multicam-angles).
+Select the angles in the Media browser, right-click and choose **Create Synced Multicam**: it puts them on one clock by timecode or sound and lays them out at the playhead. For clips already stacked on the timeline, put the playhead on them and choose **Create Multicam Clip** (Alt+C). Cut between angles with **1**–**9** while playing, or from **Clip → Switch Angle**; **Clip → Multicam Sound** picks where the sound comes from. See [Source Viewer](../ui/source-viewer.md#multicam-angles).
 
 ## Clip Properties
 
