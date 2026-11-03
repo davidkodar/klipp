@@ -919,7 +919,9 @@ pub struct ExportPrefs {
     pub post_export_command: String,
 }
 fn default_export_sr() -> u32 { 48000 }
-fn default_parallel_jobs() -> usize { 2 }
+/// One render at a time: two at once each ran at about 0.6x, so the first
+/// file came nearly twice as late; queued, each finishes sooner (P38).
+fn default_parallel_jobs() -> usize { 1 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum OverwriteMode {
@@ -3350,10 +3352,11 @@ mod tests {
     // ── #62 / #63 / #65 — export pipeline features ─────────────────────────
 
     #[test]
-    fn parallel_render_default_is_two() {
-        // #62: safe default — 2 parallel jobs on every system.
+    fn parallel_render_default_is_one() {
+        // P38: one job at a time, so the first file is ready soonest; more
+        // is a choice in Preferences.
         let p = ExportPrefs::default();
-        assert_eq!(p.parallel_render_jobs, 2);
+        assert_eq!(p.parallel_render_jobs, 1);
     }
 
     #[test]
@@ -3399,7 +3402,7 @@ mod tests {
             "proxy": { "auto_generate_on_import": true, "proxy_resolution": "Half" }
         }"#;
         let prefs: Preferences = serde_json::from_str(json).expect("deserialize");
-        assert_eq!(prefs.export.parallel_render_jobs, 2);
+        assert_eq!(prefs.export.parallel_render_jobs, 1, "the default, one at a time (P38)");
         assert!(prefs.export.post_export_command.is_empty());
     }
 
