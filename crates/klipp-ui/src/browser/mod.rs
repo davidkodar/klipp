@@ -5294,8 +5294,10 @@ fn read_directory_with_timeout(path: &std::path::Path) -> Result<Vec<FileEntry>,
             Err(_) => continue, // Skip entries we can't read
         };
 
-        // metadata() can hang on network mounts — skip on error
-        let meta = match entry.metadata() {
+        // metadata() can hang on network mounts — skip on error. A link
+        // is taken as what it points at (P64: a linked folder read as a
+        // 37-byte file that would not open); a broken one as itself.
+        let meta = match std::fs::metadata(entry.path()).or_else(|_| entry.metadata()) {
             Ok(m) => m,
             Err(_) => continue,
         };
@@ -7005,5 +7007,30 @@ mod keyboard_selection_tests {
         assert_eq!(keyboard_selection(Some(4), 1, true), (1, 4));
         assert_eq!(keyboard_selection(Some(2), 5, false), (5, 5));
         assert_eq!(keyboard_selection(None, 3, true), (3, 3));
+    }
+}
+
+#[cfg(test)]
+mod linked_folder_tests {
+    /// P64: a link to a folder is listed as a folder, which opens; a link
+    /// to a file as the file; a broken link as itself.
+    #[cfg(unix)]
+    #[test]
+    fn a_linked_folder_is_a_folder() {
+        let dir = std::env::temp_dir().join(format!("klipp_linked_folder_{}_{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.subsec_nanos()).unwrap_or(0)));
+        let _ = std::fs::remove_dir_all(&dir);
+        let (real, list) = (dir.join("real"), dir.join("list"));
+        std::fs::create_dir_all(real.join("shoot")).unwrap();
+        std::fs::write(real.join("a.mov"), vec![0u8; 1000]).unwrap();
+        std::fs::create_dir_all(&list).unwrap();
+        std::os::unix::fs::symlink(real.join("shoot"), list.join("Media")).unwrap();
+        std::os::unix::fs::symlink(real.join("a.mov"), list.join("a.mov")).unwrap();
+        std::os::unix::fs::symlink(real.join("gone"), list.join("broken")).unwrap();
+        let entries = super::read_directory_with_timeout(&list).unwrap();
+        let find = |n: &str| entries.iter().find(|e| e.name == n).unwrap_or_else(|| panic!("{n}"));
+        assert!(find("Media").is_dir, "the linked folder is a folder");
+        assert!(!find("a.mov").is_dir && find("a.mov").size == 1000 && find("a.mov").is_media, "the linked file is the file");
+        assert!(!find("broken").is_dir, "a broken link is not a folder");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

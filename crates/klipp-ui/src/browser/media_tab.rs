@@ -3218,6 +3218,28 @@ mod bin_menu_tests {
         }
     }
 
+    /// W7: a clip dragged from its thumbnail out of the pool is dragged, as
+    /// one dragged from its name is: from the thumbnail it skimmed and was
+    /// never taken to the timeline.
+    #[test]
+    fn a_drag_from_the_thumbnail_takes_the_clip() {
+        for start in ["name", "thumbnail"] {
+            let mut pool = Pool::new(BrowserViewMode::Grid, &["a.mov"]);
+            let a = pool.state.media_pool.all().next().expect("a").id;
+            let name = pool.at("a.mov");
+            let from = if start == "name" { name } else { name - egui::vec2(0.0, 30.0) };
+            let to = from + egui::vec2(200.0, 500.0);
+            let button = |pos, pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+            pool.frame(vec![egui::Event::PointerMoved(from)]);
+            pool.frame(vec![button(from, true)]);
+            for k in 1..=8 {
+                let at = from + (to - from) * (k as f32 / 8.0);
+                pool.frame(vec![egui::Event::PointerMoved(at)]);
+            }
+            assert_eq!(pool.state.dragging_media, Some(a), "from the {start}: dragging");
+        }
+    }
+
     /// #2621: New Bin, with or without items, is one undo step, and
     /// undoing it takes the bin away as well as the items back out.
     #[test]
