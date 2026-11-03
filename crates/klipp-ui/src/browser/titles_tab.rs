@@ -1365,15 +1365,8 @@ fn titles_result_strip(
         rect.max.y,
         egui::Stroke::new(1.0_f32, theme.border),
     );
-    ui.painter().text(
-        egui::pos2(rect.min.x + 12.0, rect.center().y),
-        egui::Align2::LEFT_CENTER,
-        format!("{} Titles", count),
-        egui::FontId::proportional(11.0),
-        theme.text_secondary,
-    );
-
     let dropdown_w = 116.0;
+    crate::browser::library_card::paint_count(ui, theme, rect, dropdown_w, count, &format!("{count} Titles"));
     let dropdown_rect = egui::Rect::from_min_max(
         egui::pos2(rect.max.x - dropdown_w - 8.0, rect.min.y + 1.0),
         egui::pos2(rect.max.x - 8.0, rect.max.y - 1.0),
