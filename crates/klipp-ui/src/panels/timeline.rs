@@ -9514,7 +9514,10 @@ impl TimelinePanel {
                             ui.menu_rows("Add Take From Bin", |ui| {
                                 let max_h = (ui.ctx().screen_rect().height() * 0.70).max(240.0);
                                 egui::ScrollArea::vertical().id_salt(("audition_from_bin", clip_id.0)).max_height(max_h).show(ui, |ui| {
-                                    let entries: Vec<(klipp_core::MediaId, String)> = state.media_pool.all().map(|m| (m.id, m.filename.clone())).collect();
+                                    // What this slot can play, by name.
+                                    let kind = state.sequence().tracks.get(track_idx).map_or(klipp_timeline::TrackKind::Video, |t| t.kind);
+                                    let mut entries: Vec<(klipp_core::MediaId, String)> = state.media_pool.all().filter(|m| klipp_document::ops::take_fits_track(kind, m)).map(|m| (m.id, m.filename.clone())).collect();
+                                    entries.sort_by(|a, b| a.1.cmp(&b.1));
                                     if entries.is_empty() {
                                         ui.label(egui::RichText::new("(no media in bin)").small().italics());
                                     }

@@ -79,6 +79,7 @@ impl KlippApp {
     /// Sync `media_ids` onto one clock, off the UI thread when sound is
     /// involved; the plan comes back as `AppEvent::MulticamSyncReady`.
     pub(super) fn spawn_multicam_sync(&mut self, media_ids: Vec<klipp_core::MediaId>, method: klipp_core::MulticamSync) {
+        let requested = media_ids.clone();
         let mut items: Vec<klipp_media::MediaItem> = media_ids
             .iter()
             .filter_map(|id| self.state.media_pool.get(id))
@@ -88,7 +89,7 @@ impl KlippApp {
             .cloned()
             .collect();
         if items.iter().filter(|m| !m.video_codec.is_empty()).count() < 2 {
-            self.state.toast.show("A multicam needs two or more online video clips");
+            self.multicam_not_made(&media_ids, "A multicam needs two or more online video clips");
             return;
         }
         // Angle numbers follow the names, which is how cameras label cards.
@@ -144,24 +145,30 @@ impl KlippApp {
                 };
                 AudioMatch::Matched { offset_secs, confidence: coarse.confidence }
             });
-            let _ = tx.send(AppEvent::MulticamSyncReady { plan, sequence_id, at_secs });
+            let _ = tx.send(AppEvent::MulticamSyncReady { plan, media_ids: requested, sequence_id, at_secs });
         });
         if let Err(e) = spawned {
-            self.state.toast.show(format!("Could not start the multicam sync: {e}"));
+            self.multicam_not_made(&media_ids, &format!("Could not start the multicam sync: {e}"));
         }
+    }
+
+    /// Say why no multicam was made, to the person and to whoever is
+    /// following its job over the socket.
+    fn multicam_not_made(&mut self, media_ids: &[klipp_core::MediaId], why: &str) {
+        self.state.toast.show(why.to_string());
+        self.state.control_shared.failed_multicams.lock().unwrap_or_else(|e| e.into_inner()).push((media_ids.to_vec(), why.to_string(), std::time::Instant::now()));
     }
 
     /// Lay out a synced multicam: each angle on its own tracks at its
     /// place after `at_secs`, then grouped, as one undo step.
-    pub(super) fn apply_multicam_plan(&mut self, plan: klipp_core::MulticamPlan, sequence_id: klipp_core::SequenceId, at_secs: f64) {
+    pub(super) fn apply_multicam_plan(&mut self, plan: klipp_core::MulticamPlan, media_ids: &[klipp_core::MediaId], sequence_id: klipp_core::SequenceId, at_secs: f64) {
         let seq_idx = self.state.active_sequence_idx;
         if self.state.sequences[seq_idx].id != sequence_id {
-            self.state.toast.show("The sequence changed while the angles were syncing, so the multicam was not placed");
+            self.multicam_not_made(media_ids, "The sequence changed while the angles were syncing, so the multicam was not placed");
             return;
         }
         if plan.synced() < 2 {
-            let why = if plan.notes.is_empty() { String::new() } else { format!(": {}", plan.notes.join("; ")) };
-            self.state.toast.show(format!("Could not put two angles on one clock{why}"));
+            self.multicam_not_made(media_ids, &plan.why_not_placed());
             return;
         }
         // On a frame of the sequence: a sound match is finer than a frame,
