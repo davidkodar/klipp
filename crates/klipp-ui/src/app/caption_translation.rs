@@ -109,7 +109,7 @@ impl KlippApp {
         let lines = consent_lines(&ask.entries);
         let language = tr::language_name(&ask.target);
         let (mut go, mut cancel) = (false, false);
-        egui::Window::new("Download Translation Model")
+        crate::widgets::window("Download Translation Model")
             .collapsible(false)
             .resizable(false)
             .order(egui::Order::Foreground)
