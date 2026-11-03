@@ -402,7 +402,7 @@ mod tests {
         let shared = [
             // The app's, not a timeline's: settings, popups, other panels.
             "playhead_follow", "playhead_follow_chosen", "playhead_anchor_wall", "playhead_speed", "selected_clip_loc_cache", "snap", "snap_threshold_px", "grid_snap_interval", "zoom_step",
-            "skimming_enabled", "audio_skimming_enabled", "skim_speed_px_per_sec", "skim_last_update", "skim_last_x", "skim_audio_session", "skim_last_audio_dispatch", "program_skim_active", "program_skim_revert_deadline",
+            "skimming_enabled", "audio_skimming_enabled", "skim_speed_px_per_sec", "skim_last_update", "skim_last_x", "skim_audio_session", "skim_audio_refused", "skim_last_audio_dispatch", "program_skim_active", "program_skim_revert_deadline",
             "keyframe_context_menu", "automation_lane_param_menu", "keyframe_clipboard", "curve_key_clipboard", "selects_range", "selects_drag", "selects_edit", "selects_height", "selects_sequence",
             "source_playhead", "dragging_media", "dragging_media_group", "selected_media_ids", "browser_range_selection", "browser_drag_start", "selected_title_object", "title_object_drag",
             "viewer_transform_drag", "motion_path_drag", "viewer_corner_pin_drag", "viewer_waterline_drag", "viewer_mask_drag", "color_grade_drag_start", "mixer_routing_drag", "resumable_path_drag", "selected_node_id", "selected_node_ids", "selected_node_addr",
