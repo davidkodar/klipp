@@ -55,8 +55,6 @@ const KNOWN: &[(&str, fn(&Broken, &str) -> bool)] = &[
     // A primary clip starting a frame or more before the one before it
     // ends: two over each other.
     ("R9", |b, _| b.invariant == GAPLESS && b.amount <= -FRAME),
-    // A slide leaving a pair out of sync.
-    ("R10", |b, last| b.invariant == SYNC && last == "Slide"),
     // A ripple remove closing up one track under linked clips.
     ("R3", |b, last| b.invariant == SYNC && last == "Remove"),
 ];
