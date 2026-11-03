@@ -211,6 +211,10 @@ impl RelinkPanel {
                         ui.label(egui::RichText::new(item.path.to_string_lossy()).size(10.0).color(theme.text_dim));
                         browse_button(ui, state, item.id);
                     });
+                    // Why one that is there is kept offline, and what to do.
+                    if let Some(why) = state.media_pool.refused.get(&item.id) {
+                        ui.label(egui::RichText::new(klipp_media::media_check::refused_hint(why)).small().color(theme.marker_warning));
+                    }
                 }
             });
         }

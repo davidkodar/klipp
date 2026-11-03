@@ -449,7 +449,7 @@ fn used_only_copies_what_the_timeline_uses() {
     let dest = tmp_path("used_dest");
     let options = ConsolidateOptions { dest_dir: dest.clone(), include_proxies: false, include_skims: false, mode: ConsolidateMode::UsedOnly, looks: Vec::new(), fonts: Vec::new() };
 
-    let summary = summarise(&pool, &seqs, &ColorSettings::default(), &options);
+    let summary = summarise(&pool, &seqs, &ColorSettings::default(), &options, None);
     assert_eq!((summary.files, summary.bytes), (1, 10), "{summary:?}");
     assert_eq!(summary.left_out, vec!["unused.mp4".to_string()]);
 
@@ -510,7 +510,7 @@ fn trimmed_cuts_the_file_and_moves_the_clip() {
     let seqs = vec![seq];
     let dest = tmp_path("trim_dest");
     let options = ConsolidateOptions { dest_dir: dest.clone(), include_proxies: false, include_skims: false, mode: ConsolidateMode::Trimmed { handle_secs: 1.0 }, looks: Vec::new(), fonts: Vec::new() };
-    let summary = summarise(&pool, &seqs, &ColorSettings::default(), &options);
+    let summary = summarise(&pool, &seqs, &ColorSettings::default(), &options, None);
     assert_eq!((summary.files, summary.trimmed), (1, 1), "{summary:?}");
 
     let result = consolidate_project(&source_dir, &pool, &seqs, &ColorSettings::default(), options, None).unwrap();
@@ -899,4 +899,89 @@ fn a_collected_folder_moved_away_from_its_originals_opens_whole() {
     assert!(again.verified(), "{:?}", again.failures());
     assert_eq!(klipp_project::collect_verify::reverify(&moved).unwrap(), Vec::<String>::new());
     let _ = std::fs::remove_dir_all(&moved);
+}
+
+/// SEC1: a shared project's media entries name a plain text file and a
+/// key in a hidden folder beside one clip. Opened, those two are offline
+/// with why and the clip is online; collected, the folder carries the clip
+/// alone, the dry run names it and says what it will not carry.
+#[test]
+fn a_hostile_project_carries_no_private_file() {
+    let home = tmp_path("sec1_home");
+    std::fs::create_dir_all(home.join(".ssh")).unwrap();
+    let hostname = home.join("hostname");
+    std::fs::write(&hostname, b"PRIVATE-HOSTNAME\n").unwrap();
+    let key = home.join(".ssh").join("id_rsa.mov");
+    std::fs::write(&key, b"PRIVATE KEY BYTES\n").unwrap();
+    let clip = home.join("clip.mov");
+    std::fs::write(&clip, b"fake clip bytes").unwrap();
+
+    let mut pool = MediaPool::new();
+    let (text_id, key_id, clip_id) = (pool.add(make_media_item(hostname.clone())), pool.add(make_media_item(key.clone())), pool.add(make_media_item(clip.clone())));
+
+    // Opened: the two that are not media are offline, with why.
+    let project = tmp_path("sec1_project");
+    save_project_with_color(&project, &[Sequence::new_default()], &pool, &ColorSettings::default(), None, None, "").unwrap();
+    let (_seqs, opened, ..) = load_project(&project).unwrap();
+    for (id, what) in [(text_id, "the text file"), (key_id, "the key")] {
+        assert!(opened.get(&id).is_some_and(|m| m.offline), "{what} is online");
+        assert!(opened.refused.contains_key(&id), "{what} has no reason: {:?}", opened.refused);
+    }
+    assert!(opened.get(&clip_id).is_some_and(|m| !m.offline), "the clip stays online");
+
+    // Collected from the pool as written, not as opened: Collect checks
+    // for itself.
+    let options = ConsolidateOptions { dest_dir: PathBuf::new(), include_proxies: true, include_skims: true, mode: Default::default(), looks: Vec::new(), fonts: Vec::new() };
+    let summary = klipp_project::consolidate::summarise(&pool, &[Sequence::new_default()], &ColorSettings::default(), &options, Some(&project));
+    assert_eq!(summary.copies, vec![clip.display().to_string()], "the dry run names what it copies");
+    assert_eq!(summary.warnings.len(), 2, "and what it will not carry: {:?}", summary.warnings);
+    let dest = tmp_path("sec1_dest");
+    let result = run_consolidate(&project, &pool, dest.clone()).unwrap();
+    assert_eq!(result.warnings.iter().filter(|w| w.starts_with("Not collected")).count(), 2, "{:?}", result.warnings);
+    let mut carried = Vec::new();
+    fn walk(dir: &std::path::Path, out: &mut Vec<(PathBuf, Vec<u8>)>) {
+        for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+            if e.path().is_dir() { walk(&e.path(), out) } else { out.push((e.path(), std::fs::read(e.path()).unwrap_or_default())) }
+        }
+    }
+    walk(&dest.join("media"), &mut carried);
+    assert!(carried.iter().all(|(_, bytes)| !bytes.windows(7).any(|w| w == b"PRIVATE")), "a private file was carried: {:?}", carried.iter().map(|(p, _)| p).collect::<Vec<_>>());
+    assert!(carried.iter().any(|(p, _)| p.ends_with("clip.mov")), "the clip was carried");
+    for d in [home, project, dest] {
+        let _ = std::fs::remove_dir_all(d);
+    }
+}
+
+/// SEC1: a project kept in a hidden folder has its own media opened and
+/// collected, as open and Collect ask the same check of each file: its
+/// own media were online, then refused by Collect as in a hidden folder.
+/// A file outside it there is still refused by both.
+#[test]
+fn a_project_in_a_hidden_folder_collects_its_own_media() {
+    let root = tmp_path("sec1_hidden");
+    let project = root.join(".jobs").join("run").join("t_abs");
+    std::fs::create_dir_all(project.join("media")).unwrap();
+    let own = project.join("media").join("clip.mov");
+    std::fs::write(&own, b"own clip bytes").unwrap();
+    let outside = root.join(".jobs").join("hostname");
+    std::fs::write(&outside, b"PRIVATE-HOSTNAME\n").unwrap();
+    let mut pool = MediaPool::new();
+    let (own_id, outside_id) = (pool.add(make_media_item(own.clone())), pool.add(make_media_item(outside.clone())));
+    save_project_with_color(&project, &[Sequence::new_default()], &pool, &ColorSettings::default(), None, None, "").unwrap();
+
+    let (_seqs, opened, ..) = load_project(&project).unwrap();
+    assert!(opened.get(&own_id).is_some_and(|m| !m.offline), "its own media opens online");
+    assert!(opened.get(&outside_id).is_some_and(|m| m.offline), "the file outside it is offline");
+
+    let options = ConsolidateOptions { dest_dir: PathBuf::new(), include_proxies: false, include_skims: false, mode: Default::default(), looks: Vec::new(), fonts: Vec::new() };
+    let summary = klipp_project::consolidate::summarise(&opened, &[Sequence::new_default()], &ColorSettings::default(), &options, Some(&project));
+    assert!(summary.copies.iter().any(|p| p.ends_with("clip.mov")), "the dry run copies its own media: {summary:?}");
+    assert!(!summary.copies.iter().any(|p| p.ends_with("hostname")), "{summary:?}");
+    let dest = tmp_path("sec1_hidden_dest");
+    run_consolidate(&project, &opened, dest.clone()).unwrap();
+    assert!(dest.join("media").join("clip.mov").exists(), "Collect carries its own media");
+    assert!(!dest.join("media").join("hostname").exists());
+    for d in [root, dest] {
+        let _ = std::fs::remove_dir_all(d);
+    }
 }

@@ -39,6 +39,7 @@ pub mod folder_walk;
 pub mod dolby_vision;
 pub mod smart_bin;
 pub mod relink;
+pub mod media_check;
 pub mod sidecar;
 mod item;
 mod pool;
