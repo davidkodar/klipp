@@ -4,7 +4,8 @@
 //! trims with and without ripple, split, move across tracks, remove with
 //! and without ripple, retime, slip, slide, transitions) and the magnetic
 //! primary's own edits the timeline makes (ripple trims, ripple delete,
-//! move), with undo and redo at random. After every step:
+//! move) and its blade (`blade::blade_linked`, the clip and its linked
+//! partner cut together), with undo and redo at random. After every step:
 //!
 //! 1. each linked picture and its sound are in sync: the same moment of
 //!    their file under the same moment of the timeline, within half a
@@ -46,11 +47,22 @@ use serde_json::{json, Value};
 const KNOWN: &[(&str, fn(&Broken, &str) -> bool)] = &[
     // Undo or redo giving back a time at another rate, the same time.
     ("R8", |b, _| b.invariant.ends_with("(a time written at another rate)")),
+    // Under a frame off, after a blade: a piece's file edge falls on the
+    // file's frames (24 fps here) and its timeline edge on the sequence's
+    // (25), so an edit working a length out from the file puts a picture
+    // a fraction of a frame off, a gap on the primary or a pair adrift.
+    ("R14", |b, _| b.invariant == GAPLESS && b.amount.abs() < FRAME),
+    // At a speed other than 1x the rounding is scaled by it: under a
+    // frame and a half.
+    ("R15", |b, _| b.invariant == SYNC && b.amount < 1.5),
+    // A retime after blades leaving a transition that saving drops.
+    ("R16", |b, last| b.invariant == SAVED && b.detail.contains("/transitions") && last == "Retime"),
 ];
 
 const SYNC: &str = "linked pairs in sync";
 const GAPLESS: &str = "primary gapless";
 const SAVED: &str = "save and load";
+const FRAME: f64 = 1.0 / RATE as f64;
 
 /// The known entry `broken` is, from the step it broke at in `steps`.
 fn known(broken: &Broken, steps: &[Step]) -> Option<&'static str> {
@@ -100,6 +112,9 @@ enum Step {
     PrimaryTrimTail { clip: usize, frames: i64 },
     PrimaryRippleDelete { clip: usize },
     PrimaryMove { clip: usize, to: f64 },
+    /// The timeline's blade: the clip and its linked partner cut together,
+    /// a magnetic track cut its own way.
+    Blade { clip: usize, at: f64 },
     Undo,
     Redo,
 }
@@ -107,7 +122,7 @@ enum Step {
 fn random_step(r: &mut Rng) -> Step {
     let clip = r.below(64) as usize;
     let frames = |r: &mut Rng| r.below(60) as i64 - 30;
-    match r.below(16) {
+    match r.below(17) {
         0 | 1 => Step::Place { media: r.below(2) as usize, track: r.below(4) as usize, at: r.share() * 1.2, frames: 12 + r.below(100) as i64, insert: r.coin() },
         2 => Step::Trim { clip, out: r.coin(), to: r.share(), ripple: r.coin() },
         3 => Step::Split { clip, at: r.share() },
@@ -122,7 +137,8 @@ fn random_step(r: &mut Rng) -> Step {
         12 => Step::PrimaryRippleDelete { clip },
         13 => Step::PrimaryMove { clip, to: r.share() },
         14 => Step::Undo,
-        _ => Step::Redo,
+        15 => Step::Redo,
+        _ => Step::Blade { clip, at: r.share() },
     }
 }
 
@@ -328,6 +344,18 @@ impl Run {
                 self.magnetic(|s| Some(MagneticEditor::trim_tail(s, c.id, to).command))
             }).map(|e| (e, false)),
             Step::PrimaryRippleDelete { clip } => self.pick(*clip, true).and_then(|(_, c)| self.magnetic(|s| Some(MagneticEditor::ripple_delete(s, c.id).command))).map(|e| (e, false)),
+            Step::Blade { clip, at } => self.pick(*clip, false).and_then(|(ti, c)| {
+                let (a, b) = (frame_of(secs(c.timeline_in)), frame_of(secs(c.timeline_out)));
+                let cut = t(a + 1 + ((b - a - 2).max(0) as f64 * at) as i64);
+                // Magnetic as the timeline has it (with its magnetic
+                // preference on): the primary and the tracks connected to it.
+                use klipp_timeline::TrackRole::{Connected, ConnectedStoryline, Primary};
+                let magnetic: Vec<bool> = self.seq.tracks.iter().map(|t| matches!(t.magnetic_role, Primary | Connected | ConnectedStoryline)).collect();
+                let mut seq = self.seq.clone();
+                let edits = klipp_document::blade::blade_linked(&mut seq, ti, c.id, cut, |k| magnetic.get(k).copied().unwrap_or(false)).ok()?;
+                self.seq = seq;
+                Some(edits)
+            }).map(|e| (e, false)),
             Step::PrimaryMove { clip, to } => self.pick(*clip, true).and_then(|(_, c)| {
                 let at = t(frame_of(secs(end) * to));
                 // As the timeline's drag does with Linked on (#2967): the
