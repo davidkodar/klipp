@@ -1174,6 +1174,28 @@ impl CommandHistory {
         true
     }
 
+    /// Fold `edit` into the step on top, keeping its label and its stamp:
+    /// what follows from that step and is worked out after it, such as
+    /// the roles its clips' sound proposes (#3442), goes and comes back
+    /// with it instead of landing ahead of it in the history. An open
+    /// batch takes it as one of its own. False with no step to fold into.
+    pub fn fold_into_last(&mut self, edit: EditCommand) -> bool {
+        if let Some(batch) = self.batch.as_mut() {
+            batch.push(edit);
+            return true;
+        }
+        let Some(last) = self.undo_stack.back_mut() else { return false };
+        let label = last.entry.label().to_string();
+        let was = std::mem::replace(&mut last.entry.command, EditCommand::Batch(Vec::new()));
+        let inner = match was {
+            EditCommand::Named { edit: inner, .. } => *inner,
+            other => other,
+        };
+        last.entry.command = EditCommand::Named { label, edit: Box::new(EditCommand::Batch(vec![inner, edit])) };
+        self.bump_revision();
+        true
+    }
+
     pub fn push(&mut self, entry: HistoryEntry) {
         if let Some(batch) = self.batch.as_mut() {
             batch.push(entry.command);
@@ -3310,6 +3332,36 @@ mod merge_tests {
         // Something else on top is not merged into.
         h.push(HistoryEntry { command: EditCommand::SetSequenceCamera { old: Box::default(), new: Box::default() } });
         assert!(!h.merge_into_last(|last| matches!(last, EditCommand::SetClipDepth { .. })));
+    }
+}
+
+#[cfg(test)]
+mod fold_tests {
+    use super::*;
+
+    fn named(label: &str) -> HistoryEntry {
+        HistoryEntry { command: EditCommand::Named { label: label.into(), edit: Box::new(EditCommand::Batch(Vec::new())) } }
+    }
+
+    /// Folded in, an edit is part of the step on top: one undo takes back
+    /// both, and the step keeps its label and its stamp (#3442).
+    #[test]
+    fn a_folded_edit_goes_with_the_step_on_top() {
+        let mut h = CommandHistory::new();
+        assert!(!h.fold_into_last(EditCommand::Batch(Vec::new())), "nothing to fold into");
+        h.push(named("First Cut"));
+        let stamp = h.undo_stamp();
+        assert!(h.fold_into_last(EditCommand::ProposeClipRoles { changes: Vec::new() }));
+        assert_eq!((h.undo_count(), h.undo_label(), h.undo_stamp()), (1, Some("First Cut"), stamp));
+        let undone = h.undo().expect("one step");
+        let EditCommand::Named { edit, .. } = undone.command else { panic!("named") };
+        let EditCommand::Batch(parts) = *edit else { panic!("the step and the folded edit") };
+        assert!(matches!(parts.as_slice(), [EditCommand::Batch(_), EditCommand::ProposeClipRoles { .. }]), "{parts:?}");
+        // In an open batch it is one of the batch's edits.
+        h.begin_batch();
+        assert!(h.fold_into_last(EditCommand::ProposeClipRoles { changes: Vec::new() }));
+        h.end_batch();
+        assert_eq!(h.undo_count(), 1);
     }
 }
 
