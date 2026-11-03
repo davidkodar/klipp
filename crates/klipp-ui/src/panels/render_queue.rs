@@ -322,7 +322,10 @@ impl RenderQueuePanel {
                 } else {
                     "codec default".into()
                 };
-                ui.label(small(format!("Video: {} \u{2022} {quality} \u{2022} {}-bit \u{2022} encoder preset {}", s.video_codec.label(), s.bit_depth, s.preset.ffmpeg_value()), dim));
+                // Sound alone has no picture to describe (P16).
+                if !s.format.is_audio_only() {
+                    ui.label(small(format!("Video: {} \u{2022} {quality} \u{2022} {}-bit \u{2022} encoder preset {}", s.video_codec.label(), s.bit_depth, s.preset.ffmpeg_value()), dim));
+                }
                 let audio = s.audio_bitrate_kbps.map(|b| format!(" {b} kbps")).unwrap_or_default();
                 ui.label(small(format!("Audio: {}{audio}", s.audio_codec.label()), dim));
                 if let Some(lufs) = s.target_lufs {
@@ -362,15 +365,7 @@ impl RenderQueuePanel {
     /// how long, with the stretch when it is not the whole sequence.
     fn identity(job: &klipp_export::RenderJob) -> String {
         let s = &job.settings;
-        let mut parts = Vec::new();
-        if job.width > 0 && job.height > 0 {
-            parts.push(format!("{}\u{00D7}{}", job.width, job.height));
-        }
-        if job.timeline_fps > 0.0 {
-            let fps = job.timeline_fps;
-            parts.push(if (fps - fps.round()).abs() < 1e-3 { format!("{fps:.0} fps") } else { format!("{fps:.3} fps") });
-        }
-        parts.push(if s.video_codec.uses_crf() { format!("{} CRF {}", s.video_codec.label(), s.crf) } else { s.video_codec.label().to_string() });
+        let mut parts = picture_parts(s, job.width, job.height, job.timeline_fps);
         parts.push(match s.audio_bitrate_kbps {
             Some(b) => format!("{} {b} kbps", s.audio_codec.label()),
             None => s.audio_codec.label().to_string(),
@@ -512,6 +507,36 @@ mod elide_tests {
         assert_eq!(shown.chars().count(), 40);
         assert!(shown.starts_with('\u{2026}') && shown.ends_with("final_cut_v3.mp4"), "{shown}");
         assert_eq!(super::elide_front("~/a.mp4", 40), "~/a.mp4");
+    }
+}
+
+/// A job's picture at a glance: its size, rate and codec with its quality.
+/// Nothing for sound alone (a WAV, MP3 or M4A): it said "H.264 CRF 23" for
+/// a .wav (P16).
+fn picture_parts(s: &klipp_core::ExportSettings, width: u32, height: u32, fps: f64) -> Vec<String> {
+    if s.format.is_audio_only() {
+        return Vec::new();
+    }
+    let mut parts = Vec::new();
+    if width > 0 && height > 0 {
+        parts.push(format!("{width}\u{00D7}{height}"));
+    }
+    if fps > 0.0 {
+        parts.push(if (fps - fps.round()).abs() < 1e-3 { format!("{fps:.0} fps") } else { format!("{fps:.3} fps") });
+    }
+    parts.push(if s.video_codec.uses_crf() { format!("{} CRF {}", s.video_codec.label(), s.crf) } else { s.video_codec.label().to_string() });
+    parts
+}
+
+#[cfg(test)]
+mod picture_parts_tests {
+    /// P16: an audio-only export's card names no picture.
+    #[test]
+    fn sound_alone_names_no_picture() {
+        let mut s = klipp_core::ExportSettings::default();
+        assert!(super::picture_parts(&s, 1920, 1080, 25.0).iter().any(|p| p.contains("CRF") || p.contains('\u{00D7}')));
+        s.format = klipp_core::ExportFormat::Wav;
+        assert!(super::picture_parts(&s, 1920, 1080, 25.0).is_empty());
     }
 }
 
