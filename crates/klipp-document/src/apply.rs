@@ -502,14 +502,21 @@ impl DocumentView<'_> {
                         clip.timeline_in = *old_timeline_in;
                         clip.timeline_out = *old_timeline_out;
                     }
-                    // Restore downstream clips to their pre-ripple positions
+                }
+                // Restore downstream clips, and their linked partners on
+                // other tracks (#3449), to their pre-ripple positions
+                for track in &mut self.sequences[self.active].tracks {
+                    let mut moved = false;
                     for (cid, orig_in, orig_out) in shifted_clips {
                         if let Some(c) = track.find_clip_mut(*cid) {
                             c.timeline_in = *orig_in;
                             c.timeline_out = *orig_out;
+                            moved = true;
                         }
                     }
-                    track.sort_clips();
+                    if moved || track.clips.iter().any(|c| c.id == *clip_id) {
+                        track.sort_clips();
+                    }
                 }
             }
             EditCommand::LegacyRollTrimClip {
@@ -1264,15 +1271,22 @@ impl DocumentView<'_> {
                         clip.timeline_in = *new_timeline_in;
                         clip.timeline_out = *new_timeline_out;
                     }
-                    // Re-apply ripple shift to downstream clips
-                    let ripple_delta = *new_timeline_out - *old_timeline_out;
+                }
+                // Re-apply ripple shift to downstream clips and their
+                // linked partners on other tracks (#3449)
+                let ripple_delta = *new_timeline_out - *old_timeline_out;
+                for track in &mut self.sequences[self.active].tracks {
+                    let mut moved = false;
                     for (cid, orig_in, orig_out) in shifted_clips {
                         if let Some(c) = track.find_clip_mut(*cid) {
                             c.timeline_in = *orig_in + ripple_delta;
                             c.timeline_out = *orig_out + ripple_delta;
+                            moved = true;
                         }
                     }
-                    track.sort_clips();
+                    if moved || track.clips.iter().any(|c| c.id == *clip_id) {
+                        track.sort_clips();
+                    }
                 }
             }
             EditCommand::LegacyRollTrimClip {

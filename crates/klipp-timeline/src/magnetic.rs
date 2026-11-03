@@ -455,6 +455,7 @@ impl MagneticEditor {
         let (track_idx, clip_idx) = sequence
             .find_clip(clip_id)
             .expect("ripple_delete: clip not found");
+        let before = sequence.clone();
 
         let removed_clip = sequence.tracks[track_idx].clips[clip_idx].clone();
         let position = clip_idx;
@@ -581,6 +582,11 @@ impl MagneticEditor {
                 });
             }
         }
+
+        // The sound linked to every other picture the repack moved goes
+        // with it too (#3449), not only the deleted clip's partner track.
+        let mut cascaded_clips = cascaded_clips;
+        cascaded_clips.extend(Self::follow_linked_partners(&before, sequence));
 
         #[cfg(debug_assertions)]
         if sequence.tracks[track_idx].magnetic_role == TrackRole::Primary || partner_is_primary {
@@ -981,6 +987,7 @@ impl MagneticEditor {
         let (track_idx, clip_idx) = sequence
             .find_clip(clip_id)
             .expect("trim_head: clip not found");
+        let before = sequence.clone();
 
         let clip = &sequence.tracks[track_idx].clips[clip_idx];
         let old_timeline_in = clip.timeline_in;
@@ -1003,7 +1010,10 @@ impl MagneticEditor {
             Vec::new()
         };
 
-        let cascaded_clips = Self::cascade_all_connected(sequence, &rippled_clips);
+        let mut cascaded_clips = Self::cascade_all_connected(sequence, &rippled_clips);
+        // The sound linked to each picture the ripple moved goes with it
+        // (#3449): a ripple keeps everything after the edit in sync.
+        cascaded_clips.extend(Self::follow_linked_partners(&before, sequence));
 
         #[cfg(debug_assertions)]
         if sequence.tracks[track_idx].magnetic_role == TrackRole::Primary {
@@ -1037,6 +1047,7 @@ impl MagneticEditor {
         let (track_idx, clip_idx) = sequence
             .find_clip(clip_id)
             .expect("trim_tail: clip not found");
+        let before = sequence.clone();
 
         let clip = &sequence.tracks[track_idx].clips[clip_idx];
         let old_timeline_out = clip.timeline_out;
@@ -1077,7 +1088,10 @@ impl MagneticEditor {
             records
         };
 
-        let cascaded_clips = Self::cascade_all_connected(sequence, &rippled_clips);
+        let mut cascaded_clips = Self::cascade_all_connected(sequence, &rippled_clips);
+        // The sound linked to each picture the ripple moved goes with it
+        // (#3449): a ripple keeps everything after the edit in sync.
+        cascaded_clips.extend(Self::follow_linked_partners(&before, sequence));
 
         #[cfg(debug_assertions)]
         if sequence.tracks[track_idx].magnetic_role == TrackRole::Primary {
@@ -2229,6 +2243,52 @@ mod tests {
             covers: Vec::new(),
             awaiting_refit: false,
             version_of: None,
+        }
+    }
+
+    /// #3449: a ripple trim of a primary clip's end, either end, and a
+    /// ripple delete of a picture with no sound of its own move the later
+    /// pictures and the sound linked to each, which stays under them;
+    /// undo puts every one back and redo moves them again.
+    #[test]
+    fn a_ripple_keeps_the_later_sound_under_its_picture() {
+        let linked = || {
+            let mut seq = make_sequence(&[(0, 48), (48, 96), (96, 144)]);
+            let mut a1 = Track::new("Audio 1", TrackKind::Audio);
+            let pictures: Vec<ClipId> = seq.tracks[0].clips.iter().map(|c| c.id).collect();
+            // The first picture has no sound; the later two do.
+            for (i, &(from, to)) in [(48, 96), (96, 144)].iter().enumerate() {
+                let mut sound = media_clip(from, to);
+                sound.linked_clip_id = Some(pictures[i + 1]);
+                seq.tracks[0].clips[i + 1].linked_clip_id = Some(sound.id);
+                a1.clips.push(sound);
+            }
+            seq.tracks.push(a1);
+            (seq, pictures[0])
+        };
+        let in_sync = |seq: &Sequence, what: &str| {
+            for c in seq.tracks[0].clips.iter().filter(|c| c.linked_clip_id.is_some()) {
+                let sound = seq.tracks[1].find_clip(c.linked_clip_id.unwrap()).unwrap();
+                assert_eq!((sound.timeline_in, sound.timeline_out), (c.timeline_in, c.timeline_out), "{what}: the sound under its picture");
+            }
+        };
+        let edits: [(&str, fn(&mut Sequence, ClipId) -> MagneticResult); 3] = [
+            ("trim tail", |s, id| MagneticEditor::trim_tail(s, id, tc(24))),
+            ("trim head", |s, id| MagneticEditor::trim_head(s, id, tc(24))),
+            ("ripple delete", MagneticEditor::ripple_delete),
+        ];
+        let spans = |seq: &Sequence| seq.tracks[1].clips.iter().map(|c| (c.id, c.timeline_in, c.timeline_out)).collect::<Vec<_>>();
+        for (what, edit) in edits {
+            let (mut seq, first) = linked();
+            let before = seq.clone();
+            let done = edit(&mut seq, first);
+            assert_ne!(seq.tracks[1].clips[0].timeline_in, before.tracks[1].clips[0].timeline_in, "{what}: the sound moved");
+            in_sync(&seq, what);
+            let after = seq.clone();
+            MagneticEditor::apply_inverse(&mut seq, &done.command);
+            assert_eq!(spans(&seq), spans(&before), "{what}: undone");
+            MagneticEditor::apply_forward(&mut seq, &done.command);
+            assert_eq!(spans(&seq), spans(&after), "{what}: redone");
         }
     }
 

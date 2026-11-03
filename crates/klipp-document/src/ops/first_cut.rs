@@ -529,4 +529,30 @@ mod tests {
         said.extend(words("Right.", 2.0));
         assert!(retakes(&said).is_empty());
     }
+
+    /// "Um, so, uh, let me show you": fillers that start between frames.
+    struct Hesitant;
+
+    impl Transcripts for Hesitant {
+        fn words(&self, _item: &klipp_media::MediaItem) -> Option<Vec<SpokenWord>> {
+            Some(vec![w(0.02, 0.31, "Um"), w(0.41, 0.6, "so,"), w(0.63, 0.9, "uh"), w(1.0, 1.2, "let"), w(1.25, 1.4, "me"), w(1.45, 1.7, "show"), w(1.75, 2.0, "you.")])
+        }
+    }
+
+    /// The captions read what is heard after the cut: a filler cut from
+    /// a frame after it starts is not in them (#3440).
+    #[test]
+    fn the_captions_leave_out_the_fillers_that_were_cut() {
+        let (seq, pool) = talking();
+        let op = Op::FirstCut { silences: false, fillers: true, retakes: false, punch: false, captions: true, music: None, tightness: Tightness::Normal, exclude: Vec::new() };
+        let plan = resolve_with(&seq, &pool, &[op], &Hesitant).unwrap_or_else(|r| panic!("{r:?}"));
+        let mut seqs = vec![seq.clone()];
+        let (mut p, mut fps) = (pool.clone(), seq.fps);
+        let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps };
+        view.apply_forward(&plan.steps[0].edit);
+        let cut = seqs.remove(0);
+        let track = cut.tracks.iter().position(|t| t.kind == TrackKind::Subtitle).expect("a caption track");
+        let text: Vec<String> = crate::caption_translation::captions(&cut, track).into_iter().map(|c| c.text).collect();
+        assert_eq!(text.join(" "), "so, let me show you.");
+    }
 }

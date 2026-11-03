@@ -32,10 +32,12 @@ pub(crate) fn hand_role_edit(seq: &klipp_timeline::Sequence, clip_id: klipp_core
 }
 
 impl KlippApp {
-    /// Apply what the open sequence's sound proposes, as one undo step,
-    /// when the analysis, the sequence, its history, its clips or its
-    /// track locks changed. Not while there is something to redo: a step
-    /// of its own would take that away, so it waits for the next edit.
+    /// Apply what the open sequence's sound proposes when the analysis,
+    /// the sequence, its history, its clips or its track locks changed:
+    /// folded into the step on top, so it goes and comes back with the
+    /// edit it follows instead of landing ahead of the person's own
+    /// (#3442); its own step only with nothing to fold into. Not while
+    /// there is something to redo: the step it would change is undone.
     pub(super) fn propose_audio_roles(&mut self) {
         let seq = self.state.sequence();
         let clips: usize = seq.tracks.iter().map(|t| t.clips.len()).sum();
@@ -48,7 +50,16 @@ impl KlippApp {
         self.state.role_sweep_key = Some(key);
         if !changes.is_empty() {
             let n = changes.len();
-            self.apply_edits_as_one(&[EditCommand::ProposeClipRoles { changes }], "Classify Audio Roles");
+            let edit = EditCommand::ProposeClipRoles { changes };
+            if self.state.active_history().can_undo() {
+                self.apply_edit_forward(&edit);
+                self.state.active_history_mut().fold_into_last(edit);
+                self.state.dirty = true;
+                self.sync_sequence_to_engine();
+                let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+            } else {
+                self.apply_edits_as_one(&[edit], "Classify Audio Roles");
+            }
             self.state.toast.show(format!("Audio roles proposed for {n} clip{} from their sound", if n == 1 { "" } else { "s" }));
         }
     }
