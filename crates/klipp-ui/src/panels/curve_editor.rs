@@ -1134,24 +1134,13 @@ impl CurveEditorPanel {
             }
         }
 
-        // Axis labels
-        let label_rect = Rect::from_min_max(
-            pos2(full_rect.min.x, graph_rect.min.y),
-            pos2(graph_rect.min.x, graph_rect.max.y),
-        );
+        // The curve's name, inside the graph's corner: in the column at its
+        // left it printed over the values. The times say their own unit, so
+        // nothing is printed over them.
         ui.painter().text(
-            pos2(label_rect.center().x, label_rect.center().y),
-            egui::Align2::CENTER_CENTER,
+            graph_rect.left_top() + egui::vec2(6.0, 4.0),
+            egui::Align2::LEFT_TOP,
             self.param().label(),
-            egui::FontId::proportional(10.0),
-            theme.text_dim,
-        );
-
-        // Time axis label
-        ui.painter().text(
-            pos2(graph_rect.center().x, graph_rect.max.y + 8.0),
-            egui::Align2::CENTER_TOP,
-            "Time (s)",
             egui::FontId::proportional(10.0),
             theme.text_dim,
         );
