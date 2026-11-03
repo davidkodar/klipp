@@ -5227,6 +5227,39 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
                 let mut skip = vec![ti];
                 skip.extend(partner.map(|(pti, _, _)| pti));
                 skip.extend(angles.iter().map(|(t, _)| *t));
+                // A clip that closes up takes its linked partner's sync with
+                // it: one whose partner stays is refused, as moving it alone
+                // is, not put out of sync with nothing said. What moves is
+                // what the edits move: the clips after it in its track's
+                // list, its partner's and the angles', and those from the
+                // gap on on a sync-locked track. `linked: false` edits the
+                // one track on purpose, as asked.
+                if *linked {
+                    let after = |t: usize, id: ClipId| seq.tracks[t].clips.iter().skip_while(move |c| c.id != id).skip(1).map(move |c| (t, c));
+                    let mut moving: Vec<(usize, &Clip)> = after(ti, clip.id).collect();
+                    if let Some((pti, _, p)) = partner.filter(|(pti, _, _)| !seq.tracks[*pti].locked) {
+                        moving.extend(after(pti, p.id));
+                    }
+                    for (at, a) in &angles {
+                        moving.extend(after(*at, a.id));
+                    }
+                    for (t, track) in seq.tracks.iter().enumerate().filter(|(t, tr)| !skip.contains(t) && tr.sync_lock && !tr.locked) {
+                        moving.extend(track.clips.iter().filter(|c| c.timeline_in >= clip.timeline_out).map(|c| (t, c)));
+                    }
+                    moving.retain(|(_, c)| !gone.contains(&c.id));
+                    for &(_, c) in &moving {
+                        let Some((pt, _, p)) = c.linked_clip_id.and_then(|pid| find_clip(seq, pid)) else { continue };
+                        // A locked track stays as the person locked it: a
+                        // partner there is theirs to leave.
+                        if !gone.contains(&p.id) && !seq.tracks[pt].locked && !moving.iter().any(|(_, m)| m.id == p.id) {
+                            return Err(refuse(
+                                i,
+                                format!("closing the gap would move {} and leave its linked clip {}, out of sync", clip_name(seq, pool, c), clip_name(seq, pool, p)),
+                                format!("turn on sync lock for track {pt} so it closes up too, remove with ripple: false, or give linked: false to close up this track alone"),
+                            ));
+                        }
+                    }
+                }
                 let shifts = sync_lock_shifts(seq, i, &skip, clip.timeline_out, clip.timeline_in - clip.timeline_out)?;
                 if !shifts.is_empty() {
                     with = format!("{with}, {} sync-locked track(s) with it", shifts.len());
@@ -5297,7 +5330,7 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
                     if let Some(c) = overlapping(seq, pti, p_in, p_out, Some(p.id)) {
                         return Err(refuse(
                             i,
-                            format!("its linked clip would overlap {} at {:.2}-{:.2} s on track {pti}", clip_name(seq, pool, c), secs(c.timeline_in), secs(c.timeline_out)),
+                            format!("its linked clip would overlap {} at {:.2}-{:.2} s", clip_name(seq, pool, c), secs(c.timeline_in), secs(c.timeline_out)),
                             "make room on that track first, or give linked: false to move this clip alone",
                         ));
                     }
@@ -21272,6 +21305,27 @@ mod tests {
         }
         assert_eq!(seqs[0].tracks[0].clips.len(), 2);
         assert_eq!(seqs[0].tracks[0].clips[1].timeline_in, tc(4.0));
+    }
+
+    /// A ripple remove that would close up a track under linked clips
+    /// whose partners stay is refused, saying which and what to do; with
+    /// the partner removed as well, both tracks close up and it goes; and
+    /// `linked: false` closes up the one track, as asked.
+    #[test]
+    fn a_ripple_remove_that_would_leave_partners_behind_is_refused() {
+        let (mut seq, pool, _, ia, ib) = fixture();
+        // The first sound on its own, as one placed apart is: removing it
+        // with ripple closes up its track under the second pair.
+        let sound = seq.tracks[0].find_clip(ia).unwrap().linked_clip_id.unwrap();
+        seq.tracks[0].clips.iter_mut().for_each(|c| if c.id == ia { c.linked_clip_id = None });
+        seq.tracks[1].clips.iter_mut().for_each(|c| if c.id == sound { c.linked_clip_id = None });
+        let remove = |linked: bool| Op::Remove { clip_id: ClipRef::Id(sound), ripple: true, linked };
+        let r = resolve(&seq, &pool, &[remove(true)]).unwrap_err();
+        assert!(r.why.contains("out of sync") && r.hint.contains("sync lock"), "{} / {}", r.why, r.hint);
+        assert!(resolve(&seq, &pool, &[remove(false)]).is_ok(), "linked: false closes up the one track, as asked");
+        let pair = seq.tracks[0].find_clip(ib).unwrap().linked_clip_id.unwrap();
+        assert!(resolve(&seq, &pool, &[Op::Remove { clip_id: ClipRef::Id(pair), ripple: true, linked: true }]).is_ok(), "a pair goes, both tracks close up");
+        assert!(resolve(&seq, &pool, &[Op::Remove { clip_id: ClipRef::Id(sound), ripple: false, linked: true }]).is_ok(), "a lift moves nothing");
     }
 
     /// A clip whose linked partner can't move with it (into another clip
