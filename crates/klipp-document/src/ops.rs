@@ -9958,6 +9958,9 @@ pub fn keep_reframes(seq: &mut Sequence, pool: &MediaPool, from: klipp_core::Res
 /// [`Op::Refit`]: every picture and title fitted to the frame the
 /// sequence now has (#2211), as one undoable step.
 #[allow(clippy::too_many_arguments)]
+/// The shortest piece of a shot the punch-in alternates over, seconds.
+const PUNCH_MIN_SECS: f64 = 1.0;
+
 fn refit(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts, i: usize, markers: bool, punch: Option<f32>, keep: &[ClipId]) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
     if let Some(p) = punch.filter(|p| !p.is_finite() || !(1.0..=1.5).contains(p)) {
         return Err(refuse(i, format!("a punch of {p}"), "give punch from 1 to 1.5, how much further every other picture is pushed in"));
@@ -10010,8 +10013,12 @@ fn refit(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts, i: usi
             let fill = (fw / picture.0).max(fh / picture.1);
             let keyed = |lane: &(Vec<klipp_core::Keyframe>, f32)| if lane.0.is_empty() { lane.1 } else { lane.0.iter().map(|k| k.value).fold(f32::MIN, f32::max) };
             let scale = fill.max(keyed(&placement_lanes(clip)[2])).max(1.0);
-            // Every other picture pushed in further, its jump a cut.
-            pictures += 1;
+            // Every other picture pushed in further, its jump a cut. A
+            // piece too short to read keeps the one before's push, so the
+            // picture doesn't jump in and out within a moment (#3441).
+            if secs(clip.timeline_out) - secs(clip.timeline_in) >= PUNCH_MIN_SECS || pictures == 0 {
+                pictures += 1;
+            }
             let scale = match punch {
                 Some(p) if pictures.is_multiple_of(2) => (scale * p).min(4.0),
                 _ => scale,
@@ -21965,6 +21972,33 @@ mod tests {
         let plan = resolve_with(&seq, &pool, &[Op::Refit { markers: true, punch: None, keep: Vec::new() }], &NotLooked).unwrap();
         let what = &plan.steps[0].what;
         assert!(what.contains("not analysed for people") && what.contains("Subject detection") && !what.contains("no one found"), "{what}");
+    }
+
+    /// #3441: the punch-in alternates over pieces long enough to read; a
+    /// piece shorter than a second keeps the push of the one before it.
+    #[test]
+    fn the_punch_in_skips_pieces_too_short_to_read() {
+        struct NotLooked;
+        impl Transcripts for NotLooked {
+            fn words(&self, _item: &klipp_media::MediaItem) -> Option<Vec<SpokenWord>> {
+                None
+            }
+        }
+        let (mut seq, pool, media, _, _) = fixture();
+        seq.resolution = klipp_core::Resolution { width: 1080, height: 1920 };
+        let pieces = [(0.0, 2.0), (2.0, 2.3), (2.3, 4.3), (4.3, 6.3)];
+        seq.tracks[0].clips = pieces.iter().map(|&(a, b)| Clip::media(media, tc(a), tc(b), tc(a), tc(b))).collect();
+        seq.tracks.truncate(1);
+        let ids: Vec<ClipId> = seq.tracks[0].clips.iter().map(|c| c.id).collect();
+        let plan = resolve_with(&seq, &pool, &[Op::Refit { markers: false, punch: Some(1.2), keep: Vec::new() }], &NotLooked).unwrap();
+        let EditCommand::Named { edit, .. } = &plan.steps[0].edit else { panic!("one named step") };
+        let EditCommand::Batch(edits) = edit.as_ref() else { panic!() };
+        let scale = |id: ClipId| {
+            edits.iter().find_map(|e| match e { EditCommand::EditKeyframes { clip_id, new_state, .. } if *clip_id == id => new_state.transform_scale_keyframes.first().map(|k| k.value), _ => None }).expect("refit")
+        };
+        let fill = 1920.0 / 607.5;
+        let got: Vec<f32> = ids.iter().map(|id| (scale(*id) / fill * 100.0).round() / 100.0).collect();
+        assert_eq!(got, [1.0, 1.0, 1.2, 1.0], "the short piece is not pushed in on its own");
     }
 
     /// #2211: a wide edit refit to a tall frame. The picture with a face

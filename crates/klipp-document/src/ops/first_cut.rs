@@ -89,6 +89,9 @@ const RETAKE_MATCH: f64 = 0.8;
 const RETAKE_WORDS: usize = 3;
 /// A pause between words that ends a sentence, seconds.
 const SENTENCE_PAUSE: f64 = 1.0;
+/// The shortest piece of a clip a cut may leave, seconds: a shorter one
+/// with nothing said in it goes with the cut beside it (#3441).
+const MIN_PIECE: f64 = 0.5;
 
 /// A clip heard speaking, and its file's words in its range.
 struct Speaker<'a> {
@@ -215,12 +218,13 @@ pub fn plan(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts, ste
     if speaking.is_empty() {
         return Vec::new();
     }
-    let mut cuts: Vec<Change> = Vec::new();
+    let mut all: Vec<Change> = Vec::new();
     let (min_pause, padding) = steps.tightness.pause();
     for s in speaking {
         let (s_in, s_out) = (secs(s.clip.source_in), secs(s.clip.source_out));
         let (t_in, t_out) = (secs(s.clip.timeline_in), secs(s.clip.timeline_out));
         let tl = |f: f64| (f.clamp(s_in, s_out) - s_in + t_in).clamp(t_in, t_out);
+        let mut cuts: Vec<Change> = Vec::new();
         if steps.silences {
             for &(a, b) in transcripts.silences(s.item).iter().filter(|(a, b)| b - a >= min_pause) {
                 let (from, to) = (tl(a + padding), tl(b - padding));
@@ -246,7 +250,11 @@ pub fn plan(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts, ste
                 }
             }
         }
+        let said: Vec<(f64, f64)> = s.words.iter().map(|w| (tl(w.start_secs), tl(w.end_secs))).collect();
+        close_slivers(&mut cuts, &said, t_in, t_out);
+        all.extend(cuts);
     }
+    let mut cuts = all;
     cuts.sort_by(|a, b| a.from_secs.total_cmp(&b.from_secs).then(a.to_secs.total_cmp(&b.to_secs)));
     let mut out = cuts;
     if steps.punch {
@@ -263,6 +271,33 @@ pub fn plan(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts, ste
         out.push(Change { kind: Kind::Music, from_secs: 0.0, to_secs: 0.0, what: format!("{name} under the speech, ducked") });
     }
     out
+}
+
+/// One clip's cuts reaching over the pieces they would leave shorter than
+/// [`MIN_PIECE`] with nothing said in them: between two cuts, and at the
+/// clip's ends (`t_in`, `t_out`). `said` is its words, timeline seconds.
+fn close_slivers(cuts: &mut [Change], said: &[(f64, f64)], t_in: f64, t_out: f64) {
+    if cuts.is_empty() {
+        return;
+    }
+    cuts.sort_by(|a, b| a.from_secs.total_cmp(&b.from_secs));
+    let sliver = |a: f64, b: f64| b - a > 1e-6 && b - a < MIN_PIECE && !said.iter().any(|&(x, y)| y > a && x < b);
+    if sliver(t_in, cuts[0].from_secs) {
+        cuts[0].from_secs = t_in;
+    }
+    // The cut reaching furthest so far: the piece after it is the gap.
+    let mut reach = 0;
+    for i in 1..cuts.len() {
+        if sliver(cuts[reach].to_secs, cuts[i].from_secs) {
+            cuts[reach].to_secs = cuts[i].from_secs;
+        }
+        if cuts[i].to_secs > cuts[reach].to_secs {
+            reach = i;
+        }
+    }
+    if sliver(cuts[reach].to_secs, t_out) {
+        cuts[reach].to_secs = t_out;
+    }
 }
 
 /// An op from its JSON, as an assistant would send it: the defaults are
@@ -554,5 +589,29 @@ mod tests {
         let track = cut.tracks.iter().position(|t| t.kind == TrackKind::Subtitle).expect("a caption track");
         let text: Vec<String> = crate::caption_translation::captions(&cut, track).into_iter().map(|c| c.text).collect();
         assert_eq!(text.join(" "), "so, let me show you.");
+    }
+
+    /// An "um" just in, a pause running into another, and a pause near
+    /// the end, with nothing said between them.
+    struct Slivers;
+
+    impl Transcripts for Slivers {
+        fn words(&self, _item: &klipp_media::MediaItem) -> Option<Vec<SpokenWord>> {
+            Some(vec![w(0.1, 0.35, "um"), w(0.45, 0.8, "Hello"), w(0.85, 1.0, "there."), w(2.95, 3.2, "um"), w(3.3, 3.5, "we"), w(3.55, 8.0, "go.")])
+        }
+        fn silences(&self, _item: &klipp_media::MediaItem) -> Vec<(f64, f64)> {
+            vec![(1.0, 2.9), (8.0, 9.9)]
+        }
+    }
+
+    /// Cuts that nearly meet leave no piece shorter than half a second
+    /// with nothing said in it, at a clip's ends or between them (#3441).
+    #[test]
+    fn cuts_that_nearly_meet_leave_no_sliver() {
+        let (seq, pool) = talking();
+        let changes = plan(&seq, &pool, &Slivers, &Steps { punch: false, captions: false, ..Steps::default() });
+        let span = |c: &Change| ((c.from_secs * 100.0).round() / 100.0, (c.to_secs * 100.0).round() / 100.0);
+        let spans: Vec<(f64, f64)> = changes.iter().map(span).collect();
+        assert_eq!(spans, [(0.0, 0.35), (1.15, 2.95), (2.95, 3.2), (8.15, 10.0)], "{changes:#?}");
     }
 }
