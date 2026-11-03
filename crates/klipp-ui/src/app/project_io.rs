@@ -341,6 +341,7 @@ impl KlippApp {
         self.state.dragging_bezier_handle = None;
         self.state.dragging_video_bezier_handle = None;
         self.state.dragging_fade_handle = None;
+        self.state.forget_old_project_views();
 
         // 5. Reset playback / playhead
         self.drop_automation_pass();

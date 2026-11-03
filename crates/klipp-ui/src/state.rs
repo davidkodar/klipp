@@ -693,6 +693,19 @@ impl AppState {
         raw.filter(|_| !composited)
     }
 
+    /// What belongs to the project being left and must not be carried
+    /// into the next: a gap or transition selected in it (the inspector
+    /// went on showing them), the multicam angle view (a new project's
+    /// viewer then said there was no multicam clip, and stayed empty)
+    /// and a platform's player overlay (a Shorts frame over a 16:9 cut).
+    pub fn forget_old_project_views(&mut self) {
+        self.selected_gap = None;
+        self.selected_transition = None;
+        self.multicam_mode = false;
+        self.multicam_opened = None;
+        self.viewer_overlays.platform = None;
+    }
+
     pub fn request_timeline_skim(&mut self, cmds: &mut Vec<klipp_core::AppCommand>, time: Timecode, raw: Option<(MediaId, f64)>) {
         if self.timeline_skim_in_flight.is_none() {
             self.timeline_skim_in_flight = Some((std::time::Instant::now(), raw));
@@ -6356,6 +6369,24 @@ mod tests {
         state.request_timeline_skim(&mut cmds, Timecode::from_secs_f64(16.4, 24), Some((media, 3.0)));
         assert_eq!(state.timeline_skim_shown(false), Some((media, 3.0)), "not drawn: the clip's frame is asked for");
         assert!(state.timeline_skim_in_flight.is_none());
+    }
+
+    /// Opening another project forgets the old one's selected gap and
+    /// transition, the multicam angle view and a platform overlay (P31,
+    /// P51).
+    #[test]
+    fn the_old_projects_views_are_forgotten() {
+        let mut state = super::AppState::default();
+        let t = klipp_core::Timecode::from_secs_f64(1.0, 24);
+        state.selected_gap = Some((0, t, t));
+        state.selected_transition = Some((0, klipp_core::TransitionId::new()));
+        state.multicam_mode = true;
+        state.multicam_opened = Some(klipp_core::ClipId::new());
+        state.viewer_overlays.platform = Some("shorts");
+        state.forget_old_project_views();
+        assert!(state.selected_gap.is_none() && state.selected_transition.is_none());
+        assert!(!state.multicam_mode && state.multicam_opened.is_none());
+        assert!(state.viewer_overlays.platform.is_none());
     }
 
     /// Edits recorded as one inside a batch already open (a socket or an
