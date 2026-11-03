@@ -527,14 +527,15 @@ fn show_clip_audio(
         let pad = 14.0;
         let row_h = 30.0;
 
-        // Global reset button — only when any value differs from default
+        // Global reset button: always laid out, so the first change does
+        // not push every row below it down; it works once a value differs.
         let is_default = (gain - 1.0).abs() < f32::EPSILON
             && (volume - 1.0).abs() < f32::EPSILON
             && pan.abs() < f32::EPSILON
             && fade_in.abs() < f32::EPSILON
             && fade_out.abs() < f32::EPSILON
             && channel_config == ChannelConfig::Default;
-        if !is_default {
+        ui.add_enabled_ui(!is_default, |ui| {
             ui.horizontal(|ui| {
                 ui.add_space(pad);
                 let (reset_rect, reset_resp) = ui.allocate_exact_size(
@@ -567,8 +568,8 @@ fn show_clip_audio(
                         .color(theme.text_secondary),
                 );
             });
-            ui.add_space(2.0);
-        }
+        });
+        ui.add_space(2.0);
 
         // Source channel info
         if let Some(ch) = source_channels {
@@ -1145,6 +1146,24 @@ struct MeterState {
     peak_hold_age_r: f32,
 }
 
+/// The Level strip's dB labels that fit, centred at their x: the marks
+/// sit on a linear scale, so the quiet ones crowd together at the left,
+/// and one that would overprint a louder one already placed is left out.
+fn tick_labels(left: f32, width: f32, max_level: f32, label_w: impl Fn(&str) -> f32) -> Vec<(f32, &'static str)> {
+    const MARKS: [(f32, &str); 6] = [(1.0, "0"), (0.7, "-3"), (0.5, "-6"), (0.25, "-12"), (0.06, "-24"), (0.004, "-48")];
+    let gap = 3.0;
+    let mut kept: Vec<(f32, &'static str, f32)> = Vec::new();
+    for (level, label) in MARKS {
+        let x = left + level / max_level * width;
+        let half = label_w(label) / 2.0;
+        if x > left + width || kept.iter().any(|&(kx, _, kh)| (x - kx).abs() < half + kh + gap) {
+            continue;
+        }
+        kept.push((x, label, half));
+    }
+    kept.into_iter().map(|(x, label, _)| (x, label)).collect()
+}
+
 fn draw_stereo_meter(ui: &mut egui::Ui, theme: &KlippTheme, peak_l: f32, peak_r: f32) {
     let dt = ui.input(|i| i.stable_dt).min(0.1);
     let meter_id = ui.id().with("audio_meter_state");
@@ -1221,12 +1240,10 @@ fn draw_stereo_meter(ui: &mut egui::Ui, theme: &KlippTheme, peak_l: f32, peak_r:
     let (tick_rect, _) = ui.allocate_exact_size(egui::vec2(meter_w, 10.0), egui::Sense::hover());
     let tick_left = tick_rect.left() + label_w + 4.0;
     let tick_w = meter_w - label_w - 4.0;
-    let db_marks: &[(f32, &str)] = &[(0.004, "-48"), (0.06, "-24"), (0.25, "-12"), (0.5, "-6"), (0.7, "-3"), (1.0, "0")];
-    for &(level, label) in db_marks {
-        let x = tick_left + (level / max_level) * tick_w;
-        if x <= tick_left + tick_w {
-            ui.painter().text(egui::pos2(x, tick_rect.center().y), egui::Align2::CENTER_CENTER, label, egui::FontId::monospace(10.0), theme.text_dim);
-        }
+    let font = egui::FontId::monospace(10.0);
+    let text_w = |label: &str| ui.fonts(|f| f.layout_no_wrap(label.to_owned(), font.clone(), theme.text_dim).size().x);
+    for (x, label) in tick_labels(tick_left, tick_w, max_level, text_w) {
+        ui.painter().text(egui::pos2(x, tick_rect.center().y), egui::Align2::CENTER_CENTER, label, font.clone(), theme.text_dim);
     }
 
     if ms.smooth_l > 0.001 || ms.smooth_r > 0.001 || ms.peak_hold_l > 0.005 || ms.peak_hold_r > 0.005 {
@@ -1327,6 +1344,50 @@ mod clip_audio_tests {
                 }
             }
         }
+    }
+
+    /// The first change shows Reset to defaults without moving a row: the
+    /// row is there, unused, while everything is at its default, so a
+    /// second click lands where the user aimed it.
+    #[test]
+    fn the_first_change_moves_no_row() {
+        let ctx = egui::Context::default();
+        let state = AppState::default();
+        let mut duck = DuckSettings::default();
+        let at_rest = clip();
+        let mut changed = clip();
+        changed.volume = 0.5;
+        let ys = |c: &Clip, duck: &mut DuckSettings| {
+            let (texts, _) = frame(&ctx, Vec::new(), |ui, theme, cmds| draw(ui, theme, cmds, &state, c, duck));
+            ["Source", "Channel", "Gain", "Volume", "Pan", "Fade In", "LEVEL"]
+                .map(|l| texts.iter().find(|(t, _)| t == l).unwrap_or_else(|| panic!("{l}")).1.y)
+        };
+        let before = ys(&at_rest, &mut duck);
+        let after = ys(&changed, &mut duck);
+        assert_eq!(before, after, "rows moved after the first change");
+    }
+
+    /// The Level strip's dB labels never overprint, as drawn in the
+    /// inspector, and the loud end is kept.
+    #[test]
+    fn the_level_labels_do_not_overprint() {
+        let ctx = egui::Context::default();
+        let state = AppState::default();
+        let clip = clip();
+        let mut duck = DuckSettings::default();
+        let (texts, _) = frame(&ctx, Vec::new(), |ui, theme, cmds| draw(ui, theme, cmds, &state, &clip, &mut duck));
+        let marks = ["0", "-3", "-6", "-12", "-24", "-48"];
+        let drawn: Vec<(&str, f32)> = texts.iter().filter(|(t, _)| marks.contains(&t.as_str())).map(|(t, p)| (t.as_str(), p.x)).collect();
+        assert!(drawn.iter().any(|(t, _)| *t == "0") && drawn.iter().any(|(t, _)| *t == "-24"), "{drawn:?}");
+        let char_w = 6.0;
+        for (i, (a, ax)) in drawn.iter().enumerate() {
+            for (b, bx) in &drawn[i + 1..] {
+                let room = (a.len() + b.len()) as f32 * char_w / 2.0;
+                assert!((ax - bx).abs() >= room, "{a} at {ax} overprints {b} at {bx}");
+            }
+        }
+        // Wide enough, every mark fits.
+        assert_eq!(tick_labels(0.0, 2000.0, 1.5, |l| l.len() as f32 * 6.0).len(), marks.len());
     }
 
     /// The volume's keyframe mark keys the volume at the playhead, by a
