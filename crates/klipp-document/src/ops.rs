@@ -266,7 +266,7 @@ pub use stretch::{plays_at_speed, stretch_at, stretch_range, StretchTo};
 mod alternatives;
 mod cover;
 pub mod first_cut;
-pub use alternatives::{AlternativesAction, TakeSpec};
+pub use alternatives::{take_fits_track, AlternativesAction, TakeSpec};
 
 /// How a title's text is set, for `title` and `style` (#1686): its
 /// weight, a variable font's axes, OpenType features, a justified
