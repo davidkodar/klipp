@@ -1341,7 +1341,7 @@ mod menu_smoke_tests {
 
     /// A pool file let go above the top video track, on the ruler or just
     /// over V1, goes on a new video track, as one let go below the audio
-    /// tracks goes on a new track there.
+    /// tracks goes on a new track there, at the time it was let go.
     #[test]
     fn a_drop_above_the_top_video_track_makes_a_video_track() {
         for above in [6.0f32, 20.0] {
@@ -1367,8 +1367,15 @@ mod menu_smoke_tests {
             }
             timeline.frame(vec![egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE }]);
             sent.append(&mut timeline.sent);
-            let placed = sent.iter().any(|c| matches!(c, AppCommand::AppendClipToTrack { media_id, .. } if *media_id == media));
-            assert!(placed && videos(&timeline) == before + 1, "{above} px above the top track: a new video track and the clip on it ({} video tracks, sent {sent:?})", videos(&timeline));
+            let want = f64::from((x - rect.left() + timeline.state.timeline_scroll_x) / timeline.state.timeline_zoom);
+            let placed = sent.iter().find_map(|c| match c {
+                AppCommand::PlaceMedia { media_id, drop: klipp_core::events::ClipDrop::OnTrackAt { track_index, at, .. } } if *media_id == media => Some((*track_index, at.to_secs_f64())),
+                _ => None,
+            });
+            let made = placed.is_some_and(|(ti, _)| timeline.state.sequences[0].tracks[ti].kind == TrackKind::Video && timeline.state.sequences[0].tracks[ti].clips.is_empty());
+            assert!(made && videos(&timeline) == before + 1, "{above} px above the top track: a new video track and the clip on it ({} video tracks, sent {sent:?})", videos(&timeline));
+            let at = placed.unwrap().1;
+            assert!((at - want).abs() < 0.5, "{above} px above: at the drop time {want:.2} s, not {at:.2} s");
         }
     }
 
@@ -1828,7 +1835,7 @@ mod menu_smoke_tests {
             });
         }
         assert_eq!(timeline.state.sequences[0].tracks.len(), tracks, "no track made");
-        assert!(!sent.iter().any(|c| matches!(c, AppCommand::AppendClipToTrack { .. } | AppCommand::AppendMediaBatchToTrack { .. })), "{sent:?}");
+        assert!(!sent.iter().any(|c| matches!(c, AppCommand::AppendClipToTrack { .. } | AppCommand::AppendMediaBatchToTrack { .. } | AppCommand::PlaceMedia { .. })), "{sent:?}");
         assert!(timeline.state.dragging_media.is_none(), "the drag is over");
     }
 
