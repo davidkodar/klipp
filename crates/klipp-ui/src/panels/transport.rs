@@ -369,8 +369,7 @@ impl TransportBar {
                         .frame(false)
                 );
                 if clear_resp.clicked() {
-                    cmds.push(AppCommand::ClearSequenceInPoint);
-                    cmds.push(AppCommand::ClearSequenceOutPoint);
+                    cmds.push(AppCommand::MarkRange { in_point: Some(None), out_point: Some(None) });
                 }
                 clear_resp.on_hover_text("Clear range (Alt+X)");
             }

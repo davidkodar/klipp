@@ -361,13 +361,13 @@ pub fn build(state: &AppState) -> Vec<PaletteEntry> {
     e.push(PaletteEntry { label: Cow::Borrowed("Add Title"), shortcut: Cow::Borrowed("Ctrl+T"),
         action: PaletteAction::Cmd(AppCommand::AddTitleAtPlayhead { over_clip: None }), enabled: true });
     e.push(PaletteEntry { label: Cow::Borrowed("Set In Point"), shortcut: Cow::Borrowed("I"),
-        action: PaletteAction::Cmd(AppCommand::SetSequenceInPoint(state.playhead)), enabled: true });
+        action: PaletteAction::Cmd(AppCommand::MarkRange { in_point: Some(Some(state.playhead)), out_point: None }), enabled: true });
     e.push(PaletteEntry { label: Cow::Borrowed("Set Out Point"), shortcut: Cow::Borrowed("O"),
-        action: PaletteAction::Cmd(AppCommand::SetSequenceOutPoint(state.playhead)), enabled: true });
+        action: PaletteAction::Cmd(AppCommand::MarkRange { in_point: None, out_point: Some(Some(state.playhead)) }), enabled: true });
     e.push(PaletteEntry { label: Cow::Borrowed("Clear In Point"), shortcut: Cow::Borrowed("Alt+I"),
-        action: PaletteAction::Cmd(AppCommand::ClearSequenceInPoint), enabled: has_in });
+        action: PaletteAction::Cmd(AppCommand::MarkRange { in_point: Some(None), out_point: None }), enabled: has_in });
     e.push(PaletteEntry { label: Cow::Borrowed("Clear Out Point"), shortcut: Cow::Borrowed("Alt+O"),
-        action: PaletteAction::Cmd(AppCommand::ClearSequenceOutPoint), enabled: has_out });
+        action: PaletteAction::Cmd(AppCommand::MarkRange { in_point: None, out_point: Some(None) }), enabled: has_out });
     e.push(PaletteEntry { label: Cow::Borrowed("Go to Start"), shortcut: Cow::Borrowed("Home"),
         action: PaletteAction::Cmd(AppCommand::SeekTo(klipp_core::RationalTime::from_frames(0, state.fps.rate()))), enabled: true });
     e.push(PaletteEntry { label: Cow::Borrowed("Go to End"), shortcut: Cow::Borrowed("End"),

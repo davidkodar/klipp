@@ -951,11 +951,11 @@ impl ToolbarPanel {
 
     fn mark_menu(ui: &mut egui::Ui, cmds: &mut Vec<AppCommand>, state: &mut AppState, kb: &crate::keybindings::KeyBindings) {
         ui.menu_rows(egui::RichText::new("Mark").size(crate::theme::type_scale::CONTROL), |ui| {
-            if ui.add(egui::Button::new("Set In Point").shortcut_text(kb.display_for("set_in_point"))).clicked() { cmds.push(AppCommand::SetSequenceInPoint(state.playhead)); ui.close_menu(); }
-            if ui.add(egui::Button::new("Set Out Point").shortcut_text(kb.display_for("set_out_point"))).clicked() { cmds.push(AppCommand::SetSequenceOutPoint(state.playhead)); ui.close_menu(); }
-            if ui.add(egui::Button::new("Clear In Point").shortcut_text(kb.display_for("clear_in_point"))).clicked() { cmds.push(AppCommand::ClearSequenceInPoint); ui.close_menu(); }
-            if ui.add(egui::Button::new("Clear Out Point").shortcut_text(kb.display_for("clear_out_point"))).clicked() { cmds.push(AppCommand::ClearSequenceOutPoint); ui.close_menu(); }
-            if ui.add(egui::Button::new("Clear In and Out").shortcut_text(kb.display_for("clear_in_out"))).clicked() { cmds.push(AppCommand::ClearSequenceInPoint); cmds.push(AppCommand::ClearSequenceOutPoint); ui.close_menu(); }
+            if ui.add(egui::Button::new("Set In Point").shortcut_text(kb.display_for("set_in_point"))).clicked() { cmds.push(AppCommand::MarkRange { in_point: Some(Some(state.playhead)), out_point: None }); ui.close_menu(); }
+            if ui.add(egui::Button::new("Set Out Point").shortcut_text(kb.display_for("set_out_point"))).clicked() { cmds.push(AppCommand::MarkRange { in_point: None, out_point: Some(Some(state.playhead)) }); ui.close_menu(); }
+            if ui.add(egui::Button::new("Clear In Point").shortcut_text(kb.display_for("clear_in_point"))).clicked() { cmds.push(AppCommand::MarkRange { in_point: Some(None), out_point: None }); ui.close_menu(); }
+            if ui.add(egui::Button::new("Clear Out Point").shortcut_text(kb.display_for("clear_out_point"))).clicked() { cmds.push(AppCommand::MarkRange { in_point: None, out_point: Some(None) }); ui.close_menu(); }
+            if ui.add(egui::Button::new("Clear In and Out").shortcut_text(kb.display_for("clear_in_out"))).clicked() { cmds.push(AppCommand::MarkRange { in_point: Some(None), out_point: Some(None) }); ui.close_menu(); }
             // The selected clip's span, else the one under the playhead
             // (#3127): it was only on X, so a walkthrough looking for a
             // way to mark a clip's range in this menu found none.
