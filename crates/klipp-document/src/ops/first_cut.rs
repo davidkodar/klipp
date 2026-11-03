@@ -404,6 +404,20 @@ pub fn now_at(changes: &[Change], exclude: &[usize], at: usize) -> f64 {
     (this.from_secs - removed).max(0.0)
 }
 
+/// Change `at`'s words with its time where it is now, `exclude` left out
+/// of the cut: where [`now_at`] goes. The words as planned give the time
+/// before the cut ("pause at 0:10.7" for a place at 0:07.22 after it).
+pub fn label_now(changes: &[Change], exclude: &[usize], i: usize) -> String {
+    let Some(c) = changes.get(i) else { return String::new() };
+    if !c.kind.cuts() {
+        return c.what.clone();
+    }
+    match c.what.strip_suffix(&format!(" at {}", at(c.from_secs))) {
+        Some(stem) => format!("{stem} at {}", at(now_at(changes, exclude, i))),
+        None => c.what.clone(),
+    }
+}
+
 /// The changes as a numbered list, one a line: what `exclude` counts.
 pub fn listed(changes: &[Change]) -> String {
     changes.iter().enumerate().map(|(i, c)| format!("{i}: {}", c.what)).collect::<Vec<_>>().join("\n")
@@ -411,6 +425,23 @@ pub fn listed(changes: &[Change]) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// FC6: a change is named by where it is now, after the cuts before
+    /// it, where a click on it goes: a pause planned at 0:10.7 behind a
+    /// 3 s cut reads 0:07.7; with that cut taken back, 0:10.7 again.
+    #[test]
+    fn a_change_is_named_by_where_it_is_now() {
+        let change = |kind, from: f64, to: f64, what: String| super::Change { kind, from_secs: from, to_secs: to, what };
+        let changes = vec![
+            change(super::Kind::Retake, 2.0, 5.0, format!("earlier take of \"so\" at {}", super::at(2.0))),
+            change(super::Kind::Silence, 10.7, 11.5, format!("0.8 s pause at {}", super::at(10.7))),
+            change(super::Kind::Captions, 0.0, 0.0, "captions from what is said".into()),
+        ];
+        assert_eq!(super::label_now(&changes, &[], 1), "0.8 s pause at 0:07.7");
+        assert_eq!(super::label_now(&changes, &[0], 1), "0.8 s pause at 0:10.7", "the cut before it taken back");
+        assert_eq!(super::label_now(&changes, &[], 0), "earlier take of \"so\" at 0:02.0");
+        assert_eq!(super::label_now(&changes, &[], 2), "captions from what is said");
+    }
+
     use super::*;
     use klipp_core::RationalTime;
     use klipp_timeline::Track;
