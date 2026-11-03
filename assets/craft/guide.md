@@ -571,8 +571,10 @@ exist until the plan runs.
   fit to fill: the speed that makes the clip end exactly where the next
   clip on its track begins, worked out for you (a shot slowed to fill a
   bar, a slot left for it in a cut to music); a gap clip between is room
-  it fills. `length_secs` makes the clip that long and `fit_range` as long
-  as the marked range (set it with `mark`), the speed worked out. Its sound plays at the speed, its
+  it fills. `length_secs` makes the clip that long; `fit_range` puts it on
+  the marked range (set it with `mark`): from In to Out, the speed worked
+  out, its sound with it, over what is there, or with `ripple` pushing it
+  along, as the Speed dialog's Fit to the marked range does. Its sound plays at the speed, its
   pitch moving with it as tape's does, backward when reversed; music and
   other tracks are untouched. (A speed ramp's own sound is silent.)
   With `ripple` the clips after it on its tracks move by the change in

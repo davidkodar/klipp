@@ -47,63 +47,9 @@ pub fn fit_targets(seq: &Sequence, clip_id: ClipId) -> FitTargets {
     FitTargets { to_next, range }
 }
 
-/// What Fit to the marked range made (P53): the sequence after it, the
-/// tracks it changed, and the clip in its new place.
-pub struct OnMarks {
-    pub sequence: Sequence,
-    pub touched: std::collections::BTreeSet<usize>,
-    pub clip: ClipId,
-}
-
-/// Clip `clip_id` put on the marked range: lifted with its linked sound,
-/// its speed set so it lasts from In to Out (its direction kept), and laid
-/// down from In, over what is there or pushing it along as `mode` says;
-/// played backward when `reverse`.
-/// It used to keep its place, made only as long as the range. `None`
-/// without a marked range, for a clip with a speed ramp (its curve is not
-/// one speed to set), or when Insert finds a locked track in the way.
-pub fn fit_on_marks(seq: &Sequence, clip_id: ClipId, mode: klipp_document::clipboard::PasteMode, reverse: bool) -> Option<OnMarks> {
-    use klipp_document::clipboard;
-    let (from, to) = (seq.in_point?, seq.out_point?);
-    if to <= from {
-        return None;
-    }
-    let (ti, ci) = seq.find_clip(clip_id)?;
-    let picked = &seq.tracks[ti].clips[ci];
-    if !picked.speed_keyframes.is_empty() {
-        return None;
-    }
-    let mut cb = clipboard::copy(seq, &[clip_id])?;
-    let length = to - from;
-    let secs = length.to_secs_f64();
-    let first = cb.clips.iter().map(|c| c.clip.timeline_in).min()?;
-    for c in &mut cb.clips {
-        let content = (c.clip.source_out - c.clip.source_in).to_secs_f64();
-        if content <= 0.0 {
-            return None;
-        }
-        let sign = if reverse { -1.0 } else { 1.0 };
-        c.clip.speed = sign * content / secs;
-        // Each from where the pair starts, all as long as the range.
-        c.clip.timeline_in = first;
-        c.clip.timeline_out = first + length;
-    }
-    let mut lifted = seq.clone();
-    for c in &cb.clips {
-        if let Some((t, _)) = lifted.find_clip(c.clip.id) {
-            lifted.tracks[t].remove_clip(c.clip.id);
-        }
-    }
-    let original = seq.tracks[ti].clips[ci].clone();
-    let at = cb.clips.iter().position(|c| c.clip.id == original.id)?;
-    let pasted = clipboard::paste_onto(&lifted, &cb, from, mode);
-    if pasted.no_room || pasted.ids.len() != cb.clips.len() {
-        return None;
-    }
-    let mut touched = pasted.touched;
-    touched.extend(cb.clips.iter().map(|c| c.track));
-    Some(OnMarks { clip: pasted.ids[at], sequence: pasted.sequence, touched })
-}
+/// Fit to the marked range (P53): the document's, which the `retime`
+/// op's `fit_range` uses too, so the dialog and an assistant agree.
+pub use klipp_document::clipboard::{on_marks as fit_on_marks, OnMarks};
 
 /// A length typed into the dialog: seconds ("4", "4 s", "4.5") or a
 /// timecode as the sequence counts it ("00:00:04:00").
