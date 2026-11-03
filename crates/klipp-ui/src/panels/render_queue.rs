@@ -44,7 +44,7 @@ impl RenderQueuePanel {
         let mut actions = Vec::new();
         let mut open = true;
 
-        egui::Window::new("Render Queue")
+        crate::widgets::window("Render Queue")
             .open(&mut open)
             .collapsible(false)
             .resizable(true)

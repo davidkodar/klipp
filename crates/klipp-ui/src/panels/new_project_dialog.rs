@@ -158,7 +158,7 @@ impl NewProjectDialog {
         let screen_width = ctx.screen_rect().width();
         let control_scale = (screen_width / 1920.0).clamp(1.0, 1.5);
         let dialog_width = (screen_width * 0.34).clamp(560.0, 760.0);
-        egui::Window::new("New Project")
+        crate::widgets::window("New Project")
             .collapsible(false)
             .resizable(false)
             .default_width(dialog_width)
@@ -624,7 +624,7 @@ impl SaveTemplateDialog {
     /// `false` once it is closed.
     pub fn show(&mut self, ctx: &egui::Context, theme: &KlippTheme, view: &SaveTemplateView, cmds: &mut Vec<AppCommand>) -> bool {
         let mut keep = true;
-        egui::Window::new("Save Project as Template")
+        crate::widgets::window("Save Project as Template")
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])

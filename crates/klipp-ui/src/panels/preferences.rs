@@ -215,7 +215,7 @@ impl PreferencesPanel {
         // with auto-fit content. Fixed sizing eliminates all three
         // resize bugs. `movable(true)` keeps drag-to-move active
         // anywhere on the frame so the user can still reposition.
-        egui::Window::new("Preferences")
+        crate::widgets::window("Preferences")
             .title_bar(false)
             .resizable(false)
             .collapsible(false)
@@ -2438,7 +2438,7 @@ impl PreferencesPanel {
             return;
         }
         let shared = std::sync::Arc::clone(&self.assistant);
-        egui::Window::new("Set Up AI Assistants")
+        crate::widgets::window("Set Up AI Assistants")
             .collapsible(false)
             .resizable(true)
             .default_width(620.0)
@@ -3678,7 +3678,7 @@ impl PreferencesPanel {
         };
         let mut close = false;
         let mut do_clear = false;
-        egui::Window::new("Delete all caches?")
+        crate::widgets::window("Delete all caches?")
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))

@@ -282,7 +282,7 @@ pub fn show(
     if let Some(rename_idx) = state.renaming_sequence_idx {
         if rename_idx < state.sequences.len() {
             let mut open = true;
-            egui::Window::new("Rename Sequence")
+            crate::widgets::window("Rename Sequence")
                 .collapsible(false)
                 .resizable(false)
                 .open(&mut open)

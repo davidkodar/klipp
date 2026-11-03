@@ -151,7 +151,7 @@ pub fn show_project_doctor_dialog(
 
     let findings = scan_project(state);
     let mut open = true;
-    egui::Window::new("Project Doctor")
+    crate::widgets::window("Project Doctor")
         .open(&mut open)
         .resizable(true)
         .movable(true)

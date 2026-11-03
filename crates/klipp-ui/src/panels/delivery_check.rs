@@ -233,7 +233,7 @@ impl DeliveryCheckPanel {
     /// `reuse_warns`: the brief's `reused_footage_warns`, shown as a switch.
     pub fn show(&mut self, ctx: &egui::Context, theme: &KlippTheme, tools: bool, reuse_warns: bool, open: &mut bool) -> DeliveryAction {
         let mut action = DeliveryAction::None;
-        egui::Window::new("Delivery Check")
+        crate::widgets::window("Delivery Check")
             .open(open)
             .default_size([460.0, 560.0])
             .min_width(320.0)

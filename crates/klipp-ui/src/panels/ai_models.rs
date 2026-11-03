@@ -462,7 +462,7 @@ pub fn show_ai_models_dialog(ctx: &egui::Context, state: &mut AppState, theme: &
             // Show the failure to the user — they can't do anything
             // useful but at least know why the dialog is empty.
             let mut open = state.show_ai_models_dialog;
-            egui::Window::new("AI Models")
+            crate::widgets::window("AI Models")
                 .collapsible(false)
                 .resizable(false)
                 .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
@@ -534,7 +534,7 @@ pub fn show_ai_models_dialog(ctx: &egui::Context, state: &mut AppState, theme: &
     // tooltip path below). Min width set high enough that the
     // toolbar's TASK / SORT / search controls don't overlap.
     let default_w = (screen_rect.width() * 0.65).clamp(720.0, 1100.0);
-    egui::Window::new("AI Models")
+    crate::widgets::window("AI Models")
         .collapsible(false)
         .resizable(true)
         .default_size([default_w, max_h])
@@ -990,7 +990,7 @@ fn show_model_details(
         });
 
     let mut close = false;
-    egui::Window::new("Model details")
+    crate::widgets::window("Model details")
         .collapsible(false)
         .resizable(false)
         .fixed_size([520.0, 360.0])
@@ -1128,7 +1128,7 @@ fn show_uninstall_confirm(
     let mut close_modal = false;
     let mut do_uninstall = false;
 
-    egui::Window::new("Uninstall AI model")
+    crate::widgets::window("Uninstall AI model")
         .collapsible(false)
         .resizable(false)
         .fixed_size([420.0, 180.0])
@@ -1293,7 +1293,7 @@ fn show_bulk_uninstall_confirm(
     let mut close_modal = false;
     let mut do_uninstall_all = false;
 
-    egui::Window::new("Uninstall all AI models")
+    crate::widgets::window("Uninstall all AI models")
         .collapsible(false)
         .resizable(false)
         .fixed_size([460.0, 320.0])
@@ -1430,7 +1430,7 @@ fn show_stale_uninstall_confirm(
     let mut close_modal = false;
     let mut do_uninstall = false;
 
-    egui::Window::new("Uninstall unused AI models")
+    crate::widgets::window("Uninstall unused AI models")
         .collapsible(false)
         .resizable(false)
         .fixed_size([460.0, 320.0])
@@ -1728,7 +1728,7 @@ fn show_custom_uninstall_confirm(
     let mut close_modal = false;
     let mut do_uninstall = false;
 
-    egui::Window::new("Uninstall custom AI model")
+    crate::widgets::window("Uninstall custom AI model")
         .collapsible(false)
         .resizable(false)
         .fixed_size([460.0, 200.0])
@@ -1893,7 +1893,7 @@ fn show_custom_install(
             }
         });
 
-    egui::Window::new("Add custom AI model")
+    crate::widgets::window("Add custom AI model")
         .collapsible(false)
         .resizable(false)
         .fixed_size([520.0, 360.0])

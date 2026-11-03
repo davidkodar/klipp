@@ -8,6 +8,8 @@ impl KlippApp {
     /// tools, interaction and the heartbeat, system audio, dropped files and
     /// the popup state.
     pub(super) fn begin_frame(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        // Where this frame's floating windows may go: below the menus.
+        crate::widgets::note_screen(ctx);
         // Settle any workspace switch before the layout is computed, so
         // the panel changes it implies land in the same frame the new
         // workspace does rather than a frame behind it.
@@ -1508,7 +1510,7 @@ impl KlippApp {
         // History panel
         if self.state.show_history_panel {
             let mut open = true;
-            egui::Window::new("History")
+            crate::widgets::window("History")
                 .open(&mut open)
                 .resizable(true)
                 .default_size([220.0, 400.0])
@@ -1567,7 +1569,7 @@ impl KlippApp {
         // Relink dialog
         if self.state.show_relink_dialog {
             let mut open = true;
-            egui::Window::new("Relink Offline Media")
+            crate::widgets::window("Relink Offline Media")
                 .collapsible(false)
                 .resizable(true)
                 .default_width(600.0)

@@ -57,7 +57,7 @@ impl AafInstall {
 /// moves it on; an install that finished opens the file through `cmds`.
 pub fn show(ctx: &egui::Context, slot: &mut Option<AafInstall>, cmds: &mut Vec<AppCommand>) {
     let Some(current) = slot.take() else { return };
-    let window = egui::Window::new("Open AAF").collapsible(false).resizable(false).order(egui::Order::Foreground).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]);
+    let window = crate::widgets::window("Open AAF").collapsible(false).resizable(false).order(egui::Order::Foreground).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]);
     let next = match current {
         AafInstall::Asking { path, new_project, python, venv, steps } => {
             let mut answer = None;
@@ -236,7 +236,7 @@ impl AafReading {
 /// every tenth of a second; its Cancel stops the reading.
 pub fn show_reading(ctx: &egui::Context, reading: &AafReading) {
     ctx.request_repaint_after(std::time::Duration::from_millis(100));
-    egui::Window::new("Open AAF").collapsible(false).resizable(false).order(egui::Order::Foreground).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
+    crate::widgets::window("Open AAF").collapsible(false).resizable(false).order(egui::Order::Foreground).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
         ui.horizontal(|ui| {
             ui.spinner();
             ui.label(format!("Reading {} with OpenTimelineIO…", reading.path.file_name().unwrap_or_default().to_string_lossy()));

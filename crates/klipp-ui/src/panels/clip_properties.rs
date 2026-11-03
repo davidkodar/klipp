@@ -39,7 +39,7 @@ pub fn show_clip_properties_dialog(
     };
 
     let mut open = true;
-    egui::Window::new("Clip Properties")
+    crate::widgets::window("Clip Properties")
         .open(&mut open)
         .collapsible(false)
         .resizable(true)

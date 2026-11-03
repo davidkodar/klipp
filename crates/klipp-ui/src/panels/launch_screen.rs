@@ -606,7 +606,7 @@ impl LaunchScreen {
         if let Some((ref rename_path, _)) = self.renaming_project.clone() {
             let mut open = true;
             let mut done = false;
-            egui::Window::new("Rename Project")
+            crate::widgets::window("Rename Project")
                 .open(&mut open)
                 .collapsible(false)
                 .resizable(false)
@@ -655,7 +655,7 @@ impl LaunchScreen {
         // What's New: the changes in this build, newest first.
         if self.show_whats_new {
             let mut open = true;
-            egui::Window::new("What's New")
+            crate::widgets::window("What's New")
                 .id(egui::Id::new("launch_whats_new"))
                 .open(&mut open)
                 .collapsible(false)
@@ -686,7 +686,7 @@ impl LaunchScreen {
             let name = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
             let mut open = true;
             let mut answer = None;
-            egui::Window::new("Move to Trash")
+            crate::widgets::window("Move to Trash")
                 .id(egui::Id::new("launch_confirm_trash"))
                 .open(&mut open)
                 .collapsible(false)

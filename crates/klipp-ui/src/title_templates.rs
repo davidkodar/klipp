@@ -275,7 +275,7 @@ pub fn show_dialog(ctx: &egui::Context, state: &mut crate::state::AppState) {
     let mut close = false;
     let mut result: Option<Result<String, String>> = None;
     let store = &mut state.title_templates;
-    egui::Window::new(title)
+    crate::widgets::window(title)
         .collapsible(false)
         .resizable(false)
         .open(&mut open)

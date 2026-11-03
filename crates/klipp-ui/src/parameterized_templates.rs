@@ -181,7 +181,7 @@ pub fn show_recipe_save_dialog(ctx: &egui::Context, state: &mut crate::state::Ap
     let Some(dialog) = state.recipe_save_dialog.as_mut() else { return };
     let (mut open, mut close) = (true, false);
     let mut save = false;
-    egui::Window::new("Save as Recipe")
+    crate::widgets::window("Save as Recipe")
         .collapsible(false)
         .resizable(false)
         .open(&mut open)
@@ -255,7 +255,7 @@ pub fn show_save_dialog(ctx: &egui::Context, state: &mut crate::state::AppState)
     let Some(dialog) = state.composition_save_dialog.as_mut() else { return };
     let (mut open, mut close) = (true, false);
     let mut save = false;
-    egui::Window::new("Save as Template")
+    crate::widgets::window("Save as Template")
         .collapsible(false)
         .resizable(false)
         .open(&mut open)

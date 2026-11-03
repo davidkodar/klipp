@@ -82,7 +82,7 @@ pub fn show_dialog(ctx: &egui::Context, state: &mut crate::state::AppState) -> V
     let Some(mut dialog) = state.shorts_dialog.take() else { return Vec::new() };
     let mut open = true;
     let (mut find, mut build, mut cancel) = (false, false, false);
-    egui::Window::new("Make Shorts")
+    crate::widgets::window("Make Shorts")
         .collapsible(false)
         .resizable(true)
         .open(&mut open)
