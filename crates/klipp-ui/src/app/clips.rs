@@ -151,39 +151,20 @@ impl KlippApp {
                             .is_some_and(|c| c.group_id == Some(gid)),
                         _ => false,
                     };
-                    let mut linked_partner: Option<crate::history::LinkedMovePartner> = None;
-                    if let Some(lid) = linked_id {
-                        if !partner_in_same_group && !self.clip_track_is_locked(&lid) && delta.value != 0 {
-                            if let Some(track) = self.state.sequences[self.state.active_sequence_idx].tracks.iter_mut()
-                                .find(|t| t.clips.iter().any(|c| c.id == lid))
-                            {
-                                if let Some(lclip) = track.find_clip_mut(lid) {
-                                    let old_in = lclip.timeline_in;
-                                    let old_out = lclip.timeline_out;
-                                    lclip.timeline_in += delta;
-                                    lclip.timeline_out += delta;
-                                    linked_partner = Some(crate::history::LinkedMovePartner {
-                                        partner_id: lid,
-                                        old_timeline_in: old_in,
-                                        old_timeline_out: old_out,
-                                        new_timeline_in: lclip.timeline_in,
-                                        new_timeline_out: lclip.timeline_out,
-                                    });
-                                }
-                                track.sort_clips();
-                            }
-                        }
-                    }
+                    let partner_edits = linked_id
+                        .filter(|lid| !partner_in_same_group && !self.clip_track_is_locked(lid) && delta.value != 0)
+                        .and_then(|lid| self.move_partner_over(lid, delta));
 
                     if let Some((old_in, old_out, new_in, new_out)) = primary_history {
-                        self.state.push_history(EditCommand::LegacyMoveClip {
-                                clip_id: *clip_id,
-                                old_timeline_in: old_in,
-                                old_timeline_out: old_out,
-                                new_timeline_in: new_in,
-                                new_timeline_out: new_out,
-                                linked_partner,
-                            });
+                        let move_clip = EditCommand::LegacyMoveClip {
+                            clip_id: *clip_id,
+                            old_timeline_in: old_in,
+                            old_timeline_out: old_out,
+                            new_timeline_in: new_in,
+                            new_timeline_out: new_out,
+                            linked_partner: None,
+                        };
+                        self.push_with_partner(move_clip, partner_edits);
                     }
 
                     // Propagate move to grouped clips (skip primary AND the
@@ -239,39 +220,20 @@ impl KlippApp {
                             // same delta (A/V partners live on different track
                             // kinds, so the partner doesn't cross tracks — only
                             // its timeline bounds move).
-                            let mut linked_partner: Option<crate::history::LinkedMovePartner> = None;
-                            if let Some(lid) = linked_id {
-                                if !self.clip_track_is_locked(&lid) && delta.value != 0 {
-                                    if let Some(track) = self.state.sequences[self.state.active_sequence_idx].tracks.iter_mut()
-                                        .find(|t| t.clips.iter().any(|c| c.id == lid))
-                                    {
-                                        if let Some(lclip) = track.find_clip_mut(lid) {
-                                            let p_old_in = lclip.timeline_in;
-                                            let p_old_out = lclip.timeline_out;
-                                            lclip.timeline_in += delta;
-                                            lclip.timeline_out += delta;
-                                            linked_partner = Some(crate::history::LinkedMovePartner {
-                                                partner_id: lid,
-                                                old_timeline_in: p_old_in,
-                                                old_timeline_out: p_old_out,
-                                                new_timeline_in: lclip.timeline_in,
-                                                new_timeline_out: lclip.timeline_out,
-                                            });
-                                        }
-                                        track.sort_clips();
-                                    }
-                                }
-                            }
+                            let partner_edits = linked_id
+                                .filter(|lid| !self.clip_track_is_locked(lid) && delta.value != 0)
+                                .and_then(|lid| self.move_partner_over(lid, delta));
 
-                            self.state.push_history(EditCommand::LegacyMoveClipToTrack {
+                            let move_clip = EditCommand::LegacyMoveClipToTrack {
                                 clip: moved_clip,
                                 old_timeline_in: old_in,
                                 old_timeline_out: old_out,
                                 new_timeline_in: new_in,
                                 from_track: from,
                                 to_track: to,
-                                linked_partner,
-                            });
+                                linked_partner: None,
+                            };
+                            self.push_with_partner(move_clip, partner_edits);
                             self.sync_sequence_to_engine();
                             // Force engine to re-evaluate decoders at current playhead
                             let _ = self.cmd_tx.send(AppCommand::SeekTo(self.state.playhead));
@@ -496,6 +458,9 @@ impl KlippApp {
                         self.state.selected_gap = None;
                     }
                     self.state.selected_clip = *id;
+                    if id.is_some() {
+                        self.state.colour_clip_picked();
+                    }
                     if let Some(clip_id) = *id {
                         let seq = &self.state.sequences[self.state.active_sequence_idx];
                         let title = seq.tracks.iter()
@@ -518,8 +483,6 @@ impl KlippApp {
                         } else if newly_selected
                             && self.state.active_workspace == crate::state::Workspace::Color
                         {
-                            // A clip picked here is the one graded (#2952).
-                            self.state.colour_elsewhere = None;
                             // On the Colour page the viewer and the scopes
                             // must show the shot whose grade the panel is
                             // editing. Selecting a clip the playhead is not
@@ -1727,6 +1690,43 @@ impl KlippApp {
     /// Returns true on success; toasts + returns false on validation
     /// failure (locked track, unknown clip / media, identical media,
     /// non-Media kind).
+    /// The linked partner `lid` moved by `delta` and laid over what its
+    /// track has there (#3448), at once: an overwrite, never two sound
+    /// clips over each other. The edits that record it, for the move's
+    /// undo step; `None` when it isn't on a track.
+    fn move_partner_over(&mut self, lid: ClipId, delta: klipp_core::Timecode) -> Option<Vec<EditCommand>> {
+        let seq = &self.state.sequences[self.state.active_sequence_idx];
+        let (ti, ci) = seq.find_clip(lid)?;
+        let mut moved = seq.tracks[ti].clips[ci].clone();
+        moved.timeline_in += delta;
+        moved.timeline_out += delta;
+        let edits = klipp_document::clipboard::lay_over_edits(seq, ti, &moved);
+        let track = &mut self.state.sequences[self.state.active_sequence_idx].tracks[ti];
+        track.remove_clip(lid);
+        klipp_document::clipboard::overwrite_insert_clip_on_track(track, moved);
+        Some(edits)
+    }
+
+    /// `edit` in the history, with its linked partner's edits as one
+    /// undo step when there are any.
+    fn push_with_partner(&mut self, edit: EditCommand, partner: Option<Vec<EditCommand>>) {
+        let Some(partner) = partner.filter(|p| !p.is_empty()) else {
+            self.state.push_history(edit);
+            return;
+        };
+        let batching = self.state.active_history_mut().is_batching();
+        if !batching {
+            self.state.active_history_mut().begin_batch();
+        }
+        self.state.push_history(edit);
+        for e in partner {
+            self.state.push_history(e);
+        }
+        if !batching {
+            self.state.active_history_mut().end_batch_as("Move Clip");
+        }
+    }
+
     fn try_replace_clip_media(
         &mut self,
         clip_id: ClipId,

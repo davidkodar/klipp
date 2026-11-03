@@ -125,24 +125,32 @@ impl KlippApp {
         };
         let edits: Vec<EditCommand> = plan.steps.into_iter().map(|s| s.edit).collect();
         self.apply_edits_as_one(&edits, "First Cut");
-        let Some(stamp) = self.state.active_history().undo_stamped().last().map(|(s, _)| s) else { return };
         let n = changes.len();
-        self.state.first_cut_session = Some(crate::first_cut::Session { sequence: before.id, before, music: choices.music, changes, excluded: Vec::new(), stamp });
+        let mut session = crate::first_cut::Session { sequence: before.id, before, music: choices.music, changes, steps: Vec::new() };
+        session.record(self.state.active_history().undo_count(), Vec::new());
+        self.state.first_cut_session = Some(session);
         self.state.show_first_cut_panel = true;
         self.state.toast.show(format!("First Cut: {n} changes, each listed in the First Cut panel"));
     }
 
+    /// The changes First Cut's step in force leaves out: `None` unless
+    /// that step is on top of the open sequence's history.
+    fn first_cut_in_force(&self) -> Option<Vec<usize>> {
+        let session = self.state.first_cut_session.as_ref()?;
+        let history = self.state.active_history();
+        session.in_force(self.state.sequence().id, history.undo_count(), history.undo_label()).map(<[usize]>::to_vec)
+    }
+
     /// Change `i` taken back, or put back: the cut made again from the
     /// sequence as it was without the changes left out, swapped in as one
-    /// undo step. Refused once the sequence was edited since.
+    /// undo step. Refused unless one of First Cut's own steps is in force.
     fn flip_first_cut_change(&mut self, i: usize) {
         let Some(session) = self.state.first_cut_session.clone() else { return };
-        let last = self.state.active_history().undo_stamped().last().map(|(s, _)| s);
-        if !session.editable(self.state.sequence().id, last) {
-            self.state.toast.show("Edited since First Cut: use Undo to take it back");
+        let Some(now) = self.first_cut_in_force() else {
+            self.state.toast.show("First Cut: Undo or Redo back to its step to change it");
             return;
-        }
-        let excluded = session.flipped(i);
+        };
+        let excluded = crate::first_cut::Session::flipped(&now, i);
         self.transcript_source.sync(self.state.analysis_generation);
         let new = match klipp_document::ops::first_cut::tracks_without(&session.before, &self.state.media_pool, &self.transcript_source, &session.changes, &excluded, session.music.as_ref()) {
             Ok(tracks) => tracks,
@@ -154,10 +162,9 @@ impl KlippApp {
         let old = self.state.sequence().tracks.clone();
         let label = if excluded.contains(&i) { "First Cut: change taken back" } else { "First Cut: change put back" };
         self.apply_edits_as_one(&[EditCommand::SetTracks { description: "First Cut", old, new }], label);
-        let Some(stamp) = self.state.active_history().undo_stamped().last().map(|(s, _)| s) else { return };
+        let depth = self.state.active_history().undo_count();
         if let Some(s) = self.state.first_cut_session.as_mut() {
-            s.excluded = excluded;
-            s.stamp = stamp;
+            s.record(depth, excluded);
         }
     }
 
@@ -168,31 +175,38 @@ impl KlippApp {
         if !self.state.show_first_cut_panel {
             return;
         }
-        let last = self.state.active_history().undo_stamped().last().map(|(s, _)| s);
-        let editable = session.editable(self.state.sequence().id, last);
+        let in_force = self.first_cut_in_force();
+        let editable = in_force.is_some();
+        let excluded = session.shown(in_force.as_deref()).to_vec();
         let rate = self.state.sequence().fps.num.max(1);
         let (mut open, mut flip, mut go) = (true, None, None);
+        // At the top right under the menus, clear of the menu bar and the
+        // Media panel (#3445).
+        let screen = ctx.screen_rect();
         egui::Window::new("First Cut changes")
+            .constrain_to(crate::widgets::below_menu_bar(ctx))
             .collapsible(true)
             .resizable(true)
             .default_width(360.0)
+            .pivot(egui::Align2::RIGHT_TOP)
+            .default_pos(egui::pos2(screen.right() - 16.0, screen.top() + 72.0))
             .open(&mut open)
             .show(ctx, |ui| {
                 if !editable {
-                    ui.weak("Edited since: use Undo to take the First Cut back.");
+                    ui.weak("The timeline is not at a First Cut step: Undo or Redo back to one to change it.");
                     ui.add_space(4.0);
                 }
                 egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
                     for (i, change) in session.changes.iter().enumerate() {
                         ui.horizontal(|ui| {
-                            let mut kept = session.kept(i);
+                            let mut kept = !excluded.contains(&i);
                             if ui.add_enabled(editable, egui::Checkbox::without_text(&mut kept)).on_hover_text("Untick to take this change back").changed() {
                                 flip = Some(i);
                             }
-                            let text = if session.kept(i) { egui::RichText::new(&change.what) } else { egui::RichText::new(&change.what).weak() };
+                            let text = if !excluded.contains(&i) { egui::RichText::new(&change.what) } else { egui::RichText::new(&change.what).weak() };
                             if change.kind.cuts() {
                                 if ui.link(text).on_hover_text("Go to it").clicked() {
-                                    go = Some(klipp_document::ops::first_cut::now_at(&session.changes, &session.excluded, i));
+                                    go = Some(klipp_document::ops::first_cut::now_at(&session.changes, &excluded, i));
                                 }
                             } else {
                                 ui.label(text);

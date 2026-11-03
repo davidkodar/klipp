@@ -1123,6 +1123,9 @@ pub const PRIMARY_CONTEXT: [(&str, &str); 1] = [("primary_ctx", "1")];
 /// has broken av_hwframe_transfer for AV1 via nvidia-vaapi-driver).
 pub(crate) unsafe fn try_init_cuda(codec_ctx_ptr: *mut ffmpeg_next::ffi::AVCodecContext) -> bool {
     use ffmpeg_next::ffi::*;
+    if !klipp_core::GpuVendor::nvidia_driver_loaded() {
+        return false;
+    }
 
     let device_type = av_hwdevice_find_type_by_name(c"cuda".as_ptr());
     if device_type == AVHWDeviceType::AV_HWDEVICE_TYPE_NONE {

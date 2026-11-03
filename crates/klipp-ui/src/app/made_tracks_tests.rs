@@ -155,7 +155,10 @@ fn a_title_on_a_new_text_track() {
         s.sequence_mut().tracks.insert(0, klipp_timeline::Track::new("Text 1", TrackKind::Text));
         let td = klipp_timeline::TitleData::single_text(klipp_timeline::TextBox { text: "Hello".into(), ..Default::default() });
         let clip = Clip { kind: ClipKind::Title(td), source_in: t(0.0), source_out: t(5.0), ..Clip::gap(t(0.0), t(5.0)) };
-        s.sequence_mut().tracks[0].clips.push(clip.clone());
+        // Placed as applying the step places it: with the role its track
+        // starts a title with (#3415), as redo puts it back.
+        let placed = s.sequence().tracks[0].with_starting_role(clip.clone());
+        s.sequence_mut().tracks[0].clips.push(placed);
         s.push_history(EditCommand::LegacyAppendClip { clip, track_index: 0 });
     });
 }
