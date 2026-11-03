@@ -290,7 +290,7 @@ impl Run {
                 let now = state(&self.seq);
                 if now != done.before {
                     let only_rates = same_times(now.clone()) == same_times(done.before.clone());
-                    return Err((if only_rates { "undo restores the state before (a time written at another rate)" } else { "undo restores the state before" }, first_difference(&done.before, &now), f64::INFINITY));
+                    return Err((if only_rates { "undo restores the state before (a time written at another rate)" } else { "undo restores the state before" }, first_difference(&done.before, &now) + &track_lists(&done.before, &now), f64::INFINITY));
                 }
                 self.redo.push(done);
                 return Ok(true);
@@ -301,7 +301,7 @@ impl Run {
                 let now = state(&self.seq);
                 if now != done.after {
                     let only_rates = same_times(now.clone()) == same_times(done.after.clone());
-                    return Err((if only_rates { "redo restores the state after (a time written at another rate)" } else { "redo restores the state after" }, first_difference(&done.after, &now), f64::INFINITY));
+                    return Err((if only_rates { "redo restores the state after (a time written at another rate)" } else { "redo restores the state after" }, first_difference(&done.after, &now) + &track_lists(&done.after, &now), f64::INFINITY));
                 }
                 self.undo.push(done);
                 return Ok(true);
@@ -512,6 +512,21 @@ fn shrink(steps: Vec<Step>, broken: &Broken, dir: &std::path::Path) -> (Vec<Step
         }
     }
     (best, why)
+}
+
+/// The clips of the first track that differs, wanted and got, each by
+/// the start of its id and its span: what an undo that gave back other
+/// clips, or the same in another order, put there.
+fn track_lists(want: &Value, got: &Value) -> String {
+    let list = |v: &Value, t: usize| -> String {
+        v["tracks"][t]["clips"].as_array().map(|cs| cs.iter().map(|c| {
+            let id = c["id"].as_str().unwrap_or("?");
+            let at = |k: &str| c[k]["value"].as_f64().unwrap_or(0.0) / c[k]["rate"].as_f64().unwrap_or(1.0);
+            format!("{}@{:.3}-{:.3}", &id[..id.len().min(8)], at("timeline_in"), at("timeline_out"))
+        }).collect::<Vec<_>>().join(" ")).unwrap_or_default()
+    };
+    let tracks = want["tracks"].as_array().map_or(0, |a| a.len());
+    (0..tracks).find(|&t| want["tracks"][t]["clips"] != got["tracks"][t]["clips"]).map(|t| format!("\n      track {t} wanted: {}\n      track {t} got:    {}", list(want, t), list(got, t))).unwrap_or_default()
 }
 
 fn first_difference(want: &Value, got: &Value) -> String {
