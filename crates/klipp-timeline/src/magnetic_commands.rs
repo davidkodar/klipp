@@ -129,6 +129,9 @@ pub enum MagneticEditCommand {
         /// the two stay in sync: its track, and it before and after;
         /// none after when the trim took all of it.
         partner: Option<(usize, Clip, Option<Clip>)>,
+        /// The transitions on that sound, taken out with it when the trim
+        /// took all of it.
+        partner_transitions: Vec<crate::Transition>,
     },
     TrimTail {
         clip_id: ClipId,
