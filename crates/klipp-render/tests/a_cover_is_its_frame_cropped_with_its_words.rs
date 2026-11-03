@@ -55,3 +55,62 @@ fn a_cover_is_its_frame_cropped_with_its_words() {
     let [r, g, b] = px(&worded, 4, 4);
     assert!(r < 30 && g < 30 && b > 220, "the bar still under them: {:?}", [r, g, b]);
 }
+
+/// What the words of a cover made by the `cover` op change against the same
+/// cover without them: how many pixels, of how many, and how near any comes
+/// to the frame's sides.
+fn words_drawn(fps: Fps, at: f64, size: &str, title: serde_json::Value) -> (usize, usize, u32) {
+    let mut seq = bars();
+    seq.fps = fps;
+    let rate = fps.rate();
+    let tc = |secs: f64| RationalTime::from_secs_f64(secs, rate);
+    let v = seq.tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
+    seq.tracks[v].clips = vec![Clip { kind: ClipKind::Generator(GeneratorData::ColorBars100), source_in: tc(0.0), source_out: tc(4.0), ..Clip::gap(tc(0.0), tc(4.0)) }];
+    let pool = klipp_media::MediaPool::new();
+    let op: klipp_document::ops::Op = serde_json::from_value(serde_json::json!({"op": "cover", "name": "Main", "at": {"secs": at}, "size": size, "title": title})).unwrap();
+    let plan = klipp_document::ops::resolve(&seq, &pool, &[op]).unwrap_or_else(|r| panic!("{r:?}"));
+    let mut seqs = vec![seq];
+    let (mut p, mut f) = (pool.clone(), fps);
+    let mut view = klipp_document::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut f };
+    view.apply_forward(&plan.steps[0].edit);
+    let seq = seqs.remove(0);
+    let cover = seq.covers[0].clone();
+    let dims = klipp_core::cover_sizes::by_id(size).unwrap();
+    let (w, h) = (dims.width, dims.height);
+    let look = cover::Look { lut: None, working: WorkingColorspace::default(), grade_encoding: Default::default() };
+    let worded = cover::draw(&seq, std::slice::from_ref(&seq), &pool, &look, &cover, w, h).unwrap();
+    let bare = cover::draw(&seq, std::slice::from_ref(&seq), &pool, &look, &Cover { text: None, ..cover.clone() }, w, h).unwrap();
+    let mut differ = 0;
+    let mut margin = w;
+    for (k, (a, b)) in worded.rgba.chunks_exact(4).zip(bare.rgba.chunks_exact(4)).enumerate() {
+        if a[0].abs_diff(b[0]) as u32 + a[1].abs_diff(b[1]) as u32 + a[2].abs_diff(b[2]) as u32 > 60 {
+            differ += 1;
+            let x = k as u32 % w;
+            margin = margin.min(x).min(w - 1 - x);
+        }
+    }
+    (differ, (w * h) as usize, margin)
+}
+
+/// The words the op makes are drawn in the cover: the title op gives them
+/// an entrance, and the one frame drawn was its start, with nothing on screen.
+/// At each kind of size, as a title's fields or plain words, at whole and
+/// NTSC rates and a time between frames.
+#[test]
+fn a_covers_words_are_drawn_when_the_op_makes_them() {
+    let fields = serde_json::json!({"text": "Seaside mornings"});
+    let plain = serde_json::json!("SUNSET");
+    for (fps, at, size, title) in [
+        (Fps::new(25, 1), 0.75, "youtube", &fields),
+        (Fps::new(25, 1), 0.75, "vertical", &fields),
+        (Fps::new(25, 1), 0.75, "square", &fields),
+        (Fps::new(25, 1), 1.0, "youtube", &plain),
+        (Fps::new(30000, 1001), 1.23, "youtube", &fields),
+        (Fps::new(50, 1), 0.75, "vertical", &plain),
+    ] {
+        let (differ, total, margin) = words_drawn(fps, at, size, title.clone());
+        println!("WORDS {:.3} fps at {at} {size} {title}: {differ} of {total}, {margin} px from a side", fps.as_f64());
+        assert!(differ > 500 && differ < total / 3, "{size} at {:.3} fps, {at} s: {differ} of {total} pixels changed by the words", fps.as_f64());
+        assert!(margin > 0, "{size}: the words reach the frame's side");
+    }
+}

@@ -141,10 +141,16 @@ pub fn cover_sequence(source: &Sequence, cover: &Cover, width: u32, height: u32)
         seq.camera.shutter_deg = 0.0;
     }
     if let Some(text) = &cover.text {
+        // A still, so at rest: a title's entrance, which the title op gives
+        // by default, has it not yet on screen at the one frame drawn.
+        let mut text = text.clone();
+        for fx in text.objects.iter_mut().filter_map(|o| o.fx.as_mut()) {
+            fx.motion = Default::default();
+        }
         let rate = seq.fps.rate();
         let frame = RationalTime::from_secs_f64(cover.at_secs, rate);
         let one = RationalTime::from_frames(1, rate);
-        let mut words = Clip { kind: ClipKind::Title(text.clone()), source_in: RationalTime { value: 0, rate }, source_out: one, ..Clip::gap(frame, frame + one) };
+        let mut words = Clip { kind: ClipKind::Title(text), source_in: RationalTime { value: 0, rate }, source_out: one, ..Clip::gap(frame, frame + one) };
         words.depth = 0.0;
         let mut track = Track::new("Cover", TrackKind::Text);
         track.clips.push(words);
