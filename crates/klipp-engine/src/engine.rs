@@ -5389,6 +5389,15 @@ impl PlaybackEngine {
             fb.drop_pending();
             fb.render_cache_ranges.clear();
         }
+        // The Source viewer's frame is the old project's too (#3457).
+        {
+            let mut fb = self.source_frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
+            fb.clear();
+            fb.data.clear();
+            fb.width = 0;
+            fb.height = 0;
+            fb.drop_pending();
+        }
 
         info!("Engine reset to idle (project unloaded)");
         let _ = self.event_tx.send(AppEvent::PlaybackStopped);

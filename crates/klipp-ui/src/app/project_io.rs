@@ -312,6 +312,10 @@ impl KlippApp {
         // Its changes are this project's (#3428).
         self.state.first_cut_session = None;
         self.state.show_first_cut_panel = false;
+        // Its picture is the old project's (#3457).
+        if let Some(old) = self.state.source_live_texture.take() {
+            self.defer_drop_texture(old);
+        }
         self.state.project_path = None;
         self.state.project_notes = String::new();
         self.state.last_import_report = None;
