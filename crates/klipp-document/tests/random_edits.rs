@@ -53,9 +53,24 @@ const GAPLESS: &str = "primary gapless";
 const SAVED: &str = "save and load";
 
 /// The known entry `broken` is, from the step it broke at in `steps`.
+/// `KLIPP_RANDOM_EDITS_UNKNOWN=R8,R14` treats those as not known, so
+/// their repros are shrunk and printed, to work on them.
 fn known(broken: &Broken, steps: &[Step]) -> Option<&'static str> {
     let last = steps.get(broken.step).map(kind).unwrap_or_default();
-    KNOWN.iter().find(|(_, is)| is(broken, &last)).map(|(entry, _)| *entry)
+    let unknown = std::env::var("KLIPP_RANDOM_EDITS_UNKNOWN").unwrap_or_default();
+    KNOWN.iter().filter(|(entry, _)| !unknown.split(',').any(|u| u.trim() == *entry)).find(|(_, is)| is(broken, &last)).map(|(entry, _)| *entry)
+}
+
+/// The kinds of edit an undo step holds, to say what it undid.
+fn edit_kinds(edits: &[EditCommand]) -> String {
+    fn name(e: &EditCommand) -> String {
+        match e {
+            EditCommand::Batch(v) => v.iter().map(name).collect::<Vec<_>>().join(" "),
+            EditCommand::Magnetic(m) => format!("Magnetic:{}", format!("{m:?}").split([' ', '{', '(']).next().unwrap_or("")),
+            other => format!("{other:?}").split([' ', '{', '(']).next().unwrap_or("").to_string(),
+        }
+    }
+    format!("\n      edits: {}", edits.iter().map(name).collect::<Vec<_>>().join(" "))
 }
 
 const RATE: u32 = 25;
@@ -273,7 +288,7 @@ impl Run {
                 let now = state(&self.seq);
                 if now != done.before {
                     let only_rates = same_times(now.clone()) == same_times(done.before.clone());
-                    return Err((if only_rates { "undo restores the state before (a time written at another rate)" } else { "undo restores the state before" }, first_difference(&done.before, &now) + &track_lists(&done.before, &now), f64::INFINITY));
+                    return Err((if only_rates { "undo restores the state before (a time written at another rate)" } else { "undo restores the state before" }, first_difference(&done.before, &now) + &track_lists(&done.before, &now) + &edit_kinds(&done.edits), f64::INFINITY));
                 }
                 self.redo.push(done);
                 return Ok(true);
@@ -284,7 +299,7 @@ impl Run {
                 let now = state(&self.seq);
                 if now != done.after {
                     let only_rates = same_times(now.clone()) == same_times(done.after.clone());
-                    return Err((if only_rates { "redo restores the state after (a time written at another rate)" } else { "redo restores the state after" }, first_difference(&done.after, &now) + &track_lists(&done.after, &now), f64::INFINITY));
+                    return Err((if only_rates { "redo restores the state after (a time written at another rate)" } else { "redo restores the state after" }, first_difference(&done.after, &now) + &track_lists(&done.after, &now) + &edit_kinds(&done.edits), f64::INFINITY));
                 }
                 self.undo.push(done);
                 return Ok(true);
