@@ -619,6 +619,43 @@ mod tests {
         }
     }
 
+    /// A word just before a cut with the next piece's first word right after
+    /// it: its caption ends at the cut, not at the next caption's start.
+    struct AcrossACut;
+
+    impl Transcripts for AcrossACut {
+        fn words(&self, _item: &klipp_media::MediaItem) -> Option<Vec<SpokenWord>> {
+            Some(vec![w(0.0, 0.5, "Here"), w(0.5, 1.0, "is"), w(1.0, 1.5, "the"), w(1.5, 1.95, "first"), w(4.04, 4.5, "And"), w(4.5, 5.0, "here"), w(5.0, 5.5, "the"), w(5.5, 6.0, "second")])
+        }
+    }
+
+    #[test]
+    fn a_caption_ends_at_its_pieces_cut() {
+        let mut seq = Sequence::new_default();
+        seq.fps = Fps::new(50, 1);
+        let t = |s: f64| RationalTime::from_secs_f64(s, 50);
+        let mut pool = MediaPool::new();
+        let mut item = klipp_media::MediaItem::synthetic_for_test("/tmp/talk.mov".into(), None);
+        item.duration = t(10.0);
+        item.has_audio = true;
+        let media = pool.add(item);
+        // 0-2 s of the file, then 4-8 s, back to back.
+        let mut track = Track::new("A1", TrackKind::Audio);
+        track.clips = vec![Clip::media(media, t(0.0), t(2.0), t(0.0), t(2.0)), Clip::media(media, t(2.0), t(6.0), t(4.0), t(8.0))];
+        seq.tracks = vec![track];
+        let plan = resolve_with(&seq, &pool, &[op(serde_json::json!({"op": "captions"}))], &AcrossACut).unwrap_or_else(|r| panic!("{r:?}"));
+        let mut seqs = vec![seq.clone()];
+        let (mut p, mut fps) = (pool.clone(), seq.fps);
+        let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps };
+        view.apply_forward(&plan.steps[0].edit);
+        let cut = seqs.remove(0);
+        let subtitle = cut.tracks.iter().find(|t| t.kind == TrackKind::Subtitle).expect("a caption track");
+        let ends: Vec<f64> = subtitle.clips.iter().map(|c| secs(c.timeline_out)).collect();
+        assert_eq!(ends.len(), 2, "{ends:?}");
+        assert!(ends[0] <= 2.0 + 1e-9, "the first caption ends at {:.2}, past the cut at 2.00", ends[0]);
+        assert!(ends[0] >= 1.9, "held to the word's end at least: {:.2}", ends[0]);
+    }
+
     /// "Um, so, uh, let me show you": fillers that start between frames.
     struct Hesitant;
 
