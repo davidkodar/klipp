@@ -6447,10 +6447,10 @@ fn resolve_trim(seq: &Sequence, pool: &MediaPool, i: usize, clip_id: ClipId, edg
         let partner_on_primary = linked && clip.linked_clip_id.and_then(|lid| find_clip(seq, lid)).is_some_and(|(pti, _, _)| Some(pti) == primary);
         if Some(ti) != primary && !partner_on_primary {
             for c in &seq.tracks[ti].clips[ci + 1..] {
-                if let Some((pti, _, p)) = c.linked_clip_id.and_then(|lid| find_clip(seq, lid)).filter(|(pti, _, _)| Some(*pti) == primary) {
+                if let Some((_, _, p)) = c.linked_clip_id.and_then(|lid| find_clip(seq, lid)).filter(|(pti, _, _)| Some(*pti) == primary) {
                     return Err(refuse(
                         i,
-                        format!("rippling track {ti} would move {} and leave its linked clip {} on the primary track {pti}, out of sync", clip_name(seq, pool, c), clip_name(seq, pool, p)),
+                        format!("rippling track {ti} would move {} and leave its linked clip {} on the primary track, out of sync", clip_name(seq, pool, c), clip_name(seq, pool, p)),
                         "trim without ripple, or trim the clips on the primary track",
                     ));
                 }
