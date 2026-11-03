@@ -489,6 +489,8 @@ fn sequence_to_json(seq: &Sequence, color: &ColorSettings, project_dir: &Path) -
                 visible: t.visible,
                 pan: t.pan,
                 locked: t.locked,
+                frozen: t.frozen,
+                lock_while_frozen: t.lock_while_frozen,
                 sync_lock: t.sync_lock,
                 targeted: t.targeted,
                 source_patch: t.source_patch,

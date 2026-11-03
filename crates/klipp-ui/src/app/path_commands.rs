@@ -793,7 +793,14 @@ impl crate::state::AppState {
     /// drag that `cmd` doesn't belong to is closed as its own step before
     /// any handler runs.
     pub(crate) fn before_dispatch(&mut self, cmd: &AppCommand) {
-        if super::command_writes::writes(cmd) { self.invalidate_node_thumbnails(); }
+        if super::command_writes::writes(cmd) {
+            self.invalidate_node_thumbnails();
+            // The hint that it may be unsaved, for every command that can
+            // write, so no handler has to remember it: the I and O keys'
+            // did not. It is settled after the handler has run, by what a
+            // save would write, so one that changed nothing marks nothing.
+            self.dirty = true;
+        }
         // Any other write ends a drag a result closed: only its own row's
         // next tick resumes it.
         let resuming = matches!(cmd, AppCommand::SetParamAt { addr, key, .. } if self.resumes(addr, key));

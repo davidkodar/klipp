@@ -8,8 +8,17 @@
 
 use super::*;
 
-/// The longest a raised hint waits to be settled while nothing asks.
-const SETTLE_EVERY: std::time::Duration = std::time::Duration::from_millis(100);
+/// The longest a raised hint waits to be settled while nothing asks. A
+/// digest is about 80 microseconds a clip on an M1, on the UI thread: 60 ms
+/// for 800 clips.
+const SETTLE_EVERY: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// Whether a raised hint is settled this frame. Not during a drag, whose
+/// frames a digest would hold up over and over: its release settles it,
+/// and a decision settles it whenever one is asked for.
+fn settle_this_frame(since: Option<std::time::Duration>, pointer_down: bool) -> bool {
+    !pointer_down && since.is_none_or(|since| since >= SETTLE_EVERY)
+}
 
 impl crate::state::AppState {
     /// The colour and media settings a save writes with the project.
@@ -87,13 +96,16 @@ impl KlippApp {
         if !self.state.dirty {
             return;
         }
-        match self.unsaved_settled_at.map(|t| t.elapsed()) {
-            Some(since) if since < SETTLE_EVERY => ctx.request_repaint_after(SETTLE_EVERY - since),
-            _ => {
-                self.state.settle_unsaved();
-                self.unsaved_settled_at = Some(std::time::Instant::now());
-            }
+        let since = self.unsaved_settled_at.map(|t| t.elapsed());
+        let pointer_down = ctx.input(|i| i.pointer.any_down());
+        if settle_this_frame(since, pointer_down) {
+            self.state.settle_unsaved();
+            self.unsaved_settled_at = Some(std::time::Instant::now());
+        } else if let (Some(since), false) = (since, pointer_down) {
+            ctx.request_repaint_after(SETTLE_EVERY - since);
         }
+        // In a drag its release is an event, which brings the frame that
+        // settles it.
     }
 
     /// Whether the project has unsaved changes, settled now: for a
@@ -287,6 +299,45 @@ mod tests {
             assert!(!unsaved(&mut s), "{kind}: undone back to as saved");
             let _ = std::fs::remove_dir_all(dir);
         }
+    }
+
+    /// A hint is settled no more often than the digest can be afforded, and
+    /// not during a drag.
+    #[test]
+    fn a_drag_is_not_held_up_by_settling() {
+        use std::time::Duration;
+        assert!(super::settle_this_frame(None, false), "the first");
+        assert!(!super::settle_this_frame(None, true), "the first, in a drag");
+        assert!(!super::settle_this_frame(Some(Duration::from_millis(249)), false));
+        assert!(super::settle_this_frame(Some(Duration::from_millis(250)), false));
+        assert!(!super::settle_this_frame(Some(Duration::from_secs(5)), true), "however long the drag");
+    }
+
+    /// A command that writes raises the hint at the dispatch boundary, so
+    /// its handler needn't: marks and a frozen track count as changes, and
+    /// the transport, which writes nothing, leaves the project saved.
+    #[test]
+    fn a_range_and_a_frozen_track_are_unsaved() {
+        use klipp_core::AppCommand;
+        let (kind, sequences, pool) = projects().remove(0);
+        let dir = scratch("a_range_and_", kind);
+        let mut s = opened(&dir, &sequences, &pool);
+        s.before_dispatch(&AppCommand::SeekTo(t(1.0)));
+        assert!(!unsaved(&mut s), "a seek");
+        s.before_dispatch(&AppCommand::SetSequenceInPoint(t(1.0)));
+        s.sequences[0].in_point = Some(t(1.0));
+        assert!(unsaved(&mut s), "a mark");
+        s.before_dispatch(&AppCommand::ClearSequenceInPoint);
+        s.sequences[0].in_point = None;
+        assert!(!unsaved(&mut s), "the mark taken away again");
+        let track_id = s.sequences[0].tracks[0].id;
+        s.before_dispatch(&AppCommand::SetTrackFrozen { track_id, frozen: true });
+        s.sequences[0].tracks[0].set_frozen(true);
+        assert!(unsaved(&mut s), "frozen");
+        s.before_dispatch(&AppCommand::SetTrackFrozen { track_id, frozen: false });
+        s.sequences[0].tracks[0].set_frozen(false);
+        assert!(!unsaved(&mut s), "thawed again");
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     /// Saved, the project is what was saved; with no saved state (an

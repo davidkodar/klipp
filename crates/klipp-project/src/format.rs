@@ -257,6 +257,12 @@ pub struct TrackJson {
     pub pan: f32,
     #[serde(default)]
     pub locked: bool,
+    /// Played from frames drawn ahead into the project's cache (#3207).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub frozen: bool,
+    /// Locked while frozen (#3207).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub lock_while_frozen: bool,
     /// Sync lock (#915).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub sync_lock: bool,
@@ -1290,6 +1296,8 @@ mod tests {
                 visible: true,
                 pan: 0.0,
                 locked: false,
+                frozen: false,
+                lock_while_frozen: false,
                 sync_lock: false,
                 targeted: true,
                 source_patch: false,
@@ -1345,6 +1353,8 @@ mod tests {
             visible: true,
             pan: 0.0,
             locked: false,
+            frozen: false,
+            lock_while_frozen: false,
             sync_lock: false,
             targeted: true,
             source_patch: false,
@@ -1387,6 +1397,8 @@ mod tests {
             visible: true,
             pan: 0.0,
             locked: false,
+            frozen: false,
+            lock_while_frozen: false,
             sync_lock: false,
             targeted: true,
             source_patch: false,
