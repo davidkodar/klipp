@@ -42,12 +42,11 @@ use serde_json::{json, Value};
 /// private bug list: the seed, the invariant broken and the entry there.
 /// Run, and not a failure of this test; each goes when its fix lands.
 const KNOWN: &[(u64, &str, &str)] = &[
-    (1, "linked pairs in sync", "R1"),
+    (1, "linked pairs in sync", "R5"),
     (2, "linked pairs in sync", "R2"),
-    (3, "linked pairs in sync", "R1"),
-    (4, "linked pairs in sync", "R1"),
-    (5, "linked pairs in sync", "R1"),
-    (6, "linked pairs in sync", "R1"),
+    (3, "primary gapless", "R6"),
+    (4, "save and load", "R4"),
+    (5, "linked pairs in sync", "R2"),
 ];
 
 const RATE: u32 = 25;

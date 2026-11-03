@@ -116,6 +116,9 @@ pub enum MagneticEditCommand {
         new_multicam_cuts: Vec<(f64, u8)>,
         rippled_clips: Vec<RippleRecord>,
         cascaded_clips: Vec<CascadeRecord>,
+        /// The linked sound's head trimmed with the picture's, so
+        /// the two stay in sync: before and after.
+        partner: Option<(Clip, Clip)>,
     },
     TrimTail {
         clip_id: ClipId,

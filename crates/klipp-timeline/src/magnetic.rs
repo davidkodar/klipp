@@ -1010,6 +1010,24 @@ impl MagneticEditor {
             Vec::new()
         };
 
+        // Its linked sound loses the same head, so the two stay in sync:
+        // the same file time later at its start, and as much shorter. A
+        // J or L cut keeps its lead. Left as it is on a locked track, or
+        // where it hasn't that much to lose.
+        let partner = before.find_clip(clip_id)
+            .and_then(|(ti, ci)| before.tracks[ti].clips[ci].linked_clip_id)
+            .and_then(|pid| sequence.find_clip(pid).filter(|(pti, _)| *pti != track_idx && !sequence.tracks[*pti].locked))
+            .and_then(|(pti, pci)| {
+                let old = sequence.tracks[pti].clips[pci].clone();
+                let mut new = old.clone();
+                new.source_in = old.source_in + (new_source_in - old_source_in);
+                new.timeline_out = old.timeline_out - delta;
+                (new.timeline_out > new.timeline_in && new.source_in.value >= 0).then(|| {
+                    sequence.tracks[pti].clips[pci] = new.clone();
+                    (old, new)
+                })
+            });
+
         let mut cascaded_clips = Self::cascade_all_connected(sequence, &rippled_clips);
         // The sound linked to each picture the ripple moved goes with it
         // (#3449): a ripple keeps everything after the edit in sync.
@@ -1032,6 +1050,7 @@ impl MagneticEditor {
                 new_multicam_cuts,
                 rippled_clips,
                 cascaded_clips,
+                partner,
             },
         }
     }
@@ -1790,10 +1809,16 @@ impl MagneticEditor {
                 old_source_in,
                 rippled_clips,
                 cascaded_clips,
+                partner,
                 ..
             } => {
                 for cr in cascaded_clips.iter().rev() {
                     sequence.set_clip_position(cr.clip_id, cr.old_in, cr.old_out);
+                }
+                if let Some((old, _)) = partner {
+                    if let Some((ti, ci)) = sequence.find_clip(old.id) {
+                        sequence.tracks[ti].clips[ci] = old.clone();
+                    }
                 }
                 for rr in rippled_clips.iter().rev() {
                     sequence.set_clip_position(rr.clip_id, rr.old_in, rr.old_out);
@@ -2071,6 +2096,7 @@ impl MagneticEditor {
                 new_multicam_cuts,
                 rippled_clips,
                 cascaded_clips,
+                partner,
                 ..
             } => {
                 if let Some((ti, ci)) = sequence.find_clip(*clip_id) {
@@ -2080,6 +2106,11 @@ impl MagneticEditor {
                 }
                 for rr in rippled_clips {
                     sequence.set_clip_position(rr.clip_id, rr.new_in, rr.new_out);
+                }
+                if let Some((_, new)) = partner {
+                    if let Some((ti, ci)) = sequence.find_clip(new.id) {
+                        sequence.tracks[ti].clips[ci] = new.clone();
+                    }
                 }
                 for cr in cascaded_clips {
                     sequence.set_clip_position(cr.clip_id, cr.new_in, cr.new_out);
