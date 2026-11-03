@@ -1188,11 +1188,15 @@ fn sidebar_section_separator(ui: &mut egui::Ui, theme: &KlippTheme) {
     ui.add_space(4.0);
 }
 
-/// What the Built-in filter lists and counts: all but installed plug-ins.
-/// LUT presets are among them (#3452), or the LUTs row, on the filter a new
-/// install starts on, was empty beside a count of hundreds.
+/// What the Built-in filter lists and counts: Klipp's own effects, looks
+/// and LUT presets (#3452: without them the LUTs row, on the filter a new
+/// install starts on, was empty beside a count of hundreds). Installed
+/// plug-ins, video or audio, are not.
 fn is_builtin_source(source: &EffectSource) -> bool {
-    !matches!(source, EffectSource::Ofx(_) | EffectSource::Frei0r(_))
+    matches!(
+        source,
+        EffectSource::Builtin(_) | EffectSource::Look(_) | EffectSource::Audio(_) | EffectSource::Ladspa(_) | EffectSource::LutLook(_)
+    )
 }
 
 // ───────────────────────────── Source segmented ─────────────────────────────
