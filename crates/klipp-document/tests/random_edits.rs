@@ -49,14 +49,8 @@ use serde_json::{json, Value};
 const KNOWN: &[(&str, fn(&Broken, &str) -> bool)] = &[
     // A retime after blades leaving a transition that saving drops.
     ("R16", |b, last| b.invariant == SAVED && b.detail.contains("/transitions") && last == "Retime"),
-    // A primary clip ripple-deleted with a picture on a free track whose
-    // sound is on the track that closes up: the sound moves, the picture
-    // doesn't.
-    ("R17", |b, last| b.invariant == SYNC && last == "PrimaryRippleDelete"),
     // A take's sound keeps an audition of its own, which saving drops.
     ("R18", |b, _| b.invariant == SAVED && b.detail.contains("/sound/") && b.detail.contains("/audition")),
-    // As R17, by a ripple trim through the trim op.
-    ("R19", |b, last| b.invariant == SYNC && last == "Trim"),
     // A switch to a take leaving a transition on the slot that saving drops.
     ("R20", |b, last| b.invariant == SAVED && b.detail.contains("/transitions") && last == "AuditionSwitch"),
     // A retimed picture on a free track bladed: the pieces after the cut
