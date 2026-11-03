@@ -4,8 +4,7 @@
 //! trims with and without ripple, split, move across tracks, remove with
 //! and without ripple, retime, slip, slide, transitions) and the magnetic
 //! primary's own edits the timeline makes (ripple trims, ripple delete,
-//! move), with undo and redo at random. The timeline's blade is the
-//! split op, so the magnetic blade, which cuts one clip alone, isn't one. After every step:
+//! move), with undo and redo at random. After every step:
 //!
 //! 1. each linked picture and its sound are in sync: the same moment of
 //!    their file under the same moment of the timeline, within half a
@@ -47,8 +46,6 @@ use serde_json::{json, Value};
 const KNOWN: &[(&str, fn(&Broken, &str) -> bool)] = &[
     // A link to a clip that isn't there.
     ("R5", |b, _| b.invariant == SYNC && b.detail.contains("isn't there")),
-    // A transition saving drops: one left on a clip split or deleted.
-    ("R4", |b, _| b.invariant == SAVED && b.detail.contains("/transitions")),
     // Undo or redo giving back a time at another rate, the same time.
     ("R8", |b, _| b.invariant.ends_with("(a time written at another rate)")),
     // Under a frame off: a sound placed to the sample against pictures

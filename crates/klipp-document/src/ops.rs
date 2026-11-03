@@ -5118,10 +5118,16 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
                 secs(b.timeline_out),
                 if partner_edit.is_some() { ", its linked sound with it" } else { "" }
             );
+            // The transitions on its cuts, and its partner's, go to the
+            // pieces now at those cuts.
+            let mut moved = crate::blade::transitions_onto_pieces(&seq.tracks[ti], ti, clip.id, a.id, b.id);
+            if let Some(EditCommand::LegacyBladeClip { track_index: pti, original_clip, clip_a, clip_b, .. }) = &partner_edit {
+                moved.extend(crate::blade::transitions_onto_pieces(&seq.tracks[*pti], *pti, original_clip.id, clip_a.id, clip_b.id));
+            }
             let main = EditCommand::LegacyBladeClip { track_index: ti, original_clip: clip.clone(), clip_a: a, clip_b: b, position: ci };
-            let edit = match partner_edit {
-                Some(p) => EditCommand::Batch(vec![main, p]),
-                None => main,
+            let edit = match (partner_edit, moved.is_empty()) {
+                (None, true) => main,
+                (p, _) => EditCommand::Batch(std::iter::once(main).chain(p).chain(moved).collect()),
             };
             Ok((what, edit, ids))
         }
@@ -5922,7 +5928,7 @@ fn joined(seq: &Sequence, ti: usize, a: &Clip, b: &Clip) -> Vec<EditCommand> {
     whole.fade_out_secs = b.fade_out_secs;
     let position = seq.tracks[ti].clips.iter().position(|c| c.id == b.id).unwrap_or(0);
     let mut edits = vec![EditCommand::ReplaceClip { description: "Join", old: Box::new(a.clone()), new: Box::new(whole) }];
-    edits.extend(seq.tracks[ti].transitions.iter().filter(|t| t.clip_a_id == b.id).map(|t| EditCommand::RetargetTransition { track_index: ti, transition_id: t.id, old_a: b.id, new_a: a.id }));
+    edits.extend(seq.tracks[ti].transitions.iter().filter(|t| t.clip_a_id == b.id).map(|t| EditCommand::RetargetTransition { track_index: ti, transition_id: t.id, old_a: b.id, new_a: a.id, old_b: t.clip_b_id, new_b: t.clip_b_id }));
     edits.push(EditCommand::LegacyRemoveClip { clip: b.clone(), track_index: ti, position });
     edits
 }
