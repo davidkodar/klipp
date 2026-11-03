@@ -426,3 +426,15 @@ fn a_field_with_the_keys_keeps_them() {
         assert!(!super::shortcuts::field_owns(app_wide), "{app_wide}");
     }
 }
+
+/// While the frame-rate question is up, no key reaches what is behind
+/// it: its Escape cancels the drop and nothing else.
+#[test]
+fn no_key_reaches_past_the_rate_question() {
+    use super::shortcuts::{key_scope, KeyScope};
+    let mut state = crate::state::AppState { project_path: Some(crate::project_paths::UNTITLED.into()), ..Default::default() };
+    assert_eq!(key_scope(&state, false), KeyScope::All);
+    state.rate_question_open = true;
+    assert!(state.dialog_open());
+    assert_eq!(key_scope(&state, false), KeyScope::Nothing);
+}

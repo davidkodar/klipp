@@ -65,24 +65,40 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState, theme: &KlippTheme, cmds: &
             }
             ui.add_space(4.0);
 
-            ui.label(egui::RichText::new("+").size(crate::theme::type_scale::CAPTION).color(theme.text_dim));
+            // − and + are buttons, a step each, as the ruler's are: they
+            // were labels, and a click on − did nothing. The slider is
+            // wide enough that a point of it is a small step (it ran four
+            // decades of zoom in 90 points).
+            let step = |zoom: f32| AppCommand::SetTimelineZoom { zoom: zoom.clamp(0.1, 2000.0), scroll_x: None };
+            let small = egui::vec2(20.0, crate::theme::control::COMPACT);
+            let plus = ui.add(egui::Button::new(egui::RichText::new("+").size(crate::theme::type_scale::CAPTION)).min_size(small));
+            styled_tooltip(&plus, theme, "Zoom in", None);
+            if plus.clicked() {
+                cmds.push(step(state.timeline_zoom * 1.5));
+            }
             let mut zoom_t = ((state.timeline_zoom.ln() - 0.1f32.ln())
                 / (2000.0f32.ln() - 0.1f32.ln())).clamp(0.0, 1.0);
             let slider = egui::Slider::new(&mut zoom_t, 0.0..=1.0).show_value(false);
-            let resp = ui.add_sized([90.0, 16.0], slider);
+            let resp = ui.add_sized([ZOOM_SLIDER_W, 16.0], slider);
             if resp.changed() {
                 let new_zoom = (0.1f32.ln() + zoom_t * (2000.0f32.ln() - 0.1f32.ln())).exp();
                 cmds.push(AppCommand::SetTimelineZoom { zoom: new_zoom, scroll_x: None });
             }
-            ui.label(egui::RichText::new("\u{2212}").size(crate::theme::type_scale::CAPTION).color(theme.text_dim));
+            let minus = ui.add(egui::Button::new(egui::RichText::new("\u{2212}").size(crate::theme::type_scale::CAPTION)).min_size(small));
+            styled_tooltip(&minus, theme, "Zoom out", None);
+            if minus.clicked() {
+                cmds.push(step(state.timeline_zoom / 1.5));
+            }
         });
     });
     ui.ctx().data_mut(|d| d.insert_temp(widths_id, widths));
 }
 
 /// The zoom group's width at the row's right edge, kept clear of the
-/// groups: Fit, the slider and its ends.
-const ZOOM_GROUP_W: f32 = 200.0;
+/// groups: Fit, the slider and its − and + buttons.
+const ZOOM_GROUP_W: f32 = 250.0;
+/// The zoom slider's length.
+const ZOOM_SLIDER_W: f32 = 130.0;
 /// The "»" button's room.
 const MORE_W: f32 = 30.0;
 
@@ -755,6 +771,36 @@ mod tests {
             output.shapes.iter().for_each(|s| append(&s.shape, &mut text));
         }
         text
+    }
+
+    /// The zoom group's − and + zoom out and in a step each: − was a label,
+    /// and three clicks on it did nothing.
+    #[test]
+    fn the_zoom_buttons_zoom() {
+        let ctx = egui::Context::default();
+        let (theme, kb) = (crate::theme::KlippTheme::default(), crate::keybindings::KeyBindings::default());
+        let mut state = crate::state::AppState { timeline_zoom: 60.0, ..Default::default() };
+        let frame = |state: &mut crate::state::AppState, events: Vec<egui::Event>| {
+            let mut cmds = Vec::new();
+            let out = ctx.run(egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(2400.0, 60.0))), events, ..Default::default() }, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| super::show(ui, state, &theme, &mut cmds, &kb));
+            });
+            let texts: Vec<(String, egui::Pos2)> = out.shapes.iter().filter_map(|s| match &s.shape {
+                egui::epaint::Shape::Text(t) => Some((t.galley.text().to_string(), t.pos + t.galley.size() / 2.0)),
+                _ => None,
+            }).collect();
+            (texts, cmds)
+        };
+        frame(&mut state, Vec::new());
+        let (texts, _) = frame(&mut state, Vec::new());
+        for (label, want) in [("\u{2212}", 40.0), ("+", 90.0)] {
+            let at = texts.iter().rev().find(|(t, _)| t == label).unwrap_or_else(|| panic!("{label}: {texts:?}")).1;
+            let press = |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+            frame(&mut state, vec![egui::Event::PointerMoved(at), press(true)]);
+            let (_, cmds) = frame(&mut state, vec![press(false)]);
+            let zoom = cmds.iter().find_map(|c| match c { klipp_core::AppCommand::SetTimelineZoom { zoom, .. } => Some(*zoom), _ => None });
+            assert_eq!(zoom, Some(want), "{label}: {cmds:?}");
+        }
     }
 
     /// First Cut (#3308) shows on the timeline only while a clip with

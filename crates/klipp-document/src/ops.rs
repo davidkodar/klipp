@@ -3264,6 +3264,12 @@ pub trait Transcripts {
     fn library_role(&self, _item: &klipp_media::MediaItem) -> Option<klipp_core::ClipRole> {
         None
     }
+    /// Whether `item` came from the music or effects library, rather than
+    /// having its role from what its sound was classified as (RL1: an
+    /// imported mp3 was said to be "from the music library").
+    fn is_library_file(&self, _item: &klipp_media::MediaItem) -> bool {
+        false
+    }
     /// Where `clip` sits on the frame `clip_secs` into it, as the
     /// renderer places it: position in frame pixels, scale, aspect-kept
     /// height scale, rotation in degrees, anchor in fractions. The check
@@ -4996,9 +5002,11 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
                 _ if muted => ", its sound muted".to_string(),
                 _ => String::new(),
             };
+            let library_file = transcripts.is_library_file(item);
             let sound_note = match library {
-                Some(klipp_core::ClipRole::Music) => format!("{sound_note}, marked music (from the music library)"),
-                Some(klipp_core::ClipRole::SFX) => format!("{sound_note}, marked sfx (from the effects library)"),
+                Some(klipp_core::ClipRole::Music) if library_file => format!("{sound_note}, marked music (from the music library)"),
+                Some(klipp_core::ClipRole::SFX) if library_file => format!("{sound_note}, marked sfx (from the effects library)"),
+                Some(role) => format!("{sound_note}, marked {} (from its sound)", role.label().to_lowercase()),
                 _ if track_role.is_some() => format!("{sound_note}, marked {} (its track's role)", track_role.as_ref().and_then(|r| pool.roles.label(r)).unwrap_or_default().to_lowercase()),
                 _ => match starting {
                     Some((role, klipp_core::RoleSource::Proposed)) => format!("{sound_note}, marked {} (from its sound)", role.label().to_lowercase()),
@@ -10186,7 +10194,16 @@ fn refit(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts, i: usi
             // it was already pushed in further.
             let fill = (fw / picture.0).max(fh / picture.1);
             let keyed = |lane: &(Vec<klipp_core::Keyframe>, f32)| if lane.0.is_empty() { lane.1 } else { lane.0.iter().map(|k| k.value).fold(f32::MIN, f32::max) };
-            let scale = fill.max(keyed(&placement_lanes(clip)[2])).max(1.0);
+            let own = keyed(&placement_lanes(clip)[2]);
+            // A piece an earlier refit punched in, its scale the fill
+            // pushed in by this punch, starts from the fill again: run a
+            // second time it went to 1.15 x 1.15, and kept its push where
+            // the pieces' order changed (FC5).
+            let own = match punch {
+                Some(p) if (own / (fill * p) - 1.0).abs() < 0.005 => fill,
+                _ => own,
+            };
+            let scale = fill.max(own).max(1.0);
             // Every other picture pushed in further, its jump a cut. A
             // piece too short to read keeps the one before's push, so the
             // picture doesn't jump in and out within a moment (#3441).
@@ -17233,13 +17250,17 @@ mod tests {
     /// other file keeps the default role.
     #[test]
     fn a_library_track_is_placed_with_its_role() {
-        struct Library(MediaId, MediaId);
+        // The third is music by its sound alone, an imported file (RL1).
+        struct Library(MediaId, MediaId, MediaId);
         impl Transcripts for Library {
             fn words(&self, _item: &klipp_media::MediaItem) -> Option<Vec<SpokenWord>> {
                 None
             }
             fn library_role(&self, item: &klipp_media::MediaItem) -> Option<klipp_core::ClipRole> {
-                [(self.0, klipp_core::ClipRole::Music), (self.1, klipp_core::ClipRole::SFX)].into_iter().find(|(id, _)| *id == item.id).map(|(_, r)| r)
+                [(self.0, klipp_core::ClipRole::Music), (self.1, klipp_core::ClipRole::SFX), (self.2, klipp_core::ClipRole::Music)].into_iter().find(|(id, _)| *id == item.id).map(|(_, r)| r)
+            }
+            fn is_library_file(&self, item: &klipp_media::MediaItem) -> bool {
+                item.id == self.0 || item.id == self.1
             }
         }
         let (seq, mut pool, media, _, _) = fixture();
@@ -17249,8 +17270,8 @@ mod tests {
             item.has_audio = true;
             pool.add(item)
         };
-        let (song, whip) = (sound("/tmp/song.mp3"), sound("/tmp/whip.mp3"));
-        let lib = Library(song, whip);
+        let (song, whip, imported) = (sound("/tmp/song.mp3"), sound("/tmp/whip.mp3"), sound("/tmp/own.mp3"));
+        let lib = Library(song, whip, imported);
         let place = |id: MediaId| Op::Place { media_id: id, track: TrackRef::Index(1), at: Anchor::TrackEnd(TrackRef::Index(1)), source_in: Some(0.0), source_out: Some(1.0), insert: false, with_audio: false, sync_source_secs: None };
         let placed = |id: MediaId| {
             let plan = resolve_with(&seq, &pool, &[place(id)], &lib).unwrap_or_else(|r| panic!("refused: {}", r.why));
@@ -17268,9 +17289,13 @@ mod tests {
         let (role, what) = placed(song);
         assert_eq!(role, klipp_core::roles::RoleRef::parse("music"));
         assert!(what.contains("marked music"), "{what}");
+        assert!(what.contains("music library"), "{what}");
         let (role, what) = placed(whip);
         assert_eq!(role, klipp_core::roles::RoleRef::parse("effects"));
         assert!(what.contains("marked sfx"), "{what}");
+        let (role, what) = placed(imported);
+        assert_eq!(role, klipp_core::roles::RoleRef::parse("music"));
+        assert!(what.contains("marked music (from its sound)") && !what.contains("library"), "an imported file is not said to be the library's: {what}");
         let (role, what) = placed(media);
         assert_eq!(role, None, "a file with a picture: no role");
         assert!(!what.contains("marked"), "{what}");
@@ -22315,6 +22340,43 @@ mod tests {
         let fill = 1920.0 / 607.5;
         let got: Vec<f32> = ids.iter().map(|id| (scale(*id) / fill * 100.0).round() / 100.0).collect();
         assert_eq!(got, [1.0, 1.0, 1.2, 1.0], "the short piece is not pushed in on its own");
+    }
+
+    /// FC5: refit with a punch run twice pushes in every other piece once,
+    /// as the first run did, never by the punch twice over.
+    #[test]
+    fn a_second_punch_in_does_not_push_further() {
+        struct NotLooked;
+        impl Transcripts for NotLooked {
+            fn words(&self, _item: &klipp_media::MediaItem) -> Option<Vec<SpokenWord>> {
+                None
+            }
+        }
+        let (mut seq, pool, media, _, _) = fixture();
+        seq.resolution = klipp_core::Resolution { width: 1080, height: 1920 };
+        seq.tracks[0].clips = [(0.0, 2.0), (2.0, 4.0), (4.0, 6.0), (6.0, 8.0)].iter().map(|&(a, b)| Clip::media(media, tc(a), tc(b), tc(a), tc(b))).collect();
+        seq.tracks.truncate(1);
+        let ids: Vec<ClipId> = seq.tracks[0].clips.iter().map(|c| c.id).collect();
+        let fill = 1920.0 / 607.5;
+        let run = |seq: &Sequence| {
+            let plan = resolve_with(seq, &pool, &[Op::Refit { markers: false, punch: Some(1.15), keep: Vec::new() }], &NotLooked).unwrap();
+            let mut seqs = vec![seq.clone()];
+            let (mut p, mut fps) = (pool.clone(), seq.fps);
+            let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps };
+            view.apply_forward(&plan.steps[0].edit);
+            seqs.remove(0)
+        };
+        let scales = |seq: &Sequence| -> Vec<f32> {
+            ids.iter().map(|id| {
+                let clip = seq.tracks[0].clips.iter().find(|c| c.id == *id).unwrap();
+                let lane = &placement_lanes(clip)[2];
+                let s = if lane.0.is_empty() { lane.1 } else { lane.0.iter().map(|k| k.value).fold(f32::MIN, f32::max) };
+                (s / fill * 100.0).round() / 100.0
+            }).collect()
+        };
+        let once = run(&seq);
+        assert_eq!(scales(&once), [1.0, 1.15, 1.0, 1.15]);
+        assert_eq!(scales(&run(&once)), [1.0, 1.15, 1.0, 1.15], "punched again, not 1.15 x 1.15");
     }
 
     /// P53: retime's fit_range puts the clip on the marks, as the Speed
