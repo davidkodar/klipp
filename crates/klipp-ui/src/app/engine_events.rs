@@ -38,9 +38,7 @@ impl KlippApp {
                 AppEvent::TimelineSkimShown { composited, .. } => {
                     // Not drawn: the clip's raw skim frame, as skimming
                     // showed before (#2945).
-                    let raw = self.state.timeline_skim_in_flight.take().and_then(|(_, raw)| raw);
-                    self.state.timeline_skim_declined = !composited;
-                    if let Some((media, secs)) = raw.filter(|_| !composited) {
+                    if let Some((media, secs)) = self.state.timeline_skim_shown(composited) {
                         self.request_skim_frame(media, secs, klipp_core::ViewerMode::Program);
                     }
                     self.send_queued_timeline_skim();

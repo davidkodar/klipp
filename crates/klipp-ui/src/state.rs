@@ -679,6 +679,20 @@ impl AppState {
     /// Ask the engine for the timeline's picture at `time` for a skim
     /// (#2945), or queue it behind the one in flight. `raw` is the raw
     /// skim frame shown if the engine doesn't draw it.
+    /// The engine answered a timeline skim: drawn by it (`composited`),
+    /// the Program viewer now shows a skim frame, to go back to the
+    /// playhead's when the skim ends. Only a raw frame said so, so after
+    /// a drawn one the viewer kept the skimmed frame once the pointer
+    /// left. Not drawn: the clip's raw frame to ask for instead.
+    pub fn timeline_skim_shown(&mut self, composited: bool) -> Option<(MediaId, f64)> {
+        let raw = self.timeline_skim_in_flight.take().and_then(|(_, raw)| raw);
+        self.timeline_skim_declined = !composited;
+        if composited {
+            self.program_skim_active = true;
+        }
+        raw.filter(|_| !composited)
+    }
+
     pub fn request_timeline_skim(&mut self, cmds: &mut Vec<klipp_core::AppCommand>, time: Timecode, raw: Option<(MediaId, f64)>) {
         if self.timeline_skim_in_flight.is_none() {
             self.timeline_skim_in_flight = Some((std::time::Instant::now(), raw));
@@ -6314,6 +6328,24 @@ mod tests {
     use super::{
         borrow_released_by_hand, browser_borrow_for, BrowserBorrow, Workspace,
     };
+
+    /// A skim the engine drew marks the Program viewer as showing a skim
+    /// frame, so the frame's cleanup puts the playhead's back when the
+    /// skim ends; a raw one asks for the clip's frame instead.
+    #[test]
+    fn a_drawn_timeline_skim_is_put_back_when_it_ends() {
+        use klipp_core::{MediaId, Timecode};
+        let mut state = super::AppState::default();
+        let mut cmds = Vec::new();
+        state.request_timeline_skim(&mut cmds, Timecode::from_secs_f64(16.4, 24), None);
+        assert_eq!(state.timeline_skim_shown(true), None);
+        assert!(state.program_skim_active, "the viewer shows a skim frame to put back");
+        let media = MediaId::new();
+        state.program_skim_active = false;
+        state.request_timeline_skim(&mut cmds, Timecode::from_secs_f64(16.4, 24), Some((media, 3.0)));
+        assert_eq!(state.timeline_skim_shown(false), Some((media, 3.0)), "not drawn: the clip's frame is asked for");
+        assert!(state.timeline_skim_in_flight.is_none());
+    }
 
     /// Edits recorded as one inside a batch already open (a socket or an
     /// agent batch) join it: the batch keeps its earlier edit and is one
