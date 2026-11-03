@@ -198,6 +198,13 @@ pub fn sample_times(duration: f64, still: bool) -> Vec<f64> {
     (0..n).map(|i| i as f64 * step + step.min(duration) * 0.5).filter(|t| *t < duration).collect()
 }
 
+/// Whether a file has a picture to look at. A sound-only file carries a
+/// default size, so the size alone sent it here to fail on its missing video
+/// stream, and its analysis read as failed with its sound and words fine.
+fn has_picture(item: &klipp_media::MediaItem) -> bool {
+    item.resolution.width > 0 && item.resolution.height > 0 && !item.sound_only()
+}
+
 pub struct VisualAnalyser;
 
 impl crate::Analyser for VisualAnalyser {
@@ -211,7 +218,7 @@ impl crate::Analyser for VisualAnalyser {
 
     /// Files with a picture, once the model is downloaded.
     fn wants(&self, item: &klipp_media::MediaItem) -> bool {
-        item.resolution.width > 0 && item.resolution.height > 0 && model_paths().is_some()
+        has_picture(item) && model_paths().is_some()
     }
 
     fn run(&self, item: &klipp_media::MediaItem, ctx: &crate::AnalysisCtx) -> Result<serde_json::Value, String> {
@@ -249,6 +256,20 @@ pub fn look(clip: &klipp_ml_ort::clip::Clip, item: &klipp_media::MediaItem, ctx:
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Footage and a still are looked at; a file of sound alone isn't, whatever
+    /// size it carries.
+    #[test]
+    fn a_sound_only_file_is_not_looked_at() {
+        let mut item = klipp_media::MediaItem::synthetic_for_test("/tmp/a.mov".into(), None);
+        assert!(has_picture(&item));
+        item.has_audio = true;
+        item.video_codec.clear();
+        assert!(item.resolution.width > 0, "a sound-only file's default size");
+        assert!(!has_picture(&item));
+        item.is_still = true;
+        assert!(has_picture(&item));
+    }
 
     fn unit(v: &[f32]) -> Vec<f32> {
         let n = v.iter().map(|x| x * x).sum::<f32>().sqrt();
