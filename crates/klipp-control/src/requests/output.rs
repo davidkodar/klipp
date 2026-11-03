@@ -76,7 +76,7 @@ pub(crate) fn respond(
             deliver(ctx, &outputs, overwrite, &mut send)
         }
 
-        ControlCommand::Export { path, width, height, fps, crf, bit_depth, target_lufs, true_peak_dbtp, burn_captions, captions_608, hdr10plus, hdr, peak_nits, preset, codec, audio_codec, bitrate_kbps, encoder_speed, outputs: _, overwrite } => {
+        ControlCommand::Export { path, width, height, fps, crf, bit_depth, target_lufs, true_peak_dbtp, burn_captions, embed_captions, captions_608, hdr10plus, hdr, peak_nits, preset, codec, audio_codec, bitrate_kbps, encoder_speed, outputs: _, overwrite } => {
             let out = std::path::PathBuf::from(&path);
             if !out.is_absolute() {
                 return Err(format!("export path must be absolute (got {path:?})"));
@@ -247,6 +247,17 @@ pub(crate) fn respond(
             if let Some(burn) = burn_captions {
                 settings.burn_in_subtitles = burn;
             }
+            // A soft track the player turns on, not the picture's (EX1).
+            if embed_captions == Some(true) {
+                if burn_captions == Some(true) {
+                    return Err("captions burnt in and embedded as a soft track both: give one of burn_captions or embed_captions".into());
+                }
+                if !settings.format.supports_subtitles() {
+                    return Err(format!("{} holds no subtitle track; embed_captions needs mp4, mov, mkv or webm", settings.format.label()));
+                }
+                settings.burn_in_subtitles = false;
+                settings.embed_subtitles = true;
+            }
             if let Some(cc) = captions_608 {
                 if cc && !matches!(settings.video_codec, V::H264 | V::H265) {
                     return Err(format!("{} carries no CEA-608 captions; captions_608 needs h264 or hevc", settings.video_codec.label()));
@@ -307,6 +318,10 @@ pub(crate) fn respond(
                     _ => json!("the whole timeline"),
                 }
             };
+            let has_captions = {
+                let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+                seq.tracks.iter().any(|t| t.kind == klipp_timeline::TrackKind::Subtitle && !t.clips.is_empty())
+            };
             // Another shape than the timeline's (#2784): letterboxed, said.
             let frame_warning = {
                 let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
@@ -318,6 +333,10 @@ pub(crate) fn respond(
                 "frame_warning": frame_warning,
                 "range": range,
                 "captions_burnt_in": settings.burn_in_subtitles,
+                "captions_embedded": settings.embed_subtitles,
+                // Where the captions are, said plainly: off the picture with
+                // no track of their own, a delivery lost them (EX1).
+                "captions_in_file": captions_in_file(has_captions, &settings),
                 // Titles are part of the picture; a title track left out
                 // of a delivery is hidden (#2426).
                 "titles_burnt_in": true,
@@ -350,7 +369,7 @@ pub(crate) fn respond(
                 },
                 "bit_depth": if settings.bit_depth == 10 { 10 } else { 8 },
             });
-            let burnt = said["captions_burnt_in"].as_bool().unwrap_or(true);
+            let burnt = said["captions_burnt_in"].as_bool().unwrap_or(true) || said["captions_embedded"].as_bool().unwrap_or(false);
             let known_jobs: std::collections::HashSet<String> = ctx.shared.exports.lock().unwrap_or_else(|e| e.into_inner())
                 .iter().map(|job| job.job_id.clone()).collect();
             let mut v = send(AppCommand::ExportSequence { settings })?;
@@ -1848,5 +1867,34 @@ mod export_choice_tests {
             let mut settings = klipp_core::ExportSettings { format, ..Default::default() };
             assert_eq!(apply_export_preset(&mut settings, &name).unwrap(), name);
         }
+    }
+}
+
+/// Where an export puts the sequence's captions, for its reply: in the
+/// picture, as a soft track, as CEA-608, or nowhere, with how to have them.
+fn captions_in_file(has_captions: bool, settings: &klipp_core::ExportSettings) -> &'static str {
+    match (has_captions, settings.burn_in_subtitles, settings.embed_subtitles, settings.captions_608) {
+        (false, ..) => "no captions on the timeline",
+        (_, true, ..) => "burnt into the picture",
+        (_, _, true, true) => "a soft subtitle track and CEA-608 in the video",
+        (_, _, true, false) => "a soft subtitle track",
+        (_, _, false, true) => "CEA-608 in the video",
+        _ => "none: not burnt in and no track; give embed_captions, or write export_subtitles for a sidecar",
+    }
+}
+
+#[cfg(test)]
+mod captions_in_file_tests {
+    /// EX1: an export that leaves the captions out of the picture says
+    /// where they are, and says plainly when they are nowhere.
+    #[test]
+    fn the_reply_says_where_the_captions_are() {
+        let mut s = klipp_core::ExportSettings { burn_in_subtitles: true, ..Default::default() };
+        assert_eq!(super::captions_in_file(true, &s), "burnt into the picture");
+        s.burn_in_subtitles = false;
+        assert!(super::captions_in_file(true, &s).starts_with("none"));
+        s.embed_subtitles = true;
+        assert_eq!(super::captions_in_file(true, &s), "a soft subtitle track");
+        assert_eq!(super::captions_in_file(false, &s), "no captions on the timeline");
     }
 }

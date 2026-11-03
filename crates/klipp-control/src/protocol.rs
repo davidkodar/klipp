@@ -1205,6 +1205,12 @@ pub enum ControlCommand {
         /// Titles are part of the picture either way (#2426).
         #[serde(default)]
         burn_captions: Option<bool>,
+        /// The subtitle tracks as a soft track in the file the player can
+        /// turn on and off, as the export dialog's "Embed subtitles as soft
+        /// track" does; then not burnt in. Every container but GIF and the
+        /// sound-only ones holds one.
+        #[serde(default)]
+        embed_captions: Option<bool>,
         /// The subtitle track as CEA-608 closed captions inside the video
         /// stream (#1663), as broadcast deliveries want; h264 and hevc.
         #[serde(default)]
