@@ -1775,10 +1775,25 @@ impl KlippApp {
 impl KlippApp {
     fn relink_media(&mut self, media_id: MediaId, new_path: &Path) {
         let cache_dir = self.proxy_cache_dir();
+        // Checked as a file the project names is at open (SEC1): kept
+        // offline, with why, when it is not media or is in a hidden folder.
+        let mut trusted_folders = klipp_media::media_check::klipp_folders();
+        trusted_folders.extend(self.state.project_path.as_deref().and_then(|p| p.parent()).map(Path::to_path_buf));
+        let trusted: Vec<&Path> = trusted_folders.iter().map(PathBuf::as_path).collect();
+        let refused = new_path.exists().then(|| klipp_media::media_check::media_file_check(new_path, &trusted).err()).flatten();
+        match &refused {
+            Some(why) => {
+                self.state.toast.show(klipp_media::media_check::refused_hint(why));
+                self.state.media_pool.refused.insert(media_id, why.clone());
+            }
+            None => {
+                self.state.media_pool.refused.remove(&media_id);
+            }
+        }
         let Some(item) = self.state.media_pool.get_mut(&media_id) else { return };
         let changed = item.path != new_path;
         item.path = new_path.to_path_buf();
-        item.offline = !new_path.exists();
+        item.offline = !new_path.exists() || refused.is_some();
         if changed {
             // The old proxy goes when it is the one Klipp made; a path
             // stored as anything else is forgotten, the file left alone.

@@ -74,6 +74,12 @@ pub fn lut_file_check(path: &Path, trusted: &[&Path]) -> Result<(), String> {
     }
 }
 
+/// What a person is told of an entry kept offline for `why`, and what to
+/// do about it.
+pub fn refused_hint(why: &str) -> String {
+    format!("Kept offline: {why}. If it is your media, move the file to a folder that isn't hidden, then Relink it.")
+}
+
 /// The folders Klipp keeps its own files in (template media, caches,
 /// brand kits) and the temporary folder: media there may sit in a hidden
 /// folder above them, as `~/.cache/klipp` does.
@@ -92,6 +98,14 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    /// A person is told why an entry is kept offline, and the way back:
+    /// move it out of the hidden folder, then Relink it.
+    #[test]
+    fn the_hint_says_why_and_what_to_do() {
+        let hint = super::refused_hint("it is in a hidden folder, where private files are kept, not media");
+        assert!(hint.contains("hidden folder") && hint.contains("move the file") && hint.contains("Relink"), "{hint}");
     }
 
     /// SEC1: a hostile project's media entry naming a text file, a key in
