@@ -19,8 +19,8 @@ static GIVEN: std::sync::Mutex<Option<(Vec<String>, Option<String>)>> = std::syn
 /// service's status.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum TranscribeProgress {
-    /// Not started: queued, or other passes first.
-    Waiting,
+    /// Not started: queued, or other passes first, and why when it can say.
+    Waiting(Option<String>),
     /// Transcribing, how far when it can say.
     Running(Option<f32>),
     /// The run ended: its transcript is in, or it failed, with why.
@@ -72,8 +72,11 @@ pub(crate) fn follow_transcriptions(state: &mut AppState, progress: &dyn Fn(klip
     for media_id in std::mem::take(&mut state.transcribing) {
         let Some(name) = state.media_pool.get(&media_id).map(|m| m.filename.clone()) else { continue };
         match progress(media_id) {
-            TranscribeProgress::Waiting => {
-                lines.push(format!("{name}: waiting to transcribe"));
+            TranscribeProgress::Waiting(why) => {
+                lines.push(match why {
+                    Some(why) => format!("{name}: waiting to transcribe, {why}"),
+                    None => format!("{name}: waiting to transcribe"),
+                });
                 still.push(media_id);
             }
             TranscribeProgress::Running(at) => {
@@ -117,14 +120,19 @@ impl KlippApp {
         let pool = self.state.media_pool.clone();
         follow_transcriptions(&mut self.state, &|media_id| {
             use klipp_analysis::service::State as S;
-            let Some(status) = klipp_analysis::service::status(media_id) else { return TranscribeProgress::Waiting };
+            let waiting = || TranscribeProgress::Waiting(klipp_analysis::service::why_waiting(media_id));
+            let Some(status) = klipp_analysis::service::status(media_id) else { return waiting() };
             if let Some((_, why)) = status.failed.iter().find(|(id, _)| id == klipp_analysis::transcript::ID) {
                 return TranscribeProgress::Failed(why.clone());
             }
+            // Asked for, it runs first: the file's other passes go on after.
+            if status.done.contains(&klipp_analysis::transcript::ID) {
+                return TranscribeProgress::Done;
+            }
             match status.state {
-                S::Queued => TranscribeProgress::Waiting,
+                S::Queued => waiting(),
                 S::Running if status.current == Some(klipp_analysis::transcript::ID) => TranscribeProgress::Running(status.progress),
-                S::Running => TranscribeProgress::Waiting,
+                S::Running => waiting(),
                 S::Failed | S::Cancelled => TranscribeProgress::Failed(status.failed.first().map(|f| f.1.clone()).unwrap_or_else(|| "the analysis stopped".into())),
                 S::Done => match pool.get(&media_id) {
                     Some(item) if klipp_analysis::report::MediaAnalysis::load(&item.path).transcript.is_some() => TranscribeProgress::Done,
