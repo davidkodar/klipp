@@ -840,6 +840,7 @@ impl MagneticEditor {
                 clip_id,
                 remove_command: Box::new(remove_cmd),
                 insert_command: Box::new(insert_cmd),
+                insert_index: insert_idx,
             },
         }
     }
@@ -1851,6 +1852,7 @@ impl MagneticEditor {
                 clip_id: _,
                 remove_command,
                 insert_command,
+                ..
             } => {
                 // Undo: reverse insert then reverse remove, in place: the
                 // clip goes back by its position, and the repack, not a
@@ -2175,13 +2177,28 @@ impl MagneticEditor {
                     .push(appended_clip.clone());
             }
             MagneticEditCommand::MovePrimary {
-                clip_id: _,
-                remove_command,
+                clip_id,
                 insert_command,
+                insert_index,
+                ..
             } => {
-                Self::apply_forward_in_place(sequence, remove_command);
-                Self::apply_forward_in_place(sequence, insert_command);
+                // The clip taken out and put back at its place in the
+                // order, the primary repacked, and the clips connected to
+                // it carried as the move carried them.
+                if let Some(primary) = sequence.primary_track_index() {
+                    let track = &mut sequence.tracks[primary];
+                    if let Some(pos) = track.clips.iter().position(|c| c.id == *clip_id) {
+                        let clip = track.clips.remove(pos);
+                        let at = (*insert_index).min(track.clips.len());
+                        track.clips.insert(at, clip);
+                    }
+                }
                 repack_primary(sequence);
+                if let MagneticEditCommand::InsertPrimary { cascaded_clips, .. } = insert_command.as_ref() {
+                    for cr in cascaded_clips {
+                        sequence.set_clip_position(cr.clip_id, cr.new_in, cr.new_out);
+                    }
+                }
             }
             MagneticEditCommand::InsertGap {
                 gap_clip,
@@ -2566,6 +2583,24 @@ mod tests {
         seq.assert_primary_gapless();
         let ends: Vec<f64> = seq.tracks[0].clips.iter().map(|c| c.timeline_out.to_secs_f64()).collect();
         assert!((ends[2] - (31.0 / 30.0 + 2002.0 / 24000.0)).abs() < 1e-12, "{ends:?}");
+    }
+
+    /// A primary move's undo gives back the order before, and its redo
+    /// the order after: the clip goes back to its place in the list, not
+    /// to wherever its time falls among clips not yet moved back.
+    #[test]
+    fn a_primary_move_undoes_and_redoes_in_order() {
+        let mut seq = make_sequence(&[(0, 48), (48, 96), (96, 120)]);
+        let order = |s: &Sequence| s.tracks[0].clips.iter().map(|c| (c.id, c.timeline_in, c.timeline_out)).collect::<Vec<_>>();
+        let first = seq.tracks[0].clips[0].id;
+        let before = order(&seq);
+        let moved = MagneticEditor::move_primary(&mut seq, first, tc(120));
+        let after = order(&seq);
+        assert_eq!(after.last().map(|c| c.0), Some(first), "to the end");
+        MagneticEditor::apply_inverse(&mut seq, &moved.command);
+        assert_eq!(order(&seq), before, "undone");
+        MagneticEditor::apply_forward(&mut seq, &moved.command);
+        assert_eq!(order(&seq), after, "redone");
     }
 
     /// #2967: a picture moved on the primary track takes its linked sound

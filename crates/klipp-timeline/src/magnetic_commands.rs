@@ -93,6 +93,10 @@ pub enum MagneticEditCommand {
         clip_id: ClipId,
         remove_command: Box<MagneticEditCommand>,
         insert_command: Box<MagneticEditCommand>,
+        /// Where among the primary's clips it went: a redo puts it there.
+        /// Put back by its time instead, among clips still at the times
+        /// before the move, it went in front of the wrong clip.
+        insert_index: usize,
     },
     InsertGap {
         gap_clip: Clip,
