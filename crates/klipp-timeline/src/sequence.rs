@@ -1981,8 +1981,11 @@ impl Track {
         self.transitions.sort_by_key(|t| t.id.0.as_u128());
     }
 
+    /// The clips in time order: by start, then end, then id, so two that
+    /// start together (one over the other) come in one order every time,
+    /// and an undo gives back the order the edit found.
     pub fn sort_clips(&mut self) {
-        self.clips.sort_by_key(|c| c.timeline_in);
+        self.clips.sort_by_key(|c| (c.timeline_in, c.timeline_out, c.id.0.as_u128()));
     }
 
     /// Remove clip and shift all downstream clips left by the removed clip's duration.
