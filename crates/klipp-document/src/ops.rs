@@ -7009,7 +7009,17 @@ pub fn heard_words(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcrip
             let speed = if clip.speed > 0.0 { clip.speed } else { 1.0 };
             let rate = clip.timeline_in.rate.max(1);
             let mut first = true;
-            for (index, w) in words.iter().enumerate().filter(|(_, w)| w.start_secs >= s_in - 0.05 && w.start_secs < s_out) {
+            // A word is heard where most of it plays: one cut a frame
+            // after it starts isn't (#3440).
+            let plays = |w: &SpokenWord| {
+                let (a, b) = (w.start_secs, w.end_secs.max(w.start_secs));
+                if b - a < 1e-6 {
+                    a >= s_in - 0.05 && a < s_out
+                } else {
+                    (b.min(s_out) - a.max(s_in)) * 2.0 >= b - a
+                }
+            };
+            for (index, w) in words.iter().enumerate().filter(|(_, w)| plays(w)) {
                 let text = w.text.trim();
                 if text.is_empty() {
                     continue;
