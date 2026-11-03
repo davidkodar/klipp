@@ -3861,6 +3861,7 @@ fn add_node_refuses_an_unknown_kind_and_names_the_node_it_adds() {
 #[test]
 fn perf_reports_the_presented_rate_only_while_pictures_change() {
     let mut h = harness();
+    h.shared.transport.lock().unwrap().playing = true;
     // The same picture time published again, as a paused viewer does:
     // no rate (#1169).
     for _ in 0..5 {
@@ -3873,6 +3874,21 @@ fn perf_reports_the_presented_rate_only_while_pictures_change() {
     }
     let fps = h.ok(json!({ "method": "perf" }))["presented_fps"].as_f64().expect("a rate while pictures change");
     assert!(fps.is_finite() && fps > 0.0, "{fps}");
+}
+
+/// Just paused, the last two seconds still hold pictures: no rate, where
+/// one read from them would fall until they aged out.
+#[test]
+fn perf_reports_no_presented_rate_once_paused() {
+    let mut h = harness();
+    h.shared.transport.lock().unwrap().playing = true;
+    for f in 0..12 {
+        h.frame_buffer.lock().unwrap().set_presented(klipp_core::RationalTime::from_frames(f, 25), true);
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(h.ok(json!({ "method": "perf" }))["presented_fps"].is_number());
+    h.shared.transport.lock().unwrap().playing = false;
+    assert_eq!(h.ok(json!({ "method": "perf" }))["presented_fps"], Value::Null);
 }
 
 /// #1850: perf splits the viewer frame's time into its phases around the
