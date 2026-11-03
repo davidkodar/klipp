@@ -21383,6 +21383,31 @@ mod tests {
         assert!(resolve(&seq, &pool, &[Op::Trim { clip_id: ClipRef::Id(first), edge: Edge::Out, to: Anchor::Secs(3.0), ripple: true, linked: true }]).is_ok(), "the primary's own trim moves {later_id:?} and its sound");
     }
 
+    /// A sound split past where its picture ends: each half keeps the
+    /// picture only while it lies over it, and the picture points at the
+    /// half over it, never at the whole sound that is gone.
+    #[test]
+    fn a_sound_split_past_its_picture_relinks_them() {
+        let (seq, mut pool, _, ia, _) = fixture();
+        let sound = seq.tracks[0].find_clip(ia).unwrap().linked_clip_id.unwrap();
+        let ops = [
+            Op::Trim { clip_id: ClipRef::Id(ia), edge: Edge::Out, to: Anchor::Secs(2.0), ripple: false, linked: false },
+            Op::Split { clip_id: ClipRef::Id(sound), at: Anchor::Secs(3.0) },
+        ];
+        let plan = resolve(&seq, &pool, &ops).unwrap();
+        let mut seqs = vec![seq.clone()];
+        let mut fps = seq.fps;
+        let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut pool, fps: &mut fps };
+        for s in &plan.steps {
+            view.apply_forward(&s.edit);
+        }
+        let after = &view.sequences[0];
+        let halves: Vec<&Clip> = after.tracks[1].clips.iter().filter(|c| c.timeline_in < tc(4.0)).collect();
+        assert_eq!(halves.len(), 2, "the sound in two");
+        assert_eq!((halves[0].linked_clip_id, halves[1].linked_clip_id), (Some(ia), None), "the half over the picture keeps it");
+        assert_eq!(after.tracks[0].find_clip(ia).unwrap().linked_clip_id, Some(halves[0].id), "the picture points at it");
+    }
+
     /// A ripple remove that would close up a track under linked clips
     /// whose partners stay is refused, saying which and what to do; with
     /// the partner removed as well, both tracks close up and it goes; and
