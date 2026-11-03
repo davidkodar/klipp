@@ -5275,16 +5275,26 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             }
             let delta = new_in - clip.timeline_in;
             let mut touched = vec![*clip_id];
-            let linked_partner = clip.linked_clip_id.filter(|_| *linked).and_then(|pid| {
-                let (pti, _, p) = find_clip(seq, pid)?;
-                let p_in = p.timeline_in + delta;
-                let p_out = p.timeline_out + delta;
-                if seq.tracks[pti].locked || overlapping(seq, pti, p_in, p_out, Some(pid)).is_some() {
-                    return None;
+            // The partner goes with it or the move is refused: moved
+            // alone, the two were out of sync with nothing said.
+            let linked_partner = match clip.linked_clip_id.filter(|_| *linked).and_then(|pid| find_clip(seq, pid)) {
+                None => None,
+                Some((pti, _, p)) => {
+                    let (p_in, p_out) = (p.timeline_in + delta, p.timeline_out + delta);
+                    if seq.tracks[pti].locked {
+                        return Err(refuse(i, format!("its linked clip is on locked track {pti}; moving one of them would change sync"), "unlock that track, or give linked: false to move this clip alone"));
+                    }
+                    if let Some(c) = overlapping(seq, pti, p_in, p_out, Some(p.id)) {
+                        return Err(refuse(
+                            i,
+                            format!("its linked clip would overlap {} at {:.2}-{:.2} s on track {pti}", clip_name(seq, pool, c), secs(c.timeline_in), secs(c.timeline_out)),
+                            "make room on that track first, or give linked: false to move this clip alone",
+                        ));
+                    }
+                    touched.push(p.id);
+                    Some(LinkedMovePartner { partner_id: p.id, old_timeline_in: p.timeline_in, old_timeline_out: p.timeline_out, new_timeline_in: p_in, new_timeline_out: p_out })
                 }
-                touched.push(pid);
-                Some(LinkedMovePartner { partner_id: pid, old_timeline_in: p.timeline_in, old_timeline_out: p.timeline_out, new_timeline_in: p_in, new_timeline_out: p_out })
-            });
+            };
             let what = format!(
                 "move {} from {:.2} s to {:.2} s (now {:.2}-{:.2} s){}",
                 clip_name(seq, pool, clip),
@@ -21171,6 +21181,24 @@ mod tests {
         }
         assert_eq!(seqs[0].tracks[0].clips.len(), 2);
         assert_eq!(seqs[0].tracks[0].clips[1].timeline_in, tc(4.0));
+    }
+
+    /// A clip whose linked partner can't move with it (into another clip
+    /// on its track, or on a locked track) is not moved alone, out of
+    /// sync with nothing said: refused, saying why; `linked: false` moves
+    /// it alone, as asked.
+    #[test]
+    fn a_move_its_partner_cant_follow_is_refused() {
+        let (seq, pool, _, _, ib) = fixture();
+        let sound = seq.tracks[0].find_clip(ib).unwrap().linked_clip_id.unwrap();
+        let mv = |linked: bool| Op::Move { clip_id: ClipRef::Id(sound), to: Anchor::Secs(9.0), track: None, linked };
+        let r = resolve(&seq, &pool, &[Op::Move { clip_id: ClipRef::Id(sound), to: Anchor::Secs(2.0), track: None, linked: true }]).unwrap_err();
+        assert!(r.why.contains("would overlap"), "into the picture before: {}", r.why);
+        assert!(resolve(&seq, &pool, &[mv(true)]).is_ok(), "into room: both move");
+        let mut locked = seq.clone();
+        locked.tracks[0].locked = true;
+        assert!(resolve(&locked, &pool, &[mv(true)]).unwrap_err().why.contains("locked"));
+        assert!(resolve(&locked, &pool, &[mv(false)]).is_ok(), "alone, as asked");
     }
 
     /// A picture's linked sound goes with it, so re-placing the picture
