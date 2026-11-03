@@ -65,6 +65,10 @@ kamadak-exif = "0.6"
 workspace = true
 
 [[test]]
+name = "a_reset_clears_the_source_viewer"
+path = "tests/a_reset_clears_the_source_viewer.rs"
+
+[[test]]
 name = "all"
 path = "tests/all/main.rs"
 
