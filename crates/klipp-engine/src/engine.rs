@@ -1724,6 +1724,8 @@ pub struct PlaybackEngine {
     /// plays (a floor forwards, a ceiling backwards). Cleared by a pause, a
     /// stop, a seek, a loop or a change of speed.
     report_floor: std::cell::Cell<Option<(RationalTime, bool)>>,
+    /// Played backwards by a negative `SetSpeed` (J, a reverse shuttle).
+    shuttled_backwards: bool,
     // Audio seek synchronization — generation counter
     expected_audio_generation: u64,
     // Performance
@@ -2969,6 +2971,7 @@ impl PlaybackEngine {
             empty_stack_warm: None,
             prewarm_stack: true,
             report_floor: std::cell::Cell::new(None),
+            shuttled_backwards: false,
             expected_audio_generation: 0,
             last_stats_time: std::time::Instant::now(),
             last_quiet_heartbeat: std::time::Instant::now(),
@@ -3841,6 +3844,8 @@ impl PlaybackEngine {
 
             AppCommand::SetSpeed(speed) => {
                 debug!("SetSpeed({speed})");
+                let turned_round = self.turns_round(speed);
+                self.shuttled_backwards = speed < 0.0;
                 self.master_clock.set_speed(speed);
                 // Reports follow on from here, whichever way it now plays
                 // (#1806).
@@ -3852,6 +3857,12 @@ impl PlaybackEngine {
                     } else {
                         active.source.muted().store(false, Ordering::Release);
                     }
+                }
+                // The sound reads forward whichever way the clock runs, so
+                // played backwards it runs away from the playhead: back to
+                // the playhead whenever the direction changes.
+                if turned_round && self.state == PlaybackState::Playing {
+                    self.seek_all_audio_to_timecode(self.playhead);
                 }
             }
 
@@ -6295,10 +6306,10 @@ impl PlaybackEngine {
         }
         // A retimed clip's own sound is out of the mix (see `audio_rows`):
         // its speed no longer mutes the music and the other tracks with it
-        // (#638). What mutes here is a scrub with audio scrubbing off,
-        // reasserted each tick so mid-scrub pref changes and EndScrub both
-        // self-correct.
-        let should_mute = self.is_scrubbing && !self.scrub_audio_enabled;
+        // (#638). What mutes here is a scrub with audio scrubbing off, or
+        // J, reasserted each tick so mid-scrub pref changes and EndScrub
+        // both self-correct.
+        let should_mute = self.sound_muted();
         for active in &self.audio_sources {
             active.source.muted().store(should_mute, Ordering::Release);
         }
@@ -7672,6 +7683,18 @@ impl PlaybackEngine {
         self.report_playhead();
         (self.repaint_cb)();
         true
+    }
+
+    /// Whether the sound is silenced now: a scrub with audio scrubbing off,
+    /// or played backwards by J, as the sound can only read forward. A
+    /// reversed clip also runs the clock backwards, and keeps its sound.
+    fn sound_muted(&self) -> bool {
+        (self.is_scrubbing && !self.scrub_audio_enabled) || (self.shuttled_backwards && self.master_clock.speed() < 0.0)
+    }
+
+    /// Whether `speed` changes the direction it is shuttled in.
+    fn turns_round(&self, speed: f64) -> bool {
+        self.shuttled_backwards != (speed < 0.0)
     }
 
     /// Tell the UI where the playhead is, never past the timeline's end:
@@ -15612,6 +15635,28 @@ mod track_switch_tests {
 
     fn peak(buf: &[f32]) -> f32 {
         buf.iter().fold(0.0, |m, s| m.max(s.abs()))
+    }
+
+    /// J silences the sound, which only reads forward, and L brings it
+    /// back; each turn is a change of direction for the sound to reseek on.
+    /// A reversed clip runs the clock backwards too, and keeps its sound.
+    #[test]
+    fn played_backwards_by_j_the_sound_is_silent() {
+        let (mut engine, _seq) = engine(two_tracks());
+        assert!(!engine.sound_muted());
+        assert!(engine.turns_round(-1.0));
+        assert!(!engine.turns_round(2.0), "faster the same way is no turn");
+        engine.handle_command(AppCommand::SetSpeed(-1.0));
+        assert!(engine.sound_muted(), "J");
+        assert!(engine.turns_round(1.0));
+        assert!(!engine.turns_round(-2.0));
+        engine.handle_command(AppCommand::SetSpeed(1.0));
+        assert!(!engine.sound_muted(), "L");
+        engine.master_clock.set_speed(-1.0);
+        assert!(!engine.sound_muted(), "a reversed clip's sound plays");
+        engine.handle_command(AppCommand::BeginScrub);
+        engine.scrub_audio_enabled = false;
+        assert!(engine.sound_muted(), "a scrub with its sound off");
     }
 
     /// #2672: a muted track stays silent once the timeline takes the
