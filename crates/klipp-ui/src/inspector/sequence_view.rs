@@ -19,8 +19,8 @@ pub fn show(ui: &mut Ui, theme: &KlippTheme, state: &AppState, cmds: &mut Vec<Ap
     crate::widgets::inspector_group::section_card(ui, "RANGE", None, theme, |ui| {
         let fallback_out = state.sequence_duration();
         let tc = seq.timecode_display();
-        point_row(ui, theme, "In", seq.in_point.map(|t| tc.position(t)), cmds, AppCommand::ClearSequenceInPoint);
-        point_row(ui, theme, "Out", seq.out_point.map(|t| tc.position(t)), cmds, AppCommand::ClearSequenceOutPoint);
+        point_row(ui, theme, "In", seq.in_point.map(|t| tc.position(t)), cmds, AppCommand::MarkRange { in_point: Some(None), out_point: None });
+        point_row(ui, theme, "Out", seq.out_point.map(|t| tc.position(t)), cmds, AppCommand::MarkRange { in_point: None, out_point: Some(None) });
         let end = seq.out_point.unwrap_or(fallback_out);
         // From the In point, or the start, to the Out point or the end.
         let length = seq.in_point.map_or(end, |start| if start < end { end - start } else { end - start.max(end) });
@@ -172,7 +172,7 @@ mod tests {
         let switch_of = |label: &str| egui::pos2(360.0 - 8.0 - 14.0 - 16.0, at(label).y);
         assert!(matches!(click(&ctx, &state, switch_of("Grid")).as_slice(), [AppCommand::SetViewerOverlay { overlay: ViewerOverlay::Grid, on: true }]));
         assert!(matches!(click(&ctx, &state, switch_of("Use proxies")).as_slice(), [AppCommand::SetUseProxies(false)]));
-        assert!(matches!(click(&ctx, &state, at("\u{2715}")).as_slice(), [AppCommand::ClearSequenceInPoint]));
+        assert!(matches!(click(&ctx, &state, at("\u{2715}")).as_slice(), [AppCommand::MarkRange { in_point: Some(None), out_point: None }]));
         assert!(matches!(click(&ctx, &state, at("Sequence Settings\u{2026}")).as_slice(), [AppCommand::OpenSequenceSettings { .. }]));
         assert!(texts.iter().any(|(t, _)| t == "Not set"), "the Out point unset: {texts:?}");
     }

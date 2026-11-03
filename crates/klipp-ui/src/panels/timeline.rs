@@ -4356,11 +4356,11 @@ impl TimelinePanel {
             // be footgun-y (range edits are deliberate). I/O shortcuts
             // already use playhead — match that convention.
             if ui.add(egui::Button::new("Set in point at playhead").shortcut_text("I")).clicked() {
-                cmds.push(AppCommand::SetSequenceInPoint(state.playhead));
+                cmds.push(AppCommand::MarkRange { in_point: Some(Some(state.playhead)), out_point: None });
                 ui.close_menu();
             }
             if ui.add(egui::Button::new("Set out point at playhead").shortcut_text("O")).clicked() {
-                cmds.push(AppCommand::SetSequenceOutPoint(state.playhead));
+                cmds.push(AppCommand::MarkRange { in_point: None, out_point: Some(Some(state.playhead)) });
                 ui.close_menu();
             }
 
@@ -8450,8 +8450,7 @@ impl TimelinePanel {
                         });
                     } else if state.active_tool == Tool::Range {
                         // Range tool: click on clip = set range to clip boundaries
-                        cmds.push(AppCommand::SetSequenceInPoint(hit_tl_in));
-                        cmds.push(AppCommand::SetSequenceOutPoint(hit_tl_out));
+                        cmds.push(AppCommand::MarkRange { in_point: Some(Some(hit_tl_in)), out_point: Some(Some(hit_tl_out)) });
                         state.toast.show("Range: clip selected");
                     } else {
                         let modifiers = ui.input(|i| i.modifiers);

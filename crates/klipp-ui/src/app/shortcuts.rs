@@ -717,75 +717,33 @@ impl KlippApp {
             if kb.is_action_pressed("toggle_snap", i) {
                 cmds.push(AppCommand::SetSnapMaster(!self.state.snap.master));
             }
-            // I/O — In/Out markers (context-dependent on viewer mode)
+            // I/O — In/Out markers (context-dependent on viewer mode). The
+            // program's marks go as MarkRange, which records the undo step,
+            // as the menus and buttons do.
             if kb.is_action_pressed("clear_in_point", i) || kb.is_action_pressed("set_in_point", i) {
                 if kb.is_action_pressed("clear_in_point", i) {
-                    tracing::debug!("Clear sequence in point");
-                    let old_in = self.state.sequence().in_point;
-                    let old_out = self.state.sequence().out_point;
-                    cmds.push(AppCommand::ClearSequenceInPoint);
-                    self.state.active_history_mut().push(crate::history::HistoryEntry {
-                        command: crate::history::EditCommand::SetRange {
-                            old_in, old_out, new_in: None, new_out: old_out,
-                        },
-                    });
+                    cmds.push(AppCommand::MarkRange { in_point: Some(None), out_point: None });
                 } else if self.state.viewer_mode == ViewerMode::Source {
                     tracing::debug!("I key (Source mode) -> Set source in point at {:?}", self.state.source_playhead);
                     cmds.push(AppCommand::SetSourceInPoint(self.state.source_playhead));
                 } else {
-                    tracing::debug!("I key (Program mode) -> Set sequence in point at {:?}", self.state.playhead);
-                    let old_in = self.state.sequence().in_point;
-                    let old_out = self.state.sequence().out_point;
-                    let new_in = Some(self.state.playhead);
-                    cmds.push(AppCommand::SetSequenceInPoint(self.state.playhead));
-                    self.state.active_history_mut().push(crate::history::HistoryEntry {
-                        command: crate::history::EditCommand::SetRange {
-                            old_in, old_out, new_in, new_out: old_out,
-                        },
-                    });
+                    cmds.push(AppCommand::MarkRange { in_point: Some(Some(self.state.playhead)), out_point: None });
                 }
             }
             if kb.is_action_pressed("clear_out_point", i) || kb.is_action_pressed("set_out_point", i) {
                 if kb.is_action_pressed("clear_out_point", i) {
-                    tracing::debug!("Clear sequence out point");
-                    let old_in = self.state.sequence().in_point;
-                    let old_out = self.state.sequence().out_point;
-                    cmds.push(AppCommand::ClearSequenceOutPoint);
-                    self.state.active_history_mut().push(crate::history::HistoryEntry {
-                        command: crate::history::EditCommand::SetRange {
-                            old_in, old_out, new_in: old_in, new_out: None,
-                        },
-                    });
+                    cmds.push(AppCommand::MarkRange { in_point: None, out_point: Some(None) });
                 } else if self.state.viewer_mode == ViewerMode::Source {
                     tracing::debug!("O key (Source mode) -> Set source out point at {:?}", self.state.source_playhead);
                     cmds.push(AppCommand::SetSourceOutPoint(self.state.source_playhead));
                 } else {
-                    tracing::debug!("O key (Program mode) -> Set sequence out point at {:?}", self.state.playhead);
-                    let old_in = self.state.sequence().in_point;
-                    let old_out = self.state.sequence().out_point;
-                    let new_out = Some(self.state.playhead);
-                    cmds.push(AppCommand::SetSequenceOutPoint(self.state.playhead));
-                    self.state.active_history_mut().push(crate::history::HistoryEntry {
-                        command: crate::history::EditCommand::SetRange {
-                            old_in, old_out, new_in: old_in, new_out,
-                        },
-                    });
+                    cmds.push(AppCommand::MarkRange { in_point: None, out_point: Some(Some(self.state.playhead)) });
                 }
             }
 
             // Alt+X — clear both in/out points (standard NLE shortcut)
             if kb.is_action_pressed("clear_in_out", i) {
-                let old_in = self.state.sequence().in_point;
-                let old_out = self.state.sequence().out_point;
-                if old_in.is_some() || old_out.is_some() {
-                    cmds.push(AppCommand::ClearSequenceInPoint);
-                    cmds.push(AppCommand::ClearSequenceOutPoint);
-                    self.state.active_history_mut().push(crate::history::HistoryEntry {
-                        command: crate::history::EditCommand::SetRange {
-                            old_in, old_out, new_in: None, new_out: None,
-                        },
-                    });
-                }
+                cmds.push(AppCommand::MarkRange { in_point: Some(None), out_point: Some(None) });
             }
 
         });

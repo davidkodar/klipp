@@ -2074,6 +2074,11 @@ pub enum AppCommand {
     CreateSubclipFromZone { source_media_id: MediaId, name: Option<String> },
 
     // Sequence markers
+    /// The marked range set from a key, a menu or a button: each point
+    /// set (`Some(Some)`), cleared (`Some(None)`) or left (`None`), as one
+    /// undo step. A drag's moves of the marks send the two below, and
+    /// record their one step when the drag ends.
+    MarkRange { in_point: Option<Option<RationalTime>>, out_point: Option<Option<RationalTime>> },
     SetSequenceInPoint(RationalTime),
     /// The sequence's range set to a clip's span, one step (#3127): the
     /// selected clip, else the one under the playhead.

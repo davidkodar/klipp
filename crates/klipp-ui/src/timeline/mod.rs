@@ -600,8 +600,7 @@ impl NewTimelinePanel {
 
         // Double-click: clear range
         if ruler_resp.double_clicked() {
-            cmds.push(AppCommand::ClearSequenceInPoint);
-            cmds.push(AppCommand::ClearSequenceOutPoint);
+            cmds.push(AppCommand::MarkRange { in_point: Some(None), out_point: Some(None) });
         }
 
         // Draw snap line during range drag
