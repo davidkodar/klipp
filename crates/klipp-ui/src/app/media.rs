@@ -1525,11 +1525,13 @@ impl KlippApp {
                 ) {
                     session.seek_and_play(*time_secs);
                     self.state.skim_audio_session = Some(session);
+                    self.state.skim_audio_refused = None;
                     tracing::info!(
                         "BrowserSkimAudioStart: session created and playing from {:.2}s",
                         time_secs
                     );
                 } else {
+                    self.state.skim_audio_refused = Some((*media_id, std::time::Instant::now()));
                     tracing::warn!(
                         "BrowserSkimAudioStart: session creation FAILED (PCM cache missing or load error)"
                     );

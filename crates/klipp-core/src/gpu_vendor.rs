@@ -140,6 +140,14 @@ impl GpuVendor {
         format!("Hardware decode: the first clip tries VAAPI on {}", nodes.join(", "))
     }
 
+    /// Whether an NVIDIA driver is loaded, without which CUDA can't open: its
+    /// control device, there with or without a display on the card. Opening
+    /// CUDA elsewhere fails with a warning for each decoder (#3432).
+    pub fn nvidia_driver_loaded() -> bool {
+        static LOADED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *LOADED.get_or_init(|| std::path::Path::new("/dev/nvidiactl").exists())
+    }
+
     /// Whether a VAAPI connection already failed on every render node in
     /// this process, so a decoder doesn't try it again.
     pub fn vaapi_unavailable() -> bool {
