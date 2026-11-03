@@ -283,6 +283,7 @@ fn handle_card_interaction(
         crate::browser::library_card::push_recent(&mut state.library_recent.generators, tmpl.name.as_str());
         cmds.push(AppCommand::CreateGeneratorClip {
             track_index: None,
+            at: None,
             data: tmpl.data.clone(),
         });
         state.toast.show(format!("\"{}\" generator added to timeline", tmpl.name.as_str()));

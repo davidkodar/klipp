@@ -134,8 +134,8 @@ impl KlippApp {
                     self.insert_freeze_frame(*duration_secs);
                     true
                 }
-                AppCommand::CreateGeneratorClip { track_index, data } => {
-                    let (clip_id, label, park) = add_generator_clip(&mut self.state, *track_index, data);
+                AppCommand::CreateGeneratorClip { track_index, at, data } => {
+                    let (clip_id, label, park) = add_generator_clip_at(&mut self.state, *track_index, *at, data);
                     // The new generator is the selection, the inspector
                     // opens on its parameters, and the playhead parks a
                     // little way in so the viewer shows it.
@@ -1660,8 +1660,14 @@ pub(super) fn pip_offsets_for_corner(
 /// and was hidden by it (#3243). Its id, its name, and where the playhead
 /// parks to show it, a little way in.
 pub(super) fn add_generator_clip(state: &mut AppState, track_index: Option<usize>, data: &klipp_core::GeneratorData) -> (klipp_core::ClipId, &'static str, klipp_core::Timecode) {
+    add_generator_clip_at(state, track_index, None, data)
+}
+
+/// [`add_generator_clip`] starting at `at`, where it was let go, or the
+/// playhead when it has none.
+pub(super) fn add_generator_clip_at(state: &mut AppState, track_index: Option<usize>, at: Option<klipp_core::Timecode>, data: &klipp_core::GeneratorData) -> (klipp_core::ClipId, &'static str, klipp_core::Timecode) {
     let fps_rate = state.sequences[state.active_sequence_idx].fps.rate();
-    let ph = state.playhead.rescale_to(fps_rate);
+    let ph = at.unwrap_or(state.playhead).rescale_to(fps_rate);
     // 5s default, expressed in seconds rather than raw frames.
     // `Fps::rate()` returns the numerator (e.g. 24000 for 23.976 NTSC), so a
     // literal `from_frames(120, fps_rate)` produces a 5 ms clip on
@@ -1706,8 +1712,9 @@ pub(super) fn add_generator_clip(state: &mut AppState, track_index: Option<usize
         ..klipp_timeline::Clip::gap(ph, timeline_out)
     };
     let clip_id = clip.id;
-    seq.tracks[track_idx].clips.push(clip);
-    seq.tracks[track_idx].sort_clips();
+    // Laid over what the track has there, as a clip dropped is: let go on
+    // a clip, it went in over it, two clips at once on one track (P65).
+    klipp_document::clipboard::overwrite_insert_clip_on_track(&mut seq.tracks[track_idx], clip);
     (clip_id, label, ph + klipp_core::RationalTime::from_secs_f64(0.25, fps_rate))
 }
 
@@ -1747,6 +1754,33 @@ mod track_mix_tests {
         let tracks = &state.sequences[state.active_sequence_idx].tracks;
         assert_eq!(tracks.len(), 3, "not on the free track under the clip");
         assert!(tracks[0].clips.iter().any(|c| c.id == over));
+    }
+
+    /// P65: a generator let go on V1 at 0:00 goes in at 0:00, not at the
+    /// playhead (3:19) with a gap before it; with no place given it goes
+    /// in at the playhead, as a double-click puts it.
+    #[test]
+    fn a_dropped_generator_goes_where_it_was_let_go() {
+        let tc = |s: f64| klipp_core::Timecode::from_secs_f64(s, 24);
+        let mut state = AppState::default();
+        state.sequences[state.active_sequence_idx].tracks = vec![klipp_timeline::Track::new("V1", klipp_timeline::TrackKind::Video)];
+        state.playhead = tc(199.0);
+        let bars = klipp_core::GeneratorData::ColorBars;
+        let (dropped, _, _) = super::add_generator_clip_at(&mut state, Some(0), Some(tc(0.0)), &bars);
+        let (at_playhead, _, _) = super::add_generator_clip_at(&mut state, None, None, &bars);
+        let start = |id| state.sequences[state.active_sequence_idx].all_clips().find(|c| c.id == id).map(|c| c.timeline_in.to_secs_f64());
+        assert_eq!(start(dropped), Some(0.0), "where it was let go");
+        assert_eq!(start(at_playhead), Some(199.0), "no place given: the playhead");
+        // Let go on a clip: over it, never two clips at once on the track.
+        let mut v1 = klipp_timeline::Track::new("V1", klipp_timeline::TrackKind::Video);
+        v1.clips = vec![klipp_timeline::Clip { kind: klipp_timeline::ClipKind::Media { media_id: klipp_core::MediaId::new() }, ..klipp_timeline::Clip::gap(tc(0.0), tc(10.0)) }];
+        state.sequences[state.active_sequence_idx].tracks = vec![v1];
+        super::add_generator_clip_at(&mut state, Some(0), Some(tc(6.0)), &bars);
+        let clips = &state.sequences[state.active_sequence_idx].tracks[0].clips;
+        for pair in clips.windows(2) {
+            assert!(pair[0].timeline_out <= pair[1].timeline_in, "overlap: {:?}", clips.iter().map(|c| (c.timeline_in.to_secs_f64(), c.timeline_out.to_secs_f64())).collect::<Vec<_>>());
+        }
+        assert_eq!(crate::tracks_undo::label(&klipp_core::AppCommand::CreateGeneratorClip { track_index: None, at: None, data: bars.clone() }), Some("Add Generator"), "an undo step");
     }
 
     fn view(state: &mut AppState) -> klipp_document::apply::DocumentView<'_> {
