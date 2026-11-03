@@ -87,6 +87,8 @@ const RETAKE_REACH: usize = 3;
 const RETAKE_MATCH: f64 = 0.8;
 /// The fewest words a sentence needs to be told a retake.
 const RETAKE_WORDS: usize = 3;
+/// The words a later take may say before it opens with an earlier one.
+const RETAKE_LEAD_IN: usize = 2;
 /// A pause between words that ends a sentence, seconds.
 const SENTENCE_PAUSE: f64 = 1.0;
 /// The shortest piece of a clip a cut may leave, seconds: a shorter one
@@ -153,11 +155,20 @@ fn common_in_order(a: &[String], b: &[String]) -> usize {
     row[b.len()]
 }
 
-/// Whether two sentences are one line said twice: most of the shorter's
-/// words in the longer, in order.
-fn same_line(a: &[String], b: &[String]) -> bool {
-    let shorter = a.len().min(b.len());
-    shorter >= RETAKE_WORDS && common_in_order(a, b) as f64 >= RETAKE_MATCH * shorter as f64
+/// Whether `later` says `earlier` again: most of both lines' words, in
+/// order, or `earlier` given up on and `later` opening with all of it, an
+/// "um" or two before. Most of the shorter line alone took two sentences that
+/// only opened alike for one, "The wizard is the AI." for a take of "The
+/// wizard is the frontier level of intelligence.", and cut a line meant to
+/// be said.
+fn same_line(earlier: &[String], later: &[String]) -> bool {
+    if earlier.len().min(later.len()) < RETAKE_WORDS {
+        return false;
+    }
+    let common = common_in_order(earlier, later) as f64;
+    let most_of = |line: &[String]| common >= RETAKE_MATCH * line.len() as f64;
+    let opens_with_it = later.windows(earlier.len()).take(RETAKE_LEAD_IN + 1).any(|w| w == earlier);
+    (most_of(earlier) && most_of(later)) || opens_with_it
 }
 
 /// The sentences of `words`, by their index ranges: a sentence ends at a
@@ -563,6 +574,25 @@ mod tests {
         let mut said = words("Right.", 0.0);
         said.extend(words("Right.", 2.0));
         assert!(retakes(&said).is_empty());
+    }
+
+    /// Two sentences that open alike are not one line said twice: the later
+    /// must repeat the earlier as a whole. A true retake is still one, with a
+    /// word changed, or restarted from a line given up on.
+    #[test]
+    fn a_retake_repeats_the_whole_line_not_its_opening() {
+        let words = |text: &str, from: f64| text.split(' ').enumerate().map(|(i, t)| w(from + i as f64 * 0.3, from + i as f64 * 0.3 + 0.25, t)).collect::<Vec<_>>();
+        let two = |a: &str, b: &str| {
+            let mut said = words(a, 0.0);
+            said.extend(words(b, 5.0));
+            retakes(&said).len()
+        };
+        assert_eq!(two("The wizard is the AI.", "The wizard is the frontier level of intelligence."), 0, "two sentences: both stay");
+        assert_eq!(two("We went to the river.", "We went to the river and then the sea."), 1, "given up, and said in full");
+        assert_eq!(two("We went to the river.", "um We went to the river and then the sea."), 1, "an um before it");
+        assert_eq!(two("We went to the river.", "After lunch that day we went to the river."), 0, "said later in another line");
+        assert_eq!(two("The wizard is the AI.", "The wizard is the AI."), 1);
+        assert_eq!(two("The wizard is really the AI.", "The wizard is truly the AI."), 1, "a word changed");
     }
 
     /// "Um, so, uh, let me show you": fillers that start between frames.
