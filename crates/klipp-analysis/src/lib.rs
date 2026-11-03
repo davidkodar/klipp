@@ -52,6 +52,7 @@ pub mod screentext;
 pub mod subject_matte;
 #[cfg(feature = "audio_role")]
 pub mod audio_role;
+pub mod speech_check;
 #[cfg(feature = "visual")]
 pub mod visual;
 
@@ -255,6 +256,7 @@ pub fn analysers() -> Vec<Box<dyn Analyser>> {
     v.push(Box::new(audio_role::AudioRoleAnalyser));
     #[cfg(feature = "visual")]
     v.push(Box::new(visual::VisualAnalyser));
+    v.push(Box::new(speech_check::SpeechCheckAnalyser));
     v
 }
 

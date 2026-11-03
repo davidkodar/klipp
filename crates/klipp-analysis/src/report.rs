@@ -18,6 +18,8 @@ pub struct MediaAnalysis {
     pub screentext: Option<crate::screentext::ScreenText>,
     #[cfg(feature = "audio_role")]
     pub audio_role: Option<crate::audio_role::AudioRoles>,
+    /// A sound-only file's check for speech, with no model.
+    pub speech_check: Option<crate::speech_check::SpeechCheck>,
 }
 
 impl MediaAnalysis {
@@ -68,6 +70,7 @@ impl MediaAnalysis {
         let screentext = crate::store::load(key, crate::screentext::ID, crate::screentext::VERSION).and_then(|v| serde_json::from_value(v).ok());
         #[cfg(feature = "audio_role")]
         let audio_role = crate::store::load(key, crate::audio_role::ID, crate::audio_role::VERSION).and_then(|v| serde_json::from_value(v).ok());
+        let speech_check = crate::store::load(key, crate::speech_check::ID, crate::speech_check::VERSION).and_then(|v| serde_json::from_value(v).ok());
         Self {
             shots,
             audio,
@@ -81,7 +84,18 @@ impl MediaAnalysis {
             screentext,
             #[cfg(feature = "audio_role")]
             audio_role,
+            speech_check,
         }
+    }
+
+    /// The role the file's sound proposes: the sound tagger's when it has
+    /// heard it, else the check that needs no model.
+    pub fn role_proposal(&self) -> Option<klipp_core::RoleProposal> {
+        #[cfg(feature = "audio_role")]
+        if let Some(heard) = self.audio_role.as_ref().and_then(|r| r.proposal()) {
+            return Some(heard);
+        }
+        self.speech_check.and_then(|c| c.proposal())
     }
 
     pub fn is_empty(&self) -> bool {
@@ -91,6 +105,9 @@ impl MediaAnalysis {
         }
         #[cfg(feature = "framing")]
         if self.framing.is_some() {
+            return false;
+        }
+        if self.speech_check.is_some() {
             return false;
         }
         #[cfg(feature = "audio_role")]
