@@ -495,7 +495,8 @@ pub(crate) fn respond(
             // cancel, the track added when it is done.
             let job_id = uuid::Uuid::new_v4().to_string();
             let glossary: Vec<(String, String)> = glossary.into_iter().filter(|(from, _)| !from.trim().is_empty()).collect();
-            let mut v = send(AppCommand::TranslateCaptions { track_id, source: from.clone(), target: to.clone(), job_id: job_id.clone(), glossary })?;
+            // Fetched or allowed to be (download_models), checked above.
+            let mut v = send(AppCommand::TranslateCaptions { track_id, source: from.clone(), target: to.clone(), job_id: job_id.clone(), glossary, download: true })?;
             v["job_id"] = json!(job_id);
             v["sentences"] = json!(sentences.len());
             v["text"] = json!(format!("Translating {} sentences into {} as job {job_id}.", sentences.len(), tr::language_name(&to)));
