@@ -76,6 +76,13 @@ impl crate::state::AppState {
             return false;
         }
         self.dirty = false;
+        // No project open, on the launch screen: nothing to lose. Its
+        // empty state differed from no save at all, and New Project asked
+        // to save "Untitled" (M6).
+        if self.project_path.is_none() {
+            self.unsaved = false;
+            return true;
+        }
         let now = self.project_digest_now();
         self.unsaved = now.is_none() || now != self.saved_digest;
         true
@@ -115,6 +122,26 @@ impl KlippApp {
             self.unsaved_settled_at = Some(std::time::Instant::now());
         }
         self.state.unsaved
+    }
+}
+
+#[cfg(test)]
+mod launch_screen_tests {
+    use crate::state::AppState;
+
+    /// M6: on the launch screen, with no project open, a raised hint is no
+    /// unsaved change, so New Project doesn't ask to save "Untitled"; a
+    /// project open is judged as before.
+    #[test]
+    fn nothing_open_is_nothing_unsaved() {
+        let mut state = AppState { project_path: None, ..Default::default() };
+        state.dirty = true;
+        state.settle_unsaved();
+        assert!(!state.unsaved, "the launch screen has nothing to save");
+        state.project_path = Some(crate::project_paths::UNTITLED.into());
+        state.dirty = true;
+        state.settle_unsaved();
+        assert!(state.unsaved, "an untitled project never saved is unsaved");
     }
 }
 
