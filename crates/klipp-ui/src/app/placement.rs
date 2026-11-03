@@ -277,10 +277,14 @@ impl KlippApp {
 
         match (audio_clip_id, audio_track_info) {
             (Some(aid), Some((ai, audio_clips_before))) => {
+                // Under the picture, where the edit put it (#3456): the
+                // primary closes up, so a picture asked for past its end
+                // lands at its end, not at the time asked.
+                let (sound_in, sound_out) = under_picture(&self.state.sequences[seq_idx], video_clip_id).unwrap_or((timeline_in, timeline_in + dur));
                 let mut audio_clip = klipp_timeline::Clip::media(
                     mid,
-                    timeline_in,
-                    timeline_in + dur,
+                    sound_in,
+                    sound_out,
                     source_in,
                     source_out,
                 );
@@ -674,6 +678,14 @@ pub(super) fn media_drop_edits(
     Ok((edits, placed))
 }
 
+/// Where a picture's linked sound goes: the span the picture has in
+/// `seq` once the edit placed it (#3456). Every placement puts the sound
+/// by this one rule, so a picture moved by the edit (the primary closing
+/// up) keeps its sound under it.
+pub(crate) fn under_picture(seq: &klipp_timeline::Sequence, picture: klipp_core::ClipId) -> Option<(Timecode, Timecode)> {
+    seq.all_clips().find(|c| c.id == picture).map(|c| (c.timeline_in, c.timeline_out))
+}
+
 #[cfg(test)]
 mod media_drop_tests {
     use super::super::linked_audio::attach_linked_audio_to_clip;
@@ -707,6 +719,20 @@ mod media_drop_tests {
 
     fn dropped() -> Clip {
         Clip::media(klipp_core::MediaId::new(), t(0), t(2), t(0), t(2))
+    }
+
+    /// #3456: a picture inserted past the primary's end lands where the
+    /// primary closes up, and its sound goes under it there, not at the
+    /// time asked.
+    #[test]
+    fn a_sound_goes_under_its_picture_where_the_edit_put_it() {
+        use klipp_timeline::magnetic::{EditMode, MagneticEditor, PLACED};
+        let (mut seq, _) = timeline();
+        assert!(seq.primary_track_index().is_some(), "V1 is magnetic");
+        let picture = dropped();
+        let id = picture.id;
+        MagneticEditor::three_point_edit(&mut seq, picture, t(15), true, EditMode::Insert, None, Some(&PLACED));
+        assert_eq!(super::under_picture(&seq, id), Some((t(12), t(14))), "at the primary's end, where the picture is");
     }
 
     /// #2966: a three-minute song let go on an empty audio track under a

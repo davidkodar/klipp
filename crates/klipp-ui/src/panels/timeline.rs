@@ -6755,7 +6755,9 @@ impl TimelinePanel {
                                             .as_millis()
                                             as u64;
                                         let is_new = state.skim_audio_session.is_none();
-                                        if is_new {
+                                        if is_new && !state.skim_audio_may_start(audio_media_id) {
+                                            // Refused a moment ago: asked again in a while.
+                                        } else if is_new {
                                             state.skim_last_audio_dispatch = now;
                                             cmds.push(AppCommand::BrowserSkimAudioStart {
                                                 media_id: audio_media_id,
@@ -6842,7 +6844,9 @@ impl TimelinePanel {
                                 let is_new = state.skim_audio_session.is_none();
                                 let elapsed = state.skim_last_audio_dispatch.elapsed().as_millis() as u64;
 
-                                if is_new {
+                                if is_new && !state.skim_audio_may_start(media_id) {
+                                    // Refused a moment ago: asked again in a while.
+                                } else if is_new {
                                     state.skim_last_audio_dispatch = std::time::Instant::now();
                                     cmds.push(AppCommand::BrowserSkimAudioStart {
                                         media_id,

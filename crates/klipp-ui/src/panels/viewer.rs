@@ -2165,6 +2165,7 @@ impl ViewerPanel {
             && !title_object_active
             && state.eyedropper_mode == crate::state::EyedropperMode::None
             && !state.has_modal_open()
+            && selection_is_on_screen(state)
         {
             // The selected clip's motion path (#2276), taking a press on
             // its dots and handles before the gizmo can.
@@ -8343,6 +8344,17 @@ enum GizmoStep {
     Abandon,
 }
 
+/// Whether the selected clip is in the picture at the playhead (#3427).
+/// One elsewhere on the timeline isn't what the viewer shows, so a box and
+/// a drag there would move a clip nobody can see.
+fn selection_is_on_screen(state: &AppState) -> bool {
+    state.selected_clip.is_none_or(|id| {
+        // Any track's, not only a video track's: a title on a Text track
+        // is in the picture too.
+        state.sequence().tracks.iter().filter(|t| t.visible).any(|t| t.clip_at_timecode(state.playhead).is_some_and(|(_, c)| c.id == id))
+    })
+}
+
 /// The state machine behind the transform gizmo and the corner-pin
 /// handles: given a drag that is armed (`started` false) or opened,
 /// where it was pressed, and the pointer this frame, which step to
@@ -8384,6 +8396,38 @@ fn rotation_handle_pos(top_mid: egui::Pos2, pivot: egui::Pos2, rotation_rad: f32
 #[cfg(test)]
 mod transform_gizmo_tests {
     use super::*;
+
+    /// #3427: the box follows what the viewer shows, not the selection.
+    #[test]
+    fn the_transform_box_is_only_on_a_clip_under_the_playhead() {
+        let tc = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 24);
+        let mut state = AppState::default();
+        let media = state.media_pool.add(klipp_media::MediaItem::synthetic_for_test("/tmp/a.mp4".into(), None));
+        let (first, third) = (klipp_timeline::Clip::media(media, tc(0.0), tc(2.0), tc(0.0), tc(2.0)), klipp_timeline::Clip::media(media, tc(4.0), tc(6.0), tc(0.0), tc(2.0)));
+        let (first_id, third_id) = (first.id, third.id);
+        let track = state.sequences[0].tracks.iter_mut().find(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
+        track.clips = vec![first, third];
+
+        state.playhead = tc(1.0);
+        state.selected_clip = Some(third_id);
+        assert!(!selection_is_on_screen(&state), "the third clip isn't in the picture at 1 s");
+        state.selected_clip = Some(first_id);
+        assert!(selection_is_on_screen(&state));
+        state.playhead = tc(5.0);
+        state.selected_clip = Some(third_id);
+        assert!(selection_is_on_screen(&state));
+
+        // A title on a Text track, with the playhead on it, keeps its box.
+        let title = klipp_timeline::Clip::media(media, tc(4.0), tc(6.0), tc(0.0), tc(2.0));
+        let title_id = title.id;
+        let mut text = klipp_timeline::Track::new("T1", klipp_timeline::TrackKind::Text);
+        text.clips = vec![title];
+        state.sequences[0].tracks.push(text);
+        state.selected_clip = Some(title_id);
+        assert!(selection_is_on_screen(&state), "a title under the playhead");
+        state.playhead = tc(1.0);
+        assert!(!selection_is_on_screen(&state), "a title elsewhere");
+    }
 
     #[test]
     fn a_press_that_does_not_move_is_not_a_drag() {

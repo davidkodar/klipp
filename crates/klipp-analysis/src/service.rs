@@ -323,6 +323,7 @@ fn run_all(item: &MediaItem, ctx: &AnalysisCtx, force_transcript: bool, force_fr
                 Ok(()) => {
                     tracing::info!("analysis {} of {} in {:.1} s", a.id(), item.filename, t.elapsed().as_secs_f64());
                     done.push(a.id());
+                    note_saved(&mut service().lock().unwrap_or_else(|e| e.into_inner()), item.id, a.id());
                 }
                 Err(e) => failed.push((a.id().to_string(), e)),
             },
@@ -335,7 +336,20 @@ fn run_all(item: &MediaItem, ctx: &AnalysisCtx, force_transcript: bool, force_fr
     (done, failed)
 }
 
-/// The items whose analysis finished since the last call.
+/// A result saved while the rest of an item's analysis runs on: a
+/// transcript is said at once, as First Cut and captions wait on it and
+/// not on the slower analysers after it (#3443). The item is said again
+/// when all of it is done.
+fn note_saved(s: &mut Service, item: MediaId, analyser: &str) {
+    #[cfg(feature = "transcript")]
+    if analyser == crate::transcript::ID && !s.completed.contains(&item) {
+        s.completed.push(item);
+    }
+    let _ = (s, item, analyser);
+}
+
+/// The items whose analysis finished since the last call, or whose
+/// transcript was just saved.
 pub fn take_completed() -> Vec<MediaId> {
     std::mem::take(&mut service().lock().unwrap_or_else(|e| e.into_inner()).completed)
 }
@@ -485,6 +499,20 @@ mod queue_tests {
             }
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A transcript is said as soon as it is saved, once; another
+    /// analyser's result waits for the whole item (#3443).
+    #[cfg(feature = "transcript")]
+    #[test]
+    fn a_saved_transcript_is_said_before_the_rest_is_done() {
+        let mut s = Service { statuses: HashMap::new(), queue: Vec::new(), running: 1, running_video: 1, ctx: AnalysisCtx::default(), completed: Vec::new(), force_transcript: std::collections::HashSet::new(), force_framing: std::collections::HashSet::new(), mattes: HashMap::new() };
+        let id = MediaId::new();
+        note_saved(&mut s, id, crate::shots::ID);
+        assert!(s.completed.is_empty(), "shots wait for the rest");
+        note_saved(&mut s, id, crate::transcript::ID);
+        note_saved(&mut s, id, crate::transcript::ID);
+        assert_eq!(s.completed, vec![id]);
     }
 
     #[test]
