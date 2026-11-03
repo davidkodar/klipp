@@ -370,6 +370,10 @@ impl KlippApp {
                 .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
                 .show(ctx, |ui| {
                     ui.set_min_width(280.0);
+                    // Its width fixed: the sound's hint below is longer for
+                    // tape than for kept pitch, and the window grew and
+                    // shrank with it (P54).
+                    ui.set_max_width(320.0);
                     ui.add_space(4.0);
 
                     ui.horizontal(|ui| {
@@ -475,8 +479,9 @@ impl KlippApp {
                                 } else {
                                     let mut speed = self.state.speed_dialog_value / 100.0;
                                     if self.state.speed_dialog_reverse { speed = -speed; }
-                                    cmds.push(AppCommand::SetClipSpeed { clip_id, speed, ripple: self.state.speed_dialog_ripple });
-                                    cmds.push(AppCommand::SetClipKeepPitch { clip_id, keep_pitch: self.state.speed_dialog_keep_pitch });
+                                    if let Some(clip) = self.state.sequence().all_clips().find(|c| c.id == clip_id) {
+                                        cmds.extend(crate::speed_dialog::apply_commands(clip, speed, self.state.speed_dialog_keep_pitch, self.state.speed_dialog_ripple));
+                                    }
                                 }
                             }
                             self.state.close_speed_dialog(true);
