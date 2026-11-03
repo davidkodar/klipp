@@ -80,6 +80,16 @@ pub fn refused_hint(why: &str) -> String {
     format!("Kept offline: {why}. If it is your media, move the file to a folder that isn't hidden, then Relink it.")
 }
 
+/// Where media may sit in a hidden folder above it: Klipp's own folders,
+/// the temporary folder and the project's own folder, so a project kept
+/// in a hidden folder keeps its media. Open, Relink and Collect all ask
+/// this, so a file one of them takes the others take too.
+pub fn trusted_roots(project_dir: Option<&Path>) -> Vec<std::path::PathBuf> {
+    let mut out = klipp_folders();
+    out.extend(project_dir.map(Path::to_path_buf));
+    out
+}
+
 /// The folders Klipp keeps its own files in (template media, caches,
 /// brand kits) and the temporary folder: media there may sit in a hidden
 /// folder above them, as `~/.cache/klipp` does.

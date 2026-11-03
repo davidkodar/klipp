@@ -232,6 +232,7 @@ fn build_copy_plan(
     only: Option<&HashSet<MediaId>>,
     cut: &HashSet<PathBuf>,
     still_grades: &[&NodeGraph],
+    project_dir: Option<&Path>,
 ) -> CopyPlan {
     let mut items: Vec<CopyItem> = Vec::new();
     let mut used_primary: HashSet<String> = HashSet::new();
@@ -252,7 +253,7 @@ fn build_copy_plan(
     // Only what is media, a LUT or a picture is carried (SEC1): a shared
     // project can name any file on the machine, and the folder collected
     // is handed on. Klipp's own folders may be hidden.
-    let trusted_folders = klipp_media::media_check::klipp_folders();
+    let trusted_folders = klipp_media::media_check::trusted_roots(project_dir);
     let trusted: Vec<&Path> = trusted_folders.iter().map(|p| p.as_path()).collect();
     let media_ok = |p: &Path| klipp_media::media_check::media_file_check(p, &trusted);
     let lut_ok = |p: &Path| klipp_media::media_check::lut_file_check(p, &trusted);
@@ -773,7 +774,7 @@ pub fn consolidate_project(
     // copied whole below instead.
     let mut cut_warnings = Vec::new();
     let cuts = match options.mode {
-        ConsolidateMode::Trimmed { handle_secs } => cut_used_files(media_pool, sequences, handle_secs, &options.dest_dir, progress.as_ref(), &mut cut_warnings),
+        ConsolidateMode::Trimmed { handle_secs } => cut_used_files(media_pool, sequences, handle_secs, &options.dest_dir, progress.as_ref(), &mut cut_warnings, Some(source_project_dir)),
         _ => HashMap::new(),
     };
     // A file with a clip no cut of it holds is copied whole instead: it
@@ -792,7 +793,7 @@ pub fn consolidate_project(
     // go with the project, and their grades read files like any other.
     let mut stills = crate::grade_stills::load_grade_stills(source_project_dir);
     let still_grades: Vec<&NodeGraph> = stills.iter().filter_map(|s| s.grade.as_ref()).collect();
-    let mut plan = build_copy_plan(media_pool, sequences, color_settings, &options, used.as_ref(), &cut_paths, &still_grades);
+    let mut plan = build_copy_plan(media_pool, sequences, color_settings, &options, used.as_ref(), &cut_paths, &still_grades, Some(source_project_dir));
     plan.warnings.extend(cut_warnings);
     let files_trimmed = cuts.len();
 
@@ -922,9 +923,10 @@ fn cut_used_files(
     dest_dir: &Path,
     progress: Option<&ProgressFn>,
     warnings: &mut Vec<String>,
+    project_dir: Option<&Path>,
 ) -> HashMap<PathBuf, Vec<crate::consolidate_trim::Segment>> {
     use crate::consolidate_trim as trim;
-    let planned = trim_candidates(pool, sequences, handle_secs);
+    let planned = trim_candidates(pool, sequences, handle_secs, project_dir);
     let total: usize = planned.iter().map(|(_, r)| r.len()).sum();
     let mut done = 0;
     let mut names: HashSet<String> = HashSet::new();
@@ -966,12 +968,12 @@ fn cut_used_files(
 
 /// The used files worth cutting, each with its used stretches: one item
 /// of the file stands for it (its probe facts are the file's).
-fn trim_candidates<'a>(pool: &'a MediaPool, sequences: &[Sequence], handle_secs: f64) -> Vec<(&'a MediaItem, Vec<crate::consolidate_trim::Range>)> {
+fn trim_candidates<'a>(pool: &'a MediaPool, sequences: &[Sequence], handle_secs: f64, project_dir: Option<&Path>) -> Vec<(&'a MediaItem, Vec<crate::consolidate_trim::Range>)> {
     use crate::consolidate_trim as trim;
     let mut out: Vec<(&MediaItem, Vec<trim::Range>)> = trim::used_ranges(pool, sequences, handle_secs)
         .into_iter()
         .filter_map(|(path, ranges)| {
-            let trusted_folders = klipp_media::media_check::klipp_folders();
+            let trusted_folders = klipp_media::media_check::trusted_roots(project_dir);
             let trusted: Vec<&Path> = trusted_folders.iter().map(|p| p.as_path()).collect();
             // Only media is cut and carried (SEC1).
             let item = pool.all().find(|m| m.path == path && !m.offline && !pool.refused.contains_key(&m.id) && m.path.exists() && !is_symlinked_leaf(&m.path) && trim::can_cut(m))?;
@@ -985,14 +987,16 @@ fn trim_candidates<'a>(pool: &'a MediaPool, sequences: &[Sequence], handle_secs:
 
 /// What [`consolidate_project`] will copy with these options, said before
 /// it runs (#77). Reads file sizes; writes nothing.
-pub fn summarise(media_pool: &MediaPool, sequences: &[Sequence], color_settings: &ColorSettings, options: &ConsolidateOptions) -> ConsolidateSummary {
+/// `project_dir`, the open project's folder, where its own media may be
+/// though it is in a hidden folder.
+pub fn summarise(media_pool: &MediaPool, sequences: &[Sequence], color_settings: &ColorSettings, options: &ConsolidateOptions, project_dir: Option<&Path>) -> ConsolidateSummary {
     let used = (options.mode != ConsolidateMode::Collect).then(|| crate::consolidate_trim::used_media(media_pool, sequences));
     let candidates = match options.mode {
-        ConsolidateMode::Trimmed { handle_secs } => trim_candidates(media_pool, sequences, handle_secs),
+        ConsolidateMode::Trimmed { handle_secs } => trim_candidates(media_pool, sequences, handle_secs, project_dir),
         _ => Vec::new(),
     };
     let cut: HashSet<PathBuf> = candidates.iter().map(|(m, _)| m.path.clone()).collect();
-    let plan = build_copy_plan(media_pool, sequences, color_settings, options, used.as_ref(), &cut, &[]);
+    let plan = build_copy_plan(media_pool, sequences, color_settings, options, used.as_ref(), &cut, &[], project_dir);
     let size = |p: &Path| std::fs::metadata(p).map(|m| m.len()).unwrap_or(0);
     let mut bytes: u64 = plan.items.iter().map(|i| size(&i.src)).sum();
     let mut files = plan.items.len();

@@ -490,8 +490,7 @@ fn load_project_as(dir: &Path, form: crate::FileForm, strict: bool) -> Result<Lo
     // Reconstruct media pool — resolve stored paths (relative or absolute) to absolute
     let mut media_pool = MediaPool::new();
     // Where media may sit in a hidden folder: the project's own, Klipp's.
-    let mut trusted_folders = klipp_media::media_check::klipp_folders();
-    trusted_folders.push(dir.to_path_buf());
+    let trusted_folders = klipp_media::media_check::trusted_roots(Some(dir));
     let trusted: Vec<&Path> = trusted_folders.iter().map(|p| p.as_path()).collect();
     for item_json in &manifest.items {
         // Older manifests omitted the kind even for reusable title assets.

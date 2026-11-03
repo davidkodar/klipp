@@ -1318,7 +1318,7 @@ impl KlippApp {
                             fonts: Vec::new(),
                         };
                         let color = klipp_project::ColorSettings { global_lut_path: self.state.global_lut_path.clone(), ..Default::default() };
-                        let summary = klipp_project::consolidate::summarise(&self.state.media_pool, &self.state.sequences, &color, &options);
+                        let summary = klipp_project::consolidate::summarise(&self.state.media_pool, &self.state.sequences, &color, &options, self.state.project_path.as_deref());
                         self.state.consolidate_summary = Some((key, summary));
                     }
                     if let Some((_, s)) = &self.state.consolidate_summary {

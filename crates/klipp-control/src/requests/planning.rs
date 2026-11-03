@@ -1543,7 +1543,7 @@ fn collect_project(ctx: &crate::ControlContext, dest: Option<String>, mode: Opti
             .filter_map(|family| klipp_title::collect::font_files(&family).err().map(|why| (family, why)))
             .collect();
         let options = consolidate::ConsolidateOptions { dest_dir: std::path::PathBuf::new(), include_proxies: proxies, include_skims: false, mode, looks: Vec::new(), fonts: Vec::new() };
-        let summary = consolidate::summarise(&pool, &sequences, &Default::default(), &options);
+        let summary = consolidate::summarise(&pool, &sequences, &Default::default(), &options, ctx.shared.project.lock().recovered().path.as_deref());
         let report = klipp_project::collect_report::report(&sequences, &pool, &fonts_left_out, &describe_plugin);
         return Ok(json!({
             "files": summary.files,

@@ -1777,8 +1777,7 @@ impl KlippApp {
         let cache_dir = self.proxy_cache_dir();
         // Checked as a file the project names is at open (SEC1): kept
         // offline, with why, when it is not media or is in a hidden folder.
-        let mut trusted_folders = klipp_media::media_check::klipp_folders();
-        trusted_folders.extend(self.state.project_path.as_deref().and_then(|p| p.parent()).map(Path::to_path_buf));
+        let trusted_folders = klipp_media::media_check::trusted_roots(self.state.project_path.as_deref());
         let trusted: Vec<&Path> = trusted_folders.iter().map(PathBuf::as_path).collect();
         let refused = new_path.exists().then(|| klipp_media::media_check::media_file_check(new_path, &trusted).err()).flatten();
         match &refused {
