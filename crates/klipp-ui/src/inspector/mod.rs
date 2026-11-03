@@ -468,13 +468,16 @@ impl NewInspectorPanel {
                         // track as the sidechain source (falls back to first audio track).
                         if self.last_duck_clip != Some(clip.id) {
                             self.duck = audio_tab::DuckSettings::from_prefs(&prefs.audio);
+                            // Never the clip's own track: ducked under itself,
+                            // it was an error until changed (P16).
                             let dialogue_track = state.sequence().tracks.iter().enumerate()
-                                .find(|(_, t)| {
-                                    t.kind == klipp_timeline::TrackKind::Audio
+                                .find(|(i, t)| {
+                                    *i != track_idx
+                                        && t.kind == klipp_timeline::TrackKind::Audio
                                         && t.clips.iter().any(|c| c.role.as_ref().is_some_and(|r| r.is_speech()))
                                 })
                                 .map(|(i, _)| i);
-                            let first_audio = track_infos.first().map(|ti| ti.index);
+                            let first_audio = track_infos.iter().map(|ti| ti.index).find(|i| *i != track_idx);
                             self.duck.sidechain_track = dialogue_track.or(first_audio).unwrap_or(0);
                             self.last_duck_clip = Some(clip.id);
                         }
