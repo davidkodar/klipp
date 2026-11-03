@@ -44,8 +44,6 @@ use serde_json::{json, Value};
 /// failure of this test, and any other shape is. Each goes when its fix
 /// lands, and the test then proves the fix.
 const KNOWN: &[(&str, fn(&Broken, &str) -> bool)] = &[
-    // A link to a clip that isn't there.
-    ("R5", |b, _| b.invariant == SYNC && b.detail.contains("isn't there")),
     // Undo or redo giving back a time at another rate, the same time.
     ("R8", |b, _| b.invariant.ends_with("(a time written at another rate)")),
     // Under a frame off: a sound placed to the sample against pictures

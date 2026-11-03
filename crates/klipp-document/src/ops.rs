@@ -5120,6 +5120,29 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
                 secs(b.timeline_out),
                 if partner_edit.is_some() { ", its linked sound with it" } else { "" }
             );
+            // A partner the cut doesn't reach (a sound running on past its
+            // picture, and cut there): each half keeps it only while it
+            // lies over it, and it points at the half over it most, as the
+            // timeline's blade leaves them. Left as it was, the partner
+            // named the clip no longer there.
+            if partner_edit.is_none() {
+                if let Some((_, _, partner)) = clip.linked_clip_id.and_then(|pid| find_clip(seq, pid)).filter(|(pti, _, _)| !seq.tracks[*pti].locked) {
+                    let over = |c: &Clip| (secs(c.timeline_out.min(partner.timeline_out)) - secs(c.timeline_in.max(partner.timeline_in))).max(0.0);
+                    let (oa, ob) = (over(&a), over(&b));
+                    a.linked_clip_id = (oa > 0.0).then_some(partner.id);
+                    b.linked_clip_id = (ob > 0.0).then_some(partner.id);
+                    if partner.linked_clip_id == Some(clip.id) {
+                        let want = match (oa > 0.0, ob > 0.0) {
+                            (false, false) => None,
+                            _ if ob > oa => Some(b.id),
+                            _ => Some(a.id),
+                        };
+                        let mut relinked = partner.clone();
+                        relinked.linked_clip_id = want;
+                        partner_edit = Some(EditCommand::ReplaceClip { description: "Split", old: Box::new(partner.clone()), new: Box::new(relinked) });
+                    }
+                }
+            }
             // The transitions on its cuts, and its partner's, go to the
             // pieces now at those cuts.
             let mut moved = crate::blade::transitions_onto_pieces(&seq.tracks[ti], ti, clip.id, a.id, b.id);
