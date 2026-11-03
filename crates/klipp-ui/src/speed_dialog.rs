@@ -47,6 +47,64 @@ pub fn fit_targets(seq: &Sequence, clip_id: ClipId) -> FitTargets {
     FitTargets { to_next, range }
 }
 
+/// What Fit to the marked range made (P53): the sequence after it, the
+/// tracks it changed, and the clip in its new place.
+pub struct OnMarks {
+    pub sequence: Sequence,
+    pub touched: std::collections::BTreeSet<usize>,
+    pub clip: ClipId,
+}
+
+/// Clip `clip_id` put on the marked range: lifted with its linked sound,
+/// its speed set so it lasts from In to Out (its direction kept), and laid
+/// down from In, over what is there or pushing it along as `mode` says;
+/// played backward when `reverse`.
+/// It used to keep its place, made only as long as the range. `None`
+/// without a marked range, for a clip with a speed ramp (its curve is not
+/// one speed to set), or when Insert finds a locked track in the way.
+pub fn fit_on_marks(seq: &Sequence, clip_id: ClipId, mode: klipp_document::clipboard::PasteMode, reverse: bool) -> Option<OnMarks> {
+    use klipp_document::clipboard;
+    let (from, to) = (seq.in_point?, seq.out_point?);
+    if to <= from {
+        return None;
+    }
+    let (ti, ci) = seq.find_clip(clip_id)?;
+    let picked = &seq.tracks[ti].clips[ci];
+    if !picked.speed_keyframes.is_empty() {
+        return None;
+    }
+    let mut cb = clipboard::copy(seq, &[clip_id])?;
+    let length = to - from;
+    let secs = length.to_secs_f64();
+    let first = cb.clips.iter().map(|c| c.clip.timeline_in).min()?;
+    for c in &mut cb.clips {
+        let content = (c.clip.source_out - c.clip.source_in).to_secs_f64();
+        if content <= 0.0 {
+            return None;
+        }
+        let sign = if reverse { -1.0 } else { 1.0 };
+        c.clip.speed = sign * content / secs;
+        // Each from where the pair starts, all as long as the range.
+        c.clip.timeline_in = first;
+        c.clip.timeline_out = first + length;
+    }
+    let mut lifted = seq.clone();
+    for c in &cb.clips {
+        if let Some((t, _)) = lifted.find_clip(c.clip.id) {
+            lifted.tracks[t].remove_clip(c.clip.id);
+        }
+    }
+    let original = seq.tracks[ti].clips[ci].clone();
+    let at = cb.clips.iter().position(|c| c.clip.id == original.id)?;
+    let pasted = clipboard::paste_onto(&lifted, &cb, from, mode);
+    if pasted.no_room || pasted.ids.len() != cb.clips.len() {
+        return None;
+    }
+    let mut touched = pasted.touched;
+    touched.extend(cb.clips.iter().map(|c| c.track));
+    Some(OnMarks { clip: pasted.ids[at], sequence: pasted.sequence, touched })
+}
+
 /// A length typed into the dialog: seconds ("4", "4 s", "4.5") or a
 /// timecode as the sequence counts it ("00:00:04:00").
 pub fn parse_length(input: &str, tc: TimecodeDisplay) -> Option<f64> {
@@ -101,6 +159,43 @@ mod tests {
         assert_eq!(fit_targets(&seq, id).range, Some(9.5));
         let last = seq.tracks[seq.primary_track_index().unwrap()].clips[2].id;
         assert_eq!(fit_targets(&seq, last).to_next, None, "nothing follows the last shot");
+    }
+
+    /// P53: fitted to the marked range, the clip goes on the marks: it
+    /// starts at In and ends at Out at the speed that takes, its sound
+    /// with it. Over another clip, Overwrite lays it over; Insert pushes
+    /// what is there along by the range.
+    #[test]
+    fn fit_to_the_marked_range_puts_the_clip_on_the_marks() {
+        use klipp_document::clipboard::PasteMode;
+        use klipp_timeline::{Track, TrackKind};
+        let (mut seq, id) = seq();
+        let p = seq.primary_track_index().unwrap();
+        // Its sound linked under it.
+        let mut sound = Clip::media(MediaId::new(), t(0.0), t(4.0), t(14.8), t(18.8));
+        sound.linked_clip_id = Some(id);
+        seq.tracks[p].clips[0].linked_clip_id = Some(sound.id);
+        let mut a1 = Track::new("A1", TrackKind::Audio);
+        a1.clips.push(sound);
+        seq.tracks.push(a1);
+        let ai = seq.tracks.len() - 1;
+        // The range 10 to 18 s: 8 s, over the shot at 10-14 s.
+        seq.in_point = Some(t(10.0));
+        seq.out_point = Some(t(18.0));
+        let span = |s: &Sequence, ti: usize| -> Vec<(f64, f64)> { s.tracks[ti].clips.iter().filter(|c| !c.kind.is_gap()).map(|c| (c.timeline_in.to_secs_f64(), c.timeline_out.to_secs_f64())).collect() };
+
+        let over = fit_on_marks(&seq, id, PasteMode::Overwrite, false).expect("fitted");
+        let placed = over.sequence.all_clips().find(|c| c.id == over.clip).unwrap();
+        assert_eq!((placed.timeline_in, placed.timeline_out), (t(10.0), t(18.0)), "on the marks");
+        assert!((placed.speed - 0.5).abs() < 1e-9, "4 s of source over 8 s: half speed, {}", placed.speed);
+        assert_eq!(span(&over.sequence, p), vec![(10.0, 18.0)], "laid over the shot at 10 s, its old place empty");
+        assert_eq!(span(&over.sequence, ai), vec![(10.0, 18.0)], "its sound with it");
+
+        let pushed = fit_on_marks(&seq, id, PasteMode::Insert, false).expect("fitted");
+        assert_eq!(span(&pushed.sequence, p), vec![(10.0, 18.0), (18.0, 22.0)], "the shot pushed along by 8 s");
+
+        seq.out_point = None;
+        assert!(fit_on_marks(&seq, id, PasteMode::Overwrite, false).is_none(), "no marked range");
     }
 
     #[test]

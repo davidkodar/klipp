@@ -1900,6 +1900,9 @@ pub struct AppState {
     pub speed_dialog_content_secs: f64,
     /// The lengths the dialog offers to fit the clip to (#3115).
     pub speed_dialog_fit: crate::speed_dialog::FitTargets,
+    /// Fit to the marked range was chosen (P53): Apply puts the clip on
+    /// the marks, unless the speed was changed again since.
+    pub speed_dialog_on_marks: bool,
 
     // Source viewer
     pub source_media_id: Option<MediaId>,
@@ -4938,6 +4941,7 @@ impl Default for AppState {
             speed_dialog_ripple_before: true,
             speed_dialog_content_secs: 0.0,
             speed_dialog_fit: Default::default(),
+            speed_dialog_on_marks: false,
             source_media_id: None,
             source_playhead: Timecode::zero(),
             source_seek_dispatch_at: None,
@@ -5636,6 +5640,7 @@ impl AppState {
         self.speed_dialog_keep_pitch = keep;
         self.speed_dialog_content_secs = crate::speed_dialog::content_secs(self.sequence(), clip_id).unwrap_or(0.0);
         self.speed_dialog_fit = crate::speed_dialog::fit_targets(self.sequence(), clip_id);
+        self.speed_dialog_on_marks = false;
         self.speed_dialog_ripple_before = self.speed_dialog_ripple;
         self.show_speed_dialog = true;
     }

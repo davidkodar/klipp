@@ -7,6 +7,26 @@ impl KlippApp {
     /// Render whichever model-download dialog matches the current
     /// state. Drains worker events first so progress updates land
     /// the same frame they arrive.
+    /// The Speed dialog's Fit to the marked range applied (P53): the clip
+    /// and its linked sound on the marks, at the speed that takes, over
+    /// what is there or pushing it along by the edit mode, as one undo
+    /// step; the clip there selected.
+    fn fit_clip_on_marks(&mut self, clip_id: klipp_core::ClipId, reverse: bool) {
+        let mode = match self.state.edit_mode {
+            klipp_timeline::magnetic::EditMode::Overwrite => klipp_document::clipboard::PasteMode::Overwrite,
+            klipp_timeline::magnetic::EditMode::Insert => klipp_document::clipboard::PasteMode::Insert,
+        };
+        let before = self.state.sequence().clone();
+        let Some(done) = crate::speed_dialog::fit_on_marks(&before, clip_id, mode, reverse) else {
+            self.state.toast.show("Not fitted: mark an In and an Out, on unlocked tracks, for a clip without a speed ramp");
+            return;
+        };
+        let edits = klipp_document::clipboard::track_edits(&before, &done.sequence, &done.touched, "Fit to Marked Range");
+        self.apply_edits_as_one(&edits, "Fit to Marked Range");
+        self.state.selected_clip = Some(done.clip);
+        self.state.selected_clips.clear();
+    }
+
     pub(super) fn render_model_download_dialogs(
         &mut self,
         ctx: &egui::Context,
@@ -391,11 +411,12 @@ impl KlippApp {
                                 Some(l) => format!("Fit to the marked range ({l:.2} s)"),
                                 None => "Fit to the marked range".into(),
                             }))
-                            .on_hover_text("Make the clip as long as the timeline's marked In to Out.")
+                            .on_hover_text("Put the clip on the timeline's marks: it starts at In and ends at Out, at the speed that takes. What is there is written over, or pushed along in insert mode.")
                             .on_disabled_hover_text("Mark an In and an Out point on the timeline first");
                             if range.clicked() {
                                 if let Some(l) = fit.range {
                                     self.state.speed_dialog_value = crate::speed_dialog::percent_for(content, l).clamp(1.0, 1000.0);
+                                    self.state.speed_dialog_on_marks = true;
                                 }
                             }
                         });
@@ -439,12 +460,23 @@ impl KlippApp {
                     ui.add_space(8.0);
 
                     ui.horizontal(|ui| {
+                        // On the marks (P53), while the speed is still the
+                        // one the fit set.
+                        let on_marks = self.state.speed_dialog_on_marks
+                            && self.state.speed_dialog_fit.range.is_some_and(|l| (crate::speed_dialog::percent_for(content, l).clamp(1.0, 1000.0) - self.state.speed_dialog_value).abs() < 1e-6);
                         if ui.button("Apply").clicked() {
                             if let Some(clip_id) = self.state.selected_clip {
-                                let mut speed = self.state.speed_dialog_value / 100.0;
-                                if self.state.speed_dialog_reverse { speed = -speed; }
-                                cmds.push(AppCommand::SetClipSpeed { clip_id, speed, ripple: self.state.speed_dialog_ripple });
-                                cmds.push(AppCommand::SetClipKeepPitch { clip_id, keep_pitch: self.state.speed_dialog_keep_pitch });
+                                if on_marks {
+                                    self.fit_clip_on_marks(clip_id, self.state.speed_dialog_reverse);
+                                    // The clip on the marks is a new one, selected.
+                                    let placed = self.state.selected_clip.unwrap_or(clip_id);
+                                    cmds.push(AppCommand::SetClipKeepPitch { clip_id: placed, keep_pitch: self.state.speed_dialog_keep_pitch });
+                                } else {
+                                    let mut speed = self.state.speed_dialog_value / 100.0;
+                                    if self.state.speed_dialog_reverse { speed = -speed; }
+                                    cmds.push(AppCommand::SetClipSpeed { clip_id, speed, ripple: self.state.speed_dialog_ripple });
+                                    cmds.push(AppCommand::SetClipKeepPitch { clip_id, keep_pitch: self.state.speed_dialog_keep_pitch });
+                                }
                             }
                             self.state.close_speed_dialog(true);
                         }

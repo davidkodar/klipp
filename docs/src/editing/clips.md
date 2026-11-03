@@ -57,6 +57,9 @@ Press **B** for the Blade tool and click a clip to split it there, or press **Ct
 **Clip → Speed...** sets the clip's speed and reverse:
 
 - Constant speed — preset percentages or a custom value; the clip's length changes to match
+- A length instead of a speed, typed in seconds or as a timecode
+- **Fill to the next clip** — the speed that makes the clip end where the next clip on its track starts
+- **Fit to the marked range** — the clip goes on the timeline's marks: it starts at the In point and ends at the Out point, at the speed that takes, with its linked sound. Whatever is under the range is written over in overwrite mode, or pushed along in insert mode. Undo puts it all back in one step.
 - Speed keys, in the Video tab's speed rows
 - **Keep pitch** for the sound
 
