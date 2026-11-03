@@ -3073,12 +3073,7 @@ fn tx_result_strip(
     );
     // The count in the room left of Sort: shortened, or left out, where
     // the panel is narrow. It was drawn under Sort (P55).
-    let font = egui::FontId::proportional(11.0);
-    let room = dropdown_rect.min.x - 8.0 - (rect.min.x + 12.0);
-    let width = |t: &str| ui.painter().layout_no_wrap(t.to_string(), font.clone(), theme.text_secondary).size().x;
-    if let Some(label) = count_label(count, room, width) {
-        ui.painter().text(egui::pos2(rect.min.x + 12.0, rect.center().y), egui::Align2::LEFT_CENTER, label, font, theme.text_secondary);
-    }
+    crate::browser::library_card::paint_count(ui, theme, rect, dropdown_w, count, &format!("{count} Transitions"));
     ui.allocate_new_ui(egui::UiBuilder::new().max_rect(dropdown_rect), |ui| {
         ui.style_mut().visuals.widgets.inactive.weak_bg_fill = egui::Color32::TRANSPARENT;
         ui.style_mut().visuals.widgets.inactive.bg_stroke = egui::Stroke::NONE;
@@ -3092,24 +3087,6 @@ fn tx_result_strip(
                 }
             });
     });
-}
-
-/// The result strip's count in `room` points, `width` measuring a text:
-/// "N Transitions", else the number alone, else nothing.
-fn count_label(count: usize, room: f32, width: impl Fn(&str) -> f32) -> Option<String> {
-    [format!("{count} Transitions"), count.to_string()].into_iter().find(|t| width(t) <= room)
-}
-
-#[cfg(test)]
-mod count_label_tests {
-    /// P55: the count shortens, then goes, as the room left of Sort does.
-    #[test]
-    fn the_count_fits_the_room_left_of_sort() {
-        let width = |t: &str| t.chars().count() as f32 * 6.0;
-        assert_eq!(super::count_label(73, 200.0, width).as_deref(), Some("73 Transitions"));
-        assert_eq!(super::count_label(73, 40.0, width).as_deref(), Some("73"));
-        assert_eq!(super::count_label(73, 5.0, width), None);
-    }
 }
 
 #[cfg(test)]
