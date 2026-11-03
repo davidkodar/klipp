@@ -473,8 +473,9 @@ pub enum ControlCommand {
     /// The pointer stays where a request leaves it, for the next. A drag
     /// lands where it showed on the frame before the release: move to the
     /// drop point in one step and release in the next. The reply comes
-    /// when the steps are queued; read the result back (`timeline`,
-    /// `window_screenshot`) once they have played.
+    /// once the steps have played (`settled`: false when they had not
+    /// after a minute), so a `timeline` or `window_screenshot` read after
+    /// it sees what they did.
     #[cfg(feature = "test-hooks")]
     Pointer {
         steps: Vec<klipp_core::pointer::PointerStep>,

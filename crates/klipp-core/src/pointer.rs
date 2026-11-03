@@ -126,9 +126,47 @@ pub fn pointer_steps_fault(steps: &[PointerStep]) -> Option<String> {
     None
 }
 
+/// Wait until `pending`, the steps a window has still to play, is none,
+/// up to `timeout`; whether they all played. A frame more is let run, for
+/// what the last step's frame sent on.
+pub fn wait_for_steps(pending: &std::sync::atomic::AtomicUsize, timeout: std::time::Duration) -> bool {
+    let start = std::time::Instant::now();
+    while pending.load(std::sync::atomic::Ordering::SeqCst) > 0 {
+        if start.elapsed() > timeout {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A `pointer` request waits for its steps (W7): until none are left,
+    /// or says they did not all play once the time is up.
+    #[test]
+    fn the_request_waits_for_its_steps() {
+        use std::sync::{atomic::{AtomicUsize, Ordering}, Arc};
+        let pending = Arc::new(AtomicUsize::new(3));
+        let window = {
+            let pending = pending.clone();
+            std::thread::spawn(move || {
+                for left in (0..3).rev() {
+                    std::thread::sleep(std::time::Duration::from_millis(30));
+                    pending.store(left, Ordering::SeqCst);
+                }
+            })
+        };
+        let start = std::time::Instant::now();
+        assert!(wait_for_steps(&pending, std::time::Duration::from_secs(5)), "they played");
+        assert!(start.elapsed() >= std::time::Duration::from_millis(90), "it waited for the last one: {:?}", start.elapsed());
+        window.join().unwrap();
+        pending.store(1, Ordering::SeqCst);
+        assert!(!wait_for_steps(&pending, std::time::Duration::from_millis(50)), "one never played");
+    }
 
     #[test]
     fn steps_read_and_bad_ones_are_refused() {

@@ -858,7 +858,17 @@ pub(crate) fn respond(
             if let Some(why) = klipp_core::pointer::pointer_steps_fault(&steps) {
                 return Err(why);
             }
-            send(AppCommand::InjectPointer(steps))
+            let mut answer = send(AppCommand::InjectPointer(steps))?;
+            // Answered once the steps have played (W7: a timeline read
+            // straight after a drag ran before the drop, and the drag
+            // looked as if it had done nothing).
+            if answer.get("queued").is_none() {
+                let settled = klipp_core::pointer::wait_for_steps(&ctx.shared.pointer_steps, std::time::Duration::from_secs(60));
+                if let Some(o) = answer.as_object_mut() {
+                    o.insert("settled".into(), serde_json::Value::Bool(settled));
+                }
+            }
+            Ok(answer)
         }
         #[cfg(feature = "test-hooks")]
         ControlCommand::EffectCommand { clip_id, action, index, to, effect } => {

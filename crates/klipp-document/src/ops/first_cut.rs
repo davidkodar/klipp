@@ -87,6 +87,8 @@ const RETAKE_REACH: usize = 3;
 const RETAKE_MATCH: f64 = 0.8;
 /// The fewest words a sentence needs to be told a retake.
 const RETAKE_WORDS: usize = 3;
+/// The words a later take may say before it opens with an earlier one.
+const RETAKE_LEAD_IN: usize = 2;
 /// A pause between words that ends a sentence, seconds.
 const SENTENCE_PAUSE: f64 = 1.0;
 /// The shortest piece of a clip a cut may leave, seconds: a shorter one
@@ -153,11 +155,20 @@ fn common_in_order(a: &[String], b: &[String]) -> usize {
     row[b.len()]
 }
 
-/// Whether two sentences are one line said twice: most of the shorter's
-/// words in the longer, in order.
-fn same_line(a: &[String], b: &[String]) -> bool {
-    let shorter = a.len().min(b.len());
-    shorter >= RETAKE_WORDS && common_in_order(a, b) as f64 >= RETAKE_MATCH * shorter as f64
+/// Whether `later` says `earlier` again: most of both lines' words, in
+/// order, or `earlier` given up on and `later` opening with all of it, an
+/// "um" or two before. Most of the shorter line alone took two sentences that
+/// only opened alike for one, "The wizard is the AI." for a take of "The
+/// wizard is the frontier level of intelligence.", and cut a line meant to
+/// be said.
+fn same_line(earlier: &[String], later: &[String]) -> bool {
+    if earlier.len().min(later.len()) < RETAKE_WORDS {
+        return false;
+    }
+    let common = common_in_order(earlier, later) as f64;
+    let most_of = |line: &[String]| common >= RETAKE_MATCH * line.len() as f64;
+    let opens_with_it = later.windows(earlier.len()).take(RETAKE_LEAD_IN + 1).any(|w| w == earlier);
+    (most_of(earlier) && most_of(later)) || opens_with_it
 }
 
 /// The sentences of `words`, by their index ranges: a sentence ends at a
@@ -203,6 +214,13 @@ pub fn retakes(words: &[SpokenWord]) -> Vec<(f64, f64, String)> {
     out
 }
 
+/// Whether cutting `from..to` (timeline seconds) takes a whole frame: a cut
+/// goes to whole frames inward, so a shorter one takes nothing. What is left
+/// of a pause at a cut already made is that short.
+fn takes_a_frame(from: f64, to: f64, rate: f64) -> bool {
+    ((to * rate) + 1e-6).floor() > ((from * rate) - 1e-6).ceil()
+}
+
 /// `t` (seconds) as m:ss.
 fn at(t: f64) -> String {
     let t = t.max(0.0);
@@ -220,6 +238,7 @@ pub fn plan(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts, ste
     }
     let mut all: Vec<Change> = Vec::new();
     let (min_pause, padding) = steps.tightness.pause();
+    let rate = seq.fps.as_f64();
     for s in speaking {
         let (s_in, s_out) = (secs(s.clip.source_in), secs(s.clip.source_out));
         let (t_in, t_out) = (secs(s.clip.timeline_in), secs(s.clip.timeline_out));
@@ -228,7 +247,8 @@ pub fn plan(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts, ste
         if steps.silences {
             for &(a, b) in transcripts.silences(s.item).iter().filter(|(a, b)| b - a >= min_pause) {
                 let (from, to) = (tl(a + padding), tl(b - padding));
-                if to - from > 1e-3 {
+                // Shorter than this would read "0.0 s pause".
+                if takes_a_frame(from, to, rate) && to - from >= 0.05 {
                     cuts.push(Change { kind: Kind::Silence, from_secs: from, to_secs: to, what: format!("{:.1} s pause at {}", to - from, at(from)) });
                 }
             }
@@ -237,7 +257,7 @@ pub fn plan(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts, ste
             let words = klipp_core::lang::words(transcripts.language(s.item).as_deref()).ok();
             for w in s.words.iter().filter(|w| words.as_ref().is_some_and(|l| l.is_filler(&w.text))) {
                 let (from, to) = (tl(w.start_secs), tl(w.end_secs));
-                if to - from > 1e-3 {
+                if takes_a_frame(from, to, rate) {
                     cuts.push(Change { kind: Kind::Filler, from_secs: from, to_secs: to, what: format!("\"{}\" at {}", w.text.trim(), at(from)) });
                 }
             }
@@ -245,7 +265,7 @@ pub fn plan(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts, ste
         if steps.retakes {
             for (a, b, line) in retakes(&s.words) {
                 let (from, to) = (tl(a), tl(b));
-                if to - from > 1e-3 {
+                if takes_a_frame(from, to, rate) {
                     cuts.push(Change { kind: Kind::Retake, from_secs: from, to_secs: to, what: format!("earlier take of \"{line}\" at {}", at(from)) });
                 }
             }
@@ -563,6 +583,77 @@ mod tests {
         let mut said = words("Right.", 0.0);
         said.extend(words("Right.", 2.0));
         assert!(retakes(&said).is_empty());
+    }
+
+    /// Two sentences that open alike are not one line said twice: the later
+    /// must repeat the earlier as a whole. A true retake is still one, with a
+    /// word changed, or restarted from a line given up on.
+    #[test]
+    fn a_retake_repeats_the_whole_line_not_its_opening() {
+        let words = |text: &str, from: f64| text.split(' ').enumerate().map(|(i, t)| w(from + i as f64 * 0.3, from + i as f64 * 0.3 + 0.25, t)).collect::<Vec<_>>();
+        let two = |a: &str, b: &str| {
+            let mut said = words(a, 0.0);
+            said.extend(words(b, 5.0));
+            retakes(&said).len()
+        };
+        assert_eq!(two("The wizard is the AI.", "The wizard is the frontier level of intelligence."), 0, "two sentences: both stay");
+        assert_eq!(two("We went to the river.", "We went to the river and then the sea."), 1, "given up, and said in full");
+        assert_eq!(two("We went to the river.", "um We went to the river and then the sea."), 1, "an um before it");
+        assert_eq!(two("We went to the river.", "After lunch that day we went to the river."), 0, "said later in another line");
+        assert_eq!(two("The wizard is the AI.", "The wizard is the AI."), 1);
+        assert_eq!(two("The wizard is really the AI.", "The wizard is truly the AI."), 1, "a word changed");
+    }
+
+    /// Run again on a cut timeline, what is left of a pause at each cut is
+    /// less than a frame: nothing to cut, and no "0.0 s pause" listed.
+    #[test]
+    fn a_second_run_lists_nothing_at_the_cuts() {
+        let (seq, pool) = talking();
+        let cut = applied(&seq, &pool, first_cut(Vec::new()));
+        let again = plan(&cut, &pool, &Talk, &Steps { punch: false, captions: false, ..Steps::default() });
+        let rate = cut.fps.as_f64();
+        for c in &again {
+            let frames = ((c.to_secs * rate) + 1e-6).floor() - ((c.from_secs * rate) - 1e-6).ceil();
+            assert!(frames >= 1.0, "less than a frame: {c:?}");
+            assert!(!c.what.contains("0.0 s"), "{c:?}");
+        }
+    }
+
+    /// A word just before a cut with the next piece's first word right after
+    /// it: its caption ends at the cut, not at the next caption's start.
+    struct AcrossACut;
+
+    impl Transcripts for AcrossACut {
+        fn words(&self, _item: &klipp_media::MediaItem) -> Option<Vec<SpokenWord>> {
+            Some(vec![w(0.0, 0.5, "Here"), w(0.5, 1.0, "is"), w(1.0, 1.5, "the"), w(1.5, 1.95, "first"), w(4.04, 4.5, "And"), w(4.5, 5.0, "here"), w(5.0, 5.5, "the"), w(5.5, 6.0, "second")])
+        }
+    }
+
+    #[test]
+    fn a_caption_ends_at_its_pieces_cut() {
+        let mut seq = Sequence::new_default();
+        seq.fps = Fps::new(50, 1);
+        let t = |s: f64| RationalTime::from_secs_f64(s, 50);
+        let mut pool = MediaPool::new();
+        let mut item = klipp_media::MediaItem::synthetic_for_test("/tmp/talk.mov".into(), None);
+        item.duration = t(10.0);
+        item.has_audio = true;
+        let media = pool.add(item);
+        // 0-2 s of the file, then 4-8 s, back to back.
+        let mut track = Track::new("A1", TrackKind::Audio);
+        track.clips = vec![Clip::media(media, t(0.0), t(2.0), t(0.0), t(2.0)), Clip::media(media, t(2.0), t(6.0), t(4.0), t(8.0))];
+        seq.tracks = vec![track];
+        let plan = resolve_with(&seq, &pool, &[op(serde_json::json!({"op": "captions"}))], &AcrossACut).unwrap_or_else(|r| panic!("{r:?}"));
+        let mut seqs = vec![seq.clone()];
+        let (mut p, mut fps) = (pool.clone(), seq.fps);
+        let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps };
+        view.apply_forward(&plan.steps[0].edit);
+        let cut = seqs.remove(0);
+        let subtitle = cut.tracks.iter().find(|t| t.kind == TrackKind::Subtitle).expect("a caption track");
+        let ends: Vec<f64> = subtitle.clips.iter().map(|c| secs(c.timeline_out)).collect();
+        assert_eq!(ends.len(), 2, "{ends:?}");
+        assert!(ends[0] <= 2.0 + 1e-9, "the first caption ends at {:.2}, past the cut at 2.00", ends[0]);
+        assert!(ends[0] >= 1.9, "held to the word's end at least: {:.2}", ends[0]);
     }
 
     /// "Um, so, uh, let me show you": fillers that start between frames.

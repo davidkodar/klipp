@@ -180,3 +180,34 @@ mod tests {
         assert_eq!(f, vec!["b".to_string()]);
     }
 }
+
+/// A Library tab's count, in the room left of its Sort menu: `label`
+/// ("16 Generators"), else the bare count, else nothing where the panel is
+/// too narrow. It was drawn under Sort (P55, P66).
+pub(crate) fn count_label(count: usize, label: &str, room: f32, width: impl Fn(&str) -> f32) -> Option<String> {
+    [label.to_string(), count.to_string()].into_iter().find(|t| width(t) <= room)
+}
+
+/// The count drawn at the left of a Library tab's result strip `rect`,
+/// clear of the Sort menu `sort_w` wide at its right.
+pub(crate) fn paint_count(ui: &egui::Ui, theme: &crate::theme::KlippTheme, rect: egui::Rect, sort_w: f32, count: usize, label: &str) {
+    let font = egui::FontId::proportional(11.0);
+    let room = rect.max.x - sort_w - 8.0 - 8.0 - (rect.min.x + 12.0);
+    let width = |t: &str| ui.painter().layout_no_wrap(t.to_string(), font.clone(), theme.text_secondary).size().x;
+    if let Some(text) = count_label(count, label, room, width) {
+        ui.painter().text(egui::pos2(rect.min.x + 12.0, rect.center().y), egui::Align2::LEFT_CENTER, text, font, theme.text_secondary);
+    }
+}
+
+#[cfg(test)]
+mod count_label_tests {
+    /// P55, P66: the count shortens, then goes, as the room left of Sort
+    /// does.
+    #[test]
+    fn the_count_fits_the_room_left_of_sort() {
+        let width = |t: &str| t.chars().count() as f32 * 6.0;
+        assert_eq!(super::count_label(16, "16 Generators", 200.0, width).as_deref(), Some("16 Generators"));
+        assert_eq!(super::count_label(16, "16 Generators", 40.0, width).as_deref(), Some("16"));
+        assert_eq!(super::count_label(16, "16 Generators", 5.0, width), None);
+    }
+}

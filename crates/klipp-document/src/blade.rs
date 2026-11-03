@@ -81,9 +81,9 @@ fn overlap_secs(a: &Clip, b: &Clip) -> f64 {
 /// linked crosswise. `magnetic(track)` says which tracks cut the
 /// magnetic way. The edits are made on `seq` and returned in the order
 /// made, one per clip cut and, for a partner left whole, its relink;
-/// the caller records them as one entry. A partner left whole keeps
-/// only the half that still lies over it, and each half keeps the
-/// partner only while it lies over it.
+/// the caller records them as one entry. A partner left whole is linked
+/// to the half that lies over it most, one to one, and the other half
+/// to nothing.
 pub fn blade_linked(
     seq: &mut Sequence,
     track_index: usize,
@@ -208,19 +208,22 @@ fn relink(seq: &mut Sequence, ti: usize, id: ClipId, to: Option<ClipId>) {
     }
 }
 
-/// A partner the cut did not reach: each half keeps it only while it
-/// lies over it, and the partner, if it pointed at the clip that was
-/// cut, points at the half that lies over it most — or at nothing.
+/// A partner the cut did not reach: the half that lies over it most
+/// keeps it, the other none, and the partner, if it pointed at the clip
+/// that was cut, points at that half — or at nothing. One to one: with
+/// both halves keeping it, an edit that follows a link (a retime, a
+/// move) took one half with the partner and left the other.
 fn relink_whole_partner(seq: &mut Sequence, ti: usize, a: ClipId, b: ClipId, pti: usize, partner: &Clip, original: ClipId) -> Vec<EditCommand> {
     let mut best: Option<(ClipId, f64)> = None;
     for id in [a, b] {
         let Some(half) = seq.tracks[ti].find_clip(id) else { continue };
         let over = overlap_secs(half, partner);
-        let keep = over > 0.0;
-        if keep && best.is_none_or(|(_, o)| over > o) {
+        if over > 0.0 && best.is_none_or(|(_, o)| over > o) {
             best = Some((id, over));
         }
-        relink(seq, ti, id, keep.then_some(partner.id));
+    }
+    for id in [a, b] {
+        relink(seq, ti, id, (best.map(|(b, _)| b) == Some(id)).then_some(partner.id));
     }
     if partner.linked_clip_id != Some(original) {
         return Vec::new();
