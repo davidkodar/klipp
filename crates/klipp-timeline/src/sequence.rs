@@ -2374,17 +2374,6 @@ impl Track {
         self.clips.remove(pos);
         self.clips.insert(pos, clip_b.clone());
         self.clips.insert(pos, clip_a.clone());
-        // A transition into the clip is now into its first piece, one out
-        // of it out of its last: left on the whole clip, it named a clip
-        // no longer there, and saving dropped it.
-        for t in &mut self.transitions {
-            if t.clip_b_id == clip_id {
-                t.clip_b_id = clip_a.id;
-            }
-            if t.clip_a_id == clip_id {
-                t.clip_a_id = clip_b.id;
-            }
-        }
 
         Some((clip_a, clip_b))
     }
