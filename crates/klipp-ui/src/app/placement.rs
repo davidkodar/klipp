@@ -136,11 +136,8 @@ impl KlippApp {
         // Its sound, as an append brings it (see `append_linked_audio`).
         let external = self.external_audio_of(media_id);
         let audio = (has_video && self.state.append_brings_audio && (item.has_audio || external.is_some())).then_some(external);
-        let (mode, label) = if overwrite {
-            (crate::clip_clipboard::PasteMode::Overwrite, "Overwrite")
-        } else {
-            (crate::clip_clipboard::PasteMode::Insert, "Insert")
-        };
+        let mode = if overwrite { crate::clip_clipboard::PasteMode::Overwrite } else { crate::clip_clipboard::PasteMode::Insert };
+        let label = self.state.sequence().tracks.get(track_index).map_or(if overwrite { "Overwrite" } else { "Insert" }, |t| drop_label(t, at, at + len, overwrite));
         match media_drop_edits(self.state.sequence(), clip, track_index, audio, at, mode, label) {
             Ok((edits, id)) => {
                 self.apply_edits_as_one(&edits, label);
@@ -602,6 +599,18 @@ impl KlippApp {
     }
 }
 
+/// The undo step's name for a pool item dropped on `track` over
+/// `from..to`: Overwrite only when it lays over a clip. Let go on empty
+/// space, as insert mode does there too, nothing is written over, and
+/// "Overwrite" read wrong for a drop made in insert mode.
+pub(crate) fn drop_label(track: &klipp_timeline::Track, from: klipp_core::Timecode, to: klipp_core::Timecode, overwrite: bool) -> &'static str {
+    if !overwrite {
+        return "Insert";
+    }
+    let over_a_clip = track.clips.iter().any(|c| !c.kind.is_gap() && c.timeline_in < to && from < c.timeline_out);
+    if over_a_clip { "Overwrite" } else { "Place Clip" }
+}
+
 /// How a pool item let go on `track` at `at` goes in (#2966): laid down
 /// where it is let go, nothing else moving, onto empty space (a gap, or
 /// past the last clip); inserted, as the timeline's insert mode has it,
@@ -779,6 +788,11 @@ mod media_drop_tests {
         let mut gapped = v1.clone();
         gapped.clips.remove(1);
         assert_eq!(super::media_drop_mode(&gapped, t(5), EditMode::Insert, false), EditMode::Overwrite, "in a gap");
+        // Named for what it does: laid on empty space in insert mode, it
+        // writes over nothing.
+        assert_eq!(super::drop_label(v1, t(12), t(16), true), "Place Clip", "past the last clip");
+        assert_eq!(super::drop_label(v1, t(5), t(9), true), "Overwrite", "over a clip");
+        assert_eq!(super::drop_label(v1, t(5), t(9), false), "Insert");
     }
 
     fn run(seq: &Sequence, edits: &[EditCommand], forward: bool) -> Sequence {

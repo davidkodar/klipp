@@ -222,3 +222,19 @@ fn a_sequence_never_seen_records_from_its_first_frame() {
     let _: &Sequence = s.sequence();
 }
 
+/// An edit that leaves a hole on the primary track keeps its own name
+/// with the gap clips that fill it: it read "Add Clips" for a trim.
+#[test]
+fn a_hole_filled_keeps_the_edits_name() {
+    let mut s = state();
+    let primary = s.sequence().primary_track_index().unwrap();
+    let clip = s.sequence().tracks[primary].clips[0].clone();
+    let mut trimmed = clip.clone();
+    trimmed.timeline_in = t(1.0);
+    trimmed.source_in = t(1.0);
+    s.sequence_mut().tracks[primary].clips[0] = trimmed.clone();
+    s.push_history(EditCommand::Named { label: "Trim Clip".into(), edit: Box::new(EditCommand::Batch(Vec::new())) });
+    assert_eq!(s.active_history().undo_label(), Some("Trim Clip"));
+    assert!(s.sequence().tracks[primary].clips.iter().any(|c| c.kind.is_gap()), "the hole is filled in the same step");
+}
+

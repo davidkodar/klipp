@@ -6077,7 +6077,13 @@ impl AppState {
         for f in &fills {
             let _ = view.apply_forward(f);
         }
-        EditCommand::Batch(std::iter::once(command).chain(fills).collect())
+        // Under the edit's own name: an unnamed batch reads "Add Clips",
+        // which a trim or a move that left a hole was called.
+        let (label, edit) = match command {
+            EditCommand::Named { label, edit } => (label, *edit),
+            other => (other.label().to_string(), other),
+        };
+        EditCommand::Named { label, edit: Box::new(EditCommand::Batch(std::iter::once(edit).chain(fills).collect())) }
     }
 
     /// The active sequence's tracks as recorded, taken now if it has none
