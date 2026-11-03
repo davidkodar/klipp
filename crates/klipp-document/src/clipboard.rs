@@ -387,6 +387,37 @@ pub fn overwrite_insert_clip_on_track(
     track.sort_clips();
 }
 
+/// The edits that lay `clip` over track `track_index` of `seq` as
+/// [`overwrite_insert_clip_on_track`] does, taken first from where it
+/// is on that track: the clips it covers out, those it overlaps trimmed,
+/// one it falls inside split, and `clip` put down. A linked sound moved
+/// with its picture onto sound already there (#3448) is laid over it as
+/// an editor's overwrite does, never left overlapping it. Each clip that
+/// changes is taken out and put back changed, so undo restores each and
+/// the track stays in time order. Empty for a track that isn't there.
+pub fn lay_over_edits(seq: &Sequence, track_index: usize, clip: &Clip) -> Vec<EditCommand> {
+    let Some(track) = seq.tracks.get(track_index) else { return Vec::new() };
+    let mut after = track.clone();
+    after.remove_clip(clip.id);
+    overwrite_insert_clip_on_track(&mut after, clip.clone());
+    let span = |c: &Clip| (c.timeline_in, c.timeline_out, c.source_in, c.source_out);
+    let same = |a: &Clip, list: &[Clip]| list.iter().any(|b| b.id == a.id && span(b) == span(a));
+    let mut edits = Vec::new();
+    // Taken out one after another: each at its place once those before
+    // it are gone, so undo, last first, puts each back where it was.
+    let mut gone = 0;
+    for (k, c) in track.clips.iter().enumerate() {
+        if !same(c, &after.clips) {
+            edits.push(EditCommand::LegacyRemoveClip { clip: c.clone(), track_index, position: k - gone });
+            gone += 1;
+        }
+    }
+    for c in after.clips.iter().filter(|c| !same(c, &track.clips)) {
+        edits.push(EditCommand::LegacyAppendClip { clip: c.clone(), track_index });
+    }
+    edits
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -399,6 +430,35 @@ mod tests {
 
     fn clip(from: f64, to: f64) -> Clip {
         Clip::media(MediaId::new(), tc(from), tc(to), tc(0.0), tc(to - from))
+    }
+
+    /// #3448: a sound moved onto sound already there is laid over it:
+    /// what it covers goes, what it overlaps is trimmed, nothing overlaps
+    /// after; undo puts every clip back as it was, redo lays it again.
+    #[test]
+    fn a_sound_moved_onto_sound_is_laid_over_it() {
+        let mut seq = Sequence::new_default();
+        seq.tracks = vec![Track::new("A1", TrackKind::Audio)];
+        let (a, b, c) = (clip(0.0, 10.0), clip(10.0, 20.0), clip(20.0, 30.0));
+        let mut moved = clip(30.0, 37.0);
+        seq.tracks[0].clips = vec![a.clone(), b.clone(), c.clone(), moved.clone()];
+        // The last sound moves with its picture to 8-15 s, over a and b.
+        (moved.timeline_in, moved.timeline_out) = (tc(8.0), tc(15.0));
+        let edits = lay_over_edits(&seq, 0, &moved);
+        let mut pool = klipp_media::MediaPool::new();
+        let mut seqs = vec![seq.clone()];
+        let mut fps = seq.fps;
+        let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut pool, fps: &mut fps };
+        let batch = EditCommand::Batch(edits);
+        view.apply_forward(&batch);
+        let spans = |s: &Sequence| s.tracks[0].clips.iter().map(|c| (c.id, c.timeline_in.to_secs_f64(), c.timeline_out.to_secs_f64())).collect::<Vec<_>>();
+        let laid = spans(&view.sequences[0]);
+        assert_eq!(laid.iter().map(|(_, i, o)| (*i, *o)).collect::<Vec<_>>(), vec![(0.0, 8.0), (8.0, 15.0), (15.0, 20.0), (20.0, 30.0)], "laid over, in order: {laid:?}");
+        assert!(laid.windows(2).all(|w| w[0].2 <= w[1].1), "nothing overlaps");
+        view.apply_inverse(&batch);
+        assert_eq!(spans(&view.sequences[0]), spans(&seq), "undone");
+        view.apply_forward(&batch);
+        assert_eq!(spans(&view.sequences[0]), laid, "redone");
     }
 
     /// V1: a 0-2, b 2-4 with a transition between them, c 6-8. A1: the
