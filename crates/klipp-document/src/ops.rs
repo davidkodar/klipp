@@ -10186,7 +10186,16 @@ fn refit(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts, i: usi
             // it was already pushed in further.
             let fill = (fw / picture.0).max(fh / picture.1);
             let keyed = |lane: &(Vec<klipp_core::Keyframe>, f32)| if lane.0.is_empty() { lane.1 } else { lane.0.iter().map(|k| k.value).fold(f32::MIN, f32::max) };
-            let scale = fill.max(keyed(&placement_lanes(clip)[2])).max(1.0);
+            let own = keyed(&placement_lanes(clip)[2]);
+            // A piece an earlier refit punched in, its scale the fill
+            // pushed in by this punch, starts from the fill again: run a
+            // second time it went to 1.15 x 1.15, and kept its push where
+            // the pieces' order changed (FC5).
+            let own = match punch {
+                Some(p) if (own / (fill * p) - 1.0).abs() < 0.005 => fill,
+                _ => own,
+            };
+            let scale = fill.max(own).max(1.0);
             // Every other picture pushed in further, its jump a cut. A
             // piece too short to read keeps the one before's push, so the
             // picture doesn't jump in and out within a moment (#3441).
@@ -22315,6 +22324,43 @@ mod tests {
         let fill = 1920.0 / 607.5;
         let got: Vec<f32> = ids.iter().map(|id| (scale(*id) / fill * 100.0).round() / 100.0).collect();
         assert_eq!(got, [1.0, 1.0, 1.2, 1.0], "the short piece is not pushed in on its own");
+    }
+
+    /// FC5: refit with a punch run twice pushes in every other piece once,
+    /// as the first run did, never by the punch twice over.
+    #[test]
+    fn a_second_punch_in_does_not_push_further() {
+        struct NotLooked;
+        impl Transcripts for NotLooked {
+            fn words(&self, _item: &klipp_media::MediaItem) -> Option<Vec<SpokenWord>> {
+                None
+            }
+        }
+        let (mut seq, pool, media, _, _) = fixture();
+        seq.resolution = klipp_core::Resolution { width: 1080, height: 1920 };
+        seq.tracks[0].clips = [(0.0, 2.0), (2.0, 4.0), (4.0, 6.0), (6.0, 8.0)].iter().map(|&(a, b)| Clip::media(media, tc(a), tc(b), tc(a), tc(b))).collect();
+        seq.tracks.truncate(1);
+        let ids: Vec<ClipId> = seq.tracks[0].clips.iter().map(|c| c.id).collect();
+        let fill = 1920.0 / 607.5;
+        let run = |seq: &Sequence| {
+            let plan = resolve_with(seq, &pool, &[Op::Refit { markers: false, punch: Some(1.15), keep: Vec::new() }], &NotLooked).unwrap();
+            let mut seqs = vec![seq.clone()];
+            let (mut p, mut fps) = (pool.clone(), seq.fps);
+            let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps };
+            view.apply_forward(&plan.steps[0].edit);
+            seqs.remove(0)
+        };
+        let scales = |seq: &Sequence| -> Vec<f32> {
+            ids.iter().map(|id| {
+                let clip = seq.tracks[0].clips.iter().find(|c| c.id == *id).unwrap();
+                let lane = &placement_lanes(clip)[2];
+                let s = if lane.0.is_empty() { lane.1 } else { lane.0.iter().map(|k| k.value).fold(f32::MIN, f32::max) };
+                (s / fill * 100.0).round() / 100.0
+            }).collect()
+        };
+        let once = run(&seq);
+        assert_eq!(scales(&once), [1.0, 1.15, 1.0, 1.15]);
+        assert_eq!(scales(&run(&once)), [1.0, 1.15, 1.0, 1.15], "punched again, not 1.15 x 1.15");
     }
 
     /// P53: retime's fit_range puts the clip on the marks, as the Speed
