@@ -978,6 +978,15 @@ impl ClipStreams {
             })
     }
 
+    /// Every backward window holds its frame for its current time. A clip
+    /// stream isn't asked: a still's one frame is never at a moving time.
+    pub fn windows_ready(&self) -> bool {
+        self.reversed.values().all(|r| match r {
+            Reversed::Gop(g) => g.ready(),
+            Reversed::Cpu { .. } => true,
+        })
+    }
+
     /// Take over the primary decoder at a cut, when the clip it was
     /// playing is still on screen — a transition's outgoing side, running
     /// into its handle. The decoder is already there; opening another and
