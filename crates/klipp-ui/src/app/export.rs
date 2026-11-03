@@ -3876,6 +3876,9 @@ impl KlippApp {
                         String::from_utf8(bytes).map(|s| (s, Vec::new())).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
                     }
                 });
+                // One undo step, however it was asked for: from the socket it
+                // added a track of captions with none (P55).
+                let undo_before = crate::tracks_undo::before_labelled(&self.state, "Import Subtitles");
                 match read {
                     Ok((content, bytes)) => {
                         // Detect format by extension (case-insensitive). Unknown
@@ -4058,6 +4061,9 @@ impl KlippApp {
                     Err(e) => {
                         self.state.toast.show(format!("Failed to read file: {e}"));
                     }
+                }
+                if let Some(before) = undo_before {
+                    crate::tracks_undo::record(&mut self.state, before);
                 }
                 self.sync_sequence_to_engine();
                 true
