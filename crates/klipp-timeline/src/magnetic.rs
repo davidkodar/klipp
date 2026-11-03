@@ -840,6 +840,7 @@ impl MagneticEditor {
                 clip_id,
                 remove_command: Box::new(remove_cmd),
                 insert_command: Box::new(insert_cmd),
+                insert_index: insert_idx,
             },
         }
     }
@@ -1093,6 +1094,17 @@ impl MagneticEditor {
                     (pti, old, None)
                 }
             });
+        // A sound taken out takes the transitions on it: left, they named
+        // a clip no longer there, and saving dropped them.
+        let partner_transitions: Vec<crate::Transition> = match &partner {
+            Some((pti, old, None)) => {
+                let track = &mut sequence.tracks[*pti];
+                let (going, staying): (Vec<_>, Vec<_>) = track.transitions.drain(..).partition(|t| t.clip_a_id == old.id || t.clip_b_id == old.id);
+                track.transitions = staying;
+                going
+            }
+            _ => Vec::new(),
+        };
 
         let mut cascaded_clips = Self::cascade_all_connected(sequence, &rippled_clips);
         // The sound linked to each picture the ripple moved goes with it
@@ -1118,6 +1130,7 @@ impl MagneticEditor {
                 rippled_clips,
                 cascaded_clips,
                 partner,
+                partner_transitions,
             },
         }
     }
@@ -1851,6 +1864,7 @@ impl MagneticEditor {
                 clip_id: _,
                 remove_command,
                 insert_command,
+                ..
             } => {
                 // Undo: reverse insert then reverse remove, in place: the
                 // clip goes back by its position, and the repack, not a
@@ -1906,6 +1920,7 @@ impl MagneticEditor {
                 rippled_clips,
                 cascaded_clips,
                 partner,
+                partner_transitions,
                 ..
             } => {
                 for cr in cascaded_clips.iter().rev() {
@@ -1918,6 +1933,7 @@ impl MagneticEditor {
                             if let Some(track) = sequence.tracks.get_mut(*pti) {
                                 track.clips.push(old.clone());
                                 track.sort_clips();
+                                track.transitions.extend(partner_transitions.iter().copied());
                             }
                             if let Some((ti, ci)) = sequence.find_clip(*clip_id) {
                                 sequence.tracks[ti].clips[ci].linked_clip_id = Some(old.id);
@@ -2175,13 +2191,28 @@ impl MagneticEditor {
                     .push(appended_clip.clone());
             }
             MagneticEditCommand::MovePrimary {
-                clip_id: _,
-                remove_command,
+                clip_id,
                 insert_command,
+                insert_index,
+                ..
             } => {
-                Self::apply_forward_in_place(sequence, remove_command);
-                Self::apply_forward_in_place(sequence, insert_command);
+                // The clip taken out and put back at its place in the
+                // order, the primary repacked, and the clips connected to
+                // it carried as the move carried them.
+                if let Some(primary) = sequence.primary_track_index() {
+                    let track = &mut sequence.tracks[primary];
+                    if let Some(pos) = track.clips.iter().position(|c| c.id == *clip_id) {
+                        let clip = track.clips.remove(pos);
+                        let at = (*insert_index).min(track.clips.len());
+                        track.clips.insert(at, clip);
+                    }
+                }
                 repack_primary(sequence);
+                if let MagneticEditCommand::InsertPrimary { cascaded_clips, .. } = insert_command.as_ref() {
+                    for cr in cascaded_clips {
+                        sequence.set_clip_position(cr.clip_id, cr.new_in, cr.new_out);
+                    }
+                }
             }
             MagneticEditCommand::InsertGap {
                 gap_clip,
@@ -2228,6 +2259,7 @@ impl MagneticEditor {
                 rippled_clips,
                 cascaded_clips,
                 partner,
+                partner_transitions,
                 ..
             } => {
                 if let Some((ti, ci)) = sequence.find_clip(*clip_id) {
@@ -2247,6 +2279,7 @@ impl MagneticEditor {
                     Some((pti, old, None)) => {
                         if let Some(track) = sequence.tracks.get_mut(*pti) {
                             track.remove_clip(old.id);
+                            track.transitions.retain(|t| !partner_transitions.iter().any(|g| g.id == t.id));
                         }
                         if let Some((ti, ci)) = sequence.find_clip(*clip_id) {
                             sequence.tracks[ti].clips[ci].linked_clip_id = None;
@@ -2484,15 +2517,27 @@ mod tests {
         let sound_id = sound.id;
         a1.clips.push(sound);
         seq.tracks.push(a1);
-        let state = |s: &Sequence| (s.tracks[1].clips.iter().map(|c| c.id).collect::<Vec<_>>(), s.tracks[0].clips[0].linked_clip_id);
+        // A transition out of the sound into another, taken with it.
+        let next = media_clip(6, 30);
+        seq.tracks[1].transitions.push(crate::Transition {
+            id: klipp_core::TransitionId::new(),
+            kind: crate::TransitionKind::CrossDissolve,
+            duration: tc(4),
+            clip_a_id: sound_id,
+            clip_b_id: next.id,
+            user_params: Default::default(),
+            alignment: klipp_core::TransitionAlignment::Center,
+        });
+        seq.tracks[1].clips.push(next);
+        let state = |s: &Sequence| (s.tracks[1].clips.iter().map(|c| c.id).filter(|id| *id == sound_id).collect::<Vec<_>>(), s.tracks[0].clips[0].linked_clip_id, s.tracks[1].transitions.len());
         let before = state(&seq);
         let done = MagneticEditor::trim_head(&mut seq, picture, tc(12));
-        assert_eq!(state(&seq), (Vec::new(), None), "the sound and the link to it gone");
+        assert_eq!(state(&seq), (Vec::new(), None, 0), "the sound, the link to it and its transition gone");
         MagneticEditor::apply_inverse(&mut seq, &done.command);
         assert_eq!(state(&seq), before, "undone");
         assert_eq!(seq.tracks[1].find_clip(sound_id).map(|c| (c.timeline_in, c.timeline_out)), Some((tc(0), tc(6))));
         MagneticEditor::apply_forward(&mut seq, &done.command);
-        assert_eq!(state(&seq), (Vec::new(), None), "redone");
+        assert_eq!(state(&seq), (Vec::new(), None, 0), "redone");
     }
 
     /// #3449: a ripple trim of a primary clip's end, either end, and a
@@ -2566,6 +2611,24 @@ mod tests {
         seq.assert_primary_gapless();
         let ends: Vec<f64> = seq.tracks[0].clips.iter().map(|c| c.timeline_out.to_secs_f64()).collect();
         assert!((ends[2] - (31.0 / 30.0 + 2002.0 / 24000.0)).abs() < 1e-12, "{ends:?}");
+    }
+
+    /// A primary move's undo gives back the order before, and its redo
+    /// the order after: the clip goes back to its place in the list, not
+    /// to wherever its time falls among clips not yet moved back.
+    #[test]
+    fn a_primary_move_undoes_and_redoes_in_order() {
+        let mut seq = make_sequence(&[(0, 48), (48, 96), (96, 120)]);
+        let order = |s: &Sequence| s.tracks[0].clips.iter().map(|c| (c.id, c.timeline_in, c.timeline_out)).collect::<Vec<_>>();
+        let first = seq.tracks[0].clips[0].id;
+        let before = order(&seq);
+        let moved = MagneticEditor::move_primary(&mut seq, first, tc(120));
+        let after = order(&seq);
+        assert_eq!(after.last().map(|c| c.0), Some(first), "to the end");
+        MagneticEditor::apply_inverse(&mut seq, &moved.command);
+        assert_eq!(order(&seq), before, "undone");
+        MagneticEditor::apply_forward(&mut seq, &moved.command);
+        assert_eq!(order(&seq), after, "redone");
     }
 
     /// #2967: a picture moved on the primary track takes its linked sound

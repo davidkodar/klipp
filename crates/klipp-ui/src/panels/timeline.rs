@@ -5232,8 +5232,8 @@ impl TimelinePanel {
                         if in_diff < one_frame || out_diff < one_frame {
                             // The clip's own name, as the timeline shows
                             // it; its media's file name when it has none.
-                            let file = clip.media_id().and_then(|mid| state.media_pool.get(&mid)).map(|m| m.filename.clone()).unwrap_or_default();
-                            clip_name = Some(clip.label(&file).to_string());
+                            let file = clip_fallback_name(clip, state).map_or("", |(name, _)| name);
+                            clip_name = Some(clip.label(file).to_string());
                             break 'outer;
                         }
                     }
@@ -6316,11 +6316,11 @@ impl TimelinePanel {
                         egui::Color32::from_rgb(220, 200, 255),
                     );
                 }
-            } else if let Some(media) = clip.media_id().and_then(|mid| state.media_pool.get(&mid)) {
+            } else if let Some((fallback, media)) = clip_fallback_name(clip, state) {
                 let is_audio_clip = matches!(track_kind, TrackKind::Audio);
                 let font_size = if is_audio_clip { 10.0 } else { 11.0 };
                 // An audition's take in the slot named after it (#3209).
-                let name = crate::auditions::label_with_take(clip, clip.label(&media.filename));
+                let name = crate::auditions::label_with_take(clip, clip.label(fallback));
                 let label = if is_offline {
                     format!("\u{26A0} offline: {name}")
                 } else {
@@ -6424,7 +6424,7 @@ impl TimelinePanel {
                 }
 
                 // Proxy badge [P] — orange pill when using proxy for this clip
-                if media.proxy_ready && state.use_proxies && clip_rect.width() > 30.0 {
+                if media.is_some_and(|m| m.proxy_ready) && state.use_proxies && clip_rect.width() > 30.0 {
                     let badge_font = egui::FontId::proportional(10.0);
                     let badge_pos = egui::pos2(clip_rect.right() - 12.0, clip_rect.top() + 8.0);
                     let badge_rect = egui::Rect::from_center_size(
@@ -18547,6 +18547,21 @@ fn resolve_compound_at_frac(
 /// at that source-time, and the corresponding texture from that inner
 /// media's filmstrip is drawn. Gaps and tiles whose inner filmstrip is not
 /// yet generated render as a dark fill.
+/// What a clip is called on the timeline when it has no name of its own
+/// (#920): its media's file name, with the media for its proxy badge; or
+/// for a compound clip, or a composition laid in (a brand kit's intro,
+/// say), the name of the sequence inside it.
+fn clip_fallback_name<'a>(clip: &klipp_timeline::Clip, state: &'a AppState) -> Option<(&'a str, Option<&'a klipp_media::MediaItem>)> {
+    if let Some(media) = clip.media_id().and_then(|mid| state.media_pool.get(&mid)) {
+        return Some((media.filename.as_str(), Some(media)));
+    }
+    let inner = match &clip.kind {
+        ClipKind::Sequence { sequence_id } | ClipKind::Precomposition { sequence_id } | ClipKind::TemplatePrecomposition { sequence_id, .. } => *sequence_id,
+        _ => return None,
+    };
+    state.sequences.iter().find(|s| s.id == inner).map(|s| (s.name.as_str(), None))
+}
+
 fn draw_compound_filmstrip(
     painter: &egui::Painter,
     clip_rect: egui::Rect,
@@ -19643,6 +19658,28 @@ mod snap_tests {
         let label = |secs| TimelinePanel::snap_legend_label_for_kind(klipp_core::SnapTargetKind::ClipEdge, secs, &state);
         assert_eq!(label(2.0), "Clip edge: Shot 2");
         assert_eq!(label(5.0), format!("Clip edge: {file}"));
+    }
+
+    /// A brand kit's intro, or any composition or compound clip laid in,
+    /// is called by the sequence inside it when it has no name of its own
+    /// (P43): it was drawn with no name at all.
+    #[test]
+    fn a_composition_clip_is_named_by_its_sequence() {
+        let mut state = AppState::default();
+        let rt = |s: f64| RationalTime::from_secs_f64(s, 24);
+        let mut inner = klipp_timeline::Sequence::new_default();
+        inner.name = "Hook Card".into();
+        let inner_id = inner.id;
+        state.sequences.push(inner);
+        let mut intro = klipp_timeline::Clip::sequence(inner_id, rt(0.0), rt(2.0));
+        let template_instance = klipp_core::TemplateInstance { template_id: uuid::Uuid::nil(), bindings: Default::default(), overrides: Default::default(), media_slots: Default::default(), links: Vec::new() };
+        intro.kind = ClipKind::TemplatePrecomposition { sequence_id: inner_id, template_instance };
+        assert_eq!(clip_fallback_name(&intro, &state).map(|(n, _)| n), Some("Hook Card"));
+        let precomp = klipp_timeline::Clip::precomposition(inner_id, rt(0.0), rt(2.0));
+        assert_eq!(clip_fallback_name(&precomp, &state).map(|(n, _)| n), Some("Hook Card"));
+        state.sequences[0].tracks[0].clips = vec![intro];
+        let label = TimelinePanel::snap_legend_label_for_kind(klipp_core::SnapTargetKind::ClipEdge, 2.0, &state);
+        assert_eq!(label, "Clip edge: Hook Card");
     }
 
     // Pinned: Marker with no marker locatable falls back to "Marker".

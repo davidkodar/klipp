@@ -9,6 +9,17 @@ use klipp_timeline::Clip;
 /// is treated as a deliberate pause and starts a new undo entry.
 const TITLE_TEXT_COALESCE_WINDOW: Duration = Duration::from_millis(150);
 
+/// The step typing in a title makes, and in a caption (P55): a caption's
+/// text, typed or a misspelt word put right, is named as a caption's.
+pub const TITLE_TEXT: &str = "Edit Title Text";
+pub const CAPTION_TEXT: &str = "Edit Caption Text";
+
+/// Whether a title edit named `description` is typing, whose keystrokes
+/// in a burst merge into one step.
+pub fn is_text_edit(description: &str) -> bool {
+    description == TITLE_TEXT || description == CAPTION_TEXT
+}
+
 /// Snapshot of a clip's audio chain (effects + per-effect kfs). Used by
 /// `EditCommand::EditAudioChain` so add/remove/edit/reorder operations
 /// on the audio chain can be undone atomically.
@@ -1209,7 +1220,7 @@ impl CommandHistory {
         // keystroke after this becomes a fresh undo entry.
         let breaks_burst = !matches!(
             &entry.command,
-            EditCommand::EditTitle { description, .. } if *description == "Edit Title Text"
+            EditCommand::EditTitle { description, .. } if is_text_edit(description)
         );
         if breaks_burst {
             self.last_title_text_edit = None;
@@ -1263,7 +1274,7 @@ impl CommandHistory {
         else {
             return false;
         };
-        if *ec != clip_id || *description != "Edit Title Text" {
+        if *ec != clip_id || !is_text_edit(description) {
             return false;
         }
         *nd = new.clone();
