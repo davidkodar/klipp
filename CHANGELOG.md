@@ -5,6 +5,49 @@ Each release lists what changed for people using Klipp. Versions follow
 
 ## Unreleased
 
+## 0.3.2 — 2026-11-03
+
+This release fixes about fifty problems found while testing every part of
+the app by hand and running long series of random edits on the editing
+core. It also carries features added since 0.3.0, written up in full in
+0.4.0: First Cut, covers, Collect Project, clip roles, Thai, Lao, Khmer
+and Burmese text, and colour glyphs in titles.
+
+### Fixed
+
+- Linked picture and sound stay in sync through ripple trims, ripple
+  removes, moves, splits, inserts and Close Gap; an edit that would pull
+  a pair apart is refused and says why.
+- Transitions follow a clip when it is cut and go with it when it is
+  removed; saving and opening no longer drops one. Undo and redo give
+  clips and transitions back in their place and order.
+- Clips inserted on the main track land on whole frames.
+- Trims, moves, drops, marks, mixer changes, effect drags, speed changes,
+  multicam edits and imported subtitles are each one named undo step.
+- The viewer returns to the playhead's frame after a timeline skim, and
+  Klipp hands memory back after a project closes.
+- Fit Music to Length keeps the music's volume, fades, keys, effects and
+  role. A sound-only file is told apart as speech or music without the
+  sound model.
+- The fonts the built-in templates use ship with Klipp, and any other
+  font download asks first. A brand kit restyles its intro and outro.
+- A range swiped on a thumbnail no longer shortens a later added clip
+  unannounced.
+- One export runs at a time by default; the Export page keeps its fields
+  in place, keeps typing out of the timeline, and names a vertical
+  version apart.
+- Sound-only files are no longer sent to picture analysis, and hardware
+  decoders that can't open are passed over.
+- Close Gap closes the gap on the linked clips' tracks too, or says why
+  it can't. J plays silently instead of the sound running on forward,
+  and the sound is back at the playhead when playback turns round.
+
+### Known issues
+
+- Playing backwards (J) moves the playhead, silently, but the picture
+  stays where it was until you stop.
+- Transcription waits for each imported file's other analysis first.
+
 ## 0.3.1 — 2026-11-02
 
 ### Fixed
