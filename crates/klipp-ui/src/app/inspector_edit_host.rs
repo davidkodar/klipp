@@ -129,7 +129,12 @@ impl InspectorEditHost<'_> {
                             break;
                         }
                     }
-                    if let Some(old_snap) = old_state {
+                    // Inside a drag of the clip's picture the key is part of
+                    // the drag's one step, whose snapshot holds the keys: a
+                    // step per tick made a drag ten undos long (#3459).
+                    let in_picture = !matches!(param, klipp_core::VideoParam::MatteFeather | klipp_core::VideoParam::MatteChoke);
+                    let in_drag = in_picture && self.state.active_history().is_dragging_picture(*clip_id);
+                    if let Some(old_snap) = old_state.filter(|_| !in_drag) {
                         let new_snap = self.state.sequences[self.state.active_sequence_idx].all_clips()
                             .find(|c| c.id == *clip_id).map(KeyframeSnapshot::from_clip);
                         if let Some(new_snap) = new_snap {
@@ -1016,6 +1021,36 @@ mod tests {
         assert!(matches!(&events[4], Side::Sync { picture, .. } if picture == after.as_ref()));
         history(&mut state, false);
         assert_eq!(clip(&state).picture_v2().unwrap(), before);
+        history(&mut state, true);
+        assert_eq!(clip(&state).picture_v2().unwrap(), after);
+    }
+
+    /// #3459: dragging a keyed value writes a key on each tick of the drag;
+    /// the drag is still one undo step, which takes back every tick.
+    #[test]
+    fn a_keyed_value_dragged_is_one_undo_step() {
+        let (mut state, id) = fixture(&[E::Opacity { value: 1.0 }]);
+        // Keys go through the video keyframe handlers, as the app sends them.
+        let key_at = |state: &mut AppState, side: &dyn InspectorSideEffects, time_secs: f64, value: f32| {
+            let command = AppCommand::AddVideoKeyframe { clip_id: id, param: klipp_core::VideoParam::Opacity, time_secs, value };
+            state.before_dispatch(&command);
+            assert!(InspectorEditHost { state, side }.apply_video_keyframes(&command));
+        };
+        key_at(&mut state, &Recorder::default(), 0.0, 1.0);
+        let before = clip(&state).picture_v2().unwrap();
+        let count = state.active_history().undo_count();
+        let side = Recorder::default();
+        let key = format!("{id:?}:builtin:0");
+        run(&mut state, &side, AppCommand::BeginEffectDrag { key: key.clone(), clip_id: id, effect_index: 0, old_effect: E::Opacity { value: 1.0 } });
+        for value in [0.9, 0.8, 0.7] {
+            run(&mut state, &side, AppCommand::UpdateBuiltinEffect { clip_id: id, index: 0, effect: E::Opacity { value } });
+            key_at(&mut state, &side, 2.0, value);
+        }
+        run(&mut state, &side, AppCommand::EndEffectDrag { key, clip_id: id, effect_index: 0, new_effect: E::Opacity { value: 0.7 } });
+        assert_eq!(state.active_history().undo_count(), count + 1, "one step for the drag");
+        let after = clip(&state).picture_v2().unwrap();
+        history(&mut state, false);
+        assert_eq!(clip(&state).picture_v2().unwrap(), before, "one undo takes back every tick");
         history(&mut state, true);
         assert_eq!(clip(&state).picture_v2().unwrap(), after);
     }
