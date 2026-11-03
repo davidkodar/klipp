@@ -59,9 +59,6 @@ const KNOWN: &[(&str, fn(&Broken, &str) -> bool)] = &[
     ("R19", |b, last| b.invariant == SYNC && last == "Trim"),
     // A switch to a take leaving a transition on the slot that saving drops.
     ("R20", |b, last| b.invariant == SAVED && b.detail.contains("/transitions") && last == "AuditionSwitch"),
-    // A retimed picture on a free track bladed: the pieces after the cut
-    // start at file times the speed apart, picture and sound.
-    ("R21", |b, last| b.invariant == SYNC && last == "Blade" && !b.detail.ends_with(" at 1x")),
     // A switch to a take leaving a linked pair apart.
     ("R22", |b, last| b.invariant == SYNC && last == "AuditionSwitch"),
 ];
