@@ -561,7 +561,7 @@ fn entry_at(clip: &Clip, i: usize) -> Option<klipp_effects::BuiltinEffect> {
 /// `clip` plays with `picture`'s sound settings — the ones the mixer
 /// reads from a linked pair's picture: the levels, the fades, the
 /// channel layout, and the automation and modifiers on them.
-fn take_sound_settings(clip: &mut Clip, picture: &Clip) {
+pub fn take_sound_settings(clip: &mut Clip, picture: &Clip) {
     clip.volume = picture.volume;
     clip.gain = picture.gain;
     clip.pan = picture.pan;
@@ -586,7 +586,7 @@ fn take_sound_settings(clip: &mut Clip, picture: &Clip) {
 /// every key earlier by that head and closer together by that speed, so
 /// the level at any moment of the scene is the level at that moment of
 /// the parent. A key now before the start still anchors the value there.
-fn shift_sound_automation(clip: &mut Clip, head: f64, speed: f64) {
+pub fn shift_sound_automation(clip: &mut Clip, head: f64, speed: f64) {
     if head.abs() < 1e-9 && (speed - 1.0).abs() < 1e-9 {
         return;
     }

@@ -191,7 +191,45 @@ pub fn fitted_edit(seq: &klipp_timeline::Sequence, pool: &klipp_media::MediaPool
     let at = clip.timeline_in.to_secs_f64();
     let ops = klipp_document::ops::fitted_music_ops(media_id, klipp_document::ops::TrackRef::Index(ti), at, segments, Some(clip_id));
     let plan = klipp_document::ops::resolve(seq, pool, &ops).map_err(|r| r.why)?;
-    Ok(plan.steps.into_iter().map(|s| s.edit).collect())
+    let mut edits: Vec<_> = plan.steps.into_iter().map(|s| s.edit).collect();
+    let keep = pieces_with_its_sound(seq, pool, clip, ti, &edits);
+    edits.extend(keep);
+    Ok(edits)
+}
+
+/// The edits that give the pieces `edits` make of `old` its sound: its levels
+/// and their keys, its effects and its role. A fit brought the music back at
+/// full volume with its role gone. Keys stay where they were on the timeline,
+/// so a duck stays under the voice it was made for; its fade in goes on the
+/// first piece, its fade out on the last.
+fn pieces_with_its_sound(seq: &klipp_timeline::Sequence, pool: &klipp_media::MediaPool, old: &klipp_timeline::Clip, ti: usize, edits: &[klipp_document::history::EditCommand]) -> Vec<klipp_document::history::EditCommand> {
+    let mut seqs = vec![seq.clone()];
+    let mut pool = pool.clone();
+    let mut fps = seq.fps;
+    let mut view = klipp_document::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut pool, fps: &mut fps };
+    view.apply_forward(&klipp_document::history::EditCommand::Batch(edits.to_vec()));
+    let mut pieces: Vec<&klipp_timeline::Clip> = seqs[0].tracks[ti].clips.iter().filter(|c| seq.tracks[ti].find_clip(c.id).is_none()).collect();
+    pieces.sort_by(|a, b| a.timeline_in.to_secs_f64().total_cmp(&b.timeline_in.to_secs_f64()));
+    let last = pieces.len().saturating_sub(1);
+    pieces
+        .iter()
+        .enumerate()
+        .map(|(i, piece)| {
+            let mut new = (*piece).clone();
+            klipp_timeline::flatten::take_sound_settings(&mut new, old);
+            klipp_timeline::flatten::shift_sound_automation(&mut new, (piece.timeline_in - old.timeline_in).to_secs_f64(), 1.0);
+            if i != 0 {
+                new.fade_in_secs = 0.0;
+            }
+            if i != last {
+                new.fade_out_secs = 0.0;
+            }
+            new.audio_effects = old.audio_effects.clone();
+            new.role = old.role.clone();
+            new.role_source = old.role_source;
+            klipp_document::history::EditCommand::ReplaceClip { description: "Fit Music to Length", old: Box::new((*piece).clone()), new: Box::new(new) }
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -221,6 +259,54 @@ mod tests {
         let d = MusicFitDialog::new(&seq, id).unwrap();
         assert_eq!(d.target, FitTarget::MarkedRange);
         assert!((d.target_secs().unwrap() - 20.0).abs() < 1e-6);
+    }
+
+    /// The pieces play as the clip did: its levels, its role, its fade in
+    /// first and fade out last, its keys where they were on the timeline. And
+    /// it is one step: undone, the clip is back as it was.
+    #[test]
+    fn a_fit_keeps_the_sound_of_the_clip_it_replaces() {
+        let mut seq = klipp_timeline::Sequence::new_default();
+        let mut pool = klipp_media::MediaPool::new();
+        let mut item = klipp_media::MediaItem::synthetic_for_test("/tmp/fit-music.wav".into(), None);
+        item.duration = tc(60.0);
+        item.has_audio = true;
+        let media = pool.add(item);
+        let mut music = klipp_timeline::Clip::media(media, tc(2.0), tc(62.0), tc(0.0), tc(60.0));
+        music.volume = 0.3;
+        music.gain = 1.5;
+        music.pan = -0.25;
+        music.fade_in_secs = 0.5;
+        music.fade_out_secs = 1.0;
+        music.role = klipp_core::roles::RoleRef::from_legacy(klipp_core::ClipRole::Ambience);
+        music.role_source = klipp_core::RoleSource::ByHand;
+        klipp_core::keyframe::upsert_keyframe(&mut music.volume_keyframes, 1.0, 0.2);
+        klipp_core::keyframe::upsert_keyframe(&mut music.volume_keyframes, 25.0, 0.1);
+        let id = music.id;
+        let audio = seq.tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Audio).unwrap();
+        seq.tracks[audio].clips.push(music.clone());
+        let edits = fitted_edit(&seq, &pool, id, &[(0.0, 20.0), (36.0, 60.0)]).expect("a planned fit");
+        let mut seqs = vec![seq];
+        let mut fps = klipp_core::Fps::new(24, 1);
+        let mut view = klipp_document::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut pool, fps: &mut fps };
+        let batch = klipp_document::history::EditCommand::Batch(edits);
+        view.apply_forward(&batch);
+        let clips = &view.sequences[0].tracks[audio].clips;
+        assert_eq!(clips.len(), 2);
+        for c in clips.iter() {
+            assert_eq!((c.volume, c.gain, c.pan), (0.3, 1.5, -0.25));
+            assert_eq!((&c.role, c.role_source), (&music.role, klipp_core::RoleSource::ByHand));
+        }
+        assert_eq!((clips[0].fade_in_secs, clips[0].fade_out_secs), (0.5, 0.0));
+        assert_eq!((clips[1].fade_in_secs, clips[1].fade_out_secs), (0.0, 1.0));
+        let at = |c: &klipp_timeline::Clip, t: f64| klipp_core::keyframe::evaluate(&c.volume_keyframes, t, c.volume);
+        assert!((at(&clips[0], 1.0) - 0.2).abs() < 1e-4, "{:?}", clips[0].volume_keyframes);
+        assert!((at(&clips[1], 5.0) - 0.1).abs() < 1e-4, "25 s into the clip is 5 s into the second piece: {:?}", clips[1].volume_keyframes);
+        assert!(!view.sequences[0].tracks[audio].transitions.is_empty(), "the join is still crossfaded");
+        view.apply_inverse(&batch);
+        let back = &view.sequences[0].tracks[audio].clips;
+        assert_eq!(back.len(), 1);
+        assert_eq!((back[0].id, back[0].volume), (id, 0.3));
     }
 
     #[test]
