@@ -160,6 +160,18 @@ fn common_rate(clips: &[Clip]) -> Option<u32> {
 /// sample rate's multiples.
 const MAX_COMMON_RATE: u64 = 1 << 28;
 
+/// Each track's clips in time order and its transitions in their one
+/// order, as an edit leaves them and as its undo and redo give them back
+/// ([`MagneticEditor::apply_inverse`]): a clip moved on a track that is
+/// not the primary, by a ripple or with its picture, kept its old place
+/// in the list.
+fn tidy(sequence: &mut Sequence) {
+    for track in &mut sequence.tracks {
+        track.sort_clips();
+        track.sort_transitions();
+    }
+}
+
 /// Repack all clip positions on the primary track so they are gapless,
 /// starting from frame 0. Returns RippleRecords for any clips that moved.
 ///
@@ -293,6 +305,7 @@ impl MagneticEditor {
         #[cfg(debug_assertions)]
         sequence.assert_primary_gapless();
 
+        tidy(sequence);
         MagneticResult {
             command: MagneticEditCommand::InsertPrimary {
                 inserted_clip: new_clip,
@@ -437,6 +450,7 @@ impl MagneticEditor {
         #[cfg(debug_assertions)]
         sequence.assert_primary_gapless();
 
+        tidy(sequence);
         MagneticResult {
             command: MagneticEditCommand::OverwritePrimary {
                 inserted_clip: new_clip,
@@ -621,6 +635,7 @@ impl MagneticEditor {
             sequence.assert_primary_gapless();
         }
 
+        tidy(sequence);
         MagneticResult {
             command: MagneticEditCommand::RippleDelete {
                 removed_clip,
@@ -700,6 +715,7 @@ impl MagneticEditor {
             sequence.assert_primary_gapless();
         }
 
+        tidy(sequence);
         MagneticResult {
             command: MagneticEditCommand::Lift {
                 removed_clip,
@@ -740,6 +756,7 @@ impl MagneticEditor {
         #[cfg(debug_assertions)]
         sequence.assert_primary_gapless();
 
+        tidy(sequence);
         MagneticResult {
             command: MagneticEditCommand::AppendPrimary {
                 appended_clip: new_clip,
@@ -817,6 +834,7 @@ impl MagneticEditor {
             split: None,
         };
 
+        tidy(sequence);
         MagneticResult {
             command: MagneticEditCommand::MovePrimary {
                 clip_id,
@@ -890,6 +908,7 @@ impl MagneticEditor {
             _ => unreachable!(),
         };
 
+        tidy(sequence);
         MagneticResult {
             command: MagneticEditCommand::InsertGap {
                 gap_clip: gap,
@@ -980,6 +999,7 @@ impl MagneticEditor {
             sequence.assert_primary_gapless();
         }
 
+        tidy(sequence);
         Some(MagneticResult {
             command: MagneticEditCommand::Blade {
                 original_clip: original,
@@ -1084,6 +1104,7 @@ impl MagneticEditor {
             sequence.assert_primary_gapless();
         }
 
+        tidy(sequence);
         MagneticResult {
             command: MagneticEditCommand::TrimHead {
                 clip_id,
@@ -1163,6 +1184,7 @@ impl MagneticEditor {
             sequence.assert_primary_gapless();
         }
 
+        tidy(sequence);
         MagneticResult {
             command: MagneticEditCommand::TrimTail {
                 clip_id,
@@ -1669,10 +1691,7 @@ impl MagneticEditor {
     /// it: a position put back alone left a clip out of its order.
     pub fn apply_inverse(sequence: &mut Sequence, command: &MagneticEditCommand) {
         Self::apply_inverse_in_place(sequence, command);
-        for track in &mut sequence.tracks {
-            track.sort_clips();
-            track.sort_transitions();
-        }
+        tidy(sequence);
     }
 
     fn apply_inverse_in_place(sequence: &mut Sequence, command: &MagneticEditCommand) {
@@ -1997,10 +2016,7 @@ impl MagneticEditor {
     /// Redo `command`, each track left in time order as the edit left it.
     pub fn apply_forward(sequence: &mut Sequence, command: &MagneticEditCommand) {
         Self::apply_forward_in_place(sequence, command);
-        for track in &mut sequence.tracks {
-            track.sort_clips();
-            track.sort_transitions();
-        }
+        tidy(sequence);
     }
 
     fn apply_forward_in_place(sequence: &mut Sequence, command: &MagneticEditCommand) {
