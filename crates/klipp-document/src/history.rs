@@ -569,14 +569,18 @@ pub enum EditCommand {
         old_fade_in_b: f32,
         replaced: Option<klipp_timeline::Transition>,
     },
-    /// A transition's outgoing clip changed from `old_a` to `new_a`, and
-    /// nothing else (#683): the dissolve out of a piece a join folds into
-    /// the one before it, out of that one now. Its fades already are.
+    /// A transition's clips changed, outgoing from `old_a` to `new_a`
+    /// and incoming from `old_b` to `new_b`, and nothing else: the
+    /// dissolve out of a piece a join folds into the one before it, out of
+    /// that one now (#683); one on a clip cut in two, on the piece at its
+    /// cut. Its fades already are.
     RetargetTransition {
         track_index: usize,
         transition_id: klipp_core::TransitionId,
         old_a: ClipId,
         new_a: ClipId,
+        old_b: ClipId,
+        new_b: ClipId,
     },
     /// A transition taken away. The fades at the cut it sat on go with
     /// it, on any track (a picture transition set them; an audio one

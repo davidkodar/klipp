@@ -121,11 +121,11 @@ pub fn blade_linked(
     }
 
     let mut edits = Vec::new();
-    let (mut edit, a, b) = cut_one(seq, track_index, clip_id, cut, magnetic(track_index)).ok_or(BladeRefusal::NotInside)?;
+    let (mut edit, a, b, moved) = cut_one(seq, track_index, clip_id, cut, magnetic(track_index)).ok_or(BladeRefusal::NotInside)?;
 
     match partner {
         Some((pti, p)) if cut_is_inside(&p, cut, fps) => {
-            if let Some((mut p_edit, pa, pb)) = cut_one(seq, pti, p.id, cut, magnetic(pti)) {
+            if let Some((mut p_edit, pa, pb, p_moved)) = cut_one(seq, pti, p.id, cut, magnetic(pti)) {
                 relink(seq, track_index, a, Some(pa));
                 relink(seq, track_index, b, Some(pb));
                 relink(seq, pti, pa, Some(a));
@@ -134,6 +134,8 @@ pub fn blade_linked(
                 carry_halves(&mut p_edit, seq);
                 edits.push(edit);
                 edits.push(p_edit);
+                edits.extend(moved);
+                edits.extend(p_moved);
                 return Ok(edits);
             }
             // The partner would not cut after all: it stays whole.
@@ -150,24 +152,53 @@ pub fn blade_linked(
     }
     carry_halves(&mut edit, seq);
     edits.insert(0, edit);
+    edits.extend(moved);
     Ok(edits)
 }
 
-/// Cut one clip its track's way. Returns the edit and the halves' ids.
-fn cut_one(seq: &mut Sequence, ti: usize, id: ClipId, cut: RationalTime, magnetic: bool) -> Option<(EditCommand, ClipId, ClipId)> {
+/// The transitions on `track` (track `ti`) that sat on a clip cut into
+/// `left` and `right`, put on the piece at their cut: one into the clip
+/// goes into its first piece, one out of it out of its last. Left on the
+/// whole clip, a transition named a clip no longer there, and saving
+/// dropped it.
+pub fn transitions_onto_pieces(track: &klipp_timeline::Track, ti: usize, original: ClipId, left: ClipId, right: ClipId) -> Vec<EditCommand> {
+    track
+        .transitions
+        .iter()
+        .filter(|t| t.clip_a_id == original || t.clip_b_id == original)
+        .map(|t| {
+            let new_a = if t.clip_a_id == original { right } else { t.clip_a_id };
+            let new_b = if t.clip_b_id == original { left } else { t.clip_b_id };
+            EditCommand::RetargetTransition { track_index: ti, transition_id: t.id, old_a: t.clip_a_id, new_a, old_b: t.clip_b_id, new_b }
+        })
+        .collect()
+}
+
+/// Cut one clip its track's way. Returns the edit, the halves' ids, and
+/// the transitions put on the halves, made too.
+fn cut_one(seq: &mut Sequence, ti: usize, id: ClipId, cut: RationalTime, magnetic: bool) -> Option<(EditCommand, ClipId, ClipId, Vec<EditCommand>)> {
     let fps = seq.fps;
     if magnetic {
         let result = MagneticEditor::blade(seq, id, cut)?;
         let MagneticEditCommand::Blade { left_clip, right_clip, .. } = &result.command else { return None };
         let (a, b) = (left_clip.id, right_clip.id);
-        Some((EditCommand::Magnetic(result.command), a, b))
+        // The magnetic blade puts its transitions on its pieces itself.
+        Some((EditCommand::Magnetic(result.command), a, b, Vec::new()))
     } else {
         let track = seq.tracks.get_mut(ti)?;
         let position = track.clips.iter().position(|c| c.id == id)?;
         let original_clip = track.clips[position].clone();
         let (clip_a, clip_b) = track.blade_at(id, cut, fps)?;
         let (a, b) = (clip_a.id, clip_b.id);
-        Some((EditCommand::LegacyBladeClip { track_index: ti, original_clip, clip_a, clip_b, position }, a, b))
+        let moved = transitions_onto_pieces(track, ti, id, a, b);
+        for m in &moved {
+            if let EditCommand::RetargetTransition { transition_id, new_a, new_b, .. } = m {
+                if let Some(t) = track.transitions.iter_mut().find(|t| t.id == *transition_id) {
+                    (t.clip_a_id, t.clip_b_id) = (*new_a, *new_b);
+                }
+            }
+        }
+        Some((EditCommand::LegacyBladeClip { track_index: ti, original_clip, clip_a, clip_b, position }, a, b, moved))
     }
 }
 
