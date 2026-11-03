@@ -248,14 +248,18 @@ impl RenderQueuePanel {
         ui.add_space(2.0);
 
         // ── Row 4: where it goes ──
-        ui.horizontal(|ui| {
-            ui.label(small(format!("\u{2192} {}", Self::shown_path(&job.output_path)), theme.text_dim))
-                .on_hover_text(job.output_path.display().to_string());
+        // The button first, from the right, and the path in what is left,
+        // shortened at its front: a long path laid out whole widened every
+        // card past the panel, and Cancel and Remove went out of reach.
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if job.status != RenderJobStatus::Complete
                 && ui.add(egui::Button::new(small("Show folder".into(), theme.text_secondary)).frame(false)).clicked()
             {
                 actions.push(RenderQueueAction::ShowInFolder(job.output_path.clone()));
             }
+            let room = (ui.available_width() / 6.0).floor().max(12.0) as usize;
+            ui.add(egui::Label::new(small(format!("\u{2192} {}", elide_front(&Self::shown_path(&job.output_path), room)), theme.text_dim)).truncate())
+                .on_hover_text(job.output_path.display().to_string());
         });
 
         // ── Row 5: how it is going (rendering) ──
@@ -327,7 +331,7 @@ impl RenderQueuePanel {
                 if let Some(ref lr) = job.loudness_result {
                     ui.label(small(lr.clone(), dim));
                 }
-                ui.label(small(format!("Full path: {}", job.output_path.display()), dim));
+                ui.add(egui::Label::new(small(format!("Full path: {}", job.output_path.display()), dim)).wrap());
             });
         }
     }
@@ -484,3 +488,30 @@ mod tests {
         assert_eq!(RenderQueuePanel::duration(42), "42s");
     }
 }
+
+/// `text` in at most `chars` characters, its end kept and its front cut
+/// to an ellipsis: a path's file name and nearest folders are what tell
+/// one render from another.
+fn elide_front(text: &str, chars: usize) -> String {
+    let n = text.chars().count();
+    if n <= chars {
+        return text.to_string();
+    }
+    let keep = chars.saturating_sub(1);
+    let tail: String = text.chars().skip(n - keep).collect();
+    format!("\u{2026}{tail}")
+}
+
+#[cfg(test)]
+mod elide_tests {
+    /// A long path keeps its end, the file name, and fits its room.
+    #[test]
+    fn a_long_path_keeps_its_file_name_and_fits() {
+        let long = format!("~/{}/final_cut_v3.mp4", "very_long_folder_name/".repeat(12));
+        let shown = super::elide_front(&long, 40);
+        assert_eq!(shown.chars().count(), 40);
+        assert!(shown.starts_with('\u{2026}') && shown.ends_with("final_cut_v3.mp4"), "{shown}");
+        assert_eq!(super::elide_front("~/a.mp4", 40), "~/a.mp4");
+    }
+}
+
