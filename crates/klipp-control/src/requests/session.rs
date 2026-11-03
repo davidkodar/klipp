@@ -103,7 +103,11 @@ pub(crate) fn respond(
             let perf = ctx.perf_ring.lock().ok().and_then(|r| r.latest().cloned());
             let fps = seq.fps.as_f64();
             let presented = fb.shown_presented().map(|t| t.to_secs_f64());
-            let playing = ctx.shared.transport.lock().map(|t| t.playing).unwrap_or(false);
+            let transport = ctx.shared.transport.lock().map(|t| *t).unwrap_or_default();
+            let playing = transport.playing;
+            // Paused, the frame on screen. Playing, where the playhead has
+            // got to: played backwards no new frame is shown until it stops.
+            let playhead = if playing { transport.playhead.map(|t| t.to_secs_f64()).or(presented) } else { presented };
             let media = ctx.media_pool.read().recovered().all().count();
             let mut text = status_text(&StatusFacts {
                 build: klipp_core::build_info::get(),
@@ -111,7 +115,7 @@ pub(crate) fn respond(
                 unsaved: project.dirty,
                 sequence: &seq,
                 media,
-                playhead_secs: presented.unwrap_or(0.0),
+                playhead_secs: playhead.unwrap_or(0.0),
                 playing,
                 sequences: &project.sequences,
                 active_sequence: project.active_sequence,
@@ -227,10 +231,9 @@ pub(crate) fn respond(
                             "angle": *a as usize + 1,
                         })).collect::<Vec<_>>(),
                     })),
-                // The frame on screen: where the playhead was when it was
-                // made. Seconds and, at the sequence's rate, frames.
-                "playhead_secs": presented,
-                "playhead_frame": presented.map(|s| (s * fps).round() as i64),
+                // Seconds and, at the sequence's rate, frames.
+                "playhead_secs": playhead,
+                "playhead_frame": playhead.map(|s| (s * fps).round() as i64),
                 "viewer": {
                     "width": fb.width,
                     "height": fb.height,
