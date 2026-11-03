@@ -5121,22 +5121,22 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
                 if partner_edit.is_some() { ", its linked sound with it" } else { "" }
             );
             // A partner the cut doesn't reach (a sound running on past its
-            // picture, and cut there): each half keeps it only while it
-            // lies over it, and it points at the half over it most, as the
-            // timeline's blade leaves them. Left as it was, the partner
-            // named the clip no longer there.
+            // picture, and cut there): the half over it most keeps it, the
+            // other none, and it points at that half, one to one, so an
+            // edit that follows a link moves the two together. Left as it
+            // was, the partner named the clip no longer there.
             if partner_edit.is_none() {
                 if let Some((_, _, partner)) = clip.linked_clip_id.and_then(|pid| find_clip(seq, pid)).filter(|(pti, _, _)| !seq.tracks[*pti].locked) {
                     let over = |c: &Clip| (secs(c.timeline_out.min(partner.timeline_out)) - secs(c.timeline_in.max(partner.timeline_in))).max(0.0);
                     let (oa, ob) = (over(&a), over(&b));
-                    a.linked_clip_id = (oa > 0.0).then_some(partner.id);
-                    b.linked_clip_id = (ob > 0.0).then_some(partner.id);
+                    let want = match (oa > 0.0, ob > 0.0) {
+                        (false, false) => None,
+                        _ if ob > oa => Some(b.id),
+                        _ => Some(a.id),
+                    };
+                    a.linked_clip_id = (want == Some(a.id)).then_some(partner.id);
+                    b.linked_clip_id = (want == Some(b.id)).then_some(partner.id);
                     if partner.linked_clip_id == Some(clip.id) {
-                        let want = match (oa > 0.0, ob > 0.0) {
-                            (false, false) => None,
-                            _ if ob > oa => Some(b.id),
-                            _ => Some(a.id),
-                        };
                         let mut relinked = partner.clone();
                         relinked.linked_clip_id = want;
                         partner_edit = Some(EditCommand::ReplaceClip { description: "Split", old: Box::new(partner.clone()), new: Box::new(relinked) });
@@ -21383,9 +21383,9 @@ mod tests {
         assert!(resolve(&seq, &pool, &[Op::Trim { clip_id: ClipRef::Id(first), edge: Edge::Out, to: Anchor::Secs(3.0), ripple: true, linked: true }]).is_ok(), "the primary's own trim moves {later_id:?} and its sound");
     }
 
-    /// A sound split past where its picture ends: each half keeps the
-    /// picture only while it lies over it, and the picture points at the
-    /// half over it, never at the whole sound that is gone.
+    /// A sound split past where its picture ends: the half over the
+    /// picture keeps it, the other none, and the picture points at that
+    /// half, never at the whole sound that is gone.
     #[test]
     fn a_sound_split_past_its_picture_relinks_them() {
         let (seq, mut pool, _, ia, _) = fixture();
