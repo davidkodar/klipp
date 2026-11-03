@@ -207,6 +207,15 @@ pub fn show(
 ) -> Vec<AppCommand> {
     let mut cmds = Vec::new();
 
+    // A click anywhere ends a range swiped on a thumbnail, as it was left to
+    // shorten the next add however long after. A menu's own click doesn't:
+    // that is the add the range is for.
+    if let Some(pos) = ui.ctx().input(|i| i.pointer.primary_pressed().then(|| i.pointer.press_origin()).flatten()) {
+        if ui.ctx().layer_id_at(pos).is_none_or(|layer| layer.order != egui::Order::Foreground) {
+            state.browser_range_selection = None;
+        }
+    }
+
     // Capture the panel rect upfront for the file-browser drag-drop handler
     // at the bottom of this function.
     let panel_rect = ui.max_rect();
@@ -2740,6 +2749,54 @@ mod pool_style_tests {
                 "{view:?}: a double-click put it on the timeline: {cmds:?}"
             );
         }
+    }
+
+    /// A range swiped on a thumbnail lasts until a click. A click ends it,
+    /// or it shortened the next add however long after; the menu's Add to End
+    /// is what it is for, and keeps it.
+    #[test]
+    fn a_click_ends_a_range_and_the_menus_add_keeps_it() {
+        let mut state = AppState::default();
+        let m = item("A001_C002.mov", "h264", "aac");
+        let id = state.media_pool.add(m);
+        let mut panel = crate::browser::BrowserPanel { browser_view_mode: BrowserViewMode::Grid, ..Default::default() };
+        let ctx = egui::Context::default();
+        let theme = KlippTheme::default();
+        let range = crate::state::BrowserClipSelection { media_id: id, range_in_secs: 1.0, range_out_secs: 3.0 };
+        let mut frame = |state: &mut AppState, events: Vec<egui::Event>| {
+            let mut tab = crate::layout_state::BrowserTab::Media;
+            let (mut pinned, mut ratio) = (false, 0.5);
+            let mut cmds = Vec::new();
+            let out = ctx.run(egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(700.0, 900.0))), events, ..Default::default() }, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| cmds = panel.show(ui, state, &theme, &mut tab, &mut pinned, &mut ratio));
+            });
+            let texts: Vec<(String, egui::Pos2)> = out.shapes.iter().filter_map(|s| match &s.shape {
+                egui::Shape::Text(t) => Some((t.galley.text().to_string(), t.pos + t.galley.size() / 2.0)),
+                _ => None,
+            }).collect();
+            (texts, cmds)
+        };
+        let button = |pos, button, pressed| egui::Event::PointerButton { pos, button, pressed, modifiers: egui::Modifiers::NONE };
+        frame(&mut state, Vec::new());
+        let at = frame(&mut state, Vec::new()).0.iter().find(|(t, _)| t == "A001_C002.mov").unwrap().1;
+
+        state.browser_range_selection = Some(range.clone());
+        frame(&mut state, vec![egui::Event::PointerMoved(at)]);
+        frame(&mut state, vec![button(at, egui::PointerButton::Primary, true)]);
+        frame(&mut state, vec![button(at, egui::PointerButton::Primary, false)]);
+        assert!(state.browser_range_selection.is_none(), "a click on the card ends it");
+
+        state.browser_range_selection = Some(range);
+        frame(&mut state, vec![button(at, egui::PointerButton::Secondary, true)]);
+        frame(&mut state, vec![button(at, egui::PointerButton::Secondary, false)]);
+        let (texts, _) = frame(&mut state, Vec::new());
+        let add = texts.iter().find(|(t, _)| t == MENU_ADD_TO_END).unwrap_or_else(|| panic!("{texts:?}")).1;
+        frame(&mut state, vec![egui::Event::PointerMoved(add)]);
+        frame(&mut state, vec![button(add, egui::PointerButton::Primary, true)]);
+        let mut cmds = frame(&mut state, vec![button(add, egui::PointerButton::Primary, false)]).1;
+        cmds.extend(frame(&mut state, Vec::new()).1);
+        assert!(cmds.iter().any(|c| matches!(c, AppCommand::ImportMediaLinked { media_id, .. } if *media_id == id)), "{cmds:?}");
+        assert!(state.browser_range_selection.is_some(), "the add it is for still has it");
     }
 
     /// A card's caption reads as the list's columns do, and only rates

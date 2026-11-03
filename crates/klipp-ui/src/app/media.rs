@@ -383,6 +383,15 @@ impl KlippApp {
                         // Check for browser range selection (trimmed source in/out)
                         let range = self.state.browser_range_selection.take()
                             .filter(|r| r.media_id == *media_id);
+                        // Said, since a range swiped by accident looks like
+                        // a clip cut short.
+                        if let Some(sel) = &range {
+                            self.state.toast.show(format!(
+                                "Added the range marked on its thumbnail: {} of {}",
+                                klipp_media::describe_secs(sel.range_out_secs - sel.range_in_secs),
+                                klipp_media::describe_secs(item.duration.to_secs_f64()),
+                            ));
+                        }
 
                         let (use_duration, source_in_override, source_out_override) = if let Some(ref sel) = range {
                             let rate = item.fps.num;
