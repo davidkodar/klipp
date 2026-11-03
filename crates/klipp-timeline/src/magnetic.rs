@@ -1012,20 +1012,27 @@ impl MagneticEditor {
 
         // Its linked sound loses the same head, so the two stay in sync:
         // the same file time later at its start, and as much shorter. A
-        // J or L cut keeps its lead. Left as it is on a locked track, or
-        // where it hasn't that much to lose.
+        // J or L cut keeps its lead. A trim that takes all of it takes the
+        // sound out, and the picture's link to it, as other editors do.
+        // Left as it is on a locked track.
         let partner = before.find_clip(clip_id)
             .and_then(|(ti, ci)| before.tracks[ti].clips[ci].linked_clip_id)
             .and_then(|pid| sequence.find_clip(pid).filter(|(pti, _)| *pti != track_idx && !sequence.tracks[*pti].locked))
-            .and_then(|(pti, pci)| {
+            .map(|(pti, pci)| {
                 let old = sequence.tracks[pti].clips[pci].clone();
                 let mut new = old.clone();
                 new.source_in = old.source_in + (new_source_in - old_source_in);
                 new.timeline_out = old.timeline_out - delta;
-                (new.timeline_out > new.timeline_in && new.source_in.value >= 0).then(|| {
+                if new.timeline_out > new.timeline_in && new.source_in.value >= 0 {
                     sequence.tracks[pti].clips[pci] = new.clone();
-                    (old, new)
-                })
+                    (pti, old, Some(new))
+                } else {
+                    sequence.tracks[pti].clips.remove(pci);
+                    if let Some((ti, ci)) = sequence.find_clip(clip_id) {
+                        sequence.tracks[ti].clips[ci].linked_clip_id = None;
+                    }
+                    (pti, old, None)
+                }
             });
 
         let mut cascaded_clips = Self::cascade_all_connected(sequence, &rippled_clips);
@@ -1815,9 +1822,19 @@ impl MagneticEditor {
                 for cr in cascaded_clips.iter().rev() {
                     sequence.set_clip_position(cr.clip_id, cr.old_in, cr.old_out);
                 }
-                if let Some((old, _)) = partner {
-                    if let Some((ti, ci)) = sequence.find_clip(old.id) {
-                        sequence.tracks[ti].clips[ci] = old.clone();
+                if let Some((pti, old, new)) = partner {
+                    match (new, sequence.find_clip(old.id)) {
+                        (Some(_), Some((ti, ci))) => sequence.tracks[ti].clips[ci] = old.clone(),
+                        (None, _) => {
+                            if let Some(track) = sequence.tracks.get_mut(*pti) {
+                                track.clips.push(old.clone());
+                                track.sort_clips();
+                            }
+                            if let Some((ti, ci)) = sequence.find_clip(*clip_id) {
+                                sequence.tracks[ti].clips[ci].linked_clip_id = Some(old.id);
+                            }
+                        }
+                        _ => {}
                     }
                 }
                 for rr in rippled_clips.iter().rev() {
@@ -2107,10 +2124,21 @@ impl MagneticEditor {
                 for rr in rippled_clips {
                     sequence.set_clip_position(rr.clip_id, rr.new_in, rr.new_out);
                 }
-                if let Some((_, new)) = partner {
-                    if let Some((ti, ci)) = sequence.find_clip(new.id) {
-                        sequence.tracks[ti].clips[ci] = new.clone();
+                match partner {
+                    Some((_, _, Some(new))) => {
+                        if let Some((ti, ci)) = sequence.find_clip(new.id) {
+                            sequence.tracks[ti].clips[ci] = new.clone();
+                        }
                     }
+                    Some((pti, old, None)) => {
+                        if let Some(track) = sequence.tracks.get_mut(*pti) {
+                            track.remove_clip(old.id);
+                        }
+                        if let Some((ti, ci)) = sequence.find_clip(*clip_id) {
+                            sequence.tracks[ti].clips[ci].linked_clip_id = None;
+                        }
+                    }
+                    None => {}
                 }
                 for cr in cascaded_clips {
                     sequence.set_clip_position(cr.clip_id, cr.new_in, cr.new_out);
@@ -2275,6 +2303,31 @@ mod tests {
             awaiting_refit: false,
             version_of: None,
         }
+    }
+
+    /// A ripple head trim that takes more than its picture's linked sound
+    /// has takes the sound out, and the picture's link to it, so nothing
+    /// is left out of sync; undo puts both back, redo takes it out again.
+    #[test]
+    fn a_head_trim_past_a_short_linked_sound_takes_it_out() {
+        let mut seq = make_sequence(&[(0, 48), (48, 96)]);
+        let mut a1 = Track::new("Audio 1", TrackKind::Audio);
+        let picture = seq.tracks[0].clips[0].id;
+        let mut sound = media_clip(0, 6);
+        sound.linked_clip_id = Some(picture);
+        seq.tracks[0].clips[0].linked_clip_id = Some(sound.id);
+        let sound_id = sound.id;
+        a1.clips.push(sound);
+        seq.tracks.push(a1);
+        let state = |s: &Sequence| (s.tracks[1].clips.iter().map(|c| c.id).collect::<Vec<_>>(), s.tracks[0].clips[0].linked_clip_id);
+        let before = state(&seq);
+        let done = MagneticEditor::trim_head(&mut seq, picture, tc(12));
+        assert_eq!(state(&seq), (Vec::new(), None), "the sound and the link to it gone");
+        MagneticEditor::apply_inverse(&mut seq, &done.command);
+        assert_eq!(state(&seq), before, "undone");
+        assert_eq!(seq.tracks[1].find_clip(sound_id).map(|c| (c.timeline_in, c.timeline_out)), Some((tc(0), tc(6))));
+        MagneticEditor::apply_forward(&mut seq, &done.command);
+        assert_eq!(state(&seq), (Vec::new(), None), "redone");
     }
 
     /// #3449: a ripple trim of a primary clip's end, either end, and a
