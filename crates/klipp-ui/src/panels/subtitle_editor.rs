@@ -248,7 +248,7 @@ pub fn show(ctx: &egui::Context, state: &mut AppState) -> Vec<AppCommand> {
     let rows = collect_subtitle_clips(state.sequence());
     let active_idx = active_subtitle_at(&rows, playhead);
 
-    egui::Window::new("Subtitle Editor")
+    crate::widgets::window("Subtitle Editor")
         .open(&mut open)
         .default_width(520.0)
         .default_height(420.0)

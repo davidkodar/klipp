@@ -38,7 +38,7 @@ pub fn show_batch_rename_dialog(
 
     let changed_count = preview.iter().filter(|(_, old, new)| old != new).count();
 
-    egui::Window::new("Rename Items")
+    crate::widgets::window("Rename Items")
         .collapsible(false)
         .resizable(false)
         .default_width(520.0)

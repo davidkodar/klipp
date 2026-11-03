@@ -235,7 +235,7 @@ impl NarratePanel {
         }
 
         let mut asked = None;
-        egui::Window::new("Narrate")
+        crate::widgets::window("Narrate")
             .open(open)
             .default_size([480.0, 340.0])
             .min_width(360.0)

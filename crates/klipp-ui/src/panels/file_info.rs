@@ -19,7 +19,7 @@ pub fn show_file_info(
     theme: &KlippTheme,
     open: &mut bool,
 ) {
-    egui::Window::new("File Info")
+    crate::widgets::window("File Info")
         .open(open)
         .collapsible(false)
         .resizable(false)

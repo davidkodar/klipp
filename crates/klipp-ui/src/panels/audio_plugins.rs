@@ -149,7 +149,7 @@ pub fn show_audio_plugins_dialog(
     );
 
     let mut open = true;
-    egui::Window::new("Audio Plugins")
+    crate::widgets::window("Audio Plugins")
         .open(&mut open)
         .resizable(true)
         .movable(true)

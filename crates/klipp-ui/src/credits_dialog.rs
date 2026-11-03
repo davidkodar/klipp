@@ -67,7 +67,7 @@ pub fn show_dialog(ctx: &egui::Context, state: &mut crate::state::AppState) -> V
     let mut open = true;
     let mut create = false;
     let mut cancel = false;
-    egui::Window::new("Credits from a List")
+    crate::widgets::window("Credits from a List")
         .collapsible(false)
         .resizable(true)
         .open(&mut open)

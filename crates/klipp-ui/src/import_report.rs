@@ -6,7 +6,7 @@ pub fn show_dialog(ctx: &egui::Context, state: &mut AppState) -> Vec<AppCommand>
     let mut commands = Vec::new();
     if !state.show_import_report { return commands; }
     let Some(report) = state.last_import_report.as_ref() else { state.show_import_report = false; return commands; };
-    egui::Window::new("Last Import Report").open(&mut state.show_import_report)
+    crate::widgets::window("Last Import Report").open(&mut state.show_import_report)
         .default_width(560.0).resizable(true).show(ctx, |ui| {
         egui::ScrollArea::vertical().max_height(520.0).show(ui, |ui| {
             ui.label(report.source.file_name().unwrap_or_default().to_string_lossy());

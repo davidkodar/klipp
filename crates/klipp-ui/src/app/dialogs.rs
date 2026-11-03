@@ -32,7 +32,7 @@ impl KlippApp {
             ModelDownloadState::Consenting { entry } => {
                 let mut next = ModelDownloadState::Consenting { entry: entry.clone() };
                 let mut close_kind: Option<&'static str> = None;
-                egui::Window::new("Download AI Model")
+                crate::widgets::window("Download AI Model")
                     .collapsible(false)
                     .resizable(false)
                     .order(egui::Order::Foreground)
@@ -113,7 +113,7 @@ impl KlippApp {
                 let elapsed = started_at.elapsed().as_secs_f64().max(0.001);
                 let rate = downloaded as f64 / elapsed;
                 let mut cancelled = false;
-                egui::Window::new("Downloading AI Model")
+                crate::widgets::window("Downloading AI Model")
                     .collapsible(false)
                     .resizable(false)
                     .order(egui::Order::Foreground)
@@ -156,7 +156,7 @@ impl KlippApp {
                     entry_label: entry_label.clone(),
                     error: error.clone(),
                 };
-                egui::Window::new("Download Failed")
+                crate::widgets::window("Download Failed")
                     .collapsible(false)
                     .resizable(false)
                     .order(egui::Order::Foreground)
@@ -206,7 +206,7 @@ impl KlippApp {
         // 4a0. Paste Attributes dialog
         if self.state.show_paste_attributes_dialog {
             let mut open = true;
-            egui::Window::new("Paste Attributes")
+            crate::widgets::window("Paste Attributes")
                 .collapsible(false)
                 .resizable(false)
                 .open(&mut open)
@@ -261,7 +261,7 @@ impl KlippApp {
             let mut open = true;
             let mut run = false;
             let mut cancel = false;
-            egui::Window::new(d.title())
+            crate::widgets::window(d.title())
                 .collapsible(false)
                 .resizable(false)
                 .open(&mut open)
@@ -341,7 +341,7 @@ impl KlippApp {
                 });
 
             let mut open = true;
-            egui::Window::new("Set Clip Speed")
+            crate::widgets::window("Set Clip Speed")
                 .collapsible(false)
                 .resizable(false)
                 .open(&mut open)
@@ -461,7 +461,7 @@ impl KlippApp {
         // Save Workspace dialog
         if self.state.show_save_workspace_dialog {
             let mut open = true;
-            egui::Window::new("Save Workspace")
+            crate::widgets::window("Save Workspace")
                 .collapsible(false)
                 .resizable(false)
                 .open(&mut open)
@@ -517,7 +517,7 @@ impl KlippApp {
         // ── Save hyperzoom preset dialog (HZ-NEXT-SAVED-PRESETS) ──
         if self.state.show_save_hyperzoom_preset_dialog {
             let mut open = true;
-            egui::Window::new("Save Hyperzoom as Preset")
+            crate::widgets::window("Save Hyperzoom as Preset")
                 .collapsible(false)
                 .resizable(false)
                 .open(&mut open)
@@ -607,7 +607,7 @@ impl KlippApp {
 
         // 4a1. Auto-save recovery dialog
         if self.state.show_autosave_recovery {
-            egui::Window::new("Recover Auto-Save?")
+            crate::widgets::window("Recover Auto-Save?")
                 .collapsible(false)
                 .resizable(false)
                 .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
@@ -640,7 +640,7 @@ impl KlippApp {
             let name = self.state.media_pool.get(&media_id)
                 .map(|m| m.filename.clone())
                 .unwrap_or_else(|| "Unknown".into());
-            egui::Window::new("Remove Media?")
+            crate::widgets::window("Remove Media?")
                 .collapsible(false)
                 .resizable(false)
                 .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
@@ -661,7 +661,7 @@ impl KlippApp {
 
         // Delete unused media confirmation dialog
         if let Some((count, total_bytes)) = self.state.show_delete_unused_confirm {
-            egui::Window::new("Delete Unused Media?")
+            crate::widgets::window("Delete Unused Media?")
                 .collapsible(false)
                 .resizable(false)
                 .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
@@ -690,7 +690,7 @@ impl KlippApp {
         // "anyway", since a missing frame would take its neighbour's matte.
         if let Some(lines) = self.state.export_matte_warning.clone() {
             let mut close = false;
-            egui::Window::new("Subject mattes aren't finished")
+            crate::widgets::window("Subject mattes aren't finished")
                 .collapsible(false)
                 .resizable(false)
                 .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
@@ -725,7 +725,7 @@ impl KlippApp {
             let mut dismiss = false;
             let mut force_export = false;
             if let Some((ref clips, _)) = self.state.export_offline_warning {
-                egui::Window::new("Export Contains Offline Media")
+                crate::widgets::window("Export Contains Offline Media")
                     .collapsible(false)
                     .resizable(false)
                     .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
@@ -775,7 +775,7 @@ impl KlippApp {
                     .file_name()
                     .map(|n| n.to_string_lossy().to_string())
                     .unwrap_or_else(|| "renamed copy".into());
-                egui::Window::new("Export Would Overwrite Source Media")
+                crate::widgets::window("Export Would Overwrite Source Media")
                     .collapsible(false)
                     .resizable(false)
                     .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
@@ -831,7 +831,7 @@ impl KlippApp {
         // 4a2. Confirm remove track dialog
         if let Some(track_id) = self.state.confirm_remove_track {
             let mut open = true;
-            egui::Window::new("Remove Track")
+            crate::widgets::window("Remove Track")
                 .open(&mut open)
                 .collapsible(false)
                 .resizable(false)
@@ -870,7 +870,7 @@ impl KlippApp {
                 Some(idx) => {
                     let name = self.state.sequences[idx].name.clone();
                     let mut open = true;
-                    egui::Window::new("Delete Sequence")
+                    crate::widgets::window("Delete Sequence")
                         .open(&mut open)
                         .collapsible(false)
                         .resizable(false)
@@ -913,7 +913,7 @@ impl KlippApp {
             let timecode_no = auto_align::timecode_position(self.state.sequence(), &self.state.media_pool, pair).err();
             let mut open = true;
             let mut close = false;
-            egui::Window::new("Auto Align Audio")
+            crate::widgets::window("Auto Align Audio")
                 .open(&mut open)
                 .collapsible(false)
                 .resizable(false)
@@ -1226,7 +1226,7 @@ impl KlippApp {
             let online_count = total_media - offline_count;
             let consolidation_active = self.state.consolidate_progress.is_some();
 
-            egui::Window::new("Consolidate Project")
+            crate::widgets::window("Consolidate Project")
                 .open(&mut open)
                 .collapsible(false)
                 .resizable(false)

@@ -2494,7 +2494,7 @@ impl KlippApp {
             // the buttons pinned to its foot and the form scrolling above
             // (#2941): sized to its contents, it ran off a short screen.
             let size = export_dialog_size(ctx.screen_rect());
-            egui::Window::new("Export Sequence")
+            crate::widgets::window("Export Sequence")
                 .collapsible(false)
                 .resizable(false)
                 .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
@@ -2518,7 +2518,7 @@ impl KlippApp {
 
         // Overwrite confirmation dialog
         if self.export_dialog.confirm_overwrite {
-            egui::Window::new("Overwrite File?")
+            crate::widgets::window("Overwrite File?")
                 .collapsible(false)
                 .resizable(false)
                 .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
@@ -2548,7 +2548,7 @@ impl KlippApp {
 
         // Save as Preset dialog
         if self.export_dialog.show_save_preset {
-            egui::Window::new("Save as Preset")
+            crate::widgets::window("Save as Preset")
                 .collapsible(false)
                 .resizable(false)
                 .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])

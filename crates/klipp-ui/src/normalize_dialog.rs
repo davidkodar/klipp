@@ -110,7 +110,7 @@ pub fn show_dialog(ctx: &egui::Context, state: &mut crate::state::AppState) -> V
     let Some(mut dialog) = state.normalize_dialog.take() else { return Vec::new() };
     let mut open = true;
     let (mut apply, mut cancel) = (false, false);
-    egui::Window::new("Normalize Audio")
+    crate::widgets::window("Normalize Audio")
         .collapsible(false)
         .resizable(false)
         .open(&mut open)

@@ -156,7 +156,7 @@ impl KlippApp {
             }
             ui.painter().rect_filled(screen, 0.0, egui::Color32::from_black_alpha(120));
         });
-        egui::Window::new("Bounce to Media File").collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0)).show(ctx, |ui| {
+        crate::widgets::window("Bounce to Media File").collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0)).show(ctx, |ui| {
             ui.set_min_width(440.0);
             ui.add_space(4.0);
             match &dlg.refusal {

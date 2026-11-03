@@ -452,7 +452,7 @@ impl KlippApp {
         let mut choice = None;
         let mut cancelled = false;
         let mut open = true;
-        egui::Window::new("Project In Use")
+        crate::widgets::window("Project In Use")
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
@@ -1286,7 +1286,7 @@ impl KlippApp {
             .map(|s| s.to_string_lossy().to_string())
             .unwrap_or_else(|| "Untitled".to_string());
 
-        egui::Window::new("Save Changes?")
+        crate::widgets::window("Save Changes?")
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])

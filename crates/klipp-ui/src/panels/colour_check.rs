@@ -231,7 +231,7 @@ impl ColourCheckPanel {
         let look = look_for(state);
         let at_secs = state.playhead.to_secs_f64();
         self.refresh(frame_buffer, &faces, at_secs, &look, log_prior_at_playhead(state));
-        egui::Window::new("Colour Check")
+        crate::widgets::window("Colour Check")
             .open(open)
             .default_size([420.0, 520.0])
             .min_width(300.0)

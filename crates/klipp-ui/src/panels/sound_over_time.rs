@@ -104,7 +104,7 @@ impl SoundOverTimePanel {
     pub fn show(&mut self, ctx: &egui::Context, state: &AppState, theme: &KlippTheme, open: &mut bool) {
         self.poll();
         let under = media_at_playhead(state);
-        egui::Window::new("Sound Over Time")
+        crate::widgets::window("Sound Over Time")
             .open(open)
             .default_size([620.0, 420.0])
             .min_width(320.0)

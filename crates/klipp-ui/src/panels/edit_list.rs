@@ -166,7 +166,7 @@ impl EditListPanel {
     pub fn show(&mut self, ctx: &egui::Context, state: &mut AppState) -> Vec<AppCommand> {
         let mut cmds = Vec::new();
         let mut open = state.show_edit_list;
-        egui::Window::new("Edit List")
+        crate::widgets::window("Edit List")
             .open(&mut open)
             .default_width(640.0)
             .default_height(360.0)

@@ -62,7 +62,7 @@ impl MarkersPanel {
         }
         let mut open = state.show_markers_panel;
 
-        let response = egui::Window::new("Markers")
+        let response = crate::widgets::window("Markers")
             .constrain_to(crate::widgets::below_menu_bar(ctx))
             .open(&mut open)
             .default_width(280.0)

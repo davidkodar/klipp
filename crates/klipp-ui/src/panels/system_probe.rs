@@ -32,7 +32,7 @@ pub fn show_system_probe_dialog(
 
     let report = collect_report();
     let mut open = true;
-    egui::Window::new("System Probe")
+    crate::widgets::window("System Probe")
         .open(&mut open)
         .resizable(true)
         .movable(true)
