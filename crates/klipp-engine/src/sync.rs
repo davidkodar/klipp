@@ -123,7 +123,9 @@ impl MasterClock {
         let elapsed = self.anchor_wall.lock().unwrap_or_else(|e| e.into_inner()).elapsed();
         let speed = f64::from_bits(self.speed.load(Ordering::Acquire));
         let anchor = self.anchor_pts_us.load(Ordering::Acquire);
-        anchor + (elapsed.as_micros() as f64 * speed) as u64
+        // Signed: played backwards the step is negative, and cast to u64
+        // on its own it was 0, so the clock stood still. Stops at zero.
+        (anchor as f64 + elapsed.as_micros() as f64 * speed).max(0.0) as u64
     }
 
     /// Get the current playback position in seconds (f64).
@@ -227,6 +229,26 @@ impl MasterClock {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Played backwards (J), the clock runs back from where it stood, and
+    /// stops at zero rather than wrapping. A negative step cast straight
+    /// to u64 was 0, so the clock stood still and J played nothing.
+    #[test]
+    fn a_negative_speed_runs_the_clock_back() {
+        let clock = MasterClock::new();
+        clock.seek(10_000_000);
+        clock.set_speed(-1.0);
+        clock.resume();
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        let now = clock.current_pts_us();
+        assert!(now < 10_000_000 - 20_000, "the clock went back: {now}");
+        let near_start = MasterClock::new();
+        near_start.seek(1_000);
+        near_start.set_speed(-2.0);
+        near_start.resume();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        assert_eq!(near_start.current_pts_us(), 0, "stopped at zero");
+    }
 
     #[test]
     fn pdc_offset_default_is_zero() {
