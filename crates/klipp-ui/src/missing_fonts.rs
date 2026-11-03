@@ -95,26 +95,103 @@ pub fn installed(family: &str) -> bool {
 }
 
 /// The fonts in `missing` that Klipp's catalogue has, taken out of it and
-/// fetched in the background (#2732): a project set in a catalogue family
-/// opens with it rather than asking for a replacement. A fetch that fails
-/// is logged; the titles keep the fallback until the font is there.
+/// offered for download (#2732): a project set in a catalogue family
+/// opens with it rather than asking for a replacement, once the person
+/// agrees to fetch it (P41). A fetch that fails is logged; the titles keep
+/// the fallback until the font is there.
 pub fn fetch_from_catalogue(missing: Vec<MissingFont>) -> Vec<MissingFont> {
     let (fetch, rest): (Vec<MissingFont>, Vec<MissingFont>) = missing.into_iter().partition(|m| klipp_title::catalogue::family(&m.family).is_some());
     for m in fetch {
         if let Some(family) = klipp_title::catalogue::family(&m.family) {
-            fetch_in_background(family);
+            ask_to_fetch(family);
         }
     }
     rest
 }
 
-/// `family` fetched when Klipp's catalogue has it and it is not here
-/// (#2734): a font chosen from the catalogue's section of the picker.
+/// `family` offered for download when Klipp's catalogue has it and it is
+/// not here (#2734, P41): a font chosen from the catalogue's section of
+/// the picker, or a name typed.
 pub fn fetch_family(family: &str) {
     if let Some(f) = klipp_title::catalogue::family(family).filter(|f| !klipp_title::catalogue::is_fetched(f)) {
         if !installed(family) {
-            fetch_in_background(f);
+            ask_to_fetch(f);
         }
+    }
+}
+
+/// The catalogue families waiting for the person to agree to fetch them,
+/// and those they said not now to this session (P41): no font is fetched
+/// unasked. The fonts the built-ins use ship with the app and are never
+/// asked for.
+static ASKED: std::sync::Mutex<Vec<&'static klipp_title::catalogue::CatalogueFamily>> = std::sync::Mutex::new(Vec::new());
+static DECLINED: std::sync::Mutex<Vec<&'static str>> = std::sync::Mutex::new(Vec::new());
+
+/// `family` offered for download, unless it is being fetched, offered
+/// already, or turned down this session.
+pub fn ask_to_fetch(family: &'static klipp_title::catalogue::CatalogueFamily) {
+    if fetching(&family.name) || DECLINED.lock().is_ok_and(|d| d.contains(&family.name.as_str())) {
+        return;
+    }
+    if let Ok(mut asked) = ASKED.lock() {
+        if !asked.iter().any(|f| f.name == family.name) {
+            asked.push(family);
+        }
+    }
+}
+
+/// The families waiting for an answer, by name.
+pub fn asked() -> Vec<&'static str> {
+    ASKED.lock().map(|a| a.iter().map(|f| f.name.as_str()).collect()).unwrap_or_default()
+}
+
+/// The person's answer: fetch them all, or none of them this session.
+pub fn answer(fetch: bool) {
+    let families: Vec<&'static klipp_title::catalogue::CatalogueFamily> = ASKED.lock().map(|mut a| std::mem::take(&mut *a)).unwrap_or_default();
+    for family in families {
+        if fetch {
+            fetch_in_background(family);
+        } else if let Ok(mut d) = DECLINED.lock() {
+            d.push(family.name.as_str());
+        }
+    }
+}
+
+/// The question, while a family waits for one: each family's name,
+/// licence and size, where it comes from; Download fetches them, Not now
+/// leaves the titles in their stand-in face.
+pub fn show_fetch_question(ctx: &egui::Context) {
+    let families: Vec<&'static klipp_title::catalogue::CatalogueFamily> = ASKED.lock().map(|a| a.clone()).unwrap_or_default();
+    if families.is_empty() {
+        return;
+    }
+    let size: u64 = families.iter().map(|f| f.files.iter().map(|x| x.size).sum::<u64>()).sum();
+    let mut said = None;
+    crate::widgets::window("Download Fonts")
+        .collapsible(false)
+        .resizable(false)
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .show(ctx, |ui| {
+            ui.label("Titles here are set in fonts that aren't on this computer. Klipp can download them from the Google Fonts collection:");
+            ui.add_space(6.0);
+            for f in &families {
+                let bytes: u64 = f.files.iter().map(|x| x.size).sum();
+                ui.label(format!("{}  ({}, {})", f.name, f.licence, crate::model_download::fmt_bytes(bytes)));
+            }
+            ui.add_space(6.0);
+            ui.label(egui::RichText::new("Until then they show in a stand-in face. Each file is checked against its SHA-256 before it is kept.").small().weak());
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                if ui.button("Not now").clicked() {
+                    said = Some(false);
+                }
+                if ui.button(format!("Download ({})", crate::model_download::fmt_bytes(size))).clicked() {
+                    said = Some(true);
+                }
+            });
+        });
+    if let Some(fetch) = said {
+        answer(fetch);
     }
 }
 
@@ -149,8 +226,10 @@ fn fetch_in_background(family: &'static klipp_title::catalogue::CatalogueFamily)
 }
 
 /// The catalogue families `titles` are set in that are not here yet,
-/// fetched (#2734): a title an edit places from a template, from the app
-/// or over the socket, is drawn in its own face as soon as it arrives.
+/// offered for download (#2734, P41): a title an edit places from a
+/// template, from the app or over the socket, is drawn in its own face
+/// once the person agrees and it arrives. The built-ins' fonts ship with
+/// the app, so they are never asked for.
 pub fn fetch_for<'a>(titles: impl IntoIterator<Item = &'a TitleData>) {
     let mut families: Vec<String> = Vec::new();
     for td in titles {
@@ -163,7 +242,7 @@ pub fn fetch_for<'a>(titles: impl IntoIterator<Item = &'a TitleData>) {
     for name in families {
         if let Some(family) = klipp_title::catalogue::family(&name).filter(|f| !klipp_title::catalogue::is_fetched(f)) {
             if !klipp_title::font_discovery::font_installed(&klipp_title::font_discovery::discover_system_fonts(), &name) {
-                fetch_in_background(family);
+                ask_to_fetch(family);
             }
         }
     }
@@ -273,6 +352,48 @@ pub fn show_dialog(ctx: &egui::Context, state: &mut AppState, theme: &crate::the
 mod tests {
     use super::*;
     use klipp_timeline::{Clip, ClipKind, StyleRun, TextBox};
+
+    /// P41: every family the built-in title and composition templates and
+    /// the starter brand kits are set in ships with the app, so none is
+    /// fetched when a built-in is first used.
+    #[test]
+    fn the_builtins_fonts_ship_with_the_app() {
+        let mut used: Vec<String> = Vec::new();
+        for t in klipp_timeline::title_library::TITLES.iter() {
+            used.extend(super::fonts_of(&t.data()));
+        }
+        for t in klipp_timeline::composition_template::builtin_templates() {
+            for s in &t.sequences {
+                for c in s.all_clips() {
+                    if let Some(td) = c.title_data() {
+                        used.extend(super::fonts_of(td));
+                    }
+                }
+            }
+        }
+        for k in klipp_project::brand_kit::starters() {
+            used.extend(k.fonts.heading.clone());
+            used.extend(k.fonts.body.clone());
+        }
+        used.sort();
+        used.dedup();
+        let missing: Vec<&String> = used.iter().filter(|f| klipp_title::bundled::lookup(f, "Regular").is_none() && !klipp_title::catalogue::shipped(f)).collect();
+        assert!(missing.is_empty(), "set in fonts that don't ship: {missing:?}");
+    }
+
+    /// P41: a catalogue font is offered, not fetched: it waits for an
+    /// answer, and once turned down it isn't offered again this session.
+    #[test]
+    fn a_catalogue_font_is_asked_for_and_not_again_once_declined() {
+        let cinzel = klipp_title::catalogue::family("Cinzel").expect("in the catalogue");
+        super::ask_to_fetch(cinzel);
+        assert!(super::asked().contains(&"Cinzel"));
+        assert!(!super::fetching("Cinzel"), "nothing fetched before the answer");
+        super::answer(false);
+        assert!(!super::asked().contains(&"Cinzel"));
+        super::ask_to_fetch(cinzel);
+        assert!(!super::asked().contains(&"Cinzel"), "declined: not asked again");
+    }
 
     fn title_clip(text: &str, font: &str) -> Clip {
         let mut clip = Clip::gap(klipp_core::RationalTime::from_frames(0, 24), klipp_core::RationalTime::from_frames(48, 24));
