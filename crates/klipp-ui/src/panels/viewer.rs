@@ -8348,7 +8348,11 @@ enum GizmoStep {
 /// One elsewhere on the timeline isn't what the viewer shows, so a box and
 /// a drag there would move a clip nobody can see.
 fn selection_is_on_screen(state: &AppState) -> bool {
-    state.selected_clip.is_none_or(|id| state.picture_clips_at(state.playhead).contains(&id))
+    state.selected_clip.is_none_or(|id| {
+        // Any track's, not only a video track's: a title on a Text track
+        // is in the picture too.
+        state.sequence().tracks.iter().filter(|t| t.visible).any(|t| t.clip_at_timecode(state.playhead).is_some_and(|(_, c)| c.id == id))
+    })
 }
 
 /// The state machine behind the transform gizmo and the corner-pin
@@ -8412,6 +8416,17 @@ mod transform_gizmo_tests {
         state.playhead = tc(5.0);
         state.selected_clip = Some(third_id);
         assert!(selection_is_on_screen(&state));
+
+        // A title on a Text track, with the playhead on it, keeps its box.
+        let title = klipp_timeline::Clip::media(media, tc(4.0), tc(6.0), tc(0.0), tc(2.0));
+        let title_id = title.id;
+        let mut text = klipp_timeline::Track::new("T1", klipp_timeline::TrackKind::Text);
+        text.clips = vec![title];
+        state.sequences[0].tracks.push(text);
+        state.selected_clip = Some(title_id);
+        assert!(selection_is_on_screen(&state), "a title under the playhead");
+        state.playhead = tc(1.0);
+        assert!(!selection_is_on_screen(&state), "a title elsewhere");
     }
 
     #[test]
