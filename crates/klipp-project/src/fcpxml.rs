@@ -188,9 +188,11 @@ pub fn generate_fcpxml_reporting(seq: &Sequence, media_pool: &MediaPool) -> (Str
     // Sequence markers. Range markers emit their real duration; point
     // markers fall back to the synthetic 1-frame value FCP expects.
     // Comments round-trip via a child <note> element when non-empty
-    // (matches FCPXML's marker-comment shape). Marker kind doesn't
-    // have a 1:1 FCPXML mapping so it's lost on export today.
+    // (matches FCPXML's marker-comment shape). A chapter is FCPXML's
+    // <chapter-marker>, which the import reads back as a chapter; the
+    // other kinds have no element of their own.
     for marker in &seq.markers {
+        let tag = if marker.kind == klipp_core::MarkerKind::Chapter { "chapter-marker" } else { "marker" };
         let pos = tc_str(marker.position, fps);
         let dur_str = match marker.duration {
             Some(d) if d.value > 0 => format!("{}/{}s", d.value, d.rate),
@@ -198,19 +200,19 @@ pub fn generate_fcpxml_reporting(seq: &Sequence, media_pool: &MediaPool) -> (Str
         };
         if marker.comment.is_empty() {
             xml.push_str(&format!(
-                "          <marker start=\"{}\" duration=\"{}\" value=\"{}\"/>\n",
+                "          <{tag} start=\"{}\" duration=\"{}\" value=\"{}\"/>\n",
                 pos, dur_str, escape_xml(&marker.label)
             ));
         } else {
             xml.push_str(&format!(
-                "          <marker start=\"{}\" duration=\"{}\" value=\"{}\">\n",
+                "          <{tag} start=\"{}\" duration=\"{}\" value=\"{}\">\n",
                 pos, dur_str, escape_xml(&marker.label)
             ));
             xml.push_str(&format!(
                 "            <note>{}</note>\n",
                 escape_xml(&marker.comment)
             ));
-            xml.push_str("          </marker>\n");
+            xml.push_str(&format!("          </{tag}>\n"));
         }
     }
 
@@ -1024,6 +1026,26 @@ mod tests {
         // Markers appear after </spine> but inside <sequence>
         assert!(xml.contains("<marker start=\"48/24s\" duration=\"1/24s\" value=\"Scene 2\"/>"));
         assert!(xml.contains("<marker start=\"120/24s\" duration=\"1/24s\" value=\"End\"/>"));
+    }
+
+    /// A chapter goes out as FCPXML's <chapter-marker> and comes back in
+    /// as a chapter; it went out as a plain <marker>, and came back as
+    /// none.
+    #[test]
+    fn a_chapter_marker_round_trips() {
+        let fps = Fps::film_24();
+        let mut seq = empty_sequence(fps);
+        let pool = MediaPool::new();
+        for (at, label, kind) in [(48, "Part 2", klipp_core::MarkerKind::Chapter), (96, "Note", klipp_core::MarkerKind::None)] {
+            seq.markers.push(Marker { review: None, id: MarkerId::new(), position: RationalTime { value: at, rate: 24 }, label: label.into(), color: MarkerColor::Green, duration: None, comment: String::new(), kind });
+        }
+        seq.markers[0].comment = "the second act".into();
+        let xml = generate_fcpxml(&seq, &pool);
+        assert!(xml.contains("<chapter-marker start=\"48/24s\" duration=\"1/24s\" value=\"Part 2\">") && xml.contains("</chapter-marker>"), "{xml}");
+        assert!(xml.contains("<marker start=\"96/24s\" duration=\"1/24s\" value=\"Note\"/>"), "{xml}");
+        let back = crate::fcpxml_import::parse_fcpxml(&xml).unwrap();
+        let kinds: Vec<(String, klipp_core::MarkerKind)> = back.sequence.markers.iter().map(|m| (m.label.clone(), m.kind)).collect();
+        assert_eq!(kinds, [("Part 2".to_string(), klipp_core::MarkerKind::Chapter), ("Note".to_string(), klipp_core::MarkerKind::None)]);
     }
 
     #[test]
