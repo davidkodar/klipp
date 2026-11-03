@@ -176,6 +176,19 @@ pub struct Edge {
 }
 
 impl NodeGraph {
+    /// Where a node spliced in before Output goes on the canvas: the
+    /// Output's place, the Output one place on. One place back from Output
+    /// is where the node before it already sits, and a new node there hid
+    /// it, wires and all (#3458).
+    fn place_before_output(&mut self, new_id: NodeId, output_id: NodeId) {
+        if let Some(out_pos) = self.node_positions.get(&output_id).copied() {
+            self.node_positions.insert(new_id, out_pos);
+            self.node_positions.insert(output_id, NodePos { x: out_pos.x + 220.0, y: out_pos.y });
+        } else {
+            self.node_positions.insert(new_id, NodePos { x: 220.0, y: 0.0 });
+        }
+    }
+
     /// Find an existing Corrector, or splice a new one in before
     /// Output. Returns the Corrector's id either way. Used both by the
     /// inspector's first-touch lazy-create flow and by load.rs project
@@ -211,11 +224,7 @@ impl NodeGraph {
         self.edges.push(Edge {
             from_node: new_id, from_port: 0, to_node: output_id, to_port: 0,
         });
-        if let Some(out_pos) = self.node_positions.get(&output_id).copied() {
-            self.node_positions.insert(new_id, NodePos { x: out_pos.x - 220.0, y: out_pos.y });
-        } else {
-            self.node_positions.insert(new_id, NodePos { x: 220.0, y: 0.0 });
-        }
+        self.place_before_output(new_id, output_id);
         new_id
     }
 
@@ -311,11 +320,7 @@ impl NodeGraph {
         self.edges.push(Edge {
             from_node: new_id, from_port: 0, to_node: output_id, to_port: 0,
         });
-        if let Some(out_pos) = self.node_positions.get(&output_id).copied() {
-            self.node_positions.insert(new_id, NodePos { x: out_pos.x - 220.0, y: out_pos.y });
-        } else {
-            self.node_positions.insert(new_id, NodePos { x: 220.0, y: 0.0 });
-        }
+        self.place_before_output(new_id, output_id);
         new_id
     }
 
@@ -358,11 +363,7 @@ impl NodeGraph {
             to_port: 0,
         });
         // Place it just before Output in the canvas layout.
-        if let Some(out_pos) = self.node_positions.get(&output_id).copied() {
-            self.node_positions.insert(new_id, NodePos { x: out_pos.x - 220.0, y: out_pos.y });
-        } else {
-            self.node_positions.insert(new_id, NodePos { x: 220.0, y: 0.0 });
-        }
+        self.place_before_output(new_id, output_id);
         new_id
     }
 
@@ -1433,6 +1434,23 @@ mod tests {
         n.keyframes.tracks.push(crate::params::NodeKeyframeTrack { param_name: "exposure".into(), keyframes: keys });
         assert!(n.params.is_default(), "static params stay neutral");
         assert!(!g.is_identity(), "a node animating from neutral must still run");
+    }
+
+    /// A Color Match spliced in shows beside the node before it, not on top
+    /// of it (#3458), and the picture runs through both.
+    #[test]
+    fn a_color_match_goes_beside_the_corrector() {
+        let mut g = default_graph();
+        let corrector = g.nodes.iter().find(|n| n.kind == NodeKind::Corrector).unwrap().id;
+        let (before, output) = (g.node_positions[&corrector], g.output_node_id);
+        let was_output = g.node_positions[&output];
+        let matched = g.ensure_color_match();
+        let at = |g: &NodeGraph, id: NodeId| g.node_positions[&id];
+        assert_eq!((at(&g, corrector).x, at(&g, corrector).y), (before.x, before.y), "the Corrector stays");
+        assert_eq!((at(&g, matched).x, at(&g, matched).y), (was_output.x, was_output.y));
+        assert_eq!(at(&g, output).x, was_output.x + 220.0);
+        assert!(g.edges.iter().any(|e| e.from_node == corrector && e.to_node == matched), "wired from the Corrector");
+        assert!(g.edges.iter().any(|e| e.from_node == matched && e.to_node == output), "and on to the Output");
     }
 
     /// A node left unwired does nothing to the picture: the graph is still

@@ -737,7 +737,7 @@ impl KlippApp {
             self.go_to_colour_elsewhere(clip);
         }
         let now = self.state.playhead;
-        if self.last_graded_playhead == Some(now) {
+        if !self.state.grade_needs_following(self.last_graded_playhead) {
             return;
         }
         self.last_graded_playhead = Some(now);
@@ -1046,8 +1046,10 @@ impl KlippApp {
                             let name = &clip.grade_versions()[i].name;
                             if name.is_empty() { format!("V{}", i + 1) } else { name.clone() }
                         });
+                    // Wrapped: a row of stills and buttons wider than the
+                    // panel pushed the whole column past its edge (#3454).
                     let caption_row = |ui: &mut egui::Ui, label: &str, add: &mut dyn FnMut(&mut egui::Ui)| {
-                        ui.horizontal(|ui| {
+                        ui.horizontal_wrapped(|ui| {
                             ui.set_min_height(crate::theme::control::COMPACT);
                             ui.add_space(12.0);
                             ui.add_sized(

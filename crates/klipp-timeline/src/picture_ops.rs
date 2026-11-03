@@ -254,7 +254,7 @@ fn target(p: &ClipPicture, op: &GraphOp) -> Result<Target, String> {
         GraphOp::SetNodeMeta { .. } | GraphOp::SetAnnotations { .. } => Err("an effect's name and place aren't kept until effects become nodes".into()),
         GraphOp::AddNodeBeside { .. } => Err("a node beside the clip's own chain waits for clips whose picture is stored as their revision-2 picture".into()),
         GraphOp::SetMix { .. } => Err("an effect's mix isn't kept until effects become nodes".into()),
-        _ => Err("an effect in the clip's chain has nothing to wire".into()),
+        _ => Err("a clip's effects run in order, so there are no wires to change here: reorder them in the Effects tab, or open Grade to wire nodes".into()),
     }
 }
 

@@ -267,15 +267,7 @@ pub fn show(
             let all_count = scoped.len();
             let builtin_count = scoped
                 .iter()
-                .filter(|fx| {
-                    matches!(
-                        fx.source,
-                        EffectSource::Builtin(_)
-                            | EffectSource::Look(_)
-                            | EffectSource::Audio(_)
-                            | EffectSource::Ladspa(_)
-                    )
-                })
+                .filter(|fx| is_builtin_source(&fx.source))
                 .count();
             let ofx_count = scoped
                 .iter()
@@ -315,10 +307,7 @@ pub fn show(
             .filtered_full(*active_category, search_query, favorite_effects, recent_effects)
             .into_iter()
             .filter(|fx| {
-                let is_builtin = matches!(
-                    fx.source,
-                    EffectSource::Builtin(_) | EffectSource::Look(_) | EffectSource::Audio(_) | EffectSource::Ladspa(_)
-                );
+                let is_builtin = is_builtin_source(&fx.source);
                 let is_installed = matches!(fx.source, EffectSource::Ofx(_) | EffectSource::Frei0r(_));
 
                 // Source filter: Klipp's own, installed plugins, or both.
@@ -1199,6 +1188,17 @@ fn sidebar_section_separator(ui: &mut egui::Ui, theme: &KlippTheme) {
     ui.add_space(4.0);
 }
 
+/// What the Built-in filter lists and counts: Klipp's own effects, looks
+/// and LUT presets (#3452: without them the LUTs row, on the filter a new
+/// install starts on, was empty beside a count of hundreds). Installed
+/// plug-ins, video or audio, are not.
+fn is_builtin_source(source: &EffectSource) -> bool {
+    matches!(
+        source,
+        EffectSource::Builtin(_) | EffectSource::Look(_) | EffectSource::Audio(_) | EffectSource::Ladspa(_) | EffectSource::LutLook(_)
+    )
+}
+
 // ───────────────────────────── Source segmented ─────────────────────────────
 
 /// Single coherent segmented control replacing the previous three
@@ -2019,6 +2019,15 @@ pub(crate) fn effect_commands_in(state: &AppState, source: &EffectSource, clip_i
 mod tests {
     use super::*;
     use crate::browser::effect_registry::{EffectEntry, EffectSource};
+
+    /// #3452: LUT presets are under Built-in, listed and counted; installed
+    /// plug-ins are not.
+    #[test]
+    fn luts_are_under_the_built_in_filter() {
+        assert!(is_builtin_source(&EffectSource::LutLook("/luts/film.cube".into())));
+        assert!(is_builtin_source(&EffectSource::Look(Vec::new())));
+        assert!(!is_builtin_source(&EffectSource::Ofx("org.plugin".into())));
+    }
 
     /// #3243: a start authored at 1080p goes on a 4K sequence at twice
     /// its pixel sizes, so the blur reads as it does at 1080p; a ratio is
