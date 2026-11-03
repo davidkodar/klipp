@@ -1030,7 +1030,7 @@ impl KlippApp {
                 // `state.selected_clips` at export time and writes
                 // the right `export_range` into the snapshot, so we
                 // don't need to compute the range here.
-                if self.state.selected_clips.is_empty() {
+                if self.state.selection_or_clip().is_empty() {
                     self.state.toast.show("No clips selected");
                     return true;
                 }
@@ -1203,7 +1203,7 @@ impl KlippApp {
         if let Ok(ref mut snap) = snapshot {
             if self.export_dialog.range_mode == 2 {
                 let seq = &self.state.sequences[self.state.active_sequence_idx];
-                snap.sequence_snapshot.export_range = selected_clips_frame_range(&self.state.selected_clips, seq, snap.sequence_snapshot.fps);
+                snap.sequence_snapshot.export_range = selected_clips_frame_range(&self.state.selection_or_clip(), seq, snap.sequence_snapshot.fps);
             }
             snap.sequence_snapshot.video.global_lut_opacity = self.state.global_lut_opacity;
         }
@@ -2002,7 +2002,7 @@ impl KlippApp {
                     ui.radio_value(&mut self.export_dialog.range_mode, 1,
                         format!("In/Out range ({} \u{2192} {})", self.state.timecode_display().position(in_pt), self.state.timecode_display().position(out_pt)));
                 }
-                let sel_count = self.state.selected_clips.len();
+                let sel_count = self.state.selection_or_clip().len();
                 let sel_enabled = sel_count > 0;
                 ui.add_enabled_ui(sel_enabled, |ui| {
                     let label = if sel_count > 0 {
