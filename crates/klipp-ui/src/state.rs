@@ -707,6 +707,16 @@ impl AppState {
     }
 
     pub fn request_timeline_skim(&mut self, cmds: &mut Vec<klipp_core::AppCommand>, time: Timecode, raw: Option<(MediaId, f64)>) {
+        // The picture last asked for is the one on screen. A pointer at rest
+        // on the timeline asked again every frame once the last was
+        // answered: some 900 engine commands a second, the UI redrawing
+        // for each answer, on an idle app.
+        // One still queued behind the answer is this one: it goes when that
+        // comes.
+        if self.timeline_skim_last == Some((time, raw)) {
+            return;
+        }
+        self.timeline_skim_last = Some((time, raw));
         if self.timeline_skim_in_flight.is_none() {
             self.timeline_skim_in_flight = Some((std::time::Instant::now(), raw));
             cmds.push(klipp_core::AppCommand::SkimTimeline { time });
@@ -2123,6 +2133,11 @@ pub struct AppState {
     /// The last timeline skim was left to the raw frame: where there is no
     /// skim file either, the filmstrip stands in.
     pub timeline_skim_declined: bool,
+    /// The timeline skim position last sent (with its raw frame), and the
+    /// sequence's revision it was drawn from: a pointer resting there asks
+    /// for it once.
+    pub timeline_skim_last: Option<(Timecode, Option<(MediaId, f64)>)>,
+    pub timeline_skim_revision: Option<klipp_timeline::SequenceRevision>,
     /// `(media_id, frame, target)` of the skim frame last asked for: the
     /// frame on screen while a skim rests on it. A resting pointer redraws
     /// the UI, and a request for the frame already shown is not sent
@@ -5050,6 +5065,8 @@ impl Default for AppState {
             preview_command_refused: None,
             timeline_skim_queued: None,
             timeline_skim_declined: false,
+            timeline_skim_last: None,
+            timeline_skim_revision: None,
             skim_last_requested: None,
             browser_skim_active_this_frame: false,
             program_skim_active: false,
@@ -6401,6 +6418,35 @@ mod tests {
         state.request_timeline_skim(&mut cmds, Timecode::from_secs_f64(16.4, 24), Some((media, 3.0)));
         assert_eq!(state.timeline_skim_shown(false), Some((media, 3.0)), "not drawn: the clip's frame is asked for");
         assert!(state.timeline_skim_in_flight.is_none());
+    }
+
+    /// A pointer resting on the timeline asks for its skim picture once,
+    /// however many frames are drawn and answered; moving on asks again,
+    /// and so does the same place once the skim has ended.
+    #[test]
+    fn a_resting_skim_asks_for_its_picture_once() {
+        use klipp_core::{AppCommand, Timecode};
+        let mut state = super::AppState::default();
+        let mut cmds = Vec::new();
+        let here = Timecode::from_secs_f64(10.48, 25);
+        for _ in 0..100 {
+            state.request_timeline_skim(&mut cmds, here, None);
+            let _ = state.timeline_skim_shown(true);
+        }
+        let asked = |cmds: &[AppCommand]| cmds.iter().filter(|c| matches!(c, AppCommand::SkimTimeline { .. })).count();
+        assert_eq!(asked(&cmds), 1, "{cmds:?}");
+        state.request_timeline_skim(&mut cmds, Timecode::from_secs_f64(10.6, 25), None);
+        assert_eq!(asked(&cmds), 2, "moved on");
+        state.timeline_skim_last = None;
+        let _ = state.timeline_skim_shown(true);
+        state.request_timeline_skim(&mut cmds, Timecode::from_secs_f64(10.6, 25), None);
+        assert_eq!(asked(&cmds), 3, "the skim ended and came back");
+        // Moved on while one is in flight: the new place waits its turn,
+        // asked again meanwhile or not.
+        let there = Timecode::from_secs_f64(12.0, 25);
+        state.request_timeline_skim(&mut cmds, there, None);
+        state.request_timeline_skim(&mut cmds, there, None);
+        assert_eq!(state.timeline_skim_queued.map(|(t, _)| t), Some(there), "still queued");
     }
 
     /// Opening another project forgets the old one's selected gap and
