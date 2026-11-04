@@ -1476,10 +1476,19 @@ pub enum Op {
         from: Option<Anchor>,
         #[serde(default)]
         to: Option<Anchor>,
+        #[serde(default)]
         x: f32,
+        #[serde(default)]
         y: f32,
+        #[serde(default)]
         w: f32,
+        #[serde(default)]
         h: f32,
+        /// A box that follows the text instead of one box: each held from
+        /// its `secs` (on the timeline) until the next, the last until
+        /// `to`. Given, `x`, `y`, `w`, `h` may be left out.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        keys: Vec<RedactKey>,
         #[serde(default = "default_redact_kind")]
         kind: String,
         #[serde(default)]
@@ -2931,6 +2940,18 @@ fn default_redact_kind() -> String {
     "mosaic".into()
 }
 
+/// One box of a redaction that follows the text: from `secs` (on the
+/// timeline) it covers `x`, `y`, `w`, `h` (fractions of the frame from the
+/// top left) until the next key.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct RedactKey {
+    pub secs: f64,
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+}
+
 fn default_highlight_kind() -> String {
     "box".into()
 }
@@ -3366,10 +3387,63 @@ pub struct SensitiveText {
     pub masked: String,
     pub start_secs: f64,
     pub end_secs: f64,
+    /// Everywhere it was seen, together.
     pub x: f32,
     pub y: f32,
     pub w: f32,
     pub h: f32,
+    /// Where it was in each frame it was followed through (the file's
+    /// seconds, then x, y, w, h), in time order; empty when it was not.
+    pub track: Vec<(f64, [f32; 4])>,
+}
+
+impl SensitiveText {
+    /// The boxes a redaction holds to cover it for its whole time on
+    /// screen, in the file's seconds: from each place it was seen to the
+    /// next, the two places together, so wherever it moved between them
+    /// is covered; before the first and after the last, carried on the
+    /// way it was moving to `start_secs` and `end_secs`. Each grown by a
+    /// quarter of its height, and at least 1% of the frame, every side.
+    /// Not followed, its one box from start to end.
+    pub fn cover_keys(&self) -> Vec<(f64, [f32; 4])> {
+        let grow = |[x0, y0, x1, y1]: [f32; 4]| {
+            let m = ((y1 - y0) * 0.25).max(0.01);
+            let (x0, y0, x1, y1) = ((x0 - m).clamp(0.0, 1.0), (y0 - m).clamp(0.0, 1.0), (x1 + m).clamp(0.0, 1.0), (y1 + m).clamp(0.0, 1.0));
+            [x0, y0, x1 - x0, y1 - y0]
+        };
+        let edges = |b: &[f32; 4]| [b[0], b[1], b[0] + b[2], b[1] + b[3]];
+        let union = |a: [f32; 4], b: [f32; 4]| [a[0].min(b[0]), a[1].min(b[1]), a[2].max(b[2]), a[3].max(b[3])];
+        let t = &self.track;
+        if t.is_empty() {
+            return vec![(self.start_secs, grow(edges(&[self.x, self.y, self.w, self.h])))];
+        }
+        // Where it would be at `at`, moving as it did between `a` and `b`.
+        let carried = |a: &(f64, [f32; 4]), b: &(f64, [f32; 4]), at: f64| {
+            let k = if (b.0 - a.0).abs() > 1e-9 { ((at - b.0) / (b.0 - a.0)) as f32 } else { 0.0 };
+            let (eb, ea) = (edges(&b.1), edges(&a.1));
+            [eb[0] + (eb[0] - ea[0]) * k, eb[1] + (eb[1] - ea[1]) * k, eb[2] + (eb[2] - ea[2]) * k, eb[3] + (eb[3] - ea[3]) * k]
+        };
+        let mut keys: Vec<(f64, [f32; 4])> = Vec::new();
+        let first = &t[0];
+        let lead = if t.len() > 1 { union(edges(&first.1), carried(&t[1], first, self.start_secs)) } else { edges(&first.1) };
+        keys.push((self.start_secs.min(first.0), lead));
+        for w in t.windows(2) {
+            keys.push((w[0].0, union(edges(&w[0].1), edges(&w[1].1))));
+        }
+        let last = &t[t.len() - 1];
+        let tail = if t.len() > 1 { union(edges(&last.1), carried(&t[t.len() - 2], last, self.end_secs)) } else { edges(&last.1) };
+        // The stretch before it and the one after it meet the last place
+        // it was seen: both cover that stretch, held from the later key.
+        if let Some(k) = keys.last_mut().filter(|k| k.0 >= last.0) {
+            k.1 = union(k.1, tail);
+        } else {
+            keys.push((last.0, tail));
+        }
+        let mut keys: Vec<(f64, [f32; 4])> = keys.into_iter().map(|(at, b)| (at, grow(b))).collect();
+        // A run of the same box is one key.
+        keys.dedup_by(|b, a| a.1 == b.1);
+        keys
+    }
 }
 
 /// A screen recording's beat sheet as the check reads it, all in the
@@ -4117,11 +4191,11 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
             stabilize(seq, pool, i, ti, clip, *smoothing)
         }
-        Op::Redact { clip_id, from, to, x, y, w, h, kind, amount, recipes } => {
+        Op::Redact { clip_id, from, to, x, y, w, h, keys, kind, amount, recipes } => {
             let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
             let from = match from { Some(a) => Some(resolve_anchor(seq, fps, a, i)?), None => None };
             let to = match to { Some(a) => Some(resolve_anchor(seq, fps, a, i)?), None => None };
-            redact(seq, pool, i, ti, clip, from, to, [*x, *y, *w, *h], kind, *amount, recipes.as_ref())
+            redact(seq, pool, i, ti, clip, from, to, [*x, *y, *w, *h], keys, kind, *amount, recipes.as_ref())
         }
         Op::Pin { clip_id, media_id, layer, surface, from, to, fit, inset, on_loss, fade_secs, light, shade, texture, blend, template } => {
             let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
@@ -8111,19 +8185,53 @@ fn set_text(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, 
 /// the text's edges too.
 const REDACT_MARGIN: f32 = 0.006;
 
+/// The redaction window's box held at each of `keys` (seconds into the
+/// clip, then centre x and y, width, and height along the width): the
+/// mask the recipe adds keyed so, each box held until the next. One key
+/// or none leaves the window as the recipe made it.
+fn follow_window(ops: &mut [klipp_graph_lift::ops::GraphOp], keys: &[(f64, [f32; 4])]) {
+    use klipp_graph_lift::ops::GraphOp;
+    if keys.len() < 2 {
+        return;
+    }
+    let track = |n: usize| -> Vec<klipp_core::Keyframe> {
+        keys.iter().map(|(t, b)| klipp_core::Keyframe { time_secs: *t, value: b[n], interpolation: klipp_core::keyframe::Interpolation::Step, tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0), handles: Default::default() }).collect()
+    };
+    let frames = klipp_core::MaskKeyframes { center_x: track(0), center_y: track(1), width: track(2), height: track(3), ..Default::default() };
+    // The mask's entry is set whole after the node is added (its masks
+    // as a payload): each such entry takes the keys. A mask's rectangle
+    // has no v2 route yet, so its keys go into that entry (one use of the
+    // v1 view, pinned), rather than a redaction that leaks waiting for one.
+    for op in ops.iter_mut() {
+        let GraphOp::SetPayload { payload, .. } = op else { continue };
+        let Some(mask) = payload.pointer_mut("/params/masks/masks/0") else { continue };
+        if let Ok(v) = serde_json::to_value(&frames) {
+            mask["keyframes"] = v;
+        }
+    }
+}
+
 /// `redact` (#2886): the redaction recipe of its kind in the clip's own
 /// picture, the patch taken from the graded picture and laid back over
 /// it inside the box from `from` to `to`.
 #[allow(clippy::too_many_arguments)]
-fn redact(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, from: Option<Timecode>, to: Option<Timecode>, rect: [f32; 4], kind: &str, amount: Option<f32>, recipes: Option<&RecipeMaker>) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
+fn redact(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, from: Option<Timecode>, to: Option<Timecode>, rect: [f32; 4], keys: &[RedactKey], kind: &str, amount: Option<f32>, recipes: Option<&RecipeMaker>) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
     let ClipKind::Media { media_id } = &clip.kind else {
         return Err(refuse(i, format!("{} is not a media clip", clip_name(seq, pool, clip)), "redact a picture from a file"));
     };
     if seq.tracks.get(ti).is_some_and(|t| t.locked) {
         return Err(refuse(i, format!("track {ti} is locked"), "unlock it first"));
     }
+    let usable = |[x, y, w, h]: [f32; 4]| w > 0.0 && h > 0.0 && (0.0..=1.0).contains(&x) && (0.0..=1.0).contains(&y) && [x, y, w, h].iter().all(|v| v.is_finite());
+    let mut keys: Vec<RedactKey> = keys.to_vec();
+    keys.sort_by(|a, b| a.secs.total_cmp(&b.secs));
+    if let Some(k) = keys.iter().find(|k| !k.secs.is_finite() || !usable([k.x, k.y, k.w, k.h])) {
+        return Err(refuse(i, format!("the key at {:.2} s has no size or is off the frame", k.secs), "each key's x, y, w, h are fractions of the frame from the top left"));
+    }
+    // A box that follows the text starts where its first key does.
+    let rect = keys.first().map_or(rect, |k| [k.x, k.y, k.w, k.h]);
     let [x, y, w, h] = rect;
-    if !(w > 0.0 && h > 0.0) || !(0.0..=1.0).contains(&x) || !(0.0..=1.0).contains(&y) {
+    if !usable(rect) {
         return Err(refuse(i, "the box has no size or is off the frame", "x, y, w, h are fractions of the frame from the top left; check's sensitive_on_screen finding gives them"));
     }
     let a = from.unwrap_or(clip.timeline_in).max(clip.timeline_in);
@@ -8148,6 +8256,13 @@ fn redact(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, fr
     // Shown from `a` to `b`, seconds into the clip, as its keys are timed;
     // hidden a moment before.
     let (shown, gone) = (secs(a - clip.timeline_in), secs(b - clip.timeline_in));
+    // Each key's box as the window takes it: margin, centre, size.
+    let window = |[x, y, w, h]: [f32; 4]| {
+        let (left, right) = ((x - REDACT_MARGIN).clamp(0.0, 1.0), (x + w + REDACT_MARGIN).clamp(0.0, 1.0));
+        let (top, bottom) = ((y - REDACT_MARGIN).clamp(0.0, 1.0), (y + h + REDACT_MARGIN).clamp(0.0, 1.0));
+        [(left + right) / 2.0, (top + bottom) / 2.0, right - left, (bottom - top) * aspect]
+    };
+    let followed: Vec<(f64, [f32; 4])> = keys.iter().map(|k| (k.secs - secs(clip.timeline_in), window([k.x, k.y, k.w, k.h]))).collect();
     let controls: std::collections::BTreeMap<String, serde_json::Value> = [
         ("amount", f64::from(strength)),
         ("centre_x", f64::from((left + right) / 2.0)),
@@ -8161,9 +8276,10 @@ fn redact(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, fr
     .into_iter()
     .map(|(k, v)| (k.to_string(), serde_json::json!(v)))
     .collect();
-    let edit = on_recipe(i, seq, clip, recipes, name, &controls)?;
+    let edit = on_recipe_shaped(i, seq, clip, recipes, name, &controls, |ops| follow_window(ops, &followed))?;
+    let followed_text = if keys.len() > 1 { format!(", following the text through {} boxes", keys.len()) } else { String::new() };
     let what = format!(
-        "redact {} of {} from {:.2} to {:.2} s: {kind} over the box at {:.0}%,{:.0}% ({:.0}% by {:.0}%), in the clip's own picture",
+        "redact {} of {} from {:.2} to {:.2} s: {kind} over the box at {:.0}%,{:.0}% ({:.0}% by {:.0}%){followed_text}, in the clip's own picture",
         short_name(&pool.get(media_id).map(|m| m.filename.clone()).unwrap_or_default()), clip_name(seq, pool, clip), secs(a), secs(b), x * 100.0, y * 100.0, w * 100.0, h * 100.0
     );
     Ok((what, EditCommand::PictureEdit { clip_id: clip.id, description: "Redact", edit: Box::new(edit) }, vec![clip.id]))
@@ -8173,8 +8289,15 @@ fn redact(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, fr
 /// `controls` set, built into `clip`'s picture through `recipes` (bound
 /// by the socket), with a frame round the nodes it made, if any.
 fn on_recipe(i: usize, seq: &Sequence, clip: &Clip, recipes: Option<&RecipeMaker>, name: &str, controls: &std::collections::BTreeMap<String, serde_json::Value>) -> Result<klipp_timeline::PictureEdit, Refusal> {
+    on_recipe_shaped(i, seq, clip, recipes, name, controls, |_| {})
+}
+
+/// [`on_recipe`], its graph ops changed by `shape` before they are applied.
+#[allow(clippy::too_many_arguments)]
+fn on_recipe_shaped(i: usize, seq: &Sequence, clip: &Clip, recipes: Option<&RecipeMaker>, name: &str, controls: &std::collections::BTreeMap<String, serde_json::Value>, shape: impl FnOnce(&mut Vec<klipp_graph_lift::ops::GraphOp>)) -> Result<klipp_timeline::PictureEdit, Refusal> {
     let build = recipes.and_then(|m| (m.0)(name, controls)).ok_or_else(|| refuse(i, format!("the recipe \"{name}\" isn't here"), "report it"))?;
     let RecipeBuild { mut ops, placed, .. } = (build.0)(seq, clip.id).map_err(|why| refuse(i, why, "report it"))?;
+    shape(&mut ops);
     if !placed.nodes.is_empty() {
         ops.push(recipe_frame(clip, placed).map_err(|why| refuse(i, why, "report it"))?);
     }
@@ -17365,7 +17488,7 @@ mod tests {
     #[test]
     fn a_redaction_refuses_what_it_cannot_hide() {
         let (mut seq, pool, _, a, _) = fixture();
-        let mk = |from: f64, to: f64, w: f32, kind: &str| Op::Redact { clip_id: ClipRef::Id(a), from: Some(Anchor::Secs(from)), to: Some(Anchor::Secs(to)), x: 0.2, y: 0.6, w, h: 0.05, kind: kind.into(), amount: None, recipes: None };
+        let mk = |from: f64, to: f64, w: f32, kind: &str| Op::Redact { clip_id: ClipRef::Id(a), from: Some(Anchor::Secs(from)), to: Some(Anchor::Secs(to)), x: 0.2, y: 0.6, w, h: 0.05, keys: Vec::new(), kind: kind.into(), amount: None, recipes: None };
         assert!(resolve(&seq, &pool, &[mk(5.0, 9.0, 0.3, "mosaic")]).unwrap_err().why.contains("not a stretch inside"));
         assert!(resolve(&seq, &pool, &[mk(1.0, 3.0, 0.0, "mosaic")]).unwrap_err().why.contains("no size"));
         assert!(resolve(&seq, &pool, &[mk(1.0, 3.0, 0.3, "paint")]).unwrap_err().hint.contains("mosaic or blur"));

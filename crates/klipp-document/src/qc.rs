@@ -1531,7 +1531,7 @@ mod tests {
             }
             fn screen_sensitive(&self, item: &klipp_media::MediaItem) -> Vec<SensitiveText> {
                 if item.id != self.0 { return Vec::new(); }
-                vec![SensitiveText { kind: "key".into(), masked: "sk-…9z".into(), start_secs: 10.0, end_secs: 14.0, x: 0.2, y: 0.6, w: 0.3, h: 0.03 }]
+                vec![SensitiveText { kind: "key".into(), masked: "sk-…9z".into(), start_secs: 10.0, end_secs: 14.0, x: 0.2, y: 0.6, w: 0.3, h: 0.03, track: Vec::new() }]
             }
         }
         // The first shot uses 0-4 s of the file: clean. The second uses 12-17 s: the key is up.

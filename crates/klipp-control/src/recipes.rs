@@ -462,7 +462,7 @@ mod tests {
         let mut track = klipp_timeline::Track::new("V1", klipp_timeline::TrackKind::Video);
         track.clips = vec![clip];
         seq.tracks = vec![track];
-        let op = Op::Redact { clip_id: ClipRef::Id(id), from: Some(Anchor::Secs(3.0)), to: Some(Anchor::Secs(5.0)), x: 0.2, y: 0.6, w: 0.3, h: 0.05, kind: "mosaic".into(), amount: None, recipes: None };
+        let op = Op::Redact { clip_id: ClipRef::Id(id), from: Some(Anchor::Secs(3.0)), to: Some(Anchor::Secs(5.0)), x: 0.2, y: 0.6, w: 0.3, h: 0.05, keys: Vec::new(), kind: "mosaic".into(), amount: None, recipes: None };
         // A recipe of the same name in the template folder, hiding nothing.
         let dir = std::env::temp_dir().join(format!("klipp-redact-own-{}", uuid::Uuid::new_v4()));
         let mut decoy = ct::builtin_recipes().into_iter().find(|r| r.name == "Glitch").unwrap();
@@ -491,6 +491,45 @@ mod tests {
         assert!(near("center_x", 0.35) && near("width", 0.312) && near("center_y", 0.625) && near("height", 0.062 * 1080.0 / 1920.0), "the box and its margin: {mask}");
         let names: Vec<&str> = graph.ui.frames.iter().filter_map(|f| f["recipe"]["name"].as_str()).collect();
         assert_eq!(names, ["Redact (mosaic)"]);
+    }
+
+    /// A redaction that follows the text: each key's box, with its
+    /// margin, held on the mask from its time (seconds into the clip)
+    /// until the next, so the window moves with the line instead of
+    /// staying where it was first seen.
+    #[test]
+    fn a_redaction_with_keys_holds_each_box_on_its_mask() {
+        use klipp_document::history::EditCommand;
+        use klipp_document::ops::{resolve, Anchor, ClipRef, Op, RedactKey};
+        let t = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 25);
+        let mut seq = Sequence::new_default();
+        let clip = klipp_timeline::Clip::media(klipp_core::MediaId::new(), t(2.0), t(8.0), t(0.0), t(6.0));
+        let id = clip.id;
+        let mut track = klipp_timeline::Track::new("V1", klipp_timeline::TrackKind::Video);
+        track.clips = vec![clip];
+        seq.tracks = vec![track];
+        let key = |secs: f64, x: f32, y: f32| RedactKey { secs, x, y, w: 0.3, h: 0.05 };
+        let keys = vec![key(4.0, 0.5, 0.2), key(2.0, 0.1, 0.2), key(3.0, 0.3, 0.2)];
+        let op = Op::Redact { clip_id: ClipRef::Id(id), from: Some(Anchor::Secs(2.0)), to: Some(Anchor::Secs(5.0)), x: 0.0, y: 0.0, w: 0.0, h: 0.0, keys, kind: "blur".into(), amount: None, recipes: None };
+        let plan = resolve(&seq, &klipp_media::MediaPool::new(), &crate::plans::with_recipes(std::slice::from_ref(&op), None, &klipp_media::MediaPool::new())).unwrap_or_else(|r| panic!("{r:?}"));
+        assert!(plan.steps[0].what.contains("following the text through 3 boxes"), "{}", plan.steps[0].what);
+        let EditCommand::PictureEdit { edit, .. } = &plan.steps[0].edit else { panic!("a picture step") };
+        let mut c = seq.all_clips().find(|c| c.id == id).unwrap().clone();
+        c.restore_picture(&edit.after);
+        let graph = c.picture_v2().unwrap().picture.graph.clone();
+        let mask = graph.nodes.iter().map(|n| crate::graph_read::node(n, 0)).find(|n| n["type"] == "klipp.grade.mask").expect("the box's mask");
+        let frames = &mask["params"]["masks"]["masks"][0]["keyframes"];
+        let at = |track: &str| -> Vec<(f64, f64, String)> {
+            frames[track].as_array().unwrap_or_else(|| panic!("{track} keyed: {mask}")).iter().map(|k| (k["time_secs"].as_f64().unwrap(), k["value"].as_f64().unwrap(), k["interpolation"].as_str().unwrap_or_default().to_string())).collect()
+        };
+        let xs = at("center_x");
+        let times: Vec<f64> = xs.iter().map(|k| k.0).collect();
+        assert_eq!(times, [0.0, 1.0, 2.0], "in time order, seconds into the clip");
+        for (k, want) in xs.iter().zip([0.25, 0.45, 0.65]) {
+            assert!((k.1 - want).abs() < 1e-5 && k.2 == "Step", "each box's centre, held: {xs:?}");
+        }
+        assert!(at("width").iter().all(|k| (k.1 - 0.312).abs() < 1e-5), "each box's width and its margin");
+        assert_eq!(at("height").len(), 3);
     }
 
     /// Zoom on its recipe (#2886): the clip's own scale keyed start to
