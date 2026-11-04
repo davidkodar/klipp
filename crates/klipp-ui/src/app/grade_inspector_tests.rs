@@ -1400,6 +1400,29 @@ fn a_closed_drag_on_a_sequence_grade_without_one_is_one_step() {
     }
 }
 
+/// A Colour Match added from the canvas's add menu goes into the chain:
+/// after what fed the output, the output reading it. Beside the chain,
+/// unwired, its match was made and nothing showed it.
+#[test]
+fn a_colour_match_from_the_add_menu_goes_into_the_chain() {
+    use crate::panels::node_graph_v2::canvas_command_tests::Harness;
+    let mut run = Run::with_panel(NodeKind::Corrector).unwrap();
+    let clip_id = run.clip;
+    let grade = clip(&run.state, clip_id).grade().clone();
+    let corrector = grade.nodes.iter().find(|n| n.kind == NodeKind::Corrector).unwrap().id;
+    assert_eq!(grade.input_of(grade.output_node_id, 0), Some(corrector), "the Corrector feeds the output");
+    let mut h = Harness::on(grade, clip_id);
+    h.settle();
+    h.open_add_menu("Colour Match", egui::pos2(42.0, 64.0));
+    let cmds = h.click(h.text("Colour Match"), egui::PointerButton::Primary);
+    let [cmd] = cmds.as_slice() else { panic!("the canvas sent {cmds:?}") };
+    assert_eq!(run.state.canvas_structure_edit(cmd), Some(true), "{:?}", run.state.toast.message_for_test());
+    let g = clip(&run.state, clip_id).grade();
+    let matcher = g.nodes.iter().find(|n| n.kind == NodeKind::ColorMatch).expect("added").id;
+    assert_eq!(g.input_of(g.output_node_id, 0), Some(matcher), "the output reads the Colour Match");
+    assert_eq!(g.input_of(matcher, 0), Some(corrector), "which reads the Corrector");
+}
+
 /// Each structure command the grade canvas emits inside a compound, drawn
 /// and clicked on the canvas and fed through the app's dispatch
 /// (`canvas_structure_edit`, as the colour page's handler feeds it), lands

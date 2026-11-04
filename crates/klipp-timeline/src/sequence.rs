@@ -2169,6 +2169,7 @@ impl Track {
             }
             (before, after)
         };
+        let (speed_a, speed_b) = clip.split_speed_keys(cut_secs);
         let (vol_a, vol_b) = split_kfs(&clip.volume_keyframes);
         let (pan_a, pan_b) = split_kfs(&clip.pan_keyframes);
         let (gain_a, gain_b) = split_kfs(&clip.gain_keyframes);
@@ -2280,7 +2281,7 @@ impl Track {
             role_source: clip.role_source,
             matched_to: None,
             speed: clip.speed,
-            speed_keyframes: clip.speed_keyframes.clone(),
+            speed_keyframes: speed_a,
             keep_pitch: clip.keep_pitch,
             hold: clip.hold,
             source_rotation: clip.source_rotation,
@@ -2363,7 +2364,7 @@ impl Track {
             role_source: clip.role_source,
             matched_to: None,
             speed: clip.speed,
-            speed_keyframes: clip.speed_keyframes.clone(),
+            speed_keyframes: speed_b,
             keep_pitch: clip.keep_pitch,
             hold: clip.hold,
             source_rotation: clip.source_rotation,
@@ -3099,6 +3100,34 @@ impl Clip {
         }
     }
 
+    /// The speed ramp of the two pieces a cut `at` seconds into the clip
+    /// leaves: each holds its part of the curve, timed from its own start,
+    /// with a key at the cut so it runs from or to the speed there. The right
+    /// piece, given the keys as they were, played the ramp over from its start
+    /// and never reached the end of its range.
+    pub fn split_speed_keys(&self, at: f64) -> (Vec<klipp_core::Keyframe>, Vec<klipp_core::Keyframe>) {
+        if self.speed_keyframes.is_empty() {
+            return (Vec::new(), Vec::new());
+        }
+        let at_cut = |time_secs: f64| klipp_core::Keyframe {
+            time_secs,
+            value: klipp_core::keyframe::evaluate(&self.speed_keyframes, at, self.speed as f32),
+            interpolation: self.speed_keyframes.iter().rev().find(|k| k.time_secs <= at).map_or(klipp_core::Interpolation::Linear, |k| k.interpolation),
+            tangent_out: (0.0, 0.0),
+            tangent_in: (0.0, 0.0),
+            handles: Default::default(),
+        };
+        let mut left: Vec<_> = self.speed_keyframes.iter().filter(|k| k.time_secs < at).cloned().collect();
+        left.push(at_cut(at));
+        let mut right = vec![at_cut(0.0)];
+        right.extend(self.speed_keyframes.iter().filter(|k| k.time_secs > at).map(|k| {
+            let mut k = k.clone();
+            k.time_secs -= at;
+            k
+        }));
+        (left, right)
+    }
+
     pub fn speed_integral(&self, timeline_elapsed_secs: f64, fps: f64) -> f64 {
         speed_integral_keyframes(&self.speed_keyframes, timeline_elapsed_secs, fps, self.speed)
     }
@@ -3106,7 +3135,8 @@ impl Clip {
     /// Whether the clip's own sound is heard. At a constant speed it is,
     /// varispeed: read at that speed, its pitch moving with it as tape's
     /// does, backward when reversed (#642); playback and export read it
-    /// alike. A speed ramp has no one speed to read at, and is silent.
+    /// alike. A speed ramp has no one speed to read at, and is silent; a
+    /// ramp op takes the linked clip with it, so a shot goes quiet whole.
     pub fn plays_its_sound(&self) -> bool {
         self.speed_keyframes.is_empty() && self.hold.is_none()
     }
@@ -3149,7 +3179,12 @@ impl Clip {
         if self.is_reversed() {
             self.source_out.to_secs_f64() - offset(elapsed + 1.0 / fps.max(1.0))
         } else {
-            self.source_in.to_secs_f64() + offset(elapsed)
+            let secs = self.source_in.to_secs_f64() + offset(elapsed);
+            // Slowed, the last frames ask for a time nearer the Out than a
+            // frame, and the decoder's nearest frame is the one past it. At
+            // 1x or faster the time is left exactly as it was.
+            let slowed = self.speed_at(elapsed.clamp(0.0, dur)).abs() < 1.0 - 1e-6;
+            if slowed && elapsed < dur { secs.min((self.source_out.to_secs_f64() - 1.0 / fps.max(1.0)).max(self.source_in.to_secs_f64())) } else { secs }
         }
     }
 
@@ -3691,7 +3726,7 @@ pub fn speed_at_keyframes(
 
 /// Integrate the (clamped) speed curve's magnitude — a reversed clip moves
 /// through its source as far as a forward one — from 0 to `timeline_elapsed_secs` using
-/// `dt = 1/fps` Riemann sums with a partial-step correction on the tail.
+/// `dt = 1/fps` midpoint steps, exact on a straight ramp, with a partial step on the tail.
 ///
 /// Returns the corresponding source-time offset: for constant speed=1.0 this is
 /// just `timeline_elapsed_secs`; for a 2× ramp this returns ~2× the elapsed.
@@ -3714,7 +3749,7 @@ pub fn speed_integral_keyframes(
     let full_steps = (timeline_elapsed_secs / dt).floor() as usize;
     let mut source_offset = 0.0f64;
     for i in 0..full_steps {
-        let t = i as f64 * dt;
+        let t = (i as f64 + 0.5) * dt;
         let spd = speed_at_keyframes(keyframes, t, default_speed).abs().clamp(SPEED_MIN, SPEED_MAX);
         source_offset += spd * dt;
     }
@@ -3722,7 +3757,7 @@ pub fn speed_integral_keyframes(
     let tail_start = full_steps as f64 * dt;
     let tail_len = (timeline_elapsed_secs - tail_start).max(0.0);
     if tail_len > 0.0 {
-        let spd = speed_at_keyframes(keyframes, tail_start, default_speed).abs().clamp(SPEED_MIN, SPEED_MAX);
+        let spd = speed_at_keyframes(keyframes, tail_start + tail_len / 2.0, default_speed).abs().clamp(SPEED_MIN, SPEED_MAX);
         source_offset += spd * tail_len;
     }
     source_offset
@@ -3732,7 +3767,7 @@ pub fn speed_integral_keyframes(
 /// duration that exhausts the source: i.e. find T such that
 /// `speed_integral_keyframes(keyframes, T, fps, default) == source_duration_secs`.
 ///
-/// Uses forward Riemann integration with `dt = 1/fps`. Falls back to
+/// Uses the same midpoint steps as [`speed_integral_keyframes`]. Falls back to
 /// `source_duration_secs / default_speed` for the no-keyframes case.
 ///
 /// Caps at 20× the source duration as a safety valve against a curve that
@@ -3755,7 +3790,7 @@ pub fn effective_timeline_duration_for_keyframes(
     let mut source_offset = 0.0f64;
     let mut timeline_t = 0.0f64;
     while source_offset < source_duration_secs && timeline_t < safety_cap {
-        let spd = speed_at_keyframes(keyframes, timeline_t, default_speed).abs().clamp(SPEED_MIN, SPEED_MAX);
+        let spd = speed_at_keyframes(keyframes, timeline_t + dt / 2.0, default_speed).abs().clamp(SPEED_MIN, SPEED_MAX);
         let step_source = spd * dt;
         if source_offset + step_source >= source_duration_secs {
             // Partial final step: only use the fraction needed to hit the target.
@@ -4706,6 +4741,16 @@ mod tests {
     }
 
     #[test]
+    fn a_falling_ramp_lasts_as_long_as_its_mean_speed_says() {
+        // 4x to 0.2x covers 8 s of source in 3.81 s: stepping from each step's
+        // start counted the fast side, and the clip ended before the slow one.
+        let kfs = vec![kf(0.0, 4.0), kf(8.0 / 2.1, 0.2)];
+        let len = effective_timeline_duration_for_keyframes(&kfs, 8.0, 30.0, 1.0);
+        assert!((len - 8.0 / 2.1).abs() < 1.0 / 30.0, "within a frame: {len}");
+        assert!((speed_integral_keyframes(&kfs, len, 30.0, 1.0) - 8.0).abs() < 1e-3, "and the two agree");
+    }
+
+    #[test]
     fn ramp_up_integrates_correctly() {
         // Linear ramp from 0.5× at t=0 to 2.0× at t=10.
         // Integral from 0 to 5 must be between the min-constant and max-constant
@@ -4878,6 +4923,74 @@ mod tests {
         assert_eq!(split(1.0, (0, 48), 48), ((0, 12), (12, 48)));
         assert_eq!(split(2.0, (0, 48), 24), ((0, 24), (24, 48)), "half the clip at 2x is 24 frames of source");
         assert_eq!(split(-1.0, (0, 48), 48), ((36, 48), (0, 36)), "reversed: the first half is the range's end");
+    }
+
+    /// A ramp cut in two plays as it did: each piece shows what the whole
+    /// did at that moment, and the right one reaches the end of the range.
+    #[test]
+    fn a_blade_splits_a_ramp_with_the_clip() {
+        let kf = |t, v| klipp_core::Keyframe { time_secs: t, value: v, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() };
+        let tc = |s: f64| Timecode::from_secs_f64(s, 30);
+        let mut clip = Clip::media(klipp_core::MediaId::new(), tc(0.0), tc(6.4), tc(4.0), tc(12.0));
+        clip.speed_keyframes = vec![kf(0.0, 0.5), kf(6.4, 2.0)];
+        let whole = clip.clone();
+        let mut track = Track::new("V1", TrackKind::Video);
+        let id = clip.id;
+        track.clips.push(clip);
+        let (left, right) = track.split_at(id, tc(3.0)).unwrap();
+        assert_eq!(right.speed_keyframes[0].time_secs, 0.0);
+        assert!((right.speed_keyframes[1].time_secs - 3.4).abs() < 1e-9, "the last key, from its own start");
+        for t in [0.5, 2.9] {
+            assert!((left.source_secs_at(t, 30.0) - whole.source_secs_at(t, 30.0)).abs() < 1e-6, "left at {t}");
+        }
+        for t in [3.1, 5.0, 6.3] {
+            assert!((right.source_secs_at(t - 3.0, 30.0) - whole.source_secs_at(t, 30.0)).abs() < 0.05, "right at {t}: {} and {}", right.source_secs_at(t - 3.0, 30.0), whole.source_secs_at(t, 30.0));
+        }
+        // Past the ramp's end it holds its last speed.
+        let (_, held) = whole.split_speed_keys(6.5);
+        assert_eq!((held.len(), held[0].value), (1, 2.0));
+        assert_eq!(Clip::media(klipp_core::MediaId::new(), tc(0.0), tc(1.0), tc(0.0), tc(1.0)).split_speed_keys(0.5), (Vec::new(), Vec::new()), "no ramp, no keys");
+    }
+
+    /// Slowed, or at a ramp's slow end, a clip's frames stop on the last frame
+    /// inside its Out, not the file's next one; past its end, a transition's
+    /// handle still runs on.
+    #[test]
+    fn a_slowed_clips_last_frame_is_inside_its_out() {
+        let tc = |s: f64| Timecode::from_secs_f64(s, 30);
+        let mut clip = Clip::media(klipp_core::MediaId::new(), tc(0.0), tc(16.0), tc(4.0), tc(12.0));
+        clip.speed = 0.5;
+        let frame_at = |c: &Clip, t: f64| (c.source_secs_at(t, 30.0) * 30.0).round() as i64;
+        assert_eq!(frame_at(&clip, 16.0 - 1.0 / 30.0), 359, "the last before the Out at 360");
+        assert_eq!(frame_at(&clip, 15.0), 345, "earlier frames as they were");
+        assert_eq!(frame_at(&clip, 16.5), 368, "a handle past its end runs on");
+        let mut ramp = clip.clone();
+        let kf = |t, v| klipp_core::Keyframe { time_secs: t, value: v, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() };
+        ramp.speed = 1.0;
+        ramp.speed_keyframes = vec![kf(0.0, 2.0), kf(4.0, 0.2)];
+        ramp.timeline_out = ramp.timeline_in + tc(crate::effective_timeline_duration_for_keyframes(&ramp.speed_keyframes, 8.0, 30.0, 1.0));
+        let last = ramp.duration().to_secs_f64() - 1.0 / 30.0;
+        assert_eq!(frame_at(&ramp, last), 359, "a ramp's slow end too");
+        clip.speed = 2.0;
+        clip.timeline_out = tc(4.0);
+        assert_eq!(frame_at(&clip, 4.0 - 1.0 / 30.0), 358, "fast clips as they were");
+    }
+
+    /// At 1x a clip's source time is just its elapsed time, every frame up to
+    /// its last and on through a transition's handle, whatever its range.
+    #[test]
+    fn a_clip_at_full_speed_reads_every_last_frame_as_it_is_asked() {
+        for (rate, fps, range) in [(30, 30.0, 8.0), (30000, 30000.0 / 1001.0, 8.0), (30, 30.0, 7.9)] {
+            let tc = |s: f64| Timecode::from_secs_f64(s, rate);
+            let clip = Clip::media(klipp_core::MediaId::new(), tc(0.0), tc(8.0), tc(5.0), tc(5.0 + range));
+            for frame in [0.0, 1.0, 2.0, 3.0] {
+                let e = 8.0 - frame / fps;
+                assert_eq!(clip.source_secs_at(e, fps), 5.0 + e, "{frame} frames from the end at {fps} fps, a range of {range} s");
+            }
+            for past in [0.5, 1.0] {
+                assert_eq!(clip.source_secs_at(8.0 + past, fps), 5.0 + 8.0 + past, "the handle at {fps} fps");
+            }
+        }
     }
 
     #[test]

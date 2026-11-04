@@ -128,6 +128,28 @@ fn a_pick_elsewhere_on_the_colour_page_leaves_the_playhead() {
     assert_eq!(state.colour_elsewhere_hint(), Some(later), "it is offered with Go to it");
 }
 
+/// A click on another clip while the playhead is on one: the page goes on
+/// grading the clip at the playhead, names it in the header, and offers
+/// the pick with "Go to it". The header said "Grading:" the clicked one,
+/// while the viewer showed the clip at the playhead.
+#[test]
+fn a_click_elsewhere_keeps_the_page_on_the_clip_at_the_playhead() {
+    let Cut { mut state, upper, later, .. } = cut();
+    let here = Some(state.playhead);
+    assert_eq!(to_colour_page(&mut state), Some(upper));
+    assert!(!state.grade_needs_following(here), "settled");
+    // The click: selected, and the page's choice.
+    state.selected_clip = Some(later);
+    state.colour_clip_picked();
+    assert!(state.grade_needs_following(here), "a pick away from the playhead is looked at again");
+    assert_eq!(state.grade_at_playhead(), Some(upper));
+    assert_eq!(state.selected_clip, Some(upper));
+    assert_eq!(state.grading_title(state.selected_clip.unwrap()), state.grading_title(upper), "the header names the clip at the playhead");
+    assert_eq!(state.colour_elsewhere_hint(), Some(later), "the pick is offered with Go to it");
+    assert_eq!(Some(state.playhead), here, "the playhead stays");
+    assert!(!state.grade_needs_following(here), "settled again");
+}
+
 /// #3426: the page chose the clip at the playhead, with another selected.
 /// A click on the chosen clip changes no selection, and is still the
 /// choice that ends the hint.

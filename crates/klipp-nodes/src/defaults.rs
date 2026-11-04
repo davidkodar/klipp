@@ -69,14 +69,14 @@ pub fn default_full_chain_graph() -> NodeGraph {
         make_node(idt_id, NodeKind::InputTransform, "Input Transform"),
         make_node(exposure_id, NodeKind::Exposure, "Exposure"),
         make_node(tone_id, NodeKind::ToneControls, "Tone"),
-        make_node(wheels_id, NodeKind::ColorWheels, "Color Wheels"),
+        make_node(wheels_id, NodeKind::ColorWheels, "Colour Wheels"),
         make_node(wheelsatbri_id, NodeKind::WheelSatBri, "Wheel Sat/Bri"),
         make_node(contrast_id, NodeKind::Contrast, "Contrast"),
         make_node(saturation_id, NodeKind::Saturation, "Saturation"),
         make_node(curves_id, NodeKind::RGBCurves, "Curves"),
         make_node(huesat_id, NodeKind::HueSatCurves, "Hue/Sat"),
-        make_node(warper_id, NodeKind::ColorWarper, "Color Warper"),
-        make_node(colorbal_id, NodeKind::ColorBalance, "Color Balance"),
+        make_node(warper_id, NodeKind::ColorWarper, "Colour Warper"),
+        make_node(colorbal_id, NodeKind::ColorBalance, "Colour Balance"),
         make_node(output_id, NodeKind::Output, "Output"),
     ];
 

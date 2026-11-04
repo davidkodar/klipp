@@ -718,10 +718,10 @@ impl KlippApp {
     /// whatever was last clicked — which does not merely cost a click,
     /// it invites grading the wrong shot and not noticing.
     ///
-    /// Only when the playhead has actually moved. A click that selects
-    /// a clip without moving the playhead is left alone, so selecting
-    /// and grading a clip that is not under the playhead still works
-    /// and the two never fight over the same frame. Edit is untouched:
+    /// When the playhead has moved, or a click picked a clip away from
+    /// it: the page grades the clip at the playhead and offers the pick
+    /// with "Go to it" (#2952), never moving the playhead itself. Edit is
+    /// untouched:
     /// there the selection is the user's, and a scrub should not
     /// silently reselect under them.
     pub(super) fn follow_playhead_for_grading(&mut self) {

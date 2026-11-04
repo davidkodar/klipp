@@ -340,8 +340,8 @@ mod tests {
         assert!((cv.speed - 0.5).abs() < 1e-12 && (ca.speed - 0.5).abs() < 1e-12);
         assert_eq!((secs(ca.timeline_in), secs(ca.timeline_out)), (0.0, 8.0), "its sound lasts 8 s too");
         assert!(ca.keep_pitch && cv.keep_pitch);
-        // The same frames: at 0, 4 and 7.96 s the file at 0, 2 and 3.98 s.
-        for (t, s) in [(0.0, 0.0), (4.0, 2.0), (7.96, 3.98)] {
+        // The same frames: at 0, 4 and 7.96 s the file at 0, 2 and its last frame.
+        for (t, s) in [(0.0, 0.0), (4.0, 2.0), (7.96, 3.96)] {
             assert!((cv.source_secs_at(t, 25.0) - s).abs() < 1e-9, "{t} s shows {}", cv.source_secs_at(t, 25.0));
         }
         assert_eq!(clip(&after, next).timeline_in, tc(10.0), "the clip after moved by the change");

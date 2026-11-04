@@ -1449,10 +1449,9 @@ impl KlippApp {
                 true
             }
             AppCommand::AddMaskShape { clip_id, .. } => {
-                // The shape onto the grade's Mask node, made with its
-                // cutout when there's none (`ensure_mask_cutout` composites
-                // source × matte → Output), so a mask added from the Color
-                // tab clips the picture at once.
+                // The shape onto the window on the grade's correction, made
+                // when there's none: the correction applies inside it, the
+                // picture outside left as it was.
                 self.with_current_clip_graph_mut(*clip_id, needs_refresh, |graph| {
                     write_node_settings(graph, cmd);
                 });
@@ -1601,7 +1600,7 @@ impl KlippApp {
                 true
             }
             AppCommand::ApplyColorMatch { clip_id, node_id } => {
-                let Some((ref ref_bytes, _rw, _rh)) = self.state.color_match_reference else {
+                let Some((ref ref_bytes, rw, rh)) = self.state.color_match_reference else {
                     self.state.toast.show("Capture a reference frame first");
                     return true;
                 };
@@ -1616,26 +1615,26 @@ impl KlippApp {
                 // showing converges to the reference look anyway.
                 let source = {
                     let fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
-                    if fb.data.is_empty() { None } else { Some(fb.data.clone()) }
+                    if fb.data.is_empty() { None } else { Some((fb.data.clone(), fb.width, fb.height)) }
                 };
-                let Some(source_bytes) = source else {
+                let Some((source_bytes, sw, sh)) = source else {
                     self.state.toast.show("No source frame available — try scrubbing the playhead");
                     return true;
                 };
-                let result = klipp_color::color_match::match_colors(&source_bytes, ref_bytes);
-                let settings = klipp_core::ColorMatchSettings {
-                    exposure: result.exposure_adjust,
-                    temperature: result.temperature_adjust,
-                    tint: result.tint_adjust,
-                    saturation: result.saturation_adjust,
-                };
+                // Its saturation measured through the node itself and
+                // brought to the reference's, on skin where both show some.
+                let settings = klipp_nodes::match_grade::match_for_node(&source_bytes, sw, sh, ref_bytes, rw, rh);
                 // Through SetNodeColorMatch, as the qualifier picker sends
                 // its key: one undo step. Written here in place, it was
                 // recorded in none, and undo could not take it back.
                 self.send_commands(vec![AppCommand::SetNodeColorMatch { clip_id: *clip_id, node_id: *node_id, settings }]);
                 *needs_refresh = true;
+                // A match on a node nothing reads changes no picture: said,
+                // or it looks as if the match did nothing.
+                let wired = self.state.sequence().all_clips().find(|c| c.id == *clip_id).is_some_and(|c| c.grade().edges.iter().any(|e| e.from_node == *node_id));
+                let unwired = if wired { "" } else { " — not shown: this Colour Match isn't wired into the grade; connect its output on the node canvas" };
                 self.state.toast.show(format!(
-                    "Match: exp {:+.2}, temp {:+.0}, tint {:+.0}, sat {:.2}×",
+                    "Match: exp {:+.2}, temp {:+.0}, tint {:+.0}, sat {:.2}×{unwired}",
                     settings.exposure, settings.temperature, settings.tint, settings.saturation
                 ));
                 true
@@ -3362,10 +3361,10 @@ pub(super) fn moved_index(i: usize, from: usize, to: usize) -> usize {
 
 pub(super) fn write_node_settings(graph: &mut klipp_nodes::NodeGraph, cmd: &AppCommand) -> bool {
     // A mask shape added or removed names its clip, not its node: the
-    // grade's Mask node takes it, made (with its cutout) when there's none.
+    // window on the grade's correction takes it, made when there's none.
     match cmd {
         AppCommand::AddMaskShape { shape, .. } => {
-            let (mask_node_id, _cutout_id) = graph.ensure_mask_cutout();
+            let mask_node_id = graph.ensure_corrector_window();
             if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == mask_node_id) {
                 node.params.masks.get_or_insert_with(Default::default).masks.push(klipp_core::Mask::new(shape.clone()));
             }

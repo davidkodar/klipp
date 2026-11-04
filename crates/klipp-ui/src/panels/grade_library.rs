@@ -70,7 +70,9 @@ pub fn show(ui: &mut egui::Ui, state: &mut GradeLibraryPanelState, library: &mut
     if library.is_empty() {
         ui.horizontal(|ui| {
             ui.add_space(72.0);
-            ui.label(egui::RichText::new("No saved grades yet: Save keeps this clip's grade here, for every project.").size(10.0).color(theme.text_dim));
+            // Wrapped to the panel: one line of it widened the inspector past
+            // its panel, cutting off the tabs and reset buttons.
+            ui.add(egui::Label::new(egui::RichText::new("No saved grades yet: Save keeps this clip's grade here, for every project.").size(10.0).color(theme.text_dim)).wrap());
         });
         return cmds;
     }
@@ -178,6 +180,33 @@ mod tests {
                 self.frame(vec![egui::Event::PointerMoved(at), egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE }], graded, targets);
             }
         }
+    }
+
+    /// An empty library drawn in a narrow inspector stays inside it: its
+    /// hint wraps. One line of it widened the inspector past its panel
+    /// when the GRADE section was open, cutting off the WARPER tab and
+    /// the reset buttons.
+    #[test]
+    fn an_empty_library_fits_a_narrow_inspector() {
+        const WIDE: f32 = 300.0;
+        let ctx = egui::Context::default();
+        let theme = KlippTheme::default();
+        let mut state = GradeLibraryPanelState::default();
+        let mut used = egui::Rect::NOTHING;
+        let mut texts = Vec::new();
+        for _ in 0..2 {
+            let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 400.0))), ..Default::default() };
+            let out = ctx.run(input, |ctx| {
+                egui::Area::new(egui::Id::new("narrow")).fixed_pos(egui::Pos2::ZERO).show(ctx, |ui| {
+                    ui.set_max_width(WIDE);
+                    show(ui, &mut state, &mut [], Some(ClipId::new()), &[], &theme);
+                    used = ui.min_rect();
+                });
+            });
+            texts = out.shapes.iter().filter_map(|s| match &s.shape { egui::Shape::Text(t) => Some(t.galley.text().to_string()), _ => None }).collect::<Vec<_>>();
+        }
+        assert!(used.width() <= WIDE + 1.0, "the library is {:.0} px wide in a {WIDE} px panel", used.width());
+        assert!(texts.join(" ").contains("for every project"), "the hint is all there, wrapped: {texts:?}");
     }
 
     /// Driven with pointer and key events: Save opens a name field and

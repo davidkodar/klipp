@@ -6,6 +6,12 @@ use klipp_core::{RationalTime, TimecodeDisplay};
 use klipp_core::ClipId;
 use klipp_timeline::Sequence;
 
+/// The speeds the dialog offers, as a percentage: those a clip can have. It
+/// offered 1% to 1000%, so 5% silently applied as 10%, and a clip at 1600%
+/// could not be shown at its speed.
+pub const PERCENT_MIN: f64 = klipp_timeline::SPEED_MIN * 100.0;
+pub const PERCENT_MAX: f64 = klipp_timeline::SPEED_MAX * 100.0;
+
 /// Seconds of source the clip shows, whatever its speed.
 pub fn content_secs(seq: &Sequence, clip_id: ClipId) -> Option<f64> {
     let c = seq.all_clips().find(|c| c.id == clip_id)?;
@@ -116,6 +122,14 @@ mod tests {
         assert!((length_at(c, 50.0) - 8.0).abs() < 1e-9);
         assert!((percent_for(c, 9.8) - 40.816_326_530_612_24).abs() < 1e-9);
         assert!((length_at(c, percent_for(c, 9.8)) - 9.8).abs() < 1e-9, "round trip");
+    }
+
+    /// The dialog's range is the speeds a clip can have, and the lengths that
+    /// go with them.
+    #[test]
+    fn the_dialog_offers_the_speeds_a_clip_can_have() {
+        assert_eq!((PERCENT_MIN, PERCENT_MAX), (10.0, 1600.0));
+        assert!((length_at(8.0, PERCENT_MAX) - 0.5).abs() < 1e-9 && (length_at(8.0, PERCENT_MIN) - 80.0).abs() < 1e-9);
     }
 
     /// Fill to the next shot runs over the gap clip; the marked range

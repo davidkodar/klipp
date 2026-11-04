@@ -410,27 +410,13 @@ pub(crate) fn respond(
             // first was "Short 1".
             let mut taken: Vec<String> = ctx.shared.project.lock().recovered().sequences.iter().map(|s| s.name.clone()).collect();
             let fps = item.fps;
-            let mut pool = ctx.media_pool.read().recovered().clone();
+            let pool = ctx.media_pool.read().recovered().clone();
             let mut made = Vec::new();
             let mut shorts = Vec::new();
             for (k, (pieces, hook)) in planned.iter().enumerate() {
-                let name = short_name(&taken, hook);
+                let name = klipp_document::shorts::short_name(&taken, hook);
                 taken.push(name.clone());
-                let mut short = klipp_timeline::Sequence::new_default();
-                short.name = name.clone();
-                short.resolution = klipp_core::Resolution { width: 1080, height: 1920 };
-                short.fps = fps;
-                short.drop_frame = klipp_timeline::Sequence::default_drop_frame(fps);
-                short.first_clip_autoset = klipp_timeline::FirstClipAutoSet { resolution: false, fps: false, rate_answered: false };
-                let ops = klipp_document::shorts::short_ops(id, pieces, hook_title.then_some(hook.as_str()), 1.15);
-                let plan = klipp_document::ops::resolve_with(&short, &pool, &ops, &crate::plans::AnalysedTranscripts).map_err(|r| format!("moment {}: {r}; nothing was made", k + 1))?;
-                let mut built = vec![short];
-                let mut seq_fps = fps;
-                let mut view = klipp_document::apply::DocumentView { sequences: &mut built, active: 0, media_pool: &mut pool, fps: &mut seq_fps };
-                for step in &plan.steps {
-                    view.apply_forward(&step.edit);
-                }
-                let mut short = built.pop().ok_or("the short was not built")?;
+                let mut short = klipp_document::shorts::build_short(&name, fps, id, pieces, hook_title.then_some(hook.as_str()), &pool, &crate::plans::AnalysedTranscripts).map_err(|r| format!("moment {}: {r}; nothing was made", k + 1))?;
                 level_short(&mut short, &pool, lufs)?;
                 let secs: f64 = pieces.iter().map(|(a, b)| b - a).sum();
                 made.push(json!({ "name": name, "pieces": pieces.len(), "secs": secs, "sequence_id": short.id.0.to_string() }));
@@ -1673,13 +1659,6 @@ fn import_template_pack(path: &str, replace: bool) -> Result<serde_json::Value, 
 }
 
 
-/// A short's name, "Short N: <hook>", N the first number no sequence
-/// already in `taken` has with that hook.
-fn short_name(taken: &[String], hook: &str) -> String {
-    let hook: String = hook.chars().take(40).collect();
-    (1..).map(|n| format!("Short {n}: {}", hook.trim())).find(|name| !taken.iter().any(|t| t == name)).unwrap_or_default()
-}
-
 /// `short`'s sound brought to `lufs`, measured together under a -1 dBTP
 /// ceiling, each clip and its linked partner given the gain, as
 /// normalize_clips would.
@@ -1706,16 +1685,4 @@ fn level_short(short: &mut klipp_timeline::Sequence, pool: &klipp_media::MediaPo
         }
     }
     Ok(())
-}
-
-#[cfg(test)]
-mod short_name_tests {
-    /// A short's name is one the project has not got: the next number
-    /// with that hook.
-    #[test]
-    fn a_short_takes_a_name_not_yet_taken() {
-        let taken = vec!["Main Sequence".to_string(), "Short 1: Walk the old town".to_string()];
-        assert_eq!(super::short_name(&taken, "Walk the old town"), "Short 2: Walk the old town");
-        assert_eq!(super::short_name(&taken, "Another hook"), "Short 1: Another hook");
-    }
 }
