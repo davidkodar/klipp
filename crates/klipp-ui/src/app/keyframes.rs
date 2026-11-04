@@ -386,104 +386,90 @@ impl KlippApp {
                     true
                 }
                 AppCommand::AddSpeedKeyframe { clip_id, time_secs, speed } => {
-                    let seq = &mut self.state.sequences[self.state.active_sequence_idx];
-                    if let Some((ti, ci)) = seq.find_clip(*clip_id) {
-                        let clip = &mut seq.tracks[ti].clips[ci];
-                        clip.speed_keyframes.push(klipp_core::Keyframe {
-                            time_secs: *time_secs,
-                            value: *speed as f32,
-                            interpolation: klipp_core::keyframe::Interpolation::Linear,
-                            tangent_out: (0.0, 0.0),
-                            tangent_in: (0.0, 0.0),
-                            handles: Default::default(),
-                        });
-                        clip.speed_keyframes.sort_by(|a, b| a.time_secs.partial_cmp(&b.time_secs).unwrap_or(std::cmp::Ordering::Equal));
-                        recalc_timeline_out_from_speed(clip);
-                    }
-                    self.sync_sequence_to_engine();
-                    self.state.dirty = true;
+                    let mut keys = self.speed_keys_of(*clip_id);
+                    keys.push(klipp_core::Keyframe {
+                        time_secs: *time_secs,
+                        value: *speed as f32,
+                        interpolation: klipp_core::keyframe::Interpolation::Linear,
+                        tangent_out: (0.0, 0.0),
+                        tangent_in: (0.0, 0.0),
+                        handles: Default::default(),
+                    });
+                    keys.sort_by(|a, b| a.time_secs.total_cmp(&b.time_secs));
+                    self.set_speed_keys(*clip_id, keys);
                     true
                 }
                 AppCommand::RemoveSpeedKeyframe { clip_id, index } => {
-                    let seq = &mut self.state.sequences[self.state.active_sequence_idx];
-                    if let Some((ti, ci)) = seq.find_clip(*clip_id) {
-                        let clip = &mut seq.tracks[ti].clips[ci];
-                        if *index < clip.speed_keyframes.len() {
-                            clip.speed_keyframes.remove(*index);
-                        }
-                        recalc_timeline_out_from_speed(clip);
+                    let mut keys = self.speed_keys_of(*clip_id);
+                    if *index < keys.len() {
+                        keys.remove(*index);
+                        self.set_speed_keys(*clip_id, keys);
                     }
-                    self.sync_sequence_to_engine();
-                    self.state.dirty = true;
                     true
                 }
                 AppCommand::UpdateSpeedKeyframe { clip_id, index, time_secs, speed } => {
-                    let seq = &mut self.state.sequences[self.state.active_sequence_idx];
-                    if let Some((ti, ci)) = seq.find_clip(*clip_id) {
-                        let clip = &mut seq.tracks[ti].clips[ci];
-                        if *index < clip.speed_keyframes.len() {
-                            clip.speed_keyframes[*index].time_secs = *time_secs;
-                            clip.speed_keyframes[*index].value = *speed as f32;
-                            clip.speed_keyframes.sort_by(|a, b| a.time_secs.partial_cmp(&b.time_secs).unwrap_or(std::cmp::Ordering::Equal));
-                        }
-                        recalc_timeline_out_from_speed(clip);
+                    let mut keys = self.speed_keys_of(*clip_id);
+                    if *index < keys.len() {
+                        keys[*index].time_secs = *time_secs;
+                        keys[*index].value = *speed as f32;
+                        keys.sort_by(|a, b| a.time_secs.total_cmp(&b.time_secs));
+                        self.set_speed_keys(*clip_id, keys);
                     }
-                    self.sync_sequence_to_engine();
-                    self.state.dirty = true;
                     true
                 }
                 AppCommand::SetSpeedKeyframes { clip_id, keyframes } => {
-                    let seq = &mut self.state.sequences[self.state.active_sequence_idx];
-                    if let Some((ti, ci)) = seq.find_clip(*clip_id) {
-                        let clip = &mut seq.tracks[ti].clips[ci];
-                        clip.speed_keyframes = keyframes.clone();
-                        recalc_timeline_out_from_speed(clip);
-                    }
-                    self.sync_sequence_to_engine();
-                    self.state.dirty = true;
+                    self.set_speed_keys(*clip_id, keyframes.clone());
                     true
                 }
-                AppCommand::BeginSpeedKeyframeDrag { ref key, clip_id } => {
-                    let old_state = self.state.sequences[self.state.active_sequence_idx]
-                        .all_clips().find(|c| c.id == *clip_id).map(KeyframeSnapshot::from_clip);
-                    if let Some(old_state) = old_state {
-                        self.state.active_history_mut().begin_drag(
-                            key.clone(),
-                            HistoryEntry {
-                                command: EditCommand::EditKeyframes {
-                                    clip_id: *clip_id,
-                                    linked_clip_id: None,
-                                    description: "Move Speed Keyframe",
-                                    old_state: old_state.clone(),
-                                    new_state: old_state,
-                                    old_linked_state: None,
-                                    new_linked_state: None,
-                                },
-                            },
-                        );
-                    }
+                AppCommand::BeginSpeedKeyframeDrag { clip_id, .. } => {
+                    let seq = self.state.sequence();
+                    let held: Vec<klipp_timeline::Clip> = seq.all_clips().filter(|c| c.id == *clip_id || c.linked_clip_id == Some(*clip_id)).cloned().collect();
+                    self.speed_key_drag = Some(held);
                     true
                 }
-                AppCommand::EndSpeedKeyframeDrag { ref key, clip_id } => {
-                    let new_state = self.state.sequences[self.state.active_sequence_idx]
-                        .all_clips().find(|c| c.id == *clip_id).map(KeyframeSnapshot::from_clip);
-                    if let Some(new_state) = new_state {
-                        self.state.active_history_mut().end_drag(HistoryEntry {
-                            command: EditCommand::EditKeyframes {
-                                clip_id: *clip_id,
-                                linked_clip_id: None,
-                                description: "Move Speed Keyframe",
-                                old_state: new_state.clone(), // placeholder, combine_old_new merges
-                                new_state,
-                                old_linked_state: None,
-                                new_linked_state: None,
-                            },
-                        });
+                AppCommand::EndSpeedKeyframeDrag { clip_id, .. } => {
+                    // One step, from before the drag: the clips put back and
+                    // the keys it ended on given to them.
+                    if let Some(held) = self.speed_key_drag.take() {
+                        let keys = self.speed_keys_of(*clip_id);
+                        let seq = self.state.sequence_mut();
+                        for clip in held {
+                            if let Some((t, c)) = seq.find_clip(clip.id) {
+                                seq.tracks[t].clips[c] = clip;
+                            }
+                        }
+                        if self.speed_keys_of(*clip_id) != keys {
+                            self.set_speed_keys(*clip_id, keys);
+                        } else {
+                            self.sync_sequence_to_engine();
+                        }
                     }
-                    let _ = key;
                     true
                 }
             _ => false,
+        }
+    }
+
+    fn speed_keys_of(&self, clip_id: ClipId) -> Vec<klipp_core::Keyframe> {
+        self.state.sequence().all_clips().find(|c| c.id == clip_id).map(|c| c.speed_keyframes.clone()).unwrap_or_default()
+    }
+
+    /// `clip_id` given the speed keys `keys`, as one undo step. While a drag
+    /// holds them a key that has no room stays where it last had it, and the
+    /// step is made when the drag ends.
+    fn set_speed_keys(&mut self, clip_id: ClipId, keys: Vec<klipp_core::Keyframe>) {
+        match klipp_document::ops::speed_keys_at(self.state.sequence(), &self.state.media_pool, clip_id, keys) {
+            Ok((what, edit)) if self.speed_key_drag.is_some() => {
+                tracing::debug!("{what}");
+                self.apply_edit_forward(&edit);
+                self.sync_sequence_to_engine();
+            }
+            Ok((what, edit)) => {
+                tracing::info!("{what}");
+                self.apply_edits_as_one(&[edit], "Speed Ramp");
+            }
+            Err(_) if self.speed_key_drag.is_some() => {}
+            Err(r) => self.state.toast.show(format!("Speed ramp unchanged: {}. {}", r.why, r.hint)),
         }
     }
 
@@ -491,27 +477,6 @@ impl KlippApp {
         let side = inspector_edit_host::EngineSideEffects { cmd_tx: &self.cmd_tx, sequence: &self.sequence, param_change_queue: &self.param_change_queue };
         (inspector_edit_host::InspectorEditHost { state: &mut self.state, side: &side }).apply_keyframe_drag(cmd)
     }
-}
-
-/// Recompute `clip.timeline_out` so that its visible length on the timeline
-/// matches the time it takes the speed curve to exhaust the clip's source range.
-/// Uses the constant `clip.speed` when there are no keyframes; integrates the
-/// curve otherwise. Called from the speed-keyframe command handlers so the UI
-/// and engine see a consistent clip length after a ramp edit.
-pub(super) fn recalc_timeline_out_from_speed(clip: &mut klipp_timeline::Clip) {
-    let source_dur_secs = clip.source_duration().to_secs_f64();
-    if source_dur_secs <= 0.0 {
-        return;
-    }
-    let rate = clip.timeline_in.rate;
-    let new_dur_secs = klipp_timeline::effective_timeline_duration_for_keyframes(
-        &clip.speed_keyframes,
-        source_dur_secs,
-        rate as f64,
-        clip.speed,
-    );
-    let new_duration = klipp_core::RationalTime::from_secs_f64(new_dur_secs, rate);
-    clip.timeline_out = clip.timeline_in + new_duration;
 }
 
 /// A sound effect key moved, or its tangents set, on the clip the command

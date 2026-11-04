@@ -10515,6 +10515,36 @@ fn ramp(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, ti: usize, clip: &
     let mut kfs = Vec::new();
     klipp_core::keyframe::upsert_keyframe(&mut kfs, 0.0, from as f32);
     klipp_core::keyframe::upsert_keyframe(&mut kfs, over, to as f32);
+    let SpeedKeys { edit, new_out, linked, later, delta, partners, ids } = speed_keys_edit(seq, pool, fps, i, ti, clip, kfs, ripple, "ramp")?;
+    let what = format!(
+        "ramp {} from {from:.2}x to {to:.2}x over {over:.2} s (now {:.2}-{:.2} s){}{}{}",
+        clip_name(seq, pool, clip),
+        secs(clip.timeline_in),
+        secs(new_out),
+        if linked { ", its linked clip with it; the shot's sound is muted while it ramps" } else { "" },
+        if later > 0 { format!("; {later} later clip(s) moved {:+.2} s", secs(delta)) } else { String::new() },
+        if partners == 0 { String::new() } else { format!(", {partners} linked to them on other tracks with them") },
+    );
+    Ok((what, edit, ids))
+}
+
+/// What [`speed_keys_edit`] plans.
+struct SpeedKeys {
+    edit: EditCommand,
+    new_out: Timecode,
+    linked: bool,
+    later: usize,
+    delta: Timecode,
+    partners: usize,
+    ids: Vec<ClipId>,
+}
+
+/// `clip` given the speed keys `kfs`, none for its one speed again: its length
+/// follows, on the sequence's frames, and without `ripple` one that would run
+/// over the next clip is refused. Its linked clip takes the same keys.
+#[allow(clippy::too_many_arguments)]
+fn speed_keys_edit(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, ti: usize, clip: &Clip, kfs: Vec<klipp_core::Keyframe>, ripple: bool, verb: &str) -> Result<SpeedKeys, Refusal> {
+    let source_len = secs(clip.source_out - clip.source_in);
     let new_len = klipp_timeline::effective_timeline_duration_for_keyframes(&kfs, source_len, fps.as_f64(), clip.speed);
     let new_out = clip.timeline_in + snap(new_len, fps);
     if new_out <= clip.timeline_in + one_frame(fps) {
@@ -10535,7 +10565,7 @@ fn ramp(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, ti: usize, clip: &
         };
         ends.push((pti, p, p_out));
     }
-    let Rippled { moves, ids: moved, later, delta, partners } = ripple_after(seq, pool, fps, i, &ends, ripple, "ramp")?;
+    let Rippled { moves, ids: moved, later, delta, partners } = ripple_after(seq, pool, fps, i, &ends, ripple, verb)?;
     let old_state = crate::history::KeyframeSnapshot::from_clip(clip);
     let mut new_state = old_state.clone();
     new_state.speed_keyframes = kfs.clone();
@@ -10545,15 +10575,6 @@ fn ramp(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, ti: usize, clip: &
         new.speed_keyframes = kfs.clone();
         (p.id, old, new)
     });
-    let what = format!(
-        "ramp {} from {from:.2}x to {to:.2}x over {over:.2} s (now {:.2}-{:.2} s){}{}{}",
-        clip_name(seq, pool, clip),
-        secs(clip.timeline_in),
-        secs(new_out),
-        if linked.is_some() { ", its linked clip with it; the shot's sound is muted while it ramps" } else { "" },
-        if later > 0 { format!("; {later} later clip(s) moved {:+.2} s", secs(delta)) } else { String::new() },
-        if partners == 0 { String::new() } else { format!(", {partners} linked to them on other tracks with them") },
-    );
     let edit = EditCommand::Batch(
         [
             EditCommand::EditKeyframes {
@@ -10571,7 +10592,24 @@ fn ramp(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, ti: usize, clip: &
         .chain(moves)
         .collect(),
     );
-    Ok((what, edit, ends.iter().map(|(_, m, _)| m.id).chain(moved).collect()))
+    let ids = ends.iter().map(|(_, m, _)| m.id).chain(moved).collect();
+    Ok(SpeedKeys { edit, new_out, linked: linked.is_some(), later, delta, partners, ids })
+}
+
+/// The inspector's speed keys as one edit: `clip_id` given `keys`, as a ramp
+/// without ripple gives them, with its linked clip and its length.
+pub fn speed_keys_at(seq: &Sequence, pool: &MediaPool, clip_id: ClipId, keys: Vec<klipp_core::Keyframe>) -> Result<(String, EditCommand), Refusal> {
+    let Some((ti, _, clip)) = find_clip(seq, clip_id) else {
+        return Err(refuse(0, "no such clip", "name a clip on the timeline"));
+    };
+    if seq.tracks[ti].locked {
+        return Err(refuse(0, format!("track {ti} is locked"), "unlock it first"));
+    }
+    if !matches!(clip.kind, ClipKind::Media { .. }) || clip.hold.is_some() {
+        return Err(refuse(0, format!("{} has no speed to ramp", clip_name(seq, pool, clip)), "ramp a media clip"));
+    }
+    let what = format!("{} given {} speed key(s)", clip_name(seq, pool, clip), keys.len());
+    speed_keys_edit(seq, pool, seq.fps, 0, ti, clip, keys, false, "ramp").map(|k| (what, k.edit))
 }
 
 /// [`Op::Freeze`]: the clip's frame at `at` held for `hold` seconds,
@@ -20041,6 +20079,39 @@ mod tests {
         let clip = find_clip(&view.sequences[0], a).unwrap().2;
         assert_eq!(clip.frame_blend_mode(), Some(2), "the slow part's frames follow the motion");
         assert!(!clip.speed_keyframes.is_empty(), "and it is ramped");
+    }
+
+    /// The inspector's speed keys are one edit: its linked clip takes them,
+    /// the length lands where the ramp op puts it, one that would run over the
+    /// next clip is refused, none gives the one speed and sound back, and undo
+    /// restores keys and lengths alike.
+    #[test]
+    fn inspector_speed_keys_are_one_undoable_edit() {
+        let (seq, pool, _, a, b) = fixture();
+        let aa = seq.tracks[1].clips[0].id;
+        let key = |t: f64, v: f32| klipp_core::Keyframe { time_secs: t, value: v, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() };
+        let refused = speed_keys_at(&seq, &pool, a, vec![key(0.0, 0.5), key(4.0, 0.5)]).unwrap_err();
+        assert!(refused.why.contains("would run over"), "{refused:?}");
+        let fast = vec![key(0.0, 2.0), key(1.5, 3.0)];
+        let (_, edit) = speed_keys_at(&seq, &pool, a, fast.clone()).unwrap();
+        let mut seqs = vec![seq.clone()];
+        let (mut p, mut f) = (pool.clone(), seq.fps);
+        let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut f };
+        view.apply_forward(&edit);
+        let clip = |view: &crate::apply::DocumentView, id: ClipId| find_clip(&view.sequences[0], id).map(|(_, _, c)| c.clone()).unwrap();
+        let (picture, sound) = (clip(&view, a), clip(&view, aa));
+        let by_op = klipp_timeline::effective_timeline_duration_for_keyframes(&fast, 4.0, 25.0, 1.0);
+        assert_eq!(picture.timeline_out, snap(by_op, seq.fps), "on the frames, as the ramp op puts it");
+        assert_eq!((sound.timeline_out, sound.plays_its_sound()), (picture.timeline_out, false));
+        assert_eq!(clip(&view, b).timeline_in, tc(4.0), "the next clip stays");
+        let ramped = view.sequences[0].clone();
+        let (_, off) = speed_keys_at(&ramped, &pool, a, Vec::new()).unwrap();
+        view.apply_forward(&off);
+        assert_eq!(clip(&view, a).timeline_out, tc(4.0), "its one speed, its length back");
+        assert!(clip(&view, aa).plays_its_sound(), "and its sound");
+        view.apply_inverse(&off);
+        view.apply_inverse(&edit);
+        assert_eq!(serde_json::to_value(&view.sequences[0]).unwrap(), serde_json::to_value(&seq).unwrap(), "undo restores it");
     }
 
     /// A speed on a ramped clip is refused, forward or reversed, and leaves it
