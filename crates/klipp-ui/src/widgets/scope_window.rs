@@ -1282,7 +1282,7 @@ fn draw_waveform_settings(ui: &mut egui::Ui, pane_idx: usize, state: &mut ScopeW
     });
 
     ui.add_space(2.0);
-    ui.checkbox(&mut s.colorize, "Colorize");
+    ui.checkbox(&mut s.colorize, "Colourise");
     ui.checkbox(&mut s.extents, "Extents");
 
     ui.separator();

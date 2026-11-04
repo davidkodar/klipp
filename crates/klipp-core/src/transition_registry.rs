@@ -577,7 +577,7 @@ pub const TRANSITION_SPECS: [TransitionSpec; 73] = [
         kind: TransitionKind::FadeToColor,
         kind_id: 46,
         string_key: "FadeToColor",
-        display_name: "Fade to Color",
+        display_name: "Fade to Colour",
         short_label: "Fade Clr",
         group: TransitionGroup::Dissolve,
         default_params: TransitionUserParams { param0: 0.0, param1: 0.0, param2: 0.0, param3: 0.0, color: [0.0, 0.0, 0.0, 1.0], subject: None },
@@ -622,8 +622,8 @@ pub const TRANSITION_SPECS: [TransitionSpec; 73] = [
         kind: TransitionKind::ColorizeFlash,
         kind_id: 51,
         string_key: "ColorizeFlash",
-        display_name: "Colorize Flash",
-        short_label: "Colorize",
+        display_name: "Colourise Flash",
+        short_label: "Colourise",
         group: TransitionGroup::Effect,
         default_params: TransitionUserParams { param0: 1.0, param1: 0.5, param2: 0.0, param3: 0.0, color: [0.0, 0.8, 1.0, 1.0], subject: None },
     },
@@ -901,6 +901,17 @@ pub fn spec_for_string_key(string_key: &str) -> Option<&'static TransitionSpec> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Each transition's name as a person reads it is spelt as the rest of
+    /// Klipp is: "Fade to Colour", not "Fade to Color".
+    #[test]
+    fn transition_names_are_spelt_british() {
+        for spec in TRANSITION_SPECS.iter() {
+            for name in [spec.display_name, spec.short_label] {
+                assert!(!name.split(|c: char| !c.is_alphabetic()).any(|w| w.starts_with("Color") || w.starts_with("color")), "{name:?}");
+            }
+        }
+    }
 
     #[test]
     fn test_spec_count() {

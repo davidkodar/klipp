@@ -414,3 +414,17 @@ fn every_node_type_says_how_a_grade_is_given_one() {
     assert_eq!(addable_node_kind("Source"), None);
     assert_eq!(addable_node_kind("InputTransform"), Some(NodeKind::InputTransform));
 }
+
+/// Every node's name as a person reads it, on its card, in the add menu
+/// and in the inspector, is spelt as the rest of Klipp is: British, so
+/// "Colour Match" in the menu and "Color Match" on the node no longer
+/// sit side by side.
+#[test]
+fn node_names_are_spelt_british() {
+    for t in node_types() {
+        let shown = [t.desc.name, t.kind.display_name()];
+        for name in shown {
+            assert!(!name.split(|c: char| !c.is_alphabetic()).any(|w| w == "Color" || w == "color"), "{:?}: {name:?}", t.kind);
+        }
+    }
+}
