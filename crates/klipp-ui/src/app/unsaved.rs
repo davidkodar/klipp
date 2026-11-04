@@ -13,11 +13,23 @@ use super::*;
 /// 8 ms for 800 clips.
 const SETTLE_EVERY: std::time::Duration = std::time::Duration::from_millis(250);
 
-/// Whether a raised hint is settled this frame. Not during a drag, whose
-/// frames a digest would hold up over and over: its release settles it,
-/// and a decision settles it whenever one is asked for.
-fn settle_this_frame(since: Option<std::time::Duration>, pointer_down: bool) -> bool {
-    !pointer_down && since.is_none_or(|since| since >= SETTLE_EVERY)
+/// The longest a raised hint waits, however large the project: only the
+/// unsaved mark waits this long, a decision settles it when it is asked.
+const SETTLE_AT_MOST_EVERY: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// How long a raised hint waits after a digest that took `cost`: past
+/// [`SETTLE_EVERY`] only where a project is so large that digests would take
+/// more than a fifth of the UI thread during edits.
+fn settle_wait(cost: std::time::Duration) -> std::time::Duration {
+    (cost * 4).clamp(SETTLE_EVERY, SETTLE_AT_MOST_EVERY)
+}
+
+/// Whether a raised hint is settled this frame, `wait` after the last.
+/// Not during a drag, whose frames a digest would hold up over and over:
+/// its release settles it, and a decision settles it whenever one is asked
+/// for.
+fn settle_this_frame(since: Option<std::time::Duration>, pointer_down: bool, wait: std::time::Duration) -> bool {
+    !pointer_down && since.is_none_or(|since| since >= wait)
 }
 
 impl crate::state::AppState {
@@ -117,7 +129,7 @@ impl KlippApp {
     }
 
     /// Once a frame: a raised hint is settled at most every
-    /// [`SETTLE_EVERY`], and a repaint is asked for so it is settled
+    /// [`settle_wait`], and a repaint is asked for so it is settled
     /// even when nothing else is drawn.
     pub(super) fn tick_unsaved(&mut self, ctx: &egui::Context) {
         if !self.state.dirty {
@@ -125,11 +137,14 @@ impl KlippApp {
         }
         let since = self.unsaved_settled_at.map(|t| t.elapsed());
         let pointer_down = ctx.input(|i| i.pointer.any_down());
-        if settle_this_frame(since, pointer_down) {
+        let wait = settle_wait(self.unsaved_settle_cost);
+        if settle_this_frame(since, pointer_down, wait) {
+            let started = std::time::Instant::now();
             self.state.settle_unsaved();
+            self.unsaved_settle_cost = started.elapsed();
             self.unsaved_settled_at = Some(std::time::Instant::now());
         } else if let (Some(since), false) = (since, pointer_down) {
-            ctx.request_repaint_after(SETTLE_EVERY - since);
+            ctx.request_repaint_after(wait.saturating_sub(since));
         }
         // In a drag its release is an event, which brings the frame that
         // settles it.
@@ -366,11 +381,27 @@ mod tests {
     #[test]
     fn a_drag_is_not_held_up_by_settling() {
         use std::time::Duration;
-        assert!(super::settle_this_frame(None, false), "the first");
-        assert!(!super::settle_this_frame(None, true), "the first, in a drag");
-        assert!(!super::settle_this_frame(Some(Duration::from_millis(249)), false));
-        assert!(super::settle_this_frame(Some(Duration::from_millis(250)), false));
-        assert!(!super::settle_this_frame(Some(Duration::from_secs(5)), true), "however long the drag");
+        let wait = Duration::from_millis(250);
+        assert!(super::settle_this_frame(None, false, wait), "the first");
+        assert!(!super::settle_this_frame(None, true, wait), "the first, in a drag");
+        assert!(!super::settle_this_frame(Some(Duration::from_millis(249)), false, wait));
+        assert!(super::settle_this_frame(Some(Duration::from_millis(250)), false, wait));
+        assert!(!super::settle_this_frame(Some(Duration::from_secs(5)), true, wait), "however long the drag");
+    }
+
+    /// A digest a project can afford waits as it did; a slower one waits
+    /// four times what it took, so digests take at most a fifth of the UI
+    /// thread during edits, and none waits past the cap.
+    #[test]
+    fn the_wait_between_settles_follows_what_a_digest_costs() {
+        use std::time::Duration;
+        let ms = Duration::from_millis;
+        assert_eq!(super::settle_wait(Duration::ZERO), ms(250), "before the first");
+        assert_eq!(super::settle_wait(ms(18)), ms(250), "2,000 clips");
+        assert_eq!(super::settle_wait(ms(62)), ms(250));
+        assert_eq!(super::settle_wait(ms(170)), ms(680), "20,000 clips");
+        assert_eq!(super::settle_wait(ms(400)), ms(1600));
+        assert_eq!(super::settle_wait(ms(1400)), ms(2000), "at the cap");
     }
 
     /// A command that writes raises the hint at the dispatch boundary, so
