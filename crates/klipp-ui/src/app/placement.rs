@@ -472,11 +472,14 @@ impl KlippApp {
 
     /// Remove (lift) content in [range_in, range_out] from a track, leaving a gap.
     /// Clips fully inside the range are removed. Clips partially overlapping are trimmed.
+    /// A clip the range splits is returned with the right piece it made, for
+    /// [`Self::link_right_pieces`].
     pub(super) fn lift_range(
         track: &mut klipp_timeline::Track,
         range_in: Timecode,
         range_out: Timecode,
-    ) {
+    ) -> Vec<(klipp_core::ClipId, klipp_core::ClipId)> {
+        let mut split = Vec::new();
         let mut to_remove = Vec::new();
         let mut to_split = Vec::new();
         let mut to_trim_right = Vec::new(); // trim out-point back to range_in
@@ -597,6 +600,7 @@ impl KlippApp {
             // the piece made from its fields.
             right_clip.take_picture_truth_of(&clip);
             right_clip.keep_angle_cuts_on_piece(right_offset.to_secs_f64(), (clip.timeline_out - clip.timeline_in).to_secs_f64());
+            split.push((clip.id, right_clip.id));
             track.clips.insert(i + 1, right_clip);
         }
 
@@ -618,6 +622,22 @@ impl KlippApp {
         // Remove fully covered (reverse order)
         for &i in to_remove.iter().rev() {
             track.clips.remove(i);
+        }
+        split
+    }
+
+    /// Each right piece of a lift linked to its partner's right piece, not
+    /// to the partner's left, which it was copied with. Deleting the right
+    /// picture took the left sound with it, and the ripple then pushed the
+    /// right sound before the start of the timeline.
+    pub(super) fn link_right_pieces(tracks: &mut [klipp_timeline::Track], split: &[(klipp_core::ClipId, klipp_core::ClipId)]) {
+        let right_of = |id: klipp_core::ClipId| split.iter().find(|(whole, _)| *whole == id).map(|(_, right)| *right);
+        for clip in tracks.iter_mut().flat_map(|t| t.clips.iter_mut()) {
+            if split.iter().any(|(_, right)| *right == clip.id) {
+                if let Some(partner) = clip.linked_clip_id.and_then(right_of) {
+                    clip.linked_clip_id = Some(partner);
+                }
+            }
         }
     }
 }
@@ -1220,5 +1240,58 @@ mod rate_question_tests {
         assert!(matches!(cmd, Some(AppCommand::SetSequenceFps { sequence_idx: 0, fps_num: 50, fps_den: 1 })), "{cmd:?}");
         state.media_pool.get_mut(&second).unwrap().fps = Fps { num: 30, den: 1 };
         assert_eq!(state.rate_question(&second), None);
+    }
+}
+
+#[cfg(test)]
+mod lifted_links_tests {
+    use super::KlippApp;
+    use klipp_core::{MediaId, RationalTime};
+    use klipp_timeline::{Clip, Track, TrackKind};
+
+    fn t(s: f64) -> RationalTime {
+        RationalTime::from_secs_f64(s, 24)
+    }
+
+    /// A range lifted from the middle of a clip and its sound leaves two
+    /// pairs: left with left and right with right, each way round.
+    #[test]
+    fn a_lift_leaves_each_piece_linked_to_its_own_partner() {
+        let media = MediaId::new();
+        let mut picture = Clip::media(media, t(0.0), t(10.0), t(0.0), t(10.0));
+        let mut sound = Clip::media(media, t(0.0), t(10.0), t(0.0), t(10.0));
+        picture.linked_clip_id = Some(sound.id);
+        sound.linked_clip_id = Some(picture.id);
+        let mut v = Track::new("V1", TrackKind::Video);
+        let mut a = Track::new("A1", TrackKind::Audio);
+        v.clips.push(picture);
+        a.clips.push(sound);
+        let mut tracks = vec![v, a];
+        let mut split = Vec::new();
+        for track in &mut tracks {
+            split.extend(KlippApp::lift_range(track, t(4.0), t(6.0)));
+        }
+        KlippApp::link_right_pieces(&mut tracks, &split);
+        for (x, y) in [(0, 1), (1, 0)] {
+            for piece in 0..2 {
+                let partner = tracks[x].clips[piece].linked_clip_id.expect("linked");
+                assert_eq!(partner, tracks[y].clips[piece].id, "track {x}, piece {piece}");
+            }
+        }
+    }
+
+    /// A partner the lift didn't reach, on a locked track, stays the link.
+    #[test]
+    fn a_partner_not_split_stays_linked() {
+        let media = MediaId::new();
+        let mut picture = Clip::media(media, t(0.0), t(10.0), t(0.0), t(10.0));
+        let sound = Clip::media(media, t(0.0), t(10.0), t(0.0), t(10.0));
+        picture.linked_clip_id = Some(sound.id);
+        let mut v = Track::new("V1", TrackKind::Video);
+        v.clips.push(picture);
+        let mut tracks = vec![v];
+        let split = KlippApp::lift_range(&mut tracks[0], t(4.0), t(6.0));
+        KlippApp::link_right_pieces(&mut tracks, &split);
+        assert_eq!(tracks[0].clips[1].linked_clip_id, Some(sound.id));
     }
 }

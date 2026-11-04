@@ -875,13 +875,15 @@ impl KlippApp {
                     }
                     // Locked tracks are left as they are, and named (#908).
                     let mut skipped = Vec::new();
+                    let mut split = Vec::new();
                     for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                         if track.locked {
                             skipped.push(track.name.clone());
                             continue;
                         }
-                        Self::lift_range(track, in_pt, out_pt);
+                        split.extend(Self::lift_range(track, in_pt, out_pt));
                     }
+                    Self::link_right_pieces(&mut self.state.sequences[self.state.active_sequence_idx].tracks, &split);
                     if !skipped.is_empty() {
                         self.state.toast.show(format!("Lift left locked tracks as they were: {}", skipped.join(", ")));
                     }
@@ -907,12 +909,13 @@ impl KlippApp {
                     }
                     let gap = out_pt - in_pt;
                     let mut skipped = Vec::new();
+                    let mut split = Vec::new();
                     for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                         if track.locked {
                             skipped.push(track.name.clone());
                             continue;
                         }
-                        Self::lift_range(track, in_pt, out_pt);
+                        split.extend(Self::lift_range(track, in_pt, out_pt));
                         // Ripple: shift clips at or after out_pt left by gap
                         for clip in &mut track.clips {
                             if clip.timeline_in >= out_pt {
@@ -921,6 +924,7 @@ impl KlippApp {
                             }
                         }
                     }
+                    Self::link_right_pieces(&mut self.state.sequences[self.state.active_sequence_idx].tracks, &split);
                     if !skipped.is_empty() {
                         self.state.toast.show(format!("Extract left locked tracks as they were: {}", skipped.join(", ")));
                     }
