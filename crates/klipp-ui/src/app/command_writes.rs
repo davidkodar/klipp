@@ -879,7 +879,7 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::BeginSequenceCameraDrag { .. }
         | AppCommand::EndSequenceCameraDrag { .. }
         | AppCommand::SetClipSpeed { .. }
-        | AppCommand::FillShort { .. }
+        | AppCommand::MakeShorts { .. }
         | AppCommand::SetClipInterpolation { .. }
         | AppCommand::FreezeFrame { .. }
         | AppCommand::AddSpeedKeyframe { .. }

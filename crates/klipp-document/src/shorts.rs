@@ -66,6 +66,36 @@ pub fn short_ops(media: MediaId, pieces: &[(f64, f64)], hook: Option<&str>, punc
     ops.into_iter().map(|v| serde_json::from_value(v).expect("a short's op is well formed")).collect()
 }
 
+/// A short's name, "Short N: <hook>", N the first number no sequence
+/// already in `taken` has with that hook: a second call's first short is
+/// not "Short 1" again.
+pub fn short_name(taken: &[String], hook: &str) -> String {
+    let hook: String = hook.chars().take(40).collect();
+    (1..).map(|n| format!("Short {n}: {}", hook.trim())).find(|name| !taken.iter().any(|t| t == name)).unwrap_or_default()
+}
+
+/// The short of `pieces` of `media` built whole, in a sequence of its own
+/// called `name`, 1080×1920 at `fps`: its cut resolved against the empty
+/// sequence and laid there, before anything reaches the project. Shorts
+/// are added to the project together, one undo step, and a refused one
+/// leaves nothing behind.
+pub fn build_short(name: &str, fps: klipp_core::Fps, media: MediaId, pieces: &[(f64, f64)], hook: Option<&str>, pool: &klipp_media::MediaPool, transcripts: &dyn crate::ops::Transcripts) -> Result<klipp_timeline::Sequence, crate::ops::Refusal> {
+    let mut short = klipp_timeline::Sequence::new_default();
+    short.name = name.to_string();
+    short.resolution = klipp_core::Resolution { width: 1080, height: 1920 };
+    short.fps = fps;
+    short.drop_frame = klipp_timeline::Sequence::default_drop_frame(fps);
+    short.first_clip_autoset = klipp_timeline::FirstClipAutoSet { resolution: false, fps: false, rate_answered: false };
+    let plan = crate::ops::resolve_with(&short, pool, &short_ops(media, pieces, hook, 1.15), transcripts)?;
+    let mut built = vec![short];
+    let (mut pool, mut fps) = (pool.clone(), fps);
+    let mut view = crate::apply::DocumentView { sequences: &mut built, active: 0, media_pool: &mut pool, fps: &mut fps };
+    for step in &plan.steps {
+        view.apply_forward(&step.edit);
+    }
+    Ok(built.remove(0))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -128,6 +158,26 @@ mod tests {
         let media = pool.add(item);
         let ops = short_ops(media, &pieces(&talk(), 10.0, 20.0, 19.5, true, Some(&english)), None, 1.15);
         resolve_with(&seq, &pool, &ops, &Said(talk())).unwrap_or_else(|r| panic!("{r:?}"));
+    }
+
+    /// A short is built whole in a sequence of its own, named apart from
+    /// those already in the project; a refused cut builds nothing.
+    #[test]
+    fn a_short_is_built_whole_and_named_apart() {
+        let taken = vec!["Main Sequence".to_string(), "Short 1: Walk the old town".to_string()];
+        assert_eq!(short_name(&taken, "Walk the old town"), "Short 2: Walk the old town");
+        assert_eq!(short_name(&taken, "Another hook"), "Short 1: Another hook");
+        let mut pool = klipp_media::MediaPool::new();
+        let mut item = klipp_media::MediaItem::synthetic_for_test("/tmp/talk-built.mov".into(), None);
+        item.duration = klipp_core::RationalTime::from_secs_f64(60.0, 30);
+        item.video_codec = "hevc".into();
+        item.has_audio = true;
+        let media = pool.add(item);
+        let p = pieces(&talk(), 10.0, 20.0, 60.0, true, Some(&klipp_core::lang::english()));
+        let short = build_short("Short 2: Walk the old town", klipp_core::Fps::new(30, 1), media, &p, Some("Walk the old town"), &pool, &Said(talk())).unwrap_or_else(|r| panic!("{r:?}"));
+        assert_eq!((short.name.as_str(), short.resolution.width, short.resolution.height), ("Short 2: Walk the old town", 1080, 1920));
+        assert!(short.tracks.iter().any(|t| t.kind == TrackKind::Video && !t.clips.is_empty()), "its pictures");
+        assert!(build_short("x", klipp_core::Fps::new(30, 1), media, &[(70.0, 75.0)], None, &pool, &Said(talk())).is_err(), "past its file: refused, nothing built");
     }
 
     /// A short builds in an upright sequence: its pieces end to end from
