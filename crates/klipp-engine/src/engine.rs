@@ -412,22 +412,6 @@ pub mod ui_stage {
     }
 }
 
-/// Read process RSS in MB from `/proc/self/statm` (Linux). Returns 0
-/// on non-Linux or if the proc file can't be read. Cheap enough
-/// (single file read, tens of microseconds) to call every 10 s.
-fn read_rss_mb() -> f64 {
-    let Ok(statm) = std::fs::read_to_string("/proc/self/statm") else {
-        return 0.0;
-    };
-    let Some(rss_pages_str) = statm.split_whitespace().nth(1) else {
-        return 0.0;
-    };
-    let Ok(pages) = rss_pages_str.parse::<u64>() else {
-        return 0.0;
-    };
-    (pages * 4096) as f64 / (1024.0 * 1024.0)
-}
-
 /// Gate for the GPU-resident viewer output path. When on, the engine
 /// mirrors the graded frame into `FrameBuffer.gpu_output` on the
 /// shared wgpu device so the UI can sample it directly without a
@@ -3152,7 +3136,7 @@ impl PlaybackEngine {
     /// single-frame working set = somewhere a buffer is being kept
     /// larger than needed (reallocs without shrinks, or swap-race).
     fn emit_reliability_telemetry(&mut self) {
-        let rss_mb = read_rss_mb();
+        let rss_mb = klipp_core::process_memory::resident_mb();
         let rss_delta = if self.last_rss_mb > 0.0 {
             rss_mb - self.last_rss_mb
         } else {
