@@ -1006,6 +1006,12 @@ pub fn same_file_as_probed(old: &MediaItem, fresh: &MediaItem) -> bool {
 }
 
 impl MediaItem {
+    /// Whether the item has a proxy to read now: made, and its file still
+    /// there. The flag alone outlives a cleared cache.
+    pub fn proxy_on_disk(&self) -> bool {
+        self.proxy_ready && self.proxy_path.as_deref().is_some_and(std::path::Path::exists)
+    }
+
     /// A file with sound and no picture (a song, a voice note, an effect).
     pub fn sound_only(&self) -> bool {
         self.video_codec.is_empty() && !self.is_still && self.has_audio

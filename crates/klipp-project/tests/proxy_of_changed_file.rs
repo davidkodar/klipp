@@ -6,7 +6,7 @@ use klipp_media::{MediaItem, MediaPool};
 use klipp_project::{load_project_strict, save_project};
 use klipp_timeline::{Clip, Sequence};
 
-fn opened_proxy(name: &str, change: Option<&[u8]>) -> (bool, bool) {
+fn opened_proxy(name: &str, change: Option<&[u8]>, proxy_gone: bool) -> (bool, bool) {
     let root = std::env::temp_dir().join(format!("klipp_proxy_of_changed_file_{name}_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root).unwrap();
@@ -25,6 +25,9 @@ fn opened_proxy(name: &str, change: Option<&[u8]>) -> (bool, bool) {
     if let Some(bytes) = change {
         std::fs::write(&media, bytes).unwrap();
     }
+    if proxy_gone {
+        std::fs::remove_file(&proxy).unwrap();
+    }
     let (_, loaded, ..) = load_project_strict(&dir).unwrap();
     let item = loaded.get(&id).unwrap();
     let got = (item.proxy_ready, item.proxy_path.is_some());
@@ -34,7 +37,14 @@ fn opened_proxy(name: &str, change: Option<&[u8]>) -> (bool, bool) {
 
 #[test]
 fn a_proxy_counts_for_the_content_it_shows() {
-    assert_eq!(opened_proxy("same", None), (true, true));
-    assert_eq!(opened_proxy("rewritten", Some(b"the content the proxy shows")), (true, true), "a new date, the same content");
-    assert_eq!(opened_proxy("changed", Some(b"something else altogether")), (false, false));
+    assert_eq!(opened_proxy("same", None, false), (true, true));
+    assert_eq!(opened_proxy("rewritten", Some(b"the content the proxy shows"), false), (true, true), "a new date, the same content");
+    assert_eq!(opened_proxy("changed", Some(b"something else altogether"), false), (false, false));
+}
+
+/// A proxy whose file is gone, as when the cache was cleared or the project
+/// came from another machine, is not ready.
+#[test]
+fn a_proxy_whose_file_is_gone_is_not_ready() {
+    assert!(!opened_proxy("gone", None, true).0);
 }

@@ -8,7 +8,7 @@ impl KlippApp {
             Some(item) => item.clone(),
             None => return,
         };
-        if item.proxy_ready {
+        if item.proxy_on_disk() {
             return;
         }
         if self.state.proxy_generating.contains(&media_id) {

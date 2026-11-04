@@ -212,7 +212,7 @@ pub(crate) fn respond(
                     if item.offline {
                         return Err(format!("{} is offline: relink it first", item.filename));
                     }
-                    if item.proxy_ready { ready += 1 } else { wanted.push(id) }
+                    if item.proxy_on_disk() { ready += 1 } else { wanted.push(id) }
                 }
                 (wanted, ready)
             };

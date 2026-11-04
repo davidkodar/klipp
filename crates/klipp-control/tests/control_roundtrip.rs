@@ -3012,13 +3012,30 @@ fn proxies_are_made_as_a_job_and_status_says_what_playback_reads() {
     assert_eq!((status["jobs"][0]["kind"].as_str(), status["jobs"][0]["state"].as_str()), (Some("proxies"), Some("running")), "{status}");
     assert_eq!(status["jobs"][0]["progress"], json!(0.25));
     // One made, the other failed: failed, naming it.
-    h.media_pool.write().unwrap().get_mut(&a).unwrap().proxy_ready = true;
+    let made = std::env::temp_dir().join(format!("klipp-proxy-made-{}.mp4", uuid::Uuid::new_v4()));
+    std::fs::write(&made, b"a proxy").unwrap();
+    {
+        let mut pool = h.media_pool.write().unwrap();
+        let item = pool.get_mut(&a).unwrap();
+        (item.proxy_path, item.proxy_ready) = (Some(made.clone()), true);
+    }
     *h.shared.proxies.lock().unwrap() = klipp_core::ProxyStatus { use_proxies: true, making: Vec::new(), failed: vec![(b, "ffmpeg exited with error".into())] };
     let status = h.ok(json!({ "method": "job_status", "job_id": job }));
     assert_eq!(status["jobs"][0]["state"], "failed", "{status}");
     assert!(status["jobs"][0]["error"].as_str().unwrap().contains("proxy-b.mov"), "{status}");
     let text = h.ok(json!({ "method": "status" }))["text"].as_str().unwrap().to_string();
     assert!(text.contains("Playback reads proxies: 1 of the 2"), "{text}");
+    let already = h.ok(json!({ "method": "make_proxies", "media_ids": [a.0.to_string()] }));
+    assert_eq!((&already["made"], &already["ready"]), (&json!(0), &json!(1)), "{already}");
+
+    // Its file gone, say with the cache: not ready, and it can be made again.
+    std::fs::remove_file(&made).unwrap();
+    let text = h.ok(json!({ "method": "status" }))["text"].as_str().unwrap().to_string();
+    assert!(text.contains("none of the 2"), "{text}");
+    h.sent.lock().unwrap().clear();
+    let again = h.ok(json!({ "method": "make_proxies", "media_ids": [a.0.to_string()] }));
+    assert_eq!((&again["making"], &again["ready"]), (&json!(1), &json!(0)), "{again}");
+    assert!(h.sent.lock().unwrap().iter().any(|c| matches!(c, klipp_core::AppCommand::GenerateProxy { media_id } if *media_id == a)));
 
     // A still has no moving picture to make a proxy of.
     let still = {

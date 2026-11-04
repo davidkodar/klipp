@@ -13,7 +13,7 @@ fn proxy_line(ctx: &ControlContext) -> serde_json::Value {
     let pool = ctx.media_pool.read().recovered();
     let (videos, ready) = {
         let videos: Vec<&klipp_media::MediaItem> = shown.iter().filter_map(|id| pool.get(id)).filter(|m| !m.video_codec.is_empty() && !m.is_still).collect();
-        (videos.len(), videos.iter().filter(|m| m.proxy_ready).count())
+        (videos.len(), videos.iter().filter(|m| m.proxy_on_disk()).count())
     };
     let making = status.making.len();
     let text = match (status.use_proxies, ready) {
