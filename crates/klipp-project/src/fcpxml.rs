@@ -308,10 +308,13 @@ impl ClipXml<'_> {
                 if (sound_track || !linked_sound) && clip.volume_keyframes.is_empty() && (clip.volume - 1.0).abs() > 1e-6 && clip.volume > 0.0 {
                     body.push_str(&format!("<adjust-volume amount=\"{:.2}dB\"/>\n", 20.0 * f64::from(clip.volume).log10()));
                 }
+                // FCPXML times are a whole or a rational number of seconds:
+                // "2.500s" was refused when read back, and the marker lost.
                 for marker in &clip.clip_markers {
+                    let start = RationalTime::from_secs_f64(clip.source_in.to_secs_f64() + marker.time_secs, fps.num);
                     body.push_str(&format!(
-                        "<marker start=\"{}s\" duration=\"1/{}s\" value=\"{}\"/>\n",
-                        format_decimal(clip.source_in.to_secs_f64() + marker.time_secs), fps.num, escape_xml(&marker.name)
+                        "<marker start=\"{}\" duration=\"1/{}s\" value=\"{}\"/>\n",
+                        tc_str(start, fps), fps.num, escape_xml(&marker.name)
                     ));
                 }
                 let mut left = Vec::new();
@@ -527,14 +530,6 @@ fn fps_display(fps: &klipp_core::Fps) -> String {
         format!("{}", rate.round() as u32)
     } else {
         format!("{:.2}", rate)
-    }
-}
-
-fn format_decimal(secs: f64) -> String {
-    if secs == secs.floor() {
-        format!("{}", secs as i64)
-    } else {
-        format!("{:.3}", secs)
     }
 }
 
@@ -1082,9 +1077,14 @@ mod tests {
 
         // Clip markers are children of asset-clip (not self-closing)
         assert!(xml.contains("<asset-clip"));
-        assert!(xml.contains("<marker start=\"1s\" duration=\"1/24s\" value=\"Beat Drop\"/>"));
-        assert!(xml.contains("<marker start=\"2.500s\" duration=\"1/24s\" value=\"Cut Here\"/>"));
+        assert!(xml.contains("<marker start=\"24/24s\" duration=\"1/24s\" value=\"Beat Drop\"/>"), "{xml}");
+        assert!(xml.contains("<marker start=\"60/24s\" duration=\"1/24s\" value=\"Cut Here\"/>"), "{xml}");
         assert!(xml.contains("</asset-clip>"));
+        // Both come back, where they were: the one at 2.5 s was written
+        // "2.500s", which FCPXML does not allow, and left out on reading.
+        let back = crate::fcpxml_import::parse_fcpxml(&xml).unwrap();
+        let marks: Vec<(String, f64)> = back.sequence.tracks.iter().flat_map(|t| &t.clips).flat_map(|c| &c.clip_markers).map(|m| (m.name.clone(), m.time_secs)).collect();
+        assert_eq!(marks, [("Beat Drop".to_string(), 1.0), ("Cut Here".to_string(), 2.5)]);
     }
 
     #[test]
