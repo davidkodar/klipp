@@ -531,6 +531,9 @@ pub fn show_content(
 
     // ── Effect cards ──
     let mut remove_idx = None;
+    // An effect moved up or down the chain: (from, to).
+    let mut move_to: Option<(usize, usize)> = None;
+    let count = audio_effects.len();
     for (idx, inst) in audio_effects.iter().enumerate() {
         // LADSPA lookup — avoid dlopen-per-frame by short-circuiting on the
         // "ladspa:" prefix and resolving the display name from the discovery
@@ -620,6 +623,14 @@ pub fn show_content(
                     }
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        // Down and up the chain: the order the sound goes
+                        // through them, as the list reads.
+                        if ui.add_enabled(idx + 1 < count, egui::Button::new(egui::RichText::new("\u{2193}").size(10.0)).small().frame(false)).on_hover_text("Move down the chain").clicked() {
+                            move_to = Some((idx, idx + 1));
+                        }
+                        if ui.add_enabled(idx > 0, egui::Button::new(egui::RichText::new("\u{2191}").size(10.0)).small().frame(false)).on_hover_text("Move up the chain").clicked() {
+                            move_to = Some((idx, idx - 1));
+                        }
                         // Remove button
                         let rm_resp = ui.add(
                             egui::Label::new(
@@ -885,6 +896,9 @@ pub fn show_content(
             clip_id,
             effect_index: idx,
         });
+    }
+    if let Some((from_index, to_index)) = move_to {
+        cmds.push(AppCommand::ReorderAudioEffect { clip_id, from_index, to_index });
     }
 }
 
@@ -1539,5 +1553,35 @@ mod helper_tests {
         assert_eq!(audio_kf_eval(&map, 0, "__bypass", 0.5, 1.0, 0.0), 0.0);
         // After second kf: 1.0
         assert_eq!(audio_kf_eval(&map, 0, "__bypass", 1.5, 0.0, 0.0), 1.0);
+    }
+}
+
+#[cfg(test)]
+mod chain_order_tests {
+    use super::*;
+    use crate::inspector::rows::test_frame::{click, frame};
+
+    /// An effect moves up or down its clip's chain from its row: the
+    /// first can only go down, the last only up, each one place.
+    #[test]
+    fn an_effect_row_moves_it_up_or_down_the_chain() {
+        let ctx = egui::Context::default();
+        crate::icons::install(&ctx);
+        let fx = |name: &str| AudioEffectInstance { effect_type: name.into(), enabled: true, wet_dry: 1.0, params: Vec::new() };
+        let chain = vec![fx("eq"), fx("compressor")];
+        let clip_id = ClipId::new();
+        let keys = HashMap::new();
+        let mut d = |ui: &mut egui::Ui, theme: &KlippTheme, cmds: &mut Vec<AppCommand>| show_content(ui, theme, clip_id, &chain, &keys, 0.0, 0.0, 25, &[], cmds, 0.02);
+        let (texts, _) = frame(&ctx, Vec::new(), &mut d);
+        let at = |label: &str| texts.iter().filter(|(t, _)| t == label).map(|(_, p)| *p).collect::<Vec<_>>();
+        let (downs, ups) = (at("\u{2193}"), at("\u{2191}"));
+        assert_eq!((downs.len(), ups.len()), (2, 2), "an up and a down on each row");
+        let moved = |cmds: &[AppCommand]| cmds.iter().find_map(|c| match c {
+            AppCommand::ReorderAudioEffect { from_index, to_index, .. } => Some((*from_index, *to_index)),
+            _ => None,
+        });
+        assert_eq!(moved(&click(&ctx, downs[0], &mut d)), Some((0, 1)), "the first moves down");
+        assert_eq!(moved(&click(&ctx, ups[1], &mut d)), Some((1, 0)), "the last moves up");
+        assert_eq!(moved(&click(&ctx, ups[0], &mut d)), None, "the first has nowhere up to go");
     }
 }

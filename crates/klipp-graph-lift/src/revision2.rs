@@ -218,8 +218,14 @@ pub type StoredPictures<'a> = &'a dyn Fn(&str, &str) -> Option<(ClipPicture, Vec
 
 /// [`project`], taking each clip's picture from `stored` where it has one.
 pub fn project_with(raw: &Value, stored: StoredPictures<'_>) -> Result<(Value, Vec<LiftNote>), String> {
+    project_taking(raw.clone(), stored)
+}
+
+/// [`project_with`], converting `copy` where it is rather than a copy of
+/// it: a large project's tree is gigabytes, and a save holds no other use
+/// for it.
+pub fn project_taking(mut copy: Value, stored: StoredPictures<'_>) -> Result<(Value, Vec<LiftNote>), String> {
     let mut notes = Vec::new();
-    let mut copy = raw.clone();
     for seq in sequences_mut(&mut copy).map_err(err)? {
         notes.extend(cross_group_wireless(seq));
         let lifted = lift_sequence(seq, &mut notes, stored)?;
@@ -326,5 +332,21 @@ pub fn is_lost(note: &LiftNote) -> bool {
         | LiftNote::EdgeDropped { .. }
         | LiftNote::EdgeRewired { .. }
         | LiftNote::CrossGroupWireless { .. } => false,
+    }
+}
+
+#[cfg(test)]
+mod project_taking_tests {
+    use super::*;
+
+    /// Converting a project in place gives what converting a copy gives.
+    #[test]
+    fn a_project_converted_in_place_is_the_one_converted_from_a_copy() {
+        let raw = json!({ "sequences": [{ "id": "00000000-0000-0000-0000-000000000001", "tracks": [] }] });
+        let (copied, copied_notes) = project_with(&raw, &|_, _| None).unwrap();
+        let (taken, taken_notes) = project_taking(raw, &|_, _| None).unwrap();
+        assert_eq!(copied, taken);
+        assert_eq!(format!("{copied_notes:?}"), format!("{taken_notes:?}"));
+        assert_eq!(taken["format_revision"], PROJECT_REVISION);
     }
 }

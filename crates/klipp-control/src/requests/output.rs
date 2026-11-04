@@ -353,7 +353,9 @@ pub(crate) fn respond(
                 "true_peak_dbtp": settings.target_lufs.map(|_| settings.true_peak_dbtp.unwrap_or(-1.0)),
                 // The size it is encoded at: an odd side is rounded down,
                 // as 4:2:0 video needs (hunt #2), and said so.
-                "size": settings.resolution.map(|r| {
+                // A sound-only file has no picture: no size, speed, rate
+                // or depth of one, which it was said to have.
+                "size": settings.resolution.filter(|_| !settings.format.is_audio_only()).map(|r| {
                     let (w, h) = settings.output_size(r.width, r.height);
                     if (w, h) == (r.width, r.height) { format!("{w}x{h}") } else { format!("{w}x{h} (rounded down to even from {}x{})", r.width, r.height) }
                 }),
@@ -366,12 +368,13 @@ pub(crate) fn respond(
                 "preset": preset_name,
                 // The speed used: as asked, else the preset's own, else
                 // medium; none for an encoder that has none.
-                "encoder_speed": speed_ignored(&settings).is_none().then(|| settings.preset.ffmpeg_value()),
-                "rate": match (settings.rate_control, settings.video_bitrate_kbps) {
+                "encoder_speed": (speed_ignored(&settings).is_none() && !settings.format.is_audio_only()).then(|| settings.preset.ffmpeg_value()),
+                "rate": (!settings.format.is_audio_only()).then(|| match (settings.rate_control, settings.video_bitrate_kbps) {
                     (klipp_core::RateControl::Crf, _) | (_, None) => format!("crf {}", settings.crf),
                     (_, Some(kbps)) => format!("{kbps} kbps"),
-                },
-                "bit_depth": if settings.bit_depth == 10 { 10 } else { 8 },
+                }),
+                "bit_depth": (!settings.format.is_audio_only()).then_some(if settings.bit_depth == 10 { 10 } else { 8 }),
+                "audio": settings.audio_codec.described(settings.audio_bitrate_kbps),
             });
             let burnt = !has_captions || said["captions_burnt_in"].as_bool().unwrap_or(true) || said["captions_embedded"].as_bool().unwrap_or(false);
             let known_jobs: std::collections::HashSet<String> = ctx.shared.exports.lock().unwrap_or_else(|e| e.into_inner())
@@ -456,12 +459,40 @@ pub(crate) fn respond(
                 }
             }
             // A file a subtitle track when there are several (#2223).
-            let files = {
+            // An EBU-STL file's character table, and what it has no form
+            // for (written as "?"): said, never left to be found.
+            let (files, tables) = {
                 let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
-                klipp_document::subtitle_export::files(&seq, &p)
+                let files = klipp_document::subtitle_export::files(&seq, &p);
+                let tables: Vec<Option<(&'static str, Vec<char>)>> = files
+                    .iter()
+                    .map(|f| {
+                        (ext == "stl").then(|| {
+                            let texts: Vec<String> = f.tracks.iter().flat_map(|&i| &seq.tracks[i].clips).filter_map(|c| c.title_data().map(|td| td.text())).chain([seq.name.clone()]).collect();
+                            let (table, lost) = klipp_captions::stl::character_table(texts.iter().map(String::as_str));
+                            (table.name(), lost)
+                        })
+                    })
+                    .collect();
+                (files, tables)
             };
             let mut v = send(AppCommand::ExportSubtitles { path: p })?;
-            v["files"] = json!(files.iter().map(|f| json!({ "path": f.path.display().to_string(), "tracks": f.tracks, "language": f.language })).collect::<Vec<_>>());
+            v["files"] = json!(files
+                .iter()
+                .zip(&tables)
+                .map(|(f, t)| {
+                    let mut file = json!({ "path": f.path.display().to_string(), "tracks": f.tracks, "language": f.language });
+                    if let Some((table, lost)) = t {
+                        file["character_table"] = json!(table);
+                        file["not_written"] = json!(lost.iter().map(|c| c.to_string()).collect::<Vec<_>>());
+                    }
+                    file
+                })
+                .collect::<Vec<_>>());
+            let lost: usize = tables.iter().flatten().map(|(_, l)| l.len()).sum();
+            if lost > 0 {
+                v["warning"] = json!(format!("EBU-STL has no character table for {lost} character(s) of these captions (not_written in each file): they are written as \"?\""));
+            }
             Ok(v)
         }
 
