@@ -371,6 +371,7 @@ pub(crate) fn list_clips(seq: &klipp_timeline::Sequence, pool: &klipp_media::Med
             surfaces_json(c, fps, &mut v);
             water_json(seq, c, &mut v);
             sound_json(seq, c, true, &mut v);
+            multicam_json(c, &mut v);
             return v;
         }
         let mut v = json!({
@@ -397,6 +398,7 @@ pub(crate) fn list_clips(seq: &klipp_timeline::Sequence, pool: &klipp_media::Med
         if let Some(id) = c.media_id() {
             v["media_id"] = json!(id.0.to_string());
         }
+        multicam_json(c, &mut v);
         if (c.speed - 1.0).abs() > 1e-6 {
             v["speed"] = json!(c.speed);
         }
@@ -557,11 +559,26 @@ pub(crate) fn sound_json(seq: &klipp_timeline::Sequence, c: &klipp_timeline::Cli
     }
 }
 
-/// A clip's tracked surfaces and what it is pinned to (#684), on its
-/// readout: each surface's id and name, the timeline stretch the track
-/// covers, which is where a pin follows it, and the stretches followed
-/// uncertainly (`low`) or not at all (`lost`, the last good place held)
-/// with the mean confidence and the times of corrections set by hand
+/// A clip's multicam group, on its readout: the group, the angle the clip
+/// is (counted from 1, as switch_angle takes it) and, on the clip that
+/// holds them, the cuts (timeline seconds, the angle cut to) and whose
+/// sound the group plays ("2", "follow" or "off", as set_multicam_sound
+/// takes it). It said nothing of a group, so a cut could not be read back.
+pub(crate) fn multicam_json(c: &klipp_timeline::Clip, v: &mut serde_json::Value) {
+    let Some(group) = c.multicam_group else { return };
+    let mut m = json!({ "group": group.to_string(), "angle": u32::from(c.multicam_angle) + 1 });
+    if !c.multicam_cuts.is_empty() {
+        let start = c.timeline_in.to_secs_f64();
+        m["cuts"] = json!(c.multicam_cuts.iter().map(|&(at, angle)| json!({ "at_secs": ((start + at) * 1000.0).round() / 1000.0, "angle": u32::from(angle) + 1 })).collect::<Vec<_>>());
+        m["sound"] = json!(match c.multicam_sound {
+            klipp_core::MulticamSound::Angle(a) => (u32::from(a) + 1).to_string(),
+            klipp_core::MulticamSound::FollowPicture => "follow".to_string(),
+            klipp_core::MulticamSound::Off => "off".to_string(),
+        });
+    }
+    v["multicam"] = m;
+}
+
 /// A clip's reflection's water (#2795), on its readout: the colour
 /// measured under it, whether the tint and darkness follow it, and whether
 /// the measurement is for footage, a range or a waterline that has since
@@ -578,6 +595,11 @@ pub(crate) fn water_json(seq: &klipp_timeline::Sequence, c: &klipp_timeline::Cli
     });
 }
 
+/// A clip's tracked surfaces and what it is pinned to (#684), on its
+/// readout: each surface's id and name, the timeline stretch the track
+/// covers, which is where a pin follows it, and the stretches followed
+/// uncertainly (`low`) or not at all (`lost`, the last good place held)
+/// with the mean confidence and the times of corrections set by hand
 /// (#2754).
 pub(crate) fn surfaces_json(c: &klipp_timeline::Clip, fps: f64, v: &mut serde_json::Value) {
     let on_timeline = |src: f64| ((c.timeline_in.to_secs_f64() + c.elapsed_for_source_secs(src, fps)) * 1000.0).round() / 1000.0;
@@ -696,6 +718,42 @@ mod tests {
         let text = timeline_text(&seq, &pool, None, 1, TimelineView::default());
         assert!(text.contains("Aux buses: [0] \"Verb\" -6.0 dB, to \"Delay\"; [1] \"Delay\" +0.0 dB, to master."), "{text}");
         assert!(text.contains("sends to: \"Verb\" +0.0 dB pre-fader"), "{text}");
+    }
+
+    /// A multicam group's angles say they are one, which angle each is
+    /// (from 1, as switch_angle takes it), and the clip holding the cuts
+    /// gives them on the timeline and whose sound plays, in both forms.
+    /// The readout said nothing of a group.
+    #[test]
+    fn a_multicam_group_lists_its_angles_cuts_and_sound() {
+        let tc = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 25);
+        let media = klipp_core::MediaId::new();
+        let group = klipp_core::GroupId::new();
+        let mut first = klipp_timeline::Clip::media(media, tc(2.0), tc(10.0), tc(0.0), tc(8.0));
+        (first.multicam_group, first.multicam_angle) = (Some(group), 0);
+        first.multicam_cuts = vec![(1.0, 1), (3.5, 0)];
+        first.multicam_sound = klipp_core::MulticamSound::FollowPicture;
+        let mut second = klipp_timeline::Clip::media(media, tc(2.0), tc(10.0), tc(0.0), tc(8.0));
+        (second.multicam_group, second.multicam_angle) = (Some(group), 1);
+        let lone = klipp_timeline::Clip::media(media, tc(10.0), tc(12.0), tc(0.0), tc(2.0));
+        let mut v1 = klipp_timeline::Track::new("Video 1", klipp_timeline::TrackKind::Video);
+        v1.clips = vec![first, lone];
+        let mut v2 = klipp_timeline::Track::new("Video 2", klipp_timeline::TrackKind::Video);
+        v2.clips = vec![second];
+        let mut seq = klipp_timeline::Sequence::new_default();
+        seq.tracks = vec![v2, v1];
+        let pool = klipp_media::MediaPool::new();
+        for full in [false, true] {
+            let v = list_clips(&seq, &pool, 0, &ClipFilter { full, track: None, from_secs: None, to_secs: None, media_id: None }).unwrap();
+            let (angle2, angle1, lone) = (&v["tracks"][0]["clips"][0]["multicam"], &v["tracks"][1]["clips"][0]["multicam"], &v["tracks"][1]["clips"][1]);
+            assert_eq!(angle1["group"].as_str(), Some(group.to_string().as_str()), "full {full}: {angle1}");
+            assert_eq!(angle2["group"], angle1["group"]);
+            assert_eq!((angle1["angle"].as_u64(), angle2["angle"].as_u64()), (Some(1), Some(2)));
+            assert_eq!(angle1["cuts"], serde_json::json!([{ "at_secs": 3.0, "angle": 2 }, { "at_secs": 5.5, "angle": 1 }]), "on the timeline, angles from 1");
+            assert_eq!(angle1["sound"].as_str(), Some("follow"));
+            assert!(angle2.get("cuts").is_none() && angle2.get("sound").is_none(), "the cuts are the first angle's: {angle2}");
+            assert!(lone.get("multicam").is_none(), "a clip outside a group says nothing of one: {lone}");
+        }
     }
 
     /// #2430: a caption's or title's words come back whole, with their
