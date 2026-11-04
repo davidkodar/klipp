@@ -1731,6 +1731,14 @@ fn export_takes_a_preset_a_codec_and_a_bitrate() {
     let (r, _) = sent(&mut h, json!({ "method": "export", "path": "/tmp/klipp-codec-sound.mp3", "preset": "Audio Only MP3" }));
     assert!(r["export"]["video_codec"].is_null(), "{r}");
     assert_eq!(r["export"]["audio_codec"], "MP3", "{r}");
+    // Nor a picture's rate, depth, speed or size; a WAV says the rate its
+    // PCM is written at, not the bitrate setting it never uses.
+    for key in ["rate", "bit_depth", "encoder_speed", "size"] {
+        assert!(r["export"][key].is_null(), "{key}: {r}");
+    }
+    let (r, _) = sent(&mut h, json!({ "method": "export", "path": "/tmp/klipp-codec-sound.wav" }));
+    assert!(r["export"]["rate"].is_null() && r["export"]["bit_depth"].is_null(), "{r}");
+    assert_eq!(r["export"]["audio"], "PCM 16-bit (WAV) 1536 kbps", "{r}");
 
     // Refused, and nothing sent.
     for (req, why) in [
@@ -4410,6 +4418,33 @@ fn subtitles_import_over_the_socket_and_export_in_the_format_asked() {
         assert!(r["error"].as_str().unwrap().contains(why), "{req}: {r}");
     }
     assert!(h.cmd_rx.try_recv().is_err(), "a refused call sends nothing");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// An EBU-STL export says the character table it writes in, and names
+/// what no table holds (Chinese here, written as "?"), never leaving the
+/// "?" to be found; a file STL holds whole says nothing is lost.
+#[test]
+fn an_stl_export_names_what_it_cannot_write() {
+    let mut h = harness();
+    let dir = std::env::temp_dir().join(format!("klipp-stl-loss-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let caption = |text: &str| {
+        let mut c = klipp_timeline::Clip::gap(klipp_core::Timecode::from_secs_f64(1.0, 24), klipp_core::Timecode::from_secs_f64(2.0, 24));
+        c.kind = klipp_timeline::ClipKind::Title(klipp_timeline::TitleData::single_text(klipp_timeline::TextBox { text: text.into(), ..Default::default() }));
+        c
+    };
+    let mut subs = klipp_timeline::Track::new("S1", klipp_timeline::TrackKind::Subtitle);
+    subs.clips = vec![caption("Привет, мир")];
+    h.sequence.write().unwrap().tracks.push(subs.clone());
+    let r = h.ok(json!({ "method": "export_subtitles", "path": dir.join("ru.stl").to_str().unwrap() }));
+    let _ = h.cmd_rx.recv_timeout(std::time::Duration::from_secs(5));
+    assert_eq!((r["files"][0]["character_table"].clone(), r["files"][0]["not_written"].clone(), r.get("warning").cloned()), (json!("Latin/Cyrillic"), json!([]), None), "{r}");
+    h.sequence.write().unwrap().tracks.last_mut().unwrap().clips = vec![caption("你好 world")];
+    let r = h.ok(json!({ "method": "export_subtitles", "path": dir.join("zh.stl").to_str().unwrap() }));
+    let _ = h.cmd_rx.recv_timeout(std::time::Duration::from_secs(5));
+    assert_eq!(r["files"][0]["not_written"], json!(["你", "好"]), "{r}");
+    assert!(r["warning"].as_str().is_some_and(|w| w.contains("2 character")), "{r}");
     let _ = std::fs::remove_dir_all(&dir);
 }
 

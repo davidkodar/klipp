@@ -348,48 +348,14 @@ impl KlippApp {
                         self.state.colour_clip_picked();
                     }
                     if let Some(clip_id) = *id {
-                        let seq = &self.state.sequences[self.state.active_sequence_idx];
-                        let title = seq.tracks.iter()
-                            .find_map(|t| t.clips.iter().find(|c| c.id == clip_id))
-                            .filter(|c| c.title_data().is_some());
-                        if let Some(clip) = title {
-                            // The viewer shows a title only where the engine
-                            // draws it, at the playhead. Selecting one the
-                            // playhead is outside of brings the playhead to
-                            // it, so edits to it can be seen. Only on the
-                            // selection itself: moving the playhead away
-                            // afterwards is left alone.
-                            let seek = newly_selected
-                                .then(|| title_seek_on_select(clip, self.state.playhead, seq.fps.rate()))
-                                .flatten();
-                            if let Some(t) = seek {
-                                let _ = self.cmd_tx.send(AppCommand::SeekTo(t));
-                            }
+                        // Where the selection takes the playhead, if anywhere
+                        // ([`AppState::seek_on_select`]): only on the
+                        // selection itself, moving it away after is left alone.
+                        if let Some(t) = newly_selected.then(|| self.state.seek_on_select(clip_id)).flatten() {
+                            let _ = self.cmd_tx.send(AppCommand::SeekTo(t));
+                        }
+                        if self.state.sequence().all_clips().any(|c| c.id == clip_id && c.title_data().is_some()) {
                             self.render_title_to_viewer(clip_id);
-                        } else if newly_selected
-                            && self.state.active_workspace == crate::state::Workspace::Color
-                        {
-                            // On the Colour page the viewer and the scopes
-                            // must show the shot whose grade the panel is
-                            // editing. Selecting a clip the playhead is not
-                            // in brings the playhead to it.
-                            let picture = seq.tracks.iter()
-                                .filter(|t| matches!(t.kind, klipp_timeline::TrackKind::Video))
-                                .find_map(|t| t.clips.iter().find(|c| c.id == clip_id));
-                            let seek = picture.and_then(|clip| {
-                                colour_seek_on_select(clip, self.state.playhead, self.graded_positions.get(&clip_id).copied())
-                            });
-                            if let Some(t) = seek {
-                                self.state.playhead = t;
-                                self.state.playhead_smooth_secs = t.to_secs_f64();
-                                self.state.playhead_anchor = t;
-                                self.state.playhead_anchor_wall = std::time::Instant::now();
-                                // The follow below must not re-pick the
-                                // clip from this position: a clip under a
-                                // higher track would lose the selection.
-                                self.last_graded_playhead = Some(t);
-                                let _ = self.cmd_tx.send(AppCommand::SeekTo(t));
-                            }
                         }
                     } else {
                         // Deselecting — clear title overlay if not in edit mode
