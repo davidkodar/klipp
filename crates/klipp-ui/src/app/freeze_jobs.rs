@@ -192,6 +192,15 @@ impl FreezeJobs {
         out
     }
 
+    /// Whether a frame is wanted soon even with nothing else to draw: a
+    /// change is holding still before its jobs start, the store is opening,
+    /// or a job runs whose progress and end are only seen on a frame. Without
+    /// one an idle window would start no job until the next input.
+    fn wants_frames(&self, inputs: &Inputs) -> bool {
+        let waiting = !inputs.tracks.is_empty() && self.started_for.as_ref() != Some(inputs);
+        waiting || self.opening.is_some() || !self.jobs.is_empty()
+    }
+
     /// Open the store in `folder` on a thread of its own; [`Self::tick`]
     /// takes it once it's open.
     fn open_store(&mut self, folder: PathBuf, cap: u64) {
@@ -276,7 +285,7 @@ impl KlippApp {
     /// Keep the frozen tracks' frames drawn and the engine told (see the
     /// module's doc). Called every frame; costs a walk over the tracks
     /// while nothing changes.
-    pub(super) fn keep_frozen_tracks(&mut self) {
+    pub(super) fn keep_frozen_tracks(&mut self, ctx: &egui::Context) {
         // Frozen as the project says; drawn from the copy the engine plays,
         // whose tracks are the same.
         let seq = self.sequence.snapshot();
@@ -327,6 +336,9 @@ impl KlippApp {
             self.cap_for_frozen(inputs.folder.as_deref());
         }
         klipp_engine::freeze::set_statuses(self.freeze_jobs.statuses.clone());
+        if self.freeze_jobs.wants_frames(&inputs) {
+            ctx.request_repaint_after(Duration::from_millis(100));
+        }
     }
 
     fn start_freeze_jobs(&mut self, seq: &klipp_timeline::Sequence, inputs: &Inputs) {
@@ -838,6 +850,27 @@ mod tests {
         edit_freezable_track(&mut state, &shared, &queue, id, |t| t.set_frozen(true));
         clear_frozen_tracks(&mut state, &shared, &queue, klipp_timeline::TrackKind::Video);
         assert_eq!(read(&shared), (false, false), "cleared, live and unlocked");
+    }
+
+    /// A freeze doesn't wait for input: frames are wanted while its change
+    /// holds still and until its job has started, then no more.
+    #[test]
+    fn an_idle_window_keeps_looking_until_the_jobs_start() {
+        let shared = klipp_timeline::SharedSequence::new(klipp_timeline::Sequence::new_default());
+        let mut fj = FreezeJobs::default();
+        let a = inputs(None, revision(&shared), vec![TrackId::new()]);
+        let t0 = Instant::now();
+        assert!(fj.wants_frames(&a), "nothing started for it yet");
+        assert!(!fj.tick(&a, t0).start);
+        assert!(fj.wants_frames(&a), "holding still, so the next look must come");
+        assert!(fj.tick(&a, t0 + SETTLE * 2).start);
+        assert!(!fj.wants_frames(&a), "started, with no job left: nothing to look for");
+        // Nothing frozen in a project whose store isn't open starts nothing,
+        // ever, so it can't be waited for.
+        let none = inputs(Some("/p/cache"), revision(&shared), Vec::new());
+        assert!(!fj.tick(&none, t0 + SETTLE * 4).start);
+        assert!(!fj.tick(&none, t0 + SETTLE * 8).start);
+        assert!(!fj.wants_frames(&none), "no frames asked for while nothing is frozen");
     }
 
     /// A project whose cache, or the folder cleared in it, is a link to
