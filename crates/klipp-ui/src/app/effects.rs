@@ -320,7 +320,7 @@ impl KlippApp {
                     .map(crate::history::AudioChainSnapshot::from_clip);
                 // Its keyframes with it: they are kept by its place.
                 let mut moved = old_state.clone();
-                if !moved.as_mut().is_some_and(|m| m.move_effect(*from_index, *to_index)) {
+                if !moved.as_mut().is_some_and(|m| m.reorder_effect(*from_index, *to_index)) {
                     return true;
                 }
                 if let (Some(clip), Some(moved)) = (self.state.sequences[self.state.active_sequence_idx].all_clips_mut().find(|c| c.id == *clip_id), &moved) {

@@ -46,7 +46,7 @@ impl AudioChainSnapshot {
     /// it, and its keyframes with it: they are kept by the effect's place
     /// ("2:threshold"), so each is renumbered as its effect moves. `false`
     /// for a place past the chain.
-    pub fn move_effect(&mut self, from: usize, to: usize) -> bool {
+    pub fn reorder_effect(&mut self, from: usize, to: usize) -> bool {
         let n = self.audio_effects.len();
         if from >= n || to >= n {
             return false;
@@ -72,7 +72,7 @@ impl AudioChainSnapshot {
 }
 
 #[cfg(test)]
-mod move_effect_tests {
+mod reorder_effect_tests {
     use super::AudioChainSnapshot;
 
     /// An effect moved takes its keyframes, and the ones it passes keep
@@ -86,14 +86,14 @@ mod move_effect_tests {
             audio_effects: vec![fx("eq"), fx("compressor"), fx("limiter")],
             audio_effect_keyframes: [("0:band1_gain".to_string(), key(1.0)), ("1:threshold".to_string(), key(2.0)), ("2:__bypass".to_string(), key(3.0))].into_iter().collect(),
         };
-        assert!(s.move_effect(0, 2));
+        assert!(s.reorder_effect(0, 2));
         assert_eq!(s.audio_effects.iter().map(|e| e.effect_type.as_str()).collect::<Vec<_>>(), ["compressor", "limiter", "eq"]);
         let value = |s: &AudioChainSnapshot, k: &str| s.audio_effect_keyframes.get(k).map(|v| v[0].value);
         assert_eq!((value(&s, "2:band1_gain"), value(&s, "0:threshold"), value(&s, "1:__bypass")), (Some(1.0), Some(2.0), Some(3.0)));
-        assert!(s.move_effect(2, 0), "and back");
+        assert!(s.reorder_effect(2, 0), "and back");
         assert_eq!(s.audio_effects[0].effect_type, "eq");
         assert_eq!((value(&s, "0:band1_gain"), value(&s, "1:threshold"), value(&s, "2:__bypass")), (Some(1.0), Some(2.0), Some(3.0)));
-        assert!(!s.move_effect(0, 3), "past the chain");
+        assert!(!s.reorder_effect(0, 3), "past the chain");
     }
 }
 

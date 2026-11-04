@@ -20272,18 +20272,22 @@ fn track_effects_menu(ui: &mut egui::Ui, track: &klipp_timeline::Track, cmds: &m
         if fx.is_empty() {
             ui.label(egui::RichText::new("On every clip of the track, after its own").weak());
         }
-        let row = |ui: &mut egui::Ui, name: String, on: bool, audio: bool, index: usize, count: usize, cmds: &mut Vec<AppCommand>| {
+        // `chain`: an audio chain's length, its effects moved up and down
+        // it; a picture effect has no arrows.
+        let row = |ui: &mut egui::Ui, name: String, on: bool, audio: bool, index: usize, chain: Option<usize>, cmds: &mut Vec<AppCommand>| {
             ui.horizontal(|ui| {
                 let mut on = on;
                 if ui.checkbox(&mut on, name).on_hover_text("Switch it off without taking it off").changed() {
                     cmds.push(AppCommand::ToggleTrackEffect { track_id, audio, index });
                 }
                 // Up and down the chain, the order the track runs them in.
-                if ui.add_enabled(index > 0, egui::Button::new("\u{2191}").small()).on_hover_text("Move up the chain").clicked() {
-                    cmds.push(AppCommand::ReorderTrackEffect { track_id, audio, from_index: index, to_index: index - 1 });
-                }
-                if ui.add_enabled(index + 1 < count, egui::Button::new("\u{2193}").small()).on_hover_text("Move down the chain").clicked() {
-                    cmds.push(AppCommand::ReorderTrackEffect { track_id, audio, from_index: index, to_index: index + 1 });
+                if let Some(count) = chain {
+                    if ui.add_enabled(index > 0, egui::Button::new("\u{2191}").small()).on_hover_text("Move up the chain").clicked() {
+                        cmds.push(AppCommand::ReorderTrackAudioEffect { track_id, from_index: index, to_index: index - 1 });
+                    }
+                    if ui.add_enabled(index + 1 < count, egui::Button::new("\u{2193}").small()).on_hover_text("Move down the chain").clicked() {
+                        cmds.push(AppCommand::ReorderTrackAudioEffect { track_id, from_index: index, to_index: index + 1 });
+                    }
                 }
                 if ui.small_button("Remove").clicked() {
                     cmds.push(AppCommand::RemoveTrackEffect { track_id, audio, index });
@@ -20292,7 +20296,7 @@ fn track_effects_menu(ui: &mut egui::Ui, track: &klipp_timeline::Track, cmds: &m
         };
         for (k, e) in fx.video_effects().iter().enumerate() {
             let name = format!("{e:?}").split(['{', '(', ' ']).next().unwrap_or("").to_string();
-            row(ui, name, fx.video_effects_enabled().get(k).copied().unwrap_or(true), false, k, fx.video_effects().len(), cmds);
+            row(ui, name, fx.video_effects_enabled().get(k).copied().unwrap_or(true), false, k, None, cmds);
         }
         if fx.track_grade().is_some_and(|g| !g.is_identity()) {
             ui.label("Grade, after each clip's own");
@@ -20304,7 +20308,7 @@ fn track_effects_menu(ui: &mut egui::Ui, track: &klipp_timeline::Track, cmds: &m
         }
         for (k, e) in fx.audio.iter().enumerate() {
             let name = klipp_audio::dsp::available_effects().into_iter().find(|(t, _)| *t == e.effect_type).map_or(e.effect_type.clone(), |(_, n)| n.to_string());
-            row(ui, name, e.enabled, true, k, fx.audio.len(), cmds);
+            row(ui, name, e.enabled, true, k, Some(fx.audio.len()), cmds);
         }
         ui.separator();
         if picture {

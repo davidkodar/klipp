@@ -9296,7 +9296,7 @@ fn clip_audio(seq: &Sequence, pool: &MediaPool, i: usize, given: &Clip, edit: Au
     let mut what = edit_audio_chain(i, &mut new_state.audio_effects, &clip_name(seq, pool, given), &effect, &params, edit.bypass, edit.remove)?;
     if let Some((from, to)) = moved {
         // Its keyframes with it, kept by its place.
-        new_state.move_effect(from, to);
+        new_state.reorder_effect(from, to);
         what.push_str(&format!(", moved to place {to} of its chain"));
     }
     if effect == "normalize" && !edit.remove && params.iter().find(|(k, _)| k == "mode").is_none_or(|(_, v)| *v > 0.5) {
