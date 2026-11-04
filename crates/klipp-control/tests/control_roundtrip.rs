@@ -3047,6 +3047,62 @@ fn proxies_are_made_as_a_job_and_status_says_what_playback_reads() {
     assert!(refused["error"].as_str().unwrap().contains("no moving picture"), "{refused}");
 }
 
+/// Turning proxies off makes none, whatever has none yet.
+#[test]
+fn turning_proxies_off_makes_none() {
+    let mut h = harness();
+    let id = h.media_pool.write().unwrap().add(klipp_media::MediaItem::synthetic_for_test("/tmp/proxy-off.mov".into(), None));
+    {
+        let mut seq = h.sequence.write().unwrap();
+        for c in seq.tracks.iter_mut().flat_map(|t| t.clips.iter_mut()) {
+            c.kind = klipp_timeline::ClipKind::Media { media_id: id };
+        }
+    }
+    for req in [json!({ "method": "make_proxies", "use_proxies": false }), json!({ "method": "make_proxies", "use_proxies": false, "media_ids": [id.0.to_string()] })] {
+        h.sent.lock().unwrap().clear();
+        let reply = h.ok(req.clone());
+        assert_eq!(reply["making"], 0, "{req}: {reply}");
+        assert!(reply.get("job_id").is_none(), "{reply}");
+        let sent = h.sent.lock().unwrap().clone();
+        assert!(sent.iter().any(|c| matches!(c, klipp_core::AppCommand::SetUseProxies(false))), "{sent:?}");
+        assert!(!sent.iter().any(|c| matches!(c, klipp_core::AppCommand::GenerateProxy { .. })), "{sent:?}");
+    }
+}
+
+/// A proxies job's own id cancels it: the files not made yet. One whose files
+/// are all made has nothing to cancel, and says so.
+#[test]
+fn cancel_job_takes_a_proxies_job() {
+    let mut h = harness();
+    let id = h.media_pool.write().unwrap().add(klipp_media::MediaItem::synthetic_for_test("/tmp/proxy-cancel.mov".into(), None));
+    let job = h.ok(json!({ "method": "make_proxies", "media_ids": [id.0.to_string()] }))["job_id"].as_str().unwrap().to_string();
+    h.sent.lock().unwrap().clear();
+    let reply = h.ok(json!({ "method": "cancel_job", "job_id": job }));
+    assert_eq!((&reply["kind"], &reply["cancel_requested"]), (&json!("proxies"), &json!(true)), "{reply}");
+    assert!(h.sent.lock().unwrap().iter().any(|c| matches!(c, klipp_core::AppCommand::CancelProxy { media_id } if *media_id == id)));
+
+    let made = std::env::temp_dir().join(format!("klipp-proxy-cancel-{}.mp4", uuid::Uuid::new_v4()));
+    std::fs::write(&made, b"a proxy").unwrap();
+    {
+        let mut pool = h.media_pool.write().unwrap();
+        let item = pool.get_mut(&id).unwrap();
+        (item.proxy_path, item.proxy_ready) = (Some(made.clone()), true);
+    }
+    let state = |h: &mut Harness| h.ok(json!({ "method": "job_status", "job_id": job }))["jobs"][0]["state"].as_str().unwrap().to_string();
+    assert_eq!(state(&mut h), "completed");
+    let late = h.call(json!({ "method": "cancel_job", "job_id": job }));
+    assert!(late["error"].as_str().unwrap_or("").contains("have ended"), "{late}");
+
+    // The flag set and the file gone: being made again, not done.
+    std::fs::remove_file(made).unwrap();
+    assert_eq!(state(&mut h), "running");
+
+    // Stopped, it reads as failed: cancelling again has nothing to stop.
+    *h.shared.proxies.lock().unwrap() = klipp_core::ProxyStatus { use_proxies: true, making: Vec::new(), failed: vec![(id, "stopped".into())] };
+    let again = h.call(json!({ "method": "cancel_job", "job_id": job }));
+    assert!(again["error"].as_str().unwrap_or("").contains("have ended"), "{again}");
+}
+
 /// A file that is no media is refused by name and reason, forced or not, and
 /// the item and its proxy stay as they were. A media file still relinks.
 #[test]

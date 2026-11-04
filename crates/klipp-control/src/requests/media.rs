@@ -192,6 +192,11 @@ pub(crate) fn respond(
             if in_batch {
                 return Err("make_proxies starts a job; send it on its own".into());
             }
+            // Turning proxies off makes none.
+            if use_proxies == Some(false) {
+                let v = send_envelope(ctx, vec![AppCommand::SetUseProxies(false)], false)?;
+                return Ok(json!({ "accepted": v["accepted"], "applied": v["applied"], "operation_id": v["operation_id"], "made": 0, "making": 0, "text": "Playback reads the originals. No proxies were made." }));
+            }
             // The files asked for, or every picture file the timeline
             // shows; one with its proxy made already is left be.
             // The sequence read and let go before the pool is: the rest of
