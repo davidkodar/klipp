@@ -134,6 +134,7 @@ impl KlippApp {
             toolbar: ToolbarPanel { logo_texture: None },
             updates: Default::default(),
             unsaved_settled_at: None,
+            speed_key_drag: None,
             unsaved_settle_cost: std::time::Duration::ZERO,
             proxy_look: None,
             proxy_looked_at: None,

@@ -364,6 +364,8 @@ pub struct KlippApp {
     updates: crate::updates::Updates,
     /// When `dirty` was last settled into `unsaved` (#2626).
     unsaved_settled_at: Option<std::time::Instant>,
+    /// The clip and its linked clip as they were when a speed key drag began.
+    speed_key_drag: Option<Vec<klipp_timeline::Clip>>,
     /// What the last settle of a raised hint took, which sets the wait before the next.
     unsaved_settle_cost: std::time::Duration,
     /// The look for made proxies' files under way, and when the last ended.
