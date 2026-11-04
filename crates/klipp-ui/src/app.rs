@@ -366,6 +366,9 @@ pub struct KlippApp {
     updates: crate::updates::Updates,
     /// When `dirty` was last settled into `unsaved` (#2626).
     unsaved_settled_at: Option<std::time::Instant>,
+    /// The look for made proxies' files under way, and when the last ended.
+    proxy_look: Option<std::sync::mpsc::Receiver<std::collections::HashSet<MediaId>>>,
+    proxy_looked_at: Option<std::time::Instant>,
     viewer: ViewerPanel,
     title_renderer: klipp_title::TitleRenderer,
     markers: MarkersPanel,

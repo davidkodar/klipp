@@ -2,7 +2,47 @@
 
 use super::*;
 
+/// How often the made proxies' files are looked for.
+const LOOK_FOR_PROXIES_EVERY: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Those of `made` whose file is not there.
+fn proxies_gone(made: Vec<(MediaId, PathBuf)>) -> std::collections::HashSet<MediaId> {
+    made.into_iter().filter(|(_, path)| !path.exists()).map(|(id, _)| id).collect()
+}
+
+impl crate::state::AppState {
+    /// Whether to say a file's proxy is ready: made, and its file there when
+    /// last looked for.
+    pub fn proxy_shown(&self, item: &klipp_media::MediaItem) -> bool {
+        item.proxy_ready && !self.proxies_gone.contains(&item.id)
+    }
+}
+
 impl KlippApp {
+    /// Once a frame: takes the last look's answer, and every
+    /// [`LOOK_FOR_PROXIES_EVERY`] starts another, one at a time, off this
+    /// thread.
+    pub(super) fn tick_proxy_files(&mut self) {
+        if let Some(rx) = &self.proxy_look {
+            match rx.try_recv() {
+                Ok(gone) => self.state.proxies_gone = gone,
+                Err(std::sync::mpsc::TryRecvError::Empty) => return,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {}
+            }
+            self.proxy_look = None;
+            self.proxy_looked_at = Some(std::time::Instant::now());
+        }
+        if self.proxy_looked_at.is_some_and(|t| t.elapsed() < LOOK_FOR_PROXIES_EVERY) {
+            return;
+        }
+        let made: Vec<(MediaId, PathBuf)> = self.state.media_pool.all().filter(|m| m.proxy_ready).filter_map(|m| Some((m.id, m.proxy_path.clone()?))).collect();
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.proxy_look = Some(rx);
+        std::thread::spawn(move || {
+            let _ = tx.send(proxies_gone(made));
+        });
+    }
+
     pub(super) fn spawn_proxy_generation(&mut self, media_id: MediaId) {
         let item = match self.state.media_pool.get(&media_id) {
             Some(item) => item.clone(),
@@ -37,6 +77,7 @@ impl KlippApp {
                     item.proxy_path = Some(proxy_path);
                     item.proxy_ready = true;
                 }
+                self.state.proxies_gone.remove(&media_id);
                 return;
             }
             tracing::warn!(
@@ -196,6 +237,7 @@ impl KlippApp {
                         item.proxy_path = Some(path);
                         item.proxy_ready = true;
                     }
+                    self.state.proxies_gone.remove(&media_id);
                     self.sync_media_pool_to_engine();
                 }
                 AppEvent::ProxyGenerationFailed { media_id, error } => {
@@ -708,7 +750,27 @@ mod proxy_completeness_tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    use super::{own_proxy, remove_leftover_partials, transcode_is_complete};
+    use super::{own_proxy, proxies_gone, remove_leftover_partials, transcode_is_complete};
+
+    /// A proxy whose file has gone isn't said to be ready; one whose file is
+    /// there is, and one not made isn't, whatever the look found.
+    #[test]
+    fn a_proxy_is_shown_ready_only_while_its_file_is_there() {
+        let there = std::env::temp_dir().join(format!("klipp-shown-proxy-{}.mp4", uuid::Uuid::new_v4()));
+        let gone = there.with_extension("gone.mp4");
+        std::fs::write(&there, b"a proxy").unwrap();
+        let with = klipp_media::MediaItem::synthetic_for_test("/footage/a.mp4".into(), there.to_str());
+        let without = klipp_media::MediaItem::synthetic_for_test("/footage/b.mp4".into(), gone.to_str());
+        let not_made = klipp_media::MediaItem::synthetic_for_test("/footage/c.mp4".into(), None);
+        let state = crate::state::AppState {
+            proxies_gone: proxies_gone(vec![(with.id, there.clone()), (without.id, gone)]),
+            ..Default::default()
+        };
+        assert!(state.proxy_shown(&with));
+        assert!(!state.proxy_shown(&without));
+        assert!(!state.proxy_shown(&not_made));
+        std::fs::remove_file(there).unwrap();
+    }
 
     /// A partial nothing is writing goes; a finished proxy, and a partial
     /// still being written, stay.

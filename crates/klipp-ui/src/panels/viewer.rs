@@ -972,7 +972,7 @@ impl ViewerPanel {
             .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
             .find_map(|t| t.clip_at_timecode(state.playhead))
             .and_then(|(_, clip)| clip.media_id().and_then(|mid| state.media_pool.get(&mid)))
-            .map(|m| (m.resolution.width, m.resolution.height, m.proxy_ready));
+            .map(|m| (m.resolution.width, m.resolution.height, state.proxy_shown(m)));
 
         // Anything pictured at the playhead: a project just opened is
         // Idle, and its first shot may be a title, a still or a compound

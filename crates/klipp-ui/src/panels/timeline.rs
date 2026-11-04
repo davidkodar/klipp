@@ -6446,7 +6446,7 @@ impl TimelinePanel {
                 }
 
                 // Proxy badge [P] — orange pill when using proxy for this clip
-                if media.is_some_and(|m| m.proxy_ready) && state.use_proxies && clip_rect.width() > 30.0 {
+                if media.is_some_and(|m| state.proxy_shown(m)) && state.use_proxies && clip_rect.width() > 30.0 {
                     let badge_font = egui::FontId::proportional(10.0);
                     let badge_pos = egui::pos2(clip_rect.right() - 12.0, clip_rect.top() + 8.0);
                     let badge_rect = egui::Rect::from_center_size(

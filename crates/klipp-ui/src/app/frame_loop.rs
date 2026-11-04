@@ -40,6 +40,7 @@ impl KlippApp {
         self.updates.show(ctx, &mut self.prefs.general, &mut self.prefs_dirty, project_open, &mut self.state.show_about_dialog);
         self.state.update_notice_open = self.updates.holds_keys();
         self.tick_unsaved(ctx);
+        self.tick_proxy_files();
         self.state.seed_recorded_tracks();
 
         // Rotate the deferred-drop texture ring. Advance the slot and
