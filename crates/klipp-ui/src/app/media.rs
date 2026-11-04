@@ -1900,8 +1900,11 @@ impl KlippApp {
             self.state.toast.show(
                 "Save the project before consolidating.".to_string(),
             );
+            self.state.control_shared.collecting.store(false, std::sync::atomic::Ordering::SeqCst);
             return;
         };
+        // One that has ended counts as ended, drawn yet or not.
+        self.drain_consolidation();
         if self.state.consolidate_progress.is_some() {
             self.state.toast.show(
                 "Consolidation already in progress.".to_string(),
@@ -1961,6 +1964,8 @@ impl KlippApp {
         let phase2_dest = options.dest_dir.clone();
 
         let tx_progress = tx.clone();
+        let shared = self.state.control_shared.clone();
+        shared.collecting.store(true, std::sync::atomic::Ordering::SeqCst);
         std::thread::spawn(move || {
             let result = klipp_project::consolidate::consolidate_project(
                 &source_dir,
@@ -2025,6 +2030,7 @@ impl KlippApp {
                     }
                 }
             }
+            shared.collecting.store(false, std::sync::atomic::Ordering::SeqCst);
         });
     }
 }
