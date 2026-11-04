@@ -308,7 +308,10 @@ pub fn show_picker(ctx: &egui::Context, state: &mut crate::state::AppState) -> V
                     let mut name: String = ui.data_mut(|d| d.get_temp(typed)).unwrap_or_else(|| t.name.clone());
                     // Wide enough for a take's name ("Take 'Boat shot 3'"),
                     // which was cut to "Take '"; all of it on hover.
-                    let edit = ui.add(egui::TextEdit::singleline(&mut name).desired_width(240.0).id(field)).on_hover_text(t.name.clone());
+                    // Sized from outside: a field in a grid is held to its
+                    // cell, and a cell starts from the last frame's column,
+                    // so desired_width alone stayed at about 40.
+                    let edit = ui.add_sized([240.0, ui.spacing().interact_size.y], egui::TextEdit::singleline(&mut name).id(field)).on_hover_text(t.name.clone());
                     if edit.lost_focus() {
                         ui.data_mut(|d| d.remove::<String>(typed));
                         if name.trim() != t.name && !name.trim().is_empty() {
@@ -365,6 +368,34 @@ mod tests {
 
     fn t(secs: f64) -> RationalTime {
         RationalTime::from_secs_f64(secs, 24)
+    }
+
+    /// A take's name is readable in the picker, its field as wide as
+    /// asked for, not the width a grid cell starts from.
+    #[test]
+    fn a_takes_name_field_is_wide_enough_to_read() {
+        let (seq, pool, id, _) = fixture();
+        let mut state = crate::state::AppState::default();
+        state.sequences[0] = seq;
+        state.media_pool = pool;
+        let (edits, _) = plan(state.sequence(), &state.media_pool, id, &AuditionEdit::Create).unwrap();
+        let mut fps = state.fps;
+        let mut view = klipp_document::apply::DocumentView { sequences: &mut state.sequences, active: 0, media_pool: &mut state.media_pool, fps: &mut fps };
+        for e in &edits {
+            view.apply_forward(e);
+        }
+        state.audition_picker = Some(id);
+        let take = audition(state.sequence(), id).takes[0].id;
+        let ctx = egui::Context::default();
+        // Several frames: a grid's columns settle from the frame before.
+        for frame in 0..5 {
+            let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(900.0, 700.0))), time: Some(frame as f64 * 0.1), ..Default::default() };
+            let _ = ctx.run(input, |ctx| {
+                show_picker(ctx, &mut state);
+            });
+        }
+        let field = ctx.read_response(egui::Id::new(("take_name", take.to_string()))).expect("the field drawn");
+        assert!(field.rect.width() >= 240.0, "{} points wide", field.rect.width());
     }
 
     /// A sequence with a 4 s clip on its first video track, and a second

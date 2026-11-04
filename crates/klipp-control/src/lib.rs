@@ -1345,4 +1345,16 @@ mod sound_role_tests {
         seq.tracks[0].clips[0].role = RoleRef::parse("effects.ambience");
         assert_eq!(sound_role(&seq, &seq.tracks[1].clips[0]), RoleRef::parse("effects.ambience"), "set on the picture");
     }
+
+    /// A clip's audio chain reads back whole and in order, a bypassed
+    /// effect marked so; it was left out, as if taken off.
+    #[test]
+    fn a_bypassed_effect_is_listed_and_marked() {
+        let mut seq = pair();
+        let fx = |name: &str, enabled: bool| klipp_core::AudioEffectInstance { effect_type: name.into(), enabled, wet_dry: 1.0, params: Vec::new() };
+        seq.tracks[0].clips[0].audio_effects = vec![fx("compressor", false), fx("eq", true)];
+        let mut v = serde_json::json!({});
+        sound_json(&seq, &seq.tracks[1].clips[0], false, &mut v);
+        assert_eq!(v["sound"]["effects"], serde_json::json!(["compressor (bypassed)", "eq"]), "{v}");
+    }
 }

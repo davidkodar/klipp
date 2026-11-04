@@ -61,8 +61,9 @@ pub struct Encoder {
     audio_resampler: Option<ffmpeg_next::software::resampling::Context>,
     /// The encoder's actual sample format.
     audio_sample_format: Option<ffmpeg_next::format::Sample>,
-    /// Subtitle stream index (if soft subtitle embedding is enabled).
-    pub subtitle_stream_idx: Option<usize>,
+    /// The soft subtitle streams, one a subtitle track of the snapshot's
+    /// in its order (none when soft subtitles aren't embedded).
+    pub subtitle_streams: Vec<usize>,
     /// The file's transfer ([`ExportSettings::delivery`]) — drives the
     /// colour-space tags at `open()` and, for PQ, the HDR10 side data
     /// (MaxCLL/MaxFALL + mastering display) attached at `finalise()`.
@@ -178,6 +179,26 @@ fn video_encoder_attempts(
 
 /// The encoder a render on this machine tries first, and whether it is
 /// hardware.
+/// A track's language as a container's stream tags it: ISO 639-2, the
+/// bibliographic code MP4 and Matroska keep, for the languages a brief
+/// names most; any other tag as given (a muxer that can't read it writes
+/// "und"). `None` for an empty tag.
+fn stream_language(tag: &str) -> Option<String> {
+    const CODES: &[(&str, &str)] = &[
+        ("en", "eng"), ("de", "ger"), ("fr", "fre"), ("es", "spa"), ("it", "ita"), ("nl", "dut"), ("sv", "swe"), ("da", "dan"),
+        ("fi", "fin"), ("no", "nor"), ("nb", "nob"), ("nn", "nno"), ("pt", "por"), ("pl", "pol"), ("cs", "cze"), ("hu", "hun"),
+        ("ro", "rum"), ("el", "gre"), ("tr", "tur"), ("ru", "rus"), ("uk", "ukr"), ("ar", "ara"), ("he", "heb"), ("hi", "hin"),
+        ("ja", "jpn"), ("ko", "kor"), ("zh", "chi"), ("ca", "cat"), ("hr", "hrv"), ("sk", "slo"), ("sl", "slv"), ("sr", "srp"),
+        ("is", "ice"), ("et", "est"), ("lv", "lav"), ("lt", "lit"), ("ga", "gle"), ("cy", "wel"), ("eu", "baq"), ("gl", "glg"),
+    ];
+    let tag = tag.trim().to_ascii_lowercase();
+    let primary = tag.split(['-', '_']).next().unwrap_or("");
+    if primary.is_empty() {
+        return None;
+    }
+    Some(CODES.iter().find(|(two, _)| *two == primary).map_or_else(|| primary.to_string(), |(_, three)| three.to_string()))
+}
+
 #[cfg(test)]
 fn pick_video_encoder(codec: &ExportVideoCodec, width: u32, height: u32, want_10bit: bool) -> (&'static str, bool) {
     let first = video_encoder_attempts(codec, width, height, want_10bit, &crate::vaapi::encode_nodes()).remove(0);
@@ -955,7 +976,7 @@ impl Encoder {
         // SUBTITLE STREAM (optional — soft-embedded text subtitles)
         // ═══════════════════════════════════════════════════════════
 
-        let mut subtitle_stream_idx = None;
+        let mut subtitle_streams = Vec::new();
 
         // GIF can't carry subtitles — silently skip even when the
         // user toggled "embed subtitles". The dialog also greys the
@@ -1022,24 +1043,33 @@ impl Encoder {
                 .open_as(sub_codec)
                 .map_err(|e| RenderError::Encode(format!("open subtitle encoder: {e:?}")))?;
 
-            let s_idx = unsafe {
-                let stream_ptr = ffmpeg_next::ffi::avformat_new_stream(
-                    output_ctx.as_mut_ptr(),
-                    std::ptr::null(),
-                );
-                if stream_ptr.is_null() {
-                    return Err(RenderError::Encode("failed to add subtitle stream".into()));
+            // A stream a track, each tagged with its language: one stream
+            // for them all laid every track's cues over each other, and a
+            // cue under another one ended where the other began.
+            for track in &snapshot.subtitle_tracks {
+                let s_idx = unsafe {
+                    let stream_ptr = ffmpeg_next::ffi::avformat_new_stream(
+                        output_ctx.as_mut_ptr(),
+                        std::ptr::null(),
+                    );
+                    if stream_ptr.is_null() {
+                        return Err(RenderError::Encode("failed to add subtitle stream".into()));
+                    }
+                    ffmpeg_next::ffi::avcodec_parameters_from_context(
+                        (*stream_ptr).codecpar,
+                        sub_encoder.as_ptr(),
+                    );
+                    (*stream_ptr).time_base = sub_tb.into();
+                    ((*output_ctx.as_ptr()).nb_streams - 1) as usize
+                };
+                if let (Some(lang), Some(mut stream)) = (track.language.as_deref().and_then(stream_language), output_ctx.stream_mut(s_idx)) {
+                    let mut metadata = ffmpeg_next::Dictionary::new();
+                    metadata.set("language", &lang);
+                    stream.set_metadata(metadata);
                 }
-                ffmpeg_next::ffi::avcodec_parameters_from_context(
-                    (*stream_ptr).codecpar,
-                    sub_encoder.as_ptr(),
-                );
-                (*stream_ptr).time_base = sub_tb.into();
-                ((*output_ctx.as_ptr()).nb_streams - 1) as usize
-            };
-
-            subtitle_stream_idx = Some(s_idx);
-            info!("Encoder: subtitle stream {} ({:?})", s_idx, sub_codec_id);
+                subtitle_streams.push(s_idx);
+                info!("Encoder: subtitle stream {} ({:?}, {:?})", s_idx, sub_codec_id, track.language);
+            }
         }
 
         // ═══════════════════════════════════════════════════════════
@@ -1144,7 +1174,7 @@ impl Encoder {
             video_codec_name,
             frame_format: pix_fmt,
             hardware_fallback,
-            subtitle_stream_idx,
+            subtitle_streams,
             hdr_mode: settings.delivery(),
             light_stats: LightLevelStats::new(),
             hdr_peak_nits: settings.hdr_peak_nits(),
@@ -2397,7 +2427,7 @@ mod tests {
         assert_eq!((software.name, software.hardware, &software.vaapi), ("libx265", false, &None));
         let have = |name| ffmpeg_next::encoder::find_by_name(name).is_some();
         let mut expected: Vec<(&str, Option<(&str, bool)>)> = Vec::new();
-        for name in ["hevc_nvenc", "hevc_amf"].into_iter().filter(|n| have(n)) {
+        for name in ["hevc_nvenc", "hevc_amf"].into_iter().filter(|n| have(n) && encoder_can_exist_here(n)) {
             expected.push((name, None));
         }
         if have("hevc_vaapi") {
@@ -3000,3 +3030,4 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 }
+

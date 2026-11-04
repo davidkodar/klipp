@@ -1348,10 +1348,12 @@ impl NodeGraph {
             edge.to_node = id_map[&edge.to_node];
         }
         new_graph.output_node_id = id_map[&self.output_node_id];
+        // A place kept for a node the graph no longer has is not one the
+        // copy has: indexing it was a panic on pasting the grade.
         new_graph.node_positions = self
             .node_positions
             .iter()
-            .map(|(old_id, pos)| (id_map[old_id], *pos))
+            .filter_map(|(old_id, pos)| Some((*id_map.get(old_id)?, *pos)))
             .collect();
         for frame in &mut new_graph.frames {
             frame.id = NodeFrameId::new_v4();
