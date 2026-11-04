@@ -920,7 +920,10 @@ exist until the plan runs.
   words, a colour as #rrggbb, the speed as a number (1 as made), a font
   by its family's name, a picture by its file, and Duration in seconds:
   a template with a Duration lays its motion over `secs` unless one is
-  given. `klipp_title_templates` with `save` saves a title as a template.
+  given. Without `secs` a title template is held three seconds, longer
+  where its motion needs it to be seen at rest for a second (End Card's
+  slow fades take 4.5). `klipp_title_templates` with `save` saves a title
+  as a template.
   A composition template (a stack of clips saved as one, listed under
   `compositions`) places the same way, as one clip on a free video track
   (one is made on top if none has room); `fields` sets its parameters

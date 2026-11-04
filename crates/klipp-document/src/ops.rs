@@ -4703,9 +4703,9 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
         }
         Op::Template { name, at, secs: held, track, fields, data, .. } => {
             use klipp_core::TitleFieldValue as V;
-            let held = &held.unwrap_or_else(default_title_secs);
             let at = resolve_anchor(seq, fps, at, i)?;
             let td = data.as_deref().cloned().ok_or_else(|| refuse(i, format!("there is no title template \"{name}\""), "title_templates lists the built-in and saved templates"))?;
+            let held = &held.unwrap_or_else(|| template_secs(&td));
             // A built-in laid out for the sequence's frame (#2734).
             let mut td = klipp_timeline::title_library::for_frame(td, seq.resolution.width, seq.resolution.height);
             set_title_fields(&mut td, &quoted(name), fields, i)?;
@@ -12827,6 +12827,40 @@ fn default_title_secs() -> f64 {
     3.0
 }
 
+/// How long a title is seen at rest, at least, when a template is placed
+/// without a length.
+const TEMPLATE_REST_SECS: f64 = 1.0;
+
+/// How long a template `td` is held when no length is given: the usual
+/// three seconds, or longer where its motion needs it, every layer in
+/// and at rest for [`TEMPLATE_REST_SECS`] before any starts to leave. An
+/// End Card fading in over two seconds and out over one and a half never
+/// came to full strength in three.
+fn template_secs(td: &klipp_timeline::TitleData) -> f64 {
+    let units = |m: &klipp_timeline::Motion, text: &str| -> f64 {
+        let n = match m.stagger {
+            klipp_timeline::StaggerUnit::None => 1,
+            klipp_timeline::StaggerUnit::Line => text.lines().count(),
+            klipp_timeline::StaggerUnit::Word => text.split_whitespace().count(),
+            klipp_timeline::StaggerUnit::Char => text.chars().filter(|c| !c.is_whitespace()).count(),
+        };
+        n.saturating_sub(1) as f64
+    };
+    // The last unit of a motion is the last to arrive and the first to leave.
+    let span = |m: &klipp_timeline::Motion, text: &str| f64::from(m.delay_secs + m.duration_secs) + units(m, text) * f64::from(m.stagger_secs);
+    let (mut enter, mut exit) = (0.0_f64, 0.0_f64);
+    for o in &td.objects {
+        let text = match &o.content {
+            klipp_timeline::TitleObjectContent::TextBox(tb) => tb.text.as_str(),
+            _ => "",
+        };
+        let motion = o.fx().motion;
+        enter = enter.max(motion.enter.as_ref().map_or(0.0, |m| span(m, text)));
+        exit = exit.max(motion.exit.as_ref().map_or(0.0, |m| span(m, text)));
+    }
+    default_title_secs().max(enter + TEMPLATE_REST_SECS + exit)
+}
+
 /// A [`Typeset`] checked (#1686): what it sets on a text box, in the
 /// model's own terms. Runs are found in each box's text when applied.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -15391,6 +15425,41 @@ mod tests {
         assert_eq!(sv.primary_text().unwrap().language.as_deref(), Some("sv"));
         let back = restyle(&sv, &look(""), 2.0).unwrap();
         assert_eq!(back.primary_text().unwrap().language, None, "its track's again");
+    }
+
+    /// Every built-in title template placed without a length is held long
+    /// enough for its motion: each of its layers' units in and none yet
+    /// leaving for at least a second, by the motion's own progress, frame
+    /// by frame. End Card, fading in over 2 s and out over 1.5 s, never
+    /// came to full strength in the three seconds it was given.
+    #[test]
+    fn a_template_placed_without_a_length_comes_to_rest() {
+        let (seq, pool, ..) = fixture();
+        for t in klipp_timeline::title_library::TITLES.iter() {
+            let op = Op::Template { name: t.name.clone(), at: Anchor::Secs(1.0), secs: None, track: None, fields: Default::default(), source: None, kind: None, data: Some(Box::new(t.data())), composition: None };
+            let plan = resolve(&seq, &pool, &[op]).unwrap();
+            let EditCommand::AddTitleClip { clip, .. } = &plan.steps[0].edit else { panic!("a title clip") };
+            let td = clip.title_data().unwrap();
+            let window = (clip.timeline_out.to_secs_f64() - clip.timeline_in.to_secs_f64()) as f32;
+            let step = 1.0 / 240.0;
+            let at_rest = (0..(window / step) as usize).filter(|k| {
+                let time = *k as f32 * step;
+                td.objects.iter().all(|o| {
+                    let text = match &o.content { klipp_timeline::TitleObjectContent::TextBox(tb) => tb.text.clone(), _ => String::new() };
+                    let motion = o.fx().motion;
+                    let units = |m: Option<&klipp_timeline::Motion>| match m.map(|m| m.stagger) {
+                        Some(klipp_timeline::StaggerUnit::Char) => text.chars().filter(|c| !c.is_whitespace()).count(),
+                        Some(klipp_timeline::StaggerUnit::Word) => text.split_whitespace().count(),
+                        Some(klipp_timeline::StaggerUnit::Line) => text.lines().count(),
+                        _ => 1,
+                    }.max(1);
+                    (0..units(motion.enter.as_ref())).all(|u| motion.progress(time, Some(window), u).0 >= 1.0)
+                        && (0..units(motion.exit.as_ref())).all(|u| motion.progress(time, Some(window), u).1 >= 1.0)
+                })
+            }).count() as f64 * f64::from(step);
+            assert!(at_rest >= TEMPLATE_REST_SECS - 1.0 / 24.0, "{} held {window} s rests {at_rest:.2} s", t.name);
+            assert!(window as f64 >= default_title_secs() - 1e-3, "{} held {window} s, under the usual length", t.name);
+        }
     }
 
     /// #2734: a built-in template is laid out for the sequence's frame: on
