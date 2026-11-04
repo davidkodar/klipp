@@ -739,7 +739,7 @@ mod tests {
         assert_eq!(q.queued_count(), 0);
         assert!(!q.has_active_job());
         assert!(q.active_job_progress().is_none());
-        assert_eq!(q.max_parallel, 1, "one render at a time by default (P38)");
+        assert_eq!(q.max_parallel, 1, "one render at a time by default");
     }
 
     #[test]
