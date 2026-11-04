@@ -4,8 +4,8 @@
 //!
 //! Find runs `klipp_analysis::shorts::find` on the file's transcript;
 //! the list shows each moment's place, length, score, hook and why, each
-//! kept or dropped; Build sends, for each kept one, a new 1080x1920
-//! sequence and [`AppCommand::FillShort`] to fill it.
+//! kept or dropped; Build sends [`AppCommand::MakeShorts`] with the kept
+//! ones, each made a 1080x1920 sequence and all added as one undo step.
 
 use klipp_analysis::shorts::{Ask, ShortMoment};
 use klipp_core::{AppCommand, MediaId};
@@ -52,22 +52,25 @@ impl ShortsDialog {
         });
     }
 
-    /// The commands that build the kept moments, each a sequence of its
+    /// The command that makes the kept moments, each a sequence of its
     /// own named after its hook, at `fps`, its pieces cut from `words` of
     /// a file `length` seconds long, inside which they stay.
     pub fn build(&self, words: &[klipp_document::ops::SpokenWord], fps: klipp_core::Fps, length: f64) -> Vec<AppCommand> {
         let Some(Ok(found)) = &self.found else { return Vec::new() };
-        let mut cmds = Vec::new();
-        for (k, (m, _)) in found.iter().filter(|(_, keep)| *keep).enumerate() {
-            let pieces = klipp_document::shorts::pieces(words, m.from_secs, m.to_secs, length, self.tighten, crate::transcript::word_lists().ok().as_deref());
-            if pieces.is_empty() {
-                continue;
-            }
-            let hook: String = m.hook.chars().take(40).collect();
-            cmds.push(AppCommand::AddSequenceAndOpen { name: format!("Short {}: {}", k + 1, hook.trim()), fps_num: fps.num, fps_den: fps.den, width: 1080, height: 1920 });
-            cmds.push(AppCommand::FillShort { media_id: self.media_id, pieces, hook: self.hook_title.then(|| m.hook.clone()) });
+        let shorts: Vec<klipp_core::ShortAsk> = found
+            .iter()
+            .filter(|(_, keep)| *keep)
+            .map(|(m, _)| klipp_core::ShortAsk {
+                pieces: klipp_document::shorts::pieces(words, m.from_secs, m.to_secs, length, self.tighten, crate::transcript::word_lists().ok().as_deref()),
+                hook: m.hook.clone(),
+                hook_title: self.hook_title.then(|| m.hook.clone()),
+            })
+            .filter(|s| !s.pieces.is_empty())
+            .collect();
+        if shorts.is_empty() {
+            return Vec::new();
         }
-        cmds
+        vec![AppCommand::MakeShorts { media_id: self.media_id, fps_num: fps.num, fps_den: fps.den, shorts }]
     }
 
     fn kept(&self) -> usize {
@@ -158,6 +161,30 @@ pub fn show_dialog(ctx: &egui::Context, state: &mut crate::state::AppState) -> V
     Vec::new()
 }
 
+/// `shorts` of `media` built whole, each named apart from `taken` and
+/// from the others, its sound brought up or down by `gain` (linear) when
+/// given: the sequences to add together as one undo step, or why the one
+/// that could not be built was not, and none of them. Made one by one,
+/// each short was a new sequence and two undo steps that left it behind,
+/// a refused one left it empty, and every Build's first was "Short 1".
+pub fn shorts_edit(taken: &[String], fps: klipp_core::Fps, media: MediaId, shorts: &[klipp_core::ShortAsk], pool: &klipp_media::MediaPool, transcripts: &dyn klipp_document::ops::Transcripts, gain: Option<f32>) -> Result<Vec<klipp_timeline::Sequence>, String> {
+    let mut taken = taken.to_vec();
+    let mut out = Vec::new();
+    for (k, ask) in shorts.iter().enumerate() {
+        let name = klipp_document::shorts::short_name(&taken, &ask.hook);
+        taken.push(name.clone());
+        let mut short = klipp_document::shorts::build_short(&name, fps, media, &ask.pieces, ask.hook_title.as_deref(), pool, transcripts).map_err(|r| format!("short {}: {} {}", k + 1, r.why, r.hint))?;
+        if let Some(gain) = gain {
+            let sounds: Vec<klipp_core::ClipId> = short.tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Audio).flat_map(|t| &t.clips).flat_map(|c| std::iter::once(c.id).chain(c.linked_clip_id)).collect();
+            for clip in short.all_clips_mut().filter(|c| sounds.contains(&c.id)) {
+                clip.gain = gain;
+            }
+        }
+        out.push(short);
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -198,13 +225,47 @@ mod tests {
         found[1].1 = false;
         let spoken: Vec<klipp_document::ops::SpokenWord> = words.iter().map(|w| klipp_document::ops::SpokenWord { start_secs: w.start_secs, end_secs: w.end_secs, text: w.text.clone(), confidence: w.confidence }).collect();
         let cmds = d.build(&spoken, klipp_core::Fps::new(30, 1), f64::INFINITY);
-        assert!(matches!(cmds.as_slice(), [AppCommand::AddSequenceAndOpen { width: 1080, height: 1920, .. }, AppCommand::FillShort { pieces, hook: None, .. }] if !pieces.is_empty()), "{cmds:?}");
+        assert!(matches!(cmds.as_slice(), [AppCommand::MakeShorts { fps_num: 30, fps_den: 1, shorts, .. }] if shorts.len() == 1 && !shorts[0].pieces.is_empty() && shorts[0].hook_title.is_none()), "one command, the kept one: {cmds:?}");
         // A file that ends just after the moment's last word: its pieces
         // stay inside it, the tail stopping at the file's end.
         let last = found_last_end(&d, &spoken);
         let cmds = d.build(&spoken, klipp_core::Fps::new(30, 1), last + 0.05);
-        let Some(AppCommand::FillShort { pieces, .. }) = cmds.get(1) else { panic!("{cmds:?}") };
-        assert!(pieces.iter().all(|(_, b)| *b <= last + 0.05 + 1e-9), "inside the file: {pieces:?}");
+        let Some(AppCommand::MakeShorts { shorts, .. }) = cmds.first() else { panic!("{cmds:?}") };
+        assert!(shorts[0].pieces.iter().all(|(_, b)| *b <= last + 0.05 + 1e-9), "inside the file: {:?}", shorts[0].pieces);
+    }
+
+    struct Said(Vec<klipp_document::ops::SpokenWord>);
+
+    impl klipp_document::ops::Transcripts for Said {
+        fn words(&self, _: &klipp_media::MediaItem) -> Option<Vec<klipp_document::ops::SpokenWord>> {
+            Some(self.0.clone())
+        }
+    }
+
+    /// The kept shorts are built whole and handed back to be added as one
+    /// undo step: each named apart from the project's sequences and from
+    /// each other, each levelled; one that cannot be built makes none.
+    #[test]
+    fn the_kept_shorts_are_built_together_or_not_at_all() {
+        let words: Vec<klipp_document::ops::SpokenWord> = (0..20).map(|k| klipp_document::ops::SpokenWord { start_secs: 1.0 + k as f64 * 0.4, end_secs: 1.3 + k as f64 * 0.4, text: "word".into(), confidence: 0.9 }).collect();
+        let mut pool = klipp_media::MediaPool::new();
+        let mut item = klipp_media::MediaItem::synthetic_for_test("/tmp/shorts-dialog-talk.mov".into(), None);
+        item.duration = klipp_core::RationalTime::from_secs_f64(12.0, 30);
+        item.video_codec = "hevc".into();
+        item.has_audio = true;
+        let media = pool.add(item);
+        let ask = |a: f64, b: f64| klipp_core::ShortAsk { pieces: vec![(a, b)], hook: "The old town".into(), hook_title: Some("The old town".into()) };
+        let taken = vec!["Main Sequence".to_string(), "Short 1: The old town".to_string()];
+        let made = shorts_edit(&taken, klipp_core::Fps::new(30, 1), media, &[ask(1.0, 4.0), ask(5.0, 8.0)], &pool, &Said(words.clone()), Some(2.0)).unwrap();
+        let names: Vec<&str> = made.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, ["Short 2: The old town", "Short 3: The old town"]);
+        for short in &made {
+            assert_eq!((short.resolution.width, short.resolution.height), (1080, 1920));
+            let sounds: Vec<f32> = short.tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Audio).flat_map(|t| &t.clips).map(|c| c.gain).collect();
+            assert!(!sounds.is_empty() && sounds.iter().all(|g| *g == 2.0), "{}: levelled {sounds:?}", short.name);
+        }
+        let refused = shorts_edit(&taken, klipp_core::Fps::new(30, 1), media, &[ask(1.0, 4.0), ask(20.0, 25.0)], &pool, &Said(words), None);
+        assert!(refused.is_err_and(|why| why.starts_with("short 2:")), "one past its file makes none");
     }
 
     /// The end of the last word of the first kept moment.

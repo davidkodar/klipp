@@ -4718,11 +4718,13 @@ pub enum AppCommand {
 
     /// Open the Make Shorts dialog for a media file (#2720).
     OpenShortsDialog { media_id: crate::MediaId },
-    /// Fill the open sequence with a short: `pieces` of `media_id` (file
-    /// seconds) end to end, upright, framed on the speaker, every other
-    /// piece pushed in, captioned, `hook` as a title when given, its
-    /// sound brought to -14 LUFS (#2720).
-    FillShort { media_id: crate::MediaId, pieces: Vec<(f64, f64)>, hook: Option<String> },
+    /// Make shorts of `media_id` (#2720), each a sequence of its own at
+    /// `fps_num`/`fps_den`, 1080x1920: per short, its `pieces` (file
+    /// seconds) end to end, framed on the speaker, every other one pushed
+    /// in, captioned, the hook it is named after, and that hook as a title
+    /// when given; its sound brought to -14 LUFS. Every short is built
+    /// before any is added, then all are added as one undo step.
+    MakeShorts { media_id: crate::MediaId, fps_num: u32, fps_den: u32, shorts: Vec<ShortAsk> },
 
     /// Read `clip_id`'s track and fit it to about `target_secs` by whole
     /// bars, off the UI thread; [`AppCommand::MusicFitPlanned`] brings the
@@ -5926,6 +5928,16 @@ impl ControlShared {
     pub fn revision(&self) -> u64 {
         self.revision.load(std::sync::atomic::Ordering::Acquire)
     }
+}
+
+/// One short [`AppCommand::MakeShorts`] makes: its pieces of the file
+/// (seconds), the hook it is named after, and the hook as a title over
+/// its opening when one is wanted.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ShortAsk {
+    pub pieces: Vec<(f64, f64)>,
+    pub hook: String,
+    pub hook_title: Option<String>,
 }
 
 /// One render job as a client sees it.
