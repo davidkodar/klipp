@@ -1731,6 +1731,14 @@ fn export_takes_a_preset_a_codec_and_a_bitrate() {
     let (r, _) = sent(&mut h, json!({ "method": "export", "path": "/tmp/klipp-codec-sound.mp3", "preset": "Audio Only MP3" }));
     assert!(r["export"]["video_codec"].is_null(), "{r}");
     assert_eq!(r["export"]["audio_codec"], "MP3", "{r}");
+    // Nor a picture's rate, depth, speed or size; a WAV says the rate its
+    // PCM is written at, not the bitrate setting it never uses.
+    for key in ["rate", "bit_depth", "encoder_speed", "size"] {
+        assert!(r["export"][key].is_null(), "{key}: {r}");
+    }
+    let (r, _) = sent(&mut h, json!({ "method": "export", "path": "/tmp/klipp-codec-sound.wav" }));
+    assert!(r["export"]["rate"].is_null() && r["export"]["bit_depth"].is_null(), "{r}");
+    assert_eq!(r["export"]["audio"], "PCM 16-bit (WAV) 1536 kbps", "{r}");
 
     // Refused, and nothing sent.
     for (req, why) in [
