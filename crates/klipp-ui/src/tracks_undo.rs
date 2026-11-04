@@ -144,6 +144,7 @@ pub fn record(state: &mut AppState, before: Before) {
         None => edit_between(before.label, &before.tracks, &seq.tracks),
     };
     let Some(edit) = edit else { return };
+    let edit = with_marks_used_up(state, before.label, edit);
     let now = std::time::Instant::now();
     let continues = is_gesture(before.label)
         && state
@@ -165,6 +166,18 @@ pub fn record(state: &mut AppState, before: Before) {
         }
     }
     state.push_history(edit);
+}
+
+/// `edit` with the In and Out points cleared in the same step, for Lift and
+/// Extract, which use them up. Left set after a cut in the middle, they
+/// marked whatever now followed it, and the export defaulted to that.
+fn with_marks_used_up(state: &mut AppState, label: &'static str, edit: EditCommand) -> EditCommand {
+    let seq = &mut state.sequences[state.active_sequence_idx];
+    if !matches!(label, "Lift" | "Extract") || (seq.in_point.is_none() && seq.out_point.is_none()) {
+        return edit;
+    }
+    let (old_in, old_out) = (seq.in_point.take(), seq.out_point.take());
+    EditCommand::Named { label: label.into(), edit: Box::new(EditCommand::Batch(vec![edit, EditCommand::SetRange { old_in, old_out, new_in: None, new_out: None }])) }
 }
 
 /// The undo record taking `old` to `new`: the whole list when a track
@@ -430,6 +443,39 @@ mod tests {
         s.note_timeline_length();
         cut_to(&mut s, 12.0);
         assert_eq!(marks(&s), (Some(8.0), Some(12.0)));
+    }
+
+    /// Lift and Extract use the marks up, and clear them in their own undo
+    /// step. Left set after a cut in the middle, they marked whatever now
+    /// followed it, and the export defaulted to those few seconds.
+    #[test]
+    fn lift_and_extract_clear_the_marks_they_used() {
+        for (cmd, name) in [(AppCommand::ExtractEdit, "Extract"), (AppCommand::LiftEdit, "Lift")] {
+            let mut s = marked_state();
+            let steps = s.active_history().undo_count();
+            let was = before(&s, &cmd).expect("recorded");
+            let idx = s.active_sequence_idx;
+            let p = s.sequence().primary_track_index().unwrap();
+            s.sequences[idx].tracks[p].clips.remove(1);
+            record(&mut s, was);
+            assert_eq!(marks(&s), (None, None), "{name}");
+            assert_eq!(s.active_history().undo_count(), steps + 1, "{name}: one step");
+            assert_eq!(s.undo_label().as_deref(), Some(name));
+            apply(&mut s, true);
+            assert_eq!(marks(&s), (Some(8.0), Some(18.0)), "{name} undone");
+            assert_eq!(s.sequence().tracks[p].clips.len(), 2, "{name} undone");
+            apply(&mut s, false);
+            assert_eq!(marks(&s), (None, None), "{name} redone");
+        }
+    }
+
+    /// One that changed nothing (every track locked, say) used nothing up.
+    #[test]
+    fn a_lift_that_changed_nothing_keeps_the_marks() {
+        let mut s = marked_state();
+        let was = before(&s, &AppCommand::LiftEdit).expect("recorded");
+        record(&mut s, was);
+        assert_eq!(marks(&s), (Some(8.0), Some(18.0)));
     }
 
     #[test]
