@@ -2397,7 +2397,7 @@ mod tests {
         assert_eq!((software.name, software.hardware, &software.vaapi), ("libx265", false, &None));
         let have = |name| ffmpeg_next::encoder::find_by_name(name).is_some();
         let mut expected: Vec<(&str, Option<(&str, bool)>)> = Vec::new();
-        for name in ["hevc_nvenc", "hevc_amf"].into_iter().filter(|n| have(n)) {
+        for name in ["hevc_nvenc", "hevc_amf"].into_iter().filter(|n| have(n) && encoder_can_exist_here(n)) {
             expected.push((name, None));
         }
         if have("hevc_vaapi") {
