@@ -560,6 +560,40 @@ fn tabbed_targeting_is_unchanged() {
     }
 }
 
+/// With two Correctors in the grade and the second selected on the
+/// canvas, the Colour tab draws and edits the second, the one its header
+/// names, in the right inspector and the bottom tools alike. It drew the
+/// first's 0.30 and its edits went there.
+#[test]
+fn the_colour_tab_edits_the_selected_corrector() {
+    for wide in [false, true] {
+        let mut run = Run::with_panel(NodeKind::Corrector).unwrap();
+        let first = run.node;
+        let second = NodeId::new_v4();
+        let c = run.state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(run.clip)).unwrap();
+        let n = Node { id: second, kind: NodeKind::Corrector, label: "Lift".into(), enabled: true, params: Default::default(), keyframes: Default::default(), output_link: None, input_links: Vec::new() };
+        assert!(c.insert_grade_node(Some(first), n));
+        c.edit_grade(|g| {
+            g.nodes.iter_mut().find(|n| n.id == first).unwrap().params.exposure = Some(0.3);
+            g.nodes.iter_mut().find(|n| n.id == second).unwrap().params.exposure = Some(0.7);
+        });
+        tabbed_in(&mut run, wide, Some(second), Vec::new());
+        let (_, _, texts) = tabbed_in(&mut run, wide, Some(second), Vec::new());
+        let at = texts.iter().filter(|(t, _)| t == "Exposure").map(|(_, p)| *p).next_back().expect("the Exposure row");
+        let value: Vec<&String> = texts.iter().filter(|(_, p)| (p.y - at.y).abs() < 4.0 && p.x > at.x).map(|(t, _)| t).collect();
+        assert!(value.iter().any(|t| t.starts_with("0.70")), "wide {wide}: the row shows {value:?}");
+        let press = |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+        let mut cmds = tabbed_in(&mut run, wide, Some(second), vec![egui::Event::PointerMoved(at)]).0;
+        cmds.extend(tabbed_in(&mut run, wide, Some(second), vec![egui::Event::PointerMoved(at), press(true)]).0);
+        cmds.extend(tabbed_in(&mut run, wide, Some(second), vec![egui::Event::PointerMoved(at), press(false)]).0);
+        let set: Vec<_> = cmds.iter().filter_map(|c| match c {
+            AppCommand::SetParamAt { addr, key, .. } if key.as_str() == "exposure" => addr.node(),
+            _ => None,
+        }).collect();
+        assert_eq!(set, vec![second], "wide {wide}: {cmds:?}");
+    }
+}
+
 /// A clip's snapshot is taken of its own grade at any depth: inside a
 /// compound its nodes have paths through it (#1391), and a descent that
 /// names no compound has none. A stand-in's (the timeline grade, a group's
