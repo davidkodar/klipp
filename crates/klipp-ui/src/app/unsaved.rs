@@ -9,8 +9,8 @@
 use super::*;
 
 /// The longest a raised hint waits to be settled while nothing asks. A
-/// digest is about 80 microseconds a clip on an M1, on the UI thread: 60 ms
-/// for 800 clips.
+/// digest is about 10 microseconds a plain clip on an M1, on the UI thread:
+/// 8 ms for 800 clips.
 const SETTLE_EVERY: std::time::Duration = std::time::Duration::from_millis(250);
 
 /// Whether a raised hint is settled this frame. Not during a drag, whose
