@@ -84,6 +84,7 @@ mod event_writes;
 mod graph_dock;
 pub(crate) mod colour_target;
 mod music_trim;
+mod ripple_trim;
 mod first_cut_dialog;
 #[cfg(test)]
 mod music_trim_tests;

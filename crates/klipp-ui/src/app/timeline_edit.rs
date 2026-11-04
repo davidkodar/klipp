@@ -925,49 +925,13 @@ impl KlippApp {
                 // Magnetic: Ripple trim head to playhead
                 AppCommand::RippleTrimHead { clip_id } => {
                     if self.refused_by_lock(clip_id) { return true; }
-                    let seq = &self.state.sequences[self.state.active_sequence_idx];
-                    if let Some((track_idx, clip_idx)) = seq.find_clip(*clip_id) {
-                        let clip = &seq.tracks[track_idx].clips[clip_idx];
-                        let playhead = self.state.playhead;
-                        // Only trim if playhead is inside the clip
-                        if playhead > clip.timeline_in && playhead < clip.timeline_out {
-                            let new_timeline_in = playhead;
-                            if self.is_magnetic_track(track_idx) {
-                                let result = klipp_timeline::magnetic::MagneticEditor::trim_head(
-                                    &mut self.state.sequences[self.state.active_sequence_idx], *clip_id, new_timeline_in);
-                                self.state.push_history(EditCommand::Magnetic(result.command));
-                            } else {
-                                self.trim_clip_at(*clip_id, klipp_document::ops::Edge::In, playhead);
-                                return true;
-                            }
-                            self.state.dirty = true;
-                            self.sync_sequence_to_engine();
-                        }
-                    }
+                    self.ripple_trim_to_playhead(*clip_id, klipp_document::ops::Edge::In);
                     true
                 }
                 // Magnetic: Ripple trim tail to playhead
                 AppCommand::RippleTrimTail { clip_id } => {
                     if self.refused_by_lock(clip_id) { return true; }
-                    let seq = &self.state.sequences[self.state.active_sequence_idx];
-                    if let Some((track_idx, clip_idx)) = seq.find_clip(*clip_id) {
-                        let clip = &seq.tracks[track_idx].clips[clip_idx];
-                        let playhead = self.state.playhead;
-                        // Only trim if playhead is inside the clip
-                        if playhead > clip.timeline_in && playhead < clip.timeline_out {
-                            let new_timeline_out = playhead;
-                            if self.is_magnetic_track(track_idx) {
-                                let result = klipp_timeline::magnetic::MagneticEditor::trim_tail(
-                                    &mut self.state.sequences[self.state.active_sequence_idx], *clip_id, new_timeline_out);
-                                self.state.push_history(EditCommand::Magnetic(result.command));
-                            } else {
-                                self.trim_clip_at(*clip_id, klipp_document::ops::Edge::Out, playhead);
-                                return true;
-                            }
-                            self.state.dirty = true;
-                            self.sync_sequence_to_engine();
-                        }
-                    }
+                    self.ripple_trim_to_playhead(*clip_id, klipp_document::ops::Edge::Out);
                     true
                 }
                 // Q — trim OUT edge of nearest clip at/before playhead.
@@ -1041,10 +1005,15 @@ impl KlippApp {
         }
     }
 
-    fn trim_clip_at(&mut self, clip_id: ClipId, edge: klipp_document::ops::Edge, target: klipp_core::Timecode) {
-        match klipp_document::ops::trim_at(self.state.sequence(), &self.state.media_pool, clip_id, edge, target, true) {
-            Ok(edit) => self.apply_edits_as_one(&[edit], "Ripple Trim"),
-            Err(r) => self.state.toast.show(format!("Trim unchanged: {}", r.why)),
+    fn ripple_trim_to_playhead(&mut self, clip_id: ClipId, edge: klipp_document::ops::Edge) {
+        match super::ripple_trim::to_playhead(&mut self.state, clip_id, edge) {
+            super::ripple_trim::RippleTrim::Nothing => {}
+            super::ripple_trim::RippleTrim::Made => {
+                self.state.dirty = true;
+                self.sync_sequence_to_engine();
+            }
+            super::ripple_trim::RippleTrim::Planned(edit) => self.apply_edits_as_one(&[*edit], "Ripple Trim"),
+            super::ripple_trim::RippleTrim::Refused(why) => self.state.toast.show(format!("Trim unchanged: {why}")),
         }
     }
 

@@ -6562,9 +6562,11 @@ fn resolve_trim(seq: &Sequence, pool: &MediaPool, i: usize, clip_id: ClipId, edg
         let (ti, ci, clip) = resolve_clip(seq, seq.fps, &ClipRef::Id(clip_id), i)?;
         let primary = seq.primary_track_index();
         let partner = clip.linked_clip_id.filter(|_| linked).and_then(|lid| find_clip(seq, lid));
-        let partner_on_primary = partner.as_ref().is_some_and(|(pti, _, _)| Some(*pti) == primary);
+        // With either side on the primary, the primary ripples too and
+        // later pictures there move with their sound.
+        let primary_ripples = Some(ti) == primary || partner.as_ref().is_some_and(|(pti, _, _)| Some(*pti) == primary);
         let rippled = std::iter::once((ti, ci)).chain(partner.as_ref().map(|(pti, pci, _)| (*pti, *pci)));
-        for (ti, ci) in rippled.filter(|_| !partner_on_primary).filter(|(ti, _)| Some(*ti) != primary) {
+        for (ti, ci) in rippled.filter(|_| !primary_ripples).filter(|(ti, _)| Some(*ti) != primary) {
             for c in &seq.tracks[ti].clips[ci + 1..] {
                 if let Some((_, _, p)) = c.linked_clip_id.and_then(|lid| find_clip(seq, lid)).filter(|(pti, _, _)| Some(*pti) == primary) {
                     return Err(refuse(
@@ -22300,6 +22302,37 @@ mod tests {
         assert!(r.why.contains("primary") && r.why.contains("out of sync"), "{}", r.why);
         assert!(resolve(&seq, &pool, &[trim(false, true)]).is_ok(), "no ripple: nothing else moves");
         assert!(resolve(&seq, &pool, &[trim(true, false)]).is_ok(), "unlinked: the sound's track stays");
+    }
+
+    /// A picture on the primary trimmed with ripple and its sound, later
+    /// pairs on both tracks: the primary ripples too, so they all move
+    /// together and nothing is left out of sync.
+    #[test]
+    fn a_ripple_trim_of_a_primary_picture_keeps_later_pairs_in_sync() {
+        let (_, pool, media, _, _) = fixture();
+        let mut seq = Sequence::new_default();
+        let p = seq.primary_track_index().unwrap();
+        let a = seq.tracks.iter().position(|t| t.kind == TrackKind::Audio).unwrap();
+        let mut pair = |at: f64| {
+            let mut v = Clip::media(media, tc(at), tc(at + 4.0), tc(at), tc(at + 4.0));
+            let mut s = Clip::media(media, tc(at), tc(at + 4.0), tc(at), tc(at + 4.0));
+            v.linked_clip_id = Some(s.id);
+            s.linked_clip_id = Some(v.id);
+            seq.tracks[p].clips.push(v);
+            seq.tracks[a].clips.push(s);
+        };
+        pair(0.0);
+        pair(4.0);
+        let first = seq.tracks[p].clips[0].id;
+        let plan = resolve(&seq, &pool, &[Op::Trim { clip_id: ClipRef::Id(first), edge: Edge::Out, to: Anchor::Secs(1.0), ripple: true, linked: true }]);
+        let mut fps = seq.fps;
+        let (mut seqs, mut sim_pool) = (vec![seq], pool.clone());
+        let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut sim_pool, fps: &mut fps };
+        for step in plan.expect("the pair and what follows move together").steps {
+            view.apply_forward(&step.edit);
+        }
+        assert_eq!(seqs[0].tracks[p].clips[1].timeline_in, seqs[0].tracks[a].clips[1].timeline_in, "the later pair stays in sync");
+        assert_eq!(seqs[0].tracks[p].clips[1].timeline_in, tc(1.0), "and closes up");
     }
 
     /// A sound split past where its picture ends: the half over the
