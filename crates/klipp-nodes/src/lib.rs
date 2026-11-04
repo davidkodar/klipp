@@ -49,6 +49,7 @@ pub mod held;
 pub mod plugin;
 mod plan;
 pub mod auto_layout;
+pub mod match_grade;
 pub mod json_check;
 pub mod matte_sequence;
 pub mod registry;
