@@ -177,7 +177,7 @@ impl KlippApp {
             return;
         }
         // No First Cut step left to Undo or Redo to on this sequence: the
-        // panel goes, its changes no longer to be had (FC7).
+        // panel goes, its changes no longer to be had.
         let open_seq = self.state.sequence().id;
         let reachable = {
             let history = self.state.active_history();
@@ -228,7 +228,7 @@ impl KlippApp {
                                 flip = Some(i);
                             }
                             // Named by where it is now, where a click takes it
-                            // (FC6: "pause at 0:10.7" went to 0:07.22).
+                            // ("pause at 0:10.7" went to 0:07.22).
                             let label = klipp_document::ops::first_cut::label_now(&session.changes, &excluded, i);
                             let text = if !excluded.contains(&i) { egui::RichText::new(label) } else { egui::RichText::new(label).weak() };
                             if change.kind.cuts() {

@@ -469,7 +469,7 @@ impl NewInspectorPanel {
                         if self.last_duck_clip != Some(clip.id) {
                             self.duck = audio_tab::DuckSettings::from_prefs(&prefs.audio);
                             // Never the clip's own track: ducked under itself,
-                            // it was an error until changed (P16).
+                            // it was an error until changed.
                             let dialogue_track = state.sequence().tracks.iter().enumerate()
                                 .find(|(i, t)| {
                                     *i != track_idx

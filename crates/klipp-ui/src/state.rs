@@ -1930,7 +1930,7 @@ pub struct AppState {
     pub speed_dialog_content_secs: f64,
     /// The lengths the dialog offers to fit the clip to (#3115).
     pub speed_dialog_fit: crate::speed_dialog::FitTargets,
-    /// Fit to the marked range was chosen (P53): Apply puts the clip on
+    /// Fit to the marked range was chosen: Apply puts the clip on
     /// the marks, unless the speed was changed again since.
     pub speed_dialog_on_marks: bool,
 

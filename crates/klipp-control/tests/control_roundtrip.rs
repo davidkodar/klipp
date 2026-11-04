@@ -1426,7 +1426,7 @@ fn control_socket_reads_state_and_forwards_commands() {
     assert_eq!(refused["ok"], json!(false), "{refused}");
     assert!(refused["error"].as_str().unwrap().contains("could not be imported"), "{}", refused["error"]);
     // A text file ffmpeg can read as a picture is no media either: a
-    // CREDITS.txt came in as a 0:00 clip (SEC1).
+    // CREDITS.txt came in as a 0:00 clip.
     let credits = std::env::temp_dir().join(format!("klipp-credits-{}.txt", std::process::id()));
     std::fs::write(&credits, "Music by someone, licensed CC-BY 4.0, from a free archive.\n".repeat(80)).unwrap();
     let text = h.call(json!({ "method": "import_media", "path": credits.to_string_lossy() }));
@@ -1727,7 +1727,7 @@ fn export_takes_a_preset_a_codec_and_a_bitrate() {
     let (r, s) = sent(&mut h, json!({ "method": "export", "path": "/tmp/klipp-codec-bare.mp4", "burn_captions": false }));
     assert!(!s.embed_subtitles && !s.burn_in_subtitles);
     assert!(r["export"]["captions_in_file"].is_string(), "{r}");
-    // EX4: a sound-only file is said to have no video codec.
+    // A sound-only file is said to have no video codec.
     let (r, _) = sent(&mut h, json!({ "method": "export", "path": "/tmp/klipp-codec-sound.mp3", "preset": "Audio Only MP3" }));
     assert!(r["export"]["video_codec"].is_null(), "{r}");
     assert_eq!(r["export"]["audio_codec"], "MP3", "{r}");

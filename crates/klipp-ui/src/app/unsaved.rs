@@ -96,7 +96,7 @@ impl crate::state::AppState {
         self.dirty = false;
         // No project open and nothing done since the launch: nothing to
         // lose. Its empty state differed from no save at all, and New
-        // Project asked to save "Untitled" (M6). Anything made with no
+        // Project asked to save "Untitled". Anything made with no
         // project open, over the socket before New Project, is judged as
         // ever: closing would lose it.
         if self.project_path.is_none() && self.untouched_start() {
@@ -149,7 +149,7 @@ impl KlippApp {
 mod launch_screen_tests {
     use crate::state::AppState;
 
-    /// M6: on the launch screen, with no project open, a raised hint is no
+    /// On the launch screen, with no project open, a raised hint is no
     /// unsaved change, so New Project doesn't ask to save "Untitled"; a
     /// project open is judged as before.
     #[test]

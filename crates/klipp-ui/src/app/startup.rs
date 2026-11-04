@@ -72,7 +72,7 @@ impl KlippApp {
         let (restore_browser, restore_inspector) = (layout.browser_visible, layout.inspector_visible);
 
         // The fonts the built-in templates and starter kits use ship with
-        // the app (P41): put in the fonts folder, so a built-in never
+        // the app: put in the fonts folder, so a built-in never
         // fetches one. Written only when not there at its size.
         match klipp_title::catalogue::install_shipped() {
             Ok(0) => {}

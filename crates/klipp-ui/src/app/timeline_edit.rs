@@ -98,7 +98,7 @@ impl KlippApp {
                 // Create adjustment layer at playhead
                 AppCommand::CreateAdjustmentLayer => {
                     // Above the clips at the playhead, laid over what its
-                    // track has, as a generator goes (P69: it went on the
+                    // track has, as a generator goes (it went on the
                     // top picture track beside the clip there, two at
                     // once, and was no undo step).
                     let (clip_id, _) = add_clip_above(&mut self.state, None, None, klipp_timeline::ClipKind::AdjustmentLayer, "Adjustment");
@@ -223,8 +223,7 @@ impl KlippApp {
                         return true;
                     }
                     let group_id = klipp_core::GroupId::new();
-                    // One undo step: it changed the clips with no step at all
-                    // (P50).
+                    // One undo step: it changed the clips with no step at all.
                     let before = crate::tracks_undo::before_labelled(&self.state, "Create Multicam");
                     let seq = &mut self.state.sequences[self.state.active_sequence_idx];
                     for (angle_idx, (ti, cid)) in angle_clips.iter().enumerate() {
@@ -1696,7 +1695,7 @@ pub(super) fn add_clip_above(state: &mut AppState, track_index: Option<usize>, a
     };
     let clip_id = clip.id;
     // Laid over what the track has there, as a clip dropped is: let go on
-    // a clip, it went in over it, two clips at once on one track (P65).
+    // a clip, it went in over it, two clips at once on one track.
     klipp_document::clipboard::overwrite_insert_clip_on_track(&mut seq.tracks[track_idx], clip);
     (clip_id, ph + klipp_core::RationalTime::from_secs_f64(0.25, fps_rate))
 }
@@ -1739,7 +1738,7 @@ mod track_mix_tests {
         assert!(tracks[0].clips.iter().any(|c| c.id == over));
     }
 
-    /// P65: a generator let go on V1 at 0:00 goes in at 0:00, not at the
+    /// A generator let go on V1 at 0:00 goes in at 0:00, not at the
     /// playhead (3:19) with a gap before it; with no place given it goes
     /// in at the playhead, as a double-click puts it.
     #[test]
@@ -1766,7 +1765,7 @@ mod track_mix_tests {
         assert_eq!(crate::tracks_undo::label(&klipp_core::AppCommand::CreateGeneratorClip { track_index: None, at: None, data: bars.clone() }), Some("Add Generator"), "an undo step");
     }
 
-    /// P69: an adjustment layer goes above the clip at the playhead, on a
+    /// An adjustment layer goes above the clip at the playhead, on a
     /// track of its own, where it changes what is under it; it went on the
     /// top picture track beside the clip there, two clips at once, and
     /// was no undo step.

@@ -19669,8 +19669,8 @@ mod snap_tests {
     }
 
     /// A brand kit's intro, or any composition or compound clip laid in,
-    /// is called by the sequence inside it when it has no name of its own
-    /// (P43): it was drawn with no name at all.
+    /// is called by the sequence inside it when it has no name of its own:
+    /// it was drawn with no name at all.
     #[test]
     fn a_composition_clip_is_named_by_its_sequence() {
         let mut state = AppState::default();

@@ -241,7 +241,7 @@ mod consent_tests {
     use klipp_ml_candle::translation as tr;
 
     /// The question names each file's size, source, SHA-256 and licence,
-    /// as the other model downloads do (P28).
+    /// as the other model downloads do.
     #[test]
     fn the_question_says_size_source_checksum_and_licence() {
         let pair = tr::pair("en", "de").expect("an en→de pair");

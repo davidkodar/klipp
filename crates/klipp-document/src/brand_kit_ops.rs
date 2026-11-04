@@ -116,7 +116,7 @@ pub struct SequenceParts {
     pub watermark: Option<(Watermark, MediaId, (u32, u32))>,
     /// The kit's accent colour (#rrggbb) and heading font, which its
     /// intro and outro take where their template has an accent or a
-    /// heading font to set (P42).
+    /// heading font to set.
     pub accent: Option<String>,
     pub heading_font: Option<String>,
 }
@@ -234,7 +234,7 @@ mod tests {
         assert!((secs(&ops[0]["to"]) - 3.0).abs() < 1e-6, "{}", ops[0]);
         assert_eq!((ops[1]["op"].as_str(), ops[1]["name"].as_str()), (Some("template"), Some("Card")));
         assert!(secs(&ops[1]["at"]).abs() < 1e-6);
-        // P42: the kit's accent and heading font, where the template has them.
+        // The kit's accent and heading font, where the template has them.
         assert_eq!((ops[1]["fields"]["Accent?"].as_str(), ops[1]["fields"]["Heading font?"].as_str()), (Some("#ef233c"), Some("Oswald")), "{}", ops[1]);
         assert_eq!(ops[2]["media_id"].as_str(), Some(outro.0.to_string().as_str()));
         assert!((secs(&ops[2]["at"]) - 13.0).abs() < 1e-6, "{}", ops[2]);

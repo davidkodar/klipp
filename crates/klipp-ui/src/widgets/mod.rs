@@ -61,7 +61,7 @@ pub fn window<'a>(title: impl Into<egui::WidgetText>) -> egui::Window<'a> {
 #[cfg(test)]
 mod below_menus_tests {
     /// No floating window opens where it pleases: each goes through
-    /// [`super::window`], kept below the menu bar (P29). A new
+    /// [`super::window`], kept below the menu bar. A new
     /// `egui::Window::new` outside it fails here, wherever it is.
     #[test]
     fn every_window_opens_below_the_menus() {

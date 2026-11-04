@@ -5300,7 +5300,7 @@ fn read_directory_with_timeout(path: &std::path::Path) -> Result<Vec<FileEntry>,
         };
 
         // metadata() can hang on network mounts — skip on error. A link
-        // is taken as what it points at (P64: a linked folder read as a
+        // is taken as what it points at (a linked folder read as a
         // 37-byte file that would not open); a broken one as itself.
         let meta = match std::fs::metadata(entry.path()).or_else(|_| entry.metadata()) {
             Ok(m) => m,
@@ -7017,7 +7017,7 @@ mod keyboard_selection_tests {
 
 #[cfg(test)]
 mod linked_folder_tests {
-    /// P64: a link to a folder is listed as a folder, which opens; a link
+    /// A link to a folder is listed as a folder, which opens; a link
     /// to a file as the file; a broken link as itself.
     #[cfg(unix)]
     #[test]

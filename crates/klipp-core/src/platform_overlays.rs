@@ -2,7 +2,7 @@
 //! picture — its buttons, its caption and handle, its progress bar — one
 //! data file a platform under `assets/presets/platform_overlays/`. The
 //! viewer outlines them when chosen; a title template placed in a
-//! sequence made for the platform keeps clear of the bottom ones (P23).
+//! sequence made for the platform keeps clear of the bottom ones.
 
 use serde::Deserialize;
 
@@ -127,7 +127,7 @@ mod tests {
         assert!(by_id("tiktok").is_some_and(|p| p.fits(1080.0, 1920.0) && !p.fits(1920.0, 1080.0)));
     }
 
-    /// P23: a YouTube sequence's player is YouTube's, whose progress bar
+    /// A YouTube sequence's player is YouTube's, whose progress bar
     /// and controls cover the bottom from 88%; the captions' place above
     /// them doesn't reach the edge. No destination, no player.
     #[test]

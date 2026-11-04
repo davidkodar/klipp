@@ -185,8 +185,8 @@ pub fn find_all(spell: &SpellCheck, ctx: &egui::Context, sequences: &[klipp_time
             }
         }
         // By time, each title's words together and in order: by time and
-        // then by place in the text, two titles at one time interleaved
-        // (P55). The sort is stable, and each title's words go in in order.
+        // then by place in the text, two titles at one time interleaved.
+        // The sort is stable, and each title's words go in in order.
         here.sort_by(|a, b| a.at_secs.total_cmp(&b.at_secs));
         out.extend(here);
     }
