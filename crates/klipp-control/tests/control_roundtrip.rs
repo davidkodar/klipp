@@ -2892,6 +2892,25 @@ fn match_grade_knobs_close_the_gap() {
 /// #2476: match_grade stops short of clipping the shot it brightens, as
 /// grade_to_target does, and says why; a shot with room is left alone,
 /// and one already at white is not brightened at all.
+/// A match is not held for a channel at zero (a warm shadow's blue on the
+/// bottom of the rail): only a channel at the top is what brightening
+/// pushes. It read as "10.9% of the shot is already at white" on a shot
+/// with nothing at white, and the match left it dark.
+#[test]
+fn a_match_is_not_held_for_a_channel_at_zero() {
+    use klipp_control::{hold_match_for_highlights, MatchKnobs};
+    use klipp_color::measure::FrameMeasure;
+    let up = MatchKnobs { exposure: Some(0.5), ..Default::default() };
+    let mut k = up;
+    let shadows = FrameMeasure { l_p95: 70.0, gamut_clip_pct: 10.9, gamut_hi_pct: 0.0, ..Default::default() };
+    assert_eq!(hold_match_for_highlights(&mut k, &shadows), None, "brightened: {k:?}");
+    assert_eq!(k, up);
+    let mut k = up;
+    let sky = FrameMeasure { l_p95: 70.0, gamut_clip_pct: 10.9, gamut_hi_pct: 10.9, ..Default::default() };
+    let why = hold_match_for_highlights(&mut k, &sky).expect("held for the sky at the top");
+    assert!(why.contains("10.9%") && k.exposure.is_none(), "{why} {k:?}");
+}
+
 #[test]
 fn a_match_is_held_short_of_clipping() {
     use klipp_control::{hold_match_for_highlights, MatchKnobs};
