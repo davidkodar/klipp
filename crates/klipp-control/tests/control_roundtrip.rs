@@ -5042,13 +5042,15 @@ fn an_export_of_another_shape_says_it_is_letterboxed() {
     let mut export = |preset: &str| {
         let r = h.ok(json!({ "method": "export", "path": "/tmp/klipp-shape.mp4", "preset": preset }));
         assert!(matches!(h.cmd_rx.recv_timeout(std::time::Duration::from_secs(5)), Ok(klipp_core::AppCommand::ExportSequence { .. })));
-        r["export"]["frame_warning"].clone()
+        (r["export"]["frame_warning"].clone(), r["export"]["frame_fix"].clone())
     };
-    let vertical = export("Shorts, Reels, TikTok 9:16");
+    let (vertical, fix) = export("Shorts, Reels, TikTok 9:16");
     let said = vertical.as_str().unwrap_or_default();
-    assert!(said.contains("1920x1080") && said.contains("1080x1920") && said.contains("above and below") && said.contains("format op"), "{vertical}");
-    assert!(export("Instagram Square").as_str().unwrap_or_default().contains("above and below"), "square: a wide picture letterboxed");
-    assert!(export("YouTube 1080p").is_null(), "the same shape says nothing");
+    assert!(said.contains("1920x1080") && said.contains("1080x1920") && said.contains("above and below") && said.contains("New Version at Aspect"), "{vertical}");
+    assert!(fix.as_str().unwrap_or_default().contains("format op with width 1080 and height 1920"), "{fix}");
+    assert!(export("Instagram Square").0.as_str().unwrap_or_default().contains("above and below"), "square: a wide picture letterboxed");
+    let (same, fix) = export("YouTube 1080p");
+    assert!(same.is_null() && fix.is_null(), "the same shape says nothing");
 }
 
 /// #2720: find_moments reads a transcript; a file without one is refused
