@@ -581,8 +581,9 @@ fn timeline_layout_fingerprint(seq: &klipp_timeline::Sequence) -> u64 {
 }
 
 /// How long to wait after a look at the layout that took `cost`: a parked
-/// engine spends about 2% of a core on it, whatever the timeline's size,
-/// and sees an edit within half a second at most.
+/// engine spends about 2% of a core on it until the wait reaches its cap
+/// of half a second, more past that (about 7% at 20,000 clips), and sees
+/// an edit within that half second at most.
 fn layout_check_wait(cost: Duration) -> Duration {
     (cost * 49).min(Duration::from_millis(500))
 }
@@ -592,7 +593,7 @@ mod layout_check_wait_tests {
     use super::layout_check_wait;
     use std::time::Duration;
 
-    /// A small timeline is looked at nearly every tick, a large one about
+    /// A small timeline is looked at nearly every tick, a larger one about
     /// 2% of the time, and none waits past half a second for an edit.
     #[test]
     fn the_wait_follows_the_cost_up_to_half_a_second() {
