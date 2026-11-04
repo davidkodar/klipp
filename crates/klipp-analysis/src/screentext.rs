@@ -108,8 +108,16 @@ impl ScreenText {
         (!self.frames.is_empty()).then(|| self.frames.iter().filter(|f| f.lines.iter().any(readable)).count() as f32 / self.frames.len() as f32)
     }
 
-    /// Spans whose text contains every word of `query`, case aside.
+    /// Spans whose text contains every word of `query`, case aside. A
+    /// number (a phone number, an order number: digits and the marks
+    /// between them, seven digits or more) is found by its digits alone,
+    /// however it is grouped on screen or in the query.
     pub fn search(&self, query: &str) -> Vec<&TextSpan> {
+        let digits = |s: &str| -> String { s.chars().filter(char::is_ascii_digit).collect() };
+        let number = digits(query);
+        if number.len() >= 7 && query.trim().chars().all(|c| c.is_ascii_digit() || matches!(c, ' ' | '-' | '.' | '(' | ')' | '+' | '/')) {
+            return self.spans.iter().filter(|s| digits(&s.text).contains(&number)).collect();
+        }
         let words: Vec<String> = query.split_whitespace().map(|w| w.to_lowercase()).collect();
         if words.is_empty() {
             return Vec::new();
@@ -313,7 +321,7 @@ pub fn sensitive_in(text: &str) -> Option<(&'static str, String)> {
                 return Some(("key", mask(t)));
             }
         } else if body_ok && !has_extension && !truncated && !hyphen_groups_hex
-            && ((known_prefix && t.len() >= 16) || (t.len() >= 28 && digits >= 4 && letters >= 6 && !t.contains('.') && !t.contains('-') && runs >= 4))
+            && ((known_prefix && t.len() >= 8) || (t.len() >= 28 && digits >= 4 && letters >= 6 && !t.contains('.') && !t.contains('-') && runs >= 4))
         {
             return Some(("key", mask(t)));
         }
@@ -321,7 +329,7 @@ pub fn sensitive_in(text: &str) -> Option<(&'static str, String)> {
     for (k, t) in tokens.iter().enumerate() {
         // "password: hunter2", "token = abc"
         let label = t.trim_end_matches([':', '=']).to_lowercase();
-        if matches!(label.as_str(), "password" | "passwd" | "pwd" | "secret" | "token" | "api_key" | "apikey" | "api-key") {
+        if matches!(label.as_str(), "password" | "passwd" | "pwd" | "secret" | "token" | "key" | "api_key" | "apikey" | "api-key" | "access_token" | "auth_token" | "bearer" | "secret_key" | "access_key" | "private_key") {
             let value = tokens.get(k + 1).filter(|v| !matches!(**v, ":" | "=")).or_else(|| tokens.get(k + 2));
             if let Some(v) = value {
                 // The value has to look like a secret, not the next word of
@@ -576,6 +584,33 @@ mod tests {
         assert_eq!(sensitive_in("AKIAIOSFODNN7EXAMPLE").unwrap().0, "key");
         assert_eq!(sensitive_in("k9Xz2Qm7pL4vN8bR1tY6wE3uH5sA0dF2gJ").unwrap().0, "key");
         assert_eq!(sensitive_in("3f2a9c8b1d7e4f6a5b0c9d8e7f6a5b4c3f2a9c8b").unwrap().0, "key");
+    }
+
+    /// A short key behind a known prefix is a key (a test key on screen
+    /// in a live check was missed), and a value after a "key:" label that
+    /// looks like a secret is one; a key on a shortcuts screen is not.
+    #[test]
+    fn short_keys_and_key_lines_are_seen() {
+        assert_eq!(sensitive_in("API key: sk-test-1234").unwrap().0, "key");
+        assert_eq!(sensitive_in("key: Zq81xR42kP").unwrap().0, "credential");
+        assert_eq!(sensitive_in("access_token = 9f8e7d6c5b").unwrap().0, "credential");
+        for plain in ["Key: Enter", "Shortcut key: Space", "key frames", "sk-ill", "monkey: banana"] {
+            assert!(sensitive_in(plain).is_none(), "{plain}");
+        }
+    }
+
+    /// A phone number is found by its digits, with or without the marks
+    /// between them, on screen and in the query; words are found as words.
+    #[test]
+    fn a_number_is_found_by_its_digits() {
+        let span = |text: &str| TextSpan { text: text.into(), confidence: 0.9, start_secs: 0.0, end_secs: 1.0, x: 0.0, y: 0.0, w: 0.1, h: 0.05, frames: 1 };
+        let st = ScreenText { spans: vec![span("Phone: 5550142"), span("Call 555 014 2999"), span("Fax (555) 019-9999"), span("Account Settings")], ..Default::default() };
+        let found = |q: &str| st.search(q).iter().map(|s| s.text.as_str()).collect::<Vec<_>>();
+        assert_eq!(found("555-0142"), ["Phone: 5550142", "Call 555 014 2999"]);
+        assert_eq!(found("5550199999"), ["Fax (555) 019-9999"]);
+        assert_eq!(found("(555) 019 9999"), ["Fax (555) 019-9999"]);
+        assert_eq!(found("account settings"), ["Account Settings"]);
+        assert_eq!(found("0142"), ["Phone: 5550142"], "too few digits to be a number: a word search, as it reads");
     }
 
     #[test]
