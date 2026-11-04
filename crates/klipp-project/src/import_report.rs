@@ -161,9 +161,11 @@ pub fn load_aaf(path: &Path, cancel: &std::sync::atomic::AtomicBool) -> Result<I
 
 /// A timeline's media as a project's is taken (SEC1): it can name any file
 /// on the machine, so one that is not a picture, sound or still, one in a
-/// hidden folder and one that lists other inputs stay offline, are never
-/// read, and the warnings say why. Hidden folders are judged from the
-/// timeline's own folder, as they are from a project's.
+/// hidden folder and one that lists other inputs stay offline, and the
+/// warnings say why. A file in a hidden folder or one that isn't a regular
+/// file is refused unopened; any other is opened once to see what it is,
+/// as a project's are, and nothing of it is kept. Hidden folders are judged
+/// from the timeline's own folder, as they are from a project's.
 fn media_checked(mut result: ImportResult, source: &Path) -> ImportResult {
     let trusted_folders = klipp_media::media_check::trusted_roots(source.parent());
     let trusted: Vec<&Path> = trusted_folders.iter().map(|p| p.as_path()).collect();
