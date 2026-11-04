@@ -11717,6 +11717,11 @@ fn retime(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, clip_id: ClipId,
     if clip.hold.is_some() {
         return Err(refuse(i, format!("{} is a freeze frame, which has no speed", clip_name(seq, pool, clip)), "trim it to change how long it holds"));
     }
+    // The ramp would go on deciding what shows, over the length one speed
+    // gives: the picture ended early, or left the clip's range.
+    if !clip.speed_keyframes.is_empty() {
+        return Err(refuse(i, format!("{} has a speed ramp, so it has no one speed", clip_name(seq, pool, clip)), "take the ramp off first, or give the length to stretch it to"));
+    }
     let (lo, hi) = (klipp_timeline::SPEED_MIN, klipp_timeline::SPEED_MAX);
     if !speed.is_finite() || !(lo..=hi).contains(&speed.abs()) {
         return Err(refuse(i, format!("a speed of {speed}"), format!("give speed between {lo} and {hi}, negative to play the clip reversed")));
@@ -20036,6 +20041,23 @@ mod tests {
         let clip = find_clip(&view.sequences[0], a).unwrap().2;
         assert_eq!(clip.frame_blend_mode(), Some(2), "the slow part's frames follow the motion");
         assert!(!clip.speed_keyframes.is_empty(), "and it is ramped");
+    }
+
+    /// A speed on a ramped clip is refused, forward or reversed, and leaves it
+    /// as it was: the ramp would go on deciding what it shows.
+    #[test]
+    fn a_ramped_clip_refuses_one_speed() {
+        let (mut seq, pool, _, a, _) = fixture();
+        let ramp = Op::Ramp { clip_id: ClipRef::Id(a), from: 2.0, to: 4.0, secs: None, ripple: true, interpolation: None };
+        let plan = resolve(&seq, &pool, &[ramp]).unwrap();
+        let (mut p, mut f) = (pool.clone(), seq.fps);
+        let mut seqs = vec![seq.clone()];
+        crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut f }.apply_forward(&plan.steps[0].edit);
+        seq = seqs.remove(0);
+        for speed in [2.0, -1.0] {
+            let refused = resolve(&seq, &pool, &[Op::Retime { clip_id: ClipRef::Id(a), speed, fit: false, ripple: false, interpolation: None, length_secs: None, fit_range: false }]).unwrap_err();
+            assert!(refused.why.contains("has a speed ramp, so it has no one speed") && refused.hint.contains("take the ramp off first"), "{refused:?}");
+        }
     }
 
     /// A ramp takes the linked sound with it: the same keys and length, so it
