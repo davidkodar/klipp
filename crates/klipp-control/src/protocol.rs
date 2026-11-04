@@ -1997,6 +1997,11 @@ pub enum ControlCommand {
         /// default). The counts count every finding (#2492).
         #[serde(default)]
         min_severity: Option<String>,
+        /// A render the check is run alongside, not counted as one that
+        /// keeps it from rendering frames of its own: review's own draft.
+        /// Set by Klipp, never by a client.
+        #[serde(skip)]
+        own_render: Option<std::path::PathBuf>,
     },
     /// Spelling in the titles and captions (#3236). `list` (the default)
     /// gives each word no dictionary and no project word knows, with
