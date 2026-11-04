@@ -45,14 +45,6 @@ use serde_json::{json, Value};
 /// failure of this test, and any other shape is. Each goes when its fix
 /// lands, and the test then proves the fix.
 const KNOWN: &[(&str, fn(&Broken, &str) -> bool)] = &[
-    // Under a frame off, after a blade: a piece's file edge falls on the
-    // file's frames (24 fps here) and its timeline edge on the sequence's
-    // (25), so an edit working a length out from the file puts a picture
-    // a fraction of a frame off, a gap on the primary or a pair adrift.
-    ("R14", |b, _| b.invariant == GAPLESS && b.amount.abs() < FRAME),
-    // At a speed other than 1x the rounding is scaled by it: under a
-    // frame and a half.
-    ("R15", |b, _| b.invariant == SYNC && b.amount < 1.5),
     // A retime after blades leaving a transition that saving drops.
     ("R16", |b, last| b.invariant == SAVED && b.detail.contains("/transitions") && last == "Retime"),
 ];
@@ -60,7 +52,6 @@ const KNOWN: &[(&str, fn(&Broken, &str) -> bool)] = &[
 const SYNC: &str = "linked pairs in sync";
 const GAPLESS: &str = "primary gapless";
 const SAVED: &str = "save and load";
-const FRAME: f64 = 1.0 / RATE as f64;
 
 /// The known entry `broken` is, from the step it broke at in `steps`.
 /// `KLIPP_RANDOM_EDITS_UNKNOWN=R8,R14` treats those as not known, so
@@ -86,7 +77,10 @@ fn edit_kinds(edits: &[EditCommand]) -> String {
     format!("\n      edits: {}", edits.iter().map(name).collect::<Vec<_>>().join(" "))
 }
 
-const RATE: u32 = 25;
+/// The sequence's frame rate, which every step's times are on. The
+/// sequence takes it from its first picture file (24 fps), as the app's
+/// first clip sets the format; the fixture checks the two agree.
+const RATE: u32 = 24;
 
 /// A small, fast generator: the same seed gives the same steps on every
 /// machine.
@@ -200,7 +194,11 @@ fn fixture() -> (Sequence, MediaPool, [MediaId; 2]) {
             view.apply_forward(&s.edit);
         }
     }
-    (seqs.remove(0), pool, media)
+    let seq = seqs.remove(0);
+    // The steps cut and place on the sequence's frames, as the timeline
+    // snaps them: on another grid they cut between frames.
+    assert_eq!(seq.fps.rate(), RATE, "the sequence's rate is the steps' rate");
+    (seq, pool, media)
 }
 
 /// What broke, at which step, and how.
@@ -432,7 +430,8 @@ impl Run {
             let mut expected = RationalTime::ZERO;
             for c in &p.clips {
                 if !c.timeline_in.cmp(&expected).is_eq() {
-                    return Err((GAPLESS, format!("{} starts at {:?}, the clip before ends at {:?}", short(c.id), c.timeline_in, expected), secs(c.timeline_in) - secs(expected)));
+                    let list: Vec<String> = p.clips.iter().map(|c| format!("{}@{:?}-{:?}{}", short(c.id), c.timeline_in, c.timeline_out, if c.kind.is_gap() { " gap" } else { "" })).collect();
+                    return Err((GAPLESS, format!("{} starts at {:?}, the clip before ends at {:?}\n      primary: {}", short(c.id), c.timeline_in, expected, list.join(" ")), secs(c.timeline_in) - secs(expected)));
                 }
                 expected = c.timeline_out;
             }
