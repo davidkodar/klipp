@@ -5649,6 +5649,30 @@ impl AppState {
 }
 
 impl AppState {
+    /// What I does: the source clip's in point while the source viewer has
+    /// the keys, else the timeline's, which records the undo step.
+    pub(crate) fn mark_in_key(&self) -> klipp_core::AppCommand {
+        if self.viewer_mode == klipp_core::ViewerMode::Source {
+            klipp_core::AppCommand::SetSourceInPoint(self.source_playhead)
+        } else {
+            klipp_core::AppCommand::MarkRange { in_point: Some(Some(self.playhead)), out_point: None }
+        }
+    }
+
+    /// What O does, as [`Self::mark_in_key`].
+    pub(crate) fn mark_out_key(&self) -> klipp_core::AppCommand {
+        if self.viewer_mode == klipp_core::ViewerMode::Source {
+            klipp_core::AppCommand::SetSourceOutPoint(self.source_playhead)
+        } else {
+            klipp_core::AppCommand::MarkRange { in_point: None, out_point: Some(Some(self.playhead)) }
+        }
+    }
+
+    /// Whether M and the favourite and reject keys mark the source clip.
+    pub(crate) fn marks_go_on_source(&self) -> bool {
+        self.viewer_mode == klipp_core::ViewerMode::Source && self.source_media_id.is_some()
+    }
+
     /// Switch multicam mode (#1844). On, it remembers the clip `open`ed,
     /// and a single viewer that may show the Source viewer shows it,
     /// since that is where the grid is. Off, it forgets the opened clip.
