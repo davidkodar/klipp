@@ -106,3 +106,16 @@ fn adding_a_title_leaves_the_playhead_where_it_is() {
     assert!(!follows.iter().any(|c| matches!(c, klipp_core::AppCommand::SeekTo(_))), "nothing after it seeks: {follows:?}");
 }
 
+/// A title added has the frame at the playhead drawn again, with it in.
+#[test]
+fn adding_a_title_redraws_the_frame_at_the_playhead() {
+    let tpl = TITLES.iter().find(|t| t.name == "Accent Block").expect("Accent Block");
+    let mut state = AppState { pending_title_data: Some(Entry::Builtin(tpl).data()), ..Default::default() };
+    let frames = state.sequence().fps.rate() * 5;
+    let at = state.playhead;
+    let track = free_text_track(&mut state, at, frames);
+    let (id, _) = add_title_clip(&mut state, track, at, frames);
+    let follows = after_title_added(&state, id);
+    assert!(follows.iter().any(|c| matches!(c, klipp_core::AppCommand::SequenceUpdated)), "{follows:?}");
+}
+
