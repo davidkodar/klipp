@@ -202,15 +202,16 @@ impl KlippApp {
         let rate = self.state.sequence().fps.num.max(1);
         let (mut open, mut flip, mut go) = (true, None, None);
         // At the top right under the menus, clear of the menu bar and the
-        // Media panel (#3445).
+        // Media panel (#3445), and left of the inspector.
         let screen = ctx.screen_rect();
+        let at = changes_panel_pos(screen, self.layout.inspector_width);
         crate::widgets::window("First Cut changes")
             .constrain_to(crate::widgets::below_menu_bar(ctx))
             .collapsible(true)
             .resizable(true)
             .default_width(360.0)
             .pivot(egui::Align2::RIGHT_TOP)
-            .default_pos(egui::pos2(screen.right() - 16.0, screen.top() + 72.0))
+            .default_pos(at)
             .open(&mut open)
             .show(ctx, |ui| {
                 if !editable {
@@ -253,3 +254,25 @@ impl KlippApp {
         }
     }
 }
+
+/// Where the First Cut changes panel's top right corner opens on a
+/// `screen` whose inspector is `inspector_width` wide: under the menus,
+/// just left of the inspector. At the screen's right edge it covered the
+/// inspector's header, the clip's name and its tabs.
+fn changes_panel_pos(screen: egui::Rect, inspector_width: f32) -> egui::Pos2 {
+    egui::pos2(screen.right() - inspector_width - 16.0, screen.top() + 72.0)
+}
+
+#[cfg(test)]
+mod changes_panel_tests {
+    /// The panel opens left of the inspector, its right edge 16 points
+    /// short of the inspector's left edge, under the menus.
+    #[test]
+    fn the_changes_panel_opens_clear_of_the_inspector() {
+        let screen = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1706.0, 960.0));
+        let at = super::changes_panel_pos(screen, 360.0);
+        assert!(at.x <= screen.right() - 360.0 - 16.0 + 1e-3, "left of the inspector: {at:?}");
+        assert!(at.y >= 60.0, "under the menus: {at:?}");
+    }
+}
+
