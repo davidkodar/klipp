@@ -687,6 +687,9 @@ impl KlippApp {
         if let Some(note) = crash_notice(&recent) {
             app.state.toast.show(note);
         }
+        // What a killed proxy job left: never renamed, never used.
+        let proxies = app.proxy_cache_dir();
+        std::thread::spawn(move || super::proxies::remove_leftover_partials(&proxies, std::time::Duration::from_secs(600)));
         klipp_core::startup_timer::mark("KlippApp::new returning");
         app
     }

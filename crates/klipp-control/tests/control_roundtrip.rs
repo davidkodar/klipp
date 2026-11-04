@@ -3047,6 +3047,28 @@ fn proxies_are_made_as_a_job_and_status_says_what_playback_reads() {
     assert!(refused["error"].as_str().unwrap().contains("no moving picture"), "{refused}");
 }
 
+/// A file offline is named once, though a clip and its linked sound use it.
+#[test]
+fn an_export_refused_names_each_offline_file_once() {
+    let mut h = harness();
+    let id = {
+        let mut item = klipp_media::MediaItem::synthetic_for_test("/tmp/offline-once.mov".into(), None);
+        item.offline = true;
+        h.media_pool.write().unwrap().add(item)
+    };
+    {
+        let mut seq = h.sequence.write().unwrap();
+        let clips: Vec<&mut klipp_timeline::Clip> = seq.tracks.iter_mut().flat_map(|t| t.clips.iter_mut()).collect();
+        assert!(clips.len() >= 2, "two clips of it");
+        for c in clips {
+            c.kind = klipp_timeline::ClipKind::Media { media_id: id };
+        }
+    }
+    let refused = h.call(json!({ "method": "export", "path": "/tmp/klipp-offline-once-out.mp4", "overwrite": true }));
+    let error = refused["error"].as_str().unwrap_or_else(|| panic!("{refused}"));
+    assert_eq!(error, "media offline, export refused: offline-once.mov");
+}
+
 /// Turning proxies off makes none, whatever has none yet.
 #[test]
 fn turning_proxies_off_makes_none() {

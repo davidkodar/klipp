@@ -604,6 +604,19 @@ pub(super) fn partial_proxy_path(proxy: &Path) -> PathBuf {
     proxy.with_extension("partial.mp4")
 }
 
+/// Removes the partial proxies in `dir` not written to for `idle`: a killed
+/// app's. Another Klipp sharing the folder may be writing a recent one.
+pub(super) fn remove_leftover_partials(dir: &Path, idle: std::time::Duration) {
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    for path in entries.flatten().map(|e| e.path()) {
+        let partial = path.file_name().is_some_and(|n| n.to_string_lossy().ends_with(".partial.mp4"));
+        let quiet = std::fs::metadata(&path).and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).is_some_and(|age| age >= idle);
+        if partial && quiet {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+}
+
 /// Whether a file found at the proxy path covers the source: within two
 /// seconds or two percent of its duration, whichever is more (the proxy
 /// encode may drop or pad a few frames at the end). `None` — the file
@@ -695,7 +708,25 @@ mod proxy_completeness_tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    use super::{own_proxy, transcode_is_complete};
+    use super::{own_proxy, remove_leftover_partials, transcode_is_complete};
+
+    /// A partial nothing is writing goes; a finished proxy, and a partial
+    /// still being written, stay.
+    #[test]
+    fn only_a_partial_nothing_is_writing_is_removed() {
+        let dir = std::env::temp_dir().join(format!("klipp-partials-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (old, recent, whole) = (dir.join("a.partial.mp4"), dir.join("b.partial.mp4"), dir.join("c.mp4"));
+        for p in [&old, &recent, &whole] {
+            std::fs::write(p, b"x").unwrap();
+        }
+        let hour = std::time::Duration::from_secs(3600);
+        std::fs::File::options().write(true).open(&old).unwrap().set_modified(std::time::SystemTime::now() - hour).unwrap();
+        std::fs::File::options().write(true).open(&whole).unwrap().set_modified(std::time::SystemTime::now() - hour).unwrap();
+        remove_leftover_partials(&dir, std::time::Duration::from_secs(600));
+        assert!(!old.exists() && recent.exists() && whole.exists());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn a_truncated_transcode_is_not_one() {

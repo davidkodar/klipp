@@ -89,14 +89,13 @@ pub(crate) fn respond(
                 return Err("the timeline is empty: there is nothing to export. Place some clips first.".into());
             }
             let pool = ctx.media_pool.read().recovered();
-            let offline: Vec<String> = seq
-                .tracks
-                .iter()
-                .flat_map(|t| t.clips.iter())
-                .filter_map(|c| c.media_id().and_then(|id| pool.get(&id)))
-                .filter(|m| m.offline)
-                .map(|m| m.filename.clone())
-                .collect();
+            // Each file once: a clip and its linked sound name it twice.
+            let mut offline: Vec<String> = Vec::new();
+            for m in seq.tracks.iter().flat_map(|t| t.clips.iter()).filter_map(|c| c.media_id().and_then(|id| pool.get(&id))).filter(|m| m.offline) {
+                if !offline.contains(&m.filename) {
+                    offline.push(m.filename.clone());
+                }
+            }
             if !offline.is_empty() {
                 return Err(format!("media offline, export refused: {}", offline.join(", ")));
             }
