@@ -1612,7 +1612,7 @@ fn render_grid_view(
 }
 
 /// Truncate text to fit within max_width, adding ellipsis if needed.
-fn truncate_to_width(text: &str, font: egui::FontId, max_w: f32, ui: &egui::Ui) -> String {
+pub(crate) fn truncate_to_width(text: &str, font: egui::FontId, max_w: f32, ui: &egui::Ui) -> String {
     if text.is_empty() || max_w <= 0.0 {
         return text.to_string();
     }
