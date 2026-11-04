@@ -2696,6 +2696,22 @@ fn an_edit_plan_is_proposed_unapproved_and_refused_when_it_cannot_build() {
     assert!(h.edits_seen.lock().unwrap().is_empty(), "a refused plan records nothing");
     // A plan that says it is approved is stored unapproved all the same;
     // that is checked in the document tests, where the pool has a file.
+
+    // A dissolve into a segment from its file's very start has nothing
+    // to play before the cut: refused as it is stored, and a plan stored
+    // before that check is refused its approval, with the build's reason.
+    let mut item = klipp_media::MediaItem::synthetic_for_test("/tmp/plan-join-fixture.mov".into(), None);
+    item.duration = klipp_core::Timecode { value: 240, rate: 24 };
+    let media = h.media_pool.write().unwrap().add(item);
+    let segments = json!([
+        { "media_id": media.0.to_string(), "source_in_secs": 4.0, "source_out_secs": 6.0 },
+        { "media_id": media.0.to_string(), "source_in_secs": 0.0, "source_out_secs": 2.0, "transition": "cross_dissolve" } ]);
+    let r = h.call(json!({ "method": "set_edit_plan", "plan": { "segments": segments.clone() } }));
+    assert!(r["error"].as_str().unwrap().contains("no footage beyond the cut to make the 0.50 s overlap"), "{r}");
+    h.sequence.write().unwrap().edit_plan = Some(serde_json::from_value(json!({ "segments": segments })).unwrap());
+    let r = h.call(json!({ "method": "approve_edit_plan" }));
+    assert!(r["error"].as_str().unwrap().contains("no footage beyond the cut to make the 0.50 s overlap"), "{r}");
+    assert!(!h.sequence.read().unwrap().edit_plan.as_ref().unwrap().approved, "not approved");
 }
 
 /// One call tells a session where it stands and what to do next.

@@ -192,6 +192,14 @@ pub(crate) fn respond(
             if old.approved {
                 return Ok(json!({ "approved": true, "revision": ctx.shared.revision(), "text": "The edit plan is already approved.", "next": "build_edit_plan shows what it builds; with apply true it builds it." }));
             }
+            // Checked again as it is approved, as when it was stored: the
+            // footage or the checks may have moved on since, and a plan
+            // approved and then refused by the build helps no one.
+            {
+                let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+                let pool = ctx.media_pool.read().recovered();
+                klipp_document::edit_plan::validate(&old, &pool, seq.brief.as_ref()).map_err(|why| format!("the edit plan cannot be built: {why}; propose it again with set_edit_plan"))?;
+            }
             let mut new = old.clone();
             new.approved = true;
             let edit = klipp_document::history::EditCommand::SetEditPlan { old: Some(Box::new(old)), new: Some(Box::new(new)) };
