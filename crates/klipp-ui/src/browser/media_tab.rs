@@ -1519,8 +1519,11 @@ fn render_grid_view(
                         // it above or below is taking the clip somewhere,
                         // the timeline: it drags the clip, and drops the
                         // half-made range so the clip's In is not left
-                        // wherever the drag happened to start.
-                        let leaving_thumb = from_thumb && !thumb_rect.y_range().contains(current_pos.y);
+                        // wherever the drag happened to start. So does one
+                        // that leaves the panel level with it, to a track at
+                        // the height of a card low in the pool.
+                        let leaving_thumb = from_thumb
+                            && (!thumb_rect.y_range().contains(current_pos.y) || !ui.clip_rect().x_range().contains(current_pos.x));
                         if leaving_thumb
                             && state.dragging_media.is_none()
                             && state.browser_range_selection.as_ref().is_some_and(|r| r.media_id == item.id)
@@ -3283,6 +3286,30 @@ mod bin_menu_tests {
             }
             assert_eq!(pool.state.dragging_media, Some(a), "from the {start}: dragging");
         }
+    }
+
+    /// A swipe along a thumbnail picks a range, past its end too, while it
+    /// stays in the panel. Out of the panel at the same height, as to a
+    /// track level with a card low in the pool, it takes the clip: only a
+    /// range was picked, and the drop did nothing and said nothing.
+    #[test]
+    fn a_level_drag_out_of_the_panel_takes_the_clip() {
+        let mut pool = Pool::new(BrowserViewMode::Grid, &["a.mov"]);
+        let a = pool.state.media_pool.all().next().expect("a").id;
+        let from = pool.at("a.mov") - egui::vec2(0.0, 30.0);
+        let button = |pos, pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+        pool.frame(vec![egui::Event::PointerMoved(from)]);
+        pool.frame(vec![button(from, true)]);
+        for k in 1..=4 {
+            pool.frame(vec![egui::Event::PointerMoved(from + egui::vec2(10.0 * k as f32, 0.0))]);
+        }
+        assert_eq!(pool.state.dragging_media, None, "along the thumbnail: a range");
+        assert!(pool.state.browser_range_selection.is_some());
+        for k in 1..=40 {
+            pool.frame(vec![egui::Event::PointerMoved(from + egui::vec2(100.0 * k as f32, 0.0))]);
+        }
+        assert_eq!(pool.state.dragging_media, Some(a), "out of the panel: the clip");
+        assert!(pool.state.browser_range_selection.is_none(), "the half-made range dropped");
     }
 
     /// A clip is taken however the drag first shows: a press and one
