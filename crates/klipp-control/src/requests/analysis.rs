@@ -253,7 +253,7 @@ pub(crate) fn respond(
             if in_batch {
                 return Err("auto_redact is its own batch; send it on its own".into());
             }
-            use klipp_document::ops::{Anchor, ClipRef, Op, Transcripts as _};
+            use klipp_document::ops::{Anchor, ClipRef, Op, RedactKey, Transcripts as _};
             let ops: Vec<Op> = {
                 let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
                 let pool = ctx.media_pool.read().recovered();
@@ -268,7 +268,19 @@ pub(crate) fn respond(
                         for s in found.iter().filter(|s| s.end_secs > s_in && s.start_secs < s_out) {
                             let from = t_in + (s.start_secs.max(s_in) - s_in);
                             let to = t_in + (s.end_secs.min(s_out) - s_in);
-                            ops.push(Op::Redact { clip_id: ClipRef::Id(c.id), from: Some(Anchor::Secs(from)), to: Some(Anchor::Secs(to)), x: s.x, y: s.y, w: s.w, h: s.h, kind: "mosaic".into(), amount: None, recipes: None });
+                            // Its boxes on the timeline, following it: one
+                            // that starts before the clip does is held
+                            // from the clip's start.
+                            let cover = s.cover_keys();
+                            let mut keys: Vec<RedactKey> = Vec::new();
+                            for (n, (at, b)) in cover.iter().enumerate() {
+                                let until = cover.get(n + 1).map_or(f64::MAX, |k| k.0);
+                                if until <= s_in || *at >= s_out {
+                                    continue;
+                                }
+                                keys.push(RedactKey { secs: t_in + (at.max(s_in) - s_in), x: b[0], y: b[1], w: b[2], h: b[3] });
+                            }
+                            ops.push(Op::Redact { clip_id: ClipRef::Id(c.id), from: Some(Anchor::Secs(from)), to: Some(Anchor::Secs(to)), x: s.x, y: s.y, w: s.w, h: s.h, keys, kind: "mosaic".into(), amount: None, recipes: None });
                         }
                     }
                 }

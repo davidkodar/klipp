@@ -3412,7 +3412,7 @@ mod tests {
             "proxy": { "auto_generate_on_import": true, "proxy_resolution": "Half" }
         }"#;
         let prefs: Preferences = serde_json::from_str(json).expect("deserialize");
-        assert_eq!(prefs.export.parallel_render_jobs, 1, "the default, one at a time (P38)");
+        assert_eq!(prefs.export.parallel_render_jobs, 1, "the default, one at a time");
         assert!(prefs.export.post_export_command.is_empty());
     }
 

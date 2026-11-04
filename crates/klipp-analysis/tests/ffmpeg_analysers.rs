@@ -317,3 +317,84 @@ fn a_described_picture_is_found_where_it_shows() {
     assert!(best("a blue picture") > 6.0, "blue second");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// The breaths between sentences are measured as pauses: a tone broken
+/// by gaps of 0.22 and 0.25 s, the length of those in fluent speech,
+/// gives two pauses where they are and no silence. Only silences of
+/// 0.4 s were kept, and speech that never paused that long had nowhere
+/// to cut.
+#[test]
+fn the_pauses_between_sentences_are_measured() {
+    let ctx = AnalysisCtx::default();
+    if !ctx.ffmpeg_available() {
+        eprintln!("skipping: no ffmpeg");
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("klipp-analysis-pauses-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let out = dir.join("pauses.wav");
+    let status = std::process::Command::new(&ctx.ffmpeg)
+        .args([
+            "-y", "-hide_banner", "-loglevel", "error",
+            "-f", "lavfi", "-i", "sine=frequency=220:sample_rate=48000:duration=1",
+            "-f", "lavfi", "-i", "anullsrc=r=48000:cl=mono:duration=0.22",
+            "-f", "lavfi", "-i", "sine=frequency=220:sample_rate=48000:duration=1",
+            "-f", "lavfi", "-i", "anullsrc=r=48000:cl=mono:duration=0.25",
+            "-f", "lavfi", "-i", "sine=frequency=220:sample_rate=48000:duration=1",
+            "-filter_complex", "[0:a][1:a][2:a][3:a][4:a]concat=n=5:v=0:a=1[a]",
+            "-map", "[a]",
+        ])
+        .arg(&out)
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let mut item = klipp_media::MediaItem::synthetic_for_test(out.clone(), None);
+    item.duration = klipp_core::RationalTime::from_secs_f64(3.47, 48000);
+    item.video_codec.clear();
+    item.has_audio = true;
+    let v = audio::AudioAnalyser.run(&item, &ctx).expect("audio run");
+    let a: audio::AudioEnvelope = serde_json::from_value(v).unwrap();
+    assert!(a.silences.is_empty(), "no gap is a silence: {:?}", a.silences);
+    assert_eq!(a.pauses.len(), 2, "{:?}", a.pauses);
+    for (p, (from, to)) in a.pauses.iter().zip([(1.0, 1.22), (2.22, 2.47)]) {
+        assert!((p.start_secs - from).abs() < 0.03 && (p.end_secs - to).abs() < 0.03, "{p:?} for {from}-{to}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A screen recording whose one line slides across for six seconds and
+/// then stays: the beat sheet makes the slide one action, puts no cut
+/// point inside it (it cut every second, at "a change just settled", in
+/// the middle of the move), and has the screen settled after it.
+#[test]
+fn a_slide_is_one_action_with_no_cut_inside_it() {
+    let ctx = AnalysisCtx::default();
+    if !ctx.ffmpeg_available() {
+        eprintln!("skipping: no ffmpeg");
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("klipp-beatsheet-slide-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let out = dir.join("slide.mp4");
+    let font = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/fonts/Inter/Inter-Regular.ttf");
+    let vf = format!("drawtext=fontfile='{}':text='Email alice at example dot com':fontsize=48:fontcolor=0x111111:x='100+500*min(t/6\\,1)':y=200", font.display());
+    let made = std::process::Command::new(&ctx.ffmpeg)
+        .args(["-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "color=c=0xf4f4f4:s=1280x720:r=25:d=10", "-vf", &vf, "-c:v", "libx264", "-pix_fmt", "yuv420p"])
+        .arg(&out)
+        .status()
+        .is_ok_and(|s| s.success());
+    assert!(made, "ffmpeg makes the slide");
+    let mut item = klipp_media::MediaItem::synthetic_for_test(out.clone(), None);
+    item.duration = klipp_core::RationalTime::from_secs_f64(10.0, 25);
+    item.video_codec = "h264".into();
+    item.resolution = klipp_core::Resolution { width: 1280, height: 720 };
+    item.has_audio = false;
+    let v = klipp_analysis::beatsheet::BeatSheetAnalyser.run(&item, &ctx).expect("beat sheet runs");
+    std::fs::remove_dir_all(&dir).ok();
+    let bs: klipp_analysis::beatsheet::BeatSheet = serde_json::from_value(v).unwrap();
+    let inside: Vec<f64> = bs.cut_points.iter().map(|c| c.secs).filter(|t| *t > 0.6 && *t < 5.4).collect();
+    assert!(inside.is_empty(), "no cut in the middle of the slide: {:?}", bs.cut_points);
+    let actions: Vec<&klipp_analysis::beatsheet::Segment> = bs.segments.iter().filter(|s| s.kind == "action").collect();
+    assert!(actions.iter().any(|s| s.start_secs <= 0.6 && s.end_secs >= 5.4), "one action through the slide: {:?}", bs.segments);
+    assert!(bs.segments.iter().any(|s| s.kind == "idle" && s.start_secs <= 6.6 && s.end_secs >= 9.5), "settled after it: {:?}", bs.segments);
+}

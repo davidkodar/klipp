@@ -1162,6 +1162,9 @@ pub enum ControlCommand {
         dry_run: bool,
         #[serde(default)]
         verify: Option<String>,
+        /// Collect what is there though media the project uses is offline.
+        #[serde(default)]
+        allow_offline: bool,
     },
 
     // ── Delivery ──────────────────────────────────────────────────
@@ -1526,10 +1529,11 @@ pub enum ControlCommand {
         #[serde(default)]
         replace: bool,
     },
-    /// The brand kit `name` taken into the open sequence, as one undo
-    /// step: `parts` (all when left out) of `brief` (its colours and title
-    /// looks into the brief) and `captions` (its caption look onto every
-    /// subtitle track that has none of its own).
+    /// The brand kit `name` taken into the open sequence: `parts` of
+    /// `brief` (its colours and title looks into the brief) and `captions`
+    /// (its caption look onto every subtitle track that has none of its
+    /// own), one undo step, and of `intro`, `outro` and `watermark` (its
+    /// logo), another. Left out, `brief` and `captions`.
     ApplyBrandKit {
         name: String,
         #[serde(default)]
@@ -1997,6 +2001,11 @@ pub enum ControlCommand {
         /// default). The counts count every finding (#2492).
         #[serde(default)]
         min_severity: Option<String>,
+        /// A render the check is run alongside, not counted as one that
+        /// keeps it from rendering frames of its own: review's own draft.
+        /// Set by Klipp, never by a client.
+        #[serde(skip)]
+        own_render: Option<std::path::PathBuf>,
     },
     /// Spelling in the titles and captions (#3236). `list` (the default)
     /// gives each word no dictionary and no project word knows, with
