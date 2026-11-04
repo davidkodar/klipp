@@ -1766,9 +1766,16 @@ impl KlippApp {
         let any_skim_state_alive = self.state.browser_skim_media_id.is_some()
             || self.state.skim_audio_session.is_some()
             || self.state.program_skim_active;
+        // An edit changes the picture under a resting skim: asked for again.
+        let revision = self.sequence.revision();
+        if self.state.timeline_skim_revision != Some(revision) {
+            self.state.timeline_skim_revision = Some(revision);
+            self.state.timeline_skim_last = None;
+        }
         if (!self.state.browser_skim_active_this_frame && any_skim_state_alive) || lost_focus {
             // The skim is over: coming back to the same frame asks for it again.
             self.state.skim_last_requested = None;
+            self.state.timeline_skim_last = None;
             if self.state.browser_skim_media_id.is_some() {
                 // Route the cleared handle through the deferred-drop ring —
                 // the current frame's submit may still reference its ID,
