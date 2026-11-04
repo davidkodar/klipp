@@ -2041,7 +2041,10 @@ impl Renderer {
         self.executor.set_grade_encoding(self.grade_encoding);
         self.executor.set_working_colorspace(self.working);
         self.executor.set_render_scale(self.px_scale);
-        if clip.grade_is_identity() {
+        // Keyed to nothing at this frame counts as well: going through
+        // `grade` there brought the frame back on the CPU, and the export
+        // then left the GPU for the whole clip.
+        if clip.grade_is_identity() || clip.grade().is_identity_at(clip_time) {
             // Seeded where it is: a decoded frame's own seed, or a
             // scene-referred frame's codes decoded on the GPU as `grade`
             // seeds them for a real graph. Refusing the second sent every

@@ -497,7 +497,7 @@ exist until the plan runs.
   sequence) with the picture itself, enlarged and blurred, so the frame
   is full and the whole picture still shows; more `amount` is softer
   and darker. Put it on every such clip when asked to fill the bars.
-- `track_audio {track, effect, params?, bypass?, remove?}`: the track's
+- `track_audio {track, effect, params?, bypass?, remove?, to?}`: the track's
   own audio chain, run after every clip's own: an EQ and a compressor on
   the dialogue track, a limiter on the music. `effect` is `eq`,
   `compressor`, `limiter`, `gate`, `high_pass`, `denoiser`,
@@ -506,8 +506,9 @@ exist until the plan runs.
   `multiband_compressor`; `params` by name set it (the rest stay at their
   defaults), on the one there or a new one at the end (a name the effect
   lacks is refused; topic `op.track_audio` lists them); `bypass` switches
-  it off or on; `remove` takes it off. Set once, it holds for every clip
-  of the track. `effect` may also be an installed LV2 or CLAP plug-in's
+  it off or on; `remove` takes it off; `to` moves it to that place in
+  the chain (0 first), the order the sound goes through them. Set once,
+  it holds for every clip of the track. `effect` may also be an installed LV2 or CLAP plug-in's
   id (`lv2:…`, `clap:…`; `audio_plugins` lists them), its `params` by
   name or key and inside their ranges.
 - `aux_bus {bus?, name?, volume_db?, pan?, mute?, output?, effect?, params?, bypass?, remove?}`:
@@ -526,7 +527,7 @@ exist until the plan runs.
   off. Up to 16 sends a track. The buses and sends are listed in
   `timeline` and `orient`; playback and the export mix them alike, a
   bus's latency made up for (at most 2 s through the buses).
-- `clip_audio {clip_id, effect, params?, bypass?, remove?}`: the same on
+- `clip_audio {clip_id, effect, params?, bypass?, remove?, to?}`: the same on
   one clip's own chain (a linked pair's, either clip named): a built-in
   effect or an installed plug-in. Five voice tools in it: `normalize`
   brings the whole clip to `target_lufs` integrated by one gain, its

@@ -149,6 +149,10 @@ enum MixCommand {
     /// Drain all staging consumers and main producer (on seek).
     /// The mix thread sets the ack flag when done.
     Flush { ack: Arc<AtomicBool> },
+    /// The output's drain of the main ring after a seek: asked (the seek
+    /// generation) and done. Nothing new is pushed while one is asked and
+    /// not done, so the drain takes only what was mixed before the seek.
+    WatchDrain { asked: Arc<AtomicU64>, done: Arc<AtomicU64> },
     /// Stop the mix thread.
     Stop,
 }
@@ -305,6 +309,17 @@ impl MixThread {
     /// Remove all staging consumers (e.g., on clip change or stop).
     pub fn clear_all(&self) {
         let _ = self.cmd_tx.send(MixCommand::ClearAll);
+    }
+
+    /// Hold new samples back from the main ring while the output's drain
+    /// after a seek is asked and not yet done: `asked` and `done` are the
+    /// output's ([`crate::audio_output::AudioOutput::drain_flags`]). The
+    /// output drains at its next callback, which a paused stream may run
+    /// a long quantum later; the samples from the playhead mixed in the
+    /// meantime were drained with the stale ones, and the first 150-190 ms
+    /// of a play from a parked playhead were never heard.
+    pub fn watch_drain(&self, asked: Arc<AtomicU64>, done: Arc<AtomicU64>) {
+        let _ = self.cmd_tx.send(MixCommand::WatchDrain { asked, done });
     }
 
     /// Flush all staging and main buffers. Blocks until the mix thread
@@ -466,6 +481,8 @@ fn mix_loop(
     // The latency the picture was last held back by: the aux routing
     // (#2861) changes it from the edit side, with no track's changing.
     let mut pdc_pushed: u32 = 0;
+    // The output's drain after a seek (asked, done), once it is watched.
+    let mut drain: Option<(Arc<AtomicU64>, Arc<AtomicU64>)> = None;
 
     loop {
         // A test's (#3181): outside the block's catch, so the thread ends.
@@ -527,6 +544,7 @@ fn mix_loop(
                     ack.store(true, Ordering::Release);
                     debug!("Mix thread: flushed all staging buffers");
                 }
+                MixCommand::WatchDrain { asked, done } => drain = Some((asked, done)),
                 MixCommand::Stop => {
                     debug!("Mix thread stopping");
                     return;
@@ -537,6 +555,14 @@ fn mix_loop(
         // If no stagings, sleep and retry
         if stagings.is_empty() {
             std::thread::sleep(Duration::from_millis(10));
+            continue;
+        }
+
+        // The output's drain after a seek, asked and not yet done: what is
+        // mixed now is from the new place, and would be drained with the
+        // stale samples.
+        if drain.as_ref().is_some_and(|(asked, done)| done.load(Ordering::Acquire) < asked.load(Ordering::Acquire)) {
+            std::thread::sleep(Duration::from_millis(1));
             continue;
         }
 
@@ -846,6 +872,46 @@ mod source_mix_tests {
             let onset = heard.chunks_exact(2).position(|f| f[0] != 0.0).expect("the sound is heard");
             assert_eq!(onset as u64, start, "{rate}: heard from its own sample");
         }
+    }
+
+    /// A play from a parked playhead is heard from the playhead's sample:
+    /// after a seek the output drains the main ring at its next callback,
+    /// and nothing mixed from the new place goes in before that drain is
+    /// done. The samples from the playhead went in first and were drained
+    /// with the stale ones, and the first 150-190 ms were never heard.
+    #[test]
+    fn after_a_seek_the_new_samples_wait_for_the_drain() {
+        use super::MixThread;
+        use ringbuf::traits::{Consumer, Observer, Producer, Split};
+        use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+        use std::sync::{Arc, Mutex};
+
+        let mixer = Arc::new(Mutex::new(klipp_audio::AudioMixer::new(1)));
+        let (mt, mut main) = MixThread::new(48_000, mixer, Arc::new(crate::sync::MasterClock::new()), false);
+        // A seek asked of the output, its drain not done yet.
+        let (asked, done) = (Arc::new(AtomicU64::new(1)), Arc::new(AtomicU64::new(0)));
+        mt.watch_drain(asked, done.clone());
+        // The sound from the playhead, staged: 2048 samples, a ramp so the
+        // first is told from the rest.
+        let (mut producer, consumer) = ringbuf::HeapRb::<f32>::new(4096).split();
+        let staged: Vec<f32> = (0..2048).map(|i| 0.1 + i as f32 * 1e-4).collect();
+        assert_eq!(producer.push_slice(&staged), staged.len());
+        mt.add_staging(crate::engine::source_key(0, 0), consumer, Arc::new(AtomicU32::new(0)), Arc::new(super::SourceMix::default()));
+        std::thread::sleep(std::time::Duration::from_millis(60));
+        assert_eq!(main.occupied_len(), 0, "nothing goes in while the drain is asked");
+
+        done.store(1, Ordering::Release);
+        let mut heard: Vec<f32> = Vec::new();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while heard.len() < staged.len() && std::time::Instant::now() < deadline {
+            let mut buf = vec![0.0f32; 4096];
+            let got = main.pop_slice(&mut buf);
+            heard.extend_from_slice(&buf[..got]);
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert_eq!(heard.len(), staged.len(), "every sample from the playhead is heard");
+        let ratio = heard[0] / staged[0];
+        assert!(heard.iter().zip(&staged).all(|(h, s)| (h - s * ratio).abs() < 1e-4), "from the playhead's first sample, in order");
     }
 
     /// #1632: at a cut on one track the outgoing sound ends on the cut's
