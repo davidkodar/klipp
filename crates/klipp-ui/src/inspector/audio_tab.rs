@@ -58,6 +58,16 @@ impl Default for DuckSettings {
     }
 }
 
+/// The track a clip on track `own` ducks under, as first offered: the
+/// first other sound track with speech on it, else the first other sound
+/// track. `None` when there is no other: then nothing is offered, where
+/// track 0 (a picture track) was, and the duck followed its clips.
+pub fn default_sidechain(seq: &klipp_timeline::Sequence, own: usize) -> Option<usize> {
+    let other_sound = |(i, t): &(usize, &klipp_timeline::Track)| *i != own && t.kind == klipp_timeline::TrackKind::Audio;
+    let speech = seq.tracks.iter().enumerate().filter(other_sound).find(|(_, t)| t.clips.iter().any(|c| c.role.as_ref().is_some_and(|r| r.is_speech()))).map(|(i, _)| i);
+    speech.or_else(|| seq.tracks.iter().enumerate().find(other_sound).map(|(i, _)| i))
+}
+
 impl DuckSettings {
     /// Build a fresh DuckSettings seeded from the user's audio prefs.
     /// Caller is responsible for overriding `sidechain_track` afterwards
@@ -898,8 +908,10 @@ fn show_clip_audio(
             slider_row(ui, theme, "duck_threshold", "Threshold", &mut duck.threshold, 0.0..=1.0, 0.1, 0.005, 2, "", empty_ks, false);
 
             ui.add_space(4.0);
-            // Self-ducking guard — target track cannot be its own sidechain source.
-            let is_self_duck = duck.sidechain_track == track_idx;
+            // Self-ducking guard — target track cannot be its own sidechain
+            // source, nor a track with no sound (none other to choose).
+            let no_other = !tracks.iter().any(|t| t.index != track_idx);
+            let is_self_duck = duck.sidechain_track == track_idx || !tracks.iter().any(|t| t.index == duck.sidechain_track);
             ui.horizontal(|ui| {
                 ui.add_space(14.0);
                 let btn = ui.add_enabled(
@@ -927,7 +939,7 @@ fn show_clip_audio(
                 ui.horizontal(|ui| {
                     ui.add_space(14.0);
                     ui.label(
-                        egui::RichText::new("Sidechain source cannot be the same track as the target.")
+                        egui::RichText::new(if no_other { "No other track has sound to duck under." } else { "Sidechain source cannot be the same track as the target." })
                             .size(super::rows::TEXT)
                             .color(theme.marker_warning),
                     );
@@ -1303,6 +1315,45 @@ mod sequence_properties_tests {
 mod clip_audio_tests {
     use super::*;
     use crate::inspector::rows::test_frame::{click, frame};
+
+    /// P16: with no other sound track the clip has nothing to duck under:
+    /// Apply is refused with the reason. Offered track 0, a picture track,
+    /// the duck followed its clips with nothing said.
+    #[test]
+    fn with_no_other_sound_track_there_is_nothing_to_duck_under() {
+        let state = AppState::default();
+        let clip = clip();
+        let mut duck = DuckSettings::default();
+        let ctx = egui::Context::default();
+        crate::icons::install(&ctx);
+        let mut d = |ui: &mut egui::Ui, theme: &KlippTheme, cmds: &mut Vec<AppCommand>| {
+            let tracks = [TrackInfo { index: 1, name: "Voice".into() }];
+            show(ui, theme, &state, Some((&clip, 1, true)), cmds, (0.0, 0.0), None, Some(2), 0.5, &mut duck, &tracks);
+        };
+        let (texts, _) = frame(&ctx, Vec::new(), &mut d);
+        assert!(texts.iter().any(|(t, _)| t == "No other track has sound to duck under."), "the reason said");
+        let at = texts.iter().find(|(t, _)| t == "Apply Auto Duck").expect("the button").1;
+        let cmds = click(&ctx, at, &mut d);
+        assert!(!cmds.iter().any(|c| matches!(c, AppCommand::AutoDuckAudio { .. })), "nothing ducked: {cmds:?}");
+    }
+
+    /// The track first offered to duck under: another sound track, the one
+    /// with speech first; never the clip's own; none without another.
+    #[test]
+    fn the_first_offered_sidechain_is_another_sound_track() {
+        use klipp_timeline::{Track, TrackKind};
+        let mut seq = klipp_timeline::Sequence::new_default();
+        seq.tracks = vec![Track::new("V1", TrackKind::Video), Track::new("A1", TrackKind::Audio)];
+        assert_eq!(default_sidechain(&seq, 1), None, "only its own: none");
+        seq.tracks.push(Track::new("A2", TrackKind::Audio));
+        let mut a3 = Track::new("A3", TrackKind::Audio);
+        let mut voice = clip();
+        voice.role = Some(klipp_core::roles::RoleRef::of("dialogue"));
+        a3.clips.push(voice);
+        seq.tracks.push(a3);
+        assert_eq!(default_sidechain(&seq, 1), Some(3), "the speech first");
+        assert_eq!(default_sidechain(&seq, 3), Some(1), "another sound track, never its own");
+    }
 
     fn clip() -> Clip {
         let t = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 24);

@@ -3916,7 +3916,7 @@ mod catalogue_trim_tests {
         ("klipp_spelling", "spelling", &["suggestions", "project", "every"]),
         ("klipp_operation_status", "operation_status", &["revision", "reason"]),
         ("klipp_check_delivery", "check_delivery", &["pass", "warn", "fail"]),
-        ("klipp_skin_balance", "skin_balance", &["40", "65", "three", "rounds", "apply"]),
+        ("klipp_skin_balance", "skin_balance", &["25", "70", "three", "rounds", "apply"]),
         ("klipp_cancel_job", "cancel_job", &["import", "sync", "stopped"]),
         ("klipp_transcript", "transcript", &["words", "silent"]),
         ("klipp_detect_scene_cuts", "detect_scene_cuts", &["flattened", "montage", "background"]),

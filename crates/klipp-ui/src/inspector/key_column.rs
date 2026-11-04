@@ -61,7 +61,7 @@ impl KeyColumn {
         let lane = column.shrink2(egui::vec2(INSET, 0.0));
         let px_per_sec = (lane.width() as f64 / duration).max(1e-3) as f32;
         let x_of = |t: f64| lane.min.x + t as f32 * px_per_sec;
-        let t_of = |x: f32| (((x - lane.min.x) / px_per_sec) as f64).clamp(0.0, duration);
+        let t_of = |x: f32| (((x - lane.min.x) / px_per_sec) as f64).clamp(0.0, duration.max(0.0));
         let fps = state.sequence().fps.as_f64().max(1.0);
         let playhead = (state.playhead - clip.timeline_in).to_secs_f64();
         let on_key = |t: f64| (t - playhead).abs() < 0.5 / fps;
