@@ -1,7 +1,7 @@
 //! The built-in title library applied as a drop on the timeline applies
 //! it (#1724): every template in one drag, its fields edited after.
 
-use super::titles::{add_title_clip, free_text_track};
+use super::titles::{add_title_clip, after_title_added, free_text_track};
 use crate::browser::titles_tab::{Entry, TITLES};
 use crate::state::AppState;
 use klipp_core::TitleFieldValue as V;
@@ -87,3 +87,22 @@ fn a_template_dropped_on_a_tall_sequence_is_laid_out_for_it() {
     assert!(y < klipp_timeline::title_library::TALL_BAND_TOP - 0.05, "the name at {y}");
     assert_eq!(td.template.as_deref(), Some("Name Bar"), "still marked as made from it");
 }
+
+/// A title added from a template with an entrance leaves the playhead
+/// where it is: nothing that follows the add seeks. It was moved a
+/// second on, to where the title rests, unasked.
+#[test]
+fn adding_a_title_leaves_the_playhead_where_it_is() {
+    let tpl = TITLES.iter().find(|t| t.name == "Accent Block").expect("Accent Block");
+    let mut state = AppState { pending_title_data: Some(Entry::Builtin(tpl).data()), ..Default::default() };
+    state.playhead = klipp_core::Timecode::from_frames(48, state.sequence().fps.rate());
+    let frames = state.sequence().fps.rate() * 5;
+    let at = state.playhead;
+    let track = free_text_track(&mut state, at, frames);
+    let (id, rest) = add_title_clip(&mut state, track, at, frames);
+    assert!(rest.is_some_and(|r| r != at), "the template has an entrance to rest past");
+    assert_eq!(state.playhead, at, "the add itself leaves the playhead");
+    let follows = after_title_added(&state, id);
+    assert!(!follows.iter().any(|c| matches!(c, klipp_core::AppCommand::SeekTo(_))), "nothing after it seeks: {follows:?}");
+}
+
