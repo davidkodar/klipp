@@ -329,10 +329,18 @@ pub(crate) fn respond(
                 let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
                 settings.shape_warning(seq.resolution.width, seq.resolution.height)
             };
+            // The warning is the person's words; how the assistant makes
+            // the version is said beside it.
+            let frame_fix = frame_warning.as_ref().map(|_| {
+                let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+                let (w, h) = settings.output_size(seq.resolution.width, seq.resolution.height);
+                Ok::<_, &str>(format!("the format op with width {w} and height {h}, refit following the subjects, then export that version"))
+            }).transpose()?;
             // Said, because it cannot be seen from the reply otherwise and
             // decides whether a sidecar file is needed.
             let said = json!({
                 "frame_warning": frame_warning,
+                "frame_fix": frame_fix,
                 "range": range,
                 // What the file carries, not what was asked: a sound-only
                 // file, or a timeline with no captions, carries none.
