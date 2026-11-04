@@ -30,7 +30,8 @@ An export of another shape than the timeline (a square or vertical preset of a 1
 Several formats at once: `outputs` in place of `path`, each `{format, path, preset?, target_lufs?}` with format 16:9, 9:16, 1:1 or 4:5 (#2724). Each is exported from the open sequence's version at that aspect, a sequence of its own named "<name> 9:16" and so on: the sequence itself when it already has that shape, the version that exists, or one made now and reframed to follow the subjects once its files' framing analysis is done, its export waiting for that. Loudness is -14 LUFS unless the preset or target_lufs says otherwise. To change one format's framing, open its version and reframe its clips there; the next delivery uses it as it is. A version is a copy: when the master's cut has changed since it was made (a trim, a shot added or removed), the reply names it under `stale`, and what it delivers is the old cut; it is never rebuilt without being asked. Refused: a format that isn't one of the four, a path that isn't absolute, two outputs to one file.
 
 Arguments:
-- `burn_captions`: Captions burnt in (default on); titles always are; the reply says which
+- `burn_captions`: Captions burnt in (default on); titles always are; the reply says which. In an export of another shape than the timeline (9:16 of a 16:9 cut), burnt-in captions are laid out for the export's frame, their size and height that frame's, above its platform's player, in their own style
+- `embed_captions`: Captions as a soft subtitle track the player turns on, not burnt in (mp4, mov, mkv, webm)
 - `captions_608`: CEA-608 in the video stream (h264/hevc)
 - `hdr10plus`: ST 2094-40 per shot (hevc, pq)
 - `target_lufs`: Loudness target: -14 web, -23 broadcast; default the brief's

@@ -430,6 +430,13 @@ pub(super) fn export_version_suffix(first: &str, active: Option<&str>, timeline:
     Some(format!("{}:{}", export.0 / g, export.1 / g))
 }
 
+/// What Play hands the desktop's opener for a finished render: its file
+/// as a `file://` URI, as Open in External App does, so a name that reads
+/// as an option, a folder or a missing file never reaches it (EX3).
+pub(super) fn play_target(path: &std::path::Path) -> Result<String, String> {
+    crate::ui_util::file_uri(path).ok_or_else(|| format!("{} is not a file Klipp can hand to the player", path.display()))
+}
+
 /// What the form says under the output file when a file of that name is
 /// already there: Export asks before writing over it, unless the
 /// preferences say to write over without asking.
@@ -3774,8 +3781,13 @@ impl KlippApp {
                     self.state.show_render_queue = false;
                 }
                 crate::panels::render_queue::RenderQueueAction::Play(path) => {
-                    if let Err(e) = crate::ui_util::open_external(&path) {
-                        self.state.toast.show(format!("Could not open {}: {e}", path.display()));
+                    match play_target(&path) {
+                        Ok(uri) => {
+                            if let Err(e) = crate::ui_util::open_external(&uri) {
+                                self.state.toast.show(format!("Could not open {}: {e}", path.display()));
+                            }
+                        }
+                        Err(why) => self.state.toast.show(why),
                     }
                 }
                 crate::panels::render_queue::RenderQueueAction::ShowInFolder(path) => {
@@ -4998,5 +5010,23 @@ mod field_id_tests {
         let enter = egui::Event::Key { key: egui::Key::Enter, physical_key: Some(egui::Key::Enter), pressed: true, repeat: false, modifiers: egui::Modifiers::NONE };
         run(vec![enter], true, &mut bitrate, &mut field);
         assert_eq!(bitrate, 204.0, "Enter set the value typed");
+    }
+}
+
+#[cfg(test)]
+mod play_target_tests {
+    /// EX3: Play opens a render as a file:// URI; a folder, a missing
+    /// file or a relative, option-like name is refused, not handed over.
+    #[test]
+    fn play_hands_over_a_file_uri_only() {
+        let dir = std::env::temp_dir().join(format!("klipp_play_{}_{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.subsec_nanos()).unwrap_or(0)));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("render 1.mp4");
+        std::fs::write(&file, b"x").unwrap();
+        assert!(super::play_target(&file).is_ok_and(|u| u.starts_with("file://") && u.contains("render%201.mp4")));
+        assert!(super::play_target(&dir).is_err(), "a folder");
+        assert!(super::play_target(&dir.join("gone.mp4")).is_err(), "a missing file");
+        assert!(super::play_target(std::path::Path::new("--version")).is_err(), "an option-like name");
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

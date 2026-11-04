@@ -20,6 +20,8 @@ mod a_cover_is_its_frame_cropped_with_its_words;
 mod audio_only_export;
 #[path = "../captions_608_export.rs"]
 mod captions_608_export;
+#[path = "../captions_follow_the_export_frame.rs"]
+mod captions_follow_the_export_frame;
 #[path = "../clip_sources_reads_the_media.rs"]
 mod clip_sources_reads_the_media;
 #[path = "../export_reads_chroma_as_the_viewer.rs"]

@@ -36,6 +36,12 @@ impl Backdrop {
             .collect();
         Self(Arc::new(v))
     }
+
+    /// Bright grey on the left half, dark blue on the right.
+    fn split() -> Self {
+        let v = (0..H).flat_map(|_| (0..W).flat_map(|x| if x < W / 2 { [0.85, 0.85, 0.85, 1.0] } else { [0.03, 0.04, 0.3, 1.0] })).collect();
+        Self(Arc::new(v))
+    }
 }
 
 impl FrameSource for Backdrop {
@@ -60,13 +66,17 @@ fn seq(protect: ContrastProtect) -> Sequence {
 /// The frame on the GPU stack, checked against the CPU path; `None`
 /// when the stack declined it.
 fn render(protect: ContrastProtect, bright: bool) -> Option<Vec<u8>> {
+    render_over(protect, || Backdrop::new(bright))
+}
+
+fn render_over(protect: ContrastProtect, backdrop: impl Fn() -> Backdrop) -> Option<Vec<u8>> {
     let seq = seq(protect);
     let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
     r.set_gpu_enabled(true);
-    let (stack, _) = r.render_display_u8_on_gpu(&seq, tc(1.0), W, H, &mut Backdrop::new(bright), RenderOptions::default())?;
+    let (stack, _) = r.render_display_u8_on_gpu(&seq, tc(1.0), W, H, &mut backdrop(), RenderOptions::default())?;
     let mut cpu = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
     cpu.set_gpu_enabled(false);
-    let want = klipp_effects::linear_f32_rgba_to_srgb_u8(&cpu.render(&seq, tc(1.0), W, H, &mut Backdrop::new(bright), RenderOptions::default()));
+    let want = klipp_effects::linear_f32_rgba_to_srgb_u8(&cpu.render(&seq, tc(1.0), W, H, &mut backdrop(), RenderOptions::default()));
     let worst = stack.iter().zip(&want).map(|(a, b)| (*a as i32 - *b as i32).abs()).max().unwrap_or(0);
     assert!(worst <= 3, "{protect:?}: the stack differs from the CPU path by {worst} levels");
     Some(stack)
@@ -127,4 +137,46 @@ fn protected_text_reads_over_a_bright_picture() {
     let worst = kept.iter().zip(&dark).map(|(a, b)| (*a as i32 - *b as i32).abs()).max().unwrap_or(0);
     assert!(worst <= 1, "over a dark picture Auto leaves it as it was ({worst} levels)");
     eprintln!("contrast: off {off:.2}:1, auto {auto:.2}:1, always {always:.2}:1");
+}
+
+/// White text across a picture half bright, half dark blue: the shade
+/// behind it is even, the same over both halves, as much as the bright
+/// half needs. Worked out place by place it darkened only behind the
+/// letters over the bright half, an off-centre patch. Measured as the
+/// protected frame's luminance over the unprotected one's, just round
+/// the letters, on each half.
+#[test]
+fn a_title_over_bright_and_dark_is_shaded_evenly() {
+    let Some(off) = render_over(ContrastProtect::Off, Backdrop::split) else {
+        assert!(!required(), "required, but the GPU stack declined the title");
+        eprintln!("UNVERIFIED: no GPU stack");
+        return;
+    };
+    let auto = render_over(ContrastProtect::Auto, Backdrop::split).unwrap();
+    // The letters: lit in the unprotected frame over the dark picture.
+    let lit = render(ContrastProtect::Off, false).unwrap();
+    let glyphs: Vec<bool> = (0..(W * H) as usize).map(|i| lit[i * 4] > 200).collect();
+    let near = |x: u32, y: u32, r: i32| {
+        (-r..=r).any(|dy| (-r..=r).any(|dx| {
+            let (gx, gy) = (x as i32 + dx, y as i32 + dy);
+            gx >= 0 && gy >= 0 && gx < W as i32 && gy < H as i32 && glyphs[(gy as u32 * W + gx as u32) as usize]
+        }))
+    };
+    let shade = |left: bool| {
+        let ratios: Vec<f32> = (0..H)
+            .flat_map(|y| (0..W).map(move |x| (x, y)))
+            .filter(|&(x, _)| if left { x + 8 < W / 2 } else { x > W / 2 + 8 })
+            .filter(|&(x, y)| !near(x, y, 1) && near(x, y, 4))
+            .map(|(x, y)| {
+                let i = (y * W + x) as usize;
+                luminance(&auto, i) / luminance(&off, i).max(1e-4)
+            })
+            .collect();
+        assert!(ratios.len() > 200, "the letters reach both halves: {} pixels round them", ratios.len());
+        ratios.iter().sum::<f32>() / ratios.len() as f32
+    };
+    let (bright, dark) = (shade(true), shade(false));
+    eprintln!("shade round the letters: bright half {bright:.3}, dark half {dark:.3}");
+    assert!(bright < 0.6, "the bright half is shaded: {bright:.3}");
+    assert!((bright - dark).abs() < 0.08, "the shade is even across the title: bright half {bright:.3}, dark half {dark:.3}");
 }
