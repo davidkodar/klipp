@@ -1529,10 +1529,11 @@ pub enum ControlCommand {
         #[serde(default)]
         replace: bool,
     },
-    /// The brand kit `name` taken into the open sequence, as one undo
-    /// step: `parts` (all when left out) of `brief` (its colours and title
-    /// looks into the brief) and `captions` (its caption look onto every
-    /// subtitle track that has none of its own).
+    /// The brand kit `name` taken into the open sequence: `parts` of
+    /// `brief` (its colours and title looks into the brief) and `captions`
+    /// (its caption look onto every subtitle track that has none of its
+    /// own), one undo step, and of `intro`, `outro` and `watermark` (its
+    /// logo), another. Left out, `brief` and `captions`.
     ApplyBrandKit {
         name: String,
         #[serde(default)]
