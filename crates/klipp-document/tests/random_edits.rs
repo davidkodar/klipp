@@ -2,7 +2,9 @@
 //! generator, a small project gets long runs of real edits through the
 //! paths the app and the ops use: the ops (place, insert and overwrite,
 //! trims with and without ripple, split, move across tracks, remove with
-//! and without ripple, retime, slip, slide, transitions) and the magnetic
+//! and without ripple, retime, slip, slide, transitions, auditions, covers)
+//! and the multicam edits the app makes on the clips (made a group, an angle
+//! cut to) and the magnetic
 //! primary's own edits the timeline makes (ripple trims, ripple delete,
 //! move) and its blade (`blade::blade_linked`, the clip and its linked
 //! partner cut together), with undo and redo at random. After every step:
@@ -123,6 +125,21 @@ enum Step {
     /// The timeline's blade: the clip and its linked partner cut together,
     /// a magnetic track cut its own way.
     Blade { clip: usize, at: f64 },
+    AddVideoTrack,
+    /// A clip's slot made an audition, its new take a file's stretch or,
+    /// with none, a copy of the clip.
+    AuditionCreate { clip: usize, take: Option<TakeOf> },
+    AuditionAdd { clip: usize, take: Option<TakeOf> },
+    /// The audition's slot switched to a take, by its place among them.
+    AuditionSwitch { clip: usize, take: usize, ripple: bool },
+    AuditionFinalize { clip: usize },
+    /// The pictures at a share of the timeline made a multicam group.
+    MulticamCreate { at: f64 },
+    /// The group there cut to an angle, by its place among them.
+    MulticamSwitch { at: f64, angle: usize },
+    /// A cover made, or with `named` one changed, by its place among them.
+    Cover { named: Option<usize>, at: Option<f64>, size: usize, crop: Option<(f32, f32, f32)>, title: Option<usize> },
+    CoverRemove { named: usize },
     Undo,
     Redo,
 }
@@ -130,6 +147,9 @@ enum Step {
 fn random_step(r: &mut Rng) -> Step {
     let clip = r.below(64) as usize;
     let frames = |r: &mut Rng| r.below(60) as i64 - 30;
+    if r.below(3) == 0 {
+        return more_step(r, clip);
+    }
     match r.below(17) {
         0 | 1 => Step::Place { media: r.below(2) as usize, track: r.below(4) as usize, at: r.share() * 1.2, frames: 12 + r.below(100) as i64, insert: r.coin() },
         2 => Step::Trim { clip, out: r.coin(), to: r.share(), ripple: r.coin() },
@@ -147,6 +167,36 @@ fn random_step(r: &mut Rng) -> Step {
         14 => Step::Undo,
         15 => Step::Redo,
         _ => Step::Blade { clip, at: r.share() },
+    }
+}
+
+/// A take from a file: which, from a share of it, how many frames long.
+#[derive(Debug, Clone, Copy)]
+struct TakeOf {
+    media: usize,
+    from: f64,
+    frames: i64,
+}
+
+/// A step of the auditions, multicam and covers.
+fn more_step(r: &mut Rng, clip: usize) -> Step {
+    let take = |r: &mut Rng| r.coin().then(|| TakeOf { media: r.below(2) as usize, from: r.share() * 0.8, frames: 12 + r.below(100) as i64 });
+    match r.below(10) {
+        0 => Step::AddVideoTrack,
+        1 | 2 => Step::AuditionCreate { clip, take: take(r) },
+        3 => Step::AuditionAdd { clip, take: take(r) },
+        4 => Step::AuditionSwitch { clip, take: r.below(4) as usize, ripple: r.coin() },
+        5 => Step::AuditionFinalize { clip },
+        6 => Step::MulticamCreate { at: r.share() },
+        7 => Step::MulticamSwitch { at: r.share(), angle: r.below(4) as usize },
+        8 => Step::Cover {
+            named: r.coin().then(|| r.below(4) as usize),
+            at: r.coin().then(|| r.share()),
+            size: r.below(4) as usize,
+            crop: r.coin().then(|| (r.share() as f32, r.share() as f32, 1.0 + r.share() as f32 * 3.0)),
+            title: r.coin().then(|| r.below(3) as usize),
+        },
+        _ => Step::CoverRemove { named: r.below(4) as usize },
     }
 }
 
@@ -368,6 +418,7 @@ impl Run {
                 self.seq = seq;
                 Some(edits)
             }).map(|e| (e, false)),
+            Step::AddVideoTrack | Step::AuditionCreate { .. } | Step::AuditionAdd { .. } | Step::AuditionSwitch { .. } | Step::AuditionFinalize { .. } | Step::MulticamCreate { .. } | Step::MulticamSwitch { .. } | Step::Cover { .. } | Step::CoverRemove { .. } => self.more(step).map(|e| (e, true)),
             Step::PrimaryMove { clip, to } => self.pick(*clip, true).and_then(|(_, c)| {
                 let at = t(frame_of(secs(end) * to));
                 // As the timeline's drag does with Linked on (#2967): the
@@ -450,6 +501,112 @@ impl Run {
             return Err((SAVED, first_difference(&built, &back) + &format!("\n      lost transitions: {}", lost.join("; ")), f64::INFINITY));
         }
         Ok(())
+    }
+}
+
+impl Run {
+    /// The edits of a step of the auditions, multicam and covers; `None`
+    /// when there is nothing to do or it is refused.
+    fn more(&self, step: &Step) -> Option<Vec<EditCommand>> {
+        let id = |c: &Clip| c.id.0.to_string();
+        let take = |of: &Option<TakeOf>| match of {
+            Some(k) => {
+                let from = secs(t((k.from * RATE as f64 * 50.0) as i64));
+                json!([{"media_id": self.media[k.media % 2].0.to_string(), "from": from, "to": from + secs(t(k.frames))}])
+            }
+            None => json!([{}]),
+        };
+        let end = secs(self.seq.total_duration());
+        match step {
+            Step::AddVideoTrack => self.op(json!({"op": "add_track", "kind": "video"})),
+            Step::AuditionCreate { clip, take: of } => {
+                let (_, c) = self.pick(*clip, false)?;
+                self.op(json!({"op": "alternatives", "action": "create", "clip_id": id(&c), "takes": take(of)}))
+            }
+            Step::AuditionAdd { clip, take: of } => {
+                let c = self.auditioned(*clip)?;
+                self.op(json!({"op": "alternatives", "action": "add", "clip_id": id(&c), "takes": take(of)}))
+            }
+            Step::AuditionSwitch { clip, take: k, ripple } => {
+                let c = self.auditioned(*clip)?;
+                let takes = &c.audition.as_ref()?.takes;
+                let name = takes[*k % takes.len()].id.to_string();
+                self.op(json!({"op": "alternatives", "action": "switch", "clip_id": id(&c), "take": name, "ripple": ripple}))
+            }
+            Step::AuditionFinalize { clip } => {
+                let c = self.auditioned(*clip)?;
+                self.op(json!({"op": "alternatives", "action": "finalize", "clip_id": id(&c)}))
+            }
+            // As the app's Create Multicam: the picture under the moment on
+            // each picture track an angle of a new group, as one step.
+            Step::MulticamCreate { at } => {
+                let when = self.overlap(*at)?;
+                let group = klipp_core::GroupId::new();
+                let mut new = self.seq.tracks.clone();
+                let mut angle = 0u8;
+                for track in new.iter_mut().filter(|t| t.kind == klipp_timeline::TrackKind::Video) {
+                    let Some(clip) = track.clips.iter_mut().find(|c| c.media_id().is_some() && c.timeline_in <= when && when < c.timeline_out) else { continue };
+                    clip.multicam_group = Some(group);
+                    clip.multicam_angle = angle;
+                    angle += 1;
+                }
+                (angle >= 2).then(|| vec![EditCommand::SetTracks { description: "Create Multicam", old: self.seq.tracks.clone(), new }])
+            }
+            // As the app's angle switch: a cut on the primary's list.
+            Step::MulticamSwitch { at, angle } => {
+                let primaries: Vec<RationalTime> = self.seq.all_clips().filter(|c| c.multicam_group.is_some() && c.multicam_angle == 0).map(|c| t(frame_of((secs(c.timeline_in) + secs(c.timeline_out)) / 2.0))).collect();
+                let when = *primaries.get(((primaries.len() as f64 * at) as usize).min(primaries.len().saturating_sub(1)))?;
+                let group = self.seq.multicam_at(None, when)?;
+                let wanted = group.angles[*angle % group.angles.len().max(1)];
+                let old = group.primary.clone();
+                let mut clip = old.clone();
+                let clip_time = (when - clip.timeline_in).to_secs_f64();
+                clip.multicam_cuts.retain(|(c, _)| (*c - clip_time).abs() > 0.001);
+                clip.multicam_cuts.push((clip_time, wanted));
+                clip.multicam_cuts.sort_by(|a, b| a.0.total_cmp(&b.0));
+                Some(vec![EditCommand::ReplaceClip { description: "Switch Angle", old: Box::new(old), new: Box::new(clip) }])
+            }
+            Step::Cover { named, at, size, crop, title } => {
+                let named_size = ["youtube", "vertical", "instagram_feed", "square"][*size % 4];
+                let mut op = json!({"op": "cover", "size": named_size});
+                match named {
+                    Some(k) => op["cover"] = json!(self.cover_id(*k)?),
+                    None => op["at"] = json!({"secs": end * at.unwrap_or(0.5) * 0.99}),
+                }
+                if let (Some(at), Some(_)) = (at, named) {
+                    op["at"] = json!({"secs": end * at * 0.99});
+                }
+                if let Some((x, y, zoom)) = crop {
+                    op["crop"] = json!({"x": x, "y": y, "zoom": zoom});
+                }
+                if let Some(k) = title {
+                    op["title"] = [json!("SUNSET"), json!({"text": "Seaside mornings", "size": 90}), json!("")][*k % 3].clone();
+                }
+                self.op(op)
+            }
+            Step::CoverRemove { named } => self.op(json!({"op": "cover", "cover": self.cover_id(*named)?, "remove": true})),
+            _ => None,
+        }
+    }
+
+    /// A moment two picture tracks both have a file at, by a share of the
+    /// moments there are: at any moment most runs have none to group.
+    fn overlap(&self, share: f64) -> Option<RationalTime> {
+        use klipp_timeline::TrackKind::Video;
+        let under = |when: RationalTime| self.seq.tracks.iter().filter(|t| t.kind == Video && t.clips.iter().any(|c| c.media_id().is_some() && c.timeline_in <= when && when < c.timeline_out)).count();
+        let moments: Vec<RationalTime> = self.seq.tracks.iter().filter(|t| t.kind == Video).flat_map(|t| &t.clips).filter(|c| c.media_id().is_some()).map(|c| c.timeline_in).filter(|when| under(*when) >= 2).collect();
+        (!moments.is_empty()).then(|| moments[((moments.len() as f64 * share) as usize).min(moments.len() - 1)])
+    }
+
+    /// The audition at a place among the clips that are one.
+    fn auditioned(&self, k: usize) -> Option<Clip> {
+        let all: Vec<Clip> = self.clips(false).into_iter().map(|(_, c)| c).filter(|c| c.audition.is_some()).collect();
+        (!all.is_empty()).then(|| all[k % all.len()].clone())
+    }
+
+    /// The cover at a place among them, by its id.
+    fn cover_id(&self, k: usize) -> Option<String> {
+        (!self.seq.covers.is_empty()).then(|| self.seq.covers[k % self.seq.covers.len()].id.to_string())
     }
 }
 
@@ -627,4 +784,26 @@ fn random_edits_keep_the_editing_cores_invariants() {
         eprintln!("{r}\n");
     }
     assert!(new.is_empty(), "{} seed(s) broke an invariant in a way not known; repros above and in {}", new.len(), dir.join("report.txt").display());
+}
+
+/// The auditions, multicam and covers steps are taken, not all refused: a
+/// step that never happens checks nothing.
+#[test]
+fn the_steps_of_auditions_multicam_and_covers_are_taken() {
+    let dir = klipp_testing::scratch::scratch_dir("klipp-random-edits-reached");
+    let mut taken: std::collections::BTreeMap<String, usize> = Default::default();
+    for seed in 1..=8 {
+        let mut rng = Rng(seed);
+        let mut r = Run::new(dir.clone());
+        for _ in 0..200 {
+            let step = random_step(&mut rng);
+            if matches!(r.take(&step), Ok(true)) {
+                *taken.entry(kind(&step)).or_default() += 1;
+            }
+        }
+    }
+    eprintln!("taken: {taken:?}");
+    for k in ["AddVideoTrack", "AuditionCreate", "AuditionAdd", "AuditionSwitch", "AuditionFinalize", "MulticamCreate", "MulticamSwitch", "Cover", "CoverRemove"] {
+        assert!(taken.get(k).is_some_and(|n| *n > 0), "{k} was never taken: {taken:?}");
+    }
 }
