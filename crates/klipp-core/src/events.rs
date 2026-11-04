@@ -1031,6 +1031,28 @@ impl ExportAudioCodec {
         }
     }
 
+    /// The rate uncompressed PCM is written at, kbps: the export's 48 kHz
+    /// stereo times the sample's bits. `None` for a codec that is set to
+    /// a bitrate, or has its own.
+    pub fn pcm_kbps(&self) -> Option<u32> {
+        match self {
+            Self::Pcm16 => Some(48 * 16 * 2),
+            Self::Pcm24 => Some(48 * 24 * 2),
+            _ => None,
+        }
+    }
+
+    /// The sound as a person reads it: the codec and the rate it is
+    /// written at, its own for PCM (1,536 kbps for 16-bit), else the
+    /// bitrate set, when there is one. A WAV read "192 kbps", the bitrate
+    /// setting it never used.
+    pub fn described(&self, bitrate_kbps: Option<u32>) -> String {
+        match self.pcm_kbps().or(bitrate_kbps.filter(|_| self.uses_bitrate())) {
+            Some(kbps) => format!("{} {kbps} kbps", self.label()),
+            None => self.label().to_string(),
+        }
+    }
+
     /// Whether this codec supports variable bitrate.
     pub fn uses_bitrate(&self) -> bool {
         matches!(self, Self::Aac | Self::Mp3 | Self::Opus)
