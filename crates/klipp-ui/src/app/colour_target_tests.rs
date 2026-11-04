@@ -113,6 +113,21 @@ fn a_selection_elsewhere_is_one_click_away() {
     assert_eq!(state.colour_elsewhere_hint(), None);
 }
 
+/// A clip picked on the Colour page away from the playhead leaves the
+/// playhead where it is: the pick is named in the header with "Go to it"
+/// instead. The pick took the playhead to the clip's first frame.
+#[test]
+fn a_pick_elsewhere_on_the_colour_page_leaves_the_playhead() {
+    let Cut { mut state, upper, later, .. } = cut();
+    assert_eq!(to_colour_page(&mut state), Some(upper));
+    // As the timeline's pick does: selected, and the page's choice.
+    state.selected_clip = Some(later);
+    state.colour_clip_picked();
+    assert_eq!(state.seek_on_select(later), None, "the pick moves no playhead");
+    assert_eq!(state.playhead, tc(1.0));
+    assert_eq!(state.colour_elsewhere_hint(), Some(later), "it is offered with Go to it");
+}
+
 /// #3426: the page chose the clip at the playhead, with another selected.
 /// A click on the chosen clip changes no selection, and is still the
 /// choice that ends the hint.

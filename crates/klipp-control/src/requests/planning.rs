@@ -463,14 +463,14 @@ pub(crate) fn respond(
             Ok(out)
         }
 
-        ControlCommand::CollectProject { dest, mode, handle_secs, proxies, dry_run, verify } => {
+        ControlCommand::CollectProject { dest, mode, handle_secs, proxies, dry_run, verify, allow_offline } => {
             if in_batch {
                 return read_in_batch("collect_project");
             }
-            collect_project(ctx, dest, mode, handle_secs, proxies, dry_run, verify)
+            collect_project(ctx, dest, mode, handle_secs, proxies, dry_run, verify, allow_offline)
         }
 
-        ControlCommand::Check { color, loudness, min_severity } => {
+        ControlCommand::Check { color, loudness, min_severity, own_render } => {
             if in_batch {
                 return read_in_batch("check");
             }
@@ -565,7 +565,7 @@ pub(crate) fn respond(
             // frames rendered small, as the export would draw them (#2074).
             // Not while a render runs, which it would slow: said, never
             // taken for a clean read.
-            let rendering = ctx.shared.exports.lock().is_ok_and(|e| e.iter().any(|j| j.status == "rendering"));
+            let rendering = ctx.shared.exports.lock().is_ok_and(|e| another_render_runs(&e, own_render.as_deref()));
             if rendering && banding_snapshot.is_some() {
                 report.findings.push(klipp_document::qc::Finding {
                     severity: klipp_document::qc::Severity::Note,
@@ -1511,7 +1511,7 @@ fn describe_plugin(id: &str) -> Option<klipp_project::collect_report::Described>
 }
 
 #[allow(clippy::too_many_arguments)]
-fn collect_project(ctx: &crate::ControlContext, dest: Option<String>, mode: Option<String>, handle_secs: Option<f64>, proxies: bool, dry_run: bool, verify: Option<String>) -> Result<serde_json::Value, String> {
+fn collect_project(ctx: &crate::ControlContext, dest: Option<String>, mode: Option<String>, handle_secs: Option<f64>, proxies: bool, dry_run: bool, verify: Option<String>, allow_offline: bool) -> Result<serde_json::Value, String> {
     use klipp_project::{collect_verify, consolidate};
     let absolute = |p: &str, what: &str| {
         let p = std::path::PathBuf::from(p);
@@ -1569,10 +1569,58 @@ fn collect_project(ctx: &crate::ControlContext, dest: Option<String>, mode: Opti
     if std::fs::symlink_metadata(&dest).is_ok() {
         return Err(format!("{} exists already: give a folder that doesn't", dest.display()));
     }
-    send_envelope(ctx, vec![AppCommand::ConsolidateProject { dest_dir: dest.clone(), include_proxies: proxies, include_skims: false, create_zip: false, delete_folder_after_zip: false, mode: core_mode }], false)?;
+    if !allow_offline {
+        let seq = (*ctx.sequence.snapshot()).clone();
+        let mut sequences = vec![seq];
+        sequences.extend(others_of(ctx));
+        let pool = ctx.media_pool.read().recovered().clone();
+        let offline = klipp_project::collect_report::offline_in_use(&sequences, &pool);
+        if !offline.is_empty() {
+            return Err(format!("nothing collected: media the project uses is offline: {}. Relink it, or send allow_offline: true to collect the rest", offline.join("; ")));
+        }
+    }
+    // The app would refuse one while another runs, after this had answered.
+    if ctx.shared.collecting.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return Err("nothing collected: a Collect Project is still running; try again when it has finished".into());
+    }
+    if let Err(why) = send_envelope(ctx, vec![AppCommand::ConsolidateProject { dest_dir: dest.clone(), include_proxies: proxies, include_skims: false, create_zip: false, delete_folder_after_zip: false, mode: core_mode }], false) {
+        ctx.shared.collecting.store(false, std::sync::atomic::Ordering::SeqCst);
+        return Err(why);
+    }
     Ok(json!({
         "started": true,
         "dest": dest,
         "next": format!("collect_project with verify {} once it is done: the check and its manifest are written last", dest.display()),
     }))
+}
+
+/// Whether a render other than `own` (review's draft, rendering beside
+/// the check that reads it) is running: the banding check renders frames
+/// of its own and waits for one. Counting the draft, review never checked
+/// banding at all.
+fn another_render_runs(exports: &[klipp_core::ExportStatus], own: Option<&std::path::Path>) -> bool {
+    exports.iter().any(|j| j.status == "rendering" && own.is_none_or(|own| j.path != own))
+}
+
+#[cfg(test)]
+mod own_render_tests {
+    use super::another_render_runs;
+
+    fn job(path: &str, status: &str) -> klipp_core::ExportStatus {
+        klipp_core::ExportStatus {
+            job_id: String::new(), path: path.into(), status: status.into(), progress: 0.0, frames_done: 0, total_frames: 0, stage: String::new(), error: None, loudness: None, hardware: String::new(),
+            fps: None, eta_secs: None, projected_bytes: None, encoder: None, audio_encoder: None, compositing: None, timings: None, banding: None, note: None,
+        }
+    }
+
+    /// Review's own draft, rendering, does not keep its check from the
+    /// banding read; another render does, and a finished one does not.
+    #[test]
+    fn reviews_own_draft_is_not_another_render() {
+        let draft = std::path::Path::new("/tmp/klipp-review.mp4");
+        assert!(!another_render_runs(&[job("/tmp/klipp-review.mp4", "rendering")], Some(draft)), "its own draft");
+        assert!(another_render_runs(&[job("/tmp/klipp-review.mp4", "rendering"), job("/tmp/film.mp4", "rendering")], Some(draft)), "another render beside it");
+        assert!(another_render_runs(&[job("/tmp/klipp-review.mp4", "rendering")], None), "a check on its own counts every render");
+        assert!(!another_render_runs(&[job("/tmp/film.mp4", "complete")], None), "a finished render");
+    }
 }

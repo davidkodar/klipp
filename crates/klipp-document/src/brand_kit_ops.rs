@@ -38,6 +38,13 @@ impl Watermark {
     /// The ops that put the logo `media` on a track of its own above every
     /// other, held for `length_secs`, in its place.
     pub fn ops(&self, media: MediaId, logo: (u32, u32), frame: (u32, u32), length_secs: f64) -> Result<Vec<Op>, String> {
+        self.ops_at(0, media, logo, frame, length_secs)
+    }
+
+    /// [`Self::ops`] as steps from `first` of a longer apply: the pose
+    /// names the logo by the step that places it, counted in the whole
+    /// apply, not by its place in these three.
+    pub fn ops_at(&self, first: usize, media: MediaId, logo: (u32, u32), frame: (u32, u32), length_secs: f64) -> Result<Vec<Op>, String> {
         let (x, y, w, h) = self.pose(logo, frame);
         // `compose` sizes the frame-sized layer the picture is fitted into,
         // so its box keeps the frame's shape: as wide as the logo for a
@@ -48,7 +55,7 @@ impl Watermark {
         ops(vec![
             json!({ "op": "add_track", "kind": "video", "name": "Logo" }),
             json!({ "op": "place", "media_id": media.0.to_string(), "track": 0, "at": { "secs": 0.0 }, "source_in": 0.0, "source_out": length_secs, "with_audio": false }),
-            json!({ "op": "compose", "clip_id": "@1", "poses": [{ "secs": 0.0, "x": x, "y": y, "width": width, "height": height, "opacity": self.opacity }] }),
+            json!({ "op": "compose", "clip_id": format!("@{}", first + 1), "poses": [{ "secs": 0.0, "x": x, "y": y, "width": width, "height": height, "opacity": self.opacity }] }),
         ])
     }
 }
@@ -136,7 +143,7 @@ pub fn sequence_ops(seq: &Sequence, parts: &SequenceParts) -> Result<Vec<Op>, St
         total += len;
     }
     if let Some((mark, media, size)) = &parts.watermark {
-        out.extend(mark.ops(*media, *size, (seq.resolution.width, seq.resolution.height), total.max(0.1))?);
+        out.extend(mark.ops_at(out.len(), *media, *size, (seq.resolution.width, seq.resolution.height), total.max(0.1))?);
     }
     Ok(out)
 }

@@ -1,7 +1,8 @@
 //! A caption track in another language (#2213): the captions read off a
 //! subtitle track as whole sentences, since a caption is often half of
 //! one and a fragment translates in the wrong word order; each
-//! sentence's translation spread back over its captions' times; and a
+//! sentence's translation cut back into its captions where their own
+//! translations say, so each keeps its words under its picture; and a
 //! new track under the source carrying them, in its caption style,
 //! re-flowed to the caption line limits. Translating is the caller's:
 //! this crate has no model.
@@ -211,17 +212,107 @@ pub fn cut_captions(sentences: &[Sentence], cuts: &[Option<&'static str>]) -> Ve
     sentences.iter().zip(cuts).filter_map(|(s, cut)| Some((s.parts.last()?.0, (*cut)?))).collect()
 }
 
-/// Each caption's translation: `translated[i]` is `sentences[i]`'s,
-/// spread over its captions.
-pub fn per_caption(sentences: &[Sentence], translated: &[String]) -> Vec<(ClipId, String)> {
-    sentences
+/// What each caption of a sentence of more than one says on its own, in
+/// order: translated beside the sentences, they show where the
+/// sentence's translation is cut back into its captions ([`per_caption`]).
+pub fn cue_lines(sentences: &[Sentence]) -> Vec<String> {
+    sentences.iter().filter(|s| s.parts.len() > 1).flat_map(pieces).collect()
+}
+
+/// A sentence's captions' texts, cut from it by their lengths: the
+/// sentence is its captions joined with a space.
+fn pieces(s: &Sentence) -> Vec<String> {
+    let chars: Vec<char> = s.text.chars().collect();
+    let mut at = 0;
+    s.parts
         .iter()
-        .zip(translated)
-        .flat_map(|(s, t)| {
-            let weights: Vec<usize> = s.parts.iter().map(|(_, w)| *w).collect();
-            s.parts.iter().map(|(id, _)| *id).zip(spread(t, &weights)).collect::<Vec<_>>()
+        .map(|(_, n)| {
+            let piece: String = chars[at.min(chars.len())..(at + n).min(chars.len())].iter().collect();
+            at += n + 1;
+            piece
         })
         .collect()
+}
+
+/// Each caption's translation: `translated[i]` is `sentences[i]`'s, cut
+/// into its captions. Where the captions were translated on their own
+/// too (`cues`, as [`cue_lines`] lists them), each cut falls where the
+/// sentence's words best match each caption's own translation, so a
+/// caption keeps its own words: cut by length alone, the last word of
+/// one caption's half of a sentence showed under the next. Without
+/// them, or where no word matches, the cuts follow the captions'
+/// lengths ([`spread`]).
+pub fn per_caption(sentences: &[Sentence], translated: &[String], cues: &[String]) -> Vec<(ClipId, String)> {
+    let mut cues = cues.iter();
+    let mut out = Vec::new();
+    for (s, t) in sentences.iter().zip(translated) {
+        let weights: Vec<usize> = s.parts.iter().map(|(_, w)| *w).collect();
+        let own: Vec<&String> = if s.parts.len() > 1 { cues.by_ref().take(s.parts.len()).collect() } else { Vec::new() };
+        let split = if own.len() == s.parts.len() { aligned(t, &weights, &own) } else { None };
+        out.extend(s.parts.iter().map(|(id, _)| *id).zip(split.unwrap_or_else(|| spread(t, &weights))));
+    }
+    out
+}
+
+/// `text` cut at word boundaries into one piece for each of `own` (each
+/// piece's own translation): the cuts that give each piece most of its
+/// own translation's words, the nearest to the `weights` among equals.
+/// `None` when no word of `text` is in any of `own`, or there are fewer
+/// words than pieces.
+fn aligned(text: &str, weights: &[usize], own: &[&String]) -> Option<Vec<String>> {
+    let norm = |w: &str| w.chars().filter(|c| c.is_alphanumeric()).flat_map(char::to_lowercase).collect::<String>();
+    let words = klipp_linebreak::spaced_words(text);
+    let (n, w) = (own.len(), words.len());
+    if w < n {
+        return None;
+    }
+    let bags: Vec<Vec<String>> = own.iter().map(|o| klipp_linebreak::spaced_words(o).iter().map(|(x, _)| norm(x)).filter(|x| !x.is_empty()).collect()).collect();
+    let keys: Vec<String> = words.iter().map(|(x, _)| norm(x)).collect();
+    if !keys.iter().any(|k| !k.is_empty() && bags.iter().any(|b| b.contains(k))) {
+        return None;
+    }
+    // Where each piece would end by length, in words, to break ties.
+    let total: usize = weights.iter().sum::<usize>().max(1);
+    let expected: Vec<f64> = weights.iter().scan(0usize, |acc, x| {
+        *acc += x;
+        Some(*acc as f64 / total as f64 * w as f64)
+    }).collect();
+    // best[k][j]: the score of the first k pieces ending after word j.
+    let score = |k: usize, from: usize, to: usize| -> f64 {
+        let hits = keys[from..to].iter().filter(|x| !x.is_empty() && bags[k].contains(x)).count() as f64;
+        hits * 1000.0 - (to as f64 - expected[k]).abs()
+    };
+    let mut best = vec![vec![f64::NEG_INFINITY; w + 1]; n + 1];
+    let mut from = vec![vec![0usize; w + 1]; n + 1];
+    best[0][0] = 0.0;
+    for k in 0..n {
+        for j in (k + 1)..=(w - (n - k - 1)) {
+            for i in k..j {
+                if best[k][i] == f64::NEG_INFINITY {
+                    continue;
+                }
+                let v = best[k][i] + score(k, i, j);
+                if v > best[k + 1][j] {
+                    best[k + 1][j] = v;
+                    from[k + 1][j] = i;
+                }
+            }
+        }
+    }
+    let mut cuts = vec![w];
+    for k in (1..=n).rev() {
+        let end = *cuts.last()?;
+        cuts.push(from[k][end]);
+    }
+    cuts.reverse();
+    // Joined as `spread` joins them: a space only where the text had one.
+    Some(cuts.windows(2).map(|r| words[r[0]..r[1]].iter().fold(String::new(), |mut piece, &(word, spaced)| {
+        if !piece.is_empty() && spaced {
+            piece.push(' ');
+        }
+        piece.push_str(word);
+        piece
+    })).collect())
 }
 
 /// A translated caption that will be hard to read: where it starts, and
@@ -388,6 +479,27 @@ mod tests {
         assert_eq!(pieces.concat(), thai);
     }
 
+    /// A sentence over two captions, translated whole, is cut where each
+    /// caption's own translation says, so each caption keeps its words:
+    /// by length a word moved into the neighbouring caption. The cue lines are the captions' own texts, in order, and
+    /// only of sentences of more than one.
+    #[test]
+    fn a_sentences_translation_is_cut_where_its_captions_own_words_end() {
+        let (seq, ti, ids) = caption_sequence(&[(0.0, 2.0, "First of all, the straight line"), (2.0, 4.0, "is what we draw.")]);
+        let s = sentences(&captions(&seq, ti));
+        assert_eq!(cue_lines(&s), vec!["First of all, the straight line".to_string(), "is what we draw.".to_string()]);
+        let whole = "Zuerst einmal ist die gerade Linie das, was wir zeichnen.".to_string();
+        let own = ["Zunächst einmal die gerade Linie".to_string(), "ist das, was wir zeichnen.".to_string()];
+        // By length alone the cut is after "das,", a word of the second
+        // caption's half shown under the first.
+        assert!(per_caption(&s, std::slice::from_ref(&whole), &[])[0].1.ends_with("Linie das,"));
+        let got = per_caption(&s, std::slice::from_ref(&whole), &own);
+        assert_eq!(got, vec![(ids[0], "Zuerst einmal ist die gerade Linie".to_string()), (ids[1], "das, was wir zeichnen.".to_string())]);
+        // Nothing in common: by length, as before, no word lost.
+        let strange = per_caption(&s, std::slice::from_ref(&whole), &["x".to_string(), "y".to_string()]);
+        assert_eq!(strange.iter().map(|(_, t)| t.as_str()).collect::<Vec<_>>().join(" "), whole);
+    }
+
     #[test]
     fn a_translated_track_keeps_each_captions_time_and_flags_the_hard_ones() {
         let (seq, ti, ids) = caption_sequence(&[(2.0, 4.0, "Good morning"), (0.0, 2.0, "Hello there")]);
@@ -427,7 +539,7 @@ mod tests {
         let s = sentences(&captions(&seq, ti));
         let cut = cut_captions(&s, &[Some("the translation reached its length limit: its end may be missing")]);
         assert_eq!(cut, vec![(ids[1], "the translation reached its length limit: its end may be missing")]);
-        let per = per_caption(&s, &["Und dann gingen wir zum".into()]);
+        let per = per_caption(&s, &["Und dann gingen wir zum".into()], &[]);
         let out = translated_track(&seq, ti, &per, &cut, "German", "de").unwrap();
         assert_eq!(out.flagged.len(), 1);
         assert!(out.flagged[0].why.contains("length limit"));

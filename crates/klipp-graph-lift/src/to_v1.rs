@@ -243,8 +243,10 @@ pub(crate) fn grade_body(group: &Node) -> Result<Value, Refusal> {
     g.insert("nodes".into(), Value::Array(nodes));
     g.insert("edges".into(), Value::Array(edges));
     g.insert("output_node_id".into(), Value::String(body.output.to_string()));
-    if !body.ui.positions.is_empty() {
-        let pos: Map<String, Value> = body.ui.positions.iter().map(|(k, v)| (k.to_string(), v.clone())).collect();
+    // Only the places of nodes the body holds: a file can keep one for a
+    // node removed before places were dropped with their nodes.
+    let pos: Map<String, Value> = body.ui.positions.iter().filter(|(k, _)| body.nodes.iter().any(|n| n.id == **k)).map(|(k, v)| (k.to_string(), v.clone())).collect();
+    if !pos.is_empty() {
         g.insert("node_positions".into(), Value::Object(pos));
     }
     if !body.ui.frames.is_empty() {

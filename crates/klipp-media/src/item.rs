@@ -1006,6 +1006,12 @@ pub fn same_file_as_probed(old: &MediaItem, fresh: &MediaItem) -> bool {
 }
 
 impl MediaItem {
+    /// Whether the item has a proxy to read now: made, and its file still
+    /// there. The flag alone outlives a cleared cache.
+    pub fn proxy_on_disk(&self) -> bool {
+        self.proxy_ready && self.proxy_path.as_deref().is_some_and(std::path::Path::exists)
+    }
+
     /// A file with sound and no picture (a song, a voice note, an effect).
     pub fn sound_only(&self) -> bool {
         self.video_codec.is_empty() && !self.is_still && self.has_audio
@@ -1160,9 +1166,13 @@ pub fn merge_reprobed(old: &MediaItem, fresh: &mut MediaItem) {
     fresh.synced_audio = synced_audio.clone();
     fresh.markers = markers.clone();
     fresh.span = *span;
-    if same_file {
+    // A proxy shows the file's content, wherever the file now is and
+    // whatever date it took on the way there.
+    if same_file || (old.fingerprint.is_some() && old.fingerprint == fresh.fingerprint) {
         fresh.proxy_path = proxy_path.clone();
         fresh.proxy_ready = *proxy_ready;
+    }
+    if same_file {
         fresh.skim_file = skim_file.clone();
         fresh.waveform_data = waveform_data.clone();
         fresh.audio_cache = audio_cache.clone();
@@ -1280,6 +1290,29 @@ mod reprobe_tests {
         merge_reprobed(&old, &mut other);
         assert_eq!(other.rating, 4);
         assert!(!other.proxy_ready && other.proxy_path.is_none() && other.skim_file.is_none());
+
+        // The same content at another path, with another date: its proxy
+        // still shows it. The caches go as they do for any other path.
+        old.fingerprint = Some(7);
+        let mut moved = MediaItem::synthetic_for_test(std::path::PathBuf::from("/media/b.mp4"), None);
+        moved.fingerprint = Some(7);
+        moved.file_size_bytes = 10;
+        moved.file_modified_at = Some(2);
+        merge_reprobed(&old, &mut moved);
+        assert!(moved.proxy_ready && moved.proxy_path.is_some(), "the proxy stays");
+        assert!(moved.skim_file.is_none());
+
+        // Other content: it goes, and no fingerprint is no evidence.
+        for fingerprint in [Some(8), None] {
+            let mut other = MediaItem::synthetic_for_test(std::path::PathBuf::from("/media/b.mp4"), None);
+            other.fingerprint = fingerprint;
+            merge_reprobed(&old, &mut other);
+            assert!(!other.proxy_ready && other.proxy_path.is_none(), "{fingerprint:?}");
+        }
+        old.fingerprint = None;
+        let mut unknown = MediaItem::synthetic_for_test(std::path::PathBuf::from("/media/b.mp4"), None);
+        merge_reprobed(&old, &mut unknown);
+        assert!(!unknown.proxy_ready, "neither known is not the same content");
     }
 }
 

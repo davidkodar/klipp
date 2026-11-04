@@ -47,7 +47,13 @@ pub(crate) fn node(n: &Node, depth: usize) -> Value {
     // An effect's values as its stored entry, written from its map (M3-2).
     let effect = n.type_id.as_str() == klipp_graph_format::types::LEGACY_EFFECT;
     let entry = effect.then(|| klipp_graph_lift::effect_params::entry_of(n).ok()).flatten();
+    // A grade node's keys, from its own tracks (read below).
+    let mut grade_keys: Vec<(String, Value)> = Vec::new();
     if let (Some(desc), Some(legacy)) = (desc, &n.legacy) {
+        if !effect && !klipp_graph_lift::structure::kind_of(n).is_empty() {
+            let tracks = legacy.keyframes.clone().and_then(|k| serde_json::from_value::<klipp_nodes::NodeKeyframeTracks>(k).ok()).unwrap_or_default();
+            grade_keys = tracks.tracks.into_iter().filter(|t| !t.keyframes.is_empty()).map(|t| (t.param_name, json!(t.keyframes))).collect();
+        }
         let payload = match &entry {
             Some(entry) => entry,
             None => legacy.payload.get("params").unwrap_or(&legacy.payload),
@@ -78,6 +84,21 @@ pub(crate) fn node(n: &Node, depth: usize) -> Value {
     let label = n.legacy.as_ref().filter(|_| grade_label)
         .and_then(|legacy| legacy.payload.get("label")).and_then(Value::as_str).unwrap_or(&n.label);
     let mut out = json!({"id":n.id,"type":desc.map(|d| d.id).unwrap_or(n.type_id.as_str()),"label":label,"enabled":n.enabled,"params":params,"mix":n.mix,"mask_channel":channel,"mask_channel_set":stored_channel.is_some()});
+    // Each keyed parameter's keys, as `keys` writes them: an effect's from
+    // its animations, a grade node's from its keyframe tracks. A keyed
+    // grade read as its static value alone, the keys nowhere to be seen.
+    let mut keys = serde_json::Map::new();
+    for (key, anim) in &n.anim {
+        if !anim.keys.is_empty() {
+            keys.insert(key.as_str().into(), json!(anim.keys));
+        }
+    }
+    for (name, track) in grade_keys {
+        keys.insert(name, track);
+    }
+    if !keys.is_empty() {
+        out["keys"] = Value::Object(keys);
+    }
     if let Some(group) = &n.group {
         out["ports"] = json!(group.interface);
         if depth > 0 { out["body"] = graph_value(&group.graph, depth - 1); }

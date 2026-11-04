@@ -2072,7 +2072,8 @@ pub enum Op {
     /// effect's presets by name, Klipp's or the person's own (#3095), the
     /// `params` given over it; `bypass` switches the track's effect of
     /// that type off (true) or on (false) without taking it off; `remove`
-    /// takes it off.
+    /// takes it off; `to` moves it to that place in the chain, counted
+    /// from 0, the others closing up round it.
     TrackAudio {
         track: TrackRef,
         effect: String,
@@ -2084,6 +2085,8 @@ pub enum Op {
         bypass: Option<bool>,
         #[serde(default)]
         remove: bool,
+        #[serde(default)]
+        to: Option<usize>,
     },
     /// An aux bus (#2861): with no `bus`, a new one called `name`; with
     /// `bus` (its name or index), that one changed: `name` renames it,
@@ -2137,8 +2140,9 @@ pub enum Op {
     },
     /// A clip's own audio chain, as [`Op::TrackAudio`] is a track's
     /// (#2485): a built-in effect or an installed plug-in added, set,
-    /// bypassed or taken off, on the clip that holds its sound settings
-    /// (a linked pair's picture, as clean_audio).
+    /// bypassed, taken off or moved (`to`, its keyframes with it), on the
+    /// clip that holds its sound settings (a linked pair's picture, as
+    /// clean_audio).
     ClipAudio {
         clip_id: ClipRef,
         effect: String,
@@ -2150,6 +2154,8 @@ pub enum Op {
         bypass: Option<bool>,
         #[serde(default)]
         remove: bool,
+        #[serde(default)]
+        to: Option<usize>,
     },
     /// Clean a clip's sound. Each flag adds the tool for it: `voice`
     /// Voice Isolation, the AI model that separates speech from wind,
@@ -4542,15 +4548,15 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             let (_, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
             replace_media(seq, pool, fps, i, clip, *media_id, *source_in)
         }
-        Op::TrackAudio { track, effect, preset, params, bypass, remove } => track_audio(seq, fps, i, track, AudioChainEdit { effect, preset: preset.as_deref(), params, bypass: *bypass, remove: *remove }, transcripts),
+        Op::TrackAudio { track, effect, preset, params, bypass, remove, to } => track_audio(seq, fps, i, track, AudioChainEdit { effect, preset: preset.as_deref(), params, bypass: *bypass, remove: *remove, to: *to }, transcripts),
         Op::AuxBus { bus, name, volume_db, pan, mute, output, effect, preset, params, bypass, remove } => {
-            let fx = effect.as_deref().map(|effect| AudioChainEdit { effect, preset: preset.as_deref(), params, bypass: *bypass, remove: *remove });
+            let fx = effect.as_deref().map(|effect| AudioChainEdit { effect, preset: preset.as_deref(), params, bypass: *bypass, remove: *remove, to: None });
             aux_bus(seq, i, bus.as_ref(), AuxBusSet { name: name.as_deref(), volume_db: *volume_db, pan: *pan, mute: *mute, output: output.as_ref(), remove: *remove && effect.is_none() }, fx, transcripts)
         }
         Op::Send { track, bus, level_db, pre_fader, mute, keys, remove } => send(seq, i, track, bus, SendSet { level_db: *level_db, pre_fader: *pre_fader, mute: *mute, keys: keys.as_deref(), remove: *remove }),
-        Op::ClipAudio { clip_id, effect, preset, params, bypass, remove } => {
+        Op::ClipAudio { clip_id, effect, preset, params, bypass, remove, to } => {
             let (_, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
-            clip_audio(seq, pool, i, clip, AudioChainEdit { effect, preset: preset.as_deref(), params, bypass: *bypass, remove: *remove }, transcripts)
+            clip_audio(seq, pool, i, clip, AudioChainEdit { effect, preset: preset.as_deref(), params, bypass: *bypass, remove: *remove, to: *to }, transcripts)
         }
         Op::CleanAudio { clip_id, voice, reduction_db, wind, hiss, hum, deess } => {
             let (_, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
@@ -7925,6 +7931,32 @@ fn label_name(label: &str) -> String {
     klipp_timeline::composition_template::control_name(label)
 }
 
+/// How far something drawn in the box `[x, y, w, h]` of `seq`'s frame
+/// (shares of it) must rise to end above every player of the platform
+/// `seq` is made for, along the frame's bottom: 0 where nothing covers
+/// it, never past the frame's top margin.
+fn player_lift(seq: &Sequence, [x, y, w, h]: [f32; 4]) -> f32 {
+    const GAP: f32 = 0.02;
+    let Some(platform) = seq.brief.as_ref().map(|b| b.platform.as_str()) else { return 0.0 };
+    let players = klipp_core::platform_overlays::players_for(platform, seq.resolution.width, seq.resolution.height);
+    let Some(limit) = players.iter().filter_map(|p| p.clear_above(x, x + w)).reduce(f32::min) else { return 0.0 };
+    let over = (y + h) - (limit - GAP);
+    if over <= 0.0 {
+        return 0.0;
+    }
+    over.min((y - 0.05).max(0.0))
+}
+
+/// What a composition draws, as a box in shares of its frame: its titles'
+/// boxes together. `None` with no title in it.
+fn composition_box(composition: &Sequence) -> Option<[f32; 4]> {
+    composition.all_clips().filter_map(|c| c.title_data()).filter_map(|td| klipp_timeline::title_box::title_box(td, composition.resolution)).reduce(|a, b| {
+        let (x0, y0) = (a[0].min(b[0]), a[1].min(b[1]));
+        let (x1, y1) = ((a[0] + a[2]).max(b[0] + b[2]), (a[1] + a[3]).max(b[1] + b[3]));
+        [x0, y0, x1 - x0, y1 - y0]
+    })
+}
+
 /// the sequences it needs copied in first; its parameters set from
 /// `fields` by name or label. One step.
 #[allow(clippy::too_many_arguments)]
@@ -7933,16 +7965,11 @@ fn label_name(label: &str) -> String {
 /// controls): a built-in lower third sat under them. Never past the
 /// frame's top margin; nothing without a destination's player.
 pub fn lift_above_player(seq: &Sequence, td: &mut klipp_timeline::TitleData) {
-    const GAP: f32 = 0.02;
-    let Some(platform) = seq.brief.as_ref().map(|b| b.platform.as_str()) else { return };
-    let Some(player) = klipp_core::platform_overlays::player_for(platform, seq.resolution.width, seq.resolution.height) else { return };
-    let Some([x, y, w, h]) = klipp_timeline::title_box::title_box(td, seq.resolution) else { return };
-    let Some(limit) = player.clear_above(x, x + w) else { return };
-    let over = (y + h) - (limit - GAP);
-    if over <= 0.0 {
+    let Some(b) = klipp_timeline::title_box::title_box(td, seq.resolution) else { return };
+    let by = player_lift(seq, b);
+    if by <= 0.0 {
         return;
     }
-    let by = over.min((y - 0.05).max(0.0));
     for o in &mut td.objects {
         o.transform.center.y -= by;
         for k in &mut o.transform.center_y_keyframes {
@@ -8004,9 +8031,13 @@ fn place_composition(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, at: T
     instance.overrides.extend(overrides);
     instance.media_slots = media_slots;
     klipp_timeline::flatten::validate_template_instance(&instance, composition).map_err(|e| refuse(i, e, "save the template again"))?;
+    // Only the layout this frame takes, and what it nests: the template's
+    // layouts for other frames stay in the template, not in the project.
+    let needed: Vec<klipp_core::SequenceId> = klipp_timeline::composition_template::composition_sequences(composition, &t.sequences).iter().map(|s| s.id).collect();
+    let missing: Vec<Sequence> = placed.missing.iter().filter(|s| needed.contains(&s.id)).cloned().collect();
     let mut edits = Vec::new();
-    if !placed.missing.is_empty() {
-        edits.push(EditCommand::AddSequences { sequences: placed.missing.clone() });
+    if !missing.is_empty() {
+        edits.push(EditCommand::AddSequences { sequences: missing.clone() });
     }
     let free = |ti: usize| {
         let tr = &seq.tracks[ti];
@@ -8031,9 +8062,20 @@ fn place_composition(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, at: T
     };
     let mut clip = Clip::precomposition(composition.id, tl_in, tl_out);
     clip.kind = ClipKind::TemplatePrecomposition { sequence_id: composition.id, template_instance: instance };
+    // Above the player of the platform the sequence is made for, as a
+    // title template is: the Banner Lower Third sat under YouTube's
+    // progress bar and controls.
+    let by = composition_box(composition).map_or(0.0, |b| player_lift(seq, b));
+    if by > 0.0 {
+        // The clip's own placement, raised: pixels from the frame's centre,
+        // down positive, as compose keys it.
+        let mut lanes = crate::history::KeyframeSnapshot::from_clip(&clip);
+        klipp_core::keyframe::upsert_keyframe(&mut lanes.transform_pos_y_keyframes, 0.0, -by * seq.resolution.height as f32);
+        lanes.apply_to_clip(&mut clip);
+    }
     let id = clip.id;
     edits.push(EditCommand::LegacyAppendClip { clip, track_index });
-    let copied = if placed.missing.is_empty() { String::new() } else { format!(", its {} sequence{} copied into the project", placed.missing.len(), if placed.missing.len() == 1 { "" } else { "s" }) };
+    let copied = if missing.is_empty() { String::new() } else { format!(", its {} sequence{} copied into the project", missing.len(), if missing.len() == 1 { "" } else { "s" }) };
     Ok((format!("template {} at {:.2}-{:.2} s on track {track_index}{copied}", quoted(&t.name), secs(tl_in), secs(tl_out)), EditCommand::Batch(edits), vec![id]))
 }
 
@@ -8920,6 +8962,23 @@ struct AudioChainEdit<'a> {
     params: &'a std::collections::BTreeMap<String, f32>,
     bypass: Option<bool>,
     remove: bool,
+    /// The place in the chain it moves to, counted from 0.
+    to: Option<usize>,
+}
+
+/// Where `edit` moves its effect on a chain of `len`, given where it is
+/// (`at`); refused for an effect not on it, a place past its end, or a
+/// move asked with its removal.
+fn chain_move(i: usize, edit: &AudioChainEdit, at: Option<usize>, len: usize, on: &str) -> Result<Option<(usize, usize)>, Refusal> {
+    let Some(to) = edit.to else { return Ok(None) };
+    if edit.remove {
+        return Err(refuse(i, "an effect taken off and moved", "give remove or to, not both"));
+    }
+    let from = at.ok_or_else(|| refuse(i, format!("{on} has no {}", edit.effect), "add it first, then move it"))?;
+    if to >= len {
+        return Err(refuse(i, format!("place {to} on a chain of {len}"), format!("give to from 0 to {}", len.saturating_sub(1))));
+    }
+    Ok(Some((from, to)))
 }
 
 /// The effect type an edit names and its params by the keys the chain
@@ -9031,7 +9090,14 @@ fn track_audio(seq: &Sequence, fps: Fps, i: usize, track: &TrackRef, edit: Audio
     let (effect, params) = audio_chain_effect(i, &edit, transcripts)?;
     let old = t.settings();
     let mut new = old.clone();
+    let at = new.effects.audio.iter().rposition(|e| e.effect_type == effect);
+    let moved = chain_move(i, &edit, at, new.effects.audio.len(), &on.name)?;
     let mut what = edit_audio_chain(i, &mut new.effects.audio, &on.name, &effect, &params, edit.bypass, edit.remove)?;
+    if let Some((from, to)) = moved {
+        let fx = new.effects.audio.remove(from);
+        new.effects.audio.insert(to, fx);
+        what.push_str(&format!(", moved to place {to} of its chain"));
+    }
     // A Normalize in Clip mode holds a gain measured from one clip's
     // sound (#2778); a track's chain has no one clip to measure.
     if new.effects.audio.iter().any(|inst| inst.effect_type == "normalize" && inst.enabled && inst.params.iter().find(|(k, _)| k == "mode").is_none_or(|(_, v)| *v > 0.5)) {
@@ -9261,7 +9327,14 @@ fn clip_audio(seq: &Sequence, pool: &MediaPool, i: usize, given: &Clip, edit: Au
     }
     let (effect, params) = audio_chain_effect(i, &edit, transcripts)?;
     let mut new_state = crate::history::AudioChainSnapshot::from_clip(clip);
+    let at = new_state.audio_effects.iter().rposition(|e| e.effect_type == effect);
+    let moved = chain_move(i, &edit, at, new_state.audio_effects.len(), &clip_name(seq, pool, given))?;
     let mut what = edit_audio_chain(i, &mut new_state.audio_effects, &clip_name(seq, pool, given), &effect, &params, edit.bypass, edit.remove)?;
+    if let Some((from, to)) = moved {
+        // Its keyframes with it, kept by its place.
+        new_state.reorder_effect(from, to);
+        what.push_str(&format!(", moved to place {to} of its chain"));
+    }
     if effect == "normalize" && !edit.remove && params.iter().find(|(k, _)| k == "mode").is_none_or(|(_, v)| *v > 0.5) {
         // Measured in the background, as the app opens the clip (#2778).
         what.push_str(": one gain from the clip's measured loudness, held at none until it is measured (the export measures it if it has not been)");
@@ -14349,7 +14422,9 @@ fn lower_third(
         }
         None => text_track_in_view(seq, tl_in, tl_out),
     };
-    let td = lower_third_made(name, role, place).map_err(|e| refuse(i, format!("the lower third couldn't be made: {e}"), "report it"))?;
+    let mut td = lower_third_made(name, role, place).map_err(|e| refuse(i, format!("the lower third couldn't be made: {e}"), "report it"))?;
+    // Clear of the player of the platform the sequence is made for.
+    lift_above_player(seq, &mut td);
     let clip = title_clip(td, tl_in, tl_out, fps);
     let id = clip.id;
     let what = format!(
@@ -15564,6 +15639,38 @@ mod tests {
         }
     }
 
+    /// A template placed copies in the layout its sequence's frame takes,
+    /// and what that layout nests, never its other frames' layouts: a
+    /// brand kit's intro and outro brought six sequences into a wide
+    /// project, a wide, a tall and a square of each. Undo takes them away.
+    #[test]
+    fn a_template_copies_only_the_layout_its_frame_takes() {
+        for name in ["Hook Card", "End Screen", "Split Screen"] {
+            let t = klipp_timeline::composition_template::builtin_templates().into_iter().find(|t| t.name == name).unwrap();
+            assert!(t.formats.len() >= 2, "{name} carries a layout for more than one frame");
+            for (w, h) in [(1920, 1080), (1080, 1920), (1080, 1080)] {
+                let (mut seq, pool, ..) = fixture();
+                seq.resolution = klipp_core::Resolution { width: w, height: h };
+                let missing = klipp_timeline::composition_template::missing_sequences(&t, std::slice::from_ref(&seq));
+                let op = Op::Template { name: name.into(), at: Anchor::Secs(1.0), secs: Some(3.0), track: None, fields: Default::default(), source: None, kind: None, data: None, composition: Some(Box::new(PlacedComposition { template: t.clone(), missing })) };
+                let plan = resolve(&seq, &pool, &[op]).unwrap_or_else(|r| panic!("{name} {w}x{h}: {}", r.why));
+                let mut seqs = vec![seq.clone()];
+                let (mut p, mut fps) = (pool.clone(), seq.fps);
+                let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps };
+                view.apply_forward(&plan.steps[0].edit);
+                let layout = t.composition_for(w, h).unwrap();
+                let mut want: Vec<_> = klipp_timeline::composition_template::composition_sequences(layout, &t.sequences).iter().map(|s| s.id).collect();
+                let mut got: Vec<_> = view.sequences[1..].iter().map(|s| s.id).collect();
+                want.sort_by_key(|id| id.0);
+                got.sort_by_key(|id| id.0);
+                assert_eq!(got, want, "{name} {w}x{h}: only its layout and what it nests, of {} sequences", t.sequences.len());
+                view.apply_inverse(&plan.steps[0].edit);
+                assert_eq!(view.sequences.len(), 1, "{name} {w}x{h}: undo takes them away");
+                assert_eq!(serde_json::to_value(&view.sequences[0]).unwrap(), serde_json::to_value(&seq).unwrap(), "{name} {w}x{h}: undo is exact");
+            }
+        }
+    }
+
     /// A brand kit's accent and heading font, sent as fields that
     /// end in "?", set the Hook Card's hook line; a template without such
     /// a parameter takes the rest and is not refused.
@@ -15609,6 +15716,66 @@ mod tests {
         assert!(mine[1] + mine[3] <= 0.88 - 0.019, "it ends at {:.3}, over the controls from 0.88", mine[1] + mine[3]);
         let free = placed(None);
         assert!(free[1] + free[3] > 0.88, "the built-in sits low where nothing covers it: {:.3}", free[1] + free[3]);
+    }
+
+    /// Every built-in lower third, placed in a sequence made for each
+    /// destination whose player covers the frame's bottom, at that
+    /// destination's frame, ends above what the player covers: the
+    /// lower_third op's title, each lower-third title template and each
+    /// lower-third composition template. The lower_third op and the
+    /// Banner Lower Third sat over YouTube's progress bar and controls.
+    #[test]
+    fn every_lower_third_keeps_clear_of_each_destinations_player() {
+        use klipp_timeline::composition_template::{builtin_templates, missing_sequences};
+        let compositions: Vec<_> = builtin_templates().into_iter().filter(|t| t.category == "Lower Thirds").collect();
+        let titles: Vec<_> = klipp_timeline::title_library::TITLES.iter().filter(|t| t.category == "Lower Thirds").collect();
+        assert!(!compositions.is_empty() && !titles.is_empty(), "lower thirds of both kinds ship");
+        let mut checked = 0;
+        for f in klipp_core::project_formats::formats() {
+            let Some(d) = &f.destination else { continue };
+            let players = klipp_core::platform_overlays::players_for(&d.platform, f.width, f.height);
+            if players.is_empty() {
+                continue;
+            }
+            let (mut seq, pool, ..) = fixture();
+            seq.resolution = klipp_core::Resolution { width: f.width, height: f.height };
+            seq.brief = Some(klipp_timeline::Brief { platform: d.platform.clone(), ..Default::default() });
+            let mut ops = vec![("the lower_third op".to_string(), Op::LowerThird { name: "Ada Lovelace".into(), role: Some("Engineer".into()), at: Anchor::Secs(0.5), secs: 2.0, track: None, side: None, x: None, y: None, backing: None, in_picture: false })];
+            for t in &titles {
+                ops.push((t.name.clone(), Op::Template { name: t.name.clone(), at: Anchor::Secs(0.5), secs: Some(2.0), track: None, fields: Default::default(), source: None, kind: None, data: Some(Box::new(t.data())), composition: None }));
+            }
+            for t in &compositions {
+                let missing = missing_sequences(t, std::slice::from_ref(&seq));
+                ops.push((t.name.clone(), Op::Template { name: t.name.clone(), at: Anchor::Secs(0.5), secs: Some(2.0), track: None, fields: Default::default(), source: None, kind: None, data: None, composition: Some(Box::new(PlacedComposition { template: t.clone(), missing })) }));
+            }
+            for (name, op) in ops {
+                let what = format!("{name} in a {}x{} sequence for {}", f.width, f.height, d.platform);
+                let plan = resolve(&seq, &pool, &[op]).unwrap_or_else(|r| panic!("{what}: {}", r.why));
+                let mut seqs = vec![seq.clone()];
+                let (mut p, mut fps) = (pool.clone(), seq.fps);
+                let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps };
+                view.apply_forward(&plan.steps[0].edit);
+                let made = view.sequences[0].all_clips().find(|c| !seq.all_clips().any(|o| o.id == c.id)).expect("placed").clone();
+                let [x, y, w, h] = match &made.kind {
+                    ClipKind::TemplatePrecomposition { sequence_id, .. } => {
+                        let layout = view.sequences.iter().find(|s| s.id == *sequence_id).expect("its layout");
+                        let [x, y, w, h] = composition_box(layout).expect("it draws titles");
+                        let lanes = crate::history::KeyframeSnapshot::from_clip(&made);
+                        let lifted = klipp_core::keyframe::evaluate(&lanes.transform_pos_y_keyframes, 0.5, 0.0) / f.height as f32;
+                        [x, y + lifted, w, h]
+                    }
+                    _ => klipp_timeline::title_box::title_box(made.title_data().expect("a title"), seq.resolution).expect("a box"),
+                };
+                for player in &players {
+                    if let Some(limit) = player.clear_above(x, x + w) {
+                        assert!(y + h <= limit - 0.019, "{what}: it ends at {:.3}, {}'s player covers from {limit:.3}", y + h, player.name);
+                    }
+                    checked += 1;
+                }
+            }
+        }
+        // YouTube's, and Shorts', Reels' and TikTok's on a vertical piece.
+        assert!(checked >= 4 * (1 + titles.len() + compositions.len()), "every destination's players checked: {checked}");
     }
 
     /// #2757: a composition template placed with no `secs` holds for the
@@ -19998,6 +20165,57 @@ mod tests {
         assert_eq!(serde_json::to_value(&view.sequences[0]).unwrap(), serde_json::to_value(&seq).unwrap(), "undo restores it");
         assert!(resolve(&seq, &pool, &[Op::Freeze { clip_id: ClipRef::Id(a), at: Anchor::Secs(5.0), secs: 1.0 }]).is_err(), "outside the clip");
         assert!(resolve(&seq, &pool, &[Op::Freeze { clip_id: ClipRef::Id(a), at: Anchor::Secs(1.0), secs: 0.0 }]).is_err(), "a hold of nothing");
+    }
+
+    /// An audio effect moves in its chain, a clip's or a track's, its
+    /// keyframes with it (kept by its place), in one step undo puts back
+    /// exactly; a move of an effect not there, past the chain's end or
+    /// with its removal is refused.
+    #[test]
+    fn an_audio_effect_moves_in_its_chain() {
+        let (mut seq, mut pool, _, a, _) = fixture();
+        fn step(seq: &mut Sequence, pool: &mut MediaPool, op: serde_json::Value) -> Result<EditCommand, String> {
+            let plan = resolve(seq, pool, &[serde_json::from_value(op).unwrap()]).map_err(|r| r.why)?;
+            let edit = plan.steps[0].edit.clone();
+            let mut seqs = vec![seq.clone()];
+            let mut fps = seq.fps;
+            crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: pool, fps: &mut fps }.apply_forward(&edit);
+            *seq = seqs.remove(0);
+            Ok(edit)
+        }
+        let id = a.0.to_string();
+        for effect in ["eq", "compressor", "limiter"] {
+            step(&mut seq, &mut pool, serde_json::json!({ "op": "clip_audio", "clip_id": id, "effect": effect })).unwrap();
+        }
+        let owner = |seq: &Sequence| sound_settings_clip(seq, seq.all_clips().find(|c| c.id == a).unwrap()).id;
+        let o = owner(&seq);
+        let key = |v: f32| vec![klipp_core::Keyframe { time_secs: 0.0, value: v, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() }];
+        seq.all_clips_mut().find(|c| c.id == o).unwrap().audio_effect_keyframes.insert("0:band1_gain".into(), key(4.0));
+        let before = serde_json::to_value(&seq).unwrap();
+        let chain = |seq: &Sequence| {
+            let c = seq.all_clips().find(|c| c.id == o).unwrap();
+            (c.audio_effects.iter().map(|e| e.effect_type.clone()).collect::<Vec<_>>(), c.audio_effect_keyframes.keys().cloned().collect::<Vec<_>>())
+        };
+        let moved = step(&mut seq, &mut pool, serde_json::json!({ "op": "clip_audio", "clip_id": id, "effect": "eq", "to": 2 })).unwrap();
+        assert_eq!(chain(&seq), (vec!["compressor".to_string(), "limiter".into(), "eq".into()], vec!["2:band1_gain".to_string()]), "moved, its key with it");
+        let mut seqs = vec![seq.clone()];
+        let mut fps = seq.fps;
+        crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut pool, fps: &mut fps }.apply_inverse(&moved);
+        assert_eq!(serde_json::to_value(&seqs[0]).unwrap(), before, "undo puts it back exactly");
+        for (op, why) in [
+            (serde_json::json!({ "op": "clip_audio", "clip_id": id, "effect": "gate", "to": 0 }), "has no gate"),
+            (serde_json::json!({ "op": "clip_audio", "clip_id": id, "effect": "eq", "to": 3 }), "chain of 3"),
+            (serde_json::json!({ "op": "clip_audio", "clip_id": id, "effect": "eq", "to": 0, "remove": true }), "taken off and moved"),
+        ] {
+            assert!(step(&mut seq, &mut pool, op.clone()).unwrap_err().contains(why), "{op}");
+        }
+        // A track's chain, the same.
+        let t = seq.tracks.iter().position(|t| t.kind == TrackKind::Audio).unwrap();
+        for effect in ["eq", "compressor"] {
+            step(&mut seq, &mut pool, serde_json::json!({ "op": "track_audio", "track": t, "effect": effect })).unwrap();
+        }
+        step(&mut seq, &mut pool, serde_json::json!({ "op": "track_audio", "track": t, "effect": "compressor", "to": 0 })).unwrap();
+        assert_eq!(seq.tracks[t].effects.audio.iter().map(|e| e.effect_type.as_str()).collect::<Vec<_>>(), ["compressor", "eq"]);
     }
 
     /// #2485: an installed plug-in goes on a clip's sound or a track by
