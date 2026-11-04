@@ -8057,7 +8057,11 @@ fn place_composition(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, at: T
     // progress bar and controls.
     let by = composition_box(composition).map_or(0.0, |b| player_lift(seq, b));
     if by > 0.0 {
-        clip.push_effect(klipp_effects::BuiltinEffect::Transform { position_x: 0.0, position_y: -by * seq.resolution.height as f32, scale_x: 1.0, scale_y: 1.0, rotation: 0.0, anchor_x: 0.5, anchor_y: 0.5, rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0, focal_ref: None });
+        // The clip's own placement, raised: pixels from the frame's centre,
+        // down positive, as compose keys it.
+        let mut lanes = crate::history::KeyframeSnapshot::from_clip(&clip);
+        klipp_core::keyframe::upsert_keyframe(&mut lanes.transform_pos_y_keyframes, 0.0, -by * seq.resolution.height as f32);
+        lanes.apply_to_clip(&mut clip);
     }
     let id = clip.id;
     edits.push(EditCommand::LegacyAppendClip { clip, track_index });
@@ -15683,7 +15687,8 @@ mod tests {
                     ClipKind::TemplatePrecomposition { sequence_id, .. } => {
                         let layout = view.sequences.iter().find(|s| s.id == *sequence_id).expect("its layout");
                         let [x, y, w, h] = composition_box(layout).expect("it draws titles");
-                        let lifted = made.builtin_effects().iter().find_map(|e| match e { klipp_effects::BuiltinEffect::Transform { position_y, .. } => Some(position_y / f.height as f32), _ => None }).unwrap_or(0.0);
+                        let lanes = crate::history::KeyframeSnapshot::from_clip(&made);
+                        let lifted = klipp_core::keyframe::evaluate(&lanes.transform_pos_y_keyframes, 0.5, 0.0) / f.height as f32;
                         [x, y + lifted, w, h]
                     }
                     _ => klipp_timeline::title_box::title_box(made.title_data().expect("a title"), seq.resolution).expect("a box"),
