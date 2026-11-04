@@ -351,30 +351,8 @@ pub(crate) fn respond(
                 }
                 out_scenes.push(json!({ "scene": s_i + 1, "hero_clip_id": shots[hero].0, "hero_secs": read[hero].1, "shots": per_shot }));
             }
-            // The joins the viewer actually sees: each cut, in order.
-            // A shot can sit close to its hero and still cut badly
-            // against the shot beside it, and it is the cut that shows.
-            let mut joins = Vec::new();
-            for w in read.windows(2) {
-                let d = match_distance(&w[0].2, &w[1].2);
-                let same_scene = scenes.iter().any(|s| s.contains(&w[0].0) && s.contains(&w[1].0));
-                if d > MATCH_WARN {
-                    let (a, b) = (quoted(&shots[w[0].0].3.chars().take(18).collect::<String>()), quoted(&shots[w[1].0].3.chars().take(18).collect::<String>()));
-                    // A join between two scenes is often meant to look
-                    // different — a cut to another location should.
-                    // But an interview on two cameras, or one where a
-                    // lamp was changed half way, splits into "scenes"
-                    // the viewer reads as one, and then the boundary is
-                    // precisely the fault. So every join is reported
-                    // and the person decides which are intended.
-                    lines.push(if same_scene {
-                        format!("  [warn] the cut from {a} to {b} at {:.2} s is a {d:.1} ΔE step inside one scene — the viewer sees the join", w[1].1)
-                    } else {
-                        format!("  [note] the cut from {a} to {b} at {:.2} s is a {d:.1} ΔE step between two scenes — meant, if they are different places; a fault if the viewer is meant to read them as one", w[1].1)
-                    });
-                }
-                joins.push(json!({ "at": w[1].1, "residual": d, "same_scene": same_scene }));
-            }
+            let (join_lines, joins) = scene_joins(&shots, &read, &scenes);
+            lines.extend(join_lines);
             Ok(json!({
                 "text": format!(
                     "{}\n\nMatched on what the eye notices across a cut, in its order: exposure first, then how differently each face sits against the skin band once the scene's own cast is taken off, then the cast on the neutrals, then contrast. The faces are compared as errors and not as colours, so two people with different complexions lit the same way still match. Under {MATCH_GOOD:.0} ΔE the cut is invisible; over {MATCH_WARN:.0} ΔE it reads as a change; over {SCENE_SPLIT:.0} ΔE the shots are not the same lighting setup and belong to different scenes.{}",
@@ -1286,4 +1264,58 @@ fn node_key(ctx: &ControlContext, clip: klipp_core::ClipId, node_id: uuid::Uuid,
     }
     commands.push(AppCommand::EndNodeParamEdit { clip_id: clip });
     Ok(NodeKey { commands, reply: json!({ "param": param, "clip_secs": time_secs, "removed": remove }) })
+}
+
+/// The joins the viewer actually sees, for match_scenes: each cut between
+/// neighbouring shots, in order, at the incoming shot's start, with how
+/// far apart the two read and whether they are one scene. A shot can sit
+/// close to its hero and still cut badly against the shot beside it, and
+/// it is the cut that shows. `shots` are (id, in, out, name) on the
+/// timeline; `read` each shot's (index, frame read, measure).
+fn scene_joins(shots: &[(String, f64, f64, String)], read: &[(usize, f64, klipp_color::measure::FrameMeasure)], scenes: &[Vec<usize>]) -> (Vec<String>, Vec<serde_json::Value>) {
+    use klipp_color::measure::{match_distance, MATCH_WARN};
+    let (mut lines, mut joins) = (Vec::new(), Vec::new());
+    for w in read.windows(2) {
+        let d = match_distance(&w[0].2, &w[1].2);
+        // Where the cut is: the incoming shot's start, not the
+        // frame read in it, which said a cut at 8 s was at 14.4.
+        let cut = shots[w[1].0].1;
+        let same_scene = scenes.iter().any(|s| s.contains(&w[0].0) && s.contains(&w[1].0));
+        if d > MATCH_WARN {
+            let (a, b) = (quoted(&shots[w[0].0].3.chars().take(18).collect::<String>()), quoted(&shots[w[1].0].3.chars().take(18).collect::<String>()));
+            // A join between two scenes is often meant to look
+            // different — a cut to another location should.
+            // But an interview on two cameras, or one where a
+            // lamp was changed half way, splits into "scenes"
+            // the viewer reads as one, and then the boundary is
+            // precisely the fault. So every join is reported
+            // and the person decides which are intended.
+            lines.push(if same_scene {
+                format!("  [warn] the cut from {a} to {b} at {:.2} s is a {d:.1} ΔE step inside one scene — the viewer sees the join", cut)
+            } else {
+                format!("  [note] the cut from {a} to {b} at {:.2} s is a {d:.1} ΔE step between two scenes — meant, if they are different places; a fault if the viewer is meant to read them as one", cut)
+            });
+        }
+        joins.push(json!({ "at": cut, "residual": d, "same_scene": same_scene }));
+    }
+    (lines, joins)
+}
+
+#[cfg(test)]
+mod scene_join_tests {
+    use super::*;
+
+    /// A cut is reported where it is, at the incoming shot's start, not
+    /// at the frame read in it: two shots at 0–8 and 8–16 s, read at 4
+    /// and 12, cut at 8. It said "at 12.00 s".
+    #[test]
+    fn a_cut_is_reported_where_it_is() {
+        let shots = vec![("a".to_string(), 0.0, 8.0, "first.mp4".to_string()), ("b".to_string(), 8.0, 16.0, "second.mp4".to_string())];
+        let lit = |l: f32| klipp_color::measure::FrameMeasure { l_p5: l / 4.0, l_p50: l, l_p95: l + 20.0, contrast_range: 20.0, ..Default::default() };
+        let read = vec![(0, 4.0, lit(40.0)), (1, 12.0, lit(70.0))];
+        let (lines, joins) = scene_joins(&shots, &read, &[vec![0], vec![1]]);
+        assert_eq!(joins.len(), 1);
+        assert_eq!(joins[0]["at"].as_f64(), Some(8.0), "{joins:?}");
+        assert!(lines.len() == 1 && lines[0].contains("at 8.00 s"), "{lines:?}");
+    }
 }
