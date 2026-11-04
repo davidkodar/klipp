@@ -509,6 +509,46 @@ fn a_grade_keyed_to_nothing_at_a_frame_exports_it_on_the_gpu() {
     }
 }
 
+/// A switched-off Mask on a Corrector's mask input is ignored, and the
+/// clip exports on the GPU path as the renderer draws it: the correction
+/// over the whole frame. The switched-off Mask asked for the source's CPU
+/// pixels, so the clip went to the CPU, which took the source for the
+/// matte.
+#[test]
+fn a_switched_off_mask_on_a_grade_exports_it_on_the_gpu() {
+    if !gpu_path_available() {
+        no_gpu("the GPU path refused (no usable GPU)");
+        return;
+    }
+    let mut c = media(0.0, 2.0);
+    let mut g = NodeGraph::default();
+    let corr = g.ensure_corrector();
+    g.nodes.iter_mut().find(|n| n.id == corr).unwrap().params.exposure = Some(1.0);
+    let shape = klipp_core::MaskShape::Rectangle { center_x: 0.25, center_y: 0.5, width: 0.3, height: 0.3, rotation: 0.0 };
+    let masks = klipp_core::MaskStack { masks: vec![klipp_core::Mask { shape, feather: 0.0, ..klipp_core::Mask::default() }] };
+    let mask = Node { id: NodeId::new_v4(), kind: NodeKind::Mask, label: "Window".into(), enabled: false, params: NodeParams { masks: Some(masks), ..Default::default() }, keyframes: Default::default(), output_link: None, input_links: vec![] };
+    g.edges.push(Edge { from_node: mask.id, from_port: 0, to_node: corr, to_port: 1 });
+    g.nodes.insert(0, mask);
+    let mut unmasked = g.clone();
+    unmasked.edges.retain(|e| e.to_port != 1);
+    unmasked.nodes.retain(|n| n.kind != NodeKind::Mask);
+    let mut plain = c.clone();
+    plain.set_grade(unmasked);
+    c.set_grade(g);
+    let seq = sequence(vec![vec![c.clone()]]);
+    let mut src = Flat::default().with(&c, [46, 128, 230]).on_gpu();
+    let mut r = renderer();
+    let planes = r.render_yuv420_on_gpu(&seq, tc(1.0), W, H, &mut src, RenderOptions::default(), plain_target()).map(|(b, _)| b);
+    let planes = planes.unwrap_or_else(|| panic!("the GPU path refused: {:?}", r.last_decline()));
+    let mut plain_src = Flat::default().with(&plain, [46, 128, 230]);
+    let want = cpu_luma(&sequence(vec![vec![plain]]), 1.0, &mut plain_src);
+    let worst = planes[..want.len()].iter().zip(want.iter()).map(|(g, w)| (*g as i32 - *w as i32).abs()).max().unwrap_or(0);
+    assert!(worst <= 1, "luma differs from the unmasked correction by {worst} levels");
+    let got = cpu_luma(&seq, 1.0, &mut src);
+    let worst = got.iter().zip(want.iter()).map(|(g, w)| (*g as i32 - *w as i32).abs()).max().unwrap_or(0);
+    assert!(worst <= 1, "the renderer's luma differs from the unmasked correction by {worst} levels");
+}
+
 /// An *ungraded* clip takes the path as well, and gives the renderer's
 /// picture.
 ///
