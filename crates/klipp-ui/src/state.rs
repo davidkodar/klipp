@@ -4792,7 +4792,9 @@ impl AppState {
             || self.show_about_dialog
             || self.update_notice_open
             || self.show_autosave_recovery
-            || self.show_render_queue
+            // Not the Render Queue: a window beside the work, opened by
+            // every export (one over the socket too), with no field of its
+            // own; open, it took every shortcut away with nothing said.
             || self.show_ai_models_dialog
             || self.show_assistant_setup
             || self.show_welcome
