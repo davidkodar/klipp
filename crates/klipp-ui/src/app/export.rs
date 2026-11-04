@@ -77,10 +77,37 @@ pub(super) fn export_column(ui: &mut egui::Ui, rect: egui::Rect, id: &str, theme
 }
 
 /// The range an export takes when none was picked in the form: the In
-/// and Out points when both are set, else the whole timeline (#2667).
+/// and Out points when both are set and cover something on the timeline,
+/// else the whole timeline (#2667). A picked In/Out range the marks no
+/// longer give goes back to the whole timeline too.
 pub(super) fn follow_marks(dialog: &mut ExportDialogState, seq: &klipp_timeline::Sequence) {
+    let has_range = seq.marked_range_on_timeline().is_some();
+    if dialog.range_picked && dialog.range_mode == 1 && !has_range {
+        dialog.range_picked = false;
+    }
     if !dialog.range_picked {
-        dialog.range_mode = u8::from(seq.in_point.is_some() && seq.out_point.is_some());
+        dialog.range_mode = u8::from(has_range);
+    }
+}
+
+/// What the marks' running past the timeline's end does to this export,
+/// said beside the range and when it starts, as nothing in the file would.
+pub(super) fn export_range_note(dialog: &ExportDialogState, seq: &klipp_timeline::Sequence) -> Option<&'static str> {
+    let (Some(a), Some(b)) = (seq.in_point, seq.out_point) else { return None };
+    match seq.marked_range_on_timeline() {
+        None if a >= seq.total_duration() && dialog.range_mode == 0 && !dialog.range_picked => Some("In and Out are past the end of the timeline, so this exports the whole timeline."),
+        Some((_, end)) if end < b && dialog.range_mode == 1 => Some("Out is past the end of the timeline, so this export stops at the end."),
+        _ => None,
+    }
+}
+
+/// A range rendered before, on the timeline as it is now: `Err` when the
+/// timeline no longer reaches it, as it would come out all black.
+fn range_for_render_again(range: Option<(u64, u64)>, duration_frames: u64) -> Result<Option<(u64, u64)>, ()> {
+    match range {
+        Some((a, _)) if a >= duration_frames => Err(()),
+        Some((a, b)) => Ok(Some((a, b.min(duration_frames)))),
+        None => Ok(None),
     }
 }
 
@@ -1026,6 +1053,9 @@ impl KlippApp {
                 // The form's export takes its range; any other, as a
                 // socket's, the marks'.
                 range_for_export(&mut self.export_dialog, &self.state.sequences[self.state.active_sequence_idx]);
+                if let Some(note) = export_range_note(&self.export_dialog, &self.state.sequences[self.state.active_sequence_idx]) {
+                    self.state.toast.show(note);
+                }
                 self.export_or_ask(settings, Confirmed::Nothing);
                 true
             }
@@ -2118,13 +2148,15 @@ impl KlippApp {
         section_card(ui, "RANGE", None, &theme, |ui| { indent(ui, &mut |ui| {
                 let before = self.export_dialog.range_mode;
                 ui.radio_value(&mut self.export_dialog.range_mode, 0, "Full timeline");
-                let has_range = self.state.sequences[self.state.active_sequence_idx].in_point.is_some()
-                    && self.state.sequences[self.state.active_sequence_idx].out_point.is_some();
-                if has_range {
-                    let in_pt = self.state.sequences[self.state.active_sequence_idx].in_point.unwrap();
-                    let out_pt = self.state.sequences[self.state.active_sequence_idx].out_point.unwrap();
+                let marked = self.state.sequences[self.state.active_sequence_idx].marked_range_on_timeline();
+                let has_range = marked.is_some();
+                if let Some((in_pt, out_pt)) = marked {
                     ui.radio_value(&mut self.export_dialog.range_mode, 1,
                         format!("In/Out range ({} \u{2192} {})", self.state.timecode_display().position(in_pt), self.state.timecode_display().position(out_pt)));
+                }
+                // Under the range it speaks of: the section scrolls.
+                if let Some(note) = export_range_note(&self.export_dialog, &self.state.sequences[self.state.active_sequence_idx]) {
+                    ui.label(egui::RichText::new(note).small().color(self.theme.marker_warning));
                 }
                 let sel_count = self.state.selection_or_clip().len();
                 let sel_enabled = sel_count > 0;
@@ -2305,9 +2337,9 @@ impl KlippApp {
 
         // The range, in the sequence's own time.
         let secs = match self.export_dialog.range_mode {
-            1 => match (seq.in_point, seq.out_point) {
-                (Some(a), Some(b)) => (b - a).to_secs_f64().abs(),
-                _ => seq.total_duration().to_secs_f64(),
+            1 => match seq.marked_range_on_timeline() {
+                Some((a, b)) => (b - a).to_secs_f64(),
+                None => seq.total_duration().to_secs_f64(),
             },
             2 => selected_clips_frame_range(&self.state.selected_clips, seq, seq_fps)
                 .map(|(a, b)| (b - a) as f64 / seq_fps.max(1.0))
@@ -3839,7 +3871,13 @@ impl KlippApp {
         );
         match snapshot {
             Ok(mut snap) => {
-                snap.sequence_snapshot.export_range = range;
+                snap.sequence_snapshot.export_range = match range_for_render_again(range, snap.sequence_snapshot.duration_frames) {
+                    Ok(range) => range,
+                    Err(()) => {
+                        self.state.toast.show("The timeline no longer reaches the range this rendered; export it again from the dialog");
+                        return;
+                    }
+                };
                 snap.sequence_snapshot.video.global_lut_opacity = self.state.global_lut_opacity;
                 self.state.render_queue.remove_job(id);
                 self.state.render_queue.add_job(settings.output_path.clone(), settings, label, snap);
@@ -4882,7 +4920,7 @@ mod custom_ceiling_tests {
 
 #[cfg(test)]
 mod export_range_tests {
-    use super::{follow_marks, range_for_export, ExportDialogState};
+    use super::{export_range_note, follow_marks, range_for_export, ExportDialogState};
 
     /// The frames an export from the form covers: the range step the
     /// export runs, then the render snapshot `queue_export` makes.
@@ -4927,6 +4965,54 @@ mod export_range_tests {
             assert_eq!(dialog.range_mode, 0, "export {n}: the form still shows Full timeline");
             assert_eq!(exported_frames(&mut dialog, &seq, &pool) as f64, full, "export {n}: the timeline's length");
         }
+    }
+
+    /// In and Out running past the timeline's end: the export stops at the
+    /// end and says so, In and Out as the marks give them. Wholly past it,
+    /// the whole timeline, said too, whichever was picked before. The walk
+    /// behind this got 5.4 s of picture and 24.2 s of black, and "Done".
+    #[test]
+    fn an_export_never_takes_a_range_past_the_timelines_end() {
+        let mut pool = klipp_media::MediaPool::new();
+        let mut seq = sixty_seconds(&mut pool);
+        let fps = seq.fps.as_f64();
+        let full = (seq.total_duration().to_secs_f64() * fps).round();
+        seq.in_point = Some(klipp_core::RationalTime::from_secs_f64(50.0, 25));
+        seq.out_point = Some(klipp_core::RationalTime::from_secs_f64(80.0, 25));
+        let mut dialog = ExportDialogState::default();
+        follow_marks(&mut dialog, &seq);
+        assert_eq!(dialog.range_mode, 1, "it covers the last 10 s");
+        assert_eq!(exported_frames(&mut dialog, &seq, &pool) as f64, (10.0 * fps).round(), "up to the end");
+        assert!(export_range_note(&dialog, &seq).is_some_and(|n| n.contains("stops at the end")));
+
+        seq.in_point = Some(klipp_core::RationalTime::from_secs_f64(70.0, 25));
+        dialog.range_mode = 1;
+        dialog.range_picked = true;
+        follow_marks(&mut dialog, &seq);
+        assert_eq!(dialog.range_mode, 0, "nothing marked on the timeline");
+        assert!(!dialog.range_picked);
+        assert_eq!(exported_frames(&mut dialog, &seq, &pool) as f64, full);
+        assert!(export_range_note(&dialog, &seq).is_some_and(|n| n.contains("whole timeline")));
+
+        // Full timeline picked by hand needs no word about the marks; marks
+        // within the timeline need none at all.
+        dialog.range_picked = true;
+        assert_eq!(export_range_note(&dialog, &seq), None);
+        seq.in_point = Some(klipp_core::RationalTime::from_secs_f64(20.0, 25));
+        seq.out_point = Some(klipp_core::RationalTime::from_secs_f64(30.0, 25));
+        dialog.range_mode = 1;
+        assert_eq!(export_range_note(&dialog, &seq), None);
+    }
+
+    /// Rendered again on a timeline since cut shorter: what is left of its
+    /// range, or refused when none is.
+    #[test]
+    fn a_range_rendered_again_stays_on_the_timeline() {
+        use super::range_for_render_again as again;
+        assert_eq!(again(Some((10, 40)), 100), Ok(Some((10, 40))));
+        assert_eq!(again(Some((10, 40)), 25), Ok(Some((10, 25))));
+        assert_eq!(again(Some((30, 40)), 25), Err(()));
+        assert_eq!(again(None, 25), Ok(None));
     }
 
     fn sixty_seconds(pool: &mut klipp_media::MediaPool) -> klipp_timeline::Sequence {

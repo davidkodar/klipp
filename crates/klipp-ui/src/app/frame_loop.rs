@@ -10,6 +10,7 @@ impl KlippApp {
     pub(super) fn begin_frame(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         // Where this frame's floating windows may go: below the menus.
         crate::widgets::note_screen(ctx);
+        self.state.note_timeline_length();
         // Settle any workspace switch before the layout is computed, so
         // the panel changes it implies land in the same frame the new
         // workspace does rather than a frame behind it.

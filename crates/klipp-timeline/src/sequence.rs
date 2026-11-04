@@ -783,6 +783,28 @@ impl Sequence {
             .unwrap_or(Timecode::zero())
     }
 
+    /// The In and Out points as the timeline's end leaves them: Out past
+    /// the end comes back to it, and marks wholly past it are cleared. An
+    /// edit that shortened the timeline left them where they were, and an
+    /// export of them came out black after the last clip.
+    pub fn marks_within_end(&self) -> (Option<Timecode>, Option<Timecode>) {
+        let end = self.total_duration();
+        let in_past = self.in_point.is_some_and(|a| a >= end);
+        let out = match self.out_point {
+            Some(b) if b > end => (!in_past && end > Timecode::zero()).then_some(end),
+            out => out,
+        };
+        (self.in_point.filter(|_| !in_past), out)
+    }
+
+    /// The marked range the timeline has in it: both points set, In before
+    /// Out, and Out no further than the end. `None` when they cover nothing.
+    pub fn marked_range_on_timeline(&self) -> Option<(Timecode, Timecode)> {
+        let (a, b) = self.marks_within_end();
+        let (a, b) = (a?, b?);
+        (a < b).then_some((a, b))
+    }
+
     /// Renumber video and audio tracks based on visual position.
     /// Video tracks are numbered bottom-up (last video in array = "Video 1").
     /// Audio tracks are numbered top-down (first audio = "Audio 1").
@@ -3802,6 +3824,48 @@ pub fn effective_timeline_duration_for_keyframes(
         timeline_t += dt;
     }
     timeline_t
+}
+
+#[cfg(test)]
+mod marks_tests {
+    use super::*;
+
+    /// A timeline that ends at 10 s.
+    fn ten_seconds(marks: (Option<f64>, Option<f64>)) -> Sequence {
+        let at = |s: f64| RationalTime::from_secs_f64(s, 30);
+        let mut seq = Sequence::new_default();
+        seq.tracks[0].clips.push(Clip::media(MediaId::new(), at(0.0), at(10.0), at(0.0), at(10.0)));
+        seq.in_point = marks.0.map(at);
+        seq.out_point = marks.1.map(at);
+        seq
+    }
+
+    fn secs(t: Option<Timecode>) -> Option<f64> {
+        t.map(|t| (t.to_secs_f64() * 1000.0).round() / 1000.0)
+    }
+
+    #[test]
+    fn marks_come_in_to_the_end_or_go_when_wholly_past_it() {
+        let within = |m| { let s = ten_seconds(m); let (a, b) = s.marks_within_end(); (secs(a), secs(b)) };
+        assert_eq!(within((Some(2.0), Some(6.0))), (Some(2.0), Some(6.0)), "on the timeline: as they were");
+        assert_eq!(within((Some(2.0), Some(10.0))), (Some(2.0), Some(10.0)), "Out on the end");
+        assert_eq!(within((Some(8.0), Some(30.0))), (Some(8.0), Some(10.0)), "Out past it comes back");
+        assert_eq!(within((Some(12.0), Some(30.0))), (None, None), "wholly past it");
+        assert_eq!(within((Some(10.0), Some(30.0))), (None, None), "In on the end: nothing marked");
+        assert_eq!(within((Some(12.0), None)), (None, None), "an In alone");
+        assert_eq!(within((None, Some(30.0))), (None, Some(10.0)), "an Out alone");
+        assert_eq!(within((None, None)), (None, None));
+    }
+
+    #[test]
+    fn the_marked_range_is_what_the_timeline_has_of_it() {
+        let range = |m| ten_seconds(m).marked_range_on_timeline().map(|(a, b)| (secs(Some(a)).unwrap(), secs(Some(b)).unwrap()));
+        assert_eq!(range((Some(2.0), Some(6.0))), Some((2.0, 6.0)));
+        assert_eq!(range((Some(8.0), Some(30.0))), Some((8.0, 10.0)));
+        assert_eq!(range((Some(12.0), Some(30.0))), None);
+        assert_eq!(range((Some(2.0), None)), None, "an In alone is no range");
+        assert_eq!(range((Some(6.0), Some(2.0))), None, "the wrong way round");
+    }
 }
 
 #[cfg(test)]
