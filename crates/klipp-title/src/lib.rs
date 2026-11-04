@@ -12734,6 +12734,31 @@ mod fallback_tests {
         assert!(drawn_in(&layout, '字', &cjk.font, 48.0));
     }
 
+    /// An Arabic word in a Latin face draws from a system font that
+    /// shapes Arabic, its letters joined: the first and middle letters
+    /// of بعد are not their isolated forms. A maths font mapped the
+    /// letters first and drew each apart. Skips where no system font
+    /// has Arabic.
+    #[test]
+    fn arabic_in_a_latin_face_draws_joined() {
+        let Some(path) = fallback::system_font_for('ب', false) else {
+            eprintln!("skipped: no system font has Arabic");
+            return;
+        };
+        let data = std::fs::read(&path).unwrap();
+        let shapes = read_fonts::FontRef::from_index(&data, 0).ok().and_then(|f| read_fonts::TableProvider::gsub(&f).ok()).and_then(|g| g.script_list().ok()).is_some_and(|l| l.script_records().iter().any(|r| r.script_tag() == read_fonts::types::Tag::new(b"arab")));
+        assert!(shapes, "ب falls back to {}, which does not shape Arabic", path.display());
+        let arabic = LoadedFont::new(std::borrow::Cow::Owned(data)).unwrap();
+        let mut r = TitleRenderer::new();
+        let layout = r.render_layout(&boxed("TODAY بعد", "Bebas Neue", TextAlignment::Center, |_| {}), W, H);
+        for c in ['ب', 'ع'] {
+            assert!(!drawn_in(&layout, c, &arabic.font, 48.0), "{c} is drawn in its isolated form from {}", path.display());
+        }
+        // Standing alone, the letter is its isolated form, from that font.
+        let alone = r.render_layout(&boxed("TODAY ب", "Bebas Neue", TextAlignment::Center, |_| {}), W, H);
+        assert!(drawn_in(&alone, 'ب', &arabic.font, 48.0));
+    }
+
     /// A colour emoji draws in its colours: a rainbow in a Latin-only
     /// face, from the system's colour emoji font, has pixels of at
     /// least three distinct hues. Skips where the system has no emoji
