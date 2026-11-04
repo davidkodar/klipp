@@ -126,7 +126,8 @@ impl KlippApp {
         let edits: Vec<EditCommand> = plan.steps.into_iter().map(|s| s.edit).collect();
         self.apply_edits_as_one(&edits, "First Cut");
         let n = changes.len();
-        let mut session = crate::first_cut::Session { sequence: before.id, before, music: choices.music, changes, steps: Vec::new() };
+        let notes = crate::first_cut::found_nothing(choices, &changes);
+        let mut session = crate::first_cut::Session { sequence: before.id, before, music: choices.music, changes, steps: Vec::new(), notes };
         session.record(self.state.active_history().undo_count(), Vec::new());
         self.state.first_cut_session = Some(session);
         self.state.show_first_cut_panel = true;
@@ -175,6 +176,26 @@ impl KlippApp {
         if !self.state.show_first_cut_panel {
             return;
         }
+        // No First Cut step left to Undo or Redo to on this sequence: the
+        // panel goes, its changes no longer to be had (FC7).
+        let open_seq = self.state.sequence().id;
+        let reachable = {
+            let history = self.state.active_history();
+            let (undo, redo) = (history.undo_entries(), history.redo_entries());
+            let label_at = |d: usize| -> Option<&str> {
+                if d >= 1 && d <= undo.len() {
+                    Some(undo[d - 1].label())
+                } else {
+                    redo.len().checked_sub(d.checked_sub(undo.len())?).and_then(|i| redo.get(i)).map(|e| e.label())
+                }
+            };
+            session.sequence != open_seq || session.reachable(open_seq, label_at)
+        };
+        if !reachable {
+            self.state.show_first_cut_panel = false;
+            self.state.first_cut_session = None;
+            return;
+        }
         let in_force = self.first_cut_in_force();
         let editable = in_force.is_some();
         let excluded = session.shown(in_force.as_deref()).to_vec();
@@ -196,6 +217,9 @@ impl KlippApp {
                     ui.weak("The timeline is not at a First Cut step: Undo or Redo back to one to change it.");
                     ui.add_space(4.0);
                 }
+                for note in &session.notes {
+                    ui.label(egui::RichText::new(note).weak());
+                }
                 egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
                     for (i, change) in session.changes.iter().enumerate() {
                         ui.horizontal(|ui| {
@@ -203,7 +227,10 @@ impl KlippApp {
                             if ui.add_enabled(editable, egui::Checkbox::without_text(&mut kept)).on_hover_text("Untick to take this change back").changed() {
                                 flip = Some(i);
                             }
-                            let text = if !excluded.contains(&i) { egui::RichText::new(&change.what) } else { egui::RichText::new(&change.what).weak() };
+                            // Named by where it is now, where a click takes it
+                            // (FC6: "pause at 0:10.7" went to 0:07.22).
+                            let label = klipp_document::ops::first_cut::label_now(&session.changes, &excluded, i);
+                            let text = if !excluded.contains(&i) { egui::RichText::new(label) } else { egui::RichText::new(label).weak() };
                             if change.kind.cuts() {
                                 if ui.link(text).on_hover_text("Go to it").clicked() {
                                     go = Some(klipp_document::ops::first_cut::now_at(&session.changes, &excluded, i));
