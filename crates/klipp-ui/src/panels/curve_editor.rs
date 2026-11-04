@@ -173,7 +173,7 @@ fn start_track_menu(ui: &mut egui::Ui, state: &AppState, clip_id: klipp_core::Cl
     .response
     .on_hover_text("Start a keyframe track: a key at the playhead with the parameter's value now");
     let (param, value) = picked?;
-    let t = (state.playhead.to_secs_f64() - clip.timeline_in.to_secs_f64()).clamp(0.0, clip.duration().to_secs_f64());
+    let t = (state.playhead.to_secs_f64() - clip.timeline_in.to_secs_f64()).clamp(0.0, clip.duration().to_secs_f64().max(0.0));
     // A mask's track: its key by the mask's own command (#1947).
     if let CurveParam::Mask { track, .. } = &param {
         let cmd = AppCommand::AddMaskKeyframe { clip_id, node_id: track.node, mask_index: track.mask, param: track.param.clone(), time_secs: t, value };
@@ -1120,7 +1120,7 @@ impl CurveEditorPanel {
                 if graph_rect.contains(pos) && !on_key {
                     let t = self.x_to_time(pos.x, &graph_rect, clip_duration);
                     let v = self.y_to_value(pos.y, &graph_rect, v_min, v_range);
-                    let t = t.clamp(0.0, clip_duration);
+                    let t = t.clamp(0.0, clip_duration.max(0.0));
                     let v = v.clamp(v_min, v_max);
                     // The curve editor is exact: a key goes where the
                     // pointer is, not to the nearest frame.
@@ -2242,7 +2242,7 @@ impl CurveEditorPanel {
                                 let press = drag.press;
                                 let moved_t = t0 + self.x_to_time(pos.x, graph_rect, clip_duration) - self.x_to_time(press.x, graph_rect, clip_duration);
                                 let new_t = self.snap_time(ui, state, clip_id, keyframes, &[kf_idx], moved_t, graph_rect, clip_duration)
-                                    .clamp(0.0, clip_duration);
+                                    .clamp(0.0, clip_duration.max(0.0));
                                 let mut new_v = v0 + self.y_to_value(pos.y, graph_rect, v_min, v_range) - self.y_to_value(press.y, graph_rect, v_min, v_range);
                                 if ui.ctx().input(|i| i.modifiers.command) {
                                     let step = self.compute_value_step(v_range);

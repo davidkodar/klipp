@@ -290,7 +290,7 @@ impl KlippApp {
             } else {
                 dur_secs
             };
-            let clamped = interpolated_secs.clamp(0.0, max_secs);
+            let clamped = playhead_within(interpolated_secs, max_secs);
 
             self.state.playhead_smooth_secs = clamped;
             self.state.playhead = Timecode::from_secs_f64(clamped, self.state.fps.rate());
@@ -2106,5 +2106,25 @@ impl KlippApp {
         // the next Ctrl+F starts from a clean slate instead of
         // fighting a leftover one.
         self.state.focus_search_request = None;
+    }
+}
+
+/// `secs` on a timeline ending at `end`. An out point or a length below
+/// zero (from a project file, say) puts it at the start, it doesn't stop
+/// the app.
+fn playhead_within(secs: f64, end: f64) -> f64 {
+    secs.clamp(0.0, end.max(0.0))
+}
+
+#[cfg(test)]
+mod playhead_within_tests {
+    use super::playhead_within;
+
+    #[test]
+    fn a_timeline_length_below_zero_puts_the_playhead_at_the_start() {
+        assert_eq!(playhead_within(1.0, -55.0), 0.0);
+        assert_eq!(playhead_within(1.0, f64::NAN), 0.0);
+        assert_eq!(playhead_within(7.0, 5.0), 5.0);
+        assert_eq!(playhead_within(3.0, 5.0), 3.0);
     }
 }
