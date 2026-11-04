@@ -375,13 +375,11 @@ impl KlippApp {
         if done.is_empty() {
             return;
         }
-        let mut changed = false;
-        for id in done {
-            let Some(path) = self.state.media_pool.get(&id).map(|i| i.path.clone()) else { continue };
-            let report = klipp_analysis::report::MediaAnalysis::load(&path);
-            changed |= self.state.apply_analysis(id, &report);
-        }
-        if changed {
+        let reports: Vec<_> = done
+            .into_iter()
+            .filter_map(|id| self.state.media_pool.get(&id).map(|i| (id, klipp_analysis::report::MediaAnalysis::load(&i.path))))
+            .collect();
+        if self.state.take_in_analysis(&reports) {
             self.sync_media_pool_to_engine();
         }
     }
@@ -504,6 +502,25 @@ impl crate::state::AppState {
     /// analysis cache, again on every open; marking the project unsaved
     /// for them had a project opened and only played ask to be saved
     /// before it could be closed.
+    /// Analysis results taken into the pool. What analysis finds (markers,
+    /// screen text, a sound's role) is saved with the project but is not
+    /// an edit, and it comes back from the analysis store when the project
+    /// opens: a saved project stays saved as it comes in, the next save
+    /// writing it (CL1: a minute after opening, a saved project read
+    /// unsaved with no step). Whether anything changed.
+    pub(crate) fn take_in_analysis(&mut self, reports: &[(klipp_core::MediaId, klipp_analysis::report::MediaAnalysis)]) -> bool {
+        self.settle_unsaved();
+        let was_saved = !self.unsaved;
+        let mut changed = false;
+        for (id, report) in reports {
+            changed |= self.apply_analysis(*id, report);
+        }
+        if changed && was_saved {
+            self.keep_saved();
+        }
+        changed
+    }
+
     pub(crate) fn apply_analysis(&mut self, id: klipp_core::MediaId, report: &klipp_analysis::report::MediaAnalysis) -> bool {
         let Some(item) = self.media_pool.get_mut(&id) else { return false };
         if report.is_empty() {
@@ -669,6 +686,26 @@ mod analysis_is_not_an_edit_tests {
         assert!(!state.apply_analysis(id, &report), "the same again changes nothing");
         state.add_media_marker(id, klipp_core::MediaMarker::note(4.0));
         assert!(state.dirty, "the editor's own marker is an edit");
+    }
+
+    /// CL1: a saved project took analysis in, then the next hint raised
+    /// by anything (a re-read file) settled it as unsaved with no step.
+    /// Taken in, it stays saved; an edit after it is still unsaved.
+    #[test]
+    fn a_saved_project_stays_saved_as_analysis_comes_in() {
+        let mut state = crate::state::AppState::default();
+        let id = klipp_core::MediaId::new();
+        let fps = klipp_core::Fps::new(30, 1);
+        state.media_pool.add(klipp_media::MediaItem::new_synthetic_title(id, "shot.mp4".into(), klipp_core::Timecode::from_frames(300, 30), fps));
+        state.mark_saved();
+        let report = MediaAnalysis { shots: Some(Shots::from_boundaries(10.0, vec![2.0, 6.5])), ..Default::default() };
+        assert!(state.take_in_analysis(&[(id, report)]));
+        state.dirty = true;
+        state.settle_unsaved();
+        assert!(!state.unsaved, "analysis alone leaves it saved");
+        state.add_media_marker(id, klipp_core::MediaMarker::note(4.0));
+        state.settle_unsaved();
+        assert!(state.unsaved, "an edit after it is unsaved");
     }
 }
 
