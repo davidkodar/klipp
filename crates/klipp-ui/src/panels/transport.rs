@@ -33,7 +33,7 @@ pub fn route_command_for_viewer(cmd: AppCommand, mode: ViewerMode) -> AppCommand
 /// and keyboard handlers that don't already know which viewer they
 /// belong to. Per-viewer playbars should use `route_command_for_viewer`
 /// directly with their own `viewer_kind`.
-fn route_for_viewer(cmd: AppCommand, state: &AppState) -> AppCommand {
+pub(crate) fn route_for_viewer(cmd: AppCommand, state: &AppState) -> AppCommand {
     route_command_for_viewer(cmd, state.viewer_mode)
 }
 
