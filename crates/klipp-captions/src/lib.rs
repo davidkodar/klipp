@@ -279,6 +279,31 @@ pub fn vtt_language(content: &str) -> Option<String> {
     })
 }
 
+/// The largest subtitle file read. Subtitle files are text, or EBU-STL's
+/// fixed blocks: hours of cues come to a few MB at most.
+pub const MAX_SUBTITLE_FILE_BYTES: u64 = 8 * 1024 * 1024;
+
+/// The subtitle file at `path`, read as a file from elsewhere is: only a
+/// regular file, never a pipe or device that would block or never end, and
+/// none past [`MAX_SUBTITLE_FILE_BYTES`].
+pub fn read_subtitle_file(path: &std::path::Path) -> std::io::Result<Vec<u8>> {
+    use std::io::Read;
+    let refuse = |why: String| std::io::Error::new(std::io::ErrorKind::InvalidData, why);
+    let size = std::fs::metadata(path)?;
+    if !size.is_file() {
+        return Err(refuse(format!("{} is not a file", path.display())));
+    }
+    if size.len() > MAX_SUBTITLE_FILE_BYTES {
+        return Err(refuse(format!("{} is too large for a subtitle file: {} bytes, at most {MAX_SUBTITLE_FILE_BYTES}", path.display(), size.len())));
+    }
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)?.take(MAX_SUBTITLE_FILE_BYTES + 1).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > MAX_SUBTITLE_FILE_BYTES {
+        return Err(refuse(format!("{} is too large for a subtitle file", path.display())));
+    }
+    Ok(bytes)
+}
+
 /// The language the subtitle file at `path`, read as `bytes`, names,
 /// by its extension's format: TTML's `xml:lang`, EBU-STL's language code,
 /// a WebVTT `Language:` header; `None` for a format with none (#2223).
@@ -311,8 +336,13 @@ pub fn parse_srt_vtt(content: &str) -> Vec<SubtitleEntry> {
         if line.contains("-->") {
             let parts: Vec<&str> = line.split("-->").collect();
             if parts.len() == 2 {
+                // The end time, then a VTT cue's settings (line:80%,
+                // align:start), which were read as part of the time, so
+                // the cue was dropped.
+                let mut after = parts[1].split_whitespace();
                 let start = parse_srt_timestamp(parts[0].trim());
-                let end = parse_srt_timestamp(parts[1].trim());
+                let end = after.next().and_then(parse_srt_timestamp);
+                let placement = cue_settings(after);
                 if let (Some(s), Some(e)) = (start, end) {
                     // Collect text lines until blank line
                     let mut text_lines = Vec::new();
@@ -325,7 +355,7 @@ pub fn parse_srt_vtt(content: &str) -> Vec<SubtitleEntry> {
                     // Its tags as styled runs (#1515).
                     let (text, spans) = styled::parse_markup(&text);
                     if !text.is_empty() && cue_times_ok(s, e) {
-                        subs.push(SubtitleEntry { start_secs: s, end_secs: e, text, spans, placement: Placement::default() });
+                        subs.push(SubtitleEntry { start_secs: s, end_secs: e, text, spans, placement });
                     }
                     continue;
                 }
@@ -334,6 +364,43 @@ pub fn parse_srt_vtt(content: &str) -> Vec<SubtitleEntry> {
         i += 1;
     }
     subs
+}
+
+/// Where a VTT cue's settings put it, as far as a caption's placement
+/// holds: `line` as a percentage is its height on the frame (with
+/// `position` as a percentage its place across), a line number counted
+/// from the top puts it in the top band and one from the bottom leaves it
+/// low; `align` is the side its text is set to. `size`, `vertical` and
+/// anything else are let go; the cue is kept either way.
+fn cue_settings<'a>(settings: impl Iterator<Item = &'a str>) -> Placement {
+    let percent = |v: &str| v.strip_suffix('%').and_then(|n| n.parse::<f32>().ok()).filter(|n| (0.0..=100.0).contains(n)).map(|n| n / 100.0);
+    let (mut line, mut top, mut position, mut side) = (None, false, None, None);
+    for setting in settings {
+        let Some((key, value)) = setting.split_once(':') else { continue };
+        // A value may carry its own alignment after a comma (line:80%,end).
+        let value = value.split(',').next().unwrap_or(value);
+        match key {
+            "line" => match percent(value) {
+                Some(y) => line = Some(y),
+                None => top = value.parse::<i32>().is_ok_and(|n| n >= 0),
+            },
+            "position" => position = percent(value),
+            "align" => {
+                side = match value {
+                    "start" | "left" => Some(1),
+                    "center" | "middle" => Some(2),
+                    "end" | "right" => Some(3),
+                    _ => None,
+                }
+            }
+            _ => {}
+        }
+    }
+    match line {
+        Some(y) => Placement { pos: Some((position.unwrap_or(0.5), y)), align: Some(side.unwrap_or(2)) },
+        None if top => Placement { pos: None, align: Some(6 + side.unwrap_or(2)) },
+        None => Placement { pos: None, align: side.filter(|&s| s != 2) },
+    }
 }
 
 /// Parse "HH:MM:SS,mmm" or "HH:MM:SS.mmm" or "MM:SS.mmm" to seconds.
@@ -369,11 +436,16 @@ pub fn generate_srt(subs: &[SubtitleEntry]) -> String {
 }
 
 pub fn format_srt_time(secs: f64) -> String {
-    let h = (secs / 3600.0) as u32;
-    let m = ((secs % 3600.0) / 60.0) as u32;
-    let s = (secs % 60.0) as u32;
-    let ms = ((secs % 1.0) * 1000.0) as u32;
-    format!("{:02}:{:02}:{:02},{:03}", h, m, s, ms)
+    clock(secs, ',')
+}
+
+/// `HH:MM:SS` and the milliseconds after `mark`, from seconds rounded to
+/// the millisecond. Cut off, a time on a frame (12.04 s, 12.0399… as a
+/// float) was written a millisecond early, and a reader that floors to
+/// frames took it a frame early.
+fn clock(secs: f64, mark: char) -> String {
+    let ms = (secs.max(0.0) * 1000.0).round() as u64;
+    format!("{:02}:{:02}:{:02}{mark}{:03}", ms / 3_600_000, ms / 60_000 % 60, ms / 1000 % 60, ms % 1000)
 }
 
 /// Generate WebVTT format string from subtitle entries.
@@ -399,11 +471,7 @@ pub fn generate_vtt_in(subs: &[SubtitleEntry], language: Option<&str>) -> String
 }
 
 pub fn format_vtt_time(secs: f64) -> String {
-    let h = (secs / 3600.0) as u32;
-    let m = ((secs % 3600.0) / 60.0) as u32;
-    let s = (secs % 60.0) as u32;
-    let ms = ((secs % 1.0) * 1000.0) as u32;
-    format!("{:02}:{:02}:{:02}.{:03}", h, m, s, ms)
+    clock(secs, '.')
 }
 
 /// Generate ASS v4+ subtitle file from entries. Used for both .ass and
@@ -466,6 +534,21 @@ pub fn format_ass_time(secs: f64) -> String {
 #[cfg(test)]
 mod subtitle_tests {
     use super::*;
+
+    /// A subtitle file past the cap, or anything but a file, is refused;
+    /// one at the cap is read whole.
+    #[test]
+    fn a_subtitle_file_is_read_within_its_cap() {
+        let dir = std::env::temp_dir().join(format!("klipp-subtitle-cap-{}-{:?}", std::process::id(), std::thread::current().id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("big.srt");
+        std::fs::File::create(&file).unwrap().set_len(crate::MAX_SUBTITLE_FILE_BYTES).unwrap();
+        assert_eq!(crate::read_subtitle_file(&file).unwrap().len() as u64, crate::MAX_SUBTITLE_FILE_BYTES);
+        std::fs::File::create(&file).unwrap().set_len(crate::MAX_SUBTITLE_FILE_BYTES + 1).unwrap();
+        assert!(crate::read_subtitle_file(&file).unwrap_err().to_string().contains("too large"));
+        assert!(crate::read_subtitle_file(&dir).unwrap_err().to_string().contains("not a file"));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     // ── parse_srt_vtt tests ──
 
@@ -540,6 +623,22 @@ Second VTT cue
     fn parse_empty_file() {
         let subs = parse_srt_vtt("");
         assert!(subs.is_empty());
+    }
+
+    /// A VTT cue with settings after its time is kept, and where they say
+    /// it sits is kept as far as a caption's placement holds; settings it
+    /// can't hold are let go, the cue with them.
+    #[test]
+    fn vtt_cue_settings_keep_the_cue_and_its_place() {
+        let vtt = "WEBVTT\n\n00:00:01.000 --> 00:00:03.000 line:80% align:start\nLow, set left\n\n00:00:03.520 --> 00:00:05.040\nPlain\n\nNOTE a note\n\n00:00:06.000 --> 00:00:09.000 align:end size:50% vertical:rl\nSet right\n\n00:00:09.000 --> 00:00:10.000 line:0 position:30%\nOn top\n\n00:00:10.000 --> 00:00:11.000 line:20%,end position:25%\nUp left of centre\n";
+        let subs = parse_srt_vtt(vtt);
+        assert_eq!(subs.iter().map(|s| s.text.as_str()).collect::<Vec<_>>(), ["Low, set left", "Plain", "Set right", "On top", "Up left of centre"], "every cue kept");
+        assert_eq!(subs[0].placement, Placement { pos: Some((0.5, 0.8)), align: Some(1) });
+        assert_eq!(subs[1].placement, Placement::default());
+        assert_eq!(subs[2].placement, Placement { pos: None, align: Some(3) });
+        assert_eq!(subs[3].placement, Placement { pos: None, align: Some(8) });
+        assert_eq!(subs[4].placement, Placement { pos: Some((0.25, 0.2)), align: Some(2) });
+        assert_eq!((subs[0].start_secs, subs[0].end_secs), (1.0, 3.0));
     }
 
     #[test]
@@ -628,6 +727,17 @@ This is valid
     #[test]
     fn format_srt_time_3661() {
         assert_eq!(format_srt_time(3661.0), "01:01:01,000");
+    }
+
+    /// A time on a frame is written to the millisecond it is, not one
+    /// before: 12.04 s (frame 301 at 25 fps) is 12,040, and a time a
+    /// hair under a second carries into it.
+    #[test]
+    fn times_are_rounded_to_the_millisecond() {
+        assert_eq!(format_srt_time(12.04), "00:00:12,040");
+        assert_eq!(format_vtt_time(301.0 / 25.0), "00:00:12.040");
+        assert_eq!(format_srt_time(59.9996), "00:01:00,000");
+        assert_eq!(format_vtt_time(3599.9999), "01:00:00.000");
     }
 
     // ── format_ass_time tests ──
@@ -839,9 +949,9 @@ mod same_bytes_tests {
     use super::*;
 
     /// #1516: moved out of the app, the writers write exactly what they
-    /// wrote there, byte for byte, quirks included (a time like 3725.04 s
-    /// floored to its millisecond below), and the readers read it back as
-    /// they did.
+    /// wrote there, byte for byte, but for one quirk let go: a time like
+    /// 3725.04 s is now its own millisecond, not floored to the one below;
+    /// and the readers read it back as they did.
     #[test]
     fn the_formats_are_the_bytes_the_app_wrote() {
         let subs = vec![
@@ -850,9 +960,9 @@ mod same_bytes_tests {
             SubtitleEntry { start_secs: 3725.04, end_secs: 3727.5, text: "Late, <i>tagged</i>".into(), ..Default::default() },
         ];
         let srt = generate_srt(&subs);
-        assert_eq!(srt, "1\n00:00:00,000 --> 00:00:01,500\nHello\n\n2\n00:01:01,250 --> 00:01:03,999\nTwo\nlines {with braces}\n\n3\n01:02:05,039 --> 01:02:07,500\nLate, <i>tagged</i>\n\n");
+        assert_eq!(srt, "1\n00:00:00,000 --> 00:00:01,500\nHello\n\n2\n00:01:01,250 --> 00:01:03,999\nTwo\nlines {with braces}\n\n3\n01:02:05,040 --> 01:02:07,500\nLate, <i>tagged</i>\n\n");
         let vtt = generate_vtt(&subs);
-        assert_eq!(vtt, "WEBVTT\n\n00:00:00.000 --> 00:00:01.500\nHello\n\n00:01:01.250 --> 00:01:03.999\nTwo\nlines {with braces}\n\n01:02:05.039 --> 01:02:07.500\nLate, <i>tagged</i>\n\n");
+        assert_eq!(vtt, "WEBVTT\n\n00:00:00.000 --> 00:00:01.500\nHello\n\n00:01:01.250 --> 00:01:03.999\nTwo\nlines {with braces}\n\n01:02:05.040 --> 01:02:07.500\nLate, <i>tagged</i>\n\n");
         let ass = generate_ass(&subs);
         assert_eq!(ass, "[Script Info]\nTitle: Klipp Subtitles\nScriptType: v4.00+\nWrapStyle: 0\nScaledBorderAndShadow: yes\nPlayResX: 1920\nPlayResY: 1080\n\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\nStyle: Default,Arial,48,&H00FFFFFF,&H000000FF,&H00000000,&H64000000,0,0,0,0,100,100,0,0,1,2,0,2,10,10,20,1\n\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\nDialogue: 0,0:00:00.00,0:00:01.50,Default,,0,0,0,,Hello\nDialogue: 0,0:01:01.25,0:01:04.00,Default,,0,0,0,,Two\\Nlines (with braces)\nDialogue: 0,1:02:05.04,1:02:07.50,Default,,0,0,0,,Late, <i>tagged</i>\n");
 

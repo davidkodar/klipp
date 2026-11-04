@@ -307,7 +307,7 @@ pub fn show_picker(ctx: &egui::Context, state: &mut crate::state::AppState) -> V
                     let typed = field.with("typed");
                     let mut name: String = ui.data_mut(|d| d.get_temp(typed)).unwrap_or_else(|| t.name.clone());
                     // Wide enough for a take's name ("Take 'Boat shot 3'"),
-                    // which was cut to "Take '" (P27); all of it on hover.
+                    // which was cut to "Take '"; all of it on hover.
                     // Sized from outside: a field in a grid is held to its
                     // cell, and a cell starts from the last frame's column,
                     // so desired_width alone stayed at about 40.

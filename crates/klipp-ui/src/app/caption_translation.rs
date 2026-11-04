@@ -17,7 +17,8 @@ pub(super) struct Pending {
     /// The target language's tag, for the new track (#2223).
     code: String,
     sentences: Vec<ct::Sentence>,
-    /// What each sentence's placeholders come back as (#2429).
+    /// What each line's placeholders come back as (#2429): the
+    /// sentences', then their captions' own.
     kept: Vec<Vec<String>>,
     rx: std::sync::mpsc::Receiver<Result<Vec<tr::Line>, String>>,
 }
@@ -90,7 +91,11 @@ impl KlippApp {
         // The brief's names and terms, and the glossary's, kept through
         // the model as placeholders it copies (#2429).
         let terms = ct::keep_terms(seq.brief.as_ref(), glossary);
-        let (lines, kept): (Vec<String>, Vec<Vec<String>>) = sentences.iter().map(|s| ct::protect(&s.text, &terms)).unzip();
+        // The sentences, then each caption of one of more than one on its
+        // own, so the sentence's translation is cut back into its captions
+        // where their own words end.
+        let cues = ct::cue_lines(&sentences);
+        let (lines, kept): (Vec<String>, Vec<Vec<String>>) = sentences.iter().map(|s| s.text.as_str()).chain(cues.iter().map(String::as_str)).map(|t| ct::protect(t, &terms)).unzip();
         match tr::start(job_id.to_string(), source, target, lines) {
             Ok(rx) => {
                 self.state.toast.show(format!("Translating {} captions into {language}…", captions.len()));
@@ -197,8 +202,9 @@ impl KlippApp {
                 (text, l.cut.or(lost.then_some(ct::TERM_LOST)))
             })
             .unzip();
-        let translations = ct::per_caption(&pending.sentences, &texts);
-        let cut = ct::cut_captions(&pending.sentences, &cuts);
+        let n = pending.sentences.len().min(texts.len());
+        let translations = ct::per_caption(&pending.sentences, &texts[..n], &texts[n..]);
+        let cut = ct::cut_captions(&pending.sentences, &cuts[..n]);
         let seq = self.state.sequence();
         let Some(index) = seq.tracks.iter().position(|t| t.id == pending.track_id) else {
             tr::jobs::finish(&pending.job_id, Err("the caption track went while it was translated".into()));
@@ -241,7 +247,7 @@ mod consent_tests {
     use klipp_ml_candle::translation as tr;
 
     /// The question names each file's size, source, SHA-256 and licence,
-    /// as the other model downloads do (P28).
+    /// as the other model downloads do.
     #[test]
     fn the_question_says_size_source_checksum_and_licence() {
         let pair = tr::pair("en", "de").expect("an en→de pair");

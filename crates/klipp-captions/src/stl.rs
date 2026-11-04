@@ -3,8 +3,12 @@
 //! written. A file is a 1024-byte General Subject Information block, then
 //! a 128-byte Text and Timing Information block per subtitle (and per
 //! extension of a long one). Files are written for Level-1 teletext in the
-//! Latin character table (ISO 6937); teletext and open subtitles in that
-//! table are read.
+//! character table with a form for most of their text: Latin (ISO 6937),
+//! or Latin with Cyrillic, Arabic, Greek or Hebrew (ISO 8859-5 to -8);
+//! teletext and open subtitles in any of those are read. STL has no
+//! table for Chinese, Japanese or Korean: what a table has no form for
+//! is written as `?`, and [`character_table`] names it for the writer to
+//! say.
 
 use crate::styled::{Placement, Span, SpanStyle};
 use crate::SubtitleEntry;
@@ -76,20 +80,134 @@ pub fn stl_language(bytes: &[u8]) -> Option<String> {
     LANGUAGES.iter().find(|l| l.1 == lc).map(|l| l.0.to_string())
 }
 
-/// A character as ISO 6937 bytes: one, or a diacritic and a letter; `?`
-/// for one it has no form for. `$` goes as 0x24, as readers take it.
-fn encode_char(c: char, out: &mut Vec<u8>) {
-    match c {
-        ' '..='~' => out.push(c as u8),
-        _ => {
+/// An EBU-STL character code table: Latin (ISO 6937), or one of the
+/// tables for Cyrillic, Arabic, Greek and Hebrew (ISO 8859-5 to -8 above
+/// 0xA0, ASCII below).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Table {
+    Latin,
+    Cyrillic,
+    Arabic,
+    Greek,
+    Hebrew,
+}
+
+impl Table {
+    const ALL: [Table; 5] = [Table::Latin, Table::Cyrillic, Table::Arabic, Table::Greek, Table::Hebrew];
+
+    /// Its code in the general subject block (CCT).
+    pub fn code(self) -> &'static str {
+        match self {
+            Table::Latin => "00",
+            Table::Cyrillic => "01",
+            Table::Arabic => "02",
+            Table::Greek => "03",
+            Table::Hebrew => "04",
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Table::Latin => "Latin",
+            Table::Cyrillic => "Latin/Cyrillic",
+            Table::Arabic => "Latin/Arabic",
+            Table::Greek => "Latin/Greek",
+            Table::Hebrew => "Latin/Hebrew",
+        }
+    }
+
+    fn of_code(code: &str) -> Option<Table> {
+        Table::ALL.into_iter().find(|t| t.code() == code)
+    }
+
+    /// The character at `b`, 0xA0-0xFF, in an ISO 8859 table; `\0` where
+    /// it has none.
+    fn upper(self, b: u8) -> char {
+        let u = |n: u32| char::from_u32(n).unwrap_or('\0');
+        match (self, b) {
+            (_, 0xA0) => '\u{a0}',
+            (Table::Latin, _) => UPPER[(b - 0xA0) as usize],
+            (Table::Cyrillic, 0xA1..=0xAC) => u(0x0401 + (b - 0xA1) as u32),
+            (Table::Cyrillic, 0xAD) => '\u{ad}',
+            (Table::Cyrillic, 0xAE..=0xEF) => u(0x040E + (b - 0xAE) as u32),
+            (Table::Cyrillic, 0xF0) => '№',
+            (Table::Cyrillic, 0xF1..=0xFC) => u(0x0451 + (b - 0xF1) as u32),
+            (Table::Cyrillic, 0xFD) => '§',
+            (Table::Cyrillic, 0xFE..=0xFF) => u(0x045E + (b - 0xFE) as u32),
+            (Table::Arabic, 0xA4) => '¤',
+            (Table::Arabic, 0xAC) => '\u{060c}',
+            (Table::Arabic, 0xAD) => '\u{ad}',
+            (Table::Arabic, 0xBB) => '\u{061b}',
+            (Table::Arabic, 0xBF) => '\u{061f}',
+            (Table::Arabic, 0xC1..=0xDA) => u(0x0621 + (b - 0xC1) as u32),
+            (Table::Arabic, 0xE0..=0xF2) => u(0x0640 + (b - 0xE0) as u32),
+            (Table::Greek, 0xA1) => '‘',
+            (Table::Greek, 0xA2) => '’',
+            (Table::Greek, 0xA3) => '£',
+            (Table::Greek, 0xA4) => '€',
+            (Table::Greek, 0xA5) => '₯',
+            (Table::Greek, 0xA6..=0xA9 | 0xAB..=0xAD | 0xB0..=0xB3 | 0xB7 | 0xBB | 0xBD) => u(b as u32),
+            (Table::Greek, 0xAA) => '\u{037a}',
+            (Table::Greek, 0xAF) => '―',
+            (Table::Greek, 0xB4..=0xB6 | 0xB8..=0xBA | 0xBC | 0xBE..=0xD1 | 0xD3..=0xFE) => u(0x0384 + (b - 0xB4) as u32),
+            (Table::Hebrew, 0xA2..=0xA9 | 0xAB..=0xB9 | 0xBB..=0xBE) => u(b as u32),
+            (Table::Hebrew, 0xAA) => '×',
+            (Table::Hebrew, 0xBA) => '÷',
+            (Table::Hebrew, 0xDF) => '‗',
+            (Table::Hebrew, 0xE0..=0xFA) => u(0x05D0 + (b - 0xE0) as u32),
+            (Table::Hebrew, 0xFD) => '\u{200e}',
+            (Table::Hebrew, 0xFE) => '\u{200f}',
+            _ => '\0',
+        }
+    }
+
+    /// `c` as this table's bytes, `None` where it has no form for it.
+    fn encode(self, c: char) -> Option<Vec<u8>> {
+        if let ' '..='~' = c {
+            return Some(vec![c as u8]);
+        }
+        if self == Table::Latin {
             if let Some((_, d, base)) = ACCENTED.iter().find(|a| a.0 == c) {
-                out.extend([*d, *base]);
-            } else if let Some(i) = UPPER.iter().position(|u| *u == c && *u != '\0') {
-                out.push(0xA0 + i as u8);
-            } else {
-                out.push(b'?');
+                return Some(vec![*d, *base]);
             }
         }
+        (0xA0..=0xFFu8).find(|&b| self.upper(b) == c && c != '\0').map(|b| vec![b])
+    }
+}
+
+/// The table an EBU-STL file of `texts` is written in: the one with a
+/// form for most of their characters, Latin when it has as many; and the
+/// characters it still has none for, each once, in order. Those are
+/// written as `?`, and whoever writes the file says which (STL has no
+/// table for Chinese, Japanese or Korean).
+pub fn character_table<'a>(texts: impl IntoIterator<Item = &'a str>) -> (Table, Vec<char>) {
+    let chars: Vec<char> = texts.into_iter().flat_map(str::chars).filter(|c| !c.is_control()).collect();
+    let lost = |t: Table| {
+        let mut out: Vec<char> = Vec::new();
+        for &c in &chars {
+            if t.encode(c).is_none() && !out.contains(&c) {
+                out.push(c);
+            }
+        }
+        out
+    };
+    let mut best = (Table::Latin, lost(Table::Latin));
+    for t in &Table::ALL[1..] {
+        let l = lost(*t);
+        if l.len() < best.1.len() {
+            best = (*t, l);
+        }
+    }
+    best
+}
+
+/// A character as `table`'s bytes: one, or (Latin) a diacritic and a
+/// letter; `?` for one it has no form for, which [`character_table`]
+/// names. `$` goes as 0x24, as readers take it.
+fn encode_char(c: char, table: Table, out: &mut Vec<u8>) {
+    match table.encode(c) {
+        Some(bytes) => out.extend(bytes),
+        None => out.push(b'?'),
     }
 }
 
@@ -126,7 +244,7 @@ impl Attr {
 /// colour at the space before its word (teletext draws a colour code as
 /// a space), a word taking its first letter's colour. A line longer than
 /// a teletext row holds wraps at a space.
-fn text_field(sub: &SubtitleEntry) -> Vec<u8> {
+fn text_field(sub: &SubtitleEntry, table: Table) -> Vec<u8> {
     let mut chars: Vec<(char, Attr)> = Vec::new();
     for (seg, st) in crate::styled::segments(&sub.text, &sub.spans) {
         chars.extend(seg.chars().map(|c| (c, Attr::of(st))));
@@ -188,7 +306,7 @@ fn text_field(sub: &SubtitleEntry) -> Vec<u8> {
                 underline = a.underline;
                 out.push(if underline { 0x82 } else { 0x83 });
             }
-            encode_char(*c, &mut out);
+            encode_char(*c, table, &mut out);
         }
         if italic {
             out.push(0x81);
@@ -235,10 +353,11 @@ pub fn generate_stl(subs: &[SubtitleEntry], fps: u32, lang: &str, title: &str) -
     let fps = if fps == 30 { 30 } else { 25 };
     let mut sorted: Vec<&SubtitleEntry> = subs.iter().filter(|s| !s.text.trim().is_empty()).collect();
     sorted.sort_by(|a, b| a.start_secs.total_cmp(&b.start_secs));
+    let (table, _) = character_table(sorted.iter().map(|s| s.text.as_str()).chain([title]));
     let mut blocks: Vec<[u8; TTI_LEN]> = Vec::new();
     let mut max_rows = 0usize;
     for (n, sub) in sorted.iter().enumerate() {
-        let text = text_field(sub);
+        let text = text_field(sub, table);
         let lines = text.iter().filter(|b| **b == 0x0D).count().max(1);
         max_rows = max_rows.max(lines);
         let align = sub.placement.align.unwrap_or(match sub.placement.pos {
@@ -282,13 +401,13 @@ pub fn generate_stl(subs: &[SubtitleEntry], fps: u32, lang: &str, title: &str) -
     let lc = LANGUAGES.iter().find(|l| lang.split(['-', '_']).next() == Some(l.0)).map_or(0, |l| l.1);
     let mut title_bytes = Vec::new();
     for c in title.chars() {
-        encode_char(c, &mut title_bytes);
+        encode_char(c, table, &mut title_bytes);
     }
     let date = today();
     put(0, b"850", 3);
     put(3, if fps == 30 { b"STL30.01" } else { b"STL25.01" }, 8);
     put(11, b"1", 1);
-    put(12, b"00", 2);
+    put(12, table.code().as_bytes(), 2);
     put(14, format!("{lc:02X}").as_bytes(), 2);
     put(16, &title_bytes, 32);
     put(224, date.as_bytes(), 6);
@@ -315,7 +434,7 @@ pub fn generate_stl(subs: &[SubtitleEntry], fps: u32, lang: &str, title: &str) -
 /// italics and underline (kept over the lines of a cue), ISO 6937
 /// characters with their accents, a CR/LF a new line (doubled ones and
 /// blank lines dropped), and the fill bytes ignored.
-fn read_text(field: &[u8]) -> (String, Vec<Span>) {
+fn read_text(field: &[u8], table: Table) -> (String, Vec<Span>) {
     let mut lines: Vec<Vec<(char, Attr)>> = vec![Vec::new()];
     let mut attr = Attr::PLAIN;
     let mut accent: Option<u8> = None;
@@ -341,12 +460,12 @@ fn read_text(field: &[u8]) -> (String, Vec<Span>) {
                     line.push((' ', Attr::PLAIN));
                 }
             }
-            0xC1..=0xCF => accent = Some(b),
+            0xC1..=0xCF if table == Table::Latin => accent = Some(b),
             _ => {
                 let c = match b {
                     0x24 => '$',
                     0x20..=0x7E => b as char,
-                    0xA0..=0xFF => UPPER[(b - 0xA0) as usize],
+                    0xA0..=0xFF => table.upper(b),
                     _ => '\0',
                 };
                 let c = match accent.take() {
@@ -399,9 +518,10 @@ pub fn parse_stl(bytes: &[u8]) -> Result<Vec<SubtitleEntry>, String> {
         _ => 25.0,
     };
     let cct = field(12, 2);
-    if !cct.is_empty() && cct != "00" {
-        return Err(format!("EBU-STL character code table {cct} is not read; only Latin (00) is"));
-    }
+    let table = if cct.is_empty() { Some(Table::Latin) } else { Table::of_code(&cct) };
+    let Some(table) = table else {
+        return Err(format!("EBU-STL character code table {cct} is not read; Latin (00), Cyrillic (01), Arabic (02), Greek (03) and Hebrew (04) are"));
+    };
     let open = matches!(field(11, 1).as_str(), "" | "0");
     let rows: f64 = field(253, 2).parse().ok().filter(|r: &f64| *r > 0.0).unwrap_or(if open { 99.0 } else { 23.0 });
     let tc = |b: &[u8]| b[0] as f64 * 3600.0 + b[1] as f64 * 60.0 + b[2] as f64 + b[3] as f64 / fps;
@@ -421,7 +541,7 @@ pub fn parse_stl(bytes: &[u8]) -> Result<Vec<SubtitleEntry>, String> {
         if b[3] != 0xFF {
             continue;
         }
-        let (text, spans) = read_text(&std::mem::take(&mut text_of));
+        let (text, spans) = read_text(&std::mem::take(&mut text_of), table);
         let (start, end) = (tc(&b[5..9]), tc(&b[9..13]));
         if text.is_empty() || end <= start {
             continue;
@@ -501,6 +621,25 @@ mod tests {
     /// programme at ten hours, a comment and a user-data block left out,
     /// teletext colour codes mid-line, double CR/LF, and a refused
     /// character table.
+    /// Cyrillic, Arabic, Greek and Hebrew captions are written in the
+    /// table STL has for them and read back as written; Latin stays
+    /// Latin. Chinese has no table: its characters are named, and the
+    /// file says so in its table code no other way.
+    #[test]
+    fn each_script_goes_in_its_own_table_and_comes_back() {
+        for (text, code) in [("Привет, мир", "01"), ("مرحبا بالعالم", "02"), ("Γειά σου κόσμε", "03"), ("שלום עולם", "04"), ("Grüße, ça va", "00")] {
+            let bytes = generate_stl(&[cue(1.0, 3.0, text)], 25, "", "t");
+            assert_eq!(&bytes[12..14], code.as_bytes(), "{text}: its table");
+            let back = parse_stl(&bytes).unwrap();
+            assert_eq!(back[0].text, text, "read back as written");
+            assert_eq!(character_table([text]).1, Vec::<char>::new(), "{text}: nothing lost");
+        }
+        let (table, lost) = character_table(["Hello — 你好"]);
+        assert_eq!((table, lost), (Table::Latin, vec!['—', '你', '好']), "what no table holds is named");
+        let (_, lost) = character_table(["Привет — мир"]);
+        assert_eq!(lost, vec!['—'], "the dash Cyrillic has no form for");
+    }
+
     #[test]
     fn a_broadcast_file_reads() {
         let mut gsi = vec![b' '; GSI_LEN];
@@ -538,9 +677,10 @@ mod tests {
         assert_eq!(subs[0].placement, Placement::default());
         assert_eq!(subs[1].placement.align, Some(7));
 
-        let mut cyrillic = file.clone();
-        cyrillic[12..14].copy_from_slice(b"01");
-        assert!(parse_stl(&cyrillic).unwrap_err().contains("01"));
+        // A table STL has none of is refused, by its code.
+        let mut unknown = file.clone();
+        unknown[12..14].copy_from_slice(b"05");
+        assert!(parse_stl(&unknown).unwrap_err().contains("05"));
         assert!(parse_stl(b"WEBVTT\n").is_err());
     }
 }

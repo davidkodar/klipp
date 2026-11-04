@@ -283,7 +283,7 @@ pub(crate) fn respond(
 }
 
 /// The clips on `seq`'s tracks, for status: gap clips hold the primary's
-/// empty room and are no clips anyone placed (P54), so they don't count.
+/// empty room and are no clips anyone placed, so they don't count.
 fn placed_clips(seq: &klipp_timeline::Sequence) -> usize {
     seq.tracks.iter().map(|t| t.clips.iter().filter(|c| !c.kind.is_gap()).count()).sum()
 }

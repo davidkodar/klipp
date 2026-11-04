@@ -392,6 +392,9 @@ pub struct SubtitleClipSnapshot {
 #[derive(Debug, Clone)]
 pub struct SubtitleTrackSnapshot {
     pub clips: Vec<SubtitleClipSnapshot>,
+    /// The track's language (a BCP 47 tag), which its soft stream is
+    /// tagged with.
+    pub language: Option<String>,
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -579,6 +582,8 @@ impl SequenceSnapshot {
 
         // Collect subtitle tracks regardless of burn_in setting.
         // Subtitle text + timing is always available for soft embedding.
+        // The shown ones only: a hidden track (a translation's, until it
+        // is shown) went into the file too, and over the shown one.
         let mut subtitle_tracks = Vec::new();
         // Subtitle tracks are the captions; text tracks stand in only when
         // there are none, or an embedded subtitle stream would carry the
@@ -586,7 +591,7 @@ impl SequenceSnapshot {
         let has_subtitles = seq.tracks.iter().any(|t| t.kind == TrackKind::Subtitle && !t.clips.is_empty());
         for track in seq.tracks.iter() {
             let wanted = if has_subtitles { track.kind == TrackKind::Subtitle } else { track.kind == TrackKind::Text };
-            if !wanted {
+            if !wanted || !track.visible || track.muted {
                 continue;
             }
             let mut clips = Vec::new();
@@ -600,7 +605,7 @@ impl SequenceSnapshot {
                 }
             }
             if !clips.is_empty() {
-                subtitle_tracks.push(SubtitleTrackSnapshot { clips });
+                subtitle_tracks.push(SubtitleTrackSnapshot { clips, language: track.language.clone() });
             }
         }
 

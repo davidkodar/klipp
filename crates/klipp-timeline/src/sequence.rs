@@ -1396,9 +1396,14 @@ impl Sequence {
     /// back to the last whole frame at or before it, or to the next clip's
     /// start if that is earlier, and a clip linked to it that ended with
     /// it goes too. The source is cut by as much as the clip plays of it.
+    /// Only a run of less than a frame over is mended: that is what the
+    /// append left. A clip over the next by more was put there (an EDL of
+    /// two picture tracks read onto one), and ending it would lose
+    /// seconds of picture without a word, so it is left as it is.
     /// How many clips were mended.
     pub fn mend_overlaps(&mut self) -> usize {
         let fps = self.fps;
+        let frame = 1.0 / fps.as_f64().max(1.0);
         let mut ends: Vec<(ClipId, Timecode, Timecode)> = Vec::new();
         for t in &self.tracks {
             let mut order: Vec<&Clip> = t.clips.iter().collect();
@@ -1406,6 +1411,9 @@ impl Sequence {
             for w in order.windows(2) {
                 let (a, b) = (w[0], w[1]);
                 if a.timeline_out <= b.timeline_in || b.timeline_in <= a.timeline_in {
+                    continue;
+                }
+                if a.timeline_out.to_secs_f64() - b.timeline_in.to_secs_f64() >= frame {
                     continue;
                 }
                 let on_frame = klipp_core::whole_frames_within(a.timeline_out.to_secs_f64(), fps);
@@ -5286,6 +5294,23 @@ mod mend_overlaps_tests {
         assert_eq!((seq.tracks[v].clips[1].timeline_in, seq.tracks[v].clips[1].timeline_out, seq.tracks[v].clips[1].source_out), (b_before.timeline_in, b_before.timeline_out, b_before.source_out), "the next clip as it was");
         assert_eq!((seq.tracks[s].clips[0].timeline_out, seq.tracks[s].clips[0].source_out), (sound.timeline_out, sound.source_out), "the sound, already on the frame, as it was");
         assert_eq!(seq.mend_overlaps(), 0, "mended once");
+    }
+
+    /// A clip over the next by whole seconds was put there, not left by an
+    /// append: it is kept as it is, its picture and source untouched.
+    #[test]
+    fn a_clip_over_the_next_by_seconds_is_left_as_it_is() {
+        let mut seq = Sequence::new_default();
+        seq.fps = Fps::new(25, 1);
+        seq.tracks.clear();
+        seq.add_video_track("V1".into());
+        let media = MediaId::new();
+        let a = Clip::media(media, at(0, 25), at(150, 25), at(50, 25), at(200, 25));
+        let b = Clip::media(media, at(75, 25), at(175, 25), at(25, 25), at(125, 25));
+        seq.tracks[0].clips = vec![a.clone(), b];
+        assert_eq!(seq.mend_overlaps(), 0);
+        let kept = &seq.tracks[0].clips[0];
+        assert_eq!((kept.timeline_out, kept.source_out), (a.timeline_out, a.source_out), "the 6 s clip still ends at 6 s");
     }
 
     /// A hostile project's times, far past any file, are mended without a

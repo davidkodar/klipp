@@ -47,13 +47,13 @@ pub fn fit_targets(seq: &Sequence, clip_id: ClipId) -> FitTargets {
     FitTargets { to_next, range }
 }
 
-/// Fit to the marked range (P53): the document's, which the `retime`
+/// Fit to the marked range: the document's, which the `retime`
 /// op's `fit_range` uses too, so the dialog and an assistant agree.
 pub use klipp_document::clipboard::{on_marks as fit_on_marks, OnMarks};
 
 /// The commands the dialog's Apply sends for `clip`: only what changed,
-/// and the speed and Keep Pitch together as one undo step, "Clip Speed"
-/// (P54). It sent the speed unchanged too, an empty step, and Keep Pitch
+/// and the speed and Keep Pitch together as one undo step, "Clip Speed".
+/// It sent the speed unchanged too, an empty step, and Keep Pitch
 /// as a step of its own.
 pub fn apply_commands(clip: &klipp_timeline::Clip, speed: f64, keep_pitch: bool, ripple: bool) -> Vec<klipp_core::AppCommand> {
     use klipp_core::AppCommand;
@@ -131,7 +131,7 @@ mod tests {
         assert_eq!(fit_targets(&seq, last).to_next, None, "nothing follows the last shot");
     }
 
-    /// P53: fitted to the marked range, the clip goes on the marks: it
+    /// Fitted to the marked range, the clip goes on the marks: it
     /// starts at In and ends at Out at the speed that takes, its sound
     /// with it. Over another clip, Overwrite lays it over; Insert pushes
     /// what is there along by the range.
@@ -168,7 +168,7 @@ mod tests {
         assert!(fit_on_marks(&seq, id, PasteMode::Overwrite, false).is_none(), "no marked range");
     }
 
-    /// P54: Apply sends what changed: nothing for nothing, Keep Pitch
+    /// Apply sends what changed: nothing for nothing, Keep Pitch
     /// alone with no speed step, both in one "Clip Speed" step.
     #[test]
     fn apply_sends_only_what_changed() {
