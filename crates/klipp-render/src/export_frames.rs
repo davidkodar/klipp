@@ -79,6 +79,39 @@ pub fn fit_in(width: u32, height: u32, out_w: u32, out_h: u32) -> (u32, u32, u32
     }
 }
 
+/// The frame burnt-in captions are laid out for in an export of a
+/// `width`×`height` sequence with `settings`: the output's, when the
+/// sequence's picture is barred in it. `None` when the captions aren't
+/// burnt in, or the picture fills the output and they are drawn in it.
+pub fn caption_frame(settings: &ExportSettings, width: u32, height: u32) -> Option<klipp_core::Resolution> {
+    let (out_w, out_h) = settings.output_size(width, height);
+    let (fit_w, fit_h, _, _) = fit_in(width, height, out_w, out_h);
+    (settings.burn_in_subtitles && (fit_w, fit_h) != (out_w, out_h)).then_some(klipp_core::Resolution { width: out_w, height: out_h })
+}
+
+/// `captions` at `time` drawn over `picture`, an `out`-sized export
+/// frame: on the GPU stack, on the CPU where it declines. Nothing while
+/// no caption is on.
+fn lay_captions(renderer: &mut Renderer, captions: &Sequence, time: Timecode, (w, h): (u32, u32), opts: RenderOptions, frames: &mut ExportFrameSource, picture: &mut [f32]) {
+    if !captions.tracks.iter().flat_map(|t| &t.clips).any(|c| time >= c.timeline_in && time < c.timeline_out) {
+        return;
+    }
+    let opts = RenderOptions { keep_alpha: true, ..opts };
+    let layer = renderer.render_linear_on_gpu(captions, time, w, h, frames, opts).unwrap_or_else(|| renderer.render(captions, time, w, h, frames, opts));
+    if layer.len() != picture.len() {
+        return;
+    }
+    // Straight alpha over the opaque picture.
+    for (p, c) in picture.chunks_exact_mut(4).zip(layer.chunks_exact(4)) {
+        let a = c[3].clamp(0.0, 1.0);
+        if a > 0.0 {
+            for i in 0..3 {
+                p[i] = c[i] * a + p[i] * (1.0 - a);
+            }
+        }
+    }
+}
+
 /// One export frame, as the encoder takes it.
 pub enum ExportFrame {
     /// Converted on the GPU: the encoder's planes, and the frame's light
@@ -120,6 +153,9 @@ pub struct ExportFrameMaker {
     /// Whether a frame the encoder takes no planes of is composited on the
     /// GPU and brought back (#2488): off once the device is lost.
     gpu_linear: bool,
+    /// The captions laid out for the output's frame, drawn over the barred
+    /// picture ([`caption_frame`]): the timeline's picture leaves them out.
+    captions: Option<Sequence>,
 }
 
 impl ExportFrameMaker {
@@ -151,7 +187,8 @@ impl ExportFrameMaker {
         // HDR encode (an ACES PQ transform renders its own from SDR).
         let opts = RenderOptions { hdr_peak_nits: settings.renders_hdr().then(|| settings.hdr_peak_nits()), ..Default::default() };
         let no_gpu_why = if (fit.0, fit.1) != out { "the picture is letterboxed in the output, padded on the CPU" } else { "the encoder takes no frames made on the GPU" };
-        Self { out, fit, opts, gpu_yuv, declined_stack: None, gpu_attempts: 0, label, last_pad: std::time::Duration::ZERO, declined_why: "", no_gpu_why, last_cpu_why: None, gpu_linear: true }
+        let captions = caption_frame(settings, snapshot.width, snapshot.height).and_then(|to| klipp_compose::captions::captions_for_frame(&snapshot.video.sequence, to));
+        Self { out, fit, opts, gpu_yuv, declined_stack: None, gpu_attempts: 0, label, last_pad: std::time::Duration::ZERO, declined_why: "", no_gpu_why, last_cpu_why: None, gpu_linear: true, captions }
     }
 
     /// The output size frames come at.
@@ -186,8 +223,18 @@ impl ExportFrameMaker {
 
     /// The frame of `timeline` at `time`, rendered with `renderer` from
     /// `frames`, which it ends as the export does (a decoder that failed is
-    /// the error).
+    /// the error), with the captions laid out for the output's frame over
+    /// it when the picture is barred.
     pub fn frame(&mut self, renderer: &mut Renderer, timeline: &Sequence, time: Timecode, frames: &mut ExportFrameSource) -> Result<ExportFrame, RenderError> {
+        let mut frame = self.picture(renderer, timeline, time, frames)?;
+        if let (Some(captions), ExportFrame::Linear(picture)) = (&self.captions, &mut frame) {
+            lay_captions(renderer, captions, time, self.out, self.opts, frames, picture);
+        }
+        Ok(frame)
+    }
+
+    /// The picture of `timeline` at `time`, padded to the output.
+    fn picture(&mut self, renderer: &mut Renderer, timeline: &Sequence, time: Timecode, frames: &mut ExportFrameSource) -> Result<ExportFrame, RenderError> {
         let (fit_w, fit_h, fit_x, fit_y) = self.fit;
         self.last_pad = std::time::Duration::ZERO;
         // The frame converted on the GPU, when the whole render is one

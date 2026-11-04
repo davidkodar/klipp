@@ -29,6 +29,7 @@
 //!   via `klipp-project`; treat any breaking rename as a migration.
 
 pub mod frame_glide;
+pub mod process_memory;
 pub mod xml_depth;
 pub mod assets;
 pub mod lang;

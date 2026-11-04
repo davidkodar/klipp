@@ -101,7 +101,7 @@ impl MatchKnobs {
     }
 }
 
-pub fn match_grade_knobs(target: &serde_json::Value, reference: &serde_json::Value) -> MatchKnobs {
+pub fn match_grade_knobs(target: &serde_json::Value, reference: &serde_json::Value, target_m: &klipp_color::measure::FrameMeasure, reference_m: &klipp_color::measure::FrameMeasure) -> MatchKnobs {
     let ire = |v: &serde_json::Value, k: &str| v.get("luma_ire").and_then(|x| x.get(k)).and_then(|x| x.as_f64()).unwrap_or(0.0);
     let bal = |v: &serde_json::Value, k: &str| v.get("rgb_balance").and_then(|x| x.get(k)).and_then(|x| x.as_f64()).unwrap_or(0.0);
     let some_if = |v: f32, thresh: f32| if v.abs() > thresh { Some(v) } else { None };
@@ -112,14 +112,23 @@ pub fn match_grade_knobs(target: &serde_json::Value, reference: &serde_json::Val
     // Mid: the exposure in stops that brings the mid grey together.
     let (tm, rm) = (ire(target, "mid").max(0.5), ire(reference, "mid").max(0.5));
     let exposure = some_if((rm / tm).log2().clamp(-1.0, 1.0) as f32, 0.05);
-    // Balance (#2878): the white balance, in the grade's mireds, that
-    // moves the target's average colour by the Lab a*/b* gap to the
-    // reference's, solved through the balance itself. The knobs had been
-    // the RGB gap times four, under a mired: nothing visible moved.
-    let linear = |v: &serde_json::Value| ["red", "green", "blue"].map(|k| klipp_color::transfer::srgb_to_linear(bal(v, k) as f32));
-    let lab = |c: [f32; 3]| klipp_color::measure::linear_to_lab(c[0], c[1], c[2]);
-    let (t, r) = (lab(linear(target)), lab(linear(reference)));
-    let solve = |k: f32| klipp_color::white_balance::white_balance_for_lab_shift(linear(target), (r.a - t.a) * k, (r.b - t.b) * k, klipp_core::WorkingColorspace::Rec709Linear);
+    // Balance: the white balance that takes the target's neutrals to the
+    // reference's, a* and b* as the frames' neutral surfaces measure them
+    // (#2878 solved it through the balance itself). Aimed at the frame's
+    // average colour, a warm beach matched to a blue sky read as 18 b*
+    // apart when their greys were 2, and the match turned the shot blue.
+    // A frame with nothing neutral in it has no neutrals to aim at, and
+    // then the frames' average colours are all there is to go on.
+    let (from, t, r) = if target_m.neutral_pct >= 1.0 && reference_m.neutral_pct >= 1.0 {
+        let neutral = klipp_color::measure::lab_to_linear(klipp_color::measure::Lab { l: target_m.l_p50.clamp(30.0, 80.0), a: target_m.cast_a, b: target_m.cast_b });
+        (neutral, (target_m.cast_a, target_m.cast_b), (reference_m.cast_a, reference_m.cast_b))
+    } else {
+        let linear = |v: &serde_json::Value| ["red", "green", "blue"].map(|k| klipp_color::transfer::srgb_to_linear(bal(v, k) as f32));
+        let lab = |c: [f32; 3]| klipp_color::measure::linear_to_lab(c[0], c[1], c[2]);
+        let (t, r) = (lab(linear(target)), lab(linear(reference)));
+        (linear(target), (t.a, t.b), (r.a, r.b))
+    };
+    let solve = |k: f32| klipp_color::white_balance::white_balance_for_lab_shift(from, (r.0 - t.0) * k, (r.1 - t.1) * k, klipp_core::WorkingColorspace::Rec709Linear);
     // A gap past the grade's ±50 is closed as far as the range goes, in
     // its own direction: the shift scaled down, not one knob clamped.
     let (mut temp, mut tnt) = solve(1.0);
@@ -145,13 +154,13 @@ pub fn match_grade_knobs(target: &serde_json::Value, reference: &serde_json::Val
 /// its 95th percentile. A match had taken a shot up a stop and left a
 /// fifth of the frame at white. Returns why, when a knob was held.
 pub fn hold_match_for_highlights(knobs: &mut MatchKnobs, m: &klipp_color::measure::FrameMeasure) -> Option<String> {
-    let clipping = m.clip_hi_pct > 1.0 || m.gamut_clip_pct > klipp_color::measure::GAMUT_WARN;
+    let clipping = m.clip_hi_pct > 1.0 || m.gamut_hi_pct > klipp_color::measure::GAMUT_WARN;
     let room = klipp_color::measure::exposure_headroom(m);
     let wanted = knobs.exposure.unwrap_or(0.0);
     let why = if clipping && (wanted > 0.0 || knobs.gain.is_some_and(|g| g > 0.0)) {
         knobs.exposure = knobs.exposure.filter(|e| *e < 0.0);
         knobs.gain = knobs.gain.filter(|g| *g < 0.0);
-        format!("not brightened: {:.1}% of the shot is already at white", m.clip_hi_pct.max(m.gamut_clip_pct))
+        format!("not brightened: {:.1}% of the shot is already at white", m.clip_hi_pct.max(m.gamut_hi_pct))
     } else if wanted > room + 0.01 {
         // A hold this close to nothing is no move at all.
         knobs.exposure = (room > 0.05).then_some(room);

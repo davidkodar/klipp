@@ -1715,9 +1715,10 @@ pub enum Op {
     Refit {
         #[serde(default = "default_true")]
         markers: bool,
-        /// Every other picture on a track pushed in this much further
-        /// than it fills (#2720), so the jump between two pieces of one
-        /// shot reads as a cut; 1.1 to 1.3, none by default.
+        /// Every other piece of a shot pushed in this much further than it
+        /// fills (#2720), so the jump between two pieces reads as a cut; 1.1
+        /// to 1.3, none by default. A piece follows the one before on its
+        /// track and goes on in the same file; a shot alone isn't pushed in.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         punch: Option<f32>,
         /// Clips left as they are framed (#2724): a version rebuilt from
@@ -6482,13 +6483,35 @@ fn resolve_trim(seq: &Sequence, pool: &MediaPool, i: usize, clip_id: ClipId, edg
         skip.push(pti);
     }
     // A multicam group ripples as one: its other angles, and their sound,
-    // are trimmed by the same amount from their own edges. Rippled alone,
-    // one angle's later clips moved and the others' stayed, and the group
-    // was out of sync from the edit on.
+    // follow. Rippled alone, one angle's later clips moved and the others'
+    // stayed, and the group was out of sync from the edit on.
     let (mut edits, mut ids, mut what) = (vec![edit], ids, what);
     let moved = target - match edge { Edge::In => clip.timeline_in, Edge::Out => clip.timeline_out };
     let followers = if linked { multicam_followers(seq, clip) } else { Vec::new() };
-    for f in &followers {
+    // Shortened, the group loses the same stretch of the timeline on every
+    // angle: cut from each, what follows closing up. Trimmed from each
+    // angle's own edge, an angle that started later than the clip lost its
+    // own opening instead, picture it still had under the part kept.
+    let cut = match edge {
+        Edge::In if target > clip.timeline_in => Some((clip.timeline_in, target)),
+        Edge::Out if target < clip.timeline_out => Some((target, clip.timeline_out)),
+        _ => None,
+    };
+    let mut angles = 0;
+    if let Some((from, to)) = cut.filter(|_| !followers.is_empty()) {
+        let open: Vec<usize> = cut_tracks_of(seq, &followers, from).into_iter().filter(|t| !skip.contains(t)).collect();
+        if open.iter().any(|&t| seq.tracks[t].clips.iter().any(|c| c.timeline_out > from)) {
+            let (_, cut_edit, cut_ids) = cut_tracks(seq, pool, i, from, to, &open, false, false).map_err(|mut r| {
+                r.why = format!("another angle of its multicam group cannot follow: {}", r.why);
+                r
+            })?;
+            angles = followers.iter().filter(|f| find_clip(seq, **f).is_some_and(|(t, _, _)| open.contains(&t))).count();
+            skip.extend(open);
+            edits.push(cut_edit);
+            ids.extend(cut_ids);
+        }
+    }
+    for f in followers.iter().filter(|_| cut.is_none()) {
         let Some((fti, _, fc)) = find_clip(seq, *f) else { continue };
         if skip.contains(&fti) {
             continue;
@@ -6504,9 +6527,10 @@ fn resolve_trim(seq: &Sequence, pool: &MediaPool, i: usize, clip_id: ClipId, edg
         }
         edits.push(f_edit);
         ids.extend(f_ids);
+        angles += 1;
     }
-    if edits.len() > 1 {
-        what = format!("{what}; the multicam group's {} other angle(s) follow", edits.len() - 1);
+    if angles > 0 {
+        what = format!("{what}; the multicam group's {angles} other angle(s) follow");
     }
     let shifts = sync_lock_shifts(seq, i, &skip, clip.timeline_out, delta)?;
     if !shifts.is_empty() {
@@ -6878,7 +6902,6 @@ fn cut_range(seq: &Sequence, pool: &MediaPool, i: usize, from: Timecode, to: Tim
     if to <= from {
         return Err(refuse(i, format!("the cut ends ({:.2} s) before it starts ({:.2} s)", secs(to), secs(from)), "give `to` after `from`"));
     }
-    let len = to - from;
     let open: Vec<usize> = if scope.is_empty() {
         (0..seq.tracks.len()).filter(|&t| !seq.tracks[t].locked).collect()
     } else {
@@ -6895,7 +6918,19 @@ fn cut_range(seq: &Sequence, pool: &MediaPool, i: usize, from: Timecode, to: Tim
         }
         tracks
     };
-    for &ti in &open {
+    cut_tracks(seq, pool, i, from, to, &open, !scope.is_empty(), true)
+}
+
+/// [`cut_range`] on the tracks `open`: each split at both edges, what
+/// lies between taken out, what follows moved up. `scoped` closes up the
+/// sync-locked tracks besides them (#915), and `markers` moves the
+/// sequence's markers with the cut. A ripple trim of a multicam angle
+/// cuts the group's other angles here with neither: the trim moves those
+/// itself.
+#[allow(clippy::too_many_arguments)]
+fn cut_tracks(seq: &Sequence, pool: &MediaPool, i: usize, from: Timecode, to: Timecode, open: &[usize], scoped: bool, markers: bool) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
+    let len = to - from;
+    for &ti in open {
         // Every clip the cut touches: one it crosses is split or taken
         // out, one after it is moved up.
         for c in seq.tracks[ti].clips.iter().filter(|c| c.timeline_out > from) {
@@ -6942,7 +6977,7 @@ fn cut_range(seq: &Sequence, pool: &MediaPool, i: usize, from: Timecode, to: Tim
     let mut split_into: std::collections::HashMap<ClipId, (ClipId, ClipId)> = std::collections::HashMap::new();
     for cut in [from, to] {
         let mut blades = Vec::new();
-        for &ti in &open {
+        for &ti in open {
             let track = &sims[0].tracks[ti];
             if let Some((ci, c)) = track.clips.iter().enumerate().find(|(_, c)| c.timeline_in < cut && c.timeline_out > cut) {
                 let mut scratch = track.clone();
@@ -6970,7 +7005,7 @@ fn cut_range(seq: &Sequence, pool: &MediaPool, i: usize, from: Timecode, to: Tim
 
     // Take out what lies inside, last first so the positions hold.
     let mut removed = 0;
-    for &ti in &open {
+    for &ti in open {
         let inside: Vec<(usize, Clip)> = sims[0].tracks[ti]
             .clips
             .iter()
@@ -6987,7 +7022,7 @@ fn cut_range(seq: &Sequence, pool: &MediaPool, i: usize, from: Timecode, to: Tim
     // Move up what follows, earliest first: each lands where the one
     // before it has already left.
     let mut moved = Vec::new();
-    for &ti in &open {
+    for &ti in open {
         let after: Vec<Clip> = sims[0].tracks[ti].clips.iter().filter(|c| c.timeline_in >= to).cloned().collect();
         for c in after {
             moved.push(c.id);
@@ -7013,8 +7048,8 @@ fn cut_range(seq: &Sequence, pool: &MediaPool, i: usize, from: Timecode, to: Tim
     // Kept to some tracks, the others are left as a ripple delete leaves
     // them: a sync-locked one closes up with the cut (#915).
     let mut sync_locked = 0;
-    if !scope.is_empty() {
-        let shifts = sync_lock_shifts(seq, i, &open, to, from - to)?;
+    if scoped {
+        let shifts = sync_lock_shifts(seq, i, open, to, from - to)?;
         sync_locked = shifts.len();
         for edit in shifts {
             push(&mut sims, edit);
@@ -7035,7 +7070,7 @@ fn cut_range(seq: &Sequence, pool: &MediaPool, i: usize, from: Timecode, to: Tim
         }
     }
     let mut transition_edits = Vec::new();
-    for &ti in &open {
+    for &ti in open {
         let now = &sims[0];
         let track = &now.tracks[ti];
         for t in &track.transitions {
@@ -7092,7 +7127,7 @@ fn cut_range(seq: &Sequence, pool: &MediaPool, i: usize, from: Timecode, to: Tim
     // loses what the cut took and keeps the rest.
     let mut marker_moves = Vec::new();
     let mut marker_drops = Vec::new();
-    for (index, m) in sims[0].markers.iter().enumerate() {
+    for (index, m) in sims[0].markers.iter().enumerate().filter(|_| markers) {
         let end = m.duration.map(|d| m.position + d);
         let (position, duration) = if m.position >= to {
             (m.position - len, m.duration)
@@ -7338,16 +7373,10 @@ pub(crate) fn wrap_lines(text: &str, max_chars: usize, max_lines: usize) -> Stri
     lines.join("\n")
 }
 
-/// A caption's size, in the 1080-line units a title's size is in, and
-/// the height of its line, for `frame` (#2427): low on a wide frame; on
-/// a tall one larger, and up in the lower third, clear of the controls a
-/// phone puts at the bottom.
+/// A caption's size and the height of its line for `frame`
+/// ([`klipp_timeline::title_box::caption_look`]).
 pub(crate) fn caption_look(frame: klipp_core::Resolution) -> (f32, f32) {
-    if frame.height as f32 > frame.width as f32 * 1.2 {
-        (58.0, 0.72)
-    } else {
-        (40.0, 0.88)
-    }
+    klipp_timeline::title_box::caption_look(frame)
 }
 
 /// How far past its even share [`wrap_lines`] lets a line run.
@@ -10159,6 +10188,9 @@ fn refit(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts, i: usi
     let mut shrunk: Vec<String> = Vec::new();
     for (ti, track) in seq.tracks.iter().enumerate().filter(|(_, t)| !t.locked) {
         let mut pictures = 0usize;
+        // The picture before: its file, and where it ends on the timeline
+        // and in the file.
+        let mut before: Option<(MediaId, f64, f64)> = None;
         for clip in &track.clips {
             // A caption takes the caption look of the new frame, its lines
             // wrapped again to fit, unless its track has a style of its
@@ -10208,8 +10240,16 @@ fn refit(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts, i: usi
                 _ => own,
             };
             let scale = fill.max(own).max(1.0);
-            // Every other picture pushed in further, its jump a cut. A
-            // piece too short to read keeps the one before's push, so the
+            // Every other piece of a shot pushed in further, its jump a cut.
+            // The count starts again at each shot: it ran on along the track,
+            // and pushed in a shot of another file, never cut (FC8). A piece
+            // follows the one before on the timeline and goes on in its file.
+            let goes_on = before.is_some_and(|(file, ends, file_ends)| file == *media_id && (secs(clip.timeline_in) - ends).abs() < 1e-3 && secs(clip.source_in) >= file_ends - 1e-3);
+            if !goes_on {
+                pictures = 0;
+            }
+            before = Some((*media_id, secs(clip.timeline_out), secs(clip.source_out)));
+            // A piece too short to read keeps the one before's push, so the
             // picture doesn't jump in and out within a moment (#3441).
             if secs(clip.timeline_out) - secs(clip.timeline_in) >= PUNCH_MIN_SECS || pictures == 0 {
                 pictures += 1;
@@ -16852,6 +16892,42 @@ mod tests {
         let mut seqs = vec![seq.clone()];
         applied(&mut seqs, &pool, &plan.steps[0].edit, false);
         assert_eq!(spans(&seqs[0])[0], before[0], "the other angle stays");
+    }
+
+    /// A ripple trim that shortens a multicam group takes the same stretch
+    /// of the timeline out of every angle. An angle that starts later than
+    /// the trimmed one keeps the picture it has under the part kept: cut
+    /// from its own start, it lost its opening and the group showed
+    /// another angle where its cuts asked for it.
+    #[test]
+    fn a_ripple_trim_of_a_multicam_group_keeps_a_later_angles_picture() {
+        let (mut seq, pool, ids) = multicam_fixture();
+        // Angle 1 and its sound start a second later, still in sync: a
+        // second of the timeline is the file's next second on every angle.
+        for id in [ids[1][0], ids[3][0]] {
+            let (ti, ci, _) = find_clip(&seq, id).unwrap();
+            let c = &mut seq.tracks[ti].clips[ci];
+            (c.timeline_in, c.source_in) = (tc(1.0), tc(2.0));
+        }
+        let before = spans(&seq);
+        let plan = resolve(&seq, &pool, &[Op::Trim { clip_id: ClipRef::Id(ids[0][0]), edge: Edge::In, to: Anchor::Secs(2.0), ripple: true, linked: true }]).unwrap();
+        let mut seqs = vec![seq.clone()];
+        applied(&mut seqs, &pool, &plan.steps[0].edit, false);
+        assert_eq!(spans(&seqs[0]), vec![vec![(0.0, 2.0), (2.0, 6.0)]; 4], "every angle and its sound close up together");
+        for t in &seqs[0].tracks {
+            assert_eq!(secs(t.clips[0].source_in), 3.0, "track {}: each shows the file's third second at the start", t.name);
+        }
+        applied(&mut seqs, &pool, &plan.steps[0].edit, true);
+        assert_eq!(spans(&seqs[0]), before, "undo puts every track back");
+        assert_eq!(secs(find_clip(&seqs[0], ids[1][0]).unwrap().2.source_in), 2.0);
+
+        // The tail likewise: the first angle's end a second earlier takes
+        // that second out of the later angle, which ends there too.
+        let plan = resolve(&seq, &pool, &[Op::Trim { clip_id: ClipRef::Id(ids[0][0]), edge: Edge::Out, to: Anchor::Secs(3.0), ripple: true, linked: true }]).unwrap();
+        let mut seqs = vec![seq.clone()];
+        applied(&mut seqs, &pool, &plan.steps[0].edit, false);
+        assert_eq!(spans(&seqs[0])[0], vec![(0.0, 3.0), (3.0, 7.0)]);
+        assert_eq!(spans(&seqs[0])[1], vec![(1.0, 3.0), (3.0, 7.0)], "the later angle keeps its start");
     }
 
     /// The angle a moment of the file is cut to, read through whichever

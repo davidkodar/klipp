@@ -108,6 +108,21 @@ pub(crate) fn remove_clips(state: &mut AppState, ids: &[ClipId], lift: bool, lab
     Ok(removed)
 }
 
+/// What a refused removal says: why, and what does work. The reason
+/// names a locked track when one is the cause; Lift (`lift_key`) leaves
+/// a gap where closing up would change sync. A refused lift gets no
+/// such advice. It said "unlock the linked track" whatever the reason,
+/// and with no track locked that sent people looking for one.
+pub(crate) fn refused_removal(why: &str, lift: bool, lift_key: &str, several: bool) -> String {
+    let lead = if several { "Nothing removed" } else { "Remove unchanged" };
+    let skip = if several { ", or leave that clip out" } else { "" };
+    if lift {
+        return format!("{lead}: {why}{}.", if several { "; leave that clip out" } else { "" });
+    }
+    let key = if lift_key.is_empty() { String::new() } else { format!(" ({lift_key})") };
+    format!("{lead}: {why}. Lift{key} leaves a gap instead{skip}.")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -314,5 +329,19 @@ mod tests {
         assert!(state.sequence().tracks[p].clips.iter().any(|c| c.kind.is_gap() && c.timeline_in == t(1.5) && c.timeline_out == t(2.0)), "a gap clip 1.5-2 s");
         undo(&mut state);
         assert!(serde_json::to_value(&state.sequences).unwrap() == original);
+    }
+
+    /// A refused removal says why and offers Lift, by its key; it tells
+    /// no one to unlock a track the reason does not name.
+    #[test]
+    fn a_refused_removal_offers_lift_not_an_unlock() {
+        let why = "the multicam group's angles have different timeline ranges here; closing their gaps separately would change sync";
+        let one = refused_removal(why, false, "Shift+Delete", false);
+        assert_eq!(one, format!("Remove unchanged: {why}. Lift (Shift+Delete) leaves a gap instead."));
+        assert!(!one.to_lowercase().contains("unlock"), "{one}");
+        let several = refused_removal(why, false, "", true);
+        assert_eq!(several, format!("Nothing removed: {why}. Lift leaves a gap instead, or leave that clip out."));
+        let lifted = refused_removal("the linked clip is on locked track 2", true, "Shift+Delete", false);
+        assert!(!lifted.contains("Lift"), "a refused lift offers no lift: {lifted}");
     }
 }

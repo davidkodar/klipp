@@ -1218,10 +1218,19 @@ struct SlideState {
     hold: Option<crate::timeline::snap::SnapHold>,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 enum TrimEdge {
     Left,
     Right,
+}
+
+/// The pointer over a clip's edge says which edge it holds: a start
+/// points west, an end east. At a cut the two sides looked the same.
+fn edge_cursor(edge: TrimEdge) -> egui::CursorIcon {
+    match edge {
+        TrimEdge::Left => egui::CursorIcon::ResizeWest,
+        TrimEdge::Right => egui::CursorIcon::ResizeEast,
+    }
 }
 
 /// Which body-drag gesture a press should start, given the active tool and
@@ -8157,49 +8166,30 @@ impl TimelinePanel {
                         started_fade_drag = true;
                     }
                 }
-                // Check for roll trim junction before regular trim (Select or Trim tool).
+                // Check for roll trim junction before regular trim: the Trim tool
+                // rolls at a cut; the Select tool trims the side it is on.
                 // This block only mutates `self.roll_trimming`, never state, so the
                 // immutable borrow into state.sequence() is safe across the loop.
                 let mut started_roll_trim = false;
-                if !started_fade_drag
-                    && (state.active_tool == Tool::Select || state.active_tool == Tool::Trim)
-                {
-                    let roll_threshold = 4.0_f32;
+                if !started_fade_drag && state.active_tool == Tool::Trim {
                     let roll_hit: Option<RollTrimState> = {
                         let clips = &state.sequence().tracks[track_idx].clips;
-                        if clips.len() < 2 {
-                            None
-                        } else {
-                            let mut found = None;
-                            for i in 0..clips.len() - 1 {
-                                if clips[i].kind.is_gap() || clips[i + 1].kind.is_gap() { continue; }
-                                let cr_a = Self::clip_screen_rect(&clips[i], content_rect, track_rect, zoom, scroll, track_height);
-                                let cr_b = Self::clip_screen_rect(&clips[i + 1], content_rect, track_rect, zoom, scroll, track_height);
-                                let junction_x = (cr_a.right() + cr_b.left()) / 2.0;
-                                if (pos.x - junction_x).abs() < roll_threshold
-                                    && pos.y >= track_rect.top() && pos.y <= track_rect.top() + track_height
-                                {
-                                    let gap_secs = (clips[i + 1].timeline_in - clips[i].timeline_out).to_secs_f64().abs();
-                                    if gap_secs < 0.001 {
-                                        tracing::debug!("drag_started ROLL TRIM: clip_a={:?}, clip_b={:?}", clips[i].id, clips[i + 1].id);
-                                        found = Some(RollTrimState {
-                                            clip_a_id: clips[i].id,
-                                            clip_b_id: clips[i + 1].id,
-                                            track_idx,
-                                            start_x: pos.x,
-                                            original_boundary: clips[i].timeline_out,
-                                            original_a_source_out: clips[i].source_out,
-                                            original_b_source_in: clips[i + 1].source_in,
-                                            original_a_timeline_out: clips[i].timeline_out,
-                                            original_b_timeline_in: clips[i + 1].timeline_in,
-                                            hold: None,
-                                        });
-                                        break;
-                                    }
-                                }
+                        let on_track = pos.y >= track_rect.top() && pos.y <= track_rect.top() + track_height;
+                        on_track.then(|| Self::roll_junction(clips, state.active_tool, pos.x, content_rect, track_rect, zoom, scroll, track_height)).flatten().map(|i| {
+                            tracing::debug!("drag_started ROLL TRIM: clip_a={:?}, clip_b={:?}", clips[i].id, clips[i + 1].id);
+                            RollTrimState {
+                                clip_a_id: clips[i].id,
+                                clip_b_id: clips[i + 1].id,
+                                track_idx,
+                                start_x: pos.x,
+                                original_boundary: clips[i].timeline_out,
+                                original_a_source_out: clips[i].source_out,
+                                original_b_source_in: clips[i + 1].source_in,
+                                original_a_timeline_out: clips[i].timeline_out,
+                                original_b_timeline_in: clips[i + 1].timeline_in,
+                                hold: None,
                             }
-                            found
-                        }
+                        })
                     };
                     if let Some(rt) = roll_hit {
                         self.roll_trimming = Some(rt);
@@ -11480,60 +11470,47 @@ impl TimelinePanel {
             if let Some(pos) = pointer_pos {
                 // First: check for roll trim junction (boundary between two adjacent clips)
                 let mut found_roll_junction = false;
-                if clips.len() >= 2 {
-                    let roll_threshold = 4.0_f32; // pixels
-                    for i in 0..clips.len() - 1 {
-                        let cr_a = Self::clip_screen_rect(&clips[i], content_rect, track_rect, zoom, scroll, track_height);
-                        let cr_b = Self::clip_screen_rect(&clips[i + 1], content_rect, track_rect, zoom, scroll, track_height);
-                        // Junction is where clip A ends and clip B begins
-                        let junction_x = (cr_a.right() + cr_b.left()) / 2.0;
-                        if (pos.x - junction_x).abs() < roll_threshold
-                            && pos.y >= track_rect.top() && pos.y <= track_rect.top() + track_height
-                            && !clips[i].kind.is_gap() && !clips[i + 1].kind.is_gap()
-                        {
-                            // Check clips are truly adjacent (no gap between them)
-                            let gap_secs = (clips[i + 1].timeline_in - clips[i].timeline_out).to_secs_f64().abs();
-                            if gap_secs < 0.001 {
-                                found_roll_junction = true;
-                                ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+                let on_track = pos.y >= track_rect.top() && pos.y <= track_rect.top() + track_height;
+                if let Some(i) = on_track.then(|| Self::roll_junction(clips, state.active_tool, pos.x, content_rect, track_rect, zoom, scroll, track_height)).flatten() {
+                    let cr_a = Self::clip_screen_rect(&clips[i], content_rect, track_rect, zoom, scroll, track_height);
+                    let cr_b = Self::clip_screen_rect(&clips[i + 1], content_rect, track_rect, zoom, scroll, track_height);
+                    let junction_x = (cr_a.right() + cr_b.left()) / 2.0;
+                    found_roll_junction = true;
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
 
-                                // Highlight both edges — amber color for roll trim
-                                let acc = tt.accent;
-                                let roll_color = egui::Color32::from_rgba_premultiplied(
-                                    (acc.r() as u16 * 200 / 255) as u8,
-                                    (acc.g() as u16 * 200 / 255) as u8,
-                                    (acc.b() as u16 * 200 / 255) as u8,
-                                    200,
-                                );
-                                let bar_w = 3.0;
-                                // Right edge of clip A
-                                painter.rect_filled(
-                                    egui::Rect::from_min_size(
-                                        egui::pos2(cr_a.right() - bar_w, cr_a.top()),
-                                        egui::vec2(bar_w, cr_a.height()),
-                                    ),
-                                    0.0, roll_color,
-                                );
-                                // Left edge of clip B
-                                painter.rect_filled(
-                                    egui::Rect::from_min_size(
-                                        egui::pos2(cr_b.left(), cr_b.top()),
-                                        egui::vec2(bar_w, cr_b.height()),
-                                    ),
-                                    0.0, roll_color,
-                                );
-                                // "Roll trim" label
-                                painter.text(
-                                    egui::pos2(junction_x, cr_a.top() - 2.0),
-                                    egui::Align2::CENTER_BOTTOM,
-                                    "Roll trim",
-                                    egui::FontId::proportional(10.0),
-                                    tt.text_accent,
-                                );
-                                break;
-                            }
-                        }
-                    }
+                    // Highlight both edges — amber color for roll trim
+                    let acc = tt.accent;
+                    let roll_color = egui::Color32::from_rgba_premultiplied(
+                        (acc.r() as u16 * 200 / 255) as u8,
+                        (acc.g() as u16 * 200 / 255) as u8,
+                        (acc.b() as u16 * 200 / 255) as u8,
+                        200,
+                    );
+                    let bar_w = 3.0;
+                    // Right edge of clip A
+                    painter.rect_filled(
+                        egui::Rect::from_min_size(
+                            egui::pos2(cr_a.right() - bar_w, cr_a.top()),
+                            egui::vec2(bar_w, cr_a.height()),
+                        ),
+                        0.0, roll_color,
+                    );
+                    // Left edge of clip B
+                    painter.rect_filled(
+                        egui::Rect::from_min_size(
+                            egui::pos2(cr_b.left(), cr_b.top()),
+                            egui::vec2(bar_w, cr_b.height()),
+                        ),
+                        0.0, roll_color,
+                    );
+                    // "Roll trim" label
+                    painter.text(
+                        egui::pos2(junction_x, cr_a.top() - 2.0),
+                        egui::Align2::CENTER_BOTTOM,
+                        "Roll trim",
+                        egui::FontId::proportional(10.0),
+                        tt.text_accent,
+                    );
                 }
 
                 if !found_roll_junction {
@@ -11549,7 +11526,7 @@ impl TimelinePanel {
                         let in_fade_zone = at_top && at_near_edge && clip_has_audio && !hit_clip.kind.is_gap();
 
                         if !in_fade_zone {
-                            ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+                            ui.ctx().set_cursor_icon(edge_cursor(edge));
 
                             // Amber/yellow highlight bar at the trim edge (2-3px, full clip height)
                             let acc = tt.accent;
@@ -15736,6 +15713,24 @@ impl TimelinePanel {
         }
 
         best.map(|(_, cr, clip, edge)| (cr, clip, edge))
+    }
+
+    /// The cut the pointer at `x` is on, as the index of the clip before it:
+    /// two clips that meet, neither a gap, within a few pixels of where they
+    /// meet. Only the Trim tool rolls a cut; the Select tool trims the side
+    /// the pointer is on, as other editors do. It rolled both, so a ripple
+    /// trim of one side did nothing when the other had no media to give.
+    #[allow(clippy::too_many_arguments)]
+    fn roll_junction(clips: &[klipp_timeline::Clip], tool: Tool, x: f32, content_rect: &egui::Rect, track_rect: &egui::Rect, zoom: f32, scroll: f32, track_height: f32) -> Option<usize> {
+        if tool != Tool::Trim {
+            return None;
+        }
+        (0..clips.len().saturating_sub(1)).find(|&i| {
+            let (a, b) = (&clips[i], &clips[i + 1]);
+            let cr_a = Self::clip_screen_rect(a, content_rect, track_rect, zoom, scroll, track_height);
+            let cr_b = Self::clip_screen_rect(b, content_rect, track_rect, zoom, scroll, track_height);
+            !a.kind.is_gap() && !b.kind.is_gap() && (x - (cr_a.right() + cr_b.left()) / 2.0).abs() < 4.0 && (b.timeline_in - a.timeline_out).to_secs_f64().abs() < 0.001
+        })
     }
 
     /// Hit-test: find which clip body (not edge) is under the pointer.
@@ -20547,4 +20542,45 @@ pub(crate) fn key_interpolation_commands(state: &AppState, m: &KeyframeContextMe
         }
     }
     cmds
+}
+
+#[cfg(test)]
+mod cut_trim_tests {
+    use super::*;
+
+    /// Two clips meeting at 4 s on a track drawn from x = 100 at 50 px a
+    /// second: the cut is at x = 300.
+    fn at_a_cut() -> (Vec<klipp_timeline::Clip>, egui::Rect, egui::Rect) {
+        let t = |s: f64| Timecode::from_secs_f64(s, 25);
+        let media = klipp_core::MediaId::new();
+        let clips = vec![klipp_timeline::Clip::media(media, t(0.0), t(4.0), t(0.0), t(4.0)), klipp_timeline::Clip::media(media, t(4.0), t(8.0), t(0.0), t(4.0))];
+        let content = egui::Rect::from_min_size(egui::pos2(100.0, 0.0), egui::vec2(800.0, 200.0));
+        let track = egui::Rect::from_min_size(egui::pos2(100.0, 40.0), egui::vec2(800.0, 40.0));
+        (clips, content, track)
+    }
+
+    /// Only the Trim tool rolls a cut. The Select tool rolled it too, so a
+    /// ripple trim of one side with RIPPLE on did nothing when the other
+    /// side had no media to give.
+    #[test]
+    fn at_a_cut_only_the_trim_tool_rolls() {
+        let (clips, content, track) = at_a_cut();
+        let roll = |tool, x| TimelinePanel::roll_junction(&clips, tool, x, &content, &track, 50.0, 0.0, 40.0);
+        assert_eq!(roll(Tool::Select, 301.0), None, "the Select tool trims a side");
+        assert_eq!(roll(Tool::Trim, 301.0), Some(0), "the Trim tool rolls the cut");
+        assert_eq!(roll(Tool::Trim, 320.0), None, "away from the cut, nothing to roll");
+    }
+
+    /// At a cut the Select tool takes the side the pointer is on, and the
+    /// pointer shows which: an end east, a start west.
+    #[test]
+    fn at_a_cut_the_select_tool_takes_the_side_the_pointer_is_on() {
+        let (clips, content, track) = at_a_cut();
+        let panel = TimelinePanel::default();
+        let at = |x: f32| panel.hit_test_edge(&clips, &content, &track, 50.0, 0.0, 40.0, egui::pos2(x, 60.0)).map(|(_, c, e)| (c.id, e));
+        assert_eq!(at(298.0), Some((clips[0].id, TrimEdge::Right)), "left of the cut: the first clip's end");
+        assert_eq!(at(302.0), Some((clips[1].id, TrimEdge::Left)), "right of the cut: the second clip's start");
+        assert_eq!(edge_cursor(TrimEdge::Right), egui::CursorIcon::ResizeEast);
+        assert_eq!(edge_cursor(TrimEdge::Left), egui::CursorIcon::ResizeWest);
+    }
 }

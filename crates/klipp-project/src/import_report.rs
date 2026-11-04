@@ -160,7 +160,7 @@ pub fn load_aaf(path: &Path, cancel: &std::sync::atomic::AtomicBool) -> Result<I
     Ok(media_checked(result, path))
 }
 
-/// A timeline's media as a project's is taken (SEC1): it can name any file
+/// A timeline's media as a project's is taken: it can name any file
 /// on the machine, so one that is not a picture, sound or still, one in a
 /// hidden folder and one that lists other inputs stay offline, and the
 /// warnings say why. A file in a hidden folder or one that isn't a regular
@@ -499,7 +499,7 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
-    /// SEC1, for a timeline from elsewhere: whatever the format, a file in
+    /// For a timeline from elsewhere, as for a project: whatever the format, a file in
     /// a hidden folder or one that is not media is kept offline with why,
     /// while media beside it comes in as before.
     #[test]

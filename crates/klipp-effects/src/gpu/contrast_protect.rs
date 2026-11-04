@@ -37,9 +37,10 @@ impl GpuEffectsPipeline {
         let scale = protect::SCALE;
         let (sw, sh) = (fw.div_ceil(scale), fh.div_ceil(scale));
         let small = u64::from(sw) * u64::from(sh);
-        if self.contrast_protect_scratch.as_ref().is_none_or(|(_, _, n)| *n < small) {
-            let make = |label| self.device.create_buffer(&wgpu::BufferDescriptor { label: Some(label), size: small * 16, usage: wgpu::BufferUsages::STORAGE, mapped_at_creation: false });
-            self.contrast_protect_scratch = Some((make("contrast protect measure"), make("contrast protect blur"), small));
+        // One cell more than the grid: the whole title's pull (op 5).
+        if self.contrast_protect_scratch.as_ref().is_none_or(|(_, _, n)| *n < small + 1) {
+            let make = |label| self.device.create_buffer(&wgpu::BufferDescriptor { label: Some(label), size: (small + 1) * 16, usage: wgpu::BufferUsages::STORAGE, mapped_at_creation: false });
+            self.contrast_protect_scratch = Some((make("contrast protect measure"), make("contrast protect blur"), small + 1));
         }
         let params = |op: u32| ProtectParams {
             width: fw, height: fh, op, scale, small_w: sw, small_h: sh,
@@ -60,6 +61,9 @@ impl GpuEffectsPipeline {
             pass(self, 2, measure, blur, small_groups);
             pass(self, 3, blur, measure, small_groups);
         }
+        // The pull for the whole title, the one its hardest part needs, so
+        // the shade behind it is even (protect::title_pull).
+        pass(self, 5, blur, measure, 1);
         pass(self, 4, measure, &acc, (u64::from(fw) * u64::from(fh)).div_ceil(u64::from(WORKGROUP_SIZE)) as u32);
         true
     }
