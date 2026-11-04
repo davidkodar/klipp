@@ -12,6 +12,26 @@ use klipp_timeline::GradeAccess;
 const DUPLICATE_OFFSET: (f32, f32) = (40.0, 40.0);
 
 impl AppState {
+    /// Why the wire into `node`'s input `port`, in `clip`'s grade at the
+    /// canvas's level, can't be taken away, if it can't: a picture input
+    /// left with nothing wired to it. The grade would read the clip's own
+    /// frame there, which the canvas doesn't show, and the nodes before it
+    /// would drop out without a word; the socket refuses the same graph as
+    /// unwired. A matte or mask input is free to be unplugged.
+    pub(crate) fn wire_take_refusal(&self, clip: ClipId, node: klipp_nodes::NodeId, port: u8) -> Option<String> {
+        let mut grade = self.sequence().all_clips().find(|c| c.id == clip)?.grade().clone();
+        let g = KlippApp::resolve_graph_at_path_mut(&mut grade, &self.graph_descent_path).ok()?;
+        let n = g.nodes.iter().find(|n| n.id == node)?;
+        g.edges.iter().find(|e| e.to_node == node && e.to_port == port)?;
+        let kind = serde_json::to_value(n.kind).ok().and_then(|v| v.as_str().map(str::to_owned)).unwrap_or_default();
+        let key = klipp_graph_format::ports::input_key(&kind, port);
+        if key.as_str() == "mask" || n.kind.input_port_role(port) == klipp_nodes::PortRole::Matte {
+            return None;
+        }
+        let name = if n.label.trim().is_empty() { n.kind.display_name().to_string() } else { n.label.clone() };
+        Some(format!("Not disconnected: that would leave {name}'s {key} input unwired. Wire it to another node, or delete {name}"))
+    }
+
     /// Applies a node edit; `None` for any other command, else whether
     /// the document changed. A refusal says why in a toast.
     pub(crate) fn node_edit(&mut self, cmd: &AppCommand) -> Option<bool> {
