@@ -667,6 +667,7 @@ timeline_view! {
     dragging_video_keyframe: Option<DraggingVideoKeyframe> = None,
     dragging_rubber_band: Option<ClipId> = None,
     dragging_rubber_band_in_lane: bool = false,
+    rubber_band_line_y: Option<f32> = None,
     dragging_bezier_handle: Option<BezierHandleDrag> = None,
     dragging_video_bezier_handle: Option<BezierVideoHandleDrag> = None,
     dragging_audio_effect_keyframe: Option<DraggingEffectKeyframe> = None,
@@ -3237,6 +3238,9 @@ pub struct AppState {
     /// alongside `dragging_rubber_band` on release. Only meaningful when
     /// `dragging_rubber_band.is_some()`.
     pub dragging_rubber_band_in_lane: bool,
+    /// The flat line's height when its drag was pressed (see
+    /// `rubber_band_value`): the drag moves it by the pointer's travel.
+    pub rubber_band_line_y: Option<f32>,
     /// Bezier tangent handle drag state (audio)
     pub dragging_bezier_handle: Option<BezierHandleDrag>,
     /// Bezier tangent handle drag state (video)
@@ -5477,6 +5481,7 @@ impl Default for AppState {
             dragging_video_keyframe: None,
             dragging_rubber_band: None,
             dragging_rubber_band_in_lane: false,
+            rubber_band_line_y: None,
             dragging_bezier_handle: None,
             dragging_video_bezier_handle: None,
             dragging_audio_effect_keyframe: None,
