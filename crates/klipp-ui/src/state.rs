@@ -6257,8 +6257,11 @@ impl AppState {
     /// not refused a moment ago. A clip with no audio cache yet refuses, and
     /// asking again each frame wrote a warning every few milliseconds; it is
     /// asked again in a second, as the cache may have come by then (#3432).
+    /// A file with no sound is never asked: it refused every second for as
+    /// long as the pointer rested on it, a warning each time.
     pub fn skim_audio_may_start(&self, media: klipp_core::MediaId) -> bool {
         self.skim_audio_session.is_none()
+            && self.media_pool.get(&media).is_none_or(|m| m.has_audio)
             && !self.skim_audio_refused.is_some_and(|(m, at)| m == media && at.elapsed() < SKIM_AUDIO_RETRY)
     }
 
@@ -8079,5 +8082,23 @@ mod selection_and_skim_tests {
         let earlier = std::time::Instant::now().checked_sub(SKIM_AUDIO_RETRY * 2).unwrap();
         state.skim_audio_refused = Some((media, earlier));
         assert!(state.skim_audio_may_start(media), "asked again after a while");
+    }
+
+    /// A file with no sound has no skim audio to start: never asked,
+    /// where it refused once a second while the pointer rested on it.
+    #[test]
+    fn a_file_with_no_sound_never_starts_skim_audio() {
+        let mut state = AppState::default();
+        let fps = klipp_core::Fps::new(25, 1);
+        let id = MediaId::new();
+        let mut silent = klipp_media::MediaItem::new_synthetic_title(id, "silent.mp4".into(), klipp_core::Timecode::from_secs_f64(5.0, 25), fps);
+        silent.has_audio = false;
+        state.media_pool.add(silent);
+        assert!(!state.skim_audio_may_start(id), "no sound: nothing to start");
+        let heard = MediaId::new();
+        let mut sound = klipp_media::MediaItem::new_synthetic_title(heard, "sound.mp4".into(), klipp_core::Timecode::from_secs_f64(5.0, 25), fps);
+        sound.has_audio = true;
+        state.media_pool.add(sound);
+        assert!(state.skim_audio_may_start(heard));
     }
 }
