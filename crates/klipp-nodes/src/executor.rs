@@ -23,6 +23,21 @@ fn effect_blend_is_none(graph: &NodeGraph, node: &Node, clip_time_secs: f64) -> 
     blend.mix == 0.0 || mask_off
 }
 
+/// Whether a correction's gate takes its graded picture whole because
+/// its matte is a Mask switched off at this frame: a switched-off Mask on
+/// a mask input is ignored, as if nothing were wired there, so with no
+/// mix of its own the gate changes nothing and passes the graded picture
+/// on, on the GPU chain as well. A gate with a mix still fades the
+/// correction by it.
+fn gate_ignores_its_mask(graph: &NodeGraph, node: &Node, clip_time_secs: f64) -> bool {
+    node.kind == NodeKind::ApplyMatte
+        && node.params.correction_blend.is_none_or(|b| b.mix == 1.0)
+        && graph
+            .input_of(node.id, 1)
+            .and_then(|id| graph.nodes.iter().find(|n| n.id == id))
+            .is_some_and(|m| m.kind == NodeKind::Mask && !effective_enabled(m, clip_time_secs))
+}
+
 /// The port a node's blend reads its mask on: an effect's second, a
 /// masked merge's third (its second is the picture it lays over, #2758);
 /// `None` for a node with no blend.
@@ -106,6 +121,27 @@ pub(crate) fn params_for_frame(node: &Node, clip_time_secs: f64) -> Cow<'_, Node
             params.apply_override(&param_name, value);
         }
         Cow::Owned(params)
+    }
+}
+
+impl NodeGraph {
+    /// [`NodeGraph::is_identity`] at `clip_time_secs`: the nodes' keyed
+    /// values read there, so a grade keyed to nothing at this frame (an
+    /// exposure ramp at its first key, 0) is an identity here, and its
+    /// frame passes through as an unkeyed one's does rather than coming
+    /// back on the CPU. A node whose switch is keyed is never one.
+    pub fn is_identity_at(&self, clip_time_secs: f64) -> bool {
+        if self.input_of(self.output_node_id, 1).is_some() {
+            return false;
+        }
+        let feeding = self.nodes_feeding_output();
+        self.nodes.iter().all(|n| {
+            !n.enabled
+                || !feeding.contains(&n.id)
+                || matches!(n.kind, NodeKind::Source | NodeKind::Output | NodeKind::InputTransform)
+                || (!n.keyframes.tracks.iter().any(|t| t.param_name == ENABLED_TRACK && !t.keyframes.is_empty())
+                    && params_for_frame(n, clip_time_secs).is_default())
+        })
     }
 }
 
@@ -2529,7 +2565,8 @@ impl GraphExecutor {
                 || (is_param_driven_filter && params_for_frame(node, clip_time_secs).is_default())
                 || neutral_corrector
                 || noop_input_transform
-                || effect_blend_is_none(graph, node, clip_time_secs);
+                || effect_blend_is_none(graph, node, clip_time_secs)
+                || gate_ignores_its_mask(graph, node, clip_time_secs);
             // A plug-in switched off is a decline the viewer names, never
             // one an export fails on (step 10).
             if node.kind == NodeKind::Frei0r && !effective_enabled(node, clip_time_secs) {
@@ -2781,6 +2818,15 @@ impl GraphExecutor {
                     per_node_ms.push((format!("{node_kind_name}#on_gpu"), t_node.elapsed().as_secs_f64() * 1000.0));
                     continue;
                 }
+            }
+
+            // A switched-off Mask draws no shapes. Passed through, it gave
+            // its picture (or the source) to its reader as the matte, and
+            // asked for the source's CPU pixels to do it.
+            if bypass && node.kind == NodeKind::Mask {
+                node_outputs.insert(node.id, Arc::new(Vec::new()));
+                per_node_ms.push((format!("{node_kind_name}#bypass"), t_node.elapsed().as_secs_f64() * 1000.0));
+                continue;
             }
 
             // Bypass tunnel: a bypass node whose primary input IS the
@@ -7048,8 +7094,10 @@ impl GraphExecutor {
                     None => None,
                 };
                 // The gate after a correction with a mix and no matte
-                // (M3 step 17a) takes the whole frame by the mix.
-                let whole = params.correction_blend.is_some() && gpu_matte.is_none() && secondary_input.is_none();
+                // (M3 step 17a) takes the whole frame by the mix; so does
+                // one whose Mask draws nothing (switched off, or every
+                // shape off), which is a mask ignored.
+                let whole = params.correction_blend.is_some() && gpu_matte.is_none() && secondary_input.is_none_or(|m| m.is_empty());
                 // An outside node's gate takes the key inverted (#898): it
                 // grades where the key isn't, so a matte selecting nothing
                 // grades everything and one selecting everything (or none

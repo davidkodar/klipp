@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 pub const ID: &str = "screentext";
 // 10: read on screen recordings only (#500); a camera clip's text from
 // before is dropped.
-pub const VERSION: u32 = 10;
+pub const VERSION: u32 = 11;
 pub const DET_MODEL_ID: &str = "ppocr_en_det_v3";
 pub const REC_MODEL_ID: &str = "ppocr_en_rec_v4";
 pub const MODEL_IDS: [&str; 2] = [DET_MODEL_ID, REC_MODEL_ID];
@@ -22,19 +22,30 @@ const READ_WIDTH_MIN: u32 = 1280;
 const READ_WIDTH_MAX: u32 = 2560;
 /// Frames decoded and read together; bounds the memory a 4K read takes.
 const READ_BATCH: usize = 6;
-/// How many frames a file gets: one per five seconds, never fewer than
-/// this many nor more than `MAX_FRAMES`.
-const MIN_FRAMES: usize = 80;
-const MAX_FRAMES: usize = 360;
-const SECS_PER_FRAME: f64 = 5.0;
-
-fn frame_budget(duration: f64) -> usize {
-    ((duration / SECS_PER_FRAME) as usize).clamp(MIN_FRAMES, MAX_FRAMES)
-}
+/// The reading pass takes a frame this often across the whole file,
+/// moving or still: a secret only on screen while it scrolls past is read
+/// too. The beat sheet adds its reveals and settled stretches; it never
+/// decides alone (#2212).
+const STEP_SECS: f64 = 1.0;
+/// At most this many evenly spread frames: past an hour the step grows.
+const MAX_FRAMES: usize = 3600;
 /// Two picks closer than this are one.
-const MIN_GAP_SECS: f64 = 1.0;
-/// Without a beat sheet, a frame this often.
-const FALLBACK_STEP_SECS: f64 = 4.0;
+const MIN_GAP_SECS: f64 = 0.4;
+/// How long a line read once is taken to stay up when nothing reads it
+/// again: the reading step.
+const FALLBACK_STEP_SECS: f64 = STEP_SECS;
+/// A sensitive line is followed this often, from the last frame read
+/// without it to the first read after it is gone, so a redaction can
+/// cover it wherever it moves.
+const FOLLOW_STEP_SECS: f64 = 0.2;
+/// At most this many frames are read to follow a file's sensitive lines;
+/// past it the step grows (and the boxes, held as unions, with it).
+const MAX_FOLLOW_FRAMES: usize = 3000;
+/// At most this long is a moving line taken to be coming in or going
+/// before it is read and after.
+const MAX_EDGE_SECS: f64 = 2.0;
+/// Two readings of one secret this close in time are one secret.
+const MERGE_GAP_SECS: f64 = 2.0;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Line {
@@ -70,6 +81,17 @@ pub struct TextSpan {
     pub frames: u32,
 }
 
+/// Where a followed line was in one frame read, as fractions of the frame
+/// from its top left.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+pub struct FollowBox {
+    pub secs: f64,
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+}
+
 /// Something that looks like it should not be published.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Sensitive {
@@ -79,10 +101,17 @@ pub struct Sensitive {
     pub masked: String,
     pub start_secs: f64,
     pub end_secs: f64,
+    /// Every place it was seen together, so one box covers it all.
     pub x: f32,
     pub y: f32,
     pub w: f32,
     pub h: f32,
+    /// Where it was in each frame it was followed through, in time order:
+    /// what a redaction that follows it is made from. From the last frame
+    /// read without it (`start_secs`) to the first read after it was gone
+    /// (`end_secs`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub track: Vec<FollowBox>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -108,8 +137,16 @@ impl ScreenText {
         (!self.frames.is_empty()).then(|| self.frames.iter().filter(|f| f.lines.iter().any(readable)).count() as f32 / self.frames.len() as f32)
     }
 
-    /// Spans whose text contains every word of `query`, case aside.
+    /// Spans whose text contains every word of `query`, case aside. A
+    /// number (a phone number, an order number: digits and the marks
+    /// between them, seven digits or more) is found by its digits alone,
+    /// however it is grouped on screen or in the query.
     pub fn search(&self, query: &str) -> Vec<&TextSpan> {
+        let digits = |s: &str| -> String { s.chars().filter(char::is_ascii_digit).collect() };
+        let number = digits(query);
+        if number.len() >= 7 && query.trim().chars().all(|c| c.is_ascii_digit() || matches!(c, ' ' | '-' | '.' | '(' | ')' | '+' | '/')) {
+            return self.spans.iter().filter(|s| digits(&s.text).contains(&number)).collect();
+        }
         let words: Vec<String> = query.split_whitespace().map(|w| w.to_lowercase()).collect();
         if words.is_empty() {
             return Vec::new();
@@ -313,7 +350,7 @@ pub fn sensitive_in(text: &str) -> Option<(&'static str, String)> {
                 return Some(("key", mask(t)));
             }
         } else if body_ok && !has_extension && !truncated && !hyphen_groups_hex
-            && ((known_prefix && t.len() >= 16) || (t.len() >= 28 && digits >= 4 && letters >= 6 && !t.contains('.') && !t.contains('-') && runs >= 4))
+            && ((known_prefix && t.len() >= 8) || (t.len() >= 28 && digits >= 4 && letters >= 6 && !t.contains('.') && !t.contains('-') && runs >= 4))
         {
             return Some(("key", mask(t)));
         }
@@ -321,7 +358,7 @@ pub fn sensitive_in(text: &str) -> Option<(&'static str, String)> {
     for (k, t) in tokens.iter().enumerate() {
         // "password: hunter2", "token = abc"
         let label = t.trim_end_matches([':', '=']).to_lowercase();
-        if matches!(label.as_str(), "password" | "passwd" | "pwd" | "secret" | "token" | "api_key" | "apikey" | "api-key") {
+        if matches!(label.as_str(), "password" | "passwd" | "pwd" | "secret" | "token" | "key" | "api_key" | "apikey" | "api-key" | "access_token" | "auth_token" | "bearer" | "secret_key" | "access_key" | "private_key") {
             let value = tokens.get(k + 1).filter(|v| !matches!(**v, ":" | "=")).or_else(|| tokens.get(k + 2));
             if let Some(v) = value {
                 // The value has to look like a secret, not the next word of
@@ -399,31 +436,60 @@ pub fn ensure_models(download: bool) -> Result<(std::path::PathBuf, std::path::P
 /// second. Over the file's budget, the longer settled stretches and
 /// the reveals are kept and the brief flickers dropped.
 fn pick_times(duration: f64, beats: Option<&crate::beatsheet::BeatSheet>) -> Vec<f64> {
-    let budget = frame_budget(duration);
-    // (time, weight): what to keep when there are too many.
-    let mut t: Vec<(f64, f64)> = match beats.filter(|b| b.has_freeze) {
-        Some(b) => {
-            let mut v: Vec<(f64, f64)> = vec![(0.2, 1.0)];
-            v.extend(b.reveals.iter().map(|r| (r + 0.3, 2.0)));
-            v.extend(b.segments.iter().filter(|s| s.kind == "idle").map(|s| ((s.start_secs + s.end_secs) / 2.0, s.end_secs - s.start_secs)));
-            v
-        }
-        None => {
-            let mut v = Vec::new();
-            let mut x = 0.2;
-            while x < duration { v.push((x, 1.0)); x += FALLBACK_STEP_SECS; }
-            v
-        }
-    };
-    t.retain(|(x, _)| *x >= 0.0 && *x < duration - 0.05);
-    t.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
-    t.dedup_by(|a, b| { if (a.0 - b.0).abs() < MIN_GAP_SECS { b.1 = b.1.max(a.1); true } else { false } });
-    if t.len() > budget {
-        t.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
-        t.truncate(budget);
-        t.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+    let step = (duration / MAX_FRAMES as f64).max(STEP_SECS);
+    let mut t: Vec<f64> = Vec::new();
+    let mut x = 0.2;
+    while x < duration {
+        t.push(x);
+        x += step;
     }
-    t.into_iter().map(|(x, _)| x).collect()
+    // Where the beat sheet saw something come up or settle, as well.
+    if let Some(b) = beats.filter(|b| b.has_freeze) {
+        t.extend(b.reveals.iter().map(|r| r + 0.3));
+        t.extend(b.segments.iter().filter(|s| s.kind == "idle").map(|s| (s.start_secs + s.end_secs) / 2.0));
+    }
+    t.retain(|x| *x >= 0.0 && *x < duration - 0.05);
+    t.sort_by(|a, b| a.total_cmp(b));
+    t.dedup_by(|a, b| (*a - *b).abs() < MIN_GAP_SECS);
+    t
+}
+
+/// How alike two readings of a line are, 0 to 1: one less the edit
+/// distance over the longer, spaces and case aside. A line read while it
+/// moves loses or swaps a letter now and then.
+fn alike(a: &str, b: &str) -> f32 {
+    let (a, b): (Vec<char>, Vec<char>) = (norm(a).chars().filter(|c| !c.is_whitespace()).collect(), norm(b).chars().filter(|c| !c.is_whitespace()).collect());
+    if a.is_empty() || b.is_empty() {
+        return 0.0;
+    }
+    let mut row: Vec<usize> = (0..=b.len()).collect();
+    for (i, ca) in a.iter().enumerate() {
+        let mut prev = row[0];
+        row[0] = i + 1;
+        for (j, cb) in b.iter().enumerate() {
+            let here = row[j + 1];
+            row[j + 1] = (prev + usize::from(ca != cb)).min(row[j] + 1).min(here + 1);
+            prev = here;
+        }
+    }
+    1.0 - row[b.len()] as f32 / a.len().max(b.len()) as f32
+}
+
+/// Where `text` is in each of `frames`: the line that reads most like it
+/// (at least four fifths alike), nearest where it was last seen. A frame
+/// without it gives nothing.
+pub fn follow_line(text: &str, frames: &[FrameText]) -> Vec<FollowBox> {
+    let mut last: Option<(f32, f32)> = None;
+    let mut out = Vec::new();
+    for f in frames {
+        let near = |l: &Line| last.map_or(0.0, |(x, y)| (l.x + l.w / 2.0 - x).abs() + (l.y + l.h / 2.0 - y).abs());
+        let best = f.lines.iter().filter(|l| alike(&l.text, text) >= 0.8).min_by(|a, b| near(a).total_cmp(&near(b)));
+        if let Some(l) = best {
+            last = Some((l.x + l.w / 2.0, l.y + l.h / 2.0));
+            out.push(FollowBox { secs: f.secs, x: l.x, y: l.y, w: l.w, h: l.h });
+        }
+    }
+    out
 }
 
 /// The size a `w`×`h` picture is read at: the width within bounds,
@@ -482,7 +548,77 @@ impl crate::Analyser for ScreenTextAnalyser {
             item.filename, read.len(), reader.det_secs, reader.lines_read, reader.rec_secs, reader.lines_reused
         );
         let spans = fold_spans(&read, FALLBACK_STEP_SECS);
-        let sensitive = spans.iter().filter_map(|s| sensitive_in(&s.text).map(|(kind, masked)| Sensitive { kind: kind.into(), masked, start_secs: s.start_secs, end_secs: s.end_secs, x: s.x, y: s.y, w: s.w, h: s.h })).collect();
+        let mut found: Vec<(Sensitive, String)> = spans.iter().filter_map(|s| sensitive_in(&s.text).map(|(kind, masked)| (Sensitive { kind: kind.into(), masked, start_secs: s.start_secs, end_secs: s.end_secs, x: s.x, y: s.y, w: s.w, h: s.h, track: Vec::new() }, s.text.clone()))).collect();
+        // One secret read as two spans (a frame that misread it while it
+        // moved split it) is followed as one, the gap between them too.
+        found.sort_by(|a, b| a.0.start_secs.total_cmp(&b.0.start_secs));
+        let mut merged: Vec<(Sensitive, String)> = Vec::new();
+        for (s, text) in found {
+            match merged.iter_mut().rev().find(|(m, t)| alike(t, &text) >= 0.8 && s.start_secs - m.end_secs <= MERGE_GAP_SECS) {
+                Some((m, _)) => {
+                    let (x0, y0) = (m.x.min(s.x), m.y.min(s.y));
+                    let (x1, y1) = ((m.x + m.w).max(s.x + s.w), (m.y + m.h).max(s.y + s.h));
+                    (m.x, m.y, m.w, m.h) = (x0, y0, x1 - x0, y1 - y0);
+                    m.end_secs = m.end_secs.max(s.end_secs);
+                }
+                None => merged.push((s, text)),
+            }
+        }
+        let (mut sensitive, spans_text): (Vec<Sensitive>, Vec<String>) = merged.into_iter().unzip();
+        // Each sensitive line followed closely through its whole time on
+        // screen, from the last frame read without it to the first read
+        // after it: a redaction made from one place leaked as it moved.
+        let ranges: Vec<(f64, f64)> = sensitive.iter().map(|s| {
+            let before = read.iter().rev().map(|f| f.secs).find(|t| *t < s.start_secs).unwrap_or(0.0);
+            let after = read.iter().map(|f| f.secs).find(|t| *t >= s.end_secs).unwrap_or(duration);
+            (before, after.min(duration))
+        }).collect();
+        let total: f64 = ranges.iter().map(|(a, b)| b - a).sum();
+        let step = (total / MAX_FOLLOW_FRAMES as f64).max(FOLLOW_STEP_SECS);
+        for ((s, (from, to)), text) in sensitive.iter_mut().zip(ranges).zip(spans_text) {
+            // Frames inside the file: one at its very end doesn't decode.
+            let last = to.min(duration - 0.05).max(from);
+            let mut times = Vec::new();
+            let mut t = from;
+            while t < last {
+                times.push(t);
+                t += step;
+            }
+            times.push(last);
+            let mut seen: Vec<FrameText> = Vec::new();
+            for chunk in times.chunks(READ_BATCH) {
+                crate::hold::wait();
+                let frames = frames_at(&ctx.ffmpeg, item, chunk, w, h)?;
+                for (t, f) in chunk.iter().zip(frames.iter()) {
+                    let lines = reader.read(f, w, h)?.into_iter().map(|l| Line { text: l.text, confidence: l.confidence, x: l.x, y: l.y, w: l.w, h: l.h }).collect();
+                    seen.push(FrameText { secs: *t, lines });
+                }
+            }
+            let track = follow_line(&text, &seen);
+            if let (Some(first), Some(last)) = (track.first(), track.last()) {
+                // From the last frame without it to the first after it. A
+                // line on the move comes in from an edge, or goes under
+                // one, a sliver at a time before it reads and after: as long
+                // again as it takes to move its own size at the speed it was
+                // going (at most `MAX_EDGE_SECS`), which the redaction's
+                // boxes carry on along its way.
+                let travel = |a: &FollowBox, b: &FollowBox| -> f64 {
+                    let dt = (b.secs - a.secs).abs().max(1e-6);
+                    let (vx, vy) = (((b.x - a.x) as f64 / dt).abs(), ((b.y - a.y) as f64 / dt).abs());
+                    let along = |size: f32, v: f64| if v > 0.002 { size as f64 / v } else { 0.0 };
+                    along(b.w, vx).max(along(b.h, vy)).min(MAX_EDGE_SECS)
+                };
+                let (lead, tail) = if track.len() > 1 { (travel(first, &track[1]), travel(&track[track.len() - 2], last)) } else { (0.0, 0.0) };
+                let absent_before = seen.iter().rev().map(|f| f.secs).find(|t| *t < first.secs).unwrap_or(first.secs.min(s.start_secs));
+                let absent_after = seen.iter().map(|f| f.secs).find(|t| *t > last.secs).unwrap_or(duration);
+                s.start_secs = absent_before.min(first.secs - lead).max(0.0);
+                s.end_secs = absent_after.max(last.secs + tail).min(duration);
+                let (x0, y0) = track.iter().fold((f32::MAX, f32::MAX), |(x, y), b| (x.min(b.x), y.min(b.y)));
+                let (x1, y1) = track.iter().fold((0.0f32, 0.0f32), |(x, y), b| (x.max(b.x + b.w), y.max(b.y + b.h)));
+                (s.x, s.y, s.w, s.h) = (x0, y0, x1 - x0, y1 - y0);
+                s.track = track;
+            }
+        }
         let out = ScreenText { duration_secs: duration, model: format!("{DET_MODEL_ID} + {REC_MODEL_ID}"), frames_read: read.len() as u32, frames: read, spans, sensitive };
         serde_json::to_value(out).map_err(|e| e.to_string())
     }
@@ -578,6 +714,33 @@ mod tests {
         assert_eq!(sensitive_in("3f2a9c8b1d7e4f6a5b0c9d8e7f6a5b4c3f2a9c8b").unwrap().0, "key");
     }
 
+    /// A short key behind a known prefix is a key (a test key on screen
+    /// in a live check was missed), and a value after a "key:" label that
+    /// looks like a secret is one; a key on a shortcuts screen is not.
+    #[test]
+    fn short_keys_and_key_lines_are_seen() {
+        assert_eq!(sensitive_in("API key: sk-test-1234").unwrap().0, "key");
+        assert_eq!(sensitive_in("key: Zq81xR42kP").unwrap().0, "credential");
+        assert_eq!(sensitive_in("access_token = 9f8e7d6c5b").unwrap().0, "credential");
+        for plain in ["Key: Enter", "Shortcut key: Space", "key frames", "sk-ill", "monkey: banana"] {
+            assert!(sensitive_in(plain).is_none(), "{plain}");
+        }
+    }
+
+    /// A phone number is found by its digits, with or without the marks
+    /// between them, on screen and in the query; words are found as words.
+    #[test]
+    fn a_number_is_found_by_its_digits() {
+        let span = |text: &str| TextSpan { text: text.into(), confidence: 0.9, start_secs: 0.0, end_secs: 1.0, x: 0.0, y: 0.0, w: 0.1, h: 0.05, frames: 1 };
+        let st = ScreenText { spans: vec![span("Phone: 5550142"), span("Call 555 014 2999"), span("Fax (555) 019-9999"), span("Account Settings")], ..Default::default() };
+        let found = |q: &str| st.search(q).iter().map(|s| s.text.as_str()).collect::<Vec<_>>();
+        assert_eq!(found("555-0142"), ["Phone: 5550142", "Call 555 014 2999"]);
+        assert_eq!(found("5550199999"), ["Fax (555) 019-9999"]);
+        assert_eq!(found("(555) 019 9999"), ["Fax (555) 019-9999"]);
+        assert_eq!(found("account settings"), ["Account Settings"]);
+        assert_eq!(found("0142"), ["Phone: 5550142"], "too few digits to be a number: a word search, as it reads");
+    }
+
     #[test]
     fn the_read_size_keeps_the_aspect_within_bounds_and_stays_even() {
         assert_eq!(read_size(3840, 2132), (2560, 1422));
@@ -585,22 +748,42 @@ mod tests {
         assert_eq!(read_size(640, 360), (1280, 720));
     }
 
+    /// A frame every second across the file, moving or still, so a line
+    /// only up while it scrolls is read; the beat sheet's reveals and
+    /// settled stretches as well, never instead. Past an hour the step
+    /// grows, the frames bounded.
     #[test]
-    fn frames_are_picked_from_the_beat_sheet_and_bounded() {
+    fn frames_are_picked_every_second_and_where_the_beat_sheet_points() {
         let none = pick_times(20.0, None);
-        assert_eq!(none.len(), 5);
-        assert_eq!(pick_times(1000.0, None).len(), 200, "one frame per five seconds");
+        assert_eq!(none.len(), 20);
+        assert!(none.windows(2).all(|w| w[1] - w[0] <= STEP_SECS + 1e-9), "{none:?}");
         assert_eq!(pick_times(10_000.0, None).len(), MAX_FRAMES);
-        assert_eq!(frame_budget(30.0), MIN_FRAMES);
-        // Over budget, the long settled stretches and the reveals stay.
-        let mut segs: Vec<crate::beatsheet::Segment> = (0..300).map(|i| crate::beatsheet::Segment { start_secs: i as f64 * 3.0, end_secs: i as f64 * 3.0 + 0.9, kind: "idle".into() }).collect();
-        segs.push(crate::beatsheet::Segment { start_secs: 901.0, end_secs: 950.0, kind: "idle".into() });
-        let bs = crate::beatsheet::BeatSheet { duration_secs: 960.0, has_freeze: true, reveals: vec![955.0], segments: segs, ..Default::default() };
-        let picked = pick_times(960.0, Some(&bs));
-        assert_eq!(picked.len(), frame_budget(960.0));
-        assert!(picked.contains(&925.5) && picked.contains(&955.3), "{picked:?}");
-        let bs = crate::beatsheet::BeatSheet { duration_secs: 20.0, has_freeze: true, reveals: vec![5.0, 5.4, 12.0], segments: vec![crate::beatsheet::Segment { start_secs: 0.0, end_secs: 4.0, kind: "idle".into() }], ..Default::default() };
+        // A beat sheet that saw only a still start: the moving rest is
+        // read every second all the same, and the reveals besides.
+        let bs = crate::beatsheet::BeatSheet { duration_secs: 20.0, has_freeze: true, reveals: vec![5.0, 12.0], segments: vec![crate::beatsheet::Segment { start_secs: 0.0, end_secs: 4.0, kind: "idle".into() }], ..Default::default() };
         let picked = pick_times(20.0, Some(&bs));
-        assert_eq!(picked, vec![0.2, 2.0, 5.3, 12.3], "{picked:?}");
+        assert!(picked.iter().any(|t| (t - 12.3).abs() < MIN_GAP_SECS) && picked.iter().any(|t| (t - 15.2).abs() < 1e-9), "{picked:?}");
+        assert!(picked.iter().any(|t| (t - 2.0).abs() < 1e-9), "the settled stretch's middle: {picked:?}");
+        assert!(picked.windows(2).all(|w| w[1] - w[0] >= MIN_GAP_SECS - 1e-9), "{picked:?}");
     }
+
+    /// A line followed through the frames it moves across: its box in
+    /// each frame it is read in, even read a letter wrong, nearest where
+    /// it was; the same text elsewhere and a frame without it give
+    /// nothing.
+    #[test]
+    fn a_line_is_followed_where_it_moves() {
+        let at = |x: f32, y: f32, text: &str| Line { text: text.into(), confidence: 0.95, x, y, w: 0.2, h: 0.04 };
+        let frames = vec![
+            FrameText { secs: 0.0, lines: vec![at(0.1, 0.8, "Password: hunter2")] },
+            FrameText { secs: 0.2, lines: vec![at(0.1, 0.7, "Pasword: hunter2"), at(0.6, 0.1, "Password: hunter2")] },
+            FrameText { secs: 0.4, lines: vec![at(0.1, 0.1, "Account Settings")] },
+            FrameText { secs: 0.6, lines: vec![at(0.1, 0.5, "Password: hunter2")] },
+        ];
+        let track = follow_line("Password: hunter2", &frames);
+        let got: Vec<(f64, f32)> = track.iter().map(|b| (b.secs, b.y)).collect();
+        assert_eq!(got, [(0.0, 0.8), (0.2, 0.7), (0.6, 0.5)]);
+        assert!(alike("Password: hunter2", "Pasword: hunter2") >= 0.8 && alike("Password: hunter2", "Account Settings") < 0.5);
+    }
+
 }

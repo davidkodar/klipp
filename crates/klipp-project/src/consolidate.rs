@@ -714,8 +714,10 @@ fn remap_media_pool(original: &MediaPool, plan: &CopyPlan) -> MediaPool {
             new_item.path = p.clone();
             new_item.offline = false;
         }
-        new_item.proxy_path = plan.proxy_new_paths.get(&item.id).cloned()
-            .or_else(|| item.proxy_path.clone());
+        // A proxy not carried isn't there for whoever opens the copy: its
+        // path would name a file outside the folder.
+        new_item.proxy_path = plan.proxy_new_paths.get(&item.id).cloned();
+        new_item.proxy_ready = item.proxy_ready && new_item.proxy_path.is_some();
         new_item.skim_file = plan.skim_new_paths.get(&item.id).cloned()
             .or_else(|| item.skim_file.clone());
         new_pool.add(new_item);

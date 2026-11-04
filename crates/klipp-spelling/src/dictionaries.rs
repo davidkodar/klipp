@@ -57,16 +57,39 @@ pub struct Dictionaries {
     /// The region of the system's locale (`GB` for `en_GB.UTF-8`): the
     /// first choice for a tag without one.
     region: Option<String>,
-    loaded: Mutex<HashMap<String, Result<Arc<Dictionary>, Missing>>>,
+    /// Each language as read, and when: a dictionary missing is looked
+    /// for again once [`RECHECK`] has passed, so one installed while Klipp
+    /// runs is found without a restart.
+    loaded: Mutex<HashMap<String, (Result<Arc<Dictionary>, Missing>, std::time::Instant)>>,
+    /// How long a miss stands: [`RECHECK`] unless set.
+    recheck: std::time::Duration,
     /// The languages being read on a thread of their own ([`Self::ready`]).
     loading: Mutex<HashSet<String>>,
 }
 
+/// How long a dictionary found missing stays missing before it is looked
+/// for again.
+pub const RECHECK: std::time::Duration = std::time::Duration::from_secs(5);
+
 impl Dictionaries {
+    /// What was read for `key`, unless it was a miss its recheck ago or
+    /// more, which is looked for again.
+    fn known(&self, key: &str) -> Option<Result<Arc<Dictionary>, Missing>> {
+        let loaded = self.loaded.lock().unwrap_or_else(|e| e.into_inner());
+        let (found, when) = loaded.get(key)?;
+        (found.is_ok() || when.elapsed() < self.recheck).then(|| found.clone())
+    }
+
     /// Looked for in `dirs`, in order, a region-less tag preferring
     /// `region`.
     pub fn in_dirs(dirs: Vec<PathBuf>, region: Option<String>) -> Self {
-        Self { dirs, region, loaded: Mutex::new(HashMap::new()), loading: Mutex::new(HashSet::new()) }
+        Self { dirs, region, loaded: Mutex::new(HashMap::new()), loading: Mutex::new(HashSet::new()), recheck: RECHECK }
+    }
+
+    /// The same, a miss looked for again after `recheck`.
+    pub fn with_recheck(mut self, recheck: std::time::Duration) -> Self {
+        self.recheck = recheck;
+        self
     }
 
     /// The system's: [`system_dirs`], and the region of `LANG`.
@@ -84,14 +107,14 @@ impl Dictionaries {
     /// the first time it is asked for.
     pub fn get(&self, language: &str) -> Result<Arc<Dictionary>, Missing> {
         let key = language.trim().to_ascii_lowercase().replace('_', "-");
-        if let Some(found) = self.loaded.lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
-            return found.clone();
+        if let Some(found) = self.known(&key) {
+            return found;
         }
         let found = self.read(&key);
         if let Err(missing) = &found {
             tracing::info!("spelling: {}", missing.say());
         }
-        self.loaded.lock().unwrap_or_else(|e| e.into_inner()).insert(key, found.clone());
+        self.loaded.lock().unwrap_or_else(|e| e.into_inner()).insert(key, (found.clone(), std::time::Instant::now()));
         found
     }
 
@@ -101,9 +124,12 @@ impl Dictionaries {
     /// there.
     pub fn ready(&'static self, language: &str) -> Option<Result<Arc<Dictionary>, Missing>> {
         let key = language.trim().to_ascii_lowercase().replace('_', "-");
-        if let Some(found) = self.loaded.lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
-            return Some(found.clone());
+        if let Some(found) = self.known(&key) {
+            return Some(found);
         }
+        // A miss looked for again says it is missing until the look says
+        // otherwise, so a dialog doesn't blink while it looks.
+        let stale = self.loaded.lock().unwrap_or_else(|e| e.into_inner()).get(&key).map(|(found, _)| found.clone());
         if self.loading.lock().unwrap_or_else(|e| e.into_inner()).insert(key.clone()) {
             let spawned = std::thread::Builder::new().name("spelling-dictionary".into()).spawn(move || {
                 let _ = self.get(&key);
@@ -113,7 +139,7 @@ impl Dictionaries {
                 return Some(self.get(language));
             }
         }
-        None
+        stale
     }
 
     /// The dictionaries installed, by file stem (`de_DE`, `en_GB`), each

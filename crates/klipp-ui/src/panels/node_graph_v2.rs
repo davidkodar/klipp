@@ -315,6 +315,10 @@ pub struct NodeGraphV2Panel {
     /// click that opened it is not a click outside it (#1743; the note
     /// and frame menus closed as they opened without it).
     node_menu_opened_frame: u64,
+    /// The pass a rename, note or label editor was opened on: the click
+    /// that opened it, from a menu raised above the place it opens at,
+    /// is not a click outside it.
+    editor_opened_frame: u64,
     /// Cleared on first paint of a new clip (or when `view_dirty`
     /// is set explicitly). Triggers a one-shot fit-to-view so the
     /// graph appears framed on first open instead of off-screen.
@@ -543,6 +547,7 @@ impl Default for NodeGraphV2Panel {
             add_menu_collapsed: std::collections::HashSet::new(),
             node_menu: None,
             node_menu_opened_frame: 0,
+            editor_opened_frame: 0,
             last_fit_clip: None,
             last_picture_level: None,
             picture_move_root: None,
@@ -2795,6 +2800,7 @@ impl NodeGraphV2Panel {
                                 if primary_double_clicked && !kind.is_terminal() {
                                     let current = graph.nodes().iter().find(|n| n.id() == *node_id).map(|n| n.label().to_owned()).unwrap_or_default();
                                     self.node_rename_editor = Some((*node_id, p, current));
+                                    self.editor_opened_frame = ui.ctx().cumulative_pass_nr();
                                     node_hit = true;
                                     break;
                                 }
@@ -2883,6 +2889,7 @@ impl NodeGraphV2Panel {
                                         .map(|s| s.text.clone())
                                         .unwrap_or_default();
                                     self.sticky_text_editor = Some((*sticky_id, p, initial));
+                                    self.editor_opened_frame = ui.ctx().cumulative_pass_nr();
                                 } else {
                                     self.selected_sticky = Some(*sticky_id);
                                     selected_set.clear();
@@ -4330,7 +4337,7 @@ impl NodeGraphV2Panel {
             });
             close = true;
         }
-        if area_resp.response.clicked_elsewhere() {
+        if ui.ctx().cumulative_pass_nr() != self.editor_opened_frame && area_resp.response.clicked_elsewhere() {
             close = true;
         }
         if close { self.wireless_label_editor = None; }
@@ -4365,6 +4372,7 @@ impl NodeGraphV2Panel {
                             .map(|f| f.label.clone())
                             .unwrap_or_default();
                         self.frame_rename_editor = Some((frame_id, pos, initial));
+                        self.editor_opened_frame = ui.ctx().cumulative_pass_nr();
                         close = true;
                     }
                     if ui.button("Edit description…").clicked() {
@@ -4373,6 +4381,7 @@ impl NodeGraphV2Panel {
                             .map(|f| f.description.clone())
                             .unwrap_or_default();
                         self.frame_description_editor = Some((frame_id, pos, initial));
+                        self.editor_opened_frame = ui.ctx().cumulative_pass_nr();
                         close = true;
                     }
                     ui.separator();
@@ -4441,7 +4450,7 @@ impl NodeGraphV2Panel {
                     if ui.input(|i| i.key_pressed(egui::Key::Escape)) { close = true; }
                 });
             });
-        if area_resp.response.clicked_elsewhere() { close = true; }
+        if ui.ctx().cumulative_pass_nr() != self.editor_opened_frame && area_resp.response.clicked_elsewhere() { close = true; }
         if save {
             let label = self.node_rename_editor.as_ref().map(|(_, _, b)| b.trim().to_string()).unwrap_or_default();
             if !label.is_empty() {
@@ -4493,7 +4502,7 @@ impl NodeGraphV2Panel {
                     if ui.input(|i| i.key_pressed(egui::Key::Escape)) { close = true; }
                 });
             });
-        if area_resp.response.clicked_elsewhere() { close = true; }
+        if ui.ctx().cumulative_pass_nr() != self.editor_opened_frame && area_resp.response.clicked_elsewhere() { close = true; }
         if save {
             let label = self.frame_rename_editor.as_ref()
                 .map(|(_, _, b)| b.clone()).unwrap_or_default();
@@ -4525,6 +4534,7 @@ impl NodeGraphV2Panel {
                             .map(|s| s.text.clone())
                             .unwrap_or_default();
                         self.sticky_text_editor = Some((sticky_id, pos, initial));
+                        self.editor_opened_frame = ui.ctx().cumulative_pass_nr();
                         close = true;
                     }
                     if ui.button("Delete note").clicked() {
@@ -4588,7 +4598,7 @@ impl NodeGraphV2Panel {
             });
         // Click-elsewhere → save (sticky-note semantics: throwaway
         // notes shouldn't lose what the user typed).
-        if area_resp.response.clicked_elsewhere() { save_and_close = true; }
+        if ui.ctx().cumulative_pass_nr() != self.editor_opened_frame && area_resp.response.clicked_elsewhere() { save_and_close = true; }
         if save_and_close {
             let text = self.sticky_text_editor.as_ref()
                 .map(|(_, _, b)| b.clone()).unwrap_or_default();
@@ -4653,7 +4663,7 @@ impl NodeGraphV2Panel {
                     if ui.input(|i| i.key_pressed(egui::Key::Escape)) { close = true; }
                 });
             });
-        if area_resp.response.clicked_elsewhere() { close = true; }
+        if ui.ctx().cumulative_pass_nr() != self.editor_opened_frame && area_resp.response.clicked_elsewhere() { close = true; }
         if save {
             let description = self.frame_description_editor.as_ref()
                 .map(|(_, _, b)| b.clone()).unwrap_or_default();
@@ -4729,6 +4739,7 @@ impl NodeGraphV2Panel {
                     if !is_structural && ui.button("Rename\u{2026}").clicked() {
                         let current = graph.nodes().iter().find(|n| n.id() == node_id).map(|n| n.label().to_owned()).unwrap_or_default();
                         self.node_rename_editor = Some((node_id, pos, current));
+                        self.editor_opened_frame = ui.ctx().cumulative_pass_nr();
                         close = true;
                     }
                     // A colour label, to find the node again (#1753): a
@@ -4929,6 +4940,7 @@ impl NodeGraphV2Panel {
                                 node_id, pos,
                                 current_send.clone().unwrap_or_default(),
                             ));
+                            self.editor_opened_frame = ui.ctx().cumulative_pass_nr();
                             close = true;
                         }
                     }
@@ -5887,6 +5899,27 @@ pub(crate) mod canvas_command_tests {
             self.settle();
             self.click(self.text(label), egui::PointerButton::Primary)
         }
+    }
+
+    /// A node low on the canvas has its menu raised to fit, so Rename…
+    /// sits well above the place the name editor opens at. The click on
+    /// it was a click outside the editor, drawn the same pass, and the
+    /// editor closed as it opened.
+    #[test]
+    fn rename_from_a_raised_menu_opens_the_name_editor() {
+        let mut h = Harness::new();
+        let id = h.card(NodeKind::Corrector).0;
+        h.graph.node_positions.insert(id, NodePos { x: 0.0, y: 300.0 });
+        h.settle();
+        let at = h.card_of(id).center();
+        h.click(at, egui::PointerButton::Secondary);
+        h.settle();
+        let item = h.text("Rename\u{2026}");
+        assert!(item.y < at.y - 60.0, "the menu is raised above the node: Rename… at {item:?}, the node at {at:?}");
+        h.click(item, egui::PointerButton::Primary);
+        h.settle();
+        assert_eq!(h.panel.node_rename_editor.as_ref().map(|(n, _, _)| *n), Some(id), "the name editor is open");
+        assert!(h.has("Node name"), "the name editor is drawn");
     }
 
     /// #1753: a grade node's menu gives it a colour label by the path the
