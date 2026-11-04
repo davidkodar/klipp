@@ -94,3 +94,27 @@ fn a_version_s_mix_is_stored_in_its_body_and_read_back() {
     let (second, _) = saved("mixed-again", &loaded);
     assert_eq!(content(&first), content(&second), "saved again, the same sequences");
 }
+
+/// A sequence's copy keeps its clips' ids, as Duplicate Sequence makes it. A
+/// grade version's mix changed in the copy alone is the copy's: saved and
+/// read back, each sequence holds its own, the same again on a second save.
+#[test]
+fn a_duplicated_sequence_keeps_its_own_version_mix() {
+    let (original, changed) = (EffectBlend { mix: 0.4, channel: MaskChannel::Alpha }, EffectBlend { mix: 0.9, channel: MaskChannel::Red });
+    let first = sequence(Some(original));
+    let mut copy = first.clone();
+    copy.id = klipp_core::SequenceId::new();
+    let clip = copy.tracks[0].clips.first_mut().unwrap();
+    assert_eq!(clip.id, first.tracks[0].clips[0].id, "the copy keeps the clip's id");
+    clip.edit_grade_versions(|vs| {
+        let mut g = vs[1].grade().clone();
+        g.nodes.iter_mut().find(|n| n.kind == NodeKind::Corrector).unwrap().params.correction_blend = Some(changed);
+        vs[1].set_grade(g);
+    });
+    let blend_of = |s: &Sequence| s.tracks[0].clips[0].grade_versions()[1].grade().nodes.iter().find(|n| n.kind == NodeKind::Corrector).unwrap().params.correction_blend;
+    let (text, loaded) = saved("duplicate", &[first, copy]);
+    assert_eq!(blend_of(&loaded[0]), Some(original), "the original's");
+    assert_eq!(blend_of(&loaded[1]), Some(changed), "the copy's");
+    let (again, _) = saved("duplicate-again", &loaded);
+    assert_eq!(content(&text), content(&again), "saved again, the same sequences");
+}
