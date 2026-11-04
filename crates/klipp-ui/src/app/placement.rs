@@ -688,11 +688,45 @@ pub(super) fn media_drop_edits(
     let mut before = seq.clone();
     let mut edits = Vec::new();
     if let Some(external) = audio {
-        if let Some(index) = attach_linked_audio_to_clip(&mut laid, id, external).and_then(|a| a.created_track_at) {
-            let mut track = laid.tracks[index].clone();
-            track.clips.clear();
-            before.tracks.insert(index, track.clone());
-            edits.push(EditCommand::AddTrack { index, track });
+        if let Some(attached) = attach_linked_audio_to_clip(&mut laid, id, external) {
+            if let Some(index) = attached.created_track_at {
+                let mut track = laid.tracks[index].clone();
+                track.clips.clear();
+                before.tracks.insert(index, track.clone());
+                edits.push(EditCommand::AddTrack { index, track });
+            } else {
+                // Never over another clip's sound: B-roll dropped on V2
+                // over an interview laid its sound over the interview's
+                // voice on A1, and the voice was gone from the export.
+                // The sound goes on the first audio track free across its
+                // span, else on a new one at the bottom; a picture dropped
+                // over a clip whose sound is on that track (V1 over the
+                // interview itself) still replaces that sound with its own.
+                let from = at.to_secs_f64() + attached.clip.timeline_in.to_secs_f64();
+                let to = at.to_secs_f64() + attached.clip.timeline_out.to_secs_f64();
+                let replaced = |c: &klipp_timeline::Clip| c.linked_clip_id.is_some_and(|l| seq.tracks[track_index].find_clip(l).is_some());
+                let taken = |ti: usize| {
+                    seq.tracks[ti].clips.iter().any(|c| !c.kind.is_gap() && c.timeline_in.to_secs_f64() < to - 1e-9 && c.timeline_out.to_secs_f64() > from + 1e-9 && !replaced(c))
+                };
+                if taken(attached.track_index) {
+                    let free = (0..seq.tracks.len()).find(|&ti| seq.tracks[ti].kind == klipp_timeline::TrackKind::Audio && !seq.tracks[ti].locked && !taken(ti));
+                    let dest = match free {
+                        Some(ti) => ti,
+                        None => {
+                            let n = seq.tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Audio).count();
+                            let track = klipp_timeline::Track::new(&format!("Audio {}", n + 1), klipp_timeline::TrackKind::Audio);
+                            let index = laid.tracks.len();
+                            laid.tracks.push(track.clone());
+                            before.tracks.push(track.clone());
+                            edits.push(EditCommand::AddTrack { index, track });
+                            index
+                        }
+                    };
+                    let sound = attached.clip.id;
+                    laid.tracks[attached.track_index].clips.retain(|c| c.id != sound);
+                    laid.tracks[dest].clips.push(attached.clip.clone());
+                }
+            }
         }
     }
     let cb = crate::clip_clipboard::copy(&laid, &[id]).ok_or("Nothing to place")?;
@@ -854,6 +888,54 @@ mod media_drop_tests {
     fn span(seq: &Sequence, id: ClipId) -> (klipp_core::Timecode, klipp_core::Timecode) {
         let c = seq.all_clips().find(|c| c.id == id).expect("on the timeline");
         (c.timeline_in, c.timeline_out)
+    }
+
+    /// B-roll with sound let go on V2 over an interview leaves the
+    /// interview's voice on A1 whole and takes its sound to A2, made when
+    /// there is none and taken when it is free there; dropped on V1 over
+    /// the interview itself, it still replaces that clip's sound. It laid
+    /// its sound over the voice on A1, and the voice was gone from the
+    /// export.
+    #[test]
+    fn b_roll_on_v2_never_lays_its_sound_over_a1() {
+        let (mut seq, ids) = timeline();
+        seq.add_video_track("Video 2".into());
+        let v2 = seq.tracks.iter().position(|tr| tr.name == "Video 2").unwrap();
+        let a1 = track_of(&seq, TrackKind::Audio);
+        let voice: Vec<(ClipId, (klipp_core::Timecode, klipp_core::Timecode))> = seq.tracks[a1].clips.iter().map(|c| (c.id, (c.timeline_in, c.timeline_out))).collect();
+        for mode in [PasteMode::Overwrite, PasteMode::Insert] {
+            let (edits, placed) = media_drop_edits(&seq, dropped(), v2, Some(None), t(5), mode, "Drop").expect("placed");
+            let after = run(&seq, &edits, true);
+            if mode == PasteMode::Overwrite {
+                let kept: Vec<_> = after.tracks[a1].clips.iter().map(|c| (c.id, (c.timeline_in, c.timeline_out))).collect();
+                assert_eq!(kept, voice, "{mode:?}: the voice on A1 untouched");
+            } else {
+                // An insert moves every track along, the voice with its
+                // picture: all of it is still there.
+                let length = |s: &Sequence| s.tracks[a1].clips.iter().filter(|c| !c.kind.is_gap()).map(|c| (c.timeline_out - c.timeline_in).to_secs_f64()).sum::<f64>();
+                assert!((length(&after) - length(&seq)).abs() < 1e-6, "{mode:?}: the whole voice still on A1");
+            }
+            let sound = after.all_clips().find(|c| c.linked_clip_id == Some(placed)).expect("its sound");
+            let on = after.tracks.iter().position(|tr| tr.find_clip(sound.id).is_some()).unwrap();
+            assert!(on != a1 && after.tracks[on].kind == TrackKind::Audio, "{mode:?}: its sound on another audio track, {}", after.tracks[on].name);
+            assert_eq!((sound.timeline_in, sound.timeline_out), span(&after, placed), "{mode:?}: under its picture");
+        }
+        // A free A2 is taken rather than a new track made.
+        seq.add_audio_track("Audio 2".into());
+        let tracks = seq.tracks.len();
+        let (edits, placed) = media_drop_edits(&seq, dropped(), v2, Some(None), t(5), PasteMode::Overwrite, "Drop").expect("placed");
+        let after = run(&seq, &edits, true);
+        assert_eq!(after.tracks.len(), tracks, "no track made");
+        let sound = after.all_clips().find(|c| c.linked_clip_id == Some(placed)).expect("its sound");
+        assert_eq!(after.tracks.iter().find(|tr| tr.find_clip(sound.id).is_some()).map(|tr| tr.name.as_str()), Some("Audio 2"));
+        // On V1, over the interview's own picture, its sound replaces the
+        // interview's under it, as an overwrite does.
+        let v1 = seq.tracks.iter().position(|tr| tr.find_clip(ids[1]).is_some()).unwrap();
+        let (edits, placed) = media_drop_edits(&seq, dropped(), v1, Some(None), t(5), PasteMode::Overwrite, "Drop").expect("placed");
+        let after = run(&seq, &edits, true);
+        let sound = after.all_clips().find(|c| c.linked_clip_id == Some(placed)).expect("its sound");
+        assert!(after.tracks[a1].find_clip(sound.id).is_some(), "on A1, over its own clip's sound");
+        assert!(after.all_clips().any(|c| c.id == ids[0]), "the clip before is still there");
     }
 
     /// The first clip let go on an empty timeline starts at 0, with its
