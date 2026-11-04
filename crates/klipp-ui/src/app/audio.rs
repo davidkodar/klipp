@@ -31,134 +31,32 @@ impl KlippApp {
             return;
         }
 
-        // 2. Detect active regions on the sidechain track using PCM data or clip boundaries
+        // 2. Where the sidechain track's voice speaks under the clip,
+        // measured against the voice's own level.
         let active_regions: Vec<(f64, f64)> = {
             let seq = &self.state.sequences[self.state.active_sequence_idx];
-            let sidechain_track_idx = *sidechain_track_idx;
-            if sidechain_track_idx >= seq.tracks.len() {
-                return;
-            }
-            let track = &seq.tracks[sidechain_track_idx];
-
-            // Try PCM-based analysis first
-            let mut pcm_regions: Vec<(f64, f64)> = Vec::new();
-            let mut used_pcm = false;
-
-            for sc_clip in &track.clips {
-                let sc_start = sc_clip.timeline_in.to_secs_f64();
-                let sc_end = sc_clip.timeline_out.to_secs_f64();
-                // Skip clips that don't overlap the target
-                if sc_end <= target_timeline_start || sc_start >= target_timeline_end {
-                    return;
-                }
-
-                // Try to read PCM data for this clip
-                let pcm_data = sc_clip.media_id()
-                    .and_then(|mid| self.state.media_pool.get(&mid))
-                    .and_then(|item| item.audio_cache.as_ref())
-                    .and_then(|cache| {
-                        std::fs::read(&cache.pcm_path).ok().map(|bytes| (bytes, cache.sample_rate, cache.channels))
+            let Some(track) = seq.tracks.get(*sidechain_track_idx) else { return };
+            let sounds: Vec<(f64, f64, f64, Option<(Vec<f32>, u32, u16)>)> = track
+                .clips
+                .iter()
+                .map(|c| {
+                    let cached = c.media_id().and_then(|mid| self.state.media_pool.get(&mid)).and_then(|item| item.audio_cache.as_ref()).and_then(|cache| {
+                        let bytes = std::fs::read(&cache.pcm_path).ok()?;
+                        let samples: Vec<f32> = bytes.chunks_exact(std::mem::size_of::<f32>()).map(|b| f32::from_ne_bytes([b[0], b[1], b[2], b[3]])).collect();
+                        Some((samples, cache.sample_rate, cache.channels))
                     });
-
-                if let Some((pcm_bytes, sample_rate, channels)) = pcm_data {
-                    used_pcm = true;
-                    // Reinterpret the cache bytes as f32 samples. Using
-                    // bytemuck rather than slice::from_raw_parts: the
-                    // Vec<u8> from fs::read is only byte-aligned, and a
-                    // raw cast would produce an unaligned &[f32] — UB on
-                    // any target that enforces alignment on f32 loads.
-                    // bytemuck::try_cast_slice checks alignment and
-                    // length at runtime; on a misaligned cache we fall
-                    // back to a chunk-decode copy so the analysis still
-                    // runs instead of silently corrupting its input.
-                    let owned_samples: Vec<f32>;
-                    let samples: &[f32] = match bytemuck::try_cast_slice::<u8, f32>(&pcm_bytes) {
-                        Ok(s) => s,
-                        Err(_) => {
-                            owned_samples = pcm_bytes
-                                .chunks_exact(std::mem::size_of::<f32>())
-                                .map(|c| f32::from_ne_bytes([c[0], c[1], c[2], c[3]]))
-                                .collect();
-                            &owned_samples
-                        }
-                    };
-                    let window_samples = (sample_rate as f64 * 0.05) as usize * channels as usize; // 50ms windows
-                    if window_samples == 0 { continue; }
-
-                    let src_in_secs = sc_clip.source_in.to_secs_f64();
-                    let total_mono_samples = samples.len() / channels as usize;
-                    let total_dur = total_mono_samples as f64 / sample_rate as f64;
-
-                    // Analyze overlapping region
-                    let analyze_start = target_timeline_start.max(sc_start);
-                    let analyze_end = target_timeline_end.min(sc_end);
-
-                    let window_secs = 0.05_f64;
-                    let mut t = analyze_start;
-                    let mut region_start: Option<f64> = None;
-
-                    while t < analyze_end {
-                        // Map timeline time to source time
-                        let source_t = src_in_secs + (t - sc_start);
-                        if source_t < 0.0 || source_t >= total_dur {
-                            t += window_secs;
-                            continue;
-                        }
-                        let sample_idx = (source_t * sample_rate as f64) as usize * channels as usize;
-                        let end_idx = ((sample_idx + window_samples).min(samples.len())).max(sample_idx);
-
-                        // Compute RMS
-                        let window = &samples[sample_idx..end_idx];
-                        let rms = if window.is_empty() {
-                            0.0
-                        } else {
-                            let sum: f64 = window.iter().map(|&s| (s as f64) * (s as f64)).sum();
-                            (sum / window.len() as f64).sqrt() as f32
-                        };
-
-                        if rms > *threshold {
-                            if region_start.is_none() {
-                                region_start = Some(t);
-                            }
-                        } else if let Some(rs) = region_start.take() {
-                            pcm_regions.push((rs, t));
-                        }
-                        t += window_secs;
-                    }
-                    // Close any open region
-                    if let Some(rs) = region_start {
-                        pcm_regions.push((rs, analyze_end));
-                    }
-                } else {
-                    // Fallback: use clip boundaries as active region
-                    let region_start = sc_start.max(target_timeline_start);
-                    let region_end = sc_end.min(target_timeline_end);
-                    if region_end > region_start {
-                        pcm_regions.push((region_start, region_end));
-                    }
-                }
-            }
-
-            // Merge adjacent/overlapping regions (with a small gap tolerance)
-            if used_pcm && !pcm_regions.is_empty() {
-                pcm_regions.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
-                let mut merged: Vec<(f64, f64)> = Vec::new();
-                for r in pcm_regions {
-                    if let Some(last) = merged.last_mut() {
-                        if r.0 <= last.1 + 0.05 { // 50ms merge gap
-                            last.1 = last.1.max(r.1);
-                            return;
-                        }
-                    }
-                    merged.push(r);
-                }
-                merged
-            } else {
-                pcm_regions
-            }
+                    (c.timeline_in.to_secs_f64(), c.timeline_out.to_secs_f64(), c.source_in.to_secs_f64(), cached)
+                })
+                .collect();
+            let voice: Vec<crate::auto_duck::VoiceClip> = sounds
+                .iter()
+                .map(|(a, b, s, cached)| crate::auto_duck::VoiceClip { timeline_in: *a, timeline_out: *b, source_in: *s, sound: cached.as_ref().map(|(v, r, ch)| (v.as_slice(), *r, *ch)) })
+                .collect();
+            crate::auto_duck::speech_regions(&voice, target_timeline_start, target_timeline_end, *threshold)
         };
 
         if active_regions.is_empty() {
+            self.state.toast.show("Auto Duck: no speech found on the sidechain track under this clip");
             return;
         }
 
