@@ -166,6 +166,14 @@ pub(crate) fn respond(
                 let pool = ctx.media_pool.read().recovered();
                 klipp_media::relink::Wanted::from_item(pool.get(&id).ok_or_else(|| format!("no media item {}", id.0))?)
             };
+            // Only media, as opening a project takes it: force is for a clip
+            // that looks like another, not for a file that is no clip.
+            let project = ctx.shared.project.lock().recovered().path.clone();
+            let trusted = klipp_media::media_check::trusted_roots(project.as_deref());
+            let trusted: Vec<&std::path::Path> = trusted.iter().map(|p| p.as_path()).collect();
+            if let Err(why) = klipp_media::media_check::media_file_check(&p, &trusted) {
+                return Err(format!("{path} was not relinked: {why}"));
+            }
             let verdict = klipp_media::relink::check_pick(&wanted, &p);
             use klipp_media::relink::PickVerdict;
             if let (PickVerdict::Contradicted(why), false) = (&verdict, force) {
@@ -183,6 +191,11 @@ pub(crate) fn respond(
         ControlCommand::MakeProxies { media_ids, use_proxies } => {
             if in_batch {
                 return Err("make_proxies starts a job; send it on its own".into());
+            }
+            // Turning proxies off makes none.
+            if use_proxies == Some(false) {
+                let v = send_envelope(ctx, vec![AppCommand::SetUseProxies(false)], false)?;
+                return Ok(json!({ "accepted": v["accepted"], "applied": v["applied"], "operation_id": v["operation_id"], "made": 0, "making": 0, "text": "Playback reads the originals. No proxies were made." }));
             }
             // The files asked for, or every picture file the timeline
             // shows; one with its proxy made already is left be.
@@ -212,7 +225,7 @@ pub(crate) fn respond(
                     if item.offline {
                         return Err(format!("{} is offline: relink it first", item.filename));
                     }
-                    if item.proxy_ready { ready += 1 } else { wanted.push(id) }
+                    if item.proxy_on_disk() { ready += 1 } else { wanted.push(id) }
                 }
                 (wanted, ready)
             };
@@ -672,6 +685,7 @@ fn media_listing(m: &klipp_media::MediaItem, artwork: Option<(u32, u32)>) -> ser
         "audio_channels": m.audio_channels,
         "artwork": artwork.map(|(width, height)| json!({ "width": width, "height": height })),
         "log_format": log_format_json(m),
+        "proxy_ready": m.proxy_on_disk(),
         // Part of #1224: a profile 5 picture is shown with wrong colours.
         "dolby_vision_profile": m.dolby_vision_profile,
         "warning": klipp_media::dolby_vision::warning(m.dolby_vision_profile),
@@ -707,6 +721,20 @@ mod listing_tests {
         assert_eq!(v["kind"], "video");
         assert_eq!((v["width"].as_u64(), v["height"].as_u64()), (Some(shot.resolution.width as u64), Some(shot.resolution.height as u64)));
         assert!(v["artwork"].is_null());
+    }
+
+    /// Each file says whether it has a proxy to read now: not when none was
+    /// made, nor when the one made has gone.
+    #[test]
+    fn an_item_is_listed_with_whether_its_proxy_is_there() {
+        let proxy = std::env::temp_dir().join(format!("klipp-listed-proxy-{}.mp4", uuid::Uuid::new_v4()));
+        let none = klipp_media::MediaItem::synthetic_for_test("/footage/a.mp4".into(), None);
+        assert_eq!(media_listing(&none, None)["proxy_ready"], false);
+        let with = klipp_media::MediaItem::synthetic_for_test("/footage/a.mp4".into(), proxy.to_str());
+        assert_eq!(media_listing(&with, None)["proxy_ready"], false, "its file isn't there");
+        std::fs::write(&proxy, b"a proxy").unwrap();
+        assert_eq!(media_listing(&with, None)["proxy_ready"], true);
+        std::fs::remove_file(proxy).unwrap();
     }
 
     /// Part of #1224: a Dolby Vision profile 5 item is listed with its

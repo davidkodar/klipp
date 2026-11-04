@@ -103,3 +103,74 @@ fn measure(mark: Watermark, logo_size: (u32, u32)) {
     assert!((gap_x - margin).abs() <= 2.0 && (gap_y - margin).abs() <= 2.0, "the margin in from both edges of its corner: {gap_x}, {gap_y}");
     assert!((((x1 - x0 + 1) as f32) / ((y1 - y0 + 1) as f32) - logo_size.0 as f32 / logo_size.1 as f32).abs() < 0.06, "its own shape");
 }
+
+/// The kit's parts as the open sequence takes them, every step applied.
+fn applied(seq: &Sequence, pool: &mut MediaPool, ops: &[klipp_document::ops::Op]) -> Sequence {
+    let plan = klipp_document::ops::resolve(seq, pool, ops).map_err(|r| r.why).expect("the ops resolve");
+    let mut fps = seq.fps;
+    let mut sequences = vec![seq.clone()];
+    let mut doc = DocumentView { sequences: &mut sequences, active: 0, media_pool: pool, fps: &mut fps };
+    for step in &plan.steps {
+        doc.apply_forward(&step.edit);
+    }
+    sequences.remove(0)
+}
+
+/// A clip as JSON without its id, its place in time, which the parts
+/// move, and its untouched grade, whose node ids are new per clip: what
+/// is left is how it is drawn.
+fn drawn(clip: &Clip) -> serde_json::Value {
+    let mut v = serde_json::to_value(clip).unwrap();
+    for key in ["id", "timeline_in", "timeline_out", "source_in", "source_out", "node_graph"] {
+        v.as_object_mut().unwrap().remove(key);
+    }
+    v
+}
+
+/// With an intro and an outro taken in the same step, the watermark
+/// poses the logo and nothing else. Its pose named the clip made by
+/// step 1 of the whole batch, which is the logo only when the watermark
+/// goes alone: beside an intro, step 1 is a move of the piece's
+/// last-starting clip, so that clip took the logo's size and corner, and
+/// the logo was left filling the frame.
+#[test]
+fn beside_an_intro_and_outro_the_watermark_poses_only_the_logo() {
+    let mut pool = MediaPool::new();
+    let mut item = |path: &str, secs: f64, size: Option<(u32, u32)>| {
+        let mut m = klipp_media::MediaItem::synthetic_for_test(path.into(), None);
+        m.duration = tc(secs);
+        if let Some((w, h)) = size {
+            m.is_still = true;
+            m.has_audio = false;
+            m.resolution = klipp_core::Resolution { width: w, height: h };
+        }
+        pool.add(m)
+    };
+    let (base, intro, outro, logo) = (item("/tmp/brand-base.mov", 8.0, None), item("/tmp/brand-intro.mov", 2.0, None), item("/tmp/brand-outro.mov", 2.0, None), item("/tmp/brand-logo.png", 1.0, Some((200, 100))));
+    let mut seq = Sequence::new_default();
+    seq.fps = klipp_core::Fps::new(25, 1);
+    seq.resolution = klipp_core::Resolution { width: W, height: H };
+    let mut v = Track::new("V1", TrackKind::Video);
+    v.clips = vec![Clip::media(base, tc(0.0), tc(4.0), tc(0.0), tc(4.0)), Clip::media(base, tc(4.0), tc(8.0), tc(4.0), tc(8.0))];
+    seq.tracks = vec![v];
+    let mark = Watermark { left: false, top: false, margin: 0.03, scale: 0.12, opacity: 0.8 };
+
+    // The watermark alone poses the logo: the look to find again.
+    let alone = applied(&seq, &mut pool, &mark.ops(logo, (200, 100), (W, H), 8.0).unwrap());
+    let posed = alone.tracks.iter().flat_map(|t| &t.clips).find(|c| c.media_id() == Some(logo)).map(drawn).expect("the logo placed");
+
+    let parts = klipp_document::brand_kit_ops::SequenceParts {
+        intro: Some((klipp_document::brand_kit_ops::Bookend::Media(intro), 2.0)),
+        outro: Some((klipp_document::brand_kit_ops::Bookend::Media(outro), 2.0)),
+        watermark: Some((mark, logo, (200, 100))),
+        ..Default::default()
+    };
+    let ops = klipp_document::brand_kit_ops::sequence_ops(&seq, &parts).unwrap();
+    let after = applied(&seq, &mut pool, &ops);
+    let clips: Vec<&Clip> = after.tracks.iter().flat_map(|t| &t.clips).collect();
+    let logo_clip = clips.iter().find(|c| c.media_id() == Some(logo)).expect("the logo placed");
+    assert_eq!(drawn(logo_clip), posed, "the logo takes its pose");
+    for (before, now) in seq.tracks[0].clips.iter().map(|c| (c, clips.iter().find(|n| n.id == c.id).expect("the clip kept"))) {
+        assert_eq!(drawn(now), drawn(before), "the piece's clip at {:.1} s is drawn as it was", before.timeline_in.to_secs_f64());
+    }
+}

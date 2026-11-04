@@ -626,7 +626,7 @@
                     "transform": {
                       "center": {
                         "x": 0.5,
-                        "y": 0.19062501
+                        "y": 0.0421875
                       },
                       "center_x_keyframes": [],
                       "center_y_keyframes": [],
@@ -698,7 +698,7 @@
                     "transform": {
                       "center": {
                         "x": 0.5,
-                        "y": 0.809375
+                        "y": 0.9578125
                       },
                       "center_x_keyframes": [],
                       "center_y_keyframes": [],
@@ -1166,7 +1166,7 @@
                     "transform": {
                       "center": {
                         "x": 0.5,
-                        "y": 0.016000003
+                        "y": 0.066
                       },
                       "center_x_keyframes": [],
                       "center_y_keyframes": [],
@@ -1238,7 +1238,7 @@
                     "transform": {
                       "center": {
                         "x": 0.5,
-                        "y": 0.98399997
+                        "y": 0.934
                       },
                       "center_x_keyframes": [],
                       "center_y_keyframes": [],
