@@ -69,6 +69,15 @@ impl crate::state::AppState {
         self.recorded_tracks = self.sequences.iter().map(|s| (s.id, s.tracks.iter().map(|t| t.id).collect())).collect();
     }
 
+    /// Whether the state is still the empty one the app starts with: no
+    /// media, no clip, no step to undo in any history.
+    fn untouched_start(&self) -> bool {
+        self.media_pool.is_empty()
+            && self.sequences.iter().all(|s| s.tracks.iter().all(|t| t.clips.is_empty()))
+            && self.command_histories.values().all(|h| h.undo_count() == 0)
+            && self.project_history.undo_count() == 0
+    }
+
     /// Settle a raised hint now: unsaved exactly when the project differs
     /// from the one last loaded or saved. Whether there was one to settle.
     pub(crate) fn settle_unsaved(&mut self) -> bool {
@@ -76,10 +85,12 @@ impl crate::state::AppState {
             return false;
         }
         self.dirty = false;
-        // No project open, on the launch screen: nothing to lose. Its
-        // empty state differed from no save at all, and New Project asked
-        // to save "Untitled" (M6).
-        if self.project_path.is_none() {
+        // No project open and nothing done since the launch: nothing to
+        // lose. Its empty state differed from no save at all, and New
+        // Project asked to save "Untitled" (M6). Anything made with no
+        // project open, over the socket before New Project, is judged as
+        // ever: closing would lose it.
+        if self.project_path.is_none() && self.untouched_start() {
             self.unsaved = false;
             return true;
         }
@@ -142,6 +153,19 @@ mod launch_screen_tests {
         state.dirty = true;
         state.settle_unsaved();
         assert!(state.unsaved, "an untitled project never saved is unsaved");
+    }
+
+    /// With no project open, something made all the same (a clip laid
+    /// over the socket before New Project) is unsaved: closing would lose
+    /// it.
+    #[test]
+    fn an_edit_with_no_project_open_is_unsaved() {
+        let mut state = AppState { project_path: None, ..Default::default() };
+        let clip = klipp_timeline::Clip::gap(klipp_core::Timecode::from_secs_f64(0.0, 24), klipp_core::Timecode::from_secs_f64(1.0, 24));
+        state.sequence_mut().tracks[0].clips.push(clip);
+        state.dirty = true;
+        state.settle_unsaved();
+        assert!(state.unsaved, "made with no project open, and not saved");
     }
 }
 
