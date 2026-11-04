@@ -14,6 +14,8 @@ mod auto_move_save;
 mod guide_brand_kit_example;
 #[path = "../rich_round_trip.rs"]
 mod rich_round_trip;
+#[path = "../digest_agrees_with_save.rs"]
+mod digest_agrees_with_save;
 #[path = "../autosave_restore_paths.rs"]
 mod autosave_restore_paths;
 #[path = "../crash_recovery_open.rs"]
