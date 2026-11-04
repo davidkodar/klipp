@@ -968,9 +968,14 @@ impl MagneticEditor {
         // Linked-clip partners on other tracks also continue to resolve
         // because linked_clip_id on those partners still points at the
         // original id, which is now the left half.
+        // The file cut where the legacy blade cuts it: through the speed,
+        // from the far end when reversed. One to one, a sound cut here
+        // and its retimed picture cut on a free track started their right
+        // pieces at different file times.
+        let ((left_in, left_out), (right_in, right_out)) = original.source_split(offset);
         let mut left_clip = original.clone();
         left_clip.timeline_out = at_time;
-        left_clip.source_out = original.source_in + offset;
+        (left_clip.source_in, left_clip.source_out) = (left_in, left_out);
         // The fades belong to the clip's own ends, not to the cut: the
         // left keeps its fade in and loses the fade out, or the join
         // would dip to nothing on a cut that should pass unheard. A fade
@@ -986,7 +991,7 @@ impl MagneticEditor {
         let mut right_clip = original.clone();
         right_clip.id = ClipId::new();
         right_clip.timeline_in = at_time;
-        right_clip.source_in = original.source_in + offset;
+        (right_clip.source_in, right_clip.source_out) = (right_in, right_out);
         right_clip.fade_in_secs = 0.0;
         right_clip.fade_out_secs = right_clip.fade_out_secs.min((original.timeline_out - at_time).to_secs_f64() as f32);
         right_clip.keep_angle_cuts_on_piece(at, whole);
@@ -2970,6 +2975,28 @@ mod tests {
         let (s_in, s_out) = span(sound_id);
         assert!(s_in < 72, "the sound closed up: {s_in}-{s_out}");
         assert_eq!(span(picture_id), (s_in, s_out), "its picture went with it");
+    }
+
+    /// A blade on the magnetic track cuts the file through the clip's
+    /// speed, as the legacy blade does: half a second into a 2x clip is
+    /// a second into its file. Taken one to one, a sound cut here and its
+    /// retimed picture cut on a free track went out of step.
+    #[test]
+    fn a_magnetic_blade_cuts_the_file_through_the_speed() {
+        let mut seq = make_sequence(&[(0, 24)]);
+        let clip = &mut seq.tracks[0].clips[0];
+        clip.speed = 2.0;
+        clip.source_out = tc(48);
+        let id = clip.id;
+        let mut free = Track::new("Video 2", TrackKind::Video);
+        free.clips.push(seq.tracks[0].clips[0].clone());
+        let other = free.clips[0].id;
+        let result = MagneticEditor::blade(&mut seq, id, tc(12)).expect("cut inside");
+        let MagneticEditCommand::Blade { left_clip, right_clip, .. } = &result.command else { panic!("a blade") };
+        assert_eq!((left_clip.source_in, left_clip.source_out), (tc(0), tc(24)), "the first half second at 2x is the file's first second");
+        assert_eq!((right_clip.source_in, right_clip.source_out), (tc(24), tc(48)));
+        let (a, b) = free.split_at(other, tc(12)).expect("cut inside");
+        assert_eq!((a.source_out, b.source_in), (left_clip.source_out, right_clip.source_in), "the legacy blade agrees");
     }
 
     #[test]
