@@ -464,6 +464,10 @@ pub fn legibility(title: &TitleToRead, picture: &[u8], width: usize, height: usi
     })
 }
 
+/// How far from a word's timed edge a measured pause may lie and still
+/// be the one beside it: whisper's times are off by about this much.
+const PAUSE_REACH: f64 = 0.25;
+
 /// Check `seq` against its brief and the craft's rules.
 pub fn check(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts) -> Report {
     let mut f: Vec<Finding> = Vec::new();
@@ -949,10 +953,12 @@ pub fn check(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts) ->
             // not one word whisper was unsure of (#457).
             speech_spans.extend(spoken_spans(c, words.as_deref(), seq.fps.as_f64()).unwrap_or_default());
             const INTO: f64 = 0.06;
-            let silences = silence_cache.entry(media_id).or_insert_with(|| transcripts.silences(item));
+            let pauses = silence_cache.entry(media_id).or_insert_with(|| transcripts.pauses(item));
             for (edge, at, name) in [(s_in, secs(c.timeline_in), "starts"), (s_out, secs(c.timeline_out), "ends")] {
-                // In measured silence the cut is clean, whatever the words' times say.
-                if silences.iter().any(|(a, b)| edge >= *a - 0.01 && edge <= *b + 0.01) {
+                // In a measured pause the cut is clean, whatever the words'
+                // times say: they are a model's estimate, and whisper's run
+                // on through the breath between two sentences.
+                if pauses.iter().any(|(a, b)| edge >= *a - 0.01 && edge <= *b + 0.01) {
                     continue;
                 }
                 // A word is no longer than the file: a last word timed past
@@ -960,7 +966,14 @@ pub fn check(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts) ->
                 let file_end = Some(secs(item.duration)).filter(|d| *d > 0.0).unwrap_or(f64::INFINITY);
                 if let Some(w) = inside.iter().find(|w| w.start_secs + INTO < edge && w.end_secs.min(file_end) - INTO > edge) {
                     let to = if name == "starts" { w.start_secs } else { w.end_secs.min(file_end) };
-                    add(Severity::Warning, "word_cut", Some(at), format!("the sound {name} inside the word {}", quoted(w.text.trim())), &format!("Trim that edge to {to:.2} s of the file, the word's own edge, plus a beat"));
+                    // The pause next to the word where there is one: the
+                    // word's own edge, as timed, can sit past it.
+                    let beside = pauses.iter().find(|(a, b)| if name == "starts" { *b >= w.start_secs - PAUSE_REACH && *a <= w.start_secs + PAUSE_REACH && *b <= edge } else { *a <= w.end_secs + PAUSE_REACH && *b >= w.end_secs - PAUSE_REACH && *a >= edge });
+                    let advice = match beside {
+                        Some((a, b)) => format!("Trim that edge to {:.2} s of the file, in the pause {} the word", (a + b) / 2.0, if name == "starts" { "before" } else { "after" }),
+                        None => format!("Trim that edge to {to:.2} s of the file, the word's own edge, plus a beat"),
+                    };
+                    add(Severity::Warning, "word_cut", Some(at), format!("the sound {name} inside the word {}", quoted(w.text.trim())), &advice);
                 }
             }
         }
@@ -1115,6 +1128,23 @@ mod tests {
         }
         fn shot_changes(&self, item: &klipp_media::MediaItem) -> Vec<f64> {
             if item.id == self.0 { vec![12.0] } else { Vec::new() }
+        }
+    }
+
+    /// Spoken's words as whisper times fluent speech: each running on
+    /// to the next, over the breath between them, measured as a pause
+    /// too short for a silence. `self.1`: whether the pauses were measured.
+    struct Breathing(klipp_core::MediaId, bool);
+
+    impl Transcripts for Breathing {
+        fn words(&self, item: &klipp_media::MediaItem) -> Option<Vec<SpokenWord>> {
+            if item.id != self.0 {
+                return Some(Vec::new());
+            }
+            Some("one two three four five six seven eight nine ten".split(' ').enumerate().map(|(k, w)| SpokenWord { start_secs: k as f64, end_secs: k as f64 + 1.05, text: w.into(), confidence: 1.0 }).collect())
+        }
+        fn pauses(&self, item: &klipp_media::MediaItem) -> Vec<(f64, f64)> {
+            if item.id == self.0 && self.1 { (0..10).map(|k| (k as f64 + 0.75, k as f64 + 0.95)).collect() } else { Vec::new() }
         }
     }
 
@@ -1876,6 +1906,29 @@ mod tests {
         assert!(rules(&r).contains(&"ends_apart"), "a fade to half is still picture: {}", r.text());
         let r = check(&fade(0.0), &pool, &Spoken(talk));
         assert!(!rules(&r).contains(&"ends_apart"), "the last shot fades out: {}", r.text());
+    }
+
+    /// A cut in a measured pause is clean though the words as timed run
+    /// over it, and a cut inside a word is sent to the pause beside it,
+    /// not past it to the word's own timed edge: a cut at 3.50 s, in a
+    /// 3.376-3.605 s breath, was told it ended inside "sunrise." and to
+    /// trim to 3.61 s plus a beat.
+    #[test]
+    fn a_cut_in_a_measured_pause_is_not_inside_a_word() {
+        let (mut seq, pool, talk, _) = piece();
+        let end_first = |seq: &mut Sequence, out: f64| for t in seq.tracks.iter_mut() {
+            let c = &mut t.clips[0];
+            (c.timeline_out, c.source_out) = (tc(out), tc(out));
+        };
+        end_first(&mut seq, 3.85);
+        let r = check(&seq, &pool, &Breathing(talk, true));
+        assert!(!rules(&r).contains(&"word_cut"), "in the pause: {}", r.text());
+        let r = check(&seq, &pool, &Breathing(talk, false));
+        assert!(rules(&r).contains(&"word_cut"), "no pause measured, the words' times stand: {}", r.text());
+        end_first(&mut seq, 3.5);
+        let r = check(&seq, &pool, &Breathing(talk, true));
+        let word = r.findings.iter().find(|f| f.rule == "word_cut").unwrap_or_else(|| panic!("inside \"four\": {}", r.text()));
+        assert!(word.hint.contains("3.85 s") && word.hint.contains("in the pause after the word"), "{word:?}");
     }
 
     /// #2493: a clip that plays to the end of its file does not cut its
