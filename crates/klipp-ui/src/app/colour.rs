@@ -1020,6 +1020,11 @@ impl KlippApp {
             }
             AppCommand::DisconnectEdge { clip_id, to, to_port } => {
                 let (to_node, to_port) = (*to, *to_port);
+                // Read first, so a refusal leaves no step behind.
+                if let Some(why) = self.state.wire_take_refusal(*clip_id, to_node, to_port) {
+                    self.state.toast.show(why);
+                    return true;
+                }
                 self.with_current_clip_graph_mut(*clip_id, needs_refresh, |graph| {
                     graph.edges.retain(|e| !(e.to_node == to_node && e.to_port == to_port));
                 });
