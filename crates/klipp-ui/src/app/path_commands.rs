@@ -217,10 +217,20 @@ impl crate::state::AppState {
             GradeStructure::Add { kind, id, position } => {
                 let body = self.level_body(&level)?;
                 let node = crate::inspector::grade_view::new_grade_node(kind, id);
-                let mut ops = vec![GraphOp::AddNodeBeside { at: at(body.output), node: Box::new(node.clone()) }];
-                for e in klipp_graph_lift::structure::inputs_of_unwired(&body, &node) {
-                    ops.push(GraphOp::Connect { from: at(e.from.0), from_port: e.from.1, to: at(id), to_port: e.to.1 });
-                }
+                // A Colour Match goes into the chain, after what feeds the
+                // level's output, as a duplicate does: beside it, unwired,
+                // its match was made and nothing showed it.
+                let feeding = body.edges.iter().find(|e| e.to.0 == body.output).map(|e| e.from.0);
+                let mut ops = match feeding.filter(|_| kind == klipp_nodes::NodeKind::ColorMatch) {
+                    Some(end) => vec![GraphOp::AddNode { after: at(end), node: Box::new(node.clone()) }],
+                    None => {
+                        let mut ops = vec![GraphOp::AddNodeBeside { at: at(body.output), node: Box::new(node.clone()) }];
+                        for e in klipp_graph_lift::structure::inputs_of_unwired(&body, &node) {
+                            ops.push(GraphOp::Connect { from: at(e.from.0), from_port: e.from.1, to: at(id), to_port: e.to.1 });
+                        }
+                        ops
+                    }
+                };
                 let place = serde_json::to_value(klipp_nodes::NodePos { x: position.0, y: position.1 }).map_err(|e| e.to_string())?;
                 ops.push(GraphOp::SetNodeMeta { path: at(id), label: None, position: Some(place) });
                 (ops, "Add Node")
