@@ -1162,6 +1162,9 @@ pub enum ControlCommand {
         dry_run: bool,
         #[serde(default)]
         verify: Option<String>,
+        /// Collect what is there though media the project uses is offline.
+        #[serde(default)]
+        allow_offline: bool,
     },
 
     // ── Delivery ──────────────────────────────────────────────────

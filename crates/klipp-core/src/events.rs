@@ -5623,6 +5623,9 @@ mod codec_hint_tests {
 /// them.
 #[derive(Default)]
 pub struct ControlShared {
+    /// A Collect Project is running, from its request to the end of its
+    /// copy (and archive), whatever the UI has drawn since.
+    pub collecting: std::sync::atomic::AtomicBool,
     /// Last interchange import outcome, with its request id and report/error.
     pub import_outcome: std::sync::Mutex<Option<serde_json::Value>>,
     /// The last surface click's outcome (#2754): its request id, and the

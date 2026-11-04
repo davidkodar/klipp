@@ -455,11 +455,11 @@ pub(crate) fn respond(
             Ok(out)
         }
 
-        ControlCommand::CollectProject { dest, mode, handle_secs, proxies, dry_run, verify } => {
+        ControlCommand::CollectProject { dest, mode, handle_secs, proxies, dry_run, verify, allow_offline } => {
             if in_batch {
                 return read_in_batch("collect_project");
             }
-            collect_project(ctx, dest, mode, handle_secs, proxies, dry_run, verify)
+            collect_project(ctx, dest, mode, handle_secs, proxies, dry_run, verify, allow_offline)
         }
 
         ControlCommand::Check { color, loudness, min_severity } => {
@@ -1503,7 +1503,7 @@ fn describe_plugin(id: &str) -> Option<klipp_project::collect_report::Described>
 }
 
 #[allow(clippy::too_many_arguments)]
-fn collect_project(ctx: &crate::ControlContext, dest: Option<String>, mode: Option<String>, handle_secs: Option<f64>, proxies: bool, dry_run: bool, verify: Option<String>) -> Result<serde_json::Value, String> {
+fn collect_project(ctx: &crate::ControlContext, dest: Option<String>, mode: Option<String>, handle_secs: Option<f64>, proxies: bool, dry_run: bool, verify: Option<String>, allow_offline: bool) -> Result<serde_json::Value, String> {
     use klipp_project::{collect_verify, consolidate};
     let absolute = |p: &str, what: &str| {
         let p = std::path::PathBuf::from(p);
@@ -1561,7 +1561,28 @@ fn collect_project(ctx: &crate::ControlContext, dest: Option<String>, mode: Opti
     if std::fs::symlink_metadata(&dest).is_ok() {
         return Err(format!("{} exists already: give a folder that doesn't", dest.display()));
     }
-    send_envelope(ctx, vec![AppCommand::ConsolidateProject { dest_dir: dest.clone(), include_proxies: proxies, include_skims: false, create_zip: false, delete_folder_after_zip: false, mode: core_mode }], false)?;
+    if !allow_offline {
+        let seq = (*ctx.sequence.snapshot()).clone();
+        let mut sequences = vec![seq];
+        sequences.extend(others_of(ctx));
+        let pool = ctx.media_pool.read().recovered().clone();
+        let offline: Vec<String> = klipp_project::collect_report::report(&sequences, &pool, &[], &describe_plugin)
+            .into_iter()
+            .filter(|d| d.need == klipp_project::collect_report::Need::OfflineMedia)
+            .map(|d| format!("{} ({})", d.detail, d.used_in.join(", ")))
+            .collect();
+        if !offline.is_empty() {
+            return Err(format!("nothing collected: media the project uses is offline: {}. Relink it, or send allow_offline: true to collect the rest", offline.join("; ")));
+        }
+    }
+    // The app would refuse one while another runs, after this had answered.
+    if ctx.shared.collecting.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return Err("nothing collected: a Collect Project is still running; try again when it has finished".into());
+    }
+    if let Err(why) = send_envelope(ctx, vec![AppCommand::ConsolidateProject { dest_dir: dest.clone(), include_proxies: proxies, include_skims: false, create_zip: false, delete_folder_after_zip: false, mode: core_mode }], false) {
+        ctx.shared.collecting.store(false, std::sync::atomic::Ordering::SeqCst);
+        return Err(why);
+    }
     Ok(json!({
         "started": true,
         "dest": dest,

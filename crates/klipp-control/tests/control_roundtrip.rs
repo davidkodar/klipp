@@ -5357,12 +5357,24 @@ fn a_project_is_collected_dry_run_first_and_verified_after() {
     assert_eq!(dry["offline"].as_array().map(Vec::len), Some(1), "{dry}");
 
     let dest = base.join("collected");
-    h.ok(json!({ "method": "collect_project", "dest": dest, "mode": "trimmed", "handle_secs": 2.0 }));
+    // Media the project uses is offline: refused, naming it, until asked for.
+    let refused = h.call(json!({ "method": "collect_project", "dest": dest }));
+    let error = refused["error"].as_str().unwrap_or_else(|| panic!("{refused}"));
+    assert!(error.contains("offline") && error.contains("clip Interview") && error.contains("allow_offline"), "{error}");
+    assert!(!h.sent.lock().unwrap().iter().any(|c| matches!(c, klipp_core::AppCommand::ConsolidateProject { .. })), "nothing was asked for");
+    h.ok(json!({ "method": "collect_project", "dest": dest, "mode": "trimmed", "handle_secs": 2.0, "allow_offline": true }));
+    // While it runs another is refused, saying why, not answered as started.
+    let second = h.call(json!({ "method": "collect_project", "dest": base.join("second"), "allow_offline": true }));
+    assert!(second["error"].as_str().unwrap_or("").contains("still running"), "{second}");
+    assert_eq!(h.sent.lock().unwrap().iter().filter(|c| matches!(c, klipp_core::AppCommand::ConsolidateProject { .. })).count(), 1);
+    h.shared.collecting.store(false, std::sync::atomic::Ordering::SeqCst);
+    h.ok(json!({ "method": "collect_project", "dest": base.join("third"), "allow_offline": true }));
+    h.shared.collecting.store(false, std::sync::atomic::Ordering::SeqCst);
     let asked: Vec<_> = h.sent.lock().unwrap().iter().filter_map(|c| match c {
         klipp_core::AppCommand::ConsolidateProject { dest_dir, mode, .. } => Some((dest_dir.clone(), *mode)),
         _ => None,
     }).collect();
-    assert_eq!(asked, vec![(dest.clone(), klipp_core::CollectMode::Trimmed { handle_secs: 2.0 })]);
+    assert_eq!(asked[0], (dest.clone(), klipp_core::CollectMode::Trimmed { handle_secs: 2.0 }));
     for (req, says) in [
         (json!({ "method": "collect_project", "dest": "relative/x" }), "absolute"),
         (json!({ "method": "collect_project", "dest": base }), "exists already"),
@@ -5373,7 +5385,7 @@ fn a_project_is_collected_dry_run_first_and_verified_after() {
         let r = h.call(req.clone());
         assert!(r["error"].as_str().unwrap_or("").contains(says), "{req}: {r}");
     }
-    assert_eq!(h.sent.lock().unwrap().iter().filter(|c| matches!(c, klipp_core::AppCommand::ConsolidateProject { .. })).count(), 1, "nothing asked for a refusal");
+    assert_eq!(h.sent.lock().unwrap().iter().filter(|c| matches!(c, klipp_core::AppCommand::ConsolidateProject { .. })).count(), 2, "nothing asked for a refusal");
 
     // A folder a collect made, checked; then a file in it changed.
     let (source, folder) = (base.join("source.klipp"), base.join("handed_on"));

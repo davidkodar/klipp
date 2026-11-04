@@ -1379,7 +1379,7 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
         "klipp_pace" => json!({ "method": "pace" }),
         "klipp_collect_project" => {
             let mut v = json!({ "method": "collect_project" });
-            for key in ["dest", "mode", "handle_secs", "proxies", "dry_run", "verify"] {
+            for key in ["dest", "mode", "handle_secs", "proxies", "dry_run", "verify", "allow_offline"] {
                 if let Some(x) = args.get(key) {
                     v[key] = x.clone();
                 }
@@ -2688,7 +2688,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              json!({ "apply": { "type": "boolean" }, "detail": { "type": "boolean" } }), vec![]),
         tool("klipp_collect_project",
              "Collect Project: dry_run says what it copies and can't carry; dest collects; verify checks a collected folder. Details: klipp_guide topic collect_project.",
-             json!({ "dest": { "type": "string" }, "mode": { "type": "string", "enum": ["all", "used", "trimmed"] }, "handle_secs": { "type": "number" }, "proxies": { "type": "boolean" }, "dry_run": { "type": "boolean" }, "verify": { "type": "string" } }), vec![]),
+             json!({ "dest": { "type": "string" }, "mode": { "type": "string", "enum": ["all", "used", "trimmed"] }, "handle_secs": { "type": "number" }, "proxies": { "type": "boolean" }, "dry_run": { "type": "boolean" }, "verify": { "type": "string" }, "allow_offline": { "type": "boolean" } }), vec![]),
         tool("klipp_reuse_report",
              "Where the timeline uses the same footage twice, or two files that look the same. Details: klipp_guide topic reuse_report.",
              json!({}), vec![]),
