@@ -521,6 +521,9 @@ fn load_project_as(dir: &Path, form: crate::FileForm, strict: bool) -> Result<Lo
         // The file's own fingerprint where it is there, else as stored, for
         // a relink to tell the same content (#2790).
         let fingerprint = if kind != MediaItemKind::File { None } else if offline { item_json.fingerprint } else { klipp_media::relink::fingerprint(&path) };
+        // The file changed while the project was closed: the proxy shows
+        // what it held.
+        let proxy_of_other_content = item_json.fingerprint.is_some() && !offline && fingerprint != item_json.fingerprint;
         if listed {
             warn!("Media file is a playlist or a list of other files, not media; marking offline: {:?}", path);
         } else if let Some(why) = &refused {
@@ -547,10 +550,10 @@ fn load_project_as(dir: &Path, form: crate::FileForm, strict: bool) -> Result<Lo
             audio_channels: item_json.audio_channels,
             offline,
             is_still: item_json.is_still,
-            proxy_path: item_json.proxy_path.as_ref().map(|p| {
+            proxy_path: item_json.proxy_path.as_ref().filter(|_| !proxy_of_other_content).map(|p| {
                 resolve_media_path(dir, Path::new(p))
             }),
-            proxy_ready: item_json.proxy_ready,
+            proxy_ready: item_json.proxy_ready && !proxy_of_other_content,
             default_source_in: item_json.default_source_in.as_ref().map(|tc| RationalTime { value: tc.value, rate: tc.rate }),
             default_source_out: item_json.default_source_out.as_ref().map(|tc| RationalTime { value: tc.value, rate: tc.rate }),
             rating: item_json.rating,

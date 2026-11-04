@@ -1816,18 +1816,12 @@ impl KlippApp {
         item.path = new_path.to_path_buf();
         item.offline = !new_path.exists() || refused.is_some();
         if changed {
-            // The old proxy goes when it is the one Klipp made; a path
-            // stored as anything else is forgotten, the file left alone.
-            if let Some(proxy) = item.proxy_path.take().and_then(|p| super::proxies::own_proxy(&p, &cache_dir, media_id)) {
-                let _ = std::fs::remove_file(&proxy);
-                let _ = std::fs::remove_file(partial_proxy_path(&proxy));
-            }
-            item.proxy_ready = false;
+            let was = item.fingerprint;
+            item.fingerprint = compute_media_fingerprint(new_path);
+            let_go_of_proxy_of_other_content(item, was, &cache_dir);
             item.skim_file = None;
             item.waveform_data = None;
             item.audio_cache = None;
-            let was = item.fingerprint;
-            item.fingerprint = compute_media_fingerprint(new_path);
             // The same content as the file analysed: its analysis comes
             // with it rather than running again (#2790).
             if let (Some(old_key), true) = (item.cache_key.as_deref(), was.is_some() && was == item.fingerprint) {
@@ -2042,6 +2036,22 @@ pub(super) fn media_usage_count(media_id: MediaId, sequences: &[Sequence]) -> us
         .flat_map(klipp_timeline::Clip::with_takes)
         .filter(|c| c.media_id() == Some(media_id))
         .count()
+}
+
+/// A relinked item's proxy, by whether the file holds the content it had
+/// (`was`, its fingerprint then): the same content keeps its proxy, moved
+/// or renamed. Otherwise the proxy goes, its file with it when it is the one
+/// Klipp made; a path stored as anything else is forgotten, the file left
+/// alone.
+fn let_go_of_proxy_of_other_content(item: &mut klipp_media::MediaItem, was: Option<u64>, cache_dir: &Path) {
+    if was.is_some() && was == item.fingerprint {
+        return;
+    }
+    if let Some(proxy) = item.proxy_path.take().and_then(|p| super::proxies::own_proxy(&p, cache_dir, item.id)) {
+        let _ = std::fs::remove_file(&proxy);
+        let _ = std::fs::remove_file(partial_proxy_path(&proxy));
+    }
+    item.proxy_ready = false;
 }
 
 /// Compute a content fingerprint: FNV-1a hash of first 64KB + file_size.
@@ -2416,5 +2426,40 @@ mod import_check_tests {
         assert!(super::import_check(&clip, None).is_ok(), "a clip");
         assert!(super::import_check(&hidden, None).is_err(), "a hidden folder's");
         let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
+#[cfg(test)]
+mod relinked_proxy_tests {
+    use super::let_go_of_proxy_of_other_content;
+
+    /// A proxy file for an item, ready, in a proxy folder of its own.
+    fn item_with_proxy(name: &str) -> (klipp_media::MediaItem, std::path::PathBuf, std::path::PathBuf) {
+        let cache = std::env::temp_dir().join(format!("klipp-relink-proxy-{name}-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&cache).unwrap();
+        let mut item = klipp_media::MediaItem::synthetic_for_test("/media/moved/a.mp4".into(), None);
+        let proxy = cache.join(format!("{}.mp4", item.id));
+        std::fs::write(&proxy, b"proxy").unwrap();
+        (item.proxy_path, item.proxy_ready) = (Some(proxy.clone()), true);
+        (item, proxy, cache)
+    }
+
+    /// Moved or renamed, the content is what the proxy shows: it stays,
+    /// its file too. Other content, or none known, and it goes.
+    #[test]
+    fn a_relink_to_the_same_content_keeps_the_proxy() {
+        let (mut item, proxy, cache) = item_with_proxy("same");
+        item.fingerprint = Some(7);
+        let_go_of_proxy_of_other_content(&mut item, Some(7), &cache);
+        assert!(item.proxy_ready && item.proxy_path.as_deref() == Some(proxy.as_path()) && proxy.exists());
+        std::fs::remove_dir_all(cache).unwrap();
+
+        for (was, now) in [(Some(7), Some(8)), (None, Some(8)), (Some(7), None), (None, None)] {
+            let (mut item, proxy, cache) = item_with_proxy("other");
+            item.fingerprint = now;
+            let_go_of_proxy_of_other_content(&mut item, was, &cache);
+            assert!(!item.proxy_ready && item.proxy_path.is_none() && !proxy.exists(), "{was:?} {now:?}");
+            std::fs::remove_dir_all(cache).unwrap();
+        }
     }
 }
