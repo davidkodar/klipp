@@ -675,7 +675,8 @@ fn grey_mode(mids: &[(f32, f32, f32)]) -> (f32, f32) {
 /// they are, not filtered by hue: a face with the wrong colour is the
 /// thing we are looking for, and a hue gate would throw it away and
 /// report no face. Each is
-/// laid out as an 8×8 grid of patches and the patches that hold skin
+/// laid out as a grid of patches (8×8 for a face that fills the frame,
+/// down to 3×3 for a small one) and the patches that hold skin
 /// decide. The whole frame is read sub-sampled to about a quarter of a
 /// million pixels, so a 4K frame costs a few milliseconds.
 ///
@@ -1977,17 +1978,24 @@ pub fn judge(m: &FrameMeasure, t: &LookTarget) -> Vec<Finding> {
         let (hue, off) = (f.hue, f.hue_off_band);
         let with_cast = if scene_cast { format!(" (the scene carries a {:.0} cast; without it the skin would read {:.0}°)", m.cast(), f.hue_wb) } else { String::new() };
         // Off the band is what matters; inside it, the distance to the
-        // look's own skin hue is advisory.
+        // look's own skin hue is advisory. The finding's target is the
+        // band, its nearest edge (or the reading, on it), and the
+        // tolerance the 4° the verdict allows past it: with the look's aim
+        // as the target, a 24.6° face passed against "45, give or take 4".
+        let edge = if off <= 0.0 { hue } else if hue_diff(SKIN_HUE_LOW, hue).abs() <= hue_diff(SKIN_HUE_HIGH, hue).abs() { SKIN_HUE_LOW } else { SKIN_HUE_HIGH };
+        let aim = if (hue - skin_target).abs() > 4.0 { format!("; the look aims at {skin_target:.0}°") } else { String::new() };
         let (verdict, what) = if f.mixed_light {
             (Verdict::Warn, format!("{who} is lit by two colours of light (hue spread {:.0}°): median hue {:.0}°", f.hue_iqr, f.hue))
         } else if off > 10.0 {
             (Verdict::Fail, format!("{who}: skin hue {hue:.0}°, {off:.0}° outside the skin band ({SKIN_HUE_LOW:.0}–{SKIN_HUE_HIGH:.0}°){with_cast}"))
         } else if off > 4.0 {
             (Verdict::Warn, format!("{who}: skin hue {hue:.0}°, {off:.0}° outside the skin band{with_cast}"))
+        } else if off > 0.0 {
+            (Verdict::Pass, format!("{who}: skin hue {hue:.1}°, {off:.1}° past the band's {edge:.0}° edge, within the 4° allowed (chroma {:.0}, L* {:.0}, {} patches){aim}{with_cast}", f.chroma, f.median.l, f.patches))
         } else {
-            (Verdict::Pass, format!("{who}: skin hue {hue:.0}° on the band (chroma {:.0}, L* {:.0}, {} patches){with_cast}", f.chroma, f.median.l, f.patches))
+            (Verdict::Pass, format!("{who}: skin hue {hue:.0}° on the band ({SKIN_HUE_LOW:.0}–{SKIN_HUE_HIGH:.0}°; chroma {:.0}, L* {:.0}, {} patches){aim}{with_cast}", f.chroma, f.median.l, f.patches))
         };
-        out.push(Finding { rule: "skin_hue", verdict, reading: hue, target: skin_target, tolerance: 4.0, what, fix: if scene_cast { "put the white balance right first (temperature and tint, or grade_to_target); skin_balance for what is left" } else { "skin_balance" } });
+        out.push(Finding { rule: "skin_hue", verdict, reading: hue, target: edge, tolerance: 4.0, what, fix: if scene_cast { "put the white balance right first (temperature and tint, or grade_to_target); skin_balance for what is left" } else { "skin_balance" } });
         let chroma_verdict = if f.chroma < SKIN_CHROMA_LOW - 4.0 || f.chroma > SKIN_CHROMA_HIGH + 6.0 { Verdict::Fail } else if f.chroma < SKIN_CHROMA_LOW || f.chroma > SKIN_CHROMA_HIGH { Verdict::Warn } else { Verdict::Pass };
         if chroma_verdict != Verdict::Pass {
             out.push(Finding { rule: "skin_chroma", verdict: chroma_verdict, reading: f.chroma, target: (SKIN_CHROMA_LOW + SKIN_CHROMA_HIGH) / 2.0, tolerance: 0.0, what: format!("{who}: skin chroma {:.0} ({} the {SKIN_CHROMA_LOW:.0}–{SKIN_CHROMA_HIGH:.0} band)", f.chroma, if f.chroma < SKIN_CHROMA_LOW { "under" } else { "over" }), fix: if f.chroma < SKIN_CHROMA_LOW { "vibrance up, or a skin secondary with chroma up" } else { "saturation down, or a skin secondary with chroma down" } });
@@ -2531,6 +2539,33 @@ mod tests {
         assert!(!m3.neutral_solid, "no true neutral here");
         assert!(judge(&m3, &LookTarget::preset("broadcast_neutral").unwrap()).iter().all(|f| f.rule != "cast" || f.verdict != Verdict::Fail));
         assert_eq!(primaries_toward(&m3, &LookTarget::preset("broadcast_neutral").unwrap()).temperature, 0.0);
+    }
+
+    /// A face's skin finding agrees with itself: its target is the band
+    /// (the nearest edge, or the reading on it) and its tolerance the 4°
+    /// allowed past it, so a 24.6° face passes against 25 ± 4, says it is
+    /// past the edge, and names the look's aim beside it. It passed against
+    /// a target of 45 ± 4 and called itself "on the band".
+    #[test]
+    fn a_face_by_the_band_edge_is_judged_against_the_band() {
+        let (w, h) = (200, 120);
+        let face = [0.4f32, 0.4, 0.2, 0.2];
+        let face_at = |c: [u8; 3]| {
+            let frame = frame_of(w, h, |x, y| {
+                let (fx, fy) = (x as f32 / w as f32, y as f32 / h as f32);
+                if fx >= face[0] && fx < face[0] + face[2] && fy >= face[1] && fy < face[1] + face[3] { c } else { [120, 120, 120] }
+            });
+            let m = measure_frame(&frame, w as u32, h as u32, &[face]);
+            let f = judge(&m, &LookTarget::preset("broadcast_neutral").unwrap()).into_iter().find(|x| x.rule == "skin_hue").expect("a skin finding");
+            (m.faces[0].hue, f)
+        };
+        // L* 55, chroma 18 at 24.6° and at 45°.
+        let (low, f) = face_at(lab_to_srgb8(Lab { l: 55.0, a: 16.4, b: 7.5 }));
+        assert!((low - 24.6).abs() < 1.0, "the face reads {low:.1}°");
+        assert_eq!((f.verdict, f.target, f.tolerance), (Verdict::Pass, SKIN_HUE_LOW, 4.0), "{f:?}");
+        assert!(f.what.contains("past the band's 25° edge") && f.what.contains("aims at 45"), "{}", f.what);
+        let (mid, f) = face_at(lab_to_srgb8(Lab { l: 55.0, a: 12.7, b: 12.7 }));
+        assert!((f.target - mid).abs() < 1e-3 && f.what.contains("on the band"), "{mid:.1}° {f:?}");
     }
 
     /// A face with a magenta cast is read and reported off the band,
