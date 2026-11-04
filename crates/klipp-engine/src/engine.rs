@@ -3631,6 +3631,7 @@ impl PlaybackEngine {
                 // A skim is over once the playhead moves or plays (#2945).
                 self.end_skim();
                 debug!("Play command received, state={:?}", self.state);
+                self.play_again_from_the_start();
                 // Before playback can reach a gap (#2386).
                 self.prewarm_empty_stack();
                 // Heard at the export's loudness: measured now if the
@@ -7821,6 +7822,21 @@ impl PlaybackEngine {
         let _ = self.event_tx.send(AppEvent::PlayheadMoved(at));
     }
 
+    /// Play pressed at the timeline's end, stopped there: from the start
+    /// again, the playhead with it. There is nothing to play where it is:
+    /// the first clip played while the playhead stayed at the end. Not for
+    /// J, which plays back from there.
+    fn play_again_from_the_start(&mut self) {
+        let end = self.sequence_duration();
+        if self.state == PlaybackState::Playing || self.shuttle_speed < 0.0 || end.value <= 0 || self.playhead < end {
+            return;
+        }
+        let start = RationalTime::from_frames(0, self.fps.rate());
+        self.playhead = start;
+        self.report_jump(start);
+        self.seek_in_sequence(start);
+    }
+
     fn stop_at_end(&mut self) {
         self.clear_preroll();
         info!("stop_at_end called — loop_enabled={}, playhead={:.3}s",
@@ -7844,8 +7860,22 @@ impl PlaybackEngine {
         // gone unreported, and the clock may have run past the end.
         self.playhead = self.playhead.min(self.sequence_duration());
         self.report_playhead();
+        // A stop ends what reports follow on from (#1806): left set, the
+        // next play's reports all read this end.
+        self.report_floor.set(None);
         self.state = PlaybackState::Paused;
         let _ = self.event_tx.send(AppEvent::PlaybackPaused);
+        // The clock ran out before the last frame came, after a seek to it
+        // while playing, and what is up is the black past the end: the last
+        // frame in its place.
+        let end = self.sequence_duration();
+        let past_the_end = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner()).shown_presented().is_some_and(|at| at >= end);
+        if past_the_end && end.value > 0 {
+            let last = RationalTime::from_secs_f64((end.to_secs_f64() - self.fps.frame_duration_secs()).max(0.0), self.fps.rate());
+            self.playhead = last;
+            self.report_jump(last);
+            self.seek_in_sequence(last);
+        }
         (self.repaint_cb)();
     }
 
@@ -15761,6 +15791,48 @@ mod track_switch_tests {
         engine.handle_command(AppCommand::BeginScrub);
         engine.scrub_audio_enabled = false;
         assert!(engine.sound_muted(), "a scrub with its sound off");
+    }
+
+    /// Stopped at the end, Play starts over with the playhead at the start,
+    /// not the first clip's picture under a playhead left at the end. Short
+    /// of the end, and for J, the playhead stays. The stop leaves no floor
+    /// for the next play's reports (#1806).
+    #[test]
+    fn play_at_the_end_starts_over_with_the_playhead() {
+        let mut seq = klipp_timeline::Sequence::new_default();
+        let rate = seq.fps.rate();
+        let at = |s: f64| RationalTime::from_secs_f64(s, rate);
+        let mut track = klipp_timeline::Track::new("V1", klipp_timeline::TrackKind::Video);
+        track.clips = vec![klipp_timeline::Clip::media(MediaId::new(), at(0.0), at(5.0), at(0.0), at(5.0))];
+        seq.tracks = vec![track];
+        let (mut engine, _seq) = engine(seq);
+        engine.state = PlaybackState::Playing;
+        engine.playhead = at(5.0);
+        engine.report_playhead();
+        assert!(engine.report_floor.get().is_some(), "reports follow on while playing");
+        engine.stop_at_end();
+        assert_eq!(engine.state, PlaybackState::Paused);
+        assert!(engine.report_floor.get().is_none(), "a stop ends them");
+
+        // Stopped with the black past the end up: the last frame instead.
+        engine.frame_buffer.lock().unwrap().set_presented(at(5.1), true);
+        engine.state = PlaybackState::Playing;
+        engine.playhead = at(5.1);
+        engine.stop_at_end();
+        assert_eq!(engine.playhead, at(5.0 - engine.fps.frame_duration_secs()), "on the last frame");
+
+        engine.playhead = at(5.0);
+        engine.handle_command(AppCommand::SetSpeed(-1.0));
+        engine.play_again_from_the_start();
+        assert_eq!(engine.playhead, at(5.0), "J plays back from the end");
+        engine.handle_command(AppCommand::SetSpeed(1.0));
+        engine.playhead = at(4.9);
+        engine.play_again_from_the_start();
+        assert_eq!(engine.playhead, at(4.9), "short of the end");
+        engine.playhead = at(5.0);
+        engine.state = PlaybackState::Paused;
+        engine.play_again_from_the_start();
+        assert_eq!(engine.playhead.value, 0, "from the start");
     }
 
     /// Above 4x the sound is silent while it plays, not only until the next
