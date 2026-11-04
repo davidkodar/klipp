@@ -394,11 +394,16 @@ pub fn generate_srt(subs: &[SubtitleEntry]) -> String {
 }
 
 pub fn format_srt_time(secs: f64) -> String {
-    let h = (secs / 3600.0) as u32;
-    let m = ((secs % 3600.0) / 60.0) as u32;
-    let s = (secs % 60.0) as u32;
-    let ms = ((secs % 1.0) * 1000.0) as u32;
-    format!("{:02}:{:02}:{:02},{:03}", h, m, s, ms)
+    clock(secs, ',')
+}
+
+/// `HH:MM:SS` and the milliseconds after `mark`, from seconds rounded to
+/// the millisecond. Cut off, a time on a frame (12.04 s, 12.0399… as a
+/// float) was written a millisecond early, and a reader that floors to
+/// frames took it a frame early.
+fn clock(secs: f64, mark: char) -> String {
+    let ms = (secs.max(0.0) * 1000.0).round() as u64;
+    format!("{:02}:{:02}:{:02}{mark}{:03}", ms / 3_600_000, ms / 60_000 % 60, ms / 1000 % 60, ms % 1000)
 }
 
 /// Generate WebVTT format string from subtitle entries.
@@ -424,11 +429,7 @@ pub fn generate_vtt_in(subs: &[SubtitleEntry], language: Option<&str>) -> String
 }
 
 pub fn format_vtt_time(secs: f64) -> String {
-    let h = (secs / 3600.0) as u32;
-    let m = ((secs % 3600.0) / 60.0) as u32;
-    let s = (secs % 60.0) as u32;
-    let ms = ((secs % 1.0) * 1000.0) as u32;
-    format!("{:02}:{:02}:{:02}.{:03}", h, m, s, ms)
+    clock(secs, '.')
 }
 
 /// Generate ASS v4+ subtitle file from entries. Used for both .ass and
@@ -670,6 +671,17 @@ This is valid
         assert_eq!(format_srt_time(3661.0), "01:01:01,000");
     }
 
+    /// A time on a frame is written to the millisecond it is, not one
+    /// before: 12.04 s (frame 301 at 25 fps) is 12,040, and a time a
+    /// hair under a second carries into it.
+    #[test]
+    fn times_are_rounded_to_the_millisecond() {
+        assert_eq!(format_srt_time(12.04), "00:00:12,040");
+        assert_eq!(format_vtt_time(301.0 / 25.0), "00:00:12.040");
+        assert_eq!(format_srt_time(59.9996), "00:01:00,000");
+        assert_eq!(format_vtt_time(3599.9999), "01:00:00.000");
+    }
+
     // ── format_ass_time tests ──
 
     #[test]
@@ -879,9 +891,9 @@ mod same_bytes_tests {
     use super::*;
 
     /// #1516: moved out of the app, the writers write exactly what they
-    /// wrote there, byte for byte, quirks included (a time like 3725.04 s
-    /// floored to its millisecond below), and the readers read it back as
-    /// they did.
+    /// wrote there, byte for byte, but for one quirk let go: a time like
+    /// 3725.04 s is now its own millisecond, not floored to the one below;
+    /// and the readers read it back as they did.
     #[test]
     fn the_formats_are_the_bytes_the_app_wrote() {
         let subs = vec![
@@ -890,9 +902,9 @@ mod same_bytes_tests {
             SubtitleEntry { start_secs: 3725.04, end_secs: 3727.5, text: "Late, <i>tagged</i>".into(), ..Default::default() },
         ];
         let srt = generate_srt(&subs);
-        assert_eq!(srt, "1\n00:00:00,000 --> 00:00:01,500\nHello\n\n2\n00:01:01,250 --> 00:01:03,999\nTwo\nlines {with braces}\n\n3\n01:02:05,039 --> 01:02:07,500\nLate, <i>tagged</i>\n\n");
+        assert_eq!(srt, "1\n00:00:00,000 --> 00:00:01,500\nHello\n\n2\n00:01:01,250 --> 00:01:03,999\nTwo\nlines {with braces}\n\n3\n01:02:05,040 --> 01:02:07,500\nLate, <i>tagged</i>\n\n");
         let vtt = generate_vtt(&subs);
-        assert_eq!(vtt, "WEBVTT\n\n00:00:00.000 --> 00:00:01.500\nHello\n\n00:01:01.250 --> 00:01:03.999\nTwo\nlines {with braces}\n\n01:02:05.039 --> 01:02:07.500\nLate, <i>tagged</i>\n\n");
+        assert_eq!(vtt, "WEBVTT\n\n00:00:00.000 --> 00:00:01.500\nHello\n\n00:01:01.250 --> 00:01:03.999\nTwo\nlines {with braces}\n\n01:02:05.040 --> 01:02:07.500\nLate, <i>tagged</i>\n\n");
         let ass = generate_ass(&subs);
         assert_eq!(ass, "[Script Info]\nTitle: Klipp Subtitles\nScriptType: v4.00+\nWrapStyle: 0\nScaledBorderAndShadow: yes\nPlayResX: 1920\nPlayResY: 1080\n\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\nStyle: Default,Arial,48,&H00FFFFFF,&H000000FF,&H00000000,&H64000000,0,0,0,0,100,100,0,0,1,2,0,2,10,10,20,1\n\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\nDialogue: 0,0:00:00.00,0:00:01.50,Default,,0,0,0,,Hello\nDialogue: 0,0:01:01.25,0:01:04.00,Default,,0,0,0,,Two\\Nlines (with braces)\nDialogue: 0,1:02:05.04,1:02:07.50,Default,,0,0,0,,Late, <i>tagged</i>\n");
 
