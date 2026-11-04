@@ -531,6 +531,22 @@ impl SequenceSnapshot {
                 }
             }
         }
+        // Burnt into an export of another shape, the captions are laid out
+        // for the export's frame and drawn over the barred picture, not
+        // shrunk inside it: the picture leaves them out, and the
+        // frame maker draws the tracks that still hold clips
+        // ([`crate::export_frames::caption_frame`]). A track switched off
+        // has nothing for it to draw, and the brief names the platform
+        // whose player they keep clear of.
+        if crate::export_frames::caption_frame(settings, seq.resolution.width, seq.resolution.height).is_some() {
+            timeline.brief = seq.brief.clone();
+            for t in timeline.tracks.iter_mut().filter(|t| t.kind == TrackKind::Subtitle) {
+                if !t.visible || t.muted {
+                    t.clips.clear();
+                }
+                t.visible = false;
+            }
+        }
         let mut media = HashMap::new();
         // A precomposition's scene is rendered from its own clips, so
         // their media is the export's media too, however deep the scene.
