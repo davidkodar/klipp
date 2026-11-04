@@ -973,9 +973,11 @@ impl MagneticEditor {
         // and its retimed picture cut on a free track started their right
         // pieces at different file times.
         let ((left_in, left_out), (right_in, right_out)) = original.source_split(offset);
+        let (left_speed, right_speed) = original.split_speed_keys(offset.to_secs_f64());
         let mut left_clip = original.clone();
         left_clip.timeline_out = at_time;
         (left_clip.source_in, left_clip.source_out) = (left_in, left_out);
+        left_clip.speed_keyframes = left_speed;
         // The fades belong to the clip's own ends, not to the cut: the
         // left keeps its fade in and loses the fade out, or the join
         // would dip to nothing on a cut that should pass unheard. A fade
@@ -992,6 +994,7 @@ impl MagneticEditor {
         right_clip.id = ClipId::new();
         right_clip.timeline_in = at_time;
         (right_clip.source_in, right_clip.source_out) = (right_in, right_out);
+        right_clip.speed_keyframes = right_speed;
         right_clip.fade_in_secs = 0.0;
         right_clip.fade_out_secs = right_clip.fade_out_secs.min((original.timeline_out - at_time).to_secs_f64() as f32);
         right_clip.keep_angle_cuts_on_piece(at, whole);
@@ -2997,6 +3000,26 @@ mod tests {
         assert_eq!((right_clip.source_in, right_clip.source_out), (tc(24), tc(48)));
         let (a, b) = free.split_at(other, tc(12)).expect("cut inside");
         assert_eq!((a.source_out, b.source_in), (left_clip.source_out, right_clip.source_in), "the legacy blade agrees");
+    }
+
+    /// A ramp on the magnetic track is cut as on a free one: the right piece
+    /// goes on from the speed at the cut, as the legacy blade has it.
+    #[test]
+    fn a_magnetic_blade_splits_a_ramp_as_the_legacy_one_does() {
+        let mut seq = make_sequence(&[(0, 48)]);
+        let key = |t: f64, v: f32| klipp_core::Keyframe { time_secs: t, value: v, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() };
+        let clip = &mut seq.tracks[0].clips[0];
+        clip.speed_keyframes = vec![key(0.0, 0.5), key(2.0, 2.0)];
+        let id = clip.id;
+        let mut free = Track::new("Video 2", TrackKind::Video);
+        free.clips.push(seq.tracks[0].clips[0].clone());
+        let other = free.clips[0].id;
+        let result = MagneticEditor::blade(&mut seq, id, tc(24)).expect("cut inside");
+        let MagneticEditCommand::Blade { left_clip, right_clip, .. } = &result.command else { panic!("a blade") };
+        let (a, b) = free.split_at(other, tc(24)).expect("cut inside");
+        assert_eq!(right_clip.speed_keyframes.iter().map(|k| (k.time_secs, k.value)).collect::<Vec<_>>(), vec![(0.0, 1.25), (1.0, 2.0)]);
+        assert_eq!(serde_json::to_value(&right_clip.speed_keyframes).unwrap(), serde_json::to_value(&b.speed_keyframes).unwrap());
+        assert_eq!(serde_json::to_value(&left_clip.speed_keyframes).unwrap(), serde_json::to_value(&a.speed_keyframes).unwrap());
     }
 
     #[test]
