@@ -88,7 +88,7 @@ impl KlippApp {
         let (w, h) = (item.resolution.width, item.resolution.height);
         let shown = if item.source_rotation.rem_euclid(180) == 90 { [h, w] } else { [w, h] };
         let fps = self.state.sequence().fps.as_f64();
-        let elapsed = (at - clip.timeline_in.to_secs_f64()).clamp(0.0, (clip.timeline_out - clip.timeline_in).to_secs_f64());
+        let elapsed = (at - clip.timeline_in.to_secs_f64()).clamp(0.0, (clip.timeline_out - clip.timeline_in).to_secs_f64().max(0.0));
         let when = clip.timeline_in + klipp_core::Timecode::from_secs_f64(elapsed, clip.timeline_in.rate.max(1));
         Some((shown, klipp_compose::eval::evaluate_clip_own_transform(clip, elapsed, &klipp_compose::eval::eval_context(clip, when, fps))))
     }
@@ -115,7 +115,7 @@ impl KlippApp {
             self.state.toast.show("Click on the clip's picture to find a surface there");
             return;
         }
-        let elapsed = (at - clip.timeline_in.to_secs_f64()).clamp(0.0, (clip.timeline_out - clip.timeline_in).to_secs_f64());
+        let elapsed = (at - clip.timeline_in.to_secs_f64()).clamp(0.0, (clip.timeline_out - clip.timeline_in).to_secs_f64().max(0.0));
         let media_fps = item.fps.as_f64().max(1.0);
         // The start of the file frame shown, as the tracker counts frames.
         let source_secs = (clip.source_secs_at(elapsed, fps) * media_fps).round() / media_fps;
@@ -375,7 +375,7 @@ impl KlippApp {
         }
         let media_fps = item.fps.as_f64().max(1.0);
         let frame_count = (item.duration.to_secs_f64() * media_fps).round() as usize;
-        let clip_time = (at - clip.timeline_in.to_secs_f64()).clamp(0.0, (clip.timeline_out - clip.timeline_in).to_secs_f64());
+        let clip_time = (at - clip.timeline_in.to_secs_f64()).clamp(0.0, (clip.timeline_out - clip.timeline_in).to_secs_f64().max(0.0));
         let first = (clip.source_in.to_secs_f64() * media_fps).floor() as usize;
         let last = ((clip.source_out.to_secs_f64() * media_fps).ceil() as usize).min(frame_count.saturating_sub(1)).max(first);
         let k = ((clip.source_secs_at(clip_time, fps) * media_fps).round() as usize).clamp(first, last);
