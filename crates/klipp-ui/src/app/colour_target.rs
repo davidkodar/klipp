@@ -41,9 +41,17 @@ impl AppState {
     /// Whether the page should look again for the clip to grade: the
     /// playhead has moved since `last`, or nothing is selected any more, as
     /// after Escape (#3451), which would otherwise leave the page with no
-    /// clip until the next move. A selection of several is left alone.
+    /// clip until the next move, or the one selected is a picture away from
+    /// the playhead while one is there: a click on another clip made the
+    /// header say it was graded, the viewer still on the clip at the
+    /// playhead. The page grades that one and offers the pick with "Go to
+    /// it". A selection of several is left alone.
     pub(crate) fn grade_needs_following(&self, last: Option<Timecode>) -> bool {
-        last != Some(self.playhead) || (self.selected_clip.is_none() && self.selected_clips.is_empty())
+        let picked_away = self.selected_clip.is_some_and(|c| {
+            let here = self.picture_clips_at(self.playhead);
+            self.picture_clip(c).is_some() && !here.is_empty() && !here.contains(&c)
+        });
+        last != Some(self.playhead) || (self.selected_clip.is_none() && self.selected_clips.is_empty()) || picked_away
     }
 
     /// `clip` on a video track of the sequence, with that track's index.
