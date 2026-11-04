@@ -472,6 +472,43 @@ fn a_keyed_grade_exports_each_frame_as_the_renderer_draws_it() {
     assert!(means[1] > means[0] + 10.0, "the keys didn't move the exported picture: mean luma {means:?}");
 }
 
+/// A grade keyed to nothing at a frame exports that frame on the GPU path,
+/// as an unkeyed identity grade does: an untouched Corrector, then one
+/// whose exposure is keyed from 0 at 1 s, at 1 s (nothing to do there) and
+/// at 1.5 s (graded). At 1 s it came back on the CPU, and the export then
+/// left the GPU for the whole clip.
+#[test]
+fn a_grade_keyed_to_nothing_at_a_frame_exports_it_on_the_gpu() {
+    if !gpu_path_available() {
+        no_gpu("the GPU path refused (no usable GPU)");
+        return;
+    }
+    let mut c = media(0.0, 2.0);
+    let mut g = NodeGraph::default();
+    let first = g.ensure_corrector();
+    let second = Node { id: NodeId::new_v4(), kind: NodeKind::Corrector, label: "Bright".into(), enabled: true, params: NodeParams { exposure: Some(0.5), ..Default::default() }, keyframes: Default::default(), output_link: None, input_links: vec![] };
+    let sid = second.id;
+    let out = g.output_node_id;
+    g.edges.retain(|e| !(e.from_node == first && e.to_node == out));
+    g.edges.push(Edge { from_node: first, from_port: 0, to_node: sid, to_port: 0 });
+    g.edges.push(Edge { from_node: sid, from_port: 0, to_node: out, to_port: 0 });
+    g.nodes.push(second);
+    let keys = &mut g.nodes.iter_mut().find(|n| n.id == sid).unwrap().keyframes.track_mut("exposure").keyframes;
+    klipp_core::keyframe::upsert_keyframe(keys, 1.0, 0.0);
+    klipp_core::keyframe::upsert_keyframe(keys, 6.0, 1.0);
+    c.set_grade(g);
+    let seq = sequence(vec![vec![c.clone()]]);
+    for t in [1.0, 1.5] {
+        let mut src = Flat::default().with(&c, [46, 128, 230]).on_gpu();
+        let mut r = renderer();
+        let planes = r.render_yuv420_on_gpu(&seq, tc(t), W, H, &mut src, RenderOptions::default(), plain_target()).map(|(b, _)| b);
+        let planes = planes.unwrap_or_else(|| panic!("at {t} s: the GPU path refused: {:?}", r.last_decline()));
+        let want = cpu_luma(&seq, t, &mut src);
+        let worst = planes[..want.len()].iter().zip(want.iter()).map(|(g, w)| (*g as i32 - *w as i32).abs()).max().unwrap_or(0);
+        assert!(worst <= 1, "at {t} s: luma differs from the renderer by {worst} levels");
+    }
+}
+
 /// An *ungraded* clip takes the path as well, and gives the renderer's
 /// picture.
 ///

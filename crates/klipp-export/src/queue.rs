@@ -75,6 +75,28 @@ impl RenderJob {
         let written = std::fs::metadata(klipp_render::partial_path_for(&self.output_path)).ok()?.len();
         projected(written, self.progress)
     }
+
+    /// Frames rendered per second. While it renders: the frames so far
+    /// over the time since it started, once two seconds have gone. Once
+    /// it has finished: its frames over the time it took (its timings',
+    /// else start to finish), not over the time since it started, which
+    /// went on growing after the job ended and read a 408-frame job done
+    /// in 2.3 s as 2.3 fps minutes later.
+    pub fn render_fps(&self) -> Option<f32> {
+        if self.frames_done == 0 {
+            return None;
+        }
+        let secs = match self.status {
+            RenderJobStatus::Queued => return None,
+            RenderJobStatus::Rendering => self.started_at.map(|t| t.elapsed().as_secs_f64()).filter(|s| *s > 2.0)?,
+            RenderJobStatus::Complete | RenderJobStatus::Failed | RenderJobStatus::Cancelled => {
+                let timed = self.timings.as_ref().map(|t| t.wall_secs).filter(|s| *s > 0.0);
+                let spanned = || Some(self.completed_at?.checked_duration_since(self.started_at?)?.as_secs_f64()).filter(|s| *s > 0.0);
+                timed.or_else(spanned)?
+            }
+        };
+        Some((self.frames_done as f64 / secs) as f32)
+    }
 }
 
 /// `written` bytes at `progress` (0 to 1), carried to the end; nothing
@@ -615,6 +637,30 @@ mod tests {
             assert_eq!(q.writes_to(&path), taken, "{:?}", q.jobs[0].status);
         }
         assert!(!q.writes_to(std::path::Path::new("/tmp/other.mp4")));
+    }
+
+    /// A finished job's rate is its frames over the time it took, however
+    /// long ago it started: a 408-frame job that rendered in 2.27 s reads
+    /// about 180 fps, from its timings or else its start and finish, not
+    /// 408 over the 200 s since it started. A rendering one counts from
+    /// its start.
+    #[test]
+    fn a_finished_job_reports_the_rate_it_rendered_at() {
+        let now = std::time::Instant::now();
+        let started = now.checked_sub(std::time::Duration::from_secs(200)).expect("an instant 200 s ago");
+        let mut job = fake_job(RenderJobStatus::Complete);
+        (job.frames_done, job.started_at, job.completed_at) = (408, Some(started), Some(started + std::time::Duration::from_secs_f64(2.27)));
+        job.timings = Some(klipp_core::ExportTimings { wall_secs: 2.27, ..Default::default() });
+        let fps = job.render_fps().expect("a rate");
+        assert!((fps - 408.0 / 2.27).abs() < 0.5, "from its timings: {fps}");
+        job.timings = None;
+        let fps = job.render_fps().expect("a rate");
+        assert!((fps - 408.0 / 2.27).abs() < 0.5, "from its start and finish: {fps}");
+        job.status = RenderJobStatus::Rendering;
+        let fps = job.render_fps().expect("a rate");
+        assert!((fps - 408.0 / 200.0).abs() < 0.1, "while rendering, since it started: {fps}");
+        job.status = RenderJobStatus::Queued;
+        assert_eq!(job.render_fps(), None);
     }
 
     fn fake_job(status: RenderJobStatus) -> RenderJob {
