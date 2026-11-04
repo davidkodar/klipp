@@ -1059,17 +1059,11 @@ impl KlippApp {
                 true
             }
             AppCommand::SetTrackLanguage { track_id, language } => {
-                if let Some(t) = self.state.sequences[self.state.active_sequence_idx].tracks.iter_mut().find(|t| t.id == *track_id) {
-                    t.language = language.clone();
-                    self.state.dirty = true;
-                }
+                engine_sync::edit_track(&mut self.state, &self.sequence, &self.param_change_queue, *track_id, |t| t.language = language.clone());
                 true
             }
             AppCommand::SetTrackRole { track_id, role } => {
-                if let Some(t) = self.state.sequences[self.state.active_sequence_idx].tracks.iter_mut().find(|t| t.id == *track_id) {
-                    t.role = role.clone();
-                    self.state.dirty = true;
-                }
+                engine_sync::edit_track(&mut self.state, &self.sequence, &self.param_change_queue, *track_id, |t| t.role = role.clone());
                 true
             }
             AppCommand::SetTrackAutomationKeys { track_index, param, keys } => {
@@ -1087,17 +1081,11 @@ impl KlippApp {
                 true
             }
             AppCommand::SetTrackSyncLock { track_id, on } => {
-                if let Some(t) = self.state.sequences[self.state.active_sequence_idx].tracks.iter_mut().find(|t| t.id == *track_id) {
-                    t.sync_lock = *on;
-                    self.state.dirty = true;
-                }
+                engine_sync::edit_track(&mut self.state, &self.sequence, &self.param_change_queue, *track_id, |t| t.sync_lock = *on);
                 true
             }
             AppCommand::SetTrackTargeted { track_id, on } => {
-                if let Some(t) = self.state.sequences[self.state.active_sequence_idx].tracks.iter_mut().find(|t| t.id == *track_id) {
-                    t.targeted = *on;
-                    self.state.dirty = true;
-                }
+                engine_sync::edit_track(&mut self.state, &self.sequence, &self.param_change_queue, *track_id, |t| t.targeted = *on);
                 true
             }
             AppCommand::TargetTrackFromBadge { track_id } => {
@@ -1105,6 +1093,7 @@ impl KlippApp {
                 if let Some(i) = seq.tracks.iter().position(|t| t.id == *track_id) {
                     seq.target_from_badge(i);
                     self.state.dirty = true;
+                    self.sync_sequence_to_engine();
                 }
                 true
             }
@@ -1117,14 +1106,12 @@ impl KlippApp {
                         seq.tracks[i].source_patch = false;
                     }
                     self.state.dirty = true;
+                    self.sync_sequence_to_engine();
                 }
                 true
             }
             AppCommand::RenameTrack { track_id, ref name } => {
-                if let Some(track) = self.state.sequences[self.state.active_sequence_idx].tracks.iter_mut().find(|t| t.id == *track_id) {
-                    track.name = name.clone();
-                }
-                self.state.dirty = true;
+                engine_sync::edit_track(&mut self.state, &self.sequence, &self.param_change_queue, *track_id, |t| t.name = name.clone());
                 true
             }
             AppCommand::ResetWaveformZoom { track_id } => {
@@ -1243,10 +1230,7 @@ impl KlippApp {
             }
             // Track locking
             AppCommand::SetTrackLocked { track_id, locked } => {
-                if let Some(track) = self.state.sequences[self.state.active_sequence_idx].tracks.iter_mut().find(|t| t.id == *track_id) {
-                    track.locked = *locked;
-                }
-                self.state.dirty = true;
+                engine_sync::edit_track(&mut self.state, &self.sequence, &self.param_change_queue, *track_id, |t| t.locked = *locked);
                 true
             }
             // A picture or sound track freezes (#3207); its frames are drawn by
