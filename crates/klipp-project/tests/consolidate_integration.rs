@@ -1034,3 +1034,41 @@ fn a_collected_proxy_counts_after_opening() {
         let _ = std::fs::remove_dir_all(d);
     }
 }
+
+/// Collected without proxies, or with a proxy whose file is gone, the copy
+/// names no proxy outside its folder: it verifies, and opens with none.
+#[test]
+fn a_proxy_not_carried_is_not_named_by_the_copy() {
+    for (name, include_proxies, proxy_there) in [("left_behind", false, true), ("gone", true, false)] {
+        let source = tmp_path(&format!("proxy_{name}_src"));
+        let dest = tmp_path(&format!("proxy_{name}_dest"));
+        std::fs::create_dir_all(&source).unwrap();
+        let (media, proxy) = (source.join("clip.mp4"), source.join("clip-proxy.mp4"));
+        std::fs::write(&media, b"the picture").unwrap();
+        if proxy_there {
+            std::fs::write(&proxy, b"its proxy").unwrap();
+        }
+        let mut item = make_media_item(media.clone());
+        (item.proxy_path, item.proxy_ready) = (Some(proxy), true);
+        let id = item.id;
+        let mut pool = MediaPool::new();
+        pool.add(item);
+        consolidate_project(
+            &source,
+            &pool,
+            &[Sequence::new_default()],
+            &ColorSettings::default(),
+            ConsolidateOptions { dest_dir: dest.clone(), include_proxies, include_skims: false, mode: Default::default(), looks: Vec::new(), fonts: Vec::new() },
+            None,
+        )
+        .unwrap();
+        let manifest = klipp_project::collect_verify::verify(&dest).unwrap();
+        assert!(manifest.verified(), "{name}: {:?}", manifest.failures());
+        let (_, opened, ..) = load_project(&dest).unwrap();
+        let item = opened.get(&id).unwrap();
+        assert!(!item.proxy_ready && item.proxy_path.is_none(), "{name}");
+        for d in [source, dest] {
+            let _ = std::fs::remove_dir_all(d);
+        }
+    }
+}
