@@ -2166,6 +2166,8 @@ impl ViewerPanel {
             // A sound has no picture to move (#3128).
             && !state.selected_clip.is_some_and(|id| crate::selection::is_sound_only(state.sequence(), &state.media_pool, id))
             && !state.show_color_panel
+            // The Export page shows the picture as it goes out, no gizmo.
+            && state.active_workspace != crate::state::Workspace::Export
             && !state.viewer_text_edit
             && !text_tool
             && !title_object_active
@@ -3671,7 +3673,9 @@ impl ViewerPanel {
         // The timeline's, a group's or a track's grade being edited has no
         // masks of the selected clip's: drawn there, a clip's window read
         // as the timeline grade's own.
-        if state.grade_timeline || state.grade_group_stage.is_some() || state.grade_track.is_some() {
+        // The Export page shows the picture as it goes out: no mask's
+        // outline on it.
+        if state.grade_timeline || state.grade_group_stage.is_some() || state.grade_track.is_some() || state.active_workspace == crate::state::Workspace::Export {
             state.viewer_mask_drag = None;
             return;
         }

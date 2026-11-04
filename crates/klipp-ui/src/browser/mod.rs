@@ -563,6 +563,21 @@ impl FileSortBy {
 /// Sort a slice of FileEntry in place by the chosen key. Directories are
 /// always grouped above files; the sort key + direction only affect ordering
 /// within the file group (and within the directory group).
+/// The folders from `home` (named "Home") or the root down to `path`,
+/// each with its own path: the Files tab's trail of where it is.
+fn path_crumbs(path: &std::path::Path, home: Option<&std::path::Path>) -> Vec<(String, std::path::PathBuf)> {
+    let (mut at, start, rest) = match home.and_then(|h| path.strip_prefix(h).ok().map(|r| (h, r))) {
+        Some((h, r)) => (h.to_path_buf(), "Home".to_string(), r),
+        None => (std::path::PathBuf::from("/"), "/".to_string(), path.strip_prefix("/").unwrap_or(path)),
+    };
+    let mut out = vec![(start, at.clone())];
+    for part in rest.components() {
+        at.push(part);
+        out.push((part.as_os_str().to_string_lossy().to_string(), at.clone()));
+    }
+    out
+}
+
 fn sort_file_entries(entries: &mut [FileEntry], by: FileSortBy, ascending: bool) {
     entries.sort_by(|a, b| {
         // Dirs always first.
@@ -2629,6 +2644,30 @@ impl BrowserPanel {
                 }
             }
         });
+
+        // ── Where the listing is ──
+        // Each folder from Home (or the root) down to this one, each a
+        // link back to it: inside a folder the chips above showed only
+        // "Home", with nothing to say where the listing was.
+        if self.files_current_path != RECENTS_SENTINEL.as_path() {
+            let crumbs = path_crumbs(&self.files_current_path, dirs::home_dir().as_deref());
+            ui.horizontal_wrapped(|ui| {
+                ui.add_space(pad);
+                ui.spacing_mut().item_spacing.x = 2.0;
+                let last = crumbs.len().saturating_sub(1);
+                for (i, (name, path)) in crumbs.iter().enumerate() {
+                    if i > 0 {
+                        ui.label(egui::RichText::new("\u{203A}").size(10.0).color(theme.text_dim));
+                    }
+                    let text = egui::RichText::new(name).size(10.0);
+                    if i == last {
+                        ui.label(text.color(theme.text_primary));
+                    } else if ui.link(text.color(theme.text_secondary)).on_hover_text(path.to_string_lossy().to_string()).clicked() {
+                        self.navigate_files_to(path.clone());
+                    }
+                }
+            });
+        }
 
         ui.add_space(4.0);
         ui.painter().hline(
@@ -6346,6 +6385,20 @@ mod rename_tests {
 #[cfg(test)]
 mod tests {
     use super::FILE_THUMB_MAX_WIDTH;
+
+    /// The Files tab's trail: Home and each folder under it, each with its
+    /// path; outside Home, from the root.
+    #[test]
+    fn the_trail_names_each_folder_from_home() {
+        use std::path::{Path, PathBuf};
+        let home = Path::new("/home/ada");
+        let names = |p: &str| super::path_crumbs(Path::new(p), Some(home)).into_iter().map(|(n, _)| n).collect::<Vec<_>>();
+        assert_eq!(names("/home/ada/Videos/Shoot"), ["Home", "Videos", "Shoot"]);
+        assert_eq!(names("/home/ada"), ["Home"]);
+        assert_eq!(names("/mnt/card/DCIM"), ["/", "mnt", "card", "DCIM"]);
+        let crumbs = super::path_crumbs(Path::new("/home/ada/Videos/Shoot"), Some(home));
+        assert_eq!(crumbs[1].1, PathBuf::from("/home/ada/Videos"), "each a link to its folder");
+    }
 
     /// The media files Import Folder takes from a directory: the walk its
     /// handler uses (#3096).
