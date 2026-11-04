@@ -585,13 +585,17 @@ fn terminal_card_title() -> TitleData {
         ..TextBox::default()
     };
     let command_len = command.text.chars().count().max(1) as f32;
+    // Left-aligned text starts at its anchor: the command's first letter
+    // where the line and the cursor after it sit centred in the card
+    // (0.236 of the width at 42 px of JetBrains Mono), the box as wide as
+    // the frame allows, so a tall frame's larger type stays on one line.
     let text_transform = ObjectTransform {
-        center: TitlePosition { x: 0.5, y: 0.49 },
+        center: TitlePosition { x: 0.384, y: 0.49 },
         center_x_keyframes: Vec::new(),
         center_y_keyframes: Vec::new(),
-        size: TitlePosition { x: 0.34, y: 0.08 },
+        size: TitlePosition { x: 1.0, y: 0.08 },
         rotation: 0.0,
-        anchor_norm: TitlePosition { x: 0.5, y: 0.5 },
+        anchor_norm: TitlePosition { x: 0.0, y: 0.5 },
         size_x_keyframes: Vec::new(), size_y_keyframes: Vec::new(), rotation_keyframes: Vec::new(), anchor_x_keyframes: Vec::new(), anchor_y_keyframes: Vec::new(),
     };
     let text_fx = LayerFx {
