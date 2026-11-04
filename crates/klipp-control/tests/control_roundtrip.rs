@@ -1717,6 +1717,16 @@ fn export_takes_a_preset_a_codec_and_a_bitrate() {
     assert_eq!((r["export"]["rate"].as_str(), r["export"]["bit_depth"].as_u64()), (Some("20000 kbps"), Some(10)), "{r}");
     let (_, s) = sent(&mut h, json!({ "method": "export", "path": "/tmp/klipp-codec-hq.mov", "codec": "ProRes HQ", "audio_codec": "pcm24" }));
     assert_eq!((s.video_codec, s.audio_codec), (V::ProRes422HQ, A::Pcm24));
+    // Captions as a soft track, not burnt in, and the reply says
+    // where they are; off the picture with no track, it says so plainly.
+    let (r, s) = sent(&mut h, json!({ "method": "export", "path": "/tmp/klipp-codec-soft.mp4", "embed_captions": true }));
+    assert!(s.embed_subtitles && !s.burn_in_subtitles, "{r}");
+    // Asked for, but this timeline has no captions: the file carries none,
+    // and the reply says so, not "embedded".
+    assert_eq!((r["export"]["captions_embedded"].clone(), r["export"]["captions_in_file"].clone()), (json!(false), json!("no captions on the timeline")), "{r}");
+    let (r, s) = sent(&mut h, json!({ "method": "export", "path": "/tmp/klipp-codec-bare.mp4", "burn_captions": false }));
+    assert!(!s.embed_subtitles && !s.burn_in_subtitles);
+    assert!(r["export"]["captions_in_file"].is_string(), "{r}");
 
     // Refused, and nothing sent.
     for (req, why) in [
@@ -1728,6 +1738,8 @@ fn export_takes_a_preset_a_codec_and_a_bitrate() {
         (json!({ "path": "/tmp/k.mov", "codec": "dnxhd_115", "bit_depth": 10 }), "8 bits"),
         (json!({ "path": "/tmp/k.mp4", "codec": "mpeg2" }), "not a video codec"),
         (json!({ "path": "/tmp/k.mp4", "audio_codec": "ac3" }), "not an audio codec"),
+        (json!({ "path": "/tmp/k.mp4", "burn_captions": true, "embed_captions": true }), "give one of"),
+        (json!({ "path": "/tmp/k.mp3", "embed_captions": true }), "holds no subtitle track"),
     ] {
         let mut req = req;
         req["method"] = json!("export");

@@ -1118,6 +1118,9 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             if let Some(b) = args.get("burn_captions").and_then(|v| v.as_bool()) {
                 v["burn_captions"] = json!(b);
             }
+            if let Some(b) = args.get("embed_captions").and_then(|v| v.as_bool()) {
+                v["embed_captions"] = json!(b);
+            }
             v
         }
         "klipp_transcript" => {
@@ -2551,6 +2554,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
                  "target_lufs": { "type": "number" },
                  "true_peak_dbtp": { "type": "number" },
                  "burn_captions": { "type": "boolean" },
+                 "embed_captions": { "type": "boolean" },
                  "captions_608": { "type": "boolean" },
                  "hdr10plus": { "type": "boolean" },
                  "hdr": { "type": "string", "enum": ["sdr", "hlg", "pq"] }, "peak_nits": { "type": "number" },
@@ -3811,6 +3815,7 @@ mod catalogue_trim_tests {
         ("klipp_apply", "label", "A name for the history entry"),
         ("klipp_batch", "calls", "In order. Each: {\"tool\": name, \"args\": {...}}"),
         ("klipp_export", "burn_captions", "Captions burnt in (default on); titles always are; the reply says which"),
+        ("klipp_export", "embed_captions", "Captions as a soft subtitle track the player turns on, not burnt in (mp4, mov, mkv, webm)"),
         ("klipp_export", "captions_608", "CEA-608 in the video stream (h264/hevc)"),
         ("klipp_export", "hdr10plus", "ST 2094-40 per shot (hevc, pq)"),
         ("klipp_export", "target_lufs", "Loudness target: -14 web, -23 broadcast; default the brief's"),
