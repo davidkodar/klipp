@@ -1766,10 +1766,13 @@ pub enum Op {
     /// clip takes the same ramp and length; a ramp has no one speed to read
     /// sound at, so the shot's sound is muted while it ramps.
     /// `interpolation` is [`Op::Retime`]'s, for the slow part's frames
-    /// (#2773).
+    /// (#2773). With `remove` the ramp comes off instead, from the clip and
+    /// its linked clip: back to its one speed, its length and its sound.
     Ramp {
         clip_id: ClipRef,
+        #[serde(default)]
         from: f64,
+        #[serde(default)]
         to: f64,
         #[serde(default)]
         secs: Option<f64>,
@@ -1777,6 +1780,8 @@ pub enum Op {
         ripple: bool,
         #[serde(default)]
         interpolation: Option<String>,
+        #[serde(default)]
+        remove: bool,
     },
     /// Put `clips` in the grade group `group`, made if there is none by
     /// that name, taking each out of any group it was in (#237); with
@@ -4390,8 +4395,14 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             let at = resolve_anchor(seq, fps, at, i)?;
             freeze(seq, pool, fps, i, ti, clip, at, *hold)
         }
-        Op::Ramp { clip_id, from, to, secs: over, ripple, interpolation } => {
+        Op::Ramp { clip_id, from, to, secs: over, ripple, interpolation, remove } => {
             let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
+            if *remove {
+                if *from != 0.0 || *to != 0.0 || over.is_some() || interpolation.is_some() {
+                    return Err(refuse(i, "remove takes the ramp off, so it takes no speeds", "give remove alone, with ripple if the clips after it should move"));
+                }
+                return ramp_off(seq, pool, fps, i, ti, clip, *ripple);
+            }
             let (what, edit, touched) = ramp(seq, pool, fps, i, ti, clip, *from, *to, *over, *ripple)?;
             match interpolation.as_deref().map(|how| interpolation_edit(seq, pool, i, clip, how)).transpose()?.flatten() {
                 Some((how, frames)) => Ok((format!("{what}; {how}"), EditCommand::Batch(vec![edit, frames]), touched)),
@@ -10528,6 +10539,30 @@ fn ramp(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, ti: usize, clip: &
     Ok((what, edit, ids))
 }
 
+/// [`Op::Ramp`] with `remove`: `clip` and its linked clip back to their one
+/// speed. The clip takes the length that gives, so with `ripple` the clips
+/// after it move, and without it one that would run over the next is refused.
+fn ramp_off(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, ti: usize, clip: &Clip, ripple: bool) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
+    if seq.tracks[ti].locked {
+        return Err(refuse(i, format!("track {ti} is locked"), "unlock it first"));
+    }
+    if clip.speed_keyframes.is_empty() {
+        return Err(refuse(i, format!("{} has no speed ramp", clip_name(seq, pool, clip)), "name a clip with a ramp"));
+    }
+    let SpeedKeys { edit, new_out, linked, later, delta, partners, ids } = speed_keys_edit(seq, pool, fps, i, ti, clip, Vec::new(), ripple, "take a ramp off")?;
+    let what = format!(
+        "take the speed ramp off {} (now {:.2}-{:.2} s at {:.2}x){}{}{}",
+        clip_name(seq, pool, clip),
+        secs(clip.timeline_in),
+        secs(new_out),
+        clip.speed.abs(),
+        if linked { ", its linked clip with it, its sound back" } else { "" },
+        if later > 0 { format!("; {later} later clip(s) moved {:+.2} s", secs(delta)) } else { String::new() },
+        if partners == 0 { String::new() } else { format!(", {partners} linked to them on other tracks with them") },
+    );
+    Ok((what, edit, ids))
+}
+
 /// What [`speed_keys_edit`] plans.
 struct SpeedKeys {
     edit: EditCommand,
@@ -11771,7 +11806,7 @@ fn retime(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, clip_id: ClipId,
     // The ramp would go on deciding what shows, over the length one speed
     // gives: the picture ended early, or left the clip's range.
     if !clip.speed_keyframes.is_empty() {
-        return Err(refuse(i, format!("{} has a speed ramp, so it has no one speed", clip_name(seq, pool, clip)), "take the ramp off first, or give the length to stretch it to"));
+        return Err(refuse(i, format!("{} has a speed ramp, so it has no one speed", clip_name(seq, pool, clip)), "take the ramp off first (ramp with remove), or give the length to stretch it to"));
     }
     let (lo, hi) = (klipp_timeline::SPEED_MIN, klipp_timeline::SPEED_MAX);
     if !speed.is_finite() || !(lo..=hi).contains(&speed.abs()) {
@@ -16072,7 +16107,7 @@ mod tests {
         assert_eq!(td.objects.len(), 1);
         assert!(resolve(&seq, &pool, &[Op::Highlight { at: Anchor::Secs(1.0), secs: 2.0, x: 0.3, y: 0.3, w: 0.2, h: 0.1, kind: "arrow".into(), color: None, stroke: None, track: None }]).is_err());
 
-        let plan = resolve(&seq, &pool, &[Op::Ramp { clip_id: ClipRef::Id(a), from: 1.0, to: 2.0, secs: None, ripple: false, interpolation: None }]).unwrap();
+        let plan = resolve(&seq, &pool, &[Op::Ramp { clip_id: ClipRef::Id(a), from: 1.0, to: 2.0, secs: None, ripple: false, interpolation: None, remove: false }]).unwrap();
         let EditCommand::Batch(edits) = &plan.steps[0].edit else { panic!("a batch") };
         let EditCommand::SetClipSpeed { new_timeline_out, .. } = &edits[1] else { panic!() };
         // Four seconds of source at 1x rising to 2x over its mean-speed length lands near 2.7 s.
@@ -20070,7 +20105,7 @@ mod tests {
     fn a_ramp_ripples_or_is_refused_and_takes_an_interpolation() {
         let (seq, pool, _, a, b) = fixture();
         let ab = seq.tracks[1].clips[1].id;
-        let ramp = |ripple: bool, interpolation: Option<&str>| Op::Ramp { clip_id: ClipRef::Id(a), from: 1.0, to: 0.3, secs: Some(2.0), ripple, interpolation: interpolation.map(Into::into) };
+        let ramp = |ripple: bool, interpolation: Option<&str>| Op::Ramp { clip_id: ClipRef::Id(a), from: 1.0, to: 0.3, secs: Some(2.0), ripple, interpolation: interpolation.map(Into::into), remove: false };
         let refused = resolve(&seq, &pool, &[ramp(false, None)]).unwrap_err();
         assert!(refused.why.contains("would run over") && refused.hint.contains("ramp with ripple"), "{refused:?}");
         let plan = resolve(&seq, &pool, &[ramp(true, None)]).unwrap();
@@ -20146,12 +20181,44 @@ mod tests {
         assert_eq!(serde_json::to_value(&view.sequences[0]).unwrap(), serde_json::to_value(&seq).unwrap(), "undo restores it");
     }
 
+    /// A ramp comes off by the op, from the clip and its sound: their one
+    /// speed, length and sound back, the clips after them moved with ripple,
+    /// and refused where there is no ramp or no room. Undo puts it back.
+    #[test]
+    fn a_ramp_comes_off_by_the_op() {
+        let (seq, pool, _, a, b) = fixture();
+        let aa = seq.tracks[1].clips[0].id;
+        let off = |ripple: bool| Op::Ramp { clip_id: ClipRef::Id(a), from: 0.0, to: 0.0, secs: None, ripple, interpolation: None, remove: true };
+        assert!(resolve(&seq, &pool, &[off(true)]).unwrap_err().why.contains("has no speed ramp"));
+        let on = Op::Ramp { clip_id: ClipRef::Id(a), from: 2.0, to: 4.0, secs: None, ripple: true, interpolation: None, remove: false };
+        let plan = resolve(&seq, &pool, &[on]).unwrap();
+        let mut seqs = vec![seq.clone()];
+        let (mut p, mut f) = (pool.clone(), seq.fps);
+        let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut f };
+        view.apply_forward(&plan.steps[0].edit);
+        let ramped = view.sequences[0].clone();
+        let mistaken = Op::Ramp { clip_id: ClipRef::Id(a), from: 1.0, to: 0.0, secs: None, ripple: true, interpolation: None, remove: true };
+        assert!(resolve(&ramped, &pool, &[mistaken]).unwrap_err().why.contains("takes no speeds"));
+        assert!(resolve(&ramped, &pool, &[off(false)]).unwrap_err().why.contains("would run over"), "the next clip moved up to it");
+        let plan = resolve(&ramped, &pool, &[off(true)]).unwrap();
+        assert!(plan.steps[0].what.contains("its sound back"), "{}", plan.steps[0].what);
+        view.apply_forward(&plan.steps[0].edit);
+        let at = |view: &crate::apply::DocumentView, id: ClipId| find_clip(&view.sequences[0], id).map(|(_, _, c)| c.clone()).unwrap();
+        for id in [a, aa] {
+            let c = at(&view, id);
+            assert!(c.speed_keyframes.is_empty() && c.plays_its_sound() && c.timeline_out == tc(4.0), "{:?}", c.timeline_out);
+        }
+        assert_eq!(at(&view, b).timeline_in, tc(4.0), "the next clip back at its end");
+        view.apply_inverse(&plan.steps[0].edit);
+        assert_eq!(serde_json::to_value(&view.sequences[0]).unwrap(), serde_json::to_value(&ramped).unwrap(), "undo puts it back");
+    }
+
     /// A speed on a ramped clip is refused, forward or reversed, and leaves it
     /// as it was: the ramp would go on deciding what it shows.
     #[test]
     fn a_ramped_clip_refuses_one_speed() {
         let (mut seq, pool, _, a, _) = fixture();
-        let ramp = Op::Ramp { clip_id: ClipRef::Id(a), from: 2.0, to: 4.0, secs: None, ripple: true, interpolation: None };
+        let ramp = Op::Ramp { clip_id: ClipRef::Id(a), from: 2.0, to: 4.0, secs: None, ripple: true, interpolation: None, remove: false };
         let plan = resolve(&seq, &pool, &[ramp]).unwrap();
         let (mut p, mut f) = (pool.clone(), seq.fps);
         let mut seqs = vec![seq.clone()];
@@ -20170,7 +20237,7 @@ mod tests {
     fn a_ramp_takes_its_linked_sound_and_says_it_is_muted() {
         let (seq, pool, _, a, _) = fixture();
         let aa = seq.tracks[1].clips[0].id;
-        let op = Op::Ramp { clip_id: ClipRef::Id(a), from: 2.0, to: 4.0, secs: None, ripple: true, interpolation: None };
+        let op = Op::Ramp { clip_id: ClipRef::Id(a), from: 2.0, to: 4.0, secs: None, ripple: true, interpolation: None, remove: false };
         let plan = resolve(&seq, &pool, &[op]).unwrap();
         assert!(plan.steps[0].what.contains("sound is muted while it ramps"), "{}", plan.steps[0].what);
         let mut seqs = vec![seq.clone()];
