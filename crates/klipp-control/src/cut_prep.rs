@@ -152,7 +152,7 @@ pub(crate) fn prepare(
     }).collect();
 
     let mut candidates = Vec::new();
-    let mut speech_checks: Vec<(Clip, Vec<(f64, f64)>, bool)> = Vec::new();
+    let mut speech_checks: Vec<(Clip, Vec<(f64, f64)>, bool, Vec<(f64, f64)>)> = Vec::new();
     for item in &clips {
         if item.audio_track && !item.heard { continue; }
         let Some(path) = &item.path else { continue };
@@ -181,11 +181,13 @@ pub(crate) fn prepare(
                     .collect()
             })
             .unwrap_or_default();
+        let pauses: Vec<(f64, f64)> = report.audio.as_ref().filter(|_| item.heard).map(crate::plans::measured_pauses).unwrap_or_default();
         if item.heard {
             speech_checks.push((
                 clip.clone(),
                 words.iter().map(|(start, end, _)| (*start, *end)).collect(),
                 !words.is_empty(),
+                pauses.clone(),
             ));
         }
         let segments: Vec<(f64, f64, String)> = report
@@ -199,17 +201,13 @@ pub(crate) fn prepare(
                     .collect()
             })
             .unwrap_or_default();
+        // Every measured pause, the breaths between sentences among them:
+        // only silences of 0.4 s were read, and fluent speech gave none.
         let silences: Vec<(f64, f64)> = report
             .audio
             .as_ref()
             .filter(|_| item.heard)
-            .map(|audio| {
-                audio
-                    .silences
-                    .iter()
-                    .map(|s| (s.start_secs, s.end_secs))
-                    .collect()
-            })
+            .map(crate::plans::measured_pauses)
             .unwrap_or_default();
         let shots: Vec<f64> = report
             .shots
@@ -243,6 +241,7 @@ pub(crate) fn prepare(
                 strength,
                 None,
                 &words,
+                &pauses,
             );
         }
         if let Some(sheet) = item.media.as_ref().and_then(|m| report.screen_beatsheet(m)) {
@@ -259,6 +258,7 @@ pub(crate) fn prepare(
                     point.strength,
                     None,
                     &words,
+                    &pauses,
                 );
             }
             for &source_secs in &sheet.reveals {
@@ -276,6 +276,7 @@ pub(crate) fn prepare(
                         3,
                         Some(hold),
                         &words,
+                        &pauses,
                     );
                 }
             }
@@ -376,18 +377,18 @@ pub(crate) fn prepare(
 
 fn exclude_spoken_frames(
     candidates: &mut Vec<Value>,
-    speech_checks: &[(Clip, Vec<(f64, f64)>, bool)],
+    speech_checks: &[(Clip, Vec<(f64, f64)>, bool, Vec<(f64, f64)>)],
     fps: f64,
 ) {
     candidates.retain_mut(|candidate| {
         let secs = candidate["secs"].as_f64().unwrap_or(-1.0);
         let mut speech_unknown = false;
-        for (clip, words, known) in speech_checks {
+        for (clip, words, known, pauses) in speech_checks {
             if secs < clip.timeline_in.to_secs_f64() || secs >= clip.timeline_out.to_secs_f64() {
                 continue;
             }
             let source = clip.source_secs_at(secs - clip.timeline_in.to_secs_f64(), fps);
-            if words
+            if !in_pause(pauses, source) && words
                 .iter()
                 .any(|(start, end)| source > *start + 1e-3 && source < *end - 1e-3)
             {
@@ -401,6 +402,11 @@ fn exclude_spoken_frames(
         }
         true
     });
+}
+
+/// Whether `source_secs` lies in one of `pauses` (file seconds).
+fn in_pause(pauses: &[(f64, f64)], source_secs: f64) -> bool {
+    pauses.iter().any(|(a, b)| source_secs >= *a - 1e-3 && source_secs <= *b + 1e-3)
 }
 
 fn readable_hold_secs(
@@ -443,6 +449,7 @@ fn add_candidate(
     strength: u8,
     hold_secs: Option<f64>,
     words: &[(f64, f64, String)],
+    pauses: &[(f64, f64)],
 ) {
     let clip = &item.clip;
     // A change in the picture goes on the first frame that shows it, as
@@ -467,7 +474,11 @@ fn add_candidate(
     }
     let secs = frame as f64 / fps;
     let mapped_source = clip.source_secs_at(secs - clip.timeline_in.to_secs_f64(), fps);
-    let inside_word = words
+    // A measured pause is no word, whatever the words' times say: they
+    // are a model's estimate, and whisper's run on through the breath
+    // between two sentences.
+    let paused = in_pause(pauses, mapped_source);
+    let inside_word = !paused && words
         .iter()
         .any(|(start, end, _)| mapped_source > *start + 1e-3 && mapped_source < *end - 1e-3);
     if inside_word {
@@ -548,6 +559,7 @@ mod tests {
             3,
             None,
             &words,
+            &[],
         );
         assert!(
             candidates.is_empty(),
@@ -565,11 +577,48 @@ mod tests {
             3,
             None,
             &words,
+            &[],
         );
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0]["frame"], 270);
         assert_eq!(candidates[0]["secs"], 11.25);
         assert_eq!(candidates[0]["source_secs"], 4.5);
+    }
+
+    /// A sentence's end in a measured pause is a cut point, though the
+    /// words as whisper timed them run on through it: talk2.mp4's "port."
+    /// was timed 2.40-2.76 s over the 2.381-2.587 s breath before "Its",
+    /// so the sentence end at 2.48 s, on its frame, fell inside it and
+    /// fluent speech gave no cut point at all. Outside a pause the word
+    /// still keeps a candidate off it.
+    #[test]
+    fn a_point_in_a_measured_pause_is_no_word() {
+        let time = |secs| Timecode::from_secs_f64(secs, 24);
+        let clip = Clip::media(klipp_core::MediaId::new(), time(3.5), time(7.75), time(0.0), time(4.25));
+        let item = ClipContext {
+            clip,
+            track: 1,
+            track_name: "A1".into(),
+            locked: false,
+            heard: true,
+            audio_track: true,
+            path: None,
+            media_id: None,
+            media_duration_secs: Some(10.96),
+            media_fps: Some(24.0),
+            media: None,
+        };
+        let words = vec![(2.40, 2.48, "the".into()), (2.40, 2.76, "port.".into()), (2.76, 3.08, "Its".into())];
+        let pause = [(2.381, 2.587)];
+        let mut candidates = Vec::new();
+        add_candidate(&mut candidates, &item, 24.0, 48, 180, 2.48, "sentence_end", "a sentence ends", 2, None, &words, &pause);
+        assert_eq!(candidates.len(), 1, "in the pause: {candidates:?}");
+        assert_eq!(candidates[0]["frame"], 144);
+        exclude_spoken_frames(&mut candidates, &[(item.clip.clone(), words.iter().map(|(a, b, _)| (*a, *b)).collect(), true, pause.to_vec())], 24.0);
+        assert_eq!(candidates.len(), 1, "kept past the spoken-frame check");
+        let mut without = Vec::new();
+        add_candidate(&mut without, &item, 24.0, 48, 180, 2.48, "sentence_end", "a sentence ends", 2, None, &words, &[]);
+        assert!(without.is_empty(), "with no pause measured the word keeps it off: {without:?}");
     }
 
     #[test]
@@ -609,7 +658,7 @@ mod tests {
             json!({ "secs": 11.0, "uncertain": false, "speech_known": true }),
             json!({ "secs": 11.25, "uncertain": false, "speech_known": true }),
         ];
-        exclude_spoken_frames(&mut candidates, &[(sound, vec![(3.8, 4.2)], true)], 24.0);
+        exclude_spoken_frames(&mut candidates, &[(sound, vec![(3.8, 4.2)], true, Vec::new())], 24.0);
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0]["secs"], 11.25);
     }

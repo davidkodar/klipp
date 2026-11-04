@@ -13,7 +13,7 @@ fn proxy_line(ctx: &ControlContext) -> serde_json::Value {
     let pool = ctx.media_pool.read().recovered();
     let (videos, ready) = {
         let videos: Vec<&klipp_media::MediaItem> = shown.iter().filter_map(|id| pool.get(id)).filter(|m| !m.video_codec.is_empty() && !m.is_still).collect();
-        (videos.len(), videos.iter().filter(|m| m.proxy_ready).count())
+        (videos.len(), videos.iter().filter(|m| m.proxy_on_disk()).count())
     };
     let making = status.making.len();
     let text = match (status.use_proxies, ready) {
@@ -67,6 +67,21 @@ pub(crate) fn respond(
                     "Cancellation is queued for the UI. Resolve operation_id before assuming the render stopped."
                 });
                 return Ok(response);
+            }
+            // Proxies: each of its files not made yet. A file made stays.
+            if let Some(media_ids) = jobs::proxies_of(&job_id) {
+                let failed: Vec<klipp_core::MediaId> = ctx.shared.proxies.lock().recovered().failed.iter().map(|(id, _)| *id).collect();
+                let making: Vec<klipp_core::MediaId> = {
+                    let pool = ctx.media_pool.read().recovered();
+                    media_ids.into_iter().filter(|id| !failed.contains(id) && pool.get(id).is_some_and(|m| !m.proxy_on_disk())).collect()
+                };
+                if making.is_empty() {
+                    return Err(format!("proxies {job_id} have ended; nothing cancelled"));
+                }
+                let commands = making.iter().map(|id| AppCommand::CancelProxy { media_id: *id }).collect();
+                send_envelope(ctx, commands, false)?;
+                return Ok(json!({ "job_id":job_id, "kind":"proxies", "cancel_requested":true,
+                    "next":"Read job_status until it reports a terminal state; proxies already made are kept." }));
             }
             // A caption translation (#2213): stopped between two lines.
             if klipp_ml_candle::translation::jobs::get(&job_id).is_some() {
@@ -187,7 +202,9 @@ pub(crate) fn respond(
                 // Every sequence of the project, the open one marked:
                 // `switch_sequence` opens another (M3 step 18); one held as
                 // a compound clip says where, as `remove_sequence` refuses it.
-                "sequences": project.sequences.iter().enumerate().map(|(index, s)| {
+                // A template's compositions are part of its clips, not
+                // sequences: left out, the rest keeping their index.
+                "sequences": project.sequences.iter().enumerate().filter(|(index, s)| !s.nested || *index == project.active_sequence).map(|(index, s)| {
                     let mut v = json!({
                         "index": index,
                         "id": s.id,

@@ -535,6 +535,10 @@ impl klipp_document::ops::Transcripts for AnalysedTranscripts {
         klipp_analysis::report::MediaAnalysis::load(&item.path).audio.map(|a| a.silences.iter().map(|s| (s.start_secs, s.end_secs)).collect()).unwrap_or_default()
     }
 
+    fn pauses(&self, item: &klipp_media::MediaItem) -> Vec<(f64, f64)> {
+        klipp_analysis::report::MediaAnalysis::load(&item.path).audio.map(|a| measured_pauses(&a)).unwrap_or_default()
+    }
+
     fn shot_changes(&self, item: &klipp_media::MediaItem) -> Vec<f64> {
         klipp_analysis::report::MediaAnalysis::load(&item.path).shots.map(|s| s.boundaries).unwrap_or_default()
     }
@@ -557,7 +561,7 @@ impl klipp_document::ops::Transcripts for AnalysedTranscripts {
     }
 
     fn screen_sensitive(&self, item: &klipp_media::MediaItem) -> Vec<klipp_document::ops::SensitiveText> {
-        klipp_analysis::report::MediaAnalysis::load(&item.path).screentext.map(|st| st.sensitive.into_iter().map(|s| klipp_document::ops::SensitiveText { kind: s.kind, masked: s.masked, start_secs: s.start_secs, end_secs: s.end_secs, x: s.x, y: s.y, w: s.w, h: s.h }).collect()).unwrap_or_default()
+        klipp_analysis::report::MediaAnalysis::load(&item.path).screentext.map(|st| st.sensitive.into_iter().map(|s| klipp_document::ops::SensitiveText { kind: s.kind, masked: s.masked, start_secs: s.start_secs, end_secs: s.end_secs, x: s.x, y: s.y, w: s.w, h: s.h, track: s.track.iter().map(|b| (b.secs, [b.x, b.y, b.w, b.h])).collect() }).collect()).unwrap_or_default()
     }
 
     fn people(&self, item: &klipp_media::MediaItem) -> Vec<(f64, [f32; 4])> {
@@ -967,4 +971,11 @@ mod qc_geometry_tests {
         seq.tracks=vec![track];
         assert!(AnalysedTranscripts.picture_geometry(&seq,&seq.tracks[0].clips[0],1.0).is_some());
     }
+}
+
+/// Where `audio` pauses, in the file's seconds: its pauses, or its
+/// silences where it was measured before pauses were kept.
+pub(crate) fn measured_pauses(audio: &klipp_analysis::audio::AudioEnvelope) -> Vec<(f64, f64)> {
+    let spans = if audio.pauses.is_empty() { &audio.silences } else { &audio.pauses };
+    spans.iter().map(|s| (s.start_secs, s.end_secs)).collect()
 }
