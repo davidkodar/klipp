@@ -472,10 +472,18 @@ impl KlippApp {
                         if ui.button("Apply").clicked() {
                             if let Some(clip_id) = self.state.selected_clip {
                                 if on_marks {
+                                    // The fit and its Keep Pitch are one step.
+                                    let batched = !self.state.active_history_mut().is_batching();
+                                    if batched {
+                                        self.state.active_history_mut().begin_batch();
+                                    }
                                     self.fit_clip_on_marks(clip_id, self.state.speed_dialog_reverse);
                                     // The clip on the marks is a new one, selected.
                                     let placed = self.state.selected_clip.unwrap_or(clip_id);
                                     cmds.push(AppCommand::SetClipKeepPitch { clip_id: placed, keep_pitch: self.state.speed_dialog_keep_pitch });
+                                    if batched {
+                                        cmds.push(AppCommand::EndHistoryBatchAs { label: "Clip Speed".into() });
+                                    }
                                 } else {
                                     let mut speed = self.state.speed_dialog_value / 100.0;
                                     if self.state.speed_dialog_reverse { speed = -speed; }

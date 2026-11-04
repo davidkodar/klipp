@@ -1376,19 +1376,8 @@ impl KlippApp {
                     true
                 }
                 AppCommand::SetClipKeepPitch { clip_id, keep_pitch } => {
-                    let seq = self.state.sequence_mut();
-                    let partner = seq.all_clips().find(|c| c.id == *clip_id).and_then(|c| c.linked_clip_id);
-                    let mut changed = false;
-                    for id in std::iter::once(*clip_id).chain(partner) {
-                        if let Some((t, c)) = seq.find_clip(id) {
-                            let clip = &mut seq.tracks[t].clips[c];
-                            changed |= clip.keep_pitch != *keep_pitch;
-                            clip.keep_pitch = *keep_pitch;
-                        }
-                    }
-                    if changed {
-                        self.state.dirty = true;
-                        self.sync_sequence_to_engine();
+                    if let Some(edit) = klipp_document::ops::keep_pitch_at(self.state.sequence(), *clip_id, *keep_pitch) {
+                        self.apply_edits_as_one(&[edit], "Keep Pitch");
                     }
                     true
                 }
