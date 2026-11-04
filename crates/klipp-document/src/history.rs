@@ -41,6 +41,60 @@ impl AudioChainSnapshot {
         clip.audio_effects = self.audio_effects.clone();
         clip.audio_effect_keyframes = self.audio_effect_keyframes.clone();
     }
+
+    /// The effect at `from` moved to `to`, the others closing up round
+    /// it, and its keyframes with it: they are kept by the effect's place
+    /// ("2:threshold"), so each is renumbered as its effect moves. `false`
+    /// for a place past the chain.
+    pub fn move_effect(&mut self, from: usize, to: usize) -> bool {
+        let n = self.audio_effects.len();
+        if from >= n || to >= n {
+            return false;
+        }
+        let fx = self.audio_effects.remove(from);
+        self.audio_effects.insert(to, fx);
+        // Where the effect once at `k` is now.
+        let now = |k: usize| match k {
+            k if k == from => to,
+            k if from < to && k > from && k <= to => k - 1,
+            k if to < from && k >= to && k < from => k + 1,
+            k => k,
+        };
+        self.audio_effect_keyframes = std::mem::take(&mut self.audio_effect_keyframes)
+            .into_iter()
+            .map(|(key, keys)| match key.split_once(':').and_then(|(k, rest)| Some((k.parse::<usize>().ok()?, rest))) {
+                Some((k, rest)) => (format!("{}:{rest}", now(k)), keys),
+                None => (key, keys),
+            })
+            .collect();
+        true
+    }
+}
+
+#[cfg(test)]
+mod move_effect_tests {
+    use super::AudioChainSnapshot;
+
+    /// An effect moved takes its keyframes, and the ones it passes keep
+    /// theirs: keys are by place, so each is renumbered as its effect
+    /// moves.
+    #[test]
+    fn a_moved_effect_takes_its_keyframes() {
+        let fx = |name: &str| klipp_core::AudioEffectInstance { effect_type: name.into(), enabled: true, wet_dry: 1.0, params: Vec::new() };
+        let key = |v: f32| vec![klipp_core::Keyframe { time_secs: 0.0, value: v, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() }];
+        let mut s = AudioChainSnapshot {
+            audio_effects: vec![fx("eq"), fx("compressor"), fx("limiter")],
+            audio_effect_keyframes: [("0:band1_gain".to_string(), key(1.0)), ("1:threshold".to_string(), key(2.0)), ("2:__bypass".to_string(), key(3.0))].into_iter().collect(),
+        };
+        assert!(s.move_effect(0, 2));
+        assert_eq!(s.audio_effects.iter().map(|e| e.effect_type.as_str()).collect::<Vec<_>>(), ["compressor", "limiter", "eq"]);
+        let value = |s: &AudioChainSnapshot, k: &str| s.audio_effect_keyframes.get(k).map(|v| v[0].value);
+        assert_eq!((value(&s, "2:band1_gain"), value(&s, "0:threshold"), value(&s, "1:__bypass")), (Some(1.0), Some(2.0), Some(3.0)));
+        assert!(s.move_effect(2, 0), "and back");
+        assert_eq!(s.audio_effects[0].effect_type, "eq");
+        assert_eq!((value(&s, "0:band1_gain"), value(&s, "1:threshold"), value(&s, "2:__bypass")), (Some(1.0), Some(2.0), Some(3.0)));
+        assert!(!s.move_effect(0, 3), "past the chain");
+    }
 }
 
 /// Snapshot of all keyframe data for a clip (used for undo/redo).

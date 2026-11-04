@@ -230,6 +230,27 @@ impl KlippApp {
                 }),
                 "Remove Track Effect",
             ),
+            AppCommand::ReorderTrackEffect { track_id, audio, from_index, to_index } => (
+                one(track_id, &|s| {
+                    let (from, to) = (*from_index, *to_index);
+                    if *audio {
+                        if from < s.effects.audio.len() && to < s.effects.audio.len() {
+                            let fx = s.effects.audio.remove(from);
+                            s.effects.audio.insert(to, fx);
+                        }
+                    } else {
+                        s.effects.edit_video_effects(|video, enabled| {
+                            if from < video.len() && to < video.len() {
+                                enabled.resize(video.len(), true);
+                                let (fx, on) = (video.remove(from), enabled.remove(from));
+                                video.insert(to, fx);
+                                enabled.insert(to, on);
+                            }
+                        });
+                    }
+                }),
+                "Reorder Track Effect",
+            ),
             AppCommand::ClearTrackEffects { track_id } => (one(track_id, &|s| s.effects = Default::default()), "Clear Track Effects"),
             _ => return false,
         };

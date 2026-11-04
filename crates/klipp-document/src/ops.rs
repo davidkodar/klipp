@@ -2072,7 +2072,8 @@ pub enum Op {
     /// effect's presets by name, Klipp's or the person's own (#3095), the
     /// `params` given over it; `bypass` switches the track's effect of
     /// that type off (true) or on (false) without taking it off; `remove`
-    /// takes it off.
+    /// takes it off; `to` moves it to that place in the chain, counted
+    /// from 0, the others closing up round it.
     TrackAudio {
         track: TrackRef,
         effect: String,
@@ -2084,6 +2085,8 @@ pub enum Op {
         bypass: Option<bool>,
         #[serde(default)]
         remove: bool,
+        #[serde(default)]
+        to: Option<usize>,
     },
     /// An aux bus (#2861): with no `bus`, a new one called `name`; with
     /// `bus` (its name or index), that one changed: `name` renames it,
@@ -2137,8 +2140,9 @@ pub enum Op {
     },
     /// A clip's own audio chain, as [`Op::TrackAudio`] is a track's
     /// (#2485): a built-in effect or an installed plug-in added, set,
-    /// bypassed or taken off, on the clip that holds its sound settings
-    /// (a linked pair's picture, as clean_audio).
+    /// bypassed, taken off or moved (`to`, its keyframes with it), on the
+    /// clip that holds its sound settings (a linked pair's picture, as
+    /// clean_audio).
     ClipAudio {
         clip_id: ClipRef,
         effect: String,
@@ -2150,6 +2154,8 @@ pub enum Op {
         bypass: Option<bool>,
         #[serde(default)]
         remove: bool,
+        #[serde(default)]
+        to: Option<usize>,
     },
     /// Clean a clip's sound. Each flag adds the tool for it: `voice`
     /// Voice Isolation, the AI model that separates speech from wind,
@@ -4542,15 +4548,15 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             let (_, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
             replace_media(seq, pool, fps, i, clip, *media_id, *source_in)
         }
-        Op::TrackAudio { track, effect, preset, params, bypass, remove } => track_audio(seq, fps, i, track, AudioChainEdit { effect, preset: preset.as_deref(), params, bypass: *bypass, remove: *remove }, transcripts),
+        Op::TrackAudio { track, effect, preset, params, bypass, remove, to } => track_audio(seq, fps, i, track, AudioChainEdit { effect, preset: preset.as_deref(), params, bypass: *bypass, remove: *remove, to: *to }, transcripts),
         Op::AuxBus { bus, name, volume_db, pan, mute, output, effect, preset, params, bypass, remove } => {
-            let fx = effect.as_deref().map(|effect| AudioChainEdit { effect, preset: preset.as_deref(), params, bypass: *bypass, remove: *remove });
+            let fx = effect.as_deref().map(|effect| AudioChainEdit { effect, preset: preset.as_deref(), params, bypass: *bypass, remove: *remove, to: None });
             aux_bus(seq, i, bus.as_ref(), AuxBusSet { name: name.as_deref(), volume_db: *volume_db, pan: *pan, mute: *mute, output: output.as_ref(), remove: *remove && effect.is_none() }, fx, transcripts)
         }
         Op::Send { track, bus, level_db, pre_fader, mute, keys, remove } => send(seq, i, track, bus, SendSet { level_db: *level_db, pre_fader: *pre_fader, mute: *mute, keys: keys.as_deref(), remove: *remove }),
-        Op::ClipAudio { clip_id, effect, preset, params, bypass, remove } => {
+        Op::ClipAudio { clip_id, effect, preset, params, bypass, remove, to } => {
             let (_, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
-            clip_audio(seq, pool, i, clip, AudioChainEdit { effect, preset: preset.as_deref(), params, bypass: *bypass, remove: *remove }, transcripts)
+            clip_audio(seq, pool, i, clip, AudioChainEdit { effect, preset: preset.as_deref(), params, bypass: *bypass, remove: *remove, to: *to }, transcripts)
         }
         Op::CleanAudio { clip_id, voice, reduction_db, wind, hiss, hum, deess } => {
             let (_, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
@@ -8920,6 +8926,23 @@ struct AudioChainEdit<'a> {
     params: &'a std::collections::BTreeMap<String, f32>,
     bypass: Option<bool>,
     remove: bool,
+    /// The place in the chain it moves to, counted from 0.
+    to: Option<usize>,
+}
+
+/// Where `edit` moves its effect on a chain of `len`, given where it is
+/// (`at`); refused for an effect not on it, a place past its end, or a
+/// move asked with its removal.
+fn chain_move(i: usize, edit: &AudioChainEdit, at: Option<usize>, len: usize, on: &str) -> Result<Option<(usize, usize)>, Refusal> {
+    let Some(to) = edit.to else { return Ok(None) };
+    if edit.remove {
+        return Err(refuse(i, "an effect taken off and moved", "give remove or to, not both"));
+    }
+    let from = at.ok_or_else(|| refuse(i, format!("{on} has no {}", edit.effect), "add it first, then move it"))?;
+    if to >= len {
+        return Err(refuse(i, format!("place {to} on a chain of {len}"), format!("give to from 0 to {}", len.saturating_sub(1))));
+    }
+    Ok(Some((from, to)))
 }
 
 /// The effect type an edit names and its params by the keys the chain
@@ -9031,7 +9054,14 @@ fn track_audio(seq: &Sequence, fps: Fps, i: usize, track: &TrackRef, edit: Audio
     let (effect, params) = audio_chain_effect(i, &edit, transcripts)?;
     let old = t.settings();
     let mut new = old.clone();
+    let at = new.effects.audio.iter().rposition(|e| e.effect_type == effect);
+    let moved = chain_move(i, &edit, at, new.effects.audio.len(), &on.name)?;
     let mut what = edit_audio_chain(i, &mut new.effects.audio, &on.name, &effect, &params, edit.bypass, edit.remove)?;
+    if let Some((from, to)) = moved {
+        let fx = new.effects.audio.remove(from);
+        new.effects.audio.insert(to, fx);
+        what.push_str(&format!(", moved to place {to} of its chain"));
+    }
     // A Normalize in Clip mode holds a gain measured from one clip's
     // sound (#2778); a track's chain has no one clip to measure.
     if new.effects.audio.iter().any(|inst| inst.effect_type == "normalize" && inst.enabled && inst.params.iter().find(|(k, _)| k == "mode").is_none_or(|(_, v)| *v > 0.5)) {
@@ -9261,7 +9291,14 @@ fn clip_audio(seq: &Sequence, pool: &MediaPool, i: usize, given: &Clip, edit: Au
     }
     let (effect, params) = audio_chain_effect(i, &edit, transcripts)?;
     let mut new_state = crate::history::AudioChainSnapshot::from_clip(clip);
+    let at = new_state.audio_effects.iter().rposition(|e| e.effect_type == effect);
+    let moved = chain_move(i, &edit, at, new_state.audio_effects.len(), &clip_name(seq, pool, given))?;
     let mut what = edit_audio_chain(i, &mut new_state.audio_effects, &clip_name(seq, pool, given), &effect, &params, edit.bypass, edit.remove)?;
+    if let Some((from, to)) = moved {
+        // Its keyframes with it, kept by its place.
+        new_state.move_effect(from, to);
+        what.push_str(&format!(", moved to place {to} of its chain"));
+    }
     if effect == "normalize" && !edit.remove && params.iter().find(|(k, _)| k == "mode").is_none_or(|(_, v)| *v > 0.5) {
         // Measured in the background, as the app opens the clip (#2778).
         what.push_str(": one gain from the clip's measured loudness, held at none until it is measured (the export measures it if it has not been)");
@@ -19998,6 +20035,57 @@ mod tests {
         assert_eq!(serde_json::to_value(&view.sequences[0]).unwrap(), serde_json::to_value(&seq).unwrap(), "undo restores it");
         assert!(resolve(&seq, &pool, &[Op::Freeze { clip_id: ClipRef::Id(a), at: Anchor::Secs(5.0), secs: 1.0 }]).is_err(), "outside the clip");
         assert!(resolve(&seq, &pool, &[Op::Freeze { clip_id: ClipRef::Id(a), at: Anchor::Secs(1.0), secs: 0.0 }]).is_err(), "a hold of nothing");
+    }
+
+    /// An audio effect moves in its chain, a clip's or a track's, its
+    /// keyframes with it (kept by its place), in one step undo puts back
+    /// exactly; a move of an effect not there, past the chain's end or
+    /// with its removal is refused.
+    #[test]
+    fn an_audio_effect_moves_in_its_chain() {
+        let (mut seq, mut pool, _, a, _) = fixture();
+        fn step(seq: &mut Sequence, pool: &mut MediaPool, op: serde_json::Value) -> Result<EditCommand, String> {
+            let plan = resolve(seq, pool, &[serde_json::from_value(op).unwrap()]).map_err(|r| r.why)?;
+            let edit = plan.steps[0].edit.clone();
+            let mut seqs = vec![seq.clone()];
+            let mut fps = seq.fps;
+            crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: pool, fps: &mut fps }.apply_forward(&edit);
+            *seq = seqs.remove(0);
+            Ok(edit)
+        }
+        let id = a.0.to_string();
+        for effect in ["eq", "compressor", "limiter"] {
+            step(&mut seq, &mut pool, serde_json::json!({ "op": "clip_audio", "clip_id": id, "effect": effect })).unwrap();
+        }
+        let owner = |seq: &Sequence| sound_settings_clip(seq, seq.all_clips().find(|c| c.id == a).unwrap()).id;
+        let o = owner(&seq);
+        let key = |v: f32| vec![klipp_core::Keyframe { time_secs: 0.0, value: v, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() }];
+        seq.all_clips_mut().find(|c| c.id == o).unwrap().audio_effect_keyframes.insert("0:band1_gain".into(), key(4.0));
+        let before = serde_json::to_value(&seq).unwrap();
+        let chain = |seq: &Sequence| {
+            let c = seq.all_clips().find(|c| c.id == o).unwrap();
+            (c.audio_effects.iter().map(|e| e.effect_type.clone()).collect::<Vec<_>>(), c.audio_effect_keyframes.keys().cloned().collect::<Vec<_>>())
+        };
+        let moved = step(&mut seq, &mut pool, serde_json::json!({ "op": "clip_audio", "clip_id": id, "effect": "eq", "to": 2 })).unwrap();
+        assert_eq!(chain(&seq), (vec!["compressor".to_string(), "limiter".into(), "eq".into()], vec!["2:band1_gain".to_string()]), "moved, its key with it");
+        let mut seqs = vec![seq.clone()];
+        let mut fps = seq.fps;
+        crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut pool, fps: &mut fps }.apply_inverse(&moved);
+        assert_eq!(serde_json::to_value(&seqs[0]).unwrap(), before, "undo puts it back exactly");
+        for (op, why) in [
+            (serde_json::json!({ "op": "clip_audio", "clip_id": id, "effect": "gate", "to": 0 }), "has no gate"),
+            (serde_json::json!({ "op": "clip_audio", "clip_id": id, "effect": "eq", "to": 3 }), "chain of 3"),
+            (serde_json::json!({ "op": "clip_audio", "clip_id": id, "effect": "eq", "to": 0, "remove": true }), "taken off and moved"),
+        ] {
+            assert!(step(&mut seq, &mut pool, op.clone()).unwrap_err().contains(why), "{op}");
+        }
+        // A track's chain, the same.
+        let t = seq.tracks.iter().position(|t| t.kind == TrackKind::Audio).unwrap();
+        for effect in ["eq", "compressor"] {
+            step(&mut seq, &mut pool, serde_json::json!({ "op": "track_audio", "track": t, "effect": effect })).unwrap();
+        }
+        step(&mut seq, &mut pool, serde_json::json!({ "op": "track_audio", "track": t, "effect": "compressor", "to": 0 })).unwrap();
+        assert_eq!(seq.tracks[t].effects.audio.iter().map(|e| e.effect_type.as_str()).collect::<Vec<_>>(), ["compressor", "eq"]);
     }
 
     /// #2485: an installed plug-in goes on a clip's sound or a track by

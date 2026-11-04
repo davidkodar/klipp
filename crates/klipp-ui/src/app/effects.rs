@@ -318,16 +318,13 @@ impl KlippApp {
                     .all_clips()
                     .find(|c| c.id == *clip_id)
                     .map(crate::history::AudioChainSnapshot::from_clip);
-                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
-                    if let Some(clip) = track.find_clip_mut(*clip_id) {
-                        let from = *from_index;
-                        let to = *to_index;
-                        if from < clip.audio_effects.len() && to < clip.audio_effects.len() {
-                            let fx = clip.audio_effects.remove(from);
-                            clip.audio_effects.insert(to, fx);
-                        }
-                        break;
-                    }
+                // Its keyframes with it: they are kept by its place.
+                let mut moved = old_state.clone();
+                if !moved.as_mut().is_some_and(|m| m.move_effect(*from_index, *to_index)) {
+                    return true;
+                }
+                if let (Some(clip), Some(moved)) = (self.state.sequences[self.state.active_sequence_idx].all_clips_mut().find(|c| c.id == *clip_id), &moved) {
+                    moved.apply_to_clip(clip);
                 }
                 self.push_audio_chain_history(*clip_id, "Reorder Audio Effect", old_state);
                 self.sync_sequence_to_engine();

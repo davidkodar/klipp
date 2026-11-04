@@ -3482,6 +3482,9 @@ pub enum AppCommand {
     ToggleTrackEffect { track_id: TrackId, audio: bool, index: usize },
     /// Take one of a track's own effects off, by index.
     RemoveTrackEffect { track_id: TrackId, audio: bool, index: usize },
+    /// Move one of a track's own effects to another place in its chain:
+    /// its picture effects, or (`audio`) its audio chain.
+    ReorderTrackEffect { track_id: TrackId, audio: bool, from_index: usize, to_index: usize },
     /// Take all of a track's own effects and its grade off.
     ClearTrackEffects { track_id: TrackId },
     /// Reset the per-track waveform amplitude zoom back to 1.0 (#50).
