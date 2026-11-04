@@ -216,6 +216,12 @@ pub(crate) fn timeline_text(
                     .collect();
                 let _ = write!(line, "  fx {}", names.join(","));
             }
+            // Its own audio effects, as a track's are said (the track's
+            // stay on the track's line): they were left out of the view.
+            if !c.audio_effects.is_empty() {
+                let said: Vec<String> = c.audio_effects.iter().map(|e| if e.enabled { word(&e.effect_type) } else { format!("{} (bypassed)", word(&e.effect_type)) }).collect();
+                let _ = write!(line, "  sound fx {}", said.join(", "));
+            }
             let plugins = c.picture_ofx().map_or(0, |o| o.len());
             if plugins > 0 {
                 let _ = write!(line, "  plugins {plugins}");
@@ -679,6 +685,22 @@ fn write_links(out: &mut String, inst: &klipp_core::TemplateInstance) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A clip's own audio effects are on its line, in order, a bypassed
+    /// one marked, as a track's are on the track's line.
+    #[test]
+    fn a_clips_audio_effects_are_said() {
+        let tc = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 25);
+        let mut clip = klipp_timeline::Clip::media(klipp_core::MediaId::new(), tc(0.0), tc(4.0), tc(0.0), tc(4.0));
+        let fx = |name: &str, enabled: bool| klipp_core::AudioEffectInstance { effect_type: name.into(), enabled, wet_dry: 1.0, params: Vec::new() };
+        clip.audio_effects = vec![fx("compressor", false), fx("eq", true)];
+        let mut seq = klipp_timeline::Sequence::new_default();
+        let a = seq.tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Audio).unwrap();
+        seq.tracks[a].clips = vec![clip];
+        let text = timeline_text(&seq, &klipp_media::MediaPool::new(), None, 1, TimelineView::default());
+        let line = text.lines().find(|l| l.contains("0.00-4.00 s")).unwrap_or("");
+        assert!(line.contains(&format!("sound fx {} (bypassed), {}", word("compressor"), word("eq"))), "{text}");
+    }
 
     /// #2492: a timeline grade is said, and a clip with none of its own
     /// reads as under it, not as ungraded; a still's zoom is said.
