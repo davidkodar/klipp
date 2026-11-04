@@ -359,7 +359,9 @@ pub(crate) fn respond(
                 }),
                 // Chosen by the container (VP9 and Opus for .webm, a slower
                 // software encode that is always 8-bit), so said.
-                "video_codec": settings.video_codec.label(),
+                // None for a sound-only file, which has no picture: the
+                // MP3 preset said "H.264" (EX4).
+                "video_codec": (!settings.format.is_audio_only()).then(|| settings.video_codec.label()),
                 "audio_codec": settings.audio_codec.label(),
                 "preset": preset_name,
                 // The speed used: as asked, else the preset's own, else

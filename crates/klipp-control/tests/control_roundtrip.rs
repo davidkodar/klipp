@@ -1727,6 +1727,10 @@ fn export_takes_a_preset_a_codec_and_a_bitrate() {
     let (r, s) = sent(&mut h, json!({ "method": "export", "path": "/tmp/klipp-codec-bare.mp4", "burn_captions": false }));
     assert!(!s.embed_subtitles && !s.burn_in_subtitles);
     assert!(r["export"]["captions_in_file"].is_string(), "{r}");
+    // EX4: a sound-only file is said to have no video codec.
+    let (r, _) = sent(&mut h, json!({ "method": "export", "path": "/tmp/klipp-codec-sound.mp3", "preset": "Audio Only MP3" }));
+    assert!(r["export"]["video_codec"].is_null(), "{r}");
+    assert_eq!(r["export"]["audio_codec"], "MP3", "{r}");
 
     // Refused, and nothing sent.
     for (req, why) in [
