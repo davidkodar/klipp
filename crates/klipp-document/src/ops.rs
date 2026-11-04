@@ -8004,9 +8004,13 @@ fn place_composition(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, at: T
     instance.overrides.extend(overrides);
     instance.media_slots = media_slots;
     klipp_timeline::flatten::validate_template_instance(&instance, composition).map_err(|e| refuse(i, e, "save the template again"))?;
+    // Only the layout this frame takes, and what it nests: the template's
+    // layouts for other frames stay in the template, not in the project.
+    let needed: Vec<klipp_core::SequenceId> = klipp_timeline::composition_template::composition_sequences(composition, &t.sequences).iter().map(|s| s.id).collect();
+    let missing: Vec<Sequence> = placed.missing.iter().filter(|s| needed.contains(&s.id)).cloned().collect();
     let mut edits = Vec::new();
-    if !placed.missing.is_empty() {
-        edits.push(EditCommand::AddSequences { sequences: placed.missing.clone() });
+    if !missing.is_empty() {
+        edits.push(EditCommand::AddSequences { sequences: missing.clone() });
     }
     let free = |ti: usize| {
         let tr = &seq.tracks[ti];
@@ -8033,7 +8037,7 @@ fn place_composition(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, at: T
     clip.kind = ClipKind::TemplatePrecomposition { sequence_id: composition.id, template_instance: instance };
     let id = clip.id;
     edits.push(EditCommand::LegacyAppendClip { clip, track_index });
-    let copied = if placed.missing.is_empty() { String::new() } else { format!(", its {} sequence{} copied into the project", placed.missing.len(), if placed.missing.len() == 1 { "" } else { "s" }) };
+    let copied = if missing.is_empty() { String::new() } else { format!(", its {} sequence{} copied into the project", missing.len(), if missing.len() == 1 { "" } else { "s" }) };
     Ok((format!("template {} at {:.2}-{:.2} s on track {track_index}{copied}", quoted(&t.name), secs(tl_in), secs(tl_out)), EditCommand::Batch(edits), vec![id]))
 }
 
@@ -15561,6 +15565,38 @@ mod tests {
             assert_eq!(placed.0, want, "{w}x{h}");
             let layout = view.sequences.iter().find(|s| s.id == placed).expect("its layout copied in");
             assert_eq!((layout.resolution.width, layout.resolution.height), (w, h));
+        }
+    }
+
+    /// A template placed copies in the layout its sequence's frame takes,
+    /// and what that layout nests, never its other frames' layouts: a
+    /// brand kit's intro and outro brought six sequences into a wide
+    /// project, a wide, a tall and a square of each. Undo takes them away.
+    #[test]
+    fn a_template_copies_only_the_layout_its_frame_takes() {
+        for name in ["Hook Card", "End Screen", "Split Screen"] {
+            let t = klipp_timeline::composition_template::builtin_templates().into_iter().find(|t| t.name == name).unwrap();
+            assert!(t.formats.len() >= 2, "{name} carries a layout for more than one frame");
+            for (w, h) in [(1920, 1080), (1080, 1920), (1080, 1080)] {
+                let (mut seq, pool, ..) = fixture();
+                seq.resolution = klipp_core::Resolution { width: w, height: h };
+                let missing = klipp_timeline::composition_template::missing_sequences(&t, std::slice::from_ref(&seq));
+                let op = Op::Template { name: name.into(), at: Anchor::Secs(1.0), secs: Some(3.0), track: None, fields: Default::default(), source: None, kind: None, data: None, composition: Some(Box::new(PlacedComposition { template: t.clone(), missing })) };
+                let plan = resolve(&seq, &pool, &[op]).unwrap_or_else(|r| panic!("{name} {w}x{h}: {}", r.why));
+                let mut seqs = vec![seq.clone()];
+                let (mut p, mut fps) = (pool.clone(), seq.fps);
+                let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps };
+                view.apply_forward(&plan.steps[0].edit);
+                let layout = t.composition_for(w, h).unwrap();
+                let mut want: Vec<_> = klipp_timeline::composition_template::composition_sequences(layout, &t.sequences).iter().map(|s| s.id).collect();
+                let mut got: Vec<_> = view.sequences[1..].iter().map(|s| s.id).collect();
+                want.sort_by_key(|id| id.0);
+                got.sort_by_key(|id| id.0);
+                assert_eq!(got, want, "{name} {w}x{h}: only its layout and what it nests, of {} sequences", t.sequences.len());
+                view.apply_inverse(&plan.steps[0].edit);
+                assert_eq!(view.sequences.len(), 1, "{name} {w}x{h}: undo takes them away");
+                assert_eq!(serde_json::to_value(&view.sequences[0]).unwrap(), serde_json::to_value(&seq).unwrap(), "{name} {w}x{h}: undo is exact");
+            }
         }
     }
 

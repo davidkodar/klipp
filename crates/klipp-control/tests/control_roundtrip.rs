@@ -4097,6 +4097,26 @@ fn an_effect_op_on_a_clip_with_track_effects_keeps_its_effects_node_ids() {
     assert_eq!(ids(&sequences), vec![blur], "and its undo leaves the Blur as it was");
 }
 
+/// A template's composition copied into the project is part of the
+/// template's clips: `status` lists the project's own sequences without
+/// it, in words and as data, each keeping its index for
+/// `switch_sequence`. A brand kit's intro and outro listed six.
+#[test]
+fn status_leaves_a_templates_compositions_out() {
+    let mut h = harness();
+    {
+        let mut p = h.shared.project.lock().unwrap();
+        let summary = |id: &str, name: &str, nested| klipp_core::SequenceSummary { id: id.into(), name: name.into(), clips: 1, duration_secs: 0.0, used_in: None, version: None, width: 1920, height: 1080, nested };
+        p.sequences = vec![summary("a", "Main", false), summary("b", "Hook Card wide", true), summary("c", "Social cut", false)];
+        p.active_sequence = 0;
+    }
+    let status = h.ok(json!({"method": "status"}));
+    let listed: Vec<(u64, &str)> = status["sequences"].as_array().unwrap().iter().map(|s| (s["index"].as_u64().unwrap(), s["name"].as_str().unwrap())).collect();
+    assert_eq!(listed, [(0, "Main"), (2, "Social cut")]);
+    let text = status["text"].as_str().unwrap();
+    assert!(text.contains("Sequences: 2;") && text.contains("[2] \"Social cut\"") && !text.contains("Hook Card"), "{text}");
+}
+
 /// `status` lists every sequence, the open one marked, and
 /// `switch_sequence` opens another by index or id, as its tab does (M3
 /// step 18): a client can reach each sequence's clips.
@@ -4106,8 +4126,8 @@ fn status_lists_the_sequences_and_switch_sequence_opens_one() {
     {
         let mut p = h.shared.project.lock().unwrap();
         p.sequences = vec![
-            klipp_core::SequenceSummary { id: "a".into(), name: "Main".into(), clips: 3, duration_secs: 0.0, used_in: None, version: None, width: 0, height: 0 },
-            klipp_core::SequenceSummary { id: "b".into(), name: "Social cut".into(), clips: 1, duration_secs: 0.0, used_in: None, version: None, width: 0, height: 0 },
+            klipp_core::SequenceSummary { id: "a".into(), name: "Main".into(), clips: 3, duration_secs: 0.0, used_in: None, version: None, width: 0, height: 0, nested: false },
+            klipp_core::SequenceSummary { id: "b".into(), name: "Social cut".into(), clips: 1, duration_secs: 0.0, used_in: None, version: None, width: 0, height: 0, nested: false },
         ];
         p.active_sequence = 0;
     }
@@ -4145,7 +4165,7 @@ fn orient_and_status_name_every_sequence_with_its_length() {
     let mut h = harness();
     {
         let mut p = h.shared.project.lock().unwrap();
-        let summary = |id: &str, name: &str, clips, secs| klipp_core::SequenceSummary { id: id.into(), name: name.into(), clips, duration_secs: secs, used_in: None, version: None, width: 1920, height: 1080 };
+        let summary = |id: &str, name: &str, clips, secs| klipp_core::SequenceSummary { id: id.into(), name: name.into(), clips, duration_secs: secs, used_in: None, version: None, width: 1920, height: 1080, nested: false };
         p.sequences = vec![
             summary("a", "Main Sequence", 0, 0.0),
             summary("b", "Handoff EDL", 3, 12.0),
@@ -4210,7 +4230,7 @@ fn edit_from_selects_names_the_sequence_and_content_it_copied() {
 fn remove_sequence_is_refused_until_confirmed_and_never_for_a_held_or_only_one() {
     let mut h = harness();
     let set = |h: &mut Harness, list: Vec<klipp_core::SequenceSummary>| h.shared.project.lock().unwrap().sequences = list;
-    let summary = |id: &str, name: &str, clips, used_in: Option<&str>| klipp_core::SequenceSummary { id: id.into(), name: name.into(), clips, duration_secs: 0.0, used_in: used_in.map(Into::into), version: None, width: 0, height: 0 };
+    let summary = |id: &str, name: &str, clips, used_in: Option<&str>| klipp_core::SequenceSummary { id: id.into(), name: name.into(), clips, duration_secs: 0.0, used_in: used_in.map(Into::into), version: None, width: 0, height: 0, nested: false };
     let (a, b, c, d) = ("00000000-0000-4000-8000-00000000000a", "00000000-0000-4000-8000-00000000000b", "00000000-0000-4000-8000-00000000000c", "00000000-0000-4000-8000-00000000000d");
     set(&mut h, vec![summary(a, "Main", 3, None), summary(b, "Demo", 2, None), summary(c, "Nest", 1, Some("Main")), summary(d, "Spare", 0, None)]);
     let refused = |h: &mut Harness, cmd: Value, why: &str| {
@@ -4292,7 +4312,7 @@ fn a_refused_picture_write_is_in_the_reply() {
 #[test]
 fn duplicate_sequence_copies_and_opens_the_copy() {
     let mut h = harness();
-    let summary = |id: &str, name: &str| klipp_core::SequenceSummary { id: id.into(), name: name.into(), clips: 1, duration_secs: 0.0, used_in: None, version: None, width: 0, height: 0 };
+    let summary = |id: &str, name: &str| klipp_core::SequenceSummary { id: id.into(), name: name.into(), clips: 1, duration_secs: 0.0, used_in: None, version: None, width: 0, height: 0, nested: false };
     let (a, b) = ("00000000-0000-4000-8000-00000000000a", "00000000-0000-4000-8000-00000000000b");
     {
         let mut p = h.shared.project.lock().unwrap();
@@ -4895,9 +4915,9 @@ fn rebuild_version_only_rebuilds_a_stale_version() {
         let mut p = h.shared.project.lock().unwrap();
         let version = |stale| Some(klipp_core::VersionSummary { of: "a".into(), stale });
         p.sequences = vec![
-            klipp_core::SequenceSummary { id: "a".into(), name: "Main".into(), clips: 3, duration_secs: 0.0, used_in: None, version: None, width: 1920, height: 1080 },
-            klipp_core::SequenceSummary { id: "b".into(), name: "Main 9:16".into(), clips: 3, duration_secs: 0.0, used_in: None, version: version(false), width: 1080, height: 1920 },
-            klipp_core::SequenceSummary { id: "c".into(), name: "Main 1:1".into(), clips: 3, duration_secs: 0.0, used_in: None, version: version(true), width: 1080, height: 1080 },
+            klipp_core::SequenceSummary { id: "a".into(), name: "Main".into(), clips: 3, duration_secs: 0.0, used_in: None, version: None, width: 1920, height: 1080, nested: false },
+            klipp_core::SequenceSummary { id: "b".into(), name: "Main 9:16".into(), clips: 3, duration_secs: 0.0, used_in: None, version: version(false), width: 1080, height: 1920, nested: false },
+            klipp_core::SequenceSummary { id: "c".into(), name: "Main 1:1".into(), clips: 3, duration_secs: 0.0, used_in: None, version: version(true), width: 1080, height: 1080, nested: false },
         ];
         p.active_sequence = 0;
     }
