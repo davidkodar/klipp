@@ -108,8 +108,17 @@ pub const MAX_KEYS: usize = 256;
 /// The keys on parameter `key` of an effect node (#2886), its behaviours
 /// kept: a parameter that moves over time only. See [`read_keys`].
 pub(crate) fn keys_op(node: &Node, path: klipp_graph_format::path::NodePath, key: &str, keys: &[Value]) -> Result<klipp_graph_lift::ops::GraphOp, String> {
+    // A grade node's parameter takes keys as `set_node_param` keys it, into
+    // the node's own tracks; it keeps no behaviours.
+    if node.type_id.as_str() == types::LEGACY_NODE {
+        let desc = descriptor(node).ok_or("this node has no registered parameter description")?;
+        desc.params.iter().find(|p| p.key == key && p.keyframable).ok_or_else(|| format!("{key} is not a parameter of this node that moves over time"))?;
+        let keys = read_keys(key, keys)?;
+        let anim = (!keys.is_empty()).then_some(klipp_graph_format::Animation { keys, modifiers: None });
+        return Ok(klipp_graph_lift::ops::GraphOp::SetAnim { path, key: key.into(), anim });
+    }
     if klipp_graph_lift::effect_params::tag(node).is_none() {
-        return Err(format!("{key}: only an effect's parameters and the clip's placement take keys here"));
+        return Err(format!("{key}: only an effect's or a grade node's parameters and the clip's placement take keys here"));
     }
     let desc = descriptor(node).ok_or("this node has no registered parameter description")?;
     desc.params.iter().find(|p| p.key == key && p.keyframable).ok_or_else(|| format!("{key} is not a parameter of this node that moves over time"))?;
