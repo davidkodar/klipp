@@ -425,6 +425,32 @@ fn graph_batches_cross_the_socket_once_and_name_created_nodes() {
     assert_eq!(clip.picture_v2().unwrap().picture, after);
 }
 
+/// A grade node's parameter takes keys through `graph_ops`, as
+/// `set_node_param` keys it, and `graph_read` shows them: the Corrector's
+/// exposure keyed 0 at 1 s and 1 at 6 s reads back with both keys, and
+/// the clip's grade holds them. The op was refused ("only an effect's
+/// parameters…") and a read showed no keys of any node.
+#[test]
+fn a_grade_nodes_keys_go_through_graph_ops_and_read_back() {
+    let mut h = harness();
+    let root = json!({"clip":h.ids.clip_a});
+    let graph = h.ok(json!({"method":"graph_read","path":{"root":root,"nodes":[]}}));
+    let group = graph["nodes"].as_array().unwrap().iter().find(|n| n["type"] == "klipp.group").unwrap()["id"].clone();
+    let at = json!({"root":root,"nodes":[group,h.ids.corrector_a]});
+    let reply = h.ok(json!({"method":"graph_ops","ops":[
+        {"op":"keys","path":at,"key":"exposure","keys":[{"time_secs":1.0,"value":0.0},{"time_secs":6.0,"value":1.0}]}
+    ]}));
+    assert_eq!(reply["applied"], true, "{reply}");
+    let read = h.ok(json!({"method":"graph_read","path":at}));
+    let keys = &read["nodes"][0]["keys"]["exposure"];
+    let times: Vec<f64> = keys.as_array().unwrap_or_else(|| panic!("no keys read: {read}")).iter().map(|k| k["time_secs"].as_f64().unwrap()).collect();
+    assert_eq!(times, vec![1.0, 6.0], "{read}");
+    let clip = h.sequence.read().unwrap().tracks[0].clips[0].clone();
+    let node = clip.grade().nodes.iter().find(|n| n.id.to_string() == h.ids.corrector_a).cloned().unwrap();
+    let track = node.keyframes.tracks.iter().find(|t| t.param_name == "exposure").expect("the grade holds the keys");
+    assert_eq!(track.keyframes.len(), 2);
+}
+
 #[test]
 fn graph_add_beside_connects_a_matte_in_one_undoable_batch() {
     let mut h = harness();
