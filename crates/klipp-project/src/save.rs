@@ -1096,11 +1096,9 @@ fn revision2_text(project: ProjectJson, sequences: &[Sequence]) -> Result<String
     klipp_graph_lift::sequence_grade_mix::write_project(&mut v2, &|sid, root| sequences.iter().find(|s| s.id.0 == sid).map(|s| s.root_blends(root)).unwrap_or_default())
         .map_err(|e| format!("Saving would lose a sequence grade's mix ({e}), so it was not saved"))?;
     // A clip grade version's too (#1322).
-    let mut clips_by_id = std::collections::HashMap::new();
-    for clip in sequences.iter().flat_map(|s| s.all_clips()) {
-        clips_by_id.entry(clip.id.0).or_insert(clip);
-    }
-    let version_blends = |cid: uuid::Uuid, n: usize| clips_by_id.get(&cid).map(|c| c.version_blends(n)).unwrap_or_default();
+    // By sequence and clip: a duplicated sequence keeps its clips' ids.
+    let clips: std::collections::HashMap<_, _> = sequences.iter().flat_map(|s| s.all_clips().map(move |c| ((s.id.0, c.id.0), c))).collect();
+    let version_blends = |sid: uuid::Uuid, cid: uuid::Uuid, n: usize| clips.get(&(sid, cid)).map(|c| c.version_blends(n)).unwrap_or_default();
     klipp_graph_lift::sequence_grade_mix::write_versions(&mut v2, &version_blends)
         .map_err(|e| format!("Saving would lose a grade version's mix ({e}), so it was not saved"))?;
     serde_json::to_string_pretty(&v2).map_err(|e| format!("Failed to serialize project: {e}"))
