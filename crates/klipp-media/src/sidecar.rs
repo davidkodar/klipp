@@ -175,6 +175,19 @@ fn ltc_value_to_timecode(v: &str, drop_frame: bool) -> Option<String> {
 mod tests {
     use super::*;
 
+    /// A pipe named as a sidecar is no sidecar: reading one would block
+    /// until something wrote to it.
+    #[cfg(unix)]
+    #[test]
+    fn a_pipe_named_as_a_sidecar_is_none() {
+        let dir = std::env::temp_dir().join(format!("klipp-sidecar-pipe-{}-{:?}", std::process::id(), std::thread::current().id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let pipe = dir.join("C0001M01.XML");
+        assert!(std::process::Command::new("mkfifo").arg(&pipe).status().unwrap().success());
+        assert!(read_sidecar(&dir.join("C0001.MP4")).is_none());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     /// A sidecar past the cap is no sidecar, however it starts; a real one
     /// beside its media still reads.
     #[test]
