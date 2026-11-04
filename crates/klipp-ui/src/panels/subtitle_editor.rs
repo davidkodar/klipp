@@ -40,14 +40,13 @@ struct SubTrack {
     clip_count: usize,
 }
 
-/// Collect all subtitle/text clips across tracks, sorted by timeline_in.
+/// Collect all subtitle clips across tracks, sorted by timeline_in. A
+/// text track holds titles, not subtitles: listed here, a title on the
+/// picture read as a subtitle cue.
 fn collect_subtitle_clips(seq: &klipp_timeline::Sequence) -> Vec<SubRow> {
     let mut rows = Vec::new();
     for (track_idx, track) in seq.tracks.iter().enumerate() {
-        if !matches!(
-            track.kind,
-            klipp_timeline::TrackKind::Subtitle | klipp_timeline::TrackKind::Text
-        ) {
+        if track.kind != klipp_timeline::TrackKind::Subtitle {
             continue;
         }
         for clip in &track.clips {
@@ -73,17 +72,12 @@ fn collect_subtitle_clips(seq: &klipp_timeline::Sequence) -> Vec<SubRow> {
     rows
 }
 
-/// Collect descriptors for all subtitle/text tracks in display order.
+/// Collect descriptors for all subtitle tracks in display order.
 fn collect_subtitle_tracks(seq: &klipp_timeline::Sequence) -> Vec<SubTrack> {
     seq.tracks
         .iter()
         .enumerate()
-        .filter(|(_, t)| {
-            matches!(
-                t.kind,
-                klipp_timeline::TrackKind::Subtitle | klipp_timeline::TrackKind::Text
-            )
-        })
+        .filter(|(_, t)| t.kind == klipp_timeline::TrackKind::Subtitle)
         .map(|(_idx, t)| SubTrack {
             track_id: t.id,
             name: t.name.clone(),
@@ -939,12 +933,24 @@ mod tests {
 
     #[test]
     fn collect_sorts_across_tracks() {
+        let mut seq = make_seq_with_tracks();
+        let mut more = Track::new("Subs 2", TrackKind::Subtitle);
+        more.clips.push(make_title_clip("C-subtitle", 30, 40));
+        seq.tracks.push(more);
+        let rows = collect_subtitle_clips(&seq);
+        let texts: Vec<&str> = rows.iter().map(|r| r.text.as_str()).collect();
+        assert_eq!(texts, vec!["A-subtitle", "C-subtitle", "B-subtitle"]);
+    }
+
+    /// A title on a text track is a title on the picture, not a cue: the
+    /// editor listed it with the subtitles, and its track with theirs.
+    #[test]
+    fn a_title_on_a_text_track_is_not_a_subtitle() {
         let seq = make_seq_with_tracks();
         let rows = collect_subtitle_clips(&seq);
-        assert_eq!(rows.len(), 3);
-        assert_eq!(rows[0].text, "A-subtitle");
-        assert_eq!(rows[1].text, "B-subtitle");
-        assert_eq!(rows[2].text, "C-text");
+        assert!(rows.iter().all(|r| r.text != "C-text"), "the title is not listed: {:?}", rows.iter().map(|r| &r.text).collect::<Vec<_>>());
+        let tracks: Vec<String> = collect_subtitle_tracks(&seq).into_iter().map(|t| t.name).collect();
+        assert_eq!(tracks, vec!["Subs".to_string()]);
     }
 
     #[test]
