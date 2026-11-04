@@ -958,8 +958,6 @@ impl MagneticEditor {
             return None;
         }
 
-        let offset = at_time - original.timeline_in;
-
         // T-2: left half INHERITS the original ClipId. This keeps any
         // external clip/storyline anchored to the original id anchored
         // to the visually-continuous "first half" of the clip — without
@@ -968,36 +966,17 @@ impl MagneticEditor {
         // Linked-clip partners on other tracks also continue to resolve
         // because linked_clip_id on those partners still points at the
         // original id, which is now the left half.
-        // The file cut where the legacy blade cuts it: through the speed,
-        // from the far end when reversed. One to one, a sound cut here
-        // and its retimed picture cut on a free track started their right
-        // pieces at different file times.
-        let ((left_in, left_out), (right_in, right_out)) = original.source_split(offset);
-        let (left_speed, right_speed) = original.split_speed_keys(offset.to_secs_f64());
-        let mut left_clip = original.clone();
-        left_clip.timeline_out = at_time;
-        (left_clip.source_in, left_clip.source_out) = (left_in, left_out);
-        left_clip.speed_keyframes = left_speed;
-        // The fades belong to the clip's own ends, not to the cut: the
-        // left keeps its fade in and loses the fade out, or the join
-        // would dip to nothing on a cut that should pass unheard. A fade
-        // longer than the half it is left on is shortened to it. The
-        // legacy `Track::split_at` does the same, so the two blades
-        // agree.
-        left_clip.fade_out_secs = 0.0;
-        left_clip.fade_in_secs = left_clip.fade_in_secs.min(offset.to_secs_f64() as f32);
-        // Left keeps magnetic_anchor (and its id).
-        let (at, whole) = (offset.to_secs_f64(), (original.timeline_out - original.timeline_in).to_secs_f64());
-        left_clip.keep_angle_cuts_on_piece(0.0, at);
-
-        let mut right_clip = original.clone();
-        right_clip.id = ClipId::new();
-        right_clip.timeline_in = at_time;
-        (right_clip.source_in, right_clip.source_out) = (right_in, right_out);
-        right_clip.speed_keyframes = right_speed;
-        right_clip.fade_in_secs = 0.0;
-        right_clip.fade_out_secs = right_clip.fade_out_secs.min((original.timeline_out - at_time).to_secs_f64() as f32);
-        right_clip.keep_angle_cuts_on_piece(at, whole);
+        // Cut as the legacy blade cuts: the file through the speed, from the
+        // far end when reversed, and keys and markers each to its own piece.
+        // Otherwise a sound cut here and its picture cut on a free track went
+        // out of step, and the right piece played the whole clip's keys.
+        let mut alone = crate::Track::new("", sequence.tracks[track_idx].kind);
+        alone.clips.push(original.clone());
+        let (mut left_clip, mut right_clip) = alone.split_at(clip_id, at_time)?;
+        left_clip.id = original.id;
+        right_clip.magnetic_anchor = original.magnetic_anchor.clone();
+        right_clip.audition = original.audition.clone();
+        (left_clip.matched_to, right_clip.matched_to) = (original.matched_to, original.matched_to);
         // Right keeps magnetic_anchor too (the anchor is a relationship
         // TO some other clip — both halves sit at the anchored location,
         // so both should stay connected). Dropping it on the right half
@@ -3020,6 +2999,42 @@ mod tests {
         assert_eq!(right_clip.speed_keyframes.iter().map(|k| (k.time_secs, k.value)).collect::<Vec<_>>(), vec![(0.0, 1.25), (1.0, 2.0)]);
         assert_eq!(serde_json::to_value(&right_clip.speed_keyframes).unwrap(), serde_json::to_value(&b.speed_keyframes).unwrap());
         assert_eq!(serde_json::to_value(&left_clip.speed_keyframes).unwrap(), serde_json::to_value(&a.speed_keyframes).unwrap());
+    }
+
+    /// What a clip times from its start is split on the magnetic track as on
+    /// a free one: each piece keeps its own keys and markers, the right one's
+    /// from its own start, and the anchor and the left's id stay as they were.
+    #[test]
+    fn a_magnetic_blade_splits_keys_and_markers_as_the_legacy_one_does() {
+        let key = |t: f64, v: f32| klipp_core::Keyframe { time_secs: t, value: v, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() };
+        let mut seq = make_sequence(&[(0, 48)]);
+        let clip = crate::test_clip::TestClip::of(seq.tracks[0].clips[0].clone()).lane("pos_x", 0.5, 1.0).lane("pos_x", 1.5, 2.0).lane("opacity", 1.5, 0.5).build();
+        seq.tracks[0].clips[0] = clip;
+        let clip = &mut seq.tracks[0].clips[0];
+        clip.volume_keyframes = vec![key(0.5, 0.2), key(1.5, 0.8)];
+        clip.pan_keyframes = vec![key(1.5, -1.0)];
+        clip.gain_keyframes = vec![key(0.25, 2.0), key(1.25, 3.0)];
+        clip.audio_effect_keyframes.insert("0:gain".into(), vec![key(1.5, 1.0)]);
+        clip.clip_markers.push(crate::ClipMarker { time_secs: 1.5, name: "beat".into(), color: klipp_core::MarkerColor::Red, comment: String::new() });
+        let id = clip.id;
+        let mut free = Track::new("Video 2", TrackKind::Video);
+        free.clips.push(seq.tracks[0].clips[0].clone());
+        let other = free.clips[0].id;
+        let result = MagneticEditor::blade(&mut seq, id, tc(24)).expect("cut inside");
+        let MagneticEditCommand::Blade { left_clip, right_clip, .. } = &result.command else { panic!("a blade") };
+        let (a, b) = free.split_at(other, tc(24)).expect("cut inside");
+        assert_eq!(right_clip.volume_keyframes.iter().map(|k| k.time_secs).collect::<Vec<_>>(), vec![0.5], "the later key, from its own start");
+        assert_eq!(left_clip.volume_keyframes.iter().map(|k| k.time_secs).collect::<Vec<_>>(), vec![0.5], "the earlier key");
+        assert_eq!(left_clip.id, id, "the left keeps the id");
+        for (magnetic, legacy, side) in [(left_clip, &a, "left"), (right_clip, &b, "right")] {
+            let keys = |c: &crate::Clip| {
+                let lifted = c.picture_v2().unwrap();
+                let lane = lifted.picture.placement_anim.get(&klipp_graph_format::ParamKey::from("pos_x")).map(|a| a.keys.clone());
+                let opacity = lifted.picture.opacity_anim.as_ref().map(|a| a.keys.clone());
+                serde_json::json!([c.volume_keyframes, c.pan_keyframes, c.gain_keyframes, c.audio_effect_keyframes, c.clip_markers.iter().map(|m| m.time_secs).collect::<Vec<_>>(), opacity, lane])
+            };
+            assert_eq!(keys(magnetic), keys(legacy), "{side}");
+        }
     }
 
     #[test]
