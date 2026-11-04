@@ -22,7 +22,10 @@
 //! face before a small one that maps a handful of the same characters
 //! for one historic script. An emoji font comes first for a character
 //! drawn as emoji and last for any other, so a digit or a "#" never
-//! falls to it.
+//! falls to it. A letter of a script whose letters change shape by
+//! their neighbours (Arabic, the Indic scripts) goes to the first file
+//! whose shaping table names that script: a maths font maps the Arabic
+//! letters too, and drew them apart, never joined.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -30,12 +33,13 @@ use std::sync::{Mutex, OnceLock};
 use std::time::SystemTime;
 
 use read_fonts::tables::cmap::PlatformId;
+use read_fonts::types::Tag;
 use read_fonts::{FontRef, TableProvider};
 use serde::{Deserialize, Serialize};
 
 /// Bumped whenever the chain changes which face draws a character, so
 /// a glyph cache laid out before does not match (#1503).
-pub const FALLBACK_VERSION: u32 = 1;
+pub const FALLBACK_VERSION: u32 = 2;
 
 /// Words in a font file's name that mark a face other than the Regular.
 const STYLE_WORDS: &[&str] = &[
@@ -55,6 +59,9 @@ struct Candidate {
     size: u64,
     mtime: u64,
     ranges: Option<Vec<(u32, u32)>>,
+    /// Once read, the scripts its shaping table (GSUB) names; read only
+    /// for a letter that needs one, and not kept on disk.
+    scripts: Option<Vec<Tag>>,
 }
 
 /// The system's font files in the order they are tried, and every
@@ -134,7 +141,7 @@ impl SystemFonts {
                     .and_then(|m| m.modified().ok())
                     .and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
                     .map_or(0, |d| d.as_nanos() as u64);
-                Candidate { emoji: name.contains("emoji"), path, size, mtime, ranges: None }
+                Candidate { emoji: name.contains("emoji"), path, size, mtime, ranges: None, scripts: None }
             })
             .collect();
         candidates.sort_by_cached_key(|c| {
@@ -212,14 +219,28 @@ impl SystemFonts {
             first.into_iter().chain(rest).collect()
         };
         let mut read = 0;
+        let wanted = shaping_tags(c);
+        // The first file that has it, and for a letter that is shaped by
+        // its neighbours the first whose shaping table knows its script;
+        // the first that has it when none does.
+        let mut first = None;
         let found = order.into_iter().find(|&i| {
             let candidate = &mut self.candidates[i];
             let ranges = candidate.ranges.get_or_insert_with(|| {
                 read += 1;
                 codepoints(&candidate.path)
             });
-            covers(ranges, c as u32)
+            if !covers(ranges, c as u32) {
+                return false;
+            }
+            if wanted.is_empty() {
+                return true;
+            }
+            first.get_or_insert(i);
+            let scripts = candidate.scripts.get_or_insert_with(|| shaping_scripts(&candidate.path));
+            scripts.iter().any(|t| wanted.contains(t))
         });
+        let found = found.or(first);
         self.files_read += read;
         self.decided.insert((c, emoji), found);
         // Something was learnt: a file's ranges, or a character no
@@ -277,6 +298,58 @@ fn codepoints(path: &Path) -> Vec<(u32, u32)> {
     ranges_of(&mapped)
 }
 
+/// The scripts the shaping table (GSUB) of the first face in a font file
+/// names; none for a file without one, or that does not read.
+fn shaping_scripts(path: &Path) -> Vec<Tag> {
+    let Ok(data) = std::fs::read(path) else { return Vec::new() };
+    let Ok(font) = FontRef::from_index(&data, 0) else { return Vec::new() };
+    font.gsub().ok().and_then(|g| g.script_list().ok()).map_or_else(Vec::new, |l| l.script_records().iter().map(|r| r.script_tag()).collect())
+}
+
+/// The OpenType script tags a font must name for `c` to be shaped
+/// right, its letters joined or reordered by their neighbours; empty
+/// for a character any face that maps it draws as it should.
+fn shaping_tags(c: char) -> &'static [Tag] {
+    use unicode_script::{Script, UnicodeScript};
+    const ARAB: &[Tag] = &[Tag::new(b"arab")];
+    const SYRC: &[Tag] = &[Tag::new(b"syrc")];
+    const NKO: &[Tag] = &[Tag::new(b"nko ")];
+    const MONG: &[Tag] = &[Tag::new(b"mong")];
+    const DEVA: &[Tag] = &[Tag::new(b"dev2"), Tag::new(b"deva")];
+    const BENG: &[Tag] = &[Tag::new(b"bng2"), Tag::new(b"beng")];
+    const GURU: &[Tag] = &[Tag::new(b"gur2"), Tag::new(b"guru")];
+    const GUJR: &[Tag] = &[Tag::new(b"gjr2"), Tag::new(b"gujr")];
+    const ORYA: &[Tag] = &[Tag::new(b"ory2"), Tag::new(b"orya")];
+    const TAML: &[Tag] = &[Tag::new(b"tml2"), Tag::new(b"taml")];
+    const TELU: &[Tag] = &[Tag::new(b"tel2"), Tag::new(b"telu")];
+    const KNDA: &[Tag] = &[Tag::new(b"knd2"), Tag::new(b"knda")];
+    const MLYM: &[Tag] = &[Tag::new(b"mlm2"), Tag::new(b"mlym")];
+    const SINH: &[Tag] = &[Tag::new(b"sinh")];
+    const MYMR: &[Tag] = &[Tag::new(b"mym2"), Tag::new(b"mymr")];
+    const KHMR: &[Tag] = &[Tag::new(b"khmr")];
+    const TIBT: &[Tag] = &[Tag::new(b"tibt")];
+    match c.script() {
+        Script::Arabic => ARAB,
+        Script::Syriac => SYRC,
+        Script::Nko => NKO,
+        Script::Mongolian => MONG,
+        Script::Devanagari => DEVA,
+        Script::Bengali => BENG,
+        Script::Gurmukhi => GURU,
+        Script::Gujarati => GUJR,
+        Script::Oriya => ORYA,
+        Script::Tamil => TAML,
+        Script::Telugu => TELU,
+        Script::Kannada => KNDA,
+        Script::Malayalam => MLYM,
+        Script::Sinhala => SINH,
+        Script::Myanmar => MYMR,
+        Script::Khmer => KHMR,
+        Script::Tibetan => TIBT,
+        _ => &[],
+    }
+}
+
 /// Sorted, distinct codepoints as inclusive ranges.
 fn ranges_of(sorted: &[u32]) -> Vec<(u32, u32)> {
     let mut ranges: Vec<(u32, u32)> = Vec::new();
@@ -308,6 +381,38 @@ mod tests {
         for cp in [0, 35, 64, 66, 0x4DFF, 0x4E02] {
             assert!(!covers(&ranges, cp));
         }
+    }
+
+    /// An Arabic letter goes to the font whose shaping table names
+    /// Arabic, though a larger one that maps the letter comes first: a
+    /// maths font did, and drew every letter of a caption apart. A Latin
+    /// letter still takes the first that has it, and an Arabic letter
+    /// that only the larger font has takes it.
+    #[test]
+    fn a_letter_shaped_by_its_neighbours_goes_to_a_font_that_shapes_it() {
+        let candidate = |path: &str, ranges: Vec<(u32, u32)>, scripts: Vec<Tag>| Candidate { path: path.into(), emoji: false, size: 0, mtime: 0, ranges: Some(ranges), scripts: Some(scripts) };
+        let mut fonts = SystemFonts {
+            candidates: vec![
+                candidate("math.ttf", vec![(0x41, 0x7A), (0x0600, 0x06FF)], vec![Tag::new(b"math"), Tag::new(b"latn")]),
+                candidate("arabic.ttf", vec![(0x0627, 0x064A)], vec![Tag::new(b"arab")]),
+            ],
+            decided: HashMap::new(),
+            index: None,
+            files_read: 0,
+        };
+        assert_eq!(fonts.find('ب', false), Some(PathBuf::from("arabic.ttf")));
+        assert_eq!(fonts.find('a', false), Some(PathBuf::from("math.ttf")));
+        assert_eq!(fonts.find('\u{06F0}', false), Some(PathBuf::from("math.ttf")), "only the larger one has it");
+    }
+
+    /// The scripts are read from the font's shaping table.
+    #[test]
+    fn a_fonts_shaping_scripts_are_read() {
+        let at = |name: &str| Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fonts").join(name);
+        assert!(shaping_scripts(&at("NotoSansArabic-subset.ttf")).contains(&Tag::new(b"arab")));
+        assert!(!shaping_scripts(&at("InterVariable-subset.ttf")).contains(&Tag::new(b"arab")));
+        assert_eq!(shaping_tags('ب'), &[Tag::new(b"arab")]);
+        assert!(shaping_tags('a').is_empty() && shaping_tags('中').is_empty());
     }
 
     #[test]
