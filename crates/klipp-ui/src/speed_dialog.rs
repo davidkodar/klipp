@@ -57,6 +57,14 @@ pub fn fit_targets(seq: &Sequence, clip_id: ClipId) -> FitTargets {
 /// op's `fit_range` uses too, so the dialog and an assistant agree.
 pub use klipp_document::clipboard::{on_marks as fit_on_marks, OnMarks};
 
+/// Whether Apply moves the clips after this one: not while the speed is
+/// still the one Fill to the next clip set. Filled, the clip ends where the
+/// next starts and that clip stays; moved along by the time it grew by, it
+/// left a gap the same size and the fill undid itself.
+pub fn moves_the_clips_after(ripple: bool, fit: FitTargets, content_secs: f64, percent: f64) -> bool {
+    ripple && !fit.to_next.is_some_and(|l| (percent_for(content_secs, l).clamp(PERCENT_MIN, PERCENT_MAX) - percent).abs() < 1e-6)
+}
+
 /// The commands the dialog's Apply sends for `clip`: only what changed,
 /// and the speed and Keep Pitch together as one undo step, "Clip Speed".
 /// It sent the speed unchanged too, an empty step, and Keep Pitch
@@ -155,6 +163,26 @@ mod tests {
         let (a, b) = seq.marks_within_end();
         (seq.in_point, seq.out_point) = (a, b);
         assert_eq!(fit_targets(&seq, id).range, Some(12.0), "2 s to the end at 14 s");
+    }
+
+    /// Fill to the next clip leaves that clip where it is, whatever Move
+    /// the clips after it says, for as long as the speed is the fill's;
+    /// another speed moves them as the box asks. It went from 50.90 to
+    /// 53.80 s in the walk behind this, a 2.9 s gap after the filled clip.
+    #[test]
+    fn fill_to_the_next_clip_leaves_the_next_clip_where_it_is() {
+        use klipp_core::AppCommand as C;
+        let (seq, id) = seq();
+        let fit = fit_targets(&seq, id);
+        let content = content_secs(&seq, id).unwrap();
+        let filled = percent_for(content, fit.to_next.unwrap());
+        assert!(!moves_the_clips_after(true, fit, content, filled), "filled");
+        assert!(moves_the_clips_after(true, fit, content, 50.0), "another speed");
+        assert!(!moves_the_clips_after(false, fit, content, 50.0), "the box off");
+        assert!(moves_the_clips_after(true, FitTargets::default(), content, filled), "nothing to fill to");
+        let clip = seq.all_clips().find(|c| c.id == id).unwrap().clone();
+        let cmds = apply_commands(&clip, filled / 100.0, false, moves_the_clips_after(true, fit, content, filled));
+        assert!(matches!(cmds.as_slice(), [C::SetClipSpeed { ripple: false, .. }]), "{cmds:?}");
     }
 
     /// Fitted to the marked range, the clip goes on the marks: it
