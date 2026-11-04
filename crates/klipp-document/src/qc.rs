@@ -114,6 +114,12 @@ fn visible_title_text(td: &klipp_timeline::TitleData) -> impl Iterator<Item = &s
     })
 }
 
+/// A template's stand-in line: one bracketed phrase, as the built-in
+/// titles write theirs ("[Name]", "[Title or role]").
+fn is_placeholder(line: &str) -> bool {
+    line.len() > 2 && line.starts_with('[') && line.ends_with(']') && !line[1..line.len() - 1].contains(['[', ']'])
+}
+
 fn clip_label(pool: &MediaPool, c: &Clip) -> String {
     if let Some(name) = c.name.as_deref().filter(|n| !n.trim().is_empty()) {
         return quoted(name);
@@ -500,6 +506,18 @@ pub fn check(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts) ->
 
     if on_screen.is_empty() {
         add(Severity::Error, "empty", None, "there is no picture on the timeline".into(), "Place the piece first");
+    }
+
+    // A template's stand-in text left as it came ("[Title or role]"): it
+    // goes out burnt into the picture.
+    for c in seq.tracks.iter().filter(|t| t.visible).flat_map(|t| t.clips.iter()) {
+        let ClipKind::Title(td) = &c.kind else { continue };
+        let Some(template) = td.template.as_deref() else { continue };
+        if let Some(line) = visible_title_text(td).flat_map(str::lines).map(str::trim).find(|l| is_placeholder(l)) {
+            let at = secs(c.timeline_in);
+            let clip = c.name.as_deref().filter(|n| !n.trim().is_empty()).map_or_else(|| format!("the {} title at {at:.1} s", quoted(template)), quoted);
+            add(Severity::Warning, "placeholder", Some(at), format!("{clip} still shows the template's {}", quoted(line)), "Type its text, or delete the line");
+        }
     }
 
     // Auditions left with their takes (#3209): the take in each slot is
@@ -1286,6 +1304,30 @@ mod tests {
 
     fn rules(r: &Report) -> Vec<&'static str> {
         r.findings.iter().map(|f| f.rule).collect()
+    }
+
+    /// A title from a template that still shows one of its stand-in lines
+    /// is named; filled in, or a title of the person's own, it is not.
+    #[test]
+    fn a_templates_stand_in_text_left_in_is_named() {
+        let tc = |s: f64| Timecode::from_secs_f64(s, 25);
+        let lower_third = |role: &str, template: Option<&str>| {
+            let mut td = klipp_timeline::TitleData::single_text(klipp_timeline::TextBox { text: "Ada Lovelace".into(), ..Default::default() });
+            td.add_object(TitleObjectContent::TextBox(klipp_timeline::TextBox { text: role.into(), ..Default::default() }), klipp_timeline::default_text_transform());
+            td.template = template.map(Into::into);
+            let mut seq = Sequence::new_default();
+            seq.fps = Fps::new(25, 1);
+            let mut text = Track::new("Titles", TrackKind::Text);
+            text.clips.push(Clip { kind: ClipKind::Title(td), source_in: tc(0.0), source_out: tc(4.0), ..Clip::gap(tc(3.0), tc(7.0)) });
+            seq.tracks.push(text);
+            check(&seq, &MediaPool::new(), &crate::ops::NoTranscripts)
+        };
+        let r = lower_third("[Title or role]", Some("Accent Block"));
+        let f = r.findings.iter().find(|f| f.rule == "placeholder").expect("the stand-in named");
+        assert!(f.what.contains("Accent Block") && f.what.contains("3.0 s") && f.what.contains("[Title or role]"), "{}", f.what);
+        assert_eq!(f.severity, Severity::Warning);
+        assert!(!rules(&lower_third("Mathematician", Some("Accent Block"))).contains(&"placeholder"), "filled in");
+        assert!(!rules(&lower_third("[laughs]", None)).contains(&"placeholder"), "a title of the person's own");
     }
 
     /// A screen recording whose screen changes at 10-12 s and 30-33 s of
