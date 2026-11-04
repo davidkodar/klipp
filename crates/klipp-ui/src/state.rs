@@ -3322,6 +3322,9 @@ pub struct AppState {
     // Proxy generation tracking
     /// Media IDs currently generating proxies — shown as status in UI
     pub proxy_generating: std::collections::HashSet<MediaId>,
+    /// Files whose proxy was made and has gone, as last looked for off this
+    /// thread: the disk isn't asked while drawing (it can stall on a network).
+    pub proxies_gone: std::collections::HashSet<MediaId>,
     /// Per-media proxy generation progress (0.0..1.0)
     pub proxy_progress: std::collections::HashMap<MediaId, f32>,
     /// Per-media proxy generation start time (for ETA calculation)
@@ -5500,6 +5503,7 @@ impl Default for AppState {
             audio_reference_clip_id: None,
             dragging_fade_handle: None,
             proxy_generating: std::collections::HashSet::new(),
+            proxies_gone: std::collections::HashSet::new(),
             proxy_progress: std::collections::HashMap::new(),
             proxy_start_times: std::collections::HashMap::new(),
             proxy_status_message: None,

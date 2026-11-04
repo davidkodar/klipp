@@ -86,7 +86,7 @@ pub fn show_project_info(
             info_row(ui, theme, "Clips", &clip_count.to_string());
 
             // Proxy/skim count
-            let proxy_count = state.media_pool.all().filter(|m| m.proxy_ready).count();
+            let proxy_count = state.media_pool.all().filter(|m| state.proxy_shown(m)).count();
             let skim_count = state.media_pool.all().filter(|m| m.skim_file.is_some()).count();
             if proxy_count > 0 {
                 info_row(ui, theme, "Proxies", &format!("{proxy_count} files"));
