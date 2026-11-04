@@ -174,6 +174,7 @@ impl KlippApp {
         };
         tracing::info!("placement: asking the frame-rate question ({media_fps:?} clip, {sequence_fps:?} project) before {pending_cmd:?}");
         let seq_idx = self.state.active_sequence_idx;
+        self.state.rate_question_open = true;
         self.framerate_mismatch_dialog = Some(
             crate::panels::framerate_mismatch_dialog::FrameRateMismatchDialog {
                 sequence_idx: seq_idx,

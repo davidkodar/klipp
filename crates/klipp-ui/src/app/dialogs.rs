@@ -1103,6 +1103,7 @@ impl KlippApp {
                 let seq_idx = dlg.sequence_idx;
                 let media_fps = dlg.media_fps;
                 self.framerate_mismatch_dialog = None;
+                self.state.rate_question_open = false;
                 // Answered either way, the sequence is not asked again
                 // (#2965); closed, the drop is cancelled and it may be.
                 let change_to = match choice {
