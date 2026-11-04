@@ -521,6 +521,10 @@ fn load_project_as(dir: &Path, form: crate::FileForm, strict: bool) -> Result<Lo
         // The file's own fingerprint where it is there, else as stored, for
         // a relink to tell the same content (#2790).
         let fingerprint = if kind != MediaItemKind::File { None } else if offline { item_json.fingerprint } else { klipp_media::relink::fingerprint(&path) };
+        // The file changed while the project was closed: the proxy shows
+        // what it held.
+        let proxy_of_other_content = item_json.fingerprint.is_some() && !offline && fingerprint != item_json.fingerprint;
+        let proxy_path = item_json.proxy_path.as_ref().filter(|_| !proxy_of_other_content).map(|p| resolve_media_path(dir, Path::new(p)));
         if listed {
             warn!("Media file is a playlist or a list of other files, not media; marking offline: {:?}", path);
         } else if let Some(why) = &refused {
@@ -547,10 +551,8 @@ fn load_project_as(dir: &Path, form: crate::FileForm, strict: bool) -> Result<Lo
             audio_channels: item_json.audio_channels,
             offline,
             is_still: item_json.is_still,
-            proxy_path: item_json.proxy_path.as_ref().map(|p| {
-                resolve_media_path(dir, Path::new(p))
-            }),
-            proxy_ready: item_json.proxy_ready,
+            proxy_path: proxy_path.clone(),
+            proxy_ready: item_json.proxy_ready && proxy_path.as_deref().is_some_and(Path::exists),
             default_source_in: item_json.default_source_in.as_ref().map(|tc| RationalTime { value: tc.value, rate: tc.rate }),
             default_source_out: item_json.default_source_out.as_ref().map(|tc| RationalTime { value: tc.value, rate: tc.rate }),
             rating: item_json.rating,
@@ -781,8 +783,8 @@ fn load_project_as(dir: &Path, form: crate::FileForm, strict: bool) -> Result<Lo
 
     stored.retain(|(_, id), _| !rewritten.contains(id));
     adopt_stored_pictures(&mut sequences, stored, strict)?;
-    for (cid, n, blends) in version_blends {
-        let clip = sequences.iter_mut().flat_map(|s| s.all_clips_mut()).find(|c| c.id.0 == cid).ok_or_else(|| format!("This project's clip {cid} isn't read, so its grade version's mix can't be kept"))?;
+    for (sid, cid, n, blends) in version_blends {
+        let clip = sequences.iter_mut().filter(|s| s.id.0 == sid).flat_map(|s| s.all_clips_mut()).find(|c| c.id.0 == cid).ok_or_else(|| format!("This project's clip {cid} isn't read, so its grade version's mix can't be kept"))?;
         clip.set_version_blends(n, &blends).map_err(|e| format!("This project's clip {cid} can't keep its grade version's mix: {e}"))?;
     }
     for (sid, root, blends) in sequence_blends {

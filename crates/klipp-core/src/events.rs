@@ -1031,6 +1031,28 @@ impl ExportAudioCodec {
         }
     }
 
+    /// The rate uncompressed PCM is written at, kbps: the export's 48 kHz
+    /// stereo times the sample's bits. `None` for a codec that is set to
+    /// a bitrate, or has its own.
+    pub fn pcm_kbps(&self) -> Option<u32> {
+        match self {
+            Self::Pcm16 => Some(48 * 16 * 2),
+            Self::Pcm24 => Some(48 * 24 * 2),
+            _ => None,
+        }
+    }
+
+    /// The sound as a person reads it: the codec and the rate it is
+    /// written at, its own for PCM (1,536 kbps for 16-bit), else the
+    /// bitrate set, when there is one. A WAV read "192 kbps", the bitrate
+    /// setting it never used.
+    pub fn described(&self, bitrate_kbps: Option<u32>) -> String {
+        match self.pcm_kbps().or(bitrate_kbps.filter(|_| self.uses_bitrate())) {
+            Some(kbps) => format!("{} {kbps} kbps", self.label()),
+            None => self.label().to_string(),
+        }
+    }
+
     /// Whether this codec supports variable bitrate.
     pub fn uses_bitrate(&self) -> bool {
         matches!(self, Self::Aac | Self::Mp3 | Self::Opus)
@@ -3482,6 +3504,9 @@ pub enum AppCommand {
     ToggleTrackEffect { track_id: TrackId, audio: bool, index: usize },
     /// Take one of a track's own effects off, by index.
     RemoveTrackEffect { track_id: TrackId, audio: bool, index: usize },
+    /// Move one of a track's own audio effects to another place in its
+    /// chain.
+    ReorderTrackAudioEffect { track_id: TrackId, from_index: usize, to_index: usize },
     /// Take all of a track's own effects and its grade off.
     ClearTrackEffects { track_id: TrackId },
     /// Reset the per-track waveform amplitude zoom back to 1.0 (#50).
@@ -5623,6 +5648,9 @@ mod codec_hint_tests {
 /// them.
 #[derive(Default)]
 pub struct ControlShared {
+    /// A Collect Project is running, from its request to the end of its
+    /// copy (and archive), whatever the UI has drawn since.
+    pub collecting: std::sync::atomic::AtomicBool,
     /// Last interchange import outcome, with its request id and report/error.
     pub import_outcome: std::sync::Mutex<Option<serde_json::Value>>,
     /// The last surface click's outcome (#2754): its request id, and the

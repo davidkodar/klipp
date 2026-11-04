@@ -1379,7 +1379,7 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
         "klipp_pace" => json!({ "method": "pace" }),
         "klipp_collect_project" => {
             let mut v = json!({ "method": "collect_project" });
-            for key in ["dest", "mode", "handle_secs", "proxies", "dry_run", "verify"] {
+            for key in ["dest", "mode", "handle_secs", "proxies", "dry_run", "verify", "allow_offline"] {
                 if let Some(x) = args.get(key) {
                     v[key] = x.clone();
                 }
@@ -2688,7 +2688,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              json!({ "apply": { "type": "boolean" }, "detail": { "type": "boolean" } }), vec![]),
         tool("klipp_collect_project",
              "Collect Project: dry_run says what it copies and can't carry; dest collects; verify checks a collected folder. Details: klipp_guide topic collect_project.",
-             json!({ "dest": { "type": "string" }, "mode": { "type": "string", "enum": ["all", "used", "trimmed"] }, "handle_secs": { "type": "number" }, "proxies": { "type": "boolean" }, "dry_run": { "type": "boolean" }, "verify": { "type": "string" } }), vec![]),
+             json!({ "dest": { "type": "string" }, "mode": { "type": "string", "enum": ["all", "used", "trimmed"] }, "handle_secs": { "type": "number" }, "proxies": { "type": "boolean" }, "dry_run": { "type": "boolean" }, "verify": { "type": "string" }, "allow_offline": { "type": "boolean" } }), vec![]),
         tool("klipp_reuse_report",
              "Where the timeline uses the same footage twice, or two files that look the same. Details: klipp_guide topic reuse_report.",
              json!({}), vec![]),
@@ -3116,6 +3116,10 @@ mod interface_tests {
         assert!(look.contains("```json") && look.contains("\"op\":\"look\""), "an op's example goes with it: {look}");
         let duck = guide_topic("op.duck").unwrap();
         assert!(duck.contains("bridge_secs") && !duck.contains("volume {clip_id"), "one op, not the next: {duck}");
+        // The aux buses and sends in the op reference too, each its own.
+        let (aux_bus, send) = (guide_topic("op.aux_bus").unwrap(), guide_topic("op.send").unwrap());
+        assert!(aux_bus.contains("a solo never silences them") && !aux_bus.contains("send {track"), "{aux_bus}");
+        assert!(send.contains("Up to 16 sends a track; the timeline view") && !send.contains("duck {clip_id"), "{send}");
         // The audio effects and their params, no picture effect (#2780).
         let clip_audio = guide_topic("op.clip_audio").unwrap();
         assert!(clip_audio.contains("band1..band6 _enabled") && clip_audio.contains("pitch_shift") && !clip_audio.contains("vignette") && !clip_audio.contains("chroma_key"), "{clip_audio}");

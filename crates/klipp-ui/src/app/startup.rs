@@ -134,6 +134,9 @@ impl KlippApp {
             toolbar: ToolbarPanel { logo_texture: None },
             updates: Default::default(),
             unsaved_settled_at: None,
+            unsaved_settle_cost: std::time::Duration::ZERO,
+            proxy_look: None,
+            proxy_looked_at: None,
             viewer: ViewerPanel::default(),
             title_renderer: title_renderer_ui,
             markers: MarkersPanel::default(),
@@ -687,6 +690,9 @@ impl KlippApp {
         if let Some(note) = crash_notice(&recent) {
             app.state.toast.show(note);
         }
+        // What a killed proxy job left: never renamed, never used.
+        let proxies = app.proxy_cache_dir();
+        std::thread::spawn(move || super::proxies::remove_leftover_partials(&proxies, std::time::Duration::from_secs(600)));
         klipp_core::startup_timer::mark("KlippApp::new returning");
         app
     }

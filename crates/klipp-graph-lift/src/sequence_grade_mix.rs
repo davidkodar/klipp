@@ -185,16 +185,18 @@ pub fn take(body: &mut Value) -> Result<Vec<Blend>, String> {
 }
 
 /// Each clip grade version's stored body in a project at revision 2 or
-/// later, by its clip's id and its place among the clip's versions, for
-/// `f` (#1322).
-fn for_each_version(project: &mut Value, mut f: impl FnMut(Uuid, usize, &mut Value) -> Result<(), String>) -> Result<(), String> {
+/// later, by its sequence's id, its clip's id and its place among the clip's
+/// versions, for `f` (#1322). By both ids, because a duplicated sequence
+/// keeps its clips' ids.
+fn for_each_version(project: &mut Value, mut f: impl FnMut(Uuid, Uuid, usize, &mut Value) -> Result<(), String>) -> Result<(), String> {
     for seq in old_fields::sequences_mut(project).map_err(|e| format!("{e:?}"))? {
+        let sid = id_of(seq)?;
         for track in objects(seq.get_mut("tracks")) {
             for clip in objects(track.get_mut("clips")) {
                 let cid = id_of(clip)?;
                 for (n, version) in objects(clip.get_mut("grade_versions")).enumerate() {
                     if let Some(b) = version.get_mut(V2_FIELD) {
-                        f(cid, n, b)?;
+                        f(sid, cid, n, b)?;
                     }
                 }
             }
@@ -203,25 +205,26 @@ fn for_each_version(project: &mut Value, mut f: impl FnMut(Uuid, usize, &mut Val
     Ok(())
 }
 
-/// Write each clip grade version's blends, `of` its clip's id and its
-/// place, into a project just converted (#1322): the version's v1 graph
+/// Write each clip grade version's blends, `of` its sequence's id, its clip's
+/// id and its place, into a project just converted (#1322): the version's v1 graph
 /// leaves them out, as a sequence grade's does. Each body is set to
 /// exactly those, whatever it held.
-pub fn write_versions(project: &mut Value, of: &dyn Fn(Uuid, usize) -> Vec<Blend>) -> Result<(), String> {
-    for_each_version(project, |cid, n, b| {
-        take(b).and_then(|_| write(b, &of(cid, n))).map_err(|e| format!("clip {cid}'s grade version {n}: {e}"))
+pub fn write_versions(project: &mut Value, of: &dyn Fn(Uuid, Uuid, usize) -> Vec<Blend>) -> Result<(), String> {
+    for_each_version(project, |sid, cid, n, b| {
+        take(b).and_then(|_| write(b, &of(sid, cid, n))).map_err(|e| format!("clip {cid}'s grade version {n}: {e}"))
     })
 }
 
-/// Each clip grade version's blends in a stored project, by its clip's id
-/// and its place, its own [`read()`] checks passed. Read only.
-pub fn read_versions(project: &Value) -> Result<Vec<(Uuid, usize, Vec<Blend>)>, String> {
+/// Each clip grade version's blends in a stored project, by its sequence's
+/// id, its clip's id and its place, its own [`read()`] checks passed. Read
+/// only.
+pub fn read_versions(project: &Value) -> Result<Vec<(Uuid, Uuid, usize, Vec<Blend>)>, String> {
     let mut copy = project.clone();
     let mut out = Vec::new();
-    for_each_version(&mut copy, |cid, n, b| {
+    for_each_version(&mut copy, |sid, cid, n, b| {
         let blends = read(b).map_err(|e| format!("clip {cid}'s grade version {n}: {e}"))?;
         if !blends.is_empty() {
-            out.push((cid, n, blends));
+            out.push((sid, cid, n, blends));
         }
         Ok(())
     })?;
