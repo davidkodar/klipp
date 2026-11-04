@@ -35,6 +35,8 @@ impl KlippApp {
             self.updates.check_in_about(&mut self.state.show_about_dialog);
         }
         let project_open = self.state.project_path.is_some();
+        // The first start's Welcome dialog first, then the question.
+        self.updates.hold_question = self.state.show_welcome;
         self.updates.show(ctx, &mut self.prefs.general, &mut self.prefs_dirty, project_open, &mut self.state.show_about_dialog);
         self.state.update_notice_open = self.updates.holds_keys();
         self.tick_unsaved(ctx);

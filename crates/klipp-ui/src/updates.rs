@@ -285,6 +285,10 @@ pub(crate) struct Updates {
     /// yet, and whether it is on screen.
     asked: bool,
     asking: bool,
+    /// The question waits while this is set: the Welcome screen's dialog
+    /// is up on a first start, and the question stood on top of it (Y11).
+    /// Not yet asked, it is not yet a start counted.
+    pub(crate) hold_question: bool,
     /// A notice that keeps the keys was drawn this frame.
     showing: bool,
     /// The new version's notice put off until the next start: closed, or
@@ -309,6 +313,7 @@ impl Default for Updates {
         Self {
             asked: false,
             asking: false,
+            hold_question: false,
             showing: false,
             later: false,
             check_requested: false,
@@ -485,7 +490,8 @@ impl Updates {
     /// over About, which shows the result itself. `about` is whether About
     /// is open; the notice's "Show details…" opens it.
     pub(crate) fn show(&mut self, ctx: &egui::Context, prefs: &mut GeneralPrefs, dirty: &mut bool, project_open: bool, about: &mut bool) {
-        if !std::mem::replace(&mut self.asked, true) {
+        if !self.asked && !self.hold_question {
+            self.asked = true;
             let before = (prefs.update_checks_answered, prefs.update_checks_asked);
             self.asking = ask_this_start(prefs);
             if (prefs.update_checks_answered, prefs.update_checks_asked) != before {
@@ -493,7 +499,7 @@ impl Updates {
             }
         }
         self.showing = false;
-        if self.asking && !prefs.update_checks_answered {
+        if self.asking && !prefs.update_checks_answered && !self.hold_question {
             self.ask(ctx, prefs, dirty);
             self.showing = self.asking;
         }
@@ -1126,6 +1132,26 @@ mod tests {
             updates.put_off();
             assert_eq!(frames(&mut updates, &mut prefs, true), "", "nothing drawn outside About");
         }
+    }
+
+    /// Y11: on a first start the question waits while the Welcome dialog
+    /// is up, not yet counted as a start, and is asked once it closes.
+    #[test]
+    fn the_question_waits_for_the_welcome_dialog() {
+        let ctx = egui::Context::default();
+        let mut prefs = GeneralPrefs::default();
+        let mut updates = Updates::default();
+        let drawn = |updates: &mut Updates, prefs: &mut GeneralPrefs| {
+            let _ = ctx.run(egui::RawInput::default(), |ctx| updates.show(ctx, prefs, &mut false, false, &mut false));
+            ctx.memory(|m| m.area_rect(egui::Id::new("update_checks_question"))).is_some() && updates.holds_keys()
+        };
+        updates.hold_question = true;
+        assert!(!drawn(&mut updates, &mut prefs) && !drawn(&mut updates, &mut prefs), "held while Welcome is up");
+        assert_eq!(prefs.update_checks_asked, 0, "not yet a start asked");
+        updates.hold_question = false;
+        drawn(&mut updates, &mut prefs);
+        assert!(drawn(&mut updates, &mut prefs), "asked once Welcome is closed");
+        assert_eq!(prefs.update_checks_asked, 1);
     }
 
     /// Both notices sit in the middle of the window, not in a corner.
