@@ -104,6 +104,24 @@ fn a_language_with_no_dictionary_is_said_once_and_its_text_left_alone() {
     assert!(matches!(&report.missing[0], Missing::NotInstalled { language, packages } if language == "de" && packages.contains("hunspell-de")));
 }
 
+/// A dictionary installed while Klipp runs is found without a restart:
+/// a language found missing is looked for again once its recheck has
+/// passed, and found then; before that, still missing.
+#[test]
+fn a_dictionary_installed_while_running_is_found() {
+    let dir = std::env::temp_dir().join(format!("klipp-spelling-install-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let dicts = Dictionaries::in_dirs(vec![dir.clone()], None).with_recheck(std::time::Duration::from_millis(200));
+    assert!(matches!(dicts.get("en"), Err(Missing::NotInstalled { .. })), "none installed yet");
+    for ext in ["aff", "dic"] {
+        std::fs::copy(fixtures().join(format!("en_US.{ext}")), dir.join(format!("en_US.{ext}"))).unwrap();
+    }
+    assert!(dicts.get("en").is_err(), "a miss stands until its recheck");
+    std::thread::sleep(std::time::Duration::from_millis(250));
+    assert!(dicts.get("en").is_ok(), "found once looked for again");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 #[test]
 fn a_tag_is_only_ever_made_into_these_file_names() {
     assert_eq!(dictionaries::file_stems("en", Some("GB")).unwrap(), ["en_GB", "en_US", "en"]);
