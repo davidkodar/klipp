@@ -453,6 +453,27 @@ pub fn read(dir: &Path) -> Result<Option<ImportReport>, String> {
 mod tests {
     use super::*;
 
+    /// A timeline nesting past any real one is refused with why, whatever
+    /// the XML format; the parser recurses once per level, so one past the
+    /// stack would stop the app.
+    #[test]
+    fn a_timeline_nesting_too_deep_is_refused() {
+        let dir = std::env::temp_dir().join(format!("klipp-import-depth-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let deep = |tag: &str, open: &str, close: &str| format!("{open}{}{}{close}", format!("<{tag}>").repeat(100_000), format!("</{tag}>").repeat(100_000));
+        for (name, content) in [
+            ("t.fcpxml", deep("gap", r#"<?xml version="1.0"?><fcpxml version="1.9"><resources/><library><event><project name="P"><sequence><spine>"#, "</spine></sequence></project></event></library></fcpxml>")),
+            ("t.xml", deep("sequence", r#"<?xml version="1.0"?><xmeml version="4">"#, "</xmeml>")),
+            ("t.mlt", deep("playlist", "<mlt>", "</mlt>")),
+        ] {
+            let source = dir.join(name);
+            std::fs::write(&source, content).unwrap();
+            let why = load(&source, klipp_core::Fps::pal_25(), &klipp_media::MediaPool::new()).err().unwrap_or_else(|| panic!("{name} opened"));
+            assert!(why.contains("nest deeper than 256"), "{name}: {why}");
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     /// A clip whose times no timeline can hold is refused by name, in place
     /// of opening and failing later; times at the edge of the valid range
     /// still open.

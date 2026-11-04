@@ -60,6 +60,12 @@ impl From<roxmltree::Error> for FcpxmlImportError {
     }
 }
 
+impl From<crate::path_util::SafeXmlError> for FcpxmlImportError {
+    fn from(e: crate::path_util::SafeXmlError) -> Self {
+        Self::Parse(e.to_string())
+    }
+}
+
 /// A resource in the `<resources>` block that references a media file.
 #[derive(Debug, Clone)]
 struct AssetInfo {

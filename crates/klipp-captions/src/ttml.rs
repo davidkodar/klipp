@@ -281,6 +281,7 @@ fn region_placement<'a>(n: roxmltree::Node<'a, 'a>) -> (Option<(f32, f32)>, Opti
 /// The language a TTML document's root names in `xml:lang`, as a
 /// lowercase tag; `None` when it isn't TTML or names none (#2223).
 pub fn ttml_language(content: &str) -> Option<String> {
+    klipp_core::xml_depth::xml_depth_ok(content).then_some(())?;
     let doc = roxmltree::Document::parse(content).ok()?;
     let root = doc.root_element();
     (root.tag_name().name() == "tt").then_some(())?;
@@ -293,6 +294,9 @@ pub fn ttml_language(content: &str) -> Option<String> {
 /// italics, bold, underline and colour (named styles followed), and the
 /// region it sits in when that is not the frame's bottom band.
 pub fn parse_ttml(content: &str) -> Result<Vec<SubtitleEntry>, String> {
+    if !klipp_core::xml_depth::xml_depth_ok(content) {
+        return Err(format!("not a TTML document: {}", klipp_core::xml_depth::too_deep()));
+    }
     let doc = roxmltree::Document::parse(content).map_err(|e| format!("not a TTML document: {e}"))?;
     let root = doc.root_element();
     let ns_ok = |n: roxmltree::Node| n.tag_name().namespace().is_some_and(|ns| ns == TT || TT_DRAFTS.contains(&ns));
@@ -417,6 +421,15 @@ fn collect_text(n: roxmltree::Node, style: TextStyle, styles: &Styles, text: &mu
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A file nesting past any real one is refused, not parsed: the parser
+    /// recurses once per level.
+    #[test]
+    fn a_file_nesting_too_deep_is_refused() {
+        let deep = format!("<tt xmlns=\"http://www.w3.org/ns/ttml\">{}{}</tt>", "<div>".repeat(100_000), "</div>".repeat(100_000));
+        assert!(parse_ttml(&deep).unwrap_err().contains("nest deeper"));
+        assert_eq!(ttml_language(&deep), None);
+    }
 
     fn styled(spans: &[Span], i: usize) -> SpanStyle {
         spans.iter().find(|s| s.start <= i && i < s.end).map(|s| s.style).unwrap_or_default()

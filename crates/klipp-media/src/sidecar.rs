@@ -40,6 +40,7 @@ pub fn read_sidecar(media: &Path) -> Option<Sidecar> {
 
 /// Parse a NonRealTimeMeta document. `None` when it is not one.
 pub fn parse_sidecar(xml: &str) -> Option<Sidecar> {
+    klipp_core::xml_depth::xml_depth_ok(xml).then_some(())?;
     let doc = roxmltree::Document::parse(xml).ok()?;
     let root = doc.root_element();
     if root.tag_name().name() != "NonRealTimeMeta" {
@@ -161,6 +162,14 @@ fn ltc_value_to_timecode(v: &str, drop_frame: bool) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A camera's sidecar comes with the media, from anywhere: one nesting
+    /// past any real one is no sidecar, not a parser recursing to the end.
+    #[test]
+    fn a_sidecar_nesting_too_deep_is_none() {
+        let deep = format!("<NonRealTimeMeta>{}{}</NonRealTimeMeta>", "<a>".repeat(100_000), "</a>".repeat(100_000));
+        assert!(parse_sidecar(&deep).is_none());
+    }
 
     const SONY: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 <NonRealTimeMeta xmlns="urn:schemas-professionalDisc:nonRealTimeMeta:ver.2.20" lastUpdate="2024-03-15T10:30:00+01:00">

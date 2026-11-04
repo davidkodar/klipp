@@ -219,14 +219,29 @@ pub fn sanitize_resolution(width: u32, height: u32) -> klipp_core::Resolution {
 ///     ever flips.
 ///   * `nodes_limit: MAX_XML_NODES` — cap the parsed node count to
 ///     prevent entity-bomb / nested-element DoS from degenerate inputs.
-pub fn parse_xml_safe(xml: &str) -> Result<roxmltree::Document<'_>, roxmltree::Error> {
-    roxmltree::Document::parse_with_options(
+///
+/// A file nesting past [`klipp_core::xml_depth::MAX_XML_DEPTH`] is refused
+/// before the parser, which recurses once per level, sees it.
+pub fn parse_xml_safe(xml: &str) -> Result<roxmltree::Document<'_>, SafeXmlError> {
+    if !klipp_core::xml_depth::xml_depth_ok(xml) {
+        return Err(SafeXmlError::TooDeep);
+    }
+    Ok(roxmltree::Document::parse_with_options(
         xml,
         roxmltree::ParsingOptions {
             allow_dtd: false,
             nodes_limit: MAX_XML_NODES,
         },
-    )
+    )?)
+}
+
+/// Why [`parse_xml_safe`] refused a document.
+#[derive(Debug, thiserror::Error)]
+pub enum SafeXmlError {
+    #[error("{}", klipp_core::xml_depth::too_deep())]
+    TooDeep,
+    #[error(transparent)]
+    Xml(#[from] roxmltree::Error),
 }
 
 /// `xml` without a document type declaration that names its root and
