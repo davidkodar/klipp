@@ -484,8 +484,22 @@ fn opener_title() -> TitleData {
     ])
 }
 
+/// The opener laid out for a `w` × `h` frame, its bars kept on the
+/// frame's top and bottom edges: laid out like any layer they would move
+/// in towards the title on a tall or square frame, two stripes across the
+/// picture rather than a letterbox.
+fn opener_for(w: u32, h: u32) -> TitleData {
+    let mut td = laid(opener_title, "Openers", (0.5, 0.5), w, h);
+    for (k, top) in [(0, true), (1, false)] {
+        let t = &mut td.objects[k].transform;
+        let half = t.size.y / 2.0;
+        t.center.y = if top { half } else { 1.0 - half };
+    }
+    td
+}
+
 fn opener() -> CompositionTemplate {
-    let layouts = FRAMES.map(|(key, w, h)| scene(&format!("Opener {key}"), w, h, vec![(TrackKind::Text, vec![titled("open", laid(opener_title, "Openers", (0.5, 0.5), w, h), 0.0, SECS)])]));
+    let layouts = FRAMES.map(|(key, w, h)| scene(&format!("Opener {key}"), w, h, vec![(TrackKind::Text, vec![titled("open", opener_for(w, h), 0.0, SECS)])]));
     let (top, bottom, title) = (object_index(&layouts[0], "open", 0), object_index(&layouts[0], "open", 1), object_index(&layouts[0], "open", 2));
     template("Opener", "Openers", layouts.into_iter().collect(),
         vec![("title", text_param("Title", "The Title")), ("bars", control("Bars", 1.0))],
