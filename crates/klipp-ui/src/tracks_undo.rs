@@ -45,6 +45,8 @@ pub fn label(cmd: &AppCommand) -> Option<&'static str> {
         AppCommand::UngroupClips { .. } | AppCommand::UngroupClip { .. } => "Ungroup",
         AppCommand::SetTrackLocked { locked: true, .. } => "Lock Track",
         AppCommand::SetTrackLocked { .. } => "Unlock Track",
+        AppCommand::SetTrackVisibility { visible: false, .. } => "Hide Track",
+        AppCommand::SetTrackVisibility { .. } => "Show Track",
         AppCommand::SetTrackFrozen { frozen: true, .. } => "Freeze Track",
         AppCommand::SetTrackFrozen { .. } => "Unfreeze Track",
         AppCommand::SetTrackLockWhileFrozen { .. } => "Lock While Frozen",
@@ -230,6 +232,20 @@ mod tests {
 
     fn top_label(state: &mut AppState) -> Option<String> {
         state.active_history_mut().undo_label().map(str::to_string)
+    }
+
+    /// The eye on a track header is a step of its own: Ctrl+Z took back
+    /// whatever came before it, and left the track hidden.
+    #[test]
+    fn hiding_a_track_is_one_named_undo_step() {
+        let mut state = state_with_a_clip();
+        let v1 = state.sequences[0].tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
+        for (visible, name) in [(false, "Hide Track"), (true, "Show Track")] {
+            let before = before(&state, &AppCommand::SetTrackVisibility { track_index: v1, visible }).expect("recorded here");
+            state.sequences[0].tracks[v1].visible = visible;
+            record(&mut state, before);
+            assert_eq!(top_label(&mut state).as_deref(), Some(name));
+        }
     }
 
     #[test]

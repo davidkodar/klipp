@@ -1303,7 +1303,7 @@ impl KlippApp {
                         use std::hash::{Hash, Hasher};
                         let mut h = std::collections::hash_map::DefaultHasher::new();
                         (self.state.consolidate_mode, self.state.consolidate_handle_secs.to_bits(), self.state.consolidate_include_proxies, self.state.consolidate_include_skims).hash(&mut h);
-                        total_media.hash(&mut h);
+                        (total_media, offline_count).hash(&mut h);
                         for c in self.state.sequences.iter().flat_map(|s| s.tracks.iter()).flat_map(|t| t.clips.iter()) {
                             (c.id, c.source_in.value, c.source_out.value).hash(&mut h);
                         }
@@ -1321,6 +1321,7 @@ impl KlippApp {
                         let color = klipp_project::ColorSettings { global_lut_path: self.state.global_lut_path.clone(), ..Default::default() };
                         let summary = klipp_project::consolidate::summarise(&self.state.media_pool, &self.state.sequences, &color, &options, self.state.project_path.as_deref());
                         self.state.consolidate_summary = Some((key, summary));
+                        self.state.consolidate_offline = klipp_project::collect_report::offline_in_use(&self.state.sequences, &self.state.media_pool);
                     }
                     if let Some((_, s)) = &self.state.consolidate_summary {
                         let size = if s.bytes >= 1 << 30 { format!("{:.1} GB", s.bytes as f64 / (1u64 << 30) as f64) } else { format!("{:.1} MB", s.bytes as f64 / (1u64 << 20) as f64) };
@@ -1403,9 +1404,23 @@ impl KlippApp {
                     });
                     ui.add_space(8.0);
 
+                    // As over the socket: media in use offline would leave
+                    // paths outside the folder, so it is asked for by name.
+                    if !self.state.consolidate_offline.is_empty() {
+                        ui.colored_label(self.theme.marker_warning, "\u{26A0} Media the project uses is offline. Relink it, or collect the rest:");
+                        egui::ScrollArea::vertical().id_salt("collect_offline").max_height(80.0).show(ui, |ui| {
+                            for file in &self.state.consolidate_offline {
+                                ui.label(egui::RichText::new(file).small());
+                            }
+                        });
+                        ui.checkbox(&mut self.state.consolidate_allow_offline, "Collect the rest without these");
+                        ui.add_space(8.0);
+                    }
+
                     let can_consolidate =
                         !self.state.consolidate_dest_path.trim().is_empty()
-                            && !consolidation_active;
+                            && !consolidation_active
+                            && (self.state.consolidate_offline.is_empty() || self.state.consolidate_allow_offline);
 
                     ui.horizontal(|ui| {
                         if ui.button("Cancel").clicked() {
@@ -1439,6 +1454,10 @@ impl KlippApp {
                 });
             if !open {
                 self.state.show_consolidate_dialog = false;
+            }
+            // Asked for this once, not for a later project's.
+            if !self.state.show_consolidate_dialog {
+                self.state.consolidate_allow_offline = false;
             }
             let _ = project_path; // silence unused warning in release builds
         }

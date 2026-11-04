@@ -3640,7 +3640,7 @@ impl KlippApp {
                 error: j.error.clone(),
                 loudness: j.loudness_result.clone(),
                 hardware: j.hw_info.clone(),
-                fps: j.started_at.map(|t| t.elapsed().as_secs_f32()).filter(|s| *s > 2.0 && j.frames_done > 0).map(|s| j.frames_done as f32 / s),
+                fps: j.render_fps(),
                 eta_secs: j.started_at
                     .map(|t| t.elapsed().as_secs_f32())
                     .filter(|s| *s > 2.0 && j.frames_done > 0 && j.status == klipp_export::RenderJobStatus::Rendering)

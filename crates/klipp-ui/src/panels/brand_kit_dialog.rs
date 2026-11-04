@@ -72,6 +72,11 @@ pub fn show(ctx: &egui::Context, state: &mut AppState) -> Option<(String, BrandK
                 (&mut parts.watermark, "Logo watermark", "Its logo in its corner on a track of its own, over the whole piece"),
             ];
             for ((tick, label, hover), has) in rows.into_iter().zip(has) {
+                // A part this kit hasn't got is not ticked: one ticked for
+                // another kit showed ticked and greyed.
+                if !has {
+                    *tick = false;
+                }
                 let r = ui.add_enabled(has, egui::Checkbox::new(tick, label));
                 if has {
                     r.on_hover_text(hover);
@@ -97,4 +102,33 @@ pub fn show(ctx: &egui::Context, state: &mut AppState) -> Option<(String, BrandK
     }
     state.show_apply_brand_kit = open;
     apply
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Switching from a kit with a logo to one without unticks Logo
+    /// watermark: it showed ticked and greyed, as if it would be taken.
+    #[test]
+    fn a_kit_without_a_logo_leaves_the_watermark_unticked() {
+        let ctx = egui::Context::default();
+        let listed = vec![
+            Listed { name: "With logo".into(), builtin: false, has: [true, true, false, false, true] },
+            Listed { name: "No logo".into(), builtin: false, has: [true, true, false, false, false] },
+        ];
+        ctx.data_mut(|d| d.insert_temp(egui::Id::new("apply_brand_kit_list"), std::sync::Arc::new(listed)));
+        let mut state = AppState { show_apply_brand_kit: true, apply_brand_kit: ("With logo".into(), BrandKitParts { look: true, captions: false, intro: false, outro: false, watermark: true }), ..AppState::default() };
+        let frame = |state: &mut AppState| {
+            let _ = ctx.run(egui::RawInput::default(), |ctx| {
+                show(ctx, state);
+            });
+        };
+        frame(&mut state);
+        assert!(state.apply_brand_kit.1.watermark, "a kit with a logo keeps it ticked");
+        state.apply_brand_kit.0 = "No logo".into();
+        frame(&mut state);
+        assert!(!state.apply_brand_kit.1.watermark, "a kit without one unticks it");
+        assert!(state.apply_brand_kit.1.look, "a part it has stays as it was");
+    }
 }

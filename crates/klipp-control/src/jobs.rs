@@ -93,6 +93,14 @@ pub(super) fn register_proxies(job_id: &str, media_ids: Vec<klipp_core::MediaId>
     submitted().lock().unwrap_or_else(|e| e.into_inner()).insert(job_id.to_owned(), Submitted::Proxies { media_ids });
 }
 
+/// The files of the proxies job `job_id`, if that is what it is.
+pub(super) fn proxies_of(job_id: &str) -> Option<Vec<klipp_core::MediaId>> {
+    match submitted().lock().unwrap_or_else(|e| e.into_inner()).get(job_id) {
+        Some(Submitted::Proxies { media_ids }) => Some(media_ids.clone()),
+        _ => None,
+    }
+}
+
 /// A proxies job as it stands: each file ready (in the pool), being made
 /// (its share done) or failed, as the UI last said.
 fn proxies_job(ctx: &ControlContext, job_id: &str, media_ids: &[klipp_core::MediaId]) -> Value {
@@ -105,7 +113,7 @@ fn proxies_job(ctx: &ControlContext, job_id: &str, media_ids: &[klipp_core::Medi
                 gone += 1;
                 continue;
             };
-            if item.proxy_ready {
+            if item.proxy_on_disk() {
                 done += 1;
                 share += 1.0;
             } else if let Some((_, why)) = status.failed.iter().find(|(f, _)| f == id) {

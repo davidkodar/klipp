@@ -11,11 +11,17 @@ pub const ID: &str = "audio";
 // peak and not just a lot of low end: wind was reported as mains hum.
 // v4 measures the band under 60 Hz, below any voice, for the rumble rule
 // (#505).
-pub const VERSION: u32 = 4;
+// v5 keeps the pauses as short as a breath between two sentences, a
+// cut point, beside the silences.
+pub const VERSION: u32 = 5;
 
 /// Below this the signal is silence, and it has to stay there this long.
 const SILENCE_DB: f32 = -35.0;
 const SILENCE_MIN_SECS: f32 = 0.4;
+/// A pause: below [`SILENCE_DB`] this long, as short as the breath
+/// between two sentences (0.18 to 0.28 s measured in fluent speech), too
+/// short to count as silence.
+const PAUSE_MIN_SECS: f32 = 0.12;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Span {
@@ -34,6 +40,10 @@ pub struct AudioEnvelope {
     pub true_peak_dbtp: Option<f32>,
     pub silence_threshold_db: f32,
     pub silences: Vec<Span>,
+    /// Every stretch below the threshold [`PAUSE_MIN_SECS`] or longer, the
+    /// silences among them: where speech pauses, a clean place to cut.
+    #[serde(default)]
+    pub pauses: Vec<Span>,
     /// Overall RMS level, dB (full-band). The reference the bands sit under.
     #[serde(default)]
     pub rms_db: Option<f32>,
@@ -68,6 +78,15 @@ pub struct AudioEnvelope {
 }
 
 impl AudioEnvelope {
+    /// A stretch below the threshold: a pause, and a silence too when it
+    /// lasts [`SILENCE_MIN_SECS`].
+    fn push_quiet(&mut self, span: Span) {
+        if span.end_secs - span.start_secs >= f64::from(SILENCE_MIN_SECS) - 1e-6 {
+            self.silences.push(span.clone());
+        }
+        self.pauses.push(span);
+    }
+
     /// Seconds of silence within `from..to`.
     pub fn silence_within(&self, from: f64, to: f64) -> f64 {
         self.silences
@@ -171,7 +190,7 @@ pub fn parse(stderr: &str, duration_secs: f64) -> AudioEnvelope {
             open = number_after(line, "silence_start:");
         } else if line.contains("silence_end:") {
             if let (Some(start), Some(end)) = (open.take(), number_after(line, "silence_end:")) {
-                env.silences.push(Span { start_secs: start, end_secs: end });
+                env.push_quiet(Span { start_secs: start, end_secs: end });
             }
         } else if line.contains("Summary:") {
             in_summary = true;
@@ -189,7 +208,7 @@ pub fn parse(stderr: &str, duration_secs: f64) -> AudioEnvelope {
     // A silence still open at the end runs to the end.
     if let Some(start) = open {
         if duration_secs > start {
-            env.silences.push(Span { start_secs: start, end_secs: duration_secs });
+            env.push_quiet(Span { start_secs: start, end_secs: duration_secs });
         }
     }
     env.loudest_secs = loudest.map(|(t, _)| t);
@@ -304,7 +323,7 @@ impl crate::Analyser for AudioAnalyser {
             "-vn".to_string(),
             "-sn".to_string(),
             "-af".to_string(),
-            format!("silencedetect=noise={SILENCE_DB}dB:d={SILENCE_MIN_SECS},ebur128=peak=true"),
+            format!("silencedetect=noise={SILENCE_DB}dB:d={PAUSE_MIN_SECS},ebur128=peak=true"),
             "-f".to_string(),
             "null".to_string(),
             "-".to_string(),
@@ -422,6 +441,28 @@ mod tests {
 
         // An older analysis with no bands measured reports nothing.
         assert!(AudioEnvelope::default().faults().is_empty());
+    }
+
+    /// What silencedetect printed for a narrated take (Piper's voice,
+    /// four sentences): its four breaths, 0.19 to 0.24 s, are pauses, and
+    /// none is a silence; a 0.4 s gap is both.
+    #[test]
+    fn short_gaps_are_pauses_and_long_ones_silences_too() {
+        let text = "\
+[silencedetect @ 0x1] silence_start: 1.068753\n\
+[silencedetect @ 0x1] silence_end: 1.256871 | silence_duration: 0.188118\n\
+[silencedetect @ 0x1] silence_start: 3.376054\n\
+[silencedetect @ 0x1] silence_end: 3.605442 | silence_duration: 0.229388\n\
+[silencedetect @ 0x1] silence_start: 5.480181\n\
+[silencedetect @ 0x1] silence_end: 5.667619 | silence_duration: 0.187438\n\
+[silencedetect @ 0x1] silence_start: 7.470884\n\
+[silencedetect @ 0x1] silence_end: 7.712063 | silence_duration: 0.241179\n\
+[silencedetect @ 0x1] silence_start: 9.0\n\
+[silencedetect @ 0x1] silence_end: 9.4 | silence_duration: 0.4\n";
+        let e = parse(text, 10.07);
+        assert_eq!(e.pauses.len(), 5, "{:?}", e.pauses);
+        assert_eq!(e.pauses[1], Span { start_secs: 3.376054, end_secs: 3.605442 });
+        assert_eq!(e.silences, vec![Span { start_secs: 9.0, end_secs: 9.4 }], "only the 0.4 s gap is a silence");
     }
 
     #[test]
