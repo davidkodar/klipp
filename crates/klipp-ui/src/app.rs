@@ -366,6 +366,8 @@ pub struct KlippApp {
     updates: crate::updates::Updates,
     /// When `dirty` was last settled into `unsaved` (#2626).
     unsaved_settled_at: Option<std::time::Instant>,
+    /// What the last settle of a raised hint took, which sets the wait before the next.
+    unsaved_settle_cost: std::time::Duration,
     viewer: ViewerPanel,
     title_renderer: klipp_title::TitleRenderer,
     markers: MarkersPanel,
