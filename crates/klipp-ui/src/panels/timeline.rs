@@ -3284,6 +3284,16 @@ impl TimelinePanel {
                             0.0,
                             egui::Stroke::new(2.0_f32, tt.marker_error),
                         );
+                        // Alt-let go on a clip the files can't be takes of:
+                        // the edit refuses, and says why (#3209).
+                        if !any_down && ui.input(|i| i.modifiers.alt) {
+                            let secs = ((pos.x - content_rect.left() + state.timeline_scroll_x) / state.timeline_zoom.max(1e-6)) as f64;
+                            if let Some(clip_id) = state.sequence().tracks.get(track_idx).and_then(|t| crate::auditions::drop_target(t, secs)) {
+                                state.dragging_media = None;
+                                state.dragging_media_group.clear();
+                                cmds.push(AppCommand::EditAudition { clip_id, edit: klipp_core::AuditionEdit::AddMedia { media_ids: group } });
+                            }
+                        }
                     }
                 }
             }
