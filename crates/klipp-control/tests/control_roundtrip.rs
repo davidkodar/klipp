@@ -1425,6 +1425,14 @@ fn control_socket_reads_state_and_forwards_commands() {
     let _ = std::fs::remove_file(&junk);
     assert_eq!(refused["ok"], json!(false), "{refused}");
     assert!(refused["error"].as_str().unwrap().contains("could not be imported"), "{}", refused["error"]);
+    // A text file ffmpeg can read as a picture is no media either: a
+    // CREDITS.txt came in as a 0:00 clip (SEC1).
+    let credits = std::env::temp_dir().join(format!("klipp-credits-{}.txt", std::process::id()));
+    std::fs::write(&credits, "Music by someone, licensed CC-BY 4.0, from a free archive.\n".repeat(80)).unwrap();
+    let text = h.call(json!({ "method": "import_media", "path": credits.to_string_lossy() }));
+    let _ = std::fs::remove_file(&credits);
+    assert_eq!(text["ok"], json!(false), "{text}");
+    assert!(text["error"].as_str().unwrap().contains("not a picture or sound file"), "{}", text["error"]);
     // Many at once (#1587): each file answered on its own, one that can't
     // be imported stopping none of the rest; a folder gives its media
     // files only, not a list beside them, and not recursive, not a

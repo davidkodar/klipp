@@ -2139,23 +2139,7 @@ impl Track {
 
         let offset = cut_at - clip.timeline_in;
         let cut_secs = offset.to_secs_f64();
-        // Where the cut falls in the source: through the clip's speed, and
-        // from its far end when it plays reversed, whose earlier half on
-        // the timeline is the later part of its range (#617). The source
-        // was split one to one with the timeline, so a half of a 2x clip
-        // showed the wrong part of the file.
-        let rate = clip.source_in.rate;
-        let at_source = |secs: f64| Timecode::from_secs_f64(secs, rate);
-        let moved = clip.speed_integral(cut_secs, SPLIT_STEP_FPS);
-        let ((a_in, a_out), (b_in, b_out)) = if (clip.speed - 1.0).abs() < 1e-9 && clip.speed_keyframes.is_empty() {
-            ((clip.source_in, clip.source_in + offset), (clip.source_in + offset, clip.source_out))
-        } else if clip.is_reversed() {
-            let split = at_source(clip.source_out.to_secs_f64() - moved);
-            ((split, clip.source_out), (clip.source_in, split))
-        } else {
-            let split = at_source(clip.source_in.to_secs_f64() + moved);
-            ((clip.source_in, split), (split, clip.source_out))
-        };
+        let ((a_in, a_out), (b_in, b_out)) = clip.source_split(offset);
         // A fade cannot outlast the piece it is left on: the left half may
         // be shorter than the clip's fade in, the right shorter than its
         // fade out.
@@ -3085,6 +3069,28 @@ impl Clip {
     /// same interval. Uses `dt = 1/fps` Riemann sum clamped to [0.1, 16.0].
     /// The magnitude: how far through its range the clip has moved, in
     /// whichever direction it plays.
+    /// The source ranges of the two pieces a cut `offset` into the clip
+    /// leaves, left then right: through the clip's speed, and from its
+    /// far end when it plays reversed, whose earlier half on the timeline
+    /// is the later part of its range (#617). The source was split one to
+    /// one with the timeline, so a half of a 2x clip showed the wrong part
+    /// of the file. Both blades cut here, so a picture and its sound cut
+    /// on different kinds of track stay on the same file time.
+    pub fn source_split(&self, offset: Timecode) -> ((Timecode, Timecode), (Timecode, Timecode)) {
+        let rate = self.source_in.rate;
+        let at_source = |secs: f64| Timecode::from_secs_f64(secs, rate);
+        let moved = self.speed_integral(offset.to_secs_f64(), SPLIT_STEP_FPS);
+        if (self.speed - 1.0).abs() < 1e-9 && self.speed_keyframes.is_empty() {
+            ((self.source_in, self.source_in + offset), (self.source_in + offset, self.source_out))
+        } else if self.is_reversed() {
+            let split = at_source(self.source_out.to_secs_f64() - moved);
+            ((split, self.source_out), (self.source_in, split))
+        } else {
+            let split = at_source(self.source_in.to_secs_f64() + moved);
+            ((self.source_in, split), (split, self.source_out))
+        }
+    }
+
     pub fn speed_integral(&self, timeline_elapsed_secs: f64, fps: f64) -> f64 {
         speed_integral_keyframes(&self.speed_keyframes, timeline_elapsed_secs, fps, self.speed)
     }

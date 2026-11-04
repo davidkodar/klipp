@@ -1733,6 +1733,11 @@ impl BrowserPanel {
             self.navigation_blocked_by_create = true;
             return;
         }
+        // A search is of the folder it was typed in: kept, it hid the next
+        // folder's files ("0 of 12 items", E4). Read again, it stays.
+        if path != self.files_current_path {
+            self.files_search_query.clear();
+        }
         self.files_current_path = path.clone();
         self.files_entries_dirty = true;
         // Route cleared TextureHandles through the deferred-drop
@@ -7032,5 +7037,25 @@ mod linked_folder_tests {
         assert!(!find("a.mov").is_dir && find("a.mov").size == 1000 && find("a.mov").is_media, "the linked file is the file");
         assert!(!find("broken").is_dir, "a broken link is not a folder");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod folder_search_tests {
+    /// E4: a search typed in one folder is let go on opening another, which
+    /// came up looking empty; reading the same folder again keeps it.
+    #[test]
+    fn opening_a_folder_lets_the_search_go() {
+        let dir = std::env::temp_dir().join(format!("klipp_e4_{}_{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.subsec_nanos()).unwrap_or(0)));
+        let inner = dir.join("Wallpapers");
+        std::fs::create_dir_all(&inner).unwrap();
+        let mut panel = super::BrowserPanel::default();
+        panel.navigate_files_to(dir.clone());
+        panel.files_search_query = "Wall".into();
+        panel.navigate_files_to(dir.clone());
+        assert_eq!(panel.files_search_query, "Wall", "the same folder read again keeps it");
+        panel.navigate_files_to(inner);
+        assert!(panel.files_search_query.is_empty(), "the folder opened is not filtered by it");
+        let _ = std::fs::remove_dir_all(dir);
     }
 }
