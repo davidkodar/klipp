@@ -1449,10 +1449,9 @@ impl KlippApp {
                 true
             }
             AppCommand::AddMaskShape { clip_id, .. } => {
-                // The shape onto the grade's Mask node, made with its
-                // cutout when there's none (`ensure_mask_cutout` composites
-                // source × matte → Output), so a mask added from the Color
-                // tab clips the picture at once.
+                // The shape onto the window on the grade's correction, made
+                // when there's none: the correction applies inside it, the
+                // picture outside left as it was.
                 self.with_current_clip_graph_mut(*clip_id, needs_refresh, |graph| {
                     write_node_settings(graph, cmd);
                 });
@@ -3366,10 +3365,10 @@ pub(super) fn moved_index(i: usize, from: usize, to: usize) -> usize {
 
 pub(super) fn write_node_settings(graph: &mut klipp_nodes::NodeGraph, cmd: &AppCommand) -> bool {
     // A mask shape added or removed names its clip, not its node: the
-    // grade's Mask node takes it, made (with its cutout) when there's none.
+    // window on the grade's correction takes it, made when there's none.
     match cmd {
         AppCommand::AddMaskShape { shape, .. } => {
-            let (mask_node_id, _cutout_id) = graph.ensure_mask_cutout();
+            let mask_node_id = graph.ensure_corrector_window();
             if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == mask_node_id) {
                 node.params.masks.get_or_insert_with(Default::default).masks.push(klipp_core::Mask::new(shape.clone()));
             }
