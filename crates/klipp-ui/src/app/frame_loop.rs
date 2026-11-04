@@ -40,6 +40,7 @@ impl KlippApp {
         self.updates.show(ctx, &mut self.prefs.general, &mut self.prefs_dirty, project_open, &mut self.state.show_about_dialog);
         self.state.update_notice_open = self.updates.holds_keys();
         self.tick_unsaved(ctx);
+        self.tick_proxy_files();
         self.state.seed_recorded_tracks();
 
         // Rotate the deferred-drop texture ring. Advance the slot and
@@ -783,7 +784,7 @@ impl KlippApp {
 
         self.poll_project_copy();
         self.poll_fetched_fonts();
-        self.keep_frozen_tracks();
+        self.keep_frozen_tracks(ctx);
         self.keep_reuse_marks(ctx);
         self.poll_bounces();
         self.keep_playback_note();

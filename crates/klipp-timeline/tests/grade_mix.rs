@@ -166,3 +166,23 @@ fn a_clip_holding_a_grade_mix_says_so() {
     let (mixed, ..) = mixed();
     assert!(mixed.holds_grade_mix());
 }
+
+/// A grade can hold a correction's mix or mask channel in its nodes, as a
+/// sequence grade's stand-in does, as well as in the clip's picture. One set
+/// back to whole and red holds none.
+#[test]
+fn a_mix_in_the_grade_s_nodes_is_held_too() {
+    use klipp_effects::mask_mix::MaskChannel;
+    use klipp_nodes::params::EffectBlend;
+    let with = |blend: EffectBlend| {
+        let mut g = klipp_nodes::NodeGraph::default();
+        let corrector = g.ensure_corrector();
+        g.nodes.iter_mut().find(|n| n.id == corrector).unwrap().params.correction_blend = Some(blend);
+        let mut c = klipp_timeline::Clip::media(klipp_core::MediaId::new(), klipp_core::RationalTime::from_secs_f64(0.0, 25), klipp_core::RationalTime::from_secs_f64(2.0, 25), klipp_core::RationalTime::from_secs_f64(0.0, 25), klipp_core::RationalTime::from_secs_f64(2.0, 25));
+        klipp_timeline::GradeAccess::set_grade(&mut c, g);
+        c
+    };
+    assert!(with(EffectBlend { mix: 0.5, channel: MaskChannel::Red }).holds_grade_mix());
+    assert!(with(EffectBlend { mix: 1.0, channel: MaskChannel::Alpha }).holds_grade_mix());
+    assert!(!with(EffectBlend { mix: 1.0, channel: MaskChannel::Red }).holds_grade_mix());
+}

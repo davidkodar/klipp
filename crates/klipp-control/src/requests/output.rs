@@ -30,6 +30,7 @@ pub(crate) fn respond(
         ControlCommand::CheckDelivery { spec, file } => {
             use klipp_core::delivery_spec as ds;
             let spec = ds::find_spec(&spec).ok_or_else(|| format!("no delivery spec {spec:?}; delivery_specs lists them"))?;
+            let mut measured: Option<(f32, f32)> = None;
             let (facts, what) = match &file {
                 Some(path) => (klipp_render::delivery_facts::file_facts(std::path::Path::new(path), true)?, path.clone()),
                 None => {
@@ -41,9 +42,10 @@ pub(crate) fn respond(
                         let captions = seq.tracks.iter().any(|t| t.kind == klipp_timeline::TrackKind::Subtitle && !t.clips.is_empty());
                         (seq.resolution, seq.fps.as_f64(), captions)
                     };
-                    // The mix is read only when the export would not set its
-                    // loudness.
-                    let mix = if spec.export.target_lufs.is_none() {
+                    // The mix as it is, said whether or not the export sets
+                    // its loudness: a spec whose export normalises it passed
+                    // without a word about how far the mix was from it.
+                    let mix = {
                         let snapshot = {
                             let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
                             let pool = ctx.media_pool.read().recovered();
@@ -51,22 +53,23 @@ pub(crate) fn respond(
                                 .map_err(|e| format!("the mix could not be read: {e}"))?
                         };
                         crate::grading::mix_delivery(&snapshot).ok()
-                    } else {
-                        None
                     };
+                    measured = mix;
                     (ds::export_facts(&spec.export, spec.hdr, size, fps, captions, mix), "the timeline, exported with the spec's settings".to_string())
                 }
             };
             let findings = ds::check(&spec, &facts);
             let verdict = ds::verdict(&findings);
             let word = |s: ds::Status| match s { ds::Status::Pass => "pass", ds::Status::Warn => "warn", ds::Status::Fail => "fail" };
-            let lines: Vec<String> = findings.iter().map(|f| format!("{:4}  {}: {} (wanted {}){}", word(f.status), f.what, f.found, f.wanted, if f.fix.is_empty() { String::new() } else { format!(" — {}", f.fix) })).collect();
+            let mut lines: Vec<String> = findings.iter().map(|f| format!("{:4}  {}: {} (wanted {}){}", word(f.status), f.what, f.found, f.wanted, if f.fix.is_empty() { String::new() } else { format!(" — {}", f.fix) })).collect();
+            lines.extend(mix_line(measured, spec.export.target_lufs));
             Ok(json!({
                 "text": format!("{} against {}: {}\n{}", what, spec.name, word(verdict), lines.join("\n")),
                 "spec": spec.id,
                 "verdict": word(verdict),
                 "findings": findings,
                 "sources": spec.sources,
+                "mix": measured.map(|(lufs, peak)| json!({ "integrated_lufs": lufs, "true_peak_dbtp": peak })),
             }))
         }
         ControlCommand::Export { outputs, overwrite, .. } if !outputs.is_empty() => {
@@ -89,14 +92,13 @@ pub(crate) fn respond(
                 return Err("the timeline is empty: there is nothing to export. Place some clips first.".into());
             }
             let pool = ctx.media_pool.read().recovered();
-            let offline: Vec<String> = seq
-                .tracks
-                .iter()
-                .flat_map(|t| t.clips.iter())
-                .filter_map(|c| c.media_id().and_then(|id| pool.get(&id)))
-                .filter(|m| m.offline)
-                .map(|m| m.filename.clone())
-                .collect();
+            // Each file once: a clip and its linked sound name it twice.
+            let mut offline: Vec<String> = Vec::new();
+            for m in seq.tracks.iter().flat_map(|t| t.clips.iter()).filter_map(|c| c.media_id().and_then(|id| pool.get(&id))).filter(|m| m.offline) {
+                if !offline.contains(&m.filename) {
+                    offline.push(m.filename.clone());
+                }
+            }
             if !offline.is_empty() {
                 return Err(format!("media offline, export refused: {}", offline.join(", ")));
             }
@@ -353,7 +355,9 @@ pub(crate) fn respond(
                 "true_peak_dbtp": settings.target_lufs.map(|_| settings.true_peak_dbtp.unwrap_or(-1.0)),
                 // The size it is encoded at: an odd side is rounded down,
                 // as 4:2:0 video needs (hunt #2), and said so.
-                "size": settings.resolution.map(|r| {
+                // A sound-only file has no picture: no size, speed, rate
+                // or depth of one, which it was said to have.
+                "size": settings.resolution.filter(|_| !settings.format.is_audio_only()).map(|r| {
                     let (w, h) = settings.output_size(r.width, r.height);
                     if (w, h) == (r.width, r.height) { format!("{w}x{h}") } else { format!("{w}x{h} (rounded down to even from {}x{})", r.width, r.height) }
                 }),
@@ -366,12 +370,13 @@ pub(crate) fn respond(
                 "preset": preset_name,
                 // The speed used: as asked, else the preset's own, else
                 // medium; none for an encoder that has none.
-                "encoder_speed": speed_ignored(&settings).is_none().then(|| settings.preset.ffmpeg_value()),
-                "rate": match (settings.rate_control, settings.video_bitrate_kbps) {
+                "encoder_speed": (speed_ignored(&settings).is_none() && !settings.format.is_audio_only()).then(|| settings.preset.ffmpeg_value()),
+                "rate": (!settings.format.is_audio_only()).then(|| match (settings.rate_control, settings.video_bitrate_kbps) {
                     (klipp_core::RateControl::Crf, _) | (_, None) => format!("crf {}", settings.crf),
                     (_, Some(kbps)) => format!("{kbps} kbps"),
-                },
-                "bit_depth": if settings.bit_depth == 10 { 10 } else { 8 },
+                }),
+                "bit_depth": (!settings.format.is_audio_only()).then_some(if settings.bit_depth == 10 { 10 } else { 8 }),
+                "audio": settings.audio_codec.described(settings.audio_bitrate_kbps),
             });
             let burnt = !has_captions || said["captions_burnt_in"].as_bool().unwrap_or(true) || said["captions_embedded"].as_bool().unwrap_or(false);
             let known_jobs: std::collections::HashSet<String> = ctx.shared.exports.lock().unwrap_or_else(|e| e.into_inner())
@@ -456,12 +461,40 @@ pub(crate) fn respond(
                 }
             }
             // A file a subtitle track when there are several (#2223).
-            let files = {
+            // An EBU-STL file's character table, and what it has no form
+            // for (written as "?"): said, never left to be found.
+            let (files, tables) = {
                 let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
-                klipp_document::subtitle_export::files(&seq, &p)
+                let files = klipp_document::subtitle_export::files(&seq, &p);
+                let tables: Vec<Option<(&'static str, Vec<char>)>> = files
+                    .iter()
+                    .map(|f| {
+                        (ext == "stl").then(|| {
+                            let texts: Vec<String> = f.tracks.iter().flat_map(|&i| &seq.tracks[i].clips).filter_map(|c| c.title_data().map(|td| td.text())).chain([seq.name.clone()]).collect();
+                            let (table, lost) = klipp_captions::stl::character_table(texts.iter().map(String::as_str));
+                            (table.name(), lost)
+                        })
+                    })
+                    .collect();
+                (files, tables)
             };
             let mut v = send(AppCommand::ExportSubtitles { path: p })?;
-            v["files"] = json!(files.iter().map(|f| json!({ "path": f.path.display().to_string(), "tracks": f.tracks, "language": f.language })).collect::<Vec<_>>());
+            v["files"] = json!(files
+                .iter()
+                .zip(&tables)
+                .map(|(f, t)| {
+                    let mut file = json!({ "path": f.path.display().to_string(), "tracks": f.tracks, "language": f.language });
+                    if let Some((table, lost)) = t {
+                        file["character_table"] = json!(table);
+                        file["not_written"] = json!(lost.iter().map(|c| c.to_string()).collect::<Vec<_>>());
+                    }
+                    file
+                })
+                .collect::<Vec<_>>());
+            let lost: usize = tables.iter().flatten().map(|(_, l)| l.len()).sum();
+            if lost > 0 {
+                v["warning"] = json!(format!("EBU-STL has no character table for {lost} character(s) of these captions (not_written in each file): they are written as \"?\""));
+            }
             Ok(v)
         }
 
@@ -1944,3 +1977,27 @@ mod captions_in_file_tests {
         assert_eq!(super::captions_carried(true, &soft), (false, true));
     }
 }
+
+/// The timeline's mix as measured, beside what the spec's export does with
+/// it: normalised to its target, or exported as it is.
+fn mix_line(mix: Option<(f32, f32)>, target: Option<f32>) -> Option<String> {
+    let (lufs, peak) = mix?;
+    Some(match target {
+        Some(t) => format!("note  Mix: {lufs:.1} LUFS integrated, {peak:.1} dBTP true peak; the spec's export brings it to {t:.1} LUFS ({:+.1} dB)", t - lufs),
+        None => format!("note  Mix: {lufs:.1} LUFS integrated, {peak:.1} dBTP true peak, exported as it is"),
+    })
+}
+
+#[cfg(test)]
+mod mix_line_tests {
+    /// The mix is said against the spec's export: how far its loudness
+    /// target moves it, or that it goes out as it is; nothing without a
+    /// measurement.
+    #[test]
+    fn the_mix_is_said_against_the_specs_export() {
+        assert_eq!(super::mix_line(Some((-15.8, -3.4)), Some(-14.0)).as_deref(), Some("note  Mix: -15.8 LUFS integrated, -3.4 dBTP true peak; the spec's export brings it to -14.0 LUFS (+1.8 dB)"));
+        assert_eq!(super::mix_line(Some((-23.1, -2.0)), None).as_deref(), Some("note  Mix: -23.1 LUFS integrated, -2.0 dBTP true peak, exported as it is"));
+        assert_eq!(super::mix_line(None, Some(-14.0)), None);
+    }
+}
+

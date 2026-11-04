@@ -1316,7 +1316,7 @@ mod clip_audio_tests {
     use super::*;
     use crate::inspector::rows::test_frame::{click, frame};
 
-    /// P16: with no other sound track the clip has nothing to duck under:
+    /// With no other sound track the clip has nothing to duck under:
     /// Apply is refused with the reason. Offered track 0, a picture track,
     /// the duck followed its clips with nothing said.
     #[test]

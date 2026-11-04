@@ -1743,6 +1743,14 @@ pub fn missing_sequences(template: &CompositionTemplate, project: &[Sequence]) -
     template.sequences.iter().filter(|s| !project.iter().any(|p| p.id == s.id)).cloned().collect()
 }
 
+/// The sequences `project` lacks that placing `template` in a `width` by
+/// `height` frame draws: its layout for that frame and what it nests,
+/// not its layouts for other frames.
+pub fn missing_for_frame(template: &CompositionTemplate, project: &[Sequence], width: u32, height: u32) -> Vec<Sequence> {
+    let Some(layout) = template.composition_for(width, height) else { return missing_sequences(template, project) };
+    composition_sequences(layout, &template.sequences).into_iter().filter(|s| !project.iter().any(|p| p.id == s.id)).collect()
+}
+
 /// Every template file in `dir` that reads and checks, by name, a second
 /// file with an id already read left out.
 fn read_templates_in(dir: &Path) -> Vec<(PathBuf, CompositionTemplate)> {

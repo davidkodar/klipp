@@ -776,6 +776,7 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::AddTrackVideoEffect { .. }
         | AppCommand::AddTrackAudioEffect { .. }
         | AppCommand::ToggleTrackEffect { .. }
+        | AppCommand::ReorderTrackAudioEffect { .. }
         | AppCommand::RemoveTrackEffect { .. }
         | AppCommand::ClearTrackEffects { .. }
         | AppCommand::AlignToAudioReference { .. }

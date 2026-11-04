@@ -12,6 +12,26 @@ use klipp_timeline::GradeAccess;
 const DUPLICATE_OFFSET: (f32, f32) = (40.0, 40.0);
 
 impl AppState {
+    /// Why the wire into `node`'s input `port`, in `clip`'s grade at the
+    /// canvas's level, can't be taken away, if it can't: a picture input
+    /// left with nothing wired to it. The grade would read the clip's own
+    /// frame there, which the canvas doesn't show, and the nodes before it
+    /// would drop out without a word; the socket refuses the same graph as
+    /// unwired. A matte or mask input is free to be unplugged.
+    pub(crate) fn wire_take_refusal(&self, clip: ClipId, node: klipp_nodes::NodeId, port: u8) -> Option<String> {
+        let mut grade = self.sequence().all_clips().find(|c| c.id == clip)?.grade().clone();
+        let g = KlippApp::resolve_graph_at_path_mut(&mut grade, &self.graph_descent_path).ok()?;
+        let n = g.nodes.iter().find(|n| n.id == node)?;
+        g.edges.iter().find(|e| e.to_node == node && e.to_port == port)?;
+        let kind = serde_json::to_value(n.kind).ok().and_then(|v| v.as_str().map(str::to_owned)).unwrap_or_default();
+        let key = klipp_graph_format::ports::input_key(&kind, port);
+        if key.as_str() == "mask" || n.kind.input_port_role(port) == klipp_nodes::PortRole::Matte {
+            return None;
+        }
+        let name = if n.label.trim().is_empty() { n.kind.display_name().to_string() } else { n.label.clone() };
+        Some(format!("Not disconnected: that would leave {name}'s {key} input unwired. Wire it to another node, or delete {name}"))
+    }
+
     /// Applies a node edit; `None` for any other command, else whether
     /// the document changed. A refusal says why in a toast.
     pub(crate) fn node_edit(&mut self, cmd: &AppCommand) -> Option<bool> {
@@ -162,8 +182,21 @@ impl AppState {
             return Err("Duplicate: no node to copy here".into());
         }
         let copy = crate::state::GradeNodeClipboard::from_selection(&level, &selection);
+        // One node duplicated goes into the chain after it: fed by it, and
+        // feeding what it fed. Left unwired, it stood on the original's
+        // place doing nothing, or read the clip's frame unseen.
+        let single = (selection.len() == 1).then(|| selection.iter().copied().next()).flatten()
+            .filter(|id| level.nodes.iter().find(|n| n.id == *id).is_some_and(|n| n.kind.input_port_count() > 0 && n.kind.output_port_count() > 0));
         let mut made = Vec::new();
-        super::colour::edit_clip_graph(self, clip_id, &path, true, |graph| made = copy.merge_into_ids(graph, DUPLICATE_OFFSET))
+        super::colour::edit_clip_graph(self, clip_id, &path, true, |graph| {
+            made = copy.merge_into_ids(graph, DUPLICATE_OFFSET);
+            if let (Some(original), [dup]) = (single, made.as_slice()) {
+                for e in graph.edges.iter_mut().filter(|e| e.from_node == original && e.from_port == 0) {
+                    e.from_node = *dup;
+                }
+                graph.edges.push(klipp_nodes::Edge { from_node: original, from_port: 0, to_node: *dup, to_port: 0 });
+            }
+        })
             .ok_or("The clip is no longer on the timeline")?
             .map_err(|()| "That level of the grade is gone".to_owned())?;
         self.select_nodes(&made);

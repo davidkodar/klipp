@@ -47,6 +47,9 @@ pub struct Described {
     pub file: Option<String>,
 }
 
+/// Where a file no clip uses is said to be.
+const UNUSED: &str = "the media pool";
+
 /// A clip as a person finds it: its name, else where it starts.
 fn clip_name(c: &Clip) -> String {
     c.name.clone().unwrap_or_else(|| format!("at {:.1} s", c.timeline_in.to_secs_f64()))
@@ -155,7 +158,7 @@ pub fn report(sequences: &[Sequence], pool: &MediaPool, fonts_left_out: &[(Strin
             .iter()
             .flat_map(|s| s.all_clips().filter(|c| c.media_id() == Some(item.id)).map(move |c| format!("{}: clip {}", s.name, clip_name(c))))
             .collect();
-        let at = if users.is_empty() { vec!["the media pool".to_string()] } else { users };
+        let at = if users.is_empty() { vec![UNUSED.to_string()] } else { users };
         for u in at {
             add(Need::OfflineMedia, &item.path.to_string_lossy(), item.filename.clone(), u);
         }
@@ -164,6 +167,16 @@ pub fn report(sequences: &[Sequence], pool: &MediaPool, fonts_left_out: &[(Strin
         add(Need::Font, family, why.clone(), "titles".into());
     }
     found.into_iter().map(|((need, id), (detail, used_in))| Dependency { need, id, detail, used_in }).collect()
+}
+
+/// The offline files a clip uses, each with where: what a Collect would leave
+/// pointing outside its folder. A file no clip uses is not among them.
+pub fn offline_in_use(sequences: &[Sequence], pool: &MediaPool) -> Vec<String> {
+    report(sequences, pool, &[], &|_| None)
+        .into_iter()
+        .filter(|d| d.need == Need::OfflineMedia && d.used_in != [UNUSED])
+        .map(|d| format!("{} ({})", d.detail, d.used_in.join(", ")))
+        .collect()
 }
 
 #[cfg(test)]
@@ -223,5 +236,27 @@ mod tests {
         assert_eq!(row(Need::Font, "Brand Sans").detail, "its licence does not allow embedding");
         assert!(!got.iter().any(|d| d.id == "compressor"), "a built-in effect travels with the project");
         assert_eq!(got.len(), 8);
+    }
+
+    /// An offline file a clip uses is named with the clip; one no clip uses,
+    /// and a file that is there, are not.
+    #[test]
+    fn only_offline_media_in_use_is_named() {
+        let mut seq = Sequence::new_default();
+        seq.name = "Main".into();
+        let used = MediaId::new();
+        let mut clip = Clip::media(used, RationalTime::from_frames(0, 24), RationalTime::from_frames(24, 24), RationalTime::from_frames(0, 24), RationalTime::from_frames(24, 24));
+        clip.name = Some("Interview".into());
+        seq.tracks[0].clips.push(clip);
+        let mut pool = MediaPool::new();
+        let mut item = klipp_media::MediaItem::synthetic_for_test("/nowhere/interview.mov".into(), None);
+        (item.id, item.offline) = (used, true);
+        pool.add(item);
+        let mut unused = klipp_media::MediaItem::synthetic_for_test("/nowhere/unused.mov".into(), None);
+        unused.offline = true;
+        pool.add(unused);
+        assert_eq!(offline_in_use(&[seq.clone()], &pool), ["interview.mov (Main: clip Interview)"]);
+        seq.tracks[0].clips.clear();
+        assert!(offline_in_use(&[seq], &pool).is_empty());
     }
 }
