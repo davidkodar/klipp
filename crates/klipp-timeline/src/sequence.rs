@@ -3179,7 +3179,10 @@ impl Clip {
         if self.is_reversed() {
             self.source_out.to_secs_f64() - offset(elapsed + 1.0 / fps.max(1.0))
         } else {
-            self.source_in.to_secs_f64() + offset(elapsed)
+            let secs = self.source_in.to_secs_f64() + offset(elapsed);
+            // Slowed, the last frames ask for a time nearer the Out than a
+            // frame, and the decoder's nearest frame is the one past it.
+            if elapsed < dur { secs.min((self.source_out.to_secs_f64() - 1.0 / fps.max(1.0)).max(self.source_in.to_secs_f64())) } else { secs }
         }
     }
 
@@ -4945,6 +4948,23 @@ mod tests {
         let (_, held) = whole.split_speed_keys(6.5);
         assert_eq!((held.len(), held[0].value), (1, 2.0));
         assert_eq!(Clip::media(klipp_core::MediaId::new(), tc(0.0), tc(1.0), tc(0.0), tc(1.0)).split_speed_keys(0.5), (Vec::new(), Vec::new()), "no ramp, no keys");
+    }
+
+    /// Slowed, or at a ramp's slow end, a clip's frames stop on the last frame
+    /// inside its Out, not the file's next one; past its end, a transition's
+    /// handle still runs on.
+    #[test]
+    fn a_slowed_clips_last_frame_is_inside_its_out() {
+        let tc = |s: f64| Timecode::from_secs_f64(s, 30);
+        let mut clip = Clip::media(klipp_core::MediaId::new(), tc(0.0), tc(16.0), tc(4.0), tc(12.0));
+        clip.speed = 0.5;
+        let frame_at = |c: &Clip, t: f64| (c.source_secs_at(t, 30.0) * 30.0).round() as i64;
+        assert_eq!(frame_at(&clip, 16.0 - 1.0 / 30.0), 359, "the last before the Out at 360");
+        assert_eq!(frame_at(&clip, 15.0), 345, "earlier frames as they were");
+        assert_eq!(frame_at(&clip, 16.5), 368, "a handle past its end runs on");
+        clip.speed = 2.0;
+        clip.timeline_out = tc(4.0);
+        assert_eq!(frame_at(&clip, 4.0 - 1.0 / 30.0), 358, "fast clips as they were");
     }
 
     #[test]
