@@ -252,7 +252,7 @@ fn project_files(
     };
 
     let project_json = match form {
-        crate::FileForm::Revision2 => revision2_text(&project, sequences)?,
+        crate::FileForm::Revision2 => revision2_text(project, sequences)?,
         #[cfg(feature = "v1-oracle")]
         crate::FileForm::V1 => {
             let mut project = project;
@@ -1051,7 +1051,7 @@ fn prune_stale_looks(looks_dir: &Path, kept_ids: &[String], form: crate::FileFor
 /// widens an f32 field to f64 and changes the digits today's writer prints.
 /// A conversion that would lose something refuses the save rather than
 /// write a changed file.
-fn revision2_text(project: &ProjectJson, sequences: &[Sequence]) -> Result<String, String> {
+fn revision2_text(project: ProjectJson, sequences: &[Sequence]) -> Result<String, String> {
     // Each clip's picture as the clip keeps it lifted (#1089, M1b 2b): as
     // read from the file if the clip hasn't changed, so it is written back
     // exactly, otherwise lifted now. A clip that can't be lifted refuses
@@ -1078,12 +1078,16 @@ fn revision2_text(project: &ProjectJson, sequences: &[Sequence]) -> Result<Strin
         pictures.remove(key);
     }
     let stored = |seq: &str, id: &str| pictures.get(&(seq.to_string(), id.to_string())).map(|p| (p.picture.clone(), p.versions.clone()));
-    let text = serde_json::to_string(project).map_err(|e| format!("Failed to serialize project: {e}"))?;
+    // Each form let go once the next is built: at 20,000 clips the file is
+    // 170 MB, and its tree many times that.
+    let text = serde_json::to_string(&project).map_err(|e| format!("Failed to serialize project: {e}"))?;
+    drop(project);
     let mut v1: serde_json::Value = serde_json::from_str(&text).map_err(|e| format!("Failed to serialize project: {e}"))?;
+    drop(text);
     if let Some(o) = v1.as_object_mut() {
         o.remove("format_revision");
     }
-    let (mut v2, notes) = klipp_graph_lift::revision2::project_with(&v1, &stored).map_err(|e| format!("Failed to write the project's revision-2 file: {e}"))?;
+    let (mut v2, notes) = klipp_graph_lift::revision2::project_taking(v1, &stored).map_err(|e| format!("Failed to write the project's revision-2 file: {e}"))?;
     if let Some(n) = notes.iter().find(|n| klipp_graph_lift::revision2::is_lost(n)) {
         return Err(format!("Saving would lose part of the project ({n:?}), so it was not saved"));
     }
@@ -1092,7 +1096,11 @@ fn revision2_text(project: &ProjectJson, sequences: &[Sequence]) -> Result<Strin
     klipp_graph_lift::sequence_grade_mix::write_project(&mut v2, &|sid, root| sequences.iter().find(|s| s.id.0 == sid).map(|s| s.root_blends(root)).unwrap_or_default())
         .map_err(|e| format!("Saving would lose a sequence grade's mix ({e}), so it was not saved"))?;
     // A clip grade version's too (#1322).
-    let version_blends = |cid: uuid::Uuid, n: usize| sequences.iter().flat_map(|s| s.all_clips()).find(|c| c.id.0 == cid).map(|c| c.version_blends(n)).unwrap_or_default();
+    let mut clips_by_id = std::collections::HashMap::new();
+    for clip in sequences.iter().flat_map(|s| s.all_clips()) {
+        clips_by_id.entry(clip.id.0).or_insert(clip);
+    }
+    let version_blends = |cid: uuid::Uuid, n: usize| clips_by_id.get(&cid).map(|c| c.version_blends(n)).unwrap_or_default();
     klipp_graph_lift::sequence_grade_mix::write_versions(&mut v2, &version_blends)
         .map_err(|e| format!("Saving would lose a grade version's mix ({e}), so it was not saved"))?;
     serde_json::to_string_pretty(&v2).map_err(|e| format!("Failed to serialize project: {e}"))
