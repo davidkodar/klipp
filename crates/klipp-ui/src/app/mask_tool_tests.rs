@@ -533,3 +533,33 @@ fn a_mask_from_the_colour_tab_limits_the_correction_and_leaves_the_rest() {
     assert_eq!(g.nodes.iter().filter(|n| n.kind == NodeKind::Mask).count(), 1);
     assert_eq!(g.nodes.iter().find(|n| n.id == mask).and_then(|n| n.params.masks.as_ref()).map(|m| m.masks.len()), Some(2));
 }
+
+/// The Export page's viewer shows the picture as it goes out: no mask's
+/// outline and no transform box or handles over it, both drawn on the
+/// Edit page.
+#[test]
+fn the_export_page_viewer_draws_no_mask_or_transform_box() {
+    let (mut v, _) = with_shape(square());
+    v.state.show_transform_controls = true;
+    let marks = |v: &mut Viewer| {
+        let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 800.0))), time: Some(v.clock + 0.05), ..Default::default() };
+        v.clock += 0.05;
+        let (panel, state, theme) = (&mut v.panel, &mut v.state, &v.theme);
+        let out = v.ctx.run(input, |ctx| {
+            egui::CentralPanel::default().frame(egui::Frame::none()).show(ctx, |ui| { panel.show(ui, state, theme, &crate::keybindings::KeyBindings::default()); });
+        });
+        let outlines = out.shapes.iter().filter(|s| matches!(&s.shape, egui::Shape::Path(p) if p.closed)).count();
+        let handles = out.shapes.iter().filter(|s| matches!(&s.shape, egui::Shape::Circle(_))).count();
+        (outlines, handles)
+    };
+    // The viewer's own dots, with no gizmo and no mask: what is left.
+    v.state.show_transform_controls = false;
+    v.state.active_workspace = crate::state::Workspace::Export;
+    let (_, own) = marks(&mut v);
+    v.state.show_transform_controls = true;
+    v.state.active_workspace = crate::state::Workspace::Edit;
+    let (outlines, handles) = marks(&mut v);
+    assert!(outlines > 0 && handles > own, "drawn on the Edit page: {outlines} outlines, {handles} dots against {own}");
+    v.state.active_workspace = crate::state::Workspace::Export;
+    assert_eq!(marks(&mut v), (0, own), "on the Export page, no outline and no gizmo handles");
+}

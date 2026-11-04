@@ -53,7 +53,8 @@ impl AppState {
                 self.wire_edit(*clip_id, &[*from, *to], true, &[id], |g| {
                     take_wire(g, wire)?;
                     g.nodes.push(node.clone());
-                    g.node_positions.insert(id, klipp_nodes::NodePos { x: at.0, y: at.1 });
+                    let place = room_after(g, wire.0, at);
+                    g.node_positions.insert(id, place);
                     g.edges.push(edge(wire.0, wire.1, id, 0));
                     g.edges.push(edge(id, 0, wire.2, wire.3));
                     Ok(())
@@ -291,6 +292,23 @@ impl AppState {
         self.select_nodes(&made);
         Ok(true)
     }
+}
+
+/// Where a node put on the wire out of `from` goes, with room made for
+/// it: one layout step after `from` on its row, everything at or past
+/// that point moved a step on. Put where the wire was clicked, it sat on
+/// top of its neighbours, a node's width apart. Without a place for
+/// `from`, where it was asked for.
+fn room_after(g: &mut klipp_nodes::NodeGraph, from: klipp_nodes::NodeId, asked: (f32, f32)) -> klipp_nodes::NodePos {
+    let step = klipp_nodes::auto_layout::H_SPACING;
+    let Some(at) = g.node_positions.get(&from).copied() else { return klipp_nodes::NodePos { x: asked.0, y: asked.1 } };
+    let x = at.x + step;
+    for p in g.node_positions.values_mut() {
+        if p.x >= x - step / 2.0 {
+            p.x += step;
+        }
+    }
+    klipp_nodes::NodePos { x, y: at.y }
 }
 
 fn edge(from_node: klipp_nodes::NodeId, from_port: u8, to_node: klipp_nodes::NodeId, to_port: u8) -> klipp_nodes::Edge {

@@ -2103,6 +2103,25 @@ fn a_duplicated_node_goes_into_the_chain_after_it() {
     assert_eq!(state.active_history().undo_count(), steps + 1);
 }
 
+/// A node put on a wire from its menu sits clear of both its neighbours:
+/// a step after the node feeding it, what came after moved on. Put where
+/// the wire was clicked, it sat on top of them.
+#[test]
+fn a_node_put_on_a_wire_is_given_room() {
+    let (mut state, clip_id, ids, _, _) = wired();
+    let before = wire_level(&state, clip_id);
+    let (a, b) = (before.node_positions[&ids[1]], before.node_positions[&ids[2]]);
+    let mid = ((a.x + b.x) / 2.0, (a.y + b.y) / 2.0);
+    let cmd = AppCommand::InsertNodeOnWire { clip_id, kind: "Exposure".into(), position: mid, from: ids[1], from_port: 0, to: ids[2], to_port: 0 };
+    assert_eq!(state.node_edit(&cmd), Some(true), "{:?}", state.toast.message_for_test());
+    let g = wire_level(&state, clip_id);
+    let new = g.nodes.iter().find(|n| !before.nodes.iter().any(|o| o.id == n.id)).expect("the new node").id;
+    let at = |id| g.node_positions[&id];
+    let wide = crate::panels::node_graph_v2::NODE_W;
+    assert!(at(new).x - at(ids[1]).x >= wide && at(ids[2]).x - at(new).x >= wide, "clear of both: {:?} {:?} {:?}", at(ids[1]), at(new), at(ids[2]));
+    assert!(has_wire(&g, ids[1], new, 0) && has_wire(&g, new, ids[2], 0), "on the wire");
+}
+
 /// A wire dragged from an output into empty canvas opens the add menu
 /// there, and the node picked comes fed by it, one step (#1744).
 #[test]

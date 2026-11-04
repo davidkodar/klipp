@@ -26,7 +26,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use crate::graph::{NodeGraph, NodeId, NodePos};
 
 /// Horizontal spacing between layers in graph coordinates.
-const H_SPACING: f32 = 200.0;
+pub const H_SPACING: f32 = 200.0;
 /// Vertical spacing between nodes within the same layer.
 const V_SPACING: f32 = 80.0;
 /// Vertical margin between disconnected components.

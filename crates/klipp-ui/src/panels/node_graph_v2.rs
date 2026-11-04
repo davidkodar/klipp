@@ -30,7 +30,7 @@ mod picture;
 pub(crate) use picture::node_name;
 use model::{CanvasGraph, CanvasKind, CanvasNode, GradeCanvas, MenuCategory, Palette};
 
-const NODE_W: f32 = 120.0;
+pub(crate) const NODE_W: f32 = 120.0;
 const NODE_H: f32 = 60.0;
 const NODE_HEADER_H: f32 = 16.0;
 const PORT_RADIUS: f32 = 5.0;
