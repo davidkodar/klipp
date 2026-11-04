@@ -229,6 +229,10 @@ name = "scopes_are_drawn_on_the_gpu"
 path = "tests/scopes_are_drawn_on_the_gpu.rs"
 
 [[test]]
+name = "j_on_the_viewers_texture"
+path = "tests/j_on_the_viewers_texture.rs"
+
+[[test]]
 name = "scopes_while_playing_zero_copy"
 path = "tests/scopes_while_playing_zero_copy.rs"
 

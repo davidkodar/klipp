@@ -1777,6 +1777,9 @@ pub struct AppState {
     /// A field was left by Enter (#2943): the editor's single keys wait
     /// until a click or Escape (`shortcuts::field_keys_held`).
     pub field_keys_held: bool,
+    /// The frame-rate question is up (it is the app's, not the state's):
+    /// no shortcut reaches what is behind it.
+    pub rate_question_open: bool,
     /// Whether a field had the keys as the last frame's panels were drawn
     /// (#2962): one gone by the next frame vanished under the typing.
     pub typing_at_frame_end: bool,
@@ -4803,6 +4806,9 @@ impl AppState {
             // The confirmations: Delete and the like acted behind them.
             || self.confirm_delete_sequence.is_some()
             || self.confirm_remove_track.is_some()
+            // The frame-rate question: its Escape cancelled the drop and
+            // reached the timeline too.
+            || self.rate_question_open
     }
 }
 
@@ -4916,6 +4922,7 @@ impl Default for AppState {
             tour_step: None,
             welcome_checked: false,
             field_keys_held: false,
+            rate_question_open: false,
             typing_at_frame_end: false,
             show_audio_plugins_dialog: false,
             audio_plugins_dialog: crate::panels::audio_plugins::AudioPluginsDialogState::default(),
