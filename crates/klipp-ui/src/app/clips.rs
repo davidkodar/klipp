@@ -109,83 +109,7 @@ impl KlippApp {
                     new_timeline_in,
                 } => {
                     if self.refused_by_lock(clip_id) { return true; }
-                    // Snapshot the link/group info and compute the delta before
-                    // we start mutating. The linked partner (set up by
-                    // ImportMediaLinked for A/V pairs) must follow the primary
-                    // by the same delta so linked clips stay phase-locked.
-                    let (group_id, linked_id, delta) = {
-                        let clip = self.state.sequences[self.state.active_sequence_idx].tracks.iter()
-                            .flat_map(|t| t.clips.iter())
-                            .find(|c| c.id == *clip_id);
-                        match clip {
-                            // The Linked switch off moves the clip alone (#916).
-                            Some(c) => (c.group_id, c.linked_clip_id.filter(|_| self.state.linked_selection), *new_timeline_in - c.timeline_in),
-                            None => (None, None, klipp_core::RationalTime { value: 0, rate: 1 }),
-                        }
-                    };
-
-                    // Move primary clip and capture its old/new bounds.
-                    let mut primary_history: Option<(klipp_core::RationalTime, klipp_core::RationalTime, klipp_core::RationalTime, klipp_core::RationalTime)> = None;
-                    if let Some(track) = self.state.sequences[self.state.active_sequence_idx].tracks.iter_mut()
-                        .find(|t| t.clips.iter().any(|c| c.id == *clip_id))
-                    {
-                        if let Some(clip) = track.find_clip_mut(*clip_id) {
-                            let old_in = clip.timeline_in;
-                            let old_out = clip.timeline_out;
-                            let dur = clip.duration();
-                            clip.timeline_in = *new_timeline_in;
-                            clip.timeline_out = *new_timeline_in + dur;
-                            primary_history = Some((old_in, old_out, clip.timeline_in, clip.timeline_out));
-                        }
-                        track.sort_clips();
-                    }
-
-                    // Move the linked partner by the same delta — but skip if
-                    // it's on a locked track, or if it's already in the same
-                    // group (group propagation below would double-move it).
-                    let partner_in_same_group = match (linked_id, group_id) {
-                        (Some(lid), Some(gid)) => self.state.sequences[self.state.active_sequence_idx]
-                            .tracks.iter()
-                            .flat_map(|t| t.clips.iter())
-                            .find(|c| c.id == lid)
-                            .is_some_and(|c| c.group_id == Some(gid)),
-                        _ => false,
-                    };
-                    let partner_edits = linked_id
-                        .filter(|lid| !partner_in_same_group && !self.clip_track_is_locked(lid) && delta.value != 0)
-                        .and_then(|lid| self.move_partner_over(lid, delta));
-
-                    if let Some((old_in, old_out, new_in, new_out)) = primary_history {
-                        let move_clip = EditCommand::LegacyMoveClip {
-                            clip_id: *clip_id,
-                            old_timeline_in: old_in,
-                            old_timeline_out: old_out,
-                            new_timeline_in: new_in,
-                            new_timeline_out: new_out,
-                            linked_partner: None,
-                        };
-                        self.push_with_partner(move_clip, partner_edits);
-                    }
-
-                    // Propagate move to grouped clips (skip primary AND the
-                    // already-moved linked partner to avoid double-moving).
-                    if let Some(gid) = group_id {
-                        if delta.value != 0 {
-                            for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
-                                for clip in &mut track.clips {
-                                    if clip.group_id == Some(gid)
-                                        && clip.id != *clip_id
-                                        && Some(clip.id) != linked_id
-                                    {
-                                        clip.timeline_in += delta;
-                                        clip.timeline_out += delta;
-                                    }
-                                }
-                                track.sort_clips();
-                            }
-                        }
-                    }
-
+                    super::clip_drops::move_clip(&mut self.state, *clip_id, *new_timeline_in);
                     self.sync_sequence_to_engine();
                     self.state.dirty = true;
                     true
@@ -196,49 +120,11 @@ impl KlippApp {
                         self.state.toast.show(format!("{name} is locked"));
                         return true;
                     }
-                    let from = *from_track;
-                    let to = *to_track;
-                    let new_in = *new_timeline_in;
-                    if let Some(src_track) = self.state.sequences[self.state.active_sequence_idx].tracks.get_mut(from) {
-                        if let Some(clip) = src_track.find_clip(*clip_id).cloned() {
-                            let old_in = clip.timeline_in;
-                            let old_out = clip.timeline_out;
-                            let dur = clip.duration();
-                            let linked_id = clip.linked_clip_id;
-                            let delta = new_in - old_in;
-                            let mut moved_clip = clip.clone();
-                            moved_clip.timeline_in = new_in;
-                            moved_clip.timeline_out = new_in + dur;
-                            src_track.remove_clip(*clip_id);
-
-                            if let Some(dst_track) = self.state.sequences[self.state.active_sequence_idx].tracks.get_mut(to) {
-                                dst_track.clips.push(moved_clip.clone());
-                                dst_track.sort_clips();
-                            }
-
-                            // Shift the linked partner on its own track by the
-                            // same delta (A/V partners live on different track
-                            // kinds, so the partner doesn't cross tracks — only
-                            // its timeline bounds move).
-                            let partner_edits = linked_id
-                                .filter(|lid| !self.clip_track_is_locked(lid) && delta.value != 0)
-                                .and_then(|lid| self.move_partner_over(lid, delta));
-
-                            let move_clip = EditCommand::LegacyMoveClipToTrack {
-                                clip: moved_clip,
-                                old_timeline_in: old_in,
-                                old_timeline_out: old_out,
-                                new_timeline_in: new_in,
-                                from_track: from,
-                                to_track: to,
-                                linked_partner: None,
-                            };
-                            self.push_with_partner(move_clip, partner_edits);
-                            self.sync_sequence_to_engine();
-                            // Force engine to re-evaluate decoders at current playhead
-                            let _ = self.cmd_tx.send(AppCommand::SeekTo(self.state.playhead));
-                            self.state.dirty = true;
-                        }
+                    if super::clip_drops::move_to_track(&mut self.state, *clip_id, *new_timeline_in, *from_track, *to_track) {
+                        self.sync_sequence_to_engine();
+                        // Force engine to re-evaluate decoders at current playhead
+                        let _ = self.cmd_tx.send(AppCommand::SeekTo(self.state.playhead));
+                        self.state.dirty = true;
                     }
                     true
                 }
@@ -1709,39 +1595,6 @@ impl KlippApp {
     /// track has there (#3448), at once: an overwrite, never two sound
     /// clips over each other. The edits that record it, for the move's
     /// undo step; `None` when it isn't on a track.
-    fn move_partner_over(&mut self, lid: ClipId, delta: klipp_core::Timecode) -> Option<Vec<EditCommand>> {
-        let seq = &self.state.sequences[self.state.active_sequence_idx];
-        let (ti, ci) = seq.find_clip(lid)?;
-        let mut moved = seq.tracks[ti].clips[ci].clone();
-        moved.timeline_in += delta;
-        moved.timeline_out += delta;
-        let edits = klipp_document::clipboard::lay_over_edits(seq, ti, &moved);
-        let track = &mut self.state.sequences[self.state.active_sequence_idx].tracks[ti];
-        track.remove_clip(lid);
-        klipp_document::clipboard::overwrite_insert_clip_on_track(track, moved);
-        Some(edits)
-    }
-
-    /// `edit` in the history, with its linked partner's edits as one
-    /// undo step when there are any.
-    fn push_with_partner(&mut self, edit: EditCommand, partner: Option<Vec<EditCommand>>) {
-        let Some(partner) = partner.filter(|p| !p.is_empty()) else {
-            self.state.push_history(edit);
-            return;
-        };
-        let batching = self.state.active_history_mut().is_batching();
-        if !batching {
-            self.state.active_history_mut().begin_batch();
-        }
-        self.state.push_history(edit);
-        for e in partner {
-            self.state.push_history(e);
-        }
-        if !batching {
-            self.state.active_history_mut().end_batch_as("Move Clip");
-        }
-    }
-
     fn try_replace_clip_media(
         &mut self,
         clip_id: ClipId,
