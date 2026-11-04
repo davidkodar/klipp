@@ -318,6 +318,50 @@ fn a_described_picture_is_found_where_it_shows() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// The breaths between sentences are measured as pauses: a tone broken
+/// by gaps of 0.22 and 0.25 s, the length of those in fluent speech,
+/// gives two pauses where they are and no silence. Only silences of
+/// 0.4 s were kept, and speech that never paused that long had nowhere
+/// to cut.
+#[test]
+fn the_pauses_between_sentences_are_measured() {
+    let ctx = AnalysisCtx::default();
+    if !ctx.ffmpeg_available() {
+        eprintln!("skipping: no ffmpeg");
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("klipp-analysis-pauses-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let out = dir.join("pauses.wav");
+    let status = std::process::Command::new(&ctx.ffmpeg)
+        .args([
+            "-y", "-hide_banner", "-loglevel", "error",
+            "-f", "lavfi", "-i", "sine=frequency=220:sample_rate=48000:duration=1",
+            "-f", "lavfi", "-i", "anullsrc=r=48000:cl=mono:duration=0.22",
+            "-f", "lavfi", "-i", "sine=frequency=220:sample_rate=48000:duration=1",
+            "-f", "lavfi", "-i", "anullsrc=r=48000:cl=mono:duration=0.25",
+            "-f", "lavfi", "-i", "sine=frequency=220:sample_rate=48000:duration=1",
+            "-filter_complex", "[0:a][1:a][2:a][3:a][4:a]concat=n=5:v=0:a=1[a]",
+            "-map", "[a]",
+        ])
+        .arg(&out)
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let mut item = klipp_media::MediaItem::synthetic_for_test(out.clone(), None);
+    item.duration = klipp_core::RationalTime::from_secs_f64(3.47, 48000);
+    item.video_codec.clear();
+    item.has_audio = true;
+    let v = audio::AudioAnalyser.run(&item, &ctx).expect("audio run");
+    let a: audio::AudioEnvelope = serde_json::from_value(v).unwrap();
+    assert!(a.silences.is_empty(), "no gap is a silence: {:?}", a.silences);
+    assert_eq!(a.pauses.len(), 2, "{:?}", a.pauses);
+    for (p, (from, to)) in a.pauses.iter().zip([(1.0, 1.22), (2.22, 2.47)]) {
+        assert!((p.start_secs - from).abs() < 0.03 && (p.end_secs - to).abs() < 0.03, "{p:?} for {from}-{to}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A screen recording whose one line slides across for six seconds and
 /// then stays: the beat sheet makes the slide one action, puts no cut
 /// point inside it (it cut every second, at "a change just settled", in

@@ -1069,14 +1069,15 @@ pub fn show(
     }
 
     // Apply deferred toggles
+    // Asked for, not done here: done here, the handlers found nothing to
+    // change, so no undo step, and the engine's copy kept the old value.
     if let Some(idx) = toggle_mute {
         let muted = state.sequence().tracks[idx].muted;
-        state.sequence_mut().tracks[idx].muted = !muted;
         cmds.push(AppCommand::SetTrackMute { track_index: idx, muted: !muted });
     }
     if let Some(idx) = toggle_lock {
-        let locked = state.sequence().tracks[idx].locked;
-        state.sequence_mut().tracks[idx].locked = !locked;
+        let track = &state.sequence().tracks[idx];
+        cmds.push(AppCommand::SetTrackLocked { track_id: track.id, locked: !track.locked });
     }
 
     // Apply deferred magnetic track actions

@@ -18,11 +18,11 @@ const PAUSE: f64 = 0.5;
 /// seconds: one, its ends on the words', or with `tighten` one for each
 /// run of speech between the pauses, runs of only filler (in `lists`, the
 /// transcript's language, #2889) left out.
-pub fn pieces(words: &[SpokenWord], from: f64, to: f64, tighten: bool, lists: Option<&klipp_core::lang::Words>) -> Vec<(f64, f64)> {
+pub fn pieces(words: &[SpokenWord], from: f64, to: f64, length: f64, tighten: bool, lists: Option<&klipp_core::lang::Words>) -> Vec<(f64, f64)> {
     let inside: Vec<&SpokenWord> = words.iter().filter(|w| w.start_secs >= from - 0.05 && w.end_secs <= to + 0.05).collect();
     let (Some(first), Some(last)) = (inside.first(), inside.last()) else { return Vec::new() };
     if !tighten {
-        return vec![((first.start_secs - LEAD).max(0.0), last.end_secs + TAIL)];
+        return vec![((first.start_secs - LEAD).max(0.0), (last.end_secs + TAIL).min(length))];
     }
     let filler = |w: &SpokenWord| lists.is_some_and(|l| l.is_filler(&w.text));
     let mut runs: Vec<Vec<&SpokenWord>> = Vec::new();
@@ -34,7 +34,7 @@ pub fn pieces(words: &[SpokenWord], from: f64, to: f64, tighten: bool, lists: Op
     }
     let mut out: Vec<(f64, f64)> = Vec::new();
     for run in runs.iter().filter(|r| !r.iter().all(|w| filler(w))) {
-        let (a, b) = ((run[0].start_secs - LEAD).max(0.0), run[run.len() - 1].end_secs + TAIL);
+        let (a, b) = ((run[0].start_secs - LEAD).max(0.0), (run[run.len() - 1].end_secs + TAIL).min(length));
         match out.last_mut() {
             Some(prev) if a <= prev.1 => prev.1 = b,
             _ => out.push((a, b)),
@@ -88,14 +88,14 @@ mod tests {
     /// just before its first word and ends just after its last.
     #[test]
     fn a_tightened_moment_is_its_runs_of_speech() {
-        let p = pieces(&talk(), 10.0, 20.0, true, Some(&klipp_core::lang::english()));
+        let p = pieces(&talk(), 10.0, 20.0, 60.0, true, Some(&klipp_core::lang::english()));
         assert_eq!(p.len(), 2, "{p:?}");
         assert!((p[0].0 - (10.0 - LEAD)).abs() < 1e-9 && (p[0].1 - (13.45 + TAIL)).abs() < 1e-9, "{p:?}");
         assert!((p[1].0 - (16.0 - LEAD)).abs() < 1e-9, "{p:?}");
-        let whole = pieces(&talk(), 10.0, 20.0, false, Some(&klipp_core::lang::english()));
+        let whole = pieces(&talk(), 10.0, 20.0, 60.0, false, Some(&klipp_core::lang::english()));
         assert_eq!(whole.len(), 1);
         assert!((whole[0].0 - (10.0 - LEAD)).abs() < 1e-9 && (whole[0].1 - (19.45 + TAIL)).abs() < 1e-9, "{whole:?}");
-        assert!(pieces(&talk(), 30.0, 40.0, true, Some(&klipp_core::lang::english())).is_empty());
+        assert!(pieces(&talk(), 30.0, 40.0, 60.0, true, Some(&klipp_core::lang::english())).is_empty());
     }
 
     struct Said(Vec<SpokenWord>);
@@ -104,6 +104,30 @@ mod tests {
         fn words(&self, _: &klipp_media::MediaItem) -> Option<Vec<SpokenWord>> {
             Some(self.0.clone())
         }
+    }
+
+    /// A moment whose last word ends just before its file does keeps its
+    /// pieces inside the file: the tail after the last word stops at the
+    /// file's end, and the short builds. Padded past it, a moment read
+    /// from find_moments was refused ("not inside the file").
+    #[test]
+    fn a_moment_at_its_files_end_stays_inside_the_file() {
+        let english = klipp_core::lang::english();
+        for tighten in [true, false] {
+            let p = pieces(&talk(), 10.0, 20.0, 19.5, tighten, Some(&english));
+            assert!(p.iter().all(|(a, b)| *a >= 0.0 && *b <= 19.5 + 1e-9), "tighten {tighten}: {p:?}");
+            assert!((p.last().unwrap().1 - 19.5).abs() < 1e-9, "the tail stops at the file's end: {p:?}");
+        }
+        let mut seq = Sequence::new_default();
+        seq.fps = klipp_core::Fps::new(30, 1);
+        let mut pool = klipp_media::MediaPool::new();
+        let mut item = klipp_media::MediaItem::synthetic_for_test("/tmp/talk-end.mov".into(), None);
+        item.duration = klipp_core::RationalTime::from_secs_f64(19.5, 30);
+        item.video_codec = "hevc".into();
+        item.has_audio = true;
+        let media = pool.add(item);
+        let ops = short_ops(media, &pieces(&talk(), 10.0, 20.0, 19.5, true, Some(&english)), None, 1.15);
+        resolve_with(&seq, &pool, &ops, &Said(talk())).unwrap_or_else(|r| panic!("{r:?}"));
     }
 
     /// A short builds in an upright sequence: its pieces end to end from
@@ -121,7 +145,7 @@ mod tests {
         item.video_codec = "hevc".into();
         item.has_audio = true;
         let media = pool.add(item);
-        let p = pieces(&talk(), 10.0, 20.0, true, Some(&klipp_core::lang::english()));
+        let p = pieces(&talk(), 10.0, 20.0, 60.0, true, Some(&klipp_core::lang::english()));
         let ops = short_ops(media, &p, Some("Why do most startups fail?"), 1.15);
         let plan = resolve_with(&seq, &pool, &ops, &Said(talk())).unwrap_or_else(|r| panic!("{r:?}"));
         let mut seqs = vec![seq];

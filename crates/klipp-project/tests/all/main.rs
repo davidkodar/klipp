@@ -16,6 +16,8 @@ mod guide_brand_kit_example;
 mod rich_round_trip;
 #[path = "../digest_agrees_with_save.rs"]
 mod digest_agrees_with_save;
+#[path = "../proxy_of_changed_file.rs"]
+mod proxy_of_changed_file;
 #[path = "../autosave_restore_paths.rs"]
 mod autosave_restore_paths;
 #[path = "../crash_recovery_open.rs"]

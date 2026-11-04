@@ -1476,10 +1476,19 @@ pub enum Op {
         from: Option<Anchor>,
         #[serde(default)]
         to: Option<Anchor>,
+        #[serde(default)]
         x: f32,
+        #[serde(default)]
         y: f32,
+        #[serde(default)]
         w: f32,
+        #[serde(default)]
         h: f32,
+        /// A box that follows the text instead of one box: each held from
+        /// its `secs` (on the timeline) until the next, the last until
+        /// `to`. Given, `x`, `y`, `w`, `h` may be left out.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        keys: Vec<RedactKey>,
         #[serde(default = "default_redact_kind")]
         kind: String,
         #[serde(default)]
@@ -2931,6 +2940,18 @@ fn default_redact_kind() -> String {
     "mosaic".into()
 }
 
+/// One box of a redaction that follows the text: from `secs` (on the
+/// timeline) it covers `x`, `y`, `w`, `h` (fractions of the frame from the
+/// top left) until the next key.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct RedactKey {
+    pub secs: f64,
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+}
+
 fn default_highlight_kind() -> String {
     "box".into()
 }
@@ -3223,6 +3244,12 @@ pub trait Transcripts {
     fn silences(&self, _item: &klipp_media::MediaItem) -> Vec<(f64, f64)> {
         Vec::new()
     }
+    /// Where `item`'s sound pauses, measured, in the file's seconds: every
+    /// silence, and the shorter stretches below the same threshold, down
+    /// to a breath between two sentences. A cut in one is clean.
+    fn pauses(&self, item: &klipp_media::MediaItem) -> Vec<(f64, f64)> {
+        self.silences(item)
+    }
     /// Where `item`'s picture changes shot, in the file's seconds: two
     /// selects from either side of one are a cut, not a jump cut.
     fn shot_changes(&self, _item: &klipp_media::MediaItem) -> Vec<f64> {
@@ -3366,10 +3393,63 @@ pub struct SensitiveText {
     pub masked: String,
     pub start_secs: f64,
     pub end_secs: f64,
+    /// Everywhere it was seen, together.
     pub x: f32,
     pub y: f32,
     pub w: f32,
     pub h: f32,
+    /// Where it was in each frame it was followed through (the file's
+    /// seconds, then x, y, w, h), in time order; empty when it was not.
+    pub track: Vec<(f64, [f32; 4])>,
+}
+
+impl SensitiveText {
+    /// The boxes a redaction holds to cover it for its whole time on
+    /// screen, in the file's seconds: from each place it was seen to the
+    /// next, the two places together, so wherever it moved between them
+    /// is covered; before the first and after the last, carried on the
+    /// way it was moving to `start_secs` and `end_secs`. Each grown by a
+    /// quarter of its height, and at least 1% of the frame, every side.
+    /// Not followed, its one box from start to end.
+    pub fn cover_keys(&self) -> Vec<(f64, [f32; 4])> {
+        let grow = |[x0, y0, x1, y1]: [f32; 4]| {
+            let m = ((y1 - y0) * 0.25).max(0.01);
+            let (x0, y0, x1, y1) = ((x0 - m).clamp(0.0, 1.0), (y0 - m).clamp(0.0, 1.0), (x1 + m).clamp(0.0, 1.0), (y1 + m).clamp(0.0, 1.0));
+            [x0, y0, x1 - x0, y1 - y0]
+        };
+        let edges = |b: &[f32; 4]| [b[0], b[1], b[0] + b[2], b[1] + b[3]];
+        let union = |a: [f32; 4], b: [f32; 4]| [a[0].min(b[0]), a[1].min(b[1]), a[2].max(b[2]), a[3].max(b[3])];
+        let t = &self.track;
+        if t.is_empty() {
+            return vec![(self.start_secs, grow(edges(&[self.x, self.y, self.w, self.h])))];
+        }
+        // Where it would be at `at`, moving as it did between `a` and `b`.
+        let carried = |a: &(f64, [f32; 4]), b: &(f64, [f32; 4]), at: f64| {
+            let k = if (b.0 - a.0).abs() > 1e-9 { ((at - b.0) / (b.0 - a.0)) as f32 } else { 0.0 };
+            let (eb, ea) = (edges(&b.1), edges(&a.1));
+            [eb[0] + (eb[0] - ea[0]) * k, eb[1] + (eb[1] - ea[1]) * k, eb[2] + (eb[2] - ea[2]) * k, eb[3] + (eb[3] - ea[3]) * k]
+        };
+        let mut keys: Vec<(f64, [f32; 4])> = Vec::new();
+        let first = &t[0];
+        let lead = if t.len() > 1 { union(edges(&first.1), carried(&t[1], first, self.start_secs)) } else { edges(&first.1) };
+        keys.push((self.start_secs.min(first.0), lead));
+        for w in t.windows(2) {
+            keys.push((w[0].0, union(edges(&w[0].1), edges(&w[1].1))));
+        }
+        let last = &t[t.len() - 1];
+        let tail = if t.len() > 1 { union(edges(&last.1), carried(&t[t.len() - 2], last, self.end_secs)) } else { edges(&last.1) };
+        // The stretch before it and the one after it meet the last place
+        // it was seen: both cover that stretch, held from the later key.
+        if let Some(k) = keys.last_mut().filter(|k| k.0 >= last.0) {
+            k.1 = union(k.1, tail);
+        } else {
+            keys.push((last.0, tail));
+        }
+        let mut keys: Vec<(f64, [f32; 4])> = keys.into_iter().map(|(at, b)| (at, grow(b))).collect();
+        // A run of the same box is one key.
+        keys.dedup_by(|b, a| a.1 == b.1);
+        keys
+    }
 }
 
 /// A screen recording's beat sheet as the check reads it, all in the
@@ -4117,11 +4197,11 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
             stabilize(seq, pool, i, ti, clip, *smoothing)
         }
-        Op::Redact { clip_id, from, to, x, y, w, h, kind, amount, recipes } => {
+        Op::Redact { clip_id, from, to, x, y, w, h, keys, kind, amount, recipes } => {
             let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
             let from = match from { Some(a) => Some(resolve_anchor(seq, fps, a, i)?), None => None };
             let to = match to { Some(a) => Some(resolve_anchor(seq, fps, a, i)?), None => None };
-            redact(seq, pool, i, ti, clip, from, to, [*x, *y, *w, *h], kind, *amount, recipes.as_ref())
+            redact(seq, pool, i, ti, clip, from, to, [*x, *y, *w, *h], keys, kind, *amount, recipes.as_ref())
         }
         Op::Pin { clip_id, media_id, layer, surface, from, to, fit, inset, on_loss, fade_secs, light, shade, texture, blend, template } => {
             let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
@@ -4668,7 +4748,7 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
                     let names = crate::title_style::names(seq.brief.as_ref());
                     refuse(i, format!("\"{name}\" is not a title style"), format!("the styles are {}; set_brief with type_styles adds one", names.join(", ")))
                 })?),
-                None => None,
+                None => brand_look(seq.brief.as_ref()),
             };
             let look = look.unwrap_or_default();
             let motion = crate::title_style::effective_motion(&look, enter.as_ref(), exit.as_ref(), animate.as_deref(), animate_secs.map(f64::from), stagger.as_deref(), *secs)
@@ -7931,24 +8011,86 @@ fn label_name(label: &str) -> String {
     klipp_timeline::composition_template::control_name(label)
 }
 
+/// How far something drawn in the box `[x, y, w, h]` of `seq`'s frame
+/// (shares of it) must rise to end above every player of the platform
+/// `seq` is made for, along the frame's bottom: 0 where nothing covers
+/// it, never past the frame's top margin.
+fn player_lift(seq: &Sequence, [x, y, w, h]: [f32; 4]) -> f32 {
+    const GAP: f32 = 0.02;
+    let Some(platform) = seq.brief.as_ref().map(|b| b.platform.as_str()) else { return 0.0 };
+    let players = klipp_core::platform_overlays::players_for(platform, seq.resolution.width, seq.resolution.height);
+    let Some(limit) = players.iter().filter_map(|p| p.clear_above(x, x + w)).reduce(f32::min) else { return 0.0 };
+    let over = (y + h) - (limit - GAP);
+    if over <= 0.0 {
+        return 0.0;
+    }
+    over.min((y - 0.05).max(0.0))
+}
+
+/// What a composition draws, as a box in shares of its frame: its titles'
+/// boxes together. `None` with no title in it.
+fn composition_box(composition: &Sequence) -> Option<[f32; 4]> {
+    composition.all_clips().filter_map(|c| c.title_data()).filter_map(|td| klipp_timeline::title_box::title_box(td, composition.resolution)).reduce(|a, b| {
+        let (x0, y0) = (a[0].min(b[0]), a[1].min(b[1]));
+        let (x1, y1) = ((a[0] + a[2]).max(b[0] + b[2]), (a[1] + a[3]).max(b[1] + b[3]));
+        [x0, y0, x1 - x0, y1 - y0]
+    })
+}
+
 /// the sequences it needs copied in first; its parameters set from
 /// `fields` by name or label. One step.
 #[allow(clippy::too_many_arguments)]
+/// The brief's look of `name` when the brief sets one of its own (a
+/// brand kit taken in, or set_brief): not Klipp's built-in of that name.
+fn brief_look<'a>(brief: Option<&'a klipp_timeline::Brief>, name: &str) -> Option<&'a klipp_timeline::TypeStyle> {
+    brief?.type_styles.iter().find(|s| s.name.trim().eq_ignore_ascii_case(name))
+}
+
+/// What a title made with no style takes from the brand (#2722): the
+/// font, colour and backing fill of the brief's heading look, never its
+/// size, place or motion, so a plain title is the brand's without moving.
+/// `None` when the brief sets no heading of its own.
+fn brand_look(brief: Option<&klipp_timeline::Brief>) -> Option<klipp_timeline::TypeStyle> {
+    let heading = brief_look(brief, "heading")?;
+    Some(klipp_timeline::TypeStyle { name: heading.name.clone(), font: heading.font.clone(), color: heading.color.clone(), fill: heading.fill.clone(), ..Default::default() })
+}
+
+/// A lower third in the brand's look (#2722): the name in the brief's
+/// heading font and colour, the role in its callout font, and a box
+/// backing in its card fill, where the brief sets those looks.
+fn brand_lower_third(brief: Option<&klipp_timeline::Brief>, td: &mut klipp_timeline::TitleData) {
+    let (heading, callout, card) = (brief_look(brief, "heading"), brief_look(brief, "callout"), brief_look(brief, "card"));
+    let mut texts = td.objects.iter_mut().filter_map(|o| match &mut o.content {
+        klipp_timeline::TitleObjectContent::TextBox(tb) => Some(tb),
+        _ => None,
+    });
+    if let (Some(name), Some(h)) = (texts.next(), heading) {
+        if let Some(f) = h.font.as_ref().filter(|f| !f.trim().is_empty()) {
+            name.font_name = f.clone();
+        }
+        if let Some(c) = h.color.as_deref().and_then(parse_color) {
+            name.color = c;
+        }
+    }
+    if let (Some(role), Some(f)) = (texts.next(), callout.and_then(|c| c.font.as_ref()).filter(|f| !f.trim().is_empty())) {
+        role.font_name = f.clone();
+    }
+    if let (klipp_timeline::TitleBackground::Color { color, .. }, Some(c)) = (&mut td.background, card.and_then(|c| c.fill.as_deref()).and_then(parse_color)) {
+        // The brand's colour at the box's own see-through.
+        *color = [c[0], c[1], c[2], color[3]];
+    }
+}
+
 /// `td` lifted until it ends above the player of the platform `seq` is
 /// made for, along the frame's bottom (YouTube's progress bar and
 /// controls): a built-in lower third sat under them. Never past the
 /// frame's top margin; nothing without a destination's player.
 pub fn lift_above_player(seq: &Sequence, td: &mut klipp_timeline::TitleData) {
-    const GAP: f32 = 0.02;
-    let Some(platform) = seq.brief.as_ref().map(|b| b.platform.as_str()) else { return };
-    let Some(player) = klipp_core::platform_overlays::player_for(platform, seq.resolution.width, seq.resolution.height) else { return };
-    let Some([x, y, w, h]) = klipp_timeline::title_box::title_box(td, seq.resolution) else { return };
-    let Some(limit) = player.clear_above(x, x + w) else { return };
-    let over = (y + h) - (limit - GAP);
-    if over <= 0.0 {
+    let Some(b) = klipp_timeline::title_box::title_box(td, seq.resolution) else { return };
+    let by = player_lift(seq, b);
+    if by <= 0.0 {
         return;
     }
-    let by = over.min((y - 0.05).max(0.0));
     for o in &mut td.objects {
         o.transform.center.y -= by;
         for k in &mut o.transform.center_y_keyframes {
@@ -8010,9 +8152,13 @@ fn place_composition(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, at: T
     instance.overrides.extend(overrides);
     instance.media_slots = media_slots;
     klipp_timeline::flatten::validate_template_instance(&instance, composition).map_err(|e| refuse(i, e, "save the template again"))?;
+    // Only the layout this frame takes, and what it nests: the template's
+    // layouts for other frames stay in the template, not in the project.
+    let needed: Vec<klipp_core::SequenceId> = klipp_timeline::composition_template::composition_sequences(composition, &t.sequences).iter().map(|s| s.id).collect();
+    let missing: Vec<Sequence> = placed.missing.iter().filter(|s| needed.contains(&s.id)).cloned().collect();
     let mut edits = Vec::new();
-    if !placed.missing.is_empty() {
-        edits.push(EditCommand::AddSequences { sequences: placed.missing.clone() });
+    if !missing.is_empty() {
+        edits.push(EditCommand::AddSequences { sequences: missing.clone() });
     }
     let free = |ti: usize| {
         let tr = &seq.tracks[ti];
@@ -8037,9 +8183,20 @@ fn place_composition(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, at: T
     };
     let mut clip = Clip::precomposition(composition.id, tl_in, tl_out);
     clip.kind = ClipKind::TemplatePrecomposition { sequence_id: composition.id, template_instance: instance };
+    // Above the player of the platform the sequence is made for, as a
+    // title template is: the Banner Lower Third sat under YouTube's
+    // progress bar and controls.
+    let by = composition_box(composition).map_or(0.0, |b| player_lift(seq, b));
+    if by > 0.0 {
+        // The clip's own placement, raised: pixels from the frame's centre,
+        // down positive, as compose keys it.
+        let mut lanes = crate::history::KeyframeSnapshot::from_clip(&clip);
+        klipp_core::keyframe::upsert_keyframe(&mut lanes.transform_pos_y_keyframes, 0.0, -by * seq.resolution.height as f32);
+        lanes.apply_to_clip(&mut clip);
+    }
     let id = clip.id;
     edits.push(EditCommand::LegacyAppendClip { clip, track_index });
-    let copied = if placed.missing.is_empty() { String::new() } else { format!(", its {} sequence{} copied into the project", placed.missing.len(), if placed.missing.len() == 1 { "" } else { "s" }) };
+    let copied = if missing.is_empty() { String::new() } else { format!(", its {} sequence{} copied into the project", missing.len(), if missing.len() == 1 { "" } else { "s" }) };
     Ok((format!("template {} at {:.2}-{:.2} s on track {track_index}{copied}", quoted(&t.name), secs(tl_in), secs(tl_out)), EditCommand::Batch(edits), vec![id]))
 }
 
@@ -8111,19 +8268,53 @@ fn set_text(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, 
 /// the text's edges too.
 const REDACT_MARGIN: f32 = 0.006;
 
+/// The redaction window's box held at each of `keys` (seconds into the
+/// clip, then centre x and y, width, and height along the width): the
+/// mask the recipe adds keyed so, each box held until the next. One key
+/// or none leaves the window as the recipe made it.
+fn follow_window(ops: &mut [klipp_graph_lift::ops::GraphOp], keys: &[(f64, [f32; 4])]) {
+    use klipp_graph_lift::ops::GraphOp;
+    if keys.len() < 2 {
+        return;
+    }
+    let track = |n: usize| -> Vec<klipp_core::Keyframe> {
+        keys.iter().map(|(t, b)| klipp_core::Keyframe { time_secs: *t, value: b[n], interpolation: klipp_core::keyframe::Interpolation::Step, tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0), handles: Default::default() }).collect()
+    };
+    let frames = klipp_core::MaskKeyframes { center_x: track(0), center_y: track(1), width: track(2), height: track(3), ..Default::default() };
+    // The mask's entry is set whole after the node is added (its masks
+    // as a payload): each such entry takes the keys. A mask's rectangle
+    // has no v2 route yet, so its keys go into that entry (one use of the
+    // v1 view, pinned), rather than a redaction that leaks waiting for one.
+    for op in ops.iter_mut() {
+        let GraphOp::SetPayload { payload, .. } = op else { continue };
+        let Some(mask) = payload.pointer_mut("/params/masks/masks/0") else { continue };
+        if let Ok(v) = serde_json::to_value(&frames) {
+            mask["keyframes"] = v;
+        }
+    }
+}
+
 /// `redact` (#2886): the redaction recipe of its kind in the clip's own
 /// picture, the patch taken from the graded picture and laid back over
 /// it inside the box from `from` to `to`.
 #[allow(clippy::too_many_arguments)]
-fn redact(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, from: Option<Timecode>, to: Option<Timecode>, rect: [f32; 4], kind: &str, amount: Option<f32>, recipes: Option<&RecipeMaker>) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
+fn redact(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, from: Option<Timecode>, to: Option<Timecode>, rect: [f32; 4], keys: &[RedactKey], kind: &str, amount: Option<f32>, recipes: Option<&RecipeMaker>) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
     let ClipKind::Media { media_id } = &clip.kind else {
         return Err(refuse(i, format!("{} is not a media clip", clip_name(seq, pool, clip)), "redact a picture from a file"));
     };
     if seq.tracks.get(ti).is_some_and(|t| t.locked) {
         return Err(refuse(i, format!("track {ti} is locked"), "unlock it first"));
     }
+    let usable = |[x, y, w, h]: [f32; 4]| w > 0.0 && h > 0.0 && (0.0..=1.0).contains(&x) && (0.0..=1.0).contains(&y) && [x, y, w, h].iter().all(|v| v.is_finite());
+    let mut keys: Vec<RedactKey> = keys.to_vec();
+    keys.sort_by(|a, b| a.secs.total_cmp(&b.secs));
+    if let Some(k) = keys.iter().find(|k| !k.secs.is_finite() || !usable([k.x, k.y, k.w, k.h])) {
+        return Err(refuse(i, format!("the key at {:.2} s has no size or is off the frame", k.secs), "each key's x, y, w, h are fractions of the frame from the top left"));
+    }
+    // A box that follows the text starts where its first key does.
+    let rect = keys.first().map_or(rect, |k| [k.x, k.y, k.w, k.h]);
     let [x, y, w, h] = rect;
-    if !(w > 0.0 && h > 0.0) || !(0.0..=1.0).contains(&x) || !(0.0..=1.0).contains(&y) {
+    if !usable(rect) {
         return Err(refuse(i, "the box has no size or is off the frame", "x, y, w, h are fractions of the frame from the top left; check's sensitive_on_screen finding gives them"));
     }
     let a = from.unwrap_or(clip.timeline_in).max(clip.timeline_in);
@@ -8148,6 +8339,13 @@ fn redact(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, fr
     // Shown from `a` to `b`, seconds into the clip, as its keys are timed;
     // hidden a moment before.
     let (shown, gone) = (secs(a - clip.timeline_in), secs(b - clip.timeline_in));
+    // Each key's box as the window takes it: margin, centre, size.
+    let window = |[x, y, w, h]: [f32; 4]| {
+        let (left, right) = ((x - REDACT_MARGIN).clamp(0.0, 1.0), (x + w + REDACT_MARGIN).clamp(0.0, 1.0));
+        let (top, bottom) = ((y - REDACT_MARGIN).clamp(0.0, 1.0), (y + h + REDACT_MARGIN).clamp(0.0, 1.0));
+        [(left + right) / 2.0, (top + bottom) / 2.0, right - left, (bottom - top) * aspect]
+    };
+    let followed: Vec<(f64, [f32; 4])> = keys.iter().map(|k| (k.secs - secs(clip.timeline_in), window([k.x, k.y, k.w, k.h]))).collect();
     let controls: std::collections::BTreeMap<String, serde_json::Value> = [
         ("amount", f64::from(strength)),
         ("centre_x", f64::from((left + right) / 2.0)),
@@ -8161,9 +8359,10 @@ fn redact(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, fr
     .into_iter()
     .map(|(k, v)| (k.to_string(), serde_json::json!(v)))
     .collect();
-    let edit = on_recipe(i, seq, clip, recipes, name, &controls)?;
+    let edit = on_recipe_shaped(i, seq, clip, recipes, name, &controls, |ops| follow_window(ops, &followed))?;
+    let followed_text = if keys.len() > 1 { format!(", following the text through {} boxes", keys.len()) } else { String::new() };
     let what = format!(
-        "redact {} of {} from {:.2} to {:.2} s: {kind} over the box at {:.0}%,{:.0}% ({:.0}% by {:.0}%), in the clip's own picture",
+        "redact {} of {} from {:.2} to {:.2} s: {kind} over the box at {:.0}%,{:.0}% ({:.0}% by {:.0}%){followed_text}, in the clip's own picture",
         short_name(&pool.get(media_id).map(|m| m.filename.clone()).unwrap_or_default()), clip_name(seq, pool, clip), secs(a), secs(b), x * 100.0, y * 100.0, w * 100.0, h * 100.0
     );
     Ok((what, EditCommand::PictureEdit { clip_id: clip.id, description: "Redact", edit: Box::new(edit) }, vec![clip.id]))
@@ -8173,8 +8372,15 @@ fn redact(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, fr
 /// `controls` set, built into `clip`'s picture through `recipes` (bound
 /// by the socket), with a frame round the nodes it made, if any.
 fn on_recipe(i: usize, seq: &Sequence, clip: &Clip, recipes: Option<&RecipeMaker>, name: &str, controls: &std::collections::BTreeMap<String, serde_json::Value>) -> Result<klipp_timeline::PictureEdit, Refusal> {
+    on_recipe_shaped(i, seq, clip, recipes, name, controls, |_| {})
+}
+
+/// [`on_recipe`], its graph ops changed by `shape` before they are applied.
+#[allow(clippy::too_many_arguments)]
+fn on_recipe_shaped(i: usize, seq: &Sequence, clip: &Clip, recipes: Option<&RecipeMaker>, name: &str, controls: &std::collections::BTreeMap<String, serde_json::Value>, shape: impl FnOnce(&mut Vec<klipp_graph_lift::ops::GraphOp>)) -> Result<klipp_timeline::PictureEdit, Refusal> {
     let build = recipes.and_then(|m| (m.0)(name, controls)).ok_or_else(|| refuse(i, format!("the recipe \"{name}\" isn't here"), "report it"))?;
     let RecipeBuild { mut ops, placed, .. } = (build.0)(seq, clip.id).map_err(|why| refuse(i, why, "report it"))?;
+    shape(&mut ops);
     if !placed.nodes.is_empty() {
         ops.push(recipe_frame(clip, placed).map_err(|why| refuse(i, why, "report it"))?);
     }
@@ -12296,7 +12502,7 @@ fn linked_crossfade(seq: &Sequence, pool: &MediaPool, fps: Fps, a: &Clip, b: &Cl
 
 /// A transition spec from a name: its registry key (any case), or a
 /// friendly alias for the ones people ask for by feel.
-fn resolve_transition_kind(name: &str) -> Option<&'static klipp_core::TransitionSpec> {
+pub(crate) fn resolve_transition_kind(name: &str) -> Option<&'static klipp_core::TransitionSpec> {
     let key = name.trim().to_lowercase().replace([' ', '-'], "_");
     let alias = match key.as_str() {
         "dissolve" | "crossfade" | "cross_fade" => "CrossDissolve",
@@ -14386,7 +14592,10 @@ fn lower_third(
         }
         None => text_track_in_view(seq, tl_in, tl_out),
     };
-    let td = lower_third_made(name, role, place).map_err(|e| refuse(i, format!("the lower third couldn't be made: {e}"), "report it"))?;
+    let mut td = lower_third_made(name, role, place).map_err(|e| refuse(i, format!("the lower third couldn't be made: {e}"), "report it"))?;
+    brand_lower_third(seq.brief.as_ref(), &mut td);
+    // Clear of the player of the platform the sequence is made for.
+    lift_above_player(seq, &mut td);
     let clip = title_clip(td, tl_in, tl_out, fps);
     let id = clip.id;
     let what = format!(
@@ -15601,6 +15810,38 @@ mod tests {
         }
     }
 
+    /// A template placed copies in the layout its sequence's frame takes,
+    /// and what that layout nests, never its other frames' layouts: a
+    /// brand kit's intro and outro brought six sequences into a wide
+    /// project, a wide, a tall and a square of each. Undo takes them away.
+    #[test]
+    fn a_template_copies_only_the_layout_its_frame_takes() {
+        for name in ["Hook Card", "End Screen", "Split Screen"] {
+            let t = klipp_timeline::composition_template::builtin_templates().into_iter().find(|t| t.name == name).unwrap();
+            assert!(t.formats.len() >= 2, "{name} carries a layout for more than one frame");
+            for (w, h) in [(1920, 1080), (1080, 1920), (1080, 1080)] {
+                let (mut seq, pool, ..) = fixture();
+                seq.resolution = klipp_core::Resolution { width: w, height: h };
+                let missing = klipp_timeline::composition_template::missing_sequences(&t, std::slice::from_ref(&seq));
+                let op = Op::Template { name: name.into(), at: Anchor::Secs(1.0), secs: Some(3.0), track: None, fields: Default::default(), source: None, kind: None, data: None, composition: Some(Box::new(PlacedComposition { template: t.clone(), missing })) };
+                let plan = resolve(&seq, &pool, &[op]).unwrap_or_else(|r| panic!("{name} {w}x{h}: {}", r.why));
+                let mut seqs = vec![seq.clone()];
+                let (mut p, mut fps) = (pool.clone(), seq.fps);
+                let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps };
+                view.apply_forward(&plan.steps[0].edit);
+                let layout = t.composition_for(w, h).unwrap();
+                let mut want: Vec<_> = klipp_timeline::composition_template::composition_sequences(layout, &t.sequences).iter().map(|s| s.id).collect();
+                let mut got: Vec<_> = view.sequences[1..].iter().map(|s| s.id).collect();
+                want.sort_by_key(|id| id.0);
+                got.sort_by_key(|id| id.0);
+                assert_eq!(got, want, "{name} {w}x{h}: only its layout and what it nests, of {} sequences", t.sequences.len());
+                view.apply_inverse(&plan.steps[0].edit);
+                assert_eq!(view.sequences.len(), 1, "{name} {w}x{h}: undo takes them away");
+                assert_eq!(serde_json::to_value(&view.sequences[0]).unwrap(), serde_json::to_value(&seq).unwrap(), "{name} {w}x{h}: undo is exact");
+            }
+        }
+    }
+
     /// A brand kit's accent and heading font, sent as fields that
     /// end in "?", set the Hook Card's hook line; a template without such
     /// a parameter takes the rest and is not refused.
@@ -15646,6 +15887,66 @@ mod tests {
         assert!(mine[1] + mine[3] <= 0.88 - 0.019, "it ends at {:.3}, over the controls from 0.88", mine[1] + mine[3]);
         let free = placed(None);
         assert!(free[1] + free[3] > 0.88, "the built-in sits low where nothing covers it: {:.3}", free[1] + free[3]);
+    }
+
+    /// Every built-in lower third, placed in a sequence made for each
+    /// destination whose player covers the frame's bottom, at that
+    /// destination's frame, ends above what the player covers: the
+    /// lower_third op's title, each lower-third title template and each
+    /// lower-third composition template. The lower_third op and the
+    /// Banner Lower Third sat over YouTube's progress bar and controls.
+    #[test]
+    fn every_lower_third_keeps_clear_of_each_destinations_player() {
+        use klipp_timeline::composition_template::{builtin_templates, missing_sequences};
+        let compositions: Vec<_> = builtin_templates().into_iter().filter(|t| t.category == "Lower Thirds").collect();
+        let titles: Vec<_> = klipp_timeline::title_library::TITLES.iter().filter(|t| t.category == "Lower Thirds").collect();
+        assert!(!compositions.is_empty() && !titles.is_empty(), "lower thirds of both kinds ship");
+        let mut checked = 0;
+        for f in klipp_core::project_formats::formats() {
+            let Some(d) = &f.destination else { continue };
+            let players = klipp_core::platform_overlays::players_for(&d.platform, f.width, f.height);
+            if players.is_empty() {
+                continue;
+            }
+            let (mut seq, pool, ..) = fixture();
+            seq.resolution = klipp_core::Resolution { width: f.width, height: f.height };
+            seq.brief = Some(klipp_timeline::Brief { platform: d.platform.clone(), ..Default::default() });
+            let mut ops = vec![("the lower_third op".to_string(), Op::LowerThird { name: "Ada Lovelace".into(), role: Some("Engineer".into()), at: Anchor::Secs(0.5), secs: 2.0, track: None, side: None, x: None, y: None, backing: None, in_picture: false })];
+            for t in &titles {
+                ops.push((t.name.clone(), Op::Template { name: t.name.clone(), at: Anchor::Secs(0.5), secs: Some(2.0), track: None, fields: Default::default(), source: None, kind: None, data: Some(Box::new(t.data())), composition: None }));
+            }
+            for t in &compositions {
+                let missing = missing_sequences(t, std::slice::from_ref(&seq));
+                ops.push((t.name.clone(), Op::Template { name: t.name.clone(), at: Anchor::Secs(0.5), secs: Some(2.0), track: None, fields: Default::default(), source: None, kind: None, data: None, composition: Some(Box::new(PlacedComposition { template: t.clone(), missing })) }));
+            }
+            for (name, op) in ops {
+                let what = format!("{name} in a {}x{} sequence for {}", f.width, f.height, d.platform);
+                let plan = resolve(&seq, &pool, &[op]).unwrap_or_else(|r| panic!("{what}: {}", r.why));
+                let mut seqs = vec![seq.clone()];
+                let (mut p, mut fps) = (pool.clone(), seq.fps);
+                let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps };
+                view.apply_forward(&plan.steps[0].edit);
+                let made = view.sequences[0].all_clips().find(|c| !seq.all_clips().any(|o| o.id == c.id)).expect("placed").clone();
+                let [x, y, w, h] = match &made.kind {
+                    ClipKind::TemplatePrecomposition { sequence_id, .. } => {
+                        let layout = view.sequences.iter().find(|s| s.id == *sequence_id).expect("its layout");
+                        let [x, y, w, h] = composition_box(layout).expect("it draws titles");
+                        let lanes = crate::history::KeyframeSnapshot::from_clip(&made);
+                        let lifted = klipp_core::keyframe::evaluate(&lanes.transform_pos_y_keyframes, 0.5, 0.0) / f.height as f32;
+                        [x, y + lifted, w, h]
+                    }
+                    _ => klipp_timeline::title_box::title_box(made.title_data().expect("a title"), seq.resolution).expect("a box"),
+                };
+                for player in &players {
+                    if let Some(limit) = player.clear_above(x, x + w) {
+                        assert!(y + h <= limit - 0.019, "{what}: it ends at {:.3}, {}'s player covers from {limit:.3}", y + h, player.name);
+                    }
+                    checked += 1;
+                }
+            }
+        }
+        // YouTube's, and Shorts', Reels' and TikTok's on a vertical piece.
+        assert!(checked >= 4 * (1 + titles.len() + compositions.len()), "every destination's players checked: {checked}");
     }
 
     /// #2757: a composition template placed with no `secs` holds for the
@@ -16028,6 +16329,67 @@ mod tests {
         assert!(resolve(&seq, &pool, &[op(Some("card"), None)]).is_ok());
         let err = resolve(&seq, &pool, &[op(Some("banner"), None)]).unwrap_err();
         assert!(format!("{err:?}").contains("kicker"), "{err:?}");
+    }
+
+    /// A brief with the brand's own looks, as a brand kit leaves it.
+    fn branded() -> klipp_timeline::Brief {
+        use klipp_timeline::TypeStyle;
+        let look = |name: &str, font: &str| TypeStyle { name: name.into(), font: Some(font.into()), color: Some("#ff8800".into()), size: Some(72.0), y: Some(0.1), animate: Some("rise".into()), ..Default::default() };
+        let mut card = look("card", "Oswald");
+        card.fill = Some("#002244".into());
+        klipp_timeline::Brief { brand_colors: vec!["#ff8800".into()], type_styles: vec![look("heading", "Oswald"), look("callout", "Lora"), card], ..Default::default() }
+    }
+
+    /// A title made after a brand kit is taken in, with no style named,
+    /// is in the brand's font and colour, where and as big as a plain
+    /// title is: it was in Klipp's own look, as if no kit were there.
+    /// With no look of the brief's own, a plain title is as it was.
+    #[test]
+    fn a_plain_title_takes_the_brands_font_and_colour_not_its_place() {
+        let made = |brief: Option<klipp_timeline::Brief>| {
+            let (mut seq, pool, ..) = fixture();
+            seq.brief = brief;
+            let op = Op::Title { text: "Now".into(), at: Anchor::Secs(1.0), style: None, secs: 2.0, track: None, x: None, y: None, size: None, color: None, font: None, bold: None, align: None, backing: None, backing_color: None, full_frame: None, outline: None, outline_color: None, glow: None, glow_color: None, gradient: None, animate: None, enter: None, exit: None, animate_secs: None, stagger: None, loop_effect: None, glitch: None, chromatic: None, roll_shape: None, edge_fade: None, over_faces: false, shadow: None, typeset: Default::default() };
+            let plan = resolve(&seq, &pool, &[op]).unwrap_or_else(|r| panic!("{}", r.why));
+            let EditCommand::AddTitleClip { clip, .. } = &plan.steps[plan.steps.len() - 1].edit else { panic!("a title is a clip") };
+            let ClipKind::Title(td) = &clip.kind else { panic!("a title") };
+            td.clone()
+        };
+        let plain = made(None);
+        let brand = made(Some(branded()));
+        let (p, b) = (plain.primary_text().unwrap(), brand.primary_text().unwrap());
+        assert_eq!((b.font_name.as_str(), b.color), ("Oswald", [255, 136, 0, 255]), "the brand's font and colour");
+        assert_eq!(b.font_size, p.font_size, "its size is a plain title's, not the heading's");
+        assert!((brand.objects[0].transform.center.y - plain.objects[0].transform.center.y).abs() < 1e-6, "its place is a plain title's");
+        let mut unbranded = branded();
+        unbranded.type_styles.clear();
+        assert_eq!(serde_json::to_value(made(Some(unbranded)).objects).unwrap(), serde_json::to_value(&plain.objects).unwrap(), "no look of the brief's own, no change");
+    }
+
+    /// A lower third made after a brand kit is taken in has the name in
+    /// the brand's heading font and colour, the role in its callout font,
+    /// and its box in the card's fill.
+    #[test]
+    fn a_lower_third_takes_the_brands_look() {
+        let made = |brief: Option<klipp_timeline::Brief>| {
+            let (mut seq, pool, ..) = fixture();
+            seq.brief = brief;
+            let op = Op::LowerThird { name: "Ada Lovelace".into(), role: Some("Engineer".into()), at: Anchor::Secs(0.5), secs: 2.0, track: None, side: None, x: None, y: None, backing: Some("box".into()), in_picture: false };
+            let plan = resolve(&seq, &pool, &[op]).unwrap_or_else(|r| panic!("{}", r.why));
+            let EditCommand::AddTitleClip { clip, .. } = &plan.steps[plan.steps.len() - 1].edit else { panic!("a title is a clip") };
+            let ClipKind::Title(td) = &clip.kind else { panic!("a title") };
+            td.clone()
+        };
+        let texts = |td: &klipp_timeline::TitleData| -> Vec<(String, [u8; 4])> {
+            td.objects.iter().filter_map(|o| match &o.content { klipp_timeline::TitleObjectContent::TextBox(tb) => Some((tb.font_name.clone(), tb.color)), _ => None }).collect()
+        };
+        let plain = made(None);
+        let brand = made(Some(branded()));
+        assert_eq!(texts(&brand)[0], ("Oswald".to_string(), [255, 136, 0, 255]), "the name in the heading's font and colour");
+        assert_eq!(texts(&brand)[1].0, "Lora", "the role in the callout's font");
+        assert_eq!(texts(&brand)[1].1, texts(&plain)[1].1, "the role keeps its own colour");
+        let (klipp_timeline::TitleBackground::Color { color: b, .. }, klipp_timeline::TitleBackground::Color { color: p, .. }) = (&brand.background, &plain.background) else { panic!("a box backing: {:?}", brand.background) };
+        assert_eq!((b[0], b[1], b[2], b[3]), (0x00, 0x22, 0x44, p[3]), "the box in the card's fill, as see-through as it was");
     }
 
     /// #1567: a type style's shadow reaches the titles made in it, and a
@@ -17365,7 +17727,7 @@ mod tests {
     #[test]
     fn a_redaction_refuses_what_it_cannot_hide() {
         let (mut seq, pool, _, a, _) = fixture();
-        let mk = |from: f64, to: f64, w: f32, kind: &str| Op::Redact { clip_id: ClipRef::Id(a), from: Some(Anchor::Secs(from)), to: Some(Anchor::Secs(to)), x: 0.2, y: 0.6, w, h: 0.05, kind: kind.into(), amount: None, recipes: None };
+        let mk = |from: f64, to: f64, w: f32, kind: &str| Op::Redact { clip_id: ClipRef::Id(a), from: Some(Anchor::Secs(from)), to: Some(Anchor::Secs(to)), x: 0.2, y: 0.6, w, h: 0.05, keys: Vec::new(), kind: kind.into(), amount: None, recipes: None };
         assert!(resolve(&seq, &pool, &[mk(5.0, 9.0, 0.3, "mosaic")]).unwrap_err().why.contains("not a stretch inside"));
         assert!(resolve(&seq, &pool, &[mk(1.0, 3.0, 0.0, "mosaic")]).unwrap_err().why.contains("no size"));
         assert!(resolve(&seq, &pool, &[mk(1.0, 3.0, 0.3, "paint")]).unwrap_err().hint.contains("mosaic or blur"));

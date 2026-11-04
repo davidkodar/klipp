@@ -1322,10 +1322,42 @@ mod menu_smoke_tests {
             egui::Shape::Text(t) if t.galley.text().starts_with("Video 1") && t.galley.text().ends_with('\u{2026}') => Some(t.visual_bounding_rect()),
             _ => None,
         }).expect("drawn cut");
-        let room = super::track_headers::name_room(&timeline.state.sequences[0].tracks[v1], rect.max.x);
+        let room = super::track_headers::name_room(&timeline.state.sequences[0].tracks[v1], rect.min.x);
         assert!(cut.max.x <= room + 0.5, "ends at {}, its buttons at {room}", cut.max.x);
         timeline.state.sequences[0].tracks[v1].name = "Video 1".to_string();
         assert!(timeline.frame(Vec::new()).iter().any(|(t, _)| t == "Video 1"), "a short name whole");
+    }
+
+    /// The lock and mute buttons on a track's header ask for the change, so
+    /// that it's a step of its own and reaches the engine, and don't make it
+    /// themselves.
+    #[test]
+    fn the_header_buttons_ask_for_a_lock_and_a_mute() {
+        let mut timeline = Timeline::new();
+        let v1 = timeline.state.sequences[0].tracks.iter().position(|t| t.kind == TrackKind::Video).unwrap();
+        let id = timeline.state.sequences[0].tracks[v1].id;
+        timeline.frame(Vec::new());
+        timeline.frame(Vec::new());
+        let rect = timeline.old.frame_cache.track_rects.iter().find(|(i, _, _)| *i == v1).expect("drawn").2;
+        let click = |timeline: &mut Timeline, at: egui::Pos2| {
+            let button = |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+            timeline.frame(vec![egui::Event::PointerMoved(at)]);
+            let mut sent = Vec::new();
+            timeline.frame(vec![button(true)]);
+            sent.append(&mut timeline.sent);
+            timeline.frame(vec![button(false)]);
+            sent.append(&mut timeline.sent);
+            timeline.frame(Vec::new());
+            sent.append(&mut timeline.sent);
+            sent
+        };
+        // The header ends where the clip area starts.
+        let sent = click(&mut timeline, egui::pos2(rect.min.x - 12.0, rect.center().y));
+        assert!(sent.iter().any(|c| matches!(c, AppCommand::SetTrackLocked { track_id, locked: true } if *track_id == id)), "{sent:?}");
+        assert!(!timeline.state.sequences[0].tracks[v1].locked, "left to the command");
+        let sent = click(&mut timeline, egui::pos2(rect.min.x - 52.0, rect.center().y));
+        assert!(sent.iter().any(|c| matches!(c, AppCommand::SetTrackMute { track_index, muted: true } if *track_index == v1)), "{sent:?}");
+        assert!(!timeline.state.sequences[0].tracks[v1].muted, "left to the command");
     }
 
     /// #3209: a pool file let go over a clip with Alt held goes into it as

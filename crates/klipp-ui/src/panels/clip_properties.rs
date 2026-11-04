@@ -37,6 +37,7 @@ pub fn show_clip_properties_dialog(
         state.show_clip_properties = false;
         return cmds;
     };
+    let proxy_shown = state.proxy_shown(&media);
 
     let mut open = true;
     crate::widgets::window("Clip Properties")
@@ -92,7 +93,7 @@ pub fn show_clip_properties_dialog(
                 .auto_shrink([false, true])
                 .show(ui, |ui| match state.clip_properties_tab {
                     ClipPropertiesTab::Info => render_info_tab(ui, &media),
-                    ClipPropertiesTab::File => render_file_tab(ui, &media),
+                    ClipPropertiesTab::File => render_file_tab(ui, &media, proxy_shown),
                     ClipPropertiesTab::Tags => {
                         render_tags_tab(ui, &media, &mut cmds);
                     }
@@ -184,7 +185,7 @@ fn render_info_tab(ui: &mut egui::Ui, media: &klipp_media::MediaItem) {
         });
 }
 
-fn render_file_tab(ui: &mut egui::Ui, media: &klipp_media::MediaItem) {
+fn render_file_tab(ui: &mut egui::Ui, media: &klipp_media::MediaItem, proxy_shown: bool) {
     egui::Grid::new("clip_props_file")
         .num_columns(2)
         .spacing([12.0, 6.0])
@@ -224,7 +225,7 @@ fn render_file_tab(ui: &mut egui::Ui, media: &klipp_media::MediaItem) {
             if let Some(ref enc) = media.encoder {
                 kv(ui, "Encoder", enc);
             }
-            kv(ui, "Proxy", if media.proxy_ready { "Ready" } else { "Not generated" });
+            kv(ui, "Proxy", if proxy_shown { "Ready" } else { "Not generated" });
             if let Some(ref pp) = media.proxy_path {
                 kv(ui, "Proxy path", &pp.to_string_lossy());
             }

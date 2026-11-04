@@ -311,6 +311,17 @@ impl KlippApp {
     }
 }
 
+/// A track of the open sequence changed by `edit`, and the copy the engine
+/// plays and the control socket reads given the change, so that a report of
+/// the track says what the project says.
+pub(super) fn edit_track(state: &mut AppState, sequence: &klipp_timeline::SharedSequence, param_change_queue: &ArrayQueue<ParamChange>, track_id: klipp_core::TrackId, edit: impl FnOnce(&mut klipp_timeline::Track)) {
+    let idx = state.active_sequence_idx;
+    let Some(track) = state.sequences[idx].tracks.iter_mut().find(|t| t.id == track_id) else { return };
+    edit(track);
+    state.dirty = true;
+    sync_sequence(state, sequence, param_change_queue);
+}
+
 /// The same engine mirror write used by the live inspector edit host.
 pub(super) fn sync_sequence(state: &AppState, sequence: &klipp_timeline::SharedSequence, param_change_queue: &ArrayQueue<ParamChange>) {
     // Parameter changes still queued for the engine are already in
@@ -339,6 +350,28 @@ pub(super) fn sync_sequence(state: &AppState, sequence: &klipp_timeline::SharedS
     // The clip being framed for its glide, without its move (#611).
     super::frame_glide::show_unmoved(&mut flat, state.frame_glide_clip);
     sequence.replace(flat);
+}
+
+#[cfg(test)]
+mod edit_track_tests {
+    /// A lock, a name or a role set from the header reaches the copy the
+    /// control socket reads at once, not at the next edit.
+    #[test]
+    fn a_tracks_settings_reach_the_copy_the_socket_reads() {
+        let mut state = crate::state::AppState::default();
+        let shared = klipp_timeline::SharedSequence::new(state.sequences[0].clone());
+        let queue = crossbeam_queue::ArrayQueue::new(8);
+        let id = state.sequences[0].tracks[0].id;
+        super::edit_track(&mut state, &shared, &queue, id, |t| t.locked = true);
+        assert!(state.dirty);
+        super::edit_track(&mut state, &shared, &queue, id, |t| t.name = "Boat".into());
+        super::edit_track(&mut state, &shared, &queue, id, |t| t.sync_lock = true);
+        let seq = shared.snapshot();
+        let t = seq.tracks.iter().find(|t| t.id == id).unwrap();
+        assert_eq!((t.locked, t.name.as_str(), t.sync_lock), (true, "Boat", true));
+        super::edit_track(&mut state, &shared, &queue, id, |t| t.locked = false);
+        assert!(!shared.snapshot().tracks.iter().find(|t| t.id == id).unwrap().locked, "unlocked too");
+    }
 }
 
 #[cfg(test)]

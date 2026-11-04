@@ -467,3 +467,26 @@ fn a_keyed_shape_is_edited_at_the_playhead() {
     assert!(m.keyframes.path.iter().all(|k| k.points.len() == 5), "{:?}", m.keyframes.path.iter().map(|k| k.points.len()).collect::<Vec<_>>());
     assert_eq!(points(&v, id, 0).len(), 5);
 }
+
+/// With the timeline's grade being edited, the selected clip's mask is
+/// not drawn over the viewer (nor taken by the tool): it read as the
+/// timeline grade's own window. Back on the clip, it is.
+#[test]
+fn a_clip_mask_is_not_drawn_while_the_timeline_grade_is_edited() {
+    let (mut v, _) = with_shape(square());
+    let outlines = |v: &mut Viewer| {
+        let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 800.0))), time: Some(v.clock + 0.05), ..Default::default() };
+        v.clock += 0.05;
+        let (panel, state, theme) = (&mut v.panel, &mut v.state, &v.theme);
+        let out = v.ctx.run(input, |ctx| {
+            egui::CentralPanel::default().frame(egui::Frame::none()).show(ctx, |ui| { panel.show(ui, state, theme, &crate::keybindings::KeyBindings::default()); });
+        });
+        out.shapes.iter().filter(|s| matches!(&s.shape, egui::Shape::Path(p) if p.closed)).count()
+    };
+    let on_clip = outlines(&mut v);
+    assert!(on_clip > 0, "the clip's mask is drawn");
+    v.state.grade_timeline = true;
+    assert_eq!(outlines(&mut v), 0, "none over the timeline grade");
+    v.state.grade_timeline = false;
+    assert_eq!(outlines(&mut v), on_clip, "back on the clip");
+}
