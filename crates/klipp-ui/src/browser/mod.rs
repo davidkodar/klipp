@@ -682,10 +682,14 @@ impl FileThumbSize {
 }
 
 pub struct BrowserPanel {
-    /// Search query for the Media and Library tabs (the "right pane" in
-    /// split view). Deliberately NOT shared with Files — typing effects
-    /// queries here must not filter the file list rendered alongside.
+    /// Search query for the Library tabs (titles, effects, transitions,
+    /// generators). Deliberately NOT shared with Files or Media — typing
+    /// effects queries here must not filter the file list or the pool.
     pub search_query: String,
+    /// Search query for the Media tab only: a title searched for in the
+    /// Library ("Thanks") left the pool filtered to nothing, as if the
+    /// media were gone.
+    pub media_search_query: String,
     /// Search query for the Files tab only. Kept separate from
     /// `search_query` so effects searches don't leak into the files
     /// panel when it's pinned as the split-view left pane.
@@ -1026,6 +1030,7 @@ impl Default for BrowserPanel {
         let (file_audio_tx, file_audio_rx) = crossbeam_channel::unbounded();
         Self {
             search_query: String::new(),
+            media_search_query: String::new(),
             files_search_query: String::new(),
             media_sort_by: media_tab::SortBy::Name,
             list_columns: klipp_media::Field::DEFAULT_COLUMNS.to_vec(),
@@ -1156,6 +1161,16 @@ impl Default for BrowserPanel {
 }
 
 impl BrowserPanel {
+    /// The search text `tab` filters by: each of Files, Media and the
+    /// Library its own, so one typed into one never filters another.
+    pub(crate) fn query_for(&self, tab: BrowserTab) -> &str {
+        match tab {
+            BrowserTab::Files => &self.files_search_query,
+            BrowserTab::Media => &self.media_search_query,
+            BrowserTab::Library => &self.search_query,
+        }
+    }
+
     /// Drop every cached texture this panel owns. Call from
     /// `eframe::App::on_exit` while wgpu is still alive — the
     /// browser holds large thumbnail / filmstrip / deferred-drop
@@ -1551,10 +1566,10 @@ impl BrowserPanel {
             // search inputs.
             let library_owns_search = *active_tab == BrowserTab::Library;
             if !show_split && !library_owns_search {
-                let query_buf: &mut String = if *active_tab == BrowserTab::Files {
-                    &mut self.files_search_query
-                } else {
-                    &mut self.search_query
+                let query_buf: &mut String = match *active_tab {
+                    BrowserTab::Files => &mut self.files_search_query,
+                    BrowserTab::Media => &mut self.media_search_query,
+                    BrowserTab::Library => &mut self.search_query,
                 };
                 browser_search_field(ui, theme, query_buf, search_placeholder, state);
             }
@@ -1630,7 +1645,7 @@ impl BrowserPanel {
                 let library_owns_search = *active_tab == BrowserTab::Library;
                 ui.add_space(2.0);
                 if !library_owns_search {
-                    browser_search_field(ui, theme, &mut self.search_query, search_placeholder, state);
+                    browser_search_field(ui, theme, &mut self.media_search_query, search_placeholder, state);
                 }
                 ui.add_space(4.0);
 
@@ -1644,11 +1659,12 @@ impl BrowserPanel {
                             self.render_media_filter_toolbar(ui, theme, state);
                             media_pool_buttons(ui, &mut cmds);
                         });
+                        let media_query = self.query_for(BrowserTab::Media).to_string();
                         let tab_cmds = media_tab::show(
                             ui,
                             state,
                             theme,
-                            &self.search_query,
+                            &media_query,
                             &mut self.media_sort_by,
                             &mut self.media_sort_ascending,
                             &mut self.media_selected_bin,
@@ -1687,11 +1703,12 @@ impl BrowserPanel {
                         self.render_media_filter_toolbar(ui, theme, state);
                         media_pool_buttons(ui, &mut cmds);
                     });
+                    let media_query = self.query_for(BrowserTab::Media).to_string();
                     let tab_cmds = media_tab::show(
                         ui,
                         state,
                         theme,
-                        &self.search_query,
+                        &media_query,
                         &mut self.media_sort_by,
                         &mut self.media_sort_ascending,
                         &mut self.media_selected_bin,
@@ -7044,6 +7061,18 @@ mod linked_folder_tests {
 mod folder_search_tests {
     /// E4: a search typed in one folder is let go on opening another, which
     /// came up looking empty; reading the same folder again keeps it.
+    /// A title searched for in the Library leaves the Media tab's pool
+    /// unfiltered, and the Media tab's search leaves the Library's alone.
+    #[test]
+    fn the_library_search_does_not_filter_the_media_pool() {
+        let mut panel = crate::browser::BrowserPanel { search_query: "Thanks".into(), ..Default::default() };
+        assert_eq!(panel.query_for(crate::layout_state::BrowserTab::Media), "", "the pool unfiltered");
+        assert_eq!(panel.query_for(crate::layout_state::BrowserTab::Library), "Thanks");
+        panel.media_search_query = "interview".into();
+        assert_eq!(panel.query_for(crate::layout_state::BrowserTab::Library), "Thanks", "the Library's own");
+        assert_eq!(panel.query_for(crate::layout_state::BrowserTab::Files), "");
+    }
+
     #[test]
     fn opening_a_folder_lets_the_search_go() {
         let dir = std::env::temp_dir().join(format!("klipp_e4_{}_{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.subsec_nanos()).unwrap_or(0)));
