@@ -1499,8 +1499,12 @@ fn render_grid_view(
             }
 
             // Drag disambiguation
+            // From where the button went down: the pointer's place when
+            // the drag is first seen can be far from it (a quick move, a
+            // jump between frames), and measured from there the drag never
+            // got far enough to take the clip, so the drop did nothing.
             if card_resp.drag_started() {
-                if let Some(pos) = ui.ctx().input(|i| i.pointer.interact_pos()) {
+                if let Some(pos) = ui.ctx().input(|i| i.pointer.press_origin().or(i.pointer.interact_pos())) {
                     state.browser_drag_start = Some((pos, std::time::Instant::now()));
                 }
             }
@@ -1547,7 +1551,11 @@ fn render_grid_view(
                                 0.0,
                                 egui::Color32::from_rgba_premultiplied(theme.accent.r(), theme.accent.g(), theme.accent.b(), 60),
                             );
-                        } else if dx > 8.0 || leaving_thumb {
+                        } else if (current_pos - start_pos).length() > 8.0 || leaving_thumb {
+                            // Any way off, straight down to a track below
+                            // among them, takes the clip: only a sideways
+                            // move counted, so one dragged straight down
+                            // from its name was never taken.
                             state.dragging_media_group = crate::drag_drop::drag_group(all_ordered_ids, &state.selected_media_ids, item.id);
                             state.dragging_media = Some(item.id);
                         }
@@ -3273,6 +3281,28 @@ mod bin_menu_tests {
                 pool.frame(vec![egui::Event::PointerMoved(at)]);
             }
             assert_eq!(pool.state.dragging_media, Some(a), "from the {start}: dragging");
+        }
+    }
+
+    /// A clip is taken however the drag first shows: a press and one
+    /// jump far away (a quick flick, or frames that come late), and a drag
+    /// straight down from its name. Measured from where the drag was first
+    /// seen, the jump never went far enough, and straight down never
+    /// counted, so the drop on the timeline did nothing.
+    #[test]
+    fn a_quick_or_straight_down_drag_takes_the_clip() {
+        let button = |pos, pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+        for (how, steps, offset) in [("one jump", 1, egui::vec2(300.0, 500.0)), ("straight down", 8, egui::vec2(0.0, 400.0))] {
+            let mut pool = Pool::new(BrowserViewMode::Grid, &["a.mov"]);
+            let a = pool.state.media_pool.all().next().expect("a").id;
+            let from = pool.at("a.mov");
+            pool.frame(vec![egui::Event::PointerMoved(from)]);
+            pool.frame(vec![button(from, true)]);
+            for k in 1..=steps {
+                pool.frame(vec![egui::Event::PointerMoved(from + offset * (k as f32 / steps as f32))]);
+            }
+            pool.frame(Vec::new());
+            assert_eq!(pool.state.dragging_media, Some(a), "{how}: dragging");
         }
     }
 
