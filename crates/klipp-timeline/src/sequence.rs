@@ -3378,21 +3378,18 @@ impl Clip {
         );
     }
 
-    /// Create a gap placeholder clip with the given timeline extent.
-    /// Rescales timeline_out to match timeline_in's rate if they differ.
+    /// Create a gap placeholder clip with the given timeline extent, its ends
+    /// exactly as given. Rounded to timeline_in's rate, timeline_out ran past
+    /// the next clip's start, in a project whose rate came from its first file.
     pub fn gap(timeline_in: Timecode, timeline_out: Timecode) -> Self {
-        let timeline_out = if timeline_out.rate != timeline_in.rate {
-            timeline_out.rescale_to(timeline_in.rate)
-        } else {
-            timeline_out
-        };
+        let length = timeline_out - timeline_in;
         Self {
             id: ClipId::new(),
             kind: ClipKind::Gap,
             timeline_in,
             timeline_out,
-            source_in: Timecode { value: 0, rate: timeline_in.rate },
-            source_out: timeline_out - timeline_in,
+            source_in: Timecode { value: 0, rate: length.rate },
+            source_out: length,
             picture: crate::picture_store::PictureView {
                 node_graph: crate::Grade::default(),
                 effects: Default::default(),
