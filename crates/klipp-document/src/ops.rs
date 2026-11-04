@@ -1771,7 +1771,9 @@ pub enum Op {
     /// `secs` from the clip's start (the whole clip when left out), then
     /// holding `to`. The clip's length on the timeline follows: with
     /// `ripple` the clips after it move by the change, without it a ramp
-    /// that would run over the next clip is refused (#2772).
+    /// that would run over the next clip is refused (#2772). Its linked
+    /// clip takes the same ramp and length; a ramp has no one speed to read
+    /// sound at, so the shot's sound is muted while it ramps.
     /// `interpolation` is [`Op::Retime`]'s, for the slow part's frames
     /// (#2773).
     Ramp {
@@ -10724,28 +10726,58 @@ fn ramp(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, ti: usize, clip: &
     if new_out <= clip.timeline_in + one_frame(fps) {
         return Err(refuse(i, "the clip would be shorter than a frame", "use slower speeds"));
     }
-    let Rippled { moves, ids: moved, later, delta, partners } = ripple_after(seq, pool, fps, i, &[(ti, clip, new_out)], ripple, "ramp")?;
+    // Its linked clip ramps with it: left at its own speed, the shot's sound
+    // ran on out of step with the picture and past its end.
+    let linked = clip.linked_clip_id.and_then(|lid| find_clip(seq, lid)).filter(|(_, _, p)| matches!(p.kind, ClipKind::Media { .. }));
+    let mut ends = vec![(ti, clip, new_out)];
+    if let Some((pti, _, p)) = linked {
+        if seq.tracks[pti].locked {
+            return Err(refuse(i, format!("track {pti} is locked"), "unlock it first"));
+        }
+        let p_out = if p.timeline_in == clip.timeline_in {
+            new_out
+        } else {
+            p.timeline_in + snap(klipp_timeline::effective_timeline_duration_for_keyframes(&kfs, secs(p.source_out - p.source_in), fps.as_f64(), p.speed), fps)
+        };
+        ends.push((pti, p, p_out));
+    }
+    let Rippled { moves, ids: moved, later, delta, partners } = ripple_after(seq, pool, fps, i, &ends, ripple, "ramp")?;
     let old_state = crate::history::KeyframeSnapshot::from_clip(clip);
     let mut new_state = old_state.clone();
-    new_state.speed_keyframes = kfs;
+    new_state.speed_keyframes = kfs.clone();
+    let linked_states = linked.map(|(_, _, p)| {
+        let old = crate::history::KeyframeSnapshot::from_clip(p);
+        let mut new = old.clone();
+        new.speed_keyframes = kfs.clone();
+        (p.id, old, new)
+    });
     let what = format!(
-        "ramp {} from {from:.2}x to {to:.2}x over {over:.2} s (now {:.2}-{:.2} s){}{}",
+        "ramp {} from {from:.2}x to {to:.2}x over {over:.2} s (now {:.2}-{:.2} s){}{}{}",
         clip_name(seq, pool, clip),
         secs(clip.timeline_in),
         secs(new_out),
+        if linked.is_some() { ", its linked clip with it; the shot's sound is muted while it ramps" } else { "" },
         if later > 0 { format!("; {later} later clip(s) moved {:+.2} s", secs(delta)) } else { String::new() },
         if partners == 0 { String::new() } else { format!(", {partners} linked to them on other tracks with them") },
     );
     let edit = EditCommand::Batch(
         [
-            EditCommand::EditKeyframes { clip_id: clip.id, linked_clip_id: None, description: "Speed Ramp", old_state, new_state, old_linked_state: None, new_linked_state: None },
-            EditCommand::SetClipSpeed { clip_id: clip.id, old_speed: clip.speed, new_speed: clip.speed, old_timeline_out: clip.timeline_out, new_timeline_out: new_out },
+            EditCommand::EditKeyframes {
+                clip_id: clip.id,
+                linked_clip_id: linked_states.as_ref().map(|(id, ..)| *id),
+                description: "Speed Ramp",
+                old_state,
+                new_state,
+                old_linked_state: linked_states.as_ref().map(|(_, old, _)| old.clone()),
+                new_linked_state: linked_states.map(|(.., new)| new),
+            },
         ]
         .into_iter()
+        .chain(ends.iter().map(|(_, m, out)| EditCommand::SetClipSpeed { clip_id: m.id, old_speed: m.speed, new_speed: m.speed, old_timeline_out: m.timeline_out, new_timeline_out: *out }))
         .chain(moves)
         .collect(),
     );
-    Ok((what, edit, std::iter::once(clip.id).chain(moved).collect()))
+    Ok((what, edit, ends.iter().map(|(_, m, _)| m.id).chain(moved).collect()))
 }
 
 /// [`Op::Freeze`]: the clip's frame at `at` held for `hold` seconds,
@@ -20348,7 +20380,7 @@ mod tests {
         let refused = resolve(&seq, &pool, &[ramp(false, None)]).unwrap_err();
         assert!(refused.why.contains("would run over") && refused.hint.contains("ramp with ripple"), "{refused:?}");
         let plan = resolve(&seq, &pool, &[ramp(true, None)]).unwrap();
-        assert!(plan.steps[0].what.contains("1 later clip(s) moved"), "{}", plan.steps[0].what);
+        assert!(plan.steps[0].what.contains("2 later clip(s) moved"), "{}", plan.steps[0].what);
         let mut seqs = vec![seq.clone()];
         let (mut p, mut f) = (pool.clone(), seq.fps);
         let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut f };
@@ -20366,6 +20398,30 @@ mod tests {
         let clip = find_clip(&view.sequences[0], a).unwrap().2;
         assert_eq!(clip.frame_blend_mode(), Some(2), "the slow part's frames follow the motion");
         assert!(!clip.speed_keyframes.is_empty(), "and it is ramped");
+    }
+
+    /// A ramp takes the linked sound with it: the same keys and length, so it
+    /// is muted, not left playing out of step, the reply says so, and a ramp
+    /// that shortens the clip can ripple. Undo puts both back.
+    #[test]
+    fn a_ramp_takes_its_linked_sound_and_says_it_is_muted() {
+        let (seq, pool, _, a, _) = fixture();
+        let aa = seq.tracks[1].clips[0].id;
+        let op = Op::Ramp { clip_id: ClipRef::Id(a), from: 2.0, to: 4.0, secs: None, ripple: true, interpolation: None };
+        let plan = resolve(&seq, &pool, &[op]).unwrap();
+        assert!(plan.steps[0].what.contains("sound is muted while it ramps"), "{}", plan.steps[0].what);
+        let mut seqs = vec![seq.clone()];
+        let (mut p, mut f) = (pool.clone(), seq.fps);
+        let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut f };
+        view.apply_forward(&plan.steps[0].edit);
+        let clip = |view: &crate::apply::DocumentView, id: ClipId| find_clip(&view.sequences[0], id).map(|(_, _, c)| c.clone()).unwrap();
+        let (picture, sound) = (clip(&view, a), clip(&view, aa));
+        assert!(picture.timeline_out < tc(4.0), "the ramp shortened it: {:?}", picture.timeline_out);
+        assert_eq!((sound.timeline_in, sound.timeline_out), (picture.timeline_in, picture.timeline_out));
+        assert_eq!(serde_json::to_value(&sound.speed_keyframes).unwrap(), serde_json::to_value(&picture.speed_keyframes).unwrap());
+        assert!(!sound.plays_its_sound(), "muted");
+        view.apply_inverse(&plan.steps[0].edit);
+        assert_eq!(serde_json::to_value(&view.sequences[0]).unwrap(), serde_json::to_value(&seq).unwrap(), "undo restores both");
     }
 
     /// #2773: a freeze frame holds the frame shown at its time for its

@@ -3106,7 +3106,8 @@ impl Clip {
     /// Whether the clip's own sound is heard. At a constant speed it is,
     /// varispeed: read at that speed, its pitch moving with it as tape's
     /// does, backward when reversed (#642); playback and export read it
-    /// alike. A speed ramp has no one speed to read at, and is silent.
+    /// alike. A speed ramp has no one speed to read at, and is silent; a
+    /// ramp op takes the linked clip with it, so a shot goes quiet whole.
     pub fn plays_its_sound(&self) -> bool {
         self.speed_keyframes.is_empty() && self.hold.is_none()
     }
