@@ -2854,10 +2854,12 @@ fn cut_points_find_the_clean_joins() {
 fn match_grade_knobs_close_the_gap() {
     use klipp_control::match_grade_knobs;
     // A neutral reference: white 90, mid 50, black 5, balanced.
-    let reference = klipp_control::frame_stats(&std::iter::repeat_n([230u8, 128, 12, 255], 320*180).flatten().collect::<Vec<u8>>(), 320, 180, 0.0);
+    let px = |p: [u8; 4]| std::iter::repeat_n(p, 320 * 180).flatten().collect::<Vec<u8>>();
+    let measured = |p: [u8; 4]| klipp_color::measure::measure_frame(&px(p), 320, 180, &[]);
+    let reference = klipp_control::frame_stats(&px([230u8, 128, 12, 255]), 320, 180, 0.0);
     // A darker, bluer target: everything lower, blue lifted.
-    let target = klipp_control::frame_stats(&std::iter::repeat_n([120u8, 120, 170, 255], 320*180).flatten().collect::<Vec<u8>>(), 320, 180, 1.0);
-    let k = match_grade_knobs(&target, &reference);
+    let target = klipp_control::frame_stats(&px([120u8, 120, 170, 255]), 320, 180, 1.0);
+    let k = match_grade_knobs(&target, &reference, &measured([120, 120, 170, 255]), &measured([230, 128, 12, 255]));
     assert!(k.gain.unwrap() > 0.0, "target is darker at the top: raise gain, got {:?}", k.gain);
     assert!(k.temperature.unwrap() > 0.0, "target is cooler: warm it, got {:?}", k.temperature);
 
@@ -2869,7 +2871,7 @@ fn match_grade_knobs_close_the_gap() {
     let lab = |c: [f32; 3]| klipp_color::measure::linear_to_lab(c[0], c[1], c[2]);
     let lin = |p: [u8; 4]| [p[0], p[1], p[2]].map(|v| klipp_color::transfer::srgb_to_linear(v as f32 / 255.0));
     let matched = |cool: [u8; 4], warm: [u8; 4]| {
-        let k = match_grade_knobs(&flat(cool), &flat(warm));
+        let k = match_grade_knobs(&flat(cool), &flat(warm), &measured(cool), &measured(warm));
         let t = k.temperature.expect("a white-balance move");
         let m = klipp_color::white_balance::white_balance_matrix(t, k.tint.unwrap_or(0.0), klipp_core::WorkingColorspace::Rec709Linear).unwrap();
         let moved = m.map(|row| row[0] * lin(cool)[0] + row[1] * lin(cool)[1] + row[2] * lin(cool)[2]);
@@ -2885,8 +2887,32 @@ fn match_grade_knobs_close_the_gap() {
     assert!(a_left <= a_gap.max(1.0) + 1.0, "a* kept close: {a_gap:.1} -> {a_left:.1}");
 
     // A clip matched to itself moves nothing.
-    let same = match_grade_knobs(&reference, &reference);
+    let same = match_grade_knobs(&reference, &reference, &measured([230, 128, 12, 255]), &measured([230, 128, 12, 255]));
     assert!(same.is_empty(), "no gap, no grade: {same:?}");
+}
+
+/// A match aims the target's neutrals at the reference's, not its whole
+/// picture: a warm beach (sand over a grey, the grey at b* +2) matched to
+/// a blue-sky shot (sky over a grey at b* 0) moves the beach's grey onto
+/// the sky shot's, within 1 b*. Aimed at the frames' average colour, the
+/// two read about 18 b* apart and the match turned the beach blue.
+#[test]
+fn a_match_aims_the_neutrals_at_the_reference() {
+    use klipp_control::match_grade_knobs;
+    use klipp_color::measure::{lab_to_srgb8, linear_to_lab, measure_frame, Lab};
+    let (w, h) = (200u32, 100u32);
+    let frame = |scene: [u8; 3], grey: [u8; 3]| (0..w * h).flat_map(|i| { let c = if i % 5 < 3 { scene } else { grey }; [c[0], c[1], c[2], 255] }).collect::<Vec<u8>>();
+    let warm_grey = lab_to_srgb8(Lab { l: 62.0, a: 0.5, b: 2.3 });
+    let cool_grey = lab_to_srgb8(Lab { l: 62.0, a: 0.5, b: 0.2 });
+    let (target_px, reference_px) = (frame([214, 160, 98], warm_grey), frame([90, 150, 230], cool_grey));
+    let (tm, rm) = (measure_frame(&target_px, w, h, &[]), measure_frame(&reference_px, w, h, &[]));
+    assert!((tm.cast_b - 2.3).abs() < 1.0 && (rm.cast_b - 0.2).abs() < 1.0, "the greys are what is read: {:.1} {:.1}", tm.cast_b, rm.cast_b);
+    let k = match_grade_knobs(&klipp_control::frame_stats(&target_px, w, h, 0.0), &klipp_control::frame_stats(&reference_px, w, h, 0.0), &tm, &rm);
+    let m = klipp_color::white_balance::white_balance_matrix(k.temperature.unwrap_or(0.0), k.tint.unwrap_or(0.0), klipp_core::WorkingColorspace::Rec709Linear).unwrap();
+    let lin = [warm_grey[0], warm_grey[1], warm_grey[2]].map(|v| klipp_color::transfer::srgb_to_linear(v as f32 / 255.0));
+    let moved = m.map(|row| row[0] * lin[0] + row[1] * lin[1] + row[2] * lin[2]);
+    let after = linear_to_lab(moved[0], moved[1], moved[2]);
+    assert!((after.b - rm.cast_b).abs() < 1.0, "the grey lands at b* {:.1}, the reference's {:.1} (temperature {:?}, tint {:?})", after.b, rm.cast_b, k.temperature, k.tint);
 }
 
 /// #2476: match_grade stops short of clipping the shot it brightens, as

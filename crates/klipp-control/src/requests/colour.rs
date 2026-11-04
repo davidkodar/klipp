@@ -1147,8 +1147,9 @@ pub(crate) fn respond(
             let target_stats = frame_stats(&td, tw, th, t_mid);
             let (rd, rw, rh) = grab_frame_rgba_of(ctx, r_mid, clip_of(&r), Some(4000))?;
             let ref_stats = frame_stats(&rd, rw, rh, r_mid);
-            let mut knobs = match_grade_knobs(&target_stats, &ref_stats);
-            let held = hold_match_for_highlights(&mut knobs, &klipp_color::measure::measure_frame(&td, tw, th, &[]));
+            let target_m = klipp_color::measure::measure_frame(&td, tw, th, &[]);
+            let mut knobs = match_grade_knobs(&target_stats, &ref_stats, &target_m, &klipp_color::measure::measure_frame(&rd, rw, rh, &[]));
+            let held = hold_match_for_highlights(&mut knobs, &target_m);
             if knobs.is_empty() {
                 if let Some(why) = &held {
                     return Ok(json!({
