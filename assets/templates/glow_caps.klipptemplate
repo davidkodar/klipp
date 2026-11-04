@@ -211,7 +211,7 @@
                           ],
                           "radius": 18.0,
                           "radius_keyframes": [],
-                          "intensity": 0.85,
+                          "intensity": 0.7,
                           "intensity_keyframes": []
                         }
                       ]
@@ -556,7 +556,7 @@
                           ],
                           "radius": 18.0,
                           "radius_keyframes": [],
-                          "intensity": 0.85,
+                          "intensity": 0.7,
                           "intensity_keyframes": []
                         }
                       ]
@@ -901,7 +901,7 @@
                           ],
                           "radius": 18.0,
                           "radius_keyframes": [],
-                          "intensity": 0.85,
+                          "intensity": 0.7,
                           "intensity_keyframes": []
                         }
                       ]
