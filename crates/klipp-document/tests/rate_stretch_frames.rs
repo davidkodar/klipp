@@ -83,9 +83,10 @@ fn a_clip_stretched_to_twice_its_length_shows_the_same_frames_at_half_speed() {
     let after = seqs.remove(0);
     assert!((after.tracks[0].clips[0].timeline_out.to_secs_f64() - 8.0).abs() < 1e-9, "8 s long");
 
-    // The very last frame reads halfway through the file's last one.
+    // The very last frame reads the file's last frame inside the Out, not
+    // halfway to the one past it.
     let (_, read) = cpu(&after, 7.96);
-    assert!(read.iter().all(|s| (s - 3.98).abs() < 1e-6), "the last frame read {read:?}");
+    assert!(read.iter().all(|s| (s - 3.96).abs() < 1e-6), "the last frame read {read:?}");
     // Start, middle and end (the frame showing the clip's last frame):
     // the file at half the time, the picture the clip showed there before.
     for (at, file) in [(0.0, 0.0), (4.0, 2.0), (7.92, 3.96)] {
