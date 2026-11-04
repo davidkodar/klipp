@@ -818,6 +818,10 @@ pub fn show_ai_models_dialog(ctx: &egui::Context, state: &mut AppState, theme: &
                         .color(accel_color),
                 )
                 .on_hover_text(accel_tooltip);
+            });
+            // The buttons on a row of their own: beside the cache and the
+            // runtime's state they ran over them at a narrow width (F5).
+            ui.horizontal(|ui| {
                 ui.with_layout(
                     egui::Layout::right_to_left(egui::Align::Center),
                     |ui| {
