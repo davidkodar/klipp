@@ -1416,13 +1416,55 @@ pub(crate) fn place_title(state: &mut AppState, mut data: klipp_timeline::TitleD
             0
         }
     };
-    let duration_frames = seq.fps.rate() * 5;
+    let rate = seq.fps.rate();
+    let picture_end = seq.tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Video).flat_map(|t| &t.clips).map(|c| c.timeline_out.rescale_to(rate).value).max();
+    let (duration_frames, past) = title_frames(ph.rescale_to(rate).value, picture_end, rate);
+    if past > 0 {
+        state.toast.show(format!("The title runs {:.1} s past the end of the picture: the timeline gets that much longer", past as f64 / rate as f64));
+    }
     AppCommand::CreateTitleClip { track_index, timeline_in: ph, duration_frames }
+}
+
+/// A new title's length in frames at `rate`, placed at frame `at` of a
+/// timeline whose picture ends at frame `picture_end`, and how many of
+/// those frames run past it: five seconds, or what is left of the
+/// picture when that is shorter but still a second. A title placed near
+/// the end ran its five seconds past the picture, and the export ended
+/// on black.
+fn title_frames(at: i64, picture_end: Option<i64>, rate: u32) -> (u32, i64) {
+    let five = rate * 5;
+    match picture_end {
+        Some(end) if end - at >= rate as i64 => (((end - at) as u32).min(five), 0),
+        Some(end) => (five, (at + five as i64 - end).max(0)),
+        None => (five, 0),
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use klipp_timeline::title_library::builtin;
+
+    /// A title placed near the picture's end ends with it; with under a
+    /// second of picture left it keeps its five seconds and says how far
+    /// past the picture it runs; mid-timeline, five seconds.
+    #[test]
+    fn a_new_title_fits_the_picture_or_says_it_runs_past() {
+        assert_eq!(super::title_frames(0, Some(1000), 50), (250, 0), "mid-timeline: five seconds");
+        assert_eq!(super::title_frames(595, Some(798), 50), (203, 0), "near the end: to the picture's end");
+        assert_eq!(super::title_frames(780, Some(798), 50), (250, 232), "under a second left: five seconds, 232 frames past");
+        assert_eq!(super::title_frames(0, None, 50), (250, 0), "no picture");
+        let mut state = crate::state::AppState::default();
+        let rate = state.sequence().fps.rate();
+        let media = klipp_core::MediaId::new();
+        let at = |s: i64| klipp_core::Timecode::from_frames(s * rate as i64, rate);
+        state.sequences[0].tracks.iter_mut().find(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap().clips.push(klipp_timeline::Clip::media(media, at(0), at(16), at(0), at(16)));
+        state.playhead = at(12);
+        let cmd = super::place_title(&mut state, klipp_timeline::TitleData::default());
+        assert!(matches!(cmd, klipp_core::AppCommand::CreateTitleClip { duration_frames, .. } if duration_frames == rate * 4), "to the picture's end: {cmd:?}");
+        state.playhead = klipp_core::Timecode::from_frames(16 * rate as i64 - 5, rate);
+        super::place_title(&mut state, klipp_timeline::TitleData::default());
+        assert!(state.toast.message_for_test().is_some_and(|m| m.contains("past the end of the picture")), "{:?}", state.toast.message_for_test());
+    }
 
     /// #2734: on a 9:16 sequence a card renders the template as it would
     /// be placed there, its own shape and layout; on 16:9, as designed.
