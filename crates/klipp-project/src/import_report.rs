@@ -156,7 +156,34 @@ pub fn load_aaf(path: &Path, cancel: &std::sync::atomic::AtomicBool) -> Result<I
     if let Some(name) = path.file_stem() {
         result.sequence.name = name.to_string_lossy().into_owned();
     }
-    Ok(result)
+    Ok(media_checked(result, path))
+}
+
+/// A timeline's media as a project's is taken (SEC1): it can name any file
+/// on the machine, so one that is not a picture, sound or still, one in a
+/// hidden folder and one that lists other inputs stay offline, and the
+/// warnings say why. A file in a hidden folder or one that isn't a regular
+/// file is refused unopened; any other is opened once to see what it is,
+/// as a project's are, and nothing of it is kept. Hidden folders are judged
+/// from the timeline's own folder, as they are from a project's.
+fn media_checked(mut result: ImportResult, source: &Path) -> ImportResult {
+    let trusted_folders = klipp_media::media_check::trusted_roots(source.parent());
+    let trusted: Vec<&Path> = trusted_folders.iter().map(|p| p.as_path()).collect();
+    for item in result.media_pool.all_mut().filter(|m| m.kind == klipp_media::MediaItemKind::File && !m.offline) {
+        let why = if !item.path.exists() {
+            continue;
+        } else if klipp_media::is_input_list(&item.path) {
+            "it lists other files, it is not media".to_string()
+        } else if let Err(why) = klipp_media::media_check::media_file_check(&item.path, &trusted) {
+            why
+        } else {
+            continue;
+        };
+        item.offline = true;
+        item.needs_reprobe = false;
+        result.warnings.push(format!("{}: {}", item.filename, klipp_media::media_check::refused_hint(&why)));
+    }
+    result
 }
 
 /// Where to look first for an import's missing media (#2086): the folder
@@ -199,13 +226,14 @@ fn is_mount_point(p: &Path) -> bool {
 /// apart but not read yet is refused by name, with what to export instead.
 pub fn load(path: &Path, fps: klipp_core::Fps, pool: &klipp_media::MediaPool) -> Result<ImportResult, String> {
     match detect(path)? {
-        Format::Otio => crate::otio_import::load_otio(path).map_err(|e| e.to_string()),
-        Format::Fcpxml => crate::fcpxml_import::load_fcpxml(path).map_err(|e| e.to_string()),
-        Format::Mlt => crate::mlt_import::load_kdenlive(path).map_err(|e| e.to_string()),
-        Format::Xmeml => crate::xmeml_import::load_xmeml(path),
+        Format::Otio => crate::otio_import::load_otio(path).map_err(|e| e.to_string()).map(|r| media_checked(r, path)),
+        Format::Fcpxml => crate::fcpxml_import::load_fcpxml(path).map_err(|e| e.to_string()).map(|r| media_checked(r, path)),
+        Format::Mlt => crate::mlt_import::load_kdenlive(path).map_err(|e| e.to_string()).map(|r| media_checked(r, path)),
+        Format::Xmeml => crate::xmeml_import::load_xmeml(path).map(|r| media_checked(r, path)),
         // Through OpenTimelineIO's converter (#2086), into its own format,
         // read as any OTIO timeline is.
         Format::Aaf => load_aaf(path, &std::sync::atomic::AtomicBool::new(false)),
+        // An EDL names no files: its events only meet what the pool holds.
         Format::Edl => {
             let bytes = crate::path_util::read_capped(path, crate::path_util::MAX_INPUT_FILE_BYTES).map_err(|e| e.to_string())?;
             let edl = crate::edl_import::parse(&String::from_utf8_lossy(&bytes), fps);
@@ -388,6 +416,60 @@ pub fn read(dir: &Path) -> Result<Option<ImportReport>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// SEC1, for a timeline from elsewhere: whatever the format, a file in
+    /// a hidden folder or one that is not media is kept offline with why,
+    /// while media beside it comes in as before.
+    #[test]
+    fn a_timeline_cannot_bring_in_what_a_project_could_not() {
+        let dir = std::env::temp_dir().join(format!("klipp-import-check-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(dir.join(".private")).unwrap();
+        let (hidden, text, list, good) = (dir.join(".private/key.mp4"), dir.join("notes.txt"), dir.join("list.m3u8"), dir.join("good.mp4"));
+        std::fs::write(&hidden, b"private").unwrap();
+        std::fs::write(&text, b"private").unwrap();
+        std::fs::write(&list, b"#EXTM3U\n/etc/hostname\n").unwrap();
+        std::fs::write(&good, b"not read: its name says media").unwrap();
+        let named = [&hidden, &text, &list, &good];
+
+        let fcpxml = {
+            let assets: String = named.iter().enumerate().map(|(i, p)| format!(r#"<asset id="a{i}" name="{i}" src="file://{}" start="0s" duration="10s" hasVideo="1" format="r0"/>"#, p.display())).collect();
+            let clips: String = (0..named.len()).map(|i| format!(r#"<asset-clip ref="a{i}" offset="{}s" start="0s" duration="1s"/>"#, i)).collect();
+            format!(r#"<?xml version="1.0"?><fcpxml version="1.9"><resources><format id="r0" frameDuration="1/25s" width="1920" height="1080"/>{assets}</resources><library><event><project name="P"><sequence format="r0" duration="4s"><spine>{clips}</spine></sequence></project></event></library></fcpxml>"#)
+        };
+        let xmeml = {
+            let items: String = named.iter().enumerate().map(|(i, p)| format!("<clipitem id=\"c{i}\"><start>{i}</start><end>{}</end><in>0</in><out>1</out><file id=\"f{i}\"><pathurl>file://{}</pathurl><duration>30</duration></file></clipitem>", i + 1, p.display())).collect();
+            format!(r#"<xmeml version="4"><sequence><name>P</name><rate><timebase>25</timebase></rate><media><video><track>{items}</track></video></media></sequence></xmeml>"#)
+        };
+        let mlt = {
+            let producers: String = named.iter().enumerate().map(|(i, p)| format!(r#"<producer id="p{i}" in="0" out="29"><property name="mlt_service">avformat</property><property name="length">30</property><property name="resource">{}</property></producer>"#, p.display())).collect();
+            let entries: String = (0..named.len()).map(|i| format!(r#"<entry producer="p{i}" in="0" out="29"/>"#)).collect();
+            format!(r#"<mlt><profile frame_rate_num="25" frame_rate_den="1" width="320" height="240"/>{producers}<playlist id="pl">{entries}</playlist><tractor id="t"><track producer="pl"/></tractor></mlt>"#)
+        };
+        let otio = {
+            let clips: Vec<String> = named.iter().map(|p| format!(r#"{{"OTIO_SCHEMA":"Clip.2","name":"c","source_range":{{"OTIO_SCHEMA":"TimeRange.1","start_time":{{"OTIO_SCHEMA":"RationalTime.1","rate":25.0,"value":0.0}},"duration":{{"OTIO_SCHEMA":"RationalTime.1","rate":25.0,"value":25.0}}}},"media_references":{{"DEFAULT_MEDIA":{{"OTIO_SCHEMA":"ExternalReference.1","target_url":"file://{}"}}}},"active_media_reference_key":"DEFAULT_MEDIA"}}"#, p.display())).collect();
+            format!(r#"{{"OTIO_SCHEMA":"Timeline.1","name":"P","global_start_time":null,"tracks":{{"OTIO_SCHEMA":"Stack.1","name":"s","children":[{{"OTIO_SCHEMA":"Track.1","name":"V1","kind":"Video","children":[{}]}}]}}}}"#, clips.join(","))
+        };
+
+        for (name, content) in [("t.fcpxml", fcpxml), ("t.xml", xmeml), ("t.mlt", mlt), ("t.otio", otio)] {
+            let source = dir.join(name);
+            std::fs::write(&source, content).unwrap();
+            let result = load(&source, klipp_core::Fps::pal_25(), &klipp_media::MediaPool::new()).unwrap_or_else(|e| panic!("{name}: {e}"));
+            let offline = |p: &Path| result.media_pool.all().find(|m| m.path == p).unwrap_or_else(|| panic!("{name} lost {p:?}")).offline;
+            assert!(offline(&hidden) && offline(&text) && offline(&list), "{name}");
+            assert!(!offline(&good), "{name}: media beside it stays");
+            let report = ImportReport::from_import(&source, &result);
+            assert_eq!(report.missing_media.len(), 3, "{name}: {:?}", report.missing_media);
+            assert!(result.warnings.iter().any(|w| w.contains("hidden folder") && w.contains("Kept offline")), "{name}: {:?}", result.warnings);
+            assert!(report.warnings.iter().any(|g| g.kind == "Missing media" && g.warning_count == 3), "{name}: {:?}", report.warnings);
+        }
+
+        // An EDL names no files: an event naming one brings in nothing.
+        let edl = dir.join("t.edl");
+        std::fs::write(&edl, format!("TITLE: E\n001 key V C 00:00:00:00 00:00:01:00 00:00:00:00 00:00:01:00\n* FROM CLIP NAME: {}\n", hidden.display())).unwrap();
+        let result = load(&edl, klipp_core::Fps::pal_25(), &klipp_media::MediaPool::new()).unwrap();
+        assert_eq!(result.media_pool.all().count(), 0);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     /// #2472: an FCPXML brought into a project that holds its file shows
     /// the pool's item, not a second one, even named by two assets; its
