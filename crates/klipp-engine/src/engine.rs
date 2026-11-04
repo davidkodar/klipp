@@ -5905,6 +5905,9 @@ impl PlaybackEngine {
             self.spectrum_sample_rate = mt.spectrum_sample_rate();
             match AudioOutput::new(main_consumer, self.skim_consumer.clone()) {
                 Ok(output) => {
+                    // A seek's drain takes only what was mixed before it.
+                    let (asked, done) = output.drain_flags();
+                    mt.watch_drain(asked, done);
                     self.audio_output = Some(SendAudioOutput(output));
                 }
                 Err(e) => {
