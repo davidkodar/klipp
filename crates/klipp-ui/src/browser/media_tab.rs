@@ -3245,7 +3245,7 @@ mod bin_menu_tests {
                 let _ = pool.ctx.run(egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, pool.size)), events, ..Default::default() }, |ctx| {
                     egui::CentralPanel::default().show(ctx, |ui| { panel.show(ui, state, &theme, &mut tab, &mut pinned, &mut ratio); });
                     if covered {
-                        egui::Window::new("Transcript").fixed_pos(thumb - egui::vec2(60.0, 40.0)).fixed_size(egui::vec2(200.0, 120.0)).show(ctx, |ui| { ui.label("words"); });
+                        crate::widgets::window("Transcript").fixed_pos(thumb - egui::vec2(60.0, 40.0)).fixed_size(egui::vec2(200.0, 120.0)).show(ctx, |ui| { ui.label("words"); });
                     }
                 });
                 skimmed = state.browser_skim_active_this_frame;
