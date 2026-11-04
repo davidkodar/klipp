@@ -3223,6 +3223,12 @@ pub trait Transcripts {
     fn silences(&self, _item: &klipp_media::MediaItem) -> Vec<(f64, f64)> {
         Vec::new()
     }
+    /// Where `item`'s sound pauses, measured, in the file's seconds: every
+    /// silence, and the shorter stretches below the same threshold, down
+    /// to a breath between two sentences. A cut in one is clean.
+    fn pauses(&self, item: &klipp_media::MediaItem) -> Vec<(f64, f64)> {
+        self.silences(item)
+    }
     /// Where `item`'s picture changes shot, in the file's seconds: two
     /// selects from either side of one are a cut, not a jump cut.
     fn shot_changes(&self, _item: &klipp_media::MediaItem) -> Vec<f64> {
