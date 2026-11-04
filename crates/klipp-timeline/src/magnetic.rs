@@ -629,6 +629,12 @@ impl MagneticEditor {
         // with it too (#3449), not only the deleted clip's partner track.
         let mut cascaded_clips = cascaded_clips;
         cascaded_clips.extend(Self::follow_linked_partners(&before, sequence));
+        // And the other way: a sound the partner track's close-up moved
+        // takes its picture along. A picture on a free video track stayed
+        // while its sound closed up, out of sync by the deleted length.
+        if let (Some((_, lt_idx)), false) = (partner_track, partner_is_primary) {
+            cascaded_clips.extend(Self::partners_follow(&before, sequence, lt_idx));
+        }
 
         #[cfg(debug_assertions)]
         if sequence.tracks[track_idx].magnetic_role == TrackRole::Primary || partner_is_primary {
@@ -857,8 +863,16 @@ impl MagneticEditor {
     /// moved, as cascade records (old and new spans).
     pub fn follow_linked_partners(before: &Sequence, sequence: &mut Sequence) -> Vec<CascadeRecord> {
         let Some(primary) = sequence.primary_track_index() else { return Vec::new() };
+        Self::partners_follow(before, sequence, primary)
+    }
+
+    /// [`Self::follow_linked_partners`] for the clips an edit moved on
+    /// track `from`: each takes its partner along, never onto the primary
+    /// track nor on a locked one, and not one moved already.
+    fn partners_follow(before: &Sequence, sequence: &mut Sequence, from: usize) -> Vec<CascadeRecord> {
+        let Some(primary) = sequence.primary_track_index() else { return Vec::new() };
         let was = |id: ClipId| before.tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == id).map(|c| (c.timeline_in, c.timeline_out));
-        let moves: Vec<(ClipId, RationalTime)> = sequence.tracks[primary]
+        let moves: Vec<(ClipId, RationalTime)> = sequence.tracks[from]
             .clips
             .iter()
             .filter_map(|c| {
@@ -954,9 +968,14 @@ impl MagneticEditor {
         // Linked-clip partners on other tracks also continue to resolve
         // because linked_clip_id on those partners still points at the
         // original id, which is now the left half.
+        // The file cut where the legacy blade cuts it: through the speed,
+        // from the far end when reversed. One to one, a sound cut here
+        // and its retimed picture cut on a free track started their right
+        // pieces at different file times.
+        let ((left_in, left_out), (right_in, right_out)) = original.source_split(offset);
         let mut left_clip = original.clone();
         left_clip.timeline_out = at_time;
-        left_clip.source_out = original.source_in + offset;
+        (left_clip.source_in, left_clip.source_out) = (left_in, left_out);
         // The fades belong to the clip's own ends, not to the cut: the
         // left keeps its fade in and loses the fade out, or the join
         // would dip to nothing on a cut that should pass unheard. A fade
@@ -972,7 +991,7 @@ impl MagneticEditor {
         let mut right_clip = original.clone();
         right_clip.id = ClipId::new();
         right_clip.timeline_in = at_time;
-        right_clip.source_in = original.source_in + offset;
+        (right_clip.source_in, right_clip.source_out) = (right_in, right_out);
         right_clip.fade_in_secs = 0.0;
         right_clip.fade_out_secs = right_clip.fade_out_secs.min((original.timeline_out - at_time).to_secs_f64() as f32);
         right_clip.keep_angle_cuts_on_piece(at, whole);
@@ -2926,6 +2945,58 @@ mod tests {
             surviving.linked_clip_id, None,
             "ripple_delete must purge linked_clip_id pointing at the removed clip"
         );
+    }
+
+    /// A primary clip deleted with its sound: the sound track closes up,
+    /// and a later sound there takes its picture on a free video track
+    /// along. The picture stayed, out of sync by the deleted length.
+    #[test]
+    fn ripple_delete_moves_a_picture_with_its_closing_up_sound() {
+        let mut seq = make_sequence(&[(0, 24), (24, 48)]);
+        let a_id = seq.tracks[0].clips[0].id;
+        let mut audio = Track::new("Audio 1", TrackKind::Audio);
+        let mut a_sound = media_clip(0, 24);
+        a_sound.linked_clip_id = Some(a_id);
+        seq.tracks[0].clips[0].linked_clip_id = Some(a_sound.id);
+        let mut picture = media_clip(72, 96);
+        let mut sound = media_clip(72, 96);
+        picture.linked_clip_id = Some(sound.id);
+        sound.linked_clip_id = Some(picture.id);
+        let (picture_id, sound_id) = (picture.id, sound.id);
+        audio.clips = vec![a_sound, sound];
+        seq.tracks.push(audio);
+        let mut free = Track::new("Video 2", TrackKind::Video);
+        free.clips.push(picture);
+        seq.tracks.push(free);
+
+        MagneticEditor::ripple_delete(&mut seq, a_id);
+
+        let span = |id: ClipId| seq.all_clips().find(|c| c.id == id).map(|c| (c.timeline_in.value, c.timeline_out.value)).unwrap();
+        let (s_in, s_out) = span(sound_id);
+        assert!(s_in < 72, "the sound closed up: {s_in}-{s_out}");
+        assert_eq!(span(picture_id), (s_in, s_out), "its picture went with it");
+    }
+
+    /// A blade on the magnetic track cuts the file through the clip's
+    /// speed, as the legacy blade does: half a second into a 2x clip is
+    /// a second into its file. Taken one to one, a sound cut here and its
+    /// retimed picture cut on a free track went out of step.
+    #[test]
+    fn a_magnetic_blade_cuts_the_file_through_the_speed() {
+        let mut seq = make_sequence(&[(0, 24)]);
+        let clip = &mut seq.tracks[0].clips[0];
+        clip.speed = 2.0;
+        clip.source_out = tc(48);
+        let id = clip.id;
+        let mut free = Track::new("Video 2", TrackKind::Video);
+        free.clips.push(seq.tracks[0].clips[0].clone());
+        let other = free.clips[0].id;
+        let result = MagneticEditor::blade(&mut seq, id, tc(12)).expect("cut inside");
+        let MagneticEditCommand::Blade { left_clip, right_clip, .. } = &result.command else { panic!("a blade") };
+        assert_eq!((left_clip.source_in, left_clip.source_out), (tc(0), tc(24)), "the first half second at 2x is the file's first second");
+        assert_eq!((right_clip.source_in, right_clip.source_out), (tc(24), tc(48)));
+        let (a, b) = free.split_at(other, tc(12)).expect("cut inside");
+        assert_eq!((a.source_out, b.source_in), (left_clip.source_out, right_clip.source_in), "the legacy blade agrees");
     }
 
     #[test]

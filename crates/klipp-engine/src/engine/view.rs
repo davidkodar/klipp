@@ -24,6 +24,8 @@ use crate::types::SharedFrameQueue;
 /// Decoded frames for one render: the primary decoder's frame, and the
 /// clip streams' for everything else.
 struct ViewerSource<'a> {
+    /// J drawing its pictures: each clip reads the other way (`reads_backward`).
+    played_backward: bool,
     primary: Option<(ClipId, &'a HeldFrame)>,
     /// The primary decoder's queue: its front is the frame after
     /// `primary`, for frame blending.
@@ -375,6 +377,35 @@ fn upcoming(seq: &Sequence, time: klipp_core::Timecode, playing: bool, primary_t
     out
 }
 
+/// Whether `clip` is of a still image.
+fn clip_is_still(pool: &klipp_media::MediaPool, clip: &Clip) -> bool {
+    clip.media_id().and_then(|m| pool.get(&m)).is_some_and(|m| m.is_still)
+}
+
+/// The shots J comes to next, as [`upcoming`] those playing forward: the
+/// shots ending behind the playhead, opened ahead at their last frame.
+fn upcoming_backward(seq: &Sequence, pool: &klipp_media::MediaPool, time: klipp_core::Timecode) -> Vec<(Want, f64)> {
+    let now = time.to_secs_f64();
+    let fps = seq.fps.as_f64();
+    let frame = 1.0 / fps.max(1e-6);
+    let mut out: Vec<(Want, f64)> = seq.tracks
+        .iter()
+        .filter(|t| t.kind == klipp_timeline::TrackKind::Video && t.visible)
+        .flat_map(|t| t.clips.iter())
+        .filter(|c| c.enabled && !clip_is_still(pool, c))
+        .filter_map(|c| {
+            let lead = now - c.timeline_out.to_secs_f64();
+            if lead < 0.0 || lead > super::seek_lead::MAX_LEAD_SECS {
+                return None;
+            }
+            let last = klipp_core::Timecode::from_secs_f64(c.timeline_out.to_secs_f64() - frame, seq.fps.rate());
+            Some((Want { clip: c.id, media: c.media_id()?, rotation: c.source_rotation, source_secs: klipp_compose::render::source_secs(c, last, fps), reversed: !c.is_reversed(), ahead: true }, lead))
+        })
+        .collect();
+    out.sort_by(|a, b| a.1.total_cmp(&b.1));
+    out
+}
+
 /// The track whose coming shots the primary decoder plays, left to it by
 /// [`upcoming`]: while it plays one, or holds or opens a preroll for the
 /// next, as through a strobe's gap (#2386). With neither, none.
@@ -396,6 +427,15 @@ pub fn viewer_media_range(pool: &MediaPool, clip: &Clip) -> Option<(f64, f64)> {
 pub fn viewer_analysis_key(pool: &MediaPool, clip: &Clip, kind: klipp_analysis::assets::AssetKind) -> Option<klipp_analysis::assets::AssetKey> {
     let klipp_timeline::ClipKind::Media { media_id } = &clip.kind else { return None };
     klipp_analysis::assets::asset_key(kind, pool.get(media_id)?)
+}
+
+impl ViewerSource<'_> {
+    /// Whether `clip` is read from its backward window: a reversed clip, or
+    /// a forward one under J, and a reversed clip under J reads forward. A
+    /// still has one picture and no direction.
+    fn reads_backward(&self, clip: &Clip) -> bool {
+        clip.is_reversed() != (self.played_backward && !clip_is_still(&self.media_pool.read().unwrap_or_else(|e| e.into_inner()), clip))
+    }
 }
 
 impl FrameSource for ViewerSource<'_> {
@@ -448,14 +488,14 @@ impl FrameSource for ViewerSource<'_> {
     fn frame(&mut self, clip: &Clip, source_secs: f64, width: u32, height: u32) -> Option<SourceFrame> {
         // A reversed clip is never the primary decoder's, and its frames
         // are read at the time asked for (#617).
-        let got = if clip.is_reversed() { self.streams.reversed_frame(clip, source_secs, width, height) } else { self.held(clip.id).map(source_frame) };
+        let got = if self.reads_backward(clip) { self.streams.reversed_frame(clip, source_secs, width, height) } else { self.held(clip.id).map(source_frame) };
         super::note_frame_given(clip.id, source_secs, got.as_ref().and_then(|f| f.pts));
         got
     }
 
     fn frame_after(&mut self, clip: &Clip, source_secs: f64, width: u32, height: u32) -> Option<SourceFrame> {
         // Read backward, the frame after is one already decoded (#2772).
-        if clip.is_reversed() {
+        if self.reads_backward(clip) {
             return self.streams.reversed_frame_after(clip, source_secs, width, height);
         }
         let next = match self.primary {
@@ -479,7 +519,7 @@ impl FrameSource for ViewerSource<'_> {
         if working != klipp_core::WorkingColorspace::Rec709Linear {
             return None;
         }
-        if clip.is_reversed() {
+        if self.reads_backward(clip) {
             return self.streams.reversed_frame_after_on_gpu(clip, source_secs);
         }
         let next = match self.primary {
@@ -677,12 +717,15 @@ impl PlaybackEngine {
                 .flat_map(|l| l.clips.iter().map(move |c| (c, l.at, l.fps)))
                 .filter(|(c, _, _)| Some(c.id) != primary)
                 .filter_map(|(c, at, fps)| {
+                    // Under J a still stays where it is: its stream would
+                    // seek back for the one frame it has, and hold none.
+                    let still_under_j = self.backward_on_clock && clip_is_still(&self.media_pool.read().unwrap_or_else(|e| e.into_inner()), c);
                     Some(Want {
                         clip: c.id,
                         media: c.media_id()?,
                         rotation: c.source_rotation,
-                        source_secs: klipp_compose::render::source_secs(c, at, fps),
-                        reversed: c.is_reversed(),
+                        source_secs: if still_under_j { c.source_in.to_secs_f64() } else { klipp_compose::render::source_secs(c, at, fps) },
+                        reversed: c.is_reversed() != (self.backward_on_clock && !still_under_j),
                         ahead: false,
                     })
                 })
@@ -696,7 +739,12 @@ impl PlaybackEngine {
             // picture stayed black (#2386). With neither, a shot coming up
             // on it is opened ahead as on any other track.
             let primary_track = primary_track(self.v1_decoder.is_some(), self.preroll_decoder.is_some() || self.preroll_pending.is_some(), self.current_track_index);
-            (on_screen, upcoming(&seq, time, playing, primary_track))
+            let ahead = if self.backward_on_clock {
+                upcoming_backward(&seq, &self.media_pool.read().unwrap_or_else(|e| e.into_inner()), time)
+            } else {
+                upcoming(&seq, time, playing, primary_track)
+            };
+            (on_screen, ahead)
         };
         // A frozen track's clips laid from stored frames aren't decoded
         // (#3207): their streams close, and their memory goes with them.
@@ -1072,6 +1120,7 @@ impl PlaybackEngine {
         self.time_track_gpu();
         let previous = self.previous_primary.take();
         let mut src = ViewerSource {
+            played_backward: self.backward_on_clock,
             primary,
             primary_queue: self.v1_decoder.as_ref().map(|d| d.frame_queue()),
             streams: &mut self.streams,
@@ -1143,6 +1192,7 @@ impl PlaybackEngine {
         self.time_track_gpu();
         let previous = self.previous_primary.take();
         let mut src = ViewerSource {
+            played_backward: self.backward_on_clock,
             primary,
             primary_queue: self.v1_decoder.as_ref().map(|d| d.frame_queue()),
             streams: &mut self.streams,
@@ -2193,7 +2243,7 @@ mod neighbour_tests {
         let clip = klipp_timeline::Clip::media(id, tc(0), tc(24), tc(0), tc(24));
         let mut streams = super::super::streams::ClipStreams::new();
         for (use_proxies, file, size) in [(true, &proxy, (32, 18)), (false, &original, (64, 36))] {
-            let mut view = ViewerSource { primary: None, primary_queue: None, streams: &mut streams, media_pool: &pool, hold: None, use_proxies, primary_previous: None };
+            let mut view = ViewerSource { played_backward: false, primary: None, primary_queue: None, streams: &mut streams, media_pool: &pool, hold: None, use_proxies, primary_previous: None };
             let read = view.temporal_frames(&clip).expect("a reader");
             let (viewer, w, h) = read(0.5).expect("a frame");
             assert_eq!((w, h), size, "proxies {use_proxies}: read from {}", file.display());
@@ -2206,7 +2256,7 @@ mod neighbour_tests {
         }
         // Three frames of the proxy: one reader, kept.
         for _ in 0..3 {
-            let mut view = ViewerSource { primary: None, primary_queue: None, streams: &mut streams, media_pool: &pool, hold: None, use_proxies: true, primary_previous: None };
+            let mut view = ViewerSource { played_backward: false, primary: None, primary_queue: None, streams: &mut streams, media_pool: &pool, hold: None, use_proxies: true, primary_previous: None };
             view.temporal_frames(&clip).expect("a reader")(0.25).expect("a frame");
         }
         assert_eq!(streams.neighbour_readers(), 2, "the proxy's reader and the original's, each opened once");

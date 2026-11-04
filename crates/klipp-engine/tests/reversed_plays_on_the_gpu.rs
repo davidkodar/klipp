@@ -555,3 +555,133 @@ fn reversed_by_flow_memory_report() {
         println!("written to {}", path.display());
     }
 }
+
+/// The picture on screen, 8 by 8 cells of mean luma, whatever its size;
+/// and where on the timeline it is.
+fn picture(r: &Running) -> Option<(Vec<f32>, f64)> {
+    let (bytes, w, h, at) = {
+        let fb = r.fb.lock().unwrap();
+        let at = fb.shown_presented()?.to_secs_f64();
+        if fb.gpu_output_live {
+            let snap = fb.gpu_output_snapshot()?;
+            drop(fb);
+            (snap.read().ok()?, snap.width as usize, snap.height as usize, at)
+        } else {
+            let (bytes, w, h, _) = fb.latest_frame();
+            (bytes.to_vec(), w as usize, h as usize, at)
+        }
+    };
+    if w == 0 || h == 0 || bytes.len() < w * h * 4 {
+        return None;
+    }
+    let mut cells = vec![(0.0f32, 0u32); 64];
+    for y in (0..h).step_by(7) {
+        for x in (0..w).step_by(7) {
+            let i = (y * 8 / h) * 8 + x * 8 / w;
+            let p = (y * w + x) * 4;
+            cells[i].0 += 0.3 * bytes[p] as f32 + 0.6 * bytes[p + 1] as f32 + 0.1 * bytes[p + 2] as f32;
+            cells[i].1 += 1;
+        }
+    }
+    Some((cells.iter().map(|c| c.0 / c.1.max(1) as f32).collect(), at))
+}
+
+/// How far two pictures are apart: the mean of their cells' differences.
+fn apart(a: &[f32], b: &[f32]) -> f32 {
+    a.iter().zip(b).map(|(x, y)| (x - y).abs()).sum::<f32>() / a.len() as f32
+}
+
+/// J: the picture runs back with the playhead, frame by frame through each
+/// clip's backward window, where it used to hold until K; and L takes the
+/// picture forward from where it got to.
+#[test]
+fn j_runs_the_picture_back_and_l_turns_it_round() {
+    let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(video) = source() else { return };
+    let media = MediaId::new();
+    let r = start(&video, vec![clip_at(media, 1.0, 0.0, 8.0)]);
+    let g = common::generation(&r.fb);
+    r.cmd.send(AppCommand::SetPlayhead(tc(6.0))).unwrap();
+    common::wait_new(&r.fb, g, Duration::from_secs(20));
+    common::settle(&r.fb);
+
+    let shown_for = |secs: f64| {
+        let mut shown: Vec<f64> = Vec::new();
+        let t0 = Instant::now();
+        while t0.elapsed() < Duration::from_secs_f64(secs) {
+            if let Some(at) = r.fb.lock().unwrap().shown_presented().map(|t| t.to_secs_f64()) {
+                if shown.last() != Some(&at) {
+                    shown.push(at);
+                }
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        shown
+    };
+
+    let given = klipp_engine::engine::reversed_frames_given();
+    r.cmd.send(AppCommand::SetSpeed(-1.0)).unwrap();
+    r.cmd.send(AppCommand::Play).unwrap();
+    let back = shown_for(3.0);
+    let given = klipp_engine::engine::reversed_frames_given() - given;
+    assert!(given > 20, "the frames came from its backward window: {given}");
+    assert!(back.len() > 20, "the picture ran back, frame by frame: {back:?}");
+    let settled = &back[back.len() / 3..];
+    assert!(settled.windows(2).all(|w| w[1] < w[0]), "backwards, never forwards: {settled:?}");
+    let at = *back.last().unwrap();
+    assert!(at < 5.0, "about three seconds back from 6 s: {at}");
+
+    // What J shows is the frame there, the frame parked at that time, and
+    // no black in its place. The chart moves, so frames apart differ.
+    let (during, during_at) = picture(&r).expect("a picture during J");
+    let luma = during.iter().sum::<f32>() / during.len() as f32;
+    assert!(luma > 30.0, "not black, at {during_at}: {luma}");
+    r.cmd.send(AppCommand::SetSpeed(1.0)).unwrap();
+    r.cmd.send(AppCommand::Pause).unwrap();
+    std::thread::sleep(Duration::from_millis(500));
+    let g = common::generation(&r.fb);
+    r.cmd.send(AppCommand::SetPlayhead(tc(during_at))).unwrap();
+    common::wait_new(&r.fb, g, Duration::from_secs(20));
+    common::settle(&r.fb);
+    let (parked, _) = picture(&r).expect("the parked picture");
+    let apart = apart(&during, &parked);
+    assert!(apart < 12.0, "the frame parked at {during_at}: {apart} apart");
+
+    r.cmd.send(AppCommand::SetSpeed(1.0)).unwrap();
+    r.cmd.send(AppCommand::Play).unwrap();
+    let forward = shown_for(2.0);
+    let settled = &forward[forward.len() / 2..];
+    assert!(settled.len() > 5 && settled.windows(2).all(|w| w[1] > w[0]), "L plays forward: {forward:?}");
+    assert!((settled[0] - during_at).abs() < 2.5, "from where J left it, {during_at}: {forward:?}");
+    stop(r);
+}
+
+/// J over a reversed clip reads its source forward, and the timeline's
+/// picture still runs back.
+#[test]
+fn j_over_a_reversed_clip_runs_the_picture_back() {
+    let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(video) = source() else { return };
+    let media = MediaId::new();
+    let r = start(&video, vec![clip_at(media, -1.0, 0.0, 8.0)]);
+    let g = common::generation(&r.fb);
+    r.cmd.send(AppCommand::SetPlayhead(tc(6.0))).unwrap();
+    common::wait_new(&r.fb, g, Duration::from_secs(20));
+    common::settle(&r.fb);
+    r.cmd.send(AppCommand::SetSpeed(-1.0)).unwrap();
+    r.cmd.send(AppCommand::Play).unwrap();
+    let mut shown: Vec<f64> = Vec::new();
+    let t0 = Instant::now();
+    while t0.elapsed() < Duration::from_secs(3) {
+        if let Some(at) = r.fb.lock().unwrap().shown_presented().map(|t| t.to_secs_f64()) {
+            if shown.last() != Some(&at) {
+                shown.push(at);
+            }
+        }
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    assert!(shown.len() > 20, "the picture ran back: {shown:?}");
+    let settled = &shown[shown.len() / 3..];
+    assert!(settled.windows(2).all(|w| w[1] < w[0]), "backwards, never forwards: {settled:?}");
+    stop(r);
+}

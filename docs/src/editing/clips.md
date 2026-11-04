@@ -23,10 +23,10 @@ Drag clips from the media browser or the source viewer onto any track. The drop 
 
 ## Trimming
 
-Drag the left or right edge of a clip to trim it:
+Drag the left or right edge of a clip to trim it. Where two clips meet, the Select tool trims the side the pointer is on, and the pointer shows which: it points left at a clip's start, right at its end.
 
 - **Ripple trim** — trims the clip and moves later clips to close the gap (with RIPPLE on)
-- **Roll** — moves the edit point between two adjacent clips without moving other clips
+- **Roll** — moves the edit point between two adjacent clips without moving other clips (Trim tool, **T**, on the cut)
 - **Slip** — changes a clip's in and out points without moving it (Trim tool on the clip's body, or Alt-drag)
 - **Slide** — moves a clip between its neighbours, keeping its in and out (Trim tool, Shift-drag)
 

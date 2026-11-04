@@ -1724,8 +1724,17 @@ pub struct PlaybackEngine {
     /// plays (a floor forwards, a ceiling backwards). Cleared by a pause, a
     /// stop, a seek, a loop or a change of speed.
     report_floor: std::cell::Cell<Option<(RationalTime, bool)>>,
-    /// Played backwards by a negative `SetSpeed` (J, a reverse shuttle).
-    shuttled_backwards: bool,
+    /// The speed `SetSpeed` last asked for, negative for J or a reverse
+    /// shuttle. Starting play can put the clock back to a clip's speed.
+    shuttle_speed: f64,
+    /// J at 1× or slower is drawing its pictures: on the clock in timeline
+    /// seconds, each clip's frames read backward through its own window,
+    /// as a reversed clip's are.
+    backward_on_clock: bool,
+    /// J's clock held for a clip's backward window, its frame not there
+    /// yet: moving on, the window would start again each tick and no frame
+    /// ever come.
+    backward_held: bool,
     // Audio seek synchronization — generation counter
     expected_audio_generation: u64,
     // Performance
@@ -2971,7 +2980,9 @@ impl PlaybackEngine {
             empty_stack_warm: None,
             prewarm_stack: true,
             report_floor: std::cell::Cell::new(None),
-            shuttled_backwards: false,
+            shuttle_speed: 1.0,
+            backward_on_clock: false,
+            backward_held: false,
             expected_audio_generation: 0,
             last_stats_time: std::time::Instant::now(),
             last_quiet_heartbeat: std::time::Instant::now(),
@@ -3405,6 +3416,7 @@ impl PlaybackEngine {
             // Frames drawn ahead in their job (#3212): progress and end.
             self.poll_frames_job();
             self.tick_background();
+            self.keep_backward_play();
             if self.state == PlaybackState::Playing {
                 // Playback already produces fresh frames at full res
                 // every tick; the drag-recovery flag isn't needed here.
@@ -3619,6 +3631,7 @@ impl PlaybackEngine {
                 // A skim is over once the playhead moves or plays (#2945).
                 self.end_skim();
                 debug!("Play command received, state={:?}", self.state);
+                self.play_again_from_the_start();
                 // Before playback can reach a gap (#2386).
                 self.prewarm_empty_stack();
                 // Heard at the export's loudness: measured now if the
@@ -3845,24 +3858,27 @@ impl PlaybackEngine {
             AppCommand::SetSpeed(speed) => {
                 debug!("SetSpeed({speed})");
                 let turned_round = self.turns_round(speed);
-                self.shuttled_backwards = speed < 0.0;
+                let was_muted = self.sound_muted();
+                self.shuttle_speed = speed;
                 self.master_clock.set_speed(speed);
                 // Reports follow on from here, whichever way it now plays
                 // (#1806).
                 self.report_floor.set(None);
-                // Mute audio at high speeds (unintelligible above 4x)
+                let muted = self.sound_muted();
                 for active in &self.audio_sources {
-                    if speed.abs() > 4.0 {
-                        active.source.muted().store(true, Ordering::Release);
-                    } else {
-                        active.source.muted().store(false, Ordering::Release);
-                    }
+                    active.source.muted().store(muted, Ordering::Release);
                 }
                 // The sound reads forward whichever way the clock runs, so
                 // played backwards it runs away from the playhead: back to
-                // the playhead whenever the direction changes.
-                if turned_round && self.state == PlaybackState::Playing {
+                // the playhead whenever the direction changes. Muted first:
+                // a reseek fills seconds of its buffer at once. So too when
+                // it goes silent or comes back, or the seconds already
+                // buffered play on after the mute.
+                if (turned_round || was_muted != muted) && self.state == PlaybackState::Playing {
                     self.seek_all_audio_to_timecode(self.playhead);
+                    for active in &self.audio_sources {
+                        active.source.muted().store(muted, Ordering::Release);
+                    }
                 }
             }
 
@@ -7555,7 +7571,46 @@ impl PlaybackEngine {
         self.playhead.rescale_to(self.fps.rate()).value.div_euclid(i64::from(self.fps.den.max(1)))
     }
 
+    /// Whether J's pictures are drawn now: playing, shuttled backwards at
+    /// 1× or slower. Faster, the clock runs back with the picture held.
+    fn draws_backward_play(&self) -> bool {
+        self.state == PlaybackState::Playing && (-1.0..0.0).contains(&self.shuttle_speed)
+    }
+
+    /// Bring the picture in step with J: on the clock from the playhead when
+    /// it starts, each clip read backward (#617's way for a reversed clip);
+    /// the forward decoder opened at the playhead again when it ends, by L,
+    /// a pause or a faster shuttle. Each tick, as those come in any order.
+    fn keep_backward_play(&mut self) {
+        let wanted = self.draws_backward_play();
+        // A seek under J opens the forward decoder: on the clock again from
+        // where it landed.
+        if wanted == self.backward_on_clock && (!wanted || self.clock_only) {
+            return;
+        }
+        self.backward_on_clock = wanted;
+        self.backward_held = false;
+        let speed = self.shuttle_speed;
+        let at = self.playhead;
+        if wanted {
+            self.enter_clock_only(at);
+            self.master_clock.set_speed(speed);
+            self.master_clock.resume();
+            return;
+        }
+        self.seek_in_sequence(at);
+        // A seek gives the clock the clip's speed: a shuttle's stands, as
+        // its command set it. Plain L is the clip's own.
+        if speed != 1.0 {
+            self.master_clock.set_speed(speed);
+        }
+    }
+
     fn tick_clock_only(&mut self, clock_secs: f64) {
+        if self.backward_on_clock {
+            self.tick_backward_on_clock(clock_secs);
+            return;
+        }
         let secs = self.clip_timeline_start.to_secs_f64() + (clock_secs - self.clip_source_start).max(0.0);
         self.playhead = RationalTime::from_secs_f64(secs, self.fps.rate());
         let end = self.sequence_duration();
@@ -7633,6 +7688,36 @@ impl PlaybackEngine {
         (self.repaint_cb)();
     }
 
+    /// One tick of J: the clock reads the timeline's seconds, and stops at
+    /// its start. Every picture is the renderer's to draw, a gap's black
+    /// among them, so no shot is handed to the forward decoder.
+    fn tick_backward_on_clock(&mut self, clock_secs: f64) {
+        self.playhead = RationalTime::from_secs_f64(clock_secs.max(0.0), self.fps.rate());
+        let frame = self.playhead_frame();
+        if Some(frame) != self.last_synth_frame_rendered {
+            // The frame not read yet: the clock waits for it, the picture
+            // before it staying up, rather than black.
+            self.sync_streams();
+            let ready = self.streams.windows_ready();
+            if ready == self.backward_held {
+                self.backward_held = !ready;
+                if ready {
+                    self.master_clock.resume();
+                } else {
+                    self.master_clock.pause();
+                }
+            }
+            if !ready {
+                return;
+            }
+            self.last_synth_frame_rendered = Some(frame);
+            self.present_frame(None);
+            self.frames_consumed += 1;
+        }
+        self.report_playhead();
+        (self.repaint_cb)();
+    }
+
     /// Take the shot at `tc` over as the primary from its clip stream, which
     /// opened and seeked it before it came up, rather than open its file
     /// again with a seek (#2097): the shot that comes up on another track
@@ -7686,15 +7771,19 @@ impl PlaybackEngine {
     }
 
     /// Whether the sound is silenced now: a scrub with audio scrubbing off,
-    /// or played backwards by J, as the sound can only read forward. A
-    /// reversed clip also runs the clock backwards, and keeps its sound.
+    /// played backwards by J, as the sound can only read forward, or
+    /// shuttled above 4x, past hearing. By the speed a shuttle asked for
+    /// and the clock running it: a reversed clip also runs the clock
+    /// backwards, and a clip retimed above 4x faster, and they keep their
+    /// sound (#638).
     fn sound_muted(&self) -> bool {
-        (self.is_scrubbing && !self.scrub_audio_enabled) || (self.shuttled_backwards && self.master_clock.speed() < 0.0)
+        let shuttled = |past: fn(f64) -> bool| past(self.shuttle_speed) && past(self.master_clock.speed());
+        (self.is_scrubbing && !self.scrub_audio_enabled) || shuttled(|s| s < 0.0) || shuttled(|s| s.abs() > 4.0)
     }
 
     /// Whether `speed` changes the direction it is shuttled in.
     fn turns_round(&self, speed: f64) -> bool {
-        self.shuttled_backwards != (speed < 0.0)
+        (self.shuttle_speed < 0.0) != (speed < 0.0)
     }
 
     /// Tell the UI where the playhead is, never past the timeline's end:
@@ -7733,6 +7822,21 @@ impl PlaybackEngine {
         let _ = self.event_tx.send(AppEvent::PlayheadMoved(at));
     }
 
+    /// Play pressed at the timeline's end, stopped there: from the start
+    /// again, the playhead with it. There is nothing to play where it is:
+    /// the first clip played while the playhead stayed at the end. Not for
+    /// J, which plays back from there.
+    fn play_again_from_the_start(&mut self) {
+        let end = self.sequence_duration();
+        if self.state == PlaybackState::Playing || self.shuttle_speed < 0.0 || end.value <= 0 || self.playhead < end {
+            return;
+        }
+        let start = RationalTime::from_frames(0, self.fps.rate());
+        self.playhead = start;
+        self.report_jump(start);
+        self.seek_in_sequence(start);
+    }
+
     fn stop_at_end(&mut self) {
         self.clear_preroll();
         info!("stop_at_end called — loop_enabled={}, playhead={:.3}s",
@@ -7756,8 +7860,22 @@ impl PlaybackEngine {
         // gone unreported, and the clock may have run past the end.
         self.playhead = self.playhead.min(self.sequence_duration());
         self.report_playhead();
+        // A stop ends what reports follow on from (#1806): left set, the
+        // next play's reports all read this end.
+        self.report_floor.set(None);
         self.state = PlaybackState::Paused;
         let _ = self.event_tx.send(AppEvent::PlaybackPaused);
+        // The clock ran out before the last frame came, after a seek to it
+        // while playing, and what is up is the black past the end: the last
+        // frame in its place.
+        let end = self.sequence_duration();
+        let past_the_end = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner()).shown_presented().is_some_and(|at| at >= end);
+        if past_the_end && end.value > 0 {
+            let last = RationalTime::from_secs_f64((end.to_secs_f64() - self.fps.frame_duration_secs()).max(0.0), self.fps.rate());
+            self.playhead = last;
+            self.report_jump(last);
+            self.seek_in_sequence(last);
+        }
         (self.repaint_cb)();
     }
 
@@ -10344,7 +10462,13 @@ impl PlaybackEngine {
     /// timeline's. From Idle or Stopped this parks the engine, as a seek
     /// from the UI does, so the edits after it render too.
     fn show_edit_at_playhead(&mut self) {
-        let ph = self.playhead;
+        // The timeline shrunk under it: on its last frame, not past its end
+        // in the black there.
+        let ph = on_the_timeline(self.playhead, self.sequence_duration(), self.fps);
+        if ph != self.playhead {
+            self.playhead = ph;
+            self.report_jump(ph);
+        }
         self.quiet_seek = true;
         self.seek_in_sequence(ph);
         self.quiet_seek = false;
@@ -12973,6 +13097,16 @@ pub fn generate_thumbnail_at_size_with_rotation(
     }
 }
 
+
+/// Where a parked playhead belongs on a timeline ending at `end`: where it
+/// is, or past the end, on the last frame.
+fn on_the_timeline(playhead: Timecode, end: Timecode, fps: klipp_core::Fps) -> Timecode {
+    if playhead < end {
+        return playhead;
+    }
+    let last = (end.to_secs_f64() - fps.frame_duration_secs()).max(0.0);
+    RationalTime::from_secs_f64(last, fps.rate())
+}
 
 /// Check if an RGBA frame is effectively black (< 5% average brightness).
 /// Samples ~64 evenly spaced pixels for speed.
@@ -15657,6 +15791,132 @@ mod track_switch_tests {
         engine.handle_command(AppCommand::BeginScrub);
         engine.scrub_audio_enabled = false;
         assert!(engine.sound_muted(), "a scrub with its sound off");
+    }
+
+    /// Stopped at the end, Play starts over with the playhead at the start,
+    /// not the first clip's picture under a playhead left at the end. Short
+    /// of the end, and for J, the playhead stays. The stop leaves no floor
+    /// for the next play's reports (#1806).
+    #[test]
+    fn play_at_the_end_starts_over_with_the_playhead() {
+        let mut seq = klipp_timeline::Sequence::new_default();
+        let rate = seq.fps.rate();
+        let at = |s: f64| RationalTime::from_secs_f64(s, rate);
+        let mut track = klipp_timeline::Track::new("V1", klipp_timeline::TrackKind::Video);
+        track.clips = vec![klipp_timeline::Clip::media(MediaId::new(), at(0.0), at(5.0), at(0.0), at(5.0))];
+        seq.tracks = vec![track];
+        let (mut engine, _seq) = engine(seq);
+        engine.state = PlaybackState::Playing;
+        engine.playhead = at(5.0);
+        engine.report_playhead();
+        assert!(engine.report_floor.get().is_some(), "reports follow on while playing");
+        engine.stop_at_end();
+        assert_eq!(engine.state, PlaybackState::Paused);
+        assert!(engine.report_floor.get().is_none(), "a stop ends them");
+
+        // Stopped with the black past the end up: the last frame instead.
+        engine.frame_buffer.lock().unwrap().set_presented(at(5.1), true);
+        engine.state = PlaybackState::Playing;
+        engine.playhead = at(5.1);
+        engine.stop_at_end();
+        assert_eq!(engine.playhead, at(5.0 - engine.fps.frame_duration_secs()), "on the last frame");
+
+        engine.playhead = at(5.0);
+        engine.handle_command(AppCommand::SetSpeed(-1.0));
+        engine.play_again_from_the_start();
+        assert_eq!(engine.playhead, at(5.0), "J plays back from the end");
+        engine.handle_command(AppCommand::SetSpeed(1.0));
+        engine.playhead = at(4.9);
+        engine.play_again_from_the_start();
+        assert_eq!(engine.playhead, at(4.9), "short of the end");
+        engine.playhead = at(5.0);
+        engine.state = PlaybackState::Paused;
+        engine.play_again_from_the_start();
+        assert_eq!(engine.playhead.value, 0, "from the start");
+    }
+
+    /// Above 4x the sound is silent while it plays, not only until the next
+    /// tick puts it back, and comes back below it. A clip retimed above 4x
+    /// keeps its sound (#638).
+    #[test]
+    fn shuttled_above_four_times_the_sound_is_silent() {
+        let (mut engine, _seq) = engine(two_tracks());
+        engine.handle_command(AppCommand::SetSpeed(4.0));
+        assert!(!engine.sound_muted(), "4x is heard");
+        engine.handle_command(AppCommand::SetSpeed(8.0));
+        assert!(engine.sound_muted(), "8x");
+        engine.handle_command(AppCommand::SetSpeed(1.0));
+        assert!(!engine.sound_muted(), "1x");
+        engine.master_clock.set_speed(8.0);
+        assert!(!engine.sound_muted(), "a clip retimed to 8x keeps its sound");
+    }
+
+    /// J ended, after a seek under it took the clock back off: its pictures
+    /// end too, and forward play takes no backward path in a gap.
+    #[test]
+    fn a_seek_under_j_does_not_leave_the_backward_path_on() {
+        let (mut engine, _seq) = engine(two_tracks());
+        engine.state = PlaybackState::Playing;
+        engine.handle_command(AppCommand::SetSpeed(-1.0));
+        engine.keep_backward_play();
+        assert!(engine.backward_on_clock && engine.clock_only);
+        engine.clock_only = false;
+        engine.handle_command(AppCommand::SetSpeed(1.0));
+        engine.keep_backward_play();
+        assert!(!engine.backward_on_clock);
+    }
+
+    /// The timeline shrunk under a parked playhead: it goes to the last
+    /// frame, not past the end in the black there. Undo lengthening the
+    /// timeline again leaves it where it is, and an edit that leaves it on
+    /// the timeline doesn't move it.
+    #[test]
+    fn a_timeline_shrunk_under_the_playhead_leaves_it_on_the_last_frame() {
+        let timeline = |secs: &[i64]| {
+            let mut seq = klipp_timeline::Sequence::new_default();
+            let rate = seq.fps.rate();
+            let at = |s: i64| RationalTime::from_secs_f64(s as f64, rate);
+            let mut track = klipp_timeline::Track::new("V1", klipp_timeline::TrackKind::Video);
+            track.clips = secs.windows(2).map(|w| klipp_timeline::Clip::media(MediaId::new(), at(w[0]), at(w[1]), at(0), at(w[1] - w[0]))).collect();
+            seq.tracks = vec![track];
+            seq
+        };
+        let long = timeline(&[0, 5, 10]);
+        let (mut engine, shared) = engine(long.clone());
+        let (rate, frame) = (engine.fps.rate(), engine.fps.frame_duration_secs());
+        let secs = |s: f64| RationalTime::from_secs_f64(s, rate);
+        engine.state = PlaybackState::Paused;
+        engine.note_layout_change(true);
+        engine.playhead = secs(9.5);
+
+        let mut short = long.clone();
+        short.tracks[0].clips.pop();
+        shared.replace(short);
+        engine.handle_command(AppCommand::SequenceUpdated);
+        let last = secs(5.0 - frame);
+        assert_eq!(engine.playhead, last, "on the last frame");
+
+        shared.replace(long.clone());
+        engine.handle_command(AppCommand::SequenceUpdated);
+        assert_eq!(engine.playhead, last, "undo leaves it there");
+
+        let mut trimmed = long;
+        trimmed.tracks[0].clips[1].timeline_out = secs(8.0);
+        shared.replace(trimmed);
+        engine.handle_command(AppCommand::SequenceUpdated);
+        assert_eq!(engine.playhead, last, "still on the timeline");
+    }
+
+    /// Past the end or on it, the last frame; an empty timeline, its start.
+    #[test]
+    fn a_playhead_past_the_end_belongs_on_the_last_frame() {
+        let fps = klipp_core::Fps::new(30, 1);
+        let at = |f: i64| RationalTime::from_frames(f, 30);
+        assert_eq!(on_the_timeline(at(10), at(30), fps), at(10));
+        assert_eq!(on_the_timeline(at(29), at(30), fps), at(29));
+        assert_eq!(on_the_timeline(at(30), at(30), fps), at(29));
+        assert_eq!(on_the_timeline(at(90), at(30), fps), at(29));
+        assert_eq!(on_the_timeline(at(90), at(0), fps), at(0));
     }
 
     /// #2672: a muted track stays silent once the timeline takes the

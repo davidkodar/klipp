@@ -1786,7 +1786,9 @@ fn handle_hover_skim(
     // Use raw pointer position
     let pointer_pos = ui.ctx().input(|i| i.pointer.hover_pos());
     let hover_pos = match pointer_pos {
-        Some(p) if skim_rect.contains(p) => p,
+        // Only where the pool itself is under the pointer: a window over
+        // it (the Transcript) skimmed the thumbnail behind it.
+        Some(p) if skim_rect.contains(p) && ui.ctx().layer_id_at(p).is_none_or(|l| l == ui.layer_id()) => p,
         _ => return false,
     };
     state.browser_skim_active_this_frame = true;
@@ -3222,6 +3224,33 @@ mod bin_menu_tests {
             sent.extend(pool.frame(Vec::new()).1);
             assert!(sent.iter().any(|c| matches!(c, AppCommand::MoveItemsToBin { media_ids, bin: Some(b) } if *media_ids == [a] && b == "Selects")), "{view:?}: {sent:?}");
             assert!(pool.state.dragging_media.is_none() && pool.state.dragging_media_group.is_empty(), "{view:?}: the drop is taken");
+        }
+    }
+
+    /// A window over the pool (the Transcript) keeps the pointer from the
+    /// thumbnail behind it: hovering the window skimmed that clip into the
+    /// source viewer.
+    #[test]
+    fn a_window_over_the_pool_does_not_skim_it() {
+        for covered in [false, true] {
+            let mut pool = Pool::new(BrowserViewMode::Grid, &["a.mov"]);
+            pool.state.skimming_enabled = true;
+            let thumb = pool.at("a.mov") - egui::vec2(0.0, 30.0);
+            let theme = KlippTheme::default();
+            let mut skimmed = false;
+            for events in [vec![egui::Event::PointerMoved(thumb)], Vec::new(), Vec::new()] {
+                let (state, panel) = (&mut pool.state, &mut pool.panel);
+                let (mut tab, mut pinned, mut ratio) = (crate::layout_state::BrowserTab::Media, false, 0.5);
+                state.browser_skim_active_this_frame = false;
+                let _ = pool.ctx.run(egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, pool.size)), events, ..Default::default() }, |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| { panel.show(ui, state, &theme, &mut tab, &mut pinned, &mut ratio); });
+                    if covered {
+                        crate::widgets::window("Transcript").fixed_pos(thumb - egui::vec2(60.0, 40.0)).fixed_size(egui::vec2(200.0, 120.0)).show(ctx, |ui| { ui.label("words"); });
+                    }
+                });
+                skimmed = state.browser_skim_active_this_frame;
+            }
+            assert_eq!(skimmed, !covered, "covered by a window: {covered}");
         }
     }
 
