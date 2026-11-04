@@ -233,11 +233,7 @@ impl KlippApp {
     /// live again, one undo step, and the files removed.
     pub(super) fn clear_frozen(&mut self, sound: bool) {
         let kind = if sound { klipp_timeline::TrackKind::Audio } else { klipp_timeline::TrackKind::Video };
-        let idx = self.state.active_sequence_idx;
-        if let Some(step) = unfreeze_all(&mut self.state.sequences[idx], kind) {
-            self.state.push_history(step);
-            self.state.dirty = true;
-        }
+        clear_frozen_tracks(&mut self.state, &self.sequence, &self.param_change_queue, kind);
         let fj = &mut self.freeze_jobs;
         fj.stop();
         if let Some(cache) = self.freeze_cache_folder() {
@@ -514,6 +510,41 @@ fn unfreeze_all(seq: &mut klipp_timeline::Sequence, kind: klipp_timeline::TrackK
     (!edits.is_empty()).then_some(klipp_document::history::EditCommand::Batch(edits))
 }
 
+/// A picture or sound track of the open sequence changed by `edit`, and the
+/// copy the engine plays and the control socket reads given the change, so
+/// that a report of the track says what the project says.
+pub(super) fn edit_freezable_track(
+    state: &mut crate::state::AppState,
+    sequence: &klipp_timeline::SharedSequence,
+    param_change_queue: &crossbeam_queue::ArrayQueue<klipp_core::ParamChange>,
+    track_id: TrackId,
+    edit: impl FnOnce(&mut klipp_timeline::Track),
+) {
+    let idx = state.active_sequence_idx;
+    let Some(track) = state.sequences[idx].tracks.iter_mut().find(|t| t.id == track_id && matches!(t.kind, klipp_timeline::TrackKind::Video | klipp_timeline::TrackKind::Audio)) else {
+        return;
+    };
+    edit(track);
+    state.dirty = true;
+    super::engine_sync::sync_sequence(state, sequence, param_change_queue);
+}
+
+/// The open sequence's tracks of `kind` live again, one undo step, and the
+/// copy the engine plays and the control socket reads given the change.
+fn clear_frozen_tracks(
+    state: &mut crate::state::AppState,
+    sequence: &klipp_timeline::SharedSequence,
+    param_change_queue: &crossbeam_queue::ArrayQueue<klipp_core::ParamChange>,
+    kind: klipp_timeline::TrackKind,
+) {
+    let idx = state.active_sequence_idx;
+    if let Some(step) = unfreeze_all(&mut state.sequences[idx], kind) {
+        state.push_history(step);
+        state.dirty = true;
+        super::engine_sync::sync_sequence(state, sequence, param_change_queue);
+    }
+}
+
 /// A job's end, reported on `done` for `track` with the job's id, which
 /// is set in the cell once the job is made: a job with nothing to do can
 /// end before then, so the end waits a moment for it.
@@ -781,6 +812,32 @@ mod tests {
         klipp_document::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut pool, fps: &mut fps }.apply_inverse(&step);
         assert_eq!(serde_json::to_value(&seqs[0].tracks).unwrap(), serde_json::to_value(&before.tracks).unwrap(), "undone, frozen again");
         assert!(unfreeze_all(&mut seq, TrackKind::Video).is_none(), "nothing frozen left");
+    }
+
+    /// A freeze or an unfreeze from the track header or Ctrl+Shift+F reaches
+    /// the copy the control socket reads at once, the track's lock with it,
+    /// not at the next edit: `list_clips` and `timeline` read that copy.
+    #[test]
+    fn freezing_a_track_reaches_the_copy_the_socket_reads() {
+        let mut state = crate::state::AppState::default();
+        let shared = klipp_timeline::SharedSequence::new(state.sequences[0].clone());
+        let queue = crossbeam_queue::ArrayQueue::new(8);
+        let id = state.sequences[0].tracks.iter().find(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap().id;
+        let read = |shared: &klipp_timeline::SharedSequence| {
+            let seq = shared.snapshot();
+            let t = seq.tracks.iter().find(|t| t.id == id).unwrap();
+            (t.frozen, t.locked)
+        };
+        edit_freezable_track(&mut state, &shared, &queue, id, |t| t.set_frozen(true));
+        assert!(state.dirty);
+        assert_eq!(read(&shared), (true, false), "frozen");
+        edit_freezable_track(&mut state, &shared, &queue, id, |t| t.set_lock_while_frozen(true));
+        assert_eq!(read(&shared), (true, true), "locked with it");
+        edit_freezable_track(&mut state, &shared, &queue, id, |t| t.set_frozen(false));
+        assert_eq!(read(&shared), (false, false), "live and unlocked");
+        edit_freezable_track(&mut state, &shared, &queue, id, |t| t.set_frozen(true));
+        clear_frozen_tracks(&mut state, &shared, &queue, klipp_timeline::TrackKind::Video);
+        assert_eq!(read(&shared), (false, false), "cleared, live and unlocked");
     }
 
     /// A project whose cache, or the folder cleared in it, is a link to
