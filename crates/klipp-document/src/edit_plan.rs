@@ -46,6 +46,28 @@ fn past_end(end: f64, length: f64) -> (String, String) {
     (format!("{end:.places$}"), format!("{length:.places$}"))
 }
 
+/// Whether the join `kind` into segment `n` (`into`, after `out`) has
+/// the footage it plays: a join of [`DEFAULT_TRANSITION_SECS`] centred
+/// on the cut plays half of it past the end of the segment before and
+/// half before the start of its own, as the build lays it. Stored without
+/// this check, a plan the person approved was then refused by the build.
+/// A still is the same picture at any time and a smooth cut holds each
+/// side's frame, so they always have the room.
+fn join_has_handles(out: &klipp_timeline::PlanSegment, into: &klipp_timeline::PlanSegment, kind: &str, pool: &MediaPool, n: usize) -> Result<(), String> {
+    if crate::ops::resolve_transition_kind(kind).is_some_and(|spec| spec.string_key == "SmoothCut") {
+        return Ok(());
+    }
+    let half = DEFAULT_TRANSITION_SECS / 2.0;
+    let short = |item: Option<&klipp_media::MediaItem>, room: bool| item.filter(|it| !it.is_still && !room).map(|it| it.filename.clone());
+    let out_item = pool.get(&out.media_id);
+    let after = short(out_item, out_item.is_some_and(|it| out.source_out_secs + half <= it.duration.to_secs_f64() + 1e-6));
+    let before = short(pool.get(&into.media_id), into.source_in_secs + 1e-6 >= half);
+    match after.or(before) {
+        Some(who) => Err(format!("segment {n}: {who} has no footage beyond the cut to make the {DEFAULT_TRANSITION_SECS:.2} s overlap; shorten the segment so there is a handle, or join it with a cut")),
+        None => Ok(()),
+    }
+}
+
 /// Why a plan cannot be stored, in a sentence with what would fix it.
 pub fn validate(plan: &EditPlan, pool: &MediaPool, brief: Option<&Brief>) -> Result<(), String> {
     if plan.segments.is_empty() {
@@ -125,6 +147,9 @@ pub fn validate(plan: &EditPlan, pool: &MediaPool, brief: Option<&Brief>) -> Res
         }
         if i == 0 && s.transition.is_some() {
             return Err("segment 1 has nothing before it to join to; a transition is on the segment it leads into".into());
+        }
+        if let Some(kind) = s.transition.as_deref().filter(|_| i > 0) {
+            join_has_handles(&plan.segments[i - 1], s, kind, pool, n)?;
         }
     }
     let mut seen_sections: Vec<&str> = Vec::new();
@@ -724,6 +749,27 @@ mod tests {
         assert!(why.contains("9.44-10.960 s runs past the end of talk.mp4 (10.958 s)"), "{why}");
         assert!(why.contains("end it at 10.958 s or before"), "{why}");
         assert_eq!(past_end(12.5, 10.0), ("12.50".to_string(), "10.00".to_string()), "two decimals where they tell them apart");
+    }
+
+    /// A join needs footage either side of its cut, as the build lays it:
+    /// a dissolve into a segment from its file's very start, or out of one
+    /// to its file's very end, is refused when the plan is stored, with
+    /// the reason the build gave for it after the plan was approved. A
+    /// smooth cut, and a join with a handle each side, are stored.
+    #[test]
+    fn a_join_without_a_handle_is_refused_when_planned() {
+        let (seq, pool, screen, _) = fixture();
+        let joined = |a: (f64, f64), b: (f64, f64), kind: &str| EditPlan { segments: vec![seg(screen, a.0, a.1), PlanSegment { transition: Some(kind.into()), ..seg(screen, b.0, b.1) }], ..Default::default() };
+        let from_start = validate(&joined((10.0, 14.0), (0.0, 4.0), "cross_dissolve"), &pool, None).unwrap_err();
+        assert!(from_start.contains("segment 2: screen.mov has no footage beyond the cut to make the 0.50 s overlap"), "{from_start}");
+        let built = resolve(&seq, &pool, &to_ops(&joined((10.0, 14.0), (0.0, 4.0), "cross_dissolve"), &seq, &pool, None)).unwrap_err();
+        assert!(built.why.contains("has no footage beyond the cut to make the 0.50 s overlap"), "the build's own reason: {}", built.why);
+        let to_end = validate(&joined((56.0, 60.0), (10.0, 14.0), "dissolve"), &pool, None).unwrap_err();
+        assert!(to_end.contains("no footage beyond the cut"), "{to_end}");
+        validate(&joined((10.0, 14.0), (0.0, 4.0), "smooth_cut"), &pool, None).unwrap();
+        let fine = joined((10.0, 14.0), (20.0, 24.0), "cross_dissolve");
+        validate(&fine, &pool, None).unwrap();
+        resolve(&seq, &pool, &to_ops(&fine, &seq, &pool, None)).unwrap();
     }
 
     #[test]

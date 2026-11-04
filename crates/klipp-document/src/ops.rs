@@ -12332,7 +12332,7 @@ fn linked_crossfade(seq: &Sequence, pool: &MediaPool, fps: Fps, a: &Clip, b: &Cl
 
 /// A transition spec from a name: its registry key (any case), or a
 /// friendly alias for the ones people ask for by feel.
-fn resolve_transition_kind(name: &str) -> Option<&'static klipp_core::TransitionSpec> {
+pub(crate) fn resolve_transition_kind(name: &str) -> Option<&'static klipp_core::TransitionSpec> {
     let key = name.trim().to_lowercase().replace([' ', '-'], "_");
     let alias = match key.as_str() {
         "dissolve" | "crossfade" | "cross_fade" => "CrossDissolve",
