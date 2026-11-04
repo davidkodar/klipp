@@ -502,6 +502,9 @@ mod tests {
         let output = g.output_node_id;
         g.nodes.retain(|n| n.id == source || n.id == output);
         g.edges.clear();
+        // The default nodes' places go with them: a write prunes a place
+        // left for a node the grade no longer has.
+        g.node_positions.clear();
         let mut base = node(NodeKind::Corrector, "Base");
         base.params.exposure = Some(0.25);
         base.params.contrast = Some(-0.1);
