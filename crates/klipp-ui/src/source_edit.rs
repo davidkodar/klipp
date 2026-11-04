@@ -12,6 +12,10 @@
 //! Times are seconds here; the caller turns them into timecode at the
 //! source's and the sequence's rates.
 
+/// What a source edit says with nothing in the source viewer, as a
+/// toast or on the greyed menu item.
+pub const NO_SOURCE: &str = "Load a clip in the Source viewer first: click it in the Media pool";
+
 /// A source edit's placement: the timeline span and the source range it
 /// plays, at `speed` (1 except for fit to fill).
 #[derive(Debug, Clone, Copy, PartialEq)]

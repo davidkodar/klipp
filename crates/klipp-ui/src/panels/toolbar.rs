@@ -808,10 +808,12 @@ impl ToolbarPanel {
             }
             if ui.button("Apply Brand Kit\u{2026}").on_hover_text("Take a brand kit's look, captions, intro, outro or logo into this sequence").clicked() { cmds.push(AppCommand::OpenApplyBrandKit); ui.close_menu(); }
             ui.separator();
-            if ui.add(egui::Button::new("Insert Edit").shortcut_text(kb.display_for("insert_edit"))).clicked() { cmds.push(AppCommand::InsertEdit); ui.close_menu(); }
-            if ui.add(egui::Button::new("Overwrite Edit").shortcut_text(kb.display_for("overwrite_edit"))).clicked() { cmds.push(AppCommand::OverwriteEdit); ui.close_menu(); }
-            if ui.add(egui::Button::new("Fit to Fill").shortcut_text(kb.display_for("fit_to_fill_edit"))).clicked() { cmds.push(AppCommand::FitToFillEdit); ui.close_menu(); }
-            if ui.add(egui::Button::new("Place on Top").shortcut_text(kb.display_for("place_on_top_edit"))).clicked() { cmds.push(AppCommand::PlaceOnTopEdit); ui.close_menu(); }
+            // The edits from the source viewer, with nothing loaded there.
+            let (has_source, no_source) = (state.source_media_id.is_some(), crate::source_edit::NO_SOURCE);
+            if ui.add_enabled(has_source, egui::Button::new("Insert Edit").shortcut_text(kb.display_for("insert_edit"))).on_disabled_hover_text(no_source).clicked() { cmds.push(AppCommand::InsertEdit); ui.close_menu(); }
+            if ui.add_enabled(has_source, egui::Button::new("Overwrite Edit").shortcut_text(kb.display_for("overwrite_edit"))).on_disabled_hover_text(no_source).clicked() { cmds.push(AppCommand::OverwriteEdit); ui.close_menu(); }
+            if ui.add_enabled(has_source, egui::Button::new("Fit to Fill").shortcut_text(kb.display_for("fit_to_fill_edit"))).on_disabled_hover_text(no_source).clicked() { cmds.push(AppCommand::FitToFillEdit); ui.close_menu(); }
+            if ui.add_enabled(has_source, egui::Button::new("Place on Top").shortcut_text(kb.display_for("place_on_top_edit"))).on_disabled_hover_text(no_source).clicked() { cmds.push(AppCommand::PlaceOnTopEdit); ui.close_menu(); }
             if ui.add(egui::Button::new("Append to End").shortcut_text(kb.display_for("append_edit"))).on_hover_text("The clips selected in the media pool, else the source, at the end of the main track").clicked() {
                 let targets = state.append_targets();
                 if targets.is_empty() {
@@ -820,8 +822,8 @@ impl ToolbarPanel {
                 cmds.extend(targets.into_iter().map(|media_id| AppCommand::ImportMediaLinked { media_id, on_new_tracks: false }));
                 ui.close_menu();
             }
-            if ui.add(egui::Button::new("Replace Edit").shortcut_text(kb.display_for("replace_edit"))).clicked() { cmds.push(AppCommand::ReplaceEdit); ui.close_menu(); }
-            if ui.button("Ripple Overwrite").on_hover_text("Replace the clip under the playhead with the source's marked range; what follows moves by the change in length").clicked() { cmds.push(AppCommand::RippleOverwriteEdit); ui.close_menu(); }
+            if ui.add_enabled(has_source, egui::Button::new("Replace Edit").shortcut_text(kb.display_for("replace_edit"))).on_disabled_hover_text(no_source).clicked() { cmds.push(AppCommand::ReplaceEdit); ui.close_menu(); }
+            if ui.add_enabled(has_source, egui::Button::new("Ripple Overwrite")).on_disabled_hover_text(no_source).on_hover_text("Replace the clip under the playhead with the source's marked range; what follows moves by the change in length").clicked() { cmds.push(AppCommand::RippleOverwriteEdit); ui.close_menu(); }
             if ui.button("Lift Edit").clicked() { cmds.push(AppCommand::LiftEdit); ui.close_menu(); }
             if ui.button("Extract Edit").clicked() { cmds.push(AppCommand::ExtractEdit); ui.close_menu(); }
             if ui.add(egui::Button::new("Freeze Frame").shortcut_text(kb.display_for("freeze_frame"))).clicked() {
