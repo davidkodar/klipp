@@ -162,8 +162,21 @@ impl AppState {
             return Err("Duplicate: no node to copy here".into());
         }
         let copy = crate::state::GradeNodeClipboard::from_selection(&level, &selection);
+        // One node duplicated goes into the chain after it: fed by it, and
+        // feeding what it fed. Left unwired, it stood on the original's
+        // place doing nothing, or read the clip's frame unseen.
+        let single = (selection.len() == 1).then(|| selection.iter().copied().next()).flatten()
+            .filter(|id| level.nodes.iter().find(|n| n.id == *id).is_some_and(|n| n.kind.input_port_count() > 0 && n.kind.output_port_count() > 0));
         let mut made = Vec::new();
-        super::colour::edit_clip_graph(self, clip_id, &path, true, |graph| made = copy.merge_into_ids(graph, DUPLICATE_OFFSET))
+        super::colour::edit_clip_graph(self, clip_id, &path, true, |graph| {
+            made = copy.merge_into_ids(graph, DUPLICATE_OFFSET);
+            if let (Some(original), [dup]) = (single, made.as_slice()) {
+                for e in graph.edges.iter_mut().filter(|e| e.from_node == original && e.from_port == 0) {
+                    e.from_node = *dup;
+                }
+                graph.edges.push(klipp_nodes::Edge { from_node: original, from_port: 0, to_node: *dup, to_port: 0 });
+            }
+        })
             .ok_or("The clip is no longer on the timeline")?
             .map_err(|()| "That level of the grade is gone".to_owned())?;
         self.select_nodes(&made);
