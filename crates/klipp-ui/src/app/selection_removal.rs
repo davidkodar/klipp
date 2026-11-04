@@ -7,7 +7,7 @@ use crate::state::AppState;
 use klipp_core::ClipId;
 
 /// Whether track `ti` closes up when a clip leaves it.
-fn magnetic(state: &AppState, ti: usize) -> bool {
+pub(super) fn magnetic(state: &AppState, ti: usize) -> bool {
     state.magnetic_timeline_enabled
         && matches!(
             state.sequence().tracks.get(ti).map(|t| &t.magnetic_role),
