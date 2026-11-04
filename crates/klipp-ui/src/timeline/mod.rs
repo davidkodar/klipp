@@ -57,9 +57,19 @@ impl NewTimelinePanel {
         if strip {
             state.active_tool = klipp_core::Tool::Select;
         }
-        let cmds = self.show_timeline(ui, state, theme, old_timeline, kb, adaptive_fit);
+        // A press anywhere on the timeline gives it the keys back from the
+        // source viewer, as a click on the program viewer does. The source
+        // viewer keeps them in multicam mode: its grid is what's cut from.
+        let takes_keys = state.viewer_mode == klipp_core::ViewerMode::Source
+            && !state.multicam_mode
+            && ui.rect_contains_pointer(ui.max_rect())
+            && ui.input(|i| i.pointer.any_pressed());
+        let mut cmds = self.show_timeline(ui, state, theme, old_timeline, kb, adaptive_fit);
         if strip && state.active_tool == klipp_core::Tool::Select {
             state.active_tool = edit_tool;
+        }
+        if takes_keys {
+            cmds.insert(0, AppCommand::SetViewerMode(klipp_core::ViewerMode::Program));
         }
         cmds
     }
@@ -1305,6 +1315,60 @@ mod menu_smoke_tests {
         timeline.frame(Vec::new());
         sent.append(&mut timeline.sent);
         assert!(sent.iter().any(|c| matches!(c, AppCommand::OpenAuditionPicker { clip_id: Some(c) } if *c == id)), "a double-click opens its takes: {sent:?}");
+    }
+
+    /// A press on a clip, the ruler, a track's header or empty timeline
+    /// gives the keys back from the source viewer: Space, the arrows and
+    /// J/K/L drive the timeline again, and I, O and M mark it, where they
+    /// went on driving and marking the source clip.
+    #[test]
+    fn a_press_on_the_timeline_takes_the_keys_from_the_source_viewer() {
+        use klipp_core::ViewerMode::{Program, Source};
+        let mut timeline = Timeline::new();
+        timeline.state.source_media_id = timeline.state.media_pool.all().next().map(|m| m.id);
+        timeline.frame(Vec::new());
+        timeline.frame(Vec::new());
+        let rect = timeline.old.frame_cache.track_rects.first().expect("a track drawn").2;
+        let header = timeline.header(TrackKind::Video);
+        let places = [
+            ("a clip", egui::pos2(rect.center().x, timeline.old.frame_cache.track_rects.iter().find(|(i, _, _)| timeline.state.sequences[0].tracks[*i].kind == TrackKind::Video).unwrap().2.center().y)),
+            ("the ruler", egui::pos2(rect.center().x, rect.top() - 8.0)),
+            ("a track's header", header),
+            ("empty timeline", egui::pos2(rect.center().x, 590.0)),
+        ];
+        for (name, at) in places {
+            timeline.state.viewer_mode = Source;
+            let sent = timeline.click(at);
+            assert!(sent.iter().any(|c| matches!(c, AppCommand::SetViewerMode(Program))), "{name}: {sent:?}");
+            timeline.state.viewer_mode = Program;
+            let state = &timeline.state;
+            assert!(matches!(crate::panels::transport::route_for_viewer(AppCommand::Play, state), AppCommand::Play), "{name}: Space");
+            assert!(matches!(crate::panels::transport::route_for_viewer(AppCommand::SeekRelative(-1), state), AppCommand::SeekRelative(-1)), "{name}: the arrows");
+            assert!(matches!(state.mark_in_key(), AppCommand::MarkRange { .. }), "{name}: I");
+            assert!(matches!(state.mark_out_key(), AppCommand::MarkRange { .. }), "{name}: O");
+            assert!(!state.marks_go_on_source(), "{name}: M");
+        }
+        // Until then the keys are the source viewer's.
+        timeline.state.viewer_mode = Source;
+        let state = &timeline.state;
+        assert!(matches!(crate::panels::transport::route_for_viewer(AppCommand::Play, state), AppCommand::PlaySource));
+        assert!(matches!(state.mark_in_key(), AppCommand::SetSourceInPoint(_)));
+        assert!(matches!(state.mark_out_key(), AppCommand::SetSourceOutPoint(_)));
+        assert!(state.marks_go_on_source());
+    }
+
+    /// Multicam mode cuts from the source viewer's grid: a press on the
+    /// timeline leaves it the keys.
+    #[test]
+    fn multicam_mode_keeps_the_keys_on_the_source_viewer() {
+        let mut timeline = Timeline::new();
+        timeline.frame(Vec::new());
+        timeline.frame(Vec::new());
+        let rect = timeline.old.frame_cache.track_rects.first().expect("a track drawn").2;
+        timeline.state.multicam_mode = true;
+        timeline.state.viewer_mode = klipp_core::ViewerMode::Source;
+        let sent = timeline.click(egui::pos2(rect.center().x, rect.top() - 8.0));
+        assert!(!sent.iter().any(|c| matches!(c, AppCommand::SetViewerMode(_))), "{sent:?}");
     }
 
     /// A name is cut before the header's buttons; a short one isn't.

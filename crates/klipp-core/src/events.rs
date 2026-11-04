@@ -507,9 +507,30 @@ impl ExportSettings {
             return None;
         }
         let bars = if out < timeline { "above and below" } else { "at the sides" };
+        let shape = |w: u32, h: u32| match w.cmp(&h) {
+            std::cmp::Ordering::Less => "vertical",
+            std::cmp::Ordering::Equal => "square",
+            std::cmp::Ordering::Greater => "wide",
+        };
+        let fix = match Self::aspect_name(w, h) {
+            Some(aspect) => format!("make a {aspect} version: right-click the sequence tab \u{2192} New Version at Aspect \u{2192} {aspect}, and export that version"),
+            None => "make a version in that shape: right-click the sequence tab \u{2192} Duplicate, set its size in Sequence Settings, and export that version".to_string(),
+        };
         Some(format!(
-            "The timeline is {seq_w}x{seq_h} and this export {w}x{h}: the picture is fitted whole, with black bars {bars}. To fill the frame, make a version in that shape first (the format op with width {w} and height {h}, refit following the subjects) and export it."
+            "This export is {} ({w}x{h}) and the timeline {} ({seq_w}x{seq_h}), so the picture is fitted whole with black bars {bars}. To fill the frame, {fix}.",
+            shape(w, h),
+            shape(seq_w, seq_h),
         ))
+    }
+
+    /// The aspect `w`×`h` is, as the sequence tab's New Version at Aspect
+    /// menu names it, when it is one of those.
+    fn aspect_name(w: u32, h: u32) -> Option<&'static str> {
+        let r = w as f64 / h.max(1) as f64;
+        [("9:16", 9.0 / 16.0), ("1:1", 1.0), ("4:5", 0.8), ("16:9", 16.0 / 9.0)]
+            .into_iter()
+            .find(|(_, a)| (r / a - 1.0).abs() <= 0.015)
+            .map(|(name, _)| name)
     }
 
     /// The largest side an export is encoded at (#658): 16K, past every
@@ -5222,6 +5243,23 @@ mod shape_warning_tests {
         assert_eq!(at(3840, 2160).shape_warning(1920, 1080), None);
         assert_eq!(at(1920, 1088).shape_warning(1920, 1080), None, "within 1.5%");
         assert_eq!(ExportSettings::default().shape_warning(1920, 1080), None, "the timeline's own size");
+    }
+
+    /// The warning is read by a person in the export dialog: it says the
+    /// shapes in plain words and where the menu that makes the version
+    /// is, with no assistant op names.
+    #[test]
+    fn the_warning_says_where_to_make_the_version_in_plain_words() {
+        let at = |w, h| ExportSettings { resolution: Some(Resolution { width: w, height: h }), ..Default::default() };
+        let shorts = at(1080, 1920).shape_warning(1920, 1080).unwrap();
+        assert!(shorts.starts_with("This export is vertical (1080x1920) and the timeline wide (1920x1080)"), "{shorts}");
+        assert!(shorts.contains("right-click the sequence tab \u{2192} New Version at Aspect \u{2192} 9:16"), "{shorts}");
+        for jargon in ["op ", "width ", "height ", "refit"] {
+            assert!(!shorts.contains(jargon), "{jargon:?} in {shorts}");
+        }
+        assert!(at(1080, 1350).shape_warning(1920, 1080).unwrap().contains("Aspect \u{2192} 4:5"));
+        let scope = at(1920, 804).shape_warning(1920, 1080).unwrap();
+        assert!(scope.contains("Duplicate") && !scope.contains("New Version at Aspect"), "no menu aspect for 2.39:1: {scope}");
     }
 }
 

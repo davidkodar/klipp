@@ -84,6 +84,7 @@ mod event_writes;
 mod graph_dock;
 pub(crate) mod colour_target;
 mod music_trim;
+mod ripple_trim;
 mod first_cut_dialog;
 #[cfg(test)]
 mod music_trim_tests;
@@ -189,6 +190,8 @@ mod key_selection_tests;
 mod timeline_snap_tests;
 #[cfg(test)]
 mod timeline_stretch_tests;
+#[cfg(test)]
+mod rubber_band_click_tests;
 #[cfg(test)]
 mod qualifier_3d_tests;
 #[cfg(test)]

@@ -4056,12 +4056,14 @@ pub(super) fn add_title_clip(
     (clip_id, rest)
 }
 
-/// What follows a title being added, for the engine: nothing that moves
-/// the playhead. It used to go where the title rests, a second in past
-/// an entrance, so the viewer showed it; the playhead moves only when the
-/// person moves it. The new title is selected, and its inspector shows it.
+/// What follows a title being added, for the engine: the frame at the
+/// playhead drawn again with the title in it, and nothing that moves the
+/// playhead. It used to go where the title rests, a second in past an
+/// entrance, so the viewer showed it; the playhead moves only when the
+/// person moves it. With no redraw asked, the viewer kept the frame from
+/// before the add. The new title is selected, and its inspector shows it.
 pub(super) fn after_title_added(_state: &AppState, _clip_id: klipp_core::ClipId) -> Vec<AppCommand> {
-    Vec::new()
+    vec![AppCommand::SequenceUpdated]
 }
 
 /// Where a title clip shows at rest: past its entrance when a layer has

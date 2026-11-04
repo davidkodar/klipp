@@ -17,6 +17,9 @@ pub(super) struct BandingProbe<K = BandingKey> {
     key: Option<K>,
     /// Whether the sequence at `key` bands at 8 bits, once known.
     found: Option<bool>,
+    /// What to suggest where it bands: the gradient's grain only with a
+    /// gradient in it.
+    suggestion: &'static str,
     /// The check running: its answer, `None` once called off, and what it
     /// renders and the flag that stops it, to call it off and run it again.
     running: Option<Running<K>>,
@@ -29,14 +32,14 @@ pub(super) struct BandingProbe<K = BandingKey> {
 
 struct Running<K> {
     key: K,
-    answer: std::sync::mpsc::Receiver<Option<bool>>,
+    answer: std::sync::mpsc::Receiver<Option<Option<&'static str>>>,
     snapshot: klipp_render::SequenceSnapshot,
     stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl<K> Default for BandingProbe<K> {
     fn default() -> Self {
-        Self { key: None, found: None, running: None, jobs: Vec::new(), deferred: None }
+        Self { key: None, found: None, suggestion: klipp_render::banding::SUGGESTION_10BIT, running: None, jobs: Vec::new(), deferred: None }
     }
 }
 
@@ -72,7 +75,7 @@ impl<K: Copy + PartialEq> BandingProbe<K> {
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let (snap, halt) = (snapshot.clone(), stop.clone());
         let spawned = std::thread::Builder::new().name("banding check".into()).spawn(move || {
-            let _ = tx.send(klipp_render::banding::sample_unless(&snap, &halt).ok().map(|b| b.is_some()));
+            let _ = tx.send(klipp_render::banding::sample_unless(&snap, &halt).ok().map(|b| b.map(|b| b.suggestion())));
         });
         if spawned.is_ok() {
             self.found = None;
@@ -86,7 +89,12 @@ impl<K: Copy + PartialEq> BandingProbe<K> {
     pub(super) fn poll(&mut self, idle: bool) {
         if let Some(run) = &self.running {
             match run.answer.try_recv() {
-                Ok(Some(bands)) => (self.found, self.running) = (Some(bands), None),
+                Ok(Some(said)) => {
+                    (self.found, self.running) = (Some(said.is_some()), None);
+                    if let Some(said) = said {
+                        self.suggestion = said;
+                    }
+                }
                 Ok(None) | Err(std::sync::mpsc::TryRecvError::Disconnected) => self.running = None,
                 Err(std::sync::mpsc::TryRecvError::Empty) => {}
             }
@@ -138,12 +146,12 @@ impl<K: Copy + PartialEq> BandingProbe<K> {
     /// The suggestion for job `id` writing `settings`: an 8-bit target
     /// of a sequence found to band.
     pub(super) fn note_for(&self, id: uuid::Uuid, settings: &klipp_core::ExportSettings) -> Option<String> {
-        (self.state_for(id, settings) == Some("bands")).then(|| klipp_render::banding::SUGGESTION.to_string())
+        (self.state_for(id, settings) == Some("bands")).then(|| self.suggestion.to_string())
     }
 
     /// The suggestion for the dialog's target, the sequence at `key`.
     pub(super) fn hint_for(&self, key: K, codec: klipp_core::ExportVideoCodec, bit_depth: u8) -> Option<&'static str> {
-        (codec.writes_8bit(bit_depth) && self.bands(key) == Some(true)).then_some(klipp_render::banding::SUGGESTION)
+        (codec.writes_8bit(bit_depth) && self.bands(key) == Some(true)).then_some(self.suggestion)
     }
 }
 
@@ -193,7 +201,7 @@ mod tests {
     }
 
     /// A check running for `key` that answers when `tx` sends.
-    fn running(p: &mut BandingProbe<(u64, usize)>, key: (u64, usize)) -> (std::sync::mpsc::Sender<Option<bool>>, std::sync::Arc<std::sync::atomic::AtomicBool>) {
+    fn running(p: &mut BandingProbe<(u64, usize)>, key: (u64, usize)) -> (std::sync::mpsc::Sender<Option<Option<&'static str>>>, std::sync::Arc<std::sync::atomic::AtomicBool>) {
         let (tx, answer) = std::sync::mpsc::channel();
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         (p.key, p.found) = (Some(key), None);
@@ -233,14 +241,15 @@ mod tests {
         p.queued(job, (3, 0));
         assert_eq!(p.bands((3, 0)), None, "still running");
         assert_eq!((p.state_for(job, &eight()), p.note_for(job, &eight())), (Some("pending"), None));
-        tx.send(Some(true)).unwrap();
+        // Footage that bands, no gradient in it: the 10-bit advice alone.
+        tx.send(Some(Some(klipp_render::banding::SUGGESTION_10BIT))).unwrap();
         p.poll(true);
         assert_eq!(p.bands((3, 0)), Some(true));
         assert_eq!(p.state_for(job, &eight()), Some("bands"));
-        assert_eq!(p.note_for(job, &eight()).as_deref(), Some(klipp_render::banding::SUGGESTION));
+        assert_eq!(p.note_for(job, &eight()).as_deref(), Some(klipp_render::banding::SUGGESTION_10BIT));
         let ten = klipp_core::ExportSettings { bit_depth: 10, ..eight() };
         assert_eq!((p.state_for(job, &ten), p.note_for(job, &ten)), (None, None), "a 10-bit target");
-        assert_eq!(p.hint_for((3, 0), klipp_core::ExportVideoCodec::H264, 0), Some(klipp_render::banding::SUGGESTION));
+        assert_eq!(p.hint_for((3, 0), klipp_core::ExportVideoCodec::H264, 0), Some(klipp_render::banding::SUGGESTION_10BIT));
         assert_eq!(p.hint_for((3, 0), klipp_core::ExportVideoCodec::ProRes422, 0), None);
         assert_eq!(p.hint_for((4, 0), klipp_core::ExportVideoCodec::H264, 0), None, "another edit");
         assert_eq!(p.note_for(uuid::Uuid::new_v4(), &eight()), None, "a job it doesn't know");

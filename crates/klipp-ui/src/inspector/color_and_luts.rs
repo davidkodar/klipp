@@ -28,7 +28,11 @@ pub(crate) fn show_color_and_luts(
     auto_colour: &mut bool,
     cmds: &mut Vec<AppCommand>,
 ) {
-    egui::ScrollArea::vertical().auto_shrink([false; 2]).id_salt("color_lut_scroll").show(ui, |ui| {
+    // The inspector's body scrolls the tab: a scroll area of its own here,
+    // in the body's rows that take no height ahead, was its least, some
+    // 64 points, and showed two and a half rows of the tab over empty
+    // panel.
+    ui.vertical(|ui| {
         // ── Basic correction (#2952) ──
         // The Colour page's Adjustments rows on the Corrector it edits, so
         // a value set here is the one the page shows; a clip never graded

@@ -4,7 +4,7 @@
 //! need the ffmpeg CLI to write their source; they skip without it.
 
 use klipp_core::*;
-use klipp_render::banding::{bands, export_hint, sample, sample_unless, CalledOff, SUGGESTION};
+use klipp_render::banding::{bands, export_hint, sample, sample_unless, CalledOff, SUGGESTION, SUGGESTION_10BIT};
 use klipp_render::*;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -132,7 +132,9 @@ fn ordinary_footage_is_not_told() {
         return;
     };
     let eight = target(ExportVideoCodec::H264, 8);
-    assert_eq!(export_hint(&smooth, &eight), Some(SUGGESTION), "the control: a smooth dark ramp on file bands");
+    // With no gradient generator, no grain to turn on is suggested.
+    assert_eq!(export_hint(&smooth, &eight), Some(SUGGESTION_10BIT), "the control: a smooth dark ramp on file bands");
+    assert!(!SUGGESTION_10BIT.contains("grain"));
     assert_eq!(export_hint(&textured, &eight), None, "footage");
 }
 
