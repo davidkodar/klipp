@@ -3668,6 +3668,13 @@ impl ViewerPanel {
         theme: &KlippTheme,
     ) {
         use crate::state::{MaskHandle, ViewerMaskDrag};
+        // The timeline's, a group's or a track's grade being edited has no
+        // masks of the selected clip's: drawn there, a clip's window read
+        // as the timeline grade's own.
+        if state.grade_timeline || state.grade_group_stage.is_some() || state.grade_track.is_some() {
+            state.viewer_mask_drag = None;
+            return;
+        }
         // The Mask tool draws and edits the freeform masks itself (#74),
         // with or without a mask yet; the other shapes keep their handles
         // below.
