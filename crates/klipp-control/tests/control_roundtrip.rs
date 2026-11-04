@@ -425,6 +425,32 @@ fn graph_batches_cross_the_socket_once_and_name_created_nodes() {
     assert_eq!(clip.picture_v2().unwrap().picture, after);
 }
 
+/// A grade node's parameter takes keys through `graph_ops`, as
+/// `set_node_param` keys it, and `graph_read` shows them: the Corrector's
+/// exposure keyed 0 at 1 s and 1 at 6 s reads back with both keys, and
+/// the clip's grade holds them. The op was refused ("only an effect's
+/// parameters…") and a read showed no keys of any node.
+#[test]
+fn a_grade_nodes_keys_go_through_graph_ops_and_read_back() {
+    let mut h = harness();
+    let root = json!({"clip":h.ids.clip_a});
+    let graph = h.ok(json!({"method":"graph_read","path":{"root":root,"nodes":[]}}));
+    let group = graph["nodes"].as_array().unwrap().iter().find(|n| n["type"] == "klipp.group").unwrap()["id"].clone();
+    let at = json!({"root":root,"nodes":[group,h.ids.corrector_a]});
+    let reply = h.ok(json!({"method":"graph_ops","ops":[
+        {"op":"keys","path":at,"key":"exposure","keys":[{"time_secs":1.0,"value":0.0},{"time_secs":6.0,"value":1.0}]}
+    ]}));
+    assert_eq!(reply["applied"], true, "{reply}");
+    let read = h.ok(json!({"method":"graph_read","path":at}));
+    let keys = &read["nodes"][0]["keys"]["exposure"];
+    let times: Vec<f64> = keys.as_array().unwrap_or_else(|| panic!("no keys read: {read}")).iter().map(|k| k["time_secs"].as_f64().unwrap()).collect();
+    assert_eq!(times, vec![1.0, 6.0], "{read}");
+    let clip = h.sequence.read().unwrap().tracks[0].clips[0].clone();
+    let node = clip.grade().nodes.iter().find(|n| n.id.to_string() == h.ids.corrector_a).cloned().unwrap();
+    let track = node.keyframes.tracks.iter().find(|t| t.param_name == "exposure").expect("the grade holds the keys");
+    assert_eq!(track.keyframes.len(), 2);
+}
+
 #[test]
 fn graph_add_beside_connects_a_matte_in_one_undoable_batch() {
     let mut h = harness();
@@ -1731,6 +1757,14 @@ fn export_takes_a_preset_a_codec_and_a_bitrate() {
     let (r, _) = sent(&mut h, json!({ "method": "export", "path": "/tmp/klipp-codec-sound.mp3", "preset": "Audio Only MP3" }));
     assert!(r["export"]["video_codec"].is_null(), "{r}");
     assert_eq!(r["export"]["audio_codec"], "MP3", "{r}");
+    // Nor a picture's rate, depth, speed or size; a WAV says the rate its
+    // PCM is written at, not the bitrate setting it never uses.
+    for key in ["rate", "bit_depth", "encoder_speed", "size"] {
+        assert!(r["export"][key].is_null(), "{key}: {r}");
+    }
+    let (r, _) = sent(&mut h, json!({ "method": "export", "path": "/tmp/klipp-codec-sound.wav" }));
+    assert!(r["export"]["rate"].is_null() && r["export"]["bit_depth"].is_null(), "{r}");
+    assert_eq!(r["export"]["audio"], "PCM 16-bit (WAV) 1536 kbps", "{r}");
 
     // Refused, and nothing sent.
     for (req, why) in [
@@ -2696,6 +2730,22 @@ fn an_edit_plan_is_proposed_unapproved_and_refused_when_it_cannot_build() {
     assert!(h.edits_seen.lock().unwrap().is_empty(), "a refused plan records nothing");
     // A plan that says it is approved is stored unapproved all the same;
     // that is checked in the document tests, where the pool has a file.
+
+    // A dissolve into a segment from its file's very start has nothing
+    // to play before the cut: refused as it is stored, and a plan stored
+    // before that check is refused its approval, with the build's reason.
+    let mut item = klipp_media::MediaItem::synthetic_for_test("/tmp/plan-join-fixture.mov".into(), None);
+    item.duration = klipp_core::Timecode { value: 240, rate: 24 };
+    let media = h.media_pool.write().unwrap().add(item);
+    let segments = json!([
+        { "media_id": media.0.to_string(), "source_in_secs": 4.0, "source_out_secs": 6.0 },
+        { "media_id": media.0.to_string(), "source_in_secs": 0.0, "source_out_secs": 2.0, "transition": "cross_dissolve" } ]);
+    let r = h.call(json!({ "method": "set_edit_plan", "plan": { "segments": segments.clone() } }));
+    assert!(r["error"].as_str().unwrap().contains("no footage beyond the cut to make the 0.50 s overlap"), "{r}");
+    h.sequence.write().unwrap().edit_plan = Some(serde_json::from_value(json!({ "segments": segments })).unwrap());
+    let r = h.call(json!({ "method": "approve_edit_plan" }));
+    assert!(r["error"].as_str().unwrap().contains("no footage beyond the cut to make the 0.50 s overlap"), "{r}");
+    assert!(!h.sequence.read().unwrap().edit_plan.as_ref().unwrap().approved, "not approved");
 }
 
 /// One call tells a session where it stands and what to do next.
@@ -4221,6 +4271,26 @@ fn an_effect_op_on_a_clip_with_track_effects_keeps_its_effects_node_ids() {
     assert_eq!(ids(&sequences), vec![blur], "and its undo leaves the Blur as it was");
 }
 
+/// A template's composition copied into the project is part of the
+/// template's clips: `status` lists the project's own sequences without
+/// it, in words and as data, each keeping its index for
+/// `switch_sequence`. A brand kit's intro and outro listed six.
+#[test]
+fn status_leaves_a_templates_compositions_out() {
+    let mut h = harness();
+    {
+        let mut p = h.shared.project.lock().unwrap();
+        let summary = |id: &str, name: &str, nested| klipp_core::SequenceSummary { id: id.into(), name: name.into(), clips: 1, duration_secs: 0.0, used_in: None, version: None, width: 1920, height: 1080, nested };
+        p.sequences = vec![summary("a", "Main", false), summary("b", "Hook Card wide", true), summary("c", "Social cut", false)];
+        p.active_sequence = 0;
+    }
+    let status = h.ok(json!({"method": "status"}));
+    let listed: Vec<(u64, &str)> = status["sequences"].as_array().unwrap().iter().map(|s| (s["index"].as_u64().unwrap(), s["name"].as_str().unwrap())).collect();
+    assert_eq!(listed, [(0, "Main"), (2, "Social cut")]);
+    let text = status["text"].as_str().unwrap();
+    assert!(text.contains("Sequences: 2;") && text.contains("[2] \"Social cut\"") && !text.contains("Hook Card"), "{text}");
+}
+
 /// `status` lists every sequence, the open one marked, and
 /// `switch_sequence` opens another by index or id, as its tab does (M3
 /// step 18): a client can reach each sequence's clips.
@@ -4230,8 +4300,8 @@ fn status_lists_the_sequences_and_switch_sequence_opens_one() {
     {
         let mut p = h.shared.project.lock().unwrap();
         p.sequences = vec![
-            klipp_core::SequenceSummary { id: "a".into(), name: "Main".into(), clips: 3, duration_secs: 0.0, used_in: None, version: None, width: 0, height: 0 },
-            klipp_core::SequenceSummary { id: "b".into(), name: "Social cut".into(), clips: 1, duration_secs: 0.0, used_in: None, version: None, width: 0, height: 0 },
+            klipp_core::SequenceSummary { id: "a".into(), name: "Main".into(), clips: 3, duration_secs: 0.0, used_in: None, version: None, width: 0, height: 0, nested: false },
+            klipp_core::SequenceSummary { id: "b".into(), name: "Social cut".into(), clips: 1, duration_secs: 0.0, used_in: None, version: None, width: 0, height: 0, nested: false },
         ];
         p.active_sequence = 0;
     }
@@ -4269,7 +4339,7 @@ fn orient_and_status_name_every_sequence_with_its_length() {
     let mut h = harness();
     {
         let mut p = h.shared.project.lock().unwrap();
-        let summary = |id: &str, name: &str, clips, secs| klipp_core::SequenceSummary { id: id.into(), name: name.into(), clips, duration_secs: secs, used_in: None, version: None, width: 1920, height: 1080 };
+        let summary = |id: &str, name: &str, clips, secs| klipp_core::SequenceSummary { id: id.into(), name: name.into(), clips, duration_secs: secs, used_in: None, version: None, width: 1920, height: 1080, nested: false };
         p.sequences = vec![
             summary("a", "Main Sequence", 0, 0.0),
             summary("b", "Handoff EDL", 3, 12.0),
@@ -4334,7 +4404,7 @@ fn edit_from_selects_names_the_sequence_and_content_it_copied() {
 fn remove_sequence_is_refused_until_confirmed_and_never_for_a_held_or_only_one() {
     let mut h = harness();
     let set = |h: &mut Harness, list: Vec<klipp_core::SequenceSummary>| h.shared.project.lock().unwrap().sequences = list;
-    let summary = |id: &str, name: &str, clips, used_in: Option<&str>| klipp_core::SequenceSummary { id: id.into(), name: name.into(), clips, duration_secs: 0.0, used_in: used_in.map(Into::into), version: None, width: 0, height: 0 };
+    let summary = |id: &str, name: &str, clips, used_in: Option<&str>| klipp_core::SequenceSummary { id: id.into(), name: name.into(), clips, duration_secs: 0.0, used_in: used_in.map(Into::into), version: None, width: 0, height: 0, nested: false };
     let (a, b, c, d) = ("00000000-0000-4000-8000-00000000000a", "00000000-0000-4000-8000-00000000000b", "00000000-0000-4000-8000-00000000000c", "00000000-0000-4000-8000-00000000000d");
     set(&mut h, vec![summary(a, "Main", 3, None), summary(b, "Demo", 2, None), summary(c, "Nest", 1, Some("Main")), summary(d, "Spare", 0, None)]);
     let refused = |h: &mut Harness, cmd: Value, why: &str| {
@@ -4416,7 +4486,7 @@ fn a_refused_picture_write_is_in_the_reply() {
 #[test]
 fn duplicate_sequence_copies_and_opens_the_copy() {
     let mut h = harness();
-    let summary = |id: &str, name: &str| klipp_core::SequenceSummary { id: id.into(), name: name.into(), clips: 1, duration_secs: 0.0, used_in: None, version: None, width: 0, height: 0 };
+    let summary = |id: &str, name: &str| klipp_core::SequenceSummary { id: id.into(), name: name.into(), clips: 1, duration_secs: 0.0, used_in: None, version: None, width: 0, height: 0, nested: false };
     let (a, b) = ("00000000-0000-4000-8000-00000000000a", "00000000-0000-4000-8000-00000000000b");
     {
         let mut p = h.shared.project.lock().unwrap();
@@ -4534,6 +4604,33 @@ fn subtitles_import_over_the_socket_and_export_in_the_format_asked() {
         assert!(r["error"].as_str().unwrap().contains(why), "{req}: {r}");
     }
     assert!(h.cmd_rx.try_recv().is_err(), "a refused call sends nothing");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// An EBU-STL export says the character table it writes in, and names
+/// what no table holds (Chinese here, written as "?"), never leaving the
+/// "?" to be found; a file STL holds whole says nothing is lost.
+#[test]
+fn an_stl_export_names_what_it_cannot_write() {
+    let mut h = harness();
+    let dir = std::env::temp_dir().join(format!("klipp-stl-loss-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let caption = |text: &str| {
+        let mut c = klipp_timeline::Clip::gap(klipp_core::Timecode::from_secs_f64(1.0, 24), klipp_core::Timecode::from_secs_f64(2.0, 24));
+        c.kind = klipp_timeline::ClipKind::Title(klipp_timeline::TitleData::single_text(klipp_timeline::TextBox { text: text.into(), ..Default::default() }));
+        c
+    };
+    let mut subs = klipp_timeline::Track::new("S1", klipp_timeline::TrackKind::Subtitle);
+    subs.clips = vec![caption("Привет, мир")];
+    h.sequence.write().unwrap().tracks.push(subs.clone());
+    let r = h.ok(json!({ "method": "export_subtitles", "path": dir.join("ru.stl").to_str().unwrap() }));
+    let _ = h.cmd_rx.recv_timeout(std::time::Duration::from_secs(5));
+    assert_eq!((r["files"][0]["character_table"].clone(), r["files"][0]["not_written"].clone(), r.get("warning").cloned()), (json!("Latin/Cyrillic"), json!([]), None), "{r}");
+    h.sequence.write().unwrap().tracks.last_mut().unwrap().clips = vec![caption("你好 world")];
+    let r = h.ok(json!({ "method": "export_subtitles", "path": dir.join("zh.stl").to_str().unwrap() }));
+    let _ = h.cmd_rx.recv_timeout(std::time::Duration::from_secs(5));
+    assert_eq!(r["files"][0]["not_written"], json!(["你", "好"]), "{r}");
+    assert!(r["warning"].as_str().is_some_and(|w| w.contains("2 character")), "{r}");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -5019,9 +5116,9 @@ fn rebuild_version_only_rebuilds_a_stale_version() {
         let mut p = h.shared.project.lock().unwrap();
         let version = |stale| Some(klipp_core::VersionSummary { of: "a".into(), stale });
         p.sequences = vec![
-            klipp_core::SequenceSummary { id: "a".into(), name: "Main".into(), clips: 3, duration_secs: 0.0, used_in: None, version: None, width: 1920, height: 1080 },
-            klipp_core::SequenceSummary { id: "b".into(), name: "Main 9:16".into(), clips: 3, duration_secs: 0.0, used_in: None, version: version(false), width: 1080, height: 1920 },
-            klipp_core::SequenceSummary { id: "c".into(), name: "Main 1:1".into(), clips: 3, duration_secs: 0.0, used_in: None, version: version(true), width: 1080, height: 1080 },
+            klipp_core::SequenceSummary { id: "a".into(), name: "Main".into(), clips: 3, duration_secs: 0.0, used_in: None, version: None, width: 1920, height: 1080, nested: false },
+            klipp_core::SequenceSummary { id: "b".into(), name: "Main 9:16".into(), clips: 3, duration_secs: 0.0, used_in: None, version: version(false), width: 1080, height: 1920, nested: false },
+            klipp_core::SequenceSummary { id: "c".into(), name: "Main 1:1".into(), clips: 3, duration_secs: 0.0, used_in: None, version: version(true), width: 1080, height: 1080, nested: false },
         ];
         p.active_sequence = 0;
     }
@@ -5404,6 +5501,21 @@ fn files_that_look_the_same_are_reported_and_checked() {
     assert!(checked.contains(&"looks_same".to_string()) && !checked.iter().any(|r| r == "reused_footage" || r == "looks_same_unchecked"), "{checked:?}");
 }
 
+/// A file offline that no clip uses leaves no path in the copy: it does not
+/// refuse a Collect.
+#[test]
+fn an_offline_file_no_clip_uses_does_not_refuse_a_collect() {
+    let mut h = harness();
+    let mut item = klipp_media::MediaItem::synthetic_for_test("/tmp/unused-offline.mov".into(), None);
+    item.offline = true;
+    h.media_pool.write().unwrap().add(item);
+    let mut seq = (*h.sequence.snapshot()).clone();
+    seq.tracks.iter_mut().for_each(|t| t.clips.clear());
+    h.sequence.replace(seq);
+    let dest = std::env::temp_dir().join(format!("klipp-collect-unused-{}", uuid::Uuid::new_v4()));
+    h.ok(json!({ "method": "collect_project", "dest": dest }));
+}
+
 /// #3241: `collect_project`. A dry run says what it copies and what it
 /// can't carry with where it's used (an outside plug-in not installed
 /// here, an offline file); a collect asks the app with its mode; a
@@ -5719,4 +5831,68 @@ fn a_publish_kit_reads_back_writes_beside_the_video_and_keeps_what_is_there() {
     }
     assert!(h.cmd_rx.try_recv().is_err(), "a refused call sends nothing");
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// make_shorts builds every short whole before any reaches the project
+/// and adds them as one edit: two moments are one AddSequences of two
+/// upright shorts, each named apart and its sound levelled; a refused
+/// moment records nothing. Made one by one, a refusal left an empty
+/// sequence, each short was two undo steps that left it behind, and the
+/// names repeated.
+#[test]
+fn make_shorts_adds_every_short_in_one_edit() {
+    let mut h = harness();
+    struct CacheGuard { previous: Option<std::ffi::OsString>, path: std::path::PathBuf }
+    impl Drop for CacheGuard {
+        fn drop(&mut self) {
+            match &self.previous {
+                Some(old) => std::env::set_var("XDG_CACHE_HOME", old),
+                None => std::env::remove_var("XDG_CACHE_HOME"),
+            }
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
+    }
+    let cache = CacheGuard { previous: std::env::var_os("XDG_CACHE_HOME"), path: std::env::temp_dir().join(format!("klipp-shorts-test-{}", klipp_core::MediaId::new().0)) };
+    std::fs::create_dir_all(&cache.path).unwrap();
+    std::env::set_var("XDG_CACHE_HOME", &cache.path);
+    let path = cache.path.join("talk.mp4");
+    let made = std::process::Command::new("ffmpeg")
+        .args(["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc2=s=320x180:r=24:d=6", "-f", "lavfi", "-i", "sine=frequency=440:duration=6",
+               "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest"])
+        .arg(&path)
+        .status();
+    if !made.is_ok_and(|s| s.success()) {
+        eprintln!("skipping: no ffmpeg");
+        return;
+    }
+    let key = klipp_analysis::store::key_for(&path).unwrap();
+    let mut item = klipp_media::MediaItem::synthetic_for_test(path.clone(), None);
+    item.duration = klipp_core::Timecode { value: 144, rate: 24 };
+    item.fps = klipp_core::Fps::new(24, 1);
+    item.resolution = klipp_core::Resolution { width: 320, height: 180 };
+    item.video_codec = "h264".into();
+    item.has_audio = true;
+    let media = h.media_pool.write().unwrap().add(item);
+    let words: Vec<serde_json::Value> = ["Hello", "there,", "this", "is", "the", "old", "town."].iter().enumerate()
+        .map(|(k, w)| json!({ "start_secs": 0.5 + k as f64 * 0.7, "end_secs": 0.5 + k as f64 * 0.7 + 0.5, "text": w, "confidence": 0.9 })).collect();
+    klipp_analysis::store::save(&key, klipp_analysis::transcript::ID, klipp_analysis::transcript::VERSION, &json!({
+        "duration_secs": 6.0, "language": "en", "model": "test", "segments": [{ "start_secs": 0.5, "end_secs": 5.2, "text": "Hello there, this is the old town." }], "words": words })).unwrap();
+
+    let refused = h.call(json!({ "method": "make_shorts", "media_id": media.0.to_string(), "moments": [{ "from_secs": 0.4, "to_secs": 9.0 }] }));
+    assert!(refused["error"].as_str().unwrap().contains("not inside"), "{refused}");
+    assert!(h.edits_seen.lock().unwrap().is_empty(), "a refused moment makes nothing");
+
+    h.ok(json!({ "method": "make_shorts", "media_id": media.0.to_string(), "hook_title": true,
+                 "moments": [{ "from_secs": 0.4, "to_secs": 2.8, "hook": "The old town" }, { "from_secs": 2.9, "to_secs": 5.3, "hook": "The old town" }] }));
+    let edits = h.edits_seen.lock().unwrap().clone();
+    assert_eq!(edits.len(), 1, "one edit: {edits:?}");
+    let klipp_document::history::EditCommand::AddSequences { sequences } = &edits[0] else { panic!("the shorts added together: {:?}", edits[0]) };
+    let names: Vec<&str> = sequences.iter().map(|s| s.name.as_str()).collect();
+    assert_eq!(names, ["Short 1: The old town", "Short 2: The old town"]);
+    for short in sequences {
+        assert_eq!((short.resolution.width, short.resolution.height), (1080, 1920), "{}: upright", short.name);
+        let sounds: Vec<&klipp_timeline::Clip> = short.tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Audio).flat_map(|t| &t.clips).collect();
+        assert!(!sounds.is_empty() && sounds.iter().all(|c| (c.gain - 1.0).abs() > 0.05), "{}: levelled, gains {:?}", short.name, sounds.iter().map(|c| c.gain).collect::<Vec<_>>());
+        assert!(short.all_clips().any(|c| c.title_data().and_then(|t| t.primary_text()).is_some_and(|t| t.text.contains("old town"))), "{}: its hook", short.name);
+    }
 }

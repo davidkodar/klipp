@@ -49,7 +49,7 @@ impl KlippApp {
         false
     }
 
-    fn handle_timeline_track_creation(&mut self, cmd: &AppCommand, _needs_refresh: &mut bool) -> bool {
+    fn handle_timeline_track_creation(&mut self, cmd: &AppCommand, needs_refresh: &mut bool) -> bool {
         match cmd {
                 // Phase 4: Track properties
                 AppCommand::SetTrackOpacity { track_index, opacity } => {
@@ -60,9 +60,13 @@ impl KlippApp {
                     self.sync_sequence_to_engine();
                     true
                 }
+                // The picture changes, so the engine is given it and draws
+                // again: the eye left the viewer showing the track as it was.
                 AppCommand::SetTrackVisibility { track_index, visible } => {
                     if let Some(track) = self.state.sequences[self.state.active_sequence_idx].tracks.get_mut(*track_index) {
                         track.visible = *visible;
+                        self.state.dirty = true;
+                        *needs_refresh = true;
                     }
                     true
                 }

@@ -110,11 +110,14 @@ impl Clip {
         self.view_mut().own_node_graph.as_deref_mut().map(f)
     }
 
-    /// Whether the clip's picture holds a grade correction's mix or mask
-    /// channel (M3 step 17a), which only it keeps among the clip's fields:
-    /// a copy of the grade's attributes can't carry it.
+    /// Whether the clip holds a grade correction's mix or mask channel (M3
+    /// step 17a): in its picture, which only it keeps among the clip's
+    /// fields, or in its grade's nodes, as a sequence grade's stand-in does,
+    /// which a clip draws and doesn't save. A copy of the grade's attributes
+    /// can't carry it.
     pub fn holds_grade_mix(&self) -> bool {
-        self.picture.truth().is_some_and(|t| t.picture.grade_mix_used())
+        use crate::GradeAccess;
+        self.picture.truth().is_some_and(|t| t.picture.grade_mix_used()) || !crate::grade_roots::blends_of(self.grade()).is_empty()
     }
 
     /// The grade as the renderer runs it: [`GradeAccess::grade`], with each

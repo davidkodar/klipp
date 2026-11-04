@@ -331,8 +331,7 @@ impl RenderQueuePanel {
                 if !s.format.is_audio_only() {
                     ui.label(small(format!("Video: {} \u{2022} {quality} \u{2022} {}-bit \u{2022} encoder preset {}", s.video_codec.label(), s.bit_depth, s.preset.ffmpeg_value()), dim));
                 }
-                let audio = s.audio_bitrate_kbps.map(|b| format!(" {b} kbps")).unwrap_or_default();
-                ui.label(small(format!("Audio: {}{audio}", s.audio_codec.label()), dim));
+                ui.label(small(format!("Audio: {}", s.audio_codec.described(s.audio_bitrate_kbps)), dim));
                 if let Some(lufs) = s.target_lufs {
                     ui.label(small(format!("Loudness target: {lufs:.0} LUFS"), dim));
                 }
@@ -371,10 +370,7 @@ impl RenderQueuePanel {
     fn identity(job: &klipp_export::RenderJob) -> String {
         let s = &job.settings;
         let mut parts = picture_parts(s, job.width, job.height, job.timeline_fps);
-        parts.push(match s.audio_bitrate_kbps {
-            Some(b) => format!("{} {b} kbps", s.audio_codec.label()),
-            None => s.audio_codec.label().to_string(),
-        });
+        parts.push(s.audio_codec.described(s.audio_bitrate_kbps));
         if job.total_frames > 0 && job.timeline_fps > 0.0 {
             let secs = (job.total_frames as f64 / job.timeline_fps).round() as u64;
             let mut length = format!("{} ({} frames)", Self::clock(secs), Self::thousands(job.total_frames));
@@ -535,6 +531,17 @@ fn picture_parts(s: &klipp_core::ExportSettings, width: u32, height: u32, fps: f
 
 #[cfg(test)]
 mod picture_parts_tests {
+    /// A WAV's card says the rate PCM is written at, not the bitrate
+    /// setting it never uses; a coded sound says its bitrate.
+    #[test]
+    fn a_wavs_rate_is_its_pcm_rate() {
+        use klipp_core::ExportAudioCodec as A;
+        assert_eq!(A::Pcm16.described(Some(192)), "PCM 16-bit (WAV) 1536 kbps");
+        assert_eq!(A::Pcm24.described(None), "PCM 24-bit (WAV) 2304 kbps");
+        assert_eq!(A::Aac.described(Some(192)), "AAC 192 kbps");
+        assert_eq!(A::Flac.described(Some(192)), "FLAC (lossless)");
+    }
+
     /// An audio-only export's card names no picture.
     #[test]
     fn sound_alone_names_no_picture() {

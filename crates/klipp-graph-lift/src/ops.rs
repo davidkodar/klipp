@@ -663,6 +663,10 @@ fn apply_graph(g: &mut Graph, op: &GraphOp, target: NodeId, catalog: Option<&dyn
             crate::edit_planner::rewrite(g, &crate::edit_planner::Request {
                 path: path.clone(), action: crate::edit_planner::Action::Remove,
             }, catalog, interface).map_err(|e| e.to_string())?;
+            // A node gone takes its place on the canvas with it: a place
+            // kept for it made pasting the grade onto another clip fail.
+            let kept: std::collections::HashSet<NodeId> = g.nodes.iter().map(|n| n.id).collect();
+            g.ui.positions.retain(|id, _| kept.contains(id));
         }
         GraphOp::Connect { from, from_port, to_port, .. } => {
             let from_id = from.node().ok_or("an empty path")?;

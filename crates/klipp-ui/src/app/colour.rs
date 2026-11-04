@@ -1020,6 +1020,11 @@ impl KlippApp {
             }
             AppCommand::DisconnectEdge { clip_id, to, to_port } => {
                 let (to_node, to_port) = (*to, *to_port);
+                // Read first, so a refusal leaves no step behind.
+                if let Some(why) = self.state.wire_take_refusal(*clip_id, to_node, to_port) {
+                    self.state.toast.show(why);
+                    return true;
+                }
                 self.with_current_clip_graph_mut(*clip_id, needs_refresh, |graph| {
                     graph.edges.retain(|e| !(e.to_node == to_node && e.to_port == to_port));
                 });
@@ -1936,6 +1941,11 @@ impl KlippApp {
                 };
                 let seq = &self.state.sequences[self.state.active_sequence_idx];
                 let Some(clip) = seq.all_clips().find(|c| c.id == *clip_id) else { return true };
+                // The library's file would keep it without its mixes.
+                if clip.holds_grade_mix() {
+                    self.state.toast.show(GRADE_MIX_NOT_COPIED);
+                    return true;
+                }
                 // Its thumbnail, as the strip shows it: the clip graded, at its middle.
                 let thumbnail = klipp_render::still::clip_still(clip, &self.state.media_pool, clip.duration().to_secs_f64() / 2.0, crate::graded_thumbs::THUMB_WIDTH, klipp_engine::video_decoder::working_colorspace()).ok();
                 // Its nodes' colour labels in its file (#1866).
