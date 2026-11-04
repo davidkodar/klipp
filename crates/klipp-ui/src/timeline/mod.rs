@@ -1307,6 +1307,27 @@ mod menu_smoke_tests {
         assert!(sent.iter().any(|c| matches!(c, AppCommand::OpenAuditionPicker { clip_id: Some(c) } if *c == id)), "a double-click opens its takes: {sent:?}");
     }
 
+    /// A name is cut before the header's buttons; a short one isn't.
+    #[test]
+    fn a_long_track_name_stops_before_the_buttons() {
+        let mut timeline = Timeline::new();
+        let v1 = timeline.state.sequences[0].tracks.iter().position(|t| t.kind == TrackKind::Video).unwrap();
+        let long = "Video 1 (bounced) and more than a header holds";
+        timeline.state.sequences[0].tracks[v1].name = long.to_string();
+        timeline.frame(Vec::new());
+        let drawn = timeline.frame(Vec::new());
+        let rect = timeline.old.frame_cache.track_rects.iter().find(|(i, _, _)| *i == v1).expect("drawn").2;
+        assert!(!drawn.iter().any(|(t, _)| t == long), "not drawn whole");
+        let cut = timeline.shapes.iter().find_map(|s| match &s.shape {
+            egui::Shape::Text(t) if t.galley.text().starts_with("Video 1") && t.galley.text().ends_with('\u{2026}') => Some(t.visual_bounding_rect()),
+            _ => None,
+        }).expect("drawn cut");
+        let room = super::track_headers::name_room(&timeline.state.sequences[0].tracks[v1], rect.max.x);
+        assert!(cut.max.x <= room + 0.5, "ends at {}, its buttons at {room}", cut.max.x);
+        timeline.state.sequences[0].tracks[v1].name = "Video 1".to_string();
+        assert!(timeline.frame(Vec::new()).iter().any(|(t, _)| t == "Video 1"), "a short name whole");
+    }
+
     /// #3209: a pool file let go over a clip with Alt held goes into it as
     /// a take, not onto the track.
     #[test]
