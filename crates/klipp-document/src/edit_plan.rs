@@ -38,6 +38,14 @@ fn is_hex_colour(s: &str) -> bool {
 /// A join with no length given is this long.
 const DEFAULT_TRANSITION_SECS: f64 = 0.5;
 
+/// `end` and a file's `length`, each in seconds, as few decimals as tell
+/// them apart (two at least): a segment ending at 10.96 s of a 10.958 s
+/// file read "runs past the end (10.96 s)" at two.
+fn past_end(end: f64, length: f64) -> (String, String) {
+    let places = (2..=6).find(|&d| format!("{end:.d$}") != format!("{length:.d$}")).unwrap_or(6);
+    (format!("{end:.places$}"), format!("{length:.places$}"))
+}
+
 /// Why a plan cannot be stored, in a sentence with what would fix it.
 pub fn validate(plan: &EditPlan, pool: &MediaPool, brief: Option<&Brief>) -> Result<(), String> {
     if plan.segments.is_empty() {
@@ -51,7 +59,8 @@ pub fn validate(plan: &EditPlan, pool: &MediaPool, brief: Option<&Brief>) -> Res
             return Err(format!("segment {n}: source {:.2}-{:.2} s is not a stretch of {}; give in and out in order", s.source_in_secs, s.source_out_secs, item.filename));
         }
         if !item.is_still && s.source_out_secs > dur + 1e-6 {
-            return Err(format!("segment {n}: source {:.2}-{:.2} s runs past the end of {} ({dur:.2} s)", s.source_in_secs, s.source_out_secs, item.filename));
+            let (out, length) = past_end(s.source_out_secs, dur);
+            return Err(format!("segment {n}: source {:.2}-{out} s runs past the end of {} ({length} s); end it at {length} s or before", s.source_in_secs, item.filename));
         }
         if !s.feature.trim().is_empty() {
             match brief {
@@ -200,7 +209,8 @@ fn check_layers(s: &klipp_timeline::PlanSegment, pool: &MediaPool, brief: Option
                     return Err(format!("{place}: source_in_secs is seconds into {}, 0 or more", item.filename));
                 }
                 if !item.is_still && from_file + held > item.duration.to_secs_f64() + 1e-6 {
-                    return Err(format!("{place}: {:.2} s from {:.2} s runs past the end of {} ({:.2} s)", held, from_file, item.filename, item.duration.to_secs_f64()));
+                    let (out, length) = past_end(from_file + held, item.duration.to_secs_f64());
+                    return Err(format!("{place}: {:.2} s from {:.2} s runs to {out} s, past the end of {} ({length} s)", held, from_file, item.filename));
                 }
                 if let Some(p) = placement {
                     if ![p.x, p.y, p.width, p.height, p.rotation_deg].iter().all(|v| v.is_finite()) {
@@ -698,6 +708,22 @@ mod tests {
 
     fn seg(media: MediaId, a: f64, b: f64) -> PlanSegment {
         PlanSegment { feature: String::new(), media_id: media, source_in_secs: a, source_out_secs: b, note: String::new(), with_audio: false, title: None, transition: None, sfx: None, zoom: None, placement: None, background: None, section: String::new(), layers: Vec::new() }
+    }
+
+    /// A segment ending just past its file is refused with both ends told
+    /// apart: 10.96 s of a 10.958 s file read "10.96 s runs past the end
+    /// of it (10.96 s)".
+    #[test]
+    fn a_segment_past_its_files_end_says_by_how_much() {
+        let (_, mut pool, _, _) = fixture();
+        let mut item = klipp_media::MediaItem::synthetic_for_test("/tmp/talk.mp4".into(), None);
+        item.duration = Timecode { value: 263, rate: 24 };
+        let talk = pool.add(item);
+        let plan = EditPlan { segments: vec![seg(talk, 9.44, 10.96)], ..Default::default() };
+        let why = validate(&plan, &pool, None).unwrap_err();
+        assert!(why.contains("9.44-10.960 s runs past the end of talk.mp4 (10.958 s)"), "{why}");
+        assert!(why.contains("end it at 10.958 s or before"), "{why}");
+        assert_eq!(past_end(12.5, 10.0), ("12.50".to_string(), "10.00".to_string()), "two decimals where they tell them apart");
     }
 
     #[test]
