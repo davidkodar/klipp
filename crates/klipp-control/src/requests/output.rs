@@ -30,6 +30,7 @@ pub(crate) fn respond(
         ControlCommand::CheckDelivery { spec, file } => {
             use klipp_core::delivery_spec as ds;
             let spec = ds::find_spec(&spec).ok_or_else(|| format!("no delivery spec {spec:?}; delivery_specs lists them"))?;
+            let mut measured: Option<(f32, f32)> = None;
             let (facts, what) = match &file {
                 Some(path) => (klipp_render::delivery_facts::file_facts(std::path::Path::new(path), true)?, path.clone()),
                 None => {
@@ -41,9 +42,10 @@ pub(crate) fn respond(
                         let captions = seq.tracks.iter().any(|t| t.kind == klipp_timeline::TrackKind::Subtitle && !t.clips.is_empty());
                         (seq.resolution, seq.fps.as_f64(), captions)
                     };
-                    // The mix is read only when the export would not set its
-                    // loudness.
-                    let mix = if spec.export.target_lufs.is_none() {
+                    // The mix as it is, said whether or not the export sets
+                    // its loudness: a spec whose export normalises it passed
+                    // without a word about how far the mix was from it.
+                    let mix = {
                         let snapshot = {
                             let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
                             let pool = ctx.media_pool.read().recovered();
@@ -51,22 +53,23 @@ pub(crate) fn respond(
                                 .map_err(|e| format!("the mix could not be read: {e}"))?
                         };
                         crate::grading::mix_delivery(&snapshot).ok()
-                    } else {
-                        None
                     };
+                    measured = mix;
                     (ds::export_facts(&spec.export, spec.hdr, size, fps, captions, mix), "the timeline, exported with the spec's settings".to_string())
                 }
             };
             let findings = ds::check(&spec, &facts);
             let verdict = ds::verdict(&findings);
             let word = |s: ds::Status| match s { ds::Status::Pass => "pass", ds::Status::Warn => "warn", ds::Status::Fail => "fail" };
-            let lines: Vec<String> = findings.iter().map(|f| format!("{:4}  {}: {} (wanted {}){}", word(f.status), f.what, f.found, f.wanted, if f.fix.is_empty() { String::new() } else { format!(" — {}", f.fix) })).collect();
+            let mut lines: Vec<String> = findings.iter().map(|f| format!("{:4}  {}: {} (wanted {}){}", word(f.status), f.what, f.found, f.wanted, if f.fix.is_empty() { String::new() } else { format!(" — {}", f.fix) })).collect();
+            lines.extend(mix_line(measured, spec.export.target_lufs));
             Ok(json!({
                 "text": format!("{} against {}: {}\n{}", what, spec.name, word(verdict), lines.join("\n")),
                 "spec": spec.id,
                 "verdict": word(verdict),
                 "findings": findings,
                 "sources": spec.sources,
+                "mix": measured.map(|(lufs, peak)| json!({ "integrated_lufs": lufs, "true_peak_dbtp": peak })),
             }))
         }
         ControlCommand::Export { outputs, overwrite, .. } if !outputs.is_empty() => {
@@ -1944,3 +1947,27 @@ mod captions_in_file_tests {
         assert_eq!(super::captions_carried(true, &soft), (false, true));
     }
 }
+
+/// The timeline's mix as measured, beside what the spec's export does with
+/// it: normalised to its target, or exported as it is.
+fn mix_line(mix: Option<(f32, f32)>, target: Option<f32>) -> Option<String> {
+    let (lufs, peak) = mix?;
+    Some(match target {
+        Some(t) => format!("note  Mix: {lufs:.1} LUFS integrated, {peak:.1} dBTP true peak; the spec's export brings it to {t:.1} LUFS ({:+.1} dB)", t - lufs),
+        None => format!("note  Mix: {lufs:.1} LUFS integrated, {peak:.1} dBTP true peak, exported as it is"),
+    })
+}
+
+#[cfg(test)]
+mod mix_line_tests {
+    /// The mix is said against the spec's export: how far its loudness
+    /// target moves it, or that it goes out as it is; nothing without a
+    /// measurement.
+    #[test]
+    fn the_mix_is_said_against_the_specs_export() {
+        assert_eq!(super::mix_line(Some((-15.8, -3.4)), Some(-14.0)).as_deref(), Some("note  Mix: -15.8 LUFS integrated, -3.4 dBTP true peak; the spec's export brings it to -14.0 LUFS (+1.8 dB)"));
+        assert_eq!(super::mix_line(Some((-23.1, -2.0)), None).as_deref(), Some("note  Mix: -23.1 LUFS integrated, -2.0 dBTP true peak, exported as it is"));
+        assert_eq!(super::mix_line(None, Some(-14.0)), None);
+    }
+}
+
