@@ -250,7 +250,6 @@ use ai_tool_runs::*;
 use media::*;
 use project_io::*;
 use compound::*;
-use colour::*;
 use proxies::*;
 use audio::*;
 use colour_workspace::*;
@@ -258,7 +257,6 @@ pub use media::detect_image_sequence;
 pub(crate) use project_io::{autosave_path_for, is_autosave_path, project_for_autosave, has_newer_autosave, crash_notice, iso8601_now};
 #[cfg(test)]
 pub(crate) use project_io::retire_autosave;
-use titles::*;
 pub(crate) use titles::apply_title_preset;
 pub(crate) use viewer_textures::alloc_texture_logged;
 use project_io::LockDecision;
