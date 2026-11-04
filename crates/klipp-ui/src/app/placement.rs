@@ -331,8 +331,9 @@ impl KlippApp {
         self.sync_sequence_to_engine();
     }
 
-    /// Put `media_id` at `start` on a new video track and, for its sound,
-    /// a new audio track, linked. Returns the video clip (when there is
+    /// Put `media_id` at `start` on a video track and, for its sound, an
+    /// audio track, linked: each an empty track of its kind when there
+    /// is one ([`empty_track`]), else a new one. Returns the video clip (when there is
     /// picture) and the history entry that undoes the placement; the
     /// caller pushes it, alone or in a batch.
     pub(super) fn place_media_on_new_tracks(
@@ -364,13 +365,18 @@ impl KlippApp {
         let mut created_audio_track_at = None;
         let mut video_clip_id = None;
 
-        // Video onto a new video track (inserts at index 0).
+        // Video onto an empty video track, or a new one (inserts at index 0).
         if has_video {
             let seq = &mut self.state.sequences[seq_idx];
-            let count = seq.tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Video).count();
-            seq.add_video_track(format!("Video {}", count + 1));
-            let vi = 0usize;
-            created_video_track_at = Some(vi);
+            let vi = match empty_track(seq, klipp_timeline::TrackKind::Video) {
+                Some(vi) => vi,
+                None => {
+                    let count = seq.tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Video).count();
+                    seq.add_video_track(format!("Video {}", count + 1));
+                    created_video_track_at = Some(0);
+                    0
+                }
+            };
             let mut clip = klipp_timeline::Clip::media(media_id, start, end, source_in, source_out);
             clip.source_rotation = item.source_rotation;
             let cid = clip.id;
@@ -385,10 +391,15 @@ impl KlippApp {
         // Audio onto a new audio track (pushed to the end).
         if has_audio || !has_video {
             let seq = &mut self.state.sequences[seq_idx];
-            let count = seq.tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Audio).count();
-            seq.add_audio_track(format!("Audio {}", count + 1));
-            let ai = seq.tracks.len() - 1;
-            created_audio_track_at = Some(ai);
+            let ai = match empty_track(seq, klipp_timeline::TrackKind::Audio) {
+                Some(ai) => ai,
+                None => {
+                    let count = seq.tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Audio).count();
+                    seq.add_audio_track(format!("Audio {}", count + 1));
+                    created_audio_track_at = Some(seq.tracks.len() - 1);
+                    seq.tracks.len() - 1
+                }
+            };
             let mut clip = klipp_timeline::Clip::media(media_id, start, end, source_in, source_out);
             super::media::starting_role_on(&mut clip, &item);
             if let Some(vid) = video_clip_id {
@@ -424,6 +435,17 @@ impl KlippApp {
         ))
     }
 
+}
+
+/// The track of `kind` a clip placed at the playhead goes on rather than a
+/// new one: the first that holds nothing, unlocked. An empty Audio 2 was
+/// passed over and an Audio 3 made under it. Never the primary storyline,
+/// which a clip placed past its start would leave a hole in.
+pub(crate) fn empty_track(seq: &klipp_timeline::Sequence, kind: klipp_timeline::TrackKind) -> Option<usize> {
+    seq.tracks.iter().position(|t| t.kind == kind && t.clips.is_empty() && !t.locked && t.magnetic_role != klipp_timeline::TrackRole::Primary)
+}
+
+impl KlippApp {
     /// Re-take a placement's clip snapshots from the sequence as it is
     /// now. `place_media_on_new_tracks` snapshots the picture before its
     /// sound is linked to it, and a multicam groups the clips after that;
@@ -729,6 +751,26 @@ mod media_drop_tests {
 
     fn dropped() -> Clip {
         Clip::media(klipp_core::MediaId::new(), t(0), t(2), t(0), t(2))
+    }
+
+    /// A clip placed at the playhead goes on an empty track of its kind
+    /// when there is one, unlocked and not the primary storyline: an
+    /// empty Audio 2 was passed over and an Audio 3 made.
+    #[test]
+    fn a_clip_placed_at_the_playhead_takes_an_empty_track() {
+        use super::empty_track;
+        let fresh = Sequence::new_default();
+        assert_eq!(empty_track(&fresh, TrackKind::Video), None, "the empty primary is not taken");
+        let (mut seq, _) = timeline();
+        assert_eq!(empty_track(&seq, TrackKind::Audio), None, "Audio 1 holds the sounds");
+        seq.add_audio_track("Audio 2".into());
+        let a2 = seq.tracks.len() - 1;
+        assert_eq!(empty_track(&seq, TrackKind::Audio), Some(a2));
+        seq.tracks[a2].locked = true;
+        assert_eq!(empty_track(&seq, TrackKind::Audio), None, "nor a locked one");
+        seq.add_video_track("Video 2".into());
+        assert_eq!(seq.tracks[0].name, "Video 2");
+        assert_eq!(empty_track(&seq, TrackKind::Video), Some(0));
     }
 
     /// #3456: a picture inserted past the primary's end lands where the
