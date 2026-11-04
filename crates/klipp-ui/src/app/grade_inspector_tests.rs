@@ -2062,6 +2062,24 @@ fn a_picture_input_is_not_left_unwired_but_a_mask_is_free() {
     assert_eq!(state.wire_take_refusal(clip_id, ids[1], 1), None, "the mask wire can go");
 }
 
+/// A node duplicated goes into the chain after it: fed by it and feeding
+/// what it fed, placed off it on the canvas, one undo step. It was left
+/// unwired on the original's place, doing nothing the canvas showed.
+#[test]
+fn a_duplicated_node_goes_into_the_chain_after_it() {
+    let (mut state, clip_id, ids, _, _) = wired();
+    let steps = state.active_history().undo_count();
+    assert_eq!(state.node_edit(&AppCommand::DuplicateNodes { clip_id, node_ids: vec![ids[1]] }), Some(true));
+    let g = wire_level(&state, clip_id);
+    let dup = g.nodes.iter().find(|n| n.kind == NodeKind::Saturation && n.id != ids[1]).expect("the copy").id;
+    assert!(has_wire(&g, ids[1], dup, 0), "fed by the original");
+    assert!(has_wire(&g, dup, ids[2], 0), "feeding what it fed");
+    assert!(!has_wire(&g, ids[1], ids[2], 0), "the old wire went through it");
+    let (a, b) = (g.node_positions[&ids[1]], g.node_positions[&dup]);
+    assert!((a.x - b.x).abs() + (a.y - b.y).abs() > 10.0, "placed off the original: {a:?} {b:?}");
+    assert_eq!(state.active_history().undo_count(), steps + 1);
+}
+
 /// A wire dragged from an output into empty canvas opens the add menu
 /// there, and the node picked comes fed by it, one step (#1744).
 #[test]
