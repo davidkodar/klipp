@@ -1717,6 +1717,20 @@ fn export_takes_a_preset_a_codec_and_a_bitrate() {
     assert_eq!((r["export"]["rate"].as_str(), r["export"]["bit_depth"].as_u64()), (Some("20000 kbps"), Some(10)), "{r}");
     let (_, s) = sent(&mut h, json!({ "method": "export", "path": "/tmp/klipp-codec-hq.mov", "codec": "ProRes HQ", "audio_codec": "pcm24" }));
     assert_eq!((s.video_codec, s.audio_codec), (V::ProRes422HQ, A::Pcm24));
+    // Captions as a soft track, not burnt in, and the reply says
+    // where they are; off the picture with no track, it says so plainly.
+    let (r, s) = sent(&mut h, json!({ "method": "export", "path": "/tmp/klipp-codec-soft.mp4", "embed_captions": true }));
+    assert!(s.embed_subtitles && !s.burn_in_subtitles, "{r}");
+    // Asked for, but this timeline has no captions: the file carries none,
+    // and the reply says so, not "embedded".
+    assert_eq!((r["export"]["captions_embedded"].clone(), r["export"]["captions_in_file"].clone()), (json!(false), json!("no captions on the timeline")), "{r}");
+    let (r, s) = sent(&mut h, json!({ "method": "export", "path": "/tmp/klipp-codec-bare.mp4", "burn_captions": false }));
+    assert!(!s.embed_subtitles && !s.burn_in_subtitles);
+    assert!(r["export"]["captions_in_file"].is_string(), "{r}");
+    // EX4: a sound-only file is said to have no video codec.
+    let (r, _) = sent(&mut h, json!({ "method": "export", "path": "/tmp/klipp-codec-sound.mp3", "preset": "Audio Only MP3" }));
+    assert!(r["export"]["video_codec"].is_null(), "{r}");
+    assert_eq!(r["export"]["audio_codec"], "MP3", "{r}");
 
     // Refused, and nothing sent.
     for (req, why) in [
@@ -1728,6 +1742,8 @@ fn export_takes_a_preset_a_codec_and_a_bitrate() {
         (json!({ "path": "/tmp/k.mov", "codec": "dnxhd_115", "bit_depth": 10 }), "8 bits"),
         (json!({ "path": "/tmp/k.mp4", "codec": "mpeg2" }), "not a video codec"),
         (json!({ "path": "/tmp/k.mp4", "audio_codec": "ac3" }), "not an audio codec"),
+        (json!({ "path": "/tmp/k.mp4", "burn_captions": true, "embed_captions": true }), "give one of"),
+        (json!({ "path": "/tmp/k.mp3", "embed_captions": true }), "holds no subtitle track"),
     ] {
         let mut req = req;
         req["method"] = json!("export");
@@ -2838,10 +2854,12 @@ fn cut_points_find_the_clean_joins() {
 fn match_grade_knobs_close_the_gap() {
     use klipp_control::match_grade_knobs;
     // A neutral reference: white 90, mid 50, black 5, balanced.
-    let reference = klipp_control::frame_stats(&std::iter::repeat_n([230u8, 128, 12, 255], 320*180).flatten().collect::<Vec<u8>>(), 320, 180, 0.0);
+    let px = |p: [u8; 4]| std::iter::repeat_n(p, 320 * 180).flatten().collect::<Vec<u8>>();
+    let measured = |p: [u8; 4]| klipp_color::measure::measure_frame(&px(p), 320, 180, &[]);
+    let reference = klipp_control::frame_stats(&px([230u8, 128, 12, 255]), 320, 180, 0.0);
     // A darker, bluer target: everything lower, blue lifted.
-    let target = klipp_control::frame_stats(&std::iter::repeat_n([120u8, 120, 170, 255], 320*180).flatten().collect::<Vec<u8>>(), 320, 180, 1.0);
-    let k = match_grade_knobs(&target, &reference);
+    let target = klipp_control::frame_stats(&px([120u8, 120, 170, 255]), 320, 180, 1.0);
+    let k = match_grade_knobs(&target, &reference, &measured([120, 120, 170, 255]), &measured([230, 128, 12, 255]));
     assert!(k.gain.unwrap() > 0.0, "target is darker at the top: raise gain, got {:?}", k.gain);
     assert!(k.temperature.unwrap() > 0.0, "target is cooler: warm it, got {:?}", k.temperature);
 
@@ -2853,7 +2871,7 @@ fn match_grade_knobs_close_the_gap() {
     let lab = |c: [f32; 3]| klipp_color::measure::linear_to_lab(c[0], c[1], c[2]);
     let lin = |p: [u8; 4]| [p[0], p[1], p[2]].map(|v| klipp_color::transfer::srgb_to_linear(v as f32 / 255.0));
     let matched = |cool: [u8; 4], warm: [u8; 4]| {
-        let k = match_grade_knobs(&flat(cool), &flat(warm));
+        let k = match_grade_knobs(&flat(cool), &flat(warm), &measured(cool), &measured(warm));
         let t = k.temperature.expect("a white-balance move");
         let m = klipp_color::white_balance::white_balance_matrix(t, k.tint.unwrap_or(0.0), klipp_core::WorkingColorspace::Rec709Linear).unwrap();
         let moved = m.map(|row| row[0] * lin(cool)[0] + row[1] * lin(cool)[1] + row[2] * lin(cool)[2]);
@@ -2869,23 +2887,66 @@ fn match_grade_knobs_close_the_gap() {
     assert!(a_left <= a_gap.max(1.0) + 1.0, "a* kept close: {a_gap:.1} -> {a_left:.1}");
 
     // A clip matched to itself moves nothing.
-    let same = match_grade_knobs(&reference, &reference);
+    let same = match_grade_knobs(&reference, &reference, &measured([230, 128, 12, 255]), &measured([230, 128, 12, 255]));
     assert!(same.is_empty(), "no gap, no grade: {same:?}");
+}
+
+/// A match aims the target's neutrals at the reference's, not its whole
+/// picture: a warm beach (sand over a grey, the grey at b* +2) matched to
+/// a blue-sky shot (sky over a grey at b* 0) moves the beach's grey onto
+/// the sky shot's, within 1 b*. Aimed at the frames' average colour, the
+/// two read about 18 b* apart and the match turned the beach blue.
+#[test]
+fn a_match_aims_the_neutrals_at_the_reference() {
+    use klipp_control::match_grade_knobs;
+    use klipp_color::measure::{lab_to_srgb8, linear_to_lab, measure_frame, Lab};
+    let (w, h) = (200u32, 100u32);
+    let frame = |scene: [u8; 3], grey: [u8; 3]| (0..w * h).flat_map(|i| { let c = if i % 5 < 3 { scene } else { grey }; [c[0], c[1], c[2], 255] }).collect::<Vec<u8>>();
+    let warm_grey = lab_to_srgb8(Lab { l: 62.0, a: 0.5, b: 2.3 });
+    let cool_grey = lab_to_srgb8(Lab { l: 62.0, a: 0.5, b: 0.2 });
+    let (target_px, reference_px) = (frame([214, 160, 98], warm_grey), frame([90, 150, 230], cool_grey));
+    let (tm, rm) = (measure_frame(&target_px, w, h, &[]), measure_frame(&reference_px, w, h, &[]));
+    assert!((tm.cast_b - 2.3).abs() < 1.0 && (rm.cast_b - 0.2).abs() < 1.0, "the greys are what is read: {:.1} {:.1}", tm.cast_b, rm.cast_b);
+    let k = match_grade_knobs(&klipp_control::frame_stats(&target_px, w, h, 0.0), &klipp_control::frame_stats(&reference_px, w, h, 0.0), &tm, &rm);
+    let m = klipp_color::white_balance::white_balance_matrix(k.temperature.unwrap_or(0.0), k.tint.unwrap_or(0.0), klipp_core::WorkingColorspace::Rec709Linear).unwrap();
+    let lin = [warm_grey[0], warm_grey[1], warm_grey[2]].map(|v| klipp_color::transfer::srgb_to_linear(v as f32 / 255.0));
+    let moved = m.map(|row| row[0] * lin[0] + row[1] * lin[1] + row[2] * lin[2]);
+    let after = linear_to_lab(moved[0], moved[1], moved[2]);
+    assert!((after.b - rm.cast_b).abs() < 1.0, "the grey lands at b* {:.1}, the reference's {:.1} (temperature {:?}, tint {:?})", after.b, rm.cast_b, k.temperature, k.tint);
 }
 
 /// #2476: match_grade stops short of clipping the shot it brightens, as
 /// grade_to_target does, and says why; a shot with room is left alone,
 /// and one already at white is not brightened at all.
+/// A match is not held for a channel at zero (a warm shadow's blue on the
+/// bottom of the rail): only a channel at the top is what brightening
+/// pushes. It read as "10.9% of the shot is already at white" on a shot
+/// with nothing at white, and the match left it dark.
+#[test]
+fn a_match_is_not_held_for_a_channel_at_zero() {
+    use klipp_control::{hold_match_for_highlights, MatchKnobs};
+    use klipp_color::measure::FrameMeasure;
+    let up = MatchKnobs { exposure: Some(0.5), ..Default::default() };
+    let mut k = up;
+    let shadows = FrameMeasure { l_p95: 70.0, gamut_clip_pct: 10.9, gamut_hi_pct: 0.0, ..Default::default() };
+    assert_eq!(hold_match_for_highlights(&mut k, &shadows), None, "brightened: {k:?}");
+    assert_eq!(k, up);
+    let mut k = up;
+    let sky = FrameMeasure { l_p95: 70.0, gamut_clip_pct: 10.9, gamut_hi_pct: 10.9, ..Default::default() };
+    let why = hold_match_for_highlights(&mut k, &sky).expect("held for the sky at the top");
+    assert!(why.contains("10.9%") && k.exposure.is_none(), "{why} {k:?}");
+}
+
 #[test]
 fn a_match_is_held_short_of_clipping() {
     use klipp_control::{hold_match_for_highlights, MatchKnobs};
     use klipp_color::measure::FrameMeasure;
     let up = MatchKnobs { exposure: Some(1.0), gain: Some(0.1), ..Default::default() };
-    // Bright at the top: half a stop of room.
+    // Bright at the top: a quarter of a stop of room, in light.
     let mut k = up;
     let why = hold_match_for_highlights(&mut k, &FrameMeasure { l_p95: 90.0, ..Default::default() }).expect("held");
     let e = k.exposure.unwrap();
-    assert!((e - 7.0 / 15.0).abs() < 1e-3 && k.gain.is_none(), "{k:?}");
+    assert!((e - klipp_color::measure::exposure_headroom(&FrameMeasure { l_p95: 90.0, ..Default::default() })).abs() < 1e-3 && e > 0.2 && e < 0.3 && k.gain.is_none(), "{k:?}");
     assert!(why.contains("clip"), "{why}");
     // Plenty of room: the match goes through as it was.
     let mut k = up;

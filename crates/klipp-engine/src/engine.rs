@@ -412,22 +412,6 @@ pub mod ui_stage {
     }
 }
 
-/// Read process RSS in MB from `/proc/self/statm` (Linux). Returns 0
-/// on non-Linux or if the proc file can't be read. Cheap enough
-/// (single file read, tens of microseconds) to call every 10 s.
-fn read_rss_mb() -> f64 {
-    let Ok(statm) = std::fs::read_to_string("/proc/self/statm") else {
-        return 0.0;
-    };
-    let Some(rss_pages_str) = statm.split_whitespace().nth(1) else {
-        return 0.0;
-    };
-    let Ok(pages) = rss_pages_str.parse::<u64>() else {
-        return 0.0;
-    };
-    (pages * 4096) as f64 / (1024.0 * 1024.0)
-}
-
 /// Gate for the GPU-resident viewer output path. When on, the engine
 /// mirrors the graded frame into `FrameBuffer.gpu_output` on the
 /// shared wgpu device so the UI can sample it directly without a
@@ -578,6 +562,29 @@ fn timeline_layout_fingerprint(seq: &klipp_timeline::Sequence) -> u64 {
         }
     }
     h.finish()
+}
+
+/// How long to wait after a look at the layout that took `cost`: a parked
+/// engine spends about 2% of a core on it until the wait reaches its cap
+/// of half a second, more past that (about 7% at 20,000 clips), and sees
+/// an edit within that half second at most.
+fn layout_check_wait(cost: Duration) -> Duration {
+    (cost * 49).min(Duration::from_millis(500))
+}
+
+#[cfg(test)]
+mod layout_check_wait_tests {
+    use super::layout_check_wait;
+    use std::time::Duration;
+
+    /// A small timeline is looked at nearly every tick, a larger one about
+    /// 2% of the time, and none waits past half a second for an edit.
+    #[test]
+    fn the_wait_follows_the_cost_up_to_half_a_second() {
+        assert_eq!(layout_check_wait(Duration::from_micros(10)), Duration::from_micros(490));
+        assert_eq!(layout_check_wait(Duration::from_millis(5)), Duration::from_millis(245));
+        assert_eq!(layout_check_wait(Duration::from_millis(40)), Duration::from_millis(500));
+    }
 }
 
 /// Which use of the direct-present fast path is being gated; see
@@ -2021,6 +2028,9 @@ pub struct PlaybackEngine {
     /// What the pre-grade cache was filled under (see
     /// [`timeline_layout_fingerprint`]); a different layout empties it.
     layout_fingerprint: u64,
+    /// When the tick may next look at the layout, by what the last look
+    /// cost ([`layout_check_wait`]).
+    layout_check_due: std::time::Instant,
     /// What was under the playhead when the layout was last looked at
     /// (see [`under_playhead_fingerprint`]); an edit that changes it is
     /// shown by seeking there again.
@@ -3070,6 +3080,7 @@ impl PlaybackEngine {
             presenting_progress: false,
             last_composite_path: None,
             layout_fingerprint: 0,
+            layout_check_due: std::time::Instant::now(),
             under_playhead_fingerprint: (Timecode::zero(), 0),
             quiet_seek: false,
             sdr_transfer: klipp_core::SdrTransfer::Srgb,
@@ -3152,7 +3163,7 @@ impl PlaybackEngine {
     /// single-frame working set = somewhere a buffer is being kept
     /// larger than needed (reallocs without shrinks, or swap-race).
     fn emit_reliability_telemetry(&mut self) {
-        let rss_mb = read_rss_mb();
+        let rss_mb = klipp_core::process_memory::resident_mb();
         let rss_delta = if self.last_rss_mb > 0.0 {
             rss_mb - self.last_rss_mb
         } else {
@@ -3631,6 +3642,7 @@ impl PlaybackEngine {
                 // A skim is over once the playhead moves or plays (#2945).
                 self.end_skim();
                 debug!("Play command received, state={:?}", self.state);
+                self.play_again_from_the_start();
                 // Before playback can reach a gap (#2386).
                 self.prewarm_empty_stack();
                 // Heard at the export's loudness: measured now if the
@@ -3857,21 +3869,23 @@ impl PlaybackEngine {
             AppCommand::SetSpeed(speed) => {
                 debug!("SetSpeed({speed})");
                 let turned_round = self.turns_round(speed);
+                let was_muted = self.sound_muted();
                 self.shuttle_speed = speed;
                 self.master_clock.set_speed(speed);
                 // Reports follow on from here, whichever way it now plays
                 // (#1806).
                 self.report_floor.set(None);
-                // Mute audio at high speeds (unintelligible above 4x)
-                let muted = speed.abs() > 4.0 || self.sound_muted();
+                let muted = self.sound_muted();
                 for active in &self.audio_sources {
                     active.source.muted().store(muted, Ordering::Release);
                 }
                 // The sound reads forward whichever way the clock runs, so
                 // played backwards it runs away from the playhead: back to
                 // the playhead whenever the direction changes. Muted first:
-                // a reseek fills seconds of its buffer at once.
-                if turned_round && self.state == PlaybackState::Playing {
+                // a reseek fills seconds of its buffer at once. So too when
+                // it goes silent or comes back, or the seconds already
+                // buffered play on after the mute.
+                if (turned_round || was_muted != muted) && self.state == PlaybackState::Playing {
                     self.seek_all_audio_to_timecode(self.playhead);
                     for active in &self.audio_sources {
                         active.source.muted().store(muted, Ordering::Release);
@@ -7768,10 +7782,14 @@ impl PlaybackEngine {
     }
 
     /// Whether the sound is silenced now: a scrub with audio scrubbing off,
-    /// or played backwards by J, as the sound can only read forward. A
-    /// reversed clip also runs the clock backwards, and keeps its sound.
+    /// played backwards by J, as the sound can only read forward, or
+    /// shuttled above 4x, past hearing. By the speed a shuttle asked for
+    /// and the clock running it: a reversed clip also runs the clock
+    /// backwards, and a clip retimed above 4x faster, and they keep their
+    /// sound (#638).
     fn sound_muted(&self) -> bool {
-        (self.is_scrubbing && !self.scrub_audio_enabled) || (self.shuttle_speed < 0.0 && self.master_clock.speed() < 0.0)
+        let shuttled = |past: fn(f64) -> bool| past(self.shuttle_speed) && past(self.master_clock.speed());
+        (self.is_scrubbing && !self.scrub_audio_enabled) || shuttled(|s| s < 0.0) || shuttled(|s| s.abs() > 4.0)
     }
 
     /// Whether `speed` changes the direction it is shuttled in.
@@ -7815,6 +7833,21 @@ impl PlaybackEngine {
         let _ = self.event_tx.send(AppEvent::PlayheadMoved(at));
     }
 
+    /// Play pressed at the timeline's end, stopped there: from the start
+    /// again, the playhead with it. There is nothing to play where it is:
+    /// the first clip played while the playhead stayed at the end. Not for
+    /// J, which plays back from there.
+    fn play_again_from_the_start(&mut self) {
+        let end = self.sequence_duration();
+        if self.state == PlaybackState::Playing || self.shuttle_speed < 0.0 || end.value <= 0 || self.playhead < end {
+            return;
+        }
+        let start = RationalTime::from_frames(0, self.fps.rate());
+        self.playhead = start;
+        self.report_jump(start);
+        self.seek_in_sequence(start);
+    }
+
     fn stop_at_end(&mut self) {
         self.clear_preroll();
         info!("stop_at_end called — loop_enabled={}, playhead={:.3}s",
@@ -7838,8 +7871,22 @@ impl PlaybackEngine {
         // gone unreported, and the clock may have run past the end.
         self.playhead = self.playhead.min(self.sequence_duration());
         self.report_playhead();
+        // A stop ends what reports follow on from (#1806): left set, the
+        // next play's reports all read this end.
+        self.report_floor.set(None);
         self.state = PlaybackState::Paused;
         let _ = self.event_tx.send(AppEvent::PlaybackPaused);
+        // The clock ran out before the last frame came, after a seek to it
+        // while playing, and what is up is the black past the end: the last
+        // frame in its place.
+        let end = self.sequence_duration();
+        let past_the_end = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner()).shown_presented().is_some_and(|at| at >= end);
+        if past_the_end && end.value > 0 {
+            let last = RationalTime::from_secs_f64((end.to_secs_f64() - self.fps.frame_duration_secs()).max(0.0), self.fps.rate());
+            self.playhead = last;
+            self.report_jump(last);
+            self.seek_in_sequence(last);
+        }
         (self.repaint_cb)();
     }
 
@@ -10413,10 +10460,20 @@ impl PlaybackEngine {
 
     /// An edit changed what is under the parked playhead, whether or not
     /// anyone said so: the UI writes many edits to the sequence and sends
-    /// nothing after them. Looked for every tick the engine is not
-    /// playing (playback follows the timeline as it goes).
+    /// nothing after them. Looked for on the ticks the engine is not
+    /// playing (playback follows the timeline as it goes), as often as a
+    /// look's cost allows: it hashes every clip.
     fn tick_layout_check(&mut self) {
-        if self.state != PlaybackState::Playing && self.note_layout_change(false) {
+        if self.state == PlaybackState::Playing {
+            return;
+        }
+        let now = std::time::Instant::now();
+        if now < self.layout_check_due {
+            return;
+        }
+        let changed = self.note_layout_change(false);
+        self.layout_check_due = now + layout_check_wait(now.elapsed());
+        if changed {
             self.show_edit_at_playhead();
         }
     }
@@ -15735,6 +15792,32 @@ mod track_switch_tests {
         buf.iter().fold(0.0, |m, s| m.max(s.abs()))
     }
 
+    /// Only the fallback look at the layout is spaced out: an edit the UI
+    /// announces is seen at once, whenever that look is next due.
+    #[test]
+    fn an_announced_edit_is_seen_though_the_fallback_look_is_not_due() {
+        let mut seq = klipp_timeline::Sequence::new_default();
+        seq.tracks = vec![klipp_timeline::Track::new("V1", klipp_timeline::TrackKind::Video)];
+        let (mut engine, shared) = engine(seq);
+        engine.note_layout_change(true);
+        let first = engine.layout_fingerprint;
+        let later = std::time::Instant::now() + Duration::from_secs(3600);
+
+        shared.write().unwrap().tracks[0].visible = false;
+        engine.layout_check_due = later;
+        engine.tick_layout_check();
+        assert_eq!(engine.layout_fingerprint, first, "the look is not due");
+        engine.handle_command(AppCommand::SequenceUpdated);
+        let announced = engine.layout_fingerprint;
+        assert_ne!(announced, first, "announced, it is seen now");
+
+        shared.write().unwrap().tracks[0].visible = true;
+        engine.layout_check_due = std::time::Instant::now();
+        engine.tick_layout_check();
+        assert_ne!(engine.layout_fingerprint, announced, "unannounced, the look that is due sees it");
+        assert!(engine.layout_check_due <= std::time::Instant::now() + Duration::from_millis(500), "none waits past the cap");
+    }
+
     /// J silences the sound, which only reads forward, and L brings it
     /// back; each turn is a change of direction for the sound to reseek on.
     /// A reversed clip runs the clock backwards too, and keeps its sound.
@@ -15755,6 +15838,64 @@ mod track_switch_tests {
         engine.handle_command(AppCommand::BeginScrub);
         engine.scrub_audio_enabled = false;
         assert!(engine.sound_muted(), "a scrub with its sound off");
+    }
+
+    /// Stopped at the end, Play starts over with the playhead at the start,
+    /// not the first clip's picture under a playhead left at the end. Short
+    /// of the end, and for J, the playhead stays. The stop leaves no floor
+    /// for the next play's reports (#1806).
+    #[test]
+    fn play_at_the_end_starts_over_with_the_playhead() {
+        let mut seq = klipp_timeline::Sequence::new_default();
+        let rate = seq.fps.rate();
+        let at = |s: f64| RationalTime::from_secs_f64(s, rate);
+        let mut track = klipp_timeline::Track::new("V1", klipp_timeline::TrackKind::Video);
+        track.clips = vec![klipp_timeline::Clip::media(MediaId::new(), at(0.0), at(5.0), at(0.0), at(5.0))];
+        seq.tracks = vec![track];
+        let (mut engine, _seq) = engine(seq);
+        engine.state = PlaybackState::Playing;
+        engine.playhead = at(5.0);
+        engine.report_playhead();
+        assert!(engine.report_floor.get().is_some(), "reports follow on while playing");
+        engine.stop_at_end();
+        assert_eq!(engine.state, PlaybackState::Paused);
+        assert!(engine.report_floor.get().is_none(), "a stop ends them");
+
+        // Stopped with the black past the end up: the last frame instead.
+        engine.frame_buffer.lock().unwrap().set_presented(at(5.1), true);
+        engine.state = PlaybackState::Playing;
+        engine.playhead = at(5.1);
+        engine.stop_at_end();
+        assert_eq!(engine.playhead, at(5.0 - engine.fps.frame_duration_secs()), "on the last frame");
+
+        engine.playhead = at(5.0);
+        engine.handle_command(AppCommand::SetSpeed(-1.0));
+        engine.play_again_from_the_start();
+        assert_eq!(engine.playhead, at(5.0), "J plays back from the end");
+        engine.handle_command(AppCommand::SetSpeed(1.0));
+        engine.playhead = at(4.9);
+        engine.play_again_from_the_start();
+        assert_eq!(engine.playhead, at(4.9), "short of the end");
+        engine.playhead = at(5.0);
+        engine.state = PlaybackState::Paused;
+        engine.play_again_from_the_start();
+        assert_eq!(engine.playhead.value, 0, "from the start");
+    }
+
+    /// Above 4x the sound is silent while it plays, not only until the next
+    /// tick puts it back, and comes back below it. A clip retimed above 4x
+    /// keeps its sound (#638).
+    #[test]
+    fn shuttled_above_four_times_the_sound_is_silent() {
+        let (mut engine, _seq) = engine(two_tracks());
+        engine.handle_command(AppCommand::SetSpeed(4.0));
+        assert!(!engine.sound_muted(), "4x is heard");
+        engine.handle_command(AppCommand::SetSpeed(8.0));
+        assert!(engine.sound_muted(), "8x");
+        engine.handle_command(AppCommand::SetSpeed(1.0));
+        assert!(!engine.sound_muted(), "1x");
+        engine.master_clock.set_speed(8.0);
+        assert!(!engine.sound_muted(), "a clip retimed to 8x keeps its sound");
     }
 
     /// J ended, after a seek under it took the clock back off: its pictures

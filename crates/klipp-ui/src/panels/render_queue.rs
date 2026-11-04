@@ -251,15 +251,20 @@ impl RenderQueuePanel {
         // The button first, from the right, and the path in what is left,
         // shortened at its front: a long path laid out whole widened every
         // card past the panel, and Cancel and Remove went out of reach.
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if job.status != RenderJobStatus::Complete
-                && ui.add(egui::Button::new(small("Show folder".into(), theme.text_secondary)).frame(false)).clicked()
-            {
-                actions.push(RenderQueueAction::ShowInFolder(job.output_path.clone()));
-            }
-            let room = (ui.available_width() / 6.0).floor().max(12.0) as usize;
-            ui.add(egui::Label::new(small(format!("\u{2192} {}", elide_front(&Self::shown_path(&job.output_path), room)), theme.text_dim)).truncate())
-                .on_hover_text(job.output_path.display().to_string());
+        // In a row of its own height: laid out straight in the scrolling
+        // list, the row centred itself in all the height left, and the
+        // first card filled the window with the others below it.
+        ui.horizontal(|ui| {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if job.status != RenderJobStatus::Complete
+                    && ui.add(egui::Button::new(small("Show folder".into(), theme.text_secondary)).frame(false)).clicked()
+                {
+                    actions.push(RenderQueueAction::ShowInFolder(job.output_path.clone()));
+                }
+                let room = (ui.available_width() / 6.0).floor().max(12.0) as usize;
+                ui.add(egui::Label::new(small(format!("\u{2192} {}", elide_front(&Self::shown_path(&job.output_path), room)), theme.text_dim)).truncate())
+                    .on_hover_text(job.output_path.display().to_string());
+            });
         });
 
         // ── Row 5: how it is going (rendering) ──
@@ -540,3 +545,61 @@ mod picture_parts_tests {
     }
 }
 
+
+#[cfg(test)]
+mod card_height_tests {
+    use klipp_export::{RenderJob, RenderJobStatus, RenderQueue};
+
+    fn done(name: &str) -> RenderJob {
+        RenderJob {
+            id: uuid::Uuid::new_v4(),
+            label: name.into(),
+            output_path: std::path::PathBuf::from(format!("/tmp/out/{name}")),
+            settings: klipp_core::ExportSettings::default(),
+            status: RenderJobStatus::Complete,
+            progress: 1.0,
+            created_at: std::time::Instant::now(),
+            started_at: None,
+            completed_at: None,
+            error: None,
+            total_frames: 550,
+            frames_done: 550,
+            hw_info: String::new(),
+            timeline_fps: 25.0,
+            render_stage: String::new(),
+            loudness_result: None,
+            timings: None,
+            width: 640,
+            height: 360,
+            export_range: None,
+            sequence_id: klipp_core::SequenceId(uuid::Uuid::nil()),
+            heard_media: Vec::new(),
+        }
+    }
+
+    /// EX6: in the window, each card is as tall as what it holds, so a
+    /// queue of several shows them one under another. The path row took
+    /// all the height left, and only the first card was seen.
+    #[test]
+    fn cards_stack_in_the_window() {
+        let mut queue = RenderQueue::new();
+        queue.jobs = ["j1.mp4", "j2.mp4", "j3.mp4"].into_iter().map(done).collect();
+        let ctx = egui::Context::default();
+        crate::icons::install(&ctx);
+        let theme = crate::theme::KlippTheme::default();
+        let out = ctx.run(egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(620.0, 420.0))), ..Default::default() }, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                super::RenderQueuePanel::show_contents(ui, &queue, &theme, false, &mut Vec::new());
+            });
+        });
+        let y = |name: &str| {
+            out.shapes.iter().find_map(|s| match &s.shape {
+                egui::Shape::Text(t) if t.galley.text() == name => Some(t.pos.y),
+                _ => None,
+            }).unwrap_or_else(|| panic!("{name} not drawn"))
+        };
+        let (first, second, third) = (y("j1.mp4"), y("j2.mp4"), y("j3.mp4"));
+        assert!(second - first < 160.0 && third - second < 160.0, "cards at {first}, {second}, {third}");
+        assert!(third < 420.0, "the third card is out of sight at {third}");
+    }
+}

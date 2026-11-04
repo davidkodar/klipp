@@ -10,6 +10,11 @@
 //! plus its busyness, is under [`TARGET`], the picture is pulled towards
 //! the side that gives it that contrast, and no further.
 //!
+//! The pull is one for the whole title: the one its hardest part needs
+//! ([`title_pull`]), laid evenly through the halo. Worked out place by
+//! place, a title over a picture half bright, half dark got a shade
+//! behind one half only, an off-centre patch that read as a mistake.
+//!
 //! This is the CPU twin of the GPU pass
 //! (`GpuEffectsPipeline::stack_contrast_protect`): the same grid, blur,
 //! sample and formula, so the two compose to the same pixels.
@@ -76,6 +81,28 @@ pub fn pull(lb: f32, busy: f32, lt: f32, mode: u32) -> Result<f32, f32> {
     }
 }
 
+/// The pull for a whole title, from its blurred measuring grid (picture
+/// luminance, its square, text coverage, text luminance × coverage per
+/// cell): what its hardest part needs, light text's least `k` and dark
+/// text's greatest `t`, over the cells the halo covers whole, or over any
+/// the text reaches when none is (small or thin text). `(k, t)`: `k` 1
+/// and `t` 0 when nothing needs protecting.
+pub fn title_pull(cells: &[[f32; 4]], mode: u32) -> (f32, f32) {
+    let need = |full: bool| {
+        let (mut k, mut t, mut any) = (1.0f32, 0.0f32, false);
+        for m in cells.iter().filter(|m| if full { m[2] >= HALO_FULL } else { m[2] > 1e-3 }) {
+            any = true;
+            let busy = (m[1] - m[0] * m[0]).max(0.0).sqrt();
+            match pull(m[0], busy, (m[3] / m[2]).clamp(0.0, 1.0), mode) {
+                Ok(kc) => k = k.min(kc),
+                Err(tc) => t = t.max(tc),
+            }
+        }
+        any.then_some((k, t))
+    };
+    need(true).or_else(|| need(false)).unwrap_or((1.0, 0.0))
+}
+
 /// Protects the text of `layer` over `acc`, both straight-alpha linear
 /// RGBA `width` × `height`: changes `acc` round the text by `mode` (1
 /// only where the text needs it, 2 a halo always, stronger where the
@@ -140,6 +167,7 @@ pub fn protect_backdrop(acc: &mut [f32], layer: &[f32], width: u32, height: u32,
         }
     });
     }
+    let (k, t) = title_pull(&small, mode);
     let at = |x: isize, y: isize| small[y.clamp(0, sh as isize - 1) as usize * sw + x.clamp(0, sw as isize - 1) as usize];
     acc.par_chunks_mut(w * 4).enumerate().for_each(|(y, row)| {
         let v = (y as f32 + 0.5) / s as f32 - 0.5;
@@ -159,14 +187,12 @@ pub fn protect_backdrop(acc: &mut [f32], layer: &[f32], width: u32, height: u32,
                 continue;
             }
             let halo = halo(a);
-            let busy = (m[1] - m[0] * m[0]).max(0.0).sqrt();
             let p = &mut row[x * 4..x * 4 + 3];
-            match pull(m[0], busy, (m[3] / a).clamp(0.0, 1.0), mode) {
-                Ok(k) => {
-                    let f = 1.0 - halo * (1.0 - k);
-                    p.iter_mut().for_each(|c| *c *= f);
-                }
-                Err(t) => p.iter_mut().for_each(|c| *c += (1.0 - *c) * halo * t),
+            if (m[3] / a).clamp(0.0, 1.0) >= LIGHT_TEXT {
+                let f = 1.0 - halo * (1.0 - k);
+                p.iter_mut().for_each(|c| *c *= f);
+            } else {
+                p.iter_mut().for_each(|c| *c += (1.0 - *c) * halo * t);
             }
         }
     });
@@ -186,6 +212,37 @@ mod tests {
     }
 
     const K: [f32; 3] = [0.2126, 0.7152, 0.0722];
+
+    /// White text over a picture half bright, half dark: the shade behind
+    /// it is the same over both halves, as much as the bright half needs.
+    /// Worked out place by place, it darkened the bright half alone.
+    #[test]
+    fn a_title_over_bright_and_dark_is_shaded_evenly() {
+        let (w, h) = (256, 144);
+        let back = |x: u32| if x < 128 { [0.9, 0.9, 0.9, 1.0] } else { [0.02, 0.03, 0.25, 1.0] };
+        let mut acc: Vec<f32> = (0..h).flat_map(|_| (0..w).flat_map(back)).collect();
+        let before = acc.clone();
+        let mut layer = frame(w, h, [0.0; 4]);
+        for y in 60..84 {
+            for x in 64..192 {
+                let i = ((y * w + x) * 4) as usize;
+                layer[i..i + 4].copy_from_slice(&[1.0, 1.0, 1.0, 1.0]);
+            }
+        }
+        protect_backdrop(&mut acc, &layer, w, h, 1.0, 1, K);
+        let factor = |x: u32| {
+            let i = ((72 * w + x) * 4) as usize;
+            acc[i + 2] / before[i + 2]
+        };
+        let (bright, dark) = (factor(90), factor(166));
+        assert!(bright < 0.5, "the bright half is shaded: {bright}");
+        assert!((bright - dark).abs() < 0.02, "the same shade over both halves: {bright} and {dark}");
+        // Over dark alone it needs none, and the picture stays as it was.
+        let mut dark_only = frame(w, h, [0.02, 0.03, 0.25, 1.0]);
+        let kept = dark_only.clone();
+        protect_backdrop(&mut dark_only, &layer, w, h, 1.0, 1, K);
+        assert_eq!(dark_only, kept, "a title that needs no protection leaves the picture clean");
+    }
 
     #[test]
     fn white_text_over_white_gets_its_contrast() {
