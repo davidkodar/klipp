@@ -783,8 +783,8 @@ fn load_project_as(dir: &Path, form: crate::FileForm, strict: bool) -> Result<Lo
 
     stored.retain(|(_, id), _| !rewritten.contains(id));
     adopt_stored_pictures(&mut sequences, stored, strict)?;
-    for (cid, n, blends) in version_blends {
-        let clip = sequences.iter_mut().flat_map(|s| s.all_clips_mut()).find(|c| c.id.0 == cid).ok_or_else(|| format!("This project's clip {cid} isn't read, so its grade version's mix can't be kept"))?;
+    for (sid, cid, n, blends) in version_blends {
+        let clip = sequences.iter_mut().filter(|s| s.id.0 == sid).flat_map(|s| s.all_clips_mut()).find(|c| c.id.0 == cid).ok_or_else(|| format!("This project's clip {cid} isn't read, so its grade version's mix can't be kept"))?;
         clip.set_version_blends(n, &blends).map_err(|e| format!("This project's clip {cid} can't keep its grade version's mix: {e}"))?;
     }
     for (sid, root, blends) in sequence_blends {
