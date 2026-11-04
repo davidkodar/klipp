@@ -47,7 +47,13 @@ pub(crate) fn node(n: &Node, depth: usize) -> Value {
     // An effect's values as its stored entry, written from its map (M3-2).
     let effect = n.type_id.as_str() == klipp_graph_format::types::LEGACY_EFFECT;
     let entry = effect.then(|| klipp_graph_lift::effect_params::entry_of(n).ok()).flatten();
+    // A grade node's keys, from its own tracks (read below).
+    let mut grade_keys: Vec<(String, Value)> = Vec::new();
     if let (Some(desc), Some(legacy)) = (desc, &n.legacy) {
+        if !effect && !klipp_graph_lift::structure::kind_of(n).is_empty() {
+            let tracks = legacy.keyframes.clone().and_then(|k| serde_json::from_value::<klipp_nodes::NodeKeyframeTracks>(k).ok()).unwrap_or_default();
+            grade_keys = tracks.tracks.into_iter().filter(|t| !t.keyframes.is_empty()).map(|t| (t.param_name, json!(t.keyframes))).collect();
+        }
         let payload = match &entry {
             Some(entry) => entry,
             None => legacy.payload.get("params").unwrap_or(&legacy.payload),
@@ -87,11 +93,8 @@ pub(crate) fn node(n: &Node, depth: usize) -> Value {
             keys.insert(key.as_str().into(), json!(anim.keys));
         }
     }
-    if n.type_id.as_str() == klipp_graph_format::types::LEGACY_NODE {
-        let tracks = n.legacy.as_ref().and_then(|l| l.keyframes.clone()).and_then(|k| serde_json::from_value::<klipp_nodes::NodeKeyframeTracks>(k).ok()).unwrap_or_default();
-        for t in tracks.tracks.iter().filter(|t| !t.keyframes.is_empty()) {
-            keys.insert(t.param_name.clone(), json!(t.keyframes));
-        }
+    for (name, track) in grade_keys {
+        keys.insert(name, track);
     }
     if !keys.is_empty() {
         out["keys"] = Value::Object(keys);
