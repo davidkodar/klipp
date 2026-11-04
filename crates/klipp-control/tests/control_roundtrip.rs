@@ -5584,3 +5584,67 @@ fn a_publish_kit_reads_back_writes_beside_the_video_and_keeps_what_is_there() {
     assert!(h.cmd_rx.try_recv().is_err(), "a refused call sends nothing");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// make_shorts builds every short whole before any reaches the project
+/// and adds them as one edit: two moments are one AddSequences of two
+/// upright shorts, each named apart and its sound levelled; a refused
+/// moment records nothing. Made one by one, a refusal left an empty
+/// sequence, each short was two undo steps that left it behind, and the
+/// names repeated.
+#[test]
+fn make_shorts_adds_every_short_in_one_edit() {
+    let mut h = harness();
+    struct CacheGuard { previous: Option<std::ffi::OsString>, path: std::path::PathBuf }
+    impl Drop for CacheGuard {
+        fn drop(&mut self) {
+            match &self.previous {
+                Some(old) => std::env::set_var("XDG_CACHE_HOME", old),
+                None => std::env::remove_var("XDG_CACHE_HOME"),
+            }
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
+    }
+    let cache = CacheGuard { previous: std::env::var_os("XDG_CACHE_HOME"), path: std::env::temp_dir().join(format!("klipp-shorts-test-{}", klipp_core::MediaId::new().0)) };
+    std::fs::create_dir_all(&cache.path).unwrap();
+    std::env::set_var("XDG_CACHE_HOME", &cache.path);
+    let path = cache.path.join("talk.mp4");
+    let made = std::process::Command::new("ffmpeg")
+        .args(["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc2=s=320x180:r=24:d=6", "-f", "lavfi", "-i", "sine=frequency=440:duration=6",
+               "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest"])
+        .arg(&path)
+        .status();
+    if !made.is_ok_and(|s| s.success()) {
+        eprintln!("skipping: no ffmpeg");
+        return;
+    }
+    let key = klipp_analysis::store::key_for(&path).unwrap();
+    let mut item = klipp_media::MediaItem::synthetic_for_test(path.clone(), None);
+    item.duration = klipp_core::Timecode { value: 144, rate: 24 };
+    item.fps = klipp_core::Fps::new(24, 1);
+    item.resolution = klipp_core::Resolution { width: 320, height: 180 };
+    item.video_codec = "h264".into();
+    item.has_audio = true;
+    let media = h.media_pool.write().unwrap().add(item);
+    let words: Vec<serde_json::Value> = ["Hello", "there,", "this", "is", "the", "old", "town."].iter().enumerate()
+        .map(|(k, w)| json!({ "start_secs": 0.5 + k as f64 * 0.7, "end_secs": 0.5 + k as f64 * 0.7 + 0.5, "text": w, "confidence": 0.9 })).collect();
+    klipp_analysis::store::save(&key, klipp_analysis::transcript::ID, klipp_analysis::transcript::VERSION, &json!({
+        "duration_secs": 6.0, "language": "en", "model": "test", "segments": [{ "start_secs": 0.5, "end_secs": 5.2, "text": "Hello there, this is the old town." }], "words": words })).unwrap();
+
+    let refused = h.call(json!({ "method": "make_shorts", "media_id": media.0.to_string(), "moments": [{ "from_secs": 0.4, "to_secs": 9.0 }] }));
+    assert!(refused["error"].as_str().unwrap().contains("not inside"), "{refused}");
+    assert!(h.edits_seen.lock().unwrap().is_empty(), "a refused moment makes nothing");
+
+    h.ok(json!({ "method": "make_shorts", "media_id": media.0.to_string(), "hook_title": true,
+                 "moments": [{ "from_secs": 0.4, "to_secs": 2.8, "hook": "The old town" }, { "from_secs": 2.9, "to_secs": 5.3, "hook": "The old town" }] }));
+    let edits = h.edits_seen.lock().unwrap().clone();
+    assert_eq!(edits.len(), 1, "one edit: {edits:?}");
+    let klipp_document::history::EditCommand::AddSequences { sequences } = &edits[0] else { panic!("the shorts added together: {:?}", edits[0]) };
+    let names: Vec<&str> = sequences.iter().map(|s| s.name.as_str()).collect();
+    assert_eq!(names, ["Short 1: The old town", "Short 2: The old town"]);
+    for short in sequences {
+        assert_eq!((short.resolution.width, short.resolution.height), (1080, 1920), "{}: upright", short.name);
+        let sounds: Vec<&klipp_timeline::Clip> = short.tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Audio).flat_map(|t| &t.clips).collect();
+        assert!(!sounds.is_empty() && sounds.iter().all(|c| (c.gain - 1.0).abs() > 0.05), "{}: levelled, gains {:?}", short.name, sounds.iter().map(|c| c.gain).collect::<Vec<_>>());
+        assert!(short.all_clips().any(|c| c.title_data().and_then(|t| t.primary_text()).is_some_and(|t| t.text.contains("old town"))), "{}: its hook", short.name);
+    }
+}
