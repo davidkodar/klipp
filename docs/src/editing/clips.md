@@ -19,7 +19,7 @@ Places the source range at the playhead, replacing whatever was there. No rippli
 With an out point set and no in point, an edit is backtimed: it ends at the out point. See [Magnetic Timeline](./magnetic-timeline.md#three--and-four-point-editing).
 
 ### Drag and Drop
-Drag clips from the media browser or the source viewer onto any track. The drop follows the timeline's INS / OVR mode.
+Drag clips from the media browser onto any track; the drop follows the timeline's INS / OVR mode. From the source viewer, the marked section goes in with Insert (,) or Overwrite (.).
 
 ## Trimming
 
