@@ -1193,6 +1193,28 @@ mod tests {
         assert!(!xml.contains("<project name=\"Tom & Jerry"));
     }
 
+    /// Klipp's own export of a title reads back with no warning about the
+    /// title's <effect> template, which it writes for the title and the
+    /// title is read from; an effect a clip itself is made of is still
+    /// warned about.
+    #[test]
+    fn our_own_title_template_is_not_warned_about() {
+        let fps = Fps::film_24();
+        let mut seq = empty_sequence(fps);
+        let mut td = TitleData::default();
+        if let Some(tb) = td.primary_text_mut() { tb.text = "Opening".into(); }
+        seq.tracks[0].clips.push(make_clip_with_kind(ClipKind::Title(td), RationalTime { value: 0, rate: 24 }, RationalTime { value: 48, rate: 24 }));
+        let xml = generate_fcpxml(&seq, &MediaPool::new());
+        assert!(xml.contains("<effect id=\"r1\""), "{xml}");
+        let back = crate::fcpxml_import::parse_fcpxml(&xml).unwrap();
+        assert!(back.warnings.iter().all(|w| !w.contains("resource is not supported")), "{:?}", back.warnings);
+        assert!(back.sequence.tracks.iter().flat_map(|t| &t.clips).any(|c| matches!(c.kind, ClipKind::Title(_))), "the title came back");
+
+        let made_of_it = xml.replace("</spine>", "<ref-clip ref=\"r1\" offset=\"48/24s\" duration=\"24/24s\"/>\n</spine>");
+        let back = crate::fcpxml_import::parse_fcpxml(&made_of_it).unwrap();
+        assert!(back.warnings.iter().any(|w| w.contains("<effect> resource is not supported")), "{:?}", back.warnings);
+    }
+
     // ── EDL Tests ──
 
     #[test]

@@ -281,7 +281,20 @@ fn index_resources<'a>(
                     },
                 );
             }
-            "media" | "effect" | "title-effect" | "transition-effect" => {
+            // A title's template is an <effect>, and the title is read as
+            // one of Klipp's own; a filter's is named where it is used. Only
+            // an effect something else refers to leaves a clip short: Klipp's
+            // own export, which writes one for its titles, was warned about.
+            "effect" => {
+                let id = child.attribute("id");
+                let elsewhere = id.is_some_and(|id| {
+                    resources.document().descendants().any(|n| n.is_element() && n.attribute("ref") == Some(id) && !matches!(n.tag_name().name(), "title" | "filter-video" | "filter-audio"))
+                });
+                if elsewhere {
+                    warnings.push("<effect> resource is not supported — referenced clips may be incomplete".to_string());
+                }
+            }
+            "media" | "title-effect" | "transition-effect" => {
                 warnings.push(format!(
                     "<{}> resource is not supported — referenced clips may be incomplete",
                     child.tag_name().name()
