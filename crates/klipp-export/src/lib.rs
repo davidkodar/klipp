@@ -16,7 +16,7 @@
 //! # Concurrency
 //!
 //! `max_parallel` defaults to 1: two at once each ran at about 0.6x, so
-//! the first file came nearly twice as late (P38). The app sets it from
+//! the first file came nearly twice as late. The app sets it from
 //! Preferences. Real-world limit on consumer NVIDIA cards is typically
 //! 2–3 concurrent NVENC sessions. A job that finds no
 //! session free falls back to the software encoder for its codec (#381)

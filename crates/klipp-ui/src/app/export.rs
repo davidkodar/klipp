@@ -432,7 +432,7 @@ pub(super) fn export_version_suffix(first: &str, active: Option<&str>, timeline:
 
 /// What Play hands the desktop's opener for a finished render: its file
 /// as a `file://` URI, as Open in External App does, so a name that reads
-/// as an option, a folder or a missing file never reaches it (EX3).
+/// as an option, a folder or a missing file never reaches it.
 pub(super) fn play_target(path: &std::path::Path) -> Result<String, String> {
     crate::ui_util::file_uri(path).ok_or_else(|| format!("{} is not a file Klipp can hand to the player", path.display()))
 }
@@ -3953,7 +3953,7 @@ impl KlippApp {
                     }
                 });
                 // One undo step, however it was asked for: from the socket it
-                // added a track of captions with none (P55).
+                // added a track of captions with none.
                 let undo_before = crate::tracks_undo::before_labelled(&self.state, "Import Subtitles");
                 match read {
                     Ok((content, bytes)) => {
@@ -5012,7 +5012,7 @@ mod field_id_tests {
 
 #[cfg(test)]
 mod play_target_tests {
-    /// EX3: Play opens a render as a file:// URI; a folder, a missing
+    /// Play opens a render as a file:// URI; a folder, a missing
     /// file or a relative, option-like name is refused, not handed over.
     #[test]
     fn play_hands_over_a_file_uri_only() {

@@ -469,7 +469,7 @@ impl NewInspectorPanel {
                         if self.last_duck_clip != Some(clip.id) {
                             self.duck = audio_tab::DuckSettings::from_prefs(&prefs.audio);
                             // Never the clip's own track: ducked under itself,
-                            // it was an error until changed (P16). With no
+                            // it was an error until changed. With no
                             // other sound track, none: its own, which the
                             // tab refuses with the reason.
                             self.duck.sidechain_track = audio_tab::default_sidechain(state.sequence(), track_idx).unwrap_or(track_idx);

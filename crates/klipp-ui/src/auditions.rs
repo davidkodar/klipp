@@ -307,7 +307,7 @@ pub fn show_picker(ctx: &egui::Context, state: &mut crate::state::AppState) -> V
                     let typed = field.with("typed");
                     let mut name: String = ui.data_mut(|d| d.get_temp(typed)).unwrap_or_else(|| t.name.clone());
                     // Wide enough for a take's name ("Take 'Boat shot 3'"),
-                    // which was cut to "Take '" (P27); all of it on hover.
+                    // which was cut to "Take '"; all of it on hover.
                     let edit = ui.add(egui::TextEdit::singleline(&mut name).desired_width(240.0).id(field)).on_hover_text(t.name.clone());
                     if edit.lost_focus() {
                         ui.data_mut(|d| d.remove::<String>(typed));

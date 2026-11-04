@@ -197,7 +197,7 @@ impl NewProjectDialog {
                     );
                     ui.add_space(40.0 * control_scale);
                     // Where it goes, as words, not a field: a field that
-                    // took no typing looked editable (P45). Browse
+                    // took no typing looked editable. Browse
                     // changes it; all of it on hover.
                     let loc_str = self.location.to_string_lossy().to_string();
                     ui.add_sized(

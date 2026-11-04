@@ -9,7 +9,7 @@ use klipp_timeline::Clip;
 /// is treated as a deliberate pause and starts a new undo entry.
 const TITLE_TEXT_COALESCE_WINDOW: Duration = Duration::from_millis(150);
 
-/// The step typing in a title makes, and in a caption (P55): a caption's
+/// The step typing in a title makes, and in a caption: a caption's
 /// text, typed or a misspelt word put right, is named as a caption's.
 pub const TITLE_TEXT: &str = "Edit Title Text";
 pub const CAPTION_TEXT: &str = "Edit Caption Text";
