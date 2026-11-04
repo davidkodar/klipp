@@ -580,6 +580,28 @@ fn timeline_layout_fingerprint(seq: &klipp_timeline::Sequence) -> u64 {
     h.finish()
 }
 
+/// How long to wait after a look at the layout that took `cost`: a parked
+/// engine spends about 2% of a core on it, whatever the timeline's size,
+/// and sees an edit within half a second at most.
+fn layout_check_wait(cost: Duration) -> Duration {
+    (cost * 49).min(Duration::from_millis(500))
+}
+
+#[cfg(test)]
+mod layout_check_wait_tests {
+    use super::layout_check_wait;
+    use std::time::Duration;
+
+    /// A small timeline is looked at nearly every tick, a large one about
+    /// 2% of the time, and none waits past half a second for an edit.
+    #[test]
+    fn the_wait_follows_the_cost_up_to_half_a_second() {
+        assert_eq!(layout_check_wait(Duration::from_micros(10)), Duration::from_micros(490));
+        assert_eq!(layout_check_wait(Duration::from_millis(5)), Duration::from_millis(245));
+        assert_eq!(layout_check_wait(Duration::from_millis(40)), Duration::from_millis(500));
+    }
+}
+
 /// Which use of the direct-present fast path is being gated; see
 /// [`PlaybackEngine::fast_path_blockers_for`].
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -2021,6 +2043,9 @@ pub struct PlaybackEngine {
     /// What the pre-grade cache was filled under (see
     /// [`timeline_layout_fingerprint`]); a different layout empties it.
     layout_fingerprint: u64,
+    /// When the tick may next look at the layout, by what the last look
+    /// cost ([`layout_check_wait`]).
+    layout_check_due: std::time::Instant,
     /// What was under the playhead when the layout was last looked at
     /// (see [`under_playhead_fingerprint`]); an edit that changes it is
     /// shown by seeking there again.
@@ -3070,6 +3095,7 @@ impl PlaybackEngine {
             presenting_progress: false,
             last_composite_path: None,
             layout_fingerprint: 0,
+            layout_check_due: std::time::Instant::now(),
             under_playhead_fingerprint: (Timecode::zero(), 0),
             quiet_seek: false,
             sdr_transfer: klipp_core::SdrTransfer::Srgb,
@@ -10413,10 +10439,20 @@ impl PlaybackEngine {
 
     /// An edit changed what is under the parked playhead, whether or not
     /// anyone said so: the UI writes many edits to the sequence and sends
-    /// nothing after them. Looked for every tick the engine is not
-    /// playing (playback follows the timeline as it goes).
+    /// nothing after them. Looked for on the ticks the engine is not
+    /// playing (playback follows the timeline as it goes), as often as a
+    /// look's cost allows: it hashes every clip.
     fn tick_layout_check(&mut self) {
-        if self.state != PlaybackState::Playing && self.note_layout_change(false) {
+        if self.state == PlaybackState::Playing {
+            return;
+        }
+        let now = std::time::Instant::now();
+        if now < self.layout_check_due {
+            return;
+        }
+        let changed = self.note_layout_change(false);
+        self.layout_check_due = now + layout_check_wait(now.elapsed());
+        if changed {
             self.show_edit_at_playhead();
         }
     }
@@ -15733,6 +15769,32 @@ mod track_switch_tests {
 
     fn peak(buf: &[f32]) -> f32 {
         buf.iter().fold(0.0, |m, s| m.max(s.abs()))
+    }
+
+    /// Only the fallback look at the layout is spaced out: an edit the UI
+    /// announces is seen at once, whenever that look is next due.
+    #[test]
+    fn an_announced_edit_is_seen_though_the_fallback_look_is_not_due() {
+        let mut seq = klipp_timeline::Sequence::new_default();
+        seq.tracks = vec![klipp_timeline::Track::new("V1", klipp_timeline::TrackKind::Video)];
+        let (mut engine, shared) = engine(seq);
+        engine.note_layout_change(true);
+        let first = engine.layout_fingerprint;
+        let later = std::time::Instant::now() + Duration::from_secs(3600);
+
+        shared.write().unwrap().tracks[0].visible = false;
+        engine.layout_check_due = later;
+        engine.tick_layout_check();
+        assert_eq!(engine.layout_fingerprint, first, "the look is not due");
+        engine.handle_command(AppCommand::SequenceUpdated);
+        let announced = engine.layout_fingerprint;
+        assert_ne!(announced, first, "announced, it is seen now");
+
+        shared.write().unwrap().tracks[0].visible = true;
+        engine.layout_check_due = std::time::Instant::now();
+        engine.tick_layout_check();
+        assert_ne!(engine.layout_fingerprint, announced, "unannounced, the look that is due sees it");
+        assert!(engine.layout_check_due <= std::time::Instant::now() + Duration::from_millis(500), "none waits past the cap");
     }
 
     /// J silences the sound, which only reads forward, and L brings it
