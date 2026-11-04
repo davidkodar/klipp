@@ -3,6 +3,15 @@
 
 use super::*;
 
+/// Whether `path` may be imported, as a project's media is taken when it
+/// opens: a picture, sound or still, not in a hidden folder outside the
+/// project's own and Klipp's. Why not, for the person.
+pub(super) fn import_check(path: &std::path::Path, project: Option<&std::path::Path>) -> Result<(), String> {
+    let trusted = klipp_media::media_check::trusted_roots(project);
+    let trusted: Vec<&std::path::Path> = trusted.iter().map(|p| p.as_path()).collect();
+    klipp_media::media_check::media_file_check(path, &trusted)
+}
+
 impl KlippApp {
     pub(super) fn handle_media_commands(&mut self, cmd: &AppCommand, needs_refresh: &mut bool) -> bool {
         // INLINE: LoadMediaFile uses two-phase dispatch. It conditionally returns
@@ -18,6 +27,19 @@ impl KlippApp {
             // old duration and an externally edited one never reloaded.
             if self.state.media_pool.get(media_id).is_some() {
                 return false;
+            }
+            // Only media is imported, by any way in, as a project's is
+            // taken when it opens (SEC1): ffmpeg reads a text file as a
+            // picture, and CREDITS.txt came in as a clip.
+            if let Err(why) = import_check(path, self.state.project_path.as_deref()) {
+                self.state.pending_undo_imports.remove(media_id);
+                self.state.pending_import_bins.remove(media_id);
+                self.state.pending_skip_analysis.remove(media_id);
+                self.state.pending_media_drop.remove(media_id);
+                self.state.pending_media_path = None;
+                let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| path.display().to_string());
+                self.state.toast.show(format!("{name} was not imported: {why}"));
+                return true;
             }
             if let Some(existing) = self.state.media_pool.find_by_path(path) {
                 let existing_id = existing.id;
@@ -2371,5 +2393,28 @@ impl crate::state::AppState {
             item.markers.sort_by(|a, b| a.secs.total_cmp(&b.secs));
             self.dirty = true;
         }
+    }
+}
+
+
+#[cfg(test)]
+mod import_check_tests {
+    /// A text file is not imported, whatever the way in (CREDITS.txt came
+    /// in as a 0:00 clip); a media file is, and one in a hidden folder
+    /// is not, as it would open offline.
+    #[test]
+    fn only_media_is_imported() {
+        let dir = std::env::temp_dir().join(format!("klipp_import_check_{}_{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.subsec_nanos()).unwrap_or(0)));
+        std::fs::create_dir_all(dir.join(".private")).unwrap();
+        let credits = dir.join("CREDITS.txt");
+        std::fs::write(&credits, "Music by someone\nLicensed CC-BY\n").unwrap();
+        let clip = dir.join("shot.mov");
+        std::fs::write(&clip, [0u8; 64]).unwrap();
+        let hidden = dir.join(".private").join("take.mov");
+        std::fs::write(&hidden, [0u8; 64]).unwrap();
+        assert!(super::import_check(&credits, None).is_err(), "a text file");
+        assert!(super::import_check(&clip, None).is_ok(), "a clip");
+        assert!(super::import_check(&hidden, None).is_err(), "a hidden folder's");
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

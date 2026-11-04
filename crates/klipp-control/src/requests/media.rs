@@ -378,6 +378,15 @@ pub(crate) fn respond(
                 let name = p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or(path.clone());
                 return Err(format!("{name} could not be imported: {why}. Is it a complete video, audio or image file?"));
             }
+            // Only media, as opening a project takes it (SEC1): ffmpeg reads
+            // a text file as a picture, and CREDITS.txt came in as a clip.
+            let project = ctx.shared.project.lock().recovered().path.clone();
+            let trusted = klipp_media::media_check::trusted_roots(project.as_deref());
+            let trusted: Vec<&std::path::Path> = trusted.iter().map(|p| p.as_path()).collect();
+            if let Err(why) = klipp_media::media_check::media_file_check(&p, &trusted) {
+                let name = p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or(path.clone());
+                return Err(format!("{name} was not imported: {why}"));
+            }
             let mut v = send(if analyze { AppCommand::ImportMedia { path: p.clone() } } else { AppCommand::ImportMediaWithAnalysis { path: p.clone(), analyze } })?;
             if let Some(operation_id) = v["operation_id"].as_str().map(str::to_owned) {
                 jobs::register_import(ctx, &operation_id, p.clone(), analyze);
