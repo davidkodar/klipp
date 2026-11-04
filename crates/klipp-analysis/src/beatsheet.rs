@@ -23,7 +23,7 @@ use crate::shots::Shots;
 pub const ID: &str = "beatsheet";
 // 10: made for screen recordings only (#500); a camera clip's beat sheet
 // from before is dropped.
-pub const VERSION: u32 = 10;
+pub const VERSION: u32 = 11;
 
 /// Frames sampled a second for freeze detection: enough to place a settle
 /// to a sixth of a second, cheap to decode.
@@ -297,6 +297,57 @@ pub fn grid_event_spots(grid: &[u8]) -> Vec<Spot> {
     out
 }
 
+/// The stretches some cell of the grid kept changing through, frame after
+/// frame (two or more grid frames running): a line sliding across, a page
+/// scrolling. freezedetect, which compares each frame to the first of its
+/// freeze, takes a slow move for still until it has drifted past its
+/// noise; each grid frame of the move then read as a beat of its own,
+/// and its start as a change that settled.
+pub fn grid_moves(grid: &[u8]) -> Vec<(f64, f64)> {
+    let cells = GRID_W * GRID_H;
+    let changed: Vec<bool> = grid.chunks_exact(cells).map(|f| f.iter().any(|v| *v > GRID_EVENT)).collect();
+    let mut out = Vec::new();
+    let mut f = 0;
+    while f < changed.len() {
+        if !changed[f] {
+            f += 1;
+            continue;
+        }
+        let start = f;
+        while f < changed.len() && changed[f] {
+            f += 1;
+        }
+        if f - start >= 2 {
+            // A grid frame's change is since the one before it.
+            out.push((start.saturating_sub(1) as f64 / GRID_FPS as f64, (f - 1) as f64 / GRID_FPS as f64));
+        }
+    }
+    out
+}
+
+/// The settled stretches: freezedetect's, less the grid's moves, each
+/// piece left at least half a second, then cut at the grid's single jumps
+/// (a dialog that came up), never at a move's frames.
+pub fn settled(frozen: &[(f64, f64)], grid: &[u8]) -> Vec<(f64, f64)> {
+    let moves = grid_moves(grid);
+    let mut still: Vec<(f64, f64)> = Vec::new();
+    for &(a, b) in frozen {
+        let mut pieces = vec![(a, b)];
+        for &(ma, mb) in &moves {
+            pieces = pieces.into_iter().flat_map(|(pa, pb)| {
+                if mb <= pa || ma >= pb {
+                    vec![(pa, pb)]
+                } else {
+                    [(pa, ma), (mb, pb)].into_iter().filter(|(x, y)| y > x).collect()
+                }
+            }).collect();
+        }
+        still.extend(pieces.into_iter().filter(|(x, y)| y - x >= 0.5));
+    }
+    let jumps: Vec<f64> = grid_events(grid).into_iter().filter(|t| !moves.iter().any(|(a, b)| *t >= *a && *t <= *b)).collect();
+    split_frozen(&still, &jumps)
+}
+
 /// Frozen spans cut at the grid's events, so a stretch the whole frame
 /// held still through is two beats when a dialog came up in the middle
 /// of it. A cut that would leave a piece under half a second is not made.
@@ -469,7 +520,7 @@ impl crate::Analyser for BeatSheetAnalyser {
                 }
             }
         }
-        frozen = split_frozen(&frozen, &grid_events(&grid));
+        frozen = settled(&frozen, &grid);
         // The scene changes, when they exist, are precise cut points; a
         // screen recording usually has none, and that is fine.
         let shots: Option<Shots> = crate::store::key_for(&item.path)
@@ -527,6 +578,35 @@ mod tests {
         // Too close to an edge: no cut.
         assert_eq!(split_frozen(&[(5.8, 20.0)], &[6.0]), vec![(5.8, 20.0)]);
         assert_eq!(split_frozen(&[(0.0, 3.0), (10.0, 12.0)], &[6.0]), vec![(0.0, 3.0), (10.0, 12.0)]);
+    }
+
+    /// The activity grid with `moving` grid frames changed in one cell.
+    fn grid_with(frames: usize, moving: &[usize]) -> Vec<u8> {
+        let cells = GRID_W * GRID_H;
+        let mut g = vec![0u8; frames * cells];
+        for f in moving {
+            g[f * cells + 20] = 40;
+        }
+        g
+    }
+
+    /// A line sliding across for six seconds, which freezedetect takes for
+    /// still: one action, no beats inside it and no cut in the middle of
+    /// it; it settles where it stops. A single jump inside a still stretch
+    /// (a dialog) still splits it.
+    #[test]
+    fn a_continuous_move_is_one_action_and_settles_where_it_stops() {
+        // Grid frames at 0.0..10.0 s; the move's frames 0.5..5.5 s.
+        let moving: Vec<usize> = (1..=11).collect();
+        let still = settled(&[(0.0, 10.0)], &grid_with(21, &moving));
+        assert_eq!(still, [(5.5, 10.0)], "the move taken out of the freeze");
+        let bs = build(10.0, None, &still);
+        let actions: Vec<(f64, f64)> = bs.segments.iter().filter(|s| s.kind == "action").map(|s| (s.start_secs, s.end_secs)).collect();
+        assert_eq!(actions, [(0.0, 5.5)], "one action for the whole move");
+        let cuts: Vec<f64> = bs.cut_points.iter().map(|c| c.secs).collect();
+        assert_eq!(cuts, [5.5], "cut where it settled, never inside it");
+        // One frame changed in a still stretch: a jump, split there.
+        assert_eq!(settled(&[(0.0, 10.0)], &grid_with(21, &[8])), [(0.0, 4.0), (4.0, 10.0)]);
     }
 
     #[test]

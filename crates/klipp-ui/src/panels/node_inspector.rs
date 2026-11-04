@@ -4988,6 +4988,12 @@ fn grade_slider_with(
 /// (`AbandonNodeParamEdit`), as the other rows' drags are.
 /// A mask parameter's name in the list: "center_x" is "Center x".
 fn param_label(name: &str) -> String {
+    // A rectangle's height is a share of the frame's width, as its width
+    // is: 0.4 covers about 71% of a 16:9 frame's height. "Height" alone
+    // read as a share of the height.
+    if name == "height" {
+        return "Height (share of frame width)".into();
+    }
     let words = name.replace('_', " ");
     let mut c = words.chars();
     c.next().map_or(String::new(), |f| f.to_uppercase().chain(c).collect())
@@ -5953,6 +5959,15 @@ mod mask_list_tests {
     /// from its own menu takes the first place, by its own command; a
     /// copy goes at the end; a lock keeps it from the viewer; the list
     /// names a mask by its name, and counts a freeform one's points.
+    /// The rectangle's height row says it is a share of the frame's
+    /// width, which it is: 0.4 covers about 71% of a 16:9 frame's height.
+    #[test]
+    fn a_rectangles_height_says_it_is_a_share_of_the_width() {
+        let r = Rig::new();
+        assert!(r.texts.iter().any(|(t, _)| t == "Height (share of frame width)"), "{:?}", r.texts);
+        assert!(!r.texts.iter().any(|(t, _)| t == "Height"));
+    }
+
     #[test]
     fn the_mask_list_sets_mode_order_copy_and_lock() {
         let mut r = Rig::new();

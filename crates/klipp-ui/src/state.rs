@@ -765,6 +765,15 @@ impl AppState {
     /// Every sequence of the project, as the control socket lists them,
     /// and the open one's index (M3 step 18).
     pub fn sequence_summaries(&self) -> (Vec<klipp_core::SequenceSummary>, usize) {
+        // A template's compositions, and what they nest: drawn inside its
+        // clips, not sequences of the project's own (#2757).
+        let mut nested: std::collections::HashSet<klipp_core::SequenceId> = std::collections::HashSet::new();
+        for root in self.sequences.iter().flat_map(|s| s.all_clips()).filter_map(|c| match &c.kind {
+            klipp_timeline::ClipKind::TemplatePrecomposition { sequence_id, .. } => self.sequences.iter().find(|s| s.id == *sequence_id),
+            _ => None,
+        }) {
+            nested.extend(klipp_timeline::composition_template::composition_sequences(root, &self.sequences).iter().map(|s| s.id));
+        }
         let list = self.sequences.iter().map(|seq| klipp_core::SequenceSummary {
             id: seq.id.to_string(),
             name: seq.name.clone(),
@@ -776,6 +785,7 @@ impl AppState {
             version: seq.version_of.map(|v| klipp_core::VersionSummary { of: v.master.to_string(), stale: seq.version_is_stale(&self.sequences).unwrap_or(false) }),
             width: seq.resolution.width,
             height: seq.resolution.height,
+            nested: nested.contains(&seq.id) && seq.id != self.sequence().id,
         }).collect();
         (list, self.active_sequence_idx)
     }
@@ -2956,6 +2966,10 @@ pub struct AppState {
     /// The dialog's summary and what it was worked out for (#77): worked
     /// out again when the options or the project change, not every frame.
     pub consolidate_summary: Option<(u64, klipp_project::consolidate::ConsolidateSummary)>,
+    /// The offline files the timelines use, worked out with the summary.
+    pub consolidate_offline: Vec<String>,
+    /// Asked for in the dialog: collect the rest though those are offline.
+    pub consolidate_allow_offline: bool,
     pub show_browser_panel: bool,
     /// When set, the browser panel should scroll to this media item.
     pub reveal_in_browser: Option<klipp_core::MediaId>,
@@ -3318,6 +3332,9 @@ pub struct AppState {
     // Proxy generation tracking
     /// Media IDs currently generating proxies — shown as status in UI
     pub proxy_generating: std::collections::HashSet<MediaId>,
+    /// Files whose proxy was made and has gone, as last looked for off this
+    /// thread: the disk isn't asked while drawing (it can stall on a network).
+    pub proxies_gone: std::collections::HashSet<MediaId>,
     /// Per-media proxy generation progress (0.0..1.0)
     pub proxy_progress: std::collections::HashMap<MediaId, f32>,
     /// Per-media proxy generation start time (for ETA calculation)
@@ -5354,6 +5371,8 @@ impl Default for AppState {
             consolidate_mode: 0,
             consolidate_handle_secs: 1.0,
             consolidate_summary: None,
+            consolidate_offline: Vec::new(),
+            consolidate_allow_offline: false,
             consolidate_delete_folder_after_zip: false,
             show_browser_panel: true,
             reveal_in_browser: None,
@@ -5494,6 +5513,7 @@ impl Default for AppState {
             audio_reference_clip_id: None,
             dragging_fade_handle: None,
             proxy_generating: std::collections::HashSet::new(),
+            proxies_gone: std::collections::HashSet::new(),
             proxy_progress: std::collections::HashMap::new(),
             proxy_start_times: std::collections::HashMap::new(),
             proxy_status_message: None,

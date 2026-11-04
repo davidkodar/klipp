@@ -985,3 +985,90 @@ fn a_project_in_a_hidden_folder_collects_its_own_media() {
         let _ = std::fs::remove_dir_all(d);
     }
 }
+
+/// A collected file is a copy, with its own date. Its proxy shows the same
+/// content, so opening the collected project, and the re-probe of each file
+/// that follows, still count the proxy that was collected with it.
+#[test]
+fn a_collected_proxy_counts_after_opening() {
+    let source = tmp_path("proxy_counts_src");
+    let dest = tmp_path("proxy_counts_dest");
+    std::fs::create_dir_all(&source).unwrap();
+    let (media, proxy) = (source.join("clip.mp4"), source.join("clip-proxy.mp4"));
+    std::fs::write(&media, b"the picture").unwrap();
+    std::fs::write(&proxy, b"its proxy").unwrap();
+    let mut item = make_media_item(media.clone());
+    item.fingerprint = klipp_media::relink::fingerprint(&media);
+    (item.proxy_path, item.proxy_ready) = (Some(proxy), true);
+    let id = item.id;
+    let mut pool = MediaPool::new();
+    pool.add(item);
+    let t = |s: f64| RationalTime::from_secs_f64(s, 24);
+    let mut seq = Sequence::new_default();
+    seq.tracks[0].clips.push(klipp_timeline::Clip::media(id, t(0.0), t(1.0), t(0.0), t(1.0)));
+    consolidate_project(
+        &source,
+        &pool,
+        &[seq],
+        &ColorSettings::default(),
+        ConsolidateOptions { dest_dir: dest.clone(), include_proxies: true, include_skims: false, mode: Default::default(), looks: Vec::new(), fonts: Vec::new() },
+        None,
+    )
+    .unwrap();
+
+    let (_, opened, ..) = load_project(&dest).unwrap();
+    let item = opened.get(&id).unwrap();
+    assert!(item.proxy_ready, "as opened");
+    let copied = item.proxy_path.clone().unwrap();
+    assert!(copied.starts_with(&dest) && copied.exists(), "the collected proxy: {copied:?}");
+
+    // The re-probe every open makes, which reads the copy's own date.
+    let mut fresh = MediaItem::synthetic_for_test(item.path.clone(), None);
+    fresh.fingerprint = klipp_media::relink::fingerprint(&item.path);
+    fresh.file_size_bytes = item.file_size_bytes;
+    fresh.file_modified_at = item.file_modified_at.map(|d| d + 1).or(Some(1));
+    klipp_media::merge_reprobed(item, &mut fresh);
+    assert!(fresh.proxy_ready && fresh.proxy_path.as_deref() == Some(copied.as_path()), "after its re-probe");
+
+    for d in [source, dest] {
+        let _ = std::fs::remove_dir_all(d);
+    }
+}
+
+/// Collected without proxies, or with a proxy whose file is gone, the copy
+/// names no proxy outside its folder: it verifies, and opens with none.
+#[test]
+fn a_proxy_not_carried_is_not_named_by_the_copy() {
+    for (name, include_proxies, proxy_there) in [("left_behind", false, true), ("gone", true, false)] {
+        let source = tmp_path(&format!("proxy_{name}_src"));
+        let dest = tmp_path(&format!("proxy_{name}_dest"));
+        std::fs::create_dir_all(&source).unwrap();
+        let (media, proxy) = (source.join("clip.mp4"), source.join("clip-proxy.mp4"));
+        std::fs::write(&media, b"the picture").unwrap();
+        if proxy_there {
+            std::fs::write(&proxy, b"its proxy").unwrap();
+        }
+        let mut item = make_media_item(media.clone());
+        (item.proxy_path, item.proxy_ready) = (Some(proxy), true);
+        let id = item.id;
+        let mut pool = MediaPool::new();
+        pool.add(item);
+        consolidate_project(
+            &source,
+            &pool,
+            &[Sequence::new_default()],
+            &ColorSettings::default(),
+            ConsolidateOptions { dest_dir: dest.clone(), include_proxies, include_skims: false, mode: Default::default(), looks: Vec::new(), fonts: Vec::new() },
+            None,
+        )
+        .unwrap();
+        let manifest = klipp_project::collect_verify::verify(&dest).unwrap();
+        assert!(manifest.verified(), "{name}: {:?}", manifest.failures());
+        let (_, opened, ..) = load_project(&dest).unwrap();
+        let item = opened.get(&id).unwrap();
+        assert!(!item.proxy_ready && item.proxy_path.is_none(), "{name}");
+        for d in [source, dest] {
+            let _ = std::fs::remove_dir_all(d);
+        }
+    }
+}

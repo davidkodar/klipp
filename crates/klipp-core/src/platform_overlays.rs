@@ -78,6 +78,19 @@ pub fn player_for(platform: &str, width: u32, height: u32) -> Option<&'static Pl
     destination.overlays.iter().filter_map(|id| by_id(id)).find(|p| p.fits(width as f32, height as f32))
 }
 
+/// Every player a sequence made for `platform` plays in, at a `width` by
+/// `height` frame: each of its destination's overlays that fits the frame
+/// (a vertical piece goes to Shorts, Reels and TikTok alike). Empty
+/// without a destination, or one with none that fits.
+pub fn players_for(platform: &str, width: u32, height: u32) -> Vec<&'static PlatformOverlay> {
+    let platform = platform.trim();
+    if platform.is_empty() {
+        return Vec::new();
+    }
+    let Some(destination) = crate::project_formats::formats().iter().filter_map(|f| f.destination.as_ref()).find(|d| d.platform.trim().eq_ignore_ascii_case(platform)) else { return Vec::new() };
+    destination.overlays.iter().filter_map(|id| by_id(id)).filter(|p| p.fits(width as f32, height as f32)).collect()
+}
+
 impl PlatformOverlay {
     /// Where something across `x0..x1` (shares of the frame's width) must
     /// end to stay clear of the player along the frame's bottom: the

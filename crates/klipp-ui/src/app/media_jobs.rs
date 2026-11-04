@@ -474,22 +474,13 @@ impl KlippApp {
         }
     }
 
-    pub(super) fn drain_thumbnails(&mut self) {
-        while let Ok(result) = self.thumb_rx.try_recv() {
-            self.state.thumbnail_cache.set_ready(
-                result.media_id,
-                result.rgba,
-                result.width,
-                result.height,
-            );
-        }
-
-        // Drain consolidation progress messages from the background thread.
-        // Keeps the status bar / dialog progress counter fresh, transitions
-        // the UI out of Phase 1 when `Done` arrives, and — if the optional
-        // archive phase was opted into — stays subscribed until `ArchiveDone`
-        // arrives. `ArchiveProgress` is byte-granular; Phase 1 progress is
-        // file-granular.
+    /// Drain consolidation progress messages from the background thread.
+    /// Keeps the status bar / dialog progress counter fresh, transitions
+    /// the UI out of Phase 1 when `Done` arrives, and — if the optional
+    /// archive phase was opted into — stays subscribed until `ArchiveDone`
+    /// arrives. `ArchiveProgress` is byte-granular; Phase 1 progress is
+    /// file-granular.
+    pub(super) fn drain_consolidation(&mut self) {
         let mut phase1_finished: Option<Result<klipp_project::consolidate::ConsolidateResult, String>> = None;
         let mut archive_finished: Option<Result<std::path::PathBuf, String>> = None;
         if let Some(progress) = self.state.consolidate_progress.as_mut() {
@@ -588,6 +579,19 @@ impl KlippApp {
                 }
             }
         }
+    }
+
+    pub(super) fn drain_thumbnails(&mut self) {
+        while let Ok(result) = self.thumb_rx.try_recv() {
+            self.state.thumbnail_cache.set_ready(
+                result.media_id,
+                result.rgba,
+                result.width,
+                result.height,
+            );
+        }
+
+        self.drain_consolidation();
         // A clip relinked by hand to a file that is not it says so.
         while let Ok((was, picked, verdict)) = self.relink_check_rx.try_recv() {
             let name = picked.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
