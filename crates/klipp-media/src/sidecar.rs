@@ -32,14 +32,27 @@ pub fn sidecar_path_for(media: &Path) -> Option<PathBuf> {
 /// Read and parse the sidecar beside `media`, if there is one.
 pub fn read_sidecar(media: &Path) -> Option<Sidecar> {
     let path = sidecar_path_for(media)?;
-    let xml = std::fs::read_to_string(&path).ok()?;
+    let xml = read_within_cap(&path)?;
     let mut sidecar = parse_sidecar(&xml)?;
     sidecar.shot.tags.push(("sidecar:file".into(), path.file_name()?.to_string_lossy().into_owned()));
     Some(sidecar)
 }
 
+/// The largest sidecar read: a camera's are a few KB.
+const MAX_SIDECAR_BYTES: u64 = 4 * 1024 * 1024;
+
+/// The text of `path`, a sidecar come with the media from anywhere: `None`
+/// past [`MAX_SIDECAR_BYTES`].
+fn read_within_cap(path: &Path) -> Option<String> {
+    use std::io::Read;
+    let mut xml = String::new();
+    std::fs::File::open(path).ok()?.take(MAX_SIDECAR_BYTES + 1).read_to_string(&mut xml).ok()?;
+    (xml.len() as u64 <= MAX_SIDECAR_BYTES).then_some(xml)
+}
+
 /// Parse a NonRealTimeMeta document. `None` when it is not one.
 pub fn parse_sidecar(xml: &str) -> Option<Sidecar> {
+    klipp_core::xml_depth::xml_depth_ok(xml).then_some(())?;
     let doc = roxmltree::Document::parse(xml).ok()?;
     let root = doc.root_element();
     if root.tag_name().name() != "NonRealTimeMeta" {
@@ -161,6 +174,47 @@ fn ltc_value_to_timecode(v: &str, drop_frame: bool) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A pipe named as a sidecar is no sidecar: reading one would block
+    /// until something wrote to it.
+    #[cfg(unix)]
+    #[test]
+    fn a_pipe_named_as_a_sidecar_is_none() {
+        let dir = std::env::temp_dir().join(format!("klipp-sidecar-pipe-{}-{:?}", std::process::id(), std::thread::current().id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let pipe = dir.join("C0001M01.XML");
+        assert!(std::process::Command::new("mkfifo").arg(&pipe).status().unwrap().success());
+        assert!(read_sidecar(&dir.join("C0001.MP4")).is_none());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// A sidecar past the cap is no sidecar, however it starts; a real one
+    /// beside its media still reads.
+    #[test]
+    fn a_sidecar_past_the_cap_is_none() {
+        let dir = std::env::temp_dir().join(format!("klipp-sidecar-cap-{}-{:?}", std::process::id(), std::thread::current().id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let media = dir.join("C0001.MP4");
+        let sidecar = dir.join("C0001M01.XML");
+        std::fs::write(&sidecar, SONY).unwrap();
+        assert!(read_sidecar(&media).is_some());
+        let mut big = SONY.as_bytes().to_vec();
+        big.resize(MAX_SIDECAR_BYTES as usize + 1, b' ');
+        std::fs::write(&sidecar, &big).unwrap();
+        assert!(read_sidecar(&media).is_none());
+        big.truncate(MAX_SIDECAR_BYTES as usize);
+        std::fs::write(&sidecar, &big).unwrap();
+        assert!(read_sidecar(&media).is_some(), "at the cap it reads");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// A camera's sidecar comes with the media, from anywhere: one nesting
+    /// past any real one is no sidecar, not a parser recursing to the end.
+    #[test]
+    fn a_sidecar_nesting_too_deep_is_none() {
+        let deep = format!("<NonRealTimeMeta>{}{}</NonRealTimeMeta>", "<a>".repeat(100_000), "</a>".repeat(100_000));
+        assert!(parse_sidecar(&deep).is_none());
+    }
 
     const SONY: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 <NonRealTimeMeta xmlns="urn:schemas-professionalDisc:nonRealTimeMeta:ver.2.20" lastUpdate="2024-03-15T10:30:00+01:00">

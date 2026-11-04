@@ -362,7 +362,7 @@ pub(crate) fn respond(
                 // Chosen by the container (VP9 and Opus for .webm, a slower
                 // software encode that is always 8-bit), so said.
                 // None for a sound-only file, which has no picture: the
-                // MP3 preset said "H.264" (EX4).
+                // MP3 preset said "H.264".
                 "video_codec": (!settings.format.is_audio_only()).then(|| settings.video_codec.label()),
                 "audio_codec": settings.audio_codec.label(),
                 "preset": preset_name,
@@ -459,12 +459,40 @@ pub(crate) fn respond(
                 }
             }
             // A file a subtitle track when there are several (#2223).
-            let files = {
+            // An EBU-STL file's character table, and what it has no form
+            // for (written as "?"): said, never left to be found.
+            let (files, tables) = {
                 let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
-                klipp_document::subtitle_export::files(&seq, &p)
+                let files = klipp_document::subtitle_export::files(&seq, &p);
+                let tables: Vec<Option<(&'static str, Vec<char>)>> = files
+                    .iter()
+                    .map(|f| {
+                        (ext == "stl").then(|| {
+                            let texts: Vec<String> = f.tracks.iter().flat_map(|&i| &seq.tracks[i].clips).filter_map(|c| c.title_data().map(|td| td.text())).chain([seq.name.clone()]).collect();
+                            let (table, lost) = klipp_captions::stl::character_table(texts.iter().map(String::as_str));
+                            (table.name(), lost)
+                        })
+                    })
+                    .collect();
+                (files, tables)
             };
             let mut v = send(AppCommand::ExportSubtitles { path: p })?;
-            v["files"] = json!(files.iter().map(|f| json!({ "path": f.path.display().to_string(), "tracks": f.tracks, "language": f.language })).collect::<Vec<_>>());
+            v["files"] = json!(files
+                .iter()
+                .zip(&tables)
+                .map(|(f, t)| {
+                    let mut file = json!({ "path": f.path.display().to_string(), "tracks": f.tracks, "language": f.language });
+                    if let Some((table, lost)) = t {
+                        file["character_table"] = json!(table);
+                        file["not_written"] = json!(lost.iter().map(|c| c.to_string()).collect::<Vec<_>>());
+                    }
+                    file
+                })
+                .collect::<Vec<_>>());
+            let lost: usize = tables.iter().flatten().map(|(_, l)| l.len()).sum();
+            if lost > 0 {
+                v["warning"] = json!(format!("EBU-STL has no character table for {lost} character(s) of these captions (not_written in each file): they are written as \"?\""));
+            }
             Ok(v)
         }
 
@@ -615,7 +643,7 @@ pub(crate) fn respond(
             if !p.is_file() {
                 return Err(format!("no file at {path:?}"));
             }
-            let language = std::fs::read(&p).ok().and_then(|bytes| klipp_captions::file_language(&p, &bytes));
+            let language = klipp_captions::read_subtitle_file(&p).ok().and_then(|bytes| klipp_captions::file_language(&p, &bytes));
             let mut v = send(AppCommand::ImportSubtitles { path: p })?;
             v["language"] = json!(language);
             v["next"] = json!("The cues land on a new subtitle track named after the file, in the language the file names (language, null when it names none); timeline shows it.");

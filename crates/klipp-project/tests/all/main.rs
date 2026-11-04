@@ -14,6 +14,8 @@ mod auto_move_save;
 mod guide_brand_kit_example;
 #[path = "../rich_round_trip.rs"]
 mod rich_round_trip;
+#[path = "../digest_agrees_with_save.rs"]
+mod digest_agrees_with_save;
 #[path = "../autosave_restore_paths.rs"]
 mod autosave_restore_paths;
 #[path = "../crash_recovery_open.rs"]
@@ -48,6 +50,8 @@ mod corner_pin_round_trip;
 mod dangling_transition_heals;
 #[path = "../drop_frame_round_trip.rs"]
 mod drop_frame_round_trip;
+#[path = "../edl_overlap_round_trip.rs"]
+mod edl_overlap_round_trip;
 #[path = "../edit_plan_round_trip.rs"]
 mod edit_plan_round_trip;
 #[path = "../frame_glide_round_trip.rs"]

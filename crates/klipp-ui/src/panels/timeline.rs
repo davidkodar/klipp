@@ -2884,7 +2884,7 @@ impl TimelinePanel {
                                     .map(|clip| {
                                         let clip_start = clip.timeline_in.to_secs_f64();
                                         let clip_dur = clip.duration().to_secs_f64();
-                                        let playhead_rel = (state.playhead_smooth_secs - clip_start).clamp(0.0, clip_dur);
+                                        let playhead_rel = (state.playhead_smooth_secs - clip_start).clamp(0.0, clip_dur.max(0.0));
                                         let empty_kfs: Vec<klipp_core::Keyframe> = Vec::new();
                                         // The placement and opacity lanes as the picture holds them (M4 step 12c).
                                         let video_lane: Vec<klipp_core::Keyframe> = match &ctx_menu.param_kind { crate::state::KeyframeParamKind::Video(p) => crate::inspector::placement_by_path::param_keys(clip, *p), _ => Vec::new() };
@@ -3284,6 +3284,16 @@ impl TimelinePanel {
                             0.0,
                             egui::Stroke::new(2.0_f32, tt.marker_error),
                         );
+                        // Alt-let go on a clip the files can't be takes of:
+                        // the edit refuses, and says why (#3209).
+                        if !any_down && ui.input(|i| i.modifiers.alt) {
+                            let secs = ((pos.x - content_rect.left() + state.timeline_scroll_x) / state.timeline_zoom.max(1e-6)) as f64;
+                            if let Some(clip_id) = state.sequence().tracks.get(track_idx).and_then(|t| crate::auditions::drop_target(t, secs)) {
+                                state.dragging_media = None;
+                                state.dragging_media_group.clear();
+                                cmds.push(AppCommand::EditAudition { clip_id, edit: klipp_core::AuditionEdit::AddMedia { media_ids: group } });
+                            }
+                        }
                     }
                 }
             }
@@ -19669,8 +19679,8 @@ mod snap_tests {
     }
 
     /// A brand kit's intro, or any composition or compound clip laid in,
-    /// is called by the sequence inside it when it has no name of its own
-    /// (P43): it was drawn with no name at all.
+    /// is called by the sequence inside it when it has no name of its own:
+    /// it was drawn with no name at all.
     #[test]
     fn a_composition_clip_is_named_by_its_sequence() {
         let mut state = AppState::default();

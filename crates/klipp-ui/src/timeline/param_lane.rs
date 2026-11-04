@@ -82,7 +82,7 @@ pub(crate) fn draw(
     };
     let to_x = |t: f64| clip_rect.left() + ((t / duration).clamp(0.0, 1.0) as f32) * clip_rect.width();
     let to_y = |v: f32| clip_rect.bottom() - ((v - lo) / (hi - lo).max(1e-6)).clamp(0.0, 1.0) * clip_rect.height();
-    let from_x = |x: f32| (((x - clip_rect.left()) / clip_rect.width().max(1.0)) as f64 * duration).clamp(0.0, duration);
+    let from_x = |x: f32| (((x - clip_rect.left()) / clip_rect.width().max(1.0)) as f64 * duration).clamp(0.0, duration.max(0.0));
     let from_y = |y: f32| lo + ((clip_rect.bottom() - y) / clip_rect.height().max(1.0)).clamp(0.0, 1.0) * (hi - lo);
     let under = egui::Color32::from_black_alpha(150);
     let line = theme.accent;

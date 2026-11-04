@@ -7,7 +7,7 @@ impl KlippApp {
     /// Render whichever model-download dialog matches the current
     /// state. Drains worker events first so progress updates land
     /// the same frame they arrive.
-    /// The Speed dialog's Fit to the marked range applied (P53): the clip
+    /// The Speed dialog's Fit to the marked range applied: the clip
     /// and its linked sound on the marks, at the speed that takes, over
     /// what is there or pushing it along by the edit mode, as one undo
     /// step; the clip there selected.
@@ -372,7 +372,7 @@ impl KlippApp {
                     ui.set_min_width(280.0);
                     // Its width fixed: the sound's hint below is longer for
                     // tape than for kept pitch, and the window grew and
-                    // shrank with it (P54).
+                    // shrank with it.
                     ui.set_max_width(320.0);
                     ui.add_space(4.0);
 
@@ -465,7 +465,7 @@ impl KlippApp {
                     ui.add_space(8.0);
 
                     ui.horizontal(|ui| {
-                        // On the marks (P53), while the speed is still the
+                        // On the marks, while the speed is still the
                         // one the fit set.
                         let on_marks = self.state.speed_dialog_on_marks
                             && self.state.speed_dialog_fit.range.is_some_and(|l| (crate::speed_dialog::percent_for(content, l).clamp(1.0, 1000.0) - self.state.speed_dialog_value).abs() < 1e-6);
@@ -1333,7 +1333,7 @@ impl KlippApp {
                         }
                         ui.label(said).on_hover_text(if s.left_out.is_empty() { String::new() } else { format!("Left out:\n{}", s.left_out.join("\n")) });
                         // Each file that leaves the machine in the folder,
-                        // by name, and what it will not carry (SEC1).
+                        // by name, and what it will not carry.
                         egui::CollapsingHeader::new(format!("Files it copies ({})", s.copies.len())).id_salt("collect_copies").show(ui, |ui| {
                             egui::ScrollArea::vertical().max_height(160.0).show(ui, |ui| {
                                 for path in &s.copies {

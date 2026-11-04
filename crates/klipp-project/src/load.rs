@@ -513,7 +513,7 @@ fn load_project_as(dir: &Path, form: crate::FileForm, strict: bool) -> Result<Lo
         // A file that lists other inputs (a playlist, a concat list) is
         // not media, whatever its name: offline, never handed to ffmpeg.
         let listed = kind == MediaItemKind::File && path.exists() && klipp_media::is_input_list(&path);
-        // A project can name any file on the machine (SEC1): one that is
+        // A project can name any file on the machine: one that is
         // not a picture, sound or still, or one in a hidden folder, stays
         // offline with why, and is never read or collected.
         let refused = (kind == MediaItemKind::File && path.exists() && !listed).then(|| klipp_media::media_check::media_file_check(&path, &trusted).err()).flatten();
@@ -781,8 +781,8 @@ fn load_project_as(dir: &Path, form: crate::FileForm, strict: bool) -> Result<Lo
 
     stored.retain(|(_, id), _| !rewritten.contains(id));
     adopt_stored_pictures(&mut sequences, stored, strict)?;
-    for (cid, n, blends) in version_blends {
-        let clip = sequences.iter_mut().flat_map(|s| s.all_clips_mut()).find(|c| c.id.0 == cid).ok_or_else(|| format!("This project's clip {cid} isn't read, so its grade version's mix can't be kept"))?;
+    for (sid, cid, n, blends) in version_blends {
+        let clip = sequences.iter_mut().filter(|s| s.id.0 == sid).flat_map(|s| s.all_clips_mut()).find(|c| c.id.0 == cid).ok_or_else(|| format!("This project's clip {cid} isn't read, so its grade version's mix can't be kept"))?;
         clip.set_version_blends(n, &blends).map_err(|e| format!("This project's clip {cid} can't keep its grade version's mix: {e}"))?;
     }
     for (sid, root, blends) in sequence_blends {

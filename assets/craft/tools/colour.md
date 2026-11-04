@@ -19,7 +19,7 @@ Send a published 24-patch ColorChecker through the render path and read it back,
 
 ## klipp_frame_stats
 
-The scope readings of the frame at a time, the numbers a colourist grades to: the black, mid and white luma points in IRE, the RGB balance and any cast, the saturation, how much is clipped at white and black — and in CIELAB: lightness percentiles, contrast, chroma, the cast on the neutrals (a*, b*, named), and every face read as a grid of skin patches (hue against the 40–65° skin band, chroma, lightness, spread), each judged against the brief's look with the knob that fixes it. Read it before and after a grade — grade to the numbers, not by eye, and match a shot to its neighbours by them.
+The scope readings of the frame at a time, the numbers a colourist grades to: the black, mid and white luma points in IRE, the RGB balance and any cast, the saturation, how much is clipped at white and black — and in CIELAB: lightness percentiles, contrast, chroma, the cast on the neutrals (a*, b*, named), and every face read as a grid of skin patches (hue against the 25–70° skin band, chroma, lightness, spread), each judged against the brief's look with the knob that fixes it. Read it before and after a grade — grade to the numbers, not by eye, and match a shot to its neighbours by them.
 
 ## klipp_grade_chain
 
@@ -101,7 +101,7 @@ Arguments:
 
 ## klipp_skin_balance
 
-Skin onto the skin band, by measurement: the faces in the clip's frame (the framing analysis's people, the head of each) are read as an 8×8 grid of skin patches in CIELAB; the face's median hue is held to the band 40–65° that real skin of every kind sits in. With apply true a skin secondary (a qualifier keyed on skin, a hue shift) turns the hue onto the band, measured again after each of up to three rounds. Refused when the face is lit by two colours of light; when the scene's neutrals carry the same cast the reply says to white balance first. Read a face at any time with klipp_frame_stats.
+Skin onto the skin band, by measurement: the faces in the clip's frame (the framing analysis's people, the head of each) are read as a grid of skin patches in CIELAB (8×8 for a face that fills the frame, down to 3×3 for a small one); the face's median hue is held to the band 25–70° that real skin of every kind sits in as photographed, aiming at 45°. With apply true a skin secondary (a qualifier keyed on skin, a hue shift) turns the hue onto the band, measured again after each of up to three rounds. Refused when the face is lit by two colours of light; when the scene's neutrals carry the same cast the reply says to white balance first. Read a face at any time with klipp_frame_stats.
 
 ## klipp_track_surface
 

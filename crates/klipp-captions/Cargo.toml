@@ -7,6 +7,7 @@ license.workspace = true
 [dependencies]
 # TTML, DFXP and IMSC read (#1516), as the media sidecars are.
 roxmltree = "0.20"
+klipp-core = { workspace = true }
 
 [lints]
 workspace = true

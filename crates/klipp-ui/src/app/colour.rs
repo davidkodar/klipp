@@ -1936,6 +1936,11 @@ impl KlippApp {
                 };
                 let seq = &self.state.sequences[self.state.active_sequence_idx];
                 let Some(clip) = seq.all_clips().find(|c| c.id == *clip_id) else { return true };
+                // The library's file would keep it without its mixes.
+                if clip.holds_grade_mix() {
+                    self.state.toast.show(GRADE_MIX_NOT_COPIED);
+                    return true;
+                }
                 // Its thumbnail, as the strip shows it: the clip graded, at its middle.
                 let thumbnail = klipp_render::still::clip_still(clip, &self.state.media_pool, clip.duration().to_secs_f64() / 2.0, crate::graded_thumbs::THUMB_WIDTH, klipp_engine::video_decoder::working_colorspace()).ok();
                 // Its nodes' colour labels in its file (#1866).

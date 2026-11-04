@@ -901,7 +901,7 @@ fn a_collected_folder_moved_away_from_its_originals_opens_whole() {
     let _ = std::fs::remove_dir_all(&moved);
 }
 
-/// SEC1: a shared project's media entries name a plain text file and a
+/// A shared project's media entries name a plain text file and a
 /// key in a hidden folder beside one clip. Opened, those two are offline
 /// with why and the clip is online; collected, the folder carries the clip
 /// alone, the dry run names it and says what it will not carry.
@@ -952,7 +952,7 @@ fn a_hostile_project_carries_no_private_file() {
     }
 }
 
-/// SEC1: a project kept in a hidden folder has its own media opened and
+/// A project kept in a hidden folder has its own media opened and
 /// collected, as open and Collect ask the same check of each file: its
 /// own media were online, then refused by Collect as in a hidden folder.
 /// A file outside it there is still refused by both.
