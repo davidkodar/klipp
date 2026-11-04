@@ -1496,7 +1496,9 @@ fn apply_export_preset(settings: &mut klipp_core::ExportSettings, name: &str) ->
     // The 9:16 preset's name before it was named for where it goes.
     let wanted = if wanted == "instagram vertical" { "shorts, reels, tiktok 9:16".to_string() } else { wanted };
     let Some(p) = presets.iter().find(|p| p.name.to_lowercase() == wanted || p.id == name.trim()) else {
-        let names: Vec<&str> = presets.iter().map(|p| p.name.as_str()).collect();
+        // Each quoted: a name with commas of its own ("Shorts, Reels,
+        // TikTok 9:16") read as several in a bare list.
+        let names: Vec<String> = presets.iter().map(|p| format!("{:?}", p.name)).collect();
         return Err(format!("no export preset {name:?}; the presets are {}", names.join(", ")));
     };
     let s = &p.settings;
@@ -1714,6 +1716,20 @@ fn ttml_family(f: &str) -> &str {
 fn subtitle_format(p: &std::path::Path) -> Option<&'static str> {
     let ext = p.extension()?.to_str()?.to_ascii_lowercase();
     SUBTITLE_FORMATS.iter().copied().find(|f| *f == ext)
+}
+
+#[cfg(test)]
+mod preset_name_tests {
+    /// The refusal names each preset whole: one with commas in its name
+    /// is quoted, so "Shorts" isn't read as a preset of its own.
+    #[test]
+    fn a_refusal_quotes_each_preset_name() {
+        let err = super::apply_export_preset(&mut klipp_core::ExportSettings::default(), "Shorts").unwrap_err();
+        assert!(err.contains("\"Shorts, Reels, TikTok 9:16\""), "{err}");
+        for p in klipp_core::builtin_presets() {
+            assert!(err.contains(&format!("{:?}", p.name)), "{} not quoted: {err}", p.name);
+        }
+    }
 }
 
 #[cfg(test)]
