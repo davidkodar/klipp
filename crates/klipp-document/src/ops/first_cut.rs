@@ -360,8 +360,13 @@ pub fn ops(seq: &Sequence, changes: &[Change], exclude: &[usize], music: Option<
         let removed: i64 = merged.iter().map(|(a, b)| b - a).sum();
         let end = seq.tracks.iter().flat_map(|t| &t.clips).map(|c| (secs(c.timeline_out) * rate).round() as i64).max().unwrap_or(0);
         let length = (end - removed).max(1) as f64 / rate;
-        // An audio track goes at the bottom: its index is the count now.
-        let track = seq.tracks.len();
+        // An audio track goes at the bottom: its index is the count of
+        // tracks by then, the captions' track among them when the
+        // captions above made one. Counted before them, the bed went to
+        // the caption track and was refused there, as overlapping the
+        // speech's own sound.
+        let made_for_captions = wants(Kind::Captions) && !seq.tracks.iter().any(|t| t.kind == klipp_timeline::TrackKind::Subtitle);
+        let track = seq.tracks.len() + usize::from(made_for_captions);
         out.push(op(serde_json::json!({"op": "add_track", "kind": "audio", "name": "Music"})));
         out.push(op(serde_json::json!({"op": "place", "media_id": media, "track": track, "at": {"secs": 0.0}, "source_out": length})));
         out.push(op(serde_json::json!({"op": "duck", "clip_id": {"track": track, "secs": 0.5 / rate}})));
@@ -741,6 +746,51 @@ mod tests {
         two.tracks.truncate(1);
         let refit = apply(&two, &pool, Op::Refit { markers: false, punch: Some(1.15), keep: Vec::new() });
         assert_eq!(scales(&refit), [1.0, 1.15, 1.0, 1.0, 1.15]);
+    }
+
+    /// A First Cut with captions and a music bed, on a timeline with no
+    /// caption track yet, lays the bed on its own Music track under the
+    /// speech and the captions on theirs. The bed went to the caption
+    /// track the captions had just made and the whole cut was refused,
+    /// "its sound would overlap" the speech's own.
+    #[test]
+    fn a_music_bed_goes_on_its_own_track_beside_new_captions() {
+        let (seq, mut pool) = talking();
+        assert!(!seq.tracks.iter().any(|t| t.kind == TrackKind::Subtitle), "no caption track yet");
+        let mut bed = klipp_media::MediaItem::synthetic_for_test("/tmp/bed.mp3".into(), None);
+        bed.duration = tc(200.0);
+        bed.video_codec.clear();
+        bed.has_audio = true;
+        let bed = pool.add(bed);
+        let op = Op::FirstCut { silences: true, fillers: true, retakes: false, punch: false, captions: true, music: Some(bed), tightness: Tightness::Normal, exclude: Vec::new() };
+        let plan = resolve_with(&seq, &pool, &[op], &Slivers).unwrap_or_else(|r| panic!("refused: {r}"));
+        let mut seqs = vec![seq.clone()];
+        let (mut p, mut fps) = (pool.clone(), seq.fps);
+        let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps };
+        view.apply_forward(&plan.steps[0].edit);
+        let cut = seqs.remove(0);
+        let music = cut.tracks.iter().find(|t| t.name == "Music").expect("a Music track");
+        assert_eq!(music.kind, TrackKind::Audio);
+        assert!(music.clips.iter().any(|c| c.media_id() == Some(bed)), "the bed on it");
+        let captions = cut.tracks.iter().find(|t| t.kind == TrackKind::Subtitle).expect("a caption track");
+        assert!(!captions.clips.is_empty() && captions.clips.iter().all(|c| c.media_id() != Some(bed)), "the captions on theirs");
+    }
+
+    /// A sound-only file placed on a caption track is refused for that,
+    /// not as overlapping the speech on the first audio track.
+    #[test]
+    fn a_sound_placed_on_a_caption_track_is_told_so() {
+        let (mut seq, mut pool) = talking();
+        seq.tracks.push(Track::new("S1", TrackKind::Subtitle));
+        let caption_track = seq.tracks.len() - 1;
+        let mut bed = klipp_media::MediaItem::synthetic_for_test("/tmp/bed-on-captions.mp3".into(), None);
+        bed.duration = tc(60.0);
+        bed.video_codec.clear();
+        bed.has_audio = true;
+        let bed = pool.add(bed);
+        let place = op(serde_json::json!({"op": "place", "media_id": bed, "track": caption_track, "at": {"secs": 0.0}, "source_out": 5.0}));
+        let why = resolve_with(&seq, &pool, &[place], &Slivers).unwrap_err();
+        assert!(why.why.contains("is sound only, and track 2 is a caption track") && why.hint.contains("audio track"), "{why}");
     }
 
     /// "Um, so, uh, let me show you": fillers that start between frames.

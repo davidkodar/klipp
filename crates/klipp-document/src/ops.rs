@@ -4908,6 +4908,13 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             if t.locked {
                 return Err(refuse(i, format!("track {ti} is locked"), "unlock it, or use another track"));
             }
+            // A file of sound alone on a caption or text track: said so.
+            // Its sound went to the first audio track, and was refused as
+            // overlapping the speech there, which named the wrong thing.
+            if matches!(t.kind, TrackKind::Subtitle | TrackKind::Text) && item.has_audio && item.video_codec.is_empty() && !item.is_still {
+                let what = if t.kind == TrackKind::Subtitle { "caption" } else { "text" };
+                return Err(refuse(i, format!("{} is sound only, and track {ti} is a {what} track", item.filename), "place it on an audio track"));
+            }
             let media_dur = secs(item.duration);
             let s_in = source_in.unwrap_or(0.0);
             let s_out = source_out.unwrap_or(media_dur);
