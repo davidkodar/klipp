@@ -1763,6 +1763,7 @@ impl KlippApp {
         // All three need to wind down together so pro-NLE "mouse-leave
         // = back to the committed playhead" semantics hold uniformly.
         let lost_focus = !ctx.input(|i| i.viewport().focused.unwrap_or(true));
+        self.state.window_unfocused = lost_focus;
         let any_skim_state_alive = self.state.browser_skim_media_id.is_some()
             || self.state.skim_audio_session.is_some()
             || self.state.program_skim_active;

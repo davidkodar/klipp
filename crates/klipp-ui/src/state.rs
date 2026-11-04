@@ -2212,6 +2212,8 @@ pub struct AppState {
     pub skim_last_audio_dispatch: std::time::Instant,
     /// The clip whose skim audio last would not start, and when (#3432).
     pub skim_audio_refused: Option<(klipp_core::MediaId, std::time::Instant)>,
+    /// The window lost the input focus: the frame loop ends skims then.
+    pub window_unfocused: bool,
 
     // Video stabilization analysis state
     /// Clips whose per-frame light is being measured for Deflicker.
@@ -5078,6 +5080,7 @@ impl Default for AppState {
             recent_files_snapshot: Vec::new(),
             skim_last_audio_dispatch: std::time::Instant::now(),
             skim_audio_refused: None,
+            window_unfocused: false,
             deflicker_in_progress: std::collections::HashSet::new(),
             deflicker_progress: std::collections::HashMap::new(),
             stabilization_in_progress: std::collections::HashSet::new(),
@@ -6281,6 +6284,7 @@ impl AppState {
     /// long as the pointer rested on it, a warning each time.
     pub fn skim_audio_may_start(&self, media: klipp_core::MediaId) -> bool {
         self.skim_audio_session.is_none()
+            && !self.window_unfocused
             && self.media_pool.get(&media).is_none_or(|m| m.has_audio)
             && !self.skim_audio_refused.is_some_and(|(m, at)| m == media && at.elapsed() < SKIM_AUDIO_RETRY)
     }
@@ -8102,6 +8106,12 @@ mod selection_and_skim_tests {
         let earlier = std::time::Instant::now().checked_sub(SKIM_AUDIO_RETRY * 2).unwrap();
         state.skim_audio_refused = Some((media, earlier));
         assert!(state.skim_audio_may_start(media), "asked again after a while");
+        // The frame loop ends a skim in a window without focus, so one
+        // started there would be started and ended on every frame.
+        state.window_unfocused = true;
+        assert!(!state.skim_audio_may_start(media), "not without focus");
+        state.window_unfocused = false;
+        assert!(state.skim_audio_may_start(media), "back with the focus");
     }
 
     /// A file with no sound has no skim audio to start: never asked,

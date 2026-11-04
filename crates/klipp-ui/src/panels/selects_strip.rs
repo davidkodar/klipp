@@ -224,7 +224,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState, theme: &KlippTheme, rect: e
 /// The selects' picture at `t` in the Source viewer, as hovering a clip
 /// in the media pool shows it: the cut's playhead stays where it is.
 fn skim(ui: &egui::Ui, state: &mut AppState, seq: &Sequence, t: Timecode, cmds: &mut Vec<AppCommand>) {
-    if !state.skimming_enabled || state.has_modal_open() {
+    if !state.skimming_enabled || state.window_unfocused || state.has_modal_open() {
         return;
     }
     let Some((media_id, secs)) = skim_target(seq, t) else { return };
