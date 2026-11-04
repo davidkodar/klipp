@@ -186,3 +186,57 @@ fn every_gate_from_a_seeded_source_draws_the_gated_frame_or_refuses() {
         }
     }
 }
+
+/// `p`'s graph with its window switched off.
+fn window_off(p: Producer) -> NodeGraph {
+    let mut g = graph(p);
+    g.nodes.iter_mut().filter(|n| n.kind == NodeKind::Mask).for_each(|n| n.enabled = false);
+    g
+}
+
+/// A switched-off window on a Corrector's mask input is ignored: the
+/// correction applies to the whole frame, as with no mask wired, on the
+/// CPU and on the GPU, and from a seeded source the GPU draws it without
+/// asking for the CPU picture. The CPU took the switched-off window's
+/// input picture, or the source, for the matte, so a window fed by the
+/// source graded by the picture's red and an unfed one asked for the CPU
+/// picture.
+#[test]
+fn a_switched_off_window_on_a_correctors_mask_is_ignored() {
+    let (_, source) = picture();
+    let whole = |ex: &mut GraphExecutor| ex.execute_linear(&source, &window_off(Producer::Window).without_mask_input(), W, H, 0.0, 0, None, None).unwrap().0;
+    let want = whole(&mut GraphExecutor::new_cpu_only());
+    assert!(px(&want, 2, 2)[0] > px(&source, 2, 2)[0] * 1.8, "with no mask the correction applies everywhere");
+    let mut cases = Vec::new();
+    for p in [Producer::Window, Producer::UnfedWindow] {
+        cases.push((format!("cpu, {p:?}"), GraphExecutor::new_cpu_only().execute_linear(&source, &window_off(p), W, H, 0.0, 0, None, None).unwrap().0));
+    }
+    let mut ex = GraphExecutor::new();
+    if ex.gpu_pipeline_or_init().is_some() {
+        for p in [Producer::Window, Producer::UnfedWindow] {
+            cases.push((format!("gpu, {p:?}"), GraphExecutor::new().execute_linear(&source, &window_off(p), W, H, 0.0, 0, None, None).unwrap().0));
+            let mut seeded = GraphExecutor::new();
+            assert!(seeded.prime_chain_from_srgb8(&std::sync::Arc::new(picture().0), W, H), "seeded");
+            let out = seeded.execute_linear(&[], &window_off(p), W, H, 0.0, 0, None, None).unwrap_or_else(|e| panic!("gpu seeded, {p:?}: {e:?}"));
+            cases.push((format!("gpu seeded, {p:?}"), out.0));
+        }
+    } else {
+        assert!(std::env::var_os("KLIPP_TEST_REQUIRE_GPU").is_none_or(|v| v != "1"), "required, but there is no GPU");
+        eprintln!("UNVERIFIED: no GPU");
+    }
+    for (name, out) in cases {
+        assert!(worst(&out, &want) < 3e-3, "{name}: differs from the ungated correction by {}", worst(&out, &want));
+    }
+}
+
+trait WithoutMask {
+    fn without_mask_input(self) -> Self;
+}
+
+impl WithoutMask for NodeGraph {
+    /// The graph with nothing on any port 1: the Corrector ungated.
+    fn without_mask_input(mut self) -> Self {
+        self.edges.retain(|e| e.to_port != 1);
+        self
+    }
+}

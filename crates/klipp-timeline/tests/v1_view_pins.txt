@@ -103,7 +103,10 @@ LegacyFlags 20
 ClipRecordV2 31
 LegacyClipAnim 15
 MissingLegacy 5
-SetPayload 25
+# Raised by one for a redaction that follows the text: a mask's rectangle
+# lives only in its legacy entry, so the window's keyframes are written
+# there (ops::follow_window) until masks have a v2 route.
+SetPayload 26
 SetPayloadAt 17
 legacy 171
 legacy_flags 44

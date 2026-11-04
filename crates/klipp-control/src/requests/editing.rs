@@ -394,27 +394,52 @@ pub(crate) fn respond(
                 if !(m.from_secs >= 0.0 && m.to_secs > m.from_secs && m.to_secs <= dur + 0.5) {
                     return Err(format!("moment {}: {:.2}-{:.2} s is not inside the file's {dur:.2} s", k + 1, m.from_secs, m.to_secs));
                 }
-                let pieces = klipp_document::shorts::pieces(&words, m.from_secs, m.to_secs, tighten, lists.as_deref().ok());
+                let pieces = klipp_document::shorts::pieces(&words, m.from_secs, m.to_secs, dur, tighten, lists.as_deref().ok());
                 if pieces.is_empty() {
                     return Err(format!("moment {}: nothing is said in {:.2}-{:.2} s", k + 1, m.from_secs, m.to_secs));
                 }
                 let hook = m.hook.clone().unwrap_or_else(|| words.iter().filter(|w| w.start_secs >= m.from_secs - 0.05).take(8).map(|w| w.text.trim()).collect::<Vec<_>>().join(" "));
                 planned.push((pieces, hook));
             }
+            // Every short built here, whole, before any reaches the
+            // project: added together as one edit of the sequence they
+            // were made from, so a moment refused leaves nothing behind,
+            // one undo takes them all away, and each name is new. Made one
+            // by one in sequences of their own, a refusal left an empty
+            // one, each was two undo steps that left it, and every call's
+            // first was "Short 1".
+            let mut taken: Vec<String> = ctx.shared.project.lock().recovered().sequences.iter().map(|s| s.name.clone()).collect();
+            let fps = item.fps;
+            let mut pool = ctx.media_pool.read().recovered().clone();
             let mut made = Vec::new();
+            let mut shorts = Vec::new();
             for (k, (pieces, hook)) in planned.iter().enumerate() {
-                let short: String = hook.chars().take(40).collect();
-                let name = format!("Short {}: {}", k + 1, short.trim());
-                crate::handle(ctx, ControlCommand::NewSequence { name: name.clone(), width: 1080, height: 1920, fps: item.fps.as_f64() }, &mut None)?;
+                let name = short_name(&taken, hook);
+                taken.push(name.clone());
+                let mut short = klipp_timeline::Sequence::new_default();
+                short.name = name.clone();
+                short.resolution = klipp_core::Resolution { width: 1080, height: 1920 };
+                short.fps = fps;
+                short.drop_frame = klipp_timeline::Sequence::default_drop_frame(fps);
+                short.first_clip_autoset = klipp_timeline::FirstClipAutoSet { resolution: false, fps: false, rate_answered: false };
                 let ops = klipp_document::shorts::short_ops(id, pieces, hook_title.then_some(hook.as_str()), 1.15);
-                crate::handle(ctx, ControlCommand::Apply { ops, expected_revision: None, expected_project_identity: None, label: Some(format!("Make Short {}", k + 1)), detail: false }, &mut None)?;
-                let sounds: Vec<String> = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?.tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Audio).flat_map(|t| &t.clips).map(|c| c.id.0.to_string()).collect();
-                if !sounds.is_empty() {
-                    crate::handle(ctx, ControlCommand::NormalizeClips { clip_ids: sounds, mode: klipp_core::normalize::NormalizeMode::Loudness, target: Some(lufs), target_name: None, ceiling_dbtp: Some(-1.0), group: true, apply: Some(true) }, &mut None)?;
+                let plan = klipp_document::ops::resolve_with(&short, &pool, &ops, &crate::plans::AnalysedTranscripts).map_err(|r| format!("moment {}: {r}; nothing was made", k + 1))?;
+                let mut built = vec![short];
+                let mut seq_fps = fps;
+                let mut view = klipp_document::apply::DocumentView { sequences: &mut built, active: 0, media_pool: &mut pool, fps: &mut seq_fps };
+                for step in &plan.steps {
+                    view.apply_forward(&step.edit);
                 }
+                let mut short = built.pop().ok_or("the short was not built")?;
+                level_short(&mut short, &pool, lufs)?;
                 let secs: f64 = pieces.iter().map(|(a, b)| b - a).sum();
-                made.push(json!({ "name": name, "pieces": pieces.len(), "secs": secs }));
+                made.push(json!({ "name": name, "pieces": pieces.len(), "secs": secs, "sequence_id": short.id.0.to_string() }));
+                shorts.push(short);
             }
+            let first_index = ctx.shared.project.lock().recovered().sequences.len();
+            let edit = klipp_document::history::EditCommand::AddSequences { sequences: shorts };
+            send_full_envelope(ctx, Vec::new(), vec![edit], true, None, Some("Make Shorts".into()))?;
+            send(AppCommand::SetActiveSequence { sequence_idx: first_index })?;
             let text = made.iter().map(|m| format!("  {} ({} piece(s), {:.1} s)", quoted(m["name"].as_str().unwrap_or_default()), m["pieces"], m["secs"].as_f64().unwrap_or_default())).collect::<Vec<_>>().join("\n");
             let language = match &lists {
                 Ok(l) => format!("Filler runs read in {}.", l.language),
@@ -1645,4 +1670,52 @@ fn import_template_pack(path: &str, replace: bool) -> Result<serde_json::Value, 
     }
     let source = klipp_timeline::template_places::Source::Pack(pack.folder.clone()).name();
     Ok(json!({ "text": format!("{} (as {source})", report.text(&pack.name)), "source": source, "added": report.added, "missing": report.fallbacks, "fonts_added": report.fonts_added, "presets_added": report.presets_added, "presets_not_offered": report.presets_skipped }))
+}
+
+
+/// A short's name, "Short N: <hook>", N the first number no sequence
+/// already in `taken` has with that hook.
+fn short_name(taken: &[String], hook: &str) -> String {
+    let hook: String = hook.chars().take(40).collect();
+    (1..).map(|n| format!("Short {n}: {}", hook.trim())).find(|name| !taken.iter().any(|t| t == name)).unwrap_or_default()
+}
+
+/// `short`'s sound brought to `lufs`, measured together under a -1 dBTP
+/// ceiling, each clip and its linked partner given the gain, as
+/// normalize_clips would.
+fn level_short(short: &mut klipp_timeline::Sequence, pool: &klipp_media::MediaPool, lufs: f64) -> Result<(), String> {
+    use klipp_core::normalize::{NormalizeMode, NormalizeSettings};
+    let ids: Vec<klipp_core::ClipId> = short.tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Audio).flat_map(|t| &t.clips).map(|c| c.id).collect();
+    if ids.is_empty() {
+        return Ok(());
+    }
+    let (clips, _) = klipp_render::normalize::clip_sounds(short, pool, &ids);
+    if clips.is_empty() {
+        return Ok(());
+    }
+    let sounds: Vec<_> = clips.iter().map(|(_, s)| s.clone()).collect();
+    let measured = klipp_render::normalize::measure(&sounds, &std::sync::atomic::AtomicBool::new(false)).map_err(|e| format!("the short's sound could not be measured: {e}; nothing was made"))?;
+    let settings = NormalizeSettings { mode: NormalizeMode::Loudness, target: lufs, ceiling_dbtp: -1.0, group: true };
+    let gains = klipp_core::normalize::gains(&measured.levels, &measured.together, &settings);
+    for ((id, _), gain) in clips.iter().zip(&gains) {
+        let Some(gain) = gain else { continue };
+        let linear = 10f64.powf(gain.db / 20.0) as f32;
+        let partner = short.all_clips().find(|c| c.id == *id).and_then(|c| c.linked_clip_id);
+        for clip in short.all_clips_mut().filter(|c| c.id == *id || Some(c.id) == partner) {
+            clip.gain = linear;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod short_name_tests {
+    /// A short's name is one the project has not got: the next number
+    /// with that hook.
+    #[test]
+    fn a_short_takes_a_name_not_yet_taken() {
+        let taken = vec!["Main Sequence".to_string(), "Short 1: Walk the old town".to_string()];
+        assert_eq!(super::short_name(&taken, "Walk the old town"), "Short 2: Walk the old town");
+        assert_eq!(super::short_name(&taken, "Another hook"), "Short 1: Another hook");
+    }
 }

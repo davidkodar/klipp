@@ -373,7 +373,7 @@ fn media_section(ui: &mut egui::Ui, state: &AppState, theme: &KlippTheme, media:
         }
         tag_list(ui, theme, &media.shot);
 
-        if media.proxy_ready {
+        if state.proxy_shown(media) {
             colour_row(ui, theme, "Proxy", "Ready", theme.marker_success);
         } else if state.proxy_generating.contains(&media.id) {
             let progress = state.proxy_progress.get(&media.id).copied().unwrap_or(0.0);

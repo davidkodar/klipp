@@ -159,7 +159,7 @@ impl KlippApp {
                     self.state.toast.show("The template's composition is missing");
                     return true;
                 };
-                let copied = klipp_timeline::composition_template::missing_sequences(&template, &self.state.sequences);
+                let copied = klipp_timeline::composition_template::missing_for_frame(&template, &self.state.sequences, frame.width, frame.height);
                 if self.state.sequences[sequence_idx].id == sequence_id {
                     self.state.toast.show("A template cannot be inserted into its own composition");
                     return true;
