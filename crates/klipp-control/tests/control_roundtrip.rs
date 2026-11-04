@@ -1626,11 +1626,22 @@ fn an_export_says_it_covers_the_in_out_range() {
     assert_eq!(r["export"]["range"], "the whole timeline", "{r}");
     {
         let mut seq = h.sequence.write().unwrap();
-        seq.in_point = Some(klipp_core::RationalTime::from_secs_f64(20.0, 25));
-        seq.out_point = Some(klipp_core::RationalTime::from_secs_f64(30.0, 25));
+        let tc = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 25);
+        seq.tracks[0].clips = vec![klipp_timeline::Clip::media(media, tc(0.0), tc(60.0), tc(0.0), tc(60.0))];
+        seq.in_point = Some(tc(20.0));
+        seq.out_point = Some(tc(30.0));
     }
     let r = export(&mut h, "/tmp/klipp-range-in-out.mp4");
     assert_eq!((r["export"]["range"]["in"].as_f64(), r["export"]["range"]["out"].as_f64()), (Some(20.0), Some(30.0)), "{r}");
+    // Past the timeline's end: up to the end, said; wholly past it, the
+    // whole timeline, said too.
+    h.sequence.write().unwrap().out_point = Some(klipp_core::RationalTime::from_secs_f64(80.0, 25));
+    let r = export(&mut h, "/tmp/klipp-range-past.mp4");
+    assert_eq!((r["export"]["range"]["in"].as_f64(), r["export"]["range"]["out"].as_f64()), (Some(20.0), Some(60.0)), "{r}");
+    assert!(r["export"]["range"]["from"].as_str().is_some_and(|f| f.contains("end of the timeline")), "{r}");
+    h.sequence.write().unwrap().in_point = Some(klipp_core::RationalTime::from_secs_f64(70.0, 25));
+    let r = export(&mut h, "/tmp/klipp-range-wholly-past.mp4");
+    assert_eq!(r["export"]["range"], "the whole timeline: the In and Out points are past its end", "{r}");
 }
 
 /// An export never replaces a file that is already there unless the call

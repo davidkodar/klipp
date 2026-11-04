@@ -1649,6 +1649,9 @@ pub struct AppState {
     /// The last edit recorded by `tracks_undo` and when, so a dragged
     /// value's changes fold into one undo step.
     pub tracks_undo_gesture: Option<(&'static str, std::time::Instant)>,
+    /// The active sequence and its length before this frame's edits, so
+    /// an edit that shortened it brings the marks in with it.
+    pub sequence_length_seen: Option<(klipp_core::SequenceId, klipp_core::RationalTime)>,
     /// What the control socket reads without the UI: the document
     /// revision (advanced by every recorded edit, undo and redo) and the
     /// render queue's jobs. Shared with `klipp_control` by the app.
@@ -4889,6 +4892,7 @@ impl Default for AppState {
             history_clock: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
             history_ops_since_save: 0,
             tracks_undo_gesture: None,
+            sequence_length_seen: None,
             control_shared: std::sync::Arc::new(klipp_core::ControlShared::default()),
             control_others: Default::default(),
             control_others_for: None,
@@ -6093,6 +6097,7 @@ impl AppState {
         let command = self.with_made_tracks(command);
         let command = self.with_matched_follow(command);
         let command = self.with_primary_holes_filled(command);
+        let command = self.with_marks_on_shorter_timeline(command);
         // The project's steps go to its own history, reachable from any
         // sequence (#1986); inside a batch already open they are one more
         // edit of it, and the batch stays where it is.
@@ -6111,6 +6116,38 @@ impl AppState {
         self.prune_stale_redo();
         self.history_ops_since_save = self.history_ops_since_save.saturating_add(1);
         self.note_recorded_tracks();
+    }
+
+    /// Note the active sequence's length, for the next edit to compare.
+    pub fn note_timeline_length(&mut self) {
+        let seq = self.sequence();
+        self.sequence_length_seen = Some((seq.id, seq.total_duration()));
+    }
+
+    /// `command`, already applied, with the In and Out points brought
+    /// within the end if it shortened the timeline, in the same step: an
+    /// Extract left Out where it was, past the new end, and the export of
+    /// that range was black after the last clip. Marks past the end of a
+    /// timeline nothing shortened stay: a three-point edit or a fit to the
+    /// range may be about to fill them.
+    fn with_marks_on_shorter_timeline(&mut self, command: EditCommand) -> EditCommand {
+        let seen = self.sequence_length_seen;
+        self.note_timeline_length();
+        let seq = self.sequence();
+        let shorter = seen.is_some_and(|(id, length)| id == seq.id && seq.total_duration() < length);
+        let (old_in, old_out) = (seq.in_point, seq.out_point);
+        let (new_in, new_out) = seq.marks_within_end();
+        if !shorter || (new_in, new_out) == (old_in, old_out) || command.scope() == crate::history::Scope::Project {
+            return command;
+        }
+        let seq = &mut self.sequences[self.active_sequence_idx];
+        seq.in_point = new_in;
+        seq.out_point = new_out;
+        let (label, edit) = match command {
+            EditCommand::Named { label, edit } => (label, *edit),
+            other => (other.label().to_string(), other),
+        };
+        EditCommand::Named { label, edit: Box::new(EditCommand::Batch(vec![edit, EditCommand::SetRange { old_in, old_out, new_in, new_out }])) }
     }
 
     /// `command`, already applied, with gap clips filling any hole it left

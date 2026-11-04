@@ -484,14 +484,8 @@ impl SequenceSnapshot {
         }
 
         let export_range = if use_marked_range {
-            match (&seq.in_point, &seq.out_point) {
-                (Some(in_pt), Some(out_pt)) => {
-                    let start = time_to_frame(in_pt, fps);
-                    let end = time_to_frame(out_pt, fps);
-                    Some((start, end))
-                }
-                _ => None,
-            }
+            // Within the timeline: frames past its end are black and silent.
+            seq.marked_range_on_timeline().map(|(in_pt, out_pt)| (time_to_frame(&in_pt, fps), time_to_frame(&out_pt, fps)))
         } else {
             None
         };
@@ -1115,6 +1109,24 @@ mod tests {
         assert_eq!(snap.export_range, Some((24, 72)), "the marked range, at 12 fps");
         let a = &snap.audio_tracks[0].clips[0];
         assert_eq!((a.timeline_start_frame, a.timeline_end_frame), (12, 120), "the audio clip, at 12 fps");
+    }
+
+    /// A marked range past the timeline's end stops at the end, and one
+    /// wholly past it is no range: those frames came out black and silent.
+    #[test]
+    fn a_marked_range_stops_at_the_timelines_end() {
+        let pool = MediaPool::new();
+        let settings = make_settings();
+        let mut seq = make_sequence_with_length_secs(10.0);
+        seq.in_point = Some(make_rational(8 * 24, 24));
+        seq.out_point = Some(make_rational(30 * 24, 24));
+        let snap = SequenceSnapshot::from_sequence(&seq, &pool, &settings, None, true, klipp_core::WorkingColorspace::Rec709Linear).unwrap();
+        assert_eq!(snap.export_range, Some((8 * 24, 10 * 24)));
+        assert_eq!(snap.frames_to_export(), 2 * 24);
+        seq.in_point = Some(make_rational(12 * 24, 24));
+        let snap = SequenceSnapshot::from_sequence(&seq, &pool, &settings, None, true, klipp_core::WorkingColorspace::Rec709Linear).unwrap();
+        assert_eq!(snap.export_range, None, "wholly past the end");
+        assert_eq!(snap.frames_to_export(), 10 * 24, "the whole timeline");
     }
 
     #[test]

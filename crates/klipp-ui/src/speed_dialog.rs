@@ -145,6 +145,18 @@ mod tests {
         assert_eq!(fit_targets(&seq, last).to_next, None, "nothing follows the last shot");
     }
 
+    /// The range offered is the marks as they stand: after an edit that
+    /// shortened the timeline, what `Sequence::marks_within_end` left.
+    #[test]
+    fn the_range_offered_after_a_shortening_is_the_clamped_one() {
+        let (mut seq, id) = seq();
+        seq.in_point = Some(t(2.0));
+        seq.out_point = Some(t(40.0));
+        let (a, b) = seq.marks_within_end();
+        (seq.in_point, seq.out_point) = (a, b);
+        assert_eq!(fit_targets(&seq, id).range, Some(12.0), "2 s to the end at 14 s");
+    }
+
     /// Fitted to the marked range, the clip goes on the marks: it
     /// starts at In and ends at Out at the speed that takes, its sound
     /// with it. Over another clip, Overwrite lays it over; Insert pushes

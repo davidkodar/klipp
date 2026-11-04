@@ -311,12 +311,13 @@ pub(crate) fn respond(
             // as the Export page's range does (#2667).
             let range = {
                 let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
-                match (seq.in_point, seq.out_point) {
-                    (Some(a), Some(b)) => json!({
+                match (seq.marked_range_on_timeline(), seq.out_point) {
+                    (Some((a, b)), out) => json!({
                         "in": (a.to_secs_f64() * 1000.0).round() / 1000.0,
                         "out": (b.to_secs_f64() * 1000.0).round() / 1000.0,
-                        "from": "the In and Out points; clear them to export the whole timeline",
+                        "from": if out.is_some_and(|o| o > b) { "the In and Out points, stopping at the end of the timeline, which Out is past" } else { "the In and Out points; clear them to export the whole timeline" },
                     }),
+                    (None, Some(_)) if seq.in_point.is_some() => json!("the whole timeline: the In and Out points are past its end"),
                     _ => json!("the whole timeline"),
                 }
             };
