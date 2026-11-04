@@ -379,7 +379,7 @@ impl KlippApp {
                     ui.horizontal(|ui| {
                         ui.label("Speed:");
                         ui.add(egui::DragValue::new(&mut self.state.speed_dialog_value)
-                            .range(1.0..=1000.0).speed(1.0).suffix("%").max_decimals(1));
+                            .range(crate::speed_dialog::PERCENT_MIN..=crate::speed_dialog::PERCENT_MAX).speed(1.0).suffix("%").max_decimals(1));
                     });
                     // The length it plays for, in step with the speed: one
                     // setting, its source over the length (#3115).
@@ -390,11 +390,11 @@ impl KlippApp {
                         ui.horizontal(|ui| {
                             ui.label("Length:");
                             let r = ui.add(egui::DragValue::new(&mut length)
-                                .range(content / 10.0..=content * 100.0).speed(0.05).suffix(" s").max_decimals(2)
+                                .range(crate::speed_dialog::length_at(content, crate::speed_dialog::PERCENT_MAX)..=crate::speed_dialog::length_at(content, crate::speed_dialog::PERCENT_MIN)).speed(0.05).suffix(" s").max_decimals(2)
                                 .custom_parser(move |s| crate::speed_dialog::parse_length(s, tc)))
                                 .on_hover_text("How long the clip plays at this speed. Type seconds (4.5) or a timecode.");
                             if r.changed() {
-                                self.state.speed_dialog_value = crate::speed_dialog::percent_for(content, length).clamp(1.0, 1000.0);
+                                self.state.speed_dialog_value = crate::speed_dialog::percent_for(content, length).clamp(crate::speed_dialog::PERCENT_MIN, crate::speed_dialog::PERCENT_MAX);
                             }
                         });
                         // Fit to fill: the room to the next shot, or the
@@ -409,7 +409,7 @@ impl KlippApp {
                             .on_disabled_hover_text("No clip follows this one on its track");
                             if to_next.clicked() {
                                 if let Some(l) = fit.to_next {
-                                    self.state.speed_dialog_value = crate::speed_dialog::percent_for(content, l).clamp(1.0, 1000.0);
+                                    self.state.speed_dialog_value = crate::speed_dialog::percent_for(content, l).clamp(crate::speed_dialog::PERCENT_MIN, crate::speed_dialog::PERCENT_MAX);
                                 }
                             }
                             let range = ui.add_enabled(fit.range.is_some(), egui::Button::new(match fit.range {
@@ -420,7 +420,7 @@ impl KlippApp {
                             .on_disabled_hover_text("Mark an In and an Out point on the timeline first");
                             if range.clicked() {
                                 if let Some(l) = fit.range {
-                                    self.state.speed_dialog_value = crate::speed_dialog::percent_for(content, l).clamp(1.0, 1000.0);
+                                    self.state.speed_dialog_value = crate::speed_dialog::percent_for(content, l).clamp(crate::speed_dialog::PERCENT_MIN, crate::speed_dialog::PERCENT_MAX);
                                     self.state.speed_dialog_on_marks = true;
                                 }
                             }
@@ -468,7 +468,7 @@ impl KlippApp {
                         // On the marks, while the speed is still the
                         // one the fit set.
                         let on_marks = self.state.speed_dialog_on_marks
-                            && self.state.speed_dialog_fit.range.is_some_and(|l| (crate::speed_dialog::percent_for(content, l).clamp(1.0, 1000.0) - self.state.speed_dialog_value).abs() < 1e-6);
+                            && self.state.speed_dialog_fit.range.is_some_and(|l| (crate::speed_dialog::percent_for(content, l).clamp(crate::speed_dialog::PERCENT_MIN, crate::speed_dialog::PERCENT_MAX) - self.state.speed_dialog_value).abs() < 1e-6);
                         if ui.button("Apply").clicked() {
                             if let Some(clip_id) = self.state.selected_clip {
                                 if on_marks {
