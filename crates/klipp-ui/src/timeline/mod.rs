@@ -1322,7 +1322,7 @@ mod menu_smoke_tests {
             egui::Shape::Text(t) if t.galley.text().starts_with("Video 1") && t.galley.text().ends_with('\u{2026}') => Some(t.visual_bounding_rect()),
             _ => None,
         }).expect("drawn cut");
-        let room = super::track_headers::name_room(&timeline.state.sequences[0].tracks[v1], rect.max.x);
+        let room = super::track_headers::name_room(&timeline.state.sequences[0].tracks[v1], rect.min.x);
         assert!(cut.max.x <= room + 0.5, "ends at {}, its buttons at {room}", cut.max.x);
         timeline.state.sequences[0].tracks[v1].name = "Video 1".to_string();
         assert!(timeline.frame(Vec::new()).iter().any(|(t, _)| t == "Video 1"), "a short name whole");
