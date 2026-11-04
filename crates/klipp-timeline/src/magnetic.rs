@@ -3119,6 +3119,64 @@ mod tests {
         assert_eq!(track.clips[2].timeline_out, tc(72));
     }
 
+    /// Two pieces of a project that took 30 fps from its first file, as an
+    /// Extract leaves them: the first still starts at the 24 fps zero, the
+    /// cut is at 886/30 and the end at 2062/24.
+    fn pieces_across_rates() -> Sequence {
+        let at = |value, rate| klipp_core::RationalTime { value, rate };
+        let mut seq = make_sequence(&[(0, 24), (24, 48)]);
+        seq.tracks[0].clips[0].timeline_out = at(886, 30);
+        seq.tracks[0].clips[1].timeline_in = at(886, 30);
+        seq.tracks[0].clips[1].timeline_out = at(2062, 24);
+        seq
+    }
+
+    /// A gap ends exactly where it is told to. Rounded to its start's rate,
+    /// 886/30 became 709/24: past the next clip's start by a part of a frame
+    /// in every build, and a panic where debug assertions are on.
+    #[test]
+    fn a_gap_ends_where_it_is_told_across_rates() {
+        let at = |value, rate| klipp_core::RationalTime { value, rate };
+        let gap = Clip::gap(at(0, 24), at(886, 30));
+        assert_eq!(gap.timeline_in, at(0, 24), "its start as given");
+        assert_eq!(gap.timeline_out, at(886, 30), "its end as given");
+        assert!(gap.timeline_out.cmp(&at(886, 30)).is_eq(), "no later than the next clip's start");
+        assert_eq!(gap.source_out - gap.source_in, at(886, 30), "as long as it is");
+        let same = Clip::gap(at(24, 24), at(48, 24));
+        assert_eq!((same.timeline_out, same.source_in, same.source_out), (at(48, 24), at(0, 24), at(24, 24)), "one rate: as it was");
+    }
+
+    /// Lifted, the first piece leaves a gap up to the second, and the
+    /// timeline has no hole or overlap there; undone, the piece is back.
+    #[test]
+    fn lifting_the_first_piece_leaves_a_gap_up_to_the_next_across_rates() {
+        let mut seq = pieces_across_rates();
+        let first = seq.tracks[0].clips[0].id;
+        let length = seq.total_duration();
+        let result = MagneticEditor::lift(&mut seq, first);
+        let track = &seq.tracks[0];
+        assert!(track.clips[0].kind.is_gap());
+        assert!(track.clips[0].timeline_out.cmp(&track.clips[1].timeline_in).is_eq(), "{:?} then {:?}", track.clips[0].timeline_out, track.clips[1].timeline_in);
+        assert_eq!(seq.total_duration(), length);
+        assert!(seq.primary_holes().is_none());
+        MagneticEditor::apply_inverse(&mut seq, &result.command);
+        assert_eq!(seq.tracks[0].clips[0].id, first);
+        assert_eq!(seq.total_duration(), length);
+    }
+
+    /// Lifted, the last piece leaves the timeline as long as it was: its
+    /// end went from 85.92 to 85.93 s, past its own sound.
+    #[test]
+    fn lifting_the_last_piece_keeps_the_timelines_length_across_rates() {
+        let mut seq = pieces_across_rates();
+        let last = seq.tracks[0].clips[1].id;
+        let length = seq.total_duration();
+        assert_eq!((length.to_secs_f64() * 100.0).round() / 100.0, 85.92);
+        MagneticEditor::lift(&mut seq, last);
+        assert!(seq.tracks[0].clips[1].kind.is_gap());
+        assert_eq!(seq.total_duration(), length, "85.92 s, not 85.93");
+    }
+
     // ─────────────────────────────────────────────────────────────
     // append_primary
     // ─────────────────────────────────────────────────────────────
