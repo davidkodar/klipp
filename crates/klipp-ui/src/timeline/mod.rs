@@ -1339,6 +1339,46 @@ mod menu_smoke_tests {
         assert!(!sent.iter().any(|c| matches!(c, AppCommand::PlaceMedia { .. })), "not placed on the track: {sent:?}");
     }
 
+    /// #3209: a sound-only file let go over a picture clip with Alt held
+    /// can't be a take. The edit is still asked for, and refused with the
+    /// reason, so the drop doesn't end in silence.
+    #[test]
+    fn an_alt_drop_of_a_file_that_cannot_be_a_take_says_why() {
+        let mut timeline = Timeline::new();
+        let mut song = klipp_media::MediaItem::synthetic_for_test("/tmp/song.mp3".into(), None);
+        (song.duration, song.video_codec, song.has_audio) = (klipp_core::RationalTime::from_frames(480, 24), String::new(), true);
+        let media = timeline.state.media_pool.add(song);
+        let v1 = timeline.state.sequences[0].tracks.iter().position(|t| matches!(t.kind, TrackKind::Video)).unwrap();
+        let id = timeline.state.sequences[0].tracks[v1].clips[0].id;
+        timeline.frame(Vec::new());
+        timeline.frame(Vec::new());
+        let rect = timeline.old.frame_cache.track_rects.iter().find(|(i, _, _)| *i == v1).expect("V1 drawn").2;
+        let x = rect.left() + 5.0 * timeline.state.timeline_zoom - timeline.state.timeline_scroll_x;
+        let at = egui::pos2(x, rect.center().y);
+        let start = egui::pos2(x, 590.0);
+        timeline.modifiers = egui::Modifiers::ALT;
+        let mut sent = Vec::new();
+        timeline.frame(vec![egui::Event::PointerMoved(start), egui::Event::PointerButton { pos: start, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::ALT }]);
+        timeline.state.dragging_media = Some(media);
+        sent.append(&mut timeline.sent);
+        for k in 1..=6 {
+            let p = egui::pos2(x, start.y + (at.y - start.y) * k as f32 / 6.0);
+            timeline.frame(vec![egui::Event::PointerMoved(p)]);
+            sent.append(&mut timeline.sent);
+        }
+        timeline.frame(vec![egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::ALT }]);
+        sent.append(&mut timeline.sent);
+        let edit = sent.iter().find_map(|c| match c {
+            AppCommand::EditAudition { clip_id, edit } if *clip_id == id => Some(edit.clone()),
+            _ => None,
+        });
+        let edit = edit.unwrap_or_else(|| panic!("the drop asks for the edit: {sent:?}"));
+        let why = crate::auditions::plan(&timeline.state.sequences[0], &timeline.state.media_pool, id, &edit).expect_err("refused");
+        assert!(why.contains("song.mp3") && why.contains("sound only"), "{why}");
+        assert!(!sent.iter().any(|c| matches!(c, AppCommand::PlaceMedia { .. })), "not placed on the track: {sent:?}");
+        assert!(timeline.state.dragging_media.is_none(), "the drag ended");
+    }
+
     /// A pool file let go above the top video track, on the ruler or just
     /// over V1, goes on a new video track, as one let go below the audio
     /// tracks goes on a new track there, at the time it was let go.
