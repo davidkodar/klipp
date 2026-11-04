@@ -1299,6 +1299,10 @@ impl KlippApp {
                 // Followed in the form's foot, so the page that started
                 // it says it is running and when it is done (#2941).
                 self.export_dialog.last_job = Some(id);
+                // Said, the export not held back.
+                if let Some(warning) = music_over_speech(self.state.sequence(), &self.state.media_pool, &self.transcript_source) {
+                    self.state.toast.show(warning);
+                }
             }
             Err(e) => tracing::error!("Failed to create render snapshot: {e}"),
         }
@@ -5063,3 +5067,56 @@ mod stl_loss_tests {
         assert!(said.contains("2 of its characters (你好)") && said.contains("\"?\""), "{said}");
     }
 }
+
+/// What an export says when music plays over the speech at full level,
+/// as check finds it ("... plays at 0 dB under speech and never comes
+/// down"): a warning beside the export, which goes ahead. Music 9 dB over
+/// a voice went out as it was, the only word of it in check.
+pub(crate) fn music_over_speech(seq: &klipp_timeline::Sequence, pool: &klipp_media::MediaPool, transcripts: &dyn klipp_document::ops::Transcripts) -> Option<String> {
+    klipp_document::qc::check(seq, pool, transcripts).findings.into_iter().find(|f| f.rule == "music_level").map(|f| format!("Exporting with {}. {}", f.what, f.hint))
+}
+
+#[cfg(test)]
+mod music_over_speech_tests {
+    use klipp_document::ops::{SpokenWord, Transcripts};
+
+    struct Talk(klipp_core::MediaId);
+
+    impl Transcripts for Talk {
+        fn words(&self, item: &klipp_media::MediaItem) -> Option<Vec<SpokenWord>> {
+            if item.id != self.0 {
+                return Some(Vec::new());
+            }
+            Some((0..12).map(|k| SpokenWord { start_secs: k as f64 * 0.5, end_secs: k as f64 * 0.5 + 0.4, text: "word".into(), confidence: 0.9 }).collect())
+        }
+    }
+
+    /// Music at full level under a voice is said as the export starts;
+    /// ducked to a quarter it is not.
+    #[test]
+    fn an_export_warns_of_music_over_the_speech() {
+        let mut pool = klipp_media::MediaPool::new();
+        let mut add = |path: &str, video: bool| {
+            let mut item = klipp_media::MediaItem::synthetic_for_test(path.into(), None);
+            item.duration = klipp_core::RationalTime::from_secs_f64(10.0, 25);
+            item.has_audio = true;
+            item.video_codec = if video { "h264".into() } else { String::new() };
+            pool.add(item)
+        };
+        let (talk, music) = (add("/tmp/export-warn-talk.mov", true), add("/tmp/export-warn-music.mp3", false));
+        let t = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 25);
+        let mut seq = klipp_timeline::Sequence::new_default();
+        seq.fps = klipp_core::Fps::new(25, 1);
+        let a1 = seq.tracks.iter().position(|tr| tr.kind == klipp_timeline::TrackKind::Audio).unwrap();
+        seq.tracks[a1].clips.push(klipp_timeline::Clip::media(talk, t(0.0), t(6.0), t(0.0), t(6.0)));
+        let mut bed = klipp_timeline::Track::new("Music", klipp_timeline::TrackKind::Audio);
+        bed.clips.push(klipp_timeline::Clip::media(music, t(0.0), t(6.0), t(0.0), t(6.0)));
+        seq.tracks.push(bed);
+        let warning = super::music_over_speech(&seq, &pool, &Talk(talk)).expect("music at 0 dB under the voice");
+        assert!(warning.contains("plays at 0 dB under speech") && warning.contains("Duck it"), "{warning}");
+        let last = seq.tracks.len() - 1;
+        seq.tracks[last].clips[0].volume = 0.25;
+        assert_eq!(super::music_over_speech(&seq, &pool, &Talk(talk)), None, "ducked, nothing said");
+    }
+}
+
