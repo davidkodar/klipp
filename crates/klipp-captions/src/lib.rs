@@ -279,6 +279,31 @@ pub fn vtt_language(content: &str) -> Option<String> {
     })
 }
 
+/// The largest subtitle file read. Subtitle files are text, or EBU-STL's
+/// fixed blocks: hours of cues come to a few MB at most.
+pub const MAX_SUBTITLE_FILE_BYTES: u64 = 8 * 1024 * 1024;
+
+/// The subtitle file at `path`, read as a file from elsewhere is: only a
+/// regular file, never a pipe or device that would block or never end, and
+/// none past [`MAX_SUBTITLE_FILE_BYTES`].
+pub fn read_subtitle_file(path: &std::path::Path) -> std::io::Result<Vec<u8>> {
+    use std::io::Read;
+    let refuse = |why: String| std::io::Error::new(std::io::ErrorKind::InvalidData, why);
+    let size = std::fs::metadata(path)?;
+    if !size.is_file() {
+        return Err(refuse(format!("{} is not a file", path.display())));
+    }
+    if size.len() > MAX_SUBTITLE_FILE_BYTES {
+        return Err(refuse(format!("{} is too large for a subtitle file: {} bytes, at most {MAX_SUBTITLE_FILE_BYTES}", path.display(), size.len())));
+    }
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)?.take(MAX_SUBTITLE_FILE_BYTES + 1).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > MAX_SUBTITLE_FILE_BYTES {
+        return Err(refuse(format!("{} is too large for a subtitle file", path.display())));
+    }
+    Ok(bytes)
+}
+
 /// The language the subtitle file at `path`, read as `bytes`, names,
 /// by its extension's format: TTML's `xml:lang`, EBU-STL's language code,
 /// a WebVTT `Language:` header; `None` for a format with none (#2223).
@@ -466,6 +491,21 @@ pub fn format_ass_time(secs: f64) -> String {
 #[cfg(test)]
 mod subtitle_tests {
     use super::*;
+
+    /// A subtitle file past the cap, or anything but a file, is refused;
+    /// one at the cap is read whole.
+    #[test]
+    fn a_subtitle_file_is_read_within_its_cap() {
+        let dir = std::env::temp_dir().join(format!("klipp-subtitle-cap-{}-{:?}", std::process::id(), std::thread::current().id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("big.srt");
+        std::fs::File::create(&file).unwrap().set_len(crate::MAX_SUBTITLE_FILE_BYTES).unwrap();
+        assert_eq!(crate::read_subtitle_file(&file).unwrap().len() as u64, crate::MAX_SUBTITLE_FILE_BYTES);
+        std::fs::File::create(&file).unwrap().set_len(crate::MAX_SUBTITLE_FILE_BYTES + 1).unwrap();
+        assert!(crate::read_subtitle_file(&file).unwrap_err().to_string().contains("too large"));
+        assert!(crate::read_subtitle_file(&dir).unwrap_err().to_string().contains("not a file"));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     // ── parse_srt_vtt tests ──
 
