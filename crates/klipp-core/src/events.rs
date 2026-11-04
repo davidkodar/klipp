@@ -5849,6 +5849,10 @@ pub struct SequenceSummary {
     pub width: u32,
     #[serde(default)]
     pub height: u32,
+    /// A template's composition, drawn only inside the template's clips:
+    /// part of a clip, not a sequence to open or list (#2757).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub nested: bool,
 }
 
 /// One output of a delivery (#2724): the aspect, as width and height

@@ -111,12 +111,14 @@ pub(crate) struct StatusFacts<'a> {
 /// reader who sees one timeline knows whether there are others. The open
 /// one's length is `open_secs`, read live: the list can lag an edit.
 pub(crate) fn sequences_text(list: &[klipp_core::SequenceSummary], active: usize, open_secs: f64) -> String {
-    let each: Vec<String> = list.iter().enumerate().map(|(i, s)| {
+    // A template's compositions are part of its clips, not sequences to
+    // open: left out, each other one keeping its index.
+    let each: Vec<String> = list.iter().enumerate().filter(|(i, s)| !s.nested || *i == active).map(|(i, s)| {
         let open = i == active;
         let secs = if open { open_secs } else { s.duration_secs };
         format!("[{i}] {} {secs:.1} s, {} clip{}{}", quoted(&s.name), s.clips, if s.clips == 1 { "" } else { "s" }, if open { " (open)" } else { "" })
     }).collect();
-    match list.len() {
+    match each.len() {
         0 => "Sequences: none.".to_string(),
         1 => format!("Sequences: 1, the open one: {}.", each[0]),
         n => format!("Sequences: {n}; switch_sequence opens another: {}.", each.join("; ")),

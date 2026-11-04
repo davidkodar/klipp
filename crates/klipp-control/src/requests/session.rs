@@ -202,7 +202,9 @@ pub(crate) fn respond(
                 // Every sequence of the project, the open one marked:
                 // `switch_sequence` opens another (M3 step 18); one held as
                 // a compound clip says where, as `remove_sequence` refuses it.
-                "sequences": project.sequences.iter().enumerate().map(|(index, s)| {
+                // A template's compositions are part of its clips, not
+                // sequences: left out, the rest keeping their index.
+                "sequences": project.sequences.iter().enumerate().filter(|(index, s)| !s.nested || *index == project.active_sequence).map(|(index, s)| {
                     let mut v = json!({
                         "index": index,
                         "id": s.id,

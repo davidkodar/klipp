@@ -765,6 +765,15 @@ impl AppState {
     /// Every sequence of the project, as the control socket lists them,
     /// and the open one's index (M3 step 18).
     pub fn sequence_summaries(&self) -> (Vec<klipp_core::SequenceSummary>, usize) {
+        // A template's compositions, and what they nest: drawn inside its
+        // clips, not sequences of the project's own (#2757).
+        let mut nested: std::collections::HashSet<klipp_core::SequenceId> = std::collections::HashSet::new();
+        for root in self.sequences.iter().flat_map(|s| s.all_clips()).filter_map(|c| match &c.kind {
+            klipp_timeline::ClipKind::TemplatePrecomposition { sequence_id, .. } => self.sequences.iter().find(|s| s.id == *sequence_id),
+            _ => None,
+        }) {
+            nested.extend(klipp_timeline::composition_template::composition_sequences(root, &self.sequences).iter().map(|s| s.id));
+        }
         let list = self.sequences.iter().map(|seq| klipp_core::SequenceSummary {
             id: seq.id.to_string(),
             name: seq.name.clone(),
@@ -776,6 +785,7 @@ impl AppState {
             version: seq.version_of.map(|v| klipp_core::VersionSummary { of: v.master.to_string(), stale: seq.version_is_stale(&self.sequences).unwrap_or(false) }),
             width: seq.resolution.width,
             height: seq.resolution.height,
+            nested: nested.contains(&seq.id) && seq.id != self.sequence().id,
         }).collect();
         (list, self.active_sequence_idx)
     }
