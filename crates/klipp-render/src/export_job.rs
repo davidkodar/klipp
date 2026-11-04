@@ -30,7 +30,7 @@ use crate::encoder::Encoder;
 use crate::export_frames::{export_renderer, ExportFrame, ExportFrameMaker};
 use crate::error::RenderError;
 use crate::frame_source::ExportFrameSource;
-use crate::snapshot::{SequenceSnapshot, SubtitleClipSnapshot};
+use crate::snapshot::{SequenceSnapshot, SubtitleClipSnapshot, SubtitleTrackSnapshot};
 use klipp_core::ExportSettings;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -475,11 +475,14 @@ impl ExportJob {
 
         // ─── Finalise ─────────────────────────────────────────────
         // ─── Subtitle embedding ───────────────────────────────────
-        if let Some(sub_stream_idx) = encoder.subtitle_stream_idx {
+        // Each track's cues on its own stream.
+        let streams = encoder.subtitle_streams.clone();
+        for (sub_stream_idx, track) in streams.into_iter().zip(&self.snapshot.subtitle_tracks) {
             Self::encode_subtitles(
                 &mut encoder,
                 sub_stream_idx,
-                &self.snapshot,
+                track,
+                self.snapshot.fps,
                 &self.settings,
             )?;
         }
@@ -610,20 +613,17 @@ impl ExportJob {
         Ok(())
     }
 
-    /// Encode all subtitle clips as packets and write them to the output.
+    /// Encode a subtitle track's clips as packets on its stream.
     /// For MP4/MOV, inserts empty gap packets between subtitles.
     fn encode_subtitles(
         encoder: &mut Encoder,
         sub_stream_idx: usize,
-        snapshot: &SequenceSnapshot,
+        track: &SubtitleTrackSnapshot,
+        fps: f64,
         settings: &ExportSettings,
     ) -> Result<(), RenderError> {
-        // Flatten all subtitle clips, sorted by start frame
-        let mut all_clips: Vec<&SubtitleClipSnapshot> = snapshot
-            .subtitle_tracks
-            .iter()
-            .flat_map(|t| &t.clips)
-            .collect();
+        // The track's clips, sorted by start frame
+        let mut all_clips: Vec<&SubtitleClipSnapshot> = track.clips.iter().collect();
         all_clips.sort_by_key(|c| c.timeline_start_frame);
 
         let needs_gaps = matches!(
@@ -638,7 +638,7 @@ impl ExportJob {
                 if first.timeline_start_frame > 0 {
                     let pkt = Self::build_gap_packet(
                         sub_stream_idx, 0, first.timeline_start_frame,
-                        snapshot.fps, is_micro,
+                        fps, is_micro,
                     );
                     encoder.write_subtitle_packet(pkt)?;
                 }
@@ -647,7 +647,7 @@ impl ExportJob {
 
         for (i, clip) in all_clips.iter().enumerate() {
             let pkt = Self::build_text_packet(
-                sub_stream_idx, clip, snapshot.fps, is_micro,
+                sub_stream_idx, clip, fps, is_micro,
             );
             encoder.write_subtitle_packet(pkt)?;
 
@@ -659,7 +659,7 @@ impl ExportJob {
                             sub_stream_idx,
                             clip.timeline_end_frame,
                             next.timeline_start_frame,
-                            snapshot.fps,
+                            fps,
                             is_micro,
                         );
                         encoder.write_subtitle_packet(pkt)?;
