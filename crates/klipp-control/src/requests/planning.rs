@@ -1566,11 +1566,7 @@ fn collect_project(ctx: &crate::ControlContext, dest: Option<String>, mode: Opti
         let mut sequences = vec![seq];
         sequences.extend(others_of(ctx));
         let pool = ctx.media_pool.read().recovered().clone();
-        let offline: Vec<String> = klipp_project::collect_report::report(&sequences, &pool, &[], &describe_plugin)
-            .into_iter()
-            .filter(|d| d.need == klipp_project::collect_report::Need::OfflineMedia)
-            .map(|d| format!("{} ({})", d.detail, d.used_in.join(", ")))
-            .collect();
+        let offline = klipp_project::collect_report::offline_in_use(&sequences, &pool);
         if !offline.is_empty() {
             return Err(format!("nothing collected: media the project uses is offline: {}. Relink it, or send allow_offline: true to collect the rest", offline.join("; ")));
         }

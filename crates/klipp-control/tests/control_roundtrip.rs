@@ -5404,6 +5404,21 @@ fn files_that_look_the_same_are_reported_and_checked() {
     assert!(checked.contains(&"looks_same".to_string()) && !checked.iter().any(|r| r == "reused_footage" || r == "looks_same_unchecked"), "{checked:?}");
 }
 
+/// A file offline that no clip uses leaves no path in the copy: it does not
+/// refuse a Collect.
+#[test]
+fn an_offline_file_no_clip_uses_does_not_refuse_a_collect() {
+    let mut h = harness();
+    let mut item = klipp_media::MediaItem::synthetic_for_test("/tmp/unused-offline.mov".into(), None);
+    item.offline = true;
+    h.media_pool.write().unwrap().add(item);
+    let mut seq = (*h.sequence.snapshot()).clone();
+    seq.tracks.iter_mut().for_each(|t| t.clips.clear());
+    h.sequence.replace(seq);
+    let dest = std::env::temp_dir().join(format!("klipp-collect-unused-{}", uuid::Uuid::new_v4()));
+    h.ok(json!({ "method": "collect_project", "dest": dest }));
+}
+
 /// #3241: `collect_project`. A dry run says what it copies and what it
 /// can't carry with where it's used (an outside plug-in not installed
 /// here, an offline file); a collect asks the app with its mode; a
