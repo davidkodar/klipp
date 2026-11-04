@@ -250,12 +250,15 @@ impl KlippApp {
     }
 
     /// Make sequence `sequence_idx` the one shown, as its tab does
-    /// ([`crate::state::AppState::switch_sequence`]), then stop playback
-    /// and give the engine the sequence.
+    /// ([`crate::state::AppState::switch_sequence`]), then stop playback,
+    /// give the engine the sequence and have its frame drawn.
     fn switch_active_sequence(&mut self, sequence_idx: usize, keep_view: bool) {
         if self.state.switch_sequence(sequence_idx, keep_view) {
             self.cmd_tx.send(AppCommand::Stop).ok();
             self.sync_sequence_to_engine();
+            for cmd in after_switch(&self.state) {
+                self.cmd_tx.send(cmd).ok();
+            }
         }
     }
 
@@ -1410,6 +1413,37 @@ pub(super) fn split_to_mono(seq: &mut klipp_timeline::Sequence, clip_id: klipp_c
     track.clips.insert(at, right);
     seq.renumber_tracks();
     Ok(())
+}
+
+/// What the engine is sent once the sequence shown has changed: a seek
+/// to the playhead taken back from it, so its own frame is drawn. With
+/// none, the last frame of the sequence left stayed in the viewer, drawn
+/// at the new one's shape (a 9:16 frame stretched across a 16:9 viewer),
+/// until the playhead moved.
+fn after_switch(state: &crate::state::AppState) -> [AppCommand; 1] {
+    [AppCommand::SeekTo(state.playhead)]
+}
+
+#[cfg(test)]
+mod sequence_switch_tests {
+    use super::after_switch;
+    use crate::state::AppState;
+
+    /// Switching to a tab has the frame at its playhead drawn.
+    #[test]
+    fn switching_sequence_draws_the_frame_at_its_playhead() {
+        let mut state = AppState::default();
+        let mut tall = state.sequence().clone();
+        tall.id = klipp_core::SequenceId::new();
+        tall.resolution = klipp_core::Resolution { width: 1080, height: 1920 };
+        let rate = tall.fps.rate();
+        tall.last_playhead = Some(klipp_core::RationalTime::from_frames(48, rate));
+        state.sequences.push(tall);
+        assert!(state.switch_sequence(1, false));
+        let at = state.playhead;
+        assert_eq!(at, klipp_core::Timecode::from_frames(48, rate), "its own playhead taken back");
+        assert!(after_switch(&state).iter().any(|c| matches!(c, klipp_core::AppCommand::SeekTo(t) if *t == at)), "{:?}", after_switch(&state));
+    }
 }
 
 #[cfg(test)]
