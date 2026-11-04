@@ -48,6 +48,8 @@ mod corner_pin_round_trip;
 mod dangling_transition_heals;
 #[path = "../drop_frame_round_trip.rs"]
 mod drop_frame_round_trip;
+#[path = "../edl_overlap_round_trip.rs"]
+mod edl_overlap_round_trip;
 #[path = "../edit_plan_round_trip.rs"]
 mod edit_plan_round_trip;
 #[path = "../frame_glide_round_trip.rs"]

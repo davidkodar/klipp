@@ -581,7 +581,7 @@ impl KlippApp {
                     // us an out-of-range time on a near-rounding edge.
                     let clamped_secs = if let Some(item) = self.state.media_pool.get(&mid) {
                         let dur = item.duration.to_secs_f64();
-                        secs.clamp(0.0, dur)
+                        secs.clamp(0.0, dur.max(0.0))
                     } else {
                         secs.max(0.0)
                     };

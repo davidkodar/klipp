@@ -153,6 +153,7 @@ pub fn load_aaf(path: &Path, cancel: &std::sync::atomic::AtomicBool) -> Result<I
     let read = crate::otio_import::load_otio(&otio).map_err(|e| e.to_string());
     let _ = std::fs::remove_file(&otio);
     let mut result = read?;
+    times_checked(&result)?;
     if let Some(name) = path.file_stem() {
         result.sequence.name = name.to_string_lossy().into_owned();
     }
@@ -184,6 +185,39 @@ fn media_checked(mut result: ImportResult, source: &Path) -> ImportResult {
         result.warnings.push(format!("{}: {}", item.filename, klipp_media::media_check::refused_hint(&why)));
     }
     result
+}
+
+/// `Err` naming the first clip whose times no timeline can hold: one that
+/// starts before the timeline does, ends before it starts, or reads its
+/// source from before the source's start or backwards. Half a frame of
+/// slack, as an interchange file rounds its times.
+fn times_checked(result: &ImportResult) -> Result<(), String> {
+    let seq = &result.sequence;
+    let slack = 0.5 / seq.fps.as_f64();
+    for track in &seq.tracks {
+        for clip in &track.clips {
+            let (t_in, t_out) = (clip.timeline_in.to_secs_f64(), clip.timeline_out.to_secs_f64());
+            let (s_in, s_out) = (clip.source_in.to_secs_f64(), clip.source_out.to_secs_f64());
+            let bad = if t_in < -slack {
+                Some(format!("it starts at {t_in:.3} s, before the timeline"))
+            } else if t_out < t_in - slack {
+                Some(format!("it ends at {t_out:.3} s, before it starts at {t_in:.3} s"))
+            } else if s_in < -slack {
+                Some(format!("its source starts at {s_in:.3} s, before the media"))
+            } else if s_out < s_in - slack {
+                Some(format!("its source ends at {s_out:.3} s, before it starts at {s_in:.3} s"))
+            } else if !clip.speed.is_finite() {
+                Some("its speed is not a number".to_string())
+            } else {
+                None
+            };
+            if let Some(why) = bad {
+                let name = clip.media_id().and_then(|id| result.media_pool.get(&id)).map_or("a clip", |m| m.filename.as_str());
+                return Err(format!("This timeline can't be opened: '{name}' on track '{}': {why}", track.name));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Where to look first for an import's missing media (#2086): the folder
@@ -225,7 +259,7 @@ fn is_mount_point(p: &Path) -> bool {
 /// its content (#2083): a misnamed file opens as what it is. A format told
 /// apart but not read yet is refused by name, with what to export instead.
 pub fn load(path: &Path, fps: klipp_core::Fps, pool: &klipp_media::MediaPool) -> Result<ImportResult, String> {
-    match detect(path)? {
+    let result = match detect(path)? {
         Format::Otio => crate::otio_import::load_otio(path).map_err(|e| e.to_string()).map(|r| media_checked(r, path)),
         Format::Fcpxml => crate::fcpxml_import::load_fcpxml(path).map_err(|e| e.to_string()).map(|r| media_checked(r, path)),
         Format::Mlt => crate::mlt_import::load_kdenlive(path).map_err(|e| e.to_string()).map(|r| media_checked(r, path)),
@@ -245,7 +279,9 @@ pub fn load(path: &Path, fps: klipp_core::Fps, pool: &klipp_media::MediaPool) ->
             }
             Ok(ImportResult { sequence, warnings, media_pool })
         }
-    }
+    }?;
+    times_checked(&result)?;
+    Ok(result)
 }
 
 /// An imported timeline made to sit in the project it joins (#2472): a
@@ -416,6 +452,52 @@ pub fn read(dir: &Path) -> Result<Option<ImportReport>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A timeline nesting past any real one is refused with why, whatever
+    /// the XML format; the parser recurses once per level, so one past the
+    /// stack would stop the app.
+    #[test]
+    fn a_timeline_nesting_too_deep_is_refused() {
+        let dir = std::env::temp_dir().join(format!("klipp-import-depth-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let deep = |tag: &str, open: &str, close: &str| format!("{open}{}{}{close}", format!("<{tag}>").repeat(100_000), format!("</{tag}>").repeat(100_000));
+        for (name, content) in [
+            ("t.fcpxml", deep("gap", r#"<?xml version="1.0"?><fcpxml version="1.9"><resources/><library><event><project name="P"><sequence><spine>"#, "</spine></sequence></project></event></library></fcpxml>")),
+            ("t.xml", deep("sequence", r#"<?xml version="1.0"?><xmeml version="4">"#, "</xmeml>")),
+            ("t.mlt", deep("playlist", "<mlt>", "</mlt>")),
+        ] {
+            let source = dir.join(name);
+            std::fs::write(&source, content).unwrap();
+            let why = load(&source, klipp_core::Fps::pal_25(), &klipp_media::MediaPool::new()).err().unwrap_or_else(|| panic!("{name} opened"));
+            assert!(why.contains("nest deeper than 256"), "{name}: {why}");
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// A clip whose times no timeline can hold is refused by name, in place
+    /// of opening and failing later; times at the edge of the valid range
+    /// still open.
+    #[test]
+    fn a_timeline_with_impossible_times_is_refused_naming_the_clip() {
+        let dir = std::env::temp_dir().join(format!("klipp-import-times-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let open = |attrs: &str| {
+            let source = dir.join("t.fcpxml");
+            std::fs::write(&source, format!(r#"<?xml version="1.0"?><fcpxml version="1.9"><resources><format id="r0" frameDuration="1/25s" width="1920" height="1080"/><asset id="a" name="take.mov" src="file:///nowhere/take.mov" start="0s" duration="20s" hasVideo="1" format="r0"/></resources><library><event><project name="P"><sequence format="r0" duration="5s"><spine><asset-clip ref="a" {attrs}/></spine></sequence></project></event></library></fcpxml>"#)).unwrap();
+            load(&source, klipp_core::Fps::pal_25(), &klipp_media::MediaPool::new())
+        };
+        for (attrs, says) in [
+            (r#"offset="-50s" duration="5s" start="0s""#, "before the timeline"),
+            (r#"offset="0s" duration="-5s" start="0s""#, "before it starts"),
+            (r#"offset="0s" duration="5s" start="-3s""#, "before the media"),
+        ] {
+            let why = open(attrs).err().unwrap_or_else(|| panic!("{attrs} opened"));
+            assert!(why.contains("take.mov") && why.contains(says), "{attrs}: {why}");
+        }
+        assert!(open(r#"offset="0s" duration="5s" start="0s""#).is_ok());
+        assert!(open(r#"offset="0s" duration="0s" start="0s""#).is_ok(), "empty is not inverted");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     /// For a timeline from elsewhere, as for a project: whatever the format, a file in
     /// a hidden folder or one that is not media is kept offline with why,

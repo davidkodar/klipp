@@ -469,16 +469,10 @@ impl NewInspectorPanel {
                         if self.last_duck_clip != Some(clip.id) {
                             self.duck = audio_tab::DuckSettings::from_prefs(&prefs.audio);
                             // Never the clip's own track: ducked under itself,
-                            // it was an error until changed.
-                            let dialogue_track = state.sequence().tracks.iter().enumerate()
-                                .find(|(i, t)| {
-                                    *i != track_idx
-                                        && t.kind == klipp_timeline::TrackKind::Audio
-                                        && t.clips.iter().any(|c| c.role.as_ref().is_some_and(|r| r.is_speech()))
-                                })
-                                .map(|(i, _)| i);
-                            let first_audio = track_infos.iter().map(|ti| ti.index).find(|i| *i != track_idx);
-                            self.duck.sidechain_track = dialogue_track.or(first_audio).unwrap_or(0);
+                            // it was an error until changed. With no
+                            // other sound track, none: its own, which the
+                            // tab refuses with the reason.
+                            self.duck.sidechain_track = audio_tab::default_sidechain(state.sequence(), track_idx).unwrap_or(track_idx);
                             self.last_duck_clip = Some(clip.id);
                         }
                         let is_timeline = true; // clip_info comes from timeline selection

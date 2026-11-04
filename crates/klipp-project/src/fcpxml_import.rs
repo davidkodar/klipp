@@ -60,6 +60,12 @@ impl From<roxmltree::Error> for FcpxmlImportError {
     }
 }
 
+impl From<crate::path_util::SafeXmlError> for FcpxmlImportError {
+    fn from(e: crate::path_util::SafeXmlError) -> Self {
+        Self::Parse(e.to_string())
+    }
+}
+
 /// A resource in the `<resources>` block that references a media file.
 #[derive(Debug, Clone)]
 struct AssetInfo {
@@ -93,8 +99,13 @@ impl FormatInfo {
         if fd_num <= 0 || fd_den <= 0 {
             return Fps::film_24();
         }
-        let num_u32 = u32::try_from(fd_den).unwrap_or(24);
-        let den_u32 = u32::try_from(fd_num).unwrap_or(1);
+        // Final Cut writes 25p as `100/2500s`: 2500/100 is 25/1.
+        let (mut a, mut b) = (fd_den, fd_num);
+        while b != 0 {
+            (a, b) = (b, a % b);
+        }
+        let num_u32 = u32::try_from(fd_den / a).unwrap_or(24);
+        let den_u32 = u32::try_from(fd_num / a).unwrap_or(1);
         crate::path_util::sanitize_fps(num_u32, den_u32)
     }
 }
@@ -135,8 +146,9 @@ fn parse_fcpxml_rational(s: &str) -> Result<(i64, i64), FcpxmlImportError> {
 }
 
 /// Convert an FCPXML rational-time string to a Klipp `RationalTime` at the
-/// given sequence fps. The returned `RationalTime` has `rate = fps.rate()`
-/// (which equals `fps.num`), so frames map 1:1 onto `value`.
+/// given sequence fps, rounded to its frames. The returned `RationalTime`
+/// has `rate = fps.rate()` (which equals `fps.num`) and counts its ticks,
+/// `fps.den` of them a frame.
 ///
 /// Rounding: `frames = round(num * fps.num / (den * fps.den))`, performed in
 /// `i128` to avoid overflow on long durations.
@@ -156,9 +168,13 @@ fn parse_fcpxml_time(s: &str, seq_fps: Fps) -> Result<RationalTime, FcpxmlImport
     } else {
         (numerator - denominator / 2) / denominator
     };
-    let frames = i64::try_from(frames_i128)
+    // A time's value counts the rate's ticks, `den` of them a frame: at
+    // 29.97 a frame is 1001 of 30000. Written as frames, a Final Cut file
+    // at 29.97 came in a thousand times too short.
+    let ticks = frames_i128 * i128::from(seq_fps.den);
+    let value = i64::try_from(ticks)
         .map_err(|_| FcpxmlImportError::InvalidTime(s.to_string()))?;
-    Ok(RationalTime::from_frames(frames, rate))
+    Ok(RationalTime { value, rate })
 }
 
 /// Strip `file://` prefix from an asset src URL and minimally decode percent-
@@ -275,7 +291,20 @@ fn index_resources<'a>(
                     },
                 );
             }
-            "media" | "effect" | "title-effect" | "transition-effect" => {
+            // A title's template is an <effect>, and the title is read as
+            // one of Klipp's own; a filter's is named where it is used. Only
+            // an effect something else refers to leaves a clip short: Klipp's
+            // own export, which writes one for its titles, was warned about.
+            "effect" => {
+                let id = child.attribute("id");
+                let elsewhere = id.is_some_and(|id| {
+                    resources.document().descendants().any(|n| n.is_element() && n.attribute("ref") == Some(id) && !matches!(n.tag_name().name(), "title" | "filter-video" | "filter-audio"))
+                });
+                if elsewhere {
+                    warnings.push("<effect> resource is not supported — referenced clips may be incomplete".to_string());
+                }
+            }
+            "media" | "title-effect" | "transition-effect" => {
                 warnings.push(format!(
                     "<{}> resource is not supported — referenced clips may be incomplete",
                     child.tag_name().name()
@@ -321,11 +350,11 @@ fn register_asset_media(
             let numerator = (num as i128) * (seq_fps.num as i128);
             let denominator = (den as i128) * (seq_fps.den as i128);
             let frames = if denominator != 0 {
-                i64::try_from(numerator / denominator).unwrap_or(0)
+                i64::try_from((numerator / denominator).saturating_mul(i128::from(seq_fps.den))).unwrap_or(0)
             } else {
                 0
             };
-            RationalTime::from_frames(frames, seq_fps.rate())
+            RationalTime { value: frames, rate: seq_fps.rate() }
         }
         None => RationalTime::ZERO,
     };
@@ -950,7 +979,14 @@ fn collect_sequence_markers(
             color: marker_colour(m),
             duration,
             comment,
-            kind: if m.tag_name().name() == "chapter-marker" { klipp_core::MarkerKind::Chapter } else { klipp_core::MarkerKind::None },
+            // A `completed` marker is Final Cut Pro's to-do, done or not.
+            kind: if m.tag_name().name() == "chapter-marker" {
+                klipp_core::MarkerKind::Chapter
+            } else if m.attribute("completed").is_some() {
+                klipp_core::MarkerKind::ToDo
+            } else {
+                klipp_core::MarkerKind::None
+            },
         });
     }
     out
@@ -1106,12 +1142,14 @@ mod tests {
     fn parse_fcpxml_time_non_integer() {
         // 24000/1001 fps — NTSC film.
         let fps = Fps::new(24000, 1001);
-        // 1001/24000s at 24000/1001fps → exactly 1 frame.
+        // 1001/24000s at 24000/1001fps → exactly 1 frame, 1001 ticks of
+        // 24000.
         let one = parse_fcpxml_time("1001/24000s", fps).unwrap();
-        assert_eq!(one.value, 1);
+        assert_eq!((one.value, one.rate), (1001, 24000));
         // 3003/24000s → 3 frames.
         let three = parse_fcpxml_time("3003/24000s", fps).unwrap();
-        assert_eq!(three.value, 3);
+        assert_eq!(three.value, 3003);
+        assert!((three.to_secs_f64() - 0.125125).abs() < 1e-9, "{three:?}");
     }
 
     #[test]
@@ -1264,9 +1302,23 @@ mod tests {
         let result = parse_fcpxml(FCPXML_2997).expect("parse ok");
         assert_eq!(result.sequence.fps, Fps::new(30000, 1001));
         let clip = &result.sequence.tracks[0].clips[0];
-        // duration = 30030/30000 seconds = 30030 * 30000 / (30000 * 1001) frames
-        // = 900900000 / 30030000 = 30 frames at rate=30000.
-        assert_eq!(clip.timeline_out.value - clip.timeline_in.value, 30);
+        // duration = 30030/30000 seconds = 30 frames, 30030 ticks at
+        // rate 30000: 1.001 s. It read 30 ticks, a thousandth of that.
+        assert_eq!(clip.timeline_out.value - clip.timeline_in.value, 30030);
+        assert!((clip.duration().to_secs_f64() - 1.001).abs() < 1e-9);
+    }
+
+    /// Final Cut writes 25p as a frame of `100/2500s`: the sequence is
+    /// 25 fps, and a clip 5 s long is 5 s long. It was 2500/100 fps,
+    /// each time counted in frames of it, and every clip a hundredth of
+    /// its length.
+    #[test]
+    fn a_final_cut_25p_file_keeps_its_times() {
+        let doc = FCPXML_2997.replace("1001/30000s", "100/2500s").replace("30030/30000s", "5s").replace("offset=\"0s\"", "offset=\"2s\"");
+        let result = parse_fcpxml(&doc).expect("parse ok");
+        assert_eq!(result.sequence.fps, Fps::new(25, 1));
+        let clip = &result.sequence.tracks[0].clips.iter().find(|c| !c.kind.is_gap()).unwrap();
+        assert_eq!((clip.timeline_in.to_secs_f64(), clip.duration().to_secs_f64()), (2.0, 5.0));
     }
 
     #[test]
