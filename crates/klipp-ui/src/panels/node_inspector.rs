@@ -307,7 +307,7 @@ impl NodeInspectorPanel {
         // Colour tab (`show_adjustments_tab`) and in the node's own
         // inspector, so this row stays one control wide.
         if *color_tab == ColorTab::Wheels {
-            self.show_wheels_contrast_row(ui, graph, clip_id, cmds, theme, frame);
+            self.show_wheels_contrast_row(ui, graph, clip_id, *selected_node, cmds, theme, frame);
         }
 
         match color_tab {
@@ -316,7 +316,7 @@ impl NodeInspectorPanel {
             }
             ColorTab::Wheels if wide_layout => {
                 // Wide layout: combined wheels + sat/bri in unified columns
-                self.show_wheels_wide(ui, graph, clip_id, cmds, theme, frame);
+                self.show_wheels_wide(ui, graph, clip_id, *selected_node, cmds, theme, frame);
             }
             _ => {
                 // The tab is its target's generated rows, the editors among
@@ -331,7 +331,7 @@ impl NodeInspectorPanel {
                     _ => None,
                 };
                 if let Some(tab_kind) = tab_kind {
-                    self.generated_tab(ui, graph, clip_id, tab_kind, cmds, theme, frame);
+                    self.generated_tab(ui, graph, clip_id, *selected_node, tab_kind, cmds, theme, frame);
                 }
             }
         }
@@ -348,9 +348,9 @@ impl NodeInspectorPanel {
     /// The widgets edit a copy of the node's values: every change is the
     /// commands they push, never a write into the grade while drawing.
     #[allow(clippy::too_many_arguments)]
-    fn generated_tab(&mut self, ui: &mut egui::Ui, graph: &NodeGraph, clip_id: ClipId, tab_kind: NodeKind, cmds: &mut Vec<AppCommand>, theme: &KlippTheme, frame: FrameSelection) {
+    fn generated_tab(&mut self, ui: &mut egui::Ui, graph: &NodeGraph, clip_id: ClipId, selected: Option<NodeId>, tab_kind: NodeKind, cmds: &mut Vec<AppCommand>, theme: &KlippTheme, frame: FrameSelection) {
         let Some(snapshot) = self.generated.take() else { return };
-        let target = graph.nodes.iter().find(|n| n.kind == NodeKind::Corrector && n.enabled)
+        let target = tab_corrector(graph, selected, true).map(|i| &graph.nodes[i])
             .or_else(|| graph.nodes.iter().find(|n| n.kind == tab_kind && n.enabled))
             .map(|n| (n.id, n.kind, n.enabled, n.keyframes.clone(), n.params.clone()))
             .or_else(|| snapshot.pending().map(|id| (id, NodeKind::Corrector, true, Default::default(), NodeParams::default())));
@@ -374,6 +374,7 @@ impl NodeInspectorPanel {
         ui: &mut egui::Ui,
         graph: &mut NodeGraph,
         clip_id: ClipId,
+        selected: Option<NodeId>,
         cmds: &mut Vec<AppCommand>,
         theme: &KlippTheme,
         frame: FrameSelection,
@@ -400,9 +401,7 @@ impl NodeInspectorPanel {
             });
             return;
         }
-        let corrector_idx = graph.nodes.iter().position(|n|
-            n.kind == NodeKind::Corrector && n.enabled
-        );
+        let corrector_idx = tab_corrector(graph, selected, true);
         let wheels_idx = corrector_idx.or_else(||
             graph.nodes.iter().position(|n| n.kind == NodeKind::ColorWheels && n.enabled)
         );
@@ -1209,17 +1208,15 @@ impl NodeInspectorPanel {
         ui: &mut egui::Ui,
         graph: &mut NodeGraph,
         clip_id: ClipId,
+        selected: Option<NodeId>,
         cmds: &mut Vec<AppCommand>,
         theme: &KlippTheme,
         frame: FrameSelection,
     ) {
         // Same target the wheels themselves write to: the Corrector when
         // there is one, else a standalone node of the right kind.
-        let target = graph
-            .nodes
-            .iter()
-            .find(|n| n.kind == NodeKind::Corrector)
-            .map(|n| n.id)
+        let target = tab_corrector(graph, selected, false)
+            .map(|i| graph.nodes[i].id)
             .or_else(|| graph.nodes.iter().find(|n| n.kind == NodeKind::Contrast).map(|n| n.id));
         let Some(nid) = target else { return };
 
@@ -1325,9 +1322,8 @@ impl NodeInspectorPanel {
                     return Some((n.id, n.enabled));
                 }
             }
-            graph.nodes.iter()
-                .find(|n| n.kind == NodeKind::Corrector)
-                .map(|n| (n.id, n.enabled))
+            tab_corrector(graph, selected_id, false)
+                .map(|i| (graph.nodes[i].id, graph.nodes[i].enabled))
                 .or_else(||
                     graph.nodes.iter().find(|n| n.kind == kind).map(|n| (n.id, n.enabled))
                 )
@@ -5015,6 +5011,16 @@ fn gesture_of(ui: &mut egui::Ui, started: bool, ended: bool) -> (bool, Option<fn
         }
     });
     (started, end)
+}
+
+/// The Corrector the Colour page's tabs show and edit: the node selected
+/// on the canvas when it is a Corrector, else the grade's first (its first
+/// enabled one when `enabled_only`). The tabs edited the first whichever
+/// was selected, under the selected node's name.
+pub(crate) fn tab_corrector(graph: &NodeGraph, selected: Option<NodeId>, enabled_only: bool) -> Option<usize> {
+    selected
+        .and_then(|id| graph.nodes.iter().position(|n| n.id == id && n.kind == NodeKind::Corrector))
+        .or_else(|| graph.nodes.iter().position(|n| n.kind == NodeKind::Corrector && (n.enabled || !enabled_only)))
 }
 
 /// Push a single atomic node-param edit wrapped in a `BeginNodeParamEdit` /

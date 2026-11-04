@@ -9,7 +9,8 @@
 //! when it has one and they lie past it (a conform EDL), and from zero
 //! otherwise (what Klipp's own export writes). Cuts are imported; a
 //! dissolve or wipe is imported as a cut and listed in the warnings, as is
-//! any event whose media is not in the pool.
+//! any event whose media is not in the pool. Events that overlap go on
+//! tracks of their own, each listed.
 
 use klipp_core::{Fps, MediaId, Timecode};
 use klipp_media::MediaPool;
@@ -108,6 +109,7 @@ pub fn build(edl: &Edl, name: &str, fps: Fps, mut find: impl FnMut(&Event) -> Op
     seq.fps = fps;
     seq.tracks.clear();
     let mut warnings = Vec::new();
+    let mut moved = Vec::new();
     let tc = |frames: i64| Timecode { value: frames * i64::from(fps.den), rate: fps.num };
     for e in &edl.events {
         let Some(m) = find(e) else {
@@ -138,13 +140,35 @@ pub fn build(edl: &Edl, name: &str, fps: Fps, mut find: impl FnMut(&Event) -> Op
             }
         };
         for (kind, index) in channels {
-            let track = track_for(&mut seq, kind, index);
-            let clip = Clip::media(m.media_id, tc(e.rec_in), tc(e.rec_out), tc(src_in), tc(src_out));
+            let (rec_in, rec_out) = (tc(e.rec_in), tc(e.rec_out));
+            // CMX 3600 has one picture track, so an export of two writes
+            // both onto it and their events overlap. One that runs into an
+            // event already laid goes on the next track of its kind it
+            // fits on, made as needed: kept on one, the reopened project
+            // ended the first where the second began.
+            let mut track = track_for(&mut seq, kind, index);
+            let mut up = index;
+            while seq.tracks[track].clips.iter().any(|c| c.timeline_in < rec_out && rec_in < c.timeline_out) {
+                up += 1;
+                track = track_for(&mut seq, kind, up);
+            }
+            let clip = Clip::media(m.media_id, rec_in, rec_out, tc(src_in), tc(src_out));
+            if up != index {
+                moved.push((e.number, clip.id, kind, index));
+            }
             let at = seq.tracks[track].clips.partition_point(|c| c.timeline_in < clip.timeline_in);
             seq.tracks[track].clips.insert(at, clip);
         }
     }
     seq.renumber_tracks();
+    // Named once the tracks have their numbers. A new picture track goes
+    // below the ones there, so the events listed first stay on top, as
+    // Klipp's own export lists its top track first.
+    for (number, id, kind, index) in moved {
+        let first = seq.tracks.iter().filter(|t| t.kind == kind).nth(index).map(|t| t.name.clone()).unwrap_or_default();
+        let on = seq.find_clip(id).map(|(t, _)| seq.tracks[t].name.clone()).unwrap_or_default();
+        warnings.push(format!("Event {number:03}: overlaps an event on {first}, so it was put on {on}; an EDL does not say which of them is on top"));
+    }
     (seq, warnings)
 }
 

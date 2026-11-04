@@ -4312,7 +4312,7 @@ impl ViewerPanel {
         let Some(title) = clip.title_data() else { return };
         // Its layers' boxes only while the title is on screen: with the
         // playhead past it the viewer shows another picture, and the boxes
-        // were drawn over it (P30). A drag under way goes on.
+        // were drawn over it. A drag under way goes on.
         if state.title_object_drag.is_none() && !title_on_screen(clip, title_edit_time(state)) {
             return;
         }
@@ -6797,7 +6797,7 @@ fn hdr_button_rect(image: egui::Rect, mode: klipp_core::HdrMonitor) -> egui::Rec
 /// Where the overlays' badge (SAFE AREAS, a platform's name…) sits: under
 /// the HDR monitor's button, and while monitoring, under the two rows it
 /// shows below it. It was in the button's place, and the button covered
-/// it (P22).
+/// it.
 fn overlay_badge_pos(image: egui::Rect, mode: klipp_core::HdrMonitor) -> egui::Pos2 {
     let button = hdr_button_rect(image, mode);
     let below = if mode.renders_hdr() { button.max.y + 8.0 + 2.0 * HDR_BUTTON_H } else { button.max.y };
@@ -6819,7 +6819,7 @@ fn draw_platform_overlay(painter: &egui::Painter, platform: &crate::platform_ove
         painter.text(frame.left_top() + egui::vec2(4.0, -2.0), egui::Align2::LEFT_BOTTOM, format!("{} frame ({}:{})", platform.name, platform.aspect[0], platform.aspect[1]), font.clone(), colour);
     }
     // Each zone's label wrapped to its zone and kept in the picture: a
-    // narrow zone at an edge ran its label off the picture (P45).
+    // narrow zone at an edge ran its label off the picture.
     let inside = painter.with_clip_rect(frame.intersect(painter.clip_rect()));
     for z in &platform.zones {
         let [x, y, w, h] = z.rect;
@@ -8843,7 +8843,7 @@ mod playback_note_tests {
 
 #[cfg(test)]
 mod overlay_badge_tests {
-    /// P22: the overlays' badge sits clear of the HDR monitor's button,
+    /// The overlays' badge sits clear of the HDR monitor's button,
     /// whichever width the button has.
     #[test]
     fn the_overlay_badge_is_clear_of_the_hdr_button() {
@@ -8861,7 +8861,7 @@ mod overlay_badge_tests {
 
 #[cfg(test)]
 mod title_on_screen_tests {
-    /// P30: a title's layer boxes are drawn only while it is on screen.
+    /// A title's layer boxes are drawn only while it is on screen.
     #[test]
     fn a_title_is_on_screen_from_its_start_to_before_its_end() {
         let t = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 24);

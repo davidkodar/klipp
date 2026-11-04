@@ -61,6 +61,18 @@ impl AppState {
         format!("Grading: {name} · V{n}")
     }
 
+    /// Where selecting `clip` takes the playhead: a title the playhead is
+    /// outside of brings it to its rest pose, as the viewer shows a title
+    /// only where the engine draws it; nothing else moves it. On the
+    /// Colour page a clip picked elsewhere is named in the header with
+    /// "Go to it", which moves it when clicked: the pick took the playhead
+    /// there itself, which the page must never do unasked.
+    pub(crate) fn seek_on_select(&self, clip: ClipId) -> Option<Timecode> {
+        let c = self.sequence().all_clips().find(|c| c.id == clip)?;
+        c.title_data()?;
+        super::titles::title_seek_on_select(c, self.playhead, self.sequence().fps.rate())
+    }
+
     /// A clip picked on the Colour page is the one graded (#2952), so no
     /// earlier selection is waiting elsewhere: also when it was the
     /// selected clip already, as the one the page had chosen (#3426).

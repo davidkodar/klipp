@@ -115,7 +115,7 @@ fn a_clip_slowed_into_a_gap_clip_takes_its_room() {
 /// #3115: a retime fitted to fill runs over the gap clip to the next
 /// shot, not to the gap clip's start; `length_secs` sets the clip's
 /// length and works out the speed, and `fit_range` puts it on the marks,
-/// from In to Out (P53); two ways at once are refused.
+/// from In to Out; two ways at once are refused.
 #[test]
 fn a_retime_fits_to_the_next_shot_a_length_or_the_marked_range() {
     let (mut seq, pool, ids) = with_a_gap();

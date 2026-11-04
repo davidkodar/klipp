@@ -3072,7 +3072,7 @@ fn tx_result_strip(
         egui::pos2(rect.max.x - 8.0, rect.max.y - 1.0),
     );
     // The count in the room left of Sort: shortened, or left out, where
-    // the panel is narrow. It was drawn under Sort (P55).
+    // the panel is narrow. It was drawn under Sort.
     crate::browser::library_card::paint_count(ui, theme, rect, dropdown_w, count, &format!("{count} Transitions"));
     ui.allocate_new_ui(egui::UiBuilder::new().max_rect(dropdown_rect), |ui| {
         ui.style_mut().visuals.widgets.inactive.weak_bg_fill = egui::Color32::TRANSPARENT;

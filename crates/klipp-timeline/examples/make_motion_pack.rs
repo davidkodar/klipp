@@ -182,7 +182,7 @@ fn object_index(layout: &Sequence, clip: &str, k: usize) -> usize {
     panic!("{clip} is in the layout")
 }
 
-/// A colour a brand kit's accent sets (P42), `rgb` as made.
+/// A colour a brand kit's accent sets, `rgb` as made.
 fn colour_param(label: &str, rgb: [u8; 3]) -> TemplateParameter {
     TemplateParameter { label: label.into(), default: TemplateValue::Color([rgb[0] as f32 / 255.0, rgb[1] as f32 / 255.0, rgb[2] as f32 / 255.0, 1.0]), range: None, choices: Vec::new() }
 }

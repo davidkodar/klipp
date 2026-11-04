@@ -898,7 +898,7 @@ impl InspectorEditHost<'_> {
                     EditCommand::PictureEdit { clip_id: c, description, edit } if *c == *clip_id && *description == "Add Effect" => {
                         edit.after = after.clone();
                         // Named as the drag it is: an opacity drag that
-                        // added its effect read "Add Effect" (P35).
+                        // added its effect read "Add Effect".
                         *description = "Edit Effect";
                         true
                     }
@@ -1058,7 +1058,7 @@ mod tests {
         assert_eq!(clip(&state).picture_v2().unwrap(), after);
     }
 
-    /// P35: a drag whose first move added its effect (the Opacity row on
+    /// A drag whose first move added its effect (the Opacity row on
     /// a clip without one) is one undo step named as a drag, not "Add
     /// Effect".
     #[test]
