@@ -450,7 +450,7 @@ impl KlippApp {
                         .on_hover_text("Play the clip from its last frame to its first. Its sound plays backward with it.")
                         .on_disabled_hover_text("Only a clip of a media file can play in reverse");
                     ui.checkbox(&mut self.state.speed_dialog_ripple, "Move the clips after it")
-                        .on_hover_text("A clip made longer pushes what follows on its track (and its sound's) along; one made shorter pulls it up. Off, a clip that would grow into the next one is not changed.");
+                        .on_hover_text("A clip made longer pushes what follows on its track (and its sound's) along; one made shorter pulls it up. Off, a clip that would grow into the next one is not changed. Fill to the next clip leaves them where they are.");
                     // What a speed change does to the sound (#638, #925).
                     let reverse = self.state.speed_dialog_reverse;
                     ui.add_enabled(!reverse, egui::Checkbox::new(&mut self.state.speed_dialog_keep_pitch, "Keep the pitch"))
@@ -488,7 +488,8 @@ impl KlippApp {
                                     let mut speed = self.state.speed_dialog_value / 100.0;
                                     if self.state.speed_dialog_reverse { speed = -speed; }
                                     if let Some(clip) = self.state.sequence().all_clips().find(|c| c.id == clip_id) {
-                                        cmds.extend(crate::speed_dialog::apply_commands(clip, speed, self.state.speed_dialog_keep_pitch, self.state.speed_dialog_ripple));
+                                        let ripple = crate::speed_dialog::moves_the_clips_after(self.state.speed_dialog_ripple, self.state.speed_dialog_fit, content, self.state.speed_dialog_value);
+                                        cmds.extend(crate::speed_dialog::apply_commands(clip, speed, self.state.speed_dialog_keep_pitch, ripple));
                                     }
                                 }
                             }
