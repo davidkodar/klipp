@@ -117,10 +117,10 @@ pub fn show(
     if looks.is_empty() {
         ui.horizontal(|ui| {
             ui.add_space(12.0);
-            ui.label(
+            ui.add(egui::Label::new(
                 egui::RichText::new("No saved Looks yet. Save the current grade to start.")
                     .small().color(theme.text_dim)
-            );
+            ).wrap());
         });
         return cmds;
     }
