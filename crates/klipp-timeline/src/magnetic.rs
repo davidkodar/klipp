@@ -629,6 +629,12 @@ impl MagneticEditor {
         // with it too (#3449), not only the deleted clip's partner track.
         let mut cascaded_clips = cascaded_clips;
         cascaded_clips.extend(Self::follow_linked_partners(&before, sequence));
+        // And the other way: a sound the partner track's close-up moved
+        // takes its picture along. A picture on a free video track stayed
+        // while its sound closed up, out of sync by the deleted length.
+        if let (Some((_, lt_idx)), false) = (partner_track, partner_is_primary) {
+            cascaded_clips.extend(Self::partners_follow(&before, sequence, lt_idx));
+        }
 
         #[cfg(debug_assertions)]
         if sequence.tracks[track_idx].magnetic_role == TrackRole::Primary || partner_is_primary {
@@ -857,8 +863,16 @@ impl MagneticEditor {
     /// moved, as cascade records (old and new spans).
     pub fn follow_linked_partners(before: &Sequence, sequence: &mut Sequence) -> Vec<CascadeRecord> {
         let Some(primary) = sequence.primary_track_index() else { return Vec::new() };
+        Self::partners_follow(before, sequence, primary)
+    }
+
+    /// [`Self::follow_linked_partners`] for the clips an edit moved on
+    /// track `from`: each takes its partner along, never onto the primary
+    /// track nor on a locked one, and not one moved already.
+    fn partners_follow(before: &Sequence, sequence: &mut Sequence, from: usize) -> Vec<CascadeRecord> {
+        let Some(primary) = sequence.primary_track_index() else { return Vec::new() };
         let was = |id: ClipId| before.tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == id).map(|c| (c.timeline_in, c.timeline_out));
-        let moves: Vec<(ClipId, RationalTime)> = sequence.tracks[primary]
+        let moves: Vec<(ClipId, RationalTime)> = sequence.tracks[from]
             .clips
             .iter()
             .filter_map(|c| {
@@ -2931,6 +2945,36 @@ mod tests {
             surviving.linked_clip_id, None,
             "ripple_delete must purge linked_clip_id pointing at the removed clip"
         );
+    }
+
+    /// A primary clip deleted with its sound: the sound track closes up,
+    /// and a later sound there takes its picture on a free video track
+    /// along. The picture stayed, out of sync by the deleted length.
+    #[test]
+    fn ripple_delete_moves_a_picture_with_its_closing_up_sound() {
+        let mut seq = make_sequence(&[(0, 24), (24, 48)]);
+        let a_id = seq.tracks[0].clips[0].id;
+        let mut audio = Track::new("Audio 1", TrackKind::Audio);
+        let mut a_sound = media_clip(0, 24);
+        a_sound.linked_clip_id = Some(a_id);
+        seq.tracks[0].clips[0].linked_clip_id = Some(a_sound.id);
+        let mut picture = media_clip(72, 96);
+        let mut sound = media_clip(72, 96);
+        picture.linked_clip_id = Some(sound.id);
+        sound.linked_clip_id = Some(picture.id);
+        let (picture_id, sound_id) = (picture.id, sound.id);
+        audio.clips = vec![a_sound, sound];
+        seq.tracks.push(audio);
+        let mut free = Track::new("Video 2", TrackKind::Video);
+        free.clips.push(picture);
+        seq.tracks.push(free);
+
+        MagneticEditor::ripple_delete(&mut seq, a_id);
+
+        let span = |id: ClipId| seq.all_clips().find(|c| c.id == id).map(|c| (c.timeline_in.value, c.timeline_out.value)).unwrap();
+        let (s_in, s_out) = span(sound_id);
+        assert!(s_in < 72, "the sound closed up: {s_in}-{s_out}");
+        assert_eq!(span(picture_id), (s_in, s_out), "its picture went with it");
     }
 
     /// A blade on the magnetic track cuts the file through the clip's

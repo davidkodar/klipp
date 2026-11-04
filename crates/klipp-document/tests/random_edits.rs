@@ -47,20 +47,6 @@ use serde_json::{json, Value};
 /// failure of this test, and any other shape is. Each goes when its fix
 /// lands, and the test then proves the fix.
 const KNOWN: &[(&str, fn(&Broken, &str) -> bool)] = &[
-    // A retime after blades leaving a transition that saving drops.
-    ("R16", |b, last| b.invariant == SAVED && b.detail.contains("/transitions") && last == "Retime"),
-    // A primary clip ripple-deleted with a picture on a free track whose
-    // sound is on the track that closes up: the sound moves, the picture
-    // doesn't.
-    ("R17", |b, last| b.invariant == SYNC && last == "PrimaryRippleDelete"),
-    // A take's sound keeps an audition of its own, which saving drops.
-    ("R18", |b, _| b.invariant == SAVED && b.detail.contains("/sound/") && b.detail.contains("/audition")),
-    // As R17, by a ripple trim through the trim op.
-    ("R19", |b, last| b.invariant == SYNC && last == "Trim"),
-    // A switch to a take leaving a transition on the slot that saving drops.
-    ("R20", |b, last| b.invariant == SAVED && b.detail.contains("/transitions") && last == "AuditionSwitch"),
-    // A switch to a take leaving a linked pair apart.
-    ("R22", |b, last| b.invariant == SYNC && last == "AuditionSwitch"),
 ];
 
 const SYNC: &str = "linked pairs in sync";
@@ -506,7 +492,13 @@ impl Run {
         let (loaded, ..) = klipp_project::load_project(&self.dir).map_err(|e| (SAVED, format!("load refused: {e}"), f64::INFINITY))?;
         let (built, back) = (same_times(built), same_times(state(&loaded[0])));
         if back != built {
-            return Err((SAVED, first_difference(&built, &back), f64::INFINITY));
+            // Which transitions a save would drop: one naming a clip not on
+            // its track.
+            let lost: Vec<String> = self.seq.tracks.iter().enumerate().flat_map(|(ti, t)| t.transitions.iter().filter(move |x| !t.clips.iter().any(|c| c.id == x.clip_a_id) || !t.clips.iter().any(|c| c.id == x.clip_b_id)).map(move |x| {
+                let on = |id: ClipId| self.seq.tracks.iter().position(|tr| tr.clips.iter().any(|c| c.id == id)).map_or("gone".to_string(), |k| format!("on track {k}"));
+                format!("track {ti}: {}→{} ({}, {})", short(x.clip_a_id), short(x.clip_b_id), on(x.clip_a_id), on(x.clip_b_id))
+            })).collect();
+            return Err((SAVED, first_difference(&built, &back) + &format!("\n      lost transitions: {}", lost.join("; ")), f64::INFINITY));
         }
         Ok(())
     }

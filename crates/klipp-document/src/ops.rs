@@ -6440,12 +6440,16 @@ fn resolve_trim(seq: &Sequence, pool: &MediaPool, i: usize, clip_id: ClipId, edg
     // A ripple off the primary moves later clips whose pictures may sit
     // on the primary; with no trim there to move them too, they would
     // stay while their sound moved. Refused, as a remove that would leave
-    // partners behind is.
+    // partners behind is. The partner's track ripples too when the trim
+    // is linked: a picture on a free track trimmed with its sound moved
+    // the later sounds on that track off their pictures on the primary.
     if ripple {
         let (ti, ci, clip) = resolve_clip(seq, seq.fps, &ClipRef::Id(clip_id), i)?;
         let primary = seq.primary_track_index();
-        let partner_on_primary = linked && clip.linked_clip_id.and_then(|lid| find_clip(seq, lid)).is_some_and(|(pti, _, _)| Some(pti) == primary);
-        if Some(ti) != primary && !partner_on_primary {
+        let partner = clip.linked_clip_id.filter(|_| linked).and_then(|lid| find_clip(seq, lid));
+        let partner_on_primary = partner.as_ref().is_some_and(|(pti, _, _)| Some(*pti) == primary);
+        let rippled = std::iter::once((ti, ci)).chain(partner.as_ref().map(|(pti, pci, _)| (*pti, *pci)));
+        for (ti, ci) in rippled.filter(|_| !partner_on_primary).filter(|(ti, _)| Some(*ti) != primary) {
             for c in &seq.tracks[ti].clips[ci + 1..] {
                 if let Some((_, _, p)) = c.linked_clip_id.and_then(|lid| find_clip(seq, lid)).filter(|(pti, _, _)| Some(*pti) == primary) {
                     return Err(refuse(
@@ -11459,8 +11463,10 @@ struct Rippled {
 /// primary track keeps its holes as gap clips (#3083), and a clip grown
 /// into one was refused as though the gap were a shot. Each gap clip the
 /// span overlaps is removed; what of it the span leaves is filled again
-/// as the edit is recorded. Any other clip in the span, `skip` aside, is
-/// what the span would run into.
+/// as the edit is recorded. A transition into or out of a gap clip taken
+/// goes with it: left naming a clip no longer there, a save dropped it.
+/// Any other clip in the span, `skip` aside, is what the span would run
+/// into.
 pub(super) fn room_from_gaps<'a>(seq: &'a Sequence, ti: usize, from: Timecode, to: Timecode, skip: &dyn Fn(&Clip) -> bool) -> Result<Vec<EditCommand>, &'a Clip> {
     let mut taken: Vec<(usize, &Clip)> = Vec::new();
     for (position, c) in seq.tracks[ti].clips.iter().enumerate() {
@@ -11474,7 +11480,18 @@ pub(super) fn room_from_gaps<'a>(seq: &'a Sequence, ti: usize, from: Timecode, t
     }
     // Last first, so each one's position is still its own when undone.
     taken.sort_by_key(|(p, _)| std::cmp::Reverse(*p));
-    Ok(taken.into_iter().map(|(position, c)| EditCommand::LegacyRemoveClip { clip: c.clone(), track_index: ti, position }).collect())
+    let track = &seq.tracks[ti];
+    let fade = |id: ClipId, out: bool| track.clips.iter().find(|c| c.id == id).map_or(0.0, |c| if out { c.fade_out_secs } else { c.fade_in_secs });
+    let mut edits = Vec::new();
+    for (position, c) in taken {
+        for t in track.transitions.iter().filter(|t| t.clip_a_id == c.id || t.clip_b_id == c.id) {
+            if !edits.iter().any(|e| matches!(e, EditCommand::RemoveTransition { transition, .. } if transition.id == t.id)) {
+                edits.push(EditCommand::RemoveTransition { track_index: ti, transition: *t, old_fade_out_a: fade(t.clip_a_id, true), old_fade_in_b: fade(t.clip_b_id, false) });
+            }
+        }
+        edits.push(EditCommand::LegacyRemoveClip { clip: c.clone(), track_index: ti, position });
+    }
+    Ok(edits)
 }
 
 /// The clips after `members` (each a clip, its track and its new end)
@@ -20126,6 +20143,47 @@ mod tests {
         let _ = media;
     }
 
+    /// A clip slowed into the gap clip after it takes the gap's room, and
+    /// a transition into that gap goes with it: left naming a clip no
+    /// longer on the track, it was dropped on the next save, and the
+    /// project came back without it. Undo puts the transition back.
+    #[test]
+    fn a_retime_into_a_gap_takes_the_transition_into_it_too() {
+        let (mut seq, pool, _, a, b) = fixture();
+        let partner = |s: &Sequence, id: ClipId| find_clip(s, id).unwrap().2.linked_clip_id.unwrap();
+        let (ab, aa) = (partner(&seq, b), partner(&seq, a));
+        seq.tracks[0].clips.retain(|c| c.id != b);
+        seq.tracks[1].clips.retain(|c| c.id != ab);
+        let gap = Clip::gap(tc(4.0), tc(12.0));
+        let gap_id = gap.id;
+        seq.tracks[0].clips.push(gap);
+        let tr = klipp_timeline::Transition {
+            id: klipp_core::TransitionId::new(),
+            kind: klipp_core::TransitionKind::CrossDissolve,
+            duration: tc(0.4),
+            clip_a_id: a,
+            clip_b_id: gap_id,
+            user_params: Default::default(),
+            alignment: klipp_core::TransitionAlignment::Center,
+        };
+        seq.tracks[0].transitions.push(tr);
+        let plan = resolve(&seq, &pool, &[Op::Retime { clip_id: ClipRef::Id(a), speed: 0.5, fit: false, ripple: false, interpolation: None, length_secs: None, fit_range: false }]).unwrap();
+        let mut seqs = vec![seq.clone()];
+        let (mut p, mut fps) = (pool.clone(), seq.fps);
+        let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps };
+        view.apply_forward(&plan.steps[0].edit);
+        let track = &view.sequences[0].tracks[0];
+        assert_eq!(find_clip(&view.sequences[0], a).unwrap().2.timeline_out, tc(8.0), "slowed to half, a runs to 8 s");
+        for t in &track.transitions {
+            assert!(track.clips.iter().any(|c| c.id == t.clip_a_id) && track.clips.iter().any(|c| c.id == t.clip_b_id), "a transition names a clip not on its track");
+        }
+        assert!(find_clip(&view.sequences[0], aa).is_some());
+        view.apply_inverse(&plan.steps[0].edit);
+        let back = &view.sequences[0].tracks[0];
+        assert_eq!(back.transitions.iter().map(|t| (t.id, t.clip_a_id, t.clip_b_id)).collect::<Vec<_>>(), vec![(tr.id, a, gap_id)], "undo puts the transition back");
+        assert_eq!(back.clips.iter().map(|c| (c.id, c.timeline_in, c.timeline_out)).collect::<Vec<_>>(), vec![(a, tc(0.0), tc(4.0)), (gap_id, tc(4.0), tc(12.0))]);
+    }
+
     /// #1921: a title is composed whole, as a picture is: the issue's own
     /// plan, a title then a compose of it, moves it with the clip's
     /// transform keys, its text untouched and editable; undone, it is as
@@ -21404,6 +21462,38 @@ mod tests {
         assert!(resolve(&seq, &pool, &[trim(lone_id, false)]).is_ok(), "no ripple: nothing else moves");
         let first = seq.tracks[p].clips[0].id;
         assert!(resolve(&seq, &pool, &[Op::Trim { clip_id: ClipRef::Id(first), edge: Edge::Out, to: Anchor::Secs(3.0), ripple: true, linked: true }]).is_ok(), "the primary's own trim moves {later_id:?} and its sound");
+    }
+
+    /// A picture on a free video track trimmed with ripple and its sound:
+    /// the sound's track ripples too, and a later sound there whose
+    /// picture is on the primary would leave it. Refused, as for a trim
+    /// of the sound itself; it moved the sound off its picture, unsaid.
+    #[test]
+    fn a_ripple_trim_whose_partner_track_would_leave_a_primary_picture_is_refused() {
+        let (_, pool, media, _, _) = fixture();
+        let mut seq = Sequence::new_default();
+        seq.add_video_track("Video 2".into());
+        let p = seq.primary_track_index().unwrap();
+        let free = seq.tracks.iter().position(|t| t.kind == TrackKind::Video && t.name == "Video 2").unwrap();
+        let a = seq.tracks.iter().position(|t| t.kind == TrackKind::Audio).unwrap();
+        let mut picture = Clip::media(media, tc(0.0), tc(2.0), tc(0.0), tc(2.0));
+        let mut its_sound = Clip::media(media, tc(0.0), tc(2.0), tc(0.0), tc(2.0));
+        picture.linked_clip_id = Some(its_sound.id);
+        its_sound.linked_clip_id = Some(picture.id);
+        let mut later = Clip::media(media, tc(4.0), tc(8.0), tc(4.0), tc(8.0));
+        let mut later_sound = Clip::media(media, tc(4.0), tc(8.0), tc(4.0), tc(8.0));
+        later.linked_clip_id = Some(later_sound.id);
+        later_sound.linked_clip_id = Some(later.id);
+        let opener = Clip::media(media, tc(0.0), tc(4.0), tc(0.0), tc(4.0));
+        let picture_id = picture.id;
+        seq.tracks[p].clips = vec![opener, later];
+        seq.tracks[free].clips = vec![picture];
+        seq.tracks[a].clips = vec![its_sound, later_sound];
+        let trim = |ripple: bool, linked: bool| Op::Trim { clip_id: ClipRef::Id(picture_id), edge: Edge::Out, to: Anchor::Secs(1.0), ripple, linked };
+        let r = resolve(&seq, &pool, &[trim(true, true)]).unwrap_err();
+        assert!(r.why.contains("primary") && r.why.contains("out of sync"), "{}", r.why);
+        assert!(resolve(&seq, &pool, &[trim(false, true)]).is_ok(), "no ripple: nothing else moves");
+        assert!(resolve(&seq, &pool, &[trim(true, false)]).is_ok(), "unlinked: the sound's track stays");
     }
 
     /// A sound split past where its picture ends: the half over the
