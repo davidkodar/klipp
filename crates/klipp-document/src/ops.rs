@@ -11463,8 +11463,10 @@ struct Rippled {
 /// primary track keeps its holes as gap clips (#3083), and a clip grown
 /// into one was refused as though the gap were a shot. Each gap clip the
 /// span overlaps is removed; what of it the span leaves is filled again
-/// as the edit is recorded. Any other clip in the span, `skip` aside, is
-/// what the span would run into.
+/// as the edit is recorded. A transition into or out of a gap clip taken
+/// goes with it: left naming a clip no longer there, a save dropped it.
+/// Any other clip in the span, `skip` aside, is what the span would run
+/// into.
 pub(super) fn room_from_gaps<'a>(seq: &'a Sequence, ti: usize, from: Timecode, to: Timecode, skip: &dyn Fn(&Clip) -> bool) -> Result<Vec<EditCommand>, &'a Clip> {
     let mut taken: Vec<(usize, &Clip)> = Vec::new();
     for (position, c) in seq.tracks[ti].clips.iter().enumerate() {
@@ -11478,7 +11480,18 @@ pub(super) fn room_from_gaps<'a>(seq: &'a Sequence, ti: usize, from: Timecode, t
     }
     // Last first, so each one's position is still its own when undone.
     taken.sort_by_key(|(p, _)| std::cmp::Reverse(*p));
-    Ok(taken.into_iter().map(|(position, c)| EditCommand::LegacyRemoveClip { clip: c.clone(), track_index: ti, position }).collect())
+    let track = &seq.tracks[ti];
+    let fade = |id: ClipId, out: bool| track.clips.iter().find(|c| c.id == id).map_or(0.0, |c| if out { c.fade_out_secs } else { c.fade_in_secs });
+    let mut edits = Vec::new();
+    for (position, c) in taken {
+        for t in track.transitions.iter().filter(|t| t.clip_a_id == c.id || t.clip_b_id == c.id) {
+            if !edits.iter().any(|e| matches!(e, EditCommand::RemoveTransition { transition, .. } if transition.id == t.id)) {
+                edits.push(EditCommand::RemoveTransition { track_index: ti, transition: *t, old_fade_out_a: fade(t.clip_a_id, true), old_fade_in_b: fade(t.clip_b_id, false) });
+            }
+        }
+        edits.push(EditCommand::LegacyRemoveClip { clip: c.clone(), track_index: ti, position });
+    }
+    Ok(edits)
 }
 
 /// The clips after `members` (each a clip, its track and its new end)
@@ -20128,6 +20141,47 @@ mod tests {
         assert!(bad(Op::CleanAudio { clip_id: ClipRef::Id(a), voice: false, reduction_db: None, wind: false, hiss: false, hum: false, deess: false }).why.contains("nothing to clean"));
         let _: Vec<Op> = serde_json::from_str(r#"[{"op":"effect","clip_id":{"track":0,"secs":1.0},"kind":"glow"},{"op":"retime","clip_id":{"track":0,"secs":1.0},"speed":0.5},{"op":"clean_audio","clip_id":{"track":0,"secs":1.0},"wind":true},{"op":"clean_audio","clip_id":{"track":0,"secs":1.0},"voice":true,"reduction_db":12}]"#).unwrap();
         let _ = media;
+    }
+
+    /// A clip slowed into the gap clip after it takes the gap's room, and
+    /// a transition into that gap goes with it: left naming a clip no
+    /// longer on the track, it was dropped on the next save, and the
+    /// project came back without it. Undo puts the transition back.
+    #[test]
+    fn a_retime_into_a_gap_takes_the_transition_into_it_too() {
+        let (mut seq, pool, _, a, b) = fixture();
+        let partner = |s: &Sequence, id: ClipId| find_clip(s, id).unwrap().2.linked_clip_id.unwrap();
+        let (ab, aa) = (partner(&seq, b), partner(&seq, a));
+        seq.tracks[0].clips.retain(|c| c.id != b);
+        seq.tracks[1].clips.retain(|c| c.id != ab);
+        let gap = Clip::gap(tc(4.0), tc(12.0));
+        let gap_id = gap.id;
+        seq.tracks[0].clips.push(gap);
+        let tr = klipp_timeline::Transition {
+            id: klipp_core::TransitionId::new(),
+            kind: klipp_core::TransitionKind::CrossDissolve,
+            duration: tc(0.4),
+            clip_a_id: a,
+            clip_b_id: gap_id,
+            user_params: Default::default(),
+            alignment: klipp_core::TransitionAlignment::Center,
+        };
+        seq.tracks[0].transitions.push(tr);
+        let plan = resolve(&seq, &pool, &[Op::Retime { clip_id: ClipRef::Id(a), speed: 0.5, fit: false, ripple: false, interpolation: None, length_secs: None, fit_range: false }]).unwrap();
+        let mut seqs = vec![seq.clone()];
+        let (mut p, mut fps) = (pool.clone(), seq.fps);
+        let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps };
+        view.apply_forward(&plan.steps[0].edit);
+        let track = &view.sequences[0].tracks[0];
+        assert_eq!(find_clip(&view.sequences[0], a).unwrap().2.timeline_out, tc(8.0), "slowed to half, a runs to 8 s");
+        for t in &track.transitions {
+            assert!(track.clips.iter().any(|c| c.id == t.clip_a_id) && track.clips.iter().any(|c| c.id == t.clip_b_id), "a transition names a clip not on its track");
+        }
+        assert!(find_clip(&view.sequences[0], aa).is_some());
+        view.apply_inverse(&plan.steps[0].edit);
+        let back = &view.sequences[0].tracks[0];
+        assert_eq!(back.transitions.iter().map(|t| (t.id, t.clip_a_id, t.clip_b_id)).collect::<Vec<_>>(), vec![(tr.id, a, gap_id)], "undo puts the transition back");
+        assert_eq!(back.clips.iter().map(|c| (c.id, c.timeline_in, c.timeline_out)).collect::<Vec<_>>(), vec![(a, tc(0.0), tc(4.0)), (gap_id, tc(4.0), tc(12.0))]);
     }
 
     /// #1921: a title is composed whole, as a picture is: the issue's own
