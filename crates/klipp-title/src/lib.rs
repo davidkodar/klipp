@@ -82,6 +82,19 @@ pub mod font_discovery;
 /// Embedded fallback font — Noto Sans Regular (OFL license).
 static EMBEDDED_FONT: &[u8] = include_bytes!("../assets/NotoSans-Regular.ttf");
 
+/// The fallback font's other faces (OFL, beside it): an italic or bold
+/// run in the default font, a caption's `<i>` the commonest, was drawn in
+/// the Regular, upright. Embedded as it is, so the picture is the same on
+/// every machine.
+fn embedded_face(style: FontStyle) -> Option<&'static [u8]> {
+    match style {
+        FontStyle::Regular => None,
+        FontStyle::Italic => Some(include_bytes!("../assets/NotoSans-Italic.ttf")),
+        FontStyle::Bold => Some(include_bytes!("../assets/NotoSans-Bold.ttf")),
+        FontStyle::BoldItalic => Some(include_bytes!("../assets/NotoSans-BoldItalic.ttf")),
+    }
+}
+
 /// Trait for GPU-accelerated alpha mask operations.
 /// Implemented in klipp-engine to avoid circular dependencies.
 pub trait AlphaMaskProcessor {
@@ -877,7 +890,14 @@ impl TitleRenderer {
     fn ensure_font_loaded(&mut self, family: &str, style: FontStyle) -> String {
         let key = Self::cache_key(family, style);
 
-        if family == "sans-serif" || family.is_empty() || self.font_cache.contains_key(&key) {
+        if self.font_cache.contains_key(&key) {
+            return key;
+        }
+        // The default font: the fallback's own face for the style.
+        if family == "sans-serif" || family.is_empty() {
+            if let Some(font) = embedded_face(style).and_then(|bytes| LoadedFont::new(std::borrow::Cow::Borrowed(bytes))) {
+                self.font_cache.insert(key.clone(), font);
+            }
             return key;
         }
 
@@ -942,8 +962,12 @@ impl TitleRenderer {
         if weight.is_none() && axes.is_empty() {
             return self.ensure_font_loaded(family, style);
         }
+        // The default font has no axes, and its faces are its styles'.
+        if family == "sans-serif" || family.is_empty() {
+            return self.ensure_font_loaded(family, style);
+        }
         let key = format!("{}::{weight:?}::{axes:?}", Self::cache_key(family, style));
-        if family == "sans-serif" || family.is_empty() || self.font_cache.contains_key(&key) {
+        if self.font_cache.contains_key(&key) {
             return key;
         }
         let bold = matches!(style, FontStyle::Bold | FontStyle::BoldItalic);
@@ -13099,6 +13123,23 @@ mod font_weight_tests {
         for (i, td) in style_only().iter().enumerate() {
             assert_eq!(fnv(&r.render(td, W, H)), BEFORE[i], "box {i} draws differently");
         }
+    }
+
+    /// An italic run in the default font (a caption's `<i>`) is drawn in
+    /// its italic face, as the whole box set italic is; bold the same. It
+    /// was drawn in the Regular, upright, the run's style lost.
+    #[test]
+    fn an_italic_run_in_the_default_font_is_drawn_italic() {
+        let mut r = TitleRenderer::new();
+        r.system_fallback = false;
+        let all = SENTENCE.len();
+        let plain = fnv(&r.render(&boxed("", FontStyle::Regular, |_| {}), W, H));
+        let run_italic = fnv(&r.render(&boxed("", FontStyle::Regular, |tb| tb.style_runs = vec![run(0, all, |r| r.font_style = Some(FontStyle::Italic))]), W, H));
+        let box_italic = fnv(&r.render(&boxed("", FontStyle::Italic, |_| {}), W, H));
+        assert_ne!(run_italic, plain, "the italic run is drawn in another face");
+        assert_eq!(run_italic, box_italic, "the italic face, as a box set italic draws");
+        let bold = fnv(&r.render(&boxed("sans-serif", FontStyle::Bold, |_| {}), W, H));
+        assert_ne!(bold, plain, "bold in its own face");
     }
 
     /// The mask's pixels inside glyph `i`'s box.
