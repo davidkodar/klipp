@@ -247,7 +247,7 @@ pub(crate) fn respond(
             if let Some(burn) = burn_captions {
                 settings.burn_in_subtitles = burn;
             }
-            // A soft track the player turns on, not the picture's (EX1).
+            // A soft track the player turns on, not the picture's.
             if embed_captions == Some(true) {
                 if burn_captions == Some(true) {
                     return Err("captions burnt in and embedded as a soft track both: give one of burn_captions or embed_captions".into());
@@ -332,10 +332,12 @@ pub(crate) fn respond(
             let said = json!({
                 "frame_warning": frame_warning,
                 "range": range,
-                "captions_burnt_in": settings.burn_in_subtitles,
-                "captions_embedded": settings.embed_subtitles,
+                // What the file carries, not what was asked: a sound-only
+                // file, or a timeline with no captions, carries none.
+                "captions_burnt_in": captions_carried(has_captions, &settings).0,
+                "captions_embedded": captions_carried(has_captions, &settings).1,
                 // Where the captions are, said plainly: off the picture with
-                // no track of their own, a delivery lost them (EX1).
+                // no track of their own, a delivery lost them.
                 "captions_in_file": captions_in_file(has_captions, &settings),
                 // Titles are part of the picture; a title track left out
                 // of a delivery is hidden (#2426).
@@ -369,7 +371,7 @@ pub(crate) fn respond(
                 },
                 "bit_depth": if settings.bit_depth == 10 { 10 } else { 8 },
             });
-            let burnt = said["captions_burnt_in"].as_bool().unwrap_or(true) || said["captions_embedded"].as_bool().unwrap_or(false);
+            let burnt = !has_captions || said["captions_burnt_in"].as_bool().unwrap_or(true) || said["captions_embedded"].as_bool().unwrap_or(false);
             let known_jobs: std::collections::HashSet<String> = ctx.shared.exports.lock().unwrap_or_else(|e| e.into_inner())
                 .iter().map(|job| job.job_id.clone()).collect();
             let mut v = send(AppCommand::ExportSequence { settings })?;
@@ -1872,7 +1874,20 @@ mod export_choice_tests {
 
 /// Where an export puts the sequence's captions, for its reply: in the
 /// picture, as a soft track, as CEA-608, or nowhere, with how to have them.
+/// Whether the file carries the captions burnt in and as a soft track: a
+/// sound-only file has neither picture nor track for them, and with none
+/// on the timeline there is nothing to carry.
+fn captions_carried(has_captions: bool, settings: &klipp_core::ExportSettings) -> (bool, bool) {
+    if !has_captions || settings.format.is_audio_only() {
+        return (false, false);
+    }
+    (settings.burn_in_subtitles, settings.embed_subtitles)
+}
+
 fn captions_in_file(has_captions: bool, settings: &klipp_core::ExportSettings) -> &'static str {
+    if has_captions && settings.format.is_audio_only() {
+        return "none: a sound-only file has no picture or track for them; write export_subtitles for a sidecar";
+    }
     match (has_captions, settings.burn_in_subtitles, settings.embed_subtitles, settings.captions_608) {
         (false, ..) => "no captions on the timeline",
         (_, true, ..) => "burnt into the picture",
@@ -1885,7 +1900,7 @@ fn captions_in_file(has_captions: bool, settings: &klipp_core::ExportSettings) -
 
 #[cfg(test)]
 mod captions_in_file_tests {
-    /// EX1: an export that leaves the captions out of the picture says
+    /// An export that leaves the captions out of the picture says
     /// where they are, and says plainly when they are nowhere.
     #[test]
     fn the_reply_says_where_the_captions_are() {
@@ -1896,5 +1911,18 @@ mod captions_in_file_tests {
         s.embed_subtitles = true;
         assert_eq!(super::captions_in_file(true, &s), "a soft subtitle track");
         assert_eq!(super::captions_in_file(false, &s), "no captions on the timeline");
+    }
+
+    /// The reply says what the file carries. A sound-only export,
+    /// asked to burn them in, carries no captions, and one embedding them
+    /// from a timeline with none carries none either.
+    #[test]
+    fn nothing_carried_is_said_as_nothing() {
+        let mp3 = klipp_core::ExportSettings { format: klipp_core::ExportFormat::Mp3, burn_in_subtitles: true, ..Default::default() };
+        assert_eq!(super::captions_carried(true, &mp3), (false, false));
+        assert!(super::captions_in_file(true, &mp3).starts_with("none: a sound-only file"));
+        let soft = klipp_core::ExportSettings { burn_in_subtitles: false, embed_subtitles: true, ..Default::default() };
+        assert_eq!(super::captions_carried(false, &soft), (false, false), "no captions on the timeline");
+        assert_eq!(super::captions_carried(true, &soft), (false, true));
     }
 }
