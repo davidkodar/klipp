@@ -589,7 +589,7 @@ pub(crate) fn respond(
             if !p.is_file() {
                 return Err(format!("no file at {path:?}"));
             }
-            let language = std::fs::read(&p).ok().and_then(|bytes| klipp_captions::file_language(&p, &bytes));
+            let language = klipp_captions::read_subtitle_file(&p).ok().and_then(|bytes| klipp_captions::file_language(&p, &bytes));
             let mut v = send(AppCommand::ImportSubtitles { path: p })?;
             v["language"] = json!(language);
             v["next"] = json!("The cues land on a new subtitle track named after the file, in the language the file names (language, null when it names none); timeline shows it.");
