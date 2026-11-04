@@ -10596,6 +10596,19 @@ fn speed_keys_edit(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, ti: usi
     Ok(SpeedKeys { edit, new_out, linked: linked.is_some(), later, delta, partners, ids })
 }
 
+/// Keep Pitch set on `clip_id` and its linked clip, as one edit; none when
+/// neither changes.
+pub fn keep_pitch_at(seq: &Sequence, clip_id: ClipId, keep_pitch: bool) -> Option<EditCommand> {
+    let clip = find_clip(seq, clip_id)?.2;
+    let linked = clip.linked_clip_id.and_then(|lid| find_clip(seq, lid)).map(|(_, _, p)| p);
+    let edits: Vec<EditCommand> = std::iter::once(clip).chain(linked).filter(|c| c.keep_pitch != keep_pitch).map(|c| {
+        let mut new = c.clone();
+        new.keep_pitch = keep_pitch;
+        EditCommand::ReplaceClip { description: "Keep Pitch", old: Box::new(c.clone()), new: Box::new(new) }
+    }).collect();
+    (!edits.is_empty()).then(|| EditCommand::Batch(edits))
+}
+
 /// The inspector's speed keys as one edit: `clip_id` given `keys`, as a ramp
 /// without ripple gives them, with its linked clip and its length.
 pub fn speed_keys_at(seq: &Sequence, pool: &MediaPool, clip_id: ClipId, keys: Vec<klipp_core::Keyframe>) -> Result<(String, EditCommand), Refusal> {
@@ -20079,6 +20092,25 @@ mod tests {
         let clip = find_clip(&view.sequences[0], a).unwrap().2;
         assert_eq!(clip.frame_blend_mode(), Some(2), "the slow part's frames follow the motion");
         assert!(!clip.speed_keyframes.is_empty(), "and it is ramped");
+    }
+
+    /// Keep Pitch is set on a clip and its sound as an edit undo puts back, and
+    /// is no edit when nothing changes.
+    #[test]
+    fn keep_pitch_is_an_edit_undo_puts_back() {
+        let (seq, pool, _, a, _) = fixture();
+        let aa = seq.tracks[1].clips[0].id;
+        assert!(keep_pitch_at(&seq, a, false).is_none(), "already off");
+        let edit = keep_pitch_at(&seq, a, true).unwrap();
+        let mut seqs = vec![seq.clone()];
+        let (mut p, mut f) = (pool.clone(), seq.fps);
+        let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut f };
+        view.apply_forward(&edit);
+        for id in [a, aa] {
+            assert!(find_clip(&view.sequences[0], id).unwrap().2.keep_pitch);
+        }
+        view.apply_inverse(&edit);
+        assert_eq!(serde_json::to_value(&view.sequences[0]).unwrap(), serde_json::to_value(&seq).unwrap());
     }
 
     /// The inspector's speed keys are one edit: its linked clip takes them,
