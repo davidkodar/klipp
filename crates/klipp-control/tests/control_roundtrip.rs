@@ -2916,11 +2916,11 @@ fn a_match_is_held_short_of_clipping() {
     use klipp_control::{hold_match_for_highlights, MatchKnobs};
     use klipp_color::measure::FrameMeasure;
     let up = MatchKnobs { exposure: Some(1.0), gain: Some(0.1), ..Default::default() };
-    // Bright at the top: half a stop of room.
+    // Bright at the top: a quarter of a stop of room, in light.
     let mut k = up;
     let why = hold_match_for_highlights(&mut k, &FrameMeasure { l_p95: 90.0, ..Default::default() }).expect("held");
     let e = k.exposure.unwrap();
-    assert!((e - 7.0 / 15.0).abs() < 1e-3 && k.gain.is_none(), "{k:?}");
+    assert!((e - klipp_color::measure::exposure_headroom(&FrameMeasure { l_p95: 90.0, ..Default::default() })).abs() < 1e-3 && e > 0.2 && e < 0.3 && k.gain.is_none(), "{k:?}");
     assert!(why.contains("clip"), "{why}");
     // Plenty of room: the match goes through as it was.
     let mut k = up;

@@ -770,7 +770,13 @@ pub(crate) fn respond(
                     // where they were and say why it stopped.
                     let after_round = colour_report(&m, &look, *mid);
                     let turned = klipp_color::measure::memory_colours_broken(&start_m, &m, &look);
-                    if after_round.len() > fails.len() || turned.is_some() {
+                    // Nor one that takes the highlights to white or pins
+                    // colours at the rail: the same number of findings, but
+                    // other ones, and worse (a flat shot came out of a round
+                    // 1.2 % at white and a fifth of it at the rail).
+                    let blew = (m.clip_hi_pct > 1.0 && m_before_round.clip_hi_pct <= 1.0)
+                        || m.gamut_clip_pct > m_before_round.gamut_clip_pct + klipp_color::measure::GAMUT_WARN;
+                    if after_round.len() > fails.len() || turned.is_some() || blew {
                         let op: klipp_document::ops::Op = serde_json::from_value(json!({
                             "op": "grade", "clip_id": id,
                             "exposure": now.exposure, "lift": now.lift, "gain": now.gain,
@@ -779,6 +785,7 @@ pub(crate) fn respond(
                         let (plan, revision) = resolve_plan(ctx, &[op])?;
                         let edits: Vec<klipp_document::history::EditCommand> = plan.steps.iter().map(|s| s.edit.clone()).collect();
                         fold.send(ctx, edits, revision)?;
+                        let m_after_blew = (m.clip_hi_pct, m.gamut_clip_pct);
                         // Put back exactly, so read as it was: a measure
                         // taken now could still see the frame the undone
                         // round drew, and said "4 before, 7 after" of a
@@ -797,6 +804,7 @@ pub(crate) fn respond(
                             continue;
                         }
                         stalled = Some(match turned {
+                            None if blew => format!("stopped after {done_rounds} round(s): the next one took the highlights to white ({:.1}% at white, {:.1}% at the rail), so it was put back", m_after_blew.0, m_after_blew.1),
                             Some(why) => format!("stopped after {done_rounds} round(s): the next one turned colours an eye knows — {why} — so it was put back. The look's numbers are not worth that; hold the shot there, or reach the rest with a secondary that leaves those colours out"),
                             None => format!(
                                 "stopped after {done_rounds} round(s): the next one made it worse ({} findings against {}), so it was put back. What is left is past what the primaries can reach — {}",
