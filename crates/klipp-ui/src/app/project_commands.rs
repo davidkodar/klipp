@@ -230,6 +230,16 @@ impl KlippApp {
                 }),
                 "Remove Track Effect",
             ),
+            AppCommand::ReorderTrackAudioEffect { track_id, from_index, to_index } => (
+                one(track_id, &|s| {
+                    let (from, to) = (*from_index, *to_index);
+                    if from < s.effects.audio.len() && to < s.effects.audio.len() {
+                        let fx = s.effects.audio.remove(from);
+                        s.effects.audio.insert(to, fx);
+                    }
+                }),
+                "Reorder Track Effect",
+            ),
             AppCommand::ClearTrackEffects { track_id } => (one(track_id, &|s| s.effects = Default::default()), "Clear Track Effects"),
             _ => return false,
         };
