@@ -1191,7 +1191,17 @@ mod backward_tests {
         let (_, _, _, pts) = past.decode_at(10.0, Some((32, 24))).expect("the last frame");
         assert_eq!((pts / fd).round() as i64, 74, "the file's last frame");
         assert!(t0.elapsed() < std::time::Duration::from_secs(5), "took {:?}", t0.elapsed());
-        assert!(past.decode_at(10.0, Some((32, 24))).is_some() && past.fills() == 1, "and once: {} windows", past.fills());
+        // The window before this one decodes ahead on its own thread and
+        // counts when it arrives, so wait for it: then only a second decode
+        // of this time could add to the count.
+        while past.pending.is_some() {
+            assert!(t0.elapsed() < std::time::Duration::from_secs(30), "the window ahead never came");
+            past.take_finished();
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert_eq!(past.fills(), 2, "this time's window and the one ahead");
+        assert!(past.decode_at(10.0, Some((32, 24))).is_some());
+        assert_eq!(past.fills(), 2, "and once");
         std::fs::remove_file(&path).ok();
     }
 }
