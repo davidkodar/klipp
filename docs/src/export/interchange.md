@@ -64,11 +64,11 @@ Other filters are dropped with a warning.
 - media clips on that track, with their position, length, source in point and enabled state
 - the clips' markers
 - titles on that track, as FCPXML titles carrying their text
-- sequence markers, with their duration and comment
+- sequence markers, with their duration and comment; chapters as chapter markers and to-dos as to-do markers, done or not. FCPXML has no other marker kinds and no marker colours, so a comment, best take, section or review marker, or a colour other than its kind's, is named in the export report with what it comes back as
 
 Gaps on that track stay gaps; compound clips, generators and adjustment layers become named gaps. Other video tracks, audio tracks, transitions, audio levels, grades and effects are not exported.
 
-**Import** reads the primary storyline (the `spine`) onto a video track, and connected clips onto lane tracks above and below it: asset clips and clips with their in points and enabled state, gaps, transitions joined to their clips, titles as editable titles, timeMap speed, opacity and volume with their keyframes, and markers with their notes and colours, chapters kept as chapters. Transforms, effects, compound clips, multicam clips, synchronised clips and auditions are named in the import report. An FCPXML saved as `.xml` is read too.
+**Import** reads the primary storyline (the `spine`) onto a video track, and connected clips onto lane tracks above and below it: asset clips and clips with their in points and enabled state, gaps, transitions joined to their clips, titles as editable titles, timeMap speed, opacity and volume with their keyframes, and markers with their notes, chapters kept as chapters and to-dos as to-dos (red while open, green when done); other markers come in blue, as FCPXML has no marker colours. Transforms, effects, compound clips, multicam clips, synchronised clips and auditions are named in the import report. An FCPXML saved as `.xml` is read too.
 
 ## Final Cut Pro 7 XML (xmeml)
 

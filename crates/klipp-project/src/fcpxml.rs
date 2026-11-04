@@ -189,10 +189,27 @@ pub fn generate_fcpxml_reporting(seq: &Sequence, media_pool: &MediaPool) -> (Str
     // markers fall back to the synthetic 1-frame value FCP expects.
     // Comments round-trip via a child <note> element when non-empty
     // (matches FCPXML's marker-comment shape). A chapter is FCPXML's
-    // <chapter-marker>, which the import reads back as a chapter; the
-    // other kinds have no element of their own.
+    // <chapter-marker>, which the import reads back as a chapter, and a
+    // to-do is a <marker> with `completed`, "1" for one shown done
+    // (green). FCPXML has no other kinds and no colours: a marker shows
+    // the colour of its kind, so whatever else a marker is goes in the
+    // list.
     for marker in &seq.markers {
-        let tag = if marker.kind == klipp_core::MarkerKind::Chapter { "chapter-marker" } else { "marker" };
+        use klipp_core::{MarkerColor, MarkerKind};
+        let tag = if marker.kind == MarkerKind::Chapter { "chapter-marker" } else { "marker" };
+        let completed = if marker.kind == MarkerKind::ToDo { format!(" completed=\"{}\"", u8::from(marker.color == MarkerColor::Green)) } else { String::new() };
+        let comes_back = match marker.kind {
+            MarkerKind::Chapter => Some(MarkerColor::Purple),
+            MarkerKind::ToDo => Some(if marker.color == MarkerColor::Green { MarkerColor::Green } else { MarkerColor::Red }),
+            MarkerKind::None => Some(MarkerColor::Blue),
+            _ => None,
+        };
+        let at = marker.position.to_secs_f64();
+        match comes_back {
+            None => dropped.push(format!("Marker '{}' at {at:.3} s: its kind ({:?}) and colour ({:?}) — FCPXML has plain, to-do and chapter markers and no colours, so it comes back as a plain blue marker", marker.label, marker.kind, marker.color)),
+            Some(c) if c != marker.color => dropped.push(format!("Marker '{}' at {at:.3} s: its colour ({:?}) — FCPXML has no marker colours, so it comes back {c:?}, the colour of its kind", marker.label, marker.color)),
+            Some(_) => {}
+        }
         let pos = tc_str(marker.position, fps);
         let dur_str = match marker.duration {
             Some(d) if d.value > 0 => format!("{}/{}s", d.value, d.rate),
@@ -200,12 +217,12 @@ pub fn generate_fcpxml_reporting(seq: &Sequence, media_pool: &MediaPool) -> (Str
         };
         if marker.comment.is_empty() {
             xml.push_str(&format!(
-                "          <{tag} start=\"{}\" duration=\"{}\" value=\"{}\"/>\n",
+                "          <{tag} start=\"{}\" duration=\"{}\" value=\"{}\"{completed}/>\n",
                 pos, dur_str, escape_xml(&marker.label)
             ));
         } else {
             xml.push_str(&format!(
-                "          <{tag} start=\"{}\" duration=\"{}\" value=\"{}\">\n",
+                "          <{tag} start=\"{}\" duration=\"{}\" value=\"{}\"{completed}>\n",
                 pos, dur_str, escape_xml(&marker.label)
             ));
             xml.push_str(&format!(
@@ -1048,6 +1065,39 @@ mod tests {
         assert_eq!(kinds, [("Part 2".to_string(), klipp_core::MarkerKind::Chapter), ("Note".to_string(), klipp_core::MarkerKind::None)]);
     }
 
+    /// A to-do goes out as a `completed` marker and comes back a to-do,
+    /// red while open and green when done; it came back a plain blue
+    /// marker. A kind or colour FCPXML has no way to say (a comment, an
+    /// orange marker) is named in what the export leaves out, with what it
+    /// comes back as, and a marker that comes back as it went is not.
+    #[test]
+    fn marker_kinds_go_out_and_come_back_or_are_named() {
+        use klipp_core::MarkerKind;
+        let fps = Fps::film_24();
+        let mut seq = empty_sequence(fps);
+        let pool = MediaPool::new();
+        let marks = [
+            (24, "Fix sky", MarkerKind::ToDo, MarkerColor::Red),
+            (48, "Fixed", MarkerKind::ToDo, MarkerColor::Green),
+            (72, "Lovely", MarkerKind::Comment, MarkerColor::Red),
+            (96, "Plain", MarkerKind::None, MarkerColor::Blue),
+            (120, "Orange", MarkerKind::None, MarkerColor::Orange),
+        ];
+        for (at, label, kind, color) in marks {
+            seq.markers.push(Marker { review: None, id: MarkerId::new(), position: RationalTime { value: at, rate: 24 }, label: label.into(), color, duration: None, comment: String::new(), kind });
+        }
+        let (xml, dropped) = generate_fcpxml_reporting(&seq, &pool);
+        assert!(xml.contains("value=\"Fix sky\" completed=\"0\"/>") && xml.contains("value=\"Fixed\" completed=\"1\"/>"), "{xml}");
+        let named: Vec<&String> = dropped.iter().filter(|d| d.starts_with("Marker ")).collect();
+        assert_eq!(named.len(), 2, "{dropped:?}");
+        assert!(named[0].starts_with("Marker 'Lovely' at 3.000 s: its kind (Comment) and colour (Red)") && named[0].contains("plain blue"), "{named:?}");
+        assert!(named[1].starts_with("Marker 'Orange' at 5.000 s: its colour (Orange)") && named[1].contains("comes back Blue"), "{named:?}");
+        let back = crate::fcpxml_import::parse_fcpxml(&xml).unwrap();
+        let got: Vec<(&str, MarkerKind, MarkerColor)> = back.sequence.markers.iter().map(|m| (m.label.as_str(), m.kind, m.color)).collect();
+        assert_eq!(&got[..2], &[("Fix sky", MarkerKind::ToDo, MarkerColor::Red), ("Fixed", MarkerKind::ToDo, MarkerColor::Green)]);
+        assert_eq!(got[3], ("Plain", MarkerKind::None, MarkerColor::Blue));
+    }
+
     #[test]
     fn fcpxml_clip_markers() {
         let fps = Fps::film_24();
@@ -1567,8 +1617,9 @@ mod tests {
 
         let xml = generate_fcpxml(&seq, &pool);
 
-        // Comment-bearing marker has the open/close form + the note child.
-        assert!(xml.contains("<marker start=\"24/24s\" duration=\"1/24s\" value=\"Cut on action\">"));
+        // Comment-bearing marker has the open/close form + the note child;
+        // a to-do, so `completed`.
+        assert!(xml.contains("<marker start=\"24/24s\" duration=\"1/24s\" value=\"Cut on action\" completed=\"0\">"));
         assert!(xml.contains("<note>Trim two frames off the head</note>"));
         // Plain marker stays self-closing.
         assert!(xml.contains("<marker start=\"48/24s\" duration=\"1/24s\" value=\"Plain\"/>"));

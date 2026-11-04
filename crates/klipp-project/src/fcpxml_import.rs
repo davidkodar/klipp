@@ -956,7 +956,14 @@ fn collect_sequence_markers(
             color: marker_colour(m),
             duration,
             comment,
-            kind: if m.tag_name().name() == "chapter-marker" { klipp_core::MarkerKind::Chapter } else { klipp_core::MarkerKind::None },
+            // A `completed` marker is Final Cut Pro's to-do, done or not.
+            kind: if m.tag_name().name() == "chapter-marker" {
+                klipp_core::MarkerKind::Chapter
+            } else if m.attribute("completed").is_some() {
+                klipp_core::MarkerKind::ToDo
+            } else {
+                klipp_core::MarkerKind::None
+            },
         });
     }
     out
