@@ -31,6 +31,7 @@ Several formats at once: `outputs` in place of `path`, each `{format, path, pres
 
 Arguments:
 - `burn_captions`: Captions burnt in (default on); titles always are; the reply says which. In an export of another shape than the timeline (9:16 of a 16:9 cut), burnt-in captions are laid out for the export's frame, their size and height that frame's, above its platform's player, in their own style
+- `embed_captions`: Captions as a soft subtitle track the player turns on, not burnt in (mp4, mov, mkv, webm)
 - `captions_608`: CEA-608 in the video stream (h264/hevc)
 - `hdr10plus`: ST 2094-40 per shot (hevc, pq)
 - `target_lufs`: Loudness target: -14 web, -23 broadcast; default the brief's

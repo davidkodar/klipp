@@ -97,7 +97,7 @@ impl KlippApp {
                 AppCommand::RemoveClips { clip_ids, lift } => {
                     let label = if *lift { "Lift Clips" } else { "Delete Clips" };
                     if let Err(why) = super::selection_removal::remove_clips(&mut self.state, clip_ids, *lift, label) {
-                        self.state.toast.show(format!("Nothing removed: {why}. Unlock the linked track, or leave that clip out."));
+                        self.state.toast.show(super::selection_removal::refused_removal(&why, *lift, &self.key_bindings.display_for("lift_clip"), true));
                     }
                     self.state.media_usage_cache_dirty = true;
                     self.sync_sequence_to_engine();

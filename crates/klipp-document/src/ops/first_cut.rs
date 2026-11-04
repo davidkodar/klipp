@@ -687,6 +687,62 @@ mod tests {
         assert!(ends[0] >= 1.9, "held to the word's end at least: {:.2}", ends[0]);
     }
 
+    /// Someone talking with two pauses, and a file nothing is said in.
+    struct TalkThenHarbour;
+
+    impl Transcripts for TalkThenHarbour {
+        fn words(&self, item: &klipp_media::MediaItem) -> Option<Vec<SpokenWord>> {
+            item.path.to_string_lossy().contains("talk").then(|| vec![w(0.0, 2.0, "Good"), w(3.5, 6.0, "morning"), w(7.5, 10.0, "everyone")])
+        }
+        fn silences(&self, item: &klipp_media::MediaItem) -> Vec<(f64, f64)> {
+            if item.path.to_string_lossy().contains("talk") { vec![(2.0, 3.5), (6.0, 7.5)] } else { Vec::new() }
+        }
+    }
+
+    /// FC8: the punch-in alternates within the pieces of one shot and starts
+    /// again at the next. A shot of another file, never cut, is not pushed in:
+    /// the count ran on along the track and gave it 1.15. Three pieces first,
+    /// as after two it would land right by luck.
+    #[test]
+    fn the_punch_in_restarts_at_each_shot_and_leaves_an_uncut_one() {
+        let (mut seq, mut pool) = talking();
+        let mut harbour = klipp_media::MediaItem::synthetic_for_test("/tmp/harbour.mov".into(), None);
+        harbour.duration = tc(10.0);
+        let harbour = pool.add(harbour);
+        seq.tracks[0].clips.push(Clip::media(harbour, tc(10.0), tc(15.0), tc(0.0), tc(5.0)));
+        let harbour_clip = seq.tracks[0].clips[1].id;
+        let scales = |seq: &Sequence| -> Vec<f32> {
+            seq.tracks[0].clips.iter().map(|c| {
+                let lane = &crate::ops::placement_lanes(c)[2];
+                let scale = if lane.0.is_empty() { lane.1 } else { lane.0.iter().map(|k| k.value).fold(f32::MIN, f32::max) };
+                (scale * 100.0).round() / 100.0
+            }).collect()
+        };
+        let apply = |seq: &Sequence, pool: &MediaPool, op: Op| {
+            let plan = resolve_with(seq, pool, &[op], &TalkThenHarbour).unwrap_or_else(|r| panic!("{r:?}"));
+            let mut seqs = vec![seq.clone()];
+            let (mut p, mut fps) = (pool.clone(), seq.fps);
+            let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps };
+            view.apply_forward(&plan.steps[0].edit);
+            seqs.remove(0)
+        };
+        let cut = apply(&seq, &pool, Op::FirstCut { silences: true, fillers: false, retakes: false, punch: true, captions: false, music: None, tightness: Tightness::Normal, exclude: Vec::new() });
+        assert_eq!(cut.tracks[0].clips.len(), 4, "three pieces and the uncut shot");
+        assert_eq!(cut.tracks[0].clips[3].id, harbour_clip);
+        assert_eq!(scales(&cut), [1.0, 1.15, 1.0, 1.0], "every other piece of the talk, and not the harbour");
+
+        // Both shots in pieces: each starts unpushed.
+        let mut two = seq.clone();
+        let talk = two.tracks[0].clips[0].media_id().unwrap();
+        two.tracks[0].clips = [(talk, 0.0, 2.0, 0.0), (talk, 2.0, 4.0, 3.0), (talk, 4.0, 6.0, 6.0), (harbour, 6.0, 8.0, 0.0), (harbour, 8.0, 10.0, 3.0)]
+            .iter()
+            .map(|&(m, a, b, from)| Clip::media(m, tc(a), tc(b), tc(from), tc(from + b - a)))
+            .collect();
+        two.tracks.truncate(1);
+        let refit = apply(&two, &pool, Op::Refit { markers: false, punch: Some(1.15), keep: Vec::new() });
+        assert_eq!(scales(&refit), [1.0, 1.15, 1.0, 1.0, 1.15]);
+    }
+
     /// "Um, so, uh, let me show you": fillers that start between frames.
     struct Hesitant;
 
