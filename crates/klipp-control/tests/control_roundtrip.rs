@@ -3047,6 +3047,35 @@ fn proxies_are_made_as_a_job_and_status_says_what_playback_reads() {
     assert!(refused["error"].as_str().unwrap().contains("no moving picture"), "{refused}");
 }
 
+/// A file that is no media is refused by name and reason, forced or not, and
+/// the item and its proxy stay as they were. A media file still relinks.
+#[test]
+fn relink_refuses_a_file_that_is_not_media() {
+    let mut h = harness();
+    let dir = std::env::temp_dir().join(format!("klipp-relink-refused-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(dir.join(".private")).unwrap();
+    let (text, hidden, good) = (dir.join("notes.txt"), dir.join(".private/key.mp4"), dir.join("good.mp4"));
+    for p in [&text, &hidden, &good] {
+        std::fs::write(p, b"not a picture").unwrap();
+    }
+    let id = h.media_pool.write().unwrap().add(klipp_media::MediaItem::synthetic_for_test("/tmp/relink-a.mov".into(), Some("/tmp/relink-a-proxy.mov")));
+    for (file, why) in [(&text, "not a picture or sound file"), (&hidden, "hidden folder")] {
+        for force in [false, true] {
+            h.sent.lock().unwrap().clear();
+            let refused = h.call(json!({ "method": "relink_media", "media_id": id.0.to_string(), "path": file, "force": force }));
+            let error = refused["error"].as_str().unwrap_or_else(|| panic!("{file:?} force {force}: {refused}"));
+            assert!(error.contains("was not relinked") && error.contains(why), "{error}");
+            assert!(h.sent.lock().unwrap().is_empty(), "nothing was sent");
+            let pool = h.media_pool.read().unwrap();
+            let item = pool.get(&id).unwrap();
+            assert!(item.path == std::path::Path::new("/tmp/relink-a.mov") && item.proxy_ready && item.proxy_path.is_some());
+        }
+    }
+    let ok = h.ok(json!({ "method": "relink_media", "media_id": id.0.to_string(), "path": good, "force": true }));
+    assert_eq!(ok["applied"], true, "{ok}");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 /// #2485: the installed audio plug-ins are listed with their ids and
 /// parameters, and one goes on a clip by id through the ops.
 #[test]

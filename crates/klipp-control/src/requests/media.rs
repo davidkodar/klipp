@@ -166,6 +166,14 @@ pub(crate) fn respond(
                 let pool = ctx.media_pool.read().recovered();
                 klipp_media::relink::Wanted::from_item(pool.get(&id).ok_or_else(|| format!("no media item {}", id.0))?)
             };
+            // Only media, as opening a project takes it: force is for a clip
+            // that looks like another, not for a file that is no clip.
+            let project = ctx.shared.project.lock().recovered().path.clone();
+            let trusted = klipp_media::media_check::trusted_roots(project.as_deref());
+            let trusted: Vec<&std::path::Path> = trusted.iter().map(|p| p.as_path()).collect();
+            if let Err(why) = klipp_media::media_check::media_file_check(&p, &trusted) {
+                return Err(format!("{path} was not relinked: {why}"));
+            }
             let verdict = klipp_media::relink::check_pick(&wanted, &p);
             use klipp_media::relink::PickVerdict;
             if let (PickVerdict::Contradicted(why), false) = (&verdict, force) {
