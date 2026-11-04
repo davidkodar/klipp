@@ -685,6 +685,7 @@ fn media_listing(m: &klipp_media::MediaItem, artwork: Option<(u32, u32)>) -> ser
         "audio_channels": m.audio_channels,
         "artwork": artwork.map(|(width, height)| json!({ "width": width, "height": height })),
         "log_format": log_format_json(m),
+        "proxy_ready": m.proxy_on_disk(),
         // Part of #1224: a profile 5 picture is shown with wrong colours.
         "dolby_vision_profile": m.dolby_vision_profile,
         "warning": klipp_media::dolby_vision::warning(m.dolby_vision_profile),
@@ -720,6 +721,20 @@ mod listing_tests {
         assert_eq!(v["kind"], "video");
         assert_eq!((v["width"].as_u64(), v["height"].as_u64()), (Some(shot.resolution.width as u64), Some(shot.resolution.height as u64)));
         assert!(v["artwork"].is_null());
+    }
+
+    /// Each file says whether it has a proxy to read now: not when none was
+    /// made, nor when the one made has gone.
+    #[test]
+    fn an_item_is_listed_with_whether_its_proxy_is_there() {
+        let proxy = std::env::temp_dir().join(format!("klipp-listed-proxy-{}.mp4", uuid::Uuid::new_v4()));
+        let none = klipp_media::MediaItem::synthetic_for_test("/footage/a.mp4".into(), None);
+        assert_eq!(media_listing(&none, None)["proxy_ready"], false);
+        let with = klipp_media::MediaItem::synthetic_for_test("/footage/a.mp4".into(), proxy.to_str());
+        assert_eq!(media_listing(&with, None)["proxy_ready"], false, "its file isn't there");
+        std::fs::write(&proxy, b"a proxy").unwrap();
+        assert_eq!(media_listing(&with, None)["proxy_ready"], true);
+        std::fs::remove_file(proxy).unwrap();
     }
 
     /// Part of #1224: a Dolby Vision profile 5 item is listed with its
