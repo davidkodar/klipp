@@ -224,7 +224,7 @@ impl KlippApp {
                 if self.state.pending_title_data.is_none() {
                     self.state.pending_title_data = Some(default_title_data(&self.prefs.title));
                 }
-                let (clip_id, rest) = add_title_clip(&mut self.state, *track_index, *timeline_in, *duration_frames);
+                let (clip_id, _) = add_title_clip(&mut self.state, *track_index, *timeline_in, *duration_frames);
                 self.sync_sequence_to_engine();
                 self.render_title_to_viewer(clip_id);
                 // A title placed from a template may name a font this
@@ -235,8 +235,8 @@ impl KlippApp {
                 if !missing.is_empty() {
                     self.state.missing_fonts_dialog = Some(crate::missing_fonts::MissingFontsDialog { fonts: missing, chosen: Default::default() });
                 }
-                if let Some(park) = rest.filter(|&t| t != self.state.playhead) {
-                    let _ = self.cmd_tx.send(AppCommand::SeekTo(park));
+                for cmd in after_title_added(&self.state, clip_id) {
+                    let _ = self.cmd_tx.send(cmd);
                 }
                 true
             }
@@ -4047,16 +4047,21 @@ pub(super) fn add_title_clip(
         },
     });
     state.dirty = true;
-    // The new title is the selection, the inspector opens on
-    // its text, and the playhead goes where the title rests so
-    // the viewer shows it: past its entrance if it has one,
-    // else its first frame. A title made at the playhead with
-    // no entrance leaves the playhead where it was.
+    // The new title is the selection and the inspector opens on its
+    // text; the playhead stays where it is (see [`after_title_added`]).
     state.selected_clip = Some(clip_id);
     state.selected_clips = vec![clip_id];
     state.selected_title_object = None;
     state.focus_title_text = 3;
     (clip_id, rest)
+}
+
+/// What follows a title being added, for the engine: nothing that moves
+/// the playhead. It used to go where the title rests, a second in past
+/// an entrance, so the viewer showed it; the playhead moves only when the
+/// person moves it. The new title is selected, and its inspector shows it.
+pub(super) fn after_title_added(_state: &AppState, _clip_id: klipp_core::ClipId) -> Vec<AppCommand> {
+    Vec::new()
 }
 
 /// Where a title clip shows at rest: past its entrance when a layer has
