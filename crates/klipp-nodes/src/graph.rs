@@ -293,6 +293,43 @@ impl NodeGraph {
         (mask_id, cutout_id)
     }
 
+    /// A window on the grade's correction: a Mask node on the mask input
+    /// of its first Corrector that is on (one made if there's none), so
+    /// the correction applies inside the shapes and the picture outside
+    /// is left as it was. A Mask already on a Corrector's mask input is
+    /// the one kept and answered. The Mask's id.
+    ///
+    /// What the Colour tab's "+ Add Mask" adds: it used to cut the
+    /// picture out to the shapes (`ensure_mask_cutout`), black outside,
+    /// which no colourist means by a mask on a grade.
+    pub fn ensure_corrector_window(&mut self) -> NodeId {
+        let kind = |g: &Self, id: NodeId| g.nodes.iter().find(|n| n.id == id).map(|n| n.kind);
+        if let Some(mask) = self.edges.iter().find(|e| e.to_port == 1 && kind(self, e.to_node) == Some(NodeKind::Corrector) && kind(self, e.from_node) == Some(NodeKind::Mask)).map(|e| e.from_node) {
+            return mask;
+        }
+        let corrector = match self.nodes.iter().find(|n| n.kind == NodeKind::Corrector && n.enabled) {
+            Some(n) => n.id,
+            None => self.ensure_corrector(),
+        };
+        let mask = NodeId::new_v4();
+        let at = self.nodes.iter().position(|n| n.id == corrector).unwrap_or(self.nodes.len());
+        self.nodes.insert(at, Node {
+            id: mask,
+            kind: NodeKind::Mask,
+            label: "Window".to_string(),
+            enabled: true,
+            params: NodeParams::default(),
+            keyframes: NodeKeyframeTracks::default(),
+            output_link: None,
+            input_links: Vec::new(),
+        });
+        self.edges.retain(|e| !(e.to_node == corrector && e.to_port == 1));
+        self.edges.push(Edge { from_node: mask, from_port: 0, to_node: corrector, to_port: 1 });
+        let base = self.node_positions.get(&corrector).copied().unwrap_or(NodePos { x: 220.0, y: 0.0 });
+        self.node_positions.insert(mask, NodePos { x: base.x - 160.0, y: base.y + 140.0 });
+        mask
+    }
+
     pub fn ensure_mask(&mut self) -> NodeId {
         if let Some(idx) = self.nodes.iter().position(|n| n.kind == NodeKind::Mask) {
             return self.nodes[idx].id;

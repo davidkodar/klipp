@@ -490,3 +490,46 @@ fn a_clip_mask_is_not_drawn_while_the_timeline_grade_is_edited() {
     v.state.grade_timeline = false;
     assert_eq!(outlines(&mut v), on_clip, "back on the clip");
 }
+
+/// "+ Add Mask" on the Colour tab adds a window that limits the grade's
+/// correction, never a cutout: on an untouched Corrector the picture is
+/// the same everywhere (a circle added there blacked out the rest of the
+/// frame), and a correction then changes only what the shape covers. The
+/// shape goes on a Mask wired to the Corrector's mask input.
+#[test]
+fn a_mask_from_the_colour_tab_limits_the_correction_and_leaves_the_rest() {
+    use klipp_nodes::{GraphExecutor, NodeKind};
+    const W: u32 = 32;
+    const H: u32 = 18;
+    let frame: Vec<u8> = (0..W * H).flat_map(|i| if i % W < W / 2 { [220u8, 30, 30, 255] } else { [30, 30, 220, 255] }).collect();
+    let px = |out: &[u8], x: u32, y: u32| -> [u8; 3] {
+        let i = ((y * W + x) * 4) as usize;
+        [out[i], out[i + 1], out[i + 2]]
+    };
+    let mut g = klipp_nodes::NodeGraph::default();
+    let corrector = g.ensure_corrector();
+    // The left half, the whole height.
+    let shape = MaskShape::Rectangle { center_x: 0.25, center_y: 0.5, width: 0.5, height: 1.0, rotation: 0.0 };
+    super::colour::write_node_settings(&mut g, &AppCommand::AddMaskShape { clip_id: klipp_core::ClipId::new(), shape });
+    assert!(!g.nodes.iter().any(|n| n.kind == NodeKind::MaskCutout), "no cutout");
+    let mask = g.input_of(corrector, 1).expect("the Corrector's mask input is fed");
+    assert_eq!(g.nodes.iter().find(|n| n.id == mask).map(|n| n.kind), Some(NodeKind::Mask));
+
+    let run = |g: &klipp_nodes::NodeGraph| GraphExecutor::new_cpu_only().execute(&frame, g, W, H, 0.0, 0, None, None).unwrap().0;
+    let untouched = run(&g);
+    for (x, y) in [(2, 9), (W - 3, 9), (W / 2 + 1, 1)] {
+        let (got, was) = (px(&untouched, x, y), px(&frame, x, y));
+        assert!(got.iter().zip(was).all(|(a, b)| a.abs_diff(b) <= 2), "an untouched grade leaves ({x}, {y}) as it was: {got:?}, was {was:?}");
+    }
+
+    g.nodes.iter_mut().find(|n| n.id == corrector).unwrap().params.saturation = Some(0.0);
+    let graded = run(&g);
+    let [r, gr, b] = px(&graded, 2, 9);
+    assert!(r.abs_diff(gr) <= 2 && gr.abs_diff(b) <= 2, "inside the shape, the correction: {:?}", [r, gr, b]);
+    assert!(px(&graded, W - 3, 9).iter().zip([30u8, 30, 220]).all(|(a, b)| a.abs_diff(b) <= 2), "outside it, the picture as it was: {:?}", px(&graded, W - 3, 9));
+
+    // A second shape goes on the same window.
+    super::colour::write_node_settings(&mut g, &AppCommand::AddMaskShape { clip_id: klipp_core::ClipId::new(), shape: MaskShape::Circle { center_x: 0.8, center_y: 0.5, radius: 0.1 } });
+    assert_eq!(g.nodes.iter().filter(|n| n.kind == NodeKind::Mask).count(), 1);
+    assert_eq!(g.nodes.iter().find(|n| n.id == mask).and_then(|n| n.params.masks.as_ref()).map(|m| m.masks.len()), Some(2));
+}
