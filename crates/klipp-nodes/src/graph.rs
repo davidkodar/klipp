@@ -208,7 +208,7 @@ impl NodeGraph {
         self.nodes.insert(insert_at, Node {
             id: new_id,
             kind: NodeKind::ColorMatch,
-            label: "Color Match".to_string(),
+            label: "Colour Match".to_string(),
             enabled: true,
             params: NodeParams::default(),
             keyframes: NodeKeyframeTracks::default(),

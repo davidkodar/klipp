@@ -652,7 +652,7 @@ static TYPES: &[NodeType] = &[
         offered: menu(GradeMenuGroup::Primary, "Colour Wheels", 5),
         desc: NodeTypeDesc {
             id: "klipp.grade.color_wheels",
-            name: "Color Wheels",
+            name: "Colour Wheels",
             category: Category::Grade,
             inputs: GATE_IN,
             outputs: &[PortDesc { key: "out", ty: PortType::Image, optional: false, params: &[] }],
@@ -732,7 +732,7 @@ static TYPES: &[NodeType] = &[
         offered: menu(GradeMenuGroup::Primary, "Colour Balance", 9),
         desc: NodeTypeDesc {
             id: "klipp.grade.color_balance",
-            name: "Color Balance",
+            name: "Colour Balance",
             category: Category::Grade,
             inputs: GATE_IN,
             outputs: &[PortDesc { key: "out", ty: PortType::Image, optional: false, params: &[] }],
@@ -1053,7 +1053,7 @@ static TYPES: &[NodeType] = &[
         offered: menu(GradeMenuGroup::Primary, "Colour Match", 11),
         desc: NodeTypeDesc {
             id: "klipp.grade.color_match",
-            name: "Color Match",
+            name: "Colour Match",
             category: Category::Grade,
             inputs: &[PortDesc { key: "in", ty: PortType::Image, optional: false, params: &[] }, PortDesc { key: "reference", ty: PortType::Image, optional: true, params: &[] }],
             outputs: &[PortDesc { key: "out", ty: PortType::Image, optional: false, params: &[] }],
@@ -1073,7 +1073,7 @@ static TYPES: &[NodeType] = &[
         offered: menu(GradeMenuGroup::Utilities, "Colour Warper", 2),
         desc: NodeTypeDesc {
             id: "klipp.grade.color_warper",
-            name: "Color Warper",
+            name: "Colour Warper",
             category: Category::Grade,
             inputs: &[PortDesc { key: "in", ty: PortType::Image, optional: false, params: &[] }],
             outputs: &[PortDesc { key: "out", ty: PortType::Image, optional: false, params: &[] }],
