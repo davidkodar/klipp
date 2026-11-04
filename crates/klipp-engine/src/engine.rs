@@ -3857,21 +3857,23 @@ impl PlaybackEngine {
             AppCommand::SetSpeed(speed) => {
                 debug!("SetSpeed({speed})");
                 let turned_round = self.turns_round(speed);
+                let was_muted = self.sound_muted();
                 self.shuttle_speed = speed;
                 self.master_clock.set_speed(speed);
                 // Reports follow on from here, whichever way it now plays
                 // (#1806).
                 self.report_floor.set(None);
-                // Mute audio at high speeds (unintelligible above 4x)
-                let muted = speed.abs() > 4.0 || self.sound_muted();
+                let muted = self.sound_muted();
                 for active in &self.audio_sources {
                     active.source.muted().store(muted, Ordering::Release);
                 }
                 // The sound reads forward whichever way the clock runs, so
                 // played backwards it runs away from the playhead: back to
                 // the playhead whenever the direction changes. Muted first:
-                // a reseek fills seconds of its buffer at once.
-                if turned_round && self.state == PlaybackState::Playing {
+                // a reseek fills seconds of its buffer at once. So too when
+                // it goes silent or comes back, or the seconds already
+                // buffered play on after the mute.
+                if (turned_round || was_muted != muted) && self.state == PlaybackState::Playing {
                     self.seek_all_audio_to_timecode(self.playhead);
                     for active in &self.audio_sources {
                         active.source.muted().store(muted, Ordering::Release);
@@ -7768,10 +7770,14 @@ impl PlaybackEngine {
     }
 
     /// Whether the sound is silenced now: a scrub with audio scrubbing off,
-    /// or played backwards by J, as the sound can only read forward. A
-    /// reversed clip also runs the clock backwards, and keeps its sound.
+    /// played backwards by J, as the sound can only read forward, or
+    /// shuttled above 4x, past hearing. By the speed a shuttle asked for
+    /// and the clock running it: a reversed clip also runs the clock
+    /// backwards, and a clip retimed above 4x faster, and they keep their
+    /// sound (#638).
     fn sound_muted(&self) -> bool {
-        (self.is_scrubbing && !self.scrub_audio_enabled) || (self.shuttle_speed < 0.0 && self.master_clock.speed() < 0.0)
+        let shuttled = |past: fn(f64) -> bool| past(self.shuttle_speed) && past(self.master_clock.speed());
+        (self.is_scrubbing && !self.scrub_audio_enabled) || shuttled(|s| s < 0.0) || shuttled(|s| s.abs() > 4.0)
     }
 
     /// Whether `speed` changes the direction it is shuttled in.
@@ -15755,6 +15761,22 @@ mod track_switch_tests {
         engine.handle_command(AppCommand::BeginScrub);
         engine.scrub_audio_enabled = false;
         assert!(engine.sound_muted(), "a scrub with its sound off");
+    }
+
+    /// Above 4x the sound is silent while it plays, not only until the next
+    /// tick puts it back, and comes back below it. A clip retimed above 4x
+    /// keeps its sound (#638).
+    #[test]
+    fn shuttled_above_four_times_the_sound_is_silent() {
+        let (mut engine, _seq) = engine(two_tracks());
+        engine.handle_command(AppCommand::SetSpeed(4.0));
+        assert!(!engine.sound_muted(), "4x is heard");
+        engine.handle_command(AppCommand::SetSpeed(8.0));
+        assert!(engine.sound_muted(), "8x");
+        engine.handle_command(AppCommand::SetSpeed(1.0));
+        assert!(!engine.sound_muted(), "1x");
+        engine.master_clock.set_speed(8.0);
+        assert!(!engine.sound_muted(), "a clip retimed to 8x keeps its sound");
     }
 
     /// J ended, after a seek under it took the clock back off: its pictures
