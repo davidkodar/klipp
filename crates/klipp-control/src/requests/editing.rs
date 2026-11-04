@@ -394,7 +394,7 @@ pub(crate) fn respond(
                 if !(m.from_secs >= 0.0 && m.to_secs > m.from_secs && m.to_secs <= dur + 0.5) {
                     return Err(format!("moment {}: {:.2}-{:.2} s is not inside the file's {dur:.2} s", k + 1, m.from_secs, m.to_secs));
                 }
-                let pieces = klipp_document::shorts::pieces(&words, m.from_secs, m.to_secs, tighten, lists.as_deref().ok());
+                let pieces = klipp_document::shorts::pieces(&words, m.from_secs, m.to_secs, dur, tighten, lists.as_deref().ok());
                 if pieces.is_empty() {
                     return Err(format!("moment {}: nothing is said in {:.2}-{:.2} s", k + 1, m.from_secs, m.to_secs));
                 }

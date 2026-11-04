@@ -53,12 +53,13 @@ impl ShortsDialog {
     }
 
     /// The commands that build the kept moments, each a sequence of its
-    /// own named after its hook, at `fps`, its pieces cut from `words`.
-    pub fn build(&self, words: &[klipp_document::ops::SpokenWord], fps: klipp_core::Fps) -> Vec<AppCommand> {
+    /// own named after its hook, at `fps`, its pieces cut from `words` of
+    /// a file `length` seconds long, inside which they stay.
+    pub fn build(&self, words: &[klipp_document::ops::SpokenWord], fps: klipp_core::Fps, length: f64) -> Vec<AppCommand> {
         let Some(Ok(found)) = &self.found else { return Vec::new() };
         let mut cmds = Vec::new();
         for (k, (m, _)) in found.iter().filter(|(_, keep)| *keep).enumerate() {
-            let pieces = klipp_document::shorts::pieces(words, m.from_secs, m.to_secs, self.tighten, crate::transcript::word_lists().ok().as_deref());
+            let pieces = klipp_document::shorts::pieces(words, m.from_secs, m.to_secs, length, self.tighten, crate::transcript::word_lists().ok().as_deref());
             if pieces.is_empty() {
                 continue;
             }
@@ -148,7 +149,8 @@ pub fn show_dialog(ctx: &egui::Context, state: &mut crate::state::AppState) -> V
     if build {
         let spoken: Vec<klipp_document::ops::SpokenWord> = words().unwrap_or_default().into_iter().map(|w| klipp_document::ops::SpokenWord { start_secs: w.start_secs, end_secs: w.end_secs, text: w.text, confidence: w.confidence }).collect();
         let fps = state.media_pool.get(&media_id).map_or(state.sequence().fps, |m| m.fps);
-        return dialog.build(&spoken, fps);
+        let length = state.media_pool.get(&media_id).map(|m| m.duration.to_secs_f64()).filter(|d| *d > 0.0).unwrap_or(f64::INFINITY);
+        return dialog.build(&spoken, fps, length);
     }
     if open && !cancel {
         state.shorts_dialog = Some(dialog);
@@ -195,7 +197,20 @@ mod tests {
         assert_eq!(found.len(), 2, "{found:?}");
         found[1].1 = false;
         let spoken: Vec<klipp_document::ops::SpokenWord> = words.iter().map(|w| klipp_document::ops::SpokenWord { start_secs: w.start_secs, end_secs: w.end_secs, text: w.text.clone(), confidence: w.confidence }).collect();
-        let cmds = d.build(&spoken, klipp_core::Fps::new(30, 1));
+        let cmds = d.build(&spoken, klipp_core::Fps::new(30, 1), f64::INFINITY);
         assert!(matches!(cmds.as_slice(), [AppCommand::AddSequenceAndOpen { width: 1080, height: 1920, .. }, AppCommand::FillShort { pieces, hook: None, .. }] if !pieces.is_empty()), "{cmds:?}");
+        // A file that ends just after the moment's last word: its pieces
+        // stay inside it, the tail stopping at the file's end.
+        let last = found_last_end(&d, &spoken);
+        let cmds = d.build(&spoken, klipp_core::Fps::new(30, 1), last + 0.05);
+        let Some(AppCommand::FillShort { pieces, .. }) = cmds.get(1) else { panic!("{cmds:?}") };
+        assert!(pieces.iter().all(|(_, b)| *b <= last + 0.05 + 1e-9), "inside the file: {pieces:?}");
+    }
+
+    /// The end of the last word of the first kept moment.
+    fn found_last_end(d: &ShortsDialog, words: &[klipp_document::ops::SpokenWord]) -> f64 {
+        let Some(Ok(found)) = &d.found else { panic!("no moments") };
+        let (m, _) = found.iter().find(|(_, keep)| *keep).expect("a kept moment");
+        words.iter().filter(|w| w.end_secs <= m.to_secs + 0.05).map(|w| w.end_secs).fold(0.0, f64::max)
     }
 }
