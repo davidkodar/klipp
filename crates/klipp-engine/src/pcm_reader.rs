@@ -821,7 +821,10 @@ fn pcm_feed_thread(
                     Some(s) if s.reads(anchor, speed) => stretcher.insert(s),
                     _ => stretcher.insert(klipp_audio::dsp::stretch::Stretcher::new(anchor, speed)),
                 };
-                s.read(samples, CHANNELS, ((vpos - anchor) / speed).round() as i64, n)
+                // A grain reads on past where it starts: only what the clip
+                // plays, or the sound after its Out comes through at its end.
+                let end = if to_stop == usize::MAX { samples.len() } else { (vpos + to_stop as f64 * speed).round() as usize * CHANNELS };
+                s.read(&samples[..end.min(samples.len())], CHANNELS, ((vpos - anchor) / speed).round() as i64, n)
             } else {
                 klipp_audio::dsp::varispeed::read(samples, CHANNELS, vpos, speed, n)
             };
