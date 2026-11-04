@@ -5471,6 +5471,12 @@ fn spelling_lists_and_an_ignored_word_goes_on_the_brief() {
     let marked_or_unchecked = r["misspellings"].as_array().unwrap().iter().any(|m| m["word"] == "Kestrelholm" && m["language"] == "en" && m["start"] == 11 && m["end"] == 22)
         || r["missing"].as_array().unwrap().iter().any(|m| m.as_str().unwrap().contains("no en dictionary"));
     assert!(marked_or_unchecked, "the made-up name marked, or English said to have no dictionary: {r}");
+    // A language with no dictionary is said first in the text read, with
+    // what to install: "nothing marked" alone reads as "spelt right".
+    if let Some(m) = r["missing"].as_array().unwrap().first() {
+        let text = r["text"].as_str().unwrap();
+        assert!(text.starts_with(m.as_str().unwrap()) && text.contains("install hunspell-"), "{r}");
+    }
 
     let before = h.ok(json!({ "method": "status" }))["revision"].as_u64().unwrap();
     let r = h.ok(json!({ "method": "spelling", "action": "ignore", "word": "Kestrelholm" }));

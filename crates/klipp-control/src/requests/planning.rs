@@ -329,14 +329,20 @@ pub(crate) fn respond(
                         "suggestions": m.suggestions,
                     })).collect();
                     let n = report.misspellings.len();
+                    let missing: Vec<String> = report.missing.iter().map(|m| m.say()).collect();
+                    let marked = match n {
+                        0 => "no word in the titles or captions is marked".to_string(),
+                        1 => "1 word marked".to_string(),
+                        n => format!("{n} words marked"),
+                    };
+                    // A language without a dictionary is checked not at all:
+                    // said first, with what to install, so "nothing marked"
+                    // is never read as "spelt right".
+                    let text = if missing.is_empty() { marked } else { format!("{}; {marked} in the rest", missing.join("; ")) };
                     let mut v = json!({
                         "misspellings": words,
-                        "missing": report.missing.iter().map(|m| m.say()).collect::<Vec<_>>(),
-                        "text": match n {
-                            0 => "no word in the titles or captions is marked".to_string(),
-                            1 => "1 word marked".to_string(),
-                            n => format!("{n} words marked"),
-                        },
+                        "missing": missing,
+                        "text": text,
                     });
                     if n > SHOWN {
                         v["more"] = json!(n - SHOWN);
