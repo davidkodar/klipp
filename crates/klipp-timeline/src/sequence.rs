@@ -3181,8 +3181,10 @@ impl Clip {
         } else {
             let secs = self.source_in.to_secs_f64() + offset(elapsed);
             // Slowed, the last frames ask for a time nearer the Out than a
-            // frame, and the decoder's nearest frame is the one past it.
-            if elapsed < dur { secs.min((self.source_out.to_secs_f64() - 1.0 / fps.max(1.0)).max(self.source_in.to_secs_f64())) } else { secs }
+            // frame, and the decoder's nearest frame is the one past it. At
+            // 1x or faster the time is left exactly as it was.
+            let slowed = self.speed_at(elapsed.clamp(0.0, dur)).abs() < 1.0 - 1e-6;
+            if slowed && elapsed < dur { secs.min((self.source_out.to_secs_f64() - 1.0 / fps.max(1.0)).max(self.source_in.to_secs_f64())) } else { secs }
         }
     }
 
@@ -4962,9 +4964,33 @@ mod tests {
         assert_eq!(frame_at(&clip, 16.0 - 1.0 / 30.0), 359, "the last before the Out at 360");
         assert_eq!(frame_at(&clip, 15.0), 345, "earlier frames as they were");
         assert_eq!(frame_at(&clip, 16.5), 368, "a handle past its end runs on");
+        let mut ramp = clip.clone();
+        let kf = |t, v| klipp_core::Keyframe { time_secs: t, value: v, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() };
+        ramp.speed = 1.0;
+        ramp.speed_keyframes = vec![kf(0.0, 2.0), kf(4.0, 0.2)];
+        ramp.timeline_out = ramp.timeline_in + tc(crate::effective_timeline_duration_for_keyframes(&ramp.speed_keyframes, 8.0, 30.0, 1.0));
+        let last = ramp.duration().to_secs_f64() - 1.0 / 30.0;
+        assert_eq!(frame_at(&ramp, last), 359, "a ramp's slow end too");
         clip.speed = 2.0;
         clip.timeline_out = tc(4.0);
         assert_eq!(frame_at(&clip, 4.0 - 1.0 / 30.0), 358, "fast clips as they were");
+    }
+
+    /// At 1x a clip's source time is just its elapsed time, every frame up to
+    /// its last and on through a transition's handle, whatever its range.
+    #[test]
+    fn a_clip_at_full_speed_reads_every_last_frame_as_it_is_asked() {
+        for (rate, fps, range) in [(30, 30.0, 8.0), (30000, 30000.0 / 1001.0, 8.0), (30, 30.0, 7.9)] {
+            let tc = |s: f64| Timecode::from_secs_f64(s, rate);
+            let clip = Clip::media(klipp_core::MediaId::new(), tc(0.0), tc(8.0), tc(5.0), tc(5.0 + range));
+            for frame in [0.0, 1.0, 2.0, 3.0] {
+                let e = 8.0 - frame / fps;
+                assert_eq!(clip.source_secs_at(e, fps), 5.0 + e, "{frame} frames from the end at {fps} fps, a range of {range} s");
+            }
+            for past in [0.5, 1.0] {
+                assert_eq!(clip.source_secs_at(8.0 + past, fps), 5.0 + 8.0 + past, "the handle at {fps} fps");
+            }
+        }
     }
 
     #[test]
