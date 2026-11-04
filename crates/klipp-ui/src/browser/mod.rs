@@ -3382,6 +3382,7 @@ impl BrowserPanel {
                     if is_video
                         && state.skimming_enabled
                         && state.file_browser_video_skim_enabled
+                        && !state.window_unfocused
                         && !state.has_modal_open()
                     {
                         if let Some(pos) = ui.input(|i| i.pointer.hover_pos()) {
@@ -3475,6 +3476,7 @@ impl BrowserPanel {
                         //   - no modals open
                         if state.skimming_enabled
                             && state.file_browser_audio_skim_enabled
+                            && !state.window_unfocused
                             && !state.has_modal_open()
                         {
                             if let Some(pos) = ui.input(|i| i.pointer.hover_pos()) {

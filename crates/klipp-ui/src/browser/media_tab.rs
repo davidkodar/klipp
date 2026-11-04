@@ -1788,7 +1788,7 @@ fn handle_hover_skim(
     cmds: &mut Vec<AppCommand>,
     draw_scrubber: bool,
 ) -> bool {
-    if !state.skimming_enabled || state.has_modal_open() {
+    if !state.skimming_enabled || state.window_unfocused || state.has_modal_open() {
         return false;
     }
     // Use raw pointer position
@@ -3240,9 +3240,10 @@ mod bin_menu_tests {
     /// source viewer.
     #[test]
     fn a_window_over_the_pool_does_not_skim_it() {
-        for covered in [false, true] {
+        for (covered, unfocused) in [(false, false), (true, false), (false, true)] {
             let mut pool = Pool::new(BrowserViewMode::Grid, &["a.mov"]);
             pool.state.skimming_enabled = true;
+            pool.state.window_unfocused = unfocused;
             let thumb = pool.at("a.mov") - egui::vec2(0.0, 30.0);
             let theme = KlippTheme::default();
             let mut skimmed = false;
@@ -3258,7 +3259,7 @@ mod bin_menu_tests {
                 });
                 skimmed = state.browser_skim_active_this_frame;
             }
-            assert_eq!(skimmed, !covered, "covered by a window: {covered}");
+            assert_eq!(skimmed, !covered && !unfocused, "covered by a window: {covered}, without focus: {unfocused}");
         }
     }
 

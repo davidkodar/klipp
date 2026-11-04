@@ -6711,7 +6711,7 @@ impl TimelinePanel {
                 // a different clip entirely whenever the pointer was not over
                 // the topmost video clip. During a gesture the playhead is
                 // what the viewer is about.
-                if state.skimming_enabled && !state.has_modal_open() && !state.is_scrubbing {
+                if state.skimming_enabled && !state.window_unfocused && !state.has_modal_open() && !state.is_scrubbing {
                     // Compound clip path — resolve hover to inner media at this
                     // position and skim through that media. The existing
                     // `if let Some(media_id) = clip.media_id()` block below
