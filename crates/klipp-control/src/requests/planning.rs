@@ -192,6 +192,14 @@ pub(crate) fn respond(
             if old.approved {
                 return Ok(json!({ "approved": true, "revision": ctx.shared.revision(), "text": "The edit plan is already approved.", "next": "build_edit_plan shows what it builds; with apply true it builds it." }));
             }
+            // Checked again as it is approved, as when it was stored: the
+            // footage or the checks may have moved on since, and a plan
+            // approved and then refused by the build helps no one.
+            {
+                let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+                let pool = ctx.media_pool.read().recovered();
+                klipp_document::edit_plan::validate(&old, &pool, seq.brief.as_ref()).map_err(|why| format!("the edit plan cannot be built: {why}; propose it again with set_edit_plan"))?;
+            }
             let mut new = old.clone();
             new.approved = true;
             let edit = klipp_document::history::EditCommand::SetEditPlan { old: Some(Box::new(old)), new: Some(Box::new(new)) };
@@ -462,7 +470,7 @@ pub(crate) fn respond(
             collect_project(ctx, dest, mode, handle_secs, proxies, dry_run, verify, allow_offline)
         }
 
-        ControlCommand::Check { color, loudness, min_severity } => {
+        ControlCommand::Check { color, loudness, min_severity, own_render } => {
             if in_batch {
                 return read_in_batch("check");
             }
@@ -557,7 +565,7 @@ pub(crate) fn respond(
             // frames rendered small, as the export would draw them (#2074).
             // Not while a render runs, which it would slow: said, never
             // taken for a clean read.
-            let rendering = ctx.shared.exports.lock().is_ok_and(|e| e.iter().any(|j| j.status == "rendering"));
+            let rendering = ctx.shared.exports.lock().is_ok_and(|e| another_render_runs(&e, own_render.as_deref()));
             if rendering && banding_snapshot.is_some() {
                 report.findings.push(klipp_document::qc::Finding {
                     severity: klipp_document::qc::Severity::Note,
@@ -1566,11 +1574,7 @@ fn collect_project(ctx: &crate::ControlContext, dest: Option<String>, mode: Opti
         let mut sequences = vec![seq];
         sequences.extend(others_of(ctx));
         let pool = ctx.media_pool.read().recovered().clone();
-        let offline: Vec<String> = klipp_project::collect_report::report(&sequences, &pool, &[], &describe_plugin)
-            .into_iter()
-            .filter(|d| d.need == klipp_project::collect_report::Need::OfflineMedia)
-            .map(|d| format!("{} ({})", d.detail, d.used_in.join(", ")))
-            .collect();
+        let offline = klipp_project::collect_report::offline_in_use(&sequences, &pool);
         if !offline.is_empty() {
             return Err(format!("nothing collected: media the project uses is offline: {}. Relink it, or send allow_offline: true to collect the rest", offline.join("; ")));
         }
@@ -1588,4 +1592,35 @@ fn collect_project(ctx: &crate::ControlContext, dest: Option<String>, mode: Opti
         "dest": dest,
         "next": format!("collect_project with verify {} once it is done: the check and its manifest are written last", dest.display()),
     }))
+}
+
+/// Whether a render other than `own` (review's draft, rendering beside
+/// the check that reads it) is running: the banding check renders frames
+/// of its own and waits for one. Counting the draft, review never checked
+/// banding at all.
+fn another_render_runs(exports: &[klipp_core::ExportStatus], own: Option<&std::path::Path>) -> bool {
+    exports.iter().any(|j| j.status == "rendering" && own.is_none_or(|own| j.path != own))
+}
+
+#[cfg(test)]
+mod own_render_tests {
+    use super::another_render_runs;
+
+    fn job(path: &str, status: &str) -> klipp_core::ExportStatus {
+        klipp_core::ExportStatus {
+            job_id: String::new(), path: path.into(), status: status.into(), progress: 0.0, frames_done: 0, total_frames: 0, stage: String::new(), error: None, loudness: None, hardware: String::new(),
+            fps: None, eta_secs: None, projected_bytes: None, encoder: None, audio_encoder: None, compositing: None, timings: None, banding: None, note: None,
+        }
+    }
+
+    /// Review's own draft, rendering, does not keep its check from the
+    /// banding read; another render does, and a finished one does not.
+    #[test]
+    fn reviews_own_draft_is_not_another_render() {
+        let draft = std::path::Path::new("/tmp/klipp-review.mp4");
+        assert!(!another_render_runs(&[job("/tmp/klipp-review.mp4", "rendering")], Some(draft)), "its own draft");
+        assert!(another_render_runs(&[job("/tmp/klipp-review.mp4", "rendering"), job("/tmp/film.mp4", "rendering")], Some(draft)), "another render beside it");
+        assert!(another_render_runs(&[job("/tmp/klipp-review.mp4", "rendering")], None), "a check on its own counts every render");
+        assert!(!another_render_runs(&[job("/tmp/film.mp4", "complete")], None), "a finished render");
+    }
 }

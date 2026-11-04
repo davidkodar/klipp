@@ -2956,6 +2956,10 @@ pub struct AppState {
     /// The dialog's summary and what it was worked out for (#77): worked
     /// out again when the options or the project change, not every frame.
     pub consolidate_summary: Option<(u64, klipp_project::consolidate::ConsolidateSummary)>,
+    /// The offline files the timelines use, worked out with the summary.
+    pub consolidate_offline: Vec<String>,
+    /// Asked for in the dialog: collect the rest though those are offline.
+    pub consolidate_allow_offline: bool,
     pub show_browser_panel: bool,
     /// When set, the browser panel should scroll to this media item.
     pub reveal_in_browser: Option<klipp_core::MediaId>,
@@ -5354,6 +5358,8 @@ impl Default for AppState {
             consolidate_mode: 0,
             consolidate_handle_secs: 1.0,
             consolidate_summary: None,
+            consolidate_offline: Vec::new(),
+            consolidate_allow_offline: false,
             consolidate_delete_folder_after_zip: false,
             show_browser_panel: true,
             reveal_in_browser: None,
