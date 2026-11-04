@@ -109,6 +109,27 @@ pub(crate) fn params_for_frame(node: &Node, clip_time_secs: f64) -> Cow<'_, Node
     }
 }
 
+impl NodeGraph {
+    /// [`NodeGraph::is_identity`] at `clip_time_secs`: the nodes' keyed
+    /// values read there, so a grade keyed to nothing at this frame (an
+    /// exposure ramp at its first key, 0) is an identity here, and its
+    /// frame passes through as an unkeyed one's does rather than coming
+    /// back on the CPU. A node whose switch is keyed is never one.
+    pub fn is_identity_at(&self, clip_time_secs: f64) -> bool {
+        if self.input_of(self.output_node_id, 1).is_some() {
+            return false;
+        }
+        let feeding = self.nodes_feeding_output();
+        self.nodes.iter().all(|n| {
+            !n.enabled
+                || !feeding.contains(&n.id)
+                || matches!(n.kind, NodeKind::Source | NodeKind::Output | NodeKind::InputTransform)
+                || (!n.keyframes.tracks.iter().any(|t| t.param_name == ENABLED_TRACK && !t.keyframes.is_empty())
+                    && params_for_frame(n, clip_time_secs).is_default())
+        })
+    }
+}
+
 /// Error during graph execution.
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum ExecutorError {
