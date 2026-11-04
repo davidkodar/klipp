@@ -3721,7 +3721,7 @@ pub fn speed_at_keyframes(
 
 /// Integrate the (clamped) speed curve's magnitude — a reversed clip moves
 /// through its source as far as a forward one — from 0 to `timeline_elapsed_secs` using
-/// `dt = 1/fps` Riemann sums with a partial-step correction on the tail.
+/// `dt = 1/fps` midpoint steps, exact on a straight ramp, with a partial step on the tail.
 ///
 /// Returns the corresponding source-time offset: for constant speed=1.0 this is
 /// just `timeline_elapsed_secs`; for a 2× ramp this returns ~2× the elapsed.
@@ -3744,7 +3744,7 @@ pub fn speed_integral_keyframes(
     let full_steps = (timeline_elapsed_secs / dt).floor() as usize;
     let mut source_offset = 0.0f64;
     for i in 0..full_steps {
-        let t = i as f64 * dt;
+        let t = (i as f64 + 0.5) * dt;
         let spd = speed_at_keyframes(keyframes, t, default_speed).abs().clamp(SPEED_MIN, SPEED_MAX);
         source_offset += spd * dt;
     }
@@ -3752,7 +3752,7 @@ pub fn speed_integral_keyframes(
     let tail_start = full_steps as f64 * dt;
     let tail_len = (timeline_elapsed_secs - tail_start).max(0.0);
     if tail_len > 0.0 {
-        let spd = speed_at_keyframes(keyframes, tail_start, default_speed).abs().clamp(SPEED_MIN, SPEED_MAX);
+        let spd = speed_at_keyframes(keyframes, tail_start + tail_len / 2.0, default_speed).abs().clamp(SPEED_MIN, SPEED_MAX);
         source_offset += spd * tail_len;
     }
     source_offset
@@ -3762,7 +3762,7 @@ pub fn speed_integral_keyframes(
 /// duration that exhausts the source: i.e. find T such that
 /// `speed_integral_keyframes(keyframes, T, fps, default) == source_duration_secs`.
 ///
-/// Uses forward Riemann integration with `dt = 1/fps`. Falls back to
+/// Uses the same midpoint steps as [`speed_integral_keyframes`]. Falls back to
 /// `source_duration_secs / default_speed` for the no-keyframes case.
 ///
 /// Caps at 20× the source duration as a safety valve against a curve that
@@ -3785,7 +3785,7 @@ pub fn effective_timeline_duration_for_keyframes(
     let mut source_offset = 0.0f64;
     let mut timeline_t = 0.0f64;
     while source_offset < source_duration_secs && timeline_t < safety_cap {
-        let spd = speed_at_keyframes(keyframes, timeline_t, default_speed).abs().clamp(SPEED_MIN, SPEED_MAX);
+        let spd = speed_at_keyframes(keyframes, timeline_t + dt / 2.0, default_speed).abs().clamp(SPEED_MIN, SPEED_MAX);
         let step_source = spd * dt;
         if source_offset + step_source >= source_duration_secs {
             // Partial final step: only use the fraction needed to hit the target.
@@ -4733,6 +4733,16 @@ mod tests {
         // And the integral is just speed * duration.
         let src = speed_integral_keyframes(&[], 4.0, 60.0, 2.0);
         assert!((src - 8.0).abs() < 1e-9, "got {src}");
+    }
+
+    #[test]
+    fn a_falling_ramp_lasts_as_long_as_its_mean_speed_says() {
+        // 4x to 0.2x covers 8 s of source in 3.81 s: stepping from each step's
+        // start counted the fast side, and the clip ended before the slow one.
+        let kfs = vec![kf(0.0, 4.0), kf(8.0 / 2.1, 0.2)];
+        let len = effective_timeline_duration_for_keyframes(&kfs, 8.0, 30.0, 1.0);
+        assert!((len - 8.0 / 2.1).abs() < 1.0 / 30.0, "within a frame: {len}");
+        assert!((speed_integral_keyframes(&kfs, len, 30.0, 1.0) - 8.0).abs() < 1e-3, "and the two agree");
     }
 
     #[test]
