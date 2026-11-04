@@ -16,7 +16,7 @@ pub struct MediaPool {
     /// coloured.
     #[serde(default)]
     pub roles: klipp_core::roles::RoleSet,
-    /// Files a project named that are not media, and why (SEC1): kept
+    /// Files a project named that are not media, and why: kept
     /// offline, never read or collected. Not saved; found again at open.
     #[serde(skip)]
     pub refused: HashMap<MediaId, String>,

@@ -29,7 +29,7 @@ impl KlippApp {
                 return false;
             }
             // Only media is imported, by any way in, as a project's is
-            // taken when it opens (SEC1): ffmpeg reads a text file as a
+            // taken when it opens: ffmpeg reads a text file as a
             // picture, and CREDITS.txt came in as a clip.
             if let Err(why) = import_check(path, self.state.project_path.as_deref()) {
                 self.state.pending_undo_imports.remove(media_id);
@@ -1797,7 +1797,7 @@ impl KlippApp {
 impl KlippApp {
     fn relink_media(&mut self, media_id: MediaId, new_path: &Path) {
         let cache_dir = self.proxy_cache_dir();
-        // Checked as a file the project names is at open (SEC1): kept
+        // Checked as a file the project names is at open: kept
         // offline, with why, when it is not media or is in a hidden folder.
         let trusted_folders = klipp_media::media_check::trusted_roots(self.state.project_path.as_deref());
         let trusted: Vec<&Path> = trusted_folders.iter().map(PathBuf::as_path).collect();

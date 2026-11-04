@@ -425,7 +425,7 @@ pub fn listed(changes: &[Change]) -> String {
 
 #[cfg(test)]
 mod tests {
-    /// FC6: a change is named by where it is now, after the cuts before
+    /// A change is named by where it is now, after the cuts before
     /// it, where a click on it goes: a pause planned at 0:10.7 behind a
     /// 3 s cut reads 0:07.7; with that cut taken back, 0:10.7 again.
     #[test]
@@ -699,7 +699,7 @@ mod tests {
         }
     }
 
-    /// FC8: the punch-in alternates within the pieces of one shot and starts
+    /// The punch-in alternates within the pieces of one shot and starts
     /// again at the next. A shot of another file, never cut, is not pushed in:
     /// the count ran on along the track and gave it 1.15. Three pieces first,
     /// as after two it would land right by luck.

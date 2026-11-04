@@ -39,8 +39,8 @@ impl Marks {
     /// The source range the marks name; the whole file when they name
     /// nothing, or nothing usable.
     fn source_range(&self) -> (f64, f64) {
-        let s_in = self.source_in.unwrap_or(0.0).clamp(0.0, self.media_len);
-        let s_out = self.source_out.unwrap_or(self.media_len).clamp(0.0, self.media_len);
+        let s_in = self.source_in.unwrap_or(0.0).clamp(0.0, self.media_len.max(0.0));
+        let s_out = self.source_out.unwrap_or(self.media_len).clamp(0.0, self.media_len.max(0.0));
         if s_out > s_in { (s_in, s_out) } else { (0.0, self.media_len) }
     }
 

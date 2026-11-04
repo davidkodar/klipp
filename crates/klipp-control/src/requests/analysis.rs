@@ -388,8 +388,8 @@ pub(crate) fn respond(
                     .map_err(|e| format!("the mix could not be read: {e}"))?
             };
             let end = snapshot.end_frame() as f64 / snapshot.fps.max(1.0);
-            let from = from_secs.unwrap_or(0.0).clamp(0.0, end);
-            let to = to_secs.unwrap_or(end).clamp(from, end);
+            let from = from_secs.unwrap_or(0.0).clamp(0.0, end.max(0.0));
+            let to = to_secs.unwrap_or(end).clamp(from, end.max(from));
             let step = step_secs.unwrap_or(0.5).clamp(0.1, 10.0);
             if to - from < step {
                 return Err(format!("{from:.2}-{to:.2} s is shorter than one step of {step:.2} s"));
@@ -750,8 +750,8 @@ pub(crate) fn respond(
             }
             let (media_path, duration) = media_path_and_duration(ctx, &media_id)?;
             let out = temp_output(path, "klipp-sheet", "jpg")?;
-            let from = from_secs.unwrap_or(0.0).clamp(0.0, duration);
-            let to = to_secs.unwrap_or(duration).clamp(from, duration);
+            let from = from_secs.unwrap_or(0.0).clamp(0.0, duration.max(0.0));
+            let to = to_secs.unwrap_or(duration).clamp(from, duration.max(from));
             let sheet = klipp_analysis::sheet::contact_sheet(
                 std::path::Path::new("ffmpeg"), &media_path, from, to, frames.unwrap_or(12), cols.unwrap_or(4), tile_width.unwrap_or(240), &out,
             )?;
@@ -776,8 +776,8 @@ pub(crate) fn respond(
                             .map_err(|e| format!("the mix could not be read: {e}"))?
                     };
                     let end = snapshot.end_frame() as f64 / snapshot.fps.max(1.0);
-                    let from = from_secs.clamp(0.0, end);
-                    let to = to_secs.clamp(from, end).min(from + 60.0);
+                    let from = from_secs.clamp(0.0, end.max(0.0));
+                    let to = to_secs.clamp(from, end.max(from)).min(from + 60.0);
                     if to - from < 0.1 {
                         return Err(format!("{from:.2}-{to:.2} s holds no sound of the timeline (it ends at {end:.2} s)"));
                     }
@@ -790,8 +790,8 @@ pub(crate) fn respond(
             };
             let (media_path, duration) = media_path_and_duration(ctx, &media_id)?;
             let out = temp_output(path, "klipp-excerpt", "wav")?;
-            let from = from_secs.clamp(0.0, duration);
-            let to = to_secs.clamp(from, duration);
+            let from = from_secs.clamp(0.0, duration.max(0.0));
+            let to = to_secs.clamp(from, duration.max(from));
             let p = klipp_analysis::sheet::audio_excerpt(std::path::Path::new("ffmpeg"), &media_path, from, to, &out)?;
             let bytes = std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0);
             Ok(json!({ "path": p.to_string_lossy(), "from_secs": from, "to_secs": to, "bytes": bytes, "format": "wav 16 kHz mono 16-bit" }))

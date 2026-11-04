@@ -2982,6 +2982,7 @@ dependencies = [
 name = "klipp-captions"
 version = "0.3.2"
 dependencies = [
+ "klipp-core",
  "roxmltree 0.20.0",
 ]
 

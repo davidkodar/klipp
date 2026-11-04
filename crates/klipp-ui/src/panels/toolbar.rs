@@ -718,7 +718,7 @@ impl ToolbarPanel {
                 if let Some(group) = group {
                     ui.menu_rows("Switch Angle", |ui| {
                         // The group's own angles: three listed for three, not
-                        // always nine (P50).
+                        // always nine.
                         for angle in multicam_angles(state.sequence(), group) {
                             let label = format!("Angle {angle}");
                             if ui.add(egui::Button::new(&label).shortcut_text(kb.display_for(&format!("multicam_angle_{angle}")))).clicked() {
@@ -1948,7 +1948,7 @@ fn marker_deletes(seq: &klipp_timeline::Sequence, playhead: klipp_core::Rational
 
 #[cfg(test)]
 mod multicam_angle_tests {
-    /// P50: Switch Angle lists the group's angles, three for three.
+    /// Switch Angle lists the group's angles, three for three.
     #[test]
     fn switch_angle_lists_the_groups_own_angles() {
         let t = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 24);

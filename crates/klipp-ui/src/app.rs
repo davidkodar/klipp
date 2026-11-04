@@ -393,7 +393,7 @@ pub struct KlippApp {
     /// The caption translation running (#2213), its answer to come.
     translation: Option<caption_translation::Pending>,
     /// A translation waiting for the person to agree to download its
-    /// model (P28).
+    /// model.
     translation_consent: Option<caption_translation::Consent>,
     /// The Sound Over Time window's own state: the reading in hand or
     /// the thread still making it.

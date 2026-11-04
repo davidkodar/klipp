@@ -1109,7 +1109,7 @@ fn show_clip_video(
                                                 clip_id,
                                             });
                                         }
-                                        let new_t = unmap_x(pos.x).clamp(0.0, clip_dur);
+                                        let new_t = unmap_x(pos.x).clamp(0.0, clip_dur.max(0.0));
                                         let new_v = unmap_y(pos.y).clamp(0.1, spd_max) as f64;
                                         cmds.push(AppCommand::UpdateSpeedKeyframe {
                                             clip_id,
@@ -1139,7 +1139,7 @@ fn show_clip_video(
                         // Double-click to add keyframe
                         if graph_resp.double_clicked() && hovered_kf.is_none() {
                             if let Some(pos) = graph_resp.interact_pointer_pos() {
-                                let t = unmap_x(pos.x).clamp(0.0, clip_dur);
+                                let t = unmap_x(pos.x).clamp(0.0, clip_dur.max(0.0));
                                 let v = (unmap_y(pos.y).clamp(0.1, spd_max)) as f64;
                                 cmds.push(AppCommand::AddSpeedKeyframe {
                                     clip_id,

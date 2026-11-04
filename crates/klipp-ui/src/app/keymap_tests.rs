@@ -427,6 +427,19 @@ fn a_field_with_the_keys_keeps_them() {
     }
 }
 
+/// The Render Queue open, the shortcuts still work: it is a window
+/// beside the work, not a dialog that keeps the keys. The Export dialog
+/// still keeps them.
+#[test]
+fn the_render_queue_leaves_the_shortcuts_working() {
+    use super::shortcuts::{key_scope, KeyScope};
+    let mut state = crate::state::AppState { project_path: Some(crate::project_paths::UNTITLED.into()), show_render_queue: true, ..Default::default() };
+    assert!(!state.dialog_open());
+    assert_eq!(key_scope(&state, false), KeyScope::All);
+    state.show_export_dialog = true;
+    assert_eq!(key_scope(&state, false), KeyScope::Nothing);
+}
+
 /// While the frame-rate question is up, no key reaches what is behind
 /// it: its Escape cancels the drop and nothing else.
 #[test]

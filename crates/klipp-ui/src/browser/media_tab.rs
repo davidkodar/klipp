@@ -339,7 +339,7 @@ pub fn show(
     // the inspector, so consuming the key here would steal it from the
     // title text field.
     // Nor behind a dialog that keeps the keys: Ctrl+A in New Project
-    // selected the whole pool behind it (P45).
+    // selected the whole pool behind it.
     if !ui.ctx().wants_keyboard_input()
         && !state.dialog_open()
         && ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::A))
@@ -609,7 +609,7 @@ fn draw_info_icon_with_tooltip(
     // over a small Vec. This dramatically reduces the LLVM IR that LTO
     // has to digest at release link time.
     let rows = build_info_tooltip_rows(item);
-    // Why it is kept offline though it is there (SEC1), and what to do.
+    // Why it is kept offline though it is there, and what to do.
     let refused = refused.map(klipp_media::media_check::refused_hint);
     let warn = theme.marker_warning;
     let path_string = item.path.display().to_string();

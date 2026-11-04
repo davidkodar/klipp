@@ -24,7 +24,7 @@ impl KlippApp {
         crate::missing_fonts::fetch_for(placed);
         // A template's compositions come in with it, a sequence for each
         // frame shape, and opened no tab each: a brand kit's intro and
-        // outro opened six (P43). Double-clicking the clip opens one.
+        // outro opened six. Double-clicking the clip opens one.
         for e in edits {
             for id in added_sequences(e) {
                 self.state.closed_sequence_tabs.insert(id);
@@ -177,7 +177,7 @@ fn added_sequences(edit: &EditCommand) -> Vec<klipp_core::SequenceId> {
 #[cfg(test)]
 mod added_sequences_tests {
     use crate::history::EditCommand;
-    /// P43: the compositions a template brings, however deep in its step.
+    /// The compositions a template brings, however deep in its step.
     #[test]
     fn a_templates_compositions_are_found_in_its_step() {
         let (a, b) = (klipp_timeline::Sequence::new_default(), klipp_timeline::Sequence::new_default());
