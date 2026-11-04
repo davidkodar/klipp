@@ -10,7 +10,6 @@ It is shown beside the program viewer while **View → Dual Viewers** is on; wit
 2. Scrub or play it to find the section you want.
 3. Press **I** to mark an in point, **O** for an out point.
 4. Park the timeline's playhead where the section should land, then press **,** (insert) or **.** (overwrite), or use the viewer's buttons. **Place on Top** (F12), **Replace** (Shift+F12) and **Fit to Fill** (Shift+F11) work from the same marks.
-5. Or drag the marked section from the viewer onto a track.
 
 The source viewer keeps its clip, marks and playhead until you load another; they are independent of the timeline's.
 

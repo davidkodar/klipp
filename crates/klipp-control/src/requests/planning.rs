@@ -586,7 +586,7 @@ pub(crate) fn respond(
                     rule: "banding_8bit",
                     at_secs: Some(found.secs),
                     what: format!("smooth gradients span {} code values over half the frame: an 8-bit file will show them in steps", found.levels),
-                    hint: klipp_render::banding::SUGGESTION.into(),
+                    hint: found.suggestion().into(),
                 });
             }
             // Each title's words against the picture under it, that clip

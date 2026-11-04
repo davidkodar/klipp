@@ -8,8 +8,13 @@ use crate::ExportFrameSource;
 use klipp_core::{ExportSettings, Timecode};
 use std::sync::atomic::{AtomicBool, Ordering};
 
-/// The suggestion shown where an 8-bit export of the sequence will band.
+/// The suggestion shown where an 8-bit export of the sequence will band
+/// and a gradient generator is in the range, whose own grain is a way out.
 pub const SUGGESTION: &str = "Smooth gradients here may show steps in an 8-bit file: export the master as 10-bit (HEVC Main10 or ProRes), or turn on the gradient's built-in grain";
+
+/// The suggestion where it bands with no gradient generator in the range:
+/// smooth footage (a sky, a glow), which has no grain to turn on.
+pub const SUGGESTION_10BIT: &str = "Smooth areas here may show steps in an 8-bit file: export the master as 10-bit (HEVC Main10 or ProRes)";
 
 /// How wide the sampled frames are rendered.
 pub const SAMPLE_WIDTH: u32 = 320;
@@ -28,6 +33,25 @@ const SMOOTH_STEP: u8 = 2;
 pub struct Banding {
     pub secs: f64,
     pub levels: u32,
+    /// A gradient generator is on the timeline in the range checked.
+    pub gradient: bool,
+}
+
+impl Banding {
+    /// What to suggest: the gradient's grain only where there is one.
+    pub fn suggestion(&self) -> &'static str {
+        if self.gradient { SUGGESTION } else { SUGGESTION_10BIT }
+    }
+}
+
+/// Whether a gradient generator, which carries a grain of its own, plays
+/// on a visible track between `from` and `to` seconds.
+fn gradient_between(seq: &klipp_timeline::Sequence, from: f64, to: f64) -> bool {
+    seq.tracks.iter().filter(|t| t.visible).flat_map(|t| t.clips.iter()).any(|c| {
+        matches!(c.kind, klipp_timeline::ClipKind::Generator(klipp_core::GeneratorData::Gradient { .. } | klipp_core::GeneratorData::LivingGradient { .. }))
+            && c.timeline_in.to_secs_f64() < to
+            && c.timeline_out.to_secs_f64() > from
+    })
 }
 
 /// The fewest levels per half width a banding row of `rgba` (8-bit,
@@ -122,7 +146,9 @@ pub fn sample_unless(snapshot: &SequenceSnapshot, stop: &AtomicBool) -> Result<O
         }
         let px = klipp_color::display::display_transform_ws_to(&linear, klipp_color::display::ToneMapOp::None, plain.working_colorspace, klipp_core::SdrTransfer::Srgb);
         if let Some(levels) = bands(&px, w as usize, h as usize) {
-            return Ok(Some(Banding { secs: time.to_secs_f64(), levels }));
+            let secs_of = |f: u64| f as f64 * f64::from(plain.fps_den) / f64::from(plain.fps_num);
+            let gradient = gradient_between(&plain.video.sequence, secs_of(first), secs_of(last));
+            return Ok(Some(Banding { secs: time.to_secs_f64(), levels, gradient }));
         }
     }
     Ok(None)
@@ -134,5 +160,5 @@ pub fn export_hint(snapshot: &SequenceSnapshot, settings: &ExportSettings) -> Op
     if !settings.video_codec.writes_8bit(settings.bit_depth) {
         return None;
     }
-    sample(snapshot).map(|_| SUGGESTION)
+    sample(snapshot).map(|b| b.suggestion())
 }

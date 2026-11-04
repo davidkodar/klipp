@@ -726,21 +726,15 @@ impl KlippApp {
             if kb.is_action_pressed("clear_in_point", i) || kb.is_action_pressed("set_in_point", i) {
                 if kb.is_action_pressed("clear_in_point", i) {
                     cmds.push(AppCommand::MarkRange { in_point: Some(None), out_point: None });
-                } else if self.state.viewer_mode == ViewerMode::Source {
-                    tracing::debug!("I key (Source mode) -> Set source in point at {:?}", self.state.source_playhead);
-                    cmds.push(AppCommand::SetSourceInPoint(self.state.source_playhead));
                 } else {
-                    cmds.push(AppCommand::MarkRange { in_point: Some(Some(self.state.playhead)), out_point: None });
+                    cmds.push(self.state.mark_in_key());
                 }
             }
             if kb.is_action_pressed("clear_out_point", i) || kb.is_action_pressed("set_out_point", i) {
                 if kb.is_action_pressed("clear_out_point", i) {
                     cmds.push(AppCommand::MarkRange { in_point: None, out_point: Some(None) });
-                } else if self.state.viewer_mode == ViewerMode::Source {
-                    tracing::debug!("O key (Source mode) -> Set source out point at {:?}", self.state.source_playhead);
-                    cmds.push(AppCommand::SetSourceOutPoint(self.state.source_playhead));
                 } else {
-                    cmds.push(AppCommand::MarkRange { in_point: None, out_point: Some(Some(self.state.playhead)) });
+                    cmds.push(self.state.mark_out_key());
                 }
             }
 
@@ -999,7 +993,7 @@ impl KlippApp {
             // the playhead, Shift+F a favourite stretch, Shift+R a rejected
             // one — the stretch between the in and out points, or the
             // whole clip when none are set.
-            let in_source = self.state.viewer_mode == ViewerMode::Source && self.state.source_media_id.is_some();
+            let in_source = self.state.marks_go_on_source();
             if in_source && kb.is_action_pressed("add_marker", i) {
                 if let Some(media_id) = self.state.source_media_id {
                     cmds.push(AppCommand::AddMediaMarker { media_id, marker: klipp_core::MediaMarker::note(self.state.source_playhead.to_secs_f64()) });

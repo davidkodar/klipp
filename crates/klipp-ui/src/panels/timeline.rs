@@ -468,14 +468,14 @@ pub(crate) fn audio_param_text(param: klipp_core::AudioParam, value: f32) -> Str
 }
 
 /// Map a param value to a Y position within `rect`. min = bottom, max = top.
-fn audio_param_value_to_y(rect: egui::Rect, param: klipp_core::AudioParam, value: f32) -> f32 {
+pub(crate) fn audio_param_value_to_y(rect: egui::Rect, param: klipp_core::AudioParam, value: f32) -> f32 {
     rect.bottom() - audio_param_norm(param, value) * rect.height()
 }
 
 /// Inverse of [`audio_param_value_to_y`]. Used by alt-click-to-add and
 /// the flat-line drag handler to project a pointer Y back onto a value.
 #[allow(dead_code)]
-fn audio_param_y_to_value(rect: egui::Rect, param: klipp_core::AudioParam, y: f32) -> f32 {
+pub(crate) fn audio_param_y_to_value(rect: egui::Rect, param: klipp_core::AudioParam, y: f32) -> f32 {
     audio_param_from_norm(param, (rect.bottom() - y) / rect.height())
 }
 
@@ -13825,6 +13825,7 @@ impl TimelinePanel {
                     });
                     state.dragging_rubber_band = Some(c.clip_id);
                     state.dragging_rubber_band_in_lane = true;
+                    state.rubber_band_line_y = Some(value_to_y(c.static_val));
                 }
 
                 // Diamond drag init — first priority. Hit-tested against
@@ -13975,8 +13976,9 @@ impl TimelinePanel {
                     && !state.drag_drop.is_active()
                     && pointer_down
                 {
-                    if let Some(p) = pointer_pos {
-                        let new_val = y_to_value(p.y);
+                    let press_y = ui.input(|i| i.pointer.press_origin()).map(|o| o.y);
+                    let moved = pointer_pos.zip(press_y).zip(state.rubber_band_line_y).and_then(|((p, py), ly)| rubber_band_value(p.y, py, ly, &y_to_value));
+                    if let Some(new_val) = moved {
                         let (drag_gain, drag_volume, drag_pan) = match param {
                             klipp_core::AudioParam::Volume => (c.gain, new_val, c.pan),
                             klipp_core::AudioParam::Pan => (c.gain, c.volume, new_val),
@@ -14468,6 +14470,7 @@ impl TimelinePanel {
                                 old_fade_out: kf_fade_out,
                             });
                             state.dragging_rubber_band = Some(kf_clip_id);
+                            state.rubber_band_line_y = Some(rubber_band_y);
                             // Defensive: clear any stale lane-mode flag from
                             // a prior gesture. The release handler clears
                             // both fields, but if the previous frame's
@@ -14485,32 +14488,34 @@ impl TimelinePanel {
                             && !state.dragging_rubber_band_in_lane
                             && state.dragging_fade_handle.is_none() && !state.drag_drop.is_active()
                             && pointer_down {
-                                let new_val = y_to_value(pos.y);
-                                let (drag_gain, drag_volume, drag_pan) = match rb_param {
-                                    klipp_core::AudioParam::Volume => (kf_gain, new_val, kf_pan),
-                                    klipp_core::AudioParam::Pan => (kf_gain, kf_volume, new_val),
-                                    klipp_core::AudioParam::Gain => (new_val, kf_volume, kf_pan),
-                                };
-                                cmds.push(AppCommand::UpdateClipAudio {
-                                    clip_id: kf_clip_id,
-                                    gain: drag_gain,
-                                    volume: drag_volume,
-                                    pan: drag_pan,
-                                    fade_in_secs: kf_fade_in,
-                                    fade_out_secs: kf_fade_out,
-                                    fade_in_curve: kf_fade_in_curve,
-                                    fade_out_curve: kf_fade_out_curve,
-                                    channel_config: kf_channel_config,
-                                });
-                                // Show tooltip with param-appropriate format
-                                let tooltip_text = audio_param_text(rb_param, new_val);
-                                clip_painter.text(
-                                    egui::pos2(pos.x, pos.y - 14.0),
-                                    egui::Align2::CENTER_BOTTOM,
-                                    tooltip_text,
-                                    egui::FontId::proportional(10.0),
-                                    active_line_color,
-                                );
+                                let press_y = ui.input(|i| i.pointer.press_origin()).map(|o| o.y);
+                                if let Some(new_val) = press_y.zip(state.rubber_band_line_y).and_then(|(py, ly)| rubber_band_value(pos.y, py, ly, &y_to_value)) {
+                                    let (drag_gain, drag_volume, drag_pan) = match rb_param {
+                                        klipp_core::AudioParam::Volume => (kf_gain, new_val, kf_pan),
+                                        klipp_core::AudioParam::Pan => (kf_gain, kf_volume, new_val),
+                                        klipp_core::AudioParam::Gain => (new_val, kf_volume, kf_pan),
+                                    };
+                                    cmds.push(AppCommand::UpdateClipAudio {
+                                        clip_id: kf_clip_id,
+                                        gain: drag_gain,
+                                        volume: drag_volume,
+                                        pan: drag_pan,
+                                        fade_in_secs: kf_fade_in,
+                                        fade_out_secs: kf_fade_out,
+                                        fade_in_curve: kf_fade_in_curve,
+                                        fade_out_curve: kf_fade_out_curve,
+                                        channel_config: kf_channel_config,
+                                    });
+                                    // Show tooltip with param-appropriate format
+                                    let tooltip_text = audio_param_text(rb_param, new_val);
+                                    clip_painter.text(
+                                        egui::pos2(pos.x, pos.y - 14.0),
+                                        egui::Align2::CENTER_BOTTOM,
+                                        tooltip_text,
+                                        egui::FontId::proportional(10.0),
+                                        active_line_color,
+                                    );
+                                }
                             }
 
                         // Alt+click on line to add keyframe (blocked during fade drag)
@@ -17052,6 +17057,7 @@ impl TimelinePanel {
                 }
                 state.dragging_rubber_band = None;
                 state.dragging_rubber_band_in_lane = false;
+                state.rubber_band_line_y = None;
             }
         }
     }
@@ -17347,6 +17353,21 @@ fn marker_tooltip_text(marker: &klipp_timeline::Marker, duration_secs: Option<f6
 /// What a pool item let go on track `track_idx` at `at` asks for
 /// (#2549): placed there, inserted or laid over what is there as the
 /// timeline's edit mode says.
+/// How far the pointer moves off its press before a flat volume, pan or
+/// gain line follows it, in points.
+const RUBBER_BAND_THRESHOLD: f32 = 3.0;
+
+/// The value a flat line's drag sets with the pointer at `y`, pressed at
+/// `press_y` while the line was at `line_y`, through `y_to_value`: none
+/// until the pointer has moved [`RUBBER_BAND_THRESHOLD`] off the press,
+/// so a click on the line selects the clip and leaves its level; then the
+/// line moves as far as the pointer has, not to where the press landed.
+/// A press counted as on the line up to 6 points off it, and the level
+/// jumped there at once: 0.25 became 0.20 on a click.
+fn rubber_band_value(y: f32, press_y: f32, line_y: f32, y_to_value: &dyn Fn(f32) -> f32) -> Option<f32> {
+    ((y - press_y).abs() >= RUBBER_BAND_THRESHOLD).then(|| y_to_value(line_y + (y - press_y)))
+}
+
 fn media_drop_command(media_id: klipp_core::MediaId, track_idx: usize, at: Timecode, mode: klipp_timeline::magnetic::EditMode) -> AppCommand {
     AppCommand::PlaceMedia {
         media_id,

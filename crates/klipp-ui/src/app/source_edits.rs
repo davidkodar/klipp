@@ -26,10 +26,10 @@ impl KlippApp {
 
     /// The loaded source, when it can be edited in: its id and item.
     fn editable_source(&mut self) -> Option<(MediaId, klipp_media::MediaItem)> {
-        let Some(mid) = self.state.source_media_id else {
-            self.state.toast.show("Load a clip in the source viewer first");
+        if says_no_source(&mut self.state) {
             return None;
-        };
+        }
+        let mid = self.state.source_media_id?;
         let Some(item) = self.state.media_pool.get(&mid).cloned() else {
             self.state.toast.show("Source clip is no longer in the media pool");
             return None;
@@ -525,5 +525,34 @@ mod frame_aligned_tests {
         let p = crate::source_edit::three_point(&source_marks(&state, &item));
         let (t_in, t_out, _, _) = placement_timecodes(&state, &item, &p);
         assert!(on_frame(t_in) && on_frame(t_out), "{:.6}-{:.6} s", t_in.to_secs_f64(), t_out.to_secs_f64());
+    }
+}
+
+/// With no clip in the source viewer, says so and is `true`: an edit from
+/// the source then does nothing. Insert and Overwrite did nothing silently,
+/// and a press of , or . looked like a key that failed.
+pub(super) fn says_no_source(state: &mut crate::state::AppState) -> bool {
+    let none = state.source_media_id.is_none();
+    if none {
+        state.toast.show(crate::source_edit::NO_SOURCE);
+    }
+    none
+}
+
+#[cfg(test)]
+mod no_source_tests {
+    use super::says_no_source;
+    use crate::source_edit::NO_SOURCE;
+
+    /// An edit from the source with none loaded says how to load one; with
+    /// one loaded it says nothing.
+    #[test]
+    fn a_source_edit_with_no_source_says_how_to_load_one() {
+        let mut state = crate::state::AppState::default();
+        assert!(says_no_source(&mut state));
+        assert_eq!(state.toast.message_for_test(), Some(NO_SOURCE));
+        let mut state = crate::state::AppState { source_media_id: Some(klipp_core::MediaId::new()), ..Default::default() };
+        assert!(!says_no_source(&mut state));
+        assert_eq!(state.toast.message_for_test(), None);
     }
 }

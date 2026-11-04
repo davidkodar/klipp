@@ -221,3 +221,42 @@ fn contrast_typed_after_a_double_click_is_this_clips() {
     assert_eq!(grade_of(&views.state, other_id), other_before, "the other clip is untouched");
     assert_eq!((views.state.selected_clip, views.state.selected_clips.len()), (Some(views.clip), 0), "the selection is as it was");
 }
+
+/// The tab drawn in the inspector as the app draws it, in an inspector
+/// as tall as a desktop window's: every row of Basic Correction and its
+/// two buttons are in view, not clipped. A scroll area of the tab's own
+/// inside the inspector's took its least height and showed two and a
+/// half rows over empty panel.
+#[test]
+fn every_row_of_the_colour_tab_shows_in_the_inspector() {
+    let (mut state, clip) = ungraded();
+    let ctx = egui::Context::default();
+    crate::icons::install(&ctx);
+    let theme = crate::theme::KlippTheme::default();
+    let prefs = crate::prefs::Preferences::default();
+    let mut panel = crate::inspector::NewInspectorPanel::default();
+    let c = state.sequences[0].all_clips().find(|c| c.id == clip).unwrap().clone();
+    panel.colour_grade = crate::inspector::grade_view::snapshot_for(&c, &[], false, &mut state.pending_corrector);
+    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(WIDTH, 900.0));
+    let mut out = None;
+    for frame in 0..3 {
+        let input = egui::RawInput { screen_rect: Some(screen), time: Some(frame as f64 * 0.1), ..Default::default() };
+        out = Some(ctx.run(input, |ctx| {
+            egui::CentralPanel::default().frame(egui::Frame::none()).show(ctx, |ui| {
+                let mut tab = crate::layout_state::InspectorTab::Color;
+                let _ = panel.show(ui, &state, &prefs, &theme, &mut tab);
+            });
+        }));
+    }
+    let out = out.unwrap();
+    let shown: Vec<(String, egui::Rect)> = out.shapes.iter().filter_map(|s| match &s.shape {
+        egui::Shape::Text(t) => {
+            let rect = egui::Rect::from_min_size(t.pos, t.galley.size());
+            s.clip_rect.contains_rect(rect.shrink(0.5)).then(|| (t.galley.text().to_string(), rect))
+        }
+        _ => None,
+    }).collect();
+    for key in ["Exposure", "Contrast", "Saturation", "Temperature", "Tint", "Auto Colour", "Open in Colour page"] {
+        assert!(shown.iter().any(|(t, _)| t == key), "{key} is not in view: {:?}", shown.iter().map(|(t, _)| t).collect::<Vec<_>>());
+    }
+}

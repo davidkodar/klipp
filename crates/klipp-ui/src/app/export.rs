@@ -1330,8 +1330,9 @@ impl KlippApp {
                 // it says it is running and when it is done (#2941).
                 self.export_dialog.last_job = Some(id);
                 // Said, the export not held back.
-                if let Some(warning) = music_over_speech(self.state.sequence(), &self.state.media_pool, &self.transcript_source) {
-                    self.state.toast.show(warning);
+                let warnings = export_warnings(self.state.sequence(), &self.state.media_pool, &self.transcript_source);
+                if !warnings.is_empty() {
+                    self.state.toast.show(warnings.join("\n"));
                 }
             }
             Err(e) => tracing::error!("Failed to create render snapshot: {e}"),
@@ -5154,12 +5155,22 @@ mod stl_loss_tests {
     }
 }
 
-/// What an export says when music plays over the speech at full level,
-/// as check finds it ("... plays at 0 dB under speech and never comes
-/// down"): a warning beside the export, which goes ahead. Music 9 dB over
-/// a voice went out as it was, the only word of it in check.
-pub(crate) fn music_over_speech(seq: &klipp_timeline::Sequence, pool: &klipp_media::MediaPool, transcripts: &dyn klipp_document::ops::Transcripts) -> Option<String> {
-    klipp_document::qc::check(seq, pool, transcripts).findings.into_iter().find(|f| f.rule == "music_level").map(|f| format!("Exporting with {}. {}", f.what, f.hint))
+/// What an export says as it starts, as check finds it, the export going
+/// ahead: music at full level under speech ("... plays at 0 dB under
+/// speech and never comes down"; music 9 dB over a voice went out as it
+/// was, the only word of it in check), and a template's stand-in text
+/// ("[Title or role]") left in a title, which goes out burnt in.
+pub(crate) fn export_warnings(seq: &klipp_timeline::Sequence, pool: &klipp_media::MediaPool, transcripts: &dyn klipp_document::ops::Transcripts) -> Vec<String> {
+    let findings = klipp_document::qc::check(seq, pool, transcripts).findings;
+    let music = findings.iter().find(|f| f.rule == "music_level").map(|f| format!("Exporting with {}. {}", f.what, f.hint));
+    let stand_ins = findings.iter().filter(|f| f.rule == "placeholder").map(|f| {
+        let mut what = f.what.clone();
+        if let Some(first) = what.get_mut(0..1) {
+            first.make_ascii_uppercase();
+        }
+        format!("{what}. {}, and export again", f.hint)
+    });
+    music.into_iter().chain(stand_ins).collect()
 }
 
 #[cfg(test)]
@@ -5167,6 +5178,10 @@ mod music_over_speech_tests {
     use klipp_document::ops::{SpokenWord, Transcripts};
 
     struct Talk(klipp_core::MediaId);
+
+    fn music_over_speech(seq: &klipp_timeline::Sequence, pool: &klipp_media::MediaPool, transcripts: &dyn Transcripts) -> Option<String> {
+        super::export_warnings(seq, pool, transcripts).into_iter().find(|w| w.starts_with("Exporting with"))
+    }
 
     impl Transcripts for Talk {
         fn words(&self, item: &klipp_media::MediaItem) -> Option<Vec<SpokenWord>> {
@@ -5198,11 +5213,29 @@ mod music_over_speech_tests {
         let mut bed = klipp_timeline::Track::new("Music", klipp_timeline::TrackKind::Audio);
         bed.clips.push(klipp_timeline::Clip::media(music, t(0.0), t(6.0), t(0.0), t(6.0)));
         seq.tracks.push(bed);
-        let warning = super::music_over_speech(&seq, &pool, &Talk(talk)).expect("music at 0 dB under the voice");
+        let warning = music_over_speech(&seq, &pool, &Talk(talk)).expect("music at 0 dB under the voice");
         assert!(warning.contains("plays at 0 dB under speech") && warning.contains("Duck it"), "{warning}");
         let last = seq.tracks.len() - 1;
         seq.tracks[last].clips[0].volume = 0.25;
-        assert_eq!(super::music_over_speech(&seq, &pool, &Talk(talk)), None, "ducked, nothing said");
+        assert_eq!(music_over_speech(&seq, &pool, &Talk(talk)), None, "ducked, nothing said");
+    }
+
+    /// A title from a template still showing its "[Title or role]" is said
+    /// as the export starts, naming the template and where the title is.
+    #[test]
+    fn an_export_warns_of_a_templates_stand_in_text() {
+        let t = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 25);
+        let mut td = klipp_timeline::TitleData::single_text(klipp_timeline::TextBox { text: "Ada Lovelace".into(), ..Default::default() });
+        td.add_object(klipp_timeline::TitleObjectContent::TextBox(klipp_timeline::TextBox { text: "[Title or role]".into(), ..Default::default() }), klipp_timeline::default_text_transform());
+        td.template = Some("Accent Block".into());
+        let mut seq = klipp_timeline::Sequence::new_default();
+        seq.fps = klipp_core::Fps::new(25, 1);
+        let mut titles = klipp_timeline::Track::new("Titles", klipp_timeline::TrackKind::Text);
+        titles.clips.push(klipp_timeline::Clip { kind: klipp_timeline::ClipKind::Title(td), source_in: t(0.0), source_out: t(4.0), ..klipp_timeline::Clip::gap(t(1.5), t(5.5)) });
+        seq.tracks.push(titles);
+        let said = super::export_warnings(&seq, &klipp_media::MediaPool::new(), &klipp_document::ops::NoTranscripts);
+        assert_eq!(said.len(), 1, "{said:?}");
+        assert!(said[0].starts_with("The ") && said[0].contains("Accent Block") && said[0].contains("1.5 s") && said[0].contains("[Title or role]") && said[0].ends_with("export again"), "{}", said[0]);
     }
 }
 
