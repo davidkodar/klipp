@@ -3027,7 +3027,12 @@ mod tests {
         assert_eq!(left_clip.volume_keyframes.iter().map(|k| k.time_secs).collect::<Vec<_>>(), vec![0.5], "the earlier key");
         assert_eq!(left_clip.id, id, "the left keeps the id");
         for (magnetic, legacy, side) in [(left_clip, &a, "left"), (right_clip, &b, "right")] {
-            let keys = |c: &crate::Clip| serde_json::json!([c.volume_keyframes, c.pan_keyframes, c.gain_keyframes, c.audio_effect_keyframes, c.clip_markers.iter().map(|m| m.time_secs).collect::<Vec<_>>(), c.opacity_keyframes(), c.transform_pos_x_keyframes()]);
+            let keys = |c: &crate::Clip| {
+                let lifted = c.picture_v2().unwrap();
+                let lane = lifted.picture.placement_anim.get(&klipp_graph_format::ParamKey::from("pos_x")).map(|a| a.keys.clone());
+                let opacity = lifted.picture.opacity_anim.as_ref().map(|a| a.keys.clone());
+                serde_json::json!([c.volume_keyframes, c.pan_keyframes, c.gain_keyframes, c.audio_effect_keyframes, c.clip_markers.iter().map(|m| m.time_secs).collect::<Vec<_>>(), opacity, lane])
+            };
             assert_eq!(keys(magnetic), keys(legacy), "{side}");
         }
     }

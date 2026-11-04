@@ -5648,6 +5648,9 @@ mod codec_hint_tests {
 /// them.
 #[derive(Default)]
 pub struct ControlShared {
+    /// A Collect Project is running, from its request to the end of its
+    /// copy (and archive), whatever the UI has drawn since.
+    pub collecting: std::sync::atomic::AtomicBool,
     /// Last interchange import outcome, with its request id and report/error.
     pub import_outcome: std::sync::Mutex<Option<serde_json::Value>>,
     /// The last surface click's outcome (#2754): its request id, and the
@@ -5846,6 +5849,10 @@ pub struct SequenceSummary {
     pub width: u32,
     #[serde(default)]
     pub height: u32,
+    /// A template's composition, drawn only inside the template's clips:
+    /// part of a clip, not a sequence to open or list (#2757).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub nested: bool,
 }
 
 /// One output of a delivery (#2724): the aspect, as width and height

@@ -13,13 +13,18 @@ use std::time::{Duration, Instant};
 
 use klipp_engine::video_decoder::{self, VideoDecoder};
 
-/// Threads of this process still opening a GPU decoder.
+/// Threads of this process still opening a GPU decoder. A thread that
+/// has ended stays listed in `/proc/self/task` a moment after it is
+/// joined, while the kernel finishes with it, longer under load; it has
+/// let go of the process's memory by then (its status has no `VmSize`),
+/// and such a thread runs nothing more, so it is not counted.
 fn opening_threads() -> usize {
     std::fs::read_dir("/proc/self/task")
         .map(|tasks| {
             tasks
                 .flatten()
                 .filter(|t| std::fs::read_to_string(t.path().join("comm")).is_ok_and(|c| c.trim() == "klipp-hw-open"))
+                .filter(|t| std::fs::read_to_string(t.path().join("status")).is_ok_and(|s| s.lines().any(|l| l.starts_with("VmSize:"))))
                 .count()
         })
         .unwrap_or(0)

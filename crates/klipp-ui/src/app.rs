@@ -368,6 +368,9 @@ pub struct KlippApp {
     speed_key_drag: Option<Vec<klipp_timeline::Clip>>,
     /// What the last settle of a raised hint took, which sets the wait before the next.
     unsaved_settle_cost: std::time::Duration,
+    /// The look for made proxies' files under way, and when the last ended.
+    proxy_look: Option<std::sync::mpsc::Receiver<std::collections::HashSet<MediaId>>>,
+    proxy_looked_at: Option<std::time::Instant>,
     viewer: ViewerPanel,
     title_renderer: klipp_title::TitleRenderer,
     markers: MarkersPanel,

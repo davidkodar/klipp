@@ -615,21 +615,16 @@ impl VideoDecoder {
         let frames_decoded = Arc::new(std::sync::atomic::AtomicU64::new(0));
         let frames_decoded_clone = frames_decoded.clone();
 
-        let alive = DecodeThreadToken::new();
-        let thread = std::thread::Builder::new()
-            .name("klipp-vdec".into())
-            .spawn(move || {
-                // Held for the thread's whole life, drop included, so
-                // `wait_for_decode_threads` cannot return while this one
-                // is still inside ffmpeg's teardown.
-                let _alive = alive;
-                if crate::thread_guard::caught_panic("klipp-vdec", || {
-                    decode_thread_main(path_owned, queue_clone, cmd_rx, hw_flag, stop_flag_clone, source_rotation, last_decode_us_clone, last_decoded_pts_clone, frames_decoded_clone, lease_id, decoding, source_fps.unwrap_or(30.0));
-                }) {
-                    panicked_clone.store(true, std::sync::atomic::Ordering::Release);
-                }
-            })
-            .map_err(|e| DecoderError::Open(format!("spawn thread: {e}")))?;
+        // Counted until it has wholly ended, so `wait_for_decode_threads`
+        // cannot return while this one is still inside ffmpeg's teardown.
+        let thread = spawn_counted("klipp-vdec", move || {
+            if crate::thread_guard::caught_panic("klipp-vdec", || {
+                decode_thread_main(path_owned, queue_clone, cmd_rx, hw_flag, stop_flag_clone, source_rotation, last_decode_us_clone, last_decoded_pts_clone, frames_decoded_clone, lease_id, decoding, source_fps.unwrap_or(30.0));
+            }) {
+                panicked_clone.store(true, std::sync::atomic::Ordering::Release);
+            }
+        })
+        .map_err(|e| DecoderError::Open(format!("spawn thread: {e}")))?;
 
         DECODERS_OPENED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let open = DECODERS_OPEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
@@ -884,6 +879,33 @@ impl Drop for DecodeThreadToken {
     fn drop(&mut self) {
         self.0.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
     }
+}
+
+/// `body` on a thread called `name`, counted as a decode thread until
+/// that thread has wholly ended: a second thread holds the count and
+/// joins it, so its thread-local teardown (the GPU driver's among it) is
+/// over before [`wait_for_decode_threads`] can return. A count held in
+/// the thread itself fell as its body returned, with that teardown still
+/// to run, and a process could exit under it. The handle is the joining
+/// thread's, which ends just after the one it joins.
+pub(crate) fn spawn_counted(name: &str, body: impl FnOnce() + Send + 'static) -> std::io::Result<JoinHandle<()>> {
+    spawn_counted_in(&LIVE_DECODE_THREADS, name, body)
+}
+
+fn spawn_counted_in(count: &'static std::sync::atomic::AtomicUsize, name: &str, body: impl FnOnce() + Send + 'static) -> std::io::Result<JoinHandle<()>> {
+    let alive = DecodeThreadToken::counted_in(count);
+    // Started first, so a thread that cannot be started leaves nothing
+    // running uncounted: without the worker's handle it ends at once.
+    let (handle_tx, handle_rx) = std::sync::mpsc::channel::<JoinHandle<()>>();
+    let joiner = std::thread::Builder::new().name("klipp-dec-join".into()).spawn(move || {
+        let _alive = alive;
+        if let Ok(worker) = handle_rx.recv() {
+            let _ = worker.join();
+        }
+    })?;
+    let worker = std::thread::Builder::new().name(name.into()).spawn(body)?;
+    let _ = handle_tx.send(worker);
+    Ok(joiner)
 }
 
 /// Wait for every decode thread to finish, up to `timeout`. `true` if
@@ -1705,11 +1727,7 @@ pub fn stall_next_hw_open(stall: Duration) {
 fn open_hardware_in_time(path: &Path, try_cuvid: bool, stop: &std::sync::atomic::AtomicBool) -> Option<Result<OpenedDecoder, ffmpeg_next::Error>> {
     let (tx, rx) = std::sync::mpsc::channel();
     let owned = path.to_path_buf();
-    let alive = DecodeThreadToken::new();
-    let spawned = std::thread::Builder::new().name("klipp-hw-open".into()).spawn(move || {
-        // Declared first, so dropped last: after a decoder the caller no
-        // longer waits for is dropped here.
-        let _alive = alive;
+    let spawned = spawn_counted("klipp-hw-open", move || {
         let stall = STALL_NEXT_HW_OPEN_MS.swap(0, std::sync::atomic::Ordering::Relaxed);
         if stall > 0 {
             std::thread::sleep(Duration::from_millis(stall));
@@ -4226,6 +4244,34 @@ mod decode_thread_barrier_tests {
             0,
             "dropping the token did not deregister the thread",
         );
+    }
+
+    /// A thread started counted stays counted until it has wholly ended,
+    /// its thread-local teardown included: here a thread-local that takes
+    /// 200 ms to drop after the body has returned. Counted in the body,
+    /// the count fell before that teardown ran, and the wait before exit
+    /// could return with it still running (a GPU open's thread was still
+    /// listed after the wait, now and then, under load).
+    #[test]
+    fn a_counted_thread_is_counted_through_its_teardown() {
+        static OWN: AtomicUsize = AtomicUsize::new(0);
+        static TORN_DOWN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        struct SlowToDrop;
+        impl Drop for SlowToDrop {
+            fn drop(&mut self) {
+                std::thread::sleep(Duration::from_millis(200));
+                TORN_DOWN.store(true, Ordering::Release);
+            }
+        }
+        thread_local! { static SLOW: SlowToDrop = const { SlowToDrop }; }
+        let joiner = super::spawn_counted_in(&OWN, "klipp-test-dec", || SLOW.with(|_| {})).expect("started");
+        let start = std::time::Instant::now();
+        while OWN.load(Ordering::Acquire) > 0 {
+            assert!(start.elapsed() < Duration::from_secs(5), "never let go");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(TORN_DOWN.load(Ordering::Acquire), "the count fell before the thread's teardown was over");
+        joiner.join().expect("the joining thread");
     }
 
     /// Dropped on a panicking thread too, or a decoder that panics

@@ -415,6 +415,21 @@ pub fn take_path(dir: &Path, text: &str, voice: &str, delivery: &[String]) -> Pa
     dir.join(format!("{}-{:x}.wav", if stem.is_empty() { "narration".into() } else { stem }, take_key(text, voice, delivery)))
 }
 
+/// [`take_path`], or past a take already there the next name free
+/// ("…-2.wav", "…-3.wav"): a new take of the same words in the same voice
+/// is a file of its own. Written over the first, it changed under the
+/// media item already made of it (whose length stayed the first take's)
+/// and under every clip placed from it, and undo could not bring the
+/// first take back.
+pub fn new_take_path(dir: &Path, text: &str, voice: &str, delivery: &[String]) -> PathBuf {
+    let first = take_path(dir, text, voice, delivery);
+    if !first.exists() {
+        return first;
+    }
+    let stem = first.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    (2u32..).map(|n| dir.join(format!("{stem}-{n}.wav"))).find(|p| !p.exists()).unwrap_or(first)
+}
+
 /// A voice's model and settings in the model cache, downloaded first
 /// with `download`.
 pub fn voice_files(voice: &str, download: bool) -> Result<(PathBuf, PathBuf), String> {
@@ -484,7 +499,7 @@ pub fn synthesize(req: &Request) -> Result<PathBuf, String> {
         Some(p) => p.clone(),
         None => {
             std::fs::create_dir_all(req.dir).map_err(|e| format!("{}: {e}", req.dir.display()))?;
-            take_path(req.dir, text, voice, &delivery)
+            new_take_path(req.dir, text, voice, &delivery)
         }
     };
     // Fitted to a length: said at a speed until it lasts it (#112).
@@ -637,6 +652,26 @@ fn finish_take(path: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::{commercial_use, config_beside, delivery_args, take_key, text_hash, DEFAULT_VOICE, UNNAMED_VOICE};
+
+    /// A second take of the same words in the same voice is written to a
+    /// file of its own, and a third to another: the first stays as it was.
+    #[test]
+    fn a_new_take_never_writes_over_one_already_made() {
+        let dir = std::env::temp_dir().join(format!("klipp-takes-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let first = super::new_take_path(&dir, "Thanks for walking with us.", UNNAMED_VOICE, &[]);
+        assert_eq!(first, super::take_path(&dir, "Thanks for walking with us.", UNNAMED_VOICE, &[]), "the first take keeps its name");
+        std::fs::write(&first, b"first take").unwrap();
+        let second = super::new_take_path(&dir, "Thanks for walking with us.", UNNAMED_VOICE, &[]);
+        assert_ne!(second, first);
+        assert!(second.to_string_lossy().ends_with("-2.wav"), "{}", second.display());
+        std::fs::write(&second, b"second take").unwrap();
+        let third = super::new_take_path(&dir, "Thanks for walking with us.", UNNAMED_VOICE, &[]);
+        assert!(third.to_string_lossy().ends_with("-3.wav"), "{}", third.display());
+        assert_eq!(std::fs::read(&first).unwrap(), b"first take", "the first take untouched");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// A 16-bit mono WAV at `rate` of `samples`.
     fn wav(rate: u32, samples: &[f32]) -> Vec<u8> {
