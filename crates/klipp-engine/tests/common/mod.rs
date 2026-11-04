@@ -387,6 +387,10 @@ impl Parked {
         self.fb.lock().unwrap().latest_frame().0.to_vec()
     }
 
+    pub fn frame_buffer(&self) -> &Mutex<FrameBuffer> {
+        &self.fb
+    }
+
     /// Frames shown on the GPU without their bytes (zero-copy), and the
     /// display bytes' generation.
     pub fn gpu_frames_and_generation(&self) -> (u64, u64) {
