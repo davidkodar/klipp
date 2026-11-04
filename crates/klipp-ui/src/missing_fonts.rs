@@ -97,7 +97,7 @@ pub fn installed(family: &str) -> bool {
 /// The fonts in `missing` that Klipp's catalogue has, taken out of it and
 /// offered for download (#2732): a project set in a catalogue family
 /// opens with it rather than asking for a replacement, once the person
-/// agrees to fetch it (P41). A fetch that fails is logged; the titles keep
+/// agrees to fetch it. A fetch that fails is logged; the titles keep
 /// the fallback until the font is there.
 pub fn fetch_from_catalogue(missing: Vec<MissingFont>) -> Vec<MissingFont> {
     let (fetch, rest): (Vec<MissingFont>, Vec<MissingFont>) = missing.into_iter().partition(|m| klipp_title::catalogue::family(&m.family).is_some());
@@ -121,7 +121,7 @@ pub fn fetch_family(family: &str) {
 }
 
 /// The catalogue families waiting for the person to agree to fetch them,
-/// and those they said not now to this session (P41): no font is fetched
+/// and those they said not now to this session: no font is fetched
 /// unasked. The fonts the built-ins use ship with the app and are never
 /// asked for.
 static ASKED: std::sync::Mutex<Vec<&'static klipp_title::catalogue::CatalogueFamily>> = std::sync::Mutex::new(Vec::new());
@@ -353,7 +353,7 @@ mod tests {
     use super::*;
     use klipp_timeline::{Clip, ClipKind, StyleRun, TextBox};
 
-    /// P41: every family the built-in title and composition templates and
+    /// Every family the built-in title and composition templates and
     /// the starter brand kits are set in ships with the app, so none is
     /// fetched when a built-in is first used.
     #[test]
@@ -381,7 +381,7 @@ mod tests {
         assert!(missing.is_empty(), "set in fonts that don't ship: {missing:?}");
     }
 
-    /// P41: a catalogue font is offered, not fetched: it waits for an
+    /// A catalogue font is offered, not fetched: it waits for an
     /// answer, and once turned down it isn't offered again this session.
     #[test]
     fn a_catalogue_font_is_asked_for_and_not_again_once_declined() {

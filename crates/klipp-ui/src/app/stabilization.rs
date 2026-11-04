@@ -414,7 +414,7 @@ impl KlippApp {
                 let media_fps = item.fps.as_f64().max(1.0);
                 let path = item.path.clone();
                 let frame_count = (item.duration.to_secs_f64() * media_fps).round() as usize;
-                let clip_time = (at - clip.timeline_in.to_secs_f64()).clamp(0.0, (clip.timeline_out - clip.timeline_in).to_secs_f64());
+                let clip_time = (at - clip.timeline_in.to_secs_f64()).clamp(0.0, (clip.timeline_out - clip.timeline_in).to_secs_f64().max(0.0));
                 let first = (clip.source_in.to_secs_f64() * media_fps).floor() as usize;
                 let last = ((clip.source_out.to_secs_f64() * media_fps).ceil() as usize).min(frame_count.saturating_sub(1)).max(first);
                 let reference = ((clip.source_secs_at(clip_time, fps) * media_fps).round() as usize).clamp(first, last);

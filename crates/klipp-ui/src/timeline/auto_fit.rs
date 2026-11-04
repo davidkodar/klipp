@@ -52,7 +52,7 @@ struct Easing {
 /// transport, which moves the playhead and nothing else, and a harness's
 /// pointer steps, which are a person's hand: what they do is the person's
 /// edit, not an assistant's. Counted, a drag's drop or trim fitted the
-/// view to it, mid-drag too, so a trim landed seconds off (R5).
+/// view to it, mid-drag too, so a trim landed seconds off.
 pub fn edits_document(commands: &[AppCommand]) -> bool {
     commands.iter().any(|c| !matches!(c, AppCommand::Play | AppCommand::Pause | AppCommand::Stop | AppCommand::SeekTo(_) | AppCommand::SeekRelative(_) | AppCommand::InjectPointer(_)))
 }
@@ -310,7 +310,7 @@ mod tests {
         assert!(edits_document(&[AppCommand::Play, AppCommand::Undo]));
     }
 
-    /// R5: a harness's pointer steps are a person's hand, not an
+    /// A harness's pointer steps are a person's hand, not an
     /// assistant's edit: a drag's drop or trim through them fitted the view.
     #[test]
     fn pointer_steps_are_no_assistant_edit() {

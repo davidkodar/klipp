@@ -68,7 +68,7 @@ impl KlippApp {
         let command = match steps.len() {
             0 => return,
             1 => steps.remove(0),
-            // Named: an unnamed batch reads "Add Clips" (P50).
+            // Named: an unnamed batch reads "Add Clips".
             _ => EditCommand::Named { label: "Multicam Sound".into(), edit: Box::new(EditCommand::Batch(steps)) },
         };
         self.state.push_history(command);
@@ -221,7 +221,7 @@ impl KlippApp {
             self.refresh_placement_snapshot(seq_idx, entry);
         }
         if !entries.is_empty() {
-            // Named: an unnamed batch reads "Add Clips" (P50).
+            // Named: an unnamed batch reads "Add Clips".
             self.state.active_history_mut().push(crate::history::HistoryEntry {
                 command: crate::history::EditCommand::Named { label: "Create Multicam".into(), edit: Box::new(crate::history::EditCommand::Batch(entries)) },
             });

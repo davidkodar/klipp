@@ -1,5 +1,7 @@
 use crate::format::*;
 use crate::path_util::{atomic_write, to_project_relative};
+use klipp_graph_format::lifted::Stage;
+use klipp_graph_format::path::Root;
 use klipp_media::{MediaItem, MediaPool};
 use klipp_timeline::picture_v1::ClipPictureV1;
 use klipp_timeline::{ClipKind, Look, Sequence, TrackKind};
@@ -189,8 +191,7 @@ struct Stamp {
 }
 
 /// The two files a save writes, project.json and media/manifest.json, as
-/// text: the one place they are built, for a save and for
-/// [`project_digest`] alike.
+/// text.
 #[allow(clippy::too_many_arguments)]
 fn project_files(
     dir: &Path,
@@ -209,6 +210,36 @@ fn project_files(
     // its picture is written whole (#2457).
     let unique = crate::unique_ids::unique_clip_ids(sequences);
     let sequences = unique.as_deref().unwrap_or(sequences);
+    let generation = stamp.generation.clone();
+    let project = project_model(dir, sequences, color, active_sequence_id, created_at, notes, view, title_assets, stamp);
+    let project_json = match form {
+        crate::FileForm::Revision2 => revision2_text(project, sequences)?,
+        #[cfg(feature = "v1-oracle")]
+        crate::FileForm::V1 => {
+            let mut project = project;
+            project.format_revision = 0;
+            serde_json::to_string_pretty(&project).map_err(|e| format!("Failed to serialize project: {e}"))?
+        }
+    };
+    let manifest_json = serde_json::to_string_pretty(&manifest_model(dir, media_pool, generation))
+        .map_err(|e| format!("Failed to serialize media manifest: {e}"))?;
+    Ok((project_json, manifest_json))
+}
+
+/// The project as its file's model, the one place it is built, for a save
+/// and for [`project_digest`] alike. `sequences` have their ids unique.
+#[allow(clippy::too_many_arguments)]
+fn project_model(
+    dir: &Path,
+    sequences: &[Sequence],
+    color: &ColorSettings,
+    active_sequence_id: Option<&str>,
+    created_at: Option<&str>,
+    notes: &str,
+    view: View,
+    title_assets: &std::collections::HashMap<klipp_core::MediaId, klipp_timeline::TitleAsset>,
+    stamp: Stamp,
+) -> ProjectJson {
     let View { timeline_zoom, timeline_scroll_x, timeline_track_scale } = view;
     let Stamp { generation, saved_at } = stamp;
 
@@ -226,7 +257,7 @@ fn project_files(
         })
         .collect();
 
-    let project = ProjectJson {
+    ProjectJson {
         version: "1.0.0".to_string(),
         klipp_version_min: "0.1.0".to_string(),
         format_revision: crate::FORMAT_REVISION,
@@ -249,20 +280,13 @@ fn project_files(
         viewing_lut: color.viewing_lut.as_deref().map(|p| to_project_relative(dir, p).to_string_lossy().into_owned()),
         scopes_after_viewing_lut: color.scopes_after_viewing_lut,
         title_assets: title_assets_json,
-    };
+    }
+}
 
-    let project_json = match form {
-        crate::FileForm::Revision2 => revision2_text(project, sequences)?,
-        #[cfg(feature = "v1-oracle")]
-        crate::FileForm::V1 => {
-            let mut project = project;
-            project.format_revision = 0;
-            serde_json::to_string_pretty(&project).map_err(|e| format!("Failed to serialize project: {e}"))?
-        }
-    };
-
-    // Build media/manifest.json — store paths relative to project dir
-    let manifest = MediaManifestJson {
+/// The media manifest as its file's model, paths relative to the project's
+/// folder; the one place it is built.
+fn manifest_model(dir: &Path, media_pool: &MediaPool, generation: String) -> MediaManifestJson {
+    MediaManifestJson {
         version: "1.0.0".to_string(),
         generation: Some(generation),
         // By id: the pool is a hash map, whose order changes from run to
@@ -279,10 +303,7 @@ fn project_files(
         }).collect(),
         smart_bins: media_pool.smart_bins.clone(),
         roles: (media_pool.roles != klipp_core::roles::RoleSet::built_in()).then(|| media_pool.roles.clone()),
-    };
-    let manifest_json = serde_json::to_string_pretty(&manifest)
-        .map_err(|e| format!("Failed to serialize media manifest: {e}"))?;
-    Ok((project_json, manifest_json))
+    }
 }
 
 /// A digest of what a save of this project would write that is the
@@ -292,6 +313,12 @@ fn project_files(
 /// (zoom, scroll, track height, header width, which sequence is open):
 /// those are saved with the project, but a change to them alone is not
 /// a change to it. Stable within a run, which is all it is compared in.
+///
+/// Hashed as it is read, not from the file's text: it runs on the UI
+/// thread after an edit, and building a large project's text takes
+/// gigabytes. So it reads what that text is made from: the project's model,
+/// each clip's lifted picture, and the mixes and mask channels that only
+/// the grades hold.
 #[allow(clippy::too_many_arguments)]
 pub fn project_digest(
     dir: &Path,
@@ -303,17 +330,46 @@ pub fn project_digest(
     title_assets: &std::collections::HashMap<klipp_core::MediaId, klipp_timeline::TitleAsset>,
     looks: &[Look],
 ) -> Result<u64, String> {
-    use std::hash::{Hash, Hasher};
+    use crate::content_hash::hash_serialized;
+    use std::hash::Hasher;
     let color = ColorSettings { track_header_width: ColorSettings::default().track_header_width, ..color.clone() };
-    let (project, manifest) = project_files(
-        dir, sequences, media_pool, &color, None, created_at, notes, View::default(), title_assets,
-        crate::FileForm::Revision2, Stamp { generation: String::new(), saved_at: String::new() },
-    )?;
+    let unique = crate::unique_ids::unique_clip_ids(sequences);
+    let sequences = unique.as_deref().unwrap_or(sequences);
+    let project = project_model(dir, sequences, &color, None, created_at, notes, View::default(), title_assets, Stamp { generation: String::new(), saved_at: String::new() });
+    let manifest = manifest_model(dir, media_pool, String::new());
     let mut h = std::collections::hash_map::DefaultHasher::new();
-    project.hash(&mut h);
-    manifest.hash(&mut h);
-    serde_json::to_string(looks).map_err(|e| format!("Failed to serialize looks: {e}"))?.hash(&mut h);
+    let failed = |e: crate::content_hash::HashError| format!("Failed to digest the project: {e}");
+    hash_serialized(&project, &mut h).map_err(failed)?;
+    drop(project);
+    for seq in sequences {
+        hash_blends(&mut h, &seq.root_blends(Root::TimelineGrade { sequence: seq.id.0 }));
+        for group in &seq.grade_groups {
+            for stage in [Stage::Pre, Stage::Post] {
+                hash_blends(&mut h, &seq.root_blends(Root::GroupStage { group: group.id.0, stage }));
+            }
+        }
+        for clip in seq.tracks.iter().flat_map(|t| &t.clips) {
+            let picture = clip.picture_v2().map_err(|e| format!("Failed to digest clip {}: {e}", clip.id.0))?;
+            hash_serialized(&picture.picture, &mut h).map_err(failed)?;
+            hash_serialized(&picture.versions, &mut h).map_err(failed)?;
+            for n in 0..picture.versions.len() {
+                hash_blends(&mut h, &clip.version_blends(n));
+            }
+        }
+    }
+    hash_serialized(&manifest, &mut h).map_err(failed)?;
+    hash_serialized(looks, &mut h).map_err(failed)?;
     Ok(h.finish())
+}
+
+/// Mixes and mask channels, which a grade's v1 form leaves out of the
+/// project's model.
+fn hash_blends(h: &mut std::collections::hash_map::DefaultHasher, blends: &[klipp_graph_lift::sequence_grade_mix::Blend]) {
+    use std::hash::Hash;
+    for b in blends {
+        format!("{b:?}").hash(h);
+    }
+    blends.len().hash(h);
 }
 
 /// A fresh id for one save: the time to the nanosecond and the process,
@@ -1096,11 +1152,9 @@ fn revision2_text(project: ProjectJson, sequences: &[Sequence]) -> Result<String
     klipp_graph_lift::sequence_grade_mix::write_project(&mut v2, &|sid, root| sequences.iter().find(|s| s.id.0 == sid).map(|s| s.root_blends(root)).unwrap_or_default())
         .map_err(|e| format!("Saving would lose a sequence grade's mix ({e}), so it was not saved"))?;
     // A clip grade version's too (#1322).
-    let mut clips_by_id = std::collections::HashMap::new();
-    for clip in sequences.iter().flat_map(|s| s.all_clips()) {
-        clips_by_id.entry(clip.id.0).or_insert(clip);
-    }
-    let version_blends = |cid: uuid::Uuid, n: usize| clips_by_id.get(&cid).map(|c| c.version_blends(n)).unwrap_or_default();
+    // By sequence and clip: a duplicated sequence keeps its clips' ids.
+    let clips: std::collections::HashMap<_, _> = sequences.iter().flat_map(|s| s.all_clips().map(move |c| ((s.id.0, c.id.0), c))).collect();
+    let version_blends = |sid: uuid::Uuid, cid: uuid::Uuid, n: usize| clips.get(&(sid, cid)).map(|c| c.version_blends(n)).unwrap_or_default();
     klipp_graph_lift::sequence_grade_mix::write_versions(&mut v2, &version_blends)
         .map_err(|e| format!("Saving would lose a grade version's mix ({e}), so it was not saved"))?;
     serde_json::to_string_pretty(&v2).map_err(|e| format!("Failed to serialize project: {e}"))

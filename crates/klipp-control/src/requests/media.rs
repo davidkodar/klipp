@@ -378,7 +378,7 @@ pub(crate) fn respond(
                 let name = p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or(path.clone());
                 return Err(format!("{name} could not be imported: {why}. Is it a complete video, audio or image file?"));
             }
-            // Only media, as opening a project takes it (SEC1): ffmpeg reads
+            // Only media, as opening a project takes it: ffmpeg reads
             // a text file as a picture, and CREDITS.txt came in as a clip.
             let project = ctx.shared.project.lock().recovered().path.clone();
             let trusted = klipp_media::media_check::trusted_roots(project.as_deref());

@@ -1252,10 +1252,7 @@ impl KlippApp {
             // A picture or sound track freezes (#3207); its frames are drawn by
             // the freeze jobs (`freeze_jobs`), which see the change.
             AppCommand::SetTrackFrozen { track_id, frozen } => {
-                if let Some(track) = self.state.sequences[self.state.active_sequence_idx].tracks.iter_mut().find(|t| t.id == *track_id && matches!(t.kind, klipp_timeline::TrackKind::Video | klipp_timeline::TrackKind::Audio)) {
-                    track.set_frozen(*frozen);
-                    self.state.dirty = true;
-                }
+                freeze_jobs::edit_freezable_track(&mut self.state, &self.sequence, &self.param_change_queue, *track_id, |t| t.set_frozen(*frozen));
                 true
             }
             // A track bounced to a media file (#3264): the dialog, then the
@@ -1271,10 +1268,7 @@ impl KlippApp {
                 true
             }
             AppCommand::SetTrackLockWhileFrozen { track_id, on } => {
-                if let Some(track) = self.state.sequences[self.state.active_sequence_idx].tracks.iter_mut().find(|t| t.id == *track_id && matches!(t.kind, klipp_timeline::TrackKind::Video | klipp_timeline::TrackKind::Audio)) {
-                    track.set_lock_while_frozen(*on);
-                    self.state.dirty = true;
-                }
+                freeze_jobs::edit_freezable_track(&mut self.state, &self.sequence, &self.param_change_queue, *track_id, |t| t.set_lock_while_frozen(*on));
                 true
             }
             // A track's colour (#922), shown on its header.

@@ -738,7 +738,7 @@ fn gen_result_strip(
 mod result_strip_tests {
     use super::*;
 
-    /// P66: the count left of Sort never runs under it; at the pool's
+    /// The count left of Sort never runs under it; at the pool's
     /// width "16 Generators" overprinted "Sort: A→Z".
     #[test]
     fn the_count_stays_clear_of_sort() {

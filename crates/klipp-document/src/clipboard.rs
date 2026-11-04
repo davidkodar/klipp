@@ -253,7 +253,7 @@ fn paste_with(seq: &Sequence, cb: &ClipboardContent, at: Timecode, mode: PasteMo
     Pasted { sequence: out, touched, ids, skipped, no_room: false }
 }
 
-/// What Fit to the marked range made (P53): the sequence after it, the
+/// What Fit to the marked range made: the sequence after it, the
 /// tracks it changed, and the clip in its new place.
 pub struct OnMarks {
     pub sequence: Sequence,

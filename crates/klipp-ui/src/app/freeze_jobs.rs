@@ -192,6 +192,15 @@ impl FreezeJobs {
         out
     }
 
+    /// Whether a frame is wanted soon even with nothing else to draw: a
+    /// change is holding still before its jobs start, the store is opening,
+    /// or a job runs whose progress and end are only seen on a frame. Without
+    /// one an idle window would start no job until the next input.
+    fn wants_frames(&self, inputs: &Inputs) -> bool {
+        let waiting = !inputs.tracks.is_empty() && self.started_for.as_ref() != Some(inputs);
+        waiting || self.opening.is_some() || !self.jobs.is_empty()
+    }
+
     /// Open the store in `folder` on a thread of its own; [`Self::tick`]
     /// takes it once it's open.
     fn open_store(&mut self, folder: PathBuf, cap: u64) {
@@ -233,11 +242,7 @@ impl KlippApp {
     /// live again, one undo step, and the files removed.
     pub(super) fn clear_frozen(&mut self, sound: bool) {
         let kind = if sound { klipp_timeline::TrackKind::Audio } else { klipp_timeline::TrackKind::Video };
-        let idx = self.state.active_sequence_idx;
-        if let Some(step) = unfreeze_all(&mut self.state.sequences[idx], kind) {
-            self.state.push_history(step);
-            self.state.dirty = true;
-        }
+        clear_frozen_tracks(&mut self.state, &self.sequence, &self.param_change_queue, kind);
         let fj = &mut self.freeze_jobs;
         fj.stop();
         if let Some(cache) = self.freeze_cache_folder() {
@@ -280,7 +285,7 @@ impl KlippApp {
     /// Keep the frozen tracks' frames drawn and the engine told (see the
     /// module's doc). Called every frame; costs a walk over the tracks
     /// while nothing changes.
-    pub(super) fn keep_frozen_tracks(&mut self) {
+    pub(super) fn keep_frozen_tracks(&mut self, ctx: &egui::Context) {
         // Frozen as the project says; drawn from the copy the engine plays,
         // whose tracks are the same.
         let seq = self.sequence.snapshot();
@@ -331,6 +336,9 @@ impl KlippApp {
             self.cap_for_frozen(inputs.folder.as_deref());
         }
         klipp_engine::freeze::set_statuses(self.freeze_jobs.statuses.clone());
+        if self.freeze_jobs.wants_frames(&inputs) {
+            ctx.request_repaint_after(Duration::from_millis(100));
+        }
     }
 
     fn start_freeze_jobs(&mut self, seq: &klipp_timeline::Sequence, inputs: &Inputs) {
@@ -512,6 +520,41 @@ fn unfreeze_all(seq: &mut klipp_timeline::Sequence, kind: klipp_timeline::TrackK
         edits.push(klipp_document::history::EditCommand::SetTrack { description: "Clear Freeze Cache", track_index: ti, old: Box::new(old), new: Box::new(t.clone()) });
     }
     (!edits.is_empty()).then_some(klipp_document::history::EditCommand::Batch(edits))
+}
+
+/// A picture or sound track of the open sequence changed by `edit`, and the
+/// copy the engine plays and the control socket reads given the change, so
+/// that a report of the track says what the project says.
+pub(super) fn edit_freezable_track(
+    state: &mut crate::state::AppState,
+    sequence: &klipp_timeline::SharedSequence,
+    param_change_queue: &crossbeam_queue::ArrayQueue<klipp_core::ParamChange>,
+    track_id: TrackId,
+    edit: impl FnOnce(&mut klipp_timeline::Track),
+) {
+    let idx = state.active_sequence_idx;
+    let Some(track) = state.sequences[idx].tracks.iter_mut().find(|t| t.id == track_id && matches!(t.kind, klipp_timeline::TrackKind::Video | klipp_timeline::TrackKind::Audio)) else {
+        return;
+    };
+    edit(track);
+    state.dirty = true;
+    super::engine_sync::sync_sequence(state, sequence, param_change_queue);
+}
+
+/// The open sequence's tracks of `kind` live again, one undo step, and the
+/// copy the engine plays and the control socket reads given the change.
+fn clear_frozen_tracks(
+    state: &mut crate::state::AppState,
+    sequence: &klipp_timeline::SharedSequence,
+    param_change_queue: &crossbeam_queue::ArrayQueue<klipp_core::ParamChange>,
+    kind: klipp_timeline::TrackKind,
+) {
+    let idx = state.active_sequence_idx;
+    if let Some(step) = unfreeze_all(&mut state.sequences[idx], kind) {
+        state.push_history(step);
+        state.dirty = true;
+        super::engine_sync::sync_sequence(state, sequence, param_change_queue);
+    }
 }
 
 /// A job's end, reported on `done` for `track` with the job's id, which
@@ -781,6 +824,53 @@ mod tests {
         klipp_document::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut pool, fps: &mut fps }.apply_inverse(&step);
         assert_eq!(serde_json::to_value(&seqs[0].tracks).unwrap(), serde_json::to_value(&before.tracks).unwrap(), "undone, frozen again");
         assert!(unfreeze_all(&mut seq, TrackKind::Video).is_none(), "nothing frozen left");
+    }
+
+    /// A freeze or an unfreeze from the track header or Ctrl+Shift+F reaches
+    /// the copy the control socket reads at once, the track's lock with it,
+    /// not at the next edit: `list_clips` and `timeline` read that copy.
+    #[test]
+    fn freezing_a_track_reaches_the_copy_the_socket_reads() {
+        let mut state = crate::state::AppState::default();
+        let shared = klipp_timeline::SharedSequence::new(state.sequences[0].clone());
+        let queue = crossbeam_queue::ArrayQueue::new(8);
+        let id = state.sequences[0].tracks.iter().find(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap().id;
+        let read = |shared: &klipp_timeline::SharedSequence| {
+            let seq = shared.snapshot();
+            let t = seq.tracks.iter().find(|t| t.id == id).unwrap();
+            (t.frozen, t.locked)
+        };
+        edit_freezable_track(&mut state, &shared, &queue, id, |t| t.set_frozen(true));
+        assert!(state.dirty);
+        assert_eq!(read(&shared), (true, false), "frozen");
+        edit_freezable_track(&mut state, &shared, &queue, id, |t| t.set_lock_while_frozen(true));
+        assert_eq!(read(&shared), (true, true), "locked with it");
+        edit_freezable_track(&mut state, &shared, &queue, id, |t| t.set_frozen(false));
+        assert_eq!(read(&shared), (false, false), "live and unlocked");
+        edit_freezable_track(&mut state, &shared, &queue, id, |t| t.set_frozen(true));
+        clear_frozen_tracks(&mut state, &shared, &queue, klipp_timeline::TrackKind::Video);
+        assert_eq!(read(&shared), (false, false), "cleared, live and unlocked");
+    }
+
+    /// A freeze doesn't wait for input: frames are wanted while its change
+    /// holds still and until its job has started, then no more.
+    #[test]
+    fn an_idle_window_keeps_looking_until_the_jobs_start() {
+        let shared = klipp_timeline::SharedSequence::new(klipp_timeline::Sequence::new_default());
+        let mut fj = FreezeJobs::default();
+        let a = inputs(None, revision(&shared), vec![TrackId::new()]);
+        let t0 = Instant::now();
+        assert!(fj.wants_frames(&a), "nothing started for it yet");
+        assert!(!fj.tick(&a, t0).start);
+        assert!(fj.wants_frames(&a), "holding still, so the next look must come");
+        assert!(fj.tick(&a, t0 + SETTLE * 2).start);
+        assert!(!fj.wants_frames(&a), "started, with no job left: nothing to look for");
+        // Nothing frozen in a project whose store isn't open starts nothing,
+        // ever, so it can't be waited for.
+        let none = inputs(Some("/p/cache"), revision(&shared), Vec::new());
+        assert!(!fj.tick(&none, t0 + SETTLE * 4).start);
+        assert!(!fj.tick(&none, t0 + SETTLE * 8).start);
+        assert!(!fj.wants_frames(&none), "no frames asked for while nothing is frozen");
     }
 
     /// A project whose cache, or the folder cleared in it, is a link to

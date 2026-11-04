@@ -130,7 +130,7 @@ pub fn fonts_dir() -> PathBuf {
 }
 
 /// The catalogue's families that the built-in templates and the starter
-/// brand kits set their text in, shipped with the app (P41): each file
+/// brand kits set their text in, shipped with the app: each file
 /// and its licence as the catalogue pins them, so nothing is fetched when
 /// a built-in is first used. All SIL Open Font License.
 const SHIPPED: &[(&str, &[(&str, &[u8])])] = &[
@@ -317,7 +317,7 @@ pub fn note_fonts_added() {
 mod tests {
     use super::*;
 
-    /// P41: the shipped families are put in place as a fetch would, each
+    /// The shipped families are put in place as a fetch would, each
     /// file whole and its licence beside it, so they count as fetched with
     /// no network; a second time writes nothing.
     #[test]

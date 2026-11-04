@@ -9,8 +9,8 @@
 use super::*;
 
 /// The longest a raised hint waits to be settled while nothing asks. A
-/// digest is about 80 microseconds a clip on an M1, on the UI thread: 60 ms
-/// for 800 clips.
+/// digest is about 10 microseconds a plain clip on an M1, on the UI thread:
+/// 8 ms for 800 clips.
 const SETTLE_EVERY: std::time::Duration = std::time::Duration::from_millis(250);
 
 /// Whether a raised hint is settled this frame. Not during a drag, whose
@@ -96,7 +96,7 @@ impl crate::state::AppState {
         self.dirty = false;
         // No project open and nothing done since the launch: nothing to
         // lose. Its empty state differed from no save at all, and New
-        // Project asked to save "Untitled" (M6). Anything made with no
+        // Project asked to save "Untitled". Anything made with no
         // project open, over the socket before New Project, is judged as
         // ever: closing would lose it.
         if self.project_path.is_none() && self.untouched_start() {
@@ -149,7 +149,7 @@ impl KlippApp {
 mod launch_screen_tests {
     use crate::state::AppState;
 
-    /// M6: on the launch screen, with no project open, a raised hint is no
+    /// On the launch screen, with no project open, a raised hint is no
     /// unsaved change, so New Project doesn't ask to save "Untitled"; a
     /// project open is judged as before.
     #[test]

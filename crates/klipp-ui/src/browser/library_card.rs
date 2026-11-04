@@ -183,7 +183,7 @@ mod tests {
 
 /// A Library tab's count, in the room left of its Sort menu: `label`
 /// ("16 Generators"), else the bare count, else nothing where the panel is
-/// too narrow. It was drawn under Sort (P55, P66).
+/// too narrow. It was drawn under Sort.
 pub(crate) fn count_label(count: usize, label: &str, room: f32, width: impl Fn(&str) -> f32) -> Option<String> {
     [label.to_string(), count.to_string()].into_iter().find(|t| width(t) <= room)
 }
@@ -201,7 +201,7 @@ pub(crate) fn paint_count(ui: &egui::Ui, theme: &crate::theme::KlippTheme, rect:
 
 #[cfg(test)]
 mod count_label_tests {
-    /// P55, P66: the count shortens, then goes, as the room left of Sort
+    /// The count shortens, then goes, as the room left of Sort
     /// does.
     #[test]
     fn the_count_fits_the_room_left_of_sort() {

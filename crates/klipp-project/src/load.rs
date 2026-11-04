@@ -513,7 +513,7 @@ fn load_project_as(dir: &Path, form: crate::FileForm, strict: bool) -> Result<Lo
         // A file that lists other inputs (a playlist, a concat list) is
         // not media, whatever its name: offline, never handed to ffmpeg.
         let listed = kind == MediaItemKind::File && path.exists() && klipp_media::is_input_list(&path);
-        // A project can name any file on the machine (SEC1): one that is
+        // A project can name any file on the machine: one that is
         // not a picture, sound or still, or one in a hidden folder, stays
         // offline with why, and is never read or collected.
         let refused = (kind == MediaItemKind::File && path.exists() && !listed).then(|| klipp_media::media_check::media_file_check(&path, &trusted).err()).flatten();

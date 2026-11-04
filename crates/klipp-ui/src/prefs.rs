@@ -920,7 +920,7 @@ pub struct ExportPrefs {
 }
 fn default_export_sr() -> u32 { 48000 }
 /// One render at a time: two at once each ran at about 0.6x, so the first
-/// file came nearly twice as late; queued, each finishes sooner (P38).
+/// file came nearly twice as late; queued, each finishes sooner.
 fn default_parallel_jobs() -> usize { 1 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -1188,7 +1188,7 @@ impl Preferences {
         }
         if revision < 3 {
             // Two renders at once was the default, and every file saved
-            // it: one at a time is now (P38), the first file ready about
+            // it: one at a time is now, the first file ready about
             // twice as soon. A 2 set after this revision is kept.
             if let Some(export) = root.get_mut("export").and_then(|v| v.as_object_mut()) {
                 if export.get("parallel_render_jobs").and_then(|v| v.as_u64()) == Some(2) {
@@ -3363,7 +3363,7 @@ mod tests {
 
     #[test]
     fn parallel_render_default_is_one() {
-        // P38: one job at a time, so the first file is ready soonest; more
+        // One job at a time, so the first file is ready soonest; more
         // is a choice in Preferences.
         let p = ExportPrefs::default();
         assert_eq!(p.parallel_render_jobs, 1);
@@ -3562,7 +3562,7 @@ mod revision_tests {
         assert_eq!(Preferences::default().revision, PREFS_REVISION, "a fresh install is at the revision");
     }
 
-    /// P38: an old file's saved 2 renders at once (the old default, which
+    /// An old file's saved 2 renders at once (the old default, which
     /// every file wrote) becomes one at a time, once; another number is
     /// kept, and a 2 in a file at the revision stands.
     #[test]
