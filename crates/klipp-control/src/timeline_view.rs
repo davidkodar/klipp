@@ -552,7 +552,9 @@ pub(crate) fn sound_json(seq: &klipp_timeline::Sequence, c: &klipp_timeline::Cli
     put("fade_out_secs", json!((c.fade_out_secs * 1000.0).round() / 1000.0), c.fade_out_secs > 0.0);
     put("volume_keys", json!(c.volume_keyframes.len()), !c.volume_keyframes.is_empty());
     put("role", json!(role.as_ref().map(|r| r.as_str())), role.is_some());
-    let effects: Vec<&str> = c.audio_effects.iter().filter(|e| e.enabled).map(|e| e.effect_type.as_str()).collect();
+    // The whole chain in order, a bypassed one marked: left out, one
+    // bypassed read as gone though it was still on the clip.
+    let effects: Vec<String> = c.audio_effects.iter().map(|e| if e.enabled { e.effect_type.clone() } else { format!("{} (bypassed)", e.effect_type) }).collect();
     put("effects", json!(effects), !effects.is_empty());
     if !sound.is_empty() {
         v["sound"] = serde_json::Value::Object(sound);
