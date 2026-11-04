@@ -1709,6 +1709,10 @@ fn export_takes_a_preset_a_codec_and_a_bitrate() {
     assert_eq!((r["export"]["rate"].as_str(), r["export"]["bit_depth"].as_u64()), (Some("20000 kbps"), Some(10)), "{r}");
     let (_, s) = sent(&mut h, json!({ "method": "export", "path": "/tmp/klipp-codec-hq.mov", "codec": "ProRes HQ", "audio_codec": "pcm24" }));
     assert_eq!((s.video_codec, s.audio_codec), (V::ProRes422HQ, A::Pcm24));
+    // EX4: a sound-only file is said to have no video codec.
+    let (r, _) = sent(&mut h, json!({ "method": "export", "path": "/tmp/klipp-codec-sound.mp3", "preset": "Audio Only MP3" }));
+    assert!(r["export"]["video_codec"].is_null(), "{r}");
+    assert_eq!(r["export"]["audio_codec"], "MP3", "{r}");
 
     // Refused, and nothing sent.
     for (req, why) in [
