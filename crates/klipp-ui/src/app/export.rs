@@ -4281,6 +4281,8 @@ impl KlippApp {
                 let files = klipp_document::subtitle_export::files(seq, path);
                 let brief = seq.brief.as_ref().and_then(|b| b.language.as_deref());
                 let mut written = Vec::new();
+                // What an STL file's table has no form for, written as `?`.
+                let mut not_written: Vec<char> = Vec::new();
                 for file in &files {
                     let mut subs = Vec::new();
                     for clip in file.tracks.iter().flat_map(|&i| &seq.tracks[i].clips) {
@@ -4296,12 +4298,19 @@ impl KlippApp {
                     let content: Vec<u8> = match ext.as_str() {
                         // EBU-STL for teletext, at the sequence's frame rate
                         // family (#1516).
-                        "stl" => klipp_captions::stl::generate_stl(
+                        "stl" => {
+                            for c in klipp_captions::stl::character_table(subs.iter().map(|s| s.text.as_str()).chain([seq.name.as_str()])).1 {
+                                if !not_written.contains(&c) {
+                                    not_written.push(c);
+                                }
+                            }
+                            klipp_captions::stl::generate_stl(
                             &subs,
                             if (seq.fps.as_f64().round() as u32).is_multiple_of(30) { 30 } else { 25 },
                             language,
                             &seq.name,
-                        ),
+                        )
+                        }
                         "vtt" => klipp_captions::generate_vtt_in(&subs, file.language.as_deref()).into_bytes(),
                         "ass" | "ssa" => generate_ass(&subs).into_bytes(),
                         // IMSC 1.1 Text (#1516).
@@ -4316,13 +4325,18 @@ impl KlippApp {
                     }
                     written.push((subs.len(), &file.path));
                 }
-                match &written[..] {
-                    [(n, p)] => self.state.toast.show(format!("Exported {n} subtitles to {}", p.display())),
-                    _ => self.state.toast.show(format!(
+                let said = match &written[..] {
+                    [(n, p)] => format!("Exported {n} subtitles to {}", p.display()),
+                    _ => format!(
                         "Exported {} subtitle files: {}",
                         written.len(),
                         written.iter().map(|(_, p)| p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()).collect::<Vec<_>>().join(", ")
-                    )),
+                    ),
+                };
+                // Never a silent `?`: EBU-STL has no table for what is left.
+                match stl_loss(&not_written) {
+                    Some(loss) => self.state.toast.show(format!("{said}. {loss}")),
+                    None => self.state.toast.show(said),
                 }
                 true
             }
@@ -5028,5 +5042,27 @@ mod play_target_tests {
         assert!(super::play_target(&dir.join("gone.mp4")).is_err(), "a missing file");
         assert!(super::play_target(std::path::Path::new("--version")).is_err(), "an option-like name");
         let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
+/// What an EBU-STL export could not write, said: the characters no STL
+/// table has a form for, written as `?`. `None` when there are none.
+pub(crate) fn stl_loss(chars: &[char]) -> Option<String> {
+    if chars.is_empty() {
+        return None;
+    }
+    let shown: String = chars.iter().take(12).collect();
+    let more = if chars.len() > 12 { format!(" and {} more", chars.len() - 12) } else { String::new() };
+    Some(format!("EBU-STL has no character table for {} of its characters ({shown}{more}): they are written as \"?\"", chars.len()))
+}
+
+#[cfg(test)]
+mod stl_loss_tests {
+    /// What an STL file could not hold is said, a few of them shown.
+    #[test]
+    fn what_stl_cannot_hold_is_said() {
+        assert_eq!(super::stl_loss(&[]), None);
+        let said = super::stl_loss(&['你', '好']).unwrap();
+        assert!(said.contains("2 of its characters (你好)") && said.contains("\"?\""), "{said}");
     }
 }

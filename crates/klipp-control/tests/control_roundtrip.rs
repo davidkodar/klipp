@@ -4368,6 +4368,33 @@ fn subtitles_import_over_the_socket_and_export_in_the_format_asked() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// An EBU-STL export says the character table it writes in, and names
+/// what no table holds (Chinese here, written as "?"), never leaving the
+/// "?" to be found; a file STL holds whole says nothing is lost.
+#[test]
+fn an_stl_export_names_what_it_cannot_write() {
+    let mut h = harness();
+    let dir = std::env::temp_dir().join(format!("klipp-stl-loss-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let caption = |text: &str| {
+        let mut c = klipp_timeline::Clip::gap(klipp_core::Timecode::from_secs_f64(1.0, 24), klipp_core::Timecode::from_secs_f64(2.0, 24));
+        c.kind = klipp_timeline::ClipKind::Title(klipp_timeline::TitleData::single_text(klipp_timeline::TextBox { text: text.into(), ..Default::default() }));
+        c
+    };
+    let mut subs = klipp_timeline::Track::new("S1", klipp_timeline::TrackKind::Subtitle);
+    subs.clips = vec![caption("Привет, мир")];
+    h.sequence.write().unwrap().tracks.push(subs.clone());
+    let r = h.ok(json!({ "method": "export_subtitles", "path": dir.join("ru.stl").to_str().unwrap() }));
+    let _ = h.cmd_rx.recv_timeout(std::time::Duration::from_secs(5));
+    assert_eq!((r["files"][0]["character_table"].clone(), r["files"][0]["not_written"].clone(), r.get("warning").cloned()), (json!("Latin/Cyrillic"), json!([]), None), "{r}");
+    h.sequence.write().unwrap().tracks.last_mut().unwrap().clips = vec![caption("你好 world")];
+    let r = h.ok(json!({ "method": "export_subtitles", "path": dir.join("zh.stl").to_str().unwrap() }));
+    let _ = h.cmd_rx.recv_timeout(std::time::Duration::from_secs(5));
+    assert_eq!(r["files"][0]["not_written"], json!(["你", "好"]), "{r}");
+    assert!(r["warning"].as_str().is_some_and(|w| w.contains("2 character")), "{r}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A grade parameter keyed over the socket (#891): `at` (timeline
 /// seconds) keys it at the clip's own time, in one envelope bracketed as
 /// one undo step, its interpolation or ease set on that key; `remove`
