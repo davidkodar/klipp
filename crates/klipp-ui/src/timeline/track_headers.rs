@@ -258,16 +258,22 @@ pub fn show(
                 ui.data_mut(|d| d.insert_temp(rename_id(), (rename_track, buf)));
             }
         } else {
+            // Cut to end before the header's buttons, all of it on hover.
+            let room = name_room(track, track_rect.max.x) - name_x - if track.sync_lock { 16.0 } else { 0.0 };
+            let shown = crate::browser::media_tab::truncate_to_width(&track.name, egui::FontId::proportional(10.0), room.max(1.0), ui);
+            if shown != track.name {
+                header_resp.clone().on_hover_text(track.name.clone());
+            }
             ui.painter().text(
                 egui::pos2(name_x, track_rect.center().y),
                 egui::Align2::LEFT_CENTER,
-                &track.name,
+                &shown,
                 egui::FontId::proportional(10.0),
                 theme.text_secondary,
             );
             // ⇄ after the name when the track is sync-locked (#915).
             if track.sync_lock {
-                let name_w = ui.painter().layout_no_wrap(track.name.clone(), egui::FontId::proportional(10.0), theme.text_secondary).rect.width();
+                let name_w = ui.painter().layout_no_wrap(shown.clone(), egui::FontId::proportional(10.0), theme.text_secondary).rect.width();
                 ui.painter().text(
                     egui::pos2(name_x + name_w + 4.0, track_rect.center().y),
                     egui::Align2::LEFT_CENTER,
@@ -1146,6 +1152,14 @@ pub fn show(
     }
 
     cmds
+}
+
+/// Where a track's name must end, in a header whose right edge is at
+/// `right`: before the leftmost of its buttons, each 16 wide with 4 between,
+/// which on a frozen track is its snowflake, on a sound track its lane button.
+pub(super) fn name_room(track: &klipp_timeline::Track, right: f32) -> f32 {
+    let buttons = if track.kind == TrackKind::Audio { 5.0 } else { 4.0 } + if track.frozen { 1.0 } else { 0.0 };
+    right - buttons * 20.0 - 4.0
 }
 
 /// The number on a track's badge: the one its name ends in ("Video 3"

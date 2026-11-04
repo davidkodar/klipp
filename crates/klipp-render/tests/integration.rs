@@ -603,6 +603,7 @@ fn export_mp4_with_embedded_subtitle_stream() {
         pan_law: Default::default(),
         global_lut_path: None,
         subtitle_tracks: vec![snapshot::SubtitleTrackSnapshot {
+            language: None,
             clips: vec![
                 snapshot::SubtitleClipSnapshot {
                     timeline_start_frame: 0,
@@ -657,6 +658,69 @@ fn export_mp4_with_embedded_subtitle_stream() {
     let _ = std::fs::remove_file(&output_path);
 }
 
+/// Soft captions: each shown subtitle track its own stream, tagged with
+/// its language, its cues their own lengths; a hidden track left out.
+/// One stream for them all laid the tracks over each other, and a cue
+/// under another ended where the other began; a hidden one came along.
+#[test]
+fn each_shown_subtitle_track_is_its_own_stream() {
+    if !std::process::Command::new("ffprobe").arg("-version").output().is_ok_and(|o| o.status.success()) {
+        eprintln!("skipping: no ffprobe");
+        return;
+    }
+    let dir = klipp_testing::scratch::scratch_dir("klipp-integration-test");
+    let output_path = dir.join("tracks_subs.mp4");
+    let tc = |f: i64| RationalTime::from_frames(f, 24);
+    let cue = |from: i64, to: i64, text: &str| klipp_timeline::Clip {
+        kind: ClipKind::Title(klipp_timeline::TitleData::single_text(klipp_timeline::TextBox { text: text.into(), ..Default::default() })),
+        ..klipp_timeline::Clip::gap(tc(from), tc(to))
+    };
+    let track = |name: &str, language: Option<&str>, visible: bool, clips| {
+        let mut t = klipp_timeline::Track::new(name, klipp_timeline::TrackKind::Subtitle);
+        t.language = language.map(str::to_string);
+        t.visible = visible;
+        t.clips = clips;
+        t
+    };
+    let mut seq = klipp_timeline::Sequence::new_default();
+    seq.fps = Fps::new(24, 1);
+    seq.resolution = Resolution { width: 320, height: 240 };
+    seq.tracks[0].clips = vec![klipp_timeline::Clip { kind: ClipKind::Generator(GeneratorData::SolidColor { color: [20, 40, 60, 255] }), ..klipp_timeline::Clip::gap(tc(0), tc(48)) }];
+    seq.tracks.push(track("English", Some("en"), true, vec![cue(0, 24, "Hello"), cue(30, 48, "Second")]));
+    seq.tracks.push(track("German", Some("de"), true, vec![cue(0, 48, "Hallo")]));
+    seq.tracks.push(track("Hidden", None, false, vec![cue(0, 48, "Hidden")]));
+    let mut settings = make_export_settings(&output_path);
+    settings.embed_subtitles = true;
+    settings.burn_in_subtitles = false;
+    let snapshot = SequenceSnapshot::from_sequence(&seq, &klipp_media::MediaPool::new(), &settings, None, false, WorkingColorspace::Rec709Linear).unwrap();
+    let job = ExportJob {
+        id: Uuid::new_v4(), output_path: output_path.clone(), settings, snapshot,
+        cancel: Arc::new(AtomicBool::new(false)), progress: Arc::new(AtomicU64::new(0)),
+        hw_info: Default::default(), render_stage: Default::default(), loudness_result: Default::default(), timings: Default::default(),
+        total_frames: 48, analyser: None,
+    };
+    job.run().unwrap();
+
+    let probe = std::process::Command::new("ffprobe")
+        .args(["-v", "error", "-select_streams", "s", "-show_entries", "stream=index:stream_tags=language", "-of", "csv=p=0"])
+        .arg(&output_path)
+        .output()
+        .unwrap();
+    let streams = String::from_utf8_lossy(&probe.stdout).lines().map(|l| l.split(',').nth(1).unwrap_or("").to_string()).collect::<Vec<_>>();
+    assert_eq!(streams, ["eng", "ger"], "a stream a shown track, in its language");
+    // Each stream's cues, as ffmpeg reads them back.
+    let cues = |n: usize| {
+        let out = dir.join(format!("tracks_subs.{n}.srt"));
+        let ok = std::process::Command::new("ffmpeg").args(["-nostdin", "-v", "error", "-y", "-i"]).arg(&output_path).args(["-map", &format!("0:s:{n}")]).arg(&out).status().unwrap();
+        assert!(ok.success());
+        let text = std::fs::read_to_string(&out).unwrap();
+        text.lines().filter(|l| l.contains("-->") || l.chars().any(char::is_alphabetic)).map(str::to_string).collect::<Vec<_>>()
+    };
+    assert_eq!(cues(0), ["00:00:00,000 --> 00:00:01,000", "Hello", "00:00:01,250 --> 00:00:02,000", "Second"]);
+    assert_eq!(cues(1), ["00:00:00,000 --> 00:00:02,000", "Hallo"], "its own length, though the other track's cues lie under it");
+    let _ = std::fs::remove_file(&output_path);
+}
+
 #[test]
 fn export_without_embed_has_no_subtitle_stream() {
     let dir = klipp_testing::scratch::scratch_dir("klipp-integration-test");
@@ -682,6 +746,7 @@ fn export_without_embed_has_no_subtitle_stream() {
         pan_law: Default::default(),
         global_lut_path: None,
         subtitle_tracks: vec![snapshot::SubtitleTrackSnapshot {
+            language: None,
             clips: vec![snapshot::SubtitleClipSnapshot {
                 timeline_start_frame: 0,
                 timeline_end_frame: 24,

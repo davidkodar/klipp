@@ -362,6 +362,8 @@ pub struct AudioOutput {
     /// Bumped by the engine after a seek. The cpal callback detects the change
     /// and discards all buffered samples to prevent playing stale audio.
     seek_gen: Arc<AtomicU64>,
+    /// The seek generation the callback has drained for.
+    drained: Arc<AtomicU64>,
     /// When true, play ring buffer samples even while paused (for scrub chirps).
     /// Automatically cleared by the cpal callback when the ring buffer empties.
     chirp_active: Arc<AtomicBool>,
@@ -419,6 +421,14 @@ impl AudioOutput {
         let flushing_flag = flushing.clone();
         let seek_gen = Arc::new(AtomicU64::new(0));
         let seek_gen_flag = seek_gen.clone();
+        // The seek generation the callback has drained for: the mix
+        // thread holds new samples back until it catches up.
+        let drained = Arc::new(AtomicU64::new(0));
+        let drained_flag = drained.clone();
+        // The generation this stream last saw. Its own, not the callback
+        // thread's: a thread-local outlived the stream, and a new output
+        // whose count began again took the old one's for a seek.
+        let last_gen = std::cell::Cell::new(0u64);
         let chirp_active = Arc::new(AtomicBool::new(false));
         let chirp_flag = chirp_active.clone();
         let master_volume = Arc::new(AtomicU32::new(f32::to_bits(1.0)));
@@ -464,12 +474,8 @@ impl AudioOutput {
 
                             // Check for seek — if generation changed, drain stale buffer
                             let current_gen = seek_gen_flag.load(Ordering::Acquire);
-                            // Use a thread-local to track last seen generation
-                            // (cpal callbacks always run on the same thread)
-                            thread_local! {
-                                static LAST_GEN: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
-                            }
-                            LAST_GEN.with(|lg| {
+                            (|| {
+                                let lg = &last_gen;
                                 if lg.get() != current_gen {
                                     lg.set(current_gen);
                                     // Drain all stale samples from the ring buffer
@@ -480,6 +486,9 @@ impl AudioOutput {
                                             break;
                                         }
                                     }
+                                    // Drained: the mix thread may push the
+                                    // samples from the new place.
+                                    drained_flag.store(current_gen, Ordering::Release);
                                     // Output silence for this callback
                                     data.fill(0.0);
                                     return;
@@ -536,7 +545,7 @@ impl AudioOutput {
                                     g.set(vol);
                                 });
                                 // NO clock update — master clock is external
-                            });
+                            })();
 
                             // Mix in skim audio (independent of playback state).
                             // Uses thread-local buffer to avoid heap allocation in real-time callback.
@@ -629,6 +638,7 @@ impl AudioOutput {
             paused,
             flushing,
             seek_gen,
+            drained,
             chirp_active,
             master_volume,
             delivery_gain,
@@ -653,6 +663,13 @@ impl AudioOutput {
     /// Signal a seek happened — cpal callback will drain stale samples.
     pub fn notify_seek(&self) {
         self.seek_gen.fetch_add(1, Ordering::Release);
+    }
+
+    /// The seek generation asked for and the one drained: given to the
+    /// mix thread ([`crate::mix_thread::MixThread::watch_drain`]), which
+    /// holds new samples back until the drain has caught up.
+    pub fn drain_flags(&self) -> (Arc<AtomicU64>, Arc<AtomicU64>) {
+        (self.seek_gen.clone(), self.drained.clone())
     }
 
     /// Enable chirp mode — play ring buffer samples even while paused.

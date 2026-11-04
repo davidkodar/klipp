@@ -580,6 +580,47 @@ mod grade_versions_and_mix {
         }
     }
 
+    /// The timeline grade's stand-in holds a correction's mix in its grade,
+    /// not in a picture. Carried to a clip that way the clip would draw the
+    /// mix and not save it, so what copies a grade refuses it, as it refuses
+    /// a clip's.
+    #[test]
+    fn a_stand_in_s_mix_is_held_so_its_grade_is_not_copied_without_it() {
+        use super::super::timeline_grade::{stand_down_timeline_grade_on, stand_in_grade_on, GradeStandIn};
+        use klipp_timeline::GradeAccess;
+        let blend = |g: &klipp_nodes::NodeGraph| g.nodes.iter().find(|n| n.kind == klipp_nodes::NodeKind::Corrector).and_then(|n| n.params.correction_blend);
+        let (mut s, _, _) = state();
+        s.sequences[0].timeline_grade_slot().set(Some(klipp_nodes::NodeGraph::default()));
+        let root = Root::TimelineGrade { sequence: s.sequences[0].id.0 };
+        let node = s.sequences[0].root_grade(root).unwrap().unwrap().nodes.iter().find(|n| n.kind == klipp_nodes::NodeKind::Corrector).unwrap().id;
+        let held = |s: &mut crate::state::AppState| {
+            let mut fresh = None;
+            let id = stand_in_grade_on(&mut s.sequences[0], GradeStandIn::Timeline, &mut fresh).unwrap();
+            let proxy = s.sequences[0].all_clips().find(|c| c.id == id).unwrap().clone();
+            stand_down_timeline_grade_on(&mut s.sequences[0], &mut fresh);
+            proxy
+        };
+        assert!(!held(&mut s).holds_grade_mix(), "no mix yet");
+        assert_eq!(s.path_command(&AppCommand::SetMixAt { addr: NodePath::new(root, [node]), mix: Some(0.5) }), Some(true));
+        let proxy = held(&mut s);
+        assert!(proxy.holds_grade_mix());
+        assert!(crate::state::AttributesClipboard::of(&proxy).grade_mix_held);
+
+        // Why: on a clip it draws, and a save doesn't keep it.
+        let t = |secs: f64| klipp_core::RationalTime::from_secs_f64(secs, 25);
+        let mut plain = klipp_timeline::Clip::media(klipp_core::MediaId::new(), t(5.0), t(7.0), t(0.0), t(2.0));
+        plain.set_grade(plain.grade().with_grade_of(proxy.grade()));
+        assert!(blend(&plain.grade_to_run()).is_some(), "it draws");
+        let id = plain.id;
+        let v1 = s.sequences[0].tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
+        s.sequences[0].tracks[v1].clips.push(plain);
+        let dir = std::env::temp_dir().join(format!("klipp-stand-in-mix-{}", uuid::Uuid::new_v4()));
+        klipp_project::save_project(&dir, &s.sequences, &s.media_pool).unwrap();
+        let (sequences, ..) = klipp_project::load_project_strict(&dir).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(blend(&sequences[0].all_clips().find(|c| c.id == id).unwrap().grade_to_run()).is_none(), "and doesn't save");
+    }
+
     /// Copy Attributes notes a grade it can't carry whole, so its paste
     /// of the grade is refused rather than made at full strength.
     #[test]
