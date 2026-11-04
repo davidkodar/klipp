@@ -1090,7 +1090,7 @@ impl KlippApp {
         if self.clip_track_is_locked(&clip_id) { return; }
         // The selection's removal, for one clip (#3060).
         if let Err(why) = super::selection_removal::remove_clips(&mut self.state, &[clip_id], false, "Remove Clip") {
-            self.state.toast.show(format!("Remove unchanged: {why}. Unlock the linked track or use Lift to leave a gap."));
+            self.state.toast.show(super::selection_removal::refused_removal(&why, false, &self.key_bindings.display_for("lift_clip"), false));
             return;
         }
         self.state.media_usage_cache_dirty = true;
