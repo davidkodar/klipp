@@ -639,6 +639,9 @@ impl KlippApp {
                     true
                 }
                 AppCommand::InsertSourceAtPlayhead | AppCommand::OverwriteEdit => {
+                    if super::source_edits::says_no_source(&mut self.state) {
+                        return true;
+                    }
                     if let Some(mid) = self.state.source_media_id {
                         if self.maybe_prompt_framerate_mismatch(&mid, cmd.clone()) {
                             return true;
@@ -734,6 +737,9 @@ impl KlippApp {
                     true
                 }
                 AppCommand::InsertEdit => {
+                    if super::source_edits::says_no_source(&mut self.state) {
+                        return true;
+                    }
                     // Ripple insert: push existing clips right, then insert source clip
                     if let Some(mid) = self.state.source_media_id {
                         if self.maybe_prompt_framerate_mismatch(&mid, cmd.clone()) {
