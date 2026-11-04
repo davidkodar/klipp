@@ -4662,7 +4662,7 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
                     let names = crate::title_style::names(seq.brief.as_ref());
                     refuse(i, format!("\"{name}\" is not a title style"), format!("the styles are {}; set_brief with type_styles adds one", names.join(", ")))
                 })?),
-                None => None,
+                None => brand_look(seq.brief.as_ref()),
             };
             let look = look.unwrap_or_default();
             let motion = crate::title_style::effective_motion(&look, enter.as_ref(), exit.as_ref(), animate.as_deref(), animate_secs.map(f64::from), stagger.as_deref(), *secs)
@@ -7928,6 +7928,47 @@ fn label_name(label: &str) -> String {
 /// the sequences it needs copied in first; its parameters set from
 /// `fields` by name or label. One step.
 #[allow(clippy::too_many_arguments)]
+/// The brief's look of `name` when the brief sets one of its own (a
+/// brand kit taken in, or set_brief): not Klipp's built-in of that name.
+fn brief_look<'a>(brief: Option<&'a klipp_timeline::Brief>, name: &str) -> Option<&'a klipp_timeline::TypeStyle> {
+    brief?.type_styles.iter().find(|s| s.name.trim().eq_ignore_ascii_case(name))
+}
+
+/// What a title made with no style takes from the brand (#2722): the
+/// font, colour and backing fill of the brief's heading look, never its
+/// size, place or motion, so a plain title is the brand's without moving.
+/// `None` when the brief sets no heading of its own.
+fn brand_look(brief: Option<&klipp_timeline::Brief>) -> Option<klipp_timeline::TypeStyle> {
+    let heading = brief_look(brief, "heading")?;
+    Some(klipp_timeline::TypeStyle { name: heading.name.clone(), font: heading.font.clone(), color: heading.color.clone(), fill: heading.fill.clone(), ..Default::default() })
+}
+
+/// A lower third in the brand's look (#2722): the name in the brief's
+/// heading font and colour, the role in its callout font, and a box
+/// backing in its card fill, where the brief sets those looks.
+fn brand_lower_third(brief: Option<&klipp_timeline::Brief>, td: &mut klipp_timeline::TitleData) {
+    let (heading, callout, card) = (brief_look(brief, "heading"), brief_look(brief, "callout"), brief_look(brief, "card"));
+    let mut texts = td.objects.iter_mut().filter_map(|o| match &mut o.content {
+        klipp_timeline::TitleObjectContent::TextBox(tb) => Some(tb),
+        _ => None,
+    });
+    if let (Some(name), Some(h)) = (texts.next(), heading) {
+        if let Some(f) = h.font.as_ref().filter(|f| !f.trim().is_empty()) {
+            name.font_name = f.clone();
+        }
+        if let Some(c) = h.color.as_deref().and_then(parse_color) {
+            name.color = c;
+        }
+    }
+    if let (Some(role), Some(f)) = (texts.next(), callout.and_then(|c| c.font.as_ref()).filter(|f| !f.trim().is_empty())) {
+        role.font_name = f.clone();
+    }
+    if let (klipp_timeline::TitleBackground::Color { color, .. }, Some(c)) = (&mut td.background, card.and_then(|c| c.fill.as_deref()).and_then(parse_color)) {
+        // The brand's colour at the box's own see-through.
+        *color = [c[0], c[1], c[2], color[3]];
+    }
+}
+
 /// `td` lifted until it ends above the player of the platform `seq` is
 /// made for, along the frame's bottom (YouTube's progress bar and
 /// controls): a built-in lower third sat under them. Never past the
@@ -14349,7 +14390,8 @@ fn lower_third(
         }
         None => text_track_in_view(seq, tl_in, tl_out),
     };
-    let td = lower_third_made(name, role, place).map_err(|e| refuse(i, format!("the lower third couldn't be made: {e}"), "report it"))?;
+    let mut td = lower_third_made(name, role, place).map_err(|e| refuse(i, format!("the lower third couldn't be made: {e}"), "report it"))?;
+    brand_lower_third(seq.brief.as_ref(), &mut td);
     let clip = title_clip(td, tl_in, tl_out, fps);
     let id = clip.id;
     let what = format!(
@@ -15991,6 +16033,67 @@ mod tests {
         assert!(resolve(&seq, &pool, &[op(Some("card"), None)]).is_ok());
         let err = resolve(&seq, &pool, &[op(Some("banner"), None)]).unwrap_err();
         assert!(format!("{err:?}").contains("kicker"), "{err:?}");
+    }
+
+    /// A brief with the brand's own looks, as a brand kit leaves it.
+    fn branded() -> klipp_timeline::Brief {
+        use klipp_timeline::TypeStyle;
+        let look = |name: &str, font: &str| TypeStyle { name: name.into(), font: Some(font.into()), color: Some("#ff8800".into()), size: Some(72.0), y: Some(0.1), animate: Some("rise".into()), ..Default::default() };
+        let mut card = look("card", "Oswald");
+        card.fill = Some("#002244".into());
+        klipp_timeline::Brief { brand_colors: vec!["#ff8800".into()], type_styles: vec![look("heading", "Oswald"), look("callout", "Lora"), card], ..Default::default() }
+    }
+
+    /// A title made after a brand kit is taken in, with no style named,
+    /// is in the brand's font and colour, where and as big as a plain
+    /// title is: it was in Klipp's own look, as if no kit were there.
+    /// With no look of the brief's own, a plain title is as it was.
+    #[test]
+    fn a_plain_title_takes_the_brands_font_and_colour_not_its_place() {
+        let made = |brief: Option<klipp_timeline::Brief>| {
+            let (mut seq, pool, ..) = fixture();
+            seq.brief = brief;
+            let op = Op::Title { text: "Now".into(), at: Anchor::Secs(1.0), style: None, secs: 2.0, track: None, x: None, y: None, size: None, color: None, font: None, bold: None, align: None, backing: None, backing_color: None, full_frame: None, outline: None, outline_color: None, glow: None, glow_color: None, gradient: None, animate: None, enter: None, exit: None, animate_secs: None, stagger: None, loop_effect: None, glitch: None, chromatic: None, roll_shape: None, edge_fade: None, over_faces: false, shadow: None, typeset: Default::default() };
+            let plan = resolve(&seq, &pool, &[op]).unwrap_or_else(|r| panic!("{}", r.why));
+            let EditCommand::AddTitleClip { clip, .. } = &plan.steps[plan.steps.len() - 1].edit else { panic!("a title is a clip") };
+            let ClipKind::Title(td) = &clip.kind else { panic!("a title") };
+            td.clone()
+        };
+        let plain = made(None);
+        let brand = made(Some(branded()));
+        let (p, b) = (plain.primary_text().unwrap(), brand.primary_text().unwrap());
+        assert_eq!((b.font_name.as_str(), b.color), ("Oswald", [255, 136, 0, 255]), "the brand's font and colour");
+        assert_eq!(b.font_size, p.font_size, "its size is a plain title's, not the heading's");
+        assert!((brand.objects[0].transform.center.y - plain.objects[0].transform.center.y).abs() < 1e-6, "its place is a plain title's");
+        let mut unbranded = branded();
+        unbranded.type_styles.clear();
+        assert_eq!(serde_json::to_value(made(Some(unbranded)).objects).unwrap(), serde_json::to_value(&plain.objects).unwrap(), "no look of the brief's own, no change");
+    }
+
+    /// A lower third made after a brand kit is taken in has the name in
+    /// the brand's heading font and colour, the role in its callout font,
+    /// and its box in the card's fill.
+    #[test]
+    fn a_lower_third_takes_the_brands_look() {
+        let made = |brief: Option<klipp_timeline::Brief>| {
+            let (mut seq, pool, ..) = fixture();
+            seq.brief = brief;
+            let op = Op::LowerThird { name: "Ada Lovelace".into(), role: Some("Engineer".into()), at: Anchor::Secs(0.5), secs: 2.0, track: None, side: None, x: None, y: None, backing: Some("box".into()), in_picture: false };
+            let plan = resolve(&seq, &pool, &[op]).unwrap_or_else(|r| panic!("{}", r.why));
+            let EditCommand::AddTitleClip { clip, .. } = &plan.steps[plan.steps.len() - 1].edit else { panic!("a title is a clip") };
+            let ClipKind::Title(td) = &clip.kind else { panic!("a title") };
+            td.clone()
+        };
+        let texts = |td: &klipp_timeline::TitleData| -> Vec<(String, [u8; 4])> {
+            td.objects.iter().filter_map(|o| match &o.content { klipp_timeline::TitleObjectContent::TextBox(tb) => Some((tb.font_name.clone(), tb.color)), _ => None }).collect()
+        };
+        let plain = made(None);
+        let brand = made(Some(branded()));
+        assert_eq!(texts(&brand)[0], ("Oswald".to_string(), [255, 136, 0, 255]), "the name in the heading's font and colour");
+        assert_eq!(texts(&brand)[1].0, "Lora", "the role in the callout's font");
+        assert_eq!(texts(&brand)[1].1, texts(&plain)[1].1, "the role keeps its own colour");
+        let (klipp_timeline::TitleBackground::Color { color: b, .. }, klipp_timeline::TitleBackground::Color { color: p, .. }) = (&brand.background, &plain.background) else { panic!("a box backing: {:?}", brand.background) };
+        assert_eq!((b[0], b[1], b[2], b[3]), (0x00, 0x22, 0x44, p[3]), "the box in the card's fill, as see-through as it was");
     }
 
     /// #1567: a type style's shadow reaches the titles made in it, and a
