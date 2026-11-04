@@ -7373,16 +7373,10 @@ pub(crate) fn wrap_lines(text: &str, max_chars: usize, max_lines: usize) -> Stri
     lines.join("\n")
 }
 
-/// A caption's size, in the 1080-line units a title's size is in, and
-/// the height of its line, for `frame` (#2427): low on a wide frame; on
-/// a tall one larger, and up in the lower third, clear of the controls a
-/// phone puts at the bottom.
+/// A caption's size and the height of its line for `frame`
+/// ([`klipp_timeline::title_box::caption_look`]).
 pub(crate) fn caption_look(frame: klipp_core::Resolution) -> (f32, f32) {
-    if frame.height as f32 > frame.width as f32 * 1.2 {
-        (58.0, 0.72)
-    } else {
-        (40.0, 0.88)
-    }
+    klipp_timeline::title_box::caption_look(frame)
 }
 
 /// How far past its even share [`wrap_lines`] lets a line run.

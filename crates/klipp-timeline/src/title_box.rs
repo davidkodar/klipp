@@ -41,3 +41,17 @@ pub fn text_extent(text: &str, size: f32, frame: klipp_core::Resolution) -> (f32
     // inside that.
     ((longest * px * 0.55 / w).min(0.9), (lines * px * 1.3 / h).min(0.9))
 }
+
+/// A caption's size, in the 1080-line units a title's size is in, and
+/// the height of its line, for `frame` (#2427): low on a wide frame; on
+/// a tall one larger, and up in the lower third, clear of the controls a
+/// phone puts at the bottom. What a caption made for the frame looks
+/// like, and what an export to a frame of another shape lays captions
+/// out by.
+pub fn caption_look(frame: klipp_core::Resolution) -> (f32, f32) {
+    if frame.height as f32 > frame.width as f32 * 1.2 {
+        (58.0, 0.72)
+    } else {
+        (40.0, 0.88)
+    }
+}
