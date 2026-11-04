@@ -291,6 +291,13 @@ pub struct FrameMeasure {
     /// parade shows as a channel flat against the top or the bottom.
     #[serde(default)]
     pub gamut_clip_pct: f32,
+    /// The part of `gamut_clip_pct` pinned at the top: a channel at full
+    /// while another is not. Only this is what brightening pushes further;
+    /// a channel at zero in a warm shadow moves off the rail as the picture
+    /// is lifted, and counted as "already at white" it kept a dark shot
+    /// from being brightened at all. Read by the holds, not reported.
+    #[serde(skip)]
+    pub gamut_hi_pct: f32,
     pub faces: Vec<FaceMeasure>,
     /// Every skin-coloured pixel in the frame read together, for a frame
     /// with no detected person: rougher than a face (clothes and wood
@@ -709,7 +716,7 @@ fn measure_picture(rgba: &[u8], width: u32, height: u32, faces: &[[f32; 4]]) -> 
     let mut mids: Vec<(f32, f32, f32)> = Vec::new();
     let (mut skin_h, mut skin_c, mut skin_l): (Vec<f32>, Vec<f32>, Vec<f32>) = (Vec::new(), Vec::new(), Vec::new());
     let (mut sky_c, mut leaf_c): (Vec<f32>, Vec<f32>) = (Vec::new(), Vec::new());
-    let (mut clip_hi, mut clip_lo, mut gamut_clip, mut n) = (0usize, 0usize, 0usize, 0usize);
+    let (mut clip_hi, mut clip_lo, mut gamut_clip, mut gamut_hi, mut n) = (0usize, 0usize, 0usize, 0usize, 0usize);
     let mut i = 0;
     while i < total && rgba.len() >= (i + 1) * 4 {
         let p = i * 4;
@@ -733,6 +740,9 @@ fn measure_picture(rgba: &[u8], width: u32, height: u32, faces: &[[f32; 4]]) -> 
         let (mx, mn) = (r.max(g).max(b), r.min(g).min(b));
         if (mx == 255 && mn < 240) || (mn == 0 && mx > 15) {
             gamut_clip += 1;
+        }
+        if mx == 255 && mn < 240 {
+            gamut_hi += 1;
         }
         if c.l >= 20.0 && c.l <= 90.0 {
             mids.push((c.chroma(), c.a, c.b));
@@ -823,6 +833,7 @@ fn measure_picture(rgba: &[u8], width: u32, height: u32, faces: &[[f32; 4]]) -> 
         noise_l,
         banding_pct,
         gamut_clip_pct: gamut_clip as f32 / nn * 100.0,
+        gamut_hi_pct: gamut_hi as f32 / nn * 100.0,
         chroma_mean: if chromas.is_empty() { 0.0 } else { chromas.iter().sum::<f32>() / chromas.len() as f32 },
         chroma_p95: percentile(&chromas, 0.95),
         cast_a: median(&mut na),
@@ -2073,10 +2084,11 @@ pub fn primaries_toward(m: &FrameMeasure, t: &LookTarget) -> PrimaryStep {
     // Never brighten a picture that is already losing its highlights:
     // chasing a mid-grey target by exposure alone blows the window and
     // the sky, and no colourist trades detail for a number.
-    // Nor one with a colour already pinned at the rail: at white counts
-    // the picture's luma since #459, and a saturated sky's pinned blue
-    // is gamut, not white, but brightening pushes it further all the same.
-    let clipping = m.clip_hi_pct > 1.0 || m.gamut_clip_pct > GAMUT_WARN;
+    // Nor one with a colour already pinned at the top of the rail: at
+    // white counts the picture's luma since #459, and a saturated sky's
+    // pinned blue is gamut, not white, but brightening pushes it further
+    // all the same. A channel at zero is not held: lifting moves it off.
+    let clipping = m.clip_hi_pct > 1.0 || m.gamut_hi_pct > GAMUT_WARN;
     if !t.screencast {
         // L* at the bottom: about 0.012 lift per L*. Not toward a target
         // the scene has nothing dark enough to reach (#1896), unless the
@@ -2289,11 +2301,31 @@ mod tests {
         assert!(!with(&log, LogPrior::NeverLog));
     }
 
+    /// A dark warm shot whose shadows have their blue at zero, a channel
+    /// on the bottom of the rail, is still brightened toward the look's
+    /// middle: lifting moves that channel off the rail. Counted as
+    /// "already at white", it held a match and auto colour back and left
+    /// the shot 13 L* under its reference. A sky pinned at the top is
+    /// still held.
+    #[test]
+    fn a_channel_at_zero_does_not_hold_brightening() {
+        let (w, h) = (100u32, 100u32);
+        let frame = |odd: [u8; 4]| (0..w * h).flat_map(|i| if i % 10 < 2 { odd } else { [110, 110, 110, 255] }).collect::<Vec<u8>>();
+        let look = LookTarget { mid_l: Some(60.0), ..LookTarget::default() };
+        let warm = measure_frame(&frame([60, 30, 0, 255]), w, h, &[]);
+        assert!(warm.gamut_clip_pct > GAMUT_WARN && warm.gamut_hi_pct < 0.1, "blue at zero is gamut, not the top: {:.1}% / {:.1}%", warm.gamut_clip_pct, warm.gamut_hi_pct);
+        let step = primaries_toward(&warm, &look);
+        assert!(step.exposure > 0.05 && !step.held_for_highlights, "brightened toward L* 60 from {:.1}: {step:?}", warm.l_p50);
+        let sky = measure_frame(&frame([0, 120, 255, 255]), w, h, &[]);
+        assert!(sky.gamut_hi_pct > GAMUT_WARN, "{:.1}%", sky.gamut_hi_pct);
+        assert!(primaries_toward(&sky, &look).exposure <= 0.0, "a sky at the top is not pushed further");
+    }
+
     #[test]
     fn a_pinned_sky_is_not_brightened_further() {
         // #607 review: a sky whose blue is on the rail is not at white,
         // and still must not be pushed.
-        let dark = FrameMeasure { l_p50: 30.0, l_p95: 60.0, l_p99: 70.0, gamut_clip_pct: 10.0, ..FrameMeasure::default() };
+        let dark = FrameMeasure { l_p50: 30.0, l_p95: 60.0, l_p99: 70.0, gamut_clip_pct: 10.0, gamut_hi_pct: 10.0, ..FrameMeasure::default() };
         let s = primaries_toward(&dark, &LookTarget { mid_l: Some(50.0), ..LookTarget::default() });
         assert!(s.exposure <= 0.0 && s.gain <= 0.0, "{s:?}");
     }
