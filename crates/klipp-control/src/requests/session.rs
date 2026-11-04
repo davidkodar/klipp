@@ -68,6 +68,21 @@ pub(crate) fn respond(
                 });
                 return Ok(response);
             }
+            // Proxies: each of its files not made yet. A file made stays.
+            if let Some(media_ids) = jobs::proxies_of(&job_id) {
+                let failed: Vec<klipp_core::MediaId> = ctx.shared.proxies.lock().recovered().failed.iter().map(|(id, _)| *id).collect();
+                let making: Vec<klipp_core::MediaId> = {
+                    let pool = ctx.media_pool.read().recovered();
+                    media_ids.into_iter().filter(|id| !failed.contains(id) && pool.get(id).is_some_and(|m| !m.proxy_on_disk())).collect()
+                };
+                if making.is_empty() {
+                    return Err(format!("proxies {job_id} have ended; nothing cancelled"));
+                }
+                let commands = making.iter().map(|id| AppCommand::CancelProxy { media_id: *id }).collect();
+                send_envelope(ctx, commands, false)?;
+                return Ok(json!({ "job_id":job_id, "kind":"proxies", "cancel_requested":true,
+                    "next":"Read job_status until it reports a terminal state; proxies already made are kept." }));
+            }
             // A caption translation (#2213): stopped between two lines.
             if klipp_ml_candle::translation::jobs::get(&job_id).is_some() {
                 klipp_ml_candle::translation::jobs::cancel(&job_id)?;
