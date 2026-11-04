@@ -94,7 +94,9 @@ For an existing Mask, use `set` with its path, `key:"masks"` and the stack above
 as `value`. `{"masks":[]}` clears shapes. Read `value_format` on the catalog's
 Mask `masks` parameter for Circle, Rectangle, LinearGradient and Bezier formats.
 At most 16 shapes and 3–256 points per Bezier are accepted. Coordinates, sizes,
-feather and opacity are 0..1; rotation is −180..180 degrees. Values must be
+feather and opacity are 0..1; a Rectangle's width and height are both shares of
+the frame's width, so a height of 0.4 covers about 71% of a 16:9 frame's height.
+Rotation is −180..180 degrees. Values must be
 finite. Unknown fields, non-empty keyframes and tracking are refused; this
 operation currently handles static shapes.
 
