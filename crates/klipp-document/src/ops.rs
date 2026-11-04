@@ -1715,9 +1715,10 @@ pub enum Op {
     Refit {
         #[serde(default = "default_true")]
         markers: bool,
-        /// Every other picture on a track pushed in this much further
-        /// than it fills (#2720), so the jump between two pieces of one
-        /// shot reads as a cut; 1.1 to 1.3, none by default.
+        /// Every other piece of a shot pushed in this much further than it
+        /// fills (#2720), so the jump between two pieces reads as a cut; 1.1
+        /// to 1.3, none by default. A piece follows the one before on its
+        /// track and goes on in the same file; a shot alone isn't pushed in.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         punch: Option<f32>,
         /// Clips left as they are framed (#2724): a version rebuilt from
@@ -10193,6 +10194,9 @@ fn refit(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts, i: usi
     let mut shrunk: Vec<String> = Vec::new();
     for (ti, track) in seq.tracks.iter().enumerate().filter(|(_, t)| !t.locked) {
         let mut pictures = 0usize;
+        // The picture before: its file, and where it ends on the timeline
+        // and in the file.
+        let mut before: Option<(MediaId, f64, f64)> = None;
         for clip in &track.clips {
             // A caption takes the caption look of the new frame, its lines
             // wrapped again to fit, unless its track has a style of its
@@ -10242,8 +10246,16 @@ fn refit(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts, i: usi
                 _ => own,
             };
             let scale = fill.max(own).max(1.0);
-            // Every other picture pushed in further, its jump a cut. A
-            // piece too short to read keeps the one before's push, so the
+            // Every other piece of a shot pushed in further, its jump a cut.
+            // The count starts again at each shot: it ran on along the track,
+            // and pushed in a shot of another file, never cut (FC8). A piece
+            // follows the one before on the timeline and goes on in its file.
+            let goes_on = before.is_some_and(|(file, ends, file_ends)| file == *media_id && (secs(clip.timeline_in) - ends).abs() < 1e-3 && secs(clip.source_in) >= file_ends - 1e-3);
+            if !goes_on {
+                pictures = 0;
+            }
+            before = Some((*media_id, secs(clip.timeline_out), secs(clip.source_out)));
+            // A piece too short to read keeps the one before's push, so the
             // picture doesn't jump in and out within a moment (#3441).
             if secs(clip.timeline_out) - secs(clip.timeline_in) >= PUNCH_MIN_SECS || pictures == 0 {
                 pictures += 1;
