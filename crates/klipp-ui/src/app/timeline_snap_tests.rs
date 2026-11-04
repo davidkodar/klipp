@@ -303,12 +303,13 @@ fn span(state: &AppState, id: ClipId) -> (RationalTime, RationalTime) {
     (c.timeline_in, c.timeline_out)
 }
 
-/// A roll of the cut between two clips snaps to a marker as a move does:
-/// let go 4 points short of it, the cut is on it. It used to snap to the
-/// playhead only, at its own 8 points.
+/// A roll of the cut between two clips (the Trim tool) snaps to a marker
+/// as a move does: let go 4 points short of it, the cut is on it. It used
+/// to snap to the playhead only, at its own 8 points.
 #[test]
 fn a_roll_snaps_to_a_marker() {
-    let (state, ids) = clips_on_video_2(&[(0.0, 2.0), (2.0, 4.0)]);
+    let (mut state, ids) = clips_on_video_2(&[(0.0, 2.0), (2.0, 4.0)]);
+    state.active_tool = klipp_core::Tool::Trim;
     let mut tl = Timeline::new(state);
     let v2 = tl.track("Video 2");
     let cut = tl.at(v2, 2.0);
