@@ -2060,11 +2060,20 @@ pub struct PrimaryStep {
 /// and clipped the window, 6.6% of the frame (#501).
 pub const HIGHLIGHT_HEADROOM_L: f32 = 97.0;
 
+/// Relative luminance (0 to 1) of a CIE lightness L*.
+fn luminance_of_l(l: f32) -> f32 {
+    let f = (l + 16.0) / 116.0;
+    if l > 8.0 { f * f * f } else { l / 903.3 }
+}
+
 /// How many stops `m` can be brightened before a large part of it goes
-/// to white: at about 15 L* a stop, the room above its 95th percentile
-/// up to [`HIGHLIGHT_HEADROOM_L`].
+/// to white: until its 95th percentile reaches [`HIGHLIGHT_HEADROOM_L`],
+/// reckoned in light, which a stop doubles. Near white a stop is far
+/// more than the 15 L* it is in the middle (L* 87 goes to 99 in half a
+/// stop), and counted at 15 the room above a bright shot was overstated:
+/// a grade took it to white and a fifth of it to the rail.
 pub fn exposure_headroom(m: &FrameMeasure) -> f32 {
-    ((HIGHLIGHT_HEADROOM_L - m.l_p95) / 15.0).max(0.0)
+    (luminance_of_l(HIGHLIGHT_HEADROOM_L) / luminance_of_l(m.l_p95).max(1e-4)).log2().max(0.0)
 }
 
 pub fn primaries_toward(m: &FrameMeasure, t: &LookTarget) -> PrimaryStep {
@@ -2114,9 +2123,9 @@ pub fn primaries_toward(m: &FrameMeasure, t: &LookTarget) -> PrimaryStep {
                 s.exposure = s.exposure.min(0.0);
                 s.gain = s.gain.min(0.0);
             }
-            // Nor brighten one into losing them: at about 15 L* a stop,
-            // the headroom above the 95th percentile says how far it can
-            // go before a large part of the frame is white.
+            // Nor brighten one into losing them: the headroom above the
+            // 95th percentile, in light, says how far it can go before a
+            // large part of the frame is white.
             let room = exposure_headroom(m);
             if s.exposure > room + 0.01 {
                 s.exposure = room;
@@ -2289,6 +2298,29 @@ mod tests {
         assert!(!with(&log, LogPrior::NeverLog));
     }
 
+    /// Brightened by its headroom, a bright shot's 95th percentile lands
+    /// at the headroom's L*, not past it: the frame below is grey from
+    /// L* 40 to 87, brightened in light by the stops the headroom gives,
+    /// and measured again. Reckoned at 15 L* a stop, the headroom took it
+    /// to white.
+    #[test]
+    fn brightening_by_the_headroom_stops_at_its_lightness() {
+        let (w, h) = (100u32, 100u32);
+        let ramp: Vec<f32> = (0..w * h).map(|i| 40.0 + 47.0 * (i as f32 / (w * h - 1) as f32)).collect();
+        let frame = |gain: f32| ramp.iter().flat_map(|&l| {
+            let y = (luminance_of_l(l) * gain).min(1.0);
+            let v = (crate::transfer::linear_to_srgb(y) * 255.0).round() as u8;
+            [v, v, v, 255]
+        }).collect::<Vec<u8>>();
+        let before = measure_frame(&frame(1.0), w, h, &[]);
+        assert!((before.l_p95 - 85.0).abs() < 2.0, "the bright end: L* {:.1}", before.l_p95);
+        let room = exposure_headroom(&before);
+        let after = measure_frame(&frame(2f32.powf(room)), w, h, &[]);
+        assert!(after.l_p95 <= HIGHLIGHT_HEADROOM_L + 0.6, "{room:.2} stops took the 95th percentile to L* {:.1}", after.l_p95);
+        assert!(after.l_p95 >= HIGHLIGHT_HEADROOM_L - 1.5, "and used the room: L* {:.1}", after.l_p95);
+        assert!(after.clip_hi_pct < 1.0, "nothing to speak of at white: {:.1}%", after.clip_hi_pct);
+    }
+
     #[test]
     fn a_pinned_sky_is_not_brightened_further() {
         // #607 review: a sky whose blue is on the rail is not at white,
@@ -2308,7 +2340,9 @@ mod tests {
         let bright_window = FrameMeasure { l_p50: 40.0, l_p95: 88.0, l_p99: 95.0, faces: vec![face.clone()], ..FrameMeasure::default() };
         let s = primaries_toward(&bright_window, &target);
         assert!(s.held_for_highlights, "{s:?}");
-        assert!((s.exposure - 0.6).abs() < 0.01, "9 L* of headroom is 0.6 stop: {s:?}");
+        // 9 L* of headroom near white is a third of a stop in light,
+        // not the 0.6 that 15 L* a stop gave (Y 0.72 to 0.92).
+        assert!((s.exposure - 0.36).abs() < 0.01, "88 to 97 L* is 0.36 stop: {s:?}");
         let dim_room = FrameMeasure { l_p50: 30.0, l_p95: 60.0, l_p99: 70.0, faces: vec![face], ..FrameMeasure::default() };
         let s = primaries_toward(&dim_room, &target);
         assert!(!s.held_for_highlights && s.exposure > 1.4, "{s:?}");
