@@ -336,8 +336,13 @@ pub fn parse_srt_vtt(content: &str) -> Vec<SubtitleEntry> {
         if line.contains("-->") {
             let parts: Vec<&str> = line.split("-->").collect();
             if parts.len() == 2 {
+                // The end time, then a VTT cue's settings (line:80%,
+                // align:start), which were read as part of the time, so
+                // the cue was dropped.
+                let mut after = parts[1].split_whitespace();
                 let start = parse_srt_timestamp(parts[0].trim());
-                let end = parse_srt_timestamp(parts[1].trim());
+                let end = after.next().and_then(parse_srt_timestamp);
+                let placement = cue_settings(after);
                 if let (Some(s), Some(e)) = (start, end) {
                     // Collect text lines until blank line
                     let mut text_lines = Vec::new();
@@ -350,7 +355,7 @@ pub fn parse_srt_vtt(content: &str) -> Vec<SubtitleEntry> {
                     // Its tags as styled runs (#1515).
                     let (text, spans) = styled::parse_markup(&text);
                     if !text.is_empty() && cue_times_ok(s, e) {
-                        subs.push(SubtitleEntry { start_secs: s, end_secs: e, text, spans, placement: Placement::default() });
+                        subs.push(SubtitleEntry { start_secs: s, end_secs: e, text, spans, placement });
                     }
                     continue;
                 }
@@ -359,6 +364,43 @@ pub fn parse_srt_vtt(content: &str) -> Vec<SubtitleEntry> {
         i += 1;
     }
     subs
+}
+
+/// Where a VTT cue's settings put it, as far as a caption's placement
+/// holds: `line` as a percentage is its height on the frame (with
+/// `position` as a percentage its place across), a line number counted
+/// from the top puts it in the top band and one from the bottom leaves it
+/// low; `align` is the side its text is set to. `size`, `vertical` and
+/// anything else are let go; the cue is kept either way.
+fn cue_settings<'a>(settings: impl Iterator<Item = &'a str>) -> Placement {
+    let percent = |v: &str| v.strip_suffix('%').and_then(|n| n.parse::<f32>().ok()).filter(|n| (0.0..=100.0).contains(n)).map(|n| n / 100.0);
+    let (mut line, mut top, mut position, mut side) = (None, false, None, None);
+    for setting in settings {
+        let Some((key, value)) = setting.split_once(':') else { continue };
+        // A value may carry its own alignment after a comma (line:80%,end).
+        let value = value.split(',').next().unwrap_or(value);
+        match key {
+            "line" => match percent(value) {
+                Some(y) => line = Some(y),
+                None => top = value.parse::<i32>().is_ok_and(|n| n >= 0),
+            },
+            "position" => position = percent(value),
+            "align" => {
+                side = match value {
+                    "start" | "left" => Some(1),
+                    "center" | "middle" => Some(2),
+                    "end" | "right" => Some(3),
+                    _ => None,
+                }
+            }
+            _ => {}
+        }
+    }
+    match line {
+        Some(y) => Placement { pos: Some((position.unwrap_or(0.5), y)), align: Some(side.unwrap_or(2)) },
+        None if top => Placement { pos: None, align: Some(6 + side.unwrap_or(2)) },
+        None => Placement { pos: None, align: side.filter(|&s| s != 2) },
+    }
 }
 
 /// Parse "HH:MM:SS,mmm" or "HH:MM:SS.mmm" or "MM:SS.mmm" to seconds.
@@ -581,6 +623,22 @@ Second VTT cue
     fn parse_empty_file() {
         let subs = parse_srt_vtt("");
         assert!(subs.is_empty());
+    }
+
+    /// A VTT cue with settings after its time is kept, and where they say
+    /// it sits is kept as far as a caption's placement holds; settings it
+    /// can't hold are let go, the cue with them.
+    #[test]
+    fn vtt_cue_settings_keep_the_cue_and_its_place() {
+        let vtt = "WEBVTT\n\n00:00:01.000 --> 00:00:03.000 line:80% align:start\nLow, set left\n\n00:00:03.520 --> 00:00:05.040\nPlain\n\nNOTE a note\n\n00:00:06.000 --> 00:00:09.000 align:end size:50% vertical:rl\nSet right\n\n00:00:09.000 --> 00:00:10.000 line:0 position:30%\nOn top\n\n00:00:10.000 --> 00:00:11.000 line:20%,end position:25%\nUp left of centre\n";
+        let subs = parse_srt_vtt(vtt);
+        assert_eq!(subs.iter().map(|s| s.text.as_str()).collect::<Vec<_>>(), ["Low, set left", "Plain", "Set right", "On top", "Up left of centre"], "every cue kept");
+        assert_eq!(subs[0].placement, Placement { pos: Some((0.5, 0.8)), align: Some(1) });
+        assert_eq!(subs[1].placement, Placement::default());
+        assert_eq!(subs[2].placement, Placement { pos: None, align: Some(3) });
+        assert_eq!(subs[3].placement, Placement { pos: None, align: Some(8) });
+        assert_eq!(subs[4].placement, Placement { pos: Some((0.25, 0.2)), align: Some(2) });
+        assert_eq!((subs[0].start_secs, subs[0].end_secs), (1.0, 3.0));
     }
 
     #[test]
