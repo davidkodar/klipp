@@ -347,8 +347,7 @@ fn bounce_edits(seq: &klipp_timeline::Sequence, item: &klipp_media::MediaItem, p
     s.tracks[index + 1] = hidden;
 
     if let Some(sound) = sound {
-        // Its sound silenced where it was, and on a track of its own above
-        // the first track that held it.
+        // Its sound silenced where it was, and on a track of its own.
         let ids: std::collections::HashSet<_> = original.clips.iter().map(|c| c.id).collect();
         let linked = |c: &Clip| c.linked_clip_id.is_some_and(|l| ids.contains(&l)) || original.clips.iter().any(|vc| vc.linked_clip_id == Some(c.id));
         let mut first_sound = None;
@@ -363,8 +362,11 @@ fn bounce_edits(seq: &klipp_timeline::Sequence, item: &klipp_media::MediaItem, p
             edits.push(EditCommand::SetTrack { description: "Bounce", track_index: i, old: Box::new(t.clone()), new: Box::new(quiet.clone()) });
             s.tracks[i] = quiet;
         }
-        let at = first_sound.unwrap_or(s.tracks.len());
-        let mut audio = Track::new(&format!("{} (bounced)", original.name), TrackKind::Audio);
+        // Named for the track it replaces, below the sound tracks: one put
+        // among them would renumber those under it.
+        let name = first_sound.map_or_else(|| format!("{} sound (bounced)", original.name), |i| format!("{} (bounced)", s.tracks[i].name));
+        let at = s.tracks.iter().rposition(|t| t.kind == TrackKind::Audio).map_or(s.tracks.len(), |i| i + 1);
+        let mut audio = Track::new(&name, TrackKind::Audio);
         audio.clips = vec![sound];
         edits.push(EditCommand::AddTrack { index: at, track: audio.clone() });
         s.tracks.insert(at, audio);
@@ -382,8 +384,8 @@ mod tests {
 
     /// The edits: the media, a new track above with the clip (the track's
     /// opacity, the clips' blend mode), the original hidden below it, its
-    /// linked sound silenced and the bounced sound on a track above it,
-    /// linked to the picture.
+    /// linked sound silenced and the bounced sound on a track below the
+    /// sound tracks, linked to the picture.
     #[test]
     fn a_bounced_file_is_placed_above_the_track_it_replaces() {
         let mut v1 = Track::new("V1", TrackKind::Video);
@@ -414,16 +416,65 @@ mod tests {
             }
         }
         let names: Vec<&str> = after.tracks.iter().map(|t| t.name.as_str()).collect();
-        assert_eq!(names, ["V0", "V1 (bounced)", "V1", "V1 (bounced)", "A1"]);
+        assert_eq!(names, ["V0", "V1 (bounced)", "V1", "A1", "A1 (bounced)"]);
         let bounced = &after.tracks[1];
         assert_eq!((bounced.opacity, bounced.clips.len()), (0.7, 1));
         let clip = &bounced.clips[0];
         assert_eq!((clip.timeline_in, clip.timeline_out, clip.media_id(), clip.blend_mode), (tc(0), tc(30), Some(item.id), klipp_core::BlendMode::Screen));
         assert!(!after.tracks[2].visible && after.tracks[2].clips.len() == 2, "the original kept, hidden");
-        let sound = &after.tracks[3].clips[0];
+        let sound = &after.tracks[4].clips[0];
         assert_eq!((sound.linked_clip_id, clip.linked_clip_id), (Some(clip.id), Some(sound.id)), "the bounced sound linked to its picture");
-        assert!(!after.tracks[4].clips[0].enabled && after.tracks[4].clips[1].enabled, "the linked sound silenced, the rest of its track not");
+        assert!(!after.tracks[3].clips[0].enabled && after.tracks[3].clips[1].enabled, "the linked sound silenced, the rest of its track not");
         assert_eq!(edits.len(), 5, "pool, track, hide, silence, sound track");
+    }
+
+    /// Default-named tracks keep their numbers through a bounce and its
+    /// undo: the sound tracks aren't renumbered, and the bounced sound takes
+    /// its name from the sound it replaces, or says whose it is.
+    #[test]
+    fn a_bounce_leaves_the_sound_tracks_names_alone() {
+        let mut v1 = Track::new("Video 1", TrackKind::Video);
+        let mut pic = Clip::media(MediaId::new(), tc(0), tc(12), tc(0), tc(12));
+        let mut snd = Clip::media(MediaId::new(), tc(0), tc(12), tc(0), tc(12));
+        (pic.linked_clip_id, snd.linked_clip_id) = (Some(snd.id), Some(pic.id));
+        v1.clips = vec![pic];
+        let mut a1 = Track::new("Audio 1", TrackKind::Audio);
+        a1.clips = vec![snd];
+        let mut seq = klipp_timeline::Sequence::new_default();
+        seq.tracks = vec![v1.clone(), a1, Track::new("Audio 2", TrackKind::Audio)];
+        let item = klipp_media::MediaItem::synthetic_for_test("/p/media/bounces/V1.mov".into(), None);
+        let place = ToPlace { track_id: v1.id, name: "Video 1".into(), span: (tc(0), tc(12)), sound: true };
+        let edits = bounce_edits(&seq, &item, &place);
+        let before = seq.tracks.iter().map(|t| t.name.clone()).collect::<Vec<_>>();
+        let mut seqs = vec![seq];
+        let (mut pool, mut fps) = (klipp_media::MediaPool::new(), seqs[0].fps);
+        let mut view = klipp_document::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut pool, fps: &mut fps };
+        for e in &edits {
+            view.apply_forward(e);
+        }
+        for e in edits.iter().rev() {
+            let names = view.sequences[0].tracks.iter().map(|t| t.name.as_str()).collect::<Vec<_>>();
+            assert!(names.contains(&"Audio 1") && names.contains(&"Audio 2"), "{names:?}");
+            view.apply_inverse(e);
+        }
+        assert_eq!(view.sequences[0].tracks.iter().map(|t| t.name.clone()).collect::<Vec<_>>(), before, "undone");
+        for e in &edits {
+            view.apply_forward(e);
+        }
+        let names = view.sequences[0].tracks.iter().map(|t| t.name.as_str()).collect::<Vec<_>>();
+        assert_eq!(names, ["Video 1 (bounced)", "Video 1", "Audio 1", "Audio 2", "Audio 1 (bounced)"]);
+
+        // No sound track held it.
+        let mut alone = klipp_timeline::Sequence::new_default();
+        let mut v = Track::new("Video 1", TrackKind::Video);
+        v.clips = vec![Clip::media(MediaId::new(), tc(0), tc(12), tc(0), tc(12))];
+        alone.tracks = vec![v.clone()];
+        let place = ToPlace { track_id: v.id, name: "Video 1".into(), span: (tc(0), tc(12)), sound: true };
+        let added: Vec<String> = bounce_edits(&alone, &item, &place).iter().filter_map(|e| match e {
+            EditCommand::AddTrack { track, .. } if track.kind == TrackKind::Audio => Some(track.name.clone()),
+            _ => None,
+        }).collect();
+        assert_eq!(added, ["Video 1 sound (bounced)"]);
     }
 
     #[test]

@@ -356,3 +356,28 @@ fn a_side_node_wired_from_what_the_renderer_cannot_give_is_refused() {
     tried.apply_picture_ops(&[beside, from_source, into_mask]).unwrap_or_else(|e| panic!("from the source: {e}"));
     assert!(tried.is_picture_truth());
 }
+
+/// A grade node removed through the picture takes its place on the canvas
+/// with it, and a grade that still holds a place for a node it lost (as a
+/// file saved before can) is copied without it: pasting such a grade onto
+/// another clip panicked on the place, and took the app down.
+#[test]
+fn a_removed_grade_node_leaves_no_place_behind_and_a_stale_one_copies() {
+    let (mut c, qualifier, _) = clip();
+    let mut g = c.grade().clone();
+    g.node_positions.insert(qualifier, klipp_nodes::graph::NodePos { x: 100.0, y: -140.0 });
+    c.set_grade(g);
+    assert!(c.grade().node_positions.contains_key(&qualifier));
+    let grade = grade_group(&picture(&c));
+    c.apply_picture_ops(&[GraphOp::RemoveNode { path: at(&c, [grade, qualifier]) }]).unwrap();
+    assert!(!c.grade().nodes.iter().any(|n| n.id == qualifier), "removed");
+    assert!(!c.grade().node_positions.contains_key(&qualifier), "its place went with it");
+
+    let mut stale = c.grade().clone();
+    let gone = NodeId::new_v4();
+    stale.node_positions.insert(gone, klipp_nodes::graph::NodePos { x: 0.0, y: 0.0 });
+    let (copy, map) = stale.remap_ids_mapped();
+    assert_eq!(copy.node_positions.len(), stale.node_positions.len() - 1, "the stale place is not copied");
+    assert!(!map.contains_key(&gone));
+    assert!(copy.node_positions.keys().all(|id| map.values().any(|v| v == id)));
+}
