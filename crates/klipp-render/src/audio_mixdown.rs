@@ -673,10 +673,7 @@ fn clip_sound(clip: &AudioClipSnapshot, sample_rate: u32, fps_num: u64, fps_den:
         let want = ((end - start).max(0.0) * sample_rate as f64).ceil() as usize + 1;
         let from = (v.source_at(0.0) - clip.source_start_secs) * sample_rate as f64;
         buf = if v.keep_pitch && v.speed > 0.0 {
-            // On playback's grain grid: anchored at the clip's
-            // in, its sound starting `head_secs` before it.
-            let anchor = (v.source_in - clip.source_start_secs) * sample_rate as f64;
-            klipp_audio::dsp::stretch::Stretcher::new(anchor, v.speed).read(&buf, 2, (-v.head_secs * sample_rate as f64).round() as i64, want)
+            read_kept_pitch(&buf, &v, clip.source_start_secs, end - start, sample_rate, want)
         } else {
             klipp_audio::dsp::varispeed::read(&buf, 2, from, v.speed, want)
         };
@@ -882,6 +879,17 @@ fn shape_samples(samples: &mut [f32], shape: &AudioClipShape, clip_pos_ext: f64,
 /// for a kept-pitch stretcher's grain and the resampler's filter, so the
 /// clip's last sample sounds as it did when the whole file was read.
 const DECODE_MARGIN_SECS: f64 = 0.5;
+
+/// A forward clip's sound read with its pitch kept, from `buf`, which starts
+/// at `source_start` in the file, for `secs` of timeline. On playback's grain
+/// grid: anchored at the clip's in, its sound starting `head_secs` before it.
+/// A grain reads on past where it starts, so only what the clip plays is
+/// given to it: the sound after the Out came through at the clip's end.
+fn read_kept_pitch(buf: &[f32], v: &crate::snapshot::VarispeedRead, source_start: f64, secs: f64, sample_rate: u32, want: usize) -> Vec<f32> {
+    let anchor = (v.source_in - source_start) * sample_rate as f64;
+    let end = ((v.source_at(secs) - source_start) * sample_rate as f64).round().max(0.0) as usize * 2;
+    klipp_audio::dsp::stretch::Stretcher::new(anchor, v.speed).read(&buf[..end.min(buf.len())], 2, (-v.head_secs * sample_rate as f64).round() as i64, want)
+}
 
 /// The source second a clip's decode can stop at (#1594): the end of what
 /// it plays (its timeline range, crossfade handles included, read at its
@@ -1434,5 +1442,18 @@ mod tests {
         assert_eq!(decode_until(&clip(Some(reversed)), 24.0, 0.0), Some(20.0 + 2.0 * DECODE_MARGIN_SECS));
         let stopped = VarispeedRead { speed: 0.0, ..reversed };
         assert_eq!(decode_until(&clip(Some(stopped)), 24.0, 0.0), None);
+    }
+
+    /// Slowed with its pitch kept, a clip plays nothing from past its Out: a
+    /// file silent up to it and loud after is silent to the clip's end.
+    #[test]
+    fn a_kept_pitch_reads_nothing_past_the_out() {
+        let rate = 48_000usize;
+        let mut buf = vec![0.0f32; rate * 2 * 2];
+        buf[rate * 2..].fill(0.8);
+        let v = VarispeedRead { speed: 0.5, source_in: 0.0, source_out: 1.0, head_secs: 0.0, keep_pitch: true };
+        let out = read_kept_pitch(&buf, &v, 0.0, 2.0, rate as u32, rate * 2 + 1);
+        let loudest = out.iter().fold(0.0f32, |a, b| a.max(b.abs()));
+        assert!(loudest < 1e-6, "{loudest}");
     }
 }
