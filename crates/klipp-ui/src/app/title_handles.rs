@@ -20,7 +20,7 @@ pub(super) fn snapshot_title(state: &AppState, clip_id: ClipId) -> Option<klipp_
 }
 
 /// The step typing in `clip_id` makes: a caption's, on a subtitle track,
-/// or a title's (P55: a misspelt word put right in a caption was named
+/// or a title's (a misspelt word put right in a caption was named
 /// as a title's).
 pub(super) fn text_edit_name(state: &AppState, clip_id: ClipId) -> &'static str {
     let on_captions = state.sequence().tracks.iter().any(|t| t.kind == klipp_timeline::TrackKind::Subtitle && t.find_clip(clip_id).is_some());

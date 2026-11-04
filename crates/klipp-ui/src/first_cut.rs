@@ -112,7 +112,7 @@ impl Session {
     /// `open`, by Undo or by Redo: `label_at` gives the label of the step
     /// at a depth, either side of where the history is. None once an edit
     /// after an undo past the cut has taken the redo away, and the panel
-    /// closes then rather than stand stale over the inspector (FC7).
+    /// closes then rather than stand stale over the inspector.
     pub fn reachable<'a>(&self, open: SequenceId, label_at: impl Fn(usize) -> Option<&'a str>) -> bool {
         self.sequence == open && self.steps.iter().any(|(d, _)| label_at(*d).is_some_and(|l| l.starts_with("First Cut")))
     }
@@ -185,7 +185,7 @@ pub fn untranscribed(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcr
 mod tests {
     use klipp_document::ops::first_cut::Kind;
 
-    /// FC7: the panel stays while one of First Cut's steps is there to
+    /// The panel stays while one of First Cut's steps is there to
     /// Undo or Redo to, and goes once an edit after an undo past it has
     /// taken it away; on another sequence it is not this one's to judge.
     #[test]

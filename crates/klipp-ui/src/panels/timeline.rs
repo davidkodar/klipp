@@ -2884,7 +2884,7 @@ impl TimelinePanel {
                                     .map(|clip| {
                                         let clip_start = clip.timeline_in.to_secs_f64();
                                         let clip_dur = clip.duration().to_secs_f64();
-                                        let playhead_rel = (state.playhead_smooth_secs - clip_start).clamp(0.0, clip_dur);
+                                        let playhead_rel = (state.playhead_smooth_secs - clip_start).clamp(0.0, clip_dur.max(0.0));
                                         let empty_kfs: Vec<klipp_core::Keyframe> = Vec::new();
                                         // The placement and opacity lanes as the picture holds them (M4 step 12c).
                                         let video_lane: Vec<klipp_core::Keyframe> = match &ctx_menu.param_kind { crate::state::KeyframeParamKind::Video(p) => crate::inspector::placement_by_path::param_keys(clip, *p), _ => Vec::new() };
@@ -19679,8 +19679,8 @@ mod snap_tests {
     }
 
     /// A brand kit's intro, or any composition or compound clip laid in,
-    /// is called by the sequence inside it when it has no name of its own
-    /// (P43): it was drawn with no name at all.
+    /// is called by the sequence inside it when it has no name of its own:
+    /// it was drawn with no name at all.
     #[test]
     fn a_composition_clip_is_named_by_its_sequence() {
         let mut state = AppState::default();

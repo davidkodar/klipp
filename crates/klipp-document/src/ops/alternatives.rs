@@ -90,7 +90,7 @@ pub(super) fn alternatives(
                 return Err(refuse(i, format!("{label} is not a clip that holds takes"), "make an audition of a media, title, generator or compound clip"));
             }
             // A take's clips hold no audition of their own, and a saved one
-            // loses it (R18): a switch would store the partner as a take.
+            // loses it: a switch would store the partner as a take.
             if let Some((_, _, partner)) = sound_of(seq, clip).filter(|(_, _, p)| p.audition.is_some()) {
                 return Err(refuse(i, format!("{label} is linked to {}, which already holds takes", clip_name(seq, pool, partner)), "finalize that audition first, or add takes to it"));
             }
@@ -302,9 +302,9 @@ fn switch(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, ti: usize, clip:
         // Where it lay against its picture (a J or L cut) is kept.
         let mut s = s.clone();
         // The partner keeps the id on the timeline, as the slot does: a
-        // transition or anchor on it stays good (R20), and the pieces of a
+        // transition or anchor on it stays good, and the pieces of a
         // bladed audition, whose takes hold the same ids, never put one id
-        // on the timeline twice (R22).
+        // on the timeline twice.
         s.id = old_sound.filter(|_| k == 0).map_or_else(ClipId::new, |(_, _, o)| o.id);
         let (off, slen) = (s.timeline_in - stored.timeline_in, s.timeline_out - s.timeline_in);
         s.timeline_in = clip.timeline_in + off;
@@ -450,7 +450,7 @@ mod tests {
         alt(action, clip, Vec::new(), None, None, false)
     }
 
-    /// R20: a switch brings in the take's sound under the id of the sound it
+    /// A switch brings in the take's sound under the id of the sound it
     /// replaces, so a crossfade on that sound still has both its clips, on
     /// the way there and back; from a sound slot, the picture keeps its id too.
     #[test]
@@ -520,7 +520,7 @@ mod tests {
         assert_eq!(serde_json::to_value(&seq).unwrap(), before, "undo gives both back");
     }
 
-    /// R22: the pieces of a bladed audition hold the same takes. Both switched
+    /// The pieces of a bladed audition hold the same takes. Both switched
     /// to the same take, each has its own sound under it, not one id twice.
     #[test]
     fn the_pieces_of_a_bladed_audition_switch_apart() {
@@ -544,7 +544,7 @@ mod tests {
         }
     }
 
-    /// R18: a take's clips hold no audition, as a saved one comes back with
+    /// A take's clips hold no audition, as a saved one comes back with
     /// none. Both of a linked pair can't become auditions; from a project
     /// that has it, a copy's sound leaves its takes behind, and a switch that
     /// would lose them is refused.

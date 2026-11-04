@@ -55,14 +55,7 @@ impl KlippApp {
                 self.state.perf_fps = if avg_dt > 0.0 { 1.0 / avg_dt } else { 0.0 };
             }
 
-            // Memory from /proc/self/statm (Linux)
-            if let Ok(statm) = std::fs::read_to_string("/proc/self/statm") {
-                if let Some(rss_pages) = statm.split_whitespace().nth(1) {
-                    if let Ok(pages) = rss_pages.parse::<u64>() {
-                        self.state.perf_memory_mb = (pages * 4096) as f64 / (1024.0 * 1024.0);
-                    }
-                }
-            }
+            self.state.perf_memory_mb = klipp_core::process_memory::resident_mb();
 
             // CPU usage from /proc/self/stat (Linux)
             // Fields 14+15 = utime+stime in clock ticks (typically 100 Hz)

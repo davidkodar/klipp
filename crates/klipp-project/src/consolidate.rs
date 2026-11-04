@@ -95,7 +95,7 @@ pub struct ConsolidateSummary {
     /// Media that cannot be copied because it is offline.
     pub offline: Vec<String>,
     /// Each file it copies, by where it is now, for a person to see what
-    /// leaves the machine in the folder (SEC1).
+    /// leaves the machine in the folder.
     pub copies: Vec<String>,
     /// What it will not carry, and why: a file named that is not media.
     pub warnings: Vec<String>,
@@ -250,7 +250,7 @@ fn build_copy_plan(
     let mut left_out: Vec<String> = Vec::new();
     // A file several items share (a subclip and its parent) is copied once.
     let mut copied_paths: HashMap<PathBuf, PathBuf> = HashMap::new();
-    // Only what is media, a LUT or a picture is carried (SEC1): a shared
+    // Only what is media, a LUT or a picture is carried: a shared
     // project can name any file on the machine, and the folder collected
     // is handed on. Klipp's own folders may be hidden.
     let trusted_folders = klipp_media::media_check::trusted_roots(project_dir);
@@ -975,7 +975,7 @@ fn trim_candidates<'a>(pool: &'a MediaPool, sequences: &[Sequence], handle_secs:
         .filter_map(|(path, ranges)| {
             let trusted_folders = klipp_media::media_check::trusted_roots(project_dir);
             let trusted: Vec<&Path> = trusted_folders.iter().map(|p| p.as_path()).collect();
-            // Only media is cut and carried (SEC1).
+            // Only media is cut and carried.
             let item = pool.all().find(|m| m.path == path && !m.offline && !pool.refused.contains_key(&m.id) && m.path.exists() && !is_symlinked_leaf(&m.path) && trim::can_cut(m))?;
             klipp_media::media_check::media_file_check(&item.path, &trusted).ok()?;
             trim::worth_trimming(&ranges, item.duration.to_secs_f64()).then_some((item, ranges))

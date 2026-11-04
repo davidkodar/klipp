@@ -1,7 +1,7 @@
 //! Whether a file a project names is a picture, a sound or a still, read
 //! as someone else's project may name it: a shared project can name any
 //! file on the machine, and a Collect Project of it would carry that file
-//! off in the folder handed on (SEC1).
+//! off in the folder handed on.
 
 use std::path::Path;
 
@@ -118,7 +118,7 @@ mod tests {
         assert!(hint.contains("hidden folder") && hint.contains("move the file") && hint.contains("Relink"), "{hint}");
     }
 
-    /// SEC1: a hostile project's media entry naming a text file, a key in
+    /// A hostile project's media entry naming a text file, a key in
     /// a hidden folder or a dotfile is refused; a file with a media name is
     /// taken, and one in a trusted folder even where that folder is hidden.
     #[test]

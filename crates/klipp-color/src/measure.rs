@@ -291,6 +291,13 @@ pub struct FrameMeasure {
     /// parade shows as a channel flat against the top or the bottom.
     #[serde(default)]
     pub gamut_clip_pct: f32,
+    /// The part of `gamut_clip_pct` pinned at the top: a channel at full
+    /// while another is not. Only this is what brightening pushes further;
+    /// a channel at zero in a warm shadow moves off the rail as the picture
+    /// is lifted, and counted as "already at white" it kept a dark shot
+    /// from being brightened at all. Read by the holds, not reported.
+    #[serde(skip)]
+    pub gamut_hi_pct: f32,
     pub faces: Vec<FaceMeasure>,
     /// Every skin-coloured pixel in the frame read together, for a frame
     /// with no detected person: rougher than a face (clothes and wood
@@ -675,7 +682,8 @@ fn grey_mode(mids: &[(f32, f32, f32)]) -> (f32, f32) {
 /// they are, not filtered by hue: a face with the wrong colour is the
 /// thing we are looking for, and a hue gate would throw it away and
 /// report no face. Each is
-/// laid out as an 8×8 grid of patches and the patches that hold skin
+/// laid out as a grid of patches (8×8 for a face that fills the frame,
+/// down to 3×3 for a small one) and the patches that hold skin
 /// decide. The whole frame is read sub-sampled to about a quarter of a
 /// million pixels, so a 4K frame costs a few milliseconds.
 ///
@@ -709,7 +717,7 @@ fn measure_picture(rgba: &[u8], width: u32, height: u32, faces: &[[f32; 4]]) -> 
     let mut mids: Vec<(f32, f32, f32)> = Vec::new();
     let (mut skin_h, mut skin_c, mut skin_l): (Vec<f32>, Vec<f32>, Vec<f32>) = (Vec::new(), Vec::new(), Vec::new());
     let (mut sky_c, mut leaf_c): (Vec<f32>, Vec<f32>) = (Vec::new(), Vec::new());
-    let (mut clip_hi, mut clip_lo, mut gamut_clip, mut n) = (0usize, 0usize, 0usize, 0usize);
+    let (mut clip_hi, mut clip_lo, mut gamut_clip, mut gamut_hi, mut n) = (0usize, 0usize, 0usize, 0usize, 0usize);
     let mut i = 0;
     while i < total && rgba.len() >= (i + 1) * 4 {
         let p = i * 4;
@@ -733,6 +741,9 @@ fn measure_picture(rgba: &[u8], width: u32, height: u32, faces: &[[f32; 4]]) -> 
         let (mx, mn) = (r.max(g).max(b), r.min(g).min(b));
         if (mx == 255 && mn < 240) || (mn == 0 && mx > 15) {
             gamut_clip += 1;
+        }
+        if mx == 255 && mn < 240 {
+            gamut_hi += 1;
         }
         if c.l >= 20.0 && c.l <= 90.0 {
             mids.push((c.chroma(), c.a, c.b));
@@ -823,6 +834,7 @@ fn measure_picture(rgba: &[u8], width: u32, height: u32, faces: &[[f32; 4]]) -> 
         noise_l,
         banding_pct,
         gamut_clip_pct: gamut_clip as f32 / nn * 100.0,
+        gamut_hi_pct: gamut_hi as f32 / nn * 100.0,
         chroma_mean: if chromas.is_empty() { 0.0 } else { chromas.iter().sum::<f32>() / chromas.len() as f32 },
         chroma_p95: percentile(&chromas, 0.95),
         cast_a: median(&mut na),
@@ -1977,17 +1989,24 @@ pub fn judge(m: &FrameMeasure, t: &LookTarget) -> Vec<Finding> {
         let (hue, off) = (f.hue, f.hue_off_band);
         let with_cast = if scene_cast { format!(" (the scene carries a {:.0} cast; without it the skin would read {:.0}°)", m.cast(), f.hue_wb) } else { String::new() };
         // Off the band is what matters; inside it, the distance to the
-        // look's own skin hue is advisory.
+        // look's own skin hue is advisory. The finding's target is the
+        // band, its nearest edge (or the reading, on it), and the
+        // tolerance the 4° the verdict allows past it: with the look's aim
+        // as the target, a 24.6° face passed against "45, give or take 4".
+        let edge = if off <= 0.0 { hue } else if hue_diff(SKIN_HUE_LOW, hue).abs() <= hue_diff(SKIN_HUE_HIGH, hue).abs() { SKIN_HUE_LOW } else { SKIN_HUE_HIGH };
+        let aim = if (hue - skin_target).abs() > 4.0 { format!("; the look aims at {skin_target:.0}°") } else { String::new() };
         let (verdict, what) = if f.mixed_light {
             (Verdict::Warn, format!("{who} is lit by two colours of light (hue spread {:.0}°): median hue {:.0}°", f.hue_iqr, f.hue))
         } else if off > 10.0 {
             (Verdict::Fail, format!("{who}: skin hue {hue:.0}°, {off:.0}° outside the skin band ({SKIN_HUE_LOW:.0}–{SKIN_HUE_HIGH:.0}°){with_cast}"))
         } else if off > 4.0 {
             (Verdict::Warn, format!("{who}: skin hue {hue:.0}°, {off:.0}° outside the skin band{with_cast}"))
+        } else if off > 0.0 {
+            (Verdict::Pass, format!("{who}: skin hue {hue:.1}°, {off:.1}° past the band's {edge:.0}° edge, within the 4° allowed (chroma {:.0}, L* {:.0}, {} patches){aim}{with_cast}", f.chroma, f.median.l, f.patches))
         } else {
-            (Verdict::Pass, format!("{who}: skin hue {hue:.0}° on the band (chroma {:.0}, L* {:.0}, {} patches){with_cast}", f.chroma, f.median.l, f.patches))
+            (Verdict::Pass, format!("{who}: skin hue {hue:.0}° on the band ({SKIN_HUE_LOW:.0}–{SKIN_HUE_HIGH:.0}°; chroma {:.0}, L* {:.0}, {} patches){aim}{with_cast}", f.chroma, f.median.l, f.patches))
         };
-        out.push(Finding { rule: "skin_hue", verdict, reading: hue, target: skin_target, tolerance: 4.0, what, fix: if scene_cast { "put the white balance right first (temperature and tint, or grade_to_target); skin_balance for what is left" } else { "skin_balance" } });
+        out.push(Finding { rule: "skin_hue", verdict, reading: hue, target: edge, tolerance: 4.0, what, fix: if scene_cast { "put the white balance right first (temperature and tint, or grade_to_target); skin_balance for what is left" } else { "skin_balance" } });
         let chroma_verdict = if f.chroma < SKIN_CHROMA_LOW - 4.0 || f.chroma > SKIN_CHROMA_HIGH + 6.0 { Verdict::Fail } else if f.chroma < SKIN_CHROMA_LOW || f.chroma > SKIN_CHROMA_HIGH { Verdict::Warn } else { Verdict::Pass };
         if chroma_verdict != Verdict::Pass {
             out.push(Finding { rule: "skin_chroma", verdict: chroma_verdict, reading: f.chroma, target: (SKIN_CHROMA_LOW + SKIN_CHROMA_HIGH) / 2.0, tolerance: 0.0, what: format!("{who}: skin chroma {:.0} ({} the {SKIN_CHROMA_LOW:.0}–{SKIN_CHROMA_HIGH:.0} band)", f.chroma, if f.chroma < SKIN_CHROMA_LOW { "under" } else { "over" }), fix: if f.chroma < SKIN_CHROMA_LOW { "vibrance up, or a skin secondary with chroma up" } else { "saturation down, or a skin secondary with chroma down" } });
@@ -2060,11 +2079,20 @@ pub struct PrimaryStep {
 /// and clipped the window, 6.6% of the frame (#501).
 pub const HIGHLIGHT_HEADROOM_L: f32 = 97.0;
 
+/// Relative luminance (0 to 1) of a CIE lightness L*.
+fn luminance_of_l(l: f32) -> f32 {
+    let f = (l + 16.0) / 116.0;
+    if l > 8.0 { f * f * f } else { l / 903.3 }
+}
+
 /// How many stops `m` can be brightened before a large part of it goes
-/// to white: at about 15 L* a stop, the room above its 95th percentile
-/// up to [`HIGHLIGHT_HEADROOM_L`].
+/// to white: until its 95th percentile reaches [`HIGHLIGHT_HEADROOM_L`],
+/// reckoned in light, which a stop doubles. Near white a stop is far
+/// more than the 15 L* it is in the middle (L* 87 goes to 99 in half a
+/// stop), and counted at 15 the room above a bright shot was overstated:
+/// a grade took it to white and a fifth of it to the rail.
 pub fn exposure_headroom(m: &FrameMeasure) -> f32 {
-    ((HIGHLIGHT_HEADROOM_L - m.l_p95) / 15.0).max(0.0)
+    (luminance_of_l(HIGHLIGHT_HEADROOM_L) / luminance_of_l(m.l_p95).max(1e-4)).log2().max(0.0)
 }
 
 pub fn primaries_toward(m: &FrameMeasure, t: &LookTarget) -> PrimaryStep {
@@ -2073,10 +2101,11 @@ pub fn primaries_toward(m: &FrameMeasure, t: &LookTarget) -> PrimaryStep {
     // Never brighten a picture that is already losing its highlights:
     // chasing a mid-grey target by exposure alone blows the window and
     // the sky, and no colourist trades detail for a number.
-    // Nor one with a colour already pinned at the rail: at white counts
-    // the picture's luma since #459, and a saturated sky's pinned blue
-    // is gamut, not white, but brightening pushes it further all the same.
-    let clipping = m.clip_hi_pct > 1.0 || m.gamut_clip_pct > GAMUT_WARN;
+    // Nor one with a colour already pinned at the top of the rail: at
+    // white counts the picture's luma since #459, and a saturated sky's
+    // pinned blue is gamut, not white, but brightening pushes it further
+    // all the same. A channel at zero is not held: lifting moves it off.
+    let clipping = m.clip_hi_pct > 1.0 || m.gamut_hi_pct > GAMUT_WARN;
     if !t.screencast {
         // L* at the bottom: about 0.012 lift per L*. Not toward a target
         // the scene has nothing dark enough to reach (#1896), unless the
@@ -2114,9 +2143,9 @@ pub fn primaries_toward(m: &FrameMeasure, t: &LookTarget) -> PrimaryStep {
                 s.exposure = s.exposure.min(0.0);
                 s.gain = s.gain.min(0.0);
             }
-            // Nor brighten one into losing them: at about 15 L* a stop,
-            // the headroom above the 95th percentile says how far it can
-            // go before a large part of the frame is white.
+            // Nor brighten one into losing them: the headroom above the
+            // 95th percentile, in light, says how far it can go before a
+            // large part of the frame is white.
             let room = exposure_headroom(m);
             if s.exposure > room + 0.01 {
                 s.exposure = room;
@@ -2289,11 +2318,54 @@ mod tests {
         assert!(!with(&log, LogPrior::NeverLog));
     }
 
+    /// A dark warm shot whose shadows have their blue at zero, a channel
+    /// on the bottom of the rail, is still brightened toward the look's
+    /// middle: lifting moves that channel off the rail. Counted as
+    /// "already at white", it held a match and auto colour back and left
+    /// the shot 13 L* under its reference. A sky pinned at the top is
+    /// still held.
+    #[test]
+    fn a_channel_at_zero_does_not_hold_brightening() {
+        let (w, h) = (100u32, 100u32);
+        let frame = |odd: [u8; 4]| (0..w * h).flat_map(|i| if i % 10 < 2 { odd } else { [110, 110, 110, 255] }).collect::<Vec<u8>>();
+        let look = LookTarget { mid_l: Some(60.0), ..LookTarget::default() };
+        let warm = measure_frame(&frame([60, 30, 0, 255]), w, h, &[]);
+        assert!(warm.gamut_clip_pct > GAMUT_WARN && warm.gamut_hi_pct < 0.1, "blue at zero is gamut, not the top: {:.1}% / {:.1}%", warm.gamut_clip_pct, warm.gamut_hi_pct);
+        let step = primaries_toward(&warm, &look);
+        assert!(step.exposure > 0.05 && !step.held_for_highlights, "brightened toward L* 60 from {:.1}: {step:?}", warm.l_p50);
+        let sky = measure_frame(&frame([0, 120, 255, 255]), w, h, &[]);
+        assert!(sky.gamut_hi_pct > GAMUT_WARN, "{:.1}%", sky.gamut_hi_pct);
+        assert!(primaries_toward(&sky, &look).exposure <= 0.0, "a sky at the top is not pushed further");
+    }
+
+    /// Brightened by its headroom, a bright shot's 95th percentile lands
+    /// at the headroom's L*, not past it: the frame below is grey from
+    /// L* 40 to 87, brightened in light by the stops the headroom gives,
+    /// and measured again. Reckoned at 15 L* a stop, the headroom took it
+    /// to white.
+    #[test]
+    fn brightening_by_the_headroom_stops_at_its_lightness() {
+        let (w, h) = (100u32, 100u32);
+        let ramp: Vec<f32> = (0..w * h).map(|i| 40.0 + 47.0 * (i as f32 / (w * h - 1) as f32)).collect();
+        let frame = |gain: f32| ramp.iter().flat_map(|&l| {
+            let y = (luminance_of_l(l) * gain).min(1.0);
+            let v = (crate::transfer::linear_to_srgb(y) * 255.0).round() as u8;
+            [v, v, v, 255]
+        }).collect::<Vec<u8>>();
+        let before = measure_frame(&frame(1.0), w, h, &[]);
+        assert!((before.l_p95 - 85.0).abs() < 2.0, "the bright end: L* {:.1}", before.l_p95);
+        let room = exposure_headroom(&before);
+        let after = measure_frame(&frame(2f32.powf(room)), w, h, &[]);
+        assert!(after.l_p95 <= HIGHLIGHT_HEADROOM_L + 0.6, "{room:.2} stops took the 95th percentile to L* {:.1}", after.l_p95);
+        assert!(after.l_p95 >= HIGHLIGHT_HEADROOM_L - 1.5, "and used the room: L* {:.1}", after.l_p95);
+        assert!(after.clip_hi_pct < 1.0, "nothing to speak of at white: {:.1}%", after.clip_hi_pct);
+    }
+
     #[test]
     fn a_pinned_sky_is_not_brightened_further() {
         // #607 review: a sky whose blue is on the rail is not at white,
         // and still must not be pushed.
-        let dark = FrameMeasure { l_p50: 30.0, l_p95: 60.0, l_p99: 70.0, gamut_clip_pct: 10.0, ..FrameMeasure::default() };
+        let dark = FrameMeasure { l_p50: 30.0, l_p95: 60.0, l_p99: 70.0, gamut_clip_pct: 10.0, gamut_hi_pct: 10.0, ..FrameMeasure::default() };
         let s = primaries_toward(&dark, &LookTarget { mid_l: Some(50.0), ..LookTarget::default() });
         assert!(s.exposure <= 0.0 && s.gain <= 0.0, "{s:?}");
     }
@@ -2308,7 +2380,9 @@ mod tests {
         let bright_window = FrameMeasure { l_p50: 40.0, l_p95: 88.0, l_p99: 95.0, faces: vec![face.clone()], ..FrameMeasure::default() };
         let s = primaries_toward(&bright_window, &target);
         assert!(s.held_for_highlights, "{s:?}");
-        assert!((s.exposure - 0.6).abs() < 0.01, "9 L* of headroom is 0.6 stop: {s:?}");
+        // 9 L* of headroom near white is a third of a stop in light,
+        // not the 0.6 that 15 L* a stop gave (Y 0.72 to 0.92).
+        assert!((s.exposure - 0.36).abs() < 0.01, "88 to 97 L* is 0.36 stop: {s:?}");
         let dim_room = FrameMeasure { l_p50: 30.0, l_p95: 60.0, l_p99: 70.0, faces: vec![face], ..FrameMeasure::default() };
         let s = primaries_toward(&dim_room, &target);
         assert!(!s.held_for_highlights && s.exposure > 1.4, "{s:?}");
@@ -2531,6 +2605,33 @@ mod tests {
         assert!(!m3.neutral_solid, "no true neutral here");
         assert!(judge(&m3, &LookTarget::preset("broadcast_neutral").unwrap()).iter().all(|f| f.rule != "cast" || f.verdict != Verdict::Fail));
         assert_eq!(primaries_toward(&m3, &LookTarget::preset("broadcast_neutral").unwrap()).temperature, 0.0);
+    }
+
+    /// A face's skin finding agrees with itself: its target is the band
+    /// (the nearest edge, or the reading on it) and its tolerance the 4°
+    /// allowed past it, so a 24.6° face passes against 25 ± 4, says it is
+    /// past the edge, and names the look's aim beside it. It passed against
+    /// a target of 45 ± 4 and called itself "on the band".
+    #[test]
+    fn a_face_by_the_band_edge_is_judged_against_the_band() {
+        let (w, h) = (200, 120);
+        let face = [0.4f32, 0.4, 0.2, 0.2];
+        let face_at = |c: [u8; 3]| {
+            let frame = frame_of(w, h, |x, y| {
+                let (fx, fy) = (x as f32 / w as f32, y as f32 / h as f32);
+                if fx >= face[0] && fx < face[0] + face[2] && fy >= face[1] && fy < face[1] + face[3] { c } else { [120, 120, 120] }
+            });
+            let m = measure_frame(&frame, w as u32, h as u32, &[face]);
+            let f = judge(&m, &LookTarget::preset("broadcast_neutral").unwrap()).into_iter().find(|x| x.rule == "skin_hue").expect("a skin finding");
+            (m.faces[0].hue, f)
+        };
+        // L* 55, chroma 18 at 24.6° and at 45°.
+        let (low, f) = face_at(lab_to_srgb8(Lab { l: 55.0, a: 16.4, b: 7.5 }));
+        assert!((low - 24.6).abs() < 1.0, "the face reads {low:.1}°");
+        assert_eq!((f.verdict, f.target, f.tolerance), (Verdict::Pass, SKIN_HUE_LOW, 4.0), "{f:?}");
+        assert!(f.what.contains("past the band's 25° edge") && f.what.contains("aims at 45"), "{}", f.what);
+        let (mid, f) = face_at(lab_to_srgb8(Lab { l: 55.0, a: 12.7, b: 12.7 }));
+        assert!((f.target - mid).abs() < 1e-3 && f.what.contains("on the band"), "{mid:.1}° {f:?}");
     }
 
     /// A face with a magenta cast is read and reported off the band,

@@ -327,7 +327,7 @@ impl RenderQueuePanel {
                 } else {
                     "codec default".into()
                 };
-                // Sound alone has no picture to describe (P16).
+                // Sound alone has no picture to describe.
                 if !s.format.is_audio_only() {
                     ui.label(small(format!("Video: {} \u{2022} {quality} \u{2022} {}-bit \u{2022} encoder preset {}", s.video_codec.label(), s.bit_depth, s.preset.ffmpeg_value()), dim));
                 }
@@ -517,7 +517,7 @@ mod elide_tests {
 
 /// A job's picture at a glance: its size, rate and codec with its quality.
 /// Nothing for sound alone (a WAV, MP3 or M4A): it said "H.264 CRF 23" for
-/// a .wav (P16).
+/// a .wav.
 fn picture_parts(s: &klipp_core::ExportSettings, width: u32, height: u32, fps: f64) -> Vec<String> {
     if s.format.is_audio_only() {
         return Vec::new();
@@ -535,7 +535,7 @@ fn picture_parts(s: &klipp_core::ExportSettings, width: u32, height: u32, fps: f
 
 #[cfg(test)]
 mod picture_parts_tests {
-    /// P16: an audio-only export's card names no picture.
+    /// An audio-only export's card names no picture.
     #[test]
     fn sound_alone_names_no_picture() {
         let mut s = klipp_core::ExportSettings::default();
@@ -577,7 +577,7 @@ mod card_height_tests {
         }
     }
 
-    /// EX6: in the window, each card is as tall as what it holds, so a
+    /// In the window, each card is as tall as what it holds, so a
     /// queue of several shows them one under another. The path row took
     /// all the height left, and only the first card was seen.
     #[test]

@@ -2030,8 +2030,8 @@ pub enum Op {
         #[serde(default)]
         length_secs: Option<f64>,
         /// The clip put on the sequence's marked range (its in and out
-        /// points), as the Speed dialog's Fit to the marked range does
-        /// (P53): from In to Out, the speed worked out, its linked sound
+        /// points), as the Speed dialog's Fit to the marked range does:
+        /// from In to Out, the speed worked out, its linked sound
         /// with it, over what is there, or with `ripple` pushing it along.
         #[serde(default)]
         fit_range: bool,
@@ -4492,7 +4492,7 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
                     None => Err(refuse(i, format!("{} already repeats the nearest frame", clip_name(seq, pool, clip)), "give interpolation blend or flow, or a speed")),
                 };
             }
-            // On the marks (P53): as the Speed dialog's Fit to the marked
+            // On the marks: as the Speed dialog's Fit to the marked
             // range, the clip and its sound put from In to Out, over what
             // is there, or with `ripple` pushing it along.
             if *fit_range {
@@ -4709,7 +4709,7 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             // A built-in laid out for the sequence's frame (#2734).
             let mut td = klipp_timeline::title_library::for_frame(td, seq.resolution.width, seq.resolution.height);
             set_title_fields(&mut td, &quoted(name), fields, i)?;
-            // Clear of the player the sequence is made for (P23).
+            // Clear of the player the sequence is made for.
             lift_above_player(seq, &mut td);
             if !held.is_finite() || *held < 0.2 {
                 return Err(refuse(i, format!("{held} s is too short"), "hold it at least a fraction of a second"));
@@ -7930,7 +7930,7 @@ fn label_name(label: &str) -> String {
 #[allow(clippy::too_many_arguments)]
 /// `td` lifted until it ends above the player of the platform `seq` is
 /// made for, along the frame's bottom (YouTube's progress bar and
-/// controls): a built-in lower third sat under them (P23). Never past the
+/// controls): a built-in lower third sat under them. Never past the
 /// frame's top margin; nothing without a destination's player.
 pub fn lift_above_player(seq: &Sequence, td: &mut klipp_timeline::TitleData) {
     const GAP: f32 = 0.02;
@@ -7970,7 +7970,7 @@ fn place_composition(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, at: T
     let mut media_slots = std::collections::BTreeMap::new();
     for (raw, v) in fields {
         // A label ending in "?" is set only when the template has it: a
-        // brand kit's accent and heading font (P42), which a template of
+        // brand kit's accent and heading font, which a template of
         // the person's own may not take.
         let (key, optional) = match raw.trim().strip_suffix('?') {
             Some(k) => (k.trim(), true),
@@ -10234,7 +10234,7 @@ fn refit(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts, i: usi
             // A piece an earlier refit punched in, its scale the fill
             // pushed in by this punch, starts from the fill again: run a
             // second time it went to 1.15 x 1.15, and kept its push where
-            // the pieces' order changed (FC5).
+            // the pieces' order changed.
             let own = match punch {
                 Some(p) if (own / (fill * p) - 1.0).abs() < 0.005 => fill,
                 _ => own,
@@ -10242,7 +10242,7 @@ fn refit(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts, i: usi
             let scale = fill.max(own).max(1.0);
             // Every other piece of a shot pushed in further, its jump a cut.
             // The count starts again at each shot: it ran on along the track,
-            // and pushed in a shot of another file, never cut (FC8). A piece
+            // and pushed in a shot of another file, never cut. A piece
             // follows the one before on the timeline and goes on in its file.
             let goes_on = before.is_some_and(|(file, ends, file_ends)| file == *media_id && (secs(clip.timeline_in) - ends).abs() < 1e-3 && secs(clip.source_in) >= file_ends - 1e-3);
             if !goes_on {
@@ -15564,7 +15564,7 @@ mod tests {
         }
     }
 
-    /// P42: a brand kit's accent and heading font, sent as fields that
+    /// A brand kit's accent and heading font, sent as fields that
     /// end in "?", set the Hook Card's hook line; a template without such
     /// a parameter takes the rest and is not refused.
     #[test]
@@ -15585,7 +15585,7 @@ mod tests {
         assert!((c[0] - 239.0 / 255.0).abs() < 1e-3 && (c[1] - 35.0 / 255.0).abs() < 1e-3, "{c:?}");
     }
 
-    /// P23: a built-in lower third placed in a YouTube sequence ends above
+    /// A built-in lower third placed in a YouTube sequence ends above
     /// the player's progress bar and controls (from 88% down); in a
     /// sequence made for no destination it stays where it is made.
     #[test]
@@ -22508,7 +22508,7 @@ mod tests {
         assert_eq!(got, [1.0, 1.0, 1.2, 1.0], "the short piece is not pushed in on its own");
     }
 
-    /// FC5: refit with a punch run twice pushes in every other piece once,
+    /// Refit with a punch run twice pushes in every other piece once,
     /// as the first run did, never by the punch twice over.
     #[test]
     fn a_second_punch_in_does_not_push_further() {
@@ -22545,7 +22545,7 @@ mod tests {
         assert_eq!(scales(&run(&once)), [1.0, 1.15, 1.0, 1.15], "punched again, not 1.15 x 1.15");
     }
 
-    /// P53: retime's fit_range puts the clip on the marks, as the Speed
+    /// Retime's fit_range puts the clip on the marks, as the Speed
     /// dialog does: from In to Out with its sound, over what is there, or
     /// with ripple pushing it along.
     #[test]
