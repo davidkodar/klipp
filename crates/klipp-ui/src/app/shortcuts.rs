@@ -60,6 +60,13 @@ impl KlippApp {
             }
             _ => {}
         }
+        // Before/After is looked at straight after a value is typed or a node
+        // is touched, where the single keys are held: only typing text keeps it.
+        if toggles_before_after(ctx.wants_keyboard_input(), self.state.editing_timecode || self.state.viewer_text_edit)
+            && ctx.input(|i| self.key_bindings.is_action_pressed("toggle_before_after", i))
+        {
+            cmds.push(AppCommand::ToggleBeforeAfter);
+        }
         self.shortcuts_ctrl_global(ctx, ctx.wants_keyboard_input(), &mut cmds);
         match scope {
             KeyScope::CtrlOnly | KeyScope::Nothing | KeyScope::AppOnly => return cmds,
@@ -430,10 +437,6 @@ impl KlippApp {
             }
             if kb.is_action_pressed("toggle_inspector_panel", i) {
                 cmds.push(AppCommand::ToggleInspectorPanel);
-            }
-            // B key (bare) — toggle before/after
-            if kb.is_action_pressed("toggle_before_after", i) {
-                cmds.push(AppCommand::ToggleBeforeAfter);
             }
             // C key (bare) — toggle color panel
             if kb.is_action_pressed("toggle_color_panel", i) {
@@ -1391,6 +1394,11 @@ pub(super) fn grade_level<'a>(root: &'a klipp_nodes::NodeGraph, path: &[klipp_no
     path.iter().try_fold(root, |g, id| g.nodes.iter().find(|n| n.id == *id)?.params.compound_subgraph.as_ref())
 }
 
+/// Whether the Before/After key acts: not while text is being typed.
+fn toggles_before_after(field_has_keys: bool, editing_text: bool) -> bool {
+    !field_has_keys && !editing_text
+}
+
 /// Which of the app's own shortcuts a frame's keys run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum KeyScope {
@@ -1532,6 +1540,18 @@ pub(crate) fn key_ease_shortcut(state: &crate::state::AppState, preset: Option<c
     let label = if targets.len() > 1 { format!("{what} ({} keys)", targets.len()) } else { what.to_string() };
     cmds.push(AppCommand::EndHistoryBatchAs { label });
     cmds
+}
+
+#[cfg(test)]
+mod before_after_key_tests {
+    /// A field left by Enter holds the single keys but isn't typed in, and
+    /// the node graph's focus isn't either: only typing keeps Before/After.
+    #[test]
+    fn only_typing_keeps_the_before_after_key() {
+        assert!(super::toggles_before_after(false, false));
+        assert!(!super::toggles_before_after(true, false), "in a text field");
+        assert!(!super::toggles_before_after(false, true), "typing a timecode or title");
+    }
 }
 
 #[cfg(test)]

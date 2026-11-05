@@ -4184,11 +4184,15 @@ impl PlaybackEngine {
             AppCommand::ToggleBeforeAfter => {
                 self.bypass_color_grade = !self.bypass_color_grade;
                 debug!("Before/After: bypass_color_grade = {}", self.bypass_color_grade);
+                // A parked frame has no ungraded half until it is made again:
+                // the split had nothing to show, and both sides were graded.
+                self.regrade_cached_frame();
             }
 
             AppCommand::ToggleStabilizationCompare => {
                 self.compare_stabilization = !self.compare_stabilization;
                 debug!("StabilizationCompare: compare_stabilization = {}", self.compare_stabilization);
+                self.regrade_cached_frame();
             }
 
             AppCommand::SetSplitCompareNode { clip_id, path } => {
@@ -4199,6 +4203,7 @@ impl PlaybackEngine {
                     "SetSplitCompareNode: active={} clip={:?} node={:?}",
                     self.compare_effect_active, self.compare_effect_clip_id, self.compare_effect_node,
                 );
+                self.regrade_cached_frame();
             }
 
             AppCommand::SetHdrReferenceOutput(on) => {
