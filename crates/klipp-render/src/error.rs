@@ -42,6 +42,11 @@ pub enum RenderError {
     #[error("publish rename failed: {0}")]
     Publish(String),
 
+    /// This machine cannot make what was asked, whatever the project: said
+    /// in words the user can act on, with no encoder's message around them.
+    #[error("{0}")]
+    Unavailable(String),
+
     #[error("snapshot error: {0}")]
     Snapshot(String),
 

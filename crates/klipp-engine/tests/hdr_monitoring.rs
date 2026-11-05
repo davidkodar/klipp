@@ -138,7 +138,7 @@ fn the_viewer_measures_what_the_export_writes() {
     if let Err(e) = export_pq(&src, &out) {
         // Only a machine that cannot make the file is passed over: an
         // export failing where libx265 does 10-bit is the export's fault.
-        if e.contains("open video encoder") && !libx265_encodes_10_bit() {
+        if (e.contains("open video encoder") || e.contains("10-bit HEVC")) && !libx265_encodes_10_bit() {
             eprintln!("skipping the export half: no 10-bit HEVC encoder here ({e})");
             return;
         }

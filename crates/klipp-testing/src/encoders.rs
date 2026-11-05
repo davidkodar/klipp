@@ -24,5 +24,5 @@ pub fn libx265_encodes_10_bit() -> bool {
 /// 10-bit HEVC export passes over. Anywhere 10-bit can be made, the
 /// failure is the export's.
 pub fn no_10_bit_hevc_here(error: &str) -> bool {
-    error.contains("open video encoder") && !libx265_encodes_10_bit()
+    (error.contains("open video encoder") || error.contains("10-bit HEVC")) && !libx265_encodes_10_bit()
 }
