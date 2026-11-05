@@ -117,6 +117,21 @@ struct EncoderAttempt {
 /// next. NVENC needs at least 128×128, and the others are held to the
 /// same.
 ///
+/// What an export is told when [`lacks_10_bit_hevc`].
+const NO_10_BIT_HEVC: &str = "10-bit HEVC can't be exported on this computer: its x265 library encodes 8-bit only. \
+     Choose 8-bit, or ProRes for 10-bit";
+
+/// Whether a failed `libx265` open was a 10-bit export on a library built
+/// for 8-bit only, as some distributions build x265. Asked of the
+/// encoder's own pixel formats.
+fn lacks_10_bit_hevc(name: &str, bit_depth: u8, codec: ffmpeg_next::Codec) -> bool {
+    name == "libx265"
+        && bit_depth == 10
+        && codec.video().ok().and_then(|v| v.formats()).is_some_and(|mut formats| {
+            !formats.any(|f| matches!(f, ffmpeg_next::format::Pixel::YUV420P10LE | ffmpeg_next::format::Pixel::YUV422P10LE | ffmpeg_next::format::Pixel::YUV444P10LE))
+        })
+}
+
 /// `want_10bit` matters for H.264 and only H.264: **no hardware H.264
 /// encoder does ten bits.** NVENC's and AMF's H.264 blocks are 8-bit
 /// 4:2:0, while their HEVC and AV1 blocks are not. FFmpeg is no help in
@@ -798,6 +813,10 @@ impl Encoder {
                             if settings.bit_depth == 10 { ", 10-bit" } else { "" },
                         );
                         if attempt == last_attempt {
+                            if lacks_10_bit_hevc(video_codec_name, settings.bit_depth, video_codec) {
+                                tracing::warn!("open video encoder: {failure}");
+                                return Err(RenderError::Unavailable(NO_10_BIT_HEVC.into()));
+                            }
                             return Err(RenderError::Encode(match earlier_failure.take() {
                                 Some(earlier) => format!("open video encoder: {earlier}; then {failure}"),
                                 None => format!("open video encoder: {failure}"),
@@ -2232,6 +2251,20 @@ fn convert_into(resampler: &mut ffmpeg_next::software::resampling::Context, samp
 
 #[cfg(test)]
 mod tests {
+
+    /// A 10-bit HEVC export on an 8-bit x265 is told so, and the answer
+    /// agrees with what the ffmpeg program lists on this machine. 8-bit, and
+    /// any other encoder's failure, keep their own message.
+    #[test]
+    fn a_library_with_no_10_bit_hevc_is_named() {
+        ffmpeg_next::init().unwrap();
+        let x265 = ffmpeg_next::encoder::find_by_name("libx265").expect("this ffmpeg has libx265");
+        let lacks = !klipp_testing::encoders::libx265_encodes_10_bit();
+        assert_eq!(super::lacks_10_bit_hevc("libx265", 10, x265), lacks);
+        assert!(!super::lacks_10_bit_hevc("libx265", 8, x265));
+        assert!(!super::lacks_10_bit_hevc("hevc_nvenc", 10, x265));
+        assert!(super::NO_10_BIT_HEVC.contains("8-bit only") && super::NO_10_BIT_HEVC.contains("ProRes"));
+    }
 
     /// A 10-bit H.264 export never goes to a hardware encoder.
     ///
