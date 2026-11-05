@@ -6372,6 +6372,18 @@ impl AppState {
             && !self.skim_audio_refused.is_some_and(|(m, at)| m == media && at.elapsed() < SKIM_AUDIO_RETRY)
     }
 
+    /// Whether the viewer draws anything on the picture it is given: a
+    /// compare split, zebras, false colour or focus peaking.
+    pub fn viewer_draws_on_picture(&self) -> bool {
+        let o = &self.viewer_overlays;
+        self.before_after_active
+            || self.stabilization_compare_active
+            || self.split_compare_node.is_some()
+            || o.zebras
+            || o.false_color
+            || o.focus_peaking
+    }
+
     /// The clips a command on "the selection" means: those picked together,
     /// else the one clip a plain click selects, which isn't among them
     /// (#3432).
@@ -8218,6 +8230,13 @@ mod selection_and_skim_tests {
         let earlier = std::time::Instant::now().checked_sub(SKIM_AUDIO_RETRY * 2).unwrap();
         state.skim_audio_refused = Some((media, earlier));
         assert!(state.skim_audio_may_start(media), "asked again after a while");
+        assert!(!state.viewer_draws_on_picture(), "nothing on by default");
+        state.before_after_active = true;
+        assert!(state.viewer_draws_on_picture(), "the Before/After split");
+        state.before_after_active = false;
+        state.viewer_overlays.zebras = true;
+        assert!(state.viewer_draws_on_picture(), "zebras");
+        state.viewer_overlays.zebras = false;
         // The frame loop ends a skim in a window without focus, so one
         // started there would be started and ended on every frame.
         state.window_unfocused = true;

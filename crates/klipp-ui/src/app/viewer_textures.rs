@@ -144,6 +144,11 @@ impl KlippApp {
             self.state.curve_histograms = Some(hist);
         }
 
+        // What follows draws on the picture for the viewer alone. The frame
+        // goes back below for grabs, scopes and measurements, which want the
+        // picture itself: a still grabbed during Before/After kept the split.
+        let clean_bytes = self.state.viewer_draws_on_picture().then(|| rgba_bytes.clone());
+
         // Before/After split compositing: left = original, right = graded
         if self.state.before_after_active && !original_bytes.is_empty()
             && original_bytes.len() == rgba_bytes.len()
@@ -336,7 +341,7 @@ impl KlippApp {
             let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
             // Only put back if engine hasn't written a newer frame
             if fb.data.is_empty() {
-                fb.data = rgba_bytes;
+                fb.data = clean_bytes.unwrap_or(rgba_bytes);
                 fb.original_data = original_bytes;
                 fb.unstab_data = unstab_bytes;
                 fb.compare_effect_data = compare_effect_bytes;
