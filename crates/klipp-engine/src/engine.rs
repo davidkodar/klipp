@@ -12207,7 +12207,7 @@ fn truncated_end_secs(path: &std::path::Path, header_secs: f64) -> Option<f64> {
     let secs_of = |stream: usize, ts: i64| ts as f64 * time_bases.get(stream).copied().unwrap_or(0.0);
     let near_end = (header_secs - 3.0).max(0.0);
     let ts = (near_end * f64::from(ffmpeg_next::ffi::AV_TIME_BASE)) as i64;
-    if ictx.seek(ts, ..ts).is_err() {
+    if klipp_media::seek_video(&mut ictx, ts).is_err() {
         return None;
     }
     // A long GOP puts the seek a few hundred packets before its target;
@@ -12966,7 +12966,7 @@ pub fn generate_thumbnail(
 
     if seek_secs > 0.1 {
         let ts = (seek_secs * 1_000_000.0) as i64;
-        format_ctx.seek(ts, ..ts).map_err(|e| format!("seek: {e}"))?;
+        klipp_media::seek_video(&mut format_ctx, ts).map_err(|e| format!("seek: {e}"))?;
     }
 
     let mut decoded_frame = ffmpeg_next::frame::Video::empty();
@@ -13020,7 +13020,7 @@ pub fn generate_thumbnail_at_size(
     // the actual frame at or after the requested timestamp.
     let target = if seek_secs > 0.1 {
         let ts = (seek_secs * 1_000_000.0) as i64;
-        format_ctx.seek(ts, ..ts).map_err(|e| format!("seek: {e}"))?;
+        klipp_media::seek_video(&mut format_ctx, ts).map_err(|e| format!("seek: {e}"))?;
         Some(seek_secs)
     } else {
         None
@@ -13088,7 +13088,7 @@ pub fn generate_thumbnail_at_size_with_rotation(
 
     let target = if seek_secs > 0.1 {
         let ts = (seek_secs * 1_000_000.0) as i64;
-        format_ctx.seek(ts, ..ts).map_err(|e| format!("seek: {e}"))?;
+        klipp_media::seek_video(&mut format_ctx, ts).map_err(|e| format!("seek: {e}"))?;
         Some(seek_secs)
     } else {
         None
@@ -13402,7 +13402,7 @@ pub fn generate_filmstrip_range(
             pos < ts && keyframe_at_or_before_us(&format_ctx, stream_index, ts).is_some_and(|kf| kf <= pos)
         });
         if !forward {
-            if let Err(e) = format_ctx.seek(ts, ..ts) {
+            if let Err(e) = klipp_media::seek_video(&mut format_ctx, ts) {
                 outcome.skipped.push((seek_secs, format!("seek failed: {}", describe(&e))));
                 continue;
             }
@@ -13600,7 +13600,7 @@ impl SequentialFrameDecoder {
         // for a rounding.
         let target = start + ((secs.max(0.0) - 0.5 / fps) * ticks_per_sec).round() as i64;
         let ts = (secs.max(0.0) * ffmpeg_next::ffi::AV_TIME_BASE as f64) as i64;
-        self.format_ctx.seek(ts, ..ts).map_err(|e| format!("seek to {secs:.3} s: {}", describe(&e)))?;
+        klipp_media::seek_video(&mut self.format_ctx, ts).map_err(|e| format!("seek to {secs:.3} s: {}", describe(&e)))?;
         self.decoder.flush();
         self.eof_reached = false;
         self.drained = false;

@@ -78,6 +78,16 @@ pub fn open_input<P: AsRef<std::path::Path> + ?Sized>(path: &P) -> Result<ffmpeg
     ffmpeg_next::format::input_with_dictionary(&path, options)
 }
 
+/// Seek a video input, unless it is one image through ffmpeg's `image2`
+/// demuxer: there, seeking even to 0 gives no frame at all. `.jpg` and `.tga`
+/// come this way, and neither showed anything. Nothing there to seek to.
+pub fn seek_video(input: &mut ffmpeg_next::format::context::Input, ts: i64) -> Result<(), ffmpeg_next::Error> {
+    if input.format().name() == "image2" {
+        return Ok(());
+    }
+    input.seek(ts, ..ts)
+}
+
 /// The arguments that give ffmpeg's command line `path` as an input, the
 /// one way Klipp does for media: local files and pipes only
 /// (`-protocol_whitelist file,pipe -i <path>`), and refused for a list of

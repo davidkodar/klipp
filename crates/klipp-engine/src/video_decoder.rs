@@ -1269,7 +1269,6 @@ fn cuvid_decoder_name(codec_id: ffmpeg_next::codec::Id) -> Option<&'static str> 
         Id::MPEG1VIDEO => "mpeg1_cuvid",
         Id::MPEG4 => "mpeg4_cuvid",
         Id::VC1 => "vc1_cuvid",
-        Id::MJPEG => "mjpeg_cuvid",
         _ => return None,
     })
 }
@@ -3126,7 +3125,7 @@ fn decode_thread_main(
                 let ts = (secs * 1_000_000.0) as i64;
                 debug!("decode_thread: seek to {secs:.3}s (ts={ts} us, epoch {epoch})");
                 drop(packets);
-                let _ = format_ctx.seek(ts, ..ts);
+                let _ = klipp_media::seek_video(&mut format_ctx, ts);
                 packets = format_ctx.packets();
                 decoder.flush();
                 if let Some(bsf) = bsf_ctx.as_ref() {
@@ -3215,7 +3214,7 @@ fn decode_thread_main(
                     let ts = (secs * 1_000_000.0) as i64;
                     debug!("decode_thread: seek to {secs:.3}s (ts={ts} us, epoch {epoch}) (in drain)");
                     drop(packets);
-                    let _ = format_ctx.seek(ts, ..ts);
+                    let _ = klipp_media::seek_video(&mut format_ctx, ts);
                     packets = format_ctx.packets();
                     decoder.flush();
                     if let Some(bsf) = bsf_ctx.as_ref() {
@@ -3333,7 +3332,7 @@ fn decode_thread_main(
                                 hw_active_flag.store(false, std::sync::atomic::Ordering::Relaxed);
                                 STREAMS_TO_SOFTWARE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                                 let ts = (first_refused_secs * 1_000_000.0) as i64;
-                                let _ = format_ctx.seek(ts, ..ts);
+                                let _ = klipp_media::seek_video(&mut format_ctx, ts);
                                 packets = format_ctx.packets();
                                 seek_target = Some(first_refused_secs);
                                 last_pts_secs = None;
