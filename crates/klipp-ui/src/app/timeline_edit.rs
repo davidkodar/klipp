@@ -798,6 +798,7 @@ impl KlippApp {
                                     idx == target
                                         && self.is_magnetic_track(idx)
                                         && self.state.sequences[seq_idx].tracks[idx].kind == target_kind
+                                        && super::source_edits::insert_closes_up(&self.state.sequences[seq_idx].tracks[idx], timeline_in)
                                 });
 
                             if use_magnetic {
