@@ -1596,8 +1596,8 @@ impl KlippApp {
                 // (#3425): written in place, undo took back the edit before.
                 self.with_clip_graph_mut_at(clip_id, &[], needs_refresh, |graph| write_color_match(graph, settings));
                 self.state.toast.show(format!(
-                    "Matched clip to reference: exp {:+.2}, temp {:+.0}, tint {:+.0}, sat {:.2}×",
-                    settings.exposure, settings.temperature, settings.tint, settings.saturation
+                    "Matched clip to reference: exp {:+.2}, temp {:+.0}, tint {:+.0}, sat {:.2}×{}",
+                    settings.exposure, settings.temperature, settings.tint, settings.saturation, settings.strained_note()
                 ));
                 true
             }
@@ -1636,8 +1636,8 @@ impl KlippApp {
                 let wired = self.state.sequence().all_clips().find(|c| c.id == *clip_id).is_some_and(|c| c.grade().edges.iter().any(|e| e.from_node == *node_id));
                 let unwired = if wired { "" } else { " — not shown: this Colour Match isn't wired into the grade; connect its output on the node canvas" };
                 self.state.toast.show(format!(
-                    "Match: exp {:+.2}, temp {:+.0}, tint {:+.0}, sat {:.2}×{unwired}",
-                    settings.exposure, settings.temperature, settings.tint, settings.saturation
+                    "Match: exp {:+.2}, temp {:+.0}, tint {:+.0}, sat {:.2}×{}{unwired}",
+                    settings.exposure, settings.temperature, settings.tint, settings.saturation, settings.strained_note()
                 ));
                 true
             }
