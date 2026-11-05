@@ -24,6 +24,8 @@ mod a_large_jpeg_still_shows;
 mod a_live_drag_reaches;
 #[path = "../a_parked_step_keeps_its_neighbours.rs"]
 mod a_parked_step_keeps_its_neighbours;
+#[path = "../before_after_on_a_parked_frame.rs"]
+mod before_after_on_a_parked_frame;
 #[path = "../a_still_plays_under_moving_layers.rs"]
 mod a_still_plays_under_moving_layers;
 #[path = "../unfreezing_shows_the_live_frame.rs"]
