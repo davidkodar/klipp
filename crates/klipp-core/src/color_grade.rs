@@ -1661,6 +1661,30 @@ pub struct ColorMatchSettings {
     pub saturation: f32,
 }
 
+impl ColorMatchSettings {
+    /// Whether this match pulled so hard that it is no more than a rough
+    /// start: a temperature or tint past the sliders' ±50, or at most half
+    /// or at least twice the saturation, or over a stop and a half. Two
+    /// shots of one scene stay well inside these; two different scenes
+    /// reach them, and the match looks wrong however it is computed.
+    pub fn strained(&self) -> bool {
+        self.exposure.abs() > 1.5
+            || self.temperature.abs() > 50.0
+            || self.tint.abs() > 50.0
+            || self.saturation <= 0.5
+            || self.saturation >= 2.0
+    }
+
+    /// The words to add to a match's report when it [`strained`](Self::strained).
+    pub fn strained_note(&self) -> &'static str {
+        if self.strained() {
+            " — the shots differ a lot, so treat this as a rough start or undo it"
+        } else {
+            ""
+        }
+    }
+}
+
 impl Default for ColorMatchSettings {
     fn default() -> Self {
         Self { exposure: 0.0, temperature: 0.0, tint: 0.0, saturation: 1.0 }

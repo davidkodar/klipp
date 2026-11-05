@@ -199,6 +199,37 @@ mod tests {
         assert!(result.temperature_adjust > 5.0, "should increase temperature: {}", result.temperature_adjust);
     }
 
+    fn settings(r: &ColorMatchResult) -> klipp_core::ColorMatchSettings {
+        klipp_core::ColorMatchSettings {
+            exposure: r.exposure_adjust,
+            temperature: r.temperature_adjust,
+            tint: r.tint_adjust,
+            saturation: r.saturation_adjust,
+        }
+    }
+
+    /// Two takes a little apart are no strain; a dark orange room matched
+    /// to a pale blue exterior is, and must say so.
+    #[test]
+    fn a_match_between_very_different_shots_is_strained() {
+        let spread = |c: [i32; 3]| -> Vec<u8> {
+            (0..400).flat_map(|i| {
+                let d = (i % 40) - 20;
+                [(c[0] + d) as u8, (c[1] + d / 2) as u8, (c[2] - d / 2) as u8, 255]
+            }).collect()
+        };
+        let take = spread([120, 100, 90]);
+        let next_take = spread([126, 105, 94]);
+        let near = settings(&match_colors(&take, &next_take));
+        assert!(!near.strained(), "{near:?}");
+        assert_eq!(near.strained_note(), "");
+        let room = spread([110, 50, 25]);
+        let exterior = spread([190, 215, 240]);
+        let far = settings(&match_colors(&room, &exterior));
+        assert!(far.strained(), "{far:?}");
+        assert!(far.strained_note().contains("rough start"));
+    }
+
     #[test]
     fn lab_conversion_black_white() {
         let (l, _a, _b) = rgb_to_lab(0.0, 0.0, 0.0);
