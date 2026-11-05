@@ -178,6 +178,18 @@ pub(super) fn window_track_times(clip: &klipp_timeline::Clip, tp: &klipp_core::T
     times
 }
 
+/// What to say of a window track that lost its subject: the stretch it
+/// followed, `span` on the clip's own clock, of a clip `clip_secs` long.
+/// "Complete" would read as if the whole clip were followed, while the
+/// window stands still outside that stretch.
+pub(super) fn mask_track_stopped(span: (f64, f64), clip_secs: f64) -> String {
+    format!(
+        "Mask tracking stopped early: it followed {:.1} s to {:.1} s of this {:.1} s clip, then lost the subject. \
+         The mask stays still outside that",
+        span.0, span.1, clip_secs
+    )
+}
+
 /// A window track's keyframes (#238): for each file frame tracked, its
 /// time on the clip's own clock and the window's move, size and turn
 /// from the reference frame, as (time, dx, dy, scale, degrees). Frames
@@ -211,7 +223,14 @@ pub(super) fn window_perspective_track(clip: &klipp_timeline::Clip, tp: &klipp_c
 
 #[cfg(test)]
 mod window_track_tests {
-    use super::{window_perspective_track, window_quad, window_track_keys};
+    use super::{mask_track_stopped, window_perspective_track, window_quad, window_track_keys};
+
+    #[test]
+    fn a_track_that_lost_its_subject_says_where() {
+        let said = mask_track_stopped((0.0, 5.59), 13.6);
+        assert!(said.contains("stopped early") && said.contains("0.0 s to 5.6 s of this 13.6 s clip"), "{said}");
+    }
+
 
     /// #238: a window track's keyframes sit on the clip's own clock — the
     /// grade's — not the file's: a clip trimmed to start 2 s into its file

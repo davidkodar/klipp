@@ -5139,7 +5139,9 @@ pub enum AppEvent {
     TrackingProgress { clip_id: ClipId, progress: f32 },
     /// `motion`: a window track's (scale, degrees) on each frame of
     /// `positions` (#238); empty for a point track.
-    TrackingComplete { clip_id: ClipId, point_index: usize, positions: Vec<(f64, f64)>, start_frame: usize, motion: Vec<(f64, f64)>, corners: Vec<[(f64, f64); 4]> },
+    /// `lost` is true when a window track stopped before the end of the
+    /// frames it read, because it lost what it was following.
+    TrackingComplete { clip_id: ClipId, point_index: usize, positions: Vec<(f64, f64)>, start_frame: usize, motion: Vec<(f64, f64)>, corners: Vec<[(f64, f64); 4]>, lost: bool },
     TrackingFailed { clip_id: ClipId, error: String },
     /// A surface tracked (#684): where its corners are in each file frame
     /// followed, `(file seconds, corners)`, earliest first, the reference

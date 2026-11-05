@@ -690,6 +690,7 @@ impl KlippApp {
                             start_frame,
                             motion: Vec::new(),
                             corners: Vec::new(),
+                            lost: false,
                         });
                     });
                 }
