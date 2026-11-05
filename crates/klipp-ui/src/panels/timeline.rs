@@ -899,6 +899,10 @@ pub struct TimelinePanel {
     track_key_drag: Option<TrackKeyDrag>,
     /// The edit point right-clicked, for its menu (#925).
     context_edit_point: Option<EditPoint>,
+    /// The clip right-clicked, for its menu. The selection can't say: the
+    /// Colour page puts it back on the clip at the playhead while the menu
+    /// is open (see `grade_needs_following`).
+    context_clip: Option<klipp_core::ClipId>,
     /// Track height resize drag: (track_index, start_y, original_height)
     resizing_track: Option<(usize, f32, f32)>,
     /// Automation lane height resize drag: (track_index, start_y, original_lane_height)
@@ -8588,6 +8592,7 @@ impl TimelinePanel {
             let on_transition = pointer_pos.and_then(|pos| transition_at(state, track_idx, content_rect, track_rect, zoom, scroll, pos));
             let on_edit = pointer_pos.filter(|_| on_transition.is_none()).and_then(|pos| edit_point_at(state, track_idx, content_rect, track_rect, zoom, scroll, pos));
             self.context_edit_point = on_edit;
+            self.context_clip = None;
             if let Some(tid) = on_transition {
                 state.selected_transition = Some((track_idx, tid));
                 state.selected_clip = None;
@@ -8606,7 +8611,7 @@ impl TimelinePanel {
                         .map(|(_, hit_clip)| hit_clip.id)
                 };
                 if let Some(hit_clip_id) = hit_id {
-                    // Store the clip id so the context menu can use it
+                    self.context_clip = Some(hit_clip_id);
                     cmds.push(AppCommand::SelectClip(Some(hit_clip_id)));
                 }
             }
@@ -8621,7 +8626,7 @@ impl TimelinePanel {
                 edit_point_menu(ui, state, edit, cmds);
                 return;
             }
-            if let Some(clip_id) = state.selected_clip {
+            if let Some(clip_id) = self.context_clip.or(state.selected_clip) {
                 // The clip's menu (#2674): everyday actions at the top,
                 // the rest in a submenu a task, and only what applies to
                 // this clip now: an item that can't is left out, not

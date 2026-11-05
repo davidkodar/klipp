@@ -1135,6 +1135,44 @@ mod menu_smoke_tests {
         }
     }
 
+    /// The Colour page puts the selection back on the clip at the playhead
+    /// while a menu is open. The menu stays the clicked clip's: right-clicked
+    /// elsewhere, it matches that clip, not the one at the playhead.
+    #[test]
+    fn a_clips_menu_is_for_the_clip_clicked_not_the_one_at_the_playhead() {
+        let mut timeline = Timeline::new();
+        timeline.height = 1400.0;
+        let v1 = timeline.state.sequences[0].tracks.iter().position(|t| t.kind == TrackKind::Video).unwrap();
+        // Short enough for the next clip to be on screen.
+        let ten = RationalTime { value: 240, rate: 24 };
+        timeline.state.sequences[0].tracks[v1].clips[0].timeline_out = ten;
+        timeline.state.sequences[0].tracks[v1].clips[0].source_out = ten;
+        let first = timeline.state.sequences[0].tracks[v1].clips[0].clone();
+        let mut second = first.clone();
+        second.id = klipp_core::ClipId::new();
+        second.name = Some("second.mov".into());
+        second.timeline_in = first.timeline_out;
+        second.timeline_out = first.timeline_out + first.duration();
+        let (at_playhead, clicked) = (first.id, second.id);
+        timeline.state.sequences[0].tracks[v1].clips.push(second);
+        timeline.state.selected_clip = Some(at_playhead);
+        timeline.state.color_match_reference = Some((vec![0; 4], 1, 1));
+        timeline.state.color_match_reference_clip = Some(at_playhead);
+
+        let drawn = timeline.frame(Vec::new());
+        let at = drawn.into_iter().find(|(t, _)| t == "second.mov").expect("the second clip is drawn").1;
+        timeline.right_click(at);
+        timeline.state.selected_clip = Some(at_playhead);
+
+        let drawn = timeline.open_submenus(&["Colour"]);
+        let row = drawn.iter().find(|(t, _)| t == "Match Colour to Reference").unwrap_or_else(|| panic!("the clicked clip isn't the reference: {drawn:?}")).1;
+        let sent = timeline.click(row);
+        assert!(
+            sent.iter().any(|c| matches!(c, AppCommand::MatchClipToColorReference { clip_id } if *clip_id == clicked)),
+            "{sent:?}"
+        );
+    }
+
     /// #2674: a video clip's menu is short at the top level; a title's has
     /// Text and no Audio; Paste stays, greyed, with nothing to paste.
     #[test]
