@@ -11412,10 +11412,18 @@ impl PlaybackEngine {
                             .map(|(_, v)| v.clone())
                     })
                 };
+                // An ALEXA says what it recorded in its own tags, and whether
+                // the look was burnt in, when the picture is no longer log.
+                let arri_gamma = tag(&["com.arri.camera.ColorGammaSxS"])
+                    .filter(|_| !tag(&["com.arri.camera.LookFileBurnedIn"]).is_some_and(|b| b.eq_ignore_ascii_case("yes")));
+                if camera_model.is_none() {
+                    camera_model = tag(&["com.arri.camera.CameraModel"]);
+                }
                 let start_timecode = tag(&["timecode"]);
                 let reel_name = tag(&["reel_name", "com.apple.proapps.reel", "reel"]);
                 shot.start_timecode = start_timecode;
                 shot.reel_name = reel_name;
+                shot.gamma = arri_gamma;
                 // A still's EXIF, then the sidecar a Sony or Canon camera
                 // writes beside a clip: each fills what is still missing.
                 if is_still {

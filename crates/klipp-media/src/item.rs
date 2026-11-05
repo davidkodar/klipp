@@ -580,6 +580,12 @@ impl MediaItem {
     pub fn detect_log_format(&self) -> klipp_core::LogFormat {
         use klipp_core::LogFormat;
 
+        // The gamma the camera says it recorded in comes first: ALEXA ProRes
+        // is tagged BT.709 whatever it holds, and its own tags say Log C.
+        if let Some(log) = self.shot.gamma.as_deref().and_then(log_format_of_gamma) {
+            return log;
+        }
+
         // Check explicit transfer characteristics from ffmpeg first
         if let Some(ref trc) = self.color_transfer {
             let t = trc.to_lowercase();
@@ -689,6 +695,16 @@ impl MediaItem {
 /// Takes both the probe's display names ("BT.709", "SMPTE 170M",
 /// "Gamma 2.2", "sRGB", "BT.2020 10-bit") and ffmpeg's short names
 /// ("bt709", "smpte170m", "gamma22", "iec61966-2-1", "bt2020-10").
+fn log_format_of_gamma(gamma: &str) -> Option<klipp_core::LogFormat> {
+    use klipp_core::LogFormat as L;
+    let key: String = gamma.chars().filter(|c| c.is_ascii_alphanumeric()).collect::<String>().to_ascii_lowercase();
+    // Longest first: "logc4" holds "logc".
+    [("logc4", L::LogC4), ("logc", L::LogC3), ("slog3", L::SLog3), ("slog2", L::SLog2), ("vlog", L::VLog), ("clog3", L::CanonLog3), ("clog", L::CanonLog)]
+        .into_iter()
+        .find(|(word, _)| key.starts_with(word))
+        .map(|(_, log)| log)
+}
+
 fn is_sdr_transfer(trc: &str) -> bool {
     let key: String = trc.chars().filter(|c| c.is_ascii_alphanumeric()).collect();
     matches!(
@@ -1395,6 +1411,27 @@ mod tests {
     /// #504: an 8-bit iPhone clip can never be log; one not probed yet,
     /// or a 10-bit one (Apple Log), is not ruled out (#607 review); a
     /// display transfer tag is said.
+    /// What the camera says it recorded beats the file's colour tags: ALEXA
+    /// ProRes says BT.709 and holds Log C, which opened flat. A camera gamma
+    /// that isn't log leaves the tags to decide.
+    #[test]
+    fn the_cameras_recorded_gamma_says_what_it_is() {
+        use klipp_core::LogFormat as L;
+        let with = |gamma: Option<&str>| {
+            let mut item = MediaItem::synthetic_for_test(PathBuf::from("/tmp/M001C002.mov"), None);
+            item.color_transfer = Some("bt709".into());
+            item.bit_depth = Some(12);
+            item.shot.gamma = gamma.map(str::to_string);
+            item.detect_log_format()
+        };
+        assert_eq!(with(Some("LOG-C")), L::LogC3);
+        assert_eq!(with(Some("LogC4")), L::LogC4);
+        assert_eq!(with(Some("s-log3-cine")), L::SLog3);
+        assert_eq!(with(Some("V-Log")), L::VLog);
+        assert_eq!(with(Some("REC 709")), L::Srgb);
+        assert_eq!(with(None), L::Srgb, "only the tag: BT.709");
+    }
+
     #[test]
     fn a_file_says_what_it_can_be() {
         use klipp_color::measure::LogPrior;
