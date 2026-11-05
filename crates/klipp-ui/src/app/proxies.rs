@@ -470,7 +470,7 @@ impl KlippApp {
                 AppEvent::TrackingProgress { clip_id, progress } => {
                     self.state.tracking_progress.insert(clip_id, progress);
                 }
-                AppEvent::TrackingComplete { clip_id, point_index, positions, start_frame, motion, corners } => {
+                AppEvent::TrackingComplete { clip_id, point_index, positions, start_frame, motion, corners, lost } => {
                     self.state.tracking_in_progress.remove(&clip_id);
                     self.state.tracking_progress.remove(&clip_id);
                     let seq = &mut self.state.sequences[self.state.active_sequence_idx];
@@ -493,7 +493,15 @@ impl KlippApp {
                             clip_id, point_index, target,
                         };
                         let _ = self.handle_stabilization_commands(&cmd, &mut needs_refresh);
-                        self.state.toast.show("Mask tracking complete");
+                        let fps = self.state.fps.as_f64();
+                        let seq = &self.state.sequences[self.state.active_sequence_idx];
+                        let said = seq.all_clips().find(|c| c.id == clip_id).filter(|_| lost).and_then(|clip| {
+                            let tp = clip.track_points.get(point_index)?;
+                            let times = window_track_times(clip, tp, &self.state.media_pool, fps);
+                            let span = (times.first()?.1, times.last()?.1);
+                            Some(mask_track_stopped(span, clip.duration().to_secs_f64()))
+                        });
+                        self.state.toast.show(said.unwrap_or_else(|| "Mask tracking complete".into()));
                     } else {
                         self.state.toast.show("Point tracking complete");
                     }

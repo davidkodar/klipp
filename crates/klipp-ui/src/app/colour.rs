@@ -456,9 +456,10 @@ impl KlippApp {
                     behind.into_iter().rev().chain(std::iter::once((reference, still))).chain(ahead).collect();
                 let start_frame = all.first().map_or(reference, |a| a.0);
                 let frac = |p: (f64, f64)| (p.0 / gw, p.1 / gh);
+                let lost = all.len() < frames.len();
                 let positions = all.iter().map(|(_, h)| frac(h.transform(pivot_px.0, pivot_px.1))).collect();
                 let corners = all.iter().map(|(_, h)| quad_px.map(|c| frac(h.transform(c.0, c.1)))).collect();
-                let _ = event_tx.send(klipp_core::AppEvent::TrackingComplete { clip_id, point_index, positions, start_frame, motion: Vec::new(), corners });
+                let _ = event_tx.send(klipp_core::AppEvent::TrackingComplete { clip_id, point_index, positions, start_frame, motion: Vec::new(), corners, lost });
                 return;
             }
             let ahead = track_window(gpu.as_mut(), &reference_frame, quad_px, pivot_px, &forward, &mut |f| decode(f), &opts, &|p| report(p * share));
@@ -472,9 +473,10 @@ impl KlippApp {
             let all: Vec<(usize, klipp_effects::window_track::WindowFit)> =
                 behind.into_iter().rev().chain(std::iter::once((reference, still))).chain(ahead).collect();
             let start_frame = all.first().map_or(reference, |a| a.0);
+            let lost = all.len() < frames.len();
             let positions = all.iter().map(|(_, m)| ((pivot_px.0 + m.dx) / gw, (pivot_px.1 + m.dy) / gh)).collect();
             let motion = all.iter().map(|(_, m)| (m.scale, m.rotation.to_degrees())).collect();
-            let _ = event_tx.send(klipp_core::AppEvent::TrackingComplete { clip_id, point_index, positions, start_frame, motion, corners: Vec::new() });
+            let _ = event_tx.send(klipp_core::AppEvent::TrackingComplete { clip_id, point_index, positions, start_frame, motion, corners: Vec::new(), lost });
         });
     }
 
