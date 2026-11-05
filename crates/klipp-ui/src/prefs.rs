@@ -917,6 +917,33 @@ pub struct ExportPrefs {
     /// in the background. Leave empty to skip.
     #[serde(default)]
     pub post_export_command: String,
+    /// Whether the Export page shows the Cover section (#3311).
+    #[serde(default)]
+    pub cover_section: CoverShow,
+}
+
+/// When the Export page shows the Cover section (#3311), a creator's
+/// tool kept out of other work: for a sequence made for a platform
+/// unless hidden, or always once asked for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CoverShow {
+    /// For a sequence whose brief names a platform.
+    #[default]
+    Auto,
+    Shown,
+    Hidden,
+}
+
+impl CoverShow {
+    /// Whether the section shows for `seq`.
+    pub fn shows(self, seq: &klipp_timeline::Sequence) -> bool {
+        match self {
+            CoverShow::Auto => seq.brief.as_ref().is_some_and(|b| !b.platform.trim().is_empty()),
+            CoverShow::Shown => true,
+            CoverShow::Hidden => false,
+        }
+    }
 }
 fn default_export_sr() -> u32 { 48000 }
 /// One render at a time: two at once each ran at about 0.6x, so the first
@@ -943,6 +970,7 @@ impl Default for ExportPrefs {
             open_folder_after_export: false,
             parallel_render_jobs: default_parallel_jobs(),
             post_export_command: String::new(),
+            cover_section: CoverShow::Auto,
         }
     }
 }

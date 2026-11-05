@@ -1953,6 +1953,8 @@ pub enum AppCommand {
     ClearCaptionStyle { track_id: TrackId },
     /// Export subtitles from subtitle tracks as SRT.
     ExportSubtitles { path: PathBuf },
+    /// Show or hide the Export page's Cover section (#3311), a preference.
+    ShowCoverSection { shown: bool },
     /// Export sequence as FCPXML 1.9 for Final Cut Pro interchange.
     ExportFcpxml { path: PathBuf },
     /// Export sequence as MLT XML (.kdenlive) for Kdenlive interchange (cuts-only v1).

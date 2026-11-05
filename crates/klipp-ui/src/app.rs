@@ -47,6 +47,7 @@ mod multicam;
 pub(crate) mod placement;
 mod history_apply;
 pub(crate) mod aspect_version;
+mod cover_section;
 mod brand_kit;
 mod audio_roles;
 mod visual_search;
@@ -463,6 +464,8 @@ pub struct KlippApp {
     proxy_event_rx: Receiver<AppEvent>,
     // Export dialog state
     export_dialog: ExportDialogState,
+    /// The Export page's Cover section (#3311).
+    covers_panel: crate::cover_section::CoverPanel,
     // Preferences
     prefs: crate::prefs::Preferences,
     prefs_dirty: bool,
