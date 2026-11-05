@@ -6,6 +6,13 @@ use super::*;
 use crate::source_edit::{Marks, Placement};
 use klipp_core::RationalTime;
 
+/// Whether an Insert Edit at `at` on the primary track must close up to its
+/// end, being past it. Anywhere else it ripples every track: the primary
+/// alone moved the picture away from its sound, on A1 where it was.
+pub(super) fn insert_closes_up(primary: &klipp_timeline::Track, at: klipp_core::Timecode) -> bool {
+    primary.clips.last().is_none_or(|c| c.timeline_out < at) && at.value != 0
+}
+
 impl KlippApp {
     /// The source and sequence marks a source edit of `item` reads.
     fn source_marks(&self, item: &klipp_media::MediaItem) -> Marks {
@@ -554,5 +561,66 @@ mod no_source_tests {
         let mut state = crate::state::AppState { source_media_id: Some(klipp_core::MediaId::new()), ..Default::default() };
         assert!(!says_no_source(&mut state));
         assert_eq!(state.toast.message_for_test(), None);
+    }
+}
+
+#[cfg(test)]
+mod insert_sync_tests {
+    use klipp_core::{MediaId, RationalTime};
+    use klipp_timeline::{Clip, Sequence, TrackKind};
+
+    fn t(s: i64) -> RationalTime {
+        RationalTime::from_frames(s * 24, 24)
+    }
+
+    /// An interview, 0 to 20 s, picture on the primary and its sound linked.
+    fn interview() -> Sequence {
+        let mut seq = Sequence::new_default();
+        let p = seq.primary_track_index().unwrap();
+        let a = seq.tracks.iter().position(|tr| tr.kind == TrackKind::Audio).unwrap();
+        let media = MediaId::new();
+        let mut picture = Clip::media(media, t(0), t(20), t(0), t(20));
+        let mut sound = Clip::media(media, t(0), t(20), t(0), t(20));
+        picture.linked_clip_id = Some(sound.id);
+        sound.linked_clip_id = Some(picture.id);
+        seq.tracks[p].clips.push(picture);
+        seq.tracks[a].clips.push(sound);
+        seq
+    }
+
+    fn spans(seq: &Sequence, kind: TrackKind) -> Vec<(i64, i64)> {
+        let tr = seq.tracks.iter().find(|tr| tr.kind == kind).unwrap();
+        tr.clips.iter().map(|c| (c.timeline_in.to_secs_f64().round() as i64, c.timeline_out.to_secs_f64().round() as i64)).collect()
+    }
+
+    /// A silent clip inserted at the start or in the middle: the sound stays
+    /// under its picture, each piece with its own, and undo restores it all.
+    /// Past the end it closes up instead.
+    #[test]
+    fn an_insert_keeps_the_sound_under_its_picture() {
+        for (at, picture, sound) in [
+            (0, vec![(0, 5), (5, 25)], vec![(5, 25)]),
+            (8, vec![(0, 8), (8, 13), (13, 25)], vec![(0, 8), (13, 25)]),
+        ] {
+            let mut seq = interview();
+            let before = serde_json::to_value(&seq).unwrap();
+            let p = seq.primary_track_index().unwrap();
+            assert!(!super::insert_closes_up(&seq.tracks[p], t(at)), "at {at}");
+            let edit = seq.insert_edit(p, Clip::media(MediaId::new(), t(at), t(at + 5), t(0), t(5)), t(at)).unwrap();
+            assert_eq!(spans(&seq, TrackKind::Video), picture, "at {at}");
+            assert_eq!(spans(&seq, TrackKind::Audio), sound, "at {at}");
+            assert!(seq.primary_holes().is_none(), "at {at}");
+            let tracks = |kind| seq.tracks.iter().find(|tr: &&klipp_timeline::Track| tr.kind == kind).unwrap();
+            for piece in tracks(TrackKind::Audio).clips.iter() {
+                let partner = tracks(TrackKind::Video).find_clip(piece.linked_clip_id.expect("linked")).expect("its picture");
+                assert_eq!((partner.timeline_in, partner.timeline_out), (piece.timeline_in, piece.timeline_out), "at {at}");
+            }
+            seq.undo_insert_edit(&edit);
+            assert_eq!(serde_json::to_value(&seq).unwrap(), before, "at {at}");
+        }
+        let seq = interview();
+        let p = seq.primary_track_index().unwrap();
+        assert!(!super::insert_closes_up(&seq.tracks[p], t(20)), "at its end");
+        assert!(super::insert_closes_up(&seq.tracks[p], t(30)), "past its end");
     }
 }
