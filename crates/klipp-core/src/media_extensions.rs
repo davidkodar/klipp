@@ -67,7 +67,7 @@ pub const AUDIO_EXTENSIONS: &[&str] = &[
 /// need to know "is this a raw file that needs special decoding?" should
 /// use [`is_raw`] instead of `is_image`.
 pub const IMAGE_EXTENSIONS: &[&str] = &[
-    "png", "jpg", "jpeg", "tiff", "tif", "bmp", "webp", "exr",
+    "png", "jpg", "jpeg", "tiff", "tif", "bmp", "webp", "exr", "dpx", "tga", "jp2", "j2k",
     "heic", "heif", "avif", "jxl",
     // Camera RAW formats — actual decode goes through the embedded-JPEG
     // extractor (klipp_engine::extract_raw_preview) instead of ffmpeg.
@@ -301,7 +301,7 @@ mod tests {
         // The RAW formats are decoded via embedded-JPEG preview extraction,
         // not ffmpeg — see klipp_engine::extract_raw_preview.
         let expected: &[&str] = &[
-            "png", "jpg", "jpeg", "tiff", "tif", "bmp", "webp", "exr",
+            "png", "jpg", "jpeg", "tiff", "tif", "bmp", "webp", "exr", "dpx", "tga", "jp2", "j2k",
             "heic", "heif", "avif", "jxl",
             "arw", "cr2", "cr3", "nef", "raf", "orf", "rw2", "dng", "pef", "srw", "rwl",
         ];

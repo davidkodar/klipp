@@ -1252,7 +1252,6 @@ fn cuvid_decoder_name(codec_id: ffmpeg_next::codec::Id) -> Option<&'static str> 
         Id::MPEG1VIDEO => "mpeg1_cuvid",
         Id::MPEG4 => "mpeg4_cuvid",
         Id::VC1 => "vc1_cuvid",
-        Id::MJPEG => "mjpeg_cuvid",
         _ => return None,
     })
 }
