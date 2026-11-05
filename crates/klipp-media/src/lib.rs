@@ -104,6 +104,19 @@ pub fn input_args_lossy(path: &std::path::Path) -> Result<Vec<String>, String> {
     Ok(input_args(path)?.into_iter().map(|a| a.to_string_lossy().into_owned()).collect())
 }
 
+/// The name of the cinema camera raw format `path` is in, by its extension.
+/// ffmpeg can't read these, and its "invalid data" reads as a damaged file.
+fn unsupported_camera_raw(path: &std::path::Path) -> Option<&'static str> {
+    let ext = path.extension()?.to_str()?.to_ascii_lowercase();
+    Some(match ext.as_str() {
+        "r3d" => "RED RAW (.R3D)",
+        "braw" => "Blackmagic RAW (.braw)",
+        "ari" | "arx" => "ARRIRAW",
+        "crm" => "Canon Cinema RAW Light (.crm)",
+        _ => return None,
+    })
+}
+
 /// Whether `path` can be imported: ffmpeg opens it and finds a picture or
 /// a sound in it, as the import's own first step does (#654). The error
 /// says why not, in ffmpeg's words ("moov atom not found", "Invalid data
@@ -115,6 +128,9 @@ pub fn readable(path: &std::path::Path) -> Result<(), String> {
         return Err("it is a playlist or a list of other files, which Klipp does not import".into());
     }
     let input = open_input(path).map_err(|e| {
+        if let Some(raw) = unsupported_camera_raw(path) {
+            return format!("Klipp can't read {raw} files. Export the clip to ProRes or another video format from the camera maker's software");
+        }
         let said = e.to_string();
         if said.trim().is_empty() { format!("{e:?}") } else { said }
     })?;
@@ -224,5 +240,20 @@ mod readable_tests {
         let why = super::readable(&text).expect_err("text is not a video");
         assert!(!why.is_empty());
         std::fs::remove_dir_all(&dir).ok();
+    }
+}
+
+#[cfg(test)]
+mod camera_raw_tests {
+    /// A cinema camera raw file is refused by name, not as a damaged file.
+    #[test]
+    fn a_raw_file_says_what_it_is() {
+        for (name, says) in [("A001.R3D", "RED RAW"), ("a.braw", "Blackmagic RAW"), ("a.ari", "ARRIRAW"), ("a.crm", "Canon")] {
+            let path = std::env::temp_dir().join(format!("klipp-raw-{}-{name}", std::process::id()));
+            std::fs::write(&path, b"not a video file").unwrap();
+            let why = super::readable(&path).expect_err("refused");
+            assert!(why.contains(says), "{name}: {why}");
+            let _ = std::fs::remove_file(&path);
+        }
     }
 }
