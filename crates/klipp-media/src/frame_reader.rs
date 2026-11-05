@@ -1039,12 +1039,18 @@ pub unsafe fn stream_colour_baseline(
     codecpar: *const ffmpeg_next::ffi::AVCodecParameters,
 ) -> klipp_core::SourceColorspace {
     if codecpar.is_null() {
-        return klipp_core::SourceColorspace::resolve(0, 0, 0, 0, 1920, 1080);
+        return klipp_core::SourceColorspace::resolve(0, 2, 0, 0, 1920, 1080);
     }
     let p = &*codecpar;
+    // An RGB matrix on Y'CbCr samples is ProRes's "unknown": a file with no
+    // container tag to say otherwise. Left unspecified, the size decides.
+    const SPC_UNSPECIFIED: i32 = 2;
+    let desc = ffmpeg_next::ffi::av_pix_fmt_desc_get(std::mem::transmute::<i32, ffmpeg_next::ffi::AVPixelFormat>(p.format.clamp(-1, ffmpeg_next::ffi::AVPixelFormat::AV_PIX_FMT_NB as i32 - 1)));
+    let rgb_samples = !desc.is_null() && (*desc).flags & (ffmpeg_next::ffi::AV_PIX_FMT_FLAG_RGB as u64) != 0;
+    let matrix = if p.color_space as i32 == 0 && !rgb_samples && !desc.is_null() { SPC_UNSPECIFIED } else { p.color_space as i32 };
     klipp_core::SourceColorspace::resolve(
         p.color_range as i32,
-        p.color_space as i32,
+        matrix,
         p.color_primaries as i32,
         p.color_trc as i32,
         p.width.max(1) as u32,

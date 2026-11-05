@@ -2930,19 +2930,12 @@ fn decode_thread_main(
     // actually specified.
     let (cs_baseline_from_codecpar, source_pixels): (klipp_core::SourceColorspace, u64) = unsafe {
         let par_raw: *mut ffmpeg_next::ffi::AVCodecParameters = (*video_stream.as_ptr()).codecpar;
-        let (range_r, space_r, pri_r, trc_r, w, h) = if par_raw.is_null() {
-            (0, 0, 0, 0, 1920u32, 1080u32)
+        let (w, h) = if par_raw.is_null() {
+            (1920u64, 1080u64)
         } else {
-            (
-                (*par_raw).color_range as i32,
-                (*par_raw).color_space as i32,
-                (*par_raw).color_primaries as i32,
-                (*par_raw).color_trc as i32,
-                (*par_raw).width.max(1) as u32,
-                (*par_raw).height.max(1) as u32,
-            )
+            ((*par_raw).width.max(1) as u64, (*par_raw).height.max(1) as u64)
         };
-        (klipp_core::SourceColorspace::resolve(range_r, space_r, pri_r, trc_r, w, h), w as u64 * h as u64)
+        (klipp_media::frame_reader::stream_colour_baseline(par_raw), w * h)
     };
     crate::decode_budget::set_rate(lease_id, source_pixels as f64 * source_fps);
 

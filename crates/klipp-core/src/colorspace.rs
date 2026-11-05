@@ -289,7 +289,15 @@ impl SourceColorspace {
     ) -> Self {
         Self {
             range: resolve_range_or(range_raw, baseline.range),
-            matrix: resolve_matrix_or(matrix_raw, baseline.matrix),
+            // ProRes frames say RGB for "unknown" (their header's 0 is
+            // ffmpeg's RGB), on Y'CbCr samples. Taken at its word on ALEXA
+            // footage the picture came out green only. Only a stream that
+            // says RGB too is RGB.
+            matrix: if matrix_raw == AVCOL_SPC_RGB && baseline.matrix != ColorMatrix::Identity {
+                baseline.matrix
+            } else {
+                resolve_matrix_or(matrix_raw, baseline.matrix)
+            },
             primaries: resolve_primaries_or(primaries_raw, baseline.primaries),
             transfer: resolve_transfer_or(transfer_raw, baseline.transfer),
         }
@@ -558,6 +566,20 @@ fn transfer_label(t: ColorTransfer) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    /// A frame's RGB tag doesn't overrule a stream that names a matrix:
+    /// real ALEXA ProRes (stream BT.709, frame "RGB" on Y'CbCr). A stream
+    /// that says RGB too stays RGB.
+    #[test]
+    fn a_frames_rgb_tag_does_not_overrule_the_stream() {
+        use super::*;
+        let baseline = SourceColorspace { matrix: ColorMatrix::Bt709, ..SourceColorspace::BT709_LIMITED_SDR };
+        let frame = SourceColorspace::resolve_with_baseline(1, AVCOL_SPC_RGB, 0, 0, baseline);
+        assert_eq!(frame.matrix, ColorMatrix::Bt709);
+        let rgb = SourceColorspace { matrix: ColorMatrix::Identity, ..baseline };
+        assert_eq!(SourceColorspace::resolve_with_baseline(1, AVCOL_SPC_RGB, 0, 0, rgb).matrix, ColorMatrix::Identity);
+        assert_eq!(SourceColorspace::resolve_with_baseline(1, AVCOL_SPC_BT2020_NCL, 0, 0, baseline).matrix, ColorMatrix::Bt2020Ncl, "any other frame tag still counts");
+    }
+
     use super::*;
 
     #[test]
