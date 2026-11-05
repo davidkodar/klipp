@@ -561,7 +561,7 @@ mod tests {
         assert!(!is_media("srt"));    // subtitle, separate domain
         assert!(!is_media("klipp"));  // project file, separate domain
         assert!(!is_media("cube"));   // LUT, separate domain
-        assert!(!is_media("tga"));    // texture-only, intentionally excluded
+        assert!(!is_media("dds"));    // texture-only, intentionally excluded
     }
 
     #[test]
