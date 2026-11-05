@@ -5,6 +5,104 @@ Each release lists what changed for people using Klipp. Versions follow
 
 ## Unreleased
 
+## 0.3.3 — 2026-11-05
+
+This release comes from extensive testing on editing, colour grading,
+sound, titles and captions, file formats and projects. The editing core
+also ran through long series of tests, including random edits. Colour
+grading was checked on real camera footage from ARRI and Sony and measured
+against reference charts. Below are the fixes that came out of it.
+
+### Colour
+
+- ALEXA ProRes is read through its real colour matrix and opens as Log C,
+  as the camera's own tags say. It showed green before.
+- A qualifier limits a grade from the GUI: **+ Qualifier** under Masks on
+  the Colour tab, or a matte wire on a correction's new matte input. A
+  matte dropped on a correction no longer replaces the picture.
+- Before/After shows at once, from the button, the key or the menu. The
+  Colour page stays on the clip at the playhead, and a clip's right-click
+  menu acts on the clip clicked.
+- Colour match aims its white balance at the reference's neutrals,
+  matches saturation through its own node, and says when two shots differ
+  so much that the match is only a rough start.
+- A mask track that loses its subject says where it stopped. The Colour
+  tab's mask is a window on the grade, not a cutout.
+- Scopes and stills read only the picture, never what the viewer draws on
+  it. A LUT node's bundled categories open in place.
+
+### Formats
+
+- JPEG, Targa, DPX and JPEG 2000 stills show, and MJPEG plays. H.264
+  High 4:4:4 decodes, in software.
+- A RED, Blackmagic RAW, ARRIRAW or Canon raw file is refused by name,
+  with what to convert it to.
+- A 10-bit HEVC export says so when this computer's x265 encodes 8-bit
+  only.
+
+### Editing
+
+- In and Out marks stay on the timeline, set an export's range, and are
+  cleared by the Lift or Extract that uses them. The pieces a Lift or
+  Extract splits stay linked to their own partners.
+- Insert Edit keeps each clip's sound under its picture. Trim Start and
+  End trim linked sound and picture together. A trim takes the side
+  grabbed at a cut; only the Trim tool rolls.
+- A dropped clip lands where it was let go, over what is on its track,
+  and never lays its sound over another clip's sound.
+- Speed ramps split when a clip is cut, ramp the linked sound with them
+  and come off in one step. Keep Pitch and speed keys are undo steps.
+- J shows the picture running back. Play at the end starts over. Sound
+  plays from the playhead's sample after a seek.
+- Multicam ripple trims cut the same stretch from every angle.
+
+### Sound
+
+- Auto Duck finds the voice it ducks under, or says it found none.
+  Export warns when music plays over speech at full level.
+- Audio effects move up and down their chain with their keyframes. A
+  sound-only export is described as sound.
+
+### Titles, captions and interchange
+
+- Arabic is drawn from a font that joins it when the face lacks it.
+  Italic and bold use the default font's own faces. A title still
+  showing its template's stand-in text is flagged.
+- Each shown subtitle track embeds as its own stream, in its language.
+  EBU-STL uses the character table its captions need. VTT keeps cue
+  settings, and subtitle times are written to the millisecond.
+- FCPXML reads 29.97 and Final Cut's 25p at their length and carries
+  to-do markers. Overlapping EDL events import onto tracks of their own.
+
+### First Cut, shorts and brand kits
+
+- First Cut tells a retake from sentences that open alike, cuts where
+  speech pauses, and lays its music bed on its own track.
+- Shorts are made in one step, or none, inside the file they are cut
+  from. Brand kits restyle titles in the brand's look and keep lower
+  thirds clear of the destination's players.
+
+### Projects and media
+
+- Only media files are imported, opened or collected. Proxies show
+  whether their file is still there, and survive a relink to the same
+  content. Collect refuses a project with used media offline, and says so.
+- Saving and the unsaved check cost less on a large project, and a
+  saved project stays saved as analysis comes in.
+- Subtitle and camera sidecar reads are capped in size, and XML nested
+  too deeply is refused before it is read.
+
+### Known issues
+
+- Klipp has not yet been tested end to end on AMD or Intel GPUs.
+- The input colour space is set on the Edit page only, not the Colour
+  page. The film print LUTs don't say what kind of picture they expect.
+- 10-bit and 12-bit HEVC 4:4:4 files decode with the wrong colour
+  matrix.
+- 8K HEVC at about 2.7 Gbit/s drops frames on playback, and AV1 at
+  3.4 Gbit/s doesn't play, without saying why.
+- ALEXA MXF files carry no colour tags Klipp can read: set Log C by hand.
+
 ## 0.3.2 — 2026-11-03
 
 This release fixes about fifty problems found while testing every part of
