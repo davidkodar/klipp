@@ -955,6 +955,23 @@ pub(crate) enum HwAccel {
     Software,
 }
 
+/// A stream the GPU decoder opens and then gets wrong, with no error: H.264
+/// High 4:4:4 Predictive, as lossless encodes are, came out with a flat patch
+/// as a gradient (38 down to 20), where a software decode of the file is flat.
+fn gpu_decodes_wrongly(params: &ffmpeg_next::codec::Parameters) -> bool {
+    // SAFETY: the pointer is the live stream's parameters, read here only.
+    let (id, profile) = unsafe {
+        let par = params.as_ptr();
+        ((*par).codec_id, (*par).profile)
+    };
+    is_h264_high_444(id == ffmpeg_next::ffi::AVCodecID::AV_CODEC_ID_H264, profile)
+}
+
+fn is_h264_high_444(is_h264: bool, profile: i32) -> bool {
+    const HIGH_444_PREDICTIVE: i32 = 244;
+    is_h264 && profile == HIGH_444_PREDICTIVE
+}
+
 /// Callback for FFmpeg codec negotiation — selects the preferred HW pixel format.
 ///
 /// Returns `AV_PIX_FMT_CUDA` whenever it's offered so ffmpeg keeps the frame
@@ -2879,7 +2896,7 @@ fn decode_thread_main(
         crate::decode_budget::Decoding::Software { threads } => Some(threads),
         crate::decode_budget::Decoding::Gpu => None,
     };
-    let hw_enabled = sw_threads.is_none() && HARDWARE_DECODE_PREF.load(std::sync::atomic::Ordering::Relaxed) && !hw_shunned();
+    let hw_enabled = sw_threads.is_none() && !gpu_decodes_wrongly(&video_stream.parameters()) && HARDWARE_DECODE_PREF.load(std::sync::atomic::Ordering::Relaxed) && !hw_shunned();
     let try_cuvid = hw_enabled && std::env::var("KLIPP_USE_CUVID").as_deref() != Ok("0");
 
     // The GPU open, and its first frame, within a time limit; software
@@ -4405,5 +4422,15 @@ mod sw_frames_on_gpu_tests {
             eprintln!("{pix_fmt}: mean {mean:.5}, worst {worst:.5}");
             assert!(mean < 0.003 && worst < 0.02, "{pix_fmt}: the GPU's picture differs from the CPU's: mean {mean}, worst {worst}");
         }
+    }
+}
+
+#[cfg(test)]
+mod gpu_decode_tests {
+    #[test]
+    fn only_h264_high_444_is_kept_from_the_gpu() {
+        assert!(super::is_h264_high_444(true, 244));
+        assert!(!super::is_h264_high_444(true, 100), "High");
+        assert!(!super::is_h264_high_444(false, 244), "another codec's number");
     }
 }
