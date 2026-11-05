@@ -360,6 +360,11 @@ impl NodeKind {
         }
     }
 
+    /// Whether a matte on this correction's port 1 limits where it applies.
+    pub fn takes_gate(self) -> bool {
+        crate::graph::gateable(self)
+    }
+
     /// How many output ports this node has.
     pub fn output_port_count(&self) -> u8 {
         match self {
@@ -376,6 +381,7 @@ impl NodeKind {
     /// range returns `PortRole::Primary`.
     pub fn input_port_role(&self, port: u8) -> PortRole {
         match (self, port) {
+            (kind, 1) if kind.takes_gate() => PortRole::Matte,
             // ApplyMatte: graded frame, matte, ungraded frame.
             (NodeKind::ApplyMatte, 0) => PortRole::Primary,   // graded
             (NodeKind::ApplyMatte, 1) => PortRole::Matte,
@@ -437,6 +443,7 @@ impl NodeKind {
     /// inspector.
     pub fn input_port_label(&self, port: u8) -> &'static str {
         match (self, port) {
+            (kind, 1) if kind.takes_gate() => "Limit by matte",
             (NodeKind::ApplyMatte, 0) => "Graded",
             (NodeKind::ApplyMatte, 1) => "Matte",
             (NodeKind::ApplyMatte, 2) => "Pre-grade",

@@ -417,6 +417,35 @@ impl NodeGraph {
     /// qualifier's and the correction's ids. `kind` is the correction's
     /// node kind: `ColorBalance` turns a hue, `Corrector` lifts or
     /// saturates.
+    /// `correction` limited by a new qualifier `id`: the keyer looks at the
+    /// picture the correction takes, and its matte goes to the correction's
+    /// gate. `false`, with nothing changed, when `correction` takes no matte,
+    /// has no picture, or has one already.
+    pub fn limit_with_qualifier(&mut self, correction: NodeId, id: NodeId) -> bool {
+        let Some(at) = self.nodes.iter().position(|n| n.id == correction) else { return false };
+        if !self.nodes[at].kind.takes_gate() || self.input_of(correction, 1).is_some() {
+            return false;
+        }
+        let Some(source) = self.input_of(correction, 0) else { return false };
+        let source_port = self.edges.iter().find(|e| e.to_node == correction && e.to_port == 0).map_or(0, |e| e.from_port);
+        self.nodes.insert(at, Node {
+            id,
+            kind: NodeKind::Qualifier,
+            label: "Qualifier".to_string(),
+            enabled: true,
+            params: NodeParams::default(),
+            keyframes: NodeKeyframeTracks::default(),
+            output_link: None,
+            input_links: Vec::new(),
+        });
+        if let Some(p) = self.node_positions.get(&correction).copied() {
+            self.node_positions.insert(id, NodePos { x: p.x - 220.0, y: p.y + 150.0 });
+        }
+        self.edges.push(Edge { from_node: source, from_port: source_port, to_node: id, to_port: 0 });
+        self.edges.push(Edge { from_node: id, from_port: 0, to_node: correction, to_port: 1 });
+        true
+    }
+
     pub fn ensure_masked_secondary(&mut self, kind: NodeKind) -> (NodeId, NodeId) {
         // One already there, keying exactly this kind of correction.
         let found = self.nodes.iter().filter(|n| n.kind == NodeKind::Qualifier).find_map(|q| {
@@ -1696,7 +1725,7 @@ pub struct ChainLink {
 
 /// The corrections a matte on port 1 limits: a secondary whatever the
 /// kind.
-fn gateable(kind: NodeKind) -> bool {
+pub(crate) fn gateable(kind: NodeKind) -> bool {
     matches!(
         kind,
         NodeKind::Corrector

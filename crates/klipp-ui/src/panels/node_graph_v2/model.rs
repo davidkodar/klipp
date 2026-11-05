@@ -18,6 +18,8 @@ pub(super) trait CanvasKind: Copy {
     fn is_external_matte(self) -> bool;
     fn is_variadic(self) -> bool;
     fn is_terminal(self) -> bool { self.is_source() || self.is_output() }
+    /// The input where a matte limits this node, if it has one.
+    fn gate_port(self) -> Option<u8> { None }
     fn palette(self) -> Palette;
     fn glyph(self) -> &'static str;
     fn display_name(&self) -> &str;
@@ -100,7 +102,9 @@ impl CanvasNode for Node {
     fn label(&self) -> &str { &self.label }
     fn enabled(&self) -> bool { self.enabled }
     fn effective_enabled(&self, time: f64) -> bool { klipp_nodes::effective_enabled(self, time) }
-    fn input_count(&self) -> u8 { self.dynamic_input_port_count() }
+    // A correction's gate is drawn: unseen, a matte had nowhere to go but
+    // the picture input.
+    fn input_count(&self) -> u8 { if self.kind.takes_gate() { 2 } else { self.dynamic_input_port_count() } }
     fn modified(&self) -> bool { !self.params.is_default() }
     fn animated(&self) -> bool { !self.keyframes.is_empty() }
     fn child_count(&self) -> usize { self.params.compound_subgraph.as_ref().map_or(0, |g| g.nodes.iter().filter(|n| !n.kind.is_terminal()).count()) }
@@ -116,6 +120,7 @@ impl CanvasKind for NodeKind {
     fn is_group(self) -> bool { self == NodeKind::Compound }
     fn is_external_matte(self) -> bool { self == NodeKind::ExternalMatte }
     fn is_variadic(self) -> bool { matches!(self, NodeKind::LayerMixer | NodeKind::KeyMixer) }
+    fn gate_port(self) -> Option<u8> { self.takes_gate().then_some(1) }
     fn palette(self) -> Palette { grade_palette(&self) }
     fn glyph(self) -> &'static str { grade_glyph(&self) }
     fn display_name(&self) -> &'static str { NodeKind::display_name(self) }

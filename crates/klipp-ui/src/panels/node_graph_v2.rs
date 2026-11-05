@@ -3077,6 +3077,22 @@ impl NodeGraphV2Panel {
                     }
                 }
                 let on_a_node = pointer_pos.is_some_and(|p| node_rects.iter().any(|(_, r, _, _, _)| r.contains(p)));
+                // A matte on a correction limits it, wherever on the node
+                // it lands: on the picture input it would replace the
+                // picture with black and white. A picture has no place on
+                // the gate.
+                let from_matte = node_rects.iter().find(|(id, ..)| *id == dw.from_node)
+                    .is_some_and(|(_, _, _, kind, _)| kind.output_port_role(dw.from_port) == klipp_nodes::PortRole::Matte);
+                let onto_gate = |id: NodeId| node_rects.iter().find(|(n, ..)| *n == id).and_then(|(_, _, _, kind, _)| kind.gate_port());
+                if from_matte {
+                    let under = pointer_pos.and_then(|p| node_rects.iter().find(|(n, r, ..)| *n != dw.from_node && r.contains(p)).map(|(n, ..)| *n));
+                    if let Some((node, gate)) = target.map(|(n, _)| n).or(under).and_then(|n| onto_gate(n).map(|g| (n, g))) {
+                        target = Some((node, gate));
+                    }
+                } else if target.is_some_and(|(n, port)| onto_gate(n) == Some(port)) {
+                    target = dw.detached;
+                    self.bookmark_toast = Some(("That input takes a matte, from a Qualifier or a key, to limit this node".to_owned(), std::time::Instant::now()));
+                }
                 match (target, dw.detached) {
                     // Back where it was lifted from: nothing changes.
                     (Some(to), Some(old)) if to == old => {}

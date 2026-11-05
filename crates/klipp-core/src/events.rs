@@ -2421,6 +2421,9 @@ pub enum AppCommand {
     /// A new node of `kind`, fed by `from`'s `from_port` (#1744): a wire
     /// dragged into empty canvas and a node picked for it.
     AddNodeWired { clip_id: ClipId, kind: String, position: (f32, f32), from: uuid::Uuid, from_port: u8 },
+    /// A new qualifier limiting the correction `node_id`, and selected to
+    /// be keyed: its matte on the correction's gate.
+    LimitWithQualifier { clip_id: ClipId, node_id: uuid::Uuid },
     /// The picture canvas's copy (#1745): the nodes as the picture holds
     /// them, kept for a paste.
     CopyPictureNodes { nodes: Vec<klipp_graph_format::Node> },

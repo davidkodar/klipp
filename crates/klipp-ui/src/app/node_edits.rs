@@ -111,6 +111,12 @@ impl AppState {
                     Ok(())
                 })
             }),
+            AppCommand::LimitWithQualifier { clip_id, node_id } => {
+                let (node, id) = (*node_id, klipp_nodes::NodeId::new_v4());
+                self.wire_edit(*clip_id, &[node], true, &[id], |g| {
+                    g.limit_with_qualifier(node, id).then_some(()).ok_or_else(|| "This node can't take a qualifier, or is limited already".to_owned())
+                })
+            }
             _ => return None,
         };
         Some(result.unwrap_or_else(|why| {
