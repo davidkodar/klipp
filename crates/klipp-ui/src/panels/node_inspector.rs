@@ -4136,7 +4136,9 @@ pub(crate) fn lut_picker(ui: &mut egui::Ui, params: &NodeParams, node_id: NodeId
         if let Some(dir) = klipp_core::assets::bundled_luts_dir() {
             ui.menu_rows("Bundled", |ui| {
                 ui.set_min_width(240.0);
-                egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
+                // Tall from the start: a menu keeps its first size, which
+                // left an opened category two rows to scroll in.
+                egui::ScrollArea::vertical().max_height(360.0).min_scrolled_height(360.0).auto_shrink([false, false]).show(ui, |ui| {
                     for (category, files) in bundled_luts(dir) {
                         // Opened in place: this panel is at the screen's edge,
                         // and a submenu with no room beside the menu opened on
