@@ -300,7 +300,7 @@ impl RenderDecoder {
         let source_start_secs = if still { 0.0 } else { source_start_secs };
         if source_start_secs > 0.0 {
             let ts = (source_start_secs * 1_000_000.0) as i64;
-            let _ = format_ctx.seek(ts, ..ts);
+            let _ = klipp_media::seek_video(&mut format_ctx, ts);
         }
 
         let accel_str = match hw_accel {

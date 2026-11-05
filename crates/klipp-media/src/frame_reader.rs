@@ -117,7 +117,7 @@ impl<T: Clone> SeekableFrameReader<T> {
 
         if need_seek {
             let ts = ((seek_secs - 0.5).max(0.0) * 1_000_000.0) as i64;
-            let _ = self.format_ctx.seek(ts, ..ts);
+            let _ = crate::seek_video(&mut self.format_ctx, ts);
             self.decoder.flush();
             self.current_pts = seek_secs - 1.0; // approximate; the loop corrects it
         }
@@ -251,7 +251,7 @@ impl<T: Clone> Iterator for FramesFrom<T> {
             // As `decode_at` seeks: half a second before, then on to the
             // first frame that is the one asked for (half a frame's grace).
             let ts = ((self.from_secs - 0.5).max(0.0) * 1_000_000.0) as i64;
-            let _ = r.format_ctx.seek(ts, ..ts);
+            let _ = crate::seek_video(&mut r.format_ctx, ts);
             r.decoder.flush();
             r.cache.clear();
             loop {
@@ -727,7 +727,7 @@ impl WindowDecoder {
         let start = (secs - self.frame_duration * (BACKWARD_WINDOW_FRAMES as f64 - 1.0)).max(0.0);
         let ts = (start * 1_000_000.0) as i64;
         // To the keyframe at or before the start, as every seek here.
-        let _ = self.format_ctx.seek(ts, ..ts);
+        let _ = crate::seek_video(&mut self.format_ctx, ts);
         self.decoder.flush();
         let mut frames: Vec<(f64, ffmpeg_next::frame::Video)> = Vec::new();
         // The latest frame passed over before the window: a time past the
@@ -1262,6 +1262,27 @@ mod forward_tests {
     /// past the end there is none; and the reader seeks back to the first
     /// frame after. Intra-coded ffv1, and h264 with B-frames, frames out
     /// of decode order.
+    /// An image through ffmpeg's `image2` demuxer: a seek there, even to 0,
+    /// gave no frame at all, so a .jpg or .tga showed nothing.
+    #[test]
+    fn a_jpeg_and_a_targa_give_their_frame() {
+        for ext in ["jpg", "tga"] {
+            let path = std::env::temp_dir().join(format!("klipp-still-{}.{ext}", std::process::id()));
+            let made = std::process::Command::new("ffmpeg")
+                .args(["-v", "error", "-y", "-f", "lavfi", "-i", "color=gray:size=64x48", "-frames:v", "1"])
+                .arg(&path)
+                .status()
+                .is_ok_and(|s| s.success());
+            if !made {
+                eprintln!("skipped {ext}: ffmpeg could not write the test file");
+                continue;
+            }
+            let mut r = SeekableFrameReader::open_rgba(&path).expect("opens");
+            assert!(r.decode_at(0.0).is_some(), "{ext}: its one frame");
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+
     #[test]
     fn a_file_reads_forward_to_its_last_frame_and_back() {
         for (name, codec) in [
