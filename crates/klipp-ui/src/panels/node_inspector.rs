@@ -1658,6 +1658,22 @@ impl NodeInspectorPanel {
                     ).size(10.0).color(theme.text_dim));
                 });
             }
+            // A colour range the way a shape is a place: one step to a
+            // grade that reaches only what is keyed.
+            let correction = graph.nodes.iter().find(|n| n.kind == NodeKind::Corrector && graph.input_of(n.id, 0).is_some());
+            if let Some(correction) = correction {
+                ui.horizontal(|ui| {
+                    ui.add_space(12.0);
+                    if graph.input_of(correction.id, 1).is_some() {
+                        ui.label(egui::RichText::new("This grade is limited by a matte, on its node.").size(10.0).color(theme.text_dim));
+                    } else if ui.button(egui::RichText::new("+ Qualifier").size(11.0))
+                        .on_hover_text("Limit this grade to a colour range: key the colour with the Qualifier, then grade")
+                        .clicked()
+                    {
+                        cmds.push(AppCommand::LimitWithQualifier { clip_id, node_id: correction.id });
+                    }
+                });
+            }
             section_divider(ui, theme);
         }
     }

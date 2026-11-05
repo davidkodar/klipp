@@ -90,6 +90,7 @@ Every kind also has a place in the grading order (`NodeKind::grade_stage`): inpu
 Most users only see the graph when:
 
 - **Applying an AI mask** — *Apply to clip* in the AI Tools panel inserts an `ExternalMatte` node labelled *AI mask* and wires it to the first Corrector's matte input. See [AI Tools Overview](../ai-tools/overview.md#apply-to-clip).
+- **Limiting one correction** — a correction's lower input takes a matte, so it applies only where the matte is. **+ Qualifier** on the Colour tab builds this in one step, and a matte wire dropped on a correction goes to that input.
 - **Masking or mixing one correction** — a correction takes a **mix** and a **mask channel**, set in the inspector; a grade's Output can take a matte as the clip's alpha.
 - **Stacking multiple correctors** — when the inspector adds a second corrector for secondary grading, a new `Corrector` node is appended downstream.
 - **Combining multiple masks** — e.g. an HSL qualifier *and* an external matte should select the same region. Wire both into a `CombineMattes` node and its output into the matte port of an `ApplyMatte`.

@@ -530,6 +530,7 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::SpliceNodeIntoWire { .. }
         | AppCommand::ReconnectEdge { .. }
         | AppCommand::AddNodeWired { .. }
+        | AppCommand::LimitWithQualifier { .. }
         | AppCommand::PastePictureNodes { .. }
         | AppCommand::RenameNode { .. }
         | AppCommand::SetNodeLut { .. }

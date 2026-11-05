@@ -43,7 +43,11 @@ A grid over hue and saturation (or chroma and luma): drag points to move colours
 
 ## Qualifiers
 
-A qualifier keys the picture by colour, so a correction applies only there:
+A qualifier keys the picture by colour, so a correction applies only there. On the Colour tab, under **Masks**, click **+ Qualifier**. Pick the colour with the dropper, then select the Corrector in the node graph and grade: the correction reaches only what is keyed.
+
+In the node graph, a correction's lower input takes the matte. A wire from a Qualifier dropped anywhere on a correction lands there.
+
+A qualifier has three modes:
 
 - **HSL** — hue, saturation and luminance ranges with softness
 - **RGB** — red, green and blue ranges

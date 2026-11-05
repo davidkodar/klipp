@@ -2203,3 +2203,53 @@ fn the_rgb_curve_graph_stays_inside_the_inspector() {
         assert!(canvas.right() <= edge - 8.0, "the graph runs to {} of the panel's {edge}", canvas.right());
     }
 }
+
+/// A Qualifier's wire dropped on a correction limits it, on its picture
+/// input as on its gate: it never replaces the picture. A picture's wire
+/// stays off the gate.
+#[test]
+fn a_matte_wire_on_a_correction_limits_it_and_a_picture_wire_stays_off_the_gate() {
+    let (_state, _clip_id, ids, _, mut h) = wired();
+    let correction = ids[2];
+    assert!(h.graph.nodes.iter().find(|n| n.id == correction).unwrap().kind.takes_gate());
+    let spare = NodeId::new_v4();
+    let mut qualifier = h.graph.nodes.iter().find(|n| n.id == correction).unwrap().clone();
+    (qualifier.id, qualifier.kind, qualifier.label) = (spare, NodeKind::Qualifier, "Key".into());
+    let at = h.graph.node_positions[&correction];
+    h.graph.nodes.push(qualifier);
+    h.graph.node_positions.insert(spare, klipp_nodes::NodePos { x: at.x - 230.0, y: at.y + 170.0 });
+    h.settle();
+
+    let picture_input = h.in_port(correction, 0);
+    let sent = h.drag(h.out_port(spare), picture_input);
+    assert!(sent.iter().any(|c| matches!(c, AppCommand::ConnectNodes { to, to_port: 1, .. } if *to == correction)), "onto the picture input: {sent:?}");
+    let body = h.card_of(correction).center();
+    let sent = h.drag(h.out_port(spare), body);
+    assert!(sent.iter().any(|c| matches!(c, AppCommand::ConnectNodes { to, to_port: 1, .. } if *to == correction)), "onto the node: {sent:?}");
+
+    h.settle();
+    let gate = h.in_port(correction, 1);
+    let sent = h.drag(h.out_port(ids[0]), gate);
+    assert!(!sent.iter().any(|c| matches!(c, AppCommand::ConnectNodes { .. })), "a picture on the gate: {sent:?}");
+}
+
+/// "+ Qualifier" limits the grade in one undo step, with the qualifier
+/// selected to be keyed; a second has nothing left to limit.
+#[test]
+fn a_correction_is_limited_by_a_new_qualifier_in_one_step() {
+    let (mut state, clip_id, ids, _, _h) = wired();
+    let correction = ids[2];
+    let feeding = wire_level(&state, clip_id).input_of(correction, 0).expect("fed");
+    let steps = state.active_history().undo_count();
+    dispatch_canvas(&mut state, &[AppCommand::LimitWithQualifier { clip_id, node_id: correction }]);
+    assert_eq!(state.active_history().undo_count(), steps + 1);
+    let g = wire_level(&state, clip_id);
+    let qualifier = g.nodes.iter().find(|n| n.kind == NodeKind::Qualifier).expect("added").id;
+    assert!(has_wire(&g, qualifier, correction, 1), "the matte limits the correction");
+    assert!(has_wire(&g, feeding, qualifier, 0), "the key sees the correction's picture");
+    assert_eq!(state.selected_node_id, Some(qualifier));
+
+    let again = g.clone();
+    dispatch_canvas(&mut state, &[AppCommand::LimitWithQualifier { clip_id, node_id: correction }]);
+    assert_eq!(wire_level(&state, clip_id).nodes.len(), again.nodes.len(), "limited already");
+}
