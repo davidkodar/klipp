@@ -190,6 +190,23 @@ fn explicit_mask_producer_removal_ungates_and_names_every_reader() {
     edit_planner::apply(&mut d, &p, 1, &Catalog).unwrap();
     assert!(current(&d).edges.iter().all(|e| e.to.1.as_str() != "mask"));
 }
+/// A qualifier feeding Output's alpha is removed, and its wire with it. It
+/// was treated as an image: its input was wired on to the matte input, which
+/// is refused, so the node stayed and all the person saw was a brief message.
+#[test]
+fn a_node_feeding_outputs_alpha_can_be_removed() {
+    let mut g = graph();
+    g.nodes.push(node(10, "matte"));
+    g.edges.extend([edge(3, 10, "in"), edge(10, 4, "alpha")]);
+    let mut d = docs(g);
+    let p = edit_planner::propose(&d, request(10, Action::Remove), 1, &Catalog).unwrap();
+    edit_planner::apply(&mut d, &p, 1, &Catalog).unwrap();
+    let after = current(&d);
+    assert!(after.nodes.iter().all(|n| n.id != id(10)), "the node is gone");
+    assert!(after.edges.iter().all(|e| e.to.1.as_str() != "alpha"), "nothing feeds the alpha");
+    assert!(after.edges.contains(&edge(3, 4, "in")), "the picture still reaches Output");
+}
+
 #[test]
 fn stale_proposal_revalidates_new_sharing_even_without_revision_bump() {
     let mut d = docs(masked());

@@ -175,6 +175,8 @@ fn protected(n: &Node) -> bool {
 }
 fn mask_input(n: &Node, port: &PortKey, catalog: &dyn PortCatalog) -> bool {
     matches!(port.as_str(), "mask" | "matte")
+        // A grade's Output takes a matte as the alpha its picture leaves with.
+        || (port.as_str() == "alpha" && matches!(n.type_id.as_str(), lt::OUTPUT | lt::GROUP_OUTPUT))
         || catalog.node_spec(n).is_some_and(|s| {
             s.inputs
                 .iter()
