@@ -249,9 +249,8 @@ impl RenderDecoder {
             }
         };
 
-        // Multi-threaded decode (helps SW, ignored by HW)
         unsafe {
-            (*codec_ctx.as_mut_ptr()).thread_count = 0;
+            (*codec_ctx.as_mut_ptr()).thread_count = decode_threads(hw_accel);
         }
 
         let decoder = codec_ctx.decoder().video().map_err(RenderError::Decode)?;
@@ -813,12 +812,33 @@ impl RenderDecoder {
         self.fps
     }
 
+    /// The decoder's threads, as FFmpeg set them up.
+    pub fn decode_thread_count(&self) -> i32 {
+        unsafe { (*self.decoder.as_ptr()).thread_count }
+    }
+
     pub fn hw_accel_name(&self) -> &'static str {
         match self.hw_accel {
             HwAccel::Cuda => "CUDA/NVDEC",
             HwAccel::Vaapi => "VAAPI",
             HwAccel::Software => "Software",
         }
+    }
+}
+
+/// The frame threads a hardware render decoder runs. FFmpeg's frame
+/// threading still runs under a hardware decoder, and each thread keeps
+/// frames of its own: at "all cores" (0), sixteen 1080p layers exporting
+/// on NVDEC ran 377 threads and took 2.7 GB more memory, 1.7 GB at 4, in
+/// the same time. 1 was a third slower.
+const HW_DECODE_THREADS: i32 = 4;
+
+/// The threads to decode with: a few on a hardware decoder, which does
+/// the decoding itself; as many as FFmpeg picks on the CPU.
+fn decode_threads(hw_accel: HwAccel) -> i32 {
+    match hw_accel {
+        HwAccel::Cuda | HwAccel::Vaapi => HW_DECODE_THREADS,
+        HwAccel::Software => 0,
     }
 }
 
@@ -1499,7 +1519,8 @@ mod tests {
 /// to be scaled at 44 ms a frame for a 1080p source in a 4K export.
 #[cfg(test)]
 mod upscale_tests {
-    use super::{DecodedPixels, GpuConverters, RenderDecoder};
+    use super::{decode_threads, DecodedPixels, GpuConverters, HwAccel, RenderDecoder, HW_DECODE_THREADS};
+    use serial_test::serial;
 
     /// Six seconds of a 1080p test chart held still and in grey, H.264:
     /// any frame two decoders land on is the same picture, and with no
@@ -1539,6 +1560,41 @@ mod upscale_tests {
             .status()
             .is_ok_and(|s| s.success());
         ok.then(|| std::fs::rename(&part, &out).ok()).flatten().map(|_| out)
+    }
+
+    /// A hardware render decoder runs a few frame threads, not one per
+    /// core: each keeps frames of its own, and sixteen layers exporting
+    /// on NVDEC ran 377 threads and 1 GB more memory for nothing. The CPU
+    /// decoder still takes FFmpeg's pick.
+    #[test]
+    #[serial]
+    fn a_hardware_render_decoder_runs_a_few_threads() {
+        let _watch = crate::test_watchdog::Watchdog::start();
+        assert_eq!(decode_threads(HwAccel::Cuda), HW_DECODE_THREADS);
+        assert_eq!(decode_threads(HwAccel::Vaapi), HW_DECODE_THREADS);
+        assert_eq!(decode_threads(HwAccel::Software), 0, "the CPU decoder keeps FFmpeg's own count");
+        ffmpeg_next::init().unwrap();
+        let path = std::env::temp_dir().join(format!("klipp-threads-{}.mp4", std::process::id()));
+        let made = std::process::Command::new("ffmpeg")
+            .args(["-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=s=1920x1080:r=25:d=1", "-c:v", "libx264", "-pix_fmt", "yuv420p"])
+            .arg(&path)
+            .status()
+            .is_ok_and(|s| s.success());
+        assert!(made, "ffmpeg makes the clip");
+        let mut d = RenderDecoder::open(&path, 0.0, f64::INFINITY, 1920, 1080, 25.0, 0).unwrap();
+        assert!(d.next_frame().unwrap().is_some(), "it decodes");
+        let threads = d.decode_thread_count();
+        let name = d.hw_accel_name();
+        drop(d);
+        let _ = std::fs::remove_file(&path);
+        if name == "Software" {
+            if std::env::var_os("KLIPP_TEST_REQUIRE_GPU").is_some() {
+                panic!("no hardware decoder opened");
+            }
+            eprintln!("skipped the hardware half: decoded in software");
+            return;
+        }
+        assert_eq!(threads, HW_DECODE_THREADS, "{name} decoder threads");
     }
 
     /// The milliseconds a frame takes over `n` frames at `w` x `h`, and
