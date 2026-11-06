@@ -108,6 +108,9 @@ pub fn output_within(cmd: &mut Command, limit: Option<Duration>) -> std::io::Res
 
 /// `cmd`'s program, arguments, environment changes and directory in a
 /// new command, behind `prefix` (a program and its arguments) when given.
+/// Not carried over: an `env_clear` (`get_envs` can't show one), `arg0`,
+/// a process group, a uid or gid, and the caller's own `pre_exec`; no
+/// caller sets them. Stdio is always null in, piped out and err.
 fn copy_of(cmd: &Command, prefix: &[&std::ffi::OsStr]) -> Command {
     let mut c = match prefix.split_first() {
         Some((program, args)) => {
@@ -137,16 +140,24 @@ fn copy_of(cmd: &Command, prefix: &[&std::ffi::OsStr]) -> Command {
 /// without this process forking.
 #[cfg(target_os = "linux")]
 fn setpriv() -> bool {
-    static FOUND: OnceLock<bool> = OnceLock::new();
-    *FOUND.get_or_init(|| {
-        Command::new("setpriv")
-            .args(["--pdeathsig", "KILL", "--", "true"])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .is_ok_and(|s| s.success())
-    })
+    // Only a success is kept: a probe that failed for a moment (no
+    // process slot, no descriptor) would otherwise send every spawn of
+    // the session down the fork this is here to avoid.
+    static FOUND: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if FOUND.load(std::sync::atomic::Ordering::Relaxed) {
+        return true;
+    }
+    let found = Command::new("setpriv")
+        .args(["--pdeathsig", "KILL", "--", "true"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success());
+    if found {
+        FOUND.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+    found
 }
 
 /// Start `cmd` so that it dies with this process, and say whether it
@@ -176,7 +187,12 @@ fn spawn_guarded(cmd: &Command) -> std::io::Result<(std::process::Child, bool)> 
         match forked.spawn() {
             Ok(c) => Ok((c, true)),
             Err(e) if e.raw_os_error() == Some(libc::ENOMEM) => {
-                tracing::warn!("{:?}: the fork was refused ({e}; {}); started without a death signal, and not stopped while the editor is busy", cmd.get_program(), address_space());
+                // The address space read once: its whole smaps is tens
+                // of MB in the state that refuses forks, and every spawn
+                // after the first would read it again.
+                static SAID: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+                let why = if SAID.swap(true, std::sync::atomic::Ordering::Relaxed) { String::from("as before") } else { address_space() };
+                tracing::warn!("{:?}: the fork was refused ({e}; {why}); started without a death signal, and not stopped while the editor is busy", cmd.get_program());
                 copy_of(cmd, &[]).spawn().map(|c| (c, false))
             }
             Err(e) => Err(e),
