@@ -249,9 +249,9 @@ impl RenderDecoder {
             }
         };
 
-        // Multi-threaded decode (helps SW, ignored by HW)
         unsafe {
-            (*codec_ctx.as_mut_ptr()).thread_count = 0;
+            let ctx = codec_ctx.as_mut_ptr();
+            (*ctx).thread_count = decode_threads(hw_accel, (*ctx).codec_id, (*ctx).pix_fmt);
         }
 
         let decoder = codec_ctx.decoder().video().map_err(RenderError::Decode)?;
@@ -813,12 +813,53 @@ impl RenderDecoder {
         self.fps
     }
 
+    /// The decoder's threads, as FFmpeg set them up.
+    pub fn decode_thread_count(&self) -> i32 {
+        unsafe { (*self.decoder.as_ptr()).thread_count }
+    }
+
     pub fn hw_accel_name(&self) -> &'static str {
         match self.hw_accel {
             HwAccel::Cuda => "CUDA/NVDEC",
             HwAccel::Vaapi => "VAAPI",
             HwAccel::Software => "Software",
         }
+    }
+}
+
+/// The frame threads a hardware render decoder runs. FFmpeg's frame
+/// threading still runs under a hardware decoder, and each thread keeps
+/// frames of its own: at "all cores" (0), sixteen 1080p layers exporting
+/// on NVDEC ran 377 threads and took 2.7 GB more memory, 1.7 GB at 4, in
+/// the same time. 1 was a third slower.
+const HW_DECODE_THREADS: i32 = 4;
+
+/// The threads to decode with: a few where the hardware decoder will take
+/// the stream and do the decoding itself; as many as FFmpeg picks on the
+/// CPU. A hardware device opens for any stream, but one the hardware has
+/// no profile for (ProRes, DNxHD, 4:2:2 or 4:4:4 H.264) is still decoded
+/// on the CPU, where 4 threads made a 4K ProRes decode 1.5x slower.
+fn decode_threads(hw_accel: HwAccel, codec: ffmpeg_next::ffi::AVCodecID, format: ffmpeg_next::ffi::AVPixelFormat) -> i32 {
+    if hw_accel != HwAccel::Software && hardware_decodes(codec, format) {
+        HW_DECODE_THREADS
+    } else {
+        0
+    }
+}
+
+/// Whether NVDEC and VAAPI decode `codec` in `format` themselves: the
+/// 4:2:0 profiles both have for these codecs, and 4:4:4 HEVC. Anything
+/// else, or a format not known yet, counts as a CPU decode.
+fn hardware_decodes(codec: ffmpeg_next::ffi::AVCodecID, format: ffmpeg_next::ffi::AVPixelFormat) -> bool {
+    use ffmpeg_next::ffi::AVCodecID::*;
+    use ffmpeg_next::ffi::AVPixelFormat::*;
+    let four_two_oh = matches!(format, AV_PIX_FMT_YUV420P | AV_PIX_FMT_YUVJ420P | AV_PIX_FMT_NV12);
+    let deep_four_two_oh = matches!(format, AV_PIX_FMT_YUV420P10LE | AV_PIX_FMT_YUV420P12LE | AV_PIX_FMT_P010LE);
+    match codec {
+        AV_CODEC_ID_H264 | AV_CODEC_ID_MPEG2VIDEO | AV_CODEC_ID_VC1 | AV_CODEC_ID_MPEG4 => four_two_oh,
+        AV_CODEC_ID_HEVC => four_two_oh || deep_four_two_oh || matches!(format, AV_PIX_FMT_YUV444P),
+        AV_CODEC_ID_VP9 | AV_CODEC_ID_AV1 => four_two_oh || deep_four_two_oh,
+        _ => false,
     }
 }
 
@@ -1499,7 +1540,8 @@ mod tests {
 /// to be scaled at 44 ms a frame for a 1080p source in a 4K export.
 #[cfg(test)]
 mod upscale_tests {
-    use super::{DecodedPixels, GpuConverters, RenderDecoder};
+    use super::{decode_threads, DecodedPixels, GpuConverters, HwAccel, RenderDecoder, HW_DECODE_THREADS};
+    use serial_test::serial;
 
     /// Six seconds of a 1080p test chart held still and in grey, H.264:
     /// any frame two decoders land on is the same picture, and with no
@@ -1539,6 +1581,68 @@ mod upscale_tests {
             .status()
             .is_ok_and(|s| s.success());
         ok.then(|| std::fs::rename(&part, &out).ok()).flatten().map(|_| out)
+    }
+
+    /// A clip made by the ffmpeg CLI in the temp dir: `args` between the
+    /// test source and the file.
+    fn made_clip(name: &str, args: &[&str]) -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(format!("klipp-threads-{}-{name}", std::process::id()));
+        let made = std::process::Command::new("ffmpeg")
+            .args(["-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=s=1920x1080:r=25:d=1"])
+            .args(args)
+            .arg(&path)
+            .status()
+            .is_ok_and(|s| s.success());
+        assert!(made, "ffmpeg makes {name}");
+        path
+    }
+
+    /// The decoder's threads and decode path for `path`, after a frame.
+    fn opened_threads(path: &std::path::Path) -> (i32, &'static str) {
+        let mut d = RenderDecoder::open(path, 0.0, f64::INFINITY, 1920, 1080, 25.0, 0).unwrap();
+        assert!(d.next_frame().unwrap().is_some(), "it decodes");
+        let out = (d.decode_thread_count(), d.hw_accel_name());
+        drop(d);
+        let _ = std::fs::remove_file(path);
+        out
+    }
+
+    /// A render decoder the hardware decodes for runs a few frame threads,
+    /// not one per core: each keeps frames of its own, and sixteen layers
+    /// exporting on NVDEC ran 377 threads and 1 GB more memory for
+    /// nothing. A stream the hardware has no profile for (ProRes, 4:2:2
+    /// H.264) is decoded on the CPU even with a GPU's device open, and
+    /// keeps FFmpeg's count: 4 threads made 4K ProRes 1.5x slower.
+    #[test]
+    #[serial]
+    fn a_hardware_render_decoder_runs_a_few_threads() {
+        use ffmpeg_next::ffi::AVCodecID::*;
+        use ffmpeg_next::ffi::AVPixelFormat::*;
+        let _watch = crate::test_watchdog::Watchdog::start();
+        for (codec, format, hw) in [(AV_CODEC_ID_H264, AV_PIX_FMT_YUV420P, true), (AV_CODEC_ID_HEVC, AV_PIX_FMT_YUV420P10LE, true), (AV_CODEC_ID_AV1, AV_PIX_FMT_YUV420P, true),
+            (AV_CODEC_ID_H264, AV_PIX_FMT_YUV422P10LE, false), (AV_CODEC_ID_H264, AV_PIX_FMT_YUV444P, false), (AV_CODEC_ID_PRORES, AV_PIX_FMT_YUV422P10LE, false),
+            (AV_CODEC_ID_DNXHD, AV_PIX_FMT_YUV422P, false), (AV_CODEC_ID_HEVC, AV_PIX_FMT_YUV422P10LE, false), (AV_CODEC_ID_H264, AV_PIX_FMT_NONE, false)] {
+            let want = if hw { HW_DECODE_THREADS } else { 0 };
+            assert_eq!(decode_threads(HwAccel::Cuda, codec, format), want, "{codec:?} {format:?} on CUDA");
+            assert_eq!(decode_threads(HwAccel::Vaapi, codec, format), want, "{codec:?} {format:?} on VAAPI");
+            assert_eq!(decode_threads(HwAccel::Software, codec, format), 0, "{codec:?} {format:?} on the CPU");
+        }
+        ffmpeg_next::init().unwrap();
+        let (h264, path) = opened_threads(&made_clip("h264.mp4", &["-c:v", "libx264", "-pix_fmt", "yuv420p"]));
+        if path == "Software" {
+            if std::env::var_os("KLIPP_TEST_REQUIRE_GPU").is_some() {
+                panic!("no hardware decoder opened");
+            }
+            eprintln!("skipped the opened half: decoded in software");
+            return;
+        }
+        assert_eq!(h264, HW_DECODE_THREADS, "{path} H.264 decoder threads");
+        // ProRes opens with the same device, and decodes on the CPU.
+        let (prores, path) = opened_threads(&made_clip("prores.mov", &["-c:v", "prores_ks", "-profile:v", "3", "-pix_fmt", "yuv422p10le"]));
+        let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
+        if cores > HW_DECODE_THREADS as usize * 2 {
+            assert!(prores > HW_DECODE_THREADS, "ProRes ({path}) kept FFmpeg's count on {cores} cores, got {prores}");
+        }
     }
 
     /// The milliseconds a frame takes over `n` frames at `w` x `h`, and
