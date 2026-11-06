@@ -87,7 +87,11 @@ Relaunch Klipp. The footer should now show `NVIDIA CUDA — active`.
 
 ## AMD and Intel
 
-AI inference on AMD and Intel GPUs runs on the CPU: Klipp's `ort` build registers only NVIDIA's CUDA execution provider. **Tools → System Probe…** reports which execution provider each model actually ran on.
+No distribution's onnxruntime runs the models on an AMD or Intel GPU, so they ran on the CPU. Klipp can download ONNX Runtime's WebGPU plug-in from Microsoft (MIT, about 7 MB) when you ask: **Preferences → AI → GPU for AI models → Download**. It runs subject detection, screen text and picture search on the GPU through Vulkan; the face finder stays on the CPU, where it is faster. It needs a Vulkan driver (Mesa's RADV or ANV, which most distributions install) and onnxruntime 1.24.4 or later.
+
+The plug-in runs only inside Klipp's analysis workers, so a fault in it or in the GPU driver ends that one analysis, not the editor. When it can't run, the models run on the CPU as before and the reason is shown. It has been measured through Vulkan on an NVIDIA card; it hasn't been tried on an AMD or Intel GPU yet, so reports are welcome.
+
+**Tools → System Probe…** reports which execution provider each model actually ran on.
 
 ## Auto-Configured Environment
 

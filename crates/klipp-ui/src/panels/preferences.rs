@@ -479,7 +479,7 @@ impl PreferencesPanel {
             // the other way. The labels are British; the search is not
             // fussy.
             PrefsTab::Appearance => &["appearance", "theme", "ui scale", "accent colour", "accent color", "role colours", "role colors", "colour", "color", "video", "dialogue", "music", "sfx"],
-            PrefsTab::Ai => &["ai", "artificial intelligence", "transcription", "transcribe", "whisper", "speech", "subtitles", "captions", "model", "models", "download", "gpu", "cpu", "mcp", "assistant", "opt out", "disable", "enable", "vision", "onnx", "ocr", "screen text", "text on screen", "redact"],
+            PrefsTab::Ai => &["ai", "artificial intelligence", "transcription", "transcribe", "whisper", "speech", "subtitles", "captions", "model", "models", "download", "gpu", "cpu", "mcp", "assistant", "opt out", "disable", "enable", "vision", "onnx", "ocr", "screen text", "text on screen", "redact", "webgpu", "vulkan", "amd", "intel", "gpu for ai", "add-on"],
             PrefsTab::System => &["system", "gpu", "hardware", "decode", "threads", "frame queue", "playback resolution", "nvdec", "vaapi", "cuda"],
             PrefsTab::Playback => &["playback", "quality", "background render", "pre-roll", "jkl", "speed", "loop"],
             PrefsTab::MediaCache => &["cache", "thumbnail", "waveform", "render cache", "cache size", "transcode", "clear cache"],
@@ -2401,6 +2401,22 @@ impl PreferencesPanel {
             let sub = if id == klipp_analysis::screentext::DET_MODEL_ID { "Finds where text is on the screen (PaddleOCR, Apache-2.0)." } else { "Reads each line of English text (PaddleOCR, Apache-2.0)." };
             Self::setting_row_with_subtitle(ui, &format!("{name}  ({size})"), sub, theme, |ui| {
                 if installed {
+                    ui.label(egui::RichText::new("Installed").color(theme.text_secondary));
+                } else if ui.button("Download").clicked() {
+                    cmds.push(AppCommand::OpenModelDownloadDialog { model_id: id.to_string() });
+                }
+            });
+        }
+
+        // ── The GPU for the vision models, where CUDA doesn't serve ──
+        #[cfg(feature = "ai-ort")]
+        if klipp_ml_ort::webgpu_plugin::offered() {
+            Self::section_header(ui, "GPU FOR AI MODELS", theme);
+            let id = klipp_ml_ort::webgpu_plugin::ENTRY;
+            let (name, size, _) = model_row_info(id);
+            let sub = "Runs subject detection, screen text and picture search on this GPU through Vulkan instead of the CPU, several times faster; used from the next analysis. ONNX Runtime's WebGPU plug-in from Microsoft (MIT), downloaded only when you ask; if it can't run here, the CPU is used as before.";
+            Self::setting_row_with_subtitle(ui, &format!("{name}  ({size})"), sub, theme, |ui| {
+                if klipp_ml_ort::webgpu_plugin::downloaded() {
                     ui.label(egui::RichText::new("Installed").color(theme.text_secondary));
                 } else if ui.button("Download").clicked() {
                     cmds.push(AppCommand::OpenModelDownloadDialog { model_id: id.to_string() });
@@ -4808,6 +4824,11 @@ fn whisper_blurb(id: &str) -> &'static str {
 fn ai_vision_status() -> String {
     #[cfg(feature = "ai-ort")]
     {
+        // The WebGPU add-on runs the analysis where the onnxruntime
+        // itself has nothing for this GPU.
+        if klipp_ml_ort::webgpu_plugin::offered() && klipp_ml_ort::webgpu_plugin::downloaded() {
+            return "GPU through the WebGPU add-on (analysis)".to_string();
+        }
         klipp_ml_ort::resolve_runtime_status().label()
     }
     #[cfg(not(feature = "ai-ort"))]

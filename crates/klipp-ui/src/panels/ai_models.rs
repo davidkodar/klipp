@@ -702,6 +702,7 @@ pub fn show_ai_models_dialog(ctx: &egui::Context, state: &mut AppState, theme: &
                         (ModelKind::TranslationVocabulary, "CAPTION TRANSLATION"),
                         (ModelKind::SoundTagger, "AUDIO ROLES"),
                         (ModelKind::ImageTextEmbedder, "PICTURE SEARCH"),
+                        (ModelKind::GpuRuntime, "GPU FOR AI MODELS"),
                     ];
                     for (kind, header) in kinds_in_order {
                         let entries: Vec<&ModelEntry> = visible_entries
@@ -2858,6 +2859,7 @@ fn kind_label(kind: klipp_ml::manifest::ModelKind) -> &'static str {
         ModelKind::TranslationVocabulary => "Translation Vocabulary",
         ModelKind::SoundTagger => "Audio Roles",
         ModelKind::ImageTextEmbedder => "Picture Search",
+        ModelKind::GpuRuntime => "GPU Runtime",
     }
 }
 

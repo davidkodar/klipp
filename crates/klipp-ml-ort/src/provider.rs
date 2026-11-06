@@ -108,7 +108,7 @@ fn gpu_runtime_hint() -> &'static str {
     use crate::runtime_resolve::{detect_gpu_vendor, GpuVendor};
     match detect_gpu_vendor() {
         GpuVendor::Nvidia => "a GPU build (onnxruntime-cuda, or ORT_DYLIB_PATH to a CUDA or WebGPU build) runs it on the GPU",
-        _ => "a WebGPU build of onnxruntime, set through ORT_DYLIB_PATH, runs it on the GPU",
+        _ => "the WebGPU add-on (Preferences > AI, a 7 MB download) runs the vision analysis on the GPU",
     }
 }
 
@@ -159,6 +159,10 @@ pub fn on_device(builder: ort::session::builder::SessionBuilder, device: DeviceP
         None => (builder, Ok("CUDA")),
         Some(cuda_failure) => match with_webgpu(builder) {
             (b, None) => (b, Ok("WebGPU")),
+            (b, Some(webgpu_failure)) if plugin_serves(model) => match with_webgpu_plugin(b) {
+                (b, None) => (b, Ok("WebGPU")),
+                (b, Some(plugin_failure)) => (b, Err(format!("{cuda_failure}; {webgpu_failure}; {plugin_failure}"))),
+            },
             (b, Some(webgpu_failure)) => (b, Err(format!("{cuda_failure}; {webgpu_failure}"))),
         },
     };
@@ -177,6 +181,91 @@ pub fn on_device(builder: ort::session::builder::SessionBuilder, device: DeviceP
         }
     }
 }
+
+/// Whether this process may run models on the WebGPU plug-in: set by an
+/// analysis worker, so a fault in the plug-in or the GPU driver costs
+/// that one analysis, never the editor.
+static PLUGIN_ALLOWED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Let this process run models on the WebGPU plug-in ([`webgpu_plugin`](crate::webgpu_plugin)).
+pub fn allow_gpu_plugin() {
+    PLUGIN_ALLOWED.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Whether `model` is taken to the WebGPU plug-in here: in a process that
+/// allows it, and only the models measured faster on it than on the CPU
+/// (11-07, through Vulkan: RF-DETR 119 to 17 ms, PP-OCR 54 to 7 and 14 to
+/// 3, CLIP 11 to 6). The face model ran slower (2 to 5 ms) and stays.
+#[cfg(feature = "ort")]
+fn plugin_serves(model: &str) -> bool {
+    PLUGIN_ALLOWED.load(std::sync::atomic::Ordering::Relaxed) && plugin_helps(model)
+}
+
+#[cfg(feature = "ort")]
+fn plugin_helps(model: &str) -> bool {
+    model.starts_with("rf_detr_seg") || model == "ppocr_en_det_v3" || model == "ppocr_en_rec_v4" || model == "clip_vit_b32_vision"
+}
+
+/// `builder` on the WebGPU plug-in, or as it was with why it isn't. A
+/// device has to be found for it: given none, onnxruntime builds the
+/// session on the CPU without a word.
+#[cfg(feature = "ort")]
+fn with_webgpu_plugin(builder: ort::session::builder::SessionBuilder) -> (ort::session::builder::SessionBuilder, Option<String>) {
+    let library = match crate::webgpu_plugin::library() {
+        Ok(Some(path)) => path,
+        Ok(None) => return (builder, Some("the WebGPU add-on isn't downloaded (Preferences > AI)".into())),
+        Err(e) => return (builder, Some(e)),
+    };
+    let registered = REGISTERED.get_or_init(|| {
+        let env = ort::environment::Environment::current().map_err(|e| e.to_string())?;
+        let lib = env.register_ep_library("klipp_webgpu", &library).map_err(|e| e.to_string())?;
+        // Kept for the life of the process: sessions use it.
+        std::mem::forget(lib);
+        Ok(())
+    });
+    if let Err(e) = registered {
+        return (builder, Some(format!("the WebGPU add-on didn't load: {e}")));
+    }
+    let env = match ort::environment::Environment::current() {
+        Ok(env) => env,
+        Err(e) => return (builder, Some(format!("the WebGPU add-on: {e}"))),
+    };
+    let devices: Vec<_> = env.devices().filter(|d| d.ep().is_ok_and(|ep| ep == WEBGPU_EP)).collect();
+    if devices.is_empty() {
+        return (builder, Some("the WebGPU add-on found no GPU to run on (it needs a Vulkan driver)".into()));
+    }
+    match builder.with_devices(devices, None) {
+        Ok(b) => (b, None),
+        Err(e) => {
+            let why = format!("the WebGPU add-on didn't take the model: {e}");
+            (e.recover(), Some(why))
+        }
+    }
+}
+
+/// Whether the WebGPU plug-in was loaded, and why not when it failed.
+#[cfg(feature = "ort")]
+static REGISTERED: std::sync::OnceLock<Result<(), String>> = std::sync::OnceLock::new();
+
+/// Whether this process has loaded the WebGPU plug-in. Such a process
+/// must end without onnxruntime's clean-up at exit: there it releases
+/// the plug-in, which tears Vulkan down after the GPU driver's own code is
+/// gone, and the process crashed after its work was done (11-07, NVIDIA's
+/// Vulkan driver, every framing and screen-text worker).
+pub fn gpu_plugin_loaded() -> bool {
+    #[cfg(feature = "ort")]
+    {
+        matches!(REGISTERED.get(), Some(Ok(())))
+    }
+    #[cfg(not(feature = "ort"))]
+    {
+        false
+    }
+}
+
+/// The name the WebGPU plug-in gives its devices.
+#[cfg(feature = "ort")]
+const WEBGPU_EP: &str = "WebGpuExecutionProvider";
 
 /// `builder` with CUDA registered, or as it was with why it isn't.
 #[cfg(all(feature = "ort", feature = "cuda"))]

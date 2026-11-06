@@ -50,7 +50,7 @@ A stream moves to software decode when the GPU's decoder is full or refuses it.
 
 **Effects parity is full across vendors** — RADV and AMDVLK on AMD, ANV on Intel, and the proprietary NVIDIA driver all work for Klipp's compute shaders.
 
-**AI inference currently accelerates only on NVIDIA.** AMD and Intel users get CPU AI, which is functional but several times slower for the heavier models.
+**AI inference accelerates on NVIDIA through CUDA, and on AMD and Intel through the WebGPU add-on** (Preferences → AI, downloaded when you ask; not yet tried on AMD or Intel hardware). Without it, AMD and Intel users get CPU AI, which works but is several times slower for the heavier models.
 
 ## NVIDIA-Specific Notes
 

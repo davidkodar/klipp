@@ -291,6 +291,10 @@ fn follow_parent() {
 /// on its file, the result on standard output.
 fn analysis_main(spec: &str) -> i32 {
     follow_parent();
+    // A worker is where a GPU plug-in may run: a fault in it ends this
+    // worker, not the editor.
+    #[cfg(feature = "ort-models")]
+    klipp_ml_ort::provider::allow_gpu_plugin();
     let reply = (|| -> Result<serde_json::Value, String> {
         let job: AnalysisJob = serde_json::from_str(spec).map_err(|e| format!("the job: {e}"))?;
         let a = crate::native_analysers().into_iter().find(|a| a.id() == job.analyser).ok_or_else(|| format!("no analyser {} in this build", job.analyser))?;
@@ -305,7 +309,17 @@ fn analysis_main(spec: &str) -> i32 {
         }
         v
     });
-    answer(reply)
+    let code = answer(reply);
+    // The answer is written and flushed. With the WebGPU plug-in loaded,
+    // end here, without the clean-up at exit that crashed in the plug-in's
+    // Vulkan teardown; the system frees what the process had, its GPU
+    // memory with it.
+    #[cfg(feature = "ort-models")]
+    if klipp_ml_ort::provider::gpu_plugin_loaded() {
+        // SAFETY: ends the process at once; nothing after it runs.
+        unsafe { libc::_exit(code) };
+    }
+    code
 }
 
 /// The key a worker's reply carries its models' providers under, taken

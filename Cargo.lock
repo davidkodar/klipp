@@ -3389,12 +3389,14 @@ version = "0.3.3"
 dependencies = [
  "bitflags 2.13.1",
  "dirs",
+ "flate2",
  "klipp-color",
  "klipp-ml",
  "libloading 0.8.9",
  "ort",
  "png 0.18.1",
  "serde_json",
+ "sha2",
  "thiserror 1.0.69",
  "tracing",
 ]

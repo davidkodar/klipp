@@ -77,6 +77,9 @@ pub enum ModelKind {
     /// Pictures and words in one space: what finds footage by a
     /// description (#2212), and its tokenizer.
     ImageTextEmbedder,
+    /// A provider library that runs the other models on a GPU: the
+    /// WebGPU plug-in for AMD and Intel.
+    GpuRuntime,
 }
 
 /// Which backend crate runs the model. Lets the registry pick the
