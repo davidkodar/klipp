@@ -10,6 +10,9 @@ mod normalize_tests;
 #[cfg(test)]
 #[path = "stretch_tests.rs"]
 mod stretch_tests;
+#[cfg(test)]
+#[path = "remove_clip_tests.rs"]
+mod remove_clip_tests;
 
 /// The catalogue's families as the fonts reply lists them (#2732): name,
 /// tags, size and whether fetched.
@@ -601,8 +604,11 @@ pub(crate) fn respond(
             send(AppCommand::ClearFrozenCache { frames, sound })
         }
 
-        ControlCommand::RemoveClip { clip_id: c } => {
-            send(AppCommand::RemoveClip { clip_id: existing_clip_id(ctx, &c)? })
+        // A lift unless asked to ripple, matching the `remove` op: it
+        // closed the gap on every track and moved later cards and
+        // backdrops on upper tracks with nothing in the call saying so.
+        ControlCommand::RemoveClip { clip_id: c, ripple } => {
+            send(AppCommand::RemoveClips { clip_ids: vec![existing_clip_id(ctx, &c)?], lift: !ripple })
         }
 
         ControlCommand::AttachAudio { clip_id: c } => {

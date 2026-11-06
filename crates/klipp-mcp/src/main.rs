@@ -643,9 +643,15 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             }
             v
         }
-        "klipp_remove_clip" => json!({
-            "method": "remove_clip", "clip_id": arg_str(args, "clip_id")?,
-        }),
+        "klipp_remove_clip" => {
+            let mut v = json!({ "method": "remove_clip", "clip_id": arg_str(args, "clip_id")? });
+            // Sent only when given, so an app from before the flag still
+            // takes a plain remove.
+            if let Some(r) = args.get("ripple").and_then(Value::as_bool) {
+                v["ripple"] = json!(r);
+            }
+            v
+        }
         "klipp_attach_audio" => json!({
             "method": "attach_audio", "clip_id": arg_str(args, "clip_id")?,
         }),
@@ -2274,7 +2280,8 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              }),
              vec!["clip_ids"]),
         tool("klipp_remove_clip", "Remove a clip from the timeline. Details: klipp_guide topic remove_clip.",
-             json!({ "clip_id": { "type": "string", "description": "From klipp_list_clips" } }),
+             json!({ "clip_id": { "type": "string", "description": "From klipp_list_clips" },
+                     "ripple": { "type": "boolean", "description": "Close the gap: later clips move left (default false)" } }),
              vec!["clip_id"]),
         tool("klipp_detect_scene_cuts",
              "Split a clip at the hard cuts in its picture. Details: klipp_guide topic detect_scene_cuts.",
@@ -3144,6 +3151,17 @@ mod interface_tests {
     /// #1898: every tool in the catalog answers as a guide topic, by its
     /// name with or without `klipp_`: its own section where it has one,
     /// else its catalog entry, its arguments with it.
+    /// klipp_remove_clip passes `ripple` on, and leaves it out when not
+    /// given; the app lifts by default.
+    #[test]
+    fn remove_clip_passes_ripple_on_only_when_given() {
+        let plain = tool_to_command("klipp_remove_clip", &json!({ "clip_id": "c" })).unwrap();
+        assert_eq!(plain, json!({ "method": "remove_clip", "clip_id": "c" }));
+        let ripple = tool_to_command("klipp_remove_clip", &json!({ "clip_id": "c", "ripple": true })).unwrap();
+        assert_eq!(ripple["ripple"], json!(true));
+        assert!(guide_topic("remove_clip").unwrap().contains("`ripple`"));
+    }
+
     #[test]
     fn every_tool_is_a_guide_topic() {
         let tools = tool_definitions_for(false);

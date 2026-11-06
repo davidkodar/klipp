@@ -363,7 +363,13 @@ pub enum ControlCommand {
         #[serde(default)]
         track: Option<usize>,
     },
-    RemoveClip { clip_id: String },
+    /// Take one clip out. The clips after it stay where they are unless
+    /// `ripple` is true, as with the `remove` op in apply_ops.
+    RemoveClip {
+        clip_id: String,
+        #[serde(default)]
+        ripple: bool,
+    },
     /// The size frames are drawn at while playing (#3234): "full", "half"
     /// or "quarter" of the playback resolution; saved as the preference.
     SetPlaybackQuality { quality: String },
