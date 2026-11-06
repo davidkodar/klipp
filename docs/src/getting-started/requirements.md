@@ -57,7 +57,7 @@ A stream moves to software decode when the GPU's decoder is full or refuses it.
 For full GPU acceleration:
 
 1. Install the proprietary NVIDIA driver (your distribution's `nvidia-utils` / `nvidia-driver` package).
-2. Install the cuDNN runtime library (`pacman -S cudnn`, `apt install libcudnn9-cuda-12`, or equivalent). This pulls in `libcudart`, `libcublas`, etc. — roughly 600 MB.
+2. Install the cuDNN runtime library (`apt install libcudnn9-cuda-12`, or equivalent; on Arch, `pacman -S onnxruntime-cuda`, which replaces `onnxruntime-cpu` and brings cuDNN). This pulls in `libcudart`, `libcublas`, etc. — roughly 600 MB.
 3. Run Klipp with the CUDA build alias: `cargo r-ort-cuda` for ONNX models, `cargo r-cuda` for full coverage including MobileSAM.
 
 GTX 900 series and later are supported for NVDEC. RTX 20-series and later are recommended for AI workloads.

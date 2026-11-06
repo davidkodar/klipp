@@ -16,7 +16,7 @@ ort = ["dep:ort"]
 # NVIDIA acceleration via ort's CUDA EP. Requires user-installed
 # CUDA 12.8+/cuDNN 9.19+ at runtime; the build itself just tells ort
 # to enable the EP.
-cuda = ["ort", "ort?/cuda"]
+cuda = ["ort", "ort?/cuda", "dep:libloading"]
 
 [dependencies]
 png = "0.18"
@@ -30,6 +30,8 @@ ort         = { workspace = true, optional = true }
 # Used by runtime_resolve to expand `~/.local/lib/onnxruntime/...`
 # candidate paths when probing for libonnxruntime.so.
 dirs        = { workspace = true }
+# Loads cuDNN for the CUDA provider (provider.rs `load_cudnn`).
+libloading  = { workspace = true, optional = true }
 
 [lints]
 workspace = true
