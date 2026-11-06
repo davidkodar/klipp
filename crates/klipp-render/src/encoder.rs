@@ -727,38 +727,33 @@ impl Encoder {
                         }
                     }
 
-                    // CBR/VBR override: if rate_control is not CRF and a video bitrate is set,
-                    // override the CRF-based settings above.
-                    match settings.rate_control {
-                        klipp_core::RateControl::Cbr => {
-                            if let Some(br_kbps) = settings.video_bitrate_kbps {
-                                video_ctx.set_bit_rate(br_kbps as usize * 1000);
-                                video_opts.set("maxrate", &format!("{}k", br_kbps));
-                                video_opts.set("minrate", &format!("{}k", br_kbps));
-                                video_opts.set("bufsize", &format!("{}k", br_kbps * 2));
-                                // Remove CRF if it was set
-                                video_opts.set("crf", "-1");
-                                // AMF and VAAPI name their rate control.
-                                if video_codec_name.ends_with("_vaapi") {
-                                    video_opts.set("rc_mode", "CBR");
-                                } else if video_codec_name.ends_with("_amf") {
-                                    video_opts.set("rc", "cbr");
-                                }
-                            }
+                    // CBR/VBR: a bitrate replaces the quality set above.
+                    // The quality has to go, or the encoder keeps to it and
+                    // the rate is only a cap: x264/x265 stay in CRF, NVENC
+                    // keeps its `cq` and `b:v 0` (a 40 Mbit/s VBR export
+                    // came out near 6).
+                    if let (klipp_core::RateControl::Cbr | klipp_core::RateControl::Vbr, Some(br_kbps)) = (settings.rate_control, settings.video_bitrate_kbps) {
+                        let cbr = settings.rate_control == klipp_core::RateControl::Cbr;
+                        video_ctx.set_bit_rate(br_kbps as usize * 1000);
+                        video_opts.set("b:v", &format!("{br_kbps}k"));
+                        video_opts.set("maxrate", &format!("{}k", if cbr { br_kbps } else { br_kbps * 2 }));
+                        video_opts.set("bufsize", &format!("{}k", if cbr { br_kbps * 2 } else { br_kbps * 4 }));
+                        if cbr {
+                            video_opts.set("minrate", &format!("{br_kbps}k"));
                         }
-                        klipp_core::RateControl::Vbr => {
-                            if let Some(br_kbps) = settings.video_bitrate_kbps {
-                                video_ctx.set_bit_rate(br_kbps as usize * 1000);
-                                video_opts.set("maxrate", &format!("{}k", br_kbps * 2));
-                                video_opts.set("bufsize", &format!("{}k", br_kbps * 4));
-                                if video_codec_name.ends_with("_vaapi") {
-                                    video_opts.set("rc_mode", "VBR");
-                                } else if video_codec_name.ends_with("_amf") {
-                                    video_opts.set("rc", "vbr_peak");
-                                }
-                            }
+                        if video_codec_name.ends_with("_nvenc") {
+                            video_opts.set("rc", if cbr { "cbr" } else { "vbr" });
+                            video_opts.set("cq", "0");
+                        } else if video_codec_name.ends_with("_vaapi") {
+                            video_opts.set("rc_mode", if cbr { "CBR" } else { "VBR" });
+                        } else if video_codec_name.ends_with("_amf") {
+                            video_opts.set("rc", if cbr { "cbr" } else { "vbr_peak" });
+                        } else if video_codec_name == "libsvtav1" {
+                            video_opts.set("crf", "0");
+                        } else {
+                            // libx264, libx265, libvpx: -1 is no quality.
+                            video_opts.set("crf", "-1");
                         }
-                        klipp_core::RateControl::Crf => {} // Already handled above
                     }
 
                     // Global header flag (needed for MP4/MOV containers)
@@ -2656,6 +2651,66 @@ mod tests {
                 Err(e) => eprintln!("ffprobe not available ({e}); the file was written but not probed"),
             }
             let _ = std::fs::remove_file(&path);
+        }
+    }
+
+    /// An export at a bitrate is written at about that rate. Under VBR the
+    /// quality setting stayed on (`crf` for x264, `cq` with `b:v 0` for
+    /// NVENC), so the encoder ran at constant quality and a 40 Mbit/s
+    /// request came out near 6. CBR on NVENC kept them too. Measured: the
+    /// file's video rate against the one asked for, on each encoder here.
+    #[test]
+    #[serial]
+    fn an_export_at_a_bitrate_is_written_at_that_rate() {
+        let _watch = crate::test_watchdog::Watchdog::start();
+        ffmpeg_next::init().unwrap();
+        const KBPS: u32 = 6000;
+        const FRAMES: usize = 72;
+        // A drifting gradient with mild grain: at crf 23 it comes out far
+        // under 6 Mbit/s, so a constant-quality encode misses the rate.
+        let mut seed = 0x2545F491u32;
+        let frames: Vec<Vec<u8>> = (0..FRAMES).map(|f| {
+            let mut px = Vec::with_capacity(320 * 240 * 4);
+            for y in 0..240usize {
+                for x in 0..320usize {
+                    seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+                    let grain = (seed >> 27) as i32 - 16;
+                    let v = |base: usize| ((base as i32 + grain).clamp(0, 255)) as u8;
+                    px.extend_from_slice(&[v((x + f * 3) % 256), v((y + f) % 256), v((x + y) / 3 % 256), 255]);
+                }
+            }
+            px
+        }).collect();
+        for name in ["libx264", "h264_nvenc"] {
+            if ffmpeg_next::encoder::find_by_name(name).is_none() {
+                eprintln!("skipped {name}: not in this FFmpeg");
+                continue;
+            }
+            for rate in [klipp_core::RateControl::Vbr, klipp_core::RateControl::Cbr] {
+                let (path, mut settings, snapshot) = fallback_settings(&format!("test_rate_{name}_{rate:?}.mp4"));
+                settings.rate_control = rate;
+                settings.video_bitrate_kbps = Some(KBPS);
+                ATTEMPTS.with(|a| *a.borrow_mut() = Some(vec![EncoderAttempt { name, hardware: name != "libx264", vaapi: None }]));
+                let opened = Encoder::open(&path, &settings, &snapshot);
+                ATTEMPTS.with(|a| *a.borrow_mut() = None);
+                let mut enc = match opened {
+                    Ok(enc) => enc,
+                    Err(e) if name != "libx264" => {
+                        eprintln!("skipped {name}: {e}");
+                        break;
+                    }
+                    Err(e) => panic!("{name}: {e}"),
+                };
+                for f in &frames {
+                    enc.encode_video_frame(f, 320, 240).unwrap();
+                }
+                enc.finalise().unwrap();
+                let bytes = std::fs::metadata(&path).unwrap().len() as f64;
+                let kbps = bytes * 8.0 / (FRAMES as f64 / 24.0) / 1000.0;
+                eprintln!("{name} {rate:?}: asked {KBPS} kbps, wrote {kbps:.0}");
+                assert!((0.7..1.3).contains(&(kbps / KBPS as f64)), "{name} {rate:?}: asked {KBPS} kbps, wrote {kbps:.0}");
+                let _ = std::fs::remove_file(&path);
+            }
         }
     }
 
