@@ -110,6 +110,8 @@ on your computer, and Klipp does not offer a way in from the internet yet.
 - **ONNX AI on NVIDIA:** `onnxruntime-cuda` supplies the CUDA provider and depends
   on the required CUDA/cuDNN runtime packages. It replaces the CPU provider.
   Installing cuDNN alone does not turn a CPU-only ONNX Runtime into a CUDA one.
+  Klipp loads cuDNN for the provider itself, since the Arch build doesn't link
+  it. `klipp_analysis_status` says which models run on CUDA.
   Default builds keep Candle models on CPU; CUDA compilation for those is a
   separate developer option.
 - **Narration:** the Kokoro voices (the default) need `espeak-ng`, a dependency,

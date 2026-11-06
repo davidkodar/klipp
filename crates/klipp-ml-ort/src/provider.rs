@@ -185,13 +185,44 @@ fn with_cuda(builder: ort::session::builder::SessionBuilder) -> (ort::session::b
         let lib = crate::runtime_resolve::find_libonnxruntime().map(|p| p.display().to_string()).unwrap_or_else(|| "libonnxruntime".into());
         return (builder, Some(format!("the onnxruntime in use ({lib}) has no CUDA provider")));
     }
-    match builder.with_execution_providers([ort::execution_providers::CUDAExecutionProvider::default().build().error_on_failure()]) {
+    load_cudnn();
+    // Full float precision, as on the CPU: onnxruntime's default TF32 read
+    // about 300 more lines of noise ("O") on a six-minute screen recording
+    // than the CPU did; with it off the lines matched (one label spaced
+    // differently) and it was no slower.
+    match builder.with_execution_providers([ort::execution_providers::CUDAExecutionProvider::default().with_tf32(false).build().error_on_failure()]) {
         Ok(b) => (b, None),
         Err(e) => {
             let why = format!("its CUDA provider didn't load: {e}");
             (e.recover(), Some(why))
         }
     }
+}
+
+/// cuDNN, loaded where the CUDA provider can see it before the provider
+/// loads. The provider calls cuDNN, but a build can leave it off the
+/// libraries it asks for (Arch's onnxruntime-cuda 1.29.0-3 does): the
+/// provider then failed on an undefined cuDNN symbol, and every model ran
+/// on the CPU beside the GPU. Loaded once, for the life of the process;
+/// where there is no cuDNN 9 nothing changes and the provider says why.
+#[cfg(all(feature = "ort", feature = "cuda"))]
+fn load_cudnn() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        #[cfg(unix)]
+        {
+            use libloading::os::unix::{Library, RTLD_GLOBAL, RTLD_NOW};
+            // SAFETY: a system library opened by name, whose start-up code
+            // is cuDNN's own; it stays loaded, so nothing it gave is freed.
+            match unsafe { Library::open(Some("libcudnn.so.9"), RTLD_NOW | RTLD_GLOBAL) } {
+                Ok(lib) => {
+                    tracing::info!("cuDNN 9 loaded for the CUDA provider");
+                    std::mem::forget(lib);
+                }
+                Err(e) => tracing::debug!("no cuDNN 9 to load for the CUDA provider: {e}"),
+            }
+        }
+    });
 }
 
 #[cfg(all(feature = "ort", not(feature = "cuda")))]
@@ -218,6 +249,27 @@ fn with_webgpu(builder: ort::session::builder::SessionBuilder) -> (ort::session:
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The CUDA provider finds cuDNN's functions once Klipp has loaded
+    /// it, whether or not the provider asks for the library itself: the
+    /// symbol Arch's provider failed on is then there for any library
+    /// loaded after. Skipped where there is no cuDNN 9.
+    #[cfg(all(feature = "ort", feature = "cuda", unix))]
+    #[test]
+    fn cudnn_is_there_for_the_cuda_provider() {
+        // SAFETY: as in `load_cudnn`.
+        if unsafe { libloading::os::unix::Library::open(Some("libcudnn.so.9"), libloading::os::unix::RTLD_LAZY | libloading::os::unix::RTLD_LOCAL) }.is_err() {
+            eprintln!("skipping: no cuDNN 9");
+            return;
+        }
+        let global = || {
+            // SAFETY: looking a name up in what is already loaded.
+            unsafe { libloading::os::unix::Library::this().get::<unsafe extern "C" fn()>(b"cudnnGetConvolutionBackwardDataAlgorithm_v7\0").is_ok() }
+        };
+        assert!(!global(), "only loaded on its own, not for everyone");
+        load_cudnn();
+        assert!(global(), "loaded for every library after it");
+    }
 
     #[test]
     fn a_cpu_session_beside_a_gpu_is_said_loudly() {

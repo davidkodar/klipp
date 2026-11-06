@@ -72,8 +72,9 @@ You will see this if the NVIDIA driver is installed (so `libcuda.so.1` is presen
 Fix:
 
 ```bash
-# Arch / CachyOS
-sudo pacman -S cudnn
+# Arch / CachyOS: the CUDA build of onnxruntime, in place of
+# onnxruntime-cpu; it brings cuDNN. cuDNN alone leaves the models on the CPU.
+sudo pacman -S onnxruntime-cuda
 
 # Ubuntu / Debian (CUDA 12 line)
 sudo apt install libcudnn9-cuda-12
@@ -100,7 +101,7 @@ If you have specific reasons to override these (e.g. a custom ort build), set th
 ## Troubleshooting
 
 **"My RTX is detected but inference is on CPU"**
-Almost always cuDNN runtime libraries missing — install `cudnn` per above.
+Almost always cuDNN runtime libraries missing — install them per above. On Arch, check that `onnxruntime-cuda` is installed rather than `onnxruntime-cpu` (`pacman -Q onnxruntime-cpu onnxruntime-cuda`).
 
 **"libonnxruntime.so not found"**
 Either install `onnxruntime` from your distro, or download a prebuilt from [github.com/microsoft/onnxruntime/releases](https://github.com/microsoft/onnxruntime/releases) and extract to `~/.local/lib/onnxruntime/`.

@@ -3391,6 +3391,7 @@ dependencies = [
  "dirs",
  "klipp-color",
  "klipp-ml",
+ "libloading 0.8.9",
  "ort",
  "png 0.18.1",
  "serde_json",
