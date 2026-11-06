@@ -3148,9 +3148,6 @@ mod interface_tests {
         out
     }
 
-    /// #1898: every tool in the catalog answers as a guide topic, by its
-    /// name with or without `klipp_`: its own section where it has one,
-    /// else its catalog entry, its arguments with it.
     /// klipp_remove_clip passes `ripple` on, and leaves it out when not
     /// given; the app lifts by default.
     #[test]
@@ -3162,6 +3159,9 @@ mod interface_tests {
         assert!(guide_topic("remove_clip").unwrap().contains("`ripple`"));
     }
 
+    /// #1898: every tool in the catalog answers as a guide topic, by its
+    /// name with or without `klipp_`: its own section where it has one,
+    /// else its catalog entry, its arguments with it.
     #[test]
     fn every_tool_is_a_guide_topic() {
         let tools = tool_definitions_for(false);
