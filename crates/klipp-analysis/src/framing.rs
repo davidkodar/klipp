@@ -324,8 +324,8 @@ pub fn ensure_model(download: bool) -> Result<std::path::PathBuf, String> {
     klipp_ml::download::download_to_cache(&cache, entry, &mut progress, &cancel).map_err(|e| format!("download of {MODEL_ID}: {e:?}"))
 }
 
-/// The frames at `times` of `media`, each a seek and a decode from the
-/// keyframe before it, letterboxed into a `FRAME_SIZE` square of RGBA8.
+/// The frames at `times` of `media`, letterboxed into a `FRAME_SIZE`
+/// square of RGBA8.
 fn frames_at(ffmpeg: &std::path::Path, item: &klipp_media::MediaItem, times: &[f64]) -> Result<Vec<Vec<u8>>, String> {
     // The GPU scales the longest side to the square's; the CPU pads the
     // small result into it.

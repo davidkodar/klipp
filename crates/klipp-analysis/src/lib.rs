@@ -41,6 +41,7 @@ pub mod service;
 pub mod shots;
 pub mod store;
 pub(crate) mod videopass;
+pub(crate) mod pass;
 pub mod worker;
 #[cfg(feature = "transcript")]
 pub mod transcript;
@@ -423,7 +424,7 @@ pub(crate) fn hwaccel_args(ffmpeg: &Path, codec: &str) -> Vec<String> {
 
 /// Seeks handed to one ffmpeg process: one start-up and one GPU
 /// context for all of them, each still a seek to the keyframe before
-/// its time and a decode from there, never a pass over the file.
+/// its time and a decode from there.
 const GRAB_BATCH: usize = 8;
 
 /// How long a batch of grabs may take on the GPU before it is given up
@@ -435,7 +436,46 @@ const GPU_GRAB_LIMIT: std::time::Duration = std::time::Duration::from_secs(45);
 /// (`-2` keeps the aspect) and put through `after` (a filter chain, or
 /// empty), as RGBA8 bytes of `frame_bytes` each. On the GPU where it
 /// can be; the CPU is the last resort.
+///
+/// Frames closer together than half the keyframe spacing are read in
+/// one pass of one decoder ([`pass`]); the rest, and any a pass didn't
+/// give, by a seek each. Either way a time gets the first frame at or
+/// after it.
 pub(crate) fn grab_frames(ffmpeg: &Path, item: &klipp_media::MediaItem, times: &[f64], width: u32, height: i64, after: &str, frame_bytes: usize) -> Result<Vec<Vec<u8>>, String> {
+    let ms: Option<Vec<i64>> = times.iter().map(|t| pass::millis(*t)).collect();
+    let (Some(ms), false, true) = (ms, item.is_still, times.len() >= 2) else {
+        return seek_frames(ffmpeg, item, times, width, height, after, frame_bytes);
+    };
+    let first = *ms.iter().min().unwrap_or(&0);
+    let runs = match pass::keyframe_spacing(ffmpeg, item, first) {
+        Some(spacing) => pass::runs(&ms, spacing),
+        None => Vec::new(),
+    };
+    if runs.is_empty() {
+        return seek_frames(ffmpeg, item, times, width, height, after, frame_bytes);
+    }
+    let mut got: Vec<Option<Vec<u8>>> = vec![None; times.len()];
+    for run in &runs {
+        let run_ms: Vec<i64> = run.iter().map(|&i| ms[i]).collect();
+        if let Some(frames) = pass::read(ffmpeg, item, &run_ms, width, height, after, frame_bytes) {
+            for (&i, f) in run.iter().zip(frames) {
+                got[i] = f;
+            }
+        }
+    }
+    let rest: Vec<usize> = (0..times.len()).filter(|&i| got[i].is_none()).collect();
+    tracing::debug!("frames of {}: {} in {} passes, {} by seeking", item.filename, times.len() - rest.len(), runs.len(), rest.len());
+    if !rest.is_empty() {
+        let sought = seek_frames(ffmpeg, item, &rest.iter().map(|&i| times[i]).collect::<Vec<_>>(), width, height, after, frame_bytes)?;
+        for (i, f) in rest.into_iter().zip(sought) {
+            got[i] = Some(f);
+        }
+    }
+    got.into_iter().map(|f| f.ok_or_else(|| "a frame went missing".to_string())).collect()
+}
+
+/// [`grab_frames`] by a seek each.
+fn seek_frames(ffmpeg: &Path, item: &klipp_media::MediaItem, times: &[f64], width: u32, height: i64, after: &str, frame_bytes: usize) -> Result<Vec<Vec<u8>>, String> {
     let mut out = Vec::with_capacity(times.len());
     for chunk in times.chunks(GRAB_BATCH) {
         out.extend(grab_batch(ffmpeg, item, chunk, width, height, after, frame_bytes)?);
@@ -531,6 +571,73 @@ mod ai_toggle_tests {
         assert!(!none.contains(&"transcript") && !none.contains(&"framing"), "AI gone: {none:?}");
         super::set_transcription_enabled(true);
         super::set_subject_detection_enabled(true);
+    }
+}
+
+#[cfg(test)]
+mod one_pass_tests {
+    use std::path::Path;
+
+    /// A clip made by ffmpeg, or nothing when there's no ffmpeg.
+    fn made(name: &str, args: &[&str]) -> Option<std::path::PathBuf> {
+        let path = std::env::temp_dir().join(format!("klipp-onepass-{}-{name}", std::process::id()));
+        let ok = std::process::Command::new("ffmpeg").args(["-nostdin", "-v", "error", "-y"]).args(args).arg(&path).status().is_ok_and(|s| s.success());
+        ok.then_some(path)
+    }
+
+    /// The frames a pass gives are the very ones a seek each gives,
+    /// byte for byte: on frames, between them, a millisecond either side,
+    /// the same time twice, near the end, spread out and close together,
+    /// in any order, in a clip with long keyframe spacing, one whose
+    /// frames come unevenly, one that doesn't start at zero, and one of
+    /// all keyframes.
+    #[test]
+    fn a_pass_gives_the_frames_the_seeks_give() {
+        let clips = [
+            ("long-gop.mp4", vec!["-f", "lavfi", "-i", "testsrc2=s=320x180:r=30:d=12", "-c:v", "libx264", "-g", "150", "-bf", "2", "-pix_fmt", "yuv420p"]),
+            ("uneven.mkv", vec!["-f", "lavfi", "-i", "testsrc2=s=320x180:r=30:d=12", "-vf", "setpts='N/30/TB+if(gt(mod(N,7),3),0.011/TB,0)'", "-fps_mode", "passthrough", "-c:v", "libx264", "-g", "100", "-pix_fmt", "yuv420p"]),
+            ("late-start.mkv", vec!["-f", "lavfi", "-i", "testsrc2=s=320x180:r=25:d=12", "-output_ts_offset", "7.3", "-c:v", "libx264", "-g", "120", "-pix_fmt", "yuv420p"]),
+            ("all-key.mov", vec!["-f", "lavfi", "-i", "testsrc2=s=320x180:r=24:d=6", "-c:v", "mjpeg", "-q:v", "4"]),
+        ];
+        let times: [f64; 21] = [0.0, 0.5, 1.0, 1.033, 1.034, 1.0333, 1.5, 1.5, 2.0, 2.04, 2.041, 2.039, 3.3, 3.31, 3.29, 0.25, 4.8, 9.0, 9.2, 11.9, 5.5];
+        let ffmpeg = Path::new("ffmpeg");
+        let (w, h) = (160u32, 90i64);
+        let bytes = (w as usize) * (h as usize) * 4;
+        for (name, args) in clips {
+            let Some(path) = made(name, &args) else {
+                eprintln!("skipping: no ffmpeg");
+                return;
+            };
+            let mut item = klipp_media::MediaItem::synthetic_for_test(path.clone(), None);
+            item.video_codec = if name.ends_with(".mov") { "mjpeg".into() } else { "h264".into() };
+            let near_end: Vec<f64> = times.iter().map(|t| t.min(if name.ends_with(".mov") { 5.9 } else { 11.9 })).collect();
+            // The pass is really taken where it should be, and only there.
+            let ms: Vec<i64> = near_end.iter().map(|t| super::pass::millis(*t).unwrap()).collect();
+            let spacing = super::pass::keyframe_spacing(ffmpeg, &item, 0).expect("keyframe spacing");
+            let runs = super::pass::runs(&ms, spacing);
+            if name.ends_with(".mov") {
+                // All keyframes: only times within half a frame share one.
+                assert!(runs.iter().all(|r| 2 * (ms[*r.last().unwrap()] - ms[r[0]]) < spacing), "{name}: {runs:?}");
+            } else {
+                assert!(runs.iter().map(Vec::len).sum::<usize>() >= ms.len() / 2, "{name}: spacing {spacing} ms, {runs:?}");
+            }
+            let sought = super::seek_frames(ffmpeg, &item, &near_end, w, h, "", bytes).expect("frames by seeking");
+            let passed = super::grab_frames(ffmpeg, &item, &near_end, w, h, "", bytes).expect("frames");
+            // And each pass on its own gave its frames, so the match
+            // below isn't the seeks' answer twice.
+            for run in &runs {
+                let run_ms: Vec<i64> = run.iter().map(|&i| ms[i]).collect();
+                let frames = super::pass::read(ffmpeg, &item, &run_ms, w, h, "", bytes).unwrap_or_else(|| panic!("{name}: the pass at {run_ms:?} ms"));
+                for (&i, f) in run.iter().zip(&frames) {
+                    assert!(f.as_ref() == Some(&sought[i]), "{name}: the pass's frame at {} differs", near_end[i]);
+                }
+            }
+            let _ = std::fs::remove_file(&path);
+            assert_eq!(passed.len(), near_end.len(), "{name}");
+            for ((t, a), b) in near_end.iter().zip(&sought).zip(&passed) {
+                assert!(a == b, "{name}: the frame at {t} differs");
+            }
+        }
     }
 }
 

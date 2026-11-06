@@ -500,8 +500,7 @@ fn read_size(w: u32, h: u32) -> (u32, u32) {
     (rw, ((raw / 2.0).round() as u32 * 2).max(2))
 }
 
-/// Frames at `times`, `width`×`height`, as RGBA8: each a seek and a
-/// decode from the keyframe before it, never a pass over the file.
+/// Frames at `times`, `width`×`height`, as RGBA8.
 fn frames_at(ffmpeg: &std::path::Path, item: &klipp_media::MediaItem, times: &[f64], width: u32, height: u32) -> Result<Vec<Vec<u8>>, String> {
     crate::grab_frames(ffmpeg, item, times, width, height as i64, "", (width * height * 4) as usize)
 }
