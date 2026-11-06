@@ -195,6 +195,14 @@ Arguments:
 - `media_id`: From klipp_list_media
 - `track`: Track index; omit for the default track
 
+## klipp_remove_clip
+
+Take one clip off the timeline, as one undo step. By default the clips after it stay where they are and a gap is left, on every track, as with the `remove` op in klipp_apply. With `ripple` true the gap closes: later clips on the clip's track (and its linked partner's) move left by its length, which also moves cards, titles and backdrops placed on that track. A clip on a locked track is left alone.
+
+Arguments:
+- `clip_id`: From klipp_list_clips
+- `ripple`: Close the gap, moving later clips left (default false)
+
 ## klipp_translate_captions
 
 Translate a subtitle (or text) track's captions into another language onto a new subtitle track under it, at the same times and in the source track's caption style, as one undo step. The new track is in `to`'s language, which klipp_export_subtitles tags its file with. `to` is an ISO 639-1 code: from English into de, fr, es, sv, it, nl, fi or da, or into en from de, fr, es, sv, it or nl. `from` is the captions' language: by default the track's own language tag (set_track language), else English. `track` is the track's index, by default the first subtitle track with captions. It runs as a job: the reply gives `job_id` at once; follow it with klipp_follow_job or klipp_job_status (kind translation, phase downloading, loading, translating or applying), and stop it with klipp_cancel_job. One translation runs at a time. Captions are translated as whole sentences (joined until a full stop, a pause over a second, or about 240 characters) and each sentence's translation is shared back over its captions by length, so a caption may carry other words than its source did. The finished job's `result` names the new track and the captions to check: those that read faster than 20 characters a second, run past two lines of 42, or whose sentence the translator cut short. The brief's cast names and vocabulary are kept as written, and `glossary` (an object, source term to its translation) sets how a recurring term comes out, e.g. {"application": "program"}; terms match whole words in any case, each form given on its own. A caption whose kept term the model dropped is among those to check. A sentence that comes back with under half its words is translated again a clause at a time, and the fuller one kept. Each pair's model (OPUS-MT, Helsinki-NLP, CC BY 4.0, about 300 MB) downloads only with `download_models` true; it runs locally.
