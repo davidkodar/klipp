@@ -97,7 +97,7 @@ rustup default stable
 # Fedora
 sudo dnf install gcc gcc-c++ git rustup clang clang-devel lld cmake pkg-config \
     ffmpeg-free-devel vulkan-loader-devel vulkan-headers glslc \
-    alsa-lib-devel lilv-devel espeak-ng
+    alsa-lib-devel lilv-devel espeak-ng util-linux
 rustup-init -y && . ~/.cargo/env
 ```
 
