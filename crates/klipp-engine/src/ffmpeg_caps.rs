@@ -49,86 +49,33 @@ impl FfmpegCaps {
         *CACHED.get_or_init(probe_ffmpeg)
     }
 
-    /// Pick the encode chain to use for an HDR (PQ/HLG) source.
+    /// The encode plan for an HDR clip's skim: its picture through
+    /// `cube`, a 3D LUT baked from Klipp's own HDR to SDR conversion
+    /// (`klipp_render::skim_lut`), so the skim shows what the export and
+    /// the parked frame show. ffmpeg's tone mappers (tonemap_cuda,
+    /// libplacebo, zscale + tonemap) drew it with their own curve: 100-nit
+    /// grey at 198 of 255 where the export has 139.
     ///
-    /// Returns the filter chain and the `-c:v` encoder name plus
-    /// extra encoder args. The caller is responsible for adding
-    /// `-y -ss <start> -i <src>` and segment-muxer flags.
-    ///
-    /// Ordering rationale:
-    ///   1. **tonemap_cuda + h264_nvenc** — keeps everything on the
-    ///      GPU end-to-end. ~3-5× realtime at 4K on RTX 4080.
-    ///   2. **libplacebo + h264_nvenc** — GPU tonemap on Vulkan,
-    ///      hwdownload back to CPU for nvenc upload. Slightly slower
-    ///      than #1 because of the round-trip but still well over
-    ///      realtime.
-    ///   3. **libplacebo + libx264** — GPU tonemap, CPU encode. Used
-    ///      when no hardware encoder is available (rare on a
-    ///      workstation; common on a headless render box).
-    ///   4. **CPU zscale + tonemap + libx264** — the safe fallback.
-    ///      ~0.3-0.5× realtime at 4K. Used only on stripped-down
-    ///      ffmpeg builds.
-    ///
-    /// `target_height` is baked into the filter chain — saves an
-    /// extra scaler stage.
-    pub fn pick_hdr_chain(self, target_height: u32) -> HdrChain {
-        if self.tonemap_cuda && self.h264_nvenc {
-            // `tonemap_cuda` outputs a CUDA frame; chain
-            // scale_cuda directly. NVENC consumes CUDA frames
-            // natively (`-hwaccel cuda -hwaccel_output_format cuda`
-            // on the input side; nvenc accepts the GPU surface).
-            return HdrChain {
-                tier: HdrChainTier::TonemapCudaNvenc,
-                input_args: vec!["-hwaccel".into(), "cuda".into(),
-                                  "-hwaccel_output_format".into(), "cuda".into()],
-                vf: format!(
-                    "tonemap_cuda=transfer=bt709:matrix=bt709:primaries=bt709:tonemap=hable:format=yuv420p,scale_cuda=-2:{target_height}"
-                ),
-                encoder: "h264_nvenc".into(),
-                encoder_args: vec![
-                    "-preset".into(), "p1".into(),
-                    "-rc".into(), "constqp".into(),
-                ],
-            };
-        }
-        if self.libplacebo && self.h264_nvenc {
-            return HdrChain {
-                tier: HdrChainTier::LibplaceboNvenc,
-                input_args: Vec::new(),
-                vf: format!(
-                    "libplacebo=tonemapping=hable:colorspace=bt709:color_primaries=bt709:color_trc=bt709:format=yuv420p:w=-2:h={target_height}"
-                ),
-                encoder: "h264_nvenc".into(),
-                encoder_args: vec![
-                    "-preset".into(), "p1".into(),
-                    "-rc".into(), "constqp".into(),
-                ],
-            };
-        }
-        if self.libplacebo {
-            return HdrChain {
-                tier: HdrChainTier::LibplaceboCpuEnc,
-                input_args: Vec::new(),
-                vf: format!(
-                    "libplacebo=tonemapping=hable:colorspace=bt709:color_primaries=bt709:color_trc=bt709:format=yuv420p:w=-2:h={target_height}"
-                ),
-                encoder: "libx264".into(),
-                encoder_args: vec!["-preset".into(), "ultrafast".into()],
-            };
-        }
-        // Final fallback — CPU all the way. zscale is in nearly
-        // every ffmpeg build (it's GPL, bundled by default).
-        HdrChain {
-            tier: HdrChainTier::CpuFallback,
-            input_args: Vec::new(),
-            vf: format!(
-                "zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,\
-                 tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,\
-                 format=yuv420p,scale=-2:{target_height}"
-            ),
-            encoder: "libx264".into(),
-            encoder_args: vec!["-preset".into(), "ultrafast".into()],
-        }
+    /// Decoded on the CPU, scaled to `target_height` in YUV, turned into
+    /// full-range BT.2020 R'G'B' at 16 bits (the codes the LUT takes),
+    /// through the LUT, back to limited BT.709 Y'CbCr and tagged so: the
+    /// engine plays it as the SDR picture it is. NVENC encodes it where
+    /// there is one, libx264 elsewhere.
+    pub fn pick_hdr_chain(self, target_height: u32, cube: &std::path::Path) -> HdrChain {
+        // A path in a filter argument: `:`, `,`, `'` and `\` are its syntax.
+        let cube = cube.to_string_lossy().replace('\\', "\\\\").replace(':', "\\:").replace(',', "\\,").replace('\'', "\\'");
+        let vf = format!(
+            "scale=w=-2:h={target_height}:in_color_matrix=bt2020:in_range=tv:out_range=pc,format=gbrp16le,\
+             lut3d=file={cube}:interp=tetrahedral,\
+             scale=out_color_matrix=bt709:out_range=tv,format=yuv420p,\
+             setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709:range=tv"
+        );
+        let (tier, encoder, encoder_args) = if self.h264_nvenc {
+            (HdrChainTier::LutNvenc, "h264_nvenc", vec!["-preset".to_string(), "p1".into(), "-rc".into(), "constqp".into()])
+        } else {
+            (HdrChainTier::LutCpuEnc, "libx264", vec!["-preset".to_string(), "ultrafast".into()])
+        };
+        HdrChain { tier, input_args: Vec::new(), vf, encoder: encoder.into(), encoder_args }
     }
 }
 
@@ -137,19 +84,15 @@ impl FfmpegCaps {
 /// log records which path their HDR clips actually used.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HdrChainTier {
-    TonemapCudaNvenc,
-    LibplaceboNvenc,
-    LibplaceboCpuEnc,
-    CpuFallback,
+    LutNvenc,
+    LutCpuEnc,
 }
 
 impl HdrChainTier {
     pub fn label(&self) -> &'static str {
         match self {
-            Self::TonemapCudaNvenc => "tonemap_cuda + h264_nvenc (GPU end-to-end)",
-            Self::LibplaceboNvenc  => "libplacebo + h264_nvenc",
-            Self::LibplaceboCpuEnc => "libplacebo + libx264",
-            Self::CpuFallback      => "CPU zscale+tonemap + libx264 (safe fallback)",
+            Self::LutNvenc => "Klipp's tone map (lut3d) + h264_nvenc",
+            Self::LutCpuEnc => "Klipp's tone map (lut3d) + libx264",
         }
     }
 }
@@ -266,81 +209,22 @@ Encoders:
     }
 
     #[test]
-    fn pick_hdr_chain_prefers_tonemap_cuda_when_available() {
-        let caps = FfmpegCaps {
-            tonemap_cuda: true, libplacebo: true,
-            h264_nvenc: true, h264_vaapi: false, h264_qsv: false,
-        };
-        let c = caps.pick_hdr_chain(1080);
-        assert_eq!(c.tier, HdrChainTier::TonemapCudaNvenc);
-        assert_eq!(c.encoder, "h264_nvenc");
-        assert!(c.vf.contains("tonemap_cuda"));
-        assert!(c.vf.contains("scale_cuda=-2:1080"));
-        assert!(c.input_args.contains(&"cuda".to_string()));
-    }
-
-    #[test]
-    fn pick_hdr_chain_falls_back_to_libplacebo_nvenc() {
-        let caps = FfmpegCaps {
-            tonemap_cuda: false, libplacebo: true,
-            h264_nvenc: true, h264_vaapi: false, h264_qsv: false,
-        };
-        let c = caps.pick_hdr_chain(1080);
-        assert_eq!(c.tier, HdrChainTier::LibplaceboNvenc);
-        assert_eq!(c.encoder, "h264_nvenc");
-        assert!(c.vf.contains("libplacebo"));
-        assert!(c.vf.contains("h=1080"));
-    }
-
-    #[test]
-    fn pick_hdr_chain_falls_back_to_libplacebo_libx264_when_no_hw_enc() {
-        let caps = FfmpegCaps {
-            tonemap_cuda: false, libplacebo: true,
-            h264_nvenc: false, h264_vaapi: false, h264_qsv: false,
-        };
-        let c = caps.pick_hdr_chain(1080);
-        assert_eq!(c.tier, HdrChainTier::LibplaceboCpuEnc);
-        assert_eq!(c.encoder, "libx264");
-        assert!(c.vf.contains("libplacebo"));
-    }
-
-    #[test]
-    fn pick_hdr_chain_falls_back_to_pure_cpu_when_no_gpu_filters() {
-        let caps = FfmpegCaps::default(); // nothing available
-        let c = caps.pick_hdr_chain(1080);
-        assert_eq!(c.tier, HdrChainTier::CpuFallback);
-        assert_eq!(c.encoder, "libx264");
-        assert!(c.vf.contains("zscale"));
-        assert!(c.vf.contains("tonemap=tonemap=hable"));
-        assert!(c.vf.contains("scale=-2:1080"));
-    }
-
-    #[test]
-    fn pick_hdr_chain_uses_libx264_even_with_hw_encoders_when_no_gpu_tonemap() {
-        // The CPU fallback chain emits CPU frames (zscale runs on
-        // CPU), so we can't pipe them straight into h264_nvenc
-        // without an extra hwupload that the simple chain doesn't
-        // include. The selection logic intentionally requires a
-        // GPU tonemap filter to pair with a GPU encoder.
-        let caps = FfmpegCaps {
-            tonemap_cuda: false, libplacebo: false,
-            h264_nvenc: true, h264_vaapi: true, h264_qsv: true,
-        };
-        let c = caps.pick_hdr_chain(1080);
-        assert_eq!(c.tier, HdrChainTier::CpuFallback);
-        assert_eq!(c.encoder, "libx264");
-    }
-
-    #[test]
-    fn target_height_threads_through_each_chain() {
-        let caps = FfmpegCaps {
-            tonemap_cuda: true, libplacebo: true,
-            h264_nvenc: true, h264_vaapi: false, h264_qsv: false,
-        };
-        for h in [720u32, 1080, 1440] {
-            let c = caps.pick_hdr_chain(h);
-            assert!(c.vf.contains(&format!("{h}")),
-                "{:?} chain at h={h} missed the height: {}", c.tier, c.vf);
+    fn an_hdr_skim_goes_through_klipps_lut_and_is_tagged_sdr() {
+        let cube = std::path::Path::new("/cache/klipp/skim/klipp-skim-pq-1a2b3c4d.cube");
+        for (nvenc, tier, encoder) in [(true, HdrChainTier::LutNvenc, "h264_nvenc"), (false, HdrChainTier::LutCpuEnc, "libx264")] {
+            let caps = FfmpegCaps { tonemap_cuda: true, libplacebo: true, h264_nvenc: nvenc, h264_vaapi: false, h264_qsv: false };
+            let c = caps.pick_hdr_chain(1080, cube);
+            assert_eq!((c.tier, c.encoder.as_str()), (tier, encoder));
+            assert!(c.vf.contains("lut3d=file=/cache/klipp/skim/klipp-skim-pq-1a2b3c4d.cube"), "{}", c.vf);
+            assert!(!c.vf.contains("tonemap") && !c.vf.contains("libplacebo"), "ffmpeg's own tone map is not used: {}", c.vf);
+            assert!(c.vf.contains("in_color_matrix=bt2020") && c.vf.contains("color_trc=bt709"), "{}", c.vf);
+            assert!(c.vf.contains("h=1080"));
         }
+    }
+
+    #[test]
+    fn a_cube_path_is_escaped_for_the_filter() {
+        let c = FfmpegCaps::default().pick_hdr_chain(720, std::path::Path::new("/home/a:b,c/x.cube"));
+        assert!(c.vf.contains("lut3d=file=/home/a\\:b\\,c/x.cube:interp"), "{}", c.vf);
     }
 }

@@ -513,17 +513,19 @@ pub fn skim_transcode_path(cache_key: &str) -> PathBuf {
 }
 
 /// The cache key a skim transcode is stored under: the file's content
-/// key, plus `.hdrtm` when the source is HDR (the skim is tone-mapped to
-/// SDR, and older skims that were not must not be reused) and `.r<deg>`
-/// when the source is rotated (the skim has upright pixels, and older
-/// sideways ones must not be). One function, so the transcode and every
-/// place that looks for an existing skim agree; the project loader used
-/// to look for the bare content key and pre-loaded exactly those stale
-/// HDR and sideways skims the markers exist to skip.
-pub fn skim_cache_key(content_key: &str, hdr_source: bool, source_rotation: i32) -> String {
+/// key, plus `.hdrk<key>` when the source is HDR, `<key>` naming the LUT
+/// its picture went through (Klipp's own HDR to SDR conversion, which
+/// another working space or a changed conversion changes; the older
+/// `.hdrtm` skims, tone-mapped by ffmpeg's curve, are not reused), and
+/// `.r<deg>` when the source is rotated (the skim has upright pixels, and
+/// older sideways ones must not be). One function, so the transcode and
+/// every place that looks for an existing skim agree; the project loader
+/// used to look for the bare content key and pre-loaded exactly those
+/// stale HDR and sideways skims the markers exist to skip.
+pub fn skim_cache_key(content_key: &str, hdr_lut_key: Option<&str>, source_rotation: i32) -> String {
     let mut key = content_key.to_string();
-    if hdr_source {
-        key.push_str(".hdrtm");
+    if let Some(lut) = hdr_lut_key {
+        key.push_str(&format!(".hdrk{lut}"));
     }
     if source_rotation != 0 {
         key.push_str(&format!(".r{source_rotation}"));
@@ -537,16 +539,16 @@ mod skim_key_tests {
 
     #[test]
     fn markers_follow_the_source() {
-        assert_eq!(skim_cache_key("abc", false, 0), "abc");
-        assert_eq!(skim_cache_key("abc", true, 0), "abc.hdrtm");
-        assert_eq!(skim_cache_key("abc", false, 90), "abc.r90");
-        assert_eq!(skim_cache_key("abc", true, 270), "abc.hdrtm.r270");
+        assert_eq!(skim_cache_key("abc", None, 0), "abc");
+        assert_eq!(skim_cache_key("abc", Some("1a2b3c4d"), 0), "abc.hdrk1a2b3c4d");
+        assert_eq!(skim_cache_key("abc", None, 90), "abc.r90");
+        assert_eq!(skim_cache_key("abc", Some("1a2b3c4d"), 270), "abc.hdrk1a2b3c4d.r270");
     }
 
     #[test]
     fn a_skim_path_is_the_key_alone() {
-        let p = skim_transcode_path("abc.hdrtm");
-        assert_eq!(p.file_name().unwrap(), "abc.hdrtm.mkv");
+        let p = skim_transcode_path("abc.hdrk1a2b3c4d");
+        assert_eq!(p.file_name().unwrap(), "abc.hdrk1a2b3c4d.mkv");
     }
 }
 
