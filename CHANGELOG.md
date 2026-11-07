@@ -27,8 +27,9 @@ stopped working in long sessions. Below are the changes.
 
 ### Fixes
 
-- An export at a set bitrate, under VBR or CBR, is written at that rate.
-  It came out far lower before: a 40 Mbit/s export at about 6 Mbit/s.
+- An export at a set bitrate, under VBR or CBR, is written at that rate,
+  and its render queue card names that rate. It came out far lower
+  before: a 40 Mbit/s export at about 6 Mbit/s.
 - Analysis of new files no longer fails with "Cannot allocate memory"
   after a long editing session.
 - An export with many stacked layers takes less memory: each hardware

@@ -320,13 +320,7 @@ impl RenderQueuePanel {
             ui.indent("rq_detail_indent", |ui| {
                 let dim = theme.text_dim;
                 let s = &job.settings;
-                let quality = if s.video_codec.uses_crf() {
-                    format!("CRF {}", s.crf)
-                } else if let Some(kbps) = s.video_bitrate_kbps {
-                    format!("{kbps} kbps")
-                } else {
-                    "codec default".into()
-                };
+                let quality = rate_text(s).unwrap_or_else(|| "codec default".into());
                 // Sound alone has no picture to describe.
                 if !s.format.is_audio_only() {
                     ui.label(small(format!("Video: {} \u{2022} {quality} \u{2022} {}-bit \u{2022} encoder preset {}", s.video_codec.label(), s.bit_depth, s.preset.ffmpeg_value()), dim));
@@ -525,8 +519,25 @@ fn picture_parts(s: &klipp_core::ExportSettings, width: u32, height: u32, fps: f
     if fps > 0.0 {
         parts.push(if (fps - fps.round()).abs() < 1e-3 { format!("{fps:.0} fps") } else { format!("{fps:.3} fps") });
     }
-    parts.push(if s.video_codec.uses_crf() { format!("{} CRF {}", s.video_codec.label(), s.crf) } else { s.video_codec.label().to_string() });
+    parts.push(match rate_text(s) {
+        Some(rate) if s.video_codec.uses_crf() || s.video_bitrate_kbps.is_some() => format!("{} {rate}", s.video_codec.label()),
+        _ => s.video_codec.label().to_string(),
+    });
     parts
+}
+
+/// How the picture's rate is set, as the encoder sets it: a CBR or VBR
+/// bitrate when one is given (it replaces the quality), else the codec's
+/// CRF, else a bitrate the codec takes. A VBR export's card said "CRF 23".
+fn rate_text(s: &klipp_core::ExportSettings) -> Option<String> {
+    use klipp_core::RateControl as R;
+    match (s.rate_control, s.video_bitrate_kbps) {
+        (R::Cbr, Some(kbps)) => Some(format!("CBR {kbps} kbps")),
+        (R::Vbr, Some(kbps)) => Some(format!("VBR {kbps} kbps")),
+        _ if s.video_codec.uses_crf() => Some(format!("CRF {}", s.crf)),
+        (_, Some(kbps)) => Some(format!("{kbps} kbps")),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -549,6 +560,24 @@ mod picture_parts_tests {
         assert!(super::picture_parts(&s, 1920, 1080, 25.0).iter().any(|p| p.contains("CRF") || p.contains('\u{00D7}')));
         s.format = klipp_core::ExportFormat::Wav;
         assert!(super::picture_parts(&s, 1920, 1080, 25.0).is_empty());
+    }
+
+    /// A bitrate export's card names its bitrate, as the encoder writes it,
+    /// not the CRF it doesn't use; a CRF export still names its CRF.
+    #[test]
+    fn a_bitrate_exports_card_names_its_bitrate() {
+        use klipp_core::{ExportVideoCodec as V, RateControl as R};
+        let mut s = klipp_core::ExportSettings { video_codec: V::H264, crf: 23, ..Default::default() };
+        assert_eq!(super::picture_parts(&s, 1920, 1080, 25.0).last().unwrap(), "H.264 CRF 23");
+        s.video_bitrate_kbps = Some(20000);
+        s.rate_control = R::Vbr;
+        assert_eq!(super::picture_parts(&s, 1920, 1080, 25.0).last().unwrap(), "H.264 VBR 20000 kbps");
+        assert_eq!(super::rate_text(&s).unwrap(), "VBR 20000 kbps");
+        s.rate_control = R::Cbr;
+        assert_eq!(super::picture_parts(&s, 1920, 1080, 25.0).last().unwrap(), "H.264 CBR 20000 kbps");
+        // A bitrate left over from an earlier choice doesn't count under CRF.
+        s.rate_control = R::Crf;
+        assert_eq!(super::picture_parts(&s, 1920, 1080, 25.0).last().unwrap(), "H.264 CRF 23");
     }
 }
 
