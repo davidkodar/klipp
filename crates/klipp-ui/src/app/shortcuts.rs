@@ -386,16 +386,15 @@ impl KlippApp {
                     klipp_timeline::magnetic::EditMode::Overwrite => klipp_timeline::magnetic::EditMode::Insert,
                 };
             }
-            // Alt+[ — Ripple trim head to playhead (requires selection).
-            if kb.is_action_pressed("ripple_trim_head", i) {
-                if let Some(clip_id) = self.state.selected_clip {
-                    cmds.push(AppCommand::RippleTrimHead { clip_id });
-                }
-            }
-            // Alt+] — Ripple trim tail to playhead (requires selection).
-            if kb.is_action_pressed("ripple_trim_tail", i) {
-                if let Some(clip_id) = self.state.selected_clip {
-                    cmds.push(AppCommand::RippleTrimTail { clip_id });
+            // Alt+[ / Alt+] — Trim Start / Trim End to the playhead: the
+            // selected clip, else the topmost one under the playhead.
+            let head = kb.is_action_pressed("ripple_trim_head", i);
+            let tail = kb.is_action_pressed("ripple_trim_tail", i);
+            if head || tail {
+                match super::ripple_trim::target(&self.state) {
+                    Some(clip_id) if head => cmds.push(AppCommand::RippleTrimHead { clip_id }),
+                    Some(clip_id) => cmds.push(AppCommand::RippleTrimTail { clip_id }),
+                    None => self.state.toast.show("Nothing to trim: put the playhead inside a clip"),
                 }
             }
             // Q — Trim OUT to playhead (no selection required).
