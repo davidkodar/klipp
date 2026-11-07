@@ -545,6 +545,15 @@ pub(crate) fn respond(
 
         ControlCommand::AppendClip { media_id, track } => {
             let id = klipp_core::MediaId(parse_uuid(&media_id, "media_id")?);
+            // A track that isn't there is refused here: the app drops the
+            // append and the reply said "applied" with nothing added.
+            if let Some(t) = track {
+                let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+                if t >= seq.tracks.len() {
+                    let names: Vec<String> = seq.tracks.iter().enumerate().map(|(i, tr)| format!("{i} \"{}\"", tr.name)).collect();
+                    return Err(format!("no track {t}; the tracks are {} (add one with the add_track op first)", names.join(", ")));
+                }
+            }
             match track {
                 Some(t) => send(AppCommand::AppendClipToTrack { media_id: id, track_index: t }),
                 None => send(AppCommand::AppendClip { media_id: id }),
