@@ -326,6 +326,18 @@ pub(crate) fn respond(
                 let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
                 seq.tracks.iter().any(|t| t.kind == klipp_timeline::TrackKind::Subtitle && !t.clips.is_empty())
             };
+            // What this machine can't encode is refused here, not accepted
+            // to fail as its job starts (an 8-bit-only x265, an FFmpeg
+            // with no AV1 encoder in reach, as on the M1).
+            if !settings.format.is_audio_only() {
+                let (w, h) = {
+                    let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+                    settings.output_size(seq.resolution.width, seq.resolution.height)
+                };
+                if let Some(why) = klipp_render::encoder::why_not_encodable(&settings.video_codec, settings.bit_depth, w, h) {
+                    return Err(why);
+                }
+            }
             // Another shape than the timeline's (#2784): letterboxed, said.
             let frame_warning = {
                 let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
@@ -1513,6 +1525,9 @@ fn deliver(ctx: &ControlContext, outputs: &[crate::protocol::DeliveryAsk], overw
         settings.target_lufs = o.target_lufs.or(settings.target_lufs).or(Some(-14.0));
         if let Some(problem) = settings.container_problem() {
             return Err(format!("{}: {problem}", o.format));
+        }
+        if let Some(why) = klipp_render::encoder::why_not_encodable(&settings.video_codec, settings.bit_depth, w, h) {
+            return Err(format!("{}: {why}", o.format));
         }
         said.push(json!({ "format": o.format, "path": o.path, "size": format!("{w}x{h}"), "preset": preset, "target_lufs": settings.target_lufs, "video_codec": settings.video_codec.label() }));
         sent.push(klipp_core::DeliveryOutput { aspect, settings });
