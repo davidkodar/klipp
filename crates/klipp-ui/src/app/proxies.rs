@@ -717,11 +717,31 @@ pub(super) fn apply_analysis_result(state: &mut crate::state::AppState, event: &
     true
 }
 
-/// The skim cache key for a media item, as the transcode names it.
-pub(super) fn skim_cache_key_for(item: &klipp_media::MediaItem) -> Option<String> {
+/// The skim cache key for a media item, as the transcode names it: an
+/// HDR item's carries the key of the LUT its picture goes through, baked
+/// for `working`. `None` when the file can't be keyed, or an HDR item's
+/// LUT can't be made (it then has no skim and plays from the original).
+pub(super) fn skim_cache_key_for(item: &klipp_media::MediaItem, working: klipp_core::WorkingColorspace) -> Option<String> {
     let base = klipp_media::disk_cache::compute_cache_key(&item.path)?;
-    let hdr = matches!(item.colour_space, klipp_media::ColourSpace::Hdr10 | klipp_media::ColourSpace::Hlg);
-    Some(klipp_media::disk_cache::skim_cache_key(&base, hdr, item.source_rotation))
+    let lut = match hdr_skim_lut(item, working) {
+        Some(Ok(p)) => Some(p.key),
+        Some(Err(_)) => return None,
+        None => None,
+    };
+    Some(klipp_media::disk_cache::skim_cache_key(&base, lut.as_deref(), item.source_rotation))
+}
+
+/// The LUT an HDR item's skim goes through: Klipp's own HDR to SDR
+/// conversion for its transfer in `working`, on disk beside the skims.
+/// `None` for an SDR item.
+pub(super) fn hdr_skim_lut(item: &klipp_media::MediaItem, working: klipp_core::WorkingColorspace) -> Option<Result<klipp_render::skim_lut::Prepared, String>> {
+    let transfer = match item.colour_space {
+        klipp_media::ColourSpace::Hdr10 => klipp_color::hdr::HdrTransfer::Pq,
+        klipp_media::ColourSpace::Hlg => klipp_color::hdr::HdrTransfer::Hlg,
+        _ => return None,
+    };
+    let dir = klipp_media::disk_cache::skim_transcode_path("x").parent().map(|d| d.to_path_buf())?;
+    Some(klipp_render::skim_lut::prepared(transfer, working, &dir))
 }
 
 #[cfg(test)]

@@ -1152,7 +1152,7 @@ impl KlippApp {
                             // with its HDR and rotation markers. The bare
                             // content key found exactly the stale skims
                             // those markers exist to skip.
-                            if let Some(key) = skim_cache_key_for(item) {
+                            if let Some(key) = skim_cache_key_for(item, self.state.project_working_colorspace) {
                                 let skim_path = klipp_media::disk_cache::skim_transcode_path(&key);
                                 if skim_path.exists() {
                                     if skim_file_is_complete(&skim_path, item.duration.to_secs_f64()) {

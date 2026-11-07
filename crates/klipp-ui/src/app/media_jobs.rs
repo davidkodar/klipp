@@ -746,25 +746,38 @@ impl KlippApp {
             // carries HDR metadata that the playback NV12 path
             // decodes as SDR, producing green/magenta blotches in
             // the viewer (the visible regression that prompted this
-            // fix). The downstream cache key includes a `.hdrtm`
-            // marker so old non-tone-mapped HDR skims are
-            // invalidated rather than re-used.
+            // fix). The tone map is Klipp's own, baked into a LUT for
+            // the project's working space, so the skim shows what the
+            // export and the parked frame show; ffmpeg's tone mappers
+            // drew it brighter and paler. A LUT that can't be made
+            // leaves the clip without a skim, playing from the
+            // original, rather than with another curve.
             let is_hdr_source = matches!(
                 item.colour_space,
                 klipp_media::ColourSpace::Hdr10 | klipp_media::ColourSpace::Hlg,
             );
+            let hdr_lut = match super::proxies::hdr_skim_lut(item, self.state.project_working_colorspace) {
+                Some(Ok(lut)) => Some(lut),
+                Some(Err(e)) => {
+                    tracing::warn!("Skim transcode: no skim for {:?}, its HDR tone map could not be made: {e}", item.filename);
+                    return;
+                }
+                None => None,
+            };
             let skim_dir = dirs::cache_dir()
                 .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
                 .join("klipp")
                 .join("skim");
             let _ = std::fs::create_dir_all(&skim_dir);
-            // The key carries `.hdrtm` for a tone-mapped HDR skim and
-            // `.r<deg>` for a rotated source, so stale skims from before
-            // either fix are not reused. One definition, shared with
-            // the project loader's look-up (`skim_cache_key_for`).
+            // The key carries `.hdrk<lut>` for an HDR skim, naming the
+            // LUT its picture went through, and `.r<deg>` for a rotated
+            // source, so skims made another way are not reused. One
+            // definition, shared with the project loader's look-up
+            // (`skim_cache_key_for`).
             let base_key = klipp_media::disk_cache::compute_cache_key(&source_path)
                 .unwrap_or_else(|| media_id.to_string());
-            let cache_key = klipp_media::disk_cache::skim_cache_key(&base_key, is_hdr_source, source_rotation);
+            let cache_key = klipp_media::disk_cache::skim_cache_key(&base_key, hdr_lut.as_ref().map(|l| l.key.as_str()), source_rotation);
+            let hdr_cube = hdr_lut.map(|l| l.cube);
             let skim_path = klipp_media::disk_cache::skim_transcode_path(&cache_key);
             if skim_path.exists() {
                 if skim_file_is_complete(&skim_path, duration_secs) {
@@ -1107,7 +1120,10 @@ impl KlippApp {
                     ], "skim-encode-sdr-libx264-portrait")
                 } else if is_hdr_source {
                     let caps = klipp_engine::ffmpeg_caps::FfmpegCaps::detect();
-                    let chain = caps.pick_hdr_chain(target_height);
+                    let Some(cube) = hdr_cube.as_deref() else {
+                        unreachable!("an HDR source has its LUT or no skim");
+                    };
+                    let chain = caps.pick_hdr_chain(target_height, cube);
                     tracing::info!(
                         "Skim transcode: HDR source detected — using {}",
                         chain.tier.label(),
@@ -1382,26 +1398,18 @@ impl KlippApp {
                                 // Successful — clean up the per-source
                                 // parts dir so we don't leak disk.
                                 let _ = std::fs::remove_dir_all(&parts_dir);
-                                // Prune the pre-`.hdrtm` sibling if we
-                                // just published the HDR variant. No
-                                // reader consults the old path once the
-                                // new one exists; without this the
-                                // orphaned file lingers forever (seen:
-                                // 23 GB non-hdrtm next to 71 GB hdrtm
-                                // on the same source file).
-                                if let Some(stem) = skim_path.file_stem().and_then(|s| s.to_str()) {
-                                    if let Some(base) = stem.strip_suffix(".hdrtm") {
-                                        let old = skim_path.with_file_name(format!("{base}.mkv"));
-                                        if old.exists() {
+                                // Prune this file's HDR skims made another way:
+                                // before the tone map (`<key>.mkv`), with
+                                // ffmpeg's (`.hdrtm`), or through another LUT
+                                // (another `.hdrk`). No reader consults them
+                                // once this one exists; left, they lingered
+                                // (seen: 23 GB beside 71 GB for one source).
+                                if let (Some(stem), Some(dir)) = (skim_path.file_stem().and_then(|s| s.to_str()), skim_path.parent()) {
+                                    if let Some((base, _)) = stem.split_once(".hdrk") {
+                                        for old in stale_hdr_skims(dir, base, &skim_path) {
                                             match std::fs::remove_file(&old) {
-                                                Ok(()) => tracing::info!(
-                                                    "Skim transcode: pruned stale pre-hdrtm sibling {:?}",
-                                                    old,
-                                                ),
-                                                Err(e) => tracing::warn!(
-                                                    "Skim transcode: failed to prune stale sibling {:?}: {e}",
-                                                    old,
-                                                ),
+                                                Ok(()) => tracing::info!("Skim transcode: pruned stale HDR skim {:?}", old),
+                                                Err(e) => tracing::warn!("Skim transcode: failed to prune stale skim {:?}: {e}", old),
                                             }
                                         }
                                     }
@@ -1641,5 +1649,41 @@ mod poster_width_tests {
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(small, Ok(320));
         assert_eq!(large, Ok(640));
+    }
+}
+
+/// The skims in `dir` of the file keyed `base` made another way than
+/// `current`: before HDR skims were tone-mapped (`<base>.mkv`), by
+/// ffmpeg's tone map (`<base>.hdrtm…`), or through another LUT
+/// (`<base>.hdrk…`). Another file's skims are never named.
+fn stale_hdr_skims(dir: &std::path::Path, base: &str, current: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let Ok(entries) = std::fs::read_dir(dir) else { return Vec::new() };
+    entries
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p != current)
+        .filter(|p| {
+            let Some(name) = p.file_name().and_then(|n| n.to_str()) else { return false };
+            name.ends_with(".mkv")
+                && (name == format!("{base}.mkv") || name.starts_with(&format!("{base}.hdrtm")) || name.starts_with(&format!("{base}.hdrk")))
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod stale_hdr_skim_tests {
+    /// Only this file's other HDR skims: not the new one, not another
+    /// file's, not a part folder.
+    #[test]
+    fn only_this_files_other_hdr_skims_are_stale() {
+        let dir = std::env::temp_dir().join(format!("klipp-stale-skims-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for name in ["abc.mkv", "abc.hdrtm.mkv", "abc.hdrk00000001.mkv", "abc.hdrk1a2b3c4d.mkv", "abcd.hdrtm.mkv", "xyz.hdrtm.mkv", "abc.hdrk1a2b3c4d.parts"] {
+            std::fs::write(dir.join(name), b"x").unwrap();
+        }
+        let current = dir.join("abc.hdrk1a2b3c4d.mkv");
+        let mut stale: Vec<String> = super::stale_hdr_skims(&dir, "abc", &current).iter().map(|p| p.file_name().unwrap().to_string_lossy().into_owned()).collect();
+        stale.sort();
+        assert_eq!(stale, ["abc.hdrk00000001.mkv", "abc.hdrtm.mkv", "abc.mkv"]);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
