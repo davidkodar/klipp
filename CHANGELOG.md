@@ -5,6 +5,48 @@ Each release lists what changed for people using Klipp. Versions follow
 
 ## Unreleased
 
+## 0.3.4 — 2026-11-07
+
+This release makes the AI analysis faster and lets it use the GPU on
+more machines. It also fixes exports at a set bitrate and analysis that
+stopped working in long sessions. Below are the changes.
+
+### AI analysis
+
+- On Arch with an NVIDIA card, `sudo pacman -S onnxruntime-cuda` runs the
+  AI models on the GPU. Arch's package didn't load before, because of a
+  library it doesn't link itself; Klipp now loads it.
+- On AMD and Intel GPUs, Preferences → AI → GPU for AI models offers the
+  WebGPU add-on: a 7 MB download from ONNX Runtime, on request only, and
+  checked against a pinned checksum. Subject detection, screen text and
+  picture search then run on the GPU through Vulkan. It is for x86_64
+  only. So far it has run only on an NVIDIA card's Vulkan driver, not on
+  an AMD or Intel card: reports are welcome.
+- Analysis reads frames that lie close together in one pass. On a
+  6-minute 4K take it took about a fifth less time, with the same results.
+
+### Fixes
+
+- An export at a set bitrate, under VBR or CBR, is written at that rate.
+  It came out far lower before: a 40 Mbit/s export at about 6 Mbit/s.
+- Analysis of new files no longer fails with "Cannot allocate memory"
+  after a long editing session.
+- An export with many stacked layers takes less memory: each hardware
+  decoder runs a few threads, not one per core.
+- Removing a clip from the assistant leaves the later clips in place,
+  unless it asks to close the gap.
+
+### Known issues
+
+- Klipp has not yet been tested end to end on AMD or Intel GPUs.
+- The input colour space is set on the Edit page only, not the Colour
+  page. The film print LUTs don't say what kind of picture they expect.
+- 10-bit and 12-bit HEVC 4:4:4 files decode with the wrong colour
+  matrix.
+- 8K HEVC at about 2.7 Gbit/s drops frames on playback, and AV1 at
+  3.4 Gbit/s doesn't play, without saying why.
+- ALEXA MXF files carry no colour tags Klipp can read: set Log C by hand.
+
 ## 0.3.3 — 2026-11-05
 
 This release comes from extensive testing on editing, colour grading,
