@@ -175,6 +175,11 @@ impl RenderQueuePanel {
                 }
     }
 
+    /// The card width under which a finished job's buttons go on a line
+    /// of their own: the four of them, the state and a name a few words
+    /// long.
+    const ONE_LINE_WIDTH: f32 = 440.0;
+
     fn show_job_row(
         ui: &mut egui::Ui,
         job: &klipp_export::RenderJob,
@@ -190,37 +195,59 @@ impl RenderQueuePanel {
         };
 
         // ── Row 1: state, file, and what can be done with it ──
-        ui.horizontal(|ui| {
-            let (word, color) = Self::status(&job.status, theme);
-            ui.label(egui::RichText::new(format!("\u{25CF} {word}")).color(color).size(11.0));
-            ui.label(egui::RichText::new(&job.label).color(theme.text_primary).strong().size(13.0));
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                match job.status {
-                    RenderJobStatus::Queued | RenderJobStatus::Rendering => {
-                        if button(ui, "Cancel", theme.marker_error, "Stop this render; the partial file is removed") {
-                            actions.push(RenderQueueAction::CancelJob(job.id));
-                        }
+        // The buttons first, the name in the room they leave, shortened.
+        // In a queue too narrow for the buttons beside the name (the one
+        // beside the Export page) the buttons take a line of their own:
+        // on one line they were drawn over the name and the state.
+        let buttons = |ui: &mut egui::Ui, actions: &mut Vec<RenderQueueAction>| match job.status {
+            RenderJobStatus::Queued | RenderJobStatus::Rendering => {
+                if button(ui, "Cancel", theme.marker_error, "Stop this render; the partial file is removed") {
+                    actions.push(RenderQueueAction::CancelJob(job.id));
+                }
+            }
+            RenderJobStatus::Complete | RenderJobStatus::Failed | RenderJobStatus::Cancelled => {
+                if button(ui, "Remove", theme.text_dim, "Take the job off the list; the file stays") {
+                    actions.push(RenderQueueAction::RemoveJob(job.id));
+                }
+                let again = if job.status == RenderJobStatus::Failed { "Retry" } else { "Render Again" };
+                if button(ui, again, theme.text_secondary, "The same settings and frames, from the sequence as it is now; replaces the file") {
+                    actions.push(RenderQueueAction::RenderAgain(job.id));
+                }
+                if job.status == RenderJobStatus::Complete {
+                    if button(ui, "Show in Folder", theme.text_secondary, "Open the folder the file is in") {
+                        actions.push(RenderQueueAction::ShowInFolder(job.output_path.clone()));
                     }
-                    RenderJobStatus::Complete | RenderJobStatus::Failed | RenderJobStatus::Cancelled => {
-                        if button(ui, "Remove", theme.text_dim, "Take the job off the list; the file stays") {
-                            actions.push(RenderQueueAction::RemoveJob(job.id));
-                        }
-                        let again = if job.status == RenderJobStatus::Failed { "Retry" } else { "Render Again" };
-                        if button(ui, again, theme.text_secondary, "The same settings and frames, from the sequence as it is now; replaces the file") {
-                            actions.push(RenderQueueAction::RenderAgain(job.id));
-                        }
-                        if job.status == RenderJobStatus::Complete {
-                            if button(ui, "Show in Folder", theme.text_secondary, "Open the folder the file is in") {
-                                actions.push(RenderQueueAction::ShowInFolder(job.output_path.clone()));
-                            }
-                            if button(ui, "Play", theme.accent, "Open the file in the system's player") {
-                                actions.push(RenderQueueAction::Play(job.output_path.clone()));
-                            }
-                        }
+                    if button(ui, "Play", theme.accent, "Open the file in the system's player") {
+                        actions.push(RenderQueueAction::Play(job.output_path.clone()));
                     }
                 }
+            }
+        };
+        let name = |ui: &mut egui::Ui| {
+            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                ui.add(egui::Label::new(egui::RichText::new(&job.label).color(theme.text_primary).strong().size(13.0)).truncate())
+                    .on_hover_text(&job.label);
             });
-        });
+        };
+        let (word, color) = Self::status(&job.status, theme);
+        let state = egui::RichText::new(format!("\u{25CF} {word}")).color(color).size(11.0);
+        if ui.available_width() >= Self::ONE_LINE_WIDTH {
+            ui.horizontal(|ui| {
+                ui.label(state);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    buttons(ui, actions);
+                    name(ui);
+                });
+            });
+        } else {
+            ui.horizontal(|ui| {
+                ui.label(state);
+                name(ui);
+            });
+            ui.horizontal(|ui| {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| buttons(ui, actions));
+            });
+        }
 
         // ── Row 2: what is being made, at a glance ──
         ui.label(small(Self::identity(job), theme.text_secondary));
@@ -466,6 +493,80 @@ impl RenderQueuePanel {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A finished job's card in the narrow queue beside the Export page:
+    /// the file's name is shortened to the room the buttons leave, never
+    /// drawn under them.
+    #[test]
+    fn a_long_name_stays_clear_of_the_buttons_in_a_narrow_queue() {
+        let job = klipp_export::RenderJob {
+            id: uuid::Uuid::new_v4(),
+            label: "fix_prores_hq_master_final_v2_graded_for_review.mov".into(),
+            output_path: std::path::PathBuf::from("/tmp/fix_prores_hq_master_final_v2_graded_for_review.mov"),
+            settings: klipp_core::ExportSettings::default(),
+            status: RenderJobStatus::Complete,
+            progress: 1.0,
+            created_at: std::time::Instant::now(),
+            started_at: None,
+            completed_at: None,
+            error: None,
+            total_frames: 300,
+            frames_done: 300,
+            hw_info: String::new(),
+            timeline_fps: 25.0,
+            render_stage: String::new(),
+            loudness_result: None,
+            timings: Default::default(),
+            width: 1920,
+            height: 1080,
+            export_range: None,
+            sequence_id: klipp_core::SequenceId::new(),
+            heard_media: Vec::new(),
+        };
+        let theme = crate::theme::KlippTheme::default();
+        // The card drawn `width` points wide: each text drawn, its full
+        // text, where it is and the characters it shows.
+        let draw = |width: f32| {
+            let ctx = egui::Context::default();
+            let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, 400.0))), ..Default::default() };
+            let mut texts: Vec<(String, egui::Rect, String)> = Vec::new();
+            for _ in 0..2 {
+                let out = ctx.run(input.clone(), |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        let mut actions = Vec::new();
+                        RenderQueuePanel::show_job_row(ui, &job, &theme, &mut actions);
+                    });
+                });
+                texts = out.shapes.iter().filter_map(|c| match &c.shape {
+                    egui::Shape::Text(t) => Some((
+                        t.galley.text().to_string(),
+                        t.galley.rect.translate(t.pos.to_vec2()),
+                        t.galley.rows.iter().flat_map(|r| r.glyphs.iter().map(|g| g.chr)).collect(),
+                    )),
+                    _ => None,
+                }).collect();
+            }
+            texts
+        };
+        // The queue beside the Export page, about 285 points wide.
+        let texts = draw(290.0);
+        let find = |texts: &[(String, egui::Rect, String)], start: &str| texts.iter().find(|(t, ..)| t.starts_with(start)).cloned().unwrap_or_else(|| panic!("{start} drawn"));
+        let (_, name, shown) = find(&texts, "fix_");
+        let (_, state, _) = find(&texts, "\u{25CF}");
+        assert!(shown.ends_with('\u{2026}'), "shortened in the narrow card: {shown:?}");
+        assert!(!name.intersects(state) && name.max.x <= 290.0, "the name at {name:?} runs into the state at {state:?} or out of the card");
+        for word in ["Play", "Show in Folder", "Render Again", "Remove"] {
+            let (_, button, _) = find(&texts, word);
+            assert!(!name.intersects(button) && !state.intersects(button), "{word} at {button:?} is drawn over the name {name:?} or the state {state:?}");
+            assert!(button.min.x >= 0.0 && button.max.x <= 290.0, "{word} at {button:?} is outside the card");
+        }
+        // The floating queue, wide: one line, the name whole.
+        let texts = draw(700.0);
+        let (_, name, shown) = find(&texts, "fix_");
+        let (_, play, _) = find(&texts, "Play");
+        assert_eq!(shown, job.label, "the whole name in a wide card");
+        assert!((name.center().y - play.center().y).abs() < 4.0 && name.max.x <= play.min.x, "one line: {name:?}, Play {play:?}");
+    }
 
     #[test]
     fn numbers_and_times_read_as_people_write_them() {
