@@ -259,6 +259,12 @@ pub struct FrameBuffer {
     /// what a reader waiting for the preview waits for, any frame drawn
     /// before it being the picture without it.
     pub preview_generation: Option<u64>,
+    /// The parked position the engine last judged, and whether the frame
+    /// there came from a clip's skim stand-in that it is about to redraw
+    /// from the original file. A reader that wants the picture as it is
+    /// (a frame grab) waits for its time to be judged and the redraw
+    /// done: the stand-in of an HDR clip is tone-mapped its own way.
+    pub original_redraw: Option<(klipp_core::RationalTime, bool)>,
 
     /// Advances on each complete thumbnail publication, including empty results.
     pub node_thumbs_gen: u64,
@@ -342,6 +348,7 @@ impl FrameBuffer {
             declines: Default::default(),
             preview_skipped: false,
             preview_generation: None,
+            original_redraw: None,
             gpu_output_frame: 0,
             node_thumbs_gen: 0,
             node_thumbnail_batch: None,

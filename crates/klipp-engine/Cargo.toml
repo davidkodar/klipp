@@ -289,6 +289,10 @@ name = "a_skim_keeps_its_pace"
 path = "tests/a_skim_keeps_its_pace.rs"
 
 [[test]]
+name = "a_parked_stand_in_is_redrawn"
+path = "tests/a_parked_stand_in_is_redrawn.rs"
+
+[[test]]
 name = "a_nested_scene_parks_complete"
 path = "tests/a_nested_scene_parks_complete.rs"
 
