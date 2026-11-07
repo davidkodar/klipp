@@ -20,6 +20,28 @@ pub(super) enum RippleTrim {
     Refused(String),
 }
 
+/// The clip Trim Start and Trim End work on: the selected one, else the
+/// topmost clip under the playhead, picture tracks before sound, as Final
+/// Cut Pro picks it. Without this the keys did nothing, and said nothing,
+/// when no clip was selected.
+pub(super) fn target(state: &AppState) -> Option<ClipId> {
+    if state.selected_clip.is_some() {
+        return state.selected_clip;
+    }
+    let at = state.playhead;
+    let tracks = &state.sequence().tracks;
+    let picture = |t: &&klipp_timeline::Track| matches!(t.kind, klipp_timeline::TrackKind::Video | klipp_timeline::TrackKind::Text);
+    // Tracks are stored top first, so the first hit is the topmost.
+    tracks
+        .iter()
+        .filter(picture)
+        .chain(tracks.iter().filter(|t| !picture(t)))
+        .filter(|t| !t.locked)
+        .flat_map(|t| t.clips.iter())
+        .find(|c| !c.kind.is_gap() && c.timeline_in < at && at < c.timeline_out)
+        .map(|c| c.id)
+}
+
 /// Trim `clip_id`'s `edge` to the playhead.
 pub(super) fn to_playhead(state: &mut AppState, clip_id: ClipId, edge: Edge) -> RippleTrim {
     let playhead = state.playhead;
@@ -152,6 +174,29 @@ mod tests {
         assert_eq!(span(&state, v).1, 14.0);
         assert_eq!(span(&state, ids[2].0).0, 14.0, "the next picture closes up");
         assert_eq!(span(&state, a), (10.0, 20.0, 10.0), "the sound isn't touched");
+    }
+
+    /// With nothing selected the keys take the clip under the playhead,
+    /// the picture before its sound; a selection still wins.
+    #[test]
+    fn with_nothing_selected_the_clip_under_the_playhead_is_trimmed() {
+        let (mut state, ids) = three_pairs();
+        state.playhead = tc(14.0);
+        assert_eq!(target(&state), Some(ids[1].0));
+        state.selected_clip = Some(ids[2].1);
+        assert_eq!(target(&state), Some(ids[2].1));
+        state.selected_clip = None;
+        state.sequences[0].tracks[0].locked = true;
+        assert_eq!(target(&state), Some(ids[1].1), "a locked picture track passes to the sound");
+        state.sequences[0].tracks[0].locked = false;
+        for at in [10.0, 45.0] {
+            state.playhead = tc(at);
+            assert_eq!(target(&state), None, "on a cut or past the end there is nothing to trim");
+        }
+        state.playhead = tc(14.0);
+        let id = target(&state).unwrap();
+        trim(&mut state, id, Edge::In, 14.0);
+        assert_eq!(span(&state, ids[1].0), (10.0, 16.0, 14.0));
     }
 
     #[test]
