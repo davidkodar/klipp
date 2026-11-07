@@ -1700,6 +1700,12 @@ fn an_export_delivers_hdr_as_the_dialog_allows() {
     let (r, s) = sent(&mut h, json!({ "method": "export", "path": "/tmp/klipp-hdr-hlg.mp4", "hdr": "hlg" }));
     assert_eq!((s.hdr_mode, s.bit_depth), (HdrMode::Hlg, 10), "{r}");
     assert!(r["export"]["hdr_warning"].is_string(), "{r}");
+    // AV1 carries both, as the Export page offers: it was refused here.
+    let (r, s) = sent(&mut h, json!({ "method": "export", "path": "/tmp/klipp-hdr-av1.mp4", "codec": "av1", "hdr": "pq" }));
+    assert_eq!((s.video_codec, s.hdr_mode, s.bit_depth), (klipp_core::ExportVideoCodec::Av1, HdrMode::Pq, 10), "{r}");
+    assert!(r["export"]["hdr_warning"].is_null(), "{r}");
+    let (_, s) = sent(&mut h, json!({ "method": "export", "path": "/tmp/klipp-av1-10.mp4", "codec": "av1", "bit_depth": 10 }));
+    assert_eq!((s.hdr_mode, s.bit_depth), (HdrMode::Sdr, 10));
     // ProRes keeps its own depth.
     let (_, s) = sent(&mut h, json!({ "method": "export", "path": "/tmp/klipp-hdr-prores.mov", "codec": "prores", "hdr": "hlg" }));
     assert_eq!(s.hdr_mode, HdrMode::Hlg);

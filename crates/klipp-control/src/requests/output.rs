@@ -207,8 +207,9 @@ pub(crate) fn respond(
                 settings.rate_control = klipp_core::RateControl::Vbr;
                 settings.video_bitrate_kbps = Some(kbps);
             }
-            if settings.bit_depth == 10 && !matches!(settings.video_codec, V::H264 | V::H265 | V::ProRes422 | V::ProRes422HQ | V::ProRes4444) {
-                return Err(format!("{} is written at 8 bits; bit_depth 10 needs h264, hevc or ProRes", settings.video_codec.label()));
+            // AV1 as the Export page offers it: ten bits, HLG and PQ.
+            if settings.bit_depth == 10 && !matches!(settings.video_codec, V::H264 | V::H265 | V::Av1 | V::ProRes422 | V::ProRes422HQ | V::ProRes4444) {
+                return Err(format!("{} is written at 8 bits; bit_depth 10 needs h264, hevc, av1 or ProRes", settings.video_codec.label()));
             }
             if let Some(problem) = settings.container_problem() {
                 return Err(problem);
@@ -276,8 +277,8 @@ pub(crate) fn respond(
                     if mode != klipp_core::HdrMode::Sdr {
                         let prores = matches!(settings.video_codec, V::ProRes422 | V::ProRes422HQ | V::ProRes4444);
                         if !prores {
-                            if !matches!(settings.video_codec, V::H264 | V::H265) {
-                                return Err(format!("{} writes no HDR; hdr {name} needs hevc, h264 or ProRes", settings.video_codec.label()));
+                            if !matches!(settings.video_codec, V::H264 | V::H265 | V::Av1) {
+                                return Err(format!("{} writes no HDR; hdr {name} needs hevc, av1, h264 or ProRes", settings.video_codec.label()));
                             }
                             if bit_depth == Some(8) {
                                 return Err(format!("hdr {name} is written at 10 bits; leave bit_depth out or give 10"));
