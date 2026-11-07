@@ -108,6 +108,24 @@ struct EncoderAttempt {
     vaapi: Option<(std::path::PathBuf, bool)>,
 }
 
+/// Whether `codec`'s software encoder is told to use every core. Left
+/// to itself an encoder opened through the library runs on one thread:
+/// ProRes 422 took 97 ms a 1080p frame and VP9 140 ms, where every core
+/// gives the same bytes many times faster. The x264, x265 and SVT-AV1
+/// libraries thread by themselves; the hardware encoders need none.
+fn encodes_on_every_core(codec: &ExportVideoCodec) -> bool {
+    matches!(
+        codec,
+        ExportVideoCodec::ProRes422
+            | ExportVideoCodec::ProRes422HQ
+            | ExportVideoCodec::ProRes4444
+            | ExportVideoCodec::Ffv1
+            | ExportVideoCodec::DNxHD115
+            | ExportVideoCodec::DNxHD145
+            | ExportVideoCodec::Vp9
+    )
+}
+
 /// The hardware encoders this FFmpeg has for `codec`: NVENC (NVIDIA), then
 /// AMF (AMD), then VAAPI (AMD and Intel).
 ///
@@ -669,16 +687,12 @@ impl Encoder {
                         }
                         ExportVideoCodec::ProRes4444 => {
                             video_opts.set("profile", "4");
-                            // Slices side by side on every core: on one,
-                            // 4:4:4 with alpha took 150 ms a 1080p frame.
-                            video_opts.set("threads", "auto");
                         }
                         ExportVideoCodec::Ffv1 => {
                             // Version 3: slices coded side by side, each
                             // with a CRC, so a damaged file says so.
                             video_opts.set("level", "3");
                             video_opts.set("slicecrc", "1");
-                            video_opts.set("threads", "auto");
                         }
                         ExportVideoCodec::DNxHD115 => {
                             video_ctx.set_bit_rate(115_000_000);
@@ -715,6 +729,9 @@ impl Encoder {
                             // playbacks before stopping.
                             video_opts.set("loop", "0");
                         }
+                    }
+                    if encodes_on_every_core(&settings.video_codec) {
+                        video_opts.set("threads", "auto");
                     }
 
                     // Every Y'CbCr output gets its colour tags and range — before, only
@@ -2246,6 +2263,19 @@ fn convert_into(resampler: &mut ffmpeg_next::software::resampling::Context, samp
 
 #[cfg(test)]
 mod tests {
+
+    /// Every software encoder that does not thread by itself is told to
+    /// use every core: ProRes 422 ran on one and took eight times as long
+    /// as ProRes 4444, which already used them all.
+    #[test]
+    fn encoders_that_run_on_one_thread_unless_told_use_every_core() {
+        use klipp_core::ExportVideoCodec as V;
+        let one_thread_unless_told = ["prores_ks", "dnxhd", "ffv1", "libvpx-vp9"];
+        for codec in [V::H264, V::H265, V::ProRes422, V::ProRes422HQ, V::ProRes4444, V::Ffv1, V::DNxHD115, V::DNxHD145, V::Av1, V::Vp9, V::Gif] {
+            let name = super::software_video_encoder(&codec);
+            assert_eq!(super::encodes_on_every_core(&codec), one_thread_unless_told.contains(&name), "{codec:?} ({name})");
+        }
+    }
 
     /// A 10-bit HEVC export on an 8-bit x265 is told so, and the answer
     /// agrees with what the ffmpeg program lists on this machine. 8-bit, and
