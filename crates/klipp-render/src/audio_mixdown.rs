@@ -745,8 +745,13 @@ fn levels_at(shape: &AudioClipShape, clip_pos: f64, timeline_secs: f64, fps: f64
     let eval = |kfs: &[klipp_core::Keyframe], p: klipp_core::ParamId, base: f32| {
         klipp_compose::eval::eval_with_modifiers(kfs, &shape.param_modifiers, &p, clip_pos, base, &ctx)
     };
-    let volume = eval(&shape.volume_keyframes, klipp_core::ParamId::Volume, shape.volume);
-    let gain = eval(&shape.gain_keyframes, klipp_core::ParamId::Gain, shape.gain);
+    // Levels move in dB between keys, so a ramp sounds even; pan moves
+    // straight. Playback's mix evaluates them the same way.
+    let level = |kfs: &[klipp_core::Keyframe], p: klipp_core::ParamId, base: f32| {
+        klipp_compose::eval::eval_level_with_modifiers(kfs, &shape.param_modifiers, &p, clip_pos, base, &ctx)
+    };
+    let volume = level(&shape.volume_keyframes, klipp_core::ParamId::Volume, shape.volume);
+    let gain = level(&shape.gain_keyframes, klipp_core::ParamId::Gain, shape.gain);
     let pan = eval(&shape.pan_keyframes, klipp_core::ParamId::Pan, shape.pan);
     (volume * gain, pan)
 }
@@ -1324,7 +1329,9 @@ mod tests {
             assert_eq!(&s[..], &want[..], "channel config {config}");
         }
 
-        // Keyframed volume: from 1 at 0 s to 0 at 2 s, read at 1 s.
+        // Keyframed volume: from 1 at 0 s to silence at 2 s, read at 1 s:
+        // half way in dB, silence standing at -60 dB, so -30 dB (a straight
+        // move in gain, 0.5, was still -6 dB half way down a fade out).
         let shape = AudioClipShape {
             volume_keyframes: {
                 let mut kfs = Vec::new();
@@ -1337,14 +1344,17 @@ mod tests {
         };
         let mut s = ones(2);
         shape_all(&mut s, &shape, 1.0, 1.0, 25.0, sr);
-        assert!((s[0] - 0.5).abs() < 1e-3, "{}", s[0]);
+        assert!((s[0] - 10f32.powf(-30.0 / 20.0)).abs() < 1e-3, "{}", s[0]);
         // And it moves across the frame, not in a step at its start: a
-        // tenth of a second on, the level is a twentieth lower, with
-        // every sample between on the line.
+        // tenth of a second on, 3 dB lower (-33 dB), and half way -31.5,
+        // with every sample between on the way down.
+        let g = |db: f32| 10f32.powf(db / 20.0);
         let mut s = ones(4800);
         shape_all(&mut s, &shape, 1.0, 1.0, 25.0, sr);
-        assert!((s[0] - 0.5).abs() < 1e-3 && (s[4799 * 2] - 0.45).abs() < 1e-3, "{} then {}", s[0], s[4799 * 2]);
-        assert!((s[2400 * 2] - 0.475).abs() < 1e-3, "{}", s[2400 * 2]);
+        assert!((s[0] - g(-30.0)).abs() < 1e-4 && (s[4799 * 2] - g(-33.0)).abs() < 1e-4, "{} then {}", s[0], s[4799 * 2]);
+        // Within a frame the level is blended in gain between the frame's
+        // ends: a tenth of a dB off the dB line, inaudible.
+        assert!((20.0 * s[2400 * 2].log10() - -31.5).abs() < 0.2, "{}", s[2400 * 2]);
         assert!(s.chunks(2).collect::<Vec<_>>().windows(2).all(|w| w[1][0] <= w[0][0]), "never a step up on the way down");
     }
 

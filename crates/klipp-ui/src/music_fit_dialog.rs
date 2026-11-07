@@ -299,7 +299,7 @@ mod tests {
         }
         assert_eq!((clips[0].fade_in_secs, clips[0].fade_out_secs), (0.5, 0.0));
         assert_eq!((clips[1].fade_in_secs, clips[1].fade_out_secs), (0.0, 1.0));
-        let at = |c: &klipp_timeline::Clip, t: f64| klipp_core::keyframe::evaluate(&c.volume_keyframes, t, c.volume);
+        let at = |c: &klipp_timeline::Clip, t: f64| klipp_core::keyframe::evaluate_level(&c.volume_keyframes, t, c.volume);
         assert!((at(&clips[0], 1.0) - 0.2).abs() < 1e-4, "{:?}", clips[0].volume_keyframes);
         assert!((at(&clips[1], 5.0) - 0.1).abs() < 1e-4, "25 s into the clip is 5 s into the second piece: {:?}", clips[1].volume_keyframes);
         assert!(!view.sequences[0].tracks[audio].transitions.is_empty(), "the join is still crossfaded");

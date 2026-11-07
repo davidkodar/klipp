@@ -617,6 +617,60 @@ pub fn ease_into(kfs: &mut [Keyframe], i: usize, ease: Ease) {
     kfs[i].tangent_in = ((x2 - 1.0) * d, (y2 - 1.0) * v);
 }
 
+/// The level a key at silence (0 gain, which has no level in dB) is
+/// moved to and from, at most: at -60 dB a fade to silence is heard to
+/// its end, where a lower level spent most of the fade below hearing and
+/// sounded like a cut. Keys quieter than it are their own level; silence
+/// is then this far below the quietest.
+const LEVEL_FLOOR_DB: f32 = -60.0;
+const SILENCE_BELOW_DB: f32 = 20.0;
+
+/// A gain in dB, silence at the floor.
+pub fn level_db(gain: f32) -> f32 {
+    if gain <= 0.0 { LEVEL_FLOOR_DB } else { 20.0 * gain.log10() }
+}
+
+/// `keys` (gains) as levels in dB, and the level silence stands at: for
+/// interpolating a sound level, which is heard evenly in dB.
+fn keys_in_db(keys: &[Keyframe]) -> (Vec<Keyframe>, f32) {
+    let quietest = keys.iter().filter(|k| k.value > 0.0).map(|k| level_db(k.value)).fold(f32::INFINITY, f32::min);
+    let silence = LEVEL_FLOOR_DB.min(quietest - SILENCE_BELOW_DB);
+    let level = |g: f32| if g <= 0.0 { silence } else { level_db(g) };
+    // A key's value tangents are in gain and don't carry over to dB: a
+    // Bezier level curve keeps its timing, flat at its keys.
+    let in_db = keys.iter().map(|k| Keyframe { value: level(k.value), tangent_in: (k.tangent_in.0, 0.0), tangent_out: (k.tangent_out.0, 0.0), ..k.clone() }).collect();
+    (in_db, silence)
+}
+
+/// A gain back from `db`, silence at or below `silence`.
+fn gain_of(db: f32, silence: f32) -> f32 {
+    if db <= silence + 1e-3 { 0.0 } else { 10f32.powf(db / 20.0) }
+}
+
+/// A sound level at `time_secs` from keys in gain, interpolated in dB so a
+/// ramp sounds even, as every editor's volume line moves: 0 to -20 dB over
+/// a second is -10 dB half way, where a straight move in gain was still
+/// -5 dB and fell away at the end. `default` with no keys. A clip's volume
+/// and gain, a track's fader and an aux send's level all move this way.
+pub fn evaluate_level(keyframes: &[Keyframe], time_secs: f64, default: f32) -> f32 {
+    if keyframes.is_empty() {
+        return default;
+    }
+    let (in_db, silence) = keys_in_db(keyframes);
+    gain_of(evaluate(&in_db, time_secs, silence), silence)
+}
+
+/// [`evaluate_level`] through a function that evaluates keys at a time
+/// (the modifier stack's extension of them, for one): the keys turned to
+/// dB, evaluated by `eval`, and the result back to gain.
+pub fn evaluate_level_with(keyframes: &[Keyframe], default: f32, eval: impl FnOnce(&[Keyframe], f32) -> f32) -> f32 {
+    if keyframes.is_empty() {
+        return eval(keyframes, default);
+    }
+    let (in_db, silence) = keys_in_db(keyframes);
+    gain_of(eval(&in_db, silence), silence)
+}
+
 /// Evaluate a keyframe track at a given time (relative to clip source_in).
 /// Returns the interpolated value, or `default` if no keyframes exist.
 pub fn evaluate(keyframes: &[Keyframe], time_secs: f64, default: f32) -> f32 {
@@ -1415,4 +1469,46 @@ mod precision_tests {
         assert_eq!(keys[2].interpolation, Interpolation::Linear);
     }
 
+}
+
+#[cfg(test)]
+mod level_tests {
+    use super::*;
+
+    fn keys(points: &[(f64, f32)]) -> Vec<Keyframe> {
+        let mut kfs = Vec::new();
+        for &(t, v) in points {
+            upsert_keyframe(&mut kfs, t, v);
+        }
+        kfs
+    }
+    fn db(g: f32) -> f32 {
+        20.0 * g.log10()
+    }
+
+    /// A level ramp moves evenly in dB, as every editor's volume line
+    /// does: 0 to -20 dB over a second is -10 dB half way and -5 dB a
+    /// quarter in. A straight move in gain was -5 dB half way.
+    #[test]
+    fn a_level_ramp_moves_evenly_in_db() {
+        let k = keys(&[(0.0, 1.0), (1.0, 0.1)]);
+        for (t, want) in [(0.0, 0.0), (0.25, -5.0), (0.5, -10.0), (0.75, -15.0), (1.0, -20.0)] {
+            let got = db(evaluate_level(&k, t, 1.0));
+            assert!((got - want).abs() < 0.05, "{t} s: {got} dB, not {want}");
+        }
+        assert!((db(evaluate(&k, 0.5, 1.0)) - -5.2).abs() < 0.1, "the straight move in gain this replaces");
+    }
+
+    /// A fade to silence is heard to its end (silence at -60 dB, never
+    /// below hearing for most of it) and is silence at its key; no keys
+    /// is the value as set; one key holds.
+    #[test]
+    fn a_fade_to_silence_is_heard_to_its_end() {
+        let k = keys(&[(0.0, 1.0), (2.0, 0.0)]);
+        assert!((db(evaluate_level(&k, 1.0, 1.0)) - -30.0).abs() < 0.05);
+        assert!(db(evaluate_level(&k, 1.9, 1.0)) > -60.0);
+        assert_eq!(evaluate_level(&k, 2.0, 1.0), 0.0);
+        assert_eq!(evaluate_level(&[], 1.0, 0.7), 0.7);
+        assert!((evaluate_level(&keys(&[(1.0, 0.5)]), 3.0, 1.0) - 0.5).abs() < 1e-6);
+    }
 }

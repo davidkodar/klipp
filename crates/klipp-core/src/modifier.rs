@@ -194,6 +194,22 @@ pub fn evaluate_param(
     apply_value_modifiers(&stack.modifiers, base, ctx)
 }
 
+/// [`evaluate_param`] for a sound level (a clip's volume or gain): its
+/// keys interpolated in dB, as [`keyframe::evaluate_level`], then the
+/// value modifiers on the gain.
+pub fn evaluate_level_param(
+    keyframes: &[Keyframe],
+    stack: &ModifierStack,
+    time_secs: f64,
+    default: f32,
+    ctx: &EvalContext,
+) -> f32 {
+    let effective_time = apply_time_modifiers(&stack.modifiers, time_secs, ctx);
+    let (before, after) = extension(&stack.modifiers);
+    let base = keyframe::evaluate_level_with(keyframes, default, |keys, d| evaluate_extended(keys, before, after, effective_time, d));
+    apply_value_modifiers(&stack.modifiers, base, ctx)
+}
+
 /// The stack's extension, before and after its keys: hold both with none.
 pub fn extension(modifiers: &[Modifier]) -> (Extrapolation, Extrapolation) {
     modifiers
