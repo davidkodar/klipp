@@ -211,6 +211,28 @@ kind = "text_recognizer"
 runtime = "ort"
 prompts = ""
 
+# ── The WebGPU plug-in: the vision models on an AMD or Intel GPU ──
+#
+# Microsoft's ONNX Runtime WebGPU provider, as a plug-in library, from its
+# PyPI package (a zip). Runs the models on the GPU through Vulkan where
+# CUDA doesn't. Klipp takes the one library out of it under its own
+# checksum (klipp-ml-ort's webgpu_plugin). Checksum taken from PyPI's
+# listing of version 0.5.0 on 2026-11-07, matched by the download.
+
+[[model]]
+id = "onnxruntime_ep_webgpu_linux_x86_64"
+display_name = "WebGPU add-on (AMD and Intel GPUs)"
+size_bytes = 6935993
+sha256 = "b6baa3e223d9a679023388b1179e5597b6bc0d282ba72f2afe38d46ef37deeb4"
+license = "MIT"
+attribution = "Microsoft ONNX Runtime WebGPU plug-in execution provider 0.5.0 (onnxruntime-ep-webgpu on PyPI)"
+sources = [
+    { url = "https://files.pythonhosted.org/packages/e2/1d/ac0ccbe8bd6435b6e1946fea964790ffa3d73ee2513775e90958fd6b860e/onnxruntime_ep_webgpu-0.5.0-py3-none-manylinux_2_28_x86_64.whl" },
+]
+kind = "gpu_runtime"
+runtime = "ort"
+prompts = ""
+
 # ── Narration: the Piper engine, downloaded on request (#2978) ──
 #
 # Piper's official Linux release, run where no piper program is installed.

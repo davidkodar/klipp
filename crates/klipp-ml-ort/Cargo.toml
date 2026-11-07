@@ -12,7 +12,7 @@ default = []
 # pure CPU and always available; `BiRefNetLite::generate` returns
 # MaskError::BackendInit). With the flag, ort 2.0.0-rc.12 is wired
 # in and `generate` runs real inference.
-ort = ["dep:ort"]
+ort = ["dep:ort", "dep:flate2", "dep:sha2"]
 # NVIDIA acceleration via ort's CUDA EP. Requires user-installed
 # CUDA 12.8+/cuDNN 9.19+ at runtime; the build itself just tells ort
 # to enable the EP.
@@ -30,6 +30,9 @@ ort         = { workspace = true, optional = true }
 # Used by runtime_resolve to expand `~/.local/lib/onnxruntime/...`
 # candidate paths when probing for libonnxruntime.so.
 dirs        = { workspace = true }
+# Take the WebGPU plug-in out of its package (webgpu_plugin.rs).
+flate2      = { version = "1", optional = true }
+sha2        = { workspace = true, optional = true }
 # Loads cuDNN for the CUDA provider (provider.rs `load_cudnn`).
 libloading  = { workspace = true, optional = true }
 

@@ -59,6 +59,8 @@ pub mod provider;
 pub mod rf_detr_seg;
 pub mod yunet;
 pub mod runtime_resolve;
+#[cfg(feature = "ort")]
+pub mod webgpu_plugin;
 
 pub use birefnet_lite::{BiRefNetLite, BiRefNetLiteBuilder, BIREFNET_LITE_MODEL_ID};
 pub use mobile_sam::{MobileSam, MobileSamBuilder, MOBILE_SAM_DECODER_ID, MOBILE_SAM_DISPLAY_NAME, MOBILE_SAM_MODEL_ID};

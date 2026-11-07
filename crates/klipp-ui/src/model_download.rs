@@ -278,12 +278,19 @@ pub fn model_purpose(kind: klipp_ml::ModelKind) -> &'static str {
         K::Translator | K::TranslationVocabulary => "to translate captions",
         K::SoundTagger => "to tell dialogue, music and effects apart",
         K::ImageTextEmbedder => "to find footage by a description",
+        K::GpuRuntime => "to run the AI models on your GPU instead of the CPU",
     }
 }
 
 /// The download prompt's words for `entry` (#2942): what it is for, and
 /// that it stays on this machine.
 pub fn consent_text(entry: &ModelEntry) -> String {
+    if entry.kind == klipp_ml::ModelKind::GpuRuntime {
+        return format!(
+            "Klipp uses this library {}. It runs only inside Klipp's analysis workers, and once downloaded it stays on your machine; Klipp never re-contacts the network to use it.",
+            model_purpose(entry.kind)
+        );
+    }
     format!(
         "Klipp uses this local model {}. Once downloaded the file stays on your machine and Klipp never re-contacts the network to use it.",
         model_purpose(entry.kind)
