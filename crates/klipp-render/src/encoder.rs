@@ -177,6 +177,40 @@ fn hardware_video_encoders(codec: &ExportVideoCodec, width: u32, height: u32, wa
     names.iter().copied().filter(|name| encoder_can_exist_here(name) && ffmpeg_next::encoder::find_by_name(name).is_some()).collect()
 }
 
+/// Why `codec` at `bit_depth` can't be encoded on this machine, or `None`
+/// when it can or might: asked before an export is accepted, so one that
+/// can only fail is refused with the reason instead of failing as its job
+/// starts. Every encoder a render would try is looked at: a hardware one
+/// present here might open (only opening it says), so it counts; the
+/// software one must be in this FFmpeg and, for 10-bit HEVC, built for
+/// ten bits. On a machine whose FFmpeg has no AV1 software encoder and no
+/// hardware one it can use, or an 8-bit-only x265, the export was
+/// accepted and failed at 0%.
+pub fn why_not_encodable(codec: &ExportVideoCodec, bit_depth: u8, width: u32, height: u32) -> Option<String> {
+    let _ = ffmpeg_next::init();
+    let attempts = video_encoder_attempts(codec, width, height, bit_depth == 10, &crate::vaapi::encode_nodes());
+    let name = software_video_encoder(codec);
+    refusal(codec, bit_depth, attempts.iter().any(|a| a.hardware), name, ffmpeg_next::encoder::find_by_name(name))
+}
+
+/// [`why_not_encodable`]'s answer from what it found: whether a hardware
+/// encoder is in reach, and the software encoder `name` if this FFmpeg
+/// has it.
+fn refusal(codec: &ExportVideoCodec, bit_depth: u8, hardware: bool, name: &str, software: Option<ffmpeg_next::Codec>) -> Option<String> {
+    if hardware {
+        return None;
+    }
+    match software {
+        None => Some(format!(
+            "{} can't be exported on this computer: its FFmpeg has no {name} encoder and no hardware {} encoder it can use",
+            codec.label(),
+            codec.label(),
+        )),
+        Some(found) if lacks_10_bit_hevc(name, bit_depth, found) => Some(NO_10_BIT_HEVC.to_string()),
+        Some(_) => None,
+    }
+}
+
 /// AMD ships AMF's runtime for x86-64 only. FFmpeg may still list the
 /// encoder elsewhere, and opening it there only logs that the library is
 /// missing (#3407).
@@ -2263,6 +2297,43 @@ fn convert_into(resampler: &mut ffmpeg_next::software::resampling::Context, samp
 
 #[cfg(test)]
 mod tests {
+
+    /// What this machine's FFmpeg can encode is accepted, and the answer
+    /// agrees with the encoders it lists: an AV1 export is refused only
+    /// when there is neither SVT-AV1 nor a hardware AV1 encoder in reach,
+    /// a 10-bit HEVC one only when x265 is 8-bit and nothing else does it.
+    #[test]
+    fn what_cant_be_encoded_here_is_said_before_the_export() {
+        use klipp_core::ExportVideoCodec as V;
+        ffmpeg_next::init().unwrap();
+        for c in [V::H264, V::ProRes422, V::ProRes4444, V::DNxHD115] {
+            assert_eq!(super::why_not_encodable(&c, 0, 1920, 1080), None, "{c:?} is in every FFmpeg Klipp runs on");
+        }
+        let hardware = |codec: &V, ten: bool| super::video_encoder_attempts(codec, 1920, 1080, ten, &crate::vaapi::encode_nodes()).iter().any(|a| a.hardware);
+        let av1 = super::why_not_encodable(&V::Av1, 0, 1920, 1080);
+        let no_svt = ffmpeg_next::encoder::find_by_name("libsvtav1").is_none();
+        assert_eq!(av1.is_some(), no_svt && !hardware(&V::Av1, false), "{av1:?}");
+        let hevc10 = super::why_not_encodable(&V::H265, 10, 1920, 1080);
+        let x265_8_only = !klipp_testing::encoders::libx265_encodes_10_bit();
+        assert_eq!(hevc10.is_some(), x265_8_only && !hardware(&V::H265, true), "{hevc10:?}");
+        if let Some(why) = hevc10 {
+            assert!(why.contains("8-bit only"), "{why}");
+        }
+    }
+
+    /// The M1's case, whatever this machine has: no hardware AV1 encoder
+    /// in reach and no SVT-AV1 is refused, naming both; a hardware one in
+    /// reach is not; nor is a software one that is there.
+    #[test]
+    fn no_encoder_in_reach_is_a_refusal_naming_it() {
+        use klipp_core::ExportVideoCodec as V;
+        ffmpeg_next::init().unwrap();
+        let why = super::refusal(&V::Av1, 0, false, "libsvtav1", None).expect("refused");
+        assert!(why.contains("AV1") && why.contains("libsvtav1") && why.contains("hardware"), "{why}");
+        assert_eq!(super::refusal(&V::Av1, 0, true, "libsvtav1", None), None, "a hardware encoder might open");
+        let x264 = ffmpeg_next::encoder::find_by_name("libx264").expect("libx264");
+        assert_eq!(super::refusal(&V::H264, 10, false, "libx264", Some(x264)), None);
+    }
 
     /// Every software encoder that does not thread by itself is told to
     /// use every core: ProRes 422 ran on one and took eight times as long
