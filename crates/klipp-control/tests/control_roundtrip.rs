@@ -5643,6 +5643,26 @@ fn a_track_is_bounced_by_name_and_one_that_cant_be_is_refused() {
     assert_eq!(h.sent.lock().unwrap().iter().filter(|c| matches!(c, klipp_core::AppCommand::BounceTrack { .. })).count(), 2, "nothing asked for a refusal");
 }
 
+/// `append_clip` to a track that isn't there is refused, naming the
+/// tracks there are, before anything is asked: the app dropped it and
+/// the reply said "applied" with nothing added. One that is there is
+/// asked for.
+#[test]
+fn an_append_to_a_track_that_isnt_there_is_refused() {
+    let mut h = harness();
+    let media = uuid::Uuid::new_v4().to_string();
+    let count = h.sequence.read().unwrap().tracks.len();
+    let missing = h.call(json!({ "method": "append_clip", "media_id": media, "track": count + 3 }));
+    let err = missing["error"].as_str().unwrap_or("");
+    assert!(err.contains(&format!("no track {}", count + 3)) && err.contains("0 \"") && err.contains("add_track"), "{missing}");
+    h.ok(json!({ "method": "append_clip", "media_id": media, "track": count - 1 }));
+    let asked: Vec<_> = h.sent.lock().unwrap().iter().filter_map(|c| match c {
+        klipp_core::AppCommand::AppendClipToTrack { track_index, .. } => Some(*track_index),
+        _ => None,
+    }).collect();
+    assert_eq!(asked, vec![count - 1], "only the track that is there was asked for");
+}
+
 /// #3212: `render_status` reads the strip over the ruler in seconds with
 /// drawing ahead's state; `set_background_render` sends what it is given
 /// and keeps the rest as it is, and refuses nothing to set or a delay out
