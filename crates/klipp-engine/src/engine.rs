@@ -1893,6 +1893,12 @@ pub struct PlaybackEngine {
     parked_refresh_done_for: Option<Timecode>,
     /// Parked position and when it was reached; None while not paused.
     parked_since: Option<(Timecode, std::time::Instant)>,
+    /// Where the parked frame was last judged, and whether it came from a
+    /// skim stand-in there: judged again when either moves.
+    parked_judged: Option<(Timecode, Option<PathBuf>)>,
+    parked_on_stand_in: bool,
+    /// The frame buffer's `original_redraw` as last set.
+    redraw_published: Option<(Timecode, bool)>,
 
     // ── Source Viewer playback (separate from timeline) ───────────
     /// Persistent decoder for whatever media the user has loaded into
@@ -3040,6 +3046,9 @@ impl PlaybackEngine {
             parked_refresh: None,
             parked_refresh_done_for: None,
             parked_since: None,
+            parked_judged: None,
+            parked_on_stand_in: false,
+            redraw_published: None,
             source_decoder: None,
             source_path: None,
             source_state: PlaybackState::Idle,
@@ -3851,6 +3860,9 @@ impl PlaybackEngine {
                 // otherwise slider edits silently no-op because
                 // `regrade_cached_frame` has nothing to re-grade.
                 self.seek_in_sequence(tc);
+                // Judged again where it lands: the frame may now come
+                // from a stand-in.
+                self.parked_judged = None;
                 // Transition Idle / Stopped → Paused once we
                 // actually have a decoder or audio source to play.
                 // Puts the engine in the same "paused with a valid
@@ -9097,6 +9109,23 @@ impl PlaybackEngine {
     }
 
     /// Full-quality parked refresh (see the `parked_refresh` field).
+    /// Whether `file` is a clip's skim stand-in rather than its own file.
+    fn is_stand_in(&self, file: &std::path::Path) -> bool {
+        let pool = self.media_pool.read().unwrap_or_else(|e| e.into_inner());
+        let found = pool.all().any(|item| item.skim_file.as_deref() == Some(file) && item.path != file);
+        found
+    }
+
+    /// Say on the frame buffer where the parked frame was judged and
+    /// whether a redraw from the original is coming there, locking it
+    /// only when that changes.
+    fn publish_redraw(&mut self, now: Option<(Timecode, bool)>) {
+        if self.redraw_published != now {
+            self.redraw_published = now;
+            self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner()).original_redraw = now;
+        }
+    }
+
     /// Called once per tick while paused. Three responsibilities:
     /// arm/reset the park timer when the parked position changes,
     /// poll an in-flight refresh decoder, and — after the debounce —
@@ -9115,6 +9144,8 @@ impl PlaybackEngine {
         // time all jump at once. The debounce restarts at EndScrub.
         if self.state != PlaybackState::Paused || self.is_scrubbing {
             self.parked_since = None;
+            self.parked_judged = None;
+            self.publish_redraw(None);
             if let Some((mut dec, _, _)) = self.parked_refresh.take() {
                 dec.stop_detached();
             }
@@ -9133,6 +9164,16 @@ impl PlaybackEngine {
                 }
             }
         }
+        // Whether the frame parked on came from a skim stand-in: judged
+        // when the position or the file decoded changes (the stand-in is
+        // swapped in when its transcode finishes, at the same position).
+        let judged = (ph, self.current_file.clone());
+        if self.parked_judged.as_ref() != Some(&judged) {
+            self.parked_on_stand_in = self.current_file.as_deref().is_some_and(|f| self.is_stand_in(f));
+            self.parked_judged = Some(judged);
+        }
+        let pending = self.parked_on_stand_in && self.parked_refresh_done_for != Some(ph);
+        self.publish_redraw(Some((ph, pending)));
 
         // Poll the in-flight refresh decoder.
         if self.parked_refresh.is_some() {

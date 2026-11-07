@@ -967,6 +967,12 @@ pub(crate) fn respond(
                 }
                 std::thread::sleep(std::time::Duration::from_millis(10));
             };
+            // A clip played from its skim stand-in is parked on the
+            // stand-in's frame until the engine redraws it from the
+            // original, about half a second on: the picture a grab is for.
+            // An HDR clip's stand-in is tone-mapped its own way, and grabs
+            // came back brighter and paler than the export.
+            let generation = if preview.is_some() { generation } else { drawn_from_original(&ctx.frame_buffer, target, generation, REDRAW_WAIT)? };
             // A browser's entry put on the frame without being applied
             // (#3210): shown by the app at the time sought, and the frame
             // drawn with it waited for. Refused, it says why, as the
@@ -1681,6 +1687,42 @@ fn cover_proposals(ctx: &ControlContext) -> Result<(Vec<(klipp_render::cover::Pr
     klipp_render::cover::proposals(&seq, &all, &pool, &look(ctx), &|p| klipp_analysis::report::MediaAnalysis::load(p))
 }
 
+/// How long a grab waits for the engine to redraw a stand-in's frame
+/// from the original: its rest before redrawing, and the redraw's own
+/// time limit, with room to spare.
+const REDRAW_WAIT: std::time::Duration = std::time::Duration::from_secs(6);
+/// How long a grab waits for a paused engine to judge the parked frame at
+/// all: it does on its next tick.
+const UNJUDGED_WAIT: std::time::Duration = std::time::Duration::from_millis(300);
+
+/// The generation of the frame at `target` drawn from the original file:
+/// `generation` once the engine has judged the position and needs no
+/// redraw, else the redraw's. Past `wait` the frame there is what there
+/// is.
+fn drawn_from_original(frame_buffer: &std::sync::Mutex<klipp_engine::FrameBuffer>, target: klipp_core::Timecode, generation: u64, wait: std::time::Duration) -> Result<u64, String> {
+    let started = std::time::Instant::now();
+    let until = started + wait;
+    loop {
+        let (judged, latest, at, complete) = {
+            let fb = frame_buffer.lock().map_err(|_| "frame buffer lock poisoned")?;
+            (fb.original_redraw, fb.latest_generation(), fb.latest_presented(), fb.latest_complete())
+        };
+        if let Some((t, false)) = judged {
+            if t == target {
+                let redrawn = latest != generation && at == Some(target) && complete;
+                return Ok(if redrawn { latest } else { generation });
+            }
+        }
+        // No engine judging (none paused, or none at all): a moment for
+        // it to start, not the whole wait.
+        let unjudged_for_long = judged.is_none() && started.elapsed() >= UNJUDGED_WAIT;
+        if std::time::Instant::now() >= until || unjudged_for_long {
+            return Ok(generation);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
 fn full_size_frame(ctx: &ControlContext, secs: f64, width: u32, height: u32) -> Result<klipp_render::still::Still, String> {
     let (seq, all) = sequences(ctx)?;
     let pool = ctx.media_pool.read().recovered();
@@ -2011,3 +2053,59 @@ mod mix_line_tests {
     }
 }
 
+#[cfg(test)]
+mod redraw_wait_tests {
+    use super::drawn_from_original;
+    use std::sync::{Arc, Mutex};
+    use std::time::{Duration, Instant};
+
+    /// A grab parked on a stand-in's frame waits for the engine's redraw
+    /// from the original and takes that frame; where none is coming it
+    /// takes the frame there at once; with the position not yet judged
+    /// it waits no longer than it is given.
+    #[test]
+    fn a_grab_takes_the_frame_redrawn_from_the_original() {
+        let target = klipp_core::Timecode::from_secs_f64(2.0, 24);
+        let fb = Arc::new(Mutex::new(klipp_engine::FrameBuffer::new(4, 4)));
+        let stand_in = {
+            let mut fb = fb.lock().unwrap();
+            fb.write_frame(vec![200; 64], 4, 4);
+            fb.set_presented(target, true);
+            fb.original_redraw = Some((target, true));
+            fb.latest_generation()
+        };
+        let engine = {
+            let fb = Arc::clone(&fb);
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(150));
+                let mut fb = fb.lock().unwrap();
+                fb.write_frame(vec![140; 64], 4, 4);
+                fb.set_presented(target, true);
+                fb.original_redraw = Some((target, false));
+            })
+        };
+        let t0 = Instant::now();
+        let got = drawn_from_original(&fb, target, stand_in, Duration::from_secs(5)).unwrap();
+        engine.join().unwrap();
+        assert!(t0.elapsed() >= Duration::from_millis(140), "waited for the redraw");
+        assert_ne!(got, stand_in, "the redrawn frame, not the stand-in's");
+        assert_eq!(got, fb.lock().unwrap().latest_generation());
+
+        // Nothing to redraw: at once, the frame there.
+        let t0 = Instant::now();
+        assert_eq!(drawn_from_original(&fb, target, got, Duration::from_secs(5)).unwrap(), got);
+        assert!(t0.elapsed() < Duration::from_millis(100));
+
+        // Not judged yet (another position): no longer than given.
+        fb.lock().unwrap().original_redraw = Some((klipp_core::Timecode::from_secs_f64(9.0, 24), false));
+        let t0 = Instant::now();
+        assert_eq!(drawn_from_original(&fb, target, got, Duration::from_millis(200)).unwrap(), got);
+        assert!(t0.elapsed() >= Duration::from_millis(190) && t0.elapsed() < Duration::from_secs(2));
+
+        // No engine judging at all: a moment, not the whole wait.
+        fb.lock().unwrap().original_redraw = None;
+        let t0 = Instant::now();
+        assert_eq!(drawn_from_original(&fb, target, got, Duration::from_secs(5)).unwrap(), got);
+        assert!(t0.elapsed() < Duration::from_secs(1));
+    }
+}
