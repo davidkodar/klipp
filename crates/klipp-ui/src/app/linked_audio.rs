@@ -32,6 +32,29 @@ pub(super) fn attach_linked_audio_to_clip(
     clip_id: klipp_core::ClipId,
     external: Option<ExternalAudio>,
 ) -> Option<LinkedAudioAppend> {
+    attach_linked_audio(seq, clip_id, external, false)
+}
+
+/// As `attach_linked_audio_to_clip`, for an append: the sound never goes
+/// over another clip's sound. Appended over MCP after a music bed, an
+/// interview's sound cut 21 s out of the music on A1. When the patched
+/// track is taken across the clip's span, the sound goes on the first
+/// unlocked audio track free there, else on a new one at the bottom, as
+/// a drop does.
+pub(super) fn attach_linked_audio_beside(
+    seq: &mut klipp_timeline::Sequence,
+    clip_id: klipp_core::ClipId,
+    external: Option<ExternalAudio>,
+) -> Option<LinkedAudioAppend> {
+    attach_linked_audio(seq, clip_id, external, true)
+}
+
+fn attach_linked_audio(
+    seq: &mut klipp_timeline::Sequence,
+    clip_id: klipp_core::ClipId,
+    external: Option<ExternalAudio>,
+    keep_other_sound: bool,
+) -> Option<LinkedAudioAppend> {
     let video = seq
         .tracks
         .iter()
@@ -70,8 +93,23 @@ pub(super) fn attach_linked_audio_to_clip(
 
     // The audio track the source's sound is patched to (#915), else the
     // first.
-    let (track_index, created_track_at) = match seq.source_track(klipp_timeline::TrackKind::Audio) {
-        Some(i) => (i, None),
+    let (from, to) = (timeline_in.to_secs_f64(), timeline_out.to_secs_f64());
+    let taken = |track: &klipp_timeline::Track| {
+        track.clips.iter().any(|c| !c.kind.is_gap() && c.timeline_in.to_secs_f64() < to - 1e-9 && c.timeline_out.to_secs_f64() > from + 1e-9)
+    };
+    let mut patched = seq.source_track(klipp_timeline::TrackKind::Audio);
+    let mut created = None;
+    if keep_other_sound && patched.is_some_and(|i| taken(&seq.tracks[i])) {
+        patched = seq.tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Audio && !t.locked && !taken(t));
+        if patched.is_none() {
+            let n = seq.tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Audio).count();
+            seq.add_audio_track(format!("Audio {}", n + 1));
+            created = Some(seq.tracks.len() - 1);
+            patched = created;
+        }
+    }
+    let (track_index, created_track_at) = match patched {
+        Some(i) => (i, created),
         None => {
             let n = seq.tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Audio).count();
             seq.add_audio_track(format!("Audio {}", n + 1));
@@ -164,7 +202,7 @@ impl KlippApp {
             return None;
         }
         let seq_idx = self.state.active_sequence_idx;
-        attach_linked_audio_to_clip(&mut self.state.sequences[seq_idx], video_clip_id, external)
+        attach_linked_audio_beside(&mut self.state.sequences[seq_idx], video_clip_id, external)
     }
 }
 
@@ -221,6 +259,55 @@ mod attach_linked_audio_tests {
     }
 
     use klipp_timeline::{Sequence, TrackKind};
+
+    /// An append keeps the sound already on the patched track: the clip's
+    /// own sound goes on a free audio track (a new one when none is free),
+    /// linked under its picture. Over MCP, an interview appended after a
+    /// music bed cut 21 s out of the music. The other callers (an
+    /// overwrite edit) still replace what is under them.
+    #[test]
+    fn an_append_keeps_the_sound_already_on_the_track() {
+        let mut seq = Sequence::new_default();
+        let music = klipp_core::MediaId::new();
+        let interview = klipp_core::MediaId::new();
+        if audio_track(&seq).is_none() {
+            seq.add_audio_track("Audio 1".into());
+        }
+        let ai = audio_track(&seq).unwrap();
+        let bed = seq.tracks[ai].append_clip(music, t(200));
+        let vi = video_track(&seq);
+        seq.tracks[vi].append_clip(interview, t(11));
+        let clip = seq.tracks[vi].append_clip(interview, t(21));
+        let want = seq.tracks[vi].find_clip(clip).unwrap().clone();
+        let audio_tracks = seq.tracks.iter().filter(|tr| tr.kind == TrackKind::Audio).count();
+
+        let mut over = seq.clone();
+        let added = attach_linked_audio_beside(&mut seq, clip, None).expect("attached");
+
+        let bed_now: Vec<_> = seq.tracks[ai].clips.iter().filter(|c| !c.kind.is_gap()).collect();
+        assert_eq!(bed_now.len(), 1, "the music was cut: {bed_now:?}");
+        assert_eq!(bed_now[0].id, bed);
+        assert_eq!((bed_now[0].timeline_in, bed_now[0].timeline_out), (t(0), t(200)), "the music moved or shrank");
+        assert_ne!(added.track_index, ai, "the sound went over the music");
+        assert_eq!(seq.tracks[added.track_index].kind, TrackKind::Audio);
+        assert_eq!(added.created_track_at, Some(added.track_index), "no free audio track, so one is made");
+        assert_eq!(seq.tracks.iter().filter(|tr| tr.kind == TrackKind::Audio).count(), audio_tracks + 1);
+        assert_eq!((added.clip.timeline_in, added.clip.timeline_out), (want.timeline_in, want.timeline_out), "not under its picture");
+        assert_eq!(added.clip.linked_clip_id, Some(clip));
+        assert_eq!(seq.tracks[vi].find_clip(clip).unwrap().linked_clip_id, Some(added.clip.id));
+
+        // A free audio track is used before a new one is made.
+        let mut free = over.clone();
+        free.add_audio_track("Audio 2".into());
+        let second = free.tracks.len() - 1;
+        let added = attach_linked_audio_beside(&mut free, clip, None).expect("attached");
+        assert_eq!((added.track_index, added.created_track_at), (second, None));
+
+        // The overwrite path is unchanged: its sound replaces the music there.
+        let added = attach_linked_audio_to_clip(&mut over, clip, None).expect("attached");
+        assert_eq!(added.track_index, ai);
+        assert!(over.tracks[ai].clips.iter().filter(|c| !c.kind.is_gap() && c.kind != klipp_timeline::ClipKind::Media { media_id: interview }).count() >= 2, "the overwrite still cuts the music around the clip");
+    }
 
     fn t(secs: i64) -> klipp_core::RationalTime {
         klipp_core::RationalTime { value: secs * 30, rate: 30 }
