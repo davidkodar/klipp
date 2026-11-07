@@ -899,6 +899,25 @@ pub(crate) fn decodes_on(track: &klipp_timeline::Track, cur: &klipp_timeline::Cl
 }
 
 #[cfg(test)]
+mod clip_level_tests {
+    /// Playback hears a clip's volume keys as export's mix does: moving
+    /// evenly in dB, 0 to -20 dB over a second -10 dB half way, where it
+    /// was a straight move in gain (-5 dB half way).
+    #[test]
+    fn playback_moves_a_clip_volume_ramp_in_db_as_export_does() {
+        let at = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 25);
+        let mut clip = klipp_timeline::Clip::media(klipp_core::MediaId::new(), at(10.0), at(14.0), at(0.0), at(4.0));
+        klipp_core::keyframe::upsert_keyframe(&mut clip.volume_keyframes, 1.0, 1.0);
+        klipp_core::keyframe::upsert_keyframe(&mut clip.volume_keyframes, 2.0, 0.1);
+        let seq = klipp_timeline::Sequence::new_default();
+        for (t, want) in [(11.0, 0.0), (11.5, -10.0), (11.75, -15.0), (12.0, -20.0)] {
+            let got = 20.0 * super::clip_sound_at(&seq, &clip, t, 25.0).volume.log10();
+            assert!((got - want).abs() < 0.05, "{t} s: {got} dB, not {want}");
+        }
+    }
+}
+
+#[cfg(test)]
 mod titles_starting_tests {
     use super::titles_starting;
     use klipp_core::RationalTime;
@@ -5652,10 +5671,12 @@ fn clip_sound_at(seq: &klipp_timeline::Sequence, audio_clip: &klipp_timeline::Cl
             seed: clip.id.0.as_u64_pair().0,
         };
         let eval = |kfs: &[klipp_core::Keyframe], param: klipp_core::ParamId, base: f32| eval_with_modifiers(kfs, clip.param_modifiers(), &param, clip_time, base, &ctx);
+        // Levels move in dB between keys, as export's mix moves them.
+        let level = |kfs: &[klipp_core::Keyframe], param: klipp_core::ParamId, base: f32| klipp_compose::eval::eval_level_with_modifiers(kfs, clip.param_modifiers(), &param, clip_time, base, &ctx);
         ClipSound {
-            volume: eval(&clip.volume_keyframes, klipp_core::ParamId::Volume, clip.volume),
+            volume: level(&clip.volume_keyframes, klipp_core::ParamId::Volume, clip.volume),
             pan: eval(&clip.pan_keyframes, klipp_core::ParamId::Pan, clip.pan),
-            gain: eval(&clip.gain_keyframes, klipp_core::ParamId::Gain, clip.gain),
+            gain: level(&clip.gain_keyframes, klipp_core::ParamId::Gain, clip.gain),
             fade_in: clip.fade_in_secs,
             fade_out: clip.fade_out_secs,
             fade_in_curve: clip.fade_in_curve,

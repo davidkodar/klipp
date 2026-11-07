@@ -96,7 +96,7 @@ pub use events::{AppCommand, AppEvent, CollectMode, AuditionEdit, BounceFormat, 
 pub use export_preset::{ExportPreset, ExportPresetSettings, PresetId, ProxyResolution, builtin_presets, delivery_template_listing, delivery_templates, DeliveryTemplate};
 pub use id::{BinId, BusId, ClipId, CoverId, GradeGroupId, GroupId, MarkerId, MediaId, SequenceId, TakeId, TrackId, TransitionId};
 pub use time::{whole_frames_within, Fps, RationalTime, TimeRange, Timecode, TimecodeDisplay};
-pub use modifier::{EvalContext, Extrapolation, Modifier, ModifierBlend, ModifierStack, ParamId, Waveform, evaluate_param};
+pub use modifier::{EvalContext, Extrapolation, Modifier, ModifierBlend, ModifierStack, ParamId, Waveform, evaluate_level_param, evaluate_param};
 pub use snap::{GridInterval, SnapConfig, SnapTargetKind};
 pub use ofx_value::OfxValue;
 pub use types::{AudioEffectInstance, BlendMode, ChannelConfig, ClipRole, ColorSpace, DEFAULT_GENERATOR_GRAIN, RoleProposal, RoleSource, FadeCurve, FocalRef, FourPointGradient, GeneratorData, LogFormat, PixelFormat, Resolution, TimerFormat, TimerMode, TrackPoint, TransitionAlignment, TransitionUserParams, ViewChannel};

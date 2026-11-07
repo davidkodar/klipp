@@ -421,6 +421,16 @@ const VOLUME_FADER_LAW: [(f32, f32); 7] = [(-60.0, 0.03), (-40.0, 0.15), (-30.0,
 /// Where `value` of `param` sits up its lane, 0 at the bottom to 1 at the
 /// top: a volume by [`VOLUME_FADER_LAW`], down to silence at the bottom;
 /// pan and gain evenly over their range.
+/// A clip's sound parameter at `t` seconds from its keys, as the mix
+/// hears it: volume and gain move in dB between keys, pan straight. The
+/// line is drawn and hit-tested with it, so what is drawn is heard.
+pub(crate) fn audio_param_at(param: klipp_core::AudioParam, keys: &[klipp_core::Keyframe], t: f64, static_value: f32) -> f32 {
+    match param {
+        klipp_core::AudioParam::Volume | klipp_core::AudioParam::Gain => klipp_core::keyframe::evaluate_level(keys, t, static_value),
+        klipp_core::AudioParam::Pan => klipp_core::keyframe::evaluate(keys, t, static_value),
+    }
+}
+
 pub(crate) fn audio_param_norm(param: klipp_core::AudioParam, value: f32) -> f32 {
     if param != klipp_core::AudioParam::Volume {
         let (p_min, p_range, _) = audio_param_range(param);
@@ -620,7 +630,7 @@ fn paint_audio_curve_band(
     for si in 0..=num_samples {
         let t_frac = si as f64 / num_samples as f64;
         let t_secs = t_frac * time_range_secs;
-        let val = klipp_core::keyframe::evaluate(keyframes, t_secs, static_value);
+        let val = audio_param_at(param, keyframes, t_secs, static_value);
         let x = rect.left() + t_frac as f32 * rect.width();
         curve_pts.push(egui::pos2(x, value_to_y(val)));
     }
@@ -13661,7 +13671,7 @@ impl TimelinePanel {
                         let curve_y = if c.kfs.is_empty() {
                             value_to_y(c.static_val)
                         } else {
-                            value_to_y(klipp_core::keyframe::evaluate(&c.kfs, t, c.static_val))
+                            value_to_y(audio_param_at(param, &c.kfs, t, c.static_val))
                         };
                         (p.y - curve_y).abs() < 6.0
                     })
@@ -14325,7 +14335,7 @@ impl TimelinePanel {
                             value_to_y(kf_static_val)
                         } else {
                             let t = x_to_time(pos.x);
-                            value_to_y(klipp_core::keyframe::evaluate(kf_keyframes, t, kf_static_val))
+                            value_to_y(audio_param_at(rb_param, kf_keyframes, t, kf_static_val))
                         };
                         let near_line = (pos.y - rubber_band_y).abs() < 6.0;
 
@@ -20629,5 +20639,25 @@ mod cut_trim_tests {
         assert_eq!(at(302.0), Some((clips[1].id, TrimEdge::Left)), "right of the cut: the second clip's start");
         assert_eq!(edge_cursor(TrimEdge::Right), egui::CursorIcon::ResizeEast);
         assert_eq!(edge_cursor(TrimEdge::Left), egui::CursorIcon::ResizeWest);
+    }
+}
+
+#[cfg(test)]
+mod audio_line_tests {
+    /// The volume line is drawn where the mix is: a ramp from 0 to -20
+    /// dB is -10 dB half way on the line as in the sound, gain the same;
+    /// pan moves straight.
+    #[test]
+    fn the_volume_line_is_drawn_as_it_is_heard() {
+        use klipp_core::AudioParam as P;
+        let mut keys = Vec::new();
+        klipp_core::keyframe::upsert_keyframe(&mut keys, 0.0, 1.0);
+        klipp_core::keyframe::upsert_keyframe(&mut keys, 1.0, 0.1);
+        for p in [P::Volume, P::Gain] {
+            let drawn = super::audio_param_at(p, &keys, 0.5, 1.0);
+            assert!((20.0 * drawn.log10() - -10.0).abs() < 0.05, "{p:?} drawn at {} dB", 20.0 * drawn.log10());
+            assert_eq!(drawn, klipp_core::keyframe::evaluate_level(&keys, 0.5, 1.0), "{p:?}: the mix's value");
+        }
+        assert!((super::audio_param_at(P::Pan, &keys, 0.5, 0.0) - 0.55).abs() < 1e-5, "pan halfway between 1.0 and 0.1");
     }
 }

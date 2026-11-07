@@ -34,6 +34,23 @@ pub fn eval_with_modifiers(
     }
 }
 
+/// [`eval_with_modifiers`] for a sound level (a clip's volume or gain):
+/// keys interpolated in dB, so a ramp sounds even. Playback and export
+/// both evaluate a clip's level with it.
+pub fn eval_level_with_modifiers(
+    keyframes: &[klipp_core::Keyframe],
+    modifiers: &std::collections::HashMap<klipp_core::ParamId, klipp_core::ModifierStack>,
+    param: &klipp_core::ParamId,
+    time_secs: f64,
+    default: f32,
+    ctx: &klipp_core::EvalContext,
+) -> f32 {
+    match modifiers.get(param) {
+        Some(stack) if !stack.modifiers.is_empty() => klipp_core::evaluate_level_param(keyframes, stack, time_secs, default, ctx),
+        _ => klipp_core::keyframe::evaluate_level(keyframes, time_secs, default),
+    }
+}
+
 /// Resolved transform tuple: `(position_x, position_y, scale_x,
 /// scale_y, rotation_deg, anchor_x, anchor_y)`. Matches the argument
 /// order of `klipp_effects::transform::apply` and the seven scalar
