@@ -11452,13 +11452,10 @@ fn qualify(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, a
         }
         for node in graph.nodes.iter_mut() {
             if node.kind == klipp_nodes::NodeKind::Qualifier {
-                if let Some(q) = node.params.qualifier.as_mut() {
-                    q.enabled = false;
-                    q.invert = false;
-                    q.exposure = 0.0;
-                    q.saturation = 1.0;
-                    q.hue_shift = 0.0;
-                    q.temperature = 0.0;
+                // Back to a fresh key, off: the next secondary keys what it
+                // is told, not this one's hue, ranges or inversion.
+                if node.params.qualifier.is_some() {
+                    node.params.qualifier = Some(klipp_core::QualifierSettings::default());
                 }
             }
             if keyed.contains(&node.id) {
@@ -11514,7 +11511,7 @@ fn qualify(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, a
     // (param name, value, low, high) — each validated then applied.
     let knobs: [(&str, Option<f32>, f32, f32); 10] = [
         ("qual_hue_center", hue_center, 0.0, 360.0),
-        ("qual_hue_width", hue_width, 1.0, 180.0),
+        ("qual_hue_width", hue_width, 1.0, 360.0),
         ("qual_sat_low", a.sat_low, 0.0, 1.0),
         ("qual_sat_high", a.sat_high, 0.0, 1.0),
         ("qual_lum_low", a.lum_low, 0.0, 1.0),
@@ -11583,6 +11580,18 @@ fn qualify(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, a
     };
     {
         let node = graph.nodes.iter_mut().find(|n| n.id == qid).expect("the keyer was made");
+        // A key that is not on yet (new, or cleared by remove) starts
+        // from nothing; one that is on keeps what this op leaves out.
+        // A fresh key given only saturation or luminance takes every
+        // hue: the keyer's default hue window is reds alone, so a
+        // shadows key graded only the red shadows.
+        let fresh = !node.params.qualifier.as_ref().is_some_and(|q| q.enabled);
+        if fresh {
+            node.params.qualifier = Some(klipp_core::QualifierSettings::default());
+            if hue_center.is_none() && a.rgb.is_none() && a.keep.is_none() {
+                node.params.apply_override("qual_hue_width", 360.0);
+            }
+        }
         for (name, v, _, _) in knobs.iter().take(6) {
             if let Some(v) = v {
                 if !node.params.apply_override(name, *v) {
@@ -11624,6 +11633,17 @@ fn qualify(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, a
     let mut said = Vec::new();
     if let Some(name) = a.target { said.push(name.to_string()); }
     else if let Some(h) = hue_center { said.push(format!("hue {h:.0}°")); }
+    else if a.rgb.is_some() { said.push("an RGB range".into()); }
+    else if a.keep.is_some() { said.push("the colours sampled".into()); }
+    else { said.push("every hue".into()); }
+    let range = |what: &str, lo: Option<f32>, hi: Option<f32>| match (lo, hi) {
+        (None, None) => None,
+        (lo, hi) => Some(format!("{what} {:.2}-{:.2}", lo.unwrap_or(0.0), hi.unwrap_or(1.0))),
+    };
+    if a.target.is_none() {
+        said.extend(range("saturation", a.sat_low, a.sat_high));
+        said.extend(range("lightness", a.lum_low, a.lum_high));
+    }
     if a.invert == Some(true) { said.push("inverted".into()); }
     let mut corr = Vec::new();
     for (label, v) in [("exposure", a.exposure), ("saturation", a.saturation), ("hue_shift", a.hue_shift), ("temperature", a.temperature)] {
@@ -21651,6 +21671,49 @@ mod tests {
         // And an inverted key is turned back by saying so.
         assert!(key(&step(q(Some(true), None, false))).invert);
         assert!(!key(&step(q(Some(false), None, false))).invert);
+
+        // Cleared, a key by lightness alone takes every hue: the old reds
+        // key is gone, and the keyer's own default is reds as well.
+        step(q(None, None, true));
+        let shadows = Op::Qualify {
+            clip_id: ClipRef::Id(a), target: None,
+            hue: None, hue_width: None, sat_low: None, sat_high: None, lum_low: Some(0.0), lum_high: Some(0.3),
+            invert: None, exposure: Some(0.5), saturation: None, hue_shift: None, temperature: None, remove: false,
+            window: None, window_feather: None, rgb: None, keep: None, take_out: None,
+        };
+        let k = key(&step(shadows.clone()));
+        assert!(k.enabled && k.hue_width >= 360.0 && k.lum_high == 0.3, "{k:?}");
+        // On a key that is on, what is left out stays: a narrower hue
+        // given later is kept when only the lightness changes again.
+        let narrowed = Op::Qualify { clip_id: ClipRef::Id(a), target: None, hue: Some(30.0), hue_width: Some(40.0), sat_low: None, sat_high: None, lum_low: None, lum_high: None, invert: None, exposure: Some(0.5), saturation: None, hue_shift: None, temperature: None, remove: false, window: None, window_feather: None, rgb: None, keep: None, take_out: None };
+        step(narrowed);
+        let k = key(&step(shadows));
+        assert!((k.hue_center - 30.0).abs() < 1e-3 && (k.hue_width - 40.0).abs() < 1e-3, "{k:?}");
+    }
+
+    /// A fresh secondary keyed by saturation or lightness alone keys
+    /// every hue, not the keyer's default reds.
+    #[test]
+    fn a_lightness_key_on_a_fresh_clip_takes_every_hue() {
+        let (seq, pool, _media, a, _) = fixture();
+        let plan = resolve(&seq, &pool, &[Op::Qualify {
+            clip_id: ClipRef::Id(a), target: None,
+            hue: None, hue_width: None, sat_low: None, sat_high: None, lum_low: Some(0.0), lum_high: Some(0.25),
+            invert: None, exposure: Some(0.4), saturation: None, hue_shift: None, temperature: None, remove: false,
+            window: None, window_feather: None, rgb: None, keep: None, take_out: None,
+        }]).unwrap();
+        assert!(plan.steps[0].what.contains("key every hue, lightness 0.00-0.25, exposure 0.4"), "{}", plan.steps[0].what);
+        let EditCommand::SetNodeGraph { new_graph, .. } = &plan.steps[0].edit else { panic!("node-graph edit") };
+        let k = new_graph.nodes.iter().find(|n| n.kind == klipp_nodes::NodeKind::Qualifier).and_then(|n| n.params.qualifier.clone()).expect("a key");
+        assert!(k.enabled && k.hue_width >= 360.0 && k.lum_high == 0.25, "{k:?}");
+        // The keyer itself takes it as every hue: a blue, a green and a
+        // red shadow are all in (linear light, as the keyer takes it), a
+        // bright one is not.
+        for (rgb, want) in [([0.01f32, 0.01, 0.04], 1.0f32), ([0.01, 0.04, 0.01], 1.0), ([0.04, 0.01, 0.01], 1.0), ([0.9, 0.9, 0.9], 0.0)] {
+            let mut px = [rgb[0], rgb[1], rgb[2], 1.0];
+            klipp_effects::cpu_grade::qualifier_matte(&mut px, k.hue_center / 360.0, k.hue_width / 360.0, k.hue_soft / 360.0, k.sat_low, k.sat_high, k.sat_soft, k.lum_low, k.lum_high, k.lum_soft, false);
+            assert!((px[0] - want).abs() < 0.01, "{rgb:?} -> {}", px[0]);
+        }
     }
 
     #[test]

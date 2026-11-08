@@ -634,11 +634,12 @@ exist until the plan runs.
   temperature?}`: a secondary. Key a colour or tone — a named `target`
   (skin, sky, foliage for leaves and grass olive to green, greens for
   pure green, reds, blues…) or an explicit `hue` in degrees,
-  narrowed by `hue_width` and saturation/luminance windows — and correct
-  only what is keyed. `invert` true grades everything but the key and
-  `invert` false turns that back; `remove` clears the secondary, its
-  window and inversion too. Fix a sky, calm a loud shirt, keep skin warm while cooling
-  the rest. Grade the primary first, then reach for a secondary.
+  narrowed by `hue_width` and saturation/luminance windows (a key by
+  those windows alone takes every hue) — and correct only what is
+  keyed. `invert` true grades everything but the key and `invert` false
+  turns that back; `remove` clears the secondary, its window and
+  inversion too. Fix a sky, calm a loud shirt, keep skin warm while
+  cooling the rest. Grade the primary first, then reach for a secondary.
 - `zones {clip_id | on, zone?, exposure?, hue?, amount?, saturation?,
   boundary?, falloff?, preset?, reset?}`: HDR zones, tonal balance placed
   in stops about mid grey. New zones are placed for the clip: on an SDR
