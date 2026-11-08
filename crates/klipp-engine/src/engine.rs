@@ -8,6 +8,7 @@ use crate::sync::MasterClock;
 use crate::texture::SharedFrameBuffer;
 use crate::video_decoder::VideoDecoder;
 use klipp_compose::eval::eval_with_modifiers;
+
 #[cfg(test)]
 use klipp_compose::eval::{resolve_clip_transform, ResolvedTransform};
 
@@ -1905,8 +1906,9 @@ pub struct PlaybackEngine {
     /// so the paused viewer shows source quality instead of the skim
     /// transcode's compression artifacts. Mirrors Resolve / FCP proxy
     /// behaviour: proxy while playing, full quality when parked.
-    /// (decoder, playhead it targets, start time)
-    parked_refresh: Option<(VideoDecoder, Timecode, std::time::Instant)>,
+    /// (decoder, playhead it targets, start time, the source time there,
+    /// the nearest frame to it so far)
+    parked_refresh: Option<(VideoDecoder, Timecode, std::time::Instant, f64, Option<crate::types::LinearFrame>)>,
     /// Playhead the last parked refresh completed — or gave up — for.
     /// Prevents re-triggering while parked on the same frame.
     parked_refresh_done_for: Option<Timecode>,
@@ -5809,6 +5811,46 @@ pub(crate) fn audio_resync_needed(
     })
 }
 
+/// Take the frame of `dec` nearest `target` (source seconds) out of its
+/// queue into `best`: the latest at or before half a file frame past the
+/// time, leaving later frames queued for stepping on. Returns whether
+/// `best` is settled — within half a frame of the time, or the queue
+/// shows nothing closer is coming. (After a seek the decoder hands over
+/// frames from up to 50 ms early, a whole frame at 25 fps; taking
+/// whatever arrived first showed the frame before the playhead.) Half of
+/// one of the file's frames, as playback and export take it (#696).
+fn take_nearest_frame(dec: &VideoDecoder, target: f64, half: f64, best: &mut Option<crate::types::LinearFrame>) -> bool {
+    let epoch = dec.requested_seek();
+    let mut queue = dec.frame_queue().lock().unwrap_or_else(|e| e.into_inner());
+    while let Some(f) = queue.front() {
+        // From before the seek in flight: the decode thread clears its
+        // queue when it takes one, but a frame already converted can
+        // still land. Which seek a frame was decoded under is recorded
+        // on it; the timestamp only ever allowed a guess — "more than a
+        // second out, so probably stale" — which cannot tell a stale
+        // frame from a legitimately distant one.
+        if f.seek_epoch < epoch {
+            queue.pop();
+            continue;
+        }
+        if f.is_eof {
+            queue.pop();
+            return true;
+        }
+        let pts = f.pts_secs();
+        if pts > target + half {
+            // Past the playhead. The nearest there is, if nothing came
+            // before it (the media starts after the time, or skips it).
+            if best.is_none() {
+                *best = queue.pop();
+            }
+            return true;
+        }
+        *best = queue.pop();
+    }
+    best.as_ref().is_some_and(|b| b.pts_secs() >= target - half)
+}
+
 impl PlaybackEngine {
 
     fn stop_all_audio(&mut self) {
@@ -9007,35 +9049,7 @@ impl PlaybackEngine {
         // Half of one of the file's frames, as playback and export take it
         // (#696).
         let half = dec.half_source_frame(self.fps.as_f64());
-        let epoch = dec.requested_seek();
-        let mut queue = dec.frame_queue().lock().unwrap_or_else(|e| e.into_inner());
-        while let Some(f) = queue.front() {
-            // From before the seek in flight: the decode thread clears its
-            // queue when it takes one, but a frame already converted can
-            // still land. Which seek a frame was decoded under is recorded
-            // on it; the timestamp only ever allowed a guess — "more than a
-            // second out, so probably stale" — which cannot tell a stale
-            // frame from a legitimately distant one.
-            if f.seek_epoch < epoch {
-                queue.pop();
-                continue;
-            }
-            if f.is_eof {
-                queue.pop();
-                return true;
-            }
-            let pts = f.pts_secs();
-            if pts > target + half {
-                // Past the playhead. The nearest there is, if nothing came
-                // before it (the media starts after the time, or skips it).
-                if best.is_none() {
-                    *best = queue.pop();
-                }
-                return true;
-            }
-            *best = queue.pop();
-        }
-        best.as_ref().is_some_and(|b| b.pts_secs() >= target - half)
+        take_nearest_frame(dec, target, half, best)
     }
 
     fn grab_single_frame_timeout(&mut self, timeout: Duration) -> bool {
@@ -9167,7 +9181,7 @@ impl PlaybackEngine {
             self.parked_since = None;
             self.parked_judged = None;
             self.publish_redraw(None);
-            if let Some((mut dec, _, _)) = self.parked_refresh.take() {
+            if let Some((mut dec, ..)) = self.parked_refresh.take() {
                 dec.stop_detached();
             }
             return;
@@ -9180,7 +9194,7 @@ impl PlaybackEngine {
                 // Parked position changed — restart the debounce and
                 // abandon any refresh aimed at the old position.
                 self.parked_since = Some((ph, std::time::Instant::now()));
-                if let Some((mut dec, _, _)) = self.parked_refresh.take() {
+                if let Some((mut dec, ..)) = self.parked_refresh.take() {
                     dec.stop_detached();
                 }
             }
@@ -9198,31 +9212,28 @@ impl PlaybackEngine {
 
         // Poll the in-flight refresh decoder.
         if self.parked_refresh.is_some() {
+            let fps = self.fps.as_f64();
             let (frame, timed_out) = {
-                let (dec, target, started) = self.parked_refresh.as_ref().unwrap();
+                let (dec, target, started, source_secs, best) = self.parked_refresh.as_mut().unwrap();
                 if *target != ph {
                     // Stale target (shouldn't happen given the reset
                     // above, but belt-and-braces).
                     (None, true)
                 } else {
-                    let f = {
-                        let mut q = dec.frame_queue().lock().unwrap_or_else(|e| e.into_inner());
-                        // First frame at/after the seek target — the
-                        // decode thread already skipped pre-seek frames.
-                        let mut first = None;
-                        if let Some(f) = q.pop() {
-                            if !f.is_eof {
-                                first = Some(f);
-                            }
-                        }
-                        first
-                    };
-                    let out_of_time = f.is_none() && started.elapsed() > REFRESH_TIMEOUT;
+                    // The frame nearest the playhead's source time, as
+                    // playback and export take it. The first frame after
+                    // the seek is the one already on show at that time:
+                    // painted as it came, a 23.976 fps clip on a 25 fps
+                    // timeline was parked a file frame behind its export
+                    // at every other frame.
+                    let settled = take_nearest_frame(dec, *source_secs, dec.half_source_frame(fps), best);
+                    let f = if settled { best.take() } else { None };
+                    let out_of_time = (f.is_none() && started.elapsed() > REFRESH_TIMEOUT) || (settled && f.is_none());
                     (f, out_of_time)
                 }
             };
             if let Some(frame) = frame {
-                if let Some((mut dec, _, _)) = self.parked_refresh.take() {
+                if let Some((mut dec, ..)) = self.parked_refresh.take() {
                     dec.stop_detached();
                 }
                 let (w, h) = (frame.width, frame.height);
@@ -9233,7 +9244,7 @@ impl PlaybackEngine {
                     ph.to_secs_f64(),
                 );
             } else if timed_out {
-                if let Some((mut dec, _, _)) = self.parked_refresh.take() {
+                if let Some((mut dec, ..)) = self.parked_refresh.take() {
                     dec.stop_detached();
                 }
                 // Give up for this position — the skim frame stays.
@@ -9298,7 +9309,7 @@ impl PlaybackEngine {
                     "parked refresh: decoding original {:?} at {source_secs:.3}s",
                     orig_path.file_name(),
                 );
-                self.parked_refresh = Some((dec, ph, std::time::Instant::now()));
+                self.parked_refresh = Some((dec, ph, std::time::Instant::now(), source_secs, None));
             }
             Err(e) => {
                 debug!("parked refresh: open failed ({e}), keeping skim frame");
@@ -16273,3 +16284,4 @@ mod frozen_sound_tests {
         assert_ne!(stem_media_id(&stem), stem_media_id(std::path::Path::new("/tmp/stems/a1/4567.pcm")), "a new stem is a new source");
     }
 }
+
