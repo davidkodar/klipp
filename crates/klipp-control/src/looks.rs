@@ -145,6 +145,13 @@ pub fn match_grade_knobs(target: &serde_json::Value, reference: &serde_json::Val
         let (t, r) = (lab(linear(target)), lab(linear(reference)));
         (linear(target), (t.a, t.b), (r.a, r.b))
     };
+    // Greys under one unit of a*/b* apart are not told apart, and an
+    // 8-bit frame reads its neutrals hardly finer: one code value of blue
+    // on mid grey is 0.54 b*, and a chart's greys stepped 0.1 b* between
+    // one mired and none, then 0.5 at two. Chased below that, the match
+    // moved the temperature a mired one way, read it back past the
+    // reference, moved it back, and never said the shots matched.
+    let balanced = (r.0 - t.0).hypot(r.1 - t.1) < 0.75;
     let solve = |k: f32| klipp_color::white_balance::white_balance_for_lab_shift(from, (r.0 - t.0) * k, (r.1 - t.1) * k, klipp_core::WorkingColorspace::Rec709Linear);
     // A gap past the grade's ±50 is closed as far as the range goes, in
     // its own direction: the shift scaled down, not one knob clamped.
@@ -159,8 +166,8 @@ pub fn match_grade_knobs(target: &serde_json::Value, reference: &serde_json::Val
         (temp, tnt) = solve(k);
     }
     // A mired moves a grey about 0.2 b*: under one is not seen.
-    let temperature = some_if(temp.clamp(-50.0, 50.0), 1.0);
-    let tint = some_if(tnt.clamp(-50.0, 50.0), 1.0);
+    let temperature = some_if(temp.clamp(-50.0, 50.0), 1.0).filter(|_| !balanced);
+    let tint = some_if(tnt.clamp(-50.0, 50.0), 1.0).filter(|_| !balanced);
 
     MatchKnobs { exposure, lift, gain, temperature, tint }
 }
@@ -191,15 +198,22 @@ pub fn match_on_top(now: &MatchKnobs, by: &MatchKnobs) -> MatchKnobs {
 /// brightened at all, and none is brightened past the headroom above
 /// its 95th percentile. A match had taken a shot up a stop and left a
 /// fifth of the frame at white. Returns why, when a knob was held.
-pub fn hold_match_for_highlights(knobs: &mut MatchKnobs, m: &klipp_color::measure::FrameMeasure) -> Option<String> {
-    let clipping = m.clip_hi_pct > 1.0 || m.gamut_hi_pct > klipp_color::measure::GAMUT_WARN;
+///
+/// The reference `r` sets what is allowed: a shot may go as far into
+/// white as the shot it is matched to. A chart or a sunlit scene with
+/// its whites at the rail held every copy of itself short of the match,
+/// a tenth of a stop dark, run after run.
+pub fn hold_match_for_highlights(knobs: &mut MatchKnobs, m: &klipp_color::measure::FrameMeasure, r: &klipp_color::measure::FrameMeasure) -> Option<String> {
+    let warn = klipp_color::measure::GAMUT_WARN;
+    let clipping = m.clip_hi_pct > 1.0 + r.clip_hi_pct || m.gamut_hi_pct > warn + r.gamut_hi_pct;
+    let reference_clips = r.clip_hi_pct > 1.0 || r.gamut_hi_pct > warn;
     let room = klipp_color::measure::exposure_headroom(m);
     let wanted = knobs.exposure.unwrap_or(0.0);
     let why = if clipping && (wanted > 0.0 || knobs.gain.is_some_and(|g| g > 0.0)) {
         knobs.exposure = knobs.exposure.filter(|e| *e < 0.0);
         knobs.gain = knobs.gain.filter(|g| *g < 0.0);
         format!("not brightened: {:.1}% of the shot is already at white", m.clip_hi_pct.max(m.gamut_hi_pct))
-    } else if wanted > room + 0.01 {
+    } else if !reference_clips && wanted > room + 0.01 {
         // A hold this close to nothing is no move at all.
         knobs.exposure = (room > 0.05).then_some(room);
         knobs.gain = knobs.gain.filter(|g| *g < 0.0);
