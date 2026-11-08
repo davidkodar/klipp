@@ -4,7 +4,7 @@ Fields, limits and examples op by op, for the ops above that have more to them.
 
 Editorial operations, resolved by Klipp into frame-exact edits. Give a list of ops; each is an object with "op" and its fields. A field an op does not take is refused, never passed over, and the refusal lists the ones it does:
 
-place {media_id, track, at, source_in?, source_out?, insert?, with_audio?, sync_source_secs?} — a media item onto a track (an index from klipp_timeline, or "video"/"audio"/"text" for the first of that kind) at an anchor; source_in/out in seconds of the file, the whole file by default; for still images this is the hold range and may exceed the import duration. Its sound comes along linked on the first audio track (made if none) unless with_audio is false (B-roll over a voice); an empty sequence takes the first picture's size and rate; with insert, every unlocked track is rippled later to make room and a clip straddling the anchor is split. sync_source_secs is the moment of the file (seconds from its start; search_sfx's heard.peak_secs) that lands on at: the clip starts that much earlier, to the sample on an audio track, so a whoosh's peak hits the cut; refused when the moment is outside the stretch placed or the clip would start before 0 (the reply gives the source_in that fits).
+place {media_id, track, at, source_in?, source_out?, insert?, with_audio?, sync_source_secs?} — a media item onto a track (an index from klipp_timeline, or "video"/"audio"/"text" for the first of that kind) at an anchor; source_in/out in seconds of the file, the whole file by default; for still images this is the hold range and may exceed the import duration. Its sound comes along linked on the first audio track (made if none) unless with_audio is false (B-roll over a voice); an empty sequence takes the first picture's size and rate; with insert, every unlocked track is rippled later to make room and a clip straddling the anchor is split. Without insert, empty space on the primary track (a gap, shown hatched) is filled as a drop in the app fills it: the gap is split round the clip and nothing else moves; a clip that would run on over a shot is refused, with how long the gap is. sync_source_secs is the moment of the file (seconds from its start; search_sfx's heard.peak_secs) that lands on at: the clip starts that much earlier, to the sample on an audio track, so a whoosh's peak hits the cut; refused when the moment is outside the stretch placed or the clip would start before 0 (the reply gives the source_in that fits).
 
 add_track {kind, name?} — a video or text track on top (it becomes track 0, every other index moves down by one), an audio or subtitle track at the bottom.
 
@@ -104,7 +104,7 @@ remove {clip_id, ripple?, linked?} — off the track, its linked sound or pictur
 
 cut {from, to} — that stretch out of every unlocked track, linked halves split with it, everything after moved up: a text-based delete. Refused through a retimed clip.
 
-move {clip_id, to} — the clip's start to an anchor, length unchanged, a linked partner with it.
+move {clip_id, to} — the clip's start to an anchor, length unchanged, a linked partner with it; it may land in a gap on the primary track, which it fills, and leaves a gap where it was.
 
 j_cut {incoming_clip, frames} — the incoming clip's sound starts so many frames before its picture; l_cut {outgoing_clip, frames} — the outgoing clip's sound stays so many frames past its picture. Both need linked audio on one track.
 
