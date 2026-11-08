@@ -5,6 +5,9 @@ use crate::poison::Recover;
 use crate::*;
 
 #[cfg(test)]
+#[path = "colour_match_tests.rs"]
+mod match_tests;
+#[cfg(test)]
 #[path = "colour_group_tests.rs"]
 mod group_advice_tests;
 
@@ -357,7 +360,7 @@ pub(crate) fn respond(
                 "text": format!(
                     "{}\n\nMatched on what the eye notices across a cut, in its order: exposure first, then how differently each face sits against the skin band once the scene's own cast is taken off, then the cast on the neutrals, then contrast. The faces are compared as errors and not as colours, so two people with different complexions lit the same way still match. Under {MATCH_GOOD:.0} ΔE the cut is invisible; over {MATCH_WARN:.0} ΔE it reads as a change; over {SCENE_SPLIT:.0} ΔE the shots are not the same lighting setup and belong to different scenes.{}",
                     lines.join("\n"),
-                    if apply { "" } else { " Run it with apply true to grade each shot onto its scene's hero, as one undo step." },
+                    if apply { " This is a first pass: compare the shots and fine-tune by eye where it matters." } else { " Run it with apply true to grade each shot onto its scene's hero, as one undo step." },
                 ),
                 "scenes": out_scenes,
                 "joins": joins,
@@ -1153,42 +1156,73 @@ reference: {}", target_stats["text"].as_str().unwrap_or(""), ref_stats["text"].a
             // graded now, so they go on top of the target's own grade.
             // Set in its place, a graded shot lost its grade to the gap
             // alone, and matching it again swung it back and forth.
-            let now = {
-                let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
-                seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|cl| cl.id == target_id).map(|cl| primary_knobs(klipp_timeline::GradeAccess::grade(cl))).unwrap_or_default()
+            let mut fold = UndoFold::new("Match Shot");
+            let mut grade_by = |by: &MatchKnobs| -> Result<serde_json::Value, String> {
+                let now = {
+                    let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+                    seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|cl| cl.id == target_id).map(|cl| primary_knobs(klipp_timeline::GradeAccess::grade(cl))).unwrap_or_default()
+                };
+                let set = match_on_top(&now, by);
+                let op = Op::Grade {
+                    clip_id: Some(ClipRef::Id(target_id)),
+                    on: None,
+                    exposure: set.exposure, contrast: None, saturation: None,
+                    temperature: set.temperature, tint: set.tint,
+                    lift: set.lift, gamma: None, gain: set.gain,
+                    highlights: None, shadows: None, vibrance: None, reset: false, from: None,
+                };
+                let (plan, revision) = resolve_plan(ctx, std::slice::from_ref(&op))?;
+                let edits: Vec<klipp_document::history::EditCommand> = plan.steps.iter().map(|s| s.edit.clone()).collect();
+                fold.send(ctx, edits, revision)
             };
-            let set = match_on_top(&now, &knobs);
-            let op = Op::Grade {
-                clip_id: Some(ClipRef::Id(target_id)),
-                on: None,
-                exposure: set.exposure, contrast: None, saturation: None,
-                temperature: set.temperature, tint: set.tint,
-                lift: set.lift, gamma: None, gain: set.gain,
-                highlights: None, shadows: None, vibrance: None, reset: false, from: None,
+            // Brightness first, as a colourist works: the tone goes on, the
+            // picture is read again, and the colour is judged from that. Read
+            // off a picture still too dark or too bright, the neutrals are
+            // other pixels: 45 known shifts of real shots, the temperature
+            // and tint were 56 out at worst, and 24 at worst read this way.
+            let tone = knobs.tone();
+            let mut colour = knobs.colour();
+            let mut sent = None;
+            let mut unread = None;
+            if !tone.is_empty() {
+                sent = Some(grade_by(&tone)?);
+                colour = match grab_frame_rgba_of(ctx, t_mid, clip_of(&c), Some(4000)) {
+                    Ok((d, w, h)) => match_grade_knobs(&frame_stats(&d, w, h, t_mid), &ref_stats, &klipp_color::measure::measure_frame(&d, w, h, &[]), &reference_m).colour(),
+                    Err(why) => {
+                        unread = Some(format!("its colour was left as it is: the frame could not be read again ({why})"));
+                        MatchKnobs::default()
+                    }
+                };
+            }
+            if !colour.is_empty() {
+                sent = Some(grade_by(&colour)?);
+            }
+            let knobs = MatchKnobs { temperature: colour.temperature, tint: colour.tint, ..tone };
+            let undo_steps = fold.finish(ctx);
+            let Some(mut v) = sent else {
+                return Err("the match found nothing to send".into());
             };
-            let (plan, revision) = resolve_plan(ctx, std::slice::from_ref(&op))?;
-            let edits: Vec<klipp_document::history::EditCommand> = plan.steps.iter().map(|s| s.edit.clone()).collect();
-            let mut v = send_full_envelope(ctx, Vec::new(), edits, true, Some(revision), Some(format!("match {t_name}")))?;
+            v["undo_steps"] = json!(undo_steps);
             let mut moved: Vec<String> = Vec::new();
             for (name, val) in [("exposure", knobs.exposure), ("lift", knobs.lift), ("gain", knobs.gain), ("temperature", knobs.temperature), ("tint", knobs.tint)] {
                 if let Some(x) = val { moved.push(format!("{name} {x:+.2}")); }
             }
             v["text"] = json!(format!(
-                "Matched {t_name} to the reference: {}.
+                "First pass done: {t_name} moved toward the reference ({}). For an exact match, compare the two shots and fine-tune by eye.
 target was:  {}
 reference:   {}",
                 moved.join(", "),
                 target_stats["text"].as_str().unwrap_or(""),
                 ref_stats["text"].as_str().unwrap_or(""),
             ));
-            if let Some(why) = &held {
+            if let Some(why) = held.as_ref().or(unread.as_ref()) {
                 v["text"] = json!(format!("{}\n[held] {why}", v["text"].as_str().unwrap_or("")));
             }
             v["held_for_highlights"] = json!(held);
             v["target_before"] = target_stats;
             v["reference"] = ref_stats;
             v["knobs_moved"] = json!(moved);
-            v["next"] = json!("A first pass. Run check with color, or frame_stats on both shots, to see the match; nudge exposure/temperature/tint with grade if it is not there yet.");
+            v["next"] = json!("A first pass, not the final word: say so to the person. Run check with color, or frame_stats on both shots, to see the match; nudge exposure/temperature/tint with grade if it is not there yet.");
             Ok(v)
         }
 

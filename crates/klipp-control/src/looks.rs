@@ -110,6 +110,16 @@ impl MatchKnobs {
     pub fn is_empty(&self) -> bool {
         self.exposure.is_none() && self.lift.is_none() && self.gain.is_none() && self.temperature.is_none() && self.tint.is_none()
     }
+
+    /// The knobs that set how bright the picture is.
+    pub fn tone(&self) -> Self {
+        Self { temperature: None, tint: None, ..*self }
+    }
+
+    /// The knobs that set its colour.
+    pub fn colour(&self) -> Self {
+        Self { temperature: self.temperature, tint: self.tint, ..Self::default() }
+    }
 }
 
 pub fn match_grade_knobs(target: &serde_json::Value, reference: &serde_json::Value, target_m: &klipp_color::measure::FrameMeasure, reference_m: &klipp_color::measure::FrameMeasure) -> MatchKnobs {
