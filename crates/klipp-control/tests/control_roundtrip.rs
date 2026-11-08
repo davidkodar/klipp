@@ -3075,11 +3075,11 @@ fn a_match_is_not_held_for_a_channel_at_zero() {
     let up = MatchKnobs { exposure: Some(0.5), ..Default::default() };
     let mut k = up;
     let shadows = FrameMeasure { l_p95: 70.0, gamut_clip_pct: 10.9, gamut_hi_pct: 0.0, ..Default::default() };
-    assert_eq!(hold_match_for_highlights(&mut k, &shadows), None, "brightened: {k:?}");
+    assert_eq!(hold_match_for_highlights(&mut k, &shadows, &FrameMeasure::default()), None, "brightened: {k:?}");
     assert_eq!(k, up);
     let mut k = up;
     let sky = FrameMeasure { l_p95: 70.0, gamut_clip_pct: 10.9, gamut_hi_pct: 10.9, ..Default::default() };
-    let why = hold_match_for_highlights(&mut k, &sky).expect("held for the sky at the top");
+    let why = hold_match_for_highlights(&mut k, &sky, &FrameMeasure::default()).expect("held for the sky at the top");
     assert!(why.contains("10.9%") && k.exposure.is_none(), "{why} {k:?}");
 }
 
@@ -3090,22 +3090,64 @@ fn a_match_is_held_short_of_clipping() {
     let up = MatchKnobs { exposure: Some(1.0), gain: Some(0.1), ..Default::default() };
     // Bright at the top: a quarter of a stop of room, in light.
     let mut k = up;
-    let why = hold_match_for_highlights(&mut k, &FrameMeasure { l_p95: 90.0, ..Default::default() }).expect("held");
+    let why = hold_match_for_highlights(&mut k, &FrameMeasure { l_p95: 90.0, ..Default::default() }, &FrameMeasure::default()).expect("held");
     let e = k.exposure.unwrap();
     assert!((e - klipp_color::measure::exposure_headroom(&FrameMeasure { l_p95: 90.0, ..Default::default() })).abs() < 1e-3 && e > 0.2 && e < 0.3 && k.gain.is_none(), "{k:?}");
     assert!(why.contains("clip"), "{why}");
     // Plenty of room: the match goes through as it was.
     let mut k = up;
-    assert_eq!(hold_match_for_highlights(&mut k, &FrameMeasure { l_p95: 50.0, ..Default::default() }), None);
+    assert_eq!(hold_match_for_highlights(&mut k, &FrameMeasure { l_p95: 50.0, ..Default::default() }, &FrameMeasure::default()), None);
     assert_eq!(k, up);
     // Already clipped: nothing that brightens, a darkening lift kept.
     let mut k = MatchKnobs { lift: Some(-0.05), ..up };
-    let why = hold_match_for_highlights(&mut k, &FrameMeasure { l_p95: 99.0, clip_hi_pct: 19.0, ..Default::default() }).expect("held");
+    let why = hold_match_for_highlights(&mut k, &FrameMeasure { l_p95: 99.0, clip_hi_pct: 19.0, ..Default::default() }, &FrameMeasure::default()).expect("held");
     assert!(k.exposure.is_none() && k.gain.is_none() && k.lift == Some(-0.05), "{k:?}");
     assert!(why.contains("19.0%"), "{why}");
     // Darkening is never held.
     let mut k = MatchKnobs { exposure: Some(-0.5), ..Default::default() };
-    assert_eq!(hold_match_for_highlights(&mut k, &FrameMeasure { l_p95: 99.0, clip_hi_pct: 19.0, ..Default::default() }), None);
+    assert_eq!(hold_match_for_highlights(&mut k, &FrameMeasure { l_p95: 99.0, clip_hi_pct: 19.0, ..Default::default() }, &FrameMeasure::default()), None);
+}
+
+/// A shot is let go as far into white as the reference it is matched
+/// to: a copy of a chart with its whites at the rail is brightened all
+/// the way back, not held a tenth of a stop short; past the reference's
+/// own clipping it is still held.
+#[test]
+fn a_match_may_clip_as_much_as_its_reference() {
+    use klipp_control::{hold_match_for_highlights, MatchKnobs};
+    use klipp_color::measure::FrameMeasure;
+    let up = MatchKnobs { exposure: Some(0.7), gain: Some(0.02), ..Default::default() };
+    let chart = FrameMeasure { l_p95: 100.0, clip_hi_pct: 5.9, ..Default::default() };
+    // Darkened, the copy has nothing at white yet but little headroom.
+    let mut k = up;
+    assert_eq!(hold_match_for_highlights(&mut k, &FrameMeasure { l_p95: 95.0, ..Default::default() }, &chart), None, "held: {k:?}");
+    assert_eq!(k, up);
+    // Nearly there, at white as much as the reference.
+    let mut k = up;
+    assert_eq!(hold_match_for_highlights(&mut k, &FrameMeasure { l_p95: 100.0, clip_hi_pct: 5.5, ..Default::default() }, &chart), None);
+    // Clipping well past it: held, as against a reference with none.
+    let mut k = up;
+    let why = hold_match_for_highlights(&mut k, &FrameMeasure { l_p95: 100.0, clip_hi_pct: 12.0, ..Default::default() }, &chart).expect("held");
+    assert!(k.exposure.is_none() && why.contains("12.0%"), "{why} {k:?}");
+}
+
+/// Greys a code value apart (0.54 b*) get no white-balance move: an
+/// 8-bit frame reads them hardly finer, and chased below that the match
+/// swung the temperature a mired each way, run after run.
+#[test]
+fn a_match_leaves_greys_too_close_to_tell_apart() {
+    use klipp_control::match_grade_knobs;
+    let px = |p: [u8; 4]| std::iter::repeat_n(p, 320 * 180).flatten().collect::<Vec<u8>>();
+    let knobs = |a: [u8; 4], b: [u8; 4]| {
+        let (fa, fb) = (klipp_control::frame_stats(&px(a), 320, 180, 0.0), klipp_control::frame_stats(&px(b), 320, 180, 0.0));
+        let (ma, mb) = (klipp_color::measure::measure_frame(&px(a), 320, 180, &[]), klipp_color::measure::measure_frame(&px(b), 320, 180, &[]));
+        eprintln!("b* {:.2} -> {:.2}", ma.cast_b, mb.cast_b);
+        match_grade_knobs(&fa, &fb, &ma, &mb)
+    };
+    let close = knobs([128, 128, 128, 255], [128, 128, 127, 255]);
+    assert!(close.temperature.is_none() && close.tint.is_none(), "{close:?}");
+    let apart = knobs([128, 128, 128, 255], [130, 128, 122, 255]);
+    assert!(apart.temperature.is_some_and(|t| t > 0.0), "{apart:?}");
 }
 
 /// resolve_look picks a look by a distinctive word, takes an absolute
