@@ -92,9 +92,18 @@ pub(crate) fn respond(
                 return Err("the timeline is empty: there is nothing to export. Place some clips first.".into());
             }
             let pool = ctx.media_pool.read().recovered();
+            // What it renders: the In and Out points when both are set, as
+            // the range below says. Only that is checked: a clip past the
+            // Out point, offline or with its matte unmade, refused an
+            // export it is not in.
+            let rendered = seq.marked_range_on_timeline();
+            let drawn = |c: &klipp_timeline::Clip| rendered.is_none_or(|(a, b)| {
+                let (s, e) = klipp_compose::subject_matte::span(&seq, c);
+                e > a && s < b
+            });
             // Each file once: a clip and its linked sound name it twice.
             let mut offline: Vec<String> = Vec::new();
-            for m in seq.tracks.iter().flat_map(|t| t.clips.iter()).filter_map(|c| c.media_id().and_then(|id| pool.get(&id))).filter(|m| m.offline) {
+            for m in seq.tracks.iter().flat_map(|t| t.clips.iter()).filter(|c| drawn(c)).filter_map(|c| c.media_id().and_then(|id| pool.get(&id))).filter(|m| m.offline) {
                 if !offline.contains(&m.filename) {
                     offline.push(m.filename.clone());
                 }
@@ -115,6 +124,7 @@ pub(crate) fn respond(
                 let item = pool.get(&clip.media_id()?)?;
                 Some(klipp_compose::subject_matte::last_frame_secs(item.duration.to_secs_f64(), item.fps.as_f64()))
             });
+            let gaps = klipp_compose::subject_matte::in_range(&seq, gaps, rendered);
             let short: Vec<String> = gaps
                 .iter()
                 .filter_map(|g| {

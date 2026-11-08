@@ -920,12 +920,23 @@ pub(super) fn matte_gaps(seq: &klipp_timeline::Sequence, pool: &klipp_media::Med
     })
 }
 
+/// Whether a render of `range` (`None`: the whole sequence) draws `clip`,
+/// its transitions' handles included: what an export checks before it
+/// starts is what it renders, not a clip past its Out point.
+fn drawn_in(seq: &klipp_timeline::Sequence, clip: &klipp_timeline::Clip, range: Option<(klipp_core::Timecode, klipp_core::Timecode)>) -> bool {
+    range.is_none_or(|(a, b)| {
+        let (s, e) = klipp_compose::subject_matte::span(seq, clip);
+        e > a && s < b
+    })
+}
+
 /// The clips of `seq` whose media is offline, by file name and timeline
 /// position, for the warning before a render.
-pub(super) fn offline_clips(seq: &klipp_timeline::Sequence, pool: &klipp_media::MediaPool) -> Vec<(String, String)> {
+pub(super) fn offline_clips(seq: &klipp_timeline::Sequence, pool: &klipp_media::MediaPool, range: Option<(klipp_core::Timecode, klipp_core::Timecode)>) -> Vec<(String, String)> {
     seq.tracks
         .iter()
         .flat_map(|t| t.clips.iter())
+        .filter(|clip| drawn_in(seq, clip, range))
         .filter_map(|clip| {
             let klipp_timeline::ClipKind::Media { media_id } = &clip.kind else { return None };
             let item = pool.get(media_id)?;
@@ -1263,7 +1274,7 @@ impl KlippApp {
             return;
         }
         let offline = if confirmed == Confirmed::Nothing {
-            offline_clips(&self.state.sequences[self.state.active_sequence_idx], &self.state.media_pool)
+            offline_clips(&self.state.sequences[self.state.active_sequence_idx], &self.state.media_pool, self.export_range())
         } else {
             Vec::new()
         };
@@ -1275,13 +1286,32 @@ impl KlippApp {
         }
     }
 
+    /// The stretch of the active sequence the export about to be queued
+    /// renders, as the form's range picks it (`None`: the whole of it).
+    /// Markers render segment by segment, and are checked whole.
+    fn export_range(&self) -> Option<(klipp_core::Timecode, klipp_core::Timecode)> {
+        let seq = &self.state.sequences[self.state.active_sequence_idx];
+        match self.export_dialog.range_mode {
+            1 => seq.marked_range_on_timeline(),
+            2 => {
+                let picked = self.state.selection_or_clip();
+                let clips: Vec<&klipp_timeline::Clip> = seq.tracks.iter().flat_map(|t| t.clips.iter()).filter(|c| picked.contains(&c.id)).collect();
+                let a = clips.iter().map(|c| c.timeline_in).min()?;
+                let b = clips.iter().map(|c| c.timeline_out).max()?;
+                (a < b).then_some((a, b))
+            }
+            _ => None,
+        }
+    }
+
     /// Whether a tracked subject matte in the active sequence falls short
     /// of what a render reads, putting up the question when it does. No
     /// export goes ahead past it: a missing frame would otherwise render
     /// with its neighbour's matte (#239).
     pub(super) fn ask_matte_gaps(&mut self) -> bool {
+        let range = self.export_range();
         let seq = &self.state.sequences[self.state.active_sequence_idx];
-        let gaps = matte_gaps(seq, &self.state.media_pool);
+        let gaps = klipp_compose::subject_matte::in_range(seq, matte_gaps(seq, &self.state.media_pool), range);
         if gaps.is_empty() {
             return false;
         }
@@ -3560,9 +3590,13 @@ mod export_rule_tests {
         let tc = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 25);
         let mut seq = klipp_timeline::Sequence::new_default();
         seq.tracks[0].clips = vec![klipp_timeline::Clip::media(gone, tc(2.0), tc(4.0), tc(0.0), tc(2.0)), klipp_timeline::Clip::media(here, tc(4.0), tc(6.0), tc(0.0), tc(2.0))];
-        let named = offline_clips(&seq, &pool);
+        let named = offline_clips(&seq, &pool, None);
         assert_eq!(named.len(), 1);
         assert_eq!(named[0].0, "gone.mov");
+        // An export of 4-6 s does not render the offline clip at 2-4 s:
+        // it was refused for media it never reads.
+        assert!(offline_clips(&seq, &pool, Some((tc(4.0), tc(6.0)))).is_empty(), "past it");
+        assert_eq!(offline_clips(&seq, &pool, Some((tc(3.0), tc(5.0)))).len(), 1, "over it");
     }
 
     /// #239: a clip whose tracked matte falls short is named once, with
