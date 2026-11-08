@@ -209,3 +209,48 @@ fn mark_sets_the_range_a_retime_can_fit_to() {
         assert!(resolve(&seq, &pool, &[op]).is_err(), "{bad}");
     }
 }
+
+/// The fixture with its last clip moved on to 10-12 s: the primary holds
+/// 0-2, 2-4, a gap 4-10 and 10-12.
+fn with_a_wide_gap() -> (Sequence, klipp_media::MediaPool, MediaId, [klipp_core::ClipId; 3], usize) {
+    let (seq, pool, media, ids) = fixture();
+    let p = seq.primary_track_index().unwrap();
+    let seq = holds("move the last on", seq, pool.clone(), serde_json::json!({ "op": "move", "clip_id": ids[2].0.to_string(), "to": { "secs": 10.0 } }));
+    assert!(seq.tracks[p].clips.iter().any(|c| c.kind.is_gap() && c.timeline_in == t(4.0) && c.timeline_out == t(10.0)), "a gap 4-10 s");
+    (seq, pool, media, ids, p)
+}
+
+/// What the primary holds, in order: ("gap" or "clip", from, to).
+fn layout(seq: &Sequence, p: usize) -> Vec<(&'static str, f64, f64)> {
+    let mut v: Vec<_> = seq.tracks[p].clips.iter().map(|c| (if c.kind.is_gap() { "gap" } else { "clip" }, c.timeline_in.to_secs_f64(), c.timeline_out.to_secs_f64())).collect();
+    v.sort_by(|a, b| a.1.total_cmp(&b.1));
+    v
+}
+
+/// A clip placed or moved into the primary's empty space fills it, as a
+/// drop in the app does: the gap is split round it, nothing else moves,
+/// and one undo gives the gap back. It was refused as overlapping "gap",
+/// told to remove that clip first.
+#[test]
+fn a_clip_put_in_a_gap_fills_it() {
+    let (seq, pool, media, ids, p) = with_a_wide_gap();
+    let placed = holds("place in the gap", seq.clone(), pool.clone(), serde_json::json!({ "op": "place", "media_id": media.0.to_string(), "track": p, "at": { "secs": 6.0 }, "source_in": 0.0, "source_out": 2.0, "with_audio": false }));
+    assert_eq!(layout(&placed, p), vec![("clip", 0.0, 2.0), ("clip", 2.0, 4.0), ("gap", 4.0, 6.0), ("clip", 6.0, 8.0), ("gap", 8.0, 10.0), ("clip", 10.0, 12.0)]);
+    let moved = holds("move into the gap", seq.clone(), pool.clone(), serde_json::json!({ "op": "move", "clip_id": ids[0].0.to_string(), "to": { "secs": 4.0 } }));
+    assert_eq!(layout(&moved, p), vec![("gap", 0.0, 2.0), ("clip", 2.0, 4.0), ("clip", 4.0, 6.0), ("gap", 6.0, 10.0), ("clip", 10.0, 12.0)]);
+    let filled = holds("fill it exactly", seq.clone(), pool.clone(), serde_json::json!({ "op": "place", "media_id": media.0.to_string(), "track": p, "at": { "secs": 4.0 }, "source_in": 0.0, "source_out": 6.0, "with_audio": false }));
+    assert_eq!(layout(&filled, p), vec![("clip", 0.0, 2.0), ("clip", 2.0, 4.0), ("clip", 4.0, 10.0), ("clip", 10.0, 12.0)]);
+}
+
+/// A clip longer than the gap is refused, not written over the shot
+/// after it: the refusal names that shot and how long the gap is, and
+/// never calls the gap a clip.
+#[test]
+fn a_clip_longer_than_its_gap_is_refused_with_the_room() {
+    let (seq, pool, media, _, p) = with_a_wide_gap();
+    let op: Op = serde_json::from_value(serde_json::json!({ "op": "place", "media_id": media.0.to_string(), "track": p, "at": { "secs": 6.0 }, "source_in": 0.0, "source_out": 5.0, "with_audio": false })).unwrap();
+    let Err(refused) = resolve(&seq, &pool, &[op]) else { panic!("placed over the shot after the gap") };
+    let why = refused.why;
+    assert!(!why.contains("overlap gap"), "{why}");
+    assert!(why.contains("10.00-12.00") && why.contains("4.00-10.00 s (6.00 s)"), "{why}");
+}

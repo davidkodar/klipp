@@ -3932,6 +3932,47 @@ fn overlapping(seq: &Sequence, track: usize, a: Timecode, b: Timecode, except: O
     seq.tracks.get(track)?.clips.iter().find(|c| Some(c.id) != except && c.timeline_out > a && c.timeline_in < b)
 }
 
+/// A clip on `track` that `a..b` would run over, other than a gap: a gap
+/// placeholder is the primary's empty space, and a clip put there takes
+/// it over, as a drop in the app does ([`take_gaps`]).
+fn overlapping_clip(seq: &Sequence, track: usize, a: Timecode, b: Timecode, except: Option<ClipId>) -> Option<&Clip> {
+    seq.tracks.get(track)?.clips.iter().find(|c| Some(c.id) != except && !c.kind.is_gap() && c.timeline_out > a && c.timeline_in < b)
+}
+
+/// The gap placeholders on `track` that `a..b` runs over, with their
+/// places on the track.
+fn gaps_under(seq: &Sequence, track: usize, a: Timecode, b: Timecode) -> Vec<(usize, &Clip)> {
+    seq.tracks.get(track).map_or_else(Vec::new, |t| t.clips.iter().enumerate().filter(|(_, c)| c.kind.is_gap() && c.timeline_out > a && c.timeline_in < b).collect())
+}
+
+/// `edit`, which puts a clip over `a..b` on `track`, with the gap
+/// placeholders it lands on taken off first, in the same step
+/// ([`room_from_gaps`], as a generator takes them, #3116). The primary is
+/// gapless by rule, so its empty space is gap clips; a place or a move
+/// into it was refused as overlapping "gap", where dropping the clip
+/// there in the app fills it. What the clip leaves of the gap is filled
+/// again at the end of the plan ([`fill_primary_holes_at_end`]), and
+/// nothing else moves. One undo gives the gap back. `moving` is the clip
+/// being moved, which is no obstacle to itself.
+fn take_gaps(seq: &Sequence, track: usize, a: Timecode, b: Timecode, moving: Option<ClipId>, edit: EditCommand) -> EditCommand {
+    match room_from_gaps(seq, track, a, b, &|c| Some(c.id) == moving) {
+        Ok(mut taken) if !taken.is_empty() => {
+            taken.push(edit);
+            EditCommand::Batch(taken)
+        }
+        _ => edit,
+    }
+}
+
+/// What to say when a clip that would land in a gap runs on over a real
+/// clip: how much empty space there is, so the clip can be cut to fit.
+fn gap_room_note(seq: &Sequence, track: usize, a: Timecode, b: Timecode) -> String {
+    match gaps_under(seq, track, a, b).first() {
+        Some((_, g)) => format!("; the empty stretch there is {:.2}-{:.2} s ({:.2} s)", secs(g.timeline_in), secs(g.timeline_out), secs(g.timeline_out - g.timeline_in)),
+        None => String::new(),
+    }
+}
+
 fn after_of(seq: &Sequence, ids: &[ClipId]) -> Vec<ClipAfter> {
     ids.iter()
         .filter_map(|id| find_clip(seq, *id))
@@ -5095,7 +5136,7 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
                         return Err(refuse(i, format!("audio track {ati} is locked"), "unlock it, or place with with_audio false"));
                     }
                     if !*insert {
-                        if let Some(c) = overlapping(seq, ati, tl_in, tl_out, None) {
+                        if let Some(c) = overlapping_clip(seq, ati, tl_in, tl_out, None) {
                             return Err(refuse(i, format!("its sound would overlap {} at {:.2}-{:.2} s on track {ati}", clip_name(seq, pool, c), secs(c.timeline_in), secs(c.timeline_out)), "place it later, or with with_audio false"));
                         }
                     }
@@ -5158,15 +5199,16 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
                 );
                 return Ok((what, EditCommand::LegacyInsertEdit { edit, audio, created_audio_track_at }, ids));
             }
-            if let Some(c) = overlapping(seq, ti, tl_in, tl_out, None) {
+            if let Some(c) = overlapping_clip(seq, ti, tl_in, tl_out, None) {
                 return Err(refuse(
                     i,
-                    format!("it would overlap {} at {:.2}-{:.2} s", clip_name(seq, pool, c), secs(c.timeline_in), secs(c.timeline_out)),
-                    format!("place it at clip_end of {}, remove that clip first, or place with insert", c.id.0),
+                    format!("it would overlap {} at {:.2}-{:.2} s{}", clip_name(seq, pool, c), secs(c.timeline_in), secs(c.timeline_out), gap_room_note(seq, ti, tl_in, tl_out)),
+                    format!("place it at clip_end of {}, give a shorter source range, remove that clip first, or place with insert", c.id.0),
                 ));
             }
+            let into_gap = if gaps_under(seq, ti, tl_in, tl_out).is_empty() { "" } else { ", into the empty stretch there" };
             let what = format!(
-                "place {} on track {ti} at {:.2} s ({:.2}-{:.2} s of the file), ending at {:.2} s{sound_note}{format_note}",
+                "place {} on track {ti} at {:.2} s ({:.2}-{:.2} s of the file), ending at {:.2} s{into_gap}{sound_note}{format_note}",
                 short_name(&item.filename),
                 secs(tl_in),
                 secs(src_in),
@@ -5178,7 +5220,7 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             } else {
                 EditCommand::LegacyAppendClip { clip, track_index: ti }
             };
-            Ok((what, edit, ids))
+            Ok((what, take_gaps(seq, ti, tl_in, tl_out, None, edit), ids))
         }
 
         Op::Trim { clip_id: clip_ref, edge, to, ripple, linked } => {
@@ -5461,8 +5503,8 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
                 }
             }
             let dest = to_track.unwrap_or(ti);
-            if let Some(c) = overlapping(seq, dest, new_in, new_out, Some(*clip_id)) {
-                return Err(refuse(i, format!("it would overlap {} at {:.2}-{:.2} s", clip_name(seq, pool, c), secs(c.timeline_in), secs(c.timeline_out)), format!("move it to clip_end of {}, or remove that clip first", c.id.0)));
+            if let Some(c) = overlapping_clip(seq, dest, new_in, new_out, Some(*clip_id)) {
+                return Err(refuse(i, format!("it would overlap {} at {:.2}-{:.2} s{}", clip_name(seq, pool, c), secs(c.timeline_in), secs(c.timeline_out), gap_room_note(seq, dest, new_in, new_out)), format!("move it to clip_end of {}, or remove that clip first", c.id.0)));
             }
             let delta = new_in - clip.timeline_in;
             let mut touched = vec![*clip_id];
@@ -5521,6 +5563,7 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
                     to_track: tj,
                     linked_partner,
                 };
+                let edit = take_gaps(seq, tj, new_in, new_out, Some(*clip_id), edit);
                 if off.is_empty() {
                     return Ok((what, edit, touched));
                 }
@@ -5535,7 +5578,7 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
                 new_timeline_out: new_out,
                 linked_partner,
             };
-            Ok((what, edit, touched))
+            Ok((what, take_gaps(seq, ti, new_in, new_out, Some(*clip_id), edit), touched))
         }
         Op::Compose { clip_id, poses, flip_x, flip_y } => {
             let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
