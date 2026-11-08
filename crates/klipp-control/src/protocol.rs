@@ -891,6 +891,21 @@ pub enum ControlCommand {
         #[serde(default)]
         secs: Option<f64>,
     },
+    /// A ColorChecker in the shot, read by the four corners of its patches,
+    /// in frame fractions round it starting at the brown patch: how far each
+    /// patch sits from its published value, and with `apply` the white balance
+    /// and exposure (`exposure` false leaves that) that bring it there,
+    /// measured after each round, as one undo step.
+    ReadChart {
+        clip_id: String,
+        corners: [[f32; 2]; 4],
+        #[serde(default)]
+        secs: Option<f64>,
+        #[serde(default)]
+        apply: bool,
+        #[serde(default)]
+        exposure: Option<bool>,
+    },
     /// The LV2 and CLAP audio plug-ins installed here (#2485), those whose
     /// name or id holds `query` when given: each id, name and count of
     /// parameters, and the parameters with their keys and ranges (those

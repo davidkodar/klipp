@@ -246,9 +246,337 @@ impl ChartCheck {
     }
 }
 
+/// A ColorChecker read off a picture, by the four corners of its patch
+/// grid: each patch in linear light, in the chart's own reading order.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChartInShot {
+    /// The 24 patches, median of the middle half of each.
+    pub linear: Vec<[f32; 3]>,
+    /// The corners were given starting from the wrong end: the chart is
+    /// upside down in them, and was read the right way round.
+    pub turned: bool,
+}
+
+/// What a shot needs to bring its chart to the published values, as far as
+/// white balance and exposure can.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ChartCorrection {
+    pub temperature: f32,
+    pub tint: f32,
+    pub stops: f32,
+}
+
+/// Mean ΔE2000 of the colour patches, greys taken as neutral, past which
+/// a chart is not read as a ColorChecker. Measured: see the live record.
+pub const OTHER_MAKE_DE: f32 = 16.0;
+
+/// The sRGB bytes a linear colour shows as.
+fn shown(c: [f32; 3]) -> [u8; 3] {
+    c.map(|v| (crate::transfer::linear_to_srgb(v.clamp(0.0, 1.0)) * 255.0).round() as u8)
+}
+
+impl ChartInShot {
+    /// The patches as Lab, as they show.
+    pub fn lab(&self) -> Vec<Lab> {
+        self.linear.iter().map(|c| { let s = shown(*c); srgb8_to_lab(s[0], s[1], s[2]) }).collect()
+    }
+
+    /// ΔE2000 of each patch from its published value: the mean, the worst
+    /// and the worst patch's name.
+    pub fn error(&self) -> (f32, f32, &'static str) {
+        let (mut sum, mut worst, mut name) = (0.0, 0.0, "");
+        for (lab, (patch, rgb)) in self.lab().into_iter().zip(PATCHES.iter()) {
+            let de = delta_e2000(lab, srgb8_to_lab(rgb[0], rgb[1], rgb[2]));
+            sum += de;
+            if de > worst {
+                (worst, name) = (de, patch);
+            }
+        }
+        (sum / PATCHES.len() as f32, worst, name)
+    }
+
+    /// How far its colour patches sit from a ColorChecker's once its own
+    /// greys are taken as neutral and at their published level: mean ΔE2000
+    /// over the 18 that are not grey. A light or a camera moves them a little;
+    /// another make of chart, or the wrong place, moves them a long way.
+    pub fn colours_off(&self) -> f32 {
+        let greys = self.usable_greys();
+        let (mut got, mut want) = ([0.0f32; 3], [0.0f32; 3]);
+        for &i in &greys {
+            for k in 0..3 {
+                got[k] += self.linear[i][k];
+                want[k] += crate::transfer::srgb_to_linear(PATCHES[i].1[k] as f32 / 255.0);
+            }
+        }
+        let gain = [0, 1, 2].map(|k| want[k] / got[k].max(1e-4));
+        let colours: Vec<usize> = (0..PATCHES.len()).filter(|i| !NEUTRALS.contains(i)).collect();
+        colours.iter().map(|&i| {
+            let s = shown([0, 1, 2].map(|k| self.linear[i][k] * gain[k]));
+            let p = PATCHES[i].1;
+            delta_e2000(srgb8_to_lab(s[0], s[1], s[2]), srgb8_to_lab(p[0], p[1], p[2]))
+        }).sum::<f32>() / colours.len() as f32
+    }
+
+    /// Whether this is a chart of another make, or corners in the wrong
+    /// place: its greys read as a ramp, so a white balance from them holds,
+    /// but its colours and levels are not the published ones.
+    pub fn another_make(&self) -> bool {
+        self.colours_off() > OTHER_MAKE_DE
+    }
+
+    /// The greys usable to judge from: those neither near clipping nor
+    /// near black, where a channel has lost what it holds.
+    fn usable_greys(&self) -> Vec<usize> {
+        let lab = self.lab();
+        NEUTRALS.iter().copied().filter(|&i| lab[i].l >= 15.0 && lab[i].l <= 92.0).collect()
+    }
+
+    /// The white balance that takes its greys to grey, and the exposure
+    /// that brings them to the published lightness. `None` with fewer than
+    /// two greys left to read: nothing it could say would be measured.
+    pub fn correction(&self, ws: klipp_core::WorkingColorspace) -> Option<ChartCorrection> {
+        let greys = self.usable_greys();
+        if greys.len() < 2 {
+            return None;
+        }
+        let mean = |pick: &dyn Fn(usize) -> [f32; 3]| {
+            let mut m = [0.0f32; 3];
+            for &i in &greys {
+                let c = pick(i);
+                for k in 0..3 {
+                    m[k] += c[k] / greys.len() as f32;
+                }
+            }
+            m
+        };
+        let got = mean(&|i| self.linear[i]);
+        let want = mean(&|i| PATCHES[i].1.map(|v| crate::transfer::srgb_to_linear(v as f32 / 255.0)));
+        let y = |c: [f32; 3]| 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+        let (temperature, tint) = crate::white_balance::white_balance_to_neutralise(got, ws);
+        // Another make's greys are grey at their own levels.
+        let stops = if self.another_make() { 0.0 } else { (y(want) / y(got).max(1e-4)).log2() };
+        Some(ChartCorrection { temperature, tint, stops })
+    }
+
+    /// Whether its greys span far less than the chart's own, as an
+    /// unconverted log or flat picture's do: read as it stands, no white
+    /// balance and exposure can bring it to the published values.
+    pub fn looks_flat(&self) -> bool {
+        let lab = self.lab();
+        lab[NEUTRALS[0]].l - lab[NEUTRALS[5]].l < 55.0
+    }
+}
+
+/// Why a chart could not be read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChartRefused {
+    /// The four corners are no four-sided shape in the frame.
+    Corners,
+    /// The picture has too few pixels there to read a patch from.
+    TooSmall,
+    /// Neither way round do its six patches read as a grey ramp.
+    NotAChart,
+}
+
+impl ChartRefused {
+    pub fn says(self) -> &'static str {
+        match self {
+            Self::Corners => "the four corners are not a four-sided shape in the frame: give them in order round the chart",
+            Self::TooSmall => "the chart is too small in the picture to read: each patch needs a few pixels across",
+            Self::NotAChart => "that does not read as a ColorChecker: its six grey patches should run white to black along one long side. Place the corners on the outer corners of the patches, brown patch first; a chart of another make has other values",
+        }
+    }
+}
+
+/// The chart whose patch grid has these corners, in frame fractions, round
+/// it starting at the brown patch (the patch diagonally opposite black):
+/// each patch the median of its middle half, through the perspective the
+/// corners give. Given from the other end it is turned round and said to
+/// be. Refused when neither way round its grey row runs light to dark with
+/// little colour between: anything else read as a chart would be a guess.
+pub fn read_in_shot(rgba: &[u8], width: u32, height: u32, corners: [[f32; 2]; 4]) -> Result<ChartInShot, ChartRefused> {
+    let (w, h) = (width as usize, height as usize);
+    if w == 0 || h == 0 || rgba.len() < w * h * 4 {
+        return Err(ChartRefused::TooSmall);
+    }
+    let unit = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
+    let map = klipp_core::color_grade::PlaneMap::from_quads(&unit, &corners).ok_or(ChartRefused::Corners)?;
+    // Each patch about the middle half of its cell.
+    let read = |cell: usize| -> Option<[f32; 3]> {
+        let (col, row) = ((cell % COLS) as f32, (cell / COLS) as f32);
+        let mut channels: [Vec<f32>; 3] = Default::default();
+        const STEPS: usize = 12;
+        for i in 0..STEPS {
+            for j in 0..STEPS {
+                let (u, v) = ((col + 0.25 + 0.5 * (i as f32 + 0.5) / STEPS as f32) / COLS as f32, (row + 0.25 + 0.5 * (j as f32 + 0.5) / STEPS as f32) / ROWS as f32);
+                let (x, y) = map.apply((u, v))?;
+                let (px, py) = ((x * (w - 1) as f32).round(), (y * (h - 1) as f32).round());
+                if px < 0.0 || py < 0.0 || px >= w as f32 || py >= h as f32 {
+                    return None;
+                }
+                let o = (py as usize * w + px as usize) * 4;
+                for (k, c) in channels.iter_mut().enumerate() {
+                    c.push(crate::transfer::srgb_to_linear(rgba[o + k] as f32 / 255.0));
+                }
+            }
+        }
+        Some(channels.map(|mut c| {
+            c.sort_by(|a, b| a.total_cmp(b));
+            c[c.len() / 2]
+        }))
+    };
+    // A patch at least about three pixels across, or the middle half is
+    // a pixel and the median reads a neighbour's edge.
+    let at = |u: f32, v: f32| map.apply((u, v)).map(|(x, y)| (x * w as f32, y * h as f32));
+    let span = |a: (f32, f32), b: (f32, f32)| (a.0 - b.0).hypot(a.1 - b.1);
+    if let (Some(a), Some(b), Some(c)) = (at(0.0, 0.0), at(1.0, 0.0), at(0.0, 1.0)) {
+        if span(a, b) / (COLS as f32) < 6.0 || span(a, c) / (ROWS as f32) < 6.0 {
+            return Err(ChartRefused::TooSmall);
+        }
+    } else {
+        return Err(ChartRefused::Corners);
+    }
+    let cells: Vec<[f32; 3]> = (0..PATCHES.len()).map(read).collect::<Option<_>>().ok_or(ChartRefused::Corners)?;
+    let ramp = |patches: &[[f32; 3]]| {
+        let labs: Vec<Lab> = NEUTRALS.iter().map(|&i| { let s = shown(patches[i]); srgb8_to_lab(s[0], s[1], s[2]) }).collect();
+        // Light to dark in order, by a clear step overall; a cast moves
+        // every grey together and keeps them close to each other in a*b*.
+        let ordered = labs.windows(2).all(|p| p[0].l >= p[1].l - 1.5);
+        let wide = labs[0].l - labs[5].l >= 20.0;
+        let mids = &labs[1..5];
+        let (ma, mb) = (mids.iter().map(|l| l.a).sum::<f32>() / 4.0, mids.iter().map(|l| l.b).sum::<f32>() / 4.0);
+        let close = mids.iter().all(|l| (l.a - ma).hypot(l.b - mb) < 9.0) && ma.hypot(mb) < 30.0;
+        // And a chart has colour beside its greys: a grey ramp alone is not
+        // one, and read as one would be scored against patches it lacks.
+        let mut chroma: Vec<f32> = (0..PATCHES.len()).filter(|i| !NEUTRALS.contains(i)).map(|i| {
+            let s = shown(patches[i]);
+            let l = srgb8_to_lab(s[0], s[1], s[2]);
+            (l.a - ma).hypot(l.b - mb)
+        }).collect();
+        chroma.sort_by(|a, b| a.total_cmp(b));
+        ordered && wide && close && chroma[chroma.len() / 2] >= 15.0
+    };
+    if ramp(&cells) {
+        return Ok(ChartInShot { linear: cells, turned: false });
+    }
+    let mut back = cells;
+    back.reverse();
+    if ramp(&back) {
+        return Ok(ChartInShot { linear: back, turned: true });
+    }
+    Err(ChartRefused::NotAChart)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `chart_rgba` drawn into the quadrilateral `corners` of a noisy
+    /// frame, through `look` on its way out, as a camera sees a chart.
+    fn in_shot(corners: [[f32; 2]; 4], look: impl Fn([f32; 3]) -> [f32; 3]) -> (Vec<u8>, u32, u32) {
+        use klipp_core::color_grade::PlaneMap;
+        let (w, h) = (640u32, 360u32);
+        let (cw, ch) = (600u32, 400u32);
+        let chart = chart_rgba(cw, ch);
+        // The patch grid alone, as the corners give it: chart_rgba keeps a
+        // tenth of the frame round the grid.
+        let map = PlaneMap::from_quads(&corners, &[[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]).unwrap();
+        let mut out = Vec::with_capacity((w * h * 4) as usize);
+        for y in 0..h {
+            for x in 0..w {
+                let p = (x as f32 / (w - 1) as f32, y as f32 / (h - 1) as f32);
+                let rgb = match map.apply(p) {
+                    Some((u, v)) if (0.0..1.0).contains(&u) && (0.0..1.0).contains(&v) => {
+                        let (cx, cy) = ((0.1 + 0.8 * u) * cw as f32, (0.1 + 0.8 * v) * ch as f32);
+                        let o = ((cy as u32).min(ch - 1) * cw + (cx as u32).min(cw - 1)) as usize * 4;
+                        [chart[o], chart[o + 1], chart[o + 2]]
+                    }
+                    // The room behind it: anything but a chart.
+                    _ => [((x * 7 + y * 3) % 200) as u8 + 20, ((x * 3 + y * 11) % 180) as u8 + 30, ((x * 13 + y) % 150) as u8 + 40],
+                };
+                let lin = look(rgb.map(|v| crate::transfer::srgb_to_linear(v as f32 / 255.0)));
+                let s = shown(lin);
+                out.extend_from_slice(&[s[0], s[1], s[2], 255]);
+            }
+        }
+        (out, w, h)
+    }
+
+    const LEANING: [[f32; 2]; 4] = [[0.20, 0.15], [0.80, 0.22], [0.76, 0.85], [0.17, 0.78]];
+
+    /// A chart leaning in perspective reads as the published values through
+    /// its corners, and comes back the right way round from the far end.
+    #[test]
+    fn a_chart_in_perspective_reads_as_itself() {
+        let (px, w, h) = in_shot(LEANING, |c| c);
+        let read = read_in_shot(&px, w, h, LEANING).unwrap();
+        let (mean, worst, name) = read.error();
+        assert!(!read.turned && mean < 1.0 && worst < 2.0, "mean {mean:.2}, worst {worst:.2} on {name}");
+        let [a, b, c, d] = LEANING;
+        let from_the_far_end = read_in_shot(&px, w, h, [c, d, a, b]).unwrap();
+        assert!(from_the_far_end.turned, "said to be turned");
+        assert!(from_the_far_end.error().0 < 1.0, "and read the right way round");
+    }
+
+    /// What is not a chart is refused, not read: the room behind one, a
+    /// flat wall, corners in a line, a chart too small to read.
+    #[test]
+    fn what_is_not_a_chart_is_refused() {
+        let (px, w, h) = in_shot(LEANING, |c| c);
+        assert_eq!(read_in_shot(&px, w, h, [[0.0, 0.0], [0.04, 0.0], [0.04, 0.03], [0.0, 0.03]]), Err(ChartRefused::TooSmall));
+        let room = [[0.02, 0.02], [0.3, 0.02], [0.3, 0.14], [0.02, 0.14]];
+        assert_eq!(read_in_shot(&px, w, h, room), Err(ChartRefused::NotAChart));
+        let wall = [120u8, 120, 120, 255].repeat((w * h) as usize);
+        assert_eq!(read_in_shot(&wall, w, h, LEANING), Err(ChartRefused::NotAChart));
+        assert_eq!(read_in_shot(&px, w, h, [[0.2, 0.2], [0.4, 0.4], [0.6, 0.6], [0.8, 0.8]]), Err(ChartRefused::Corners));
+        // A grey ramp alone has the row, and none of the colour.
+        let ramp: Vec<u8> = (0..w * h).flat_map(|i| { let v = 250 - ((i % w) * 230 / w) as u8; [v, v, v, 255] }).collect();
+        assert_eq!(read_in_shot(&ramp, w, h, [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]), Err(ChartRefused::NotAChart));
+    }
+
+    /// A ColorChecker whose camera is less saturated and cast is still one;
+    /// another make's colours, on the same greys, are not, and it then gives
+    /// a white balance from its greys and no exposure.
+    #[test]
+    fn another_make_of_chart_gives_only_its_white_balance() {
+        use klipp_core::WorkingColorspace::Rec709Linear;
+        let muted = |c: [f32; 3]| {
+            let y = 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+            [(y + 0.7 * (c[0] - y)) * 1.1, y + 0.7 * (c[1] - y), (y + 0.7 * (c[2] - y)) * 0.9]
+        };
+        let (px, w, h) = in_shot(LEANING, muted);
+        let read = read_in_shot(&px, w, h, LEANING).unwrap();
+        assert!(!read.another_make(), "a muted camera: {:.1}", read.colours_off());
+        // The colours swapped about, as a chart laid out otherwise is, the
+        // greys left, and half a stop under.
+        let mut other = read.clone();
+        let colours: Vec<usize> = (0..24).filter(|i| !NEUTRALS.contains(i)).collect();
+        for (a, b) in colours.iter().zip(colours.iter().rev()).take(9) {
+            other.linear.swap(*a, *b);
+        }
+        other.linear.iter_mut().for_each(|c| *c = c.map(|v| v * 0.7));
+        assert!(other.another_make(), "{:.1}", other.colours_off());
+        let k = other.correction(Rec709Linear).unwrap();
+        assert!(k.stops == 0.0 && k.temperature.abs() > 1.0, "{k:?}");
+    }
+
+    /// A chart under a cast and under-exposed: what it says to do, done
+    /// with the grade's own white balance and exposure, brings it back.
+    #[test]
+    fn the_correction_a_chart_gives_brings_it_back() {
+        use klipp_core::WorkingColorspace::Rec709Linear;
+        let wb = |c: [f32; 3], t: f32, g: f32| {
+            let m = crate::white_balance::white_balance_matrix(t, g, Rec709Linear).unwrap();
+            m.map(|r| r[0] * c[0] + r[1] * c[1] + r[2] * c[2])
+        };
+        let (px, w, h) = in_shot(LEANING, |c| wb(c, 25.0, 8.0).map(|v| v * 0.7));
+        let read = read_in_shot(&px, w, h, LEANING).unwrap();
+        let before = read.error().0;
+        let k = read.correction(Rec709Linear).unwrap();
+        assert!((k.temperature + 25.0).abs() < 4.0 && (k.stops - 0.51).abs() < 0.12, "{k:?}");
+        let (after, _, _) = read_in_shot(&in_shot(LEANING, |c| wb(wb(c, 25.0, 8.0).map(|v| v * 0.7), k.temperature, k.tint).map(|v| v * k.stops.exp2())).0, w, h, LEANING).unwrap().error();
+        assert!(before > 6.0 && after < 2.0, "mean dE {before:.1} -> {after:.1}");
+    }
 
     #[test]
     fn the_chart_comes_back_as_itself_through_nothing() {

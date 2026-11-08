@@ -875,6 +875,14 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             v
         }
         "klipp_auto_redact" => json!({ "method": "auto_redact", "apply": args.get("apply").and_then(|v| v.as_bool()).unwrap_or(false) }),
+        "klipp_read_chart" => json!({
+            "method": "read_chart",
+            "clip_id": arg_str(args, "clip_id")?,
+            "corners": args.get("corners").ok_or("missing required argument: corners")?,
+            "secs": args.get("secs"),
+            "apply": args.get("apply").and_then(Value::as_bool).unwrap_or(false),
+            "exposure": args.get("exposure"),
+        }),
         "klipp_pick_grey" => json!({
             "method": "pick_grey",
             "clip_id": arg_str(args, "clip_id")?,
@@ -2460,6 +2468,9 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
         tool("klipp_measure_region",
              "One box of the frame read alone, in klipp_frame_stats's numbers; x, y, w, h are fractions. Details: klipp_guide topic measure_region.",
              json!({ "secs": { "type": "number" }, "x": { "type": "number" }, "y": { "type": "number" }, "w": { "type": "number" }, "h": { "type": "number" }, "timeout_ms": { "type": "integer" } }), vec!["secs", "x", "y", "w", "h"]),
+        tool("klipp_read_chart",
+             "Read a ColorChecker in the shot against its published values; apply sets white balance and exposure from it. Details: klipp_guide topic read_chart.",
+             json!({ "clip_id": { "type": "string" }, "corners": { "type": "array", "items": { "type": "array", "items": { "type": "number" } }, "description": "Four [x, y], frame fractions, round the patches starting at the brown one" }, "secs": { "type": "number" }, "apply": { "type": "boolean" }, "exposure": { "type": "boolean", "description": "false leaves exposure alone (default true)" } }), vec!["clip_id", "corners"]),
         tool("klipp_pick_grey",
              "Set a clip's white balance exactly from a point known to be grey. Details: klipp_guide topic pick_grey.",
              json!({ "clip_id": { "type": "string" }, "x": { "type": "number", "description": "0-1 across the frame" }, "y": { "type": "number", "description": "0-1 down the frame" }, "secs": { "type": "number", "description": "Timeline second; else the clip's middle" } }), vec!["clip_id", "x", "y"]),
@@ -3949,6 +3960,7 @@ mod catalogue_trim_tests {
         ("klipp_operation_status", "operation_status", &["revision", "reason"]),
         ("klipp_check_delivery", "check_delivery", &["pass", "warn", "fail"]),
         ("klipp_pick_grey", "pick_grey", &["grey", "fractions", "undo"]),
+        ("klipp_read_chart", "read_chart", &["ColorChecker", "brown", "published", "apply", "undo"]),
         ("klipp_skin_balance", "skin_balance", &["25", "70", "three", "rounds", "apply"]),
         ("klipp_cancel_job", "cancel_job", &["import", "sync", "stopped"]),
         ("klipp_transcript", "transcript", &["words", "silent"]),
