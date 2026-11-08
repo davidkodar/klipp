@@ -1260,10 +1260,7 @@ impl KlippApp {
                             // never be a state you cannot see is on.
                             let before_after = self.state.before_after_active;
                             if ui.selectable_label(before_after, "Before/After")
-                                .on_hover_text(format!(
-                                    "Split the viewer: left ungraded, right graded ({})",
-                                    self.key_bindings.display_for("toggle_before_after")
-                                ))
+                                .on_hover_text(before_after_tip(&self.key_bindings))
                                 .clicked()
                             {
                                 all_cmds.push(AppCommand::ToggleBeforeAfter);
@@ -1732,5 +1729,25 @@ mod show_panel_tests {
         assert_eq!((state.active_workspace, layout.active_inspector_tab), (Workspace::Edit, InspectorTab::Effects), "a workspace alone keeps the tab");
         assert!(!show_panel(&mut state, &mut layout, None, Some("info")), "already shown: the saved layout is unchanged");
         assert_eq!(layout.active_inspector_tab, InspectorTab::Info);
+    }
+}
+
+/// The Before/After button's tooltip, with its key when the layout binds
+/// one. Final Cut's leaves it unbound (Alt+B is beat detection there),
+/// and the tip ended in an empty "()".
+pub(crate) fn before_after_tip(kb: &crate::keybindings::KeyBindings) -> String {
+    crate::welcome::with_keys("Split the viewer: left ungraded, right graded ({toggle_before_after})", kb)
+}
+
+#[cfg(test)]
+mod before_after_tip_tests {
+    use crate::keybindings::{KeyBindings, KeymapPreset};
+
+    #[test]
+    fn the_before_after_tip_drops_the_key_when_the_layout_has_none() {
+        let fcp = super::before_after_tip(&KeyBindings::from_preset(KeymapPreset::FinalCut));
+        assert_eq!(fcp, "Split the viewer: left ungraded, right graded", "{fcp}");
+        let ours = super::before_after_tip(&KeyBindings::defaults());
+        assert!(ours.ends_with(&format!("({})", KeyBindings::defaults().display_for("toggle_before_after"))) && !ours.contains("()"), "{ours}");
     }
 }

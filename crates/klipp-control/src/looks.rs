@@ -79,6 +79,17 @@ pub(crate) fn pick_look(looks: &[(String, String, std::path::PathBuf)], q: &str)
     }
 }
 
+/// What to do next, after a look is put on or, with `removed`, taken off.
+/// The reply said "Look on." either way, and an agent that had just
+/// cleared a look read it as still there.
+pub fn look_next(removed: bool) -> &'static str {
+    if removed {
+        "Look off. See the clip with frame_at or screenshot; apply a look again with look {clip_id, name}."
+    } else {
+        "Look on. See it with frame_at or screenshot; check color reads the graded frame. Fade it with opacity, or remove to clear."
+    }
+}
+
 /// The grade knobs that move a shot toward a reference shot, from the
 /// two frames' scope readings: lift from the black-point gap, gain from
 /// the white-point gap, exposure from the mid gap, and temperature and

@@ -1081,7 +1081,7 @@ pub(crate) fn respond(
             let edits: Vec<klipp_document::history::EditCommand> = plan.steps.iter().map(|s| s.edit.clone()).collect();
             let mut v = send_full_envelope(ctx, Vec::new(), edits, true, Some(revision), Some(plan.steps.first().map(|s| s.what.clone()).unwrap_or_else(|| "look".into())))?;
             v["text"] = json!(plan.text_folded());
-            v["next"] = json!("Look on. See it with frame_at or screenshot; check color reads the graded frame. Fade it with opacity, or remove to clear.");
+            v["next"] = json!(look_next(remove));
             Ok(v)
         }
 
