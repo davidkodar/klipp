@@ -258,6 +258,21 @@ pub fn uncovered_with(seq: &Sequence, dir_of: impl Fn(&Clip, u32) -> Option<Path
     out
 }
 
+/// The gaps in `gaps` that a render of `range` (sequence times; `None`
+/// for the whole sequence) draws: those whose clip is drawn there, its
+/// transitions' handles included ([`span`]). An export of the In and Out
+/// points was refused for a clip a minute past them whose matte was not
+/// made; a render checks what it renders.
+pub fn in_range(seq: &Sequence, gaps: Vec<Uncovered>, range: Option<(klipp_core::Timecode, klipp_core::Timecode)>) -> Vec<Uncovered> {
+    let Some((a, b)) = range else { return gaps };
+    gaps.into_iter()
+        .filter(|g| seq.tracks.iter().find_map(|t| t.find_clip(g.clip)).is_none_or(|c| {
+            let (s, e) = span(seq, c);
+            e > a && s < b
+        }))
+        .collect()
+}
+
 /// Every clip of `seq` graded by a tracked matte that doesn't cover the
 /// source times a render asks it for: what an export checks before its
 /// first frame.
@@ -305,6 +320,33 @@ mod tests {
         c.source_in = tc(source_in);
         c.source_out = tc(source_in + to - from);
         c
+    }
+
+    /// An export checks the mattes of what it renders: a clip's unmade
+    /// matte refuses a range it is drawn in, its transition's handle
+    /// included, and not one past it.
+    #[test]
+    fn only_the_mattes_a_range_draws_are_checked() {
+        let mut seq = Sequence::new_default();
+        seq.fps = klipp_core::Fps::new(25, 1);
+        let (a, b) = (clip(0.0, 2.0, 10.0), clip(2.0, 4.0, 0.0));
+        let mut v = Track::new("V1", TrackKind::Video);
+        v.transitions.push(klipp_timeline::Transition {
+            id: klipp_core::TransitionId::new(),
+            kind: klipp_core::TransitionKind::CrossDissolve,
+            duration: tc(0.4),
+            clip_a_id: a.id,
+            clip_b_id: b.id,
+            user_params: Default::default(),
+            alignment: klipp_core::TransitionAlignment::Center,
+        });
+        v.clips = vec![a.clone(), b];
+        seq.tracks = vec![v];
+        let gap = || vec![Uncovered { clip: a.id, transition: None, subject: Some(0), folder: PathBuf::new(), covered: 0, needed: 52, from_secs: 10.0, to_secs: 12.2 }];
+        assert_eq!(in_range(&seq, gap(), None).len(), 1, "the whole sequence draws it");
+        assert_eq!(in_range(&seq, gap(), Some((tc(1.0), tc(3.0)))).len(), 1, "over it");
+        assert_eq!(in_range(&seq, gap(), Some((tc(2.1), tc(4.0)))).len(), 1, "the dissolve's handle draws it to 2.2 s");
+        assert!(in_range(&seq, gap(), Some((tc(2.3), tc(4.0)))).is_empty(), "past it");
     }
 
     /// The times asked are the clip's frames through its source, plus the
