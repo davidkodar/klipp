@@ -270,6 +270,11 @@ pub struct FrameMeasure {
     /// of the frame was neutral.
     pub cast_a: f32,
     pub cast_b: f32,
+    /// The median L* of those neutrals: a white balance moves a grey's
+    /// a* b* about in step with its lightness, and the frame's own median
+    /// can sit far from them.
+    #[serde(default)]
+    pub neutral_l: f32,
     pub neutral_pct: f32,
     /// Whether the cast was read off pixels that are actually neutral
     /// (chroma under 8), or only off the least-coloured quarter of the
@@ -715,6 +720,7 @@ fn measure_picture(rgba: &[u8], width: u32, height: u32, faces: &[[f32; 4]]) -> 
     // still has "neutrals" to read the cast from — under a blue light the
     // greys are blue, and that is the finding.
     let mut mids: Vec<(f32, f32, f32)> = Vec::new();
+    let mut mid_l: Vec<f32> = Vec::new();
     let (mut skin_h, mut skin_c, mut skin_l): (Vec<f32>, Vec<f32>, Vec<f32>) = (Vec::new(), Vec::new(), Vec::new());
     let (mut sky_c, mut leaf_c): (Vec<f32>, Vec<f32>) = (Vec::new(), Vec::new());
     let (mut clip_hi, mut clip_lo, mut gamut_clip, mut gamut_hi, mut n) = (0usize, 0usize, 0usize, 0usize, 0usize);
@@ -747,6 +753,7 @@ fn measure_picture(rgba: &[u8], width: u32, height: u32, faces: &[[f32; 4]]) -> 
         }
         if c.l >= 20.0 && c.l <= 90.0 {
             mids.push((c.chroma(), c.a, c.b));
+            mid_l.push(c.l);
         }
         if skin_candidate(c) && c.chroma() >= SKIN_CHROMA_LOW {
             skin_h.push(c.hue());
@@ -775,20 +782,22 @@ fn measure_picture(rgba: &[u8], width: u32, height: u32, faces: &[[f32; 4]]) -> 
     let (mode_a, mode_b) = grey_mode(&mids);
     let solid: Vec<&(f32, f32, f32)> = mids.iter().filter(|(_, a, b)| (a - mode_a).hypot(b - mode_b) < 6.0).collect();
     let enough = solid.len() as f32 >= 0.01 * n.max(1) as f32 && solid.len() >= 40;
-    let (mut na, mut nb): (Vec<f32>, Vec<f32>) = (Vec::new(), Vec::new());
+    let (mut na, mut nb, mut nl): (Vec<f32>, Vec<f32>, Vec<f32>) = (Vec::new(), Vec::new(), Vec::new());
     if enough {
-        for (_, a, b) in solid {
+        for ((_, a, b), l) in mids.iter().zip(&mid_l).filter(|((_, a, b), _)| (a - mode_a).hypot(b - mode_b) < 6.0) {
             na.push(*a);
             nb.push(*b);
+            nl.push(*l);
         }
     } else {
         let mut chroma_sorted: Vec<f32> = mids.iter().map(|m| m.0).collect();
         chroma_sorted.sort_by(|a, b| a.total_cmp(b));
         let gate = percentile(&chroma_sorted, 0.25).clamp(6.0, 25.0);
-        for (c, a, b) in &mids {
+        for ((c, a, b), l) in mids.iter().zip(&mid_l) {
             if *c <= gate {
                 na.push(*a);
                 nb.push(*b);
+                nl.push(*l);
             }
         }
     }
@@ -839,6 +848,7 @@ fn measure_picture(rgba: &[u8], width: u32, height: u32, faces: &[[f32; 4]]) -> 
         chroma_p95: percentile(&chromas, 0.95),
         cast_a: median(&mut na),
         cast_b: median(&mut nb),
+        neutral_l: median(&mut nl),
         neutral_pct: na.len() as f32 / nn * 100.0,
         neutral_solid,
         faces,

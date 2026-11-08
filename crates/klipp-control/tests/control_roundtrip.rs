@@ -3061,6 +3061,31 @@ fn a_match_aims_the_neutrals_at_the_reference() {
     assert!((after.b - rm.cast_b).abs() < 1.0, "the grey lands at b* {:.1}, the reference's {:.1} (temperature {:?}, tint {:?})", after.b, rm.cast_b, k.temperature, k.tint);
 }
 
+/// The white balance is solved at the lightness of the neutrals it moves,
+/// not of the frame: a mired moves a grey's b* about in step with its L*.
+/// Solved at the median of a mostly dark frame, a chart's greys were moved
+/// half as far again as they needed (-43.6 mireds for a gap of -30), and
+/// the match needed a second run to come back.
+#[test]
+fn a_match_lands_the_greys_of_a_dark_frame_in_one_run() {
+    use klipp_control::match_grade_knobs;
+    use klipp_color::measure::{lab_to_srgb8, linear_to_lab, measure_frame, Lab};
+    let (w, h) = (200u32, 100u32);
+    // Seven pixels in ten deep colour, L* about 25; the rest grey at L* 70.
+    let frame = |grey: [u8; 3]| (0..w * h).flat_map(|i| { let c = if i % 10 < 7 { [90u8, 20, 30] } else { grey }; [c[0], c[1], c[2], 255] }).collect::<Vec<u8>>();
+    let warm = lab_to_srgb8(Lab { l: 70.0, a: 0.0, b: 7.2 });
+    let plain = lab_to_srgb8(Lab { l: 70.0, a: 0.0, b: 0.0 });
+    let (target, reference) = (frame(warm), frame(plain));
+    let (tm, rm) = (measure_frame(&target, w, h, &[]), measure_frame(&reference, w, h, &[]));
+    assert!(tm.l_p50 < 40.0 && (tm.neutral_l - 70.0).abs() < 2.0, "the frame is dark and its greys are not: {:.1} {:.1}", tm.l_p50, tm.neutral_l);
+    let k = match_grade_knobs(&klipp_control::frame_stats(&target, w, h, 0.0), &klipp_control::frame_stats(&reference, w, h, 0.0), &tm, &rm);
+    let m = klipp_color::white_balance::white_balance_matrix(k.temperature.unwrap(), k.tint.unwrap_or(0.0), klipp_core::WorkingColorspace::Rec709Linear).unwrap();
+    let lin = [warm[0], warm[1], warm[2]].map(|v| klipp_color::transfer::srgb_to_linear(v as f32 / 255.0));
+    let moved = m.map(|row| row[0] * lin[0] + row[1] * lin[1] + row[2] * lin[2]);
+    let after = linear_to_lab(moved[0], moved[1], moved[2]);
+    assert!((after.b - rm.cast_b).abs() < 0.75, "the grey lands at b* {:.2}, the reference's {:.2} (temperature {:?})", after.b, rm.cast_b, k.temperature);
+}
+
 /// #2476: match_grade stops short of clipping the shot it brightens, as
 /// grade_to_target does, and says why; a shot with room is left alone,
 /// and one already at white is not brightened at all.
