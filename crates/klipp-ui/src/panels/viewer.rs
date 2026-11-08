@@ -5435,6 +5435,12 @@ impl ViewerPanel {
         let hit = |p: egui::Pos2| (edit != SurfaceEdit::LeaveOut).then(|| screen.iter().position(|s| (p - *s).length() <= 12.0)).flatten();
         let inside = |p: egui::Pos2| edit != SurfaceEdit::LeaveOut && in_screen_polygon(&screen, p);
 
+        // Take the pointer from the viewer under the tool, so a drag here does
+        // not also scrub or pan; before the bar, so the bar is over it and its
+        // buttons get their clicks. After it, they took none: the tool could
+        // be neither run nor left.
+        let _ = ui.allocate_rect(image_rect, egui::Sense::click_and_drag());
+
         // The bar: what to do, what a drag changes, and the two ways out.
         // Laid out first so a press on it is not taken as grabbing the quad.
         let mut bar_rect = egui::Rect::NOTHING;
@@ -5454,7 +5460,7 @@ impl ViewerPanel {
                             (_, 0, true) => "Put the corners right, then correct this frame or track again",
                             _ => "Put the corners on the surface here, then continue",
                         };
-                        ui.label(what);
+                        ui.label(egui::RichText::new(what).color(egui::Color32::from_gray(235)));
                         ui.separator();
                         ui.selectable_value(&mut tool.edit, SurfaceEdit::Corners, "Corners").on_hover_text("The four corners things are pinned to");
                         ui.selectable_value(&mut tool.edit, SurfaceEdit::Area, "Area to follow")
@@ -5584,10 +5590,6 @@ impl ViewerPanel {
         if !down {
             tool.drag = None;
         }
-        // Take the pointer from the viewer under it, so a drag here does not
-        // also scrub or pan.
-        let _ = ui.allocate_rect(image_rect, egui::Sense::click_and_drag());
-
         // The parts left out, the area followed, then the corners on top;
         // what a drag changes is drawn strong, the rest faint.
         let leave_out = egui::Color32::from_rgb(255, 110, 110);
@@ -8997,6 +8999,52 @@ mod title_on_screen_tests {
         let clip = klipp_timeline::Clip { kind: klipp_timeline::ClipKind::Title(td), source_in: t(0.0), source_out: t(2.0), ..klipp_timeline::Clip::gap(t(2.0), t(4.0)) };
         assert!(super::title_on_screen(&clip, t(2.0)) && super::title_on_screen(&clip, t(3.9)));
         assert!(!super::title_on_screen(&clip, t(1.0)) && !super::title_on_screen(&clip, t(4.0)), "outside it, no boxes");
+    }
+}
+
+#[cfg(test)]
+mod surface_tool_bar_tests {
+    use super::ViewerPanel;
+    use crate::state::{AppState, SurfaceEdit, SurfaceTool};
+    use klipp_core::AppCommand;
+
+    /// The bar's buttons take their clicks, over the layer that holds the
+    /// viewer's pointer for the corners: under it, the tool could be neither
+    /// run, nor changed, nor left. Its words are drawn in a colour to read.
+    #[test]
+    fn the_surface_tools_buttons_take_their_clicks() {
+        let ctx = egui::Context::default();
+        let image = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1280.0, 720.0));
+        let panel = ViewerPanel::default();
+        let tool = || SurfaceTool { clip_id: klipp_core::ClipId::new(), surface: None, name: None, corners: [[0.25, 0.2], [0.75, 0.2], [0.75, 0.8], [0.25, 0.8]], direction: 0, track: None, exclude: Vec::new(), edit: SurfaceEdit::Corners, drag: None };
+        let run = |state: &mut AppState, events: Vec<egui::Event>| {
+            let mut cmds = Vec::new();
+            let out = ctx.run(egui::RawInput { screen_rect: Some(image), events, ..Default::default() }, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| panel.draw_surface_tool(ui, state, image, &mut cmds));
+            });
+            let texts: Vec<(String, egui::Pos2, egui::Color32)> = out.shapes.iter().filter_map(|s| match &s.shape { egui::Shape::Text(t) => Some((t.galley.text().to_owned(), t.pos, t.galley.job.sections.first().map_or(t.fallback_color, |s| s.format.color))), _ => None }).collect();
+            (texts, cmds)
+        };
+        let click = |state: &mut AppState, label: &str| {
+            let (texts, _) = run(state, Vec::new());
+            let at = texts.iter().find(|(t, ..)| t == label).unwrap_or_else(|| panic!("{label}: {texts:?}")).1 + egui::vec2(6.0, 6.0);
+            run(state, vec![egui::Event::PointerMoved(at)]);
+            run(state, vec![egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE }]);
+            run(state, vec![egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE }]).1
+        };
+        let mut state = AppState { surface_tool: Some(tool()), ..Default::default() };
+        let (texts, _) = run(&mut state, Vec::new());
+        let (_, _, colour) = texts.iter().find(|(t, ..)| t.starts_with("Click the surface")).expect("what to do");
+        assert!(colour.r() > 200 && colour.a() == 255, "to read: {colour:?}");
+        click(&mut state, "Area to follow");
+        assert_eq!(state.surface_tool.as_ref().unwrap().edit, SurfaceEdit::Area, "a tab changes");
+        click(&mut state, "Corners");
+        let cmds = click(&mut state, "Track");
+        assert!(matches!(cmds.as_slice(), [AppCommand::TrackSurface { .. }]), "{cmds:?}");
+        assert!(state.surface_tool.is_none());
+        state.surface_tool = Some(tool());
+        click(&mut state, "Cancel");
+        assert!(state.surface_tool.is_none(), "and it can be left");
     }
 }
 
