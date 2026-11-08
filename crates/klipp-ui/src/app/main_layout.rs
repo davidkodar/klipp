@@ -1327,6 +1327,12 @@ impl KlippApp {
                     } else {
                         crate::inspector::grade_view::snapshot_for(clip, &path, false, &mut self.state.pending_corrector)
                     };
+                    // One node's page takes the place of the grade's tabs: a
+                    // way back to them, or touching a mask in the viewer left
+                    // the rest of the grade out of reach but in the node graph.
+                    if generated_node.is_some() {
+                        node_page_back(ui, &mut self.state.selected_node_id, &mut self.state.selected_node_ids);
+                    }
                     let mut generated_cmds = Vec::new();
                     let drawn = generated_node.is_some_and(|nid| {
                         egui::ScrollArea::vertical()
@@ -1626,6 +1632,15 @@ impl KlippApp {
 /// Whether a selected grade node of `kind` is shown in its own layout
 /// rather than the grade tabs: the nodes with their own widget, and the
 /// ones with none (whose tabs would mislead).
+/// The way back from one node's page to the grade's tabs: a button that
+/// lets the node go.
+pub(crate) fn node_page_back(ui: &mut egui::Ui, selected: &mut Option<klipp_nodes::NodeId>, selected_ids: &mut std::collections::HashSet<klipp_nodes::NodeId>) {
+    if ui.button("\u{2039} All colour controls").on_hover_text("Back to the Colour, Wheels and Curves tabs for this clip").clicked() {
+        *selected = None;
+        selected_ids.clear();
+    }
+}
+
 pub(crate) fn per_node_kind(kind: klipp_nodes::NodeKind) -> bool {
     matches!(kind,
         klipp_nodes::NodeKind::Mask
@@ -1749,5 +1764,31 @@ mod before_after_tip_tests {
         assert_eq!(fcp, "Split the viewer: left ungraded, right graded", "{fcp}");
         let ours = super::before_after_tip(&KeyBindings::defaults());
         assert!(ours.ends_with(&format!("({})", KeyBindings::defaults().display_for("toggle_before_after"))) && !ours.contains("()"), "{ours}");
+    }
+}
+
+#[cfg(test)]
+mod node_page_back_tests {
+    /// A click lets the node go, which is what puts the grade's tabs back.
+    #[test]
+    fn the_way_back_from_a_node_page_lets_the_node_go() {
+        let ctx = egui::Context::default();
+        let screen = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(400.0, 200.0));
+        let node = klipp_nodes::NodeId::new_v4();
+        let (mut selected, mut ids) = (Some(node), std::collections::HashSet::from([node]));
+        let mut run = |events: Vec<egui::Event>| {
+            let out = ctx.run(egui::RawInput { screen_rect: Some(screen), events, ..Default::default() }, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| super::node_page_back(ui, &mut selected, &mut ids));
+            });
+            out.shapes.iter().find_map(|s| match &s.shape { egui::Shape::Text(t) => Some(t.pos), _ => None })
+        };
+        run(Vec::new());
+        let at = run(Vec::new()).expect("the button") + egui::vec2(10.0, 6.0);
+        run(vec![egui::Event::PointerMoved(at)]);
+        run(Vec::new());
+        run(vec![egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE }]);
+        run(vec![egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE }]);
+        assert_eq!(selected, None);
+        assert!(ids.is_empty());
     }
 }
