@@ -3150,6 +3150,13 @@ fn a_match_leaves_greys_too_close_to_tell_apart() {
     assert!(apart.temperature.is_some_and(|t| t > 0.0), "{apart:?}");
 }
 
+/// Taking a look off says it is off, not "Look on".
+#[test]
+fn a_removed_look_is_reported_off() {
+    assert!(klipp_control::look_next(true).starts_with("Look off"));
+    assert!(klipp_control::look_next(false).starts_with("Look on"));
+}
+
 /// resolve_look picks a look by a distinctive word, takes an absolute
 /// .cube path as-is, and says so when a name matches nothing.
 #[test]
