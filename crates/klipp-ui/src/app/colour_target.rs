@@ -30,7 +30,14 @@ impl AppState {
                 self.colour_elsewhere = self.selected_clip.filter(|c| self.picture_clip(*c).is_some());
             }
             self.selected_clip = Some(graded);
-            self.selected_clips.clear();
+            // A selection of several is the person's, made with Ctrl or
+            // Shift for Apply Grade from Still and Looks to reach: kept.
+            // Cleared, a Ctrl+click on a clip away from the playhead
+            // emptied it the next frame, and Apply went to the graded
+            // clip alone.
+            if self.selected_clips.len() < 2 {
+                self.selected_clips.clear();
+            }
         }
         if self.colour_elsewhere == Some(graded) {
             self.colour_elsewhere = None;

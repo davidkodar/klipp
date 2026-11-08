@@ -192,3 +192,30 @@ fn escape_keeps_the_page_on_the_clip_at_the_playhead() {
     assert!(!state.grade_needs_following(here), "several selected are left alone");
     assert!(state.grade_needs_following(None), "the page was just opened");
 }
+
+/// Ctrl+click on a clip away from the playhead adds it to a selection of
+/// several, as the timeline makes it: the page goes on grading the clip at
+/// the playhead and keeps the several, so Apply Grade from Still and Looks
+/// reach them. A single click away is still named with "Go to it".
+#[test]
+fn a_ctrl_click_selection_away_from_the_playhead_is_kept() {
+    let Cut { mut state, upper, later, .. } = cut();
+    assert_eq!(to_colour_page(&mut state), Some(upper));
+    let here = Some(state.playhead);
+    // The timeline's Ctrl+click on `later`: the primary seeded into the
+    // set, `later` added and made the primary.
+    state.selected_clips = vec![upper, later];
+    state.selected_clip = Some(later);
+    assert!(state.grade_needs_following(here), "a primary picked away is looked at again");
+    assert_eq!(state.grade_at_playhead(), Some(upper), "the clip at the playhead is graded");
+    assert_eq!(state.selected_clips, vec![upper, later], "the several are kept");
+    assert!(!state.grade_needs_following(here), "settled");
+
+    // One clip picked away: no set to keep.
+    state.selected_clips.clear();
+    state.selected_clip = Some(later);
+    assert_eq!(state.grade_at_playhead(), Some(upper));
+    assert!(state.selected_clips.is_empty());
+    assert_eq!(state.colour_elsewhere_hint(), Some(later));
+}
+
