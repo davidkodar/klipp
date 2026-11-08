@@ -46,6 +46,9 @@ pub enum ColourAction {
     /// A starting grade for the selected clip, from the inspector's
     /// Colour tab: the `auto_colour` op an assistant sends.
     AutoColour,
+    /// A colour chart in the shot, from the viewer's chart tool: the
+    /// `read_chart` request an assistant sends.
+    ReadChart,
 }
 
 impl ColourAction {
@@ -59,6 +62,7 @@ impl ColourAction {
             ColourAction::GradeToLook => "Grade to Look",
             ColourAction::AdoptLookFromTimeline | ColourAction::AdoptLookFromMedia => "Adopt Look",
             ColourAction::AutoColour => "Auto Colour",
+            ColourAction::ReadChart => "Read Chart",
         }
     }
 }

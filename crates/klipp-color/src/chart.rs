@@ -383,7 +383,7 @@ impl ChartRefused {
         match self {
             Self::Corners => "the four corners are not a four-sided shape in the frame: give them in order round the chart",
             Self::TooSmall => "the chart is too small in the picture to read: each patch needs a few pixels across",
-            Self::NotAChart => "that does not read as a ColorChecker: its six grey patches should run white to black along one long side. Place the corners on the outer corners of the patches, brown patch first; a chart of another make has other values",
+            Self::NotAChart => "that does not read as a ColorChecker: its six grey patches should run white to black along one long side. Place the corners on the outer corners of the patches, brown patch first; on a chart of another make, so that its greys lie along that side, white first",
         }
     }
 }

@@ -2790,6 +2790,14 @@ pub enum AppCommand {
     /// click picks the grey the clip is balanced on
     /// (`RequestWhiteBalanceSample`).
     PickWhiteBalance { clip_id: ClipId },
+    /// Put the chart tool up in the viewer for `clip_id`: four corners to
+    /// drag onto a colour chart in the shot.
+    StartChartRead { clip_id: ClipId },
+    /// Read the chart at `corners` (frame fractions, round it from the brown
+    /// patch) in `clip_id` at the playhead, and set the white balance from
+    /// it, with the exposure too when `exposure`: the request an assistant
+    /// sends, one undo step.
+    RunChartRead { clip_id: ClipId, corners: [[f32; 2]; 4], exposure: bool },
     /// Arm the viewer's qualifier eyedropper for a Qualifier node: the
     /// next click keys the node on the colour picked
     /// (`RequestQualifierSample`).
