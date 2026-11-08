@@ -205,15 +205,8 @@ pub(crate) fn timeline_text(
                 let _ = write!(line, " in group {}", quoted(&g.name));
             }
             // Read from the clip's picture (M4 step 12d).
-            let effects = c.picture_effects().unwrap_or_default();
-            if !effects.is_empty() {
-                let names: Vec<String> = effects
-                    .iter()
-                    .map(|e| {
-                        let d = format!("{:?}", e.effect);
-                        d.split(['{', '(', ' ']).next().unwrap_or("").to_string()
-                    })
-                    .collect();
+            let names = picture_effect_names(c);
+            if !names.is_empty() {
                 let _ = write!(line, "  fx {}", names.join(","));
             }
             // Its own audio effects, as a track's are said (the track's
@@ -299,6 +292,7 @@ pub(crate) fn timeline_text(
 
 /// What `list_clips` is asked for: every field or the short form, and
 /// which clips.
+#[derive(Default)]
 pub(crate) struct ClipFilter {
     pub(crate) full: bool,
     pub(crate) track: Option<serde_json::Value>,
@@ -361,6 +355,10 @@ pub(crate) fn list_clips(seq: &klipp_timeline::Sequence, pool: &klipp_media::Med
                 "blend_mode": format!("{:?}", c.blend_mode),
                 "grade_is_identity": c.own_grade().is_identity(),
                 "grade_nodes": c.own_grade().nodes.len(),
+                // What else is on its picture: a clip with a glitch on it
+                // read as untouched, its grade being the identity.
+                "recipes": recipe_names(c),
+                "effect_kinds": picture_effect_names(c),
                 "grade_group": c.grade_group.and_then(|g| seq.grade_group(g)).map(|g| g.name.clone()),
                 "media": c.media_id()
                     .and_then(|id| pool.get(&id))
@@ -413,6 +411,13 @@ pub(crate) fn list_clips(seq: &klipp_timeline::Sequence, pool: &klipp_media::Med
         }
         if !c.own_grade().is_identity() || c.grade_group.is_some() {
             v["graded"] = json!(true);
+        }
+        let (recipes, effects) = (recipe_names(c), picture_effect_names(c));
+        if !recipes.is_empty() {
+            v["recipes"] = json!(recipes);
+        }
+        if !effects.is_empty() {
+            v["effect_kinds"] = json!(effects);
         }
         let fx = c.picture_effects().map_or(0, |e| e.len()) + c.picture_ofx().map_or(0, |o| o.len());
         if fx > 0 {
@@ -665,6 +670,26 @@ pub(crate) fn log_format_json(m: &klipp_media::MediaItem) -> serde_json::Value {
         "detected": format!("{:?}", m.detected_log_format),
         "effective": format!("{:?}", m.effective_log_format()),
     })
+}
+
+/// The recipes placed on `c`'s picture, by name (#2758).
+fn recipe_names(c: &klipp_timeline::Clip) -> Vec<String> {
+    c.picture_v2()
+        .as_ref()
+        .map(|l| l.picture.graph.ui.frames.iter().filter_map(|f| serde_json::from_value::<klipp_core::RecipeInstance>(f.get("recipe")?.clone()).ok()).map(|r| r.name).collect())
+        .unwrap_or_default()
+}
+
+/// The effects on `c`'s picture, each by its kind (M4 step 12d).
+fn picture_effect_names(c: &klipp_timeline::Clip) -> Vec<String> {
+    c.picture_effects()
+        .unwrap_or_default()
+        .iter()
+        .map(|e| {
+            let d = format!("{:?}", e.effect);
+            d.split(['{', '(', ' ']).next().unwrap_or("").to_string()
+        })
+        .collect()
 }
 
 /// A placed template's or recipe's controls (#2757, #2758): each with its

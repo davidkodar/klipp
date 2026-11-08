@@ -202,7 +202,7 @@ pub(crate) fn subject_note(seq: &Sequence, clip: ClipId, recipe: &CompositionTem
             .map_or(0, |(have, _)| have);
         if have < times.len() {
             said.push(format!(
-                "its {word} matte has {have} of the clip's {} frames: track_subject with model {word} makes the missing ones (it downloads the model only if you ask it to), and the text shows in front where none is made yet",
+                "its {word} matte has {have} of the {} frames a render reads from the clip (its own, and one either side for blending): track_subject with model {word} makes the missing ones (it downloads the model only if you ask it to), and the text shows in front where none is made yet",
                 times.len()
             ));
         }
@@ -668,7 +668,7 @@ mod tests {
         let slots = BTreeMap::from([("title".to_string(), json!("Hello")), ("Subject".to_string(), json!("foreground"))]);
         let v = values(r, &slots, &BTreeMap::new()).unwrap();
         let note = subject_note(&seq, id, r, &v, &files).expect("said");
-        assert!(note.contains("has 0 of the clip's") && note.contains("track_subject with model foreground") && note.contains("only if you ask"), "{note}");
+        assert!(note.contains("has 0 of the 26 frames a render reads from the clip") && note.contains("track_subject with model foreground") && note.contains("only if you ask"), "{note}");
         assert!(values(r, &BTreeMap::from([("subject".to_string(), json!("cat"))]), &BTreeMap::new()).unwrap_err().contains("\"subject\""));
         // The title slot is the title op's: its text made into a title.
         let (ops, _) = on_clip(&seq, id, r, &v).unwrap();
