@@ -181,7 +181,7 @@ fn video_codec_name(c: ExportVideoCodec) -> &'static str {
         ExportVideoCodec::H264 => "h264",
         ExportVideoCodec::H265 => "hevc",
         ExportVideoCodec::ProRes422 | ExportVideoCodec::ProRes422HQ | ExportVideoCodec::ProRes4444 => "prores",
-        ExportVideoCodec::DNxHD115 | ExportVideoCodec::DNxHD145 => "dnxhd",
+        ExportVideoCodec::DNxHD115 | ExportVideoCodec::DnxhrLb | ExportVideoCodec::DnxhrSq | ExportVideoCodec::DnxhrHq | ExportVideoCodec::DnxhrHqx | ExportVideoCodec::Dnxhr444 => "dnxhd",
         ExportVideoCodec::Av1 => "av1",
         ExportVideoCodec::Vp9 => "vp9",
         ExportVideoCodec::Gif => "gif",

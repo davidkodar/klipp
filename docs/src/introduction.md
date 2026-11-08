@@ -55,7 +55,7 @@ The list below describes which subsystems currently produce output. None of thes
 - Models download on request; nothing is bundled
 
 ### Export
-- H.264, H.265, AV1, VP9, ProRes, DNxHD and animated GIF; sound alone as MP3, WAV or M4A
+- H.264, H.265, AV1, VP9, ProRes, DNxHR (and DNxHD at 1920x1080) and animated GIF; sound alone as MP3, WAV or M4A
 - HDR10 / HLG output, HDR10+ metadata on H.265 PQ
 - Captions burnt in, as sidecar files, or as CEA-608 in the video stream
 - A delivery check over picture and sound before export

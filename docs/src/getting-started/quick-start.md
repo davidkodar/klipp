@@ -125,7 +125,7 @@ Klipp's pipeline is linear-light throughout, working in **Rec.709 linear** unles
 Go to **File → Export...** (**Ctrl+E**). Choose a delivery preset or set:
 
 - **Container** — MP4, MKV, MOV
-- **Video codec** — H.264, H.265, AV1, VP9, ProRes, DNxHD, GIF
+- **Video codec** — H.264, H.265, AV1, VP9, ProRes, DNxHR (LB, SQ, HQ, HQX, 444; DNxHD at 1920x1080), GIF. One this computer can't encode is greyed, with the reason on hover
 - **Resolution, frame rate and bit depth**
 - **Audio** — codec, and a loudness target
 - **Output Display Transform** — sRGB, Rec.709, Rec.2020, P3-D65

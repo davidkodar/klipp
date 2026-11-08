@@ -193,7 +193,7 @@ pub(crate) fn respond(
                 settings.audio_codec = audio_codec_named(name)?;
             }
             use klipp_core::ExportVideoCodec as V;
-            let fixed_rate = matches!(settings.video_codec, V::ProRes422 | V::ProRes422HQ | V::ProRes4444 | V::DNxHD115 | V::DNxHD145);
+            let fixed_rate = matches!(settings.video_codec, V::ProRes422 | V::ProRes422HQ | V::ProRes4444) || settings.video_codec.is_dnx();
             if let Some(kbps) = bitrate_kbps {
                 if crf.is_some() {
                     return Err("give crf (a quality) or bitrate_kbps (a rate), not both".into());
@@ -208,8 +208,8 @@ pub(crate) fn respond(
                 settings.video_bitrate_kbps = Some(kbps);
             }
             // AV1 as the Export page offers it: ten bits, HLG and PQ.
-            if settings.bit_depth == 10 && !matches!(settings.video_codec, V::H264 | V::H265 | V::Av1 | V::ProRes422 | V::ProRes422HQ | V::ProRes4444) {
-                return Err(format!("{} is written at 8 bits; bit_depth 10 needs h264, hevc, av1 or ProRes", settings.video_codec.label()));
+            if settings.bit_depth == 10 && !(matches!(settings.video_codec, V::H264 | V::H265 | V::Av1) || settings.video_codec.is_hdr_master()) {
+                return Err(format!("{} is written at 8 bits; bit_depth 10 needs h264, hevc, av1, ProRes or DNxHR HQX/444", settings.video_codec.label()));
             }
             if let Some(problem) = settings.container_problem() {
                 return Err(problem);
@@ -275,10 +275,11 @@ pub(crate) fn respond(
                 Some(name) => {
                     let mode = hdr_mode_named(name)?;
                     if mode != klipp_core::HdrMode::Sdr {
-                        let prores = matches!(settings.video_codec, V::ProRes422 | V::ProRes422HQ | V::ProRes4444);
-                        if !prores {
+                        // A mastering codec keeps its own depth (ProRes, DNxHR
+                        // HQX and 444); the others are set to ten bits.
+                        if !settings.video_codec.is_hdr_master() {
                             if !matches!(settings.video_codec, V::H264 | V::H265 | V::Av1) {
-                                return Err(format!("{} writes no HDR; hdr {name} needs hevc, av1, h264 or ProRes", settings.video_codec.label()));
+                                return Err(format!("{} writes no HDR; hdr {name} needs hevc, av1, h264, ProRes or DNxHR HQX/444", settings.video_codec.label()));
                             }
                             if bit_depth == Some(8) {
                                 return Err(format!("hdr {name} is written at 10 bits; leave bit_depth out or give 10"));
@@ -1306,7 +1307,7 @@ fn speed_ignored(settings: &klipp_core::ExportSettings) -> Option<String> {
     if settings.format == klipp_core::ExportFormat::Gif {
         return Some("a GIF has no video encoder speed".into());
     }
-    matches!(settings.video_codec, V::ProRes422 | V::ProRes422HQ | V::ProRes4444 | V::DNxHD115 | V::DNxHD145)
+    (matches!(settings.video_codec, V::ProRes422 | V::ProRes422HQ | V::ProRes4444) || settings.video_codec.is_dnx())
         .then(|| format!("{} encodes at its own fixed rate, with no speed setting", settings.video_codec.label()))
 }
 
@@ -1765,11 +1766,16 @@ fn video_codec_named(name: &str) -> Result<klipp_core::ExportVideoCodec, String>
         "prores" | "prores_422" => V::ProRes422,
         "prores_hq" | "prores_422_hq" => V::ProRes422HQ,
         "prores_4444" => V::ProRes4444,
-        "dnxhd" | "dnxhd_115" => V::DNxHD115,
-        "dnxhd_145" => V::DNxHD145,
+        // The 1080 classes by any of their rates: one class, one file.
+        "dnxhd" | "dnxhd_115" | "dnxhd_120" | "dnxhd_145" => V::DNxHD115,
+        "dnxhr" | "dnxhr_sq" => V::DnxhrSq,
+        "dnxhr_lb" => V::DnxhrLb,
+        "dnxhr_hq" => V::DnxhrHq,
+        "dnxhr_hqx" => V::DnxhrHqx,
+        "dnxhr_444" => V::Dnxhr444,
         "av1" => V::Av1,
         "vp9" => V::Vp9,
-        _ => return Err(format!("{name:?} is not a video codec; give h264, hevc, prores, prores_hq, prores_4444, dnxhd_115, dnxhd_145, av1 or vp9")),
+        _ => return Err(format!("{name:?} is not a video codec; give h264, hevc, prores, prores_hq, prores_4444, dnxhr_lb, dnxhr_sq, dnxhr_hq, dnxhr_hqx, dnxhr_444, dnxhd (1920x1080 only), av1 or vp9")),
     })
 }
 
@@ -1968,7 +1974,7 @@ mod export_choice_tests {
         use klipp_core::{ExportFormat as F, ExportVideoCodec as V};
         let with = |format: F, codec: V| klipp_core::ExportSettings { format, video_codec: codec, ..Default::default() };
         assert!(speed_ignored(&with(F::Mov, V::ProRes422HQ)).unwrap().contains("fixed rate"));
-        assert!(speed_ignored(&with(F::Mov, V::DNxHD145)).is_some());
+        assert!(speed_ignored(&with(F::Mov, V::DnxhrHqx)).is_some());
         assert!(speed_ignored(&with(F::Gif, V::H264)).is_some());
         assert!(speed_ignored(&with(F::Mp3, V::H264)).is_some());
         assert_eq!(speed_ignored(&with(F::Mp4, V::H264)), None);
