@@ -1148,12 +1148,21 @@ reference: {}", target_stats["text"].as_str().unwrap_or(""), ref_stats["text"].a
                 }));
             }
             use klipp_document::ops::{ClipRef, Op};
+            // The knobs are the gap between the two frames as they are
+            // graded now, so they go on top of the target's own grade.
+            // Set in its place, a graded shot lost its grade to the gap
+            // alone, and matching it again swung it back and forth.
+            let now = {
+                let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+                seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|cl| cl.id == target_id).map(|cl| primary_knobs(klipp_timeline::GradeAccess::grade(cl))).unwrap_or_default()
+            };
+            let set = match_on_top(&now, &knobs);
             let op = Op::Grade {
                 clip_id: Some(ClipRef::Id(target_id)),
                 on: None,
-                exposure: knobs.exposure, contrast: None, saturation: None,
-                temperature: knobs.temperature, tint: knobs.tint,
-                lift: knobs.lift, gamma: None, gain: knobs.gain,
+                exposure: set.exposure, contrast: None, saturation: None,
+                temperature: set.temperature, tint: set.tint,
+                lift: set.lift, gamma: None, gain: set.gain,
                 highlights: None, shadows: None, vibrance: None, reset: false, from: None,
             };
             let (plan, revision) = resolve_plan(ctx, std::slice::from_ref(&op))?;
@@ -1328,3 +1337,4 @@ mod scene_join_tests {
         assert!(lines.len() == 1 && lines[0].contains("at 8.00 s"), "{lines:?}");
     }
 }
+
