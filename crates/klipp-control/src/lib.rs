@@ -536,6 +536,15 @@ mod timeline_view_tests {
         seq.tracks[0].clips[0].restore_picture(&edit.after);
         let text = timeline_text(&seq, &pool, None, 1, TimelineView::default());
         assert!(text.contains("recipe \"Green screen\"  control \"tolerance\" = 0.2: node:0.tolerance 0..1 linear;"), "{text}");
+        // The clip list says so too, short and full: a clip with a recipe
+        // on it read as untouched there, its grade being the identity.
+        for full in [false, true] {
+            let f = crate::timeline_view::ClipFilter { full, ..Default::default() };
+            let listed = crate::timeline_view::list_clips(&seq, &pool, 1, &f).unwrap();
+            let row = &listed["tracks"][0]["clips"][0];
+            assert_eq!(row["recipes"], serde_json::json!(["Green screen"]), "full {full}: {row}");
+            assert!(row["effect_kinds"].as_array().is_some_and(|e| !e.is_empty()), "full {full}: {row}");
+        }
     }
 }
 
