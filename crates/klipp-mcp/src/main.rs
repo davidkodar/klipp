@@ -875,6 +875,13 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             v
         }
         "klipp_auto_redact" => json!({ "method": "auto_redact", "apply": args.get("apply").and_then(|v| v.as_bool()).unwrap_or(false) }),
+        "klipp_pick_grey" => json!({
+            "method": "pick_grey",
+            "clip_id": arg_str(args, "clip_id")?,
+            "x": args.get("x").and_then(Value::as_f64).ok_or("missing required argument: x")?,
+            "y": args.get("y").and_then(Value::as_f64).ok_or("missing required argument: y")?,
+            "secs": args.get("secs"),
+        }),
         "klipp_skin_balance" => json!({ "method": "skin_balance", "clip_id": arg_str(args, "clip_id")?, "apply": args.get("apply").and_then(|v| v.as_bool()).unwrap_or(false) }),
         "klipp_grade_to_target" => json!({
             "method": "grade_to_target",
@@ -2453,6 +2460,9 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
         tool("klipp_measure_region",
              "One box of the frame read alone, in klipp_frame_stats's numbers; x, y, w, h are fractions. Details: klipp_guide topic measure_region.",
              json!({ "secs": { "type": "number" }, "x": { "type": "number" }, "y": { "type": "number" }, "w": { "type": "number" }, "h": { "type": "number" }, "timeout_ms": { "type": "integer" } }), vec!["secs", "x", "y", "w", "h"]),
+        tool("klipp_pick_grey",
+             "Set a clip's white balance exactly from a point known to be grey. Details: klipp_guide topic pick_grey.",
+             json!({ "clip_id": { "type": "string" }, "x": { "type": "number", "description": "0-1 across the frame" }, "y": { "type": "number", "description": "0-1 down the frame" }, "secs": { "type": "number", "description": "Timeline second; else the clip's middle" } }), vec!["clip_id", "x", "y"]),
         tool("klipp_skin_balance",
              "Turn faces' skin hue onto the skin band by measurement, with a skin secondary. Details: klipp_guide topic skin_balance.",
              json!({ "clip_id": { "type": "string" }, "apply": { "type": "boolean" } }), vec!["clip_id"]),
@@ -3938,6 +3948,7 @@ mod catalogue_trim_tests {
         ("klipp_spelling", "spelling", &["suggestions", "project", "every"]),
         ("klipp_operation_status", "operation_status", &["revision", "reason"]),
         ("klipp_check_delivery", "check_delivery", &["pass", "warn", "fail"]),
+        ("klipp_pick_grey", "pick_grey", &["grey", "fractions", "undo"]),
         ("klipp_skin_balance", "skin_balance", &["25", "70", "three", "rounds", "apply"]),
         ("klipp_cancel_job", "cancel_job", &["import", "sync", "stopped"]),
         ("klipp_transcript", "transcript", &["words", "silent"]),

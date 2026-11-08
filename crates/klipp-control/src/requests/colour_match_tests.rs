@@ -101,4 +101,27 @@ fn a_match_sets_the_brightness_then_reads_the_colour() {
     assert_eq!(steps[1].exposure, steps[0].exposure, "the colour step leaves the tone");
     assert_eq!(reply["undo_steps"], serde_json::json!(1), "{reply}");
     assert_eq!(*squashed.lock().unwrap(), 1, "folded");
+    assert!(reply["text"].as_str().unwrap().contains("eyedropper in Colour Balance"), "where the exact tool is: {reply}");
+    assert!(reply["next"].as_str().unwrap().contains("pick_grey"), "{reply}");
+}
+
+/// A grey picked is taken to grey, on top of the clip's grade, as one
+/// undo step, and the reply says what the point reads after. A point off
+/// the frame is refused, changing nothing.
+#[test]
+fn a_picked_grey_is_balanced_on_and_read_again() {
+    let (ctx, target, _, written, _) = context();
+    crate::handle(&ctx, ControlCommand::Apply { ops: vec![serde_json::from_value(serde_json::json!({ "op": "grade", "clip_id": target, "exposure": 0.5 })).unwrap()], expected_revision: None, expected_project_identity: None, label: None, detail: false }, &mut None).unwrap_or_else(|e| panic!("{e}"));
+    written.lock().unwrap().clear();
+    let off = respond(&ctx, ControlCommand::PickGrey { clip_id: target.clone(), x: 1.5, y: 0.5, secs: Some(3.0) }, &mut None).unwrap_err();
+    assert!(off.contains("fractions"), "{off}");
+    assert!(written.lock().unwrap().is_empty(), "nothing changed");
+    let reply = respond(&ctx, ControlCommand::PickGrey { clip_id: target, x: 0.5, y: 0.5, secs: Some(3.0) }, &mut None).unwrap();
+    let steps = written.lock().unwrap().clone();
+    assert_eq!(steps.len(), 1, "one step: {steps:?}");
+    let temperature = steps[0].temperature.expect("a move");
+    assert!((-14.0..-2.0).contains(&temperature), "b* +2 on the picked grey takes a few mireds off: {temperature}");
+    assert_eq!(steps[0].exposure, Some(0.5), "the grade kept");
+    let text = reply["text"].as_str().unwrap();
+    assert!(text.contains("it now reads"), "{text}");
 }

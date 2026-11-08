@@ -99,6 +99,15 @@ Arguments:
 - `param`: Parameter name, e.g. temperature
 - `remove`: Take the key at `at` away
 
+## klipp_pick_grey
+
+White balance from a point you know is grey, as the Colour page's eyedropper in Colour Balance does: `x` and `y` are fractions of the frame, read with klipp_frame_at, at `secs` on the timeline or the clip's middle. Temperature and tint go on top of the clip's grade, as one undo step, and the reply says what the point reads after. This is the exact way when klipp_match_grade or an automatic balance cannot tell a grey from a coloured surface, and exact only if the point really is grey: a white or grey that is not blown out, not a surface that only looks neutral. Refused on a point clipped white or too dark to read.
+
+Arguments:
+- `clip_id`: From klipp_list_clips
+- `x`, `y`: The point, 0 to 1 across and down the frame
+- `secs`: Timeline second, inside the clip
+
 ## klipp_skin_balance
 
 Skin onto the skin band, by measurement: the faces in the clip's frame (the framing analysis's people, the head of each) are read as a grid of skin patches in CIELAB (8×8 for a face that fills the frame, down to 3×3 for a small one); the face's median hue is held to the band 25–70° that real skin of every kind sits in as photographed, aiming at 45°. With apply true a skin secondary (a qualifier keyed on skin, a hue shift) turns the hue onto the band, measured again after each of up to three rounds. Refused when the face is lit by two colours of light; when the scene's neutrals carry the same cast the reply says to white balance first. Read a face at any time with klipp_frame_stats.
