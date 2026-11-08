@@ -1897,7 +1897,7 @@ pub enum Op {
         #[serde(default)]
         lum_high: Option<f32>,
         #[serde(default)]
-        invert: bool,
+        invert: Option<bool>,
         #[serde(default)]
         exposure: Option<f32>,
         #[serde(default)]
@@ -11368,7 +11368,7 @@ struct QualifyArgs<'a> {
     sat_high: Option<f32>,
     lum_low: Option<f32>,
     lum_high: Option<f32>,
-    invert: bool,
+    invert: Option<bool>,
     exposure: Option<f32>,
     saturation: Option<f32>,
     hue_shift: Option<f32>,
@@ -11411,17 +11411,50 @@ fn qualify(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, a
             return Err(refuse(i, "no secondary to remove", "this clip has no qualifier on it"));
         }
         let mut graph = clip.grade().clone();
-        // The keyer off, and the corrections it gated back to neutral.
-        let keyed: Vec<klipp_nodes::NodeId> = graph
-            .nodes
-            .iter()
-            .filter(|n| n.kind == klipp_nodes::NodeKind::Qualifier)
-            .filter_map(|q| graph.edges.iter().find(|e| e.from_node == q.id && e.to_port == 1).map(|e| e.to_node))
-            .collect();
+        // The keyer off, and the corrections it gated back to neutral:
+        // straight from the keyer, or through the combiner that holds
+        // the key inside a window. The window comes out with the key and
+        // the keyer is wired straight to its correction again: left in,
+        // the correction went on grading everything inside the window,
+        // and a later secondary without one would key only there.
+        let qualifiers: Vec<klipp_nodes::NodeId> = graph.nodes.iter().filter(|n| n.kind == klipp_nodes::NodeKind::Qualifier).map(|n| n.id).collect();
+        let is_kind = |g: &klipp_nodes::NodeGraph, id: klipp_nodes::NodeId, k: klipp_nodes::NodeKind| g.nodes.iter().any(|n| n.id == id && n.kind == k);
+        let mut keyed: Vec<klipp_nodes::NodeId> = Vec::new();
+        for q in qualifiers {
+            let outs: Vec<klipp_nodes::Edge> = graph.edges.iter().filter(|e| e.from_node == q).cloned().collect();
+            for e in outs {
+                if !is_kind(&graph, e.to_node, klipp_nodes::NodeKind::CombineMattes) {
+                    if e.to_port == 1 {
+                        keyed.push(e.to_node);
+                    }
+                    continue;
+                }
+                let combine = e.to_node;
+                let corrections: Vec<klipp_nodes::NodeId> = graph.edges.iter().filter(|c| c.from_node == combine && c.to_port == 1).map(|c| c.to_node).collect();
+                let windows: Vec<klipp_nodes::NodeId> = graph
+                    .edges
+                    .iter()
+                    .filter(|m| m.to_node == combine && m.from_node != q)
+                    .map(|m| m.from_node)
+                    .filter(|m| is_kind(&graph, *m, klipp_nodes::NodeKind::Mask))
+                    .collect();
+                graph.edges.retain(|x| x.from_node != combine && x.to_node != combine && !windows.contains(&x.from_node) && !windows.contains(&x.to_node));
+                graph.nodes.retain(|n| n.id != combine && !windows.contains(&n.id));
+                for c in &corrections {
+                    graph.node_positions.remove(&combine);
+                    graph.edges.push(klipp_nodes::Edge { from_node: q, from_port: 0, to_node: *c, to_port: 1 });
+                }
+                for w in &windows {
+                    graph.node_positions.remove(w);
+                }
+                keyed.extend(corrections);
+            }
+        }
         for node in graph.nodes.iter_mut() {
             if node.kind == klipp_nodes::NodeKind::Qualifier {
                 if let Some(q) = node.params.qualifier.as_mut() {
                     q.enabled = false;
+                    q.invert = false;
                     q.exposure = 0.0;
                     q.saturation = 1.0;
                     q.hue_shift = 0.0;
@@ -11570,8 +11603,10 @@ fn qualify(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, a
             q.remove_samples = a.take_out.unwrap_or(&[]).to_vec();
         }
         node.params.apply_override("qual_enabled", 1.0);
-        if a.invert {
-            node.params.apply_override("qual_invert", 1.0);
+        // Given either way, it is set either way: an inverted key is
+        // turned back by invert false.
+        if let Some(inv) = a.invert {
+            node.params.apply_override("qual_invert", if inv { 1.0 } else { 0.0 });
         }
     }
     {
@@ -11589,7 +11624,7 @@ fn qualify(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, a
     let mut said = Vec::new();
     if let Some(name) = a.target { said.push(name.to_string()); }
     else if let Some(h) = hue_center { said.push(format!("hue {h:.0}°")); }
-    if a.invert { said.push("inverted".into()); }
+    if a.invert == Some(true) { said.push("inverted".into()); }
     let mut corr = Vec::new();
     for (label, v) in [("exposure", a.exposure), ("saturation", a.saturation), ("hue_shift", a.hue_shift), ("temperature", a.temperature)] {
         if let Some(v) = v { corr.push(format!("{label} {v}")); }
@@ -15496,7 +15531,7 @@ mod tests {
         let (seq, pool, _, a, _) = fixture();
         let op = |hue_shift: Option<f32>, saturation: Option<f32>| Op::Qualify {
             clip_id: ClipRef::Id(a), target: Some("skin".into()), hue: None, hue_width: None,
-            sat_low: None, sat_high: None, lum_low: None, lum_high: None, invert: false,
+            sat_low: None, sat_high: None, lum_low: None, lum_high: None, invert: None,
             exposure: None, saturation, hue_shift, temperature: None, remove: false, window: None, window_feather: None, rgb: None, keep: None, take_out: None };
         let plan = resolve(&seq, &pool, &[op(Some(20.0), None)]).unwrap();
         let EditCommand::SetNodeGraph { new_graph, .. } = &plan.steps[0].edit else { panic!("a graph edit") };
@@ -21314,7 +21349,7 @@ mod tests {
         let (seq, pool, _media, a, _) = fixture();
         let q = |target: Option<&str>, hue: Option<f32>, exposure: Option<f32>, saturation: Option<f32>, remove: bool| Op::Qualify {
             clip_id: ClipRef::Id(a), target: target.map(|s| s.to_string()), hue, hue_width: None,
-            sat_low: None, sat_high: None, lum_low: None, lum_high: None, invert: false,
+            sat_low: None, sat_high: None, lum_low: None, lum_high: None, invert: None,
             exposure, saturation, hue_shift: None, temperature: None, remove,
             window: None, window_feather: None, rgb: None, keep: None, take_out: None,
         };
@@ -21366,7 +21401,7 @@ mod tests {
             clip_id: ClipRef::Id(a),
             target: None,
             hue, hue_width: None, sat_low: None, sat_high: None, lum_low: None, lum_high: None,
-            invert: false, exposure: Some(-0.5), saturation: None, hue_shift: None, temperature: None, remove: false,
+            invert: None, exposure: Some(-0.5), saturation: None, hue_shift: None, temperature: None, remove: false,
             window: None, window_feather: None, rgb, keep: None, take_out: None,
         };
         let plan = resolve(&seq, &pool, &[q(Some([0.5, 1.0, 0.0, 0.4, 0.0, 0.3]), None)]).unwrap();
@@ -21428,7 +21463,7 @@ mod tests {
     #[test]
     fn foliage_keys_olive_to_green() {
         let (seq, pool, _, a, _) = fixture();
-        let q = |target: &str| Op::Qualify { clip_id: ClipRef::Id(a), target: Some(target.into()), hue: None, hue_width: None, sat_low: None, sat_high: None, lum_low: None, lum_high: None, invert: false, exposure: None, saturation: None, hue_shift: Some(40.0), temperature: None, remove: false, window: None, window_feather: None, rgb: None, keep: None, take_out: None };
+        let q = |target: &str| Op::Qualify { clip_id: ClipRef::Id(a), target: Some(target.into()), hue: None, hue_width: None, sat_low: None, sat_high: None, lum_low: None, lum_high: None, invert: None, exposure: None, saturation: None, hue_shift: Some(40.0), temperature: None, remove: false, window: None, window_feather: None, rgb: None, keep: None, take_out: None };
         let key = |target: &str| {
             let plan = resolve(&seq, &pool, &[q(target)]).unwrap();
             let EditCommand::SetNodeGraph { new_graph, .. } = &plan.steps[0].edit else { panic!() };
@@ -21500,7 +21535,7 @@ mod tests {
             clip_id: ClipRef::Id(a),
             target: None,
             hue, hue_width: None, sat_low: None, sat_high: None, lum_low: None, lum_high: None,
-            invert: false, exposure: None, saturation: Some(1.2), hue_shift: None, temperature: None, remove: false,
+            invert: None, exposure: None, saturation: Some(1.2), hue_shift: None, temperature: None, remove: false,
             window: None, window_feather: None, rgb: None, keep, take_out,
         };
         let skin = vec![[0.8, 0.55, 0.45], [0.7, 0.47, 0.38]];
@@ -21525,7 +21560,7 @@ mod tests {
             clip_id: ClipRef::Id(a),
             target: Some("skin".into()),
             hue: None, hue_width: None, sat_low: None, sat_high: None, lum_low: None, lum_high: None,
-            invert: false, exposure: None, saturation: None, hue_shift: Some(6.0), temperature: None, remove: false,
+            invert: None, exposure: None, saturation: None, hue_shift: Some(6.0), temperature: None, remove: false,
             window: Some(vec![face(0.0, 0.20), face(1.0, 0.44), face(2.0, 0.62)]),
             window_feather: None, rgb: None, keep: None, take_out: None,
         };
@@ -21554,12 +21589,68 @@ mod tests {
             resolve(&seq, &pool, &[Op::Qualify {
                 clip_id: ClipRef::Id(a), target: Some("skin".into()),
                 hue: None, hue_width: None, sat_low: None, sat_high: None, lum_low: None, lum_high: None,
-                invert: false, exposure: None, saturation: None, hue_shift: Some(6.0), temperature: None, remove: false,
+                invert: None, exposure: None, saturation: None, hue_shift: Some(6.0), temperature: None, remove: false,
                 window: Some(w), window_feather: None, rgb: None, keep: None, take_out: None,
             }]).unwrap_err()
         };
         assert!(bad(vec![WindowKey { at: 0.0, x: 0.2, y: 0.2, w: 0.0, h: 0.2 }]).why.contains("not a box"));
         assert!(bad(vec![WindowKey { at: -1.0, x: 0.2, y: 0.2, w: 0.2, h: 0.2 }]).why.contains("not a box"));
+    }
+
+    /// Clearing a windowed secondary clears all of it: the window's
+    /// correction back to neutral, the window gone and the key wired to
+    /// its correction again, the key no longer inverted. Left as it was,
+    /// the correction graded everything inside the window once the key
+    /// was off, and the next secondary keyed inverted without being asked.
+    #[test]
+    fn clearing_a_windowed_secondary_takes_its_window_and_inversion_with_it() {
+        use klipp_nodes::NodeKind as K;
+        let (seq, pool, _media, a, _) = fixture();
+        let q = |invert: Option<bool>, window: Option<Vec<WindowKey>>, remove: bool| Op::Qualify {
+            clip_id: ClipRef::Id(a), target: if remove { None } else { Some("reds".into()) },
+            hue: None, hue_width: None, sat_low: None, sat_high: None, lum_low: None, lum_high: None,
+            invert, exposure: None, saturation: if remove { None } else { Some(0.0) }, hue_shift: None, temperature: None, remove,
+            window, window_feather: None, rgb: None, keep: None, take_out: None,
+        };
+        let mut seqs = vec![seq.clone()];
+        let mut p = pool.clone();
+        let mut fps = seq.fps;
+        let mut step = |op: Op| -> klipp_nodes::NodeGraph {
+            let plan = resolve(&seqs[0], &p, &[op]).unwrap();
+            let EditCommand::SetNodeGraph { new_graph, .. } = &plan.steps[0].edit else { panic!("node-graph edit") };
+            let g = new_graph.clone();
+            let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps };
+            view.apply_forward(&plan.steps[0].edit);
+            g
+        };
+        let key = |g: &klipp_nodes::NodeGraph| g.nodes.iter().find(|n| n.kind == K::Qualifier).and_then(|n| n.params.qualifier.clone()).expect("a key");
+        let gated = |g: &klipp_nodes::NodeGraph| {
+            let qid = g.nodes.iter().find(|n| n.kind == K::Qualifier).unwrap().id;
+            let to = g.edges.iter().find(|e| e.from_node == qid).map(|e| (e.to_node, e.to_port)).expect("the key goes somewhere");
+            (g.nodes.iter().find(|n| n.id == to.0).unwrap().clone(), to.1)
+        };
+
+        let g = step(q(Some(true), Some(vec![WindowKey { at: 0.0, x: 0.3, y: 0.2, w: 0.2, h: 0.2 }]), false));
+        assert!(key(&g).invert && g.nodes.iter().any(|n| n.kind == K::Mask) && g.nodes.iter().any(|n| n.kind == K::CombineMattes));
+
+        let g = step(q(None, None, true));
+        assert!(!g.nodes.iter().any(|n| n.kind == K::Mask || n.kind == K::CombineMattes), "the window comes out with the key");
+        let (corr, port) = gated(&g);
+        assert_eq!((corr.kind, port), (K::Corrector, 1), "the key gates its correction straight again");
+        assert_eq!(corr.params.saturation, Some(1.0), "the window's correction is back to neutral");
+        let k = key(&g);
+        assert!(!k.enabled && !k.invert, "{k:?}");
+
+        // A secondary after it keys what it is told, the whole frame and
+        // not inverted, on the same two nodes.
+        let g = step(q(None, None, false));
+        assert!(!key(&g).invert && key(&g).enabled);
+        assert_eq!(g.nodes.iter().filter(|n| n.kind == K::Qualifier).count(), 1);
+        assert_eq!(gated(&g).0.params.saturation, Some(0.0));
+
+        // And an inverted key is turned back by saying so.
+        assert!(key(&step(q(Some(true), None, false))).invert);
+        assert!(!key(&step(q(Some(false), None, false))).invert);
     }
 
     #[test]
