@@ -592,14 +592,23 @@ impl NodeGraph {
         let Some(first) = track.first() else { return };
         let aspect = if aspect.is_finite() && aspect > 0.01 { aspect } else { 9.0 / 16.0 };
         let centre = |b: [f32; 4]| (b[0] + b[2] / 2.0, b[1] + b[3] / 2.0);
-        // A quarter past the face on every side: the detector's box is
-        // the face, and a grade that stops at the jaw is a mask.
-        const PAD: f32 = 1.25;
-        let radius = |b: [f32; 4]| ((b[2] / 2.0).max(b[3] * aspect / 2.0) * PAD).clamp(0.02, 1.2);
+        // The box itself, in frame widths both ways as a mask's sizes are,
+        // full strength inside it and softening outside over `feather` of
+        // its shorter half, so a face box keeps the jaw and a band across
+        // the sky keeps its height. Taken as a circle round the longer
+        // side, padded and softened by `feather` frame widths, a band a
+        // third of the frame high became a window over all of it, and the
+        // key reached everything the window was there to keep out.
+        let size = |b: [f32; 4]| (b[2].clamp(0.01, 2.0), (b[3] * aspect).clamp(0.01, 2.0));
+        let soft = |b: [f32; 4]| {
+            let (w, h) = size(b);
+            feather.clamp(0.0, 1.0) * w.min(h) / 2.0
+        };
         let (cx, cy) = centre(first.1);
+        let (w, h) = size(first.1);
         let mut mask = Mask { feather_inner: 0.0, combine: klipp_core::MaskCombine::Add, name: String::new(), locked: false,
-            shape: MaskShape::Circle { center_x: cx, center_y: cy, radius: radius(first.1) },
-            feather: feather.clamp(0.0, 1.0),
+            shape: MaskShape::Rectangle { center_x: cx, center_y: cy, width: w, height: h, rotation: 0.0 },
+            feather: soft(first.1),
             invert: false,
             opacity: 1.0,
             enabled: true,
@@ -608,6 +617,7 @@ impl NodeGraph {
         if track.len() > 1 {
             for (t, b) in track {
                 let (cx, cy) = centre(*b);
+                let (w, h) = size(*b);
                 let key = |v: f32| Keyframe {
                     time_secs: *t,
                     value: v,
@@ -620,7 +630,9 @@ impl NodeGraph {
                 };
                 mask.keyframes.center_x.push(key(cx));
                 mask.keyframes.center_y.push(key(cy));
-                mask.keyframes.radius.push(key(radius(*b)));
+                mask.keyframes.width.push(key(w));
+                mask.keyframes.height.push(key(h));
+                mask.keyframes.feather.push(key(soft(*b)));
             }
         }
         node.params.masks = Some(MaskStack { masks: vec![mask] });
@@ -2194,20 +2206,28 @@ mod window_tests {
     }
 
     #[test]
-    fn the_window_covers_the_face_under_the_circles_own_convention() {
-        // MaskShape::Circle reaches `radius` across and `radius / aspect`
-        // of the height down. A tall face box is the case a radius from
-        // its width alone gets wrong: it would cut the chin off.
+    fn the_window_is_the_box_it_is_given() {
+        // A face box, narrow and tall, is covered to its chin and cheeks;
+        // a band across the top third of the frame stays a band: the
+        // circle round its longer side it was covered the whole frame.
         let mut g = graph_with_corrector();
         let (_q, mask, _c) = g.ensure_windowed_secondary(NodeKind::ColorBalance);
         let aspect = 9.0f32 / 16.0;
-        let face = [0.45f32, 0.20, 0.10, 0.30]; // narrow and tall
+        let face = [0.45f32, 0.20, 0.10, 0.30];
         g.set_window_track(mask, &[(0.0, face)], aspect, 0.5);
         let m = &g.nodes.iter().find(|n| n.id == mask).unwrap().params.masks.as_ref().unwrap().masks[0];
-        let MaskShape::Circle { center_x, center_y, radius } = m.shape else { panic!("a circle") };
+        let MaskShape::Rectangle { center_x, center_y, width, height, .. } = m.shape else { panic!("a box") };
         assert!((center_x - 0.5).abs() < 1e-5 && (center_y - 0.35).abs() < 1e-5, "centred on the face");
-        assert!(radius / aspect >= face[3] / 2.0, "the window reaches the chin: {radius}");
-        assert!(radius >= face[2] / 2.0, "and the cheeks");
+        assert!((width - 0.10).abs() < 1e-5 && (height - 0.30 * aspect).abs() < 1e-5, "the face's own size: {width} x {height}");
+        assert!(m.feather > 0.0 && m.feather <= width / 4.0 + 1e-6, "soft by half its shorter half: {}", m.feather);
+
+        let band = [0.0f32, 0.0, 1.0, 0.33];
+        g.set_window_track(mask, &[(0.0, band)], aspect, 0.5);
+        let m = &g.nodes.iter().find(|n| n.id == mask).unwrap().params.masks.as_ref().unwrap().masks[0];
+        let matte = klipp_color::masks::generate_mask_matte(160, 90, &klipp_core::color_grade::MaskStack { masks: vec![m.clone()] });
+        let row = |y: usize| matte[y * 160 + 80];
+        assert!(row(10) > 0.99, "inside the band: {}", row(10));
+        assert!(row(60) < 0.01 && row(89) < 0.01, "the lower two thirds are kept out: {} {}", row(60), row(89));
     }
 
     #[test]
@@ -2226,8 +2246,9 @@ mod window_tests {
         // Half way across the shot the window is half way across the
         // frame: the correction travels with the subject.
         let at = m.evaluated_at(1.0);
-        let MaskShape::Circle { center_x, .. } = at.shape else { panic!("a circle") };
+        let MaskShape::Rectangle { center_x, width, .. } = at.shape else { panic!("a box") };
         assert!((center_x - 0.45).abs() < 1e-3, "the window follows the face: {center_x}");
+        assert!((width - 0.10).abs() < 1e-3, "and keeps its size: {width}");
     }
 
     #[test]

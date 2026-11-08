@@ -11579,8 +11579,8 @@ fn qualify(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, a
         let res = seq.resolution;
         let aspect = res.height as f32 / (res.width.max(1) as f32);
         // Soft by default. A colourist softens a face window until its
-        // edge cannot be found by looking, and 0.5 of the radius is
-        // about where that lands.
+        // edge cannot be found by looking, and half the box's shorter
+        // half, outside it, is about where that lands.
         graph.set_window_track(mask, &window, aspect, a.window_feather.unwrap_or(0.5));
         (q, c)
     };
