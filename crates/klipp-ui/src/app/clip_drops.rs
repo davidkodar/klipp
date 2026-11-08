@@ -23,6 +23,66 @@ fn lay_over(state: &mut AppState, ti: usize, id: ClipId) -> Vec<EditCommand> {
     edits
 }
 
+/// The sound linked to each clip a drop on track `ti` cut (as `before`
+/// had it), cut the same way: a picture covered whole takes its sound
+/// off, one trimmed trims it, one split in two splits it, each piece of
+/// sound linked to its piece of picture. The edits, made on the state, for
+/// the same undo step. A drop over a clip with its sound under it cut the
+/// picture and left the sound whole: the two ran 93 frames apart. Only
+/// sound in step with its picture is cut; `moved` (the dropped clip) and
+/// its own sound are the move's.
+fn mirror_onto_linked_sound(state: &mut AppState, before: &klipp_timeline::Sequence, ti: usize, moved: ClipId) -> Vec<EditCommand> {
+    use std::cmp::Ordering::Equal;
+    let after = state.sequence().clone();
+    let (Some(was), Some(now)) = (before.tracks.get(ti), after.tracks.get(ti)) else { return Vec::new() };
+    let known: std::collections::HashSet<ClipId> = was.clips.iter().map(|c| c.id).collect();
+    let mut edits = Vec::new();
+    for c in was.clips.iter().filter(|c| c.id != moved && !c.kind.is_gap()) {
+        let Some(pid) = c.linked_clip_id else { continue };
+        let Some((pt, pi)) = before.find_clip(pid) else { continue };
+        let p = &before.tracks[pt].clips[pi];
+        if pt == ti || p.timeline_in.cmp(&c.timeline_in) != Equal || p.timeline_out.cmp(&c.timeline_out) != Equal {
+            continue;
+        }
+        // What is left of `c`: its own id, and pieces cut from it (they
+        // keep its link).
+        let pieces: Vec<&klipp_timeline::Clip> = now.clips.iter().filter(|x| x.id == c.id || (!known.contains(&x.id) && x.linked_clip_id == Some(pid))).collect();
+        let untouched = pieces.len() == 1 && pieces[0].id == c.id && pieces[0].timeline_in.cmp(&c.timeline_in) == Equal && pieces[0].timeline_out.cmp(&c.timeline_out) == Equal && pieces[0].source_in == c.source_in;
+        if untouched {
+            continue;
+        }
+        // The sound for a piece of picture: its span, its source moved as
+        // the picture's was.
+        let shaped = |piece: &klipp_timeline::Clip| {
+            let mut s = p.clone();
+            s.timeline_in = piece.timeline_in;
+            s.timeline_out = piece.timeline_out;
+            s.source_in = p.source_in + (piece.source_in - c.source_in);
+            s.source_out = s.source_in + (piece.source_out - piece.source_in);
+            s.linked_clip_id = Some(piece.id);
+            s
+        };
+        let keeps_id = pieces.iter().any(|x| x.id == c.id);
+        if !keeps_id {
+            edits.push(EditCommand::LegacyRemoveClip { clip: p.clone(), track_index: pt, position: pi });
+        }
+        for piece in pieces {
+            if piece.id == c.id {
+                edits.push(EditCommand::ReplaceClip { description: "Overwrite", old: Box::new(p.clone()), new: Box::new(shaped(piece)) });
+            } else {
+                let mut sound = shaped(piece);
+                sound.id = ClipId::new();
+                let mut relinked = piece.clone();
+                relinked.linked_clip_id = Some(sound.id);
+                edits.push(EditCommand::LegacyAppendClip { clip: sound, track_index: pt });
+                edits.push(EditCommand::ReplaceClip { description: "Overwrite", old: Box::new(piece.clone()), new: Box::new(relinked) });
+            }
+        }
+    }
+    apply(state, &edits);
+    edits
+}
+
 /// `edits` made on the state, so it is what the history holds: a piece
 /// split off is the history's own, which undo then takes off. Laid over
 /// apart from its edits, the piece had another id, and undo left it.
@@ -83,6 +143,7 @@ pub(super) fn move_clip(state: &mut AppState, clip_id: ClipId, new_timeline_in: 
         }
     };
 
+    let before = state.sequence().clone();
     // Move primary clip and capture its old/new bounds.
     let mut primary_history: Option<(Timecode, Timecode, Timecode, Timecode)> = None;
     let mut on_track = None;
@@ -99,7 +160,11 @@ pub(super) fn move_clip(state: &mut AppState, clip_id: ClipId, new_timeline_in: 
         on_track = Some(ti);
     }
     let cover = match (on_track, delta.value != 0) {
-        (Some(ti), true) => lay_over(state, ti, clip_id),
+        (Some(ti), true) => {
+            let mut edits = lay_over(state, ti, clip_id);
+            edits.extend(mirror_onto_linked_sound(state, &before, ti, clip_id));
+            edits
+        }
         _ => Vec::new(),
     };
 
@@ -147,6 +212,7 @@ pub(super) fn move_to_track(state: &mut AppState, clip_id: ClipId, new_in: Timec
     let dur = clip.duration();
     let linked_id = clip.linked_clip_id;
     let delta = new_in - old_in;
+    let before = state.sequence().clone();
     let mut moved_clip = clip.clone();
     moved_clip.timeline_in = new_in;
     moved_clip.timeline_out = new_in + dur;
@@ -154,7 +220,8 @@ pub(super) fn move_to_track(state: &mut AppState, clip_id: ClipId, new_in: Timec
     let dst_track = &mut state.sequence_mut().tracks[to];
     dst_track.clips.push(moved_clip.clone());
     dst_track.sort_clips();
-    let cover = lay_over(state, to, clip_id);
+    let mut cover = lay_over(state, to, clip_id);
+    cover.extend(mirror_onto_linked_sound(state, &before, to, clip_id));
 
     // Shift the linked partner on its own track by the
     // same delta (A/V partners live on different track
@@ -220,6 +287,74 @@ mod tests {
         seq.tracks[v2].clips.push(clip(10.0, 20.0));
         state.linked_selection = true;
         (state, v1, v2, id)
+    }
+
+    /// V1 primary with three clips end to end, A 0-4, B 4-8 (no sound) and
+    /// C 8-`c_end` with its sound linked on A1; their ids and indices.
+    fn primary_line(c_end: f64) -> (AppState, usize, usize, [ClipId; 3], ClipId) {
+        let mut state = AppState::default();
+        let seq = state.sequence_mut();
+        let v1 = seq.primary_track_index().expect("a primary track");
+        let a1 = seq.tracks.iter().position(|t| t.kind == TrackKind::Audio).unwrap();
+        let (a, b) = (clip(0.0, 4.0), clip(4.0, 8.0));
+        let (mut c, mut sound) = (clip(8.0, c_end), clip(8.0, c_end));
+        c.linked_clip_id = Some(sound.id);
+        sound.linked_clip_id = Some(c.id);
+        let ids = [a.id, b.id, c.id];
+        let sid = sound.id;
+        seq.tracks[v1].clips = vec![a, b, c];
+        seq.tracks[a1].clips = vec![sound];
+        state.linked_selection = true;
+        (state, v1, a1, ids, sid)
+    }
+
+    /// Each picture on `v1` linked to a sound on `a1` runs with it: same
+    /// span, same source.
+    fn in_sync(state: &AppState, v1: usize, a1: usize) -> bool {
+        let seq = state.sequence();
+        seq.tracks[v1].clips.iter().filter_map(|p| p.linked_clip_id.map(|s| (p, s))).all(|(p, s)| {
+            seq.tracks[a1].find_clip(s).is_some_and(|s| s.timeline_in == p.timeline_in && s.timeline_out == p.timeline_out && s.source_in == p.source_in && s.linked_clip_id == Some(p.id))
+        })
+    }
+
+    /// An overwrite-move on the primary track over a clip with its sound
+    /// under it: the moved clip lands where it was dropped, a gap holds its
+    /// place, and what it covers of the clip there goes from the picture
+    /// and the sound alike; one undo puts it all back. It slid back to
+    /// where it was, the clip it covered lost its start, and that clip's
+    /// sound stayed whole, 93 frames out of step.
+    #[test]
+    fn an_overwrite_move_over_a_linked_clip_cuts_its_sound_with_it() {
+        let (mut state, v1, a1, [_, b, c], sound) = primary_line(12.0);
+        let before = spans(&state);
+        move_clip(&mut state, b, t(7.75));
+        let seq = state.sequence();
+        let pic = |id| seq.tracks[v1].find_clip(id).map(|c| (c.timeline_in.to_secs_f64(), c.timeline_out.to_secs_f64(), c.source_in.to_secs_f64()));
+        assert_eq!(pic(b), Some((7.75, 11.75, 0.0)), "B where it was dropped");
+        assert_eq!(pic(c), Some((11.75, 12.0, 3.75)), "C's picture loses what B covers");
+        let s = seq.tracks[a1].find_clip(sound).map(|c| (c.timeline_in.to_secs_f64(), c.timeline_out.to_secs_f64(), c.source_in.to_secs_f64()));
+        assert_eq!(s, Some((11.75, 12.0, 3.75)), "and so does its sound");
+        assert!(seq.tracks[v1].clips.iter().any(|x| x.kind.is_gap() && x.timeline_in == t(4.0) && x.timeline_out == t(7.75)), "a gap holds B's place: {:?}", spans(&state)[v1]);
+        assert!(in_sync(&state, v1, a1) && no_overlaps(&state), "{:?}", spans(&state));
+        let after = spans(&state);
+        undo(&mut state);
+        assert_eq!(spans(&state), before, "one undo");
+        redo(&mut state);
+        assert_eq!(spans(&state), after, "redone");
+    }
+
+    /// Dropped inside a longer linked clip: the clip splits round it and
+    /// so does its sound, each piece of sound linked to its piece of
+    /// picture, in step.
+    #[test]
+    fn an_overwrite_move_inside_a_linked_clip_splits_its_sound_too() {
+        let (mut state, v1, a1, [_, b, _], _) = primary_line(20.0);
+        move_clip(&mut state, b, t(12.0));
+        assert_eq!(spans(&state)[a1], vec![(8.0, 12.0), (16.0, 20.0)], "the sound round the drop");
+        assert!(in_sync(&state, v1, a1) && no_overlaps(&state), "{:?}", spans(&state));
+        undo(&mut state);
+        assert_eq!(spans(&state)[a1], vec![(8.0, 20.0)]);
+        assert!(in_sync(&state, v1, a1));
     }
 
     /// A clip dragged onto V2 over the clip there is laid over it, as its

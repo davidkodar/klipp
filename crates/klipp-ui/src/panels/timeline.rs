@@ -10519,37 +10519,31 @@ impl TimelinePanel {
                                 } else {
                                     state.edit_mode
                                 };
-                                // Where every clip was, for its linked sound
-                                // to follow (#2967).
-                                let before = state.sequence().clone();
-                                let result = match effective_mode {
-                                    klipp_timeline::magnetic::EditMode::Insert => {
-                                        // Into the slot the insert line showed.
-                                        let slot = state.sequence().tracks.get(from_track)
-                                            .map_or(target_time, |t| primary_insert_time(t, &[clip_id], target_time));
-                                        klipp_timeline::magnetic::MagneticEditor::move_primary(
-                                            state.sequence_mut(), clip_id, slot)
-                                    }
-                                    klipp_timeline::magnetic::EditMode::Overwrite => {
-                                        // Remove clip from track first, then overwrite at target
-                                        let clip_data = state.sequence().tracks.get(from_track)
-                                            .and_then(|t| t.find_clip(clip_id)).cloned();
-                                        if let Some(clip_data) = clip_data {
-                                            // Remove the clip being dragged
-                                            if let Some(track) = state.sequence_mut().tracks.get_mut(from_track) {
-                                                track.clips.retain(|c| c.id != clip_id);
-                                            }
-                                            klipp_timeline::magnetic::MagneticEditor::overwrite_primary(
-                                                state.sequence_mut(), clip_data, target_time)
-                                        } else {
-                                            klipp_timeline::magnetic::MagneticEditor::move_primary(
-                                                state.sequence_mut(), clip_id, target_time)
-                                        }
-                                    }
-                                };
-                                record_primary_drag(state, &before, result.command);
-                                state.dirty = true;
-                                cmds.push(AppCommand::SequenceUpdated);
+                                if effective_mode == klipp_timeline::magnetic::EditMode::Overwrite {
+                                    // Over what is at the drop, as on any
+                                    // track: the clip moves there, a gap holds
+                                    // its place (the primary's holes are
+                                    // filled as the step is recorded), what it
+                                    // covers is cut with its linked sound,
+                                    // one undo step. It was lifted and laid at
+                                    // the drop, then the track closed up: the
+                                    // clip slid back where it was, the clip it
+                                    // covered lost its start, and that clip's
+                                    // sound stayed whole, 93 frames out.
+                                    cmds.push(AppCommand::MoveClip { clip_id, new_timeline_in: target_time });
+                                } else {
+                                    // Where every clip was, for its linked
+                                    // sound to follow (#2967).
+                                    let before = state.sequence().clone();
+                                    // Into the slot the insert line showed.
+                                    let slot = state.sequence().tracks.get(from_track)
+                                        .map_or(target_time, |t| primary_insert_time(t, &[clip_id], target_time));
+                                    let result = klipp_timeline::magnetic::MagneticEditor::move_primary(
+                                        state.sequence_mut(), clip_id, slot);
+                                    record_primary_drag(state, &before, result.command);
+                                    state.dirty = true;
+                                    cmds.push(AppCommand::SequenceUpdated);
+                                }
                             }
                         } else {
                             let target_in = shown_in;
