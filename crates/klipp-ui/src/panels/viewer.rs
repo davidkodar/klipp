@@ -167,6 +167,121 @@ pub(crate) fn title_view_of(state: &AppState, clip: &klipp_timeline::Clip, image
         .map(|placement| TitleView { image_rect, placement, frame: (res.width as f32, res.height as f32) })
 }
 
+/// The chart tool: four corners to drag onto a colour chart, its patch
+/// grid drawn through them so it shows when they sit right.
+fn draw_chart_tool(ui: &mut egui::Ui, state: &mut AppState, image_rect: egui::Rect, cmds: &mut Vec<AppCommand>) {
+    let Some(mut tool) = state.chart_tool.clone() else { return };
+    let painter = ui.painter().with_clip_rect(ui.clip_rect());
+    let to_screen = |c: [f32; 2]| viewer_norm_to_screen(image_rect, c[0], c[1]);
+    let screen: Vec<egui::Pos2> = tool.corners.iter().map(|c| to_screen(*c)).collect();
+    // Take the pointer from the viewer under the tool, so a drag here does
+    // not also scrub or pan; before the bar, so the bar is over it and its
+    // buttons get their clicks.
+    let _ = ui.allocate_rect(image_rect, egui::Sense::click_and_drag());
+    let mut bar_rect = egui::Rect::NOTHING;
+    let (mut both, mut balance, mut cancel) = (false, false, ui.input(|i| i.key_pressed(egui::Key::Escape)));
+    let bar_area = egui::Rect::from_min_max(image_rect.left_top() + egui::vec2(8.0, 8.0), image_rect.right_bottom());
+    ui.new_child(egui::UiBuilder::new().max_rect(bar_area)).scope(|ui| {
+        let r = egui::Frame::popup(ui.style()).show(ui, |ui| {
+            ui.set_max_width((image_rect.width() - 32.0).max(120.0));
+            ui.vertical(|ui| {
+                ui.add(egui::Label::new(egui::RichText::new("Drag the corners onto the outer corners of the chart's patches, brown patch first, so the bright row lies on its greys").color(egui::Color32::from_gray(235))).wrap());
+                ui.horizontal_wrapped(|ui| {
+                    both = ui.button("White balance and exposure").on_hover_text("Set both from the chart's greys, as one undo step").clicked();
+                    balance = ui.button("White balance only").on_hover_text("Leave the exposure as it is").clicked();
+                    cancel |= ui.button("Cancel").clicked();
+                });
+            });
+        });
+        bar_rect = r.response.rect;
+    });
+    if cancel {
+        state.chart_tool = None;
+        return;
+    }
+    if both || balance {
+        cmds.push(AppCommand::RunChartRead { clip_id: tool.clip_id, corners: tool.corners, exposure: both });
+        state.chart_tool = None;
+        return;
+    }
+    let (pointer, pressed, down) = ui.input(|i| (i.pointer.interact_pos(), i.pointer.primary_pressed(), i.pointer.primary_down()));
+    let hit = |p: egui::Pos2| screen.iter().position(|s| (p - *s).length() <= 12.0);
+    if let Some(p) = pointer.filter(|p| !bar_rect.contains(*p)) {
+        if pressed && image_rect.expand(16.0).contains(p) {
+            if let Some(c) = hit(p) {
+                tool.drag = Some((c, p, tool.corners));
+            } else if in_screen_polygon(&screen, p) {
+                tool.drag = Some((4, p, tool.corners));
+            }
+        }
+        if let Some((which, from, start)) = tool.drag.filter(|_| down) {
+            let (nx, ny) = viewer_screen_to_norm(image_rect, p);
+            let (fx, fy) = viewer_screen_to_norm(image_rect, from);
+            tool.corners = moved_chart_corners(start, which, (nx, ny), (fx, fy));
+        }
+        ui.ctx().set_cursor_icon(if tool.drag.is_some() { egui::CursorIcon::Grabbing } else if hit(p).is_some() || in_screen_polygon(&screen, p) { egui::CursorIcon::Grab } else { egui::CursorIcon::Default });
+    }
+    if !down {
+        tool.drag = None;
+    }
+    let accent = egui::Color32::from_rgb(90, 200, 255);
+    let unit = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
+    if let Some(map) = klipp_core::color_grade::PlaneMap::from_quads(&unit, &tool.corners) {
+        let at = |u: f32, v: f32| map.apply((u, v)).map(|(x, y)| to_screen([x, y]));
+        let thin = egui::Stroke::new(1.0_f32, egui::Color32::from_rgba_unmultiplied(90, 200, 255, 170));
+        let (cols, rows) = (klipp_color::chart::COLS, klipp_color::chart::ROWS);
+        for i in 0..=cols {
+            let u = i as f32 / cols as f32;
+            if let (Some(a), Some(b)) = (at(u, 0.0), at(u, 1.0)) {
+                painter.line_segment([a, b], thin);
+            }
+        }
+        for j in 0..=rows {
+            let v = j as f32 / rows as f32;
+            if let (Some(a), Some(b)) = (at(0.0, v), at(1.0, v)) {
+                painter.line_segment([a, b], thin);
+            }
+        }
+        // The row the greys lie on, white at its first end.
+        let last = (rows - 1) as f32 / rows as f32;
+        if let (Some(a), Some(b), Some(c), Some(d)) = (at(0.0, last), at(1.0, last), at(1.0, 1.0), at(0.0, 1.0)) {
+            painter.add(egui::Shape::closed_line(vec![a, b, c, d], egui::Stroke::new(2.5_f32, egui::Color32::WHITE)));
+        }
+        let label = |pos: Option<egui::Pos2>, text: &str| {
+            if let Some(pos) = pos {
+                painter.text(pos + egui::vec2(1.0, 1.0), egui::Align2::CENTER_CENTER, text, egui::FontId::proportional(13.0), egui::Color32::BLACK);
+                painter.text(pos, egui::Align2::CENTER_CENTER, text, egui::FontId::proportional(13.0), egui::Color32::WHITE);
+            }
+        };
+        let (du, dv) = (0.5 / cols as f32, 0.5 / rows as f32);
+        label(at(du, dv), "brown");
+        label(at(du, 1.0 - dv), "white");
+        label(at(1.0 - du, 1.0 - dv), "black");
+    }
+    for (i, p) in screen.iter().enumerate() {
+        let held = tool.drag.is_some_and(|d| d.0 == i);
+        painter.circle_filled(*p, if held { 7.0 } else { 5.5 }, egui::Color32::WHITE);
+        painter.circle_stroke(*p, if held { 7.0 } else { 5.5 }, egui::Stroke::new(1.5_f32, accent));
+    }
+    state.chart_tool = Some(tool);
+}
+
+/// The chart tool's corners after a drag from `from` to `to` (frame
+/// fractions): corner `which` to where the pointer is, or for 4 the whole
+/// shape by as much, kept to the frame, where a chart can be read.
+pub(crate) fn moved_chart_corners(start: [[f32; 2]; 4], which: usize, to: (f32, f32), from: (f32, f32)) -> [[f32; 2]; 4] {
+    let mut q = start;
+    if which < 4 {
+        q[which] = [to.0.clamp(0.0, 1.0), to.1.clamp(0.0, 1.0)];
+    } else {
+        let (minx, maxx) = start.iter().fold((f32::MAX, f32::MIN), |a, c| (a.0.min(c[0]), a.1.max(c[0])));
+        let (miny, maxy) = start.iter().fold((f32::MAX, f32::MIN), |a, c| (a.0.min(c[1]), a.1.max(c[1])));
+        let (dx, dy) = ((to.0 - from.0).clamp(-minx, 1.0 - maxx), (to.1 - from.1).clamp(-miny, 1.0 - maxy));
+        q = start.map(|c| [c[0] + dx, c[1] + dy]);
+    }
+    q
+}
+
 /// Whether `p` is inside the outline `poly` on screen (even-odd, so any
 /// simple polygon, convex or not).
 fn in_screen_polygon(poly: &[egui::Pos2], p: egui::Pos2) -> bool {
@@ -2162,6 +2277,8 @@ impl ViewerPanel {
             crate::panels::frame_glide_tool::show(ui, state, image_rect, cmds);
         } else if state.surface_tool.is_some() && !state.has_modal_open() {
             self.draw_surface_tool(ui, state, image_rect, cmds);
+        } else if state.chart_tool.is_some() && !state.has_modal_open() {
+            draw_chart_tool(ui, state, image_rect, cmds);
         } else if state.show_transform_controls
             // A sound has no picture to move (#3128).
             && !state.selected_clip.is_some_and(|id| crate::selection::is_sound_only(state.sequence(), &state.media_pool, id))
@@ -8928,5 +9045,59 @@ mod surface_tool_bar_tests {
         state.surface_tool = Some(tool());
         click(&mut state, "Cancel");
         assert!(state.surface_tool.is_none(), "and it can be left");
+    }
+}
+
+#[cfg(test)]
+mod chart_tool_tests {
+    use super::{draw_chart_tool, moved_chart_corners};
+    use crate::state::{AppState, ChartTool};
+    use klipp_core::AppCommand;
+
+    /// The bar's buttons take their clicks, over the layer that holds the
+    /// viewer's pointer for the corners: under it, they looked up and did
+    /// nothing. And its words are on screen, so it says what to do.
+    #[test]
+    fn the_chart_tools_buttons_take_their_clicks() {
+        let ctx = egui::Context::default();
+        let image = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1280.0, 720.0));
+        let mut state = AppState::default();
+        let clip_id = klipp_core::ClipId::new();
+        let corners = [[0.25, 0.2], [0.75, 0.2], [0.75, 0.8], [0.25, 0.8]];
+        state.chart_tool = Some(ChartTool { clip_id, corners, drag: None });
+        let run = |state: &mut AppState, events: Vec<egui::Event>| {
+            let mut cmds = Vec::new();
+            let out = ctx.run(egui::RawInput { screen_rect: Some(image), events, ..Default::default() }, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| draw_chart_tool(ui, state, image, &mut cmds));
+            });
+            let texts: Vec<(String, egui::Pos2)> = out.shapes.iter().filter_map(|s| match &s.shape { egui::Shape::Text(t) => Some((t.galley.text().to_owned(), t.pos)), _ => None }).collect();
+            (texts, cmds)
+        };
+        let (texts, _) = run(&mut state, Vec::new());
+        assert!(texts.iter().any(|(t, _)| t.starts_with("Drag the corners")), "what to do: {texts:?}");
+        for label in ["brown", "white", "black"] {
+            assert!(texts.iter().any(|(t, _)| t == label), "{label}: {texts:?}");
+        }
+        let at = texts.iter().find(|(t, _)| t == "White balance only").expect("the button").1 + egui::vec2(8.0, 6.0);
+        run(&mut state, vec![egui::Event::PointerMoved(at)]);
+        run(&mut state, vec![egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE }]);
+        let (_, cmds) = run(&mut state, vec![egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE }]);
+        assert!(matches!(cmds.as_slice(), [AppCommand::RunChartRead { exposure: false, .. }]), "{cmds:?}");
+        assert!(state.chart_tool.is_none(), "the tool closes");
+    }
+
+    /// A corner goes where the pointer is, inside the frame; the whole
+    /// shape keeps its form and stops at the frame's edge. read_chart
+    /// refuses corners off the frame, so the tool never makes any.
+    #[test]
+    fn the_chart_tool_keeps_its_corners_on_the_frame() {
+        let q = [[0.2, 0.2], [0.8, 0.2], [0.8, 0.8], [0.2, 0.8]];
+        assert_eq!(moved_chart_corners(q, 1, (1.4, -0.3), (0.8, 0.2))[1], [1.0, 0.0]);
+        assert_eq!(moved_chart_corners(q, 0, (0.3, 0.1), (0.2, 0.2))[0], [0.3, 0.1]);
+        let moved = moved_chart_corners(q, 4, (0.9, 0.5), (0.4, 0.5));
+        assert!((moved[1][0] - 1.0).abs() < 1e-5 && (moved[0][0] - 0.4).abs() < 1e-5, "stopped at the edge, its width kept: {moved:?}");
+        for c in moved_chart_corners(q, 4, (-5.0, -5.0), (0.5, 0.5)) {
+            assert!((0.0..=1.0).contains(&c[0]) && (0.0..=1.0).contains(&c[1]), "{c:?}");
+        }
     }
 }

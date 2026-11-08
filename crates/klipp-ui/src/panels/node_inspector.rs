@@ -1542,6 +1542,12 @@ impl NodeInspectorPanel {
                     if pick.clicked() {
                         cmds.push(AppCommand::PickWhiteBalance { clip_id });
                     }
+                    if ui.add(egui::Button::new(egui::RichText::new("Chart").size(11.0)).min_size(egui::vec2(42.0, 18.0)))
+                        .on_hover_text("Read a colour chart in the shot: set its corners in the viewer, and the white balance and exposure come from it")
+                        .clicked()
+                    {
+                        cmds.push(AppCommand::StartChartRead { clip_id });
+                    }
                 });
                 ui.add_space(2.0);
 
