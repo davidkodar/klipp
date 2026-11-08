@@ -34,8 +34,11 @@ pub(crate) fn event_writes(event: &AppEvent) -> bool {
         | AppEvent::MulticamSyncReady { .. }
         | AppEvent::AudioSyncComplete { .. }
         | AppEvent::DenoiserProfileLearned { .. }
-        | AppEvent::NormalizeMeasured { .. }
-        | AppEvent::WaterMeasured { .. } => true,
+        | AppEvent::NormalizeMeasured { .. } => true,
+        // Most find nothing to store (no footage below, or it has changed
+        // since), and leave a drag alone. One that stores writes through
+        // `apply_edits_as_one`, which closes the drag itself.
+        AppEvent::WaterMeasured { .. } => false,
         // What the viewer, the meters and the panels show, a job's progress,
         // start or failure, and the engine's own echoes, which write nothing.
         AppEvent::PlaybackStarted
@@ -108,5 +111,13 @@ mod tests {
         assert!(!event_writes(&AppEvent::FrameReady));
         assert!(!event_writes(&AppEvent::MasterPeakLevels { left: 0.1, right: 0.1 }));
         assert!(!event_writes(&AppEvent::EngineStats { dropped_frames: 0, hw_decode: None }));
+    }
+
+    /// A measurement of the water with nothing to store leaves the drag the
+    /// person is holding open.
+    #[test]
+    fn water_that_found_nothing_leaves_a_drag_open() {
+        let clip_id = klipp_core::ClipId(uuid::Uuid::nil());
+        assert!(!event_writes(&AppEvent::WaterMeasured { clip_id, key: 1, water: None }));
     }
 }

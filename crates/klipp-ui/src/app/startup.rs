@@ -200,7 +200,7 @@ impl KlippApp {
             },
             proxy_event_tx,
             normalize_measuring: Default::default(),
-            water_measuring: Default::default(),
+            water_tries: Default::default(),
             proxy_event_rx,
             export_dialog: ExportDialogState::default(),
             prefs,

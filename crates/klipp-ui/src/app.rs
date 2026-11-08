@@ -454,8 +454,9 @@ pub struct KlippApp {
     /// Normalize measurements under way (#2778): the clip, the effect's
     /// place and what it is measured for, so each runs once.
     normalize_measuring: std::collections::HashSet<(klipp_core::ClipId, usize, u64)>,
-    /// Water measurements running (#2795), by clip and footprint.
-    water_measuring: std::collections::HashSet<(klipp_core::ClipId, u32)>,
+    /// Water measurements running or come back empty (#2795), by clip and
+    /// footprint.
+    water_tries: water::WaterTries,
     /// The thread that makes skim frames, from decoders it keeps open
     /// per skimmed file. Both the media browser's hover and the timeline's
     /// skimmer ask it.
