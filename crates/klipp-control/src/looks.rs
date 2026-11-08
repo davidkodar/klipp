@@ -106,12 +106,29 @@ pub fn match_grade_knobs(target: &serde_json::Value, reference: &serde_json::Val
     let bal = |v: &serde_json::Value, k: &str| v.get("rgb_balance").and_then(|x| x.get(k)).and_then(|x| x.as_f64()).unwrap_or(0.0);
     let some_if = |v: f32, thresh: f32| if v.abs() > thresh { Some(v) } else { None };
 
-    // Black and white points: the gap in IRE, as a lift/gain offset.
+    // Mid: the exposure in stops that brings the mid grey together. A
+    // stop is a doubling of light, so the ratio is taken in linear light:
+    // taken on the IRE as shown it was under half the stops (a shot 0.7
+    // stops under was moved 0.32).
+    let lin = |v: f64| klipp_color::transfer::srgb_to_linear((v / 100.0).clamp(0.0, 1.0) as f32).max(1e-4);
+    let (tm, rm) = (lin(ire(target, "mid").max(0.5)), lin(ire(reference, "mid").max(0.5)));
+    let stops = (rm / tm).log2().clamp(-2.0, 2.0);
+    let exposure = some_if(stops, 0.05);
+    // The white point: the gap in IRE left once that exposure has moved
+    // it, as a gain offset. Taken before it, the exposure and the gain
+    // each closed the whole white gap and the white was pushed past the
+    // reference's to clip.
+    let moved = |v: f64| {
+        let e = exposure.unwrap_or(0.0);
+        f64::from(klipp_color::transfer::linear_to_srgb((lin(v) * e.exp2()).min(1.0))) * 100.0
+    };
+    let gain = some_if(((ire(reference, "white") - moved(ire(target, "white"))) / 100.0).clamp(-0.3, 0.3) as f32, 0.015);
+    // The black point as measured, as a lift offset. Near black an
+    // exposure moves the IRE least and the curve is least straight, and a
+    // black read as the frame's darkest 2% falls on different pixels once
+    // the exposure moves: predicted, it set a lift the shot did not need
+    // and the match chased it round after round.
     let lift = some_if(((ire(reference, "black") - ire(target, "black")) / 100.0).clamp(-0.3, 0.3) as f32, 0.015);
-    let gain = some_if(((ire(reference, "white") - ire(target, "white")) / 100.0).clamp(-0.3, 0.3) as f32, 0.015);
-    // Mid: the exposure in stops that brings the mid grey together.
-    let (tm, rm) = (ire(target, "mid").max(0.5), ire(reference, "mid").max(0.5));
-    let exposure = some_if((rm / tm).log2().clamp(-1.0, 1.0) as f32, 0.05);
     // Balance: the white balance that takes the target's neutrals to the
     // reference's, a* and b* as the frames' neutral surfaces measure them
     // (#2878 solved it through the balance itself). Aimed at the frame's
@@ -146,6 +163,27 @@ pub fn match_grade_knobs(target: &serde_json::Value, reference: &serde_json::Val
     let tint = some_if(tnt.clamp(-50.0, 50.0), 1.0);
 
     MatchKnobs { exposure, lift, gain, temperature, tint }
+}
+
+/// A clip's primary grade as the grade op sets it: the knobs of its
+/// first corrector, the one `grade` writes to.
+pub fn primary_knobs(graph: &klipp_nodes::NodeGraph) -> MatchKnobs {
+    let Some(n) = graph.nodes.iter().find(|n| n.kind == klipp_nodes::NodeKind::Corrector) else { return MatchKnobs::default() };
+    MatchKnobs { exposure: n.params.exposure, lift: n.params.lift_master, gain: n.params.gain_master, temperature: n.params.temperature, tint: n.params.tint }
+}
+
+/// The grade a match sets: the knobs it moves, `by`, added to where the
+/// target's grade has them `now`, inside the grade's ranges. The match
+/// reads both frames as graded, so what it finds is the gap still left.
+pub fn match_on_top(now: &MatchKnobs, by: &MatchKnobs) -> MatchKnobs {
+    let on_top = |was: Option<f32>, d: Option<f32>, lo: f32, hi: f32| d.map(|d| (was.unwrap_or(0.0) + d).clamp(lo, hi));
+    MatchKnobs {
+        exposure: on_top(now.exposure, by.exposure, -6.0, 6.0),
+        lift: on_top(now.lift, by.lift, -1.0, 1.0),
+        gain: on_top(now.gain, by.gain, -1.0, 1.0),
+        temperature: on_top(now.temperature, by.temperature, -50.0, 50.0),
+        tint: on_top(now.tint, by.tint, -50.0, 50.0),
+    }
 }
 
 /// Holds `knobs` short of clipping the target `m`, as grade_to_target

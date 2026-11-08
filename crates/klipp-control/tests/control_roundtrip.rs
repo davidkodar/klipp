@@ -2958,7 +2958,7 @@ fn match_grade_knobs_close_the_gap() {
     // A darker, bluer target: everything lower, blue lifted.
     let target = klipp_control::frame_stats(&px([120u8, 120, 170, 255]), 320, 180, 1.0);
     let k = match_grade_knobs(&target, &reference, &measured([120, 120, 170, 255]), &measured([230, 128, 12, 255]));
-    assert!(k.gain.unwrap() > 0.0, "target is darker at the top: raise gain, got {:?}", k.gain);
+    assert!(k.exposure.unwrap_or(0.0) > 0.0 || k.gain.unwrap_or(0.0) > 0.0, "target is darker: brighten it, got {k:?}");
     assert!(k.temperature.unwrap() > 0.0, "target is cooler: warm it, got {:?}", k.temperature);
 
     // #2878: a cool target matched to a warmer reference, measured on
@@ -2987,6 +2987,54 @@ fn match_grade_knobs_close_the_gap() {
     // A clip matched to itself moves nothing.
     let same = match_grade_knobs(&reference, &reference, &measured([230, 128, 12, 255]), &measured([230, 128, 12, 255]));
     assert!(same.is_empty(), "no gap, no grade: {same:?}");
+}
+
+/// A shot 0.7 stops under its reference is moved 0.7 stops, not the
+/// 0.32 a ratio of the IRE as shown gave, and the white the exposure
+/// already brings back gets no gain on top.
+#[test]
+fn a_match_takes_the_stops_in_linear_light() {
+    use klipp_control::match_grade_knobs;
+    use klipp_color::transfer::{linear_to_srgb, srgb_to_linear};
+    let (w, h) = (210u32, 60u32);
+    let steps: Vec<f32> = (0..21).map(|i| i as f32 / 20.0).collect();
+    let ramp = |stops: f32| -> Vec<u8> {
+        (0..w * h).flat_map(|i| {
+            let v = steps[((i % w) / 10) as usize];
+            let e = (linear_to_srgb(srgb_to_linear(v) * stops.exp2()) * 255.0).round() as u8;
+            [e, e, e, 255]
+        }).collect()
+    };
+    let (target, reference) = (ramp(-0.7), ramp(0.0));
+    let m = |px: &[u8]| klipp_color::measure::measure_frame(px, w, h, &[]);
+    let k = match_grade_knobs(&klipp_control::frame_stats(&target, w, h, 0.0), &klipp_control::frame_stats(&reference, w, h, 0.0), &m(&target), &m(&reference));
+    let e = k.exposure.expect("an exposure move");
+    assert!((e - 0.7).abs() < 0.12, "0.7 stops under is moved {e:+.2}: {k:?}");
+    assert!(k.gain.unwrap_or(0.0).abs() < 0.04 && k.lift.unwrap_or(0.0).abs() < 0.04, "the exposure brings the white and black back: {k:?}");
+    assert!(k.temperature.is_none() && k.tint.is_none(), "a grey stays grey: {k:?}");
+}
+
+/// A match goes on top of the target's grade: a shot graded down 0.7
+/// stops and warm by 30 that the match finds 0.7 under and 30 warm ends
+/// at neutral, not at +0.7 and -30 with its own grade gone. What the
+/// match leaves alone stays as graded.
+#[test]
+fn a_match_adds_to_the_grade_it_finds() {
+    use klipp_control::{match_on_top, primary_knobs, MatchKnobs};
+    let mut graph = klipp_nodes::defaults::default_graph();
+    let c = graph.ensure_corrector();
+    let n = graph.nodes.iter_mut().find(|n| n.id == c).unwrap();
+    n.params.exposure = Some(-0.7);
+    n.params.temperature = Some(30.0);
+    let now = primary_knobs(&graph);
+    assert_eq!((now.exposure, now.temperature, now.gain), (Some(-0.7), Some(30.0), None));
+    let set = match_on_top(&now, &MatchKnobs { exposure: Some(0.7), temperature: Some(-30.0), gain: Some(0.02), ..Default::default() });
+    assert!(set.exposure.unwrap().abs() < 1e-5 && set.temperature.unwrap().abs() < 1e-4, "{set:?}");
+    assert_eq!(set.gain, Some(0.02));
+    assert_eq!((set.lift, set.tint), (None, None), "knobs the match does not move are not set");
+    // Inside the grade's ranges.
+    let far = match_on_top(&MatchKnobs { temperature: Some(45.0), ..Default::default() }, &MatchKnobs { temperature: Some(20.0), ..Default::default() });
+    assert_eq!(far.temperature, Some(50.0));
 }
 
 /// A match aims the target's neutrals at the reference's, not its whole
