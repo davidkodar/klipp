@@ -4928,6 +4928,12 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
                 let what = if t.kind == TrackKind::Subtitle { "caption" } else { "text" };
                 return Err(refuse(i, format!("{} is sound only, and track {ti} is a {what} track", item.filename), "place it on an audio track"));
             }
+            // A file with no sound on an audio track: a silent clip there
+            // that nothing plays, and picture recipes were then put on it.
+            if t.kind == TrackKind::Audio && !item.has_audio {
+                let what = if item.is_still { "a still picture" } else { "picture only" };
+                return Err(refuse(i, format!("{} is {what}, with no sound, and track {ti} is an audio track", item.filename), "place it on a video track"));
+            }
             let media_dur = secs(item.duration);
             let s_in = source_in.unwrap_or(0.0);
             let s_out = source_out.unwrap_or(media_dur);
@@ -17118,6 +17124,24 @@ mod tests {
             kind: klipp_core::MarkerKind::None,
         });
         (seq, pool, media_id, ia, ib)
+    }
+
+    /// A file with no sound is refused on an audio track, said so, and
+    /// placed on a picture track as before; a file with sound still goes
+    /// on an audio track.
+    #[test]
+    fn a_file_with_no_sound_is_refused_on_an_audio_track() {
+        let (seq, mut pool, sound, _, _) = fixture();
+        let mut silent = klipp_media::MediaItem::synthetic_for_test("/tmp/screen.mov".into(), None);
+        silent.duration = tc(10.0);
+        silent.video_codec = "prores".into();
+        silent.has_audio = false;
+        let silent = pool.add(silent);
+        let place = |media_id: MediaId, track: usize| Op::Place { media_id, track: TrackRef::Index(track), at: Anchor::Secs(8.0), source_in: Some(0.0), source_out: Some(2.0), insert: false, with_audio: true, sync_source_secs: None };
+        let why = resolve(&seq, &pool, &[place(silent, 1)]).unwrap_err().why;
+        assert!(why.contains("screen.mov is picture only, with no sound, and track 1 is an audio track"), "{why}");
+        assert!(resolve(&seq, &pool, &[place(silent, 0)]).is_ok(), "on a picture track it goes");
+        assert!(resolve(&seq, &pool, &[place(sound, 1)]).is_ok(), "a file with sound still goes on an audio track");
     }
 
     /// #789: a clip shows another file in its own slot: the same place,
