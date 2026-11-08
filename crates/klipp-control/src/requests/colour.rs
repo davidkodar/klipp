@@ -360,7 +360,7 @@ pub(crate) fn respond(
                 "text": format!(
                     "{}\n\nMatched on what the eye notices across a cut, in its order: exposure first, then how differently each face sits against the skin band once the scene's own cast is taken off, then the cast on the neutrals, then contrast. The faces are compared as errors and not as colours, so two people with different complexions lit the same way still match. Under {MATCH_GOOD:.0} ΔE the cut is invisible; over {MATCH_WARN:.0} ΔE it reads as a change; over {SCENE_SPLIT:.0} ΔE the shots are not the same lighting setup and belong to different scenes.{}",
                     lines.join("\n"),
-                    if apply { " This is a first pass: compare the shots and fine-tune by eye where it matters." } else { " Run it with apply true to grade each shot onto its scene's hero, as one undo step." },
+                    if apply { " This is a first pass: compare the shots and fine-tune by eye where it matters; for an exact white balance, click something that should be grey with the eyedropper in Colour Balance." } else { " Run it with apply true to grade each shot onto its scene's hero, as one undo step." },
                 ),
                 "scenes": out_scenes,
                 "joins": joins,
@@ -1088,6 +1088,60 @@ pub(crate) fn respond(
             Ok(v)
         }
 
+        ControlCommand::PickGrey { clip_id: c, x, y, secs } => {
+            if in_batch {
+                return Err("pick_grey reads the picture and applies; send it on its own".into());
+            }
+            if !(0.0..=1.0).contains(&x) || !(0.0..=1.0).contains(&y) {
+                return Err(format!("x {x} and y {y} are fractions of the frame: give them from 0 to 1"));
+            }
+            let target = clip_id(&c)?;
+            let (at, name, now) = {
+                let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+                let pool = ctx.media_pool.read().recovered();
+                let clip = seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|cl| cl.id == target).ok_or_else(|| format!("no clip with id {c}"))?;
+                if !matches!(clip.kind, klipp_timeline::ClipKind::Media { .. }) {
+                    return Err("that clip is not a picture clip; pick a grey in a shot".into());
+                }
+                let (a, b) = (clip.timeline_in.to_secs_f64(), clip.timeline_out.to_secs_f64());
+                let at = match secs {
+                    Some(t) if t >= a && t < b => t,
+                    Some(t) => return Err(format!("secs {t:.2} is outside the clip ({a:.2}-{b:.2} s)")),
+                    None => (a + b) / 2.0,
+                };
+                let name = clip.media_id().and_then(|m| pool.get(&m)).map_or_else(|| "the clip".to_string(), |m| m.filename.clone());
+                (at, name, primary_knobs(klipp_timeline::GradeAccess::grade(clip)))
+            };
+            let (d, w, h) = grab_frame_rgba_of(ctx, at, clip_of(&c), Some(4000))?;
+            let grey = klipp_color::measure::picked_grey(&d, w, h, x, y).map_err(|why| why.to_string())?;
+            let (temperature, tint) = klipp_color::white_balance::white_balance_to_neutralise(grey, klipp_core::WorkingColorspace::Rec709Linear);
+            let set = match_on_top(&now, &MatchKnobs { temperature: Some(temperature), tint: Some(tint), ..Default::default() });
+            use klipp_document::ops::{ClipRef, Op};
+            let op = Op::Grade {
+                clip_id: Some(ClipRef::Id(target)), on: None,
+                exposure: None, contrast: None, saturation: None,
+                temperature: set.temperature, tint: set.tint,
+                lift: None, gamma: None, gain: None,
+                highlights: None, shadows: None, vibrance: None, reset: false, from: None,
+            };
+            let (plan, revision) = resolve_plan(ctx, std::slice::from_ref(&op))?;
+            let edits: Vec<klipp_document::history::EditCommand> = plan.steps.iter().map(|s| s.edit.clone()).collect();
+            let mut v = send_full_envelope(ctx, Vec::new(), edits, true, Some(revision), Some(format!("pick grey in {name}")))?;
+            // What the point reads now, measured rather than assumed.
+            let lab_of = |c: [f32; 3]| klipp_color::measure::linear_to_lab(c[0], c[1], c[2]);
+            let was = lab_of(grey);
+            let after = grab_frame_rgba_of(ctx, at, clip_of(&c), Some(4000)).ok().and_then(|(d, w, h)| klipp_color::measure::picked_grey(&d, w, h, x, y).ok()).map(lab_of);
+            let reads = after.map_or_else(|| "it could not be read again".to_string(), |l| format!("it now reads a* {:.1}, b* {:.1}", l.a, l.b));
+            let ended = [set.temperature, set.tint].into_iter().flatten().any(|k| k.abs() >= 49.99);
+            v["text"] = json!(format!(
+                "White balance of {name} set from the grey at ({x:.3}, {y:.3}), {at:.2} s: temperature {temperature:+.1}, tint {tint:+.1}. The point read a* {:.1}, b* {:.1}; {reads}.{}",
+                was.a, was.b,
+                if ended { " The correction reached the end of the range, so the frame is only partly balanced." } else { "" },
+            ));
+            v["next"] = json!("Exact only if that point really is grey. See it with frame_at; one undo takes it back.");
+            Ok(v)
+        }
+
         ControlCommand::MatchGrade { clip_id: c, reference_clip_id: r, secs, reference_secs } => {
             if in_batch {
                 return Err("match_grade applies a grade; send it on its own, not in a batch".into());
@@ -1208,7 +1262,7 @@ reference: {}", target_stats["text"].as_str().unwrap_or(""), ref_stats["text"].a
                 if let Some(x) = val { moved.push(format!("{name} {x:+.2}")); }
             }
             v["text"] = json!(format!(
-                "First pass done: {t_name} moved toward the reference ({}). For an exact match, compare the two shots and fine-tune by eye.
+                "First pass done: {t_name} moved toward the reference ({}). For an exact match, compare the two shots and fine-tune by eye; for an exact white balance, click something that should be grey with the eyedropper in Colour Balance on the Colour page.
 target was:  {}
 reference:   {}",
                 moved.join(", "),
@@ -1222,7 +1276,7 @@ reference:   {}",
             v["target_before"] = target_stats;
             v["reference"] = ref_stats;
             v["knobs_moved"] = json!(moved);
-            v["next"] = json!("A first pass, not the final word: say so to the person. Run check with color, or frame_stats on both shots, to see the match; nudge exposure/temperature/tint with grade if it is not there yet.");
+            v["next"] = json!("A first pass, not the final word: say so to the person. pick_grey sets an exact white balance from a point known to be grey. Run check with color, or frame_stats on both shots, to see the match; nudge exposure/temperature/tint with grade if it is not there yet.");
             Ok(v)
         }
 

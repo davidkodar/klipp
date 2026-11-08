@@ -879,6 +879,18 @@ pub enum ControlCommand {
         #[serde(default)]
         apply: bool,
     },
+    /// White balance from a point the caller knows is grey: `x`, `y` as
+    /// fractions of the frame, at `secs` on the timeline (else the clip's
+    /// middle), as the Colour page's eyedropper reads it. The exact way when
+    /// a match or an automatic balance cannot tell a grey from a coloured
+    /// surface.
+    PickGrey {
+        clip_id: String,
+        x: f32,
+        y: f32,
+        #[serde(default)]
+        secs: Option<f64>,
+    },
     /// The LV2 and CLAP audio plug-ins installed here (#2485), those whose
     /// name or id holds `query` when given: each id, name and count of
     /// parameters, and the parameters with their keys and ranges (those
