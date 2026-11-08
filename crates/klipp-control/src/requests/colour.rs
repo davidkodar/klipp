@@ -5,6 +5,9 @@ use crate::poison::Recover;
 use crate::*;
 
 #[cfg(test)]
+#[path = "colour_chart_tests.rs"]
+mod chart_tests;
+#[cfg(test)]
 #[path = "colour_match_tests.rs"]
 mod match_tests;
 #[cfg(test)]
@@ -1139,6 +1142,103 @@ pub(crate) fn respond(
                 if ended { " The correction reached the end of the range, so the frame is only partly balanced." } else { "" },
             ));
             v["next"] = json!("Exact only if that point really is grey. See it with frame_at; one undo takes it back.");
+            Ok(v)
+        }
+
+        ControlCommand::ReadChart { clip_id: c, corners, secs, apply, exposure } => {
+            use klipp_color::chart::{read_in_shot, ChartCorrection, ChartInShot};
+            use klipp_core::WorkingColorspace::Rec709Linear;
+            use klipp_document::ops::{ClipRef, Op};
+            if in_batch {
+                return Err("read_chart reads the picture; send it on its own".into());
+            }
+            if corners.iter().flatten().any(|v| !v.is_finite() || !(0.0..=1.0).contains(v)) {
+                return Err("corners are four [x, y] points, fractions of the frame from 0 to 1".into());
+            }
+            let target = clip_id(&c)?;
+            let (at, name) = {
+                let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+                let pool = ctx.media_pool.read().recovered();
+                let clip = seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|cl| cl.id == target).ok_or_else(|| format!("no clip with id {c}"))?;
+                if !matches!(clip.kind, klipp_timeline::ClipKind::Media { .. }) {
+                    return Err("that clip is not a picture clip; read a chart in a shot".into());
+                }
+                let (a, b) = (clip.timeline_in.to_secs_f64(), clip.timeline_out.to_secs_f64());
+                let at = match secs {
+                    Some(t) if t >= a && t < b => t,
+                    Some(t) => return Err(format!("secs {t:.2} is outside the clip ({a:.2}-{b:.2} s)")),
+                    None => (a + b) / 2.0,
+                };
+                (at, clip.media_id().and_then(|m| pool.get(&m)).map_or_else(|| "the clip".to_string(), |m| m.filename.clone()))
+            };
+            let read = || -> Result<ChartInShot, String> {
+                let (d, w, h) = grab_frame_rgba_of(ctx, at, clip_of(&c), Some(4000))?;
+                read_in_shot(&d, w, h, corners).map_err(|why| why.says().to_string())
+            };
+            let first = read()?;
+            let (before, worst, worst_name) = first.error();
+            let said = |r: &ChartInShot| {
+                let lab = r.lab();
+                let grey = klipp_color::chart::NEUTRALS[2];
+                let (mean, worst, patch) = r.error();
+                let on = if patch.is_empty() { String::new() } else { format!(" on {patch}") };
+                // Against values that are not this chart's, they say nothing.
+                let error = if r.another_make() { String::new() } else { format!("mean \u{394}E {mean:.1}, worst {worst:.1}{on}; ") };
+                format!("{error}neutral grey a* {:.1}, b* {:.1}, L* {:.0}", lab[grey].a, lab[grey].b, lab[grey].l)
+            };
+            let turned = if first.turned { " The corners were given from the far end, so it was read the right way round: brown first next time." } else { "" };
+            let flat = if first.looks_flat() { " Its greys span far less than a chart's, as an unconverted log or flat picture's do: apply the camera's conversion first, or no white balance and exposure can reach the published values." } else { "" };
+            let other = first.another_make();
+            let flat = if other { format!("{flat} Its greys run as a ramp but its colours are not a ColorChecker's (colour patches {:.0} \u{394}E off): another make of chart, or the corners elsewhere. Only the white balance from its greys is offered; exposure is left to you.", first.colours_off()) } else { flat.to_string() };
+            let shape = json!({ "before": { "mean_de": before, "worst_de": worst, "worst_patch": worst_name }, "turned": first.turned, "looks_flat": first.looks_flat(), "colours_off": first.colours_off(), "another_make": other });
+            if !apply {
+                let k = first.correction(Rec709Linear);
+                let mut v = shape;
+                v["text"] = json!(format!("The chart in {name} at {at:.2} s read: {}.{turned}{flat}{}", said(&first), k.map_or(" Too few of its greys can be read to work out a correction: they are near black or clipped.".to_string(), |k| format!(" It asks for temperature {:+.1}, tint {:+.1}, exposure {:+.2} stops; apply true sets them.", k.temperature, k.tint, k.stops))));
+                v["applied"] = json!(false);
+                return Ok(v);
+            }
+            let use_exposure = exposure.unwrap_or(true) && !other;
+            let mut fold = UndoFold::new("Read Chart");
+            let mut now = first.clone();
+            let mut moved = (0.0f32, 0.0f32, 0.0f32);
+            // Two rounds: each measured on the picture the last one left.
+            for _ in 0..2 {
+                let Some(ChartCorrection { temperature, tint, stops }) = now.correction(Rec709Linear) else { break };
+                let stops = if use_exposure { stops } else { 0.0 };
+                if temperature.abs() < 1.0 && tint.abs() < 1.0 && stops.abs() < 0.03 {
+                    break;
+                }
+                let grade = {
+                    let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+                    seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|cl| cl.id == target).map(|cl| primary_knobs(klipp_timeline::GradeAccess::grade(cl))).unwrap_or_default()
+                };
+                let set = match_on_top(&grade, &MatchKnobs { temperature: Some(temperature), tint: Some(tint), exposure: use_exposure.then_some(stops), ..Default::default() });
+                let op = Op::Grade {
+                    clip_id: Some(ClipRef::Id(target)), on: None,
+                    exposure: set.exposure, contrast: None, saturation: None,
+                    temperature: set.temperature, tint: set.tint,
+                    lift: None, gamma: None, gain: None,
+                    highlights: None, shadows: None, vibrance: None, reset: false, from: None,
+                };
+                let (plan, revision) = resolve_plan(ctx, std::slice::from_ref(&op))?;
+                let edits: Vec<klipp_document::history::EditCommand> = plan.steps.iter().map(|s| s.edit.clone()).collect();
+                fold.send(ctx, edits, revision)?;
+                moved = (moved.0 + temperature, moved.1 + tint, moved.2 + stops);
+                now = read()?;
+            }
+            let undo_steps = fold.finish(ctx);
+            let (after, after_worst, after_name) = now.error();
+            let mut v = shape;
+            v["text"] = if undo_steps == 0 {
+                json!(format!("The chart in {name} needs nothing it can set: {}.{turned}{flat}", said(&first)))
+            } else {
+                json!(format!("Corrected {name} from its chart: temperature {:+.1}, tint {:+.1}, exposure {:+.2} stops. Before: {}. After: {}.{turned}{flat}", moved.0, moved.1, moved.2, said(&first), said(&now)))
+            };
+            v["after"] = json!({ "mean_de": after, "worst_de": after_worst, "worst_patch": after_name });
+            v["applied"] = json!(undo_steps > 0);
+            v["undo_steps"] = json!(undo_steps);
+            v["next"] = json!("White balance and exposure only: a chart's colour patches left off are the camera's own colour, for a grade by eye or a look. Carry it to the scene's other shots with grade from this clip.");
             Ok(v)
         }
 

@@ -877,6 +877,7 @@ fn handle(
             | ControlCommand::MeasureRegion { .. }
             | ControlCommand::SkinBalance { .. }
             | ControlCommand::PickGrey { .. }
+            | ControlCommand::ReadChart { .. }
             | ControlCommand::GradeToTarget { .. }
             | ControlCommand::GetGrade { .. }
             | ControlCommand::AddNode { .. }
