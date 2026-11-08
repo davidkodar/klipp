@@ -147,8 +147,11 @@ pub fn match_grade_knobs(target: &serde_json::Value, reference: &serde_json::Val
     // apart when their greys were 2, and the match turned the shot blue.
     // A frame with nothing neutral in it has no neutrals to aim at, and
     // then the frames' average colours are all there is to go on.
+    // Solved at the neutrals' own lightness: a mired moves a grey's b*
+    // about in step with its L*, and solved at the median of a dark frame
+    // its greys were moved half as far again as they needed.
     let (from, t, r) = if target_m.neutral_pct >= 1.0 && reference_m.neutral_pct >= 1.0 {
-        let neutral = klipp_color::measure::lab_to_linear(klipp_color::measure::Lab { l: target_m.l_p50.clamp(30.0, 80.0), a: target_m.cast_a, b: target_m.cast_b });
+        let neutral = klipp_color::measure::lab_to_linear(klipp_color::measure::Lab { l: target_m.neutral_l.clamp(20.0, 90.0), a: target_m.cast_a, b: target_m.cast_b });
         (neutral, (target_m.cast_a, target_m.cast_b), (reference_m.cast_a, reference_m.cast_b))
     } else {
         let linear = |v: &serde_json::Value| ["red", "green", "blue"].map(|k| klipp_color::transfer::srgb_to_linear(bal(v, k) as f32));
