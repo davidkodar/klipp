@@ -514,7 +514,7 @@ impl ColourCheckPanel {
         };
         ui.horizontal_wrapped(|ui| {
             let scope = if picked >= 2 { format!("the {picked} selected shots") } else { "every shot on the picture track".to_string() };
-            if button(ui, true, "Match to Hero", &format!("Group {scope} into scenes by how they were lit, take the shot in each nearest the look as its hero, and move the others' primaries toward it, measuring after each round. One undo step.")) {
+            if button(ui, true, "Match to Hero", &format!("Group {scope} into scenes by how they were lit, take the shot in each nearest the look as its hero, and move the others' primaries toward it, measuring after each round: a first pass to compare and fine-tune by eye. One undo step.")) {
                 action = ColourAction::MatchToHero;
             }
             if button(ui, clip, "Balance Skin", "Measure the faces in the selected clip and add a skin secondary that turns their hue onto the skin band, measured again after each round. Refused when the whole scene carries the cast: that is a white balance. One undo step.") {

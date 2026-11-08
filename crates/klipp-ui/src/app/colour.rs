@@ -1636,7 +1636,7 @@ impl KlippApp {
                 let wired = self.state.sequence().all_clips().find(|c| c.id == *clip_id).is_some_and(|c| c.grade().edges.iter().any(|e| e.from_node == *node_id));
                 let unwired = if wired { "" } else { " — not shown: this Colour Match isn't wired into the grade; connect its output on the node canvas" };
                 self.state.toast.show(format!(
-                    "Match: exp {:+.2}, temp {:+.0}, tint {:+.0}, sat {:.2}×{}{unwired}",
+                    "First pass: exp {:+.2}, temp {:+.0}, tint {:+.0}, sat {:.2}×{}{unwired}. Compare the shots and fine-tune by eye for an exact match.",
                     settings.exposure, settings.temperature, settings.tint, settings.saturation, settings.strained_note()
                 ));
                 true

@@ -53,7 +53,7 @@ Arguments:
 
 ## klipp_match_grade
 
-Match picture clips using scope measurements: adjust target exposure/lift/gain/temperature/tint toward reference black/mid/white and colour balance. secs/reference_secs select timeline frames inside each clip; otherwise use the midpoint of each longest detected shot, avoiding cuts. One undo step; verify this first pass with klipp_check color or klipp_frame_stats, then refine with grade.
+Match picture clips using scope measurements: adjust target exposure/lift/gain toward reference black/mid/white, read the picture again, then temperature/tint toward its colour balance: brightness first, since colour read off a picture too dark or too bright is off. secs/reference_secs select timeline frames inside each clip; otherwise use the midpoint of each longest detected shot, avoiding cuts. One undo step. It is a first pass and the reply says so: tell the person to compare the shots and fine-tune by eye for an exact match; verify with klipp_check color or klipp_frame_stats, then refine with grade.
 
 Arguments:
 - `reference_clip_id`: the shot to match it to
