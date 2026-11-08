@@ -6147,6 +6147,7 @@ impl AppState {
         let command = self.with_matched_follow(command);
         let command = self.with_primary_holes_filled(command);
         let command = self.with_marks_on_shorter_timeline(command);
+        let command = self.with_broken_transitions_removed(command);
         // The project's steps go to its own history, reachable from any
         // sequence (#1986); inside a batch already open they are one more
         // edit of it, and the batch stays where it is.
@@ -6203,7 +6204,41 @@ impl AppState {
     /// on the primary track (#3060), applied now and kept in the same
     /// step: the primary stays gapless, so no later magnetic edit packs
     /// it, and the undo takes the gap clips away with the edit.
-    fn with_primary_holes_filled(&mut self, command: EditCommand) -> EditCommand {
+/// `command`, already applied, with every transition it left off a cut
+    /// taken off in the same step: a clip moved away from its neighbour, a
+    /// gap trimmed between them. The transition stayed on both clips, drawn
+    /// over the gap, and an export after the move failed on it. Undo puts
+    /// it back with the clips.
+    fn with_broken_transitions_removed(&mut self, command: EditCommand) -> EditCommand {
+        let removals: Vec<EditCommand> = self
+            .sequence()
+            .tracks
+            .iter()
+            .enumerate()
+            .flat_map(|(track_index, t)| {
+                t.broken_transitions().into_iter().map(move |transition| {
+                    let fade = |id| t.find_clip(id).map(|c| (c.fade_out_secs, c.fade_in_secs));
+                    let old_fade_out_a = fade(transition.clip_a_id).map_or(0.0, |f| f.0);
+                    let old_fade_in_b = fade(transition.clip_b_id).map_or(0.0, |f| f.1);
+                    EditCommand::RemoveTransition { track_index, transition, old_fade_out_a, old_fade_in_b }
+                })
+            })
+            .collect();
+        if removals.is_empty() {
+            return command;
+        }
+        let mut view = klipp_document::apply::DocumentView { sequences: &mut self.sequences, active: self.active_sequence_idx, media_pool: &mut self.media_pool, fps: &mut self.fps };
+        for r in &removals {
+            let _ = view.apply_forward(r);
+        }
+        let (label, edit) = match command {
+            EditCommand::Named { label, edit } => (label, *edit),
+            other => (other.label().to_string(), other),
+        };
+        EditCommand::Named { label, edit: Box::new(EditCommand::Batch(std::iter::once(edit).chain(removals).collect())) }
+    }
+
+        fn with_primary_holes_filled(&mut self, command: EditCommand) -> EditCommand {
         let Some((track_index, gaps)) = self.sequence().primary_holes() else { return command };
         let fills: Vec<EditCommand> = gaps.into_iter().map(|clip| EditCommand::LegacyAppendClip { clip, track_index }).collect();
         let mut view = klipp_document::apply::DocumentView { sequences: &mut self.sequences, active: self.active_sequence_idx, media_pool: &mut self.media_pool, fps: &mut self.fps };
@@ -8261,5 +8296,58 @@ mod selection_and_skim_tests {
         sound.has_audio = true;
         state.media_pool.add(sound);
         assert!(state.skim_audio_may_start(heard));
+    }
+}
+
+#[cfg(test)]
+mod broken_transition_tests {
+    use crate::history::EditCommand;
+    use klipp_core::{MediaId, RationalTime, TransitionAlignment, TransitionId, TransitionKind};
+    use klipp_timeline::{Clip, Transition};
+
+    fn tc(s: f64) -> RationalTime {
+        RationalTime::from_secs_f64(s, 25)
+    }
+
+    /// A clip moved away from its neighbour takes the transition on their
+    /// cut off in the same step, and one undo puts the clip and the
+    /// transition back; an edit that leaves the cut alone keeps it. The
+    /// transition stayed on both clips, and an export after the move
+    /// failed on it.
+    #[test]
+    fn a_transition_off_its_cut_goes_with_the_edit_and_comes_back_with_its_undo() {
+        let mut s = super::AppState::default();
+        let media = MediaId::new();
+        let (a, b, c) = (Clip::media(media, tc(0.0), tc(2.0), tc(0.0), tc(2.0)), Clip::media(media, tc(2.0), tc(4.0), tc(2.0), tc(4.0)), Clip::media(media, tc(6.0), tc(8.0), tc(6.0), tc(8.0)));
+        let tr = Transition { id: TransitionId::new(), kind: TransitionKind::CrossDissolve, duration: tc(1.0), clip_a_id: a.id, clip_b_id: b.id, user_params: Default::default(), alignment: TransitionAlignment::Center };
+        let ti = s.sequence().tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
+        {
+            let t = &mut s.sequence_mut().tracks[ti];
+            t.clips = vec![a.clone(), b.clone(), c.clone()];
+            t.transitions = vec![tr];
+        }
+        // Another clip moved: the cut is untouched, so is the transition.
+        s.sequence_mut().tracks[ti].clips[2].timeline_in = tc(7.0);
+        s.sequence_mut().tracks[ti].clips[2].timeline_out = tc(9.0);
+        s.push_history(EditCommand::LegacyMoveClip { clip_id: c.id, old_timeline_in: tc(6.0), old_timeline_out: tc(8.0), new_timeline_in: tc(7.0), new_timeline_out: tc(9.0), linked_partner: None });
+        assert_eq!(s.sequence().tracks[ti].transitions.len(), 1, "a move elsewhere keeps it");
+
+        // B moved away from A.
+        {
+            let t = &mut s.sequence_mut().tracks[ti];
+            let b = t.find_clip_mut(b.id).unwrap();
+            (b.timeline_in, b.timeline_out) = (tc(10.0), tc(12.0));
+            t.sort_clips();
+        }
+        s.push_history(EditCommand::LegacyMoveClip { clip_id: b.id, old_timeline_in: tc(2.0), old_timeline_out: tc(4.0), new_timeline_in: tc(10.0), new_timeline_out: tc(12.0), linked_partner: None });
+        assert!(s.sequence().tracks[ti].transitions.is_empty(), "the transition off its cut is gone");
+
+        let entry = s.active_history_mut().undo().expect("the move's step");
+        let mut view = klipp_document::apply::DocumentView { sequences: &mut s.sequences, active: s.active_sequence_idx, media_pool: &mut s.media_pool, fps: &mut s.fps };
+        let _ = view.apply_inverse(&entry.command);
+        let t = &s.sequence().tracks[ti];
+        assert_eq!(t.find_clip(b.id).map(|c| c.timeline_in), Some(tc(2.0)), "B back on the cut");
+        assert_eq!(t.transitions.iter().map(|x| x.id).collect::<Vec<_>>(), vec![tr.id], "and its transition with it");
+        assert!(t.transition_meets(&t.transitions[0]));
     }
 }

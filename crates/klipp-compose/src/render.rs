@@ -6988,7 +6988,9 @@ pub(crate) fn running_transition(seq: &Sequence, track: &Track, time: Timecode) 
 /// `tr`, when it is running at `time` between two enabled clips.
 fn transition_at<'a>(seq: &Sequence, track: &'a Track, tr: &klipp_timeline::Transition, time: Timecode) -> Option<TrackItem<'a>> {
     let (a, b) = (track.find_clip(tr.clip_a_id)?, track.find_clip(tr.clip_b_id)?);
-    if !a.enabled || !b.enabled {
+    // Not on a cut any more (a side moved away, a gap between them): a
+    // plain cut, never a frame asked of a clip where it isn't.
+    if !a.enabled || !b.enabled || !track.transition_meets(tr) {
         return None;
     }
     let (start, end) = tr.span(b.timeline_in);
@@ -9310,4 +9312,40 @@ fn generator_feature(g: &klipp_core::GeneratorData) -> &'static str {
 /// A title's backing per line as the GPU stack takes it (#3237).
 fn gpu_line_boxes(l: &klipp_title::BackingLines) -> klipp_effects::gpu::TitleBackingLines {
     klipp_effects::gpu::TitleBackingLines { rects: l.rects.clone(), alphas: l.alphas.clone(), radius: l.radius, joined: l.joined }
+}
+
+#[cfg(test)]
+mod broken_transition_tests {
+    use klipp_core::{MediaId, RationalTime, TransitionAlignment, TransitionId, TransitionKind};
+    use klipp_timeline::{Clip, Sequence, Track, TrackKind, Transition};
+
+    fn tc(s: f64) -> RationalTime {
+        RationalTime::from_secs_f64(s, 25)
+    }
+
+    /// A transition is drawn only on its cut: with the incoming clip moved
+    /// away it is a plain cut, and nothing is asked of the outgoing clip
+    /// where it never was (the export failed there).
+    #[test]
+    fn a_transition_off_its_cut_is_drawn_as_a_plain_cut() {
+        let media = MediaId::new();
+        let (a, mut b) = (Clip::media(media, tc(0.0), tc(2.0), tc(0.0), tc(2.0)), Clip::media(media, tc(2.0), tc(4.0), tc(2.0), tc(4.0)));
+        let tr = Transition { id: TransitionId::new(), kind: TransitionKind::CrossDissolve, duration: tc(1.0), clip_a_id: a.id, clip_b_id: b.id, user_params: Default::default(), alignment: TransitionAlignment::Center };
+        let mut seq = Sequence::new_default();
+        let mut track = Track::new("V1", TrackKind::Video);
+        track.clips = vec![a.clone(), b.clone()];
+        track.transitions = vec![tr];
+        assert_eq!(super::running_transition(&seq, &track, tc(2.0)), Some(TransitionKind::CrossDissolve), "on its cut");
+        (b.timeline_in, b.timeline_out) = (tc(10.0), tc(12.0));
+        track.clips = vec![a, b];
+        seq.tracks = vec![track.clone()];
+        for at in [1.6, 2.0, 9.6, 10.0] {
+            assert_eq!(super::running_transition(&seq, &track, tc(at)), None, "off its cut, at {at} s");
+        }
+        // The same cut at another rate is still the cut.
+        let mut c = track.clips[1].clone();
+        (c.timeline_in, c.timeline_out) = (RationalTime { value: 60000, rate: 30000 }, RationalTime { value: 120000, rate: 30000 });
+        track.clips[1] = c;
+        assert!(track.transition_meets(&tr), "2.0 s at 30000 meets 2.0 s at 25");
+    }
 }
