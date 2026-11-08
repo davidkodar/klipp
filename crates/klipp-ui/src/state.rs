@@ -243,6 +243,18 @@ pub struct SurfaceTool {
     pub drag: Option<(usize, egui::Pos2, [[f32; 2]; 4])>,
 }
 
+/// The viewer's chart tool: four corners being set on a colour chart in a
+/// clip, in fractions of the frame as it is shown, round its patches from the
+/// brown one, before it is read.
+#[derive(Debug, Clone)]
+pub struct ChartTool {
+    pub clip_id: klipp_core::ClipId,
+    pub corners: [[f32; 2]; 4],
+    /// The corner held, or 4 for the whole shape; where the press was, and
+    /// the corners then.
+    pub drag: Option<(usize, egui::Pos2, [[f32; 2]; 4])>,
+}
+
 /// What the surface tool's drags change (#2754).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SurfaceEdit {
@@ -3378,6 +3390,7 @@ pub struct AppState {
     /// A reflection's waterline dragged in the viewer (#2707).
     pub viewer_waterline_drag: Option<ViewerWaterlineDrag>,
     pub surface_tool: Option<SurfaceTool>,
+    pub chart_tool: Option<ChartTool>,
     /// Whether on-screen transform handles are shown when a clip is selected
     pub show_transform_controls: bool,
     /// Currently selected object inside a Title clip. The first
@@ -5552,6 +5565,7 @@ impl Default for AppState {
             viewer_corner_pin_drag: None,
             viewer_waterline_drag: None,
             surface_tool: None,
+            chart_tool: None,
             show_transform_controls: true,
             selected_title_object: None,
             title_object_drag: None,

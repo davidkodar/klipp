@@ -196,6 +196,8 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::SetMeasureOnlyClip(..)
         | AppCommand::MediaDecodeChanged
         | AppCommand::PickWhiteBalance { .. }
+        | AppCommand::StartChartRead { .. }
+        | AppCommand::RunChartRead { .. }
         | AppCommand::PickQualifierColour { .. }
         | AppCommand::PickQualifierStroke { .. }
         | AppCommand::QualifierStroke { .. }

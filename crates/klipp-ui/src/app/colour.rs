@@ -1773,6 +1773,21 @@ impl KlippApp {
                 self.state.toast.show("Click the colour to key in the viewer (Esc cancels)");
                 true
             }
+            AppCommand::StartChartRead { clip_id } => {
+                let playhead = self.state.playhead;
+                let here = self.state.sequence().all_clips().find(|c| c.id == *clip_id).is_some_and(|c| c.timeline_in <= playhead && playhead < c.timeline_out);
+                if here {
+                    self.state.chart_tool = Some(crate::state::ChartTool { clip_id: *clip_id, corners: [[0.25, 0.2], [0.75, 0.2], [0.75, 0.8], [0.25, 0.8]], drag: None });
+                } else {
+                    self.state.toast.show("Put the playhead on the clip, on a frame that shows the chart");
+                }
+                true
+            }
+            AppCommand::RunChartRead { clip_id, corners, exposure } => {
+                let request = chart_read_request(*clip_id, *corners, *exposure, self.state.playhead.to_secs_f64());
+                self.start_colour_tool(crate::panels::colour_check::ColourAction::ReadChart, request);
+                true
+            }
             AppCommand::PickWhiteBalance { clip_id } => {
                 self.state.eyedropper_mode = crate::state::EyedropperMode::WhiteBalance;
                 self.state.wb_pick_clip = Some(*clip_id);
@@ -2475,16 +2490,22 @@ impl KlippApp {
     /// Start a measured colour tool on a worker thread: it renders and
     /// measures frames through this UI, so it must not run on it.
     pub(super) fn run_colour_tool(&mut self, action: crate::panels::colour_check::ColourAction) {
+        let selected_media = (self.state.selected_media_ids.len() == 1).then(|| self.state.selected_media_ids.iter().next().copied()).flatten();
+        let Some(request) = colour_tool_request(action, self.state.selected_clip, &self.state.selected_clips, selected_media) else { return };
+        self.start_colour_tool(action, request);
+    }
+
+    /// Run `request` as `action` on a worker thread.
+    pub(super) fn start_colour_tool(&mut self, action: crate::panels::colour_check::ColourAction, request: serde_json::Value) {
+        use crate::panels::colour_check::ColourAction as A;
         let Some(run) = self.local_control.clone() else { return };
         if self.colour_tool_reply.is_some() {
-            // The inspector's button has no window to say it in.
-            if action == crate::panels::colour_check::ColourAction::AutoColour {
-                self.state.toast.show("Auto Colour waits for the colour tool still running");
+            // These answer outside the window, which may not be up.
+            if matches!(action, A::AutoColour | A::ReadChart) {
+                self.state.toast.show(format!("{} waits for the colour tool still running", action.name()));
             }
             return;
         }
-        let selected_media = (self.state.selected_media_ids.len() == 1).then(|| self.state.selected_media_ids.iter().next().copied()).flatten();
-        let Some(request) = colour_tool_request(action, self.state.selected_clip, &self.state.selected_clips, selected_media) else { return };
         let (tx, rx) = std::sync::mpsc::channel();
         let spawned = std::thread::Builder::new().name("klipp-colour-tool".into()).spawn(move || {
             let _ = tx.send(run(request));
@@ -2516,11 +2537,17 @@ impl KlippApp {
             Err(why) => (false, format!("{name}: {why}")),
         };
         // Auto Colour is started from the inspector, so it answers there.
-        if action == Some(crate::panels::colour_check::ColourAction::AutoColour) {
+        if matches!(action, Some(crate::panels::colour_check::ColourAction::AutoColour | crate::panels::colour_check::ColourAction::ReadChart)) {
             self.state.toast.show(&result.1);
         }
         self.colour_check.tool_result = Some(result);
     }
+}
+
+/// The request the chart tool sends: what an assistant sends to read a
+/// chart and apply it.
+pub(super) fn chart_read_request(clip: klipp_core::ClipId, corners: [[f32; 2]; 4], exposure: bool, secs: f64) -> serde_json::Value {
+    serde_json::json!({ "method": "read_chart", "clip_id": clip.0.to_string(), "corners": corners, "secs": secs, "apply": true, "exposure": exposure })
 }
 
 /// The control request a Colour Check tool sends (#897), or `None` when
@@ -2547,8 +2574,30 @@ pub(super) fn colour_tool_request(
         A::AdoptLookFromTimeline => json!({ "method": "adopt_look", "from_timeline": true, "apply": true }),
         A::AdoptLookFromMedia => json!({ "method": "adopt_look", "media_id": media?.0.to_string(), "apply": true }),
         A::AutoColour => json!({ "method": "apply", "ops": [{ "op": "auto_colour", "clips": [clip?.0.to_string()] }] }),
-        A::None | A::SelfCheck => return None,
+        // The chart tool sends its own, with its corners.
+        A::None | A::SelfCheck | A::ReadChart => return None,
     })
+}
+
+#[cfg(test)]
+mod chart_tool_tests {
+    use super::chart_read_request;
+
+    /// What the chart tool sends is what an assistant sends: the corners
+    /// round the chart, the playhead, applied, and the exposure as asked.
+    #[test]
+    fn the_chart_tool_sends_the_request_an_assistant_sends() {
+        let clip = klipp_core::ClipId::new();
+        let corners = [[0.1, 0.2], [0.8, 0.2], [0.8, 0.7], [0.1, 0.7]];
+        let v = chart_read_request(clip, corners, false, 3.5);
+        assert_eq!(v["method"], "read_chart");
+        assert_eq!(v["clip_id"], clip.0.to_string());
+        assert_eq!(v["apply"], true);
+        assert_eq!(v["exposure"], false);
+        assert_eq!(v["secs"], 3.5);
+        let sent: [[f32; 2]; 4] = serde_json::from_value(v["corners"].clone()).unwrap();
+        assert_eq!(sent, corners);
+    }
 }
 
 #[cfg(test)]
