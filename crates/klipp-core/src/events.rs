@@ -802,8 +802,19 @@ pub enum ExportVideoCodec {
     ProRes422,
     ProRes422HQ,
     ProRes4444,
+    /// DNxHD at 1920x1080 only, at the rate its frame rate takes (115 at
+    /// 23.976/24, 120 at 25, 145 at 29.97): for a broadcast spec that names
+    /// DNxHD. The two entries there were (115 and 145) were one class and
+    /// wrote the same file; a project or preset with either loads as this.
+    #[serde(alias = "DNxHD145")]
     DNxHD115,
-    DNxHD145,
+    /// DNxHR, Avid's DNx at any size: LB (offline), SQ, HQ (8-bit 4:2:2),
+    /// HQX (10-bit 4:2:2) and 444 (10-bit 4:4:4).
+    DnxhrLb,
+    DnxhrSq,
+    DnxhrHq,
+    DnxhrHqx,
+    Dnxhr444,
     Av1,
     Vp9,
     /// Animated GIF — two-pass palette workflow inside the encoder.
@@ -820,7 +831,7 @@ impl ExportVideoCodec {
             Self::H264 => "libx264",
             Self::H265 => "libx265",
             Self::ProRes422 | Self::ProRes422HQ | Self::ProRes4444 => "prores_ks",
-            Self::DNxHD115 | Self::DNxHD145 => "dnxhd",
+            Self::DNxHD115 | Self::DnxhrLb | Self::DnxhrSq | Self::DnxhrHq | Self::DnxhrHqx | Self::Dnxhr444 => "dnxhd",
             Self::Av1 => "libsvtav1",
             Self::Vp9 => "libvpx-vp9",
             Self::Gif => "gif",
@@ -835,8 +846,12 @@ impl ExportVideoCodec {
             Self::ProRes422 => "ProRes 422",
             Self::ProRes422HQ => "ProRes 422 HQ",
             Self::ProRes4444 => "ProRes 4444",
-            Self::DNxHD115 => "DNxHD 115 Mbps",
-            Self::DNxHD145 => "DNxHD 145 Mbps",
+            Self::DNxHD115 => "DNxHD 1080",
+            Self::DnxhrLb => "DNxHR LB",
+            Self::DnxhrSq => "DNxHR SQ",
+            Self::DnxhrHq => "DNxHR HQ",
+            Self::DnxhrHqx => "DNxHR HQX",
+            Self::Dnxhr444 => "DNxHR 444",
             Self::Av1 => "AV1",
             Self::Vp9 => "VP9",
             Self::Gif => "GIF (animated)",
@@ -863,8 +878,12 @@ impl ExportVideoCodec {
             Self::ProRes422 => "CPU only — NLE interchange, large files",
             Self::ProRes422HQ => "CPU only — high quality NLE interchange",
             Self::ProRes4444 => "CPU only — alpha channel, mastering",
-            Self::DNxHD115 => "CPU only — Avid interchange",
-            Self::DNxHD145 => "CPU only — Avid interchange, high bitrate",
+            Self::DNxHD115 => "CPU only — Avid, 1920x1080 only, for a spec that names DNxHD",
+            Self::DnxhrLb => "CPU only — Avid offline editing, small files",
+            Self::DnxhrSq => "CPU only — Avid interchange, any size",
+            Self::DnxhrHq => "CPU only — Avid high quality, 8-bit",
+            Self::DnxhrHqx => "CPU only — Avid high quality, 10-bit, grading and HDR",
+            Self::Dnxhr444 => "CPU only — Avid 10-bit 4:4:4, mastering and effects",
             Self::Av1 => "CPU — next-gen, best compression, slow encode",
             Self::Vp9 => "CPU — web video (YouTube, WebM)",
             Self::Gif => "CPU only — animated GIF, 256-colour palette",
@@ -879,8 +898,8 @@ impl ExportVideoCodec {
     pub fn writes_8bit(&self, bit_depth: u8) -> bool {
         match self {
             Self::H264 | Self::H265 | Self::Av1 => bit_depth != 10,
-            Self::Vp9 | Self::DNxHD115 | Self::DNxHD145 => true,
-            Self::ProRes422 | Self::ProRes422HQ | Self::ProRes4444 | Self::Gif | Self::Ffv1 => false,
+            Self::Vp9 | Self::DNxHD115 | Self::DnxhrLb | Self::DnxhrSq | Self::DnxhrHq => true,
+            Self::ProRes422 | Self::ProRes422HQ | Self::ProRes4444 | Self::DnxhrHqx | Self::Dnxhr444 | Self::Gif | Self::Ffv1 => false,
         }
     }
 
@@ -929,15 +948,15 @@ impl ExportVideoCodec {
             }),
             // The standard HDR deliveries, and ProRes the standard HDR
             // mastering format. Nothing to warn about.
-            Self::H265 | Self::Av1 | Self::ProRes422 | Self::ProRes422HQ | Self::ProRes4444 | Self::Ffv1 => None,
-            // Not offered an HDR delivery by the export dialog today —
-            // DNxHD 115/145 are 8-bit, GIF is palettised. Answered
-            // anyway so the advice does not depend on the UI's gating.
-            Self::DNxHD115 | Self::DNxHD145 => Some(HdrAdvice {
-                headline: "DNxHD cannot carry HDR",
-                detail: "These DNxHD bitrates are 8-bit 4:2:2, which has nowhere to put \
-                         an HDR signal. ProRes 422 HQ is the 10-bit equivalent.",
-                suggest: Some(Self::ProRes422HQ),
+            Self::H265 | Self::Av1 | Self::ProRes422 | Self::ProRes422HQ | Self::ProRes4444 | Self::DnxhrHqx | Self::Dnxhr444 | Self::Ffv1 => None,
+            // Not offered an HDR delivery by the export dialog: these DNx
+            // are 8-bit, and a GIF is palettised. Answered anyway so the
+            // advice does not depend on the UI's gating.
+            Self::DNxHD115 | Self::DnxhrLb | Self::DnxhrSq | Self::DnxhrHq => Some(HdrAdvice {
+                headline: "This DNx cannot carry HDR",
+                detail: "DNxHD and DNxHR LB, SQ and HQ are 8-bit 4:2:2, which has nowhere to put \
+                         an HDR signal. DNxHR HQX is the 10-bit equivalent.",
+                suggest: Some(Self::DnxhrHqx),
             }),
             Self::Vp9 => Some(HdrAdvice {
                 headline: "VP9 HDR has thin support",
@@ -967,11 +986,23 @@ impl ExportVideoCodec {
     pub fn home_format(&self) -> ExportFormat {
         match self {
             Self::H264 | Self::H265 | Self::Av1 => ExportFormat::Mp4,
-            Self::ProRes422 | Self::ProRes422HQ | Self::ProRes4444 | Self::DNxHD115 | Self::DNxHD145 => ExportFormat::Mov,
+            Self::ProRes422 | Self::ProRes422HQ | Self::ProRes4444 => ExportFormat::Mov,
+            Self::DNxHD115 | Self::DnxhrLb | Self::DnxhrSq | Self::DnxhrHq | Self::DnxhrHqx | Self::Dnxhr444 => ExportFormat::Mov,
             Self::Vp9 => ExportFormat::WebM,
             Self::Gif => ExportFormat::Gif,
             Self::Ffv1 => ExportFormat::Mkv,
         }
+    }
+
+    /// Any DNx: DNxHD or DNxHR.
+    pub fn is_dnx(&self) -> bool {
+        matches!(self, Self::DNxHD115 | Self::DnxhrLb | Self::DnxhrSq | Self::DnxhrHq | Self::DnxhrHqx | Self::Dnxhr444)
+    }
+
+    /// A mastering codec whose depth is its own and carries HDR: ProRes,
+    /// DNxHR HQX and 444 (10-bit). No bit depth is chosen for them.
+    pub fn is_hdr_master(&self) -> bool {
+        matches!(self, Self::ProRes422 | Self::ProRes422HQ | Self::ProRes4444 | Self::DnxhrHqx | Self::Dnxhr444)
     }
 
     /// Whether the codec can carry an alpha channel: ProRes 4444 and FFV1
@@ -5451,7 +5482,7 @@ mod gif_format_tests {
         for f in [ExportFormat::Mp4, ExportFormat::Mkv, ExportFormat::Mov, ExportFormat::WebM] {
             assert!(!f.holds_video(V::Gif), "{f:?} holds GIF");
         }
-        for c in [V::H264, V::H265, V::ProRes422, V::ProRes422HQ, V::ProRes4444, V::DNxHD115, V::DNxHD145, V::Av1, V::Vp9] {
+        for c in [V::H264, V::H265, V::ProRes422, V::ProRes422HQ, V::ProRes4444, V::DNxHD115, V::DnxhrLb, V::DnxhrSq, V::DnxhrHq, V::DnxhrHqx, V::Dnxhr444, V::Av1, V::Vp9] {
             assert!(!ExportFormat::Gif.holds_video(c), "GIF holds {c:?}");
         }
     }
@@ -5476,7 +5507,7 @@ mod gif_format_tests {
         // container past these would refuse a file that encodes.
         for (f, v) in [
             (ExportFormat::Mkv, V::ProRes422HQ),
-            (ExportFormat::Mkv, V::DNxHD145),
+            (ExportFormat::Mkv, V::DnxhrHqx),
             (ExportFormat::Mkv, V::Vp9),
             (ExportFormat::Mp4, V::Vp9),
             (ExportFormat::Mp4, V::Av1),
@@ -5494,7 +5525,7 @@ mod gif_format_tests {
             assert!(f.holds_video(f.default_video()), "{f:?}");
             assert!(f.holds_audio(f.default_audio()), "{f:?}");
         }
-        for v in [V::H264, V::H265, V::ProRes422, V::ProRes422HQ, V::ProRes4444, V::DNxHD115, V::DNxHD145, V::Av1, V::Vp9, V::Gif] {
+        for v in [V::H264, V::H265, V::ProRes422, V::ProRes422HQ, V::ProRes4444, V::DNxHD115, V::DnxhrLb, V::DnxhrSq, V::DnxhrHq, V::DnxhrHqx, V::Dnxhr444, V::Av1, V::Vp9, V::Gif] {
             assert!(v.home_format().holds_video(v), "{v:?}");
         }
     }
@@ -5551,14 +5582,18 @@ mod delivery_tests {
 mod hdr_advice_tests {
     use super::*;
 
-    const CODECS: [ExportVideoCodec; 10] = [
+    const CODECS: [ExportVideoCodec; 14] = [
         ExportVideoCodec::H264,
         ExportVideoCodec::H265,
         ExportVideoCodec::ProRes422,
         ExportVideoCodec::ProRes422HQ,
         ExportVideoCodec::ProRes4444,
         ExportVideoCodec::DNxHD115,
-        ExportVideoCodec::DNxHD145,
+        ExportVideoCodec::DnxhrLb,
+        ExportVideoCodec::DnxhrSq,
+        ExportVideoCodec::DnxhrHq,
+        ExportVideoCodec::DnxhrHqx,
+        ExportVideoCodec::Dnxhr444,
         ExportVideoCodec::Av1,
         ExportVideoCodec::Vp9,
         ExportVideoCodec::Gif,
@@ -5638,6 +5673,8 @@ mod hdr_advice_tests {
                     | ExportVideoCodec::ProRes422
                     | ExportVideoCodec::ProRes422HQ
                     | ExportVideoCodec::ProRes4444
+                    | ExportVideoCodec::DnxhrHqx
+                    | ExportVideoCodec::Dnxhr444
             );
             let advice = c.hdr_advice(HdrMode::Pq);
             if !ten_bit_capable {
@@ -5679,7 +5716,8 @@ mod codec_hint_tests {
             ExportVideoCodec::ProRes422HQ,
             ExportVideoCodec::ProRes4444,
             ExportVideoCodec::DNxHD115,
-            ExportVideoCodec::DNxHD145,
+            ExportVideoCodec::DnxhrSq,
+            ExportVideoCodec::DnxhrHqx,
             ExportVideoCodec::Gif,
         ] {
             assert_eq!(c.hint_at_depth(0), c.hint(), "{c:?} at 8-bit");
@@ -6215,3 +6253,31 @@ mod project_switch_tests {
 /// TrackSubject command continues the pass without changing the graph.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SubjectMatteUse { Grade, CutOut }
+
+#[cfg(test)]
+mod dnx_tests {
+    use super::ExportVideoCodec as V;
+
+    /// A project or preset saved with the DNxHD 145 entry loads as the one
+    /// DNxHD entry: the two wrote the same file.
+    #[test]
+    fn a_saved_dnxhd_145_loads_as_dnxhd() {
+        let old: V = serde_json::from_str("\"DNxHD145\"").unwrap();
+        assert_eq!(old, V::DNxHD115);
+        assert_eq!(serde_json::from_str::<V>("\"DNxHD115\"").unwrap(), V::DNxHD115);
+        assert_eq!(serde_json::to_string(&V::DnxhrHqx).unwrap(), "\"DnxhrHqx\"");
+    }
+
+    /// DNxHR HQX and 444 are 10-bit masters that carry HDR; the 8-bit DNx
+    /// are told to use HQX for it.
+    #[test]
+    fn ten_bit_dnxhr_carries_hdr_and_the_8_bit_ones_point_to_it() {
+        for c in [V::DnxhrHqx, V::Dnxhr444] {
+            assert!(c.is_hdr_master() && !c.writes_8bit(0) && c.hdr_advice(super::HdrMode::Pq).is_none(), "{c:?}");
+        }
+        for c in [V::DNxHD115, V::DnxhrLb, V::DnxhrSq, V::DnxhrHq] {
+            assert!(!c.is_hdr_master() && c.writes_8bit(0), "{c:?}");
+            assert_eq!(c.hdr_advice(super::HdrMode::Pq).and_then(|a| a.suggest), Some(V::DnxhrHqx), "{c:?}");
+        }
+    }
+}

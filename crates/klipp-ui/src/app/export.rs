@@ -1255,6 +1255,10 @@ impl KlippApp {
     /// offline, or a source about to be written over, when that is the
     /// next question (see [`export_step`]); otherwise queue the render.
     pub(super) fn export_or_ask(&mut self, settings: &klipp_core::ExportSettings, confirmed: Confirmed) {
+        if let Some(why) = self.unencodable(settings) {
+            self.state.toast.show(why);
+            return;
+        }
         if self.ask_matte_gaps() {
             return;
         }
@@ -1295,7 +1299,22 @@ impl KlippApp {
     /// chose: the whole sequence, its in and out points, the selected
     /// clips, or one job per marker segment. The three ways an export is
     /// confirmed each had a copy of this.
+    /// Why `settings` can't be encoded on this machine, as the form
+    /// greys it: refused before a job is made, not failed as it starts.
+    fn unencodable(&self, settings: &klipp_core::ExportSettings) -> Option<String> {
+        if settings.format.is_audio_only() {
+            return None;
+        }
+        let res = self.state.sequence().resolution;
+        let (w, h) = settings.output_size(res.width, res.height);
+        klipp_render::encoder::why_not_encodable_here(&settings.video_codec, settings.bit_depth, w, h)
+    }
+
     pub(super) fn queue_export(&mut self, settings: &klipp_core::ExportSettings) {
+        if let Some(why) = self.unencodable(settings) {
+            self.state.toast.show(why);
+            return;
+        }
         // A range picked in the form stays picked for the next export
         // (#2968): reset here, the form went back to a stale In/Out after
         // each export and the next came out the In/Out's length.
@@ -1641,25 +1660,56 @@ impl KlippApp {
                         ui.label("Video codec:");
                         let prev_codec = self.export_dialog.video_codec;
                         let gpu_encoder = klipp_core::GpuVendor::gpu_encoder_likely();
+                        // What this machine can't encode is greyed, saying
+                        // why on hover, rather than accepted to fail as its
+                        // job starts (an 8-bit-only x265, no AV1 encoder).
+                        let (out_w, out_h) = {
+                            let res = self.state.sequence().resolution;
+                            dialog_settings(&self.export_dialog).resolution.map_or((res.width, res.height), |r| (r.width, r.height))
+                        };
+                        let depth_for = |codec: ExportVideoCodec, depth: u8| if matches!(codec, ExportVideoCodec::H264 | ExportVideoCodec::H265 | ExportVideoCodec::Av1) { depth } else { 0 };
+                        let chosen_depth = self.export_dialog.bit_depth;
+                        let why_not = |codec: ExportVideoCodec| klipp_render::encoder::why_not_encodable_here(&codec, depth_for(codec, chosen_depth), out_w, out_h);
+                        let entry = |ui: &mut egui::Ui, value: &mut ExportVideoCodec, codec: ExportVideoCodec, label: &str| {
+                            let why = why_not(codec);
+                            let r = ui.add_enabled_ui(why.is_none(), |ui| ui.selectable_value(value, codec, label)).inner;
+                            if let Some(why) = why {
+                                r.on_disabled_hover_text(why);
+                            }
+                        };
                         egui::ComboBox::from_id_salt("export_vcodec")
                             .selected_text(self.export_dialog.video_codec.label())
                             .show_ui(ui, |ui| {
-                                ui.selectable_value(&mut self.export_dialog.video_codec, ExportVideoCodec::H264, if gpu_encoder { "\u{26A1} H.264 — GPU accelerated" } else { "H.264" });
-                                ui.selectable_value(&mut self.export_dialog.video_codec, ExportVideoCodec::H265, if gpu_encoder { "\u{26A1} H.265 — GPU accelerated, best quality/size" } else { "H.265 — best quality/size" });
+                                let v = &mut self.export_dialog.video_codec;
+                                entry(ui, v, ExportVideoCodec::H264, if gpu_encoder { "\u{26A1} H.264 — GPU accelerated" } else { "H.264" });
+                                entry(ui, v, ExportVideoCodec::H265, if gpu_encoder { "\u{26A1} H.265 — GPU accelerated, best quality/size" } else { "H.265 — best quality/size" });
                                 ui.separator();
-                                ui.selectable_value(&mut self.export_dialog.video_codec, ExportVideoCodec::Av1, "AV1 — next-gen, best compression");
-                                ui.selectable_value(&mut self.export_dialog.video_codec, ExportVideoCodec::Vp9, "VP9 — web video (YouTube, WebM)");
+                                entry(ui, v, ExportVideoCodec::Av1, "AV1 — next-gen, best compression");
+                                entry(ui, v, ExportVideoCodec::Vp9, "VP9 — web video (YouTube, WebM)");
                                 if self.export_dialog.format.holds_video(ExportVideoCodec::ProRes422) {
                                     ui.separator();
-                                    ui.selectable_value(&mut self.export_dialog.video_codec, ExportVideoCodec::ProRes422, "ProRes 422 — NLE interchange");
-                                    ui.selectable_value(&mut self.export_dialog.video_codec, ExportVideoCodec::ProRes422HQ, "ProRes 422 HQ — high quality");
-                                    ui.selectable_value(&mut self.export_dialog.video_codec, ExportVideoCodec::ProRes4444, "ProRes 4444 — 4:4:4 mastering");
+                                    entry(ui, v, ExportVideoCodec::ProRes422, "ProRes 422 — NLE interchange");
+                                    entry(ui, v, ExportVideoCodec::ProRes422HQ, "ProRes 422 HQ — high quality");
+                                    entry(ui, v, ExportVideoCodec::ProRes4444, "ProRes 4444 — 4:4:4 mastering");
                                     ui.separator();
-                                    ui.selectable_value(&mut self.export_dialog.video_codec, ExportVideoCodec::DNxHD115, "DNxHD 115 — Avid interchange");
-                                    ui.selectable_value(&mut self.export_dialog.video_codec, ExportVideoCodec::DNxHD145, "DNxHD 145 — Avid high bitrate");
+                                    entry(ui, v, ExportVideoCodec::DnxhrLb, "DNxHR LB — Avid offline, small files");
+                                    entry(ui, v, ExportVideoCodec::DnxhrSq, "DNxHR SQ — Avid interchange");
+                                    entry(ui, v, ExportVideoCodec::DnxhrHq, "DNxHR HQ — Avid high quality, 8-bit");
+                                    entry(ui, v, ExportVideoCodec::DnxhrHqx, "DNxHR HQX — Avid 10-bit, grading and HDR");
+                                    entry(ui, v, ExportVideoCodec::Dnxhr444, "DNxHR 444 — Avid 10-bit 4:4:4 mastering");
+                                    entry(ui, v, ExportVideoCodec::DNxHD115, "DNxHD 1080 — for a spec that names DNxHD");
                                 }
                             });
                         ui.end_row();
+
+                        // The choice as it stands can't be made here (a
+                        // preset or an older project picked it): said, and
+                        // Export refuses it with the same words.
+                        if let Some(why) = why_not(self.export_dialog.video_codec) {
+                            ui.label("");
+                            warn_note(ui, egui::RichText::new(format!("\u{26A0} {why}")).small());
+                            ui.end_row();
+                        }
 
                         // Codec hint
                         ui.label("");
@@ -1720,22 +1770,28 @@ impl KlippApp {
                 grid("export_grid_video").show(ui, |ui| {
                         // #65: bit-depth + HDR controls. H.264, H.265 and
                         // AV1 pick their depth and take HDR at 10 bits;
-                        // ProRes is always 10-bit, so always can. DNxHD is
-                        // 8-bit, and VP9 stays 8-bit and SDR here.
+                        // ProRes and DNxHR HQX/444 are always 10-bit, so
+                        // always can. DNxHD and DNxHR LB/SQ/HQ are 8-bit,
+                        // and VP9 stays 8-bit and SDR here.
                         let picks_depth = matches!(
                             self.export_dialog.video_codec,
                             ExportVideoCodec::H264 | ExportVideoCodec::H265 | ExportVideoCodec::Av1
                         );
-                        let prores = matches!(
-                            self.export_dialog.video_codec,
-                            ExportVideoCodec::ProRes422 | ExportVideoCodec::ProRes422HQ | ExportVideoCodec::ProRes4444
-                        );
+                        let prores = self.export_dialog.video_codec.is_hdr_master();
                         if picks_depth || prores {
                             if picks_depth {
                                 ui.label("Bit depth:");
                                 ui.horizontal(|ui| {
                                     ui.radio_value(&mut self.export_dialog.bit_depth, 0u8, "8-bit");
-                                    ui.radio_value(&mut self.export_dialog.bit_depth, 10u8, "10-bit");
+                                    let (out_w, out_h) = {
+                                        let res = self.state.sequence().resolution;
+                                        dialog_settings(&self.export_dialog).resolution.map_or((res.width, res.height), |r| (r.width, r.height))
+                                    };
+                                    let ten = klipp_render::encoder::why_not_encodable_here(&self.export_dialog.video_codec, 10, out_w, out_h);
+                                    let r = ui.add_enabled_ui(ten.is_none(), |ui| ui.radio_value(&mut self.export_dialog.bit_depth, 10u8, "10-bit")).inner;
+                                    if let Some(why) = ten {
+                                        r.on_disabled_hover_text(why);
+                                    }
                                 });
                                 ui.end_row();
                             } else {
@@ -4539,8 +4595,12 @@ pub(super) fn intra_frame_mbps(codec: klipp_core::ExportVideoCodec, px: f64, fps
         C::ProRes422 => 147.0,
         C::ProRes422HQ => 220.0,
         C::ProRes4444 => 330.0,
-        C::DNxHD115 => 115.0,
-        C::DNxHD145 => 145.0,
+        // DNxHD's 1080 class: 145 at 29.97 (120 at 25, 116 at 23.976).
+        C::DNxHD115 => 145.0,
+        C::DnxhrLb => 45.0,
+        C::DnxhrSq => 145.0,
+        C::DnxhrHq | C::DnxhrHqx => 220.0,
+        C::Dnxhr444 => 440.0,
         _ => return None,
     };
     let reference_px = 1920.0 * 1080.0;

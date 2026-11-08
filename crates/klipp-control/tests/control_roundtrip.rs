@@ -1673,6 +1673,37 @@ fn an_export_refuses_an_existing_file_unless_told_to_overwrite() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// DNxHR by name at any size, HQX carrying HDR at its own depth; DNxHD
+/// (any of its rates' names, one class) only at 1920x1080, refused at
+/// another size before anything is sent, pointing at DNxHR SQ.
+#[test]
+fn dnxhr_exports_at_any_size_and_dnxhd_only_at_1080() {
+    let mut h = harness();
+    let media = h.media_pool.write().unwrap().add(klipp_media::MediaItem::synthetic_for_test("/tmp/export-dnx-fixture.mov".into(), None));
+    for c in h.sequence.write().unwrap().tracks.iter_mut().flat_map(|t| t.clips.iter_mut()) {
+        c.kind = klipp_timeline::ClipKind::Media { media_id: media };
+    }
+    let sent = |h: &mut Harness, req: serde_json::Value| -> klipp_core::ExportSettings {
+        let r = h.ok(req);
+        match h.cmd_rx.recv_timeout(std::time::Duration::from_secs(5)) {
+            Ok(klipp_core::AppCommand::ExportSequence { settings }) => settings,
+            other => panic!("expected ExportSequence, got {other:?} for {r}"),
+        }
+    };
+    use klipp_core::ExportVideoCodec as V;
+    let s = sent(&mut h, json!({ "method": "export", "path": "/tmp/klipp-dnxhr-sq-4k.mov", "codec": "dnxhr_sq", "width": 3840, "height": 2160 }));
+    assert_eq!(s.video_codec, V::DnxhrSq);
+    let s = sent(&mut h, json!({ "method": "export", "path": "/tmp/klipp-dnxhr-hqx-pq.mov", "codec": "dnxhr_hqx", "hdr": "pq" }));
+    assert_eq!((s.video_codec, s.hdr_mode), (V::DnxhrHqx, klipp_core::HdrMode::Pq));
+    let s = sent(&mut h, json!({ "method": "export", "path": "/tmp/klipp-dnxhd-1080.mov", "codec": "dnxhd_145", "width": 1920, "height": 1080 }));
+    assert_eq!(s.video_codec, V::DNxHD115, "one DNxHD class");
+    let err = h.call(json!({ "method": "export", "path": "/tmp/klipp-dnxhd-4k.mov", "codec": "dnxhd", "width": 3840, "height": 2160 }));
+    assert!(err["error"].as_str().is_some_and(|e| e.contains("1920x1080") && e.contains("DNxHR SQ")), "{err}");
+    let hdr8 = h.call(json!({ "method": "export", "path": "/tmp/klipp-dnxhr-sq-pq.mov", "codec": "dnxhr_sq", "hdr": "pq" }));
+    assert!(hdr8["error"].as_str().is_some_and(|e| e.contains("writes no HDR")), "{hdr8}");
+    assert!(h.cmd_rx.try_recv().is_err(), "nothing sent for a refusal");
+}
+
 /// #2477: an export chooses its output transfer, under the dialog's
 /// rules: HDR at 10 bits in hevc, h264 or ProRes, a mastering peak for PQ
 /// only, and the reply says what it delivers.

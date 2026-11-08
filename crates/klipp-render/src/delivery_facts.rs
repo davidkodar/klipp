@@ -168,7 +168,14 @@ fn video_codec_of(name: &str, profile: Option<&str>) -> Option<ExportVideoCodec>
             p if p.contains("4444") => ExportVideoCodec::ProRes4444,
             _ => ExportVideoCodec::ProRes422,
         },
-        "dnxhd" => ExportVideoCodec::DNxHD145,
+        "dnxhd" => match profile.unwrap_or("").to_ascii_uppercase().as_str() {
+            "DNXHR LB" => ExportVideoCodec::DnxhrLb,
+            "DNXHR SQ" => ExportVideoCodec::DnxhrSq,
+            "DNXHR HQ" => ExportVideoCodec::DnxhrHq,
+            "DNXHR HQX" => ExportVideoCodec::DnxhrHqx,
+            "DNXHR 444" => ExportVideoCodec::Dnxhr444,
+            _ => ExportVideoCodec::DNxHD115,
+        },
         _ => return None,
     })
 }

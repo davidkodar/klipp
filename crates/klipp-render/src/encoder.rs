@@ -121,7 +121,11 @@ fn encodes_on_every_core(codec: &ExportVideoCodec) -> bool {
             | ExportVideoCodec::ProRes4444
             | ExportVideoCodec::Ffv1
             | ExportVideoCodec::DNxHD115
-            | ExportVideoCodec::DNxHD145
+            | ExportVideoCodec::DnxhrLb
+            | ExportVideoCodec::DnxhrSq
+            | ExportVideoCodec::DnxhrHq
+            | ExportVideoCodec::DnxhrHqx
+            | ExportVideoCodec::Dnxhr444
             | ExportVideoCodec::Vp9
     )
 }
@@ -187,10 +191,44 @@ fn hardware_video_encoders(codec: &ExportVideoCodec, width: u32, height: u32, wa
 /// hardware one it can use, or an 8-bit-only x265, the export was
 /// accepted and failed at 0%.
 pub fn why_not_encodable(codec: &ExportVideoCodec, bit_depth: u8, width: u32, height: u32) -> Option<String> {
+    size_refusal(codec, width, height).or_else(|| why_no_encoder(codec, bit_depth, width, height))
+}
+
+/// A size the codec has no form for: DNxHD's classes are 1920x1080 only,
+/// and another size was accepted and failed as the encoder opened. DNxHR
+/// takes any size.
+fn size_refusal(codec: &ExportVideoCodec, width: u32, height: u32) -> Option<String> {
+    (*codec == ExportVideoCodec::DNxHD115 && (width, height) != (1920, 1080))
+        .then(|| format!("DNxHD is 1920x1080 only, and this export is {width}x{height}: choose DNxHR SQ, the same quality at any size"))
+}
+
+/// Why no encoder this machine has can write `codec` at `bit_depth`.
+fn why_no_encoder(codec: &ExportVideoCodec, bit_depth: u8, width: u32, height: u32) -> Option<String> {
     let _ = ffmpeg_next::init();
     let attempts = video_encoder_attempts(codec, width, height, bit_depth == 10, &crate::vaapi::encode_nodes());
     let name = software_video_encoder(codec);
     refusal(codec, bit_depth, attempts.iter().any(|a| a.hardware), name, ffmpeg_next::encoder::find_by_name(name))
+}
+
+/// [`why_not_encodable`] remembered for the process, for a form that asks
+/// every frame: the answer depends on the codec, ten bits or not, and
+/// whether the picture is big enough for a hardware encoder, none of which
+/// a running process sees change.
+pub fn why_not_encodable_here(codec: &ExportVideoCodec, bit_depth: u8, width: u32, height: u32) -> Option<String> {
+    // The size rule is cheap and names the size: asked each time. What
+    // the encoders can do is remembered.
+    if let Some(why) = size_refusal(codec, width, height) {
+        return Some(why);
+    }
+    type Key = (ExportVideoCodec, bool, bool);
+    static KNOWN: std::sync::Mutex<Vec<(Key, Option<String>)>> = std::sync::Mutex::new(Vec::new());
+    let key = (*codec, bit_depth == 10, width >= 128 && height >= 128);
+    if let Some((_, why)) = KNOWN.lock().unwrap_or_else(|e| e.into_inner()).iter().find(|(k, _)| *k == key) {
+        return why.clone();
+    }
+    let why = why_no_encoder(codec, bit_depth, width, height);
+    KNOWN.lock().unwrap_or_else(|e| e.into_inner()).push((key, why.clone()));
+    why
 }
 
 /// [`why_not_encodable`]'s answer from what it found: whether a hardware
@@ -340,7 +378,7 @@ fn software_video_encoder(codec: &ExportVideoCodec) -> &'static str {
         ExportVideoCodec::Av1 => "libsvtav1",
         ExportVideoCodec::ProRes422 | ExportVideoCodec::ProRes422HQ | ExportVideoCodec::ProRes4444 => "prores_ks",
         ExportVideoCodec::Ffv1 => "ffv1",
-        ExportVideoCodec::DNxHD115 | ExportVideoCodec::DNxHD145 => "dnxhd",
+        ExportVideoCodec::DNxHD115 | ExportVideoCodec::DnxhrLb | ExportVideoCodec::DnxhrSq | ExportVideoCodec::DnxhrHq | ExportVideoCodec::DnxhrHqx | ExportVideoCodec::Dnxhr444 => "dnxhd",
         ExportVideoCodec::Vp9 => "libvpx-vp9",
         ExportVideoCodec::Gif => "gif",
     }
@@ -655,9 +693,11 @@ impl Encoder {
                         ExportVideoCodec::ProRes422 | ExportVideoCodec::ProRes422HQ => {
                             ffmpeg_next::format::Pixel::YUV422P10LE
                         }
-                        ExportVideoCodec::DNxHD115 | ExportVideoCodec::DNxHD145 => {
+                        ExportVideoCodec::DNxHD115 | ExportVideoCodec::DnxhrLb | ExportVideoCodec::DnxhrSq | ExportVideoCodec::DnxhrHq => {
                             ffmpeg_next::format::Pixel::YUV422P
                         }
+                        ExportVideoCodec::DnxhrHqx => ffmpeg_next::format::Pixel::YUV422P10LE,
+                        ExportVideoCodec::Dnxhr444 => ffmpeg_next::format::Pixel::YUV444P10LE,
                         ExportVideoCodec::H264 | ExportVideoCodec::H265 => {
                             if is_hw_encoder {
                                 if want_10bit {
@@ -728,12 +768,17 @@ impl Encoder {
                             video_opts.set("level", "3");
                             video_opts.set("slicecrc", "1");
                         }
+                        // DNxHD: its 1080 class at the rate the frame rate
+                        // takes (115, 120 or 145); FFmpeg picks it from this.
                         ExportVideoCodec::DNxHD115 => {
                             video_ctx.set_bit_rate(115_000_000);
                         }
-                        ExportVideoCodec::DNxHD145 => {
-                            video_ctx.set_bit_rate(145_000_000);
-                        }
+                        // DNxHR: any size, its rate set by the profile.
+                        ExportVideoCodec::DnxhrLb => video_opts.set("profile", "dnxhr_lb"),
+                        ExportVideoCodec::DnxhrSq => video_opts.set("profile", "dnxhr_sq"),
+                        ExportVideoCodec::DnxhrHq => video_opts.set("profile", "dnxhr_hq"),
+                        ExportVideoCodec::DnxhrHqx => video_opts.set("profile", "dnxhr_hqx"),
+                        ExportVideoCodec::Dnxhr444 => video_opts.set("profile", "dnxhr_444"),
                         ExportVideoCodec::Av1 => {
                             // SVT-AV1 uses CRF
                             video_opts.set("crf", &settings.crf.to_string());
@@ -2342,7 +2387,7 @@ mod tests {
     fn encoders_that_run_on_one_thread_unless_told_use_every_core() {
         use klipp_core::ExportVideoCodec as V;
         let one_thread_unless_told = ["prores_ks", "dnxhd", "ffv1", "libvpx-vp9"];
-        for codec in [V::H264, V::H265, V::ProRes422, V::ProRes422HQ, V::ProRes4444, V::Ffv1, V::DNxHD115, V::DNxHD145, V::Av1, V::Vp9, V::Gif] {
+        for codec in [V::H264, V::H265, V::ProRes422, V::ProRes422HQ, V::ProRes4444, V::Ffv1, V::DNxHD115, V::DnxhrLb, V::DnxhrSq, V::DnxhrHq, V::DnxhrHqx, V::Dnxhr444, V::Av1, V::Vp9, V::Gif] {
             let name = super::software_video_encoder(&codec);
             assert_eq!(super::encodes_on_every_core(&codec), one_thread_unless_told.contains(&name), "{codec:?} ({name})");
         }
@@ -2813,6 +2858,60 @@ mod tests {
                 let _ = std::fs::remove_file(&path);
             }
         }
+    }
+
+    /// The remembered answer the export form greys by is the answer: per
+    /// codec, depth and size class, so DNxHD asked at 1920x1080 first is
+    /// still refused at 4K, and the other way round.
+    #[test]
+    fn the_remembered_answer_is_the_answer_at_each_size() {
+        ffmpeg_next::init().unwrap();
+        for (w, h) in [(1920, 1080), (3840, 2160), (1920, 1080), (1280, 720)] {
+            for c in [ExportVideoCodec::DNxHD115, ExportVideoCodec::DnxhrSq, ExportVideoCodec::H264, ExportVideoCodec::Av1] {
+                assert_eq!(super::why_not_encodable_here(&c, 0, w, h), super::why_not_encodable(&c, 0, w, h), "{c:?} at {w}x{h}");
+            }
+        }
+    }
+
+    /// DNxHR at a size DNxHD has no class for (320x240): each profile
+    /// written with its own pixel format, the file naming the profile.
+    /// DNxHD here was accepted and failed as the encoder opened.
+    #[test]
+    #[serial]
+    fn dnxhr_writes_each_profile_at_any_size() {
+        let _watch = crate::test_watchdog::Watchdog::start();
+        let dir = std::env::temp_dir().join("klipp_render_test");
+        let _ = std::fs::create_dir_all(&dir);
+        let snapshot = make_snapshot();
+        for (codec, profile, pix) in [
+            (ExportVideoCodec::DnxhrLb, "DNXHR LB", "yuv422p"),
+            (ExportVideoCodec::DnxhrSq, "DNXHR SQ", "yuv422p"),
+            (ExportVideoCodec::DnxhrHq, "DNXHR HQ", "yuv422p"),
+            (ExportVideoCodec::DnxhrHqx, "DNXHR HQX", "yuv422p10le"),
+            (ExportVideoCodec::Dnxhr444, "DNXHR 444", "yuv444p10le"),
+        ] {
+            let path = dir.join(format!("test_{profile}.mov").replace(' ', "_"));
+            let mut settings = make_settings(codec, path.to_str().unwrap());
+            settings.format = ExportFormat::Mov;
+            settings.audio_codec = ExportAudioCodec::Copy;
+            assert_eq!(super::why_not_encodable(&codec, 0, 320, 240), None, "{codec:?} is any size");
+            let mut enc = Encoder::open(&path, &settings, &snapshot).unwrap_or_else(|e| panic!("{codec:?}: {e}"));
+            let rgba = [200u8, 120, 40, 255].repeat(320 * 240);
+            for _ in 0..3 {
+                enc.encode_video_frame(&rgba, 320, 240).unwrap();
+            }
+            enc.finalise().unwrap();
+            let out = std::process::Command::new("ffprobe")
+                .args(["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=codec_name,profile,pix_fmt,width,height", "-of", "csv=p=0"])
+                .arg(&path)
+                .output()
+                .expect("ffprobe");
+            let got = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            assert_eq!(got, format!("dnxhd,{profile},320,240,{pix}"), "{codec:?}");
+            let _ = std::fs::remove_file(&path);
+        }
+        assert!(super::why_not_encodable(&ExportVideoCodec::DNxHD115, 0, 3840, 2160).is_some_and(|w| w.contains("1920x1080") && w.contains("DNxHR SQ")));
+        assert_eq!(super::why_not_encodable(&ExportVideoCodec::DNxHD115, 0, 1920, 1080), None);
     }
 
     #[test]
