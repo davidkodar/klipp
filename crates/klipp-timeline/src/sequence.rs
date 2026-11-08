@@ -2050,6 +2050,26 @@ impl Track {
             .find(|(_, c)| tc >= c.timeline_in && tc < c.timeline_out)
     }
 
+    /// Whether `tr` sits on a cut: both its clips on this track, the first
+    /// ending where the second starts. A clip moved away, a gap trimmed
+    /// between them or one taken off leaves a transition that doesn't, and
+    /// it is no transition: drawn as a plain cut, and an edit that leaves
+    /// one takes it off (an export after a clip was moved away failed on
+    /// one, the outgoing clip asked for a frame where it never was).
+    pub fn transition_meets(&self, tr: &crate::Transition) -> bool {
+        match (self.find_clip(tr.clip_a_id), self.find_clip(tr.clip_b_id)) {
+            // By value: the same moment at two rates is one cut.
+            (Some(a), Some(b)) => a.timeline_out.cmp(&b.timeline_in) == std::cmp::Ordering::Equal,
+            _ => false,
+        }
+    }
+
+    /// The transitions on this track that no longer sit on a cut
+    /// ([`Self::transition_meets`]).
+    pub fn broken_transitions(&self) -> Vec<crate::Transition> {
+        self.transitions.iter().filter(|t| !self.transition_meets(t)).cloned().collect()
+    }
+
     /// The transitions in one order, by their ids, so an edit and its undo
     /// give back the order they found: a transition taken off and put back
     /// went to the end. Not by where they sit, which moves with the clips.
