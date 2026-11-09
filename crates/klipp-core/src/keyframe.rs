@@ -647,6 +647,31 @@ fn gain_of(db: f32, silence: f32) -> f32 {
     if db <= silence + 1e-3 { 0.0 } else { 10f32.powf(db / 20.0) }
 }
 
+/// A key track cut in two at `cut` seconds: the keys before it, and the
+/// keys after it re-timed from the cut, each piece given a key at the
+/// cut at the value the curve had there, so the two meet where the track
+/// was and each goes on as it did. A track with no keys stays without.
+/// `level`: a sound level, read in dB as [`evaluate_level`] reads it.
+/// Each piece kept only its own keys before: a ramp across the cut
+/// became a step, and a piece with none fell back to the unkeyed value.
+pub fn split_at_cut(keys: &[Keyframe], cut: f64, level: bool) -> (Vec<Keyframe>, Vec<Keyframe>) {
+    let Some(first) = keys.first() else { return (Vec::new(), Vec::new()) };
+    const NEAR: f64 = 1e-9;
+    let value = if level { evaluate_level(keys, cut, first.value) } else { evaluate(keys, cut, first.value) };
+    // The segment the cut falls in goes on as it did, either side.
+    let on = keys.iter().rev().find(|k| k.time_secs <= cut + NEAR).unwrap_or(first);
+    let at_cut = keys.iter().find(|k| (k.time_secs - cut).abs() <= NEAR);
+    let cut_key = |time_secs: f64| match at_cut {
+        Some(k) => Keyframe { time_secs, ..k.clone() },
+        None => Keyframe { time_secs, value, interpolation: on.interpolation, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Handles::default() },
+    };
+    let mut before: Vec<Keyframe> = keys.iter().filter(|k| k.time_secs < cut - NEAR).cloned().collect();
+    before.push(cut_key(cut));
+    let mut after = vec![cut_key(0.0)];
+    after.extend(keys.iter().filter(|k| k.time_secs > cut + NEAR).map(|k| Keyframe { time_secs: k.time_secs - cut, ..k.clone() }));
+    (before, after)
+}
+
 /// A sound level at `time_secs` from keys in gain, interpolated in dB so a
 /// ramp sounds even, as every editor's volume line moves: 0 to -20 dB over
 /// a second is -10 dB half way, where a straight move in gain was still

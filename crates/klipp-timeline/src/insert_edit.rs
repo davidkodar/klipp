@@ -503,9 +503,14 @@ mod tests {
         let mut s = seq(vec![(TrackKind::Video, vec![c])]);
         s.insert_edit(0, clip(0, 10), tc(40)).expect("insert");
         let (left, right) = (&s.tracks[0].clips[0], &s.tracks[0].clips[2]);
-        assert_eq!(left.opacity_keyframes().len(), 1);
-        assert_eq!(right.opacity_keyframes().len(), 1);
+        // Each half keeps its own key and meets the other at the cut, at
+        // the value the ramp had there (0.2 + 0.6 * 1.2 / 2.0).
+        assert_eq!(left.opacity_keyframes().len(), 2);
+        assert_eq!(right.opacity_keyframes().len(), 2);
+        let (l, r) = (&left.picture.view().opacity_keyframes.0, &right.picture.view().opacity_keyframes.0);
+        assert!((l[1].time_secs - 1.6).abs() < 1e-9 && (l[1].value - 0.56).abs() < 1e-5, "{l:?}");
+        assert!(r[0].time_secs.abs() < 1e-9 && (r[0].value - 0.56).abs() < 1e-5, "{r:?}");
         // The right half's keyframe is re-timed from its own start.
-        assert!((right.picture.view().opacity_keyframes.0[0].time_secs - (2.4 - 1.6)).abs() < 1e-9);
+        assert!((r[1].time_secs - (2.4 - 1.6)).abs() < 1e-9);
     }
 }
