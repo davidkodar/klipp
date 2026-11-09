@@ -167,6 +167,31 @@ pub(crate) fn title_view_of(state: &AppState, clip: &klipp_timeline::Clip, image
         .map(|placement| TitleView { image_rect, placement, frame: (res.width as f32, res.height as f32) })
 }
 
+/// Where a clip's Corner Pin corners sit on the viewer: through its placement
+/// when the pin comes before it in the chain, as it does unless the clip's
+/// placement has been moved, and on the frame when it comes after. `Err`:
+/// placed in a way a flat mapping can't follow (tilted, say).
+fn corner_pin_view(state: &AppState, clip: &klipp_timeline::Clip, effect_index: usize, image_rect: egui::Rect) -> Result<TitleView, ()> {
+    use klipp_graph_lift::stack_view::PlacementBoundary;
+    let seq = state.sequence();
+    let at = title_edit_time(state);
+    let before_placement = match klipp_compose::resolve::placement_in(seq, clip.id, at, seq.fps.as_f64(), None) {
+        Ok(Some(placed)) => match placed.boundary {
+            PlacementBoundary::End => true,
+            PlacementBoundary::Before(path) => path
+                .nodes
+                .last()
+                .and_then(|node| clip.effect_slot_of_node(*node))
+                .is_none_or(|(_, slot)| effect_index < slot),
+        },
+        _ => true,
+    };
+    if !before_placement {
+        return Ok(TitleView::flat(image_rect));
+    }
+    title_view_of(state, clip, image_rect).map_err(|_| ())
+}
+
 /// The chart tool: four corners to drag onto a colour chart, its patch
 /// grid drawn through them so it shows when they sit right.
 fn draw_chart_tool(ui: &mut egui::Ui, state: &mut AppState, image_rect: egui::Rect, cmds: &mut Vec<AppCommand>) {
@@ -5803,7 +5828,28 @@ impl ViewerPanel {
         let old_effect = clip.builtin_effects()[effect_index].clone();
         let keyed: [[bool; 2]; 4] = std::array::from_fn(|i| [keys_of(PARAMS[i][0]).is_some(), keys_of(PARAMS[i][1]).is_some()]);
 
-        let screen: [egui::Pos2; 4] = std::array::from_fn(|i| viewer_norm_to_screen(image_rect, shown[i][0], shown[i][1]));
+        // On the picture they pin, wherever its placement has put it. Placed
+        // in a way they can't follow, they say so rather than sit elsewhere.
+        let view = match corner_pin_view(state, clip, effect_index, image_rect) {
+            Ok(view) => view,
+            Err(()) => {
+                if let Some(drag) = state.viewer_corner_pin_drag.take() {
+                    if drag.started {
+                        match &addr {
+                            Some(a) => cmds.push(AppCommand::AbandonParamEditAt { addr: a.clone(), key: "".into() }),
+                            None => cmds.push(AppCommand::AbandonEffectDrag { clip_id: drag.clip_id, effect_index: drag.effect_index, added: false }),
+                        }
+                    }
+                }
+                let painter = ui.painter_at(image_rect);
+                let galley = painter.layout("This clip is placed in a way the pin's corners can't follow here: set them in the inspector.".to_string(), egui::FontId::proportional(crate::theme::type_scale::CAPTION), egui::Color32::WHITE, image_rect.width() - 24.0);
+                let r = egui::Rect::from_min_size(image_rect.left_top() + egui::vec2(12.0, 12.0), galley.size() + egui::vec2(12.0, 6.0));
+                painter.rect_filled(r, 3.0, egui::Color32::from_rgba_unmultiplied(20, 20, 24, 220));
+                painter.galley(r.min + egui::vec2(6.0, 3.0), galley, egui::Color32::WHITE);
+                return;
+            }
+        };
+        let screen: [egui::Pos2; 4] = std::array::from_fn(|i| view.to_screen(shown[i][0], shown[i][1]));
         let painter = ui.painter().with_clip_rect(ui.clip_rect());
         // White on black, as the transform gizmo's handles are: visible
         // over any picture, and not mistaken for the picture.
@@ -5859,7 +5905,7 @@ impl ViewerPanel {
                 }
                 GizmoStep::Update | GizmoStep::End => {
                     if let Some(p) = pointer_pos {
-                        let (nx, ny) = viewer_screen_to_norm(image_rect, p);
+                        let (nx, ny) = view.to_norm(p);
                         let mut next = drag.corners;
                         next[drag.corner] = [nx.clamp(-2.0, 3.0), ny.clamp(-2.0, 3.0)];
                         match &path {

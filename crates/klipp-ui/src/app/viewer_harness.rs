@@ -198,6 +198,73 @@ mod viewer_menu_tests {
         assert!(crate::hyperzoom::read_hyperzoom_scratch(&v.ctx, id).focal_x > 0.51, "the focal point moved");
     }
 
+    /// A viewer holding one selected clip, built with `edit`.
+    fn with_clip(edit: impl FnOnce(klipp_timeline::test_clip::TestClip) -> klipp_timeline::test_clip::TestClip) -> Viewer {
+        let mut v = Viewer::new();
+        v.state.active_tool = Tool::Select;
+        let tc = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 25);
+        let clip = edit(klipp_timeline::test_clip::TestClip::of(klipp_timeline::Clip::media(klipp_core::MediaId::new(), tc(0.0), tc(2.0), tc(0.0), tc(2.0)))).build();
+        let id = clip.id;
+        let v1 = v.state.sequences[0].tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
+        v.state.sequences[0].tracks[v1].clips = vec![clip];
+        v.state.selected_clip = Some(id);
+        v.frame(Vec::new());
+        v.frame(Vec::new());
+        v
+    }
+
+    /// The value the last write of pin parameter `key` sent.
+    fn sent_pin_value(v: &Viewer, key: &str) -> Option<f32> {
+        v.sent.iter().rev().find_map(|c| match c {
+            AppCommand::SetParamAt { key: k, value: klipp_graph_format::ParamValue::Float(x), .. } if k.as_str() == key => Some(*x),
+            _ => None,
+        })
+    }
+
+    /// A pin's corners sit on the picture they pin, wherever its placement
+    /// has put it, and a drag comes back through it: a clip at half size, a
+    /// corner dragged 40 screen px is 80 px of its own picture. They stayed
+    /// on the full frame, off the picture.
+    #[test]
+    fn a_corner_pins_handles_follow_the_clip() {
+        let mut v = with_clip(|c| c.effects([klipp_effects::corner_pin::still()]).lane("scale", 0.0, 0.5).lane("scale", 5.0, 0.5));
+        let r = v.image_rect();
+        v.press(r.left_top());
+        assert!(v.state.viewer_corner_pin_drag.is_none(), "nothing where the picture isn't");
+        v.release(r.left_top());
+        let corner = r.center() - r.size() * 0.25;
+        v.press(corner);
+        assert!(v.state.viewer_corner_pin_drag.is_some(), "the pin's corner is on the placed picture");
+        v.frame(vec![egui::Event::PointerMoved(corner + egui::vec2(20.0, 0.0))]);
+        v.frame(vec![egui::Event::PointerMoved(corner + egui::vec2(40.0, 0.0))]);
+        v.release(corner + egui::vec2(40.0, 0.0));
+        let x = sent_pin_value(&v, "tl_x").expect("the corner written");
+        assert!((x - 80.0 / r.width()).abs() < 0.01, "40 px on screen at half size: {x}");
+    }
+
+    /// A pin after the placement in the chain is worked out on the frame, so
+    /// its corners stay there: an effect drawn outside the picture comes
+    /// after the placement, and a pin behind it too.
+    #[test]
+    fn a_corner_pin_after_the_placement_stays_on_the_frame() {
+        let mut v = with_clip(|c| c
+            .effects([klipp_effects::reflection::surface("calm_water", 0.6).unwrap(), klipp_effects::corner_pin::still()])
+            .lane("scale", 0.0, 0.5)
+            .lane("scale", 5.0, 0.5));
+        v.press(v.image_rect().left_top());
+        assert!(v.state.viewer_corner_pin_drag.is_some(), "on the frame's corner");
+    }
+
+    /// On a tilted clip the corners can't be placed, so they aren't drawn or
+    /// taken, and the viewer says why.
+    #[test]
+    fn a_tilted_clips_pin_says_so_and_takes_no_press() {
+        let mut v = with_clip(|c| c.effects([klipp_effects::corner_pin::still()]).lane("tilt_x", 0.0, 30.0).lane("tilt_x", 5.0, 30.0));
+        assert!(v.texts.iter().any(|t| t.contains("can't follow")), "{:?}", v.texts);
+        v.press(v.image_rect().left_top());
+        assert!(v.state.viewer_corner_pin_drag.is_none());
+    }
+
     /// A press on a corner of a new Corner Pin is the pin's: its corners
     /// start on the transform gizmo's, which took the press and scaled the
     /// clip, so a pin could not be dragged until something else moved it.
