@@ -2472,7 +2472,7 @@ fn show_hyperzoom_section(
                 // = top-left; 1,1 = bottom-right; 0.5,0.5 = centre.
                 row(ui, theme, "Focal X", |ui| {
                     ui.add(
-                        egui::DragValue::new(&mut focal_x)
+                        crate::widgets::number_field(&mut focal_x)
                             .range(0.0_f32..=1.0)
                             .speed(0.005)
                             .fixed_decimals(3),
@@ -2480,7 +2480,7 @@ fn show_hyperzoom_section(
                 });
                 row(ui, theme, "Focal Y", |ui| {
                     ui.add(
-                        egui::DragValue::new(&mut focal_y)
+                        crate::widgets::number_field(&mut focal_y)
                             .range(0.0_f32..=1.0)
                             .speed(0.005)
                             .fixed_decimals(3),
@@ -2775,7 +2775,7 @@ fn show_hyperzoom_section(
                 // ── Duration + peak scale ──
                 row(ui, theme, "Duration", |ui| {
                     ui.add(
-                        egui::DragValue::new(&mut duration_secs)
+                        crate::widgets::number_field(&mut duration_secs)
                             .range(0.05_f64..=10.0)
                             .speed(0.05)
                             .suffix(" s")
@@ -2784,7 +2784,7 @@ fn show_hyperzoom_section(
                 });
                 row(ui, theme, "Peak scale", |ui| {
                     ui.add(
-                        egui::DragValue::new(&mut max_scale)
+                        crate::widgets::number_field(&mut max_scale)
                             .range(1.5_f32..=200.0)
                             .speed(0.5)
                             .suffix(" ×")
@@ -2829,7 +2829,7 @@ fn show_hyperzoom_section(
                 // two-keyframe ramp.
                 row(ui, theme, "Hold at peak", |ui| {
                     ui.add(
-                        egui::DragValue::new(&mut hold_secs)
+                        crate::widgets::number_field(&mut hold_secs)
                             .range(0.0_f64..=1.0)
                             .speed(0.01)
                             .suffix(" s")
@@ -2862,7 +2862,7 @@ fn show_hyperzoom_section(
                         ui.label(egui::RichText::new("Amount").size(super::rows::TEXT).color(theme.text_secondary));
                         ui.add_space(8.0);
                         ui.add(
-                            egui::DragValue::new(&mut radial_blur_amount)
+                            crate::widgets::number_field(&mut radial_blur_amount)
                                 .range(0.0_f32..=50.0)
                                 .speed(0.5)
                                 .fixed_decimals(1),
@@ -2898,7 +2898,7 @@ fn show_hyperzoom_section(
                         ui.label(egui::RichText::new("Amount").size(super::rows::TEXT).color(theme.text_secondary));
                         ui.add_space(8.0);
                         ui.add(
-                            egui::DragValue::new(&mut chromatic_aberration_amount)
+                            crate::widgets::number_field(&mut chromatic_aberration_amount)
                                 .range(0.0_f32..=30.0)
                                 .speed(0.25)
                                 .fixed_decimals(1),
@@ -2932,7 +2932,7 @@ fn show_hyperzoom_section(
                         ui.label(egui::RichText::new("Intensity").size(super::rows::TEXT).color(theme.text_secondary));
                         ui.add_space(8.0);
                         ui.add(
-                            egui::DragValue::new(&mut light_leak_intensity)
+                            crate::widgets::number_field(&mut light_leak_intensity)
                                 .range(0.0_f32..=1.0)
                                 .speed(0.01)
                                 .fixed_decimals(2),
@@ -3660,7 +3660,7 @@ fn color_fade_row(
             // a heavyweight scrubby with keyframe affordances since the
             // ColorFade's progress is engine-driven, not user-keyframed.
             let mut dur = duration;
-            if ui.add(egui::DragValue::new(&mut dur)
+            if ui.add(crate::widgets::number_field(&mut dur)
                 .range(0.05..=10.0)
                 .speed(0.05)
                 .suffix(" s")

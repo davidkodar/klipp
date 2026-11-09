@@ -520,7 +520,7 @@ fn slider_row(ui: &mut egui::Ui, ctx: &mut RowCtx, desc: &ParamDesc, pres: &Pres
             match grade_span {
                 Some(span) => {
                     let before_drag = drag_carry(ui, desc, v).unwrap_or(v);
-                    let number = ui.add(egui::DragValue::new(&mut v).range(lo..=hi).speed(span / 800.0));
+                    let number = ui.add(crate::widgets::number_field(&mut v).range(lo..=hi).speed(span / 800.0));
                     if number.dragged() {
                         let pace = ui.input(|i| if i.modifiers.shift_only() { 0.1 } else if i.modifiers.alt { 10.0 } else { 1.0 });
                         v = crate::widgets::grade_drag::grade_drag(before_drag, number.drag_delta().x * pace, span).clamp(lo, hi);

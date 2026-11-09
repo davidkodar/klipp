@@ -129,7 +129,7 @@ fn show_ofx_param(
                 let imax = desc.max.as_ref()
                     .and_then(|m| match m { klipp_plugin::ParamValue::Int(i) => Some(*i), _ => None })
                     .unwrap_or(100);
-                if ui.add(egui::DragValue::new(&mut v).range(imin..=imax).speed(1)).changed() {
+                if ui.add(crate::widgets::number_field(&mut v).range(imin..=imax).speed(1)).changed() {
                     cmds.push(AppCommand::SetEffectParam {
                         clip_id,
                         effect_index,
@@ -240,8 +240,8 @@ fn show_ofx_param(
                     .and_then(|m| match m { klipp_plugin::ParamValue::Double2(a, _) => Some(*a as f32), klipp_plugin::ParamValue::Double(a) => Some(*a as f32), _ => None })
                     .unwrap_or(1000.0);
                 ui.horizontal(|ui| {
-                    let changed0 = ui.add(egui::DragValue::new(&mut v0).range(dmin..=dmax).speed(0.1).prefix("x: ")).changed();
-                    let changed1 = ui.add(egui::DragValue::new(&mut v1).range(dmin..=dmax).speed(0.1).prefix("y: ")).changed();
+                    let changed0 = ui.add(crate::widgets::number_field(&mut v0).range(dmin..=dmax).speed(0.1).prefix("x: ")).changed();
+                    let changed1 = ui.add(crate::widgets::number_field(&mut v1).range(dmin..=dmax).speed(0.1).prefix("y: ")).changed();
                     if changed0 || changed1 {
                         cmds.push(AppCommand::SetEffectParam {
                             clip_id, effect_index,
@@ -260,9 +260,9 @@ fn show_ofx_param(
                     },
                 };
                 ui.horizontal(|ui| {
-                    let c0 = ui.add(egui::DragValue::new(&mut v0).speed(0.1).prefix("x: ")).changed();
-                    let c1 = ui.add(egui::DragValue::new(&mut v1).speed(0.1).prefix("y: ")).changed();
-                    let c2 = ui.add(egui::DragValue::new(&mut v2).speed(0.1).prefix("z: ")).changed();
+                    let c0 = ui.add(crate::widgets::number_field(&mut v0).speed(0.1).prefix("x: ")).changed();
+                    let c1 = ui.add(crate::widgets::number_field(&mut v1).speed(0.1).prefix("y: ")).changed();
+                    let c2 = ui.add(crate::widgets::number_field(&mut v2).speed(0.1).prefix("z: ")).changed();
                     if c0 || c1 || c2 {
                         cmds.push(AppCommand::SetEffectParam {
                             clip_id, effect_index,
@@ -281,8 +281,8 @@ fn show_ofx_param(
                     },
                 };
                 ui.horizontal(|ui| {
-                    let c0 = ui.add(egui::DragValue::new(&mut v0).speed(1).prefix("x: ")).changed();
-                    let c1 = ui.add(egui::DragValue::new(&mut v1).speed(1).prefix("y: ")).changed();
+                    let c0 = ui.add(crate::widgets::number_field(&mut v0).speed(1).prefix("x: ")).changed();
+                    let c1 = ui.add(crate::widgets::number_field(&mut v1).speed(1).prefix("y: ")).changed();
                     if c0 || c1 {
                         cmds.push(AppCommand::SetEffectParam {
                             clip_id, effect_index,
@@ -301,9 +301,9 @@ fn show_ofx_param(
                     },
                 };
                 ui.horizontal(|ui| {
-                    let c0 = ui.add(egui::DragValue::new(&mut v0).speed(1).prefix("x: ")).changed();
-                    let c1 = ui.add(egui::DragValue::new(&mut v1).speed(1).prefix("y: ")).changed();
-                    let c2 = ui.add(egui::DragValue::new(&mut v2).speed(1).prefix("z: ")).changed();
+                    let c0 = ui.add(crate::widgets::number_field(&mut v0).speed(1).prefix("x: ")).changed();
+                    let c1 = ui.add(crate::widgets::number_field(&mut v1).speed(1).prefix("y: ")).changed();
+                    let c2 = ui.add(crate::widgets::number_field(&mut v2).speed(1).prefix("z: ")).changed();
                     if c0 || c1 || c2 {
                         cmds.push(AppCommand::SetEffectParam {
                             clip_id, effect_index,

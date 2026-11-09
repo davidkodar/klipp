@@ -2154,11 +2154,11 @@ impl KlippApp {
                                         });
                                     if self.export_dialog.loudness_preset == 4 {
                                         let mut v = self.export_dialog.custom_lufs;
-                                        if ui.add(egui::DragValue::new(&mut v).range(-30.0..=-5.0).speed(0.5).suffix(" LUFS")).changed() {
+                                        if ui.add(crate::widgets::number_field(&mut v).range(-30.0..=-5.0).speed(0.5).suffix(" LUFS")).changed() {
                                             self.export_dialog.custom_lufs = v;
                                         }
                                         let mut peak = self.export_dialog.custom_true_peak;
-                                        if ui.add(egui::DragValue::new(&mut peak).range(-6.0..=0.0).speed(0.1).prefix("peak ").suffix(" dBTP")).on_hover_text("The highest true peak the export lets through").changed() {
+                                        if ui.add(crate::widgets::number_field(&mut peak).range(-6.0..=0.0).speed(0.1).prefix("peak ").suffix(" dBTP")).on_hover_text("The highest true peak the export lets through").changed() {
                                             self.export_dialog.custom_true_peak = peak;
                                         }
                                     }
@@ -2204,9 +2204,9 @@ impl KlippApp {
                         if self.export_dialog.resolution_override == 4 {
                             ui.label("Custom size:");
                             ui.horizontal(|ui| {
-                                ui.add(egui::DragValue::new(&mut self.export_dialog.custom_width).range(128..=7680).suffix("w"));
+                                ui.add(crate::widgets::number_field(&mut self.export_dialog.custom_width).range(128..=7680).suffix("w"));
                                 ui.label("\u{00d7}");
-                                ui.add(egui::DragValue::new(&mut self.export_dialog.custom_height).range(128..=4320).suffix("h"));
+                                ui.add(crate::widgets::number_field(&mut self.export_dialog.custom_height).range(128..=4320).suffix("h"));
                             });
                             ui.end_row();
                         }
@@ -5190,7 +5190,7 @@ mod field_id_tests {
                     let rect = egui::Rect::from_min_size(egui::pos2(0.0, 60.0), egui::vec2(400.0, 700.0));
                     export_column(ui, rect, "export_ws", &theme, &mut |ui, part| {
                         if let ExportPart::Form = part {
-                            *field = ui.add(egui::DragValue::new(&mut *bitrate)).id;
+                            *field = ui.add(crate::widgets::number_field(&mut *bitrate)).id;
                         }
                     });
                 });

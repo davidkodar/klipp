@@ -159,7 +159,7 @@ fn captions_form(ui: &mut egui::Ui, state: &mut AppState) {
                 });
             if form.animated.is_some() {
                 ui.label("Words on screen");
-                ui.add(egui::DragValue::new(&mut form.words_per_screen).range(1..=5));
+                ui.add(crate::widgets::number_field(&mut form.words_per_screen).range(1..=5));
             }
             if let Some(look) = look {
                 ui.label("Colour");
@@ -185,9 +185,9 @@ fn captions_form(ui: &mut egui::Ui, state: &mut AppState) {
             // An animated caption is one line of a few words.
             ui.add_enabled_ui(form.animated.is_none(), |ui| {
                 ui.label("Characters per line");
-                ui.add(egui::DragValue::new(&mut form.max_chars).range(8..=80));
+                ui.add(crate::widgets::number_field(&mut form.max_chars).range(8..=80));
                 ui.label("Lines");
-                ui.add(egui::DragValue::new(&mut form.max_lines).range(1..=3));
+                ui.add(crate::widgets::number_field(&mut form.max_lines).range(1..=3));
             });
             ui.add_enabled(has_range, egui::Checkbox::new(&mut form.in_out_only, "In to out only"))
                 .on_disabled_hover_text("Set in and out points on the timeline first");
@@ -588,7 +588,7 @@ fn render_style_form(ui: &mut egui::Ui, st: &SubTrack, state: &mut AppState, cmd
     ui.group(|ui| {
         egui::Grid::new(("caption_style", track_id)).num_columns(2).spacing([8.0, 4.0]).show(ui, |ui| {
             ui.label("Size");
-            ui.add(egui::DragValue::new(&mut draft.size).range(12.0..=160.0).suffix(" px"));
+            ui.add(crate::widgets::number_field(&mut draft.size).range(12.0..=160.0).suffix(" px"));
             ui.end_row();
             ui.label("Font");
             ui.add(egui::TextEdit::singleline(&mut draft.font).hint_text("default").desired_width(140.0));
@@ -601,7 +601,7 @@ fn render_style_form(ui: &mut egui::Ui, st: &SubTrack, state: &mut AppState, cmd
             ui.end_row();
             ui.label("Outline");
             ui.horizontal(|ui| {
-                ui.add(egui::DragValue::new(&mut draft.outline).range(0.0..=12.0).speed(0.1).suffix(" px"));
+                ui.add(crate::widgets::number_field(&mut draft.outline).range(0.0..=12.0).speed(0.1).suffix(" px"));
                 ui.color_edit_button_srgba_unmultiplied(&mut draft.outline_color);
             });
             ui.end_row();
@@ -617,8 +617,8 @@ fn render_style_form(ui: &mut egui::Ui, st: &SubTrack, state: &mut AppState, cmd
                         draft.per_line = per_line.then(klipp_timeline::LineBoxes::default);
                     }
                     if let Some(lines) = draft.per_line.as_mut() {
-                        ui.add(egui::DragValue::new(&mut lines.radius).range(0.0..=60.0).speed(0.2).prefix("radius ").suffix(" px")).on_hover_text("The corners' radius, inside and out; 0 is square");
-                        ui.add(egui::DragValue::new(&mut lines.gap).range(0.0..=60.0).speed(0.2).prefix("gap ").suffix(" px")).on_hover_text("0 joins the boxes into one shape; more parts them");
+                        ui.add(crate::widgets::number_field(&mut lines.radius).range(0.0..=60.0).speed(0.2).prefix("radius ").suffix(" px")).on_hover_text("The corners' radius, inside and out; 0 is square");
+                        ui.add(crate::widgets::number_field(&mut lines.gap).range(0.0..=60.0).speed(0.2).prefix("gap ").suffix(" px")).on_hover_text("0 joins the boxes into one shape; more parts them");
                     }
                 });
                 ui.end_row();

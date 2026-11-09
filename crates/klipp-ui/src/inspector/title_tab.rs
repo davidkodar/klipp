@@ -621,7 +621,7 @@ fn motion_row(
     });
     if let Some(m) = slot.as_mut() {
         rail_row(ui, theme, "Duration", |ui| {
-            if ui.add(egui::DragValue::new(&mut m.duration_secs).range(0.05..=klipp_core::title_motion::MAX_DURATION_SECS).speed(0.02).suffix(" s").fixed_decimals(2)).changed() {
+            if ui.add(crate::widgets::number_field(&mut m.duration_secs).range(0.05..=klipp_core::title_motion::MAX_DURATION_SECS).speed(0.02).suffix(" s").fixed_decimals(2)).changed() {
                 changed = true;
             }
         });
@@ -686,7 +686,7 @@ fn motion_row(
         });
         if open {
             rail_row(ui, theme, "Delay", |ui| {
-                if ui.add(egui::DragValue::new(&mut m.delay_secs).range(0.0..=10.0).speed(0.02).suffix(" s").fixed_decimals(2)).changed() {
+                if ui.add(crate::widgets::number_field(&mut m.delay_secs).range(0.0..=10.0).speed(0.02).suffix(" s").fixed_decimals(2)).changed() {
                     changed = true;
                 }
             });
@@ -719,7 +719,7 @@ fn motion_row(
             }
             rail_row(ui, theme, "Stagger", |ui| {
                 if m.stagger != StaggerUnit::None
-                    && ui.add(egui::DragValue::new(&mut m.stagger_secs).range(0.0..=1.0).speed(0.005).suffix(" s").prefix("every ").fixed_decimals(3)).changed()
+                    && ui.add(crate::widgets::number_field(&mut m.stagger_secs).range(0.0..=1.0).speed(0.005).suffix(" s").prefix("every ").fixed_decimals(3)).changed()
                 {
                     changed = true;
                 }
@@ -738,7 +738,7 @@ fn motion_row(
             let moves = matches!(m.kind, MotionKind::Rise | MotionKind::Drop | MotionKind::SlideLeft | MotionKind::SlideRight);
             if moves {
                 rail_row(ui, theme, "Travel", |ui| {
-                    if ui.add(egui::DragValue::new(&mut m.distance).range(0.1..=8.0).speed(0.02).suffix("\u{00d7} font").fixed_decimals(2)).changed() {
+                    if ui.add(crate::widgets::number_field(&mut m.distance).range(0.1..=8.0).speed(0.02).suffix("\u{00d7} font").fixed_decimals(2)).changed() {
                         changed = true;
                     }
                 });
@@ -852,7 +852,7 @@ pub fn template_fields(ui: &mut egui::Ui, theme: &KlippTheme, clip_id: klipp_cor
                 ui.horizontal(|ui| {
                     ui.label(field.label.as_str());
                     let mut v = secs;
-                    let r = ui.add(egui::DragValue::new(&mut v).range(klipp_timeline::TITLE_DURATION_RANGE).speed(0.05).suffix(" s").fixed_decimals(2));
+                    let r = ui.add(crate::widgets::number_field(&mut v).range(klipp_timeline::TITLE_DURATION_RANGE).speed(0.05).suffix(" s").fixed_decimals(2));
                     if r.changed() {
                         set(V::Duration(v), !r.dragged());
                     } else if r.drag_stopped() {
@@ -987,39 +987,39 @@ fn show_loops(
                 );
                 match l {
                     TitleLoop::Blink { rate_hz, duty } => {
-                        changed |= ui.add(egui::DragValue::new(rate_hz).range(0.1..=20.0).speed(0.05).suffix(" Hz").fixed_decimals(2)).changed();
-                        changed |= ui.add(egui::DragValue::new(duty).range(0.05..=0.95).speed(0.01).prefix("on ").fixed_decimals(2)).changed();
+                        changed |= ui.add(crate::widgets::number_field(rate_hz).range(0.1..=20.0).speed(0.05).suffix(" Hz").fixed_decimals(2)).changed();
+                        changed |= ui.add(crate::widgets::number_field(duty).range(0.05..=0.95).speed(0.01).prefix("on ").fixed_decimals(2)).changed();
                     }
                     TitleLoop::Pulse { rate_hz, min_opacity } => {
-                        changed |= ui.add(egui::DragValue::new(rate_hz).range(0.05..=10.0).speed(0.02).suffix(" Hz").fixed_decimals(2)).changed();
-                        changed |= ui.add(egui::DragValue::new(min_opacity).range(0.0..=1.0).speed(0.01).prefix("min ").fixed_decimals(2)).changed();
+                        changed |= ui.add(crate::widgets::number_field(rate_hz).range(0.05..=10.0).speed(0.02).suffix(" Hz").fixed_decimals(2)).changed();
+                        changed |= ui.add(crate::widgets::number_field(min_opacity).range(0.0..=1.0).speed(0.01).prefix("min ").fixed_decimals(2)).changed();
                     }
                     TitleLoop::Shake { amplitude, rate_hz } | TitleLoop::Wave { amplitude, rate_hz } => {
-                        changed |= ui.add(egui::DragValue::new(amplitude).range(0.0..=2.0).speed(0.005).suffix("\u{00d7} font").fixed_decimals(3)).changed();
-                        changed |= ui.add(egui::DragValue::new(rate_hz).range(0.05..=30.0).speed(0.05).suffix(" Hz").fixed_decimals(2)).changed();
+                        changed |= ui.add(crate::widgets::number_field(amplitude).range(0.0..=2.0).speed(0.005).suffix("\u{00d7} font").fixed_decimals(3)).changed();
+                        changed |= ui.add(crate::widgets::number_field(rate_hz).range(0.05..=30.0).speed(0.05).suffix(" Hz").fixed_decimals(2)).changed();
                     }
                     TitleLoop::Float { amplitude, rate_hz } | TitleLoop::Sway { amplitude, rate_hz } => {
-                        changed |= ui.add(egui::DragValue::new(amplitude).range(0.0..=2.0).speed(0.005).suffix("\u{00d7} font").fixed_decimals(3)).changed();
-                        changed |= ui.add(egui::DragValue::new(rate_hz).range(0.02..=5.0).speed(0.01).suffix(" Hz").fixed_decimals(2)).changed();
+                        changed |= ui.add(crate::widgets::number_field(amplitude).range(0.0..=2.0).speed(0.005).suffix("\u{00d7} font").fixed_decimals(3)).changed();
+                        changed |= ui.add(crate::widgets::number_field(rate_hz).range(0.02..=5.0).speed(0.01).suffix(" Hz").fixed_decimals(2)).changed();
                     }
                     TitleLoop::Flicker { rate_hz, depth } => {
-                        changed |= ui.add(egui::DragValue::new(rate_hz).range(0.5..=30.0).speed(0.05).suffix(" Hz").fixed_decimals(1)).changed();
-                        changed |= ui.add(egui::DragValue::new(depth).range(0.0..=1.0).speed(0.01).prefix("dips to ").fixed_decimals(2)).changed();
+                        changed |= ui.add(crate::widgets::number_field(rate_hz).range(0.5..=30.0).speed(0.05).suffix(" Hz").fixed_decimals(1)).changed();
+                        changed |= ui.add(crate::widgets::number_field(depth).range(0.0..=1.0).speed(0.01).prefix("dips to ").fixed_decimals(2)).changed();
                     }
                     TitleLoop::Drift { dx, dy } => {
                         let mut x = *dx * 100.0;
-                        if ui.add(egui::DragValue::new(&mut x).range(-50.0..=50.0).speed(0.2).prefix("x ").suffix(" %").fixed_decimals(1)).on_hover_text("How far across the frame it drifts over the clip").changed() {
+                        if ui.add(crate::widgets::number_field(&mut x).range(-50.0..=50.0).speed(0.2).prefix("x ").suffix(" %").fixed_decimals(1)).on_hover_text("How far across the frame it drifts over the clip").changed() {
                             *dx = x / 100.0;
                             changed = true;
                         }
                         let mut y = *dy * 100.0;
-                        if ui.add(egui::DragValue::new(&mut y).range(-50.0..=50.0).speed(0.2).prefix("y ").suffix(" %").fixed_decimals(1)).on_hover_text("How far down the frame it drifts over the clip").changed() {
+                        if ui.add(crate::widgets::number_field(&mut y).range(-50.0..=50.0).speed(0.2).prefix("y ").suffix(" %").fixed_decimals(1)).on_hover_text("How far down the frame it drifts over the clip").changed() {
                             *dy = y / 100.0;
                             changed = true;
                         }
                     }
                     TitleLoop::ColorCycle { rate_hz } => {
-                        changed |= ui.add(egui::DragValue::new(rate_hz).range(0.01..=5.0).speed(0.01).suffix(" Hz").fixed_decimals(2)).changed();
+                        changed |= ui.add(crate::widgets::number_field(rate_hz).range(0.01..=5.0).speed(0.01).suffix(" Hz").fixed_decimals(2)).changed();
                     }
                     TitleLoop::ColorBlend { color_a, color_b, rate_hz } => {
                         let mut a = egui::Color32::from_rgba_unmultiplied(color_a[0], color_a[1], color_a[2], color_a[3]);
@@ -1032,7 +1032,7 @@ fn show_loops(
                             *color_b = b.to_array();
                             changed = true;
                         }
-                        changed |= ui.add(egui::DragValue::new(rate_hz).range(0.01..=5.0).speed(0.01).suffix(" Hz").fixed_decimals(2)).changed();
+                        changed |= ui.add(crate::widgets::number_field(rate_hz).range(0.01..=5.0).speed(0.01).suffix(" Hz").fixed_decimals(2)).changed();
                     }
                     TitleLoop::Scroll { direction, .. } => {
                         let up = *direction == ScrollDirection::Up;
@@ -1050,11 +1050,11 @@ fn show_loops(
                         changed |= ui.checkbox(repeat, "Repeat").changed();
                     }
                     TitleLoop::Counter { from, to, duration_secs, decimals } => {
-                        changed |= ui.add(egui::DragValue::new(from).speed(1.0).prefix("from ")).changed();
-                        changed |= ui.add(egui::DragValue::new(to).speed(1.0).prefix("to ")).changed();
-                        changed |= ui.add(egui::DragValue::new(duration_secs).range(0.1..=60.0).speed(0.05).suffix(" s").fixed_decimals(1)).changed();
+                        changed |= ui.add(crate::widgets::number_field(from).speed(1.0).prefix("from ")).changed();
+                        changed |= ui.add(crate::widgets::number_field(to).speed(1.0).prefix("to ")).changed();
+                        changed |= ui.add(crate::widgets::number_field(duration_secs).range(0.1..=60.0).speed(0.05).suffix(" s").fixed_decimals(1)).changed();
                         let mut d = *decimals as f32;
-                        if ui.add(egui::DragValue::new(&mut d).range(0.0..=3.0).speed(0.1).prefix("dec ").fixed_decimals(0)).changed() {
+                        if ui.add(crate::widgets::number_field(&mut d).range(0.0..=3.0).speed(0.1).prefix("dec ").fixed_decimals(0)).changed() {
                             *decimals = d.round() as u8;
                             changed = true;
                         }
@@ -1133,7 +1133,7 @@ fn roll_speed(ui: &mut egui::Ui, theme: &KlippTheme, speed: &mut f32, travel: Tr
         ui.label(dim("Speed"));
         let mut rate = if *speed > 0.0 { *speed } else { fitted };
         let r = ui
-            .add(egui::DragValue::new(&mut rate).range(1.0..=5000.0).speed(1.0).suffix(" px/s").fixed_decimals(0))
+            .add(crate::widgets::number_field(&mut rate).range(1.0..=5000.0).speed(1.0).suffix(" px/s").fixed_decimals(0))
             .on_hover_text("Pixels per second of a 1080p frame: the same pace on any frame size");
         if r.changed() {
             *speed = rate.max(1.0);
@@ -1148,7 +1148,7 @@ fn roll_speed(ui: &mut egui::Ui, theme: &KlippTheme, speed: &mut f32, travel: Tr
         ui.label(dim("takes"));
         let mut secs = klipp_core::title_motion::travel_secs(distance, *speed, clip);
         if ui
-            .add(egui::DragValue::new(&mut secs).range(0.2..=3600.0).speed(0.05).suffix(" s").fixed_decimals(1))
+            .add(crate::widgets::number_field(&mut secs).range(0.2..=3600.0).speed(0.05).suffix(" s").fixed_decimals(1))
             .on_hover_text("How long it takes to travel through the frame")
             .changed()
         {
@@ -1194,7 +1194,7 @@ fn roll_shape(ui: &mut egui::Ui, theme: &KlippTheme, shape: &mut klipp_core::tit
         if let Some(focus) = &mut shape.focus {
             let mut band = focus.band * 100.0;
             if ui
-                .add(egui::DragValue::new(&mut band).range(0.0..=99.0).speed(0.5).suffix(" %").fixed_decimals(0))
+                .add(crate::widgets::number_field(&mut band).range(0.0..=99.0).speed(0.5).suffix(" %").fixed_decimals(0))
                 .on_hover_text("How much of the frame, around its middle, is at full strength")
                 .changed()
             {
@@ -1204,7 +1204,7 @@ fn roll_shape(ui: &mut egui::Ui, theme: &KlippTheme, shape: &mut klipp_core::tit
             ui.label(dim("edges at"));
             let mut edge = focus.edge_opacity * 100.0;
             if ui
-                .add(egui::DragValue::new(&mut edge).range(0.0..=100.0).speed(0.5).suffix(" %").fixed_decimals(0))
+                .add(crate::widgets::number_field(&mut edge).range(0.0..=100.0).speed(0.5).suffix(" %").fixed_decimals(0))
                 .on_hover_text("How much of the layer shows at the frame's edges")
                 .changed()
             {
@@ -1213,7 +1213,7 @@ fn roll_shape(ui: &mut egui::Ui, theme: &KlippTheme, shape: &mut klipp_core::tit
             }
             ui.label(dim("blur"));
             if ui
-                .add(egui::DragValue::new(&mut focus.blur).range(0.0..=60.0).speed(0.2).suffix(" px").fixed_decimals(1))
+                .add(crate::widgets::number_field(&mut focus.blur).range(0.0..=60.0).speed(0.2).suffix(" px").fixed_decimals(1))
                 .on_hover_text("How soft it goes towards the frame's edges, in pixels of a 1080p frame; 0 for sharp")
                 .changed()
             {
@@ -1239,7 +1239,7 @@ fn show_edge_fade(ui: &mut egui::Ui, theme: &KlippTheme, clip_id: klipp_core::Cl
             rail_row(ui, theme, label, |ui| {
                 let mut pct = *zone * 100.0;
                 if ui
-                    .add(egui::DragValue::new(&mut pct).range(0.0..=50.0).speed(0.5).suffix(" %").fixed_decimals(0))
+                    .add(crate::widgets::number_field(&mut pct).range(0.0..=50.0).speed(0.5).suffix(" %").fixed_decimals(0))
                     .on_hover_text(format!("{tip}; 0 for none"))
                     .changed()
                 {
@@ -1363,7 +1363,7 @@ fn style_rows(ui: &mut egui::Ui, theme: &KlippTheme, clip_id: klipp_core::ClipId
             send = true;
         }
         if on || o.is_some() {
-            if ui.add(egui::DragValue::new(&mut width).range(0.5..=40.0).speed(0.1).suffix(" px").fixed_decimals(1)).changed() {
+            if ui.add(crate::widgets::number_field(&mut width).range(0.5..=40.0).speed(0.1).suffix(" px").fixed_decimals(1)).changed() {
                 send = true;
                 on = true;
             }
@@ -1388,15 +1388,15 @@ fn style_rows(ui: &mut egui::Ui, theme: &KlippTheme, clip_id: klipp_core::ClipId
             send = true;
         }
         if on || s.is_some() {
-            if ui.add(egui::DragValue::new(&mut blur).range(0.0..=60.0).speed(0.2).prefix("blur ").fixed_decimals(0)).changed() {
+            if ui.add(crate::widgets::number_field(&mut blur).range(0.0..=60.0).speed(0.2).prefix("blur ").fixed_decimals(0)).changed() {
                 send = true;
                 on = true;
             }
-            if ui.add(egui::DragValue::new(&mut oy).range(-100.0..=100.0).speed(0.2).prefix("y ").fixed_decimals(0)).changed() {
+            if ui.add(crate::widgets::number_field(&mut oy).range(-100.0..=100.0).speed(0.2).prefix("y ").fixed_decimals(0)).changed() {
                 send = true;
                 on = true;
             }
-            if ui.add(egui::DragValue::new(&mut ox).range(-100.0..=100.0).speed(0.2).prefix("x ").fixed_decimals(0)).changed() {
+            if ui.add(crate::widgets::number_field(&mut ox).range(-100.0..=100.0).speed(0.2).prefix("x ").fixed_decimals(0)).changed() {
                 send = true;
                 on = true;
             }
@@ -1421,11 +1421,11 @@ fn style_rows(ui: &mut egui::Ui, theme: &KlippTheme, clip_id: klipp_core::ClipId
             send = true;
         }
         if on || g.is_some() {
-            if ui.add(egui::DragValue::new(&mut intensity).range(0.1..=3.0).speed(0.02).prefix("\u{00d7}").fixed_decimals(2)).changed() {
+            if ui.add(crate::widgets::number_field(&mut intensity).range(0.1..=3.0).speed(0.02).prefix("\u{00d7}").fixed_decimals(2)).changed() {
                 send = true;
                 on = true;
             }
-            if ui.add(egui::DragValue::new(&mut radius).range(1.0..=100.0).speed(0.2).prefix("radius ").fixed_decimals(0)).changed() {
+            if ui.add(crate::widgets::number_field(&mut radius).range(1.0..=100.0).speed(0.2).prefix("radius ").fixed_decimals(0)).changed() {
                 send = true;
                 on = true;
             }

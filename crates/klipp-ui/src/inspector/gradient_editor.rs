@@ -60,17 +60,17 @@ pub(super) fn show(
     ui.horizontal(|ui| match &mut kind {
         GradientKind::Linear { angle_deg } => {
             ui.label("Angle");
-            let r = ui.add(egui::DragValue::new(angle_deg).range(-360.0..=360.0).speed(1.0).suffix("°").fixed_decimals(0));
+            let r = ui.add(crate::widgets::number_field(angle_deg).range(-360.0..=360.0).speed(1.0).suffix("°").fixed_decimals(0));
             track(&r, &mut changed, &mut drag_started, &mut drag_stopped);
         }
         GradientKind::Radial { centre, radius } => {
             ui.label("Centre");
-            let r = ui.add(egui::DragValue::new(&mut centre[0]).range(-1.0..=2.0).speed(0.005).fixed_decimals(2));
+            let r = ui.add(crate::widgets::number_field(&mut centre[0]).range(-1.0..=2.0).speed(0.005).fixed_decimals(2));
             track(&r, &mut changed, &mut drag_started, &mut drag_stopped);
-            let r = ui.add(egui::DragValue::new(&mut centre[1]).range(-1.0..=2.0).speed(0.005).fixed_decimals(2));
+            let r = ui.add(crate::widgets::number_field(&mut centre[1]).range(-1.0..=2.0).speed(0.005).fixed_decimals(2));
             track(&r, &mut changed, &mut drag_started, &mut drag_stopped);
             ui.label("Radius");
-            let r = ui.add(egui::DragValue::new(radius).range(0.01..=2.0).speed(0.005).fixed_decimals(2));
+            let r = ui.add(crate::widgets::number_field(radius).range(0.01..=2.0).speed(0.005).fixed_decimals(2));
             track(&r, &mut changed, &mut drag_started, &mut drag_stopped);
         }
     });
@@ -159,7 +159,7 @@ pub(super) fn show(
             _ => {}
         }
         let mut percent = stop.position * 100.0;
-        let r = ui.add(egui::DragValue::new(&mut percent).range(0.0..=100.0).speed(0.5).suffix(" %").fixed_decimals(0));
+        let r = ui.add(crate::widgets::number_field(&mut percent).range(0.0..=100.0).speed(0.5).suffix(" %").fixed_decimals(0));
         if r.changed() {
             stop.position = (percent / 100.0).clamp(lo, hi);
         }

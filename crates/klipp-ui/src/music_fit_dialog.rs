@@ -119,7 +119,7 @@ pub fn show_dialog(ctx: &egui::Context, state: &mut crate::state::AppState) -> V
             });
             ui.horizontal(|ui| {
                 ui.radio_value(&mut dialog.target, FitTarget::Length, "To a length");
-                ui.add_enabled(dialog.target == FitTarget::Length, egui::DragValue::new(&mut dialog.length_secs).range(1.0..=3600.0).speed(0.1).fixed_decimals(2).suffix(" s"));
+                ui.add_enabled(dialog.target == FitTarget::Length, crate::widgets::number_field(&mut dialog.length_secs).range(1.0..=3600.0).speed(0.1).fixed_decimals(2).suffix(" s"));
             });
             ui.checkbox(&mut dialog.skip_intro, "Start on the music, leaving out a quiet intro");
             if (dialog.target, dialog.length_secs, dialog.skip_intro) != before {

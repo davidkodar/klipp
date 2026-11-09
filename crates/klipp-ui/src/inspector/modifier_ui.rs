@@ -471,11 +471,11 @@ fn drag_row(
                 );
             }
             ui.add(
-                egui::DragValue::new(value)
+                crate::widgets::number_field(value)
                     .range(range)
                     .speed(speed)
                     .max_decimals(decimals)
-                    .update_while_editing(false),
+                    ,
             )
             .on_hover_text(format!("{id_salt}:{field}"));
         });

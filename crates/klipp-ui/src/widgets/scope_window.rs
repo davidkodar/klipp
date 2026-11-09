@@ -1199,7 +1199,7 @@ fn draw_pane_settings(
                 ui.label("dB floor:");
                 let mut v = state.panes[pane_idx].settings.spectrogram_db_floor;
                 if ui.add(
-                    egui::DragValue::new(&mut v)
+                    crate::widgets::number_field(&mut v)
                         .range(-96.0..=-12.0)
                         .speed(0.5)
                         .suffix(" dBFS")
@@ -1335,7 +1335,7 @@ fn draw_waveform_settings(ui: &mut egui::Ui, pane_idx: usize, state: &mut ScopeW
                 egui::pos2(ui.available_rect_before_wrap().max.x - 20.0, ui.available_rect_before_wrap().center().y),
                 3.0, theme.accent,
             );
-            ui.add(egui::DragValue::new(&mut s.reference_low).range(0.0..=1023.0).speed(1.0));
+            ui.add(crate::widgets::number_field(&mut s.reference_low).range(0.0..=1023.0).speed(1.0));
         });
         ui.horizontal(|ui| {
             ui.label("High");
@@ -1343,7 +1343,7 @@ fn draw_waveform_settings(ui: &mut egui::Ui, pane_idx: usize, state: &mut ScopeW
                 egui::pos2(ui.available_rect_before_wrap().max.x - 20.0, ui.available_rect_before_wrap().center().y),
                 3.0, theme.accent,
             );
-            ui.add(egui::DragValue::new(&mut s.reference_high).range(0.0..=1023.0).speed(1.0));
+            ui.add(crate::widgets::number_field(&mut s.reference_high).range(0.0..=1023.0).speed(1.0));
         });
     }
 }
@@ -1366,11 +1366,11 @@ fn draw_vectorscope_settings(ui: &mut egui::Ui, pane_idx: usize, state: &mut Sco
     // Range inputs
     ui.horizontal(|ui| {
         ui.label("Low Range");
-        ui.add(egui::DragValue::new(&mut s.low_range).range(0.0..=1.0).speed(0.01).fixed_decimals(2));
+        ui.add(crate::widgets::number_field(&mut s.low_range).range(0.0..=1.0).speed(0.01).fixed_decimals(2));
     });
     ui.horizontal(|ui| {
         ui.label("High Range");
-        ui.add(egui::DragValue::new(&mut s.high_range).range(0.0..=1.0).speed(0.01).fixed_decimals(2));
+        ui.add(crate::widgets::number_field(&mut s.high_range).range(0.0..=1.0).speed(0.01).fixed_decimals(2));
     });
 
     ui.separator();
