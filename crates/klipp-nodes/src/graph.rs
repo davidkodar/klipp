@@ -1481,11 +1481,14 @@ impl NodeGraph {
         for node in &mut new_graph.nodes {
             node.id = id_map[&node.id];
         }
+        // A wire to a node the graph doesn't hold (a damaged or hand-edited
+        // file) is no wire of the copy's.
+        new_graph.edges.retain(|e| id_map.contains_key(&e.from_node) && id_map.contains_key(&e.to_node));
         for edge in &mut new_graph.edges {
             edge.from_node = id_map[&edge.from_node];
             edge.to_node = id_map[&edge.to_node];
         }
-        new_graph.output_node_id = id_map[&self.output_node_id];
+        new_graph.output_node_id = id_map.get(&self.output_node_id).copied().unwrap_or(self.output_node_id);
         // A place kept for a node the graph no longer has is not one the
         // copy has: indexing it was a panic on pasting the grade.
         new_graph.node_positions = self
