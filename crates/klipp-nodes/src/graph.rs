@@ -302,9 +302,21 @@ impl NodeGraph {
     /// What the Colour tab's "+ Add Mask" adds: it used to cut the
     /// picture out to the shapes (`ensure_mask_cutout`), black outside,
     /// which no colourist means by a mask on a grade.
+    ///
+    /// A matte already limiting that Corrector, a Qualifier's key, stays:
+    /// the two go through a combiner, so the grade reaches only what is
+    /// both the keyed colour and inside the shapes. The window used to
+    /// take the key's place, and the grade went to everything in the shape.
     pub fn ensure_corrector_window(&mut self) -> NodeId {
         let kind = |g: &Self, id: NodeId| g.nodes.iter().find(|n| n.id == id).map(|n| n.kind);
         if let Some(mask) = self.edges.iter().find(|e| e.to_port == 1 && kind(self, e.to_node) == Some(NodeKind::Corrector) && kind(self, e.from_node) == Some(NodeKind::Mask)).map(|e| e.from_node) {
+            return mask;
+        }
+        // Already combined with a key: the same window.
+        let combined = self.edges.iter().filter(|e| e.to_port == 1 && kind(self, e.to_node) == Some(NodeKind::Corrector) && kind(self, e.from_node) == Some(NodeKind::CombineMattes)).find_map(|gate| {
+            self.edges.iter().find(|e| e.to_node == gate.from_node && kind(self, e.from_node) == Some(NodeKind::Mask)).map(|e| e.from_node)
+        });
+        if let Some(mask) = combined {
             return mask;
         }
         let corrector = match self.nodes.iter().find(|n| n.kind == NodeKind::Corrector && n.enabled) {
@@ -323,11 +335,44 @@ impl NodeGraph {
             output_link: None,
             input_links: Vec::new(),
         });
-        self.edges.retain(|e| !(e.to_node == corrector && e.to_port == 1));
-        self.edges.push(Edge { from_node: mask, from_port: 0, to_node: corrector, to_port: 1 });
         let base = self.node_positions.get(&corrector).copied().unwrap_or(NodePos { x: 220.0, y: 0.0 });
-        self.node_positions.insert(mask, NodePos { x: base.x - 160.0, y: base.y + 140.0 });
+        match self.edges.iter().position(|e| e.to_node == corrector && e.to_port == 1) {
+            Some(gate) => {
+                let key = self.edges.remove(gate);
+                self.combine_on_gate(corrector, (key.from_node, key.from_port), mask);
+                self.node_positions.insert(mask, NodePos { x: base.x - 220.0, y: base.y + 300.0 });
+            }
+            None => {
+                self.edges.push(Edge { from_node: mask, from_port: 0, to_node: corrector, to_port: 1 });
+                self.node_positions.insert(mask, NodePos { x: base.x - 160.0, y: base.y + 140.0 });
+            }
+        }
         mask
+    }
+
+    /// A combiner on `correction`'s matte input: `key` on its first input,
+    /// `window` on its second, as `ensure_windowed_secondary` builds them,
+    /// so both ways of getting here are the same secondary. It intersects by
+    /// default, which is what both mean. Placed right before `correction`,
+    /// after what feeds it.
+    fn combine_on_gate(&mut self, correction: NodeId, key: (NodeId, u8), window: NodeId) {
+        let combine = NodeId::new_v4();
+        let at = self.nodes.iter().position(|n| n.id == correction).unwrap_or(self.nodes.len());
+        self.nodes.insert(at, Node {
+            id: combine,
+            kind: NodeKind::CombineMattes,
+            label: "Key \u{2229} Window".to_string(),
+            enabled: true,
+            params: NodeParams::default(),
+            keyframes: NodeKeyframeTracks::default(),
+            output_link: None,
+            input_links: Vec::new(),
+        });
+        self.edges.push(Edge { from_node: key.0, from_port: key.1, to_node: combine, to_port: 0 });
+        self.edges.push(Edge { from_node: window, from_port: 0, to_node: combine, to_port: 1 });
+        self.edges.push(Edge { from_node: combine, from_port: 0, to_node: correction, to_port: 1 });
+        let base = self.node_positions.get(&correction).copied().unwrap_or(NodePos { x: 220.0, y: 0.0 });
+        self.node_positions.insert(combine, NodePos { x: base.x - 110.0, y: base.y + 225.0 });
     }
 
     pub fn ensure_mask(&mut self) -> NodeId {
@@ -419,11 +464,17 @@ impl NodeGraph {
     /// saturates.
     /// `correction` limited by a new qualifier `id`: the keyer looks at the
     /// picture the correction takes, and its matte goes to the correction's
-    /// gate. `false`, with nothing changed, when `correction` takes no matte,
-    /// has no picture, or has one already.
+    /// gate. A window already on the gate stays, the two through a combiner:
+    /// the grade reaches what is that colour inside the shapes. `false`, with
+    /// nothing changed, when `correction` takes no matte, has no picture, or
+    /// has a matte other than a window already.
     pub fn limit_with_qualifier(&mut self, correction: NodeId, id: NodeId) -> bool {
         let Some(at) = self.nodes.iter().position(|n| n.id == correction) else { return false };
-        if !self.nodes[at].kind.takes_gate() || self.input_of(correction, 1).is_some() {
+        if !self.nodes[at].kind.takes_gate() {
+            return false;
+        }
+        let window = self.input_of(correction, 1);
+        if window.is_some_and(|w| !self.nodes.iter().any(|n| n.id == w && n.kind == NodeKind::Mask)) {
             return false;
         }
         let Some(source) = self.input_of(correction, 0) else { return false };
@@ -442,7 +493,16 @@ impl NodeGraph {
             self.node_positions.insert(id, NodePos { x: p.x - 220.0, y: p.y + 150.0 });
         }
         self.edges.push(Edge { from_node: source, from_port: source_port, to_node: id, to_port: 0 });
-        self.edges.push(Edge { from_node: id, from_port: 0, to_node: correction, to_port: 1 });
+        match window {
+            Some(window) => {
+                self.edges.retain(|e| !(e.to_node == correction && e.to_port == 1));
+                self.combine_on_gate(correction, (id, 0), window);
+                if let Some(p) = self.node_positions.get(&correction).copied() {
+                    self.node_positions.insert(window, NodePos { x: p.x - 220.0, y: p.y + 300.0 });
+                }
+            }
+            None => self.edges.push(Edge { from_node: id, from_port: 0, to_node: correction, to_port: 1 }),
+        }
         true
     }
 
@@ -2184,6 +2244,45 @@ mod window_tests {
         assert!(!g.edges.iter().any(|e| e.from_node == qual && e.to_node == corr), "the key no longer bypasses the window");
         // And the chain still reads as a secondary, not a balance.
         assert!(g.chain_out_of_order().is_empty(), "{:?}", g.chain_out_of_order());
+    }
+
+    #[test]
+    fn a_window_added_to_a_keyed_correction_keeps_the_key() {
+        let mut g = graph_with_corrector();
+        let corr = g.nodes.iter().find(|n| n.kind == NodeKind::Corrector).unwrap().id;
+        let qual = NodeId::new_v4();
+        assert!(g.limit_with_qualifier(corr, qual));
+        let mask = g.ensure_corrector_window();
+        let combine = g.input_of(corr, 1).expect("the correction is gated");
+        assert_eq!(g.nodes.iter().find(|n| n.id == combine).unwrap().kind, NodeKind::CombineMattes);
+        assert_eq!(g.input_of(combine, 0), Some(qual), "the key is kept");
+        assert_eq!(g.input_of(combine, 1), Some(mask), "the window joins it");
+        // A second shape is the same window, not a second combiner.
+        let nodes = g.nodes.len();
+        assert_eq!(g.ensure_corrector_window(), mask);
+        assert_eq!(g.nodes.len(), nodes);
+        // And it is the secondary the face tools know.
+        let (q2, m2, c2) = g.ensure_windowed_secondary(NodeKind::Corrector);
+        assert_eq!((q2, m2, c2), (qual, mask, corr));
+        assert_eq!(g.nodes.len(), nodes, "nothing built over it");
+    }
+
+    #[test]
+    fn a_key_added_to_a_windowed_correction_keeps_the_window() {
+        let mut g = graph_with_corrector();
+        let corr = g.nodes.iter().find(|n| n.kind == NodeKind::Corrector).unwrap().id;
+        let mask = g.ensure_corrector_window();
+        let qual = NodeId::new_v4();
+        assert!(g.limit_with_qualifier(corr, qual));
+        let combine = g.input_of(corr, 1).expect("the correction is gated");
+        assert_eq!(g.input_of(combine, 0), Some(qual));
+        assert_eq!(g.input_of(combine, 1), Some(mask));
+        assert_eq!(g.input_of(qual, 0), g.input_of(corr, 0), "the key sees the correction's picture");
+        // Each reads before it is read, as the nodes run in order.
+        let at = |id: NodeId| g.nodes.iter().position(|n| n.id == id).unwrap();
+        assert!(at(qual) < at(combine) && at(mask) < at(combine) && at(combine) < at(corr));
+        // Key and window both there: nothing more to add.
+        assert!(!g.limit_with_qualifier(corr, NodeId::new_v4()));
     }
 
     #[test]
