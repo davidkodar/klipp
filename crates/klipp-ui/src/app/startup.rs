@@ -147,6 +147,7 @@ impl KlippApp {
             colour_check: Default::default(),
             local_control: None,
             colour_tool_reply: None,
+            recipe_reply: None,
             delivery_check: Default::default(),
             delivery_reply: None,
             reuse_marks: Default::default(),

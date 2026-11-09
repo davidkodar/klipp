@@ -104,6 +104,7 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::SetVideoRubberBandParam(..)
         | AppCommand::CopyClip { .. }
         | AppCommand::CopyAttributes { .. }
+        | AppCommand::ApplyRecipe { .. }
         | AppCommand::SelectAllClips
         | AppCommand::SelectClipsForward
         | AppCommand::SelectClipsBackward
@@ -442,6 +443,7 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::EditAudition { .. }
         | AppCommand::PickPreviewedTake
         | AppCommand::PasteAttributes { .. }
+        | AppCommand::SetRecipeControl { .. }
         | AppCommand::SetClipEnabled { .. }
         | AppCommand::SetClipSolo { .. }
         | AppCommand::CloseAllGaps { .. }

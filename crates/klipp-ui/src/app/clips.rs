@@ -701,6 +701,14 @@ impl KlippApp {
                 }
                 // Ctrl+D — Duplicate selected clip (place immediately after original)
                 // Copy Attributes: snapshot a clip's effects/audio/transform/speed
+                AppCommand::ApplyRecipe { clip_id, name, slots } => {
+                    self.apply_recipe(*clip_id, name.clone(), slots);
+                    true
+                }
+                AppCommand::SetRecipeControl { clip_id, control, value } => {
+                    self.set_recipe_control(*clip_id, control, *value);
+                    true
+                }
                 AppCommand::CopyAttributes { clip_id } => {
                     let cid = *clip_id;
                     let seq = &self.state.sequences[self.state.active_sequence_idx];

@@ -786,6 +786,15 @@ mod respond_local_tests {
     /// The requests the app's Colour Check buttons send (#897,
     /// `colour_tool_request` in klipp-ui) are ones the protocol reads,
     /// with the fields they mean.
+    /// The Library's Recipes list sends the recipe op through `apply` (the
+    /// request `recipe_request` in klipp-ui writes).
+    #[test]
+    fn the_recipes_list_request_is_one_the_protocol_reads() {
+        let request = json!({ "method": "apply", "ops": [{ "op": "recipe", "clip_id": "6f9619ff-8b86-d011-b42d-00c04fc964ff", "name": "Glitch" }], "label": "Recipe" });
+        let req: Request = serde_json::from_value(request).expect("read");
+        assert!(matches!(req.command, ControlCommand::Apply { .. }));
+    }
+
     #[test]
     fn the_colour_buttons_requests_parse() {
         let parse = |v: serde_json::Value| serde_json::from_value::<Request>(v).expect("a request").command;

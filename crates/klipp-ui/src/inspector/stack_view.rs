@@ -70,6 +70,9 @@ fn draw_stack(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppState, clip: &Cl
         Some(a) => d.insert_temp(revealed_id, a.clone()),
         None => d.remove::<NodePath>(revealed_id),
     });
+    // A placed recipe's own controls first: what it was made to be set by,
+    // above its nodes' raw fields.
+    recipe_cards(ui, theme, state, clip, graph, cmds);
     for item in &view.items {
         match item {
             Item::Header(section) => header(ui, theme, *section),
@@ -95,6 +98,97 @@ fn draw_stack(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppState, clip: &Cl
     }
     selected_matte(ui, theme, clip, graph, view, selected, cmds, clip_time_secs);
     add_menu(ui, clip, view, cmds);
+}
+
+/// One placed recipe's controls as the inspector shows them.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct RecipeCard {
+    pub name: String,
+    /// Each control: its name, label, value, range, and whether the card
+    /// can set it (a number, and the first recipe on the clip to use the
+    /// name, as the edit finds a control by name).
+    pub controls: Vec<(String, String, f64, Option<(f64, f64)>, bool)>,
+    /// Controls that aren't numbers, with their values, shown as they are.
+    pub others: Vec<(String, String)>,
+}
+
+/// The recipes placed in `graph`, each with its named controls, from the
+/// recipe's own description where it is known.
+pub(crate) fn recipe_cards_of(graph: &Graph, known: &[klipp_timeline::composition_template::CompositionTemplate]) -> Vec<RecipeCard> {
+    use klipp_core::TemplateValue;
+    let frames: Vec<klipp_nodes::NodeFrame> = graph.ui.frames.iter().filter_map(|f| serde_json::from_value(f.clone()).ok()).collect();
+    let mut seen: Vec<String> = Vec::new();
+    let mut cards = Vec::new();
+    for placed in frames.iter().filter_map(|f| f.recipe.as_ref()) {
+        let Some(recipe) = known.iter().find(|r| r.name.eq_ignore_ascii_case(&placed.name)) else {
+            cards.push(RecipeCard { name: placed.name.clone(), controls: Vec::new(), others: Vec::new() });
+            continue;
+        };
+        let mut card = RecipeCard { name: placed.name.clone(), controls: Vec::new(), others: Vec::new() };
+        for (name, p) in &recipe.parameters {
+            let linked = placed.instance.links.iter().any(|l| &l.parameter == name);
+            match &p.default {
+                TemplateValue::Number(_) if linked => {
+                    let range = p.range.as_ref().and_then(|r| Some((r.min?, r.max?)));
+                    let first = !seen.iter().any(|s| s.eq_ignore_ascii_case(name));
+                    card.controls.push((name.clone(), p.label.clone(), placed.instance.control(name), range, first));
+                }
+                other => {
+                    let shown = match placed.instance.overrides.get(name).unwrap_or(other) {
+                        TemplateValue::Number(n) => format!("{n:.2}"),
+                        TemplateValue::Bool(b) => if *b { "on".into() } else { "off".into() },
+                        TemplateValue::Text(t) | TemplateValue::Enum(t) => t.clone(),
+                        TemplateValue::Color(c) => format!("#{:02x}{:02x}{:02x}", (c[0] * 255.0) as u8, (c[1] * 255.0) as u8, (c[2] * 255.0) as u8),
+                    };
+                    card.others.push((p.label.clone(), shown));
+                }
+            }
+            seen.push(name.clone());
+        }
+        cards.push(card);
+    }
+    cards
+}
+
+/// The clip's placed recipes, each a card with its named controls: what
+/// the recipe was made to be set by, instead of every node's own fields.
+fn recipe_cards(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppState, clip: &Clip, graph: &Graph, cmds: &mut Vec<AppCommand>) {
+    let mut known: Vec<klipp_timeline::composition_template::CompositionTemplate> = state.composition_templates.recipes().cloned().collect();
+    known.extend(klipp_timeline::composition_template::builtin_recipes());
+    for (i, card) in recipe_cards_of(graph, &known).into_iter().enumerate() {
+        egui::Frame::none().stroke(egui::Stroke::new(1.0_f32, theme.border)).rounding(3.0).inner_margin(6.0).show(ui, |ui| {
+            ui.label(egui::RichText::new(format!("Recipe \u{00B7} {}", card.name)).size(12.0).color(theme.text_primary));
+            if card.controls.is_empty() && card.others.is_empty() {
+                ui.label(egui::RichText::new("Its controls aren't known here: its nodes are set on their own cards.").size(10.0).color(theme.text_dim));
+            }
+            for (name, label, value, range, settable) in &card.controls {
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new(label).size(11.0));
+                    let draft_id = egui::Id::new(("recipe_control", clip.id, i, name.as_str()));
+                    let mut v = ui.data(|d| d.get_temp::<f64>(draft_id)).unwrap_or(*value);
+                    let mut field = crate::widgets::number_field(&mut v).speed(range.map_or(0.01, |(lo, hi)| (hi - lo) / 400.0)).max_decimals(3);
+                    if let Some((lo, hi)) = range {
+                        field = field.range(*lo..=*hi);
+                    }
+                    let r = ui.add_enabled(*settable, field);
+                    let r = if *settable { r } else { r.on_disabled_hover_text("Another recipe on this clip has a control of this name; set this one on its nodes") };
+                    if r.dragged() {
+                        ui.data_mut(|d| d.insert_temp(draft_id, v));
+                    } else {
+                        ui.data_mut(|d| d.remove::<f64>(draft_id));
+                        if (r.changed() || r.drag_stopped()) && (v - value).abs() > 1e-9 {
+                            cmds.push(AppCommand::SetRecipeControl { clip_id: clip.id, control: name.clone(), value: v });
+                        }
+                    }
+                });
+            }
+            for (label, shown) in &card.others {
+                ui.label(egui::RichText::new(format!("{label}: {shown}")).size(11.0).color(theme.text_dim))
+                    .on_hover_text("Set where the recipe is placed; change it on its nodes");
+            }
+        });
+        ui.add_space(4.0);
+    }
 }
 
 /// A matte beside the chain picked in the graph that no effect's card shows
@@ -857,4 +951,44 @@ mod selected_matte_tests {
         assert!(after.iter().any(|t| t == UNWIRED_MATTE), "{after:?}");
         assert!(after.len() > before.len() + 3, "its controls are drawn: {after:?}");
     }
+
 }
+
+#[cfg(test)]
+mod recipe_card_tests {
+    use super::recipe_cards_of;
+
+    /// A frame holding a placed recipe, its controls linked as placing it
+    /// links them.
+    fn placed(name: &str, controls: &[(&str, f64)]) -> serde_json::Value {
+        let links: Vec<serde_json::Value> = controls.iter().enumerate().map(|(i, (c, v))| serde_json::json!({
+            "parameter": c, "property": format!("node:{i}.amount"), "from": [*v, 1.0], "to": [0.0, 1.0],
+        })).collect();
+        serde_json::json!({
+            "id": uuid::Uuid::new_v4(), "label": name, "color_rgba": 0, "contained_node_ids": [],
+            "recipe": { "name": name, "instance": { "template_id": uuid::Uuid::nil(), "links": links }, "nodes": {} },
+        })
+    }
+
+    /// A placed recipe shows its named controls with their values, as its
+    /// file labels them; a second recipe with a control of the same name
+    /// shows it but can't set it, as the edit finds a control by name.
+    #[test]
+    fn a_placed_recipe_shows_its_named_controls() {
+        let known = klipp_timeline::composition_template::builtin_recipes();
+        let mut graph = klipp_graph_format::Graph::empty();
+        graph.ui.frames.push(placed("Glitch", &[("amount", 0.4)]));
+        graph.ui.frames.push(placed("Glitch", &[("amount", 0.7)]));
+        let cards = recipe_cards_of(&graph, &known);
+        assert_eq!(cards.len(), 2, "{cards:?}");
+        let (name, label, value, _, settable) = &cards[0].controls.iter().find(|c| c.0 == "amount").expect("Amount").clone();
+        assert_eq!((name.as_str(), label.as_str(), *value, *settable), ("amount", "Amount", 0.4, true));
+        let second = cards[1].controls.iter().find(|c| c.0 == "amount").expect("Amount");
+        assert_eq!((second.2, second.4), (0.7, false));
+        // A recipe the app doesn't know is still named.
+        let mut other = klipp_graph_format::Graph::empty();
+        other.ui.frames.push(placed("Someone else's", &[]));
+        assert_eq!(recipe_cards_of(&other, &known)[0].name, "Someone else's");
+    }
+}
+
