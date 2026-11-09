@@ -912,11 +912,17 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             "from_timeline": args.get("from_timeline").and_then(|v| v.as_bool()).unwrap_or(false),
             "apply": args.get("apply").and_then(|v| v.as_bool()).unwrap_or(false),
         }),
-        "klipp_match_scenes" => json!({
-            "method": "match_scenes",
-            "apply": args.get("apply").and_then(|v| v.as_bool()).unwrap_or(false),
-            "rounds": args.get("rounds").cloned().unwrap_or(serde_json::Value::Null),
-        }),
+        "klipp_match_scenes" => {
+            let mut v = json!({
+                "method": "match_scenes",
+                "apply": args.get("apply").and_then(|v| v.as_bool()).unwrap_or(false),
+                "rounds": args.get("rounds").cloned().unwrap_or(serde_json::Value::Null),
+            });
+            if let Some(ids) = args.get("clip_ids").filter(|x| !x.is_null()) {
+                v["clip_ids"] = ids.clone();
+            }
+            v
+        }
         "klipp_grade_chain" => json!({
             "method": "grade_chain",
             "clip_id": args.get("clip_id").cloned().unwrap_or(serde_json::Value::Null),
@@ -2458,7 +2464,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              json!({ "media_id": { "type": "string" }, "from_timeline": { "type": "boolean" }, "apply": { "type": "boolean" } }), vec![]),
         tool("klipp_match_scenes",
              "Group shots into scenes by their light and grade each onto its hero; apply true makes one undo step. Details: klipp_guide topic match_scenes.",
-             json!({ "apply": { "type": "boolean" }, "rounds": { "type": "integer" } }), vec![]),
+             json!({ "apply": { "type": "boolean" }, "rounds": { "type": "integer" }, "clip_ids": { "type": "array", "items": { "type": "string" } } }), vec![]),
         tool("klipp_grade_chain",
              "A clip's grade chain in picture order, each node with its stage, and what runs out of order. Details: klipp_guide topic grade_chain.",
              json!({ "clip_id": { "type": "string" } }), vec![]),
@@ -2936,6 +2942,19 @@ mod sheet_inline_tests {
 #[cfg(test)]
 mod listen_arg_tests {
     use super::*;
+
+    /// Match to Hero on the shots asked for reaches the app with them, as
+    /// the panel's does, and without any it is the whole timeline.
+    #[test]
+    fn match_scenes_takes_the_shots_asked_for() {
+        let asked = tool_to_command("klipp_match_scenes", &json!({ "apply": true, "clip_ids": ["a", "b"] })).unwrap();
+        assert_eq!(asked["clip_ids"], json!(["a", "b"]), "{asked}");
+        assert_eq!(asked["apply"], json!(true));
+        let all = tool_to_command("klipp_match_scenes", &json!({ "apply": true })).unwrap();
+        assert!(all.get("clip_ids").is_none(), "{all}");
+        let def = tool_definitions_for(false).into_iter().find(|t| t["name"] == "klipp_match_scenes").unwrap();
+        assert!(def.to_string().contains("clip_ids"), "offered to agents: {def}");
+    }
 
     /// #891: a grade parameter keyed at a time goes through with its
     /// time, interpolation and removal; a plain set still needs a value.
