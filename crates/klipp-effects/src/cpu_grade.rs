@@ -494,8 +494,12 @@ pub fn huesat(px: &mut [f32], lut: &[f32; HUESAT_LUT_LEN], mix: f32, active: u32
 pub const HUESAT_CURVES: usize = 7;
 pub const HUESAT_LUT_LEN: usize = HUESAT_CURVES * 256;
 
-/// `SHADER_COLOR_WARPER`: twelve 30° sectors, cosine-blended.
-pub fn color_warper(px: &mut [f32], hue_shifts: &[f32; 12], sat_shifts: &[f32; 12]) {
+/// `SHADER_COLOR_WARPER`: twelve 30° sectors, cosine-blended, each
+/// pixel's luminance (`l`, the working space's weights) held. Turned or
+/// desaturated in HSV alone, a colour kept its largest channel: a magenta
+/// dress taken to grey came out as light as its red, its L* doubled, and
+/// neighbouring berries lightened by different amounts into blotches.
+pub fn color_warper(px: &mut [f32], hue_shifts: &[f32; 12], sat_shifts: &[f32; 12], l: [f32; 3]) {
     px.par_chunks_exact_mut(4).for_each(|p| {
         let hsl = picture_hsl([p[0], p[1], p[2]]);
         let h_deg = hsl.h * 360.0;
@@ -509,7 +513,11 @@ pub fn color_warper(px: &mut [f32], hue_shifts: &[f32; 12], sat_shifts: &[f32; 1
         let sat_weight = hsl.s.clamp(0.0, 1.0);
         let new_h = ((h_deg + hue_shift * sat_weight) % 360.0 + 360.0) % 360.0 / 360.0;
         let new_s = (hsl.s + sat_shift * sat_weight).clamp(0.0, 1.0);
-        let rgb = picture_rgb(new_h, new_s, hsl.v, hsl.magnitude);
+        let mut rgb = picture_rgb(new_h, new_s, hsl.v, hsl.magnitude);
+        let (was, now) = (l[0] * p[0] + l[1] * p[1] + l[2] * p[2], l[0] * rgb[0] + l[1] * rgb[1] + l[2] * rgb[2]);
+        if now > 1e-6 && was > 0.0 {
+            rgb = rgb.map(|c| c * (was / now));
+        }
         p[..3].copy_from_slice(&rgb);
     });
 }
