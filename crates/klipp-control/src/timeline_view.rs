@@ -548,6 +548,7 @@ pub(crate) fn sound_json(seq: &klipp_timeline::Sequence, c: &klipp_timeline::Cli
         return;
     }
     let role = sound_role(seq, c);
+    let heard = seq.audio_effects_clip(c);
     let c = sound_owner(seq, c);
     let db = |linear: f32| if linear > 0.0 { ((20.0 * linear.log10()) * 10.0).round() / 10.0 } else { -144.0 };
     let mut sound = serde_json::Map::new();
@@ -565,7 +566,10 @@ pub(crate) fn sound_json(seq: &klipp_timeline::Sequence, c: &klipp_timeline::Cli
     put("role", json!(role.as_ref().map(|r| r.as_str())), role.is_some());
     // The whole chain in order, a bypassed one marked: left out, one
     // bypassed read as gone though it was still on the clip.
-    let effects: Vec<String> = c.audio_effects.iter().map(|e| if e.enabled { e.effect_type.clone() } else { format!("{} (bypassed)", e.effect_type) }).collect();
+    // Read where the mix reads them: a picture's sound clip on an audio
+    // track, or the clip itself; read from the pair's settings clip, a
+    // sound clip's effects added on its Audio tab read as none.
+    let effects: Vec<String> = heard.audio_effects.iter().map(|e| if e.enabled { e.effect_type.clone() } else { format!("{} (bypassed)", e.effect_type) }).collect();
     put("effects", json!(effects), !effects.is_empty());
     if !sound.is_empty() {
         v["sound"] = serde_json::Value::Object(sound);

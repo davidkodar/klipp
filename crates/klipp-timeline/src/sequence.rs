@@ -1336,6 +1336,19 @@ impl Sequence {
         self.tracks.iter().flat_map(|t| t.clips.iter())
     }
 
+    /// The clip whose audio effects `clip`'s sound plays through: a
+    /// picture's linked sound clip on an audio track, else the clip itself.
+    /// The mix reads a sound clip's own chain and leaves out the sound of
+    /// a picture whose sound is on an audio track, so an effect put on
+    /// that picture is never heard (#3481). Its level, pan and fades are
+    /// the picture's, the pair's sound settings.
+    pub fn audio_effects_clip<'a>(&'a self, clip: &'a Clip) -> &'a Clip {
+        clip.linked_clip_id
+            .filter(|_| self.tracks.iter().any(|t| t.kind == TrackKind::Video && t.clips.iter().any(|c| c.id == clip.id)))
+            .and_then(|lid| self.tracks.iter().filter(|t| t.kind == TrackKind::Audio).flat_map(|t| &t.clips).find(|c| c.id == lid))
+            .unwrap_or(clip)
+    }
+
     /// How many clips the sequence holds, as the status says it and the
     /// Projects card shows it: a gap is a space between clips, not one.
     /// The card counted gaps, and said 11 where the status said 8.
