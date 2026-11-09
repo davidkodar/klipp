@@ -171,8 +171,16 @@ impl KlippApp {
                 // UI's playhead follows only when the engine reports back,
                 // so a frame read straight after an acknowledged seek held
                 // the position from before it and put the playhead back
-                // there. What this envelope sought is where the user is.
-                self.publish_transport(sought);
+                // there. What this envelope sought is where the user is,
+                // and goes on being, for the acknowledgements that follow it
+                // before the engine has reported: a colour tool's write right
+                // after a read published the read's time, the next read held
+                // that, and the playhead stayed on the last shot it read.
+                if let Some(at) = sought {
+                    self.state.control_sought = Some((at, std::time::Instant::now()));
+                }
+                let on_its_way = seek_on_its_way(self.state.control_sought, std::time::Instant::now());
+                self.publish_transport(on_its_way.filter(|_| self.state.playback != PlaybackState::Playing));
                 // A write through a picture-truth clip's fields refused
                 // while this envelope applied: for the caller, and the
                 // person, as the frame loop would have said it (#2458).
@@ -482,6 +490,32 @@ pub(super) fn param_write_outside(seq: &klipp_timeline::Sequence, cmds: &[AppCom
         AppCommand::SetNodeParam { clip_id, .. } | AppCommand::AddKeyframe { clip_id, .. } | AppCommand::RemoveKeyframe { clip_id, .. } if !seq.tracks.iter().any(|t| t.clips.iter().any(|x| x.id == *clip_id)) => Some(*clip_id),
         _ => None,
     })
+}
+
+/// How long a seek counts as on its way if the engine never reports reaching
+/// it, as for a time past the end of the timeline.
+const SEEK_ON_ITS_WAY: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Where a control seek the engine hasn't reported yet is taking the playhead.
+pub(super) fn seek_on_its_way(sought: Option<(klipp_core::Timecode, std::time::Instant)>, now: std::time::Instant) -> Option<klipp_core::Timecode> {
+    sought.filter(|(_, at)| now.duration_since(*at) < SEEK_ON_ITS_WAY).map(|(t, _)| t)
+}
+
+#[cfg(test)]
+mod seek_on_its_way_tests {
+    use super::*;
+
+    /// An acknowledgement with no seek of its own, straight after one, says
+    /// where the playhead is going; with none waiting, or long past, the
+    /// UI's own playhead stands.
+    #[test]
+    fn a_seek_counts_until_the_engine_reports_or_it_runs_out() {
+        let now = std::time::Instant::now();
+        let at = klipp_core::Timecode::from_frames(25, 25);
+        assert_eq!(seek_on_its_way(Some((at, now)), now), Some(at));
+        assert_eq!(seek_on_its_way(None, now), None);
+        assert_eq!(seek_on_its_way(Some((at, now)), now + SEEK_ON_ITS_WAY), None);
+    }
 }
 
 /// The last absolute seek among a control envelope's commands: where the
