@@ -22,6 +22,10 @@ pub(super) struct Viewer {
     pub(super) modifiers: egui::Modifiers,
     /// The texts the last frame drew.
     pub(super) texts: Vec<String>,
+    /// The circles the last frame drew: centre and fill.
+    pub(super) circles: Vec<(egui::Pos2, egui::Color32)>,
+    /// A window lying over the viewer, as Colour Check or Clip Properties do.
+    pub(super) window_over: Option<egui::Rect>,
 }
 
 impl Viewer {
@@ -29,7 +33,7 @@ impl Viewer {
         // Paused on an empty timeline: the viewer shows a frame to
         // draw on.
         let state = AppState { playback: klipp_engine::PlaybackState::Paused, active_tool: Tool::Text, ..Default::default() };
-        let mut v = Self { ctx: egui::Context::default(), panel: ViewerPanel::default(), state, theme: KlippTheme::default(), clock: 0.0, sent: Vec::new(), modifiers: egui::Modifiers::NONE, texts: Vec::new() };
+        let mut v = Self { ctx: egui::Context::default(), panel: ViewerPanel::default(), state, theme: KlippTheme::default(), clock: 0.0, sent: Vec::new(), modifiers: egui::Modifiers::NONE, texts: Vec::new(), circles: Vec::new(), window_over: None };
         v.frame(Vec::new());
         v
     }
@@ -44,12 +48,19 @@ impl Viewer {
             ..Default::default()
         };
         let mut cmds = Vec::new();
-        let (panel, state, theme) = (&mut self.panel, &mut self.state, &self.theme);
+        let (panel, state, theme, over) = (&mut self.panel, &mut self.state, &self.theme, self.window_over);
         let out = self.ctx.run(input, |ctx| {
             egui::CentralPanel::default().frame(egui::Frame::none()).show(ctx, |ui| cmds = panel.show(ui, state, theme, &crate::keybindings::KeyBindings::default()));
+            if let Some(over) = over {
+                crate::widgets::window("Over").fixed_pos(over.min).fixed_size(over.size()).show(ctx, |ui| { ui.allocate_space(ui.available_size()); });
+            }
         });
         self.texts = out.shapes.iter().filter_map(|s| match &s.shape {
             egui::Shape::Text(t) => Some(t.galley.text().to_string()),
+            _ => None,
+        }).collect();
+        self.circles = out.shapes.iter().filter_map(|s| match &s.shape {
+            egui::Shape::Circle(c) => Some((c.center, c.fill)),
             _ => None,
         }).collect();
         for cmd in cmds {
