@@ -226,6 +226,7 @@ impl KlippApp {
 
         // 4a0. Paste Attributes dialog
         if self.state.show_paste_attributes_dialog {
+            let named = self.state.paste_attributes_named(&self.state.paste_attributes_targets());
             let mut open = true;
             crate::widgets::window("Paste Attributes")
                 .collapsible(false)
@@ -234,7 +235,7 @@ impl KlippApp {
                 .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
                 .show(ctx, |ui| {
                     ui.set_min_width(260.0);
-                    ui.label("Select which attributes to paste:");
+                    ui.label(format!("Select which attributes to paste onto {}:", named));
                     ui.add_space(6.0);
 
                     // Persistent checkboxes via egui's data store (no unsafe statics)
@@ -268,11 +269,13 @@ impl KlippApp {
                         }
                         if ui.button("Cancel").clicked() {
                             self.state.show_paste_attributes_dialog = false;
+                            self.state.paste_attributes_onto = None;
                         }
                     });
                 });
             if !open {
                 self.state.show_paste_attributes_dialog = false;
+                self.state.paste_attributes_onto = None;
             }
         }
 

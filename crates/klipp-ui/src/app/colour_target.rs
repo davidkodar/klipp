@@ -88,6 +88,37 @@ impl AppState {
         super::titles::title_seek_on_select(c, self.playhead, self.sequence().fps.rate())
     }
 
+    /// The clips a Paste Attributes goes to: the clip whose own menu asked,
+    /// with the rest of the selection when it is part of one, else the
+    /// selection. On the Colour page that is the clip graded, the one named
+    /// in its header.
+    pub(crate) fn paste_attributes_targets(&self) -> Vec<ClipId> {
+        if let Some(clip) = self.paste_attributes_onto {
+            if !self.selected_clips.contains(&clip) && (self.selected_clips.is_empty() || self.selected_clip != Some(clip)) {
+                return vec![clip];
+            }
+        }
+        let mut targets = self.selected_clips.clone();
+        if let Some(primary) = self.selected_clip {
+            if !targets.contains(&primary) {
+                targets.push(primary);
+            }
+        }
+        targets
+    }
+
+    /// What a paste's dialog and message call `targets`: the file, or how
+    /// many.
+    pub(crate) fn paste_attributes_named(&self, targets: &[ClipId]) -> String {
+        match targets {
+            [one] => self.sequence().all_clips().find(|c| c.id == *one)
+                .and_then(|c| c.media_id())
+                .and_then(|m| self.media_pool.get(&m))
+                .map_or_else(|| "the clip".to_string(), |it| klipp_core::quote::quoted(&it.filename)),
+            many => format!("{} clips", many.len()),
+        }
+    }
+
     /// A clip picked on the Colour page is the one graded (#2952), so no
     /// earlier selection is waiting elsewhere: also when it was the
     /// selected clip already, as the one the page had chosen (#3426).

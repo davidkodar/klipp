@@ -8764,6 +8764,7 @@ impl TimelinePanel {
                     }
                     if state.attributes_clipboard.is_some() && ui.add(egui::Button::new("Paste Attributes\u{2026}").shortcut_text(edit_key("paste_attributes"))).clicked() {
                         state.show_paste_attributes_dialog = true;
+                        state.paste_attributes_onto = Some(clip_id);
                         ui.close_menu();
                     }
                     if !keyed.is_empty() {

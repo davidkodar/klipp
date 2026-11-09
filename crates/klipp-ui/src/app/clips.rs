@@ -732,18 +732,14 @@ impl KlippApp {
                             transform: *transform,
                             speed: *speed,
                         };
-                        let mut targets = self.state.selected_clips.clone();
-                        if let Some(primary) = self.state.selected_clip {
-                            if !targets.contains(&primary) {
-                                targets.push(primary);
-                            }
-                        }
+                        let targets = self.state.paste_attributes_targets();
+                        self.state.paste_attributes_onto = None;
+                        let named = self.state.paste_attributes_named(&targets);
                         let (mut edits, labels) = paste_attributes(&self.state.sequences[self.state.active_sequence_idx], &targets, &attrs, what);
-                        let count = edits.len();
                         // The grade's node labels, in the same step (#1866).
                         edits.extend(labels);
                         self.apply_edits_as_one(&edits, "Paste Attributes");
-                        self.state.toast.show(format!("Attributes pasted to {count} clip(s)"));
+                        self.state.toast.show(format!("Attributes pasted to {named}"));
                     }
                     true
                 }
