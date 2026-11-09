@@ -216,6 +216,12 @@ impl AppState {
                     e.from_node = *dup;
                 }
                 graph.edges.push(klipp_nodes::Edge { from_node: original, from_port: 0, to_node: *dup, to_port: 0 });
+                // Limited as the original is: without its matte the copy's
+                // grade would reach the whole frame.
+                if graph.nodes.iter().find(|n| n.id == original).is_some_and(|n| n.kind.takes_gate()) {
+                    let gate = graph.edges.iter().find(|e| e.to_node == original && e.to_port == 1).cloned();
+                    graph.edges.extend(gate.map(|e| klipp_nodes::Edge { to_node: *dup, ..e }));
+                }
             }
         })
             .ok_or("The clip is no longer on the timeline")?
