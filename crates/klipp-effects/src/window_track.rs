@@ -131,23 +131,30 @@ fn follow(
         Some(g) => g.track(reference, quad, &[], frames, next, &opts, progress),
         None => crate::planar::track(reference, quad, &[], frames, next, &opts, progress),
     };
+    sure_part(tracked).into_iter().map(|t| (t.frame, t.h)).collect()
+}
+
+/// How sure a fit must be for a track that is lost to end on it: well
+/// clear of the line between good and weak ([`State::Good`] from 0.6).
+/// Before a loss the fits fade through that line, and a frame scoring
+/// just over it on one decode scores just under on another: the app's
+/// frames kept a weak run the same track on other frames left out.
+const SURE: f32 = 0.8;
+
+/// The frames of a track up to the first lost one; when it was lost, cut
+/// back to the last frame followed surely. The frames just before a loss
+/// were already failing: a weak fit there swings the window and shrinks
+/// it as the surface slips away. A track that runs to the end of its
+/// frames keeps them all.
+fn sure_part(tracked: Vec<crate::planar::Tracked>) -> Vec<crate::planar::Tracked> {
     let stopped = tracked.iter().any(|t| t.state == State::Lost);
     let mut kept: Vec<_> = tracked.into_iter().take_while(|t| t.state != State::Lost).collect();
     if stopped {
-        // The frames just before a loss were already failing: a weak fit
-        // there swings the window and shrinks it as the surface slips
-        // away. The track ends at the last frame followed well, one whose
-        // frame before was followed well too (the reference counts) — a
-        // lone good frame among weak ones is not the surface back.
-        while let Some(i) = kept.len().checked_sub(1) {
-            let good = |j: usize| kept[j].state == State::Good;
-            if good(i) && (i == 0 || good(i - 1)) {
-                break;
-            }
+        while kept.last().is_some_and(|t| t.confidence < SURE) {
             kept.pop();
         }
     }
-    kept.into_iter().map(|t| (t.frame, t.h)).collect()
+    kept
 }
 
 /// Follow the window `quad` (its four corners on the reference frame, in
@@ -290,8 +297,8 @@ mod tests {
         let pivot = (100.0, 70.0);
         let quad = [(75.0, 50.0), (125.0, 50.0), (125.0, 90.0), (75.0, 90.0)];
         // The subject slides a pixel a frame and, from frame 4, gives
-        // way to a still picture of its own: frames to 16 are clear, 17
-        // to 19 weak, and 20 lost.
+        // way to a still picture of its own: frames to 15 are sure, 16
+        // good but fading, 17 to 19 weak, and 20 lost.
         let other = |x: f64, y: f64| texture(y * 1.3 + 17.0, x * 0.9 - 5.0);
         let fading = |k: usize| {
             let gone = ((k as f64 - 3.0) * 0.04).clamp(0.0, 1.0);
@@ -309,10 +316,38 @@ mod tests {
         let states: Vec<State> = crate::planar::track(&fading(0), quad, &[], &frames, &mut |k| Some(fading(k)), &opts, &|_| true).iter().map(|t| t.state).collect();
         assert!(states.len() > 17 && states[15] == State::Good && states[16] == State::Low && states.last() == Some(&State::Lost), "the fixture weakens before it is lost: {states:?}");
         let got = track_window(None, &fading(0), quad, pivot, &frames, &mut |k| Some(fading(k)), &TrackOptions::default(), &|_| true);
-        assert_eq!(got.last().map(|g| g.0), Some(16), "ends at the last frame followed well");
+        // Frame 16 is still called good, at 0.74, but no longer sure.
+        assert_eq!(got.last().map(|g| g.0), Some(15), "ends at the last frame followed surely");
         for (k, fit) in &got {
             assert!((fit.dx - *k as f64).abs() < 0.6 && fit.dy.abs() < 0.6 && (fit.scale - 1.0).abs() < 0.01, "frame {k}: {fit:?}");
         }
+    }
+
+    /// The runner's last frames before the track was lost, as measured
+    /// (confidence per frame from 4.84 s): sure, then weak with one frame
+    /// just over the line between weak and good. On the app's decode two
+    /// of them scored over it, and the track kept a turn of 0.2° and a
+    /// scale of 0.976 it does not have. Either way it ends on the last
+    /// sure frame.
+    #[test]
+    fn a_lost_track_ends_on_its_last_sure_frame_whatever_scores_near_the_line() {
+        let run = |scores: &[f32]| -> Vec<usize> {
+            let mut tracked: Vec<crate::planar::Tracked> = scores
+                .iter()
+                .enumerate()
+                .map(|(i, &c)| crate::planar::Tracked { frame: 121 + i, h: Homography::identity(), confidence: c, state: if c >= 0.6 { State::Good } else { State::Low }, round_trip_px: 0.0 })
+                .collect();
+            tracked.push(crate::planar::Tracked { frame: 121 + scores.len(), h: Homography::identity(), confidence: 0.01, state: State::Lost, round_trip_px: f32::INFINITY });
+            sure_part(tracked).iter().map(|t| t.frame).collect()
+        };
+        let measured = [0.97, 0.483, 0.334, 0.616, 0.561, 0.36, 0.436, 0.558];
+        let app = [0.97, 0.483, 0.334, 0.63, 0.61, 0.36, 0.436, 0.558];
+        assert_eq!(run(&measured), vec![121]);
+        assert_eq!(run(&app), vec![121], "two frames just over the line are not the surface back");
+        // Not lost: every frame followed is kept, weak ones too.
+        let mut whole: Vec<crate::planar::Tracked> = measured.iter().enumerate().map(|(i, &c)| crate::planar::Tracked { frame: 121 + i, h: Homography::identity(), confidence: c, state: if c >= 0.6 { State::Good } else { State::Low }, round_trip_px: 0.0 }).collect();
+        whole.truncate(8);
+        assert_eq!(sure_part(whole).len(), 8);
     }
 
     /// #2754: a window over a plain card — nothing inside it to match
