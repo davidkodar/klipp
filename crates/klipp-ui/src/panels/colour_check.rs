@@ -176,11 +176,24 @@ pub struct ColourCheckPanel {
     /// The last colour tool's answer: whether it did what it set out to,
     /// and its readings before and after.
     pub tool_result: Option<(bool, String)>,
+    /// Where the edit history stood when that answer came: `(undo, redo)`.
+    pub tool_result_at: (usize, usize),
+}
+
+impl ColourCheckPanel {
+    /// The last tool's answer speaks of the shots as it left them: gone once
+    /// the history has moved, an undo or an edit. "Already matched" stayed up
+    /// after the match it spoke of was undone.
+    pub fn forget_result_once_edited(&mut self, history: (usize, usize)) {
+        if self.tool_result_at != history {
+            self.tool_result = None;
+        }
+    }
 }
 
 impl Default for ColourCheckPanel {
     fn default() -> Self {
-        Self { measured: None, generation: u64::MAX, at: None, selfcheck: None, show_all: false, trend: ColourTrend::default(), tools_available: false, tool_running: None, tool_result: None }
+        Self { tool_result_at: (0, 0), measured: None, generation: u64::MAX, at: None, selfcheck: None, show_all: false, trend: ColourTrend::default(), tools_available: false, tool_running: None, tool_result: None }
     }
 }
 
@@ -832,5 +845,14 @@ mod trend_tests {
         // window is in the moment it is first opened.
         super::tests::run(&mut panel, &state, &fb);
         assert!(panel.trend.is_empty());
+    }
+
+    #[test]
+    fn a_tools_answer_goes_when_the_history_moves() {
+        let mut panel = ColourCheckPanel { tool_result: Some((true, "matched".into())), tool_result_at: (4, 0), ..Default::default() };
+        panel.forget_result_once_edited((4, 0));
+        assert!(panel.tool_result.is_some(), "nothing has changed");
+        panel.forget_result_once_edited((3, 1));
+        assert!(panel.tool_result.is_none(), "undone");
     }
 }
