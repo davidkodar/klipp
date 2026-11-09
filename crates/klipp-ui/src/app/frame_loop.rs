@@ -1278,6 +1278,8 @@ impl KlippApp {
         // colourist reads it, with the fault named and the knob to turn.
         if self.state.show_colour_check {
             let mut open = self.state.show_colour_check;
+            let history = self.state.active_history();
+            self.colour_check.forget_result_once_edited((history.undo_count(), history.redo_count()));
             let action = {
                 let fb = self.frame_buffer.clone();
                 self.colour_check.show(ctx, &self.state, &fb, &self.theme, &mut open)

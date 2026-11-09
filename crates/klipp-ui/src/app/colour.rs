@@ -1310,8 +1310,11 @@ impl KlippApp {
                 }
                 // Auto-capture a "Before" reference still the first time the
                 // user touches grade params on a saved project. Cheap gate
-                // (is_empty) avoids re-capturing on subsequent edits.
-                if self.state.grade_stills.is_empty() && self.state.project_path.is_some() {
+                // (is_empty) avoids re-capturing on subsequent edits. Only a
+                // clip with no grade yet: typed values don't begin an edit,
+                // so a first drag could come after them, and the still
+                // called Before held the grade.
+                if self.state.grade_stills.is_empty() && self.state.project_path.is_some() && before_still_is_true(self.node_param_edit_snapshot.as_ref().map(|(_, g)| g)) {
                     if let Some(still) = self.capture_grade_still("Before".to_string()) {
                         self.state.grade_stills.push(still);
                         self.persist_grade_stills();
@@ -2541,7 +2544,15 @@ impl KlippApp {
             self.state.toast.show(&result.1);
         }
         self.colour_check.tool_result = Some(result);
+        let history = self.state.active_history();
+        self.colour_check.tool_result_at = (history.undo_count(), history.redo_count());
     }
+}
+
+/// Whether the grade as it was before an edit began leaves the picture as
+/// shot, so a still of it can be called Before.
+fn before_still_is_true(before_edit: Option<&klipp_nodes::NodeGraph>) -> bool {
+    before_edit.is_some_and(klipp_nodes::NodeGraph::is_identity)
 }
 
 /// The request the chart tool sends: what an assistant sends to read a
@@ -2577,6 +2588,21 @@ pub(super) fn colour_tool_request(
         // The chart tool sends its own, with its corners.
         A::None | A::SelfCheck | A::ReadChart => return None,
     })
+}
+
+#[cfg(test)]
+mod before_still_tests {
+    /// Values typed first are in the picture when a first drag begins: a
+    /// still of it isn't the before. A grade only just begun is.
+    #[test]
+    fn a_before_still_needs_a_picture_not_yet_graded() {
+        let mut g = klipp_nodes::NodeGraph::default();
+        let corrector = g.ensure_corrector();
+        assert!(super::before_still_is_true(Some(&g)), "a Corrector at its defaults changes nothing");
+        g.nodes.iter_mut().find(|n| n.id == corrector).unwrap().params.exposure = Some(0.5);
+        assert!(!super::before_still_is_true(Some(&g)));
+        assert!(!super::before_still_is_true(None));
+    }
 }
 
 #[cfg(test)]
