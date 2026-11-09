@@ -3960,7 +3960,7 @@ mod catalogue_trim_tests {
         ("klipp_operation_status", "operation_status", &["revision", "reason"]),
         ("klipp_check_delivery", "check_delivery", &["pass", "warn", "fail"]),
         ("klipp_pick_grey", "pick_grey", &["grey", "fractions", "undo"]),
-        ("klipp_read_chart", "read_chart", &["ColorChecker", "brown", "published", "apply", "undo"]),
+        ("klipp_read_chart", "read_chart", &["colorchecker", "brown", "published", "apply", "undo"]),
         ("klipp_skin_balance", "skin_balance", &["25", "70", "three", "rounds", "apply"]),
         ("klipp_cancel_job", "cancel_job", &["import", "sync", "stopped"]),
         ("klipp_transcript", "transcript", &["words", "silent"]),
@@ -3994,14 +3994,15 @@ mod catalogue_trim_tests {
         }
     }
 
-    /// The catalogue is under 55 KB (raised from 54 for covers, #3311);
+    /// The catalogue is under 56 KB (raised from 54 for covers, #3311, and
+    /// from 55 for klipp_pick_grey and klipp_read_chart);
     /// every tool names its guide topic; and each moved sentence is in its tool's
     /// topic, under Arguments, and no longer on the argument.
     #[test]
     fn the_catalogue_is_a_tenth_under_its_budget_and_nothing_moved_is_lost() {
         let tools = tool_definitions_for(false);
         let total = serde_json::to_vec(&tools).unwrap().len();
-        assert!(total < 55_000, "the catalogue is {total} bytes");
+        assert!(total < 56_000, "the catalogue is {total} bytes");
         for t in &tools {
             let name = t["name"].as_str().unwrap();
             if name != "klipp_guide" {
