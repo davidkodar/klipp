@@ -12,10 +12,7 @@ use klipp_timeline::{ChannelConfig, Clip, FadeCurve};
 /// reads a sound clip's own chain and leaves out its picture's sound, so
 /// an effect put on the picture was never heard.
 pub fn effects_clip<'a>(seq: &'a klipp_timeline::Sequence, clip: &'a Clip) -> &'a Clip {
-    clip.linked_clip_id
-        .filter(|_| seq.tracks.iter().any(|t| t.kind == klipp_timeline::TrackKind::Video && t.clips.iter().any(|c| c.id == clip.id)))
-        .and_then(|lid| seq.tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Audio).flat_map(|t| &t.clips).find(|c| c.id == lid))
-        .unwrap_or(clip)
+    seq.audio_effects_clip(clip)
 }
 
 /// Find peak levels for the clip's audio. If the clip is on a video track

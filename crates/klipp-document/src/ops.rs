@@ -9566,7 +9566,10 @@ fn send(seq: &Sequence, i: usize, track: &TrackRef, bus: &BusRef, set: SendSet) 
 /// [`Op::ClipAudio`]: the chain of the clip that holds the sound's
 /// settings, a linked pair's picture, as [`clean_audio`] puts it.
 fn clip_audio(seq: &Sequence, pool: &MediaPool, i: usize, given: &Clip, edit: AudioChainEdit, transcripts: &dyn Transcripts) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
-    let clip = sound_settings_clip(seq, given);
+    // On the clip the chain plays through: a picture's sound clip when its
+    // sound is on an audio track. Kept on the picture with its level, it
+    // was listed and never heard.
+    let clip = seq.audio_effects_clip(given);
     if !clip.media_id().and_then(|id| pool.get(&id)).is_some_and(|m| m.has_audio) {
         return Err(refuse(i, format!("{} has no sound", clip_name(seq, pool, clip)), "name a clip whose media has audio"));
     }
@@ -12338,7 +12341,7 @@ fn clips_recipe(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, clip: &Cli
 /// Its own file, never one saved under that name.
 fn clean_audio(seq: &Sequence, pool: &MediaPool, i: usize, given: &Clip, flags: CleanFlags) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
     let CleanFlags { voice, reduction_db, wind, hiss, hum, deess } = flags;
-    let clip = sound_settings_clip(seq, given);
+    let clip = seq.audio_effects_clip(given);
     if !clip.media_id().and_then(|id| pool.get(&id)).is_some_and(|m| m.has_audio) {
         return Err(refuse(i, format!("{} has no sound", clip_name(seq, pool, clip)), "name a clip whose media has audio"));
     }
@@ -12388,7 +12391,7 @@ fn clean_audio(seq: &Sequence, pool: &MediaPool, i: usize, given: &Clip, flags: 
 /// added, by name and what each says, and the edit; refused when the
 /// clip has no sound.
 fn add_audio_steps<'a>(seq: &Sequence, pool: &MediaPool, i: usize, given: &Clip, steps: &'a [(String, String, klipp_core::AudioEffectInstance)], description: &'static str) -> Result<(Vec<(&'a str, &'a str)>, EditCommand), Refusal> {
-    let clip = sound_settings_clip(seq, given);
+    let clip = seq.audio_effects_clip(given);
     if !clip.media_id().and_then(|id| pool.get(&id)).is_some_and(|m| m.has_audio) {
         return Err(refuse(i, format!("{} has no sound", clip_name(seq, pool, clip)), "name a clip whose media has audio"));
     }
@@ -20822,6 +20825,20 @@ mod tests {
     /// keyframes with it (kept by its place), in one step undo puts back
     /// exactly; a move of an effect not there, past the chain's end or
     /// with its removal is refused.
+    /// Clean Audio on a picture whose sound is on an audio track puts its
+    /// chain on that sound clip, where the mix plays it, as clip_audio
+    /// does: kept on the picture with the pair's level, it was never heard.
+    #[test]
+    fn clean_audio_goes_on_the_sound_the_mix_plays() {
+        let (seq, pool, _, a, _) = fixture();
+        let sound = seq.all_clips().find(|c| c.id == a).and_then(|c| c.linked_clip_id).expect("a linked sound");
+        let op: Op = serde_json::from_value(serde_json::json!({ "op": "clean_audio", "clip_id": a.0.to_string(), "hum": true })).unwrap();
+        let plan = resolve(&seq, &pool, &[op]).unwrap();
+        let EditCommand::EditAudioChain { clip_id, new_state, .. } = &plan.steps[0].edit else { panic!("{:?}", plan.steps[0].edit) };
+        assert_eq!(*clip_id, sound, "on the sound clip");
+        assert!(new_state.audio_effects.iter().any(|e| e.effect_type == "hum_removal"), "{:?}", new_state.audio_effects);
+    }
+
     #[test]
     fn an_audio_effect_moves_in_its_chain() {
         let (mut seq, mut pool, _, a, _) = fixture();
@@ -20838,7 +20855,8 @@ mod tests {
         for effect in ["eq", "compressor", "limiter"] {
             step(&mut seq, &mut pool, serde_json::json!({ "op": "clip_audio", "clip_id": id, "effect": effect })).unwrap();
         }
-        let owner = |seq: &Sequence| sound_settings_clip(seq, seq.all_clips().find(|c| c.id == a).unwrap()).id;
+        // The chain is on the clip it plays through: the picture's sound clip.
+        let owner = |seq: &Sequence| seq.audio_effects_clip(seq.all_clips().find(|c| c.id == a).unwrap()).id;
         let o = owner(&seq);
         let key = |v: f32| vec![klipp_core::Keyframe { time_secs: 0.0, value: v, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() }];
         seq.all_clips_mut().find(|c| c.id == o).unwrap().audio_effect_keyframes.insert("0:band1_gain".into(), key(4.0));
@@ -20894,7 +20912,10 @@ mod tests {
         // On the clip's sound, by the param's name: stored by its key.
         let plan = one(serde_json::json!({ "op": "clip_audio", "clip_id": a.0.to_string(), "effect": "lv2:urn:test:room", "params": { "room size": 4.0 } })).unwrap();
         let EditCommand::EditAudioChain { new_state, clip_id, .. } = &plan.steps[0].edit else { panic!("{:?}", plan.steps[0].edit) };
-        assert_eq!(*clip_id, a, "the clip that holds the pair's sound settings: the picture");
+        // On the clip the pair's sound plays through, its sound clip on A1:
+        // kept on the picture with the pair's level, it was never heard.
+        let sound = seq.all_clips().find(|c| c.id == a).and_then(|c| c.linked_clip_id).expect("a linked sound");
+        assert_eq!(*clip_id, sound, "on the pair's sound clip, where it plays");
         assert_eq!(new_state.audio_effects.last().map(|e| (e.effect_type.as_str(), e.params.clone())), Some(("lv2:urn:test:room", vec![("size".to_string(), 4.0)])));
         // On a track, by its key.
         let plan = one(serde_json::json!({ "op": "track_audio", "track": "audio", "effect": "lv2:urn:test:room", "params": { "size": 9.0 } })).unwrap();
