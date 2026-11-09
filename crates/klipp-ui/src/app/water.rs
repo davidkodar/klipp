@@ -5,8 +5,40 @@
 //! footprint (the footage under it, its range, its waterline) has changed
 //! since is outdated, and measured again only when asked (Re-analyze).
 //! A measurement that lands for a footprint that has moved on is dropped.
+//! One that finds nothing (a reflection with no footage below it) is not
+//! tried again for that footprint unless asked.
 
 use super::*;
+
+/// The measurements running, and the footprints that gave nothing.
+#[derive(Default)]
+pub(super) struct WaterTries {
+    running: std::collections::HashSet<(klipp_core::ClipId, u32)>,
+    found_nothing: std::collections::HashSet<(klipp_core::ClipId, u32)>,
+}
+
+impl WaterTries {
+    /// Whether to measure this footprint on its own account: never if it
+    /// gave nothing, which would go on being nothing, frame after frame.
+    fn wanted(&self, clip_id: klipp_core::ClipId, key: u32) -> bool {
+        !self.found_nothing.contains(&(clip_id, key))
+    }
+
+    /// A measurement starting. False when one is running for this footprint.
+    fn start(&mut self, clip_id: klipp_core::ClipId, key: u32) -> bool {
+        self.running.insert((clip_id, key))
+    }
+
+    /// A measurement over, by what it found.
+    fn finish(&mut self, clip_id: klipp_core::ClipId, key: u32, found: bool) {
+        self.running.remove(&(clip_id, key));
+        if found {
+            self.found_nothing.remove(&(clip_id, key));
+        } else {
+            self.found_nothing.insert((clip_id, key));
+        }
+    }
+}
 
 impl KlippApp {
     /// Every reflection on the active sequence set to take the water's
@@ -21,7 +53,11 @@ impl KlippApp {
             .map(|c| c.id)
             .collect();
         for clip_id in unmeasured {
-            self.start_water_measure(clip_id);
+            let seq = &self.state.sequences[self.state.active_sequence_idx];
+            let key = klipp_render::water::footprint_key(seq, clip_id);
+            if key.is_some_and(|key| self.water_tries.wanted(clip_id, key)) {
+                self.start_water_measure(clip_id);
+            }
         }
     }
 
@@ -30,7 +66,7 @@ impl KlippApp {
     pub(super) fn start_water_measure(&mut self, clip_id: klipp_core::ClipId) {
         let seq = &self.state.sequences[self.state.active_sequence_idx];
         let Some(key) = klipp_render::water::footprint_key(seq, clip_id) else { return };
-        if !self.water_measuring.insert((clip_id, key)) {
+        if !self.water_tries.start(clip_id, key) {
             return;
         }
         let snapshot = klipp_render::SequenceSnapshot::from_sequence(
@@ -42,7 +78,7 @@ impl KlippApp {
             self.state.project_working_colorspace,
         );
         let Ok(snapshot) = snapshot else {
-            self.water_measuring.remove(&(clip_id, key));
+            self.water_tries.finish(clip_id, key, false);
             return;
         };
         let tx = self.proxy_event_tx.clone();
@@ -51,7 +87,7 @@ impl KlippApp {
             let _ = tx.send(klipp_core::AppEvent::WaterMeasured { clip_id, key, water });
         });
         if spawned.is_err() {
-            self.water_measuring.remove(&(clip_id, key));
+            self.water_tries.finish(clip_id, key, false);
         }
     }
 
@@ -59,7 +95,7 @@ impl KlippApp {
     /// darkness following it where they are set to, one undo step; dropped
     /// when the footprint has changed since it started.
     pub(super) fn water_measured(&mut self, clip_id: klipp_core::ClipId, key: u32, water: Option<[u8; 3]>) {
-        self.water_measuring.remove(&(clip_id, key));
+        self.water_tries.finish(clip_id, key, water.is_some());
         let seq = &self.state.sequences[self.state.active_sequence_idx];
         if klipp_render::water::footprint_key(seq, clip_id) != Some(key) {
             tracing::info!("water under {clip_id:?} measured for footage that has since changed; dropped");
@@ -103,6 +139,24 @@ pub(super) fn with_water(effect: klipp_effects::BuiltinEffect, water: [u8; 3], k
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A footprint that gave nothing is not measured again on its own, or
+    /// it runs every frame, for good; another footprint is, once footage
+    /// has come to lie below, and a measurement asked for still runs.
+    #[test]
+    fn a_footprint_with_no_water_is_tried_once() {
+        let clip = klipp_core::ClipId(uuid::Uuid::nil());
+        let mut tries = WaterTries::default();
+        assert!(tries.wanted(clip, 1));
+        assert!(tries.start(clip, 1));
+        assert!(!tries.start(clip, 1), "one running at a time");
+        tries.finish(clip, 1, false);
+        assert!(!tries.wanted(clip, 1), "nothing found: not tried again");
+        assert!(tries.wanted(clip, 2), "another footprint is");
+        assert!(tries.start(clip, 1), "asked for, it still runs");
+        tries.finish(clip, 1, true);
+        assert!(tries.wanted(clip, 1), "found: nothing held against it");
+    }
 
     /// #2795: a measurement sets the tint and darkness where they follow
     /// the water, and leaves them where they're the user's.

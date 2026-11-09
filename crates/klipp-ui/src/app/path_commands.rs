@@ -454,7 +454,11 @@ impl crate::state::AppState {
         // the gesture is one drag again.
         if let AppCommand::SetParamAt { addr, key, .. } = cmd {
             if self.resumes(addr, key) && !self.active_history().is_any_drag_in_progress() {
-                let _ = self.begin_param_edit_at(addr, key);
+                // Over the whole node again if it was: its next parameter
+                // is part of the same drag.
+                let whole_node = self.resumable_path_drag.as_ref().is_some_and(|(open, _)| *open == node_drag(addr));
+                let node_key = ParamKey::from("");
+                let _ = self.begin_param_edit_at(addr, if whole_node { &node_key } else { key });
             }
         }
         // A clip's keyframe command on its placement or opacity lane, as
@@ -795,8 +799,10 @@ impl crate::state::AppState {
         }
     }
 
+    /// Whether a write of `(addr, key)` belongs to the drag a result closed:
+    /// its own parameter's, or a drag over all of its node's (the gizmo's).
     fn resumes(&self, addr: &NodePath, key: &ParamKey) -> bool {
-        self.resumable_path_drag.as_ref().is_some_and(|(open, _)| *open == drag_key(addr, key))
+        self.resumable_path_drag.as_ref().is_some_and(|(open, _)| *open == drag_key(addr, key) || *open == node_drag(addr))
     }
 
     /// The dispatch boundary every command passes (M3 step 2): an open path
@@ -2103,6 +2109,38 @@ mod tests {
         assert_eq!(picture(&s), before, "values and keys as the drag found them");
         assert_eq!(s.active_history().undo_count(), steps, "no step recorded");
         assert!(!s.active_history().is_any_drag_in_progress());
+    }
+
+    /// A drag of the gizmo that a result lands in the middle of is two
+    /// steps, before it and after it, as a row's is: a drag over a whole
+    /// node did not resume, and each frame after the result was its own.
+    #[test]
+    fn a_gizmo_drag_held_past_a_result_is_two_steps() {
+        let (mut s, id) = state(&[klipp_effects::reflection::surface("calm_water", 0.6).unwrap()]);
+        let c = clip(&s, id).clone();
+        let steps = s.active_history().undo_count();
+        let at = |x: f32| match transform(x, 1.0) { E::Transform { position_x, scale_x, scale_y, rotation, anchor_x, anchor_y, rotation_x, rotation_y, perspective, focal_ref, .. } => E::Transform { position_x, position_y: x * 0.5, scale_x, scale_y, rotation, anchor_x, anchor_y, rotation_x, rotation_y, perspective, focal_ref }, other => other };
+        let key = format!("viewer_transform_{}", id.0);
+        let idx = test_clip::effects(&c).len();
+        let send = |s: &mut AppState, frame: AppCommand| {
+            let now = clip(s, id).clone();
+            for cmd in crate::inspector::placement_by_path::by_path(vec![frame], &now) {
+                s.before_dispatch(&cmd);
+                s.path_command(&cmd);
+            }
+        };
+        send(&mut s, AppCommand::BeginEffectDrag { key: key.clone(), clip_id: id, effect_index: idx, old_effect: at(0.0) });
+        for i in 1..=40 {
+            if i == 20 {
+                s.close_path_drag_before_edit();
+            }
+            send(&mut s, AppCommand::UpdateBuiltinEffect { clip_id: id, index: idx, effect: at(i as f32) });
+        }
+        send(&mut s, AppCommand::EndEffectDrag { key, clip_id: id, effect_index: idx, new_effect: at(40.0) });
+        assert_eq!(clip(&s, id).picture_v2().unwrap().picture.placement.pos_x, Some(40.0), "it moved");
+        assert_eq!(s.active_history().undo_count(), steps + 2, "before the result and after it");
+        assert!(!s.active_history().is_any_drag_in_progress());
+        assert!(s.resumable_path_drag.is_none(), "the release forgets the drag");
     }
 
     /// The gizmo's abandon by path, after it moved the clip, leaves the
