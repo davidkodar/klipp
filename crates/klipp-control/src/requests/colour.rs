@@ -18,6 +18,17 @@ mod group_advice_tests;
 #[path = "colour_auto_tests.rs"]
 mod auto_colour_tests;
 
+/// A shot's file name for a reply line, at most `max` characters, an
+/// ellipsis saying when it was cut: a name stopped short reads as the name.
+pub(super) fn short_name(name: &str, max: usize) -> String {
+    if name.chars().count() <= max {
+        return name.to_owned();
+    }
+    let mut short: String = name.chars().take(max.saturating_sub(1)).collect();
+    short.push('\u{2026}');
+    short
+}
+
 pub(crate) fn respond(
     ctx: &ControlContext,
     cmd: ControlCommand,
@@ -306,7 +317,7 @@ pub(crate) fn respond(
                         score(a).total_cmp(&score(b))
                     })
                     .expect("a scene has members");
-                let hero_name = quoted(&shots[hero].3.chars().take(24).collect::<String>());
+                let hero_name = quoted(&short_name(&shots[hero].3, 24));
                 lines.push(format!(
                     "Scene {} — {} shot(s), hero {hero_name} at {:.2} s",
                     s_i + 1,
@@ -315,7 +326,7 @@ pub(crate) fn respond(
                 ));
                 let mut per_shot = Vec::new();
                 for &i in members {
-                    let name: String = shots[i].3.chars().take(24).collect();
+                    let name = short_name(&shots[i].3, 24);
                     let before = match_distance(&read[hero].2, &read[i].2);
                     let unmatched = read[i].2.clone();
                     let start = {
@@ -1583,7 +1594,7 @@ fn scene_joins(shots: &[(String, f64, f64, String)], read: &[(usize, f64, klipp_
         let cut = shots[w[1].0].1;
         let same_scene = scenes.iter().any(|s| s.contains(&w[0].0) && s.contains(&w[1].0));
         if d > MATCH_WARN {
-            let (a, b) = (quoted(&shots[w[0].0].3.chars().take(18).collect::<String>()), quoted(&shots[w[1].0].3.chars().take(18).collect::<String>()));
+            let (a, b) = (quoted(&short_name(&shots[w[0].0].3, 18)), quoted(&short_name(&shots[w[1].0].3, 18)));
             // A join between two scenes is often meant to look
             // different — a cut to another location should.
             // But an interview on two cameras, or one where a

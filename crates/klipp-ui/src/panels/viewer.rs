@@ -192,6 +192,15 @@ fn corner_pin_view(state: &AppState, clip: &klipp_timeline::Clip, effect_index: 
     title_view_of(state, clip, image_rect).map_err(|_| ())
 }
 
+/// The scope cursor's "LOCKED", on a dark plate: the picture under it can be
+/// as bright as the label, and the label says why the cursor stopped moving.
+fn draw_locked_label(painter: &egui::Painter, bottom_centre: egui::Pos2, colour: egui::Color32) {
+    let galley = painter.layout_no_wrap("LOCKED".to_owned(), egui::FontId::proportional(10.0), colour);
+    let text = egui::Align2::CENTER_BOTTOM.anchor_size(bottom_centre, galley.size());
+    painter.rect_filled(text.expand2(egui::vec2(3.0, 1.0)), 2.0, egui::Color32::from_black_alpha(190));
+    painter.galley(text.min, galley, colour);
+}
+
 /// The chart tool: four corners to drag onto a colour chart, its patch
 /// grid drawn through them so it shows when they sit right.
 fn draw_chart_tool(ui: &mut egui::Ui, state: &mut AppState, image_rect: egui::Rect, cmds: &mut Vec<AppCommand>) {
@@ -1690,13 +1699,7 @@ impl ViewerPanel {
                 );
                 // "LOCKED" label
                 if state.scope_cursor_locked {
-                    painter.text(
-                        egui::pos2(pos.x, pos.y - 10.0),
-                        egui::Align2::CENTER_BOTTOM,
-                        "LOCKED",
-                        egui::FontId::proportional(10.0),
-                        cursor_color,
-                    );
+                    draw_locked_label(painter, egui::pos2(pos.x, pos.y - 10.0), cursor_color);
                 }
             }
         }
@@ -9110,6 +9113,30 @@ mod surface_tool_bar_tests {
         state.surface_tool = Some(tool());
         click(&mut state, "Cancel");
         assert!(state.surface_tool.is_none(), "and it can be left");
+    }
+}
+
+#[cfg(test)]
+mod locked_label_tests {
+    /// The label sits on a dark plate drawn before it, as far as it reaches.
+    #[test]
+    fn the_locked_label_has_a_dark_plate_under_it() {
+        let ctx = egui::Context::default();
+        let mut out = None;
+        for _ in 0..2 {
+            out = Some(ctx.run(Default::default(), |ctx| {
+                egui::CentralPanel::default().frame(egui::Frame::none()).show(ctx, |ui| super::draw_locked_label(ui.painter(), egui::pos2(200.0, 200.0), egui::Color32::from_rgb(232, 160, 32)));
+            }));
+        }
+        let shapes = out.unwrap().shapes;
+        let at = shapes.iter().position(|s| matches!(&s.shape, egui::Shape::Text(t) if t.galley.text() == "LOCKED")).expect("the label");
+        let egui::Shape::Text(text) = &shapes[at].shape else { unreachable!() };
+        let label = egui::Rect::from_min_size(text.pos, text.galley.size());
+        let plate = shapes[..at].iter().find_map(|s| match &s.shape {
+            egui::Shape::Rect(r) if r.fill.a() >= 150 && r.fill.r() < 40 => Some(r.rect),
+            _ => None,
+        });
+        assert!(plate.is_some_and(|p| p.contains_rect(label)), "{plate:?} under {label:?}");
     }
 }
 
