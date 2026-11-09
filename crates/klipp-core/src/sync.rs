@@ -296,6 +296,9 @@ pub enum AudioMatch {
     Matched { offset_secs: f64, confidence: f64 },
     /// They share less sound than a match needs.
     TooLittleOverlap,
+    /// The sound repeats, so several places fit about as well and none can
+    /// be told from the others: a song's chorus, a steady beat.
+    Repeats,
     /// The sound could not be read.
     Unavailable(String),
 }
@@ -437,6 +440,10 @@ pub fn plan_multicam(
                             "{name} shares no clear sound with {} (match {:.0}%)",
                             angles[r].name,
                             c * 100.0
+                        )),
+                        AudioMatch::Repeats => notes.push(format!(
+                            "{name}'s sound repeats, so it fits several places against {}: it wasn't placed by sound",
+                            angles[r].name
                         )),
                         AudioMatch::TooLittleOverlap => {
                             notes.push(format!("{name} overlaps {} by too little to sync by sound", angles[r].name))
@@ -630,6 +637,16 @@ mod tests {
         assert!((phone.start_secs - 20.0).abs() < 1e-9);
         assert!(plan.placements[1].is_reference);
         assert_eq!(plan.synced(), 3);
+    }
+
+    /// Sound that repeats places nothing and says why, where it has no
+    /// timecode to go by, and leaves a timecode placement standing.
+    #[test]
+    fn an_angle_whose_sound_repeats_is_named_not_placed() {
+        let angles = [angle("A", None, 60.0, true), angle("B", None, 30.0, true)];
+        let plan = plan_multicam(&angles, MulticamSync::Audio, |_, _| AudioMatch::Repeats);
+        assert_eq!(plan.synced(), 1);
+        assert!(plan.notes.iter().any(|n| n.contains("repeats")), "{:?}", plan.notes);
     }
 
     #[test]

@@ -309,6 +309,11 @@ pub struct CoarseMatch {
     /// Where in the reference to refine: the start of a window in the
     /// middle of the overlap.
     pub probe_at_secs: f64,
+    /// How significant the best lag is (correlation × √overlap).
+    pub peak: f64,
+    /// How significant the best lag away from it is: near `peak` when the
+    /// sound repeats, so that several places fit about as well.
+    pub runner_up: f64,
 }
 
 impl CoarseMatch {
@@ -318,6 +323,138 @@ impl CoarseMatch {
     pub fn refine_windows(&self) -> (f64, f64, f64) {
         (self.probe_at_secs, self.probe_at_secs + self.offset_secs - REFINE_SLACK_SECS, REFINE_WINDOW_SECS)
     }
+
+    /// The stretches to decode for [`wave_check`]: up to [`CHECK_WINDOW_SECS`]
+    /// of the overlap's middle from the reference, and from the clip the same
+    /// moment with [`CHECK_SEARCH_SECS`] either side, as (reference from,
+    /// its length, clip from, its length, the lag between the two stretches:
+    /// `reference[i]` meets `clip[i + lag × rate]`). A short overlap is taken
+    /// whole, and an hour's file costs no more than a minute's.
+    pub fn check_windows(&self, reference_secs: f64, clip_secs: f64) -> (f64, f64, f64, f64, f64) {
+        let start = (-self.offset_secs).max(0.0);
+        let end = reference_secs.min(clip_secs - self.offset_secs).max(start);
+        let len = (end - start).min(CHECK_WINDOW_SECS);
+        let ref_from = start + ((end - start) - len) / 2.0;
+        let same = ref_from + self.offset_secs;
+        let clip_from = (same - CHECK_SEARCH_SECS).max(0.0);
+        let clip_end = (same + len + CHECK_SEARCH_SECS).min(clip_secs);
+        (ref_from, len, clip_from, (clip_end - clip_from).max(0.0), same - clip_from)
+    }
+}
+
+/// How much of the overlap's waveform [`wave_check`] compares.
+pub const CHECK_WINDOW_SECS: f64 = 30.0;
+/// How far either side of the match it looks for another that fits.
+pub const CHECK_SEARCH_SECS: f64 = 30.0;
+
+/// The waveforms' say on a match: how well they correlate at its lag, and
+/// how well anywhere else.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct WaveCheck {
+    pub here: f64,
+    pub elsewhere: f64,
+}
+
+/// What a sound match comes to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SyncVerdict {
+    /// The two share this sound, here.
+    Sure,
+    /// The sound repeats, so several places fit about as well and this one
+    /// can't be told from them: a song's chorus, a beat.
+    Repeats,
+    /// Nothing says these share any sound.
+    NoClearMatch,
+}
+
+/// Runner-up against peak above which the envelope can't tell places apart.
+const REPEATS_ABOVE: f64 = 0.55;
+/// The waveform correlation that alone vouches for a match envelopes were
+/// unsure of, the best elsewhere well below it. Two microphones in a room
+/// correlate far below 1 even where they share everything.
+const WAVE_VOUCHES: f64 = 0.1;
+const WAVE_CLEAR_OF: f64 = 1.5;
+/// Below this share of the best elsewhere, the waveform contradicts a match
+/// the envelopes liked: repeating music whose loudness fits and whose sound
+/// doesn't.
+const WAVE_CONTRADICTS: f64 = 0.5;
+/// The envelope confidence that stands on its own (`MIN_AUDIO_CONFIDENCE`).
+const ENVELOPE_STANDS: f64 = 0.3;
+
+/// Whether to believe `coarse`, with the waveforms' say if they could be read.
+/// Waveforms clearly agreeing settle it. Otherwise the envelope must be sure,
+/// its best place must stand clear of the others, and the waveforms must not
+/// favour somewhere else; a confident envelope that fails those is sound that
+/// repeats. An unsure one is simply no clear match.
+pub fn sync_verdict(coarse: &CoarseMatch, wave: Option<WaveCheck>) -> SyncVerdict {
+    if wave.is_some_and(|w| w.here >= WAVE_VOUCHES && w.here >= WAVE_CLEAR_OF * w.elsewhere) {
+        return SyncVerdict::Sure;
+    }
+    if coarse.confidence < ENVELOPE_STANDS {
+        return SyncVerdict::NoClearMatch;
+    }
+    let crowded = coarse.peak > 0.0 && coarse.runner_up / coarse.peak > REPEATS_ABOVE;
+    let contradicted = wave.is_some_and(|w| w.here < WAVE_CONTRADICTS * w.elsewhere);
+    if crowded || contradicted { SyncVerdict::Repeats } else { SyncVerdict::Sure }
+}
+
+/// [`WaveCheck`] of `reference` against `clip` at `lag_secs`
+/// (`reference[i]` meets `clip[i + lag × rate]`). Whitened first, so rumble
+/// and level don't carry it, and normalised over each lag's overlap. A lag
+/// sharing under three seconds isn't counted.
+pub fn wave_check(reference: &[f32], clip: &[f32], sample_rate: u32, lag_secs: f64) -> Option<WaveCheck> {
+    use realfft::RealFftPlanner;
+    let whiten = |x: &[f32]| -> Vec<f64> { x.windows(2).map(|w| f64::from(w[1]) - 0.97 * f64::from(w[0])).collect() };
+    let (a, b) = (whiten(reference), whiten(clip));
+    let sr = f64::from(sample_rate);
+    let least = (3.0 * sr) as i64;
+    if (a.len() as i64) < least || (b.len() as i64) < least {
+        return None;
+    }
+    let n = (a.len() + b.len()).next_power_of_two();
+    let mut planner = RealFftPlanner::<f64>::new();
+    let (fwd, inv) = (planner.plan_fft_forward(n), planner.plan_fft_inverse(n));
+    let spectrum = |x: &[f64]| {
+        let mut buf = vec![0.0f64; n];
+        buf[..x.len()].copy_from_slice(x);
+        let mut out = fwd.make_output_vec();
+        fwd.process(&mut buf, &mut out).ok()?;
+        Some(out)
+    };
+    let (fa, fb) = (spectrum(&a)?, spectrum(&b)?);
+    let mut prod: Vec<_> = fa.iter().zip(&fb).map(|(x, y)| x.conj() * y).collect();
+    let mut corr = inv.make_output_vec();
+    inv.process(&mut prod, &mut corr).ok()?;
+    let prefix = |x: &[f64]| {
+        let mut p = Vec::with_capacity(x.len() + 1);
+        p.push(0.0f64);
+        for v in x {
+            p.push(p.last().copied().unwrap_or(0.0) + v * v);
+        }
+        p
+    };
+    let (pa, pb) = (prefix(&a), prefix(&b));
+    let target = (lag_secs * sr).round() as i64;
+    let (near, apart) = ((0.03 * sr) as i64, (0.2 * sr) as i64);
+    let (na, nb) = (a.len() as i64, b.len() as i64);
+    let (mut here, mut elsewhere) = (0.0f64, 0.0f64);
+    for k in -(na - 1)..nb {
+        let (i0, i1) = ((-k).max(0), na.min(nb - k));
+        if i1 - i0 < least {
+            continue;
+        }
+        let energy = (pa[i1 as usize] - pa[i0 as usize]) * (pb[(i1 + k) as usize] - pb[(i0 + k) as usize]);
+        if energy <= 1e-12 {
+            continue;
+        }
+        let r = corr[k.rem_euclid(n as i64) as usize] / n as f64 / energy.sqrt();
+        if (k - target).abs() <= near {
+            here = here.max(r);
+        } else if (k - target).abs() > apart {
+            elsewhere = elsewhere.max(r.abs());
+        }
+    }
+    Some(WaveCheck { here, elsewhere })
 }
 
 /// The waveform compared to refine a coarse match.
@@ -337,14 +474,14 @@ pub fn coarse_offset(reference: &SoundPrint, clip: &SoundPrint) -> Option<Coarse
     if reference.env.len() < min_overlap || clip.env.len() < min_overlap {
         return None;
     }
-    let (lag, confidence) = best_envelope_lag(&reference.env, &clip.env, min_overlap)?;
+    let (lag, confidence, peak, runner_up) = best_envelope_lag(&reference.env, &clip.env, min_overlap)?;
     let offset_secs = lag as f64 / f64::from(ENVELOPE_RATE);
     // The overlap in reference time, and a window in its middle that
     // leaves the slack inside both recordings.
     let from = (-offset_secs).max(0.0) + REFINE_SLACK_SECS;
     let to = reference.secs().min(clip.secs() - offset_secs) - REFINE_SLACK_SECS;
     let probe_at_secs = (from + (to - from - REFINE_WINDOW_SECS) / 2.0).max(from);
-    Some(CoarseMatch { offset_secs, confidence, probe_at_secs })
+    Some(CoarseMatch { offset_secs, confidence, probe_at_secs, peak, runner_up })
 }
 
 /// Refine `coarse` to the sample: `reference` and `clip` are the windows
@@ -423,6 +560,9 @@ fn onset_envelope(pcm: &[f32], hop: usize) -> Vec<f32> {
 /// from 0 to 1 between them, so it measures the same thing the lag was
 /// chosen by.
 const CHANCE_Z: f64 = 5.0;
+/// How far from the best lag, in envelope frames, another counts as another
+/// place: past the peak's own shoulders.
+const RUNNER_UP_APART: i64 = 25;
 const SURE_Z: f64 = 12.0;
 
 /// The lag `k` at which `a[i]` and `b[i + k]` correlate most
@@ -433,7 +573,7 @@ const SURE_Z: f64 = 12.0;
 /// line up for real, and correlation × √overlap (a z-score for
 /// independent frames) tells them apart. The confidence is the
 /// peak's significance mapped onto 0..1 between chance and certainty.
-fn best_envelope_lag(a: &[f32], b: &[f32], min_overlap: usize) -> Option<(i64, f64)> {
+fn best_envelope_lag(a: &[f32], b: &[f32], min_overlap: usize) -> Option<(i64, f64, f64, f64)> {
     use realfft::RealFftPlanner;
     let n = (a.len() + b.len()).next_power_of_two();
     let mut planner = RealFftPlanner::<f64>::new();
@@ -483,6 +623,7 @@ fn best_envelope_lag(a: &[f32], b: &[f32], min_overlap: usize) -> Option<(i64, f
     let independent = (1.0 - rho) / (1.0 + rho);
     let (na, nb) = (a.len() as i64, b.len() as i64);
     let mut best: Option<(i64, f64, f64)> = None;
+    let mut scores: Vec<(i64, f64)> = Vec::new();
     for k in -(na - 1)..nb {
         // a[i] meets b[i + k] for i in max(0, -k) .. min(na, nb - k).
         let i0 = (-k).max(0);
@@ -499,16 +640,92 @@ fn best_envelope_lag(a: &[f32], b: &[f32], min_overlap: usize) -> Option<(i64, f
         let raw = corr[k.rem_euclid(n as i64) as usize] / n as f64;
         let r = raw / denom;
         let z = r * ((i1 - i0) as f64 * independent).sqrt();
+        scores.push((k, z));
         if best.is_none_or(|(_, bz, _)| z > bz) {
             best = Some((k, z, r));
         }
     }
-    best.map(|(k, z, _)| (k, ((z - CHANCE_Z) / (SURE_Z - CHANCE_Z)).clamp(0.0, 1.0)))
+    best.map(|(k, z, _)| {
+        let runner_up = scores.iter().filter(|(at, _)| (at - k).abs() > RUNNER_UP_APART).map(|(_, z)| *z).fold(0.0, f64::max);
+        (k, ((z - CHANCE_Z) / (SURE_Z - CHANCE_Z)).clamp(0.0, 1.0), z, runner_up)
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn coarse(confidence: f64, peak: f64, runner_up: f64) -> CoarseMatch {
+        CoarseMatch { offset_secs: 0.0, confidence, probe_at_secs: 0.0, peak, runner_up }
+    }
+
+    /// Clear waveforms settle a match the envelope was unsure of, so short
+    /// takes sync. An envelope that is sure is believed unless other places
+    /// fit about as well or the waveforms favour one, which is repeating
+    /// music: it was placed wrongly and confidently.
+    #[test]
+    fn a_match_is_believed_only_where_nothing_else_fits() {
+        let w = |here, elsewhere| Some(WaveCheck { here, elsewhere });
+        assert_eq!(sync_verdict(&coarse(0.1, 6.0, 5.0), w(0.3, 0.1)), SyncVerdict::Sure, "the waveforms vouch");
+        assert_eq!(sync_verdict(&coarse(0.1, 6.0, 5.0), w(0.1, 0.1)), SyncVerdict::NoClearMatch, "nothing vouches");
+        assert_eq!(sync_verdict(&coarse(0.9, 12.0, 3.0), w(0.03, 0.04)), SyncVerdict::Sure, "far microphones");
+        assert_eq!(sync_verdict(&coarse(0.9, 12.0, 11.0), w(0.03, 0.04)), SyncVerdict::Repeats, "other places fit");
+        assert_eq!(sync_verdict(&coarse(0.9, 12.0, 3.0), w(0.05, 0.4)), SyncVerdict::Repeats, "the waveforms say elsewhere");
+        assert_eq!(sync_verdict(&coarse(1.0, 12.0, 12.0), w(1.0, 1.0)), SyncVerdict::Repeats, "a steady beat");
+        assert_eq!(sync_verdict(&coarse(0.9, 12.0, 3.0), None), SyncVerdict::Sure, "unread waveforms: the envelope's word");
+        assert_eq!(sync_verdict(&coarse(0.1, 6.0, 1.0), None), SyncVerdict::NoClearMatch);
+    }
+
+    /// A strict beat, cut at two moments that share nothing but its pattern,
+    /// fits everywhere: refused, not placed at whichever bar scored best.
+    #[test]
+    fn a_steady_beat_is_refused() {
+        let sr = 8000usize;
+        let beat: Vec<f32> = (0..sr * 60)
+            .map(|i| {
+                let t = i as f32 / sr as f32;
+                let b = t % 0.5;
+                (-b * 30.0).exp() * (2.0 * std::f32::consts::PI * 80.0 * t).sin() * 0.4
+            })
+            .collect();
+        let (a, b) = (&beat[0..sr * 10], &beat[sr * 40..sr * 50]);
+        let c = coarse_offset(&SoundPrint::of(a, sr as u32), &SoundPrint::of(b, sr as u32)).unwrap();
+        let w = wave_check(a, b, sr as u32, c.offset_secs);
+        assert_eq!(sync_verdict(&c, w), SyncVerdict::Repeats, "{c:?} {w:?}");
+    }
+
+    /// Two takes of one unrepeating sound sharing seven seconds, too short
+    /// for the envelope alone, are placed by their waveforms.
+    #[test]
+    fn a_short_shared_stretch_is_vouched_for_by_its_waveform() {
+        let sr = 8000usize;
+        let mut x = 12345u32;
+        let noise: Vec<f32> = (0..sr * 20)
+            .map(|i| {
+                x = x.wrapping_mul(1_103_515_245).wrapping_add(12345);
+                let bursts = if (i / (sr / 3)) % 5 < 2 { 1.0 } else { 0.1 };
+                ((x >> 16) as f32 / 32768.0 - 1.0) * bursts * 0.3
+            })
+            .collect();
+        let (a, b) = (&noise[0..sr * 9], &noise[sr * 2..sr * 11]);
+        let w = wave_check(a, b, sr as u32, -2.0).unwrap();
+        assert!(w.here > 0.9 && w.elsewhere < 0.3, "{w:?}");
+    }
+
+    /// The stretches checked stay short however long the files are, cover a
+    /// short overlap whole, and give the lag between them.
+    #[test]
+    fn the_stretches_checked_are_bounded() {
+        let long = CoarseMatch { offset_secs: 600.0, ..coarse(1.0, 1.0, 0.0) };
+        let (rf, rl, cf, cl, lag) = long.check_windows(3600.0, 3600.0);
+        assert_eq!(rl, CHECK_WINDOW_SECS);
+        assert_eq!(cl, CHECK_WINDOW_SECS + 2.0 * CHECK_SEARCH_SECS);
+        assert!((rf + 600.0 - (cf + lag)).abs() < 1e-9, "the same moment in each");
+        let short = CoarseMatch { offset_secs: -2.0, ..coarse(1.0, 1.0, 0.0) };
+        let (rf, rl, cf, _, lag) = short.check_windows(9.0, 9.0);
+        assert_eq!((rf, rl), (2.0, 7.0));
+        assert_eq!((cf, lag), (0.0, 0.0));
+    }
 
     #[test]
     fn correlation_perfect_match_at_zero() {
@@ -639,7 +856,7 @@ mod tests {
 
     #[test]
     fn refining_over_digital_silence_keeps_the_coarse_answer() {
-        let coarse = CoarseMatch { offset_secs: -12.34, confidence: 1.0, probe_at_secs: 20.0 };
+        let coarse = CoarseMatch { offset_secs: -12.34, confidence: 1.0, probe_at_secs: 20.0, peak: 0.0, runner_up: 0.0 };
         assert_eq!(refine_offset(&[0.0; 16_000], &[0.0; 16_400], 8_000, &coarse), -12.34);
     }
 
@@ -647,7 +864,7 @@ mod tests {
     fn a_refinement_pinned_to_the_edge_keeps_the_coarse_answer() {
         const SR: u32 = 8_000;
         let sound = room(SR as usize * 4, 3);
-        let coarse = CoarseMatch { offset_secs: 5.0, confidence: 1.0, probe_at_secs: 0.0 };
+        let coarse = CoarseMatch { offset_secs: 5.0, confidence: 1.0, probe_at_secs: 0.0, peak: 0.0, runner_up: 0.0 };
         // The clip window starts 0.1 s late, far past the 20 ms slack.
         let slack = (REFINE_SLACK_SECS * f64::from(SR)) as usize;
         let reference = sound[..SR as usize * 2].to_vec();
