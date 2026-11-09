@@ -63,7 +63,10 @@ fn the_selected_clip_among_stacked_ones_is_graded() {
     state.selected_clip = Some(lower);
     assert_eq!(to_colour_page(&mut state), Some(lower));
     assert_eq!(state.selected_clip, Some(lower));
-    assert_eq!(state.grading_title(lower), "Grading: interview.mp4 · V1");
+    // The file is on the timeline more than once here, so the piece's
+    // place follows.
+    let title = state.grading_title(lower);
+    assert!(title.starts_with("Grading: interview.mp4 · V1 · "), "{title}");
     assert_eq!(state.colour_elsewhere_hint(), None, "the selection is the clip graded");
     // Nothing selected: the top one, as the viewer shows.
     state.selected_clip = None;
@@ -259,4 +262,26 @@ fn the_elsewhere_hint_does_not_move_the_rows_below_it() {
         y
     };
     assert_eq!(below(true), below(false));
+}
+
+/// A file on the timeline more than once is named with where each piece
+/// sits, so a split shot's two pieces read apart; a file there once isn't.
+#[test]
+fn the_header_names_which_piece_of_a_file_is_graded() {
+    let mut state = AppState::default();
+    let mut item = klipp_media::MediaItem::synthetic_for_test("/tmp/07-promenade.mp4".into(), None);
+    item.fps = klipp_core::Fps::new(25, 1);
+    let media = state.media_pool.add(item);
+    let t = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 25);
+    let clip = klipp_timeline::Clip::media(media, t(0.0), t(10.0), t(0.0), t(10.0));
+    let id = clip.id;
+    let video = state.sequences[0].tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
+    state.sequences[0].tracks[video].clips.push(clip);
+    let once = state.grading_title(id);
+    assert!(once.ends_with("V1"), "a file there once: {once}");
+    let (left, right) = state.sequences[0].tracks[video].split_at(id, klipp_core::Timecode::from_secs_f64(7.0, 25)).unwrap();
+    let (a, b) = (state.grading_title(left.id), state.grading_title(right.id));
+    assert!(a.ends_with("\u{b7} 0:00\u{2013}0:07"), "{a}");
+    assert!(b.ends_with("\u{b7} 0:07\u{2013}0:10"), "{b}");
+    assert_ne!(a, b);
 }
