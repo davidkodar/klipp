@@ -173,6 +173,31 @@ mod multicam_mode_program_tests {
 mod viewer_menu_tests {
     use super::*;
 
+    /// A drag of the Hyperzoom focal handle moves the focal point alone: it
+    /// starts on the transform gizmo's centre, which moved the clip as well,
+    /// one drag leaving a step nobody meant.
+    #[test]
+    fn the_focal_handle_takes_the_press_on_its_point() {
+        let mut v = Viewer::new();
+        v.state.active_tool = Tool::Select;
+        let tc = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 25);
+        let clip = klipp_timeline::test_clip::TestClip::of(klipp_timeline::Clip::media(klipp_core::MediaId::new(), tc(0.0), tc(2.0), tc(0.0), tc(2.0))).build();
+        let id = clip.id;
+        let v1 = v.state.sequences[0].tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
+        v.state.sequences[0].tracks[v1].clips = vec![clip];
+        v.state.selected_clip = Some(id);
+        v.frame(Vec::new());
+        crate::hyperzoom::keep_section_shown(&v.ctx, id);
+        v.frame(Vec::new());
+        let at = v.image_rect().center();
+        v.press(at);
+        assert!(v.state.viewer_transform_drag.is_none(), "the gizmo left the press");
+        v.frame(vec![egui::Event::PointerMoved(at + egui::vec2(20.0, 0.0))]);
+        v.frame(vec![egui::Event::PointerMoved(at + egui::vec2(40.0, 0.0))]);
+        v.release(at + egui::vec2(40.0, 0.0));
+        assert!(crate::hyperzoom::read_hyperzoom_scratch(&v.ctx, id).focal_x > 0.51, "the focal point moved");
+    }
+
     /// A press on a corner of a new Corner Pin is the pin's: its corners
     /// start on the transform gizmo's, which took the press and scaled the
     /// clip, so a pin could not be dragged until something else moved it.

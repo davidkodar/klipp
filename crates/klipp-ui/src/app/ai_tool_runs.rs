@@ -59,6 +59,9 @@ impl KlippApp {
             // so the panel's progress bar stops ticking. Done's
             // own duration comes from response.inference_ms.
             self.state.ai_tools_state.inference_start_time = None;
+            if let crate::ai_tools::InferenceState::Failed { model_id, error } = &self.state.ai_tools_state.inference {
+                tracing::warn!(model = %model_id, %error, "AI tool run failed");
+            }
             // Record telemetry on the Idle → Done transition. poll()
             // returns true on every state change (Done / Failed /
             // Disconnected) but we only want successful runs.

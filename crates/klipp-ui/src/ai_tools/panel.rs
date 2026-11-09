@@ -131,7 +131,7 @@ impl AiToolsPanel {
 
                 // ── 4. RUN ──────────────────────────────────────────
                 section_step_header(ui, 4, "RUN", false, theme);
-                run_section(ui, state, registry, theme);
+                run_section(ui, state, registry, theme, show_models_dialog);
 
                 ui.add_space(10.0);
                 ui.separator();
@@ -303,14 +303,8 @@ fn task_tile(
     let has_model = registry.has_model_for(task) || task == AiTask::TrackObject;
     let active = state.active_task == Some(task);
 
-    let (rect, response) = ui.allocate_exact_size(
-        egui::vec2(w, h),
-        if has_model {
-            egui::Sense::click()
-        } else {
-            egui::Sense::hover()
-        },
-    );
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(w, h), egui::Sense::hover());
+    let hovered = ui.rect_contains_pointer(rect);
 
     // Background fill + border. Active = warning fill (very low
     // alpha) + warning stroke. Hover (when enabled) = subtle
@@ -321,7 +315,7 @@ fn task_tile(
             theme.marker_warning.gamma_multiply(0.10),
             egui::Stroke::new(1.5_f32, theme.marker_warning),
         )
-    } else if has_model && response.hovered() {
+    } else if has_model && hovered {
         (theme.bg_raised, egui::Stroke::new(1.0_f32, theme.text_dim.gamma_multiply(0.4)))
     } else {
         (theme.bg_raised.gamma_multiply(0.6), egui::Stroke::NONE)
@@ -392,6 +386,9 @@ fn task_tile(
                 .color(theme.text_secondary),
         );
     }
+
+    // On top of the icon and the text, last, or they take a click on them.
+    let response = ui.interact(rect, ui.id().with(("task_tile", task.display_label())), if has_model { egui::Sense::click() } else { egui::Sense::hover() });
 
     // Click → activate the task. Auto-pick the user's last
     // explicit choice for this task if they have one (via
@@ -528,7 +525,7 @@ fn model_card(
                             .tint(theme.marker_warning),
                     );
                 } else {
-                    let dot_color = if info.is_some() {
+                    let dot_color = if info.as_ref().is_some_and(|i| !model_not_downloaded(&i.id)) {
                         theme.marker_success
                     } else {
                         theme.text_dim
@@ -733,7 +730,25 @@ fn model_subline(info: &ModelInfo, _task: Option<AiTask>) -> String {
         .unwrap_or_else(|| "—".into());
 
     let kind_label = capability_kind_label(info.capabilities);
-    format!("{kind_label} · {size_str} · Ready")
+    let state = if model_not_downloaded(&info.id) { "Not downloaded" } else { "Ready" };
+    format!("{kind_label} · {size_str} · {state}")
+}
+
+/// Whether a model the manifest lists has no file on disk yet, or lacks a
+/// part it runs with. One the manifest doesn't list (a custom model) is the
+/// manager's to judge, and counts as there.
+fn model_not_downloaded(model_id: &str) -> bool {
+    let Ok(manifest) = klipp_ml::manifest::load_effective() else { return false };
+    let Some(entry) = manifest.models.iter().find(|e| e.id == model_id) else { return false };
+    let Ok(cache) = klipp_ml::cache::ModelCache::open() else { return false };
+    let missing = |id: &str| !cache.path_for_id(id).exists();
+    missing(&entry.id) || entry.with.iter().any(|id| missing(id))
+}
+
+/// The Run button's words: a model not on disk can't run, so the button
+/// offers what comes first.
+fn run_button_label(not_downloaded: bool) -> &'static str {
+    if not_downloaded { "Download Model…" } else { "▶ Generate Mask" }
 }
 
 /// Device label for the model card's "Inferring on {device}"
@@ -1023,6 +1038,7 @@ fn run_section(
     state: &mut AiToolsState,
     registry: &AiToolsRegistry,
     theme: &KlippTheme,
+    show_models_dialog: &mut bool,
 ) {
     let running = matches!(state.inference, InferenceState::Running { .. });
     if running {
@@ -1054,6 +1070,7 @@ fn run_section(
             .map(|id| registry.has_id(id))
             .unwrap_or(false);
 
+    let not_downloaded = can_run && state.selected_model_id.as_deref().is_some_and(model_not_downloaded);
     ui.horizontal(|ui| {
         // Same anti-feedback safety margin as the task grid: leave
         // headroom in the button width so the panel resizer
@@ -1064,7 +1081,7 @@ fn run_section(
         let resp = ui.add_sized(
             [button_w, 36.0],
             egui::Button::new(
-                egui::RichText::new("▶ Generate Mask")
+                egui::RichText::new(run_button_label(not_downloaded))
                     .strong()
                     .size(13.0),
             )
@@ -1075,7 +1092,11 @@ fn run_section(
             }),
         );
         if can_run && resp.clicked() {
-            state.pending_run = true;
+            if not_downloaded {
+                *show_models_dialog = true;
+            } else {
+                state.pending_run = true;
+            }
         }
         if !can_run {
             resp.on_disabled_hover_text(disabled_run_reason(state, registry));
@@ -1302,6 +1323,13 @@ fn output_section(ui: &mut egui::Ui, state: &mut AiToolsState, theme: &KlippThem
         }
         InferenceState::Done { response, .. } if !response.candidates.is_empty() => {
             done_preview(ui, state, theme);
+        }
+        InferenceState::Done { .. } => {
+            run_said_no(ui, theme, "The model found no mask for these prompts. Try another point or a box.");
+        }
+        InferenceState::Failed { error, .. } => {
+            let said = format!("The mask could not be made: {error}");
+            run_said_no(ui, theme, &said);
         }
         _ => {
             empty_output_placeholder(ui, theme);
@@ -1807,6 +1835,18 @@ fn display_mode_tab(
     }
 }
 
+/// What a run that made no mask said, where its mask would be: a run that
+/// looks as if it never happened is taken for a button that does nothing.
+fn run_said_no(ui: &mut egui::Ui, theme: &KlippTheme, said: &str) {
+    egui::Frame::none()
+        .fill(theme.bg_raised.gamma_multiply(0.6))
+        .rounding(4.0)
+        .inner_margin(egui::Margin::symmetric(10.0, 12.0))
+        .show(ui, |ui| {
+            ui.add(egui::Label::new(egui::RichText::new(said).small().color(theme.text_secondary)).wrap());
+        });
+}
+
 fn empty_output_placeholder(ui: &mut egui::Ui, theme: &KlippTheme) {
     // The Frame fills its parent's available width naturally —
     // we deliberately do NOT set_min_width here. Reading
@@ -2103,5 +2143,48 @@ mod tests {
         assert_eq!(s.mask_threshold, 0.5);
         assert_eq!(s.edge_feather, 2);
         assert_eq!(s.output_format, OutputFormat::AlphaMatte16);
+    }
+
+    /// A model not on disk is not called ready, and its button offers the
+    /// download: "Ready" was fixed text, and a run then failed out of sight.
+    #[test]
+    fn the_run_button_offers_the_download_a_missing_model_needs() {
+        assert_eq!(run_button_label(true), "Download Model…");
+        assert_eq!(run_button_label(false), "▶ Generate Mask");
+        assert!(!model_not_downloaded("no such model in any manifest"), "not the manifest's: the manager's to judge");
+    }
+
+    /// A click on a task card's title and description picks it: they sat
+    /// over its click area and took the click for themselves.
+    #[test]
+    fn a_click_on_a_task_cards_text_picks_it() {
+        let registry = AiToolsRegistry::with_stub_registered();
+        let theme = KlippTheme::default();
+        let run = |ctx: &egui::Context, state: &mut AiToolsState, events: Vec<egui::Event>| {
+            let raw = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(400.0, 200.0))),
+                events,
+                ..Default::default()
+            };
+            let mut card = egui::Rect::NOTHING;
+            let _ = ctx.run(raw, |ctx| {
+                egui::CentralPanel::default().frame(egui::Frame::none()).show(ctx, |ui| {
+                    card = ui.scope(|ui| task_tile(ui, AiTask::DetectObjects, 200.0, 92.0, false, state, &registry, &theme)).response.rect;
+                });
+            });
+            card
+        };
+        let card = run(&egui::Context::default(), &mut AiToolsState::default(), Vec::new());
+        for from_top in [38.0, 44.0, 50.0, 56.0, 62.0, 68.0] {
+            let at = egui::pos2(card.left() + 30.0, card.top() + from_top);
+            let ctx = egui::Context::default();
+            let mut state = AiToolsState::default();
+            let button = |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+            run(&ctx, &mut state, Vec::new());
+            run(&ctx, &mut state, vec![egui::Event::PointerMoved(at)]);
+            run(&ctx, &mut state, vec![button(true)]);
+            run(&ctx, &mut state, vec![button(false)]);
+            assert_eq!(state.active_task, Some(AiTask::DetectObjects), "a click at {at:?} on {card:?} did not pick the card");
+        }
     }
 }

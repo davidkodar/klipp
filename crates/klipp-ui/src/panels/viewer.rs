@@ -520,6 +520,11 @@ fn draw_master_meter(
     }
 }
 
+/// The Hyperzoom focal handle: its disc, and its arms, which are also the
+/// half of the square that takes a press.
+const FOCAL_HANDLE_RADIUS: f32 = 5.5;
+const FOCAL_HANDLE_ARM: f32 = FOCAL_HANDLE_RADIUS + 4.0;
+
 impl ViewerPanel {
     pub fn show(
         &mut self,
@@ -4950,6 +4955,42 @@ impl ViewerPanel {
         }
     }
 
+    /// The clip whose Hyperzoom focal handle is up, and where: the handle's
+    /// own checks, which the transform gizmo asks too, as a press on the
+    /// handle is the handle's and moves the focal point alone.
+    fn hyperzoom_focal_handle_at(ctx: &egui::Context, state: &AppState, image_rect: egui::Rect) -> Option<(klipp_core::ClipId, egui::Pos2)> {
+        let clip_id = state.selected_clip?;
+        if image_rect.width() < 1.0 || image_rect.height() < 1.0 {
+            return None;
+        }
+        if !crate::hyperzoom::section_shown(ctx, clip_id) {
+            return None;
+        }
+        // Source-of-truth check: the clip must still be in the active
+        // sequence and its kind must qualify for hyperzoom.
+        let qualifies = state
+            .sequence()
+            .tracks
+            .iter()
+            .flat_map(|t| t.clips.iter())
+            .find(|c| c.id == clip_id)
+            .map(|c| {
+                !matches!(
+                    c.kind,
+                    klipp_timeline::ClipKind::AdjustmentLayer
+                        | klipp_timeline::ClipKind::Gap
+                        | klipp_timeline::ClipKind::Sequence { .. }
+                )
+            })
+            .unwrap_or(false);
+        if !qualifies {
+            return None;
+        }
+
+        let scratch = crate::hyperzoom::read_hyperzoom_scratch(ctx, clip_id);
+        Some((clip_id, viewer_norm_to_screen(image_rect, scratch.focal_x.clamp(0.0, 1.0), scratch.focal_y.clamp(0.0, 1.0))))
+    }
+
     /// Draggable focal-point gizmo on the viewer for the HYPERZOOM
     /// inspector section. Visual language matches the title-object
     /// anchor handle (filled circle + ring + cross) — that's the
@@ -4977,38 +5018,7 @@ impl ViewerPanel {
         state: &mut AppState,
         image_rect: egui::Rect,
     ) {
-        let Some(clip_id) = state.selected_clip else { return; };
-        if image_rect.width() < 1.0 || image_rect.height() < 1.0 {
-            return;
-        }
-        if !crate::hyperzoom::section_shown(ui.ctx(), clip_id) {
-            return;
-        }
-        // Source-of-truth check: the clip must still be in the active
-        // sequence and its kind must qualify for hyperzoom.
-        let qualifies = state
-            .sequence()
-            .tracks
-            .iter()
-            .flat_map(|t| t.clips.iter())
-            .find(|c| c.id == clip_id)
-            .map(|c| {
-                !matches!(
-                    c.kind,
-                    klipp_timeline::ClipKind::AdjustmentLayer
-                        | klipp_timeline::ClipKind::Gap
-                        | klipp_timeline::ClipKind::Sequence { .. }
-                )
-            })
-            .unwrap_or(false);
-        if !qualifies {
-            return;
-        }
-
-        let scratch = crate::hyperzoom::read_hyperzoom_scratch(ui.ctx(), clip_id);
-        let fx = scratch.focal_x.clamp(0.0, 1.0);
-        let fy = scratch.focal_y.clamp(0.0, 1.0);
-
+        let Some((clip_id, centre)) = Self::hyperzoom_focal_handle_at(ui.ctx(), state, image_rect) else { return };
         // Same accent + handle colours as the title-object editor so
         // the two gizmos read as the same visual family.
         let accent = ui.visuals().selection.stroke.color;
@@ -5016,10 +5026,9 @@ impl ViewerPanel {
         let handle_stroke = egui::Stroke::new(1.5_f32, accent);
 
         let painter = ui.painter_at(image_rect);
-        let centre = viewer_norm_to_screen(image_rect, fx, fy);
         let cx = centre.x;
         let cy = centre.y;
-        let r = 5.5_f32;
+        let r = FOCAL_HANDLE_RADIUS;
 
         // Filled disc + accent ring + cross arms. Slightly bigger
         // than the title-object anchor (4.5 → 5.5) so the focal
@@ -5028,7 +5037,7 @@ impl ViewerPanel {
         // tuning" while the title anchor is a static reference.
         painter.circle_filled(centre, r, handle_fill);
         painter.circle_stroke(centre, r, handle_stroke);
-        let arm = r + 4.0;
+        let arm = FOCAL_HANDLE_ARM;
         painter.line_segment(
             [egui::pos2(cx - arm, cy), egui::pos2(cx + arm, cy)],
             egui::Stroke::new(1.0_f32, accent),
@@ -5061,6 +5070,8 @@ impl ViewerPanel {
         // user is dragging — without it the floating crosshair on a
         // black letterbox is a UFO.
         if resp.hovered() || resp.dragged() {
+            let scratch = crate::hyperzoom::read_hyperzoom_scratch(ui.ctx(), clip_id);
+            let (fx, fy) = (scratch.focal_x.clamp(0.0, 1.0), scratch.focal_y.clamp(0.0, 1.0));
             resp.on_hover_text(format!(
                 "Hyperzoom focal point ({:.3}, {:.3})\nDrag to move; spinboxes in HYPERZOOM stay in sync.",
                 fx, fy,
@@ -5351,7 +5362,9 @@ impl ViewerPanel {
         } else if let Some(pointer) = pointer_pos {
             // Check for new drag start; not one the motion path or a corner
             // pin took (#2276).
-            if pointer_down && ui.input(|i| i.pointer.primary_pressed()) && state.motion_path_drag.is_none() && state.viewer_corner_pin_drag.is_none() {
+            if pointer_down && ui.input(|i| i.pointer.primary_pressed()) && state.motion_path_drag.is_none() && state.viewer_corner_pin_drag.is_none()
+                && !Self::hyperzoom_focal_handle_at(ui.ctx(), state, image_rect).is_some_and(|(_, at)| egui::Rect::from_center_size(at, egui::Vec2::splat(FOCAL_HANDLE_ARM * 2.0)).contains(pointer))
+            {
                 // Only start a drag if the pointer is within the image_rect (with some margin)
                 let expanded = image_rect.expand(40.0);
                 if expanded.contains(pointer) && viewer_rect.contains(pointer) {
