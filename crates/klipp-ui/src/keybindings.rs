@@ -1612,6 +1612,15 @@ mod quick_press_tests {
         assert!(pressed("undo", Modifiers::CTRL, vec![key(Key::Z, true, Modifiers::CTRL)]), "held through the frame");
         assert!(!pressed("undo", Modifiers::NONE, vec![key(Key::Z, true, Modifiers::NONE)]), "Z alone");
         assert!(!pressed("undo", Modifiers::CTRL, vec![key(Key::Z, true, Modifiers::NONE)]), "Ctrl pressed after Z");
+        // Held keys repeat: each repeat carries what is held, as before.
+        let repeat = |m| egui::Event::Key { key: Key::ArrowLeft, physical_key: Some(Key::ArrowLeft), pressed: true, repeat: true, modifiers: m };
+        assert!(pressed("step_backward", Modifiers::NONE, vec![repeat(Modifiers::NONE)]), "a repeat steps");
+        assert!(!pressed("step_backward", Modifiers::ALT, vec![repeat(Modifiers::ALT)]), "with Alt held it is another action");
+        assert!(pressed("prev_keyframe", Modifiers::ALT, vec![repeat(Modifiers::ALT)]), "that one");
+        // A modifier held through the frame chooses as it always did; one let
+        // go after the key in the same frame no longer changes what it was.
+        assert!(pressed("prev_keyframe", Modifiers::NONE, vec![key(Key::ArrowLeft, true, Modifiers::ALT)]), "Alt let go in the frame");
+        assert!(!pressed("step_backward", Modifiers::NONE, vec![key(Key::ArrowLeft, true, Modifiers::ALT)]), "not a plain step as well");
         let redo = vec![key(Key::Z, true, Modifiers::CTRL | Modifiers::SHIFT)];
         assert!(pressed("redo", Modifiers::NONE, redo.clone()) && !pressed("undo", Modifiers::NONE, redo), "Shift held with it is redo");
     }
