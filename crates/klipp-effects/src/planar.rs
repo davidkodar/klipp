@@ -669,6 +669,112 @@ fn confidence(zncc: f64, round_trip: f64, size: f64, conditioning: f64, base: f6
     (alike * returns * floor * kept) as f32
 }
 
+/// The share of a surface's inside below which it counts as plain, by how
+/// much of it has any detail. A plain surface is alike to itself anywhere
+/// over itself, so its likeness proves little and its outline has to.
+const PLAIN_BELOW: f64 = 0.10;
+/// How well a plain surface's outline has to agree, side by side, for a fit
+/// to count as sure. On shots with known corners, fits within 2 px sit around
+/// 0.8 or above, and ones over 5 px off mostly near 0.
+const OUTLINE_HOLDS: f64 = 0.7;
+/// What a plain fit with its outline unconfirmed reads at most: just under
+/// sure (`state_of`).
+const UNCONFIRMED: f32 = 0.59;
+
+/// A grey frame's value at `(x, y)`, between its pixels, if it is inside.
+fn grey_at(f: &GrayFrame, x: f64, y: f64) -> Option<f64> {
+    if x < 0.0 || y < 0.0 || x >= f.width as f64 - 1.0 || y >= f.height as f64 - 1.0 {
+        return None;
+    }
+    let (x0, y0) = (x as usize, y as usize);
+    let (fx, fy) = (x - x0 as f64, y - y0 as f64);
+    let at = |x: usize, y: usize| f.data.get(y * f.width + x).map(|v| f64::from(*v));
+    Some(at(x0, y0)? * (1.0 - fx) * (1.0 - fy) + at(x0 + 1, y0)? * fx * (1.0 - fy) + at(x0, y0 + 1)? * (1.0 - fx) * fy + at(x0 + 1, y0 + 1)? * fx * fy)
+}
+
+/// Whether the surface inside `quad` has next to no detail of its own: its
+/// outline is all a fit has to hold on to.
+fn is_plain(reference: &GrayFrame, quad: &[(f64, f64); 4]) -> bool {
+    let c = quad.iter().fold((0.0, 0.0), |a, p| (a.0 + p.0 / 4.0, a.1 + p.1 / 4.0));
+    let shrunk = quad.map(|p| (c.0 + (p.0 - c.0) * 0.9, c.1 + (p.1 - c.1) * 0.9));
+    let (lo_x, hi_x) = shrunk.iter().fold((f64::MAX, f64::MIN), |a, p| (a.0.min(p.0), a.1.max(p.0)));
+    let (lo_y, hi_y) = shrunk.iter().fold((f64::MAX, f64::MIN), |a, p| (a.0.min(p.1), a.1.max(p.1)));
+    let (mut seen, mut detail) = (0usize, 0usize);
+    let mut y = lo_y.max(1.0);
+    while y < hi_y {
+        let mut x = lo_x.max(1.0);
+        while x < hi_x {
+            if inside(&shrunk, (x, y)) {
+                let at = |dx: f64, dy: f64| grey_at(reference, x + dx, y + dy);
+                if let (Some(l), Some(r), Some(u), Some(d)) = (at(-1.0, 0.0), at(1.0, 0.0), at(0.0, -1.0), at(0.0, 1.0)) {
+                    seen += 1;
+                    if ((r - l) / 2.0).hypot((d - u) / 2.0) > 4.0 {
+                        detail += 1;
+                    }
+                }
+            }
+            x += 1.0;
+        }
+        y += 1.0;
+    }
+    seen > 0 && (detail as f64) < PLAIN_BELOW * seen as f64
+}
+
+/// How well the outline of `quad` in `reference` agrees with `frame` where
+/// `h` takes it: the step across each side, correlated with the same step
+/// there, side by side, and the worst side's. `None` with under two sides in
+/// both pictures. Each row's level is taken away, so what lies beyond the
+/// outline can change, as it does when the surface moves over a background.
+fn outline_agreement(reference: &GrayFrame, frame: &GrayFrame, quad: &[(f64, f64); 4], h: &Homography) -> Option<f64> {
+    const ALONG: usize = 60;
+    const ACROSS: [f64; 5] = [-4.0, -2.0, 0.0, 2.0, 4.0];
+    let mut worst: Option<f64> = None;
+    let mut sides = 0;
+    for i in 0..4 {
+        let (a, b) = (quad[i], quad[(i + 1) % 4]);
+        let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+        let len = dx.hypot(dy);
+        if len < 1.0 {
+            continue;
+        }
+        let (nx, ny) = (-dy / len, dx / len);
+        let (mut xs, mut ys) = (Vec::new(), Vec::new());
+        for t in 0..ALONG {
+            let t = 0.08 + 0.84 * t as f64 / (ALONG - 1) as f64;
+            let row: Option<Vec<(f64, f64)>> = ACROSS
+                .iter()
+                .map(|o| {
+                    let p = (a.0 + dx * t + nx * o, a.1 + dy * t + ny * o);
+                    let q = h.transform(p.0, p.1);
+                    Some((grey_at(reference, p.0, p.1)?, grey_at(frame, q.0, q.1)?))
+                })
+                .collect();
+            let Some(row) = row else { continue };
+            let n = row.len() as f64;
+            let (ma, mb) = (row.iter().map(|r| r.0).sum::<f64>() / n, row.iter().map(|r| r.1).sum::<f64>() / n);
+            for r in row {
+                xs.push(r.0 - ma);
+                ys.push(r.1 - mb);
+            }
+        }
+        if xs.len() < 8 * ACROSS.len() {
+            continue;
+        }
+        let n = xs.len() as f64;
+        let (ma, mb) = (xs.iter().sum::<f64>() / n, ys.iter().sum::<f64>() / n);
+        let (mut ab, mut aa, mut bb) = (0.0, 0.0, 0.0);
+        for (x, y) in xs.iter().zip(&ys) {
+            ab += (x - ma) * (y - mb);
+            aa += (x - ma) * (x - ma);
+            bb += (y - mb) * (y - mb);
+        }
+        let r = if aa * bb > 1e-6 { ab / (aa * bb).sqrt() } else { 0.0 };
+        sides += 1;
+        worst = Some(worst.map_or(r, |w: f64| w.min(r)));
+    }
+    if sides >= 2 { worst } else { None }
+}
+
 /// The state a confidence makes.
 fn state_of(confidence: f32) -> State {
     if confidence >= 0.6 {
@@ -770,6 +876,7 @@ pub(crate) fn track_on<B: Backend>(
 ) -> Vec<Tracked> {
     let side = Frame::of(&quad).s * 2.0;
     let levels = depth(side, opts);
+    let plain = is_plain(reference, &quad);
     let anchor_pyr = backend.pyramid(reference, levels);
     let anchor = backend.template(&anchor_pyr, &quad, exclude, opts);
     // What is left out, where a map takes it.
@@ -879,6 +986,12 @@ pub(crate) fn track_on<B: Backend>(
         last = h;
         prev_pyr = cur_pyr;
         prev = cur_tpl;
+        // Only what the frame is called: where the track goes next is as it was.
+        let (confidence, state) = if plain && state == State::Good && !outline_agreement(reference, &cur, &quad, &h).is_some_and(|r| r >= OUTLINE_HOLDS) {
+            (confidence.min(UNCONFIRMED), State::Low)
+        } else {
+            (confidence, state)
+        };
         out.push(Tracked { frame: f, h, confidence, state, round_trip_px: round_trip as f32 });
     }
     out
@@ -1141,6 +1254,40 @@ mod tests {
         let worst = got.iter().map(|t| corner_error(&quad, &t.h, &course_map(&quad, &course, t.frame))).fold(0.0, f64::max);
         assert!(worst < 1.2, "a plain surface followed by its outline, worst {worst:.3} px");
         assert!(got.iter().all(|t| t.state != State::Lost));
+    }
+
+    /// A plain surface is told from one with detail, and its outline tells a
+    /// fit that sits on it from one a few pixels off, whatever lies beyond
+    /// the outline.
+    #[test]
+    fn a_plain_surfaces_outline_tells_a_right_fit_from_a_wrong_one() {
+        let (w, h) = (320usize, 220usize);
+        let quad = [(110.0, 70.0), (210.0, 70.0), (210.0, 150.0), (110.0, 150.0)];
+        let bg = |x: f64, y: f64| 90.0 + 40.0 * ((x * 0.13).sin() * (y * 0.09).cos());
+        let picture = |dx: f64, dy: f64, wall: f64, detail: bool| {
+            let moved = quad.map(|p| (p.0 + dx, p.1 + dy));
+            let data = (0..h).flat_map(|y| (0..w).map(move |x| (x as f64, y as f64))).map(|(x, y)| {
+                let v = if inside(&moved, (x, y)) {
+                    if detail { 120.0 + 80.0 * ((x * 0.7).sin() * (y * 0.6).cos()) } else { 205.0 }
+                } else {
+                    bg(x + wall, y)
+                };
+                v as u8
+            }).collect();
+            GrayFrame { data, width: w, height: h }
+        };
+        let reference = picture(0.0, 0.0, 0.0, false);
+        assert!(is_plain(&reference, &quad));
+        assert!(!is_plain(&picture(0.0, 0.0, 0.0, true), &quad), "detail isn't plain");
+        // Moved over a wall that stays, or moves otherwise.
+        let later = picture(30.0, 12.0, 17.0, false);
+        let shift = |dx: f64, dy: f64| Homography::from_4_points(&quad, &quad.map(|p| (p.0 + dx, p.1 + dy))).unwrap();
+        let on = outline_agreement(&reference, &later, &quad, &shift(30.0, 12.0)).unwrap();
+        assert!(on >= OUTLINE_HOLDS, "on the surface: {on}");
+        let off = outline_agreement(&reference, &later, &quad, &shift(38.0, 12.0)).unwrap();
+        assert!(off < OUTLINE_HOLDS, "8 px off: {off}");
+        let off = outline_agreement(&reference, &later, &quad, &shift(30.0, 20.0)).unwrap();
+        assert!(off < OUTLINE_HOLDS, "8 px off the other way: {off}");
     }
 
     /// Light falling across the surface during the shot moves nothing.
