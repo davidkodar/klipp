@@ -59,7 +59,7 @@ fn plain(parent: &Path, name: &str) -> PathBuf {
         enabled.push(true);
     });
     klipp_project::save_project_v1(&dir, &[seq], &klipp_media::MediaPool::new()).unwrap();
-    klipp_project::save_looks_v1(&dir, &[klipp_timeline::Look { id: uuid::Uuid::new_v4(), name: "Warm".into(), node_graph: graph() }]).unwrap();
+    klipp_project::save_looks_v1(&dir, &[klipp_timeline::Look { id: uuid::Uuid::new_v4(), name: "Warm".into(), node_graph: graph(), node_labels: Vec::new() }]).unwrap();
     std::fs::write(dir.join("media/stills.json"), json!([{ "name": "s", "filename": "s.png", "grade": graph() }]).to_string()).unwrap();
     let mut p = revision2::project(&read(&dir.join("project.json"))).unwrap().0;
     p["format_revision"] = json!(step4::FROM);

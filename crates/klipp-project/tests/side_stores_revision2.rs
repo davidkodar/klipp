@@ -13,7 +13,7 @@ fn scratch(tag: &str) -> std::path::PathBuf {
 }
 
 fn look(name: &str) -> Look {
-    Look { id: uuid::Uuid::new_v4(), name: name.into(), node_graph: klipp_nodes::NodeGraph::default() }
+    Look { id: uuid::Uuid::new_v4(), name: name.into(), node_graph: klipp_nodes::NodeGraph::default(), node_labels: Vec::new() }
 }
 
 #[test]

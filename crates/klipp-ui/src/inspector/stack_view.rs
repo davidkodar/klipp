@@ -930,6 +930,22 @@ mod selected_matte_tests {
         texts
     }
 
+    /// A Qualifier from the graph's Mattes menu starts off, so it keys
+    /// nothing until set, and its card says how to set it.
+    #[test]
+    fn a_picture_qualifier_starts_off_and_says_how_to_set_it() {
+        let t = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 24);
+        let mut clip = Clip::media(klipp_core::MediaId::new(), t(0.0), t(4.0), t(0.0), t(4.0));
+        let graph = clip.picture_v2().unwrap().picture.graph.clone();
+        let level = NodePath::new(Root::Clip { clip: clip.id.0 }, []);
+        let key = crate::picture_mattes::matte("matte.qualifier").expect("the qualifier");
+        assert!((key.params)().qualifier.is_some_and(|q| !q.enabled), "off until set");
+        let id = uuid::Uuid::new_v4();
+        clip.apply_picture_ops(&crate::picture_mattes::add_ops(&graph, &level, key, id, (100.0, 100.0), None).unwrap()).unwrap();
+        let state = AppState { selected_node_addr: Some(NodePath::new(Root::Clip { clip: clip.id.0 }, [id])), ..Default::default() };
+        assert!(texts(&state, &clip).iter().any(|t| t == crate::inspector::side_matte::QUALIFIER_UNSET), "{:?}", texts(&state, &clip));
+    }
+
     /// A Roto Shape added from the graph and picked there has its card, with
     /// its shapes, and says it needs a mask input to do anything; picked
     /// nothing, it has none.

@@ -1771,6 +1771,13 @@ impl KlippApp {
                 true
             }
             AppCommand::PickQualifierColour { clip_id, node_id } => {
+                // The eyedropper button again while it waits for this key:
+                // the pick is called off.
+                if self.state.eyedropper_mode == crate::state::EyedropperMode::Qualifier && self.state.qualifier_pick == Some((*clip_id, *node_id)) {
+                    self.state.eyedropper_mode = crate::state::EyedropperMode::None;
+                    self.state.qualifier_pick = None;
+                    return true;
+                }
                 self.state.eyedropper_mode = crate::state::EyedropperMode::Qualifier;
                 self.state.qualifier_pick = Some((*clip_id, *node_id));
                 self.state.toast.show("Click the colour to key in the viewer (Esc cancels)");
@@ -1933,7 +1940,8 @@ impl KlippApp {
                 };
                 let name = still.name.clone();
                 let labels = still.grade_labels.clone();
-                let GradeApplied { edits, refused, labels } = apply_grade(&self.state.sequences[self.state.active_sequence_idx], &grade, &labels, clip_ids, *append);
+                let from = still.source.as_ref().and_then(|s| s.clip_id);
+                let GradeApplied { edits, refused, labels, tracks_left } = super::grade_edits::apply_grade_from(&self.state.sequences[self.state.active_sequence_idx], &grade, &labels, clip_ids, *append, from);
                 if edits.is_empty() {
                     if refused.is_empty() {
                         self.state.toast.show("Select the clips to grade first");
@@ -1947,6 +1955,7 @@ impl KlippApp {
                 let edits: Vec<_> = edits.into_iter().chain(labels).collect();
                 self.apply_edits_as_one(&edits, "Apply Grade from Still");
                 let mut told = format!("Applied the grade of \"{name}\" to {n} clip{}", if n == 1 { "" } else { "s" });
+                if tracks_left { told = format!("{told}; {}", super::grade_edits::TRACKS_LEFT); }
                 if !refused.is_empty() {
                     told = format!("{told}; not to {}: {}", clip_ids.len() - n, refusals_line(&refused));
                 }
@@ -2004,7 +2013,7 @@ impl KlippApp {
                     self.state.toast.show(format!("No grade \"{name}\" in the library"));
                     return true;
                 };
-                let GradeApplied { edits, refused, labels } = apply_grade(&self.state.sequences[self.state.active_sequence_idx], &grade, &labels, clip_ids, *append);
+                let GradeApplied { edits, refused, labels, tracks_left } = apply_grade(&self.state.sequences[self.state.active_sequence_idx], &grade, &labels, clip_ids, *append);
                 if edits.is_empty() {
                     if refused.is_empty() {
                         self.state.toast.show("Select the clips to grade first");
@@ -2018,6 +2027,7 @@ impl KlippApp {
                 let edits: Vec<_> = edits.into_iter().chain(labels).collect();
                 self.apply_edits_as_one(&edits, "Apply Grade from Library");
                 let mut told = format!("Applied \"{name}\" to {n} clip{}", if n == 1 { "" } else { "s" });
+                if tracks_left { told = format!("{told}; {}", super::grade_edits::TRACKS_LEFT); }
                 if !refused.is_empty() {
                     told = format!("{told}; not to {}: {}", clip_ids.len() - n, refusals_line(&refused));
                 }
@@ -2033,7 +2043,7 @@ impl KlippApp {
                     return true;
                 }
                 let labels = klipp_timeline::grade_node_labels(&seq.node_labels, clip.id);
-                let GradeApplied { edits, labels, .. } = apply_grade(seq, clip.grade(), &labels, &targets, false);
+                let GradeApplied { edits, labels, .. } = super::grade_edits::apply_grade_from(seq, clip.grade(), &labels, &targets, false, Some(*clip_id));
                 let n = edits.len();
                 let edits: Vec<_> = edits.into_iter().chain(labels).collect();
                 self.apply_edits_as_one(&edits, "Apply Grade to Shot Pieces");
@@ -2300,31 +2310,8 @@ impl KlippApp {
                 }
                 true
             }
-            AppCommand::DeleteGradeVersion { clip_id, version_index } => {
-                let seq = &mut self.state.sequences[self.state.active_sequence_idx];
-                if let Some(clip) = seq.all_clips_mut().find(|c| c.id == *clip_id) {
-                    if *version_index < clip.grade_versions().len() {
-                        clip.edit_grade_versions(|vs| vs.remove(*version_index));
-                        match clip.active_grade_version() {
-                            Some(idx) if idx == *version_index => clip.set_active_grade_version(None),
-                            Some(idx) if idx > *version_index => clip.set_active_grade_version(Some(idx - 1)),
-                            _ => {}
-                        }
-                    }
-                }
-                self.state.dirty = true;
-                true
-            }
-            AppCommand::RenameGradeVersion { clip_id, version_index, name } => {
-                let seq = &mut self.state.sequences[self.state.active_sequence_idx];
-                if let Some(clip) = seq.all_clips_mut().find(|c| c.id == *clip_id) {
-                    clip.edit_grade_versions(|vs| {
-                        if let Some(version) = vs.get_mut(*version_index) {
-                            version.name = name.clone();
-                        }
-                    });
-                }
-                self.state.dirty = true;
+            AppCommand::DeleteGradeVersion { .. } | AppCommand::RenameGradeVersion { .. } => {
+                self.state.grade_version_command(cmd);
                 true
             }
 
@@ -2339,13 +2326,12 @@ impl KlippApp {
                         self.state.toast.show(GRADE_MIX_NOT_COPIED);
                         return true;
                     }
-                    seq.all_clips().find(|c| c.id == clip_id).map(|c| c.grade().clone())
+                    super::grade_edits::look_of(seq, clip_id, name)
                 };
-                let Some(node_graph) = snapshot else {
+                let Some(look) = snapshot else {
                     self.state.toast.show("Selected clip not found");
                     return true;
                 };
-                let look = klipp_timeline::Look::new(uuid::Uuid::new_v4(), name.trim().to_string(), node_graph);
                 let label = look.name.clone();
                 self.state.looks.push(look);
                 self.state.dirty = true;
@@ -2370,55 +2356,29 @@ impl KlippApp {
                     self.state.toast.show("Look not found");
                     return true;
                 };
-                let mut applied = 0_usize;
-                let mut refused: Vec<klipp_nodes::CannotAppend> = Vec::new();
-                // Collect old/new graphs first (mutable borrow on seq); push history
-                // entries afterwards (mutable borrow on state.command_histories).
-                let mut history_pushes: Vec<(klipp_core::ClipId, klipp_nodes::NodeGraph, klipp_nodes::NodeGraph)> = Vec::new();
-                {
-                    let seq = &mut self.state.sequences[self.state.active_sequence_idx];
-                    for clip_id in clip_ids {
-                        if let Some(clip) = seq.all_clips_mut().find(|c| c.id == *clip_id) {
-                            let old_graph = clip.grade().clone();
-                            // Fresh node ids per clip, so two clips with the
-                            // same Look don't collide, and the clip's own
-                            // Input Transform kept: the Look's, if it has
-                            // one, is the shot it was saved on.
-                            if *append {
-                                if let Err(why) = clip.edit_grade(|g| g.append(look.grade())) {
-                                    if !refused.contains(&why) {
-                                        refused.push(why);
-                                    }
-                                    continue;
-                                }
-                            } else {
-                                clip.set_grade(clip.grade().with_grade_of(look.grade()));
-                            }
-                            applied += 1;
-                            history_pushes.push((*clip_id, old_graph, clip.grade().clone()));
-                        }
+                // As a library grade applies: fresh ids per clip, the clip's
+                // own Input Transform kept, every clip one undo step. Each
+                // clip was a step of its own, so undoing a Look on ten clips
+                // took ten presses.
+                let GradeApplied { edits, refused, labels, tracks_left } = apply_grade(&self.state.sequences[self.state.active_sequence_idx], look.grade(), &look.node_labels, clip_ids, *append);
+                if edits.is_empty() {
+                    if refused.is_empty() {
+                        self.state.toast.show("No matching clips selected");
+                    } else {
+                        self.state.toast.show(format!("Could not add \"{}\": {}", look.name, refusals_line(&refused)));
                     }
+                    return true;
                 }
-                for (clip_id, old_graph, new_graph) in history_pushes {
-                    self.state.push_history(crate::history::EditCommand::SetNodeGraph {
-                        clip_id,
-                        old_graph,
-                        new_graph,
-                    });
+                let n = edits.len();
+                let edits: Vec<_> = edits.into_iter().chain(labels).collect();
+                self.apply_edits_as_one(&edits, "Apply Look");
+                let mut told = format!("Applied \"{}\" to {n} clip{}", look.name, if n == 1 { "" } else { "s" });
+                if tracks_left { told = format!("{told}; {}", super::grade_edits::TRACKS_LEFT); }
+                if !refused.is_empty() {
+                    told = format!("{told}; not to {}: {}", clip_ids.len() - n, refusals_line(&refused));
                 }
-                if applied > 0 {
-                    self.state.dirty = true;
-                    let mut told = format!("Applied \"{}\" to {applied} clip{}", look.name, if applied == 1 { "" } else { "s" });
-                    if !refused.is_empty() {
-                        told = format!("{told}; not to {}: {}", clip_ids.len() - applied, refusals_line(&refused));
-                    }
-                    self.state.toast.show(told);
-                    *needs_refresh = true;
-                } else if refused.is_empty() {
-                    self.state.toast.show("No matching clips selected");
-                } else {
-                    self.state.toast.show(format!("Could not add \"{}\": {}", look.name, refusals_line(&refused)));
-                }
+                self.state.toast.show(told);
+                *needs_refresh = true;
                 true
             }
             AppCommand::DeleteLook { look_id } => {

@@ -46,3 +46,100 @@ fn a_key_and_a_window_through_a_combiner_come_back_wired_the_same() {
     assert_eq!(back.output_node_id, g.output_node_id);
     assert_eq!(back.input_of(window, 0), None, "the window reads nothing");
 }
+
+/// A clip's grade versions come back with their names, which is active, and
+/// each grade's wiring: a key and window through a combiner in one, a plain
+/// grade in the other.
+#[test]
+fn grade_versions_come_back_with_their_wiring() {
+    let t = |s: f64| RationalTime::from_secs_f64(s, 24);
+    let mut clip = Clip::media(MediaId::new(), t(0.0), t(4.0), t(0.0), t(4.0));
+    let clip_id = clip.id;
+    let mut keyed = NodeGraph::default();
+    let correction = keyed.ensure_corrector();
+    assert!(keyed.limit_with_qualifier(correction, NodeId::new_v4()));
+    keyed.ensure_corrector_window();
+    clip.edit_grade_versions(|vs| {
+        vs.push(klipp_timeline::GradeVersion::new(String::from("Keyed"), keyed.clone()));
+        vs.push(klipp_timeline::GradeVersion::new(String::from("Plain"), NodeGraph::default()));
+    });
+    clip.set_active_grade_version(Some(1));
+    let mut seq = Sequence::new_default();
+    seq.tracks.iter_mut().find(|t| t.kind == TrackKind::Video).unwrap().clips.push(clip);
+    let dir = std::env::temp_dir().join(format!("klipp_grade_versions_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    save_project(&dir, &[seq], &MediaPool::new()).unwrap();
+    let (sequences, ..) = load_project(&dir).unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+    let back = sequences[0].all_clips().find(|c| c.id == clip_id).expect("the clip");
+    assert_eq!(back.active_grade_version(), Some(1));
+    let versions = back.grade_versions();
+    assert_eq!(versions.iter().map(|v| v.name.as_str()).collect::<Vec<_>>(), ["Keyed", "Plain"]);
+    assert_eq!(sorted(&versions[0].grade().edges), sorted(&keyed.edges), "the keyed version's wires");
+    assert_eq!(versions[0].grade().nodes.iter().filter(|n| n.kind == NodeKind::CombineMattes).count(), 1);
+}
+
+/// Hue/Sat curves with points, including ones at the curve's very ends, and
+/// a Warper's twelve sectors, come back to the bit.
+#[test]
+fn hue_sat_curves_and_the_warper_come_back_exact() {
+    let t = |s: f64| RationalTime::from_secs_f64(s, 24);
+    let mut clip = Clip::media(MediaId::new(), t(0.0), t(4.0), t(0.0), t(4.0));
+    let clip_id = clip.id;
+    let curves = klipp_core::HueSatCurves {
+        hue_vs_hue: vec![[0.0, 0.5], [0.0833, 0.62], [0.1667, 0.5], [1.0, 0.5]],
+        hue_vs_sat: vec![[0.3, 0.5], [0.33333334, 0.1], [0.36, 0.5]],
+        lum_vs_sat: vec![[0.0, 0.25], [1.0, 0.75]],
+        ..Default::default()
+    };
+    let mut warper = klipp_core::ColorWarperParams::default();
+    warper.hue_shifts[3] = 12.5;
+    warper.sat_shifts[11] = -0.35;
+    clip.edit_grade(|g| {
+        let c = g.ensure_corrector();
+        let n = g.nodes.iter_mut().find(|n| n.id == c).unwrap();
+        n.params.huesat = Some(curves.clone());
+        n.params.huesat_mix = Some(0.7);
+        n.params.warper_params = Some(warper.clone());
+    });
+    let want = clip.grade().clone();
+    let mut seq = Sequence::new_default();
+    seq.tracks.iter_mut().find(|t| t.kind == TrackKind::Video).unwrap().clips.push(clip);
+    let dir = std::env::temp_dir().join(format!("klipp_huesat_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    save_project(&dir, &[seq], &MediaPool::new()).unwrap();
+    let (sequences, ..) = load_project(&dir).unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+    let back = sequences[0].all_clips().find(|c| c.id == clip_id).expect("the clip").grade().clone();
+    let params = |g: &NodeGraph| g.nodes.iter().find(|n| n.kind == NodeKind::Corrector).map(|n| (n.params.huesat.clone(), n.params.huesat_mix, n.params.warper_params.clone()));
+    assert_eq!(params(&back), params(&want));
+}
+
+/// A Look keeps its node labels through a save and reload, and a Look file
+/// from before they were kept still reads, with none.
+#[test]
+fn a_look_keeps_its_node_labels_and_an_older_one_still_reads() {
+    let mut grade = NodeGraph::default();
+    let correction = grade.ensure_corrector();
+    let mut look = klipp_timeline::Look::new(uuid::Uuid::new_v4(), "Warm", grade);
+    look.node_labels = vec![klipp_timeline::GradeNodeLabel { nodes: vec![correction], colour: 3 }];
+    let dir = std::env::temp_dir().join(format!("klipp_look_labels_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    klipp_project::save_looks(&dir, std::slice::from_ref(&look)).unwrap();
+    let back = klipp_project::load_looks(&dir);
+    assert_eq!(back.len(), 1);
+    assert_eq!(back[0].node_labels, look.node_labels);
+    // The same file without its labels, as an older Klipp wrote it.
+    let file = dir.join("looks").join(format!("{}.json", look.id));
+    let mut v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+    assert!(v.as_object_mut().unwrap().remove("node_labels").is_some(), "kept beside the grade");
+    std::fs::write(&file, serde_json::to_string(&v).unwrap()).unwrap();
+    let older = klipp_project::load_looks(&dir);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(older.len(), 1, "an older Look reads");
+    assert!(older[0].node_labels.is_empty());
+    assert_eq!(older[0].node_graph.nodes.len(), back[0].node_graph.nodes.len());
+}

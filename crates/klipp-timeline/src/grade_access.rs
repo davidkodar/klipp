@@ -210,7 +210,7 @@ impl GradeVersion {
 impl Look {
     /// A Look with its id and name, holding `grade`.
     pub fn new(id: uuid::Uuid, name: impl Into<String>, grade: NodeGraph) -> Self {
-        Self { id, name: name.into(), node_graph: grade }
+        Self { id, name: name.into(), node_graph: grade, node_labels: Vec::new() }
     }
 }
 

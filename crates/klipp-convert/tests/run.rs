@@ -46,7 +46,7 @@ fn project(parent: &Path, name: &str) -> PathBuf {
     clip.set_effect_list(vec![klipp_effects::BuiltinEffect::GaussianBlur { radius: 2.0 }], clip.builtin_effects_enabled().to_vec());
     seq.tracks[0].clips.push(clip);
     klipp_project::save_project_v1(&dir, &[seq], &klipp_media::MediaPool::new()).unwrap();
-    klipp_project::save_looks_v1(&dir, &[klipp_timeline::Look { id: uuid::Uuid::new_v4(), name: "Warm".into(), node_graph: graph() }]).unwrap();
+    klipp_project::save_looks_v1(&dir, &[klipp_timeline::Look { id: uuid::Uuid::new_v4(), name: "Warm".into(), node_graph: graph(), node_labels: Vec::new() }]).unwrap();
     std::fs::write(dir.join("media/stills.json"), json!([{ "name": "s", "filename": "s.png", "grade": graph() }]).to_string()).unwrap();
     std::fs::create_dir_all(dir.join("media/stills")).unwrap();
     std::fs::write(dir.join("media/stills/s.png"), b"png bytes").unwrap();

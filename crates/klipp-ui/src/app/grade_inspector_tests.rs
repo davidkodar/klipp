@@ -2620,3 +2620,16 @@ fn a_duplicated_correction_keeps_its_key() {
     let many = copy_of(&g, &ids);
     assert_eq!(g.edges.iter().filter(|e| e.to_node == many && e.to_port == 1).count(), 0, "copied without the key: {:?}", g.edges);
 }
+
+/// "+ Qualifier" waits for the colour: the eyedropper is armed for the new
+/// key, which stays off until a pick, and the page says so.
+#[test]
+fn a_new_qualifier_waits_for_its_colour() {
+    let (mut state, clip_id, ids, _, _h) = wired();
+    dispatch_canvas(&mut state, &[AppCommand::LimitWithQualifier { clip_id, node_id: ids[2] }]);
+    let g = wire_level(&state, clip_id);
+    let key = g.nodes.iter().find(|n| n.kind == NodeKind::Qualifier).expect("added");
+    assert!(key.params.qualifier.as_ref().is_none_or(|q| !q.enabled), "off until picked");
+    assert_eq!(state.eyedropper_mode, crate::state::EyedropperMode::Qualifier, "the eyedropper armed");
+    assert_eq!(state.qualifier_pick, Some((clip_id, key.id)), "for that key");
+}

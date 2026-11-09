@@ -18,6 +18,9 @@ use klipp_graph_format::path::NodePath;
 use klipp_graph_format::{Graph, Node};
 use klipp_nodes::{NodeKind, NodeParams};
 
+/// What a Qualifier beside the chain says until its colour is set.
+pub(crate) const QUALIFIER_UNSET: &str = "Set Hue Center to the colour to key, or key it on the Colour page with + Qualifier";
+
 /// The node `addr` names when it is a matte beside the chain: a grade
 /// node at the picture's top, outside its grade group, with its kind and
 /// settings as a grade run reads them.
@@ -42,6 +45,11 @@ fn whole(addr: &NodePath, key: &str, value: &impl serde::Serialize) -> Option<Ap
 pub(crate) fn show(ui: &mut egui::Ui, theme: &KlippTheme, clip: &klipp_timeline::Clip, graph: &Graph, addr: &NodePath, frame: FrameSelection, source_secs: f64, cmds: &mut Vec<AppCommand>) -> bool {
     let Some((node, kind, params)) = matte_at(graph, addr) else { return false };
     let Some(ty) = klipp_nodes::registry::node_type(kind) else { return false };
+    // A Qualifier here starts off, waiting for its colour: the eyedropper
+    // reaches only a grade's own keys, so say what sets this one.
+    if kind == NodeKind::Qualifier && params.qualifier.as_ref().is_none_or(|q| !q.enabled) {
+        ui.add(egui::Label::new(egui::RichText::new(QUALIFIER_UNSET).size(10.0).color(theme.text_dim)).wrap());
+    }
     // The rows read the settings as a grade node's entry holds them.
     let entry = serde_json::json!({ "kind": kind, "params": params });
     let presentation = |p: &ParamDesc| ty.presentation(p);

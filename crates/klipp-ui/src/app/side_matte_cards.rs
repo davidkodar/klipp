@@ -68,18 +68,21 @@ fn a_luma_keys_number_is_typed_under_the_effect_it_masks() {
 
 /// #2576: a qualifier beside the chain keys the picture by colour for
 /// the effect it masks; its hue typed under that effect, one step,
-/// drawn on both routes.
+/// drawn on both routes. It starts off, keying nothing, and typing its
+/// hue switches it on.
 #[test]
 fn a_qualifiers_hue_is_typed_under_the_effect_it_masks() {
     let (c, id) = masked("matte.qualifier");
-    assert!(params(&Run::new(c.clone()), id).qualifier.is_some_and(|q| q.enabled), "it starts on");
+    assert!(params(&Run::new(c.clone()), id).qualifier.is_some_and(|q| !q.enabled), "it starts off");
     let mut run = Run::new(c.clone());
     let drawn = run.frame(Vec::new(), egui::Modifiers::NONE);
     assert!(drawn.iter().any(|(t, _)| t == "Masked by: Qualifier"), "the chip: {:?}", drawn.iter().map(|d| &d.0).collect::<Vec<_>>());
     let before = run.clip().picture_v2().unwrap().picture.clone();
     let at = number_right_of(&mut run, "Hue Center").expect("the qualifier's Hue Center row");
     type_into(&mut run, at, "120");
-    assert_eq!(params(&run, id).qualifier.unwrap().hue_center, 120.0);
+    let key = params(&run, id).qualifier.unwrap();
+    assert_eq!(key.hue_center, 120.0);
+    assert!(key.enabled, "its hue set, it keys");
     one_step(&mut run, &before).unwrap();
     super::parity_pixels::clip_edit_drawn_on(super::parity_pixels::Routes::Both, super::parity_pixels::SMALL, &c, run.clip()).unwrap();
 }

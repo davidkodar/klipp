@@ -25,7 +25,7 @@ fn from_a_newer_klipp(path: &std::path::Path) -> Vec<u8> {
 #[test]
 fn a_look_from_a_newer_klipp_is_not_loaded_and_survives_a_save() {
     let dir = scratch("look_kept");
-    let look = Look { id: uuid::Uuid::new_v4(), name: "Newer".into(), node_graph: klipp_nodes::NodeGraph::default() };
+    let look = Look { id: uuid::Uuid::new_v4(), name: "Newer".into(), node_graph: klipp_nodes::NodeGraph::default(), node_labels: Vec::new() };
     save_looks(&dir, std::slice::from_ref(&look)).unwrap();
     let path = std::fs::read_dir(dir.join("looks")).unwrap().flatten().map(|e| e.path()).next().unwrap();
     let before = from_a_newer_klipp(&path);
@@ -41,7 +41,7 @@ fn a_look_from_a_newer_klipp_is_not_loaded_and_survives_a_save() {
 #[test]
 fn a_readable_look_that_was_removed_is_still_pruned() {
     let dir = scratch("look_pruned");
-    let look = Look { id: uuid::Uuid::new_v4(), name: "Old".into(), node_graph: klipp_nodes::NodeGraph::default() };
+    let look = Look { id: uuid::Uuid::new_v4(), name: "Old".into(), node_graph: klipp_nodes::NodeGraph::default(), node_labels: Vec::new() };
     save_looks(&dir, std::slice::from_ref(&look)).unwrap();
     save_looks(&dir, &[]).unwrap();
     assert_eq!(std::fs::read_dir(dir.join("looks")).map(|d| d.count()).unwrap_or(0), 0, "a Look this Klipp reads is still removed when deleted");

@@ -35,7 +35,7 @@ fn each_always_graded_owner_reads_and_writes_its_own_field() {
     let (g, id) = graded();
     let mut clip = Clip::media(MediaId::new(), t(0.0), t(1.0), t(0.0), t(1.0));
     let mut version = GradeVersion { name: "A".into(), node_graph: Default::default() };
-    let mut look = Look { id: uuid::Uuid::new_v4(), name: "Warm".into(), node_graph: NodeGraph::default() };
+    let mut look = Look { id: uuid::Uuid::new_v4(), name: "Warm".into(), node_graph: NodeGraph::default(), node_labels: Vec::new() };
 
     clip.set_grade(g.clone());
     version.set_grade(g.clone());
@@ -165,7 +165,7 @@ fn a_removed_node_takes_its_wires_place_and_empty_frames() {
         contained_node_ids: [id].into_iter().collect(),
         recipe: None,
     });
-    let mut look = Look { id: uuid::Uuid::new_v4(), name: "Warm".into(), node_graph: g };
+    let mut look = Look { id: uuid::Uuid::new_v4(), name: "Warm".into(), node_graph: g, node_labels: Vec::new() };
     look.remove_grade_node(id);
     let g = look.grade();
     assert!(g.nodes.iter().all(|n| n.id != id));
