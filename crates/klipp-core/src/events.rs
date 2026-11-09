@@ -5766,6 +5766,9 @@ pub struct ControlShared {
     /// The last surface click's outcome (#2754): its request id, and the
     /// corners found or why none were.
     pub surface_snap: std::sync::Mutex<Option<serde_json::Value>>,
+    /// Mask tracks asked for over the socket, newest last: what
+    /// `job_status` answers with once the app has run them.
+    pub mask_tracks: std::sync::Mutex<Vec<MaskTrackJob>>,
     pub revision: std::sync::atomic::AtomicU64,
     pub exports: std::sync::Mutex<Vec<ExportStatus>>,
     /// The open project as the UI last saw it.
@@ -6028,7 +6031,67 @@ mod identity_tests {
     }
 }
 
+/// A mask track asked for over the socket, as far as it has got.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MaskTrackJob {
+    pub job_id: String,
+    pub clip_id: ClipId,
+    pub progress: f32,
+    /// What it followed, once done.
+    pub outcome: Option<MaskTrackOutcome>,
+    pub error: Option<String>,
+}
+
+/// What a finished mask track followed, on the clip's own clock.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MaskTrackOutcome {
+    pub span_secs: (f64, f64),
+    pub clip_secs: f64,
+    /// It stopped before the end of what it was asked to follow.
+    pub lost: bool,
+    pub text: String,
+}
+
+/// Mask tracks kept to be read back.
+const MASK_TRACKS_KEPT: usize = 32;
+
 impl ControlShared {
+    /// A new mask track on `clip_id`, or the running one's id as the refusal.
+    pub fn start_mask_track(&self, clip_id: ClipId, job_id: String) -> Result<(), String> {
+        let mut jobs = self.mask_tracks.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(running) = jobs.iter().find(|j| j.clip_id == clip_id && j.outcome.is_none() && j.error.is_none()) {
+            return Err(running.job_id.clone());
+        }
+        jobs.push(MaskTrackJob { job_id, clip_id, progress: 0.0, outcome: None, error: None });
+        let over = jobs.len().saturating_sub(MASK_TRACKS_KEPT);
+        jobs.drain(..over);
+        Ok(())
+    }
+
+    /// Change the job running on `clip_id`, if one is: a track started from
+    /// the GUI has none.
+    fn on_running_mask_track(&self, clip_id: ClipId, change: impl FnOnce(&mut MaskTrackJob)) {
+        let mut jobs = self.mask_tracks.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(job) = jobs.iter_mut().find(|j| j.clip_id == clip_id && j.outcome.is_none() && j.error.is_none()) {
+            change(job);
+        }
+    }
+
+    pub fn mask_track_progress(&self, clip_id: ClipId, progress: f32) {
+        self.on_running_mask_track(clip_id, |j| j.progress = progress);
+    }
+
+    pub fn mask_track_done(&self, clip_id: ClipId, outcome: MaskTrackOutcome) {
+        self.on_running_mask_track(clip_id, |j| {
+            j.progress = 1.0;
+            j.outcome = Some(outcome);
+        });
+    }
+
+    pub fn mask_track_failed(&self, clip_id: ClipId, error: String) {
+        self.on_running_mask_track(clip_id, |j| j.error = Some(error));
+    }
+
     pub fn bump_revision(&self) -> u64 {
         self.revision.fetch_add(1, std::sync::atomic::Ordering::AcqRel) + 1
     }

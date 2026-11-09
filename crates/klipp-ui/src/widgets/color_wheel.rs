@@ -337,7 +337,7 @@ pub fn color_wheel_spanned(
             // the border the channel colour is carried by.
             st.visuals.widgets.hovered.weak_bg_fill = theme.bg_hover;
             pill_ui.add(
-                egui::DragValue::new(&mut v)
+                crate::widgets::number_field(&mut v)
                     .speed(0.002)
                     .range(-1.0..=1.0)
                     // The sign is always shown, as the painted pills

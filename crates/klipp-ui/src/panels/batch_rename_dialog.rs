@@ -100,10 +100,10 @@ pub fn show_batch_rename_dialog(
                     });
                     ui.horizontal(|ui| {
                         ui.label("Start:");
-                        ui.add(egui::DragValue::new(&mut state.batch_rename_start).range(0..=9999));
+                        ui.add(crate::widgets::number_field(&mut state.batch_rename_start).range(0..=9999));
                         ui.add_space(16.0);
                         ui.label("Zero padding:");
-                        ui.add(egui::DragValue::new(&mut state.batch_rename_padding).range(1..=8));
+                        ui.add(crate::widgets::number_field(&mut state.batch_rename_padding).range(1..=8));
                     });
                 }
             }

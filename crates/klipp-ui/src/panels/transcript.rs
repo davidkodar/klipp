@@ -269,7 +269,7 @@ impl TranscriptPanel {
             if ui.button("Fillers\u{2026}").on_hover_text("Every um and uh, to review and cut together").clicked() {
                 self.sweep = Some(Sweep::fillers(&self.words));
             }
-            ui.add(egui::DragValue::new(&mut self.pause_longer_than).range(0.5..=10.0).speed(0.05).suffix(" s"))
+            ui.add(crate::widgets::number_field(&mut self.pause_longer_than).range(0.5..=10.0).speed(0.05).suffix(" s"))
                 .on_hover_text("How long a pause has to be to count as long");
             if ui.button("Long Pauses\u{2026}").on_hover_text("Every pause longer than that, cut down to 0.4 s").clicked() {
                 self.sweep = Some(Sweep::pauses(&self.words, self.pause_longer_than, 0.4));

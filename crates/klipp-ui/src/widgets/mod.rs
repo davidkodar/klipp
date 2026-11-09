@@ -100,3 +100,63 @@ mod below_menus_tests {
     }
 }
 
+/// A number field. A typed value lands when the field is left or Enter is
+/// pressed: "120" is one edit, one undo step and one picture, not 1, 12 and
+/// 120. Dragging it still changes the value as it goes.
+pub fn number_field<N: egui::emath::Numeric>(value: &mut N) -> egui::DragValue<'_> {
+    egui::DragValue::new(value).update_while_editing(false)
+}
+
+#[cfg(test)]
+mod number_field_tests {
+    /// Typing leaves the value alone until Enter, and Enter changes it once.
+    #[test]
+    fn a_typed_number_is_one_edit() {
+        let ctx = egui::Context::default();
+        let mut value = 9.0_f32;
+        let mut changes = 0;
+        let mut frame = |events: Vec<egui::Event>| {
+            let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(200.0, 100.0))), events, ..Default::default() };
+            let _ = ctx.run(input, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let id = egui::Id::new("field");
+                    let response = ui.push_id(id, |ui| ui.add(super::number_field(&mut value))).inner;
+                    ui.memory_mut(|m| m.request_focus(response.id));
+                    if response.changed() {
+                        changes += 1;
+                    }
+                });
+            });
+        };
+        frame(Vec::new());
+        frame(Vec::new());
+        frame(vec![egui::Event::Key { key: egui::Key::A, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::COMMAND }]);
+        for digit in ["1", "2", "0"] {
+            frame(vec![egui::Event::Text(digit.into())]);
+        }
+        frame(vec![egui::Event::Key { key: egui::Key::Enter, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE }]);
+        frame(Vec::new());
+        assert_eq!((value, changes), (120.0, 1), "the value and how many edits made it");
+    }
+
+    /// Every number field goes through it, so no new one types live.
+    #[test]
+    fn every_number_field_lands_on_leaving() {
+        fn scan(dir: &std::path::Path, found: &mut Vec<String>) {
+            for entry in std::fs::read_dir(dir).unwrap().flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    scan(&path, found);
+                } else if path.extension().is_some_and(|e| e == "rs") && !path.ends_with("widgets/mod.rs") && !path.ends_with("app/keymap_tests.rs") {
+                    let text = std::fs::read_to_string(&path).unwrap();
+                    if text.contains(concat!("DragValue", "::new(")) {
+                        found.push(path.display().to_string());
+                    }
+                }
+            }
+        }
+        let mut found = Vec::new();
+        scan(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), &mut found);
+        assert!(found.is_empty(), "{found:?}");
+    }
+}

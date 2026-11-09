@@ -192,6 +192,16 @@ fn corner_pin_view(state: &AppState, clip: &klipp_timeline::Clip, effect_index: 
     title_view_of(state, clip, image_rect).map_err(|_| ())
 }
 
+/// The colour of a Corner Pin's handles and outline.
+pub(crate) const CORNER_PIN_HANDLE: egui::Color32 = egui::Color32::from_rgb(90, 200, 255);
+
+/// Whether a press at `p` is the viewer's: not on a window or popup over it.
+/// These tools read the pointer itself, so without this a press on a window
+/// lying over the viewer also took hold of whatever was under it.
+fn reaches_viewer(ui: &egui::Ui, p: egui::Pos2) -> bool {
+    ui.ctx().layer_id_at(p).is_none_or(|layer| layer == ui.layer_id())
+}
+
 /// The scope cursor's "LOCKED", on a dark plate: the picture under it can be
 /// as bright as the label, and the label says why the cursor stopped moving.
 fn draw_locked_label(painter: &egui::Painter, bottom_centre: egui::Pos2, colour: egui::Color32) {
@@ -268,7 +278,7 @@ fn draw_chart_tool(ui: &mut egui::Ui, state: &mut AppState, image_rect: egui::Re
     let (pointer, pressed, down) = ui.input(|i| (i.pointer.interact_pos(), i.pointer.primary_pressed(), i.pointer.primary_down()));
     let hit = |p: egui::Pos2| screen.iter().position(|s| (p - *s).length() <= 12.0);
     if let Some(p) = pointer.filter(|p| !bar_rect.contains(*p)) {
-        if pressed && image_rect.expand(16.0).contains(p) {
+        if pressed && image_rect.expand(16.0).contains(p) && reaches_viewer(ui, p) {
             if let Some(c) = hit(p) {
                 tool.drag = Some((c, p, tool.corners));
             } else if in_screen_polygon(&screen, p) {
@@ -1653,7 +1663,7 @@ impl ViewerPanel {
         {
             let clicked = ui.input(|i| i.pointer.primary_clicked() && i.modifiers.ctrl);
             if clicked {
-                if let Some(pos) = state.viewer_pointer_pos {
+                if let Some(pos) = state.viewer_pointer_pos.filter(|p| reaches_viewer(ui, *p)) {
                     // Toggle lock: if already locked at this position, unlock
                     if state.scope_cursor_locked {
                         state.scope_cursor_locked = false;
@@ -5418,7 +5428,7 @@ impl ViewerPanel {
         } else if let Some(pointer) = pointer_pos {
             // Check for new drag start; not one the motion path or a corner
             // pin took (#2276).
-            if pointer_down && ui.input(|i| i.pointer.primary_pressed()) && state.motion_path_drag.is_none() && state.viewer_corner_pin_drag.is_none()
+            if pointer_down && ui.input(|i| i.pointer.primary_pressed()) && reaches_viewer(ui, pointer) && state.motion_path_drag.is_none() && state.viewer_corner_pin_drag.is_none()
                 && !Self::hyperzoom_focal_handle_at(ui.ctx(), state, image_rect).is_some_and(|(_, at)| egui::Rect::from_center_size(at, egui::Vec2::splat(FOCAL_HANDLE_ARM * 2.0)).contains(pointer))
             {
                 // Only start a drag if the pointer is within the image_rect (with some margin)
@@ -5594,7 +5604,7 @@ impl ViewerPanel {
         // Grab a corner, or the whole quad from inside it; drag; let go. In
         // Leave out, a drag draws a rectangle.
         if let Some(p) = pointer.filter(|p| !bar_rect.contains(*p)) {
-            if pressed && image_rect.expand(16.0).contains(p) {
+            if pressed && image_rect.expand(16.0).contains(p) && reaches_viewer(ui, p) {
                 if tool.edit == SurfaceEdit::LeaveOut {
                     if image_rect.contains(p) {
                         tool.drag = Some((6, p, tool.corners));
@@ -5883,9 +5893,10 @@ impl ViewerPanel {
         };
         let screen: [egui::Pos2; 4] = std::array::from_fn(|i| view.to_screen(shown[i][0], shown[i][1]));
         let painter = ui.painter().with_clip_rect(ui.clip_rect());
-        // White on black, as the transform gizmo's handles are: visible
-        // over any picture, and not mistaken for the picture.
-        let (fill, edge) = (egui::Color32::WHITE, egui::Color32::BLACK);
+        // Round and in the tools' blue, as the chart's are: at their
+        // untouched place they sit on the transform box's corners, and white
+        // squares there read as that box's own handles, not a pin's.
+        let (fill, edge) = (CORNER_PIN_HANDLE, egui::Color32::BLACK);
         let hit_radius = 10.0;
         let pointer_pos = ui.input(|i| i.pointer.interact_pos());
         let hit = |p: egui::Pos2| screen.iter().position(|s| (p - *s).length() <= hit_radius);
@@ -5893,11 +5904,10 @@ impl ViewerPanel {
 
         painter.add(egui::Shape::closed_line(screen.to_vec(), egui::Stroke::new(1.0_f32, fill)));
         for (i, s) in screen.iter().enumerate() {
-            let half = if hot == Some(i) { 5.0 } else { 4.0 };
-            let rect = egui::Rect::from_center_size(*s, egui::vec2(half * 2.0, half * 2.0));
-            painter.rect_filled(rect, 0.0, fill);
-            painter.rect_stroke(rect, 0.0, egui::Stroke::new(1.0_f32, edge));
+            let radius = if hot == Some(i) { 6.0 } else { 5.0 };
+            painter.circle(*s, radius, fill, egui::Stroke::new(1.0_f32, edge));
         }
+        painter.text(screen[0] + egui::vec2(10.0, 8.0), egui::Align2::LEFT_TOP, "Corner Pin", egui::FontId::proportional(11.0), fill);
 
         let drag_key = format!("{:?}:builtin:{}", clip_id, effect_index);
         let pressed = ui.input(|i| i.pointer.primary_pressed());
@@ -6001,7 +6011,7 @@ impl ViewerPanel {
                 }
             }
         } else if let Some(p) = pointer_pos {
-            if pressed && state.viewer_transform_drag.is_none() {
+            if pressed && reaches_viewer(ui, p) && state.viewer_transform_drag.is_none() {
                 if viewer_rect.contains(p) {
                     if let Some(corner) = hit(p) {
                         state.viewer_corner_pin_drag = Some(crate::state::ViewerCornerPinDrag {
@@ -6112,7 +6122,7 @@ impl ViewerPanel {
             }
         } else if let Some(p) = pointer_pos {
             let pressed = ui.input(|i| i.pointer.primary_pressed());
-            if pressed && state.viewer_transform_drag.is_none() && state.viewer_corner_pin_drag.is_none() && viewer_rect.contains(p) && near(p) {
+            if pressed && reaches_viewer(ui, p) && state.viewer_transform_drag.is_none() && state.viewer_corner_pin_drag.is_none() && viewer_rect.contains(p) && near(p) {
                 state.viewer_waterline_drag = Some(crate::state::ViewerWaterlineDrag { clip_id, node, drag_start_pos: p, started: false });
             } else if near(p) {
                 ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
@@ -9096,6 +9106,40 @@ mod surface_tool_bar_tests {
     use crate::state::{AppState, SurfaceEdit, SurfaceTool};
     use klipp_core::AppCommand;
 
+    /// A press on a window over the viewer takes no hold of the surface's
+    /// corners under it; on the viewer it does.
+    #[test]
+    fn a_press_on_a_window_over_the_surface_tool_leaves_its_corners() {
+        let image = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1280.0, 720.0));
+        let corners = [[0.25, 0.2], [0.75, 0.2], [0.75, 0.8], [0.25, 0.8]];
+        let dragged = |window: bool| {
+            let ctx = egui::Context::default();
+            let panel = ViewerPanel::default();
+            let mut state = AppState { surface_tool: Some(SurfaceTool { clip_id: klipp_core::ClipId::new(), surface: None, name: None, corners, direction: 0, track: None, exclude: Vec::new(), edit: SurfaceEdit::Corners, drag: None }), ..Default::default() };
+            let mut clock = 0.0;
+            let mut run = |state: &mut AppState, events: Vec<egui::Event>| {
+                clock += 0.05;
+                let _ = ctx.run(egui::RawInput { screen_rect: Some(image), time: Some(clock), events, ..Default::default() }, |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| panel.draw_surface_tool(ui, state, image, &mut Vec::new()));
+                    if window {
+                        crate::widgets::window("Over").fixed_pos(egui::pos2(500.0, 300.0)).fixed_size([300.0, 200.0]).show(ctx, |ui| { ui.allocate_space(ui.available_size()); });
+                    }
+                });
+            };
+            run(&mut state, Vec::new());
+            run(&mut state, Vec::new());
+            let (from, to) = (egui::pos2(600.0, 400.0), egui::pos2(300.0, 300.0));
+            let press = |pos, pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+            run(&mut state, vec![egui::Event::PointerMoved(from)]);
+            run(&mut state, vec![press(from, true)]);
+            run(&mut state, vec![egui::Event::PointerMoved(to)]);
+            run(&mut state, vec![press(to, false)]);
+            state.surface_tool.expect("still open").corners
+        };
+        assert_eq!(dragged(true), corners, "under the window");
+        assert_ne!(dragged(false), corners, "on the viewer");
+    }
+
     /// The bar's buttons take their clicks, over the layer that holds the
     /// viewer's pointer for the corners: under it, the tool could be neither
     /// run, nor changed, nor left. Its words are drawn in a colour to read.
@@ -9257,6 +9301,40 @@ mod chart_tool_tests {
     use super::{draw_chart_tool, moved_chart_corners};
     use crate::state::{AppState, ChartTool};
     use klipp_core::AppCommand;
+
+    /// A press on a window over the viewer, and dragging that window, leaves
+    /// the chart's corners where they were; on the viewer the same drag moves
+    /// them. Dragging Colour Check moved the grid onto other patches.
+    #[test]
+    fn dragging_a_window_over_the_chart_leaves_its_corners() {
+        let image = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1280.0, 720.0));
+        let corners = [[0.25, 0.2], [0.75, 0.2], [0.75, 0.8], [0.25, 0.8]];
+        let dragged = |window: bool| {
+            let ctx = egui::Context::default();
+            let mut state = AppState { chart_tool: Some(ChartTool { clip_id: klipp_core::ClipId::new(), corners, drag: None }), ..Default::default() };
+            let mut clock = 0.0;
+            let mut run = |state: &mut AppState, events: Vec<egui::Event>| {
+                clock += 0.05;
+                let _ = ctx.run(egui::RawInput { screen_rect: Some(image), time: Some(clock), events, ..Default::default() }, |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| draw_chart_tool(ui, state, image, &mut Vec::new()));
+                    if window {
+                        crate::widgets::window("Over").fixed_pos(egui::pos2(500.0, 300.0)).fixed_size([300.0, 200.0]).show(ctx, |ui| { ui.allocate_space(ui.available_size()); });
+                    }
+                });
+            };
+            run(&mut state, Vec::new());
+            run(&mut state, Vec::new());
+            let (from, to) = (egui::pos2(600.0, 400.0), egui::pos2(300.0, 300.0));
+            let press = |pos, pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+            run(&mut state, vec![egui::Event::PointerMoved(from)]);
+            run(&mut state, vec![press(from, true)]);
+            run(&mut state, vec![egui::Event::PointerMoved(to)]);
+            run(&mut state, vec![press(to, false)]);
+            state.chart_tool.expect("still open").corners
+        };
+        assert_eq!(dragged(true), corners, "under the window");
+        assert_ne!(dragged(false), corners, "on the viewer");
+    }
 
     /// The bar's buttons take their clicks, over the layer that holds the
     /// viewer's pointer for the corners: under it, they looked up and did

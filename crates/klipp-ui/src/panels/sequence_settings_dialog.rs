@@ -116,10 +116,10 @@ impl SequenceSettingsDialog {
                         });
                 });
                 rows::row(ui, theme, "Width", |ui| {
-                    ui.add(egui::DragValue::new(&mut self.width).range(2..=8192).speed(2.0).suffix(" px"));
+                    ui.add(crate::widgets::number_field(&mut self.width).range(2..=8192).speed(2.0).suffix(" px"));
                 });
                 rows::row(ui, theme, "Height", |ui| {
-                    ui.add(egui::DragValue::new(&mut self.height).range(2..=8192).speed(2.0).suffix(" px"));
+                    ui.add(crate::widgets::number_field(&mut self.height).range(2..=8192).speed(2.0).suffix(" px"));
                 });
 
                 rows::heading(ui, theme, "FRAME RATE");
@@ -146,7 +146,7 @@ impl SequenceSettingsDialog {
 
                 rows::heading(ui, theme, "MOTION BLUR");
                 rows::row(ui, theme, "Shutter", |ui| {
-                    ui.add(egui::DragValue::new(&mut self.shutter_deg).range(0.0..=360.0).speed(1.0).suffix("\u{00b0}"))
+                    ui.add(crate::widgets::number_field(&mut self.shutter_deg).range(0.0..=360.0).speed(1.0).suffix("\u{00b0}"))
                         .on_hover_text("How long the shutter stays open, as a share of a frame. 180\u{00b0} is the film look; 0 is no motion blur.");
                     // Right to left: the presets in reverse, so they read Off to 360°.
                     for (label, deg) in [("360\u{00b0}", 360.0), ("180\u{00b0}", 180.0), ("90\u{00b0}", 90.0), ("Off", 0.0)] {
@@ -156,7 +156,7 @@ impl SequenceSettingsDialog {
                     }
                 });
                 rows::row(ui, theme, "Samples", |ui| {
-                    ui.add_enabled(self.shutter_deg > 0.0, egui::DragValue::new(&mut self.shutter_samples).range(2..=32))
+                    ui.add_enabled(self.shutter_deg > 0.0, crate::widgets::number_field(&mut self.shutter_samples).range(2..=32))
                         .on_hover_text("Instants blended across the open shutter. More is smoother and slower to render.");
                 });
 
@@ -166,7 +166,7 @@ impl SequenceSettingsDialog {
                     if ui.small_button("Reset").on_hover_text("Back to 203 nits, SDR white").clicked() {
                         self.title_nits = klipp_timeline::DEFAULT_TITLE_NITS;
                     }
-                    ui.add(egui::DragValue::new(&mut self.title_nits).range(*range.start()..=*range.end()).speed(1.0).suffix(" nits"))
+                    ui.add(crate::widgets::number_field(&mut self.title_nits).range(*range.start()..=*range.end()).speed(1.0).suffix(" nits"))
                         .on_hover_text(
                             "How bright a title's white is in an HDR (PQ or HLG) export and in the viewer's HDR preview. \
                              203 nits is where SDR white sits; brighter stands out more. Held under the export's peak. \

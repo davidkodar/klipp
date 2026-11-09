@@ -154,7 +154,7 @@ pub(super) fn show(
                         for p in [&mut v.incoming, &mut v.outgoing, &mut v.point] {
                             for x in p {
                                 changed |= ui
-                                    .add(egui::DragValue::new(x).speed(0.005).range(-4.0..=5.0))
+                                    .add(crate::widgets::number_field(x).speed(0.005).range(-4.0..=5.0))
                                     .changed();
                             }
                         }
@@ -359,7 +359,7 @@ fn trim_controls(
         .changed();
     changed |= ui
         .add(
-            egui::DragValue::new(&mut range.offset)
+            crate::widgets::number_field(&mut range.offset)
                 .range(-100.0..=100.0)
                 .speed(0.01)
                 .prefix("Offset (turns): "),

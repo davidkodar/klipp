@@ -687,6 +687,15 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             }
             v
         }
+        "klipp_track_mask" => {
+            let mut v = json!({ "method": "track_mask", "clip_id": arg_str(args, "clip_id")? });
+            for key in ["node_id", "mask_index", "perspective"] {
+                if let Some(x) = args.get(key).filter(|x| !x.is_null()) {
+                    v[key] = x.clone();
+                }
+            }
+            v
+        }
         "klipp_measure_water" => json!({ "method": "measure_water", "clip_id": arg_str(args, "clip_id")? }),
         "klipp_surface_key" => {
             let mut v = json!({
@@ -2308,6 +2317,15 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              "Split a clip at the hard cuts in its picture. Details: klipp_guide topic detect_scene_cuts.",
              json!({ "clip_id": { "type": "string", "description": "The clip to split" } }),
              vec!["clip_id"]),
+        tool("klipp_track_mask",
+             "Follow a mask from the frame under the playhead, as a background job. Details: klipp_guide topic track_mask.",
+             json!({
+                 "clip_id": { "type": "string", "description": "The footage clip" },
+                 "node_id": { "type": "string" },
+                 "mask_index": { "type": "integer", "minimum": 0 },
+                 "perspective": { "type": "boolean" },
+             }),
+             vec!["clip_id"]),
         tool("klipp_track_surface",
              "Track a planar surface in perspective for the pin op, from a click or corners, in the background. Details: klipp_guide topic track_surface.",
              json!({
@@ -3831,6 +3849,9 @@ mod catalogue_trim_tests {
         ("klipp_normalize", "group", "One gain for all the clips. Default false"),
         ("klipp_normalize", "mode", "loudness: integrated LUFS (ITU-R BS.1770); peak: sample peak dBFS. Default loudness"),
         ("klipp_normalize", "target", "LUFS or dBFS, or a loudness target by name (Web, Podcast, EBU R128 broadcast, ATSC A/85, or one of the person's own). Default -14 LUFS (web) or -1 dBFS; -16 podcast, -23 EBU R128, -24 ATSC A/85"),
+        ("klipp_track_mask", "mask_index", "Which shape on the node; else the first"),
+        ("klipp_track_mask", "node_id", "The Mask node; else the first with a shape"),
+        ("klipp_track_mask", "perspective", "Follow four corners on a flat surface, not a move, size and turn"),
         ("klipp_track_surface", "at_secs", "Timeline second of the corners; else the playhead"),
         ("klipp_track_surface", "click", "[x,y] inside the surface, frame fractions; instead of corners"),
         ("klipp_track_surface", "corners", "[[x,y] TL, TR, BR, BL], frame fractions"),

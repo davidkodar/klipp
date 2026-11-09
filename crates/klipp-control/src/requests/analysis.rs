@@ -121,12 +121,21 @@ pub(crate) fn respond(
                 return Err("track_subject with download_model fetches the model first; send it on its own".into());
             }
             klipp_analysis::subject_matte::ensure_model(which, download_model).map_err(|e| format!("{e} (pass download_model: true to fetch it)"))?;
+            // Told before the app binds it: its own step, from the same graph.
+            let combines = !cut_out && transition.is_none() && {
+                let subject = if which == MatteModel::Foreground { klipp_nodes::SubjectMatte::Foreground } else { klipp_nodes::SubjectMatte::Subject };
+                let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+                seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == clip).is_some_and(|c| klipp_timeline::GradeAccess::grade(c).subject_would_combine(subject, None))
+            };
             let mut send = sender!(ctx, collect);
             let mut reply = match &transition {
                 Some(ts) => send(AppCommand::TrackTransitionSubject { transition_id: ts.transition })?,
                 None => send(AppCommand::TrackSubject { clip_id: clip, model: name, into: Some(if cut_out { klipp_core::SubjectMatteUse::CutOut } else { klipp_core::SubjectMatteUse::Grade }) })?,
             };
             reply["job_id"] = json!(format!("{}:{}", media.0, klipp_analysis::subject_matte::ID));
+            if combines {
+                reply["matte"] = json!(format!("The subject's matte is {}: the grade reaches where both do.", klipp_nodes::graph::COMBINED_WITH_MATTE));
+            }
             reply["next"] = json!("The matte is made in the background and shows on the clip's grade as it goes. Read job_status with this job_id for its progress; cancel_job stops it and keeps the frames made.");
             Ok(reply)
         }

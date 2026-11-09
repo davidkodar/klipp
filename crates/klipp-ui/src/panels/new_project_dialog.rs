@@ -409,7 +409,7 @@ impl NewProjectDialog {
                             );
                             ui.add_sized(
                                 egui::vec2(48.0 * control_scale, field_height),
-                                egui::DragValue::new(&mut self.custom_width).range(64..=8192).speed(2),
+                                crate::widgets::number_field(&mut self.custom_width).range(64..=8192).speed(2),
                             );
                             ui.label(
                                 egui::RichText::new("H")
@@ -418,7 +418,7 @@ impl NewProjectDialog {
                             );
                             ui.add_sized(
                                 egui::vec2(48.0 * control_scale, field_height),
-                                egui::DragValue::new(&mut self.custom_height).range(64..=8192).speed(2),
+                                crate::widgets::number_field(&mut self.custom_height).range(64..=8192).speed(2),
                             );
                         });
                     }
