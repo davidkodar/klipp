@@ -1336,6 +1336,13 @@ impl Sequence {
         self.tracks.iter().flat_map(|t| t.clips.iter())
     }
 
+    /// How many clips the sequence holds, as the status says it and the
+    /// Projects card shows it: a gap is a space between clips, not one.
+    /// The card counted gaps, and said 11 where the status said 8.
+    pub fn clip_count(&self) -> usize {
+        self.all_clips().filter(|c| !c.kind.is_gap()).count()
+    }
+
     /// Mutable iterator over all clips in all tracks.
     pub fn all_clips_mut(&mut self) -> impl Iterator<Item = &mut Clip> {
         self.tracks.iter_mut().flat_map(|t| t.clips.iter_mut())

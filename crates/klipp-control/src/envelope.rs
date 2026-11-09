@@ -157,7 +157,7 @@ pub(crate) fn status_text(f: &StatusFacts) -> String {
     let seq = f.sequence;
     let fps = seq.fps.as_f64();
     let fps = if (fps - fps.round()).abs() < 1e-3 { format!("{}", fps.round()) } else { format!("{fps:.2}") };
-    let clips = seq.tracks.iter().map(|t| t.clips.iter().filter(|c| !matches!(c.kind, klipp_timeline::ClipKind::Gap)).count()).sum::<usize>();
+    let clips = seq.clip_count();
     let (pictures, sounds) = seq.tracks.iter().fold((0, 0), |(v, a), t| match t.kind {
         klipp_timeline::TrackKind::Audio => (v, a + 1),
         _ => (v + 1, a),
