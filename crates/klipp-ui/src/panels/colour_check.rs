@@ -605,32 +605,26 @@ pub(crate) fn whole_faces_at_playhead(state: &AppState) -> Vec<[f32; 4]> {
 /// What the file of the picture clip under the playhead says about
 /// being camera log (#504).
 fn log_prior_at_playhead(state: &AppState) -> measure::LogPrior {
+    picture_at_playhead(state).map(|(item, _)| item.log_prior()).unwrap_or_default()
+}
+
+/// The file of the picture clip under the playhead, and the second of it
+/// shown there. The live playhead: the sequence's own `last_playhead` is
+/// only where it was left when another sequence was opened, and read
+/// for this one it measured skin at the start of the timeline, on
+/// another clip, and found no face on a face in plain view.
+fn picture_at_playhead(state: &AppState) -> Option<(&klipp_media::MediaItem, f64)> {
     let seq = state.sequence();
-    let tc = seq.last_playhead.unwrap_or_else(|| klipp_core::Timecode::from_secs_f64(0.0, seq.fps.rate()));
-    seq.tracks
-        .iter()
-        .filter(|t| t.kind == klipp_timeline::TrackKind::Video && t.visible)
-        .find_map(|t| t.clip_at_timecode(tc))
-        .and_then(|(_, clip)| clip.media_id().and_then(|m| state.media_pool.get(&m)))
-        .map(|item| item.log_prior())
-        .unwrap_or_default()
+    let tc = state.playhead;
+    let (_, clip) = seq.tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Video && t.visible).find_map(|t| t.clip_at_timecode(tc))?;
+    let item = clip.media_id().and_then(|m| state.media_pool.get(&m))?;
+    Some((item, clip.source_secs_at((tc.to_secs_f64() - clip.timeline_in.to_secs_f64()).max(0.0), seq.fps.as_f64())))
 }
 
 fn face_regions_at_playhead(state: &AppState, whole: bool) -> Vec<[f32; 4]> {
-    let seq = state.sequence();
-    let tc = seq.last_playhead.unwrap_or_else(|| klipp_core::Timecode::from_secs_f64(0.0, seq.fps.rate()));
-    let Some((_, clip)) = seq
-        .tracks
-        .iter()
-        .filter(|t| t.kind == klipp_timeline::TrackKind::Video && t.visible)
-        .find_map(|t| t.clip_at_timecode(tc))
-    else {
+    let Some((item, source)) = picture_at_playhead(state) else {
         return Vec::new();
     };
-    let Some(item) = clip.media_id().and_then(|m| state.media_pool.get(&m)) else {
-        return Vec::new();
-    };
-    let source = clip.source_secs_at((tc.to_secs_f64() - clip.timeline_in.to_secs_f64()).max(0.0), 30.0);
     let Some(framing) = klipp_analysis::report::MediaAnalysis::load(&item.path).framing else {
         return Vec::new();
     };
@@ -673,6 +667,26 @@ pub(crate) fn open_rect(ctx: &egui::Context) -> Option<egui::Rect> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Skin is read at the playhead: the clip under it and the second of
+    /// its file shown there, not the start of the timeline the sequence's
+    /// remembered playhead held — there a harbour shot was measured and
+    /// "No face found" said of an interview with a face in plain view.
+    #[test]
+    fn skin_is_read_where_the_playhead_is() {
+        let mut state = AppState::default();
+        let tc = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 24);
+        let harbour = state.media_pool.add(klipp_media::MediaItem::synthetic_for_test("/tmp/harbour.mp4".into(), None));
+        let interview = state.media_pool.add(klipp_media::MediaItem::synthetic_for_test("/tmp/interview.mp4".into(), None));
+        let clips = &mut state.sequences[0].tracks[0].clips;
+        clips.push(klipp_timeline::Clip::media(harbour, tc(0.0), tc(4.0), tc(1.0), tc(5.0)));
+        clips.push(klipp_timeline::Clip::media(interview, tc(8.0), tc(14.0), tc(2.0), tc(8.0)));
+        state.sequences[0].last_playhead = None;
+        state.playhead = tc(11.04);
+        let (item, source) = picture_at_playhead(&state).expect("a clip under the playhead");
+        assert_eq!(item.path, std::path::PathBuf::from("/tmp/interview.mp4"), "the clip under the playhead");
+        assert!((source - 5.04).abs() < 0.05, "its file at {source:.2} s, not 5.04");
+    }
     use std::sync::{Arc, Mutex};
 
     fn ctx() -> egui::Context {
