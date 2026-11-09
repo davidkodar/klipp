@@ -142,16 +142,16 @@ pub fn show_dialog(ctx: &egui::Context, state: &mut crate::state::AppState) -> V
                                 }
                             }
                         });
-                        ui.add(egui::DragValue::new(&mut dialog.settings.target).range(-70.0..=0.0).speed(0.1).fixed_decimals(1).suffix(" LUFS"));
+                        ui.add(crate::widgets::number_field(&mut dialog.settings.target).range(-70.0..=0.0).speed(0.1).fixed_decimals(1).suffix(" LUFS"));
                     }
                     NormalizeMode::Peak => {
-                        ui.add(egui::DragValue::new(&mut dialog.settings.target).range(-60.0..=0.0).speed(0.1).fixed_decimals(1).suffix(" dBFS"));
+                        ui.add(crate::widgets::number_field(&mut dialog.settings.target).range(-60.0..=0.0).speed(0.1).fixed_decimals(1).suffix(" dBFS"));
                     }
                 });
                 ui.end_row();
 
                 ui.label("True-peak ceiling");
-                ui.add(egui::DragValue::new(&mut dialog.settings.ceiling_dbtp).range(-20.0..=0.0).speed(0.1).fixed_decimals(1).suffix(" dBTP"));
+                ui.add(crate::widgets::number_field(&mut dialog.settings.ceiling_dbtp).range(-20.0..=0.0).speed(0.1).fixed_decimals(1).suffix(" dBTP"));
                 ui.end_row();
 
                 ui.label("Clips");

@@ -709,7 +709,7 @@ impl PreferencesPanel {
 
         Self::setting_row_with_subtitle(ui, "Also auto-save every N operations", "0 = off", theme, |ui| {
             let mut v = prefs.general.auto_save_op_threshold;
-            if ui.add(egui::DragValue::new(&mut v).range(0..=1000).speed(0.5)).changed() {
+            if ui.add(crate::widgets::number_field(&mut v).range(0..=1000).speed(0.5)).changed() {
                 prefs.general.auto_save_op_threshold = v;
                 *dirty = true;
             }
@@ -717,7 +717,7 @@ impl PreferencesPanel {
 
         Self::setting_row(ui, "Backup versions to keep", theme, |ui| {
             let mut v = prefs.editing.backup_count;
-            if ui.add(egui::DragValue::new(&mut v).range(0..=20).speed(0.5)).changed() {
+            if ui.add(crate::widgets::number_field(&mut v).range(0..=20).speed(0.5)).changed() {
                 prefs.editing.backup_count = v;
                 *dirty = true;
             }
@@ -820,7 +820,7 @@ impl PreferencesPanel {
 
         Self::setting_row_with_subtitle(ui, "Start after", "Seconds with nothing done before heavy parts are drawn", theme, |ui| {
             let mut v = prefs.playback.background_render_delay_secs;
-            if ui.add_enabled(prefs.playback.background_render, egui::DragValue::new(&mut v).range(1.0..=60.0).speed(0.1).suffix(" s").fixed_decimals(1)).changed() {
+            if ui.add_enabled(prefs.playback.background_render, crate::widgets::number_field(&mut v).range(1.0..=60.0).speed(0.1).suffix(" s").fixed_decimals(1)).changed() {
                 prefs.playback.background_render_delay_secs = v;
                 *dirty = true;
             }
@@ -897,7 +897,7 @@ impl PreferencesPanel {
 
         Self::setting_row(ui, "Pre-roll duration", theme, |ui| {
             let mut v = prefs.playback.pre_roll_duration;
-            if ui.add(egui::DragValue::new(&mut v).range(0.0..=10.0).speed(0.1).suffix(" s").fixed_decimals(1)).changed() {
+            if ui.add(crate::widgets::number_field(&mut v).range(0.0..=10.0).speed(0.1).suffix(" s").fixed_decimals(1)).changed() {
                 prefs.playback.pre_roll_duration = v;
                 *dirty = true;
             }
@@ -993,7 +993,7 @@ impl PreferencesPanel {
 
         Self::setting_row_with_subtitle(ui, "Snap threshold", "How near an edge comes, in points on screen, before it snaps; it holds until half as far again", theme, |ui| {
             let mut v = prefs.editing.snap_threshold_px;
-            if ui.add(egui::DragValue::new(&mut v).range(2.0..=30.0).speed(0.5).suffix(" pt").fixed_decimals(0)).changed() {
+            if ui.add(crate::widgets::number_field(&mut v).range(2.0..=30.0).speed(0.5).suffix(" pt").fixed_decimals(0)).changed() {
                 // Dispatch through AppCommand so the handler also
                 // mirrors to state.snap_threshold_px (consulted live
                 // by the snap-resolution layer via the per-paint
@@ -1070,7 +1070,7 @@ impl PreferencesPanel {
                     });
                 if let GridInterval::Custom(secs) = prefs.editing.grid_snap_interval {
                     let mut v = secs;
-                    if ui.add(egui::DragValue::new(&mut v).range(0.001..=60.0).speed(0.05).suffix(" s").fixed_decimals(3)).changed() {
+                    if ui.add(crate::widgets::number_field(&mut v).range(0.001..=60.0).speed(0.05).suffix(" s").fixed_decimals(3)).changed() {
                         let new_val = GridInterval::Custom(v.max(0.001));
                         prefs.editing.grid_snap_interval = new_val;
                         *dirty = true;
@@ -1234,7 +1234,7 @@ impl PreferencesPanel {
 
         Self::setting_row(ui, "Default transition duration", theme, |ui| {
             let mut v = prefs.editing.default_transition_frames;
-            if ui.add(egui::DragValue::new(&mut v).range(1..=120).speed(1.0).suffix(" fr")).changed() {
+            if ui.add(crate::widgets::number_field(&mut v).range(1..=120).speed(1.0).suffix(" fr")).changed() {
                 // Dispatch through AppCommand for live-sync to
                 // state.default_transition_frames (read by transition
                 // application sites in timeline.rs and transitions_tab.rs).
@@ -1248,7 +1248,7 @@ impl PreferencesPanel {
         // one second, or a number of frames.
         Self::setting_row(ui, "Shift+arrow step", theme, |ui| {
             let mut v = prefs.editing.shift_step_frames;
-            let drag = egui::DragValue::new(&mut v)
+            let drag = crate::widgets::number_field(&mut v)
                 .range(0..=600)
                 .speed(1.0)
                 .custom_formatter(|n, _| if n < 0.5 { "1 second".to_string() } else { format!("{n:.0} fr") });
@@ -1296,21 +1296,21 @@ impl PreferencesPanel {
 
         Self::setting_row_with_subtitle(ui, "Search radius", "How far a new track point looks for its match, in pixels", theme, |ui| {
             let mut v = prefs.editing.track_search_radius;
-            if ui.add(egui::DragValue::new(&mut v).range(8..=128).speed(1.0).suffix(" px")).changed() {
+            if ui.add(crate::widgets::number_field(&mut v).range(8..=128).speed(1.0).suffix(" px")).changed() {
                 prefs.editing.track_search_radius = v; *dirty = true;
             }
         });
 
         Self::setting_row_with_subtitle(ui, "Patch size", "Half-width of matching patch", theme, |ui| {
             let mut v = prefs.editing.track_patch_size;
-            if ui.add(egui::DragValue::new(&mut v).range(2..=16).speed(1.0).suffix(" px")).changed() {
+            if ui.add(crate::widgets::number_field(&mut v).range(2..=16).speed(1.0).suffix(" px")).changed() {
                 prefs.editing.track_patch_size = v; *dirty = true;
             }
         });
 
         Self::setting_row_with_subtitle(ui, "Loss threshold", "SAD threshold for tracking loss", theme, |ui| {
             let mut v = prefs.editing.track_loss_threshold;
-            if ui.add(egui::DragValue::new(&mut v).range(5..=100).speed(1.0)).changed() {
+            if ui.add(crate::widgets::number_field(&mut v).range(5..=100).speed(1.0)).changed() {
                 prefs.editing.track_loss_threshold = v; *dirty = true;
             }
         });
@@ -1731,14 +1731,14 @@ impl PreferencesPanel {
 
         Self::setting_row_with_subtitle(ui, "Anti-click fade", "Duration of micro-fade at clip edges", theme, |ui| {
             let mut v = prefs.advanced.anti_click_fade_ms;
-            if ui.add(egui::DragValue::new(&mut v).range(0.0..=20.0).speed(0.5).suffix(" ms").fixed_decimals(0)).changed() {
+            if ui.add(crate::widgets::number_field(&mut v).range(0.0..=20.0).speed(0.5).suffix(" ms").fixed_decimals(0)).changed() {
                 prefs.advanced.anti_click_fade_ms = v; *dirty = true;
             }
         });
 
         Self::setting_row_with_subtitle(ui, "Default fade duration", "A clip's Add Fade In and Add Fade Out", theme, |ui| {
             let mut v_secs = prefs.audio.default_fade_duration_ms as f32 / 1000.0;
-            if ui.add(egui::DragValue::new(&mut v_secs).range(0.05..=5.0).speed(0.05).suffix(" s").fixed_decimals(2)).changed() {
+            if ui.add(crate::widgets::number_field(&mut v_secs).range(0.05..=5.0).speed(0.05).suffix(" s").fixed_decimals(2)).changed() {
                 prefs.audio.default_fade_duration_ms = (v_secs * 1000.0).round() as u32;
                 *dirty = true;
             }
@@ -1783,7 +1783,7 @@ impl PreferencesPanel {
 
         Self::setting_row(ui, "Peak hold time", theme, |ui| {
             let mut v = prefs.audio.peak_hold_time_secs;
-            if ui.add(egui::DragValue::new(&mut v).range(0.5..=10.0).speed(0.1).suffix(" s").fixed_decimals(1)).changed() {
+            if ui.add(crate::widgets::number_field(&mut v).range(0.5..=10.0).speed(0.1).suffix(" s").fixed_decimals(1)).changed() {
                 prefs.audio.peak_hold_time_secs = v; *dirty = true;
             }
         });
@@ -1793,28 +1793,28 @@ impl PreferencesPanel {
 
         Self::setting_row_with_subtitle(ui, "Duck level", "Target volume while ducking (0 = silence, 1 = unchanged)", theme, |ui| {
             let mut v = prefs.audio.duck_level;
-            if ui.add(egui::DragValue::new(&mut v).range(0.0..=1.0).speed(0.01).fixed_decimals(2)).changed() {
+            if ui.add(crate::widgets::number_field(&mut v).range(0.0..=1.0).speed(0.01).fixed_decimals(2)).changed() {
                 prefs.audio.duck_level = v; *dirty = true;
             }
         });
 
         Self::setting_row(ui, "Attack", theme, |ui| {
             let mut v = prefs.audio.duck_attack_secs;
-            if ui.add(egui::DragValue::new(&mut v).range(0.01..=2.0).speed(0.01).suffix(" s").fixed_decimals(2)).changed() {
+            if ui.add(crate::widgets::number_field(&mut v).range(0.01..=2.0).speed(0.01).suffix(" s").fixed_decimals(2)).changed() {
                 prefs.audio.duck_attack_secs = v; *dirty = true;
             }
         });
 
         Self::setting_row(ui, "Release", theme, |ui| {
             let mut v = prefs.audio.duck_release_secs;
-            if ui.add(egui::DragValue::new(&mut v).range(0.01..=2.0).speed(0.01).suffix(" s").fixed_decimals(2)).changed() {
+            if ui.add(crate::widgets::number_field(&mut v).range(0.01..=2.0).speed(0.01).suffix(" s").fixed_decimals(2)).changed() {
                 prefs.audio.duck_release_secs = v; *dirty = true;
             }
         });
 
         Self::setting_row_with_subtitle(ui, "Threshold", "Sidechain level above which ducking activates", theme, |ui| {
             let mut v = prefs.audio.duck_threshold;
-            if ui.add(egui::DragValue::new(&mut v).range(0.0..=1.0).speed(0.01).fixed_decimals(2)).changed() {
+            if ui.add(crate::widgets::number_field(&mut v).range(0.0..=1.0).speed(0.01).fixed_decimals(2)).changed() {
                 prefs.audio.duck_threshold = v; *dirty = true;
             }
         });
@@ -3337,7 +3337,7 @@ impl PreferencesPanel {
 
         Self::setting_row_with_subtitle(ui, "Max cache size", "Frozen tracks' frames and sound are kept first; the render cache keeps to the rest, its least recently used frames going past it", theme, |ui| {
             let mut v = prefs.media_cache.max_cache_size_gb;
-            if ui.add(egui::DragValue::new(&mut v).range(1..=500).speed(1.0).suffix(" GB")).changed() {
+            if ui.add(crate::widgets::number_field(&mut v).range(1..=500).speed(1.0).suffix(" GB")).changed() {
                 prefs.media_cache.max_cache_size_gb = v; *dirty = true;
             }
         });
@@ -3397,7 +3397,7 @@ impl PreferencesPanel {
                 let mut v = prefs.media_cache.filmstrip_height;
                 if ui
                     .add(
-                        egui::DragValue::new(&mut v)
+                        crate::widgets::number_field(&mut v)
                             .range(32..=1024)
                             .speed(1.0)
                             .suffix(" px"),
@@ -3875,7 +3875,7 @@ impl PreferencesPanel {
 
         Self::setting_row(ui, "Printer point", theme, |ui| {
             let mut v = prefs.color.printer_point;
-            if ui.add(egui::DragValue::new(&mut v).range(0.001..=0.1).speed(0.0005).fixed_decimals(4))
+            if ui.add(crate::widgets::number_field(&mut v).range(0.001..=0.1).speed(0.0005).fixed_decimals(4))
                 .on_hover_text("How far one printer-light key moves a channel's offset, as a share of the signal. The keys step red, green, blue or all three by it.")
                 .changed()
             {
@@ -3885,7 +3885,7 @@ impl PreferencesPanel {
 
         Self::setting_row(ui, "Vectorscope skin angle", theme, |ui| {
             let mut v = prefs.color.vectorscope_skin_angle;
-            if ui.add(egui::DragValue::new(&mut v).range(0.0..=360.0).speed(0.5).suffix("\u{00b0}").fixed_decimals(0)).changed() {
+            if ui.add(crate::widgets::number_field(&mut v).range(0.0..=360.0).speed(0.5).suffix("\u{00b0}").fixed_decimals(0)).changed() {
                 prefs.color.vectorscope_skin_angle = v; *dirty = true;
             }
         });
@@ -3920,7 +3920,7 @@ impl PreferencesPanel {
                 ui.add_enabled_ui(enabled, |ui| {
                     let mut v = prefs.color.port_snap_radius_px;
                     if ui.add(
-                        egui::DragValue::new(&mut v)
+                        crate::widgets::number_field(&mut v)
                             .range(4.0..=32.0)
                             .speed(0.5)
                             .suffix(" px")
@@ -3969,7 +3969,7 @@ impl PreferencesPanel {
 
         Self::setting_row(ui, "Default size", theme, |ui| {
             let mut v = prefs.title.default_size_pt;
-            if ui.add(egui::DragValue::new(&mut v).range(8.0..=400.0).speed(0.5).suffix(" pt").fixed_decimals(0)).changed() {
+            if ui.add(crate::widgets::number_field(&mut v).range(8.0..=400.0).speed(0.5).suffix(" pt").fixed_decimals(0)).changed() {
                 prefs.title.default_size_pt = v; *dirty = true;
             }
         });
@@ -4003,7 +4003,7 @@ impl PreferencesPanel {
 
         Self::setting_row(ui, "Default duration", theme, |ui| {
             let mut v = prefs.title.default_duration_secs;
-            if ui.add(egui::DragValue::new(&mut v).range(0.5..=30.0).speed(0.1).suffix(" s").fixed_decimals(1)).changed() {
+            if ui.add(crate::widgets::number_field(&mut v).range(0.5..=30.0).speed(0.1).suffix(" s").fixed_decimals(1)).changed() {
                 prefs.title.default_duration_secs = v; *dirty = true;
             }
         });
@@ -4036,7 +4036,7 @@ impl PreferencesPanel {
         let dim_row = |ui: &mut egui::Ui, label: &str, val: &mut f32, min: f32, max: f32, suffix: &str, dirty: &mut bool| {
             Self::setting_row(ui, label, theme, |ui| {
                 let mut v = *val;
-                if ui.add(egui::DragValue::new(&mut v).range(min..=max).speed(0.5).suffix(suffix)).changed() {
+                if ui.add(crate::widgets::number_field(&mut v).range(min..=max).speed(0.5).suffix(suffix)).changed() {
                     *val = v; *dirty = true;
                 }
             });
@@ -4083,14 +4083,14 @@ impl PreferencesPanel {
         Self::setting_row(ui, "High threshold (clipping)", theme, |ui| {
             let mut v = prefs.viewer.zebra_high_threshold;
             ui.label(egui::RichText::new(format!("{:.0}% IRE", ire(v))).color(theme.text_dim).size(11.0));
-            if ui.add(egui::DragValue::new(&mut v).range(128..=255).speed(1.0)).changed() {
+            if ui.add(crate::widgets::number_field(&mut v).range(128..=255).speed(1.0)).changed() {
                 prefs.viewer.zebra_high_threshold = v; *dirty = true;
             }
         });
         Self::setting_row(ui, "Low threshold (underexposure)", theme, |ui| {
             let mut v = prefs.viewer.zebra_low_threshold;
             ui.label(egui::RichText::new(format!("{:.0}% IRE", ire(v))).color(theme.text_dim).size(11.0));
-            if ui.add(egui::DragValue::new(&mut v).range(0..=128).speed(1.0)).changed() {
+            if ui.add(crate::widgets::number_field(&mut v).range(0..=128).speed(1.0)).changed() {
                 prefs.viewer.zebra_low_threshold = v; *dirty = true;
             }
         });
@@ -4128,19 +4128,19 @@ impl PreferencesPanel {
         });
         Self::setting_row(ui, "Checkerboard tile", theme, |ui| {
             let mut v = prefs.viewer.checkerboard_tile_size;
-            if ui.add(egui::DragValue::new(&mut v).range(4.0..=32.0).speed(0.5).suffix(" px")).changed() {
+            if ui.add(crate::widgets::number_field(&mut v).range(4.0..=32.0).speed(0.5).suffix(" px")).changed() {
                 prefs.viewer.checkerboard_tile_size = v; *dirty = true;
             }
         });
         Self::setting_row(ui, "Transform handle size", theme, |ui| {
             let mut v = prefs.viewer.transform_handle_size;
-            if ui.add(egui::DragValue::new(&mut v).range(4.0..=20.0).speed(0.5).suffix(" px")).changed() {
+            if ui.add(crate::widgets::number_field(&mut v).range(4.0..=20.0).speed(0.5).suffix(" px")).changed() {
                 prefs.viewer.transform_handle_size = v; *dirty = true;
             }
         });
         Self::setting_row(ui, "Fullscreen overlay timeout", theme, |ui| {
             let mut v = prefs.viewer.fullscreen_overlay_timeout_secs;
-            if ui.add(egui::DragValue::new(&mut v).range(1.0..=10.0).speed(0.1).suffix(" sec")).changed() {
+            if ui.add(crate::widgets::number_field(&mut v).range(1.0..=10.0).speed(0.1).suffix(" sec")).changed() {
                 prefs.viewer.fullscreen_overlay_timeout_secs = v; *dirty = true;
             }
         });
@@ -4238,7 +4238,7 @@ impl PreferencesPanel {
 
                 // Luma min
                 let mut min_val = stop.luma_min;
-                if ui.add(egui::DragValue::new(&mut min_val).range(0..=254).speed(1.0)).changed() {
+                if ui.add(crate::widgets::number_field(&mut min_val).range(0..=254).speed(1.0)).changed() {
                     stop.luma_min = min_val;
                     any_changed = true;
                 }
@@ -4246,7 +4246,7 @@ impl PreferencesPanel {
                 // Luma max
                 let mut max_val = stop.luma_max;
                 let max_lower = stop.luma_min.saturating_add(1);
-                if ui.add(egui::DragValue::new(&mut max_val).range(max_lower..=255).speed(1.0)).changed() {
+                if ui.add(crate::widgets::number_field(&mut max_val).range(max_lower..=255).speed(1.0)).changed() {
                     stop.luma_max = max_val;
                     any_changed = true;
                 }
@@ -4327,7 +4327,7 @@ impl PreferencesPanel {
 
         Self::setting_row(ui, "Toast notification duration", theme, |ui| {
             let mut v = prefs.advanced.toast_duration_secs;
-            if ui.add(egui::DragValue::new(&mut v).range(0.5..=10.0).speed(0.1).suffix(" s").fixed_decimals(1)).changed() {
+            if ui.add(crate::widgets::number_field(&mut v).range(0.5..=10.0).speed(0.1).suffix(" s").fixed_decimals(1)).changed() {
                 prefs.advanced.toast_duration_secs = v; *dirty = true;
             }
         });

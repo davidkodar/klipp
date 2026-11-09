@@ -694,7 +694,7 @@ fn show_template_controls(
                     changed = ui.text_edit_singleline(text).changed();
                 }
                 crate::parameterized_templates::TemplateValue::Number(number) => {
-                    let mut drag = egui::DragValue::new(number).speed(0.01);
+                    let mut drag = crate::widgets::number_field(number).speed(0.01);
                     if let Some(range) = &parameter.range {
                         if let (Some(min), Some(max)) = (range.min, range.max) { drag = drag.range(min..=max); }
                     }
@@ -757,7 +757,7 @@ fn template_link_rows(
             ui.add_space(14.0);
             ui.label(egui::RichText::new(label).color(colour).size(11.0));
             let mut value = link.effective(control);
-            if ui.add(egui::DragValue::new(&mut value).speed(0.01).max_decimals(2)).changed() {
+            if ui.add(crate::widgets::number_field(&mut value).speed(0.01).max_decimals(2)).changed() {
                 cmds.push(set(klipp_core::LinkAction::Set(value)));
             }
             let (badge, tip) = link_badge(link, control_label);
@@ -2156,7 +2156,7 @@ fn show_title_pinned_core_textbox(
             .inner_margin(egui::Margin::symmetric(8.0, 6.0))
             .show(ui, |ui| {
                 ui.add(
-                    egui::DragValue::new(&mut size)
+                    crate::widgets::number_field(&mut size)
                         .range(12.0..=300.0)
                         .speed(1.0)
                         .suffix(" pt"),
@@ -2339,7 +2339,7 @@ fn show_title_pinned_core_textbox(
                 ui.label(egui::RichText::new("Mixed underline").size(rows::TEXT).color(theme.text_secondary));
             }
             let mut tracking = display_tracking;
-            if ui.add(egui::DragValue::new(&mut tracking).range(-10.0..=50.0).speed(0.2).suffix(" px").prefix("Tracking: ").fixed_decimals(1)).changed() {
+            if ui.add(crate::widgets::number_field(&mut tracking).range(-10.0..=50.0).speed(0.2).suffix(" px").prefix("Tracking: ").fixed_decimals(1)).changed() {
                 cmds.push(AppCommand::ApplyTitleStyle {
                     clip_id,
                     range_start: sel_range.0,
@@ -2352,7 +2352,7 @@ fn show_title_pinned_core_textbox(
                 ui.label(egui::RichText::new("Mixed").size(rows::TEXT).color(theme.text_secondary));
             }
             let mut baseline = display_baseline;
-            if ui.add(egui::DragValue::new(&mut baseline).range(-200.0..=200.0).speed(0.5).suffix(" px").prefix("Raise: ").fixed_decimals(0))
+            if ui.add(crate::widgets::number_field(&mut baseline).range(-200.0..=200.0).speed(0.5).suffix(" px").prefix("Raise: ").fixed_decimals(0))
                 .on_hover_text("Moves the selection up off the line, or down with a negative value")
                 .changed()
             {
@@ -2456,7 +2456,7 @@ fn show_title_pinned_core_textbox(
         if cur == 1 {
             let mut m = min;
             let resp = ui
-                .add(egui::DragValue::new(&mut m).range(4.0..=1000.0).speed(0.5).fixed_decimals(0).prefix("min "))
+                .add(crate::widgets::number_field(&mut m).range(4.0..=1000.0).speed(0.5).fixed_decimals(0).prefix("min "))
                 .on_hover_text("The smallest the text is set, in the same units as its size");
             if resp.drag_started() {
                 cmds.push(AppCommand::BeginTitleObjectDrag { clip_id });
@@ -4415,7 +4415,7 @@ fn compact_axis_input(
                         crate::widgets::scrubby_param::tint_animated(ui);
                     }
                     let dv_resp = ui.add(
-                        egui::DragValue::new(value)
+                        crate::widgets::number_field(value)
                             .range(0.0..=1.0)
                             .speed(0.001)
                             .fixed_decimals(2),
@@ -4875,7 +4875,7 @@ fn show_title_motion_blur_group(
             let mut samples = mb.samples as i32;
             let samples_resp = ui.horizontal(|ui| {
                 ui.label("Samples:");
-                ui.add(egui::DragValue::new(&mut samples).range(2..=32).speed(0.1)).changed()
+                ui.add(crate::widgets::number_field(&mut samples).range(2..=32).speed(0.1)).changed()
             });
             if samples_resp.inner {
                 cmds.push(AppCommand::SetTitleMotionBlur {
@@ -5079,21 +5079,21 @@ fn show_title_editor(
             // Right to left: the mark at the edge, the value before it.
             rows::rail_row(ui, theme, "Width", |ui| {
                 if ui.small_button(mark(&t.size_x_keyframes)).on_hover_text("Animate width at the playhead").clicked() { toggles.push(klipp_core::TitleTransformProperty::Width); }
-                if ui.add(egui::DragValue::new(&mut w).range(1.0..=400.0).suffix(" %")).changed() { property_changes.push((klipp_core::TitleTransformProperty::Width, w / 100.0)); }
+                if ui.add(crate::widgets::number_field(&mut w).range(1.0..=400.0).suffix(" %")).changed() { property_changes.push((klipp_core::TitleTransformProperty::Width, w / 100.0)); }
             });
             rows::rail_row(ui, theme, "Height", |ui| {
                 if ui.small_button(mark(&t.size_y_keyframes)).on_hover_text("Animate height at the playhead").clicked() { toggles.push(klipp_core::TitleTransformProperty::Height); }
-                if ui.add(egui::DragValue::new(&mut h).range(1.0..=400.0).suffix(" %")).changed() { property_changes.push((klipp_core::TitleTransformProperty::Height, h / 100.0)); }
+                if ui.add(crate::widgets::number_field(&mut h).range(1.0..=400.0).suffix(" %")).changed() { property_changes.push((klipp_core::TitleTransformProperty::Height, h / 100.0)); }
             });
             rows::rail_row(ui, theme, "Rotation", |ui| {
                 if ui.small_button(mark(&t.rotation_keyframes)).on_hover_text("Animate rotation at the playhead").clicked() { toggles.push(klipp_core::TitleTransformProperty::Rotation); }
-                if ui.add(egui::DragValue::new(&mut rotation).speed(0.5).range(-360.0..=360.0).suffix("°")).changed() { property_changes.push((klipp_core::TitleTransformProperty::Rotation, rotation)); }
+                if ui.add(crate::widgets::number_field(&mut rotation).speed(0.5).range(-360.0..=360.0).suffix("°")).changed() { property_changes.push((klipp_core::TitleTransformProperty::Rotation, rotation)); }
             });
             rows::rail_row(ui, theme, "Anchor", |ui| {
                 if ui.small_button(mark(&t.anchor_y_keyframes)).on_hover_text("Animate the anchor's Y at the playhead").clicked() { toggles.push(klipp_core::TitleTransformProperty::AnchorY); }
-                if ui.add(egui::DragValue::new(&mut anchor_y).range(0.0..=100.0).suffix(" Y")).changed() { property_changes.push((klipp_core::TitleTransformProperty::AnchorY, anchor_y / 100.0)); }
+                if ui.add(crate::widgets::number_field(&mut anchor_y).range(0.0..=100.0).suffix(" Y")).changed() { property_changes.push((klipp_core::TitleTransformProperty::AnchorY, anchor_y / 100.0)); }
                 if ui.small_button(mark(&t.anchor_x_keyframes)).on_hover_text("Animate the anchor's X at the playhead").clicked() { toggles.push(klipp_core::TitleTransformProperty::AnchorX); }
-                if ui.add(egui::DragValue::new(&mut anchor_x).range(0.0..=100.0).suffix(" X")).changed() { property_changes.push((klipp_core::TitleTransformProperty::AnchorX, anchor_x / 100.0)); }
+                if ui.add(crate::widgets::number_field(&mut anchor_x).range(0.0..=100.0).suffix(" X")).changed() { property_changes.push((klipp_core::TitleTransformProperty::AnchorX, anchor_x / 100.0)); }
             });
             ui.horizontal(|ui| {
                 ui.add_space(rows::RAIL_PAD);
@@ -5343,7 +5343,7 @@ fn show_title_editor(
                 });
                 if style != 0 {
                     let mut i = indent;
-                    let resp = ui.add(egui::DragValue::new(&mut i).range(0.0..=2000.0).speed(0.5).fixed_decimals(0).prefix("indent ").suffix(" px"));
+                    let resp = ui.add(crate::widgets::number_field(&mut i).range(0.0..=2000.0).speed(0.5).fixed_decimals(0).prefix("indent ").suffix(" px"));
                     if resp.drag_started() {
                         cmds.push(AppCommand::BeginTitleObjectDrag { clip_id });
                     }
@@ -5380,7 +5380,7 @@ fn show_title_editor(
         for (n, &(at, align)) in tabs.iter().enumerate() {
             ui.horizontal(|ui| {
                 let mut a = at;
-                let resp = ui.add(egui::DragValue::new(&mut a).range(0.0..=4000.0).speed(1.0).fixed_decimals(0).suffix(" px"));
+                let resp = ui.add(crate::widgets::number_field(&mut a).range(0.0..=4000.0).speed(1.0).fixed_decimals(0).suffix(" px"));
                 if resp.drag_started() {
                     cmds.push(AppCommand::BeginTitleObjectDrag { clip_id });
                 }
@@ -5421,7 +5421,7 @@ fn show_title_editor(
     let mut baseline = td.baseline_shift();
     rows::rail_row(ui, theme, "Baseline shift", |ui| {
         if ui.add(
-            egui::DragValue::new(&mut baseline)
+            crate::widgets::number_field(&mut baseline)
                 .range(-200.0..=200.0)
                 .speed(0.5)
                 .suffix(" px")
@@ -5433,7 +5433,7 @@ fn show_title_editor(
     rows::rail_row(ui, theme, "Columns", |ui| {
         let mut cols = td.primary_text().map_or(1u8, |tb| tb.columns) as i32;
         if ui.add(
-            egui::DragValue::new(&mut cols)
+            crate::widgets::number_field(&mut cols)
                 .range(1..=8)
                 .speed(0.05),
         ).changed() {
@@ -5479,7 +5479,7 @@ fn show_title_editor(
         // so an off→on→off toggle is a single drag.
         let mut dc = td.drop_cap_scale();
         let resp = rows::rail_row_inner(ui, theme, "Drop cap", |ui| ui.add(
-            egui::DragValue::new(&mut dc)
+            crate::widgets::number_field(&mut dc)
                 .range(0.0..=8.0)
                 .speed(0.05)
                 .fixed_decimals(2)
@@ -5667,8 +5667,8 @@ fn show_title_editor(
     if let Some(lines) = per_line {
         ui.horizontal(|ui| {
             let (mut radius, mut gap) = (lines.radius, lines.gap.max(0.0));
-            let r = ui.add(egui::DragValue::new(&mut radius).range(0.0..=60.0).speed(0.2).prefix("Radius ").suffix(" px")).on_hover_text("The corners' radius, inside and out; 0 is square");
-            let g = ui.add(egui::DragValue::new(&mut gap).range(0.0..=60.0).speed(0.2).prefix("Gap ").suffix(" px")).on_hover_text("0 joins the boxes into one shape; more parts them");
+            let r = ui.add(crate::widgets::number_field(&mut radius).range(0.0..=60.0).speed(0.2).prefix("Radius ").suffix(" px")).on_hover_text("The corners' radius, inside and out; 0 is square");
+            let g = ui.add(crate::widgets::number_field(&mut gap).range(0.0..=60.0).speed(0.2).prefix("Gap ").suffix(" px")).on_hover_text("0 joins the boxes into one shape; more parts them");
             if (r.changed() || g.changed()) && (radius != lines.radius || gap != lines.gap.max(0.0)) {
                 cmds.push(AppCommand::SetTitleBackgroundLines { clip_id, on: true, radius, gap, color: bg_color });
             }
@@ -5849,7 +5849,7 @@ fn show_title_editor(
         // Chromatic aberration: 0 = off, sub-pixel = silent, max ~40px.
         let mut ca = td.primary_text().map_or(0.0, |tb| tb.chromatic_aberration_px);
         let resp = rows::rail_row_inner(ui, theme, "Chromatic aberration", |ui| ui.add(
-            egui::DragValue::new(&mut ca)
+            crate::widgets::number_field(&mut ca)
                 .range(0.0..=40.0)
                 .speed(0.1)
                 .fixed_decimals(1)
@@ -5934,25 +5934,25 @@ fn show_title_editor(
             match path {
                 klipp_timeline::TextPath::Arc { radius, start_angle, sweep } => {
                     let (mut r, mut sa, mut sw) = (*radius, *start_angle, *sweep);
-                    path_changed |= ui.add(egui::DragValue::new(&mut r).range(50.0..=800.0).speed(1.0).suffix(" px").prefix("Radius: ")).changed();
-                    path_changed |= ui.add(egui::DragValue::new(&mut sa).range(-360.0..=360.0).speed(1.0).suffix("\u{00b0}").prefix("Start: ")).changed();
-                    path_changed |= ui.add(egui::DragValue::new(&mut sw).range(-360.0..=360.0).speed(1.0).suffix("\u{00b0}").prefix("Sweep: ")).changed();
+                    path_changed |= ui.add(crate::widgets::number_field(&mut r).range(50.0..=800.0).speed(1.0).suffix(" px").prefix("Radius: ")).changed();
+                    path_changed |= ui.add(crate::widgets::number_field(&mut sa).range(-360.0..=360.0).speed(1.0).suffix("\u{00b0}").prefix("Start: ")).changed();
+                    path_changed |= ui.add(crate::widgets::number_field(&mut sw).range(-360.0..=360.0).speed(1.0).suffix("\u{00b0}").prefix("Sweep: ")).changed();
                     if path_changed {
                         cmds.push(AppCommand::SetTitleTextPath { clip_id, path_kind: 1, p1: r, p2: sa, p3: sw });
                     }
                 }
                 klipp_timeline::TextPath::Circle { radius } => {
                     let mut r = *radius;
-                    path_changed |= ui.add(egui::DragValue::new(&mut r).range(50.0..=800.0).speed(1.0).suffix(" px").prefix("Radius: ")).changed();
+                    path_changed |= ui.add(crate::widgets::number_field(&mut r).range(50.0..=800.0).speed(1.0).suffix(" px").prefix("Radius: ")).changed();
                     if path_changed {
                         cmds.push(AppCommand::SetTitleTextPath { clip_id, path_kind: 2, p1: r, p2: 0.0, p3: 0.0 });
                     }
                 }
                 klipp_timeline::TextPath::Wave { amplitude, frequency, phase } => {
                     let (mut a, mut f, mut p) = (*amplitude, *frequency, *phase);
-                    path_changed |= ui.add(egui::DragValue::new(&mut a).range(5.0..=200.0).speed(0.5).suffix(" px").prefix("Amplitude: ")).changed();
-                    path_changed |= ui.add(egui::DragValue::new(&mut f).range(0.1..=10.0).speed(0.05).prefix("Frequency: ").fixed_decimals(1)).changed();
-                    path_changed |= ui.add(egui::DragValue::new(&mut p).range(0.0..=360.0).speed(1.0).suffix("\u{00b0}").prefix("Phase: ")).changed();
+                    path_changed |= ui.add(crate::widgets::number_field(&mut a).range(5.0..=200.0).speed(0.5).suffix(" px").prefix("Amplitude: ")).changed();
+                    path_changed |= ui.add(crate::widgets::number_field(&mut f).range(0.1..=10.0).speed(0.05).prefix("Frequency: ").fixed_decimals(1)).changed();
+                    path_changed |= ui.add(crate::widgets::number_field(&mut p).range(0.0..=360.0).speed(1.0).suffix("\u{00b0}").prefix("Phase: ")).changed();
                     if path_changed {
                         cmds.push(AppCommand::SetTitleTextPath { clip_id, path_kind: 3, p1: a, p2: f, p3: p });
                     }
@@ -6130,10 +6130,10 @@ fn show_transition_inspector(
                 // each keystroke: "120" is one edit, not 1, 12 and 120,
                 // each checked and perhaps refused in turn.
                 let resp = ui.add(
-                    egui::DragValue::new(&mut frames)
+                    crate::widgets::number_field(&mut frames)
                         .range(1..=600)
                         .suffix(" fr")
-                        .update_while_editing(false),
+                        ,
                 );
                 if resp.dragged() {
                     ui.data_mut(|d| d.insert_temp(draft_id, frames));
@@ -6207,7 +6207,7 @@ fn show_transition_inspector(
                     );
                     let mut feather = transition.user_params.param0;
                     let resp = ui.add(
-                        egui::DragValue::new(&mut feather)
+                        crate::widgets::number_field(&mut feather)
                             .range(0.0..=32.0)
                             .speed(0.5)
                             .suffix(" px"),
@@ -6233,7 +6233,7 @@ fn show_transition_inspector(
                     );
                     let mut radius = transition.user_params.param0;
                     let resp = ui.add(
-                        egui::DragValue::new(&mut radius)
+                        crate::widgets::number_field(&mut radius)
                             .range(4.0..=128.0)
                             .speed(1.0)
                             .suffix(" px"),
@@ -6288,7 +6288,7 @@ fn show_transition_inspector(
                     );
                     let mut hold = transition.user_params.param0;
                     let resp = ui.add(
-                        egui::DragValue::new(&mut hold)
+                        crate::widgets::number_field(&mut hold)
                             .range(0.0..=0.45)
                             .speed(0.01),
                     );
@@ -6339,7 +6339,7 @@ fn show_transition_inspector(
                     );
                     let mut intensity = transition.user_params.param0;
                     let resp = ui.add(
-                        egui::DragValue::new(&mut intensity)
+                        crate::widgets::number_field(&mut intensity)
                             .range(0.0..=2.0)
                             .speed(0.05),
                     );
@@ -6361,7 +6361,7 @@ fn show_transition_inspector(
                     );
                     let mut peak = transition.user_params.param1;
                     let resp = ui.add(
-                        egui::DragValue::new(&mut peak)
+                        crate::widgets::number_field(&mut peak)
                             .range(0.1..=0.9)
                             .speed(0.01),
                     );
@@ -6412,7 +6412,7 @@ fn show_transition_inspector(
                     );
                     let mut intensity = transition.user_params.param0;
                     let resp = ui.add(
-                        egui::DragValue::new(&mut intensity)
+                        crate::widgets::number_field(&mut intensity)
                             .range(0.0..=2.0)
                             .speed(0.05),
                     );
@@ -6450,7 +6450,7 @@ fn show_transition_inspector(
                             _ => transition.user_params.param2,
                         };
                         let resp = ui.add(
-                            egui::DragValue::new(&mut v).range(range).speed(speed),
+                            crate::widgets::number_field(&mut v).range(range).speed(speed),
                         );
                         if resp.changed() {
                             let mut new_params = transition.user_params;
@@ -6482,7 +6482,7 @@ fn show_transition_inspector(
                     );
                     let mut v = transition.user_params.param0;
                     let resp = ui.add(
-                        egui::DragValue::new(&mut v).range(0.0..=4.0).speed(0.05),
+                        crate::widgets::number_field(&mut v).range(0.0..=4.0).speed(0.05),
                     );
                     if resp.changed() {
                         let mut new_params = transition.user_params;
@@ -6527,7 +6527,7 @@ fn show_transition_inspector(
                     );
                     let mut v = transition.user_params.param0;
                     let resp = ui.add(
-                        egui::DragValue::new(&mut v).range(0.0..=1.0).speed(0.01),
+                        crate::widgets::number_field(&mut v).range(0.0..=1.0).speed(0.01),
                     );
                     if resp.changed() {
                         let mut new_params = transition.user_params;
@@ -6610,7 +6610,7 @@ fn show_transition_inspector(
                             _ => transition.user_params.param1,
                         };
                         let resp = ui.add(
-                            egui::DragValue::new(&mut v).range(range).speed(speed),
+                            crate::widgets::number_field(&mut v).range(range).speed(speed),
                         );
                         if resp.changed() {
                             let mut new_params = transition.user_params;
@@ -6641,7 +6641,7 @@ fn show_transition_inspector(
                     );
                     let mut v = transition.user_params.param0;
                     let resp = ui.add(
-                        egui::DragValue::new(&mut v).range(0.0..=4.0).speed(0.05),
+                        crate::widgets::number_field(&mut v).range(0.0..=4.0).speed(0.05),
                     );
                     if resp.changed() {
                         let mut new_params = transition.user_params;
@@ -6671,7 +6671,7 @@ fn show_transition_inspector(
                             _ => transition.user_params.param1,
                         };
                         let resp = ui.add(
-                            egui::DragValue::new(&mut v).range(range).speed(speed),
+                            crate::widgets::number_field(&mut v).range(range).speed(speed),
                         );
                         if resp.changed() {
                             let mut new_params = transition.user_params;
@@ -6709,7 +6709,7 @@ fn show_transition_inspector(
                             _ => transition.user_params.param1,
                         };
                         let resp = ui.add(
-                            egui::DragValue::new(&mut v).range(range).speed(speed),
+                            crate::widgets::number_field(&mut v).range(range).speed(speed),
                         );
                         if resp.changed() {
                             let mut new_params = transition.user_params;
@@ -6740,7 +6740,7 @@ fn show_transition_inspector(
                     );
                     let mut v = transition.user_params.param0;
                     let resp = ui.add(
-                        egui::DragValue::new(&mut v).range(0.0..=4.0).speed(0.05),
+                        crate::widgets::number_field(&mut v).range(0.0..=4.0).speed(0.05),
                     );
                     if resp.changed() {
                         let mut new_params = transition.user_params;
@@ -6772,7 +6772,7 @@ fn show_transition_inspector(
                             _ => transition.user_params.param2,
                         };
                         let resp = ui.add(
-                            egui::DragValue::new(&mut v).range(range).speed(speed),
+                            crate::widgets::number_field(&mut v).range(range).speed(speed),
                         );
                         if resp.changed() {
                             let mut new_params = transition.user_params;
@@ -6805,7 +6805,7 @@ fn show_transition_inspector(
                     );
                     let mut v = transition.user_params.param0;
                     let resp = ui.add(
-                        egui::DragValue::new(&mut v)
+                        crate::widgets::number_field(&mut v)
                             .range(1.1..=2.0)
                             .speed(0.05)
                             .suffix("×"),
@@ -6861,7 +6861,7 @@ fn show_transition_inspector(
                             _ => transition.user_params.param1,
                         };
                         let resp = ui.add(
-                            egui::DragValue::new(&mut v).range(range).speed(speed),
+                            crate::widgets::number_field(&mut v).range(range).speed(speed),
                         );
                         if resp.changed() {
                             let mut new_params = transition.user_params;
@@ -6924,7 +6924,7 @@ fn show_transition_inspector(
                             _ => transition.user_params.param1,
                         };
                         let resp = ui.add(
-                            egui::DragValue::new(&mut v).range(range).speed(speed),
+                            crate::widgets::number_field(&mut v).range(range).speed(speed),
                         );
                         if resp.changed() {
                             let mut new_params = transition.user_params;
@@ -6961,7 +6961,7 @@ fn show_transition_inspector(
                             _ => transition.user_params.param1,
                         };
                         let resp = ui.add(
-                            egui::DragValue::new(&mut v).range(range).speed(speed),
+                            crate::widgets::number_field(&mut v).range(range).speed(speed),
                         );
                         if resp.changed() {
                             let mut new_params = transition.user_params;
@@ -6998,7 +6998,7 @@ fn show_transition_inspector(
                             _ => transition.user_params.param1,
                         };
                         let resp = ui.add(
-                            egui::DragValue::new(&mut v).range(range).speed(speed),
+                            crate::widgets::number_field(&mut v).range(range).speed(speed),
                         );
                         if resp.changed() {
                             let mut new_params = transition.user_params;
@@ -7058,7 +7058,7 @@ fn show_transition_inspector(
                             _ => transition.user_params.param1,
                         };
                         let resp = ui.add(
-                            egui::DragValue::new(&mut v).range(range).speed(speed),
+                            crate::widgets::number_field(&mut v).range(range).speed(speed),
                         );
                         if resp.changed() {
                             let mut new_params = transition.user_params;
@@ -7095,7 +7095,7 @@ fn show_transition_inspector(
                             _ => transition.user_params.param1,
                         };
                         let resp = ui.add(
-                            egui::DragValue::new(&mut v).range(range).speed(speed),
+                            crate::widgets::number_field(&mut v).range(range).speed(speed),
                         );
                         if resp.changed() {
                             let mut new_params = transition.user_params;
@@ -7129,7 +7129,7 @@ fn show_transition_inspector(
                             _ => transition.user_params.param1,
                         };
                         let resp = ui.add(
-                            egui::DragValue::new(&mut v).range(range).speed(speed),
+                            crate::widgets::number_field(&mut v).range(range).speed(speed),
                         );
                         if resp.changed() {
                             let mut new_params = transition.user_params;
@@ -7163,7 +7163,7 @@ fn show_transition_inspector(
                             _ => transition.user_params.param1,
                         };
                         let resp = ui.add(
-                            egui::DragValue::new(&mut v).range(range).speed(speed),
+                            crate::widgets::number_field(&mut v).range(range).speed(speed),
                         );
                         if resp.changed() {
                             let mut new_params = transition.user_params;
@@ -7190,7 +7190,7 @@ fn show_transition_inspector(
                     );
                     let mut v = transition.user_params.param0;
                     let resp = ui.add(
-                        egui::DragValue::new(&mut v)
+                        crate::widgets::number_field(&mut v)
                             .range(0.0..=360.0)
                             .speed(1.0)
                             .suffix("°"),
@@ -7213,7 +7213,7 @@ fn show_transition_inspector(
                     );
                     let mut v = transition.user_params.param1;
                     let resp = ui.add(
-                        egui::DragValue::new(&mut v).range(0.1..=3.0).speed(0.05),
+                        crate::widgets::number_field(&mut v).range(0.1..=3.0).speed(0.05),
                     );
                     if resp.changed() {
                         let mut new_params = transition.user_params;
@@ -7246,7 +7246,7 @@ fn show_transition_inspector(
                             _ => transition.user_params.param1,
                         };
                         let resp = ui.add(
-                            egui::DragValue::new(&mut v).range(range).speed(speed),
+                            crate::widgets::number_field(&mut v).range(range).speed(speed),
                         );
                         if resp.changed() {
                             let mut new_params = transition.user_params;
@@ -7333,7 +7333,7 @@ fn show_transition_inspector(
                             _ => transition.user_params.param1,
                         };
                         let resp = ui.add(
-                            egui::DragValue::new(&mut v).range(range).speed(speed),
+                            crate::widgets::number_field(&mut v).range(range).speed(speed),
                         );
                         if resp.changed() {
                             let mut new_params = transition.user_params;
@@ -7360,7 +7360,7 @@ fn show_transition_inspector(
                     );
                     let mut v = transition.user_params.param0;
                     let resp = ui.add(
-                        egui::DragValue::new(&mut v)
+                        crate::widgets::number_field(&mut v)
                             .range(0.5..=3.0)
                             .speed(0.05)
                             .suffix("×"),
@@ -7396,7 +7396,7 @@ fn show_transition_inspector(
                             _ => transition.user_params.param1,
                         };
                         let resp = ui.add(
-                            egui::DragValue::new(&mut v).range(range).speed(speed),
+                            crate::widgets::number_field(&mut v).range(range).speed(speed),
                         );
                         if resp.changed() {
                             let mut new_params = transition.user_params;
@@ -7430,7 +7430,7 @@ fn show_transition_inspector(
                             _ => transition.user_params.param1,
                         };
                         let resp = ui.add(
-                            egui::DragValue::new(&mut v).range(range).speed(speed),
+                            crate::widgets::number_field(&mut v).range(range).speed(speed),
                         );
                         if resp.changed() {
                             let mut new_params = transition.user_params;
@@ -7467,7 +7467,7 @@ fn show_transition_inspector(
                             _ => transition.user_params.param1,
                         };
                         let resp = ui.add(
-                            egui::DragValue::new(&mut v).range(range).speed(speed),
+                            crate::widgets::number_field(&mut v).range(range).speed(speed),
                         );
                         if resp.changed() {
                             let mut new_params = transition.user_params;
@@ -7494,7 +7494,7 @@ fn show_transition_inspector(
                     );
                     let mut v = transition.user_params.param0;
                     let resp = ui.add(
-                        egui::DragValue::new(&mut v).range(0.0..=1.0).speed(0.01),
+                        crate::widgets::number_field(&mut v).range(0.0..=1.0).speed(0.01),
                     );
                     if resp.changed() {
                         let mut new_params = transition.user_params;
@@ -7520,7 +7520,7 @@ fn show_transition_inspector(
                     );
                     let mut v = transition.user_params.param0;
                     let resp = ui.add(
-                        egui::DragValue::new(&mut v).range(0.0..=2.0).speed(0.05),
+                        crate::widgets::number_field(&mut v).range(0.0..=2.0).speed(0.05),
                     );
                     if resp.changed() {
                         let mut new_params = transition.user_params;
@@ -7569,7 +7569,7 @@ fn show_transition_inspector(
                     );
                     let mut v = transition.user_params.param0;
                     let resp = ui.add(
-                        egui::DragValue::new(&mut v).range(0.0..=0.45).speed(0.01),
+                        crate::widgets::number_field(&mut v).range(0.0..=0.45).speed(0.01),
                     );
                     if resp.changed() {
                         let mut new_params = transition.user_params;
@@ -7601,7 +7601,7 @@ fn show_transition_inspector(
                             _ => transition.user_params.param2,
                         };
                         let resp = ui.add(
-                            egui::DragValue::new(&mut v).range(range).speed(speed),
+                            crate::widgets::number_field(&mut v).range(range).speed(speed),
                         );
                         if resp.changed() {
                             let mut new_params = transition.user_params;
@@ -7632,7 +7632,7 @@ fn show_transition_inspector(
                     );
                     let mut v = transition.user_params.param0;
                     let resp = ui.add(
-                        egui::DragValue::new(&mut v)
+                        crate::widgets::number_field(&mut v)
                             .range(0.0..=60.0)
                             .speed(0.5)
                             .suffix(" px"),
@@ -7691,7 +7691,7 @@ fn show_transition_inspector(
                             _ => transition.user_params.param2,
                         };
                         let resp = ui.add(
-                            egui::DragValue::new(&mut v).range(range).speed(speed),
+                            crate::widgets::number_field(&mut v).range(range).speed(speed),
                         );
                         if resp.changed() {
                             let mut new_params = transition.user_params;
@@ -7718,7 +7718,7 @@ fn show_transition_inspector(
                             .size(11.0),
                     );
                     let mut v = transition.user_params.param1;
-                    let resp = ui.add(egui::DragValue::new(&mut v).range(0.0..=3.0).speed(0.02));
+                    let resp = ui.add(crate::widgets::number_field(&mut v).range(0.0..=3.0).speed(0.02));
                     if resp.changed() {
                         let mut new_params = transition.user_params;
                         new_params.param1 = v;
@@ -7763,7 +7763,7 @@ fn show_transition_inspector(
                             _ => transition.user_params.param3,
                         };
                         let resp = ui.add(
-                            egui::DragValue::new(&mut v).range(range).speed(speed),
+                            crate::widgets::number_field(&mut v).range(range).speed(speed),
                         );
                         if resp.changed() {
                             let mut new_params = transition.user_params;
@@ -7792,7 +7792,7 @@ fn show_transition_inspector(
                     );
                     let mut v = transition.user_params.param0;
                     let resp = ui.add(
-                        egui::DragValue::new(&mut v)
+                        crate::widgets::number_field(&mut v)
                             .range(4.0..=128.0)
                             .speed(1.0)
                             .suffix(" px"),
@@ -7844,7 +7844,7 @@ fn show_transition_inspector(
                             transition.user_params.param1
                         };
                         let resp = ui.add(
-                            egui::DragValue::new(&mut v).range(range).speed(speed),
+                            crate::widgets::number_field(&mut v).range(range).speed(speed),
                         );
                         if resp.changed() {
                             let mut new_params = transition.user_params;
@@ -7890,7 +7890,7 @@ fn show_transition_inspector(
                     );
                     let mut softness = transition.user_params.param0;
                     let resp = ui.add(
-                        egui::DragValue::new(&mut softness)
+                        crate::widgets::number_field(&mut softness)
                             .range(0.0..=3.0)
                             .speed(0.05),
                     );
@@ -7944,7 +7944,7 @@ fn show_transition_inspector(
                     );
                     let mut rotations = transition.user_params.param0;
                     let resp = ui.add(
-                        egui::DragValue::new(&mut rotations)
+                        crate::widgets::number_field(&mut rotations)
                             .range(0.25..=3.0)
                             .speed(0.05)
                             .suffix("\u{00D7}"),
@@ -7967,7 +7967,7 @@ fn show_transition_inspector(
                     );
                     let mut zoom = transition.user_params.param1;
                     let resp = ui.add(
-                        egui::DragValue::new(&mut zoom)
+                        crate::widgets::number_field(&mut zoom)
                             .range(0.0..=1.0)
                             .speed(0.01),
                     );

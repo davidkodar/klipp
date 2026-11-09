@@ -751,7 +751,7 @@ fn camera_section(
                     CameraParam::Zoom => 0.01,
                     _ => 0.002,
                 };
-                if ui.add(egui::DragValue::new(&mut value).speed(speed)).changed() {
+                if ui.add(crate::widgets::number_field(&mut value).speed(speed)).changed() {
                     cmds.push(row_at.set(idx, param, value));
                 }
             });

@@ -27,11 +27,11 @@ pub fn show(ui: &mut egui::Ui, theme: &KlippTheme, kind: TransitionKind, params:
         TransitionKind::SlideStrips => {
             ui.horizontal(|ui| {
                 label(ui, theme, "Strips");
-                ui.add(egui::DragValue::new(&mut p.count).range(1..=64).speed(0.1));
+                ui.add(crate::widgets::number_field(&mut p.count).range(1..=64).speed(0.1));
             });
             ui.horizontal(|ui| {
                 label(ui, theme, "Direction");
-                ui.add(egui::DragValue::new(&mut p.angle).range(-360.0..=360.0).speed(1.0).suffix("\u{b0}"))
+                ui.add(crate::widgets::number_field(&mut p.angle).range(-360.0..=360.0).speed(1.0).suffix("\u{b0}"))
                     .on_hover_text("The way the strips slide: 0\u{b0} sideways, 90\u{b0} up and down");
             });
         }
@@ -40,7 +40,7 @@ pub fn show(ui: &mut egui::Ui, theme: &KlippTheme, kind: TransitionKind, params:
                 label(ui, theme, "Rows");
                 // Posed panels are drawn forward, each one: fewer of them.
                 let most = if p.motion == PieceMotion::Slide { 16 } else { 8 };
-                ui.add(egui::DragValue::new(&mut p.count).range(1..=most).speed(0.1)).on_hover_text("As many columns as make the panels square");
+                ui.add(crate::widgets::number_field(&mut p.count).range(1..=most).speed(0.1)).on_hover_text("As many columns as make the panels square");
             });
             ui.horizontal(|ui| {
                 label(ui, theme, "Direction");
@@ -55,18 +55,18 @@ pub fn show(ui: &mut egui::Ui, theme: &KlippTheme, kind: TransitionKind, params:
         TransitionKind::Shatter => {
             ui.horizontal(|ui| {
                 label(ui, theme, "Shards");
-                ui.add(egui::DragValue::new(&mut p.count).range(4..=96).speed(0.2));
+                ui.add(crate::widgets::number_field(&mut p.count).range(4..=96).speed(0.2));
             });
             ui.horizontal(|ui| {
                 label(ui, theme, "Direction");
-                ui.add(egui::DragValue::new(&mut p.angle).range(-360.0..=360.0).speed(1.0).suffix("\u{b0}"))
+                ui.add(crate::widgets::number_field(&mut p.angle).range(-360.0..=360.0).speed(1.0).suffix("\u{b0}"))
                     .on_hover_text("The way the shards are pushed as they break away");
             });
         }
         _ => {
             ui.horizontal(|ui| {
                 label(ui, theme, "Line");
-                ui.add(egui::DragValue::new(&mut p.angle).range(-360.0..=360.0).speed(1.0).suffix("\u{b0}"))
+                ui.add(crate::widgets::number_field(&mut p.angle).range(-360.0..=360.0).speed(1.0).suffix("\u{b0}"))
                     .on_hover_text("The line the picture splits down: 90\u{b0} upright, 0\u{b0} level");
             });
             ui.horizontal(|ui| {
@@ -126,7 +126,7 @@ pub fn show(ui: &mut egui::Ui, theme: &KlippTheme, kind: TransitionKind, params:
     }
     ui.horizontal(|ui| {
         label(ui, theme, "Gap");
-        ui.add(egui::DragValue::new(&mut p.gap).range(0..=31).speed(0.2).suffix(" px")).on_hover_text("A gap that opens between the pieces as they move");
+        ui.add(crate::widgets::number_field(&mut p.gap).range(0..=31).speed(0.2).suffix(" px")).on_hover_text("A gap that opens between the pieces as they move");
     });
     // Shadows and the tumbling's pattern are the posed pieces': the
     // sliding ones are flat on the picture.
@@ -137,7 +137,7 @@ pub fn show(ui: &mut egui::Ui, theme: &KlippTheme, kind: TransitionKind, params:
         });
         ui.horizontal(|ui| {
             label(ui, theme, "Pattern");
-            ui.add(egui::DragValue::new(&mut p.seed).range(0..=255).speed(0.3)).on_hover_text("Another cut of the shards, another way for each piece to turn");
+            ui.add(crate::widgets::number_field(&mut p.seed).range(0..=255).speed(0.3)).on_hover_text("Another cut of the shards, another way for each piece to turn");
         });
     }
     // The subject, cut out by its tracked matte, moving on its own

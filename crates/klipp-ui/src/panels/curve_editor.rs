@@ -1783,7 +1783,7 @@ impl CurveEditorPanel {
             ui.menu_rows(egui::RichText::new("Scale\u{2026}").size(10.0), |ui| {
                 ui.horizontal(|ui| {
                     ui.label("Time");
-                    ui.add(egui::DragValue::new(&mut self.scale_pct).range(5.0..=1000.0).suffix(" %").speed(1.0));
+                    ui.add(crate::widgets::number_field(&mut self.scale_pct).range(5.0..=1000.0).suffix(" %").speed(1.0));
                 });
                 ui.checkbox(&mut self.scale_about_playhead, "About the playhead (else the first key)");
                 if ui.button("Apply").clicked() {

@@ -100,9 +100,9 @@ pub fn show_dialog(ctx: &egui::Context, state: &mut crate::state::AppState) -> V
             ui.horizontal(|ui| {
                 ui.radio_value(&mut dialog.fit, true, "Fit");
                 ui.radio_value(&mut dialog.fit, false, "Scroll at");
-                ui.add_enabled(!dialog.fit, egui::DragValue::new(&mut dialog.speed).range(1.0..=1000.0).suffix(" px/s"));
+                ui.add_enabled(!dialog.fit, crate::widgets::number_field(&mut dialog.speed).range(1.0..=1000.0).suffix(" px/s"));
                 ui.label("for");
-                ui.add(egui::DragValue::new(&mut dialog.secs).range(1.0..=3600.0).suffix(" s"));
+                ui.add(crate::widgets::number_field(&mut dialog.secs).range(1.0..=3600.0).suffix(" s"));
             });
             ui.add_space(6.0);
             ui.horizontal(|ui| {

@@ -315,7 +315,7 @@ impl NarratePanel {
                     ui.label("Length");
                     ui.horizontal(|ui| {
                         ui.checkbox(&mut self.fit_on, "fit to").on_hover_text("Speak it again at another speed until it lasts this long, within a frame");
-                        ui.add_enabled(self.fit_on, egui::DragValue::new(&mut self.fit_secs).range(0.2..=600.0).speed(0.05).fixed_decimals(2).suffix(" s"));
+                        ui.add_enabled(self.fit_on, crate::widgets::number_field(&mut self.fit_secs).range(0.2..=600.0).speed(0.05).fixed_decimals(2).suffix(" s"));
                     });
                     ui.end_row();
                 });
