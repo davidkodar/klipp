@@ -4,6 +4,28 @@ use crate::poison::Recover;
 #[allow(unused_imports)]
 use crate::*;
 
+/// Which frame Balance Skin read, and why, for its reply: the one where
+/// the clip's face is largest, which is seldom the playhead's, or the
+/// clip's middle when its analysis knows no face sizes. Without the why,
+/// a time that is not the playhead's read as a mistake.
+fn skin_frame(secs: f64, largest: bool) -> String {
+    if largest {
+        format!("read at {secs:.2} s, where its face is largest")
+    } else {
+        format!("read at {secs:.2} s, the clip's middle")
+    }
+}
+
+/// Which frame Grade to Look graded from, and why: of the frames read
+/// across the shot, the middle one in lightness.
+fn look_frame(secs: f64, frames: usize) -> String {
+    if frames > 1 {
+        format!("read at {secs:.2} s, the middle in lightness of {frames} frames across the shot")
+    } else {
+        format!("read at {secs:.2} s, the shot's middle")
+    }
+}
+
 #[cfg(test)]
 #[path = "colour_chart_tests.rs"]
 mod chart_tests;
@@ -583,7 +605,7 @@ pub(crate) fn respond(
             // midpoint: a face a hundred pixels across is what a skin
             // read needs, and the clip's middle may hold none at all.
             let only = clip_of(&clip_id);
-            let (mid, name) = {
+            let (mid, largest, name) = {
                 let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
                 let pool = ctx.media_pool.read().recovered();
                 let id = klipp_core::ClipId(clip_id.parse().map_err(|e| format!("clip_id is not a uuid: {e}"))?);
@@ -606,7 +628,7 @@ pub(crate) fn respond(
                             .map(|(secs, _)| t_in + clip.elapsed_for_source_secs(secs, seq.fps.as_f64()))
                     })
                     .filter(|t| *t >= t_in && *t < t_out);
-                (biggest.unwrap_or((t_in + t_out) / 2.0), name)
+                (biggest.unwrap_or((t_in + t_out) / 2.0), biggest.is_some(), name)
             };
             let look = look_for(ctx, mid);
             let target = look.skin_hue.unwrap_or(SKIN_HUE_CENTRE);
@@ -614,7 +636,7 @@ pub(crate) fn respond(
             let mut shift = 0.0f32;
             let mut m = measure_at(ctx, mid, only, Some(6000))?;
             let Some(face0) = m.faces.iter().find(|f| f.readable()).cloned() else {
-                return Err(format!("no face to read in {name} at {mid:.2} s, where the largest face in the clip is: the framing analysis found no face there (analyze — the face model comes with the detector), or the face is too small or too dark to read skin in"));
+                return Err(format!("no face to read in {name} {}: {}", skin_frame(mid, largest), if largest { "the face is too small or too dark there to read skin in" } else { "the framing analysis has found no face in it (analyze — the face model comes with the detector)" }));
             };
             if face0.mixed_light {
                 return Err(format!("{name}: the face is lit by two colours of light (hue spread {:.0}°); a skin secondary would fix one side and break the other — grade the light, not the skin", face0.hue_iqr));
@@ -699,7 +721,7 @@ pub(crate) fn respond(
             }
             let face_now = m.faces.iter().find(|f| f.readable());
             let text = match face_now {
-                Some(f) => format!("{name} at {mid:.2} s: skin hue {:.0}° → {:.0}° (band {SKIN_HUE_LOW:.0}–{SKIN_HUE_HIGH:.0}°, aim {target:.0}°), chroma {:.0}, L* {:.0}, {} of {}×{} patches{}{}", face0.hue, f.hue, f.chroma, f.median.l, f.patches, f.grid, f.grid, if apply { format!("; {} round(s), skin secondary hue shift {shift:+.0}°{}", rounds.len(), match windowed { 0 => ", keyed on hue alone — no face track in this clip's analysis, so anything else in the skin band turns with the face".to_string(), 1 => ", held inside a window on the face".to_string(), n => format!(", held inside a window tracked on the face over {n} samples") }) } else { String::new() }, before.get("advice").and_then(|a| a.as_str()).map(|a| format!(". {a}")).unwrap_or_default()),
+                Some(f) => format!("{name} {}: skin hue {:.0}° → {:.0}° (band {SKIN_HUE_LOW:.0}–{SKIN_HUE_HIGH:.0}°, aim {target:.0}°), chroma {:.0}, L* {:.0}, {} of {}×{} patches{}{}", skin_frame(mid, largest), face0.hue, f.hue, f.chroma, f.median.l, f.patches, f.grid, f.grid, if apply { format!("; {} round(s), skin secondary hue shift {shift:+.0}°{}", rounds.len(), match windowed { 0 => ", keyed on hue alone — no face track in this clip's analysis, so anything else in the skin band turns with the face".to_string(), 1 => ", held inside a window on the face".to_string(), n => format!(", held inside a window tracked on the face over {n} samples") }) } else { String::new() }, before.get("advice").and_then(|a| a.as_str()).map(|a| format!(". {a}")).unwrap_or_default()),
                 None => format!("{name}: the face could not be read after the change"),
             };
             let text = format!("{text}{}", taken_back.unwrap_or(""));
@@ -758,7 +780,7 @@ pub(crate) fn respond(
                 // Log with no input transform is not a grading problem.
                 if klipp_color::measure::looks_like_log(&m) && !force {
                     let short = quoted(&name.chars().take(28).collect::<String>());
-                    lines.push(format!("{short} at {mid:.2} s: left alone — it looks like camera log with no input transform (5–95 range {:.0}, chroma {:.0}). Set the clip's log format so the transform runs, then grade; grade_to_target with force true grades it as it is.", m.contrast_range, m.chroma_mean));
+                    lines.push(format!("{short} {}: left alone — it looks like camera log with no input transform (5–95 range {:.0}, chroma {:.0}). Set the clip's log format so the transform runs, then grade; grade_to_target with force true grades it as it is.", look_frame(*mid, reads.len()), m.contrast_range, m.chroma_mean));
                     per_shot.push(json!({ "clip_id": id, "secs": mid, "skipped": "looks like camera log with no input transform", "lab": m }));
                     continue;
                 }
@@ -923,7 +945,8 @@ pub(crate) fn respond(
                     format!("; first step: {} (held at the {} limit for {})", describe_step(&start_knobs, &first_step), limits.name, first_held.join(", "))
                 };
                 lines.push(format!(
-                    "{short} at {mid:.2} s [{}]: {} before, {} after{}{first}{}{}",
+                    "{short} {} [{}]: {} before, {} after{}{first}{}{}",
+                    look_frame(*mid, reads.len()),
                     quoted(&look.name),
                     before.len(),
                     after.len(),

@@ -82,3 +82,24 @@ fn incomplete_or_missing_scene_groups_keep_the_advice() {
         assert!(reply["text"].as_str().unwrap().contains("Grade them together"));
     }
 }
+
+/// Grade to Look reads frames across the shot and grades from the middle
+/// one in lightness, seldom the playhead's: its reply says so, so a time
+/// that is not the playhead's does not read as a mistake.
+#[test]
+fn grade_to_look_says_which_frame_it_read_and_why() {
+    let ctx = context();
+    let reply = preview(&ctx);
+    let text = reply["text"].as_str().unwrap();
+    assert!(text.contains("the middle in lightness of 3 frames across the shot"), "{text}");
+}
+
+/// With no face sizes in the clip's analysis Balance Skin reads the
+/// clip's middle, and says that, not "where the largest face is".
+#[test]
+fn balance_skin_says_which_frame_it_read_and_why() {
+    let ctx = context();
+    let clip = ctx.sequence.read().unwrap().tracks[0].clips[1].id.0.to_string();
+    let err = respond(&ctx, ControlCommand::SkinBalance { clip_id: clip, apply: false }, &mut None).unwrap_err();
+    assert!(err.contains("read at 3.00 s, the clip's middle") && !err.contains("largest"), "{err}");
+}
