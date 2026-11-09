@@ -114,7 +114,7 @@ impl KlippApp {
             self.state.toast.show(format!("Syncing {} angles\u{2026}", angles.len()));
         }
         let spawned = std::thread::Builder::new().name("klipp-multicam-sync".into()).spawn(move || {
-            use klipp_analysis::audio_sync::{coarse_offset, decode_mono_pcm, refine_offset, SoundPrint};
+            use klipp_analysis::audio_sync::{coarse_offset, decode_mono_pcm, refine_offset, sync_verdict, wave_check, SoundPrint, SyncVerdict};
             use klipp_core::AudioMatch;
             const SR: u32 = 8_000;
             let ffmpeg = std::path::Path::new("ffmpeg");
@@ -135,6 +135,18 @@ impl KlippApp {
                     (Err(e), _) | (_, Err(e)) => return AudioMatch::Unavailable(e),
                 };
                 let Some(coarse) = coarse_offset(&a, &b) else { return AudioMatch::TooLittleOverlap };
+                // Believed only if the waveforms bear it out and no other
+                // place fits as well: repeating music fits many, wrongly.
+                let (ref_from, ref_len, clip_from, clip_len, lag) = coarse.check_windows(a.secs(), b.secs());
+                let wave = match (decode_mono_pcm(ffmpeg, &paths[r], SR, ref_from, ref_len), decode_mono_pcm(ffmpeg, &paths[i], SR, clip_from, clip_len)) {
+                    (Ok(rw), Ok(cw)) => wave_check(&rw, &cw, SR, lag),
+                    _ => None,
+                };
+                match sync_verdict(&coarse, wave) {
+                    SyncVerdict::Sure => {}
+                    SyncVerdict::Repeats => return AudioMatch::Repeats,
+                    SyncVerdict::NoClearMatch => return AudioMatch::Matched { offset_secs: coarse.offset_secs, confidence: coarse.confidence.min(klipp_core::MIN_AUDIO_CONFIDENCE * 0.99) },
+                }
                 let (ref_from, clip_from, len) = coarse.refine_windows();
                 let slack = klipp_analysis::audio_sync::REFINE_SLACK_SECS;
                 let offset_secs = match (
@@ -144,7 +156,7 @@ impl KlippApp {
                     (Ok(rw), Ok(cw)) if clip_from >= 0.0 => refine_offset(&rw, &cw, SR, &coarse),
                     _ => coarse.offset_secs,
                 };
-                AudioMatch::Matched { offset_secs, confidence: coarse.confidence }
+                AudioMatch::Matched { offset_secs, confidence: coarse.confidence.max(klipp_core::MIN_AUDIO_CONFIDENCE) }
             });
             let _ = tx.send(AppEvent::MulticamSyncReady { plan, media_ids: requested, sequence_id, at_secs });
         });

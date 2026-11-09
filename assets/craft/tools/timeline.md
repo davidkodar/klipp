@@ -22,7 +22,7 @@ Build the approved edit plan onto the timeline after whatever is down, as a dry 
 
 ## klipp_create_multicam
 
-Make a multicam group from pool items (two or more angles of one event): synced onto one clock and laid out at the playhead, each angle on tracks of its own, as Create Synced Multicam does. sync is "timecode", "audio" or "timecode_then_audio" (default: timecode where a clip has it, sound for the rest). Seek first to where it should go. The sync runs in the background: read klipp_status (its multicam entry) or klipp_timeline once it is laid out.
+Make a multicam group from pool items (two or more angles of one event): synced onto one clock and laid out at the playhead, each angle on tracks of its own, as Create Synced Multicam does. sync is "timecode", "audio" or "timecode_then_audio" (default: timecode where a clip has it, sound for the rest). Seek first to where it should go. The sync runs in the background: read klipp_status (its multicam entry) or klipp_timeline once it is laid out. By sound, an angle is placed only where its sound clearly fits one place: sound that repeats (a chorus, a steady beat) fits several, and that angle is left out and named in the notes, to place by hand or by timecode.
 
 Arguments:
 - `media_ids`: the angles, from klipp_list_media
