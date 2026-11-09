@@ -4235,7 +4235,7 @@ pub(crate) fn publish_matte_shown(ctx: &egui::Context, node: Option<NodeId>) {
     ctx.data_mut(|d| d.insert_temp(matte_shown_id(), node));
 }
 
-fn matte_shown(ctx: &egui::Context) -> Option<NodeId> {
+pub(crate) fn matte_shown(ctx: &egui::Context) -> Option<NodeId> {
     ctx.data(|d| d.get_temp::<Option<NodeId>>(matte_shown_id())).flatten()
 }
 
