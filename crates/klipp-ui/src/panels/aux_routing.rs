@@ -529,4 +529,32 @@ mod tests {
         let names: Vec<&str> = listed.iter().map(|(t, _)| t.as_str()).collect();
         assert!(names.contains(&"Delay") && !names.contains(&"Normalize"), "{names:?}");
     }
+
+    /// A denoiser on a bus has no noise profile to learn: a profile is
+    /// learned from a clip's file, which a bus hasn't, and Learn there did
+    /// nothing.
+    #[test]
+    fn a_buss_denoiser_offers_no_profile_to_learn() {
+        let ctx = egui::Context::default();
+        let fx = vec![klipp_core::AudioEffectInstance { effect_type: "denoiser".into(), enabled: true, wet_dry: 1.0, params: Vec::new() }];
+        let drawn = |bus: bool| {
+            let out = ctx.run(egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(400.0, 1200.0))), ..Default::default() }, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let me = klipp_core::ClipId::new();
+                    if bus {
+                        crate::inspector::audio_fx_inspector::show_bus_content(ui, &KlippTheme::default(), me, &fx, &[], &mut Vec::new());
+                    } else {
+                        crate::inspector::audio_fx_inspector::show_content(ui, &KlippTheme::default(), me, &fx, &std::collections::HashMap::new(), 0.0, 0.0, 30, &[], &mut Vec::new(), 0.0);
+                    }
+                });
+            });
+            out.shapes.iter().filter_map(|s| match &s.shape {
+                egui::Shape::Text(t) => Some(t.galley.text().to_string()),
+                _ => None,
+            }).collect::<Vec<_>>()
+        };
+        assert!(drawn(false).iter().any(|t| t == "Learn at Playhead"), "a clip's denoiser learns: {:?}", drawn(false));
+        let on_bus = drawn(true);
+        assert!(!on_bus.iter().any(|t| t == "Learn at Playhead" || t == "Auto Learn" || t == "NOISE PROFILE"), "{on_bus:?}");
+    }
 }

@@ -1381,6 +1381,11 @@ fn show_denoiser_controls(
     ui.label(egui::RichText::new("PRESETS").size(10.0).strong().color(theme.text_dim));
     audio_preset_buttons(ui, "denoiser", clip_id, idx, inst, cmds);
 
+    // A profile is learned from a clip's file, which a bus hasn't: on a
+    // bus the denoiser tracks its floor as it goes.
+    if on_a_bus(ui) {
+        return;
+    }
     ui.add_space(4.0);
     ui.label(egui::RichText::new("NOISE PROFILE").size(10.0).strong().color(theme.text_dim));
     let status = if learned {
