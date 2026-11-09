@@ -523,11 +523,11 @@ impl KlippApp {
                         exclude,
                     }, held_secs, direction, interactive, wider_area);
                 }
-                AppEvent::SurfaceCorrected { clip_id, surface, source_secs, corners, spans } => {
+                AppEvent::SurfaceCorrected { clip_id, surface, source_secs, corners, spans, sure } => {
                     self.state.tracking_in_progress.remove(&clip_id);
                     self.state.tracking_progress.remove(&clip_id);
                     self.state.surface_track_cancel.remove(&clip_id);
-                    self.apply_surface_correction(clip_id, surface, source_secs, corners, spans);
+                    self.apply_surface_correction(clip_id, surface, source_secs, corners, spans, sure);
                 }
                 AppEvent::SurfaceSnapped { clip_id, at_secs, corners, then_track, name, why, request_id } => {
                     self.state.surface_snaps_pending = self.state.surface_snaps_pending.saturating_sub(1);

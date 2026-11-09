@@ -264,6 +264,15 @@ impl Surface {
         true
     }
 
+    /// The correction at `source_secs` rated `confidence`, as measured
+    /// against the surface rather than taken as certain (#2754).
+    pub fn rate_correction(&mut self, source_secs: f64, confidence: f32) {
+        let near = self.near();
+        for k in self.keys.iter_mut().filter(|k| k.state == TrackState::Manual && (k.source_secs - source_secs).abs() <= near) {
+            k.confidence = Some(confidence.clamp(0.0, 1.0));
+        }
+    }
+
     /// The keys strictly between `after` and `before` (either open-ended
     /// when `None`) replaced by `keys`: the track re-solved there.
     pub fn replace_between(&mut self, after: Option<f64>, before: Option<f64>, keys: Vec<SurfaceKey>) {
@@ -742,6 +751,18 @@ mod tests {
         assert!(quad_is_usable(&square(0.1)));
         assert!(!quad_is_usable(&[[0.1, 0.1]; 4]));
         assert!(!quad_is_usable(&[[f32::NAN, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]));
+    }
+
+    /// A correction is rated as measured, not taken as certain: the key
+    /// set by hand carries its confidence, and only it does.
+    #[test]
+    fn a_correction_carries_its_measured_confidence() {
+        let mut s = Surface { id: uuid::Uuid::nil(), name: "S".into(), corners: square(0.0), reference_secs: 1.0, keys: Vec::new(), source_size: [100, 100], media_fps: 10.0, track_area: None, exclude: Vec::new() };
+        s.keys = (0..30).map(|k| SurfaceKey { confidence: Some(0.9), ..SurfaceKey::at_corners(k as f64 / 10.0, &s.corners, &square(0.0)).unwrap() }).collect();
+        assert!(s.set_correction(2.0, &square(0.3)));
+        s.rate_correction(2.0, 0.3);
+        let rated: Vec<(f64, Option<f32>)> = s.keys.iter().filter(|k| k.confidence != Some(0.9)).map(|k| (k.source_secs, k.confidence)).collect();
+        assert_eq!(rated, vec![(2.0, Some(0.3))]);
     }
 
     /// A correction (#2754) is an anchor with the reference frame: set on

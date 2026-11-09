@@ -5220,7 +5220,9 @@ pub enum AppEvent {
     /// picture, and each span re-solved, its keys as
     /// [`AppEvent::SurfaceTracked`]'s, replacing those strictly between
     /// its bounds (file seconds; `None` open to that end of the track).
-    SurfaceCorrected { clip_id: ClipId, surface: uuid::Uuid, source_secs: f64, corners: [[f32; 2]; 4], spans: Vec<(Option<f64>, Option<f64>, Vec<(f64, [f64; 9], f32, u8, Option<f32>)>)> },
+    /// `sure`: the correction's confidence, measured against the surface's
+    /// reference frame; `None` where it could not be.
+    SurfaceCorrected { clip_id: ClipId, surface: uuid::Uuid, source_secs: f64, corners: [[f32; 2]; 4], spans: Vec<(Option<f64>, Option<f64>, Vec<(f64, [f64; 9], f32, u8, Option<f32>)>)>, sure: Option<f32> },
     /// The corners a [`AppCommand::SnapSurface`] found, as fractions of the
     /// clip's own picture, or `None` where none was found; `why` then
     /// says what was wrong (#2754).
