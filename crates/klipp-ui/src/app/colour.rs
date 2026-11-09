@@ -1771,6 +1771,13 @@ impl KlippApp {
                 true
             }
             AppCommand::PickQualifierColour { clip_id, node_id } => {
+                // The eyedropper button again while it waits for this key:
+                // the pick is called off.
+                if self.state.eyedropper_mode == crate::state::EyedropperMode::Qualifier && self.state.qualifier_pick == Some((*clip_id, *node_id)) {
+                    self.state.eyedropper_mode = crate::state::EyedropperMode::None;
+                    self.state.qualifier_pick = None;
+                    return true;
+                }
                 self.state.eyedropper_mode = crate::state::EyedropperMode::Qualifier;
                 self.state.qualifier_pick = Some((*clip_id, *node_id));
                 self.state.toast.show("Click the colour to key in the viewer (Esc cancels)");

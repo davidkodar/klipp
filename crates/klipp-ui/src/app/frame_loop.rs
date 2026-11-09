@@ -499,6 +499,8 @@ impl KlippApp {
         if self.state.matte_node_gone() {
             self.send_commands(vec![AppCommand::ShowMatte { node: None }]);
         }
+        let waiting = (self.state.eyedropper_mode == crate::state::EyedropperMode::Qualifier).then_some(self.state.qualifier_pick).flatten().map(|(_, node)| node);
+        crate::panels::node_inspector::publish_key_waiting(ctx, waiting);
         // Likewise a track, a window's or a surface's: with the window
         // idle its result sat unapplied until the pointer moved.
         if !self.state.tracking_in_progress.is_empty() || self.state.surface_snaps_pending > 0 {
