@@ -1229,7 +1229,7 @@ impl NodeInspectorPanel {
                 ui.add_space(12.0);
                 let resp = ui.add(
                     egui::Button::new(
-                        egui::RichText::new("Reset wheels").size(10.0).color(theme.text_dim),
+                        egui::RichText::new("Reset wheels").size(10.0),
                     )
                     .frame(true),
                 );
@@ -1672,7 +1672,10 @@ impl NodeInspectorPanel {
                     ui.add_space(12.0);
                     let gate = graph.input_of(correction.id, 1);
                     if gate.is_some_and(|m| !graph.nodes.iter().any(|n| n.id == m && n.kind == NodeKind::Mask)) {
-                        ui.label(egui::RichText::new("This grade is limited by a matte, on its node.").size(10.0).color(theme.text_dim));
+                        ui.label(egui::RichText::new("This grade is limited by a matte.").size(10.0).color(theme.text_dim));
+                        if ui.link(egui::RichText::new("Open it").size(10.0)).on_hover_text("Show the node that makes this matte").clicked() {
+                            *selected_node = matte_to_open(graph, correction.id);
+                        }
                     } else if ui.button(egui::RichText::new("+ Qualifier").size(11.0))
                         .on_hover_text("Limit this grade to a colour range: key the colour with the Qualifier, then grade")
                         .clicked()
@@ -5769,6 +5772,62 @@ fn pivot_linear(shown: f32) -> f32 {
     klipp_color::grade_model::decode(shown, grade_encoding_now())
 }
 
+/// The node to open for the matte limiting `correction`: what feeds its
+/// matte input, and through a combiner its key, which is what a colourist
+/// goes back to; the window has its own handles in the viewer.
+fn matte_to_open(graph: &NodeGraph, correction: NodeId) -> Option<NodeId> {
+    let mut at = graph.input_of(correction, 1)?;
+    // Bounded: a project file can hold a loop.
+    for _ in 0..graph.nodes.len() {
+        if !graph.nodes.iter().any(|n| n.id == at && n.kind == NodeKind::CombineMattes) {
+            break;
+        }
+        at = graph.input_of(at, 0)?;
+    }
+    Some(at)
+}
+
+#[cfg(test)]
+mod matte_note_tests {
+    use super::*;
+
+    /// The note under the mask list opens the Qualifier, from a key alone
+    /// and from a key with a window on it.
+    #[test]
+    fn the_matte_note_opens_the_qualifier() {
+        let ctx = egui::Context::default();
+        let mut graph = NodeGraph::default();
+        let (correction, qualifier) = (graph.ensure_corrector(), NodeId::new_v4());
+        assert!(graph.limit_with_qualifier(correction, qualifier));
+        assert_eq!(matte_to_open(&graph, correction), Some(qualifier));
+        graph.ensure_corrector_window();
+        assert_eq!(matte_to_open(&graph, correction), Some(qualifier), "through the combiner");
+
+        let mut panel = NodeInspectorPanel::default();
+        let mut selected = None;
+        let clip = ClipId::new();
+        let frame = FrameSelection::new(klipp_core::Timecode::zero(), klipp_core::Timecode::zero(), 0.02);
+        let mut run = |selected: &mut Option<NodeId>, events: Vec<egui::Event>| {
+            let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(420.0, 3000.0))), events, ..Default::default() };
+            let out = ctx.run(input, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    panel.show_adjustments_tab(ui, &mut graph, clip, selected, &mut Vec::new(), &KlippTheme::default(), frame);
+                });
+            });
+            out.shapes.iter().find_map(|s| match &s.shape {
+                egui::Shape::Text(t) if t.galley.text() == "Open it" => Some(t.pos + t.galley.size() / 2.0),
+                _ => None,
+            })
+        };
+        run(&mut selected, Vec::new());
+        let at = run(&mut selected, Vec::new()).expect("the note offers the way there");
+        run(&mut selected, vec![egui::Event::PointerMoved(at)]);
+        run(&mut selected, vec![egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE }]);
+        run(&mut selected, vec![egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE }]);
+        assert_eq!(selected, Some(qualifier));
+    }
+}
+
 #[cfg(test)]
 mod wheel_layout_tests {
     use super::*;
@@ -5808,6 +5867,31 @@ mod wheel_layout_tests {
             }
             assert_eq!(texts.iter().any(|t| t == "\u{1F6AB} Untrack"), !tracked.is_empty(), "tracked {tracked:?}");
         }
+    }
+
+    /// Reset wheels works whenever it is shown, so it reads like the other
+    /// buttons and not in the dim text that says a thing is off.
+    #[test]
+    fn reset_wheels_does_not_look_disabled() {
+        let ctx = egui::Context::default();
+        let theme = KlippTheme::default();
+        let mut graph = NodeGraph::default();
+        graph.ensure_corrector();
+        let mut panel = NodeInspectorPanel::default();
+        let frame = FrameSelection::new(klipp_core::Timecode::zero(), klipp_core::Timecode::zero(), 0.02);
+        let mut colour = None;
+        for _ in 0..3 {
+            let out = ctx.run(egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(420.0, 800.0))), ..Default::default() }, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    panel.show_wheels_contrast_row(ui, &mut graph, ClipId::new(), None, &mut Vec::new(), &theme, frame);
+                });
+            });
+            colour = out.shapes.iter().find_map(|s| match &s.shape {
+                egui::Shape::Text(t) if t.galley.text() == "Reset wheels" => Some(t.galley.job.sections[0].format.color),
+                _ => None,
+            });
+        }
+        assert_ne!(colour.expect("the button"), theme.text_dim);
     }
 
     #[test]
