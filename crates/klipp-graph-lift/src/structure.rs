@@ -255,12 +255,14 @@ pub fn ungroup(g: &mut Graph, group: NodeId) -> Result<(), String> {
     refuse_set_aside(&body)?;
     let (src, out, frame) = (input_of(&body), body.output, frame_of(&body));
     strip_derived(&mut body);
-    let entry = src.and_then(|s| body.edges.iter().find(|e| e.from.0 == s).map(|e| e.to.clone()));
+    // Every reader of the input and of the output: a Qualifier beside its
+    // correction reads the same picture, and dropped, it reads the frame.
+    let entries: Vec<_> = body.edges.iter().filter(|e| Some(e.from.0) == src).map(|e| e.to.clone()).collect();
     let exit = body.edges.iter().find(|e| e.to.0 == out).map(|e| e.from.clone());
     let mut level = g.clone();
     strip_derived(&mut level);
     let fed = level.edges.iter().find(|e| e.to.0 == group).cloned();
-    let read = level.edges.iter().find(|e| e.from.0 == group).cloned();
+    let readers: Vec<_> = level.edges.iter().filter(|e| e.from.0 == group).cloned().collect();
     let anchor = level.ui.positions.remove(&group).and_then(|p| pos(&p)).unwrap_or((0.0, 0.0));
     level.nodes.retain(|n| n.id != group);
     level.edges.retain(|e| e.from.0 != group && e.to.0 != group);
@@ -275,11 +277,11 @@ pub fn ungroup(g: &mut Graph, group: NodeId) -> Result<(), String> {
         placed += 1;
     }
     level.edges.extend(body.edges.iter().filter(|e| Some(e.from.0) != src && e.to.0 != out).cloned());
-    if let (Some(fed), Some(to)) = (&fed, entry) {
-        level.edges.push(Edge { from: fed.from.clone(), to });
+    if let Some(fed) = &fed {
+        level.edges.extend(entries.into_iter().map(|to| Edge { from: fed.from.clone(), to }));
     }
-    if let (Some(read), Some(from)) = (&read, exit) {
-        level.edges.push(Edge { from, to: read.to.clone() });
+    if let Some(from) = exit {
+        level.edges.extend(readers.into_iter().map(|read| Edge { from: from.clone(), to: read.to }));
     }
     derive(&mut level);
     level.check_lifted_body().map_err(|e| format!("Ungroup would leave the grade invalid: {e}"))?;
