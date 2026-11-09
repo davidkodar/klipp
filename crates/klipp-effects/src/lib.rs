@@ -1701,6 +1701,8 @@ pub fn resolve_cover_shapes(fx: &mut Vec<BuiltinEffect>, src: (u32, u32), frame:
 pub fn is_identity_effect(effect: &BuiltinEffect) -> bool {
     match effect {
         BuiltinEffect::Opacity { value } => (value - 1.0).abs() < f32::EPSILON,
+        // No surface chosen yet: nothing to pin to, so the picture stays.
+        BuiltinEffect::SurfacePin { surface, .. } => surface.is_empty(),
         // Outside the fade region the engine drives progress to 1.0 so
         // we can short-circuit to "no work" — the per-pixel apply does
         // the same fast path at progress >= 0.9999, but skipping the

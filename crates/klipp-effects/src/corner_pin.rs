@@ -71,9 +71,13 @@ pub fn fitted(size: [u32; 2], frame: [u32; 2]) -> [f64; 4] {
 
 /// A surface pin as the corner pin it is in a `width` × `height` frame:
 /// its corners on the clip's picture carried to the frame by the fit
-/// that places the picture there. `None` for another effect.
+/// that places the picture there. `None` for another effect, and for a
+/// pin with no surface chosen, which leaves the picture as it was.
 pub fn surface_as_pin(effect: &BuiltinEffect, width: u32, height: u32) -> Option<BuiltinEffect> {
-    let BuiltinEffect::SurfacePin { on_source, source, .. } = effect else { return None };
+    let BuiltinEffect::SurfacePin { surface, on_source, source, .. } = effect else { return None };
+    if surface.is_empty() {
+        return None;
+    }
     let [x0, y0, dw, dh] = fitted(*source, [width, height]);
     let (fw, fh) = (width.max(1) as f64, height.max(1) as f64);
     Some(with_corners(on_source.map(|c| [((x0 + c[0] as f64 * dw) / fw) as f32, ((y0 + c[1] as f64 * dh) / fh) as f32])))
@@ -127,6 +131,20 @@ mod tests {
     use super::*;
 
     /// The picture as it is samples every pixel from itself.
+    /// A pin with no surface chosen yet leaves the picture as it was, on
+    /// the path both renderers take and in the CPU's own, while one naming a
+    /// surface the clip lacks still draws nothing.
+    #[test]
+    fn a_surface_pin_with_no_surface_chosen_leaves_the_picture() {
+        let blank = BuiltinEffect::SurfacePin { surface: String::new(), inset: 0.0, on_source: [[0.0; 2]; 4], source: [0; 2] };
+        assert!(crate::is_identity_effect(&blank));
+        assert!(surface_as_pin(&blank, 16, 16).is_none());
+        let picture: Vec<f32> = (0..16 * 16 * 4).map(|i| (i % 7) as f32 / 7.0).collect();
+        assert_eq!(crate::cpu::apply(&blank, picture.clone(), 16, 16, [0.2126, 0.7152, 0.0722]), picture);
+        let named = BuiltinEffect::SurfacePin { surface: "Gone".into(), inset: 0.0, on_source: [[0.0; 2]; 4], source: [0; 2] };
+        assert!(!crate::is_identity_effect(&named), "a surface it names is still looked for");
+    }
+
     #[test]
     fn the_still_pin_is_the_identity_map() {
         assert!(is_still(&STILL));

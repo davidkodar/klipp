@@ -174,6 +174,10 @@ impl GpuEffectsPipeline {
         if let Some(plain) = crate::flicker::as_plain(effect) {
             return self.record_effect(&plain, src, dst, scratch, width, height, rec);
         }
+        // A surface pin with no surface chosen leaves the picture.
+        if matches!(effect, BuiltinEffect::SurfacePin { surface, .. } if surface.is_empty()) {
+            return Recorded::Identity;
+        }
         // A surface pin, as the corner pin it is in this frame.
         if let Some(pin) = crate::corner_pin::surface_as_pin(effect, width, height) {
             return self.record_effect(&pin, src, dst, scratch, width, height, rec);
