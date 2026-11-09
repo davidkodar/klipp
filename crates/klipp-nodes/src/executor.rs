@@ -760,7 +760,9 @@ enum GradeStage {
     WheelSatBri([f32; 8], [f32; 3]),
     Curves { lut: Box<[f32; 1024]>, preserve_luma: bool, mix: f32, luma: [f32; 3] },
     HueSat { lut: Box<[f32; klipp_effects::cpu_grade::HUESAT_LUT_LEN]>, mix: f32, active: u32 },
-    Warper { hue: [f32; 12], sat: [f32; 12] },
+    /// The sectors' turns and saturation shifts, and the luma weights
+    /// each pixel's luminance is held by.
+    Warper { hue: [f32; 12], sat: [f32; 12], luma: [f32; 3] },
     /// Mix with the kept input.
     Mix(f32),
 }
@@ -790,7 +792,7 @@ impl GradeStage {
                 gpu.apply_rgb_curves_chain(in_is_a, width, height, lut, *preserve_luma, *mix)
             }
             GradeStage::HueSat { lut, mix, active } => gpu.apply_huesat_chain(in_is_a, width, height, *mix, lut, *active),
-            GradeStage::Warper { hue, sat } => gpu.apply_color_warper_chain(in_is_a, width, height, hue, sat),
+            GradeStage::Warper { hue, sat, .. } => gpu.apply_color_warper_chain(in_is_a, width, height, hue, sat),
             GradeStage::Mix(m) => gpu.apply_mix_with_kept_chain(in_is_a, width, height, *m),
         }
         1
@@ -807,7 +809,7 @@ impl GradeStage {
             GradeStage::WheelSatBri(v, l) => cg::wheel_sat_bri(frame, v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7], *l),
             GradeStage::Curves { lut, preserve_luma, mix, luma } => cg::rgb_curves(frame, lut, *preserve_luma, *mix, *luma),
             GradeStage::HueSat { lut, mix, active } => cg::huesat(frame, lut, *mix, *active),
-            GradeStage::Warper { hue, sat } => cg::color_warper(frame, hue, sat),
+            GradeStage::Warper { hue, sat, luma } => cg::color_warper(frame, hue, sat, *luma),
             GradeStage::Mix(m) => {
                 if let Some(k) = kept.as_ref() {
                     cg::grade_mix(frame, k, *m);
@@ -5497,7 +5499,7 @@ impl GraphExecutor {
             });
         }
         if let Some(warper) = params.warper_params.as_ref().filter(|w| !w.is_identity()) {
-            later.push(GradeStage::Warper { hue: warper.hue_shifts, sat: warper.sat_shifts });
+            later.push(GradeStage::Warper { hue: warper.hue_shifts, sat: warper.sat_shifts, luma });
         }
 
         let global_mix = params.global_mix.unwrap_or(1.0);
@@ -7366,7 +7368,7 @@ impl GraphExecutor {
                         &warper.hue_shifts, &warper.sat_shifts,
                     )
                 } else {
-                    let stage = GradeStage::Warper { hue: warper.hue_shifts, sat: warper.sat_shifts };
+                    let stage = GradeStage::Warper { hue: warper.hue_shifts, sat: warper.sat_shifts, luma: klipp_color::linear::luma_coefs(self.working_colorspace) };
                     run_stages_cpu(&[stage], primary_input, width, height)
                 }
             }
@@ -9607,6 +9609,44 @@ mod tests {
             let (g_warm, _) = gpu.execute(&grey, &graph, 2, 2, 0.0, 0, None, None).unwrap();
             let (gr, gb) = (g_warm[0] as i32 - flat[0] as i32, g_warm[2] as i32 - flat[2] as i32);
             assert!(gr > 4 && gb < -4, "and on the GPU: r {gr:+} b {gb:+}");
+        }
+    }
+
+    /// The Colour Warper holds each pixel's luminance, on the CPU and the
+    /// GPU alike: a magenta taken to grey stays as dark as it was, where
+    /// it came out as light as its brightest channel (a dress's L* 21 to
+    /// 43), and the two executors agree.
+    #[test]
+    fn the_warper_holds_lightness_on_both_executors() {
+        let mut graph = crate::defaults::default_graph();
+        let corrector = graph.nodes.iter_mut().find(|n| n.kind == NodeKind::Corrector).expect("a corrector");
+        let mut warper = klipp_core::ColorWarperParams::default();
+        warper.sat_shifts[11] = -1.0;
+        warper.hue_shifts[11] = -5.0;
+        corrector.params.warper_params = Some(warper);
+        // Two magentas at 330° (the sector moved), a red beside it, and a
+        // grey the warper leaves.
+        let frame = vec![120u8, 20, 70, 255, 160, 30, 50, 255, 100, 100, 100, 255, 160, 40, 100, 255];
+        let luma = klipp_color::linear::luma_coefs(klipp_core::WorkingColorspace::Rec709Linear);
+        let lin = |v: u8| { let v = v as f32 / 255.0; if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) } };
+        let y = |px: &[u8]| -> f32 { (0..3).map(|c| luma[c] * lin(px[c])).sum() };
+        let mut cpu = GraphExecutor::new_cpu_only();
+        let (cpu_out, _) = cpu.execute(&frame, &graph, 2, 2, 0.0, 0, None, None).unwrap();
+        for i in [0, 3] {
+            let (was, now) = (y(&frame[i * 4..]), y(&cpu_out[i * 4..]));
+            assert!((now / was - 1.0).abs() < 0.06, "pixel {i}: luminance {was:.4} became {now:.4}");
+            let px = &cpu_out[i * 4..i * 4 + 3];
+            assert!(px.iter().max().unwrap() - px.iter().min().unwrap() < 12, "pixel {i} taken to grey: {px:?}");
+        }
+        let mut gpu = GraphExecutor::new();
+        if gpu.gpu_pipeline_or_init().is_none() {
+            assert!(std::env::var_os("KLIPP_TEST_REQUIRE_GPU").is_none_or(|v| v != "1"), "required, but there is no GPU");
+            eprintln!("UNVERIFIED: no GPU");
+            return;
+        }
+        let (gpu_out, _) = gpu.execute(&frame, &graph, 2, 2, 0.0, 0, None, None).unwrap();
+        for (i, (g, c)) in gpu_out.iter().zip(cpu_out.iter()).enumerate() {
+            assert!((*g as i32 - *c as i32).abs() <= 3, "byte {i}: GPU {g} against CPU {c}");
         }
     }
 

@@ -278,7 +278,7 @@ impl GpuEffectsPipeline {
         let workgroups = (width * height).div_ceil(WORKGROUP_SIZE);
         self.write_params(&GpuColorWarperParams {
             width, height, _pad0: 0, _pad1: 0,
-            hue_shifts: *hue_shifts, sat_shifts: *sat_shifts,
+            hue_shifts: *hue_shifts, sat_shifts: *sat_shifts, luma: self.luma_coefs, _pad2: 0.0,
         });
         self.dispatch(&self.pipelines.color_warper_pipeline, buf_a, buf_b, workgroups);
         self.download_linear_rgba_f32(buf_b, (width * height) as usize)
@@ -725,7 +725,7 @@ impl GpuEffectsPipeline {
         let slot = self.next_params_slot();
         self.write_chain_params(slot, &GpuColorWarperParams {
             width, height, _pad0: 0, _pad1: 0,
-            hue_shifts: *hue_shifts, sat_shifts: *sat_shifts,
+            hue_shifts: *hue_shifts, sat_shifts: *sat_shifts, luma: self.luma_coefs, _pad2: 0.0,
         });
         let workgroups = (width * height).div_ceil(WORKGROUP_SIZE);
         let bind_group = self.chain_bg_3binding[slot * 4 + Self::chain_cfg_3b_ab(in_is_a)]
@@ -1100,6 +1100,8 @@ pub(super) struct GpuColorWarperParams {
     pub(super) width: u32, pub(super) height: u32, pub(super) _pad0: u32, pub(super) _pad1: u32,
     pub(super) hue_shifts: [f32; 12],
     pub(super) sat_shifts: [f32; 12],
+    pub(super) luma: [f32; 3],
+    pub(super) _pad2: f32,
 }
 
 #[repr(C)]

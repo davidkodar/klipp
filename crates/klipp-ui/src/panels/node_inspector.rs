@@ -3735,7 +3735,7 @@ impl NodeInspectorPanel {
             .map(|i| {
                 let base_angle = (i as f32 * 30.0).to_radians();
                 let a = base_angle + warper.hue_shifts[i].to_radians() * 0.02;
-                let r = neutral_r + warper.sat_shifts[i] * radius * 0.25;
+                let r = warper_sat_radius(warper.sat_shifts[i], neutral_r, radius);
                 egui::pos2(center.x + a.cos() * r, center.y - a.sin() * r)
             })
             .collect();
@@ -3814,29 +3814,29 @@ impl NodeInspectorPanel {
         if let (_, Some(end)) = gesture_of(ui, false, resp.drag_stopped()) {
             cmds.push(end(clip_id));
         }
-        // Handle drag interaction
+        // The drag is measured from where it was pressed, on the sector
+        // picked then: the point under the press, else the sector the
+        // press is in. Set from the pointer's own place, a press a few
+        // pixels off the dot jumped, and a drag that wandered sideways
+        // moved on to the next sector's point.
+        let grab_id = resp.id.with("warper_grab");
+        if resp.drag_started() {
+            // Where the button went down: egui starts a drag a few pixels
+            // after, and from there the first of them would be lost.
+            if let Some(pos) = ui.input(|i| i.pointer.press_origin()).or_else(|| resp.interact_pointer_pos()) {
+                let nearest = (0..12).map(|i| (i, (positions[i] - pos).length())).min_by(|a, b| a.1.total_cmp(&b.1));
+                let sector = match nearest {
+                    Some((i, d)) if d <= 12.0 => i,
+                    _ => ((-(pos.y - center.y)).atan2(pos.x - center.x).to_degrees().rem_euclid(360.0) / 30.0).round() as usize % 12,
+                };
+                let grab = (sector, pos, warper.hue_shifts[sector], warper.sat_shifts[sector]);
+                ui.data_mut(|d| d.insert_temp(grab_id, grab));
+            }
+        }
+        let grab: Option<(usize, egui::Pos2, f32, f32)> = ui.data(|d| d.get_temp(grab_id));
         if resp.dragged() {
-            if let Some(pos) = resp.interact_pointer_pos() {
-                let dx = pos.x - center.x;
-                let dy = -(pos.y - center.y); // flip Y for math convention
-                let angle = dy.atan2(dx).to_degrees().rem_euclid(360.0);
-                let dist = (dx * dx + dy * dy).sqrt();
-
-                // Find nearest sector
-                let sector = ((angle / 30.0).round() as usize) % 12;
-
-                // Compute hue shift (tangential displacement) and sat shift (radial)
-                let base_angle = (sector as f32 * 30.0).to_radians();
-
-                // Tangential component = hue shift
-                let tangent_x = -base_angle.sin();
-                let tangent_y = base_angle.cos();
-                let tangent_proj = dx * tangent_x + dy * tangent_y;
-                let new_hue_shift = (tangent_proj / radius * 180.0).clamp(-180.0, 180.0);
-
-                // Radial component = sat shift
-                let new_sat_shift = ((dist - neutral_r) / (radius * 0.25)).clamp(-1.0, 1.0);
-
+            if let (Some(pos), Some((sector, pressed, hue0, sat0))) = (resp.interact_pointer_pos(), grab) {
+                let (new_hue_shift, new_sat_shift) = warper_drag(sector, pos - pressed, hue0, sat0, neutral_r, radius);
                 warper.hue_shifts[sector] = new_hue_shift;
                 warper.sat_shifts[sector] = new_sat_shift;
 
@@ -4238,6 +4238,40 @@ fn show_matte_toggle(ui: &mut egui::Ui, node_id: NodeId, cmds: &mut Vec<AppComma
             cmds.push(AppCommand::ShowMatte { node: (!on).then_some(node_id) });
         }
     });
+}
+
+/// Where a warper point sits for a saturation shift: at rest (`neutral_r`)
+/// for none, at the wheel's centre for -1, the whole colour gone, and on
+/// its ring (`radius`) for +1. Full desaturation is the point dragged all
+/// the way in, as on the wheel it is drawn as, not a quarter of the way.
+fn warper_sat_radius(sat: f32, neutral_r: f32, radius: f32) -> f32 {
+    if sat < 0.0 {
+        neutral_r * (1.0 + sat.max(-1.0))
+    } else {
+        neutral_r + sat.min(1.0) * (radius - neutral_r)
+    }
+}
+
+/// The saturation shift for a point `r` from the wheel's centre: the
+/// inverse of [`warper_sat_radius`].
+fn warper_radius_sat(r: f32, neutral_r: f32, radius: f32) -> f32 {
+    if r < neutral_r {
+        (r / neutral_r.max(1e-3) - 1.0).clamp(-1.0, 0.0)
+    } else {
+        ((r - neutral_r) / (radius - neutral_r).max(1e-3)).clamp(0.0, 1.0)
+    }
+}
+
+/// A warper drag `moved` from its press on `sector`'s point, whose hue
+/// and saturation shifts were `hue0` and `sat0`: along the sector's
+/// direction the point's distance from the centre changes, and with it
+/// the saturation; across it, the hue, 180° for the wheel's radius.
+fn warper_drag(sector: usize, moved: egui::Vec2, hue0: f32, sat0: f32, neutral_r: f32, radius: f32) -> (f32, f32) {
+    let a = (sector as f32 * 30.0).to_radians();
+    let (out, across) = (egui::vec2(a.cos(), -a.sin()), egui::vec2(-a.sin(), -a.cos()));
+    let r = warper_sat_radius(sat0, neutral_r, radius) + moved.dot(out);
+    let hue = (hue0 + moved.dot(across) / radius * 180.0).clamp(-180.0, 180.0);
+    (hue, warper_radius_sat(r, neutral_r, radius))
 }
 
 pub(crate) fn shows_a_matte(kind: NodeKind) -> bool {
@@ -6457,5 +6491,74 @@ mod tool_presets {
         frame(&ctx, &mut panel, &mut graph, 0.2, vec![button(false)]);
         let open = frame(&ctx, &mut panel, &mut graph, 0.3, Vec::new());
         assert!(open.iter().any(|(t, _)| t.starts_with("No presets for this tool yet.")), "the open list says none are saved: {open:?}");
+    }
+}
+
+#[cfg(test)]
+mod warper_drag_tests {
+    use super::*;
+
+    /// Full desaturation is the point at the wheel's centre, none at
+    /// rest, +1 on the ring; and back again.
+    #[test]
+    fn saturation_follows_the_points_distance_from_the_centre() {
+        let (rest, ring) = (70.0, 100.0);
+        assert_eq!(warper_sat_radius(-1.0, rest, ring), 0.0);
+        assert_eq!(warper_sat_radius(0.0, rest, ring), rest);
+        assert_eq!(warper_sat_radius(1.0, rest, ring), ring);
+        for sat in [-1.0, -0.5, 0.0, 0.25, 1.0] {
+            assert!((warper_radius_sat(warper_sat_radius(sat, rest, ring), rest, ring) - sat).abs() < 1e-5, "{sat}");
+        }
+    }
+
+    /// A drag on a warper point is measured from its press, on the sector
+    /// pressed: pressed a few pixels off the dot and pulled in by half its
+    /// way to the centre, wandering sideways as a hand does, the sector
+    /// is half desaturated and no other moves. From the pointer's own
+    /// place it was fully desaturated after a quarter of the way.
+    #[test]
+    fn a_drag_is_measured_from_its_press_on_one_sector() {
+        let ctx = egui::Context::default();
+        let mut panel = NodeInspectorPanel::default();
+        let mut params = NodeParams::default();
+        let (node, clip) = (NodeId::new_v4(), ClipId::new());
+        let mut clock = 0.0;
+        let mut step = |events: Vec<egui::Event>, params: &mut NodeParams| {
+            clock += 0.05;
+            let mut cmds = Vec::new();
+            let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(420.0, 400.0))), time: Some(clock), events, ..Default::default() };
+            let out = ctx.run(input, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| panel.show_warper_widget(ui, node, params, clip, &mut cmds, &KlippTheme::default()));
+            });
+            let at = |name: &str| out.shapes.iter().rev().find_map(|s| match &s.shape {
+                egui::Shape::Text(t) if t.galley.text() == name => Some(t.pos + t.galley.size() / 2.0),
+                _ => None,
+            });
+            (cmds, at("R").zip(at("C")))
+        };
+        let (_, labels) = step(Vec::new(), &mut params);
+        let (r, c) = labels.expect("the sector labels");
+        let out = (r.x - c.x) / 2.0;
+        let (centre, radius) = (egui::pos2(r.x - out, r.y), out - 12.0);
+        let rest = radius * 0.7;
+        let a = 330f32.to_radians();
+        let (dir, across) = (egui::vec2(a.cos(), -a.sin()), egui::vec2(-a.sin(), -a.cos()));
+        let press = centre + dir * rest + across * 4.0;
+        let to = press - dir * rest * 0.5 + across * 20.0;
+        let button = |pos, pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+        step(vec![egui::Event::PointerMoved(press)], &mut params);
+        step(vec![button(press, true)], &mut params);
+        let mut sent = Vec::new();
+        for k in 1..=8 {
+            let at = press + (to - press) * (k as f32 / 8.0);
+            sent.extend(step(vec![egui::Event::PointerMoved(at)], &mut params).0);
+        }
+        sent.extend(step(vec![button(to, false)], &mut params).0);
+        let last = |name: &str| sent.iter().rev().find_map(|c| match c { AppCommand::SetNodeParam { param, value, .. } if param == name => Some(*value), _ => None });
+        let sat = last("warper_sat_11").expect("sector 11 set");
+        assert!((sat + 0.5).abs() < 0.05, "half desaturated, got {sat}");
+        let hue = last("warper_hue_11").unwrap();
+        assert!((hue - 20.0 / radius * 180.0).abs() < 2.0, "the sideways part turned it: {hue}");
+        assert!(sent.iter().all(|c| !matches!(c, AppCommand::SetNodeParam { param, .. } if param.starts_with("warper_") && !param.ends_with("_11"))), "only the sector pressed");
     }
 }

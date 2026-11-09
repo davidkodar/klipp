@@ -10,6 +10,7 @@ struct Params {
     sat0: f32, sat1: f32, sat2: f32, sat3: f32,
     sat4: f32, sat5: f32, sat6: f32, sat7: f32,
     sat8: f32, sat9: f32, sat10: f32, sat11: f32,
+    luma_yr: f32, luma_yg: f32, luma_yb: f32, _pad2: f32,
 }
 @group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
 @group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
@@ -58,6 +59,13 @@ fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgro
     let sat_weight = clamp(hsl.s, 0.0, 1.0);
     let new_h = ((h_deg + hue_shift * sat_weight) % 360.0 + 360.0) % 360.0 / 360.0;
     let new_s = clamp(hsl.s + sat_shift * sat_weight, 0.0, 1.0);
-    let rgb = picture_rgb(new_h, new_s, hsl.v, hsl.magnitude);
+    // The pixel's luminance held, as `cpu_grade::color_warper` holds it.
+    var rgb = picture_rgb(new_h, new_s, hsl.v, hsl.magnitude);
+    let l = vec3<f32>(params.luma_yr, params.luma_yg, params.luma_yb);
+    let was = dot(l, p.xyz);
+    let now = dot(l, rgb);
+    if now > 1e-6 && was > 0.0 {
+        rgb = rgb * (was / now);
+    }
     output[idx] = pack(vec4<f32>(rgb, p.w));
 }
