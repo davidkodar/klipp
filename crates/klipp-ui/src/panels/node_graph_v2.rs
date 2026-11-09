@@ -243,6 +243,13 @@ fn empty_preview_text(reason: &str) -> Option<&'static str> {
     }
 }
 
+/// What an empty preview says: the engine's reason, else, while the
+/// viewer shows a matte, that: the frame's previews are not made then,
+/// and after a move of the playhead the nodes had none, and no word why.
+fn empty_preview_note(said: Option<&'static str>, matte_shown: bool) -> Option<&'static str> {
+    said.or(matte_shown.then_some("Viewer shows a matte"))
+}
+
 impl FeedbackKind {
     fn glyph(self) -> &'static str {
         match self { Self::Failed => "\u{2715}", Self::Declined => "!", Self::NoPreview => "\u{2013}" }
@@ -2471,7 +2478,9 @@ impl NodeGraphV2Panel {
                     }
                     // A preview the engine said it can't make: why, in
                     // the node, rather than a blank (#3328).
-                    if let Some(text) = self.node_feedback.get(&node_id).filter(|f| f.kind == FeedbackKind::NoPreview).filter(|_| !kind.is_group()).and_then(|f| empty_preview_text(&f.reason)) {
+                    let said = self.node_feedback.get(&node_id).filter(|f| f.kind == FeedbackKind::NoPreview).filter(|_| !kind.is_group()).and_then(|f| empty_preview_text(&f.reason));
+                    let matte = crate::panels::node_inspector::matte_shown(ui.ctx()).is_some();
+                    if let Some(text) = empty_preview_note(said, matte && !kind.is_group()) {
                         let cell = body_rect.shrink(4.0 * zoom);
                         if cell.is_positive() && zoom > 0.45 {
                             let galley = painter.layout(text.to_string(), egui::FontId::proportional((10.0 * zoom).max(8.0)), theme.text_dim, cell.width());
@@ -6504,6 +6513,9 @@ mod empty_preview_tests {
         assert_eq!(super::empty_preview_text(picture), Some("No preview for picture nodes yet"));
         assert_eq!(super::empty_preview_text("a1b2 doesn't run in this frame's picture"), Some("Not in this frame"));
         assert_eq!(super::empty_preview_text("the render failed"), None);
+        assert_eq!(super::empty_preview_note(None, true), Some("Viewer shows a matte"), "no preview while a matte is shown, said");
+        assert_eq!(super::empty_preview_note(None, false), None);
+        assert_eq!(super::empty_preview_note(Some("Not in this frame"), true), Some("Not in this frame"), "the engine's reason first");
         // A group says what it holds there instead, and the two were drawn
         // over each other.
         let src = include_str!("node_graph_v2.rs");

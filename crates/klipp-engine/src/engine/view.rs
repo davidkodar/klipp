@@ -935,10 +935,14 @@ impl PlaybackEngine {
         // frames only, never the speculative pre-render, and not while a
         // slider is held: the drag's frames are for the viewer, and the
         // regrade on release brings the thumbnails up to date.
+        // Nor while the viewer shows a matte: that render stops at the
+        // matte's node, and every node's preview came back "not in this
+        // frame". Not asked, the previews the frame had stay.
         let thumbs = (self.state != PlaybackState::Playing
             && !self.visible_node_thumbs.is_empty()
             && !self.thumb_capture_suspended
-            && !self.in_node_param_edit)
+            && !self.in_node_param_edit
+            && matte_view.is_none())
             .then(|| self.visible_node_thumbs.clone());
         // The matte view's node is the clip's own grade's (M3 step 16a).
         let at = |node: klipp_nodes::NodeId| clip.map(|c| klipp_compose::inspect::grade_node(c, node));

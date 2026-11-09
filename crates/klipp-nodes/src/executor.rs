@@ -3421,7 +3421,17 @@ impl GraphExecutor {
             // pure-mask graphs (no Corrector with non-default
             // params) ran the entire mask + multiply on CPU at
             // ~60–110 ms / 4K frame.
-            if node.kind == NodeKind::Mask && self.gpu.is_some() {
+            // A window looked at — its matte in the viewer, tapped or
+            // soloed — runs in its turn, its pixels on the CPU, as the
+            // GPU window above does: drawn here into the gate's buffer it
+            // never reached the matte preview, and a plain window on a
+            // correction's gate showed the graded picture for its matte.
+            if node.kind == NodeKind::Mask
+                && self.gpu.is_some()
+                && Some(node_id) != matte_preview_node
+                && Some(node_id) != matte_tap
+                && Some(node_id) != self.solo_node
+            {
                 let consumers: Vec<&Edge> = graph.edges.iter()
                     .filter(|e| e.from_node == node_id)
                     .collect();
@@ -10787,4 +10797,42 @@ fn domain_decline(graph: &NodeGraph, fault: &crate::domains::DomainFault) -> cra
 /// it holds (#1746, #1265).
 fn side_key_of(n: &Node) -> Option<crate::side_picture::SideKey> {
     (n.kind == NodeKind::SidePicture).then(|| n.params.side_picture.clone().or_else(|| n.params.effects.iter().find_map(crate::side_picture::SideKey::of))).flatten()
+}
+
+#[cfg(test)]
+mod window_matte_tests {
+    use super::*;
+
+    /// A plain window on a correction's gate shows its own matte when
+    /// previewed: white in the circle, black outside. On the GPU it was
+    /// drawn straight into the gate's buffer, and the viewer showed the
+    /// graded picture instead; a window combined with a key showed its
+    /// matte, as it runs another way.
+    #[test]
+    fn a_plain_windows_matte_is_its_own_on_the_gpu() {
+        let mut graph = crate::graph::NodeGraph::default();
+        let correction = graph.ensure_corrector();
+        let window = graph.ensure_corrector_window();
+        for n in graph.nodes.iter_mut() {
+            if n.id == window {
+                n.params.masks = Some(klipp_core::MaskStack { masks: vec![klipp_core::Mask::new(klipp_core::MaskShape::Circle { center_x: 0.5, center_y: 0.5, radius: 0.2 })] });
+            }
+            if n.id == correction {
+                n.params.exposure = Some(1.0);
+            }
+        }
+        let (w, h) = (32usize, 32usize);
+        let frame = [0.18f32, 0.18, 0.18, 1.0].repeat(w * h);
+        let mut on_gpu = GraphExecutor::new();
+        if on_gpu.gpu_pipeline_or_init().is_none() {
+            assert!(std::env::var_os("KLIPP_TEST_REQUIRE_GPU").is_none_or(|v| v != "1"), "required, but there is no GPU");
+            eprintln!("UNVERIFIED: no GPU");
+            return;
+        }
+        for (way, mut exec) in [("CPU", GraphExecutor::new_cpu_only()), ("GPU", on_gpu)] {
+            let (out, _, _) = exec.execute_linear_with_thumbs(&frame, &graph, w as u32, h as u32, 0.0, 0, None, Some(window), None).unwrap();
+            let at = |x: usize, y: usize| out[(y * w + x) * 4];
+            assert!(at(16, 16) > 0.99 && at(1, 1) < 0.01, "{way}: the circle's middle {:.3}, the corner {:.3}: the matte, not the picture", at(16, 16), at(1, 1));
+        }
+    }
 }

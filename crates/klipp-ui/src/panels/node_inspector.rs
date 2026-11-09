@@ -1612,6 +1612,7 @@ impl NodeInspectorPanel {
                 // The mask editor the node's own page draws, its tracked
                 // masks marked as there.
                 let tracked = self.tracked_masks.clone();
+                show_matte_toggle(ui, node_id, cmds);
                 Self::render_masks_body(ui, masks, node_id, clip_id, cmds, theme, frame, &tracked);
             } else {
                 ui.horizontal(|ui| {
@@ -4222,6 +4223,23 @@ fn tracked_span(mask: &klipp_core::Mask) -> Option<(f64, f64)> {
 }
 
 /// Whether a page of `kind` offers Show matte.
+/// "Show matte": the matte of `node_id` in the viewer instead of the
+/// picture, lit while it is the one shown; again, back to the picture.
+/// On a matte node's page and on the Colour page's mask list, so a
+/// window's matte is a click away where its key's is.
+fn show_matte_toggle(ui: &mut egui::Ui, node_id: NodeId, cmds: &mut Vec<AppCommand>) {
+    ui.horizontal(|ui| {
+        ui.add_space(12.0);
+        let on = matte_shown(ui.ctx()) == Some(node_id);
+        if ui.selectable_label(on, egui::RichText::new("Show matte").size(10.0))
+            .on_hover_text("Show this node's matte in the viewer instead of the picture, white where it reaches (Alt+M). Only the viewer: nothing is exported or saved")
+            .clicked()
+        {
+            cmds.push(AppCommand::ShowMatte { node: (!on).then_some(node_id) });
+        }
+    });
+}
+
 /// Where a warper point sits for a saturation shift: at rest (`neutral_r`)
 /// for none, at the wheel's centre for -1, the whole colour gone, and on
 /// its ring (`radius`) for +1. Full desaturation is the point dragged all
@@ -4269,7 +4287,7 @@ pub(crate) fn publish_matte_shown(ctx: &egui::Context, node: Option<NodeId>) {
     ctx.data_mut(|d| d.insert_temp(matte_shown_id(), node));
 }
 
-fn matte_shown(ctx: &egui::Context) -> Option<NodeId> {
+pub(crate) fn matte_shown(ctx: &egui::Context) -> Option<NodeId> {
     ctx.data(|d| d.get_temp::<Option<NodeId>>(matte_shown_id())).flatten()
 }
 
@@ -4331,16 +4349,7 @@ pub(crate) fn node_header(
         });
     });
     if shows_a_matte(*kind) {
-        ui.horizontal(|ui| {
-            ui.add_space(12.0);
-            let on = matte_shown(ui.ctx()) == Some(node_id);
-            if ui.selectable_label(on, egui::RichText::new("Show matte").size(10.0))
-                .on_hover_text("Show this node's matte in the viewer instead of the picture, white where it reaches (Alt+M). Only the viewer: nothing is exported or saved")
-                .clicked()
-            {
-                cmds.push(AppCommand::ShowMatte { node: (!on).then_some(node_id) });
-            }
-        });
+        show_matte_toggle(ui, node_id, cmds);
     }
     if *kind == NodeKind::Qualifier && ui.ctx().data(|d| d.get_temp::<Option<NodeId>>(key_waiting_id())).flatten() == Some(node_id) {
         ui.horizontal(|ui| {
@@ -5975,6 +5984,41 @@ mod show_matte_tests {
         assert_eq!(run(NodeKind::Mask, Some(NodeId::new_v4())), Some(Some(Some(node))), "another's shown: this one instead");
         assert_eq!(run(NodeKind::Qualifier, Some(node)), Some(Some(None)), "turned off");
         assert_eq!(run(NodeKind::Corrector, None), None, "no toggle on a correction's page");
+    }
+
+    /// The Colour page's mask list has the window's toggle too, as the
+    /// key's page has the key's: it was reached only from the node graph.
+    #[test]
+    fn the_mask_list_toggles_the_windows_matte() {
+        let ctx = egui::Context::default();
+        let mut graph = NodeGraph::default();
+        graph.ensure_corrector();
+        graph.ensure_corrector_window();
+        let window = graph.nodes.iter().find(|n| n.kind == NodeKind::Mask).map(|n| n.id).expect("a window");
+        let mut panel = NodeInspectorPanel::default();
+        let frame = FrameSelection::new(klipp_core::Timecode::zero(), klipp_core::Timecode::zero(), 0.02);
+        let mut clock = 0.0;
+        let mut step = |events: Vec<egui::Event>| {
+            clock += 0.05;
+            let mut cmds = Vec::new();
+            let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(420.0, 3000.0))), time: Some(clock), events, ..Default::default() };
+            let out = ctx.run(input, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| panel.show_adjustments_tab(ui, &mut graph, ClipId::new(), &mut None, &mut cmds, &KlippTheme::default(), frame));
+            });
+            let at = out.shapes.iter().find_map(|s| match &s.shape {
+                egui::Shape::Text(t) if t.galley.text() == "Show matte" => Some(t.pos + t.galley.size() / 2.0),
+                _ => None,
+            });
+            (cmds, at)
+        };
+        step(Vec::new());
+        let (_, at) = step(Vec::new());
+        let at = at.expect("Show matte on the mask list");
+        let press = |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+        step(vec![egui::Event::PointerMoved(at)]);
+        step(vec![press(true)]);
+        let (cmds, _) = step(vec![press(false)]);
+        assert!(cmds.iter().any(|c| matches!(c, AppCommand::ShowMatte { node: Some(n) } if *n == window)), "shows the window's matte");
     }
 }
 
