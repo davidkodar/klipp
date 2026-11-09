@@ -646,3 +646,31 @@ fn a_ctrl_click_on_a_window_over_the_viewer_does_not_lock_the_scope_cursor() {
     assert!(locked(false), "on the viewer it does");
     assert!(!locked(true), "under the window");
 }
+
+/// A clip with a Corner Pin, its first corner typed in, in the viewer: the
+/// pin's handles are its own, there and at the corners left where they
+/// were, and it says what they are. A press on a window over one takes none.
+#[test]
+fn a_corner_pins_handles_are_its_own_and_stay_under_a_window() {
+    let (mut v, clip) = viewer();
+    v.state.active_tool = Tool::Select;
+    let mut pin = klipp_effects::corner_pin::still();
+    if let klipp_effects::BuiltinEffect::CornerPin { tl, .. } = &mut pin {
+        tl[0] = 0.2;
+    }
+    v.state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip)).unwrap().push_effect(pin);
+    v.frame(Vec::new());
+    v.frame(Vec::new());
+    let handles: Vec<egui::Pos2> = v.circles.iter().filter(|(_, fill)| *fill == crate::panels::viewer::CORNER_PIN_HANDLE).map(|c| c.0).collect();
+    assert_eq!(handles.len(), 4, "{:?}", v.circles);
+    let typed = at(&v, 0.2, 0.0);
+    assert!(handles.iter().any(|h| (*h - typed).length() < 2.0), "at the typed corner {typed:?}: {handles:?}");
+    assert!(v.texts.iter().any(|t| t == "Corner Pin"), "{:?}", v.texts);
+
+    // A window lying over the handle, which the same press would have taken.
+    v.window_over = Some(egui::Rect::from_center_size(typed, egui::vec2(300.0, 200.0)));
+    v.frame(Vec::new());
+    v.frame(vec![egui::Event::PointerMoved(typed)]);
+    v.frame(vec![egui::Event::PointerButton { pos: typed, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE }]);
+    assert!(v.state.viewer_corner_pin_drag.is_none(), "under the window");
+}

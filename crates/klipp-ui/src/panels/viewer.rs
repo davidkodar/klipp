@@ -192,6 +192,9 @@ fn corner_pin_view(state: &AppState, clip: &klipp_timeline::Clip, effect_index: 
     title_view_of(state, clip, image_rect).map_err(|_| ())
 }
 
+/// The colour of a Corner Pin's handles and outline.
+pub(crate) const CORNER_PIN_HANDLE: egui::Color32 = egui::Color32::from_rgb(90, 200, 255);
+
 /// Whether a press at `p` is the viewer's: not on a window or popup over it.
 /// These tools read the pointer itself, so without this a press on a window
 /// lying over the viewer also took hold of whatever was under it.
@@ -5868,9 +5871,10 @@ impl ViewerPanel {
         };
         let screen: [egui::Pos2; 4] = std::array::from_fn(|i| view.to_screen(shown[i][0], shown[i][1]));
         let painter = ui.painter().with_clip_rect(ui.clip_rect());
-        // White on black, as the transform gizmo's handles are: visible
-        // over any picture, and not mistaken for the picture.
-        let (fill, edge) = (egui::Color32::WHITE, egui::Color32::BLACK);
+        // Round and in the tools' blue, as the chart's are: at their
+        // untouched place they sit on the transform box's corners, and white
+        // squares there read as that box's own handles, not a pin's.
+        let (fill, edge) = (CORNER_PIN_HANDLE, egui::Color32::BLACK);
         let hit_radius = 10.0;
         let pointer_pos = ui.input(|i| i.pointer.interact_pos());
         let hit = |p: egui::Pos2| screen.iter().position(|s| (p - *s).length() <= hit_radius);
@@ -5878,11 +5882,10 @@ impl ViewerPanel {
 
         painter.add(egui::Shape::closed_line(screen.to_vec(), egui::Stroke::new(1.0_f32, fill)));
         for (i, s) in screen.iter().enumerate() {
-            let half = if hot == Some(i) { 5.0 } else { 4.0 };
-            let rect = egui::Rect::from_center_size(*s, egui::vec2(half * 2.0, half * 2.0));
-            painter.rect_filled(rect, 0.0, fill);
-            painter.rect_stroke(rect, 0.0, egui::Stroke::new(1.0_f32, edge));
+            let radius = if hot == Some(i) { 6.0 } else { 5.0 };
+            painter.circle(*s, radius, fill, egui::Stroke::new(1.0_f32, edge));
         }
+        painter.text(screen[0] + egui::vec2(10.0, 8.0), egui::Align2::LEFT_TOP, "Corner Pin", egui::FontId::proportional(11.0), fill);
 
         let drag_key = format!("{:?}:builtin:{}", clip_id, effect_index);
         let pressed = ui.input(|i| i.pointer.primary_pressed());

@@ -22,6 +22,8 @@ pub(super) struct Viewer {
     pub(super) modifiers: egui::Modifiers,
     /// The texts the last frame drew.
     pub(super) texts: Vec<String>,
+    /// The circles the last frame drew: centre and fill.
+    pub(super) circles: Vec<(egui::Pos2, egui::Color32)>,
     /// A window lying over the viewer, as Colour Check or Clip Properties do.
     pub(super) window_over: Option<egui::Rect>,
 }
@@ -31,7 +33,7 @@ impl Viewer {
         // Paused on an empty timeline: the viewer shows a frame to
         // draw on.
         let state = AppState { playback: klipp_engine::PlaybackState::Paused, active_tool: Tool::Text, ..Default::default() };
-        let mut v = Self { ctx: egui::Context::default(), panel: ViewerPanel::default(), state, theme: KlippTheme::default(), clock: 0.0, sent: Vec::new(), modifiers: egui::Modifiers::NONE, texts: Vec::new(), window_over: None };
+        let mut v = Self { ctx: egui::Context::default(), panel: ViewerPanel::default(), state, theme: KlippTheme::default(), clock: 0.0, sent: Vec::new(), modifiers: egui::Modifiers::NONE, texts: Vec::new(), circles: Vec::new(), window_over: None };
         v.frame(Vec::new());
         v
     }
@@ -55,6 +57,10 @@ impl Viewer {
         });
         self.texts = out.shapes.iter().filter_map(|s| match &s.shape {
             egui::Shape::Text(t) => Some(t.galley.text().to_string()),
+            _ => None,
+        }).collect();
+        self.circles = out.shapes.iter().filter_map(|s| match &s.shape {
+            egui::Shape::Circle(c) => Some((c.center, c.fill)),
             _ => None,
         }).collect();
         for cmd in cmds {
