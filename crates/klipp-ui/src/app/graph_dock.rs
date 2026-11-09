@@ -252,8 +252,7 @@ mod tests {
         use super::select_graph_clip;
         let clip = ClipId::new();
         let at = NodePath::new(Root::Clip { clip: clip.0 }, [uuid::Uuid::new_v4()]);
-        let mut s = AppState::default();
-        s.selected_node_addr = Some(at.clone());
+        let mut s = AppState { selected_node_addr: Some(at.clone()), ..Default::default() };
         select_graph_clip(&mut s, Some(clip), None);
         assert_eq!(s.selected_clip, Some(clip));
         let other = ClipId::new();
