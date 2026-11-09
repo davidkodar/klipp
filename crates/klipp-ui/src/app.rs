@@ -915,6 +915,7 @@ impl eframe::App for KlippApp {
         self.take_in_results(ctx, frame);
         self.sync_derived_state(ctx);
         self.tick_meters_and_skims(ctx);
+        self.state.menu_open_at_frame_start = crate::widgets::menu::open_at_frame_start(ctx);
         let all_cmds = self.draw_window(ctx);
         let has_quit = self.dispatch_commands(ctx, all_cmds);
         // After the commands, which may have queued a harness's steps.
