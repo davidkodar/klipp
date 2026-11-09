@@ -28,6 +28,10 @@ fn drawn(seq: &klipp_timeline::Sequence, at: klipp_core::Timecode) -> Vec<u8> {
 type Written = Arc<Mutex<Vec<crate::MatchKnobs>>>;
 
 fn context() -> (ControlContext, String, String, Written, Arc<Mutex<usize>>) {
+    context_drawing(drawn)
+}
+
+fn context_drawing(draw: fn(&klipp_timeline::Sequence, klipp_core::Timecode) -> Vec<u8>) -> (ControlContext, String, String, Written, Arc<Mutex<usize>>) {
     let root = std::env::temp_dir().join(format!("klipp-match-order-{}", uuid::Uuid::new_v4()));
     let mut pool = klipp_media::MediaPool::new();
     let media = pool.add(klipp_media::MediaItem::synthetic_for_test(root.join("shot.mp4"), None));
@@ -65,7 +69,7 @@ fn context() -> (ControlContext, String, String, Written, Arc<Mutex<usize>>) {
                     host_shared.bump_revision();
                 }
                 if let AppCommand::SeekTo(at) = command {
-                    let rgba = drawn(&host_seq.snapshot(), at);
+                    let rgba = draw(&host_seq.snapshot(), at);
                     let mut frame = frame_buffer.lock().unwrap();
                     frame.write_frame(rgba, W, H);
                     frame.set_presented(at, true);
@@ -169,4 +173,34 @@ fn a_picked_grey_is_balanced_on_and_read_again() {
     assert_eq!(steps[0].exposure, Some(0.5), "the grade kept");
     let text = reply["text"].as_str().unwrap();
     assert!(text.contains("it now reads"), "{text}");
+}
+
+/// A match that leaves a shot further from its hero is taken back: on a
+/// real interview one went from 5.6 to 18.0 and stayed, saturation up by
+/// three. The shot ends as it began, and the reply says why.
+#[test]
+fn a_match_that_brings_a_shot_no_closer_is_taken_back() {
+    fn worse_when_graded(seq: &klipp_timeline::Sequence, at: klipp_core::Timecode) -> Vec<u8> {
+        use klipp_color::measure::{lab_to_srgb8, Lab};
+        let target = seq.tracks[0].clips[1].clone();
+        let l = if at < target.timeline_in {
+            50.0
+        } else if crate::primary_knobs(klipp_timeline::GradeAccess::grade(&target)).exposure.unwrap_or(0.0).abs() > 0.01 {
+            75.0
+        } else {
+            44.0
+        };
+        let c = lab_to_srgb8(Lab { l, a: 0.0, b: 0.0 });
+        [c[0], c[1], c[2], 255].repeat((W * H) as usize)
+    }
+    let (ctx, target, _reference, written, _) = context_drawing(worse_when_graded);
+    let reply = respond(&ctx, ControlCommand::MatchScenes { apply: true, rounds: None, clip_ids: None }, &mut None).unwrap();
+    assert!(!written.lock().unwrap().is_empty(), "it tried");
+    let shot = reply["scenes"].as_array().unwrap().iter().flat_map(|s| s["shots"].as_array().unwrap()).find(|s| s["clip_id"] == serde_json::json!(target)).unwrap().clone();
+    assert_eq!(shot["left_as_it_was"], serde_json::json!("a match brought it no closer"), "{reply}");
+    assert_eq!(shot["rounds"], serde_json::json!(0));
+    assert!(reply["text"].as_str().unwrap().contains("left as it was"), "{reply}");
+    let seq = ctx.sequence.snapshot();
+    let knobs = crate::primary_knobs(klipp_timeline::GradeAccess::grade(&seq.tracks[0].clips[1]));
+    assert!(knobs.exposure.unwrap_or(0.0).abs() < 0.001, "back where it began: {knobs:?}");
 }

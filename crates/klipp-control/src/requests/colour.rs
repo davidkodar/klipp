@@ -206,7 +206,7 @@ pub(crate) fn respond(
             if in_batch {
                 return Err("match_scenes measures and applies; send it on its own".into());
             }
-            use klipp_color::measure::{match_distance, LookTarget, MATCH_GOOD, MATCH_WARN, SCENE_SPLIT};
+            use klipp_color::measure::{match_distance, match_move_too_big, LookTarget, MATCH_GOOD, MATCH_WARN, SCENE_SPLIT};
             let shots: Vec<(String, f64, f64, String)> = {
                 let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
                 let pool = ctx.media_pool.read().recovered();
@@ -317,7 +317,16 @@ pub(crate) fn respond(
                 for &i in members {
                     let name: String = shots[i].3.chars().take(24).collect();
                     let before = match_distance(&read[hero].2, &read[i].2);
+                    let unmatched = read[i].2.clone();
+                    let start = {
+                        let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+                        let cid = klipp_core::ClipId(shots[i].0.parse().map_err(|e| format!("{e}"))?);
+                        seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == cid).map(corrector_now).unwrap_or_default()
+                    };
                     let mut done = 0u32;
+                    // Why this shot is left as it was: a match has to help,
+                    // and within what one lighting setup asks of a shot.
+                    let mut left = None;
                     if i != hero && apply && before > MATCH_GOOD {
                         // The hero itself is the target: it already
                         // carries the look, so matching to it is one
@@ -334,18 +343,20 @@ pub(crate) fn respond(
                                 let cid = klipp_core::ClipId(shots[i].0.parse().map_err(|e| format!("{e}"))?);
                                 seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == cid).map(corrector_now).unwrap_or_default()
                             };
-                            let op: klipp_document::ops::Op = serde_json::from_value(json!({
-                                "op": "grade", "clip_id": shots[i].0,
-                                "exposure": (now.exposure + step.exposure).clamp(-6.0, 6.0),
-                                "lift": (now.lift + step.lift).clamp(-1.0, 1.0),
-                                "gain": (now.gain + step.gain).clamp(-1.0, 1.0),
-                                "temperature": (now.temperature + step.temperature).clamp(-50.0, 50.0),
-                                "tint": (now.tint + step.tint).clamp(-50.0, 50.0),
-                                "saturation": (now.saturation * (1.0 + step.saturation)).clamp(0.0, 4.0),
-                            })).map_err(|e| e.to_string())?;
-                            let (plan, revision) = resolve_plan(ctx, &[op])?;
-                            let edits: Vec<klipp_document::history::EditCommand> = plan.steps.iter().map(|s| s.edit.clone()).collect();
-                            fold.send(ctx, edits, revision)?;
+                            let next = klipp_color::measure::PrimaryStep {
+                                exposure: (now.exposure + step.exposure).clamp(-6.0, 6.0),
+                                lift: (now.lift + step.lift).clamp(-1.0, 1.0),
+                                gain: (now.gain + step.gain).clamp(-1.0, 1.0),
+                                temperature: (now.temperature + step.temperature).clamp(-50.0, 50.0),
+                                tint: (now.tint + step.tint).clamp(-50.0, 50.0),
+                                saturation: (now.saturation * (1.0 + step.saturation)).clamp(0.0, 4.0),
+                                ..Default::default()
+                            };
+                            if let Some(what) = match_move_too_big(&start, &next) {
+                                left = Some(format!("a match would take more {what} than one lighting setup asks of a shot"));
+                                break;
+                            }
+                            send_primaries(ctx, &mut fold, &shots[i].0, &next)?;
                             done += 1;
                             read[i].2 = measure_at(ctx, read[i].1, clip_of(&shots[read[i].0].0), Some(6000))?;
                             if match_distance(&read[hero].2, &read[i].2) <= MATCH_GOOD {
@@ -353,9 +364,19 @@ pub(crate) fn respond(
                             }
                         }
                     }
+                    if done > 0 && left.is_none() && match_distance(&read[hero].2, &read[i].2) >= before {
+                        left = Some("a match brought it no closer".to_string());
+                    }
+                    if left.is_some() && done > 0 {
+                        send_primaries(ctx, &mut fold, &shots[i].0, &start)?;
+                        read[i].2 = unmatched;
+                        done = 0;
+                    }
                     let after = match_distance(&read[hero].2, &read[i].2);
                     let verdict = if i == hero {
                         "the hero".to_string()
+                    } else if let Some(why) = &left {
+                        format!("left as it was, ΔE {after:.1} — {why}: it reads as a look of its own, so grade it by eye")
                     } else if after <= MATCH_GOOD {
                         format!("matched, ΔE {after:.1}")
                     } else if after <= MATCH_WARN {
@@ -377,6 +398,7 @@ pub(crate) fn respond(
                         "residual_to_hero": after,
                         "residual_before": before,
                         "rounds": done,
+                        "left_as_it_was": left,
                     }));
                 }
                 out_scenes.push(json!({ "scene": s_i + 1, "hero_clip_id": shots[hero].0, "hero_secs": read[hero].1, "shots": per_shot }));
@@ -1535,6 +1557,22 @@ fn node_key(ctx: &ControlContext, clip: klipp_core::ClipId, node_id: uuid::Uuid,
 /// close to its hero and still cut badly against the shot beside it, and
 /// it is the cut that shows. `shots` are (id, in, out, name) on the
 /// timeline; `read` each shot's (index, frame read, measure).
+/// `clip`'s Corrector set to `to`, in the match's one undo step.
+fn send_primaries(ctx: &ControlContext, fold: &mut UndoFold, clip: &str, to: &klipp_color::measure::PrimaryStep) -> Result<(), String> {
+    let op: klipp_document::ops::Op = serde_json::from_value(json!({
+        "op": "grade", "clip_id": clip,
+        "exposure": to.exposure,
+        "lift": to.lift,
+        "gain": to.gain,
+        "temperature": to.temperature,
+        "tint": to.tint,
+        "saturation": to.saturation,
+    })).map_err(|e| e.to_string())?;
+    let (plan, revision) = resolve_plan(ctx, &[op])?;
+    let edits: Vec<klipp_document::history::EditCommand> = plan.steps.iter().map(|s| s.edit.clone()).collect();
+    fold.send(ctx, edits, revision).map(|_| ())
+}
+
 fn scene_joins(shots: &[(String, f64, f64, String)], read: &[(usize, f64, klipp_color::measure::FrameMeasure)], scenes: &[Vec<usize>]) -> (Vec<String>, Vec<serde_json::Value>) {
     use klipp_color::measure::{match_distance, MATCH_WARN};
     let (mut lines, mut joins) = (Vec::new(), Vec::new());
