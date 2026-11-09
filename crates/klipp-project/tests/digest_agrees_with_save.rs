@@ -139,7 +139,7 @@ fn project() -> Project {
     let mut assets = HashMap::new();
     let ClipKind::Title(data) = caption("Asset", 0.0, 1.0).kind else { unreachable!() };
     assets.insert(MediaId::new(), TitleAsset { display_name: "Lower third".into(), data, animation: None });
-    let looks = vec![Look { id: MediaId::new().0, name: "Warm".into(), node_graph: grade(0.6, None) }];
+    let looks = vec![Look { id: MediaId::new().0, name: "Warm".into(), node_graph: grade(0.6, None), node_labels: Vec::new() }];
     Project { sequences: vec![seq, second], pool, color: ColorSettings::default(), notes: "notes".into(), assets, looks }
 }
 

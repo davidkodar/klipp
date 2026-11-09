@@ -466,6 +466,30 @@ impl NodeGraph {
         self.clone().gate_with_matte(target, matte) == GateOutcome::Combined
     }
 
+    /// Take every mask's tracked motion off, in this graph and the
+    /// compounds it holds: what a tracker read from one shot's subject,
+    /// which on another shot moves the window the way the first one's did.
+    /// Whether there was any.
+    pub fn drop_mask_tracks(&mut self) -> bool {
+        let mut dropped = false;
+        for node in &mut self.nodes {
+            if let Some(stack) = node.params.masks.as_mut() {
+                for m in &mut stack.masks {
+                    let k = &mut m.keyframes;
+                    let had = !k.track_x.is_empty() || !k.track_y.is_empty() || !k.track_scale.is_empty() || !k.track_rotation.is_empty() || k.track_perspective.is_some();
+                    if had {
+                        (k.track_x, k.track_y, k.track_scale, k.track_rotation, k.track_perspective) = (Vec::new(), Vec::new(), Vec::new(), Vec::new(), None);
+                        dropped = true;
+                    }
+                }
+            }
+            if let Some(inner) = node.params.compound_subgraph.as_mut() {
+                dropped |= inner.drop_mask_tracks();
+            }
+        }
+        dropped
+    }
+
     pub fn ensure_mask(&mut self) -> NodeId {
         if let Some(idx) = self.nodes.iter().position(|n| n.kind == NodeKind::Mask) {
             return self.nodes[idx].id;

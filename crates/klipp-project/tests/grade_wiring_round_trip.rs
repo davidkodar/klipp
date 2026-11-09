@@ -116,3 +116,30 @@ fn hue_sat_curves_and_the_warper_come_back_exact() {
     let params = |g: &NodeGraph| g.nodes.iter().find(|n| n.kind == NodeKind::Corrector).map(|n| (n.params.huesat.clone(), n.params.huesat_mix, n.params.warper_params.clone()));
     assert_eq!(params(&back), params(&want));
 }
+
+/// A Look keeps its node labels through a save and reload, and a Look file
+/// from before they were kept still reads, with none.
+#[test]
+fn a_look_keeps_its_node_labels_and_an_older_one_still_reads() {
+    let mut grade = NodeGraph::default();
+    let correction = grade.ensure_corrector();
+    let mut look = klipp_timeline::Look::new(uuid::Uuid::new_v4(), "Warm", grade);
+    look.node_labels = vec![klipp_timeline::GradeNodeLabel { nodes: vec![correction], colour: 3 }];
+    let dir = std::env::temp_dir().join(format!("klipp_look_labels_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    klipp_project::save_looks(&dir, std::slice::from_ref(&look)).unwrap();
+    let back = klipp_project::load_looks(&dir);
+    assert_eq!(back.len(), 1);
+    assert_eq!(back[0].node_labels, look.node_labels);
+    // The same file without its labels, as an older Klipp wrote it.
+    let file = dir.join("looks").join(format!("{}.json", look.id));
+    let mut v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+    assert!(v.as_object_mut().unwrap().remove("node_labels").is_some(), "kept beside the grade");
+    std::fs::write(&file, serde_json::to_string(&v).unwrap()).unwrap();
+    let older = klipp_project::load_looks(&dir);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(older.len(), 1, "an older Look reads");
+    assert!(older[0].node_labels.is_empty());
+    assert_eq!(older[0].node_graph.nodes.len(), back[0].node_graph.nodes.len());
+}

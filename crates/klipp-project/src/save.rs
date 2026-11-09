@@ -1049,16 +1049,26 @@ fn save_looks_as(dir: &Path, looks: &[Look], form: crate::FileForm) -> Result<()
 }
 
 /// Write one Look's file in `form`.
+/// Where a Look file keeps its node labels (#1866).
+pub(crate) const LOOK_NODE_LABELS: &str = "node_labels";
+
 fn write_look(looks_dir: &Path, look: &Look, form: crate::FileForm) -> Result<(), String> {
     {
         let json = match form {
             // Through text, as the project: an f32 keeps today's digits.
             crate::FileForm::Revision2 => {
-                let text = serde_json::to_string(look).map_err(|e| format!("Failed to serialize Look {}: {e}", look.name))?;
+                // Its labels beside the grade's revision-2 form, as a library
+                // grade keeps them (#1866): the grade's form has no place for them.
+                let bare = Look { node_labels: Vec::new(), ..look.clone() };
+                let text = serde_json::to_string(&bare).map_err(|e| format!("Failed to serialize Look {}: {e}", look.name))?;
                 let v1: serde_json::Value = serde_json::from_str(&text).map_err(|e| format!("Failed to serialize Look {}: {e}", look.name))?;
                 let (v2, notes) = klipp_graph_lift::revision2::look_noted(&v1).map_err(|e| format!("Failed to write Look {}'s revision-2 file: {e}", look.name))?;
                 if let Some(n) = notes.iter().find(|n| klipp_graph_lift::revision2::is_lost(n)) {
                     return Err(format!("Saving Look {} would lose part of it ({n:?}), so it was not saved", look.name));
+                }
+                let mut v2 = v2;
+                if !look.node_labels.is_empty() {
+                    v2[LOOK_NODE_LABELS] = serde_json::to_value(&look.node_labels).map_err(|e| format!("Failed to serialize Look {}: {e}", look.name))?;
                 }
                 serde_json::to_string_pretty(&v2).map_err(|e| format!("Failed to serialize Look {}: {e}", look.name))?
             }

@@ -743,11 +743,12 @@ impl KlippApp {
                         let targets = self.state.paste_attributes_targets();
                         self.state.paste_attributes_onto = None;
                         let named = self.state.paste_attributes_named(&targets);
-                        let (mut edits, labels) = paste_attributes(&self.state.sequences[self.state.active_sequence_idx], &targets, &attrs, what);
+                        let (mut edits, labels, tracks_left) = paste_attributes(&self.state.sequences[self.state.active_sequence_idx], &targets, &attrs, what);
                         // The grade's node labels, in the same step (#1866).
                         edits.extend(labels);
                         self.apply_edits_as_one(&edits, "Paste Attributes");
-                        self.state.toast.show(format!("Attributes pasted to {named}"));
+                        let left = if tracks_left { format!("; {}", super::grade_edits::TRACKS_LEFT) } else { String::new() };
+                        self.state.toast.show(format!("Attributes pasted to {named}{left}"));
                     }
                     true
                 }
