@@ -61,66 +61,7 @@ impl KlippApp {
         }
 
         // 3. Generate volume keyframes on the target clip
-        let attack = *attack_secs as f64;
-        let release = *release_secs as f64;
-        let duck = *duck_level;
-        let mut keyframes: Vec<klipp_core::Keyframe> = Vec::new();
-
-        for &(region_start, region_end) in &active_regions {
-            // Convert to clip-local time (relative to target clip's timeline_in)
-            let ramp_down_start = (region_start - target_timeline_start - attack).max(0.0);
-            let duck_start = (region_start - target_timeline_start).max(0.0);
-            let duck_end = (region_end - target_timeline_start).min(target_clip_dur_secs);
-            let ramp_up_end = (region_end - target_timeline_start + release).min(target_clip_dur_secs);
-
-            // Before duck: normal volume
-            if ramp_down_start < duck_start {
-                keyframes.push(klipp_core::Keyframe {
-                    time_secs: ramp_down_start,
-                    value: 1.0,
-                    interpolation: klipp_core::Interpolation::Bezier,
-                    tangent_in: (0.0, 0.0),
-                    tangent_out: (attack / 3.0, 0.0),
-                    handles: Default::default(),
-                });
-            }
-
-            // Duck start
-            keyframes.push(klipp_core::Keyframe {
-                time_secs: duck_start,
-                value: duck,
-                interpolation: klipp_core::Interpolation::Bezier,
-                tangent_in: (-attack / 3.0, 0.0),
-                tangent_out: (0.0, 0.0),
-                handles: Default::default(),
-            });
-
-            // Duck end
-            keyframes.push(klipp_core::Keyframe {
-                time_secs: duck_end,
-                value: duck,
-                interpolation: klipp_core::Interpolation::Bezier,
-                tangent_in: (0.0, 0.0),
-                tangent_out: (release / 3.0, 0.0),
-                handles: Default::default(),
-            });
-
-            // After duck: normal volume
-            if ramp_up_end > duck_end {
-                keyframes.push(klipp_core::Keyframe {
-                    time_secs: ramp_up_end,
-                    value: 1.0,
-                    interpolation: klipp_core::Interpolation::Bezier,
-                    tangent_in: (-release / 3.0, 0.0),
-                    tangent_out: (0.0, 0.0),
-                    handles: Default::default(),
-                });
-            }
-        }
-
-        // Remove duplicate times (keep the last keyframe at each time)
-        keyframes.sort_by(|a, b| a.time_secs.partial_cmp(&b.time_secs).unwrap_or(std::cmp::Ordering::Equal));
-        keyframes.dedup_by(|a, b| (a.time_secs - b.time_secs).abs() < klipp_core::keyframe::KEYFRAME_TIME_EPSILON);
+        let keyframes = crate::auto_duck::duck_keys(&active_regions, target_timeline_start, target_clip_dur_secs, *attack_secs as f64, *release_secs as f64, *duck_level);
 
         // 4. Apply keyframes to the target clip
         for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
