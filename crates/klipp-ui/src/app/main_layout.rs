@@ -1026,10 +1026,8 @@ impl KlippApp {
                     if crate::widgets::inspector_group::panel_title_row(ui, &title, false, &theme) {
                         collapse_requested = true;
                     }
-                    if let Some(elsewhere) = elsewhere {
-                        if super::colour_target::elsewhere_hint(ui, &theme) {
-                            self.colour_go_to = Some(elsewhere);
-                        }
+                    if super::colour_target::elsewhere_row(ui, &theme, elsewhere.is_some()) {
+                        self.colour_go_to = elsewhere;
                     }
                     if let Some(n) = shot_pieces {
                         if super::colour_target::shot_pieces_hint(ui, &theme, n) {
