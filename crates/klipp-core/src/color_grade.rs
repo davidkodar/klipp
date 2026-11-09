@@ -211,7 +211,10 @@ impl Default for QualifierSettings {
             hue_center: 0.0,
             hue_width: 30.0,
             hue_soft: 10.0,
-            sat_low: 0.0,
+            // Above the near-greys, whose hue is noise: from 0 a new key took
+            // pale wood in speckles (48% of a crate front, 16% from 0.15;
+            // colours above about 0.25 saturation keyed as before).
+            sat_low: 0.15,
             sat_high: 1.0,
             sat_soft: 0.1,
             lum_low: 0.0,
@@ -1973,5 +1976,21 @@ mod user_zone_preset_tests {
         said("\"Blinding\": exposure 40 is outside -4 to 4");
         said("\"Grey\": saturation 9 is outside 0 to 2");
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod qualifier_default_tests {
+    use super::QualifierSettings;
+
+    /// A new key starts above the near-greys, whose hue is noise; a key
+    /// saved with any Sat Low, 0 included, keeps it.
+    #[test]
+    fn a_new_key_leaves_out_the_near_greys_and_a_saved_one_keeps_its_own() {
+        let new = QualifierSettings::default();
+        assert_eq!((new.sat_low, new.sat_soft, new.hue_soft), (0.15, 0.1, 10.0));
+        let saved = QualifierSettings { sat_low: 0.0, ..QualifierSettings::default() };
+        let back: QualifierSettings = serde_json::from_str(&serde_json::to_string(&saved).unwrap()).unwrap();
+        assert_eq!(back.sat_low, 0.0, "a saved key keeps its value");
     }
 }
