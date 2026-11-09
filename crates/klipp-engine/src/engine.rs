@@ -15250,6 +15250,42 @@ mod view_past_grade_tests {
     use klipp_timeline::Sequence;
     use std::sync::Mutex;
 
+    /// While the viewer shows a matte the node previews are not asked of
+    /// the frame: its render stops at the matte, and every preview came
+    /// back "not in this frame". Off, they are asked again.
+    #[test]
+    fn previews_are_not_asked_while_a_matte_is_shown() {
+        use klipp_timeline::GradeAccess;
+        let tc = |s: f64| Timecode::from_secs_f64(s, 25);
+        let mut clip = klipp_timeline::Clip::media(klipp_core::MediaId::new(), tc(0.0), tc(4.0), tc(0.0), tc(4.0));
+        let id = clip.id;
+        let mut window = None;
+        clip.edit_grade(|g| {
+            g.ensure_corrector();
+            window = Some(g.ensure_corrector_window());
+        });
+        let window = window.unwrap();
+        let correction = clip.grade().nodes.iter().find(|n| n.kind == klipp_nodes::NodeKind::Corrector).unwrap().id;
+        let mut seq = klipp_timeline::Sequence::new_default();
+        seq.tracks.iter_mut().find(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap().clips.push(clip);
+        let sequence = Arc::new(klipp_timeline::SharedSequence::new(seq));
+        let (_cmd_tx, cmd_rx) = crossbeam_channel::unbounded();
+        let (ev_tx, _ev_rx) = crossbeam_channel::unbounded();
+        let fb = || Arc::new(Mutex::new(crate::texture::FrameBuffer::new(16, 16)));
+        let mut engine = PlaybackEngine::new(
+            cmd_rx, ev_tx, fb(), fb(),
+            Arc::clone(&sequence), Arc::new(RwLock::new(klipp_media::MediaPool::new())), Box::new(|| {}),
+            Arc::new(Mutex::new(None)), Arc::new(Mutex::new(crate::perf::PerfRing::default())),
+        );
+        engine.handle_command(AppCommand::SetVisibleNodeThumbs { request: 1, clip_id: id, at: vec![klipp_compose::inspect::grade_node(id, correction)] });
+        let asked = |e: &PlaybackEngine| e.inspect_request(&sequence.read().unwrap(), Some(id), false).thumbs.is_some();
+        assert!(asked(&engine), "asked with no matte shown");
+        engine.handle_command(AppCommand::ShowMatte { node: Some(window) });
+        assert!(!asked(&engine), "not while the matte is shown");
+        engine.handle_command(AppCommand::ShowMatte { node: None });
+        assert!(asked(&engine), "asked again");
+    }
+
     /// The matte shown is the node named, not the first there is; off, none;
     /// and the shortcut's plain on still takes the first.
     #[test]
