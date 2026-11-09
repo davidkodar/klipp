@@ -76,6 +76,25 @@ fn vol_to_db(vol: f32) -> f32 {
     if vol <= 0.0001 { -60.0 } else { 20.0 * vol.log10() }
 }
 
+/// The fader's top, in dB: a gain of 2.
+const MAX_FADER_DB: f32 = 6.02;
+
+/// A level for `db` dB, as [`vol_to_db`] reads it back: silence at -60
+/// and below, at most the fader's top.
+fn db_to_vol(db: f32) -> f32 {
+    if db <= -59.95 { 0.0 } else { 10f32.powf(db.min(MAX_FADER_DB) / 20.0).min(2.0) }
+}
+
+/// A typed level: a number of dB, its unit and sign optional ("-6",
+/// "+3.5 dB", "-inf").
+fn parse_db(text: &str) -> Option<f64> {
+    let t = text.trim().trim_end_matches(|c: char| c.is_whitespace() || c.eq_ignore_ascii_case(&'d') || c.eq_ignore_ascii_case(&'b')).trim();
+    if t.eq_ignore_ascii_case("-inf") || t == "\u{2212}\u{221e}" {
+        return Some(-60.0);
+    }
+    t.replace('\u{2212}', "-").parse::<f64>().ok()
+}
+
 fn format_db(db: f32) -> String {
     if db <= -59.0 { "-inf".to_string() } else { format!("{:+.1}", db) }
 }
@@ -613,13 +632,32 @@ fn fader_strip(
 
     y = fader_bottom + READOUT_GAP;
 
-    // -- dB readout --
-    let db = vol_to_db(shown_volume);
+    // -- dB readout: typed into, as a send's level is, or dragged --
+    // It was drawn text, so a level could be set only by the fader's feel.
+    let mut db = vol_to_db(shown_volume);
     let db_color = if *muted { theme.text_dim } else { theme.text_secondary };
-    painter.text(
-        egui::pos2(rect.center().x, y + 5.0), egui::Align2::CENTER_CENTER,
-        format!("{} dB", format_db(db)), egui::FontId::monospace(10.0), db_color,
-    );
+    let readout = egui::Rect::from_center_size(egui::pos2(rect.center().x, y + 5.0), egui::vec2(inner_w.min(64.0), 14.0));
+    let field = ui.scope_builder(egui::UiBuilder::new().max_rect(readout), |ui| {
+        ui.style_mut().override_font_id = Some(egui::FontId::monospace(10.0));
+        ui.visuals_mut().override_text_color = Some(db_color);
+        ui.add_sized(readout.size(), crate::widgets::number_field(&mut db)
+            .range(-60.0..=MAX_FADER_DB)
+            .speed(0.2)
+            .custom_formatter(|v, _| format!("{} dB", format_db(v as f32)))
+            .custom_parser(parse_db))
+            .on_hover_text("The track's level: type a number of dB, or drag")
+    }).inner;
+    if field.drag_started() {
+        touches.push((TrackParam::Volume, true));
+        cmds.push(AppCommand::BeginHistoryBatch);
+    }
+    if field.drag_stopped() {
+        touches.push((TrackParam::Volume, false));
+        cmds.push(AppCommand::EndHistoryBatchAs { label: "Track Volume".into() });
+    }
+    if field.changed() {
+        set_control(track_index, TrackParam::Volume, db_to_vol(db), automation.live_volume, volume, lives, cmds);
+    }
     y += 16.0;
 
     // -- Mute / Solo buttons --
@@ -1272,6 +1310,47 @@ mod tests {
             });
         });
         (out.shapes, cmds)
+    }
+
+    /// A track's level is typed into its readout, as a send's is: "-6"
+    /// and Enter sets it to -6 dB, one step. The readout was drawn text,
+    /// so only the fader's feel could set it. The readout still reads as
+    /// it did, and a typed "+3.5 dB" or "-inf" is understood.
+    #[test]
+    fn a_tracks_level_is_typed_into_its_readout() {
+        assert_eq!((parse_db("-6"), parse_db("+3.5 dB"), parse_db("-inf"), parse_db("loud")), (Some(-6.0), Some(3.5), Some(-60.0), None));
+        assert!((db_to_vol(-6.0) - 0.501).abs() < 1e-3 && db_to_vol(-60.0) == 0.0 && (db_to_vol(12.0) - 2.0).abs() < 1e-3, "capped at the fader's top");
+        let ctx = egui::Context::default();
+        let mut state = AppState::default();
+        let mut clock = 0.0;
+        let mut frame = |state: &mut AppState, events: Vec<egui::Event>| {
+            clock += 0.05;
+            let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200.0, 800.0))), time: Some(clock), events, ..Default::default() };
+            let theme = KlippTheme::default();
+            let mut cmds = Vec::new();
+            let out = ctx.run(input, |ctx| {
+                egui::CentralPanel::default().frame(egui::Frame::none()).show(ctx, |ui| {
+                    let rect = egui::Rect::from_min_size(egui::pos2(0.0, 300.0), egui::vec2(1200.0, 480.0));
+                    crate::ui_util::allocate_clipped_ui(ui, rect, |ui| {
+                        ui.set_min_size(rect.size());
+                        cmds = show(ui, state, &theme);
+                    });
+                });
+            });
+            (out.shapes, cmds)
+        };
+        frame(&mut state, Vec::new());
+        let (shapes, _) = frame(&mut state, Vec::new());
+        let at = shown_whole(&shapes, "+0.0 dB").first().copied().expect("a track's readout").center();
+        let b = |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+        frame(&mut state, vec![egui::Event::PointerMoved(at)]);
+        frame(&mut state, vec![b(true)]);
+        frame(&mut state, vec![b(false)]);
+        frame(&mut state, vec![egui::Event::Key { key: egui::Key::A, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::COMMAND }]);
+        frame(&mut state, vec![egui::Event::Text("-6".into())]);
+        let (_, cmds) = frame(&mut state, vec![egui::Event::Key { key: egui::Key::Enter, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE }]);
+        let set: Vec<f32> = cmds.iter().filter_map(|c| match c { AppCommand::SetTrackVolume { volume, .. } => Some(*volume), _ => None }).collect();
+        assert!(set.len() == 1 && (set[0] - 0.501).abs() < 1e-3, "one level, -6 dB: {set:?} ({cmds:?})");
     }
 
     /// A text drawn whole, inside what its clip lets be seen.
