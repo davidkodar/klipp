@@ -73,10 +73,17 @@ impl AppState {
                     if matches!(kind, klipp_nodes::NodeKind::Source | klipp_nodes::NodeKind::Output) {
                         return Err(format!("{} stays where it is", kind.display_name()));
                     }
+                    // A matte has no picture to pass on: in a picture wire
+                    // it would cut the chain, and what it limited would be
+                    // limited by the picture before it instead.
+                    if klipp_nodes::registry::node_type(kind).and_then(|t| t.desc.outputs.first()).is_some_and(|p| p.ty != klipp_effects::registry::PortType::Image) {
+                        return Err(format!("{} makes a matte: wire it to a matte input", kind.display_name()));
+                    }
                     // Out of where it was: what fed it feeds what it fed.
+                    // Only its picture moves: a matte or other input stays.
                     let fed_by = g.edges.iter().find(|e| e.to_node == id && e.to_port == 0).map(|e| (e.from_node, e.from_port));
                     let readers: Vec<(klipp_nodes::NodeId, u8)> = g.edges.iter().filter(|e| e.from_node == id).map(|e| (e.to_node, e.to_port)).collect();
-                    g.edges.retain(|e| e.from_node != id && e.to_node != id);
+                    g.edges.retain(|e| e.from_node != id && !(e.to_node == id && e.to_port == 0));
                     if let Some((src, port)) = fed_by {
                         for (to, to_port) in readers {
                             g.edges.push(edge(src, port, to, to_port));
