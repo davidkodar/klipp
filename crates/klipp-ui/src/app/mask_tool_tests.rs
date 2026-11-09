@@ -604,3 +604,45 @@ fn the_export_page_viewer_draws_no_mask_or_transform_box() {
     v.state.active_workspace = crate::state::Workspace::Export;
     assert_eq!(marks(&mut v), (0, own), "on the Export page, no outline and no gizmo handles");
 }
+
+/// Whether a drag from the middle of the picture took hold of the gizmo, with
+/// a window lying over that place or not.
+fn gizmo_taken(over: bool) -> bool {
+    let (mut v, _) = viewer();
+    v.state.active_tool = Tool::Select;
+    let middle = at(&v, 0.5, 0.5);
+    v.window_over = over.then(|| egui::Rect::from_center_size(middle, egui::vec2(300.0, 200.0)));
+    v.frame(Vec::new());
+    v.frame(Vec::new());
+    v.frame(vec![egui::Event::PointerMoved(middle)]);
+    v.frame(vec![egui::Event::PointerButton { pos: middle, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE }]);
+    v.state.viewer_transform_drag.is_some()
+}
+
+/// A press on a window over the viewer does not also start moving the clip
+/// under it.
+#[test]
+fn a_press_on_a_window_over_the_viewer_leaves_the_gizmo() {
+    assert!(gizmo_taken(false), "on the viewer it does");
+    assert!(!gizmo_taken(true), "under the window");
+}
+
+/// Nor does a Ctrl+click on that window lock the scope cursor.
+#[test]
+fn a_ctrl_click_on_a_window_over_the_viewer_does_not_lock_the_scope_cursor() {
+    let locked = |over: bool| {
+        let (mut v, _) = viewer();
+        v.state.active_tool = Tool::Select;
+        v.state.scope_cursor_show = true;
+        let middle = at(&v, 0.5, 0.5);
+        v.window_over = over.then(|| egui::Rect::from_center_size(middle, egui::vec2(300.0, 200.0)));
+        v.frame(Vec::new());
+        v.frame(Vec::new());
+        v.modifiers = egui::Modifiers::CTRL;
+        v.frame(vec![egui::Event::PointerMoved(middle)]);
+        click(&mut v, middle);
+        v.state.scope_cursor_locked
+    };
+    assert!(locked(false), "on the viewer it does");
+    assert!(!locked(true), "under the window");
+}
