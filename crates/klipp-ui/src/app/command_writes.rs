@@ -190,6 +190,7 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::ToggleInspectorPanel
         | AppCommand::ToggleStabilizationCompare
         | AppCommand::SetMattePreview(..)
+        | AppCommand::ShowMatte { .. }
         | AppCommand::SetHdrMonitor(..)
         | AppCommand::SetHdrReferenceOutput(..)
         | AppCommand::SetInspectorMattePreviewTarget(..)

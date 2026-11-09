@@ -2752,6 +2752,10 @@ pub enum AppCommand {
     /// Mutually exclusive with ToggleBeforeAfter and grade still compare.
     ToggleStabilizationCompare,
     SetMattePreview(bool),
+    /// The viewer shows this matte node's matte instead of the picture, or
+    /// goes back to the picture with `None`. The same state as
+    /// [`Self::SetMattePreview`], naming the node.
+    ShowMatte { node: Option<uuid::Uuid> },
 
     /// What the viewer shows while grading for an HDR delivery — see
     /// [`HdrMonitor`]. Off is the SDR picture the viewer has always shown.

@@ -4995,6 +4995,37 @@ fn restore_background_whole_routes_without_a_model_or_job() {
     assert!(h.cmd_rx.try_recv().is_err());
 }
 
+/// `show_matte` names the clip's matte node to the app, the first when none
+/// is given; refuses a node that makes no matte, or a clip with none; and
+/// `on` false goes back to the picture.
+#[test]
+fn show_matte_names_the_node_and_goes_back_to_the_picture() {
+    let mut h = harness();
+    let clip_id = klipp_core::ClipId(uuid::Uuid::parse_str(&h.ids.clip_a).unwrap());
+    let clip = h.ids.clip_a.clone();
+    let refused = h.call(json!({"method": "show_matte", "clip_id": clip}));
+    assert!(refused["error"].as_str().unwrap().contains("no Qualifier or Mask"), "{refused}");
+    let mut window = None;
+    {
+        use klipp_timeline::GradeAccess;
+        let mut seq = h.sequence.write().unwrap();
+        let c = seq.tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id)).unwrap();
+        c.edit_grade(|g| window = Some(g.ensure_corrector_window()));
+    }
+    let window = window.unwrap();
+    let shown = |h: &Harness| h.sent.lock().unwrap().iter().rev().find_map(|c| match c { klipp_core::AppCommand::ShowMatte { node } => Some(*node), _ => None });
+    let reply = h.ok(json!({"method": "show_matte", "clip_id": clip}));
+    assert_eq!(reply["node_id"], json!(window), "{reply}");
+    assert_eq!(shown(&h), Some(Some(window)));
+    h.ok(json!({"method": "show_matte", "clip_id": clip, "node_id": window.to_string()}));
+    assert_eq!(shown(&h), Some(Some(window)));
+    let refused = h.call(json!({"method": "show_matte", "clip_id": clip, "node_id": uuid::Uuid::new_v4().to_string()}));
+    assert_eq!(refused["ok"], json!(false), "{refused}");
+    h.ok(json!({"method": "show_matte", "on": false}));
+    assert_eq!(shown(&h), Some(None));
+    assert_eq!(h.call(json!({"method": "show_matte"}))["ok"], json!(false), "no clip to show");
+}
+
 /// `track_surface` carries the area followed and the parts left out to
 /// the app as given (#2754): `exclude` left out keeps a surface's own,
 /// `[]` clears them; and it refuses either with a click, or a part left

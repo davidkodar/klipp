@@ -4286,6 +4286,12 @@ impl PlaybackEngine {
                 debug!("Matte preview: {}", self.matte_preview);
             }
 
+            AppCommand::ShowMatte { node } => {
+                self.matte_preview = node.is_some();
+                self.matte_preview_node = node;
+                debug!("Matte preview node: {:?}", node);
+            }
+
             AppCommand::SetMeasureOnlyClip(clip) => {
                 self.measure_only_clip = clip;
                 debug!("Measure only clip: {:?}", clip);
@@ -15231,6 +15237,45 @@ mod view_past_grade_tests {
     use super::*;
     use klipp_timeline::Sequence;
     use std::sync::Mutex;
+
+    /// The matte shown is the node named, not the first there is; off, none;
+    /// and the shortcut's plain on still takes the first.
+    #[test]
+    fn the_matte_shown_is_the_node_named() {
+        use klipp_timeline::GradeAccess;
+        let tc = |s: f64| Timecode::from_secs_f64(s, 25);
+        let mut clip = klipp_timeline::Clip::media(klipp_core::MediaId::new(), tc(0.0), tc(4.0), tc(0.0), tc(4.0));
+        let id = clip.id;
+        let (mut key, mut window) = (None, None);
+        clip.edit_grade(|g| {
+            let correction = g.ensure_corrector();
+            let k = klipp_nodes::NodeId::new_v4();
+            assert!(g.limit_with_qualifier(correction, k));
+            key = Some(k);
+            window = Some(g.ensure_corrector_window());
+        });
+        let (key, window) = (key.unwrap(), window.unwrap());
+        let first = clip.grade().nodes.iter().find(|n| matches!(n.kind, klipp_nodes::NodeKind::Qualifier | klipp_nodes::NodeKind::Mask)).unwrap().id;
+        let other = if first == key { window } else { key };
+        let mut seq = klipp_timeline::Sequence::new_default();
+        seq.tracks.iter_mut().find(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap().clips.push(clip);
+        let sequence = Arc::new(klipp_timeline::SharedSequence::new(seq));
+        let (_cmd_tx, cmd_rx) = crossbeam_channel::unbounded();
+        let (ev_tx, _ev_rx) = crossbeam_channel::unbounded();
+        let fb = || Arc::new(Mutex::new(crate::texture::FrameBuffer::new(16, 16)));
+        let mut engine = PlaybackEngine::new(
+            cmd_rx, ev_tx, fb(), fb(),
+            Arc::clone(&sequence), Arc::new(RwLock::new(klipp_media::MediaPool::new())), Box::new(|| {}),
+            Arc::new(Mutex::new(None)), Arc::new(Mutex::new(crate::perf::PerfRing::default())),
+        );
+        let shown = |e: &PlaybackEngine| e.inspect_request(&sequence.read().unwrap(), Some(id), false).matte_view;
+        engine.handle_command(AppCommand::ShowMatte { node: Some(other) });
+        assert_eq!(shown(&engine), Some(klipp_compose::inspect::grade_node(id, other)));
+        engine.handle_command(AppCommand::ShowMatte { node: None });
+        assert_eq!(shown(&engine), None);
+        engine.handle_command(AppCommand::SetMattePreview(true));
+        assert_eq!(shown(&engine), Some(klipp_compose::inspect::grade_node(id, first)));
+    }
 
     /// #2879: a node of a clip's chain past its grade, viewed, is drawn by
     /// cutting the chain there: the frame's sequence holds the clip cut,

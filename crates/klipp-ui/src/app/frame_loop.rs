@@ -493,6 +493,12 @@ impl KlippApp {
         if !self.state.scene_detect_in_progress.is_empty() {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }
+        // The node the viewer's matte was named by gone from the clip in hand:
+        // back to the picture, not a badge over one.
+        crate::panels::node_inspector::publish_matte_shown(ctx, self.state.matte_preview_node);
+        if self.state.matte_node_gone() {
+            self.send_commands(vec![AppCommand::ShowMatte { node: None }]);
+        }
         // Likewise a track, a window's or a surface's: with the window
         // idle its result sat unapplied until the pointer moved.
         if !self.state.tracking_in_progress.is_empty() || self.state.surface_snaps_pending > 0 {

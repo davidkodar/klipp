@@ -926,6 +926,7 @@ fn handle(
             | ControlCommand::AppendClip { .. }
             | ControlCommand::ClearFrozen { .. }
             | ControlCommand::SetPlaybackQuality { .. }
+            | ControlCommand::ShowMatte { .. }
             | ControlCommand::SetBackgroundRender { .. }
             | ControlCommand::BounceTrack { .. }
             | ControlCommand::RemoveClip { .. }
