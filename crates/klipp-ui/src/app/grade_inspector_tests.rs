@@ -2509,3 +2509,77 @@ fn copying_a_compound_with_a_dangling_wire_leaves_the_wire_out() {
     let copy = wire_level(&state, clip_id).nodes.iter().find(|n| n.kind == NodeKind::Compound && n.id != compound).expect("copied").params.compound_subgraph.clone().unwrap();
     assert!(copy.edges.iter().all(|e| copy.nodes.iter().any(|n| n.id == e.from_node) && copy.nodes.iter().any(|n| n.id == e.to_node)), "{:?}", copy.edges);
 }
+
+/// A node with a matte on it, dragged onto a wire further down, keeps the
+/// matte: the move takes its picture input and output, nothing else.
+#[test]
+fn a_node_moved_onto_a_wire_keeps_its_matte() {
+    let (mut state, clip_id, ids, _, _h) = wired();
+    let correction = ids[2];
+    let next = wire_level(&state, clip_id);
+    let out = next.edges.iter().find(|e| e.from_node == correction && e.from_port == 0).expect("it feeds on").to_node;
+    dispatch_canvas(&mut state, &[
+        AppCommand::LimitWithQualifier { clip_id, node_id: correction },
+        AppCommand::InsertNodeOnWire { clip_id, kind: "Exposure".into(), position: (0.0, 0.0), from: correction, from_port: 0, to: out, to_port: 0 },
+    ]);
+    let g = wire_level(&state, clip_id);
+    let qualifier = g.nodes.iter().find(|n| n.kind == NodeKind::Qualifier).expect("added").id;
+    let exposure = g.nodes.iter().find(|n| n.kind == NodeKind::Exposure && !ids.contains(&n.id)).expect("inserted").id;
+    dispatch_canvas(&mut state, &[AppCommand::SpliceNodeIntoWire { clip_id, node_id: correction, from: exposure, from_port: 0, to: out, to_port: 0 }]);
+    let g = wire_level(&state, clip_id);
+    assert!(has_wire(&g, exposure, correction, 0) && has_wire(&g, correction, out, 0), "moved: {:?}", g.edges);
+    assert!(has_wire(&g, qualifier, correction, 1), "the matte stays on it: {:?}", g.edges);
+}
+
+/// A key has no picture to pass on: dragged onto a picture wire it stays
+/// where it is, its grade still limited by it, not by the picture before it.
+#[test]
+fn a_matte_node_does_not_go_into_a_picture_wire() {
+    let (mut state, clip_id, ids, _, _h) = wired();
+    let correction = ids[2];
+    let g = wire_level(&state, clip_id);
+    let out = g.edges.iter().find(|e| e.from_node == correction && e.from_port == 0).expect("it feeds on").to_node;
+    dispatch_canvas(&mut state, &[AppCommand::LimitWithQualifier { clip_id, node_id: correction }]);
+    let g = wire_level(&state, clip_id);
+    let qualifier = g.nodes.iter().find(|n| n.kind == NodeKind::Qualifier).expect("added").id;
+    dispatch_canvas(&mut state, &[AppCommand::SpliceNodeIntoWire { clip_id, node_id: qualifier, from: correction, from_port: 0, to: out, to_port: 0 }]);
+    let after = wire_level(&state, clip_id);
+    assert_eq!(after.edges, g.edges, "left as it was");
+}
+
+/// Ungrouping keeps every reader of a compound's input and of its output:
+/// a Qualifier added inside reads the input beside its correction, and one
+/// after it reads the output beside the next node.
+#[test]
+fn ungrouping_keeps_every_reader_of_the_compound() {
+    let (mut state, clip_id, ids, _, _h) = wired();
+    let compound = state.graph_descent_path[0];
+    let correction = ids[0];
+    let fed_by = wire_level(&state, clip_id).input_of(correction, 0).expect("fed");
+    let input = wire_level(&state, clip_id).nodes.iter().find(|n| n.id == fed_by).map(|n| n.kind);
+    assert_eq!(input, Some(NodeKind::Source), "the first node reads the compound's input");
+    dispatch_canvas(&mut state, &[AppCommand::LimitWithQualifier { clip_id, node_id: correction }]);
+    let inner = wire_level(&state, clip_id).nodes.iter().find(|n| n.kind == NodeKind::Qualifier).expect("added").id;
+    state.graph_descent_path.clear();
+    let top = wire_level(&state, clip_id);
+    let frame = top.input_of(compound, 0).expect("the compound is fed");
+    // A node before it, so what feeds it is not what an unwired node reads.
+    dispatch_canvas(&mut state, &[AppCommand::InsertNodeOnWire { clip_id, kind: "Exposure".into(), position: (0.0, 0.0), from: frame, from_port: 0, to: compound, to_port: 0 }]);
+    let top = wire_level(&state, clip_id);
+    let feed = top.input_of(compound, 0).expect("the compound is fed");
+    assert_ne!(feed, frame);
+    let mut next = None;
+    state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id)).unwrap().edit_grade(|g| next = Some(g.insert_corrector(NodeId::new_v4())));
+    let next = next.unwrap();
+    assert_eq!(wire_level(&state, clip_id).input_of(next, 0), Some(compound), "the next node reads the compound");
+    dispatch_canvas(&mut state, &[AppCommand::LimitWithQualifier { clip_id, node_id: next }]);
+    let top = wire_level(&state, clip_id);
+    let outer = top.nodes.iter().find(|n| n.kind == NodeKind::Qualifier).expect("one after the compound").id;
+    assert_eq!(top.input_of(outer, 0), Some(compound), "{:?}", top.edges);
+    assert!(state.grade_structure_edit(clip_id, &[], super::path_commands::GradeStructure::Ungroup { node: compound }), "{:?}", state.toast.message_for_test());
+    let g = wire_level(&state, clip_id);
+    assert_eq!(g.input_of(correction, 0), Some(feed), "the first reader inside: {:?}", g.edges);
+    assert_eq!(g.input_of(inner, 0), Some(feed), "the Qualifier beside it: {:?}", g.edges);
+    assert_eq!(g.input_of(next, 0), g.input_of(outer, 0), "both after it read the same: {:?}", g.edges);
+    assert!(g.input_of(outer, 0).is_some(), "{:?}", g.edges);
+}

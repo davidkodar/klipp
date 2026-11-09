@@ -192,6 +192,33 @@ fn corner_pin_view(state: &AppState, clip: &klipp_timeline::Clip, effect_index: 
     title_view_of(state, clip, image_rect).map_err(|_| ())
 }
 
+/// Where a tool's bar goes over the viewer: its top-left corner, moved
+/// clear of Colour Check while that is open, which opens over that corner.
+/// The bar stays on the viewer's own layer, under any window (#2852), so
+/// where there is no room clear of it, it says so.
+fn tool_bar_area(ctx: &egui::Context, toast: &mut crate::widgets::toast::ToastState, image: egui::Rect) -> egui::Rect {
+    let whole = egui::Rect::from_min_max(image.left_top() + egui::vec2(8.0, 8.0), image.right_bottom() - egui::vec2(8.0, 0.0));
+    let window = crate::panels::colour_check::open_rect(ctx);
+    bar_area_clear_of(whole, window).unwrap_or_else(|| {
+        toast.show("Colour Check covers this tool's bar: move it off the viewer".to_owned());
+        whole
+    })
+}
+
+/// [`tool_bar_area`]'s choice: `whole`, or the part of it beside or below
+/// `window` a bar fits in; `None` when none does.
+fn bar_area_clear_of(whole: egui::Rect, window: Option<egui::Rect>) -> Option<egui::Rect> {
+    const FIT: egui::Vec2 = egui::vec2(320.0, 120.0);
+    const GAP: f32 = 8.0;
+    let Some(window) = window else { return Some(whole) };
+    if !window.intersects(egui::Rect::from_min_size(whole.min, egui::vec2(whole.width(), FIT.y))) {
+        return Some(whole);
+    }
+    let beside = egui::Rect::from_min_max(egui::pos2(window.right() + GAP, whole.top()), whole.max);
+    let below = egui::Rect::from_min_max(egui::pos2(whole.left(), window.bottom() + GAP), whole.max);
+    [beside, below].into_iter().find(|r| r.width() >= FIT.x && r.height() >= FIT.y)
+}
+
 /// The chart tool: four corners to drag onto a colour chart, its patch
 /// grid drawn through them so it shows when they sit right.
 fn draw_chart_tool(ui: &mut egui::Ui, state: &mut AppState, image_rect: egui::Rect, cmds: &mut Vec<AppCommand>) {
@@ -205,10 +232,10 @@ fn draw_chart_tool(ui: &mut egui::Ui, state: &mut AppState, image_rect: egui::Re
     let _ = ui.allocate_rect(image_rect, egui::Sense::click_and_drag());
     let mut bar_rect = egui::Rect::NOTHING;
     let (mut both, mut balance, mut cancel) = (false, false, ui.input(|i| i.key_pressed(egui::Key::Escape)));
-    let bar_area = egui::Rect::from_min_max(image_rect.left_top() + egui::vec2(8.0, 8.0), image_rect.right_bottom());
+    let bar_area = tool_bar_area(ui.ctx(), &mut state.toast, image_rect);
     ui.new_child(egui::UiBuilder::new().max_rect(bar_area)).scope(|ui| {
         let r = egui::Frame::popup(ui.style()).show(ui, |ui| {
-            ui.set_max_width((image_rect.width() - 32.0).max(120.0));
+            ui.set_max_width((bar_area.width() - 24.0).max(120.0));
             ui.vertical(|ui| {
                 ui.add(egui::Label::new(egui::RichText::new("Drag the corners onto the outer corners of the chart's patches, brown patch first, so the bright row lies on its greys").color(egui::Color32::from_gray(235))).wrap());
                 ui.horizontal_wrapped(|ui| {
@@ -3978,8 +4005,6 @@ impl ViewerPanel {
                             }
                             if resp.drag_started() {
                                 if let Some(pos) = resp.interact_pointer_pos() {
-                                    state.selected_node_id = Some(node_id);
-                                    cmds.push(AppCommand::FocusMaskInspector);
                                     cmds.push(AppCommand::BeginNodeParamEdit { clip_id });
                                     // If this mask is keyframed (i.e. a
                                     // tracker is driving its centre),
@@ -4060,8 +4085,6 @@ impl ViewerPanel {
                             }
                             if resp.drag_started() {
                                 if let Some(pos) = resp.interact_pointer_pos() {
-                                    state.selected_node_id = Some(node_id);
-                                    cmds.push(AppCommand::FocusMaskInspector);
                                     cmds.push(AppCommand::BeginNodeParamEdit { clip_id });
                                     // If this mask is keyframed (i.e. a
                                     // tracker is driving its centre),
@@ -4138,8 +4161,6 @@ impl ViewerPanel {
                             }
                             if resp.drag_started() {
                                 if let Some(pos) = resp.interact_pointer_pos() {
-                                    state.selected_node_id = Some(node_id);
-                                    cmds.push(AppCommand::FocusMaskInspector);
                                     cmds.push(AppCommand::BeginNodeParamEdit { clip_id });
                                     // If this mask is keyframed (i.e. a
                                     // tracker is driving its centre),
@@ -4202,8 +4223,6 @@ impl ViewerPanel {
                             }
                             if resp.drag_started() {
                                 if let Some(pos) = resp.interact_pointer_pos() {
-                                    state.selected_node_id = Some(node_id);
-                                    cmds.push(AppCommand::FocusMaskInspector);
                                     cmds.push(AppCommand::BeginNodeParamEdit { clip_id });
                                     // If this mask is keyframed (i.e. a
                                     // tracker is driving its centre),
@@ -4271,10 +4290,8 @@ impl ViewerPanel {
                                 ui.painter().circle_filled(*sp, 4.0, color);
                                 if resp.drag_started() {
                                     if let Some(pos) = resp.interact_pointer_pos() {
-                                        state.selected_node_id = Some(node_id);
-                                        cmds.push(AppCommand::FocusMaskInspector);
                                         cmds.push(AppCommand::BeginNodeParamEdit { clip_id });
-                                        if !raw_mask.keyframes.is_empty() {
+                                        if raw_mask.keyframes.moves_beyond_its_shape_keys() {
                                             cmds.push(AppCommand::RemoveMaskTracking {
                                                 clip_id, node_id, mask_index: mask_idx,
                                             });
@@ -4424,7 +4441,8 @@ impl ViewerPanel {
                 // Build updated mask stack and emit command
                 let mut updated_masks = masks.clone();
                 if drag_mask_idx < updated_masks.masks.len() {
-                    updated_masks.masks[drag_mask_idx].shape = new_shape;
+                    let tolerance = crate::inspector::keyframe_selection::frame_tolerance(state.sequence());
+                    updated_masks.masks[drag_mask_idx] = updated_masks.masks[drag_mask_idx].with_dragged_shape(new_shape, clip_time_secs, tolerance);
                 }
                 cmds.push(AppCommand::SetNodeMasks {
                     clip_id: drag_clip_id,
@@ -5499,11 +5517,12 @@ impl ViewerPanel {
         let mut correct = false;
         let mut cancel = false;
         // On the viewer's own layer, under any window over it (#2852).
-        let bar_area = egui::Rect::from_min_max(image_rect.left_top() + egui::vec2(8.0, 8.0), image_rect.right_bottom());
+        let bar_area = tool_bar_area(ui.ctx(), &mut state.toast, image_rect);
         ui.new_child(egui::UiBuilder::new().max_rect(bar_area)).scope(|ui| {
                 let frame = egui::Frame::popup(ui.style());
                 let r = frame.show(ui, |ui| {
-                    ui.horizontal(|ui| {
+                    ui.set_max_width((bar_area.width() - 24.0).max(120.0));
+                    ui.horizontal_wrapped(|ui| {
                         let what = match (tool.edit, tool.direction, tool.surface.is_some()) {
                             (SurfaceEdit::Area, ..) => "Drag the area to follow over more of the same flat plane",
                             (SurfaceEdit::LeaveOut, ..) => "Draw over parts that move on their own; click one to put it back",
@@ -8919,6 +8938,7 @@ mod overlay_layer_tests {
         let code: String = src.lines().filter(|l| !l.trim_start().starts_with("//")).collect::<Vec<_>>().join("\n");
         assert_eq!(code.matches("layer_painter(").count(), 0, "an overlay on a layer of its own");
         assert_eq!(code.matches(".order(egui::Order::Foreground)").count(), 1, "only the right-click menu floats");
+        assert_eq!(code.matches("move_to_top(").count(), 0, "lifted over the windows from its own layer");
     }
 }
 
@@ -9110,6 +9130,98 @@ mod surface_tool_bar_tests {
         state.surface_tool = Some(tool());
         click(&mut state, "Cancel");
         assert!(state.surface_tool.is_none(), "and it can be left");
+    }
+}
+
+#[cfg(test)]
+mod tool_bar_place_tests {
+    use super::{bar_area_clear_of, draw_chart_tool, ViewerPanel};
+    use crate::panels::colour_check::ColourCheckPanel;
+    use crate::state::{AppState, ChartTool, SurfaceEdit, SurfaceTool};
+
+    fn rect(x: f32, y: f32, w: f32, h: f32) -> egui::Rect {
+        egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(w, h))
+    }
+
+    /// Each bar, with Colour Check open where it opens, at window sizes from
+    /// wide to a narrow viewer with Scopes docked: it stays in the viewer and
+    /// meets no part of the window.
+    #[test]
+    fn the_tool_bars_stay_in_the_viewer_and_clear_of_colour_check() {
+        let frame = std::sync::Arc::new(std::sync::Mutex::new({
+            let mut fb = klipp_engine::FrameBuffer::new(8, 8);
+            fb.data = vec![128; 8 * 8 * 4];
+            fb.generation = 1;
+            fb
+        }));
+        let corners = [[0.25, 0.2], [0.75, 0.2], [0.75, 0.8], [0.25, 0.8]];
+        for (screen, image) in [
+            (egui::vec2(1600.0, 900.0), rect(0.0, 40.0, 1200.0, 680.0)),
+            (egui::vec2(1600.0, 900.0), rect(280.0, 40.0, 900.0, 560.0)),
+            (egui::vec2(2560.0, 1440.0), rect(0.0, 40.0, 2000.0, 1100.0)),
+            (egui::vec2(1280.0, 720.0), rect(0.0, 40.0, 800.0, 450.0)),
+        ] {
+            for surface in [false, true] {
+                let ctx = egui::Context::default();
+                let mut state = AppState::default();
+                if surface {
+                    state.surface_tool = Some(SurfaceTool { clip_id: klipp_core::ClipId::new(), corners, track: None, exclude: Vec::new(), edit: SurfaceEdit::Corners, direction: 0, surface: None, name: None, drag: None });
+                } else {
+                    state.chart_tool = Some(ChartTool { clip_id: klipp_core::ClipId::new(), corners, drag: None });
+                }
+                let (panel, mut check, theme, mut open) = (ViewerPanel::default(), ColourCheckPanel::default(), crate::theme::KlippTheme::default(), true);
+                let mut texts = Vec::new();
+                let mut window = None;
+                for _ in 0..4 {
+                    let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, screen)), ..Default::default() };
+                    let out = ctx.run(input, |ctx| {
+                        egui::CentralPanel::default().show(ctx, |ui| {
+                            if surface {
+                                panel.draw_surface_tool(ui, &mut state, image, &mut Vec::new());
+                            } else {
+                                draw_chart_tool(ui, &mut state, image, &mut Vec::new());
+                            }
+                        });
+                        check.show(ctx, &state, &frame, &theme, &mut open);
+                    });
+                    window = crate::panels::colour_check::open_rect(&ctx);
+                    texts = out.shapes.iter().filter(|s| s.clip_rect.is_positive()).filter_map(|s| match &s.shape {
+                        egui::Shape::Text(t) if ["Cancel", "White balance only", "Track", "Corners"].contains(&t.galley.text()) || t.galley.text().starts_with("Drag the corners") || t.galley.text().starts_with("Click the surface") => Some((t.galley.text().to_owned(), egui::Rect::from_min_size(t.pos, t.galley.size()))),
+                        _ => None,
+                    }).collect();
+                }
+                let window = window.expect("Colour Check is open");
+                assert!(window.intersects(image), "the case needs the window over the viewer: {window:?} {image:?}");
+                assert!(texts.len() >= 2, "{screen:?} surface {surface}: {texts:?}");
+                for (text, at) in &texts {
+                    assert!(!at.intersects(window), "{screen:?} surface {surface}: {text:?} at {at:?} meets {window:?}");
+                    assert!(image.contains_rect(*at), "{screen:?} surface {surface}: {text:?} at {at:?} leaves {image:?}");
+                }
+            }
+        }
+    }
+
+    /// With no room clear of the window, no place is offered, and the tool
+    /// says so; away from the bar's corner the window changes nothing.
+    #[test]
+    fn a_viewer_with_no_room_for_the_bar_says_so() {
+        let ctx = egui::Context::default();
+        let mut state = AppState { chart_tool: Some(ChartTool { clip_id: klipp_core::ClipId::new(), corners: [[0.25, 0.2], [0.75, 0.2], [0.75, 0.8], [0.25, 0.8]], drag: None }), ..Default::default() };
+        let frame = std::sync::Arc::new(std::sync::Mutex::new(klipp_engine::FrameBuffer::new(8, 8)));
+        let (mut check, theme, mut open) = (ColourCheckPanel::default(), crate::theme::KlippTheme::default(), true);
+        for _ in 0..4 {
+            let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1600.0, 900.0))), ..Default::default() };
+            let _ = ctx.run(input, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| draw_chart_tool(ui, &mut state, rect(0.0, 40.0, 500.0, 300.0), &mut Vec::new()));
+                check.show(ctx, &state, &frame, &theme, &mut open);
+            });
+        }
+        assert!(state.toast.message_for_test().is_some_and(|m| m.contains("Colour Check")), "{:?}", state.toast.message_for_test());
+
+        let whole = rect(8.0, 48.0, 500.0, 300.0);
+        assert_eq!(bar_area_clear_of(whole, None), Some(whole));
+        assert_eq!(bar_area_clear_of(whole, Some(rect(16.0, 56.0, 420.0, 520.0))), None);
+        assert_eq!(bar_area_clear_of(whole, Some(rect(16.0, 300.0, 420.0, 200.0))), Some(whole), "below the bar's band");
     }
 }
 
