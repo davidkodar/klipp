@@ -288,6 +288,7 @@ impl KlippApp {
 
         // 2. Replace project-scoped data
         self.state.project_epoch += 1;
+        self.state.ai_tools_state.forget_project();
         self.retire_project_media();
         self.state.sequences = vec![Sequence::new_default()];
         self.state.active_sequence_idx = 0;

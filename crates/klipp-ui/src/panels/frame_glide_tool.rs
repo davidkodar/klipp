@@ -114,8 +114,25 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState, frame: egui::Rect, cmds: &m
     }
     // The tool has the viewer to itself: nothing under it takes the drag.
     let response = ui.interact(frame, ui.id().with("frame_glide_tool"), egui::Sense::click_and_drag());
+    // Done here too: the inspector's moves down as the clip gains keys, away
+    // from a pointer on its way to it. Read from the pointer, as the drags
+    // are: what the viewer draws after the tool would take a widget's click.
+    let done_at = done_rect(frame);
+    let over_done = pointer.is_some_and(|p| done_at.contains(p));
+    // A fixed id: the viewer's own ids move with what it draws, between a
+    // press and its release.
+    let held = egui::Id::new("frame_glide_done_held");
+    if pressed {
+        ui.ctx().data_mut(|d| d.insert_temp(held, over_done));
+    }
+    if released {
+        let pressed_on_done = ui.ctx().data_mut(|d| d.remove_temp::<bool>(held)).unwrap_or(false);
+        if pressed_on_done && over_done && state.frame_glide_drag.is_none() {
+            cmds.push(AppCommand::SetFrameGlideMode(None));
+        }
+    }
     if let Some(p) = pointer {
-        if pressed && response.hovered() && state.frame_glide_drag.is_none() {
+        if pressed && response.hovered() && !done_at.contains(p) && state.frame_glide_drag.is_none() {
             if let Some((which, grip)) = grip_at(&glide, p, frame, 12.0) {
                 state.frame_glide_drag = Some(GlideDrag { clip_id, which, grip, before: glide, glide });
             }
@@ -179,9 +196,16 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState, frame: egui::Rect, cmds: &m
         egui::FontId::proportional(12.0),
         egui::Color32::from_white_alpha(220),
     );
+    painter.rect_filled(done_at, 3.0, if over_done { egui::Color32::from_gray(70) } else { egui::Color32::from_black_alpha(190) });
+    painter.text(done_at.center(), egui::Align2::CENTER_CENTER, "Done", egui::FontId::proportional(13.0), egui::Color32::WHITE);
     if state.frame_glide_drag.is_some() {
         ui.ctx().request_repaint();
     }
+}
+
+/// The tool's Done button, at the top of the frame.
+fn done_rect(frame: egui::Rect) -> egui::Rect {
+    egui::Rect::from_center_size(frame.center_top() + egui::vec2(0.0, 22.0), egui::vec2(64.0, 24.0))
 }
 
 #[cfg(test)]
@@ -227,5 +251,31 @@ mod tests {
         assert_eq!(grip_at(&glide, frame().left_top() + egui::vec2(3.0, 3.0), frame(), 12.0), Some((End::Start, Grip::Corner(0))));
         assert_eq!(grip_at(&glide, frame().left_top() + egui::vec2(40.0, 40.0), frame(), 12.0).map(|g| g.0), Some(End::Start));
         assert_eq!(grip_at(&glide, egui::pos2(0.0, 0.0), frame(), 12.0), None);
+    }
+
+    /// The Done button on the viewer ends the tool on a click, and the press
+    /// on it starts no drag of the framing under it.
+    #[test]
+    fn done_on_the_viewer_ends_the_tool_and_drags_nothing() {
+        let tc = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 25);
+        let clip = klipp_timeline::Clip::media(klipp_core::MediaId::new(), tc(0.0), tc(2.0), tc(0.0), tc(2.0));
+        let id = clip.id;
+        let mut state = AppState::default();
+        let v1 = state.sequences[0].tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
+        state.sequences[0].tracks[v1].clips.push(clip);
+        state.frame_glide_clip = Some(id);
+        let ctx = egui::Context::default();
+        let at = done_rect(frame()).center();
+        let press = |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+        let mut sent = Vec::new();
+        for events in [Vec::new(), vec![egui::Event::PointerMoved(at)], vec![press(true)], vec![press(false)], Vec::new()] {
+            let raw = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(900.0, 500.0))), events, ..Default::default() };
+            let _ = ctx.run(raw, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| show(ui, &mut state, frame(), &mut sent));
+            });
+            assert!(state.frame_glide_drag.is_none(), "no drag from the press on it");
+        }
+        assert!(sent.iter().any(|c| matches!(c, AppCommand::SetFrameGlideMode(None))), "{sent:?}");
+        assert!(!sent.iter().any(|c| matches!(c, AppCommand::SetFrameGlide { .. })), "nothing written");
     }
 }

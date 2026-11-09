@@ -1067,6 +1067,9 @@ fn register_real_models(r: &mut klipp_ml::ModelRegistry) {
 /// feature flags.
 fn build_shared_registry() -> std::sync::Arc<std::sync::RwLock<klipp_ml::ModelRegistry>> {
     let mut r = klipp_ml::ModelRegistry::new();
+    // The placeholder only under test: it makes a blank mask, and a person
+    // picking it from the list would take that for a result.
+    #[cfg(test)]
     r.register(
         klipp_ml::ModelInfo {
             id: klipp_ml::STUB_GENERATOR_ID.into(),
