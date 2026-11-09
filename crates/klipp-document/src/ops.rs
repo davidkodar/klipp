@@ -11434,6 +11434,15 @@ struct QualifyArgs<'a> {
     take_out: Option<&'a [[f32; 3]]>,
 }
 
+/// The key a secondary op starts from: every saturation taken, as the
+/// ops have always keyed. The Qualifier page starts a picked key above a
+/// floor of 0.15 (#3822), for a colourist clicking a colour by eye; an
+/// op's key is what its target and arguments say, and doesn't move with
+/// a page's default.
+fn op_key() -> klipp_core::QualifierSettings {
+    klipp_core::QualifierSettings { sat_low: 0.0, ..Default::default() }
+}
+
 /// A named colour target for the qualifier: its hue centre and width in
 /// degrees, where colourists usually key each.
 /// A named target's hue centre and full width (degrees), and the
@@ -11508,7 +11517,7 @@ fn qualify(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, a
                 // Back to a fresh key, off: the next secondary keys what it
                 // is told, not this one's hue, ranges or inversion.
                 if node.params.qualifier.is_some() {
-                    node.params.qualifier = Some(klipp_core::QualifierSettings::default());
+                    node.params.qualifier = Some(op_key());
                 }
             }
             if keyed.contains(&node.id) {
@@ -11640,7 +11649,7 @@ fn qualify(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, a
         // shadows key graded only the red shadows.
         let fresh = !node.params.qualifier.as_ref().is_some_and(|q| q.enabled);
         if fresh {
-            node.params.qualifier = Some(klipp_core::QualifierSettings::default());
+            node.params.qualifier = Some(op_key());
             if hue_center.is_none() && a.rgb.is_none() && a.keep.is_none() {
                 node.params.apply_override("qual_hue_width", 360.0);
             }
