@@ -178,6 +178,9 @@ pub struct Edge {
 /// The label an AI mask's matte node carries.
 pub const AI_MASK_LABEL: &str = "AI mask";
 
+/// What to say when a tool's matte combines with a person's.
+pub const COMBINED_WITH_MATTE: &str = "combined with the matte already limiting this grade";
+
 /// What [`NodeGraph::gate_with_matte`] did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GateOutcome {
@@ -443,6 +446,24 @@ impl NodeGraph {
         self.edges.remove(at);
         self.combine_on_gate(correction, (gate, port), matte);
         GateOutcome::Combined
+    }
+
+    /// The correction a subject matte gates: the one chosen, else the first
+    /// that isn't an outside node, whose gate takes its key inverted (#898).
+    pub fn subject_gate_target(&self, chosen: Option<NodeId>) -> Option<NodeId> {
+        let is_correction = |n: &&Node| n.kind == NodeKind::Corrector;
+        chosen
+            .and_then(|id| self.nodes.iter().filter(is_correction).find(|n| n.id == id))
+            .or_else(|| self.nodes.iter().filter(is_correction).find(|n| n.params.key_invert != Some(true)))
+            .map(|n| n.id)
+    }
+
+    /// Whether gating with the subject matte `model` would combine with a
+    /// person's matte, as [`Self::gate_with_matte`] would: what to tell them.
+    pub fn subject_would_combine(&self, model: crate::SubjectMatte, chosen: Option<NodeId>) -> bool {
+        let Some(target) = self.subject_gate_target(chosen) else { return false };
+        let matte = self.nodes.iter().find(|n| n.kind == NodeKind::ExternalMatte && n.params.matte_subject == Some(model)).map_or_else(NodeId::new_v4, |n| n.id);
+        self.clone().gate_with_matte(target, matte) == GateOutcome::Combined
     }
 
     pub fn ensure_mask(&mut self) -> NodeId {
@@ -2838,6 +2859,24 @@ mod gate_with_matte_tests {
         let other = tool_matte(&mut g, "Foreground", true);
         assert_eq!(g.gate_with_matte(correction, other), GateOutcome::Replaced(matte), "found through the combiners");
         assert!(g.topo_sort().is_ok());
+    }
+
+    /// What a person is told matches what is done: a key is combined with;
+    /// nothing, or the subject's own, is not; another subject's gives way.
+    #[test]
+    fn a_subject_says_when_it_will_combine() {
+        use crate::SubjectMatte::{Foreground, Subject};
+        let mut g = NodeGraph::default();
+        let correction = g.ensure_corrector();
+        assert!(!g.subject_would_combine(Subject, None), "nothing limits it");
+        let key = NodeId::new_v4();
+        assert!(g.limit_with_qualifier(correction, key));
+        assert!(g.subject_would_combine(Subject, None), "a person's key");
+        let matte = tool_matte(&mut g, "Subject", true);
+        assert_eq!(g.gate_with_matte(correction, matte), GateOutcome::Combined);
+        assert!(!g.subject_would_combine(Subject, None), "the subject's own again");
+        assert!(!g.subject_would_combine(Foreground, None), "the other model takes its place");
+        assert_eq!(g.subject_gate_target(None), Some(correction));
     }
 
     /// Alone on the gate a tool's matte gives way; an image matte a person

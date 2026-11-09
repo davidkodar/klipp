@@ -145,6 +145,9 @@ impl KlippApp {
             }
             if !subject_bound(clip.grade(), subject, cut_out) {
                 let chosen = self.state.selected_node_id;
+                if !cut_out && clip.grade().subject_would_combine(subject, chosen) {
+                    self.state.toast.show(format!("The subject's matte is {}: the grade reaches where both do", klipp_nodes::graph::COMBINED_WITH_MATTE));
+                }
                 let edited = super::colour::edit_clip_graph(&mut self.state, clip_id, &[], true, move |graph| bind_requested_subject(graph, subject, chosen, into));
                 if matches!(edited, Some(Ok(()))) { *needs_refresh = true; }
             }
@@ -450,17 +453,9 @@ pub(super) fn bind_subject(graph: &mut klipp_nodes::NodeGraph, model: klipp_node
     let target = if cut_out {
         graph.output_node_id
     } else {
-        let is_correction = |n: &&klipp_nodes::graph::Node| n.kind == klipp_nodes::NodeKind::Corrector;
-        // Unchosen, never an outside node (#898): its gate takes its key
-        // inverted, so the subject would grade everywhere but the subject.
-        let inside = |n: &&klipp_nodes::graph::Node| is_correction(n) && n.params.key_invert != Some(true);
-        chosen
-            .and_then(|id| graph.nodes.iter().filter(is_correction).find(|n| n.id == id))
-            .or_else(|| graph.nodes.iter().find(inside))
-            .map(|n| n.id)
-            // None to gate: a new one, never an outside node (which
-            // `ensure_corrector` would hand back as the first Corrector).
-            .unwrap_or_else(|| graph.insert_corrector(klipp_nodes::NodeId::new_v4()))
+        // Unchosen, never an outside node (#898). None to gate: a new one,
+        // not an outside node `ensure_corrector` would hand back.
+        graph.subject_gate_target(chosen).unwrap_or_else(|| graph.insert_corrector(klipp_nodes::NodeId::new_v4()))
     };
     if cut_out {
         graph.edges.retain(|e| !(e.to_node == target && e.to_port == 1));
