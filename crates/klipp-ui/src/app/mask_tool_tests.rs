@@ -674,3 +674,38 @@ fn a_corner_pins_handles_are_its_own_and_stay_under_a_window() {
     v.frame(vec![egui::Event::PointerButton { pos: typed, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE }]);
     assert!(v.state.viewer_corner_pin_drag.is_none(), "under the window");
 }
+
+/// Dragging a shape in the viewer leaves the inspector where it was, so
+/// the next control is where the hand left it; a click on it asks for the
+/// mask's page and still opens it.
+#[test]
+fn dragging_a_mask_keeps_the_inspector_and_a_click_opens_its_page() {
+    let (mut v, clip) = viewer();
+    v.state.active_tool = Tool::Select;
+    let circle = klipp_core::Mask { shape: MaskShape::Circle { center_x: 0.5, center_y: 0.5, radius: 0.2 }, ..Default::default() };
+    let mut node = None;
+    v.state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip)).unwrap().edit_grade(|g| {
+        let id = g.ensure_corrector_window();
+        g.nodes.iter_mut().find(|n| n.id == id).unwrap().params.masks = Some(klipp_core::MaskStack { masks: vec![circle] });
+        node = Some(id);
+    });
+    v.frame(Vec::new());
+    v.frame(Vec::new());
+
+    let from = v.sent.len();
+    let (start, end) = (at(&v, 0.5, 0.5), at(&v, 0.6, 0.5));
+    drag(&mut v, start, end);
+    let sent = apply(&mut v, clip, from);
+    assert!(sent.iter().any(|c| matches!(c, AppCommand::SetNodeMasks { .. })), "the drag moved the mask: {sent:?}");
+    assert!(!sent.iter().any(|c| matches!(c, AppCommand::FocusMaskInspector)), "{sent:?}");
+    assert_eq!(v.state.selected_node_id, None, "the inspector stays on what it showed");
+
+    v.frame(Vec::new());
+    v.frame(Vec::new());
+    let from = v.sent.len();
+    let MaskShape::Circle { center_x, center_y, .. } = masks(&v, clip)[0].shape else { panic!("a circle") };
+    let centre = at(&v, center_x, center_y);
+    click(&mut v, centre);
+    assert!(v.sent[from..].iter().any(|c| matches!(c, AppCommand::FocusMaskInspector)));
+    assert_eq!(v.state.selected_node_id, node, "a click opens its page");
+}

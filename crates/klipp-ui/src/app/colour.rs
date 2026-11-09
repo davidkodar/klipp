@@ -3804,6 +3804,13 @@ pub(super) fn abandon_gesture(state: &mut AppState, clip_id: klipp_core::ClipId,
 /// stale) keep the editor's descent, where they change nothing. Nodes in
 /// different graphs: `None`, no graph holds them all.
 pub(super) fn graph_path_for(root: &klipp_nodes::NodeGraph, nodes: &[klipp_nodes::NodeId], descent: &[klipp_nodes::NodeId]) -> Option<Vec<klipp_nodes::NodeId>> {
+    // The level on the canvas first: two compounds can hold the same ids (a
+    // copy saved before copies had their own), and the first found is
+    // not the one being edited.
+    let here = descent.iter().try_fold(root, |g, id| g.nodes.iter().find(|n| n.id == *id)?.params.compound_subgraph.as_ref());
+    if !nodes.is_empty() && here.is_some_and(|g| nodes.iter().all(|id| g.nodes.iter().any(|n| n.id == *id))) {
+        return Some(descent.to_vec());
+    }
     let mut paths = nodes.iter().filter_map(|id| root.path_to_node(*id));
     let Some(first) = paths.next() else { return Some(descent.to_vec()) };
     paths.all(|p| p == first).then_some(first)
