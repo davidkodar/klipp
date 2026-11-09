@@ -4092,9 +4092,9 @@ impl NodeGraphV2Panel {
 
                     let q = self.add_menu_search.trim().to_lowercase();
                     let in_search = !q.is_empty();
-                    let matches = |label: &str| -> bool { !in_search || model::menu_entry_matches(label, &q) };
+                    let matches = |category: &str, label: &str| -> bool { !in_search || model::menu_entry_matches(label, &q) || model::menu_section_matches(category, &q) };
                     if enter && in_search {
-                        chosen_kind = categories.iter().flat_map(|(_, e)| e.iter()).find(|(label, _)| matches(label)).map(|(_, k)| *k);
+                        chosen_kind = categories.iter().flat_map(|(cat, e)| e.iter().map(move |entry| (*cat, entry))).find(|(cat, (label, _))| matches(cat, label)).map(|(_, (_, k))| *k);
                     }
                     // Paste where the menu was opened (#1745).
                     if !replacing && self.insert_wire.is_none() && self.wire_from.is_none() && !in_search && add_menu_entry(ui, "Paste", theme) {
@@ -4158,7 +4158,7 @@ impl NodeGraphV2Panel {
                                 // categories during search would
                                 // otherwise leave naked headers.
                                 let visible: Vec<_> = entries.iter()
-                                    .filter(|(label, _)| matches(label))
+                                    .filter(|(label, _)| matches(cat_name, label))
                                     .collect();
                                 if visible.is_empty() { continue; }
                                 if !first_cat { ui.add_space(8.0); }
@@ -4217,8 +4217,8 @@ impl NodeGraphV2Panel {
 
                             // Empty-state for search-with-no-hits.
                             if in_search {
-                                let any = categories.iter().any(|(_, entries)| {
-                                    entries.iter().any(|(label, _)| matches(label))
+                                let any = categories.iter().any(|(cat_name, entries)| {
+                                    entries.iter().any(|(label, _)| matches(cat_name, label))
                                 });
                                 if !any {
                                     ui.add_space(6.0);
