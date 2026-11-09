@@ -5931,6 +5931,24 @@ impl AppState {
             )
     }
 
+    /// On open: the sound effects a project kept on pictures whose sound is
+    /// on an audio track, where they were never heard, moved to that sound
+    /// clip ([`Sequence::move_picture_sound_effects`]); what was moved, and
+    /// what was left because the sound has its own, said once each. Not an
+    /// undo step; the project is changed by it.
+    pub fn move_sound_effects_on_open(&mut self) -> Vec<String> {
+        let (moved, kept) = self.sequences.iter_mut().map(|s| s.move_picture_sound_effects()).fold((0, 0), |a, b| (a.0 + b.0, a.1 + b.1));
+        let mut said = Vec::new();
+        if moved > 0 {
+            said.push(format!("Moved {moved} sound effect{} to the sound clip{} {} meant for", if moved == 1 { "" } else { "s" }, if moved == 1 { "" } else { "s" }, if moved == 1 { "it was" } else { "they were" }));
+            self.dirty = true;
+        }
+        if kept > 0 {
+            said.push(format!("Kept sound effects on {kept} picture{} whose sound already has its own; they are not heard", if kept == 1 { "" } else { "s" }));
+        }
+        said
+    }
+
     pub fn split_at_playhead_commands(&self) -> Vec<klipp_core::AppCommand> {
         let ph = self.playhead;
         let fps = self.sequence().fps;
@@ -8537,3 +8555,85 @@ mod broken_transition_tests {
         assert!(t.transition_meets(&t.transitions[0]));
     }
 }
+
+#[cfg(test)]
+mod sound_effects_on_open_tests {
+    use super::AppState;
+    use klipp_core::{MediaId, RationalTime};
+    use klipp_timeline::TrackKind;
+
+    fn fx(t: &str) -> klipp_core::AudioEffectInstance {
+        klipp_core::AudioEffectInstance { effect_type: t.into(), enabled: true, wet_dry: 1.0, params: Vec::new() }
+    }
+
+    /// A picture and its sound on an audio track, linked both ways, saved
+    /// and opened again: what's opened, with the picture's and the sound's
+    /// ids.
+    fn opened(picture_fx: Vec<klipp_core::AudioEffectInstance>, sound_fx: Vec<klipp_core::AudioEffectInstance>) -> (AppState, klipp_core::ClipId, klipp_core::ClipId) {
+        let t = |s: i64| RationalTime { value: s * 30, rate: 30 };
+        let mut state = AppState::default();
+        let media = MediaId::new();
+        let seq = state.sequence_mut();
+        let vi = seq.tracks.iter().position(|tr| tr.kind == TrackKind::Video).unwrap();
+        let ai = seq.tracks.iter().position(|tr| tr.kind == TrackKind::Audio).unwrap();
+        let v = seq.tracks[vi].append_clip(media, t(10));
+        let a = seq.tracks[ai].append_clip(media, t(10));
+        let key = klipp_core::Keyframe { time_secs: 1.0, value: 0.5, interpolation: Default::default(), tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() };
+        {
+            let p = seq.tracks[vi].find_clip_mut(v).unwrap();
+            p.linked_clip_id = Some(a);
+            p.audio_effects = picture_fx;
+            if !p.audio_effects.is_empty() {
+                p.audio_effect_keyframes.insert("0:amount".into(), vec![key]);
+            }
+        }
+        {
+            let s = seq.tracks[ai].find_clip_mut(a).unwrap();
+            s.linked_clip_id = Some(v);
+            s.audio_effects = sound_fx;
+        }
+        let dir = std::env::temp_dir().join(format!("klipp-sound-fx-{}", uuid::Uuid::new_v4())).join("Moved.klipp");
+        klipp_project::save_project(&dir, &state.sequences, &state.media_pool).unwrap();
+        let (sequences, ..) = klipp_project::load_project(&dir).unwrap();
+        let _ = std::fs::remove_dir_all(dir.parent().unwrap());
+        (AppState { sequences, ..Default::default() }, v, a)
+    }
+
+    /// A project saved with Hum Removal on a picture whose sound is on an
+    /// audio track opens with it on the sound clip, its key with it, the
+    /// picture's chain empty, the project changed, and it said once.
+    #[test]
+    fn a_pictures_sound_effects_move_to_its_sound_clip_on_open() {
+        let (mut state, v, a) = opened(vec![fx("hum_removal")], Vec::new());
+        let said = state.move_sound_effects_on_open();
+        let seq = state.sequence();
+        let (p, s) = (seq.all_clips().find(|c| c.id == v).unwrap(), seq.all_clips().find(|c| c.id == a).unwrap());
+        assert!(p.audio_effects.is_empty() && p.audio_effect_keyframes.is_empty(), "the picture's chain taken off");
+        assert_eq!(s.audio_effects.iter().map(|e| e.effect_type.as_str()).collect::<Vec<_>>(), ["hum_removal"]);
+        assert!(s.audio_effect_keyframes.contains_key("0:amount"), "its key with it");
+        assert_eq!(said, ["Moved 1 sound effect to the sound clip it was meant for"]);
+        assert!(state.dirty, "the project is changed");
+    }
+
+    /// A picture whose sound has a chain of its own keeps its own: both
+    /// left as they are, and said.
+    #[test]
+    fn both_chains_are_left_and_said() {
+        let (mut state, v, a) = opened(vec![fx("hum_removal")], vec![fx("eq")]);
+        let said = state.move_sound_effects_on_open();
+        let seq = state.sequence();
+        assert_eq!(seq.all_clips().find(|c| c.id == v).unwrap().audio_effects.len(), 1);
+        assert_eq!(seq.all_clips().find(|c| c.id == a).unwrap().audio_effects[0].effect_type, "eq");
+        assert_eq!(said, ["Kept sound effects on 1 picture whose sound already has its own; they are not heard"]);
+        assert!(!state.dirty);
+    }
+
+    /// Nothing to move: nothing said, nothing changed.
+    #[test]
+    fn nothing_to_move_says_nothing() {
+        let (mut state, _, _) = opened(Vec::new(), vec![fx("eq")]);
+        assert!(state.move_sound_effects_on_open().is_empty());
+        assert!(!state.dirty);
+    }
+}
+
