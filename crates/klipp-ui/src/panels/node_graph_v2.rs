@@ -1178,11 +1178,21 @@ impl NodeGraphV2Panel {
         if edit_refit {
             self.edit_refits += 1;
         }
+        // An edit keeps the zoom and the view, so ports stay under the hand;
+        // a node it put out of view is brought in by the least pan.
+        if edit_refit && !(fit_clicked || f_pressed || self.fit_pending || resized_fit || self.last_fit_clip != Some(clip_id)) {
+            let rects: Vec<egui::Rect> = graph.nodes().iter().map(|n| {
+                let p = graph.positions().get(&n.id()).copied().unwrap_or(NodePos { x: 0.0, y: 0.0 });
+                let half = if n.kind().is_reroute() { egui::vec2(REROUTE_SIZE, REROUTE_SIZE) * 0.5 } else { egui::vec2(NODE_W, NODE_H) * 0.5 };
+                egui::Rect::from_center_size(egui::pos2(p.x, p.y), half * 2.0)
+            }).collect();
+            self.pan = pan_to_show(self.pan, self.zoom, canvas_rect.size(), &rects);
+            self.fitted_view = Some((self.pan, self.zoom, canvas_rect.size()));
+        }
         let need_fit = fit_clicked
             || f_pressed
             || self.fit_pending
             || resized_fit
-            || edit_refit
             || self.last_fit_clip != Some(clip_id);
         if need_fit && !graph.nodes().is_empty() {
             self.fit_to_nodes(graph, canvas_rect);
@@ -5175,6 +5185,35 @@ fn draw_view_eye(painter: &egui::Painter, node: egui::Rect, zoom: f32, viewed: b
     }
 }
 
+/// The pan, at `zoom` on a canvas `size` big, that shows every node of
+/// `rects` (graph units) it can, moved as little as it can from `pan`: no
+/// move when they all show. Where they can't all show on one axis, the
+/// start of that axis (left, top) is shown.
+fn pan_to_show(pan: egui::Vec2, zoom: f32, size: egui::Vec2, rects: &[egui::Rect]) -> egui::Vec2 {
+    let zoom = zoom.max(1e-3);
+    let margin = 24.0 / zoom;
+    let half = size / (2.0 * zoom);
+    let view = egui::Rect::from_center_size(egui::pos2(-pan.x, -pan.y), half * 2.0);
+    let outside: Vec<egui::Rect> = rects.iter().copied().filter(|r| !view.shrink(margin).contains_rect(*r)).collect();
+    let Some(want) = outside.into_iter().reduce(|a, b| a.union(b)) else { return pan };
+    let fix = |pan: f32, lo: f32, hi: f32, view_lo: f32, view_hi: f32| {
+        // Showing the start first: a view moved right by d has its edges
+        // at view - d, and pan grows by d.
+        let short = (view_lo + margin) - lo;
+        if short > 0.0 {
+            return pan + short;
+        }
+        let over = hi - (view_hi - margin);
+        if over > 0.0 {
+            // As far as shows its end, never past its start.
+            let room = lo - (view_lo + margin);
+            return pan - over.min(room);
+        }
+        pan
+    };
+    egui::vec2(fix(pan.x, want.min.x, want.max.x, view.min.x, view.max.x), fix(pan.y, want.min.y, want.max.y, view.min.y, view.max.y))
+}
+
 fn graph_bounds(graph: &impl CanvasGraph) -> Option<egui::Rect> {
     let mut min_x = f32::INFINITY;
     let mut min_y = f32::INFINITY;
@@ -5994,6 +6033,45 @@ pub(crate) mod canvas_command_tests {
         assert_eq!(show(&mut h, egui::vec2(1600.0, 260.0)), 1.7, "a zoomed view is left alone");
     }
 
+    /// A node added where the view shows it leaves the view and the zoom as
+    /// they were; one just off the edge is brought in by panning that far,
+    /// the zoom kept, so the ports already on screen stay where they were.
+    #[test]
+    fn an_added_node_keeps_the_view_and_pans_only_to_show_itself() {
+        let mut h = Harness::new();
+        h.panel.request_fit();
+        h.settle();
+        let framed = (h.panel.pan, h.panel.zoom);
+        let last = h.graph.nodes.last().unwrap().id;
+        let at = h.graph.node_positions[&last];
+        // In view: unchanged.
+        h.graph.node_positions.insert(last, NodePos { x: at.x, y: at.y + 10.0 });
+        h.panel.refit_if_untouched();
+        h.settle();
+        assert_eq!((h.panel.pan, h.panel.zoom), framed, "in view");
+        // Just past the right edge: panned by about that much, same zoom.
+        let half_w = h.panel.fitted_view.unwrap().2.x / (2.0 * h.panel.zoom);
+        let edge = -h.panel.pan.x + half_w;
+        h.graph.node_positions.insert(last, NodePos { x: edge + NODE_W, y: at.y });
+        h.panel.refit_if_untouched();
+        h.settle();
+        assert_eq!(h.panel.zoom, framed.1, "the zoom kept");
+        let moved = framed.0.x - h.panel.pan.x;
+        assert!(moved > 0.0 && moved < 2.0 * NODE_W + 60.0, "panned only so far: {moved}");
+        assert!(-h.panel.pan.x + h.panel.fitted_view.unwrap().2.x / (2.0 * h.panel.zoom) >= edge + 1.5 * NODE_W, "it shows");
+    }
+
+    #[test]
+    fn pan_to_show_moves_least_and_prefers_the_start() {
+        let size = egui::vec2(400.0, 200.0);
+        let node = |x: f32, y: f32| egui::Rect::from_center_size(egui::pos2(x, y), egui::vec2(NODE_W, NODE_H));
+        assert_eq!(super::pan_to_show(egui::Vec2::ZERO, 1.0, size, &[node(0.0, 0.0)]), egui::Vec2::ZERO);
+        let pan = super::pan_to_show(egui::Vec2::ZERO, 1.0, size, &[node(250.0, 0.0)]);
+        assert!(pan.x < 0.0 && pan.y == 0.0, "{pan:?}");
+        let pan = super::pan_to_show(egui::Vec2::ZERO, 1.0, size, &[node(-900.0, 0.0), node(900.0, 0.0)]);
+        assert!(-pan.x - 200.0 <= -960.0 + 1.0, "the start shown: {pan:?}");
+    }
+
     /// After a batch of graph ops (#1905), an untouched view is framed
     /// again, once however many edits asked, and takes in a node the
     /// batch put far off; a view moved by hand stays as it was.
@@ -6011,7 +6089,8 @@ pub(crate) mod canvas_command_tests {
         }
         h.settle();
         assert_eq!(h.panel.edit_refits, 1, "one refit for the batch");
-        assert_ne!((h.panel.pan, h.panel.zoom), framed, "framed again to take in the far node");
+        assert_ne!(h.panel.pan, framed.0, "panned to take in the far node");
+        assert_eq!(h.panel.zoom, framed.1, "the zoom kept");
         // Moved by hand: left alone.
         h.panel.pan += egui::vec2(37.0, 0.0);
         let moved = (h.panel.pan, h.panel.zoom);
