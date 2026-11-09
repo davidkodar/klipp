@@ -8595,13 +8595,17 @@ fn pin_layer(seq: &Sequence, pool: &MediaPool, i: usize, clip: &Clip, pinned: &C
     let on_frame = klipp_timeline::surface::source_quad_in_frame(&s.corners, s.source_size, frame, None);
     let target = klipp_timeline::surface::pin_target(&on_frame, s.aspect(), picture_size, fit, inset).unwrap_or(on_frame);
     let [tl, tr, br, bl] = klipp_timeline::surface::pin_frame_corners(&target, picture_size, frame).unwrap_or(target);
-    // Its corner pin replaced, not stacked, when it was pinned before.
+    // Its corner pin replaced, not stacked, when it was pinned before. A
+    // corner pin of the person's own is replaced too, two would bend the
+    // picture twice, and the message says so: it went without a word.
+    let own_pin = pinned.surface_pin.is_none() && pinned.builtin_effects().iter().any(|e| matches!(e, klipp_effects::BuiltinEffect::CornerPin { .. }));
     let (_, mut new) = effects_edit_and_after(pinned, |e| matches!(e, klipp_effects::BuiltinEffect::CornerPin { .. }), Some((klipp_effects::BuiltinEffect::CornerPin { tl, tr, br, bl }, Place::Last)))
         .map_err(|e| refuse(i, format!("{layer} couldn't take its corner pin: {e}"), "report it"))?;
     new.surface_pin = Some(klipp_timeline::SurfacePin { host: clip.id, surface: s.id, picture_size, fit, inset, on_loss: look.on_loss, light: look.light, shade: look.shade, texture: look.texture });
     new.blend_mode = look.blend;
     let tracked = if s.keys.is_empty() { ", where it stays until the surface is tracked" } else { ", following it" };
-    let what = format!("pin {layer} to the surface {} of {host}{tracked}", quoted(&s.name));
+    let replaced = if own_pin { "; its own Corner Pin is replaced by the pin's (undo brings it back)" } else { "" };
+    let what = format!("pin {layer} to the surface {} of {host}{tracked}{replaced}", quoted(&s.name));
     Ok((what, EditCommand::ReplaceClip { description: "Pin to Surface", old: Box::new(pinned.clone()), new: Box::new(new) }, vec![pinned.id]))
 }
 
@@ -17859,6 +17863,32 @@ mod tests {
         // Round trip through the wire format.
         let json = serde_json::to_string(&pin_op(None)).unwrap();
         assert!(json.contains("\"op\":\"pin\""), "{json}");
+    }
+
+    /// A layer with a Corner Pin of its own, pinned to a surface, has it
+    /// replaced by the pin's, and the message says so: it was replaced
+    /// without a word. Pinned again, nothing of its own is left to say.
+    #[test]
+    fn pinning_says_it_replaces_a_corner_pin_of_ones_own() {
+        let (mut seq, pool, _, a, _) = fixture();
+        let corners = [[0.3, 0.3], [0.6, 0.3], [0.6, 0.6], [0.3, 0.6]];
+        let frame = [seq.resolution.width, seq.resolution.height];
+        seq.tracks[0].clips[0].surfaces.push(klipp_timeline::Surface { id: ClipId::new().0, name: "Wall".into(), corners, reference_secs: 0.0, keys: vec![klipp_timeline::SurfaceKey::at_corners(0.0, &corners, &corners).unwrap()], source_size: frame, media_fps: 25.0, track_area: None, exclude: Vec::new() });
+        let td = klipp_timeline::TitleData::single_text(klipp_timeline::TextBox { text: "Open".into(), ..Default::default() });
+        let mut title = Clip { kind: klipp_timeline::ClipKind::Title(td), ..Clip::gap(tc(1.0), tc(3.0)) };
+        title.push_effect(klipp_effects::BuiltinEffect::CornerPin { tl: [0.2, 0.0], tr: [1.0, 0.0], br: [1.0, 1.0], bl: [0.0, 1.0] });
+        let tid = title.id;
+        let mut words = Track::new("T1", TrackKind::Text);
+        words.clips = vec![title];
+        seq.tracks.insert(0, words);
+        let ops: Vec<Op> = serde_json::from_value(serde_json::json!([{"op": "pin", "clip_id": a.to_string(), "layer": tid.to_string(), "surface": "wall"}])).unwrap();
+        let plan = resolve(&seq, &pool, &ops).unwrap();
+        assert!(plan.steps[0].what.contains("its own Corner Pin is replaced"), "{}", plan.steps[0].what);
+        let mut seqs = vec![seq.clone()];
+        let (mut p, mut fps) = (pool.clone(), seq.fps);
+        crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps }.apply_forward(&plan.steps[0].edit);
+        let again = resolve(&seqs[0], &pool, &ops).unwrap();
+        assert!(!again.steps[0].what.contains("Corner Pin"), "pinned before: the pin's own, {}", again.steps[0].what);
     }
 
     /// #2751: a title already on the timeline pins where it is: its corner
