@@ -34,6 +34,24 @@ pub(super) struct GradeApplied {
     pub edits: Vec<EditCommand>,
     pub refused: Vec<klipp_nodes::CannotAppend>,
     pub labels: Option<EditCommand>,
+    /// A tracked window's motion was left behind on some target: a clip
+    /// of another file, where it would follow the first shot's subject.
+    pub tracks_left: bool,
+}
+
+/// What a toast adds when a tracked window's motion was left behind.
+pub(super) const TRACKS_LEFT: &str = "the window's track was left behind: track it on this clip";
+
+/// Whether a grade from clip `from` keeps its windows' tracked motion on
+/// `target`: only on the same file over the same span or the piece next to
+/// it (a split shot), where the subject the track followed is the one in
+/// the picture. A grade whose clip isn't known (a Look, a library grade)
+/// keeps none.
+pub(super) fn keeps_tracks(seq: &klipp_timeline::Sequence, from: Option<klipp_core::ClipId>, target: &klipp_timeline::Clip) -> bool {
+    let Some(from) = from.and_then(|id| seq.all_clips().find(|c| c.id == id)) else { return false };
+    let (Some(a), Some(b)) = (from.media_id(), target.media_id()) else { return false };
+    let slack = 1.0 / f64::from(seq.fps.num.max(1)) * f64::from(seq.fps.den.max(1));
+    a == b && from.source_in.to_secs_f64() <= target.source_out.to_secs_f64() + slack && target.source_in.to_secs_f64() <= from.source_out.to_secs_f64() + slack
 }
 
 /// `grade` onto each of `targets`, fresh node ids per clip, as graph
@@ -48,12 +66,31 @@ pub(super) fn apply_grade(
     targets: &[klipp_core::ClipId],
     append: bool,
 ) -> GradeApplied {
+    apply_grade_from(seq, grade, labels, targets, append, None)
+}
+
+/// [`apply_grade`] of the grade of clip `from` (a still's, a split shot's),
+/// whose windows' tracks stay where it is that shot ([`keeps_tracks`]).
+pub(super) fn apply_grade_from(
+    seq: &klipp_timeline::Sequence,
+    grade: &klipp_nodes::NodeGraph,
+    labels: &[klipp_timeline::GradeNodeLabel],
+    targets: &[klipp_core::ClipId],
+    append: bool,
+    from: Option<klipp_core::ClipId>,
+) -> GradeApplied {
+    let mut tracks_left = false;
     let mut refused = Vec::new();
     let mut node_labels = seq.node_labels.clone();
     let edits = seq
         .all_clips()
         .filter(|c| targets.contains(&c.id))
         .filter_map(|c| {
+            let mut grade = grade.clone();
+            if !keeps_tracks(seq, from, c) && grade.drop_mask_tracks() {
+                tracks_left = true;
+            }
+            let grade = &grade;
             let (new_graph, map) = if append {
                 let mut g = c.grade().clone();
                 match g.append_mapped(grade) {
@@ -74,7 +111,7 @@ pub(super) fn apply_grade(
         })
         .collect();
     let labels = (node_labels != seq.node_labels).then(|| EditCommand::SetNodeLabels { old: seq.node_labels.clone(), new: node_labels });
-    GradeApplied { edits, refused, labels }
+    GradeApplied { edits, refused, labels, tracks_left }
 }
 
 /// How many other pieces of its shot the Colour page offers `clip`'s
@@ -100,13 +137,18 @@ pub(super) fn paste_attributes(
     targets: &[klipp_core::ClipId],
     attrs: &crate::state::AttributesClipboard,
     what: crate::state::PasteChoice,
-) -> (Vec<EditCommand>, Option<EditCommand>) {
+) -> (Vec<EditCommand>, Option<EditCommand>, bool) {
+    let mut tracks_left = false;
     let mut node_labels = seq.node_labels.clone();
     let edits = seq
         .all_clips()
         .filter(|c| targets.contains(&c.id))
         .map(|c| {
             let mut new = c.clone();
+            let mut attrs = attrs.clone();
+            if what.color_grade && !keeps_tracks(seq, attrs.source_clip, c) && attrs.node_graph.drop_mask_tracks() {
+                tracks_left = true;
+            }
             if let Some(map) = attrs.paste_onto_mapped(&mut new, what) {
                 let moved = klipp_timeline::remap_grade_node_labels(&attrs.grade_labels, &map, new.grade());
                 node_labels = klipp_timeline::with_grade_node_labels(&node_labels, c.id, &moved, true);
@@ -115,7 +157,7 @@ pub(super) fn paste_attributes(
         })
         .collect();
     let labels = (node_labels != seq.node_labels).then(|| EditCommand::SetNodeLabels { old: seq.node_labels.clone(), new: node_labels });
-    (edits, labels)
+    (edits, labels, tracks_left)
 }
 
 impl crate::state::AppState {
@@ -223,7 +265,7 @@ mod paste_attributes_tests {
         seq.tracks[0].clips = vec![a.clone(), b.clone(), c.clone()];
         let attrs = crate::state::AttributesClipboard::of(&source);
         let what = crate::state::PasteChoice { color_grade: true, audio: true, ..Default::default() };
-        let (edits, _) = paste_attributes(&seq, &targets, &attrs, what);
+        let (edits, _, _) = paste_attributes(&seq, &targets, &attrs, what);
         assert_eq!(edits.len(), 2);
 
         let mut sequences = vec![seq];
@@ -491,7 +533,7 @@ mod grade_still_tests {
         // A library entry or a still from before labels: applied cleanly,
         // added with no labels edit at all, put in place with only the
         // replaced grade's label taken off.
-        let GradeApplied { edits, refused, labels: label_edit } = apply_grade(&seq, &look, &[], &[a.id], true);
+        let GradeApplied { edits, refused, labels: label_edit, .. } = apply_grade(&seq, &look, &[], &[a.id], true);
         assert!(edits.len() == 1 && refused.is_empty() && label_edit.is_none());
         let GradeApplied { edits, labels: label_edit, .. } = apply_grade(&seq, &look, &[], &[a.id], false);
         let (after, _) = apply(seq.clone(), &edits.into_iter().chain(label_edit).collect::<Vec<_>>());
@@ -512,11 +554,11 @@ mod grade_still_tests {
         let attrs = crate::state::AttributesClipboard::of_in(&seq, &source);
         assert_eq!(attrs.grade_labels.len(), 1);
         let what = crate::state::PasteChoice { color_grade: true, ..Default::default() };
-        let (edits, label_edit) = paste_attributes(&seq, &[target.id], &attrs, what);
+        let (edits, label_edit, _) = paste_attributes(&seq, &[target.id], &attrs, what);
         let (after, _) = apply(seq.clone(), &edits.into_iter().chain(label_edit).collect::<Vec<_>>());
         let new = labelled(&after, target.id, 4).expect("the pasted corrector is labelled");
         assert_ne!(new, node);
-        let (_, none) = paste_attributes(&seq, &[target.id], &attrs, crate::state::PasteChoice { audio: true, ..Default::default() });
+        let (_, none, _) = paste_attributes(&seq, &[target.id], &attrs, crate::state::PasteChoice { audio: true, ..Default::default() });
         assert!(none.is_none(), "no grade pasted, no labels");
     }
 
@@ -754,27 +796,45 @@ mod grade_version_tests {
         }
     }
 
-    /// A grade holding a window tracked on its own clip, applied to another,
-    /// brings the window's moves with it: they follow the first shot's
-    /// subject, not this one's. Shown here as it is; what to do is a call.
+    /// A window's tracked motion stays only where it is the same shot: a
+    /// grade from another file, or from nowhere known (a Look), leaves it
+    /// behind and says so; a split piece of the same file keeps it, by
+    /// still, split-shot apply or paste alike.
     #[test]
-    fn a_tracked_window_applied_elsewhere_carries_the_first_shots_moves() {
-        let state = crate::state::AppState::default();
+    fn a_tracked_window_stays_only_on_its_own_shot() {
+        let mut seq = crate::state::AppState::default().sequences[0].clone();
+        let t = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 25);
+        let media = klipp_core::MediaId::new();
         let mut g = NodeGraph::default();
         let window = g.ensure_corrector_window();
         let key = |t: f64, v: f32| klipp_core::Keyframe { time_secs: t, value: v, interpolation: Default::default(), tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() };
         let mut mask = klipp_core::Mask::default();
         mask.keyframes.track_x = vec![key(0.0, 0.0), key(1.0, 0.3)];
         g.nodes.iter_mut().find(|n| n.id == window).unwrap().params.masks = Some(klipp_core::MaskStack { masks: vec![mask] });
-        let mut seq = state.sequences[0].clone();
-        let t = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 25);
-        let other = klipp_timeline::Clip::media(klipp_core::MediaId::new(), t(0.0), t(2.0), t(0.0), t(2.0));
-        let id = other.id;
-        seq.tracks.iter_mut().find(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap().clips.push(other);
-        let super::GradeApplied { edits, .. } = super::apply_grade(&seq, &g, &[], &[id], false);
-        let crate::history::EditCommand::SetNodeGraph { new_graph, .. } = &edits[0] else { panic!("a grade edit") };
-        let moves = new_graph.nodes.iter().filter_map(|n| n.params.masks.as_ref()).flat_map(|m| m.masks.iter()).map(|m| m.keyframes.track_x.len()).sum::<usize>();
-        assert_eq!(moves, 2, "the first shot's track came with it");
+        let mut first = klipp_timeline::Clip::media(media, t(0.0), t(2.0), t(0.0), t(2.0));
+        first.set_grade(g.clone());
+        let piece = klipp_timeline::Clip::media(media, t(2.0), t(4.0), t(2.0), t(4.0));
+        let other = klipp_timeline::Clip::media(klipp_core::MediaId::new(), t(4.0), t(6.0), t(0.0), t(2.0));
+        let (from, piece_id, other_id) = (first.id, piece.id, other.id);
+        let track = seq.tracks.iter_mut().find(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
+        track.clips.extend([first, piece, other]);
+        let moves = |e: &crate::history::EditCommand| {
+            let g = match e { crate::history::EditCommand::SetNodeGraph { new_graph, .. } => new_graph.clone(), crate::history::EditCommand::ReplaceClip { new, .. } => new.grade().clone(), _ => panic!("{e:?}") };
+            g.nodes.iter().filter_map(|n| n.params.masks.as_ref()).flat_map(|m| m.masks.iter()).map(|m| m.keyframes.track_x.len()).sum::<usize>()
+        };
+        let a = super::apply_grade_from(&seq, &g, &[], &[other_id], false, Some(from));
+        assert!(a.tracks_left && moves(&a.edits[0]) == 0, "another file: left behind");
+        let a = super::apply_grade(&seq, &g, &[], &[piece_id], false);
+        assert!(a.tracks_left && moves(&a.edits[0]) == 0, "from a Look: left behind");
+        let a = super::apply_grade_from(&seq, &g, &[], &[piece_id], false, Some(from));
+        assert!(!a.tracks_left && moves(&a.edits[0]) == 2, "the next piece of the shot keeps it");
+        let attrs = crate::state::AttributesClipboard::of(seq.all_clips().find(|c| c.id == from).unwrap());
+        let what = crate::state::PasteChoice { color_grade: true, ..Default::default() };
+        let (edits, _, left) = super::paste_attributes(&seq, &[other_id], &attrs, what);
+        assert!(left && moves(&edits[0]) == 0, "pasted on another file: left behind");
+        let (edits, _, left) = super::paste_attributes(&seq, &[piece_id], &attrs, what);
+        assert!(!left && moves(&edits[0]) == 2, "pasted on the next piece: kept");
+        assert_eq!(super::TRACKS_LEFT, "the window's track was left behind: track it on this clip");
     }
 
     /// A version holding a key and a window through a combiner, switched

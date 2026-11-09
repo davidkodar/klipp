@@ -4528,6 +4528,8 @@ pub struct AttributesClipboard {
     pub effects: Vec<klipp_plugin::AppliedEffect>,
     /// Node-based color grade.
     pub node_graph: klipp_nodes::NodeGraph,
+    /// The clip copied from: whether its windows' tracks fit a target.
+    pub source_clip: Option<klipp_core::ClipId>,
     /// The clip's picture held a grade correction's mix or mask channel
     /// (M3 step 17a), which `node_graph` doesn't: its grade isn't pasted.
     pub grade_mix_held: bool,
@@ -4578,6 +4580,7 @@ impl AttributesClipboard {
             picture_effects: CopiedEffect::of(clip),
             effects: clip.ofx_effects().to_vec(),
             node_graph: clip.grade().clone(),
+            source_clip: Some(clip.id),
             grade_mix_held: clip.holds_grade_mix(),
             volume: clip.volume,
             pan: clip.pan,
