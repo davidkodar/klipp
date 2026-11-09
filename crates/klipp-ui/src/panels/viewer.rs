@@ -200,26 +200,30 @@ fn draw_chart_tool(ui: &mut egui::Ui, state: &mut AppState, image_rect: egui::Re
     let to_screen = |c: [f32; 2]| viewer_norm_to_screen(image_rect, c[0], c[1]);
     let screen: Vec<egui::Pos2> = tool.corners.iter().map(|c| to_screen(*c)).collect();
     // Take the pointer from the viewer under the tool, so a drag here does
-    // not also scrub or pan; before the bar, so the bar is over it and its
-    // buttons get their clicks.
+    // not also scrub or pan.
     let _ = ui.allocate_rect(image_rect, egui::Sense::click_and_drag());
-    let mut bar_rect = egui::Rect::NOTHING;
     let (mut both, mut balance, mut cancel) = (false, false, ui.input(|i| i.key_pressed(egui::Key::Escape)));
-    let bar_area = egui::Rect::from_min_max(image_rect.left_top() + egui::vec2(8.0, 8.0), image_rect.right_bottom());
-    ui.new_child(egui::UiBuilder::new().max_rect(bar_area)).scope(|ui| {
-        let r = egui::Frame::popup(ui.style()).show(ui, |ui| {
-            ui.set_max_width((image_rect.width() - 32.0).max(120.0));
-            ui.vertical(|ui| {
-                ui.add(egui::Label::new(egui::RichText::new("Drag the corners onto the outer corners of the chart's patches, brown patch first, so the bright row lies on its greys").color(egui::Color32::from_gray(235))).wrap());
-                ui.horizontal_wrapped(|ui| {
-                    both = ui.button("White balance and exposure").on_hover_text("Set both from the chart's greys, as one undo step").clicked();
-                    balance = ui.button("White balance only").on_hover_text("Leave the exposure as it is").clicked();
-                    cancel |= ui.button("Cancel").clicked();
+    // A layer of its own, above the windows: Colour Check opens over this
+    // corner of the viewer, and the tool cannot be used or left without
+    // this bar. Popups stay above it.
+    let bar = egui::Area::new(egui::Id::new("chart_tool_bar"))
+        .movable(false)
+        .fixed_pos(image_rect.left_top() + egui::vec2(8.0, 8.0))
+        .show(ui.ctx(), |ui| {
+            egui::Frame::popup(ui.style()).show(ui, |ui| {
+                ui.set_max_width((image_rect.width() - 32.0).max(120.0));
+                ui.vertical(|ui| {
+                    ui.add(egui::Label::new(egui::RichText::new("Drag the corners onto the outer corners of the chart's patches, brown patch first, so the bright row lies on its greys").color(egui::Color32::from_gray(235))).wrap());
+                    ui.horizontal_wrapped(|ui| {
+                        both = ui.button("White balance and exposure").on_hover_text("Set both from the chart's greys, as one undo step").clicked();
+                        balance = ui.button("White balance only").on_hover_text("Leave the exposure as it is").clicked();
+                        cancel |= ui.button("Cancel").clicked();
+                    });
                 });
-            });
+            }).response.rect
         });
-        bar_rect = r.response.rect;
-    });
+    let bar_rect = bar.inner;
+    ui.ctx().move_to_top(bar.response.layer_id);
     if cancel {
         state.chart_tool = None;
         return;
@@ -3978,8 +3982,6 @@ impl ViewerPanel {
                             }
                             if resp.drag_started() {
                                 if let Some(pos) = resp.interact_pointer_pos() {
-                                    state.selected_node_id = Some(node_id);
-                                    cmds.push(AppCommand::FocusMaskInspector);
                                     cmds.push(AppCommand::BeginNodeParamEdit { clip_id });
                                     // If this mask is keyframed (i.e. a
                                     // tracker is driving its centre),
@@ -4060,8 +4062,6 @@ impl ViewerPanel {
                             }
                             if resp.drag_started() {
                                 if let Some(pos) = resp.interact_pointer_pos() {
-                                    state.selected_node_id = Some(node_id);
-                                    cmds.push(AppCommand::FocusMaskInspector);
                                     cmds.push(AppCommand::BeginNodeParamEdit { clip_id });
                                     // If this mask is keyframed (i.e. a
                                     // tracker is driving its centre),
@@ -4138,8 +4138,6 @@ impl ViewerPanel {
                             }
                             if resp.drag_started() {
                                 if let Some(pos) = resp.interact_pointer_pos() {
-                                    state.selected_node_id = Some(node_id);
-                                    cmds.push(AppCommand::FocusMaskInspector);
                                     cmds.push(AppCommand::BeginNodeParamEdit { clip_id });
                                     // If this mask is keyframed (i.e. a
                                     // tracker is driving its centre),
@@ -4202,8 +4200,6 @@ impl ViewerPanel {
                             }
                             if resp.drag_started() {
                                 if let Some(pos) = resp.interact_pointer_pos() {
-                                    state.selected_node_id = Some(node_id);
-                                    cmds.push(AppCommand::FocusMaskInspector);
                                     cmds.push(AppCommand::BeginNodeParamEdit { clip_id });
                                     // If this mask is keyframed (i.e. a
                                     // tracker is driving its centre),
@@ -4271,8 +4267,6 @@ impl ViewerPanel {
                                 ui.painter().circle_filled(*sp, 4.0, color);
                                 if resp.drag_started() {
                                     if let Some(pos) = resp.interact_pointer_pos() {
-                                        state.selected_node_id = Some(node_id);
-                                        cmds.push(AppCommand::FocusMaskInspector);
                                         cmds.push(AppCommand::BeginNodeParamEdit { clip_id });
                                         if !raw_mask.keyframes.is_empty() {
                                             cmds.push(AppCommand::RemoveMaskTracking {
@@ -9138,6 +9132,8 @@ mod chart_tool_tests {
             let texts: Vec<(String, egui::Pos2)> = out.shapes.iter().filter_map(|s| match &s.shape { egui::Shape::Text(t) => Some((t.galley.text().to_owned(), t.pos)), _ => None }).collect();
             (texts, cmds)
         };
+        // The bar is on its own layer, measured on its first frame.
+        run(&mut state, Vec::new());
         let (texts, _) = run(&mut state, Vec::new());
         assert!(texts.iter().any(|(t, _)| t.starts_with("Drag the corners")), "what to do: {texts:?}");
         for label in ["brown", "white", "black"] {
@@ -9149,6 +9145,38 @@ mod chart_tool_tests {
         let (_, cmds) = run(&mut state, vec![egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE }]);
         assert!(matches!(cmds.as_slice(), [AppCommand::RunChartRead { exposure: false, .. }]), "{cmds:?}");
         assert!(state.chart_tool.is_none(), "the tool closes");
+    }
+
+    /// Colour Check opens over the viewer's corner where the bar is; the bar
+    /// stays on top and takes its clicks, or the tool can't be used or left.
+    #[test]
+    fn the_chart_tools_bar_stays_above_a_window_over_it() {
+        let ctx = egui::Context::default();
+        let image = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1280.0, 720.0));
+        let mut state = AppState::default();
+        let corners = [[0.25, 0.2], [0.75, 0.2], [0.75, 0.8], [0.25, 0.8]];
+        state.chart_tool = Some(ChartTool { clip_id: klipp_core::ClipId::new(), corners, drag: None });
+        let run = |state: &mut AppState, events: Vec<egui::Event>| {
+            let mut cmds = Vec::new();
+            let out = ctx.run(egui::RawInput { screen_rect: Some(image), events, ..Default::default() }, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| draw_chart_tool(ui, state, image, &mut cmds));
+                egui::Window::new("Colour Check").fixed_pos(egui::pos2(0.0, 0.0)).fixed_size([420.0, 520.0]).show(ctx, |ui| {
+                    ui.allocate_space(ui.available_size());
+                });
+            });
+            let at = out.shapes.iter().find_map(|s| match &s.shape {
+                egui::Shape::Text(t) if t.galley.text() == "White balance only" => Some(t.pos + egui::vec2(8.0, 6.0)),
+                _ => None,
+            });
+            (at, cmds)
+        };
+        run(&mut state, Vec::new());
+        let (at, _) = run(&mut state, Vec::new());
+        let at = at.expect("the button");
+        run(&mut state, vec![egui::Event::PointerMoved(at)]);
+        run(&mut state, vec![egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE }]);
+        let (_, cmds) = run(&mut state, vec![egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE }]);
+        assert!(matches!(cmds.as_slice(), [AppCommand::RunChartRead { exposure: false, .. }]), "{cmds:?}");
     }
 
     /// A corner goes where the pointer is, inside the frame; the whole
