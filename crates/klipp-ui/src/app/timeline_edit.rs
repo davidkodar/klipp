@@ -1522,21 +1522,8 @@ impl KlippApp {
     /// already have been cut through its partner (it now ends on the
     /// cut, or is gone); that refusal has nothing to say.
     fn blade_clip_and_partner(&mut self, track_index: usize, clip_id: klipp_core::ClipId, cut_at: klipp_core::RationalTime) {
-        let magnetic: Vec<bool> = (0..self.state.sequence().tracks.len()).map(|ti| self.is_magnetic_track(ti)).collect();
-        let seq = &mut self.state.sequences[self.state.active_sequence_idx];
-        match klipp_document::blade::blade_linked(seq, track_index, clip_id, cut_at, |ti| magnetic.get(ti).copied().unwrap_or(false)) {
-            Ok(edits) => {
-                for edit in edits {
-                    self.state.push_history(edit);
-                }
-                self.state.dirty = true;
-                self.sync_sequence_to_engine();
-            }
-            Err(refusal) => {
-                if let Some(message) = refusal.message() {
-                    self.state.toast.show(message);
-                }
-            }
+        if self.state.blade_one(track_index, clip_id, cut_at) {
+            self.sync_sequence_to_engine();
         }
     }
 }

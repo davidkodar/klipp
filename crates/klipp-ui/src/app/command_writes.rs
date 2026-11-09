@@ -435,6 +435,7 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::SetTrackSolo { .. }
         | AppCommand::SetTrackPan { .. }
         | AppCommand::BladeClip { .. }
+        | AppCommand::SplitAtPlayhead
         | AppCommand::CutClip { .. }
         | AppCommand::PasteClip
         | AppCommand::PasteClipInsert

@@ -586,6 +586,12 @@ impl KlippApp {
                     self.blade_clip_at(*track_index, *clip_id, *cut_at);
                     true
                 }
+                AppCommand::SplitAtPlayhead => {
+                    if self.state.split_at_playhead() {
+                        self.sync_sequence_to_engine();
+                    }
+                    true
+                }
                 _ => false,
         }
     }
@@ -1686,11 +1692,7 @@ impl KlippApp {
     /// Check if a track uses magnetic editing (Primary, Connected, or ConnectedStoryline).
     /// Returns false when the magnetic timeline pref is disabled.
     pub(super) fn is_magnetic_track(&self, track_index: usize) -> bool {
-        self.state.magnetic_timeline_enabled
-            && matches!(
-                self.state.sequences[self.state.active_sequence_idx].tracks.get(track_index).map(|t| &t.magnetic_role),
-                Some(klipp_timeline::TrackRole::Primary | klipp_timeline::TrackRole::Connected | klipp_timeline::TrackRole::ConnectedStoryline)
-            )
+        self.state.is_magnetic_track(track_index)
     }
 }
 

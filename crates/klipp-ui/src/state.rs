@@ -5873,6 +5873,64 @@ impl AppState {
     /// is not cut, by the blade's own rule (`klipp_document::blade`); a
     /// pair across a lock is queued from its unlocked side so the blade
     /// refuses it whole, with a word on which track to unlock.
+    /// Split at Playhead: every cut
+    /// [`Self::split_at_playhead_commands`] lists, made as one undo step.
+    /// Whether anything was cut.
+    pub fn split_at_playhead(&mut self) -> bool {
+        let cuts: Vec<(usize, ClipId, Timecode)> = self.split_at_playhead_commands().into_iter().filter_map(|c| match c {
+            klipp_core::AppCommand::BladeClip { track_index, clip_id, cut_at } => Some((track_index, clip_id, cut_at)),
+            _ => None,
+        }).collect();
+        if cuts.is_empty() {
+            return false;
+        }
+        let owns_batch = !self.active_history_mut().is_batching();
+        if owns_batch {
+            self.active_history_mut().begin_batch();
+        }
+        let mut cut = false;
+        for (track_index, clip_id, cut_at) in cuts {
+            cut |= self.blade_one(track_index, clip_id, cut_at);
+        }
+        if owns_batch {
+            self.active_history_mut().end_batch();
+        }
+        cut
+    }
+
+    /// One clip cut at `cut_at`, the clip it is linked to with it
+    /// (`klipp_document::blade::blade_linked`), its edits recorded; a
+    /// refusal says why when there is something to say. Whether it cut.
+    pub fn blade_one(&mut self, track_index: usize, clip_id: ClipId, cut_at: Timecode) -> bool {
+        let magnetic: Vec<bool> = (0..self.sequence().tracks.len()).map(|ti| self.is_magnetic_track(ti)).collect();
+        let seq = &mut self.sequences[self.active_sequence_idx];
+        match klipp_document::blade::blade_linked(seq, track_index, clip_id, cut_at, |ti| magnetic.get(ti).copied().unwrap_or(false)) {
+            Ok(edits) => {
+                for edit in edits {
+                    self.push_history(edit);
+                }
+                self.dirty = true;
+                true
+            }
+            Err(refusal) => {
+                if let Some(message) = refusal.message() {
+                    self.toast.show(message);
+                }
+                false
+            }
+        }
+    }
+
+    /// Whether `track_index` cuts and moves the magnetic way: the
+    /// magnetic timeline on, and the track one of its storylines.
+    pub fn is_magnetic_track(&self, track_index: usize) -> bool {
+        self.magnetic_timeline_enabled
+            && matches!(
+                self.sequences[self.active_sequence_idx].tracks.get(track_index).map(|t| &t.magnetic_role),
+                Some(klipp_timeline::TrackRole::Primary | klipp_timeline::TrackRole::Connected | klipp_timeline::TrackRole::ConnectedStoryline)
+            )
+    }
+
     pub fn split_at_playhead_commands(&self) -> Vec<klipp_core::AppCommand> {
         let ph = self.playhead;
         let fps = self.sequence().fps;
@@ -7758,6 +7816,39 @@ mod split_at_playhead_tests {
     use klipp_timeline::TrackKind;
 
     fn t(secs: i64) -> RationalTime { RationalTime { value: secs * 30, rate: 30 } }
+
+    /// Split at Playhead over a picture, its linked sound and a music clip
+    /// of its own is one step: all three cut, and one undo puts all three
+    /// back. Queued as a blade per clip, the music's cut was a second step
+    /// ("Blade" and "Blade Clip"), and one undo rejoined only the music.
+    #[test]
+    fn split_at_playhead_is_one_undo_step() {
+        let mut state = AppState::default();
+        let media = MediaId::new();
+        let seq = state.sequence_mut();
+        let vi = seq.tracks.iter().position(|tr| tr.kind == TrackKind::Video).unwrap();
+        let ai = seq.tracks.iter().position(|tr| tr.kind == TrackKind::Audio).unwrap();
+        let v = seq.tracks[vi].append_clip(media, t(10));
+        let a = seq.tracks[ai].append_clip(media, t(10));
+        seq.tracks[vi].find_clip_mut(v).unwrap().linked_clip_id = Some(a);
+        seq.tracks[ai].find_clip_mut(a).unwrap().linked_clip_id = Some(v);
+        let mut music = klipp_timeline::Track::new("Music", TrackKind::Audio);
+        music.append_clip(MediaId::new(), t(10));
+        seq.tracks.push(music);
+        state.playhead = t(4);
+        let shape = |s: &AppState| s.sequence().tracks.iter().map(|tr| tr.clips.len()).collect::<Vec<_>>();
+        let before = shape(&state);
+        let steps = state.active_history().undo_count();
+
+        assert!(state.split_at_playhead());
+        assert_eq!(shape(&state).iter().sum::<usize>(), before.iter().sum::<usize>() + 3, "all three cut: {:?}", shape(&state));
+        assert_eq!(state.active_history().undo_count(), steps + 1, "one step");
+
+        let entry = state.take_undo().expect("the split to undo");
+        let mut view = klipp_document::apply::DocumentView { sequences: &mut state.sequences, active: state.active_sequence_idx, media_pool: &mut state.media_pool, fps: &mut state.fps };
+        view.apply_inverse(&entry.command);
+        assert_eq!(shape(&state), before, "one undo puts all three back");
+    }
 
     /// Issue #250: Ctrl+B on a clip with linked audio queued a blade for
     /// both clips. The first blade already cut the partner, so the
