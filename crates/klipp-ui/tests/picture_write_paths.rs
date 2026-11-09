@@ -34,20 +34,23 @@ const KNOWN: &[(&str, &str, usize)] = &[
     // zones placed for their source and the foliage key, #2767, among
     // them), and the test that a grade change undoes exactly on a
     // picture-truth clip (#2459), and a split shot's grade copied whole
-    // onto its other pieces (on: "shot"), as `from` copies one (#3390).
-    ("klipp-document/src/ops.rs", "SetNodeGraph", 29),
+    // onto its other pieces (on: "shot"), as `from` copies one (#3390),
+    // and two tests reading the graph a cleared windowed secondary and a
+    // hue-free lightness key leave (#3768).
+    ("klipp-document/src/ops.rs", "SetNodeGraph", 31),
     // A drag left open, closed on the state alone (M3 step 2). The list
     // handlers and their drags go through the picture (M4 step 12c-5).
     ("klipp-ui/src/app/effects.rs", "EditBuiltinEffect", 2),
-    // The grade closures (node edits, balance, a look) and
-    // their tests (the zones the colour page and the op place alike,
-    // #2767, among them).
-    ("klipp-ui/src/app/colour.rs", "SetNodeGraph", 9),
+    // The grade closures (node edits, balance) and their tests (the zones
+    // the colour page and the op place alike, #2767, among them). A look
+    // is applied by grade_edits' apply_grade now (#3821).
+    ("klipp-ui/src/app/colour.rs", "SetNodeGraph", 8),
     // A compound's grade moved in and out with its clips.
     // Keys generated from a track, on a grade window.
     ("klipp-ui/src/app/stabilization.rs", "SetNodeGraph", 3),
-    // A still's grade put on clips, and its tests.
-    ("klipp-ui/src/app/grade_edits.rs", "SetNodeGraph", 3),
+    // A still's, a look's or a library grade put on clips (one write, its
+    // node labels beside it, #3821), and its tests.
+    ("klipp-ui/src/app/grade_edits.rs", "SetNodeGraph", 4),
 ];
 
 const ENTRIES: [&str; 4] = ["SetBuiltinEffects", "SetNodeGraph", "EditBuiltinEffect", "ToggleBuiltinEffectEnabled"];
