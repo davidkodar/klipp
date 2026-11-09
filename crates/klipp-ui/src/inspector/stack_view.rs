@@ -541,6 +541,38 @@ pub fn placement_text(p: &Placement) -> String {
 }
 
 #[allow(clippy::too_many_arguments)]
+/// A surface pin's surface: chosen among the clip's tracked ones, or why
+/// there is nothing to choose. The node added from the graph starts with
+/// none, and has no other way to be given one.
+fn surface_choice(ui: &mut egui::Ui, theme: &KlippTheme, clip: &Clip, addr: &NodePath, entry: &serde_json::Value, cmds: &mut Vec<AppCommand>) {
+    let chosen = entry.get("surface").and_then(serde_json::Value::as_str).unwrap_or_default();
+    let tracked: Vec<_> = clip.surfaces.iter().filter(|s| !s.keys.is_empty()).collect();
+    let current = tracked.iter().find(|s| s.id.to_string() == chosen || s.name == chosen);
+    let note = |ui: &mut egui::Ui, text: &str| {
+        ui.add(egui::Label::new(egui::RichText::new(text).size(10.0).color(theme.text_dim)).wrap());
+    };
+    if tracked.is_empty() {
+        note(ui, "This clip has no tracked surface. Track one under Surface in the Video tab, or pin this clip to another clip's with Effects > Pin to Surface in its menu.");
+    } else {
+        egui::ComboBox::from_id_salt(("surface_pin_choice", addr.clone()))
+            .selected_text(current.map_or("Choose a surface", |s| s.name.as_str()))
+            .show_ui(ui, |ui| {
+                for s in &tracked {
+                    if ui.selectable_label(current.is_some_and(|c| c.id == s.id), &s.name).clicked() {
+                        let mut payload = entry.clone();
+                        payload["surface"] = serde_json::Value::String(s.id.to_string());
+                        cmds.push(AppCommand::SetPayloadAt { addr: addr.clone(), payload });
+                    }
+                }
+            });
+    }
+    if chosen.is_empty() {
+        note(ui, "No surface chosen: the picture stays as it is.");
+    } else if current.is_none() {
+        note(ui, "The surface it names is not on this clip, so the pin draws nothing.");
+    }
+}
+
 fn row_card(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppState, clip: &Clip, graph: &Graph, row: &Row, cmds: &mut Vec<AppCommand>, clip_time_secs: f64) {
     let node = node_at(graph, &row.addr);
     ui.horizontal(|ui| {
@@ -620,6 +652,9 @@ fn row_card(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppState, clip: &Clip
     let effect = node.and_then(|n| klipp_graph_lift::effect_params::tag(n).map(|tag| (n, tag))).and_then(|(n, tag)| effect_types().find(|t| t.tag == tag).map(|t| (n, t)));
     match effect {
         Some((n, ty)) if !row.read_only => {
+            if ty.tag == "surface_pin" {
+                surface_choice(ui, theme, clip, &row.addr, &klipp_graph_lift::effect_params::entry_of(n).unwrap_or(serde_json::Value::Null), cmds);
+            }
             let entry = klipp_graph_lift::effect_params::entry_of(n).unwrap_or(serde_json::Value::Null);
             // The catalog retains legacy animation names (Chroma Key's
             // "spill"), while the picture stores their canonical keys
@@ -699,5 +734,55 @@ fn row_card(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppState, clip: &Clip
             }
         }
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod surface_choice_tests {
+    use super::*;
+
+    fn frame(ctx: &egui::Context, clip: &Clip, addr: &NodePath, entry: &serde_json::Value, clock: f64, events: Vec<egui::Event>) -> (Vec<AppCommand>, Vec<(String, egui::Pos2)>) {
+        let mut cmds = Vec::new();
+        let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(420.0, 600.0))), time: Some(clock), events, ..Default::default() };
+        let out = ctx.run(input, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| surface_choice(ui, &KlippTheme::default(), clip, addr, entry, &mut cmds));
+        });
+        (cmds, out.shapes.iter().filter_map(|s| match &s.shape { egui::Shape::Text(t) => Some((t.galley.text().to_owned(), t.pos + t.galley.size() / 2.0)), _ => None }).collect())
+    }
+
+    /// With none chosen it says the picture stays; with no surface on the
+    /// clip it says so; with one, a click chooses it by its id.
+    #[test]
+    fn a_surface_pin_chooses_among_the_clips_surfaces_or_says_there_are_none() {
+        let t = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 24);
+        let mut clip = klipp_timeline::Clip::media(klipp_core::MediaId::new(), t(0.0), t(4.0), t(0.0), t(4.0));
+        let addr = NodePath::new(klipp_graph_format::path::Root::Clip { clip: clip.id.0 }, [uuid::Uuid::new_v4()]);
+        let entry = serde_json::json!({ "surface": "", "inset": 0.0 });
+
+        let ctx = egui::Context::default();
+        let (_, texts) = frame(&ctx, &clip, &addr, &entry, 0.0, Vec::new());
+        assert!(texts.iter().any(|(t, _)| t.starts_with("This clip has no tracked surface")), "{texts:?}");
+        assert!(texts.iter().any(|(t, _)| t.starts_with("No surface chosen")), "{texts:?}");
+
+        let screen = [[0.2, 0.15], [0.8, 0.2], [0.75, 0.85], [0.25, 0.8]];
+        let key = klipp_timeline::SurfaceKey::at_corners(1.0, &screen, &screen).expect("a quad");
+        let id = uuid::Uuid::new_v4();
+        clip.surfaces.push(klipp_timeline::Surface { id, name: "Phone".into(), corners: screen, reference_secs: 1.0, keys: vec![key], source_size: [1920, 1080], media_fps: 24.0, track_area: None, exclude: Vec::new() });
+        let ctx = egui::Context::default();
+        let mut clock = 0.0;
+        let mut step = |events| { clock += 0.05; frame(&ctx, &clip, &addr, &entry, clock, events) };
+        step(Vec::new());
+        let (_, texts) = step(Vec::new());
+        let click = |at: egui::Pos2, pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+        let open = texts.iter().find(|(t, _)| t == "Choose a surface").expect("the choice").1;
+        step(vec![egui::Event::PointerMoved(open), click(open, true)]);
+        step(vec![click(open, false)]);
+        let (_, texts) = step(Vec::new());
+        let item = texts.iter().find(|(t, _)| t == "Phone").expect("the surface offered").1;
+        step(vec![egui::Event::PointerMoved(item)]);
+        step(vec![click(item, true)]);
+        let (cmds, _) = step(vec![click(item, false)]);
+        let chose = cmds.iter().find_map(|c| match c { AppCommand::SetPayloadAt { payload, .. } => payload["surface"].as_str().map(str::to_owned), _ => None });
+        assert_eq!(chose, Some(id.to_string()), "{cmds:?}");
     }
 }

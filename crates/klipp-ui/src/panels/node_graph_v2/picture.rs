@@ -636,6 +636,23 @@ mod tests {
     use klipp_timeline::Clip;
     use klipp_timeline::test_clip::TestClip;
 
+    /// In the picture's and the Composite page's add menus, "matte" and
+    /// "mask" find the Mattes section by its name, Roto Shape among it, and
+    /// a letter or two opens no section.
+    #[test]
+    fn the_add_menus_find_a_section_by_its_name() {
+        use super::super::model::{menu_entry_matches, menu_section_matches};
+        let menus: [(&str, &[MenuCategory]); 2] = [("picture", picture_menu()), ("composite", composite_menu())];
+        for (menu, categories) in menus {
+            for q in ["matte", "mattes", "mask"] {
+                let found: Vec<&str> = categories.iter().flat_map(|(cat, e)| e.iter().map(move |entry| (*cat, entry))).filter(|(cat, (label, _))| menu_entry_matches(label, q) || menu_section_matches(cat, q)).map(|(_, (label, _))| *label).collect();
+                assert!(found.contains(&"Roto Shape") && found.contains(&"Window"), "{menu}: {q:?} finds {found:?}");
+            }
+        }
+        assert!(!menu_section_matches("Mattes", "ma"), "too short");
+        assert!(!menu_section_matches("Mattes", "blur"));
+    }
+
     /// #2576: searching any add menu (the grade's, the picture's and the
     /// Composite page's) for a qualifier, HSL, hue or a key by colour
     /// finds the Qualifier; a search for something else does not.

@@ -845,6 +845,13 @@ impl NodeInspectorPanel {
                         // an Untrack button appears next to it.
                         let is_tracked = tracked_mask_indices.contains(&mask_idx);
                         ui.add_space(6.0);
+                        // What it followed, kept in view: the toast that
+                        // says a track stopped is gone by the time a long
+                        // one has been looked at.
+                        if let Some((from, to)) = tracked_span(mask).filter(|_| is_tracked) {
+                            ui.label(egui::RichText::new(format!("{from:.1}\u{2013}{to:.1} s")).size(10.0).color(theme.text_dim))
+                                .on_hover_text("The stretch of the clip the track followed; the mask stays still outside it");
+                        }
                         if is_tracked {
                             if ui.add(egui::Button::new(
                                 egui::RichText::new("\u{1F6AB} Untrack").size(10.0)
@@ -4195,6 +4202,25 @@ pub(crate) fn tracked_masks_of(clip: &klipp_timeline::Clip, node: NodeId) -> Vec
     clip.track_points.iter().filter_map(|tp| tp.linked_mask).filter(|(n, _)| *n == node).map(|(_, i)| i).collect()
 }
 
+/// The masks a tracker drives on the Mask node a page's list shows: the one
+/// selected, else the first of `level`, which is what the Colour tab's own
+/// Masks section lists with no node selected. Read from the selection alone
+/// it was empty there, so a tracked mask offered Track as if it had none.
+pub(crate) fn tracked_masks_on_page(clip: &klipp_timeline::Clip, level: &NodeGraph, selected: Option<NodeId>) -> Vec<usize> {
+    let is_mask = |n: &&klipp_nodes::Node| n.kind == NodeKind::Mask;
+    let shown = selected.filter(|id| level.nodes.iter().filter(is_mask).any(|n| n.id == *id)).or_else(|| level.nodes.iter().find(is_mask).map(|n| n.id));
+    shown.map_or_else(Vec::new, |node| tracked_masks_of(clip, node))
+}
+
+/// The stretch of the clip's own clock a mask's track covers.
+fn tracked_span(mask: &klipp_core::Mask) -> Option<(f64, f64)> {
+    let times: Vec<f64> = match &mask.keyframes.track_perspective {
+        Some(track) => track.keys.iter().map(|k| k.time_secs).collect(),
+        None => mask.keyframes.track_x.iter().map(|k| k.time_secs).collect(),
+    };
+    Some((times.iter().copied().reduce(f64::min)?, times.iter().copied().reduce(f64::max)?))
+}
+
 /// A grade node's header: its name, its on switch, and the diamond that
 /// keys the switch. Shared by the per-node layout and the generated one
 /// (M3 step 11).
@@ -5986,6 +6012,52 @@ fn render_wheel_layout_review(ctx: &egui::Context, out: &egui::FullOutput, textu
     let mapped = buffer.slice(..).get_mapped_range();
     let pixels: Vec<u8> = mapped.chunks(stride as usize).flat_map(|row| row[..width as usize * 4].iter().copied()).collect();
     image::save_buffer(path, &pixels, width, 2000, image::ColorType::Rgba8).unwrap();
+}
+
+#[cfg(test)]
+mod tracked_span_tests {
+    use super::*;
+
+    /// With no node selected the Colour tab's Masks section lists the first
+    /// Mask node, and knows which of its masks are tracked; a selected Mask
+    /// node is the one shown, and one that isn't a mask changes nothing.
+    #[test]
+    fn the_masks_section_knows_what_is_tracked_with_no_node_selected() {
+        let tc = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 25);
+        let mut clip = klipp_timeline::Clip::media(klipp_core::MediaId::new(), tc(0.0), tc(2.0), tc(0.0), tc(2.0));
+        let mut g = NodeGraph::default();
+        let first = g.ensure_corrector_window();
+        let correction = g.ensure_corrector();
+        let second = NodeId::new_v4();
+        g.nodes.push(klipp_nodes::Node { id: second, kind: NodeKind::Mask, label: String::new(), enabled: true, params: Default::default(), keyframes: Default::default(), output_link: None, input_links: Vec::new() });
+        clip.track_points.push(klipp_core::TrackPoint { linked_mask: Some((first, 1)), ..Default::default() });
+        assert_eq!(tracked_masks_on_page(&clip, &g, None), vec![1], "the first Mask node, none selected");
+        assert_eq!(tracked_masks_on_page(&clip, &g, Some(correction)), vec![1], "a node that isn't a mask");
+        assert!(tracked_masks_on_page(&clip, &g, Some(second)).is_empty(), "the one selected is shown");
+        assert!(tracked_masks_on_page(&clip, &NodeGraph::default(), None).is_empty(), "no mask");
+    }
+
+    /// A tracked mask's row keeps saying how much of the clip it follows.
+    #[test]
+    fn a_tracked_mask_shows_what_it_followed() {
+        let key = |t: f64| klipp_core::Keyframe { time_secs: t, value: 0.0, interpolation: Default::default(), tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() };
+        let mut mask = klipp_core::Mask { shape: klipp_core::MaskShape::Circle { center_x: 0.5, center_y: 0.5, radius: 0.2 }, ..Default::default() };
+        assert_eq!(tracked_span(&mask), None);
+        mask.keyframes.track_x = vec![key(4.44), key(5.12)];
+        assert_eq!(tracked_span(&mask), Some((4.44, 5.12)));
+        let stack = klipp_core::MaskStack { masks: vec![mask] };
+        let ctx = egui::Context::default();
+        let frame = FrameSelection::new(klipp_core::Timecode::zero(), klipp_core::Timecode::zero(), 0.02);
+        let mut texts = Vec::new();
+        for _ in 0..3 {
+            let mut masks = stack.clone();
+            let out = ctx.run(egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(700.0, 1200.0))), ..Default::default() }, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| NodeInspectorPanel::render_masks_body(ui, &mut masks, NodeId::new_v4(), ClipId::new(), &mut Vec::new(), &KlippTheme::default(), frame, &[0]));
+            });
+            texts = out.shapes.iter().filter_map(|s| match &s.shape { egui::Shape::Text(t) => Some(t.galley.text().to_owned()), _ => None }).collect();
+        }
+        assert!(texts.iter().any(|t| t == "4.4\u{2013}5.1 s"), "{texts:?}");
+    }
 }
 
 #[cfg(test)]

@@ -157,6 +157,16 @@ pub(super) fn menu_entry_matches(label: &str, q: &str) -> bool {
     label.to_lowercase().contains(q) || SEARCH_ALIASES.iter().any(|(l, words)| label.starts_with(l) && words.iter().any(|w| w.contains(q)))
 }
 
+/// Other words for a menu section.
+const SECTION_ALIASES: &[(&str, &[&str])] = &[("Mattes", &["mask", "masks"])];
+
+/// Whether the add menu's search `q`, lowercase and trimmed, finds the
+/// section `name`, and so all that is in it. Not for a letter or two, which
+/// would open a whole section on the way to typing a node's name.
+pub(super) fn menu_section_matches(name: &str, q: &str) -> bool {
+    q.len() >= 3 && (name.to_lowercase().contains(q) || SECTION_ALIASES.iter().any(|(n, words)| *n == name && words.iter().any(|w| w.contains(q))))
+}
+
 /// The grade add menu: each node type its registry entry offers in the
 /// menu, under its group, by its label and rank (#2888); the entry's
 /// name is the kind's add name.
