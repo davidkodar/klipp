@@ -1068,6 +1068,12 @@ impl KlippApp {
                 // re-read or analysis arrives, so a file that changed on
                 // disk still shows as a change.
                 self.mark_saved();
+                // Sound effects a project kept where they weren't heard:
+                // after the saved state is taken, so the move counts as a
+                // change to save.
+                for said in self.state.move_sound_effects_on_open() {
+                    self.state.toast.show(said);
+                }
                 // Fonts the titles name that are not installed (#1720).
                 let missing = self.state.missing_fonts(&crate::missing_fonts::installed);
                 // The catalogue's families are fetched, not asked about (#2732).

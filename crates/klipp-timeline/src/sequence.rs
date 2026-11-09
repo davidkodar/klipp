@@ -1336,6 +1336,39 @@ impl Sequence {
         self.tracks.iter().flat_map(|t| t.clips.iter())
     }
 
+    /// Sound effects kept on a picture whose sound is on an audio track,
+    /// where the mix never plays them, moved to that sound clip, keys and
+    /// all, when its own chain is empty: projects saved while the ops wrote
+    /// a pair's chain onto its picture. A picture whose sound has a chain
+    /// of its own keeps its own, unheard: which to keep is the person's.
+    /// The effects moved, and the pictures left so.
+    pub fn move_picture_sound_effects(&mut self) -> (usize, usize) {
+        let (mut moved, mut kept) = (0, 0);
+        let pairs: Vec<(ClipId, ClipId)> = self.tracks.iter().filter(|t| t.kind == TrackKind::Video).flat_map(|t| &t.clips)
+            .filter(|c| !c.audio_effects.is_empty())
+            .filter_map(|c| {
+                let sound = self.audio_effects_clip(c);
+                (sound.id != c.id).then_some((c.id, sound.id))
+            })
+            .collect();
+        for (picture, sound) in pairs {
+            let empty = self.all_clips().find(|c| c.id == sound).is_some_and(|s| s.audio_effects.is_empty() && s.audio_effect_keyframes.is_empty());
+            if !empty {
+                kept += 1;
+                continue;
+            }
+            let Some(p) = self.all_clips_mut().find(|c| c.id == picture) else { continue };
+            let chain = std::mem::take(&mut p.audio_effects);
+            let keys = std::mem::take(&mut p.audio_effect_keyframes);
+            moved += chain.len();
+            if let Some(s) = self.all_clips_mut().find(|c| c.id == sound) {
+                s.audio_effects = chain;
+                s.audio_effect_keyframes = keys;
+            }
+        }
+        (moved, kept)
+    }
+
     /// The clip whose audio effects `clip`'s sound plays through: a
     /// picture's linked sound clip on an audio track, else the clip itself.
     /// The mix reads a sound clip's own chain and leaves out the sound of
