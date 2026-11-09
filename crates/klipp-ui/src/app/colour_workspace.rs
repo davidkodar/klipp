@@ -323,13 +323,7 @@ impl KlippApp {
                         // Glyph buttons: settings, floating window, picker.
                         let glyph = |ui: &mut egui::Ui, text: &str, on: bool, lit: bool| -> egui::Response {
                             let (r, resp) = ui.allocate_exact_size(egui::vec2(crate::theme::control::COMPACT, crate::theme::control::COMPACT), egui::Sense::click());
-                            let (bg, fg) = if on {
-                                (theme.accent_subtle, theme.accent)
-                            } else if resp.hovered() {
-                                (theme.bg_hover, theme.text_primary)
-                            } else {
-                                (egui::Color32::TRANSPARENT, if lit { theme.text_primary } else { theme.text_secondary })
-                            };
+                            let (bg, fg) = scope_glyph_colours(theme, on, lit, resp.hovered());
                             ui.painter().rect_filled(r, crate::theme::radius::CONTROL, bg);
                             ui.painter().text(r.center(), egui::Align2::CENTER_CENTER, text, egui::FontId::proportional(13.0), fg);
                             resp
@@ -352,13 +346,7 @@ impl KlippApp {
                                 self.state.scope_cursor_show = !self.state.scope_cursor_show;
                             }
                         }
-                        picker_resp.on_hover_text(if picker_locked {
-                            "Click to unlock sample point"
-                        } else if picker_active {
-                            "Scope picker (click viewer to lock)"
-                        } else {
-                            "Enable scope picker"
-                        });
+                        picker_resp.on_hover_text(scope_picker_tip(picker_locked, picker_active));
 
                         egui::ComboBox::from_id_salt("scope_scale_sel")
                             .width(0.0)
@@ -872,4 +860,51 @@ pub(super) struct ColorWsParams {
     pub(super) nodes_rect: egui::Rect,
     pub(super) nodes_resizer_rect: egui::Rect,
     pub(super) bottom_scope_cursor: Option<crate::state::ScopeCursorData>,
+}
+
+/// A glyph button's background and mark. `lit` says a tool is on without
+/// being pressed in, and goes on saying so under the pointer, or there is
+/// no telling on from off while aiming at the button.
+fn scope_glyph_colours(theme: &crate::theme::KlippTheme, on: bool, lit: bool, hovered: bool) -> (egui::Color32, egui::Color32) {
+    if on {
+        return (theme.accent_subtle, theme.accent);
+    }
+    let bg = if hovered { theme.bg_hover } else { egui::Color32::TRANSPARENT };
+    let fg = if lit {
+        theme.accent
+    } else if hovered {
+        theme.text_primary
+    } else {
+        theme.text_secondary
+    };
+    (bg, fg)
+}
+
+/// What the scope picker's button says: the viewer locks on Ctrl+click,
+/// a plain click there belongs to the viewer's other tools.
+fn scope_picker_tip(locked: bool, on: bool) -> &'static str {
+    if locked {
+        "Click to unlock sample point"
+    } else if on {
+        "Scope picker is on: Ctrl+click the viewer to lock a point. Click here to turn it off"
+    } else {
+        "Scope picker is off: click to turn it on"
+    }
+}
+
+#[cfg(test)]
+mod scope_picker_tests {
+    use super::{scope_glyph_colours, scope_picker_tip};
+
+    #[test]
+    fn the_scope_picker_says_which_click_locks_and_shows_when_it_is_on() {
+        assert!(scope_picker_tip(false, true).contains("Ctrl+click the viewer"), "a plain click does not lock");
+        let theme = crate::theme::KlippTheme::default();
+        for hovered in [false, true] {
+            let (_, on) = scope_glyph_colours(&theme, false, true, hovered);
+            let (_, off) = scope_glyph_colours(&theme, false, false, hovered);
+            assert_eq!(on, theme.accent, "hovered {hovered}");
+            assert_ne!(on, off, "hovered {hovered}");
+        }
+    }
 }

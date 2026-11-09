@@ -1026,10 +1026,8 @@ impl KlippApp {
                     if crate::widgets::inspector_group::panel_title_row(ui, &title, false, &theme) {
                         collapse_requested = true;
                     }
-                    if let Some(elsewhere) = elsewhere {
-                        if super::colour_target::elsewhere_hint(ui, &theme) {
-                            self.colour_go_to = Some(elsewhere);
-                        }
+                    if super::colour_target::elsewhere_row(ui, &theme, elsewhere.is_some()) {
+                        self.colour_go_to = elsewhere;
                     }
                     if let Some(n) = shot_pieces {
                         if super::colour_target::shot_pieces_hint(ui, &theme, n) {
@@ -1246,15 +1244,7 @@ impl KlippApp {
                             // Wipe against the shot before or after (#899):
                             // the split's left side that clip, graded. A
                             // second click on the lit one ends it.
-                            for (label, target, hover, that) in [
-                                ("\u{25C0} Clip", klipp_core::WipeClip::Previous, "Wipe against the clip before this one, graded", wipe_neighbours.0),
-                                ("Clip \u{25B6}", klipp_core::WipeClip::Next, "Wipe against the clip after this one, graded", wipe_neighbours.1),
-                            ] {
-                                let lit = that.is_some() && that == wiping;
-                                if ui.add_enabled(that.is_some(), egui::Button::new(label).small().selected(lit)).on_hover_text(hover).clicked() {
-                                    all_cmds.push(AppCommand::WipeAgainstClip { target: (!lit).then_some(target) });
-                                }
-                            }
+                            wipe_clip_buttons(ui, wipe_neighbours, wiping, all_cmds);
                             // Alt+B's split, shown and switchable here: the
                             // viewer showing half a frame ungraded should
                             // never be a state you cannot see is on.
@@ -1631,6 +1621,29 @@ impl KlippApp {
     }
 }
 
+/// The wipe's two buttons, side by side: the pair goes to the next line
+/// together when it doesn't fit, as one split between lines reads as two
+/// unrelated things.
+fn wipe_clip_buttons(ui: &mut egui::Ui, neighbours: (Option<klipp_core::ClipId>, Option<klipp_core::ClipId>), wiping: Option<klipp_core::ClipId>, cmds: &mut Vec<AppCommand>) {
+    const BEFORE: &str = "\u{25C0} Clip";
+    const AFTER: &str = "Clip \u{25B6}";
+    let text_width = |ui: &egui::Ui, text: &str| egui::WidgetText::from(text).into_galley(ui, None, f32::INFINITY, egui::TextStyle::Body).size().x;
+    let spacing = ui.spacing();
+    let needed = text_width(ui, BEFORE) + text_width(ui, AFTER) + 4.0 * spacing.button_padding.x + spacing.item_spacing.x;
+    if ui.available_size_before_wrap().x < needed {
+        ui.end_row();
+    }
+    for (label, target, hover, that) in [
+        (BEFORE, klipp_core::WipeClip::Previous, "Wipe against the clip before this one, graded", neighbours.0),
+        (AFTER, klipp_core::WipeClip::Next, "Wipe against the clip after this one, graded", neighbours.1),
+    ] {
+        let lit = that.is_some() && that == wiping;
+        if ui.add_enabled(that.is_some(), egui::Button::new(label).small().selected(lit)).on_hover_text(hover).clicked() {
+            cmds.push(AppCommand::WipeAgainstClip { target: (!lit).then_some(target) });
+        }
+    }
+}
+
 /// Whether a selected grade node of `kind` is shown in its own layout
 /// rather than the grade tabs: the nodes with their own widget, and the
 /// ones with none (whose tabs would mislead).
@@ -1792,5 +1805,38 @@ mod node_page_back_tests {
         run(vec![egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE }]);
         assert_eq!(selected, None);
         assert!(ids.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod wipe_clip_button_tests {
+    /// However narrow the panel, the two wipe buttons share a line.
+    #[test]
+    fn the_wipe_buttons_stay_on_one_line() {
+        let mut wrapped = false;
+        for width in (120..400).step_by(2) {
+            let ctx = egui::Context::default();
+            let mut ys = (None, None, None);
+            for _ in 0..2 {
+                let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width as f32, 400.0))), ..Default::default() };
+                let out = ctx.run(input, |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        ui.horizontal_wrapped(|ui| {
+                            ui.add_sized([100.0, 18.0], egui::Label::new("before"));
+                            super::wipe_clip_buttons(ui, (None, None), None, &mut Vec::new());
+                        });
+                    });
+                });
+                let y = |want: &str| out.shapes.iter().find_map(|s| match &s.shape {
+                    egui::Shape::Text(t) if t.galley.text() == want => Some(t.pos.y),
+                    _ => None,
+                });
+                ys = (y("before"), y("\u{25C0} Clip"), y("Clip \u{25B6}"));
+            }
+            let (first, a, b) = (ys.0.expect("the row's start"), ys.1.expect("the first button"), ys.2.expect("the second"));
+            assert_eq!(a, b, "at width {width}");
+            wrapped |= a > first + 10.0;
+        }
+        assert!(wrapped, "some width in the sweep went to a second line");
     }
 }

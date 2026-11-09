@@ -73,10 +73,17 @@ impl AppState {
                     if matches!(kind, klipp_nodes::NodeKind::Source | klipp_nodes::NodeKind::Output) {
                         return Err(format!("{} stays where it is", kind.display_name()));
                     }
+                    // A matte has no picture to pass on: in a picture wire
+                    // it would cut the chain, and what it limited would be
+                    // limited by the picture before it instead.
+                    if klipp_nodes::registry::node_type(kind).and_then(|t| t.desc.outputs.first()).is_some_and(|p| p.ty != klipp_effects::registry::PortType::Image) {
+                        return Err(format!("{} makes a matte: wire it to a matte input", kind.display_name()));
+                    }
                     // Out of where it was: what fed it feeds what it fed.
+                    // Only its picture moves: a matte or other input stays.
                     let fed_by = g.edges.iter().find(|e| e.to_node == id && e.to_port == 0).map(|e| (e.from_node, e.from_port));
                     let readers: Vec<(klipp_nodes::NodeId, u8)> = g.edges.iter().filter(|e| e.from_node == id).map(|e| (e.to_node, e.to_port)).collect();
-                    g.edges.retain(|e| e.from_node != id && e.to_node != id);
+                    g.edges.retain(|e| e.from_node != id && !(e.to_node == id && e.to_port == 0));
                     if let Some((src, port)) = fed_by {
                         for (to, to_port) in readers {
                             g.edges.push(edge(src, port, to, to_port));
@@ -198,6 +205,13 @@ impl AppState {
         super::colour::edit_clip_graph(self, clip_id, &path, true, |graph| {
             made = copy.merge_into_ids(graph, DUPLICATE_OFFSET);
             if let (Some(original), [dup]) = (single, made.as_slice()) {
+                // A matte is no picture to chain: its copy reads what the
+                // original reads, and what the original limits stays on it.
+                if graph.nodes.iter().find(|n| n.id == original).is_some_and(|n| makes_matte(n.kind)) {
+                    let reads: Vec<klipp_nodes::Edge> = graph.edges.iter().filter(|e| e.to_node == original).cloned().collect();
+                    graph.edges.extend(reads.into_iter().map(|e| klipp_nodes::Edge { to_node: *dup, ..e }));
+                    return;
+                }
                 for e in graph.edges.iter_mut().filter(|e| e.from_node == original && e.from_port == 0) {
                     e.from_node = *dup;
                 }
@@ -315,6 +329,11 @@ fn room_after(g: &mut klipp_nodes::NodeGraph, from: klipp_nodes::NodeId, asked: 
         }
     }
     klipp_nodes::NodePos { x, y: at.y }
+}
+
+/// Whether `kind`'s output is a matte, not a picture to pass along a chain.
+fn makes_matte(kind: klipp_nodes::NodeKind) -> bool {
+    klipp_nodes::registry::node_type(kind).and_then(|t| t.desc.outputs.first()).is_some_and(|p| p.ty == klipp_effects::registry::PortType::Matte)
 }
 
 fn edge(from_node: klipp_nodes::NodeId, from_port: u8, to_node: klipp_nodes::NodeId, to_port: u8) -> klipp_nodes::Edge {

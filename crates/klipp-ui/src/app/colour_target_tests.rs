@@ -88,7 +88,7 @@ fn a_selection_elsewhere_is_one_click_away() {
         let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(360.0, 600.0))), time: Some(t), events, ..Default::default() };
         let mut clicked = false;
         let out = ctx.run(input, |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| clicked = super::colour_target::elsewhere_hint(ui, &theme));
+            egui::CentralPanel::default().show(ctx, |ui| clicked = super::colour_target::elsewhere_row(ui, &theme, true));
         });
         let texts: Vec<(String, egui::Pos2)> = out.shapes.iter().filter_map(|s| match &s.shape {
             egui::Shape::Text(t) => Some((t.galley.text().to_string(), t.pos + t.galley.size() / 2.0)),
@@ -239,4 +239,24 @@ fn a_paste_from_a_clips_own_menu_goes_to_that_clip() {
     let mut want = vec![later, lower, upper];
     want.sort_by_key(|c| c.0);
     assert_eq!(both, want);
+}
+
+/// The hint coming and going leaves what is under it where it was.
+#[test]
+fn the_elsewhere_hint_does_not_move_the_rows_below_it() {
+    let theme = crate::theme::KlippTheme::default();
+    let below = |shown: bool| {
+        let ctx = egui::Context::default();
+        let mut y = 0.0;
+        for _ in 0..2 {
+            let _ = ctx.run(egui::RawInput::default(), |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    super::colour_target::elsewhere_row(ui, &theme, shown);
+                    y = ui.label("next row").rect.top();
+                });
+            });
+        }
+        y
+    };
+    assert_eq!(below(true), below(false));
 }
