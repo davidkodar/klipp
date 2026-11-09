@@ -4278,18 +4278,30 @@ impl PlaybackEngine {
                 }
             }
             AppCommand::SetMattePreview(active) => {
+                let changed = self.matte_preview != active || (!active && self.matte_preview_node.is_some());
                 self.matte_preview = active;
                 // When matte preview is disabled, clear the matte preview node
                 if !active {
                     self.matte_preview_node = None;
                 }
                 debug!("Matte preview: {}", self.matte_preview);
+                if changed {
+                    self.dbg_regrade_count += 1;
+                    self.regrade_cached_frame();
+                }
             }
 
             AppCommand::ShowMatte { node } => {
+                let changed = (self.matte_preview, self.matte_preview_node) != (node.is_some(), node);
                 self.matte_preview = node.is_some();
                 self.matte_preview_node = node;
                 debug!("Matte preview node: {:?}", node);
+                // Paused, the frame on screen is the one parked before: the
+                // badge said MATTE over the graded picture until a seek.
+                if changed {
+                    self.dbg_regrade_count += 1;
+                    self.regrade_cached_frame();
+                }
             }
 
             AppCommand::SetMeasureOnlyClip(clip) => {
@@ -15275,6 +15287,20 @@ mod view_past_grade_tests {
         assert_eq!(shown(&engine), None);
         engine.handle_command(AppCommand::SetMattePreview(true));
         assert_eq!(shown(&engine), Some(klipp_compose::inspect::grade_node(id, first)));
+
+        // Each change draws the parked frame again, as a paused param edit
+        // does; asking again for what is shown draws nothing.
+        let regrades = |e: &PlaybackEngine| e.dbg_regrade_count;
+        let before = regrades(&engine);
+        engine.handle_command(AppCommand::ShowMatte { node: Some(other) });
+        assert_eq!(regrades(&engine), before + 1, "on another node");
+        engine.handle_command(AppCommand::ShowMatte { node: Some(other) });
+        assert_eq!(regrades(&engine), before + 1, "the same again");
+        engine.handle_command(AppCommand::ShowMatte { node: None });
+        assert_eq!(regrades(&engine), before + 2, "off");
+        engine.handle_command(AppCommand::SetMattePreview(true));
+        engine.handle_command(AppCommand::SetMattePreview(false));
+        assert_eq!(regrades(&engine), before + 4, "the shortcut on and off");
     }
 
     /// #2879: a node of a clip's chain past its grade, viewed, is drawn by
