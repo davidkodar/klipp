@@ -62,7 +62,7 @@ Arguments:
 
 ## klipp_match_scenes
 
-Group the timeline's shots into scenes by how they were lit, pick the shot in each that is already closest to the look as the hero, grade the rest onto it, and report how far each still is. This is the job that fills most of a colourist's day and it is not the same as grading each shot well: two shots can each be defensible alone and still cut badly, because the eye tracks a change across a cut far more readily than an absolute error inside a shot. Matched on the face first, then exposure, then the cast on the neutrals, then contrast. apply false reports; apply true grades, the whole pass as one undo step.
+Group the timeline's shots into scenes by how they were lit, pick the shot in each that is already closest to the look as the hero, grade the rest onto it, and report how far each still is. This is the job that fills most of a colourist's day and it is not the same as grading each shot well: two shots can each be defensible alone and still cut badly, because the eye tracks a change across a cut far more readily than an absolute error inside a shot. Matched on the face first, then exposure, then the cast on the neutrals, then contrast. apply false reports; apply true grades, the whole pass as one undo step. The same match again changes nothing while every shot still stands: `already_matched`, with the last report.
 
 ## klipp_node_types
 

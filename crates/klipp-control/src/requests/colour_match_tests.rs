@@ -126,6 +126,30 @@ fn the_same_match_again_changes_nothing() {
     assert_ne!(changed["already_matched"], serde_json::json!(true), "{changed}");
 }
 
+/// Match to Hero again changes nothing and repeats what it reported, for the
+/// panel to show: each click on the last one's result walked the grades. A
+/// shot graded since is a new match, and a report alone is never remembered.
+#[test]
+fn the_same_match_to_hero_again_changes_nothing() {
+    let (ctx, _target, _reference, written, _) = context();
+    let ask = |apply| ControlCommand::MatchScenes { apply, rounds: None, clip_ids: None };
+    assert!(respond(&ctx, ask(false), &mut None).unwrap().get("already_matched").is_none());
+    assert!(ctx.shared.last_scene_match.lock().unwrap().is_none(), "a report remembers nothing");
+    let first = respond(&ctx, ask(true), &mut None).unwrap();
+    assert!(first.get("already_matched").is_none(), "{first}");
+    let writes = written.lock().unwrap().len();
+    let again = respond(&ctx, ask(true), &mut None).unwrap();
+    assert_eq!(again["already_matched"], serde_json::json!(true), "{again}");
+    assert_eq!(again["applied"], serde_json::json!(false));
+    assert_eq!(written.lock().unwrap().len(), writes, "nothing written");
+    assert!(again["text"].as_str().unwrap().contains("left as they are"), "{again}");
+    assert_eq!(again["scenes"], first["scenes"], "the report kept");
+    // A shot graded since: no longer the grades the match left.
+    ctx.shared.last_scene_match.lock().unwrap().as_mut().unwrap().0[0].1 = "other".into();
+    let changed = respond(&ctx, ask(true), &mut None).unwrap();
+    assert!(changed.get("already_matched").is_none(), "{changed}");
+}
+
 /// A grey picked is taken to grey, on top of the clip's grade, as one
 /// undo step, and the reply says what the point reads after. A point off
 /// the frame is refused, changing nothing.
