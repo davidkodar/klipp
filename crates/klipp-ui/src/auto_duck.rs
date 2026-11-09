@@ -89,6 +89,89 @@ pub fn speech_regions(voice: &[VoiceClip], from: f64, to: f64, threshold: f32) -
     merged
 }
 
+
+/// A gap in the speech shorter than this stays ducked: the music doesn't
+/// swell up between two sentences. The `duck` op's default bridge.
+pub const BRIDGE_SECS: f64 = 2.0;
+
+/// The volume keys that duck a clip under `regions` (timeline seconds) of
+/// speech: down to `duck` over `attack` before each, back up over
+/// `release` after, in the clip's own time from `clip_start`, within its
+/// `clip_secs`. Stretches closer than [`BRIDGE_SECS`], or than the
+/// attack and release together, are one: the music came up in a 0.3 s
+/// break and a 0.2 s pause, and where the release and the next attack
+/// met, the key that held it down was dropped as a duplicate.
+pub fn duck_keys(regions: &[(f64, f64)], clip_start: f64, clip_secs: f64, attack: f64, release: f64, duck: f32) -> Vec<klipp_core::Keyframe> {
+    let (target_timeline_start, target_clip_dur_secs) = (clip_start, clip_secs);
+    let bridge = BRIDGE_SECS.max(attack + release);
+    let mut spans: Vec<(f64, f64)> = Vec::new();
+    for &(a, b) in regions {
+        match spans.last_mut() {
+            Some(last) if a - last.1 < bridge => last.1 = last.1.max(b),
+            _ => spans.push((a, b)),
+        }
+    }
+    let active_regions = &spans;
+    let mut keyframes: Vec<klipp_core::Keyframe> = Vec::new();
+
+    for &(region_start, region_end) in active_regions {
+        // Convert to clip-local time (relative to target clip's timeline_in)
+        let ramp_down_start = (region_start - target_timeline_start - attack).max(0.0);
+        let duck_start = (region_start - target_timeline_start).max(0.0);
+        let duck_end = (region_end - target_timeline_start).min(target_clip_dur_secs);
+        let ramp_up_end = (region_end - target_timeline_start + release).min(target_clip_dur_secs);
+
+        // Before duck: normal volume
+        if ramp_down_start < duck_start {
+            keyframes.push(klipp_core::Keyframe {
+                time_secs: ramp_down_start,
+                value: 1.0,
+                interpolation: klipp_core::Interpolation::Bezier,
+                tangent_in: (0.0, 0.0),
+                tangent_out: (attack / 3.0, 0.0),
+                handles: Default::default(),
+            });
+        }
+
+        // Duck start
+        keyframes.push(klipp_core::Keyframe {
+            time_secs: duck_start,
+            value: duck,
+            interpolation: klipp_core::Interpolation::Bezier,
+            tangent_in: (-attack / 3.0, 0.0),
+            tangent_out: (0.0, 0.0),
+            handles: Default::default(),
+        });
+
+        // Duck end
+        keyframes.push(klipp_core::Keyframe {
+            time_secs: duck_end,
+            value: duck,
+            interpolation: klipp_core::Interpolation::Bezier,
+            tangent_in: (0.0, 0.0),
+            tangent_out: (release / 3.0, 0.0),
+            handles: Default::default(),
+        });
+
+        // After duck: normal volume
+        if ramp_up_end > duck_end {
+            keyframes.push(klipp_core::Keyframe {
+                time_secs: ramp_up_end,
+                value: 1.0,
+                interpolation: klipp_core::Interpolation::Bezier,
+                tangent_in: (-release / 3.0, 0.0),
+                tangent_out: (0.0, 0.0),
+                handles: Default::default(),
+            });
+        }
+    }
+
+    // Remove duplicate times (keep the last keyframe at each time)
+    keyframes.sort_by(|a, b| a.time_secs.partial_cmp(&b.time_secs).unwrap_or(std::cmp::Ordering::Equal));
+    keyframes.dedup_by(|a, b| (a.time_secs - b.time_secs).abs() < klipp_core::keyframe::KEYFRAME_TIME_EPSILON);
+    keyframes
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -136,5 +219,27 @@ mod tests {
         let regions = speech_regions(&voice, 0.0, 10.0, 0.1);
         assert_eq!(regions.len(), 2, "{regions:?}");
         assert!((regions[1].0 - 5.0).abs() < 1e-9 && (regions[1].1 - 6.0).abs() < 1e-9, "{regions:?}");
+    }
+}
+
+#[cfg(test)]
+mod bridge_tests {
+    /// The walk's case: speech with a 0.3 s break (19.04 to 19.34 s) and a
+    /// 0.2 s pause (27.4 to 27.6 s) under music from 5.28 s, ducked to 0.2
+    /// with a 0.1 s attack and a 0.3 s release. The music stays down
+    /// across both, as across any gap under 2 s; it came up 10 dB in the
+    /// break, the release's key and the next attack's landing on one time
+    /// and the key that kept it down dropped. A 3 s pause lets it up.
+    #[test]
+    fn music_stays_down_across_a_short_gap_in_the_speech() {
+        let speech = [(15.0, 19.04), (19.34, 27.4), (27.6, 30.0), (33.0, 36.0)];
+        let start = 5.28;
+        let keys = super::duck_keys(&speech, start, 40.0, 0.1, 0.3, 0.2);
+        let at = |t: f64| klipp_core::keyframe::evaluate_level(&keys, t - start, 1.0);
+        for t in [17.0, 19.1, 19.19, 19.3, 27.45, 27.5, 27.55, 29.0] {
+            assert!(at(t) < 0.21, "down at {t} s: {:.3} ({keys:?})", at(t));
+        }
+        assert!(at(31.5) > 0.99, "up in a 3 s pause: {:.3}", at(31.5));
+        assert!(at(10.0) > 0.99 && at(39.0) > 0.99, "up away from the speech");
     }
 }
