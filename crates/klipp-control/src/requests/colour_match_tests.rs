@@ -204,3 +204,11 @@ fn a_match_that_brings_a_shot_no_closer_is_taken_back() {
     let knobs = crate::primary_knobs(klipp_timeline::GradeAccess::grade(&seq.tracks[0].clips[1]));
     assert!(knobs.exposure.unwrap_or(0.0).abs() < 0.001, "back where it began: {knobs:?}");
 }
+
+/// A file name cut for a reply line says so; one that fits is left whole.
+#[test]
+fn a_shortened_file_name_ends_in_an_ellipsis() {
+    assert_eq!(super::short_name("05-cafe-terrace.mp4", 18), "05-cafe-terrace.m\u{2026}");
+    assert_eq!(super::short_name("05-cafe-terrace.mp4", 19), "05-cafe-terrace.mp4");
+    assert_eq!(super::short_name("sm\u{f6}rg\u{e5}sbord-kv\u{e4}ll.mov", 5).chars().count(), 5, "characters, not bytes");
+}

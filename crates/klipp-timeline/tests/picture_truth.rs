@@ -381,3 +381,38 @@ fn a_removed_grade_node_leaves_no_place_behind_and_a_stale_one_copies() {
     assert!(!map.contains_key(&gone));
     assert!(copy.node_positions.keys().all(|id| map.values().any(|v| v == id)));
 }
+
+/// A grade's secondary (key and window through a combiner) and its places on
+/// the canvas are left as they were by edits to the clip's effects, also
+/// when the clip is picture-truth, and a restore puts everything back.
+#[test]
+fn effect_edits_leave_a_grades_secondary_wired_as_it_was() {
+    let sorted = |c: &Clip| {
+        let g = c.grade();
+        let mut wires: Vec<String> = g.edges.iter().map(|e| format!("{e:?}")).collect();
+        wires.sort();
+        let mut places: Vec<String> = g.node_positions.iter().map(|(id, p)| format!("{id} {} {}", p.x, p.y)).collect();
+        places.sort();
+        (wires, places)
+    };
+    let (mut c, _, _, blur) = masked();
+    let window = c.edit_grade(|g| {
+        let correction = g.ensure_corrector();
+        let key = NodeId::new_v4();
+        let added = g.limit_with_qualifier(correction, key);
+        assert!(added || g.input_of(correction, 1).is_some(), "the corrector has its key");
+        g.ensure_corrector_window()
+    });
+    assert!(c.grade().nodes.iter().any(|n| n.id == window), "the window is in the grade");
+    let want = sorted(&c);
+    let vignette = effects(&picture(&c))[1];
+    c.apply_picture_ops(&[GraphOp::MoveAfter { path: at(&c, [blur]), after: vignette }]).unwrap();
+    assert_eq!(sorted(&c), want, "a move");
+    let first = c.effect_id_at(0).unwrap();
+    assert!(c.set_effect_enabled(first, false));
+    assert_eq!(sorted(&c), want, "a switch");
+    c.apply_picture_ops(&[GraphOp::RemoveNode { path: at(&c, [vignette]) }]).unwrap();
+    assert_eq!(sorted(&c), want, "a removal");
+    c.apply_picture_ops(&[GraphOp::SetParam { path: at(&c, [blur]), key: "radius".into(), value: ParamValue::Float(5.0) }]).unwrap();
+    assert_eq!(sorted(&c), want, "a parameter");
+}
