@@ -3010,6 +3010,8 @@ pub struct AppState {
 
     /// True when any egui popup/menu/combobox is open. Set at start of each frame.
     pub modal_or_popup_open: bool,
+    /// A menu or popup was up as this frame started: Escape is its.
+    pub menu_open_at_frame_start: bool,
 
     // Phase 9: Preferences
     pub show_preferences: bool,
@@ -5419,6 +5421,7 @@ impl Default for AppState {
             reveal_in_browser: None,
             show_inspector_panel: true,
             modal_or_popup_open: false,
+            menu_open_at_frame_start: false,
             show_preferences: false,
             ui_scale_request: None,
             window_capture: None,

@@ -173,6 +173,28 @@ mod multicam_mode_program_tests {
 mod viewer_menu_tests {
     use super::*;
 
+    /// A press on a corner of a new Corner Pin is the pin's: its corners
+    /// start on the transform gizmo's, which took the press and scaled the
+    /// clip, so a pin could not be dragged until something else moved it.
+    #[test]
+    fn a_corner_pin_takes_the_press_on_its_corner() {
+        let mut v = Viewer::new();
+        v.state.active_tool = Tool::Select;
+        let tc = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 25);
+        let clip = klipp_timeline::test_clip::TestClip::of(klipp_timeline::Clip::media(klipp_core::MediaId::new(), tc(0.0), tc(2.0), tc(0.0), tc(2.0)))
+            .effects([klipp_effects::corner_pin::still()])
+            .build();
+        let id = clip.id;
+        let v1 = v.state.sequences[0].tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
+        v.state.sequences[0].tracks[v1].clips = vec![clip];
+        v.state.selected_clip = Some(id);
+        v.frame(Vec::new());
+        v.frame(Vec::new());
+        v.press(v.image_rect().left_top());
+        assert!(v.state.viewer_corner_pin_drag.is_some(), "the pin took the press");
+        assert!(v.state.viewer_transform_drag.is_none(), "and the gizmo did not");
+    }
+
     /// A right-click on the picture opens the viewer's menu at the
     /// pointer, the one behind its corner button, and a click elsewhere
     /// closes it; while the AI tools' prompts take right-clicks on the

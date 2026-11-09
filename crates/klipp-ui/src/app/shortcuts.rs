@@ -753,8 +753,9 @@ impl KlippApp {
         ctx.input(|i| {
             // Escape — deselect clips, clear range drag, or return Range tool to Select
             if i.key_pressed(egui::Key::Escape) {
-                // Unlock scope cursor on Escape
-                if self.state.mask_keys_owned() {
+                if self.state.menu_open_at_frame_start {
+                    // The menu closes on it; nothing behind it changes.
+                } else if self.state.mask_keys_owned() {
                     // The Mask tool's (#74): it drops the drawn shape or
                     // the point selection itself.
                 } else if self.state.dynamic_trim.is_some() {

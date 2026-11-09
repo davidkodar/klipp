@@ -21,6 +21,17 @@ const SLOT_W: f32 = 14.0;
 /// slot and a gap. The shortcut column ends as far in from the right.
 pub const LABEL_X: f32 = SLOT_X + SLOT_W + 6.0;
 
+/// Where the frame a menu's rows were last drawn in is kept.
+const MENU_DRAWN: &str = "klipp_menu_drawn";
+
+/// Whether a menu or a popup is up as this frame starts. Asked before the
+/// panels draw, since they close it on the Escape this frame may hold, and
+/// Escape then is the menu's alone.
+pub fn open_at_frame_start(ctx: &egui::Context) -> bool {
+    let drawn: Option<u64> = ctx.data(|d| d.get_temp(egui::Id::new(MENU_DRAWN)));
+    ctx.memory(|m| m.any_popup_open()) || drawn.is_some_and(|f| f + 1 >= ctx.cumulative_pass_nr())
+}
+
 /// A menu drawn in its own popup frame (an `Area` the caller places).
 pub fn menu_frame<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> egui::InnerResponse<R> {
     egui::Frame::popup(ui.style()).inner_margin(egui::Margin::symmetric(4.0, 4.0)).show(ui, |ui| menu_body(ui, add))
@@ -28,6 +39,8 @@ pub fn menu_frame<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) ->
 
 /// A menu's rows inside a popup egui already framed (a `context_menu`'s).
 pub fn menu_body<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    let frame = ui.ctx().cumulative_pass_nr();
+    ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new(MENU_DRAWN), frame));
     let style = ui.style_mut();
     // The label column, for every row egui lays out itself: buttons,
     // selectable rows and submenu rows put their text after this.
@@ -278,5 +291,52 @@ mod key_in_label_tests {
         for label in ["Cut", "Insert Gap (1s)", "Double Speed (2x)", "Language (en)", "Match Frame \u{2192} Timeline", "Paste Attributes..."] {
             assert!(!key_in_label(label), "{label}");
         }
+    }
+}
+
+#[cfg(test)]
+mod open_tests {
+    use super::*;
+
+    /// One frame, its Escape if `escape`: the menu and popup as asked, and
+    /// whether a menu counted as open as it started.
+    fn frame(ctx: &egui::Context, menu: bool, popup: bool, escape: bool) -> bool {
+        let mut raw = egui::RawInput::default();
+        if escape {
+            raw.events.push(egui::Event::Key { key: egui::Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE });
+        }
+        let mut open = false;
+        let _ = ctx.run(raw, |ctx| {
+            open = open_at_frame_start(ctx);
+            egui::CentralPanel::default().show(ctx, |ui| {
+                if menu {
+                    menu_body(ui, |_| ());
+                }
+            });
+            if popup {
+                ctx.memory_mut(|m| m.open_popup(egui::Id::new("a popup")));
+            }
+        });
+        open
+    }
+
+    /// Escape while a menu is up is the menu's: it counts as open on the
+    /// frame after its rows were drawn, and not once it has gone.
+    #[test]
+    fn a_menu_is_open_at_the_start_of_the_next_frame_only() {
+        let ctx = egui::Context::default();
+        assert!(!frame(&ctx, false, false, false), "nothing up");
+        frame(&ctx, true, false, false);
+        assert!(frame(&ctx, false, false, true), "drawn last frame");
+        frame(&ctx, false, false, false);
+        assert!(!frame(&ctx, false, false, true), "gone");
+    }
+
+    /// The same for a popup such as a dropdown.
+    #[test]
+    fn an_open_popup_has_the_key() {
+        let ctx = egui::Context::default();
+        frame(&ctx, false, true, false);
+        assert!(frame(&ctx, false, false, true), "up when the key came");
     }
 }

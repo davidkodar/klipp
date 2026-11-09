@@ -2295,6 +2295,9 @@ impl ViewerPanel {
             // The selected clip's motion path (#2276), taking a press on
             // its dots and handles before the gizmo can.
             super::motion_path::show(ui, state, image_rect, video_w, video_h, cmds);
+            // Before the gizmo: a pin's corners start on the gizmo's, and a
+            // press on them is the pin's, added for just that.
+            self.draw_corner_pin_handles(ui, state, image_rect, frame.viewer_rect, cmds);
             let start = cmds.len();
             self.draw_transform_controls(ui, state, image_rect, frame.viewer_rect, video_w, video_h, cmds);
             // The gizmo moves the clip's placement by path, and adds no
@@ -2303,7 +2306,6 @@ impl ViewerPanel {
                 let mine = cmds.split_off(start);
                 cmds.extend(crate::inspector::placement_by_path::by_path(mine, &clip));
             }
-            self.draw_corner_pin_handles(ui, state, image_rect, frame.viewer_rect, cmds);
             self.draw_waterline(ui, state, image_rect, frame.viewer_rect, cmds);
             self.draw_surface_outlines(ui, state, image_rect);
         }
@@ -5347,8 +5349,9 @@ impl ViewerPanel {
                 }
             }
         } else if let Some(pointer) = pointer_pos {
-            // Check for new drag start; not one the motion path took (#2276).
-            if pointer_down && ui.input(|i| i.pointer.primary_pressed()) && state.motion_path_drag.is_none() {
+            // Check for new drag start; not one the motion path or a corner
+            // pin took (#2276).
+            if pointer_down && ui.input(|i| i.pointer.primary_pressed()) && state.motion_path_drag.is_none() && state.viewer_corner_pin_drag.is_none() {
                 // Only start a drag if the pointer is within the image_rect (with some margin)
                 let expanded = image_rect.expand(40.0);
                 if expanded.contains(pointer) && viewer_rect.contains(pointer) {

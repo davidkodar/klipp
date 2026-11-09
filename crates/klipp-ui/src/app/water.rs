@@ -10,10 +10,11 @@
 
 use super::*;
 
-/// The measurements running, and the footprints that gave nothing.
+/// The measurements running, each with whether it was asked for, and the
+/// footprints that gave nothing.
 #[derive(Default)]
 pub(super) struct WaterTries {
-    running: std::collections::HashSet<(klipp_core::ClipId, u32)>,
+    running: std::collections::HashMap<(klipp_core::ClipId, u32), bool>,
     found_nothing: std::collections::HashSet<(klipp_core::ClipId, u32)>,
 }
 
@@ -25,18 +26,27 @@ impl WaterTries {
     }
 
     /// A measurement starting. False when one is running for this footprint.
-    fn start(&mut self, clip_id: klipp_core::ClipId, key: u32) -> bool {
-        self.running.insert((clip_id, key))
+    fn start(&mut self, clip_id: klipp_core::ClipId, key: u32, asked: bool) -> bool {
+        match self.running.entry((clip_id, key)) {
+            std::collections::hash_map::Entry::Occupied(mut running) => {
+                *running.get_mut() |= asked;
+                false
+            }
+            std::collections::hash_map::Entry::Vacant(free) => {
+                free.insert(asked);
+                true
+            }
+        }
     }
 
-    /// A measurement over, by what it found.
-    fn finish(&mut self, clip_id: klipp_core::ClipId, key: u32, found: bool) {
-        self.running.remove(&(clip_id, key));
+    /// A measurement over, by what it found. Whether it was asked for.
+    fn finish(&mut self, clip_id: klipp_core::ClipId, key: u32, found: bool) -> bool {
         if found {
             self.found_nothing.remove(&(clip_id, key));
         } else {
             self.found_nothing.insert((clip_id, key));
         }
+        self.running.remove(&(clip_id, key)).unwrap_or(false)
     }
 }
 
@@ -56,17 +66,19 @@ impl KlippApp {
             let seq = &self.state.sequences[self.state.active_sequence_idx];
             let key = klipp_render::water::footprint_key(seq, clip_id);
             if key.is_some_and(|key| self.water_tries.wanted(clip_id, key)) {
-                self.start_water_measure(clip_id);
+                self.start_water_measure(clip_id, false);
             }
         }
     }
 
     /// Measure the water under `clip_id`'s reflection on a thread, unless
-    /// a measurement for its footprint now is already running.
-    pub(super) fn start_water_measure(&mut self, clip_id: klipp_core::ClipId) {
+    /// a measurement for its footprint now is already running. `asked`: the
+    /// person asked for it, and hears if there was nothing to measure; on
+    /// its own, a reflection with nothing below it is nothing to report.
+    pub(super) fn start_water_measure(&mut self, clip_id: klipp_core::ClipId, asked: bool) {
         let seq = &self.state.sequences[self.state.active_sequence_idx];
         let Some(key) = klipp_render::water::footprint_key(seq, clip_id) else { return };
-        if !self.water_tries.start(clip_id, key) {
+        if !self.water_tries.start(clip_id, key, asked) {
             return;
         }
         let snapshot = klipp_render::SequenceSnapshot::from_sequence(
@@ -95,14 +107,16 @@ impl KlippApp {
     /// darkness following it where they are set to, one undo step; dropped
     /// when the footprint has changed since it started.
     pub(super) fn water_measured(&mut self, clip_id: klipp_core::ClipId, key: u32, water: Option<[u8; 3]>) {
-        self.water_tries.finish(clip_id, key, water.is_some());
+        let asked = self.water_tries.finish(clip_id, key, water.is_some());
         let seq = &self.state.sequences[self.state.active_sequence_idx];
         if klipp_render::water::footprint_key(seq, clip_id) != Some(key) {
             tracing::info!("water under {clip_id:?} measured for footage that has since changed; dropped");
             return;
         }
         let Some(water) = water else {
-            self.state.toast.show("No water could be measured under the reflection: set its tint by hand");
+            if asked {
+                self.state.toast.show("No water could be measured under the reflection: set its tint by hand");
+            }
             return;
         };
         let Some(old) = seq.all_clips().find(|c| c.id == clip_id).cloned() else { return };
@@ -148,13 +162,13 @@ mod tests {
         let clip = klipp_core::ClipId(uuid::Uuid::nil());
         let mut tries = WaterTries::default();
         assert!(tries.wanted(clip, 1));
-        assert!(tries.start(clip, 1));
-        assert!(!tries.start(clip, 1), "one running at a time");
-        tries.finish(clip, 1, false);
+        assert!(tries.start(clip, 1, false));
+        assert!(!tries.start(clip, 1, false), "one running at a time");
+        assert!(!tries.finish(clip, 1, false), "on its own: nothing to tell");
         assert!(!tries.wanted(clip, 1), "nothing found: not tried again");
         assert!(tries.wanted(clip, 2), "another footprint is");
-        assert!(tries.start(clip, 1), "asked for, it still runs");
-        tries.finish(clip, 1, true);
+        assert!(tries.start(clip, 1, true), "asked for, it still runs");
+        assert!(tries.finish(clip, 1, true), "and says so");
         assert!(tries.wanted(clip, 1), "found: nothing held against it");
     }
 
