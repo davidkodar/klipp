@@ -1026,6 +1026,12 @@ pub struct MaskKeyframes {
 }
 
 impl MaskKeyframes {
+    /// Whether anything but shape keys is keyed: what a drag of a point
+    /// clears, as those follow a track. Shape keys are what the drag edits.
+    pub fn moves_beyond_its_shape_keys(&self) -> bool {
+        Self { path: Vec::new(), ..self.clone() } != Self::default()
+    }
+
     /// Returns true if no keyframe tracks have any keyframes.
     pub fn is_empty(&self) -> bool {
         self.center_x.is_empty()
@@ -1272,6 +1278,17 @@ impl Mask {
     /// This mask with its freeform shape at `time_secs` set to `points`:
     /// the shape key there (within `tolerance`) or a new one when the
     /// shape is keyed, else the shape itself.
+    /// This mask with `shape` as dragged at `time_secs`: a keyed Bezier's
+    /// shape goes on its shape key there, as the keys decide what it draws,
+    /// and anything else on its base shape. A drag wrote the base shape, so
+    /// a keyed mask's points snapped back and its keys could not be changed.
+    pub fn with_dragged_shape(&self, shape: MaskShape, time_secs: f64, tolerance: f64) -> Mask {
+        match shape {
+            MaskShape::Bezier { points } => self.with_path_at(time_secs, points, tolerance),
+            shape => Mask { shape, ..self.clone() },
+        }
+    }
+
     pub fn with_path_at(&self, time_secs: f64, points: Vec<crate::mask_path::BezierPoint>, tolerance: f64) -> Mask {
         let mut m = self.clone();
         if m.keyframes.path.is_empty() {

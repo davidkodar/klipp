@@ -4274,7 +4274,7 @@ impl ViewerPanel {
                                         state.selected_node_id = Some(node_id);
                                         cmds.push(AppCommand::FocusMaskInspector);
                                         cmds.push(AppCommand::BeginNodeParamEdit { clip_id });
-                                        if !raw_mask.keyframes.is_empty() {
+                                        if raw_mask.keyframes.moves_beyond_its_shape_keys() {
                                             cmds.push(AppCommand::RemoveMaskTracking {
                                                 clip_id, node_id, mask_index: mask_idx,
                                             });
@@ -4424,7 +4424,8 @@ impl ViewerPanel {
                 // Build updated mask stack and emit command
                 let mut updated_masks = masks.clone();
                 if drag_mask_idx < updated_masks.masks.len() {
-                    updated_masks.masks[drag_mask_idx].shape = new_shape;
+                    let tolerance = crate::inspector::keyframe_selection::frame_tolerance(state.sequence());
+                    updated_masks.masks[drag_mask_idx] = updated_masks.masks[drag_mask_idx].with_dragged_shape(new_shape, clip_time_secs, tolerance);
                 }
                 cmds.push(AppCommand::SetNodeMasks {
                     clip_id: drag_clip_id,
