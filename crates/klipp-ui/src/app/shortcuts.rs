@@ -860,8 +860,7 @@ impl KlippApp {
         ctx.input(|i| {
             // Alt+M — Toggle matte preview
             if kb.is_action_pressed("toggle_matte_preview", i) {
-                self.state.matte_preview_active = !self.state.matte_preview_active;
-                cmds.push(AppCommand::SetMattePreview(self.state.matte_preview_active));
+                cmds.push(self.state.matte_shortcut());
             }
             // K — Toggle keyframe at playhead for the active parameter
             if kb.is_action_pressed("toggle_keyframe", i) {

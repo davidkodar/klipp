@@ -506,10 +506,7 @@ pub fn ungated_consumers(
             if lost {
                 out.push(Ungated {
                     path: path.clone(),
-                    label: match crate::topology::node_label(node) {
-                        "" => node.type_id.to_string(),
-                        label => label.to_owned(),
-                    },
+                    label: crate::topology::readable_name(node),
                 });
             }
             if let (Some(old), Some(new)) = (&node.group, &now.group) {

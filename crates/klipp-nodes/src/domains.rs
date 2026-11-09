@@ -78,7 +78,7 @@ pub fn step(step: DomainStep, inputs: &[PictureDomain]) -> Result<PictureDomain,
     }
     let known: Vec<PictureDomain> = inputs.iter().copied().filter(|d| *d != PictureDomain::Unknown).collect();
     if known.contains(&PictureDomain::Scene) && known.contains(&PictureDomain::Display) {
-        return Err("it would mix a scene-referred picture with a display-referred one".into());
+        return Err("it would mix a scene-referred picture with a display-referred one. Take both from the same side of the clip's Scene to Display node: what comes out of it is display-referred".into());
     }
     match step {
         DomainStep::Gives(_) => unreachable!("returned above"),

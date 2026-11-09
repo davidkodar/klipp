@@ -560,6 +560,35 @@ pub(crate) fn respond(
             }
         }
 
+        ControlCommand::ShowMatte { clip_id, node_id, on } => {
+            if !on.unwrap_or(true) {
+                let mut v = send(AppCommand::ShowMatte { node: None })?;
+                v["text"] = json!("The viewer shows the picture again.");
+                return Ok(v);
+            }
+            let clip_id = clip_id.ok_or("give clip_id: the clip whose matte to show")?;
+            let id = existing_clip_id(ctx, &clip_id)?;
+            let node = {
+                let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+                let clip = seq.tracks.iter().find_map(|t| t.find_clip(id)).ok_or_else(|| format!("no clip with id {clip_id}"))?;
+                let makes = |n: &&klipp_nodes::Node| matches!(n.kind, klipp_nodes::NodeKind::Qualifier | klipp_nodes::NodeKind::Mask);
+                let grade = klipp_timeline::GradeAccess::grade(clip);
+                match node_id.as_deref() {
+                    Some(given) => {
+                        let wanted = uuid::Uuid::parse_str(given).map_err(|_| format!("node_id \"{given}\" is not a node's id"))?;
+                        grade.nodes.iter().filter(makes).find(|n| n.id == wanted).ok_or_else(|| format!("the clip's grade has no Qualifier or Mask node {given}"))?.id
+                    }
+                    None => grade.nodes.iter().find(makes).ok_or("the clip's grade has no Qualifier or Mask to show")?.id,
+                }
+            };
+            // The viewer's matte is the selected clip's: select it first.
+            send(AppCommand::SelectClip(Some(id)))?;
+            let mut v = send(AppCommand::ShowMatte { node: Some(node) })?;
+            v["node_id"] = json!(node);
+            v["text"] = json!("The viewer shows that node's matte instead of the picture, with a MATTE badge: read it with klipp_screenshot. Only the viewer, not an export or the file. Send on false to go back to the picture.");
+            Ok(v)
+        }
+
         ControlCommand::SetPlaybackQuality { quality } => {
             let q = match quality.trim().to_ascii_lowercase().as_str() {
                 "full" => klipp_core::PlaybackQuality::Full,

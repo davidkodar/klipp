@@ -2646,6 +2646,8 @@ pub struct AppState {
     pub hue_curve_awaiting: Option<(ClipId, uuid::Uuid, u8)>,
     /// Matte preview — show B&W qualifier/mask matte in viewer
     pub matte_preview_active: bool,
+    /// The matte node the viewer shows, when one was named.
+    pub matte_preview_node: Option<klipp_nodes::NodeId>,
     /// Node-graph solo target — when set, the engine returns this
     /// node's output as the final image so the user can preview any
     /// mid-chain node as if it were the Output. Mirrors the same
@@ -5330,6 +5332,7 @@ impl Default for AppState {
             hue_curve_pick: None,
             hue_curve_awaiting: None,
             matte_preview_active: false,
+            matte_preview_node: None,
             solo_node: None,
             solo_at: None,
             view_channel: klipp_core::ViewChannel::Picture,

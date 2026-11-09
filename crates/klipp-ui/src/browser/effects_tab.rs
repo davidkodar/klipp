@@ -23,6 +23,9 @@ pub enum EffectCategory {
     /// The bundled LUT presets (#3255), each put on the clip as its own
     /// 3D LUT effect.
     Luts,
+    /// The composite recipes: node groups with named controls, built into
+    /// a clip's picture. Not effects, so listed by their own pane.
+    Recipes,
     Blur,
     Color,
     Stylize,
@@ -201,10 +204,11 @@ pub fn show(
                 // ── VIDEO FX section ──
                 sidebar_section_header(ui, theme, Some(Icon::FilmStrip), "Video FX");
 
-                let video_categories: [(EffectCategory, &str, Option<Icon>); 10] = [
+                let video_categories: [(EffectCategory, &str, Option<Icon>); 11] = [
                     (EffectCategory::All, "All", Some(Icon::List)),
                     (EffectCategory::Looks, "Looks", Some(Icon::Star)),
                     (EffectCategory::Luts, "LUTs", Some(Icon::FilmStrip)),
+                    (EffectCategory::Recipes, "Recipes", Some(Icon::Sliders)),
                     // No drop/blur icon — leaving blank reads cleaner than
                     // a wrong-fit stand-in. TODO: bespoke blur glyph.
                     (EffectCategory::Blur, "Blur", None),
@@ -219,6 +223,8 @@ pub fn show(
                 for (cat, label, icon) in &video_categories {
                     let count = if *cat == EffectCategory::All {
                         video_total
+                    } else if *cat == EffectCategory::Recipes {
+                        crate::browser::recipes_list::all_rows(state).len()
                     } else {
                         state.effect_registry.filtered_with_favorites(*cat, "", &[]).len()
                     };
@@ -251,6 +257,10 @@ pub fn show(
                 super::browser_search_field(ui, theme, search_query, "Search effects\u{2026}", state);
             });
         ui.add_space(6.0);
+        if *active_category == EffectCategory::Recipes {
+            crate::browser::recipes_list::show(ui, state, theme, search_query, &mut cmds);
+            return;
+        }
 
         // ── Filter row: segmented source filter (All / Built-in / OFX) ──
         ui.add_space(6.0);
@@ -1018,7 +1028,7 @@ fn category_color(cat: EffectCategory, theme: &KlippTheme) -> egui::Color32 {
         EffectCategory::Distort => egui::Color32::from_rgb(0xe8, 0x50, 0x20),
         EffectCategory::Light => egui::Color32::from_rgb(0xf0, 0xd0, 0x60),
         EffectCategory::Film => egui::Color32::from_rgb(0xc8, 0x9a, 0x5a),
-        EffectCategory::Looks | EffectCategory::Luts => theme.accent,
+        EffectCategory::Looks | EffectCategory::Luts | EffectCategory::Recipes => theme.accent,
         EffectCategory::AudioAll => egui::Color32::from_rgb(0x60, 0xc0, 0x80),
         EffectCategory::AudioEQ => egui::Color32::from_rgb(0x2d, 0x6f, 0xa8),
         EffectCategory::AudioDynamics => egui::Color32::from_rgb(0x3a, 0x8c, 0x6e),

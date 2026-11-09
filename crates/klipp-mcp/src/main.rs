@@ -54,7 +54,7 @@ static PENDING_WRITE_GENERATION: std::sync::atomic::AtomicU64 =
 const WRITE_TOOLS: &[&str] = &[
     "klipp_graph", "klipp_import_timeline", "klipp_alternatives",
     "klipp_play", "klipp_pause", "klipp_stop", "klipp_seek",
-    "klipp_append_clip", "klipp_clear_frozen", "klipp_set_playback_quality", "klipp_set_background_render", "klipp_bounce_track", "klipp_remove_clip", "klipp_attach_audio", "klipp_normalize", "klipp_set_append_audio", "klipp_select_clip",
+    "klipp_append_clip", "klipp_clear_frozen", "klipp_show_matte", "klipp_set_playback_quality", "klipp_set_background_render", "klipp_bounce_track", "klipp_remove_clip", "klipp_attach_audio", "klipp_normalize", "klipp_set_append_audio", "klipp_select_clip",
     "klipp_add_node", "klipp_remove_node", "klipp_connect_nodes",
     "klipp_set_node_param", "klipp_toggle_node", "klipp_set_log_format",
     "klipp_generator", "klipp_undo", "klipp_redo", "klipp_batch", "klipp_export", "klipp_export_subtitles", "klipp_import_subtitles", "klipp_translate_captions", "klipp_apply",
@@ -601,6 +601,15 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             if let Some(b) = args.get("bins").and_then(Value::as_bool) { v["bins"] = json!(b); }
             if v.get("path").is_none() && v.get("paths").is_none() && v.get("folder").is_none() {
                 return Err("klipp_import_media needs path, paths or folder".into());
+            }
+            v
+        }
+        "klipp_show_matte" => {
+            let mut v = json!({ "method": "show_matte" });
+            for key in ["clip_id", "node_id", "on"] {
+                if let Some(x) = args.get(key).filter(|x| !x.is_null()) {
+                    v[key] = x.clone();
+                }
             }
             v
         }
@@ -2267,6 +2276,14 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              "Import media: a path, paths, or a folder's files. Details: klipp_guide topic import_media.",
              json!({ "path": { "type": "string" }, "paths": { "type": "array", "items": { "type": "string" } }, "folder": { "type": "string" }, "recursive": { "type": "boolean" }, "bins": { "type": "boolean" }, "analyze": { "type": "boolean" } }),
              vec![]),
+        tool("klipp_show_matte",
+             "Show a Qualifier's or Mask's matte in the viewer, or go back to the picture. Details: klipp_guide topic show_matte.",
+             json!({
+                 "clip_id": { "type": "string" },
+                 "node_id": { "type": "string" },
+                 "on": { "type": "boolean" },
+             }),
+             vec![]),
         tool("klipp_set_playback_quality",
              "Draw frames full, half or quarter size while playing; saved as the preference. Details: klipp_guide topic set_playback_quality.",
              json!({ "quality": { "type": "string", "enum": ["full", "half", "quarter"] } }),
@@ -3838,6 +3855,9 @@ mod catalogue_trim_tests {
         ("klipp_append_clip", "media_id", "From klipp_list_media"),
         ("klipp_screenshot", "wait_for_new_frame", "Wait for a frame rendered after the last change. Defaults to true when a change was made since the last screenshot, so 'change then look' captures the result, not the old frame."),
         ("klipp_clear_frozen", "frames", "Clear frozen video tracks' frames (default true)"),
+        ("klipp_show_matte", "clip_id", "The clip whose matte to show"),
+        ("klipp_show_matte", "node_id", "A Qualifier or Mask node; else the clip's first"),
+        ("klipp_show_matte", "on", "False goes back to the picture"),
         ("klipp_set_playback_quality", "quality", "full, half or quarter of the playback resolution"),
         ("klipp_clear_frozen", "sound", "Clear frozen audio tracks' stems (default true)"),
         ("klipp_append_clip", "track", "Track index; omit for the default track"),
@@ -4034,15 +4054,16 @@ mod catalogue_trim_tests {
         }
     }
 
-    /// The catalogue is under 56 KB (raised from 54 for covers, #3311, and
-    /// from 55 for klipp_pick_grey and klipp_read_chart);
+    /// The catalogue is under 56.5 KB (raised from 54 for covers, #3311,
+    /// from 55 for klipp_pick_grey and klipp_read_chart, and from 56 for
+    /// klipp_track_mask and klipp_show_matte);
     /// every tool names its guide topic; and each moved sentence is in its tool's
     /// topic, under Arguments, and no longer on the argument.
     #[test]
     fn the_catalogue_is_a_tenth_under_its_budget_and_nothing_moved_is_lost() {
         let tools = tool_definitions_for(false);
         let total = serde_json::to_vec(&tools).unwrap().len();
-        assert!(total < 56_000, "the catalogue is {total} bytes");
+        assert!(total < 56_500, "the catalogue is {total} bytes");
         for t in &tools {
             let name = t["name"].as_str().unwrap();
             if name != "klipp_guide" {

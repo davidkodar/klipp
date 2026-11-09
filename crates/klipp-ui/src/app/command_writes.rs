@@ -104,6 +104,7 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::SetVideoRubberBandParam(..)
         | AppCommand::CopyClip { .. }
         | AppCommand::CopyAttributes { .. }
+        | AppCommand::ApplyRecipe { .. }
         | AppCommand::SelectAllClips
         | AppCommand::SelectClipsForward
         | AppCommand::SelectClipsBackward
@@ -190,6 +191,7 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::ToggleInspectorPanel
         | AppCommand::ToggleStabilizationCompare
         | AppCommand::SetMattePreview(..)
+        | AppCommand::ShowMatte { .. }
         | AppCommand::SetHdrMonitor(..)
         | AppCommand::SetHdrReferenceOutput(..)
         | AppCommand::SetInspectorMattePreviewTarget(..)
@@ -442,6 +444,7 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::EditAudition { .. }
         | AppCommand::PickPreviewedTake
         | AppCommand::PasteAttributes { .. }
+        | AppCommand::SetRecipeControl { .. }
         | AppCommand::SetClipEnabled { .. }
         | AppCommand::SetClipSolo { .. }
         | AppCommand::CloseAllGaps { .. }

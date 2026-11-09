@@ -120,9 +120,18 @@ impl AppState {
             }),
             AppCommand::LimitWithQualifier { clip_id, node_id } => {
                 let (node, id) = (*node_id, klipp_nodes::NodeId::new_v4());
-                self.wire_edit(*clip_id, &[node], true, &[id], |g| {
+                let done = self.wire_edit(*clip_id, &[node], true, &[id], |g| {
                     g.limit_with_qualifier(node, id).then_some(()).ok_or_else(|| "This node can't take a qualifier, or is limited already".to_owned())
-                })
+                });
+                // It waits for its colour: the next click in the viewer
+                // keys it, and until then it is off. Keyed on reds as it
+                // was, it took skin and pale wood the person never asked for.
+                if matches!(done, Ok(true)) {
+                    self.eyedropper_mode = crate::state::EyedropperMode::Qualifier;
+                    self.qualifier_pick = Some((*clip_id, id));
+                    self.toast.show("Click the colour to key in the viewer (Esc cancels)");
+                }
+                done
             }
             _ => return None,
         };

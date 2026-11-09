@@ -135,6 +135,15 @@ Arguments:
 
 Change a marker's label, note, colour or kind, by its id from klipp_list_markers. Mark a todo done by changing its kind or colour, rather than removing the note.
 
+## klipp_show_matte
+
+Judge a key or window by its matte: the viewer shows a Qualifier's or Mask's matte instead of the picture, white where it reaches, with a MATTE badge, and klipp_screenshot reads it. It selects the clip first. A Qualifier or window that looks right on the graded picture can still be full of holes or reach too far: look at the matte before grading through it. It is the same state as the Show matte toggle on those nodes' pages and Alt+M. Nothing is saved or exported with it; `on` false goes back to the picture, and so does deleting the node or selecting another clip.
+
+Arguments:
+- `clip_id`: The clip whose matte to show
+- `node_id`: A Qualifier or Mask node; else the clip's first
+- `on`: False goes back to the picture
+
 ## klipp_set_playback_quality
 
 Set the size frames are drawn at while playing, as Preferences > Playback sets it, and save it: `full`, `half` or `quarter` of the playback resolution. A smaller size plays a heavy timeline that drops frames; a parked frame is still drawn full size. klipp_perf's `diagnosis` says when this is the fix.

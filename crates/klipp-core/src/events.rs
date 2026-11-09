@@ -1876,6 +1876,16 @@ pub enum AppCommand {
     DuplicateClip { clip_id: ClipId },
     /// Copy attributes from a clip for later paste-attributes.
     CopyAttributes { clip_id: ClipId },
+    /// A composite recipe, by name, built into `clip_id`'s picture as one
+    /// undo step: the Library's Recipes list. It goes through the same op an
+    /// agent sends, which finds the recipe and builds it.
+    /// `slots` fills its slots by name: a colour as `#rrggbb`, a media
+    /// item's id, a surface's name, a title's text, `subject` or
+    /// `foreground`.
+    ApplyRecipe { clip_id: ClipId, name: String, slots: Vec<(String, String)> },
+    /// A placed recipe's named control set to `value`, as one undo step:
+    /// the inspector's recipe card. The same edit as the `template_link` op.
+    SetRecipeControl { clip_id: ClipId, control: String, value: f64 },
     /// Paste previously copied attributes onto the selected clip(s).
     PasteAttributes {
         effects: bool,
@@ -2752,6 +2762,10 @@ pub enum AppCommand {
     /// Mutually exclusive with ToggleBeforeAfter and grade still compare.
     ToggleStabilizationCompare,
     SetMattePreview(bool),
+    /// The viewer shows this matte node's matte instead of the picture, or
+    /// goes back to the picture with `None`. The same state as
+    /// [`Self::SetMattePreview`], naming the node.
+    ShowMatte { node: Option<uuid::Uuid> },
 
     /// What the viewer shows while grading for an HDR delivery — see
     /// [`HdrMonitor`]. Off is the SDR picture the viewer has always shown.

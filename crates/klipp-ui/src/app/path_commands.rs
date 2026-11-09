@@ -177,6 +177,32 @@ pub(crate) fn pasted_keys(cb: &crate::state::KeyframeClipboard, clip_dur: f64) -
 }
 
 impl crate::state::AppState {
+    /// What the matte shortcut asks for: off when on; else the selected
+    /// node when it makes a matte, else the first the clip has, as its own
+    /// toggle would.
+    pub(crate) fn matte_shortcut(&self) -> AppCommand {
+        if self.matte_preview_active {
+            return AppCommand::ShowMatte { node: None };
+        }
+        let selected = self.selected_clip.zip(self.selected_node_id).and_then(|(clip, node)| {
+            let clip = self.sequence().all_clips().find(|c| c.id == clip)?;
+            let level = crate::inspector::grade_view::v1_level(klipp_timeline::GradeAccess::grade(clip), &self.graph_descent_path)?;
+            level.nodes.iter().find(|n| n.id == node && crate::panels::node_inspector::shows_a_matte(n.kind)).map(|n| n.id)
+        });
+        match selected {
+            Some(node) => AppCommand::ShowMatte { node: Some(node) },
+            None => AppCommand::SetMattePreview(true),
+        }
+    }
+
+    /// Whether the node named for the viewer is gone from the clip in hand,
+    /// by deleting it or selecting another: the viewer has nothing to show.
+    pub(crate) fn matte_node_gone(&self) -> bool {
+        let Some(node) = self.matte_preview_node else { return false };
+        let clip = self.selected_clip.and_then(|id| self.sequence().all_clips().find(|c| c.id == id));
+        !clip.is_some_and(|c| klipp_timeline::GradeAccess::grade(c).path_to_node(node).is_some())
+    }
+
     /// The node's implicit blend, distinct from an effect parameter named `mix`.
     pub(crate) const NODE_MIX_DRAG_KEY: &'static str = "@mix";
 
@@ -809,6 +835,13 @@ impl crate::state::AppState {
     /// drag that `cmd` doesn't belong to is closed as its own step before
     /// any handler runs.
     pub(crate) fn before_dispatch(&mut self, cmd: &AppCommand) {
+        // What the viewer shows, for its badge and the pages' toggles, from
+        // whichever way it was asked: the toggle, the shortcut or the socket.
+        match cmd {
+            AppCommand::ShowMatte { node } => (self.matte_preview_active, self.matte_preview_node) = (node.is_some(), *node),
+            AppCommand::SetMattePreview(on) => (self.matte_preview_active, self.matte_preview_node) = (*on, None),
+            _ => {}
+        }
         if super::command_writes::writes(cmd) {
             self.invalidate_node_thumbnails();
             // The hint that it may be unsaved, for every command that can
@@ -2532,6 +2565,23 @@ mod tests {
         assert_eq!(s.selected_node_addr, Some(at(id, &[ids[1]])), "the selection still names it");
     }
 
+    /// A reader with no label of its own is named by its kind, not a type id.
+    #[test]
+    fn a_reader_without_a_label_is_named_by_its_kind() {
+        let mut c = fixture(&[]);
+        let mut grade = klipp_nodes::NodeGraph::default();
+        let (mask, _) = grade.ensure_masked_secondary(klipp_nodes::NodeKind::Corrector);
+        for n in &mut grade.nodes {
+            n.label.clear();
+        }
+        c.set_grade(grade);
+        let p = c.picture_v2().unwrap();
+        let group = p.picture.graph.nodes.iter().find(|n| n.group.as_ref().is_some_and(|b| b.graph.nodes.iter().any(|n| n.id == mask))).unwrap().id;
+        let s = with(std::slice::from_ref(&c));
+        let outcome = graph_ops::graph_ops_edit(&s.sequences[0], &[GraphOp::RemoveNode { path: at(c.id, &[group, mask]) }]).unwrap();
+        assert_eq!(outcome.ungated.iter().map(|u| u.label.as_str()).collect::<Vec<_>>(), vec!["Corrector"]);
+    }
+
     #[test]
     fn removing_a_mask_by_path_reports_its_reader_and_undo_restores_it() {
         let mut c = fixture(&[]);
@@ -2549,7 +2599,7 @@ mod tests {
         let count = s.active_history().undo_count();
         run(&mut s, AppCommand::RemoveNodeAt { addr });
         assert_eq!(s.active_history().undo_count(), count + 1);
-        assert_eq!(s.toast.message_for_test(), Some("1 node lost their mask: Skin correction"));
+        assert_eq!(s.toast.message_for_test(), Some("Skin correction lost its mask"));
         undo(&mut s);
         assert_eq!(picture(&s, c.id), before);
     }
