@@ -119,6 +119,11 @@ pub(super) fn apply_grade_from(
             } else {
                 c.grade().with_grade_of_mapped(grade)
             };
+            // The grade as the clip will hold it: a clip whose picture is its
+            // truth keeps its nodes' ids where it can, so the copy's nodes may
+            // land under other ids than the copy gave them, and a label made
+            // by the copy's ids named nodes the clip didn't have.
+            let (new_graph, map) = crate::state::grade_as_held(c, new_graph, map);
             let moved = klipp_timeline::remap_grade_node_labels(labels, &map, &new_graph);
             node_labels = klipp_timeline::with_grade_node_labels(&node_labels, c.id, &moved, !append);
             Some(EditCommand::SetNodeGraph { clip_id: c.id, old_graph: c.grade().clone(), new_graph })
@@ -954,6 +959,71 @@ mod grade_version_tests {
         seq.node_labels = seq.node_labels_with(&at(new), 2);
         let look = super::look_of(&seq, id, "L").unwrap();
         assert_eq!(look.node_labels, vec![klipp_timeline::GradeNodeLabel { nodes: vec![new], colour: 2 }]);
+    }
+
+
+    /// A Look applied to a clip whose picture holds what its fields can't
+    /// (an effect masked by its grade): the label lands on the node the
+    /// clip's picture holds, live, as on any other clip.
+    #[test]
+    fn a_looks_label_lands_on_a_picture_truth_clip() {
+        use klipp_graph_format::path::{NodePath, Root};
+        use klipp_timeline::GradeAccess;
+        let mut state = crate::state::AppState::default();
+        let t = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 25);
+        let mut look_grade = NodeGraph::default();
+        let corr = look_grade.ensure_corrector();
+        let mut look = klipp_timeline::Look::new(uuid::Uuid::new_v4(), "Red", look_grade);
+        look.node_labels = vec![klipp_timeline::GradeNodeLabel { nodes: vec![corr], colour: 1 }];
+        // The target: a blur masked by its grade's qualifier, picture-truth.
+        let mut target = klipp_timeline::Clip::media(klipp_core::MediaId::new(), t(0.0), t(4.0), t(0.0), t(4.0));
+        target.push_effect(klipp_effects::BuiltinEffect::GaussianBlur { radius: 3.0 });
+        let mut g = NodeGraph::default();
+        g.ensure_corrector();
+        let source = g.nodes.iter().find(|n| n.kind == NodeKind::Source).unwrap().id;
+        let q = NodeId::new_v4();
+        g.nodes.push(klipp_nodes::Node { id: q, kind: NodeKind::Qualifier, label: String::new(), enabled: true, params: Default::default(), keyframes: Default::default(), output_link: None, input_links: Vec::new() });
+        g.edges.push(klipp_nodes::Edge { from_node: source, from_port: 0, to_node: q, to_port: 0 });
+        target.set_grade(g);
+        let p = target.picture_v2().unwrap().picture.clone();
+        let group = p.graph.nodes.iter().find(|n| n.type_id.as_str() == klipp_graph_format::lifted::types::GROUP).unwrap().id;
+        let blur = p.graph.nodes.iter().find(|n| klipp_graph_lift::effect_params::tag(n) == Some("gaussian_blur")).unwrap().id;
+        let at = |ids: Vec<uuid::Uuid>| NodePath::new(Root::Clip { clip: target.id.0 }, ids);
+        target.apply_picture_ops(&[
+            klipp_graph_lift::ops::GraphOp::PublishOutput { group: at(vec![group]), endpoint: klipp_graph_format::PortBinding { node: q, port: "out".into() }, key: "matte_selection".into(), label: "Selection".into() },
+            klipp_graph_lift::ops::GraphOp::Connect { from: at(vec![group]), from_port: "matte_selection".into(), to: at(vec![blur]), to_port: "mask".into() },
+        ]).expect("masked");
+        assert!(target.is_picture_truth(), "the fixture is picture-truth");
+        let id = target.id;
+        state.sequences[0].tracks.iter_mut().find(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap().clips.push(target);
+
+        // Pasted as well as applied: the same picture-truth clip, its grade
+        // from a clip with a label.
+        let mut pasted = state.sequences.clone();
+        let mut source = klipp_timeline::Clip::media(klipp_core::MediaId::new(), t(4.0), t(6.0), t(0.0), t(2.0));
+        source.set_grade(look.grade().clone());
+        let source_id = source.id;
+        pasted[0].tracks.iter_mut().find(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap().clips.push(source.clone());
+        let src_path = NodePath::new(Root::Clip { clip: source_id.0 }, [klipp_timeline::grade_group_id(source_id), corr]);
+        pasted[0].node_labels = pasted[0].node_labels_with(&src_path, 1);
+        let mut attrs = crate::state::AttributesClipboard::of(&source);
+        attrs.grade_labels = look.node_labels.clone();
+        let (pedits, plabels, _) = super::paste_attributes(&pasted[0], &[id], &attrs, crate::state::PasteChoice { color_grade: true, ..Default::default() });
+        let mut pool = klipp_media::MediaPool::new();
+        let mut fps = state.fps;
+        for e in pedits.iter().chain(plabels.iter()) {
+            klipp_document::apply::DocumentView { sequences: &mut pasted, active: 0, media_pool: &mut pool, fps: &mut fps }.apply_forward(e);
+        }
+        let there = pasted[0].live_node_labels().into_iter().filter(|l| l.node.root == Root::Clip { clip: id.0 }).count();
+        assert_eq!(there, 1, "pasted: a live label on the clip: {:?}", pasted[0].node_labels);
+
+        let super::GradeApplied { edits, labels, .. } = super::apply_grade(&state.sequences[0], look.grade(), &look.node_labels, &[id], false);
+        let edits: Vec<_> = edits.into_iter().chain(labels).collect();
+        for e in &edits {
+            klipp_document::apply::DocumentView { sequences: &mut state.sequences, active: 0, media_pool: &mut state.media_pool, fps: &mut state.fps }.apply_forward(e);
+        }
+        let seq = &state.sequences[0];
+        assert!(!seq.live_node_labels().is_empty(), "a live label on the clip: labels {:?}, grade {:?}", seq.node_labels, seq.all_clips().find(|c| c.id == id).unwrap().grade().nodes.iter().map(|n| (n.kind, n.id)).collect::<Vec<_>>());
     }
 
 }

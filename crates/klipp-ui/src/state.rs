@@ -4518,6 +4518,31 @@ fn placement_anims(clip: &klipp_timeline::Clip) -> std::collections::BTreeMap<&'
         .collect()
 }
 
+/// `graph` as clip `clip` holds it once set, and `map` (a copied grade's
+/// node to the copy's) carried onto the ids it holds them under: the same
+/// ids, or a node of each kind in its order where they were renamed.
+pub(crate) fn grade_as_held(clip: &klipp_timeline::Clip, graph: klipp_nodes::NodeGraph, map: std::collections::HashMap<klipp_nodes::NodeId, klipp_nodes::NodeId>) -> (klipp_nodes::NodeGraph, std::collections::HashMap<klipp_nodes::NodeId, klipp_nodes::NodeId>) {
+    use klipp_timeline::GradeAccess;
+    let mut probe = clip.clone();
+    probe.set_grade(graph.clone());
+    let held = probe.grade().clone();
+    let mut rename = std::collections::HashMap::new();
+    let unmatched = |g: &klipp_nodes::NodeGraph, other: &klipp_nodes::NodeGraph, kind: klipp_nodes::NodeKind| -> Vec<klipp_nodes::NodeId> {
+        g.nodes.iter().filter(|n| n.kind == kind && !other.nodes.iter().any(|o| o.id == n.id)).map(|n| n.id).collect()
+    };
+    for n in &graph.nodes {
+        if held.nodes.iter().any(|h| h.id == n.id) {
+            continue;
+        }
+        let k = unmatched(&graph, &held, n.kind).iter().position(|x| *x == n.id);
+        if let Some(there) = k.and_then(|k| unmatched(&held, &graph, n.kind).get(k).copied()) {
+            rename.insert(n.id, there);
+        }
+    }
+    let map = map.into_iter().map(|(from, to)| (from, rename.get(&to).copied().unwrap_or(to))).collect();
+    (held, map)
+}
+
 /// Snapshot of a clip's attributes for Paste Attributes.
 #[derive(Debug, Clone)]
 pub struct AttributesClipboard {
@@ -4695,6 +4720,9 @@ impl AttributesClipboard {
         }
         if what.color_grade {
             let (grade, ids) = clip.grade().with_grade_of_mapped(&self.node_graph);
+            // By the ids the clip holds its nodes under (a picture-truth
+            // clip keeps its own where it can), so labels land on them.
+            let (grade, ids) = grade_as_held(clip, grade, ids);
             clip.set_grade(grade);
             map = Some(ids);
         }
