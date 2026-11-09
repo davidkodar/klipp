@@ -1944,6 +1944,9 @@ pub struct AppState {
     /// The title the style eyedropper gives the next title clicked's
     /// look to (#1718).
     pub title_style_pick: Option<ClipId>,
+    /// The last seek over the control socket, and when: the UI's playhead
+    /// follows only when the engine reports back.
+    pub control_sought: Option<(klipp_core::Timecode, std::time::Instant)>,
     /// Whether to show the Paste Attributes dialog.
     pub show_paste_attributes_dialog: bool,
     /// The clip the dialog was opened for from its own menu. The selection
@@ -5030,6 +5033,7 @@ impl Default for AppState {
             title_style_clipboard: None,
             title_style_pick: None,
             show_paste_attributes_dialog: false,
+            control_sought: None,
             paste_attributes_onto: None,
             show_speed_dialog: false,
             edit_helper: None,

@@ -100,6 +100,9 @@ impl KlippApp {
                     } else {
                         // When not playing: set playhead directly
                         self.state.playhead = tc;
+                        if self.state.control_sought.is_some_and(|(at, _)| at == tc) {
+                            self.state.control_sought = None;
+                        }
                         self.state.playhead_smooth_secs = tc.to_secs_f64();
                         self.state.playhead_anchor = tc;
                         self.state.playhead_anchor_wall = std::time::Instant::now();
