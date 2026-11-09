@@ -93,8 +93,41 @@ fn draw_stack(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppState, clip: &Cl
             }
         }
     }
+    selected_matte(ui, theme, clip, graph, view, selected, cmds, clip_time_secs);
     add_menu(ui, clip, view, cmds);
 }
+
+/// A matte beside the chain picked in the graph that no effect's card shows
+/// under its "Masked by" chip: its own card, with what to do to use it. A
+/// Roto Shape or window added from the menu starts unwired, and selecting it
+/// showed nothing, so it had no controls anywhere.
+#[allow(clippy::too_many_arguments)]
+fn selected_matte(ui: &mut egui::Ui, theme: &KlippTheme, clip: &Clip, graph: &Graph, view: &StackView, selected: Option<&NodePath>, cmds: &mut Vec<AppCommand>, clip_time_secs: f64) {
+    let Some(addr) = selected.filter(|a| a.nodes.len() == 1) else { return };
+    if view.rows().any(|r| r.mask_chips.iter().any(|c| c.source == *addr)) {
+        return;
+    }
+    let read = graph.edges.iter().any(|e| Some(&e.from.0) == addr.nodes.first());
+    let fps = f64::from(clip.timeline_in.rate.max(1));
+    let frame = crate::inspector::keyframe_selection::FrameSelection { time_secs: clip_time_secs, tolerance: 0.5 / fps, clip_start: clip.timeline_in };
+    let source_secs = clip.source_secs_at(clip_time_secs, fps);
+    let card = ui.scope(|ui| {
+        let name = node_at(graph, addr).map_or(String::new(), |n| n.label.clone());
+        ui.label(egui::RichText::new(if name.is_empty() { "Matte".to_owned() } else { name }).strong());
+        let drawn = crate::inspector::side_matte::show(ui, theme, clip, graph, addr, frame, source_secs, cmds);
+        if drawn && !read {
+            ui.add(egui::Label::new(egui::RichText::new(UNWIRED_MATTE).size(10.0).color(theme.text_dim)).wrap());
+        }
+        drawn
+    });
+    if card.inner {
+        ui.painter().rect_stroke(card.response.rect.expand(2.0), 3.0, egui::Stroke::new(1.0_f32, theme.accent));
+        ui.add_space(4.0);
+    }
+}
+
+/// What a matte nothing reads says.
+const UNWIRED_MATTE: &str = "Connect to an effect's mask input to use it.";
 
 /// The rows that can be moved and removed here: the clip's own effects
 /// in its top level, not a placed kind, not read-only.
@@ -784,5 +817,44 @@ mod surface_choice_tests {
         let (cmds, _) = step(vec![click(item, false)]);
         let chose = cmds.iter().find_map(|c| match c { AppCommand::SetPayloadAt { payload, .. } => payload["surface"].as_str().map(str::to_owned), _ => None });
         assert_eq!(chose, Some(id.to_string()), "{cmds:?}");
+    }
+}
+
+#[cfg(test)]
+mod selected_matte_tests {
+    use super::*;
+
+    fn texts(state: &AppState, clip: &Clip) -> Vec<String> {
+        let ctx = egui::Context::default();
+        let mut texts = Vec::new();
+        for _ in 0..2 {
+            let out = ctx.run(egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(420.0, 3000.0))), ..Default::default() }, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| show(ui, &KlippTheme::default(), state, clip, &mut Vec::new(), 0.5));
+            });
+            texts = out.shapes.iter().filter_map(|s| match &s.shape { egui::Shape::Text(t) => Some(t.galley.text().to_owned()), _ => None }).collect();
+        }
+        texts
+    }
+
+    /// A Roto Shape added from the graph and picked there has its card, with
+    /// its shapes, and says it needs a mask input to do anything; picked
+    /// nothing, it has none.
+    #[test]
+    fn a_picked_roto_shape_shows_its_controls_and_what_it_needs() {
+        let t = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 24);
+        let mut clip = Clip::media(klipp_core::MediaId::new(), t(0.0), t(4.0), t(0.0), t(4.0));
+        let graph = clip.picture_v2().unwrap().picture.graph.clone();
+        let level = NodePath::new(Root::Clip { clip: clip.id.0 }, []);
+        let roto = crate::picture_mattes::matte("matte.roto").expect("the roto shape");
+        let id = uuid::Uuid::new_v4();
+        let ops = crate::picture_mattes::add_ops(&graph, &level, roto, id, (100.0, 100.0), None).expect("its ops");
+        clip.apply_picture_ops(&ops).expect("added");
+        let mut state = AppState::default();
+        let before = texts(&state, &clip);
+        assert!(!before.iter().any(|t| t == UNWIRED_MATTE), "{before:?}");
+        state.selected_node_addr = Some(NodePath::new(Root::Clip { clip: clip.id.0 }, [id]));
+        let after = texts(&state, &clip);
+        assert!(after.iter().any(|t| t == UNWIRED_MATTE), "{after:?}");
+        assert!(after.len() > before.len() + 3, "its controls are drawn: {after:?}");
     }
 }
