@@ -180,6 +180,9 @@ pub struct ColourCheckPanel {
     pub tool_result_at: (usize, usize),
 }
 
+/// The window's title, which is also what egui knows it by.
+const TITLE: &str = "Colour Check";
+
 impl ColourCheckPanel {
     /// The last tool's answer speaks of the shots as it left them: gone once
     /// the history has moved, an undo or an edit. "Already matched" stayed up
@@ -248,7 +251,7 @@ impl ColourCheckPanel {
         let look = look_for(state);
         let at_secs = state.playhead.to_secs_f64();
         self.refresh(frame_buffer, &faces, at_secs, &look, log_prior_at_playhead(state));
-        crate::widgets::window("Colour Check")
+        crate::widgets::window(TITLE)
             .open(open)
             .default_size([420.0, 520.0])
             .min_width(300.0)
@@ -658,6 +661,13 @@ fn row(ui: &mut egui::Ui, theme: &KlippTheme, label: &str, value: &str) {
         ui.label(egui::RichText::new(label).color(theme.text_secondary).size(crate::theme::type_scale::BODY));
         ui.label(egui::RichText::new(value).color(theme.text_primary).size(crate::theme::type_scale::BODY));
     });
+}
+
+/// Where the window is on screen, while it is open: the viewer's tool bars
+/// lay themselves out clear of it.
+pub(crate) fn open_rect(ctx: &egui::Context) -> Option<egui::Rect> {
+    let id = egui::Id::new(TITLE);
+    ctx.memory(|m| m.areas().is_visible(&egui::LayerId::new(egui::Order::Middle, id)).then(|| m.area_rect(id)).flatten())
 }
 
 #[cfg(test)]

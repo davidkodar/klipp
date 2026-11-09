@@ -158,9 +158,15 @@ impl AppState {
 }
 
 /// The header's quiet hint under the title: "Selected clip is elsewhere —
-/// Go to it". `true` when "Go to it" is clicked.
-pub(crate) fn elsewhere_hint(ui: &mut egui::Ui, theme: &crate::theme::KlippTheme) -> bool {
+/// Go to it". `true` when "Go to it" is clicked. The row stays when there
+/// is no hint: it comes and goes as a selection does, and every control
+/// below moving with it made clicks land on the wrong one.
+pub(crate) fn elsewhere_row(ui: &mut egui::Ui, theme: &crate::theme::KlippTheme, shown: bool) -> bool {
     ui.horizontal(|ui| {
+        ui.set_min_height(ui.spacing().interact_size.y);
+        if !shown {
+            return false;
+        }
         ui.add_space(12.0);
         ui.label(egui::RichText::new("Selected clip is elsewhere —").size(crate::theme::type_scale::CAPTION).color(theme.text_dim));
         ui.link(egui::RichText::new("Go to it").size(crate::theme::type_scale::CAPTION))
