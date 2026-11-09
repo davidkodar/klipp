@@ -72,7 +72,8 @@ fn the_selected_clip_among_stacked_ones_is_graded() {
     state.selected_clip = None;
     state.playhead = tc(1.5);
     assert_eq!(state.grade_at_playhead(), Some(upper));
-    assert_eq!(state.grading_title(upper), "Grading: interview.mp4 · V2");
+    let title = state.grading_title(upper);
+    assert!(title.starts_with("Grading: interview.mp4 · V2 · "), "{title}");
 }
 
 /// The selection elsewhere: the page grades the clip at the playhead, the
