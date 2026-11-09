@@ -100,7 +100,12 @@ mod routing_tests {
         // set_background_render (#3212), 157 with preview_takes (#3209),
         // 158 with bounce_track (#3264), 159 with reuse_report (#3272),
         // 160 with collect_project (#3241), 161 with publish_kit (#3312),
-        // 162 with covers (#3311), 163 with pace (#3313).
-        assert_eq!(routed_all.len(), 163);
+        // 162 with covers (#3311), 163 with pace (#3313), 165 with
+        // pick_grey (#3781) and read_chart (#3782), 167 with track_mask
+        // (#3811) and show_matte (#3816).
+        for (variant, area) in [("PickGrey", "colour"), ("ReadChart", "colour"), ("TrackMask", "editing"), ("ShowMatte", "editing")] {
+            assert_eq!(area_of.get(variant).copied(), Some(area), "{variant}");
+        }
+        assert_eq!(routed_all.len(), 167);
     }
 }

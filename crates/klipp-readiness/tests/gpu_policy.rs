@@ -253,6 +253,18 @@ fn active(mut fx: E) -> E {
             }
             E::Merge { opacity, .. } => *opacity = 0.7,
             E::ColourSpaceTransform { output_curve, .. } => *output_curve = 1,
+            // With no surface named a pin leaves the picture (#3809): one
+            // named, on a slanted quadrilateral inside the frame.
+            E::SurfacePin {
+                surface,
+                on_source,
+                source,
+                ..
+            } => {
+                *surface = "Wall".into();
+                *on_source = [[0.2, 0.15], [0.85, 0.25], [0.8, 0.85], [0.15, 0.75]];
+                *source = [1920, 1080];
+            }
             _ => panic!("identity fixture must activate {}", diag::effect_id(&fx)),
         }
     }
