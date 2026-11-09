@@ -10,7 +10,7 @@ impl KlippApp {
     /// of the clip it covers and where it was lost; for a person at the
     /// viewer, the playhead goes to the first frame lost with the corners
     /// up to put right and continue.
-    pub(super) fn apply_surface_track(&mut self, clip_id: klipp_core::ClipId, surface: klipp_timeline::Surface, held_secs: (f64, f64), direction: i8, interactive: bool) {
+    pub(super) fn apply_surface_track(&mut self, clip_id: klipp_core::ClipId, surface: klipp_timeline::Surface, held_secs: (f64, f64), direction: i8, interactive: bool, wider_area: bool) {
         let seq = &self.state.sequences[self.state.active_sequence_idx];
         let fps = seq.fps.as_f64();
         let Some(old) = seq.all_clips().find(|c| c.id == clip_id).cloned() else {
@@ -51,6 +51,9 @@ impl KlippApp {
         }
         if !held.is_empty() {
             note.push_str(&format!("; not tracked {}, past the frames held at once: track again from a frame there", held.join(" and ")));
+        }
+        if wider_area {
+            note.push_str("; a plain surface, so followed with more of what is round it");
         }
         // Stretches followed uncertainly or lost then found again (#2754).
         let weak = surface.weak_spans();
@@ -285,7 +288,6 @@ impl KlippApp {
             let exclude_px: Vec<Vec<(f64, f64)>> = exclude.iter().map(|e| e.iter().map(|c| (c[0] as f64 * gw, c[1] as f64 * gh)).collect()).collect();
             // The whole surface aligned frame to frame (#2754), its own
             // outline included, each frame with its confidence.
-            let opts = klipp_effects::planar::Options::default();
             let forward: Vec<usize> = if direction >= 0 { (reference + 1..=last).collect() } else { Vec::new() };
             let backward: Vec<usize> = if direction <= 0 { (first..reference).rev().collect() } else { Vec::new() };
             let share = (forward.len() as f32 / (forward.len() + backward.len()).max(1) as f32).max(0.01);
@@ -293,12 +295,19 @@ impl KlippApp {
             // On the GPU when there is one (its own passes on the shared
             // device), else the CPU, which follows the same.
             let mut gpu = klipp_effects::gpu::planar::PlanarGpu::new();
-            let mut run = |frames: &[usize], progress: &dyn Fn(f32) -> bool| match gpu.as_mut() {
-                Some(g) => g.track(&reference_frame, quad_px, &exclude_px, frames, &mut |f| decode(f), &opts, progress),
-                None => klipp_effects::planar::track(&reference_frame, quad_px, &exclude_px, frames, &mut |f| decode(f), &opts, progress),
+            let mut run = |frames: &[usize], opts: &klipp_effects::planar::Options, progress: &dyn Fn(f32) -> bool| match gpu.as_mut() {
+                Some(g) => g.track(&reference_frame, quad_px, &exclude_px, frames, &mut |f| decode(f), opts, progress),
+                None => klipp_effects::planar::track(&reference_frame, quad_px, &exclude_px, frames, &mut |f| decode(f), opts, progress),
             };
-            let ahead = run(&forward, &|p| report(p * share));
-            let behind = run(&backward, &|p| report(share + p * (1.0 - share)));
+            // A plain surface has little to hold a fit: a wider area round it
+            // may do what the first go didn't.
+            let ((ahead, behind), wider_area) = klipp_effects::planar::try_wider_areas(
+                klipp_effects::planar::is_plain(&reference_frame, &quad_px),
+                forward.len() + backward.len(),
+                |opts| (run(&forward, opts, &|p| report(p * share)), run(&backward, opts, &|p| report(share + p * (1.0 - share)))),
+                |(a, b)| good_frames(a) + good_frames(b),
+                going,
+            );
             // Frames lost at the end of a run, never found again, are where
             // the track ends: not kept, so the track reads as lost there.
             let trimmed = |mut t: Vec<klipp_effects::planar::Tracked>| {
@@ -340,7 +349,7 @@ impl KlippApp {
             if !going() {
                 return fail("cancelled".into());
             }
-            let _ = event_tx.send(klipp_core::AppEvent::SurfaceTracked { clip_id, surface, name, corners, reference_secs: reference as f64 / media_fps, keys, source_size, media_fps, held_secs, direction, interactive, track_area: track, exclude });
+            let _ = event_tx.send(klipp_core::AppEvent::SurfaceTracked { clip_id, surface, name, wider_area, corners, reference_secs: reference as f64 / media_fps, keys, source_size, media_fps, held_secs, direction, interactive, track_area: track, exclude });
         });
     }
 
@@ -439,15 +448,23 @@ impl KlippApp {
             let here = Anchor { frame: k, h: px(&correction) };
             let quad = area.map(|c| (c[0] as f64 * gw, c[1] as f64 * gh));
             let exclude_px: Vec<Vec<(f64, f64)>> = exclude.iter().map(|e| e.iter().map(|c| (c[0] as f64 * gw, c[1] as f64 * gh)).collect()).collect();
-            let opts = klipp_effects::planar::Options::default();
             let report = |p: f32| going() && event_tx.send(klipp_core::AppEvent::TrackingProgress { clip_id, progress: loading + p * (1.0 - loading) }).is_ok();
             let mut gpu = klipp_effects::gpu::planar::PlanarGpu::new();
-            let mut solve = |start: Option<Anchor>, end: Option<Anchor>, span: (usize, usize), progress: &dyn Fn(f32) -> bool| match gpu.as_mut() {
-                Some(g) => g.solve_between(quad, &exclude_px, start, end, span, &mut decode, &opts, progress),
-                None => klipp_effects::planar::solve_between(quad, &exclude_px, start, end, span, &mut decode, &opts, progress),
+            let mut solve = |start: Option<Anchor>, end: Option<Anchor>, span: (usize, usize), opts: &klipp_effects::planar::Options, progress: &dyn Fn(f32) -> bool| match gpu.as_mut() {
+                Some(g) => g.solve_between(quad, &exclude_px, start, end, span, &mut decode, opts, progress),
+                None => klipp_effects::planar::solve_between(quad, &exclude_px, start, end, span, &mut decode, opts, progress),
             };
-            let earlier = solve(before.map(anchor), Some(here), (lo, k), &|p| report(p * 0.5));
-            let later = solve(Some(here), after.map(anchor), (k, hi), &|p| report(0.5 + p * 0.5));
+            // A correction on a plain surface is solved as its track was, a
+            // wider area where the first go doesn't hold.
+            let here_frame = frames.get(k - lo);
+            let plain = here_frame.is_some_and(|f| klipp_effects::planar::is_plain(f, &quad.map(|p| here.h.transform(p.0, p.1))));
+            let ((earlier, later), _) = klipp_effects::planar::try_wider_areas(
+                plain,
+                hi - lo,
+                |opts| (solve(before.map(anchor), Some(here), (lo, k), opts, &|p| report(p * 0.5)), solve(Some(here), after.map(anchor), (k, hi), opts, &|p| report(0.5 + p * 0.5))),
+                |(a, b)| good_frames(a) + good_frames(b),
+                going,
+            );
             if !going() {
                 return fail("cancelled".into());
             }
@@ -519,6 +536,11 @@ impl KlippApp {
         }
         self.state.toast.show(format!("Corrected \u{201c}{name}\u{201d} at {:.2} s, the track solved again from {:.2} to {:.2} s{note}", on_timeline(source_secs), on_timeline(from), on_timeline(to)));
     }
+}
+
+/// How many of a run's frames read Good.
+fn good_frames(run: &[klipp_effects::planar::Tracked]) -> usize {
+    run.iter().filter(|t| t.state == klipp_effects::planar::State::Good).count()
 }
 
 /// A key as a tracking job sends it, `(file seconds, map, confidence,
