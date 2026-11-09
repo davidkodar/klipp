@@ -105,6 +105,27 @@ fn a_match_sets_the_brightness_then_reads_the_colour() {
     assert!(reply["next"].as_str().unwrap().contains("pick_grey"), "{reply}");
 }
 
+/// The same match again changes nothing and says why: each click measured
+/// on the last one's result walked the grade. Asked at another moment it is
+/// a new match, and so it is once the clip's grade has changed.
+#[test]
+fn the_same_match_again_changes_nothing() {
+    let (ctx, target, reference, written, _) = context();
+    let ask = |secs: f64| ControlCommand::MatchGrade { clip_id: target.clone(), reference_clip_id: reference.clone(), secs: Some(secs), reference_secs: Some(1.0) };
+    respond(&ctx, ask(3.0), &mut None).unwrap();
+    let first = written.lock().unwrap().len();
+    assert!(first > 0, "the first match grades");
+    let again = respond(&ctx, ask(3.0), &mut None).unwrap();
+    assert_eq!(again["applied"], serde_json::json!(false), "{again}");
+    assert_eq!(again["already_matched"], serde_json::json!(true), "{again}");
+    assert_eq!(written.lock().unwrap().len(), first, "nothing written");
+    // The clip's grade changed since: no longer the grade the match left.
+    let id = klipp_core::ClipId(uuid::Uuid::parse_str(&target).unwrap());
+    ctx.shared.last_matches.lock().unwrap().get_mut(&id).unwrap().left[0] = Some(9.0);
+    let changed = respond(&ctx, ask(3.0), &mut None).unwrap();
+    assert_ne!(changed["already_matched"], serde_json::json!(true), "{changed}");
+}
+
 /// A grey picked is taken to grey, on top of the clip's grade, as one
 /// undo step, and the reply says what the point reads after. A point off
 /// the frame is refused, changing nothing.

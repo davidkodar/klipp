@@ -5734,11 +5734,26 @@ mod codec_hint_tests {
     }
 }
 
+/// A shot match as it was made ([`ControlShared::last_matches`]).
+#[derive(Debug, Clone, PartialEq)]
+pub struct LastMatch {
+    pub reference: ClipId,
+    /// The moments read, in the clip and in the reference.
+    pub at_secs: (f64, f64),
+    /// The reference as it read then: graded since, a match means something new.
+    pub reference_read: String,
+    /// The primary grade it left: exposure, lift, gain, temperature, tint.
+    pub left: [Option<f32>; 5],
+}
+
 /// State the control socket reads without a round trip through the UI:
 /// the document revision, and the render queue's jobs as the UI last saw
 /// them.
 #[derive(Default)]
 pub struct ControlShared {
+    /// Each clip's last shot match: what it was matched to and the grade it
+    /// left, so the same match again changes nothing while both still stand.
+    pub last_matches: std::sync::Mutex<std::collections::HashMap<ClipId, LastMatch>>,
     /// A Collect Project is running, from its request to the end of its
     /// copy (and archive), whatever the UI has drawn since.
     pub collecting: std::sync::atomic::AtomicBool,
