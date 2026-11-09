@@ -1282,6 +1282,27 @@ pub(crate) fn respond(
             let target_stats = frame_stats(&td, tw, th, t_mid);
             let (rd, rw, rh) = grab_frame_rgba_of(ctx, r_mid, clip_of(&r), Some(4000))?;
             let ref_stats = frame_stats(&rd, rw, rh, r_mid);
+            // The same match again changes nothing, as a colourist's would:
+            // each click measured on the last click's result walked the grade,
+            // exposure and gain trading off. A graded clip or reference, or
+            // another moment or reference, is a new match.
+            let reference_read = ref_stats["text"].as_str().unwrap_or("").to_string();
+            let primary_now = || -> Result<[Option<f32>; 5], String> {
+                let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+                let now = seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|cl| cl.id == target_id).map(|cl| primary_knobs(klipp_timeline::GradeAccess::grade(cl))).unwrap_or_default();
+                Ok([now.exposure, now.lift, now.gain, now.temperature, now.tint])
+            };
+            let this_match = |left: [Option<f32>; 5]| klipp_core::LastMatch { reference: ref_id, at_secs: (t_mid, r_mid), reference_read: reference_read.clone(), left };
+            let made = ctx.shared.last_matches.lock().map_err(|_| "match memory poisoned")?.get(&target_id).cloned();
+            let left_now = primary_now()?;
+            if made.is_some_and(|m| m == this_match(left_now)) {
+                return Ok(json!({
+                    "text": format!("{t_name} was already matched to this shot and hasn't changed since, so the match is left as it is. It's a first pass: to go further, compare the two shots and fine-tune by eye, or set white balance from something known to be grey."),
+                    "applied": false,
+                    "already_matched": true,
+                    "target": target_stats, "reference": ref_stats,
+                }));
+            }
             let target_m = klipp_color::measure::measure_frame(&td, tw, th, &[]);
             let reference_m = klipp_color::measure::measure_frame(&rd, rw, rh, &[]);
             let mut knobs = match_grade_knobs(&target_stats, &ref_stats, &target_m, &reference_m);
@@ -1353,6 +1374,11 @@ reference: {}", target_stats["text"].as_str().unwrap_or(""), ref_stats["text"].a
             }
             let knobs = MatchKnobs { temperature: colour.temperature, tint: colour.tint, ..tone };
             let undo_steps = fold.finish(ctx);
+            if let Ok(left) = primary_now() {
+                if let Ok(mut made) = ctx.shared.last_matches.lock() {
+                    made.insert(target_id, this_match(left));
+                }
+            }
             let Some(mut v) = sent else {
                 return Err("the match found nothing to send".into());
             };
