@@ -1203,6 +1203,60 @@ pub fn region_light(frame: &GrayFrame, quad: &[(f64, f64); 4]) -> Option<f32> {
     (n > 0).then(|| (sum / n as f64 / 255.0) as f32)
 }
 
+/// How alike the surface `quad` on `reference` is to where `h` takes it
+/// on `frame`, 0 to 1 (the two's normalised cross-correlation, below
+/// nothing as nothing): what a correction set by hand is measured by
+/// (#2754). A track from a correction follows the picture under its
+/// corners, wherever they were put, and was sure of it: corners moved off
+/// the surface read as a perfect track. `None` with too little of the
+/// surface on either frame.
+pub fn likeness(reference: &GrayFrame, quad: &[(f64, f64); 4], frame: &GrayFrame, h: &Homography) -> Option<f32> {
+    const N: usize = 48;
+    let at = |f: &GrayFrame, x: f64, y: f64| -> Option<f64> {
+        if !(x >= 0.0 && y >= 0.0 && x <= (f.width - 1) as f64 && y <= (f.height - 1) as f64) {
+            return None;
+        }
+        let (x0, y0) = (x.floor() as usize, y.floor() as usize);
+        let (x1, y1) = ((x0 + 1).min(f.width - 1), (y0 + 1).min(f.height - 1));
+        let (fx, fy) = (x - x0 as f64, y - y0 as f64);
+        let p = |x: usize, y: usize| f.data[y * f.width + x] as f64;
+        Some((p(x0, y0) * (1.0 - fx) + p(x1, y0) * fx) * (1.0 - fy) + (p(x0, y1) * (1.0 - fx) + p(x1, y1) * fx) * fy)
+    };
+    let mut pairs = Vec::with_capacity(N * N);
+    for j in 0..N {
+        for i in 0..N {
+            let (u, v) = ((i as f64 + 0.5) / N as f64, (j as f64 + 0.5) / N as f64);
+            let top = (quad[0].0 + (quad[1].0 - quad[0].0) * u, quad[0].1 + (quad[1].1 - quad[0].1) * u);
+            let bottom = (quad[3].0 + (quad[2].0 - quad[3].0) * u, quad[3].1 + (quad[2].1 - quad[3].1) * u);
+            let (x, y) = (top.0 + (bottom.0 - top.0) * v, top.1 + (bottom.1 - top.1) * v);
+            let (tx, ty) = h.transform(x, y);
+            if let (Some(a), Some(b)) = (at(reference, x, y), at(frame, tx, ty)) {
+                pairs.push((a, b));
+            }
+        }
+    }
+    if pairs.len() < N * N / 4 {
+        return None;
+    }
+    let n = pairs.len() as f64;
+    let (ma, mb) = (pairs.iter().map(|p| p.0).sum::<f64>() / n, pairs.iter().map(|p| p.1).sum::<f64>() / n);
+    let (mut ab, mut aa, mut bb) = (0.0, 0.0, 0.0);
+    for (a, b) in &pairs {
+        ab += (a - ma) * (b - mb);
+        aa += (a - ma) * (a - ma);
+        bb += (b - mb) * (b - mb);
+    }
+    Some(if aa * bb > 1e-9 { (ab / (aa * bb).sqrt()).clamp(0.0, 1.0) as f32 } else { 0.0 })
+}
+
+/// A correction's confidence, 0 to 1, from its [`likeness`] to the
+/// surface: a surface found again is taken only alike past 0.95, and
+/// texture's broad shapes leave corners well off it still alike near
+/// 0.75, so 0.6 alike and below is nothing and 0.95 near certain.
+pub fn correction_confidence(likeness: f32) -> f32 {
+    ((likeness - 0.6) / 0.35).clamp(0.0, 1.0)
+}
+
 /// The spans of `tracked` (in order) that were not followed with
 /// confidence: `(first, last, state)` for each run of Low or Lost frames.
 pub fn weak_spans(tracked: &[Tracked]) -> Vec<(usize, usize, State)> {
@@ -1242,6 +1296,24 @@ mod tests {
             }
         }
         GrayFrame { data, width: w, height: h }
+    }
+
+    /// A correction is measured by the surface itself: corners set where
+    /// it went read near 1, one corner pulled well off it far less.
+    #[test]
+    fn a_correction_off_the_surface_measures_low() {
+        let (w, h) = (240, 180);
+        let quad = [(70.0, 50.0), (170.0, 50.0), (170.0, 130.0), (70.0, 130.0)];
+        let reference = seen(w, h, &Homography::identity(), &texture);
+        let went = course_map(&quad, &[(6.0, 3.0), (8.0, 2.0), (7.0, 5.0), (5.0, 4.0)], 1);
+        let frame = seen(w, h, &went, &texture);
+        let right = likeness(&reference, &quad, &frame, &went).unwrap();
+        let mut off = [went.transform(quad[0].0, quad[0].1), went.transform(quad[1].0, quad[1].1), went.transform(quad[2].0, quad[2].1), went.transform(quad[3].0, quad[3].1)];
+        off[2] = (off[2].0 + 30.0, off[2].1 + 30.0);
+        let wrong = likeness(&reference, &quad, &frame, &Homography::from_4_points(&quad, &off).unwrap()).unwrap();
+        let (right, wrong) = (correction_confidence(right), correction_confidence(wrong));
+        assert!(right > 0.95, "set where it went: {right}");
+        assert!(wrong < 0.6, "a corner well off reads as weak: {wrong}");
     }
 
     /// The map that takes `quad` to its corners moved by `course` × `k`.

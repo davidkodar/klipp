@@ -405,6 +405,7 @@ impl KlippApp {
         let pixels = ((w * scale) * (h * scale)) as usize;
         let area = existing.track_area.unwrap_or(existing.corners);
         let pin_corners = existing.corners;
+        let reference_k = ((existing.reference_secs * media_fps).round() as usize).clamp(first, last);
         let exclude = existing.exclude.clone();
         let path = item.path.clone();
         let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -468,18 +469,31 @@ impl KlippApp {
             if !going() {
                 return fail("cancelled".into());
             }
+            // How sure the correction is: the surface on its reference frame
+            // against where the corners put it (#2754). The runs from it
+            // follow whatever is under the corners and were sure of a wrong
+            // place too, so they are no surer than it.
+            let reference_frame = match reference_k.checked_sub(lo).and_then(|i| frames.get(i)) {
+                Some(f) => Some(f.clone()),
+                None => grey_frames_sized(&path, media_fps, reference_k, reference_k, SURFACE_TRACK_SIDE, false, &|_| true).ok().and_then(|f| f.into_iter().next()),
+            };
+            let sure = reference_frame
+                .zip(frames.get(k - lo))
+                .and_then(|(r, f)| klipp_effects::planar::likeness(&r, &quad, f, &here.h))
+                .map(klipp_effects::planar::correction_confidence);
             // The pin's corners, in the reference frame's pixels: how light
             // the surface is, measured on each frame where they are (#2751).
             let pin_px = pin_corners.map(|c| (c[0] as f64 * gw, c[1] as f64 * gh));
             let key = |t: &klipp_effects::planar::Tracked| {
                 let m = to_frac.multiply(&t.h).multiply(&to_px).h;
-                let state = match t.state {
+                let (confidence, state) = held_to(t.confidence, t.state, sure);
+                let state = match state {
                     State::Good => 0,
                     State::Low => 1,
                     State::Lost => 2,
                 };
                 let light = decode(t.frame).and_then(|f| klipp_effects::planar::region_light(&f, &pin_px.map(|p| t.h.transform(p.0, p.1))));
-                (t.frame as f64 / media_fps, [m[0][0], m[0][1], m[0][2], m[1][0], m[1][1], m[1][2], m[2][0], m[2][1], m[2][2]], t.confidence, state, light)
+                (t.frame as f64 / media_fps, [m[0][0], m[0][1], m[0][2], m[1][0], m[1][1], m[1][2], m[2][0], m[2][1], m[2][2]], confidence, state, light)
             };
             // Each span's bounds: its anchor, or the edge of the frames
             // read (open where that is the clip's end).
@@ -490,7 +504,7 @@ impl KlippApp {
                 (edge_before, Some(source_secs), earlier.iter().map(key).collect()),
                 (Some(source_secs), edge_after, later.iter().map(key).collect()),
             ];
-            let _ = event_tx.send(klipp_core::AppEvent::SurfaceCorrected { clip_id, surface, source_secs, corners: on_source, spans });
+            let _ = event_tx.send(klipp_core::AppEvent::SurfaceCorrected { clip_id, surface, source_secs, corners: on_source, spans, sure });
         });
     }
 
@@ -498,7 +512,7 @@ impl KlippApp {
     /// set by hand and the spans either side re-solved; says what was
     /// re-solved and where it is still uncertain or lost.
     #[allow(clippy::type_complexity)]
-    pub(super) fn apply_surface_correction(&mut self, clip_id: klipp_core::ClipId, surface: uuid::Uuid, source_secs: f64, corners: [[f32; 2]; 4], spans: Vec<(Option<f64>, Option<f64>, Vec<(f64, [f64; 9], f32, u8, Option<f32>)>)>) {
+    pub(super) fn apply_surface_correction(&mut self, clip_id: klipp_core::ClipId, surface: uuid::Uuid, source_secs: f64, corners: [[f32; 2]; 4], spans: Vec<(Option<f64>, Option<f64>, Vec<(f64, [f64; 9], f32, u8, Option<f32>)>)>, sure: Option<f32>) {
         let seq = &self.state.sequences[self.state.active_sequence_idx];
         let fps = seq.fps.as_f64();
         let Some(old) = seq.all_clips().find(|c| c.id == clip_id).cloned() else {
@@ -512,6 +526,11 @@ impl KlippApp {
         };
         if !s.set_correction(source_secs, &corners) {
             return;
+        }
+        // Measured, not taken as certain: corners put off the surface read
+        // as a perfect key, and its track as followed throughout.
+        if let Some(sure) = sure {
+            s.rate_correction(source_secs, sure);
         }
         let (mut from, mut to) = (source_secs, source_secs);
         for (after, before, keys) in spans {
@@ -534,8 +553,21 @@ impl KlippApp {
                 note.push_str(&format!("; still {said} {}", these.join(", ")));
             }
         }
+        if let Some(sure) = sure.filter(|s| *s < 0.6) {
+            note.push_str(&format!("; the corners match the surface poorly there (confidence {sure:.2}): check they are on it"));
+        }
         self.state.toast.show(format!("Corrected \u{201c}{name}\u{201d} at {:.2} s, the track solved again from {:.2} to {:.2} s{note}", on_timeline(source_secs), on_timeline(from), on_timeline(to)));
     }
+}
+
+/// A frame of a run from a correction, held to the correction's own
+/// confidence `sure`: no surer than it, and weak where it is weak.
+fn held_to(confidence: f32, state: klipp_effects::planar::State, sure: Option<f32>) -> (f32, klipp_effects::planar::State) {
+    use klipp_effects::planar::State;
+    let Some(sure) = sure else { return (confidence, state) };
+    let confidence = confidence.min(sure);
+    let state = if state == State::Good && confidence < 0.6 { State::Low } else { state };
+    (confidence, state)
 }
 
 /// How many of a run's frames read Good.
@@ -552,4 +584,21 @@ pub(super) fn surface_key_of((source_secs, map, confidence, state, light): (f64,
         _ => klipp_timeline::TrackState::Lost,
     };
     klipp_timeline::SurfaceKey { source_secs, map, confidence: Some(confidence), state, light }
+}
+
+#[cfg(test)]
+mod correction_tests {
+    use klipp_effects::planar::State;
+
+    /// A frame re-solved from a correction is no surer than the
+    /// correction: a run from corners put off the surface follows the
+    /// picture under them with confidence, and read as followed
+    /// throughout, its weak stretches cleared.
+    #[test]
+    fn a_run_from_a_correction_is_no_surer_than_it() {
+        assert_eq!(super::held_to(1.0, State::Good, Some(0.4)), (0.4, State::Low), "weak where the correction is");
+        assert_eq!(super::held_to(0.95, State::Good, Some(0.98)), (0.95, State::Good), "a sure correction leaves its run");
+        assert_eq!(super::held_to(0.1, State::Lost, Some(0.4)), (0.1, State::Lost));
+        assert_eq!(super::held_to(1.0, State::Good, None), (1.0, State::Good), "not measured: as followed");
+    }
 }
