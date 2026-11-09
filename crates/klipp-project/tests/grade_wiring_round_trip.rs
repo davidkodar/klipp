@@ -79,3 +79,40 @@ fn grade_versions_come_back_with_their_wiring() {
     assert_eq!(sorted(&versions[0].grade().edges), sorted(&keyed.edges), "the keyed version's wires");
     assert_eq!(versions[0].grade().nodes.iter().filter(|n| n.kind == NodeKind::CombineMattes).count(), 1);
 }
+
+/// Hue/Sat curves with points, including ones at the curve's very ends, and
+/// a Warper's twelve sectors, come back to the bit.
+#[test]
+fn hue_sat_curves_and_the_warper_come_back_exact() {
+    let t = |s: f64| RationalTime::from_secs_f64(s, 24);
+    let mut clip = Clip::media(MediaId::new(), t(0.0), t(4.0), t(0.0), t(4.0));
+    let clip_id = clip.id;
+    let curves = klipp_core::HueSatCurves {
+        hue_vs_hue: vec![[0.0, 0.5], [0.0833, 0.62], [0.1667, 0.5], [1.0, 0.5]],
+        hue_vs_sat: vec![[0.3, 0.5], [0.33333334, 0.1], [0.36, 0.5]],
+        lum_vs_sat: vec![[0.0, 0.25], [1.0, 0.75]],
+        ..Default::default()
+    };
+    let mut warper = klipp_core::ColorWarperParams::default();
+    warper.hue_shifts[3] = 12.5;
+    warper.sat_shifts[11] = -0.35;
+    clip.edit_grade(|g| {
+        let c = g.ensure_corrector();
+        let n = g.nodes.iter_mut().find(|n| n.id == c).unwrap();
+        n.params.huesat = Some(curves.clone());
+        n.params.huesat_mix = Some(0.7);
+        n.params.warper_params = Some(warper.clone());
+    });
+    let want = clip.grade().clone();
+    let mut seq = Sequence::new_default();
+    seq.tracks.iter_mut().find(|t| t.kind == TrackKind::Video).unwrap().clips.push(clip);
+    let dir = std::env::temp_dir().join(format!("klipp_huesat_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    save_project(&dir, &[seq], &MediaPool::new()).unwrap();
+    let (sequences, ..) = load_project(&dir).unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+    let back = sequences[0].all_clips().find(|c| c.id == clip_id).expect("the clip").grade().clone();
+    let params = |g: &NodeGraph| g.nodes.iter().find(|n| n.kind == NodeKind::Corrector).map(|n| (n.params.huesat.clone(), n.params.huesat_mix, n.params.warper_params.clone()));
+    assert_eq!(params(&back), params(&want));
+}

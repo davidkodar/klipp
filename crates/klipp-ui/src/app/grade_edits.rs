@@ -676,6 +676,40 @@ mod grade_version_tests {
         (n, e)
     }
 
+    /// A Hue/Sat point added, moved and removed, each as the curve editor
+    /// writes it: one step each, and each undo gives back the curve before.
+    #[test]
+    fn hue_sat_points_added_moved_and_removed_undo_exactly() {
+        let mut state = crate::state::AppState::default();
+        let t = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 25);
+        let clip = klipp_timeline::Clip::media(klipp_core::MediaId::new(), t(0.0), t(2.0), t(0.0), t(2.0));
+        let id = clip.id;
+        state.sequences[0].tracks.iter_mut().find(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap().clips.push(clip);
+        let mut node = None;
+        state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(id)).unwrap().edit_grade(|g| node = Some(g.ensure_corrector()));
+        let node = node.unwrap();
+        let curve = |s: &crate::state::AppState| s.sequences[0].all_clips().find(|c| c.id == id).unwrap().grade().nodes.iter().find(|n| n.id == node).and_then(|n| n.params.huesat.clone()).map(|h| h.hue_vs_hue).unwrap_or_default();
+        let set = |state: &mut crate::state::AppState, points: Vec<[f32; 2]>| {
+            let cmd = AppCommand::SetNodeHueSatCurves { clip_id: id, node_id: node, huesat: klipp_core::HueSatCurves { hue_vs_hue: points, ..Default::default() } };
+            super::super::colour::edit_clip_graph(state, id, &[], true, |g| { super::super::colour::write_node_settings(g, &cmd); }).unwrap().unwrap();
+        };
+        let shapes = [vec![[0.0, 0.5], [0.25, 0.7], [1.0, 0.5]], vec![[0.0, 0.5], [0.3, 0.35], [1.0, 0.5]], vec![[0.0, 0.5], [1.0, 0.5]]];
+        let mut was = vec![curve(&state)];
+        for points in shapes {
+            let steps = state.active_history().undo_count();
+            set(&mut state, points.clone());
+            assert_eq!(curve(&state), points);
+            assert_eq!(state.active_history().undo_count(), steps + 1);
+            was.push(points);
+        }
+        was.pop();
+        while let Some(before) = was.pop() {
+            let entry = state.active_history_mut().undo().expect("a step");
+            klipp_document::apply::DocumentView { sequences: &mut state.sequences, active: 0, media_pool: &mut state.media_pool, fps: &mut state.fps }.apply_inverse(&entry.command);
+            assert_eq!(curve(&state), before, "undone exactly");
+        }
+    }
+
     /// A grade with a key and window through a combiner, applied to three
     /// clips as Apply Look now does: each the same wiring under fresh ids,
     /// one undo step, and undo leaves all three as they were.
