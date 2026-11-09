@@ -355,7 +355,7 @@ static P_QUALIFIER: &[ParamDesc] = &[
     ParamDesc { field: "qualifier.hue_center", index: None, key: "qual_hue_center", label: "Hue centre", kind: ParamKind::Float, default: 0.0, range: None, soft: Some((0.0, 360.0)), unit: Unit::Degrees, scaling: Scaling::None, keyframable: true, derived: false },
     ParamDesc { field: "qualifier.hue_width", index: None, key: "qual_hue_width", label: "Hue width", kind: ParamKind::Float, default: 30.0, range: None, soft: Some((0.0, 180.0)), unit: Unit::Degrees, scaling: Scaling::None, keyframable: true, derived: false },
     ParamDesc { field: "qualifier.hue_soft", index: None, key: "qual_hue_soft", label: "Hue softness", kind: ParamKind::Float, default: 10.0, range: None, soft: Some((0.0, 90.0)), unit: Unit::Degrees, scaling: Scaling::None, keyframable: true, derived: false },
-    ParamDesc { field: "qualifier.sat_low", index: None, key: "qual_sat_low", label: "Saturation low", kind: ParamKind::Float, default: 0.0, range: None, soft: Some((0.0, 1.0)), unit: Unit::Ratio, scaling: Scaling::None, keyframable: true, derived: false },
+    ParamDesc { field: "qualifier.sat_low", index: None, key: "qual_sat_low", label: "Saturation low", kind: ParamKind::Float, default: 0.15, range: None, soft: Some((0.0, 1.0)), unit: Unit::Ratio, scaling: Scaling::None, keyframable: true, derived: false },
     ParamDesc { field: "qualifier.sat_high", index: None, key: "qual_sat_high", label: "Saturation high", kind: ParamKind::Float, default: 1.0, range: None, soft: Some((0.0, 1.0)), unit: Unit::Ratio, scaling: Scaling::None, keyframable: true, derived: false },
     ParamDesc { field: "qualifier.sat_soft", index: None, key: "qual_sat_soft", label: "Saturation softness", kind: ParamKind::Float, default: 0.1, range: None, soft: Some((0.0, 1.0)), unit: Unit::Ratio, scaling: Scaling::None, keyframable: true, derived: false },
     ParamDesc { field: "qualifier.lum_low", index: None, key: "qual_lum_low", label: "Luminance low", kind: ParamKind::Float, default: 0.0, range: None, soft: Some((0.0, 1.0)), unit: Unit::Ratio, scaling: Scaling::None, keyframable: true, derived: false },
@@ -1229,3 +1229,26 @@ static TYPES: &[NodeType] = &[
         },
     },
 ];
+
+#[cfg(test)]
+mod qualifier_default_tests {
+    /// What a Qualifier's page shows before the key is set is what a new
+    /// key starts with: Sat Low read 0.00 there and 0.15 once the key was on.
+    #[test]
+    fn a_qualifiers_page_defaults_are_the_new_keys() {
+        let ty = super::node_type(crate::NodeKind::Qualifier).expect("the qualifier's type");
+        let new = serde_json::to_value(klipp_core::QualifierSettings::default()).unwrap();
+        let mut checked = 0;
+        for p in ty.desc.params.iter().filter(|p| p.field.starts_with("qualifier.")) {
+            let name = &p.field["qualifier.".len()..];
+            let Some(want) = new.get(name) else { continue };
+            let want = want.as_f64().or_else(|| want.as_bool().map(|b| f64::from(u8::from(b)))).unwrap_or(f64::NAN);
+            if want.is_nan() {
+                continue;
+            }
+            assert!((f64::from(p.default) - want).abs() < 1e-6, "{name}: the page shows {} where a new key has {want}", p.default);
+            checked += 1;
+        }
+        assert!(checked > 10, "{checked} fields compared");
+    }
+}
