@@ -564,7 +564,7 @@ fn collect_brings_the_files_grades_read_and_the_looks() {
     clip_graph.nodes.push(node(NodeKind::ExternalMatte, NodeParams { matte_image_path: Some(mask.clone()), ..Default::default() }));
     let mut look_graph = NodeGraph::default();
     look_graph.nodes.push(node(NodeKind::Lut3D, NodeParams { lut_path: Some(look_lut.clone()), ..Default::default() }));
-    let look = klipp_timeline::Look { id: uuid::Uuid::new_v4(), name: "Warm".into(), node_graph: look_graph };
+    let look = klipp_timeline::Look { id: uuid::Uuid::new_v4(), name: "Warm".into(), node_graph: look_graph, node_labels: Vec::new() };
 
     let mut seq = Sequence::new_default();
     let mut clip = klipp_timeline::Clip::gap(RationalTime::from_frames(0, 24), RationalTime::from_frames(24, 24));
@@ -772,7 +772,7 @@ fn a_moved_collected_folder_keeps_its_grade_files() {
     clip_graph.nodes.push(node(NodeKind::ExternalMatte, NodeParams { matte_image_path: Some(mask.clone()), ..Default::default() }));
     let mut look_graph = NodeGraph::default();
     look_graph.nodes.push(node(NodeKind::Lut3D, NodeParams { lut_path: Some(look_lut.clone()), ..Default::default() }));
-    let look = klipp_timeline::Look { id: uuid::Uuid::new_v4(), name: "Warm".into(), node_graph: look_graph };
+    let look = klipp_timeline::Look { id: uuid::Uuid::new_v4(), name: "Warm".into(), node_graph: look_graph, node_labels: Vec::new() };
     let mut seq = Sequence::new_default();
     let mut clip = klipp_timeline::Clip::gap(RationalTime::from_frames(0, 24), RationalTime::from_frames(24, 24));
     clip.set_grade(clip_graph);

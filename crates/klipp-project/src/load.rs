@@ -1587,11 +1587,17 @@ fn load_transform_link(j: &crate::format::TransformLinkJson) -> Option<klipp_tim
 /// test both a load and a save's pruning ask, so a Look that isn't loaded
 /// is never removed either.
 pub(crate) fn read_look(text: &str, form: crate::FileForm) -> Result<Look, String> {
+    let mut labels = Vec::new();
     let v1_text = match form {
         crate::FileForm::Revision2 => {
-            let v2: serde_json::Value = serde_json::from_str(text).map_err(|e| format!("not JSON: {e}"))?;
+            let mut v2: serde_json::Value = serde_json::from_str(text).map_err(|e| format!("not JSON: {e}"))?;
             if let Some(why) = crate::side_store_revision_refusal(&v2) {
                 return Err(why);
+            }
+            // Its node labels, kept beside the grade (#1866); none in a Look
+            // saved before they were kept.
+            if let Some(kept) = v2.as_object_mut().and_then(|o| o.remove(crate::save::LOOK_NODE_LABELS)) {
+                labels = serde_json::from_value(kept).map_err(|e| format!("its node labels: {e}"))?;
             }
             let v1 = klipp_graph_lift::unlift::look(&v2)?;
             serde_json::to_string(&v1).map_err(|e| e.to_string())?
@@ -1602,7 +1608,11 @@ pub(crate) fn read_look(text: &str, form: crate::FileForm) -> Result<Look, Strin
     if !klipp_nodes::json_check::reads_in_full(&v1_text) {
         return Err("it was saved by a newer Klipp, or cannot be read".into());
     }
-    serde_json::from_str::<Look>(&v1_text).map_err(|e| format!("corrupt: {e}"))
+    let mut look = serde_json::from_str::<Look>(&v1_text).map_err(|e| format!("corrupt: {e}"))?;
+    if look.node_labels.is_empty() {
+        look.node_labels = labels;
+    }
+    Ok(look)
 }
 
 pub fn load_looks(dir: &Path) -> Vec<Look> {

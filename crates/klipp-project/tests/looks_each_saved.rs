@@ -13,7 +13,7 @@ fn temp(tag: &str) -> std::path::PathBuf {
 }
 
 fn look(name: &str, graph: NodeGraph) -> Look {
-    Look { id: uuid::Uuid::new_v4(), name: name.into(), node_graph: graph }
+    Look { id: uuid::Uuid::new_v4(), name: name.into(), node_graph: graph, node_labels: Vec::new() }
 }
 
 /// A grade whose last node feeds its first: a loop, which a revision-2

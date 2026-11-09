@@ -2519,6 +2519,10 @@ pub struct Look {
     pub id: uuid::Uuid,
     pub name: String,
     pub node_graph: klipp_nodes::NodeGraph,
+    /// Its nodes' colour labels, by path inside it, as a library grade
+    /// keeps them (#1866). A Look saved before they were kept has none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub node_labels: Vec<crate::node_labels::GradeNodeLabel>,
 }
 
 /// A marker placed at a specific time within a clip.
