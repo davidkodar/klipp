@@ -53,14 +53,21 @@ impl KeyCombo {
 
     /// Check if this combo matches the current egui input state.
     pub fn is_pressed(&self, input: &egui::InputState) -> bool {
-        if input.modifiers.ctrl != self.ctrl { return false; }
-        if input.modifiers.shift != self.shift { return false; }
-        if input.modifiers.alt != self.alt { return false; }
+        let held = |m: &egui::Modifiers| m.ctrl == self.ctrl && m.shift == self.shift && m.alt == self.alt;
+        // A key is matched with the modifiers held when it went down, which
+        // its event carries. The frame's own are those at its end: on an
+        // idle window, a quick Ctrl+Z (Ctrl down, Z, Ctrl up) arrives in one
+        // frame with Ctrl already up there, and was dropped.
+        if let Some(egui_key) = parse_egui_key(&self.key) {
+            if input.events.iter().any(|e| matches!(e, egui::Event::Key { key, pressed: true, modifiers, .. } if *key == egui_key && held(modifiers))) {
+                return true;
+            }
+        }
+        if !held(&input.modifiers) { return false; }
 
         // Try to parse as egui::Key
         if let Some(egui_key) = parse_egui_key(&self.key) {
-            input.key_pressed(egui_key)
-                || self.shifted_punctuation_pressed(egui_key, input)
+            self.shifted_punctuation_pressed(egui_key, input)
                 || self.clipboard_event_pressed(egui_key, input)
         } else {
             // Text-based keys (punctuation: ,  .  ;  '  etc.). Ctrl and
@@ -1575,5 +1582,46 @@ mod category_coverage {
             .collect();
         let orphans: Vec<&String> = kb.bindings.keys().filter(|a| !listed.contains(a.as_str())).collect();
         assert!(orphans.is_empty(), "actions in no category: {orphans:?}");
+    }
+}
+
+#[cfg(test)]
+mod quick_press_tests {
+    use super::KeyBindings;
+
+    fn pressed(action: &str, frame_mods: egui::Modifiers, events: Vec<egui::Event>) -> bool {
+        let ctx = egui::Context::default();
+        let mut hit = false;
+        let raw = egui::RawInput { modifiers: frame_mods, events, ..Default::default() };
+        let _ = ctx.run(raw, |ctx| hit = ctx.input(|i| KeyBindings::default().is_action_pressed(action, i)));
+        hit
+    }
+
+    fn key(key: egui::Key, pressed: bool, modifiers: egui::Modifiers) -> egui::Event {
+        egui::Event::Key { key, physical_key: Some(key), pressed, repeat: false, modifiers }
+    }
+
+    /// Ctrl+Z pressed and let go within one frame, Ctrl up by the frame's
+    /// end, as on an idle window, undoes; Z alone doesn't; and Ctrl held at
+    /// the end over a Z pressed without it doesn't either.
+    #[test]
+    fn a_quick_shortcut_is_matched_by_the_keys_it_was_pressed_with() {
+        use egui::{Key, Modifiers};
+        let quick = vec![key(Key::Z, true, Modifiers::CTRL), key(Key::Z, false, Modifiers::CTRL)];
+        assert!(pressed("undo", Modifiers::NONE, quick), "Ctrl already up at the frame's end");
+        assert!(pressed("undo", Modifiers::CTRL, vec![key(Key::Z, true, Modifiers::CTRL)]), "held through the frame");
+        assert!(!pressed("undo", Modifiers::NONE, vec![key(Key::Z, true, Modifiers::NONE)]), "Z alone");
+        assert!(!pressed("undo", Modifiers::CTRL, vec![key(Key::Z, true, Modifiers::NONE)]), "Ctrl pressed after Z");
+        // Held keys repeat: each repeat carries what is held, as before.
+        let repeat = |m| egui::Event::Key { key: Key::ArrowLeft, physical_key: Some(Key::ArrowLeft), pressed: true, repeat: true, modifiers: m };
+        assert!(pressed("step_backward", Modifiers::NONE, vec![repeat(Modifiers::NONE)]), "a repeat steps");
+        assert!(!pressed("step_backward", Modifiers::ALT, vec![repeat(Modifiers::ALT)]), "with Alt held it is another action");
+        assert!(pressed("prev_keyframe", Modifiers::ALT, vec![repeat(Modifiers::ALT)]), "that one");
+        // A modifier held through the frame chooses as it always did; one let
+        // go after the key in the same frame no longer changes what it was.
+        assert!(pressed("prev_keyframe", Modifiers::NONE, vec![key(Key::ArrowLeft, true, Modifiers::ALT)]), "Alt let go in the frame");
+        assert!(!pressed("step_backward", Modifiers::NONE, vec![key(Key::ArrowLeft, true, Modifiers::ALT)]), "not a plain step as well");
+        let redo = vec![key(Key::Z, true, Modifiers::CTRL | Modifiers::SHIFT)];
+        assert!(pressed("redo", Modifiers::NONE, redo.clone()) && !pressed("undo", Modifiers::NONE, redo), "Shift held with it is redo");
     }
 }
