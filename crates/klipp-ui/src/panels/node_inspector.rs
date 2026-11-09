@@ -4239,6 +4239,15 @@ fn matte_shown(ctx: &egui::Context) -> Option<NodeId> {
     ctx.data(|d| d.get_temp::<Option<NodeId>>(matte_shown_id())).flatten()
 }
 
+fn key_waiting_id() -> egui::Id {
+    egui::Id::new("qualifier_waiting_for_its_colour")
+}
+
+/// Tell the pages which key waits for its colour, if one does.
+pub(crate) fn publish_key_waiting(ctx: &egui::Context, node: Option<NodeId>) {
+    ctx.data_mut(|d| d.insert_temp(key_waiting_id(), node));
+}
+
 /// A grade node's header: its name, its on switch, and the diamond that
 /// keys the switch. Shared by the per-node layout and the generated one
 /// (M3 step 11).
@@ -4297,6 +4306,13 @@ pub(crate) fn node_header(
             {
                 cmds.push(AppCommand::ShowMatte { node: (!on).then_some(node_id) });
             }
+        });
+    }
+    if *kind == NodeKind::Qualifier && ui.ctx().data(|d| d.get_temp::<Option<NodeId>>(key_waiting_id())).flatten() == Some(node_id) {
+        ui.horizontal(|ui| {
+            ui.add_space(12.0);
+            ui.label(egui::RichText::new("Click the colour to key in the viewer").size(11.0).color(theme.accent))
+                .on_hover_text("The key stays off until then. Esc, or the eyedropper button, calls it off");
         });
     }
     // The frame on screen didn't draw this node as asked: why, as the
@@ -5925,6 +5941,30 @@ mod show_matte_tests {
         assert_eq!(run(NodeKind::Mask, Some(NodeId::new_v4())), Some(Some(Some(node))), "another's shown: this one instead");
         assert_eq!(run(NodeKind::Qualifier, Some(node)), Some(Some(None)), "turned off");
         assert_eq!(run(NodeKind::Corrector, None), None, "no toggle on a correction's page");
+    }
+}
+
+#[cfg(test)]
+mod key_waiting_tests {
+    use super::*;
+
+    /// A Qualifier's page says it waits for its colour while it does, and
+    /// only for that key.
+    #[test]
+    fn a_waiting_key_says_so_on_its_page() {
+        let node = NodeId::new_v4();
+        let frame = FrameSelection::new(klipp_core::Timecode::zero(), klipp_core::Timecode::zero(), 0.02);
+        let says = |waiting: Option<NodeId>| {
+            let ctx = egui::Context::default();
+            publish_key_waiting(&ctx, waiting);
+            let out = ctx.run(Default::default(), |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| node_header(ui, &NodeKind::Qualifier, true, &Default::default(), node, ClipId::new(), &mut Vec::new(), &KlippTheme::default(), frame));
+            });
+            out.shapes.iter().any(|s| matches!(&s.shape, egui::Shape::Text(t) if t.galley.text() == "Click the colour to key in the viewer"))
+        };
+        assert!(says(Some(node)));
+        assert!(!says(None));
+        assert!(!says(Some(NodeId::new_v4())), "another key's");
     }
 }
 
