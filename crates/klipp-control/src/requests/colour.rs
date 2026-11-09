@@ -230,6 +230,30 @@ pub(crate) fn respond(
                     "matching needs at least two shots on one video track".into()
                 });
             }
+            // The same match again changes nothing, as a colourist's would:
+            // each click measured on the last one's result, and walked the
+            // grades, exposure and gain trading off. A shot graded since, or
+            // other shots, is a new match.
+            let grades_now = || -> Result<Vec<(klipp_core::ClipId, String)>, String> {
+                let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+                shots.iter().map(|(id, ..)| {
+                    let cid = klipp_core::ClipId(id.parse().map_err(|e| format!("{e}"))?);
+                    let grade = seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == cid).map(|c| serde_json::to_string(klipp_timeline::GradeAccess::grade(c)).unwrap_or_default()).unwrap_or_default();
+                    Ok((cid, grade))
+                }).collect()
+            };
+            if apply {
+                let made = ctx.shared.last_scene_match.lock().map_err(|_| "match memory poisoned")?.clone();
+                if let Some((_, mut again)) = made.filter(|(left, _)| grades_now().is_ok_and(|now| now == *left)) {
+                    let said = again["text"].as_str().unwrap_or("").to_string();
+                    again["text"] = json!(format!("These shots were already matched and none has changed since, so they are left as they are. It's a first pass: to go further, compare the shots and fine-tune by eye.\n\n{said}"));
+                    again["applied"] = json!(false);
+                    again["already_matched"] = json!(true);
+                    again["undo_steps"] = json!(0);
+                    again["revision"] = json!(ctx.shared.revision());
+                    return Ok(again);
+                }
+            }
             // Every shot read the way a colourist checks one: three
             // frames, the middle reading grading it.
             let mut read: Vec<(usize, f64, klipp_color::measure::FrameMeasure)> = Vec::new();
@@ -359,7 +383,7 @@ pub(crate) fn respond(
             }
             let (join_lines, joins) = scene_joins(&shots, &read, &scenes);
             lines.extend(join_lines);
-            Ok(json!({
+            let reply = json!({
                 "text": format!(
                     "{}\n\nMatched on what the eye notices across a cut, in its order: exposure first, then how differently each face sits against the skin band once the scene's own cast is taken off, then the cast on the neutrals, then contrast. The faces are compared as errors and not as colours, so two people with different complexions lit the same way still match. Under {MATCH_GOOD:.0} ΔE the cut is invisible; over {MATCH_WARN:.0} ΔE it reads as a change; over {SCENE_SPLIT:.0} ΔE the shots are not the same lighting setup and belong to different scenes.{}",
                     lines.join("\n"),
@@ -370,7 +394,13 @@ pub(crate) fn respond(
                 "applied": apply,
                 "undo_steps": fold.finish(ctx),
                 "revision": ctx.shared.revision(),
-            }))
+            });
+            if apply {
+                if let (Ok(left), Ok(mut made)) = (grades_now(), ctx.shared.last_scene_match.lock()) {
+                    *made = Some((left, reply.clone()));
+                }
+            }
+            Ok(reply)
         }
 
         ControlCommand::GradeChain { clip_id } => {

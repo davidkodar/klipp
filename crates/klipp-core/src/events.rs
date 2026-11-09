@@ -5751,6 +5751,10 @@ pub struct LastMatch {
 /// them.
 #[derive(Default)]
 pub struct ControlShared {
+    /// The last Match to Hero: its shots with their grades as it left them,
+    /// and what it reported, so the same match again changes nothing while
+    /// they all still stand.
+    pub last_scene_match: std::sync::Mutex<Option<(Vec<(ClipId, String)>, serde_json::Value)>>,
     /// Each clip's last shot match: what it was matched to and the grade it
     /// left, so the same match again changes nothing while both still stand.
     pub last_matches: std::sync::Mutex<std::collections::HashMap<ClipId, LastMatch>>,
