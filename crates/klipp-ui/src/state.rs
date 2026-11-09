@@ -1946,6 +1946,9 @@ pub struct AppState {
     pub title_style_pick: Option<ClipId>,
     /// Whether to show the Paste Attributes dialog.
     pub show_paste_attributes_dialog: bool,
+    /// The clip the dialog was opened for from its own menu. The selection
+    /// can't say: the Colour page keeps the clip at the playhead selected.
+    pub paste_attributes_onto: Option<ClipId>,
     /// Whether to show the Set Clip Speed dialog.
     pub show_speed_dialog: bool,
     /// An editing helper's dialog, open on a clip (#988).
@@ -5027,6 +5030,7 @@ impl Default for AppState {
             title_style_clipboard: None,
             title_style_pick: None,
             show_paste_attributes_dialog: false,
+            paste_attributes_onto: None,
             show_speed_dialog: false,
             edit_helper: None,
             speed_dialog_value: 100.0,

@@ -219,3 +219,24 @@ fn a_ctrl_click_selection_away_from_the_playhead_is_kept() {
     assert_eq!(state.colour_elsewhere_hint(), Some(later));
 }
 
+/// A clip's own menu says where a paste goes: the Colour page keeps the
+/// clip at the playhead selected, so the paste went there, said it had
+/// worked, and overwrote the wrong clip's grade.
+#[test]
+fn a_paste_from_a_clips_own_menu_goes_to_that_clip() {
+    let Cut { mut state, upper, later, lower } = cut();
+    assert_eq!(to_colour_page(&mut state), Some(upper));
+    assert_eq!(state.paste_attributes_targets(), vec![upper], "from the Edit menu: the clip graded, as the header names it");
+    state.paste_attributes_onto = Some(later);
+    assert_eq!(state.paste_attributes_targets(), vec![later], "the clip right-clicked");
+    assert_eq!(state.selected_clip, Some(upper), "and nothing else moved");
+    assert_eq!(state.paste_attributes_named(&[later]), "\"interview.mp4\"");
+    assert_eq!(state.paste_attributes_named(&[later, lower]), "2 clips");
+    // Right-clicked inside a selection of several: all of them.
+    state.selected_clips = vec![later, lower];
+    let mut both = state.paste_attributes_targets();
+    both.sort_by_key(|c| c.0);
+    let mut want = vec![later, lower, upper];
+    want.sort_by_key(|c| c.0);
+    assert_eq!(both, want);
+}
