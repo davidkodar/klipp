@@ -115,7 +115,8 @@ fn fit(src: &[(f64, f64)], dst: &[(f64, f64)], opts: &TrackOptions) -> Option<Si
 /// The window's region followed by the planar tracker, its map held to
 /// `model`, on `gpu` when there is one: the map from the reference
 /// frame's pixels to each frame's, up to the first frame where it is
-/// lost — a track stops there rather than guessing.
+/// lost — a track stops there rather than guessing, and the weak frames
+/// that led up to the loss go with it.
 fn follow(
     model: Model,
     gpu: Option<&mut PlanarGpu>,
@@ -130,7 +131,23 @@ fn follow(
         Some(g) => g.track(reference, quad, &[], frames, next, &opts, progress),
         None => crate::planar::track(reference, quad, &[], frames, next, &opts, progress),
     };
-    tracked.into_iter().take_while(|t| t.state != State::Lost).map(|t| (t.frame, t.h)).collect()
+    let stopped = tracked.iter().any(|t| t.state == State::Lost);
+    let mut kept: Vec<_> = tracked.into_iter().take_while(|t| t.state != State::Lost).collect();
+    if stopped {
+        // The frames just before a loss were already failing: a weak fit
+        // there swings the window and shrinks it as the surface slips
+        // away. The track ends at the last frame followed well, one whose
+        // frame before was followed well too (the reference counts) — a
+        // lone good frame among weak ones is not the surface back.
+        while let Some(i) = kept.len().checked_sub(1) {
+            let good = |j: usize| kept[j].state == State::Good;
+            if good(i) && (i == 0 || good(i - 1)) {
+                break;
+            }
+            kept.pop();
+        }
+    }
+    kept.into_iter().map(|t| (t.frame, t.h)).collect()
 }
 
 /// Follow the window `quad` (its four corners on the reference frame, in
@@ -264,6 +281,40 @@ mod tests {
         assert_eq!(got.iter().map(|g| g.0).collect::<Vec<_>>(), vec![1], "followed to the frame before it was lost");
     }
 
+    /// A subject that fades from view is followed while it is clear;
+    /// the frames where the fit was already failing before the track
+    /// stopped are left out, rather than kept with their swing.
+    #[test]
+    fn a_track_that_is_lost_ends_at_its_last_good_frame() {
+        let (w, h) = (200, 140);
+        let pivot = (100.0, 70.0);
+        let quad = [(75.0, 50.0), (125.0, 50.0), (125.0, 90.0), (75.0, 90.0)];
+        // The subject slides a pixel a frame and, from frame 4, gives
+        // way to a still picture of its own: frames to 16 are clear, 17
+        // to 19 weak, and 20 lost.
+        let other = |x: f64, y: f64| texture(y * 1.3 + 17.0, x * 0.9 - 5.0);
+        let fading = |k: usize| {
+            let gone = ((k as f64 - 3.0) * 0.04).clamp(0.0, 1.0);
+            let mut data = vec![0u8; w * h];
+            for y in 0..h {
+                for x in 0..w {
+                    let (fx, fy) = (x as f64, y as f64);
+                    data[y * w + x] = ((1.0 - gone) * texture(fx - k as f64, fy) + gone * other(fx, fy)).clamp(0.0, 255.0) as u8;
+                }
+            }
+            GrayFrame { data, width: w, height: h }
+        };
+        let frames: Vec<usize> = (1..=30).collect();
+        let opts = Options { lost_after: 1, reacquire_for: 0, model: Model::Similarity, ..Options::default() };
+        let states: Vec<State> = crate::planar::track(&fading(0), quad, &[], &frames, &mut |k| Some(fading(k)), &opts, &|_| true).iter().map(|t| t.state).collect();
+        assert!(states.len() > 17 && states[15] == State::Good && states[16] == State::Low && states.last() == Some(&State::Lost), "the fixture weakens before it is lost: {states:?}");
+        let got = track_window(None, &fading(0), quad, pivot, &frames, &mut |k| Some(fading(k)), &TrackOptions::default(), &|_| true);
+        assert_eq!(got.last().map(|g| g.0), Some(16), "ends at the last frame followed well");
+        for (k, fit) in &got {
+            assert!((fit.dx - *k as f64).abs() < 0.6 && fit.dy.abs() < 0.6 && (fit.scale - 1.0).abs() < 0.01, "frame {k}: {fit:?}");
+        }
+    }
+
     /// #2754: a window over a plain card — nothing inside it to match
     /// a point on — is held by the card's outline, every frame, as the
     /// card moves and grows over a background that stays.
@@ -360,3 +411,4 @@ mod tests {
         assert_eq!(got.iter().map(|g| g.0).collect::<Vec<_>>(), vec![1]);
     }
 }
+
