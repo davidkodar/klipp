@@ -82,7 +82,7 @@ pub fn show_project_info(
             info_row(ui, theme, "Tracks", &format!("{video_tracks}V + {audio_tracks}A"));
 
             // Clip count
-            let clip_count: usize = seq.tracks.iter().map(|t| t.clips.len()).sum();
+            let clip_count = seq.clip_count();
             info_row(ui, theme, "Clips", &clip_count.to_string());
 
             // Proxy/skim count

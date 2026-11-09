@@ -1391,10 +1391,7 @@ impl Preferences {
                         }
                         // Clip and track counts
                         if rp.clip_count.is_none() {
-                            let total: u32 = seq.tracks.iter()
-                                .map(|t| t.clips.len() as u32)
-                                .sum();
-                            rp.clip_count = Some(total);
+                            rp.clip_count = Some(seq.clip_count() as u32);
                             changed = true;
                         }
                         if rp.track_count.is_none() {
@@ -2264,6 +2261,27 @@ mod tests {
         prefs.general.recent_projects = vec![rp];
         assert!(prefs.enrich_recent_projects());
         assert_eq!(prefs.general.recent_projects[0].name, "Two Shores");
+    }
+
+    /// The Projects card counts the clips the status counts: a gap between
+    /// clips is not one. It counted gaps, and said 11 where status said 8.
+    #[test]
+    fn the_projects_card_counts_clips_as_the_status_does() {
+        let dir = std::env::temp_dir().join(format!("klipp-card-count-{}", uuid::Uuid::new_v4())).join("Count.klipp");
+        let tc = |s: f64| klipp_core::Timecode::from_secs_f64(s, 24);
+        let mut pool = klipp_media::MediaPool::new();
+        let media = pool.add(klipp_media::MediaItem::synthetic_for_test(dir.with_file_name("a.mp4"), None));
+        let mut seq = klipp_timeline::Sequence::new_default();
+        let track = seq.tracks.iter_mut().find(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
+        track.clips.push(klipp_timeline::Clip::media(media, tc(0.0), tc(2.0), tc(0.0), tc(2.0)));
+        track.clips.push(klipp_timeline::Clip::gap(tc(2.0), tc(3.0)));
+        track.clips.push(klipp_timeline::Clip::media(media, tc(3.0), tc(5.0), tc(0.0), tc(2.0)));
+        klipp_project::save_project(&dir, &[seq], &pool).unwrap();
+        let mut prefs = Preferences::default();
+        prefs.general.recent_projects = vec![RecentProject::from_path(dir.clone())];
+        prefs.enrich_recent_projects();
+        let _ = std::fs::remove_dir_all(dir.parent().unwrap());
+        assert_eq!(prefs.general.recent_projects[0].clip_count, Some(2));
     }
 
     /// #1847: saving a pinned project puts it first in time order and
