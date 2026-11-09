@@ -8596,9 +8596,7 @@ mod sound_effects_on_open_tests {
         klipp_project::save_project(&dir, &state.sequences, &state.media_pool).unwrap();
         let (sequences, ..) = klipp_project::load_project(&dir).unwrap();
         let _ = std::fs::remove_dir_all(dir.parent().unwrap());
-        let mut opened = AppState::default();
-        opened.sequences = sequences;
-        (opened, v, a)
+        (AppState { sequences, ..Default::default() }, v, a)
     }
 
     /// A project saved with Hum Removal on a picture whose sound is on an
