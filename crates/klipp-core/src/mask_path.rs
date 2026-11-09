@@ -525,4 +525,31 @@ mod tests {
         assert_eq!(edited.keyframes.path.len(), 3);
         assert_eq!(edited.evaluated_at(1.0).path_at(1.0).unwrap()[0].x, 0.25);
     }
+
+    /// A drag of a keyed mask's point changes the key at the playhead, adding
+    /// one if there is none; it wrote the base shape, which the keys override,
+    /// so the point snapped back and every key kept its old shape. Keys are
+    /// not a track: the drag clears a track and leaves them.
+    #[test]
+    fn a_drag_on_a_keyed_shape_goes_on_its_key() {
+        let plain = crate::Mask::new(crate::MaskShape::Bezier { points: sq(0.1) });
+        let dragged = crate::MaskShape::Bezier { points: sq(0.3) };
+        let moved = plain.with_dragged_shape(dragged.clone(), 1.0, 0.02);
+        assert_eq!(moved.shape, dragged, "with no keys, the shape itself");
+        assert!(moved.keyframes.path.is_empty());
+
+        let mut keyed = plain.clone();
+        keyed.keyframes.path = vec![key(0.0, 0.0, PathEase::Linear), key(2.0, 0.2, PathEase::Linear)];
+        assert!(!keyed.keyframes.moves_beyond_its_shape_keys());
+        let on_key = keyed.with_dragged_shape(dragged.clone(), 2.0, 0.02);
+        assert_eq!(on_key.keyframes.path.len(), 2);
+        assert_eq!(on_key.keyframes.path[1].points, sq(0.3));
+        assert_eq!(on_key.keyframes.path[0].points, keyed.keyframes.path[0].points, "the other key stays");
+        let between = keyed.with_dragged_shape(dragged, 1.0, 0.02);
+        assert_eq!(between.keyframes.path.len(), 3, "a new key at the playhead");
+        assert_eq!(between.keyframes.path[1].points, sq(0.3));
+
+        keyed.keyframes.track_x = vec![crate::keyframe::upserted(&[], 1.0, 0.1)];
+        assert!(keyed.keyframes.moves_beyond_its_shape_keys());
+    }
 }
