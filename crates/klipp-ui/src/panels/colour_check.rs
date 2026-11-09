@@ -180,6 +180,9 @@ pub struct ColourCheckPanel {
     pub tool_result_at: (usize, usize),
 }
 
+/// The window's title, which is also what egui knows it by.
+const TITLE: &str = "Colour Check";
+
 impl ColourCheckPanel {
     /// The last tool's answer speaks of the shots as it left them: gone once
     /// the history has moved, an undo or an edit. "Already matched" stayed up
@@ -248,10 +251,9 @@ impl ColourCheckPanel {
         let look = look_for(state);
         let at_secs = state.playhead.to_secs_f64();
         self.refresh(frame_buffer, &faces, at_secs, &look, log_prior_at_playhead(state));
-        crate::widgets::window("Colour Check")
+        crate::widgets::window(TITLE)
             .open(open)
-            .default_pos(default_place(state.viewer_panel_rect, ctx.screen_rect()))
-            .default_size(DEFAULT_SIZE)
+            .default_size([420.0, 520.0])
             .min_width(300.0)
             .min_height(200.0)
             .resizable(true)
@@ -661,17 +663,11 @@ fn row(ui: &mut egui::Ui, theme: &KlippTheme, label: &str, value: &str) {
     });
 }
 
-/// The window's size when it first opens.
-const DEFAULT_SIZE: [f32; 2] = [420.0, 520.0];
-
-/// Where the window first opens: beside the viewer and level with its top,
-/// kept on screen. Over the viewer it hid the picture it reads, and the bars
-/// the chart and surface tools put in the viewer's corner, which stay under
-/// windows like all the viewer's overlays.
-fn default_place(viewer: egui::Rect, screen: egui::Rect) -> egui::Pos2 {
-    let margin = 8.0;
-    let x = (viewer.right() + margin).min(screen.right() - DEFAULT_SIZE[0] - margin).max(screen.left());
-    egui::pos2(x, viewer.top().max(screen.top()))
+/// Where the window is on screen, while it is open: the viewer's tool bars
+/// lay themselves out clear of it.
+pub(crate) fn open_rect(ctx: &egui::Context) -> Option<egui::Rect> {
+    let id = egui::Id::new(TITLE);
+    ctx.memory(|m| m.areas().is_visible(&egui::LayerId::new(egui::Order::Middle, id)).then(|| m.area_rect(id)).flatten())
 }
 
 #[cfg(test)]
@@ -694,33 +690,6 @@ mod tests {
         fb.height = h;
         fb.generation = 1;
         Arc::new(Mutex::new(fb))
-    }
-
-    /// The window first opens clear of the viewer's top-left corner, where
-    /// the chart and surface tools have their bars.
-    #[test]
-    fn colour_check_first_opens_clear_of_the_viewers_corner() {
-        let ctx = ctx();
-        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1920.0, 1080.0));
-        let viewer = egui::Rect::from_min_size(egui::pos2(0.0, 40.0), egui::vec2(1300.0, 700.0));
-        let state = AppState { viewer_panel_rect: viewer, ..Default::default() };
-        let (mut panel, theme, fb) = (ColourCheckPanel::default(), KlippTheme::default(), buffer([128, 128, 128], 64, 64));
-        let mut open = true;
-        for _ in 0..3 {
-            let input = egui::RawInput { screen_rect: Some(screen), ..Default::default() };
-            let _ = ctx.run(input, |ctx| {
-                panel.show(ctx, &state, &fb, &theme, &mut open);
-            });
-        }
-        let window = |p: egui::Pos2| ctx.layer_id_at(p).is_some_and(|l| l.order == egui::Order::Middle);
-        assert!(!window(viewer.left_top() + egui::vec2(20.0, 20.0)), "the bars' corner");
-        assert!(!window(viewer.right_top() - egui::vec2(20.0, -20.0)), "nor over the picture");
-        assert!(window(viewer.right_top() + egui::vec2(40.0, 40.0)), "it is beside the viewer");
-
-        // A viewer taking the whole width: on screen, whatever it covers.
-        let wide = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1920.0, 700.0));
-        let at = default_place(wide, screen);
-        assert!(at.x + DEFAULT_SIZE[0] <= screen.right(), "{at:?}");
     }
 
     /// One frame of the window, with whatever is on screen.
