@@ -2253,3 +2253,259 @@ fn a_correction_is_limited_by_a_new_qualifier_in_one_step() {
     dispatch_canvas(&mut state, &[AppCommand::LimitWithQualifier { clip_id, node_id: correction }]);
     assert_eq!(wire_level(&state, clip_id).nodes.len(), again.nodes.len(), "limited already");
 }
+
+/// A level's whole graph, in a form to compare: nodes, wires, places on
+/// the canvas, frames and notes, none depending on the order they are held.
+fn whole(g: &NodeGraph) -> String {
+    let mut nodes: Vec<String> = g.nodes.iter().map(|n| serde_json::to_string(n).unwrap()).collect();
+    nodes.sort();
+    let mut edges: Vec<String> = g.edges.iter().map(|e| format!("{e:?}")).collect();
+    edges.sort();
+    let mut places: Vec<String> = g.node_positions.iter().map(|(id, p)| format!("{id} {} {}", p.x, p.y)).collect();
+    places.sort();
+    format!("nodes {nodes:#?}\nedges {edges:#?}\nplaces {places:#?}\noutput {}\nframes {}\nnotes {}", g.output_node_id, serde_json::to_string(&g.frames).unwrap(), serde_json::to_string(&g.sticky_notes).unwrap())
+}
+
+/// The document as undo and redo apply a history step to it.
+fn document_view(state: &mut AppState) -> klipp_document::apply::DocumentView<'_> {
+    klipp_document::apply::DocumentView { sequences: &mut state.sequences, active: state.active_sequence_idx, media_pool: &mut state.media_pool, fps: &mut state.fps }
+}
+
+/// Every wiring edit on a grade with a key on it: one step, undo gives the
+/// whole graph back as it was, and redo the graph as it was after.
+#[test]
+fn every_wiring_edit_undoes_and_redoes_to_the_same_graph() {
+    let setup = || {
+        let (mut state, clip_id, ids, _, _h) = wired();
+        dispatch_canvas(&mut state, &[AppCommand::LimitWithQualifier { clip_id, node_id: ids[1] }]);
+        (state, clip_id, ids)
+    };
+    type Edit = Box<dyn Fn(&AppState, ClipId, &[NodeId]) -> Vec<AppCommand>>;
+    let out_of = |state: &AppState, clip_id: ClipId, id: NodeId| wire_level(state, clip_id).edges.iter().find(|e| e.from_node == id && e.from_port == 0).unwrap().to_node;
+    let cases: Vec<(&str, Edit)> = vec![
+        ("reconnect", Box::new(|_, clip_id, ids| vec![AppCommand::ReconnectEdge { clip_id, to: ids[1], to_port: 1, new_to: ids[2], new_to_port: 1 }])),
+        ("insert on a wire", Box::new(|_, clip_id, ids| vec![AppCommand::InsertNodeOnWire { clip_id, kind: "Exposure".into(), position: (10.0, 20.0), from: ids[1], from_port: 0, to: ids[2], to_port: 0 }])),
+        ("add wired", Box::new(|_, clip_id, ids| vec![AppCommand::AddNodeWired { clip_id, kind: "Exposure".into(), position: (10.0, 20.0), from: ids[2], from_port: 0 }])),
+        ("splice", Box::new(move |s, clip_id, ids| vec![AppCommand::SpliceNodeIntoWire { clip_id, node_id: ids[0], from: ids[2], from_port: 0, to: out_of(s, clip_id, ids[2]), to_port: 0 }])),
+        ("remove", Box::new(|_, _, _| Vec::new())),
+        ("group", Box::new(|_, _, _| Vec::new())),
+        ("ungroup", Box::new(|_, _, _| Vec::new())),
+        ("limit", Box::new(|_, clip_id, ids| vec![AppCommand::LimitWithQualifier { clip_id, node_id: ids[2] }])),
+        ("duplicate", Box::new(|_, clip_id, ids| vec![AppCommand::DuplicateNodes { clip_id, node_ids: vec![ids[1]] }])),
+        ("paste", Box::new(|_, clip_id, ids| vec![AppCommand::CopyNodes { clip_id, node_ids: vec![ids[1]] }, AppCommand::PasteNodes { clip_id, position: (300.0, 300.0) }])),
+        ("replace", Box::new(|_, clip_id, ids| vec![AppCommand::ReplaceNode { clip_id, node_id: ids[2], kind: "Saturation".into() }])),
+    ];
+    for (name, edit) in cases {
+        let (mut state, clip_id, ids) = setup();
+        let key_of = |state: &AppState| wire_level(state, clip_id).nodes.iter().find(|n| n.kind == NodeKind::Qualifier).unwrap().id;
+        // What ungrouping takes apart: a compound holding the key and all.
+        let compound = (name == "ungroup").then(NodeId::new_v4);
+        if let Some(group) = compound {
+            let descent = state.graph_descent_path.clone();
+            assert!(state.grade_structure_edit(clip_id, &descent, super::path_commands::GradeStructure::Group { nodes: vec![ids[0], ids[1], key_of(&state)], group }));
+        }
+        let before = whole(&wire_level(&state, clip_id));
+        let steps = state.active_history().undo_count();
+        let cmds = edit(&state, clip_id, &ids);
+        if cmds.is_empty() {
+            let descent = state.graph_descent_path.clone();
+            let structure = match name {
+                "remove" => super::path_commands::GradeStructure::Remove { node: ids[2] },
+                "group" => super::path_commands::GradeStructure::Group { nodes: vec![ids[0], ids[1], key_of(&state)], group: NodeId::new_v4() },
+                "ungroup" => super::path_commands::GradeStructure::Ungroup { node: compound.unwrap() },
+                _ => unreachable!("{name}"),
+            };
+            assert!(state.grade_structure_edit(clip_id, &descent, structure), "{name}: {:?}", state.toast.message_for_test());
+        }
+        dispatch_canvas(&mut state, &cmds);
+        let after = whole(&wire_level(&state, clip_id));
+        assert_eq!(state.active_history().undo_count(), steps + 1, "{name}: one step; {:?}", state.toast.message_for_test());
+        assert_ne!(before, after, "{name}: it changed the graph");
+        let entry = state.active_history_mut().undo().expect("a step to undo");
+        document_view(&mut state).apply_inverse(&entry.command);
+        assert_eq!(whole(&wire_level(&state, clip_id)), before, "{name}: undo");
+        let entry = state.active_history_mut().redo().expect("a step to redo");
+        document_view(&mut state).apply_forward(&entry.command);
+        assert_eq!(whole(&wire_level(&state, clip_id)), after, "{name}: redo");
+    }
+}
+
+/// `Reorder`, the move by path a card's drag makes: the matte on a moved
+/// correction stays on it, and a move past what its key reads is refused,
+/// not done with the key cut off.
+#[test]
+fn moving_a_correction_along_the_chain_keeps_its_matte() {
+    use super::path_commands::GradeStructure as S;
+    let (mut state, clip_id, ids, _, _h) = wired();
+    let descent = state.graph_descent_path.clone();
+    dispatch_canvas(&mut state, &[AppCommand::LimitWithQualifier { clip_id, node_id: ids[0] }]);
+    let qualifier = wire_level(&state, clip_id).nodes.iter().find(|n| n.kind == NodeKind::Qualifier).unwrap().id;
+    assert!(state.grade_structure_edit(clip_id, &descent, S::Reorder { node: ids[0], after: ids[2] }), "{:?}", state.toast.message_for_test());
+    let g = wire_level(&state, clip_id);
+    assert!(has_wire(&g, ids[2], ids[0], 0), "moved: {:?}", g.edges);
+    assert!(has_wire(&g, qualifier, ids[0], 1), "the matte stays: {:?}", g.edges);
+    assert!(g.input_of(qualifier, 0).is_some(), "the key still reads: {:?}", g.edges);
+
+    let (mut state, clip_id, ids, _, _h) = wired();
+    let descent = state.graph_descent_path.clone();
+    dispatch_canvas(&mut state, &[AppCommand::LimitWithQualifier { clip_id, node_id: ids[2] }]);
+    let qualifier = wire_level(&state, clip_id).nodes.iter().find(|n| n.kind == NodeKind::Qualifier).unwrap().id;
+    let was = whole(&wire_level(&state, clip_id));
+    let moved = state.grade_structure_edit(clip_id, &descent, S::Reorder { node: ids[2], after: ids[0] });
+    let g = wire_level(&state, clip_id);
+    if moved {
+        assert!(has_wire(&g, qualifier, ids[2], 1) && g.topo_sort().is_ok(), "{:?}", g.edges);
+    } else {
+        assert_eq!(whole(&g), was, "refused, nothing changed");
+    }
+}
+
+/// A key duplicated alone does not go into what it fed: a matte is no
+/// picture to chain, and its reader keeps reading the original.
+#[test]
+fn a_duplicated_key_leaves_its_reader_on_the_original() {
+    let (mut state, clip_id, ids, _, _h) = wired();
+    dispatch_canvas(&mut state, &[AppCommand::LimitWithQualifier { clip_id, node_id: ids[2] }]);
+    let g = wire_level(&state, clip_id);
+    let qualifier = g.nodes.iter().find(|n| n.kind == NodeKind::Qualifier).unwrap().id;
+    let feed = g.input_of(qualifier, 0);
+    dispatch_canvas(&mut state, &[AppCommand::DuplicateNodes { clip_id, node_ids: vec![qualifier] }]);
+    let g = wire_level(&state, clip_id);
+    let copy = g.nodes.iter().find(|n| n.kind == NodeKind::Qualifier && n.id != qualifier).expect("copied").id;
+    assert!(has_wire(&g, qualifier, ids[2], 1), "the grade keeps its key: {:?}", g.edges);
+    assert!(!has_wire(&g, qualifier, copy, 0), "a matte fed into a key: {:?}", g.edges);
+    assert_eq!(g.input_of(copy, 0), feed, "the copy keys the same picture: {:?}", g.edges);
+}
+
+/// A key, a window and their combiner with the correction, copied and
+/// pasted: the copies are wired as the originals are among themselves, and
+/// no wire of theirs touches an original.
+#[test]
+fn a_pasted_secondary_is_wired_among_its_own_copies() {
+    let (mut state, clip_id, ids, _, _h) = wired();
+    let path = state.graph_descent_path.clone();
+    let (mask, combine) = (NodeId::new_v4(), NodeId::new_v4());
+    dispatch_canvas(&mut state, &[AppCommand::LimitWithQualifier { clip_id, node_id: ids[2] }]);
+    state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id)).unwrap().edit_grade(|g| {
+        let level = crate::app::KlippApp::resolve_graph_at_path_mut(g, &path).unwrap();
+        level.nodes.push(Node { id: mask, kind: NodeKind::Mask, label: "Window".into(), enabled: true, params: Default::default(), keyframes: Default::default(), output_link: None, input_links: Vec::new() });
+        let key = level.edges.iter().position(|e| e.to_node == ids[2] && e.to_port == 1).unwrap();
+        let key = level.edges.remove(key);
+        level.nodes.push(Node { id: combine, kind: NodeKind::CombineMattes, label: "Key \u{2229} Window".into(), enabled: true, params: Default::default(), keyframes: Default::default(), output_link: None, input_links: Vec::new() });
+        level.edges.push(klipp_nodes::Edge { from_node: key.from_node, from_port: key.from_port, to_node: combine, to_port: 0 });
+        level.edges.push(klipp_nodes::Edge { from_node: mask, from_port: 0, to_node: combine, to_port: 1 });
+        level.edges.push(klipp_nodes::Edge { from_node: combine, from_port: 0, to_node: ids[2], to_port: 1 });
+    });
+    let g = wire_level(&state, clip_id);
+    let of = |g: &NodeGraph, k: NodeKind| g.nodes.iter().filter(|n| n.kind == k).map(|n| n.id).collect::<Vec<_>>();
+    let (q, m, c) = (of(&g, NodeKind::Qualifier)[0], of(&g, NodeKind::Mask)[0], of(&g, NodeKind::CombineMattes)[0]);
+    let originals = vec![q, m, c, ids[2]];
+    dispatch_canvas(&mut state, &[AppCommand::CopyNodes { clip_id, node_ids: originals.clone() }, AppCommand::PasteNodes { clip_id, position: (500.0, 500.0) }]);
+    let g = wire_level(&state, clip_id);
+    let fresh = |k: NodeKind| g.nodes.iter().find(|n| n.kind == k && !originals.contains(&n.id)).unwrap_or_else(|| panic!("a copy of {k:?}")).id;
+    let (q2, m2, c2) = (fresh(NodeKind::Qualifier), fresh(NodeKind::Mask), fresh(NodeKind::CombineMattes));
+    let g2 = g.nodes.iter().find(|n| n.kind == g.nodes.iter().find(|o| o.id == ids[2]).unwrap().kind && n.id != ids[2]).unwrap().id;
+    assert!(has_wire(&g, q2, c2, 0) && has_wire(&g, m2, c2, 1) && has_wire(&g, c2, g2, 1), "{:?}", g.edges);
+    let copies = [q2, m2, c2, g2];
+    for e in &g.edges {
+        assert!(!(copies.contains(&e.from_node) && originals.contains(&e.to_node)) && !(originals.contains(&e.from_node) && copies.contains(&e.to_node)), "a wire between a copy and an original: {e:?}");
+    }
+    assert!(has_wire(&g, q, c, 0) && has_wire(&g, m, c, 1) && has_wire(&g, c, ids[2], 1), "the originals untouched: {:?}", g.edges);
+}
+
+/// A compound duplicated holds nodes of its own: an edit inside the copy
+/// changes the copy, and no id is shared with the original.
+#[test]
+fn an_edit_inside_a_duplicated_compound_lands_in_the_copy() {
+    let (mut state, clip_id, _, _, _h) = wired();
+    let compound = state.graph_descent_path[0];
+    state.graph_descent_path.clear();
+    dispatch_canvas(&mut state, &[AppCommand::DuplicateNodes { clip_id, node_ids: vec![compound] }]);
+    let top = wire_level(&state, clip_id);
+    let copy = top.nodes.iter().find(|n| n.kind == NodeKind::Compound && n.id != compound).expect("copied").id;
+    let inner = |id: NodeId, state: &AppState| clip(state, clip_id).grade().nodes.iter().find(|n| n.id == id).unwrap().params.compound_subgraph.clone().unwrap();
+    let (theirs, mine) = (inner(compound, &state), inner(copy, &state));
+    assert!(mine.nodes.iter().all(|n| !theirs.nodes.iter().any(|o| o.id == n.id)), "no id shared");
+    assert_eq!(mine.nodes.len(), theirs.nodes.len());
+    assert!(mine.topo_sort().is_ok() && mine.edges.len() == theirs.edges.len(), "wired as the original: {:?}", mine.edges);
+    let first = mine.nodes.iter().find(|n| n.kind == NodeKind::Exposure).expect("its first node").id;
+    state.graph_descent_path = vec![copy];
+    dispatch_canvas(&mut state, &[AppCommand::LimitWithQualifier { clip_id, node_id: first }]);
+    let keys = |g: &NodeGraph| g.nodes.iter().filter(|n| n.kind == NodeKind::Qualifier).count();
+    assert_eq!((keys(&inner(compound, &state)), keys(&inner(copy, &state))), (0, 1), "the key lands in the copy being edited");
+}
+
+/// A project saved before copies had ids of their own holds two compounds
+/// with the same nodes inside: an edit lands in the one on the canvas.
+#[test]
+fn an_edit_lands_in_the_compound_on_the_canvas_when_two_share_ids() {
+    let (mut state, clip_id, ids, _, _h) = wired();
+    let compound = state.graph_descent_path[0];
+    let twin = NodeId::new_v4();
+    state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id)).unwrap().edit_grade(|g| {
+        let mut node = g.nodes.iter().find(|n| n.id == compound).unwrap().clone();
+        node.id = twin;
+        g.nodes.push(node);
+    });
+    state.graph_descent_path = vec![twin];
+    dispatch_canvas(&mut state, &[AppCommand::LimitWithQualifier { clip_id, node_id: ids[0] }]);
+    let keys = |id: NodeId| clip(&state, clip_id).grade().nodes.iter().find(|n| n.id == id).unwrap().params.compound_subgraph.as_ref().unwrap().nodes.iter().filter(|n| n.kind == NodeKind::Qualifier).count();
+    assert_eq!((keys(compound), keys(twin)), (0, 1));
+}
+
+/// A sender duplicated sends under the same name as the original: readers
+/// must keep reading the original, also when the copy stands first.
+#[test]
+fn a_duplicated_sender_leaves_its_readers_on_the_original() {
+    let (mut state, clip_id, ids, _, _h) = wired();
+    let path = state.graph_descent_path.clone();
+    state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id)).unwrap().edit_grade(|g| {
+        let level = crate::app::KlippApp::resolve_graph_at_path_mut(g, &path).unwrap();
+        level.nodes.iter_mut().find(|n| n.id == ids[0]).unwrap().output_link = Some("A".into());
+        let reader = level.nodes.iter_mut().find(|n| n.id == ids[2]).unwrap();
+        reader.input_links = vec![None, Some("A".into())];
+    });
+    dispatch_canvas(&mut state, &[AppCommand::DuplicateNodes { clip_id, node_ids: vec![ids[0]] }]);
+    let g = wire_level(&state, clip_id);
+    let senders = g.nodes.iter().filter(|n| n.output_link.as_deref() == Some("A")).count();
+    assert_eq!(g.input_of(ids[2], 1), Some(ids[0]), "the reader stays on the original");
+    assert_eq!(senders, 1, "one sender of a name: {:?}", g.nodes.iter().map(|n| (n.id, n.output_link.clone())).collect::<Vec<_>>());
+}
+
+/// A sender and its reader copied together stay a pair: the copied reader
+/// reads the copied sender, not the original under the shared name.
+#[test]
+fn a_pasted_sender_and_reader_stay_a_pair() {
+    let (mut state, clip_id, ids, _, _h) = wired();
+    let path = state.graph_descent_path.clone();
+    state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id)).unwrap().edit_grade(|g| {
+        let level = crate::app::KlippApp::resolve_graph_at_path_mut(g, &path).unwrap();
+        level.nodes.iter_mut().find(|n| n.id == ids[0]).unwrap().output_link = Some("A".into());
+        level.nodes.iter_mut().find(|n| n.id == ids[2]).unwrap().input_links = vec![None, Some("A".into())];
+    });
+    let originals = vec![ids[0], ids[2]];
+    dispatch_canvas(&mut state, &[AppCommand::CopyNodes { clip_id, node_ids: originals.clone() }, AppCommand::PasteNodes { clip_id, position: (500.0, 500.0) }]);
+    let g = wire_level(&state, clip_id);
+    let kind = |id: NodeId| g.nodes.iter().find(|n| n.id == id).unwrap().kind;
+    let copy = |k: NodeKind| g.nodes.iter().find(|n| n.kind == k && !originals.contains(&n.id) && !ids.contains(&n.id)).unwrap().id;
+    let (sender, reader) = (copy(kind(ids[0])), copy(kind(ids[2])));
+    assert_eq!(g.input_of(reader, 1), Some(sender), "the copies are a pair");
+    assert_eq!(g.input_of(ids[2], 1), Some(ids[0]), "the originals too");
+}
+
+/// A saved compound with a wire to a node it no longer holds: copying it
+/// leaves that wire out rather than bringing the app down.
+#[test]
+fn copying_a_compound_with_a_dangling_wire_leaves_the_wire_out() {
+    let (mut state, clip_id, _, _, _h) = wired();
+    let compound = state.graph_descent_path[0];
+    state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id)).unwrap().edit_grade(|g| {
+        let inner = g.nodes.iter_mut().find(|n| n.id == compound).unwrap().params.compound_subgraph.as_mut().unwrap();
+        let out = inner.output_node_id;
+        inner.edges.push(klipp_nodes::Edge { from_node: NodeId::new_v4(), from_port: 0, to_node: out, to_port: 1 });
+    });
+    state.graph_descent_path.clear();
+    dispatch_canvas(&mut state, &[AppCommand::DuplicateNodes { clip_id, node_ids: vec![compound] }]);
+    let copy = wire_level(&state, clip_id).nodes.iter().find(|n| n.kind == NodeKind::Compound && n.id != compound).expect("copied").params.compound_subgraph.clone().unwrap();
+    assert!(copy.edges.iter().all(|e| copy.nodes.iter().any(|n| n.id == e.from_node) && copy.nodes.iter().any(|n| n.id == e.to_node)), "{:?}", copy.edges);
+}

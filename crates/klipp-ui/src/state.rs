@@ -151,10 +151,33 @@ impl GradeNodeClipboard {
             .map(|n| (n.id, klipp_nodes::NodeId::new_v4()))
             .collect();
         let ids: Vec<klipp_nodes::NodeId> = self.nodes.iter().map(|n| remap[&n.id]).collect();
+        // A name already sent here goes to the copy under a name of its own,
+        // copied readers with it: under the shared name they would read the
+        // original, and every reader could change sender with the node order.
+        let mut names: HashMap<String, String> = HashMap::new();
+        for label in self.nodes.iter().filter_map(|n| n.output_link.as_ref()) {
+            if target.nodes.iter().any(|n| n.output_link.as_ref() == Some(label)) && !names.contains_key(label) {
+                let taken = |name: &str| target.nodes.iter().chain(&self.nodes).any(|n| n.output_link.as_deref() == Some(name)) || names.values().any(|v| v == name);
+                let name = (2..).map(|i| format!("{label} {i}")).find(|name| !taken(name)).expect("a free name");
+                names.insert(label.clone(), name);
+            }
+        }
+        let sent: std::collections::HashSet<String> = self.nodes.iter().filter_map(|n| n.output_link.clone()).collect();
         for node in self.nodes.into_iter() {
             let new_id = remap[&node.id];
             let mut new_node = node;
             new_node.id = new_id;
+            fresh_inner_ids(&mut new_node);
+            if let Some(name) = new_node.output_link.as_ref().and_then(|l| names.get(l)) {
+                new_node.output_link = Some(name.clone());
+            }
+            for slot in new_node.input_links.iter_mut().flatten() {
+                if sent.contains(slot.as_str()) {
+                    if let Some(name) = names.get(slot.as_str()) {
+                        *slot = name.clone();
+                    }
+                }
+            }
             target.nodes.push(new_node);
         }
         for edge in self.edges.into_iter() {
@@ -177,6 +200,16 @@ impl GradeNodeClipboard {
             }
         }
         ids
+    }
+}
+
+/// A copied compound's own ids for what is inside it, all the way down: an
+/// edit finds its node by id, and a shared one can land in the original.
+fn fresh_inner_ids(node: &mut klipp_nodes::Node) {
+    if let Some(inner) = node.params.compound_subgraph.as_mut() {
+        let mut fresh = inner.remap_ids_mapped().0;
+        fresh.nodes.iter_mut().for_each(fresh_inner_ids);
+        *inner = fresh;
     }
 }
 

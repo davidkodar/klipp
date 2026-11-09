@@ -146,6 +146,8 @@ mod texture_fill_path;
 mod title_nits_round_trip;
 #[path = "../aux_routing_round_trip.rs"]
 mod aux_routing_round_trip;
+#[path = "../grade_wiring_round_trip.rs"]
+mod grade_wiring_round_trip;
 #[path = "../track_automation_round_trip.rs"]
 mod track_automation_round_trip;
 #[path = "../track_effects_round_trip.rs"]
