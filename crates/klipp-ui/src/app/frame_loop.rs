@@ -1302,6 +1302,7 @@ impl KlippApp {
         if self.colour_tool_reply.is_some() {
             self.take_colour_tool_reply(ctx);
         }
+        self.take_recipe_reply(ctx);
 
         self.publish_picture_transform();
 

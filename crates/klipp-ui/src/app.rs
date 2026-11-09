@@ -21,6 +21,7 @@ use klipp_core::{
 use klipp_engine::{PlaybackState, SharedFrameBuffer};
 
 mod export;
+mod recipes;
 mod pointer_hook;
 mod selection_removal;
 mod clip_drops;
@@ -391,6 +392,9 @@ pub struct KlippApp {
     local_control: Option<LocalControl>,
     /// The running colour tool's answer, when it comes.
     colour_tool_reply: Option<std::sync::mpsc::Receiver<Result<serde_json::Value, String>>>,
+    /// A recipe being built from the Library's list: its name and the
+    /// control request's answer to come.
+    recipe_reply: Option<(String, std::sync::mpsc::Receiver<Result<serde_json::Value, String>>)>,
     /// The Delivery Check window's own state (#1978).
     delivery_check: crate::panels::delivery_check::DeliveryCheckPanel,
     /// The answer of the request the Delivery Check window sent, and
