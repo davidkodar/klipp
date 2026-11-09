@@ -4221,6 +4221,24 @@ fn tracked_span(mask: &klipp_core::Mask) -> Option<(f64, f64)> {
     Some((times.iter().copied().reduce(f64::min)?, times.iter().copied().reduce(f64::max)?))
 }
 
+/// Whether a page of `kind` offers Show matte.
+pub(crate) fn shows_a_matte(kind: NodeKind) -> bool {
+    matches!(kind, NodeKind::Qualifier | NodeKind::Mask)
+}
+
+fn matte_shown_id() -> egui::Id {
+    egui::Id::new("matte_shown_in_viewer")
+}
+
+/// Tell the pages, wherever they are drawn from, which matte the viewer shows.
+pub(crate) fn publish_matte_shown(ctx: &egui::Context, node: Option<NodeId>) {
+    ctx.data_mut(|d| d.insert_temp(matte_shown_id(), node));
+}
+
+fn matte_shown(ctx: &egui::Context) -> Option<NodeId> {
+    ctx.data(|d| d.get_temp::<Option<NodeId>>(matte_shown_id())).flatten()
+}
+
 /// A grade node's header: its name, its on switch, and the diamond that
 /// keys the switch. Shared by the per-node layout and the generated one
 /// (M3 step 11).
@@ -4269,6 +4287,18 @@ pub(crate) fn node_header(
             bypass_keys(ui, enabled_track.map_or(&[], |t| &t.keyframes), effective_on, node_id, clip_id, cmds, theme, frame, 12.0);
         });
     });
+    if shows_a_matte(*kind) {
+        ui.horizontal(|ui| {
+            ui.add_space(12.0);
+            let on = matte_shown(ui.ctx()) == Some(node_id);
+            if ui.selectable_label(on, egui::RichText::new("Show matte").size(10.0))
+                .on_hover_text("Show this node's matte in the viewer instead of the picture, white where it reaches (Alt+M). Only the viewer: nothing is exported or saved")
+                .clicked()
+            {
+                cmds.push(AppCommand::ShowMatte { node: (!on).then_some(node_id) });
+            }
+        });
+    }
     // The frame on screen didn't draw this node as asked: why, as the
     // viewer's chip says (M4 step 10).
     if let Some(reason) = crate::panels::viewer_declines::reason(ui.ctx(), clip_id, node_id) {
@@ -5851,6 +5881,50 @@ mod matte_note_tests {
         run(&mut selected, vec![egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE }]);
         run(&mut selected, vec![egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE }]);
         assert_eq!(selected, Some(qualifier));
+    }
+}
+
+#[cfg(test)]
+mod show_matte_tests {
+    use super::*;
+
+    /// The Qualifier's and Mask's pages have the toggle, lit for the node the
+    /// viewer shows; a click there asks for it, or back to the picture. Other
+    /// nodes' pages don't.
+    #[test]
+    fn a_matte_nodes_page_toggles_its_matte_in_the_viewer() {
+        let node = NodeId::new_v4();
+        let frame = FrameSelection::new(klipp_core::Timecode::zero(), klipp_core::Timecode::zero(), 0.02);
+        let run = |kind: NodeKind, shown: Option<NodeId>| {
+            let ctx = egui::Context::default();
+            publish_matte_shown(&ctx, shown);
+            let mut clock = 0.0;
+            let mut step = |events: Vec<egui::Event>| {
+                clock += 0.05;
+                let mut cmds = Vec::new();
+                let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(420.0, 300.0))), time: Some(clock), events, ..Default::default() };
+                let out = ctx.run(input, |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| node_header(ui, &kind, true, &Default::default(), node, ClipId::new(), &mut cmds, &KlippTheme::default(), frame));
+                });
+                let at = out.shapes.iter().find_map(|s| match &s.shape {
+                    egui::Shape::Text(t) if t.galley.text() == "Show matte" => Some(t.pos + t.galley.size() / 2.0),
+                    _ => None,
+                });
+                (cmds, at)
+            };
+            step(Vec::new());
+            let (_, at) = step(Vec::new());
+            let at = at?;
+            let press = |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+            step(vec![egui::Event::PointerMoved(at)]);
+            step(vec![press(true)]);
+            let (cmds, _) = step(vec![press(false)]);
+            Some(cmds.into_iter().find_map(|c| match c { AppCommand::ShowMatte { node } => Some(node), _ => None }))
+        };
+        assert_eq!(run(NodeKind::Qualifier, None), Some(Some(Some(node))), "turned on");
+        assert_eq!(run(NodeKind::Mask, Some(NodeId::new_v4())), Some(Some(Some(node))), "another's shown: this one instead");
+        assert_eq!(run(NodeKind::Qualifier, Some(node)), Some(Some(None)), "turned off");
+        assert_eq!(run(NodeKind::Corrector, None), None, "no toggle on a correction's page");
     }
 }
 

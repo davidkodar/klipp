@@ -373,6 +373,19 @@ pub enum ControlCommand {
     /// The size frames are drawn at while playing (#3234): "full", "half"
     /// or "quarter" of the playback resolution; saved as the preference.
     SetPlaybackQuality { quality: String },
+    /// Show a matte node's matte in the viewer instead of the picture, or go
+    /// back to the picture. Not saved, and not in an export.
+    ShowMatte {
+        /// The clip whose matte to show; left out with `on` false.
+        #[serde(default)]
+        clip_id: Option<String>,
+        /// A Qualifier or Mask node; else the clip's first.
+        #[serde(default)]
+        node_id: Option<String>,
+        /// False goes back to the picture. Left out, true.
+        #[serde(default)]
+        on: Option<bool>,
+    },
     /// Bounce a picture track to a media file (#3264): `track` by index or
     /// name; `format` "prores4444" (default) or "ffv1"; `sound` (default
     /// true) its linked sound in the file. The clip of it goes on a new

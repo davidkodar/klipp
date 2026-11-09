@@ -1435,6 +1435,7 @@ impl ViewerPanel {
         if ov.safe_areas { labels.push("SAFE AREAS"); }
         if let Some(p) = ov.platform.and_then(crate::platform_overlays::by_id) { labels.push(p.name.as_str()); }
         if ov.grid { labels.push("GRID"); }
+        if state.matte_preview_active { labels.push("MATTE"); }
         // no badge for checkerboard
         if !labels.is_empty() {
             let label = labels.join(" + ");

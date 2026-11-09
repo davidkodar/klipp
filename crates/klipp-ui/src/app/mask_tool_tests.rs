@@ -709,3 +709,38 @@ fn dragging_a_mask_keeps_the_inspector_and_a_click_opens_its_page() {
     assert!(v.sent[from..].iter().any(|c| matches!(c, AppCommand::FocusMaskInspector)));
     assert_eq!(v.state.selected_node_id, node, "a click opens its page");
 }
+
+/// The viewer says when it shows a matte, however it was asked; the shortcut
+/// names the selected matte node and turns it off again; a node gone from the
+/// clip in hand is noticed.
+#[test]
+fn the_viewer_says_it_shows_a_matte_and_the_shortcut_is_the_same_state() {
+    let (mut v, clip) = viewer();
+    v.state.active_tool = Tool::Select;
+    let mut window = None;
+    v.state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip)).unwrap().edit_grade(|g| window = Some(g.ensure_corrector_window()));
+    let window = window.unwrap();
+    v.frame(Vec::new());
+    assert!(!v.texts.iter().any(|t| t.contains("MATTE")), "{:?}", v.texts);
+
+    assert!(matches!(v.state.matte_shortcut(), AppCommand::SetMattePreview(true)), "nothing selected: the first it has");
+    v.state.selected_node_id = Some(window);
+    let on = v.state.matte_shortcut();
+    assert!(matches!(on, AppCommand::ShowMatte { node: Some(n) } if n == window), "{on:?}");
+    v.state.before_dispatch(&on);
+    assert_eq!((v.state.matte_preview_active, v.state.matte_preview_node), (true, Some(window)));
+    v.frame(Vec::new());
+    assert!(v.texts.iter().any(|t| t.contains("MATTE")), "{:?}", v.texts);
+    assert!(!v.state.matte_node_gone());
+
+    let off = v.state.matte_shortcut();
+    assert!(matches!(off, AppCommand::ShowMatte { node: None }), "{off:?}");
+    v.state.before_dispatch(&off);
+    assert_eq!((v.state.matte_preview_active, v.state.matte_preview_node), (false, None));
+    v.frame(Vec::new());
+    assert!(!v.texts.iter().any(|t| t.contains("MATTE")), "{:?}", v.texts);
+
+    v.state.before_dispatch(&AppCommand::ShowMatte { node: Some(window) });
+    v.state.selected_clip = None;
+    assert!(v.state.matte_node_gone(), "another clip in hand");
+}
