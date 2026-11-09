@@ -135,6 +135,86 @@ fn control(state: &mut AppState, cmds: &mut Vec<AppCommand>, resp: &egui::Respon
     }
 }
 
+/// What the effect card asks of bus `at`'s chain, drawn for it under the
+/// clip id `stand_in`: a value moved with a drag is heard at once and one
+/// step when the drag ends, as the strip's other controls are; anything
+/// else is a step. A bus has no keys, and its chain no file to learn a
+/// noise profile from: those asks go nowhere.
+fn bus_card_command(state: &mut AppState, cmds: &mut Vec<AppCommand>, at: usize, stand_in: klipp_core::ClipId, cmd: &AppCommand) {
+    match cmd {
+        AppCommand::BeginAudioChainDrag { clip_id, .. } if *clip_id == stand_in => {
+            if state.mixer_routing_drag.is_none() {
+                state.mixer_routing_drag = Some(state.sequence().routing());
+            }
+        }
+        AppCommand::EndAudioChainDrag { clip_id, .. } if *clip_id == stand_in => {
+            if let Some(old) = state.mixer_routing_drag.take() {
+                let new = state.sequence().routing();
+                if new != old {
+                    state.active_history_mut().push(HistoryEntry { command: EditCommand::SetRouting { old: Box::new(old), new: Box::new(new) } });
+                    cmds.push(AppCommand::RoutingChanged);
+                }
+            }
+        }
+        AppCommand::OpenModelDownloadDialog { .. } => cmds.push(cmd.clone()),
+        _ => {
+            let mut r = state.sequence().routing();
+            let Some(effects) = r.buses.get_mut(at).map(|b| &mut b.effects) else { return };
+            if !bus_chain_edit(effects, stand_in, cmd) {
+                return;
+            }
+            if state.mixer_routing_drag.is_some() {
+                state.sequence_mut().set_routing(&r);
+                cmds.push(AppCommand::RoutingChanged);
+            } else {
+                let effects = r.buses[at].effects.clone();
+                edit(state, cmds, |n| n.buses[at].effects = effects);
+            }
+        }
+    }
+}
+
+/// `cmd`, an effect card's ask addressed to `stand_in`, made on a bus's
+/// `effects`: whether it changed them. An effect is added only while the
+/// bus has room, and never a Normalize, which measures a clip's file.
+fn bus_chain_edit(effects: &mut Vec<klipp_core::AudioEffectInstance>, stand_in: klipp_core::ClipId, cmd: &AppCommand) -> bool {
+    let set = |fx: &mut klipp_core::AudioEffectInstance, name: &str, value: f32| match fx.params.iter_mut().find(|(n, _)| n == name) {
+        Some(p) => p.1 = value,
+        None => fx.params.push((name.to_string(), value)),
+    };
+    match cmd {
+        AppCommand::AddAudioEffect { clip_id, effect_type } if *clip_id == stand_in => {
+            if effects.len() >= klipp_timeline::routing::MAX_BUS_EFFECTS || effect_type == "normalize" {
+                return false;
+            }
+            effects.push(klipp_core::AudioEffectInstance { effect_type: effect_type.clone(), enabled: true, wet_dry: 1.0, params: Vec::new() });
+        }
+        AppCommand::RemoveAudioEffect { clip_id, effect_index } if *clip_id == stand_in && *effect_index < effects.len() => {
+            effects.remove(*effect_index);
+        }
+        AppCommand::ToggleAudioEffect { clip_id, effect_index } if *clip_id == stand_in && *effect_index < effects.len() => {
+            effects[*effect_index].enabled = !effects[*effect_index].enabled;
+        }
+        AppCommand::SetAudioEffectWetDry { clip_id, effect_index, wet_dry } if *clip_id == stand_in && *effect_index < effects.len() => {
+            effects[*effect_index].wet_dry = wet_dry.clamp(0.0, 1.0);
+        }
+        AppCommand::UpdateAudioEffectParam { clip_id, effect_index, param_name, value } if *clip_id == stand_in && *effect_index < effects.len() => {
+            set(&mut effects[*effect_index], param_name, *value);
+        }
+        AppCommand::SetAudioEffectParams { clip_id, effect_index, params } if *clip_id == stand_in && *effect_index < effects.len() => {
+            for (name, value) in params {
+                set(&mut effects[*effect_index], name, *value);
+            }
+        }
+        AppCommand::ReorderAudioEffect { clip_id, from_index, to_index } if *clip_id == stand_in && *from_index < effects.len() && *to_index < effects.len() => {
+            let fx = effects.remove(*from_index);
+            effects.insert(*to_index, fx);
+        }
+        _ => return false,
+    }
+    true
+}
+
 /// Bus `at`'s strip, `w` by `h`: its name (right-click to rename or take
 /// it out), where it goes, its effects, its pan, its fader with its
 /// meter, and its mute. A way to master longer than is made up for is
@@ -188,38 +268,38 @@ pub fn bus_strip(ui: &mut egui::Ui, theme: &KlippTheme, state: &mut AppState, cm
         edit(state, cmds, |r| r.buses[at].output = out);
     }
 
-    // Its effects: each switched or taken off, one added from the list.
+    // Its effects, in the card the clip inspector draws: each opened by its
+    // name for its parameters, switched, mixed, moved or taken off, and one
+    // added from the list. A bus's chain had its switches alone, so a
+    // delay on it couldn't be set.
+    // In a window of its own, opened and closed by FX: inside a menu, the
+    // card's add list opened outside the menu, and a click on it closed
+    // the menu before the choice was read.
     let on = bus.effects.iter().filter(|e| e.enabled).count();
-    ui.menu_button(egui::RichText::new(format!("FX {on}/{}", bus.effects.len())).size(9.0), |ui| {
-        for (k, fx) in bus.effects.iter().enumerate() {
-            ui.horizontal(|ui| {
-                let mut enabled = fx.enabled;
-                let name = klipp_core::audio_effect_registry::audio_effect(&fx.effect_type).map_or(fx.effect_type.as_str(), |s| s.name);
-                if ui.checkbox(&mut enabled, name).changed() {
-                    edit(state, cmds, |r| r.buses[at].effects[k].enabled = enabled);
-                }
-                if ui.small_button("✕").on_hover_text("Take it off").clicked() {
-                    edit(state, cmds, |r| {
-                        r.buses[at].effects.remove(k);
-                    });
-                }
+    let open_id = egui::Id::new(("bus_fx_open", bus.id));
+    let mut open = ui.ctx().data(|d| d.get_temp::<bool>(open_id)).unwrap_or(false);
+    if ui.selectable_label(open, egui::RichText::new(format!("FX {on}/{}", bus.effects.len())).size(9.0))
+        .on_hover_text("The bus's effects: open one by its name for its settings")
+        .clicked()
+    {
+        open = !open;
+    }
+    if open {
+        let stand_in = klipp_core::ClipId(bus.id.0);
+        let mut card = Vec::new();
+        crate::widgets::window(format!("{} Effects", bus.name))
+            .id(egui::Id::new(("bus_fx_window", bus.id)))
+            .open(&mut open)
+            .default_width(300.0)
+            .resizable(false)
+            .show(ui.ctx(), |ui| {
+                crate::inspector::audio_fx_inspector::show_bus_content(ui, theme, stand_in, &bus.effects, &state.ladspa_plugins, &mut card);
             });
+        for cmd in card {
+            bus_card_command(state, cmds, at, stand_in, &cmd);
         }
-        if !bus.effects.is_empty() {
-            ui.separator();
-        }
-        ui.add_enabled_ui(bus.effects.len() < klipp_timeline::routing::MAX_BUS_EFFECTS, |ui| {
-            ui.menu_button("Add Effect", |ui| {
-                for spec in klipp_core::audio_effect_registry::AUDIO_EFFECTS.iter().filter(|s| s.type_id != "normalize") {
-                    if ui.button(spec.name).clicked() {
-                        let fx = klipp_core::AudioEffectInstance { effect_type: spec.type_id.into(), enabled: true, wet_dry: 1.0, params: Vec::new() };
-                        edit(state, cmds, |r| r.buses[at].effects.push(fx));
-                        ui.close_menu();
-                    }
-                }
-            });
-        });
-    });
+    }
+    ui.ctx().data_mut(|d| d.insert_temp(open_id, open));
     if state.buses_held_at_cap.get(at).copied().unwrap_or(false) {
         ui.label(egui::RichText::new("over 2 s late").size(9.0).color(theme.marker_error)).on_hover_text(format!(
             "The effects on this bus and the buses after it take longer than {} s, more than is made up for: what it returns is heard that much early against the rest.",
@@ -399,5 +479,141 @@ mod tests {
         assert!(old.buses.is_empty() && new.buses.len() == 1);
         edit(&mut state, &mut cmds, |_| {});
         assert_eq!(cmds.len(), 1, "no change, no step");
+    }
+
+    /// The card's asks, made on a bus's chain: a delay's time set and its
+    /// mix, switched and moved; none past the cap, no Normalize, nothing
+    /// asked of another clip.
+    #[test]
+    fn the_effect_card_edits_a_buss_chain() {
+        let me = klipp_core::ClipId::new();
+        let fx = |t: &str| klipp_core::AudioEffectInstance { effect_type: t.into(), enabled: true, wet_dry: 1.0, params: Vec::new() };
+        let mut chain = vec![fx("delay"), fx("reverb")];
+        assert!(bus_chain_edit(&mut chain, me, &AppCommand::UpdateAudioEffectParam { clip_id: me, effect_index: 0, param_name: "delay_time".into(), value: 1.5 }));
+        assert!(bus_chain_edit(&mut chain, me, &AppCommand::SetAudioEffectWetDry { clip_id: me, effect_index: 0, wet_dry: 0.4 }));
+        assert!(bus_chain_edit(&mut chain, me, &AppCommand::ToggleAudioEffect { clip_id: me, effect_index: 1 }));
+        assert_eq!((chain[0].params.clone(), chain[0].wet_dry, chain[1].enabled), (vec![("delay_time".to_string(), 1.5)], 0.4, false));
+        assert!(bus_chain_edit(&mut chain, me, &AppCommand::ReorderAudioEffect { clip_id: me, from_index: 0, to_index: 1 }));
+        assert_eq!(chain.iter().map(|e| e.effect_type.as_str()).collect::<Vec<_>>(), ["reverb", "delay"]);
+        assert!(!bus_chain_edit(&mut chain, klipp_core::ClipId::new(), &AppCommand::RemoveAudioEffect { clip_id: klipp_core::ClipId::new(), effect_index: 0 }), "another clip's");
+        assert!(!bus_chain_edit(&mut chain, me, &AppCommand::AddAudioEffect { clip_id: me, effect_type: "normalize".into() }));
+        while bus_chain_edit(&mut chain, me, &AppCommand::AddAudioEffect { clip_id: me, effect_type: "eq".into() }) {}
+        assert_eq!(chain.len(), klipp_timeline::routing::MAX_BUS_EFFECTS);
+    }
+
+    /// A bus's FX menu shows each effect's card, its parameters among it:
+    /// a delay's time and feedback can be set where the bus is. The menu
+    /// had each effect's switch and remove alone.
+    #[test]
+    fn a_buss_effects_show_their_parameters() {
+        let mut state = AppState::default();
+        let mut cmds = Vec::new();
+        edit(&mut state, &mut cmds, |r| {
+            add_bus(r);
+            r.buses[0].effects.push(klipp_core::AudioEffectInstance { effect_type: "delay".into(), enabled: true, wet_dry: 1.0, params: Vec::new() });
+        });
+        let ctx = egui::Context::default();
+        let mut clock = 0.0;
+        let mut frame = |state: &mut AppState, events: Vec<egui::Event>| {
+            clock += 0.05;
+            let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(900.0, 900.0))), time: Some(clock), events, ..Default::default() };
+            let out = ctx.run(input, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| bus_strip(ui, &KlippTheme::default(), state, &mut Vec::new(), 0, 90.0, 400.0));
+            });
+            out.shapes.iter().filter_map(|s| match &s.shape {
+                egui::Shape::Text(t) => Some((t.galley.text().to_string(), t.pos + t.galley.size() / 2.0)),
+                _ => None,
+            }).collect::<Vec<_>>()
+        };
+        frame(&mut state, Vec::new());
+        let drawn = frame(&mut state, Vec::new());
+        let at = drawn.iter().find(|(t, _)| t == "FX 1/1").map(|(_, p)| *p).expect("the FX menu");
+        let b = |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+        frame(&mut state, vec![egui::Event::PointerMoved(at)]);
+        frame(&mut state, vec![b(true)]);
+        frame(&mut state, vec![b(false)]);
+        let open = frame(&mut state, Vec::new());
+        let texts: Vec<&str> = open.iter().map(|(t, _)| t.as_str()).collect();
+        assert!(texts.iter().any(|t| t.contains("Feedback")), "the delay's parameters in the menu: {texts:?}");
+        assert!(!texts.iter().any(|t| t.contains('\u{25C6}')), "no keyframe diamonds: a bus has no keys: {texts:?}");
+        // Its add list: the bus's effects, not Normalize, which measures a
+        // clip's file.
+        let add = open.iter().find(|(t, _)| t == "+ Add Effect").map(|(_, p)| *p).expect("the card's add button");
+        let b = |pressed| egui::Event::PointerButton { pos: add, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+        frame(&mut state, vec![egui::Event::PointerMoved(add)]);
+        frame(&mut state, vec![b(true)]);
+        frame(&mut state, vec![b(false)]);
+        let listed = frame(&mut state, Vec::new());
+        let names: Vec<&str> = listed.iter().map(|(t, _)| t.as_str()).collect();
+        assert!(names.contains(&"Delay") && !names.contains(&"Normalize"), "{names:?}");
+    }
+
+    /// A denoiser on a bus has no noise profile to learn: a profile is
+    /// learned from a clip's file, which a bus hasn't, and Learn there did
+    /// nothing.
+    #[test]
+    fn a_buss_denoiser_offers_no_profile_to_learn() {
+        let ctx = egui::Context::default();
+        let fx = vec![klipp_core::AudioEffectInstance { effect_type: "denoiser".into(), enabled: true, wet_dry: 1.0, params: Vec::new() }];
+        let drawn = |bus: bool| {
+            let out = ctx.run(egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(400.0, 1200.0))), ..Default::default() }, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let me = klipp_core::ClipId::new();
+                    if bus {
+                        crate::inspector::audio_fx_inspector::show_bus_content(ui, &KlippTheme::default(), me, &fx, &[], &mut Vec::new());
+                    } else {
+                        crate::inspector::audio_fx_inspector::show_content(ui, &KlippTheme::default(), me, &fx, &std::collections::HashMap::new(), 0.0, 0.0, 30, &[], &mut Vec::new(), 0.0);
+                    }
+                });
+            });
+            out.shapes.iter().filter_map(|s| match &s.shape {
+                egui::Shape::Text(t) => Some(t.galley.text().to_string()),
+                _ => None,
+            }).collect::<Vec<_>>()
+        };
+        assert!(drawn(false).iter().any(|t| t == "Learn at Playhead"), "a clip's denoiser learns: {:?}", drawn(false));
+        let on_bus = drawn(true);
+        assert!(!on_bus.iter().any(|t| t == "Learn at Playhead" || t == "Auto Learn" || t == "NOISE PROFILE"), "{on_bus:?}");
+    }
+
+    /// An effect is added to a bus from its card's list, through the menus
+    /// a hand goes through: FX, + Add Effect, Delay. The list opened outside
+    /// the FX menu, and a click on it closed the menu before the choice was
+    /// read: the bus stayed empty.
+    #[test]
+    fn an_effect_is_added_to_a_bus_from_its_list() {
+        let mut state = AppState::default();
+        let mut cmds = Vec::new();
+        edit(&mut state, &mut cmds, |r| {
+            add_bus(r);
+        });
+        let steps = state.active_history().undo_count();
+        let ctx = egui::Context::default();
+        let mut clock = 0.0;
+        let mut frame = |state: &mut AppState, events: Vec<egui::Event>| {
+            clock += 0.05;
+            let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200.0, 900.0))), time: Some(clock), events, ..Default::default() };
+            let out = ctx.run(input, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| bus_strip(ui, &KlippTheme::default(), state, &mut Vec::new(), 0, 90.0, 400.0));
+            });
+            out.shapes.iter().filter_map(|s| match &s.shape {
+                egui::Shape::Text(t) => Some((t.galley.text().to_string(), t.pos + t.galley.size() / 2.0)),
+                _ => None,
+            }).collect::<Vec<_>>()
+        };
+        let mut click = |state: &mut AppState, label: &str| {
+            let drawn = frame(state, Vec::new());
+            let at = drawn.iter().rev().find(|(t, _)| t == label).map(|(_, p)| *p).unwrap_or_else(|| panic!("{label:?} not drawn: {:?}", drawn.iter().map(|d| d.0.as_str()).collect::<Vec<_>>()));
+            let b = |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+            frame(state, vec![egui::Event::PointerMoved(at)]);
+            frame(state, vec![b(true)]);
+            frame(state, vec![b(false)]);
+        };
+        click(&mut state, "FX 0/0");
+        click(&mut state, "+ Add Effect");
+        click(&mut state, "Delay");
+        let chain: Vec<String> = state.sequence().routing().buses[0].effects.iter().map(|e| e.effect_type.clone()).collect();
+        assert_eq!(chain, ["delay"], "the delay on the bus");
+        assert_eq!(state.active_history().undo_count(), steps + 1, "one step");
     }
 }
