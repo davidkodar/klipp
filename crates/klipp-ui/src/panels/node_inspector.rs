@@ -4199,6 +4199,16 @@ pub(crate) fn tracked_masks_of(clip: &klipp_timeline::Clip, node: NodeId) -> Vec
     clip.track_points.iter().filter_map(|tp| tp.linked_mask).filter(|(n, _)| *n == node).map(|(_, i)| i).collect()
 }
 
+/// The masks a tracker drives on the Mask node a page's list shows: the one
+/// selected, else the first of `level`, which is what the Colour tab's own
+/// Masks section lists with no node selected. Read from the selection alone
+/// it was empty there, so a tracked mask offered Track as if it had none.
+pub(crate) fn tracked_masks_on_page(clip: &klipp_timeline::Clip, level: &NodeGraph, selected: Option<NodeId>) -> Vec<usize> {
+    let is_mask = |n: &&klipp_nodes::Node| n.kind == NodeKind::Mask;
+    let shown = selected.filter(|id| level.nodes.iter().filter(is_mask).any(|n| n.id == *id)).or_else(|| level.nodes.iter().find(is_mask).map(|n| n.id));
+    shown.map_or_else(Vec::new, |node| tracked_masks_of(clip, node))
+}
+
 /// The stretch of the clip's own clock a mask's track covers.
 fn tracked_span(mask: &klipp_core::Mask) -> Option<(f64, f64)> {
     let times: Vec<f64> = match &mask.keyframes.track_perspective {
@@ -5923,6 +5933,25 @@ fn render_wheel_layout_review(ctx: &egui::Context, out: &egui::FullOutput, textu
 #[cfg(test)]
 mod tracked_span_tests {
     use super::*;
+
+    /// With no node selected the Colour tab's Masks section lists the first
+    /// Mask node, and knows which of its masks are tracked; a selected Mask
+    /// node is the one shown, and one that isn't a mask changes nothing.
+    #[test]
+    fn the_masks_section_knows_what_is_tracked_with_no_node_selected() {
+        let tc = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 25);
+        let mut clip = klipp_timeline::Clip::media(klipp_core::MediaId::new(), tc(0.0), tc(2.0), tc(0.0), tc(2.0));
+        let mut g = NodeGraph::default();
+        let first = g.ensure_corrector_window();
+        let correction = g.ensure_corrector();
+        let second = NodeId::new_v4();
+        g.nodes.push(klipp_nodes::Node { id: second, kind: NodeKind::Mask, label: String::new(), enabled: true, params: Default::default(), keyframes: Default::default(), output_link: None, input_links: Vec::new() });
+        clip.track_points.push(klipp_core::TrackPoint { linked_mask: Some((first, 1)), ..Default::default() });
+        assert_eq!(tracked_masks_on_page(&clip, &g, None), vec![1], "the first Mask node, none selected");
+        assert_eq!(tracked_masks_on_page(&clip, &g, Some(correction)), vec![1], "a node that isn't a mask");
+        assert!(tracked_masks_on_page(&clip, &g, Some(second)).is_empty(), "the one selected is shown");
+        assert!(tracked_masks_on_page(&clip, &NodeGraph::default(), None).is_empty(), "no mask");
+    }
 
     /// A tracked mask's row keeps saying how much of the clip it follows.
     #[test]
