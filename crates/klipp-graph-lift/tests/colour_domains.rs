@@ -84,6 +84,9 @@ fn a_merge_of_both_domains_is_refused_and_one_of_either_side_allowed() {
     g.edges.retain(|e| e.to != (id(5), "in".into()));
     g.edges.push(edge(3, 5, "in"));
     refused(g.clone(), connect(1, 5, "fg"), "mix a scene-referred picture with a display-referred one");
+    // Named as a person knows it, with a way out; never by its id.
+    let err = ops::apply_with_catalog(&mut docs(g.clone()), &connect(1, 5, "fg"), &Catalog).unwrap_err();
+    assert!(!err.contains(&id(5).to_string()) && err.contains("\u{201c}") && err.contains("Scene to Display"), "{err}");
     // Control: the fx before the display step is scene-referred too, so
     // feeding the display step's picture is the one allowed.
     let mut d = docs(g);

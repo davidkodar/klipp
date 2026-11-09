@@ -251,6 +251,12 @@ impl<'a> PictureCanvas<'a> {
         self.nodes.iter().find(|n| n.node.id == id).filter(|n| !n.kind().is_terminal() && !n.kind().is_group()).map(|n| n.node)
     }
 
+    /// Whether `id` stands beside the picture's chain, as a matte or a source
+    /// does: a node of this level nothing reads as its picture.
+    fn beside_the_chain(&self, id: NodeId) -> bool {
+        self.copyable(id).is_some() && !self.graph.edges.iter().any(|e| e.from.0 == id && e.to.1.as_str() == "in")
+    }
+
     /// How many wires leave `node`'s output `port` (#1744).
     fn readers(&self, node: NodeId, port: u8) -> usize {
         self.edges.iter().filter(|e| e.from_node == node && e.from_port == port).count()
@@ -396,9 +402,15 @@ impl<'a> CanvasGraph for PictureCanvas<'a> {
             AppCommand::AddNode { kind, .. } if matte(kind) => {
                 (!self.graph.nodes.iter().any(|n| n.type_id.as_str() == lt::SOURCE)).then(|| "A matte goes beside the clip's picture chain: go up to Clip to add one".to_owned())
             }
-            AppCommand::InsertNodeOnWire { kind, .. } | AppCommand::AddNodeWired { kind, .. } | AppCommand::ReplaceNode { kind, .. } if matte(kind) => {
+            // A matte or source beside the chain swaps for another, its wires
+            // kept; one on the chain can't take a node that stands beside it.
+            AppCommand::ReplaceNode { node_id, kind, .. } if matte(kind) && !self.beside_the_chain(*node_id) => {
+                Some("A matte or a source stands beside the picture's chain: it replaces another matte or source, not an effect on the chain".to_owned())
+            }
+            AppCommand::InsertNodeOnWire { kind, .. } | AppCommand::AddNodeWired { kind, .. } if matte(kind) => {
                 Some("A matte or a source stands beside the picture's chain: add it from its menu, then wire it to an effect's mask or a merge's picture".to_owned())
             }
+            AppCommand::ReplaceNode { kind, .. } if matte(kind) => None,
             AppCommand::AddNode { kind, .. } | AppCommand::ReplaceNode { kind, .. } if picture_node(kind).is_none() => {
                 Some(format!("{kind} can't be added to a picture"))
             }
@@ -502,6 +514,12 @@ impl<'a> CanvasGraph for PictureCanvas<'a> {
                 (!nodes.is_empty()).then_some(AppCommand::CopyPictureNodes { nodes })
             }
             AppCommand::PasteNodes { position, .. } => Some(AppCommand::PastePictureNodes { after: self.path(self.after?), position }),
+            AppCommand::ReplaceNode { node_id, kind, .. } if crate::picture_mattes::matte(&kind).is_some() || crate::picture_mattes::source(&kind).is_some() => {
+                self.beside_the_chain(node_id).then_some(())?;
+                let p = self.positions.get(&node_id).copied().unwrap_or_default();
+                let ops = crate::picture_mattes::replace_ops(self.graph, &self.level, node_id, &kind, NodeId::new_v4(), (p.x, p.y))?;
+                Some(AppCommand::GraphOps { ops, label: "Replace node".into() })
+            }
             AppCommand::ReplaceNode { node_id, kind, .. } => {
                 self.copyable(node_id)?;
                 let node = picture_node(&kind)?;
@@ -926,6 +944,52 @@ mod tests {
         assert!(graph.edges.iter().any(|e| e.from.0 == source && e.to.0 == key), "the key reads the source");
         let on_wire = AppCommand::AddNodeWired { clip_id: c.id, kind: "matte.window".into(), position: (0.0, 0.0), from: source, from_port: 0 };
         assert!(model.refusal(&on_wire).is_some_and(|why| why.contains("add it from its menu")));
+    }
+
+    /// A Solid Colour on a merge's picture, and a window on a blur's mask,
+    /// replaced by a Gradient and a luma key: each takes the other's wire, one
+    /// step, and the old node goes. On the chain, an effect can't be replaced
+    /// by a source, and says why.
+    #[test]
+    fn a_matte_or_source_beside_the_chain_is_replaced_keeping_its_wire() {
+        let mut c = clip();
+        let p = c.picture_v2().unwrap();
+        let blur = p.picture.graph.nodes.iter().find(|n| klipp_graph_lift::effect_params::tag(n) == Some("gaussian_blur")).unwrap().id;
+        let add = |c: &mut Clip, kind: &str, selected: Option<NodeId>, composite: bool| -> NodeId {
+            let graph = c.picture_v2().unwrap().picture.graph.clone();
+            let mut model = PictureCanvas::new(&graph, root(c), selected).unwrap();
+            model.composite_menu = composite;
+            let id = NodeId::new_v4();
+            let Some(AppCommand::GraphOps { ops, .. }) = model.command(AppCommand::AddNode { clip_id: c.id, kind: kind.into(), node_id: Some(id), position: (300.0, 200.0) }) else { panic!("{kind}") };
+            c.apply_picture_ops(&ops).unwrap_or_else(|e| panic!("{kind}: {e}"));
+            id
+        };
+        let window = add(&mut c, "matte.window", Some(blur), false);
+        add(&mut c, "merge", None, true);
+        let merge = c.picture_v2().unwrap().picture.graph.nodes.iter().find(|n| klipp_graph_lift::effect_params::tag(n) == Some("merge")).unwrap().id;
+        let solid = add(&mut c, "source.solid", Some(merge), true);
+        let replace = |c: &mut Clip, old: NodeId, kind: &str| {
+            let graph = c.picture_v2().unwrap().picture.graph.clone();
+            let model = PictureCanvas::new(&graph, root(c), None).unwrap();
+            let cmd = AppCommand::ReplaceNode { clip_id: c.id, node_id: old, kind: kind.into() };
+            assert_eq!(model.refusal(&cmd), None, "{kind}");
+            let Some(AppCommand::GraphOps { ops, .. }) = model.command(cmd) else { panic!("{kind}: one batch") };
+            c.apply_picture_ops(&ops).unwrap_or_else(|e| panic!("{kind}: {e}"));
+        };
+        replace(&mut c, solid, "source.gradient");
+        replace(&mut c, window, "matte.luma_key");
+        let graph = c.picture_v2().unwrap().picture.graph.clone();
+        let tag_of = |id: NodeId| graph.nodes.iter().find(|n| n.id == id).map(|n| (klipp_graph_lift::effect_params::tag(n).map(str::to_owned), n.label.clone()));
+        let fg = graph.edges.iter().find(|e| e.to == (merge, "fg".into())).expect("the merge's picture still wired").from.0;
+        assert_eq!(tag_of(fg).map(|t| t.1), Some("Gradient".into()));
+        let mask = graph.edges.iter().find(|e| e.to == (blur, "mask".into())).expect("the blur still masked").from.0;
+        let kind = graph.nodes.iter().find(|n| n.id == mask).and_then(|n| n.legacy.as_ref()).and_then(|l| l.payload.get("kind")).cloned();
+        assert_eq!(kind, Some(serde_json::json!("LumaKey")), "the luma key masks it");
+        assert!(!graph.nodes.iter().any(|n| n.id == solid || n.id == window), "the old ones are gone");
+
+        let model = PictureCanvas::new(&graph, root(&c), None).unwrap();
+        let why = model.refusal(&AppCommand::ReplaceNode { clip_id: c.id, node_id: blur, kind: "source.solid".into() });
+        assert!(why.is_some_and(|w| w.contains("not an effect on the chain")));
     }
 
     /// Every node of a clip's picture is on the canvas, in a wide strip

@@ -213,6 +213,23 @@ pub enum FeedbackKind {
     NoPreview,
 }
 
+/// Where a new node goes, asked for at `at` (its top-left in graph units):
+/// there, or the nearest place below it clear of every node at `others`, so
+/// it doesn't land on one and hide its name and ports.
+fn clear_place(at: (f32, f32), others: impl Iterator<Item = (f32, f32)>) -> (f32, f32) {
+    const GAP: f32 = 16.0;
+    let others: Vec<(f32, f32)> = others.collect();
+    let hits = |y: f32| others.iter().any(|o| (o.0 - at.0).abs() < NODE_W + GAP && (o.1 - y).abs() < NODE_H + GAP);
+    let mut y = at.1;
+    for _ in 0..=others.len() {
+        if !hits(y) {
+            return (at.0, y);
+        }
+        y = others.iter().filter(|o| (o.0 - at.0).abs() < NODE_W + GAP && (o.1 - y).abs() < NODE_H + GAP).map(|o| o.1).fold(y, f32::max) + NODE_H + GAP;
+    }
+    (at.0, y)
+}
+
 /// What an empty preview says, from the engine's reason it has none
 /// (#3328): the picture graph's own nodes aren't previewed yet, and a node
 /// can be out of this frame's picture.
@@ -2454,7 +2471,7 @@ impl NodeGraphV2Panel {
                     }
                     // A preview the engine said it can't make: why, in
                     // the node, rather than a blank (#3328).
-                    if let Some(text) = self.node_feedback.get(&node_id).filter(|f| f.kind == FeedbackKind::NoPreview).and_then(|f| empty_preview_text(&f.reason)) {
+                    if let Some(text) = self.node_feedback.get(&node_id).filter(|f| f.kind == FeedbackKind::NoPreview).filter(|_| !kind.is_group()).and_then(|f| empty_preview_text(&f.reason)) {
                         let cell = body_rect.shrink(4.0 * zoom);
                         if cell.is_positive() && zoom > 0.45 {
                             let galley = painter.layout(text.to_string(), egui::FontId::proportional((10.0 * zoom).max(8.0)), theme.text_dim, cell.width());
@@ -2736,7 +2753,13 @@ impl NodeGraphV2Panel {
                 if canvas_rect.contains(p) {
                     // Output port hit?
                     let mut wire_started = false;
-                    for (node_id, rect, _, kind, _) in &node_rects {
+                    // A node drawn over another takes the press: a port of
+                    // the one under it sits at its edge, and took a click
+                    // on its title (the later node is drawn on top).
+                    let top = node_rects.iter().rposition(|(_, r, ..)| r.contains(p));
+                    let covered = |i: usize| top.is_some_and(|t| t > i);
+                    for (i, (node_id, rect, _, kind, _)) in node_rects.iter().enumerate() {
+                        if covered(i) { continue; }
                         for port in 0..kind.output_port_count() {
                             let port_pos = output_port_pos(rect, port, kind);
                             if (p - port_pos).length() <= PORT_HIT_RADIUS * zoom.max(0.5) {
@@ -2750,7 +2773,8 @@ impl NodeGraphV2Panel {
                     // A wire's input end (#1744): pressed, the wire lifts
                     // off it and follows the pointer from its source.
                     if !wire_started {
-                        'input: for (node_id, rect, _, _, in_count) in &node_rects {
+                        'input: for (i, (node_id, rect, _, _, in_count)) in node_rects.iter().enumerate() {
+                            if covered(i) { continue; }
                             for port in 0..*in_count {
                                 if (p - input_port_pos(rect, port, *in_count)).length() > PORT_HIT_RADIUS * zoom.max(0.5) { continue; }
                                 if let Some(e) = graph.edges().iter().find(|e| e.to_node == *node_id && e.to_port == port) {
@@ -2785,7 +2809,7 @@ impl NodeGraphV2Panel {
                             .unwrap_or(false);
                         self.last_primary_press = Some((now, p));
                         let mut node_hit = false;
-                        for (node_id, rect, _, kind, _) in &node_rects {
+                        for (node_id, rect, _, kind, _) in node_rects.iter().rev() {
                             if rect.contains(p) {
                                 // The eye on the header views the node in
                                 // the program viewer, or goes back to the
@@ -3360,7 +3384,7 @@ impl NodeGraphV2Panel {
                         // sticky (above frames), then frame body,
                         // then empty canvas.
                         let mut on_node = None;
-                        for (node_id, rect, _, _, _) in &node_rects {
+                        for (node_id, rect, _, _, _) in node_rects.iter().rev() {
                             if rect.contains(p) { on_node = Some(*node_id); break; }
                         }
                         let mut on_sticky: Option<NodeStickyNoteId> = None;
@@ -3416,7 +3440,8 @@ impl NodeGraphV2Panel {
 
         // ── Floating menus (egui::Area) ──────────────────────────
         if self.add_menu_open {
-            self.draw_add_menu(ui, clip_id, &mut cmds, theme, graph.add_menu());
+            let taken: Vec<(f32, f32)> = graph.positions().values().map(|p| (p.x, p.y)).collect();
+            self.draw_add_menu(ui, clip_id, &mut cmds, theme, graph.add_menu(), &taken);
         }
         if let Some((nid, _pos)) = self.node_menu {
             // Snapshot kind+enabled so we can borrow out of `graph` cleanly
@@ -4025,6 +4050,7 @@ impl NodeGraphV2Panel {
         cmds: &mut Vec<AppCommand>,
         theme: &KlippTheme,
         categories: &[MenuCategory],
+        taken: &[(f32, f32)],
     ) {
         // Salt the menu id with `add_menu_opened_frame` so each open
         // is a fresh egui::Area / ScrollArea layer with no cached
@@ -4252,7 +4278,8 @@ impl NodeGraphV2Panel {
             close = true;
         }
         if let Some(kind_str) = chosen_kind {
-            let (kind, position) = (kind_str.to_string(), (self.add_menu_graph_pos.x, self.add_menu_graph_pos.y));
+            let asked = (self.add_menu_graph_pos.x, self.add_menu_graph_pos.y);
+            let (kind, position) = (kind_str.to_string(), clear_place(asked, taken.iter().copied()));
             match (self.replace_target, self.insert_wire, self.wire_from) {
                 (Some(node_id), _, _) => cmds.push(AppCommand::ReplaceNode { clip_id, node_id, kind }),
                 (None, Some((from, from_port, to, to_port)), _) => cmds.push(AppCommand::InsertNodeOnWire { clip_id, kind, position, from, from_port, to, to_port }),
@@ -6113,7 +6140,7 @@ pub(crate) mod canvas_command_tests {
         h.panel.add_menu_search = "Exposure".into();
         h.settle();
         let commands = h.click(h.text("Exposure"), egui::PointerButton::Primary);
-        assert!(matches!(commands.as_slice(), [AppCommand::AddNode { clip_id, kind, node_id: None, position }] if *clip_id == h.clip && kind == "Exposure" && *position == (42.0, 64.0)), "{commands:?}");
+        assert!(matches!(commands.as_slice(), [AppCommand::AddNode { clip_id, kind, node_id: None, position }] if *clip_id == h.clip && kind == "Exposure" && *position == super::clear_place((42.0, 64.0), h.graph.node_positions.values().map(|p| (p.x, p.y)))), "{commands:?}");
         h.settle();
         let (source, source_rect) = h.card(NodeKind::Source);
         let (output, output_rect) = h.card(NodeKind::Output);
@@ -6276,6 +6303,48 @@ mod editing_tests {
     /// Tab, or Shift+A, opens the add menu where the pointer is, its
     /// search taking the keys: typed and Enter, the first match is added
     /// there. The pick is a recent one, kept for the next session.
+    /// A node added where another stands goes just below it, clear; one
+    /// asked for in empty canvas goes where asked.
+    #[test]
+    fn a_new_node_is_placed_clear_of_the_others() {
+        assert_eq!(super::clear_place((0.0, 0.0), [(400.0, 0.0)].into_iter()), (0.0, 0.0));
+        let below = super::clear_place((10.0, 20.0), [(0.0, 0.0), (0.0, 80.0)].into_iter());
+        assert_eq!(below.0, 10.0);
+        assert!(below.1 >= 80.0 + super::NODE_H, "below both: {below:?}");
+        for o in [(0.0f32, 0.0f32), (0.0, 80.0)] {
+            assert!((o.1 - below.1).abs() >= super::NODE_H, "clear of {o:?}: {below:?}");
+        }
+    }
+
+    /// A click on a node drawn over another picks the one on top, also on
+    /// its title, where the one under it has its port.
+    #[test]
+    fn a_click_picks_the_node_drawn_on_top() {
+        let mut graph = NodeGraph::default();
+        let correction = graph.ensure_corrector();
+        for (i, node) in graph.nodes.iter().enumerate() {
+            graph.node_positions.insert(node.id, NodePos { x: (i as f32 - 1.0) * 230.0, y: 0.0 });
+        }
+        let source = graph.nodes.iter().find(|n| n.kind == NodeKind::Source).unwrap().id;
+        let at = graph.node_positions[&source];
+        // The corrector lying across the source's right edge, drawn later.
+        graph.node_positions.insert(correction, NodePos { x: at.x + NODE_W * 0.8, y: at.y + NODE_H * 0.4 });
+        assert!(graph.nodes.iter().position(|n| n.id == correction) > graph.nodes.iter().position(|n| n.id == source), "drawn later");
+        let mut h = Harness::on(graph, ClipId::new());
+        h.settle();
+        let (_, top) = h.card(NodeKind::Corrector);
+        let (_, under) = h.card(NodeKind::Source);
+        let overlap = top.intersect(under);
+        assert!(overlap.is_positive(), "{top:?} {under:?}");
+        h.click(overlap.center(), egui::PointerButton::Primary);
+        assert_eq!(h.selected, Some(correction), "the one on top");
+        h.selected = None;
+        h.settle();
+        // On its title, right by the port of the one under it.
+        h.click(egui::pos2(top.left() + 3.0, top.top() + 6.0), egui::PointerButton::Primary);
+        assert!(h.panel.drag_wire.is_none(), "no wire taken from the one under it");
+    }
+
     #[test]
     fn tab_and_shift_a_open_the_add_menu_at_the_pointer() {
         let (mut h, _, at) = canvas();
@@ -6435,5 +6504,10 @@ mod empty_preview_tests {
         assert_eq!(super::empty_preview_text(picture), Some("No preview for picture nodes yet"));
         assert_eq!(super::empty_preview_text("a1b2 doesn't run in this frame's picture"), Some("Not in this frame"));
         assert_eq!(super::empty_preview_text("the render failed"), None);
+        // A group says what it holds there instead, and the two were drawn
+        // over each other.
+        let src = include_str!("node_graph_v2.rs");
+        let at = src.find(&["FeedbackKind::NoPreview).filter(|_| !kind", ".is_group())"].concat());
+        assert!(at.is_some(), "a group's body draws no preview note");
     }
 }

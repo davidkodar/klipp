@@ -2565,6 +2565,23 @@ mod tests {
         assert_eq!(s.selected_node_addr, Some(at(id, &[ids[1]])), "the selection still names it");
     }
 
+    /// A reader with no label of its own is named by its kind, not a type id.
+    #[test]
+    fn a_reader_without_a_label_is_named_by_its_kind() {
+        let mut c = fixture(&[]);
+        let mut grade = klipp_nodes::NodeGraph::default();
+        let (mask, _) = grade.ensure_masked_secondary(klipp_nodes::NodeKind::Corrector);
+        for n in &mut grade.nodes {
+            n.label.clear();
+        }
+        c.set_grade(grade);
+        let p = c.picture_v2().unwrap();
+        let group = p.picture.graph.nodes.iter().find(|n| n.group.as_ref().is_some_and(|b| b.graph.nodes.iter().any(|n| n.id == mask))).unwrap().id;
+        let s = with(std::slice::from_ref(&c));
+        let outcome = graph_ops::graph_ops_edit(&s.sequences[0], &[GraphOp::RemoveNode { path: at(c.id, &[group, mask]) }]).unwrap();
+        assert_eq!(outcome.ungated.iter().map(|u| u.label.as_str()).collect::<Vec<_>>(), vec!["Corrector"]);
+    }
+
     #[test]
     fn removing_a_mask_by_path_reports_its_reader_and_undo_restores_it() {
         let mut c = fixture(&[]);
@@ -2582,7 +2599,7 @@ mod tests {
         let count = s.active_history().undo_count();
         run(&mut s, AppCommand::RemoveNodeAt { addr });
         assert_eq!(s.active_history().undo_count(), count + 1);
-        assert_eq!(s.toast.message_for_test(), Some("1 node lost their mask: Skin correction"));
+        assert_eq!(s.toast.message_for_test(), Some("Skin correction lost its mask"));
         undo(&mut s);
         assert_eq!(picture(&s, c.id), before);
     }
