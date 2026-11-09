@@ -145,6 +145,9 @@ impl KlippApp {
             }
             if !subject_bound(clip.grade(), subject, cut_out) {
                 let chosen = self.state.selected_node_id;
+                if !cut_out && clip.grade().subject_would_combine(subject, chosen) {
+                    self.state.toast.show(format!("The subject's matte is {}: the grade reaches where both do", klipp_nodes::graph::COMBINED_WITH_MATTE));
+                }
                 let edited = super::colour::edit_clip_graph(&mut self.state, clip_id, &[], true, move |graph| bind_requested_subject(graph, subject, chosen, into));
                 if matches!(edited, Some(Ok(()))) { *needs_refresh = true; }
             }
@@ -417,8 +420,9 @@ fn lost_frames(dir: &std::path::Path) -> usize {
 
 /// `graph` with an External Matte named "Subject" reading the matte
 /// sequence in `folder`, gating the correction `chosen` (the one picked in
-/// the grade view), else the first, made in the same step if it has none;
-/// a matte that gated it is replaced.
+/// the grade view), else the first, made in the same step if it has none.
+/// A person's matte on it stays, combined with this one; another subject's or
+/// an AI mask gives way ([`klipp_nodes::NodeGraph::gate_with_matte`]).
 pub(super) fn bind_subject(graph: &mut klipp_nodes::NodeGraph, model: klipp_nodes::SubjectMatte, chosen: Option<klipp_nodes::NodeId>, cut_out: bool) {
     // One matte node per model, shared by the grade's gate and the cut
     // out (#73). Two readers of it cost nothing more on the GPU: an
@@ -449,20 +453,16 @@ pub(super) fn bind_subject(graph: &mut klipp_nodes::NodeGraph, model: klipp_node
     let target = if cut_out {
         graph.output_node_id
     } else {
-        let is_correction = |n: &&klipp_nodes::graph::Node| n.kind == klipp_nodes::NodeKind::Corrector;
-        // Unchosen, never an outside node (#898): its gate takes its key
-        // inverted, so the subject would grade everywhere but the subject.
-        let inside = |n: &&klipp_nodes::graph::Node| is_correction(n) && n.params.key_invert != Some(true);
-        chosen
-            .and_then(|id| graph.nodes.iter().filter(is_correction).find(|n| n.id == id))
-            .or_else(|| graph.nodes.iter().find(inside))
-            .map(|n| n.id)
-            // None to gate: a new one, never an outside node (which
-            // `ensure_corrector` would hand back as the first Corrector).
-            .unwrap_or_else(|| graph.insert_corrector(klipp_nodes::NodeId::new_v4()))
+        // Unchosen, never an outside node (#898). None to gate: a new one,
+        // not an outside node `ensure_corrector` would hand back.
+        graph.subject_gate_target(chosen).unwrap_or_else(|| graph.insert_corrector(klipp_nodes::NodeId::new_v4()))
     };
-    graph.edges.retain(|e| !(e.to_node == target && e.to_port == 1));
-    graph.edges.push(klipp_nodes::graph::Edge { from_node: matte, from_port: 0, to_node: target, to_port: 1 });
+    if cut_out {
+        graph.edges.retain(|e| !(e.to_node == target && e.to_port == 1));
+        graph.edges.push(klipp_nodes::graph::Edge { from_node: matte, from_port: 0, to_node: target, to_port: 1 });
+    } else {
+        graph.gate_with_matte(target, matte);
+    }
 }
 
 /// Why `graph`'s Output alpha can't take the subject `model`'s matte, if
@@ -563,8 +563,33 @@ mod tests {
         }
     }
 
-    /// The subject matte gates the first correction, replacing a matte
-    /// that gated it, as Remove Background's still does.
+    /// A person's Qualifier stays when a subject is tracked: the grade reaches
+    /// what is that colour within the subject. Tracked again, or with the
+    /// other model, the subject's matte is what gives way.
+    #[test]
+    fn tracking_a_subject_keeps_a_persons_key() {
+        use klipp_nodes::SubjectMatte::{Foreground, Subject};
+        let mut g = klipp_nodes::NodeGraph::default();
+        let corr = g.ensure_corrector();
+        let key = klipp_nodes::NodeId::new_v4();
+        assert!(g.limit_with_qualifier(corr, key));
+        bind_subject(&mut g, Subject, None, false);
+        let gate = g.input_of(corr, 1).expect("gated");
+        assert_eq!(g.nodes.iter().find(|n| n.id == gate).unwrap().kind, klipp_nodes::NodeKind::CombineMattes);
+        let first = g.input_of(gate, 1).expect("the subject");
+        assert_eq!(g.input_of(gate, 0), Some(key), "{:?}", g.edges);
+        assert_eq!(g.nodes.iter().find(|n| n.id == first).unwrap().params.matte_subject, Some(Subject));
+        let wires = g.edges.len();
+        bind_subject(&mut g, Subject, None, false);
+        assert_eq!(g.edges.len(), wires, "again changes nothing");
+        bind_subject(&mut g, Foreground, None, false);
+        assert_eq!(g.input_of(gate, 0), Some(key), "still the key");
+        assert_ne!(g.input_of(gate, 1), Some(first), "the other model took its place");
+        assert_eq!(g.nodes.iter().filter(|n| n.kind == klipp_nodes::NodeKind::CombineMattes).count(), 1);
+    }
+
+    /// The subject matte gates the first correction, replacing a wire from
+    /// no node, as Remove Background's still does.
     #[test]
     fn the_subject_gates_the_first_correction() {
         let mut g = klipp_nodes::NodeGraph::default();

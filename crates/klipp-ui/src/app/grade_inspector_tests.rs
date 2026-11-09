@@ -2583,3 +2583,40 @@ fn ungrouping_keeps_every_reader_of_the_compound() {
     assert_eq!(g.input_of(next, 0), g.input_of(outer, 0), "both after it read the same: {:?}", g.edges);
     assert!(g.input_of(outer, 0).is_some(), "{:?}", g.edges);
 }
+
+/// A correction duplicated alone reads the matte the original does, so its
+/// grade reaches the same place and not the whole frame. A copy made some
+/// other way, with no key among what was copied, stays without one.
+#[test]
+fn a_duplicated_correction_keeps_its_key() {
+    let setup = || {
+        let (mut state, clip_id, ids, _, _h) = wired();
+        dispatch_canvas(&mut state, &[AppCommand::LimitWithQualifier { clip_id, node_id: ids[2] }]);
+        let key = wire_level(&state, clip_id).nodes.iter().find(|n| n.kind == NodeKind::Qualifier).unwrap().id;
+        (state, clip_id, ids, key)
+    };
+    let copy_of = |g: &NodeGraph, ids: &[NodeId]| {
+        let kind = g.nodes.iter().find(|n| n.id == ids[2]).unwrap().kind;
+        g.nodes.iter().find(|n| n.kind == kind && !ids.contains(&n.id)).expect("a copy").id
+    };
+
+    let (mut state, clip_id, ids, key) = setup();
+    dispatch_canvas(&mut state, &[AppCommand::DuplicateNodes { clip_id, node_ids: vec![ids[2]] }]);
+    let g = wire_level(&state, clip_id);
+    let dup = copy_of(&g, &ids);
+    assert!(has_wire(&g, ids[2], dup, 0), "in the chain: {:?}", g.edges);
+    assert!(has_wire(&g, key, dup, 1), "the copy reads the key: {:?}", g.edges);
+    assert!(has_wire(&g, key, ids[2], 1), "and the original still does: {:?}", g.edges);
+
+    let (mut state, clip_id, ids, _) = setup();
+    dispatch_canvas(&mut state, &[AppCommand::CopyNodes { clip_id, node_ids: vec![ids[2]] }, AppCommand::PasteNodes { clip_id, position: (500.0, 500.0) }]);
+    let g = wire_level(&state, clip_id);
+    let pasted = copy_of(&g, &ids);
+    assert_eq!(g.edges.iter().filter(|e| e.to_node == pasted && e.to_port == 1).count(), 0, "a pasted copy stays unwired: {:?}", g.edges);
+
+    let (mut state, clip_id, ids, _) = setup();
+    dispatch_canvas(&mut state, &[AppCommand::DuplicateNodes { clip_id, node_ids: vec![ids[1], ids[2]] }]);
+    let g = wire_level(&state, clip_id);
+    let many = copy_of(&g, &ids);
+    assert_eq!(g.edges.iter().filter(|e| e.to_node == many && e.to_port == 1).count(), 0, "copied without the key: {:?}", g.edges);
+}

@@ -97,10 +97,10 @@ pub fn show_dialog(ctx: &egui::Context, state: &mut crate::state::AppState) -> V
             ui.add_space(4.0);
             egui::Grid::new("shorts_grid").num_columns(2).spacing([10.0, 6.0]).show(ui, |ui| {
                 ui.label("Length");
-                ui.add(egui::DragValue::new(&mut dialog.length).range(10.0..=90.0).speed(1.0).fixed_decimals(0).suffix(" s"));
+                ui.add(crate::widgets::number_field(&mut dialog.length).range(10.0..=90.0).speed(1.0).fixed_decimals(0).suffix(" s"));
                 ui.end_row();
                 ui.label("How many");
-                ui.add(egui::DragValue::new(&mut dialog.count).range(1..=20));
+                ui.add(crate::widgets::number_field(&mut dialog.count).range(1..=20));
                 ui.end_row();
                 ui.label("Cut");
                 ui.checkbox(&mut dialog.tighten, "Take out pauses and filler").on_hover_text("Each jump is covered by pushing every other piece in a little");

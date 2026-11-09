@@ -742,6 +742,57 @@ pub(crate) fn respond(
             Ok(v)
         }
 
+        ControlCommand::TrackMask { clip_id, node_id, mask_index, perspective } => {
+            if in_batch {
+                return Err("track_mask runs in the background; send it on its own".into());
+            }
+            let id = existing_clip_id(ctx, &clip_id)?;
+            let index = mask_index.unwrap_or(0);
+            let node = {
+                let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+                let pool = ctx.media_pool.read().recovered();
+                let clip = seq.tracks.iter().find_map(|t| t.find_clip(id)).ok_or_else(|| format!("no clip with id {clip_id}"))?;
+                if clip.media_id().and_then(|m| pool.get(&m)).is_none_or(|m| m.is_still) {
+                    return Err("only a clip of moving footage from a file can be tracked".into());
+                }
+                let is_mask = |n: &&klipp_nodes::Node| n.kind == klipp_nodes::NodeKind::Mask;
+                let shapes = |n: &klipp_nodes::Node| n.params.masks.as_ref().map_or(0, |m| m.masks.len());
+                let grade = klipp_timeline::GradeAccess::grade(clip);
+                let found = match node_id.as_deref() {
+                    Some(given) => {
+                        let wanted = uuid::Uuid::parse_str(given).map_err(|_| format!("node_id \"{given}\" is not a node's id"))?;
+                        grade.nodes.iter().filter(is_mask).find(|n| n.id == wanted).ok_or_else(|| format!("the clip's grade has no Mask node {given}"))?
+                    }
+                    None => grade.nodes.iter().filter(is_mask).find(|n| shapes(n) > 0).ok_or("the clip's grade has no mask to track: add one first")?,
+                };
+                if index >= shapes(found) {
+                    return Err(format!("that Mask node has {} shape(s): mask_index {index} isn't one", shapes(found)));
+                }
+                let transport = ctx.shared.transport.lock().map(|t| *t).unwrap_or_default();
+                let shown = ctx.frame_buffer.lock().ok().and_then(|fb| fb.shown_presented());
+                if let Some(at) = transport.playhead.or(shown).map(|t| t.to_secs_f64()) {
+                    let (a, b) = (clip.timeline_in.to_secs_f64(), clip.timeline_out.to_secs_f64());
+                    if !(a..b).contains(&at) {
+                        return Err(format!("the playhead at {at:.2} s is outside the clip ({a:.2}-{b:.2} s): a track starts from the frame under it, so seek onto the clip first"));
+                    }
+                }
+                found.id
+            };
+            let job_id = format!("mask-track-{}", uuid::Uuid::new_v4());
+            ctx.shared.start_mask_track(id, job_id.clone()).map_err(|running| format!("a mask track is already running on this clip: follow job {running}"))?;
+            let mut v = match send(AppCommand::TrackMaskRegion { clip_id: id, node_id: node, mask_index: index, perspective: perspective.unwrap_or(false) }) {
+                Ok(v) => v,
+                Err(why) => {
+                    ctx.shared.mask_track_failed(id, why.clone());
+                    return Err(why);
+                }
+            };
+            v["job_id"] = json!(job_id);
+            v["node_id"] = json!(node);
+            v["text"] = json!("Tracking the mask in the background. Follow job_id with klipp_follow_job or klipp_job_status: its result says the stretch of the clip it followed and whether it lost the subject.");
+            Ok(v)
+        }
+
         ControlCommand::TrackSurface { clip_id, corners, click, track_corners, exclude, at_secs, name, surface, direction } => {
             let direction: i8 = match direction.as_deref().map(str::trim).map(str::to_lowercase).as_deref() {
                 None | Some("") | Some("both") => 0,

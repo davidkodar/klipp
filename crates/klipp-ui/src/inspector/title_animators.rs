@@ -217,7 +217,7 @@ fn details(ui: &mut egui::Ui, theme: &KlippTheme, i: usize, a: &mut Animator, ke
             }
         });
         if let SelectOrder::Random { seed } = &mut s.order {
-            changed |= ui.add(egui::DragValue::new(seed).prefix("Seed ")).changed();
+            changed |= ui.add(crate::widgets::number_field(seed).prefix("Seed ")).changed();
         }
     });
     ui.horizontal(|ui| {
@@ -227,7 +227,7 @@ fn details(ui: &mut egui::Ui, theme: &KlippTheme, i: usize, a: &mut Animator, ke
             }
         });
         let mut amount = s.amount * 100.0;
-        if ui.add(egui::DragValue::new(&mut amount).range(-100.0..=100.0).suffix("%").prefix("Amount ")).changed() {
+        if ui.add(crate::widgets::number_field(&mut amount).range(-100.0..=100.0).suffix("%").prefix("Amount ")).changed() {
             s.amount = amount / 100.0;
             changed = true;
         }

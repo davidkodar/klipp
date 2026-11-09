@@ -291,8 +291,7 @@ impl KlippApp {
         let _ = clip_snapshot; // we mutate via sequence_mut below
 
         let path_for_node = final_path.clone();
-        let mut wired = false;
-        let mut taken: Option<String> = None;
+        let mut wiring = AiMaskWiring::Unwired;
         if let Some(track) = self.state.sequence_mut().tracks.get_mut(track_idx) {
             if let Some(clip) = track.clips.iter_mut().find(|c| c.id == clip_id) {
                 let matte_id = klipp_nodes::NodeId::new_v4();
@@ -300,57 +299,7 @@ impl KlippApp {
                 params.matte_image_path = Some(path_for_node);
                 params.matte_channel =
                     Some(klipp_nodes::params::MatteChannel::Luminance);
-                clip.edit_grade(|graph| {
-                    graph.nodes.push(klipp_nodes::graph::Node {
-                        id: matte_id,
-                        kind: klipp_nodes::kinds::NodeKind::ExternalMatte,
-                        label: "AI mask".into(),
-                        enabled: true,
-                        params,
-                        keyframes: klipp_nodes::params::NodeKeyframeTracks::default(),
-                        output_link: None,
-                        input_links: Vec::new(),
-                    });
-                    // Cut out: into the Output's alpha (port 1), a matte
-                    // already there replaced (#73, #898).
-                    if cut_out {
-                        let out = graph.output_node_id;
-                        // Another matte already the alpha: refused below,
-                        // by name, with the mask left unwired (#73).
-                        if let Some(other) = graph.input_of(out, 1) {
-                            taken = graph.nodes.iter().find(|n| n.id == other).map(|n| if n.label.is_empty() { n.kind.display_name().to_string() } else { n.label.clone() });
-                            return;
-                        }
-                        graph.edges.retain(|e| !(e.to_node == out && e.to_port == 1));
-                        graph.edges.push(klipp_nodes::graph::Edge { from_node: matte_id, from_port: 0, to_node: out, to_port: 1 });
-                        wired = true;
-                        return;
-                    }
-                    // Find the first Corrector node — that's where the
-                    // default-graph's grade-with-matte expects the
-                    // matte input to feed (port 1).
-                    let corrector_id = graph
-                        .nodes
-                        .iter()
-                        .find(|n| {
-                            matches!(n.kind, klipp_nodes::kinds::NodeKind::Corrector)
-                        })
-                        .map(|n| n.id);
-                    if let Some(corrector_id) = corrector_id {
-                        // Drop any existing matte edge into the
-                        // corrector's port 1 so the new mask wins.
-                        graph
-                            .edges
-                            .retain(|e| !(e.to_node == corrector_id && e.to_port == 1));
-                        graph.edges.push(klipp_nodes::graph::Edge {
-                            from_node: matte_id,
-                            from_port: 0,
-                            to_node: corrector_id,
-                            to_port: 1,
-                        });
-                        wired = true;
-                    }
-                });
+                clip.edit_grade(|graph| wiring = wire_ai_mask(graph, matte_id, params, cut_out));
             }
         }
 
@@ -360,11 +309,13 @@ impl KlippApp {
             .next()
             .map(|s| s.to_string())
             .unwrap_or_else(|| "clip".into());
-        if let Some(name) = taken {
+        if let AiMaskWiring::AlphaTaken(name) = wiring {
             self.state.toast.show(format!("The grade's alpha already takes \u{201c}{name}\u{201d}: the mask was added unwired; unwire that one from the Output to cut out by it"));
-        } else if wired && cut_out {
+        } else if matches!(wiring, AiMaskWiring::CutOut) {
             self.state.toast.show(format!("{track_name} · {clip_short} cut out by the mask"));
-        } else if wired {
+        } else if matches!(wiring, AiMaskWiring::Combined) {
+            self.state.toast.show(format!("Mask combined with the matte already limiting {track_name} \u{b7} {clip_short}: the grade reaches where both do"));
+        } else if matches!(wiring, AiMaskWiring::Gated) {
             self.state.toast.show(format!(
                 "Mask applied to {track_name} · {clip_short}",
             ));
@@ -532,5 +483,123 @@ pub(super) fn ai_tools_task_from_tag(tag: klipp_core::events::AiToolsTaskTag) ->
         AiToolsTaskTag::IsolateObject => crate::ai_tools::AiTask::IsolateObject,
         AiToolsTaskTag::DetectObjects => crate::ai_tools::AiTask::DetectObjects,
         AiToolsTaskTag::TrackObject => crate::ai_tools::AiTask::TrackObject,
+    }
+}
+
+/// How an AI mask's matte went into a clip's grade.
+#[derive(Debug, PartialEq)]
+enum AiMaskWiring {
+    /// Nothing to gate: it hangs in the graph.
+    Unwired,
+    /// Into the Output's alpha.
+    CutOut,
+    /// The alpha takes this matte already: left unwired.
+    AlphaTaken(String),
+    /// The first correction's matte, an earlier AI mask's place taken.
+    Gated,
+    /// Combined with the matte a person limited the correction by.
+    Combined,
+}
+
+/// An AI mask's matte node `matte_id` in `graph`, reading `params`: cutting
+/// the clip out, or gating its first correction (#440), where a person's
+/// matte stays and an earlier AI mask, then left with no reader, goes.
+fn wire_ai_mask(graph: &mut klipp_nodes::NodeGraph, matte_id: klipp_nodes::NodeId, params: klipp_nodes::params::NodeParams, cut_out: bool) -> AiMaskWiring {
+    graph.nodes.push(klipp_nodes::graph::Node {
+        id: matte_id,
+        kind: klipp_nodes::kinds::NodeKind::ExternalMatte,
+        label: klipp_nodes::graph::AI_MASK_LABEL.into(),
+        enabled: true,
+        params,
+        keyframes: klipp_nodes::params::NodeKeyframeTracks::default(),
+        output_link: None,
+        input_links: Vec::new(),
+    });
+    // Cut out: into the Output's alpha (port 1) (#73, #898). Another matte
+    // already the alpha: refused by name, the mask left unwired (#73).
+    if cut_out {
+        let out = graph.output_node_id;
+        if let Some(other) = graph.input_of(out, 1) {
+            let name = graph.nodes.iter().find(|n| n.id == other).map_or_else(String::new, |n| if n.label.is_empty() { n.kind.display_name().to_string() } else { n.label.clone() });
+            return AiMaskWiring::AlphaTaken(name);
+        }
+        graph.edges.push(klipp_nodes::graph::Edge { from_node: matte_id, from_port: 0, to_node: out, to_port: 1 });
+        return AiMaskWiring::CutOut;
+    }
+    // The first Corrector: where the default graph's grade-with-matte
+    // expects the matte (port 1).
+    let Some(corrector) = graph.nodes.iter().find(|n| n.kind == klipp_nodes::kinds::NodeKind::Corrector).map(|n| n.id) else {
+        return AiMaskWiring::Unwired;
+    };
+    match graph.gate_with_matte(corrector, matte_id) {
+        klipp_nodes::graph::GateOutcome::Combined => AiMaskWiring::Combined,
+        klipp_nodes::graph::GateOutcome::Wired => AiMaskWiring::Gated,
+        klipp_nodes::graph::GateOutcome::Replaced(earlier) => {
+            let read = graph.edges.iter().any(|e| e.from_node == earlier) || graph.nodes.iter().find(|n| n.id == earlier).and_then(|n| n.output_link.as_ref()).is_some();
+            let earlier_ai = graph.nodes.iter().any(|n| n.id == earlier && n.label == klipp_nodes::graph::AI_MASK_LABEL);
+            if earlier_ai && !read {
+                graph.nodes.retain(|n| n.id != earlier);
+                graph.node_positions.remove(&earlier);
+            }
+            AiMaskWiring::Gated
+        }
+    }
+}
+
+#[cfg(test)]
+mod ai_mask_wiring_tests {
+    use super::{wire_ai_mask, AiMaskWiring};
+    use klipp_nodes::{kinds::NodeKind, params::NodeParams, NodeGraph, NodeId};
+
+    fn apply(g: &mut NodeGraph, cut_out: bool) -> (NodeId, AiMaskWiring) {
+        let id = NodeId::new_v4();
+        let wiring = wire_ai_mask(g, id, NodeParams { matte_image_path: Some("/tmp/ai.png".into()), ..NodeParams::default() }, cut_out);
+        (id, wiring)
+    }
+
+    /// The first AI mask gates the correction; another takes its place and
+    /// its node goes, however often it is run.
+    #[test]
+    fn an_ai_mask_run_again_replaces_its_own() {
+        let mut g = NodeGraph::default();
+        let corr = g.ensure_corrector();
+        let (first, wiring) = apply(&mut g, false);
+        assert_eq!(wiring, AiMaskWiring::Gated);
+        assert_eq!(g.input_of(corr, 1), Some(first));
+        for _ in 0..3 {
+            let (next, wiring) = apply(&mut g, false);
+            assert_eq!(wiring, AiMaskWiring::Gated);
+            assert_eq!(g.input_of(corr, 1), Some(next));
+        }
+        assert_eq!(g.nodes.iter().filter(|n| n.kind == NodeKind::ExternalMatte).count(), 1, "no pile of old masks");
+    }
+
+    /// A person's Qualifier stays when an AI mask is applied, and still does
+    /// when it is applied again.
+    #[test]
+    fn an_ai_mask_keeps_a_persons_key() {
+        let mut g = NodeGraph::default();
+        let corr = g.ensure_corrector();
+        let key = NodeId::new_v4();
+        assert!(g.limit_with_qualifier(corr, key));
+        let (first, wiring) = apply(&mut g, false);
+        assert_eq!(wiring, AiMaskWiring::Combined);
+        let gate = g.input_of(corr, 1).expect("gated");
+        assert_eq!((g.input_of(gate, 0), g.input_of(gate, 1)), (Some(key), Some(first)), "{:?}", g.edges);
+        let (second, wiring) = apply(&mut g, false);
+        assert_eq!(wiring, AiMaskWiring::Gated);
+        assert_eq!((g.input_of(gate, 0), g.input_of(gate, 1)), (Some(key), Some(second)), "{:?}", g.edges);
+        assert!(!g.nodes.iter().any(|n| n.id == first), "the first is gone");
+        assert_eq!(g.nodes.iter().filter(|n| n.kind == NodeKind::CombineMattes).count(), 1);
+    }
+
+    /// Cutting out still goes to the alpha, and refuses a taken one by name.
+    #[test]
+    fn an_ai_mask_cuts_out_or_says_what_has_the_alpha() {
+        let mut g = NodeGraph::default();
+        let (first, wiring) = apply(&mut g, true);
+        assert_eq!(wiring, AiMaskWiring::CutOut);
+        assert_eq!(g.input_of(g.output_node_id, 1), Some(first));
+        assert_eq!(apply(&mut g, true).1, AiMaskWiring::AlphaTaken("AI mask".into()));
     }
 }

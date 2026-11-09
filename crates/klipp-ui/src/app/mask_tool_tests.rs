@@ -605,6 +605,76 @@ fn the_export_page_viewer_draws_no_mask_or_transform_box() {
     assert_eq!(marks(&mut v), (0, own), "on the Export page, no outline and no gizmo handles");
 }
 
+/// Whether a drag from the middle of the picture took hold of the gizmo, with
+/// a window lying over that place or not.
+fn gizmo_taken(over: bool) -> bool {
+    let (mut v, _) = viewer();
+    v.state.active_tool = Tool::Select;
+    let middle = at(&v, 0.5, 0.5);
+    v.window_over = over.then(|| egui::Rect::from_center_size(middle, egui::vec2(300.0, 200.0)));
+    v.frame(Vec::new());
+    v.frame(Vec::new());
+    v.frame(vec![egui::Event::PointerMoved(middle)]);
+    v.frame(vec![egui::Event::PointerButton { pos: middle, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE }]);
+    v.state.viewer_transform_drag.is_some()
+}
+
+/// A press on a window over the viewer does not also start moving the clip
+/// under it.
+#[test]
+fn a_press_on_a_window_over_the_viewer_leaves_the_gizmo() {
+    assert!(gizmo_taken(false), "on the viewer it does");
+    assert!(!gizmo_taken(true), "under the window");
+}
+
+/// Nor does a Ctrl+click on that window lock the scope cursor.
+#[test]
+fn a_ctrl_click_on_a_window_over_the_viewer_does_not_lock_the_scope_cursor() {
+    let locked = |over: bool| {
+        let (mut v, _) = viewer();
+        v.state.active_tool = Tool::Select;
+        v.state.scope_cursor_show = true;
+        let middle = at(&v, 0.5, 0.5);
+        v.window_over = over.then(|| egui::Rect::from_center_size(middle, egui::vec2(300.0, 200.0)));
+        v.frame(Vec::new());
+        v.frame(Vec::new());
+        v.modifiers = egui::Modifiers::CTRL;
+        v.frame(vec![egui::Event::PointerMoved(middle)]);
+        click(&mut v, middle);
+        v.state.scope_cursor_locked
+    };
+    assert!(locked(false), "on the viewer it does");
+    assert!(!locked(true), "under the window");
+}
+
+/// A clip with a Corner Pin, its first corner typed in, in the viewer: the
+/// pin's handles are its own, there and at the corners left where they
+/// were, and it says what they are. A press on a window over one takes none.
+#[test]
+fn a_corner_pins_handles_are_its_own_and_stay_under_a_window() {
+    let (mut v, clip) = viewer();
+    v.state.active_tool = Tool::Select;
+    let mut pin = klipp_effects::corner_pin::still();
+    if let klipp_effects::BuiltinEffect::CornerPin { tl, .. } = &mut pin {
+        tl[0] = 0.2;
+    }
+    v.state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip)).unwrap().push_effect(pin);
+    v.frame(Vec::new());
+    v.frame(Vec::new());
+    let handles: Vec<egui::Pos2> = v.circles.iter().filter(|(_, fill)| *fill == crate::panels::viewer::CORNER_PIN_HANDLE).map(|c| c.0).collect();
+    assert_eq!(handles.len(), 4, "{:?}", v.circles);
+    let typed = at(&v, 0.2, 0.0);
+    assert!(handles.iter().any(|h| (*h - typed).length() < 2.0), "at the typed corner {typed:?}: {handles:?}");
+    assert!(v.texts.iter().any(|t| t == "Corner Pin"), "{:?}", v.texts);
+
+    // A window lying over the handle, which the same press would have taken.
+    v.window_over = Some(egui::Rect::from_center_size(typed, egui::vec2(300.0, 200.0)));
+    v.frame(Vec::new());
+    v.frame(vec![egui::Event::PointerMoved(typed)]);
+    v.frame(vec![egui::Event::PointerButton { pos: typed, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE }]);
+    assert!(v.state.viewer_corner_pin_drag.is_none(), "under the window");
+}
+
 /// Dragging a shape in the viewer leaves the inspector where it was, so
 /// the next control is where the hand left it; a click on it asks for the
 /// mask's page and still opens it.

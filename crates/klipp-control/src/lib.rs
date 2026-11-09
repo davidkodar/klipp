@@ -935,6 +935,7 @@ fn handle(
             | ControlCommand::SetAppendAudio { .. }
             | ControlCommand::DetectSceneCuts { .. }
             | ControlCommand::TrackSurface { .. }
+            | ControlCommand::TrackMask { .. }
             | ControlCommand::SurfaceKey { .. }
             | ControlCommand::MeasureWater { .. }
             | ControlCommand::SelectClip { .. }

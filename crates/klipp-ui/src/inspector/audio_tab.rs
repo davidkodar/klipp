@@ -335,7 +335,7 @@ fn slider_row(
         ui.style_mut().visuals.widgets.active.bg_stroke = egui::Stroke::NONE;
         ui.style_mut().visuals.selection.bg_fill = theme.accent.linear_multiply(0.3);
 
-        let dv = egui::DragValue::new(value)
+        let dv = crate::widgets::number_field(value)
             .range(min..=max)
             .speed(speed)
             .custom_formatter(move |v, _| {
@@ -346,7 +346,7 @@ fn slider_row(
                 let cleaned: String = s.chars().filter(|c| c.is_ascii_digit() || *c == '.' || *c == '-').collect();
                 cleaned.parse::<f64>().ok()
             })
-            .update_while_editing(false);
+            ;
 
         ui.add_sized(
             egui::vec2(input_w - 4.0, input_h - 4.0),

@@ -294,7 +294,7 @@ pub fn sends_popup(ui: &mut egui::Ui, theme: &KlippTheme, state: &mut AppState, 
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new(name).size(10.0)).on_hover_text(if send.keys.is_empty() { String::new() } else { format!("Its level follows {} keys", send.keys.len()) });
                 let mut level = db(send.level);
-                let resp = ui.add(egui::DragValue::new(&mut level).range(-60.0..=12.0).speed(0.2).suffix(" dB").fixed_decimals(1)).on_hover_text("The send's level");
+                let resp = ui.add(crate::widgets::number_field(&mut level).range(-60.0..=12.0).speed(0.2).suffix(" dB").fixed_decimals(1)).on_hover_text("The send's level");
                 control(state, cmds, &resp, |r| {
                     if let Some(s) = send_mut(r, track, bus) {
                         s.level = gain(level);

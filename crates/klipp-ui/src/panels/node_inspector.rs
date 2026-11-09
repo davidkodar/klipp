@@ -5020,7 +5020,7 @@ fn grade_slider_with(
             // keyboard nudges (at its speed) are kept.
             let before_drag = *value;
             let resp = ui.add(
-                egui::DragValue::new(value)
+                crate::widgets::number_field(value)
                     .range(range.clone())
                     .speed(speed)
                     .custom_formatter(|v, _| {

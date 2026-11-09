@@ -611,7 +611,7 @@ fn scrubby_row(
             if animated {
                 tint_animated(ui);
             }
-            let dv = egui::DragValue::new(value)
+            let dv = crate::widgets::number_field(value)
                 .speed(effective_speed)
                 .range(range.clone())
                 .fixed_decimals(decimals)

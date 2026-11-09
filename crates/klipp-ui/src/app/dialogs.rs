@@ -297,13 +297,13 @@ impl KlippApp {
                             ui.label(egui::RichText::new("Between the In and Out when both are inside the clip, else the whole clip.").small().weak());
                             ui.horizontal(|ui| {
                                 ui.label("Pieces of");
-                                ui.add(egui::DragValue::new(&mut d.piece_frames).range(1..=240).suffix(" frames"));
+                                ui.add(crate::widgets::number_field(&mut d.piece_frames).range(1..=240).suffix(" frames"));
                             });
                             ui.horizontal(|ui| {
                                 ui.label("Keep");
-                                ui.add(egui::DragValue::new(&mut d.on).range(1..=16));
+                                ui.add(crate::widgets::number_field(&mut d.on).range(1..=16));
                                 ui.label("then remove");
-                                ui.add(egui::DragValue::new(&mut d.off).range(1..=16));
+                                ui.add(crate::widgets::number_field(&mut d.off).range(1..=16));
                             });
                             ui.checkbox(&mut d.ripple, "Close up the gaps").on_hover_text("Off, the removed pieces leave black");
                         }
@@ -311,7 +311,7 @@ impl KlippApp {
                             ui.label(egui::RichText::new("Every selected clip, or this one.").small().weak());
                             ui.horizontal(|ui| {
                                 ui.label("Length");
-                                ui.add(egui::DragValue::new(&mut d.frames).range(1..=100_000).suffix(" frames"));
+                                ui.add(crate::widgets::number_field(&mut d.frames).range(1..=100_000).suffix(" frames"));
                             });
                             ui.horizontal(|ui| {
                                 ui.label("Keep the");
@@ -381,7 +381,7 @@ impl KlippApp {
 
                     ui.horizontal(|ui| {
                         ui.label("Speed:");
-                        ui.add(egui::DragValue::new(&mut self.state.speed_dialog_value)
+                        ui.add(crate::widgets::number_field(&mut self.state.speed_dialog_value)
                             .range(crate::speed_dialog::PERCENT_MIN..=crate::speed_dialog::PERCENT_MAX).speed(1.0).suffix("%").max_decimals(1));
                     });
                     // The length it plays for, in step with the speed: one
@@ -392,7 +392,7 @@ impl KlippApp {
                         let mut length = crate::speed_dialog::length_at(content, self.state.speed_dialog_value);
                         ui.horizontal(|ui| {
                             ui.label("Length:");
-                            let r = ui.add(egui::DragValue::new(&mut length)
+                            let r = ui.add(crate::widgets::number_field(&mut length)
                                 .range(crate::speed_dialog::length_at(content, crate::speed_dialog::PERCENT_MAX)..=crate::speed_dialog::length_at(content, crate::speed_dialog::PERCENT_MIN)).speed(0.05).suffix(" s").max_decimals(2)
                                 .custom_parser(move |s| crate::speed_dialog::parse_length(s, tc)))
                                 .on_hover_text("How long the clip plays at this speed. Type seconds (4.5) or a timecode.");
@@ -1301,7 +1301,7 @@ impl KlippApp {
                             .on_hover_text("Each file cut to the stretches its clips use, plus the handles, without re-encoding (from the keyframe before). A file that cannot be cut cleanly is copied whole");
                         ui.add_enabled(
                             self.state.consolidate_mode == 2,
-                            egui::DragValue::new(&mut self.state.consolidate_handle_secs).range(0.0..=30.0).speed(0.1).suffix(" s"),
+                            crate::widgets::number_field(&mut self.state.consolidate_handle_secs).range(0.0..=30.0).speed(0.1).suffix(" s"),
                         );
                     });
                     let mode = match self.state.consolidate_mode {
