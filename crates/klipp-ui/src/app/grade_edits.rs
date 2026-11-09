@@ -39,6 +39,20 @@ pub(super) struct GradeApplied {
     pub tracks_left: bool,
 }
 
+/// Clip `clip`'s grade as a Look named `name`, its nodes' labels with it, as
+/// a library grade keeps them (#1866).
+pub(super) fn look_of(seq: &klipp_timeline::Sequence, clip: klipp_core::ClipId, name: &str) -> Option<klipp_timeline::Look> {
+    let c = seq.all_clips().find(|c| c.id == clip)?;
+    // Only labels of nodes the grade holds: one left on a node since gone
+    // (its grade replaced by a path that didn't take its labels with it)
+    // would name a node the Look doesn't have, and land on none.
+    let node_labels = klipp_timeline::grade_node_labels(&seq.node_labels, c.id)
+        .into_iter()
+        .filter(|l| l.nodes.first().is_some_and(|n| c.grade().nodes.iter().any(|m| m.id == *n)))
+        .collect();
+    Some(klipp_timeline::Look { node_labels, ..klipp_timeline::Look::new(uuid::Uuid::new_v4(), name.trim().to_string(), c.grade().clone()) })
+}
+
 /// What a toast adds when a tracked window's motion was left behind.
 pub(super) const TRACKS_LEFT: &str = "the window's track was left behind: track it on this clip";
 
@@ -879,4 +893,67 @@ mod grade_version_tests {
             assert_eq!(state.active_history().undo_count(), steps + 1, "{cmd:?}: one undo step");
         }
     }
+
+
+
+    /// A node labelled on a clip, the clip split, a Look saved from the
+    /// second piece and applied to a clip of another file: the copy's node
+    /// carries the label, by its own id, in the sequence's labels.
+    #[test]
+    fn a_looks_label_reaches_the_clip_it_is_applied_to() {
+        use klipp_graph_format::path::{NodePath, Root};
+        use klipp_timeline::GradeAccess;
+        let mut state = crate::state::AppState::default();
+        let t = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 25);
+        let mut a = klipp_timeline::Clip::media(klipp_core::MediaId::new(), t(0.0), t(4.0), t(0.0), t(4.0));
+        let corr = a.edit_grade(|g| g.ensure_corrector());
+        let target = klipp_timeline::Clip::media(klipp_core::MediaId::new(), t(4.0), t(6.0), t(0.0), t(2.0));
+        let (a_id, target_id) = (a.id, target.id);
+        let ti = state.sequences[0].tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
+        state.sequences[0].tracks[ti].clips.extend([a, target]);
+        let (_, piece) = state.sequences[0].tracks[ti].split_at(a_id, klipp_core::Timecode::from_secs_f64(2.0, 25)).unwrap();
+        let path = NodePath::new(Root::Clip { clip: piece.id.0 }, [klipp_timeline::grade_group_id(piece.id), corr]);
+        state.sequences[0].node_labels = state.sequences[0].node_labels_with(&path, 1);
+        assert_eq!(state.sequences[0].node_label(&path), 1, "labelled on the piece");
+
+        let look = super::look_of(&state.sequences[0], piece.id, "Red").expect("a look");
+        assert_eq!(look.node_labels.len(), 1, "the label saved with it");
+        assert!(look.node_labels[0].nodes.iter().all(|n| look.grade().nodes.iter().any(|m| m.id == *n) || *n == corr), "{:?}", look.node_labels);
+        let super::GradeApplied { edits, labels, .. } = super::apply_grade(&state.sequences[0], look.grade(), &look.node_labels, &[target_id], false);
+        let edits: Vec<_> = edits.into_iter().chain(labels).collect();
+        for e in &edits {
+            klipp_document::apply::DocumentView { sequences: &mut state.sequences, active: 0, media_pool: &mut state.media_pool, fps: &mut state.fps }.apply_forward(e);
+        }
+        let seq = &state.sequences[0];
+        let new = seq.all_clips().find(|c| c.id == target_id).unwrap().grade().nodes.iter().find(|n| n.kind == NodeKind::Corrector).expect("its corrector").id;
+        let there = NodePath::new(Root::Clip { clip: target_id.0 }, [klipp_timeline::grade_group_id(target_id), new]);
+        assert_eq!(seq.node_label(&there), 1, "labelled on the clip applied to: {:?}", seq.node_labels);
+        assert!(seq.live_node_labels().iter().any(|l| l.node == there), "kept when saved");
+    }
+
+
+
+
+    /// A label left on a node the clip's grade no longer has isn't saved
+    /// into a Look, where it would name a node the Look doesn't hold.
+    #[test]
+    fn a_look_leaves_out_a_label_whose_node_is_gone() {
+        use klipp_graph_format::path::{NodePath, Root};
+        use klipp_timeline::GradeAccess;
+        let mut seq = crate::state::AppState::default().sequences[0].clone();
+        let t = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 25);
+        let mut clip = klipp_timeline::Clip::media(klipp_core::MediaId::new(), t(0.0), t(4.0), t(0.0), t(4.0));
+        let old = clip.edit_grade(|g| g.ensure_corrector());
+        let id = clip.id;
+        let mut fresh = NodeGraph::default();
+        let new = fresh.ensure_corrector();
+        clip.set_grade(fresh);
+        seq.tracks.iter_mut().find(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap().clips.push(clip);
+        let at = |n| NodePath::new(Root::Clip { clip: id.0 }, [klipp_timeline::grade_group_id(id), n]);
+        seq.node_labels = seq.node_labels_with(&at(old), 1);
+        seq.node_labels = seq.node_labels_with(&at(new), 2);
+        let look = super::look_of(&seq, id, "L").unwrap();
+        assert_eq!(look.node_labels, vec![klipp_timeline::GradeNodeLabel { nodes: vec![new], colour: 2 }]);
+    }
+
 }

@@ -2319,14 +2319,12 @@ impl KlippApp {
                         self.state.toast.show(GRADE_MIX_NOT_COPIED);
                         return true;
                     }
-                    seq.all_clips().find(|c| c.id == clip_id).map(|c| (c.grade().clone(), klipp_timeline::grade_node_labels(&seq.node_labels, c.id)))
+                    super::grade_edits::look_of(seq, clip_id, name)
                 };
-                let Some((node_graph, node_labels)) = snapshot else {
+                let Some(look) = snapshot else {
                     self.state.toast.show("Selected clip not found");
                     return true;
                 };
-                // Its nodes' labels with it, as a library grade keeps them.
-                let look = klipp_timeline::Look { node_labels, ..klipp_timeline::Look::new(uuid::Uuid::new_v4(), name.trim().to_string(), node_graph) };
                 let label = look.name.clone();
                 self.state.looks.push(look);
                 self.state.dirty = true;
