@@ -175,6 +175,26 @@ pub struct Edge {
     pub to_port: u8,
 }
 
+/// The label an AI mask's matte node carries.
+pub const AI_MASK_LABEL: &str = "AI mask";
+
+/// What [`NodeGraph::gate_with_matte`] did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GateOutcome {
+    /// It is the correction's matte, and nothing else was.
+    Wired,
+    /// It took the place of this node's matte, a tool's own earlier result.
+    Replaced(NodeId),
+    /// It was combined with the matte a person limited the correction by.
+    Combined,
+}
+
+/// Whether `node` is a matte a tool made, not one a person chose: a tracked
+/// subject's, or an AI mask. An image matte a person loaded is theirs.
+fn is_tool_matte(node: &Node) -> bool {
+    node.kind == NodeKind::ExternalMatte && (node.params.matte_subject.is_some() || node.label == AI_MASK_LABEL)
+}
+
 impl NodeGraph {
     /// Where a node spliced in before Output goes on the canvas: the
     /// Output's place, the Output one place on. One place back from Output
@@ -373,6 +393,56 @@ impl NodeGraph {
         self.edges.push(Edge { from_node: combine, from_port: 0, to_node: correction, to_port: 1 });
         let base = self.node_positions.get(&correction).copied().unwrap_or(NodePos { x: 220.0, y: 0.0 });
         self.node_positions.insert(combine, NodePos { x: base.x - 110.0, y: base.y + 225.0 });
+    }
+
+    /// Give `correction` the matte `matte`, keeping what a person limited it
+    /// by: their Qualifier or Window stays and combines with it (they then
+    /// intersect, as a key and a window do). Only a matte a tool made, a
+    /// tracked subject's or an AI mask, gives way, so a tool run again
+    /// replaces its own result rather than narrowing it each time. The wire
+    /// that was there would otherwise just be dropped, with nothing said.
+    pub fn gate_with_matte(&mut self, correction: NodeId, matte: NodeId) -> GateOutcome {
+        let Some(at) = self.edges.iter().position(|e| e.to_node == correction && e.to_port == 1) else {
+            self.edges.push(Edge { from_node: matte, from_port: 0, to_node: correction, to_port: 1 });
+            return GateOutcome::Wired;
+        };
+        let (gate, port) = (self.edges[at].from_node, self.edges[at].from_port);
+        if gate == matte {
+            return GateOutcome::Wired;
+        }
+        // A wire from no node, or from a tool's matte: its place is taken.
+        if self.nodes.iter().find(|n| n.id == gate).is_none_or(is_tool_matte) {
+            self.edges[at].from_node = matte;
+            self.edges[at].from_port = 0;
+            return GateOutcome::Replaced(gate);
+        }
+        // Through combiners already there, for this matte or a tool's.
+        let mut walk = vec![gate];
+        let mut seen = 0;
+        while let Some(combiner) = walk.pop() {
+            seen += 1;
+            if seen > self.nodes.len() || !self.nodes.iter().any(|n| n.id == combiner && n.kind == NodeKind::CombineMattes) {
+                continue;
+            }
+            for i in 0..self.edges.len() {
+                if self.edges[i].to_node != combiner {
+                    continue;
+                }
+                let from = self.edges[i].from_node;
+                if from == matte {
+                    return GateOutcome::Wired;
+                }
+                if self.nodes.iter().find(|n| n.id == from).is_some_and(is_tool_matte) {
+                    self.edges[i].from_node = matte;
+                    self.edges[i].from_port = 0;
+                    return GateOutcome::Replaced(from);
+                }
+                walk.push(from);
+            }
+        }
+        self.edges.remove(at);
+        self.combine_on_gate(correction, (gate, port), matte);
+        GateOutcome::Combined
     }
 
     pub fn ensure_mask(&mut self) -> NodeId {
@@ -2718,5 +2788,76 @@ mod remap_map_tests {
         let mut base = NodeGraph::default();
         let map = base.append_mapped(&other).unwrap();
         assert!(base.nodes.iter().any(|n| n.id == map[&corrector]), "appended under its mapped id");
+    }
+}
+
+#[cfg(test)]
+mod gate_with_matte_tests {
+    use super::*;
+
+    fn tool_matte(g: &mut NodeGraph, label: &str, subject: bool) -> NodeId {
+        let id = NodeId::new_v4();
+        let params = NodeParams { matte_subject: subject.then_some(crate::SubjectMatte::Subject), matte_image_path: (!subject).then(|| "/tmp/m.png".into()), ..NodeParams::default() };
+        g.nodes.push(Node { id, kind: NodeKind::ExternalMatte, label: label.into(), enabled: true, params, keyframes: NodeKeyframeTracks::default(), output_link: None, input_links: Vec::new() });
+        id
+    }
+
+    fn wired(g: &NodeGraph, from: NodeId, to: NodeId, port: u8) -> bool {
+        g.edges.iter().any(|e| e.from_node == from && e.to_node == to && e.to_port == port)
+    }
+
+    /// A key stays and combines; a window too; both with a tool's matte.
+    /// Run again, the tool's own gives way, so nothing piles up.
+    #[test]
+    fn a_persons_matte_stays_and_a_tools_own_gives_way() {
+        let mut g = NodeGraph::default();
+        let correction = g.ensure_corrector();
+        let key = NodeId::new_v4();
+        assert!(g.limit_with_qualifier(correction, key));
+        let first = tool_matte(&mut g, AI_MASK_LABEL, false);
+        assert_eq!(g.gate_with_matte(correction, first), GateOutcome::Combined);
+        let combiner = g.input_of(correction, 1).unwrap();
+        assert!(wired(&g, key, combiner, 0) && wired(&g, first, combiner, 1), "{:?}", g.edges);
+        assert_eq!(g.gate_with_matte(correction, first), GateOutcome::Wired, "the same again");
+        let second = tool_matte(&mut g, AI_MASK_LABEL, false);
+        assert_eq!(g.gate_with_matte(correction, second), GateOutcome::Replaced(first));
+        assert!(wired(&g, key, combiner, 0) && wired(&g, second, combiner, 1) && !wired(&g, first, combiner, 1), "{:?}", g.edges);
+        assert_eq!(g.nodes.iter().filter(|n| n.kind == NodeKind::CombineMattes).count(), 1, "no pile of combiners");
+
+        // A key and a window already: both stay, under a further combiner.
+        let mut g = NodeGraph::default();
+        let correction = g.ensure_corrector();
+        let key = NodeId::new_v4();
+        assert!(g.limit_with_qualifier(correction, key));
+        let window = g.ensure_corrector_window();
+        let matte = tool_matte(&mut g, "Subject", true);
+        assert_eq!(g.gate_with_matte(correction, matte), GateOutcome::Combined);
+        let outer = g.input_of(correction, 1).unwrap();
+        let inner = g.input_of(outer, 0).unwrap();
+        assert!(wired(&g, matte, outer, 1) && wired(&g, key, inner, 0) && wired(&g, window, inner, 1), "{:?}", g.edges);
+        let other = tool_matte(&mut g, "Foreground", true);
+        assert_eq!(g.gate_with_matte(correction, other), GateOutcome::Replaced(matte), "found through the combiners");
+        assert!(g.topo_sort().is_ok());
+    }
+
+    /// Alone on the gate a tool's matte gives way; an image matte a person
+    /// loaded doesn't, whatever else it is.
+    #[test]
+    fn a_tools_matte_alone_is_replaced_and_a_loaded_one_kept() {
+        let mut g = NodeGraph::default();
+        let correction = g.ensure_corrector();
+        let ai = tool_matte(&mut g, AI_MASK_LABEL, false);
+        assert_eq!(g.gate_with_matte(correction, ai), GateOutcome::Wired);
+        let subject = tool_matte(&mut g, "Subject", true);
+        assert_eq!(g.gate_with_matte(correction, subject), GateOutcome::Replaced(ai));
+        assert_eq!(g.input_of(correction, 1), Some(subject));
+
+        let mut g = NodeGraph::default();
+        let correction = g.ensure_corrector();
+        let loaded = tool_matte(&mut g, "My matte", false);
+        g.edges.push(Edge { from_node: loaded, from_port: 0, to_node: correction, to_port: 1 });
+        let subject = tool_matte(&mut g, "Subject", true);
+        assert_eq!(g.gate_with_matte(correction, subject), GateOutcome::Combined);
+        assert_eq!(g.input_of(g.input_of(correction, 1).unwrap(), 0), Some(loaded));
     }
 }
