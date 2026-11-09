@@ -100,6 +100,16 @@ impl AppState {
 
 /// Whether the picture graph's selection, changed from `before`, names an
 /// effect node of the clip, whose card the inspector reveals (#1347).
+/// A node newly picked in the dock's graph while no clip is selected: the
+/// graph's clip becomes the selection, so the inspector shows that node and
+/// not the sequence. The graph followed the playhead's clip while the
+/// inspector followed the selection, and a click on a Merge changed nothing.
+pub(super) fn select_graph_clip(state: &mut AppState, clip: Option<ClipId>, before: Option<&NodePath>) {
+    if state.selected_clip.is_none() && state.selected_node_addr.is_some() && state.selected_node_addr.as_ref() != before {
+        state.selected_clip = clip;
+    }
+}
+
 pub(super) fn reveals_card(state: &AppState, before: Option<&NodePath>) -> bool {
     let Some(addr) = state.selected_node_addr.as_ref().filter(|a| Some(*a) != before) else { return false };
     let Some(clip) = addr.root_clip().and_then(|id| state.sequence().all_clips().find(|c| c.id.0 == id)) else { return false };
@@ -223,6 +233,7 @@ impl KlippApp {
             self.state.selected_node_addr = self.state.selected_node_id.map(|node| NodePath::new(level.root, level.nodes.iter().copied().chain([node])));
             // An effect node picked: its card, on the Effects tab, which
             // scrolls it into view (#1347). Layout only, never the document.
+            select_graph_clip(&mut self.state, clip_id, before.as_ref());
             if reveals_card(&self.state, before.as_ref()) {
                 self.layout.active_inspector_tab = crate::layout_state::InspectorTab::Effects;
                 self.set_inspector_visible(true);
@@ -234,6 +245,26 @@ impl KlippApp {
 
 #[cfg(test)]
 mod tests {
+    /// A node picked with no clip selected selects the graph's clip; picked
+    /// again, or with a clip already selected, the selection stays.
+    #[test]
+    fn a_node_picked_with_no_clip_selected_selects_the_graphs_clip() {
+        use super::select_graph_clip;
+        let clip = ClipId::new();
+        let at = NodePath::new(Root::Clip { clip: clip.0 }, [uuid::Uuid::new_v4()]);
+        let mut s = AppState::default();
+        s.selected_node_addr = Some(at.clone());
+        select_graph_clip(&mut s, Some(clip), None);
+        assert_eq!(s.selected_clip, Some(clip));
+        let other = ClipId::new();
+        s.selected_clip = Some(other);
+        select_graph_clip(&mut s, Some(clip), None);
+        assert_eq!(s.selected_clip, Some(other), "a clip chosen stays");
+        s.selected_clip = None;
+        select_graph_clip(&mut s, Some(clip), Some(&at));
+        assert_eq!(s.selected_clip, None, "nothing newly picked");
+    }
+
     use super::*;
 
     /// The dock's header is a bar along its top, whatever its height: it
