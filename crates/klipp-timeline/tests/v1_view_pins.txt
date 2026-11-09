@@ -107,7 +107,11 @@ MissingLegacy 5
 # lives only in its legacy entry, so the window's keyframes are written
 # there (ops::follow_window) until masks have a v2 route.
 SetPayload 26
-SetPayloadAt 17
+# 19: a Surface Pin's surface chosen in its node's stack view (#3809)
+# and that row's test. The surface is the id of the clip's surface, text,
+# and a node's text field is written by its payload: SetParamAt carries
+# numbers, flags and choices only.
+SetPayloadAt 19
 legacy 171
 legacy_flags 44
 LEGACY_NODE 60

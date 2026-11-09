@@ -658,7 +658,8 @@ fn a_corner_pins_handles_are_its_own_and_stay_under_a_window() {
     if let klipp_effects::BuiltinEffect::CornerPin { tl, .. } = &mut pin {
         tl[0] = 0.2;
     }
-    v.state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip)).unwrap().push_effect(pin);
+    let c = v.state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip)).unwrap();
+    *c = klipp_timeline::test_clip::TestClip::of(c.clone()).effect(pin).build();
     v.frame(Vec::new());
     v.frame(Vec::new());
     let handles: Vec<egui::Pos2> = v.circles.iter().filter(|(_, fill)| *fill == crate::panels::viewer::CORNER_PIN_HANDLE).map(|c| c.0).collect();

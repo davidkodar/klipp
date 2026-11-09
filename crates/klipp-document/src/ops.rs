@@ -8598,7 +8598,7 @@ fn pin_layer(seq: &Sequence, pool: &MediaPool, i: usize, clip: &Clip, pinned: &C
     // Its corner pin replaced, not stacked, when it was pinned before. A
     // corner pin of the person's own is replaced too, two would bend the
     // picture twice, and the message says so: it went without a word.
-    let own_pin = pinned.surface_pin.is_none() && pinned.builtin_effects().iter().any(|e| matches!(e, klipp_effects::BuiltinEffect::CornerPin { .. }));
+    let own_pin = pinned.surface_pin.is_none() && pinned.picture_effects().is_ok_and(|fx| fx.iter().any(|p| matches!(p.effect, klipp_effects::BuiltinEffect::CornerPin { .. })));
     let (_, mut new) = effects_edit_and_after(pinned, |e| matches!(e, klipp_effects::BuiltinEffect::CornerPin { .. }), Some((klipp_effects::BuiltinEffect::CornerPin { tl, tr, br, bl }, Place::Last)))
         .map_err(|e| refuse(i, format!("{layer} couldn't take its corner pin: {e}"), "report it"))?;
     new.surface_pin = Some(klipp_timeline::SurfacePin { host: clip.id, surface: s.id, picture_size, fit, inset, on_loss: look.on_loss, light: look.light, shade: look.shade, texture: look.texture });
@@ -17884,8 +17884,9 @@ mod tests {
         let frame = [seq.resolution.width, seq.resolution.height];
         seq.tracks[0].clips[0].surfaces.push(klipp_timeline::Surface { id: ClipId::new().0, name: "Wall".into(), corners, reference_secs: 0.0, keys: vec![klipp_timeline::SurfaceKey::at_corners(0.0, &corners, &corners).unwrap()], source_size: frame, media_fps: 25.0, track_area: None, exclude: Vec::new() });
         let td = klipp_timeline::TitleData::single_text(klipp_timeline::TextBox { text: "Open".into(), ..Default::default() });
-        let mut title = Clip { kind: klipp_timeline::ClipKind::Title(td), ..Clip::gap(tc(1.0), tc(3.0)) };
-        title.push_effect(klipp_effects::BuiltinEffect::CornerPin { tl: [0.2, 0.0], tr: [1.0, 0.0], br: [1.0, 1.0], bl: [0.0, 1.0] });
+        let title = klipp_timeline::test_clip::TestClip::of(Clip { kind: klipp_timeline::ClipKind::Title(td), ..Clip::gap(tc(1.0), tc(3.0)) })
+            .effect(klipp_effects::BuiltinEffect::CornerPin { tl: [0.2, 0.0], tr: [1.0, 0.0], br: [1.0, 1.0], bl: [0.0, 1.0] })
+            .build();
         let tid = title.id;
         let mut words = Track::new("T1", TrackKind::Text);
         words.clips = vec![title];
