@@ -1797,6 +1797,29 @@ pub const MATCH_WARN: f32 = 4.0;
 /// than a matched one — they belong to different scenes.
 pub const SCENE_SPLIT: f32 = 9.0;
 
+/// What a shot match would have to do past what one lighting setup asks of
+/// it, if anything: two shots whose readings are close can still be different
+/// pictures, and the reading of a sunset's orange or a magenta dress is taken
+/// for a cast. `now` against `start`, the grade before the match.
+///
+/// Shots of one setup with known offsets asked for up to saturation x0.63
+/// and x1.43, temperature 24.5 and tint 13.5. A sunset matched to a daylight
+/// street asked for saturation x0.39 and tint 39.
+pub fn match_move_too_big(start: &PrimaryStep, now: &PrimaryStep) -> Option<&'static str> {
+    let saturation = now.saturation / start.saturation.max(0.01);
+    if !(0.55..=1.6).contains(&saturation) {
+        Some("saturation")
+    } else if (now.tint - start.tint).abs() > 25.0 {
+        Some("tint")
+    } else if (now.temperature - start.temperature).abs() > 35.0 {
+        Some("temperature")
+    } else if (now.exposure - start.exposure).abs() > 2.0 {
+        Some("exposure")
+    } else {
+        None
+    }
+}
+
 /// How far off a reading is, and how bad.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -2977,6 +3000,23 @@ mod match_tests {
         let day = with_face(flat(55.0, -1.0, -6.0), Lab { l: 62.0, a: 12.0, b: 14.0 });
         let tungsten = with_face(flat(42.0, 6.0, 18.0), Lab { l: 52.0, a: 20.0, b: 30.0 });
         assert!(match_distance(&day, &tungsten) > SCENE_SPLIT, "{}", match_distance(&day, &tungsten));
+    }
+
+    #[test]
+    fn a_match_one_setup_could_ask_for_passes_and_a_different_picture_does_not() {
+        let start = PrimaryStep { saturation: 1.0, ..Default::default() };
+        let to = |saturation, temperature, tint, exposure| PrimaryStep { saturation, temperature, tint, exposure, ..Default::default() };
+        // Shots of one setup, offsets known: what matching them took.
+        for fine in [to(0.63, 23.8, 3.41, 0.0), to(0.9, -24.49, 9.88, 0.08), to(1.17, 10.55, 13.51, 0.0), to(0.82, -0.07, -0.21, -0.49)] {
+            assert_eq!(match_move_too_big(&start, &fine), None, "{fine:?}");
+        }
+        // A sunset onto a daylight street, and a matte of skin onto a wall.
+        assert_eq!(match_move_too_big(&start, &to(0.39, -15.16, -20.4, 0.38)), Some("saturation"));
+        assert_eq!(match_move_too_big(&start, &to(0.7, -28.41, -38.89, 0.15)), Some("tint"));
+        assert_eq!(match_move_too_big(&start, &to(4.0, -17.4, -15.57, 0.02)), Some("saturation"));
+        // Against where the shot started, not against nothing.
+        let held = PrimaryStep { saturation: 0.7, ..Default::default() };
+        assert_eq!(match_move_too_big(&held, &to(1.0, 0.0, 0.0, 0.0)), None);
     }
 
     #[test]
