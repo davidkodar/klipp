@@ -92,6 +92,27 @@ fn dispatch_audio_chain_drag(
 /// Wire a scrubby_param row's response to the AudioEffectKeyframe
 /// command family — auto-update, diamond toggle, prev/next nav. Mirrors
 /// the post-loop block in `inspector::effects_tab::show_builtin_effect_params`.
+fn bus_card_id() -> egui::Id {
+    egui::Id::new("audio_fx_card_on_a_bus")
+}
+
+/// Whether the card being drawn is a bus's chain ([`show_bus_content`]):
+/// no keys, so no diamonds, and no file of its own, so no Normalize.
+fn on_a_bus(ui: &egui::Ui) -> bool {
+    ui.ctx().data(|d| d.get_temp::<bool>(bus_card_id())).unwrap_or(false)
+}
+
+/// [`show_content`] for an aux bus's chain, under `stand_in` (the mixer
+/// turns its asks into the bus's): the same card, its keyframe diamonds
+/// left off, as a bus has no keys, and Normalize left out of its list,
+/// as it measures a clip's file.
+#[allow(clippy::too_many_arguments)]
+pub fn show_bus_content(ui: &mut egui::Ui, theme: &KlippTheme, stand_in: ClipId, effects: &[AudioEffectInstance], ladspa_plugins: &[LadspaPluginInfo], cmds: &mut Vec<AppCommand>) {
+    ui.ctx().data_mut(|d| d.insert_temp(bus_card_id(), true));
+    show_content(ui, theme, stand_in, effects, &HashMap::new(), 0.0, 0.0, 30, ladspa_plugins, cmds, 0.0);
+    ui.ctx().data_mut(|d| d.insert_temp(bus_card_id(), false));
+}
+
 fn dispatch_audio_kf_response(
     resp: &crate::widgets::scrubby_param::ScrubbyParamResponse,
     value: f32,
@@ -217,8 +238,10 @@ fn add_effect_picker(
         .max_height(max_height)
         .show(ui, |ui| {
             // ── Built-in section ──
+            let bus = on_a_bus(ui);
             let builtins: Vec<(&'static str, &'static str)> = klipp_audio::dsp::available_effects()
                 .into_iter()
+                .filter(|(id, _)| !(bus && *id == "normalize"))
                 .filter(|(_, name)| {
                     search_lower.is_empty() || name.to_lowercase().contains(&search_lower)
                 })
@@ -669,48 +692,51 @@ pub fn show_content(
                         // checkbox. Reads the reserved __bypass kf track;
                         // clicking adds/removes a kf at the playhead with
                         // value mirroring the current enabled state.
-                        let bypass_kfs = audio_effect_keyframes
-                            .get(&format!("{idx}:__bypass"));
-                        let has_any_bypass = bypass_kfs.is_some_and(|v| !v.is_empty());
-                        let has_at_playhead = bypass_kfs.is_some_and(|v| {
-                            crate::inspector::keyframe_selection::nearest(v, clip_time_secs, keyframe_tolerance).is_some()
-                        });
-                        let diamond_color = if has_at_playhead {
-                            theme.accent
-                        } else if has_any_bypass {
-                            theme.accent_dim
-                        } else {
-                            theme.text_dim
-                        };
-                        let dia_resp = ui.add(
-                            egui::Label::new(
-                                egui::RichText::new("\u{25C6}")
-                                    .size(11.0)
-                                    .color(diamond_color),
-                            )
-                            .sense(egui::Sense::click()),
-                        );
-                        if dia_resp.clicked() {
-                            if has_at_playhead {
-                                cmds.push(AppCommand::RemoveAudioEffectKeyframe {
-                                    clip_id,
-                                    effect_index: idx,
-                                    param_name: "__bypass".to_string(),
-                                    time_secs: clip_time_secs,
-                                });
+                        // A bus has no keys: no diamond.
+                        if !on_a_bus(ui) {
+                            let bypass_kfs = audio_effect_keyframes
+                                .get(&format!("{idx}:__bypass"));
+                            let has_any_bypass = bypass_kfs.is_some_and(|v| !v.is_empty());
+                            let has_at_playhead = bypass_kfs.is_some_and(|v| {
+                                crate::inspector::keyframe_selection::nearest(v, clip_time_secs, keyframe_tolerance).is_some()
+                            });
+                            let diamond_color = if has_at_playhead {
+                                theme.accent
+                            } else if has_any_bypass {
+                                theme.accent_dim
                             } else {
-                                // 1.0 = active, 0.0 = bypassed; mirror current enabled state.
-                                let value = if inst.enabled { 1.0 } else { 0.0 };
-                                cmds.push(AppCommand::AddAudioEffectKeyframe {
-                                    clip_id,
-                                    effect_index: idx,
-                                    param_name: "__bypass".to_string(),
-                                    time_secs: clip_time_secs,
-                                    value,
-                                });
+                                theme.text_dim
+                            };
+                            let dia_resp = ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new("\u{25C6}")
+                                        .size(11.0)
+                                        .color(diamond_color),
+                                )
+                                .sense(egui::Sense::click()),
+                            );
+                            if dia_resp.clicked() {
+                                if has_at_playhead {
+                                    cmds.push(AppCommand::RemoveAudioEffectKeyframe {
+                                        clip_id,
+                                        effect_index: idx,
+                                        param_name: "__bypass".to_string(),
+                                        time_secs: clip_time_secs,
+                                    });
+                                } else {
+                                    // 1.0 = active, 0.0 = bypassed; mirror current enabled state.
+                                    let value = if inst.enabled { 1.0 } else { 0.0 };
+                                    cmds.push(AppCommand::AddAudioEffectKeyframe {
+                                        clip_id,
+                                        effect_index: idx,
+                                        param_name: "__bypass".to_string(),
+                                        time_secs: clip_time_secs,
+                                        value,
+                                    });
+                                }
                             }
+                            dia_resp.on_hover_text("Toggle bypass keyframe at playhead");
                         }
-                        dia_resp.on_hover_text("Toggle bypass keyframe at playhead");
                     });
                 });
 
@@ -794,7 +820,7 @@ pub fn show_content(
                             let speed = (range * 0.003) as f64;
                             let decimals = if range > 100.0 { 0 } else if range > 10.0 { 1 } else { 2 };
                             let mut shown = val * display_scale;
-                            let kf_state = if desc.is_keyframable() {
+                            let kf_state = if desc.is_keyframable() && !on_a_bus(ui) {
                                 Some(audio_kf_row(ui, audio_effect_keyframes, idx, desc.name, clip_time_secs, keyframe_tolerance))
                             } else {
                                 None
@@ -858,7 +884,7 @@ pub fn show_content(
                         "__wetdry",
                         clip_time_secs,
                         static_wet_dry, keyframe_tolerance);
-                    let kf_state = Some(audio_kf_row(ui,
+                    let kf_state = (!on_a_bus(ui)).then(|| audio_kf_row(ui,
                         audio_effect_keyframes, idx, "__wetdry", clip_time_secs,
                         keyframe_tolerance,
                     ));
@@ -1005,7 +1031,7 @@ fn render_ladspa_params(
             klipp_audio::dsp::ParamUnit::Ratio => ":1",
             klipp_audio::dsp::ParamUnit::None => "",
         };
-        let kf_state = Some(audio_kf_row(ui,
+        let kf_state = (!on_a_bus(ui)).then(|| audio_kf_row(ui,
             audio_effect_keyframes, effect_index, &port.name, clip_time_secs,
             keyframe_tolerance,
         ));
@@ -1104,7 +1130,7 @@ fn render_lv2_params(
         } else {
             3
         };
-        let kf_state = Some(audio_kf_row(ui,
+        let kf_state = (!on_a_bus(ui)).then(|| audio_kf_row(ui,
             audio_effect_keyframes,
             effect_index,
             &port.symbol,
@@ -1203,7 +1229,7 @@ fn render_clap_params(
         } else {
             3
         };
-        let kf_state = Some(audio_kf_row(ui,
+        let kf_state = (!on_a_bus(ui)).then(|| audio_kf_row(ui,
             audio_effect_keyframes,
             effect_index,
             &key,

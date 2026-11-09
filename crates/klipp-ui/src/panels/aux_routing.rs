@@ -277,10 +277,7 @@ pub fn bus_strip(ui: &mut egui::Ui, theme: &KlippTheme, state: &mut AppState, cm
         ui.set_min_width(260.0);
         let stand_in = klipp_core::ClipId(bus.id.0);
         let mut card = Vec::new();
-        crate::inspector::audio_fx_inspector::show_content(
-            ui, theme, stand_in, &bus.effects, &std::collections::HashMap::new(),
-            0.0, 0.0, 30, &state.ladspa_plugins, &mut card, 0.0,
-        );
+        crate::inspector::audio_fx_inspector::show_bus_content(ui, theme, stand_in, &bus.effects, &state.ladspa_plugins, &mut card);
         for cmd in card {
             bus_card_command(state, cmds, at, stand_in, &cmd);
         }
@@ -520,5 +517,16 @@ mod tests {
         let open = frame(&mut state, Vec::new());
         let texts: Vec<&str> = open.iter().map(|(t, _)| t.as_str()).collect();
         assert!(texts.iter().any(|t| t.contains("Feedback")), "the delay's parameters in the menu: {texts:?}");
+        assert!(!texts.iter().any(|t| t.contains('\u{25C6}')), "no keyframe diamonds: a bus has no keys: {texts:?}");
+        // Its add list: the bus's effects, not Normalize, which measures a
+        // clip's file.
+        let add = open.iter().find(|(t, _)| t == "+ Add Effect").map(|(_, p)| *p).expect("the card's add button");
+        let b = |pressed| egui::Event::PointerButton { pos: add, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+        frame(&mut state, vec![egui::Event::PointerMoved(add)]);
+        frame(&mut state, vec![b(true)]);
+        frame(&mut state, vec![b(false)]);
+        let listed = frame(&mut state, Vec::new());
+        let names: Vec<&str> = listed.iter().map(|(t, _)| t.as_str()).collect();
+        assert!(names.contains(&"Delay") && !names.contains(&"Normalize"), "{names:?}");
     }
 }
