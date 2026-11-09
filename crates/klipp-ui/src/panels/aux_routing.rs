@@ -272,16 +272,34 @@ pub fn bus_strip(ui: &mut egui::Ui, theme: &KlippTheme, state: &mut AppState, cm
     // name for its parameters, switched, mixed, moved or taken off, and one
     // added from the list. A bus's chain had its switches alone, so a
     // delay on it couldn't be set.
+    // In a window of its own, opened and closed by FX: inside a menu, the
+    // card's add list opened outside the menu, and a click on it closed
+    // the menu before the choice was read.
     let on = bus.effects.iter().filter(|e| e.enabled).count();
-    ui.menu_button(egui::RichText::new(format!("FX {on}/{}", bus.effects.len())).size(9.0), |ui| {
-        ui.set_min_width(260.0);
+    let open_id = egui::Id::new(("bus_fx_open", bus.id));
+    let mut open = ui.ctx().data(|d| d.get_temp::<bool>(open_id)).unwrap_or(false);
+    if ui.selectable_label(open, egui::RichText::new(format!("FX {on}/{}", bus.effects.len())).size(9.0))
+        .on_hover_text("The bus's effects: open one by its name for its settings")
+        .clicked()
+    {
+        open = !open;
+    }
+    if open {
         let stand_in = klipp_core::ClipId(bus.id.0);
         let mut card = Vec::new();
-        crate::inspector::audio_fx_inspector::show_bus_content(ui, theme, stand_in, &bus.effects, &state.ladspa_plugins, &mut card);
+        crate::widgets::window(format!("{} Effects", bus.name))
+            .id(egui::Id::new(("bus_fx_window", bus.id)))
+            .open(&mut open)
+            .default_width(300.0)
+            .resizable(false)
+            .show(ui.ctx(), |ui| {
+                crate::inspector::audio_fx_inspector::show_bus_content(ui, theme, stand_in, &bus.effects, &state.ladspa_plugins, &mut card);
+            });
         for cmd in card {
             bus_card_command(state, cmds, at, stand_in, &cmd);
         }
-    });
+    }
+    ui.ctx().data_mut(|d| d.insert_temp(open_id, open));
     if state.buses_held_at_cap.get(at).copied().unwrap_or(false) {
         ui.label(egui::RichText::new("over 2 s late").size(9.0).color(theme.marker_error)).on_hover_text(format!(
             "The effects on this bus and the buses after it take longer than {} s, more than is made up for: what it returns is heard that much early against the rest.",
@@ -556,5 +574,46 @@ mod tests {
         assert!(drawn(false).iter().any(|t| t == "Learn at Playhead"), "a clip's denoiser learns: {:?}", drawn(false));
         let on_bus = drawn(true);
         assert!(!on_bus.iter().any(|t| t == "Learn at Playhead" || t == "Auto Learn" || t == "NOISE PROFILE"), "{on_bus:?}");
+    }
+
+    /// An effect is added to a bus from its card's list, through the menus
+    /// a hand goes through: FX, + Add Effect, Delay. The list opened outside
+    /// the FX menu, and a click on it closed the menu before the choice was
+    /// read: the bus stayed empty.
+    #[test]
+    fn an_effect_is_added_to_a_bus_from_its_list() {
+        let mut state = AppState::default();
+        let mut cmds = Vec::new();
+        edit(&mut state, &mut cmds, |r| {
+            add_bus(r);
+        });
+        let steps = state.active_history().undo_count();
+        let ctx = egui::Context::default();
+        let mut clock = 0.0;
+        let mut frame = |state: &mut AppState, events: Vec<egui::Event>| {
+            clock += 0.05;
+            let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200.0, 900.0))), time: Some(clock), events, ..Default::default() };
+            let out = ctx.run(input, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| bus_strip(ui, &KlippTheme::default(), state, &mut Vec::new(), 0, 90.0, 400.0));
+            });
+            out.shapes.iter().filter_map(|s| match &s.shape {
+                egui::Shape::Text(t) => Some((t.galley.text().to_string(), t.pos + t.galley.size() / 2.0)),
+                _ => None,
+            }).collect::<Vec<_>>()
+        };
+        let mut click = |state: &mut AppState, label: &str| {
+            let drawn = frame(state, Vec::new());
+            let at = drawn.iter().rev().find(|(t, _)| t == label).map(|(_, p)| *p).unwrap_or_else(|| panic!("{label:?} not drawn: {:?}", drawn.iter().map(|d| d.0.as_str()).collect::<Vec<_>>()));
+            let b = |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+            frame(state, vec![egui::Event::PointerMoved(at)]);
+            frame(state, vec![b(true)]);
+            frame(state, vec![b(false)]);
+        };
+        click(&mut state, "FX 0/0");
+        click(&mut state, "+ Add Effect");
+        click(&mut state, "Delay");
+        let chain: Vec<String> = state.sequence().routing().buses[0].effects.iter().map(|e| e.effect_type.clone()).collect();
+        assert_eq!(chain, ["delay"], "the delay on the bus");
+        assert_eq!(state.active_history().undo_count(), steps + 1, "one step");
     }
 }
