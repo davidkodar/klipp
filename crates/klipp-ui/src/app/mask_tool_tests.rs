@@ -534,6 +534,47 @@ fn a_mask_from_the_colour_tab_limits_the_correction_and_leaves_the_rest() {
     assert_eq!(g.nodes.iter().find(|n| n.id == mask).and_then(|n| n.params.masks.as_ref()).map(|m| m.masks.len()), Some(2));
 }
 
+/// A Qualifier's key limiting the grade, then "+ Add Mask": the correction
+/// reaches only the keyed colour inside the shape. The shape used to take
+/// the key's place, and the grade went to every colour in it. With the
+/// shape switched off, the key alone is left.
+#[test]
+fn a_mask_added_to_a_keyed_grade_keeps_the_key() {
+    use klipp_nodes::{GraphExecutor, NodeKind};
+    const W: u32 = 32;
+    const H: u32 = 18;
+    // Columns of four: red, blue, red, blue.
+    let frame: Vec<u8> = (0..W * H).flat_map(|i| if ((i % W) / 8).is_multiple_of(2) { [220u8, 30, 30, 255] } else { [30, 30, 220, 255] }).collect();
+    let grey = |out: &[u8], x: u32| -> bool {
+        let i = ((9 * W + x) * 4) as usize;
+        out[i].abs_diff(out[i + 1]) <= 2 && out[i + 1].abs_diff(out[i + 2]) <= 2
+    };
+    let mut g = klipp_nodes::NodeGraph::default();
+    let corrector = g.ensure_corrector();
+    let qualifier = klipp_nodes::NodeId::new_v4();
+    assert!(g.limit_with_qualifier(corrector, qualifier));
+    g.nodes.iter_mut().find(|n| n.id == qualifier).unwrap().params.qualifier = Some(klipp_core::QualifierSettings {
+        enabled: true,
+        hue_center: 0.0,
+        hue_width: 30.0,
+        ..Default::default()
+    });
+    g.nodes.iter_mut().find(|n| n.id == corrector).unwrap().params.saturation = Some(0.0);
+    let run = |g: &klipp_nodes::NodeGraph| GraphExecutor::new_cpu_only().execute(&frame, g, W, H, 0.0, 0, None, None).unwrap().0;
+    let keyed = run(&g);
+    assert_eq!([4, 12, 20, 28].map(|x| grey(&keyed, x)), [true, false, true, false], "the key alone: both reds");
+
+    // The left half, the whole height.
+    let shape = MaskShape::Rectangle { center_x: 0.25, center_y: 0.5, width: 0.5, height: 1.0, rotation: 0.0 };
+    super::colour::write_node_settings(&mut g, &AppCommand::AddMaskShape { clip_id: klipp_core::ClipId::new(), shape });
+    let both = run(&g);
+    assert_eq!([4, 12, 20, 28].map(|x| grey(&both, x)), [true, false, false, false], "only the red inside the shape");
+
+    g.nodes.iter_mut().find(|n| n.kind == NodeKind::Mask).unwrap().enabled = false;
+    let off = run(&g);
+    assert_eq!([4, 12, 20, 28].map(|x| grey(&off, x)), [true, false, true, false], "the shape off: the key alone again");
+}
+
 /// The Export page's viewer shows the picture as it goes out: no mask's
 /// outline and no transform box or handles over it, both drawn on the
 /// Edit page.

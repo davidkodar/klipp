@@ -1670,7 +1670,8 @@ impl NodeInspectorPanel {
             if let Some(correction) = correction {
                 ui.horizontal(|ui| {
                     ui.add_space(12.0);
-                    if graph.input_of(correction.id, 1).is_some() {
+                    let gate = graph.input_of(correction.id, 1);
+                    if gate.is_some_and(|m| !graph.nodes.iter().any(|n| n.id == m && n.kind == NodeKind::Mask)) {
                         ui.label(egui::RichText::new("This grade is limited by a matte, on its node.").size(10.0).color(theme.text_dim));
                     } else if ui.button(egui::RichText::new("+ Qualifier").size(11.0))
                         .on_hover_text("Limit this grade to a colour range: key the colour with the Qualifier, then grade")
