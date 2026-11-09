@@ -123,12 +123,18 @@ impl crate::state::AppState {
     /// `SwitchGradeVersion`): whether the clip changed. A version keeps its
     /// corrections' mix and mask channel (M3 step 17a, #1322).
     pub(super) fn grade_version_command(&mut self, cmd: &AppCommand) -> bool {
-        let clip_id = match cmd {
-            AppCommand::SaveGradeVersion { clip_id, .. } | AppCommand::SwitchGradeVersion { clip_id, .. } => *clip_id,
+        let (clip_id, description) = match cmd {
+            AppCommand::SaveGradeVersion { clip_id, .. } => (*clip_id, "Save Grade Version"),
+            AppCommand::SwitchGradeVersion { clip_id, .. } => (*clip_id, "Switch Grade Version"),
+            AppCommand::DeleteGradeVersion { clip_id, .. } => (*clip_id, "Delete Grade Version"),
+            AppCommand::RenameGradeVersion { clip_id, .. } => (*clip_id, "Rename Grade Version"),
             _ => return false,
         };
         let seq = &mut self.sequences[self.active_sequence_idx];
         let Some(clip) = seq.all_clips_mut().find(|c| c.id == clip_id) else { return false };
+        // The clip whole either side, one undo step: a switch changed the
+        // grade with none, so undo took back the edit before it instead.
+        let old = clip.clone();
         // A version keeps its corrections' mix and mask channel (#1322).
         match cmd {
             AppCommand::SaveGradeVersion { name, .. } => {
@@ -157,8 +163,32 @@ impl crate::state::AppState {
                 }
                 clip.set_active_grade_version(Some(*version_index));
             }
+            AppCommand::DeleteGradeVersion { version_index, .. } => {
+                if *version_index >= clip.grade_versions().len() {
+                    return false;
+                }
+                clip.edit_grade_versions(|vs| vs.remove(*version_index));
+                match clip.active_grade_version() {
+                    Some(idx) if idx == *version_index => clip.set_active_grade_version(None),
+                    Some(idx) if idx > *version_index => clip.set_active_grade_version(Some(idx - 1)),
+                    _ => {}
+                }
+            }
+            AppCommand::RenameGradeVersion { version_index, name, .. } => {
+                clip.edit_grade_versions(|vs| {
+                    if let Some(version) = vs.get_mut(*version_index) {
+                        version.name = name.clone();
+                    }
+                });
+            }
             _ => {}
         }
+        let same = |c: &klipp_timeline::Clip| serde_json::to_value(c).ok();
+        if same(clip) == same(&old) {
+            return false;
+        }
+        let new = clip.clone();
+        self.push_history(crate::history::EditCommand::ReplaceClip { description, old: Box::new(old), new: Box::new(new) });
         self.dirty = true;
         true
     }
@@ -629,5 +659,63 @@ mod grade_versions_and_mix {
         assert!(crate::state::AttributesClipboard::of(clip(&s, id)).grade_mix_held);
         let plain = klipp_timeline::Clip::media(klipp_core::MediaId::new(), klipp_core::RationalTime::from_secs_f64(0.0, 25), klipp_core::RationalTime::from_secs_f64(1.0, 25), klipp_core::RationalTime::from_secs_f64(0.0, 25), klipp_core::RationalTime::from_secs_f64(1.0, 25));
         assert!(!crate::state::AttributesClipboard::of(&plain).grade_mix_held);
+    }
+}
+
+#[cfg(test)]
+mod grade_version_tests {
+    use klipp_core::AppCommand;
+    use klipp_nodes::{NodeGraph, NodeId, NodeKind};
+    use klipp_timeline::GradeAccess;
+
+    fn sorted(g: &NodeGraph) -> (Vec<String>, Vec<String>) {
+        let mut n: Vec<String> = g.nodes.iter().map(|n| serde_json::to_string(n).unwrap()).collect();
+        n.sort();
+        let mut e: Vec<String> = g.edges.iter().map(|e| format!("{e:?}")).collect();
+        e.sort();
+        (n, e)
+    }
+
+    /// A version holding a key and a window through a combiner, switched
+    /// away from and back to, is the grade it was; each switch is one undo
+    /// step, and undo brings back the grade switched from.
+    #[test]
+    fn switching_versions_keeps_each_grade_and_undoes() {
+        let mut state = crate::state::AppState::default();
+        let t = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 25);
+        let mut clip = klipp_timeline::Clip::media(klipp_core::MediaId::new(), t(0.0), t(2.0), t(0.0), t(2.0));
+        let id = clip.id;
+        clip.edit_grade(|g| {
+            let c = g.ensure_corrector();
+            assert!(g.limit_with_qualifier(c, NodeId::new_v4()));
+            g.ensure_corrector_window();
+        });
+        let keyed = clip.grade().clone();
+        assert!(keyed.nodes.iter().any(|n| n.kind == NodeKind::CombineMattes));
+        state.sequences[0].tracks.iter_mut().find(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap().clips.push(clip);
+        let grade = |s: &crate::state::AppState| s.sequences[0].all_clips().find(|c| c.id == id).unwrap().grade().clone();
+
+        assert!(state.grade_version_command(&AppCommand::SaveGradeVersion { clip_id: id, name: "Keyed".into() }));
+        state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(id)).unwrap().set_grade(NodeGraph::default());
+        let plain = grade(&state);
+        assert!(state.grade_version_command(&AppCommand::SaveGradeVersion { clip_id: id, name: "Plain".into() }));
+
+        let steps = state.active_history().undo_count();
+        assert!(state.grade_version_command(&AppCommand::SwitchGradeVersion { clip_id: id, version_index: 0 }));
+        assert_eq!(sorted(&grade(&state)), sorted(&keyed), "the keyed grade, combiner and all");
+        assert_eq!(state.active_history().undo_count(), steps + 1, "one undo step");
+        let entry = state.active_history_mut().undo().expect("a step");
+        klipp_document::apply::DocumentView { sequences: &mut state.sequences, active: 0, media_pool: &mut state.media_pool, fps: &mut state.fps }.apply_inverse(&entry.command);
+        assert_eq!(sorted(&grade(&state)), sorted(&plain), "undo: the grade switched from");
+        assert_eq!(state.sequences[0].all_clips().find(|c| c.id == id).unwrap().active_grade_version(), Some(1), "and its version");
+        for cmd in [
+            AppCommand::RenameGradeVersion { clip_id: id, version_index: 0, name: "Key".into() },
+            AppCommand::DeleteGradeVersion { clip_id: id, version_index: 0 },
+            AppCommand::SaveGradeVersion { clip_id: id, name: "Again".into() },
+        ] {
+            let steps = state.active_history().undo_count();
+            assert!(state.grade_version_command(&cmd), "{cmd:?}");
+            assert_eq!(state.active_history().undo_count(), steps + 1, "{cmd:?}: one undo step");
+        }
     }
 }

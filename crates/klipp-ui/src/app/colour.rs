@@ -2300,31 +2300,8 @@ impl KlippApp {
                 }
                 true
             }
-            AppCommand::DeleteGradeVersion { clip_id, version_index } => {
-                let seq = &mut self.state.sequences[self.state.active_sequence_idx];
-                if let Some(clip) = seq.all_clips_mut().find(|c| c.id == *clip_id) {
-                    if *version_index < clip.grade_versions().len() {
-                        clip.edit_grade_versions(|vs| vs.remove(*version_index));
-                        match clip.active_grade_version() {
-                            Some(idx) if idx == *version_index => clip.set_active_grade_version(None),
-                            Some(idx) if idx > *version_index => clip.set_active_grade_version(Some(idx - 1)),
-                            _ => {}
-                        }
-                    }
-                }
-                self.state.dirty = true;
-                true
-            }
-            AppCommand::RenameGradeVersion { clip_id, version_index, name } => {
-                let seq = &mut self.state.sequences[self.state.active_sequence_idx];
-                if let Some(clip) = seq.all_clips_mut().find(|c| c.id == *clip_id) {
-                    clip.edit_grade_versions(|vs| {
-                        if let Some(version) = vs.get_mut(*version_index) {
-                            version.name = name.clone();
-                        }
-                    });
-                }
-                self.state.dirty = true;
+            AppCommand::DeleteGradeVersion { .. } | AppCommand::RenameGradeVersion { .. } => {
+                self.state.grade_version_command(cmd);
                 true
             }
 

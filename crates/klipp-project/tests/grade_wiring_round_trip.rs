@@ -46,3 +46,36 @@ fn a_key_and_a_window_through_a_combiner_come_back_wired_the_same() {
     assert_eq!(back.output_node_id, g.output_node_id);
     assert_eq!(back.input_of(window, 0), None, "the window reads nothing");
 }
+
+/// A clip's grade versions come back with their names, which is active, and
+/// each grade's wiring: a key and window through a combiner in one, a plain
+/// grade in the other.
+#[test]
+fn grade_versions_come_back_with_their_wiring() {
+    let t = |s: f64| RationalTime::from_secs_f64(s, 24);
+    let mut clip = Clip::media(MediaId::new(), t(0.0), t(4.0), t(0.0), t(4.0));
+    let clip_id = clip.id;
+    let mut keyed = NodeGraph::default();
+    let correction = keyed.ensure_corrector();
+    assert!(keyed.limit_with_qualifier(correction, NodeId::new_v4()));
+    keyed.ensure_corrector_window();
+    clip.edit_grade_versions(|vs| {
+        vs.push(klipp_timeline::GradeVersion::new(String::from("Keyed"), keyed.clone()));
+        vs.push(klipp_timeline::GradeVersion::new(String::from("Plain"), NodeGraph::default()));
+    });
+    clip.set_active_grade_version(Some(1));
+    let mut seq = Sequence::new_default();
+    seq.tracks.iter_mut().find(|t| t.kind == TrackKind::Video).unwrap().clips.push(clip);
+    let dir = std::env::temp_dir().join(format!("klipp_grade_versions_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    save_project(&dir, &[seq], &MediaPool::new()).unwrap();
+    let (sequences, ..) = load_project(&dir).unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+    let back = sequences[0].all_clips().find(|c| c.id == clip_id).expect("the clip");
+    assert_eq!(back.active_grade_version(), Some(1));
+    let versions = back.grade_versions();
+    assert_eq!(versions.iter().map(|v| v.name.as_str()).collect::<Vec<_>>(), ["Keyed", "Plain"]);
+    assert_eq!(sorted(&versions[0].grade().edges), sorted(&keyed.edges), "the keyed version's wires");
+    assert_eq!(versions[0].grade().nodes.iter().filter(|n| n.kind == NodeKind::CombineMattes).count(), 1);
+}
