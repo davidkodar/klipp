@@ -1805,6 +1805,16 @@ pub const SCENE_SPLIT: f32 = 9.0;
 /// Shots of one setup with known offsets asked for up to saturation x0.63
 /// and x1.43, temperature 24.5 and tint 13.5. A sunset matched to a daylight
 /// street asked for saturation x0.39 and tint 39.
+/// Whether a skin turn brought the face nearer its aim: from `before` to
+/// `after` (the face's hue, read before and after) against `target`, by at
+/// least a degree. One that didn't is taken back, as a match that brings a
+/// shot no closer is: kept, it is a hue secondary on the face for nothing,
+/// or for worse.
+pub fn skin_turn_helped(before: f32, after: f32, target: f32) -> bool {
+    let off = |hue: f32| hue_off_skin_band(hue) + hue_diff(hue, target).abs();
+    off(after) < off(before) - 1.0
+}
+
 pub fn match_move_too_big(start: &PrimaryStep, now: &PrimaryStep) -> Option<&'static str> {
     let saturation = now.saturation / start.saturation.max(0.01);
     if !(0.55..=1.6).contains(&saturation) {
@@ -3000,6 +3010,15 @@ mod match_tests {
         let day = with_face(flat(55.0, -1.0, -6.0), Lab { l: 62.0, a: 12.0, b: 14.0 });
         let tungsten = with_face(flat(42.0, 6.0, 18.0), Lab { l: 52.0, a: 20.0, b: 30.0 });
         assert!(match_distance(&day, &tungsten) > SCENE_SPLIT, "{}", match_distance(&day, &tungsten));
+    }
+
+    #[test]
+    fn a_skin_turn_is_kept_only_when_it_brings_the_face_nearer() {
+        let target = SKIN_HUE_CENTRE;
+        assert!(skin_turn_helped(target + 25.0, target + 5.0, target), "nearer");
+        assert!(!skin_turn_helped(target + 25.0, target + 24.5, target), "no nearer");
+        assert!(!skin_turn_helped(target + 10.0, target - 20.0, target), "past it, further");
+        assert!(!skin_turn_helped(target - 3.0, target + 3.0, target), "as near the other side");
     }
 
     #[test]
