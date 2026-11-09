@@ -55,14 +55,17 @@ pub fn switch_mode(on: bool) -> klipp_core::AppCommand {
     klipp_core::AppCommand::SetMulticamMode { on: !on, open: None }
 }
 
-/// The Source viewer's Angles button, at the top right of `rect`, in the
+/// The Source viewer's Angles button, at the top right of `rect`, beside the
+/// viewer's menu button, in the
 /// viewer controls' toggle style (accent on the subtle accent fill while
 /// on). The command that switches the mode, when clicked.
 pub fn angles_button(ui: &mut egui::Ui, rect: egui::Rect, on: bool, theme: &crate::theme::KlippTheme) -> Option<klipp_core::AppCommand> {
     let font = egui::FontId::proportional(crate::theme::type_scale::CAPTION);
     let text_w = ui.painter().layout_no_wrap("Angles".into(), font.clone(), theme.text_primary).size().x;
     let size = egui::vec2(text_w + 16.0, crate::theme::control::COMPACT);
-    let r = egui::Rect::from_min_size(egui::pos2(rect.right() - 8.0 - size.x, rect.top() + 8.0), size);
+    // Left of the viewer's menu button, which shows at the corner on hover.
+    let menu = crate::panels::viewer::overflow_button_rect(rect);
+    let r = egui::Rect::from_min_size(egui::pos2(menu.left() - 4.0 - size.x, rect.top() + 8.0), size);
     let resp = ui.interact(r, ui.id().with("multicam_angles_button"), egui::Sense::click());
     let colour = if on { theme.accent } else if resp.hovered() { theme.text_primary } else { theme.text_secondary };
     let fill = if on { theme.accent_subtle } else { theme.bg_panel.gamma_multiply(0.85) };
@@ -681,6 +684,16 @@ mod tests {
             _ => None,
         });
         (text, sent)
+    }
+
+    /// The Angles button sits clear of the viewer's menu button, which covered
+    /// it on hover.
+    #[test]
+    fn the_angles_button_is_clear_of_the_viewers_menu() {
+        let ctx = egui::Context::default();
+        let (Some((at, _)), None) = button_frame(&ctx, false, Vec::new()) else { panic!("the button is drawn") };
+        let menu = crate::panels::viewer::overflow_button_rect(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 450.0)));
+        assert!(at.x + 20.0 <= menu.left(), "the text at {at:?}, the menu at {menu:?}");
     }
 
     /// #1844: the Angles button, clicked for real, turns the mode on, and

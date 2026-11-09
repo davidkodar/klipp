@@ -291,6 +291,17 @@ impl OutputFormat {
     ];
 }
 
+impl AiToolsState {
+    /// What belongs to the project closing goes with it: the points and boxes
+    /// set on its picture, and the mask made from them, next asked to go
+    /// through the panel's own way back to idle. The choice of task and model
+    /// stays, being the person's.
+    pub fn forget_project(&mut self) {
+        self.prompts.clear();
+        self.pending_rerun = true;
+    }
+}
+
 impl Default for AiToolsState {
     fn default() -> Self {
         Self {
@@ -524,6 +535,19 @@ mod tests {
 
         let track = r.models_for(AiTask::TrackObject);
         assert!(track.is_empty(), "no v1 model satisfies TEMPORAL");
+    }
+
+    /// A new project starts with no points or boxes from the last one's
+    /// picture, its mask on its way out, and the task and model as they were.
+    #[test]
+    fn a_new_project_forgets_the_last_ones_prompts() {
+        let mut state = AiToolsState { active_task: Some(AiTask::IsolateObject), selected_model_id: Some("m".into()), ..Default::default() };
+        state.prompts.record_click(0.5, 0.5, ClickButton::Left);
+        assert!(!state.prompts.is_empty());
+        state.forget_project();
+        assert!(state.prompts.is_empty());
+        assert!(state.pending_rerun, "the mask goes the panel's way");
+        assert_eq!((state.active_task, state.selected_model_id.as_deref()), (Some(AiTask::IsolateObject), Some("m")));
     }
 
     #[test]

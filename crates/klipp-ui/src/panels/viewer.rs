@@ -545,6 +545,16 @@ fn draw_master_meter(
     }
 }
 
+/// The viewer's three-dot menu button, at the top right of the picture.
+const OVERFLOW_BUTTON_SIZE: f32 = 24.0;
+pub(crate) fn overflow_button_rect(video_rect: egui::Rect) -> egui::Rect {
+    const INSET: f32 = 10.0;
+    egui::Rect::from_min_size(
+        egui::pos2(video_rect.max.x - INSET - OVERFLOW_BUTTON_SIZE, video_rect.min.y + INSET),
+        egui::Vec2::splat(OVERFLOW_BUTTON_SIZE),
+    )
+}
+
 /// The Hyperzoom focal handle: its disc, and its arms, which are also the
 /// half of the square that takes a press.
 const FOCAL_HANDLE_RADIUS: f32 = 5.5;
@@ -6325,16 +6335,9 @@ impl ViewerPanel {
         kb: &crate::keybindings::KeyBindings,
         cmds: &mut Vec<AppCommand>,
     ) {
-        const BTN_SIZE: f32 = 24.0;
-        const INSET: f32 = 10.0;
+        const BTN_SIZE: f32 = OVERFLOW_BUTTON_SIZE;
 
-        let trigger_rect = egui::Rect::from_min_size(
-            egui::pos2(
-                video_rect.max.x - INSET - BTN_SIZE,
-                video_rect.min.y + INSET,
-            ),
-            egui::vec2(BTN_SIZE, BTN_SIZE),
-        );
+        let trigger_rect = overflow_button_rect(video_rect);
 
         let popup_id = ui.make_persistent_id(match viewer_kind {
             ViewerMode::Source => "viewer_overflow_menu_source",
