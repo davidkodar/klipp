@@ -24,7 +24,7 @@ pub struct Matte {
     pub tag: &'static str,
     pub name: &'static str,
     pub kind: NodeKind,
-    params: fn() -> NodeParams,
+    pub(crate) params: fn() -> NodeParams,
 }
 
 fn window(shape: MaskShape) -> NodeParams {
@@ -32,7 +32,9 @@ fn window(shape: MaskShape) -> NodeParams {
 }
 
 /// Each matte, in the menu's order. A key starts on, so it acts as it is
-/// added: the qualifier selects the reds until its range is picked
+/// added, but the qualifier, which starts off until its colour is set (its
+/// card says how): keyed on reds it took skin and pale wood nobody asked
+/// for
 /// (#2576); the luma key selects the highlights; the difference key
 /// selects everything until a clean plate is chosen.
 pub const MATTES: &[Matte] = &[
@@ -54,7 +56,7 @@ pub const MATTES: &[Matte] = &[
         tag: "matte.qualifier",
         name: "Qualifier",
         kind: NodeKind::Qualifier,
-        params: || NodeParams { qualifier: Some(QualifierSettings { enabled: true, ..QualifierSettings::default() }), ..NodeParams::default() },
+        params: || NodeParams { qualifier: Some(QualifierSettings { enabled: false, ..QualifierSettings::default() }), ..NodeParams::default() },
     },
     Matte {
         tag: "matte.luma_key",
