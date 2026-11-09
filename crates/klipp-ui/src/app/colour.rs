@@ -2307,31 +2307,8 @@ impl KlippApp {
                 }
                 true
             }
-            AppCommand::DeleteGradeVersion { clip_id, version_index } => {
-                let seq = &mut self.state.sequences[self.state.active_sequence_idx];
-                if let Some(clip) = seq.all_clips_mut().find(|c| c.id == *clip_id) {
-                    if *version_index < clip.grade_versions().len() {
-                        clip.edit_grade_versions(|vs| vs.remove(*version_index));
-                        match clip.active_grade_version() {
-                            Some(idx) if idx == *version_index => clip.set_active_grade_version(None),
-                            Some(idx) if idx > *version_index => clip.set_active_grade_version(Some(idx - 1)),
-                            _ => {}
-                        }
-                    }
-                }
-                self.state.dirty = true;
-                true
-            }
-            AppCommand::RenameGradeVersion { clip_id, version_index, name } => {
-                let seq = &mut self.state.sequences[self.state.active_sequence_idx];
-                if let Some(clip) = seq.all_clips_mut().find(|c| c.id == *clip_id) {
-                    clip.edit_grade_versions(|vs| {
-                        if let Some(version) = vs.get_mut(*version_index) {
-                            version.name = name.clone();
-                        }
-                    });
-                }
-                self.state.dirty = true;
+            AppCommand::DeleteGradeVersion { .. } | AppCommand::RenameGradeVersion { .. } => {
+                self.state.grade_version_command(cmd);
                 true
             }
 
@@ -2377,55 +2354,28 @@ impl KlippApp {
                     self.state.toast.show("Look not found");
                     return true;
                 };
-                let mut applied = 0_usize;
-                let mut refused: Vec<klipp_nodes::CannotAppend> = Vec::new();
-                // Collect old/new graphs first (mutable borrow on seq); push history
-                // entries afterwards (mutable borrow on state.command_histories).
-                let mut history_pushes: Vec<(klipp_core::ClipId, klipp_nodes::NodeGraph, klipp_nodes::NodeGraph)> = Vec::new();
-                {
-                    let seq = &mut self.state.sequences[self.state.active_sequence_idx];
-                    for clip_id in clip_ids {
-                        if let Some(clip) = seq.all_clips_mut().find(|c| c.id == *clip_id) {
-                            let old_graph = clip.grade().clone();
-                            // Fresh node ids per clip, so two clips with the
-                            // same Look don't collide, and the clip's own
-                            // Input Transform kept: the Look's, if it has
-                            // one, is the shot it was saved on.
-                            if *append {
-                                if let Err(why) = clip.edit_grade(|g| g.append(look.grade())) {
-                                    if !refused.contains(&why) {
-                                        refused.push(why);
-                                    }
-                                    continue;
-                                }
-                            } else {
-                                clip.set_grade(clip.grade().with_grade_of(look.grade()));
-                            }
-                            applied += 1;
-                            history_pushes.push((*clip_id, old_graph, clip.grade().clone()));
-                        }
+                // As a library grade applies: fresh ids per clip, the clip's
+                // own Input Transform kept, every clip one undo step. Each
+                // clip was a step of its own, so undoing a Look on ten clips
+                // took ten presses.
+                let GradeApplied { edits, refused, labels } = apply_grade(&self.state.sequences[self.state.active_sequence_idx], look.grade(), &[], clip_ids, *append);
+                if edits.is_empty() {
+                    if refused.is_empty() {
+                        self.state.toast.show("No matching clips selected");
+                    } else {
+                        self.state.toast.show(format!("Could not add \"{}\": {}", look.name, refusals_line(&refused)));
                     }
+                    return true;
                 }
-                for (clip_id, old_graph, new_graph) in history_pushes {
-                    self.state.push_history(crate::history::EditCommand::SetNodeGraph {
-                        clip_id,
-                        old_graph,
-                        new_graph,
-                    });
+                let n = edits.len();
+                let edits: Vec<_> = edits.into_iter().chain(labels).collect();
+                self.apply_edits_as_one(&edits, "Apply Look");
+                let mut told = format!("Applied \"{}\" to {n} clip{}", look.name, if n == 1 { "" } else { "s" });
+                if !refused.is_empty() {
+                    told = format!("{told}; not to {}: {}", clip_ids.len() - n, refusals_line(&refused));
                 }
-                if applied > 0 {
-                    self.state.dirty = true;
-                    let mut told = format!("Applied \"{}\" to {applied} clip{}", look.name, if applied == 1 { "" } else { "s" });
-                    if !refused.is_empty() {
-                        told = format!("{told}; not to {}: {}", clip_ids.len() - applied, refusals_line(&refused));
-                    }
-                    self.state.toast.show(told);
-                    *needs_refresh = true;
-                } else if refused.is_empty() {
-                    self.state.toast.show("No matching clips selected");
-                } else {
-                    self.state.toast.show(format!("Could not add \"{}\": {}", look.name, refusals_line(&refused)));
-                }
+                self.state.toast.show(told);
+                *needs_refresh = true;
                 true
             }
             AppCommand::DeleteLook { look_id } => {

@@ -169,8 +169,12 @@ pub fn source_of(root: klipp_graph_format::path::Root) -> PictureDomain {
 pub fn check_edit(before: &Graph, after: &Graph, source: PictureDomain, catalog: &dyn PortCatalog) -> Result<(), String> {
     match (fault(before, source, catalog), fault(after, source, catalog)) {
         (None, Some((at, why))) => {
-            let node = at.last().map_or_else(String::new, |n| n.to_string());
-            Err(format!("that would leave node {node} unable to take the pictures it reads: {why}"))
+            // By its name, found at any depth: its id told a person nothing.
+            fn find(g: &Graph, id: NodeId) -> Option<&klipp_graph_format::Node> {
+                g.nodes.iter().find(|n| n.id == id).or_else(|| g.nodes.iter().filter_map(|n| n.group.as_ref()).find_map(|b| find(&b.graph, id)))
+            }
+            let node = at.last().and_then(|id| find(after, *id)).map_or_else(|| "a node".to_owned(), |n| format!("\u{201c}{}\u{201d}", crate::topology::readable_name(n)));
+            Err(format!("that would leave {node} unable to take the pictures it reads: {why}"))
         }
         _ => Ok(()),
     }

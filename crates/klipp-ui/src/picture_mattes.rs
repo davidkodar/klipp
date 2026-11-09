@@ -141,6 +141,24 @@ pub const SOURCES: &[Source] = &[
     },
 ];
 
+/// The ops that put the matte or source the menu tag `tag` names in the
+/// place of `old`, beside the chain: added as from its menu, every wire that
+/// left `old` leaving it instead, `old` taken out. A mask or a merge's
+/// picture swapped for another keeps where it goes. `None` for another tag.
+pub fn replace_ops(graph: &Graph, level: &NodePath, old: NodeId, tag: &str, id: NodeId, position: (f32, f32)) -> Option<Vec<GraphOp>> {
+    let at = |node: NodeId| NodePath::new(level.root, level.nodes.iter().copied().chain([node]));
+    let (mut ops, out) = if let Some(m) = matte(tag) {
+        (add_ops(graph, level, m, id, position, None)?, output_key(serde_json::to_value(m.kind).ok()?.as_str()?, 0))
+    } else {
+        (source_ops(graph, level, source(tag)?, id, position, None)?, "out".into())
+    };
+    ops.push(GraphOp::RemoveNode { path: at(old) });
+    for e in graph.edges.iter().filter(|e| e.from.0 == old) {
+        ops.push(GraphOp::Connect { from: at(id), from_port: out.clone(), to: at(e.to.0), to_port: e.to.1.clone() });
+    }
+    Some(ops)
+}
+
 /// The source the menu tag `tag` names.
 pub fn source(tag: &str) -> Option<&'static Source> {
     SOURCES.iter().find(|s| s.tag == tag)

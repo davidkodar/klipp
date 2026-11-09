@@ -21,8 +21,11 @@ pub(super) struct GraphOpsOutcome {
 impl AppState {
     pub(super) fn show_ungated(&mut self, nodes: &[Ungated]) {
         if !nodes.is_empty() {
-            let noun = if nodes.len() == 1 { "node" } else { "nodes" };
-            self.toast.show(format!("{} {noun} lost their mask: {}", nodes.len(), nodes.iter().map(|n| n.label.as_str()).collect::<Vec<_>>().join(", ")));
+            let names = nodes.iter().map(|n| n.label.as_str()).collect::<Vec<_>>().join(", ");
+            self.toast.show(match nodes.len() {
+                1 => format!("{names} lost its mask"),
+                _ => format!("{names} lost their masks"),
+            });
         }
     }
 }

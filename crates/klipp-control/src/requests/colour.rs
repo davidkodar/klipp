@@ -632,6 +632,12 @@ pub(crate) fn respond(
             let window = (!window.is_empty()).then(|| serde_json::to_value(&window).unwrap_or(serde_json::Value::Null));
             let n_rounds = if apply { 3 } else { 0 };
             let mut fold = UndoFold::new("Skin Balance");
+            let start_grade = {
+                let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+                let id = klipp_core::ClipId(clip_id.parse().map_err(|e| format!("clip_id is not a uuid: {e}"))?);
+                let found = seq.all_clips().find(|c| c.id == id).map(|c| klipp_timeline::GradeAccess::grade(c).clone());
+                found
+            };
             for round in 0..n_rounds {
                 let Some(face) = m.faces.iter().find(|f| f.readable()) else { break };
                 let off = klipp_color::measure::hue_off_skin_band(face.hue);
@@ -670,13 +676,35 @@ pub(crate) fn respond(
                 let after = m.faces.iter().find(|f| f.patches >= 4).map(|f| json!({ "hue": f.hue, "chroma": f.chroma }));
                 rounds.push(json!({ "round": round + 1, "hue_shift": shift, "after": after }));
             }
+            // A turn that left the face no nearer its aim is taken back, as a
+            // match that brings a shot no closer is (#3802): kept, it was a
+            // hue secondary on the face for nothing, or for worse.
+            let mut taken_back = None;
+            if !rounds.is_empty() {
+                let helped = m.faces.iter().find(|f| f.readable()).is_some_and(|f| klipp_color::measure::skin_turn_helped(face0.hue, f.hue, target));
+                if let (false, Some(start)) = (helped, start_grade) {
+                    let id = klipp_core::ClipId(clip_id.parse().map_err(|e| format!("clip_id is not a uuid: {e}"))?);
+                    let now = {
+                        let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+                        let found = seq.all_clips().find(|c| c.id == id).map(|c| klipp_timeline::GradeAccess::grade(c).clone());
+                        found
+                    };
+                    if let Some(now) = now {
+                        let back = klipp_document::history::EditCommand::SetNodeGraph { clip_id: id, old_graph: now, new_graph: start };
+                        fold.send(ctx, vec![back], ctx.shared.revision())?;
+                        m = measure_at(ctx, mid, only, Some(6000))?;
+                        taken_back = Some(" Left as it was: the turn brought the skin no nearer its aim, so it was taken back; grade the face by eye, or white balance first if the scene has a cast.");
+                    }
+                }
+            }
             let face_now = m.faces.iter().find(|f| f.readable());
             let text = match face_now {
                 Some(f) => format!("{name} at {mid:.2} s: skin hue {:.0}° → {:.0}° (band {SKIN_HUE_LOW:.0}–{SKIN_HUE_HIGH:.0}°, aim {target:.0}°), chroma {:.0}, L* {:.0}, {} of {}×{} patches{}{}", face0.hue, f.hue, f.chroma, f.median.l, f.patches, f.grid, f.grid, if apply { format!("; {} round(s), skin secondary hue shift {shift:+.0}°{}", rounds.len(), match windowed { 0 => ", keyed on hue alone — no face track in this clip's analysis, so anything else in the skin band turns with the face".to_string(), 1 => ", held inside a window on the face".to_string(), n => format!(", held inside a window tracked on the face over {n} samples") }) } else { String::new() }, before.get("advice").and_then(|a| a.as_str()).map(|a| format!(". {a}")).unwrap_or_default()),
                 None => format!("{name}: the face could not be read after the change"),
             };
+            let text = format!("{text}{}", taken_back.unwrap_or(""));
             let undo_steps = fold.finish(ctx);
-            Ok(json!({ "text": text, "before": before, "rounds": rounds, "hue_shift": shift, "applied": apply && !rounds.is_empty(), "undo_steps": undo_steps, "revision": ctx.shared.revision(), "next": if apply { "frame_at to see it; check with color reads every shot." } else { "Run it with apply true to turn the skin onto the band as one undo step." } }))
+            Ok(json!({ "text": text, "before": before, "rounds": rounds, "hue_shift": shift, "applied": apply && !rounds.is_empty() && taken_back.is_none(), "undo_steps": undo_steps, "revision": ctx.shared.revision(), "next": if apply { "frame_at to see it; check with color reads every shot." } else { "Run it with apply true to turn the skin onto the band as one undo step." } }))
         }
 
         ControlCommand::GradeToTarget { clip_id, clips, look_if_unbriefed, apply, rounds, force, strength } => {

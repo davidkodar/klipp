@@ -544,20 +544,9 @@ impl TransportBar {
             // Shift+arrows extend the transcript's selection while it is
             // under the pointer (#3020).
             let words_take_shift = state.show_transcript_panel && state.transcript_panel_hovered;
-            if !text_editing && !i.modifiers.alt
-                && (kb.is_action_pressed("step_backward", i) || (i.modifiers.shift && !words_take_shift && i.key_pressed(egui::Key::ArrowLeft))) {
-                if i.modifiers.shift {
-                    cmds.push(route_for_viewer(AppCommand::SeekRelative(-shift_step), state));
-                } else {
-                    cmds.push(route_for_viewer(AppCommand::SeekRelative(-1), state));
-                }
-            }
-            if !text_editing && !i.modifiers.alt
-                && (kb.is_action_pressed("step_forward", i) || (i.modifiers.shift && !words_take_shift && i.key_pressed(egui::Key::ArrowRight))) {
-                if i.modifiers.shift {
-                    cmds.push(route_for_viewer(AppCommand::SeekRelative(shift_step), state));
-                } else {
-                    cmds.push(route_for_viewer(AppCommand::SeekRelative(1), state));
+            if !text_editing {
+                if let Some(frames) = arrow_step(kb, i, words_take_shift, shift_step) {
+                    cmds.push(route_for_viewer(AppCommand::SeekRelative(frames), state));
                 }
             }
             if !text_editing && kb.is_action_pressed("go_to_start", i) {
@@ -799,5 +788,59 @@ mod jkl_step_tests {
     fn l_steps_by_the_preference() {
         assert_eq!(press_l(3.0, 3.0), Some(9.0));
         assert_eq!(press_l(2.0, 2.0), Some(4.0));
+    }
+}
+
+/// The frames the step keys move by this frame, if one was pressed: the
+/// step keys one frame, an arrow with Shift `shift_step` (unless the
+/// transcript's words take Shift), never with Alt. Read with the keys held
+/// as each arrow went down, as the shortcuts are: Shift let go in the same
+/// frame still meant the long step.
+fn arrow_step(kb: &crate::keybindings::KeyBindings, i: &egui::InputState, words_take_shift: bool, shift_step: i64) -> Option<i64> {
+    let held = |key: egui::Key| i.events.iter().find_map(|e| match e {
+        egui::Event::Key { key: k, pressed: true, modifiers, .. } if *k == key => Some(*modifiers),
+        _ => None,
+    });
+    let long = |key: egui::Key| !words_take_shift && held(key).is_some_and(|m| m.shift && !m.alt);
+    if long(egui::Key::ArrowLeft) {
+        Some(-shift_step)
+    } else if long(egui::Key::ArrowRight) {
+        Some(shift_step)
+    } else if kb.is_action_pressed("step_backward", i) {
+        Some(-1)
+    } else if kb.is_action_pressed("step_forward", i) {
+        Some(1)
+    } else {
+        None
+    }
+}
+
+#[cfg(test)]
+mod arrow_step_tests {
+    use super::arrow_step;
+    use egui::{Key, Modifiers};
+
+    fn step(frame_mods: Modifiers, events: Vec<egui::Event>, words_take_shift: bool) -> Option<i64> {
+        let ctx = egui::Context::default();
+        let mut out = None;
+        let _ = ctx.run(egui::RawInput { modifiers: frame_mods, events, ..Default::default() }, |ctx| {
+            out = ctx.input(|i| arrow_step(&crate::keybindings::KeyBindings::default(), i, words_take_shift, 10));
+        });
+        out
+    }
+
+    fn key(key: Key, modifiers: Modifiers) -> egui::Event {
+        egui::Event::Key { key, physical_key: Some(key), pressed: true, repeat: false, modifiers }
+    }
+
+    /// A step, a long step with Shift, and none with Alt; Shift let go in
+    /// the same frame is still the long step; the transcript keeps Shift.
+    #[test]
+    fn the_step_keys_read_the_keys_held_as_they_went_down() {
+        assert_eq!(step(Modifiers::NONE, vec![key(Key::ArrowLeft, Modifiers::NONE)], false), Some(-1));
+        assert_eq!(step(Modifiers::SHIFT, vec![key(Key::ArrowRight, Modifiers::SHIFT)], false), Some(10));
+        assert_eq!(step(Modifiers::NONE, vec![key(Key::ArrowLeft, Modifiers::SHIFT)], false), Some(-10), "Shift let go in the frame");
+        assert_eq!(step(Modifiers::ALT, vec![key(Key::ArrowLeft, Modifiers::ALT)], false), None, "Alt+arrow is another key's");
+        assert_eq!(step(Modifiers::SHIFT, vec![key(Key::ArrowLeft, Modifiers::SHIFT)], true), None, "the words' selection");
     }
 }

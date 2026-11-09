@@ -73,6 +73,18 @@ impl AppState {
         let Some((track, c)) = self.picture_clip(clip) else { return "Grading".into() };
         let name = c.media_id().and_then(|m| self.media_pool.get(&m)).map(|m| m.filename.clone()).unwrap_or_else(|| "Clip".into());
         let n = crate::timeline::track_headers::badge_number(&self.sequence().tracks, track);
+        // A file on the timeline more than once (a split shot, a reused
+        // take): which piece, by where it sits, or the two read the same.
+        let media = c.media_id();
+        let pieces = media.map_or(0, |m| self.sequence().all_clips().filter(|o| o.media_id() == Some(m)).count());
+        if pieces > 1 {
+            let at = |t: Timecode| {
+                let secs = t.to_secs_f64().max(0.0).round() as u64;
+                let (h, m, s) = (secs / 3600, secs / 60 % 60, secs % 60);
+                if h > 0 { format!("{h}:{m:02}:{s:02}") } else { format!("{m}:{s:02}") }
+            };
+            return format!("Grading: {name} · V{n} · {}\u{2013}{}", at(c.timeline_in), at(c.timeline_out));
+        }
         format!("Grading: {name} · V{n}")
     }
 
