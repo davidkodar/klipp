@@ -302,6 +302,9 @@ pub(super) fn snapshot(ctx: &ControlContext) -> Vec<Value> {
             "error": t.error, "artifact": null, "result": t.result,
         })
     }));
+    // Mask tracks asked for over the socket, run by the app as its Track
+    // button runs them.
+    jobs.extend(ctx.shared.mask_tracks.lock().unwrap_or_else(|e| e.into_inner()).iter().map(mask_track_job));
     claim_multicam_failures(ctx);
     let submitted: Vec<_> = submitted().lock().unwrap_or_else(|e| e.into_inner())
         .iter().map(|(id, work)| (id.clone(), work.clone())).collect();
@@ -405,6 +408,29 @@ pub(super) fn status(ctx: &ControlContext, job_id: Option<&str>, wait: bool, tim
             return Ok(reply(latest, true, false));
         }
     }
+}
+
+/// A mask track as a job: its result the stretch of the clip it followed.
+fn mask_track_job(job: &klipp_core::MaskTrackJob) -> Value {
+    let state = if job.error.is_some() {
+        "failed"
+    } else if job.outcome.is_some() {
+        "completed"
+    } else {
+        "running"
+    };
+    let result = job.outcome.as_ref().map(|o| json!({
+        "followed_secs": [o.span_secs.0, o.span_secs.1],
+        "clip_secs": o.clip_secs,
+        "lost": o.lost,
+        "text": o.text,
+    }));
+    json!({
+        "job_id": job.job_id, "kind": "mask_track", "state": state,
+        "phase": if state == "running" { "Tracking" } else { "" }, "progress": job.progress,
+        "completed_units": null, "total_units": null, "unit": null, "eta_secs": null,
+        "error": job.error, "artifact": null, "result": result,
+    })
 }
 
 /// What a caller following a job reports: its state, phase, whole

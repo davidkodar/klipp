@@ -500,6 +500,22 @@ pub enum ControlCommand {
     /// sound, one undoable edit. Returns at once; the split shows on the
     /// timeline when the detection is done.
     DetectSceneCuts { clip_id: String },
+    /// Follow a mask from the frame under the playhead, in the background:
+    /// a job whose result says the stretch it followed and whether it lost
+    /// the subject. The mask's keys are written as the GUI's Track writes
+    /// them.
+    TrackMask {
+        clip_id: String,
+        /// The Mask node; else the first with a shape.
+        #[serde(default)]
+        node_id: Option<String>,
+        /// Which shape on it; else the first.
+        #[serde(default)]
+        mask_index: Option<usize>,
+        /// Follow its four corners on a flat surface, not a move, size and turn.
+        #[serde(default)]
+        perspective: Option<bool>,
+    },
     /// Follow a flat surface in a clip, a phone screen, a sign, a monitor,
     /// in perspective through the clip (#684), from four `corners` (top
     /// left, top right, bottom right, bottom left, fractions of the frame)

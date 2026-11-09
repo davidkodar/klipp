@@ -4995,6 +4995,57 @@ fn restore_background_whole_routes_without_a_model_or_job() {
     assert!(h.cmd_rx.try_recv().is_err());
 }
 
+/// `track_mask` runs as a job: it asks the app for the track of the mask it
+/// finds, refuses what can't be tracked and a second on the same clip, and
+/// the job's result says what was followed and whether the subject was lost.
+#[test]
+fn track_mask_is_a_job_that_says_what_it_followed() {
+    let mut h = harness();
+    let media = h.media_pool.write().unwrap().add(klipp_media::MediaItem::synthetic_for_test("/tmp/mask-fixture.mov".into(), None));
+    let clip_id = klipp_core::ClipId(uuid::Uuid::parse_str(&h.ids.clip_a).unwrap());
+    let clip = h.ids.clip_a.clone();
+    let refused = h.call(json!({"method": "track_mask", "clip_id": clip}));
+    assert_eq!(refused["ok"], json!(false), "no footage yet: {refused}");
+    let mut node = None;
+    for c in h.sequence.write().unwrap().tracks.iter_mut().flat_map(|t| t.clips.iter_mut()) {
+        c.kind = klipp_timeline::ClipKind::Media { media_id: media };
+        if c.id == clip_id {
+            use klipp_timeline::GradeAccess;
+            c.edit_grade(|g| {
+                let id = g.ensure_corrector_window();
+                g.nodes.iter_mut().find(|n| n.id == id).unwrap().params.masks = Some(klipp_core::MaskStack { masks: vec![klipp_core::Mask::default()] });
+                node = Some(id);
+            });
+        }
+    }
+    let node = node.expect("the clip has a mask");
+    let refused = h.call(json!({"method": "track_mask", "clip_id": clip, "mask_index": 3}));
+    assert!(refused["error"].as_str().unwrap().contains("mask_index 3"), "{refused}");
+
+    let reply = h.ok(json!({"method": "track_mask", "clip_id": clip, "perspective": true}));
+    let job = reply["job_id"].as_str().expect("a job").to_owned();
+    let sent = h.sent.lock().unwrap().iter().any(|c| matches!(c, klipp_core::AppCommand::TrackMaskRegion { clip_id: c, node_id, mask_index: 0, perspective: true } if *c == clip_id && *node_id == node));
+    assert!(sent, "the app is asked for that mask");
+    let again = h.call(json!({"method": "track_mask", "clip_id": clip}));
+    assert!(again["error"].as_str().unwrap().contains(&job), "one at a time, naming the job: {again}");
+
+    let status = h.ok(json!({"method": "job_status", "job_id": job}));
+    assert_eq!(status["jobs"][0]["state"], json!("running"), "{status}");
+    h.shared.mask_track_progress(clip_id, 0.5);
+    h.shared.mask_track_done(clip_id, klipp_core::MaskTrackOutcome { span_secs: (4.44, 5.12), clip_secs: 10.0, lost: true, text: "stopped early".into() });
+    let status = h.ok(json!({"method": "job_status", "job_id": job}));
+    assert_eq!(status["jobs"][0]["state"], json!("completed"), "{status}");
+    assert_eq!(status["jobs"][0]["result"]["followed_secs"], json!([4.44, 5.12]), "{status}");
+    assert_eq!(status["jobs"][0]["result"]["lost"], json!(true), "{status}");
+    assert_eq!(status["jobs"][0]["result"]["clip_secs"], json!(10.0), "{status}");
+
+    let reply = h.ok(json!({"method": "track_mask", "clip_id": clip}));
+    h.shared.mask_track_failed(clip_id, "the window could not be followed from this frame".into());
+    let status = h.ok(json!({"method": "job_status", "job_id": reply["job_id"]}));
+    assert_eq!(status["jobs"][0]["state"], json!("failed"), "{status}");
+    assert!(status["jobs"][0]["error"].as_str().unwrap().contains("could not be followed"), "{status}");
+}
+
 /// `track_surface` carries the area followed and the parts left out to
 /// the app as given (#2754): `exclude` left out keeps a surface's own,
 /// `[]` clears them; and it refuses either with a click, or a part left
