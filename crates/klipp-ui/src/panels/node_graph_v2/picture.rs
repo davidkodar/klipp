@@ -983,8 +983,8 @@ mod tests {
         let fg = graph.edges.iter().find(|e| e.to == (merge, "fg".into())).expect("the merge's picture still wired").from.0;
         assert_eq!(tag_of(fg).map(|t| t.1), Some("Gradient".into()));
         let mask = graph.edges.iter().find(|e| e.to == (blur, "mask".into())).expect("the blur still masked").from.0;
-        let kind = graph.nodes.iter().find(|n| n.id == mask).and_then(|n| n.legacy.as_ref()).and_then(|l| l.payload.get("kind")).cloned();
-        assert_eq!(kind, Some(serde_json::json!("LumaKey")), "the luma key masks it");
+        let kind = graph.nodes.iter().find(|n| n.id == mask).map(|n| klipp_graph_lift::structure::kind_of(n).to_owned());
+        assert_eq!(kind.as_deref(), Some("LumaKey"), "the luma key masks it");
         assert!(!graph.nodes.iter().any(|n| n.id == solid || n.id == window), "the old ones are gone");
 
         let model = PictureCanvas::new(&graph, root(&c), None).unwrap();

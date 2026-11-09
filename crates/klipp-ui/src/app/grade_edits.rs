@@ -976,8 +976,9 @@ mod grade_version_tests {
         let mut look = klipp_timeline::Look::new(uuid::Uuid::new_v4(), "Red", look_grade);
         look.node_labels = vec![klipp_timeline::GradeNodeLabel { nodes: vec![corr], colour: 1 }];
         // The target: a blur masked by its grade's qualifier, picture-truth.
-        let mut target = klipp_timeline::Clip::media(klipp_core::MediaId::new(), t(0.0), t(4.0), t(0.0), t(4.0));
-        target.push_effect(klipp_effects::BuiltinEffect::GaussianBlur { radius: 3.0 });
+        let mut target = klipp_timeline::test_clip::TestClip::of(klipp_timeline::Clip::media(klipp_core::MediaId::new(), t(0.0), t(4.0), t(0.0), t(4.0)))
+            .effect(klipp_effects::BuiltinEffect::GaussianBlur { radius: 3.0 })
+            .build();
         let mut g = NodeGraph::default();
         g.ensure_corrector();
         let source = g.nodes.iter().find(|n| n.kind == NodeKind::Source).unwrap().id;

@@ -278,6 +278,10 @@ fn effect_tries(t: &klipp_effects::registry::EffectType) -> Vec<klipp_effects::B
         "colour_space_transform" => {
             return vec![klipp_effects::BuiltinEffect::ColourSpaceTransform { input_gamut: 2, input_curve: 1, output_gamut: 1, output_curve: 0, prepared: None }];
         }
+        // A pin names the clip's surface it goes on, and with none named
+        // leaves the picture as it was (#3809): on the probe's tracked
+        // wall ([`with_a_wall`]).
+        "surface_pin" => return vec![klipp_effects::BuiltinEffect::SurfacePin { surface: WALL.into(), inset: 0.0, on_source: [[0.0; 2]; 4], source: [0; 2] }],
         _ => {}
     }
     let mut out = Vec::new();
@@ -318,6 +322,27 @@ fn effect_tries(t: &klipp_effects::registry::EffectType) -> Vec<klipp_effects::B
     }
     out.push((t.sample)());
     out
+}
+
+/// The surface the probed clip carries for a Surface Pin to go on.
+const WALL: &str = "Wall";
+
+/// `seq`'s probed clip with a tracked surface, [`WALL`], a slanted
+/// quadrilateral inside its picture: what a Surface Pin is drawn on.
+fn with_a_wall(seq: &mut Sequence) {
+    let corners = [[0.2, 0.15], [0.85, 0.25], [0.8, 0.85], [0.15, 0.75]];
+    let wall = klipp_timeline::Surface {
+        id: ClipId::new().0,
+        name: WALL.into(),
+        corners,
+        reference_secs: 0.0,
+        keys: vec![klipp_timeline::SurfaceKey::at_corners(0.0, &corners, &corners).expect("a quadrilateral")],
+        source_size: [W, H],
+        media_fps: 25.0,
+        track_area: None,
+        exclude: Vec::new(),
+    };
+    probed(seq).surfaces.push(wall);
 }
 
 /// A Transform that shrinks the picture to 60%, so an effect that draws
@@ -504,6 +529,9 @@ fn every_effect_and_grade_node_is_drawn_by_the_stack_or_declined() {
     };
     let with = |list: Vec<klipp_effects::BuiltinEffect>| {
         let mut s = seq.clone();
+        if list.iter().any(|e| matches!(e, klipp_effects::BuiltinEffect::SurfacePin { .. })) {
+            with_a_wall(&mut s);
+        }
         let n = list.len();
         probed(&mut s).set_effect_list(list, vec![true; n]);
         s

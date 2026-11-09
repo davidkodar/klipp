@@ -38,7 +38,8 @@ pub fn readable_name(node: &klipp_graph_format::Node) -> String {
     if let Some(ty) = crate::effect_params::tag(node).and_then(|tag| klipp_effects::registry::effect_types().find(|t| t.tag == tag)) {
         return ty.desc.name.to_owned();
     }
-    let kind = node.legacy.as_ref().and_then(|l| l.payload.get("kind")).and_then(|k| serde_json::from_value::<klipp_nodes::NodeKind>(k.clone()).ok());
+    // Through the one reader of a grade node's kind (`structure::kind_of`).
+    let kind = serde_json::from_value::<klipp_nodes::NodeKind>(serde_json::Value::String(crate::structure::kind_of(node).to_owned())).ok();
     if let Some(kind) = kind {
         return kind.display_name().to_owned();
     }

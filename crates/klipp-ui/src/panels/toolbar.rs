@@ -641,7 +641,7 @@ impl ToolbarPanel {
             }
             ui.separator();
             if ui.add(egui::Button::new("Split at Playhead").shortcut_text(kb.display_for("split_at_playhead"))).clicked() {
-                cmds.extend(state.split_at_playhead_commands());
+                cmds.push(AppCommand::SplitAtPlayhead);
                 ui.close_menu();
             }
             if ui.add_enabled(has_clip, egui::Button::new("Close Gap")).clicked() {

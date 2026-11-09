@@ -5690,9 +5690,10 @@ fn clip_sound_at(seq: &klipp_timeline::Sequence, audio_clip: &klipp_timeline::Cl
             fps,
             seed: clip.id.0.as_u64_pair().0,
         };
-        let eval = |kfs: &[klipp_core::Keyframe], param: klipp_core::ParamId, base: f32| eval_with_modifiers(kfs, clip.param_modifiers(), &param, clip_time, base, &ctx);
+        let modifiers = clip.param_modifiers();
+        let eval = |kfs: &[klipp_core::Keyframe], param: klipp_core::ParamId, base: f32| eval_with_modifiers(kfs, modifiers, &param, clip_time, base, &ctx);
         // Levels move in dB between keys, as export's mix moves them.
-        let level = |kfs: &[klipp_core::Keyframe], param: klipp_core::ParamId, base: f32| klipp_compose::eval::eval_level_with_modifiers(kfs, clip.param_modifiers(), &param, clip_time, base, &ctx);
+        let level = |kfs: &[klipp_core::Keyframe], param: klipp_core::ParamId, base: f32| klipp_compose::eval::eval_level_with_modifiers(kfs, modifiers, &param, clip_time, base, &ctx);
         ClipSound {
             volume: level(&clip.volume_keyframes, klipp_core::ParamId::Volume, clip.volume),
             pan: eval(&clip.pan_keyframes, klipp_core::ParamId::Pan, clip.pan),

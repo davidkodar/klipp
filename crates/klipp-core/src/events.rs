@@ -1854,6 +1854,11 @@ pub enum AppCommand {
 
     // Editing
     BladeClip { track_index: usize, clip_id: ClipId, cut_at: RationalTime },
+    /// Split at Playhead: every clip under the playhead on a targeted,
+    /// unlocked track cut there, its linked partner with it, as one undo
+    /// step. Sent as one `BladeClip` per clip, it was a step per track
+    /// that wasn't a partner: picture and sound one, the music another.
+    SplitAtPlayhead,
     CutClip { clip_id: ClipId },
     CopyClip { clip_id: ClipId },
     PasteClip,

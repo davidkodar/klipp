@@ -594,7 +594,7 @@ impl KlippApp {
             }
             // Split at playhead
             if kb.is_action_pressed("split_at_playhead", i) {
-                cmds.extend(self.state.split_at_playhead_commands());
+                cmds.push(AppCommand::SplitAtPlayhead);
             }
             // Freeze frame at playhead (default 2s duration).
             // The default transition at the nearest cut (#918).

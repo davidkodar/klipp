@@ -68,8 +68,18 @@ fn frame() -> Vec<f32> {
 }
 
 /// `ty`'s effect with each numeric parameter at 0.7 of its slider range.
+/// `ty`'s sample, set to do something: a Surface Pin with no surface
+/// named leaves the picture (#3809), so it goes on a surface here, a
+/// slanted quadrilateral inside the frame, as the pin's tracker sets it.
+fn sample(ty: &EffectType) -> BuiltinEffect {
+    match (ty.sample)() {
+        BuiltinEffect::SurfacePin { inset, .. } => BuiltinEffect::SurfacePin { surface: "Wall".into(), inset, on_source: [[0.2, 0.15], [0.85, 0.25], [0.8, 0.85], [0.15, 0.75]], source: [W, H] },
+        e => e,
+    }
+}
+
 fn at_seven_tenths(ty: &EffectType) -> BuiltinEffect {
-    let mut v = serde_json::to_value((ty.sample)()).unwrap();
+    let mut v = serde_json::to_value(sample(ty)).unwrap();
     for p in ty.desc.params {
         let Some((lo, hi)) = p.soft else { continue };
         let value = lo + 0.7 * (hi - lo);
@@ -111,7 +121,7 @@ fn cases() -> (Vec<(&'static str, BuiltinEffect)>, usize) {
             exempt += 1;
             continue;
         }
-        cases.push((ty.tag, (ty.sample)()));
+        cases.push((ty.tag, sample(ty)));
         cases.push((ty.tag, at_seven_tenths(ty)));
     }
     (cases, exempt)

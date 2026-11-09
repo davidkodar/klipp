@@ -408,8 +408,8 @@ fn effect_edits_leave_a_grades_secondary_wired_as_it_was() {
     let vignette = effects(&picture(&c))[1];
     c.apply_picture_ops(&[GraphOp::MoveAfter { path: at(&c, [blur]), after: vignette }]).unwrap();
     assert_eq!(sorted(&c), want, "a move");
-    let first = c.effect_id_at(0).unwrap();
-    assert!(c.set_effect_enabled(first, false));
+    let first = effects(&picture(&c))[0];
+    c.apply_picture_ops(&[GraphOp::SetEnabled { path: at(&c, [first]), enabled: false }]).unwrap();
     assert_eq!(sorted(&c), want, "a switch");
     c.apply_picture_ops(&[GraphOp::RemoveNode { path: at(&c, [vignette]) }]).unwrap();
     assert_eq!(sorted(&c), want, "a removal");

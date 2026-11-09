@@ -1374,9 +1374,25 @@ mod sound_role_tests {
     fn a_bypassed_effect_is_listed_and_marked() {
         let mut seq = pair();
         let fx = |name: &str, enabled: bool| klipp_core::AudioEffectInstance { effect_type: name.into(), enabled, wet_dry: 1.0, params: Vec::new() };
-        seq.tracks[0].clips[0].audio_effects = vec![fx("compressor", false), fx("eq", true)];
+        seq.tracks[1].clips[0].audio_effects = vec![fx("compressor", false), fx("eq", true)];
         let mut v = serde_json::json!({});
         sound_json(&seq, &seq.tracks[1].clips[0], false, &mut v);
         assert_eq!(v["sound"]["effects"], serde_json::json!(["compressor (bypassed)", "eq"]), "{v}");
+    }
+
+    /// A sound clip's effects are listed where the mix plays them: on the
+    /// sound clip, read on either half of the pair. They were read from
+    /// the picture, the pair's settings clip, and an eq, a normalize and
+    /// a high-pass added on the sound's Audio tab read as none.
+    #[test]
+    fn a_sound_clips_own_effects_are_listed() {
+        let mut seq = pair();
+        let fx = |name: &str| klipp_core::AudioEffectInstance { effect_type: name.into(), enabled: true, wet_dry: 1.0, params: Vec::new() };
+        seq.tracks[1].clips[0].audio_effects = vec![fx("eq"), fx("normalize"), fx("high_pass")];
+        for (half, clip) in [("sound", &seq.tracks[1].clips[0]), ("picture", &seq.tracks[0].clips[0])] {
+            let mut v = serde_json::json!({});
+            sound_json(&seq, clip, true, &mut v);
+            assert_eq!(v["sound"]["effects"], serde_json::json!(["eq", "normalize", "high_pass"]), "{half}: {v}");
+        }
     }
 }

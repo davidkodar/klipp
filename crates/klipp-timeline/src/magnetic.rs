@@ -3023,8 +3023,8 @@ mod tests {
         let result = MagneticEditor::blade(&mut seq, id, tc(24)).expect("cut inside");
         let MagneticEditCommand::Blade { left_clip, right_clip, .. } = &result.command else { panic!("a blade") };
         let (a, b) = free.split_at(other, tc(24)).expect("cut inside");
-        assert_eq!(right_clip.volume_keyframes.iter().map(|k| k.time_secs).collect::<Vec<_>>(), vec![0.5], "the later key, from its own start");
-        assert_eq!(left_clip.volume_keyframes.iter().map(|k| k.time_secs).collect::<Vec<_>>(), vec![0.5], "the earlier key");
+        assert_eq!(right_clip.volume_keyframes.iter().map(|k| k.time_secs).collect::<Vec<_>>(), vec![0.0, 0.5], "from the cut, then the later key, from its own start");
+        assert_eq!(left_clip.volume_keyframes.iter().map(|k| k.time_secs).collect::<Vec<_>>(), vec![0.5, 1.0], "the earlier key, then the cut");
         assert_eq!(left_clip.id, id, "the left keeps the id");
         for (magnetic, legacy, side) in [(left_clip, &a, "left"), (right_clip, &b, "right")] {
             let keys = |c: &crate::Clip| {
