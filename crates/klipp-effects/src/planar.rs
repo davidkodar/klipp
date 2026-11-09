@@ -694,7 +694,7 @@ fn grey_at(f: &GrayFrame, x: f64, y: f64) -> Option<f64> {
 
 /// Whether the surface inside `quad` has next to no detail of its own: its
 /// outline is all a fit has to hold on to.
-fn is_plain(reference: &GrayFrame, quad: &[(f64, f64); 4]) -> bool {
+pub fn is_plain(reference: &GrayFrame, quad: &[(f64, f64); 4]) -> bool {
     let c = quad.iter().fold((0.0, 0.0), |a, p| (a.0 + p.0 / 4.0, a.1 + p.1 / 4.0));
     let shrunk = quad.map(|p| (c.0 + (p.0 - c.0) * 0.9, c.1 + (p.1 - c.1) * 0.9));
     let (lo_x, hi_x) = shrunk.iter().fold((f64::MAX, f64::MIN), |a, p| (a.0.min(p.0), a.1.max(p.0)));
@@ -773,6 +773,42 @@ fn outline_agreement(reference: &GrayFrame, frame: &GrayFrame, quad: &[(f64, f64
         worst = Some(worst.map_or(r, |w: f64| w.min(r)));
     }
     if sides >= 2 { worst } else { None }
+}
+
+/// How far the region reaches past a plain surface when its first run didn't
+/// hold, in turn: what lies round it gives the fit more to hold on to, and
+/// the outline still has to prove each frame.
+pub const WIDER_AREAS: [f64; 3] = [0.15, 0.30, 0.50];
+/// The share of frames reading Good at which a run is good enough to stop.
+const GOOD_ENOUGH: f64 = 0.9;
+
+/// A plain surface's run, tried again over wider areas if too few of its
+/// `total` frames read Good, stopping once one is good enough or `going`
+/// says stop. The run with the most Good frames is kept, the narrowest of
+/// any level, so a wider area is used only where it helped. Whether one was.
+/// Anything with detail of its own runs once, as it always has.
+pub fn try_wider_areas<R>(plain: bool, total: usize, mut run: impl FnMut(&Options) -> R, good: impl Fn(&R) -> usize, going: impl Fn() -> bool) -> (R, bool) {
+    let enough = |n: usize| n as f64 >= GOOD_ENOUGH * total as f64;
+    let mut best = run(&Options::default());
+    let mut most = good(&best);
+    let mut wider = false;
+    if !plain || enough(most) {
+        return (best, wider);
+    }
+    for margin in WIDER_AREAS {
+        if !going() {
+            break;
+        }
+        let next = run(&Options { margin, ..Options::default() });
+        let n = good(&next);
+        if n > most {
+            (best, most, wider) = (next, n, true);
+        }
+        if enough(most) {
+            break;
+        }
+    }
+    (best, wider)
 }
 
 /// The state a confidence makes.
@@ -1288,6 +1324,48 @@ mod tests {
         assert!(off < OUTLINE_HOLDS, "8 px off: {off}");
         let off = outline_agreement(&reference, &later, &quad, &shift(30.0, 20.0)).unwrap();
         assert!(off < OUTLINE_HOLDS, "8 px off the other way: {off}");
+    }
+
+    /// Detail runs once. A plain surface is tried wider only while too few
+    /// frames read Good, stops once enough do, and keeps the run with the
+    /// most, the narrowest of any level.
+    #[test]
+    fn a_plain_surface_is_tried_wider_only_while_it_needs_it() {
+        let tried = std::cell::RefCell::new(Vec::new());
+        // The Good frames, of 100, each margin's run reads.
+        let with = |levels: [(f64, usize); 4]| {
+            let tried = &tried;
+            move |o: &Options| {
+                tried.borrow_mut().push(o.margin);
+                (o.margin, levels.iter().find(|l| l.0 == o.margin).unwrap().1)
+            }
+        };
+        let count = |r: &(f64, usize)| r.1;
+        let go = || true;
+        let levels = |a, b, c, d| [(Options::default().margin, a), (0.15, b), (0.30, c), (0.50, d)];
+
+        let (r, wider) = try_wider_areas(false, 100, with(levels(10, 99, 99, 99)), count, go);
+        assert_eq!((r.1, wider, tried.borrow().len()), (10, false, 1), "detail runs once");
+        tried.borrow_mut().clear();
+
+        let (r, wider) = try_wider_areas(true, 100, with(levels(95, 0, 0, 0)), count, go);
+        assert_eq!((r.1, wider, tried.borrow().len()), (95, false, 1), "held at the first go");
+        tried.borrow_mut().clear();
+
+        let (r, wider) = try_wider_areas(true, 100, with(levels(10, 40, 92, 99)), count, go);
+        assert_eq!((r.0, r.1, wider, tried.borrow().len()), (0.30, 92, true, 3), "stops at good enough");
+        tried.borrow_mut().clear();
+
+        let (r, wider) = try_wider_areas(true, 100, with(levels(10, 60, 30, 20)), count, go);
+        assert_eq!((r.0, r.1, wider, tried.borrow().len()), (0.15, 60, true, 4), "the most Good frames kept");
+        tried.borrow_mut().clear();
+
+        let (r, wider) = try_wider_areas(true, 100, with(levels(10, 10, 10, 10)), count, go);
+        assert_eq!((r.0, wider), (Options::default().margin, false), "no better: the narrowest, and not called wider");
+        tried.borrow_mut().clear();
+
+        let (_, _) = try_wider_areas(true, 100, with(levels(10, 40, 50, 60)), count, || false);
+        assert_eq!(tried.borrow().len(), 1, "stopped: no more tries");
     }
 
     /// Light falling across the surface during the shot moves nothing.
