@@ -2203,25 +2203,14 @@ impl Track {
         let left_secs = cut_secs as f32;
         let right_secs = (clip.timeline_out - cut_at).to_secs_f64() as f32;
 
-        // Split keyframes at the cut point
-        let split_kfs = |kfs: &[klipp_core::Keyframe]| -> (Vec<klipp_core::Keyframe>, Vec<klipp_core::Keyframe>) {
-            let mut before = Vec::new();
-            let mut after = Vec::new();
-            for kf in kfs {
-                if kf.time_secs < cut_secs {
-                    before.push(kf.clone());
-                } else {
-                    let mut shifted = kf.clone();
-                    shifted.time_secs -= cut_secs;
-                    after.push(shifted);
-                }
-            }
-            (before, after)
-        };
+        // Split keyframes at the cut point: each piece with a key at the
+        // cut, at the curve's value there, so a ramp across it goes on.
+        let split_kfs = |kfs: &[klipp_core::Keyframe]| klipp_core::keyframe::split_at_cut(kfs, cut_secs, false);
         let (speed_a, speed_b) = clip.split_speed_keys(cut_secs);
-        let (vol_a, vol_b) = split_kfs(&clip.volume_keyframes);
+        // Sound levels move in dB between keys.
+        let (vol_a, vol_b) = klipp_core::keyframe::split_at_cut(&clip.volume_keyframes, cut_secs, true);
         let (pan_a, pan_b) = split_kfs(&clip.pan_keyframes);
-        let (gain_a, gain_b) = split_kfs(&clip.gain_keyframes);
+        let (gain_a, gain_b) = klipp_core::keyframe::split_at_cut(&clip.gain_keyframes, cut_secs, true);
         let (opacity_a, opacity_b) = split_kfs(clip.opacity_keyframes());
         let (pos_x_a, pos_x_b) = split_kfs(clip.transform_pos_x_keyframes());
         let (pos_y_a, pos_y_b) = split_kfs(clip.transform_pos_y_keyframes());
@@ -2458,12 +2447,40 @@ impl Track {
         let whole = (clip.timeline_out - clip.timeline_in).to_secs_f64();
         clip_a.keep_angle_cuts_on_piece(0.0, cut_secs);
         clip_b.keep_angle_cuts_on_piece(cut_secs, whole);
+        // The grade's keys too: the right piece's re-timed from the cut,
+        // which they weren't, each piece with a key at the cut.
+        if has_grade_keys(crate::grade_access::GradeAccess::grade(&clip_a)) {
+            crate::grade_access::GradeAccess::edit_grade(&mut clip_a, |g| split_grade_keys(g, cut_secs, true));
+            crate::grade_access::GradeAccess::edit_grade(&mut clip_b, |g| split_grade_keys(g, cut_secs, false));
+        }
 
         self.clips.remove(pos);
         self.clips.insert(pos, clip_b.clone());
         self.clips.insert(pos, clip_a.clone());
 
         Some((clip_a, clip_b))
+    }
+}
+
+/// Whether a grade has keys anywhere, inside its compounds too.
+fn has_grade_keys(g: &klipp_nodes::NodeGraph) -> bool {
+    g.nodes.iter().any(|n| !n.keyframes.is_empty() || n.params.compound_subgraph.as_ref().is_some_and(has_grade_keys))
+}
+
+/// A grade's keys as one piece of a clip cut at `cut` seconds keeps them
+/// ([`klipp_core::keyframe::split_at_cut`]): the left piece's up to the
+/// cut, the right's from it, re-timed; inside its compounds too.
+fn split_grade_keys(g: &mut klipp_nodes::NodeGraph, cut: f64, left: bool) {
+    for n in &mut g.nodes {
+        for t in &mut n.keyframes.tracks {
+            if !t.keyframes.is_empty() {
+                let (a, b) = klipp_core::keyframe::split_at_cut(&t.keyframes, cut, false);
+                t.keyframes = if left { a } else { b };
+            }
+        }
+        if let Some(inner) = n.params.compound_subgraph.as_mut() {
+            split_grade_keys(inner, cut, left);
+        }
     }
 }
 
@@ -4501,26 +4518,72 @@ mod tests {
         assert!(result.is_some(), "blade should succeed at frame 24");
         assert_eq!(track.clips.len(), 2);
 
-        // clip_a: keeps the first two `gain` kfs, no bypass kf.
+        // clip_a: the first two `gain` kfs and one at the cut, at the
+        // ramp's value there (0.7 + 0.2 * 0.25 / 0.75); the bypass kf
+        // past the cut held back to the cut, as the whole clip held it.
+        let at_cut = 0.7 + 0.2 * 0.25 / 0.75;
         let a_gain = track.clips[0].audio_effect_keyframes.get("0:gain")
             .expect("clip_a must keep the gain track");
-        assert_eq!(a_gain.len(), 2, "clip_a gets the two pre-cut kfs");
-        assert!((a_gain[0].time_secs - 0.25).abs() < 1e-9);
-        assert!((a_gain[1].time_secs - 0.75).abs() < 1e-9);
-        assert!(!track.clips[0].audio_effect_keyframes.contains_key("0:__bypass"),
-            "clip_a must not carry the bypass kf (it sits past the cut)");
+        assert_eq!(a_gain.iter().map(|k| k.time_secs).collect::<Vec<_>>(), vec![0.25, 0.75, 1.0]);
+        assert!((a_gain[2].value - at_cut).abs() < 1e-5, "{a_gain:?}");
+        let a_bypass = &track.clips[0].audio_effect_keyframes["0:__bypass"];
+        assert_eq!(a_bypass.iter().map(|k| (k.time_secs, k.value)).collect::<Vec<_>>(), vec![(1.0, 1.0)]);
 
-        // clip_b: the third gain kf, with time shifted back by 1.0s
-        // (the cut point), and the bypass kf shifted likewise.
+        // clip_b: from the cut's value, then the third gain kf, shifted
+        // back by 1.0s (the cut point), and the bypass kf likewise.
         let b_gain = track.clips[1].audio_effect_keyframes.get("0:gain")
             .expect("clip_b must inherit the post-cut gain kf");
-        assert_eq!(b_gain.len(), 1);
-        assert!((b_gain[0].time_secs - 0.5).abs() < 1e-9,
-            "clip_b's kf time must be shifted: 1.5s - 1.0s = 0.5s, got {}", b_gain[0].time_secs);
+        assert_eq!(b_gain.len(), 2);
+        assert!(b_gain[0].time_secs.abs() < 1e-9 && (b_gain[0].value - at_cut).abs() < 1e-5, "{b_gain:?}");
+        assert!((b_gain[1].time_secs - 0.5).abs() < 1e-9,
+            "clip_b's kf time must be shifted: 1.5s - 1.0s = 0.5s, got {}", b_gain[1].time_secs);
         let b_bypass = track.clips[1].audio_effect_keyframes.get("0:__bypass")
             .expect("clip_b must carry the bypass kf");
-        assert!((b_bypass[0].time_secs - 0.25).abs() < 1e-9,
-            "bypass kf time must be 1.25s - 1.0s = 0.25s, got {}", b_bypass[0].time_secs);
+        assert!((b_bypass[1].time_secs - 0.25).abs() < 1e-9,
+            "bypass kf time must be 1.25s - 1.0s = 0.25s, got {}", b_bypass[1].time_secs);
+    }
+
+    /// A ramp a cut falls inside goes on across it: each piece has a key at
+    /// the cut at the value the curve had there, and every key track a
+    /// clip carries reads on each piece as it read on the clip. The walk's
+    /// case: an EQ band keyed from -12 dB to 0, cut between its keys, left
+    /// one piece flat at -12 and the other at 0, a 12 dB step. A volume
+    /// ramp meets in dB, and the grade's keys are re-timed on the right.
+    #[test]
+    fn a_split_keeps_every_ramp_across_the_cut() {
+        use crate::grade_access::GradeAccess;
+        use klipp_core::keyframe::{evaluate, evaluate_level};
+        use klipp_core::{Interpolation, Keyframe};
+        let key = |t: f64, v: f32| Keyframe { time_secs: t, value: v, interpolation: Interpolation::Linear, tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0), handles: Default::default() };
+        // 10 s at 24 fps, cut at 5.25 s (frame 126).
+        let mut c = make_clip(0, 240, 0, 240);
+        let eq = vec![key(2.25, -12.0), key(8.25, 0.0)];
+        let volume = vec![key(1.0, 1.0), key(9.0, 0.1)];
+        let exposure = vec![key(1.0, 0.0), key(9.0, 2.0)];
+        c.audio_effect_keyframes.insert("0:band3_gain".into(), eq.clone());
+        c.volume_keyframes = volume.clone();
+        c.edit_grade(|g| {
+            let corrector = g.ensure_corrector();
+            let n = g.nodes.iter_mut().find(|n| n.id == corrector).unwrap();
+            n.keyframes.tracks.push(klipp_nodes::NodeKeyframeTrack { param_name: "exposure".into(), keyframes: exposure.clone() });
+        });
+        let id = c.id;
+        let mut track = make_track(vec![c]);
+        let (a, b) = track.blade_at(id, tc(126), test_fps()).expect("cut inside");
+        let cut = 5.25;
+        let grade_keys = |c: &Clip| c.grade().nodes.iter().flat_map(|n| n.keyframes.tracks.iter()).find(|t| t.param_name == "exposure").map(|t| t.keyframes.clone()).unwrap_or_default();
+        for t in [0.5, 2.25, 4.0, 5.0, 5.25, 5.5, 7.0, 8.25, 9.5] {
+            let (piece, at) = if t <= cut { (&a, t) } else { (&b, t - cut) };
+            let eq_here = evaluate(&piece.audio_effect_keyframes["0:band3_gain"], at, 99.0);
+            assert!((eq_here - evaluate(&eq, t, 99.0)).abs() < 1e-4, "EQ at {t} s: {eq_here}");
+            let vol_here = evaluate_level(&piece.volume_keyframes, at, 99.0);
+            assert!((vol_here / evaluate_level(&volume, t, 99.0) - 1.0).abs() < 1e-3, "volume at {t} s: {vol_here}");
+            let exp_here = evaluate(&grade_keys(piece), at, 99.0);
+            assert!((exp_here - evaluate(&exposure, t, 99.0)).abs() < 1e-4, "grade exposure at {t} s: {exp_here}");
+        }
+        // Either side of the cut: the same value, -12 + 12 * 3 / 6.
+        let meet = (a.audio_effect_keyframes["0:band3_gain"].last().unwrap().value, b.audio_effect_keyframes["0:band3_gain"][0].value);
+        assert!((meet.0 + 6.0).abs() < 1e-4 && (meet.1 + 6.0).abs() < 1e-4, "{meet:?}");
     }
 
     #[test]
