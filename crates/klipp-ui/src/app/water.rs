@@ -25,6 +25,11 @@ impl WaterTries {
         !self.found_nothing.contains(&(clip_id, key))
     }
 
+    /// Whether any measurement is running.
+    pub(super) fn any_running(&self) -> bool {
+        !self.running.is_empty()
+    }
+
     /// A measurement starting. False when one is running for this footprint.
     fn start(&mut self, clip_id: klipp_core::ClipId, key: u32, asked: bool) -> bool {
         match self.running.entry((clip_id, key)) {
@@ -104,8 +109,11 @@ impl KlippApp {
     }
 
     /// A measurement in (#2795): stored on the reflection, its tint and
-    /// darkness following it where they are set to, one undo step; dropped
-    /// when the footprint has changed since it started.
+    /// darkness following it where they are set to; dropped when the
+    /// footprint has changed since it started. One asked for is an undo
+    /// step. One Klipp made on its own is not an edit, so it leaves the undo
+    /// and redo lists alone, and an undo that takes it back has it measured
+    /// again.
     pub(super) fn water_measured(&mut self, clip_id: klipp_core::ClipId, key: u32, water: Option<[u8; 3]>) {
         let asked = self.water_tries.finish(clip_id, key, water.is_some());
         let seq = &self.state.sequences[self.state.active_sequence_idx];
@@ -127,8 +135,24 @@ impl KlippApp {
         if !matches!(new.apply_effect_edits(&[klipp_timeline::EffectEdit::Update(index, &updated)]), Some(Ok(_))) {
             return;
         }
-        let edit = EditCommand::ReplaceClip { description: "Measure Water", old: Box::new(old), new: Box::new(new) };
-        self.apply_edits_as_one(std::slice::from_ref(&edit), "Measure Water");
+        if asked {
+            let edit = EditCommand::ReplaceClip { description: "Measure Water", old: Box::new(old), new: Box::new(new) };
+            self.apply_edits_as_one(std::slice::from_ref(&edit), "Measure Water");
+        } else {
+            store_water_quietly(&mut self.state, new);
+            self.sync_sequence_to_engine();
+            let _ = self.cmd_tx.send(klipp_core::AppCommand::SequenceUpdated);
+        }
+    }
+}
+
+/// `measured`, the clip with its water, in place of the clip as it was, and
+/// nothing else: no undo step, the redo list kept, an open drag left open.
+fn store_water_quietly(state: &mut crate::state::AppState, measured: klipp_timeline::Clip) {
+    let seq = &mut state.sequences[state.active_sequence_idx];
+    if let Some(clip) = seq.tracks.iter_mut().find_map(|t| t.find_clip_mut(measured.id)) {
+        *clip = measured;
+        state.dirty = true;
     }
 }
 
@@ -154,6 +178,40 @@ pub(super) fn with_water(effect: klipp_effects::BuiltinEffect, water: [u8; 3], k
 mod tests {
     use super::*;
 
+    /// Water Klipp measured on its own is no edit: undo and redo keep what
+    /// they hold, and an open drag stays open. It was a step of its own that
+    /// came back after each undo and emptied the redo list.
+    #[test]
+    fn water_measured_on_its_own_leaves_undo_and_redo_alone() {
+        let tc = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 25);
+        let clip = klipp_timeline::test_clip::TestClip::of(klipp_timeline::Clip::media(klipp_core::MediaId::new(), tc(0.0), tc(2.0), tc(0.0), tc(2.0)))
+            .effects([klipp_effects::reflection::surface("calm_water", 0.6).unwrap()])
+            .build();
+        let id = clip.id;
+        let mut state = crate::state::AppState::default();
+        let v1 = state.sequences[0].tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
+        state.sequences[0].tracks[v1].clips.push(clip.clone());
+        let edit = |description| crate::history::HistoryEntry { command: EditCommand::ReplaceClip { description, old: Box::new(clip.clone()), new: Box::new(clip.clone()) } };
+        state.active_history_mut().push(edit("One"));
+        state.active_history_mut().push(edit("Two"));
+        assert!(state.take_undo().is_some());
+        state.active_history_mut().begin_drag("a drag".into(), edit("Drag"));
+        let (undo, redo) = (state.active_history().undo_count(), state.active_history().redo_count());
+
+        let (node, effect) = klipp_render::water::reflection_of(&clip).unwrap();
+        let index = clip.picture_effects().unwrap().iter().position(|e| e.node == node).unwrap();
+        let updated = with_water(effect, [10, 40, 80], 7);
+        let mut measured = clip.clone();
+        assert!(matches!(measured.apply_effect_edits(&[klipp_timeline::EffectEdit::Update(index, &updated)]), Some(Ok(_))));
+        store_water_quietly(&mut state, measured);
+
+        let now = state.sequences[0].tracks[v1].clips.iter().find(|c| c.id == id).unwrap();
+        assert!(matches!(klipp_render::water::reflection_of(now), Some((_, klipp_effects::BuiltinEffect::Reflection { water_key: 7, .. }))), "stored");
+        assert_eq!(state.active_history().undo_count(), undo, "no undo step");
+        assert_eq!(state.active_history().redo_count(), redo, "the redo list kept");
+        assert!(state.active_history().is_any_drag_in_progress(), "the drag still open");
+    }
+
     /// A footprint that gave nothing is not measured again on its own, or
     /// it runs every frame, for good; another footprint is, once footage
     /// has come to lie below, and a measurement asked for still runs.
@@ -162,9 +220,12 @@ mod tests {
         let clip = klipp_core::ClipId(uuid::Uuid::nil());
         let mut tries = WaterTries::default();
         assert!(tries.wanted(clip, 1));
+        assert!(!tries.any_running());
         assert!(tries.start(clip, 1, false));
+        assert!(tries.any_running(), "the frame loop waits for its result");
         assert!(!tries.start(clip, 1, false), "one running at a time");
         assert!(!tries.finish(clip, 1, false), "on its own: nothing to tell");
+        assert!(!tries.any_running());
         assert!(!tries.wanted(clip, 1), "nothing found: not tried again");
         assert!(tries.wanted(clip, 2), "another footprint is");
         assert!(tries.start(clip, 1, true), "asked for, it still runs");

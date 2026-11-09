@@ -502,6 +502,11 @@ impl KlippApp {
         self.drain_proxy_events();
         self.measure_stale_normalizes();
         self.measure_unmeasured_water();
+        // Its result is read here, so it needs a frame: an idle window draws
+        // none, and the water would wait for the next pointer move or edit.
+        if self.water_tries.any_running() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        }
         // If a skim decode just finished and there's a queued request,
         // dispatch it immediately. After `drain_proxy_events`, because that
         // is where `BrowserSkimFrameReady` clears `skim_decode_in_flight`:
