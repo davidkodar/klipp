@@ -485,31 +485,30 @@ pub fn route_placed(clip: &Clip, cmds: Vec<AppCommand>) -> Vec<AppCommand> {
     out
 }
 
-/// The Transform card's key commands on a field with a placement lane as
-/// that lane's video keyframe commands, and a value set on a field whose
-/// lane has keys as a key at `t` (as the Video tab keys a keyed field:
-/// the stored value under the keys would change nothing seen); the rest
-/// pass.
-fn to_placement_lanes(clip: &Clip, t: f64, cmds: Vec<AppCommand>) -> Vec<AppCommand> {
+/// The Transform card's command `cmd` on a field with a keyed placement
+/// lane as that lane's command, as the Video tab sends it, or `None` for
+/// one that goes through the clip's effect list: a key set or taken off;
+/// a value set on a keyed field as a key at `t` (the stored value under
+/// the keys would change nothing seen); a drag of a keyed field as the
+/// lane's own key drag, one step however many ticks it writes (a step per
+/// tick made one Ctrl+Z take back a pixel), and its Escape as that drag
+/// taken back.
+fn to_placement_lane(clip: &Clip, t: f64, cmd: &AppCommand) -> Option<AppCommand> {
     use crate::inspector::placement_by_path::{lane_key, lane_keys, video_param_of_field};
-    let keyed = |param: klipp_core::VideoParam| lane_key(param).is_some_and(|lane| !lane_keys(clip, lane).is_empty());
-    cmds.into_iter()
-        .map(|cmd| match &cmd {
-            AppCommand::SetParamAt { key, value: klipp_graph_format::ParamValue::Float(v), .. } => match video_param_of_field(key.as_str()).filter(|p| keyed(*p)) {
-                Some(param) => AppCommand::AddVideoKeyframe { clip_id: clip.id, param, time_secs: t, value: *v },
-                None => cmd,
-            },
-            AppCommand::AddKeyAt { key, keyframe, .. } => match (video_param_of_field(key.as_str()), serde_json::from_value::<Keyframe>(keyframe.clone())) {
-                (Some(param), Ok(k)) => AppCommand::AddVideoKeyframe { clip_id: clip.id, param, time_secs: k.time_secs, value: k.value },
-                _ => cmd,
-            },
-            AppCommand::RemoveKeyAt { key, time_secs, .. } => match video_param_of_field(key.as_str()) {
-                Some(param) => AppCommand::RemoveVideoKeyframe { clip_id: clip.id, param, time_secs: *time_secs },
-                None => cmd,
-            },
-            _ => cmd,
-        })
-        .collect()
+    let keyed = |key: &klipp_graph_format::ParamKey| video_param_of_field(key.as_str()).filter(|p| lane_key(*p).is_some_and(|lane| !lane_keys(clip, lane).is_empty()));
+    let lane_drag = |p: klipp_core::VideoParam| format!("kf:video:{}:{p:?}", clip.id.0);
+    Some(match cmd {
+        AppCommand::SetParamAt { key, value: klipp_graph_format::ParamValue::Float(v), .. } => AppCommand::AddVideoKeyframe { clip_id: clip.id, param: keyed(key)?, time_secs: t, value: *v },
+        AppCommand::AddKeyAt { key, keyframe, .. } => {
+            let k = serde_json::from_value::<Keyframe>(keyframe.clone()).ok()?;
+            AppCommand::AddVideoKeyframe { clip_id: clip.id, param: video_param_of_field(key.as_str())?, time_secs: k.time_secs, value: k.value }
+        }
+        AppCommand::RemoveKeyAt { key, time_secs, .. } => AppCommand::RemoveVideoKeyframe { clip_id: clip.id, param: video_param_of_field(key.as_str())?, time_secs: *time_secs },
+        AppCommand::BeginParamEditAt { key, .. } => AppCommand::BeginKeyframeDrag { key: lane_drag(keyed(key)?), clip_id: clip.id },
+        AppCommand::EndParamEditAt { key, .. } => AppCommand::EndKeyframeDrag { key: lane_drag(keyed(key)?), clip_id: clip.id },
+        AppCommand::AbandonParamEditAt { key, .. } => AppCommand::AbandonParamEditAt { addr: clip.placement_path()?, key: lane_key(keyed(key)?)?.into() },
+        _ => return None,
+    })
 }
 
 /// A placed kind's row commands as the clip's effect-list commands, which
@@ -889,8 +888,23 @@ fn row_card(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppState, clip: &Clip
             if placed {
                 // A key the clip's own Transform card sets or takes off goes
                 // on the placement lane it reads, as the Video tab's.
-                let scratch = if clip_transform { to_placement_lanes(clip, clip_time_secs, scratch) } else { scratch };
-                cmds.extend(to_effect_list(clip, ty, n.id, &entry, scratch));
+                if clip_transform {
+                    // What goes on a lane goes as it is; the rest, in runs
+                    // between, through the clip's effect list, in order.
+                    let mut run = Vec::new();
+                    for cmd in scratch {
+                        match to_placement_lane(clip, clip_time_secs, &cmd) {
+                            Some(lane) => {
+                                cmds.extend(to_effect_list(clip, ty, n.id, &entry, std::mem::take(&mut run)));
+                                cmds.push(lane);
+                            }
+                            None => run.push(cmd),
+                        }
+                    }
+                    cmds.extend(to_effect_list(clip, ty, n.id, &entry, run));
+                } else {
+                    cmds.extend(to_effect_list(clip, ty, n.id, &entry, scratch));
+                }
             }
         }
         _ if row.is_group || row.section == Section::Colour => {

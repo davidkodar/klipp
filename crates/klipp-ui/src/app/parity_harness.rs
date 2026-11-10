@@ -463,3 +463,42 @@ fn the_transform_card_reads_and_keys_the_placement_at_the_playhead() {
     let keys = crate::inspector::placement_by_path::lane_keys(run.clip(), "pos_x");
     assert!(keys.iter().any(|k| (k.time_secs - 2.5).abs() < 1e-6 && (k.value - 300.0).abs() < 1e-3), "a key at 2.5 s: {keys:?}, unapplied {:?}", run.unapplied);
 }
+
+/// A drag of the Transform card's keyed Pos X, many ticks long, is one
+/// undo step, as the Video tab's drag is: it was a step per tick ("Add
+/// Keyframe"), so one Ctrl+Z took back a pixel.
+#[test]
+fn a_drag_on_the_transform_cards_keyed_field_is_one_step() {
+    let t = |s| klipp_core::RationalTime::from_secs_f64(s, 24);
+    let transform = BuiltinEffect::Transform { position_x: 400.0, position_y: 0.0, scale_x: 1.0, scale_y: 1.0, rotation: 0.0, anchor_x: 0.5, anchor_y: 0.5, rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0, focal_ref: None };
+    let clip = klipp_timeline::test_clip::TestClip::of(klipp_timeline::Clip::media(klipp_core::MediaId::new(), t(0.0), t(6.0), t(0.0), t(6.0)))
+        .effect(transform)
+        .lane("pos_x", 1.0, 0.0)
+        .lane("pos_x", 4.0, 400.0)
+        .build();
+    let mut run = Run::new(clip);
+    run.state.playhead = t(2.5);
+    let before = crate::inspector::placement_by_path::lane_keys(run.clip(), "pos_x");
+    let (_, at) = run.row("Pos X").expect("the card's Pos X row");
+    run.button(at, egui::PointerButton::Primary, true);
+    for i in 1..=30 {
+        run.frame(vec![egui::Event::PointerMoved(at + egui::vec2(i as f32, 0.0))], egui::Modifiers::NONE);
+    }
+    run.button(at + egui::vec2(30.0, 0.0), egui::PointerButton::Primary, false);
+    run.frame(Vec::new(), egui::Modifiers::NONE);
+    let after = crate::inspector::placement_by_path::lane_keys(run.clip(), "pos_x");
+    assert!(after.iter().any(|k| (k.time_secs - 2.5).abs() < 1e-6), "the drag keyed 2.5 s: {after:?}, unapplied {:?}", run.unapplied);
+    assert!(run.step(false), "a step to undo");
+    assert_eq!(crate::inspector::placement_by_path::lane_keys(run.clip(), "pos_x"), before, "one undo takes the whole drag back");
+    // The same drag taken back with Escape: the keys as they were, no step.
+    let steps = run.state.active_history().undo_count();
+    run.button(at, egui::PointerButton::Primary, true);
+    for i in 1..=10 {
+        run.frame(vec![egui::Event::PointerMoved(at + egui::vec2(i as f32, 0.0))], egui::Modifiers::NONE);
+    }
+    run.key(egui::Key::Escape, egui::Modifiers::NONE);
+    run.button(at + egui::vec2(10.0, 0.0), egui::PointerButton::Primary, false);
+    run.frame(Vec::new(), egui::Modifiers::NONE);
+    assert_eq!(crate::inspector::placement_by_path::lane_keys(run.clip(), "pos_x"), before, "Escape leaves the keys as they were: unapplied {:?}", run.unapplied);
+    assert_eq!(run.state.active_history().undo_count(), steps, "and records no step");
+}
