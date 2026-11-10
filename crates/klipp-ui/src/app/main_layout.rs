@@ -1029,6 +1029,10 @@ impl KlippApp {
                 let shot_pieces = (self.prefs.color.offer_grade_to_shot_pieces && stand_in.is_none())
                     .then(|| super::grade_edits::shot_pieces_offer(&self.state.sequences[seq_idx], clip_id))
                     .flatten();
+                // A press inside marks the node inspector the active panel,
+                // so its keys are its own (Ctrl+A stays out of the timeline).
+                // Taken before the clip is borrowed to draw.
+                crate::state::note_active_panel(&mut self.state, crate::state::PanelKind::NodeInspector, ui.ctx(), ui.max_rect());
                 let clip = self.state.sequences[seq_idx].tracks.iter_mut()
                     .find_map(|t| t.find_clip_mut(clip_id));
                 if let Some(clip) = clip {

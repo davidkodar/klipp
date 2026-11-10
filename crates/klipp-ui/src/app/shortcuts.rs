@@ -1614,8 +1614,8 @@ mod select_all_tests {
     /// so the panel pressed last before them kept the keys.
     #[test]
     fn the_layout_notes_a_press_in_each_panel() {
-        let layout = include_str!("main_layout.rs");
-        for kind in ["Inspector", "Viewer", "CurveEditor", "AudioMixer", "Browser"] {
+        let layout = [include_str!("main_layout.rs"), include_str!("colour_workspace.rs")].concat();
+        for kind in ["Inspector", "Viewer", "CurveEditor", "AudioMixer", "Browser", "NodeInspector"] {
             let call = format!("note_active_panel(&mut self.state, crate::state::PanelKind::{kind}");
             let alt = format!("crate::state::PanelKind::{kind},");
             assert!(layout.contains(&call) || layout.contains(&alt), "the {kind} notes a press in it");
