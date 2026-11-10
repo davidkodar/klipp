@@ -1096,7 +1096,23 @@ impl NodeInspectorPanel {
                     );
                     // Begun before the drag's first write (a key, or the
                     // stack sent below), so its step starts from before it.
-                    let (began, end) = gesture_of(ui, resp.drag_started(), resp.drag_stopped());
+                    let (mut began, mut end) = gesture_of(ui, resp.drag_started(), resp.drag_stopped());
+                    // A value typed in is a gesture too, from its first
+                    // change to the field letting go of the keys (Enter, a
+                    // click away): each digit's write was its own step, the
+                    // first a key at 0.
+                    let typing_id = resp.id.with("typing");
+                    let typing: Option<Option<egui::Id>> = ui.data(|d| d.get_temp(typing_id));
+                    if resp.changed() && !resp.dragged() && typing.is_none() {
+                        began = true;
+                        let focus = ui.memory(|m| m.focused());
+                        ui.data_mut(|d| d.insert_temp(typing_id, focus));
+                    } else if let Some(focus) = typing {
+                        if !resp.changed() && ui.memory(|m| m.focused()) != focus {
+                            ui.data_mut(|d| d.remove::<Option<egui::Id>>(typing_id));
+                            end = end.or(Some(|clip_id| AppCommand::EndNodeParamEdit { clip_id }));
+                        }
+                    }
                     if began {
                         cmds.push(AppCommand::BeginNodeParamEdit { clip_id });
                     }
@@ -6370,6 +6386,41 @@ mod mask_list_tests {
         r.click(p);
         assert!(r.masks.masks[0].locked);
         assert!(!r.texts.iter().any(|(t, _)| t.contains('\u{1F512}') || t.contains('\u{1F513}')), "the lock is the shared toggle, not an emoji");
+    }
+
+    /// A value typed into a keyed mask field is one step: the key writes
+    /// it makes as the digits come in ("0", then "0.4") sit inside one
+    /// gesture, opened by the first and closed when the field lets go. Each
+    /// was a step of its own, the first a key at 0, so one undo left a key
+    /// with no feather.
+    #[test]
+    fn a_value_typed_into_a_keyed_mask_field_is_one_step() {
+        let mut r = Rig::new();
+        r.masks.masks[0].keyframes.feather = vec![klipp_core::Keyframe { time_secs: 0.0, value: 0.05, interpolation: Default::default(), tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() }];
+        r.frame(Vec::new());
+        let label = r.at("Feather", 0);
+        let value = r.texts.iter().filter(|(t, p)| (p.y - label.y).abs() < 6.0 && p.x > label.x && t.starts_with("0.")).min_by(|a, b| a.1.x.total_cmp(&b.1.x)).expect("the feather's value").1;
+        let b = |d| egui::Event::PointerButton { pos: value, button: egui::PointerButton::Primary, pressed: d, modifiers: egui::Modifiers::NONE };
+        let key = |key, modifiers| egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers };
+        r.frame(vec![egui::Event::PointerMoved(value)]);
+        for _ in 0..2 {
+            r.frame(vec![b(true)]);
+            r.frame(vec![b(false)]);
+        }
+        r.frame(vec![key(egui::Key::A, egui::Modifiers::COMMAND)]);
+        for c in ["0", ".", "4"] {
+            r.frame(vec![egui::Event::Text(c.into())]);
+        }
+        r.frame(vec![key(egui::Key::Enter, egui::Modifiers::NONE)]);
+        r.frame(Vec::new());
+        r.frame(Vec::new());
+        let keys: Vec<usize> = r.sent.iter().enumerate().filter(|(_, c)| matches!(c, AppCommand::AddMaskKeyframe { .. })).map(|(i, _)| i).collect();
+        assert!(!keys.is_empty(), "the typed value keyed: {:?}", r.sent);
+        let begin = r.sent.iter().position(|c| matches!(c, AppCommand::BeginNodeParamEdit { .. }));
+        let end = r.sent.iter().rposition(|c| matches!(c, AppCommand::EndNodeParamEdit { .. }));
+        let (Some(begin), Some(end)) = (begin, end) else { panic!("one gesture around the typing: {:?}", r.sent) };
+        assert!(keys.iter().all(|i| *i > begin && *i < end), "every key write inside it: {:?}", r.sent);
+        assert!(matches!(r.sent[keys[keys.len() - 1]], AppCommand::AddMaskKeyframe { value, .. } if (value - 0.4).abs() < 1e-6), "the last at the typed value");
     }
 
     /// The inner feather is a slider of its own, and a drag on it is one

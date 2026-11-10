@@ -803,6 +803,14 @@ impl crate::state::AppState {
             // A whole entry written (a colour dragged in its popup) is part
             // of a drag over the node's values.
             AppCommand::SetPayloadAt { addr, .. } => node_drag(addr) != open,
+            // A mask's key on a matte beside the picture chain, written into
+            // its masks by path: part of a drag over those masks (a value
+            // typed or dragged in its field).
+            AppCommand::AddMaskKeyframe { clip_id, node_id, .. }
+            | AppCommand::RemoveMaskKeyframe { clip_id, node_id, .. }
+            | AppCommand::ClearMaskKeyframes { clip_id, node_id, .. }
+            | AppCommand::MoveMaskKeyframe { clip_id, node_id, .. }
+            | AppCommand::SetMaskKeyframeInterpolation { clip_id, node_id, .. } => drag_key(&NodePath::new(Root::Clip { clip: clip_id.0 }, [*node_id]), &ParamKey::from("masks")) != open,
             _ => super::command_writes::writes(cmd),
         }
     }
