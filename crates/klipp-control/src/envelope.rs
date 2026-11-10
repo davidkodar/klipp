@@ -200,6 +200,10 @@ pub(crate) fn build_json() -> serde_json::Value {
         "exe": build.exe.as_ref().map(|p| p.display().to_string()),
         "built_at": build.built_at.map(klipp_core::build_info::format_utc),
         "built_at_unix": build.built_at,
+        // What About shows: the file's time, or its commit's where the file
+        // has no real one (a Flatpak).
+        "built": build.built().map(|b| b.text()),
+        "committed_at_unix": build.committed_at,
         "newer_build_on_disk": build.newer_build_on_disk(),
     })
 }

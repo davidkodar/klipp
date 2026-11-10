@@ -27,17 +27,54 @@ pub struct BuildInfo {
     pub exe: Option<PathBuf>,
     /// When that executable was written, in seconds since the Unix epoch.
     pub built_at: Option<u64>,
+    /// When the commit it was built from was made, seconds since the Unix
+    /// epoch: what a build whose files have no real time shows.
+    pub committed_at: Option<u64>,
 }
+
+/// The build's date as About shows it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Built {
+    /// The executable's own time.
+    File(u64),
+    /// Its commit's date, where the file has no real time.
+    Committed(u64),
+}
+
+impl Built {
+    /// The date as shown: a commit's said to be that.
+    pub fn text(self) -> String {
+        match self {
+            Built::File(at) => format_utc(at),
+            Built::Committed(at) => format!("{} (its commit's date)", format_utc(at)),
+        }
+    }
+}
+
+/// Times before this (2020-01-01) are no build's of Klipp: a file stored
+/// at the epoch, as a Flatpak's are, or a reproducible build's
+/// SOURCE_DATE_EPOCH of 0.
+const NO_REAL_TIME_BEFORE: u64 = 1_577_836_800;
 
 static BUILD: OnceLock<BuildInfo> = OnceLock::new();
 
 impl BuildInfo {
     /// The build of this process's executable, with what its build script
     /// recorded.
-    pub fn of_this_process(version: &'static str, number: u32, commit: &'static str, dirty: bool, profile: &'static str) -> Self {
+    /// `committed_at` is the commit's time the build script read, 0 when
+    /// it read none.
+    pub fn of_this_process(version: &'static str, number: u32, commit: &'static str, dirty: bool, profile: &'static str, committed_at: u64) -> Self {
         let exe = std::env::current_exe().ok();
         let built_at = exe.as_deref().and_then(modified_secs);
-        Self { version, number, commit, dirty, profile, exe, built_at }
+        Self { version, number, commit, dirty, profile, exe, built_at, committed_at: Some(committed_at).filter(|&t| t > 0) }
+    }
+
+    /// The date to show for this build: its executable's time when that is
+    /// a real one, else its commit's (a Flatpak's files all read
+    /// 1970-01-01), else none.
+    pub fn built(&self) -> Option<Built> {
+        let real = |t: &u64| *t >= NO_REAL_TIME_BEFORE;
+        self.built_at.filter(real).map(Built::File).or_else(|| self.committed_at.filter(real).map(Built::Committed))
     }
 
     /// `0.1.0 36466b08 release`, with `-dirty` after the commit when it was.
@@ -90,6 +127,7 @@ pub fn get() -> &'static BuildInfo {
         profile: "unknown",
         exe: None,
         built_at: None,
+        committed_at: None,
     })
 }
 
@@ -121,9 +159,25 @@ mod tests {
         assert_eq!(format_utc(1_709_210_096), "2024-02-29 12:34:56 UTC");
     }
 
+    /// A build whose executable has no real time (a Flatpak's files are
+    /// stored at the epoch, a reproducible build's at SOURCE_DATE_EPOCH 0)
+    /// shows its commit's date, said to be that, not 1970-01-01; a real
+    /// file time is shown as the build time; with neither, nothing.
+    #[test]
+    fn a_build_without_a_real_file_time_shows_its_commits_date() {
+        let at = |file: Option<u64>, commit: Option<u64>| BuildInfo { version: "0.3.5", number: 1, commit: "abcdef12", dirty: false, profile: "release", exe: None, built_at: file, committed_at: commit }.built();
+        assert_eq!(at(Some(0), Some(1_762_780_000)), Some(Built::Committed(1_762_780_000)), "a Flatpak");
+        assert_eq!(at(None, Some(1_762_780_000)), Some(Built::Committed(1_762_780_000)));
+        assert_eq!(at(Some(1_762_790_000), Some(1_762_780_000)), Some(Built::File(1_762_790_000)), "a real build time");
+        assert_eq!(at(Some(0), None), None, "nothing true to show");
+        assert_eq!(at(Some(0), Some(0)), None);
+        assert_eq!(Built::Committed(1_762_780_000).text(), format!("{} (its commit's date)", format_utc(1_762_780_000)));
+        assert_eq!(Built::File(1_762_790_000).text(), format_utc(1_762_790_000));
+    }
+
     #[test]
     fn a_build_labels_its_commit() {
-        let build = BuildInfo { version: "0.1.0", number: 2711, commit: "36466b08", dirty: true, profile: "release", exe: None, built_at: None };
+        let build = BuildInfo { version: "0.1.0", number: 2711, commit: "36466b08", dirty: true, profile: "release", exe: None, built_at: None, committed_at: None };
         assert_eq!(build.label(), "0.1.0 36466b08-dirty release");
         assert!(!build.newer_build_on_disk(), "no executable, nothing newer");
     }
