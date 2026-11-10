@@ -144,6 +144,9 @@ pub(super) struct Run {
     /// Draw the clip's Video tab, not its stack, in either view: the
     /// effect is a clip property there (M3 step 13).
     pub(super) property: bool,
+    /// The Video tab drawn as the app's inspector draws a timeline clip's
+    /// (its `is_timeline`), whose commands the dispatch routes.
+    pub(super) timeline: bool,
 }
 
 /// The one clip both views start from: a clone each, so their pictures
@@ -226,6 +229,7 @@ impl Run {
             shapes: Vec::new(),
             seeks: Vec::new(),
             property: false,
+            timeline: false,
         }
     }
 
@@ -255,7 +259,7 @@ impl Run {
             ..Default::default()
         };
         let mut cmds = Vec::new();
-        let (state, clip_id, property) = (&mut self.state, self.clip, self.property);
+        let (state, clip_id, property, timeline) = (&mut self.state, self.clip, self.property, self.timeline);
         let out = self.ctx.run(input, |ctx| {
             // As the app's frame does before its panels draw.
             state.forget_stale_path_drag(ctx.input(|i| i.pointer.any_down()));
@@ -275,7 +279,7 @@ impl Run {
                         ui,
                         &theme,
                         state,
-                        Some((clip, clip_time, false)),
+                        Some((clip, clip_time, timeline)),
                         None,
                         &mut cmds,
                     );
@@ -302,7 +306,15 @@ impl Run {
             .collect()
     }
 
+    /// `cmd` as the app's dispatch takes it: a graph-held clip's placement
+    /// edits routed by path first (`send_commands`).
     pub(super) fn apply(&mut self, cmd: AppCommand) {
+        for cmd in self.state.placed_by_path(cmd) {
+            self.apply_one(cmd);
+        }
+    }
+
+    fn apply_one(&mut self, cmd: AppCommand) {
         self.state.before_dispatch(&cmd);
         if let AppCommand::SeekTo(time) = cmd {
             self.seeks.push(time);

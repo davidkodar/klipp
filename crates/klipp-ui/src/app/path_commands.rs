@@ -772,6 +772,37 @@ impl crate::state::AppState {
     ///
     /// Which commands write is [`super::command_writes::writes`], where
     /// every command is named.
+    /// `cmd` as it reaches a clip whose picture is held as its graph (a
+    /// mask, a mix): the Video tab's, the viewer box's and the key
+    /// diamonds' list commands for its Transform and Opacity, as path
+    /// commands on its placement node, which such a clip takes; the effect
+    /// list refused them, so a typed Opacity or a dragged box did nothing.
+    /// Anything else, or a clip held as fields, unchanged. An abandon is
+    /// the placement's only while its drag is the one open.
+    pub(crate) fn placed_by_path(&self, cmd: AppCommand) -> Vec<AppCommand> {
+        let id = match &cmd {
+            AppCommand::UpdateBuiltinEffect { clip_id, .. }
+            | AppCommand::AddBuiltinEffect { clip_id, .. }
+            | AppCommand::BeginEffectDrag { clip_id, .. }
+            | AppCommand::EndEffectDrag { clip_id, .. }
+            | AppCommand::AddVideoKeyframe { clip_id, .. }
+            | AppCommand::RemoveVideoKeyframe { clip_id, .. }
+            | AppCommand::AbandonEffectDrag { clip_id, .. } => *clip_id,
+            _ => return vec![cmd],
+        };
+        let Some(clip) = self.sequence().all_clips().find(|c| c.id == id) else { return vec![cmd] };
+        if !clip.is_picture_truth() {
+            return vec![cmd];
+        }
+        if matches!(cmd, AppCommand::AbandonEffectDrag { .. }) {
+            let open = clip.placement_path().is_some_and(|addr| self.active_history().pending_drag_key() == Some(node_drag(&addr).as_str()));
+            if !open {
+                return vec![cmd];
+            }
+        }
+        crate::inspector::placement_by_path::by_path(vec![cmd], clip)
+    }
+
     pub(crate) fn closes_path_drag(&self, cmd: &AppCommand) -> bool {
         let Some(open) = self.active_history().pending_drag_key().filter(|k| k.starts_with(PATH_DRAG)) else { return false };
         // A key moved or re-shaped on a placement or opacity lane, or that
@@ -2183,6 +2214,70 @@ mod tests {
         assert_eq!(s.active_history().undo_count(), steps + 2, "before the result and after it");
         assert!(!s.active_history().is_any_drag_in_progress());
         assert!(s.resumable_path_drag.is_none(), "the release forgets the drag");
+    }
+
+    /// The viewer box's drag on a clip whose blur is masked (its picture
+    /// held as its graph) moves it, as one step, the mask kept: its list
+    /// commands go by path at the dispatch. The effect list refused them,
+    /// so the box moved nothing. Abandoned, the placement is as it was.
+    #[test]
+    fn the_viewer_box_moves_a_masked_clip() {
+        for abandon in [false, true] {
+            let mut c = fixture(&[E::GaussianBlur { radius: 3.0 }]);
+            crate::panels::node_graph_v2::masked_by_a_window(&mut c);
+            let id = c.id;
+            let mut s = with(&[c.clone()]);
+            let picture = |s: &AppState| serde_json::to_string(&clip(s, id).picture_v2().unwrap().picture).unwrap();
+            let (before, steps) = (picture(&s), s.active_history().undo_count());
+            // From where the box finds the clip, as the viewer starts it.
+            let from = crate::inspector::placement_by_path::placement(&c).to_builtin_effect();
+            let mut cmds = gizmo_drag(&c, from, transform(40.0, 0.6));
+            if abandon {
+                cmds.pop();
+                cmds.push(AppCommand::AbandonEffectDrag { clip_id: id, effect_index: 1, added: true });
+            }
+            for frame in cmds {
+                for cmd in s.placed_by_path(frame) {
+                    s.before_dispatch(&cmd);
+                    assert!(s.path_command(&cmd).is_some(), "{cmd:?} is a path command");
+                }
+            }
+            let masked = clip(&s, id).is_picture_truth() && clip(&s, id).picture_v2().unwrap().picture.graph.edges.iter().any(|e| e.to.1.as_str() == "mask");
+            assert!(masked, "the mask is kept");
+            assert!(!s.active_history().is_any_drag_in_progress(), "nothing left open");
+            if abandon {
+                assert_eq!(picture(&s), before, "abandoned, as it was");
+                assert_eq!(s.active_history().undo_count(), steps, "and no step");
+            } else {
+                assert_eq!(clip(&s, id).picture_v2().unwrap().picture.placement.pos_x, Some(40.0), "it moved");
+                assert_eq!(s.active_history().undo_count(), steps + 1, "one step");
+            }
+        }
+    }
+
+    /// Keys on a masked clip's Opacity, set and taken off from its lane's
+    /// diamond, land on the placement's lane, a step each.
+    #[test]
+    fn a_masked_clips_opacity_takes_keys() {
+        let mut c = fixture(&[E::GaussianBlur { radius: 3.0 }]);
+        crate::panels::node_graph_v2::masked_by_a_window(&mut c);
+        let id = c.id;
+        let mut s = with(&[c]);
+        let steps = s.active_history().undo_count();
+        let send = |s: &mut AppState, cmd: AppCommand| {
+            for cmd in s.placed_by_path(cmd) {
+                s.before_dispatch(&cmd);
+                assert!(s.path_command(&cmd).is_some(), "{cmd:?} is a path command");
+            }
+        };
+        send(&mut s, AppCommand::AddVideoKeyframe { clip_id: id, param: klipp_core::VideoParam::Opacity, time_secs: 1.0, value: 1.0 });
+        send(&mut s, AppCommand::AddVideoKeyframe { clip_id: id, param: klipp_core::VideoParam::Opacity, time_secs: 2.0, value: 0.25 });
+        let keys = |s: &AppState| crate::inspector::placement_by_path::lane_keys(clip(s, id), "opacity").iter().map(|k| (k.time_secs, k.value)).collect::<Vec<_>>();
+        assert_eq!(keys(&s), vec![(1.0, 1.0), (2.0, 0.25)]);
+        assert_eq!(s.active_history().undo_count(), steps + 2, "a step each");
+        send(&mut s, AppCommand::RemoveVideoKeyframe { clip_id: id, param: klipp_core::VideoParam::Opacity, time_secs: 2.0 });
+        assert_eq!(keys(&s), vec![(1.0, 1.0)]);
+        assert!(clip(&s, id).is_picture_truth(), "still masked");
     }
 
     /// The gizmo's abandon by path, after it moved the clip, leaves the
