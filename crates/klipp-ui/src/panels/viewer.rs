@@ -4718,11 +4718,18 @@ impl ViewerPanel {
                     let upright = new_t.rotation.rem_euclid(360.0) == 0.0;
                     match drag.handle {
                         H::Body if !free => {
-                            // The layer as it is seen: its box hugs its text.
+                            // The layer as it is seen: its box hugs its text,
+                            // which left or right aligned text sits beside
+                            // the layer's anchor, not round it. The box moves
+                            // with the anchor, so it is snapped where it is
+                            // drawn and the anchor shifted by as much.
                             let mut seen = td.object(drag.object_id).map(|o| o.transform.clone()).unwrap_or_else(|| new_t.clone());
-                            seen.center = new_t.center;
+                            let anchor_now = raw_title.object(drag.object_id).map(|o| o.transform.evaluated_center(time));
+                            let (ox, oy) = anchor_now.map_or((0.0, 0.0), |a| (seen.center.x - a.x, seen.center.y - a.y));
+                            seen.center.x = new_t.center.x + ox;
+                            seen.center.y = new_t.center.y + oy;
                             let (hw, hh) = layer_half_extent(&seen, drag.frame_aspect);
-                            let c = new_t.center;
+                            let c = seen.center;
                             if let Some((shift, line)) = snap_to_lines(&[c.x - hw, c.x, c.x + hw], &xs, within_x) {
                                 new_t.center.x += shift;
                                 guides.push((true, line));
