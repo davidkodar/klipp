@@ -811,6 +811,87 @@ pub fn try_wider_areas<R>(plain: bool, total: usize, mut run: impl FnMut(&Option
     (best, wider)
 }
 
+/// Why a run of a track stopped (#2754), from where its surface was on
+/// the last frame it was followed: so a person is told, not left to
+/// guess why it ended short.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum RunEnd {
+    /// Part of it was past the picture's edge: it was leaving the frame.
+    LeftPicture,
+    /// It had grown or shrunk this much (across, the square root of its
+    /// area's change) since the run's reference frame, which every frame
+    /// is matched against: past [`RESIZED_PAST`], the match fails.
+    Resized { scale: f64 },
+    /// Neither: the match was lost (covered, blurred, turned away).
+    Lost,
+}
+
+/// How much larger or smaller than on its reference frame a surface has
+/// grown when a run that stopped is said to have stopped for it. Measured
+/// on a drone shot flying at a boat: runs held to about 1.5x and lost it
+/// at 1.55x.
+pub const RESIZED_PAST: f64 = 1.4;
+/// The share of a surface inside the picture below which a run that
+/// stopped is said to have stopped as it left the frame.
+pub const IN_PICTURE: f64 = 0.97;
+
+/// Why a run that followed `quad` (pixels of its reference frame) and
+/// stopped after the frame mapped by `last` ended, on a `frame` (width,
+/// height) of the frames tracked.
+pub fn why_run_ended(quad: &[(f64, f64); 4], last: &Homography, frame: (f64, f64)) -> RunEnd {
+    let there: Vec<(f64, f64)> = quad.iter().map(|&(x, y)| last.transform(x, y)).collect();
+    let area = polygon_area(&there);
+    if area <= 0.0 || !area.is_finite() {
+        return RunEnd::Lost;
+    }
+    let inside = polygon_area(&clip_to_rect(&there, frame)) / area;
+    if inside < IN_PICTURE {
+        return RunEnd::LeftPicture;
+    }
+    let scale = (area / polygon_area(quad).max(1e-9)).sqrt();
+    if scale >= RESIZED_PAST || scale <= 1.0 / RESIZED_PAST {
+        return RunEnd::Resized { scale };
+    }
+    RunEnd::Lost
+}
+
+fn polygon_area(p: &[(f64, f64)]) -> f64 {
+    let n = p.len();
+    (0..n).map(|i| p[i].0 * p[(i + 1) % n].1 - p[(i + 1) % n].0 * p[i].1).sum::<f64>().abs() * 0.5
+}
+
+/// `p` clipped to the rectangle from the origin to `size` (Sutherland and
+/// Hodgman, one edge at a time: each an axis, a bound, and which side of
+/// it is in).
+fn clip_to_rect(p: &[(f64, f64)], size: (f64, f64)) -> Vec<(f64, f64)> {
+    let mut out = p.to_vec();
+    for (axis, bound, keep_above) in [(0, 0.0, true), (0, size.0, false), (1, 0.0, true), (1, size.1, false)] {
+        let along = |q: (f64, f64)| if axis == 0 { q.0 } else { q.1 };
+        let inside = |q: (f64, f64)| if keep_above { along(q) >= bound } else { along(q) <= bound };
+        let input = std::mem::take(&mut out);
+        for (i, &a) in input.iter().enumerate() {
+            let b = input[(i + 1) % input.len()];
+            let cross = || {
+                let t = (bound - along(a)) / (along(b) - along(a));
+                (a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t)
+            };
+            match (inside(a), inside(b)) {
+                (true, true) => out.push(a),
+                (true, false) => {
+                    out.push(a);
+                    out.push(cross());
+                }
+                (false, true) => out.push(cross()),
+                (false, false) => {}
+            }
+        }
+        if out.is_empty() {
+            break;
+        }
+    }
+    out
+}
+
 /// The state a confidence makes.
 fn state_of(confidence: f32) -> State {
     if confidence >= 0.6 {
@@ -1272,6 +1353,34 @@ pub fn weak_spans(tracked: &[Tracked]) -> Vec<(usize, usize, State)> {
 
 #[cfg(test)]
 mod tests {
+    /// Why a run stopped, from where its surface was at the last frame
+    /// followed: measured on a drone shot flying at a boat (the composite
+    /// walk), the first runs ended with the boat grown about 1.55x since
+    /// their reference, the last ones with it running off the frame's edge.
+    #[test]
+    fn a_run_says_why_it_ended() {
+        let (w, h) = (1280.0, 720.0);
+        let at = |q: [(f64, f64); 4], to: [(f64, f64); 4]| Homography::from_4_points(&q, &to).unwrap();
+        // Run 1 of the walk: frame 0 to 80.
+        let r1 = [(890.0, 380.0), (999.3, 394.7), (997.3, 408.0), (896.7, 398.7)];
+        let e1 = [(913.3, 432.0), (1082.4, 455.6), (1079.9, 474.1), (925.2, 460.0)];
+        match why_run_ended(&r1, &at(r1, e1), (w, h)) {
+            RunEnd::Resized { scale } => assert!((scale - 1.55).abs() < 0.1, "{scale}"),
+            other => panic!("grew: {other:?}"),
+        }
+        // Run 3: 128 to 140, the boat's stern past the right edge.
+        let r3 = [(976.4, 518.5), (1241.5, 559.6), (1227.8, 610.2), (982.4, 587.5)];
+        let e3 = [(1023.3, 567.6), (1337.0, 614.6), (1327.7, 674.5), (1027.4, 646.3)];
+        assert_eq!(why_run_ended(&r3, &at(r3, e3), (w, h)), RunEnd::LeftPicture);
+        // Neither: in the picture, about its size.
+        let still = [(400.0, 300.0), (600.0, 310.0), (598.0, 360.0), (402.0, 352.0)];
+        let moved = still.map(|(x, y)| (x + 30.0, y - 12.0));
+        assert_eq!(why_run_ended(&still, &at(still, moved), (w, h)), RunEnd::Lost);
+        // Shrunk as much as grown is said too.
+        let small = still.map(|(x, y)| (500.0 + (x - 500.0) * 0.6, 330.0 + (y - 330.0) * 0.6));
+        assert!(matches!(why_run_ended(&still, &at(still, small), (w, h)), RunEnd::Resized { scale } if (scale - 0.6).abs() < 0.02));
+    }
+
     use super::*;
 
     /// A textured world: a sum of sines, bright and dark at many scales.

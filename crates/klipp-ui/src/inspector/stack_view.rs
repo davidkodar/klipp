@@ -720,17 +720,32 @@ pub fn display_name(graph: &Graph, addr: &NodePath, label: &str, is_group: bool)
     node.map_or_else(String::new, |n| n.type_id.as_str().rsplit('.').next().unwrap_or_default().replace('_', " "))
 }
 
+/// The Chroma Key's eyedropper: armed, the viewer's next click keys the
+/// effect at `addr` on the colour the key receives there.
+fn key_colour_picker(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppState, clip: &Clip, addr: &klipp_graph_format::path::NodePath, cmds: &mut Vec<AppCommand>) {
+    let armed = state.eyedropper_mode == crate::state::EyedropperMode::KeyColour && state.key_colour_pick.as_ref().is_some_and(|(c, at)| *c == clip.id && at == addr);
+    let tint = if armed { theme.accent } else { theme.overlay(160) };
+    let text = if armed { "Click the colour in the viewer" } else { "Pick Key Colour" };
+    let pick = ui
+        .add(egui::Button::image_and_text(crate::icons::Icon::Eyedropper.image(12.0).tint(tint), egui::RichText::new(text).size(11.0)).selected(armed))
+        .on_hover_text("Click the colour to key out in the viewer. It is read from the picture the key receives, before it is keyed out (Esc cancels)");
+    if pick.clicked() {
+        cmds.push(AppCommand::PickKeyColour { clip_id: clip.id, at: addr.clone() });
+    }
+}
+
 /// What a Chroma Key's card says when its key colour is so near grey that
-/// white and greys key out with it: the key measures colour alone (its
-/// CbCr), and a neutral pixel sits at its centre, `tolerance + soft_edge`
-/// from the key or nearer. A dark navy logo's white letters went with its
-/// blue at the default 0.2. `None` for a key colour clear of grey.
+/// greys key out with it: a neutral pixel as light as the key sits
+/// `tolerance + soft_edge` from it or nearer, its colour (CbCr) alone
+/// telling them apart there. Lighter and darker ones, white and black,
+/// are kept by the key's luma term (`CHROMA_KEY_LUMA_WEIGHT`). `None` for
+/// a key colour clear of grey.
 pub(crate) fn greys_keyed_note(key_color: [u8; 3], tolerance: f32, soft_edge: f32) -> Option<&'static str> {
     let [r, g, b] = key_color.map(f32::from);
     let cb = -0.168736 * r - 0.331264 * g + 0.5 * b;
     let cr = 0.5 * r - 0.418688 * g - 0.081312 * b;
     let from_grey = (cb * cb + cr * cr).sqrt() / 255.0;
-    (from_grey < tolerance + soft_edge).then_some("This key colour is close to grey: white, black and greys key out with it. Lower the Tolerance, or key a more saturated colour.")
+    (from_grey < tolerance + soft_edge).then_some("This key colour is close to grey: greys about as light as it key out with it. Lower the Tolerance, or key a more saturated colour.")
 }
 
 /// What the Placement row says: the renderer's cut, or pending.
@@ -919,6 +934,9 @@ fn row_card(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppState, clip: &Clip
                     klipp_effects::BuiltinEffect::ChromaKey { key_color, tolerance, soft_edge, .. } => greys_keyed_note(key_color, tolerance, soft_edge),
                     _ => None,
                 });
+            if ty.tag == "chroma_key" {
+                key_colour_picker(ui, theme, state, clip, &row.addr, cmds);
+            }
             if ty.tag == "surface_pin" {
                 surface_choice(ui, theme, clip, &row.addr, &klipp_graph_lift::effect_params::entry_of(n).unwrap_or(serde_json::Value::Null), cmds);
             }

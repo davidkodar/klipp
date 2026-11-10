@@ -1112,6 +1112,9 @@ impl ViewerPanel {
                         crate::state::EyedropperMode::HueCurve => {
                             cmds.push(AppCommand::RequestHueCurveSample { nx, ny });
                         }
+                        crate::state::EyedropperMode::KeyColour => {
+                            cmds.push(AppCommand::RequestKeyColourSample { nx, ny });
+                        }
                         crate::state::EyedropperMode::None | crate::state::EyedropperMode::QualifierStroke => {}
                     }
                     state.eyedropper_mode = crate::state::EyedropperMode::None;
@@ -1122,6 +1125,7 @@ impl ViewerPanel {
                 state.wb_pick_clip = None;
                 state.qualifier_pick = None;
                 state.hue_curve_pick = None;
+                state.key_colour_pick = None;
             }
         }
     }

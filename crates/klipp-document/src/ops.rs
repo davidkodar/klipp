@@ -5945,7 +5945,10 @@ fn duck(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, music: &Clip, by_
     // Keyframes in the clip's own time: down before the speech starts,
     // up after it ends.
     let mut kfs: Vec<klipp_core::Keyframe> = Vec::new();
-    let mut put = |t: f64, v: f32| klipp_core::keyframe::upsert_keyframe(&mut kfs, (t - m_in).clamp(0.0, m_out - m_in), v);
+    // On the clock of the clip holding the keys (a J cut's picture starts
+    // after its sound).
+    let s_in = secs(settings.timeline_in);
+    let mut put = |t: f64, v: f32| klipp_core::keyframe::upsert_keyframe(&mut kfs, t.clamp(m_in, m_out) - s_in, v);
     for (a, b) in &spans {
         if *a - fade_secs > m_in {
             put(a - fade_secs, base);
@@ -6451,11 +6454,14 @@ fn volume_keys(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Cli
         }
     }
     let settings = sound_settings_clip(seq, clip);
+    // On the clock of the clip holding the keys: a J cut's sound starts
+    // before its picture, whose keys are timed from the picture's start.
+    let s_in = secs(settings.timeline_in);
     let mut kfs: Vec<klipp_core::Keyframe> = Vec::new();
     for k in keys {
         // From the clip's own level, as `duck` writes: a bed set to
         // -8 dB and keyed at 0 stays at -8, not 8 dB louder.
-        klipp_core::keyframe::upsert_keyframe(&mut kfs, (k.at - c_in).clamp(0.0, c_out - c_in), settings.volume * db_to_linear(k.db));
+        klipp_core::keyframe::upsert_keyframe(&mut kfs, k.at.clamp(c_in, c_out) - s_in, settings.volume * db_to_linear(k.db));
     }
     kfs.sort_by(|a, b| a.time_secs.partial_cmp(&b.time_secs).unwrap_or(std::cmp::Ordering::Equal));
     let old_state = crate::history::KeyframeSnapshot::from_clip(settings);
@@ -12176,6 +12182,20 @@ fn retime(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, clip_id: ClipId,
             old_timeline_out: m.timeline_out,
             new_timeline_out: new_out,
         });
+        // Its keys, markers and cuts with it, as a speed change moves them
+        // in other editors: they are timed from the clip's start, and
+        // stayed where they were, a 2x clip ending before its 4 s key.
+        // Its fades stay a length of time, as a stretch keeps them.
+        let old_len = secs(m.timeline_out - m.timeline_in);
+        if old_len > 0.0 {
+            let mut retimed = m.clone();
+            retimed.speed = speed;
+            retimed.timeline_out = new_out;
+            let mut scaled = retimed.clone();
+            if scaled.scale_content_time(secs(new_out - m.timeline_in) / old_len).is_ok() && serde_json::to_value(&scaled).ok() != serde_json::to_value(&retimed).ok() {
+                speeds.push(EditCommand::ReplaceClip { description: "Clip Speed", old: Box::new(retimed), new: Box::new(scaled) });
+            }
+        }
     }
     let new_out_of_clip = ends[0].2;
     let Rippled { moves, ids: moved, later: moved_later, delta, partners } = ripple_after(seq, pool, fps, i, &ends, ripple, "retime")?;
@@ -19742,6 +19762,41 @@ mod tests {
         assert!((at(3.0) - db_to_linear(-20.0)).abs() < 1e-4, "-12 dB under it: {}", at(3.0));
     }
 
+    /// A J cut: the second sound starts 0.48 s before its picture. Keyed
+    /// from the sound at timeline 4.0 and 6.0, the keys land on the
+    /// picture (which holds the pair's level) at its own 0.0 and 2.0,
+    /// where playback and the export read them; a key in the sound's lead
+    /// lands before the picture's start.
+    #[test]
+    fn a_j_cuts_sound_keys_land_on_the_pictures_clock() {
+        let (mut seq, pool, _, _, ib) = fixture();
+        let a1 = &mut seq.tracks[1].clips;
+        (a1[0].timeline_out, a1[0].source_out) = (tc(3.52), tc(3.52));
+        (a1[1].timeline_in, a1[1].source_in) = (tc(3.52), tc(3.52));
+        let sound = a1[1].id;
+        let ops: Vec<Op> = serde_json::from_str(&format!(r#"[{{"op":"volume","clip_id":"{}","keys":[{{"at":3.6,"db":-30}},{{"at":4.0,"db":-20}},{{"at":6.0,"db":0}}]}}]"#, sound.0)).unwrap();
+        let plan = resolve(&seq, &pool, &ops).unwrap();
+        let EditCommand::EditKeyframes { clip_id, new_state, .. } = &plan.steps[0].edit else { panic!("keyframes") };
+        assert_eq!(*clip_id, ib, "on the picture, which holds the pair's level");
+        let times: Vec<f64> = new_state.volume_keyframes.iter().map(|k| k.time_secs).collect();
+        for (got, want) in times.iter().zip([-0.4, 0.0, 2.0]) {
+            assert!((got - want).abs() < 1e-6, "keys at {times:?}, not at -0.4, 0 and 2");
+        }
+
+        // A duck from the sound: its keys on the picture's clock too.
+        let mut voice = Track::new("A2", TrackKind::Audio);
+        let v = Clip::media(seq.tracks[0].clips[0].media_id().unwrap(), tc(5.0), tc(6.0), tc(0.0), tc(1.0));
+        voice.clips = vec![v];
+        seq.tracks.push(voice);
+        let ops: Vec<Op> = serde_json::from_str(&format!(r#"[{{"op":"duck","clip_id":"{}","by_db":9,"fade_secs":0.5}}]"#, sound.0)).unwrap();
+        let plan = resolve(&seq, &pool, &ops).unwrap();
+        let EditCommand::EditKeyframes { new_state, .. } = &plan.steps[0].edit else { panic!("keyframes") };
+        let times: Vec<f64> = new_state.volume_keyframes.iter().map(|k| k.time_secs).collect();
+        for (got, want) in times.iter().zip([0.5, 1.0, 2.0, 2.5]) {
+            assert!((got - want).abs() < 1e-6, "duck keys at {times:?}, not at the speech (5-6 s) on the picture's clock");
+        }
+    }
+
     #[test]
     fn a_lower_third_goes_where_the_speaker_is() {
         let (seq, pool, _, _, _) = fixture();
@@ -24700,5 +24755,56 @@ mod freeze_track_tests {
         let thaw = resolve(&held, &pool, &[op(serde_json::json!({ "op": "set_track", "track": 0, "frozen": false }))]).unwrap();
         let EditCommand::SetTrack { new, .. } = &thaw.steps[0].edit else { panic!() };
         assert!(!new.frozen && !new.locked, "{}", thaw.steps[0].what);
+    }
+}
+
+#[cfg(test)]
+mod retime_keys_tests {
+    use super::*;
+
+    fn tc(s: f64) -> Timecode {
+        Timecode::from_secs_f64(s, 24)
+    }
+
+    /// A clip's speed changed, its keys move with it, as a speed change
+    /// moves them in other editors: at 2x a Position X key 4 s into the
+    /// clip is 2 s into it, and so are its marker and its linked sound's
+    /// volume key; the undo puts them back. They stayed at their times,
+    /// and the clip at 2x ended before its 4 s key.
+    #[test]
+    fn a_speed_change_moves_the_clips_keys_with_it() {
+        let mut pool = MediaPool::new();
+        let mut item = klipp_media::MediaItem::synthetic_for_test("/tmp/retime-keys.mov".into(), None);
+        item.duration = tc(20.0);
+        item.has_audio = true;
+        let media = pool.add(item);
+        let mut picture = klipp_timeline::test_clip::TestClip::of(Clip::media(media, tc(0.0), tc(8.0), tc(0.0), tc(8.0))).lane("pos_x", 4.0, 300.0).build();
+        picture.clip_markers.push(klipp_timeline::ClipMarker { time_secs: 4.0, name: "Here".into(), color: klipp_core::MarkerColor::Red, comment: String::new() });
+        let mut sound = Clip::media(media, tc(0.0), tc(8.0), tc(0.0), tc(8.0));
+        sound.volume_keyframes = vec![klipp_core::keyframe::upserted(&[], 4.0, 0.5)];
+        picture.linked_clip_id = Some(sound.id);
+        sound.linked_clip_id = Some(picture.id);
+        let (pid, sid) = (picture.id, sound.id);
+        let mut seq = Sequence::new_default();
+        let vi = seq.tracks.iter().position(|t| t.kind == TrackKind::Video).unwrap();
+        let ai = seq.tracks.iter().position(|t| t.kind == TrackKind::Audio).unwrap();
+        seq.tracks[vi].clips = vec![picture];
+        seq.tracks[ai].clips = vec![sound];
+        let (_, edit) = retime_at(&seq, &pool, pid, 2.0, false).expect("retimed");
+        let mut seqs = vec![seq.clone()];
+        let (mut p, mut f) = (pool.clone(), seq.fps);
+        let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut f };
+        view.apply_forward(&edit);
+        let clip = |v: &crate::apply::DocumentView, id: ClipId| v.sequences[0].all_clips().find(|c| c.id == id).unwrap().clone();
+        let pos_x = |c: &Clip| klipp_timeline::frame_glide::lane(c, "pos_x").iter().map(|k| k.time_secs).collect::<Vec<_>>();
+        let p2 = clip(&view, pid);
+        assert_eq!(p2.timeline_out, tc(4.0), "the clip halved");
+        assert_eq!(pos_x(&p2), vec![2.0], "its key with it");
+        assert_eq!(p2.clip_markers[0].time_secs, 2.0, "its marker");
+        assert_eq!(clip(&view, sid).volume_keyframes[0].time_secs, 2.0, "its sound's key");
+        view.apply_inverse(&edit);
+        assert_eq!(pos_x(&clip(&view, pid)), vec![4.0], "undone, back");
+        assert_eq!(clip(&view, sid).volume_keyframes[0].time_secs, 4.0);
+        assert_eq!(serde_json::to_value(&view.sequences[0]).unwrap(), serde_json::to_value(&seq).unwrap(), "undone, as it was");
     }
 }

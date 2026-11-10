@@ -432,6 +432,7 @@ pub(crate) fn apply(
             let (rf, gf, bf) = (key_color[0] as f32, key_color[1] as f32, key_color[2] as f32);
             let key_cb = 128.0 + (-0.168736 * rf - 0.331264 * gf + 0.5 * bf);
             let key_cr = 128.0 + (0.5 * rf - 0.418688 * gf - 0.081312 * bf);
+            let key_y = crate::chroma_key_luma(rf, gf, bf);
             let key_idx = if key_color[1] >= key_color[0] && key_color[1] >= key_color[2] {
                 1
             } else if key_color[2] > key_color[0] {
@@ -449,7 +450,8 @@ pub(crate) fn apply(
                 let cb = 128.0 + (-0.168736 * s[0] - 0.331264 * s[1] + 0.5 * s[2]);
                 let cr = 128.0 + (0.5 * s[0] - 0.418688 * s[1] - 0.081312 * s[2]);
                 let (dcb, dcr) = ((cb - key_cb) / 255.0, (cr - key_cr) / 255.0);
-                let dist = (dcb * dcb + dcr * dcr).sqrt();
+                let dy = crate::CHROMA_KEY_LUMA_WEIGHT * (crate::chroma_key_luma(s[0], s[1], s[2]) - key_y) / 255.0;
+                let dist = (dcb * dcb + dcr * dcr + dy * dy).sqrt();
                 if dist < tolerance {
                     return [0.0; 4];
                 } else if dist < tolerance + soft_edge {

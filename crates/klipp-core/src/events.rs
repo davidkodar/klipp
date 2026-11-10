@@ -1401,6 +1401,9 @@ pub enum AppCommand {
     /// The viewer click for an armed hue-curve eyedropper
     /// (`PickHueCurve`), as a fraction of the frame.
     RequestHueCurveSample { nx: f32, ny: f32 },
+    /// The viewer click for an armed Chroma Key eyedropper
+    /// (`PickKeyColour`), as a fraction of the frame.
+    RequestKeyColourSample { nx: f32, ny: f32 },
     BeginTitleEdit { clip_id: ClipId },
     EndTitleEdit,
 
@@ -2836,6 +2839,10 @@ pub enum AppCommand {
     /// (0 Hue vs Hue, 1 Hue vs Sat, 2 Hue vs Lum): the next click puts
     /// a range on that curve round the hue picked (#612).
     PickHueCurve { clip_id: ClipId, node_id: uuid::Uuid, curve: u8 },
+    /// Arm the viewer's eyedropper for the Chroma Key at `at` (a node of
+    /// `clip_id`'s picture): the next click sets its Key Colour to the
+    /// colour the key receives there, one undo step.
+    PickKeyColour { clip_id: ClipId, at: klipp_graph_format::path::NodePath },
 
     // Global LUT
     LoadGlobalLut { path: PathBuf },
@@ -4127,8 +4134,9 @@ pub enum AppCommand {
     // Audio ducking
     AutoDuckAudio {
         target_clip_id: ClipId,
-        /// Track index of the dialogue/sidechain source
-        sidechain_track_idx: usize,
+        /// The tracks of the dialogue it ducks under, by index: their
+        /// speech joined.
+        sidechain_tracks: Vec<usize>,
         /// How much to reduce volume (0.0 = silence, 0.3 = reduce to 30%)
         duck_level: f32,
         /// How quickly to ramp down in seconds
@@ -5228,7 +5236,11 @@ pub enum AppEvent {
     /// surface is there, 0 to 1 (#2751).
     /// `track_area` and `exclude` are the area followed and the parts left
     /// out, on the reference frame as `corners` are.
-    SurfaceTracked { clip_id: ClipId, surface: uuid::Uuid, name: String, wider_area: bool, corners: [[f32; 2]; 4], reference_secs: f64, keys: Vec<(f64, [f64; 9], f32, u8, Option<f32>)>, source_size: [u32; 2], media_fps: f64, held_secs: (f64, f64), direction: i8, interactive: bool, track_area: Option<[[f32; 2]; 4]>, exclude: Vec<Vec<[f32; 2]>> },
+    /// `ended`: why the run after the reference and the one before it
+    /// stopped short of the frames read, where they did: 0 the match was
+    /// lost, 1 the surface was leaving the picture, 2 it had grown or
+    /// shrunk by the factor given since the reference frame.
+    SurfaceTracked { clip_id: ClipId, surface: uuid::Uuid, name: String, wider_area: bool, corners: [[f32; 2]; 4], reference_secs: f64, keys: Vec<(f64, [f64; 9], f32, u8, Option<f32>)>, source_size: [u32; 2], media_fps: f64, held_secs: (f64, f64), direction: i8, interactive: bool, track_area: Option<[[f32; 2]; 4]>, exclude: Vec<Vec<[f32; 2]>>, ended: [Option<(u8, f32)>; 2] },
     SurfaceTrackFailed { clip_id: ClipId, surface: uuid::Uuid, error: String },
     /// A [`AppCommand::CorrectSurface`] solved (#2754): the correction at
     /// file second `source_secs`, `corners` there as fractions of the

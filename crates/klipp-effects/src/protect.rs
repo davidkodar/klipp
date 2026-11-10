@@ -88,12 +88,15 @@ pub fn pull(lb: f32, busy: f32, lt: f32, mode: u32) -> Result<f32, f32> {
 /// the text reaches when none is (small or thin text). `(k, t)`: `k` 1
 /// and `t` 0 when nothing needs protecting.
 pub fn title_pull(cells: &[[f32; 4]], mode: u32) -> (f32, f32) {
+    // Each part's need for the text the whole title is, light or dark: a
+    // part's own read a stroke round light letters as dark text.
+    let lt = title_luminance(cells);
     let need = |full: bool| {
         let (mut k, mut t, mut any) = (1.0f32, 0.0f32, false);
         for m in cells.iter().filter(|m| if full { m[2] >= HALO_FULL } else { m[2] > 1e-3 }) {
             any = true;
             let busy = (m[1] - m[0] * m[0]).max(0.0).sqrt();
-            match pull(m[0], busy, (m[3] / m[2]).clamp(0.0, 1.0), mode) {
+            match pull(m[0], busy, lt, mode) {
                 Ok(kc) => k = k.min(kc),
                 Err(tc) => t = t.max(tc),
             }
@@ -101,6 +104,17 @@ pub fn title_pull(cells: &[[f32; 4]], mode: u32) -> (f32, f32) {
         any.then_some((k, t))
     };
     need(true).or_else(|| need(false)).unwrap_or((1.0, 0.0))
+}
+
+/// The text luminance of the whole title, from its measuring grid: its
+/// luminance over all its coverage, a stroke and its letters together.
+/// The title is light or dark text by this, everywhere: decided place by
+/// place, the cells a black stroke filled read as dark text round white
+/// letters, and the picture was lightened into a bright rim about the
+/// darkened patch.
+pub fn title_luminance(cells: &[[f32; 4]]) -> f32 {
+    let (lt, a) = cells.iter().filter(|m| m[2] > 1e-3).fold((0.0f32, 0.0f32), |(lt, a), m| (lt + m[3], a + m[2]));
+    if a > 0.0 { (lt / a).clamp(0.0, 1.0) } else { 1.0 }
 }
 
 /// Protects the text of `layer` over `acc`, both straight-alpha linear
@@ -168,6 +182,7 @@ pub fn protect_backdrop(acc: &mut [f32], layer: &[f32], width: u32, height: u32,
     });
     }
     let (k, t) = title_pull(&small, mode);
+    let light = title_luminance(&small) >= LIGHT_TEXT;
     let at = |x: isize, y: isize| small[y.clamp(0, sh as isize - 1) as usize * sw + x.clamp(0, sw as isize - 1) as usize];
     acc.par_chunks_mut(w * 4).enumerate().for_each(|(y, row)| {
         let v = (y as f32 + 0.5) / s as f32 - 0.5;
@@ -188,7 +203,7 @@ pub fn protect_backdrop(acc: &mut [f32], layer: &[f32], width: u32, height: u32,
             }
             let halo = halo(a);
             let p = &mut row[x * 4..x * 4 + 3];
-            if (m[3] / a).clamp(0.0, 1.0) >= LIGHT_TEXT {
+            if light {
                 let f = 1.0 - halo * (1.0 - k);
                 p.iter_mut().for_each(|c| *c *= f);
             } else {
@@ -212,6 +227,34 @@ mod tests {
     }
 
     const K: [f32; 3] = [0.2126, 0.7152, 0.0722];
+
+    /// White text with a black stroke round it (Readability on Auto, a
+    /// title's Stroke turned on) is light text: the picture behind it is
+    /// darkened or left, never lightened. Where the stroke filled a cell
+    /// the text read as dark there, so the pass lightened the picture
+    /// round the edge into a white rim about a dark patch.
+    #[test]
+    fn stroked_light_text_never_lightens_the_picture() {
+        let (w, h) = (256, 144);
+        let mut acc = frame(w, h, [0.35, 0.3, 0.25, 1.0]);
+        let before = acc.clone();
+        let mut layer = frame(w, h, [0.0; 4]);
+        // Letters 24 high, a 4-pixel black stroke round each.
+        for letter in 0..5u32 {
+            let x0 = 40 + letter * 36;
+            for y in 56..88u32 {
+                for x in x0..x0 + 28 {
+                    let inside = (60..84).contains(&y) && (x0 + 4..x0 + 24).contains(&x);
+                    let i = ((y * w + x) * 4) as usize;
+                    let c = if inside { 1.0 } else { 0.0 };
+                    layer[i..i + 4].copy_from_slice(&[c, c, c, 1.0]);
+                }
+            }
+        }
+        protect_backdrop(&mut acc, &layer, w, h, 1.0, 1, K);
+        let lighter = acc.chunks(4).zip(before.chunks(4)).filter(|(a, b)| luma(a, K) > luma(b, K) + 1e-3).count();
+        assert_eq!(lighter, 0, "{lighter} pixels of the picture lightened round stroked white text");
+    }
 
     /// White text over a picture half bright, half dark: the shade behind
     /// it is the same over both halves, as much as the bright half needs.

@@ -473,15 +473,14 @@ impl NewInspectorPanel {
                         let clip_time_secs = keyframe_selection::clip_time(state, clip);
                         let track_infos: Vec<audio_tab::TrackInfo> = audio_tab::TrackInfo::of(state.sequence());
                         // Re-seed DuckSettings when the selected clip changes: pull
-                        // defaults from prefs and pick the first Dialogue-bearing audio
-                        // track as the sidechain source (falls back to first audio track).
+                        // defaults from prefs and tick every heard track of
+                        // dialogue to duck under (else the first other sound track).
                         if self.last_duck_clip != Some(clip.id) {
                             self.duck = audio_tab::DuckSettings::from_prefs(&prefs.audio);
-                            // Never the clip's own track: ducked under itself,
-                            // it was an error until changed. With no
-                            // other sound track, none: its own, which the
-                            // tab refuses with the reason.
-                            self.duck.sidechain_track = audio_tab::default_sidechain(state.sequence(), track_idx).unwrap_or(track_idx);
+                            // Never the clip's own track. With no other sound
+                            // track, none, which the tab refuses with the
+                            // reason.
+                            self.duck.sidechain_tracks = audio_tab::default_sidechains(state.sequence(), track_idx);
                             self.last_duck_clip = Some(clip.id);
                         }
                         let is_timeline = true; // clip_info comes from timeline selection
@@ -1850,9 +1849,8 @@ fn show_title_position_block(
 
     // X / Y compact 50/50 framed inputs. Default visual: just the
     // axis letter on the left and the DragValue on the right —
-    // matching the reference. Diamond shows only when keyframes
-    // exist on that axis (option b), keeping the unanimated default
-    // state visually clean.
+    // matching the reference, with a key diamond on each axis of a
+    // layer.
     let mut x = pos.x;
     let mut y = pos.y;
     let avail = ui.available_width();
@@ -1862,8 +1860,9 @@ fn show_title_position_block(
         .horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = gap;
             let ks = |kfs| title_object_keyframe_state(kfs, clip_time_secs, keyframe_tolerance);
-            let rx = compact_axis_input(ui, theme, "X", &mut x, col_w, kfs_x, ks(kfs_x));
-            let ry = compact_axis_input(ui, theme, "Y", &mut y, col_w, kfs_y, ks(kfs_y));
+            let keyable = target_oid.is_some();
+            let rx = compact_axis_input(ui, theme, "X", &mut x, col_w, kfs_x, ks(kfs_x), keyable);
+            let ry = compact_axis_input(ui, theme, "Y", &mut y, col_w, kfs_y, ks(kfs_y), keyable);
             (rx, ry)
         })
         .inner;
@@ -4388,6 +4387,7 @@ fn compact_axis_input(
     col_w: f32,
     keyframes: &[klipp_core::Keyframe],
     ks: crate::widgets::scrubby_param::KeyframeState,
+    keyable: bool,
 ) -> crate::widgets::scrubby_param::ScrubbyParamResponse {
     let has_kfs = !keyframes.is_empty();
     let mut changed = false;
@@ -4410,10 +4410,12 @@ fn compact_axis_input(
                 ).sense(if tag.is_some() { egui::Sense::click() } else { egui::Sense::hover() }));
                 picked |= name.clicked();
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    // Diamond only when this axis already has
-                    // keyframes, drawn as a number row's: filled on a
-                    // key, an outline between keys (#2296).
-                    if has_kfs {
+                    // A diamond whenever the axis can be keyed (a layer
+                    // is the target), as Width and Rotation have one,
+                    // drawn as a number row's: filled on a key, an
+                    // outline otherwise (#2296). Shown only once keyed,
+                    // position could be keyed only from the Curve Editor.
+                    if keyable {
                         let diamond = crate::widgets::scrubby_param::diamond_button(ui, &ks, tag.as_ref().map(|t| t.keys()));
                         if diamond.clicked() {
                             keyframe_toggled = true;
@@ -9271,6 +9273,45 @@ mod title_row_style_tests {
         let (_, texts, _) = frame(&ctx, &clip, &state, Vec::new());
         assert!(texts.iter().any(|(t, _)| t == "150 %"), "{:?}", texts.iter().map(|(t, _)| t.as_str()).filter(|t| t.ends_with('%')).collect::<Vec<_>>());
     }
+
+    /// A layer's Position X and Y each have a key diamond before they
+    /// are keyed, as Width, Height and Rotation do, and the X diamond keys
+    /// X where it stands. They showed one only once the axis had keys, so
+    /// position could be keyed only from the Curve Editor.
+    #[test]
+    fn a_title_layers_position_has_key_diamonds() {
+        let ctx = egui::Context::default();
+        let (clip, state) = title();
+        let (_, texts, _) = frame(&ctx, &clip, &state, Vec::new());
+        let below = texts.iter().find(|(t, _)| t == "POSITION").expect("the position section").1.y;
+        let row_y = texts.iter().find(|(t, p)| t == "X" && p.y > below).expect("the X field").1.y;
+        // The diamonds drawn on that row: four-point shapes.
+        let out = ctx.run(egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(380.0, 9000.0))), ..Default::default() }, |ctx| {
+            let mut chips = title_tab::TitleChips::default();
+            egui::CentralPanel::default().show(ctx, |ui| show_title_editor(ui, &KlippTheme::default(), &clip, &state, &mut Vec::new(), &mut chips));
+        });
+        fn walk(shape: &egui::Shape, out: &mut Vec<egui::Pos2>) {
+            match shape {
+                egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, out)),
+                egui::Shape::Path(p) if p.points.len() == 4 && p.closed => out.push(egui::Rect::from_points(&p.points).center()),
+                _ => {}
+            }
+        }
+        let mut found = Vec::new();
+        out.shapes.iter().for_each(|s| walk(&s.shape, &mut found));
+        let mut diamonds: Vec<egui::Pos2> = found.into_iter().filter(|p| (p.y - row_y).abs() < 8.0).collect();
+        diamonds.sort_by(|a, b| a.x.total_cmp(&b.x));
+        diamonds.dedup_by(|a, b| a.distance(*b) < 1.0);
+        assert_eq!(diamonds.len(), 2, "a diamond on X and on Y: {diamonds:?}");
+        let x_diamond = diamonds[0];
+        frame(&ctx, &clip, &state, vec![egui::Event::PointerMoved(x_diamond)]);
+        let press = |pressed| egui::Event::PointerButton { pos: x_diamond, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+        frame(&ctx, &clip, &state, vec![press(true)]);
+        let (cmds, _, _) = frame(&ctx, &clip, &state, vec![press(false)]);
+        let at = match &clip.kind { klipp_timeline::ClipKind::Title(td) => td.objects[0].transform.center.x, _ => unreachable!() };
+        assert!(cmds.iter().any(|c| matches!(c, AppCommand::AddTitleObjectPositionKeyframe { axis: klipp_core::TitlePositionAxis::X, value, .. } if (*value - at).abs() < 1e-6)), "{cmds:?}");
+    }
+
 
     /// The layers, transform, text, position and style blocks are
     /// sections with the shared header; every control they had is still
