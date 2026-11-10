@@ -678,59 +678,12 @@ impl KlippApp {
                     true
                 }
                 AppCommand::UpdateClipAudio { clip_id, gain, volume, pan, fade_in_secs, fade_out_secs, fade_in_curve, fade_out_curve, channel_config } => {
-                    let mut old_vals = None;
-                    let mut linked_partner_id = None;
-                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
-                        if let Some(clip) = track.find_clip_mut(*clip_id) {
-                            old_vals = Some((clip.gain, clip.volume, clip.pan, clip.fade_in_secs, clip.fade_out_secs, clip.channel_config));
-                            linked_partner_id = clip.linked_clip_id;
-                            clip.gain = *gain;
-                            clip.volume = *volume;
-                            clip.pan = *pan;
-                            clip.fade_in_secs = *fade_in_secs;
-                            clip.fade_out_secs = *fade_out_secs;
-                            clip.fade_in_curve = *fade_in_curve;
-                            clip.fade_out_curve = *fade_out_curve;
-                            clip.channel_config = *channel_config;
-                            break;
-                        }
-                    }
-                    // Also sync audio params to the linked partner clip
-                    // so both video and audio clips have the same values
-                    if let Some(partner_id) = linked_partner_id {
-                        for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
-                            if let Some(partner) = track.find_clip_mut(partner_id) {
-                                partner.gain = *gain;
-                                partner.volume = *volume;
-                                partner.pan = *pan;
-                                partner.fade_in_secs = *fade_in_secs;
-                                partner.fade_out_secs = *fade_out_secs;
-                                partner.fade_in_curve = *fade_in_curve;
-                                partner.fade_out_curve = *fade_out_curve;
-                                partner.channel_config = *channel_config;
-                                break;
-                            }
-                        }
-                    }
-                    if let Some((og, ov, op, ofi, ofo, occ)) = old_vals {
-                        let drag_key = format!("{:?}:audio", clip_id);
-                        if !self.state.active_history().is_dragging(&drag_key) {
-                            self.state.push_history(EditCommand::EditClipAudio {
-                                    clip_id: *clip_id,
-                                    old_gain: og,
-                                    old_volume: ov,
-                                    old_pan: op,
-                                    old_fade_in: ofi,
-                                    old_fade_out: ofo,
-                                    old_channel_config: occ,
-                                    new_gain: *gain,
-                                    new_volume: *volume,
-                                    new_pan: *pan,
-                                    new_fade_in: *fade_in_secs,
-                                    new_fade_out: *fade_out_secs,
-                                    new_channel_config: *channel_config,
-                                });
-                        }
+                    // The clip and its linked partner, so a pair keeps one
+                    // level, each recorded with its own old values.
+                    let edits = self.state.set_clip_audio(*clip_id, *gain, *volume, *pan, *fade_in_secs, *fade_out_secs, *fade_in_curve, *fade_out_curve, *channel_config);
+                    let drag_key = format!("{:?}:audio", clip_id);
+                    if !edits.is_empty() && !self.state.active_history().is_dragging(&drag_key) {
+                        self.state.push_history(if edits.len() == 1 { edits.into_iter().next().unwrap() } else { EditCommand::Batch(edits) });
                     }
                     self.sync_sequence_to_engine();
                     // Instant clip gain + volume + pan + channel config — bypass command channel latency
@@ -872,23 +825,30 @@ impl KlippApp {
                             _ => None,
                         })
                         .unwrap_or((*new_gain, *new_volume, *new_pan, *new_fade_in, *new_fade_out, cc));
-                    self.state.active_history_mut().end_drag(HistoryEntry {
-                        command: EditCommand::EditClipAudio {
-                            clip_id: *clip_id,
-                            old_gain: og,
-                            old_volume: ov,
-                            old_pan: op,
-                            old_fade_in: ofi,
-                            old_fade_out: ofo,
-                            old_channel_config: occ,
-                            new_gain: *new_gain,
-                            new_volume: *new_volume,
-                            new_pan: *new_pan,
-                            new_fade_in: *new_fade_in,
-                            new_fade_out: *new_fade_out,
-                            new_channel_config: cc,
-                        },
-                    });
+                    // Its linked partner, moved with it as the drag went,
+                    // in the same step: a pair is kept at one level, so it
+                    // started where the clip did.
+                    let partner = self.state.sequences[self.state.active_sequence_idx].all_clips().find(|c| c.id == *clip_id).and_then(|c| c.linked_clip_id);
+                    let edit_of = |id: klipp_core::ClipId| EditCommand::EditClipAudio {
+                        clip_id: id,
+                        old_gain: og,
+                        old_volume: ov,
+                        old_pan: op,
+                        old_fade_in: ofi,
+                        old_fade_out: ofo,
+                        old_channel_config: occ,
+                        new_gain: *new_gain,
+                        new_volume: *new_volume,
+                        new_pan: *new_pan,
+                        new_fade_in: *new_fade_in,
+                        new_fade_out: *new_fade_out,
+                        new_channel_config: cc,
+                    };
+                    let command = match partner {
+                        Some(p) => EditCommand::Batch(vec![edit_of(*clip_id), edit_of(p)]),
+                        None => edit_of(*clip_id),
+                    };
+                    self.state.active_history_mut().end_drag(HistoryEntry { command });
                     true
                 }
             _ => false,
