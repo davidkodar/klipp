@@ -1162,6 +1162,7 @@ mod selected_matte_tests {
         let after = texts(&state, &clip);
         assert!(after.iter().any(|t| t == UNWIRED_MATTE), "{after:?}");
         assert!(after.len() > before.len() + 3, "its controls are drawn: {after:?}");
+        assert!(after.iter().any(|t| t == crate::inspector::side_matte::ROTO_POINTS), "it says where its points are moved: {after:?}");
     }
 
 }
