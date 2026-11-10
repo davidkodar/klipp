@@ -14,8 +14,13 @@ pub const INTERFACE_SIZES: [(&str, u32); 8] = [("Auto", 0), ("80%", 80), ("90%",
 /// Whether the small-screen note goes up now (#2944): once, ever, the first
 /// time Auto (`ui_scale_percent` 0) makes the interface smaller (`zoom`
 /// under 1) with a project open in the editor. True when `prefs` changed
-/// and is to be saved.
+/// and is to be saved. A note already up follows the size: the new one
+/// while Auto keeps it smaller, gone once it doesn't or a size is chosen.
+/// It said 80% after the window had its whole screen back.
 pub fn small_screen_note_now(state: &mut AppState, prefs: &mut crate::prefs::AppearancePrefs, zoom: f32) -> bool {
+    if state.small_screen_note.is_some() {
+        state.small_screen_note = (prefs.ui_scale_percent == 0 && zoom < 1.0).then(|| (zoom * 100.0).round() as u32);
+    }
     if prefs.ui_scale_percent != 0 || zoom >= 1.0 || prefs.small_screen_note_shown || state.project_path.is_none() {
         return false;
     }
