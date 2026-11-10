@@ -770,7 +770,7 @@ impl KlippApp {
             };
             let gains = klipp_core::normalize::gains(&measured.levels, &measured.together, &settings);
             let applied: Vec<(klipp_core::ClipId, f32)> = clips.iter().zip(&gains).filter_map(|((id, _), g)| g.map(|g| (*id, 10f64.powf(g.db / 20.0) as f32))).collect();
-            let text = normalize_summary(&settings, &gains, skipped.len());
+            let text = normalize_summary(&settings, &gains, &measured.levels, &measured.together, skipped.len());
             let mut out = Vec::new();
             if !applied.is_empty() {
                 out.push(AppCommand::ApplyClipGains { gains: applied });
@@ -1172,8 +1172,11 @@ impl crate::state::AppState {
     }
 }
 
-/// What a normalize says it did (#1843).
-fn normalize_summary(settings: &klipp_core::normalize::NormalizeSettings, gains: &[Option<klipp_core::normalize::Gain>], skipped: usize) -> String {
+/// What a normalize says it did (#1843), and where a clip the ceiling held
+/// lands (`levels` measured, `together` for a group): it said the target,
+/// "Normalized 1 clip to -14 LUFS; 1 held under the -1 dBTP ceiling",
+/// while the export measured -17.1.
+fn normalize_summary(settings: &klipp_core::normalize::NormalizeSettings, gains: &[Option<klipp_core::normalize::Gain>], levels: &[klipp_core::normalize::Level], together: &klipp_core::normalize::Level, skipped: usize) -> String {
     let unit = match settings.mode {
         klipp_core::normalize::NormalizeMode::Loudness => "LUFS",
         klipp_core::normalize::NormalizeMode::Peak => "dBFS",
@@ -1185,7 +1188,16 @@ fn normalize_summary(settings: &klipp_core::normalize::NormalizeSettings, gains:
     }
     let held = gains.iter().flatten().filter(|g| g.ceiling_limited).count();
     if held > 0 {
-        text.push_str(&format!("; {held} held under the {} dBTP ceiling", settings.ceiling_dbtp));
+        // Where each held clip lands: its level, or the group's, plus the
+        // gain the ceiling let it have.
+        let measured = |l: &klipp_core::normalize::Level| match settings.mode {
+            klipp_core::normalize::NormalizeMode::Loudness => l.integrated_lufs,
+            klipp_core::normalize::NormalizeMode::Peak => l.sample_peak_dbfs,
+        };
+        let reached: Vec<f64> = gains.iter().zip(levels).filter_map(|(g, l)| g.filter(|g| g.ceiling_limited).map(|g| measured(if settings.group { together } else { l }) + g.db)).collect();
+        let (lo, hi) = reached.iter().fold((f64::MAX, f64::MIN), |(a, b), v| (a.min(*v), b.max(*v)));
+        let at = if reached.is_empty() { String::new() } else if hi - lo < 0.05 { format!(", reaching {lo:.1} {unit}") } else { format!(", reaching {lo:.1} to {hi:.1} {unit}") };
+        text.push_str(&format!("; {held} held under the {} dBTP ceiling{at}", settings.ceiling_dbtp));
     }
     let maxed = gains.iter().flatten().filter(|g| g.max_limited).count();
     if maxed > 0 {
@@ -1214,3 +1226,25 @@ mod meter_ballistics_tests {
         assert!((2.0 * at120.drift - at60.drift).abs() < 1e-6);
     }
 }
+
+#[cfg(test)]
+mod normalize_summary_tests {
+    use klipp_core::normalize::{gains, Level, NormalizeSettings};
+
+    /// A clip the ceiling holds is said with the level it reaches, not
+    /// only the target it was asked for: at -30 LUFS with a -4 dBTP peak,
+    /// -14 asks +16 dB and the -1 dBTP ceiling gives +3, so it reaches -27.
+    #[test]
+    fn a_clip_held_by_the_ceiling_says_where_it_lands() {
+        let settings = NormalizeSettings { target: -14.0, ceiling_dbtp: -1.0, ..Default::default() };
+        let levels = [Level { integrated_lufs: -30.0, sample_peak_dbfs: -5.0, true_peak_dbtp: -4.0 }];
+        let g = gains(&levels, &levels[0], &settings);
+        let text = super::normalize_summary(&settings, &g, &levels, &levels[0], 0);
+        assert!(text.contains("1 held under the -1 dBTP ceiling, reaching -27.0 LUFS"), "{text}");
+        // One the ceiling doesn't hold says nothing more.
+        let free = [Level { integrated_lufs: -30.0, sample_peak_dbfs: -25.0, true_peak_dbtp: -24.0 }];
+        let text = super::normalize_summary(&settings, &gains(&free, &free[0], &settings), &free, &free[0], 0);
+        assert!(!text.contains("reaching"), "{text}");
+    }
+}
+
