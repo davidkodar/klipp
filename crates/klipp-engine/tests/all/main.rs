@@ -8,6 +8,8 @@
 // per file here.
 #![allow(clippy::duplicate_mod)]
 
+#[path = "../a_probe_does_not_hold_the_engine.rs"]
+mod a_probe_does_not_hold_the_engine;
 #[path = "../a_flow_frame_at_the_playback_size.rs"]
 mod a_flow_frame_at_the_playback_size;
 #[path = "../a_frame_without_a_primary_plays_at_the_playback_size.rs"]

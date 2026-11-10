@@ -16,6 +16,10 @@ impl KlippApp {
         if std::mem::take(&mut self.state.matched_follow_sync) {
             self.sync_sequence_to_engine();
         }
+        // Files the engine read again, already in its pool: their new
+        // readings go over in one copy of the pool once the events are in,
+        // not one copy per file. Opening a project reads all of them.
+        let mut pool_sync_due = false;
         while let Ok(event) = self.event_rx.try_recv() {
             if super::event_writes::event_writes(&event) {
                 self.close_drag_for_result();
@@ -308,7 +312,14 @@ impl KlippApp {
                     if !saves_alike {
                         self.state.dirty = true;
                     }
-                    self.sync_media_pool_to_engine();
+                    // A new file goes over at once: it may be placed on
+                    // the timeline right below, and the engine plays it
+                    // from its own pool.
+                    if previous.is_some() {
+                        pool_sync_due = true;
+                    } else {
+                        self.sync_media_pool_to_engine();
+                    }
                     if previous.is_some() {
                         tracing::info!(
                             "Reloaded {:?}: {}",
@@ -554,6 +565,9 @@ impl KlippApp {
                 | AppEvent::NormalizeMeasured { .. }
                 | AppEvent::WaterMeasured { .. } => {}
             }
+        }
+        if pool_sync_due {
+            self.sync_media_pool_to_engine();
         }
 
         // ── Audio spectrum: refresh FFT bins once per UI frame ──

@@ -888,28 +888,6 @@ impl KlippApp {
         self.do_open_project_inner(original);
     }
 
-    /// Read the shot metadata of every item whose file was imported
-    /// before the probe read it — a project saved by an earlier build.
-    /// Each goes through the same re-probe a relink uses, which keeps
-    /// what the user said about the item; it happens once, since the
-    /// probe marks the item read.
-    fn probe_unread_metadata(&mut self) {
-        let unread: Vec<(klipp_core::MediaId, std::path::PathBuf)> = self
-            .state
-            .media_pool
-            .all()
-            .filter(|m| m.wants_metadata_probe())
-            .map(|m| (m.id, m.path.clone()))
-            .collect();
-        if unread.is_empty() {
-            return;
-        }
-        tracing::info!("Reading the shot metadata of {} clips imported before it was kept", unread.len());
-        for (media_id, path) in unread {
-            let _ = self.cmd_tx.send(AppCommand::LoadMediaFile { path, media_id });
-        }
-    }
-
     pub(super) fn do_open_project_inner(&mut self, path: &std::path::Path) {
         match klipp_project::load_project(path) {
             Ok((mut sequences, media_pool, color_settings, active_id, created_at, notes,
@@ -974,7 +952,6 @@ impl KlippApp {
                         self.state.toast.show(format!("The project's own fonts were not used: {why}"));
                     }
                 }
-                self.probe_unread_metadata();
                 // Restore saved timeline view-state (zoom + scroll). Legacy
                 // project files don't carry these — leave the in-memory
                 // defaults alone in that case.
@@ -1218,14 +1195,11 @@ impl KlippApp {
                 self.state.active_grade_still = None;
                 self.state.grade_still_compare = false;
 
-                // Reload media files into the engine and trigger thumbnails/filmstrips/audio/skim
-                let media_items: Vec<_> = self
-                    .state
-                    .media_pool
-                    .all()
-                    .filter(|item| !item.offline)
-                    .map(|item| (item.id, item.path.clone(), item.duration, item.has_audio))
-                    .collect();
+                // Reload media files into the engine and trigger thumbnails/filmstrips/audio/skim.
+                // This read is also the re-probe of each file's shot
+                // metadata a load owes (#1148): a source may have changed
+                // while the project was closed. One read a file.
+                let media_items = files_to_read_on_open(&self.state.media_pool);
                 for (id, source_path, duration, has_audio) in media_items {
                     // Always use the original source for timeline playback (full quality + audio)
                     self.cmd_tx.send(AppCommand::LoadMediaFile {
@@ -1416,6 +1390,16 @@ enum ProjectEvent {
     Saved,
     /// Replaced in memory: opened, reopened, made new or closed.
     Replaced,
+}
+
+/// The files an open reads again, each once: every one that isn't
+/// offline. The read brings each file's streams and shot metadata up to
+/// date, which a load leaves unread (#1148).
+fn files_to_read_on_open(pool: &klipp_media::MediaPool) -> Vec<(klipp_core::MediaId, std::path::PathBuf, klipp_core::Timecode, bool)> {
+    pool.all()
+        .filter(|item| !item.offline)
+        .map(|item| (item.id, item.path.clone(), item.duration, item.has_audio))
+        .collect()
 }
 
 /// Whether a save or an open made this a different document for a
@@ -1704,5 +1688,33 @@ mod global_lut_tests {
             to_engine.as_slice(),
             [AppCommand::LoadGlobalLut { path }, AppCommand::SetGlobalLutOpacity(o), AppCommand::SetGlobalLutEnabled(false)] if *path == here && *o == 0.5
         ));
+    }
+}
+
+#[cfg(test)]
+mod files_read_on_open_tests {
+    use super::files_to_read_on_open;
+    use klipp_media::{MediaItem, MediaPool};
+
+    /// Each file is read once when the project opens, an unread one among
+    /// them: a source may have changed while it was closed (#1148). Two
+    /// passes, the reload and the metadata probe, read every file twice.
+    #[test]
+    fn each_file_is_read_once_on_open() {
+        let mut pool = MediaPool::default();
+        let mut unread = MediaItem::synthetic_for_test("/m/unread.mov".into(), None);
+        unread.metadata_read = false;
+        let mut read = MediaItem::synthetic_for_test("/m/read.mov".into(), None);
+        read.metadata_read = true;
+        let mut offline = MediaItem::synthetic_for_test("/m/gone.mov".into(), None);
+        offline.offline = true;
+        let ids = [unread.id, read.id, offline.id];
+        for item in [unread, read, offline] {
+            pool.add(item);
+        }
+        let listed: Vec<_> = files_to_read_on_open(&pool).into_iter().map(|f| f.0).collect();
+        assert_eq!(listed.len(), 2, "the online files, each once: {listed:?}");
+        assert!(listed.contains(&ids[0]) && listed.contains(&ids[1]), "the unread and the read file: {listed:?}");
+        assert!(!listed.contains(&ids[2]), "not the offline one");
     }
 }
