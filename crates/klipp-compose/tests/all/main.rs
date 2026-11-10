@@ -176,6 +176,8 @@ mod view_any_node;
 mod wide_gamut_scene_export;
 #[path = "../a_grade_of_the_wrong_size.rs"]
 mod a_grade_of_the_wrong_size;
+#[path = "../a_placed_clips_window_moves_with_it.rs"]
+mod a_placed_clips_window_moves_with_it;
 
 #[path = "../animated_generators_gpu.rs"]
 mod animated_generators_gpu;
