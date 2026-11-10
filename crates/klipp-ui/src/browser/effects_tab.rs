@@ -1046,6 +1046,13 @@ fn category_color(cat: EffectCategory, theme: &KlippTheme) -> egui::Color32 {
 /// Single category row: leading icon (or reserved blank space when
 /// `icon` is `None`), label, right-aligned count badge, full-row click
 /// target, and a 2px accent stripe + accent_subtle fill when active.
+/// The face the browser's small counts are drawn in: the proportional
+/// one, whose zero can't be read as an eight (the monospace zero at 10 px
+/// made "104" read as "184" and "0" as "8").
+fn count_font() -> egui::FontId {
+    egui::FontId::proportional(10.5)
+}
+
 fn sidebar_row(
     ui: &mut egui::Ui,
     theme: &KlippTheme,
@@ -1120,12 +1127,12 @@ fn sidebar_row(
         label_color,
     );
 
-    // Right-aligned count, monospace tabular-nums for stable column edge.
+    // Right-aligned count.
     let count_str = format!("{}", count);
     let count_color = if is_active { theme.accent } else { theme.text_dim };
     let count_galley = ui.painter().layout_no_wrap(
         count_str,
-        egui::FontId::monospace(10.0),
+        count_font(),
         count_color,
     );
     let count_pos = egui::pos2(
@@ -1246,7 +1253,7 @@ fn segmented_source_filter(
         );
         let count_galley = ui.painter().layout_no_wrap(
             format!("{}", count),
-            egui::FontId::monospace(10.0),
+            count_font(),
             theme.text_dim,
         );
         let w = label_galley.size().x + 5.0 + count_galley.size().x + 18.0;
@@ -1301,7 +1308,7 @@ fn segmented_source_filter(
         );
         let count_galley = ui.painter().layout_no_wrap(
             format!("{}", count),
-            egui::FontId::monospace(10.0),
+            count_font(),
             count_color,
         );
 
@@ -2020,6 +2027,30 @@ pub(crate) fn effect_commands_in(state: &AppState, source: &EffectSource, clip_i
 
 #[cfg(test)]
 mod tests {
+    /// The browser's small counts (the source chips, the sidebar's rows)
+    /// are drawn in the proportional face, whose zero can't be read as an
+    /// eight: in the monospace face at 10 px "104" read as "184" and "0"
+    /// as "8", twice, to two readers.
+    #[test]
+    fn the_browsers_counts_are_drawn_with_a_plain_zero() {
+        let ctx = egui::Context::default();
+        crate::icons::install(&ctx);
+        let out = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let theme = KlippTheme::default();
+                let mut filter = SourceFilter::Builtin;
+                super::segmented_source_filter(ui, &theme, &mut filter, 477, 373, 104);
+                super::sidebar_row(ui, &theme, None, "LUTs", 304, false, "probe", &mut |_| {}, EffectCategory::Luts);
+            });
+        });
+        let counts: Vec<egui::FontFamily> = out.shapes.iter().filter_map(|s| match &s.shape {
+            egui::Shape::Text(t) if t.galley.text().chars().all(|c| c.is_ascii_digit()) => t.galley.job.sections.first().map(|sec| sec.format.font_id.family.clone()),
+            _ => None,
+        }).collect();
+        assert_eq!(counts.len(), 4, "the three chips' counts and the row's");
+        assert!(counts.iter().all(|f| *f == egui::FontFamily::Proportional), "{counts:?}");
+    }
+
     use super::*;
     use crate::browser::effect_registry::{EffectEntry, EffectSource};
 
