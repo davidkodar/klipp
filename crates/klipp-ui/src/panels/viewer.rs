@@ -8595,6 +8595,31 @@ mod fitted_backing_editor_tests {
         assert!(bb.width() < line.width(), "narrower than a word: {}", bb.width());
     }
 
+    /// Left, centred or right aligned, an empty layer's box is where
+    /// typing puts the text: the first letter typed starts in it (left),
+    /// is centred in it, or ends in it (right).
+    #[test]
+    fn an_empty_layers_box_is_where_typing_starts_whatever_the_alignment() {
+        use klipp_timeline::TextAlignment;
+        let frame = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1920.0, 1080.0));
+        for alignment in [TextAlignment::Left, TextAlignment::Center, TextAlignment::Right] {
+            let mut empty = TitleData::single_text(TextBox { text: String::new(), font_size: 72.0, alignment, ..Default::default() });
+            empty.objects[0].transform.center = klipp_timeline::TitlePosition { x: 0.4, y: 0.6 };
+            let mut typed = empty.clone();
+            let klipp_timeline::TitleObjectContent::TextBox(tb) = &mut typed.objects[0].content else { unreachable!() };
+            tb.text = "W".into();
+            let ink = klipp_title::TitleRenderer::new().render_layout(&typed, 1920, 1080);
+            tighten_text_editor_boxes(&mut empty, (1920, 1080));
+            let bb = object_screen_bb(&empty.objects[0], frame);
+            let start = match alignment {
+                TextAlignment::Left => ink.text_left,
+                TextAlignment::Right => ink.text_right,
+                _ => (ink.text_left + ink.text_right) * 0.5,
+            };
+            assert!(bb.left() <= start && start <= bb.right(), "{alignment:?}: the letter's {start:.0} in the box {:.0}..{:.0}", bb.left(), bb.right());
+        }
+    }
+
     #[test]
     fn text_editor_frame_keeps_wrapped_lines_inside_authored_box() {
         let title = TitleData::single_text(TextBox {
