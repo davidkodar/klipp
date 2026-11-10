@@ -626,6 +626,30 @@ impl KlippApp {
         *needs_refresh = true;
     }
 
+    /// The Chroma Key eyedropper's answer: the key at `at` keyed on the
+    /// colour picked, as one change. The sample is the linear picture the
+    /// key receives; the key holds the sRGB bytes it compares.
+    pub(super) fn key_colour_on_sample(&mut self, clip_id: klipp_core::ClipId, at: &klipp_graph_format::path::NodePath, sample: Result<[f32; 3], klipp_core::NodeSampleRefusal>) {
+        let rgb = match sample {
+            Ok(rgb) => rgb,
+            Err(klipp_core::NodeSampleRefusal::Why(why)) => {
+                self.state.toast.show(format!("Key colour picker: {why}"));
+                return;
+            }
+            // The screen shows the keyed picture: no colour of it to fall
+            // back on, as the grade's pickers do.
+            Err(klipp_core::NodeSampleRefusal::Placed) => {
+                self.state.toast.show("Key colour picker: the clip is moved in the frame, so a point of the viewer is not the same point of its picture; reset its position and scale to pick, or set the colour by hand");
+                return;
+            }
+        };
+        let Some(payload) = key_colour_payload(self.state.sequence(), clip_id, at, key_colour_of(rgb)) else {
+            self.state.toast.show("Key colour picker: the key is no longer on the clip");
+            return;
+        };
+        self.send_commands(vec![AppCommand::SetPayloadAt { addr: at.clone(), payload }]);
+    }
+
     /// The hue eyedropper's answer: three points on `curve` of the node,
     /// round the hue picked, as one change (#612).
     pub(super) fn range_hue_curve_on_sample(
@@ -770,6 +794,17 @@ impl KlippApp {
                 let Some((clip_id, node_id, curve)) = self.state.hue_curve_pick.take() else { return true };
                 self.state.hue_curve_awaiting = Some((clip_id, node_id, curve));
                 let at = sample_path(self.state.sequence(), clip_id, node_id);
+                let _ = self.cmd_tx.send(AppCommand::SampleNodeInput { clip_id, node_id, at, nx: *nx, ny: *ny });
+                true
+            }
+            AppCommand::RequestKeyColourSample { nx, ny } => {
+                // Read from the picture the key receives: the frame on
+                // screen is already keyed, its green gone. Answered by
+                // `NodeInputSampled`, the mean of a small patch round the
+                // point.
+                let Some((clip_id, at)) = self.state.key_colour_pick.take() else { return true };
+                let Some(&node_id) = at.nodes.last() else { return true };
+                self.state.key_colour_awaiting = Some((clip_id, at.clone()));
                 let _ = self.cmd_tx.send(AppCommand::SampleNodeInput { clip_id, node_id, at, nx: *nx, ny: *ny });
                 true
             }
@@ -1756,6 +1791,18 @@ impl KlippApp {
                         }
                     }
                 }
+                true
+            }
+            AppCommand::PickKeyColour { clip_id, at } => {
+                // The button again while it waits for this key: called off.
+                if self.state.eyedropper_mode == crate::state::EyedropperMode::KeyColour && self.state.key_colour_pick.as_ref() == Some(&(*clip_id, at.clone())) {
+                    self.state.eyedropper_mode = crate::state::EyedropperMode::None;
+                    self.state.key_colour_pick = None;
+                    return true;
+                }
+                self.state.eyedropper_mode = crate::state::EyedropperMode::KeyColour;
+                self.state.key_colour_pick = Some((*clip_id, at.clone()));
+                self.state.toast.show("Click the colour to key out in the viewer (Esc cancels)");
                 true
             }
             AppCommand::PickHueCurve { clip_id, node_id, curve } => {
@@ -4178,4 +4225,23 @@ mod zones_placed_for_their_source {
         assert_eq!(crate::panels::node_inspector::zone_start_label(3, -1.0), "Shadow reaches up to 9% of white");
         assert_eq!(crate::panels::node_inspector::zone_start_label(6, 4.5), "Specular starts at 4.1\u{00d7} white");
     }
+}
+
+/// The sRGB bytes a Chroma Key holds for the linear colour `rgb`: the
+/// encoding the key compares the picture in.
+pub(super) fn key_colour_of(rgb: [f32; 3]) -> [u8; 3] {
+    rgb.map(|v| (klipp_color::transfer::linear_to_srgb(v.clamp(0.0, 1.0)) * 255.0).round() as u8)
+}
+
+/// The Chroma Key at `at` in `clip`'s picture with its Key Colour `key`:
+/// its entry, ready for `SetPayloadAt`. `None` when `at` names no Chroma
+/// Key of the clip.
+pub(super) fn key_colour_payload(seq: &klipp_timeline::Sequence, clip: klipp_core::ClipId, at: &klipp_graph_format::path::NodePath, key: [u8; 3]) -> Option<serde_json::Value> {
+    let &[node] = at.nodes.as_slice() else { return None };
+    let picture = seq.all_clips().find(|c| c.id == clip)?.picture_v2().ok()?;
+    let n = picture.picture.graph.nodes.iter().find(|n| n.id == node)?;
+    (klipp_graph_lift::effect_params::tag(n)? == "chroma_key").then_some(())?;
+    let mut entry = klipp_graph_lift::effect_params::entry_of(n).ok()?;
+    *entry.get_mut("key_color")? = serde_json::json!(key);
+    Some(entry)
 }

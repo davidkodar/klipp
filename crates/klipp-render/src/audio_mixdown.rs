@@ -733,8 +733,11 @@ fn envelope_samples(samples: &mut [f32], shape: &AudioClipShape, from_secs: f64,
     }
 }
 
-/// A clip's volume, gain and pan at `clip_pos` seconds into it.
-fn levels_at(shape: &AudioClipShape, clip_pos: f64, timeline_secs: f64, fps: f64) -> (f32, f32) {
+/// A clip's volume, gain and pan at `clip_pos` seconds into it: its
+/// settings read on the clock of the clip holding them
+/// ([`AudioClipShape::settings_offset_secs`]).
+pub fn levels_at(shape: &AudioClipShape, clip_pos: f64, timeline_secs: f64, fps: f64) -> (f32, f32) {
+    let clip_pos = clip_pos - shape.settings_offset_secs;
     let ctx = klipp_core::EvalContext {
         clip_time_secs: clip_pos,
         clip_duration_secs: shape.clip_duration_secs,

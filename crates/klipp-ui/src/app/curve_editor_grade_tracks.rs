@@ -103,12 +103,6 @@ impl Run {
     fn apply(&mut self, cmd: AppCommand) {
         self.state.before_dispatch(&cmd);
         self.state.toast = Default::default();
-        if self.state.path_command(&cmd).is_some() {
-            if let Some(why) = self.state.toast.message_for_test() {
-                self.unapplied.push(format!("{cmd:?} refused: {why}"));
-            }
-            return;
-        }
         // The key menu wraps its edits in one named step (#2374).
         match &cmd {
             AppCommand::SeekTo(_) => return,
@@ -117,8 +111,22 @@ impl Run {
             AppCommand::EndHistoryBatchAs { label } => return self.state.active_history_mut().end_batch_as(label),
             _ => {}
         }
+        // In the order the app's dispatch tries its handlers
+        // (`engine_sync`): a lane's key by path, the keyframe handlers, then
+        // the path commands, then the rest.
+        let lane = self.state.is_lane_key_command(&cmd);
         let mut host = InspectorEditHost { state: &mut self.state, side: &Sink };
-        if !host.apply_keyframe_drag(&cmd) && !host.apply(&cmd) {
+        if !lane && (host.apply_keyframe_drag(&cmd) || host.apply_effect_keyframes(&cmd) || host.apply_video_keyframes(&cmd)) {
+            return;
+        }
+        if self.state.path_command(&cmd).is_some() {
+            if let Some(why) = self.state.toast.message_for_test() {
+                self.unapplied.push(format!("{cmd:?} refused: {why}"));
+            }
+            return;
+        }
+        let mut host = InspectorEditHost { state: &mut self.state, side: &Sink };
+        if !host.apply(&cmd) {
             self.unapplied.push(format!("{cmd:?}"));
         }
     }

@@ -855,7 +855,7 @@ impl Grade {
                 }
             }
             None => {
-                if matches!(cmd, AppCommand::AutoWhiteBalance { .. } | AppCommand::PickWhiteBalance { .. } | AppCommand::PickQualifierColour { .. } | AppCommand::PickQualifierStroke { .. } | AppCommand::PickHueCurve { .. } | AppCommand::CaptureColorMatchReference | AppCommand::ApplyColorMatch { .. } | AppCommand::TrackMaskRegion { .. } | AppCommand::RemoveMaskTracking { .. }) {
+                if matches!(cmd, AppCommand::AutoWhiteBalance { .. } | AppCommand::PickWhiteBalance { .. } | AppCommand::PickQualifierColour { .. } | AppCommand::PickQualifierStroke { .. } | AppCommand::PickHueCurve { .. } | AppCommand::PickKeyColour { .. } | AppCommand::CaptureColorMatchReference | AppCommand::ApplyColorMatch { .. } | AppCommand::TrackMaskRegion { .. } | AppCommand::RemoveMaskTracking { .. }) {
                     self.side.push(format!("{cmd:?}"));
                     return;
                 }
