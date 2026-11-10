@@ -680,3 +680,112 @@ fn a_masked_clips_opacity_drag_is_one_step() {
     assert!(run.unapplied.is_empty(), "{:?}", run.unapplied);
 }
 
+
+
+/// The stack's "All effects" switch turns every one of the clip's
+/// effects off, as one undo step, and on again, as one; the undo puts
+/// each back as it was.
+#[test]
+fn the_all_effects_switch_turns_every_effect_off_and_on() {
+    let t = |s| klipp_core::RationalTime::from_secs_f64(s, 24);
+    let clip = klipp_timeline::test_clip::TestClip::of(klipp_timeline::Clip::media(klipp_core::MediaId::new(), t(0.0), t(2.0), t(0.0), t(2.0)))
+        .effect(BuiltinEffect::GaussianBlur { radius: 3.0 })
+        .effect(BuiltinEffect::Sharpen { amount: 0.5 })
+        .effect(BuiltinEffect::Opacity { value: 0.5 })
+        .build();
+    let mut run = Run::new(clip);
+    let opacity = |run: &Run| crate::inspector::placement_by_path::opacity(run.clip());
+    let on = |run: &Run| -> Vec<bool> {
+        let graph = run.clip().picture_v2().unwrap().picture.graph.clone();
+        ["gaussian_blur", "sharpen"].iter().map(|tag| graph.nodes.iter().find(|n| klipp_graph_lift::effect_params::tag(n) == Some(tag)).unwrap().enabled).collect()
+    };
+    assert_eq!(on(&run), [true, true]);
+    assert!(run.click_last("All effects"), "the switch is drawn");
+    assert_eq!(on(&run), [false, false], "all off: {:?}", run.unapplied);
+    assert_eq!(opacity(&run), 0.5, "the clip's own opacity is not an effect to take off");
+    assert_eq!(run.state.active_history().undo_count(), 1, "one step");
+    assert_eq!(run.state.active_history().undo_label(), Some("Turn Effects Off"));
+    assert!(run.click_last("All effects"));
+    assert_eq!(on(&run), [true, true], "all on again");
+    assert_eq!(run.state.active_history().undo_count(), 2, "one step");
+    assert!(run.step(false), "an undo");
+    assert_eq!(on(&run), [false, false], "the undo takes back the switch on");
+    assert!(run.unapplied.is_empty(), "{:?}", run.unapplied);
+}
+
+/// Blur, sharpen and vignette on a clip; `sharpen_off` has the sharpen off
+/// of its own to begin with.
+fn three_effects(sharpen_off: bool) -> Run {
+    let t = |s| klipp_core::RationalTime::from_secs_f64(s, 24);
+    let mut clip = klipp_timeline::test_clip::TestClip::of(klipp_timeline::Clip::media(klipp_core::MediaId::new(), t(0.0), t(2.0), t(0.0), t(2.0)))
+        .effect(BuiltinEffect::GaussianBlur { radius: 3.0 })
+        .effect(BuiltinEffect::Sharpen { amount: 0.5 })
+        .effect(BuiltinEffect::Vignette { amount: 0.4, size: 0.5, roundness: 0.5, softness: 0.5 })
+        .build();
+    if sharpen_off {
+        let id = clip.id;
+        let mut s = crate::state::AppState::default();
+        s.sequences[0].tracks[0].clips.push(clip.clone());
+        let graph = clip.picture_v2().unwrap().picture.graph.clone();
+        let sharpen = graph.nodes.iter().find(|n| klipp_graph_lift::effect_params::tag(n) == Some("sharpen")).unwrap().id;
+        let addr = klipp_graph_format::path::NodePath::new(klipp_graph_format::path::Root::Clip { clip: id.0 }, [sharpen]);
+        s.path_command(&AppCommand::SetNodeEnabledAt { addr, enabled: false });
+        clip = s.sequences[0].all_clips().find(|c| c.id == id).unwrap().clone();
+    }
+    Run::new(clip)
+}
+
+fn effects_on(run: &Run) -> Vec<bool> {
+    let graph = run.clip().picture_v2().unwrap().picture.graph.clone();
+    ["gaussian_blur", "sharpen", "vignette"].iter().map(|tag| graph.nodes.iter().find(|n| klipp_graph_lift::effect_params::tag(n) == Some(tag)).unwrap().enabled).collect()
+}
+
+/// An effect the person had off of their own stays off through the All
+/// effects switch's off and on: switching on brings back only what the
+/// switch turned off.
+#[test]
+fn the_all_effects_switch_keeps_an_effect_off_that_was_off() {
+    let mut run = three_effects(true);
+    assert_eq!(effects_on(&run), [true, false, true]);
+    assert!(run.click_last("All effects"));
+    assert_eq!(effects_on(&run), [false, false, false], "all off: {:?}", run.unapplied);
+    assert!(run.click_last("All effects"));
+    assert_eq!(effects_on(&run), [true, false, true], "the sharpen stays off");
+    assert!(run.clip().effects_switched_off.is_empty(), "the switch-on forgets the list");
+    assert!(run.unapplied.is_empty(), "{:?}", run.unapplied);
+}
+
+/// One switched on by hand while all were off stays on, and the switch
+/// still reads off until it is switched on.
+#[test]
+fn an_effect_switched_on_by_hand_meanwhile_stays_on() {
+    let mut run = three_effects(false);
+    assert!(run.click_last("All effects"));
+    // The vignette on again by hand, by its own switch.
+    let graph = run.clip().picture_v2().unwrap().picture.graph.clone();
+    let vignette = graph.nodes.iter().find(|n| klipp_graph_lift::effect_params::tag(n) == Some("vignette")).unwrap().id;
+    let clip = run.clip;
+    run.apply(AppCommand::SetNodeEnabledAt { addr: klipp_graph_format::path::NodePath::new(klipp_graph_format::path::Root::Clip { clip: clip.0 }, [vignette]), enabled: true });
+    assert_eq!(effects_on(&run), [false, false, true]);
+    assert!(!run.clip().effects_switched_off.is_empty(), "the switch still reads off");
+    assert!(run.click_last("All effects"));
+    assert_eq!(effects_on(&run), [true, true, true], "the two it turned off come back; the vignette stays on");
+    assert!(run.unapplied.is_empty(), "{:?}", run.unapplied);
+}
+
+/// Undo and redo put the remembered list back with the switches.
+#[test]
+fn undo_and_redo_bring_the_switch_back_with_its_list() {
+    let mut run = three_effects(true);
+    assert!(run.click_last("All effects"));
+    let remembered = run.clip().effects_switched_off.clone();
+    assert_eq!(remembered.len(), 2, "the blur and the vignette, not the sharpen");
+    assert!(run.step(false));
+    assert_eq!(effects_on(&run), [true, false, true]);
+    assert!(run.clip().effects_switched_off.is_empty(), "undone, nothing remembered");
+    assert!(run.step(true));
+    assert_eq!(effects_on(&run), [false, false, false]);
+    assert_eq!(run.clip().effects_switched_off, remembered, "redone, remembered again");
+    assert!(run.click_last("All effects"));
+    assert_eq!(effects_on(&run), [true, false, true], "and the switch-on after it still keeps the sharpen off");
+}
