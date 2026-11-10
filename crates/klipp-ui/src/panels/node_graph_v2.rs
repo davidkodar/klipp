@@ -27,6 +27,8 @@ use klipp_nodes::{NodeFrameId, NodeGraph, NodeId, NodePos, NodeStickyNoteId};
 
 mod model;
 mod picture;
+#[cfg(test)]
+pub(crate) use picture::masked_by_a_window;
 pub(crate) use picture::node_name;
 use model::{CanvasGraph, CanvasKind, CanvasNode, GradeCanvas, MenuCategory, Palette};
 

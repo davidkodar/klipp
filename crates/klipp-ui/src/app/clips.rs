@@ -1683,6 +1683,7 @@ pub(super) fn duplicate_after(clip: &klipp_timeline::Clip) -> klipp_timeline::Cl
             ..Default::default()
         }
         .into(),
+        effects_switched_off: Vec::new(),
         linked_clip_id: None,
         linked_title_asset_id: None,
         group_id: None,

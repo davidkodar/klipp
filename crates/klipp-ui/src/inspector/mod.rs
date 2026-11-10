@@ -422,8 +422,11 @@ impl NewInspectorPanel {
         if let Some((_, clip)) = clip_info {
             crate::param_focus::begin_rows(ui.ctx(), state.param_focus.as_ref(), clip, self.key_column);
         }
+        // A scroll of each tab's own: one for all, a tab opened as far down
+        // as the last was scrolled, past its first sections (a title's Clip
+        // Video opened at Compositing, its Position and Opacity above).
         egui::ScrollArea::vertical()
-            .id_salt("inspector_body_scroll")
+            .id_salt(("inspector_body_scroll", *active_tab))
             .auto_shrink([false, false])
             .show(ui, |ui| {
             let full = ui.available_width();
@@ -496,6 +499,7 @@ impl NewInspectorPanel {
                             source_in: klipp_core::Timecode { value: 0, rate: bm.duration.rate },
                             source_out: bm.duration,
                             picture: Default::default(),
+                            effects_switched_off: Vec::new(),
                             linked_clip_id: None,
                             linked_title_asset_id: None,
                             group_id: None,

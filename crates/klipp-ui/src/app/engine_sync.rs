@@ -186,6 +186,9 @@ impl KlippApp {
         // lock-free param_change_queue, so we don't need to flatten the
         // sequence or take the shared RwLock's write lock on the slider path.
         let mut node_param_scrub = false;
+        // A graph-held clip's placement edits go by path, before the
+        // dispatch boundary sees them (so a drag stays one).
+        let cmds: Vec<AppCommand> = cmds.into_iter().flat_map(|c| self.state.placed_by_path(c)).collect();
         for cmd in cmds {
             // Every way a clip is put down, logged as it arrives: a
             // placement that did nothing left no trace to find it by.

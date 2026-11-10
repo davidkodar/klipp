@@ -4465,6 +4465,11 @@ pub enum AppCommand {
     /// `mode` is the discriminant index into `BlendMode::ALL`.
     SetClipBlendMode { clip_id: ClipId, mode: crate::types::BlendMode },
 
+    /// The effects the inspector's All effects switch turned off on a
+    /// clip, by their picture nodes (`Clip::effects_switched_off`), set
+    /// with the switch's own changes, in the same undo step.
+    SetEffectsSwitchedOff { clip_id: ClipId, nodes: Vec<uuid::Uuid> },
+
     /// Bind another clip as this clip's track matte. The render path
     /// resolves `source_clip_id`'s rendered RGBA at the same timeline
     /// time, extracts `channel`, applies `invert`/`feather_px`/`choke_px`,
