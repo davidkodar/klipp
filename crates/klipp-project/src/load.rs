@@ -1127,6 +1127,7 @@ fn load_clip(c: &ClipJson, project_dir: &Path, effects_by_clip: &HashMap<&str, V
             active_grade_version: c.active_grade_version,
         }
         .into(),
+        effects_switched_off: Vec::new(),
         linked_clip_id: c.linked_clip_id.as_ref().and_then(|s| {
             parse_uuid(s).ok().map(ClipId)
         }),

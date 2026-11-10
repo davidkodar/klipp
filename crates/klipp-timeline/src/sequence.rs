@@ -2044,6 +2044,7 @@ impl Track {
                 active_grade_version: None,
             }.into(),
             linked_clip_id: None,
+            effects_switched_off: Vec::new(),
             linked_title_asset_id: None,
             group_id: None,
             grade_group: None,
@@ -2359,6 +2360,7 @@ impl Track {
                 active_grade_version: clip.picture.view().active_grade_version,
             }.into(),
             linked_clip_id: clip.linked_clip_id,
+            effects_switched_off: clip.effects_switched_off.clone(),
             linked_title_asset_id: clip.linked_title_asset_id,
             group_id: clip.group_id,
             grade_group: clip.grade_group,
@@ -2444,6 +2446,7 @@ impl Track {
                 active_grade_version: clip.picture.view().active_grade_version,
             }.into(),
             linked_clip_id: clip.linked_clip_id,
+            effects_switched_off: clip.effects_switched_off.clone(),
             linked_title_asset_id: clip.linked_title_asset_id,
             group_id: clip.group_id,
             grade_group: clip.grade_group,
@@ -2907,6 +2910,12 @@ pub struct Clip {
     /// behind the rest.
     #[serde(flatten)]
     pub picture: ClipPictureFields,
+    /// The effects the inspector's All effects switch turned off, by their
+    /// picture nodes: switching all on again turns these back on, and no
+    /// other, so one the person had off of their own stays off. Cleared by
+    /// that switch-on; while it holds any, the switch reads off.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub effects_switched_off: Vec<uuid::Uuid>,
     #[serde(default)]
     pub linked_clip_id: Option<ClipId>,
     /// If `Some`, this clip is a *linked instance* of a project-scoped
@@ -3555,6 +3564,7 @@ impl Clip {
                 active_grade_version: None,
             }.into(),
             linked_clip_id: None,
+            effects_switched_off: Vec::new(),
             linked_title_asset_id: None,
             group_id: None,
             grade_group: None,
@@ -3675,6 +3685,7 @@ impl Clip {
                 active_grade_version: None,
             }.into(),
             linked_clip_id: None,
+            effects_switched_off: Vec::new(),
             linked_title_asset_id: None,
             group_id: None,
             grade_group: None,
@@ -3784,6 +3795,7 @@ impl Clip {
                 active_grade_version: None,
             }.into(),
             linked_clip_id: None,
+            effects_switched_off: Vec::new(),
             linked_title_asset_id: None,
             group_id: None,
             grade_group: None,

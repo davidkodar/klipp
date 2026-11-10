@@ -2103,6 +2103,10 @@ impl ViewerPanel {
         let mut te_ui = ui.new_child(egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(bb.min, egui::vec2(1.0, 1.0))));
         te_ui.style_mut().visuals.selection.bg_fill = egui::Color32::TRANSPARENT;
         te_ui.style_mut().visuals.selection.stroke = egui::Stroke::NONE;
+        // Its caret too: the one shown is drawn in the text, below. One
+        // pixel wide, this editor puts a character on each line, and its
+        // own caret showed a line down per character, below the picture.
+        te_ui.style_mut().visuals.text_cursor.stroke = egui::Stroke::NONE;
         let te_output = egui::TextEdit::multiline(&mut state.viewer_text_edit_buffer)
             .id(edit_id)
             .desired_width(1.0)
@@ -4685,11 +4689,18 @@ impl ViewerPanel {
                     let upright = new_t.rotation.rem_euclid(360.0) == 0.0;
                     match drag.handle {
                         H::Body if !free => {
-                            // The layer as it is seen: its box hugs its text.
+                            // The layer as it is seen: its box hugs its text,
+                            // which left or right aligned text sits beside
+                            // the layer's anchor, not round it. The box moves
+                            // with the anchor, so it is snapped where it is
+                            // drawn and the anchor shifted by as much.
                             let mut seen = td.object(drag.object_id).map(|o| o.transform.clone()).unwrap_or_else(|| new_t.clone());
-                            seen.center = new_t.center;
+                            let anchor_now = raw_title.object(drag.object_id).map(|o| o.transform.evaluated_center(time));
+                            let (ox, oy) = anchor_now.map_or((0.0, 0.0), |a| (seen.center.x - a.x, seen.center.y - a.y));
+                            seen.center.x = new_t.center.x + ox;
+                            seen.center.y = new_t.center.y + oy;
                             let (hw, hh) = layer_half_extent(&seen, drag.frame_aspect);
-                            let c = new_t.center;
+                            let c = seen.center;
                             if let Some((shift, line)) = snap_to_lines(&[c.x - hw, c.x, c.x + hw], &xs, within_x) {
                                 new_t.center.x += shift;
                                 guides.push((true, line));
@@ -7039,8 +7050,13 @@ pub(crate) fn shown_title_layer(
     editor_title_geometry(title, frame, 0.0, &mut None).object(object).cloned()
 }
 
-/// Match the editor frame to the renderer's measured glyph bounds while
-/// preserving the authored transform centre and wrapping constraint.
+/// Match the editor frame to the renderer's measured glyph bounds, around
+/// the text as it is drawn, keeping the wrapping constraint. Across, the
+/// box is centred on the text: the renderer sets left text from the
+/// layer's anchor and right text up to it, and a box kept on the anchor
+/// held half the text. Down, and for text on a path, it keeps the
+/// authored centre. The document
+/// keeps the anchor; a drag starts from it, not from this box.
 fn tighten_text_editor_boxes(title: &mut klipp_timeline::TitleData, dimensions: (u32, u32)) {
     with_editor_renderer(|renderer| tighten_with(renderer, title, dimensions));
 }
@@ -7062,13 +7078,33 @@ fn tighten_with(renderer: &mut klipp_title::TitleRenderer, title: &mut klipp_tim
         let mut single = klipp_timeline::TitleData::single_text_fx(tb.clone(), obj.fx().clone());
         single.objects[0].transform = obj.transform.clone();
         let layout = renderer.render_layout(&single, width.max(1), height.max(1));
-        if layout.glyph_count == 0 { continue; }
+        if layout.glyph_count == 0 {
+            // Emptied: a line high at its anchor, where typing puts the
+            // text, a caret wide, not the layout box behind it (the whole
+            // frame, reaching below the picture). The line is measured on
+            // a stand-in with a capital and a descender, in its own type.
+            let klipp_timeline::TitleObjectContent::TextBox(stand_in) = &mut single.objects[0].content else { continue };
+            stand_in.text = "Ag".into();
+            let line = renderer.render_layout(&single, width.max(1), height.max(1));
+            if line.glyph_count == 0 { continue; }
+            let pad_x = (line.scale * 8.0).clamp(4.0, 12.0);
+            let pad_y = (line.scale * 6.0).clamp(3.0, 10.0);
+            obj.transform.size.x = (2.0 + pad_x * 2.0) / width.max(1) as f32;
+            obj.transform.size.y = (line.text_bottom - line.text_top + pad_y * 2.0) / height.max(1) as f32;
+            obj.transform.center.y = (line.text_top + line.text_bottom) * 0.5 / height.max(1) as f32;
+            continue;
+        }
         let pad_x = (layout.scale * 8.0).clamp(4.0, 12.0);
         let pad_y = (layout.scale * 6.0).clamp(3.0, 10.0);
         let w = (layout.text_right - layout.text_left + pad_x * 2.0) / width.max(1) as f32;
         let h = (layout.text_bottom - layout.text_top + pad_y * 2.0) / height.max(1) as f32;
         obj.transform.size.x = w.clamp(0.01, obj.transform.size.x.max(0.01));
         obj.transform.size.y = h.clamp(0.01, obj.transform.size.y.max(0.01));
+        // Text on a path turns about the layer's centre, which its handle
+        // reads: kept there.
+        if tb.text_path.is_none() {
+            obj.transform.center.x = (layout.text_left + layout.text_right) * 0.5 / width.max(1) as f32;
+        }
     }
 }
 
@@ -8528,6 +8564,74 @@ mod fitted_backing_editor_tests {
         let bb = object_screen_bb(object, frame);
         assert!(bb.width() < frame.width() * 0.6);
         assert!(bb.height() < frame.height() * 0.25);
+    }
+
+    /// Left, centred or right aligned, the layer's box (its handles and
+    /// what a click on it hits) is around the text as it is drawn. The
+    /// renderer sets left text from the layer's anchor and right text up
+    /// to it, and the box stayed centred on the anchor: half the text out
+    /// of it, and a click on its end selected the clip.
+    #[test]
+    fn the_layer_box_is_around_its_text_whatever_the_alignment() {
+        use klipp_timeline::TextAlignment;
+        let frame = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1920.0, 1080.0));
+        for alignment in [TextAlignment::Left, TextAlignment::Center, TextAlignment::Right] {
+            let title = TitleData::single_text(TextBox { text: "Maria Lind".into(), font_size: 72.0, alignment, ..Default::default() });
+            let ink = klipp_title::TitleRenderer::new().render_layout(&title, 1920, 1080);
+            let mut fitted = title.clone();
+            tighten_text_editor_boxes(&mut fitted, (1920, 1080));
+            let bb = object_screen_bb(&fitted.objects[0], frame);
+            assert!(
+                bb.left() <= ink.text_left && bb.right() >= ink.text_right,
+                "{alignment:?}: the box {:.0}..{:.0} holds the text {:.0}..{:.0}", bb.left(), bb.right(), ink.text_left, ink.text_right
+            );
+        }
+    }
+
+    /// A text layer emptied keeps a box one line high at its anchor, where
+    /// typing puts the text: it kept the layout box behind it, the whole
+    /// frame and more, reaching below the picture.
+    #[test]
+    fn an_empty_text_layer_has_a_one_line_box_at_its_anchor() {
+        let frame = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1920.0, 1080.0));
+        let mut typed = TitleData::single_text(TextBox { text: "Harbour".into(), font_size: 72.0, ..Default::default() });
+        typed.objects[0].transform.center = klipp_timeline::TitlePosition { x: 0.3, y: 0.8 };
+        let mut empty = typed.clone();
+        let klipp_timeline::TitleObjectContent::TextBox(tb) = &mut empty.objects[0].content else { unreachable!() };
+        tb.text.clear();
+        tighten_text_editor_boxes(&mut typed, (1920, 1080));
+        tighten_text_editor_boxes(&mut empty, (1920, 1080));
+        let (line, bb) = (object_screen_bb(&typed.objects[0], frame), object_screen_bb(&empty.objects[0], frame));
+        let anchor = egui::pos2(0.3 * 1920.0, 0.8 * 1080.0);
+        assert!(bb.contains(anchor), "at its anchor: {bb:?}");
+        assert!(frame.contains_rect(bb), "inside the picture: {bb:?}");
+        assert!((bb.height() - line.height()).abs() < line.height() * 0.25, "a line high: {} vs a typed line's {}", bb.height(), line.height());
+        assert!(bb.width() < line.width(), "narrower than a word: {}", bb.width());
+    }
+
+    /// Left, centred or right aligned, an empty layer's box is where
+    /// typing puts the text: the first letter typed starts in it (left),
+    /// is centred in it, or ends in it (right).
+    #[test]
+    fn an_empty_layers_box_is_where_typing_starts_whatever_the_alignment() {
+        use klipp_timeline::TextAlignment;
+        let frame = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1920.0, 1080.0));
+        for alignment in [TextAlignment::Left, TextAlignment::Center, TextAlignment::Right] {
+            let mut empty = TitleData::single_text(TextBox { text: String::new(), font_size: 72.0, alignment, ..Default::default() });
+            empty.objects[0].transform.center = klipp_timeline::TitlePosition { x: 0.4, y: 0.6 };
+            let mut typed = empty.clone();
+            let klipp_timeline::TitleObjectContent::TextBox(tb) = &mut typed.objects[0].content else { unreachable!() };
+            tb.text = "W".into();
+            let ink = klipp_title::TitleRenderer::new().render_layout(&typed, 1920, 1080);
+            tighten_text_editor_boxes(&mut empty, (1920, 1080));
+            let bb = object_screen_bb(&empty.objects[0], frame);
+            let start = match alignment {
+                TextAlignment::Left => ink.text_left,
+                TextAlignment::Right => ink.text_right,
+                _ => (ink.text_left + ink.text_right) * 0.5,
+            };
+            assert!(bb.left() <= start && start <= bb.right(), "{alignment:?}: the letter's {start:.0} in the box {:.0}..{:.0}", bb.left(), bb.right());
+        }
     }
 
     #[test]
