@@ -3160,6 +3160,18 @@ pub struct ClipLabel {
 pub use klipp_core::GradeFlag;
 
 impl Clip {
+    /// Seconds from this sound clip's start to the start of `settings`,
+    /// the clip whose sound settings it plays with (its linked picture,
+    /// or itself): picture in − sound in. The picture's level keys are
+    /// timed from the picture's start, so a time `pos` seconds into the
+    /// sound reads them at `pos − offset`. Zero for a clip that is its
+    /// own settings, or a pair that starts together (an L cut, a plain
+    /// pair); half a second for a J cut whose sound starts that early.
+    /// Playback and the export both read the keys through this.
+    pub fn settings_offset_secs(&self, settings: &Clip) -> f64 {
+        settings.timeline_in.to_secs_f64() - self.timeline_in.to_secs_f64()
+    }
+
     /// Whether any of the clip's plug-in effects is on (#995). A clip
     /// whose plug-ins are all off renders as one without any: no 8-bit
     /// round trip, and nothing keeps it off the GPU paths.

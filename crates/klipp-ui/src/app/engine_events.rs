@@ -61,6 +61,11 @@ impl KlippApp {
                     self.state.toast.show(said);
                 }
                 AppEvent::NodeInputSampled { clip_id, node_id, nx, ny, sample } => {
+                    if let Some((c, at)) = self.state.key_colour_awaiting.clone().filter(|(c, at)| (*c, at.nodes.last()) == (clip_id, Some(&node_id))) {
+                        self.state.key_colour_awaiting = None;
+                        self.key_colour_on_sample(c, &at, sample);
+                        continue;
+                    }
                     match self.state.hue_curve_awaiting {
                         Some((c, n, curve)) if (c, n) == (clip_id, node_id) => {
                             self.state.hue_curve_awaiting = None;
