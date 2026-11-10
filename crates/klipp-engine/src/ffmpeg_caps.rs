@@ -49,6 +49,33 @@ impl FfmpegCaps {
         *CACHED.get_or_init(probe_ffmpeg)
     }
 
+    /// What this machine can use of `self`: NVIDIA's encoder and its CUDA
+    /// filter only with an NVIDIA driver loaded. A distribution's FFmpeg
+    /// lists `h264_nvenc` on every machine, and trying it without the card
+    /// failed every skim's first encode with a warning.
+    pub fn on_machine(self, nvidia_driver: bool) -> Self {
+        if nvidia_driver {
+            return self;
+        }
+        Self { h264_nvenc: false, tonemap_cuda: false, ..self }
+    }
+
+    /// [`Self::detect`], as far as this machine can use it.
+    pub fn usable() -> Self {
+        Self::detect().on_machine(klipp_core::GpuVendor::nvidia_driver_loaded())
+    }
+
+    /// The encoders a skim or proxy is tried with, in turn: NVENC where it
+    /// can open, then libx264, which is in every build Klipp runs on.
+    pub fn skim_encoders(self) -> Vec<SkimEncoder> {
+        let mut encoders = Vec::with_capacity(2);
+        if self.h264_nvenc {
+            encoders.push(SkimEncoder::Nvenc);
+        }
+        encoders.push(SkimEncoder::Libx264);
+        encoders
+    }
+
     /// The encode plan for an HDR clip's skim: its picture through
     /// `cube`, a 3D LUT baked from Klipp's own HDR to SDR conversion
     /// (`klipp_render::skim_lut`), so the skim shows what the export and
@@ -62,20 +89,38 @@ impl FfmpegCaps {
     /// engine plays it as the SDR picture it is. NVENC encodes it where
     /// there is one, libx264 elsewhere.
     pub fn pick_hdr_chain(self, target_height: u32, cube: &std::path::Path) -> HdrChain {
-        // A path in a filter argument: `:`, `,`, `'` and `\` are its syntax.
-        let cube = cube.to_string_lossy().replace('\\', "\\\\").replace(':', "\\:").replace(',', "\\,").replace('\'', "\\'");
-        let vf = format!(
-            "scale=w=-2:h={target_height}:in_color_matrix=bt2020:in_range=tv:out_range=pc,format=gbrp16le,\
-             lut3d=file={cube}:interp=tetrahedral,\
-             scale=out_color_matrix=bt709:out_range=tv,format=yuv420p,\
-             setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709:range=tv"
-        );
-        let (tier, encoder, encoder_args) = if self.h264_nvenc {
-            (HdrChainTier::LutNvenc, "h264_nvenc", vec!["-preset".to_string(), "p1".into(), "-rc".into(), "constqp".into()])
-        } else {
-            (HdrChainTier::LutCpuEnc, "libx264", vec!["-preset".to_string(), "ultrafast".into()])
-        };
-        HdrChain { tier, input_args: Vec::new(), vf, encoder: encoder.into(), encoder_args }
+        hdr_chain(self.skim_encoders()[0], target_height, cube)
+    }
+}
+
+/// An HDR clip's skim plan (see [`FfmpegCaps::pick_hdr_chain`]) encoded with
+/// `encoder`: each encoder a skim is tried with gets the same picture.
+pub fn hdr_chain(encoder: SkimEncoder, target_height: u32, cube: &std::path::Path) -> HdrChain {
+    // A path in a filter argument: `:`, `,`, `'` and `\` are its syntax.
+    let cube = cube.to_string_lossy().replace('\\', "\\\\").replace(':', "\\:").replace(',', "\\,").replace('\'', "\\'");
+    let vf = format!(
+        "scale=w=-2:h={target_height}:in_color_matrix=bt2020:in_range=tv:out_range=pc,format=gbrp16le,\
+         lut3d=file={cube}:interp=tetrahedral,\
+         scale=out_color_matrix=bt709:out_range=tv,format=yuv420p,\
+         setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709:range=tv"
+    );
+    let (tier, encoder, encoder_args) = match encoder {
+        SkimEncoder::Nvenc => (HdrChainTier::LutNvenc, "h264_nvenc", vec!["-preset".to_string(), "p1".into(), "-rc".into(), "constqp".into()]),
+        SkimEncoder::Libx264 => (HdrChainTier::LutCpuEnc, "libx264", vec!["-preset".to_string(), "ultrafast".into()]),
+    };
+    HdrChain { tier, input_args: Vec::new(), vf, encoder: encoder.into(), encoder_args }
+}
+
+/// An encoder a skim or proxy is made with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SkimEncoder {
+    Nvenc,
+    Libx264,
+}
+
+impl SkimEncoder {
+    pub fn is_hardware(self) -> bool {
+        self == Self::Nvenc
     }
 }
 
@@ -220,6 +265,19 @@ Encoders:
             assert!(c.vf.contains("in_color_matrix=bt2020") && c.vf.contains("color_trc=bt709"), "{}", c.vf);
             assert!(c.vf.contains("h=1080"));
         }
+    }
+
+    #[test]
+    fn nvenc_is_tried_only_with_an_nvidia_driver_and_libx264_always_follows() {
+        let built = parse_caps(FILTERS_FIXTURE, ENCODERS_FIXTURE);
+        let without = built.on_machine(false);
+        assert!(!without.h264_nvenc && !without.tonemap_cuda, "{without:?}");
+        assert!(without.h264_vaapi && without.libplacebo, "the rest is kept: {without:?}");
+        assert_eq!(without.skim_encoders(), [SkimEncoder::Libx264]);
+        assert_eq!(without.pick_hdr_chain(1080, std::path::Path::new("/x.cube")).encoder, "libx264");
+        assert_eq!(built.on_machine(true), built);
+        assert_eq!(built.on_machine(true).skim_encoders(), [SkimEncoder::Nvenc, SkimEncoder::Libx264]);
+        assert_eq!(FfmpegCaps::default().skim_encoders(), [SkimEncoder::Libx264]);
     }
 
     #[test]
