@@ -196,7 +196,8 @@ impl KlippApp {
         }
 
         // ── Handle OS-level file drag-and-drop ──
-        let dropped_files: Vec<std::path::PathBuf> = ctx.input(|i| {
+        #[allow(unused_mut)]
+        let mut dropped_files: Vec<std::path::PathBuf> = ctx.input(|i| {
             if i.raw.dropped_files.is_empty() {
                 return Vec::new();
             }
@@ -204,6 +205,10 @@ impl KlippApp {
                 .filter_map(|f| f.path.clone())
                 .collect()
         });
+        // On Wayland the clipboard's data device takes drops (winit sees
+        // them only on X11): see vendor/smithay-clipboard/KLIPP-PATCH.md.
+        #[cfg(target_os = "linux")]
+        dropped_files.extend(smithay_clipboard::take_dropped_files());
         if !dropped_files.is_empty() {
             let media_exts = klipp_core::media_extensions::all_media_extensions();
             for path in dropped_files {
@@ -231,7 +236,11 @@ impl KlippApp {
         }
 
         // Also show visual feedback when files are being hovered over the window
-        if !ctx.input(|i| i.raw.hovered_files.is_empty()) {
+        #[cfg(target_os = "linux")]
+        let wayland_drag = smithay_clipboard::drag_hovering();
+        #[cfg(not(target_os = "linux"))]
+        let wayland_drag = false;
+        if wayland_drag || !ctx.input(|i| i.raw.hovered_files.is_empty()) {
             // Paint a subtle overlay to indicate drop target
             let screen = ctx.screen_rect();
             egui::Area::new(egui::Id::new("drop_overlay"))
