@@ -851,3 +851,24 @@ fn easing_several_keys_names_the_step_with_their_count() {
     assert_eq!(state.active_history().undo_count(), steps + 1, "one step for both");
     assert_eq!(state.active_history().undo_label(), Some("Ease In-Out (2 keys)"));
 }
+
+/// A key eased with Ease Both from its menu is shown as Ease Both when the
+/// menu opens again, not as a custom Bezier (or Linear): the ease presets
+/// were never marked, so the menu named another choice for it.
+#[test]
+fn a_key_menu_names_the_ease_a_key_has() {
+    use crate::widgets::scrubby_param::{ease_preset_at, EasePreset};
+    for (preset, index) in [(EasePreset::EaseBoth, 0usize), (EasePreset::EaseIn, 1), (EasePreset::EaseOut, 0)] {
+        let (mut state, id, _) = state();
+        let lane = KeyframeParamKind::Video(VideoParam::PositionX);
+        let m = crate::state::KeyframeContextMenu { clip_id: id, param_kind: lane.clone(), keyframe_index: index, screen_pos: egui::Pos2::ZERO };
+        let cmds = crate::panels::timeline::key_ease_commands(&state, &m, preset);
+        assert!(apply(&mut state, &cmds).is_empty());
+        let keys = crate::key_selection::track_keys(&clip(&state, id), &lane);
+        assert_eq!(ease_preset_at(&keys, index), Some(preset), "{preset:?} on key {index}: {keys:?}");
+    }
+    // A key no preset made has none.
+    let (state, id, _) = state();
+    let keys = crate::key_selection::track_keys(&clip(&state, id), &KeyframeParamKind::Video(VideoParam::PositionX));
+    assert_eq!(ease_preset_at(&keys, 0), None);
+}

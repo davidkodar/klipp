@@ -2627,6 +2627,12 @@ impl TimelinePanel {
                                     };
                                     kfs.get(ctx_menu.keyframe_index).map(|kf| kf.interpolation)
                                 });
+                            // The ease preset the key was given, marked as
+                            // itself, not as the custom Bezier it is stored as
+                            // (nor anything else).
+                            let current_ease = state.sequence().all_clips().find(|c| c.id == ctx_menu.clip_id)
+                                .and_then(|clip| crate::widgets::scrubby_param::ease_preset_at(&crate::key_selection::track_keys(clip, &ctx_menu.param_kind), ctx_menu.keyframe_index));
+                            let current_interp = current_interp.filter(|_| current_ease.is_none());
 
                             // Several keys selected, this one among them:
                             // each choice goes to every one (#1958).
@@ -2685,6 +2691,7 @@ impl TimelinePanel {
                                 ("Ease Both", crate::widgets::scrubby_param::EasePreset::EaseBoth, &hints[2]),
                             ] {
                                 let text = egui::RichText::new(format!("  {label}"));
+                                let text = if current_ease == Some(preset) { text.strong() } else { text };
                                 if ui.add(egui::Button::new(text).frame(false).shortcut_text(hint.as_str())).clicked() {
                                     // One step, however many keys (#1958), named for
                                     // the ease as the shortcut names it (#2358).
