@@ -12,7 +12,10 @@
 //!   claude mcp add klipp -- /path/to/klipp-mcp
 //!
 //! The socket path follows `KLIPP_CONTROL_SOCKET`, else
-//! `$XDG_RUNTIME_DIR/klipp-control.sock`. Klipp must be running; every
+//! `$XDG_RUNTIME_DIR/klipp-control.sock`, or in a Flatpak
+//! `$XDG_RUNTIME_DIR/app/$FLATPAK_ID/klipp-control.sock` (an assistant
+//! starts it there with `flatpak run --command=klipp-mcp <app id>`).
+//! Klipp must be running; every
 //! tool answers with a clear "is Klipp running?" error if it is not,
 //! since that is the overwhelmingly common cause.
 

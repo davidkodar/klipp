@@ -111,14 +111,20 @@ impl Client {
     /// The arguments that register `klipp_mcp` for every project of the
     /// person's: Claude Code's user scope, Codex's own settings.
     pub fn connect_args(self, klipp_mcp: &Path) -> Vec<String> {
-        let path = klipp_mcp.to_string_lossy().to_string();
-        match self {
-            Client::ClaudeCode => vec!["mcp".into(), "add".into(), "--scope".into(), "user".into(), SERVER_NAME.into(), "--".into(), path],
-            Client::Codex => vec!["mcp".into(), "add".into(), SERVER_NAME.into(), "--".into(), path],
-            Client::GeminiCli => vec!["mcp".into(), "add".into(), "-s".into(), "user".into(), SERVER_NAME.into(), path],
+        self.connect_args_running(&[klipp_mcp.to_string_lossy().to_string()])
+    }
+
+    /// [`Self::connect_args`] for a server started by `server`, a program
+    /// and its arguments (`flatpak run --command=klipp-mcp <id>`).
+    pub fn connect_args_running(self, server: &[String]) -> Vec<String> {
+        let head: Vec<String> = match self {
+            Client::ClaudeCode => vec!["mcp".into(), "add".into(), "--scope".into(), "user".into(), SERVER_NAME.into(), "--".into()],
+            Client::Codex => vec!["mcp".into(), "add".into(), SERVER_NAME.into(), "--".into()],
+            Client::GeminiCli => vec!["mcp".into(), "add".into(), "-s".into(), "user".into(), SERVER_NAME.into()],
             // Set in their settings files, by no command.
-            Client::Zed | Client::Cursor => Vec::new(),
-        }
+            Client::Zed | Client::Cursor => return Vec::new(),
+        };
+        head.into_iter().chain(server.iter().cloned()).collect()
     }
 
     /// The arguments that remove Klipp's entry, and only it.
@@ -381,6 +387,27 @@ pub fn json_snippet(klipp_mcp: &Path) -> String {
     serde_json::to_string_pretty(&v).unwrap_or_default()
 }
 
+/// In a Flatpak, the commands that register Klipp with each assistant on
+/// the host that has one, by name: the sandbox can neither see nor run
+/// them, so they are shown for the person to run.
+pub fn flatpak_connect_commands(app_id: &str) -> Vec<(&'static str, String)> {
+    let server = klipp_core::flatpak::mcp_command(app_id);
+    [Client::ClaudeCode, Client::Codex, Client::GeminiCli]
+        .into_iter()
+        .map(|c| {
+            let words: Vec<String> = std::iter::once(c.program().to_string()).chain(c.connect_args_running(&server).into_iter().map(|w| shell_quote(&w))).collect();
+            (c.name(), words.join(" "))
+        })
+        .collect()
+}
+
+/// [`json_snippet`] in a Flatpak: the server started through `flatpak run`.
+pub fn flatpak_json_snippet(app_id: &str) -> String {
+    let server = klipp_core::flatpak::mcp_command(app_id);
+    let v = serde_json::json!({ "mcpServers": { SERVER_NAME: { "command": server[0], "args": &server[1..] } } });
+    serde_json::to_string_pretty(&v).unwrap_or_default()
+}
+
 /// The same for Codex's `config.toml`.
 pub fn toml_snippet(klipp_mcp: &Path) -> String {
     let path = klipp_mcp.to_string_lossy().replace('\\', "\\\\").replace('"', "\\\"");
@@ -413,6 +440,22 @@ fn shell_quote(word: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// In a Flatpak an assistant on the host starts Klipp's MCP server
+    /// with `flatpak run --command=klipp-mcp <id>`: the commands and the
+    /// settings shown to copy name that, whole.
+    #[test]
+    fn a_flatpaks_assistants_run_klipp_mcp_through_flatpak() {
+        let id = "io.github.davidkodar.Klipp";
+        let commands = flatpak_connect_commands(id);
+        let of = |name: &str| commands.iter().find(|(n, _)| *n == name).map(|(_, c)| c.clone()).unwrap_or_default();
+        assert_eq!(of("Claude Code"), "claude mcp add --scope user klipp -- flatpak run --command=klipp-mcp io.github.davidkodar.Klipp");
+        assert_eq!(of("Codex"), "codex mcp add klipp -- flatpak run --command=klipp-mcp io.github.davidkodar.Klipp");
+        assert_eq!(of("Gemini CLI"), "gemini mcp add -s user klipp flatpak run --command=klipp-mcp io.github.davidkodar.Klipp");
+        let json: serde_json::Value = serde_json::from_str(&flatpak_json_snippet(id)).unwrap();
+        assert_eq!(json["mcpServers"]["klipp"]["command"], "flatpak");
+        assert_eq!(json["mcpServers"]["klipp"]["args"], serde_json::json!(["run", "--command=klipp-mcp", id]));
+    }
 
     /// #625: Connect is the assistant's own add, for every project, and
     /// Disconnect its remove of Klipp's entry alone; the commands a person

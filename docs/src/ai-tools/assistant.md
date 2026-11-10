@@ -17,6 +17,22 @@ Klipp listens on a local control socket. **Klipp's MCP program** (`klipp-mcp`, i
 
 Nothing connects unless you click, and with the AI assistant switched off in Preferences nothing can.
 
+### Klipp as a Flatpak
+
+A Flatpak Klipp runs in a sandbox, so it can't see or set up the assistants on your computer. The same dialog shows the commands to run yourself in a terminal instead. Each one has the assistant start Klipp's MCP program inside Klipp's sandbox:
+
+```
+flatpak run --command=klipp-mcp io.github.davidkodar.Klipp
+```
+
+For example, for Claude Code:
+
+```
+claude mcp add --scope user klipp -- flatpak run --command=klipp-mcp io.github.davidkodar.Klipp
+```
+
+For an assistant set up through a settings file, the server's `command` is `flatpak` and its `args` are `["run", "--command=klipp-mcp", "io.github.davidkodar.Klipp"]`. Klipp's control socket is in the app's own runtime folder (`$XDG_RUNTIME_DIR/app/io.github.davidkodar.Klipp/`), where that command finds it.
+
 ## What to Ask
 
 Ask in your own words. Some examples:
