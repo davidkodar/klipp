@@ -839,72 +839,60 @@ impl NodeInspectorPanel {
                         ).on_hover_text("Delete mask").clicked() {
                             delete_this = true;
                         }
-                        // One-shot mask tracking. When a tracker is
-                        // already bound to this mask, the button flips
-                        // to "Re-track" (overwrites prior keyframes) and
-                        // an Untrack button appears next to it.
-                        let is_tracked = tracked_mask_indices.contains(&mask_idx);
-                        ui.add_space(6.0);
+                    });
+                });
+                // Its tracking, on a row of its own: beside the name it
+                // pushed the header past the panel's width, cutting the
+                // buttons and every label below. Tracked only while the
+                // mask holds track keys: an undone track leaves the
+                // tracker's binding but no track.
+                let is_tracked = tracked_mask_indices.contains(&mask_idx)
+                    && (mask.keyframes.is_tracked() || mask.keyframes.track_perspective.is_some() || !mask.keyframes.center_x.is_empty());
+                ui.horizontal_wrapped(|ui| {
+                    ui.add_space(30.0);
+                    let persp_id = ui.id().with(("track_perspective", node_id, mask_idx));
+                    let was_perspective = mask.keyframes.track_perspective.is_some();
+                    let mut perspective = ui.data_mut(|d| *d.get_temp_mut_or_insert_with(persp_id, || was_perspective));
+                    let label = if is_tracked { "\u{1F3AF} Re-track" } else { "\u{1F3AF} Track" };
+                    let hover = if is_tracked {
+                        "Re-run tracking from the playhead — overwrites the window's tracked keyframes"
+                    } else {
+                        "Track this region across the clip — keyframes the window's position, size and rotation as it follows"
+                    };
+                    if ui.add(egui::Button::new(egui::RichText::new(label).size(10.0)).frame(true)).on_hover_text(hover).clicked() {
+                        // Re-track: drop the existing tracker first so
+                        // duplicates don't pile up.
+                        if is_tracked {
+                            cmds.push(AppCommand::RemoveMaskTracking { clip_id, node_id, mask_index: mask_idx });
+                        }
+                        cmds.push(AppCommand::TrackMaskRegion { clip_id, node_id, mask_index: mask_idx, perspective });
+                    }
+                    // Perspective (#238): follow a flat surface's four
+                    // corners — a screen, a sign — instead of a move, size
+                    // and turn. Off by default; a window tracked in
+                    // perspective re-tracks the same way.
+                    if ui.selectable_label(perspective, egui::RichText::new("Perspective").size(10.0))
+                        .on_hover_text("Track the window's four corners on a flat surface seen at an angle, so the window turns away with it")
+                        .clicked()
+                    {
+                        perspective = !perspective;
+                        ui.data_mut(|d| d.insert_temp(persp_id, perspective));
+                    }
+                    if is_tracked {
+                        if ui.add(egui::Button::new(egui::RichText::new("\u{1F6AB} Untrack").size(10.0).color(theme.text_dim)).frame(true))
+                            .on_hover_text("Remove the tracker bound to this mask + clear its centre keyframes")
+                            .clicked()
+                        {
+                            cmds.push(AppCommand::RemoveMaskTracking { clip_id, node_id, mask_index: mask_idx });
+                        }
                         // What it followed, kept in view: the toast that
                         // says a track stopped is gone by the time a long
                         // one has been looked at.
-                        if let Some((from, to)) = tracked_span(mask).filter(|_| is_tracked) {
+                        if let Some((from, to)) = tracked_span(mask) {
                             ui.label(egui::RichText::new(format!("{from:.1}\u{2013}{to:.1} s")).size(10.0).color(theme.text_dim))
                                 .on_hover_text("The stretch of the clip the track followed; the mask stays still outside it");
                         }
-                        if is_tracked {
-                            if ui.add(egui::Button::new(
-                                egui::RichText::new("\u{1F6AB} Untrack").size(10.0)
-                                    .color(theme.text_dim)
-                            ).frame(true))
-                                .on_hover_text("Remove the tracker bound to this mask + clear its centre keyframes")
-                                .clicked()
-                            {
-                                cmds.push(AppCommand::RemoveMaskTracking {
-                                    clip_id, node_id, mask_index: mask_idx,
-                                });
-                            }
-                            ui.add_space(4.0);
-                        }
-                        // Perspective (#238): follow a flat surface's four
-                        // corners — a screen, a sign — instead of a move,
-                        // size and turn. Off by default; a window tracked
-                        // in perspective re-tracks the same way.
-                        let persp_id = ui.id().with(("track_perspective", node_id, mask_idx));
-                        let was_perspective = mask.keyframes.track_perspective.is_some();
-                        let mut perspective = ui.data_mut(|d| *d.get_temp_mut_or_insert_with(persp_id, || was_perspective));
-                        if ui.selectable_label(perspective, egui::RichText::new("Perspective").size(10.0))
-                            .on_hover_text("Track the window's four corners on a flat surface seen at an angle, so the window turns away with it")
-                            .clicked()
-                        {
-                            perspective = !perspective;
-                            ui.data_mut(|d| d.insert_temp(persp_id, perspective));
-                        }
-                        ui.add_space(4.0);
-                        let label = if is_tracked { "\u{1F3AF} Re-track" } else { "\u{1F3AF} Track" };
-                        let hover = if is_tracked {
-                            "Re-run tracking from the playhead — overwrites the window's tracked keyframes"
-                        } else {
-                            "Track this region across the clip — keyframes the window's position, size and rotation as it follows"
-                        };
-                        if ui.add(egui::Button::new(
-                            egui::RichText::new(label).size(10.0)
-                        ).frame(true))
-                            .on_hover_text(hover)
-                            .clicked()
-                        {
-                            // Re-track: drop the existing tracker first
-                            // so we don't leave duplicates piling up.
-                            if is_tracked {
-                                cmds.push(AppCommand::RemoveMaskTracking {
-                                    clip_id, node_id, mask_index: mask_idx,
-                                });
-                            }
-                            cmds.push(AppCommand::TrackMaskRegion {
-                                clip_id, node_id, mask_index: mask_idx, perspective,
-                            });
-                        }
-                    });
+                    }
                 });
             }
             // Its name and lock (#74).
@@ -6081,7 +6069,9 @@ mod wheel_layout_tests {
         })).unwrap());
         assert_eq!(tracked_masks_of(&clip, node), vec![0]);
         assert!(tracked_masks_of(&clip, NodeId::new_v4()).is_empty(), "another node's");
-        let circle = klipp_core::Mask { shape: klipp_core::MaskShape::Circle { center_x: 0.5, center_y: 0.5, radius: 0.3 }, ..Default::default() };
+        let mut circle = klipp_core::Mask { shape: klipp_core::MaskShape::Circle { center_x: 0.5, center_y: 0.5, radius: 0.3 }, ..Default::default() };
+        // The keys a track leaves: tracked is a tracker bound and its track.
+        circle.keyframes.track_x = vec![klipp_core::Keyframe { time_secs: 0.0, value: 0.0, interpolation: Default::default(), tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() }];
         for (tracked, want) in [(vec![0], ["\u{1F3AF} Re-track", "\u{1F6AB} Untrack"].as_slice()), (Vec::new(), ["\u{1F3AF} Track"].as_slice())] {
             let ctx = egui::Context::default();
             let mut panel = NodeInspectorPanel { tracked_masks: tracked.clone(), ..Default::default() };
