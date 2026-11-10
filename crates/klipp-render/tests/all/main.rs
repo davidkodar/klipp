@@ -110,3 +110,5 @@ mod tnr_export_cost;
 mod tnr_neighbours_kept;
 #[path = "../tnr_on_the_chain.rs"]
 mod tnr_on_the_chain;
+#[path = "../linked_sound_keys_in_the_export.rs"]
+mod linked_sound_keys_in_the_export;

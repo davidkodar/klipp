@@ -269,6 +269,13 @@ pub struct AudioClipShape {
     /// the in point, over which its sound is heard, the rest gated out
     /// (see `Sequence::multicam_sound_spans`). `None` is all of it.
     pub heard: Option<Vec<(f64, f64)>>,
+    /// Where the clip holding these settings starts, seconds into the
+    /// sound (`Clip::settings_offset_secs`): its level keys and their
+    /// modifiers are read at the time into the sound less this, on that
+    /// clip's clock. A J cut's sound starts before its picture, whose
+    /// keys landed that much early. The fades stay the sound's own, from
+    /// its own start and end.
+    pub settings_offset_secs: f64,
 }
 
 impl Default for AudioClipShape {
@@ -293,6 +300,7 @@ impl Default for AudioClipShape {
             crossfade_in_secs: 0.0,
             crossfade_out_secs: 0.0,
             heard: None,
+            settings_offset_secs: 0.0,
         }
     }
 }
@@ -334,6 +342,7 @@ impl AudioClipShape {
             crossfade_in_secs: 0.0,
             crossfade_out_secs: 0.0,
             heard: None,
+            settings_offset_secs: 0.0,
         }
     }
 
@@ -770,7 +779,8 @@ fn snapshot_audio_track(
                     let (head_frames, tail_frames) = (frames(xfade.head_secs), frames(xfade.tail_secs));
                     // A multicam angle's sound, linked to its picture, is
                     // heard where the group's sound rule says.
-                    let shape = AudioClipShape::of(sound_settings_source(seq, clip), clip.duration().to_secs_f64())
+                    let settings = sound_settings_source(seq, clip);
+                    let shape = AudioClipShape { settings_offset_secs: clip.settings_offset_secs(settings), ..AudioClipShape::of(settings, clip.duration().to_secs_f64()) }
                         .with_crossfades(xfade)
                         .heard_over(seq.multicam_sound_spans(clip));
                     if shape.is_silent() {

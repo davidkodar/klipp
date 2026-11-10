@@ -916,6 +916,75 @@ mod clip_level_tests {
             assert!((got - want).abs() < 0.05, "{t} s: {got} dB, not {want}");
         }
     }
+
+    /// Picture A 0-2 s and B 2-4 s, each with level keys timed from its
+    /// picture's start; A's sound ends and B's starts at `cut` seconds
+    /// (1.5 a J cut, 2.5 an L cut, 2 a plain pair).
+    fn pair(cut: f64) -> (klipp_timeline::Sequence, klipp_media::MediaPool) {
+        use klipp_timeline::{Clip, Track, TrackKind};
+        let tc = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 24);
+        let mut pool = klipp_media::MediaPool::new();
+        let mut item = klipp_media::MediaItem::synthetic_for_test("/tmp/linked-sound-keys.wav".into(), None);
+        item.has_audio = true;
+        item.duration = tc(10.0);
+        let id = pool.add(item);
+        let mut a = Clip::media(id, tc(0.0), tc(2.0), tc(0.0), tc(2.0));
+        let mut b = Clip::media(id, tc(2.0), tc(4.0), tc(5.0), tc(7.0));
+        let mut a_sound = Clip::media(id, tc(0.0), tc(cut), tc(0.0), tc(cut));
+        let mut b_sound = Clip::media(id, tc(cut), tc(4.0), tc(3.0 + cut), tc(7.0));
+        a_sound.linked_clip_id = Some(a.id);
+        a.linked_clip_id = Some(a_sound.id);
+        b_sound.linked_clip_id = Some(b.id);
+        b.linked_clip_id = Some(b_sound.id);
+        klipp_core::keyframe::upsert_keyframe(&mut a.volume_keyframes, 1.0, 1.0);
+        klipp_core::keyframe::upsert_keyframe(&mut a.volume_keyframes, 2.0, 0.3);
+        klipp_core::keyframe::upsert_keyframe(&mut b.volume_keyframes, 0.0, 0.2);
+        klipp_core::keyframe::upsert_keyframe(&mut b.volume_keyframes, 1.0, 1.0);
+        let mut v = Track::new("V1", TrackKind::Video);
+        v.clips = vec![a, b];
+        let mut s = Track::new("A1", TrackKind::Audio);
+        s.clips = vec![a_sound, b_sound];
+        let mut seq = klipp_timeline::Sequence::new_default();
+        seq.tracks = vec![v, s];
+        (seq, pool)
+    }
+
+    /// A J cut's sound starts half a second before its picture: playback
+    /// hears the picture's keys at the picture's times, 0.2 at the cut and
+    /// full a second in.
+    #[test]
+    fn playback_hears_a_j_cuts_picture_keys_where_the_picture_puts_them() {
+        let (seq, _) = pair(1.5);
+        let b_sound = seq.tracks[1].clips[1].clone();
+        let at = |t: f64| super::clip_sound_at(&seq, &b_sound, t, 24.0).volume;
+        assert!((at(2.0) - 0.2).abs() < 1e-3, "at the cut: {}", at(2.0));
+        assert!((at(3.0) - 1.0).abs() < 1e-3, "a second in: {}", at(3.0));
+    }
+
+    /// Playback and the export hear a linked sound's level alike, every
+    /// 50 ms of it, for a J cut, an L cut and a plain pair, both sounds
+    /// of each: they read the picture's keys through one offset.
+    #[test]
+    fn playback_and_export_hear_a_linked_sounds_level_alike() {
+        for cut in [1.5, 2.5, 2.0] {
+            let (seq, pool) = pair(cut);
+            let snap = klipp_render::snapshot::SequenceSnapshot::from_sequence(&seq, &pool, &klipp_core::ExportSettings::default(), None, false, klipp_core::WorkingColorspace::Rec709Linear).unwrap();
+            let fps = snap.fps;
+            let exported: Vec<_> = snap.audio_tracks.iter().flat_map(|t| t.clips.iter()).collect();
+            assert_eq!(exported.len(), 2, "cut at {cut} s: both sounds");
+            for sound in &seq.tracks[1].clips {
+                let start = sound.timeline_in.to_secs_f64();
+                let out = exported.iter().find(|c| (c.span_secs(fps).0 - start).abs() < 1e-6).expect("in the export");
+                let mut t = start;
+                while t < sound.timeline_out.to_secs_f64() {
+                    let heard = super::clip_sound_at(&seq, sound, t, fps).volume;
+                    let rendered = klipp_render::audio_mixdown::levels_at(&out.shape, t - start, t, fps).0;
+                    assert!((heard - rendered).abs() < 1e-4, "cut at {cut} s, sound from {start} s, at {t:.2} s: playback {heard}, export {rendered}");
+                    t += 0.05;
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -5682,7 +5751,10 @@ struct ClipSound {
 
 fn clip_sound_at(seq: &klipp_timeline::Sequence, audio_clip: &klipp_timeline::Clip, heard_at: f64, fps: f64) -> ClipSound {
     let at = |clip: &klipp_timeline::Clip| {
-        let clip_time = (heard_at - clip.timeline_in.to_secs_f64()).max(0.0);
+        // On the clock of the clip holding the settings, as the export's
+        // mix reads them (`Clip::settings_offset_secs`).
+        let into_sound = heard_at - audio_clip.timeline_in.to_secs_f64();
+        let clip_time = (into_sound - audio_clip.settings_offset_secs(clip)).max(0.0);
         let ctx = klipp_core::EvalContext {
             clip_time_secs: clip_time,
             clip_duration_secs: clip.source_out.to_secs_f64() - clip.source_in.to_secs_f64(),
