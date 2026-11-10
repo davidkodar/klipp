@@ -780,6 +780,8 @@ impl KlippApp {
                     self.layout.active_browser_tab = *tab;
                 }
                 self.set_browser_visible(true);
+                // Kept open in a window too narrow for both.
+                self.state.narrow_side = Some(crate::state::SidePanel::Browser);
             }
         }
     }
@@ -809,6 +811,7 @@ impl KlippApp {
                     self.layout.active_inspector_tab = *tab;
                 }
                 self.set_inspector_visible(true);
+                self.state.narrow_side = Some(crate::state::SidePanel::Inspector);
             }
         }
     }

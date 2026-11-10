@@ -3056,6 +3056,9 @@ pub struct AppState {
     /// When set, the browser panel should scroll to this media item.
     pub reveal_in_browser: Option<klipp_core::MediaId>,
     pub show_inspector_panel: bool,
+    /// The side panel last opened from its rail: in a window too narrow
+    /// for both, it is the one kept open, the other folded.
+    pub narrow_side: Option<SidePanel>,
 
     /// True when any egui popup/menu/combobox is open. Set at start of each frame.
     pub modal_or_popup_open: bool,
@@ -5509,6 +5512,7 @@ impl Default for AppState {
             show_browser_panel: true,
             reveal_in_browser: None,
             show_inspector_panel: true,
+            narrow_side: None,
             modal_or_popup_open: false,
             menu_open_at_frame_start: false,
             show_preferences: false,
@@ -8841,4 +8845,11 @@ mod clip_audio_pair_tests {
         klipp_document::apply::DocumentView { sequences: &mut state.sequences, active: state.active_sequence_idx, media_pool: &mut state.media_pool, fps: &mut state.fps }.apply_forward(&entry.command);
         assert_eq!(gains(&state), [2.0, 2.0], "redone on both");
     }
+}
+
+/// One of the editor's two side panels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SidePanel {
+    Browser,
+    Inspector,
 }
