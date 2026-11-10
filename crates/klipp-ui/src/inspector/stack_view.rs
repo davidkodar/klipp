@@ -721,16 +721,17 @@ pub fn display_name(graph: &Graph, addr: &NodePath, label: &str, is_group: bool)
 }
 
 /// What a Chroma Key's card says when its key colour is so near grey that
-/// white and greys key out with it: the key measures colour alone (its
-/// CbCr), and a neutral pixel sits at its centre, `tolerance + soft_edge`
-/// from the key or nearer. A dark navy logo's white letters went with its
-/// blue at the default 0.2. `None` for a key colour clear of grey.
+/// greys key out with it: a neutral pixel as light as the key sits
+/// `tolerance + soft_edge` from it or nearer, its colour (CbCr) alone
+/// telling them apart there. Lighter and darker ones, white and black,
+/// are kept by the key's luma term (`CHROMA_KEY_LUMA_WEIGHT`). `None` for
+/// a key colour clear of grey.
 pub(crate) fn greys_keyed_note(key_color: [u8; 3], tolerance: f32, soft_edge: f32) -> Option<&'static str> {
     let [r, g, b] = key_color.map(f32::from);
     let cb = -0.168736 * r - 0.331264 * g + 0.5 * b;
     let cr = 0.5 * r - 0.418688 * g - 0.081312 * b;
     let from_grey = (cb * cb + cr * cr).sqrt() / 255.0;
-    (from_grey < tolerance + soft_edge).then_some("This key colour is close to grey: white, black and greys key out with it. Lower the Tolerance, or key a more saturated colour.")
+    (from_grey < tolerance + soft_edge).then_some("This key colour is close to grey: greys about as light as it key out with it. Lower the Tolerance, or key a more saturated colour.")
 }
 
 /// What the Placement row says: the renderer's cut, or pending.
