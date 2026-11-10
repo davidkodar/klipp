@@ -1544,6 +1544,11 @@ pub enum AppCommand {
         new_a_timeline_out: Timecode,
         new_b_source_in: Timecode,
         new_b_timeline_in: Timecode,
+        /// The two clips' linked partners roll with them: Linked on and
+        /// Alt not held when the roll began, as an edge trim takes it.
+        /// They always did, so a roll on a sound cut moved its picture's
+        /// cut with Linked off.
+        linked: bool,
     },
     SelectClip(Option<ClipId>),
 
