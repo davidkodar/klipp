@@ -21,6 +21,9 @@ use klipp_nodes::{NodeKind, NodeParams};
 /// What a Qualifier beside the chain says until its colour is set.
 pub(crate) const QUALIFIER_UNSET: &str = "Set Hue Center to the colour to key, or key it on the Colour page with + Qualifier";
 
+/// What a drawn shape's card says of its points.
+pub(crate) const ROTO_POINTS: &str = "Its points are moved in the viewer: pick this shape, then the Mask Tool in the timeline's toolbar";
+
 /// The node `addr` names when it is a matte beside the chain: a grade
 /// node at the picture's top, outside its grade group, with its kind and
 /// settings as a grade run reads them.
@@ -49,6 +52,11 @@ pub(crate) fn show(ui: &mut egui::Ui, theme: &KlippTheme, clip: &klipp_timeline:
     // reaches only a grade's own keys, so say what sets this one.
     if kind == NodeKind::Qualifier && params.qualifier.as_ref().is_none_or(|q| !q.enabled) {
         ui.add(egui::Label::new(egui::RichText::new(QUALIFIER_UNSET).size(10.0).color(theme.text_dim)).wrap());
+    }
+    // A drawn shape has no numbers for its points: they are moved in the
+    // viewer, which a walk didn't find.
+    if kind == NodeKind::Mask && params.masks.as_ref().is_some_and(|m| m.masks.iter().any(|m| matches!(m.shape, klipp_core::MaskShape::Bezier { .. }))) {
+        ui.add(egui::Label::new(egui::RichText::new(ROTO_POINTS).size(10.0).color(theme.text_dim)).wrap());
     }
     // The rows read the settings as a grade node's entry holds them.
     let entry = serde_json::json!({ "kind": kind, "params": params });
@@ -99,7 +107,7 @@ pub(crate) fn show(ui: &mut egui::Ui, theme: &KlippTheme, clip: &klipp_timeline:
 /// A grade editor's command for the matte, as its path's: its masks
 /// written whole, and its drag gesture as the path's. What the grade
 /// alone answers (a shape's keys, its tracking) is left out.
-fn by_path(cmd: AppCommand, addr: &NodePath) -> Option<AppCommand> {
+pub(crate) fn by_path(cmd: AppCommand, addr: &NodePath) -> Option<AppCommand> {
     let key = || klipp_graph_format::ParamKey::from("masks");
     Some(match cmd {
         AppCommand::SetNodeMasks { masks, .. } => whole(addr, "masks", &masks)?,
