@@ -2082,7 +2082,7 @@ fn show_transform_link_section(
                     // list; for `Tracker { ... }` we enumerate
                     // tracker targets and find the matching one.
                     let tracker_candidates = state.sequences.get(active_idx)
-                        .map(crate::inspector::tracker_picker::enumerate_tracker_targets)
+                        .map(|seq| crate::inspector::tracker_picker::enumerate_tracker_targets(seq, &|c| clip_name(state, c)))
                         .unwrap_or_default();
                     let current_label = match clip.transform_link.as_ref() {
                         None => "(none)".to_string(),
@@ -2171,7 +2171,7 @@ fn show_transform_link_section(
                                         None => (0u8, true, true, true, true),
                                     };
                                     crate::inspector::tracker_picker::tracker_menu_items(
-                                        ui, seq,
+                                        ui, seq, &|c| clip_name(state, c),
                                         |hid, pi| cur.as_ref().is_some_and(|tl| match &tl.target {
                                             klipp_timeline::TransformLinkTarget::Tracker { clip_id, point_index } =>
                                                 *clip_id == hid && *point_index == pi,
@@ -2443,7 +2443,7 @@ fn show_hyperzoom_section(
                 let tracker_label = match tracker_target {
                     None => "(static focal — no tracker)".to_string(),
                     Some((hid, pi)) => state.sequences.get(state.active_sequence_idx)
-                        .and_then(|seq| crate::inspector::tracker_picker::enumerate_tracker_targets(seq)
+                        .and_then(|seq| crate::inspector::tracker_picker::enumerate_tracker_targets(seq, &|c| clip_name(state, c))
                             .into_iter().find(|(c, p, _)| *c == hid && *p == pi)
                             .map(|(_, _, l)| l))
                         .unwrap_or_else(|| "(missing tracker)".to_string()),
@@ -2462,7 +2462,7 @@ fn show_hyperzoom_section(
                                     ui.ctx().data_mut(|d| d.insert_temp::<Option<(klipp_core::ClipId, u32)>>(tracker_focal_id, None));
                                 }
                             if let Some(seq) = state.sequences.get(state.active_sequence_idx) {
-                                let trackers = crate::inspector::tracker_picker::enumerate_tracker_targets(seq);
+                                let trackers = crate::inspector::tracker_picker::enumerate_tracker_targets(seq, &|c| clip_name(state, c));
                                 if !trackers.is_empty() {
                                     ui.label(egui::RichText::new("── Trackers ──").size(10.0).color(theme.text_dim));
                                 }
@@ -2473,7 +2473,7 @@ fn show_hyperzoom_section(
                                 // cheap to clone — Arc inside).
                                 let ctx_for_pick = ui.ctx().clone();
                                 crate::inspector::tracker_picker::tracker_menu_items(
-                                    ui, seq,
+                                    ui, seq, &|c| clip_name(state, c),
                                     |hid, pi| tracker_target == Some((hid, pi)),
                                     |hid, pi, _label| {
                                         ctx_for_pick.data_mut(|d| d.insert_temp::<Option<(klipp_core::ClipId, u32)>>(tracker_focal_id, Some((hid, pi))));
@@ -3305,6 +3305,17 @@ fn matte_channel_to_u8(ch: klipp_nodes::params::MatteChannel) -> u8 {
 /// layer that `keep` allows, each named as the timeline names it, after
 /// its track: "Video 3 · logo.png". Two that would read alike also say
 /// where they start.
+/// A clip as the timeline names it: its own name, else its media's file
+/// name, else a title's text.
+fn clip_name(state: &AppState, c: &klipp_timeline::Clip) -> String {
+    let media = c.media_id().and_then(|m| state.media_pool.get(&m)).map(|m| m.filename.clone());
+    let fallback = match &c.kind {
+        klipp_timeline::ClipKind::Title(td) => format!("Title: {}", crate::ui_util::elide(&td.text(), 24)),
+        _ => media.unwrap_or_else(|| "Clip".to_owned()),
+    };
+    c.label(&fallback).to_owned()
+}
+
 fn clip_choices(state: &AppState, clip_id: klipp_core::ClipId, keep: impl Fn(&klipp_timeline::Sequence, &klipp_timeline::Clip) -> bool) -> Vec<(klipp_core::ClipId, String)> {
     let seq = state.sequence();
     let mut out: Vec<(klipp_core::ClipId, String, klipp_core::Timecode)> = Vec::new();
@@ -3314,12 +3325,7 @@ fn clip_choices(state: &AppState, clip_id: klipp_core::ClipId, keep: impl Fn(&kl
             if c.id == clip_id || matches!(c.kind, klipp_timeline::ClipKind::AdjustmentLayer) || !keep(seq, c) {
                 continue;
             }
-            let media = c.media_id().and_then(|m| state.media_pool.get(&m)).map(|m| m.filename.clone());
-            let fallback = match &c.kind {
-                klipp_timeline::ClipKind::Title(td) => format!("Title: {}", crate::ui_util::elide(&td.text(), 24)),
-                _ => media.unwrap_or_else(|| "Clip".to_owned()),
-            };
-            out.push((c.id, format!("{track_label} · {}", c.label(&fallback)), c.timeline_in));
+            out.push((c.id, format!("{track_label} · {}", clip_name(state, c)), c.timeline_in));
         }
     }
     let labels: Vec<String> = out.iter().map(|(_, l, _)| l.clone()).collect();
