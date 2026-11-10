@@ -503,6 +503,32 @@ mod tests {
         }
     }
 
+    /// A left aligned layer moved snaps by the box it is drawn with,
+    /// around its text: its right edge, brought to within a few points of
+    /// the frame's centre line, lands on it. The snap measured a box
+    /// centred on the layer's anchor, half the text to the left of the
+    /// one drawn, so its drawn right edge never snapped.
+    #[test]
+    fn a_left_aligned_layer_snaps_by_the_box_drawn() {
+        let (mut v, id) = viewer(&[("Hello", (0.2, 0.35), 0.0)]);
+        {
+            let clip = v.state.sequences[0].tracks[0].find_clip_mut(id).unwrap();
+            let klipp_timeline::ClipKind::Title(td) = &mut clip.kind else { unreachable!() };
+            let TitleObjectContent::TextBox(tb) = &mut td.objects[0].content else { unreachable!() };
+            tb.alignment = klipp_timeline::TextAlignment::Left;
+        }
+        v.frame(Vec::new());
+        let seen = shown(&v, id, 0).transform;
+        let right = seen.center.x + seen.size.x * 0.5;
+        assert!(seen.center.x > 0.2 + 1e-3, "the box is round the text, right of the anchor: {:?}", seen.center);
+        let w = v.image_rect().width();
+        let grab = screen(&v, seen.center.x + seen.size.x * 0.25, 0.35);
+        v.drag(grab, grab + egui::vec2((0.5 - right) * w - 3.0, 0.0));
+        let t = layer(&v, id, 0).transform;
+        assert!(close(t.center.x, 0.2 + (0.5 - right)), "its drawn right edge on the centre line: anchor {} for {}", t.center.x, 0.2 + (0.5 - right));
+        assert_eq!(steps(&v), 1);
+    }
+
     /// An edge drawn to within a few points of another layer's edge
     /// lands on it.
     #[test]

@@ -67,7 +67,7 @@ fn a_browser_add_puts_its_effects_after_the_stack() {
         let mut run = Run::new(fixture(&base));
         let targets = crate::effect_targets::Targets { clips: vec![run.clip], skipped: 0 };
         let before = run.clip().picture_v2().unwrap();
-        match crate::effect_targets::all_or_none(&targets, |id| crate::browser::effects_tab::effect_commands_in(&run.state, &entry.source, id)) {
+        match crate::effect_targets::all_or_none(&targets, &entry.name, |id| crate::browser::effects_tab::effect_commands_in(&run.state, &entry.source, id)) {
             Ok(cmds) => cmds.into_iter().for_each(|cmd| run.apply(cmd)),
             Err(why) => differ.push(format!("{}: refused ({why})", entry.name)),
         }
@@ -126,8 +126,9 @@ fn a_look_on_two_clips_is_one_step_by_path() {
     let pictures = |r: &Run| ids.map(|id| r.state.sequences[0].all_clips().find(|c| c.id == id).unwrap().picture_v2().unwrap());
     let lists = |r: &Run| ids.map(|id| test_clip::effects(r.state.sequences[0].all_clips().find(|c| c.id == id).unwrap()));
     let before = pictures(&run);
-    let cmds = crate::effect_targets::all_or_none(&targets, |id| crate::browser::effects_tab::effect_commands_in(&run.state, &chain, id)).unwrap();
-    assert!(cmds.iter().all(|c| matches!(c, AppCommand::AddNodeAt { .. } | AppCommand::BeginHistoryBatch | AppCommand::EndHistoryBatch)), "{name}: by path: {cmds:?}");
+    let cmds = crate::effect_targets::all_or_none(&targets, &name, |id| crate::browser::effects_tab::effect_commands_in(&run.state, &chain, id)).unwrap();
+    assert!(cmds.iter().all(|c| matches!(c, AppCommand::AddNodeAt { .. } | AppCommand::BeginHistoryBatch | AppCommand::EndHistoryBatchAs { .. })), "{name}: by path: {cmds:?}");
+    assert!(matches!(cmds.last(), Some(AppCommand::EndHistoryBatchAs { label }) if *label == format!("Add {name} to 2 Clips")), "named for the look");
     for cmd in cmds {
         run.apply(cmd);
     }
@@ -605,4 +606,186 @@ fn a_frei0r_effect_is_added_only_by_an_installed_plug_ins_id() {
         _ => None,
     }).collect();
     assert_eq!(added, ["frei0r:/usr/lib/frei0r-1/klipp3200ui.so:Klipp3200Ui"], "added as the installed plug-in's own id");
+}
+
+/// A clip whose blur is masked by a Window: its picture is held as its
+/// graph. The Video tab's fields still edit its placement: they sent the
+/// effect list's commands, which a graph-held clip refuses, so a typed
+/// Opacity or Position did nothing.
+fn masked() -> klipp_timeline::Clip {
+    let mut clip = fixture(&BuiltinEffect::GaussianBlur { radius: 3.0 });
+    crate::panels::node_graph_v2::masked_by_a_window(&mut clip);
+    clip
+}
+
+fn mask_kept(run: &Run) -> bool {
+    let c = run.clip();
+    c.is_picture_truth() && c.picture_v2().unwrap().picture.graph.edges.iter().any(|e| e.to.1.as_str() == "mask")
+}
+
+/// Types `text` into the Video tab's row `label` and enters it.
+fn type_into(run: &mut Run, label: &str, text: &str) {
+    run.frame(Vec::new(), egui::Modifiers::NONE);
+    let (_, at) = run.row(label).unwrap_or_else(|| panic!("the Video tab's {label} row"));
+    for pressed in [true, false, true, false] {
+        run.button(at, egui::PointerButton::Primary, pressed);
+    }
+    run.frame(Vec::new(), egui::Modifiers::NONE);
+    run.key(egui::Key::A, egui::Modifiers::COMMAND);
+    run.frame(vec![egui::Event::Text(text.into())], egui::Modifiers::NONE);
+    run.key(egui::Key::Enter, egui::Modifiers::NONE);
+    run.frame(Vec::new(), egui::Modifiers::NONE);
+}
+
+#[test]
+fn a_masked_clip_takes_a_typed_opacity_and_position() {
+    for (label, text, key, want) in [("Opacity", "0.5", "opacity", 0.5f32), ("Position X", "120", "pos_x", 120.0)] {
+        let mut run = Run::new(masked());
+        run.property = true;
+        run.timeline = true;
+        let before = run.clip().picture_v2().unwrap();
+        type_into(&mut run, label, text);
+        let got = match key {
+            "opacity" => Some(crate::inspector::placement_by_path::opacity(run.clip())),
+            _ => Some(crate::inspector::placement_by_path::placement(run.clip()).position_x),
+        };
+        assert!(got.is_some_and(|v| (v - want).abs() < 1e-3), "{label}: {got:?}, unapplied {:?}", run.unapplied);
+        assert!(mask_kept(&run), "{label}: the blur is still masked");
+        assert_eq!(run.state.active_history().undo_count(), 1, "{label}: one step");
+        assert!(run.step(false), "an undo");
+        assert_eq!(run.clip().picture_v2().unwrap(), before, "{label}: the undo puts the clip back");
+        assert!(run.unapplied.is_empty(), "{label}: {:?}", run.unapplied);
+    }
+}
+
+/// A drag on a masked clip's Opacity is one step, with no drag left open.
+#[test]
+fn a_masked_clips_opacity_drag_is_one_step() {
+    let mut run = Run::new(masked());
+    run.property = true;
+    run.timeline = true;
+    run.frame(Vec::new(), egui::Modifiers::NONE);
+    let (_, at) = run.row("Opacity").expect("the Video tab's Opacity row");
+    run.button(at, egui::PointerButton::Primary, true);
+    for dx in [-6.0, -12.0, -18.0, -24.0] {
+        run.frame(vec![egui::Event::PointerMoved(at + egui::vec2(dx, 0.0))], egui::Modifiers::NONE);
+    }
+    run.button(at + egui::vec2(-24.0, 0.0), egui::PointerButton::Primary, false);
+    run.frame(Vec::new(), egui::Modifiers::NONE);
+    let opacity = crate::inspector::placement_by_path::opacity(run.clip());
+    assert!(opacity < 0.99, "the drag lowered it: {opacity}, unapplied {:?}", run.unapplied);
+    assert!(mask_kept(&run));
+    assert_eq!(run.state.active_history().undo_count(), 1, "one step");
+    assert!(!run.state.any_drag_in_progress(), "no drag left open");
+    assert!(run.unapplied.is_empty(), "{:?}", run.unapplied);
+}
+
+
+
+/// The stack's "All effects" switch turns every one of the clip's
+/// effects off, as one undo step, and on again, as one; the undo puts
+/// each back as it was.
+#[test]
+fn the_all_effects_switch_turns_every_effect_off_and_on() {
+    let t = |s| klipp_core::RationalTime::from_secs_f64(s, 24);
+    let clip = klipp_timeline::test_clip::TestClip::of(klipp_timeline::Clip::media(klipp_core::MediaId::new(), t(0.0), t(2.0), t(0.0), t(2.0)))
+        .effect(BuiltinEffect::GaussianBlur { radius: 3.0 })
+        .effect(BuiltinEffect::Sharpen { amount: 0.5 })
+        .effect(BuiltinEffect::Opacity { value: 0.5 })
+        .build();
+    let mut run = Run::new(clip);
+    let opacity = |run: &Run| crate::inspector::placement_by_path::opacity(run.clip());
+    let on = |run: &Run| -> Vec<bool> {
+        let graph = run.clip().picture_v2().unwrap().picture.graph.clone();
+        ["gaussian_blur", "sharpen"].iter().map(|tag| graph.nodes.iter().find(|n| klipp_graph_lift::effect_params::tag(n) == Some(tag)).unwrap().enabled).collect()
+    };
+    assert_eq!(on(&run), [true, true]);
+    assert!(run.click_last("All effects"), "the switch is drawn");
+    assert_eq!(on(&run), [false, false], "all off: {:?}", run.unapplied);
+    assert_eq!(opacity(&run), 0.5, "the clip's own opacity is not an effect to take off");
+    assert_eq!(run.state.active_history().undo_count(), 1, "one step");
+    assert_eq!(run.state.active_history().undo_label(), Some("Turn Effects Off"));
+    assert!(run.click_last("All effects"));
+    assert_eq!(on(&run), [true, true], "all on again");
+    assert_eq!(run.state.active_history().undo_count(), 2, "one step");
+    assert!(run.step(false), "an undo");
+    assert_eq!(on(&run), [false, false], "the undo takes back the switch on");
+    assert!(run.unapplied.is_empty(), "{:?}", run.unapplied);
+}
+
+/// Blur, sharpen and vignette on a clip; `sharpen_off` has the sharpen off
+/// of its own to begin with.
+fn three_effects(sharpen_off: bool) -> Run {
+    let t = |s| klipp_core::RationalTime::from_secs_f64(s, 24);
+    let mut clip = klipp_timeline::test_clip::TestClip::of(klipp_timeline::Clip::media(klipp_core::MediaId::new(), t(0.0), t(2.0), t(0.0), t(2.0)))
+        .effect(BuiltinEffect::GaussianBlur { radius: 3.0 })
+        .effect(BuiltinEffect::Sharpen { amount: 0.5 })
+        .effect(BuiltinEffect::Vignette { amount: 0.4, size: 0.5, roundness: 0.5, softness: 0.5 })
+        .build();
+    if sharpen_off {
+        let id = clip.id;
+        let mut s = crate::state::AppState::default();
+        s.sequences[0].tracks[0].clips.push(clip.clone());
+        let graph = clip.picture_v2().unwrap().picture.graph.clone();
+        let sharpen = graph.nodes.iter().find(|n| klipp_graph_lift::effect_params::tag(n) == Some("sharpen")).unwrap().id;
+        let addr = klipp_graph_format::path::NodePath::new(klipp_graph_format::path::Root::Clip { clip: id.0 }, [sharpen]);
+        s.path_command(&AppCommand::SetNodeEnabledAt { addr, enabled: false });
+        clip = s.sequences[0].all_clips().find(|c| c.id == id).unwrap().clone();
+    }
+    Run::new(clip)
+}
+
+fn effects_on(run: &Run) -> Vec<bool> {
+    let graph = run.clip().picture_v2().unwrap().picture.graph.clone();
+    ["gaussian_blur", "sharpen", "vignette"].iter().map(|tag| graph.nodes.iter().find(|n| klipp_graph_lift::effect_params::tag(n) == Some(tag)).unwrap().enabled).collect()
+}
+
+/// An effect the person had off of their own stays off through the All
+/// effects switch's off and on: switching on brings back only what the
+/// switch turned off.
+#[test]
+fn the_all_effects_switch_keeps_an_effect_off_that_was_off() {
+    let mut run = three_effects(true);
+    assert_eq!(effects_on(&run), [true, false, true]);
+    assert!(run.click_last("All effects"));
+    assert_eq!(effects_on(&run), [false, false, false], "all off: {:?}", run.unapplied);
+    assert!(run.click_last("All effects"));
+    assert_eq!(effects_on(&run), [true, false, true], "the sharpen stays off");
+    assert!(run.clip().effects_switched_off.is_empty(), "the switch-on forgets the list");
+    assert!(run.unapplied.is_empty(), "{:?}", run.unapplied);
+}
+
+/// One switched on by hand while all were off stays on, and the switch
+/// still reads off until it is switched on.
+#[test]
+fn an_effect_switched_on_by_hand_meanwhile_stays_on() {
+    let mut run = three_effects(false);
+    assert!(run.click_last("All effects"));
+    // The vignette on again by hand, by its own switch.
+    let graph = run.clip().picture_v2().unwrap().picture.graph.clone();
+    let vignette = graph.nodes.iter().find(|n| klipp_graph_lift::effect_params::tag(n) == Some("vignette")).unwrap().id;
+    let clip = run.clip;
+    run.apply(AppCommand::SetNodeEnabledAt { addr: klipp_graph_format::path::NodePath::new(klipp_graph_format::path::Root::Clip { clip: clip.0 }, [vignette]), enabled: true });
+    assert_eq!(effects_on(&run), [false, false, true]);
+    assert!(!run.clip().effects_switched_off.is_empty(), "the switch still reads off");
+    assert!(run.click_last("All effects"));
+    assert_eq!(effects_on(&run), [true, true, true], "the two it turned off come back; the vignette stays on");
+    assert!(run.unapplied.is_empty(), "{:?}", run.unapplied);
+}
+
+/// Undo and redo put the remembered list back with the switches.
+#[test]
+fn undo_and_redo_bring_the_switch_back_with_its_list() {
+    let mut run = three_effects(true);
+    assert!(run.click_last("All effects"));
+    let remembered = run.clip().effects_switched_off.clone();
+    assert_eq!(remembered.len(), 2, "the blur and the vignette, not the sharpen");
+    assert!(run.step(false));
+    assert_eq!(effects_on(&run), [true, false, true]);
+    assert!(run.clip().effects_switched_off.is_empty(), "undone, nothing remembered");
+    assert!(run.step(true));
+    assert_eq!(effects_on(&run), [false, false, false]);
+    assert_eq!(run.clip().effects_switched_off, remembered, "redone, remembered again");
+    assert!(run.click_last("All effects"));
+    assert_eq!(effects_on(&run), [true, false, true], "and the switch-on after it still keeps the sharpen off");
 }
