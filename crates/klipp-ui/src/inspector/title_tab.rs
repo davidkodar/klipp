@@ -329,8 +329,11 @@ const RECENT_PICKS: usize = 6;
 
 /// The body of an effect picker (#596), one for In, Out and Loops: a
 /// search field, the groups as pills (All, Recent once there is any,
-/// then each group), and the matching entries as live chips, three to a
-/// row, scrolling. `draw` draws entry `i`'s chip; the entry clicked comes
+/// then each group), and the matching entries as live chips, as many to a
+/// row as the inspector has room for, three at most, scrolling: three
+/// fixed ran past a narrow inspector's edge, the third cut off. Each
+/// group and search scrolls from its top: one scroll for all showed a
+/// group's second row only, its first above the view. `draw` draws entry `i`'s chip; the entry clicked comes
 /// back and goes to the front of the picker's Recent, kept under
 /// `recent_key` for the session. A row of buttons, one per effect, did
 /// not scale past a handful and duplicated the pickers.
@@ -349,8 +352,8 @@ fn gallery_body(
     let mut recent: Vec<String> = ui.memory(|m| m.data.get_temp(recent_id)).unwrap_or_default();
     recent.retain(|k| entries.iter().any(|e| &e.key == k));
 
-    ui.set_min_width(3.0 * GALLERY_CHIP.x + 2.0 * 8.0 + 16.0);
     ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0);
+    let columns = (((ui.available_width() + 8.0) / (GALLERY_CHIP.x + 8.0)).floor() as usize).clamp(1, 3);
     let field = ui.add(egui::TextEdit::singleline(&mut search).hint_text("Search").desired_width(f32::INFINITY));
     if !ui.memory(|m| m.data.get_temp::<bool>(focus_id).unwrap_or(false)) {
         field.request_focus();
@@ -388,11 +391,11 @@ fn gallery_body(
     .filter(|&i| needle.is_empty() || entries[i].label.to_lowercase().contains(&needle) || entries[i].group.to_lowercase().contains(&needle))
     .collect();
     let mut picked = None;
-    egui::ScrollArea::vertical().max_height(330.0).auto_shrink([false, true]).show(ui, |ui| {
+    egui::ScrollArea::vertical().id_salt((group.clone(), needle.clone())).max_height(330.0).auto_shrink([false, true]).show(ui, |ui| {
         if shown.is_empty() {
             ui.label(egui::RichText::new("Nothing matches").size(crate::theme::type_scale::CAPTION).color(theme.text_dim));
         }
-        for row in shown.chunks(3) {
+        for row in shown.chunks(columns) {
             ui.horizontal(|ui| {
                 for &i in row {
                     let resp = draw(ui, i, false);
@@ -437,6 +440,7 @@ fn set_open_picker(ui: &egui::Ui, id: Option<egui::Id>) {
     ui.memory_mut(|m| {
         for p in [was, id].into_iter().flatten() {
             m.data.remove::<bool>(p.with("body").with("focused"));
+            m.data.remove::<bool>(p.with("shown"));
         }
         m.data.insert_temp(egui::Id::new("title_open_picker"), id);
     });
@@ -502,6 +506,14 @@ fn inline_picker(
             ui.add_space(4.0);
             picked = gallery_body(ui, theme, id.with("body"), recent_key, entries, &mut draw);
         });
+    // Opened, the inspector scrolls to show it whole, or from its top
+    // when it is taller than the view: opened near the inspector's foot,
+    // it ran below the window, its names unread.
+    let shown_id = id.with("shown");
+    if !ui.memory(|m| m.data.get_temp::<bool>(shown_id).unwrap_or(false)) {
+        ui.scroll_to_rect(frame.response.rect, if frame.response.rect.height() > ui.clip_rect().height() { Some(egui::Align::TOP) } else { None });
+        ui.memory_mut(|m| m.data.insert_temp(shown_id, true));
+    }
     if !ui.rect_contains_pointer(frame.response.rect) {
         ui.memory_mut(|m| m.data.remove::<Option<usize>>(hovered_id));
     }
@@ -1726,6 +1738,73 @@ mod gallery_tests {
         run(vec![egui::Event::Text("slam".into())], &mut slot);
         let texts = run(Vec::new(), &mut slot);
         assert!(find(&texts, "Slam").is_some() && find(&texts, "Fly from left").is_none(), "reopened, typing searches again");
+    }
+
+    /// In a narrow inspector the chips take the rows they need, every one
+    /// inside it: three to a row ran past its edge, the third cut off.
+    #[test]
+    fn the_chips_stay_inside_a_narrow_inspector() {
+        let ctx = egui::Context::default();
+        let list = entries();
+        let rects = std::cell::RefCell::new(Vec::new());
+        let mut panel = egui::Rect::NOTHING;
+        let _ = ctx.run(egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(260.0, 800.0))), ..Default::default() }, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                panel = ui.clip_rect();
+                gallery_body(ui, &KlippTheme::default(), egui::Id::new("narrow"), "narrow", &list, |ui, _, _| {
+                    let (rect, resp) = ui.allocate_exact_size(super::GALLERY_CHIP, egui::Sense::click());
+                    rects.borrow_mut().push(rect);
+                    resp
+                });
+            });
+        });
+        let rects = rects.into_inner();
+        assert_eq!(rects.len(), list.len(), "every chip drawn");
+        assert!(rects.iter().all(|r| r.right() <= panel.right() + 0.5), "inside {panel:?}: {rects:?}");
+        assert!(rects.iter().any(|r| r.top() > rects[0].bottom()), "on more than one row");
+    }
+
+    /// Opened at the foot of a long inspector, the picker is scrolled into
+    /// view: its search field and its chips are on the screen.
+    #[test]
+    fn a_picker_opened_at_the_foot_is_scrolled_into_view() {
+        use super::{motion_row, ChipSubject, Direction, TitleChips};
+        let ctx = egui::Context::default();
+        let mut chips = TitleChips::default();
+        let subject = ChipSubject::Text(klipp_timeline::TextBox { text: "Credits".into(), ..Default::default() });
+        let fx = klipp_timeline::LayerFx::default();
+        let mut slot: Option<klipp_timeline::Motion> = None;
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(420.0, 500.0));
+        // A clock: the scroll moves over a moment.
+        let mut clock = 0.0;
+        let mut run = |events: Vec<egui::Event>| -> Vec<(String, egui::Pos2)> {
+            clock += 0.1;
+            let out = ctx.run(egui::RawInput { screen_rect: Some(screen), time: Some(clock), events, ..Default::default() }, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    egui::ScrollArea::vertical().show(ui, |ui| {
+                        ui.allocate_space(egui::vec2(ui.available_width(), 420.0));
+                        motion_row(ui, &KlippTheme::default(), &mut chips, &subject, &fx, Direction::Enter, &mut slot);
+                        ui.allocate_space(egui::vec2(ui.available_width(), 300.0));
+                    });
+                });
+            });
+            out.shapes.iter().filter_map(|s| match &s.shape {
+                egui::Shape::Text(t) if s.clip_rect.intersects(egui::Rect::from_min_size(t.pos, t.galley.size())) => Some((t.galley.text().to_string(), t.pos + t.galley.size() / 2.0)),
+                _ => None,
+            }).collect()
+        };
+        let texts = run(Vec::new());
+        let field = texts.iter().find(|(t, _)| t.starts_with("Choose entrance")).expect("the field").1;
+        assert!(screen.contains(field), "the field is at the foot, on screen: {field:?}");
+        let click = |pressed: bool| egui::Event::PointerButton { pos: field, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+        run(vec![egui::Event::PointerMoved(field), click(true)]);
+        run(vec![click(false)]);
+        let mut texts = Vec::new();
+        for _ in 0..20 {
+            texts = run(Vec::new());
+        }
+        let on = |name: &str| texts.iter().find(|(t, _)| t == name).is_some_and(|(_, p)| screen.contains(*p));
+        assert!(on("Fade") && on("Focus"), "its first chips are on screen, names and all: {texts:?}");
     }
 
     /// #596: search narrows the picker by name or group, a group's pill

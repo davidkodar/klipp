@@ -1,7 +1,7 @@
 //! FCPXML export (version 1.9) for interchange with Final Cut Pro and other NLEs.
 //!
 //! Generates a valid FCPXML document from a Klipp sequence with media references,
-//! clip timing, transitions, and markers.
+//! clip timing, speed, constant volume, titles and markers on every track.
 
 use klipp_core::{MediaId, RationalTime};
 use klipp_media::MediaPool;

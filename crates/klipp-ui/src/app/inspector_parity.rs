@@ -608,6 +608,80 @@ fn a_frei0r_effect_is_added_only_by_an_installed_plug_ins_id() {
     assert_eq!(added, ["frei0r:/usr/lib/frei0r-1/klipp3200ui.so:Klipp3200Ui"], "added as the installed plug-in's own id");
 }
 
+/// A clip whose blur is masked by a Window: its picture is held as its
+/// graph. The Video tab's fields still edit its placement: they sent the
+/// effect list's commands, which a graph-held clip refuses, so a typed
+/// Opacity or Position did nothing.
+fn masked() -> klipp_timeline::Clip {
+    let mut clip = fixture(&BuiltinEffect::GaussianBlur { radius: 3.0 });
+    crate::panels::node_graph_v2::masked_by_a_window(&mut clip);
+    clip
+}
+
+fn mask_kept(run: &Run) -> bool {
+    let c = run.clip();
+    c.is_picture_truth() && c.picture_v2().unwrap().picture.graph.edges.iter().any(|e| e.to.1.as_str() == "mask")
+}
+
+/// Types `text` into the Video tab's row `label` and enters it.
+fn type_into(run: &mut Run, label: &str, text: &str) {
+    run.frame(Vec::new(), egui::Modifiers::NONE);
+    let (_, at) = run.row(label).unwrap_or_else(|| panic!("the Video tab's {label} row"));
+    for pressed in [true, false, true, false] {
+        run.button(at, egui::PointerButton::Primary, pressed);
+    }
+    run.frame(Vec::new(), egui::Modifiers::NONE);
+    run.key(egui::Key::A, egui::Modifiers::COMMAND);
+    run.frame(vec![egui::Event::Text(text.into())], egui::Modifiers::NONE);
+    run.key(egui::Key::Enter, egui::Modifiers::NONE);
+    run.frame(Vec::new(), egui::Modifiers::NONE);
+}
+
+#[test]
+fn a_masked_clip_takes_a_typed_opacity_and_position() {
+    for (label, text, key, want) in [("Opacity", "0.5", "opacity", 0.5f32), ("Position X", "120", "pos_x", 120.0)] {
+        let mut run = Run::new(masked());
+        run.property = true;
+        run.timeline = true;
+        let before = run.clip().picture_v2().unwrap();
+        type_into(&mut run, label, text);
+        let got = match key {
+            "opacity" => Some(crate::inspector::placement_by_path::opacity(run.clip())),
+            _ => Some(crate::inspector::placement_by_path::placement(run.clip()).position_x),
+        };
+        assert!(got.is_some_and(|v| (v - want).abs() < 1e-3), "{label}: {got:?}, unapplied {:?}", run.unapplied);
+        assert!(mask_kept(&run), "{label}: the blur is still masked");
+        assert_eq!(run.state.active_history().undo_count(), 1, "{label}: one step");
+        assert!(run.step(false), "an undo");
+        assert_eq!(run.clip().picture_v2().unwrap(), before, "{label}: the undo puts the clip back");
+        assert!(run.unapplied.is_empty(), "{label}: {:?}", run.unapplied);
+    }
+}
+
+/// A drag on a masked clip's Opacity is one step, with no drag left open.
+#[test]
+fn a_masked_clips_opacity_drag_is_one_step() {
+    let mut run = Run::new(masked());
+    run.property = true;
+    run.timeline = true;
+    run.frame(Vec::new(), egui::Modifiers::NONE);
+    let (_, at) = run.row("Opacity").expect("the Video tab's Opacity row");
+    run.button(at, egui::PointerButton::Primary, true);
+    for dx in [-6.0, -12.0, -18.0, -24.0] {
+        run.frame(vec![egui::Event::PointerMoved(at + egui::vec2(dx, 0.0))], egui::Modifiers::NONE);
+    }
+    run.button(at + egui::vec2(-24.0, 0.0), egui::PointerButton::Primary, false);
+    run.frame(Vec::new(), egui::Modifiers::NONE);
+    let opacity = crate::inspector::placement_by_path::opacity(run.clip());
+    assert!(opacity < 0.99, "the drag lowered it: {opacity}, unapplied {:?}", run.unapplied);
+    assert!(mask_kept(&run));
+    assert_eq!(run.state.active_history().undo_count(), 1, "one step");
+    assert!(!run.state.any_drag_in_progress(), "no drag left open");
+    assert!(run.unapplied.is_empty(), "{:?}", run.unapplied);
+}
+
+
+
 /// The stack's "All effects" switch turns every one of the clip's
 /// effects off, as one undo step, and on again, as one; the undo puts
 /// each back as it was.
