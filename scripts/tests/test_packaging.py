@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+import xml.etree.ElementTree as ET
 
 
 REPO = Path(__file__).resolve().parents[2]
@@ -27,6 +28,7 @@ class ArchPackagingTests(unittest.TestCase):
         (assets / "luts/film/sample.cube").write_text("LUT_3D_SIZE 2\n")
         shutil.copy(REPO / "assets/luts/CREDITS.md", assets / "luts/CREDITS.md")
         shutil.copy(REPO / "assets/klipp.desktop", assets / "klipp.desktop")
+        shutil.copy(REPO / "assets/klipp-mime.xml", assets / "klipp-mime.xml")
         shutil.copytree(REPO / "assets/branding/klipp-refined", assets / "branding/klipp-refined")
         release = self.root / "target/release"
         release.mkdir(parents=True)
@@ -61,6 +63,7 @@ class ArchPackagingTests(unittest.TestCase):
         self.assertEqual((self.stage / "usr/lib/klipp/assets/luts/film/sample.cube").read_text(), "LUT_3D_SIZE 2\n")
         self.assertTrue((self.stage / "usr/lib/klipp/assets/luts/CREDITS.md").is_file())
         self.assertEqual((self.stage / "usr/share/applications/klipp.desktop").read_bytes(), (REPO / "assets/klipp.desktop").read_bytes())
+        self.assertEqual((self.stage / "usr/share/mime/packages/klipp.xml").read_bytes(), (REPO / "assets/klipp-mime.xml").read_bytes())
         icons = self.stage / "usr/share/icons/hicolor"
         for size in (16, 22, 24, 32, 48, 64, 128, 256, 512, 1024):
             self.assertEqual(
@@ -139,6 +142,15 @@ class ArchPackagingTests(unittest.TestCase):
                 self.assertEqual(rustflags, "-C link-arg=-fuse-ld=lld", "lld without makepkg's flags too")
                 rustflags, _ = self.git_build_env(carch, "-C link-arg=-fuse-ld=mold")
                 self.assertEqual(rustflags, "-C link-arg=-fuse-ld=mold", "a linker already chosen is kept")
+
+    def test_the_project_type_the_desktop_entry_claims_is_defined(self):
+        desktop = (REPO / "assets/klipp.desktop").read_text()
+        claimed = next(l for l in desktop.splitlines() if l.startswith("MimeType=")).split("=", 1)[1].split(";")
+        package = ET.parse(REPO / "assets/klipp-mime.xml").getroot()
+        ns = "{http://www.freedesktop.org/standards/shared-mime-info}"
+        types = {t.get("type"): [g.get("pattern") for g in t.findall(f"{ns}glob")] for t in package.findall(f"{ns}mime-type")}
+        self.assertIn("application/vnd.klipp-project", claimed)
+        self.assertEqual(types, {"application/vnd.klipp-project": ["*.klipp"]})
 
     def test_missing_required_icon_fails_packaging(self):
         (self.root / "assets/branding/klipp-refined/klipp-icon-32.png").unlink()

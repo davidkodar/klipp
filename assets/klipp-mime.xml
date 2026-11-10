@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- The project type assets/klipp.desktop claims. A project is a folder
+     named *.klipp, and a folder is typed as a folder before any name
+     pattern is looked at, so this types a .klipp only where it is a file;
+     a project folder opens as a folder, its project.json with Klipp. -->
+<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
+  <mime-type type="application/vnd.klipp-project">
+    <comment>Klipp project</comment>
+    <glob pattern="*.klipp"/>
+  </mime-type>
+</mime-info>

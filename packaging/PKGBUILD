@@ -149,6 +149,9 @@ package() {
 
   # Desktop entry and icons for the Omarchy app menu.
   install -Dm644 assets/klipp.desktop "${pkgdir}/usr/share/applications/klipp.desktop"
+  # The project type the desktop entry names (shared-mime-info's pacman
+  # hook updates the database).
+  install -Dm644 assets/klipp-mime.xml "${pkgdir}/usr/share/mime/packages/klipp.xml"
   for size in 16 22 24 32 48 64 128 256 512 1024; do
     icon="assets/branding/klipp-refined/klipp-icon-${size}.png"
     install -Dm644 "$icon" \
