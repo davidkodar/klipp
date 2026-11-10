@@ -6338,7 +6338,8 @@ impl Renderer {
                 continue;
             }
             if !self.found.unavailable.iter().any(|(a, _)| a == at) {
-                self.found.unavailable.push((at.clone(), format!("{node} doesn't run in this frame's picture")));
+                // Said in words: the node is the one it is shown on.
+                self.found.unavailable.push((at.clone(), "it doesn't run in this frame's picture".to_owned()));
             }
             if self.resolved.solo == Some(*node) {
                 self.executor.set_solo_node(None);
