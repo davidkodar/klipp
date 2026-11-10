@@ -50,6 +50,13 @@ impl KlippApp {
             theme.apply_to_egui(&cc.egui_ctx);
             theme.apply_fonts_with_size(&cc.egui_ctx, prefs.appearance.ui_text_size);
             crate::icons::install(&cc.egui_ctx);
+            // A drop on Wayland arrives on the clipboard's thread while the
+            // window gets no input; it asks for a frame to be taken in.
+            #[cfg(target_os = "linux")]
+            {
+                let ctx = cc.egui_ctx.clone();
+                smithay_clipboard::set_drop_waker(move || ctx.request_repaint());
+            }
         }
 
 
