@@ -646,3 +646,39 @@ fn a_moved_clip_snaps_by_the_edge_it_was_grabbed_nearer() {
         assert_eq!(moved_to(&tl.sent), [(RationalTime::from_frames(start, 24), None)], "grabbed at {grab_secs} s");
     }
 }
+
+/// A title template dropped on a text track a little before a title on
+/// it never leaves two clips on that track at once: the later title
+/// was hidden under the new one. (Repro: the drop placed it on the track
+/// under the pointer for five seconds whatever was there.)
+#[test]
+fn a_title_dropped_on_a_busy_text_track_overlaps_nothing() {
+    let (mut state, _) = clips_on_video_2(&[(0.0, 2.0)]);
+    state.sequences[0].tracks.insert(0, klipp_timeline::Track::new("Text 1", TrackKind::Text));
+    let rate = state.sequence().fps.rate();
+    let (_marina, _) = super::titles::add_title_clip(&mut state, 0, RationalTime::from_frames((9.16 * rate as f64).round() as i64, rate), rate * 5);
+    let mut tl = Timeline::new(state);
+    let row = tl.track("Text 1");
+    tl.state.drag_drop.begin(crate::drag_drop::DragPayload::Title { template_name: "Impact".into(), list_key: "Impact".into(), title_data: klipp_timeline::TitleData::default() });
+    tl.sent.clear();
+    tl.frame(vec![egui::Event::PointerMoved(tl.at(row, 5.5))], egui::Modifiers::NONE);
+    tl.frame(Vec::new(), egui::Modifiers::NONE);
+    let Some(AppCommand::CreateTitleClip { track_index, timeline_in, duration_frames }) = tl.sent.iter().find(|c| matches!(c, AppCommand::CreateTitleClip { .. })).cloned() else { panic!("a title placed: {:?}", tl.sent) };
+    let said = tl.state.toast.message_for_test().unwrap_or_default().to_string();
+    assert!(said.contains("Text 1 is busy there"), "the toast says where it went and why: {said}");
+    super::titles::add_title_clip(&mut tl.state, track_index, timeline_in, duration_frames);
+    // The title on Text 1 untouched, on its own there.
+    let text_1 = tl.state.sequence().tracks.iter().find(|t| t.name == "Text 1").unwrap();
+    assert_eq!(text_1.clips.len(), 1, "the new title went elsewhere");
+    // A double-click on a title card at a playhead past the picture's end
+    // (so five seconds long) and a little before a title, too.
+    let ph = RationalTime::from_frames(8 * rate as i64, rate);
+    tl.state.playhead = ph;
+    let AppCommand::CreateTitleClip { track_index, timeline_in, duration_frames } = crate::browser::titles_tab::place_title(&mut tl.state, klipp_timeline::TitleData::default()) else { unreachable!() };
+    super::titles::add_title_clip(&mut tl.state, track_index, timeline_in, duration_frames);
+    for track in &tl.state.sequence().tracks {
+        for pair in track.clips.windows(2) {
+            assert!(pair[0].timeline_out <= pair[1].timeline_in, "two clips at once on {}: {:?}-{:?} and {:?}-{:?}", track.name, pair[0].timeline_in, pair[0].timeline_out, pair[1].timeline_in, pair[1].timeline_out);
+        }
+    }
+}

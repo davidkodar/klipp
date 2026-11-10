@@ -3667,27 +3667,23 @@ impl TimelinePanel {
                                 let timeline_in = Self::media_drop_time(state, time_secs as f64, state.timeline_zoom, ui.input(|i| i.modifiers.shift));
                                 let duration_frames = fps_rate * 5;
                                 state.pending_title_data = Some(title_data);
-                                // If dropped on a Video track, redirect to a Text track so the
-                                // title composites correctly as an overlay instead of replacing
-                                // the primary video decoder.
-                                let actual_track_idx = if track_kind == TrackKind::Video {
-                                    // Find or create a Text track
-                                    let text_idx = state.sequences[state.active_sequence_idx].tracks.iter()
-                                        .position(|t| t.kind == TrackKind::Text && t.clip_at_timecode(timeline_in).is_none());
-                                    match text_idx {
-                                        Some(idx) => idx,
-                                        None => {
-                                            let track_num = state.sequences[state.active_sequence_idx].tracks.iter()
-                                                .filter(|t| t.kind == TrackKind::Text).count() + 1;
-                                            let track = klipp_timeline::Track::new(
-                                                &format!("Text {track_num}"),
-                                                TrackKind::Text,
-                                            );
-                                            state.sequences[state.active_sequence_idx].tracks.insert(0, track);
-                                            0
-                                        }
+                                // On a Video track it goes to a text track, to lie over
+                                // the picture rather than replace it; on a text track with
+                                // a clip anywhere in its time, to another one free for all
+                                // of it, so it never lies over a title on one track.
+                                let busy = track_kind == TrackKind::Text && crate::browser::titles_tab::text_track_busy(state, track_idx, timeline_in, duration_frames);
+                                let actual_track_idx = if track_kind == TrackKind::Video || busy {
+                                    let busy_name = state.sequence().tracks[track_idx].name.clone();
+                                    let at = crate::browser::titles_tab::free_text_track(state, timeline_in, duration_frames);
+                                    let name = state.sequence().tracks[at].name.clone();
+                                    if busy {
+                                        state.toast.show(format!("\"{template_name}\" title put on {name}: {busy_name} is busy there"));
+                                    } else {
+                                        state.toast.show(format!("\"{template_name}\" title added to track"));
                                     }
+                                    at
                                 } else {
+                                    state.toast.show(format!("\"{template_name}\" title added to track"));
                                     track_idx
                                 };
                                 cmds.push(AppCommand::CreateTitleClip {
@@ -3695,7 +3691,6 @@ impl TimelinePanel {
                                     timeline_in,
                                     duration_frames,
                                 });
-                                state.toast.show(format!("\"{}\" title added to track", template_name));
                             }
                         }
                     } else {
