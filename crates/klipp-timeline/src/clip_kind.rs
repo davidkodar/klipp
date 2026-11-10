@@ -1853,6 +1853,23 @@ impl TitleData {
         self.objects.iter().any(|o| o.visible && self.mask_of(o).is_some_and(|(src, _)| src.id == id))
     }
 
+    /// Whether every text of this title sits on a backing of its own: an
+    /// opaque shape fitted to it, or one its place is inside (a lower
+    /// third's bar, a caption's card). Its text reads on that, so
+    /// Readability on Auto adds no halo round it, and a template with one
+    /// ships with Readability off.
+    pub fn has_own_backing(&self) -> bool {
+        let backings: Vec<&TitleObject> = self.objects.iter().filter(|o| matches!(&o.content, TitleObjectContent::Shape(s) if s.fill.is_some_and(|f| f[3] >= 150))).collect();
+        self.objects.iter().filter(|o| matches!(o.content, TitleObjectContent::TextBox(_))).all(|text| {
+            backings.iter().any(|b| {
+                let TitleObjectContent::Shape(s) = &b.content else { return false };
+                let (c, size, at) = (b.transform.center, b.transform.size, text.transform.center);
+                s.fit.as_ref().is_some_and(|f| f.target == text.id)
+                    || ((at.x - c.x).abs() <= size.x / 2.0 && (at.y - c.y).abs() <= size.y / 2.0)
+            })
+        })
+    }
+
     /// Whether a shown layer blends other than "over" or is masked: the
     /// title is then its layers mixed, not each laid on the last
     /// (#1513).
