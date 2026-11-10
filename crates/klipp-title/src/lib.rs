@@ -6999,15 +6999,43 @@ pub(crate) fn tracking_back(alignment: TextAlignment, gained: f32) -> f32 {
 }
 
 fn text_box_extent(title: &TitleData, width: u32, height: u32) -> (f32, f32) {
-    let size = title.objects.iter().find_map(|o| {
-        matches!(o.content, TitleObjectContent::TextBox(_)).then_some(o.transform.size)
-    }).unwrap_or(klipp_timeline::TitlePosition { x: 1.0, y: 1.0 });
+    let (size, centre, alignment) = title.objects.iter().find_map(|o| match &o.content {
+        TitleObjectContent::TextBox(tb) => Some((o.transform.size, o.transform.center, tb.alignment)),
+        _ => None,
+    }).unwrap_or((klipp_timeline::TitlePosition { x: 1.0, y: 1.0 }, klipp_timeline::TitlePosition { x: 0.5, y: 0.5 }, TextAlignment::Center));
+    let unsized_box = |v: f32| !v.is_finite() || v == 1.0;
     let extent = |v: f32, pixels: u32| {
-        let fraction = if !v.is_finite() || v == 1.0 { 0.9 } else { v.max(0.0) };
+        let fraction = if unsized_box(v) { 0.9 } else { v.max(0.0) };
         (fraction * pixels as f32).max(1.0)
     };
-    (extent(size.x, width), extent(size.y, height))
+    // A box with no width of its own wraps no wider than the frame has
+    // room for its lines from where they are set, less a margin: at nine
+    // tenths of the frame wherever it sat, a title centred left of the
+    // middle ran its lines past the left edge and lost their first
+    // letters. Lines set from their anchor (`text_offset_x`) have the room
+    // to its right; set to it, the room to its left; centred on it, twice
+    // the room to the nearer edge.
+    let w = if unsized_box(size.x) && centre.x.is_finite() {
+        let x = centre.x.clamp(0.0, 1.0);
+        let room = match alignment {
+            TextAlignment::Left => 1.0 - x - UNSIZED_EDGE_MARGIN,
+            TextAlignment::Right => x - UNSIZED_EDGE_MARGIN,
+            TextAlignment::Center | TextAlignment::Justify => 2.0 * (x.min(1.0 - x) - UNSIZED_EDGE_MARGIN),
+        };
+        (room.clamp(UNSIZED_MIN_WIDTH, 0.9) * width as f32).max(1.0)
+    } else {
+        extent(size.x, width)
+    };
+    (w, extent(size.y, height))
 }
+
+/// How far from the frame's edge an unsized text box's lines stop, as a
+/// share of the frame's width.
+const UNSIZED_EDGE_MARGIN: f32 = 0.02;
+
+/// The narrowest an unsized text box wraps at, as a share of the frame's
+/// width, however near the edge its centre is.
+const UNSIZED_MIN_WIDTH: f32 = 0.1;
 
 /// Paint a `Shape` layer onto `buf` using its `ObjectTransform`.
 /// `transform.center` and `transform.size` are normalised 0..1

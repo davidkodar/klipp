@@ -105,6 +105,11 @@ pub fn apply_gains(state: &mut crate::state::AppState, gains: &[(ClipId, f32)]) 
     }
 }
 
+/// The dialog's content width, and its preset list's: as wide as the
+/// longest preset's name needs, fixed.
+const DIALOG_W: f32 = 440.0;
+const PRESET_W: f32 = 230.0;
+
 /// Draw the open dialog, if any; the commands its Normalize sends.
 pub fn show_dialog(ctx: &egui::Context, state: &mut crate::state::AppState) -> Vec<AppCommand> {
     let Some(mut dialog) = state.normalize_dialog.take() else { return Vec::new() };
@@ -116,7 +121,10 @@ pub fn show_dialog(ctx: &egui::Context, state: &mut crate::state::AppState) -> V
         .open(&mut open)
         .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
         .show(ctx, |ui| {
-            ui.set_min_width(320.0);
+            // One width whatever the target is called: sized to its
+            // content, the dialog re-centred on each preset's name and its
+            // Normalize button moved.
+            ui.set_width(DIALOG_W);
             let n = dialog.clip_ids.len();
             ui.label(egui::RichText::new(format!("{n} clip{} selected. Sets each clip's gain; the media is not changed.", if n == 1 { "" } else { "s" })).small().weak());
             ui.add_space(4.0);
@@ -134,7 +142,7 @@ pub fn show_dialog(ctx: &egui::Context, state: &mut crate::state::AppState) -> V
                 ui.horizontal(|ui| match dialog.settings.mode {
                     NormalizeMode::Loudness => {
                         let shown = dialog.preset().map_or("Custom".to_string(), |i| format!("{} ({} LUFS)", dialog.targets[i].0, dialog.targets[i].1));
-                        egui::ComboBox::from_id_salt("normalize_preset").selected_text(shown).show_ui(ui, |ui| {
+                        egui::ComboBox::from_id_salt("normalize_preset").selected_text(shown).width(PRESET_W).show_ui(ui, |ui| {
                             for i in 0..dialog.targets.len() {
                                 let (name, value) = dialog.targets[i].clone();
                                 if ui.selectable_label(dialog.preset() == Some(i), format!("{name} ({value} LUFS)")).clicked() {
@@ -238,6 +246,27 @@ mod tests {
             other => panic!("Normalize sent {other:?}"),
         }
         assert!(state.normalize_dialog.is_none(), "the dialog closes");
+    }
+
+    /// The dialog keeps its width whichever target is picked, so its
+    /// Normalize button stays put: it re-centred on the target's name, and
+    /// the button moved between Web and EBU R128.
+    #[test]
+    fn the_normalize_button_stays_put_across_targets() {
+        let last = NormalizeSettings { mode: NormalizeMode::Loudness, target: -14.0, ceiling_dbtp: -1.0, group: false };
+        let mut state = AppState { normalize_dialog: Some(NormalizeDialog::new(vec![ClipId::new()], last)), ..Default::default() };
+        let ctx = egui::Context::default();
+        let mut xs = Vec::new();
+        // One dialog, its target switched as a person picks presets.
+        for target in [-14.0, -23.0, -14.0, -16.0] {
+            state.normalize_dialog.as_mut().unwrap().settings.target = target;
+            for _ in 0..3 {
+                frame(&ctx, &mut state, Vec::new());
+            }
+            let (out, _) = frame(&ctx, &mut state, Vec::new());
+            xs.push(at(&out, "Normalize").x);
+        }
+        assert!(xs.windows(2).all(|w| (w[0] - w[1]).abs() < 0.5), "the button at {xs:?}");
     }
 
     /// One clip can't be a group, whatever was last used.

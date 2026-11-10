@@ -144,6 +144,11 @@ pub(super) struct Run {
     /// Draw the clip's Video tab, not its stack, in either view: the
     /// effect is a clip property there (M3 step 13).
     pub(super) property: bool,
+    /// The panel's width, in points.
+    pub(super) width: f32,
+    /// The Video tab drawn as the app's inspector draws a timeline clip's
+    /// (its `is_timeline`), whose commands the dispatch routes.
+    pub(super) timeline: bool,
 }
 
 /// The one clip both views start from: a clone each, so their pictures
@@ -226,6 +231,8 @@ impl Run {
             shapes: Vec::new(),
             seeks: Vec::new(),
             property: false,
+            width: 520.0,
+            timeline: false,
         }
     }
 
@@ -247,7 +254,7 @@ impl Run {
         let input = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(
                 egui::Pos2::ZERO,
-                egui::vec2(520.0, 3000.0),
+                egui::vec2(self.width, 3000.0),
             )),
             time: Some(self.time),
             events,
@@ -255,7 +262,7 @@ impl Run {
             ..Default::default()
         };
         let mut cmds = Vec::new();
-        let (state, clip_id, property) = (&mut self.state, self.clip, self.property);
+        let (state, clip_id, property, timeline) = (&mut self.state, self.clip, self.property, self.timeline);
         let out = self.ctx.run(input, |ctx| {
             // As the app's frame does before its panels draw.
             state.forget_stale_path_drag(ctx.input(|i| i.pointer.any_down()));
@@ -275,7 +282,7 @@ impl Run {
                         ui,
                         &theme,
                         state,
-                        Some((clip, clip_time, false)),
+                        Some((clip, clip_time, timeline)),
                         None,
                         &mut cmds,
                     );
@@ -302,7 +309,15 @@ impl Run {
             .collect()
     }
 
+    /// `cmd` as the app's dispatch takes it: a graph-held clip's placement
+    /// edits routed by path first (`send_commands`).
     pub(super) fn apply(&mut self, cmd: AppCommand) {
+        for cmd in self.state.placed_by_path(cmd) {
+            self.apply_one(cmd);
+        }
+    }
+
+    fn apply_one(&mut self, cmd: AppCommand) {
         self.state.before_dispatch(&cmd);
         if let AppCommand::SeekTo(time) = cmd {
             self.seeks.push(time);
@@ -425,4 +440,210 @@ impl Run {
         true
     }
 
+}
+
+/// The Track button of a Window that masks an effect, drawn under the
+/// effect's card ("Masked by: Window"), sends the track of that window on
+/// that clip. Pressed in the app, it lit and nothing followed.
+#[test]
+fn the_track_button_under_a_masked_effect_sends_its_track() {
+    let mut c = fixture(&BuiltinEffect::GaussianBlur { radius: 3.0 });
+    let graph = c.picture_v2().unwrap().picture.graph.clone();
+    let blur = graph.nodes.iter().find(|n| klipp_graph_lift::effect_params::tag(n) == Some("gaussian_blur")).unwrap().id;
+    let level = klipp_graph_format::path::NodePath::new(klipp_graph_format::path::Root::Clip { clip: c.id.0 }, []);
+    let window = uuid::Uuid::new_v4();
+    let ops = crate::picture_mattes::add_ops(&graph, &level, crate::picture_mattes::matte("matte.window").unwrap(), window, (0.0, 0.0), Some(blur)).unwrap();
+    c.apply_picture_ops(&ops).unwrap();
+    let mut run = Run::new(c);
+    let drawn = run.frame(Vec::new(), egui::Modifiers::NONE);
+    let label = drawn.iter().map(|(t, _)| t.clone()).find(|t| t.ends_with("Track")).expect("the Track button is drawn");
+    assert!(run.click_last(&label), "pressed");
+    let sent: Vec<&String> = run.unapplied.iter().filter(|c| c.contains("TrackMaskRegion")).collect();
+    assert_eq!(sent.len(), 1, "the track sent once, of the window: {:?}", run.unapplied);
+    assert!(sent[0].contains(&window.to_string()), "{sent:?}");
+}
+
+/// A tracked Window under a masked effect shows as tracked there, as a
+/// grade's does: "Re-track", "Untrack" and the stretch it followed. The
+/// panel was told of no tracked masks, so after a track nothing showed it.
+#[test]
+fn a_tracked_window_under_a_masked_effect_shows_as_tracked() {
+    let mut c = fixture(&BuiltinEffect::GaussianBlur { radius: 3.0 });
+    let graph = c.picture_v2().unwrap().picture.graph.clone();
+    let blur = graph.nodes.iter().find(|n| klipp_graph_lift::effect_params::tag(n) == Some("gaussian_blur")).unwrap().id;
+    let level = klipp_graph_format::path::NodePath::new(klipp_graph_format::path::Root::Clip { clip: c.id.0 }, []);
+    let window = uuid::Uuid::new_v4();
+    let ops = crate::picture_mattes::add_ops(&graph, &level, crate::picture_mattes::matte("matte.window").unwrap(), window, (0.0, 0.0), Some(blur)).unwrap();
+    c.apply_picture_ops(&ops).unwrap();
+    let key = |t: f64, v: f32| klipp_core::Keyframe { time_secs: t, value: v, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() };
+    super::colour::edit_clip_masks(&mut c, window, "Track Window", |ms| ms.masks[0].keyframes.track_x = vec![key(0.0, 0.0), key(1.0, 0.1)]).unwrap();
+    c.track_points.push(klipp_core::TrackPoint { name: "Mask 1 tracker".into(), linked_mask: Some((window, 0)), ..Default::default() });
+    let mut run = Run::new(c);
+    let drawn = run.frame(Vec::new(), egui::Modifiers::NONE);
+    let texts: Vec<&str> = drawn.iter().map(|(t, _)| t.as_str()).collect();
+    assert!(texts.iter().any(|t| t.ends_with("Re-track")) && texts.iter().any(|t| t.ends_with("Untrack")), "{texts:?}");
+}
+
+/// A tracked Window's panel under a masked effect fits an inspector of
+/// its usual width: its tracking controls on their own row, nothing drawn
+/// past either edge. On the header row beside the name they pushed it
+/// past the panel, cutting "Re-track" and the start of every label below.
+#[test]
+fn a_tracked_windows_panel_fits_the_inspector() {
+    let mut c = fixture(&BuiltinEffect::GaussianBlur { radius: 3.0 });
+    let graph = c.picture_v2().unwrap().picture.graph.clone();
+    let blur = graph.nodes.iter().find(|n| klipp_graph_lift::effect_params::tag(n) == Some("gaussian_blur")).unwrap().id;
+    let level = klipp_graph_format::path::NodePath::new(klipp_graph_format::path::Root::Clip { clip: c.id.0 }, []);
+    let window = uuid::Uuid::new_v4();
+    let ops = crate::picture_mattes::add_ops(&graph, &level, crate::picture_mattes::matte("matte.window").unwrap(), window, (0.0, 0.0), Some(blur)).unwrap();
+    c.apply_picture_ops(&ops).unwrap();
+    let key = |t: f64, v: f32| klipp_core::Keyframe { time_secs: t, value: v, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() };
+    super::colour::edit_clip_masks(&mut c, window, "Track Window", |ms| ms.masks[0].keyframes.track_x = vec![key(0.0, 0.0), key(1.8, 0.1)]).unwrap();
+    c.track_points.push(klipp_core::TrackPoint { name: "Mask 1 tracker".into(), linked_mask: Some((window, 0)), ..Default::default() });
+    let mut run = Run::new(c);
+    run.width = 280.0;
+    run.frame(Vec::new(), egui::Modifiers::NONE);
+    run.frame(Vec::new(), egui::Modifiers::NONE);
+    let texts: Vec<(String, egui::Rect)> = run.shapes.iter().filter_map(|s| match &s.shape {
+        egui::Shape::Text(t) if !t.galley.text().trim().is_empty() => Some((t.galley.text().to_string(), egui::Rect::from_min_size(t.pos, t.galley.size()))),
+        _ => None,
+    }).collect();
+    for name in ["Re-track", "Untrack", "Perspective", "Center x", "Feather"] {
+        assert!(texts.iter().any(|(t, _)| t.ends_with(name)), "{name} drawn: {:?}", texts.iter().map(|(t, _)| t).collect::<Vec<_>>());
+    }
+    let out: Vec<&(String, egui::Rect)> = texts.iter().filter(|(_, r)| r.left() < -1.5 || r.right() > 281.5).collect();
+    assert!(out.is_empty(), "drawn past the panel's edge: {out:?}");
+}
+
+/// A Window whose track was undone (its tracker's binding kept, its track
+/// keys gone) reads as untracked: "Track", no Untrack. It still read
+/// "Re-track" with an Untrack after the undo.
+#[test]
+fn an_undone_track_reads_as_untracked() {
+    let mut c = fixture(&BuiltinEffect::GaussianBlur { radius: 3.0 });
+    let graph = c.picture_v2().unwrap().picture.graph.clone();
+    let blur = graph.nodes.iter().find(|n| klipp_graph_lift::effect_params::tag(n) == Some("gaussian_blur")).unwrap().id;
+    let level = klipp_graph_format::path::NodePath::new(klipp_graph_format::path::Root::Clip { clip: c.id.0 }, []);
+    let window = uuid::Uuid::new_v4();
+    let ops = crate::picture_mattes::add_ops(&graph, &level, crate::picture_mattes::matte("matte.window").unwrap(), window, (0.0, 0.0), Some(blur)).unwrap();
+    c.apply_picture_ops(&ops).unwrap();
+    c.track_points.push(klipp_core::TrackPoint { name: "Mask 1 tracker".into(), linked_mask: Some((window, 0)), ..Default::default() });
+    let mut run = Run::new(c);
+    let drawn = run.frame(Vec::new(), egui::Modifiers::NONE);
+    let texts: Vec<&str> = drawn.iter().map(|(t, _)| t.as_str()).collect();
+    assert!(texts.iter().any(|t| t.ends_with(" Track")) && !texts.iter().any(|t| t.ends_with("Re-track") || t.ends_with("Untrack")), "{texts:?}");
+}
+
+/// The Chroma Key card says when its key colour takes greys with it: the
+/// walk's navy at the default Tolerance, and not once it is lowered.
+#[test]
+fn a_chroma_key_card_says_when_greys_key_out() {
+    let key = |tolerance: f32| BuiltinEffect::ChromaKey { key_color: [13, 59, 102], tolerance, soft_edge: 0.1, spill_method: klipp_effects::SpillMethod::None, spill_strength: 0.0 };
+    for (tolerance, said) in [(0.2, true), (0.05, false)] {
+        let mut run = Run::new(fixture(&key(tolerance)));
+        let drawn = run.frame(Vec::new(), egui::Modifiers::NONE);
+        let shown = drawn.iter().any(|(t, _)| t.starts_with("This key colour is close to grey"));
+        assert_eq!(shown, said, "Tolerance {tolerance}");
+    }
+}
+
+/// The Effects tab's Transform card on a clip whose Position X is keyed
+/// (0 at 1 s, 400 at 4 s) reads the keyed value at the playhead, as the
+/// Video tab and the viewer's box do: 2.5 s is half way, 200. It read the
+/// stored 400 at every time. A value typed there at a time between the
+/// keys keys the lane there.
+#[test]
+fn the_transform_card_reads_and_keys_the_placement_at_the_playhead() {
+    let t = |s| klipp_core::RationalTime::from_secs_f64(s, 24);
+    let transform = BuiltinEffect::Transform { position_x: 400.0, position_y: 0.0, scale_x: 1.0, scale_y: 1.0, rotation: 0.0, anchor_x: 0.5, anchor_y: 0.5, rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0, focal_ref: None };
+    let clip = klipp_timeline::test_clip::TestClip::of(klipp_timeline::Clip::media(klipp_core::MediaId::new(), t(0.0), t(6.0), t(0.0), t(6.0)))
+        .effect(transform)
+        .lane("pos_x", 1.0, 0.0)
+        .lane("pos_x", 4.0, 400.0)
+        .build();
+    let mut run = Run::new(clip);
+    run.state.playhead = t(2.5);
+    let number = |run: &mut Run| -> f32 {
+        let (_, at) = run.row("Pos X").expect("the card's Pos X row");
+        let drawn = run.frame(Vec::new(), egui::Modifiers::NONE);
+        let text = drawn.iter().find(|(_, p)| p.distance(at) < 0.5).map(|(s, _)| s.clone()).unwrap();
+        text.trim_end_matches(|c: char| !c.is_ascii_digit()).parse().unwrap_or_else(|_| panic!("a number: {text}"))
+    };
+    assert!((number(&mut run) - 200.0).abs() < 1.0, "Pos X at 2.5 s: {}", number(&mut run));
+    let (_, at) = run.row("Pos X").unwrap();
+    run.button(at, egui::PointerButton::Primary, true);
+    run.button(at, egui::PointerButton::Primary, false);
+    run.button(at, egui::PointerButton::Primary, true);
+    run.button(at, egui::PointerButton::Primary, false);
+    run.frame(Vec::new(), egui::Modifiers::NONE);
+    run.key(egui::Key::A, egui::Modifiers::COMMAND);
+    run.frame(vec![egui::Event::Text("300".into())], egui::Modifiers::NONE);
+    run.key(egui::Key::Enter, egui::Modifiers::NONE);
+    run.frame(Vec::new(), egui::Modifiers::NONE);
+    let keys = crate::inspector::placement_by_path::lane_keys(run.clip(), "pos_x");
+    assert!(keys.iter().any(|k| (k.time_secs - 2.5).abs() < 1e-6 && (k.value - 300.0).abs() < 1e-3), "a key at 2.5 s: {keys:?}, unapplied {:?}", run.unapplied);
+}
+
+/// A drag of the Transform card's keyed Pos X, many ticks long, is one
+/// undo step, as the Video tab's drag is: it was a step per tick ("Add
+/// Keyframe"), so one Ctrl+Z took back a pixel.
+#[test]
+fn a_drag_on_the_transform_cards_keyed_field_is_one_step() {
+    let t = |s| klipp_core::RationalTime::from_secs_f64(s, 24);
+    let transform = BuiltinEffect::Transform { position_x: 400.0, position_y: 0.0, scale_x: 1.0, scale_y: 1.0, rotation: 0.0, anchor_x: 0.5, anchor_y: 0.5, rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0, focal_ref: None };
+    let clip = klipp_timeline::test_clip::TestClip::of(klipp_timeline::Clip::media(klipp_core::MediaId::new(), t(0.0), t(6.0), t(0.0), t(6.0)))
+        .effect(transform)
+        .lane("pos_x", 1.0, 0.0)
+        .lane("pos_x", 4.0, 400.0)
+        .build();
+    let mut run = Run::new(clip);
+    run.state.playhead = t(2.5);
+    let before = crate::inspector::placement_by_path::lane_keys(run.clip(), "pos_x");
+    let (_, at) = run.row("Pos X").expect("the card's Pos X row");
+    run.button(at, egui::PointerButton::Primary, true);
+    for i in 1..=30 {
+        run.frame(vec![egui::Event::PointerMoved(at + egui::vec2(i as f32, 0.0))], egui::Modifiers::NONE);
+    }
+    run.button(at + egui::vec2(30.0, 0.0), egui::PointerButton::Primary, false);
+    run.frame(Vec::new(), egui::Modifiers::NONE);
+    let after = crate::inspector::placement_by_path::lane_keys(run.clip(), "pos_x");
+    assert!(after.iter().any(|k| (k.time_secs - 2.5).abs() < 1e-6), "the drag keyed 2.5 s: {after:?}, unapplied {:?}", run.unapplied);
+    assert!(run.step(false), "a step to undo");
+    assert_eq!(crate::inspector::placement_by_path::lane_keys(run.clip(), "pos_x"), before, "one undo takes the whole drag back");
+    // The same drag taken back with Escape: the keys as they were, no step.
+    let steps = run.state.active_history().undo_count();
+    run.button(at, egui::PointerButton::Primary, true);
+    for i in 1..=10 {
+        run.frame(vec![egui::Event::PointerMoved(at + egui::vec2(i as f32, 0.0))], egui::Modifiers::NONE);
+    }
+    run.key(egui::Key::Escape, egui::Modifiers::NONE);
+    run.button(at + egui::vec2(10.0, 0.0), egui::PointerButton::Primary, false);
+    run.frame(Vec::new(), egui::Modifiers::NONE);
+    assert_eq!(crate::inspector::placement_by_path::lane_keys(run.clip(), "pos_x"), before, "Escape leaves the keys as they were: unapplied {:?}", run.unapplied);
+    assert_eq!(run.state.active_history().undo_count(), steps, "and records no step");
+}
+
+/// With two clips selected, "+ Add effect" on the one shown puts the
+/// effect on both, as the banner over it says, and one undo takes it off
+/// both. It went to the clip shown only.
+#[test]
+fn an_effect_added_with_two_clips_selected_lands_on_both_as_one_step() {
+    let mut run = Run::new(fixture(&BuiltinEffect::GaussianBlur { radius: 3.0 }));
+    let other = fixture(&BuiltinEffect::GaussianBlur { radius: 3.0 });
+    let other_id = other.id;
+    let mut track = klipp_timeline::Track::new("Video 9", klipp_timeline::TrackKind::Video);
+    track.clips.push(other);
+    run.state.sequences[0].tracks.push(track);
+    run.state.selected_clip = Some(run.clip);
+    run.state.selected_clips = vec![run.clip, other_id];
+    let blooms = |run: &Run, id: ClipId| {
+        let clip = run.state.sequences[0].all_clips().find(|c| c.id == id).unwrap();
+        clip.picture_v2().unwrap().picture.graph.nodes.iter().filter(|n| klipp_graph_lift::effect_params::tag(n) == Some("bloom")).count()
+    };
+    assert!(run.click_last("+ Add effect"), "the add menu");
+    assert!(run.click_last("Bloom"), "Bloom in it");
+    assert_eq!((blooms(&run, run.clip), blooms(&run, other_id)), (1, 1), "on both: {:?}", run.unapplied);
+    assert_eq!(run.state.active_history().undo_label(), Some("Add Bloom to 2 Clips"), "the step named for the effect");
+    assert!(run.step(false));
+    assert_eq!((blooms(&run, run.clip), blooms(&run, other_id)), (0, 0), "one undo takes it off both");
 }
