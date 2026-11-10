@@ -786,6 +786,10 @@ impl KlippApp {
                         // The canvas's single keys are its own only while
                         // it has the focus (#1742).
                         self.node_graph_v2_panel.grade_keys = self.state.active_panel == Some(crate::state::PanelKind::NodeGraph);
+                        // A clip whose picture keeps a mask or a mix holds no
+                        // compound in its grade: its menu item says so.
+                        self.node_graph_v2_panel.grade_takes_no_compound = clip.picture_v2().ok().filter(|p| p.picture.is_truth())
+                            .map(|_| "This clip's effects use a mask or a mix, which a compound in its grade can't hold yet".to_owned());
                         let cmds = clip.edit_grade(|root| {
                             let resolved = Self::resolve_graph_at_path_mut(root, &path);
                             let graph = match resolved {
