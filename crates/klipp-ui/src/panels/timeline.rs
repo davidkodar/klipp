@@ -1195,6 +1195,9 @@ struct RollTrimState {
     original_b_timeline_in: Timecode,
     /// The snap the roll holds from frame to frame (#3056).
     hold: Option<crate::timeline::snap::SnapHold>,
+    /// The linked partners roll too: Linked on and Alt not held at its
+    /// start, as an edge trim takes it.
+    linked: bool,
 }
 
 #[allow(dead_code)]
@@ -8196,6 +8199,7 @@ impl TimelinePanel {
                 // immutable borrow into state.sequence() is safe across the loop.
                 let mut started_roll_trim = false;
                 if !started_fade_drag && state.active_tool == Tool::Trim {
+                    let linked = state.linked_selection && !ui.input(|i| i.modifiers.alt);
                     let roll_hit: Option<RollTrimState> = {
                         let clips = &state.sequence().tracks[track_idx].clips;
                         let on_track = pos.y >= track_rect.top() && pos.y <= track_rect.top() + track_height;
@@ -8212,6 +8216,7 @@ impl TimelinePanel {
                                 original_a_timeline_out: clips[i].timeline_out,
                                 original_b_timeline_in: clips[i + 1].timeline_in,
                                 hold: None,
+                                linked,
                             }
                         })
                     };
@@ -11129,6 +11134,7 @@ impl TimelinePanel {
                         new_a_timeline_out: a_tl_out,
                         new_b_source_in: b_src_in,
                         new_b_timeline_in: b_tl_in,
+                        linked: roll.linked,
                     });
                 }
                 self.roll_trimming = None;

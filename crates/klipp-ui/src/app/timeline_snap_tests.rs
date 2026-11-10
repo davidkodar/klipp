@@ -646,3 +646,29 @@ fn a_moved_clip_snaps_by_the_edge_it_was_grabbed_nearer() {
         assert_eq!(moved_to(&tl.sent), [(RationalTime::from_frames(start, 24), None)], "grabbed at {grab_secs} s");
     }
 }
+
+/// A roll takes its partners as an edge trim does: Linked on, and Alt not
+/// held when it begins. It always took them, so a roll on a sound cut
+/// moved the picture's with Linked off, and Alt didn't stop it.
+#[test]
+fn a_roll_takes_its_partners_as_linked_and_alt_say() {
+    for (linked_selection, alt, want) in [(true, false, true), (false, false, false), (true, true, false)] {
+        let (mut state, _) = clips_on_video_2(&[(0.0, 2.0), (2.0, 4.0)]);
+        state.active_tool = klipp_core::Tool::Trim;
+        state.linked_selection = linked_selection;
+        let mut tl = Timeline::new(state);
+        let v2 = tl.track("Video 2");
+        let cut = tl.at(v2, 2.0);
+        let m = if alt { egui::Modifiers::ALT } else { egui::Modifiers::NONE };
+        let b = |p, d| egui::Event::PointerButton { pos: p, button: egui::PointerButton::Primary, pressed: d, modifiers: m };
+        tl.frame(vec![egui::Event::PointerMoved(cut)], m);
+        tl.frame(vec![b(cut, true)], m);
+        for dx in [8.0, 15.0, 30.0] {
+            tl.frame(vec![egui::Event::PointerMoved(cut + egui::vec2(dx, 0.0))], m);
+        }
+        tl.frame(vec![b(cut + egui::vec2(30.0, 0.0), false)], m);
+        tl.frame(Vec::new(), m);
+        let sent = tl.sent.iter().find_map(|c| match c { AppCommand::RollTrimClip { linked, .. } => Some(*linked), _ => None });
+        assert_eq!(sent, Some(want), "Linked {linked_selection}, Alt {alt}");
+    }
+}
