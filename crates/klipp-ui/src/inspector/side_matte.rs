@@ -65,7 +65,10 @@ pub(crate) fn show(ui: &mut egui::Ui, theme: &KlippTheme, clip: &klipp_timeline:
                 let mut edited = params.clone();
                 let mut grade_cmds = Vec::new();
                 let masks = edited.masks.get_or_insert_with(Default::default);
-                crate::panels::node_inspector::NodeInspectorPanel::render_masks_body(ui, masks, node.id, clip.id, &mut grade_cmds, theme, frame, &[]);
+                // Its masks a tracker is bound to, shown as tracked
+                // (Re-track, Untrack, the stretch followed), as a grade's are.
+                let tracked: Vec<usize> = clip.track_points.iter().filter_map(|tp| tp.linked_mask.filter(|(n, _)| *n == node.id).map(|(_, i)| i)).collect();
+                crate::panels::node_inspector::NodeInspectorPanel::render_masks_body(ui, masks, node.id, clip.id, &mut grade_cmds, theme, frame, &tracked);
                 cmds.extend(grade_cmds.into_iter().filter_map(|c| by_path(c, addr)));
                 true
             }

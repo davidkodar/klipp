@@ -447,3 +447,24 @@ fn the_track_button_under_a_masked_effect_sends_its_track() {
     assert_eq!(sent.len(), 1, "the track sent once, of the window: {:?}", run.unapplied);
     assert!(sent[0].contains(&window.to_string()), "{sent:?}");
 }
+
+/// A tracked Window under a masked effect shows as tracked there, as a
+/// grade's does: "Re-track", "Untrack" and the stretch it followed. The
+/// panel was told of no tracked masks, so after a track nothing showed it.
+#[test]
+fn a_tracked_window_under_a_masked_effect_shows_as_tracked() {
+    let mut c = fixture(&BuiltinEffect::GaussianBlur { radius: 3.0 });
+    let graph = c.picture_v2().unwrap().picture.graph.clone();
+    let blur = graph.nodes.iter().find(|n| klipp_graph_lift::effect_params::tag(n) == Some("gaussian_blur")).unwrap().id;
+    let level = klipp_graph_format::path::NodePath::new(klipp_graph_format::path::Root::Clip { clip: c.id.0 }, []);
+    let window = uuid::Uuid::new_v4();
+    let ops = crate::picture_mattes::add_ops(&graph, &level, crate::picture_mattes::matte("matte.window").unwrap(), window, (0.0, 0.0), Some(blur)).unwrap();
+    c.apply_picture_ops(&ops).unwrap();
+    let key = |t: f64, v: f32| klipp_core::Keyframe { time_secs: t, value: v, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() };
+    super::colour::edit_clip_masks(&mut c, window, "Track Window", |ms| ms.masks[0].keyframes.track_x = vec![key(0.0, 0.0), key(1.0, 0.1)]).unwrap();
+    c.track_points.push(klipp_core::TrackPoint { name: "Mask 1 tracker".into(), linked_mask: Some((window, 0)), ..Default::default() });
+    let mut run = Run::new(c);
+    let drawn = run.frame(Vec::new(), egui::Modifiers::NONE);
+    let texts: Vec<&str> = drawn.iter().map(|(t, _)| t.as_str()).collect();
+    assert!(texts.iter().any(|t| t.ends_with("Re-track")) && texts.iter().any(|t| t.ends_with("Untrack")), "{texts:?}");
+}
