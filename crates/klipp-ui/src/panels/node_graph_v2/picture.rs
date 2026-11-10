@@ -66,10 +66,15 @@ fn is_grade_node(n: &Node) -> bool {
 
 /// Whether `node` is on as the menu and canvas show it: a clip's grade
 /// group by the nodes inside it, which are what its Bypass switches
-/// (#2553); any other node by its own switch.
+/// (#2553); the clip's own Opacity by whether the clip has it on (the
+/// graph keeps that node off, as the clip applies its value when it lays
+/// the layers together, not the node); any other node by its own switch.
 fn shown_on(node: &Node) -> bool {
     match node.group.as_ref().filter(|_| node.type_id.as_str() == lt::GROUP) {
         Some(body) if body.graph.nodes.iter().any(is_grade_node) => body.graph.nodes.iter().any(|n| is_grade_node(n) && n.enabled),
+        _ if node.type_id.as_str() == klipp_graph_format::types::LEGACY_OPACITY => {
+            node.enabled || node.legacy_flags.as_ref().and_then(|f| f.was_enabled) == Some(true)
+        }
         _ => node.enabled,
     }
 }
@@ -1987,5 +1992,17 @@ mod tests {
         assert_eq!(d.graph(), before, "nothing changed");
         assert_eq!(d.steps(), 0);
     }
-}
 
+    /// A clip's Opacity node at 0.50, as the Video tab's typed value
+    /// makes it, is on: its card read "OFF" with a bypass mark, which
+    /// says the opacity is off, though the picture shows its 50 %.
+    #[test]
+    fn an_opacity_node_at_half_is_not_drawn_off() {
+        let t = |s| klipp_core::RationalTime::from_secs_f64(s, 25);
+        let c = TestClip::of(Clip::media(klipp_core::MediaId::new(), t(0.0), t(2.0), t(0.0), t(2.0))).effect(klipp_effects::BuiltinEffect::Opacity { value: 0.5 }).build();
+        let d = Dock::of(c);
+        d.at("Opacity");
+        let off = |d: &Dock| d.texts.iter().any(|(s, _)| s == "OFF" || s == "\u{00F8}");
+        assert!(!off(&d), "drawn off: {:?}", d.texts);
+    }
+}
