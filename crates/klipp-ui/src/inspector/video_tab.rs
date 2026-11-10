@@ -174,6 +174,7 @@ fn show_bin_media_video(
         source_in: Timecode { value: 0, rate: media.duration.rate },
         source_out: media.duration,
         picture: Default::default(),
+        effects_switched_off: Vec::new(),
         linked_clip_id: None,
         linked_title_asset_id: None,
         group_id: None,
