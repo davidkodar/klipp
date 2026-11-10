@@ -74,15 +74,27 @@ pub fn default_sidechain(seq: &klipp_timeline::Sequence, own: usize) -> Option<u
     let other_sound = |(i, t): &(usize, &klipp_timeline::Track)| *i != own && t.kind == klipp_timeline::TrackKind::Audio;
     let others = || seq.tracks.iter().enumerate().filter(other_sound);
     let pick = |muted: bool| {
-        let speech = others().filter(|(_, t)| t.muted == muted).find(|(_, t)| has_speech(t)).map(|(i, _)| i);
+        let speech = others().filter(|(_, t)| t.muted == muted).find(|(_, t)| has_speech(seq, t)).map(|(i, _)| i);
         speech.or_else(|| others().find(|(_, t)| t.muted == muted).map(|(i, _)| i))
     };
     pick(false).or_else(|| pick(true))
 }
 
-/// Whether any clip on `track` is speech by its role.
-fn has_speech(track: &klipp_timeline::Track) -> bool {
-    track.clips.iter().any(|c| c.role.as_ref().is_some_and(|r| r.is_speech()))
+/// Whether any clip on `track` is speech by its role: its own, or its
+/// picture's where the pair's role is set there, as the mix and the
+/// checks read it.
+fn has_speech(seq: &klipp_timeline::Sequence, track: &klipp_timeline::Track) -> bool {
+    track.clips.iter().any(|c| sound_role(seq, c).is_some_and(|r| r.is_speech()))
+}
+
+/// What `clip`'s sound is, by its role: its own when one was set other
+/// than speech, else that of the clip holding its sound settings (its
+/// picture), else its own. The rule `klipp-document` reads roles by.
+fn sound_role(seq: &klipp_timeline::Sequence, clip: &Clip) -> Option<klipp_core::roles::RoleRef> {
+    match &clip.role {
+        Some(r) if !r.is_speech() => Some(r.clone()),
+        own => sound_settings_clip(seq, clip).role.clone().or_else(|| own.clone()),
+    }
 }
 
 impl DuckSettings {
@@ -118,7 +130,7 @@ impl TrackInfo {
                 index: i,
                 name: if t.name.is_empty() { format!("Track {}", i + 1) } else { t.name.clone() },
                 muted: t.muted,
-                speech: has_speech(t),
+                speech: has_speech(seq, t),
             })
             .collect()
     }
@@ -1477,6 +1489,34 @@ mod clip_audio_tests {
         let (texts, cmds) = duck_section(&seq, 2);
         assert!(!texts.iter().any(|t| t.contains("muted")), "the heard voice: nothing of a mute: {texts:?}");
         assert!(ducks(&cmds), "and Apply ducks");
+    }
+
+    /// A voice whose role is set on its picture, not its sound clip, is
+    /// speech too, as the mix and the checks read it: offered first to duck
+    /// under, and named when it isn't the one listened to. Read from the
+    /// sound clip alone, it was neither.
+    #[test]
+    fn a_voice_marked_on_its_picture_is_speech() {
+        use klipp_timeline::{Track, TrackKind};
+        let mut seq = klipp_timeline::Sequence::new_default();
+        let mut picture = clip();
+        picture.role = Some(klipp_core::roles::RoleRef::of("dialogue"));
+        let mut sound = clip();
+        sound.linked_clip_id = Some(picture.id);
+        picture.linked_clip_id = Some(sound.id);
+        let mut v = Track::new("V1", TrackKind::Video);
+        v.clips.push(picture);
+        let mut music = Track::new("Music", TrackKind::Audio);
+        music.clips.push(clip());
+        let mut fx = Track::new("Effects", TrackKind::Audio);
+        fx.clips.push(clip());
+        let mut voice = Track::new("Interview", TrackKind::Audio);
+        voice.clips.push(sound);
+        seq.tracks = vec![v, music, fx, voice];
+        assert_eq!(default_sidechain(&seq, 1), Some(3), "the voice, though its role is on its picture");
+        let tracks = TrackInfo::of(&seq);
+        assert!(tracks.iter().find(|t| t.name == "Interview").is_some_and(|t| t.speech), "counted as speech");
+        assert!(!tracks.iter().find(|t| t.name == "Effects").unwrap().speech);
     }
 
     /// Auto Duck listens to one track: with speech on another, the section
