@@ -612,6 +612,9 @@ impl KlippApp {
         viewer_rect: egui::Rect,
         all_cmds: &mut Vec<AppCommand>,
     ) {
+        // A press inside marks it the active panel, so the keys go to it
+        // (Ctrl+A stays out of the timeline while it is).
+        crate::state::note_active_panel(&mut self.state, crate::state::PanelKind::Viewer, ui.ctx(), viewer_rect);
         // Click-to-focus. Allocated BEFORE the viewer's child UI so its
         // z-order sits below every interactive widget rendered later
         // (transform handles, scrub bar, transport buttons, etc.).
@@ -661,6 +664,9 @@ impl KlippApp {
         curve_editor_rect: egui::Rect,
         all_cmds: &mut Vec<AppCommand>,
     ) {
+        // A press inside marks it the active panel, so the keys go to it
+        // (Ctrl+A stays out of the timeline while it is).
+        crate::state::note_active_panel(&mut self.state, crate::state::PanelKind::CurveEditor, ui.ctx(), curve_editor_rect);
         self.curve_editor.sync_param_from_state(&self.state);
         crate::ui_util::panel_ui(ui, curve_editor_rect, "curve_editor_panel", |ui| {
             ui.set_min_size(curve_editor_rect.size());
@@ -675,6 +681,9 @@ impl KlippApp {
         audio_mixer_rect: egui::Rect,
         all_cmds: &mut Vec<AppCommand>,
     ) {
+        // A press inside marks it the active panel, so the keys go to it
+        // (Ctrl+A stays out of the timeline while it is).
+        crate::state::note_active_panel(&mut self.state, crate::state::PanelKind::AudioMixer, ui.ctx(), audio_mixer_rect);
         crate::ui_util::panel_ui(ui, audio_mixer_rect, "audio_mixer_panel", |ui| {
             ui.set_min_size(audio_mixer_rect.size());
             let panel_cmds = crate::panels::audio_mixer::show(ui, &mut self.state, &self.theme);
@@ -926,6 +935,9 @@ impl KlippApp {
         // "Texture has been destroyed" validation —
         // feedback_defer_drop_texture).
         self.refresh_letter_picker_texture(ui.ctx());
+        // A press inside marks it the active panel, so the keys go to it
+        // (Ctrl+A stays out of the timeline while it is).
+        crate::state::note_active_panel(&mut self.state, crate::state::PanelKind::Inspector, ui.ctx(), inspector_rect);
 
         // The Export column's title row carries the same collapse button
         // as the clip inspector's; it is applied after the closure so
@@ -1017,6 +1029,10 @@ impl KlippApp {
                 let shot_pieces = (self.prefs.color.offer_grade_to_shot_pieces && stand_in.is_none())
                     .then(|| super::grade_edits::shot_pieces_offer(&self.state.sequences[seq_idx], clip_id))
                     .flatten();
+                // A press inside marks the node inspector the active panel,
+                // so its keys are its own (Ctrl+A stays out of the timeline).
+                // Taken before the clip is borrowed to draw.
+                crate::state::note_active_panel(&mut self.state, crate::state::PanelKind::NodeInspector, ui.ctx(), ui.max_rect());
                 let clip = self.state.sequences[seq_idx].tracks.iter_mut()
                     .find_map(|t| t.find_clip_mut(clip_id));
                 if let Some(clip) = clip {

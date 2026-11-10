@@ -244,6 +244,7 @@ fn stepped_keys(ui: &mut egui::Ui, ctx: &mut RowCtx, desc: &ParamDesc, keys: Key
         prev_keyframe_time: keys.prev,
         next_keyframe_time: keys.next,
         current_interpolation: keys.interpolation,
+        current_ease: None,
     });
     if r.toggled {
         if keys.at_playhead {
@@ -361,6 +362,7 @@ fn numeric_row(ui: &mut egui::Ui, ctx: &mut RowCtx, input: RowInput) -> RowOutco
         prev_keyframe_time: keys.prev,
         next_keyframe_time: keys.next,
         current_interpolation: keys.interpolation,
+        current_ease: None,
     });
     // The row's track, for the Inspector to show it in focus (#2296).
     if let Some((_, clip)) = ctx.app.and_then(|app| app.selected_clip_loc()).filter(|_| has_diamond(desc)) {
