@@ -921,3 +921,32 @@ fn a_typed_mask_value_on_a_picture_window_is_one_step() {
     undo(&mut state);
     assert_eq!(feather(&state), vec![(0.0, 0.05)], "one undo takes the new key off");
 }
+
+/// A window tracked on a matte beside the clip's picture chain (a Window
+/// from the clip graph's menu): its mask is read where it is, and the
+/// tracker's keys are written there, as one undo step. The tracker read
+/// and wrote the clip's grade only, so the Track button did nothing.
+#[test]
+fn a_picture_graph_window_is_read_and_keyed_for_tracking() {
+    let (mut state, id, _) = state();
+    let c = clip(&state, id);
+    let graph = c.picture_v2().unwrap().picture.graph.clone();
+    let level = klipp_graph_format::path::NodePath::new(klipp_graph_format::path::Root::Clip { clip: id.0 }, []);
+    let window = klipp_nodes::NodeId::new_v4();
+    let ops = crate::picture_mattes::add_ops(&graph, &level, crate::picture_mattes::matte("matte.window").unwrap(), window, (0.0, 0.0), None).unwrap();
+    state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(id)).unwrap().apply_picture_ops(&ops).unwrap();
+    let c = clip(&state, id);
+    assert!(super::colour::clip_mask(&c, window, 0).is_some(), "the window read beside the chain");
+    let key = |t: f64, v: f32| Keyframe { time_secs: t, value: v, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() };
+    let clip_mut = state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(id)).unwrap();
+    let edit = super::colour::edit_clip_masks(clip_mut, window, "Track Window", |masks| {
+        masks.masks[0].keyframes.track_x = vec![key(0.0, 0.0), key(1.0, 0.1)];
+    })
+    .expect("an undo step");
+    assert!(matches!(edit, crate::history::EditCommand::PictureEdit { .. }), "{edit:?}");
+    let c = clip(&state, id);
+    assert_eq!(super::colour::clip_mask(&c, window, 0).unwrap().keyframes.track_x.len(), 2, "the track keys on the window");
+    let mut view = klipp_document::apply::DocumentView { sequences: &mut state.sequences, active: 0, media_pool: &mut state.media_pool, fps: &mut state.fps };
+    view.apply_inverse(&edit);
+    assert!(super::colour::clip_mask(&clip(&state, id), window, 0).unwrap().keyframes.track_x.is_empty(), "the step undoes them");
+}

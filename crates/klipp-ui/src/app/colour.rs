@@ -1537,19 +1537,19 @@ impl KlippApp {
                 let node_id = *node_id;
                 let mask_index = *mask_index;
                 let seq = &mut self.state.sequences[self.state.active_sequence_idx];
-                if let Some(clip) = seq.all_clips_mut().find(|c| c.id == clip_id) {
+                let edit = seq.all_clips_mut().find(|c| c.id == clip_id).and_then(|clip| {
                     clip.track_points.retain(|tp| tp.linked_mask != Some((node_id, mask_index)));
-                    clip.edit_grade(|graph| {
-                        if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == node_id) {
-                            if let Some(masks) = &mut node.params.masks {
-                                if let Some(mask) = masks.masks.get_mut(mask_index) {
-                                    mask.keyframes.center_x.clear();
-                                    mask.keyframes.center_y.clear();
-                                    mask.keyframes.clear_track();
-                                }
-                            }
+                    // In the grade, or beside the picture chain.
+                    edit_clip_masks(clip, node_id, "Clear Window Tracking", |masks| {
+                        if let Some(mask) = masks.masks.get_mut(mask_index) {
+                            mask.keyframes.center_x.clear();
+                            mask.keyframes.center_y.clear();
+                            mask.keyframes.clear_track();
                         }
-                    });
+                    })
+                });
+                if let Some(edit) = edit {
+                    self.state.push_history(edit);
                 }
                 self.state.dirty = true;
                 *needs_refresh = true;
@@ -3674,6 +3674,43 @@ fn write_mask_key(masks: &mut klipp_core::MaskStack, cmd: &AppCommand) {
         }
         _ => {}
     }
+}
+
+/// Mask `mask_index` of node `node_id` on `clip`: a window in its grade,
+/// or a matte beside its picture chain (added on the Composite page).
+pub(super) fn clip_mask(clip: &klipp_timeline::Clip, node_id: klipp_nodes::NodeId, mask_index: usize) -> Option<klipp_core::Mask> {
+    if let Some(node) = clip.grade().nodes.iter().find(|n| n.id == node_id) {
+        return node.params.masks.as_ref()?.masks.get(mask_index).cloned();
+    }
+    let lifted = clip.picture_v2().ok()?;
+    let node = lifted.picture.graph.nodes.iter().find(|n| n.id == node_id)?;
+    klipp_timeline::grade_node_for_run(node).ok()?.params.masks?.masks.get(mask_index).cloned()
+}
+
+/// Node `node_id`'s masks on `clip` changed by `f`, and the step that
+/// undoes it: a window in the grade as the grade's step; a matte beside
+/// the picture chain with its masks written whole by path, as the
+/// picture's. `None` when the clip has no such node, or nothing changed.
+pub(super) fn edit_clip_masks(clip: &mut klipp_timeline::Clip, node_id: klipp_nodes::NodeId, description: &'static str, f: impl FnOnce(&mut klipp_core::MaskStack)) -> Option<crate::history::EditCommand> {
+    use crate::history::EditCommand;
+    if clip.grade().nodes.iter().any(|n| n.id == node_id) {
+        let old_graph = clip.grade().clone();
+        clip.edit_grade(|graph| {
+            if let Some(masks) = graph.nodes.iter_mut().find(|n| n.id == node_id).and_then(|n| n.params.masks.as_mut()) {
+                f(masks);
+            }
+        });
+        let new_graph = clip.grade().clone();
+        return (old_graph != new_graph).then_some(EditCommand::SetNodeGraph { clip_id: clip.id, old_graph, new_graph });
+    }
+    let lifted = clip.picture_v2().ok()?;
+    let node = lifted.picture.graph.nodes.iter().find(|n| n.id == node_id)?;
+    let mut masks = klipp_timeline::grade_node_for_run(node).ok()?.params.masks?;
+    f(&mut masks);
+    let path = klipp_graph_format::path::NodePath::new(klipp_graph_format::path::Root::Clip { clip: clip.id.0 }, [node_id]);
+    let op = klipp_graph_lift::ops::GraphOp::SetParam { path, key: "masks".into(), value: klipp_graph_format::ParamValue::Text(serde_json::to_string(&masks).ok()?) };
+    let edit = clip.apply_picture_ops(&[op]).ok()?;
+    Some(EditCommand::PictureEdit { clip_id: clip.id, description, edit: Box::new(edit) })
 }
 
 /// A mask key command (#1947) on the clip it names, in the graph of that

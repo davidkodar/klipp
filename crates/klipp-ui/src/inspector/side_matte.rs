@@ -106,6 +106,8 @@ fn by_path(cmd: AppCommand, addr: &NodePath) -> Option<AppCommand> {
         // A mask's keys go as they are: the app writes them into the
         // matte's masks by path. Dropped here, a diamond set no key.
         AppCommand::AddMaskKeyframe { .. } | AppCommand::RemoveMaskKeyframe { .. } | AppCommand::ClearMaskKeyframes { .. } | AppCommand::MoveMaskKeyframe { .. } | AppCommand::SetMaskKeyframeInterpolation { .. } => cmd,
+        // Its tracking as well: the app reads and keys the window where it is.
+        AppCommand::TrackMaskRegion { .. } | AppCommand::RemoveMaskTracking { .. } => cmd,
         _ => return None,
     })
 }
@@ -172,5 +174,8 @@ mod key_tests {
         let addr = klipp_graph_format::path::NodePath::new(klipp_graph_format::path::Root::Clip { clip: uuid::Uuid::new_v4() }, [uuid::Uuid::new_v4()]);
         let add = klipp_core::AppCommand::AddMaskKeyframe { clip_id: klipp_core::ClipId::new(), node_id: uuid::Uuid::new_v4(), mask_index: 0, param: "feather".into(), time_secs: 0.0, value: 0.05 };
         assert!(matches!(super::by_path(add, &addr), Some(klipp_core::AppCommand::AddMaskKeyframe { .. })));
+        // And its Track button's commands: they were dropped too.
+        let track = klipp_core::AppCommand::TrackMaskRegion { clip_id: klipp_core::ClipId::new(), node_id: uuid::Uuid::new_v4(), mask_index: 0, perspective: false };
+        assert!(matches!(super::by_path(track, &addr), Some(klipp_core::AppCommand::TrackMaskRegion { .. })));
     }
 }
