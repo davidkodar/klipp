@@ -257,6 +257,10 @@ name = "sw_decode_scene_referred"
 path = "tests/sw_decode_scene_referred.rs"
 
 [[test]]
+name = "a_cut_keeps_the_sound_running"
+path = "tests/a_cut_keeps_the_sound_running.rs"
+
+[[test]]
 name = "the_shot_after_a_gap_is_taken_over_warm"
 path = "tests/the_shot_after_a_gap_is_taken_over_warm.rs"
 
