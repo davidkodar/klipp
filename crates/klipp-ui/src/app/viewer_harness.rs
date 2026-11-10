@@ -24,6 +24,8 @@ pub(super) struct Viewer {
     pub(super) texts: Vec<String>,
     /// The circles the last frame drew: centre and fill.
     pub(super) circles: Vec<(egui::Pos2, egui::Color32)>,
+    /// The filled rectangles the last frame drew, and their fill.
+    pub(super) rects: Vec<(egui::Rect, egui::Color32)>,
     /// The straight lines the last frame drew, a caret among them: their
     /// ends, and where each was clipped to.
     pub(super) lines: Vec<([egui::Pos2; 2], egui::Rect)>,
@@ -36,7 +38,7 @@ impl Viewer {
         // Paused on an empty timeline: the viewer shows a frame to
         // draw on.
         let state = AppState { playback: klipp_engine::PlaybackState::Paused, active_tool: Tool::Text, ..Default::default() };
-        let mut v = Self { ctx: egui::Context::default(), panel: ViewerPanel::default(), state, theme: KlippTheme::default(), clock: 0.0, sent: Vec::new(), modifiers: egui::Modifiers::NONE, texts: Vec::new(), circles: Vec::new(), lines: Vec::new(), window_over: None };
+        let mut v = Self { ctx: egui::Context::default(), panel: ViewerPanel::default(), state, theme: KlippTheme::default(), clock: 0.0, sent: Vec::new(), modifiers: egui::Modifiers::NONE, texts: Vec::new(), circles: Vec::new(), rects: Vec::new(), lines: Vec::new(), window_over: None };
         v.frame(Vec::new());
         v
     }
@@ -64,6 +66,10 @@ impl Viewer {
         }).collect();
         self.circles = out.shapes.iter().filter_map(|s| match &s.shape {
             egui::Shape::Circle(c) => Some((c.center, c.fill)),
+            _ => None,
+        }).collect();
+        self.rects = out.shapes.iter().filter_map(|s| match &s.shape {
+            egui::Shape::Rect(r) => Some((r.rect, r.fill)),
             _ => None,
         }).collect();
         self.lines = out.shapes.iter().filter_map(|s| match &s.shape {
@@ -332,4 +338,19 @@ mod viewer_menu_tests {
         v.frame(Vec::new());
         assert!(!menu(&v), "the prompts' right-click opened the menu");
     }
+}
+
+/// With the checkerboard switched on (by a project or the socket), nothing
+/// is painted over the picture: the viewer's frame is opaque, so the
+/// checker's grey tiles covered it whole and the picture was gone.
+#[test]
+fn the_checkerboard_never_covers_the_picture() {
+    let mut v = Viewer::new();
+    v.state.viewer_overlays.checkerboard = true;
+    v.frame(Vec::new());
+    v.frame(Vec::new());
+    let image = v.image_rect();
+    let tiles = [egui::Color32::from_rgb(80, 80, 80), egui::Color32::from_rgb(120, 120, 120)];
+    let over = v.rects.iter().filter(|(r, fill)| tiles.contains(fill) && image.intersects(*r)).count();
+    assert_eq!(over, 0, "{over} checker tiles over the picture");
 }

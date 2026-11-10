@@ -404,6 +404,10 @@ impl KlippApp {
                     let seq = &self.state.sequences[seq_idx];
                     crate::inspector::grade_view::snapshot_for_root(seq, clip_id, w.root(seq), &self.state.graph_descent_path, &mut self.state.pending_corrector, &mut self.state.root_grade_start)
                 });
+                // A press inside marks the node inspector the active panel,
+                // so its keys are its own (Ctrl+A stays out of the timeline).
+                // Taken before the clip is borrowed to draw.
+                crate::state::note_active_panel(&mut self.state, crate::state::PanelKind::NodeInspector, ui.ctx(), ui.max_rect());
                 let clip = self.state.sequences[seq_idx].tracks.iter_mut()
                     .find_map(|t| t.find_clip_mut(clip_id));
                 if let Some(clip) = clip {
@@ -782,6 +786,10 @@ impl KlippApp {
                         // The canvas's single keys are its own only while
                         // it has the focus (#1742).
                         self.node_graph_v2_panel.grade_keys = self.state.active_panel == Some(crate::state::PanelKind::NodeGraph);
+                        // A clip whose picture keeps a mask or a mix holds no
+                        // compound in its grade: its menu item says so.
+                        self.node_graph_v2_panel.grade_takes_no_compound = clip.picture_v2().ok().filter(|p| p.picture.is_truth())
+                            .map(|_| "This clip's effects use a mask or a mix, which a compound in its grade can't hold yet".to_owned());
                         let cmds = clip.edit_grade(|root| {
                             let resolved = Self::resolve_graph_at_path_mut(root, &path);
                             let graph = match resolved {
