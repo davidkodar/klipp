@@ -5,6 +5,93 @@ Each release lists what changed for people using Klipp. Versions follow
 
 ## Unreleased
 
+## 0.3.5 — 2026-11-11
+
+This release comes from extensive testing of effects, titles,
+compositing, keyframes, sound and the Colour page, on Arch and on other
+distributions and desktops. Below are the fixes that came out of it.
+
+### Editing and keyframes
+
+- Moving a key in the Dope Sheet, splitting a clip and many other key
+  edits are one undo step each, and undo names what it undoes.
+- A clip's keys move with it when its speed changes.
+- Copied keys paste onto the properties they were copied from.
+- The viewer's transform box and the Effects tab's Transform card follow
+  a clip's keys at the playhead.
+- Add, set, switch, reorder and remove an effect on every selected clip
+  at once, and turn all of a clip's effects off and on with one switch.
+- A typed number is taken once, when you leave the field, and Klipp says
+  when it is outside the field's range.
+
+### Titles
+
+- Readability protection decides light or dark text once per title, from
+  the letters that meet the picture, so stroked titles and titles beside
+  a dark block stay readable.
+- Wrapped and tracked lines stay inside the picture and inside their box,
+  and a title layer's box sits around its text in any alignment.
+- Pasting a style onto a title keeps the title's place and fit.
+- A new title goes on a free text track rather than over another title.
+
+### Compositing and masks
+
+- A mask made in a clip's node graph shows its shape and handles in the
+  viewer, and can be dragged, keyed and tracked. On a moved or scaled
+  clip the outline sits on the picture it cuts.
+- Chroma Key weighs brightness as well as colour, warns when its key
+  colour takes greys with it, and has an eyedropper for the key colour.
+- Surface tracking says why a track stopped, and measures a surface
+  correction instead of taking it as certain.
+
+### Colour
+
+- The Colour page's chart reading, shot matching, Qualifier, Colour
+  Warper, curves and window mattes were checked by a colourist walk and
+  an audit, and a number of their results and controls were corrected.
+- Colour tools leave the playhead where it is.
+
+### Sound
+
+- A linked picture's level keys play and export where the picture puts
+  them on J and L cuts.
+- Auto Duck ducks under every voice track, keeps the music down across
+  short gaps in the speech, and never listens to a muted voice.
+- A clip with no sound says so in the Audio tab and the audio effects
+  audition.
+- Bus effects are set in the mixer, and a track's level can be typed
+  into its readout.
+
+### Desktop and hardware
+
+- Files dragged from a file manager onto Klipp are imported on Wayland
+  (GNOME, KDE, Hyprland), as they were on X11.
+- A narrow window folds the side panels and the menu titles instead of
+  drawing them over the viewers.
+- A fresh install starts in the dark theme with your desktop's accent
+  colour. Following the desktop's dark or light is a separate switch in
+  Preferences → Appearance. The light theme has been brought to readable
+  contrast.
+- On machines without an NVIDIA or AMD driver, Klipp no longer tries
+  their hardware encoders first, and an HDR clip's preview keeps its tone
+  mapping.
+- Installed fonts are listed by their own names, so a title or an
+  imported project asking for "DejaVu Sans" finds it. Old names still
+  work.
+- The `.klipp` project type is defined for file managers, and
+  `klipp <project>/project.json` opens the project.
+
+### Known issues
+
+- Klipp has not yet been tested end to end on AMD or Intel GPUs.
+- The input colour space is set on the Edit page only, not the Colour
+  page. The film print LUTs don't say what kind of picture they expect.
+- 10-bit and 12-bit HEVC 4:4:4 files decode with the wrong colour
+  matrix.
+- 8K HEVC at about 2.7 Gbit/s drops frames on playback, and AV1 at
+  3.4 Gbit/s doesn't play, without saying why.
+- ALEXA MXF files carry no colour tags Klipp can read: set Log C by hand.
+
 ## 0.3.4 — 2026-11-07
 
 This release makes the AI analysis faster and lets it use the GPU on
