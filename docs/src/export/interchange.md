@@ -59,14 +59,17 @@ Other filters are dropped with a warning.
 
 ## FCPXML 1.9
 
-**Export** walks the **first video track only**. It writes:
+**Export** writes every video and audio track. The lowest video track becomes the primary storyline (the `spine`), with a gap for every hole in it. Each other video track becomes a connected lane above it, and each audio track a connected lane below it. It writes:
 
-- media clips on that track, with their position, length, source in point and enabled state
+- media clips, with their position, length, source in point and enabled state; a file used by several clips is one asset
+- a clip's linked picture and sound, each played from its own track
+- constant speed and reverse, as a `timeMap`; a speed ramp is written as one even speed over the same frames
+- a constant clip volume, as `adjust-volume`
 - the clips' markers
-- titles on that track, as FCPXML titles carrying their text
+- titles, as FCPXML titles carrying their text, but not their look
 - sequence markers, with their duration and comment; chapters as chapter markers and to-dos as to-do markers, done or not. FCPXML has no other marker kinds and no marker colours, so a comment, best take, section or review marker, or a colour other than its kind's, is named in the export report with what it comes back as
 
-Gaps on that track stay gaps; compound clips, generators and adjustment layers become named gaps. Other video tracks, audio tracks, transitions, audio levels, grades and effects are not exported.
+On the storyline, compound clips, generators and adjustment layers become named gaps of the same length; on a lane they are left out. A clip that overlaps the one before it on the storyline track cannot be held there and is left out. Transitions become cuts. Grades and picture effects, volume keyframes, pan, fades, audio effects and caption tracks are not exported. A muted audio track or a hidden video track is written as playing. Each of these is named in the export report.
 
 **Import** reads the primary storyline (the `spine`) onto a video track, and connected clips onto lane tracks above and below it: asset clips and clips with their in points and enabled state, gaps, transitions joined to their clips, titles as editable titles, timeMap speed, opacity and volume with their keyframes, and markers with their notes, chapters kept as chapters and to-dos as to-dos (red while open, green when done); other markers come in blue, as FCPXML has no marker colours. Transforms, effects, compound clips, multicam clips, synchronised clips and auditions are named in the import report. An FCPXML saved as `.xml` is read too.
 
@@ -94,5 +97,5 @@ The header says `DROP FRAME` at 29.97 and 59.94 fps and `NON-DROP FRAME` otherwi
 |---|---|
 | Hand a multitrack edit to another application | OpenTimelineIO, or Kdenlive for Kdenlive itself |
 | Send a conform list against camera reels | EDL |
-| Hand a single-track cut to an FCPXML reader | FCPXML |
+| Hand a multitrack edit to an FCPXML reader | FCPXML |
 | Keep everything, including grades and effects | Klipp's own project file |

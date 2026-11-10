@@ -539,6 +539,7 @@ impl KlippApp {
             speed: 1.0,
             speed_keyframes: Vec::new(),
             keep_pitch: false,
+            sound_apart: false,
             hold: None,
             source_rotation: 0,
             enabled: true,
@@ -3903,21 +3904,7 @@ pub(crate) fn apply_title_preset(tb: &mut klipp_timeline::TextBox, fx: &mut klip
 /// new one on top: where a title made at the playhead goes, from the
 /// title button or the Text tool (#1713).
 pub(super) fn free_text_track(state: &mut AppState, timeline_in: klipp_core::Timecode, duration_frames: u32) -> usize {
-    let fps_rate = state.sequences[state.active_sequence_idx].fps.rate();
-    let timeline_out = timeline_in.rescale_to(fps_rate) + klipp_core::RationalTime::from_frames(duration_frames as i64, fps_rate);
-    let seq = &mut state.sequences[state.active_sequence_idx];
-    let free = seq.tracks.iter().position(|t| {
-        t.kind == klipp_timeline::TrackKind::Text
-            && !t.clips.iter().any(|c| c.timeline_in < timeline_out && c.timeline_out > timeline_in)
-    });
-    match free {
-        Some(i) => i,
-        None => {
-            let n = seq.tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Text).count() + 1;
-            seq.tracks.insert(0, klipp_timeline::Track::new(&format!("Text {n}"), klipp_timeline::TrackKind::Text));
-            0
-        }
-    }
+    crate::browser::titles_tab::free_text_track(state, timeline_in, duration_frames)
 }
 
 /// A title clip of `state.pending_title_data` (else the default title) on
@@ -4004,6 +3991,7 @@ pub(super) fn add_title_clip(
         speed: 1.0,
         speed_keyframes: Vec::new(),
         keep_pitch: false,
+        sound_apart: false,
         hold: None,
         source_rotation: 0,
         enabled: true,

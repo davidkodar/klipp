@@ -124,7 +124,7 @@ HDR delivery itself (HLG or HDR10) is chosen separately; see [Exporting Projects
 |--------|--------|--------|
 | OpenTimelineIO (`.otio`) | yes | yes |
 | Kdenlive / MLT (`.kdenlive`) | yes | yes |
-| FCPXML 1.9 | yes (storyline and connected clips) | yes (first video track only) |
+| FCPXML 1.9 | yes (storyline and connected clips) | yes (storyline and connected clips) |
 | Final Cut Pro 7 XML (xmeml) | yes | no |
 | CMX 3600 EDL | yes (cuts) | yes (all video and audio tracks) |
 | AAF, through OpenTimelineIO | yes | yes |
