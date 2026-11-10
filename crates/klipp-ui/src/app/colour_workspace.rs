@@ -404,6 +404,10 @@ impl KlippApp {
                     let seq = &self.state.sequences[seq_idx];
                     crate::inspector::grade_view::snapshot_for_root(seq, clip_id, w.root(seq), &self.state.graph_descent_path, &mut self.state.pending_corrector, &mut self.state.root_grade_start)
                 });
+                // A press inside marks the node inspector the active panel,
+                // so its keys are its own (Ctrl+A stays out of the timeline).
+                // Taken before the clip is borrowed to draw.
+                crate::state::note_active_panel(&mut self.state, crate::state::PanelKind::NodeInspector, ui.ctx(), ui.max_rect());
                 let clip = self.state.sequences[seq_idx].tracks.iter_mut()
                     .find_map(|t| t.find_clip_mut(clip_id));
                 if let Some(clip) = clip {

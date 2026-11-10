@@ -709,6 +709,15 @@ impl crate::state::AppState {
         whole(self, vec![op], label)
     }
 
+    /// Whether `cmd` is a keyframe command on one of a clip's placement or
+    /// opacity lanes, which the path writes and records ([`Self::lane_command`]):
+    /// the app tries it there before its keyframe handlers, whose list
+    /// write of a key's move recorded no step (an empty batch, so the undo
+    /// after a Dope Sheet move took back the edit before it).
+    pub(crate) fn is_lane_key_command(&self, cmd: &AppCommand) -> bool {
+        self.lane_target(cmd).is_some()
+    }
+
     /// The placement or opacity lane a keyframe command on one lane edits
     /// (or a key drag over one names), by its node path and key.
     fn lane_target(&self, cmd: &AppCommand) -> Option<(NodePath, ParamKey)> {
