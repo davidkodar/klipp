@@ -860,6 +860,76 @@ fn easing_several_keys_names_the_step_with_their_count() {
     assert_eq!(state.active_history().undo_label(), Some("Ease In-Out (2 keys)"));
 }
 
+/// The diamond by a mask's Feather sets a key on a mask made in the clip's
+/// picture graph (a Window from its menu), as it does on a grade's: the
+/// key command found no such node in the grade and nothing took it.
+#[test]
+fn a_mask_key_lands_on_a_picture_graph_window() {
+    let (mut state, id, _) = state();
+    let c = clip(&state, id);
+    let graph = c.picture_v2().unwrap().picture.graph.clone();
+    let level = klipp_graph_format::path::NodePath::new(klipp_graph_format::path::Root::Clip { clip: id.0 }, []);
+    let window = klipp_nodes::NodeId::new_v4();
+    let ops = crate::picture_mattes::add_ops(&graph, &level, crate::picture_mattes::matte("matte.window").unwrap(), window, (0.0, 0.0), None).unwrap();
+    state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(id)).unwrap().apply_picture_ops(&ops).unwrap();
+    let feather_keys = |state: &AppState| {
+        let lifted = clip(state, id).picture_v2().unwrap();
+        let node = lifted.picture.graph.nodes.iter().find(|n| n.id == window).unwrap().clone();
+        let masks = klipp_timeline::grade_node_for_run(&node).unwrap().params.masks.unwrap();
+        masks.masks[0].keyframes.feather.iter().map(|k| (k.time_secs, k.value)).collect::<Vec<_>>()
+    };
+    let steps = state.active_history().undo_count();
+    let add = |t: f64, v: f32| AppCommand::AddMaskKeyframe { clip_id: id, node_id: window, mask_index: 0, param: "feather".into(), time_secs: t, value: v };
+    assert!(matches!(super::colour::mask_key_edit(&mut state, &add(0.0, 0.05), true), Some(Ok(()))), "the key command is taken");
+    assert!(matches!(super::colour::mask_key_edit(&mut state, &add(3.0, 0.4), true), Some(Ok(()))));
+    assert_eq!(feather_keys(&state), vec![(0.0, 0.05), (3.0, 0.4)], "both keys on the window's feather");
+    assert_eq!(state.active_history().undo_count(), steps + 2, "a step each");
+    let remove = AppCommand::RemoveMaskKeyframe { clip_id: id, node_id: window, mask_index: 0, param: "feather".into(), time_secs: 3.0 };
+    assert!(matches!(super::colour::mask_key_edit(&mut state, &remove, true), Some(Ok(()))));
+    assert_eq!(feather_keys(&state), vec![(0.0, 0.05)], "the 3 s key taken off");
+    undo(&mut state);
+    assert_eq!(feather_keys(&state), vec![(0.0, 0.05), (3.0, 0.4)], "one undo puts it back");
+}
+
+/// A value typed on a picture-graph Window's keyed Feather at a new time
+/// (the field's gesture around the writes its digits make, "0" then
+/// "0.4") is one step, and one undo takes the new key off. It was two,
+/// the first a key at 0, so one undo left the clip with no feather there.
+#[test]
+fn a_typed_mask_value_on_a_picture_window_is_one_step() {
+    let (mut state, id, _) = state();
+    let c = clip(&state, id);
+    let graph = c.picture_v2().unwrap().picture.graph.clone();
+    let level = klipp_graph_format::path::NodePath::new(klipp_graph_format::path::Root::Clip { clip: id.0 }, []);
+    let window = klipp_nodes::NodeId::new_v4();
+    let ops = crate::picture_mattes::add_ops(&graph, &level, crate::picture_mattes::matte("matte.window").unwrap(), window, (0.0, 0.0), None).unwrap();
+    state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(id)).unwrap().apply_picture_ops(&ops).unwrap();
+    let add = |t: f64, v: f32| AppCommand::AddMaskKeyframe { clip_id: id, node_id: window, mask_index: 0, param: "feather".into(), time_secs: t, value: v };
+    assert!(matches!(super::colour::mask_key_edit(&mut state, &add(0.0, 0.05), true), Some(Ok(()))));
+    let feather = |state: &AppState| {
+        let lifted = clip(state, id).picture_v2().unwrap();
+        let node = lifted.picture.graph.nodes.iter().find(|n| n.id == window).unwrap().clone();
+        klipp_timeline::grade_node_for_run(&node).unwrap().params.masks.unwrap().masks[0].keyframes.feather.iter().map(|k| (k.time_secs, k.value)).collect::<Vec<_>>()
+    };
+    let steps = state.active_history().undo_count();
+    let addr = klipp_graph_format::path::NodePath::new(klipp_graph_format::path::Root::Clip { clip: id.0 }, [window]);
+    // As the matte panel sends the field's gesture (by path) around it.
+    state.before_dispatch(&AppCommand::BeginParamEditAt { addr: addr.clone(), key: "masks".into() });
+    state.path_command(&AppCommand::BeginParamEditAt { addr: addr.clone(), key: "masks".into() });
+    for v in [0.0, 0.4] {
+        let cmd = add(4.0, v);
+        state.before_dispatch(&cmd);
+        assert!(matches!(super::colour::mask_key_edit(&mut state, &cmd, false), Some(Ok(()))));
+    }
+    let end = AppCommand::EndParamEditAt { addr, key: "masks".into() };
+    state.before_dispatch(&end);
+    state.path_command(&end);
+    assert_eq!(feather(&state), vec![(0.0, 0.05), (4.0, 0.4)]);
+    assert_eq!(state.active_history().undo_count(), steps + 1, "one step");
+    undo(&mut state);
+    assert_eq!(feather(&state), vec![(0.0, 0.05)], "one undo takes the new key off");
+}
+
 /// Keys copied from several properties (Position X and Opacity, picked
 /// together) paste onto another clip on those same properties, at the
 /// playhead, as far apart as they were, in one step. Only the property
