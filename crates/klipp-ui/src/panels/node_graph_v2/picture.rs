@@ -229,7 +229,10 @@ impl<'a> PictureCanvas<'a> {
                 .unwrap_or(defaults[&n.id]);
             (n.id, p)
         }).collect();
-        let after = selected.filter(|id| nodes.iter().any(|n| n.node.id == *id && !n.kind().is_output()))
+        // After the picked node when it is on the picture's chain; a node
+        // beside it (a matte, a source) gives no picture to follow, and an
+        // effect after it read its matte as one (PortTypeMismatch).
+        let after = selected.filter(|id| nodes.iter().any(|n| n.node.id == *id && !n.kind().is_output()) && on_the_chain(graph, *id))
             .or_else(|| add_after(graph));
         Ok(Self { graph, level, nodes, edges, positions,
             frames: graph.ui.frames.iter().filter_map(|v| serde_json::from_value(v.clone()).ok()).collect(),
@@ -294,6 +297,23 @@ impl<'a> PictureCanvas<'a> {
 
 /// The last effect on the primary picture chain, otherwise its display
 /// or grade stage. Storage order and side branches never choose the site.
+/// Whether `id` is on `graph`'s picture chain: reached from its output
+/// back along each node's primary input.
+fn on_the_chain(graph: &Graph, id: NodeId) -> bool {
+    let mut at = graph.output;
+    let mut seen = std::collections::HashSet::new();
+    while seen.insert(at) {
+        if at == id {
+            return true;
+        }
+        let Some(node) = graph.nodes.iter().find(|n| n.id == at) else { return false };
+        let Some(port) = klipp_timeline::RegistryCatalog.primary_input(node) else { return false };
+        let Some(edge) = graph.edges.iter().find(|e| e.to == (at, port.clone())) else { return false };
+        at = edge.from.0;
+    }
+    false
+}
+
 fn add_after(graph: &Graph) -> Option<NodeId> {
     let mut at = graph.output;
     let mut seen = std::collections::HashSet::new();
@@ -944,6 +964,34 @@ mod tests {
         assert!(graph.edges.iter().any(|e| e.from.0 == source && e.to.0 == key), "the key reads the source");
         let on_wire = AppCommand::AddNodeWired { clip_id: c.id, kind: "matte.window".into(), position: (0.0, 0.0), from: source, from_port: 0 };
         assert!(model.refusal(&on_wire).is_some_and(|why| why.contains("add it from its menu")));
+    }
+
+    /// With a Window added from the menu, and it picked (as the editor
+    /// leaves the node it just added) or nothing picked, adding an effect
+    /// from the menu adds it to the clip's chain. It was put after the
+    /// Window, reading its matte as a picture, and refused as an invalid
+    /// graph (PortTypeMismatch on the effect's "in").
+    #[test]
+    fn an_effect_added_after_a_window_goes_on_the_chain() {
+        for picked_window in [false, true] {
+            let mut c = clip();
+            let graph = c.picture_v2().unwrap().picture.graph.clone();
+            let model = PictureCanvas::new(&graph, root(&c), None).unwrap();
+            let window = NodeId::new_v4();
+            let AppCommand::GraphOps { ops, .. } = model.command(AppCommand::AddNode { clip_id: c.id, kind: "matte.window".into(), node_id: Some(window), position: (40.0, 300.0) }).unwrap() else { panic!("one graph batch") };
+            c.apply_picture_ops(&ops).unwrap();
+            let graph = c.picture_v2().unwrap().picture.graph.clone();
+            let model = PictureCanvas::new(&graph, root(&c), picked_window.then_some(window)).unwrap();
+            let add = AppCommand::AddNode { clip_id: c.id, kind: "sharpen".into(), node_id: None, position: (300.0, 120.0) };
+            let refused = model.refusal(&add);
+            let applied = refused.clone().map_or_else(|| {
+                let AppCommand::GraphOps { ops, .. } = model.command(add).unwrap() else { panic!("one graph batch") };
+                c.apply_picture_ops(&ops).map_err(|e| e.to_string())
+            }, Err);
+            assert!(applied.is_ok(), "Window picked {picked_window}: {applied:?}");
+            let graph = &c.picture_v2().unwrap().picture.graph;
+            assert!(graph.nodes.iter().any(|n| klipp_graph_lift::effect_params::tag(n) == Some("sharpen")), "Window picked {picked_window}: the sharpen is in");
+        }
     }
 
     /// A Solid Colour on a merge's picture, and a window on a blur's mask,
