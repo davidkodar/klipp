@@ -32,11 +32,23 @@ pub fn hardware() -> Hardware {
     let (cpu, gpu, fallback, cuda) = FIXED
         .get_or_init(|| {
             let cpuinfo = std::fs::read_to_string("/proc/cpuinfo").unwrap_or_default();
-            let lspci = std::process::Command::new("lspci").output().ok().and_then(|o| String::from_utf8(o.stdout).ok()).unwrap_or_default();
+            let lspci = match std::process::Command::new("lspci").output() {
+                Ok(o) => String::from_utf8(o.stdout).unwrap_or_default(),
+                Err(e) => {
+                    tracing::info!("lspci can't run ({e}): the graphics are named by the adapter in use");
+                    String::new()
+                }
+            };
             let soc = crate::soc_info::gpu();
             let nvidia = std::fs::read_to_string("/proc/driver/nvidia/version").ok().as_deref().and_then(nvidia_version);
             // nvidia-smi only where NVIDIA's module is loaded.
-            let cuda = nvidia.as_ref().and(std::process::Command::new("nvidia-smi").output().ok()).and_then(|o| String::from_utf8(o.stdout).ok()).as_deref().and_then(cuda_version);
+            let cuda = nvidia.as_ref().and_then(|_| match std::process::Command::new("nvidia-smi").output() {
+                Ok(o) => Some(o),
+                Err(e) => {
+                    tracing::info!("nvidia-smi can't run ({e}): the CUDA version isn't shown");
+                    None
+                }
+            }).and_then(|o| String::from_utf8(o.stdout).ok()).as_deref().and_then(cuda_version);
             let fallback = nvidia.map(|v| format!("NVIDIA {v}")).or_else(|| soc.as_ref().map(|g| g.detail.clone()));
             (cpu_from(&cpuinfo, crate::soc_info::cpu_name), gpu_from(&lspci, soc.map(|g| g.name)), fallback, cuda)
         })
@@ -46,7 +58,19 @@ pub fn hardware() -> Hardware {
         Some(c) => format!("{d}, CUDA {c}"),
         None => d,
     });
+    // Without lspci (a Flatpak's sandbox has none), the adapter drawing.
+    let adapter = klipp_effects::gpu_context::GpuContext::shared_if_made().and_then(|c| c.adapter_info().map(|i| i.name.clone()));
+    let gpu = gpu_name(&gpu, adapter.as_deref());
     Hardware { cpu, gpu, driver }
+}
+
+/// The graphics' name: lspci's (`from_lspci`), else, where that said
+/// nothing, the adapter Klipp draws with.
+fn gpu_name(from_lspci: &str, adapter: Option<&str>) -> String {
+    match adapter.map(str::trim).filter(|a| !a.is_empty()) {
+        Some(a) if from_lspci == "Unknown" => a.to_string(),
+        _ => from_lspci.to_string(),
+    }
 }
 
 /// `/proc/cpuinfo`'s first model name, else `soc` (the chip's name).
@@ -114,6 +138,18 @@ fn cuda_version(text: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    /// Without lspci (a Flatpak's sandbox has none) the graphics are named
+    /// by the adapter Klipp draws with, not "Unknown"; lspci's name, where
+    /// it gave one, stays.
+    #[test]
+    fn a_gpu_lspci_cant_name_is_named_by_the_adapter() {
+        assert_eq!(super::gpu_name("Unknown", Some("NVIDIA GeForce RTX 4080")), "NVIDIA GeForce RTX 4080");
+        assert_eq!(super::gpu_name("AMD Radeon RX 7900 XTX", Some("AMD Radeon RX 7900 XTX (RADV NAVI31)")), "AMD Radeon RX 7900 XTX");
+        assert_eq!(super::gpu_name("Unknown", None), "Unknown");
+        assert_eq!(super::gpu_name("Unknown", Some(" ")), "Unknown");
+        assert_eq!(super::gpu_from("", None), "Unknown", "no lspci output");
+    }
+
     use super::*;
 
     #[test]
