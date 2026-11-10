@@ -276,7 +276,19 @@ impl NewInspectorPanel {
         // ── Animated strip (#2296) ──
         // The clip's animated parameters, on every tab: a chip opens the
         // tab that holds one and brings it into focus.
+        // Its row is there before anything is keyed, so the first key
+        // moves no field: it came in above the tabs with the first key and
+        // put every field a row lower, under a double-click aimed at it.
         let animated = clip_info.map(|(_, c)| crate::param_focus::animated(c)).unwrap_or_default();
+        if clip_info.is_some() && animated.is_empty() {
+            ui.add_space(4.0);
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = egui::vec2(4.0, 4.0);
+                // As tall as a chip, unframed and dim.
+                ui.add(egui::Button::new(egui::RichText::new("Nothing animated").size(10.0).color(theme.text_dim)).frame(false).small().sense(egui::Sense::hover()));
+            });
+            ui.add_space(2.0);
+        }
         if !animated.is_empty() {
             // Up to this many chips show at once; more fold behind a count.
             const SHOWN: usize = 4;
