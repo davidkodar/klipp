@@ -66,12 +66,35 @@ impl Default for DuckSettings {
 
 /// The track a clip on track `own` ducks under, as first offered: the
 /// first other sound track with speech on it, else the first other sound
-/// track. `None` when there is no other: then nothing is offered, where
-/// track 0 (a picture track) was, and the duck followed its clips.
+/// track, each heard before muted (a muted voice ducked the music under
+/// what no one hears, with nothing said). `None` when there is no other:
+/// then nothing is offered, where track 0 (a picture track) was, and the
+/// duck followed its clips.
 pub fn default_sidechain(seq: &klipp_timeline::Sequence, own: usize) -> Option<usize> {
     let other_sound = |(i, t): &(usize, &klipp_timeline::Track)| *i != own && t.kind == klipp_timeline::TrackKind::Audio;
-    let speech = seq.tracks.iter().enumerate().filter(other_sound).find(|(_, t)| t.clips.iter().any(|c| c.role.as_ref().is_some_and(|r| r.is_speech()))).map(|(i, _)| i);
-    speech.or_else(|| seq.tracks.iter().enumerate().find(other_sound).map(|(i, _)| i))
+    let others = || seq.tracks.iter().enumerate().filter(other_sound);
+    let pick = |muted: bool| {
+        let speech = others().filter(|(_, t)| t.muted == muted).find(|(_, t)| has_speech(seq, t)).map(|(i, _)| i);
+        speech.or_else(|| others().find(|(_, t)| t.muted == muted).map(|(i, _)| i))
+    };
+    pick(false).or_else(|| pick(true))
+}
+
+/// Whether any clip on `track` is speech by its role: its own, or its
+/// picture's where the pair's role is set there, as the mix and the
+/// checks read it.
+fn has_speech(seq: &klipp_timeline::Sequence, track: &klipp_timeline::Track) -> bool {
+    track.clips.iter().any(|c| sound_role(seq, c).is_some_and(|r| r.is_speech()))
+}
+
+/// What `clip`'s sound is, by its role: its own when one was set other
+/// than speech, else that of the clip holding its sound settings (its
+/// picture), else its own. The rule `klipp-document` reads roles by.
+fn sound_role(seq: &klipp_timeline::Sequence, clip: &Clip) -> Option<klipp_core::roles::RoleRef> {
+    match &clip.role {
+        Some(r) if !r.is_speech() => Some(r.clone()),
+        own => sound_settings_clip(seq, clip).role.clone().or_else(|| own.clone()),
+    }
 }
 
 impl DuckSettings {
@@ -89,9 +112,40 @@ impl DuckSettings {
     }
 }
 
+#[derive(Default)]
 pub struct TrackInfo {
     pub index: usize,
     pub name: String,
+    pub muted: bool,
+    /// Speech on it, by its clips' roles.
+    pub speech: bool,
+}
+
+impl TrackInfo {
+    /// The sequence's sound tracks, as Auto Duck offers them.
+    pub fn of(seq: &klipp_timeline::Sequence) -> Vec<Self> {
+        seq.tracks.iter().enumerate()
+            .filter(|(_, t)| t.kind == klipp_timeline::TrackKind::Audio)
+            .map(|(i, t)| Self {
+                index: i,
+                name: if t.name.is_empty() { format!("Track {}", i + 1) } else { t.name.clone() },
+                muted: t.muted,
+                speech: has_speech(seq, t),
+            })
+            .collect()
+    }
+}
+
+/// What the duck under `side` leaves out, said: the other heard tracks
+/// with speech, which it doesn't listen to. `None` when there are none.
+fn not_counted(tracks: &[TrackInfo], own: usize, side: &TrackInfo) -> Option<String> {
+    let others: Vec<&str> = tracks.iter().filter(|t| t.index != own && t.index != side.index && t.speech && !t.muted).map(|t| t.name.as_str()).collect();
+    let names = match others.as_slice() {
+        [] => return None,
+        [one] => format!("{one} isn't counted"),
+        [rest @ .., last] => format!("{} and {last} aren't counted", rest.join(", ")),
+    };
+    Some(format!("Ducks under {} only; {names}.", side.name))
 }
 
 /// clip_ctx: Some((clip, track_idx, is_timeline_clip)) or None for no-selection state.
@@ -907,6 +961,7 @@ fn show_clip_audio(
                 prev_keyframe_time: None,
                 next_keyframe_time: None,
                 current_interpolation: None,
+                current_ease: None,
             });
             slider_row(ui, theme, "duck_level", "Duck Level", &mut duck.level, 0.0..=1.0, 0.2, 0.005, 2, "", empty_ks, false);
             ui.add_space(4.0);
@@ -921,10 +976,14 @@ fn show_clip_audio(
             // source, nor a track with no sound (none other to choose).
             let no_other = !tracks.iter().any(|t| t.index != track_idx);
             let is_self_duck = duck.sidechain_track == track_idx || !tracks.iter().any(|t| t.index == duck.sidechain_track);
+            let side = tracks.iter().find(|t| t.index == duck.sidechain_track).filter(|_| !is_self_duck);
+            // A muted sidechain: the duck would follow a voice no one hears.
+            let muted = side.filter(|t| t.muted).map(|t| format!("{} is muted: this clip would duck under a voice nobody hears.", t.name));
+            let note = side.and_then(|t| not_counted(tracks, track_idx, t));
             ui.horizontal(|ui| {
                 ui.add_space(14.0);
                 let btn = ui.add_enabled(
-                    !is_self_duck,
+                    !is_self_duck && muted.is_none(),
                     egui::Button::new(
                         egui::RichText::new("Apply Auto Duck").size(11.0).color(theme.text_primary),
                     )
@@ -952,6 +1011,15 @@ fn show_clip_audio(
                             .size(super::rows::TEXT)
                             .color(theme.marker_warning),
                     );
+                });
+            }
+            for (text, warn) in [(muted, true), (note, false)] {
+                let Some(text) = text else { continue };
+                ui.add_space(2.0);
+                ui.horizontal(|ui| {
+                    ui.add_space(14.0);
+                    let color = if warn { theme.marker_warning } else { theme.text_secondary };
+                    ui.add(egui::Label::new(egui::RichText::new(text).size(super::rows::TEXT).color(color)).wrap());
                 });
             }
             ui.add_space(4.0);
@@ -1336,7 +1404,7 @@ mod clip_audio_tests {
         let ctx = egui::Context::default();
         crate::icons::install(&ctx);
         let mut d = |ui: &mut egui::Ui, theme: &KlippTheme, cmds: &mut Vec<AppCommand>| {
-            let tracks = [TrackInfo { index: 1, name: "Voice".into() }];
+            let tracks = [TrackInfo { index: 1, name: "Voice".into(), ..Default::default() }];
             show(ui, theme, &state, Some((&clip, 1, true)), cmds, (0.0, 0.0), None, Some(2), 0.5, &mut duck, &tracks);
         };
         let (texts, _) = frame(&ctx, Vec::new(), &mut d);
@@ -1364,13 +1432,119 @@ mod clip_audio_tests {
         assert_eq!(default_sidechain(&seq, 3), Some(1), "another sound track, never its own");
     }
 
+    /// Music on A1 and two voices: `voice_a_muted` mutes the first. The
+    /// tracks as the inspector lists them.
+    fn music_and_two_voices(voice_a_muted: bool) -> klipp_timeline::Sequence {
+        use klipp_timeline::{Track, TrackKind};
+        let mut seq = klipp_timeline::Sequence::new_default();
+        let mut music = Track::new("Music", TrackKind::Audio);
+        music.clips.push(clip());
+        let voice = |name: &str| {
+            let mut t = Track::new(name, TrackKind::Audio);
+            let mut c = clip();
+            c.role = Some(klipp_core::roles::RoleRef::of("dialogue"));
+            t.clips.push(c);
+            t
+        };
+        let mut a = voice("Voice A");
+        a.muted = voice_a_muted;
+        seq.tracks = vec![music, a, voice("Voice B")];
+        seq
+    }
+
+    /// The music's Auto Duck section with `sidechain` chosen: what it
+    /// says, and what a click on Apply sends.
+    fn duck_section(seq: &klipp_timeline::Sequence, sidechain: usize) -> (Vec<String>, Vec<AppCommand>) {
+        let mut state = AppState::default();
+        state.sequences[0] = seq.clone();
+        let music = seq.tracks[0].clips[0].clone();
+        let mut duck = DuckSettings { sidechain_track: sidechain, ..DuckSettings::default() };
+        let tracks = TrackInfo::of(seq);
+        let ctx = egui::Context::default();
+        crate::icons::install(&ctx);
+        let mut d = |ui: &mut egui::Ui, theme: &KlippTheme, cmds: &mut Vec<AppCommand>| {
+            show(ui, theme, &state, Some((&music, 0, true)), cmds, (0.0, 0.0), None, Some(2), 0.5, &mut duck, &tracks);
+        };
+        let (texts, _) = frame(&ctx, Vec::new(), &mut d);
+        let at = texts.iter().find(|(t, _)| t == "Apply Auto Duck").expect("the button").1;
+        let cmds = click(&ctx, at, &mut d);
+        (texts.into_iter().map(|(t, _)| t).collect(), cmds)
+    }
+
+    fn ducks(cmds: &[AppCommand]) -> bool {
+        cmds.iter().any(|c| matches!(c, AppCommand::AutoDuckAudio { .. }))
+    }
+
+    /// A muted voice is not offered: the music would duck under a voice
+    /// no one hears. Chosen anyway, the section says so and Apply is
+    /// refused with the reason; offered first and applied, it ducked the
+    /// music with nothing said.
+    #[test]
+    fn a_muted_voice_is_not_ducked_under() {
+        let seq = music_and_two_voices(true);
+        assert_eq!(default_sidechain(&seq, 0), Some(2), "the voice that is heard");
+        let (texts, cmds) = duck_section(&seq, 1);
+        let reason = "Voice A is muted: this clip would duck under a voice nobody hears.";
+        assert!(texts.iter().any(|t| t == reason), "the reason: {texts:?}");
+        assert!(!ducks(&cmds), "Apply refused: {cmds:?}");
+        let (texts, cmds) = duck_section(&seq, 2);
+        assert!(!texts.iter().any(|t| t.contains("muted")), "the heard voice: nothing of a mute: {texts:?}");
+        assert!(ducks(&cmds), "and Apply ducks");
+    }
+
+    /// A voice whose role is set on its picture, not its sound clip, is
+    /// speech too, as the mix and the checks read it: offered first to duck
+    /// under, and named when it isn't the one listened to. Read from the
+    /// sound clip alone, it was neither.
+    #[test]
+    fn a_voice_marked_on_its_picture_is_speech() {
+        use klipp_timeline::{Track, TrackKind};
+        let mut seq = klipp_timeline::Sequence::new_default();
+        let mut picture = clip();
+        picture.role = Some(klipp_core::roles::RoleRef::of("dialogue"));
+        let mut sound = clip();
+        sound.linked_clip_id = Some(picture.id);
+        picture.linked_clip_id = Some(sound.id);
+        let mut v = Track::new("V1", TrackKind::Video);
+        v.clips.push(picture);
+        let mut music = Track::new("Music", TrackKind::Audio);
+        music.clips.push(clip());
+        let mut fx = Track::new("Effects", TrackKind::Audio);
+        fx.clips.push(clip());
+        let mut voice = Track::new("Interview", TrackKind::Audio);
+        voice.clips.push(sound);
+        seq.tracks = vec![v, music, fx, voice];
+        assert_eq!(default_sidechain(&seq, 1), Some(3), "the voice, though its role is on its picture");
+        let tracks = TrackInfo::of(&seq);
+        assert!(tracks.iter().find(|t| t.name == "Interview").is_some_and(|t| t.speech), "counted as speech");
+        assert!(!tracks.iter().find(|t| t.name == "Effects").unwrap().speech);
+    }
+
+    /// Auto Duck listens to one track: with speech on another, the section
+    /// says which it ducks under and that the other isn't counted; with
+    /// speech on one track only, nothing more.
+    #[test]
+    fn the_duck_says_which_voice_it_ducks_under() {
+        let seq = music_and_two_voices(false);
+        let (texts, cmds) = duck_section(&seq, 1);
+        assert!(texts.iter().any(|t| t == "Ducks under Voice A only; Voice B isn't counted."), "{texts:?}");
+        assert!(ducks(&cmds), "and still ducks");
+        let mut one = seq.clone();
+        one.tracks.truncate(2);
+        let (texts, _) = duck_section(&one, 1);
+        assert!(!texts.iter().any(|t| t.starts_with("Ducks under")), "one voice, nothing more: {texts:?}");
+        // A muted voice isn't heard, so isn't missed either.
+        let (texts, _) = duck_section(&music_and_two_voices(true), 2);
+        assert!(!texts.iter().any(|t| t.starts_with("Ducks under")), "{texts:?}");
+    }
+
     fn clip() -> Clip {
         let t = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 24);
         Clip::media(klipp_core::MediaId::new(), t(0.0), t(2.0), t(0.0), t(2.0))
     }
 
     fn draw(ui: &mut egui::Ui, theme: &KlippTheme, cmds: &mut Vec<AppCommand>, state: &AppState, clip: &Clip, duck: &mut DuckSettings) {
-        let tracks = [TrackInfo { index: 0, name: "Music".into() }, TrackInfo { index: 1, name: "Voice".into() }];
+        let tracks = [TrackInfo { index: 0, name: "Music".into(), ..Default::default() }, TrackInfo { index: 1, name: "Voice".into(), ..Default::default() }];
         show(ui, theme, state, Some((clip, 1, true)), cmds, (0.0, 0.0), None, Some(2), 0.5, duck, &tracks);
     }
 
