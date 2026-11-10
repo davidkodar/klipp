@@ -188,11 +188,17 @@ pub fn picker(
                             // The family in its own face; its name small
                             // beside it, and alone until the preview comes.
                             let tint = if family == current { theme.text_primary } else { theme.text_secondary };
+                            // The name laid out first, and the preview cut
+                            // short of it: drawn the row's full width, the
+                            // preview ran under the name.
+                            let name = ui.painter().layout_no_wrap(family.to_string(), egui::FontId::proportional(10.0), theme.text_dim);
+                            let name_at = row.rect.right_bottom() - egui::vec2(4.0 + name.size().x, 2.0 + name.size().y);
                             if let Some(tex) = previews.texture(ui.ctx(), family, sample.unwrap_or(family)) {
-                                let r = egui::Rect::from_min_size(row.rect.min, egui::vec2(PREVIEW_W as f32, PREVIEW_H as f32).min(row.rect.size()));
+                                let room = (name_at.x - 6.0 - row.rect.left()).max(0.0);
+                                let r = egui::Rect::from_min_size(row.rect.min, egui::vec2((PREVIEW_W as f32).min(room), (PREVIEW_H as f32).min(row.rect.height())));
                                 ui.painter().image(tex.id(), r, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(r.width() / PREVIEW_W as f32, 1.0)), tint);
                             }
-                            ui.painter().text(row.rect.right_bottom() - egui::vec2(4.0, 2.0), egui::Align2::RIGHT_BOTTOM, family, egui::FontId::proportional(10.0), theme.text_dim);
+                            ui.painter().galley(name_at, name, theme.text_dim);
                             if row.clicked() {
                                 out.family = Some(family.to_string());
                             }
@@ -294,6 +300,38 @@ mod tests {
         let press = |pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
         frame(ctx, favourites, previews, vec![egui::Event::PointerMoved(pos), press(true)]);
         frame(ctx, favourites, previews, vec![press(false)]).picked
+    }
+
+    /// Each family's small name sits clear of its large preview: the
+    /// preview filled the row and the name was drawn over its end.
+    #[test]
+    fn a_familys_name_is_clear_of_its_preview() {
+        let ctx = egui::Context::default();
+        let previews = FontPreviews::default();
+        let f = frame(&ctx, &[], &previews, Vec::new());
+        click(&ctx, &[], &previews, at(&f, "Inter").expect("the field names the font"));
+        // The previews come a few a frame.
+        for _ in 0..8 {
+            frame(&ctx, &[], &previews, Vec::new());
+        }
+        let out = ctx.run(egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(420.0, 900.0))), ..Default::default() }, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                picker(ui, &KlippTheme::default(), "test", "Inter", "Opening night", &families(), &[], &[], &previews);
+            });
+        });
+        let font_atlas = egui::TextureId::default();
+        let images: Vec<egui::Rect> = out.shapes.iter().filter_map(|s| match &s.shape {
+            egui::Shape::Mesh(m) if m.texture_id != font_atlas && !m.vertices.is_empty() => Some(egui::Rect::from_points(&m.vertices.iter().map(|v| v.pos).collect::<Vec<_>>())),
+            _ => None,
+        }).collect();
+        assert!(!images.is_empty(), "the previews are drawn");
+        let names: Vec<(String, egui::Rect)> = out.shapes.iter().filter_map(|s| match &s.shape {
+            egui::Shape::Text(t) if families().contains(&t.galley.text().to_string()) => Some((t.galley.text().to_string(), egui::Rect::from_min_size(t.pos, t.galley.size()))),
+            _ => None,
+        }).collect();
+        for (name, r) in &names {
+            assert!(!images.iter().any(|i| i.shrink(0.5).intersects(*r)), "{name} drawn over a preview: {r:?} {images:?}");
+        }
     }
 
     /// The done-when: open the picker, search, star a family; next time

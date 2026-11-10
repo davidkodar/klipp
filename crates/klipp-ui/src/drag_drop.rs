@@ -17,6 +17,9 @@ pub enum DragPayload {
         /// Audio effect type_id (e.g. "eq", "compressor", "reverb")
         type_id: String,
     },
+    /// Dragging a LUT tile from the effects browser: put on a clip as its
+    /// look (`ApplyClipLut`), as a click on the tile does.
+    Lut { name: String, path: std::path::PathBuf },
     /// Dragging a transition from the transitions browser tab.
     Transition { name: String, kind_id: u8 },
     /// Dragging a media item from the media browser tab.

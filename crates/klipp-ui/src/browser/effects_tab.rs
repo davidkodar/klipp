@@ -608,9 +608,15 @@ pub fn show(
                                             type_id: plugin.type_id(),
                                         });
                                     }
-                                    // A LUT preset is put on by a click, as
-                                    // the clip's look; it has no drop.
-                                    EffectSource::LutLook(_) => {}
+                                    // A LUT preset, put on as the clip's look
+                                    // where it is dropped, as a click puts it
+                                    // on the selected clip.
+                                    EffectSource::LutLook(path) => {
+                                        state.drag_drop.begin(DragPayload::Lut {
+                                            name: fx.name.clone(),
+                                            path: path.clone(),
+                                        });
+                                    }
                                     EffectSource::Clap(plugin) => {
                                         // CLAP also rides the audio-effect
                                         // drop target. type_id = "clap:{plugin_id}".
@@ -1980,14 +1986,18 @@ fn paint_effect_preview(
 }
 
 /// The picture effects `source` puts on a clip, with their own values: a
-/// built-in effect, a look's chain, a frei0r plugin at its declared
-/// defaults. `None` for a plug-in or sound effect, added by its type.
+/// built-in effect, a look's chain, a frei0r plugin at the values a
+/// fresh instance of it starts with. `None` for a plug-in or sound effect, added by its type.
 pub(crate) fn picture_effects(source: &EffectSource) -> Option<Vec<klipp_effects::BuiltinEffect>> {
     match source {
         EffectSource::Builtin(effect) => Some(vec![effect.clone()]),
         EffectSource::Look(effects) => Some(effects.clone()),
         EffectSource::Frei0r(plugin) => {
-            let params: Vec<klipp_frei0r::Frei0rValue> = plugin.params.iter().map(|p| klipp_frei0r::Frei0rValue::default_for(p.kind)).collect();
+            // The plug-in's own starting values, as a fresh instance of it
+            // holds them (every number at 0 turned Brightness black); each
+            // kind's own only when it can't be opened.
+            let params: Vec<klipp_frei0r::Frei0rValue> = klipp_frei0r::instance::fresh_defaults(plugin)
+                .unwrap_or_else(|| plugin.params.iter().map(|p| klipp_frei0r::Frei0rValue::default_for(p.kind)).collect());
             Some(vec![klipp_effects::BuiltinEffect::Frei0r { type_id: plugin.type_id(), params }])
         }
         _ => None,
@@ -2049,6 +2059,22 @@ mod tests {
         }).collect();
         assert_eq!(counts.len(), 4, "the three chips' counts and the row's");
         assert!(counts.iter().all(|f| *f == egui::FontFamily::Proportional), "{counts:?}");
+    }
+
+    /// A frei0r plug-in from the Library goes on a clip at its own
+    /// starting values: Brightness at 0.5, which keeps the picture. It went
+    /// on at 0, which turned the clip black. Skipped where it isn't
+    /// installed.
+    #[test]
+    fn a_frei0r_plugin_goes_on_at_its_own_values() {
+        let path = std::path::Path::new("/usr/lib/frei0r-1/brightness.so");
+        let Some(info) = path.exists().then(|| klipp_frei0r::host::scan_library(path).into_iter().next()).flatten() else {
+            eprintln!("skipping: no brightness.so installed");
+            return;
+        };
+        let effects = super::picture_effects(&super::EffectSource::Frei0r(info)).unwrap();
+        let [klipp_effects::BuiltinEffect::Frei0r { params, .. }] = &effects[..] else { panic!("{effects:?}") };
+        assert!(matches!(params[0], klipp_frei0r::Frei0rValue::Double(v) if (v - 0.5).abs() < 1e-6), "{params:?}");
     }
 
     use super::*;
