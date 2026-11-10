@@ -860,6 +860,38 @@ fn easing_several_keys_names_the_step_with_their_count() {
     assert_eq!(state.active_history().undo_label(), Some("Ease In-Out (2 keys)"));
 }
 
+/// Keys copied from several properties (Position X and Opacity, picked
+/// together) paste onto another clip on those same properties, at the
+/// playhead, as far apart as they were, in one step. Only the property
+/// the Curve Editor showed (and every key onto it) was pasted.
+#[test]
+fn copied_keys_paste_on_their_own_properties() {
+    let (mut state, id, _) = state();
+    let (pos_x, opacity) = (KeyframeParamKind::Video(VideoParam::PositionX), KeyframeParamKind::Video(VideoParam::Opacity));
+    let c = clip(&state, id);
+    crate::key_selection::click(&mut state, &c, &pos_x, 0, false);
+    crate::key_selection::click(&mut state, &c, &opacity, 0, true);
+    crate::panels::curve_editor::copy_selected_keys(&mut state, &c, &pos_x);
+    assert_eq!(state.curve_key_clipboard.len(), 2, "both keys copied: {:?}", state.curve_key_clipboard);
+    // Another clip on the same track, after the first.
+    let t = |s| RationalTime::from_secs_f64(s, 24);
+    let other = klipp_timeline::Clip::media(c.media_id().unwrap(), t(10.0), t(16.0), t(0.0), t(6.0));
+    let other_id = other.id;
+    let v1 = state.sequences[0].tracks.iter().position(|t| t.kind == TrackKind::Video).unwrap();
+    state.sequences[0].tracks[v1].clips.push(other);
+    state.playhead = t(11.0);
+    let target = clip(&state, other_id);
+    let (cmds, skipped) = crate::panels::curve_editor::paste_key_commands(&state, &target, 1.0);
+    assert_eq!(skipped, 0);
+    assert!(matches!(cmds.last(), Some(AppCommand::EndHistoryBatchAs { label }) if label == "Paste Keys"), "named for what it does, not \"Add Clips\": {:?}", cmds.last());
+    let steps = state.active_history().undo_count();
+    assert!(apply(&mut state, &cmds).is_empty());
+    // Copied at 1 s (x 10) and 3 s (opacity 0.5): pasted at 1 s and 3 s.
+    assert_eq!(keys(&state, other_id, &pos_x), vec![(1.0, 10.0)]);
+    assert_eq!(keys(&state, other_id, &opacity), vec![(3.0, 0.5)]);
+    assert_eq!(state.active_history().undo_count(), steps + 1, "one step");
+}
+
 /// A key eased with Ease Both from its menu is shown as Ease Both when the
 /// menu opens again, not as a custom Bezier (or Linear): the ease presets
 /// were never marked, so the menu named another choice for it.
