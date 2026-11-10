@@ -427,6 +427,19 @@ impl Run {
 
 }
 
+/// The Chroma Key card says when its key colour takes greys with it: the
+/// walk's navy at the default Tolerance, and not once it is lowered.
+#[test]
+fn a_chroma_key_card_says_when_greys_key_out() {
+    let key = |tolerance: f32| BuiltinEffect::ChromaKey { key_color: [13, 59, 102], tolerance, soft_edge: 0.1, spill_method: klipp_effects::SpillMethod::None, spill_strength: 0.0 };
+    for (tolerance, said) in [(0.2, true), (0.05, false)] {
+        let mut run = Run::new(fixture(&key(tolerance)));
+        let drawn = run.frame(Vec::new(), egui::Modifiers::NONE);
+        let shown = drawn.iter().any(|(t, _)| t.starts_with("This key colour is close to grey"));
+        assert_eq!(shown, said, "Tolerance {tolerance}");
+    }
+}
+
 /// The Effects tab's Transform card on a clip whose Position X is keyed
 /// (0 at 1 s, 400 at 4 s) reads the keyed value at the playhead, as the
 /// Video tab and the viewer's box do: 2.5 s is half way, 200. It read the
