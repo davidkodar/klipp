@@ -1522,38 +1522,6 @@ impl ViewerPanel {
         painter.line_segment([egui::pos2(cx, cy - 12.0), egui::pos2(cx, cy + 12.0)], cross);
     }
 
-    fn draw_checkerboard_overlay(
-        &self,
-        painter: &egui::Painter,
-        state: &AppState,
-        frame: &ViewerFrameState,
-    ) {
-        let image_rect = frame.image_rect;
-        let tile: f32 = state.viewer_prefs.checkerboard_tile_size;
-        let c1 = egui::Color32::from_rgb(80, 80, 80);
-        let c2 = egui::Color32::from_rgb(120, 120, 120);
-        let x0 = image_rect.left();
-        let y0 = image_rect.top();
-        let mut y = y0;
-        let mut row = 0;
-        while y < image_rect.bottom() {
-            let mut x = x0;
-            let mut col = 0;
-            while x < image_rect.right() {
-                let color = if (row + col) % 2 == 0 { c1 } else { c2 };
-                let r = egui::Rect::from_min_size(
-                    egui::pos2(x, y),
-                    egui::vec2(tile.min(image_rect.right() - x), tile.min(image_rect.bottom() - y)),
-                );
-                painter.rect_filled(r, 0.0, color);
-                x += tile;
-                col += 1;
-            }
-            y += tile;
-            row += 1;
-        }
-    }
-
     fn draw_proxy_badge(
         &self,
         painter: &egui::Painter,
@@ -2475,10 +2443,9 @@ impl ViewerPanel {
             self.draw_grid_overlay(ui.painter(), state, &frame);
         }
 
-        // Checkerboard transparency overlay (drawn behind video, replaces black background)
-        if state.viewer_overlays.checkerboard {
-            self.draw_checkerboard_overlay(ui.painter(), state, &frame);
-        }
+        // No checkerboard: the viewer's frame is flattened over black, so
+        // there is no transparency to show, and grey tiles painted over the
+        // frame hid the picture. Its switches are greyed, saying why.
 
         // Timecode + zoom now shown in playbar below scrub bar
 
@@ -6587,7 +6554,9 @@ impl ViewerPanel {
             menu_toggle_value(ui, &mut state.viewer_overlays.zebras, "Zebras", &key("toggle_zebra"));
             menu_toggle_value(ui, &mut state.viewer_overlays.false_color, "False Colour", &key("toggle_false_color"));
             menu_toggle_value(ui, &mut state.viewer_overlays.focus_peaking, "Focus Peaking", "Ctrl+P");
-            menu_toggle_value(ui, &mut state.viewer_overlays.checkerboard, "Checkerboard", "");
+            ui.add_enabled_ui(false, |ui| {
+                menu_toggle_value(ui, &mut state.viewer_overlays.checkerboard, "Checkerboard", "");
+            }).response.on_disabled_hover_text(CHECKERBOARD_NOT_YET);
 
             ui.separator();
 
@@ -8816,6 +8785,11 @@ fn draw_view_channel(ui: &mut egui::Ui, state: &AppState, image_rect: egui::Rect
 }
 
 /// A channel's name in the viewer's chrome.
+/// Why the Checkerboard (transparency grid) can't be switched on: the
+/// viewer's frame is flattened over black, so it has no transparency to
+/// show, and a grid painted over it hid the picture.
+pub const CHECKERBOARD_NOT_YET: &str = "The viewer doesn't show transparency yet";
+
 pub fn view_channel_label(channel: klipp_core::ViewChannel) -> &'static str {
     use klipp_core::ViewChannel as V;
     match channel {
