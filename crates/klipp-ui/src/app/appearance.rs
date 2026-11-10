@@ -29,6 +29,50 @@ impl<T: PartialEq + Copy> Settling<T> {
     }
 }
 
+/// The interface size last worked out, and the window size it waits on.
+#[derive(Default)]
+pub(crate) struct UiScale {
+    /// The preference and the window size (points at the system scale) the
+    /// size was last worked out for, so it is set once per change rather
+    /// than every frame (and never fights a zoom made another way).
+    applied: Option<(u32, u32, u32)>,
+    /// The window's size, counting once it holds.
+    settling: Settling<(u32, u32)>,
+}
+
+/// What [`UiScale::step`] asks for.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum ScaleStep {
+    /// Nothing has changed.
+    Same,
+    /// A new window size, not yet held: ask again after [`SETTLE_SECS`].
+    Wait,
+    /// The interface at this zoom.
+    Set(f32),
+}
+
+impl UiScale {
+    /// The interface size for preference `pct` (0 is Auto) in a window
+    /// `size` points at the system scale, seen at `now`. Auto follows the
+    /// window both ways: smaller for a small one, and back up when it is
+    /// large again, as a tiling compositor gives a window half the screen
+    /// beside a dialog and then the whole of it back. A size chosen stays.
+    pub(crate) fn step(&mut self, pct: u32, size: egui::Vec2, now: f64) -> ScaleStep {
+        let key = (pct, size.x.round() as u32, size.y.round() as u32);
+        if self.applied == Some(key) {
+            return ScaleStep::Same;
+        }
+        // A new size waits until it holds, but the first one, at the start,
+        // and a size chosen in the View menu apply at once.
+        let chosen = self.applied.is_none_or(|(applied, _, _)| applied != pct);
+        if !chosen && !self.settling.held((key.1, key.2), now) {
+            return ScaleStep::Wait;
+        }
+        self.applied = Some(key);
+        ScaleStep::Set(if pct == 0 { super::auto_zoom_factor(size) } else { pct as f32 / 100.0 })
+    }
+}
+
 impl KlippApp {
     /// Apply the interface size: a View menu choice is saved first, then
     /// the preference is set on the context whenever it or the screen
@@ -63,19 +107,14 @@ impl KlippApp {
         let zoom = ctx.zoom_factor();
         let size = ctx.input(|i| i.screen_rect().size()) * zoom;
         self.state.small_window = size.x < SMALL_WINDOW.x || size.y < SMALL_WINDOW.y;
-        let key = (pct, size.x.round() as u32, size.y.round() as u32);
-        if self.ui_scale_applied == Some(key) {
-            return;
-        }
-        // A new size waits until it holds, but the first one, at the start,
-        // and a size chosen in the View menu apply at once.
-        let chosen = self.ui_scale_applied.is_none_or(|(applied, _, _)| applied != pct);
-        if !chosen && !self.size_settling.held((key.1, key.2), now) {
-            ctx.request_repaint_after(std::time::Duration::from_secs_f64(SETTLE_SECS));
-            return;
-        }
-        self.ui_scale_applied = Some(key);
-        let want = if pct == 0 { auto_zoom_factor(size) } else { pct as f32 / 100.0 };
+        let want = match self.ui_scale.step(pct, size, now) {
+            ScaleStep::Same => return,
+            ScaleStep::Wait => {
+                ctx.request_repaint_after(std::time::Duration::from_secs_f64(SETTLE_SECS));
+                return;
+            }
+            ScaleStep::Set(want) => want,
+        };
         tracing::debug!("interface size: {pct}% (0 = Auto), window {:.0}x{:.0} pt at the system scale (zoom {zoom}), zoom {want}", size.x, size.y);
         if (zoom - want).abs() > 0.001 {
             ctx.set_zoom_factor(want);

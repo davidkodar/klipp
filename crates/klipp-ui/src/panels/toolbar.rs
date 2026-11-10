@@ -124,15 +124,26 @@ impl ToolbarPanel {
                     v.widgets.open.weak_bg_fill = theme.bg_hover;
                     v.widgets.open.bg_stroke = egui::Stroke::NONE;
                 }
-                Self::file_menu(ui, &mut cmds, state, recent_projects, kb);
-                Self::edit_menu(ui, &mut cmds, state, kb);
-                Self::clip_menu(ui, &mut cmds, state, kb);
-                Self::timeline_menu(ui, &mut cmds, state, kb);
-                Self::mark_menu(ui, &mut cmds, state, kb);
-                Self::view_menu(ui, &mut cmds, state, kb);
-                Self::window_menu(ui, &mut cmds, state, kb);
-                Self::tools_menu(ui, &mut cmds, state);
-                Self::help_menu(ui, state);
+                let mut menus = |ui: &mut egui::Ui| {
+                    Self::file_menu(ui, &mut cmds, state, recent_projects, kb);
+                    Self::edit_menu(ui, &mut cmds, state, kb);
+                    Self::clip_menu(ui, &mut cmds, state, kb);
+                    Self::timeline_menu(ui, &mut cmds, state, kb);
+                    Self::mark_menu(ui, &mut cmds, state, kb);
+                    Self::view_menu(ui, &mut cmds, state, kb);
+                    Self::window_menu(ui, &mut cmds, state, kb);
+                    Self::tools_menu(ui, &mut cmds, state);
+                    Self::help_menu(ui, state);
+                };
+                // Where the titles don't all fit before the right group,
+                // one "Menu" holding them: in a narrow window (a tiling
+                // compositor gives less than the minimum size) they ran
+                // into each other and under the Nodes button.
+                if ui.cursor().min.x + menu_titles_width(ui) <= right_edge {
+                    menus(ui);
+                } else {
+                    ui.menu_rows(egui::RichText::new("Menu").size(crate::theme::type_scale::CONTROL), |ui| menus(ui));
+                }
                 ui.min_rect().right()
             })
             .inner
@@ -1505,6 +1516,17 @@ enum SwitcherPlace {
     None,
 }
 
+/// The menu bar's titles, as `show` puts them on the bar.
+const MENU_TITLES: [&str; 9] = ["File", "Edit", "Clip", "Timeline", "Mark", "View", "Window", "Tools", "Help"];
+
+/// How wide the menu titles are side by side on the bar, as buttons.
+fn menu_titles_width(ui: &egui::Ui) -> f32 {
+    let font = egui::FontId::proportional(crate::theme::type_scale::CONTROL);
+    let pad = ui.spacing().button_padding.x * 2.0;
+    let gap = ui.spacing().item_spacing.x;
+    ui.fonts(|f| MENU_TITLES.iter().map(|t| f.layout_no_wrap((*t).to_owned(), font.clone(), egui::Color32::WHITE).size().x + pad + gap).sum())
+}
+
 /// The narrowest drop-down the switcher shrinks to.
 const SWITCHER_MENU_WIDTH: f32 = 96.0;
 
@@ -1977,5 +1999,72 @@ mod marker_delete_tests {
         seq.markers.push(klipp_timeline::Marker { id: klipp_core::MarkerId::new(), position: at(1.0), label: String::new(), color: klipp_core::MarkerColor::Blue, duration: None, comment: String::new(), kind: Default::default(), review: None });
         assert_eq!(marker_deletes(&seq, at(1.0)), (true, true));
         assert_eq!(marker_deletes(&seq, at(2.0)), (false, true));
+    }
+}
+
+/// A narrow window, as a tiling compositor gives one beside a dialog:
+/// nothing on the bar is drawn over anything else, and the menus are
+/// still there, folded into one.
+#[cfg(test)]
+mod folded_menu_tests {
+    use super::*;
+
+    fn bar_texts(width: f32, clicks: &[&str]) -> Vec<(String, egui::Rect)> {
+        let ctx = egui::Context::default();
+        let mut panel = ToolbarPanel { logo_texture: None };
+        let mut state = AppState::default();
+        let mut time = 0.0;
+        let mut frame = |events| {
+            time += 0.1;
+            let output = ctx.run(egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, 600.0))), time: Some(time), events, ..Default::default() }, |ctx| {
+                egui::TopBottomPanel::top("toolbar").exact_height(MENU_BAR_HEIGHT).show(ctx, |ui| {
+                    panel.show(ui, &mut state, &[], &KlippTheme::default(), &crate::keybindings::KeyBindings::default());
+                });
+            });
+            output.shapes.iter().filter_map(|s| match &s.shape {
+                egui::Shape::Text(t) => Some((t.galley.text().to_owned(), egui::Rect::from_min_size(t.pos, t.galley.size()))),
+                _ => None,
+            }).collect::<Vec<_>>()
+        };
+        let button = |at, pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+        let mut texts = Vec::new();
+        for _ in 0..3 { texts = frame(Vec::new()); }
+        for click in clicks {
+            let at = texts.iter().rev().find(|(s, _)| s == click).unwrap_or_else(|| panic!("{click} at {width}: {texts:?}")).1.center();
+            frame(vec![egui::Event::PointerMoved(at), button(at, true)]);
+            frame(vec![button(at, false)]);
+            for _ in 0..3 { texts = frame(Vec::new()); }
+        }
+        texts
+    }
+
+    #[test]
+    fn no_label_on_a_narrow_bar_overlaps_another() {
+        for width in [400.0, 500.0, 640.0, 960.0, 1920.0] {
+            let texts: Vec<_> = bar_texts(width, &[]).into_iter().filter(|(t, _)| !t.trim().is_empty()).collect();
+            for (i, (a, ra)) in texts.iter().enumerate() {
+                assert!(ra.right() <= width + 0.5, "{a:?} past the window's edge at {width}: {ra:?}");
+                for (b, rb) in &texts[i + 1..] {
+                    assert!(!ra.shrink(0.5).intersects(rb.shrink(0.5)), "{a:?} {ra:?} over {b:?} {rb:?} at {width}");
+                }
+            }
+            // "Edit" is the workspace switcher's too.
+            let unique: Vec<_> = MENU_TITLES.iter().filter(|t| **t != "Edit").collect();
+            let titles = texts.iter().filter(|(t, _)| unique.iter().any(|u| **u == t)).count();
+            let folded = texts.iter().any(|(t, _)| t == "Menu");
+            assert!(titles == unique.len() && !folded || titles == 0 && folded, "at {width}: every title on the bar, or one Menu: {texts:?}");
+        }
+        assert!(bar_texts(1920.0, &[]).iter().all(|(t, _)| t != "Menu"), "a wide bar has its titles");
+        assert!(bar_texts(400.0, &[]).iter().any(|(t, _)| t == "Menu"), "a narrow one folds them");
+    }
+
+    #[test]
+    fn the_folded_menu_holds_every_menu() {
+        let open = bar_texts(400.0, &["Menu"]);
+        for title in MENU_TITLES {
+            assert!(open.iter().any(|(t, _)| t == title), "{title} in the folded menu: {open:?}");
+        }
+        let help = bar_texts(400.0, &["Menu", "Help"]);
+        assert!(help.iter().any(|(t, _)| t == "Set Up AI Assistants\u{2026}"), "Help opens from it: {help:?}");
     }
 }

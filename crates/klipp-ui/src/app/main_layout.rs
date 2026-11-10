@@ -134,6 +134,8 @@ impl KlippApp {
                         nodes_rect,
                         nodes_resizer_rect,
                         nodes_on_right,
+                        browser_open,
+                        inspector_open,
                     } = rects;
 
                     // Derived scalars consumed by the render section below. These mirror
@@ -177,13 +179,13 @@ impl KlippApp {
                     self.render_toolbar_panel(ui, toolbar_rect, all_cmds);
                     self.render_status_bar_panel(ui, statusbar_rect);
 
-                    if self.state.show_browser_panel {
+                    if browser_open {
                         self.render_browser_panel(ui, browser_rect, all_cmds);
                     } else {
                         self.render_browser_rail(ui, browser_rect);
                     }
 
-                    if self.state.show_inspector_panel {
+                    if inspector_open {
                         // Grading the timeline: the panels show and edit
                         // its grade as the selected clip's.
                         let stood_in = self.stand_in_timeline_grade();
@@ -778,6 +780,8 @@ impl KlippApp {
                     self.layout.active_browser_tab = *tab;
                 }
                 self.set_browser_visible(true);
+                // Kept open in a window too narrow for both.
+                self.state.narrow_side = Some(crate::state::SidePanel::Browser);
             }
         }
     }
@@ -807,6 +811,7 @@ impl KlippApp {
                     self.layout.active_inspector_tab = *tab;
                 }
                 self.set_inspector_visible(true);
+                self.state.narrow_side = Some(crate::state::SidePanel::Inspector);
             }
         }
     }

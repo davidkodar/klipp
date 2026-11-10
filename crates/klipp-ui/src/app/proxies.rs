@@ -153,13 +153,20 @@ impl KlippApp {
                 if status.success() { Ok(()) } else { Err("ffmpeg exited with error".into()) }
             };
 
-            // Try GPU (NVENC) first — much faster on NVIDIA GPUs
+            // NVENC first where it can open: much faster, and only with
+            // an NVIDIA driver loaded (a distribution's FFmpeg lists it on
+            // every machine). libx264 elsewhere, and after NVENC fails.
+            let nvenc = klipp_engine::ffmpeg_caps::FfmpegCaps::usable().skim_encoders()[0].is_hardware();
             let nvenc_args: Vec<&str> = vec![
                 "-vf", &scale_arg,
                 "-c:v", "h264_nvenc", "-preset", "p1", "-cq", "30",
                 "-c:a", "aac", "-b:a", "64k",
             ];
-            let result = run_ffmpeg(&nvenc_args, &pid_clone, &progress_tx, total_duration_secs);
+            let result = if nvenc {
+                run_ffmpeg(&nvenc_args, &pid_clone, &progress_tx, total_duration_secs)
+            } else {
+                Err("no NVIDIA driver loaded".into())
+            };
 
             let result = match result {
                 Ok(()) => {
@@ -167,7 +174,7 @@ impl KlippApp {
                     Ok(())
                 }
                 Err(nvenc_err) => {
-                    tracing::info!("NVENC failed ({}), retrying with CPU (libx264)", nvenc_err);
+                    tracing::info!("Proxy: NVENC not used ({}); encoding with libx264 (CPU)", nvenc_err);
                     let _ = std::fs::remove_file(&proxy_out); // clean up partial file
                     let _ = progress_tx.send((media_id, 0.0)); // reset progress
                     let cpu_args: Vec<&str> = vec![

@@ -9,6 +9,7 @@ autotests = false
 
 [dependencies]
 klipp-core        = { workspace = true }
+libloading = { workspace = true }
 klipp-transitions = { workspace = true }
 klipp-audio    = { workspace = true }
 klipp-timeline = { workspace = true }
