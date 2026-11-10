@@ -1692,7 +1692,7 @@ impl klipp_project::template_pack::FontLookup for PackFonts {
         klipp_title::catalogue::family(family).is_some()
     }
     fn carry(&self, family: &str) -> Option<(Vec<std::path::PathBuf>, String)> {
-        let faces = self.registry.get(family)?;
+        let faces = klipp_title::font_discovery::registry_faces(&self.registry, family)?;
         let files: Vec<std::path::PathBuf> = faces.iter().map(|f| f.path.clone()).collect();
         // Its licence, as the font's own folder holds it.
         let licence = files.iter().filter_map(|f| f.parent()).find_map(|dir| {
@@ -1704,7 +1704,7 @@ impl klipp_project::template_pack::FontLookup for PackFonts {
         Some((files, licence))
     }
     fn available(&self, family: &str) -> bool {
-        self.bundled(family) || self.registry.contains_key(family) || self.in_catalogue(family)
+        self.bundled(family) || klipp_title::font_discovery::registry_family(&self.registry, family).is_some() || self.in_catalogue(family)
             || klipp_timeline::template_places::data_root().is_some_and(|root| klipp_title::catalogue::pack_faces_in(&root, family).is_some())
     }
     fn fallback(&self) -> String {
