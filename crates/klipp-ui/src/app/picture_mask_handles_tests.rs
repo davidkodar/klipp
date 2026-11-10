@@ -13,9 +13,17 @@ use klipp_timeline::GradeAccess;
 /// A paused 4 s clip, selected, with a Gaussian Blur masked by the matte
 /// `tag` added from the Mattes menu: the matte's path and the blur's.
 fn viewer(tag: &str) -> (Viewer, klipp_core::ClipId, NodePath, NodePath) {
+    viewer_placed(tag, None)
+}
+
+/// [`viewer`], the clip first placed by `transform`.
+fn viewer_placed(tag: &str, transform: Option<klipp_effects::BuiltinEffect>) -> (Viewer, klipp_core::ClipId, NodePath, NodePath) {
     let mut v = Viewer::new();
     let t = |s| klipp_core::RationalTime::from_secs_f64(s, 25);
     let mut clip = klipp_timeline::Clip::media(klipp_core::MediaId::new(), t(0.0), t(4.0), t(0.0), t(4.0));
+    if let Some(transform) = transform {
+        clip = klipp_timeline::test_clip::TestClip::of(clip).effect(transform).build();
+    }
     clip.push_effect(klipp_effects::BuiltinEffect::GaussianBlur { radius: 30.0 });
     let graph = clip.picture_v2().unwrap().picture.graph.clone();
     let blur = graph.nodes.iter().find(|n| klipp_graph_lift::effect_params::tag(n) == Some("gaussian_blur")).expect("the blur").id;
@@ -161,4 +169,32 @@ fn a_picked_roto_shapes_point_drags_with_the_mask_tool() {
     }
     assert!(sent.iter().any(|c| matches!(c, AppCommand::SetParamAt { addr, .. } if *addr == matte)), "written by its path: {sent:?}");
     assert_eq!(v.state.active_history().undo_count(), steps + 1, "one step");
+}
+
+/// On a clip placed smaller and moved, a picked Roto Shape's point is
+/// taken where the placed picture shows it and lands under the pointer,
+/// with the Mask Tool: its points are the clip's own picture's.
+#[test]
+fn a_placed_clips_roto_point_drags_on_its_picture() {
+    let (mut v, clip, matte, _) = viewer_placed("matte.roto", Some(klipp_effects::BuiltinEffect::Transform {
+        position_x: 200.0, position_y: 0.0, scale_x: 0.5, scale_y: 0.5, rotation: 0.0, anchor_x: 0.5, anchor_y: 0.5,
+        rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0, focal_ref: None,
+    }));
+    v.state.selected_node_addr = Some(matte.clone());
+    v.state.active_tool = Tool::Mask;
+    v.frame(Vec::new());
+    v.frame(Vec::new());
+    let view = crate::panels::viewer::title_view_of(&v.state, v.state.sequences[0].all_clips().find(|c| c.id == clip).unwrap(), v.image_rect()).expect("a placement");
+    assert!(view.placement.is_some(), "the clip is placed");
+    let start = view.to_screen(0.7, 0.5);
+    let end = start + egui::vec2(0.0, 30.0);
+    let from = v.sent.len();
+    v.click(start);
+    apply(&mut v, from);
+    let from = v.sent.len();
+    drag(&mut v, start, end);
+    let sent = apply(&mut v, from);
+    let MaskShape::Bezier { points } = shape(&v, clip, &matte) else { panic!("freeform") };
+    let want = view.to_norm(end);
+    assert!((points[1].x - want.0).abs() < 3e-3 && (points[1].y - want.1).abs() < 3e-3, "the point at ({}, {}), not under the pointer at {want:?}; sent {sent:?}", points[1].x, points[1].y);
 }

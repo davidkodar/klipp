@@ -242,11 +242,20 @@ struct View {
     back: Option<klipp_core::PlaneMap>,
     ahead: Option<klipp_core::PlaneMap>,
     aspect: f32,
+    /// The clip's placement on the viewer: its picture, where the mask
+    /// cuts it, drawn smaller, moved or turned (the identity when not).
+    placed: crate::panels::viewer::TitleView,
 }
 
 impl View {
     fn plain(rect: egui::Rect) -> Self {
-        Self { rect, motion: None, pivot: (0.5, 0.5), back: None, ahead: None, aspect: rect.height() / rect.width().max(1.0) }
+        Self { rect, motion: None, pivot: (0.5, 0.5), back: None, ahead: None, aspect: rect.height() / rect.width().max(1.0), placed: crate::panels::viewer::TitleView::flat(rect) }
+    }
+
+    /// The view on the clip placed as `placed` has it.
+    fn placed(mut self, placed: crate::panels::viewer::TitleView) -> Self {
+        self.placed = placed;
+        self
     }
 
     fn of(rect: egui::Rect, mask: &klipp_core::Mask, time_secs: f64) -> Self {
@@ -270,10 +279,11 @@ impl View {
         if let Some(a) = self.ahead {
             q = a.apply(q).unwrap_or(q);
         }
-        egui::pos2(self.rect.min.x + q.0 * self.rect.width(), self.rect.min.y + q.1 * self.rect.height())
+        self.placed.place(egui::pos2(self.rect.min.x + q.0 * self.rect.width(), self.rect.min.y + q.1 * self.rect.height()))
     }
 
     fn frame(&self, s: egui::Pos2) -> P {
+        let s = self.placed.unplace(s);
         let mut n = ((s.x - self.rect.min.x) / self.rect.width(), (s.y - self.rect.min.y) / self.rect.height());
         if let Some(b) = self.back {
             n = b.apply(n).unwrap_or(n);
@@ -450,6 +460,8 @@ pub(crate) fn mask_tool(ui: &mut egui::Ui, state: &mut crate::state::AppState, r
         state.mask_edit.gesture = None;
     }
     let node = mask_node(state, clip_id);
+    // The clip's picture as the viewer places it: the masks cut it before.
+    let placed = state.sequence().all_clips().find(|c| c.id == clip_id).and_then(|c| crate::panels::viewer::title_view_of(state, c, rect).ok()).unwrap_or_else(|| crate::panels::viewer::TitleView::flat(rect));
     let time = state.sequence().tracks.iter().find_map(|t| t.find_clip(clip_id)).map_or(0.0, |c| (state.playhead_smooth_secs - c.timeline_in.to_secs_f64()).max(0.0));
     // A shape key is written at the canonical playhead, as the mask
     // list's keys are, and is the one there within half a frame.
@@ -487,7 +499,7 @@ pub(crate) fn mask_tool(ui: &mut egui::Ui, state: &mut crate::state::AppState, r
         state.active_panel = Some(crate::state::PanelKind::Viewer);
     }
     let edit = &mut state.mask_edit;
-    let plain = View::plain(rect);
+    let plain = View::plain(rect).placed(placed);
 
     // Every freeform mask, the edited one in the accent with its points.
     let mut hit_point: Option<(usize, usize)> = None;
@@ -502,7 +514,7 @@ pub(crate) fn mask_tool(ui: &mut egui::Ui, state: &mut crate::state::AppState, r
             if !m.enabled || points.len() < 2 {
                 continue;
             }
-            let view = View::of(rect, m, time);
+            let view = View::of(rect, m, time).placed(placed);
             let outline: Vec<egui::Pos2> = klipp_core::mask_path::flatten(points, 0.5 / rect.width().max(1.0), view.aspect).into_iter().map(|p| view.screen(p)).collect();
             let this = edited == Some(i);
             ink.polyline(&painter, outline, true, if this { ink.edited } else { ink.line.gamma_multiply(if m.locked { 0.5 } else { 1.0 }) });
@@ -573,7 +585,7 @@ pub(crate) fn mask_tool(ui: &mut egui::Ui, state: &mut crate::state::AppState, r
     let set_points = |cmds: &mut Vec<AppCommand>, node: &Option<(klipp_nodes::NodeId, klipp_core::MaskStack)>, i: usize, points: Vec<BezierPoint>| {
         set_mask(cmds, node, i, &|m| Some(m.with_path_at(key_time, points.clone(), key_tolerance)));
     };
-    let view_of = |i: usize| node.as_ref().and_then(|(_, m)| m.masks.get(i)).map_or(View::plain(rect), |m| View::of(rect, m, time));
+    let view_of = |i: usize| node.as_ref().and_then(|(_, m)| m.masks.get(i)).map_or(View::plain(rect), |m| View::of(rect, m, time)).placed(placed);
 
     // A press: the pen, a handle, a point, the curve, the shape, or the
     // empty picture.

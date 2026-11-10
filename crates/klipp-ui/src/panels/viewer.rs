@@ -3912,9 +3912,13 @@ impl ViewerPanel {
         let outline_color = ui.visuals().selection.stroke.color;
         let handle_color = egui::Color32::WHITE;
 
+        // The clip's picture as the viewer places it (smaller, moved or
+        // turned): the masks cut it before it is placed, so they are drawn
+        // through its placement and the pointer is read back through it.
+        let placed = state.sequence().all_clips().find(|c| c.id == clip_id).and_then(|c| title_view_of(state, c, image_rect).ok()).unwrap_or_else(|| TitleView::flat(image_rect));
         // Helper: convert normalized coords to screen coords
         let to_screen = |nx: f32, ny: f32| -> egui::Pos2 {
-            egui::pos2(image_rect.min.x + nx * iw, image_rect.min.y + ny * ih)
+            placed.place(egui::pos2(image_rect.min.x + nx * iw, image_rect.min.y + ny * ih))
         };
 
         for (mask_idx, raw_mask) in masks.masks.iter().enumerate() {
@@ -4320,6 +4324,8 @@ impl ViewerPanel {
             // Check if pointer is still down
             let pointer_down = ui.input(|i| i.pointer.any_down());
             let current_pos = ui.input(|i| i.pointer.interact_pos()).unwrap_or(drag_start);
+            // Both on the clip's own picture, before it is placed.
+            let (drag_start, current_pos) = (placed.unplace(drag_start), placed.unplace(current_pos));
             // On a tracked window (#238), the pointer is where the window
             // is now; the edit is to the window as drawn on its reference
             // frame, so both ends of the drag are taken back through the
