@@ -645,6 +645,8 @@ impl PreferencesPanel {
             Self::setting_row(ui, "Installed version", theme, |ui| {
                 ui.label(klipp_core::build_info::get().version);
                 ui.label(egui::RichText::new(FLATPAK_UPDATES).color(theme.text_secondary));
+                // About answers with how the store updates it.
+                if ui.button("Check for updates…").clicked() { self.show_updates = true; }
             });
         } else {
         Self::setting_row_with_subtitle(ui, "Check automatically", "Checks GitHub for new releases once a day", theme, |ui| {
@@ -4685,7 +4687,9 @@ impl PreferencesPanel {
     fn show_about(&mut self, ui: &mut egui::Ui, theme: &KlippTheme) {
         if klipp_core::flatpak::app_id().is_some() {
             ui.label(egui::RichText::new(FLATPAK_UPDATES).color(theme.text_secondary));
-        } else if ui.button("Check for updates…").clicked() {
+        }
+        // In a Flatpak, About answers with how the store updates it.
+        if ui.button("Check for updates…").clicked() {
             self.show_updates = true;
         }
         // Page heading

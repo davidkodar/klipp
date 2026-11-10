@@ -307,6 +307,9 @@ pub(crate) struct Updates {
     /// A Flatpak: its software store updates it, so Klipp neither asks,
     /// checks nor updates itself.
     store: bool,
+    /// In a Flatpak, someone asked for a check: About says where updates
+    /// come from, with the command, rather than doing nothing.
+    store_asked: bool,
 }
 
 impl Default for Updates {
@@ -335,6 +338,7 @@ impl Updates {
             launch_error: None,
             launched: None,
             store,
+            store_asked: false,
         }
     }
 }
@@ -422,6 +426,11 @@ impl Updates {
 
     /// Check now, from About.
     pub(crate) fn check_now(&mut self) {
+        // A Flatpak doesn't check: it says how it is updated instead.
+        if self.store {
+            self.store_asked = true;
+            return;
+        }
         self.check_requested = true;
     }
 
@@ -440,7 +449,7 @@ impl Updates {
     /// Where the check is, for About's status row.
     pub(crate) fn status(&self) -> Status<'_> {
         if self.store {
-            return Status::Store;
+            return Status::Store { asked: self.store_asked };
         }
         if self.pending.is_some() {
             return Status::Checking;
@@ -618,8 +627,15 @@ pub(crate) enum Status<'a> {
     Latest { previews: bool, testing: Option<&'a str> },
     Available { version: String, notes: String, install: Install, error: Option<&'a str>, testing: Option<&'a str> },
     Failed(&'a str),
-    /// A Flatpak: its software store updates it.
-    Store,
+    /// A Flatpak: its software store updates it. `asked` once someone
+    /// asked for a check, which is answered with how to update.
+    Store { asked: bool },
+}
+
+/// The command that updates this Flatpak from a terminal.
+pub(crate) fn store_update_command() -> String {
+    let id = klipp_core::flatpak::app_id().unwrap_or_else(|| "io.github.davidkodar.Klipp".to_owned());
+    format!("flatpak update {id}")
 }
 
 /// How a newer version is put in, for the way this Klipp was installed.
@@ -683,8 +699,9 @@ mod tests {
         let mut prefs = GeneralPrefs::default();
         let before = (prefs.update_checks_answered, prefs.update_checks_asked, prefs.last_update_check);
         let mut u = Updates::for_store(true);
-        assert_eq!(u.status(), Status::Store);
+        assert_eq!(u.status(), Status::Store { asked: false });
         u.check_now();
+        assert_eq!(u.status(), Status::Store { asked: true }, "a check asked for is answered, not ignored");
         let (mut dirty, mut about) = (false, false);
         let _ = ctx.run(Default::default(), |ctx| u.show(ctx, &mut prefs, &mut dirty, false, &mut about));
         assert!(u.pending.is_none() && !u.asking, "no check started, no question");

@@ -453,8 +453,9 @@ fn body(ui: &mut egui::Ui, theme: &KlippTheme, status: &Status<'_>) -> Option<Ab
                 .stroke(Stroke::NONE)
                 .rounding(7.0)
                 .min_size(vec2(0.0, 32.0));
-            // A Flatpak's store updates it: no check of Klipp's own.
-            if *status != Status::Store && ui.add(primary).clicked() {
+            // Shown in a Flatpak too: there it answers with how the
+            // software store updates Klipp, so the button is never a dead end.
+            if ui.add(primary).clicked() {
                 action = Some(AboutAction::CheckForUpdates);
             }
             let secondary = egui::Button::new(egui::RichText::new("Report an issue").size(13.0).color(theme.text_primary))
@@ -540,7 +541,7 @@ fn mark(ui: &mut egui::Ui, theme: &KlippTheme, status: &Status<'_>) {
             painter.circle_filled(c, 8.0, AMBER.gamma_multiply(0.22));
             painter.circle_filled(c, 4.0, AMBER);
         }
-        Status::Store => {
+        Status::Store { .. } => {
             painter.circle_filled(c, 8.0, theme.marker_success);
             let ink = theme.bg_deep;
             painter.add(egui::Shape::line(vec![pos2(c.x - 3.6, c.y + 0.2), pos2(c.x - 1.0, c.y + 2.8), pos2(c.x + 3.8, c.y - 2.6)], Stroke::new(1.8_f32, ink)));
@@ -593,9 +594,16 @@ fn status_text(ui: &mut egui::Ui, theme: &KlippTheme, status: &Status<'_>) -> Op
             }
             None
         }
-        Status::Store => {
-            headline(ui, theme, "Updated by your software store", None);
-            detail(ui, theme, "This Klipp is a Flatpak: your software store, or flatpak update, brings its new versions.");
+        Status::Store { asked } => {
+            if *asked {
+                headline(ui, theme, "Update Klipp from your software store", None);
+                detail(ui, theme, "This Klipp is a Flatpak, so it doesn't update itself. Open your software store (GNOME Software, Discover…) and update Klipp there, or run this in a terminal:");
+                ui.add_space(8.0);
+                commands(ui, theme, &crate::updates::store_update_command());
+            } else {
+                headline(ui, theme, "Updated by your software store", None);
+                detail(ui, theme, "This Klipp is a Flatpak: your software store, or flatpak update, brings its new versions.");
+            }
             None
         }
         Status::Failed(message) => {
@@ -841,14 +849,27 @@ mod tests {
         Status::Available { version: "0.2.0".into(), notes: "https://example.invalid/notes".into(), install, error: None, testing: None }
     }
 
-    /// A Flatpak's About says the software store updates it, with no
-    /// button to check: Klipp doesn't check or update itself there.
+    /// A Flatpak's About says the software store updates it. Its "Check
+    /// for updates…" stays, and asks for a check, which a Flatpak answers
+    /// with how to update: the store, or the command to copy.
     #[test]
     fn a_flatpaks_about_says_its_store_updates_it() {
-        let text = drawn(&Status::Store);
+        let text = drawn(&Status::Store { asked: false });
         assert!(text.contains("Updated by your software store"), "{text}");
-        assert!(!text.contains("Check for updates…"), "{text}");
-        assert!(drawn(&Status::Idle).contains("Check for updates…"), "outside a Flatpak the button stays");
+        assert!(text.contains("Check for updates…"), "the button a person looks for is there: {text}");
+        let theme = KlippTheme::default();
+        let ctx = egui::Context::default();
+        let mut asked = Vec::new();
+        probe::click(&ctx, "Check for updates…", |ctx| asked.push(show(ctx, &theme, &Status::Store { asked: false })));
+        assert!(asked.contains(&AboutAction::CheckForUpdates), "{asked:?}");
+
+        let answer = drawn(&Status::Store { asked: true });
+        for want in ["Update Klipp from your software store", "doesn't update itself", "flatpak update io.github.davidkodar.Klipp", "Copy"] {
+            assert!(answer.contains(want), "{want} in {answer}");
+        }
+        let ctx = egui::Context::default();
+        let out = probe::click(&ctx, "Copy", |ctx| { let _ = show(ctx, &theme, &Status::Store { asked: true }); });
+        assert_eq!(out.platform_output.copied_text, "flatpak update io.github.davidkodar.Klipp");
     }
 
     /// Each place the check can be in draws as a row in About: nothing
