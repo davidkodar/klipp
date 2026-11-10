@@ -289,6 +289,9 @@ pub fn bus_strip(ui: &mut egui::Ui, theme: &KlippTheme, state: &mut AppState, cm
         let mut card = Vec::new();
         crate::widgets::window(format!("{} Effects", bus.name))
             .id(egui::Id::new(("bus_fx_window", bus.id)))
+            // Beside the strip it belongs to; it opened at the app's top
+            // left. Kept on screen by the window's own constraint.
+            .default_pos(rect.right_top() + egui::vec2(6.0, 0.0))
             .open(&mut open)
             .default_width(300.0)
             .resizable(false)
@@ -615,5 +618,49 @@ mod tests {
         let chain: Vec<String> = state.sequence().routing().buses[0].effects.iter().map(|e| e.effect_type.clone()).collect();
         assert_eq!(chain, ["delay"], "the delay on the bus");
         assert_eq!(state.active_history().undo_count(), steps + 1, "one step");
+    }
+
+    /// A bus's effects open beside its strip: they opened at the app's top
+    /// left, away from the bus they belong to.
+    #[test]
+    fn a_buss_effects_open_beside_its_strip() {
+        let mut state = AppState::default();
+        let mut cmds = Vec::new();
+        edit(&mut state, &mut cmds, |r| {
+            add_bus(r);
+        });
+        let bus = state.sequence().routing().buses[0].id;
+        let ctx = egui::Context::default();
+        let mut clock = 0.0;
+        let mut strip = egui::Rect::NOTHING;
+        let mut frame = |state: &mut AppState, events: Vec<egui::Event>, strip: &mut egui::Rect| {
+            clock += 0.05;
+            let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0))), time: Some(clock), events, ..Default::default() };
+            let out = ctx.run(input, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    ui.add_space(200.0);
+                    ui.horizontal(|ui| {
+                        ui.add_space(500.0);
+                        let at = ui.cursor().min;
+                        bus_strip(ui, &KlippTheme::default(), state, &mut Vec::new(), 0, 90.0, 400.0);
+                        *strip = egui::Rect::from_min_size(at, egui::vec2(90.0, 400.0));
+                    });
+                });
+            });
+            out.shapes.iter().filter_map(|s| match &s.shape {
+                egui::Shape::Text(t) => Some((t.galley.text().to_string(), t.pos + t.galley.size() / 2.0)),
+                _ => None,
+            }).collect::<Vec<_>>()
+        };
+        frame(&mut state, Vec::new(), &mut strip);
+        let drawn = frame(&mut state, Vec::new(), &mut strip);
+        let at = drawn.iter().find(|(t, _)| t == "FX 0/0").map(|(_, p)| *p).expect("FX");
+        let b = |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+        frame(&mut state, vec![egui::Event::PointerMoved(at)], &mut strip);
+        frame(&mut state, vec![b(true)], &mut strip);
+        frame(&mut state, vec![b(false)], &mut strip);
+        frame(&mut state, Vec::new(), &mut strip);
+        let window = ctx.memory(|m| m.area_rect(egui::Id::new(("bus_fx_window", bus)))).expect("the window open");
+        assert!((window.left() - strip.right()).abs() < 24.0 && (window.top() - strip.top()).abs() < 40.0, "beside the strip at {strip:?}: the window is at {window:?}");
     }
 }
