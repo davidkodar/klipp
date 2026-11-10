@@ -43,6 +43,22 @@ pub fn lane_key(param: VideoParam) -> Option<&'static str> {
     })
 }
 
+/// The keyable lane a Transform field is on the clip's placement, as the
+/// Video tab keys it: Position X is the `pos_x` lane. `None` for a field
+/// with no lane (an anchor, the perspective).
+pub fn video_param_of_field(field: &str) -> Option<VideoParam> {
+    Some(match field {
+        "position_x" => VideoParam::PositionX,
+        "position_y" => VideoParam::PositionY,
+        "scale_x" => VideoParam::Scale,
+        "scale_y" => VideoParam::ScaleY,
+        "rotation" => VideoParam::Rotation,
+        "rotation_x" => VideoParam::TiltX,
+        "rotation_y" => VideoParam::TiltY,
+        _ => return None,
+    })
+}
+
 /// `effect`'s values as the placement's keys, if it is a Transform or an
 /// Opacity.
 fn values(effect: &BuiltinEffect) -> Vec<(&'static str, f32)> {
