@@ -468,13 +468,7 @@ impl NewInspectorPanel {
                             .and_then(|mid| state.media_pool.get(&mid))
                             .and_then(|item| item.audio_channels);
                         let clip_time_secs = keyframe_selection::clip_time(state, clip);
-                        let track_infos: Vec<audio_tab::TrackInfo> = state.sequence().tracks.iter().enumerate()
-                            .filter(|(_, t)| t.kind == klipp_timeline::TrackKind::Audio)
-                            .map(|(i, t)| audio_tab::TrackInfo {
-                                index: i,
-                                name: if t.name.is_empty() { format!("Track {}", i + 1) } else { t.name.clone() },
-                            })
-                            .collect();
+                        let track_infos: Vec<audio_tab::TrackInfo> = audio_tab::TrackInfo::of(state.sequence());
                         // Re-seed DuckSettings when the selected clip changes: pull
                         // defaults from prefs and pick the first Dialogue-bearing audio
                         // track as the sidechain source (falls back to first audio track).
@@ -492,13 +486,7 @@ impl NewInspectorPanel {
                     } else if let Some(bm) = bin_media {
                         // Bin media selected — show audio info for the media item
                         let source_channels = bm.audio_channels;
-                        let track_infos: Vec<audio_tab::TrackInfo> = state.sequence().tracks.iter().enumerate()
-                            .filter(|(_, t)| t.kind == klipp_timeline::TrackKind::Audio)
-                            .map(|(i, t)| audio_tab::TrackInfo {
-                                index: i,
-                                name: if t.name.is_empty() { format!("Track {}", i + 1) } else { t.name.clone() },
-                            })
-                            .collect();
+                        let track_infos: Vec<audio_tab::TrackInfo> = audio_tab::TrackInfo::of(state.sequence());
                         // Create a temporary clip for the bin media (same pattern as video tab)
                         let temp_clip = klipp_timeline::Clip {
                             id: klipp_core::ClipId::new(),
