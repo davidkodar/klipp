@@ -1718,27 +1718,7 @@ fn show_compositing_section(
                 // chain. The handler still cycle-rejects, but skipping
                 // ineligible options keeps the dropdown focused.
                 let active_idx = state.active_sequence_idx;
-                let candidates: Vec<(klipp_core::ClipId, String)> = state
-                    .sequences
-                    .get(active_idx)
-                    .map(|seq| {
-                        seq.tracks.iter().enumerate().flat_map(|(ti, track)| {
-                            let track_label = if track.name.is_empty() {
-                                format!("Track {}", ti + 1)
-                            } else {
-                                track.name.clone()
-                            };
-                            track.clips.iter().filter_map(move |c| {
-                                if c.id == clip_id { return None; }
-                                if matches!(c.kind, klipp_timeline::ClipKind::AdjustmentLayer) { return None; }
-                                let label = format!("{} · clip {}…",
-                                    track_label,
-                                    short_clip_id(&c.id));
-                                Some((c.id, label))
-                            }).collect::<Vec<_>>()
-                        }).collect()
-                    })
-                    .unwrap_or_default();
+                let candidates = clip_choices(state, clip_id, |_, _| true);
 
                 row(ui, theme, "Matte Source", |ui| {
                     let current_label = match clip.matte_source.as_ref() {
@@ -2092,28 +2072,7 @@ fn show_transform_link_section(
                 // will accept so the user doesn't pick a path that
                 // silently no-ops.
                 let active_idx = state.active_sequence_idx;
-                let candidates: Vec<(klipp_core::ClipId, String)> = state
-                    .sequences
-                    .get(active_idx)
-                    .map(|seq| {
-                        seq.tracks.iter().enumerate().flat_map(|(ti, track)| {
-                            let track_label = if track.name.is_empty() {
-                                format!("Track {}", ti + 1)
-                            } else {
-                                track.name.clone()
-                            };
-                            track.clips.iter().filter_map(move |c| {
-                                if c.id == clip_id { return None; }
-                                if matches!(c.kind, klipp_timeline::ClipKind::AdjustmentLayer) { return None; }
-                                if transform_link_chain_creates_cycle_local(seq, clip_id, c.id) { return None; }
-                                let label = format!("{} · clip {}…",
-                                    track_label,
-                                    short_clip_id(&c.id));
-                                Some((c.id, label))
-                            }).collect::<Vec<_>>()
-                        }).collect()
-                    })
-                    .unwrap_or_default();
+                let candidates = clip_choices(state, clip_id, |seq, c| !transform_link_chain_creates_cycle_local(seq, clip_id, c.id));
 
                 // ── Target picker ──
                 row(ui, theme, "Target", |ui| {
@@ -2414,30 +2373,7 @@ fn show_hyperzoom_section(
                 // else explicitly names a clip elsewhere in the
                 // sequence — useful when the next clip in track order
                 // isn't the one the user wants to fly into.
-                let active_idx = state.active_sequence_idx;
-                let candidates: Vec<(klipp_core::ClipId, String)> = state
-                    .sequences
-                    .get(active_idx)
-                    .map(|seq| {
-                        seq.tracks.iter().enumerate().flat_map(|(ti, track)| {
-                            let track_label = if track.name.is_empty() {
-                                format!("Track {}", ti + 1)
-                            } else {
-                                track.name.clone()
-                            };
-                            track.clips.iter().filter_map(move |c| {
-                                if c.id == clip_id { return None; }
-                                if matches!(c.kind, ClipKind::AdjustmentLayer | ClipKind::Gap | ClipKind::Sequence { .. }) {
-                                    return None;
-                                }
-                                let label = format!("{} · clip {}…",
-                                    track_label,
-                                    short_clip_id(&c.id));
-                                Some((c.id, label))
-                            }).collect::<Vec<_>>()
-                        }).collect()
-                    })
-                    .unwrap_or_default();
+                let candidates = clip_choices(state, clip_id, |_, c| !matches!(c.kind, ClipKind::Gap | ClipKind::Sequence { .. }));
 
                 row(ui, theme, "Target", |ui| {
                     let current_label = match target_choice {
@@ -3364,10 +3300,40 @@ fn matte_channel_to_u8(ch: klipp_nodes::params::MatteChannel) -> u8 {
 /// The full UUID is unreadable in a dropdown; the short form is enough
 /// to disambiguate at human scale (and the track label disambiguates
 /// the rest). Future work surfaces actual clip names where available.
-fn short_clip_id(id: &klipp_core::ClipId) -> String {
-    let s = id.0.to_string();
-    s.chars().take(6).collect()
+/// The clips a picker offers in place of `clip_id` (a matte's source, a
+/// link's target): every other clip of the sequence but an adjustment
+/// layer that `keep` allows, each named as the timeline names it, after
+/// its track: "Video 3 · logo.png". Two that would read alike also say
+/// where they start.
+fn clip_choices(state: &AppState, clip_id: klipp_core::ClipId, keep: impl Fn(&klipp_timeline::Sequence, &klipp_timeline::Clip) -> bool) -> Vec<(klipp_core::ClipId, String)> {
+    let seq = state.sequence();
+    let mut out: Vec<(klipp_core::ClipId, String, klipp_core::Timecode)> = Vec::new();
+    for (ti, track) in seq.tracks.iter().enumerate() {
+        let track_label = if track.name.is_empty() { format!("Track {}", ti + 1) } else { track.name.clone() };
+        for c in &track.clips {
+            if c.id == clip_id || matches!(c.kind, klipp_timeline::ClipKind::AdjustmentLayer) || !keep(seq, c) {
+                continue;
+            }
+            let media = c.media_id().and_then(|m| state.media_pool.get(&m)).map(|m| m.filename.clone());
+            let fallback = match &c.kind {
+                klipp_timeline::ClipKind::Title(td) => format!("Title: {}", crate::ui_util::elide(&td.text(), 24)),
+                _ => media.unwrap_or_else(|| "Clip".to_owned()),
+            };
+            out.push((c.id, format!("{track_label} · {}", c.label(&fallback)), c.timeline_in));
+        }
+    }
+    let labels: Vec<String> = out.iter().map(|(_, l, _)| l.clone()).collect();
+    out.into_iter()
+        .map(|(id, label, at)| {
+            if labels.iter().filter(|l| **l == label).count() > 1 {
+                (id, format!("{label} · at {}", state.timecode_display().position(at)))
+            } else {
+                (id, label)
+            }
+        })
+        .collect()
 }
+
 
 /// Does this title data have an animation that moves glyphs over
 /// clip-time? Used by the HYPERZOOM picker preview to surface a
@@ -3687,6 +3653,44 @@ pub(crate) fn color_fade_update(clip: &Clip, idx: usize, effect: klipp_effects::
             payload: serde_json::to_value(&effect).unwrap_or(serde_json::Value::Null),
         },
         None => AppCommand::UpdateBuiltinEffect { clip_id: clip.id, index: idx, effect },
+    }
+}
+
+#[cfg(test)]
+mod clip_choice_tests {
+    use super::*;
+
+    /// The Matte Source picker names each clip as the timeline does, after
+    /// its track, not by a piece of its id; two clips that read alike say
+    /// where they start.
+    #[test]
+    fn the_matte_source_picker_names_its_clips() {
+        let mut state = AppState::default();
+        let t = |s| klipp_core::RationalTime::from_secs_f64(s, 24);
+        let mut item = klipp_media::MediaItem::synthetic_for_test("/tmp/logo.png".into(), None);
+        item.filename = "logo.png".into();
+        let media = state.media_pool.add(item);
+        let me = klipp_timeline::Clip::media(klipp_core::MediaId::new(), t(0.0), t(2.0), t(0.0), t(2.0));
+        let logo = klipp_timeline::Clip::media(media, t(0.0), t(2.0), t(0.0), t(2.0));
+        let (a, b) = (klipp_timeline::Clip::media(media, t(4.0), t(5.0), t(0.0), t(1.0)), klipp_timeline::Clip::media(media, t(6.0), t(7.0), t(0.0), t(1.0)));
+        let mut named = klipp_timeline::Clip::media(media, t(8.0), t(9.0), t(0.0), t(1.0));
+        named.name = Some("Badge".into());
+        let ids = [logo.id, a.id, b.id, named.id];
+        let mut v3 = klipp_timeline::Track::new("Video 3", klipp_timeline::TrackKind::Video);
+        v3.clips = vec![logo];
+        let mut v4 = klipp_timeline::Track::new("Video 4", klipp_timeline::TrackKind::Video);
+        v4.clips = vec![a, b, named];
+        let me_id = me.id;
+        state.sequences[0].tracks[0].clips = vec![me];
+        state.sequences[0].tracks.push(v3);
+        state.sequences[0].tracks.push(v4);
+        let choices = clip_choices(&state, me_id, |_, _| true);
+        let label = |id| choices.iter().find(|(c, _)| *c == id).map(|(_, l)| l.clone()).unwrap();
+        assert!(choices.iter().all(|(c, _)| *c != me_id), "not the clip itself");
+        assert_eq!(label(ids[0]), "Video 3 · logo.png");
+        assert_eq!(label(ids[3]), "Video 4 · Badge", "its own name first");
+        let (la, lb) = (label(ids[1]), label(ids[2]));
+        assert!(la.starts_with("Video 4 · logo.png · at ") && lb.starts_with("Video 4 · logo.png · at ") && la != lb, "two alike say where they start: {la} / {lb}");
     }
 }
 
