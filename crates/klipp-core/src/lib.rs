@@ -33,6 +33,7 @@ pub mod process_memory;
 pub mod xml_depth;
 pub mod assets;
 pub mod lang;
+pub mod flatpak;
 pub mod assistants_seen;
 pub mod automation;
 pub mod build_info;

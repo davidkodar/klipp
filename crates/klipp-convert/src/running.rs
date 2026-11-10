@@ -76,10 +76,38 @@ pub fn answering_sockets(runtime_dir: Option<&Path>, override_path: Option<&Path
     Ok(candidates.into_iter().filter(|p| UnixStream::connect(p).is_ok()).collect())
 }
 
+/// The folder Klipp's control sockets are in: the runtime folder, or in a
+/// Flatpak the app's own folder in it (`app/<id>`), as the app puts them.
+pub fn socket_dir(runtime: Option<PathBuf>, flatpak: Option<&str>) -> Option<PathBuf> {
+    let runtime = runtime?;
+    Some(match flatpak {
+        Some(id) => runtime.join("app").join(id),
+        None => runtime,
+    })
+}
+
 /// Whether Klipp is running on this machine, for this user: an error when
 /// it can't be told.
 pub fn running() -> Result<Running, String> {
-    let runtime = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from);
+    // The Flatpak's app id, read as the app reads it (klipp-core's
+    // `flatpak::app_id`, not a dependency of this tool).
+    let flatpak = std::env::var("FLATPAK_ID").ok().filter(|v| !v.trim().is_empty());
+    let runtime = socket_dir(std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from), flatpak.as_deref());
     let over = std::env::var_os("KLIPP_CONTROL_SOCKET").map(PathBuf::from);
     Ok(Running { processes: app_processes(Path::new("/proc"))?, sockets: answering_sockets(runtime.as_deref(), over.as_deref())? })
+}
+
+#[cfg(test)]
+mod socket_dir_tests {
+    use std::path::PathBuf;
+
+    /// In a Flatpak the sockets are in the app's own runtime folder, as the
+    /// app puts them; outside one, in the runtime folder.
+    #[test]
+    fn a_flatpaks_sockets_are_in_its_app_folder() {
+        let run = Some(PathBuf::from("/run/user/1000"));
+        assert_eq!(super::socket_dir(run.clone(), Some("io.github.davidkodar.Klipp")), Some(PathBuf::from("/run/user/1000/app/io.github.davidkodar.Klipp")));
+        assert_eq!(super::socket_dir(run, None), Some(PathBuf::from("/run/user/1000")));
+        assert_eq!(super::socket_dir(None, Some("x")), None);
+    }
 }
