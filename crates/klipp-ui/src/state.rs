@@ -3338,7 +3338,9 @@ pub struct AppState {
     pub keyframe_clipboard: Option<KeyframeClipboard>,
     /// Keys copied in the Curve Editor (#2278), their times from the
     /// first one's, to paste at the playhead on any curve.
-    pub curve_key_clipboard: Vec<klipp_core::Keyframe>,
+    /// Keys copied in the Curve Editor or the Dope Sheet, each with the
+    /// property it was on, timed from the first of them.
+    pub curve_key_clipboard: Vec<(KeyframeParamKind, klipp_core::Keyframe)>,
     /// Currently selected keyframe on timeline (click to select, right-click for menu)
     pub selected_keyframe: Option<SelectedKeyframe>,
     /// The keys selected together, `selected_keyframe` the primary among
@@ -5947,6 +5949,79 @@ impl AppState {
             said.push(format!("Kept sound effects on {kept} picture{} whose sound already has its own; they are not heard", if kept == 1 { "" } else { "s" }));
         }
         said
+    }
+
+    /// A roll at the cut between `a` and `b`: `a`'s out and `b`'s in moved
+    /// to `a_out` and `b_in` (source, timeline), as one undo step; their
+    /// linked partners roll by the same amounts when `linked` (Linked on,
+    /// Alt not held), and stay where they are when not. They always rolled,
+    /// so a roll on a sound cut moved the picture's cut with Linked off.
+    pub fn roll_trim(&mut self, a: ClipId, b: ClipId, a_out: (Timecode, Timecode), b_in: (Timecode, Timecode), linked: bool) {
+        use crate::history::EditCommand;
+        let seq = &self.sequences[self.active_sequence_idx];
+        let old_a = seq.all_clips().find(|c| c.id == a).map(|c| (c.source_out, c.timeline_out));
+        let old_b = seq.all_clips().find(|c| c.id == b).map(|c| (c.source_in, c.timeline_in));
+        let (Some((old_a_src_out, old_a_tl_out)), Some((old_b_src_in, old_b_tl_in))) = (old_a, old_b) else { return };
+        // The roll and its linked partners, one undo step.
+        let batching = self.active_history_mut().is_batching();
+        if !batching {
+            self.active_history_mut().begin_batch();
+        }
+        self.push_history(EditCommand::LegacyRollTrimClip {
+            clip_a_id: a,
+            clip_b_id: b,
+            old_a_source_out: old_a_src_out,
+            old_a_timeline_out: old_a_tl_out,
+            old_b_source_in: old_b_src_in,
+            old_b_timeline_in: old_b_tl_in,
+            new_a_source_out: a_out.0,
+            new_a_timeline_out: a_out.1,
+            new_b_source_in: b_in.0,
+            new_b_timeline_in: b_in.1,
+        });
+        let seq = &mut self.sequences[self.active_sequence_idx];
+        for track in &mut seq.tracks {
+            if let Some(c) = track.find_clip_mut(a) {
+                c.source_out = a_out.0;
+                c.timeline_out = a_out.1;
+            }
+            if let Some(c) = track.find_clip_mut(b) {
+                c.source_in = b_in.0;
+                c.timeline_in = b_in.1;
+            }
+        }
+        // Linked partners follow by the same amounts (#911): each moved
+        // from its own source times, which may start elsewhere (sound
+        // recorded apart and synced, a slipped partner).
+        let (a_tl, a_src) = (a_out.1 - old_a_tl_out, a_out.0 - old_a_src_out);
+        let (b_tl, b_src) = (b_in.1 - old_b_tl_in, b_in.0 - old_b_src_in);
+        let partner = |id: ClipId| if linked { seq.all_clips().find(|c| c.id == id).and_then(|c| c.linked_clip_id) } else { None };
+        let (linked_a, linked_b) = (partner(a), partner(b));
+        let mut partner_edits = Vec::new();
+        for track in &mut seq.tracks {
+            for c in track.clips.iter_mut() {
+                let old = c.clone();
+                if Some(c.id) == linked_a && c.id != b {
+                    c.timeline_out += a_tl;
+                    c.source_out += a_src;
+                } else if Some(c.id) == linked_b && c.id != a {
+                    c.timeline_in += b_tl;
+                    c.source_in += b_src;
+                } else {
+                    continue;
+                }
+                partner_edits.push(EditCommand::ReplaceClip { description: "Roll", old: Box::new(old), new: Box::new(c.clone()) });
+            }
+        }
+        // B's picture moved against its start: a multicam primary's cuts
+        // stay on the picture they cut.
+        partner_edits.extend(klipp_document::ops::keep_angle_cuts(seq, b, b_tl.to_secs_f64()));
+        for edit in partner_edits {
+            self.push_history(edit);
+        }
+        if !batching {
+            self.active_history_mut().end_batch_as("Roll");
+        }
     }
 
     /// A clip's sound settings set, and its linked partner's with them, so
@@ -8687,6 +8762,40 @@ mod sound_effects_on_open_tests {
     }
 }
 
+#[cfg(test)]
+mod roll_trim_tests {
+    use super::AppState;
+    use klipp_core::{MediaId, RationalTime};
+    use klipp_timeline::TrackKind;
+
+    /// A roll on a sound cut moves the picture's cut with it only when
+    /// it is linked: with Linked off the picture stays where it is.
+    #[test]
+    fn a_roll_moves_its_partners_only_when_linked() {
+        let t = |s: i64| RationalTime { value: s * 30, rate: 30 };
+        for linked in [true, false] {
+            let mut state = AppState::default();
+            let seq = state.sequence_mut();
+            let vi = seq.tracks.iter().position(|tr| tr.kind == TrackKind::Video).unwrap();
+            let ai = seq.tracks.iter().position(|tr| tr.kind == TrackKind::Audio).unwrap();
+            let (m1, m2) = (MediaId::new(), MediaId::new());
+            let p1 = seq.tracks[vi].append_clip(m1, t(10));
+            let p2 = seq.tracks[vi].append_clip(m2, t(10));
+            let s1 = seq.tracks[ai].append_clip(m1, t(10));
+            let s2 = seq.tracks[ai].append_clip(m2, t(10));
+            for (p, s) in [(p1, s1), (p2, s2)] {
+                seq.tracks[vi].find_clip_mut(p).unwrap().linked_clip_id = Some(s);
+                seq.tracks[ai].find_clip_mut(s).unwrap().linked_clip_id = Some(p);
+            }
+            let (a, b) = (seq.tracks[ai].find_clip(s1).unwrap().clone(), seq.tracks[ai].find_clip(s2).unwrap().clone());
+            let two = t(2);
+            state.roll_trim(s1, s2, (a.source_out + two, a.timeline_out + two), (b.source_in + two, b.timeline_in + two), linked);
+            let out = |s: &AppState, id| s.sequence().all_clips().find(|c| c.id == id).unwrap().timeline_out;
+            assert_eq!(out(&state, s1), t(12), "the sound cut rolled");
+            assert_eq!(out(&state, p1), if linked { t(12) } else { t(10) }, "the picture's cut, linked {linked}");
+        }
+    }
+}
 
 #[cfg(test)]
 mod clip_audio_pair_tests {

@@ -243,6 +243,12 @@ impl<'a> PictureCanvas<'a> {
         NodePath::new(self.level.root, self.level.nodes.iter().copied().chain([node]))
     }
 
+    /// Whether input `index` of `node` is its picture input.
+    fn feeds_the_picture(&self, node: NodeId, index: u8) -> bool {
+        let (Some(key), Some(stored)) = (self.port(node, index, false), self.graph.nodes.iter().find(|n| n.id == node)) else { return false };
+        klipp_timeline::RegistryCatalog.primary_input(stored).is_some_and(|p| p == key)
+    }
+
     fn port(&self, node: NodeId, index: u8, output: bool) -> Option<PortKey> {
         let n = self.nodes.iter().find(|n| n.node.id == node)?;
         (if output { &n.outputs } else { &n.inputs }).get(index as usize).map(|p| PortKey::from(p.key.as_str()))
@@ -446,6 +452,11 @@ impl<'a> CanvasGraph for PictureCanvas<'a> {
             }
             AppCommand::SpliceNodeIntoWire { node_id, .. } if self.copyable(*node_id).is_none() => {
                 Some("Only an effect moves into a wire here".to_owned())
+            }
+            // A wire into a node's picture input, at the clip's own level,
+            // is the order its effects run in: not a wire to take away.
+            AppCommand::DisconnectEdge { to, to_port, .. } if self.level.nodes.is_empty() && self.feeds_the_picture(*to, *to_port) => {
+                Some("A clip's effects run in order, so this wire can't be taken away: reorder them in the Effects tab, or open Grade to wire nodes".to_owned())
             }
             AppCommand::ResetNode { node_id, .. } if self.effect_reset(*node_id).is_none() => {
                 Some("Reset works on an effect here; the grade's nodes reset in the grade".to_owned())
@@ -964,6 +975,26 @@ mod tests {
         assert!(graph.edges.iter().any(|e| e.from.0 == source && e.to.0 == key), "the key reads the source");
         let on_wire = AppCommand::AddNodeWired { clip_id: c.id, kind: "matte.window".into(), position: (0.0, 0.0), from: source, from_port: 0 };
         assert!(model.refusal(&on_wire).is_some_and(|why| why.contains("add it from its menu")));
+    }
+
+    /// A wire of the clip's own chain can't be taken away there, and says
+    /// so before it is picked (its Delete greyed, the reason on hover); a
+    /// matte's wire into an effect's mask can.
+    #[test]
+    fn a_chain_wire_refuses_delete_and_a_mask_wire_takes_it() {
+        let mut c = clip();
+        let graph = c.picture_v2().unwrap().picture.graph.clone();
+        let blur = graph.nodes.iter().find(|n| klipp_graph_lift::effect_params::tag(n) == Some("gaussian_blur")).unwrap().id;
+        let model = PictureCanvas::new(&graph, root(&c), Some(blur)).unwrap();
+        let AppCommand::GraphOps { ops, .. } = model.command(AppCommand::AddNode { clip_id: c.id, kind: "matte.window".into(), node_id: None, position: (40.0, 300.0) }).unwrap() else { panic!("one graph batch") };
+        c.apply_picture_ops(&ops).unwrap();
+        let graph = c.picture_v2().unwrap().picture.graph.clone();
+        let model = PictureCanvas::new(&graph, root(&c), None).unwrap();
+        let index = |node: NodeId, key: &str| model.nodes.iter().find(|n| n.id() == node).unwrap().inputs.iter().position(|p| p.key == key).unwrap() as u8;
+        let chain = AppCommand::DisconnectEdge { clip_id: c.id, to: blur, to_port: index(blur, "in") };
+        assert!(model.refusal(&chain).is_some_and(|why| why.contains("run in order")), "{:?}", model.refusal(&chain));
+        let mask = AppCommand::DisconnectEdge { clip_id: c.id, to: blur, to_port: index(blur, "mask") };
+        assert_eq!(model.refusal(&mask), None);
     }
 
     /// With a Window added from the menu, and it picked (as the editor
