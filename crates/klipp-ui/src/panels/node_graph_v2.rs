@@ -2795,8 +2795,10 @@ impl NodeGraphV2Panel {
                         }
                     }
                     if !wire_started {
-                        // Node body hit?
-                        let shift = ui.input(|i| i.modifiers.shift);
+                        // Node body hit? Shift or Ctrl (Cmd) adds to the
+                        // selection or takes out, as Ctrl does on the
+                        // timeline; Ctrl alone selected the node alone.
+                        let shift = ui.input(|i| i.modifiers.shift || i.modifiers.command);
                         // Double-click on a Compound node descends
                         // into its sub-graph. Must fire ALONGSIDE
                         // the single-click selection (the second
@@ -2848,7 +2850,7 @@ impl NodeGraphV2Panel {
                                     break;
                                 }
                                 if shift {
-                                    // Shift-click toggles set membership.
+                                    // Shift- or Ctrl-click toggles set membership.
                                     // Adding a node also makes it the
                                     // primary so the inspector follows
                                     // the user's hand. Removing a node
@@ -6378,6 +6380,32 @@ mod editing_tests {
         assert_eq!(next.recent_kinds(), ["Saturation"]);
         next.restore_recents(&["no_such_kind".to_owned()]);
         assert!(next.recent_kinds().is_empty(), "a kind no menu offers is dropped");
+    }
+
+    /// Ctrl+click adds a node to the selection, and takes it out again,
+    /// as Shift+click does and as Ctrl+click does on the timeline: it
+    /// selected the node alone.
+    #[test]
+    fn ctrl_click_adds_a_node_to_the_selection() {
+        let (mut h, corrector, _) = canvas();
+        let other = h.graph.nodes.iter().find(|n| n.id != corrector).map(|n| (n.id, n.label.clone())).expect("another node");
+        let corrector_label = h.graph.nodes.iter().find(|n| n.id == corrector).unwrap().label.clone();
+        h.set.clear();
+        h.selected = None;
+        let at = h.text(&corrector_label);
+        h.click(at, egui::PointerButton::Primary);
+        assert_eq!(h.set.iter().copied().collect::<Vec<_>>(), vec![corrector], "a plain click selects one");
+        h.mods = egui::Modifiers::COMMAND;
+        let at = h.text(&other.1);
+        h.click(at, egui::PointerButton::Primary);
+        assert!(h.set.contains(&corrector) && h.set.contains(&other.0), "Ctrl+click adds: {:?}", h.set);
+        assert_eq!(h.selected, Some(other.0), "and makes it the one shown");
+        let at = h.text(&other.1);
+        h.frame(Vec::new());
+        h.frame(Vec::new());
+        std::thread::sleep(std::time::Duration::from_millis(450));
+        h.click(at, egui::PointerButton::Primary);
+        assert!(!h.set.contains(&other.0) && h.set.contains(&corrector), "and again takes it out: {:?}", h.set);
     }
 
     /// Shift+drag on empty canvas draws a marquee and never pans: it
