@@ -504,11 +504,18 @@ impl KlippApp {
                 let node_id = *node_id;
                 let mask_index = *mask_index;
                 let perspective = *perspective;
+                // Each way out said: a press that went nowhere left no trace.
+                tracing::info!("track window: clip {clip_id:?}, node {node_id}, mask {mask_index}, perspective {perspective}");
                 let playhead_secs = self.state.playhead_smooth_secs;
                 let seq = &self.state.sequences[self.state.active_sequence_idx];
                 let aspect = seq.resolution.height as f32 / seq.resolution.width.max(1) as f32;
-                let Some(clip) = seq.all_clips().find(|c| c.id == clip_id) else { return true };
+                let Some(clip) = seq.all_clips().find(|c| c.id == clip_id) else {
+                    tracing::warn!("track window: clip {clip_id:?} isn't on the open sequence");
+                    self.state.toast.show("The window's clip isn't on this sequence: open its sequence to track it");
+                    return true;
+                };
                 let Some(item) = clip.media_id().and_then(|m| self.state.media_pool.get(&m)) else {
+                    tracing::warn!("track window: clip {clip_id:?} has no media file");
                     self.state.toast.show("Only a clip from a file can be tracked");
                     return true;
                 };
@@ -526,6 +533,7 @@ impl KlippApp {
                 // In the clip's grade, or beside its picture chain.
                 let window = super::colour::clip_mask(clip, node_id, mask_index).map(|m| m.evaluated_at(clip_time).shape);
                 let Some(shape) = window else {
+                    tracing::warn!("track window: no mask {mask_index} on node {node_id} of clip {clip_id:?}, in its grade or beside its picture");
                     self.state.toast.show("Couldn't read the window");
                     return true;
                 };

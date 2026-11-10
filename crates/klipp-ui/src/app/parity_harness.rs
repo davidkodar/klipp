@@ -426,3 +426,24 @@ impl Run {
     }
 
 }
+
+/// The Track button of a Window that masks an effect, drawn under the
+/// effect's card ("Masked by: Window"), sends the track of that window on
+/// that clip. Pressed in the app, it lit and nothing followed.
+#[test]
+fn the_track_button_under_a_masked_effect_sends_its_track() {
+    let mut c = fixture(&BuiltinEffect::GaussianBlur { radius: 3.0 });
+    let graph = c.picture_v2().unwrap().picture.graph.clone();
+    let blur = graph.nodes.iter().find(|n| klipp_graph_lift::effect_params::tag(n) == Some("gaussian_blur")).unwrap().id;
+    let level = klipp_graph_format::path::NodePath::new(klipp_graph_format::path::Root::Clip { clip: c.id.0 }, []);
+    let window = uuid::Uuid::new_v4();
+    let ops = crate::picture_mattes::add_ops(&graph, &level, crate::picture_mattes::matte("matte.window").unwrap(), window, (0.0, 0.0), Some(blur)).unwrap();
+    c.apply_picture_ops(&ops).unwrap();
+    let mut run = Run::new(c);
+    let drawn = run.frame(Vec::new(), egui::Modifiers::NONE);
+    let label = drawn.iter().map(|(t, _)| t.clone()).find(|t| t.ends_with("Track")).expect("the Track button is drawn");
+    assert!(run.click_last(&label), "pressed");
+    let sent: Vec<&String> = run.unapplied.iter().filter(|c| c.contains("TrackMaskRegion")).collect();
+    assert_eq!(sent.len(), 1, "the track sent once, of the window: {:?}", run.unapplied);
+    assert!(sent[0].contains(&window.to_string()), "{sent:?}");
+}
