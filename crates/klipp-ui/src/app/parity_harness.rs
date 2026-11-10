@@ -328,19 +328,30 @@ impl Run {
         if is_view(&cmd) {
             return;
         }
-        // A refused path edit says so in a toast and changes nothing.
+        // In the order the app's dispatch tries its handlers
+        // (`engine_sync`): a lane's key by path, the keyframe handlers, then
+        // the path commands, then the rest. A refused path edit says so in a
+        // toast and changes nothing.
         self.state.toast = Default::default();
-        if self.state.path_command(&cmd).is_some() {
-            if let Some(why) = self.state.toast.message_for_test() {
-                self.unapplied.push(format!("{cmd:?} refused: {why}"));
+        let by_path = |state: &mut AppState, unapplied: &mut Vec<String>| {
+            let taken = state.path_command(&cmd).is_some();
+            if let Some(why) = state.toast.message_for_test().filter(|_| taken) {
+                unapplied.push(format!("{cmd:?} refused: {why}"));
             }
+            taken
+        };
+        if self.state.is_lane_key_command(&cmd) && by_path(&mut self.state, &mut self.unapplied) {
             return;
         }
-        let mut host = InspectorEditHost {
-            state: &mut self.state,
-            side: &Sink,
-        };
-        if !host.apply_effect_keyframes(&cmd) && !host.apply_video_keyframes(&cmd) && !host.apply_keyframe_drag(&cmd) && !host.apply(&cmd) {
+        let mut host = InspectorEditHost { state: &mut self.state, side: &Sink };
+        if host.apply_keyframe_drag(&cmd) || host.apply_effect_keyframes(&cmd) || host.apply_video_keyframes(&cmd) {
+            return;
+        }
+        if by_path(&mut self.state, &mut self.unapplied) {
+            return;
+        }
+        let mut host = InspectorEditHost { state: &mut self.state, side: &Sink };
+        if !host.apply(&cmd) {
             self.unapplied.push(format!("{cmd:?}"));
         }
     }
