@@ -659,6 +659,19 @@ pub fn display_name(graph: &Graph, addr: &NodePath, label: &str, is_group: bool)
     node.map_or_else(String::new, |n| n.type_id.as_str().rsplit('.').next().unwrap_or_default().replace('_', " "))
 }
 
+/// What a Chroma Key's card says when its key colour is so near grey that
+/// white and greys key out with it: the key measures colour alone (its
+/// CbCr), and a neutral pixel sits at its centre, `tolerance + soft_edge`
+/// from the key or nearer. A dark navy logo's white letters went with its
+/// blue at the default 0.2. `None` for a key colour clear of grey.
+pub(crate) fn greys_keyed_note(key_color: [u8; 3], tolerance: f32, soft_edge: f32) -> Option<&'static str> {
+    let [r, g, b] = key_color.map(f32::from);
+    let cb = -0.168736 * r - 0.331264 * g + 0.5 * b;
+    let cr = 0.5 * r - 0.418688 * g - 0.081312 * b;
+    let from_grey = (cb * cb + cr * cr).sqrt() / 255.0;
+    (from_grey < tolerance + soft_edge).then_some("This key colour is close to grey: white, black and greys key out with it. Lower the Tolerance, or key a more saturated colour.")
+}
+
 /// What the Placement row says: the renderer's cut, or pending.
 pub fn placement_text(p: &Placement) -> String {
     match &p.resolved {
@@ -779,6 +792,13 @@ fn row_card(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppState, clip: &Clip
     let effect = node.and_then(|n| klipp_graph_lift::effect_params::tag(n).map(|tag| (n, tag))).and_then(|(n, tag)| effect_types().find(|t| t.tag == tag).map(|t| (n, t)));
     match effect {
         Some((n, ty)) if !row.read_only => {
+            if ty.tag == "chroma_key" {
+                if let Ok(klipp_effects::BuiltinEffect::ChromaKey { key_color, tolerance, soft_edge, .. }) = serde_json::from_value(klipp_graph_lift::effect_params::entry_of(n).unwrap_or(serde_json::Value::Null)) {
+                    if let Some(note) = greys_keyed_note(key_color, tolerance, soft_edge) {
+                        ui.add(egui::Label::new(egui::RichText::new(note).size(10.0).color(theme.marker_warning)).wrap());
+                    }
+                }
+            }
             if ty.tag == "surface_pin" {
                 surface_choice(ui, theme, clip, &row.addr, &klipp_graph_lift::effect_params::entry_of(n).unwrap_or(serde_json::Value::Null), cmds);
             }
@@ -866,6 +886,17 @@ fn row_card(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppState, clip: &Clip
 
 #[cfg(test)]
 mod surface_choice_tests {
+
+    /// A key colour near grey says that greys key out with it (the walk's
+    /// navy 13/59/102 at the default 0.2 took the white letters); a green
+    /// screen's, and the navy at 0.05, say nothing.
+    #[test]
+    fn a_key_colour_near_grey_says_greys_key_out() {
+        assert!(greys_keyed_note([13, 59, 102], 0.2, 0.1).is_some());
+        assert!(greys_keyed_note([13, 59, 102], 0.05, 0.1).is_none());
+        assert!(greys_keyed_note([0, 255, 0], 0.2, 0.1).is_none());
+        assert!(greys_keyed_note([0, 71, 187], 0.2, 0.1).is_none(), "a blue screen");
+    }
     use super::*;
 
     fn frame(ctx: &egui::Context, clip: &Clip, addr: &NodePath, entry: &serde_json::Value, clock: f64, events: Vec<egui::Event>) -> (Vec<AppCommand>, Vec<(String, egui::Pos2)>) {
