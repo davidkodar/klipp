@@ -5228,7 +5228,11 @@ pub enum AppEvent {
     /// surface is there, 0 to 1 (#2751).
     /// `track_area` and `exclude` are the area followed and the parts left
     /// out, on the reference frame as `corners` are.
-    SurfaceTracked { clip_id: ClipId, surface: uuid::Uuid, name: String, wider_area: bool, corners: [[f32; 2]; 4], reference_secs: f64, keys: Vec<(f64, [f64; 9], f32, u8, Option<f32>)>, source_size: [u32; 2], media_fps: f64, held_secs: (f64, f64), direction: i8, interactive: bool, track_area: Option<[[f32; 2]; 4]>, exclude: Vec<Vec<[f32; 2]>> },
+    /// `ended`: why the run after the reference and the one before it
+    /// stopped short of the frames read, where they did: 0 the match was
+    /// lost, 1 the surface was leaving the picture, 2 it had grown or
+    /// shrunk by the factor given since the reference frame.
+    SurfaceTracked { clip_id: ClipId, surface: uuid::Uuid, name: String, wider_area: bool, corners: [[f32; 2]; 4], reference_secs: f64, keys: Vec<(f64, [f64; 9], f32, u8, Option<f32>)>, source_size: [u32; 2], media_fps: f64, held_secs: (f64, f64), direction: i8, interactive: bool, track_area: Option<[[f32; 2]; 4]>, exclude: Vec<Vec<[f32; 2]>>, ended: [Option<(u8, f32)>; 2] },
     SurfaceTrackFailed { clip_id: ClipId, surface: uuid::Uuid, error: String },
     /// A [`AppCommand::CorrectSurface`] solved (#2754): the correction at
     /// file second `source_secs`, `corners` there as fractions of the
