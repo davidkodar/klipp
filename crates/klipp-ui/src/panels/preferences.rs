@@ -33,6 +33,11 @@ enum PrefsTab {
 /// (#3021).
 const NO_KEY: &str = "No key in this preset";
 
+
+/// What Preferences says of updates in a Flatpak, which its software
+/// store updates.
+const FLATPAK_UPDATES: &str = "Updated by your software store";
+
 pub struct PreferencesPanel {
     /// "Check for updates…" was clicked: About opens and checks.
     pub(crate) show_updates: bool,
@@ -635,6 +640,15 @@ impl PreferencesPanel {
         });
 
         Self::section_header(ui, "UPDATES", theme);
+        // A Flatpak's software store updates it: Klipp checks nothing.
+        if klipp_core::flatpak::app_id().is_some() {
+            Self::setting_row(ui, "Installed version", theme, |ui| {
+                ui.label(klipp_core::build_info::get().version);
+                ui.label(egui::RichText::new(FLATPAK_UPDATES).color(theme.text_secondary));
+                // About answers with how the store updates it.
+                if ui.button("Check for updates…").clicked() { self.show_updates = true; }
+            });
+        } else {
         Self::setting_row_with_subtitle(ui, "Check automatically", "Checks GitHub for new releases once a day", theme, |ui| {
             if ui.add(Switch::new(&mut prefs.general.check_for_updates, theme)).changed() {
                 prefs.general.update_checks_answered = true;
@@ -648,6 +662,7 @@ impl PreferencesPanel {
             ui.label(klipp_core::build_info::get().version);
             if ui.button("Check for updates…").clicked() { self.show_updates = true; }
         });
+        }
 
         // ── STARTUP section ──
         Self::section_header(ui, "STARTUP", theme);
@@ -2561,6 +2576,32 @@ impl PreferencesPanel {
                     }
                 }
             });
+        }
+        // In a Flatpak the assistants on the host are out of the sandbox's
+        // sight and reach: the commands that register Klipp are shown for
+        // the person to run, each starting klipp-mcp through `flatpak run`.
+        if let Some(id) = klipp_core::flatpak::app_id() {
+            ui.horizontal_wrapped(|ui| {
+                ui.add_space(14.0);
+                ui.label(egui::RichText::new(format!("Klipp runs as a Flatpak, so it can't see or set up the assistants on this computer. Register it with yours by running one of these in a terminal. The assistant then starts Klipp's MCP program with: {}", klipp_core::flatpak::mcp_command(&id).join(" "))).color(theme.text_secondary));
+            });
+            let mut shown = clients::flatpak_connect_commands(&id);
+            shown.push(("Other assistants (JSON, mcpServers)", clients::flatpak_json_snippet(&id)));
+            for (what, text) in shown {
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    ui.add_space(14.0);
+                    ui.label(egui::RichText::new(what).color(theme.text_primary));
+                    if ui.small_button("Copy").clicked() {
+                        ui.ctx().copy_text(text.clone());
+                    }
+                });
+                ui.horizontal_wrapped(|ui| {
+                    ui.add_space(14.0);
+                    ui.label(egui::RichText::new(&text).monospace().color(theme.text_secondary));
+                });
+            }
+            return;
         }
         for (client, reg) in &clients_now {
             let (state, can_connect, can_disconnect) = match reg {
@@ -4644,7 +4685,13 @@ impl PreferencesPanel {
     }
 
     fn show_about(&mut self, ui: &mut egui::Ui, theme: &KlippTheme) {
-        if ui.button("Check for updates…").clicked() { self.show_updates = true; }
+        if klipp_core::flatpak::app_id().is_some() {
+            ui.label(egui::RichText::new(FLATPAK_UPDATES).color(theme.text_secondary));
+        }
+        // In a Flatpak, About answers with how the store updates it.
+        if ui.button("Check for updates…").clicked() {
+            self.show_updates = true;
+        }
         // Page heading
         ui.horizontal(|ui| {
             ui.add_space(14.0);
@@ -4664,9 +4711,9 @@ impl PreferencesPanel {
         Self::setting_row(ui, "Version", theme, |ui| {
             ui.label(egui::RichText::new(build.label()).color(theme.text_dim));
         });
-        if let Some(at) = build.built_at {
+        if let Some(built) = build.built() {
             Self::setting_row(ui, "Built", theme, |ui| {
-                ui.label(egui::RichText::new(klipp_core::build_info::format_utc(at)).color(theme.text_dim));
+                ui.label(egui::RichText::new(built.text()).color(theme.text_dim));
             });
         }
 

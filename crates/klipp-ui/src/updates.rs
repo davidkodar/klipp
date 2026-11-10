@@ -304,10 +304,24 @@ pub(crate) struct Updates {
     launch_error: Option<String>,
     /// The updater running: what to say if it ends without updating.
     launched: Option<mpsc::Receiver<String>>,
+    /// A Flatpak: its software store updates it, so Klipp neither asks,
+    /// checks nor updates itself.
+    store: bool,
+    /// In a Flatpak, someone asked for a check: About says where updates
+    /// come from, with the command, rather than doing nothing.
+    store_asked: bool,
 }
 
 impl Default for Updates {
     fn default() -> Self {
+        Self::for_store(klipp_core::flatpak::app_id().is_some())
+    }
+}
+
+impl Updates {
+    /// Updates for a Klipp its software store updates (`store`, a
+    /// Flatpak) or not.
+    fn for_store(store: bool) -> Self {
         // Read and logged at start, not at the first check.
         test_overrides();
         Self {
@@ -323,13 +337,15 @@ impl Default for Updates {
             stopped: None,
             launch_error: None,
             launched: None,
+            store,
+            store_asked: false,
         }
     }
 }
 
 impl Updates {
     fn start(&mut self, ctx: &egui::Context, prefs: &mut GeneralPrefs, dirty: &mut bool) {
-        if self.pending.is_some() {
+        if self.pending.is_some() || self.store {
             return;
         }
         prefs.last_update_check = now();
@@ -410,6 +426,11 @@ impl Updates {
 
     /// Check now, from About.
     pub(crate) fn check_now(&mut self) {
+        // A Flatpak doesn't check: it says how it is updated instead.
+        if self.store {
+            self.store_asked = true;
+            return;
+        }
         self.check_requested = true;
     }
 
@@ -427,6 +448,9 @@ impl Updates {
 
     /// Where the check is, for About's status row.
     pub(crate) fn status(&self) -> Status<'_> {
+        if self.store {
+            return Status::Store { asked: self.store_asked };
+        }
         if self.pending.is_some() {
             return Status::Checking;
         }
@@ -455,6 +479,11 @@ impl Updates {
     /// package it downloads and verifies.
     pub(crate) fn install(&mut self) {
         self.launch_error = None;
+        // A Flatpak has no package of Klipp's to update, and its sandbox
+        // no pacman.
+        if self.store {
+            return;
+        }
         let Some(args) = self.updater_args() else { return };
         // Fixed, package-owned helper; no downloaded command or URL is executed.
         match Command::new("/usr/bin/klipp-update").args(args).spawn() {
@@ -490,6 +519,11 @@ impl Updates {
     /// over About, which shows the result itself. `about` is whether About
     /// is open; the notice's "Show details…" opens it.
     pub(crate) fn show(&mut self, ctx: &egui::Context, prefs: &mut GeneralPrefs, dirty: &mut bool, project_open: bool, about: &mut bool) {
+        // The software store updates a Flatpak: no question, no check.
+        if self.store {
+            self.check_requested = false;
+            return;
+        }
         if !self.asked && !self.hold_question {
             self.asked = true;
             let before = (prefs.update_checks_answered, prefs.update_checks_asked);
@@ -593,6 +627,15 @@ pub(crate) enum Status<'a> {
     Latest { previews: bool, testing: Option<&'a str> },
     Available { version: String, notes: String, install: Install, error: Option<&'a str>, testing: Option<&'a str> },
     Failed(&'a str),
+    /// A Flatpak: its software store updates it. `asked` once someone
+    /// asked for a check, which is answered with how to update.
+    Store { asked: bool },
+}
+
+/// The command that updates this Flatpak from a terminal.
+pub(crate) fn store_update_command() -> String {
+    let id = klipp_core::flatpak::app_id().unwrap_or_else(|| "io.github.davidkodar.Klipp".to_owned());
+    format!("flatpak update {id}")
 }
 
 /// How a newer version is put in, for the way this Klipp was installed.
@@ -646,6 +689,28 @@ fn now() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// In a Flatpak the software store updates Klipp: the status says so
+    /// from the start, and Klipp never asks about checking, never checks
+    /// GitHub and never opens the package's updater (which runs pacman).
+    #[test]
+    fn a_flatpak_is_updated_by_its_store() {
+        let ctx = egui::Context::default();
+        let mut prefs = GeneralPrefs::default();
+        let before = (prefs.update_checks_answered, prefs.update_checks_asked, prefs.last_update_check);
+        let mut u = Updates::for_store(true);
+        assert_eq!(u.status(), Status::Store { asked: false });
+        u.check_now();
+        assert_eq!(u.status(), Status::Store { asked: true }, "a check asked for is answered, not ignored");
+        let (mut dirty, mut about) = (false, false);
+        let _ = ctx.run(Default::default(), |ctx| u.show(ctx, &mut prefs, &mut dirty, false, &mut about));
+        assert!(u.pending.is_none() && !u.asking, "no check started, no question");
+        assert_eq!((prefs.update_checks_answered, prefs.update_checks_asked, prefs.last_update_check), before, "nothing of the checks recorded");
+        u.install();
+        assert!(u.launched.is_none() && u.launch_error.is_none(), "no updater opened");
+        assert_eq!(Updates::for_store(false).status(), Status::Idle, "outside a Flatpak, as before");
+    }
+
     fn releases() -> Vec<Release> {
         serde_json::from_str(
             r#"[

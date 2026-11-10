@@ -432,7 +432,17 @@ fn read_free_vram() -> Option<f64> {
             }
         }
     }
-    let out = std::process::Command::new("nvidia-smi").args(["--query-gpu=memory.free", "--format=csv,noheader,nounits"]).output().ok()?;
+    let out = match std::process::Command::new("nvidia-smi").args(["--query-gpu=memory.free", "--format=csv,noheader,nounits"]).output() {
+        Ok(out) => out,
+        Err(e) => {
+            // No AMD figure and no nvidia-smi (a Flatpak's sandbox, a
+            // machine without NVIDIA's tools): decoders are budgeted
+            // without the GPU's free memory. Said once.
+            static SAID: std::sync::Once = std::sync::Once::new();
+            SAID.call_once(|| tracing::info!("the GPU's free memory isn't read: no sysfs figure, and nvidia-smi can't run ({e})"));
+            return None;
+        }
+    };
     out.status.success().then(|| nvidia_smi_free(&String::from_utf8_lossy(&out.stdout))).flatten()
 }
 

@@ -745,3 +745,50 @@ fn the_viewer_says_it_shows_a_matte_and_the_shortcut_is_the_same_state() {
     v.state.selected_clip = None;
     assert!(v.state.matte_node_gone(), "another clip in hand");
 }
+
+/// A clip at half its size, moved 200 pixels right (and turned by
+/// `rotation`), its grade holding a circle Window at its own centre, on the
+/// Colour page: the viewer, a Select drag.
+fn placed(rotation: f32) -> (Viewer, klipp_core::ClipId) {
+    let (mut v, clip) = viewer();
+    v.state.active_tool = Tool::Select;
+    v.state.show_color_panel = true;
+    let c = v.state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip)).unwrap();
+    *c = klipp_timeline::test_clip::TestClip::of(c.clone())
+        .effect(klipp_effects::BuiltinEffect::Transform {
+            position_x: 200.0, position_y: 0.0, scale_x: 0.5, scale_y: 0.5, rotation, anchor_x: 0.5, anchor_y: 0.5,
+            rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0, focal_ref: None,
+        })
+        .build();
+    let circle = klipp_core::Mask { shape: MaskShape::Circle { center_x: 0.5, center_y: 0.5, radius: 0.2 }, ..Default::default() };
+    v.state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip)).unwrap().edit_grade(|g| {
+        let id = g.ensure_corrector_window();
+        g.nodes.iter_mut().find(|n| n.id == id).unwrap().params.masks = Some(klipp_core::MaskStack { masks: vec![circle] });
+    });
+    v.frame(Vec::new());
+    v.frame(Vec::new());
+    (v, clip)
+}
+
+/// On a clip placed smaller, moved and turned, its window is drawn where
+/// its matte cuts the clip's picture, and a drag of its centre moves it
+/// under the pointer, by the pointer's distance in the clip's own picture:
+/// pressed where the placed picture shows the window's centre, it lands
+/// where the pointer is let go. The overlay drew in the frame's fractions,
+/// so on a placed clip it lay off the picture it cut.
+#[test]
+fn a_placed_clips_window_is_drawn_and_dragged_on_its_picture() {
+    for rotation in [0.0, 90.0] {
+        let (mut v, clip) = placed(rotation);
+        let view = crate::panels::viewer::title_view_of(&v.state, v.state.sequences[0].all_clips().find(|c| c.id == clip).unwrap(), v.image_rect()).expect("a placement the viewer follows");
+        assert!(view.placement.is_some(), "the clip is placed");
+        let start = view.to_screen(0.5, 0.5);
+        let end = start + egui::vec2(40.0, 0.0);
+        let from = v.sent.len();
+        drag(&mut v, start, end);
+        let sent = apply(&mut v, clip, from);
+        let MaskShape::Circle { center_x, center_y, .. } = masks(&v, clip)[0].shape else { panic!("a circle") };
+        let want = view.to_norm(end);
+        assert!((center_x - want.0).abs() < 3e-3 && (center_y - want.1).abs() < 3e-3, "turned {rotation}°: the centre at ({center_x}, {center_y}), not under the pointer at {want:?}; sent {sent:?}");
+    }
+}

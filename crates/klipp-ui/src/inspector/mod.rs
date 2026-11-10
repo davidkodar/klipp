@@ -2617,8 +2617,7 @@ fn show_title_weight_row(
         weights = faces.iter().map(|f| f.weight).collect();
     }
     weights.dedup();
-    let axes: Vec<klipp_title::variable::VariationAxis> = registry
-        .get(family)
+    let axes: Vec<klipp_title::variable::VariationAxis> = klipp_title::font_discovery::registry_faces(&registry, family)
         .and_then(|infos| infos.iter().find(|i| !i.axes.is_empty() && i.italic == italic).or_else(|| infos.iter().find(|i| !i.axes.is_empty())))
         .map(|i| i.axes.clone())
         .unwrap_or_default();

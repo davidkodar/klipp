@@ -26,6 +26,10 @@ fn main() {
     // so a later build of main always has a larger number.
     let number = git(&["rev-list", "--count", "HEAD"]).unwrap_or_else(|| "0".to_string());
     println!("cargo:rustc-env=KLIPP_GIT_COMMIT={commit}");
+    // The commit's time: what About shows where the executable's own time
+    // isn't a real one (a Flatpak's files are stored at the epoch).
+    let committed = git(&["log", "-1", "--format=%ct", "HEAD"]).filter(|t| t.parse::<u64>().is_ok()).unwrap_or_else(|| "0".to_string());
+    println!("cargo:rustc-env=KLIPP_GIT_COMMIT_TIME={committed}");
     println!("cargo:rustc-env=KLIPP_BUILD_NUMBER={number}");
     println!("cargo:rustc-env=KLIPP_GIT_DIRTY={dirty}");
     println!("cargo:rustc-env=KLIPP_BUILD_PROFILE={}", std::env::var("PROFILE").unwrap_or_default());

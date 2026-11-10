@@ -1415,6 +1415,26 @@ pub(crate) fn slip_clamped_source_range(
     (new_src_in, new_src_out)
 }
 
+/// Seconds from where `holder`'s keys start to where `clip`'s start: a
+/// J cut's picture holds its sound's level and starts after it, so a key at
+/// the picture's 0 is heard this much into the sound
+/// (`Clip::settings_offset_secs`). Zero for a clip holding its own keys.
+pub(crate) fn linked_key_offset(seq: &klipp_timeline::Sequence, clip: &klipp_timeline::Clip, holder: ClipId) -> f64 {
+    if holder == clip.id {
+        return 0.0;
+    }
+    seq.all_clips().find(|c| c.id == holder).map_or(0.0, |h| clip.settings_offset_secs(h))
+}
+
+/// `keys` moved `offset` seconds later: another clip's keys on this one's
+/// clock.
+pub(crate) fn keys_on_own_clock(mut keys: Vec<klipp_core::Keyframe>, offset: f64) -> Vec<klipp_core::Keyframe> {
+    for k in &mut keys {
+        k.time_secs += offset;
+    }
+    keys
+}
+
 /// Audio params for the per-frame `UpdateClipAudio` command emitted while a
 /// fade-handle is being dragged. Returns the linked video clip's params when
 /// `clip` has `linked_clip_id`, otherwise the clip's own fields.
@@ -14212,6 +14232,12 @@ impl TimelinePanel {
             return;
         }
 
+        // The keys are the clip's that holds the pair's level (a linked
+        // sound's picture), each on that clip's clock: drawn and picked
+        // here on this clip's, as they are heard (`linked_key_offset`), and
+        // a time written back on theirs.
+        let kf_offset = linked_key_offset(state.sequence(), &state.sequence().tracks[track_idx].clips[clip_index], kf_clip_id);
+        let kf_keyframes_vec = keys_on_own_clock(kf_keyframes_vec, kf_offset);
         let kf_keyframes = &kf_keyframes_vec[..];
 
 
@@ -14438,7 +14464,7 @@ impl TimelinePanel {
                                 cmds.push(AppCommand::RemoveAudioKeyframe {
                                     clip_id: kf_clip_id,
                                     param: rb_param,
-                                    time_secs: kf.time_secs,
+                                    time_secs: kf.time_secs - kf_offset,
                                 });
                             }
                         }
@@ -14612,7 +14638,7 @@ impl TimelinePanel {
                             cmds.push(AppCommand::AddAudioKeyframe {
                                 clip_id: kf_clip_id,
                                 param: rb_param,
-                                time_secs: t,
+                                time_secs: t - kf_offset,
                                 value: v,
                             });
                         }

@@ -1,4 +1,3 @@
-use klipp_timeline::GradeAccess;
 use crate::icons::Icon;
 use crate::inspector::video_tab::{find_transform_index, TransformParams};
 use crate::state::{AppState, TransformHandle, ViewerTransformDrag};
@@ -1113,6 +1112,9 @@ impl ViewerPanel {
                         crate::state::EyedropperMode::HueCurve => {
                             cmds.push(AppCommand::RequestHueCurveSample { nx, ny });
                         }
+                        crate::state::EyedropperMode::KeyColour => {
+                            cmds.push(AppCommand::RequestKeyColourSample { nx, ny });
+                        }
                         crate::state::EyedropperMode::None | crate::state::EyedropperMode::QualifierStroke => {}
                     }
                     state.eyedropper_mode = crate::state::EyedropperMode::None;
@@ -1123,6 +1125,7 @@ impl ViewerPanel {
                 state.wb_pick_clip = None;
                 state.qualifier_pick = None;
                 state.hue_curve_pick = None;
+                state.key_colour_pick = None;
             }
         }
     }
@@ -2344,6 +2347,9 @@ impl ViewerPanel {
             && state.eyedropper_mode == crate::state::EyedropperMode::None
             && !state.has_modal_open()
             && selection_is_on_screen(state)
+            // A mask of the picture's picked in the graph has the viewer's
+            // handles: a drag on it moved the clip as well.
+            && !state.selected_clip.and_then(|c| crate::mask_edit::mask_site(state, c)).is_some_and(|s| s.addr.is_some())
         {
             // The selected clip's motion path (#2276), taking a press on
             // its dots and handles before the gizmo can.
@@ -2424,7 +2430,12 @@ impl ViewerPanel {
 
         // ── Interactive mask handles on viewer ──
         // Draw and interact with masks from the selected node in the clip's node graph.
+        let from = cmds.len();
         self.draw_mask_handles(ui, state, image_rect, cmds, theme);
+        // A picture matte's edits, by its path.
+        if let Some(site) = state.selected_clip.and_then(|c| crate::mask_edit::mask_site(state, c)) {
+            crate::mask_edit::to_site(cmds, from, &site);
+        }
 
         // ── Point tracking overlay ──
         self.draw_track_points(ui, state, image_rect, cmds, theme);
@@ -3872,24 +3883,10 @@ impl ViewerPanel {
                 return;
             }
         };
-        let selected_id = state.selected_node_id;
-        let mask_node: Option<(klipp_nodes::NodeId, klipp_core::MaskStack)> = state
-            .sequence()
-            .tracks
-            .iter()
-            .find_map(|t| t.find_clip(clip_id))
-            .and_then(|clip| {
-                let selected_match = selected_id.and_then(|sid| {
-                    clip.grade().nodes.iter().find(|n|
-                        n.id == sid && n.kind == klipp_nodes::NodeKind::Mask)
-                });
-                let fallback = clip.grade().nodes.iter()
-                    .find(|n| n.kind == klipp_nodes::NodeKind::Mask);
-                selected_match.or(fallback).map(|n| (
-                    n.id,
-                    n.params.masks.clone().unwrap_or_default(),
-                ))
-            });
+        // A mask made in the clip's picture graph, picked there (or the
+        // effect it masks picked), comes first: its edits go by its path
+        // (`mask_edit::to_site`, where the viewer calls this).
+        let mask_node: Option<(klipp_nodes::NodeId, klipp_core::MaskStack)> = crate::mask_edit::mask_site(state, clip_id).map(|s| (s.node_id, s.masks));
         let (node_id, masks) = match mask_node {
             Some((id, ms)) if !ms.masks.is_empty() => (id, ms),
             _ => {
@@ -3915,9 +3912,13 @@ impl ViewerPanel {
         let outline_color = ui.visuals().selection.stroke.color;
         let handle_color = egui::Color32::WHITE;
 
+        // The clip's picture as the viewer places it (smaller, moved or
+        // turned): the masks cut it before it is placed, so they are drawn
+        // through its placement and the pointer is read back through it.
+        let placed = state.sequence().all_clips().find(|c| c.id == clip_id).and_then(|c| title_view_of(state, c, image_rect).ok()).unwrap_or_else(|| TitleView::flat(image_rect));
         // Helper: convert normalized coords to screen coords
         let to_screen = |nx: f32, ny: f32| -> egui::Pos2 {
-            egui::pos2(image_rect.min.x + nx * iw, image_rect.min.y + ny * ih)
+            placed.place(egui::pos2(image_rect.min.x + nx * iw, image_rect.min.y + ny * ih))
         };
 
         for (mask_idx, raw_mask) in masks.masks.iter().enumerate() {
@@ -4015,7 +4016,9 @@ impl ViewerPanel {
                                         mask_index: mask_idx,
                                         handle: handle_kind,
                                         initial_shape: untracked_shape.clone(),
-                                        drag_start_pos: pos,
+                                        // From where the press was, not where the drag was
+                                        // recognised: the shape kept that far behind the hand.
+                                        drag_start_pos: ui.input(|i| i.pointer.press_origin()).unwrap_or(pos),
                                     });
                                 }
                             }
@@ -4095,7 +4098,9 @@ impl ViewerPanel {
                                         mask_index: mask_idx,
                                         handle: handle_kind,
                                         initial_shape: untracked_shape.clone(),
-                                        drag_start_pos: pos,
+                                        // From where the press was, not where the drag was
+                                        // recognised: the shape kept that far behind the hand.
+                                        drag_start_pos: ui.input(|i| i.pointer.press_origin()).unwrap_or(pos),
                                     });
                                 }
                             }
@@ -4171,7 +4176,9 @@ impl ViewerPanel {
                                         mask_index: mask_idx,
                                         handle: handle_kind,
                                         initial_shape: untracked_shape.clone(),
-                                        drag_start_pos: pos,
+                                        // From where the press was, not where the drag was
+                                        // recognised: the shape kept that far behind the hand.
+                                        drag_start_pos: ui.input(|i| i.pointer.press_origin()).unwrap_or(pos),
                                     });
                                 }
                             }
@@ -4233,7 +4240,9 @@ impl ViewerPanel {
                                         mask_index: mask_idx,
                                         handle: handle_kind,
                                         initial_shape: untracked_shape.clone(),
-                                        drag_start_pos: pos,
+                                        // From where the press was, not where the drag was
+                                        // recognised: the shape kept that far behind the hand.
+                                        drag_start_pos: ui.input(|i| i.pointer.press_origin()).unwrap_or(pos),
                                     });
                                 }
                             }
@@ -4287,7 +4296,9 @@ impl ViewerPanel {
                                             mask_index: mask_idx,
                                             handle: MaskHandle::BezierPoint(pi),
                                             initial_shape: untracked_shape.clone(),
-                                            drag_start_pos: pos,
+                                            // From where the press was, not where the drag was
+                                            // recognised: the shape kept that far behind the hand.
+                                            drag_start_pos: ui.input(|i| i.pointer.press_origin()).unwrap_or(pos),
                                         });
                                     }
                                 }
@@ -4313,6 +4324,8 @@ impl ViewerPanel {
             // Check if pointer is still down
             let pointer_down = ui.input(|i| i.pointer.any_down());
             let current_pos = ui.input(|i| i.pointer.interact_pos()).unwrap_or(drag_start);
+            // Both on the clip's own picture, before it is placed.
+            let (drag_start, current_pos) = (placed.unplace(drag_start), placed.unplace(current_pos));
             // On a tracked window (#238), the pointer is where the window
             // is now; the edit is to the window as drawn on its reference
             // frame, so both ends of the drag are taken back through the

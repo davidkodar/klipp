@@ -137,6 +137,81 @@ fn attach_linked_audio(
     Some(LinkedAudioAppend { clip, track_index, created_track_at, clips_before, clips_after })
 }
 
+/// Seconds to add to a key's time on `from` to put it on `to`'s clock: a
+/// linked pair's keys are each timed from its own clip's start, and a J
+/// cut's sound starts before its picture (`Clip::settings_offset_secs`,
+/// which playback and the export read the picture's keys through). Zero
+/// for a pair that starts together, or a clip not found.
+pub(super) fn linked_key_shift(seq: &klipp_timeline::Sequence, from: klipp_core::ClipId, to: klipp_core::ClipId) -> f64 {
+    let start = |id| seq.all_clips().find(|c| c.id == id).map(|c| c.timeline_in.to_secs_f64());
+    match (start(from), start(to)) {
+        (Some(f), Some(t)) => f - t,
+        _ => 0.0,
+    }
+}
+
+/// `clip_id`'s `param` keys set to `keys` (a paste, a reversal) and, when it
+/// is linked, its partner's to the same keys on the partner's clock: a
+/// linked sound's level is read from its picture, so a list set on the
+/// sound alone was never heard. The edit, both clips in one undo step, or
+/// `None` when the clip is gone.
+pub(super) fn set_audio_keys_with_partner(
+    seq: &mut klipp_timeline::Sequence,
+    clip_id: klipp_core::ClipId,
+    param: klipp_core::AudioParam,
+    keys: Vec<klipp_core::Keyframe>,
+    description: &'static str,
+) -> Option<klipp_document::history::EditCommand> {
+    use klipp_document::history::KeyframeSnapshot;
+    let partner = seq.all_clips().find(|c| c.id == clip_id)?.linked_clip_id.filter(|p| seq.all_clips().any(|c| c.id == *p));
+    let shift = partner.map_or(0.0, |p| linked_key_shift(seq, clip_id, p));
+    let snapshot = |seq: &klipp_timeline::Sequence, id| seq.all_clips().find(|c| c.id == id).map(KeyframeSnapshot::from_clip);
+    let (old_state, old_linked_state) = (snapshot(seq, clip_id)?, partner.and_then(|p| snapshot(seq, p)));
+    let mut set = |id, keys: Vec<klipp_core::Keyframe>| {
+        if let Some(clip) = seq.tracks.iter_mut().find_map(|t| t.find_clip_mut(id)) {
+            *match param {
+                klipp_core::AudioParam::Volume => &mut clip.volume_keyframes,
+                klipp_core::AudioParam::Pan => &mut clip.pan_keyframes,
+                klipp_core::AudioParam::Gain => &mut clip.gain_keyframes,
+            } = keys;
+        }
+    };
+    if let Some(p) = partner {
+        set(p, keys.iter().cloned().map(|mut k| {
+            k.time_secs += shift;
+            k
+        }).collect());
+    }
+    set(clip_id, keys);
+    Some(klipp_document::history::EditCommand::EditKeyframes {
+        clip_id,
+        linked_clip_id: partner,
+        description,
+        old_state,
+        new_state: snapshot(seq, clip_id)?,
+        old_linked_state,
+        new_linked_state: partner.and_then(|p| snapshot(seq, p)),
+    })
+}
+
+/// `keys` turned round in time, from their last key back to zero, each
+/// curve's handles with them; fewer than two are left as they are.
+pub(super) fn reversed_keys(keys: &[klipp_core::Keyframe]) -> Vec<klipp_core::Keyframe> {
+    let mut keys = keys.to_vec();
+    if keys.len() >= 2 {
+        let max_time = keys.last().map(|k| k.time_secs).unwrap_or(0.0);
+        for kf in keys.iter_mut() {
+            kf.time_secs = max_time - kf.time_secs;
+            let (old_in, old_out) = (kf.tangent_in, kf.tangent_out);
+            kf.tangent_in = (-old_out.0, old_out.1);
+            kf.tangent_out = (-old_in.0, old_in.1);
+        }
+        keys.reverse();
+        keys.sort_by(|a, b| a.time_secs.partial_cmp(&b.time_secs).unwrap_or(std::cmp::Ordering::Equal));
+    }
+    keys
+}
+
 /// A linked clip may have a differently nudged key in the same displayed frame.
 pub(super) fn edit_linked_audio_key(keys: &mut Vec<klipp_core::Keyframe>, time: f64, tolerance: f64, insert_time: f64, value: Option<f32>) {
     let target = if tolerance > 0.0 { crate::inspector::keyframe_selection::nearest(keys, time, tolerance).map_or(insert_time, |i| keys[i].time_secs) } else { time };
@@ -512,5 +587,93 @@ mod linked_missing_key_review_tests {
         let mut partner=vec![];
         super::edit_linked_audio_key(&mut partner,0.700,0.5/24.0,0.707,Some(0.25));
         assert_eq!(partner[0].time_secs,0.707);
+    }
+}
+
+#[cfg(test)]
+mod linked_key_clock_tests {
+    /// The hand check's J cut: the cafe picture 4-10 s, its sound from
+    /// 3.52 s. A key the Audio tab, the Curve Editor or the Dope Sheet
+    /// sets on the sound at 4.0 s (0.48 s into it) goes on the picture at
+    /// its own 0.0, where playback and the export read the pair's level;
+    /// one set on the picture at 2.0 goes on the sound at 2.48. A plain
+    /// pair keeps its times.
+    #[test]
+    fn a_j_cuts_keys_cross_to_the_partners_clock() {
+        let tc = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 25);
+        let id = klipp_core::MediaId::new();
+        let mut picture = klipp_timeline::Clip::media(id, tc(4.0), tc(10.0), tc(1.0), tc(7.0));
+        let mut sound = klipp_timeline::Clip::media(id, tc(3.52), tc(10.0), tc(0.52), tc(7.0));
+        (picture.linked_clip_id, sound.linked_clip_id) = (Some(sound.id), Some(picture.id));
+        let plain_picture = klipp_timeline::Clip::media(id, tc(10.0), tc(12.0), tc(0.0), tc(2.0));
+        let plain_sound = klipp_timeline::Clip::media(id, tc(10.0), tc(12.0), tc(0.0), tc(2.0));
+        let (p, s, pp, ps) = (picture.id, sound.id, plain_picture.id, plain_sound.id);
+        let mut seq = klipp_timeline::Sequence::new_default();
+        let mut v = klipp_timeline::Track::new("V1", klipp_timeline::TrackKind::Video);
+        v.clips = vec![picture, plain_picture];
+        let mut a = klipp_timeline::Track::new("A1", klipp_timeline::TrackKind::Audio);
+        a.clips = vec![sound, plain_sound];
+        seq.tracks = vec![v, a];
+        let shift = |from, to| super::linked_key_shift(&seq, from, to);
+        assert!((0.48 + shift(s, p)).abs() < 1e-9, "sound 0.48 s is the picture's 0: {}", shift(s, p));
+        assert!((2.0 + shift(p, s) - 2.48).abs() < 1e-9, "picture 2.0 s is the sound's 2.48: {}", shift(p, s));
+        assert_eq!(shift(pp, ps), 0.0);
+        // The partner's key set where the sound's was asked.
+        let mut keys = Vec::new();
+        super::edit_linked_audio_key(&mut keys, 0.48 + shift(s, p), 0.0, 0.48 + shift(s, p), Some(0.1));
+        assert!(keys[0].time_secs.abs() < 1e-9, "{keys:?}");
+    }
+}
+
+#[cfg(test)]
+mod linked_key_list_tests {
+    use klipp_core::{AudioParam, Keyframe};
+
+    fn key(t: f64, v: f32) -> Keyframe {
+        let mut keys = Vec::new();
+        klipp_core::keyframe::upsert_keyframe(&mut keys, t, v);
+        keys.remove(0)
+    }
+
+    /// The J cut of the hand check: the cafe picture 4-10 s, its sound from
+    /// 3.52 s. A list of keys pasted or reversed on the sound is written on
+    /// the picture too, where the pair's level is read, on the picture's
+    /// clock; one undo step puts both back.
+    #[test]
+    fn a_key_list_on_a_linked_sound_lands_on_its_picture() {
+        let tc = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 25);
+        let id = klipp_core::MediaId::new();
+        let mut picture = klipp_timeline::Clip::media(id, tc(4.0), tc(10.0), tc(1.0), tc(7.0));
+        let mut sound = klipp_timeline::Clip::media(id, tc(3.52), tc(10.0), tc(0.52), tc(7.0));
+        (picture.linked_clip_id, sound.linked_clip_id) = (Some(sound.id), Some(picture.id));
+        picture.volume_keyframes = vec![key(1.0, 0.5)];
+        sound.volume_keyframes = vec![key(1.48, 0.5)];
+        let (p, s) = (picture.id, sound.id);
+        let mut seq = klipp_timeline::Sequence::new_default();
+        let mut v = klipp_timeline::Track::new("V1", klipp_timeline::TrackKind::Video);
+        v.clips = vec![picture];
+        let mut a = klipp_timeline::Track::new("A1", klipp_timeline::TrackKind::Audio);
+        a.clips = vec![sound];
+        seq.tracks = vec![v, a];
+        let before = seq.clone();
+        let times = |seq: &klipp_timeline::Sequence, id| seq.all_clips().find(|c| c.id == id).unwrap().volume_keyframes.iter().map(|k| (k.time_secs, k.value)).collect::<Vec<_>>();
+        let close = |got: Vec<(f64, f32)>, want: &[(f64, f32)]| got.len() == want.len() && got.iter().zip(want).all(|(g, w)| (g.0 - w.0).abs() < 1e-9 && g.1 == w.1);
+
+        let edit = super::set_audio_keys_with_partner(&mut seq, s, AudioParam::Volume, vec![key(0.48, 0.1), key(2.48, 1.0)], "Paste Audio Keyframes").expect("an edit");
+        assert!(close(times(&seq, s), &[(0.48, 0.1), (2.48, 1.0)]), "the sound: {:?}", times(&seq, s));
+        assert!(close(times(&seq, p), &[(0.0, 0.1), (2.0, 1.0)]), "the picture, on its clock: {:?}", times(&seq, p));
+        // One undo puts both clips back.
+        let mut seqs = vec![seq.clone()];
+        let (mut pool, mut fps) = (klipp_media::MediaPool::default(), seq.fps);
+        klipp_document::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut pool, fps: &mut fps }.apply_inverse(&edit);
+        assert_eq!((times(&seqs[0], s), times(&seqs[0], p)), (times(&before, s), times(&before, p)), "one undo step for both");
+
+        // Reversed on the sound, the same: the sound's keys turned round,
+        // the picture's the same keys on its clock.
+        let reversed = super::reversed_keys(&times(&seq, s).iter().map(|&(t, v)| key(t, v)).collect::<Vec<_>>());
+        super::set_audio_keys_with_partner(&mut seq, s, AudioParam::Volume, reversed, "Reverse Audio Keyframes").unwrap();
+        assert!(close(times(&seq, s), &[(0.0, 1.0), (2.0, 0.1)]), "the sound reversed: {:?}", times(&seq, s));
+        assert!(close(times(&seq, p), &[(-0.48, 1.0), (1.52, 0.1)]), "the picture: {:?}", times(&seq, p));
+
     }
 }

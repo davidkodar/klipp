@@ -280,6 +280,42 @@ fn cpu_section() -> ReportSection {
     }
 }
 
+/// The report's GPU devices: lspci's display controllers (`pci`, its
+/// output, `None` when it couldn't run), else the chip's own GPU (`soc`).
+/// Without lspci (a Flatpak's sandbox) that is said, not "(none)".
+#[cfg(any(feature = "ai-ort", test))]
+fn devices_text(pci: Option<&str>, soc: Option<String>) -> String {
+    let devices: Vec<String> = pci
+        .unwrap_or_default()
+        .lines()
+        .map(|l| l.splitn(3, ' ').nth(2).unwrap_or(l).trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    if !devices.is_empty() {
+        return devices.join("\n  ");
+    }
+    match (soc, pci) {
+        (Some(soc), _) => soc,
+        (None, None) => "(lspci isn't available here)".to_string(),
+        (None, Some(_)) => "(none)".to_string(),
+    }
+}
+
+#[cfg(test)]
+mod devices_text_tests {
+    /// The devices lspci lists; without lspci (a Flatpak), that is said
+    /// rather than "(none)", which read as no GPU at all.
+    #[test]
+    fn a_missing_lspci_is_said_not_taken_for_no_gpu() {
+        // As `lspci -d ::0300` prints it: slot, class, then the device.
+        let pci = "01:00.0 VGA NVIDIA Corporation AD103 [GeForce RTX 4080] (rev a1)\n";
+        assert_eq!(super::devices_text(Some(pci), None), "NVIDIA Corporation AD103 [GeForce RTX 4080] (rev a1)");
+        assert_eq!(super::devices_text(None, None), "(lspci isn't available here)");
+        assert_eq!(super::devices_text(Some(""), None), "(none)");
+        assert_eq!(super::devices_text(None, Some("Apple M1 GPU (8 cores)".into())), "Apple M1 GPU (8 cores)");
+    }
+}
+
 #[cfg(feature = "ai-ort")]
 fn gpu_section() -> ReportSection {
     let mut rows = gpu_rows();
@@ -287,29 +323,9 @@ fn gpu_section() -> ReportSection {
     rows.push(("Vendor".into(), format!("{vendor:?}")));
 
     // Lspci VGA + 3D devices for full device strings.
-    let pci = std::process::Command::new("lspci")
-        .args(["-d", "::0300"])
-        .output()
-        .ok()
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .unwrap_or_default();
-    let devices: Vec<String> = pci
-        .lines()
-        .map(|l| {
-            l.splitn(3, ' ')
-                .nth(2)
-                .unwrap_or(l)
-                .trim()
-                .to_string()
-        })
-        .filter(|s| !s.is_empty())
-        .collect();
-    let device_str = if devices.is_empty() {
-        // A GPU on the chip (Apple Silicon) is no PCI device.
-        crate::soc_info::gpu().map(|g| format!("{} ({})", g.name, g.detail)).unwrap_or_else(|| "(none)".to_string())
-    } else {
-        devices.join("\n  ")
-    };
+    let pci = std::process::Command::new("lspci").args(["-d", "::0300"]).output().ok().map(|o| String::from_utf8_lossy(&o.stdout).into_owned());
+    // A GPU on the chip (Apple Silicon) is no PCI device.
+    let device_str = devices_text(pci.as_deref(), crate::soc_info::gpu().map(|g| format!("{} ({})", g.name, g.detail)));
     rows.push(("Devices".into(), device_str));
 
     ReportSection {

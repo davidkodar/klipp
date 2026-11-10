@@ -90,10 +90,12 @@ pub fn pull(lb: f32, busy: f32, lt: f32, mode: u32) -> Result<f32, f32> {
 pub fn title_pull(cells: &[[f32; 4]], mode: u32) -> (f32, f32) {
     // Each part's need for the text the whole title is, light or dark: a
     // part's own read a stroke round light letters as dark text.
-    let lt = title_luminance(cells);
+    let (light, lt) = title_tone(cells);
     let need = |full: bool| {
         let (mut k, mut t, mut any) = (1.0f32, 0.0f32, false);
-        for m in cells.iter().filter(|m| if full { m[2] >= HALO_FULL } else { m[2] > 1e-3 }) {
+        // Over the cells the halo of the title's tone reaches: what
+        // dark ink beside light text sits on needs no darkening.
+        for m in cells.iter().filter(|m| if full { tone_coverage(m, light) >= HALO_FULL } else { tone_coverage(m, light) > 1e-3 }) {
             any = true;
             let busy = (m[1] - m[0] * m[0]).max(0.0).sqrt();
             match pull(m[0], busy, lt, mode) {
@@ -106,15 +108,89 @@ pub fn title_pull(cells: &[[f32; 4]], mode: u32) -> (f32, f32) {
     need(true).or_else(|| need(false)).unwrap_or((1.0, 0.0))
 }
 
-/// The text luminance of the whole title, from its measuring grid: its
-/// luminance over all its coverage, a stroke and its letters together.
-/// The title is light or dark text by this, everywhere: decided place by
-/// place, the cells a black stroke filled read as dark text round white
-/// letters, and the picture was lightened into a bright rim about the
-/// darkened patch.
-pub fn title_luminance(cells: &[[f32; 4]]) -> f32 {
-    let (lt, a) = cells.iter().filter(|m| m[2] > 1e-3).fold((0.0f32, 0.0f32), |(lt, a), m| (lt + m[3], a + m[2]));
-    if a > 0.0 { (lt / a).clamp(0.0, 1.0) } else { 1.0 }
+/// How much of a measuring cell `m` is ink of the title's tone: in a
+/// light-text title its light ink (ink as light as [`LIGHT_TEXT`] or
+/// lighter counting whole, darker less, black not at all), in a dark-text
+/// title its dark ink, the same way round. The
+/// halo and the pull follow it, so black letterbox bars or a logo block
+/// beside white words take none of the words' darkening.
+pub fn tone_coverage(m: &[f32; 4], light: bool) -> f32 {
+    let cov = m[2].max(0.0);
+    if light {
+        // Ink as light as light text or lighter counts whole: a grey
+        // attribution under white words keeps its halo.
+        (m[3] / LIGHT_TEXT).clamp(0.0, cov)
+    } else {
+        ((m[2] - m[3]) / (1.0 - LIGHT_TEXT)).clamp(0.0, cov)
+    }
+}
+
+/// The share of a title's ink, by coverage, that must be light text for
+/// the whole title to be light text.
+pub const LIGHT_SHARE: f32 = 0.1;
+
+/// The least share of a title's edge ink that may be light text for it to
+/// count as light text by its need ([`title_tone`]).
+pub const MIN_LIGHT_SHARE: f32 = 0.02;
+
+/// A measuring cell the title covers this much or more is solid ink, not
+/// an edge of it against the picture.
+pub const SOLID: f32 = 0.98;
+
+/// Whether the whole title is light text, and the luminance its need is
+/// worked out for, from its measuring grid. One decision holds for the
+/// whole title: decided place by place, the cells a black stroke filled
+/// read as dark text round white letters, and the picture was lightened
+/// into a bright rim about the darkened patch.
+///
+/// Read from the ink that meets the picture (cells the title covers
+/// solidly, a letterbox bar's or a logo block's inside, are left out), the
+/// title is light text when the cells reading as light text hold
+/// [`LIGHT_SHARE`] of it or more, or, holding [`MIN_LIGHT_SHARE`] of it or
+/// more, need more protecting than the dark ink does; at the light ink's
+/// luminance. Light text is what darkening
+/// protects, and darkening leaves dark ink beside it readable. Taken as
+/// the average of all its ink, a big dark block (a logo's place) or black
+/// letterbox bars made the white words dark text, and the picture round
+/// them was lightened to their own white. Otherwise it is dark text, at
+/// its dark ink's luminance.
+pub fn title_tone(cells: &[[f32; 4]]) -> (bool, f32) {
+    // The ink that meets the picture: a cell the title covers solidly (the
+    // inside of a letterbox bar, a logo's block) borders none of it. Only
+    // when all of it is solid are those cells the title's.
+    let edge = |m: &&[f32; 4]| m[2] > 1e-3 && m[2] < SOLID;
+    let any_edge = cells.iter().any(|m| edge(&m));
+    let (mut l, mut a, mut ll, mut la) = (0.0f32, 0.0f32, 0.0f32, 0.0f32);
+    // What each kind of ink needs at its own tone, by its coverage: the
+    // light ink's darkening (1 - k), the dark ink's lightening t.
+    let (mut need_light, mut need_dark) = (0.0f32, 0.0f32);
+    for m in cells.iter().filter(|m| if any_edge { edge(m) } else { m[2] > 1e-3 }) {
+        l += m[3];
+        a += m[2];
+        let busy = (m[1] - m[0] * m[0]).max(0.0).sqrt();
+        let own = (m[3] / m[2]).clamp(0.0, 1.0);
+        if own >= LIGHT_TEXT {
+            ll += m[3];
+            la += m[2];
+            need_light += (1.0 - pull(m[0], busy, own, 1).unwrap_or(1.0)) * m[2];
+        } else {
+            need_dark += pull(m[0], busy, own, 1).err().unwrap_or(0.0) * m[2];
+        }
+    }
+    if a <= 0.0 {
+        return (true, 1.0);
+    }
+    // Light text by its share of the ink, or where the light ink needs
+    // more than the dark: white words between black letterbox bars over a
+    // bright sky need it darkened, the bars nothing.
+    // A few cells where white letters meet their own black box read as
+    // light: not enough to count.
+    let light_needs_more = la >= MIN_LIGHT_SHARE * a && need_light / la > need_dark / (a - la).max(1e-6);
+    if la >= LIGHT_SHARE * a || light_needs_more {
+        (true, (ll / la).clamp(0.0, 1.0))
+    } else {
+        (false, ((l - ll) / (a - la).max(1e-6)).clamp(0.0, 1.0))
+    }
 }
 
 /// Protects the text of `layer` over `acc`, both straight-alpha linear
@@ -182,7 +258,7 @@ pub fn protect_backdrop(acc: &mut [f32], layer: &[f32], width: u32, height: u32,
     });
     }
     let (k, t) = title_pull(&small, mode);
-    let light = title_luminance(&small) >= LIGHT_TEXT;
+    let (light, _) = title_tone(&small);
     let at = |x: isize, y: isize| small[y.clamp(0, sh as isize - 1) as usize * sw + x.clamp(0, sw as isize - 1) as usize];
     acc.par_chunks_mut(w * 4).enumerate().for_each(|(y, row)| {
         let v = (y as f32 + 0.5) / s as f32 - 0.5;
@@ -197,7 +273,9 @@ pub fn protect_backdrop(acc: &mut [f32], layer: &[f32], width: u32, height: u32,
                 let bottom = c01[k] + (c11[k] - c01[k]) * fx;
                 m[k] = top + (bottom - top) * fy;
             }
-            let a = m[2];
+            // The halo round the ink of the title's own tone: black bars
+            // round white words spread none of the words' darkening.
+            let a = tone_coverage(&m, light);
             if a <= 1e-3 {
                 continue;
             }
@@ -254,6 +332,71 @@ mod tests {
         protect_backdrop(&mut acc, &layer, w, h, 1.0, 1, K);
         let lighter = acc.chunks(4).zip(before.chunks(4)).filter(|(a, b)| luma(a, K) > luma(b, K) + 1e-3).count();
         assert_eq!(lighter, 0, "{lighter} pixels of the picture lightened round stroked white text");
+    }
+
+    /// A title of a big dark block (a logo's place) above a line of white
+    /// text, over a bright sky (the End Screen template): the white text is
+    /// light text, and the sky round it is darkened, never lightened. Read
+    /// as one title by its ink on average, the block made it dark text, and
+    /// the sky round the white words was lightened to white.
+    #[test]
+    fn white_text_beside_a_dark_block_is_light_text() {
+        let (w, h) = (256, 144);
+        let mut acc = frame(w, h, [0.7, 0.8, 0.95, 1.0]);
+        let before = acc.clone();
+        let mut layer = frame(w, h, [0.0; 4]);
+        let mut put = |x0: u32, y0: u32, x1: u32, y1: u32, c: f32| {
+            for y in y0..y1 {
+                for x in x0..x1 {
+                    let i = ((y * w + x) * 4) as usize;
+                    layer[i..i + 4].copy_from_slice(&[c, c, c, 1.0]);
+                }
+            }
+        };
+        // The block, 80 by 64 (far more ink than the words, as the
+        // template's is), and under it a line of five letters.
+        put(88, 4, 168, 68, 0.03);
+        for letter in 0..5u32 {
+            put(80 + letter * 20, 90, 92 + letter * 20, 104, 1.0);
+        }
+        protect_backdrop(&mut acc, &layer, w, h, 1.0, 1, K);
+        // The sky just under the letters.
+        let lighter = (106..116u32).flat_map(|y| (80..172u32).map(move |x| (y * w + x) as usize * 4)).filter(|&i| luma(&acc[i..i + 4], K) > luma(&before[i..i + 4], K) + 1e-3).count();
+        assert_eq!(lighter, 0, "{lighter} pixels of sky round the white text lightened");
+    }
+
+    /// Black letterbox bars across the frame with white words between them
+    /// (the Opener template), over a bright sky: the words are protected,
+    /// but the sky just inside the bars is left as it is. With one halo
+    /// round all the ink, the bars' edges took the darkening the white
+    /// words asked for, a dark band along each bar.
+    #[test]
+    fn letterbox_bars_round_white_words_get_no_dark_band() {
+        let (w, h) = (256, 144);
+        let mut acc = frame(w, h, [0.7, 0.8, 0.95, 1.0]);
+        let before = acc.clone();
+        let mut layer = frame(w, h, [0.0; 4]);
+        let mut put = |x0: u32, y0: u32, x1: u32, y1: u32, c: f32| {
+            for y in y0..y1 {
+                for x in x0..x1 {
+                    let i = ((y * w + x) * 4) as usize;
+                    layer[i..i + 4].copy_from_slice(&[c, c, c, 1.0]);
+                }
+            }
+        };
+        // The bars, 20 high, and five letters in the middle.
+        put(0, 0, w, 20, 0.0);
+        put(0, h - 20, w, h, 0.0);
+        for letter in 0..5u32 {
+            put(80 + letter * 20, 64, 92 + letter * 20, 80, 1.0);
+        }
+        protect_backdrop(&mut acc, &layer, w, h, 1.0, 1, K);
+        let band = |y0: u32, y1: u32| (y0..y1).flat_map(|y| (0..w).map(move |x| (y * w + x) as usize * 4)).map(|i| luma(&acc[i..i + 4], K) - luma(&before[i..i + 4], K)).fold(0.0f32, f32::min);
+        let (top, bottom) = (band(20, 44), band(h - 44, h - 20));
+        assert!(top > -0.02 && bottom > -0.02, "the sky inside the bars darkened by {top} (top) and {bottom} (bottom)");
+        // The words still get their shade.
+        let under = (82..86u32).flat_map(|y| (80..172u32).map(move |x| (y * w + x) as usize * 4)).map(|i| luma(&acc[i..i + 4], K) - luma(&before[i..i + 4], K)).fold(0.0f32, f32::min);
+        assert!(under < -0.1, "the sky round the words is darkened: {under}");
     }
 
     /// White text over a picture half bright, half dark: the shade behind
