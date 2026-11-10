@@ -448,7 +448,15 @@ fn retrack_and_untrack_click_through() {
     for (button, want) in [("\u{1F3AF} Re-track", vec!["RemoveMaskTracking", "TrackMaskRegion"]), ("\u{1F6AB} Untrack", vec!["RemoveMaskTracking"])] {
         let mut g = start.twin();
         let clip = g.clip;
-        g.state.sequences[0].all_clips_mut().find(|c| c.id == clip).unwrap().track_points.push(tracker.clone());
+        let c = g.state.sequences[0].all_clips_mut().find(|c| c.id == clip).unwrap();
+        c.track_points.push(tracker.clone());
+        // And the keys its track left: tracked is the two together.
+        let node = start.node;
+        klipp_timeline::GradeAccess::edit_grade(c, |graph| {
+            if let Some(m) = graph.nodes.iter_mut().find(|n| n.id == node).and_then(|n| n.params.masks.as_mut()).and_then(|ms| ms.masks.get_mut(0)) {
+                m.keyframes.track_x = vec![klipp_core::Keyframe { time_secs: 0.0, value: 0.0, interpolation: Default::default(), tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() }];
+            }
+        });
         g.drawn();
         let before = g.picture();
         click(&mut g, button).unwrap();
