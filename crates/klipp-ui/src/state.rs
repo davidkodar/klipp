@@ -3338,7 +3338,9 @@ pub struct AppState {
     pub keyframe_clipboard: Option<KeyframeClipboard>,
     /// Keys copied in the Curve Editor (#2278), their times from the
     /// first one's, to paste at the playhead on any curve.
-    pub curve_key_clipboard: Vec<klipp_core::Keyframe>,
+    /// Keys copied in the Curve Editor or the Dope Sheet, each with the
+    /// property it was on, timed from the first of them.
+    pub curve_key_clipboard: Vec<(KeyframeParamKind, klipp_core::Keyframe)>,
     /// Currently selected keyframe on timeline (click to select, right-click for menu)
     pub selected_keyframe: Option<SelectedKeyframe>,
     /// The keys selected together, `selected_keyframe` the primary among
