@@ -5949,6 +5949,56 @@ impl AppState {
         said
     }
 
+    /// A clip's sound settings set, and its linked partner's with them, so
+    /// a pair keeps one level: the edits for each, its own old values in
+    /// its own, ready to be recorded as one step. Recorded for the clip
+    /// alone, an undo put back the picture's gain and left the sound
+    /// clip's, which played louder once the pair was unlinked.
+    #[allow(clippy::too_many_arguments)]
+    pub fn set_clip_audio(
+        &mut self,
+        clip_id: ClipId,
+        gain: f32,
+        volume: f32,
+        pan: f32,
+        fade_in: f32,
+        fade_out: f32,
+        fade_in_curve: klipp_timeline::FadeCurve,
+        fade_out_curve: klipp_timeline::FadeCurve,
+        channel_config: klipp_timeline::ChannelConfig,
+    ) -> Vec<crate::history::EditCommand> {
+        let seq = &mut self.sequences[self.active_sequence_idx];
+        let partner = seq.all_clips().find(|c| c.id == clip_id).and_then(|c| c.linked_clip_id);
+        let mut edits = Vec::new();
+        for id in std::iter::once(clip_id).chain(partner) {
+            let Some(c) = seq.all_clips_mut().find(|c| c.id == id) else { continue };
+            edits.push(crate::history::EditCommand::EditClipAudio {
+                clip_id: id,
+                old_gain: c.gain,
+                old_volume: c.volume,
+                old_pan: c.pan,
+                old_fade_in: c.fade_in_secs,
+                old_fade_out: c.fade_out_secs,
+                old_channel_config: c.channel_config,
+                new_gain: gain,
+                new_volume: volume,
+                new_pan: pan,
+                new_fade_in: fade_in,
+                new_fade_out: fade_out,
+                new_channel_config: channel_config,
+            });
+            c.gain = gain;
+            c.volume = volume;
+            c.pan = pan;
+            c.fade_in_secs = fade_in;
+            c.fade_out_secs = fade_out;
+            c.fade_in_curve = fade_in_curve;
+            c.fade_out_curve = fade_out_curve;
+            c.channel_config = channel_config;
+        }
+        edits
+    }
+
     pub fn split_at_playhead_commands(&self) -> Vec<klipp_core::AppCommand> {
         let ph = self.playhead;
         let fps = self.sequence().fps;
@@ -8637,3 +8687,40 @@ mod sound_effects_on_open_tests {
     }
 }
 
+
+#[cfg(test)]
+mod clip_audio_pair_tests {
+    use super::AppState;
+    use klipp_core::{MediaId, RationalTime};
+    use klipp_timeline::TrackKind;
+
+    /// A gain typed on a picture is set on its linked sound clip too, and
+    /// one undo puts both back: recorded for the picture alone, the sound
+    /// clip kept the gain, and played 6 dB louder once the pair was
+    /// unlinked. A redo sets both again.
+    #[test]
+    fn a_pairs_gain_undoes_on_both_halves() {
+        let t = |s: i64| RationalTime { value: s * 30, rate: 30 };
+        let mut state = AppState::default();
+        let media = MediaId::new();
+        let seq = state.sequence_mut();
+        let vi = seq.tracks.iter().position(|tr| tr.kind == TrackKind::Video).unwrap();
+        let ai = seq.tracks.iter().position(|tr| tr.kind == TrackKind::Audio).unwrap();
+        let v = seq.tracks[vi].append_clip(media, t(10));
+        let a = seq.tracks[ai].append_clip(media, t(10));
+        seq.tracks[vi].find_clip_mut(v).unwrap().linked_clip_id = Some(a);
+        seq.tracks[ai].find_clip_mut(a).unwrap().linked_clip_id = Some(v);
+        let gains = |s: &AppState| [v, a].map(|id| s.sequence().all_clips().find(|c| c.id == id).unwrap().gain);
+        let steps = state.active_history().undo_count();
+        let edits = state.set_clip_audio(v, 2.0, 1.0, 0.0, 0.0, 0.0, Default::default(), Default::default(), Default::default());
+        state.push_history(crate::history::EditCommand::Batch(edits));
+        assert_eq!(gains(&state), [2.0, 2.0], "both halves");
+        assert_eq!(state.active_history().undo_count(), steps + 1, "one step");
+        assert_eq!(state.active_history().undo_label(), Some("Edit Audio"));
+        let entry = state.take_undo().expect("the edit");
+        klipp_document::apply::DocumentView { sequences: &mut state.sequences, active: state.active_sequence_idx, media_pool: &mut state.media_pool, fps: &mut state.fps }.apply_inverse(&entry.command);
+        assert_eq!(gains(&state), [1.0, 1.0], "undone on both halves");
+        klipp_document::apply::DocumentView { sequences: &mut state.sequences, active: state.active_sequence_idx, media_pool: &mut state.media_pool, fps: &mut state.fps }.apply_forward(&entry.command);
+        assert_eq!(gains(&state), [2.0, 2.0], "redone on both");
+    }
+}

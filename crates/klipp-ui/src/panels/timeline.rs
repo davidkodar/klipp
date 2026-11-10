@@ -3412,7 +3412,7 @@ impl TimelinePanel {
         painter: &egui::Painter,
         cmds: &mut Vec<AppCommand>,
     ) {
-        if matches!(&state.drag_drop.payload, Some(crate::drag_drop::DragPayload::Effect { .. })) {
+        if matches!(&state.drag_drop.payload, Some(crate::drag_drop::DragPayload::Effect { .. } | crate::drag_drop::DragPayload::Lut { .. })) {
             let hover_pos = ui.input(|i| i.pointer.hover_pos());
             let any_down = ui.input(|i| i.pointer.any_down());
             if let Some(pos) = hover_pos {
@@ -3441,7 +3441,19 @@ impl TimelinePanel {
 
                     if !any_down {
                         if let Some(clip_id) = hit_clip_id {
-                            if let Some(crate::drag_drop::DragPayload::Effect { name, is_builtin, plugin_id }) = state.drag_drop.end() {
+                            let payload = state.drag_drop.end();
+                            // A LUT tile: the look of the clip it lands on,
+                            // or of the whole selection when it lands on
+                            // one of it, as one step.
+                            if let Some(crate::drag_drop::DragPayload::Lut { name, path }) = &payload {
+                                let targets = crate::effect_targets::targets(state.sequence(), state.selected_clip, &state.selected_clips, Some(clip_id), crate::effect_targets::EffectKind::Picture);
+                                if crate::effect_targets::drop_reselects(state.selected_clip, &state.selected_clips, clip_id) {
+                                    cmds.push(AppCommand::SelectClip(Some(clip_id)));
+                                }
+                                cmds.extend(crate::effect_targets::commands(&targets, name, |id| vec![crate::browser::effect_registry::lut_command(id, path)]));
+                                state.toast.show(crate::effect_targets::said(name, &targets));
+                            }
+                            if let Some(crate::drag_drop::DragPayload::Effect { name, is_builtin, plugin_id }) = payload {
                                 // Dropped on a clip of the selection: the
                                 // whole selection takes it (#842), and stays
                                 // selected; dropped elsewhere, that clip.
@@ -4594,7 +4606,7 @@ impl TimelinePanel {
         }
 
         // Draw effect drag ghost — a translucent pill following the cursor
-        if let Some(crate::drag_drop::DragPayload::Effect { ref name, .. }) = state.drag_drop.payload
+        if let Some(crate::drag_drop::DragPayload::Effect { ref name, .. } | crate::drag_drop::DragPayload::Lut { ref name, .. }) = state.drag_drop.payload
         {
             if let Some(cursor_pos) = ui.input(|i| i.pointer.latest_pos()) {
                 let ghost_w = 120.0;
@@ -17031,6 +17043,7 @@ impl TimelinePanel {
         let any_down = ui.input(|i| i.pointer.any_down());
         if !any_down
             && matches!(&state.drag_drop.payload, Some(crate::drag_drop::DragPayload::Effect { .. })
+                | Some(crate::drag_drop::DragPayload::Lut { .. })
                 | Some(crate::drag_drop::DragPayload::AudioEffect { .. })
                 | Some(crate::drag_drop::DragPayload::Transition { .. })) {
                 state.drag_drop.end();

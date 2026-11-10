@@ -260,16 +260,15 @@ pub fn _register_named_for_test(path: &str, name: &str) {
 
 // ─── Helper used by inspector when a frei0r effect is added ───────────────
 
-/// Build a parameter list with default values for the named plugin.
+/// The values a newly added effect of the named plugin starts with.
 /// Returns `None` when the plugin isn't installed.
 pub fn default_params(type_id: &str) -> Option<Vec<Frei0rValue>> {
     let info = lookup_info(type_id)?;
-    Some(
-        info.params
-            .iter()
-            .map(|p| Frei0rValue::default_for(p.kind))
-            .collect(),
-    )
+    // The plug-in's own values, as a fresh instance of it holds them:
+    // every number at 0 turned Brightness black and Saturat0r grey. Each
+    // kind's own value only when the plug-in can't be opened. A saved
+    // effect keeps the values stored with it; only a new one starts here.
+    Some(klipp_frei0r::instance::fresh_defaults(&info).unwrap_or_else(|| info.params.iter().map(|p| Frei0rValue::default_for(p.kind)).collect()))
 }
 
 /// Convenience: list every plugin path we currently know about.
@@ -342,6 +341,24 @@ mod tests {
         assert_eq!(params.len(), 2);
         assert!(matches!(params[0], Frei0rValue::Double(_)));
         assert!(matches!(params[1], Frei0rValue::Bool(_)));
+    }
+
+    /// A plug-in added to a clip starts at its own values, as a fresh
+    /// instance of it holds them: Brightness at 0.5, which leaves the
+    /// picture as it is. It started at 0, which turned the clip black.
+    #[test]
+    fn default_params_are_the_plugins_own() {
+        let _guard = REGISTRY.lock().unwrap_or_else(|e| e.into_inner());
+        let path = std::path::Path::new("/usr/lib/frei0r-1/brightness.so");
+        let Some(info) = path.exists().then(|| klipp_frei0r::host::scan_library(path).into_iter().next()).flatten() else {
+            eprintln!("skipping: no brightness.so installed");
+            return;
+        };
+        _reset_for_test();
+        let type_id = info.type_id();
+        _register_for_test(info);
+        let params = default_params(&type_id).unwrap();
+        assert!(matches!(params[0], Frei0rValue::Double(v) if (v - 0.5).abs() < 1e-6), "{params:?}");
     }
 
     fn at(path: &str) -> Frei0rPluginInfo {
