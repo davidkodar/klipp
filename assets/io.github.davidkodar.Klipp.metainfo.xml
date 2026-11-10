@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.davidkodar.Klipp</id>
+  <name>Klipp</name>
+  <summary>Edit, grade and finish video on the GPU</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-only</project_license>
+  <developer id="io.github.davidkodar">
+    <name>David Kodar</name>
+  </developer>
+  <description>
+    <p>Klipp is a non-linear video editor for Linux. Picture work runs on the GPU in a linear-light colour pipeline.</p>
+    <ul>
+      <li>Timeline editing with linked sound, J and L cuts, and keyframes</li>
+      <li>Colour page with node grading, scopes and HDR (HLG and PQ) export</li>
+      <li>Titles, transitions, effects and compositing</li>
+      <li>An assistant that works in the project over MCP</li>
+    </ul>
+  </description>
+  <launchable type="desktop-id">io.github.davidkodar.Klipp.desktop</launchable>
+  <url type="homepage">https://davidkodar.github.io/klipp/</url>
+  <url type="bugtracker">https://github.com/davidkodar/klipp/issues</url>
+  <url type="vcs-browser">https://github.com/davidkodar/klipp</url>
+  <branding>
+    <color type="primary" scheme_preference="light">#EAE7E0</color>
+    <color type="primary" scheme_preference="dark">#6B4A17</color>
+  </branding>
+  <content_rating type="oars-1.1"/>
+  <categories>
+    <category>AudioVideo</category>
+    <category>Video</category>
+  </categories>
+  <supports>
+    <control>pointing</control>
+    <control>keyboard</control>
+  </supports>
+  <requires>
+    <display_length compare="ge">720</display_length>
+  </requires>
+  <recommends>
+    <display_length compare="ge">1080</display_length>
+  </recommends>
+  <releases>
+    <release version="0.3.4" date="2026-11-07"/>
+    <release version="0.3.3" date="2026-11-05"/>
+    <release version="0.3.2" date="2026-11-03"/>
+    <release version="0.3.1" date="2026-11-02"/>
+    <release version="0.3.0" date="2026-11-02"/>
+    <release version="0.2.0" date="2026-10-29"/>
+    <release version="0.1.0" date="2026-10-26"/>
+    <release version="0.1.0~rc.3" date="2026-10-25" type="development"/>
+    <release version="0.1.0~rc.2" date="2026-10-24" type="development"/>
+    <release version="0.1.0~rc.1" date="2026-10-23" type="development"/>
+  </releases>
+</component>
