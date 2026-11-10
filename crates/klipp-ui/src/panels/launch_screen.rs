@@ -2495,7 +2495,7 @@ mod tests {
     /// platform: Klipp runs on Linux only.
     #[test]
     fn the_version_line_carries_the_build_number() {
-        let mut build = klipp_core::build_info::BuildInfo { version: "0.1.0", number: 2711, commit: "672c2162", dirty: false, profile: "release", exe: None, built_at: None };
+        let mut build = klipp_core::build_info::BuildInfo { version: "0.1.0", number: 2711, commit: "672c2162", dirty: false, profile: "release", exe: None, built_at: None, committed_at: None };
         assert_eq!(version_line(&build), "Version 0.1.0 · Build 2711");
         build.number = 0;
         assert_eq!(version_line(&build), "Version 0.1.0");

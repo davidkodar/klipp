@@ -163,6 +163,7 @@ fn main() -> Result<()> {
         env!("KLIPP_GIT_COMMIT"),
         env!("KLIPP_GIT_DIRTY") == "true",
         env!("KLIPP_BUILD_PROFILE"),
+        env!("KLIPP_GIT_COMMIT_TIME").parse().unwrap_or(0),
     ));
     klipp_core::build_info::set_changes(include_str!(concat!(env!("OUT_DIR"), "/changes.txt")));
 
