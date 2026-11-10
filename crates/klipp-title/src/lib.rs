@@ -1469,12 +1469,9 @@ impl TitleRenderer {
         }
 
         let tracking_origins = if tracking::eligible(title) { glyphs_owned.iter().map(|g| [g.x, g.y]).collect::<Vec<_>>() } else { Vec::new() };
-        // Apply tracking (extra pixel spacing per character)
+        // Apply tracking (extra pixel spacing per character), line by line.
         if tb.tracking != 0.0 && !vertical_active {
-            let tracking_px = tb.tracking * scale;
-            for (i, g) in glyphs_owned.iter_mut().enumerate() {
-                g.x += tracking_px * i as f32;
-            }
+            track_lines(&mut glyphs_owned, &line_starts, tb.tracking * scale, tb.alignment);
         }
         // A style run's own tracking and baseline offset (#1505).
         if !vertical_active {
@@ -4577,16 +4574,13 @@ impl TitleRenderer {
 
         let mut glyphs_owned: Vec<fontdue::layout::GlyphPosition> = glyphs.to_vec();
 
+        let line_starts: Vec<usize> = layout.lines().map_or(Vec::new(), |lines| lines.iter().map(|l| l.glyph_start).collect());
         // Apply tracking (same as render_layout)
         if tb.tracking != 0.0 {
-            let tracking_px = tb.tracking * scale;
-            for (i, g) in glyphs_owned.iter_mut().enumerate() {
-                g.x += tracking_px * i as f32;
-            }
+            track_lines(&mut glyphs_owned, &line_starts, tb.tracking * scale, tb.alignment);
         }
         // A style run's own tracking and baseline offset (same as
         // render_layout, #1505)
-        let line_starts: Vec<usize> = layout.lines().map_or(Vec::new(), |lines| lines.iter().map(|l| l.glyph_start).collect());
         apply_run_spacing(&mut glyphs_owned, &tb.style_runs, &line_starts, tb.tracking, scale);
 
         // Justify (same as render_layout, #1506)
@@ -6948,6 +6942,37 @@ fn justify_lines(
 
 /// Full-frame text keeps the historical five-percent margin. Explicit
 /// boxes use their authored dimensions for wrapping and cursor layout.
+/// Tracking, `px` more between each character and the next, laid line by
+/// line from each line's own first character, and each line moved back
+/// by as much of what it gained as its alignment keeps still: half for a
+/// centred line, all of it for one set right, none for one set left. It
+/// counted from the text's first character and moved no line back, so
+/// centred lines drifted apart sideways, each further than the last.
+fn track_lines(glyphs: &mut [fontdue::layout::GlyphPosition], line_starts: &[usize], px: f32, alignment: TextAlignment) {
+    let starts: Vec<usize> = if line_starts.is_empty() { vec![0] } else { line_starts.to_vec() };
+    for (n, &start) in starts.iter().enumerate() {
+        let end = starts.get(n + 1).copied().unwrap_or(glyphs.len()).min(glyphs.len());
+        let Some(line) = glyphs.get_mut(start..end) else { continue };
+        // What the line's ink gained: up to its last inked character, a
+        // trailing space or the line's break adding nothing.
+        let last_ink = line.iter().rposition(|g| g.width > 0).unwrap_or(0);
+        let back = tracking_back(alignment, px * last_ink as f32);
+        for (i, g) in line.iter_mut().enumerate() {
+            g.x += px * i as f32 - back;
+        }
+    }
+}
+
+/// How far a tracked line moves back for `gained`, what its ink grew by,
+/// to keep its alignment: half centred, all of it set right.
+pub(crate) fn tracking_back(alignment: TextAlignment, gained: f32) -> f32 {
+    match alignment {
+        TextAlignment::Center => gained * 0.5,
+        TextAlignment::Right => gained,
+        TextAlignment::Left | TextAlignment::Justify => 0.0,
+    }
+}
+
 fn text_box_extent(title: &TitleData, width: u32, height: u32) -> (f32, f32) {
     let size = title.objects.iter().find_map(|o| {
         matches!(o.content, TitleObjectContent::TextBox(_)).then_some(o.transform.size)
@@ -12403,13 +12428,13 @@ mod style_run_tests {
         // characters where the column sets them.
         let before = [
             (537262310058089473, 12990052878724863373),
-            (9375910112802164878, 7007222290492971662),
+            (7798464064316371794, 11316520570194681196), // retaken: tracking laid line by line
             (17185529782468128921, 6239473186763768033),
             (1323807162608565093, 12990052878724863373),
             (12328210842903889326, 12990052878724863373),
             (13922581151920256384, 382594927444531904),
             (5448820052067944582, 6194283091192519508),
-            (7193490694850778374, 224027851749628502),
+            (4072404209454578630, 15611322728832826659), // retaken: tracking laid line by line
             (7400897415938749996, 9238244902904153988),
         ];
         assert_eq!(hashes, before, "a box whose runs set no font, style, tracking or baseline offset draws or lays out differently");
@@ -12597,7 +12622,7 @@ mod shaping_tests {
             (6118582486406094929, 12454316361513787245),
             (945665265085242760, 15164285115390767754),
             (1478896466625051445, 12454316361513787245),
-            (10567450272971704784, 60548708505280472),
+            (11859713508366916064, 4431894200284709202) /* retaken: tracking laid line by line */,
             (17028306380591570627, 11204599021776345478),
         ];
         assert_eq!(hashes, before, "text with nothing to shape draws or lays out differently");
@@ -12882,7 +12907,7 @@ mod fallback_tests {
         let before = [
             (12362235235435922744, 11758040230992881638),
             (11429411338127416158, 14383662946162571450),
-            (3569128012378324932, 2346819359444522047),
+            (17714060068776600644, 2330529648194227184) /* retaken: tracking laid line by line */,
             (11565043810062183343, 1917150523641949634),
             (9098010272575383407, 179561844797826116),
             (3193317923789182864, 14796392279787328656),
