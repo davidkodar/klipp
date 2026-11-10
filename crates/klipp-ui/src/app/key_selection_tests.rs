@@ -860,6 +860,53 @@ fn easing_several_keys_names_the_step_with_their_count() {
     assert_eq!(state.active_history().undo_label(), Some("Ease In-Out (2 keys)"));
 }
 
+/// A J cut's sound (from 0.5 s, its picture from 1.0 s) draws the pair's
+/// volume keys, which its picture holds on its own clock (0 and 2 s), where
+/// they are heard: at timeline 1.0 and 3.0, the very places an unlinked
+/// sound keyed there draws its own. They were drawn half a second early,
+/// from the sound's start.
+#[test]
+fn a_j_cuts_sound_draws_its_pictures_keys_where_they_are_heard() {
+    let mut state = AppState::default();
+    let t = |s| RationalTime::from_secs_f64(s, 24);
+    let mut item = klipp_media::MediaItem::synthetic_for_test("/tmp/jcut.mov".into(), None);
+    (item.duration, item.has_audio) = (t(60.0), true);
+    let media = state.media_pool.add(item);
+    let mut picture = klipp_timeline::Clip::media(media, t(1.0), t(5.0), t(1.0), t(5.0));
+    let mut sound = klipp_timeline::Clip::media(media, t(0.5), t(5.0), t(0.5), t(5.0));
+    (picture.linked_clip_id, sound.linked_clip_id) = (Some(sound.id), Some(picture.id));
+    picture.volume_keyframes = vec![key(0.0, 0.1), key(2.0, 1.0)];
+    sound.volume_keyframes = vec![key(0.5, 0.1), key(2.5, 1.0)];
+    let mut alone = klipp_timeline::Clip::media(media, t(0.5), t(5.0), t(0.5), t(5.0));
+    alone.volume_keyframes = vec![key(0.5, 0.1), key(2.5, 1.0)];
+    let v1 = state.sequences[0].tracks.iter().position(|t| t.kind == TrackKind::Video).unwrap();
+    state.sequences[0].tracks[v1].clips.push(picture);
+    if state.sequences[0].tracks.iter().filter(|t| t.kind == TrackKind::Audio).count() < 2 {
+        state.sequences[0].tracks.push(klipp_timeline::Track::new("A2", TrackKind::Audio));
+    }
+    let audio: Vec<usize> = state.sequences[0].tracks.iter().enumerate().filter(|(_, t)| t.kind == TrackKind::Audio).map(|(i, _)| i).collect();
+    state.sequences[0].tracks[audio[0]].clips.push(sound);
+    state.sequences[0].tracks[audio[1]].clips.push(alone);
+    state.audio_show_rubber_band = true;
+    state.rubber_band_param = crate::state::RubberBandParam::ClipParam(klipp_core::AudioParam::Volume);
+    let mut tl = Timeline::new(state);
+    tl.frame(Vec::new(), egui::Modifiers::NONE);
+    // The sound band's diamonds, 8 px across their half.
+    let found = diamonds(&tl.shapes, 8.0);
+    // Both sounds' keys at the same two places in time: two columns of
+    // two diamonds. Drawn from the sound's start, the J cut's were half a
+    // second (100 px) left of the unlinked sound's: four columns.
+    let mut columns: Vec<(f32, usize)> = Vec::new();
+    for p in &found {
+        match columns.iter_mut().find(|(x, _)| (x - p.x).abs() < 1.0) {
+            Some((_, n)) => *n += 1,
+            None => columns.push((p.x, 1)),
+        }
+    }
+    assert_eq!(found.len(), 4, "two keys on each sound: {found:?}");
+    assert_eq!(columns.iter().map(|c| c.1).collect::<Vec<_>>(), vec![2, 2], "the J cut's keys where the unlinked sound's are: {columns:?}");
+}
+
 /// The diamond by a mask's Feather sets a key on a mask made in the clip's
 /// picture graph (a Window from its menu), as it does on a grade's: the
 /// key command found no such node in the grade and nothing took it.

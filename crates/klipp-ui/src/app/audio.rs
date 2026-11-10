@@ -123,6 +123,9 @@ impl KlippApp {
                             }
                         }
                     }
+                    // The partner's keys on its own clock (a J cut's
+                    // picture starts after its sound).
+                    let shift = linked_partner_id.map_or(0.0, |pid| super::linked_audio::linked_key_shift(self.state.sequence(), *clip_id, pid));
                     for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                         if let Some(clip) = track.find_clip_mut(*clip_id) {
                             let keyframes = match param {
@@ -143,7 +146,7 @@ impl KlippApp {
                                     klipp_core::AudioParam::Pan => &mut partner.pan_keyframes,
                                     klipp_core::AudioParam::Gain => &mut partner.gain_keyframes,
                                 };
-                                edit_linked_audio_key(keyframes, frame_time.unwrap_or(*time_secs), tolerance, *time_secs, Some(*value));
+                                edit_linked_audio_key(keyframes, frame_time.unwrap_or(*time_secs) + shift, tolerance, *time_secs + shift, Some(*value));
                                 break;
                             }
                         }
@@ -186,6 +189,9 @@ impl KlippApp {
                             }
                         }
                     }
+                    // The partner's keys on its own clock (a J cut's
+                    // picture starts after its sound).
+                    let shift = linked_partner_id.map_or(0.0, |pid| super::linked_audio::linked_key_shift(self.state.sequence(), *clip_id, pid));
                     for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                         if let Some(clip) = track.find_clip_mut(*clip_id) {
                             let keyframes = match param {
@@ -205,7 +211,7 @@ impl KlippApp {
                                     klipp_core::AudioParam::Pan => &mut partner.pan_keyframes,
                                     klipp_core::AudioParam::Gain => &mut partner.gain_keyframes,
                                 };
-                                edit_linked_audio_key(keyframes, frame_time.unwrap_or(*time_secs), tolerance, *time_secs, None);
+                                edit_linked_audio_key(keyframes, frame_time.unwrap_or(*time_secs) + shift, tolerance, *time_secs + shift, None);
                                 break;
                             }
                         }
@@ -247,28 +253,34 @@ impl KlippApp {
                             }
                         }
                     }
+                    // The partner's keys on its own clock (a J cut's
+                    // picture starts after its sound).
+                    let shift = linked_partner_id.map_or(0.0, |pid| super::linked_audio::linked_key_shift(self.state.sequence(), *clip_id, pid));
                     let all_ids: Vec<klipp_core::ClipId> = {
                         let mut ids = vec![*clip_id];
                         if let Some(lid) = linked_partner_id { ids.push(lid); }
                         ids
                     };
+                    // Scaled from the selected clip's start and kept within
+                    // it, on each clip's own clock.
+                    let span = self.state.sequence().all_clips().find(|c| c.id == *clip_id).map_or(0.0, |c| c.duration().to_secs_f64());
                     for target_id in &all_ids {
+                        let s = if target_id == clip_id { 0.0 } else { shift };
                         for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                             if let Some(clip) = track.find_clip_mut(*target_id) {
-                                let clip_dur = clip.duration().to_secs_f64();
                                 let keyframes = match param {
                                     klipp_core::AudioParam::Volume => &mut clip.volume_keyframes,
                                     klipp_core::AudioParam::Pan => &mut clip.pan_keyframes,
                                     klipp_core::AudioParam::Gain => &mut clip.gain_keyframes,
                                 };
                                 for kf in keyframes.iter_mut() {
-                                    kf.time_secs *= factor;
+                                    kf.time_secs = (kf.time_secs - s) * factor + s;
                                     // Scale bezier tangent time components
                                     kf.tangent_in.0 *= *factor;
                                     kf.tangent_out.0 *= *factor;
                                 }
                                 // Clamp and remove out-of-range
-                                keyframes.retain(|kf| kf.time_secs >= 0.0 && kf.time_secs <= clip_dur);
+                                keyframes.retain(|kf| kf.time_secs - s >= 0.0 && kf.time_secs - s <= span);
                                 keyframes.sort_by(|a, b| a.time_secs.partial_cmp(&b.time_secs).unwrap_or(std::cmp::Ordering::Equal));
                                 break;
                             }
@@ -311,6 +323,9 @@ impl KlippApp {
                             }
                         }
                     }
+                    // The partner's keys on its own clock (a J cut's
+                    // picture starts after its sound).
+                    let shift = linked_partner_id.map_or(0.0, |pid| super::linked_audio::linked_key_shift(self.state.sequence(), *clip_id, pid));
                     let bump_kfs: Vec<(f64, f32)> = vec![
                         (center_time - duration_secs / 2.0 - ramp_secs, *base_value),
                         (center_time - duration_secs / 2.0, *bump_value),
@@ -322,19 +337,21 @@ impl KlippApp {
                         if let Some(lid) = linked_partner_id { ids.push(lid); }
                         ids
                     };
+                    // Within the selected clip, on each clip's own clock.
+                    let span = self.state.sequence().all_clips().find(|c| c.id == *clip_id).map_or(0.0, |c| c.duration().to_secs_f64());
                     for target_id in &all_ids {
+                        let s = if target_id == clip_id { 0.0 } else { shift };
                         for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                             if let Some(clip) = track.find_clip_mut(*target_id) {
-                                let clip_dur = clip.duration().to_secs_f64();
                                 let keyframes = match param {
                                     klipp_core::AudioParam::Volume => &mut clip.volume_keyframes,
                                     klipp_core::AudioParam::Pan => &mut clip.pan_keyframes,
                                     klipp_core::AudioParam::Gain => &mut clip.gain_keyframes,
                                 };
                                 for &(t, v) in &bump_kfs {
-                                    if t >= 0.0 && t <= clip_dur {
+                                    if t >= 0.0 && t <= span {
                                         keyframes.push(klipp_core::Keyframe {
-                                            time_secs: t,
+                                            time_secs: t + s,
                                             value: v,
                                             interpolation: klipp_core::Interpolation::Linear,
                                             tangent_out: (0.0, 0.0),
@@ -478,6 +495,9 @@ impl KlippApp {
                     true
                 }
                 AppCommand::MoveAudioKeyframe { clip_id, param, index, new_time_secs, new_value } => {
+                    // The partner's keys on its own clock (a J cut's
+                    // picture starts after its sound).
+                    let shift = self.state.sequence().all_clips().find(|c| c.id == *clip_id).and_then(|c| c.linked_clip_id).map_or(0.0, |pid| super::linked_audio::linked_key_shift(self.state.sequence(), *clip_id, pid));
                     let mut linked_partner_id = None;
                     for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                         if let Some(clip) = track.find_clip_mut(*clip_id) {
@@ -505,7 +525,7 @@ impl KlippApp {
                                     klipp_core::AudioParam::Gain => &mut partner.gain_keyframes,
                                 };
                                 if let Some(kf) = keyframes.get_mut(*index) {
-                                    kf.time_secs = *new_time_secs;
+                                    kf.time_secs = *new_time_secs + shift;
                                     kf.value = *new_value;
                                 }
                                 keyframes.sort_by(|a, b| a.time_secs.partial_cmp(&b.time_secs).unwrap_or(std::cmp::Ordering::Equal));
