@@ -349,15 +349,78 @@ impl Ink {
 /// or the curve.
 const HIT_PX: f32 = 8.0;
 
-/// The grade's Mask node the overlay edits on `clip`: the selected one,
-/// else the first, with its masks.
-fn mask_node(state: &crate::state::AppState, clip: klipp_core::ClipId) -> Option<(klipp_nodes::NodeId, klipp_core::MaskStack)> {
+/// The mask the viewer's overlay and the Mask tool edit on a clip: a
+/// grade's Mask node, or a mask made beside the clip's picture chain (a
+/// Window or Roto Shape from the Picture view's Mattes menu), with its
+/// path there. Its masks as a grade run reads them.
+pub(crate) struct MaskSite {
+    pub(crate) node_id: klipp_nodes::NodeId,
+    pub(crate) masks: klipp_core::MaskStack,
+    /// The matte's path in the clip's picture; `None` for a grade's node.
+    pub(crate) addr: Option<klipp_graph_format::path::NodePath>,
+}
+
+/// The mask the overlay edits on `clip`: a picture matte picked in the
+/// graph, or the one feeding the mask of the effect picked there; else the
+/// grade's selected Mask node, else its first.
+pub(crate) fn mask_site(state: &crate::state::AppState, clip: klipp_core::ClipId) -> Option<MaskSite> {
     use klipp_timeline::GradeAccess;
     let clip = state.sequence().tracks.iter().find_map(|t| t.find_clip(clip))?;
+    if let Some(site) = state.selected_node_addr.as_ref().and_then(|addr| picture_matte(clip, addr)) {
+        return Some(site);
+    }
     let grade = clip.grade();
     let is_mask = |n: &&klipp_nodes::Node| n.kind == klipp_nodes::NodeKind::Mask;
     let node = state.selected_node_id.and_then(|id| grade.nodes.iter().filter(is_mask).find(|n| n.id == id)).or_else(|| grade.nodes.iter().find(is_mask))?;
-    Some((node.id, node.params.masks.clone().unwrap_or_default()))
+    Some(MaskSite { node_id: node.id, masks: node.params.masks.clone().unwrap_or_default(), addr: None })
+}
+
+/// The mask matte beside `clip`'s picture chain that `addr` names, or that
+/// feeds the mask of the effect it names.
+fn picture_matte(clip: &klipp_timeline::Clip, addr: &klipp_graph_format::path::NodePath) -> Option<MaskSite> {
+    use klipp_graph_format::path::{NodePath, Root};
+    let (Root::Clip { clip: c }, [picked]) = (addr.root, addr.nodes.as_slice()) else { return None };
+    (c == clip.id.0).then_some(())?;
+    let picture = clip.picture_v2().ok()?;
+    let graph = &picture.picture.graph;
+    let node = graph.nodes.iter().find(|n| n.id == *picked)?;
+    // An effect: the matte wired into its mask.
+    let node = match klipp_graph_lift::effect_params::tag(node) {
+        Some(_) => {
+            let feed = graph.edges.iter().find(|e| e.to.0 == node.id && e.to.1.as_str() == "mask")?.from.0;
+            graph.nodes.iter().find(|n| n.id == feed)?
+        }
+        None => node,
+    };
+    klipp_graph_lift::effect_params::tag(node).is_none().then_some(())?;
+    let run = klipp_timeline::grade_node_for_run(node).ok()?;
+    (run.kind == klipp_nodes::NodeKind::Mask).then_some(())?;
+    Some(MaskSite { node_id: node.id, masks: run.params.masks.unwrap_or_default(), addr: Some(NodePath::new(Root::Clip { clip: clip.id.0 }, [node.id])) })
+}
+
+/// `cmds` from `from` on, as `site` takes them: for a picture matte, its
+/// masks written whole by its path and the drag as its path's gesture
+/// (`side_matte::by_path`); what only a grade answers (its mask list's
+/// focus, a grade tracker's removal) left out. A grade's site keeps them.
+pub(crate) fn to_site(cmds: &mut Vec<klipp_core::AppCommand>, from: usize, site: &MaskSite) {
+    use klipp_core::AppCommand;
+    let Some(addr) = &site.addr else { return };
+    let tail: Vec<AppCommand> = cmds.drain(from.min(cmds.len())..).collect();
+    for cmd in tail {
+        match cmd {
+            AppCommand::SetNodeMasks { node_id, .. } if node_id != site.node_id => cmds.push(cmd),
+            AppCommand::SetNodeMasks { .. } | AppCommand::BeginNodeParamEdit { .. } | AppCommand::EndNodeParamEdit { .. } | AppCommand::AbandonNodeParamEdit { .. } => {
+                cmds.extend(crate::inspector::side_matte::by_path(cmd, addr));
+            }
+            AppCommand::FocusMaskInspector | AppCommand::RemoveMaskTracking { .. } | AppCommand::AddMaskShape { .. } => {}
+            other => cmds.push(other),
+        }
+    }
+}
+
+/// The site's node and masks, as the tool below reads them.
+fn mask_node(state: &crate::state::AppState, clip: klipp_core::ClipId) -> Option<(klipp_nodes::NodeId, klipp_core::MaskStack)> {
+    mask_site(state, clip).map(|s| (s.node_id, s.masks))
 }
 
 fn is_freeform(mask: &klipp_core::Mask) -> bool {
