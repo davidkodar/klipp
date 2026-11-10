@@ -7,6 +7,14 @@ use crate::widgets::waveform;
 use klipp_core::{AppCommand, AudioParam, Timecode};
 use klipp_timeline::{ChannelConfig, Clip, FadeCurve};
 
+/// What the waveform of a clip whose file has no sound stream says.
+const NO_SOUND: &str = "This clip has no sound";
+
+/// Whether the waveform draws bars: only of peaks read from the sound.
+fn waveform_bars_for(peaks: Option<&[f32]>) -> bool {
+    peaks.is_some()
+}
+
 /// The clip whose audio effects `clip`'s sound plays through: a picture's
 /// linked sound clip on an audio track, else the clip itself. The mix
 /// reads a sound clip's own chain and leaves out its picture's sound, so
@@ -902,7 +910,15 @@ fn show_clip_audio(
                     let end = (((src_in + clip_dur) / media_dur) * total_dur) as usize;
                     &peaks[start.min(peaks.len())..end.min(peaks.len())]
                 });
-                waveform::draw_role_waveform(ui.painter(), rect, theme.role_dialogue, clip_peaks);
+                // A file with no sound stream: said, as the audition says
+                // it. Without peaks (none read yet) nothing is drawn: the
+                // painter's stand-in bars read as a sound that isn't there.
+                let no_sound = clip.media_id().and_then(|id| state.media_pool.get(&id)).is_some_and(|m| !m.has_audio);
+                if no_sound {
+                    ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, NO_SOUND, egui::FontId::proportional(10.0), theme.text_dim);
+                } else if waveform_bars_for(clip_peaks) {
+                    waveform::draw_role_waveform(ui.painter(), rect, theme.role_dialogue, clip_peaks);
+                }
             });
             }); // close padding frame
         ui.add_space(4.0);
@@ -1585,6 +1601,31 @@ mod clip_audio_tests {
         // A muted voice isn't heard, so isn't missed either.
         let (texts, _) = duck_section(&music_and_two_voices(true), &[2]);
         assert!(!texts.iter().any(|t| t.starts_with("Ducks under")), "{texts:?}");
+    }
+
+    /// A clip of a file with no sound stream (a camera's picture only):
+    /// its Audio tab's waveform says so, as the audition does, and draws
+    /// no bars. With no peaks it drew a made-up sawtooth. A file with
+    /// sound says nothing of the kind.
+    #[test]
+    fn a_clip_with_no_sound_says_so_in_its_waveform() {
+        let t = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 24);
+        let said = |has_audio: bool| {
+            let mut state = AppState { audio_backend_ok: true, ..Default::default() };
+            let mut item = klipp_media::MediaItem::synthetic_for_test("/tmp/market.mp4".into(), None);
+            (item.duration, item.has_audio) = (t(10.0), has_audio);
+            let media = state.media_pool.add(item);
+            let clip = Clip::media(media, t(0.0), t(2.0), t(0.0), t(2.0));
+            let ctx = egui::Context::default();
+            crate::icons::install(&ctx);
+            let mut duck = DuckSettings::default();
+            let (texts, _) = frame(&ctx, Vec::new(), |ui, theme, cmds| draw(ui, theme, cmds, &state, &clip, &mut duck));
+            texts.iter().any(|(t, _)| t == NO_SOUND)
+        };
+        assert!(said(false), "a file without sound says so");
+        assert!(!said(true), "a file with sound doesn't");
+        assert!(!waveform_bars_for(None), "no made-up bars without peaks");
+        assert!(waveform_bars_for(Some(&[0.5, 0.2])), "the file's peaks are drawn");
     }
 
     fn clip() -> Clip {
