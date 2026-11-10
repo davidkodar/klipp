@@ -807,6 +807,19 @@ pub(crate) struct NodeSample {
     pub(crate) ny: f32,
 }
 
+/// The picture an effect of `clip`'s picture receives (a Chroma Key's
+/// eyedropper reads it): the output of the node feeding its `in`. `None`
+/// when `node` is no effect of the picture or nothing feeds it.
+fn effect_input(clip: &klipp_timeline::Clip, node: klipp_nodes::NodeId) -> Option<klipp_compose::inspect::InspectAt> {
+    use klipp_graph_format::path::{NodeOutput, NodePath, Root};
+    let picture = clip.picture_v2().ok()?;
+    let graph = &picture.picture.graph;
+    // An effect's node carries its type in its payload, as the lift writes it.
+    graph.nodes.iter().find(|n| n.id == node).and_then(|n| n.legacy.as_ref()?.payload.get("type")?.as_str())?;
+    let feed = graph.edges.iter().find(|e| e.to.0 == node && e.to.1.as_str() == "in")?;
+    Some(NodeOutput { path: NodePath::new(Root::Clip { clip: clip.id.0 }, [feed.from.0]), port: feed.from.1.clone() })
+}
+
 /// Whether `clip` draws unmoved at `at`: its own transform the identity,
 /// no link to another's, no tilt or corner pin and no sequence camera
 /// moving it, so a point of the frame is the same point of its picture.
@@ -10773,7 +10786,11 @@ impl PlaybackEngine {
                     match seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == clip) {
                         None => why("the clip is no longer on the timeline"),
                         Some(c) => on_frame(c).and_then(|()| {
-                            c.grade().input_of(node, 0).map(|tap| (clip, klipp_compose::inspect::grade_node(clip, tap))).ok_or_else(|| klipp_core::NodeSampleRefusal::Why("the node has no input to read".into()))
+                            c.grade()
+                                .input_of(node, 0)
+                                .map(|tap| (clip, klipp_compose::inspect::grade_node(clip, tap)))
+                                .or_else(|| effect_input(c, node).map(|at| (clip, at)))
+                                .ok_or_else(|| klipp_core::NodeSampleRefusal::Why("the node has no input to read".into()))
                         }),
                     }
                 }

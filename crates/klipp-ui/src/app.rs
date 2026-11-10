@@ -196,6 +196,8 @@ mod rubber_band_click_tests;
 #[cfg(test)]
 mod qualifier_3d_tests;
 #[cfg(test)]
+mod key_colour_pick_tests;
+#[cfg(test)]
 mod wipe_tests;
 mod poster_frames;
 mod links;

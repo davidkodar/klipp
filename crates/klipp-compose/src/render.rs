@@ -4769,6 +4769,13 @@ impl Renderer {
             }))
             .flatten()
             .filter(|w: &HashSet<NodeId>| !w.is_empty());
+        // A read of an effect's picture at full size (the effect after it
+        // taking it as its input, for its eyedropper), taken in this run;
+        // an identity's, from the effect it shows.
+        let tap: Option<NodeId> = (self.inspect.clip == Some(clip.id))
+            .then_some(self.resolved.scope_tap)
+            .flatten()
+            .and_then(|t| if in_run(&t) { Some(t) } else { fed.iter().find(|(n, _)| *n == t).map(|(_, f)| *f) });
         self.splice_effects_only(clip, fx, blends, nodes.as_deref());
         let t = Instant::now();
         let frame = grade_frame(clip_time, fps);
@@ -4782,23 +4789,29 @@ impl Renderer {
             let spliced = std::mem::take(&mut r.spliced);
             let thumbs = wanted.as_ref();
             let run = match r.executor.prime_chain_from_linear(&pixels, width, height) {
-                true => match r.executor.execute_linear_with_context(&[], &spliced, width, height, clip_time, frame, None, None, thumbs, ctx) {
+                true => match r.executor.execute_linear_with_context(&[], &spliced, width, height, clip_time, frame, tap, None, thumbs, ctx) {
                     Err(klipp_nodes::executor::ExecutorError::CpuSourceRequired) => {
-                        r.executor.execute_linear_with_context(&pixels, &spliced, width, height, clip_time, frame, None, None, thumbs, ctx)
+                        r.executor.execute_linear_with_context(&pixels, &spliced, width, height, clip_time, frame, tap, None, thumbs, ctx)
                     }
                     run => run,
                 },
-                false => r.executor.execute_linear_with_context(&pixels, &spliced, width, height, clip_time, frame, None, None, thumbs, ctx),
+                false => r.executor.execute_linear_with_context(&pixels, &spliced, width, height, clip_time, frame, tap, None, thumbs, ctx),
             };
             r.spliced = spliced;
             run
         });
         self.found.stats.effects_ms += ms_since(t);
         match run {
-            Ok((out, _, thumbs)) if self.executor.last_run_effects_complete() && out.len() == pixels.len() => {
+            Ok((out, tapped, thumbs)) if self.executor.last_run_effects_complete() && out.len() == pixels.len() => {
                 // Only a run that is kept: one the CPU takes again notes
                 // the retry's.
                 self.note_declines(clip.id);
+                if let (Some(asked), Some(tapped)) = (self.resolved.scope_tap.filter(|_| tap.is_some()), tapped) {
+                    self.found.scope_tap = Some(tapped);
+                    for at in self.resolved.asked.iter().filter(|(n, _)| *n == asked).map(|(_, at)| at.clone()).collect::<Vec<_>>() {
+                        self.found.unavailable.retain(|(a, _)| *a != at);
+                    }
+                }
                 for (node, bytes) in thumbs {
                     let fed_from = fed.iter().filter(|(_, f)| *f == node).map(|(n, _)| *n);
                     for at in std::iter::once(node).chain(fed_from).flat_map(|n| self.resolved.thumb_of.get(&n).cloned().unwrap_or_default()) {
@@ -5117,7 +5130,13 @@ impl Renderer {
             return;
         }
         let Some(nodes) = self.effect_nodes(clip, fx) else { return };
-        let Some(asked) = self.resolved.thumbs.clone() else { return };
+        // A read of an effect's picture at full size (the effect after it
+        // taking it as its input, for its eyedropper): the kernels' own.
+        let tap = self.resolved.scope_tap;
+        let asked = self.resolved.thumbs.clone();
+        if asked.is_none() && tap.is_none() {
+            return;
+        }
         // An identity effect, dropped from the run, shows the effect before
         // it (#1314): each run effect's identities after it in the clip.
         let mut identities: HashMap<NodeId, Vec<NodeId>> = HashMap::new();
@@ -5135,7 +5154,15 @@ impl Renderer {
         for (i, effect) in fx.iter().enumerate() {
             acc = self.effects_analysed(clip, std::slice::from_ref(effect), acc, clip_time, fps, width, height);
             let Some(id) = nodes[i] else { continue };
-            let shown: Vec<NodeId> = std::iter::once(id).chain(identities.get(&id).cloned().unwrap_or_default()).filter(|n| asked.contains(n)).collect();
+            let answers: Vec<NodeId> = std::iter::once(id).chain(identities.get(&id).cloned().unwrap_or_default()).collect();
+            if let Some(t) = tap.filter(|t| answers.contains(t)) {
+                self.found.scope_tap = Some(acc.clone());
+                for at in self.resolved.asked.iter().filter(|(n, _)| *n == t).map(|(_, at)| at.clone()).collect::<Vec<_>>() {
+                    self.found.unavailable.retain(|(a, _)| *a != at);
+                }
+            }
+            let Some(asked) = asked.as_ref() else { continue };
+            let shown: Vec<NodeId> = answers.into_iter().filter(|n| asked.contains(n)).collect();
             if shown.is_empty() {
                 continue;
             }
@@ -6342,6 +6369,16 @@ impl Renderer {
                     fed_thumbs.push((input, at.clone()));
                 }
                 continue;
+            }
+            // A read of the picture after a display step this clip doesn't
+            // run (an effect's input, for its eyedropper) reads the grade's
+            // picture: nothing changes it between. A preview of the step
+            // still says it doesn't run.
+            if self.resolved.scope_tap == Some(*node) && *node == display_step_id(clip.id) {
+                if let Some(g) = graded.filter(|g| held.contains(g)) {
+                    scope_tap = Some(g);
+                    continue;
+                }
             }
             if !self.found.unavailable.iter().any(|(a, _)| a == at) {
                 // Said in words: the node is the one it is shown on.
