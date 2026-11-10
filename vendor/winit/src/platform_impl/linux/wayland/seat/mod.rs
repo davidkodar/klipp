@@ -57,10 +57,6 @@ pub struct WinitSeatState {
 
     /// Whether we have pending modifiers.
     modifiers_pending: bool,
-
-    /// KLIPP PATCH: the seat's data device, for files dropped on our
-    /// windows (`dnd.rs`).
-    pub data_device: Option<sctk::data_device_manager::data_device::DataDevice>,
 }
 
 impl WinitSeatState {
@@ -81,7 +77,6 @@ impl SeatHandler for WinitState {
         seat: WlSeat,
         capability: SeatCapability,
     ) {
-        tracing::debug!("Drag and drop: seat {} has {capability:?}", seat.id());
         let seat_state = match self.seats.get_mut(&seat.id()) {
             Some(seat_state) => seat_state,
             None => {
@@ -89,23 +84,6 @@ impl SeatHandler for WinitState {
                 return;
             },
         };
-
-        // KLIPP PATCH: the seat's data device made again once it has a
-        // pointer, replacing (releasing) the one made at start, never a
-        // second beside it, which would take each drop twice. Mutter sent
-        // the device made before the seat's capabilities nothing at all.
-        if capability == SeatCapability::Pointer {
-            if let Some(manager) = self.data_device_manager.as_ref() {
-                let device = manager.get_data_device(queue_handle, &seat);
-                tracing::debug!(
-                    "Drag and drop: seat {} pointer, data device {} (was {:?})",
-                    seat.id(),
-                    device.inner().id(),
-                    seat_state.data_device.as_ref().map(|d| d.inner().id())
-                );
-                seat_state.data_device = Some(device);
-            }
-        }
 
         match capability {
             SeatCapability::Touch if seat_state.touch.is_none() => {
@@ -224,19 +202,10 @@ impl SeatHandler for WinitState {
     fn new_seat(
         &mut self,
         _connection: &Connection,
-        queue_handle: &QueueHandle<Self>,
+        _queue_handle: &QueueHandle<Self>,
         seat: WlSeat,
     ) {
-        let mut seat_state = WinitSeatState::new();
-        // KLIPP PATCH: files dropped on our windows (`dnd.rs`).
-        seat_state.data_device =
-            self.data_device_manager.as_ref().map(|m| m.get_data_device(queue_handle, &seat));
-        tracing::debug!(
-            "Drag and drop: new seat {}, data device {:?}",
-            seat.id(),
-            seat_state.data_device.as_ref().map(|d| d.inner().id())
-        );
-        self.seats.insert(seat.id(), seat_state);
+        self.seats.insert(seat.id(), WinitSeatState::new());
     }
 
     fn remove_seat(

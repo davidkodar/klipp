@@ -319,6 +319,10 @@ egui-wgpu = { path = "vendor/egui-wgpu" }
 # vendor/winit/KLIPP-PATCH.md). Unbounded, Hyprland's once-a-second callbacks
 # on an idle desktop left the app painting once a second under input.
 winit = { path = "vendor/winit" }
+# smithay-clipboard 0.7.3 taking files dropped on the window too (see
+# vendor/smithay-clipboard/KLIPP-PATCH.md). Mutter sends a client's drags and
+# its clipboard to one data device, the newest, which is the clipboard's.
+smithay-clipboard = { path = "vendor/smithay-clipboard" }
 # wgpu-core 22.1.0 with the queue's write paths taking the snatch lock before
 # `pending_writes`, as `queue_submit` does (see vendor/wgpu-core/KLIPP-PATCH.md).
 # The other order deadlocked the engine, a decoder and the UI on the shared

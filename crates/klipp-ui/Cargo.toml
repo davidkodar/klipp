@@ -81,6 +81,11 @@ chrono = { workspace = true }
 bytemuck = { workspace = true }
 libc = "0.2"
 
+# Files dropped on the window on Wayland, which the clipboard's data device
+# takes (vendor/smithay-clipboard/KLIPP-PATCH.md); the one egui-winit uses.
+[target.'cfg(target_os = "linux")'.dependencies]
+smithay-clipboard = "0.7.3"
+
 [dev-dependencies]
 klipp-timeline = { workspace = true, features = ["test-clip"] }
 # Measures a face's glyphs in the interface font tests.
