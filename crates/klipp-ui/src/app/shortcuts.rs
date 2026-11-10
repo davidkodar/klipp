@@ -788,9 +788,8 @@ impl KlippApp {
                 self.state.selected_clips.clear();
                 cmds.push(AppCommand::SelectClip(None));
             }
-            // Select All clips; the Files list takes Ctrl+A for its own
-            // files while it has the keyboard (#3019).
-            if kb.is_action_pressed("select_all", i) && !self.state.files_panel_focused {
+            // Select All clips, from the timeline only (`select_all_reaches_timeline`).
+            if kb.is_action_pressed("select_all", i) && select_all_reaches_timeline(&self.state) {
                 cmds.push(AppCommand::SelectAllClips);
             }
             // The selected clip's track: all of it, or from the playhead on
@@ -1455,6 +1454,15 @@ pub(super) fn key_scope(state: &crate::state::AppState, text_editing: bool) -> K
     }
 }
 
+/// Whether Ctrl+A selects the timeline's clips: with the timeline, or no
+/// panel, active. In the inspector or any other panel it selected every
+/// clip behind it, and the inspector then edited them all (a missed
+/// double-click on a field, a colour picker); the Files list takes it for
+/// its own files while it has the keyboard (#3019).
+pub(super) fn select_all_reaches_timeline(state: &crate::state::AppState) -> bool {
+    !state.files_panel_focused && matches!(state.active_panel, None | Some(crate::state::PanelKind::Timeline))
+}
+
 /// Whether Delete goes to the timeline's selection: not while the
 /// Transcript panel under the pointer takes it for its words, nor while
 /// the viewer's Mask tool has points selected or a shape being drawn
@@ -1550,6 +1558,68 @@ mod before_after_key_tests {
         assert!(super::toggles_before_after(false, false));
         assert!(!super::toggles_before_after(true, false), "in a text field");
         assert!(!super::toggles_before_after(false, true), "typing a timecode or title");
+    }
+}
+
+#[cfg(test)]
+mod select_all_tests {
+    use crate::state::{AppState, PanelKind};
+
+    /// Ctrl+A selects the timeline's clips from the timeline, or with no
+    /// panel active, and from nowhere else: in the inspector it selected
+    /// every clip.
+    #[test]
+    fn select_all_reaches_the_timeline_from_the_timeline_only() {
+        let at = |panel| AppState { active_panel: panel, ..Default::default() };
+        assert!(super::select_all_reaches_timeline(&at(Some(PanelKind::Timeline))));
+        assert!(super::select_all_reaches_timeline(&at(None)));
+        for panel in [PanelKind::Inspector, PanelKind::Viewer, PanelKind::Browser, PanelKind::CurveEditor, PanelKind::NodeInspector] {
+            assert!(!super::select_all_reaches_timeline(&at(Some(panel))), "{panel:?}");
+        }
+        let files = AppState { active_panel: Some(PanelKind::Timeline), files_panel_focused: true, ..Default::default() };
+        assert!(!super::select_all_reaches_timeline(&files), "the Files list keeps its own");
+    }
+
+    /// Through the presses themselves, as the layout notes them: a clip
+    /// clicked on the timeline, then a press in the inspector, and Ctrl+A
+    /// stays out of the timeline. The inspector never noted itself, so
+    /// the timeline stayed active and Ctrl+A there selected every clip.
+    #[test]
+    fn a_press_in_the_inspector_keeps_select_all_from_the_timeline() {
+        let ctx = egui::Context::default();
+        let mut state = AppState::default();
+        let (timeline, inspector) = (egui::Rect::from_min_max(egui::pos2(0.0, 400.0), egui::pos2(1000.0, 700.0)), egui::Rect::from_min_max(egui::pos2(1000.0, 0.0), egui::pos2(1300.0, 700.0)));
+        let mut t = 0.0;
+        let mut press = |state: &mut AppState, at: egui::Pos2| {
+            for pressed in [true, false] {
+                t += 0.1;
+                let events = vec![egui::Event::PointerMoved(at), egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE }];
+                let _ = ctx.run(egui::RawInput { time: Some(t), events, ..Default::default() }, |ctx| {
+                    // Each panel as the layout draws it notes a press in
+                    // its own rect.
+                    crate::state::note_active_panel(state, PanelKind::Timeline, ctx, timeline);
+                    crate::state::note_active_panel(state, PanelKind::Inspector, ctx, inspector);
+                });
+            }
+        };
+        press(&mut state, egui::pos2(300.0, 500.0));
+        assert!(super::select_all_reaches_timeline(&state), "after a click on the timeline");
+        press(&mut state, egui::pos2(1100.0, 200.0));
+        assert_eq!(state.active_panel, Some(PanelKind::Inspector));
+        assert!(!super::select_all_reaches_timeline(&state), "after a press in the inspector");
+    }
+
+    /// The layout notes a press in each panel that has keys of its own:
+    /// the inspector, the viewer, the curve editor and the mixer never did,
+    /// so the panel pressed last before them kept the keys.
+    #[test]
+    fn the_layout_notes_a_press_in_each_panel() {
+        let layout = [include_str!("main_layout.rs"), include_str!("colour_workspace.rs")].concat();
+        for kind in ["Inspector", "Viewer", "CurveEditor", "AudioMixer", "Browser", "NodeInspector"] {
+            let call = format!("note_active_panel(&mut self.state, crate::state::PanelKind::{kind}");
+            let alt = format!("crate::state::PanelKind::{kind},");
+            assert!(layout.contains(&call) || layout.contains(&alt), "the {kind} notes a press in it");
+        }
     }
 }
 
