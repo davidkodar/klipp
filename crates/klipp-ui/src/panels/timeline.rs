@@ -1195,6 +1195,56 @@ struct RollTrimState {
     original_b_timeline_in: Timecode,
     /// The snap the roll holds from frame to frame (#3056).
     hold: Option<crate::timeline::snap::SnapHold>,
+    /// The linked partners roll too: Linked on and Alt not held at its
+    /// start, as an edge trim takes it.
+    linked: bool,
+    /// The partners that roll with it, as they were at its start, so the
+    /// drag shows them moving and its release puts them back for the
+    /// command to edit.
+    partners: Vec<RollPartner>,
+}
+
+/// A linked partner of one side of a roll: its id, whether it follows
+/// clip A (its out moves) or clip B (its in moves), and its source and
+/// timeline time on that side at the start.
+struct RollPartner {
+    id: ClipId,
+    of_a: bool,
+    source: Timecode,
+    timeline: Timecode,
+}
+
+impl RollPartner {
+    /// The partners of a roll between `a` and `b`, as `AppState::roll_trim`
+    /// moves them.
+    fn of(seq: &klipp_timeline::Sequence, a: ClipId, b: ClipId) -> Vec<RollPartner> {
+        let partner = |id: ClipId| seq.all_clips().find(|c| c.id == id).and_then(|c| c.linked_clip_id);
+        let (linked_a, linked_b) = (partner(a), partner(b));
+        seq.all_clips().filter_map(|c| {
+            if Some(c.id) == linked_a && c.id != b {
+                Some(RollPartner { id: c.id, of_a: true, source: c.source_out, timeline: c.timeline_out })
+            } else if Some(c.id) == linked_b && c.id != a {
+                Some(RollPartner { id: c.id, of_a: false, source: c.source_in, timeline: c.timeline_in })
+            } else {
+                None
+            }
+        }).collect()
+    }
+
+    /// Each partner moved from its start by `d` (source, timeline): clip
+    /// A's moves for its side, clip B's for the other.
+    fn set(seq: &mut klipp_timeline::Sequence, partners: &[RollPartner], d_a: (Timecode, Timecode), d_b: (Timecode, Timecode)) {
+        for p in partners {
+            let Some(c) = seq.tracks.iter_mut().find_map(|t| t.find_clip_mut(p.id)) else { continue };
+            if p.of_a {
+                c.source_out = p.source + d_a.0;
+                c.timeline_out = p.timeline + d_a.1;
+            } else {
+                c.source_in = p.source + d_b.0;
+                c.timeline_in = p.timeline + d_b.1;
+            }
+        }
+    }
 }
 
 #[allow(dead_code)]
@@ -2627,6 +2677,12 @@ impl TimelinePanel {
                                     };
                                     kfs.get(ctx_menu.keyframe_index).map(|kf| kf.interpolation)
                                 });
+                            // The ease preset the key was given, marked as
+                            // itself, not as the custom Bezier it is stored as
+                            // (nor anything else).
+                            let current_ease = state.sequence().all_clips().find(|c| c.id == ctx_menu.clip_id)
+                                .and_then(|clip| crate::widgets::scrubby_param::ease_preset_at(&crate::key_selection::track_keys(clip, &ctx_menu.param_kind), ctx_menu.keyframe_index));
+                            let current_interp = current_interp.filter(|_| current_ease.is_none());
 
                             // Several keys selected, this one among them:
                             // each choice goes to every one (#1958).
@@ -2685,6 +2741,7 @@ impl TimelinePanel {
                                 ("Ease Both", crate::widgets::scrubby_param::EasePreset::EaseBoth, &hints[2]),
                             ] {
                                 let text = egui::RichText::new(format!("  {label}"));
+                                let text = if current_ease == Some(preset) { text.strong() } else { text };
                                 if ui.add(egui::Button::new(text).frame(false).shortcut_text(hint.as_str())).clicked() {
                                     // One step, however many keys (#1958), named for
                                     // the ease as the shortcut names it (#2358).
@@ -3450,7 +3507,7 @@ impl TimelinePanel {
                                 if crate::effect_targets::drop_reselects(state.selected_clip, &state.selected_clips, clip_id) {
                                     cmds.push(AppCommand::SelectClip(Some(clip_id)));
                                 }
-                                cmds.extend(crate::effect_targets::commands(&targets, |id| vec![crate::browser::effect_registry::lut_command(id, path)]));
+                                cmds.extend(crate::effect_targets::commands(&targets, name, |id| vec![crate::browser::effect_registry::lut_command(id, path)]));
                                 state.toast.show(crate::effect_targets::said(name, &targets));
                             }
                             if let Some(crate::drag_drop::DragPayload::Effect { name, is_builtin, plugin_id }) = payload {
@@ -3470,7 +3527,7 @@ impl TimelinePanel {
                                     // step 19).
                                     let effects = state.effect_registry.effects.iter().find(|e| e.name == name).and_then(|e| crate::browser::effects_tab::starting_effects(state, &e.source)).unwrap_or_default();
                                     if !effects.is_empty() {
-                                        let adds = crate::effect_targets::all_or_none(&targets, |clip_id| {
+                                        let adds = crate::effect_targets::all_or_none(&targets, &name, |clip_id| {
                                             let clip = state.sequence().tracks.iter().flat_map(|t| &t.clips).find(|c| c.id == clip_id).ok_or("the clip isn't in the sequence")?;
                                             crate::inspector::stack_view::add_effects_command(state, clip, &effects)
                                         });
@@ -3483,7 +3540,7 @@ impl TimelinePanel {
                                         }
                                     }
                                 } else {
-                                    cmds.extend(crate::effect_targets::commands(&targets, |clip_id| vec![AppCommand::AddEffect { clip_id, plugin_name: plugin_id.clone() }]));
+                                    cmds.extend(crate::effect_targets::commands(&targets, &name, |clip_id| vec![AppCommand::AddEffect { clip_id, plugin_name: plugin_id.clone() }]));
                                     state.toast.show(crate::effect_targets::said(&name, &targets));
                                 }
                             }
@@ -3542,7 +3599,7 @@ impl TimelinePanel {
                                 if crate::effect_targets::drop_reselects(state.selected_clip, &state.selected_clips, clip_id) {
                                     cmds.push(AppCommand::SelectClip(Some(clip_id)));
                                 }
-                                cmds.extend(crate::effect_targets::commands(&targets, |clip_id| vec![AppCommand::AddAudioEffect { clip_id, effect_type: type_id.clone() }]));
+                                cmds.extend(crate::effect_targets::commands(&targets, &name, |clip_id| vec![AppCommand::AddAudioEffect { clip_id, effect_type: type_id.clone() }]));
                                 state.toast.show(crate::effect_targets::said(&name, &targets));
                             }
                         } else {
@@ -3679,27 +3736,23 @@ impl TimelinePanel {
                                 let timeline_in = Self::media_drop_time(state, time_secs as f64, state.timeline_zoom, ui.input(|i| i.modifiers.shift));
                                 let duration_frames = fps_rate * 5;
                                 state.pending_title_data = Some(title_data);
-                                // If dropped on a Video track, redirect to a Text track so the
-                                // title composites correctly as an overlay instead of replacing
-                                // the primary video decoder.
-                                let actual_track_idx = if track_kind == TrackKind::Video {
-                                    // Find or create a Text track
-                                    let text_idx = state.sequences[state.active_sequence_idx].tracks.iter()
-                                        .position(|t| t.kind == TrackKind::Text && t.clip_at_timecode(timeline_in).is_none());
-                                    match text_idx {
-                                        Some(idx) => idx,
-                                        None => {
-                                            let track_num = state.sequences[state.active_sequence_idx].tracks.iter()
-                                                .filter(|t| t.kind == TrackKind::Text).count() + 1;
-                                            let track = klipp_timeline::Track::new(
-                                                &format!("Text {track_num}"),
-                                                TrackKind::Text,
-                                            );
-                                            state.sequences[state.active_sequence_idx].tracks.insert(0, track);
-                                            0
-                                        }
+                                // On a Video track it goes to a text track, to lie over
+                                // the picture rather than replace it; on a text track with
+                                // a clip anywhere in its time, to another one free for all
+                                // of it, so it never lies over a title on one track.
+                                let busy = track_kind == TrackKind::Text && crate::browser::titles_tab::text_track_busy(state, track_idx, timeline_in, duration_frames);
+                                let actual_track_idx = if track_kind == TrackKind::Video || busy {
+                                    let busy_name = state.sequence().tracks[track_idx].name.clone();
+                                    let at = crate::browser::titles_tab::free_text_track(state, timeline_in, duration_frames);
+                                    let name = state.sequence().tracks[at].name.clone();
+                                    if busy {
+                                        state.toast.show(format!("\"{template_name}\" title put on {name}: {busy_name} is busy there"));
+                                    } else {
+                                        state.toast.show(format!("\"{template_name}\" title added to track"));
                                     }
+                                    at
                                 } else {
+                                    state.toast.show(format!("\"{template_name}\" title added to track"));
                                     track_idx
                                 };
                                 cmds.push(AppCommand::CreateTitleClip {
@@ -3707,7 +3760,6 @@ impl TimelinePanel {
                                     timeline_in,
                                     duration_frames,
                                 });
-                                state.toast.show(format!("\"{}\" title added to track", template_name));
                             }
                         }
                     } else {
@@ -8208,6 +8260,7 @@ impl TimelinePanel {
                 // immutable borrow into state.sequence() is safe across the loop.
                 let mut started_roll_trim = false;
                 if !started_fade_drag && state.active_tool == Tool::Trim {
+                    let linked = state.linked_selection && !ui.input(|i| i.modifiers.alt);
                     let roll_hit: Option<RollTrimState> = {
                         let clips = &state.sequence().tracks[track_idx].clips;
                         let on_track = pos.y >= track_rect.top() && pos.y <= track_rect.top() + track_height;
@@ -8224,6 +8277,8 @@ impl TimelinePanel {
                                 original_a_timeline_out: clips[i].timeline_out,
                                 original_b_timeline_in: clips[i + 1].timeline_in,
                                 hold: None,
+                                linked,
+                                partners: if linked { RollPartner::of(state.sequence(), clips[i].id, clips[i + 1].id) } else { Vec::new() },
                             }
                         })
                     };
@@ -11098,6 +11153,11 @@ impl TimelinePanel {
                             c.timeline_in = final_b_timeline_in;
                         }
                     }
+                    // The linked partners move with it as they will at the
+                    // release, so the cut doesn't jump then.
+                    let d_a = (final_a_source_out - roll.original_a_source_out, final_a_timeline_out - roll.original_a_timeline_out);
+                    let d_b = (final_b_source_in - roll.original_b_source_in, final_b_timeline_in - roll.original_b_timeline_in);
+                    RollPartner::set(state.sequence_mut(), &roll.partners, d_a, d_b);
 
                     // Rich overlay for roll trim
                     let delta_frames = snapped_boundary - roll.original_boundary;
@@ -11134,6 +11194,10 @@ impl TimelinePanel {
                             c.timeline_in = roll.original_b_timeline_in;
                         }
                     }
+                    let zero = |t: Timecode| RationalTime { value: 0, rate: t.rate };
+                    let none_a = (zero(roll.original_a_source_out), zero(roll.original_a_timeline_out));
+                    let none_b = (zero(roll.original_b_source_in), zero(roll.original_b_timeline_in));
+                    RollPartner::set(state.sequence_mut(), &roll.partners, none_a, none_b);
                     cmds.push(AppCommand::RollTrimClip {
                         clip_a_id: roll.clip_a_id,
                         clip_b_id: roll.clip_b_id,
@@ -11141,6 +11205,7 @@ impl TimelinePanel {
                         new_a_timeline_out: a_tl_out,
                         new_b_source_in: b_src_in,
                         new_b_timeline_in: b_tl_in,
+                        linked: roll.linked,
                     });
                 }
                 self.roll_trimming = None;

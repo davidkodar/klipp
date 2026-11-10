@@ -647,6 +647,119 @@ fn a_moved_clip_snaps_by_the_edge_it_was_grabbed_nearer() {
     }
 }
 
+/// A title template dropped on a text track a little before a title on
+/// it never leaves two clips on that track at once: the later title
+/// was hidden under the new one. (Repro: the drop placed it on the track
+/// under the pointer for five seconds whatever was there.)
+#[test]
+fn a_title_dropped_on_a_busy_text_track_overlaps_nothing() {
+    let (mut state, _) = clips_on_video_2(&[(0.0, 2.0)]);
+    state.sequences[0].tracks.insert(0, klipp_timeline::Track::new("Text 1", TrackKind::Text));
+    let rate = state.sequence().fps.rate();
+    let (_marina, _) = super::titles::add_title_clip(&mut state, 0, RationalTime::from_frames((9.16 * rate as f64).round() as i64, rate), rate * 5);
+    let mut tl = Timeline::new(state);
+    let row = tl.track("Text 1");
+    tl.state.drag_drop.begin(crate::drag_drop::DragPayload::Title { template_name: "Impact".into(), list_key: "Impact".into(), title_data: klipp_timeline::TitleData::default() });
+    tl.sent.clear();
+    tl.frame(vec![egui::Event::PointerMoved(tl.at(row, 5.5))], egui::Modifiers::NONE);
+    tl.frame(Vec::new(), egui::Modifiers::NONE);
+    let Some(AppCommand::CreateTitleClip { track_index, timeline_in, duration_frames }) = tl.sent.iter().find(|c| matches!(c, AppCommand::CreateTitleClip { .. })).cloned() else { panic!("a title placed: {:?}", tl.sent) };
+    let said = tl.state.toast.message_for_test().unwrap_or_default().to_string();
+    assert!(said.contains("Text 1 is busy there"), "the toast says where it went and why: {said}");
+    super::titles::add_title_clip(&mut tl.state, track_index, timeline_in, duration_frames);
+    // The title on Text 1 untouched, on its own there.
+    let text_1 = tl.state.sequence().tracks.iter().find(|t| t.name == "Text 1").unwrap();
+    assert_eq!(text_1.clips.len(), 1, "the new title went elsewhere");
+    // A double-click on a title card at a playhead past the picture's end
+    // (so five seconds long) and a little before a title, too.
+    let ph = RationalTime::from_frames(8 * rate as i64, rate);
+    tl.state.playhead = ph;
+    let AppCommand::CreateTitleClip { track_index, timeline_in, duration_frames } = crate::browser::titles_tab::place_title(&mut tl.state, klipp_timeline::TitleData::default()) else { unreachable!() };
+    super::titles::add_title_clip(&mut tl.state, track_index, timeline_in, duration_frames);
+    for track in &tl.state.sequence().tracks {
+        for pair in track.clips.windows(2) {
+            assert!(pair[0].timeline_out <= pair[1].timeline_in, "two clips at once on {}: {:?}-{:?} and {:?}-{:?}", track.name, pair[0].timeline_in, pair[0].timeline_out, pair[1].timeline_in, pair[1].timeline_out);
+        }
+    }
+}
+
+/// A roll takes its partners as an edge trim does: Linked on, and Alt not
+/// held when it begins. It always took them, so a roll on a sound cut
+/// moved the picture's with Linked off, and Alt didn't stop it.
+#[test]
+fn a_roll_takes_its_partners_as_linked_and_alt_say() {
+    for (linked_selection, alt, want) in [(true, false, true), (false, false, false), (true, true, false)] {
+        let (mut state, _) = clips_on_video_2(&[(0.0, 2.0), (2.0, 4.0)]);
+        state.active_tool = klipp_core::Tool::Trim;
+        state.linked_selection = linked_selection;
+        let mut tl = Timeline::new(state);
+        let v2 = tl.track("Video 2");
+        let cut = tl.at(v2, 2.0);
+        let m = if alt { egui::Modifiers::ALT } else { egui::Modifiers::NONE };
+        let b = |p, d| egui::Event::PointerButton { pos: p, button: egui::PointerButton::Primary, pressed: d, modifiers: m };
+        tl.frame(vec![egui::Event::PointerMoved(cut)], m);
+        tl.frame(vec![b(cut, true)], m);
+        for dx in [8.0, 15.0, 30.0] {
+            tl.frame(vec![egui::Event::PointerMoved(cut + egui::vec2(dx, 0.0))], m);
+        }
+        tl.frame(vec![b(cut + egui::vec2(30.0, 0.0), false)], m);
+        tl.frame(Vec::new(), m);
+        let sent = tl.sent.iter().find_map(|c| match c { AppCommand::RollTrimClip { linked, .. } => Some(*linked), _ => None });
+        assert_eq!(sent, Some(want), "Linked {linked_selection}, Alt {alt}");
+    }
+}
+
+/// While a roll is dragged with Linked on, the sound cut under the
+/// picture's moves with it, and is back where it was at the release (the
+/// command makes the edit). It moved only at the release, so the cut
+/// jumped then. With Linked off the sound stays put throughout.
+#[test]
+fn a_linked_roll_shows_its_partners_moving() {
+    for linked_selection in [true, false] {
+        let (mut state, ids) = clips_on_video_2(&[(0.0, 2.0), (2.0, 4.0)]);
+        state.active_tool = klipp_core::Tool::Trim;
+        state.linked_selection = linked_selection;
+        let a1 = state.sequence().tracks.iter().position(|t| t.kind == TrackKind::Audio).unwrap();
+        let v2 = state.sequence().tracks.iter().position(|t| t.name == "Video 2").unwrap();
+        let mut sounds = Vec::new();
+        for (i, &id) in ids.iter().enumerate() {
+            let picture = state.sequences[0].tracks[v2].clips.iter_mut().find(|c| c.id == id).unwrap();
+            let mut sound = picture.clone();
+            sound.id = ClipId::new();
+            sound.linked_clip_id = Some(id);
+            picture.linked_clip_id = Some(sound.id);
+            sounds.push(sound.id);
+            if i == 0 { state.sequences[0].tracks[a1].clips.clear(); }
+            state.sequences[0].tracks[a1].clips.push(sound);
+        }
+        let mut tl = Timeline::new(state);
+        let row = tl.track("Video 2");
+        let cut = tl.at(row, 2.0);
+        let m = egui::Modifiers::NONE;
+        let b = |p, d| egui::Event::PointerButton { pos: p, button: egui::PointerButton::Primary, pressed: d, modifiers: m };
+        let sound_cut = |tl: &Timeline| {
+            let s = tl.state.sequence();
+            let (a, b) = (s.all_clips().find(|c| c.id == sounds[0]).unwrap(), s.all_clips().find(|c| c.id == sounds[1]).unwrap());
+            (a.timeline_out, a.source_out, b.timeline_in, b.source_in)
+        };
+        let before = sound_cut(&tl);
+        tl.frame(vec![egui::Event::PointerMoved(cut)], m);
+        tl.frame(vec![b(cut, true)], m);
+        for dx in [8.0, 15.0, 30.0] {
+            tl.frame(vec![egui::Event::PointerMoved(cut + egui::vec2(dx, 0.0))], m);
+        }
+        let s = tl.state.sequence();
+        let (pa, pb) = (s.all_clips().find(|c| c.id == ids[0]).unwrap(), s.all_clips().find(|c| c.id == ids[1]).unwrap());
+        let picture = (pa.timeline_out, pa.source_out, pb.timeline_in, pb.source_in);
+        assert!(picture.0 > t(2.0), "the picture cut is rolling");
+        let want = if linked_selection { picture } else { before };
+        assert_eq!(sound_cut(&tl), want, "during the drag, Linked {linked_selection}");
+        tl.frame(vec![b(cut + egui::vec2(30.0, 0.0), false)], m);
+        tl.frame(Vec::new(), m);
+        assert_eq!(sound_cut(&tl), before, "after the release the command edits, Linked {linked_selection}");
+    }
+}
+
 /// A LUT tile from the Library dropped on a clip puts it on as the clip's
 /// look, as the other tiles' drops do: on the clip under the pointer, or
 /// on every selected clip when it lands on one of them, as one step. The
@@ -671,7 +784,7 @@ fn a_lut_tile_dropped_on_a_clip_puts_it_on() {
         let luts: Vec<ClipId> = tl.sent.iter().filter_map(|c| match c { AppCommand::ApplyClipLut { clip_id, lut_path, .. } if *lut_path == path => Some(*clip_id), _ => None }).collect();
         let want = if on_selection { vec![ids[0], ids[1]] } else { vec![target] };
         assert_eq!(luts, want, "selected {selected}, on the selection {on_selection}: {:?}", tl.sent);
-        let batched = tl.sent.iter().any(|c| matches!(c, AppCommand::BeginHistoryBatch)) && tl.sent.iter().any(|c| matches!(c, AppCommand::EndHistoryBatch));
+        let batched = tl.sent.iter().any(|c| matches!(c, AppCommand::BeginHistoryBatch)) && tl.sent.iter().any(|c| matches!(c, AppCommand::EndHistoryBatchAs { label } if label.starts_with("Add ") && label.ends_with(" to 2 Clips")));
         assert_eq!(batched, want.len() > 1, "one step for several");
         assert!(tl.state.drag_drop.payload.is_none(), "the drag is over");
     }

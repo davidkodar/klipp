@@ -67,7 +67,7 @@ fn a_browser_add_puts_its_effects_after_the_stack() {
         let mut run = Run::new(fixture(&base));
         let targets = crate::effect_targets::Targets { clips: vec![run.clip], skipped: 0 };
         let before = run.clip().picture_v2().unwrap();
-        match crate::effect_targets::all_or_none(&targets, |id| crate::browser::effects_tab::effect_commands_in(&run.state, &entry.source, id)) {
+        match crate::effect_targets::all_or_none(&targets, &entry.name, |id| crate::browser::effects_tab::effect_commands_in(&run.state, &entry.source, id)) {
             Ok(cmds) => cmds.into_iter().for_each(|cmd| run.apply(cmd)),
             Err(why) => differ.push(format!("{}: refused ({why})", entry.name)),
         }
@@ -126,8 +126,9 @@ fn a_look_on_two_clips_is_one_step_by_path() {
     let pictures = |r: &Run| ids.map(|id| r.state.sequences[0].all_clips().find(|c| c.id == id).unwrap().picture_v2().unwrap());
     let lists = |r: &Run| ids.map(|id| test_clip::effects(r.state.sequences[0].all_clips().find(|c| c.id == id).unwrap()));
     let before = pictures(&run);
-    let cmds = crate::effect_targets::all_or_none(&targets, |id| crate::browser::effects_tab::effect_commands_in(&run.state, &chain, id)).unwrap();
-    assert!(cmds.iter().all(|c| matches!(c, AppCommand::AddNodeAt { .. } | AppCommand::BeginHistoryBatch | AppCommand::EndHistoryBatch)), "{name}: by path: {cmds:?}");
+    let cmds = crate::effect_targets::all_or_none(&targets, &name, |id| crate::browser::effects_tab::effect_commands_in(&run.state, &chain, id)).unwrap();
+    assert!(cmds.iter().all(|c| matches!(c, AppCommand::AddNodeAt { .. } | AppCommand::BeginHistoryBatch | AppCommand::EndHistoryBatchAs { .. })), "{name}: by path: {cmds:?}");
+    assert!(matches!(cmds.last(), Some(AppCommand::EndHistoryBatchAs { label }) if *label == format!("Add {name} to 2 Clips")), "named for the look");
     for cmd in cmds {
         run.apply(cmd);
     }
