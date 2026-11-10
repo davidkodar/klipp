@@ -684,6 +684,20 @@ pub(super) fn composite_menu() -> &'static [MenuCategory] {
     })
 }
 
+/// Test fixture: `clip`'s first effect masked by a Window added from the
+/// canvas's menu with that effect picked, as a person makes it; the clip's
+/// picture is then held as its graph (picture-truth).
+#[cfg(test)]
+pub(crate) fn masked_by_a_window(clip: &mut klipp_timeline::Clip) {
+    let picture = clip.picture_v2().expect("a picture").picture.clone();
+    let root = NodePath::new(klipp_graph_format::path::Root::Clip { clip: clip.id.0 }, []);
+    let effect = picture.graph.nodes.iter().find(|n| klipp_graph_lift::effect_params::tag(n).is_some()).expect("an effect to mask").id;
+    let model = PictureCanvas::new(&picture.graph, root, Some(effect)).expect("the canvas");
+    let Some(AppCommand::GraphOps { ops, .. }) = model.command(AppCommand::AddNode { clip_id: clip.id, kind: "matte.window".into(), node_id: None, position: (40.0, 300.0) }) else { panic!("one graph batch") };
+    clip.apply_picture_ops(&ops).expect("the window is wired");
+    assert!(clip.is_picture_truth(), "masked, the picture is its graph");
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
