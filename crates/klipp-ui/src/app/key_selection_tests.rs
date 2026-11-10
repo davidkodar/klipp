@@ -851,3 +851,27 @@ fn easing_several_keys_names_the_step_with_their_count() {
     assert_eq!(state.active_history().undo_count(), steps + 1, "one step for both");
     assert_eq!(state.active_history().undo_label(), Some("Ease In-Out (2 keys)"));
 }
+
+/// The Curve Editor's add-key button on a title layer's X with no keys
+/// yet keys the layer where it stands (0.47), and the title stays put:
+/// it keyed the curve's default, 0.5, and the title jumped right.
+#[test]
+fn a_first_key_from_the_curve_editor_keeps_the_value() {
+    let mut state = AppState::default();
+    let t = |s| RationalTime::from_secs_f64(s, 24);
+    let mut td = super::titles::default_title_data(&crate::prefs::TitlePrefs::default());
+    td.objects[0].transform.center.x = 0.47;
+    let object_id = td.objects[0].id.0;
+    let mut title_clip = klipp_timeline::Clip::media(klipp_core::MediaId::new(), t(0.0), t(6.0), t(0.0), t(6.0));
+    title_clip.kind = klipp_timeline::ClipKind::Title(td);
+    let id = title_clip.id;
+    let v1 = state.sequences[0].tracks.iter().position(|t| t.kind == TrackKind::Video).unwrap();
+    state.sequences[0].tracks[v1].clips.push(title_clip);
+    state.selected_clip = Some(id);
+    state.playhead = t(4.2);
+    let param = crate::panels::title_curve::TitleCurveParam::Position(klipp_core::keyframe::TitlePositionAxis::X);
+    let curve = CurveParam::Title { object_id, param };
+    // What the add-key button keys with no keys on the curve yet.
+    let value = crate::panels::curve_editor::key_value_at(&curve, &clip(&state, id), &[], 4.2);
+    assert!((value - 0.47).abs() < 1e-4, "keyed where it stands, not at the curve's default: {value}");
+}

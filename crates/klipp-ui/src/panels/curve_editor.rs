@@ -37,6 +37,53 @@ pub enum CurveParam {
 /// `clip_id`: what a double-click on the graph does, and the key tools'
 /// key at the playhead and paste (#2278). None for a curve with no keys
 /// of its own here (speed, the camera).
+/// The value a key put on `param` at `t` takes: the curve's there, or,
+/// with no keys on it yet, the property's own value as it stands (a title
+/// layer at 0.47 keys 0.47), not the curve's default, which moved what it
+/// keyed.
+pub(crate) fn key_value_at(param: &CurveParam, clip: &klipp_timeline::Clip, keys: &[Keyframe], t: f64) -> f32 {
+    let rest = rest_value(param, clip).unwrap_or(param.range().2);
+    klipp_core::keyframe::evaluate(keys, t, rest)
+}
+
+/// What `param` reads on `clip` with no keys: its own value, where the
+/// curve stands for one.
+fn rest_value(param: &CurveParam, clip: &klipp_timeline::Clip) -> Option<f32> {
+    use crate::panels::title_curve::TitleCurveParam as T;
+    use klipp_core::keyframe::TitlePositionAxis as Axis;
+    match param {
+        CurveParam::Title { object_id, param } => {
+            let object = clip.title_data()?.object(klipp_timeline::TitleObjectId(*object_id))?;
+            match param {
+                T::Position(Axis::X) => Some(object.transform.center.x),
+                T::Position(Axis::Y) => Some(object.transform.center.y),
+                T::Opacity => Some(object.opacity),
+                T::Effect(_) => None,
+            }
+        }
+        CurveParam::Video(p) => {
+            let at = crate::inspector::placement_by_path::placement(clip);
+            Some(match p {
+                VideoParam::Opacity => crate::inspector::placement_by_path::opacity(clip),
+                VideoParam::PositionX => at.position_x,
+                VideoParam::PositionY => at.position_y,
+                VideoParam::Scale => at.scale_x,
+                VideoParam::ScaleY => at.scale_y,
+                VideoParam::Rotation => at.rotation,
+                VideoParam::TiltX => at.rotation_x,
+                VideoParam::TiltY => at.rotation_y,
+                VideoParam::MatteFeather | VideoParam::MatteChoke => return None,
+            })
+        }
+        CurveParam::Audio(p) => Some(match p {
+            AudioParam::Volume => clip.volume,
+            AudioParam::Pan => clip.pan,
+            AudioParam::Gain => clip.gain,
+        }),
+        _ => None,
+    }
+}
+
 pub(crate) fn add_key_commands(param: &CurveParam, clip_id: klipp_core::ClipId, t: f64, v: f32) -> Vec<AppCommand> {
     match param {
         CurveParam::Title { object_id, param } => vec![param.add(clip_id, *object_id, t, v)],
@@ -1756,7 +1803,7 @@ impl CurveEditorPanel {
         }
         let inside = (0.0..=duration).contains(&local);
         if ui.add_enabled(inside, small("\u{25C6}")).on_hover_text("A key at the playhead, at the curve's value there").clicked() {
-            let value = klipp_core::keyframe::evaluate(&keys, local, self.param().range().2);
+            let value = key_value_at(self.param(), &clip, &keys, local);
             cmds.extend(add_key_commands(self.param(), clip_id, local, value));
         }
         if ui.add_enabled(next.is_some(), small("\u{25B6}")).on_hover_text("Next key").clicked() {
