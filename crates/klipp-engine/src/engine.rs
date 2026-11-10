@@ -1189,6 +1189,56 @@ pub fn sound_counts() -> (u64, u64, u64) {
     (load(&SOUND_STOPS_PLAYING), load(&SOUND_OPENS), load(&SOUND_RESEEKS))
 }
 
+// DIAG (diag-takeover-timing): where a slow tick's time goes. Laps of
+// the tick loop, and named parts inside them, logged with
+// ENGINE_TICK_SLOW. The engine runs on one thread.
+thread_local! {
+    static TICK_LAPS: std::cell::RefCell<(Option<std::time::Instant>, Vec<(&'static str, f64)>, Vec<(&'static str, f64)>)> =
+        const { std::cell::RefCell::new((None, Vec::new(), Vec::new())) };
+}
+
+/// A new tick: the laps and parts start again.
+fn tick_diag_start() {
+    TICK_LAPS.with(|t| {
+        let mut t = t.borrow_mut();
+        t.0 = Some(std::time::Instant::now());
+        t.1.clear();
+        t.2.clear();
+    });
+}
+
+/// The time since the last lap (or the tick's start), as `name`.
+fn tick_lap(name: &'static str) {
+    TICK_LAPS.with(|t| {
+        let mut t = t.borrow_mut();
+        let now = std::time::Instant::now();
+        if let Some(from) = t.0.replace(now) {
+            let ms = now.duration_since(from).as_secs_f64() * 1000.0;
+            if ms >= 0.5 {
+                t.1.push((name, ms));
+            }
+        }
+    });
+}
+
+/// A part inside a lap that took `since.elapsed()`, as `name`.
+fn tick_part(name: &'static str, since: std::time::Instant) {
+    let ms = since.elapsed().as_secs_f64() * 1000.0;
+    if ms >= 0.5 {
+        TICK_LAPS.with(|t| t.borrow_mut().2.push((name, ms)));
+    }
+}
+
+/// This tick's laps and parts, as "a=1.2 b=3.4 | c=0.9".
+fn tick_diag_line() -> String {
+    TICK_LAPS.with(|t| {
+        let t = t.borrow();
+        let laps: Vec<String> = t.1.iter().map(|(n, ms)| format!("{n}={ms:.1}")).collect();
+        let parts: Vec<String> = t.2.iter().map(|(n, ms)| format!("{n}={ms:.1}")).collect();
+        format!("{} | {}", laps.join(" "), parts.join(" "))
+    })
+}
+
 /// (from the preroll, opened cold) cuts to the next shot on the primary
 /// track since the process began.
 pub fn cut_openings() -> (u64, u64) {
@@ -3465,6 +3515,7 @@ impl PlaybackEngine {
             mark_stage(EngineStage::LoopTop);
 
             let tick_start = std::time::Instant::now();
+            tick_diag_start();
 
             // Loop timeout paces the engine thread's spin rate.
             // Playing: 8 ms = up to 125 Hz loop rate (plenty for 60 fps
@@ -3510,6 +3561,7 @@ impl PlaybackEngine {
             // Idle time waiting for a command is not work; counting it made
             // every idle paused tick (a 16 ms timeout) log as "slow".
             let waited = wait_start.elapsed();
+            tick_lap("wait");
             while let Ok(cmd) = self.cmd_rx.try_recv() {
                 commands.push(cmd);
             }
@@ -3522,6 +3574,7 @@ impl PlaybackEngine {
             }
 
             self.refresh_fadeable_media(had_commands);
+            tick_lap("fadeable");
 
             mark_stage(EngineStage::CommandDrain);
             for cmd in commands {
@@ -3536,8 +3589,10 @@ impl PlaybackEngine {
             // Pause this is the ONLY site that drains the queue (update_playback
             // doesn't run). Cheap no-op when the queue is empty, so it's safe to
             // call every tick.
+            tick_lap("commands");
             mark_stage(EngineStage::ParamDrain);
             let applied = self.drain_param_changes();
+            tick_lap("params");
 
             // Source-viewer playback runs in parallel with the
             // timeline state machine — this is the only site that
@@ -3581,6 +3636,7 @@ impl PlaybackEngine {
                     let _ = self.event_tx.send(AppEvent::PlaybackPaused);
                 }
             }
+            tick_lap("source");
             self.tick_layout_check();
             // Full-quality refresh of the parked frame when playback ran
             // on the skim substitute (optimised playback). Runs every
@@ -3603,6 +3659,7 @@ impl PlaybackEngine {
             self.poll_frames_job();
             self.tick_background();
             self.keep_backward_play();
+            tick_lap("housekeeping");
             if self.state == PlaybackState::Playing {
                 // Playback already produces fresh frames at full res
                 // every tick; the drag-recovery flag isn't needed here.
@@ -3610,8 +3667,10 @@ impl PlaybackEngine {
                 self.dbg_update_playback_count += 1;
                 mark_stage(EngineStage::UpdatePlayback);
                 self.update_playback();
+                tick_lap("update_playback");
                 // Sync clip audio params periodically during playback (for keyframe animation)
                 self.sync_clip_volumes();
+                tick_lap("clip_volumes");
             } else if self.state == PlaybackState::Paused {
                 // A paused frame shown before every clip stream had its
                 // frame: re-render once they have.
@@ -3775,13 +3834,15 @@ impl PlaybackEngine {
             // during a slider drag point directly at the regression.
             let tick_ms = tick_start.elapsed().saturating_sub(waited).as_secs_f64() * 1000.0;
             if tick_ms > 16.0 {
+                tick_lap("tail");
                 debug!(
-                    "ENGINE_TICK_SLOW {:.1}ms state={:?} in_edit={} had_cmds={} drained={}",
+                    "ENGINE_TICK_SLOW {:.1}ms state={:?} in_edit={} had_cmds={} drained={} parts: {}",
                     tick_ms,
                     self.state,
                     self.in_node_param_edit,
                     had_commands,
                     applied,
+                    tick_diag_line(),
                 );
             }
         }
@@ -6615,6 +6676,7 @@ impl PlaybackEngine {
         stage_clock_ramp_us = t_stage.elapsed().as_micros();
         t_stage = std::time::Instant::now();
 
+        tick_part("update.before_picture", t_update);
         // Title / Generator clip path — standalone non-media clip on V1 (no decoder active)
         if self.v1_decoder.is_none() && self.current_file.is_none() {
             let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
@@ -7938,14 +8000,19 @@ impl PlaybackEngine {
                     return;
                 }
             }
-            if self.take_over_stream_at(tc) {
+            let t_over = std::time::Instant::now();
+            let took = self.take_over_stream_at(tc);
+            tick_part("clock_only.take_over", t_over);
+            if took {
                 // Another track's shot is the primary now: a preroll
                 // for this one's next shot is not its.
                 self.clear_preroll();
                 return;
             }
             GAP_HAND_OVERS_COLD.fetch_add(1, Ordering::Relaxed);
+            let t_cold = std::time::Instant::now();
             self.take_over_cold_at(tc);
+            tick_part("clock_only.cold", t_cold);
             // A title or generator takes over on the synthetic path, which
             // reads the clock as the clip's own seconds.
             if self.v1_decoder.is_none() && self.current_file.is_none() {
@@ -8012,7 +8079,9 @@ impl PlaybackEngine {
         let Some((ti, idx, clip)) = found else { return false };
         let Some(media_id) = clip.media_id() else { return false };
         let Some(path) = self.path_for_media(media_id) else { return false };
+        let t_take = std::time::Instant::now();
         let Some((dec, held)) = self.streams.take(clip.id) else { return false };
+        tick_part("takeover.stream_take", t_take);
         STREAM_TAKE_OVERS.fetch_add(1, Ordering::Relaxed);
         debug!("CUT-DIAG primary took {:?} over from its clip stream", clip.id);
         self.current_track_index = ti;
@@ -8033,13 +8102,19 @@ impl PlaybackEngine {
         self.master_clock.seek((source_secs.max(0.0) * 1_000_000.0) as u64);
         self.master_clock.resume();
         self.playhead = tc;
+        let t_sound = std::time::Instant::now();
         self.swap_changed_audio_at_cut();
+        tick_part("takeover.sound_swap", t_sound);
+        let t_fades = std::time::Instant::now();
         self.refresh_audio_fades(tc);
+        tick_part("takeover.fades", t_fades);
         self.last_frame_time = std::time::Instant::now();
         // The frame the stream holds is the one for here: shown now, the
         // queue goes on from the frame after it.
         if let Some(held) = held {
+            let t_present = std::time::Instant::now();
             self.present_frame(Some(held));
+            tick_part("takeover.present", t_present);
             self.frames_consumed += 1;
         }
         self.report_playhead();
