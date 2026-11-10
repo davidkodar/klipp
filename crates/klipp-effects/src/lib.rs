@@ -276,6 +276,22 @@ fn is_zero(v: &f32) -> bool {
     *v == 0.0
 }
 
+/// How much a Chroma Key weighs a pixel's luma against the key colour's,
+/// besides their colour (CbCr): `dist = sqrt(dCb² + dCr² + (w·dY)²)`,
+/// each over 255. On colour alone, greys and whites sit near every
+/// unsaturated key: a navy logo's white letters keyed out with its blue,
+/// and a black camera in front of a green screen came out a third
+/// opaque. At 0.5 both are kept whole, the screen and the navy still
+/// keyed out to the last pixel (measured on the walk's logo and a Sony
+/// a6700 green screen); higher, a green screen's darker edges stay.
+pub const CHROMA_KEY_LUMA_WEIGHT: f32 = 0.5;
+
+/// A colour's luma as the Chroma Key weighs it, sRGB 0-255 (BT.601, as
+/// its CbCr).
+pub fn chroma_key_luma(r: f32, g: f32, b: f32) -> f32 {
+    0.299 * r + 0.587 * g + 0.114 * b
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum BuiltinEffect {
@@ -2093,6 +2109,27 @@ mod tests {
             rgba.clone(), 1, 1,
         );
         assert_eq!(result, rgba);
+    }
+
+    /// A Chroma Key weighs luma as well as colour: keyed on a navy logo's
+    /// blue (13/59/102), its white letters stay and the navy goes; keyed on
+    /// a green screen's green (37/164/80), a black camera body in front stays
+    /// whole and the green goes, at the default tolerance and soft edge. On
+    /// colour alone the white keyed out with the navy, and the black came
+    /// out a third opaque.
+    #[test]
+    fn chroma_key_keeps_white_and_black_far_from_the_keys_brightness() {
+        let key = |key_color: [u8; 3], px: [u8; 3]| {
+            let rgba = vec![px[0], px[1], px[2], 255];
+            apply_effects(&[BuiltinEffect::ChromaKey { key_color, tolerance: 0.2, soft_edge: 0.1, spill_method: SpillMethod::None, spill_strength: 0.0 }], rgba, 1, 1)[3]
+        };
+        let navy = [13, 59, 102];
+        assert_eq!(key(navy, navy), 0, "the navy keyed out");
+        assert_eq!(key(navy, [255, 255, 255]), 255, "its white letters kept");
+        let green = [37, 164, 80];
+        assert_eq!(key(green, green), 0, "the screen keyed out");
+        assert_eq!(key(green, [32, 160, 76]), 0, "a darker part of it too");
+        assert_eq!(key(green, [20, 20, 22]), 255, "the black camera kept whole");
     }
 
     // ── Invert tests ───────────────────────────────────────────────────────
