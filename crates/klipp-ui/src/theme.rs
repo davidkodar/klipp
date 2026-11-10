@@ -234,6 +234,9 @@ impl Default for KlippTheme {
     }
 }
 
+/// A dark theme's selection fill: the amber selected buttons have.
+pub const DARK_SELECTION: Color32 = Color32::from_rgb(0x38, 0x2c, 0x14);
+
 /// WCAG's least contrast for text, and for a control's edge or state.
 pub const TEXT_CONTRAST: f32 = 4.5;
 pub const UI_CONTRAST: f32 = 3.0;
@@ -381,12 +384,14 @@ impl KlippTheme {
     /// directly (selection bg fill, etc.).
     /// The fill egui draws behind a selected item, a selected button and
     /// selected text: a light accent tint on a light theme, where dark
-    /// text reads on it, and a dark one on a dark theme.
+    /// text reads on it, and on a dark theme the dark amber selected
+    /// buttons have always had (the frame loop used to force it over
+    /// every theme; Dark keeps its look).
     pub fn selection_fill(&self) -> Color32 {
         if self.is_light() {
             Color32::from_rgb(0xd6, 0xe4, 0xf8)
         } else {
-            Color32::from_rgb(0x1e, 0x2f, 0x4a)
+            DARK_SELECTION
         }
     }
 
@@ -864,6 +869,19 @@ mod light_contrast_tests {
             }
         }
         out
+    }
+
+    /// Dark looks as it did: its selected buttons stay the dark amber the
+    /// frame loop used to force, now its own fill. Text on it: primary
+    /// 10.96:1, secondary 5.26:1; the lit RIPPLE and LINKED labels in the
+    /// accent 4.14:1, as before.
+    #[test]
+    fn dark_keeps_its_amber_selection() {
+        let reg = crate::theme::ThemeRegistry::builtins_only();
+        let dark = reg.get("Dark").expect("the built-in Dark");
+        assert_eq!(dark.selection_fill(), Color32::from_rgb(0x38, 0x2c, 0x14));
+        assert!(contrast(dark.text_primary, dark.selection_fill()) >= TEXT_CONTRAST);
+        assert!(contrast(dark.text_secondary, dark.selection_fill()) >= TEXT_CONTRAST);
     }
 
     #[test]
