@@ -11,6 +11,12 @@
 # against those sums and its own metadata, then it is handed to pacman.
 set -euo pipefail
 
+# A Flatpak's software store updates it; its sandbox has no pacman.
+if [[ -n ${FLATPAK_ID:-} ]]; then
+    echo "Klipp is updated by your software store (Flatpak). Nothing was installed."
+    exit 0
+fi
+
 RELEASES=https://github.com/davidkodar/klipp/releases/download
 # The project's release key: minisign's public key line (key id
 # 54950EE2C08EE0E8). With none, nothing is installed this way.

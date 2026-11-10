@@ -2244,12 +2244,29 @@ impl Response {
 /// cleared on logout. Falls back to the temp dir with the uid in the
 /// name so two users on one machine cannot collide.
 pub fn socket_path() -> std::path::PathBuf {
-    socket_path_from(
+    socket_path_in(
         std::env::var("KLIPP_CONTROL_SOCKET").ok().as_deref(),
         std::env::var("XDG_RUNTIME_DIR").ok().as_deref(),
         unsafe { libc_getuid() },
         &|p| p.is_dir(),
+        klipp_core::flatpak::app_id().as_deref(),
     )
+}
+
+/// [`socket_path_from`] in a Flatpak (`flatpak`, its app id): the folder
+/// is the app's own in the runtime folder, `app/<id>`, which Flatpak shares
+/// with the host and with every process of the app, `klipp-mcp` run by
+/// `flatpak run --command=klipp-mcp` among them. The sandbox's runtime
+/// folder itself is private to the one instance.
+fn socket_path_in(over: Option<&str>, runtime: Option<&str>, uid: u32, is_dir: &dyn Fn(&std::path::Path) -> bool, flatpak: Option<&str>) -> std::path::PathBuf {
+    let path = socket_path_from(over, runtime, uid, is_dir);
+    match flatpak {
+        Some(id) if over.is_none_or(str::is_empty) => match path.parent() {
+            Some(dir) => dir.join("app").join(id).join("klipp-control.sock"),
+            None => path,
+        },
+        _ => path,
+    }
 }
 
 /// [`socket_path`] from its inputs: the override, the session's runtime
@@ -2329,6 +2346,21 @@ mod socket_path_tests {
         assert_eq!(socket_path_from(Some("/x/test.sock"), None, 1000, &has_run), PathBuf::from("/x/test.sock"), "the override wins");
         let none = socket_path_from(None, None, 1000, &|_| false);
         assert_eq!(none, std::env::temp_dir().join("klipp-1000").join("klipp-control.sock"), "no runtime directory at all: the user's own folder in /tmp");
+    }
+
+    /// In a Flatpak the runtime folder is the sandbox's own; the app's
+    /// folder in it, `app/<id>`, is shared with the host and with
+    /// `flatpak run --command=klipp-mcp`, so the socket is there, with or
+    /// without the variable. The override still wins.
+    #[test]
+    fn a_flatpaks_socket_is_in_its_app_folder() {
+        let has_run = |p: &Path| p == Path::new("/run/user/1000");
+        let id = Some("io.github.davidkodar.Klipp");
+        let want = PathBuf::from("/run/user/1000/app/io.github.davidkodar.Klipp/klipp-control.sock");
+        assert_eq!(super::socket_path_in(None, Some("/run/user/1000"), 1000, &has_run, id), want);
+        assert_eq!(super::socket_path_in(None, None, 1000, &has_run, id), want);
+        assert_eq!(super::socket_path_in(Some("/x/test.sock"), Some("/run/user/1000"), 1000, &has_run, id), PathBuf::from("/x/test.sock"));
+        assert_eq!(super::socket_path_in(None, Some("/run/user/1000"), 1000, &has_run, None), PathBuf::from("/run/user/1000/klipp-control.sock"), "outside a Flatpak, as before");
     }
 }
 
