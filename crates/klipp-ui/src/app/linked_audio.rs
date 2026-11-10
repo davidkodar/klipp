@@ -137,6 +137,19 @@ fn attach_linked_audio(
     Some(LinkedAudioAppend { clip, track_index, created_track_at, clips_before, clips_after })
 }
 
+/// Seconds to add to a key's time on `from` to put it on `to`'s clock: a
+/// linked pair's keys are each timed from its own clip's start, and a J
+/// cut's sound starts before its picture (`Clip::settings_offset_secs`,
+/// which playback and the export read the picture's keys through). Zero
+/// for a pair that starts together, or a clip not found.
+pub(super) fn linked_key_shift(seq: &klipp_timeline::Sequence, from: klipp_core::ClipId, to: klipp_core::ClipId) -> f64 {
+    let start = |id| seq.all_clips().find(|c| c.id == id).map(|c| c.timeline_in.to_secs_f64());
+    match (start(from), start(to)) {
+        (Some(f), Some(t)) => f - t,
+        _ => 0.0,
+    }
+}
+
 /// A linked clip may have a differently nudged key in the same displayed frame.
 pub(super) fn edit_linked_audio_key(keys: &mut Vec<klipp_core::Keyframe>, time: f64, tolerance: f64, insert_time: f64, value: Option<f32>) {
     let target = if tolerance > 0.0 { crate::inspector::keyframe_selection::nearest(keys, time, tolerance).map_or(insert_time, |i| keys[i].time_secs) } else { time };
@@ -512,5 +525,40 @@ mod linked_missing_key_review_tests {
         let mut partner=vec![];
         super::edit_linked_audio_key(&mut partner,0.700,0.5/24.0,0.707,Some(0.25));
         assert_eq!(partner[0].time_secs,0.707);
+    }
+}
+
+#[cfg(test)]
+mod linked_key_clock_tests {
+    /// The hand check's J cut: the cafe picture 4-10 s, its sound from
+    /// 3.52 s. A key the Audio tab, the Curve Editor or the Dope Sheet
+    /// sets on the sound at 4.0 s (0.48 s into it) goes on the picture at
+    /// its own 0.0, where playback and the export read the pair's level;
+    /// one set on the picture at 2.0 goes on the sound at 2.48. A plain
+    /// pair keeps its times.
+    #[test]
+    fn a_j_cuts_keys_cross_to_the_partners_clock() {
+        let tc = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 25);
+        let id = klipp_core::MediaId::new();
+        let mut picture = klipp_timeline::Clip::media(id, tc(4.0), tc(10.0), tc(1.0), tc(7.0));
+        let mut sound = klipp_timeline::Clip::media(id, tc(3.52), tc(10.0), tc(0.52), tc(7.0));
+        (picture.linked_clip_id, sound.linked_clip_id) = (Some(sound.id), Some(picture.id));
+        let plain_picture = klipp_timeline::Clip::media(id, tc(10.0), tc(12.0), tc(0.0), tc(2.0));
+        let plain_sound = klipp_timeline::Clip::media(id, tc(10.0), tc(12.0), tc(0.0), tc(2.0));
+        let (p, s, pp, ps) = (picture.id, sound.id, plain_picture.id, plain_sound.id);
+        let mut seq = klipp_timeline::Sequence::new_default();
+        let mut v = klipp_timeline::Track::new("V1", klipp_timeline::TrackKind::Video);
+        v.clips = vec![picture, plain_picture];
+        let mut a = klipp_timeline::Track::new("A1", klipp_timeline::TrackKind::Audio);
+        a.clips = vec![sound, plain_sound];
+        seq.tracks = vec![v, a];
+        let shift = |from, to| super::linked_key_shift(&seq, from, to);
+        assert!((0.48 + shift(s, p)).abs() < 1e-9, "sound 0.48 s is the picture's 0: {}", shift(s, p));
+        assert!((2.0 + shift(p, s) - 2.48).abs() < 1e-9, "picture 2.0 s is the sound's 2.48: {}", shift(p, s));
+        assert_eq!(shift(pp, ps), 0.0);
+        // The partner's key set where the sound's was asked.
+        let mut keys = Vec::new();
+        super::edit_linked_audio_key(&mut keys, 0.48 + shift(s, p), 0.0, 0.48 + shift(s, p), Some(0.1));
+        assert!(keys[0].time_secs.abs() < 1e-9, "{keys:?}");
     }
 }

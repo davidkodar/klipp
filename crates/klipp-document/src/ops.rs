@@ -5945,7 +5945,10 @@ fn duck(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, music: &Clip, by_
     // Keyframes in the clip's own time: down before the speech starts,
     // up after it ends.
     let mut kfs: Vec<klipp_core::Keyframe> = Vec::new();
-    let mut put = |t: f64, v: f32| klipp_core::keyframe::upsert_keyframe(&mut kfs, (t - m_in).clamp(0.0, m_out - m_in), v);
+    // On the clock of the clip holding the keys (a J cut's picture starts
+    // after its sound).
+    let s_in = secs(settings.timeline_in);
+    let mut put = |t: f64, v: f32| klipp_core::keyframe::upsert_keyframe(&mut kfs, t.clamp(m_in, m_out) - s_in, v);
     for (a, b) in &spans {
         if *a - fade_secs > m_in {
             put(a - fade_secs, base);
@@ -6451,11 +6454,14 @@ fn volume_keys(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Cli
         }
     }
     let settings = sound_settings_clip(seq, clip);
+    // On the clock of the clip holding the keys: a J cut's sound starts
+    // before its picture, whose keys are timed from the picture's start.
+    let s_in = secs(settings.timeline_in);
     let mut kfs: Vec<klipp_core::Keyframe> = Vec::new();
     for k in keys {
         // From the clip's own level, as `duck` writes: a bed set to
         // -8 dB and keyed at 0 stays at -8, not 8 dB louder.
-        klipp_core::keyframe::upsert_keyframe(&mut kfs, (k.at - c_in).clamp(0.0, c_out - c_in), settings.volume * db_to_linear(k.db));
+        klipp_core::keyframe::upsert_keyframe(&mut kfs, k.at.clamp(c_in, c_out) - s_in, settings.volume * db_to_linear(k.db));
     }
     kfs.sort_by(|a, b| a.time_secs.partial_cmp(&b.time_secs).unwrap_or(std::cmp::Ordering::Equal));
     let old_state = crate::history::KeyframeSnapshot::from_clip(settings);
@@ -19754,6 +19760,41 @@ mod tests {
         let at = |t: f64| klipp_core::keyframe::evaluate(&new_state.volume_keyframes, t, 1.0);
         assert!((at(1.0) - db_to_linear(-8.0)).abs() < 1e-4, "0 dB is the clip as set: {}", at(1.0));
         assert!((at(3.0) - db_to_linear(-20.0)).abs() < 1e-4, "-12 dB under it: {}", at(3.0));
+    }
+
+    /// A J cut: the second sound starts 0.48 s before its picture. Keyed
+    /// from the sound at timeline 4.0 and 6.0, the keys land on the
+    /// picture (which holds the pair's level) at its own 0.0 and 2.0,
+    /// where playback and the export read them; a key in the sound's lead
+    /// lands before the picture's start.
+    #[test]
+    fn a_j_cuts_sound_keys_land_on_the_pictures_clock() {
+        let (mut seq, pool, _, _, ib) = fixture();
+        let a1 = &mut seq.tracks[1].clips;
+        (a1[0].timeline_out, a1[0].source_out) = (tc(3.52), tc(3.52));
+        (a1[1].timeline_in, a1[1].source_in) = (tc(3.52), tc(3.52));
+        let sound = a1[1].id;
+        let ops: Vec<Op> = serde_json::from_str(&format!(r#"[{{"op":"volume","clip_id":"{}","keys":[{{"at":3.6,"db":-30}},{{"at":4.0,"db":-20}},{{"at":6.0,"db":0}}]}}]"#, sound.0)).unwrap();
+        let plan = resolve(&seq, &pool, &ops).unwrap();
+        let EditCommand::EditKeyframes { clip_id, new_state, .. } = &plan.steps[0].edit else { panic!("keyframes") };
+        assert_eq!(*clip_id, ib, "on the picture, which holds the pair's level");
+        let times: Vec<f64> = new_state.volume_keyframes.iter().map(|k| k.time_secs).collect();
+        for (got, want) in times.iter().zip([-0.4, 0.0, 2.0]) {
+            assert!((got - want).abs() < 1e-6, "keys at {times:?}, not at -0.4, 0 and 2");
+        }
+
+        // A duck from the sound: its keys on the picture's clock too.
+        let mut voice = Track::new("A2", TrackKind::Audio);
+        let v = Clip::media(seq.tracks[0].clips[0].media_id().unwrap(), tc(5.0), tc(6.0), tc(0.0), tc(1.0));
+        voice.clips = vec![v];
+        seq.tracks.push(voice);
+        let ops: Vec<Op> = serde_json::from_str(&format!(r#"[{{"op":"duck","clip_id":"{}","by_db":9,"fade_secs":0.5}}]"#, sound.0)).unwrap();
+        let plan = resolve(&seq, &pool, &ops).unwrap();
+        let EditCommand::EditKeyframes { new_state, .. } = &plan.steps[0].edit else { panic!("keyframes") };
+        let times: Vec<f64> = new_state.volume_keyframes.iter().map(|k| k.time_secs).collect();
+        for (got, want) in times.iter().zip([0.5, 1.0, 2.0, 2.5]) {
+            assert!((got - want).abs() < 1e-6, "duck keys at {times:?}, not at the speech (5-6 s) on the picture's clock");
+        }
     }
 
     #[test]
