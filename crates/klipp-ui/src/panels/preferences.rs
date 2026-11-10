@@ -2562,6 +2562,32 @@ impl PreferencesPanel {
                 }
             });
         }
+        // In a Flatpak the assistants on the host are out of the sandbox's
+        // sight and reach: the commands that register Klipp are shown for
+        // the person to run, each starting klipp-mcp through `flatpak run`.
+        if let Some(id) = klipp_core::flatpak::app_id() {
+            ui.horizontal_wrapped(|ui| {
+                ui.add_space(14.0);
+                ui.label(egui::RichText::new(format!("Klipp runs as a Flatpak, so it can't see or set up the assistants on this computer. Register it with yours by running one of these in a terminal. The assistant then starts Klipp's MCP program with: {}", klipp_core::flatpak::mcp_command(&id).join(" "))).color(theme.text_secondary));
+            });
+            let mut shown = clients::flatpak_connect_commands(&id);
+            shown.push(("Other assistants (JSON, mcpServers)", clients::flatpak_json_snippet(&id)));
+            for (what, text) in shown {
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    ui.add_space(14.0);
+                    ui.label(egui::RichText::new(what).color(theme.text_primary));
+                    if ui.small_button("Copy").clicked() {
+                        ui.ctx().copy_text(text.clone());
+                    }
+                });
+                ui.horizontal_wrapped(|ui| {
+                    ui.add_space(14.0);
+                    ui.label(egui::RichText::new(&text).monospace().color(theme.text_secondary));
+                });
+            }
+            return;
+        }
         for (client, reg) in &clients_now {
             let (state, can_connect, can_disconnect) = match reg {
                 Registration::NotInstalled => ("Not installed on this computer".to_string(), false, false),
