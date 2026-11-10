@@ -1,4 +1,4 @@
-# Maintainer: David Kodar <fds.bolin@gmail.com>
+# Maintainer: davidkodar
 #
 # Builds Klipp from the checkout this file sits in (../) and installs it
 # as a pacman package. Run `makepkg -si` from this directory.
