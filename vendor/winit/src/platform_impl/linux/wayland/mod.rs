@@ -14,6 +14,8 @@ pub use event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy};
 pub use output::{MonitorHandle, VideoModeHandle};
 pub use window::Window;
 
+// KLIPP PATCH: files dropped from other clients (dnd.rs).
+mod dnd;
 mod event_loop;
 mod output;
 mod seat;

@@ -112,6 +112,11 @@ pub struct WinitState {
     /// Loop handle to re-register event sources, such as keyboard repeat.
     pub loop_handle: LoopHandle<'static, Self>,
 
+    /// KLIPP PATCH: the data device manager, for files dropped on our
+    /// windows, and the drag over one of them (`dnd.rs`).
+    pub data_device_manager: Option<sctk::data_device_manager::DataDeviceManagerState>,
+    pub dnd: super::dnd::DndState,
+
     /// Whether we have dispatched events to the user thus we want to
     /// send `AboutToWait` and normally wakeup the user.
     pub dispatched_events: bool,
@@ -143,9 +148,16 @@ impl WinitState {
 
         let seat_state = SeatState::new(globals, queue_handle);
 
+        // KLIPP PATCH: a data device on each seat, for files dropped on our
+        // windows (`dnd.rs`).
+        let data_device_manager =
+            sctk::data_device_manager::DataDeviceManagerState::bind(globals, queue_handle).ok();
         let mut seats = AHashMap::default();
         for seat in seat_state.seats() {
-            seats.insert(seat.id(), WinitSeatState::new());
+            let mut state = WinitSeatState::new();
+            state.data_device =
+                data_device_manager.as_ref().map(|m| m.get_data_device(queue_handle, &seat));
+            seats.insert(seat.id(), state);
         }
 
         let (viewporter_state, fractional_scaling_manager) =
@@ -190,6 +202,8 @@ impl WinitState {
             monitors: Arc::new(Mutex::new(monitors)),
             events_sink: EventSink::new(),
             loop_handle,
+            data_device_manager,
+            dnd: Default::default(),
             // Make it true by default.
             dispatched_events: true,
         })
