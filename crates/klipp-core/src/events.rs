@@ -1544,6 +1544,11 @@ pub enum AppCommand {
         new_a_timeline_out: Timecode,
         new_b_source_in: Timecode,
         new_b_timeline_in: Timecode,
+        /// The two clips' linked partners roll with them: Linked on and
+        /// Alt not held when the roll began, as an edge trim takes it.
+        /// They always did, so a roll on a sound cut moved its picture's
+        /// cut with Linked off.
+        linked: bool,
     },
     SelectClip(Option<ClipId>),
 
@@ -4459,6 +4464,11 @@ pub enum AppCommand {
     /// Set a clip's compositor blend mode (Normal, Multiply, Screen, …).
     /// `mode` is the discriminant index into `BlendMode::ALL`.
     SetClipBlendMode { clip_id: ClipId, mode: crate::types::BlendMode },
+
+    /// The effects the inspector's All effects switch turned off on a
+    /// clip, by their picture nodes (`Clip::effects_switched_off`), set
+    /// with the switch's own changes, in the same undo step.
+    SetEffectsSwitchedOff { clip_id: ClipId, nodes: Vec<uuid::Uuid> },
 
     /// Bind another clip as this clip's track matte. The render path
     /// resolves `source_clip_id`'s rendered RGBA at the same timeline

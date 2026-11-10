@@ -96,6 +96,7 @@ video_param_value 16
 # canvas (#1724), read from the payload's OFX identifier.
 # Raised for the node editor's Reset and Replace on the picture (#1745):
 # Raised for #2888 (load migrations): migrate_ids.rs finds an opened project's saved effect nodes by their stored type id (LEGACY_EFFECT 2) to rename an effect or a setting through the migration table before the project is read.
+# Raised for #3853 (multi_edit.rs): a path edit of an effect node goes to every selected clip, so its classify and path_of list SetPayloadAt (2) beside the other path edits, and path_op_at maps it to a GraphOp::SetPayload (SetPayloadAt 1, SetPayload 1).
 # an effect node's defaults and a swapped effect are written through its
 # payload, as every picture effect edit is until revision 5's rows.
 Legacy 48
@@ -106,12 +107,12 @@ MissingLegacy 5
 # Raised by one for a redaction that follows the text: a mask's rectangle
 # lives only in its legacy entry, so the window's keyframes are written
 # there (ops::follow_window) until masks have a v2 route.
-SetPayload 26
+SetPayload 27
 # 19: a Surface Pin's surface chosen in its node's stack view (#3809)
 # and that row's test. The surface is the id of the clip's surface, text,
 # and a node's text field is written by its payload: SetParamAt carries
 # numbers, flags and choices only.
-SetPayloadAt 19
+SetPayloadAt 22
 legacy 171
 legacy_flags 44
 LEGACY_NODE 60
