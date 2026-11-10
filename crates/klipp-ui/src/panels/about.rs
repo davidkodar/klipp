@@ -453,7 +453,8 @@ fn body(ui: &mut egui::Ui, theme: &KlippTheme, status: &Status<'_>) -> Option<Ab
                 .stroke(Stroke::NONE)
                 .rounding(7.0)
                 .min_size(vec2(0.0, 32.0));
-            if ui.add(primary).clicked() {
+            // A Flatpak's store updates it: no check of Klipp's own.
+            if *status != Status::Store && ui.add(primary).clicked() {
                 action = Some(AboutAction::CheckForUpdates);
             }
             let secondary = egui::Button::new(egui::RichText::new("Report an issue").size(13.0).color(theme.text_primary))
@@ -539,6 +540,11 @@ fn mark(ui: &mut egui::Ui, theme: &KlippTheme, status: &Status<'_>) {
             painter.circle_filled(c, 8.0, AMBER.gamma_multiply(0.22));
             painter.circle_filled(c, 4.0, AMBER);
         }
+        Status::Store => {
+            painter.circle_filled(c, 8.0, theme.marker_success);
+            let ink = theme.bg_deep;
+            painter.add(egui::Shape::line(vec![pos2(c.x - 3.6, c.y + 0.2), pos2(c.x - 1.0, c.y + 2.8), pos2(c.x + 3.8, c.y - 2.6)], Stroke::new(1.8_f32, ink)));
+        }
         Status::Failed(_) => {
             painter.circle_stroke(c, 7.2, Stroke::new(1.5_f32, theme.marker_error));
             painter.line_segment([pos2(c.x, c.y - 3.6), pos2(c.x, c.y + 0.8)], Stroke::new(1.6_f32, theme.marker_error));
@@ -585,6 +591,11 @@ fn status_text(ui: &mut egui::Ui, theme: &KlippTheme, status: &Status<'_>) -> Op
             if *previews {
                 detail(ui, theme, "Preview releases included");
             }
+            None
+        }
+        Status::Store => {
+            headline(ui, theme, "Updated by your software store", None);
+            detail(ui, theme, "This Klipp is a Flatpak: your software store, or flatpak update, brings its new versions.");
             None
         }
         Status::Failed(message) => {
@@ -828,6 +839,16 @@ mod tests {
 
     fn available(install: Install) -> Status<'static> {
         Status::Available { version: "0.2.0".into(), notes: "https://example.invalid/notes".into(), install, error: None, testing: None }
+    }
+
+    /// A Flatpak's About says the software store updates it, with no
+    /// button to check: Klipp doesn't check or update itself there.
+    #[test]
+    fn a_flatpaks_about_says_its_store_updates_it() {
+        let text = drawn(&Status::Store);
+        assert!(text.contains("Updated by your software store"), "{text}");
+        assert!(!text.contains("Check for updates…"), "{text}");
+        assert!(drawn(&Status::Idle).contains("Check for updates…"), "outside a Flatpak the button stays");
     }
 
     /// Each place the check can be in draws as a row in About: nothing

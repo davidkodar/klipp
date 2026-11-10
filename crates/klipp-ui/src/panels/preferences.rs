@@ -33,6 +33,11 @@ enum PrefsTab {
 /// (#3021).
 const NO_KEY: &str = "No key in this preset";
 
+
+/// What Preferences says of updates in a Flatpak, which its software
+/// store updates.
+const FLATPAK_UPDATES: &str = "Updated by your software store";
+
 pub struct PreferencesPanel {
     /// "Check for updates…" was clicked: About opens and checks.
     pub(crate) show_updates: bool,
@@ -635,6 +640,13 @@ impl PreferencesPanel {
         });
 
         Self::section_header(ui, "UPDATES", theme);
+        // A Flatpak's software store updates it: Klipp checks nothing.
+        if klipp_core::flatpak::app_id().is_some() {
+            Self::setting_row(ui, "Installed version", theme, |ui| {
+                ui.label(klipp_core::build_info::get().version);
+                ui.label(egui::RichText::new(FLATPAK_UPDATES).color(theme.text_secondary));
+            });
+        } else {
         Self::setting_row_with_subtitle(ui, "Check automatically", "Checks GitHub for new releases once a day", theme, |ui| {
             if ui.add(Switch::new(&mut prefs.general.check_for_updates, theme)).changed() {
                 prefs.general.update_checks_answered = true;
@@ -648,6 +660,7 @@ impl PreferencesPanel {
             ui.label(klipp_core::build_info::get().version);
             if ui.button("Check for updates…").clicked() { self.show_updates = true; }
         });
+        }
 
         // ── STARTUP section ──
         Self::section_header(ui, "STARTUP", theme);
@@ -4670,7 +4683,11 @@ impl PreferencesPanel {
     }
 
     fn show_about(&mut self, ui: &mut egui::Ui, theme: &KlippTheme) {
-        if ui.button("Check for updates…").clicked() { self.show_updates = true; }
+        if klipp_core::flatpak::app_id().is_some() {
+            ui.label(egui::RichText::new(FLATPAK_UPDATES).color(theme.text_secondary));
+        } else if ui.button("Check for updates…").clicked() {
+            self.show_updates = true;
+        }
         // Page heading
         ui.horizontal(|ui| {
             ui.add_space(14.0);
