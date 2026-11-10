@@ -75,12 +75,20 @@ fn apply(state: &mut AppState, cmds: &[AppCommand]) -> Vec<String> {
             AppCommand::SelectClip(id) => state.selected_clip = *id,
             // The viewer's: a hover skim shows a frame, it edits nothing (#2957).
             AppCommand::SetVideoRubberBandParam(_) | AppCommand::SequenceUpdated | AppCommand::BrowserSkimAudioStart { .. } | AppCommand::SkimTimeline { .. } => {}
-            _ if super::colour::mask_key_edit(state, cmd, true).is_some() => {}
+            // In the order the app's dispatch tries its handlers
+            // (`engine_sync`): a lane's key by path, then the keyframe
+            // handlers, then the path commands, then the colour's and the
+            // rest.
+            _ if state.is_lane_key_command(cmd) && state.path_command(cmd).is_some() => {}
+            _ if InspectorEditHost { state: &mut *state, side: &Sink }.apply_keyframe_drag(cmd) => {}
+            _ if InspectorEditHost { state: &mut *state, side: &Sink }.apply_effect_keyframes(cmd) => {}
             _ if super::keyframes::audio_effect_key_write(state, cmd) => {}
+            _ if InspectorEditHost { state: &mut *state, side: &Sink }.apply_video_keyframes(cmd) => {}
             _ if state.path_command(cmd).is_some() => {}
+            _ if super::colour::mask_key_edit(state, cmd, true).is_some() => {}
             _ => {
                 let mut host = InspectorEditHost { state: &mut *state, side: &Sink };
-                if !host.apply_effect_keyframes(cmd) && !host.apply_video_keyframes(cmd) && !host.apply_keyframe_drag(cmd) && !host.apply(cmd) {
+                if !host.apply(cmd) {
                     unapplied.push(format!("{cmd:?}"));
                 }
             }
@@ -986,4 +994,57 @@ fn a_tracked_picture_window_moves_as_a_grade_window_does() {
     let (picture_moved, grade_moved) = (centre(window) - rest(window), centre(grade_window) - rest(grade_window));
     assert!(picture_moved > 0.1, "the picture window follows: moved {picture_moved}");
     assert!((picture_moved - grade_moved).abs() < 1e-4, "as far as the grade's: {picture_moved} and {grade_moved}");
+}
+
+/// A key dragged in the dope sheet by hand, a few pixels a frame, goes
+/// as far as it is dragged: it moved one frame, however far.
+#[test]
+fn a_dope_sheet_key_dragged_by_hand_goes_all_the_way() {
+    let mut e = Editor::new();
+    let drawn = e.frame(Vec::new(), egui::Modifiers::NONE);
+    let tab = drawn.iter().find(|(t, _)| t == "Dope Sheet").expect("the Dope Sheet tab").1;
+    e.press(tab, egui::PointerButton::Primary, egui::Modifiers::NONE);
+    e.frame(Vec::new(), egui::Modifiers::NONE);
+    let pos_x = KeyframeParamKind::Video(VideoParam::PositionX);
+    let (from, to) = (e.panel.sheet_at(1, 2.0).unwrap(), e.panel.sheet_at(1, 3.0).unwrap());
+    let m = egui::Modifiers::NONE;
+    let b = |p, d| egui::Event::PointerButton { pos: p, button: egui::PointerButton::Primary, pressed: d, modifiers: m };
+    e.frame(vec![egui::Event::PointerMoved(from)], m);
+    e.frame(vec![b(from, true)], m);
+    let steps = ((to.x - from.x) / 3.0).ceil() as usize;
+    for i in 1..=steps {
+        e.frame(vec![egui::Event::PointerMoved(from + (to - from) * (i as f32 / steps as f32))], m);
+    }
+    e.frame(vec![b(to, false)], m);
+    e.frame(Vec::new(), m);
+    assert_eq!(keys(&e.state, e.clip, &pos_x), vec![(1.0, 10.0), (3.0, 20.0)], "dragged {} px in {steps} moves", to.x - from.x);
+}
+
+/// The same hand drag with the commands applied as the app applies them:
+/// the key goes all the way, and the move is one undo step of its own. In
+/// the app it went one frame, and Ctrl+Z after it took back the edit before.
+#[test]
+fn a_dope_sheet_key_drag_in_the_apps_order_moves_and_is_one_step() {
+    let mut e = Editor::new();
+    let drawn = e.frame(Vec::new(), egui::Modifiers::NONE);
+    let tab = drawn.iter().find(|(t, _)| t == "Dope Sheet").expect("the Dope Sheet tab").1;
+    e.press(tab, egui::PointerButton::Primary, egui::Modifiers::NONE);
+    e.frame(Vec::new(), egui::Modifiers::NONE);
+    let pos_x = KeyframeParamKind::Video(VideoParam::PositionX);
+    let steps_before = e.state.active_history().undo_count();
+    let (from, to) = (e.panel.sheet_at(1, 2.0).unwrap(), e.panel.sheet_at(1, 3.0).unwrap());
+    let m = egui::Modifiers::NONE;
+    let b = |p, d| egui::Event::PointerButton { pos: p, button: egui::PointerButton::Primary, pressed: d, modifiers: m };
+    e.frame(vec![egui::Event::PointerMoved(from)], m);
+    e.frame(vec![b(from, true)], m);
+    let steps = ((to.x - from.x) / 3.0).ceil() as usize;
+    for i in 1..=steps {
+        e.frame(vec![egui::Event::PointerMoved(from + (to - from) * (i as f32 / steps as f32))], m);
+    }
+    e.frame(vec![b(to, false)], m);
+    e.frame(Vec::new(), m);
+    assert_eq!(keys(&e.state, e.clip, &pos_x), vec![(1.0, 10.0), (3.0, 20.0)], "dragged all the way");
+    assert_eq!(e.state.active_history().undo_count(), steps_before + 1, "one undo step");
+    undo(&mut e.state);
+    assert_eq!(keys(&e.state, e.clip, &pos_x), vec![(1.0, 10.0), (2.0, 20.0)], "the undo takes back the move");
 }

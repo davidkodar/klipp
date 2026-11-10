@@ -5,6 +5,10 @@ use super::*;
 
 impl KlippApp {
     pub(super) fn handle_keyframe_commands(&mut self, cmd: &AppCommand, needs_refresh: &mut bool) -> bool {
+        // A placement or opacity lane's key goes by path, recorded there.
+        if self.state.is_lane_key_command(cmd) && self.handle_path_commands(cmd) {
+            return true;
+        }
         self.handle_keyframe_drag_commands(cmd, needs_refresh)
             || self.handle_speed_keyframe_commands(cmd, needs_refresh)
             || self.handle_effect_keyframe_commands(cmd, needs_refresh)

@@ -491,6 +491,10 @@ pub struct ClipJson {
     pub speed_keyframes: Option<Vec<klipp_core::Keyframe>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub keep_pitch: Option<bool>,
+    /// A picture whose sound is on a sound clip of its own: it plays none
+    /// itself, linked or not.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sound_apart: Option<bool>,
     /// A freeze frame's source time (#2773).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hold: Option<TimecodeJson>,
@@ -1169,7 +1173,7 @@ mod tests {
             role_source: Default::default(),
             matched_to: None,
             param_modifiers: None,
-            speed: None, speed_keyframes: None, keep_pitch: None, hold: None,
+            speed: None, speed_keyframes: None, keep_pitch: None, sound_apart: None, hold: None,
             source_rotation: None,
             enabled: None,
             audio_effects: None,
@@ -1244,7 +1248,7 @@ mod tests {
             clip_markers: None,
             effect_keyframes: None,
             role: None, role_id: None, role_source: Default::default(), matched_to: None, param_modifiers: None,
-            speed: None, speed_keyframes: None, keep_pitch: None, hold: None,
+            speed: None, speed_keyframes: None, keep_pitch: None, sound_apart: None, hold: None,
             source_rotation: None, enabled: None,
             audio_effects: None,
             audio_effect_keyframes: std::collections::HashMap::new(),
@@ -1460,7 +1464,7 @@ mod tests {
             matte_feather_keyframes: None, matte_choke_keyframes: None,
             clip_markers: None, effect_keyframes: None,
             role: None, role_id: None, role_source: Default::default(), matched_to: None, param_modifiers: None,
-            speed: None, speed_keyframes: None, keep_pitch: None, hold: None,
+            speed: None, speed_keyframes: None, keep_pitch: None, sound_apart: None, hold: None,
             source_rotation: None, enabled: None,
             audio_effects: None,
             audio_effect_keyframes: std::collections::HashMap::new(),
