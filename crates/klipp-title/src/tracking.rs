@@ -118,12 +118,19 @@ impl TitleRenderer {
         if !spacing.is_finite() {
             return None;
         }
-        let xs: Vec<f32> = u
-            .tracking_origins
-            .iter()
-            .enumerate()
-            .map(|(i, p)| p[0] + spacing * i as f32)
-            .collect();
+        // Line by line, as the layout tracks them (`track_lines`): each
+        // from its own first character, and moved back by what its ink
+        // gained as its alignment keeps it. A line starts where the next
+        // glyph steps back to the left of the one before it.
+        let mut xs: Vec<f32> = Vec::with_capacity(n);
+        let mut start = 0;
+        while start < n {
+            let end = (start + 1..n).find(|&i| u.tracking_origins[i][0] < u.tracking_origins[i - 1][0]).unwrap_or(n);
+            let last_ink = (start..end).rposition(|i| u.boxes[i][2] > u.boxes[i][0]).unwrap_or(0);
+            let back = crate::tracking_back(tb.alignment, spacing * last_ink as f32);
+            xs.extend((start..end).map(|i| u.tracking_origins[i][0] + spacing * (i - start) as f32 - back));
+            start = end;
+        }
         let min = xs.iter().copied().fold(f32::INFINITY, f32::min);
         let max = xs
             .iter()

@@ -75,12 +75,20 @@ fn apply(state: &mut AppState, cmds: &[AppCommand]) -> Vec<String> {
             AppCommand::SelectClip(id) => state.selected_clip = *id,
             // The viewer's: a hover skim shows a frame, it edits nothing (#2957).
             AppCommand::SetVideoRubberBandParam(_) | AppCommand::SequenceUpdated | AppCommand::BrowserSkimAudioStart { .. } | AppCommand::SkimTimeline { .. } => {}
-            _ if super::colour::mask_key_edit(state, cmd, true).is_some() => {}
+            // In the order the app's dispatch tries its handlers
+            // (`engine_sync`): a lane's key by path, then the keyframe
+            // handlers, then the path commands, then the colour's and the
+            // rest.
+            _ if state.is_lane_key_command(cmd) && state.path_command(cmd).is_some() => {}
+            _ if InspectorEditHost { state: &mut *state, side: &Sink }.apply_keyframe_drag(cmd) => {}
+            _ if InspectorEditHost { state: &mut *state, side: &Sink }.apply_effect_keyframes(cmd) => {}
             _ if super::keyframes::audio_effect_key_write(state, cmd) => {}
+            _ if InspectorEditHost { state: &mut *state, side: &Sink }.apply_video_keyframes(cmd) => {}
             _ if state.path_command(cmd).is_some() => {}
+            _ if super::colour::mask_key_edit(state, cmd, true).is_some() => {}
             _ => {
                 let mut host = InspectorEditHost { state: &mut *state, side: &Sink };
-                if !host.apply_effect_keyframes(cmd) && !host.apply_video_keyframes(cmd) && !host.apply_keyframe_drag(cmd) && !host.apply(cmd) {
+                if !host.apply(cmd) {
                     unapplied.push(format!("{cmd:?}"));
                 }
             }
@@ -897,4 +905,342 @@ fn a_j_cuts_sound_draws_its_pictures_keys_where_they_are_heard() {
     }
     assert_eq!(found.len(), 4, "two keys on each sound: {found:?}");
     assert_eq!(columns.iter().map(|c| c.1).collect::<Vec<_>>(), vec![2, 2], "the J cut's keys where the unlinked sound's are: {columns:?}");
+}
+
+/// The diamond by a mask's Feather sets a key on a mask made in the clip's
+/// picture graph (a Window from its menu), as it does on a grade's: the
+/// key command found no such node in the grade and nothing took it.
+#[test]
+fn a_mask_key_lands_on_a_picture_graph_window() {
+    let (mut state, id, _) = state();
+    let c = clip(&state, id);
+    let graph = c.picture_v2().unwrap().picture.graph.clone();
+    let level = klipp_graph_format::path::NodePath::new(klipp_graph_format::path::Root::Clip { clip: id.0 }, []);
+    let window = klipp_nodes::NodeId::new_v4();
+    let ops = crate::picture_mattes::add_ops(&graph, &level, crate::picture_mattes::matte("matte.window").unwrap(), window, (0.0, 0.0), None).unwrap();
+    state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(id)).unwrap().apply_picture_ops(&ops).unwrap();
+    let feather_keys = |state: &AppState| {
+        let lifted = clip(state, id).picture_v2().unwrap();
+        let node = lifted.picture.graph.nodes.iter().find(|n| n.id == window).unwrap().clone();
+        let masks = klipp_timeline::grade_node_for_run(&node).unwrap().params.masks.unwrap();
+        masks.masks[0].keyframes.feather.iter().map(|k| (k.time_secs, k.value)).collect::<Vec<_>>()
+    };
+    let steps = state.active_history().undo_count();
+    let add = |t: f64, v: f32| AppCommand::AddMaskKeyframe { clip_id: id, node_id: window, mask_index: 0, param: "feather".into(), time_secs: t, value: v };
+    assert!(matches!(super::colour::mask_key_edit(&mut state, &add(0.0, 0.05), true), Some(Ok(()))), "the key command is taken");
+    assert!(matches!(super::colour::mask_key_edit(&mut state, &add(3.0, 0.4), true), Some(Ok(()))));
+    assert_eq!(feather_keys(&state), vec![(0.0, 0.05), (3.0, 0.4)], "both keys on the window's feather");
+    assert_eq!(state.active_history().undo_count(), steps + 2, "a step each");
+    let remove = AppCommand::RemoveMaskKeyframe { clip_id: id, node_id: window, mask_index: 0, param: "feather".into(), time_secs: 3.0 };
+    assert!(matches!(super::colour::mask_key_edit(&mut state, &remove, true), Some(Ok(()))));
+    assert_eq!(feather_keys(&state), vec![(0.0, 0.05)], "the 3 s key taken off");
+    undo(&mut state);
+    assert_eq!(feather_keys(&state), vec![(0.0, 0.05), (3.0, 0.4)], "one undo puts it back");
+}
+
+/// A value typed on a picture-graph Window's keyed Feather at a new time
+/// (the field's gesture around the writes its digits make, "0" then
+/// "0.4") is one step, and one undo takes the new key off. It was two,
+/// the first a key at 0, so one undo left the clip with no feather there.
+#[test]
+fn a_typed_mask_value_on_a_picture_window_is_one_step() {
+    let (mut state, id, _) = state();
+    let c = clip(&state, id);
+    let graph = c.picture_v2().unwrap().picture.graph.clone();
+    let level = klipp_graph_format::path::NodePath::new(klipp_graph_format::path::Root::Clip { clip: id.0 }, []);
+    let window = klipp_nodes::NodeId::new_v4();
+    let ops = crate::picture_mattes::add_ops(&graph, &level, crate::picture_mattes::matte("matte.window").unwrap(), window, (0.0, 0.0), None).unwrap();
+    state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(id)).unwrap().apply_picture_ops(&ops).unwrap();
+    let add = |t: f64, v: f32| AppCommand::AddMaskKeyframe { clip_id: id, node_id: window, mask_index: 0, param: "feather".into(), time_secs: t, value: v };
+    assert!(matches!(super::colour::mask_key_edit(&mut state, &add(0.0, 0.05), true), Some(Ok(()))));
+    let feather = |state: &AppState| {
+        let lifted = clip(state, id).picture_v2().unwrap();
+        let node = lifted.picture.graph.nodes.iter().find(|n| n.id == window).unwrap().clone();
+        klipp_timeline::grade_node_for_run(&node).unwrap().params.masks.unwrap().masks[0].keyframes.feather.iter().map(|k| (k.time_secs, k.value)).collect::<Vec<_>>()
+    };
+    let steps = state.active_history().undo_count();
+    let addr = klipp_graph_format::path::NodePath::new(klipp_graph_format::path::Root::Clip { clip: id.0 }, [window]);
+    // As the matte panel sends the field's gesture (by path) around it.
+    state.before_dispatch(&AppCommand::BeginParamEditAt { addr: addr.clone(), key: "masks".into() });
+    state.path_command(&AppCommand::BeginParamEditAt { addr: addr.clone(), key: "masks".into() });
+    for v in [0.0, 0.4] {
+        let cmd = add(4.0, v);
+        state.before_dispatch(&cmd);
+        assert!(matches!(super::colour::mask_key_edit(&mut state, &cmd, false), Some(Ok(()))));
+    }
+    let end = AppCommand::EndParamEditAt { addr, key: "masks".into() };
+    state.before_dispatch(&end);
+    state.path_command(&end);
+    assert_eq!(feather(&state), vec![(0.0, 0.05), (4.0, 0.4)]);
+    assert_eq!(state.active_history().undo_count(), steps + 1, "one step");
+    undo(&mut state);
+    assert_eq!(feather(&state), vec![(0.0, 0.05)], "one undo takes the new key off");
+}
+
+/// A window tracked on a matte beside the clip's picture chain (a Window
+/// from the clip graph's menu): its mask is read where it is, and the
+/// tracker's keys are written there, as one undo step. The tracker read
+/// and wrote the clip's grade only, so the Track button did nothing.
+#[test]
+fn a_picture_graph_window_is_read_and_keyed_for_tracking() {
+    let (mut state, id, _) = state();
+    let c = clip(&state, id);
+    let graph = c.picture_v2().unwrap().picture.graph.clone();
+    let level = klipp_graph_format::path::NodePath::new(klipp_graph_format::path::Root::Clip { clip: id.0 }, []);
+    let window = klipp_nodes::NodeId::new_v4();
+    let ops = crate::picture_mattes::add_ops(&graph, &level, crate::picture_mattes::matte("matte.window").unwrap(), window, (0.0, 0.0), None).unwrap();
+    state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(id)).unwrap().apply_picture_ops(&ops).unwrap();
+    let c = clip(&state, id);
+    assert!(super::colour::clip_mask(&c, window, 0).is_some(), "the window read beside the chain");
+    let key = |t: f64, v: f32| Keyframe { time_secs: t, value: v, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() };
+    let clip_mut = state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(id)).unwrap();
+    let edit = super::colour::edit_clip_masks(clip_mut, window, "Track Window", |masks| {
+        masks.masks[0].keyframes.track_x = vec![key(0.0, 0.0), key(1.0, 0.1)];
+    })
+    .expect("an undo step");
+    assert!(matches!(edit, crate::history::EditCommand::PictureEdit { .. }), "{edit:?}");
+    let c = clip(&state, id);
+    assert_eq!(super::colour::clip_mask(&c, window, 0).unwrap().keyframes.track_x.len(), 2, "the track keys on the window");
+    let mut view = klipp_document::apply::DocumentView { sequences: &mut state.sequences, active: 0, media_pool: &mut state.media_pool, fps: &mut state.fps };
+    view.apply_inverse(&edit);
+    assert!(super::colour::clip_mask(&clip(&state, id), window, 0).unwrap().keyframes.track_x.is_empty(), "the step undoes them");
+}
+
+/// A window tracked beside the picture chain moves in the picture as a
+/// window tracked in the grade does: the same track keys, written where
+/// each mask is, move each by the same amount at 1 s as the renderer reads
+/// it (`evaluated_in`); its centre field stays put, as the grade's does,
+/// the move being the track's.
+#[test]
+fn a_tracked_picture_window_moves_as_a_grade_window_does() {
+    let (mut state, id, grade_window) = state();
+    let c = clip(&state, id);
+    let graph = c.picture_v2().unwrap().picture.graph.clone();
+    let level = klipp_graph_format::path::NodePath::new(klipp_graph_format::path::Root::Clip { clip: id.0 }, []);
+    let window = klipp_nodes::NodeId::new_v4();
+    let ops = crate::picture_mattes::add_ops(&graph, &level, crate::picture_mattes::matte("matte.window").unwrap(), window, (0.0, 0.0), None).unwrap();
+    state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(id)).unwrap().apply_picture_ops(&ops).unwrap();
+    let key = |t: f64, v: f32| Keyframe { time_secs: t, value: v, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() };
+    let track = |ms: &mut klipp_core::MaskStack| {
+        ms.masks[0].keyframes.track_x = vec![key(0.0, 0.0), key(1.0, 0.2)];
+        ms.masks[0].keyframes.track_y = vec![key(0.0, 0.0), key(1.0, 0.0)];
+    };
+    for node in [window, grade_window] {
+        let c = state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(id)).unwrap();
+        assert!(super::colour::edit_clip_masks(c, node, "Track Window", track).is_some());
+    }
+    let c = clip(&state, id);
+    let centre = |node| match super::colour::clip_mask(&c, node, 0).unwrap().evaluated_in(1.0, 0.5625).shape {
+        klipp_core::MaskShape::Circle { center_x, .. } => center_x,
+        other => panic!("{other:?}"),
+    };
+    let rest = |node| match super::colour::clip_mask(&c, node, 0).unwrap().shape {
+        klipp_core::MaskShape::Circle { center_x, .. } => center_x,
+        other => panic!("{other:?}"),
+    };
+    let (picture_moved, grade_moved) = (centre(window) - rest(window), centre(grade_window) - rest(grade_window));
+    assert!(picture_moved > 0.1, "the picture window follows: moved {picture_moved}");
+    assert!((picture_moved - grade_moved).abs() < 1e-4, "as far as the grade's: {picture_moved} and {grade_moved}");
+}
+
+/// Keys copied from several properties (Position X and Opacity, picked
+/// together) paste onto another clip on those same properties, at the
+/// playhead, as far apart as they were, in one step. Only the property
+/// the Curve Editor showed (and every key onto it) was pasted.
+#[test]
+fn copied_keys_paste_on_their_own_properties() {
+    let (mut state, id, _) = state();
+    let (pos_x, opacity) = (KeyframeParamKind::Video(VideoParam::PositionX), KeyframeParamKind::Video(VideoParam::Opacity));
+    let c = clip(&state, id);
+    crate::key_selection::click(&mut state, &c, &pos_x, 0, false);
+    crate::key_selection::click(&mut state, &c, &opacity, 0, true);
+    crate::panels::curve_editor::copy_selected_keys(&mut state, &c, &pos_x);
+    assert_eq!(state.curve_key_clipboard.len(), 2, "both keys copied: {:?}", state.curve_key_clipboard);
+    // Another clip on the same track, after the first.
+    let t = |s| RationalTime::from_secs_f64(s, 24);
+    let other = klipp_timeline::Clip::media(c.media_id().unwrap(), t(10.0), t(16.0), t(0.0), t(6.0));
+    let other_id = other.id;
+    let v1 = state.sequences[0].tracks.iter().position(|t| t.kind == TrackKind::Video).unwrap();
+    state.sequences[0].tracks[v1].clips.push(other);
+    state.playhead = t(11.0);
+    let target = clip(&state, other_id);
+    let (cmds, skipped) = crate::panels::curve_editor::paste_key_commands(&state, &target, 1.0);
+    assert_eq!(skipped, 0);
+    assert!(matches!(cmds.last(), Some(AppCommand::EndHistoryBatchAs { label }) if label == "Paste Keys"), "named for what it does, not \"Add Clips\": {:?}", cmds.last());
+    let steps = state.active_history().undo_count();
+    assert!(apply(&mut state, &cmds).is_empty());
+    // Copied at 1 s (x 10) and 3 s (opacity 0.5): pasted at 1 s and 3 s.
+    assert_eq!(keys(&state, other_id, &pos_x), vec![(1.0, 10.0)]);
+    assert_eq!(keys(&state, other_id, &opacity), vec![(3.0, 0.5)]);
+    assert_eq!(state.active_history().undo_count(), steps + 1, "one step");
+}
+
+/// A key eased with Ease Both from its menu is shown as Ease Both when the
+/// menu opens again, not as a custom Bezier (or Linear): the ease presets
+/// were never marked, so the menu named another choice for it.
+#[test]
+fn a_key_menu_names_the_ease_a_key_has() {
+    use crate::widgets::scrubby_param::{ease_preset_at, EasePreset};
+    for (preset, index) in [(EasePreset::EaseBoth, 0usize), (EasePreset::EaseIn, 1), (EasePreset::EaseOut, 0)] {
+        let (mut state, id, _) = state();
+        let lane = KeyframeParamKind::Video(VideoParam::PositionX);
+        let m = crate::state::KeyframeContextMenu { clip_id: id, param_kind: lane.clone(), keyframe_index: index, screen_pos: egui::Pos2::ZERO };
+        let cmds = crate::panels::timeline::key_ease_commands(&state, &m, preset);
+        assert!(apply(&mut state, &cmds).is_empty());
+        let keys = crate::key_selection::track_keys(&clip(&state, id), &lane);
+        assert_eq!(ease_preset_at(&keys, index), Some(preset), "{preset:?} on key {index}: {keys:?}");
+    }
+    // A key no preset made has none.
+    let (state, id, _) = state();
+    let keys = crate::key_selection::track_keys(&clip(&state, id), &KeyframeParamKind::Video(VideoParam::PositionX));
+    assert_eq!(ease_preset_at(&keys, 0), None);
+}
+
+/// A key dragged in the dope sheet by hand, a few pixels a frame, goes
+/// as far as it is dragged: it moved one frame, however far.
+#[test]
+fn a_dope_sheet_key_dragged_by_hand_goes_all_the_way() {
+    let mut e = Editor::new();
+    let drawn = e.frame(Vec::new(), egui::Modifiers::NONE);
+    let tab = drawn.iter().find(|(t, _)| t == "Dope Sheet").expect("the Dope Sheet tab").1;
+    e.press(tab, egui::PointerButton::Primary, egui::Modifiers::NONE);
+    e.frame(Vec::new(), egui::Modifiers::NONE);
+    let pos_x = KeyframeParamKind::Video(VideoParam::PositionX);
+    let (from, to) = (e.panel.sheet_at(1, 2.0).unwrap(), e.panel.sheet_at(1, 3.0).unwrap());
+    let m = egui::Modifiers::NONE;
+    let b = |p, d| egui::Event::PointerButton { pos: p, button: egui::PointerButton::Primary, pressed: d, modifiers: m };
+    e.frame(vec![egui::Event::PointerMoved(from)], m);
+    e.frame(vec![b(from, true)], m);
+    let steps = ((to.x - from.x) / 3.0).ceil() as usize;
+    for i in 1..=steps {
+        e.frame(vec![egui::Event::PointerMoved(from + (to - from) * (i as f32 / steps as f32))], m);
+    }
+    e.frame(vec![b(to, false)], m);
+    e.frame(Vec::new(), m);
+    assert_eq!(keys(&e.state, e.clip, &pos_x), vec![(1.0, 10.0), (3.0, 20.0)], "dragged {} px in {steps} moves", to.x - from.x);
+}
+
+/// The same hand drag with the commands applied as the app applies them:
+/// the key goes all the way, and the move is one undo step of its own. In
+/// the app it went one frame, and Ctrl+Z after it took back the edit before.
+#[test]
+fn a_dope_sheet_key_drag_in_the_apps_order_moves_and_is_one_step() {
+    let mut e = Editor::new();
+    let drawn = e.frame(Vec::new(), egui::Modifiers::NONE);
+    let tab = drawn.iter().find(|(t, _)| t == "Dope Sheet").expect("the Dope Sheet tab").1;
+    e.press(tab, egui::PointerButton::Primary, egui::Modifiers::NONE);
+    e.frame(Vec::new(), egui::Modifiers::NONE);
+    let pos_x = KeyframeParamKind::Video(VideoParam::PositionX);
+    let steps_before = e.state.active_history().undo_count();
+    let (from, to) = (e.panel.sheet_at(1, 2.0).unwrap(), e.panel.sheet_at(1, 3.0).unwrap());
+    let m = egui::Modifiers::NONE;
+    let b = |p, d| egui::Event::PointerButton { pos: p, button: egui::PointerButton::Primary, pressed: d, modifiers: m };
+    e.frame(vec![egui::Event::PointerMoved(from)], m);
+    e.frame(vec![b(from, true)], m);
+    let steps = ((to.x - from.x) / 3.0).ceil() as usize;
+    for i in 1..=steps {
+        e.frame(vec![egui::Event::PointerMoved(from + (to - from) * (i as f32 / steps as f32))], m);
+    }
+    e.frame(vec![b(to, false)], m);
+    e.frame(Vec::new(), m);
+    assert_eq!(keys(&e.state, e.clip, &pos_x), vec![(1.0, 10.0), (3.0, 20.0)], "dragged all the way");
+    assert_eq!(e.state.active_history().undo_count(), steps_before + 1, "one undo step");
+    undo(&mut e.state);
+    assert_eq!(keys(&e.state, e.clip, &pos_x), vec![(1.0, 10.0), (2.0, 20.0)], "the undo takes back the move");
+}
+
+/// The walk's clip: 6 s, Position X keyed at 1 s and 4 s. Its 4 s key
+/// dragged in the dope sheet a second to the right by hand, a few points
+/// a move, at several step sizes, lands a second on, at 5 s. It went one
+/// frame: each move is made from where the last left the key, and once
+/// one found no key there, none after did.
+#[test]
+fn a_dope_sheet_key_dragged_in_small_steps_lands_where_it_is_let_go() {
+    for step in [1.0f32, 2.0, 3.0, 5.0] {
+        let mut state = AppState::default();
+        let t = |s| RationalTime::from_secs_f64(s, 25);
+        state.sequences[0].fps = klipp_core::Fps::new(25, 1);
+        let mut item = klipp_media::MediaItem::synthetic_for_test("/tmp/cafe.mov".into(), None);
+        item.duration = t(60.0);
+        let media = state.media_pool.add(item);
+        let clip = TestClip::of(klipp_timeline::Clip::media(media, t(0.0), t(6.0), t(0.0), t(6.0))).lane("pos_x", 1.0, 0.0).lane("pos_x", 4.0, 400.0).build();
+        let id = clip.id;
+        let v1 = state.sequences[0].tracks.iter().position(|t| t.kind == TrackKind::Video).unwrap();
+        state.sequences[0].tracks[v1].clips.push(clip);
+        state.selected_clip = Some(id);
+        let mut e = Editor::showing(state, id, klipp_nodes::NodeId::new_v4(), CurveParam::Video(VideoParam::PositionX));
+        let drawn = e.frame(Vec::new(), egui::Modifiers::NONE);
+        let tab = drawn.iter().find(|(t, _)| t == "Dope Sheet").expect("the Dope Sheet tab").1;
+        e.press(tab, egui::PointerButton::Primary, egui::Modifiers::NONE);
+        e.frame(Vec::new(), egui::Modifiers::NONE);
+        let pos_x = KeyframeParamKind::Video(VideoParam::PositionX);
+        let (from, to) = (e.panel.sheet_at(0, 4.0).unwrap(), e.panel.sheet_at(0, 5.0).unwrap());
+        let m = egui::Modifiers::NONE;
+        let b = |p, d| egui::Event::PointerButton { pos: p, button: egui::PointerButton::Primary, pressed: d, modifiers: m };
+        e.frame(vec![egui::Event::PointerMoved(from)], m);
+        e.frame(vec![b(from, true)], m);
+        let mut x = from.x;
+        while x < to.x {
+            x = (x + step).min(to.x);
+            e.frame(vec![egui::Event::PointerMoved(egui::pos2(x, from.y))], m);
+        }
+        e.frame(vec![b(to, false)], m);
+        e.frame(Vec::new(), m);
+        let got = keys(&e.state, e.clip, &pos_x);
+        assert!((got[1].0 - 5.0).abs() < 1e-6, "{step} pt a move over {} pt: {got:?}", to.x - from.x);
+    }
+}
+
+/// A drag goes on when a key's last move left it a hair off where the
+/// drag put it (a time read back through points, a lane write's own
+/// rounding): each move finds the key near its place, within half a
+/// frame. Found only at its exact time, the next move found nothing, and
+/// none after it did, so the key stopped one frame on.
+#[test]
+fn a_key_drag_goes_on_when_a_move_lands_a_hair_off() {
+    let (mut state, id, _) = state();
+    let pos_x = KeyframeParamKind::Video(VideoParam::PositionX);
+    let c = clip(&state, id);
+    crate::key_selection::click(&mut state, &c, &pos_x, 1, false);
+    let begin = crate::key_selection::begin_drag(&mut state, &c, None);
+    apply(&mut state, &begin);
+    let frame = 1.0 / state.sequence().fps.as_f64();
+    let first = crate::key_selection::drag_to(&mut state, &c, frame, 0.0);
+    apply(&mut state, &first);
+    // The key a hair off where the move put it.
+    let c = clip(&state, id);
+    let off = keys(&state, id, &pos_x)[1].0 + 3e-5;
+    let nudge = crate::key_selection::move_command(&c, &pos_x, keys(&state, id, &pos_x)[1].0, off, None).unwrap();
+    apply(&mut state, &[nudge]);
+    let c = clip(&state, id);
+    let next = crate::key_selection::drag_to(&mut state, &c, 10.0 * frame, 0.0);
+    apply(&mut state, &next);
+    let end = crate::key_selection::end_drag(&mut state);
+    apply(&mut state, &end);
+    let at = keys(&state, id, &pos_x)[1].0;
+    assert!((at - (2.0 + 10.0 * frame)).abs() < 1e-6, "the key went on to ten frames: at {at}");
+}
+
+/// The Curve Editor's add-key button on a title layer's X with no keys
+/// yet keys the layer where it stands (0.47), and the title stays put:
+/// it keyed the curve's default, 0.5, and the title jumped right.
+#[test]
+fn a_first_key_from_the_curve_editor_keeps_the_value() {
+    let mut state = AppState::default();
+    let t = |s| RationalTime::from_secs_f64(s, 24);
+    let mut td = super::titles::default_title_data(&crate::prefs::TitlePrefs::default());
+    td.objects[0].transform.center.x = 0.47;
+    let object_id = td.objects[0].id.0;
+    let mut title_clip = klipp_timeline::Clip::media(klipp_core::MediaId::new(), t(0.0), t(6.0), t(0.0), t(6.0));
+    title_clip.kind = klipp_timeline::ClipKind::Title(td);
+    let id = title_clip.id;
+    let v1 = state.sequences[0].tracks.iter().position(|t| t.kind == TrackKind::Video).unwrap();
+    state.sequences[0].tracks[v1].clips.push(title_clip);
+    state.selected_clip = Some(id);
+    state.playhead = t(4.2);
+    let param = crate::panels::title_curve::TitleCurveParam::Position(klipp_core::keyframe::TitlePositionAxis::X);
+    let curve = CurveParam::Title { object_id, param };
+    // What the add-key button keys with no keys on the curve yet.
+    let value = crate::panels::curve_editor::key_value_at(&curve, &clip(&state, id), &[], 4.2);
+    assert!((value - 0.47).abs() < 1e-4, "keyed where it stands, not at the curve's default: {value}");
 }

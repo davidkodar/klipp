@@ -1853,6 +1853,23 @@ impl TitleData {
         self.objects.iter().any(|o| o.visible && self.mask_of(o).is_some_and(|(src, _)| src.id == id))
     }
 
+    /// Whether every text of this title sits on a backing of its own: an
+    /// opaque shape fitted to it, or one its place is inside (a lower
+    /// third's bar, a caption's card). Its text reads on that, so
+    /// Readability on Auto adds no halo round it, and a template with one
+    /// ships with Readability off.
+    pub fn has_own_backing(&self) -> bool {
+        let backings: Vec<&TitleObject> = self.objects.iter().filter(|o| matches!(&o.content, TitleObjectContent::Shape(s) if s.fill.is_some_and(|f| f[3] >= 150))).collect();
+        self.objects.iter().filter(|o| matches!(o.content, TitleObjectContent::TextBox(_))).all(|text| {
+            backings.iter().any(|b| {
+                let TitleObjectContent::Shape(s) = &b.content else { return false };
+                let (c, size, at) = (b.transform.center, b.transform.size, text.transform.center);
+                s.fit.as_ref().is_some_and(|f| f.target == text.id)
+                    || ((at.x - c.x).abs() <= size.x / 2.0 && (at.y - c.y).abs() <= size.y / 2.0)
+            })
+        })
+    }
+
     /// Whether a shown layer blends other than "over" or is masked: the
     /// title is then its layers mixed, not each laid on the last
     /// (#1513).
@@ -1886,15 +1903,20 @@ impl TitleData {
         Some(out)
     }
 
-    /// `target` styled like this title (#1718), its words kept: this
-    /// title's look whole when the two have the same layers
-    /// ([`Self::with_texts_of`]); else this title's main text layer's
-    /// type, fill, effects, motion and animators on `target`'s main text
-    /// layer, which keeps its words, styled runs and place, and this
-    /// title's background. `None` when either has no text layer.
+    /// `target` styled like this title (#1718), its words kept: a look of
+    /// several layers (a template's) whole when the two have the same
+    /// layers ([`Self::with_texts_of`]); else this title's main text
+    /// layer's type, fill, effects, motion and animators on `target`'s
+    /// main text layer, which keeps its words, styled runs, place and
+    /// layout (its box, fit, alignment, paragraph and columns), and this
+    /// title's background. A one-layer look went on whole, place and fit
+    /// too: a lower third's Shrink and anchor made a long wrapped title one
+    /// small line off the frame. `None` when either has no text layer.
     pub fn styled_like(&self, target: &TitleData) -> Option<TitleData> {
-        if let Some(whole) = self.with_texts_of(target) {
-            return Some(whole);
+        if self.objects.len() > 1 {
+            if let Some(whole) = self.with_texts_of(target) {
+                return Some(whole);
+            }
         }
         let from = self.primary_object()?;
         let TitleObjectContent::TextBox(look) = &from.content else { return None };
@@ -1902,9 +1924,24 @@ impl TitleData {
         let to = out.primary_object_mut()?;
         let TitleObjectContent::TextBox(tb) = &mut to.content else { return None };
         // Its words, runs and the path it follows (a path names a layer
-        // of its own title) are its own.
-        let (text, runs, path) = (std::mem::take(&mut tb.text), std::mem::take(&mut tb.style_runs), tb.text_path.take());
-        *tb = TextBox { text, style_runs: runs, text_path: path, ..look.clone() };
+        // of its own title) are its own, and so is how its text is laid
+        // in its box.
+        let own = TextBox { text: std::mem::take(&mut tb.text), style_runs: std::mem::take(&mut tb.style_runs), text_path: tb.text_path.take(), paragraph: std::mem::take(&mut tb.paragraph), ..tb.clone() };
+        *tb = TextBox {
+            text: own.text,
+            style_runs: own.style_runs,
+            text_path: own.text_path,
+            alignment: own.alignment,
+            vertical_align: own.vertical_align,
+            last_line: own.last_line,
+            fit: own.fit,
+            columns: own.columns,
+            paragraph: own.paragraph,
+            vertical_layout: own.vertical_layout,
+            vertical_columns_ltr: own.vertical_columns_ltr,
+            text_direction: own.text_direction,
+            ..look.clone()
+        };
         to.fx = from.fx.clone();
         to.opacity = from.opacity;
         to.blend = from.blend;
@@ -5241,6 +5278,49 @@ mod styled_like_tests {
         assert_eq!((tb.text.as_str(), tb.font_name.as_str()), ("Ben Holt", "Libre Baskerville"));
         assert_eq!(styled.objects[0].transform.center.x, 0.2, "its place kept");
         assert!(matches!(&styled.objects[1].content, TitleObjectContent::TextBox(tb) if tb.text == "Producer" && tb.font_name != "Libre Baskerville"), "the other layer as it was");
+    }
+
+    /// A lower third's style pasted on a long wrapped title gives it the
+    /// lower third's type, colour, effects and motion, and keeps the
+    /// title's own place and fit: its box and where it sits, its Wrap,
+    /// its alignment. Taking them too, the title became one small line at
+    /// the lower third's Shrink minimum, starting at its anchor and running
+    /// off the frame, its size field still reading 64.
+    #[test]
+    fn a_pasted_style_keeps_the_titles_place_and_fit() {
+        let mut third = TitleData::single_text(TextBox { text: "Maria Lind".into(), font_name: "Anton".into(), font_size: 64.0, color: [255, 214, 0, 255], alignment: TextAlignment::Left, fit: TextFit::Shrink { min_size: 23.0 }, ..Default::default() });
+        third.objects[0].transform.center = TitlePosition { x: 0.1, y: 0.8 };
+        third.objects[0].transform.size = TitlePosition { x: 1.0, y: 1.0 };
+        third.objects[0].fx_mut().motion.enter = Some(klipp_core::title_motion::Motion::new(klipp_core::title_motion::MotionKind::Rise));
+        let long = "A long sentence about the harbour, the fishermen and the cafe on the corner, wrapped over several lines.";
+        let mut wrapped = TitleData::single_text(TextBox { text: long.into(), font_name: "Inter".into(), font_size: 48.0, ..Default::default() });
+        wrapped.objects[0].transform.center = TitlePosition { x: 0.38, y: 0.5 };
+        wrapped.objects[0].transform.size = TitlePosition { x: 0.6, y: 0.5 };
+        let pasted = third.styled_like(&wrapped).expect("styled");
+        let o = &pasted.objects[0];
+        let TitleObjectContent::TextBox(tb) = &o.content else { panic!("text") };
+        assert_eq!(tb.text, long, "its words");
+        assert_eq!((tb.font_name.as_str(), tb.font_size, tb.color), ("Anton", 64.0, [255, 214, 0, 255]), "the type and colour");
+        assert!(o.fx().motion.enter.is_some(), "the motion");
+        assert_eq!(tb.fit, TextFit::Wrap, "its own fit");
+        assert_eq!(tb.alignment, TextAlignment::Center, "its own alignment");
+        assert_eq!(o.transform, wrapped.objects[0].transform, "its own place and box");
+    }
+
+    /// A look of several layers, a template's, still goes on whole where
+    /// the layers match: each layer's place with it.
+    #[test]
+    fn a_template_look_of_several_layers_goes_on_whole() {
+        let two = |name: &str, x: f32| {
+            let mut td = TitleData::single_text(TextBox { text: name.into(), ..Default::default() });
+            td.add_object(TitleObjectContent::TextBox(TextBox { text: "Role".into(), ..Default::default() }), default_text_transform());
+            td.objects[0].transform.center.x = x;
+            td
+        };
+        let (look, target) = (two("Look", 0.2), two("Ben Holt", 0.7));
+        let styled = look.styled_like(&target).unwrap();
+        assert_eq!(styled.objects[0].transform.center.x, 0.2, "the look's place");
+        assert_eq!(styled.primary_text().unwrap().text, "Ben Holt");
     }
 }
 
