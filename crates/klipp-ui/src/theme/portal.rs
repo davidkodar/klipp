@@ -3,11 +3,12 @@
 //! `org.freedesktop.appearance`): whether the user prefers dark or
 //! light, and their accent colour (#2625).
 //!
-//! This is the fallback for "Follow system theme" where no full
-//! palette is found (`omarchy.rs`). Any desktop with a portal backend
-//! answers it. Dark and light pick the built-in Dark and Light themes,
-//! the accent colours them, and no preference keeps the theme the
-//! user picked.
+//! It serves two settings. "Follow desktop dark or light", where no
+//! full palette is found (`omarchy.rs`): dark and light pick the
+//! built-in Dark and Light themes, and no preference keeps the theme the
+//! user picked. "Follow desktop accent", on by default: the accent
+//! colours whichever theme is shown. Any desktop with a portal backend
+//! answers it.
 //!
 //! The portal is read on a thread of its own, never the UI's: the bus
 //! may start the portal on the first call, which can take seconds, or

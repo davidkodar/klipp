@@ -483,7 +483,7 @@ impl PreferencesPanel {
             // into the preferences search, and half the world spells it
             // the other way. The labels are British; the search is not
             // fussy.
-            PrefsTab::Appearance => &["appearance", "theme", "ui scale", "accent colour", "accent color", "role colours", "role colors", "colour", "color", "video", "dialogue", "music", "sfx"],
+            PrefsTab::Appearance => &["appearance", "theme", "dark", "light", "follow desktop", "ui scale", "accent colour", "accent color", "role colours", "role colors", "colour", "color", "video", "dialogue", "music", "sfx"],
             PrefsTab::Ai => &["ai", "artificial intelligence", "transcription", "transcribe", "whisper", "speech", "subtitles", "captions", "model", "models", "download", "gpu", "cpu", "mcp", "assistant", "opt out", "disable", "enable", "vision", "onnx", "ocr", "screen text", "text on screen", "redact", "webgpu", "vulkan", "amd", "intel", "gpu for ai", "add-on"],
             PrefsTab::System => &["system", "gpu", "hardware", "decode", "threads", "frame queue", "playback resolution", "nvdec", "vaapi", "cuda"],
             PrefsTab::Playback => &["playback", "quality", "background render", "pre-roll", "jkl", "speed", "loop"],
@@ -2869,11 +2869,23 @@ impl PreferencesPanel {
         // picker below stays visible but inactive so the user sees
         // what they get back.
         let subtitle = theme_registry.system_theme_summary();
-        Self::setting_row_with_subtitle(ui, "Follow system theme", &subtitle, theme, |ui| {
+        Self::setting_row_with_subtitle(ui, "Follow desktop dark or light", &subtitle, theme, |ui| {
             let mut val = prefs.appearance.follow_system_theme;
             if ui.add(Switch::new(&mut val, theme)).changed() {
                 prefs.appearance.follow_system_theme = val;
-                prefs.appearance.follow_system_theme_pending = false;
+                *dirty = true;
+            }
+        });
+        // The desktop's accent on Klipp's buttons, selection and focus,
+        // whatever the theme: on for a fresh install, which starts dark.
+        let accent = match theme_registry.portal_accent() {
+            Some(c) => format!("Your desktop\u{2019}s accent colour ({}) on buttons, selection and focus, in any theme.", crate::theme::portal::colour_name(c)),
+            None => "Your desktop\u{2019}s accent colour on buttons, selection and focus, when it sets one; it sets none now.".to_string(),
+        };
+        Self::setting_row_with_subtitle(ui, "Follow desktop accent", &accent, theme, |ui| {
+            let mut val = prefs.appearance.follow_system_accent;
+            if ui.add(Switch::new(&mut val, theme)).changed() {
+                prefs.appearance.follow_system_accent = val;
                 *dirty = true;
             }
         });
@@ -5080,7 +5092,8 @@ mod layout_tests {
         "Filmstrip strips",
         "Filmstrip tile resolution",
         "Foley",
-        "Follow system theme",
+        "Follow desktop accent",
+        "Follow desktop dark or light",
         "Frame queue size",
         "Fullscreen overlay timeout",
         "GENERATION",

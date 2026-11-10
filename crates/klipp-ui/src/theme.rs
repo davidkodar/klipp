@@ -319,9 +319,15 @@ impl KlippTheme {
                 KlippTheme::default()
             });
 
-        // The accent is the theme's. It used to follow a preference,
-        // which put the old amber over every palette that came after
-        // and made the accent a decoration rather than a signal.
+        // The accent is the theme's, or the desktop's where it is
+        // followed. It used to follow a preference of Klipp's own, which
+        // put the old amber over every palette that came after.
+        if prefs.follow_system_accent {
+            if let Some(accent) = registry.portal_accent() {
+                let light = t.is_light();
+                t.set_accent(accent, light);
+            }
+        }
 
         // Role colours — user prefs always win (themes specify role
         // defaults but the per-clip-role picker is universal).
