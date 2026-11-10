@@ -96,7 +96,17 @@ pub fn trusted_roots(project_dir: Option<&Path>) -> Vec<std::path::PathBuf> {
 pub fn klipp_folders() -> Vec<std::path::PathBuf> {
     let mut out: Vec<std::path::PathBuf> = [dirs::cache_dir(), dirs::data_dir(), dirs::config_dir()].into_iter().flatten().map(|d| d.join("klipp")).collect();
     out.push(std::env::temp_dir());
+    out.extend(flatpak_root(dirs::home_dir().as_deref(), klipp_core::flatpak::app_id().as_deref()));
     out
+}
+
+/// In a Flatpak (`app_id`), the app's own folder in `home`'s hidden
+/// `.var/app`, where its sandbox keeps its data, cache and settings: Klipp's
+/// own. Another app's folder there is not, and stays refused as hidden.
+pub fn flatpak_root(home: Option<&Path>, app_id: Option<&str>) -> Option<std::path::PathBuf> {
+    // An id is one name: never a path out of `.var/app`.
+    let id = app_id.filter(|id| !id.is_empty() && !id.contains('/') && *id != "." && *id != "..")?;
+    Some(home?.join(".var").join("app").join(id))
 }
 
 #[cfg(test)]
@@ -108,6 +118,33 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    /// In a Flatpak, the app's own folder under the home's hidden
+    /// `.var/app` (`<id>`, where its sandbox keeps its data, cache and
+    /// settings) is Klipp's: media there is taken. Another app's folder
+    /// there stays hidden and refused, and outside a Flatpak so is Klipp's.
+    #[test]
+    fn a_flatpaks_own_folder_is_klipps() {
+        let home = dir("flatpak_home");
+        let id = "io.github.davidkodar.Klipp";
+        let own = home.join(".var/app").join(id).join("data/klipp/intro.mp4");
+        let other = home.join(".var/app/org.other.App/data/clip.mp4");
+        for f in [&own, &other] {
+            std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+            std::fs::write(f, [0u8; 64]).unwrap();
+        }
+        let roots: Vec<std::path::PathBuf> = super::flatpak_root(Some(&home), Some(id)).into_iter().collect();
+        let trusted: Vec<&std::path::Path> = roots.iter().map(|p| p.as_path()).collect();
+        assert_eq!(roots, vec![home.join(".var/app").join(id)]);
+        assert!(media_file_check(&own, &trusted).is_ok(), "the Flatpak's own folder");
+        assert!(media_file_check(&other, &trusted).is_err(), "another app's");
+        assert!(super::flatpak_root(Some(&home), None).is_none(), "outside a Flatpak, nothing");
+        // An id is one name, never a way out of `.var/app` to the home.
+        for bad in ["..", "../..", "a/../..", ""] {
+            assert!(super::flatpak_root(Some(&home), Some(bad)).is_none(), "{bad:?}");
+        }
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     /// A person is told why an entry is kept offline, and the way back:
