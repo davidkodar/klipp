@@ -496,7 +496,7 @@ mod tests {
         r.system_fallback = false;
         let path = std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fonts/NotoSansCJKjp-subset.otf"));
         let traits = crate::variable::face_traits(&std::fs::read(&path).unwrap()).unwrap();
-        let info = crate::font_discovery::FontInfo { family: "JP Test".into(), style: "Regular".into(), path, weight: traits.weight, italic: traits.italic, axes: traits.axes };
+        let info = crate::font_discovery::FontInfo { family: "JP Test".into(), style: "Regular".into(), path, weight: traits.weight, italic: traits.italic, axes: traits.axes, aliases: Vec::new() };
         r.font_registry = std::sync::Arc::new([("JP Test".to_string(), vec![info])].into_iter().collect());
         r
     }

@@ -350,6 +350,42 @@ pub fn show_dialog(ctx: &egui::Context, state: &mut AppState, theme: &crate::the
 
 #[cfg(test)]
 mod tests {
+    /// A Kdenlive title naming a font by its family as the font's own name
+    /// table gives it (B612 Mono here, its file named otherwise, as
+    /// DejaVu Sans's DejaVuSans-Bold.ttf is) imports with that name kept,
+    /// and is not listed as a missing font: the name Klipp made of the
+    /// file before ("Bsixtwelve") is no longer the only one it knows it by.
+    #[test]
+    fn a_kdenlive_title_naming_a_fonts_own_family_is_not_missing() {
+        let dir = std::env::temp_dir().join(format!("klipp-kdenlive-font-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("fonts")).unwrap();
+        std::fs::copy(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/fonts/B612Mono/B612Mono-Regular.ttf"), dir.join("fonts/Bsixtwelve-Regular.ttf")).unwrap();
+        let registry: klipp_title::font_discovery::FontRegistry = std::sync::Arc::new(klipp_title::font_discovery::scan_folder(&dir.join("fonts")));
+        let project = dir.join("titles.kdenlive");
+        std::fs::write(&project, r#"<?xml version="1.0"?>
+<mlt version="7.0">
+  <profile frame_rate_num="24" frame_rate_den="1" width="1920" height="1080"/>
+  <producer id="t1" in="0" out="47">
+    <property name="mlt_service">kdenlivetitle</property>
+    <property name="length">48</property>
+    <property name="xmldata"><![CDATA[<kdenlivetitle><item><content font="B612 Mono" font-size="72" color="255,255,255,255">Hello</content></item></kdenlivetitle>]]></property>
+  </producer>
+  <playlist id="pl"><entry producer="t1" in="0" out="47"/></playlist>
+  <tractor id="root"><track producer="pl"/></tractor>
+</mlt>"#).unwrap();
+        let imported = klipp_project::mlt_import::load_kdenlive(&project).expect("imported");
+        let fonts: Vec<String> = imported.sequence.all_clips().filter_map(|c| c.title_data()).flat_map(|td| td.objects.iter()).filter_map(|o| match &o.content {
+            klipp_timeline::TitleObjectContent::TextBox(tb) => Some(tb.font_name.clone()),
+            _ => None,
+        }).collect();
+        assert_eq!(fonts, ["B612 Mono"], "the title's font, its name kept");
+        let state = crate::state::AppState { sequences: vec![imported.sequence], ..Default::default() };
+        let missing = state.missing_fonts(&|f| klipp_title::font_discovery::font_installed(&registry, f));
+        assert!(missing.is_empty(), "listed as missing: {:?}", missing.iter().map(|m| m.family.clone()).collect::<Vec<_>>());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     use super::*;
     use klipp_timeline::{Clip, ClipKind, StyleRun, TextBox};
 

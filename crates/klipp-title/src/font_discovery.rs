@@ -47,6 +47,36 @@ pub struct FontInfo {
     /// A variable face's axes; empty for a static face (#1504).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub axes: Vec<VariationAxis>,
+    /// Other names the family goes by: its name table's other family name
+    /// ("JetBrainsMono NF" beside "JetBrainsMono Nerd Font") and the one
+    /// made of its file name ("Deja Vu Sans"), which Klipp's font list
+    /// gave before and a saved title may hold.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub aliases: Vec<String>,
+}
+
+/// The family in `fonts` that `name` names: itself; else the one it names
+/// with spacing and case aside ("Deja Vu Sans" for "DejaVu Sans"); else
+/// the one a face of goes by it too. `None` when none does.
+pub fn registry_family<'a>(fonts: &'a BTreeMap<String, Vec<FontInfo>>, name: &str) -> Option<&'a str> {
+    if let Some((k, _)) = fonts.get_key_value(name) {
+        return Some(k.as_str());
+    }
+    let key = |s: &str| s.chars().filter(|c| c.is_alphanumeric()).flat_map(char::to_lowercase).collect::<String>();
+    let wanted = key(name);
+    if wanted.is_empty() {
+        return None;
+    }
+    fonts
+        .iter()
+        .find(|(k, _)| key(k) == wanted)
+        .or_else(|| fonts.iter().find(|(_, faces)| faces.iter().any(|f| f.aliases.iter().any(|a| key(a) == wanted))))
+        .map(|(k, _)| k.as_str())
+}
+
+/// The faces of the family `name` names in `fonts` ([`registry_family`]).
+pub fn registry_faces<'a>(fonts: &'a BTreeMap<String, Vec<FontInfo>>, name: &str) -> Option<&'a Vec<FontInfo>> {
+    registry_family(fonts, name).and_then(|k| fonts.get(k))
 }
 
 fn regular_weight() -> u16 {
@@ -67,7 +97,7 @@ impl FontInfo {
 /// standard weights in its range, each named by its weight.
 pub fn family_faces(registry: &FontRegistry, family: &str) -> Vec<FaceTraits> {
     let mut out: Vec<FaceTraits> = Vec::new();
-    for info in registry.get(family).into_iter().flatten() {
+    for info in registry_faces(registry, family).into_iter().flatten() {
         let traits = info.traits();
         let (lo, hi) = traits.weights();
         let weights: Vec<u16> = if lo == hi { vec![traits.weight] } else { (1..=9).map(|k| k * 100).filter(|w| (lo..=hi).contains(w)).collect() };
@@ -86,7 +116,7 @@ pub fn family_faces(registry: &FontRegistry, family: &str) -> Vec<FaceTraits> {
 /// app, or one installed on this computer. Any other name draws in a
 /// fallback.
 pub fn font_installed(registry: &FontRegistry, family: &str) -> bool {
-    family.is_empty() || family == "sans-serif" || crate::bundled::BUNDLED.iter().any(|f| f.family == family) || registry.contains_key(family)
+    family.is_empty() || family == "sans-serif" || crate::bundled::BUNDLED.iter().any(|f| f.family == family) || registry_family(registry, family).is_some()
 }
 
 /// The name a weight goes by: "Thin" for 100 up to "Black" for 900,
@@ -142,8 +172,7 @@ pub fn family_feature_tags(registry: &FontRegistry, family: &str, style: &str) -
     } else if let Some(bytes) = crate::bundled::lookup(family, style) {
         face_feature_tags(bytes)
     } else {
-        registry
-            .get(family)
+        registry_faces(registry, family)
             .and_then(|infos| infos.iter().find(|i| i.style == style).or_else(|| infos.iter().find(|i| i.style == "Regular")).or_else(|| infos.first()))
             .and_then(|info| std::fs::read(&info.path).ok())
             .map(|data| face_feature_tags(&data))
@@ -289,6 +318,7 @@ fn run_scan_and_publish() {
                         weight: traits.as_ref().map_or(400, |t| t.weight),
                         italic: traits.as_ref().is_some_and(|t| t.italic),
                         axes: traits.map(|t| t.axes).unwrap_or_default(),
+                        aliases: Vec::new(),
                     });
                 }
             }
@@ -403,12 +433,20 @@ fn parse_font_info(path: &Path) -> Option<FontInfo> {
         fontdue::Font::from_bytes(data.as_slice(), fontdue::FontSettings::default()).ok()?;
 
     let filename = path.file_stem()?.to_string_lossy().to_string();
-    let (family, style) = parse_font_name(&filename);
+    // The family and style the font's name table gives; the ones made of
+    // its file name where it has none to read, and kept as another name
+    // the family goes by.
+    let (from_file, file_style) = parse_font_name(&filename);
+    let (family, style, mut aliases) = names_from_table(&data).unwrap_or_else(|| (from_file.clone(), file_style, Vec::new()));
+    if from_file != family && !aliases.contains(&from_file) {
+        aliases.push(from_file);
+    }
     let traits = face_traits(&data);
 
     Some(FontInfo {
         family,
         style,
+        aliases,
         path: path.to_path_buf(),
         weight: traits.as_ref().map_or(400, |t| t.weight),
         italic: traits.as_ref().is_some_and(|t| t.italic),
@@ -444,7 +482,7 @@ struct DirSig {
 
 /// 2: each face's weight, slope and axes (#1504). 3: a variable font's
 /// family read without its axes' tag (#2734).
-const CACHE_SCHEMA_VERSION: u32 = 3;
+const CACHE_SCHEMA_VERSION: u32 = 4;
 
 fn cache_path() -> Option<PathBuf> {
     let base = dirs::cache_dir()?.join("klipp");
@@ -565,6 +603,51 @@ fn insert_spaces_before_caps(s: &str) -> String {
     result
 }
 
+/// The family, style and other family names `data`'s name table gives:
+/// the typographic family (name 16) where the face is one of its regular,
+/// bold, italic or bold italic faces, else the font's own family (name 1)
+/// with its style (name 2), as a Condensed or Light face's is ("DejaVu
+/// Sans Condensed", "Bold"): Klipp's styles are those four, and a
+/// Condensed Bold under the typographic family took the place of its
+/// Bold. `None` when the font has no name table to read.
+fn names_from_table(data: &[u8]) -> Option<(String, String, Vec<String>)> {
+    let face = ttf_parser::Face::parse(data, 0).ok()?;
+    let name = |id: u16| {
+        let names: Vec<ttf_parser::name::Name> = face.names().into_iter().filter(|n| n.name_id == id).collect();
+        // English first (Windows US English, then Mac Roman English).
+        let english = |n: &&ttf_parser::name::Name| n.language_id == 0x0409 || (n.platform_id == ttf_parser::PlatformId::Macintosh && n.language_id == 0);
+        names.iter().filter(english).chain(names.iter()).find_map(|n| n.to_string()).map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+    };
+    let (family, style) = (name(ttf_parser::name_id::FAMILY), name(ttf_parser::name_id::SUBFAMILY));
+    let (typographic, typo_style) = (name(ttf_parser::name_id::TYPOGRAPHIC_FAMILY), name(ttf_parser::name_id::TYPOGRAPHIC_SUBFAMILY));
+    let four = |s: &str| table_style(s).filter(|s| ["Regular", "Bold", "Italic", "Bold Italic"].contains(&s.as_str()));
+    let mut aliases = Vec::new();
+    if let Some(t) = &typographic {
+        if let Some(st) = typo_style.as_deref().or(style.as_deref()).and_then(four) {
+            aliases.extend(family.clone().filter(|f| f != t));
+            return Some((t.clone(), st, aliases));
+        }
+    }
+    let family = family.or(typographic.clone())?;
+    aliases.extend(typographic.filter(|t| *t != family));
+    let style = style.as_deref().and_then(table_style).unwrap_or_else(|| "Regular".into());
+    Some((family, style, aliases))
+}
+
+/// A name table's style as Klipp names styles: "Book", "Roman" and
+/// "Normal" are its Regular, "Oblique" its Italic.
+fn table_style(s: &str) -> Option<String> {
+    let squeezed: String = s.chars().filter(|c| !c.is_whitespace()).collect();
+    Some(match squeezed.to_lowercase().as_str() {
+        "" => return None,
+        "book" | "roman" | "normal" | "regular" => "Regular".into(),
+        "oblique" | "italic" => "Italic".into(),
+        "boldoblique" | "bolditalic" => "Bold Italic".into(),
+        "bold" => "Bold".into(),
+        _ => normalize_style(&squeezed),
+    })
+}
+
 fn normalize_style(s: &str) -> String {
     match s.to_lowercase().as_str() {
         "regular" | "reg" => "Regular".into(),
@@ -586,6 +669,49 @@ fn normalize_style(s: &str) -> String {
 #[cfg(test)]
 mod tests {
 
+    /// A folder holding B612 Mono saved as "Bsixtwelve-Regular.ttf" (its
+    /// file name not its family), and the same font with its name table
+    /// hidden, saved as "Plainname-Regular.ttf".
+    pub(crate) fn renamed_fonts(label: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("klipp-font-names-{label}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let bytes = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/fonts/B612Mono/B612Mono-Regular.ttf")).unwrap();
+        std::fs::write(dir.join("Bsixtwelve-Regular.ttf"), &bytes).unwrap();
+        // The table directory names each table by tag: "name" renamed, the
+        // font still draws but has no name table to read.
+        let mut hidden = bytes.clone();
+        let tables = u16::from_be_bytes([hidden[4], hidden[5]]) as usize;
+        let at = (0..tables).map(|i| 12 + 16 * i).find(|&o| &hidden[o..o + 4] == b"name").expect("a name table");
+        hidden[at..at + 4].copy_from_slice(b"nmae");
+        std::fs::write(dir.join("Plainname-Regular.ttf"), &hidden).unwrap();
+        dir
+    }
+
+    /// A font's family is the one its name table gives, "B612 Mono", not
+    /// one made of its file name; the list names it once; the name its
+    /// file gave ("Bsixtwelve", what a project saved before may hold) still
+    /// finds the same face; and a font whose name table can't be read is
+    /// named by its file, as before.
+    #[test]
+    fn a_fonts_family_is_its_own_name_and_the_old_name_still_finds_it() {
+        use super::*;
+        let dir = renamed_fonts("family");
+        let fonts = scan_dirs(&[dir.to_string_lossy().into_owned()]);
+        let families: Vec<&str> = fonts.keys().map(String::as_str).collect();
+        assert_eq!(families, vec!["B612 Mono", "Plainname"], "the real family once, and the unreadable one by its file");
+        let face = |name: &str| registry_faces(&fonts, name).and_then(|f| f.first()).map(|f| f.path.clone());
+        let real = face("B612 Mono").expect("found by its family");
+        assert_eq!(real, dir.join("Bsixtwelve-Regular.ttf"));
+        assert_eq!(face("Bsixtwelve").as_ref(), Some(&real), "the old name from its file");
+        assert_eq!(face("b612mono").as_ref(), Some(&real), "spacing and case aside");
+        assert_eq!(face("Plainname"), Some(dir.join("Plainname-Regular.ttf")));
+        assert_eq!(face("Nothing Like It"), None);
+        let reg: FontRegistry = std::sync::Arc::new(fonts);
+        assert!(font_installed(&reg, "B612 Mono") && font_installed(&reg, "Bsixtwelve") && !font_installed(&reg, "Nothing Like It"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// In a Flatpak the host's fonts are under `/run/host`: its system
     /// fonts (`fonts`) and the person's own (`user-fonts`) are scanned with
     /// the runtime's when they are there, and a family the runtime has too
@@ -598,9 +724,10 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         let (runtime, host) = (root.join("usr-share-fonts"), root.join("run-host"));
         let inter = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/fonts/Inter/Inter-Regular.ttf");
-        for (dir, name) in [(&runtime, "Shared-Regular.ttf"), (&host.join("fonts"), "Shared-Regular.ttf"), (&host.join("user-fonts"), "Mine-Regular.ttf")] {
+        let b612 = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/fonts/B612Mono/B612Mono-Regular.ttf");
+        for (dir, from, name) in [(&runtime, inter, "Inter-Regular.ttf"), (&host.join("fonts"), inter, "Inter-Regular.ttf"), (&host.join("user-fonts"), b612, "B612Mono-Regular.ttf")] {
             std::fs::create_dir_all(dir).unwrap();
-            std::fs::copy(inter, dir.join(name)).unwrap();
+            std::fs::copy(from, dir.join(name)).unwrap();
         }
         let dirs = font_directories_in("/nonexistent-home", &host, "/nonexistent-catalogue".into());
         for want in [host.join("fonts"), host.join("user-fonts")] {
@@ -610,10 +737,10 @@ mod tests {
         let mut scanned = vec![runtime.to_string_lossy().into_owned()];
         scanned.extend(dirs);
         let fonts = scan_dirs(&scanned);
-        let shared = &fonts["Shared"];
+        let shared = &fonts["Inter"];
         assert_eq!(shared.len(), 1, "listed once: {shared:?}");
         assert!(shared[0].path.starts_with(&runtime), "the runtime's face kept: {:?}", shared[0].path);
-        assert_eq!(fonts["Mine"].len(), 1, "the person's own font on the host");
+        assert_eq!(fonts["B612 Mono"].len(), 1, "the person's own font on the host");
         let _ = std::fs::remove_dir_all(&root);
     }
 

@@ -609,7 +609,7 @@ fn title_post_and_grade_stay_resident_in_working_spaces() {
                 if variant!=11 {return renderer();}
                 let path=std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"),"/../klipp-title/tests/fonts/InterVariable-subset.ttf"));
                 let traits=klipp_title::variable::face_traits(&std::fs::read(&path).unwrap()).unwrap();
-                let info=klipp_title::font_discovery::FontInfo {family:"Variable Test".into(),style:"Regular".into(),path,weight:traits.weight,italic:traits.italic,axes:traits.axes};
+                let info=klipp_title::font_discovery::FontInfo {family:"Variable Test".into(),style:"Regular".into(),path,weight:traits.weight,italic:traits.italic,axes:traits.axes,aliases:Vec::new()};
                 let registry=std::sync::Arc::new([("Variable Test".into(),vec![info])].into_iter().collect());
                 Renderer::new(klipp_plugin::OfxHost::new(),klipp_title::TitleRenderer::with_font_registry(registry))
             };

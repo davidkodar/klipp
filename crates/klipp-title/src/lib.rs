@@ -869,8 +869,7 @@ impl TitleRenderer {
 
     /// Get available styles for a given font family.
     pub fn available_styles(&self, family: &str) -> Vec<&str> {
-        self.font_registry
-            .get(family)
+        font_discovery::registry_faces(&self.font_registry, family)
             .map(|infos| infos.iter().map(|i| i.style.as_str()).collect())
             .unwrap_or_default()
     }
@@ -919,13 +918,13 @@ impl TitleRenderer {
 
         // Installed on the machine, else a catalogue family fetched since
         // the font scan ran (#2732).
-        let fetched = if self.font_registry.contains_key(family) { None } else { catalogue::extra_faces(family) };
+        let fetched = if font_discovery::registry_family(&self.font_registry, family).is_some() { None } else { catalogue::extra_faces(family) };
         // A variable face named by its style alone is set at the style's
         // weight, not at whatever its default instance is: Manrope's is
         // ExtraLight, which drew a bold name hairline-thin (#2734).
         let weight = if matches!(style, FontStyle::Bold | FontStyle::BoldItalic) { 700.0 } else { 400.0 };
         let mut reweigh = false;
-        if let Some(infos) = self.font_registry.get(family).or(fetched.as_ref()) {
+        if let Some(infos) = font_discovery::registry_faces(&self.font_registry, family).or(fetched.as_ref()) {
 
             // Try exact style match first, then fall back to Regular, then first available
             let info = infos
@@ -978,7 +977,7 @@ impl TitleRenderer {
         let picked = if !bundled.is_empty() {
             let traits: Vec<_> = bundled.iter().map(|b| variable::face_traits(b).unwrap_or_else(unread)).collect();
             variable::nearest_face(&traits, wanted, italic).map(|i| (std::borrow::Cow::Borrowed(bundled[i]), traits[i].clone()))
-        } else if let Some(infos) = self.font_registry.get(family).cloned().or_else(|| catalogue::extra_faces(family)) {
+        } else if let Some(infos) = font_discovery::registry_faces(&self.font_registry, family).cloned().or_else(|| catalogue::extra_faces(family)) {
             let traits: Vec<_> = infos.iter().map(|i| i.traits()).collect();
             variable::nearest_face(&traits, wanted, italic)
                 .and_then(|i| std::fs::read(&infos[i].path).ok().map(|data| (std::borrow::Cow::Owned(data), traits[i].clone())))
@@ -9560,7 +9559,7 @@ mod tests {
         r.system_fallback = false;
         let path = std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fonts/NotoSansHebrew-subset.ttf"));
         let traits = variable::face_traits(&std::fs::read(&path).unwrap()).unwrap();
-        let info = font_discovery::FontInfo { family: "Hebrew Test".into(), style: "Regular".into(), path, weight: traits.weight, italic: traits.italic, axes: traits.axes };
+        let info = font_discovery::FontInfo { family: "Hebrew Test".into(), style: "Regular".into(), path, weight: traits.weight, italic: traits.italic, axes: traits.axes, aliases: Vec::new() };
         r.font_registry = std::sync::Arc::new([("Hebrew Test".to_string(), vec![info])].into_iter().collect());
         let mk = |text: &str, dir: klipp_timeline::TextDirection| {
             let tb = klipp_timeline::TextBox { text: text.to_string(), font_size: 80.0, font_name: "Hebrew Test".into(), text_direction: dir, ..Default::default() };
@@ -13302,7 +13301,7 @@ mod font_weight_tests {
         let path = std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fonts/InterVariable-subset.ttf"));
         let traits = variable::face_traits(&std::fs::read(&path).unwrap()).unwrap();
         assert!(traits.axes.iter().any(|a| a.tag == "wght" && a.min == 100.0 && a.max == 900.0));
-        let info = font_discovery::FontInfo { family: VARIABLE.into(), style: "Regular".into(), path, weight: traits.weight, italic: traits.italic, axes: traits.axes };
+        let info = font_discovery::FontInfo { family: VARIABLE.into(), style: "Regular".into(), path, weight: traits.weight, italic: traits.italic, axes: traits.axes, aliases: Vec::new() };
         r.font_registry = std::sync::Arc::new([(VARIABLE.to_string(), vec![info])].into_iter().collect());
         r
     }
