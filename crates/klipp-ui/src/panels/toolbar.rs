@@ -1138,10 +1138,9 @@ impl ToolbarPanel {
                 state.viewer_overlays.grid = !state.viewer_overlays.grid;
                 ui.close_menu();
             }
-            if menu_toggle(ui, "Checkerboard", "", state.viewer_overlays.checkerboard).clicked() {
-                state.viewer_overlays.checkerboard = !state.viewer_overlays.checkerboard;
-                ui.close_menu();
-            }
+            ui.add_enabled_ui(false, |ui| {
+                menu_toggle(ui, "Checkerboard", "", state.viewer_overlays.checkerboard);
+            }).response.on_disabled_hover_text(crate::panels::viewer::CHECKERBOARD_NOT_YET);
             ui.separator();
             ui.menu_rows("Scopes", |ui| {
                 // Pick a scope: shows it (dock, overlay or floating window)

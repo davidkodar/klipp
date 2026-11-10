@@ -65,7 +65,10 @@ pub(crate) fn show(ui: &mut egui::Ui, theme: &KlippTheme, clip: &klipp_timeline:
                 let mut edited = params.clone();
                 let mut grade_cmds = Vec::new();
                 let masks = edited.masks.get_or_insert_with(Default::default);
-                crate::panels::node_inspector::NodeInspectorPanel::render_masks_body(ui, masks, node.id, clip.id, &mut grade_cmds, theme, frame, &[]);
+                // Its masks a tracker is bound to, shown as tracked
+                // (Re-track, Untrack, the stretch followed), as a grade's are.
+                let tracked: Vec<usize> = clip.track_points.iter().filter_map(|tp| tp.linked_mask.filter(|(n, _)| *n == node.id).map(|(_, i)| i)).collect();
+                crate::panels::node_inspector::NodeInspectorPanel::render_masks_body(ui, masks, node.id, clip.id, &mut grade_cmds, theme, frame, &tracked);
                 cmds.extend(grade_cmds.into_iter().filter_map(|c| by_path(c, addr)));
                 true
             }
@@ -103,9 +106,15 @@ fn by_path(cmd: AppCommand, addr: &NodePath) -> Option<AppCommand> {
         AppCommand::BeginNodeParamEdit { .. } => AppCommand::BeginParamEditAt { addr: addr.clone(), key: key() },
         AppCommand::EndNodeParamEdit { .. } => AppCommand::EndParamEditAt { addr: addr.clone(), key: key() },
         AppCommand::AbandonNodeParamEdit { .. } => AppCommand::AbandonParamEditAt { addr: addr.clone(), key: key() },
+        // A mask's keys go as they are: the app writes them into the
+        // matte's masks by path. Dropped here, a diamond set no key.
+        AppCommand::AddMaskKeyframe { .. } | AppCommand::RemoveMaskKeyframe { .. } | AppCommand::ClearMaskKeyframes { .. } | AppCommand::MoveMaskKeyframe { .. } | AppCommand::SetMaskKeyframeInterpolation { .. } => cmd,
+        // Its tracking as well: the app reads and keys the window where it is.
+        AppCommand::TrackMaskRegion { .. } | AppCommand::RemoveMaskTracking { .. } => cmd,
         _ => return None,
     })
 }
+
 
 /// A difference key's clean plate: a frame of the clip's own picked at
 /// the playhead (#2758), or a file; its name, Use This Frame, Browse and
@@ -157,4 +166,19 @@ fn plate_picker(ui: &mut egui::Ui, theme: &KlippTheme, addr: &NodePath, params: 
             cmds.extend(with_plate(addr, None));
         }
     });
+}
+
+#[cfg(test)]
+mod key_tests {
+    /// The diamond by a matte's mask field sends its key: it was dropped
+    /// here, so the Feather's diamond set no key.
+    #[test]
+    fn a_mask_key_from_the_matte_panel_is_sent() {
+        let addr = klipp_graph_format::path::NodePath::new(klipp_graph_format::path::Root::Clip { clip: uuid::Uuid::new_v4() }, [uuid::Uuid::new_v4()]);
+        let add = klipp_core::AppCommand::AddMaskKeyframe { clip_id: klipp_core::ClipId::new(), node_id: uuid::Uuid::new_v4(), mask_index: 0, param: "feather".into(), time_secs: 0.0, value: 0.05 };
+        assert!(matches!(super::by_path(add, &addr), Some(klipp_core::AppCommand::AddMaskKeyframe { .. })));
+        // And its Track button's commands: they were dropped too.
+        let track = klipp_core::AppCommand::TrackMaskRegion { clip_id: klipp_core::ClipId::new(), node_id: uuid::Uuid::new_v4(), mask_index: 0, perspective: false };
+        assert!(matches!(super::by_path(track, &addr), Some(klipp_core::AppCommand::TrackMaskRegion { .. })));
+    }
 }

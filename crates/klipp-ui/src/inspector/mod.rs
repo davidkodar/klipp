@@ -468,13 +468,7 @@ impl NewInspectorPanel {
                             .and_then(|mid| state.media_pool.get(&mid))
                             .and_then(|item| item.audio_channels);
                         let clip_time_secs = keyframe_selection::clip_time(state, clip);
-                        let track_infos: Vec<audio_tab::TrackInfo> = state.sequence().tracks.iter().enumerate()
-                            .filter(|(_, t)| t.kind == klipp_timeline::TrackKind::Audio)
-                            .map(|(i, t)| audio_tab::TrackInfo {
-                                index: i,
-                                name: if t.name.is_empty() { format!("Track {}", i + 1) } else { t.name.clone() },
-                            })
-                            .collect();
+                        let track_infos: Vec<audio_tab::TrackInfo> = audio_tab::TrackInfo::of(state.sequence());
                         // Re-seed DuckSettings when the selected clip changes: pull
                         // defaults from prefs and pick the first Dialogue-bearing audio
                         // track as the sidechain source (falls back to first audio track).
@@ -492,13 +486,7 @@ impl NewInspectorPanel {
                     } else if let Some(bm) = bin_media {
                         // Bin media selected — show audio info for the media item
                         let source_channels = bm.audio_channels;
-                        let track_infos: Vec<audio_tab::TrackInfo> = state.sequence().tracks.iter().enumerate()
-                            .filter(|(_, t)| t.kind == klipp_timeline::TrackKind::Audio)
-                            .map(|(i, t)| audio_tab::TrackInfo {
-                                index: i,
-                                name: if t.name.is_empty() { format!("Track {}", i + 1) } else { t.name.clone() },
-                            })
-                            .collect();
+                        let track_infos: Vec<audio_tab::TrackInfo> = audio_tab::TrackInfo::of(state.sequence());
                         // Create a temporary clip for the bin media (same pattern as video tab)
                         let temp_clip = klipp_timeline::Clip {
                             id: klipp_core::ClipId::new(),
@@ -528,6 +516,7 @@ impl NewInspectorPanel {
                             speed: 1.0,
                             speed_keyframes: Vec::new(),
                             keep_pitch: false,
+                            sound_apart: false,
                             hold: None,
                             source_rotation: 0,
                             enabled: true,
@@ -5077,11 +5066,15 @@ fn show_title_editor(
     }
     if let Some(object) = target_oid.and_then(|id| td.object(id)).or_else(|| td.objects.iter().find(|o| matches!(o.content, klipp_timeline::TitleObjectContent::TextBox(_)))) {
         let t = &object.transform;
-        let mut w = t.size.x * 100.0;
-        let mut h = t.size.y * 100.0;
-        let mut rotation = t.rotation;
-        let mut anchor_x = t.anchor_norm.x * 100.0;
-        let mut anchor_y = t.anchor_norm.y * 100.0;
+        // Each field at its value at the playhead, as the picture draws
+        // it: a keyed Width read its stored value at every time, so a
+        // value typed on its keys seemed ignored.
+        let now = t.evaluated_at(clip_time_secs);
+        let mut w = now.size.x * 100.0;
+        let mut h = now.size.y * 100.0;
+        let mut rotation = now.rotation;
+        let mut anchor_x = now.anchor_norm.x * 100.0;
+        let mut anchor_y = now.anchor_norm.y * 100.0;
         let mut property_changes: Vec<(klipp_core::TitleTransformProperty, f32)> = Vec::new();
         let mut toggles: Vec<klipp_core::TitleTransformProperty> = Vec::new();
         // A keyframe mark: filled where the property has a key at the
@@ -9205,6 +9198,22 @@ mod title_row_style_tests {
         let clip = klipp_timeline::Clip { kind: klipp_timeline::ClipKind::Title(td), ..klipp_timeline::Clip::gap(klipp_core::Timecode::zero(), klipp_core::Timecode { value: 48, rate: 24 }) };
         let state = AppState { selected_title_object: Some((clip.id, oid)), ..Default::default() };
         (clip, state)
+    }
+
+    /// A keyed Width shows its value at the playhead, as the picture
+    /// draws it: keyed 100% at 0 s and 200% at 2 s, 150% at 1 s. It read
+    /// the stored 100% at every time, so a typed value seemed ignored.
+    #[test]
+    fn a_keyed_title_width_reads_its_value_at_the_playhead() {
+        let ctx = egui::Context::default();
+        let (mut clip, mut state) = title();
+        let key = |t: f64, v: f32| klipp_core::Keyframe { time_secs: t, value: v, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() };
+        if let klipp_timeline::ClipKind::Title(td) = &mut clip.kind {
+            td.objects[0].transform.size_x_keyframes = vec![key(0.0, 1.0), key(2.0, 2.0)];
+        }
+        state.playhead = klipp_core::Timecode { value: 24, rate: 24 };
+        let (_, texts, _) = frame(&ctx, &clip, &state, Vec::new());
+        assert!(texts.iter().any(|(t, _)| t == "150 %"), "{:?}", texts.iter().map(|(t, _)| t.as_str()).filter(|t| t.ends_with('%')).collect::<Vec<_>>());
     }
 
     /// The layers, transform, text, position and style blocks are
