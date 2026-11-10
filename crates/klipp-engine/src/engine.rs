@@ -985,6 +985,55 @@ mod clip_level_tests {
             }
         }
     }
+
+    /// The hand check's J cut: market 0-4 s, cafe 4-10 s with its sound
+    /// from 3.52 s. Keyed from the sound at 4.0 (-20 dB) and 6.0 (0 dB),
+    /// and at 3.6 in its lead (-30 dB), the writers put the keys on the
+    /// picture at its own -0.4, 0 and 2 s (`klipp-document`'s
+    /// `a_j_cuts_sound_keys_land_on_the_pictures_clock`, the app's
+    /// `linked_key_shift`): playback and the export hear -20 dB at 4.0,
+    /// 0 dB at 6.0 and the ramp between, not half a second late, and the
+    /// lead key where it was set.
+    #[test]
+    fn a_j_cut_keyed_from_its_sound_ramps_where_it_was_keyed() {
+        use klipp_timeline::{Clip, Track, TrackKind};
+        let tc = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 25);
+        let mut pool = klipp_media::MediaPool::new();
+        let mut item = klipp_media::MediaItem::synthetic_for_test("/tmp/j-cut-keys.wav".into(), None);
+        item.has_audio = true;
+        item.duration = tc(20.0);
+        let id = pool.add(item);
+        let mut market = Clip::media(id, tc(0.0), tc(4.0), tc(0.0), tc(4.0));
+        let mut cafe = Clip::media(id, tc(4.0), tc(10.0), tc(1.0), tc(7.0));
+        let mut market_sound = Clip::media(id, tc(0.0), tc(3.52), tc(0.0), tc(3.52));
+        let mut cafe_sound = Clip::media(id, tc(3.52), tc(10.0), tc(0.52), tc(7.0));
+        (market.linked_clip_id, market_sound.linked_clip_id) = (Some(market_sound.id), Some(market.id));
+        (cafe.linked_clip_id, cafe_sound.linked_clip_id) = (Some(cafe_sound.id), Some(cafe.id));
+        let db = |d: f32| 10f32.powf(d / 20.0);
+        for (t, v) in [(-0.4, db(-30.0)), (0.0, db(-20.0)), (2.0, 1.0)] {
+            klipp_core::keyframe::upsert_keyframe(&mut cafe.volume_keyframes, t, v);
+        }
+        for (t, v) in [(0.08, db(-30.0)), (0.48, db(-20.0)), (2.48, 1.0)] {
+            klipp_core::keyframe::upsert_keyframe(&mut cafe_sound.volume_keyframes, t, v);
+        }
+        let mut v = Track::new("V1", TrackKind::Video);
+        v.clips = vec![market, cafe];
+        let mut a = Track::new("A1", TrackKind::Audio);
+        a.clips = vec![market_sound, cafe_sound];
+        let mut seq = klipp_timeline::Sequence::new_default();
+        seq.tracks = vec![v, a];
+        let fps = 25.0;
+        let sound = seq.tracks[1].clips[1].clone();
+        let snap = klipp_render::snapshot::SequenceSnapshot::from_sequence(&seq, &pool, &klipp_core::ExportSettings::default(), None, false, klipp_core::WorkingColorspace::Rec709Linear).unwrap();
+        let out = snap.audio_tracks.iter().flat_map(|t| t.clips.iter()).find(|c| (c.span_secs(snap.fps).0 - 3.52).abs() < 1e-6).expect("the cafe's sound in the export");
+        let to_db = |v: f32| 20.0 * v.log10();
+        for (t, want) in [(3.6, -30.0), (4.0, -20.0), (5.0, -10.0), (6.0, 0.0), (8.0, 0.0)] {
+            let heard = to_db(super::clip_sound_at(&seq, &sound, t, fps).volume);
+            let rendered = to_db(klipp_render::audio_mixdown::levels_at(&out.shape, t - 3.52, t, fps).0);
+            assert!((heard - want).abs() < 0.05, "playback at {t} s: {heard} dB, not {want}");
+            assert!((rendered - want).abs() < 0.05, "export at {t} s: {rendered} dB, not {want}");
+        }
+    }
 }
 
 #[cfg(test)]
@@ -5752,9 +5801,12 @@ struct ClipSound {
 fn clip_sound_at(seq: &klipp_timeline::Sequence, audio_clip: &klipp_timeline::Clip, heard_at: f64, fps: f64) -> ClipSound {
     let at = |clip: &klipp_timeline::Clip| {
         // On the clock of the clip holding the settings, as the export's
-        // mix reads them (`Clip::settings_offset_secs`).
-        let into_sound = heard_at - audio_clip.timeline_in.to_secs_f64();
-        let clip_time = (into_sound - audio_clip.settings_offset_secs(clip)).max(0.0);
+        // mix reads them (`Clip::settings_offset_secs`). A J cut's lead,
+        // before the picture starts, reads the picture's keys before its
+        // zero, as the export does: a key set there from the sound lands
+        // there.
+        let into_sound = (heard_at - audio_clip.timeline_in.to_secs_f64()).max(0.0);
+        let clip_time = into_sound - audio_clip.settings_offset_secs(clip);
         let ctx = klipp_core::EvalContext {
             clip_time_secs: clip_time,
             clip_duration_secs: clip.source_out.to_secs_f64() - clip.source_in.to_secs_f64(),
