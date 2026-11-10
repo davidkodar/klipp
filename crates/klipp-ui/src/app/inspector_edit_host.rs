@@ -767,6 +767,21 @@ impl InspectorEditHost<'_> {
     /// boundary still closes unrelated path drags before this call.
     pub(super) fn apply(&mut self, cmd: &AppCommand) -> bool {
         match cmd {
+            // What the All effects switch turned off, set with its
+            // switches, in their step: an undo puts the list back too.
+            AppCommand::SetEffectsSwitchedOff { clip_id, nodes } => {
+                let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                let Some(clip) = seq.all_clips_mut().find(|c| c.id == *clip_id) else { return true };
+                if clip.effects_switched_off == *nodes {
+                    return true;
+                }
+                let before = clip.clone();
+                clip.effects_switched_off = nodes.clone();
+                let after = clip.clone();
+                self.state.dirty = true;
+                self.state.push_history(EditCommand::ReplaceClip { description: "All Effects", old: Box::new(before), new: Box::new(after) });
+                true
+            }
             // Built-in effects
             AppCommand::AddBuiltinEffect { clip_id, ref effect } => {
                 // A frei0r plug-in by its installed id, or refused and said

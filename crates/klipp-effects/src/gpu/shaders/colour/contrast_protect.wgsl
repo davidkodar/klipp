@@ -38,6 +38,8 @@ fn pull_t(lb: f32, busy: f32, lt: f32) -> f32 {
 
 var<workgroup> wk: array<vec4<f32>, 256>;
 var<workgroup> wany: array<vec2<f32>, 256>;
+var<workgroup> wsum: array<vec2<f32>, 256>;
+var<workgroup> wlt: f32;
 
 fn small_at(x: i32, y: i32) -> vec4<f32> {
     let cx = clamp(x, 0, i32(p.small_w) - 1);
@@ -54,13 +56,33 @@ fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgro
         // none is, over any the text reaches (zw), into the cell after the
         // grid as (k, t).
         let n = p.small_w * p.small_h;
+        // First the whole title's text luminance (protect::title_luminance):
+        // light or dark text by it everywhere, each part's need for it.
+        var sum = vec2<f32>(0.0);
+        for (var c = li; c < n; c += 256u) {
+            let m = unpack(output[c]);
+            if m.z <= 1e-3 { continue; }
+            sum += vec2<f32>(m.w, m.z);
+        }
+        wsum[li] = sum;
+        workgroupBarrier();
+        for (var half = 128u; half > 0u; half >>= 1u) {
+            if li < half { wsum[li] += wsum[li + half]; }
+            workgroupBarrier();
+        }
+        if li == 0u {
+            var t_lt = 1.0;
+            if wsum[0].y > 0.0 { t_lt = clamp(wsum[0].x / wsum[0].y, 0.0, 1.0); }
+            wlt = t_lt;
+        }
+        workgroupBarrier();
+        let lt = wlt;
         var acc = vec4<f32>(1.0, 0.0, 1.0, 0.0);
         var seen = vec2<f32>(0.0);
         for (var c = li; c < n; c += 256u) {
             let m = unpack(output[c]);
             if m.z <= 1e-3 { continue; }
             let busy = sqrt(max(m.y - m.x * m.x, 0.0));
-            let lt = clamp(m.w / m.z, 0.0, 1.0);
             let full = m.z >= HALO_FULL;
             if lt >= LIGHT_TEXT {
                 let k = pull_k(m.x, busy, lt);
@@ -90,7 +112,8 @@ fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgro
             let r = wk[0];
             var kt = vec2<f32>(1.0, 0.0);
             if wany[0].x > 0.5 { kt = r.xy; } else if wany[0].y > 0.5 { kt = r.zw; }
-            output[n] = pack(vec4<f32>(kt, 0.0, 0.0));
+            // The pull, and the title light (1) or dark (0) text.
+            output[n] = pack(vec4<f32>(kt, select(0.0, 1.0, lt >= LIGHT_TEXT), 0.0));
         }
         return;
     }
@@ -108,11 +131,12 @@ fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgro
         if a <= 1e-3 { return; }
         let ht = clamp(a / HALO_FULL, 0.0, 1.0);
         let halo = ht * ht * (3.0 - 2.0 * ht);
-        let lt = clamp(m.w / a, 0.0, 1.0);
-        // The whole title's pull, from op 5, evenly through the halo.
-        let kt = unpack(input[p.small_w * p.small_h]).xy;
+        // The whole title's pull, and whether it is light text, from op 5,
+        // evenly through the halo.
+        let title = unpack(input[p.small_w * p.small_h]);
+        let kt = title.xy;
         var px = unpack(output[i]);
-        if lt >= LIGHT_TEXT {
+        if title.z > 0.5 {
             px = vec4<f32>(px.xyz * (1.0 - halo * (1.0 - kt.x)), px.w);
         } else {
             px = vec4<f32>(px.xyz + (vec3<f32>(1.0) - px.xyz) * halo * kt.y, px.w);
