@@ -274,6 +274,38 @@ mod tests {
         assert_eq!(count, 1);
     }
 
+    /// Unlink is one step that undo takes back whole: the pair linked
+    /// again and the picture's sound no longer set apart; a redo unlinks
+    /// it and sets it apart again, so the sound plays once either way.
+    #[test]
+    fn an_unlink_undoes_and_redoes_with_its_sound_apart() {
+        let mut state = AppState::default();
+        let tc = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 25);
+        let media = klipp_core::MediaId::new();
+        let (v1, a1) = (
+            state.sequences[0].tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap(),
+            state.sequences[0].tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Audio).unwrap(),
+        );
+        let (mut picture, mut sound) = (klipp_timeline::Clip::media(media, tc(0.0), tc(2.0), tc(0.0), tc(2.0)), klipp_timeline::Clip::media(media, tc(0.0), tc(2.0), tc(0.0), tc(2.0)));
+        picture.linked_clip_id = Some(sound.id);
+        sound.linked_clip_id = Some(picture.id);
+        let p = picture.id;
+        state.sequences[0].tracks[v1].clips.push(picture);
+        state.sequences[0].tracks[a1].clips.push(sound);
+        let cmd = AppCommand::UnlinkClip { clip_id: p };
+        let before = before(&state, &cmd).expect("recorded here");
+        state.sequences[0].unlink(p);
+        record(&mut state, before);
+        assert_eq!(top_label(&mut state).as_deref(), Some("Unlink"));
+        let picture = |state: &AppState| state.sequences[0].all_clips().find(|c| c.id == p).cloned().unwrap();
+        assert!(picture(&state).sound_apart && picture(&state).linked_clip_id.is_none());
+        let entry = state.take_undo().expect("the unlink");
+        klipp_document::apply::DocumentView { sequences: &mut state.sequences, active: 0, media_pool: &mut state.media_pool, fps: &mut state.fps }.apply_inverse(&entry.command);
+        assert!(!picture(&state).sound_apart && picture(&state).linked_clip_id.is_some(), "undone: linked, its sound not apart");
+        klipp_document::apply::DocumentView { sequences: &mut state.sequences, active: 0, media_pool: &mut state.media_pool, fps: &mut state.fps }.apply_forward(&entry.command);
+        assert!(picture(&state).sound_apart && picture(&state).linked_clip_id.is_none(), "redone: unlinked, its sound apart");
+    }
+
     #[test]
     fn an_edit_that_changed_nothing_records_nothing() {
         let mut state = state_with_a_clip();
