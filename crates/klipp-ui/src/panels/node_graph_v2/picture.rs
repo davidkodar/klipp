@@ -1948,6 +1948,49 @@ mod tests {
         assert!(d.panel.bookmark_toast.as_ref().is_some_and(|(t, _)| t.contains("loop")), "{:?}", d.panel.bookmark_toast);
     }
 
+    /// A clip's Opacity node, which the frame's picture applies while it
+    /// lays the layers together rather than as a node, says in words why
+    /// it has no preview: it read "Not in this frame" while its opacity
+    /// showed, and its tooltip named the node by its id.
+    #[test]
+    fn an_opacity_node_says_in_words_why_it_has_no_preview() {
+        let t = |s| klipp_core::RationalTime::from_secs_f64(s, 25);
+        let c = TestClip::of(Clip::media(klipp_core::MediaId::new(), t(0.0), t(2.0), t(0.0), t(2.0)))
+            .effect(klipp_effects::BuiltinEffect::Opacity { value: 0.5 })
+            .build();
+        let mut d = Dock::of(c);
+        let c = d.clip();
+        let graph = d.graph();
+        let model = PictureCanvas::new(&graph, root(&c), None).unwrap();
+        let opacity = graph.nodes.iter().find(|n| klipp_graph_lift::effect_params::tag(n) == Some("opacity")).expect("an Opacity node").id;
+        let wanted: Vec<_> = model.nodes.iter().filter_map(|n| model.output(n.id())).collect();
+        let seq = d.state.sequence().baked_for_render().into_owned();
+        let mut renderer = klipp_compose::Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
+        renderer.set_gpu_enabled(false);
+        let inspect = klipp_compose::Inspect { clip: Some(c.id), only: Some(c.id), thumbs: Some(wanted.iter().cloned().collect()), ..Default::default() };
+        struct Grey;
+        impl klipp_compose::FrameSource for Grey {
+            fn frame(&mut self, _: &Clip, _: f64, w: u32, h: u32) -> Option<klipp_compose::SourceFrame> {
+                Some(klipp_compose::SourceFrame { pixels: klipp_compose::SourcePixels::Linear(std::sync::Arc::new([0.18, 0.18, 0.18, 1.0].repeat((w * h) as usize))), width: w, height: h, pts: None })
+            }
+        }
+        let (_, found) = renderer.render_inspected(&seq, t(1.0), 64, 36, &mut Grey, klipp_compose::RenderOptions::default(), inspect);
+        let batch = klipp_engine::node_thumbnails::ThumbnailBatch::new(1, 0, klipp_engine::node_thumbnails::PreviewQuality::Viewer, klipp_timeline::SharedSequence::new(seq.clone()).revision(), &wanted, found.thumbs)
+            .with_unavailable(&wanted, found.unavailable);
+        assert!(batch.unavailable.iter().any(|(at, _)| at.path.node() == Some(opacity)), "the renderer has no preview of it: {:?}", batch.unavailable);
+        d.state.node_thumbs_unavailable = batch.unavailable.clone();
+        d.settle();
+        let at = card_of(&d, opacity);
+        let notes = d.texts.iter().filter(|(t, p)| t == "Not in this frame" && at.contains(*p)).count();
+        assert_eq!(notes, 0, "it is in this frame: no \"Not in this frame\" on it, let alone twice");
+        for _ in 0..12 {
+            d.frame(vec![egui::Event::PointerMoved(at.center())]);
+        }
+        let tip = d.texts.iter().find(|(t, _)| t.starts_with("No preview")).map(|(t, _)| t.clone()).expect("its reason on hover");
+        assert!(!tip.contains(&opacity.to_string()), "in words, not by its id: {tip}");
+        assert!(tip.contains("no preview of its own"), "why, as it is: {tip}");
+    }
+
     /// A node the frame shown declined and one whose preview the renderer
     /// couldn't make each carry a badge, and the reason on hover (#1747).
     /// The preview's reason is the renderer's own, from an inspected render
