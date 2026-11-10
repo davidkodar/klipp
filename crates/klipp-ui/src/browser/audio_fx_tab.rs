@@ -183,7 +183,7 @@ pub fn show(
     audition_path: Option<&std::path::Path>,
     audition_media_id: Option<klipp_core::MediaId>,
     audition_peaks: Option<&[(f32, f32)]>,
-    audition_failed: bool,
+    no_sound: bool,
     audition_duration_secs: Option<f64>,
     audition_volume: &mut f32,
     audition_anchor_secs: &mut f64,
@@ -345,7 +345,7 @@ pub fn show(
             audition_path,
             audition_media_id,
             audition_peaks,
-            audition_failed,
+            no_sound,
             audition_duration_secs,
             audition_volume,
             audition_anchor_secs,
@@ -630,7 +630,7 @@ fn audition_player(
     audition_path: Option<&std::path::Path>,
     audition_media_id: Option<klipp_core::MediaId>,
     audition_peaks: Option<&[(f32, f32)]>,
-    audition_failed: bool,
+    no_sound: bool,
     audition_duration_secs: Option<f64>,
     audition_volume: &mut f32,
     audition_anchor_secs: &mut f64,
@@ -844,13 +844,15 @@ fn audition_player(
                 );
                 let bar_color = egui::Color32::from_rgb(0x3a, 0x8c, 0x6e);
 
-                if audition_failed {
+                if no_sound {
+                    // The file has no sound stream: said as that, not as
+                    // a sound that failed to load.
                     painter.text(
                         wave_rect.center(),
                         egui::Align2::CENTER_CENTER,
-                        "Couldn't read audio from source",
+                        "This clip has no sound",
                         egui::FontId::proportional(10.0),
-                        theme.marker_warning,
+                        theme.text_dim,
                     );
                 } else if let Some(peaks) = audition_peaks {
                     if peaks.is_empty() {
@@ -1961,5 +1963,28 @@ fn category_glyph_icon(cat: EffectCategory) -> Icon {
         EffectCategory::AudioRestoration => Icon::Lock,
         EffectCategory::AudioUtility => Icon::Sliders,
         _ => Icon::Waveform,
+    }
+}
+
+#[cfg(test)]
+mod audition_tests {
+    use super::*;
+
+    /// The audition's waveform for a clip whose file has no sound: it
+    /// says so, plainly. It read "Couldn't read audio from source", as if
+    /// a sound there had failed to load.
+    #[test]
+    fn a_clip_without_sound_says_it_has_none() {
+        let ctx = egui::Context::default();
+        let (mut playing, mut source, mut volume, mut anchor, mut at) = (false, None, 1.0, 0.0, None);
+        let path = std::path::PathBuf::from("/media/05-cafe-terrace.mp4");
+        let out = ctx.run(egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(600.0, 400.0))), ..Default::default() }, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                audition_player(ui, &KlippTheme::default(), &mut playing, &mut source, &[], Some(&path), None, None, true, Some(8.0), &mut volume, &mut anchor, &mut at);
+            });
+        });
+        let texts: Vec<String> = out.shapes.iter().filter_map(|s| match &s.shape { egui::Shape::Text(t) => Some(t.galley.text().to_string()), _ => None }).collect();
+        assert!(texts.iter().any(|t| t == "This clip has no sound"), "{texts:?}");
+        assert!(!texts.iter().any(|t| t.contains("Couldn't")), "{texts:?}");
     }
 }
