@@ -426,3 +426,27 @@ impl Run {
     }
 
 }
+
+/// With two clips selected, "+ Add effect" on the one shown puts the
+/// effect on both, as the banner over it says, and one undo takes it off
+/// both. It went to the clip shown only.
+#[test]
+fn an_effect_added_with_two_clips_selected_lands_on_both_as_one_step() {
+    let mut run = Run::new(fixture(&BuiltinEffect::GaussianBlur { radius: 3.0 }));
+    let other = fixture(&BuiltinEffect::GaussianBlur { radius: 3.0 });
+    let other_id = other.id;
+    let mut track = klipp_timeline::Track::new("Video 9", klipp_timeline::TrackKind::Video);
+    track.clips.push(other);
+    run.state.sequences[0].tracks.push(track);
+    run.state.selected_clip = Some(run.clip);
+    run.state.selected_clips = vec![run.clip, other_id];
+    let blooms = |run: &Run, id: ClipId| {
+        let clip = run.state.sequences[0].all_clips().find(|c| c.id == id).unwrap();
+        clip.picture_v2().unwrap().picture.graph.nodes.iter().filter(|n| klipp_graph_lift::effect_params::tag(n) == Some("bloom")).count()
+    };
+    assert!(run.click_last("+ Add effect"), "the add menu");
+    assert!(run.click_last("Bloom"), "Bloom in it");
+    assert_eq!((blooms(&run, run.clip), blooms(&run, other_id)), (1, 1), "on both: {:?}", run.unapplied);
+    assert!(run.step(false));
+    assert_eq!((blooms(&run, run.clip), blooms(&run, other_id)), (0, 0), "one undo takes it off both");
+}
