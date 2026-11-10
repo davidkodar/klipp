@@ -221,6 +221,10 @@ name = "pregrade_made_once"
 path = "tests/pregrade_made_once.rs"
 
 [[test]]
+name = "key_colour_pick_reads_key_input"
+path = "tests/key_colour_pick_reads_key_input.rs"
+
+[[test]]
 name = "qualifier_pick_reads_node_input"
 path = "tests/qualifier_pick_reads_node_input.rs"
 
