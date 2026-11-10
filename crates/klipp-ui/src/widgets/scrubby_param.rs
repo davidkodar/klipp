@@ -331,6 +331,14 @@ pub struct KeyControls {
     pub next: bool,
 }
 
+/// The width [`key_controls`] takes: its diamond, and the arrows either
+/// side once the parameter has keys, with `spacing` between them. A row
+/// that draws them after its own controls leaves this much room.
+pub fn key_controls_width(keyed: bool, spacing: f32) -> f32 {
+    const DIAMOND_W: f32 = 16.0;
+    if keyed { DIAMOND_W + 2.0 * NAV_ARROW_W + 3.0 * spacing } else { DIAMOND_W + spacing }
+}
+
 /// A switch or choice row's key controls at the right edge, as a number
 /// row draws them: the diamond, with the previous and next key arrows
 /// either side of it once the parameter has keys. Its keys are steps, so
