@@ -1396,6 +1396,31 @@ fn titles_result_strip(
     );
 }
 
+/// Whether text track `track` has a clip anywhere in the `duration_frames`
+/// from `timeline_in`.
+pub(crate) fn text_track_busy(state: &AppState, track: usize, timeline_in: klipp_core::Timecode, duration_frames: u32) -> bool {
+    let rate = state.sequence().fps.rate();
+    let from = timeline_in.rescale_to(rate);
+    let to = from + klipp_core::RationalTime::from_frames(duration_frames as i64, rate);
+    state.sequence().tracks.get(track).is_some_and(|t| t.clips.iter().any(|c| c.timeline_in < to && c.timeline_out > from))
+}
+
+/// The first text track with nothing on it for the `duration_frames`
+/// from `timeline_in`, or a new one at the top: where a title goes that
+/// must not lie over another on its track.
+pub(crate) fn free_text_track(state: &mut AppState, timeline_in: klipp_core::Timecode, duration_frames: u32) -> usize {
+    let free = (0..state.sequence().tracks.len()).find(|&i| state.sequence().tracks[i].kind == klipp_timeline::TrackKind::Text && !text_track_busy(state, i, timeline_in, duration_frames));
+    match free {
+        Some(i) => i,
+        None => {
+            let seq = &mut state.sequences[state.active_sequence_idx];
+            let n = seq.tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Text).count() + 1;
+            seq.tracks.insert(0, klipp_timeline::Track::new(&format!("Text {n}"), klipp_timeline::TrackKind::Text));
+            0
+        }
+    }
+}
+
 /// A title of `data` put at the playhead, five seconds long, on the first
 /// text track free there, or a new one at the top: the title made the
 /// next to place, and the command that places it. As a double-click on a
@@ -1407,18 +1432,13 @@ pub(crate) fn place_title(state: &mut AppState, mut data: klipp_timeline::TitleD
     klipp_document::ops::lift_above_player(state.sequence(), &mut data);
     state.pending_title_data = Some(data);
     let ph = state.playhead;
-    let seq = &mut state.sequences[state.active_sequence_idx];
-    let track_index = match seq.tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Text && t.clip_at_timecode(ph).is_none()) {
-        Some(idx) => idx,
-        None => {
-            let track_num = seq.tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Text).count() + 1;
-            seq.tracks.insert(0, klipp_timeline::Track::new(&format!("Text {track_num}"), klipp_timeline::TrackKind::Text));
-            0
-        }
-    };
+    let seq = state.sequence();
     let rate = seq.fps.rate();
     let picture_end = seq.tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Video).flat_map(|t| &t.clips).map(|c| c.timeline_out.rescale_to(rate).value).max();
     let (duration_frames, past) = title_frames(ph.rescale_to(rate).value, picture_end, rate);
+    // Free for the whole of it, not only where it starts: a title there
+    // later would be under it on one track.
+    let track_index = free_text_track(state, ph, duration_frames);
     if past > 0 {
         state.toast.show(format!("The title runs {:.1} s past the end of the picture: the timeline gets that much longer", past as f64 / rate as f64));
     }
