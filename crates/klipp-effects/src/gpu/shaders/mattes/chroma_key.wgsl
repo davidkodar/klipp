@@ -10,9 +10,9 @@ struct Params {
     spill_method: u32,
     spill_strength: f32,
     spill_key_idx: u32,
+    key_y: f32,
+    luma_weight: f32,
     _pad0: u32,
-    _pad1: u32,
-    _pad2: u32,
 }
 
 @group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
@@ -56,7 +56,11 @@ fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgro
 
     let dcb = (cbcr.x - params.key_cb) / 255.0;
     let dcr = (cbcr.y - params.key_cr) / 255.0;
-    let dist = sqrt(dcb * dcb + dcr * dcr);
+    // Luma weighed too (CHROMA_KEY_LUMA_WEIGHT), so greys and whites
+    // far from the key's brightness are kept.
+    let y = 0.299 * srgb_r + 0.587 * srgb_g + 0.114 * srgb_b;
+    let dy = params.luma_weight * (y - params.key_y) / 255.0;
+    let dist = sqrt(dcb * dcb + dcr * dcr + dy * dy);
 
     if dist < params.tolerance {
         // Fully keyed out — no spill stage needed.

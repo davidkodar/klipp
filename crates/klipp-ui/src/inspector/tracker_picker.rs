@@ -47,9 +47,10 @@ use klipp_timeline::Sequence;
 /// Iteration order matches the inspector's existing tracker list
 /// (clip-major, point-major) so users see trackers in the same
 /// order across the TRACKING / TRANSFORM LINK / HYPERZOOM
-/// surfaces. Track-point name is preferred when set; falls back
-/// to `Track {N}` / `clip xxxxxx` when blank.
-pub fn enumerate_tracker_targets(seq: &Sequence) -> Vec<(ClipId, u32, String)> {
+/// surfaces. Each reads "{track} · {clip's name} · {tracker}", the
+/// clip named by `name_of` as the timeline names it; a tracker with no
+/// name of its own is `Track {N}`.
+pub fn enumerate_tracker_targets(seq: &Sequence, name_of: &dyn Fn(&klipp_timeline::Clip) -> String) -> Vec<(ClipId, u32, String)> {
     let mut out = Vec::new();
     for (ti, track) in seq.tracks.iter().enumerate() {
         let track_label = if track.name.is_empty() {
@@ -64,8 +65,7 @@ pub fn enumerate_tracker_targets(seq: &Sequence) -> Vec<(ClipId, u32, String)> {
                 } else {
                     tp.name.clone()
                 };
-                let clip_short: String = clip.id.0.to_string().chars().take(6).collect();
-                let label = format!("{} · clip {}… · {}", track_label, clip_short, tp_name);
+                let label = format!("{} · {} · {}", track_label, name_of(clip), tp_name);
                 out.push((clip.id, pi as u32, label));
             }
         }
@@ -74,7 +74,7 @@ pub fn enumerate_tracker_targets(seq: &Sequence) -> Vec<(ClipId, u32, String)> {
 }
 
 /// Render one `selectable_label` per tracker target. The label
-/// reads "Track N · clip xxxxxx… · Tracker name". `is_selected`
+/// reads "Track N · clip name · Tracker name". `is_selected`
 /// pre-renders the dot for the currently-bound tracker; clicking
 /// any item fires `on_pick` and the click is consumed.
 ///
@@ -83,6 +83,7 @@ pub fn enumerate_tracker_targets(seq: &Sequence) -> Vec<(ClipId, u32, String)> {
 pub fn tracker_menu_items<F>(
     ui: &mut Ui,
     seq: &Sequence,
+    name_of: &dyn Fn(&klipp_timeline::Clip) -> String,
     mut is_selected: impl FnMut(ClipId, u32) -> bool,
     mut on_pick: F,
 ) -> bool
@@ -90,7 +91,7 @@ where
     F: FnMut(ClipId, u32, &str),
 {
     let mut clicked_any = false;
-    for (host_clip_id, point_index, label) in enumerate_tracker_targets(seq) {
+    for (host_clip_id, point_index, label) in enumerate_tracker_targets(seq, name_of) {
         let sel = is_selected(host_clip_id, point_index);
         if ui.selectable_label(sel, &label).clicked() && !sel {
             on_pick(host_clip_id, point_index, &label);
@@ -138,7 +139,7 @@ mod tests {
             track("V1", vec![c1.clone(), c2]),
             track("V2", vec![c3.clone()]),
         ]);
-        let out = enumerate_tracker_targets(&seq);
+        let out = enumerate_tracker_targets(&seq, &|_| "interview.mov".to_owned());
         // c1 has 2 trackers, c2 has 0, c3 has 1 → 3 total.
         assert_eq!(out.len(), 3);
     }
@@ -148,7 +149,7 @@ mod tests {
         let c = clip_with_n_trackers(2);
         let cid = c.id;
         let seq = seq_with(vec![track("V1", vec![c])]);
-        let out = enumerate_tracker_targets(&seq);
+        let out = enumerate_tracker_targets(&seq, &|_| "interview.mov".to_owned());
         assert_eq!(out.len(), 2);
         assert_eq!(out[0].0, cid);
         assert_eq!(out[0].1, 0);
@@ -166,7 +167,7 @@ mod tests {
         let aid = a.id;
         let bid = b.id;
         let seq = seq_with(vec![track("V1", vec![a, b])]);
-        let out = enumerate_tracker_targets(&seq);
+        let out = enumerate_tracker_targets(&seq, &|_| "interview.mov".to_owned());
         assert_eq!(out[0].0, aid);
         assert_eq!(out[0].1, 0);
         assert_eq!(out[1].0, aid);
@@ -181,21 +182,20 @@ mod tests {
     fn enumerate_returns_empty_when_no_trackers() {
         let c = clip_with_n_trackers(0);
         let seq = seq_with(vec![track("V1", vec![c])]);
-        assert!(enumerate_tracker_targets(&seq).is_empty());
+        assert!(enumerate_tracker_targets(&seq, &|_| "interview.mov".to_owned()).is_empty());
     }
 
     #[test]
-    fn enumerate_label_includes_track_name_and_short_clip_id() {
+    /// A tracker is named after its track and its clip's name, as the
+    /// Matte Source picker names clips, not a piece of the clip's id.
+    fn enumerate_label_names_the_track_and_the_clip() {
         let c = clip_with_n_trackers(1);
         let cid = c.id;
         let seq = seq_with(vec![track("V1", vec![c])]);
-        let out = enumerate_tracker_targets(&seq);
-        // Label includes "V1" (track name) and the first 6 chars
-        // of the clip id (short form, same convention as the
-        // matte-source dropdown).
-        let expected_short: String = cid.0.to_string().chars().take(6).collect();
-        assert!(out[0].2.contains("V1"), "track name in label: {}", out[0].2);
-        assert!(out[0].2.contains(&expected_short), "short clip id in label: {}", out[0].2);
+        let out = enumerate_tracker_targets(&seq, &|_| "interview.mov".to_owned());
+        let short: String = cid.0.to_string().chars().take(6).collect();
+        assert_eq!(out[0].2, "V1 · interview.mov · Track 1");
+        assert!(!out[0].2.contains(&short), "no piece of the id: {}", out[0].2);
     }
 
     #[test]
@@ -203,7 +203,7 @@ mod tests {
         let mut c = clip_with_n_trackers(1);
         c.track_points[0].name = "Face".to_string();
         let seq = seq_with(vec![track("V1", vec![c])]);
-        let out = enumerate_tracker_targets(&seq);
+        let out = enumerate_tracker_targets(&seq, &|_| "interview.mov".to_owned());
         assert!(out[0].2.contains("Face"), "tracker name in label: {}", out[0].2);
     }
 }

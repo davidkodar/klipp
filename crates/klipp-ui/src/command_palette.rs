@@ -1237,7 +1237,7 @@ fn add_to_selection(state: &mut AppState, cmds: &mut Vec<AppCommand>, name: &str
     if targets.clips.is_empty() {
         return;
     }
-    let adds = crate::effect_targets::all_or_none(&targets, |clip_id| {
+    let adds = crate::effect_targets::all_or_none(&targets, name, |clip_id| {
         let clip = state.sequence().tracks.iter().flat_map(|t| &t.clips).find(|c| c.id == clip_id).ok_or("the clip isn't in the sequence")?;
         crate::inspector::stack_view::add_effects_command(state, clip, std::slice::from_ref(&effect))
     });

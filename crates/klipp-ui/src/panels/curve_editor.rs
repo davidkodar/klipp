@@ -37,6 +37,136 @@ pub enum CurveParam {
 /// `clip_id`: what a double-click on the graph does, and the key tools'
 /// key at the playhead and paste (#2278). None for a curve with no keys
 /// of its own here (speed, the camera).
+/// The selected keys of `clip` copied, each with its property, timed from
+/// the first of them: every key picked together, on any of its tracks (a
+/// box over the Dope Sheet's rows), else the ones picked on `shown`, the
+/// track the Curve Editor shows.
+pub(crate) fn copy_selected_keys(state: &mut AppState, clip: &klipp_timeline::Clip, shown: &KeyframeParamKind) {
+    let picked: Vec<(KeyframeParamKind, Keyframe)> = if state.key_selection.clip_id == Some(clip.id) && !state.key_selection.keys.is_empty() {
+        state.key_selection.keys.iter().filter_map(|r| {
+            let k = crate::key_selection::track_keys(clip, &r.param_kind).into_iter().find(|k| (k.time_secs - r.time_secs).abs() < 1e-6)?;
+            Some((r.param_kind.clone(), k))
+        }).collect()
+    } else {
+        let keys = crate::key_selection::track_keys(clip, shown);
+        selected_keys(state, clip.id, shown, &keys).into_iter().map(|k| (shown.clone(), k)).collect()
+    };
+    let Some(first) = picked.iter().map(|(_, k)| k.time_secs).min_by(f64::total_cmp) else { return };
+    state.curve_key_clipboard = picked.into_iter().map(|(kind, k)| (kind, Keyframe { time_secs: k.time_secs - first, ..k })).collect();
+}
+
+/// The copied keys put on `target` from `at` seconds into it, each on its
+/// own property there: a placement, opacity, sound or title track as it
+/// is; an effect's or grade node's key on `target`'s node of the same kind
+/// (the first), a mask's only on the clip it came from; one step. With
+/// how many had no place on `target` (a property it lacks, or past its
+/// end).
+pub(crate) fn paste_key_commands(state: &AppState, target: &klipp_timeline::Clip, at: f64) -> (Vec<AppCommand>, usize) {
+    let duration = target.duration().to_secs_f64();
+    let mut out = Vec::new();
+    let mut skipped = 0;
+    for (kind, k) in &state.curve_key_clipboard {
+        let t = at + k.time_secs;
+        let placed = (t <= duration + 1e-9).then(|| key_on(state, target, kind)).flatten();
+        match placed {
+            Some(kind) => out.extend(add_key_for(target.id, &kind, t, k.value)),
+            None => skipped += 1,
+        }
+    }
+    if !out.is_empty() {
+        out.insert(0, AppCommand::BeginHistoryBatch);
+        // Named for what it does: unnamed, a batch read "Add Clips".
+        out.push(AppCommand::EndHistoryBatchAs { label: "Paste Keys".into() });
+    }
+    (out, skipped)
+}
+
+/// `kind`, a track of the clip a key was copied from, as the same property
+/// on `target`, if it has it.
+fn key_on(state: &AppState, target: &klipp_timeline::Clip, kind: &KeyframeParamKind) -> Option<KeyframeParamKind> {
+    use klipp_graph_format::path::{NodePath, Root};
+    match kind {
+        KeyframeParamKind::Video(_) | KeyframeParamKind::Audio(_) => Some(kind.clone()),
+        KeyframeParamKind::Title { object_id, .. } => target.title_data().filter(|td| td.objects.iter().any(|o| o.id.0 == *object_id)).map(|_| kind.clone()),
+        KeyframeParamKind::AudioEffect { effect_index, .. } => (*effect_index < target.audio_effects.len()).then(|| kind.clone()),
+        KeyframeParamKind::Mask(_) => state.key_selection.clip_id.filter(|c| *c == target.id).map(|_| kind.clone()),
+        KeyframeParamKind::Node { path, key } => {
+            if path.root_clip() == Some(target.id.0) {
+                return Some(kind.clone());
+            }
+            // The same kind of node on the target, by the copied one's type.
+            let source = state.sequence().all_clips().find(|c| Some(c.id.0) == path.root_clip())?;
+            let from = source.picture_v2().ok()?;
+            let tag = from.picture.graph.nodes.iter().find(|n| Some(n.id) == path.node()).and_then(klipp_graph_lift::effect_params::tag)?.to_owned();
+            let to = target.picture_v2().ok()?;
+            let node = to.picture.graph.nodes.iter().find(|n| klipp_graph_lift::effect_params::tag(n) == Some(tag.as_str()))?.id;
+            (path.nodes.len() == 1).then(|| KeyframeParamKind::Node { path: NodePath::new(Root::Clip { clip: target.id.0 }, [node]), key: key.clone() })
+        }
+    }
+}
+
+/// The command that puts a key of `value` at `t` on `kind` of `clip_id`.
+fn add_key_for(clip_id: klipp_core::ClipId, kind: &KeyframeParamKind, t: f64, value: f32) -> Vec<AppCommand> {
+    match kind {
+        KeyframeParamKind::Title { object_id, param } => vec![param.add(clip_id, *object_id, t, value)],
+        KeyframeParamKind::Audio(p) => vec![AppCommand::AddAudioKeyframe { clip_id, param: *p, time_secs: t, value }],
+        KeyframeParamKind::Video(p) => vec![AppCommand::AddVideoKeyframe { clip_id, param: *p, time_secs: t, value }],
+        KeyframeParamKind::AudioEffect { effect_index, param_name } => vec![AppCommand::AddAudioEffectKeyframe { clip_id, effect_index: *effect_index, param_name: param_name.clone(), time_secs: t, value }],
+        KeyframeParamKind::Mask(track) => vec![AppCommand::AddMaskKeyframe { clip_id, node_id: track.node, mask_index: track.mask, param: track.param.clone(), time_secs: t, value }],
+        KeyframeParamKind::Node { path, key } => {
+            let keyframe = Keyframe { time_secs: t, value, interpolation: Default::default(), tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() };
+            serde_json::to_value(keyframe).map(|keyframe| vec![AppCommand::AddKeyAt { addr: path.clone(), key: key.clone(), keyframe }]).unwrap_or_default()
+        }
+    }
+}
+
+/// The value a key put on `param` at `t` takes: the curve's there, or,
+/// with no keys on it yet, the property's own value as it stands (a title
+/// layer at 0.47 keys 0.47), not the curve's default, which moved what it
+/// keyed.
+pub(crate) fn key_value_at(param: &CurveParam, clip: &klipp_timeline::Clip, keys: &[Keyframe], t: f64) -> f32 {
+    let rest = rest_value(param, clip).unwrap_or(param.range().2);
+    klipp_core::keyframe::evaluate(keys, t, rest)
+}
+
+/// What `param` reads on `clip` with no keys: its own value, where the
+/// curve stands for one.
+fn rest_value(param: &CurveParam, clip: &klipp_timeline::Clip) -> Option<f32> {
+    use crate::panels::title_curve::TitleCurveParam as T;
+    use klipp_core::keyframe::TitlePositionAxis as Axis;
+    match param {
+        CurveParam::Title { object_id, param } => {
+            let object = clip.title_data()?.object(klipp_timeline::TitleObjectId(*object_id))?;
+            match param {
+                T::Position(Axis::X) => Some(object.transform.center.x),
+                T::Position(Axis::Y) => Some(object.transform.center.y),
+                T::Opacity => Some(object.opacity),
+                T::Effect(_) => None,
+            }
+        }
+        CurveParam::Video(p) => {
+            let at = crate::inspector::placement_by_path::placement(clip);
+            Some(match p {
+                VideoParam::Opacity => crate::inspector::placement_by_path::opacity(clip),
+                VideoParam::PositionX => at.position_x,
+                VideoParam::PositionY => at.position_y,
+                VideoParam::Scale => at.scale_x,
+                VideoParam::ScaleY => at.scale_y,
+                VideoParam::Rotation => at.rotation,
+                VideoParam::TiltX => at.rotation_x,
+                VideoParam::TiltY => at.rotation_y,
+                VideoParam::MatteFeather | VideoParam::MatteChoke => return None,
+            })
+        }
+        CurveParam::Audio(p) => Some(match p {
+            AudioParam::Volume => clip.volume,
+            AudioParam::Pan => clip.pan,
+            AudioParam::Gain => clip.gain,
+        }),
+        _ => None,
+    }
+}
+
 pub(crate) fn add_key_commands(param: &CurveParam, clip_id: klipp_core::ClipId, t: f64, v: f32) -> Vec<AppCommand> {
     match param {
         CurveParam::Title { object_id, param } => vec![param.add(clip_id, *object_id, t, v)],
@@ -1756,26 +1886,23 @@ impl CurveEditorPanel {
         }
         let inside = (0.0..=duration).contains(&local);
         if ui.add_enabled(inside, small("\u{25C6}")).on_hover_text("A key at the playhead, at the curve's value there").clicked() {
-            let value = klipp_core::keyframe::evaluate(&keys, local, self.param().range().2);
+            let value = key_value_at(self.param(), &clip, &keys, local);
             cmds.extend(add_key_commands(self.param(), clip_id, local, value));
         }
         if ui.add_enabled(next.is_some(), small("\u{25B6}")).on_hover_text("Next key").clicked() {
             cmds.push(AppCommand::SeekTo(at(next.unwrap_or_default())));
         }
         let selected = selected_keys(state, clip_id, &kind, &keys);
-        if ui.add_enabled(!selected.is_empty(), small("Copy")).on_hover_text("Copy the selected keys").clicked() {
-            let first = selected[0].time_secs;
-            state.curve_key_clipboard = selected.iter().map(|k| klipp_core::Keyframe { time_secs: k.time_secs - first, ..k.clone() }).collect();
+        let several = state.key_selection.clip_id == Some(clip_id) && !state.key_selection.keys.is_empty();
+        if ui.add_enabled(!selected.is_empty() || several, small("Copy")).on_hover_text("Copy the selected keys, each with its property").clicked() {
+            copy_selected_keys(state, &clip, &kind);
         }
-        if ui.add_enabled(!state.curve_key_clipboard.is_empty() && inside, small("Paste")).on_hover_text("Paste the copied keys at the playhead, on this curve").clicked() {
-            cmds.push(AppCommand::BeginHistoryBatch);
-            for k in &state.curve_key_clipboard {
-                let t = local + k.time_secs;
-                if t <= duration + 1e-9 {
-                    cmds.extend(add_key_commands(self.param(), clip_id, t, k.value));
-                }
+        if ui.add_enabled(!state.curve_key_clipboard.is_empty() && inside, small("Paste")).on_hover_text("Paste the copied keys at the playhead, each on its own property").clicked() {
+            let (paste, skipped) = paste_key_commands(state, &clip, local);
+            cmds.extend(paste);
+            if skipped > 0 {
+                state.toast.show(format!("{skipped} copied key{} had no place on this clip (a property it lacks, or past its end)", if skipped == 1 { "" } else { "s" }));
             }
-            cmds.push(AppCommand::EndHistoryBatch);
         }
         // The selected keys stretched or squeezed in time, about the first
         // of them or the playhead.

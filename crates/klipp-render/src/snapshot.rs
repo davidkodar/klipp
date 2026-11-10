@@ -1392,6 +1392,40 @@ mod tests {
         assert_eq!(format!("{:?}", klipp_timeline::test_clip::effects(&viewer.tracks[0].clips[0])), format!("{exported:?}"), "the viewer's render copy has the same");
     }
 
+    /// Unlinking a picture from its sound clip leaves one copy of the sound
+    /// in the mix: the sound clip's. The picture played its own sound once
+    /// the link was gone, on top of the sound clip's, 6 dB louder.
+    #[test]
+    fn unlinking_a_picture_from_its_sound_plays_the_sound_once() {
+        let media_id = MediaId::new();
+        let mut pool = MediaPool::new();
+        pool.add(make_media_item(media_id, "/media/clip.mp4"));
+        let clip = || Clip {
+            id: ClipId::new(),
+            kind: ClipKind::Media { media_id },
+            timeline_in: make_rational(0, 24),
+            timeline_out: make_rational(48, 24),
+            source_in: make_rational(24, 24),
+            source_out: make_rational(72, 24),
+            ..Clip::gap(make_rational(0, 24), make_rational(48, 24))
+        };
+        let mut seq = make_sequence();
+        let (mut picture, mut sound) = (clip(), clip());
+        picture.linked_clip_id = Some(sound.id);
+        sound.linked_clip_id = Some(picture.id);
+        let p = picture.id;
+        seq.tracks[0].clips.push(picture); // V1
+        seq.tracks[1].clips.push(sound); // A1
+        let heard = |seq: &Sequence| {
+            let snap = SequenceSnapshot::from_sequence(seq, &pool, &make_settings(), None, false, klipp_core::WorkingColorspace::Rec709Linear).unwrap();
+            snap.audio_tracks.iter().map(|t| t.clips.len()).sum::<usize>()
+        };
+        assert_eq!(heard(&seq), 1, "linked: the sound clip's");
+        seq.unlink(p);
+        assert!(seq.all_clips().all(|c| c.linked_clip_id.is_none()), "unlinked both ways");
+        assert_eq!(heard(&seq), 1, "unlinked: still once");
+    }
+
     /// #642: a retimed clip's sound is in the export, read at its speed
     /// from its own range, as playback reads it; a ramped one, which has
     /// no one speed, is left out. The clip at 1x is read as ever.

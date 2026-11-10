@@ -1026,6 +1026,9 @@ impl EditCommand {
             EditCommand::Batch(cmds) if !cmds.is_empty() && cmds.iter().all(|c| matches!(c, EditCommand::EditClipAudio { .. })) => cmds[0].label(),
             // Several tracks set at once (a freeze cache cleared, #3207).
             EditCommand::Batch(cmds) if !cmds.is_empty() && cmds.iter().all(|c| matches!(c, EditCommand::SetTrack { .. })) => cmds[0].label(),
+            // Several edits of one name (keys moved, eased, pasted) undo
+            // under it, not as "Add Clips"; several clips still do.
+            EditCommand::Batch(cmds) if !cmds.is_empty() && cmds.iter().all(|c| c.label() == cmds[0].label()) && !cmds[0].label().ends_with(" Clip") => cmds[0].label(),
             EditCommand::Batch(..) => "Add Clips",
             EditCommand::Magnetic(cmd) => cmd.label(),
             EditCommand::SourceLinkedInsert { video_command, .. } => video_command.label(),
@@ -3124,6 +3127,10 @@ mod linked_import_tests {
             video: None, audio: None, created_video_track_at: None, created_audio_track_at: None, autoset: None,
         }]);
         assert_eq!(mixed.label(), "Add Clips");
+        // Several edits of one name (keys put on together) take that name,
+        // not "Add Clips".
+        let key = || EditCommand::Named { label: "Add Keyframe".into(), edit: Box::new(EditCommand::Batch(Vec::new())) };
+        assert_eq!(EditCommand::Batch(vec![key(), key()]).label(), "Add Keyframe");
     }
 
     /// #322: a drag opened under any key suppresses the per-step pushes

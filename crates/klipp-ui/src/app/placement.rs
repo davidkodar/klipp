@@ -542,6 +542,7 @@ impl KlippApp {
                     ..Default::default()
                 }
                 .into(),
+                effects_switched_off: Vec::new(),
                 linked_clip_id: clip.linked_clip_id,
                 linked_title_asset_id: clip.linked_title_asset_id,
                 group_id: clip.group_id,
@@ -568,6 +569,7 @@ impl KlippApp {
                 speed: clip.speed,
                 speed_keyframes: clip.speed_keyframes.clone(),
                 keep_pitch: clip.keep_pitch,
+                sound_apart: clip.sound_apart,
                 hold: None,
                 source_rotation: clip.source_rotation,
                 enabled: clip.enabled,

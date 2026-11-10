@@ -1336,6 +1336,25 @@ impl Sequence {
         self.tracks.iter().flat_map(|t| t.clips.iter())
     }
 
+    /// `clip_id` and the clip it is linked to, unlinked: each free to move
+    /// on its own. A picture whose sound was on that clip, on an audio
+    /// track, keeps playing none of its own ([`Clip::sound_apart`]): its
+    /// sound was left out only while the link pointed at the sound clip,
+    /// and unlinked it played twice, its own and the sound clip's.
+    pub fn unlink(&mut self, clip_id: ClipId) {
+        let Some(partner) = self.all_clips().find(|c| c.id == clip_id).and_then(|c| c.linked_clip_id) else { return };
+        let on = |seq: &Self, id: ClipId, kind: TrackKind| seq.tracks.iter().any(|t| t.kind == kind && t.clips.iter().any(|c| c.id == id));
+        let picture = [(clip_id, partner), (partner, clip_id)].into_iter()
+            .find(|(p, s)| on(self, *p, TrackKind::Video) && on(self, *s, TrackKind::Audio))
+            .map(|(p, _)| p);
+        for c in self.all_clips_mut().filter(|c| c.id == clip_id || c.id == partner) {
+            c.linked_clip_id = None;
+            if Some(c.id) == picture {
+                c.sound_apart = true;
+            }
+        }
+    }
+
     /// Sound effects kept on a picture whose sound is on an audio track,
     /// where the mix never plays them, moved to that sound clip, keys and
     /// all, when its own chain is empty: projects saved while the ops wrote
@@ -2025,6 +2044,7 @@ impl Track {
                 active_grade_version: None,
             }.into(),
             linked_clip_id: None,
+            effects_switched_off: Vec::new(),
             linked_title_asset_id: None,
             group_id: None,
             grade_group: None,
@@ -2050,6 +2070,7 @@ impl Track {
             speed: 1.0,
             speed_keyframes: Vec::new(),
             keep_pitch: false,
+            sound_apart: false,
             hold: None,
             audio_effects: Vec::new(),
             audio_effect_keyframes: std::collections::HashMap::new(),
@@ -2339,6 +2360,7 @@ impl Track {
                 active_grade_version: clip.picture.view().active_grade_version,
             }.into(),
             linked_clip_id: clip.linked_clip_id,
+            effects_switched_off: clip.effects_switched_off.clone(),
             linked_title_asset_id: clip.linked_title_asset_id,
             group_id: clip.group_id,
             grade_group: clip.grade_group,
@@ -2367,6 +2389,7 @@ impl Track {
             speed: clip.speed,
             speed_keyframes: speed_a,
             keep_pitch: clip.keep_pitch,
+            sound_apart: clip.sound_apart,
             hold: clip.hold,
             source_rotation: clip.source_rotation,
             enabled: clip.enabled,
@@ -2423,6 +2446,7 @@ impl Track {
                 active_grade_version: clip.picture.view().active_grade_version,
             }.into(),
             linked_clip_id: clip.linked_clip_id,
+            effects_switched_off: clip.effects_switched_off.clone(),
             linked_title_asset_id: clip.linked_title_asset_id,
             group_id: clip.group_id,
             grade_group: clip.grade_group,
@@ -2450,6 +2474,7 @@ impl Track {
             speed: clip.speed,
             speed_keyframes: speed_b,
             keep_pitch: clip.keep_pitch,
+            sound_apart: clip.sound_apart,
             hold: clip.hold,
             source_rotation: clip.source_rotation,
             enabled: clip.enabled,
@@ -2885,6 +2910,12 @@ pub struct Clip {
     /// behind the rest.
     #[serde(flatten)]
     pub picture: ClipPictureFields,
+    /// The effects the inspector's All effects switch turned off, by their
+    /// picture nodes: switching all on again turns these back on, and no
+    /// other, so one the person had off of their own stays off. Cleared by
+    /// that switch-on; while it holds any, the switch reads off.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub effects_switched_off: Vec<uuid::Uuid>,
     #[serde(default)]
     pub linked_clip_id: Option<ClipId>,
     /// If `Some`, this clip is a *linked instance* of a project-scoped
@@ -2973,6 +3004,13 @@ pub struct Clip {
     /// Forward speeds only: a reversed clip's sound is tape's.
     #[serde(default)]
     pub keep_pitch: bool,
+    /// A picture whose sound was put on a sound clip of its own: it plays
+    /// no sound of its own, linked to that clip or not. A picture's sound
+    /// was left out only while its link pointed at the sound clip, so
+    /// Unlink, which clears the link, played it twice, the picture's and
+    /// the sound clip's on top.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub sound_apart: bool,
     /// A freeze frame (#2773): the source time shown for the clip's whole
     /// length, whatever its speed, its sound silent. Its length is its
     /// timeline length; `None` plays the clip.
@@ -3266,7 +3304,7 @@ impl Clip {
     /// alike. A speed ramp has no one speed to read at, and is silent; a
     /// ramp op takes the linked clip with it, so a shot goes quiet whole.
     pub fn plays_its_sound(&self) -> bool {
-        self.speed_keyframes.is_empty() && self.hold.is_none()
+        self.speed_keyframes.is_empty() && self.hold.is_none() && !self.sound_apart
     }
 
     /// Whether its sound is read at another speed than its own.
@@ -3538,6 +3576,7 @@ impl Clip {
                 active_grade_version: None,
             }.into(),
             linked_clip_id: None,
+            effects_switched_off: Vec::new(),
             linked_title_asset_id: None,
             group_id: None,
             grade_group: None,
@@ -3563,6 +3602,7 @@ impl Clip {
             speed: 1.0,
             speed_keyframes: Vec::new(),
             keep_pitch: false,
+            sound_apart: false,
             hold: None,
             source_rotation: 0,
             enabled: true,
@@ -3657,6 +3697,7 @@ impl Clip {
                 active_grade_version: None,
             }.into(),
             linked_clip_id: None,
+            effects_switched_off: Vec::new(),
             linked_title_asset_id: None,
             group_id: None,
             grade_group: None,
@@ -3682,6 +3723,7 @@ impl Clip {
             speed: 1.0,
             speed_keyframes: Vec::new(),
             keep_pitch: false,
+            sound_apart: false,
             hold: None,
             source_rotation: 0,
             enabled: true,
@@ -3765,6 +3807,7 @@ impl Clip {
                 active_grade_version: None,
             }.into(),
             linked_clip_id: None,
+            effects_switched_off: Vec::new(),
             linked_title_asset_id: None,
             group_id: None,
             grade_group: None,
@@ -3790,6 +3833,7 @@ impl Clip {
             speed: 1.0,
             speed_keyframes: Vec::new(),
             keep_pitch: false,
+            sound_apart: false,
             hold: None,
             source_rotation: 0,
             enabled: true,

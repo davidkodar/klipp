@@ -54,7 +54,7 @@ impl TitleTemplate {
         let mut td = publish(td, &self.fields, anchor);
         // A template with a backing of its own reads on it; a halo round
         // the backing would only smudge the picture.
-        td.protect = if backed(&td) { crate::ContrastProtect::Off } else { crate::ContrastProtect::Auto };
+        td.protect = if td.has_own_backing() { crate::ContrastProtect::Off } else { crate::ContrastProtect::Auto };
         td
     }
 
@@ -166,19 +166,6 @@ impl TitleTemplate {
     }
 }
 
-/// Whether every text of `td` sits on a backing of its own: an opaque
-/// shape fitted to it, or one its place is inside.
-fn backed(td: &TitleData) -> bool {
-    let backings: Vec<&crate::TitleObject> = td.objects.iter().filter(|o| matches!(&o.content, TitleObjectContent::Shape(s) if s.fill.is_some_and(|f| f[3] >= 150))).collect();
-    td.objects.iter().filter(|o| matches!(o.content, TitleObjectContent::TextBox(_))).all(|text| {
-        backings.iter().any(|b| {
-            let TitleObjectContent::Shape(s) = &b.content else { return false };
-            let (c, size, at) = (b.transform.center, b.transform.size, text.transform.center);
-            s.fit.as_ref().is_some_and(|f| f.target == text.id)
-                || ((at.x - c.x).abs() <= size.x / 2.0 && (at.y - c.y).abs() <= size.y / 2.0)
-        })
-    })
-}
 
 /// The frame a template was designed on, wide to high.
 const DESIGN_ASPECT: f32 = 16.0 / 9.0;

@@ -1364,6 +1364,67 @@ mod tests {
         }).collect()
     }
 
+    /// The master's readouts in the interface's monospace face, at their
+    /// widest values (-60 dB, LUFS -70.5, LRA 20.5): each stays in its
+    /// column and the strip, the left one's clear of the right's.
+    #[test]
+    fn the_master_readouts_keep_their_columns() {
+        let ctx = egui::Context::default();
+        ctx.set_fonts(crate::theme::unicode_fallback_fonts());
+        let theme = KlippTheme::default();
+        let mut strip = egui::Rect::NOTHING;
+        let mut out = None;
+        for _ in 0..2 {
+            out = Some(ctx.run(egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(400.0, 400.0))), ..Default::default() }, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let mut volume = 0.001;
+                    strip = ui.available_rect_before_wrap();
+                    master_strip(ui, &theme, 300.0, &mut volume, 0.001, 0.001, -70.5, -70.5, -70.5, 20.5, -70.5, -23.0, true, false, &mut Vec::new());
+                });
+            }));
+        }
+        let strip = egui::Rect::from_min_size(strip.min, egui::vec2(MASTER_W, 300.0));
+        let col2 = strip.min.x + MASTER_W / 2.0 + 4.0;
+        let texts: Vec<(String, egui::Rect)> = out.unwrap().shapes.iter().filter_map(|s| match &s.shape {
+            egui::Shape::Text(t) if t.galley.job.sections.first().is_some_and(|sec| sec.format.font_id.family == egui::FontFamily::Monospace) => Some((t.galley.text().to_string(), egui::Rect::from_min_size(t.pos, t.galley.size()))),
+            _ => None,
+        }).collect();
+        let readouts: Vec<&(String, egui::Rect)> = texts.iter().filter(|(t, _)| t.contains("dB") || t.contains(':') || t.starts_with("Pk") || t.starts_with("TP") || t.starts_with("LRA")).collect();
+        assert!(readouts.len() >= 7, "the readouts drawn: {texts:?}");
+        for (t, r) in readouts {
+            assert!(strip.contains_rect(r.shrink(0.5)), "{t:?} inside the strip: {r:?} in {strip:?}");
+            if r.min.x < col2 - 1.0 {
+                assert!(r.max.x <= col2 - 2.0, "{t:?} clear of the right column: ends {:.1}, it starts {col2:.1}", r.max.x);
+            }
+        }
+    }
+
+    /// The whole mixer in the interface's monospace face: no two of its
+    /// monospace texts on one row (the strips' readouts and labels, the
+    /// master's two columns) run into each other, at the panel's minimum
+    /// height. Rows a line apart may share a pixel of their line boxes'
+    /// spacing, which shows nothing.
+    #[test]
+    fn no_mixer_readouts_overlap_in_the_interface_mono() {
+        let ctx = egui::Context::default();
+        ctx.set_fonts(crate::theme::unicode_fallback_fonts());
+        let mut state = AppState::default();
+        mixer_frame(&ctx, &mut state, MIXER_MIN_H, None);
+        let (shapes, _) = mixer_frame(&ctx, &mut state, MIXER_MIN_H, None);
+        let texts: Vec<(String, egui::Rect)> = shapes.iter().filter_map(|s| match &s.shape {
+            egui::Shape::Text(t) if !t.galley.text().trim().is_empty() && t.galley.job.sections.first().is_some_and(|sec| sec.format.font_id.family == egui::FontFamily::Monospace) => Some((t.galley.text().to_string(), egui::Rect::from_min_size(t.pos, t.galley.size()).shrink(0.5))),
+            _ => None,
+        }).collect();
+        assert!(texts.len() > 5, "monospace texts drawn: {texts:?}");
+        for (i, (a, ra)) in texts.iter().enumerate() {
+            for (b, rb) in &texts[i + 1..] {
+                let same_row = (ra.center().y - rb.center().y).abs() < 3.0;
+                let across = ra.max.x > rb.min.x && rb.max.x > ra.min.x;
+                assert!(!(same_row && across), "{a:?} {ra:?} runs into {b:?} {rb:?}");
+            }
+        }
+    }
+
     /// #2693: at the panel's old fixed height and at its new minimum,
     /// every strip shows its mute and solo, the master its reset, and a
     /// click on a mute mutes that track.
