@@ -2135,6 +2135,10 @@ impl ViewerPanel {
         let mut te_ui = ui.new_child(egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(bb.min, egui::vec2(1.0, 1.0))));
         te_ui.style_mut().visuals.selection.bg_fill = egui::Color32::TRANSPARENT;
         te_ui.style_mut().visuals.selection.stroke = egui::Stroke::NONE;
+        // Its caret too: the one shown is drawn in the text, below. One
+        // pixel wide, this editor puts a character on each line, and its
+        // own caret showed a line down per character, below the picture.
+        te_ui.style_mut().visuals.text_cursor.stroke = egui::Stroke::NONE;
         let te_output = egui::TextEdit::multiline(&mut state.viewer_text_edit_buffer)
             .id(edit_id)
             .desired_width(1.0)
