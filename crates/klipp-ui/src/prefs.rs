@@ -1047,18 +1047,11 @@ impl Preferences {
             }
             Err(_) => {
                 tracing::info!("No preferences file found, using defaults");
-                let mut prefs = Self::default();
-                // A fresh install on Omarchy matches the desktop from
-                // the first launch. Existing installs keep their theme.
-                if crate::theme::omarchy::detect().is_some() {
+                let omarchy = crate::theme::omarchy::detect().is_some();
+                if omarchy {
                     tracing::info!("Omarchy detected: following the system theme by default");
-                    prefs.appearance.follow_system_theme = true;
-                } else {
-                    // Elsewhere the desktop portal decides, once it has
-                    // answered (`sync_system_theme`).
-                    prefs.appearance.follow_system_theme_pending = true;
                 }
-                prefs
+                Self::first_run(omarchy)
             }
         }
     }
@@ -1067,6 +1060,17 @@ impl Preferences {
     /// falling back to `Preferences::default()` on any error path. Extracted
     /// from `load()` so the malformed-input behaviour can be tested without
     /// going through the on-disk config path.
+    /// A fresh install's preferences: Dark, in the desktop's accent. On
+    /// Omarchy, the person's own desktop, its whole palette is followed
+    /// from the first launch. Elsewhere the desktop's dark or light is
+    /// not: KDE's Breeze prefers light by default, and Klipp started light
+    /// there. Light is the person's choice, in the picker or by following.
+    pub fn first_run(omarchy: bool) -> Self {
+        let mut prefs = Self::default();
+        prefs.appearance.follow_system_theme = omarchy;
+        prefs
+    }
+
     pub fn from_json_str(contents: &str) -> Self {
         // Two-pass parse: first into a generic JSON Value so we can run the
         // legacy field migrations, then into the typed Preferences struct.
@@ -1517,20 +1521,21 @@ pub struct AppearancePrefs {
     /// appear here by their TOML `name` field.
     #[serde(default = "default_theme_name")]
     pub theme_name: String,
-    /// Follow the desktop's theme instead of `theme_name`. Only
-    /// Omarchy is understood today (`theme/omarchy.rs`); on a desktop
-    /// without it the flag is ignored and `theme_name` applies, so
-    /// preferences travel between machines. `theme_name` is left
-    /// untouched while following, so switching it off restores the
-    /// user's own choice. Defaults to on for a fresh install under
-    /// Omarchy (see `Preferences::load`), off otherwise.
+    /// Follow the desktop's theme instead of `theme_name`: Omarchy's whole
+    /// palette (`theme/omarchy.rs`), or elsewhere the desktop's dark or
+    /// light (the portal, #2625). With neither, `theme_name` applies, so
+    /// preferences travel between machines; it is left untouched while
+    /// following, so switching this off restores the user's own choice.
+    /// On for a fresh install under Omarchy (`Preferences::first_run`),
+    /// off otherwise; an existing file keeps what it says.
     #[serde(default)]
     pub follow_system_theme: bool,
-    /// A fresh install with no full system palette, waiting for the
-    /// desktop portal's first answer: following turns on then if the
-    /// desktop prefers dark or light (#2625). Not saved.
-    #[serde(skip)]
-    pub follow_system_theme_pending: bool,
+    /// Colour the theme in the desktop's accent (the portal's), whatever
+    /// the theme. On for a fresh install; a file saved before this
+    /// setting existed reads it as off, so an existing install keeps its
+    /// look.
+    #[serde(default)]
+    pub follow_system_accent: bool,
     /// Legacy: pre-registry theme mode enum. If present, the
     /// post-load migration in `Preferences::load` translates it to
     /// `theme_name` and clears this field. Kept Serialize so existing
@@ -1578,7 +1583,7 @@ impl Default for AppearancePrefs {
             small_screen_note_shown: false,
             theme_name: default_theme_name(),
             follow_system_theme: false,
-            follow_system_theme_pending: false,
+            follow_system_accent: true,
             theme_mode: None,
             accent_color: default_accent_color(),
             playhead_color: default_playhead_color(),

@@ -177,6 +177,14 @@ impl ThemeRegistry {
         Some(theme)
     }
 
+    /// The desktop's accent colour, when the portal gives one.
+    pub fn portal_accent(&self) -> Option<egui::Color32> {
+        match self.portal {
+            super::portal::PortalStatus::Found(appearance) => appearance.accent,
+            _ => None,
+        }
+    }
+
     /// Whether following the system theme changes anything here: a full
     /// palette, or a portal with a dark or light preference.
     pub fn has_system_theme(&self) -> bool {
@@ -378,6 +386,61 @@ mod portal_tests {
         reg.set_portal(found(ColorScheme::Light, None));
         let t = KlippTheme::from_prefs(&following("Solarized Dark"), &reg);
         assert_eq!((t.bg_panel, t.accent), (light.bg_panel, light.accent), "no accent set: the theme's own");
+    }
+
+    /// A fresh install starts Dark in the desktop's accent, even where the
+    /// desktop prefers light (Breeze's default on KDE); light only when
+    /// the person turns following dark and light on.
+    #[test]
+    fn a_fresh_install_starts_dark_in_the_desktops_accent() {
+        let mut reg = ThemeRegistry::builtins_only();
+        let (dark, light) = (reg.get("Dark").expect("Dark").clone(), reg.get("Light").expect("Light").clone());
+        reg.set_portal(found(ColorScheme::Light, Some(BLUE)));
+        let fresh = crate::prefs::Preferences::first_run(false).appearance;
+        let t = KlippTheme::from_prefs(&fresh, &reg);
+        assert_eq!((t.bg_panel, t.accent), (dark.bg_panel, BLUE), "dark, in the accent");
+        let on = crate::prefs::AppearancePrefs { follow_system_theme: true, ..fresh.clone() };
+        let t = KlippTheme::from_prefs(&on, &reg);
+        assert_eq!((t.bg_panel, t.accent), (light.bg_panel, BLUE), "following dark and light: light");
+        let own = crate::prefs::AppearancePrefs { follow_system_accent: false, ..fresh };
+        assert_eq!(KlippTheme::from_prefs(&own, &reg).accent, dark.accent, "the accent not followed: the theme's");
+    }
+
+    /// An existing preferences file keeps what it followed: on, the
+    /// desktop's dark or light; off, its own theme and accent, the accent
+    /// switch not added to it.
+    #[test]
+    fn an_old_preferences_file_keeps_what_it_followed() {
+        let mut reg = ThemeRegistry::builtins_only();
+        let (dark, light) = (reg.get("Dark").expect("Dark").clone(), reg.get("Light").expect("Light").clone());
+        reg.set_portal(found(ColorScheme::Light, Some(BLUE)));
+        // A file saved before the accent switch existed: no such field.
+        let old = |follow: bool| {
+            let mut file = serde_json::to_value(crate::prefs::Preferences::default()).expect("prefs serialize");
+            let appearance = file["appearance"].as_object_mut().expect("appearance");
+            appearance.remove("follow_system_accent");
+            appearance.insert("follow_system_theme".into(), follow.into());
+            crate::prefs::Preferences::from_json_str(&file.to_string()).appearance
+        };
+        let t = KlippTheme::from_prefs(&old(true), &reg);
+        assert_eq!((t.bg_panel, t.accent), (light.bg_panel, BLUE));
+        let t = KlippTheme::from_prefs(&old(false), &reg);
+        assert!(!old(false).follow_system_accent);
+        assert_eq!((t.bg_panel, t.accent), (dark.bg_panel, dark.accent));
+    }
+
+    /// Omarchy is followed whole, its own palette and accent, as before.
+    #[test]
+    fn omarchy_is_followed_whole() {
+        let mut reg = ThemeRegistry::builtins_only();
+        let palette = reg.get("Solarized Dark").expect("a palette").clone();
+        reg.entries.insert(super::super::omarchy::THEME_ID.to_string(), RegistryEntry { theme: palette.clone(), source: ThemeSource::Omarchy, path: None });
+        reg.omarchy_name = Some("Solarized".into());
+        reg.set_portal(found(ColorScheme::Light, Some(BLUE)));
+        let prefs = crate::prefs::Preferences::first_run(true).appearance;
+        assert!(prefs.follow_system_theme, "a fresh install on Omarchy follows it");
+        let t = KlippTheme::from_prefs(&prefs, &reg);
+        assert_eq!((t.bg_panel, t.accent), (palette.bg_panel, palette.accent));
     }
 
     /// No preference, no portal, an answer not in yet, or following
