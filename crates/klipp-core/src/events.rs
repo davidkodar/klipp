@@ -4122,8 +4122,9 @@ pub enum AppCommand {
     // Audio ducking
     AutoDuckAudio {
         target_clip_id: ClipId,
-        /// Track index of the dialogue/sidechain source
-        sidechain_track_idx: usize,
+        /// The tracks of the dialogue it ducks under, by index: their
+        /// speech joined.
+        sidechain_tracks: Vec<usize>,
         /// How much to reduce volume (0.0 = silence, 0.3 = reduce to 30%)
         duck_level: f32,
         /// How quickly to ramp down in seconds

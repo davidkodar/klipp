@@ -45,7 +45,8 @@ pub fn find_clip_peak_levels(clip: &Clip, track_idx: usize, state: &AppState) ->
 }
 
 pub struct DuckSettings {
-    pub sidechain_track: usize,
+    /// The tracks it ducks under: their speech joined.
+    pub sidechain_tracks: Vec<usize>,
     pub level: f32,
     pub attack: f32,
     pub release: f32,
@@ -55,7 +56,7 @@ pub struct DuckSettings {
 impl Default for DuckSettings {
     fn default() -> Self {
         Self {
-            sidechain_track: 0,
+            sidechain_tracks: Vec::new(),
             level: 0.2,
             attack: 0.1,
             release: 0.3,
@@ -99,11 +100,11 @@ fn sound_role(seq: &klipp_timeline::Sequence, clip: &Clip) -> Option<klipp_core:
 
 impl DuckSettings {
     /// Build a fresh DuckSettings seeded from the user's audio prefs.
-    /// Caller is responsible for overriding `sidechain_track` afterwards
+    /// Caller is responsible for setting `sidechain_tracks` afterwards
     /// (role-aware track selection lives in the inspector dispatcher).
     pub fn from_prefs(prefs: &crate::prefs::AudioPrefs) -> Self {
         Self {
-            sidechain_track: 0,
+            sidechain_tracks: Vec::new(),
             level: prefs.duck_level,
             attack: prefs.duck_attack_secs,
             release: prefs.duck_release_secs,
@@ -136,16 +137,37 @@ impl TrackInfo {
     }
 }
 
-/// What the duck under `side` leaves out, said: the other heard tracks
-/// with speech, which it doesn't listen to. `None` when there are none.
-fn not_counted(tracks: &[TrackInfo], own: usize, side: &TrackInfo) -> Option<String> {
-    let others: Vec<&str> = tracks.iter().filter(|t| t.index != own && t.index != side.index && t.speech && !t.muted).map(|t| t.name.as_str()).collect();
-    let names = match others.as_slice() {
-        [] => return None,
-        [one] => format!("{one} isn't counted"),
-        [rest @ .., last] => format!("{} and {last} aren't counted", rest.join(", ")),
-    };
-    Some(format!("Ducks under {} only; {names}.", side.name))
+/// The tracks a clip on track `own` ducks under, as first offered: every
+/// other heard track with speech on it, their speech joined, so music under
+/// an interview of two voices ducks under both; with none, the one
+/// [`default_sidechain`] offers. Empty when there is no other sound track.
+pub fn default_sidechains(seq: &klipp_timeline::Sequence, own: usize) -> Vec<usize> {
+    let voices: Vec<usize> = seq.tracks.iter().enumerate()
+        .filter(|(i, t)| *i != own && t.kind == klipp_timeline::TrackKind::Audio && !t.muted && has_speech(seq, t))
+        .map(|(i, _)| i)
+        .collect();
+    if voices.is_empty() { default_sidechain(seq, own).into_iter().collect() } else { voices }
+}
+
+/// Names said in a row: "A", "A and B", "A, B and C".
+fn named(names: &[&str]) -> String {
+    match names {
+        [] => String::new(),
+        [one] => (*one).to_string(),
+        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+    }
+}
+
+/// What a duck under `ticked` leaves out, said: the other heard tracks with
+/// speech, not ticked. `None` when it leaves none out.
+fn not_counted(tracks: &[TrackInfo], own: usize, ticked: &[usize]) -> Option<String> {
+    let others: Vec<&str> = tracks.iter().filter(|t| t.index != own && !ticked.contains(&t.index) && t.speech && !t.muted).map(|t| t.name.as_str()).collect();
+    if others.is_empty() {
+        return None;
+    }
+    let under: Vec<&str> = tracks.iter().filter(|t| ticked.contains(&t.index)).map(|t| t.name.as_str()).collect();
+    let verb = if others.len() == 1 { "isn't" } else { "aren't" };
+    Some(format!("Ducks under {} only; {} {verb} counted.", named(&under), named(&others)))
 }
 
 /// clip_ctx: Some((clip, track_idx, is_timeline_clip)) or None for no-selection state.
@@ -924,34 +946,28 @@ fn show_clip_audio(
             let pad = 14.0;
             let row_h = 30.0;
 
-            // Sidechain dropdown — right-aligned to match slider value boxes
-            {
-                let (row_rect, _) = ui.allocate_exact_size(egui::vec2(w, row_h + 4.0), egui::Sense::hover());
-                ui.painter().text(
-                    egui::pos2(row_rect.min.x + pad, row_rect.center().y),
-                    egui::Align2::LEFT_CENTER, "Sidechain",
-                    egui::FontId::proportional(super::rows::TEXT), theme.text_secondary,
-                );
-                let combo_w = 110.0;
-                let combo_rect = egui::Rect::from_min_size(
-                    egui::pos2(row_rect.max.x - pad - combo_w, row_rect.center().y - 13.0),
-                    egui::vec2(combo_w, 26.0),
-                );
-                let current_label = tracks.iter()
-                    .find(|t| t.index == duck.sidechain_track)
-                    .map(|t| t.name.clone())
-                    .unwrap_or_else(|| "None".to_string());
-                ui.allocate_new_ui(egui::UiBuilder::new().max_rect(combo_rect), |ui| {
-                    egui::ComboBox::from_id_salt("duck_sidechain")
-                        .selected_text(&current_label)
-                        .width(combo_w - 10.0)
-                        .show_ui(ui, |ui| {
-                            for t in tracks {
-                                ui.selectable_value(&mut duck.sidechain_track, t.index, &t.name);
-                            }
-                        });
+            // The tracks it ducks under: each other sound track, ticked to
+            // be listened to (#walk: one track only, a second voice left out).
+            ui.horizontal(|ui| {
+                ui.add_space(pad);
+                ui.label(egui::RichText::new("Duck under").size(super::rows::TEXT).color(theme.text_secondary));
+            });
+            for t in tracks.iter().filter(|t| t.index != track_idx) {
+                let mut on = duck.sidechain_tracks.contains(&t.index);
+                let label = if t.muted { format!("{} (muted)", t.name) } else { t.name.clone() };
+                ui.horizontal(|ui| {
+                    ui.add_space(pad + 8.0);
+                    if ui.checkbox(&mut on, egui::RichText::new(label).size(super::rows::TEXT)).changed() {
+                        if on {
+                            duck.sidechain_tracks.push(t.index);
+                            duck.sidechain_tracks.sort_unstable();
+                        } else {
+                            duck.sidechain_tracks.retain(|i| *i != t.index);
+                        }
+                    }
                 });
             }
+            let _ = (w, row_h);
 
             // Duck Level
             let empty_ks = Some(KeyframeState {
@@ -971,18 +987,19 @@ fn show_clip_audio(
             slider_row(ui, theme, "duck_threshold", "Threshold", &mut duck.threshold, 0.0..=1.0, 0.1, 0.005, 2, "", empty_ks, false);
 
             ui.add_space(4.0);
-            // Self-ducking guard — target track cannot be its own sidechain
-            // source, nor a track with no sound (none other to choose).
+            // The tracks ticked, of the other sound tracks: never the
+            // clip's own, nor one with no sound.
             let no_other = !tracks.iter().any(|t| t.index != track_idx);
-            let is_self_duck = duck.sidechain_track == track_idx || !tracks.iter().any(|t| t.index == duck.sidechain_track);
-            let side = tracks.iter().find(|t| t.index == duck.sidechain_track).filter(|_| !is_self_duck);
-            // A muted sidechain: the duck would follow a voice no one hears.
-            let muted = side.filter(|t| t.muted).map(|t| format!("{} is muted: this clip would duck under a voice nobody hears.", t.name));
-            let note = side.and_then(|t| not_counted(tracks, track_idx, t));
+            let ticked: Vec<usize> = duck.sidechain_tracks.iter().copied().filter(|i| *i != track_idx && tracks.iter().any(|t| t.index == *i)).collect();
+            let none_ticked = ticked.is_empty();
+            // A muted one ticked: the duck would follow a voice no one hears.
+            let muted: Vec<&str> = tracks.iter().filter(|t| ticked.contains(&t.index) && t.muted).map(|t| t.name.as_str()).collect();
+            let muted = (!muted.is_empty()).then(|| format!("{} {} muted: this clip would duck under a voice nobody hears.", named(&muted), if muted.len() == 1 { "is" } else { "are" }));
+            let note = (!none_ticked).then(|| not_counted(tracks, track_idx, &ticked)).flatten();
             ui.horizontal(|ui| {
                 ui.add_space(14.0);
                 let btn = ui.add_enabled(
-                    !is_self_duck && muted.is_none(),
+                    !none_ticked && muted.is_none(),
                     egui::Button::new(
                         egui::RichText::new("Apply Auto Duck").size(11.0).color(theme.text_primary),
                     )
@@ -993,7 +1010,7 @@ fn show_clip_audio(
                 if btn.clicked() {
                     cmds.push(AppCommand::AutoDuckAudio {
                         target_clip_id: clip_id,
-                        sidechain_track_idx: duck.sidechain_track,
+                        sidechain_tracks: ticked.clone(),
                         duck_level: duck.level,
                         attack_secs: duck.attack,
                         release_secs: duck.release,
@@ -1001,12 +1018,12 @@ fn show_clip_audio(
                     });
                 }
             });
-            if is_self_duck {
+            if none_ticked {
                 ui.add_space(2.0);
                 ui.horizontal(|ui| {
                     ui.add_space(14.0);
                     ui.label(
-                        egui::RichText::new(if no_other { "No other track has sound to duck under." } else { "Sidechain source cannot be the same track as the target." })
+                        egui::RichText::new(if no_other { "No other track has sound to duck under." } else { "Tick the tracks to duck under." })
                             .size(super::rows::TEXT)
                             .color(theme.marker_warning),
                     );
@@ -1453,11 +1470,11 @@ mod clip_audio_tests {
 
     /// The music's Auto Duck section with `sidechain` chosen: what it
     /// says, and what a click on Apply sends.
-    fn duck_section(seq: &klipp_timeline::Sequence, sidechain: usize) -> (Vec<String>, Vec<AppCommand>) {
+    fn duck_section(seq: &klipp_timeline::Sequence, sidechain: &[usize]) -> (Vec<String>, Vec<AppCommand>) {
         let mut state = AppState::default();
         state.sequences[0] = seq.clone();
         let music = seq.tracks[0].clips[0].clone();
-        let mut duck = DuckSettings { sidechain_track: sidechain, ..DuckSettings::default() };
+        let mut duck = DuckSettings { sidechain_tracks: sidechain.to_vec(), ..DuckSettings::default() };
         let tracks = TrackInfo::of(seq);
         let ctx = egui::Context::default();
         crate::icons::install(&ctx);
@@ -1482,13 +1499,45 @@ mod clip_audio_tests {
     fn a_muted_voice_is_not_ducked_under() {
         let seq = music_and_two_voices(true);
         assert_eq!(default_sidechain(&seq, 0), Some(2), "the voice that is heard");
-        let (texts, cmds) = duck_section(&seq, 1);
+        let (texts, cmds) = duck_section(&seq, &[1]);
         let reason = "Voice A is muted: this clip would duck under a voice nobody hears.";
         assert!(texts.iter().any(|t| t == reason), "the reason: {texts:?}");
         assert!(!ducks(&cmds), "Apply refused: {cmds:?}");
-        let (texts, cmds) = duck_section(&seq, 2);
-        assert!(!texts.iter().any(|t| t.contains("muted")), "the heard voice: nothing of a mute: {texts:?}");
+        let (texts, cmds) = duck_section(&seq, &[2]);
+        assert!(!texts.iter().any(|t| t.contains("is muted:")), "the heard voice: no warning of a mute: {texts:?}");
         assert!(ducks(&cmds), "and Apply ducks");
+    }
+
+    /// Two voices, both heard: the duck listens to both by default, each
+    /// ticked in its list, and Apply sends both; nothing is said left out.
+    /// It took one track, and the second voice went undocked.
+    #[test]
+    fn the_duck_listens_to_every_voice_by_default() {
+        let seq = music_and_two_voices(false);
+        assert_eq!(default_sidechains(&seq, 0), vec![1, 2], "both voices");
+        let (texts, cmds) = duck_section(&seq, &default_sidechains(&seq, 0));
+        assert!(texts.iter().any(|t| t == "Voice A") && texts.iter().any(|t| t == "Voice B"), "both listed: {texts:?}");
+        assert!(!texts.iter().any(|t| t.contains("counted")), "nothing left out: {texts:?}");
+        let sent = cmds.iter().find_map(|c| match c { AppCommand::AutoDuckAudio { sidechain_tracks, .. } => Some(sidechain_tracks.clone()), _ => None });
+        assert_eq!(sent, Some(vec![1, 2]));
+        // A muted voice isn't offered; with no voice at all, the first
+        // other sound track, as before.
+        assert_eq!(default_sidechains(&music_and_two_voices(true), 0), vec![2]);
+        let mut plain = seq.clone();
+        for t in &mut plain.tracks {
+            for c in &mut t.clips {
+                c.role = None;
+            }
+        }
+        assert_eq!(default_sidechains(&plain, 0), vec![1]);
+    }
+
+    /// Nothing ticked: Apply is refused with what to do.
+    #[test]
+    fn with_nothing_ticked_the_duck_says_to_tick() {
+        let (texts, cmds) = duck_section(&music_and_two_voices(false), &[]);
+        assert!(texts.iter().any(|t| t == "Tick the tracks to duck under."), "{texts:?}");
+        assert!(!ducks(&cmds));
     }
 
     /// A voice whose role is set on its picture, not its sound clip, is
@@ -1525,15 +1574,15 @@ mod clip_audio_tests {
     #[test]
     fn the_duck_says_which_voice_it_ducks_under() {
         let seq = music_and_two_voices(false);
-        let (texts, cmds) = duck_section(&seq, 1);
+        let (texts, cmds) = duck_section(&seq, &[1]);
         assert!(texts.iter().any(|t| t == "Ducks under Voice A only; Voice B isn't counted."), "{texts:?}");
         assert!(ducks(&cmds), "and still ducks");
         let mut one = seq.clone();
         one.tracks.truncate(2);
-        let (texts, _) = duck_section(&one, 1);
+        let (texts, _) = duck_section(&one, &[1]);
         assert!(!texts.iter().any(|t| t.starts_with("Ducks under")), "one voice, nothing more: {texts:?}");
         // A muted voice isn't heard, so isn't missed either.
-        let (texts, _) = duck_section(&music_and_two_voices(true), 2);
+        let (texts, _) = duck_section(&music_and_two_voices(true), &[2]);
         assert!(!texts.iter().any(|t| t.starts_with("Ducks under")), "{texts:?}");
     }
 
@@ -1560,7 +1609,7 @@ mod clip_audio_tests {
         let all: Vec<&str> = texts.iter().map(|(t, _)| t.as_str()).collect();
         for label in [
             "ROLE", "AUDIO", "Source", "Stereo (2ch)", "Channel", "Gain", "Volume", "Pan", "Fade In", "Curve", "Fade Out",
-            "BEHAVIORS", "LEVEL", "WAVEFORM", "AUDIO EFFECTS", "AUTO DUCK", "Sidechain", "Duck Level", "Attack", "Release", "Threshold", "Apply Auto Duck",
+            "BEHAVIORS", "LEVEL", "WAVEFORM", "AUDIO EFFECTS", "AUTO DUCK", "Duck under", "Duck Level", "Attack", "Release", "Threshold", "Apply Auto Duck",
         ] {
             assert!(all.contains(&label), "{label} is no longer shown: {all:?}");
         }
