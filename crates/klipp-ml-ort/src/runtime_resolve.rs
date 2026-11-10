@@ -285,10 +285,15 @@ fn expand_tilde(p: &str) -> PathBuf {
 /// Linux. Returns `None` when lspci isn't installed OR when
 /// no VGA/3D class entry is found (very rare on a real machine).
 fn detect_via_lspci() -> Option<GpuVendor> {
-    let out = std::process::Command::new("lspci")
-        .arg("-nn")
-        .output()
-        .ok()?;
+    let out = match std::process::Command::new("lspci").arg("-nn").output() {
+        Ok(out) => out,
+        Err(e) => {
+            // A Flatpak's sandbox has no lspci: the loaded kernel modules
+            // name the GPU's maker instead.
+            tracing::info!("lspci can't run ({e}): the GPU's maker is read from the loaded kernel modules");
+            return None;
+        }
+    };
     if !out.status.success() {
         return None;
     }
