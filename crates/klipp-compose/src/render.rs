@@ -1166,10 +1166,16 @@ struct Layer {
 /// title's own, 0 for anything else. A title with a backing has none:
 /// the backing is what it stands out on, and the pass, measuring the
 /// layer, read the dark box round white words as dark text and lightened
-/// the picture into bright streaks at the halo's edge.
+/// the picture into bright streaks at the halo's edge. On Auto, a title
+/// whose texts each sit on a box of its own (a lower third's bar) has
+/// none either, as its template ships: the halo drew a grey rim round the
+/// box. Always protects it still.
 pub(crate) fn contrast_protect(c: &Clip) -> u32 {
     match &c.kind {
-        ClipKind::Title(td) if matches!(td.background, klipp_timeline::TitleBackground::None) => td.protect.code(),
+        ClipKind::Title(td) if matches!(td.background, klipp_timeline::TitleBackground::None) => match td.protect {
+            klipp_timeline::ContrastProtect::Auto if td.has_own_backing() => 0,
+            protect => protect.code(),
+        },
         _ => 0,
     }
 }
@@ -9385,5 +9391,32 @@ mod broken_transition_tests {
         (c.timeline_in, c.timeline_out) = (RationalTime { value: 60000, rate: 30000 }, RationalTime { value: 120000, rate: 30000 });
         track.clips[1] = c;
         assert!(track.transition_meets(&tr), "2.0 s at 30000 meets 2.0 s at 25");
+    }
+}
+
+#[cfg(test)]
+mod contrast_protect_tests {
+    use super::*;
+
+    /// A title with a box of its own (a lower third's bar, a caption's
+    /// card) gets no halo on Auto, as the templates that have one ship
+    /// with Readability off: switched to Auto, the pass still drew a grey
+    /// halo round the box over a dark picture. Always still protects it,
+    /// and a plain title on Auto is protected as before.
+    #[test]
+    fn auto_gives_a_titles_own_box_no_halo() {
+        use klipp_timeline::{title_library::TITLES, ContrastProtect};
+        let clip_of = |name: &str, protect: ContrastProtect| {
+            let mut td = TITLES.iter().find(|t| t.name == name).unwrap_or_else(|| panic!("{name}")).build_for(1280, 720);
+            td.protect = protect;
+            Clip { kind: ClipKind::Title(td), ..Clip::gap(klipp_core::Timecode::zero(), klipp_core::Timecode { value: 48, rate: 24 }) }
+        };
+        for boxed in ["Name Bar", "Caption", "Callout", "Note", "Label"] {
+            assert_eq!(contrast_protect(&clip_of(boxed, ContrastProtect::Auto)), 0, "{boxed} on Auto");
+            assert_eq!(contrast_protect(&clip_of(boxed, ContrastProtect::Always)), ContrastProtect::Always.code(), "{boxed} on Always");
+        }
+        for plain in ["Clean Line", "Impact", "Statement"] {
+            assert_eq!(contrast_protect(&clip_of(plain, ContrastProtect::Auto)), ContrastProtect::Auto.code(), "{plain} on Auto");
+        }
     }
 }

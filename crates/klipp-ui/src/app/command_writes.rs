@@ -965,6 +965,7 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::BeginAudioChainDrag { .. }
         | AppCommand::EndAudioChainDrag { .. }
         | AppCommand::SetClipBlendMode { .. }
+        | AppCommand::SetEffectsSwitchedOff { .. }
         | AppCommand::SetClipMatte { .. }
         | AppCommand::ClearClipMatte { .. }
         | AppCommand::SetClipTransformLink { .. }

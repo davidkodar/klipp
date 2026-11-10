@@ -627,7 +627,9 @@ impl GpuEffectsPipeline {
                     spill_method: method_code,
                     spill_strength: *spill_strength,
                     spill_key_idx: key_idx,
-                    _pad: [0; 3],
+                    key_y: crate::chroma_key_luma(rf, gf, bf),
+                    luma_weight: crate::CHROMA_KEY_LUMA_WEIGHT,
+                    _pad: 0,
                 });
                 (&self.pipelines.chroma_key_pipeline, slot)
             }

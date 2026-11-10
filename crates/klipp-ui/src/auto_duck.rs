@@ -78,6 +78,13 @@ pub fn speech_regions(voice: &[VoiceClip], from: f64, to: f64, threshold: f32) -
             regions.push((s, (last + WINDOW_SECS).min(to)));
         }
     }
+    joined(regions)
+}
+
+/// Stretches of speech in time order, those that touch or overlap made
+/// one: one voice's, or several tracks' each measured against its own
+/// voice's level, so music under two voices ducks under both.
+pub fn joined(mut regions: Vec<(f64, f64)>) -> Vec<(f64, f64)> {
     regions.sort_by(|a, b| a.0.total_cmp(&b.0));
     let mut merged: Vec<(f64, f64)> = Vec::new();
     for r in regions {
@@ -241,5 +248,14 @@ mod bridge_tests {
         }
         assert!(at(31.5) > 0.99, "up in a 3 s pause: {:.3}", at(31.5));
         assert!(at(10.0) > 0.99 && at(39.0) > 0.99, "up away from the speech");
+    }
+
+    /// Two voices' stretches, each track's found against its own level,
+    /// joined: the music ducks under both, overlapping ones made one.
+    #[test]
+    fn two_voices_stretches_are_joined() {
+        let a = vec![(1.0, 2.0), (6.0, 7.0)];
+        let b = vec![(1.5, 3.0), (4.0, 5.0)];
+        assert_eq!(super::joined([a, b].concat()), vec![(1.0, 3.0), (4.0, 5.0), (6.0, 7.0)]);
     }
 }

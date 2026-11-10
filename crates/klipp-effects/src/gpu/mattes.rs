@@ -797,8 +797,12 @@ pub(super) struct ChromaKeyParams {
     /// Pre-computed CPU-side from `key_color` so the shader avoids a
     /// per-pixel argmax. Tied to `dominant_channel` in chroma_key.rs.
     pub(super) spill_key_idx: u32,
+    /// The key colour's luma, sRGB 0-255, and how much a pixel's is
+    /// weighed against it (`CHROMA_KEY_LUMA_WEIGHT`).
+    pub(super) key_y: f32,
+    pub(super) luma_weight: f32,
     /// Round to 16-byte alignment — WGSL uniforms require it.
-    pub(super) _pad: [u32; 3],
+    pub(super) _pad: u32,
 }
 
 /// A gate's blend: its mix, and which channel of its matte is the

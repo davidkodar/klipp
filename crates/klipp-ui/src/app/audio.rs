@@ -7,7 +7,7 @@ impl KlippApp {
     fn auto_duck_audio(
         &mut self,
         target_clip_id: &ClipId,
-        sidechain_track_idx: &usize,
+        sidechain_tracks: &[usize],
         duck_level: &f32,
         attack_secs: &f32,
         release_secs: &f32,
@@ -31,11 +31,12 @@ impl KlippApp {
             return;
         }
 
-        // 2. Where the sidechain track's voice speaks under the clip,
-        // measured against the voice's own level.
-        let active_regions: Vec<(f64, f64)> = {
+        // 2. Where each sidechain track's voice speaks under the clip,
+        // measured against that voice's own level, the stretches joined.
+        let mut all_regions: Vec<(f64, f64)> = Vec::new();
+        for track_idx in sidechain_tracks {
             let seq = &self.state.sequences[self.state.active_sequence_idx];
-            let Some(track) = seq.tracks.get(*sidechain_track_idx) else { return };
+            let Some(track) = seq.tracks.get(*track_idx) else { continue };
             let sounds: Vec<(f64, f64, f64, Option<(Vec<f32>, u32, u16)>)> = track
                 .clips
                 .iter()
@@ -52,11 +53,12 @@ impl KlippApp {
                 .iter()
                 .map(|(a, b, s, cached)| crate::auto_duck::VoiceClip { timeline_in: *a, timeline_out: *b, source_in: *s, sound: cached.as_ref().map(|(v, r, ch)| (v.as_slice(), *r, *ch)) })
                 .collect();
-            crate::auto_duck::speech_regions(&voice, target_timeline_start, target_timeline_end, *threshold)
-        };
+            all_regions.extend(crate::auto_duck::speech_regions(&voice, target_timeline_start, target_timeline_end, *threshold));
+        }
+        let active_regions = crate::auto_duck::joined(all_regions);
 
         if active_regions.is_empty() {
-            self.state.toast.show("Auto Duck: no speech found on the sidechain track under this clip");
+            self.state.toast.show("Auto Duck: no speech found on the tracks it ducks under, under this clip");
             return;
         }
 
@@ -673,8 +675,8 @@ impl KlippApp {
                     self.translate_captions(*track_id, source, target, job_id, glossary, *download);
                     true
                 }
-                AppCommand::AutoDuckAudio { target_clip_id, sidechain_track_idx, duck_level, attack_secs, release_secs, threshold } => {
-                    self.auto_duck_audio(target_clip_id, sidechain_track_idx, duck_level, attack_secs, release_secs, threshold);
+                AppCommand::AutoDuckAudio { target_clip_id, sidechain_tracks, duck_level, attack_secs, release_secs, threshold } => {
+                    self.auto_duck_audio(target_clip_id, sidechain_tracks, duck_level, attack_secs, release_secs, threshold);
                     true
                 }
                 AppCommand::UpdateClipAudio { clip_id, gain, volume, pan, fade_in_secs, fade_out_secs, fade_in_curve, fade_out_curve, channel_config } => {
