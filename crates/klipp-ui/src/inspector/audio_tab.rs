@@ -11,6 +11,15 @@ use klipp_timeline::{ChannelConfig, Clip, FadeCurve};
 /// linked sound clip on an audio track, else the clip itself. The mix
 /// reads a sound clip's own chain and leaves out its picture's sound, so
 /// an effect put on the picture was never heard.
+/// The clip whose level, pan and fades `clip`'s sound plays at: its linked
+/// picture when it has one on a video track, else itself, as the mix reads
+/// a pair's sound settings.
+fn sound_settings_clip<'a>(seq: &'a klipp_timeline::Sequence, clip: &'a Clip) -> &'a Clip {
+    clip.linked_clip_id
+        .and_then(|lid| seq.tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Video).flat_map(|t| &t.clips).find(|c| c.id == lid))
+        .unwrap_or(clip)
+}
+
 pub fn effects_clip<'a>(seq: &'a klipp_timeline::Sequence, clip: &'a Clip) -> &'a Clip {
     seq.audio_effects_clip(clip)
 }
@@ -839,12 +848,15 @@ fn show_clip_audio(
                 let fx = effects_clip(state.sequence(), clip);
                 let clip_timeline_in_secs = fx.timeline_in.to_secs_f64();
                 let clip_rate = fx.timeline_in.rate;
+                // The level the mix puts on the sound before its effects:
+                // the pair's sound settings, on its picture when linked.
+                let level = super::audio_fx_inspector::ClipLevel::of(sound_settings_clip(state.sequence(), clip));
                 super::audio_fx_inspector::show_content(
                     ui, theme, fx.id,
                     &fx.audio_effects, &fx.audio_effect_keyframes,
                     clip_time_secs, clip_timeline_in_secs, clip_rate,
                     &state.ladspa_plugins, cmds,
-                    keyframe_tolerance,
+                    keyframe_tolerance, Some(&level),
                 );
             });
         ui.add_space(4.0);

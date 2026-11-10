@@ -109,7 +109,7 @@ fn on_a_bus(ui: &egui::Ui) -> bool {
 #[allow(clippy::too_many_arguments)]
 pub fn show_bus_content(ui: &mut egui::Ui, theme: &KlippTheme, stand_in: ClipId, effects: &[AudioEffectInstance], ladspa_plugins: &[LadspaPluginInfo], cmds: &mut Vec<AppCommand>) {
     ui.ctx().data_mut(|d| d.insert_temp(bus_card_id(), true));
-    show_content(ui, theme, stand_in, effects, &HashMap::new(), 0.0, 0.0, 30, ladspa_plugins, cmds, 0.0);
+    show_content(ui, theme, stand_in, effects, &HashMap::new(), 0.0, 0.0, 30, ladspa_plugins, cmds, 0.0, None);
     ui.ctx().data_mut(|d| d.insert_temp(bus_card_id(), false));
 }
 
@@ -491,7 +491,7 @@ pub fn show(
         ui, theme, clip_id, audio_effects, audio_effect_keyframes,
         clip_time_secs, clip_timeline_in_secs, clip_rate,
         ladspa_plugins, cmds,
-        keyframe_tolerance,
+        keyframe_tolerance, None,
     );
 }
 
@@ -516,6 +516,7 @@ pub fn show_content(
     ladspa_plugins: &[LadspaPluginInfo],
     cmds: &mut Vec<AppCommand>,
     keyframe_tolerance: f64,
+    level: Option<&ClipLevel>,
 ) {
     // "+ Add Effect" button
     ui.horizontal(|ui| {
@@ -867,7 +868,7 @@ pub fn show_content(
                         show_voice_isolation_controls(ui, theme, clip_id, idx, inst, cmds);
                     }
                     if inst.effect_type == "normalize" {
-                        if let Some(note) = normalize_note(inst) {
+                        if let Some(note) = normalize_note(inst, level) {
                             ui.label(egui::RichText::new(note).size(crate::theme::type_scale::CAPTION).color(theme.text_dim));
                         }
                     }
@@ -1433,29 +1434,82 @@ fn show_denoiser_controls(
 }
 
 
+/// The clip's own level, which the mix puts on its sound before its
+/// effects: its gain and volume, and whether fades or level keys move it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ClipLevel {
+    pub gain: f32,
+    pub volume: f32,
+    pub fades: bool,
+    pub keyed: bool,
+}
+
+impl ClipLevel {
+    /// `clip`'s, as its sound settings hold them.
+    pub fn of(clip: &klipp_timeline::Clip) -> Self {
+        ClipLevel {
+            gain: clip.gain,
+            volume: clip.volume,
+            fades: clip.fade_in_secs > 0.0 || clip.fade_out_secs > 0.0,
+            keyed: !clip.volume_keyframes.is_empty() || !clip.gain_keyframes.is_empty(),
+        }
+    }
+}
+
 /// What a Normalize says under its controls (#2778): in Clip mode, that
 /// it is measuring the clip (unity until then), or what it measured and
-/// the gain it holds; in Ride mode, nothing.
-pub(crate) fn normalize_note(inst: &klipp_core::AudioEffectInstance) -> Option<String> {
+/// the gain it holds; then that it brings the clip's sound to its target
+/// before the clip's own level and fades, which the mix puts on first, and
+/// where a gain or volume off unity lands it (`level`, the clip's). The
+/// note read as if the sound played at the target whatever the clip's own
+/// level: at +6 dB of gain it plays 6 dB over. In Ride mode, nothing.
+pub(crate) fn normalize_note(inst: &klipp_core::AudioEffectInstance, level: Option<&ClipLevel>) -> Option<String> {
     let get = |n: &str| inst.params.iter().find(|(k, _)| k == n).map(|(_, v)| *v);
     if get("mode").unwrap_or(1.0) <= 0.5 {
         return None;
     }
     let target = get("target_lufs").unwrap_or(-14.0);
-    Some(match get("measured_lufs").filter(|v| v.is_finite()) {
+    let mut lines = vec![match get("measured_lufs").filter(|v| v.is_finite()) {
         None => "Measuring the clip's loudness\u{2026} (no gain until then)".to_string(),
         Some(m) if m <= -70.0 => "The clip is silent: no gain".to_string(),
         Some(m) => {
             let gain = 20.0 * klipp_audio::dsp::normalize::Normalize::clip_gain(target, m).log10();
             format!("Clip measured at {m:.1} LUFS: {gain:+.1} dB held over it")
         }
-    })
+    }];
+    let Some(level) = level else { return Some(lines.join("\n")) };
+    lines.push(format!("Brings the clip's sound to {target:.0} LUFS before its own level and fades"));
+    let static_db = 20.0 * (level.gain * level.volume).max(1e-6).log10();
+    if static_db.abs() >= 0.05 {
+        lines.push(format!("With the clip's gain and volume ({static_db:+.1} dB) it plays at about {:.1} LUFS", target + static_db));
+    }
+    if level.fades || level.keyed {
+        lines.push("The clip's fades and level keys move it from there".to_string());
+    }
+    Some(lines.join("\n"))
 }
 
 #[cfg(test)]
 mod helper_tests {
     use super::*;
     use klipp_core::Interpolation;
+
+    /// A Normalize says it brings the clip's sound to its target before
+    /// the clip's own level and fades, and, with the clip's gain at +6 dB,
+    /// where the sound lands: the export plays it at about -8 LUFS, where
+    /// the note said nothing of it and read as -14.
+    #[test]
+    fn a_normalize_says_where_the_clips_own_level_puts_it() {
+        let inst = klipp_core::AudioEffectInstance { effect_type: "normalize".into(), enabled: true, wet_dry: 1.0, params: vec![("target_lufs".into(), -14.0), ("mode".into(), 1.0), ("measured_lufs".into(), -34.0)] };
+        let unity = normalize_note(&inst, Some(&ClipLevel { gain: 1.0, volume: 1.0, fades: false, keyed: false })).unwrap();
+        assert!(unity.contains("Brings the clip's sound to -14 LUFS before its own level and fades"), "{unity}");
+        assert!(!unity.contains("plays at"), "at unity, nothing more: {unity}");
+        let louder = normalize_note(&inst, Some(&ClipLevel { gain: 2.0, volume: 1.0, fades: false, keyed: false })).unwrap();
+        assert!(louder.contains("+6.0 dB") && louder.contains("about -8.0 LUFS"), "{louder}");
+        let faded = normalize_note(&inst, Some(&ClipLevel { gain: 1.0, volume: 1.0, fades: true, keyed: true })).unwrap();
+        assert!(faded.contains("fades and level keys move it"), "{faded}");
+        assert!(!normalize_note(&inst, None).unwrap().contains("before its own level"), "a bus has no level of its own");
+    }
 
     #[test]
     fn fractions_read_as_percent_and_percent_params_stay_as_they_are() {
@@ -1602,7 +1656,7 @@ mod chain_order_tests {
         let chain = vec![fx("eq"), fx("compressor")];
         let clip_id = ClipId::new();
         let keys = HashMap::new();
-        let mut d = |ui: &mut egui::Ui, theme: &KlippTheme, cmds: &mut Vec<AppCommand>| show_content(ui, theme, clip_id, &chain, &keys, 0.0, 0.0, 25, &[], cmds, 0.02);
+        let mut d = |ui: &mut egui::Ui, theme: &KlippTheme, cmds: &mut Vec<AppCommand>| show_content(ui, theme, clip_id, &chain, &keys, 0.0, 0.0, 25, &[], cmds, 0.02, None);
         let (texts, _) = frame(&ctx, Vec::new(), &mut d);
         let at = |label: &str| texts.iter().filter(|(t, _)| t == label).map(|(_, p)| *p).collect::<Vec<_>>();
         let (downs, ups) = (at("\u{2193}"), at("\u{2191}"));

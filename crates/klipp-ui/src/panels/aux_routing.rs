@@ -562,7 +562,7 @@ mod tests {
                     if bus {
                         crate::inspector::audio_fx_inspector::show_bus_content(ui, &KlippTheme::default(), me, &fx, &[], &mut Vec::new());
                     } else {
-                        crate::inspector::audio_fx_inspector::show_content(ui, &KlippTheme::default(), me, &fx, &std::collections::HashMap::new(), 0.0, 0.0, 30, &[], &mut Vec::new(), 0.0);
+                        crate::inspector::audio_fx_inspector::show_content(ui, &KlippTheme::default(), me, &fx, &std::collections::HashMap::new(), 0.0, 0.0, 30, &[], &mut Vec::new(), 0.0, None);
                     }
                 });
             });
