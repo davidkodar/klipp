@@ -66,26 +66,36 @@ pub fn drop_reselects(primary: Option<ClipId>, selected: &[ClipId], dropped_on: 
 
 /// The commands for `targets`, `make` giving each clip's, as one undo
 /// step when there is more than one command (several clips, or a look's
-/// several effects on one).
-pub fn commands(targets: &Targets, make: impl FnMut(ClipId) -> Vec<AppCommand>) -> Vec<AppCommand> {
+/// several effects on one), named for `name`, the effect put on
+/// ([`step_name`]): it read "Add Clips".
+pub fn commands(targets: &Targets, name: &str, make: impl FnMut(ClipId) -> Vec<AppCommand>) -> Vec<AppCommand> {
     let mut out: Vec<AppCommand> = targets.clips.iter().copied().flat_map(make).collect();
     if out.len() > 1 {
         out.insert(0, AppCommand::BeginHistoryBatch);
-        out.push(AppCommand::EndHistoryBatch);
+        out.push(AppCommand::EndHistoryBatchAs { label: step_name(name, targets) });
     }
     out
+}
+
+/// What the undo step putting `name` on `targets` is called: "Add Bloom",
+/// or "Add Bloom to 2 Clips".
+pub fn step_name(name: &str, targets: &Targets) -> String {
+    match targets.clips.len() {
+        0 | 1 => format!("Add {name}"),
+        n => format!("Add {name} to {n} Clips"),
+    }
 }
 
 /// As [`commands`], each clip's from `make`, all of them or none: the
 /// first clip that can't take the effect refuses the whole add, naming
 /// the clip's reason, so a drop on several clips never lands on some.
-pub fn all_or_none(targets: &Targets, mut make: impl FnMut(ClipId) -> Result<Vec<AppCommand>, String>) -> Result<Vec<AppCommand>, String> {
+pub fn all_or_none(targets: &Targets, name: &str, mut make: impl FnMut(ClipId) -> Result<Vec<AppCommand>, String>) -> Result<Vec<AppCommand>, String> {
     let mut each = Vec::with_capacity(targets.clips.len());
     for id in &targets.clips {
         each.push(make(*id)?);
     }
     let mut each = each.into_iter();
-    Ok(commands(targets, |_| each.next().unwrap_or_default()))
+    Ok(commands(targets, name, |_| each.next().unwrap_or_default()))
 }
 
 /// What the toast says: where `name` went, and what it skipped.
@@ -103,6 +113,17 @@ mod tests {
     use super::*;
     use klipp_core::{MediaId, RationalTime};
     use klipp_timeline::{Clip, Track};
+
+    /// Several clips' effect, put on as one step, is named for it: it
+    /// read "Add Clips".
+    #[test]
+    fn a_step_on_several_clips_is_named_for_its_effect() {
+        let targets = Targets { clips: vec![ClipId::new(), ClipId::new()], skipped: 0 };
+        let cmds = commands(&targets, "Bloom", |clip_id| vec![AppCommand::AddEffect { clip_id, plugin_name: "x".into() }]);
+        assert!(matches!(cmds.last(), Some(AppCommand::EndHistoryBatchAs { label }) if label == "Add Bloom to 2 Clips"), "{cmds:?}");
+        let one = Targets { clips: vec![ClipId::new()], skipped: 0 };
+        assert_eq!(step_name("Bloom", &one), "Add Bloom");
+    }
 
     fn tc(s: f64) -> RationalTime {
         RationalTime::from_secs_f64(s, 24)
@@ -168,11 +189,11 @@ mod tests {
         let seq = timeline();
         let v = |i: usize| seq.tracks[0].clips[i].id;
         let t = targets(&seq, Some(v(0)), &[v(0), v(1)], None, EffectKind::Picture);
-        let cmds = commands(&t, |clip_id| vec![AppCommand::SelectClip(Some(clip_id))]);
-        assert!(matches!(cmds.first(), Some(AppCommand::BeginHistoryBatch)) && matches!(cmds.last(), Some(AppCommand::EndHistoryBatch)));
+        let cmds = commands(&t, "Vignette", |clip_id| vec![AppCommand::SelectClip(Some(clip_id))]);
+        assert!(matches!(cmds.first(), Some(AppCommand::BeginHistoryBatch)) && matches!(cmds.last(), Some(AppCommand::EndHistoryBatchAs { .. })));
         assert_eq!(cmds.len(), 4);
         let one = targets(&seq, Some(v(0)), &[], None, EffectKind::Picture);
-        assert_eq!(commands(&one, |c| vec![AppCommand::SelectClip(Some(c))]).len(), 1, "one clip needs no batch");
+        assert_eq!(commands(&one, "Vignette", |c| vec![AppCommand::SelectClip(Some(c))]).len(), 1, "one clip needs no batch");
         assert!(said("Vignette", &t).contains("2 clips"));
         assert!(said("Vignette", &Targets { clips: vec![v(0)], skipped: 2 }).contains("2 selected clips could not take it"));
     }
@@ -185,11 +206,11 @@ mod tests {
         let seq = timeline();
         let v = |i: usize| seq.tracks[0].clips[i].id;
         let one = targets(&seq, Some(v(0)), &[], None, EffectKind::Picture);
-        let cmds = all_or_none(&one, |c| Ok(vec![AppCommand::SelectClip(Some(c)), AppCommand::SelectClip(None)])).unwrap();
-        assert!(matches!(cmds.first(), Some(AppCommand::BeginHistoryBatch)) && matches!(cmds.last(), Some(AppCommand::EndHistoryBatch)));
+        let cmds = all_or_none(&one, "Film Look", |c| Ok(vec![AppCommand::SelectClip(Some(c)), AppCommand::SelectClip(None)])).unwrap();
+        assert!(matches!(cmds.first(), Some(AppCommand::BeginHistoryBatch)) && matches!(cmds.last(), Some(AppCommand::EndHistoryBatchAs { label }) if label == "Add Film Look"));
         assert_eq!(cmds.len(), 4);
         let two = targets(&seq, Some(v(0)), &[v(0), v(1)], None, EffectKind::Picture);
-        let refused = all_or_none(&two, |c| if c == v(1) { Err("its stack can't be read".to_string()) } else { Ok(vec![AppCommand::SelectClip(Some(c))]) });
+        let refused = all_or_none(&two, "Film Look", |c| if c == v(1) { Err("its stack can't be read".to_string()) } else { Ok(vec![AppCommand::SelectClip(Some(c))]) });
         assert_eq!(refused.unwrap_err(), "its stack can't be read");
     }
 }

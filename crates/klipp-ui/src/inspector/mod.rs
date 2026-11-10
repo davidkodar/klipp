@@ -515,6 +515,7 @@ impl NewInspectorPanel {
                             speed: 1.0,
                             speed_keyframes: Vec::new(),
                             keep_pitch: false,
+                            sound_apart: false,
                             hold: None,
                             source_rotation: 0,
                             enabled: true,
@@ -2097,7 +2098,11 @@ fn show_title_pinned_core_textbox(
     ui.horizontal(|ui| {
         let total = ui.available_width();
         let size_w = 70.0;
-        let combo_w = (total - size_w - 8.0).max(80.0);
+        // The size's key controls, after the field when the layer's size
+        // is keyable, have their room too: without it they were drawn
+        // over the field, and a click on its number hit the diamond.
+        let keys_w = if size_target.is_some() { crate::widgets::scrubby_param::key_controls_width(!tb.font_size_keyframes.is_empty(), ui.spacing().item_spacing.x) } else { 0.0 };
+        let combo_w = (total - size_w - 8.0 - keys_w).max(80.0);
         // The font picker (#1719): each family in its own face, the
         // title's words as the sample, starred and recent ones first.
         let choice = ui.vertical(|ui| {
@@ -5064,11 +5069,15 @@ fn show_title_editor(
     }
     if let Some(object) = target_oid.and_then(|id| td.object(id)).or_else(|| td.objects.iter().find(|o| matches!(o.content, klipp_timeline::TitleObjectContent::TextBox(_)))) {
         let t = &object.transform;
-        let mut w = t.size.x * 100.0;
-        let mut h = t.size.y * 100.0;
-        let mut rotation = t.rotation;
-        let mut anchor_x = t.anchor_norm.x * 100.0;
-        let mut anchor_y = t.anchor_norm.y * 100.0;
+        // Each field at its value at the playhead, as the picture draws
+        // it: a keyed Width read its stored value at every time, so a
+        // value typed on its keys seemed ignored.
+        let now = t.evaluated_at(clip_time_secs);
+        let mut w = now.size.x * 100.0;
+        let mut h = now.size.y * 100.0;
+        let mut rotation = now.rotation;
+        let mut anchor_x = now.anchor_norm.x * 100.0;
+        let mut anchor_y = now.anchor_norm.y * 100.0;
         let mut property_changes: Vec<(klipp_core::TitleTransformProperty, f32)> = Vec::new();
         let mut toggles: Vec<klipp_core::TitleTransformProperty> = Vec::new();
         // A keyframe mark: filled where the property has a key at the
@@ -8914,6 +8923,54 @@ mod selection_underline_tests {
         assert!(!texts.iter().any(|(t, _)| t == "x\u{00b2}"), "no selection, no button");
     }
 
+    /// A double-click on a keyed field (the layer's Text size, keyed)
+    /// edits its number, as on any field: the typed size is set, and the
+    /// Curve Editor is not brought up for it. On the titles walk the
+    /// double-click opened the Curve Editor and the digits went nowhere.
+    #[test]
+    fn a_double_click_on_a_keyed_field_edits_its_number() {
+        let ctx = egui::Context::default();
+        let mut tb = klipp_timeline::TextBox { text: "Harbour".into(), font_name: "Inter".into(), font_size: 72.0, ..Default::default() };
+        tb.font_size_keyframes = vec![klipp_core::keyframe::upserted(&[], 0.0, 72.0), klipp_core::keyframe::upserted(&[], 1.5, 120.0)];
+        let td = klipp_timeline::TitleData::single_text(tb);
+        let layer = td.objects[0].id;
+        let clip = klipp_timeline::Clip { kind: klipp_timeline::ClipKind::Title(td), ..klipp_timeline::Clip::gap(klipp_core::Timecode::zero(), klipp_core::Timecode { value: 48, rate: 24 }) };
+        let state = AppState { selected_title_object: Some((clip.id, layer)), ..Default::default() };
+        let mut chips = title_tab::TitleChips::default();
+        let mut time = 0.0;
+        let mut frame = |events: Vec<egui::Event>| {
+            time += 0.05;
+            let mut cmds = Vec::new();
+            let out = ctx.run(
+                egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(420.0, 6000.0))), time: Some(time), events, ..Default::default() },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        egui::ScrollArea::vertical().show(ui, |ui| show_title_editor(ui, &KlippTheme::default(), &clip, &state, &mut cmds, &mut chips));
+                    });
+                },
+            );
+            let texts: Vec<(String, egui::Pos2)> = out.shapes.iter().filter_map(|s| match &s.shape {
+                egui::Shape::Text(t) => Some((t.galley.text().to_string(), t.pos + t.galley.size() / 2.0)),
+                _ => None,
+            }).collect();
+            (cmds, texts)
+        };
+        frame(Vec::new());
+        let (_, texts) = frame(Vec::new());
+        let at = texts.iter().find(|(t, _)| t == "72 pt").unwrap_or_else(|| panic!("the size field: {:?}", texts.iter().map(|t| &t.0).collect::<Vec<_>>())).1;
+        let b = |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+        let mut cmds = Vec::new();
+        for events in [vec![egui::Event::PointerMoved(at), b(true)], vec![b(false)], vec![b(true)], vec![b(false)], Vec::new()] {
+            cmds.extend(frame(events).0);
+        }
+        assert_eq!(crate::param_focus::take_request(&ctx), None, "no curve brought up");
+        cmds.extend(frame(vec![egui::Event::Key { key: egui::Key::A, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::COMMAND }]).0);
+        cmds.extend(frame(vec![egui::Event::Text("90".into())]).0);
+        cmds.extend(frame(vec![egui::Event::Key { key: egui::Key::Enter, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE }]).0);
+        cmds.extend(frame(Vec::new()).0);
+        assert!(format!("{cmds:?}").contains("90.0"), "the typed size is set: {cmds:?}");
+    }
+
     /// #1721: the Typography group has the paragraph rows, each showing
     /// the box's setting.
     #[test]
@@ -9192,6 +9249,22 @@ mod title_row_style_tests {
         let clip = klipp_timeline::Clip { kind: klipp_timeline::ClipKind::Title(td), ..klipp_timeline::Clip::gap(klipp_core::Timecode::zero(), klipp_core::Timecode { value: 48, rate: 24 }) };
         let state = AppState { selected_title_object: Some((clip.id, oid)), ..Default::default() };
         (clip, state)
+    }
+
+    /// A keyed Width shows its value at the playhead, as the picture
+    /// draws it: keyed 100% at 0 s and 200% at 2 s, 150% at 1 s. It read
+    /// the stored 100% at every time, so a typed value seemed ignored.
+    #[test]
+    fn a_keyed_title_width_reads_its_value_at_the_playhead() {
+        let ctx = egui::Context::default();
+        let (mut clip, mut state) = title();
+        let key = |t: f64, v: f32| klipp_core::Keyframe { time_secs: t, value: v, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() };
+        if let klipp_timeline::ClipKind::Title(td) = &mut clip.kind {
+            td.objects[0].transform.size_x_keyframes = vec![key(0.0, 1.0), key(2.0, 2.0)];
+        }
+        state.playhead = klipp_core::Timecode { value: 24, rate: 24 };
+        let (_, texts, _) = frame(&ctx, &clip, &state, Vec::new());
+        assert!(texts.iter().any(|(t, _)| t == "150 %"), "{:?}", texts.iter().map(|(t, _)| t.as_str()).filter(|t| t.ends_with('%')).collect::<Vec<_>>());
     }
 
     /// The layers, transform, text, position and style blocks are

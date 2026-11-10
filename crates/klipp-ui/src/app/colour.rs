@@ -1537,19 +1537,19 @@ impl KlippApp {
                 let node_id = *node_id;
                 let mask_index = *mask_index;
                 let seq = &mut self.state.sequences[self.state.active_sequence_idx];
-                if let Some(clip) = seq.all_clips_mut().find(|c| c.id == clip_id) {
+                let edit = seq.all_clips_mut().find(|c| c.id == clip_id).and_then(|clip| {
                     clip.track_points.retain(|tp| tp.linked_mask != Some((node_id, mask_index)));
-                    clip.edit_grade(|graph| {
-                        if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == node_id) {
-                            if let Some(masks) = &mut node.params.masks {
-                                if let Some(mask) = masks.masks.get_mut(mask_index) {
-                                    mask.keyframes.center_x.clear();
-                                    mask.keyframes.center_y.clear();
-                                    mask.keyframes.clear_track();
-                                }
-                            }
+                    // In the grade, or beside the picture chain.
+                    edit_clip_masks(clip, node_id, "Clear Window Tracking", |masks| {
+                        if let Some(mask) = masks.masks.get_mut(mask_index) {
+                            mask.keyframes.center_x.clear();
+                            mask.keyframes.center_y.clear();
+                            mask.keyframes.clear_track();
                         }
-                    });
+                    })
+                });
+                if let Some(edit) = edit {
+                    self.state.push_history(edit);
                 }
                 self.state.dirty = true;
                 *needs_refresh = true;
@@ -3535,38 +3535,11 @@ pub(super) fn write_node_settings(graph: &mut klipp_nodes::NodeGraph, cmd: &AppC
     };
     let Some(node) = graph.nodes.iter_mut().find(|n| n.id == node_id) else { return true };
     let params = &mut node.params;
-    // A mask, by its place in the node's stack.
-    fn mask(params: &mut klipp_nodes::NodeParams, mask_index: usize) -> Option<&mut klipp_core::Mask> {
-        params.masks.as_mut()?.masks.get_mut(mask_index)
+    if let Some(masks) = params.masks.as_mut().filter(|_| is_mask_key(cmd)) {
+        write_mask_key(masks, cmd);
+        return true;
     }
     match cmd {
-        // A key at this time is updated, else one is put in; "shape" keys
-        // a freeform mask's shape as it is then.
-        AppCommand::AddMaskKeyframe { mask_index, param, time_secs, value, .. } => {
-            if let Some(m) = mask(params, *mask_index) {
-                m.add_key(param, *time_secs, *value);
-            }
-        }
-        AppCommand::RemoveMaskKeyframe { mask_index, param, time_secs, .. } => {
-            if let Some(m) = mask(params, *mask_index) {
-                m.remove_key(param, *time_secs);
-            }
-        }
-        AppCommand::ClearMaskKeyframes { mask_index, param, .. } => {
-            if let Some(m) = mask(params, *mask_index) {
-                m.clear_track(param);
-            }
-        }
-        AppCommand::MoveMaskKeyframe { mask_index, param, time_secs, new_time_secs, value, .. } => {
-            if let Some(m) = mask(params, *mask_index) {
-                m.move_key(param, *time_secs, *new_time_secs, *value);
-            }
-        }
-        AppCommand::SetMaskKeyframeInterpolation { mask_index, param, time_secs, interpolation, .. } => {
-            if let Some(m) = mask(params, *mask_index) {
-                m.set_key_interpolation(param, *time_secs, *interpolation);
-            }
-        }
         AppCommand::SetNodeCurves { curves, .. } => {
             params.curves = Some(curves.clone());
             node.enabled = true;
@@ -3663,6 +3636,83 @@ pub(super) fn edit_clip_graph(
     Some(Ok(()))
 }
 
+/// Whether `cmd` is a mask key command.
+fn is_mask_key(cmd: &AppCommand) -> bool {
+    matches!(cmd, AppCommand::AddMaskKeyframe { .. } | AppCommand::RemoveMaskKeyframe { .. } | AppCommand::ClearMaskKeyframes { .. } | AppCommand::MoveMaskKeyframe { .. } | AppCommand::SetMaskKeyframeInterpolation { .. })
+}
+
+/// A mask key command written on `masks`, the stack of the node it names:
+/// a key at this time is updated, else one is put in ("shape" keys a
+/// freeform mask's shape as it is then), taken off, cleared, moved, or
+/// its curve set.
+fn write_mask_key(masks: &mut klipp_core::MaskStack, cmd: &AppCommand) {
+    match cmd {
+        AppCommand::AddMaskKeyframe { mask_index, param, time_secs, value, .. } => {
+            if let Some(m) = masks.masks.get_mut(*mask_index) {
+                m.add_key(param, *time_secs, *value);
+            }
+        }
+        AppCommand::RemoveMaskKeyframe { mask_index, param, time_secs, .. } => {
+            if let Some(m) = masks.masks.get_mut(*mask_index) {
+                m.remove_key(param, *time_secs);
+            }
+        }
+        AppCommand::ClearMaskKeyframes { mask_index, param, .. } => {
+            if let Some(m) = masks.masks.get_mut(*mask_index) {
+                m.clear_track(param);
+            }
+        }
+        AppCommand::MoveMaskKeyframe { mask_index, param, time_secs, new_time_secs, value, .. } => {
+            if let Some(m) = masks.masks.get_mut(*mask_index) {
+                m.move_key(param, *time_secs, *new_time_secs, *value);
+            }
+        }
+        AppCommand::SetMaskKeyframeInterpolation { mask_index, param, time_secs, interpolation, .. } => {
+            if let Some(m) = masks.masks.get_mut(*mask_index) {
+                m.set_key_interpolation(param, *time_secs, *interpolation);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Mask `mask_index` of node `node_id` on `clip`: a window in its grade,
+/// or a matte beside its picture chain (added on the Composite page).
+pub(super) fn clip_mask(clip: &klipp_timeline::Clip, node_id: klipp_nodes::NodeId, mask_index: usize) -> Option<klipp_core::Mask> {
+    if let Some(node) = clip.grade().nodes.iter().find(|n| n.id == node_id) {
+        return node.params.masks.as_ref()?.masks.get(mask_index).cloned();
+    }
+    let lifted = clip.picture_v2().ok()?;
+    let node = lifted.picture.graph.nodes.iter().find(|n| n.id == node_id)?;
+    klipp_timeline::grade_node_for_run(node).ok()?.params.masks?.masks.get(mask_index).cloned()
+}
+
+/// Node `node_id`'s masks on `clip` changed by `f`, and the step that
+/// undoes it: a window in the grade as the grade's step; a matte beside
+/// the picture chain with its masks written whole by path, as the
+/// picture's. `None` when the clip has no such node, or nothing changed.
+pub(super) fn edit_clip_masks(clip: &mut klipp_timeline::Clip, node_id: klipp_nodes::NodeId, description: &'static str, f: impl FnOnce(&mut klipp_core::MaskStack)) -> Option<crate::history::EditCommand> {
+    use crate::history::EditCommand;
+    if clip.grade().nodes.iter().any(|n| n.id == node_id) {
+        let old_graph = clip.grade().clone();
+        clip.edit_grade(|graph| {
+            if let Some(masks) = graph.nodes.iter_mut().find(|n| n.id == node_id).and_then(|n| n.params.masks.as_mut()) {
+                f(masks);
+            }
+        });
+        let new_graph = clip.grade().clone();
+        return (old_graph != new_graph).then_some(EditCommand::SetNodeGraph { clip_id: clip.id, old_graph, new_graph });
+    }
+    let lifted = clip.picture_v2().ok()?;
+    let node = lifted.picture.graph.nodes.iter().find(|n| n.id == node_id)?;
+    let mut masks = klipp_timeline::grade_node_for_run(node).ok()?.params.masks?;
+    f(&mut masks);
+    let path = klipp_graph_format::path::NodePath::new(klipp_graph_format::path::Root::Clip { clip: clip.id.0 }, [node_id]);
+    let op = klipp_graph_lift::ops::GraphOp::SetParam { path, key: "masks".into(), value: klipp_graph_format::ParamValue::Text(serde_json::to_string(&masks).ok()?) };
+    let edit = clip.apply_picture_ops(&[op]).ok()?;
+    Some(EditCommand::PictureEdit { clip_id: clip.id, description, edit: Box::new(edit) })
+}
+
 /// A mask key command (#1947) on the clip it names, in the graph of that
 /// clip's grade that holds the Mask node, a group's or a compound's too.
 /// A node id is only unique within one clip's grade (a duplicate's can
@@ -3678,8 +3728,20 @@ pub(super) fn mask_key_edit(state: &mut AppState, cmd: &AppCommand, record: bool
         _ => return None,
     };
     let seq = &state.sequences[state.active_sequence_idx];
-    let root = seq.tracks.iter().find_map(|t| t.clips.iter().find(|c| c.id == clip_id))?.grade();
-    let path = root.path_to_node(node_id)?;
+    let clip = seq.tracks.iter().find_map(|t| t.clips.iter().find(|c| c.id == clip_id))?;
+    let Some(path) = clip.grade().path_to_node(node_id) else {
+        // A mask beside the clip's picture chain (a Window or a Roto Shape
+        // added on the Composite page): its masks, keys and all, written
+        // whole by path, as its values are. The key found no node in the
+        // grade and nothing took it.
+        let lifted = clip.picture_v2().ok()?;
+        let node = lifted.picture.graph.nodes.iter().find(|n| n.id == node_id)?;
+        let mut masks = klipp_timeline::grade_node_for_run(node).ok()?.params.masks?;
+        write_mask_key(&mut masks, cmd);
+        let addr = klipp_graph_format::path::NodePath::new(klipp_graph_format::path::Root::Clip { clip: clip_id.0 }, [node_id]);
+        let write = AppCommand::SetParamAt { addr, key: "masks".into(), value: klipp_graph_format::ParamValue::Text(serde_json::to_string(&masks).ok()?) };
+        return Some(state.path_command(&write).map(|_| ()).ok_or(()));
+    };
     edit_clip_graph(state, clip_id, &path, record, |graph| {
         write_node_settings(graph, cmd);
     })

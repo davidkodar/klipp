@@ -40,6 +40,8 @@ mod canvas_metadata;
 mod clip_below_round_trip;
 #[path = "../clip_label_round_trip.rs"]
 mod clip_label_round_trip;
+#[path = "../sound_apart_round_trip.rs"]
+mod sound_apart_round_trip;
 #[path = "../clip_rates_round_trip.rs"]
 mod clip_rates_round_trip;
 #[path = "../consolidate_integration.rs"]

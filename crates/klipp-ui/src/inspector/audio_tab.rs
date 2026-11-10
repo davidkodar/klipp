@@ -977,6 +977,7 @@ fn show_clip_audio(
                 prev_keyframe_time: None,
                 next_keyframe_time: None,
                 current_interpolation: None,
+                current_ease: None,
             });
             slider_row(ui, theme, "duck_level", "Duck Level", &mut duck.level, 0.0..=1.0, 0.2, 0.005, 2, "", empty_ks, false);
             ui.add_space(4.0);

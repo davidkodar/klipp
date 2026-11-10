@@ -1,6 +1,5 @@
 //! Stabilization: a clip's motion analysed and smoothed (#826).
 
-use klipp_timeline::GradeAccess;
 use super::*;
 
 impl KlippApp {
@@ -505,11 +504,18 @@ impl KlippApp {
                 let node_id = *node_id;
                 let mask_index = *mask_index;
                 let perspective = *perspective;
+                // Each way out said: a press that went nowhere left no trace.
+                tracing::info!("track window: clip {clip_id:?}, node {node_id}, mask {mask_index}, perspective {perspective}");
                 let playhead_secs = self.state.playhead_smooth_secs;
                 let seq = &self.state.sequences[self.state.active_sequence_idx];
                 let aspect = seq.resolution.height as f32 / seq.resolution.width.max(1) as f32;
-                let Some(clip) = seq.all_clips().find(|c| c.id == clip_id) else { return true };
+                let Some(clip) = seq.all_clips().find(|c| c.id == clip_id) else {
+                    tracing::warn!("track window: clip {clip_id:?} isn't on the open sequence");
+                    self.state.toast.show("The window's clip isn't on this sequence: open its sequence to track it");
+                    return true;
+                };
                 let Some(item) = clip.media_id().and_then(|m| self.state.media_pool.get(&m)) else {
+                    tracing::warn!("track window: clip {clip_id:?} has no media file");
                     self.state.toast.show("Only a clip from a file can be tracked");
                     return true;
                 };
@@ -524,12 +530,10 @@ impl KlippApp {
                 let reference = (source_secs * media_fps).round() as usize;
                 let first = (clip.source_in.to_secs_f64() * media_fps).floor() as usize;
                 let last = ((clip.source_out.to_secs_f64() * media_fps).ceil() as usize).min(frame_count.saturating_sub(1)).max(first);
-                let window = clip.grade().nodes.iter()
-                    .find(|n| n.id == node_id)
-                    .and_then(|n| n.params.masks.as_ref())
-                    .and_then(|ms| ms.masks.get(mask_index))
-                    .map(|m| m.evaluated_at(clip_time).shape);
+                // In the clip's grade, or beside its picture chain.
+                let window = super::colour::clip_mask(clip, node_id, mask_index).map(|m| m.evaluated_at(clip_time).shape);
                 let Some(shape) = window else {
+                    tracing::warn!("track window: no mask {mask_index} on node {node_id} of clip {clip_id:?}, in its grade or beside its picture");
                     self.state.toast.show("Couldn't read the window");
                     return true;
                 };
@@ -730,33 +734,27 @@ impl KlippApp {
                                 // step.
                                 let track = window_perspective_track(clip, tp, &self.state.media_pool, fps);
                                 let count = track.as_ref().map_or(0, |t| t.keys.len());
-                                let old_graph = clip.grade().clone();
-                                clip.edit_grade(|graph| {
-                                    if let Some(mask) = graph.nodes.iter_mut().find(|n| n.id == node_id)
-                                        .and_then(|n| n.params.masks.as_mut())
-                                        .and_then(|ms| ms.masks.get_mut(mask_index))
-                                    {
+                                // In the grade, or beside the picture chain.
+                                let edit = super::colour::edit_clip_masks(clip, node_id, "Track Window", |ms| {
+                                    if let Some(mask) = ms.masks.get_mut(mask_index) {
                                         mask.keyframes.clear_track();
                                         mask.keyframes.track_perspective = track.filter(|t| !t.keys.is_empty());
                                     }
                                 });
-                                let new_graph = clip.grade().clone();
                                 if let Some(tp) = clip.track_points.get_mut(point_index) {
                                     tp.linked_mask = Some((node_id, mask_index));
                                 }
-                                window_edit = Some((EditCommand::SetNodeGraph { clip_id, old_graph, new_graph }, count));
+                                window_edit = edit.map(|e| (e, count));
                             }
                             klipp_core::TrackTarget::MaskCenter { node_id, mask_index } if !tp.motion.is_empty() => {
                                 // A window track (#238): the window's move,
                                 // size and turn, as keyframes on its own
                                 // clock, one undo step.
                                 let keys = window_track_keys(clip, tp, &self.state.media_pool, fps);
-                                let old_graph = clip.grade().clone();
-                                clip.edit_grade(|graph| {
-                                    if let Some(mask) = graph.nodes.iter_mut().find(|n| n.id == node_id)
-                                        .and_then(|n| n.params.masks.as_mut())
-                                        .and_then(|ms| ms.masks.get_mut(mask_index))
-                                    {
+                                let count = keys.len();
+                                // In the grade, or beside the picture chain.
+                                let edit = super::colour::edit_clip_masks(clip, node_id, "Track Window", |ms| {
+                                    if let Some(mask) = ms.masks.get_mut(mask_index) {
                                         mask.keyframes.clear_track();
                                         let k = |t: f64, v: f32| klipp_core::Keyframe { time_secs: t, value: v, interpolation: klipp_core::Interpolation::Linear, tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0), handles: Default::default() };
                                         for &(t, dx, dy, scale, rot) in &keys {
@@ -767,47 +765,31 @@ impl KlippApp {
                                         }
                                     }
                                 });
-                                let new_graph = clip.grade().clone();
                                 if let Some(tp) = clip.track_points.get_mut(point_index) {
                                     tp.linked_mask = Some((node_id, mask_index));
                                 }
-                                window_edit = Some((EditCommand::SetNodeGraph { clip_id, old_graph, new_graph }, keys.len()));
+                                window_edit = edit.map(|e| (e, count));
                             }
                             klipp_core::TrackTarget::MaskCenter { node_id, mask_index } => {
                                 if let Some(tp) = clip.track_points.get_mut(point_index) {
                                     tp.linked_mask = Some((node_id, mask_index));
                                 }
-                                clip.edit_grade(|graph| {
-                                    if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == node_id) {
-                                        if let Some(mask_stack) = &mut node.params.masks {
-                                            if let Some(mask) = mask_stack.masks.get_mut(mask_index) {
-                                                mask.keyframes.center_x.clear();
-                                                mask.keyframes.center_y.clear();
-                                                for (i, &(nx, ny)) in positions.iter().enumerate() {
-                                                    let frame_idx = start_frame + i;
-                                                    let t = frame_idx as f64 / fps;
-                                                    mask.keyframes.center_x.push(klipp_core::Keyframe {
-                                                        time_secs: t,
-                                                        value: nx as f32,
-                                                        interpolation: klipp_core::Interpolation::Linear,
-                                                        tangent_in: (0.0, 0.0),
-                                                        tangent_out: (0.0, 0.0),
-                                                        handles: Default::default(),
-                                                    });
-                                                    mask.keyframes.center_y.push(klipp_core::Keyframe {
-                                                        time_secs: t,
-                                                        value: ny as f32,
-                                                        interpolation: klipp_core::Interpolation::Linear,
-                                                        tangent_in: (0.0, 0.0),
-                                                        tangent_out: (0.0, 0.0),
-                                                        handles: Default::default(),
-                                                    });
-                                                }
-                                                self.state.toast.show("Generated mask center keyframes from tracker");
-                                            }
+                                // The window's centre on the point's course,
+                                // in the grade or beside the picture chain,
+                                // one undo step.
+                                let key = |t: f64, value: f32| klipp_core::Keyframe { time_secs: t, value, interpolation: klipp_core::Interpolation::Linear, tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0), handles: Default::default() };
+                                let edit = super::colour::edit_clip_masks(clip, node_id, "Track Window", |ms| {
+                                    if let Some(mask) = ms.masks.get_mut(mask_index) {
+                                        mask.keyframes.center_x.clear();
+                                        mask.keyframes.center_y.clear();
+                                        for (i, &(nx, ny)) in positions.iter().enumerate() {
+                                            let t = (start_frame + i) as f64 / fps;
+                                            mask.keyframes.center_x.push(key(t, nx as f32));
+                                            mask.keyframes.center_y.push(key(t, ny as f32));
                                         }
                                     }
                                 });
+                                window_edit = edit.map(|e| (e, positions.len()));
                             }
                         }
                     }
@@ -822,11 +804,9 @@ impl KlippApp {
                     }
                 }
                 if let Some((edit, frames)) = window_edit {
-                    if let EditCommand::SetNodeGraph { old_graph, new_graph, .. } = &edit {
-                        if old_graph != new_graph {
-                            self.state.push_history(edit.clone());
-                        }
-                    }
+                    // Only a change is a step (`edit_clip_masks` gives none
+                    // for a grade left as it was).
+                    self.state.push_history(edit);
                     self.sync_sequence_to_engine();
                     self.state.toast.show(format!("The window follows the picture over {frames} frames"));
                 }

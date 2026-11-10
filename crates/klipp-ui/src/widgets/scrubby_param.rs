@@ -30,6 +30,9 @@ impl EasePreset {
         }
     }
 
+    /// Every preset, in the menu's order.
+    pub const ALL: [EasePreset; 3] = [EasePreset::EaseIn, EasePreset::EaseOut, EasePreset::EaseBoth];
+
     /// Compute the tangent values for a given keyframe index within a keyframe array.
     /// Returns (tangent_in, tangent_out) suitable for a SetTangent command.
     pub fn compute_tangents(self, keyframes: &[klipp_core::Keyframe], ki: usize) -> (Option<(f64, f32)>, Option<(f64, f32)>) {
@@ -64,6 +67,9 @@ pub struct KeyframeState {
     pub next_keyframe_time: Option<f64>,
     /// Interpolation type of the keyframe at the playhead (if any).
     pub current_interpolation: Option<klipp_core::Interpolation>,
+    /// The ease preset the current key was given, when its handles are
+    /// one's: the menu marks it rather than a custom Bezier.
+    pub current_ease: Option<EasePreset>,
 }
 
 /// How wide a previous or next key arrow is: a target a finger of the
@@ -178,6 +184,28 @@ pub fn ease_hints(ctx: &egui::Context) -> std::sync::Arc<[String; 4]> {
     ctx.data(|d| d.get_temp(ease_hints_id())).unwrap_or_default()
 }
 
+/// The ease preset key `index` of `keys` was given from a key menu, read
+/// from its handles as [`key_ease_commands`](crate::panels::timeline::key_ease_commands)
+/// lays them: a Bezier key, flat handles, each as long against its
+/// neighbour's span as the preset makes it. `None` for any other key.
+pub fn ease_preset_at(keys: &[klipp_core::Keyframe], index: usize) -> Option<EasePreset> {
+    let k = keys.get(index)?;
+    if k.interpolation != klipp_core::Interpolation::Bezier || k.tangent_in.1 != 0.0 || k.tangent_out.1 != 0.0 {
+        return None;
+    }
+    let prev = if index > 0 { keys[index - 1].time_secs } else { k.time_secs - 1.0 };
+    let next = keys.get(index + 1).map_or(k.time_secs + 1.0, |n| n.time_secs);
+    let (span_in, span_out) = ((k.time_secs - prev).abs(), (next - k.time_secs).abs());
+    if span_in <= 0.0 || span_out <= 0.0 {
+        return None;
+    }
+    let (out_ratio, in_ratio) = (k.tangent_out.0 / span_out, -k.tangent_in.0 / span_in);
+    EasePreset::ALL.into_iter().find(|p| {
+        let (o, i) = p.tangent_ratios();
+        (o - out_ratio).abs() < 1e-3 && (i - in_ratio).abs() < 1e-3
+    })
+}
+
 /// What a key's menu picked.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeyMenuPick {
@@ -188,8 +216,11 @@ pub enum KeyMenuPick {
 /// A key's right-click menu, in the app's menu look: how the move leaves
 /// the key (Linear, the eases, a custom Bezier, a hold), the one in force
 /// shown selected. What was picked, closing the menu.
-pub fn key_menu(ui: &mut egui::Ui, current: Option<klipp_core::Interpolation>) -> Option<KeyMenuPick> {
+pub fn key_menu(ui: &mut egui::Ui, current: Option<klipp_core::Interpolation>, ease: Option<EasePreset>) -> Option<KeyMenuPick> {
     use klipp_core::Interpolation;
+    // An eased key is marked as its ease, not as the custom Bezier it is
+    // stored as.
+    let current = current.filter(|_| ease.is_none());
     super::menu::menu_body(ui, |ui| {
         let mut pick = None;
         let hints = ease_hints(ui.ctx());
@@ -197,7 +228,7 @@ pub fn key_menu(ui: &mut egui::Ui, current: Option<klipp_core::Interpolation>) -
             pick = Some(KeyMenuPick::Interpolation(Interpolation::Linear));
         }
         for (label, preset, hint) in [("Ease In", EasePreset::EaseIn, &hints[0]), ("Ease Out", EasePreset::EaseOut, &hints[1]), ("Ease Both", EasePreset::EaseBoth, &hints[2])] {
-            if super::menu::menu_item(ui, label, hint).clicked() {
+            if super::menu::menu_choice(ui, label, hint, ease == Some(preset)).clicked() {
                 pick = Some(KeyMenuPick::Ease(preset));
             }
         }
@@ -278,7 +309,7 @@ pub fn key_strip(ui: &mut egui::Ui, ks: KeyframeState) -> KeyStrip {
         }
         out.toggled = diamond.clicked();
         if ks.has_keyframe_at_playhead {
-            diamond.context_menu_rows(|ui| out.pick = key_menu(ui, ks.current_interpolation));
+            diamond.context_menu_rows(|ui| out.pick = key_menu(ui, ks.current_interpolation, ks.current_ease));
         }
         if ks.has_any_keyframes {
             out.prev = nav_arrow(ui, ks.prev_keyframe_time.is_some(), Icon::CaretLeft);
@@ -298,6 +329,14 @@ pub struct KeyControls {
     pub toggled: bool,
     pub prev: bool,
     pub next: bool,
+}
+
+/// The width [`key_controls`] takes: its diamond, and the arrows either
+/// side once the parameter has keys, with `spacing` between them. A row
+/// that draws them after its own controls leaves this much room.
+pub fn key_controls_width(keyed: bool, spacing: f32) -> f32 {
+    const DIAMOND_W: f32 = 16.0;
+    if keyed { DIAMOND_W + 2.0 * NAV_ARROW_W + 3.0 * spacing } else { DIAMOND_W + spacing }
 }
 
 /// A switch or choice row's key controls at the right edge, as a number
@@ -675,7 +714,8 @@ fn scrubby_row(
         // Right-click context menu on diamond for interpolation type
         if is_keyframeable && keyframe_state.as_ref().is_some_and(|ks| ks.has_keyframe_at_playhead) {
             let cur_interp = keyframe_state.as_ref().and_then(|ks| ks.current_interpolation);
-            diamond_btn_resp.clone().context_menu_rows(|ui| match key_menu(ui, cur_interp) {
+            let cur_ease = keyframe_state.as_ref().and_then(|ks| ks.current_ease);
+            diamond_btn_resp.clone().context_menu_rows(|ui| match key_menu(ui, cur_interp, cur_ease) {
                 Some(KeyMenuPick::Interpolation(i)) => interp_changed = Some(i),
                 Some(KeyMenuPick::Ease(e)) => ease_preset = Some(e),
                 None => {}
@@ -716,7 +756,7 @@ mod tests {
     fn animated_and_plain_rows_line_up() {
         let ctx = egui::Context::default();
         crate::icons::install(&ctx);
-        let state = |any| KeyframeState { has_keyframe_at_playhead: false, has_any_keyframes: any, keys_in_frame: 0, prev_keyframe_time: any.then_some(0.5), next_keyframe_time: None, current_interpolation: None };
+        let state = |any| KeyframeState { has_keyframe_at_playhead: false, has_any_keyframes: any, keys_in_frame: 0, prev_keyframe_time: any.then_some(0.5), next_keyframe_time: None, current_interpolation: None, current_ease: None };
         let out = ctx.run(egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(300.0, 200.0))), ..Default::default() }, |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
                 let (mut a, mut b) = (1.25_f32, 2.5_f32);

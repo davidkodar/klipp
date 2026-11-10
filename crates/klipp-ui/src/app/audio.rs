@@ -680,59 +680,12 @@ impl KlippApp {
                     true
                 }
                 AppCommand::UpdateClipAudio { clip_id, gain, volume, pan, fade_in_secs, fade_out_secs, fade_in_curve, fade_out_curve, channel_config } => {
-                    let mut old_vals = None;
-                    let mut linked_partner_id = None;
-                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
-                        if let Some(clip) = track.find_clip_mut(*clip_id) {
-                            old_vals = Some((clip.gain, clip.volume, clip.pan, clip.fade_in_secs, clip.fade_out_secs, clip.channel_config));
-                            linked_partner_id = clip.linked_clip_id;
-                            clip.gain = *gain;
-                            clip.volume = *volume;
-                            clip.pan = *pan;
-                            clip.fade_in_secs = *fade_in_secs;
-                            clip.fade_out_secs = *fade_out_secs;
-                            clip.fade_in_curve = *fade_in_curve;
-                            clip.fade_out_curve = *fade_out_curve;
-                            clip.channel_config = *channel_config;
-                            break;
-                        }
-                    }
-                    // Also sync audio params to the linked partner clip
-                    // so both video and audio clips have the same values
-                    if let Some(partner_id) = linked_partner_id {
-                        for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
-                            if let Some(partner) = track.find_clip_mut(partner_id) {
-                                partner.gain = *gain;
-                                partner.volume = *volume;
-                                partner.pan = *pan;
-                                partner.fade_in_secs = *fade_in_secs;
-                                partner.fade_out_secs = *fade_out_secs;
-                                partner.fade_in_curve = *fade_in_curve;
-                                partner.fade_out_curve = *fade_out_curve;
-                                partner.channel_config = *channel_config;
-                                break;
-                            }
-                        }
-                    }
-                    if let Some((og, ov, op, ofi, ofo, occ)) = old_vals {
-                        let drag_key = format!("{:?}:audio", clip_id);
-                        if !self.state.active_history().is_dragging(&drag_key) {
-                            self.state.push_history(EditCommand::EditClipAudio {
-                                    clip_id: *clip_id,
-                                    old_gain: og,
-                                    old_volume: ov,
-                                    old_pan: op,
-                                    old_fade_in: ofi,
-                                    old_fade_out: ofo,
-                                    old_channel_config: occ,
-                                    new_gain: *gain,
-                                    new_volume: *volume,
-                                    new_pan: *pan,
-                                    new_fade_in: *fade_in_secs,
-                                    new_fade_out: *fade_out_secs,
-                                    new_channel_config: *channel_config,
-                                });
-                        }
+                    // The clip and its linked partner, so a pair keeps one
+                    // level, each recorded with its own old values.
+                    let edits = self.state.set_clip_audio(*clip_id, *gain, *volume, *pan, *fade_in_secs, *fade_out_secs, *fade_in_curve, *fade_out_curve, *channel_config);
+                    let drag_key = format!("{:?}:audio", clip_id);
+                    if !edits.is_empty() && !self.state.active_history().is_dragging(&drag_key) {
+                        self.state.push_history(if edits.len() == 1 { edits.into_iter().next().unwrap() } else { EditCommand::Batch(edits) });
                     }
                     self.sync_sequence_to_engine();
                     // Instant clip gain + volume + pan + channel config — bypass command channel latency
@@ -772,7 +725,7 @@ impl KlippApp {
             };
             let gains = klipp_core::normalize::gains(&measured.levels, &measured.together, &settings);
             let applied: Vec<(klipp_core::ClipId, f32)> = clips.iter().zip(&gains).filter_map(|((id, _), g)| g.map(|g| (*id, 10f64.powf(g.db / 20.0) as f32))).collect();
-            let text = normalize_summary(&settings, &gains, skipped.len());
+            let text = normalize_summary(&settings, &gains, &measured.levels, &measured.together, skipped.len());
             let mut out = Vec::new();
             if !applied.is_empty() {
                 out.push(AppCommand::ApplyClipGains { gains: applied });
@@ -874,23 +827,30 @@ impl KlippApp {
                             _ => None,
                         })
                         .unwrap_or((*new_gain, *new_volume, *new_pan, *new_fade_in, *new_fade_out, cc));
-                    self.state.active_history_mut().end_drag(HistoryEntry {
-                        command: EditCommand::EditClipAudio {
-                            clip_id: *clip_id,
-                            old_gain: og,
-                            old_volume: ov,
-                            old_pan: op,
-                            old_fade_in: ofi,
-                            old_fade_out: ofo,
-                            old_channel_config: occ,
-                            new_gain: *new_gain,
-                            new_volume: *new_volume,
-                            new_pan: *new_pan,
-                            new_fade_in: *new_fade_in,
-                            new_fade_out: *new_fade_out,
-                            new_channel_config: cc,
-                        },
-                    });
+                    // Its linked partner, moved with it as the drag went,
+                    // in the same step: a pair is kept at one level, so it
+                    // started where the clip did.
+                    let partner = self.state.sequences[self.state.active_sequence_idx].all_clips().find(|c| c.id == *clip_id).and_then(|c| c.linked_clip_id);
+                    let edit_of = |id: klipp_core::ClipId| EditCommand::EditClipAudio {
+                        clip_id: id,
+                        old_gain: og,
+                        old_volume: ov,
+                        old_pan: op,
+                        old_fade_in: ofi,
+                        old_fade_out: ofo,
+                        old_channel_config: occ,
+                        new_gain: *new_gain,
+                        new_volume: *new_volume,
+                        new_pan: *new_pan,
+                        new_fade_in: *new_fade_in,
+                        new_fade_out: *new_fade_out,
+                        new_channel_config: cc,
+                    };
+                    let command = match partner {
+                        Some(p) => EditCommand::Batch(vec![edit_of(*clip_id), edit_of(p)]),
+                        None => edit_of(*clip_id),
+                    };
+                    self.state.active_history_mut().end_drag(HistoryEntry { command });
                     true
                 }
             _ => false,
@@ -1174,8 +1134,11 @@ impl crate::state::AppState {
     }
 }
 
-/// What a normalize says it did (#1843).
-fn normalize_summary(settings: &klipp_core::normalize::NormalizeSettings, gains: &[Option<klipp_core::normalize::Gain>], skipped: usize) -> String {
+/// What a normalize says it did (#1843), and where a clip the ceiling held
+/// lands (`levels` measured, `together` for a group): it said the target,
+/// "Normalized 1 clip to -14 LUFS; 1 held under the -1 dBTP ceiling",
+/// while the export measured -17.1.
+fn normalize_summary(settings: &klipp_core::normalize::NormalizeSettings, gains: &[Option<klipp_core::normalize::Gain>], levels: &[klipp_core::normalize::Level], together: &klipp_core::normalize::Level, skipped: usize) -> String {
     let unit = match settings.mode {
         klipp_core::normalize::NormalizeMode::Loudness => "LUFS",
         klipp_core::normalize::NormalizeMode::Peak => "dBFS",
@@ -1187,7 +1150,16 @@ fn normalize_summary(settings: &klipp_core::normalize::NormalizeSettings, gains:
     }
     let held = gains.iter().flatten().filter(|g| g.ceiling_limited).count();
     if held > 0 {
-        text.push_str(&format!("; {held} held under the {} dBTP ceiling", settings.ceiling_dbtp));
+        // Where each held clip lands: its level, or the group's, plus the
+        // gain the ceiling let it have.
+        let measured = |l: &klipp_core::normalize::Level| match settings.mode {
+            klipp_core::normalize::NormalizeMode::Loudness => l.integrated_lufs,
+            klipp_core::normalize::NormalizeMode::Peak => l.sample_peak_dbfs,
+        };
+        let reached: Vec<f64> = gains.iter().zip(levels).filter_map(|(g, l)| g.filter(|g| g.ceiling_limited).map(|g| measured(if settings.group { together } else { l }) + g.db)).collect();
+        let (lo, hi) = reached.iter().fold((f64::MAX, f64::MIN), |(a, b), v| (a.min(*v), b.max(*v)));
+        let at = if reached.is_empty() { String::new() } else if hi - lo < 0.05 { format!(", reaching {lo:.1} {unit}") } else { format!(", reaching {lo:.1} to {hi:.1} {unit}") };
+        text.push_str(&format!("; {held} held under the {} dBTP ceiling{at}", settings.ceiling_dbtp));
     }
     let maxed = gains.iter().flatten().filter(|g| g.max_limited).count();
     if maxed > 0 {
@@ -1216,3 +1188,25 @@ mod meter_ballistics_tests {
         assert!((2.0 * at120.drift - at60.drift).abs() < 1e-6);
     }
 }
+
+#[cfg(test)]
+mod normalize_summary_tests {
+    use klipp_core::normalize::{gains, Level, NormalizeSettings};
+
+    /// A clip the ceiling holds is said with the level it reaches, not
+    /// only the target it was asked for: at -30 LUFS with a -4 dBTP peak,
+    /// -14 asks +16 dB and the -1 dBTP ceiling gives +3, so it reaches -27.
+    #[test]
+    fn a_clip_held_by_the_ceiling_says_where_it_lands() {
+        let settings = NormalizeSettings { target: -14.0, ceiling_dbtp: -1.0, ..Default::default() };
+        let levels = [Level { integrated_lufs: -30.0, sample_peak_dbfs: -5.0, true_peak_dbtp: -4.0 }];
+        let g = gains(&levels, &levels[0], &settings);
+        let text = super::normalize_summary(&settings, &g, &levels, &levels[0], 0);
+        assert!(text.contains("1 held under the -1 dBTP ceiling, reaching -27.0 LUFS"), "{text}");
+        // One the ceiling doesn't hold says nothing more.
+        let free = [Level { integrated_lufs: -30.0, sample_peak_dbfs: -25.0, true_peak_dbtp: -24.0 }];
+        let text = super::normalize_summary(&settings, &gains(&free, &free[0], &settings), &free, &free[0], 0);
+        assert!(!text.contains("reaching"), "{text}");
+    }
+}
+
