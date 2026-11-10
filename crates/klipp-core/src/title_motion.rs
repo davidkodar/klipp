@@ -251,7 +251,7 @@ impl MotionKind {
     /// The picker's group for this motion: what it does to the text.
     pub fn category(self) -> &'static str {
         match self {
-            MotionKind::Fade | MotionKind::Blur | MotionKind::FocusIn | MotionKind::Flicker => "Fade",
+            MotionKind::Fade | MotionKind::Blur | MotionKind::FocusIn | MotionKind::Flicker => "Appear",
             MotionKind::Rise | MotionKind::Drop | MotionKind::SlideLeft | MotionKind::SlideRight | MotionKind::SoftRise | MotionKind::Bounce => "Move",
             MotionKind::FlyLeft | MotionKind::FlyRight | MotionKind::FlyTop | MotionKind::FlyBottom => "Fly",
             MotionKind::ScaleUp | MotionKind::ScaleDown | MotionKind::Pop | MotionKind::Slam | MotionKind::Larger | MotionKind::Smaller => "Scale",
@@ -1693,6 +1693,18 @@ pub fn format_counter_value(value: f64, decimals: u8) -> String {
 
 #[cfg(test)]
 mod loop_tests {
+    /// The picker groups the motions that bring the text up where it
+    /// stands, its own opacity and focus, as "Appear": three of the four
+    /// are not fades (Focus, Focus in, Flicker), and under "Fade" they
+    /// read as misfiled.
+    #[test]
+    fn the_in_place_motions_are_grouped_as_appear() {
+        for kind in [MotionKind::Fade, MotionKind::Blur, MotionKind::FocusIn, MotionKind::Flicker] {
+            assert_eq!(kind.category(), "Appear", "{}", kind.label());
+        }
+        assert_eq!(MotionKind::Rise.category(), "Move");
+    }
+
 
     /// #1920: an easing is read in the saved spelling and in the
     /// snake_case one the ops use, and saved as before.
