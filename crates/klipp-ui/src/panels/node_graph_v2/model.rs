@@ -76,10 +76,11 @@ pub(super) trait CanvasGraph {
     fn takes_outside_node(&self, _node: NodeId) -> bool { false }
 }
 
-/// The grade's graph on the canvas, and whether the canvas has the keys
+/// The grade's graph on the canvas, whether the canvas has the keys
 /// (#1742): it has them only while it is the focused panel, so Delete in
-/// the timeline does not take the selected nodes with it.
-pub(super) struct GradeCanvas<'a>(pub &'a NodeGraph, pub bool);
+/// the timeline does not take the selected nodes with it; and why the
+/// grade takes no compound, when it can't.
+pub(super) struct GradeCanvas<'a>(pub &'a NodeGraph, pub bool, pub Option<String>);
 
 impl CanvasGraph for GradeCanvas<'_> {
     type Node = Node;
@@ -91,6 +92,12 @@ impl CanvasGraph for GradeCanvas<'_> {
     fn signal_role(&self, node: NodeId, port: u8) -> PortRole { klipp_nodes::effective_signal_role_at(self.0, node, port) }
     fn add_menu(&self) -> &[MenuCategory] { grade_menu() }
     fn command(&self, command: AppCommand) -> Option<AppCommand> { Some(command) }
+    fn refusal(&self, command: &AppCommand) -> Option<String> {
+        match command {
+            AppCommand::GroupIntoCompound { .. } => self.2.clone(),
+            _ => None,
+        }
+    }
     fn keyboard_enabled(&self) -> bool { self.1 }
     fn takes_outside_node(&self, node: NodeId) -> bool { self.0.clone().add_outside_node(node).is_some() }
 }

@@ -460,6 +460,10 @@ pub struct NodeGraphV2Panel {
     /// focused panel (#1742). On by default, as a canvas drawn alone has
     /// them.
     pub grade_keys: bool,
+    /// Why the grade shown takes no compound, when it can't (its clip's
+    /// picture keeps a mask or a mix): the colour page sets it, and Group
+    /// into Compound is greyed with it.
+    pub grade_takes_no_compound: Option<String>,
     /// The node soloed in the engine, for the picture canvas to mark
     /// with its halo, chip and Clear solo (#1743); the app sets it before
     /// each draw, as it hands the grade canvas its solo.
@@ -597,6 +601,7 @@ impl Default for NodeGraphV2Panel {
             thumb_clipping_overlays: std::collections::HashMap::new(),
             thumb_histograms: std::collections::HashMap::new(),
             grade_keys: true,
+            grade_takes_no_compound: None,
             picture_solo: None,
             compared_node: None,
             composite_menu: false,
@@ -705,7 +710,7 @@ impl NodeGraphV2Panel {
             cmds.push(AppCommand::AbandonNodeLayoutEdit { root });
         }
         let keys = self.grade_keys;
-        let updates = self.show_canvas(ui, selected_node, selected_set, &GradeCanvas(graph, keys), clip_id, theme,
+        let updates = self.show_canvas(ui, selected_node, selected_set, &GradeCanvas(graph, keys, self.grade_takes_no_compound.clone()), clip_id, theme,
             engine_node_thumbs, engine_node_thumbs_gen, deferred_drops, descent_path,
             breadcrumb_labels, grade_version_names, active_grade_version, clip_time_secs,
             port_snap_enabled, port_snap_radius_px, solo_node);
@@ -3486,7 +3491,9 @@ impl NodeGraphV2Panel {
             self.draw_sticky_menu(ui, clip_id, graph, &mut cmds);
         }
         if self.wire_menu.is_some() {
-            self.draw_wire_menu(ui, clip_id, graph.grade_tools(), &mut cmds);
+            // A wire Delete can't take away is greyed, saying why.
+            let delete_refused = self.wire_menu.and_then(|((_, _, to, to_port), _, _)| graph.refusal(&AppCommand::DisconnectEdge { clip_id, to, to_port }));
+            self.draw_wire_menu(ui, clip_id, graph.grade_tools(), delete_refused, &mut cmds);
         }
         if self.sticky_text_editor.is_some() {
             self.draw_sticky_text_editor(ui, clip_id, &mut cmds);
@@ -4314,7 +4321,7 @@ impl NodeGraphV2Panel {
 
     /// A wire's menu (#1744): Delete, Insert node… (the add menu, its
     /// pick put into the wire), and on the grade, Add reroute.
-    fn draw_wire_menu(&mut self, ui: &mut egui::Ui, clip_id: ClipId, grade: bool, cmds: &mut Vec<AppCommand>) {
+    fn draw_wire_menu(&mut self, ui: &mut egui::Ui, clip_id: ClipId, grade: bool, delete_refused: Option<String>, cmds: &mut Vec<AppCommand>) {
         let Some(((from, from_port, to, to_port), pos, at)) = self.wire_menu else { return };
         let mut close = false;
         let area_resp = egui::Area::new(ui.id().with(("ngv2_wire_menu", to, to_port)))
@@ -4332,7 +4339,7 @@ impl NodeGraphV2Panel {
                         cmds.push(AppCommand::InsertNodeOnWire { clip_id, kind: "Reroute".into(), position: (at.x, at.y), from, from_port, to, to_port });
                         close = true;
                     }
-                    if ui.button("Delete").clicked() {
+                    if ui.add_enabled(delete_refused.is_none(), egui::Button::new("Delete")).on_disabled_hover_text(delete_refused.clone().unwrap_or_default()).clicked() {
                         cmds.push(AppCommand::DisconnectEdge { clip_id, to, to_port });
                         close = true;
                     }
@@ -4932,11 +4939,12 @@ impl NodeGraphV2Panel {
                             "Group {} into Compound",
                             selected_set.len(),
                         );
-                        if graph.grade_tools() && ui.button(label).clicked() {
-                            cmds.push(AppCommand::GroupIntoCompound {
-                                clip_id,
-                                node_ids: selected_set.iter().copied().collect(),
-                            });
+                        let group = AppCommand::GroupIntoCompound { clip_id, node_ids: selected_set.iter().copied().collect() };
+                        // Greyed, saying why, where it can't be made: it
+                        // was offered and then refused in a toast.
+                        let refused = graph.refusal(&group);
+                        if graph.grade_tools() && ui.add_enabled(refused.is_none(), egui::Button::new(label)).on_disabled_hover_text(refused.unwrap_or_default()).clicked() {
+                            cmds.push(group);
                             close = true;
                         }
                         // Lightweight frame — purely visual grouping.
@@ -5837,7 +5845,7 @@ mod add_menu_tests {
     fn every_kind_the_add_menu_offers_can_be_added() {
         use super::model::CanvasGraph;
         let graph = klipp_nodes::NodeGraph::default();
-        let model = super::model::GradeCanvas(&graph, true);
+        let model = super::model::GradeCanvas(&graph, true, None);
         let menu = model.add_menu();
         let groups: Vec<&str> = menu.iter().map(|(g, _)| *g).collect();
         assert_eq!(groups, ["Primary Grade", "Secondary", "Compositing", "Utilities", "Structural"]);
@@ -5990,6 +5998,25 @@ pub(crate) mod canvas_command_tests {
             self.settle();
             self.click(self.text(label), egui::PointerButton::Primary)
         }
+    }
+
+    /// On a clip whose grade can't take a compound, Group into Compound is
+    /// still listed but greyed, and picking it sends nothing: it was
+    /// offered and then always refused in a toast.
+    #[test]
+    fn group_into_compound_is_greyed_where_it_cant_be_made() {
+        let mut h = Harness::new();
+        let (corrector, rect) = h.card(NodeKind::Corrector);
+        let mut extra = h.graph.nodes.iter().find(|n| n.id == corrector).unwrap().clone();
+        extra.id = NodeId::new_v4(); extra.kind = NodeKind::Exposure; extra.label = "Exposure fixture".into();
+        let extra_id = extra.id;
+        h.graph.node_positions.insert(extra_id, NodePos { x: 0.0, y: 160.0 });
+        h.graph.nodes.push(extra);
+        h.set = [corrector, extra_id].into_iter().collect(); h.selected = Some(corrector);
+        h.panel.grade_takes_no_compound = Some("this clip's effects use a mask or a mix, which a compound can't hold yet".into());
+        h.settle();
+        let commands = h.menu_item(rect.center(), "Group 2 into Compound");
+        assert!(!commands.iter().any(|c| matches!(c, AppCommand::GroupIntoCompound { .. })), "nothing sent: {commands:?}");
     }
 
     /// A node low on the canvas has its menu raised to fit, so Rename…
