@@ -1213,7 +1213,7 @@ impl TitleRenderer {
         let mut layout = ShapedLayout::new();
         layout.set_rtl(tb.text_direction == TextDirection::Rtl);
         layout.set_paragraphs(paragraphs_px(&tb, scale));
-        layout.reset(&LayoutSettings {
+        let settings = LayoutSettings {
             x: 0.0,
             y: 0.0,
             // Text on a path is one line, as long as the text (#1508).
@@ -1226,7 +1226,8 @@ impl TitleRenderer {
             // type: the box's spacing is a multiple of that (#1676).
             line_height: tb.line_spacing,
             ..LayoutSettings::default()
-        });
+        };
+        layout.reset(&settings);
 
         // Resolve the laid-out text, honouring the pre-layout case
         // transform. The `text` field on TextBox is preserved verbatim
@@ -1254,6 +1255,11 @@ impl TitleRenderer {
         let (fit_w, fit_h) = paragraph_room(&tb, &resolved_text, scale, box_w, box_h);
         let fit = box_fit_ratio(&tb, face_at, &resolved_text, |i| run_px_at(&tb.style_runs, i, font_px, scale * case_scale), shaped_widest, fit_w, fit_h);
         let font_px = font_px * fit;
+        // Wrapped narrower by what tracking adds to its lines, which the
+        // layout's wrap doesn't measure ([`tracked_wrap_width`]).
+        if let Some(max) = settings.max_width.filter(|_| !on_path && !tb.vertical_layout).and_then(|max| tracked_wrap_width(max, &resolved_text, shaped_widest(fit), tb.tracking * scale)) {
+            layout.reset(&LayoutSettings { max_width: Some(max), ..settings });
+        }
         // The text from one byte to another, cut where its style runs
         // begin and end, each piece at its run's size and face (#1505).
         let run_px = |run: &StyleRun| run.font_size.unwrap_or(tb.font_size) * scale * case_scale * fit;
@@ -1469,12 +1475,9 @@ impl TitleRenderer {
         }
 
         let tracking_origins = if tracking::eligible(title) { glyphs_owned.iter().map(|g| [g.x, g.y]).collect::<Vec<_>>() } else { Vec::new() };
-        // Apply tracking (extra pixel spacing per character)
+        // Apply tracking (extra pixel spacing per character), line by line.
         if tb.tracking != 0.0 && !vertical_active {
-            let tracking_px = tb.tracking * scale;
-            for (i, g) in glyphs_owned.iter_mut().enumerate() {
-                g.x += tracking_px * i as f32;
-            }
+            track_lines(&mut glyphs_owned, &line_starts, tb.tracking * scale, tb.alignment);
         }
         // A style run's own tracking and baseline offset (#1505).
         if !vertical_active {
@@ -4543,8 +4546,12 @@ impl TitleRenderer {
         layout.reset(&LayoutSettings {
             x: 0.0,
             y: 0.0,
-            // Text on a path is one line, as long as the text (#1508).
-            max_width: tb.text_path.is_none().then(|| text_box_extent(title, width, height).0),
+            // Text on a path is one line, as long as the text (#1508);
+            // narrower by what tracking adds, as render_layout wraps it.
+            max_width: tb.text_path.is_none().then(|| {
+                let max = text_box_extent(title, width, height).0;
+                tracked_wrap_width(max, &resolved_text, shaped_widest(fit), tb.tracking * scale).unwrap_or(max)
+            }),
             max_height: Some(text_box_extent(title, width, height).1),
             horizontal_align: h_align,
             vertical_align: VerticalAlign::Top,
@@ -4577,16 +4584,13 @@ impl TitleRenderer {
 
         let mut glyphs_owned: Vec<fontdue::layout::GlyphPosition> = glyphs.to_vec();
 
+        let line_starts: Vec<usize> = layout.lines().map_or(Vec::new(), |lines| lines.iter().map(|l| l.glyph_start).collect());
         // Apply tracking (same as render_layout)
         if tb.tracking != 0.0 {
-            let tracking_px = tb.tracking * scale;
-            for (i, g) in glyphs_owned.iter_mut().enumerate() {
-                g.x += tracking_px * i as f32;
-            }
+            track_lines(&mut glyphs_owned, &line_starts, tb.tracking * scale, tb.alignment);
         }
         // A style run's own tracking and baseline offset (same as
         // render_layout, #1505)
-        let line_starts: Vec<usize> = layout.lines().map_or(Vec::new(), |lines| lines.iter().map(|l| l.glyph_start).collect());
         apply_run_spacing(&mut glyphs_owned, &tb.style_runs, &line_starts, tb.tracking, scale);
 
         // Justify (same as render_layout, #1506)
@@ -6948,6 +6952,52 @@ fn justify_lines(
 
 /// Full-frame text keeps the historical five-percent margin. Explicit
 /// boxes use their authored dimensions for wrapping and cursor layout.
+/// The width to wrap `text` at so its lines fit `max` once `tracking_px`
+/// is added between their characters, which the layout's wrap doesn't
+/// measure: narrower by the share the spacing adds to an average
+/// character (its widest typed line's width, `widest`, over its
+/// characters). A line wrapped at the box's width ran past it by the
+/// spacing: the Cinematic opener's long text, past both edges of the
+/// frame. `None` without tracking or a measure to go by.
+fn tracked_wrap_width(max: f32, text: &str, widest: f32, tracking_px: f32) -> Option<f32> {
+    let chars = text.lines().map(|l| l.chars().count()).max().unwrap_or(0);
+    (tracking_px > 0.0 && chars > 1 && widest > 0.0).then(|| {
+        let average = widest / chars as f32;
+        max * average / (average + tracking_px)
+    })
+}
+
+/// Tracking, `px` more between each character and the next, laid line by
+/// line from each line's own first character, and each line moved back
+/// by as much of what it gained as its alignment keeps still: half for a
+/// centred line, all of it for one set right, none for one set left. It
+/// counted from the text's first character and moved no line back, so
+/// centred lines drifted apart sideways, each further than the last.
+fn track_lines(glyphs: &mut [fontdue::layout::GlyphPosition], line_starts: &[usize], px: f32, alignment: TextAlignment) {
+    let starts: Vec<usize> = if line_starts.is_empty() { vec![0] } else { line_starts.to_vec() };
+    for (n, &start) in starts.iter().enumerate() {
+        let end = starts.get(n + 1).copied().unwrap_or(glyphs.len()).min(glyphs.len());
+        let Some(line) = glyphs.get_mut(start..end) else { continue };
+        // What the line's ink gained: up to its last inked character, a
+        // trailing space or the line's break adding nothing.
+        let last_ink = line.iter().rposition(|g| g.width > 0).unwrap_or(0);
+        let back = tracking_back(alignment, px * last_ink as f32);
+        for (i, g) in line.iter_mut().enumerate() {
+            g.x += px * i as f32 - back;
+        }
+    }
+}
+
+/// How far a tracked line moves back for `gained`, what its ink grew by,
+/// to keep its alignment: half centred, all of it set right.
+pub(crate) fn tracking_back(alignment: TextAlignment, gained: f32) -> f32 {
+    match alignment {
+        TextAlignment::Center => gained * 0.5,
+        TextAlignment::Right => gained,
+        TextAlignment::Left | TextAlignment::Justify => 0.0,
+    }
+}
+
 fn text_box_extent(title: &TitleData, width: u32, height: u32) -> (f32, f32) {
     let (size, centre, alignment) = title.objects.iter().find_map(|o| match &o.content {
         TitleObjectContent::TextBox(tb) => Some((o.transform.size, o.transform.center, tb.alignment)),
@@ -12431,13 +12481,13 @@ mod style_run_tests {
         // characters where the column sets them.
         let before = [
             (537262310058089473, 12990052878724863373),
-            (9375910112802164878, 7007222290492971662),
+            (561373292695273422, 3404623014263716401), // retaken: tracking laid line by line, wrapped allowing for it
             (17185529782468128921, 6239473186763768033),
             (1323807162608565093, 12990052878724863373),
             (12328210842903889326, 12990052878724863373),
             (13922581151920256384, 382594927444531904),
             (5448820052067944582, 6194283091192519508),
-            (7193490694850778374, 224027851749628502),
+            (14291560484910987066, 7744030957236369960), // retaken: tracking laid line by line, wrapped allowing for it
             (7400897415938749996, 9238244902904153988),
         ];
         assert_eq!(hashes, before, "a box whose runs set no font, style, tracking or baseline offset draws or lays out differently");
@@ -12625,7 +12675,7 @@ mod shaping_tests {
             (6118582486406094929, 12454316361513787245),
             (945665265085242760, 15164285115390767754),
             (1478896466625051445, 12454316361513787245),
-            (10567450272971704784, 60548708505280472),
+            (11859713508366916064, 4431894200284709202) /* retaken: tracking laid line by line */,
             (17028306380591570627, 11204599021776345478),
         ];
         assert_eq!(hashes, before, "text with nothing to shape draws or lays out differently");
@@ -12910,7 +12960,7 @@ mod fallback_tests {
         let before = [
             (12362235235435922744, 11758040230992881638),
             (11429411338127416158, 14383662946162571450),
-            (3569128012378324932, 2346819359444522047),
+            (3130990877802087884, 13682365324135852376), // retaken: wrapped allowing for tracking
             (11565043810062183343, 1917150523641949634),
             (9098010272575383407, 179561844797826116),
             (3193317923789182864, 14796392279787328656),
