@@ -234,6 +234,16 @@ impl Default for KlippTheme {
     }
 }
 
+/// WCAG's least contrast for text, and for a control's edge or state.
+pub const TEXT_CONTRAST: f32 = 4.5;
+pub const UI_CONTRAST: f32 = 3.0;
+
+/// The WCAG contrast ratio of two opaque colours, 1 to 21.
+pub fn contrast(a: Color32, b: Color32) -> f32 {
+    let (la, lb) = (omarchy::rel_luminance(a), omarchy::rel_luminance(b));
+    (la.max(lb) + 0.05) / (la.min(lb) + 0.05)
+}
+
 impl KlippTheme {
     /// Colour the theme in `accent`, the tones made from it the way the
     /// system palette makes them: a dimmer accent, the translucent glow
@@ -241,8 +251,13 @@ impl KlippTheme {
     pub fn set_accent(&mut self, accent: Color32, light: bool) {
         use omarchy::{mix, rel_luminance, veil};
         let (glow, subtle) = if light { (0.24, 0.22) } else { (0.18, 0.22) };
+        // On a light theme the accent is also text, on hover and on a
+        // selection: a light desktop accent (Breeze's #3daee9 is 2.3:1 on
+        // white) is darkened in its own hue until it reads there, and its
+        // dim form is darker still, as the built-in Light's is.
+        let accent = if light { self.readable(accent, &[self.bg_hover, self.selection_fill()], TEXT_CONTRAST) } else { accent };
         self.accent = accent;
-        self.accent_dim = mix(accent, self.bg_panel, 0.4);
+        self.accent_dim = if light { mix(accent, Color32::BLACK, 0.25) } else { mix(accent, self.bg_panel, 0.4) };
         self.accent_glow = veil(accent, glow);
         self.accent_subtle = veil(accent, subtle);
         // Contrast against white is (1.05) / (L + 0.05), against black
@@ -364,7 +379,34 @@ impl KlippTheme {
     /// is darker than bg_panel). Used to pick polarity-aware values
     /// for egui's built-in widgets that don't track our theme tokens
     /// directly (selection bg fill, etc.).
-    fn is_light(&self) -> bool {
+    /// The fill egui draws behind a selected item, a selected button and
+    /// selected text: a light accent tint on a light theme, where dark
+    /// text reads on it, and a dark one on a dark theme.
+    pub fn selection_fill(&self) -> Color32 {
+        if self.is_light() {
+            Color32::from_rgb(0xd6, 0xe4, 0xf8)
+        } else {
+            Color32::from_rgb(0x1e, 0x2f, 0x4a)
+        }
+    }
+
+    /// Black-ish or white text on `fill`, whichever reads better.
+    pub fn text_on(&self, fill: Color32) -> Color32 {
+        let dark = Color32::from_rgb(16, 16, 20);
+        if contrast(dark, fill) >= contrast(Color32::WHITE, fill) { dark } else { Color32::WHITE }
+    }
+
+    /// `c`, darkened (on a light theme) or lightened (on a dark one) in
+    /// its own hue until it has `min` contrast against each of `on`.
+    pub fn readable(&self, c: Color32, on: &[Color32], min: f32) -> Color32 {
+        let toward = if self.is_light() { Color32::BLACK } else { Color32::WHITE };
+        (0..=20)
+            .map(|i| omarchy::mix(c, toward, i as f32 * 0.05))
+            .find(|c| on.iter().all(|bg| contrast(*c, *bg) >= min))
+            .unwrap_or(toward)
+    }
+
+    pub(crate) fn is_light(&self) -> bool {
         // Average channel value of text_primary vs bg_panel — if text
         // is darker than bg, we're light-mode.
         let avg = |c: Color32| (c.r() as u32 + c.g() as u32 + c.b() as u32) / 3;
@@ -396,8 +438,11 @@ impl KlippTheme {
         visuals.widgets.inactive.bg_fill = self.bg_raised;
         visuals.widgets.inactive.fg_stroke =
             egui::Stroke::new(1.0_f32, self.text_secondary);
+        // A control's outline is what shows it is one: on a light theme
+        // the stronger border, 3:1 against the panels (`border` is a
+        // divider's, 1.5:1 there).
         visuals.widgets.inactive.bg_stroke =
-            egui::Stroke::new(1.0_f32, self.border);
+            egui::Stroke::new(1.0_f32, if self.is_light() { self.border_light } else { self.border });
 
         visuals.widgets.hovered.bg_fill = self.bg_hover;
         visuals.widgets.hovered.fg_stroke =
@@ -422,11 +467,7 @@ impl KlippTheme {
         // light-mode (so dark text reads). Both variants use a warm
         // tint — same accent family, different polarity — to mark
         // selection without dominating the panel.
-        visuals.selection.bg_fill = if self.is_light() {
-            Color32::from_rgb(0xd6, 0xe4, 0xf8)
-        } else {
-            Color32::from_rgb(0x1e, 0x2f, 0x4a)
-        };
+        visuals.selection.bg_fill = self.selection_fill();
         visuals.selection.stroke = egui::Stroke::new(1.0_f32, self.accent);
         // egui's own status colours follow the theme's markers, so a
         // destructive menu item or a warning label reads in the palette.
@@ -766,5 +807,77 @@ mod fallback_font_tests {
         for c in ['▾', '▸', '●', '✓'] {
             assert!(ctx.fonts(|f| f.has_glyph(&egui::FontId::proportional(13.0), c)), "no glyph for {c:?}");
         }
+    }
+}
+
+/// The Light theme against WCAG: text on each surface it is drawn on at
+/// least 4.5:1, a control's edge, state and focus at least 3:1 (1.4.3 and
+/// 1.4.11), as shipped and in a desktop's accent. A token change that
+/// breaks a pair fails here with its numbers.
+#[cfg(test)]
+mod light_contrast_tests {
+    use super::*;
+
+    /// Each pair below its least, as "name on name: ratio < least".
+    fn failures(t: &KlippTheme) -> Vec<String> {
+        let mut out = Vec::new();
+        let mut check = |what: &str, fg: Color32, on: &str, bg: Color32, least: f32| {
+            let r = contrast(fg, bg);
+            if r + 0.005 < least {
+                out.push(format!("{what} on {on}: {r:.2} < {least}"));
+            }
+        };
+        let surfaces = [
+            ("bg_void", t.bg_void), ("bg_deep", t.bg_deep), ("bg_panel", t.bg_panel), ("bg_panel_alt", t.bg_panel_alt),
+            ("bg_raised", t.bg_raised), ("bg_hover", t.bg_hover), ("selection", t.selection_fill()),
+        ];
+        for (name, fg) in [("text_primary", t.text_primary), ("text_secondary", t.text_secondary), ("text_dim", t.text_dim), ("text_accent", t.text_accent)] {
+            for (on, bg) in surfaces {
+                check(name, fg, on, bg, TEXT_CONTRAST);
+            }
+        }
+        // The accent is text too: a lit RIPPLE, a link, a hovered tab.
+        for (on, bg) in [("bg_panel", t.bg_panel), ("bg_raised", t.bg_raised), ("bg_hover", t.bg_hover), ("selection", t.selection_fill())] {
+            check("accent", t.accent, on, bg, TEXT_CONTRAST);
+        }
+        check("text_on_accent", t.text_on_accent, "accent", t.accent, TEXT_CONTRAST);
+        check("text_on(accent_dim)", t.text_on(t.accent_dim), "accent_dim", t.accent_dim, TEXT_CONTRAST);
+        for (on, bg) in surfaces {
+            check("border_light (a control's outline)", t.border_light, on, bg, UI_CONTRAST);
+        }
+        for (name, fg) in [("marker_error", t.marker_error), ("marker_success", t.marker_success), ("marker_info", t.marker_info), ("marker_warning", t.marker_warning), ("playhead", t.playhead)] {
+            for (on, bg) in [("bg_panel", t.bg_panel), ("bg_raised", t.bg_raised), ("bg_hover", t.bg_hover)] {
+                check(name, fg, on, bg, UI_CONTRAST);
+            }
+        }
+        for on_state in [false, true] {
+            let (track, knob) = crate::inspector::rows::switch_colours(t, on_state);
+            check(&format!("switch track ({})", if on_state { "on" } else { "off" }), track, "bg_panel", t.bg_panel, UI_CONTRAST);
+            check(&format!("switch knob ({})", if on_state { "on" } else { "off" }), knob, "its track", track, UI_CONTRAST);
+        }
+        for (role, colour) in [("video", t.role_video), ("dialogue", t.role_dialogue), ("music", t.role_music), ("sfx", t.role_sfx), ("title", t.role_title),
+            ("broll", t.role_broll), ("ambience", t.role_ambience), ("foley", t.role_foley), ("voiceover", t.role_voiceover), ("graphics", t.role_graphics)] {
+            for active in [false, true] {
+                let (bg, text, stroke) = crate::widgets::role_pill::role_pill_colours(t, colour, active);
+                check(&format!("{role} pill text"), text, "its fill", bg, TEXT_CONTRAST);
+                check(&format!("{role} pill outline"), stroke.color, "bg_panel", t.bg_panel, UI_CONTRAST);
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn the_light_theme_meets_wcag_as_shipped_and_in_a_desktops_accent() {
+        let reg = crate::theme::ThemeRegistry::builtins_only();
+        let light = reg.get("Light").expect("the built-in Light").clone();
+        assert!(light.is_light());
+        let mut bad = failures(&light);
+        // GNOME's blue, KDE Breeze's, a yellow, a purple and a green.
+        for accent in [(0x35, 0x84, 0xe4), (0x3d, 0xae, 0xe9), (0xf6, 0xd3, 0x2d), (0x91, 0x41, 0xac), (0x3a, 0x94, 0x4a)] {
+            let mut t = light.clone();
+            t.set_accent(Color32::from_rgb(accent.0, accent.1, accent.2), true);
+            bad.extend(failures(&t).into_iter().map(|f| format!("{f} (accent #{:02x}{:02x}{:02x})", accent.0, accent.1, accent.2)));
+        }
+        assert!(bad.is_empty(), "{} pairs below WCAG:\n{}", bad.len(), bad.join("\n"));
     }
 }

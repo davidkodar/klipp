@@ -150,12 +150,12 @@ impl KlippApp {
             self.toggle_perf_recording();
         }
 
-        // CONTRAST RULE: Ensure selection bg stays dark each frame.
-        // egui popup windows can reset visuals; re-apply selection colors to be safe.
-        // Only mutate when the value drifted — avoids bumping the style dirty flag
-        // on the 99% of frames where no popup reset happened.
+        // The theme's selection fill each frame: egui popup windows can
+        // reset visuals. It was a fixed dark amber, which drew every
+        // selected button dark on a light theme. Only mutate when the
+        // value drifted, so the style is not marked dirty every frame.
         {
-            let target = egui::Color32::from_rgb(0x38, 0x2c, 0x14);
+            let target = self.theme.selection_fill();
             let needs_fix = ctx.style().visuals.selection.bg_fill != target;
             if needs_fix {
                 ctx.style_mut(|style| {

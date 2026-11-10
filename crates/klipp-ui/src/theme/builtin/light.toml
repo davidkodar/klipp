@@ -22,14 +22,17 @@ bg_hover      = "#e6e6ea"
 bg_viewer     = "#e0e0e4"
 
 # ── Borders / dividers ──
+# `border` divides; `border_light` outlines controls, 3:1 on every panel
+# (WCAG 1.4.11). Every text and control pair here is held to WCAG by
+# theme::light_contrast_tests.
 border        = "#cccccc"
-border_light  = "#b8b8c0"
+border_light  = "#7c7c86"
 resizer_idle  = "#b0b0b8"
 
 # ── Accent (warm amber, same family) ──
 # Slightly darker than Dark's accent so it carries enough weight against
 # white surfaces.
-accent        = "#2f6fd0"
+accent        = "#2a62b8"
 accent_dim    = "#245399"
 # Glow alphas re-tuned for white background: higher opacity so the hint
 # of accent reads, lower RGB so we don't tint to a muddy yellow.
@@ -45,7 +48,7 @@ playhead       = "#d63b2f"
 
 text_primary   = "#18181c"
 text_secondary = "#555560"
-text_dim       = "#888890"
+text_dim       = "#62626c"
 text_accent    = "#101014"
 # Same dark text as Dark mode for accent backgrounds — the contrast
 # rule is about contrast vs the accent itself, which is the same
@@ -58,7 +61,7 @@ text_on_accent = "#ffffff"
 # semantic mapping (red = error, green = success, blue = info, amber
 # = warning) reads correctly.
 marker_error   = "#b8302c"
-marker_success = "#3aa05c"
+marker_success = "#2b8249"
 marker_info    = "#1f5a9c"
 marker_warning = "#a87810"
 

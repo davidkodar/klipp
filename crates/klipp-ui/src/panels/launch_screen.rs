@@ -777,7 +777,9 @@ impl LaunchScreen {
             egui::Align2::CENTER_CENTER,
             "+ New Project",
             egui::FontId::proportional(13.0),
-            theme.bg_void,
+            // The text that reads on the fill: bg_void was white on a
+            // light theme, on a pale blue.
+            theme.text_on(new_bg),
         );
         if new_resp.clicked() {
             cmds.push(AppCommand::NewProject);

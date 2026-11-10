@@ -138,15 +138,26 @@ pub fn point_row(ui: &mut Ui, theme: &KlippTheme, label: &str, tc: Option<String
     });
 }
 
+/// A switch's track and knob. Off on a light theme, a grey track and a
+/// white knob: the track was white on a near-white panel, a dark knob on
+/// nothing, with no edge to see the control by.
+pub fn switch_colours(theme: &KlippTheme, on: bool) -> (egui::Color32, egui::Color32) {
+    match (on, theme.is_light()) {
+        (true, _) => (theme.accent, theme.text_on_accent),
+        (false, true) => (theme.text_dim, theme.bg_raised),
+        (false, false) => (theme.bg_raised, theme.text_secondary),
+    }
+}
+
 /// A compact switch in the theme's colours.
 pub fn switch(ui: &mut Ui, theme: &KlippTheme, on: bool) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(vec2(32.0, 18.0), egui::Sense::click());
     let t = ui.ctx().animate_bool_with_time(resp.id, on, 0.12);
-    let track = if on { theme.accent } else { theme.bg_raised };
+    let (track, knob) = switch_colours(theme, on);
     ui.painter().rect_filled(rect, 9.0, track);
     let r = 7.0;
     let x = egui::lerp(rect.left() + r + 2.0..=rect.right() - r - 2.0, t);
-    ui.painter().circle_filled(egui::pos2(x, rect.center().y), r, if on { theme.text_on_accent } else { theme.text_secondary });
+    ui.painter().circle_filled(egui::pos2(x, rect.center().y), r, knob);
     if resp.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }

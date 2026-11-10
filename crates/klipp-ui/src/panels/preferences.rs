@@ -438,7 +438,7 @@ impl PreferencesPanel {
                 // bg_raised -> bg_hover because it is not the primary action.
                 let done_bg = if done_resp.hovered() { theme.accent } else { theme.accent_dim };
                 bottom_painter.rect_filled(done_rect, 4.0, done_bg);
-                bottom_painter.text(done_rect.center(), egui::Align2::CENTER_CENTER, "Done", egui::FontId::proportional(12.0).clone(), theme.text_on_accent);
+                bottom_painter.text(done_rect.center(), egui::Align2::CENTER_CENTER, "Done", egui::FontId::proportional(12.0).clone(), theme.text_on(done_bg));
                 if done_resp.clicked() { open = false; }
                 // Reset defaults button
                 let reset_rect = egui::Rect::from_min_size(
