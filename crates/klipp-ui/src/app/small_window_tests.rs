@@ -312,3 +312,37 @@ fn a_toast_stands_above_the_small_screen_note() {
     let low = alone.iter().find(|(s, _)| s == "Clip placed on Video 2").expect("drawn").1;
     assert!(low.bottom() > said.bottom(), "lower without the note: {low:?} vs {said:?}");
 }
+
+/// The timeline's toolbar in the centre a narrow window leaves when a side
+/// panel is open from its rail, 180 pt or so: the zoom group gives up its
+/// slider before anything overlaps, keeping −, + and Fit, and the rest is
+/// under "»". The zoom group kept its 250 pt there, and "»" and "−" drew
+/// over each other.
+#[test]
+fn a_narrow_timeline_toolbar_overlaps_nothing() {
+    for width in [160.0, 180.0, 240.0, 320.0] {
+        let mut state = AppState::default();
+        let ctx = egui::Context::default();
+        let theme = KlippTheme::default();
+        let kb = crate::keybindings::KeyBindings::defaults();
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, 40.0));
+        let mut shown = Vec::new();
+        for frame in 0..4 {
+            let out = ctx.run(input(screen, Vec::new(), frame as f64 * 0.1), |ctx| {
+                egui::CentralPanel::default().frame(egui::Frame::none()).show(ctx, |ui| {
+                    crate::timeline::toolbar::show(ui, &mut state, &theme, &mut Vec::new(), &kb);
+                });
+            });
+            shown = texts(&out);
+        }
+        for (i, (a, ra)) in shown.iter().enumerate() {
+            assert!(ra.right() <= width + 0.5 && ra.left() >= -0.5, "{width} pt: {a:?} at {ra:?} is past the edge");
+            for (b, rb) in &shown[i + 1..] {
+                assert!(!ra.shrink(1.0).intersects(rb.shrink(1.0)), "{width} pt: {a:?} {ra:?} and {b:?} {rb:?} overlap");
+            }
+        }
+        for want in ["\u{2212}", "+", "Fit", "\u{00bb}"] {
+            assert!(shown.iter().any(|(t, _)| t == want), "{width} pt: no {want:?} in {shown:?}");
+        }
+    }
+}

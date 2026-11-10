@@ -14,7 +14,13 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState, theme: &KlippTheme, cmds: &
     let btn = crate::theme::control::REGULAR;
     // What the row has before the zoom group and a "»" button, which keep
     // their place at the right (#2944).
-    let budget = ui.available_width() - ZOOM_GROUP_W - MORE_W - 8.0;
+    // In a narrow centre the zoom group gives up its slider's length, then
+    // the slider, keeping −, + and Fit: at its full width it ran under
+    // the "»" button.
+    let slider_w = (ui.available_width() - 8.0 - MORE_W - 8.0 - (ZOOM_GROUP_W - ZOOM_SLIDER_W)).clamp(0.0, ZOOM_SLIDER_W);
+    let slider_w = if slider_w < ZOOM_SLIDER_MIN_W { 0.0 } else { slider_w };
+    let zoom_group_w = ZOOM_GROUP_W - ZOOM_SLIDER_W + slider_w;
+    let budget = ui.available_width() - zoom_group_w - MORE_W - 8.0;
     let widths_id = ui.id().with("timeline_toolbar_widths");
     let mut widths: [f32; GROUPS.len()] = ui.ctx().data(|d| d.get_temp(widths_id)).unwrap_or([0.0; GROUPS.len()]);
     let mut folded: Vec<Group> = Vec::new();
@@ -78,9 +84,12 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState, theme: &KlippTheme, cmds: &
             }
             let mut zoom_t = ((state.timeline_zoom.ln() - 0.1f32.ln())
                 / (2000.0f32.ln() - 0.1f32.ln())).clamp(0.0, 1.0);
-            let slider = egui::Slider::new(&mut zoom_t, 0.0..=1.0).show_value(false);
-            let resp = ui.add_sized([ZOOM_SLIDER_W, 16.0], slider);
-            if resp.changed() {
+            let changed = slider_w > 0.0 && {
+                // Narrower only: the full row is drawn as it was.
+                ui.spacing_mut().slider_width = ui.spacing().slider_width.min(slider_w);
+                ui.add_sized([slider_w, 16.0], egui::Slider::new(&mut zoom_t, 0.0..=1.0).show_value(false)).changed()
+            };
+            if changed {
                 let new_zoom = (0.1f32.ln() + zoom_t * (2000.0f32.ln() - 0.1f32.ln())).exp();
                 cmds.push(AppCommand::SetTimelineZoom { zoom: new_zoom, scroll_x: None });
             }
@@ -99,6 +108,8 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState, theme: &KlippTheme, cmds: &
 const ZOOM_GROUP_W: f32 = 250.0;
 /// The zoom slider's length.
 const ZOOM_SLIDER_W: f32 = 130.0;
+/// The shortest the zoom slider is drawn; shorter, it goes.
+const ZOOM_SLIDER_MIN_W: f32 = 40.0;
 /// The "»" button's room.
 const MORE_W: f32 = 30.0;
 
