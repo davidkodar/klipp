@@ -32,14 +32,15 @@ impl KlippApp {
         }
         // A path edit goes to the others when it is an effect's (the
         // Effects tab's rows); a grade's nodes stay the clip's own.
-        let place = if crate::multi_edit::is_path_edit(cmd) {
+        let (place, after) = if crate::multi_edit::is_path_edit(cmd) {
             let primary = self.state.sequence().all_clips().find(|c| c.id == clip)?;
             if !crate::multi_edit::takes_path(cmd, primary) {
                 return None;
             }
-            crate::multi_edit::path_place(cmd, primary)
+            // A move's target too, read before the move changes the places.
+            (crate::multi_edit::path_place(cmd, primary), crate::multi_edit::after_place(cmd, primary))
         } else {
-            None
+            (None, None)
         };
         let mut in_drag = self.multi_edit.as_ref().is_some_and(|m| m.primary == clip);
         // An audio plugin's slider coalesces in its own handler under a
@@ -53,13 +54,13 @@ impl KlippApp {
             }
         }
         match phase {
-            Phase::Live => Some(MultiEditPost { cmd: cmd.clone(), others, finish: false, opened_batch: false, place: place.clone() }),
+            Phase::Live => Some(MultiEditPost { cmd: cmd.clone(), others, finish: false, opened_batch: false, place: place.clone(), after: after.clone() }),
             Phase::Begin => {
                 self.multi_edit = Some(MultiEditSession { primary: clip, before: self.multi_edit_snapshot(clip, &others) });
                 None
             }
-            Phase::Update if in_drag => Some(MultiEditPost { cmd: cmd.clone(), others, finish: false, opened_batch: false, place: place.clone() }),
-            Phase::Abandon => in_drag.then(|| MultiEditPost { cmd: cmd.clone(), others, finish: true, opened_batch: false, place: place.clone() }),
+            Phase::Update if in_drag => Some(MultiEditPost { cmd: cmd.clone(), others, finish: false, opened_batch: false, place: place.clone(), after: after.clone() }),
+            Phase::Abandon => in_drag.then(|| MultiEditPost { cmd: cmd.clone(), others, finish: true, opened_batch: false, place: place.clone(), after: after.clone() }),
             Phase::End if !in_drag => None,
             Phase::Update | Phase::End | Phase::Redo => {
                 if !in_drag {
@@ -72,7 +73,7 @@ impl KlippApp {
                 if opened_batch {
                     self.state.active_history_mut().begin_batch();
                 }
-                Some(MultiEditPost { cmd: cmd.clone(), others, finish: true, opened_batch, place })
+                Some(MultiEditPost { cmd: cmd.clone(), others, finish: true, opened_batch, place, after })
             }
         }
     }
@@ -112,7 +113,12 @@ impl KlippApp {
                 // written live: the step below records each clip whole.
                 for other in &post.others {
                     let Some(clip) = self.state.sequence().all_clips().find(|c| c.id == *other).cloned() else { continue };
-                    let Some(op) = crate::multi_edit::path_op_at(&post.cmd, place, &clip) else { continue };
+                    let op = match &post.after {
+                        // A move: the same effect after the same, on each.
+                        Some(after) => crate::multi_edit::move_op_at(place, after, &clip),
+                        None => crate::multi_edit::path_op_at(&post.cmd, place, &clip),
+                    };
+                    let Some(op) = op else { continue };
                     if let Ok(graph_ops::GraphOpsOutcome { edit: EditCommand::PictureEdit { clip_id, edit, .. }, .. }) = graph_ops::graph_ops_edit(self.state.sequence(), &[op]) {
                         self.state.set_picture(clip_id, &edit.after);
                     }
@@ -176,4 +182,6 @@ pub(super) struct MultiEditPost {
     /// A path edit's node: its kind and place among that kind on the
     /// edited clip, taken before the edit (a remove takes it away).
     pub(super) place: Option<(String, usize)>,
+    /// A move's target on the edited clip, taken before the move.
+    pub(super) after: Option<crate::multi_edit::After>,
 }

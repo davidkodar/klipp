@@ -10,7 +10,8 @@ impl KlippApp {
     /// of the clip it covers and where it was lost; for a person at the
     /// viewer, the playhead goes to the first frame lost with the corners
     /// up to put right and continue.
-    pub(super) fn apply_surface_track(&mut self, clip_id: klipp_core::ClipId, surface: klipp_timeline::Surface, held_secs: (f64, f64), direction: i8, interactive: bool, wider_area: bool) {
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn apply_surface_track(&mut self, clip_id: klipp_core::ClipId, surface: klipp_timeline::Surface, held_secs: (f64, f64), direction: i8, interactive: bool, wider_area: bool, ended: [Option<(u8, f32)>; 2]) {
         let seq = &self.state.sequences[self.state.active_sequence_idx];
         let fps = seq.fps.as_f64();
         let Some(old) = seq.all_clips().find(|c| c.id == clip_id).cloned() else {
@@ -33,15 +34,16 @@ impl KlippApp {
         // Short of the clip at an edge of the frames read is the memory
         // limit, not the tracker losing the surface.
         let (mut lost, mut held) = (Vec::new(), Vec::new());
-        let mut first_lost: Option<(f64, i8)> = None;
-        for (short, edge, held_edge, side, way) in [(direction >= 0 && to < hi - frame * 1.5, to, held_secs.1, "after", 1i8), (direction <= 0 && from > lo + frame * 1.5, from, held_secs.0, "before", -1i8)] {
+        let mut first_lost: Option<(f64, i8, Option<String>)> = None;
+        for (short, edge, held_edge, side, way, why) in [(direction >= 0 && to < hi - frame * 1.5, to, held_secs.1, "after", 1i8, ended[0]), (direction <= 0 && from > lo + frame * 1.5, from, held_secs.0, "before", -1i8, ended[1])] {
             if short {
                 let said = format!("{side} {:.2} s", on_timeline(edge));
                 if (edge - held_edge).abs() < frame * 1.5 {
                     held.push(said)
                 } else {
-                    lost.push(said);
-                    first_lost.get_or_insert((edge, way));
+                    let why = why_run_ended_said(why);
+                    lost.push(match &why { Some(w) => format!("{said} ({w})"), None => said });
+                    first_lost.get_or_insert((edge, way, why));
                 }
             }
         }
@@ -66,7 +68,7 @@ impl KlippApp {
         let total = new.surfaces.iter().find(|s| s.id == surface.id).map_or(0, |s| s.keys.len());
         // Stop and fix: on the frame after the last one followed, the
         // corners where they last were, to drag onto the surface.
-        if let (true, Some((edge, way))) = (interactive, first_lost) {
+        if let (true, Some((edge, way, why))) = (interactive, first_lost) {
             let step = 1.0 / surface.media_fps.max(1.0);
             let src = (edge + way as f64 * step).clamp(lo, (hi - step).max(lo));
             let at = on_timeline(src).clamp(new.timeline_in.to_secs_f64(), new.timeline_out.to_secs_f64() - 1.0 / fps.max(1.0));
@@ -77,7 +79,7 @@ impl KlippApp {
                 let (track, exclude) = surface_area_on_frame(self.state.sequence(), &new, s, at, Some(edge));
                 self.state.surface_tool = Some(crate::state::SurfaceTool { clip_id, surface: Some(s.id), name: Some(s.name.clone()), corners, direction: way, track, exclude, edit: Default::default(), drag: None });
             }
-            self.state.toast.show(format!("Lost \u{201c}{}\u{201d} at {at:.2} s: drag the corners onto it and press Continue", surface.name));
+            self.state.toast.show(lost_at_said(&surface.name, at, why.as_deref()));
             return;
         }
         self.state.toast.show(format!("Tracked \u{201c}{}\u{201d} over {total} frames{note}", surface.name));
@@ -317,6 +319,22 @@ impl KlippApp {
                 t
             };
             let (ahead, behind) = (trimmed(ahead), trimmed(behind));
+            // Why each way stopped short of the frames it ran over, from
+            // where the area followed was on its last frame followed: the
+            // tracker's own reading, said to the person (#2754).
+            let ended_at = |kept: &[klipp_effects::planar::Tracked], ran: &[usize]| -> Option<(u8, f32)> {
+                let end = ran.last()?;
+                if kept.last().is_some_and(|t| t.frame == *end) {
+                    return None;
+                }
+                let h = kept.last().map_or_else(klipp_effects::homography::Homography::identity, |t| t.h);
+                Some(match klipp_effects::planar::why_run_ended(&quad_px, &h, (gw, gh)) {
+                    klipp_effects::planar::RunEnd::Lost => (0, 1.0),
+                    klipp_effects::planar::RunEnd::LeftPicture => (1, 1.0),
+                    klipp_effects::planar::RunEnd::Resized { scale } => (2, scale as f32),
+                })
+            };
+            let ended = [ended_at(&ahead, &forward), ended_at(&behind, &backward)];
             let followed = |t: &[klipp_effects::planar::Tracked]| !t.is_empty();
             if !followed(&ahead) && !followed(&behind) && !(forward.is_empty() && backward.is_empty()) {
                 return fail("the surface could not be followed from the frame its corners were set on: set them round the whole flat surface, its edges included".into());
@@ -349,7 +367,7 @@ impl KlippApp {
             if !going() {
                 return fail("cancelled".into());
             }
-            let _ = event_tx.send(klipp_core::AppEvent::SurfaceTracked { clip_id, surface, name, wider_area, corners, reference_secs: reference as f64 / media_fps, keys, source_size, media_fps, held_secs, direction, interactive, track_area: track, exclude });
+            let _ = event_tx.send(klipp_core::AppEvent::SurfaceTracked { clip_id, surface, name, wider_area, corners, reference_secs: reference as f64 / media_fps, keys, source_size, media_fps, held_secs, direction, interactive, track_area: track, exclude, ended });
         });
     }
 
@@ -586,8 +604,52 @@ pub(super) fn surface_key_of((source_secs, map, confidence, state, light): (f64,
     klipp_timeline::SurfaceKey { source_secs, map, confidence: Some(confidence), state, light }
 }
 
+
+/// Why a track's run stopped, said, from what the tracker read on its
+/// last frame followed (`AppEvent::SurfaceTracked`'s `ended`): leaving
+/// the picture, grown or shrunk since the frame its corners were set on,
+/// or else no longer matched to it. `None` where no reason came.
+pub(super) fn why_run_ended_said(ended: Option<(u8, f32)>) -> Option<String> {
+    Some(match ended? {
+        (1, _) => "it was leaving the picture".to_string(),
+        (2, scale) if scale >= 1.0 => format!("it had grown to {scale:.1}\u{d7} its size on the frame its corners were set on"),
+        (2, scale) => format!("it had shrunk to {scale:.1}\u{d7} its size on the frame its corners were set on"),
+        _ => "it could no longer be matched to the frame its corners were set on".to_string(),
+    })
+}
+
+/// What a person at the viewer is told when a run stops at timeline second
+/// `at`: where, why, and what to do next, unless it left the picture,
+/// where there is nothing to drag the corners onto.
+pub(super) fn lost_at_said(name: &str, at: f64, why: Option<&str>) -> String {
+    match why {
+        Some(w) if w.contains("leaving the picture") => format!("Lost \u{201c}{name}\u{201d} at {at:.2} s: {w}"),
+        Some(w) => format!("Lost \u{201c}{name}\u{201d} at {at:.2} s: {w}. Drag the corners onto it and press Continue"),
+        None => format!("Lost \u{201c}{name}\u{201d} at {at:.2} s: drag the corners onto it and press Continue"),
+    }
+}
+
 #[cfg(test)]
 mod correction_tests {
+    /// A run that stopped says why, in words, with where: leaving the
+    /// picture (nothing to drag the corners onto then), grown or shrunk
+    /// since the frame its corners were set on, or no longer matched.
+    #[test]
+    fn a_stopped_run_says_why() {
+        use super::{lost_at_said, why_run_ended_said};
+        let left = why_run_ended_said(Some((1, 1.0)));
+        assert_eq!(lost_at_said("Surface 1", 5.83, left.as_deref()), "Lost \u{201c}Surface 1\u{201d} at 5.83 s: it was leaving the picture");
+        let grew = why_run_ended_said(Some((2, 1.58)));
+        assert_eq!(
+            lost_at_said("Surface 1", 3.34, grew.as_deref()),
+            "Lost \u{201c}Surface 1\u{201d} at 3.34 s: it had grown to 1.6\u{d7} its size on the frame its corners were set on. Drag the corners onto it and press Continue"
+        );
+        assert_eq!(why_run_ended_said(Some((2, 0.6))).as_deref(), Some("it had shrunk to 0.6\u{d7} its size on the frame its corners were set on"));
+        assert_eq!(why_run_ended_said(Some((0, 1.0))).as_deref(), Some("it could no longer be matched to the frame its corners were set on"));
+        assert_eq!(why_run_ended_said(None), None, "no reason, none made up");
+        assert_eq!(lost_at_said("S", 1.0, None), "Lost \u{201c}S\u{201d} at 1.00 s: drag the corners onto it and press Continue");
+    }
+
     use klipp_effects::planar::State;
 
     /// A frame re-solved from a correction is no surer than the
