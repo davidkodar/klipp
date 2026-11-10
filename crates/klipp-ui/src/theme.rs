@@ -502,7 +502,10 @@ fn install_unicode_fallback_fonts(ctx: &egui::Context) {
     ctx.set_fonts(unicode_fallback_fonts());
 }
 
-/// The interface's monospace face: see [`unicode_fallback_fonts`].
+/// The interface's monospace face: see [`unicode_fallback_fonts`]. B612
+/// Mono with its colon, semicolon, full stop and comma moved to the middle
+/// of their cells (they sit at the left in the original, which drew a
+/// timecode "00: 00: 06: 00"); nothing else of it is changed.
 const UI_MONO: &str = "klipp_ui_mono";
 const UI_MONO_BYTES: &[u8] = include_bytes!("../../../assets/fonts/B612Mono/B612Mono-Regular.ttf");
 
@@ -716,6 +719,41 @@ mod fallback_font_tests {
         let font = fontdue::Font::from_bytes(super::UI_MONO_BYTES, fontdue::FontSettings::default()).unwrap();
         let widths: Vec<f32> = "0123456789.-+ ".chars().map(|c| font.metrics(c, 10.0).advance_width).collect();
         assert!(widths.iter().all(|w| (w - widths[0]).abs() < 1e-3), "figures one width: {widths:?}");
+    }
+
+    /// The space either side of `mark`'s ink drawn between two zeros of
+    /// `bytes` at `px`: from the first zero's ink to the mark's, and from
+    /// the mark's to the second zero's.
+    fn gaps_around(bytes: &[u8], mark: char, px: f32) -> (f32, f32) {
+        let font = fontdue::Font::from_bytes(bytes, fontdue::FontSettings::default()).expect("a font");
+        let (zero, m) = (font.metrics('0', px), font.metrics(mark, px));
+        let before = zero.advance_width - (zero.xmin + zero.width as i32) as f32 + m.xmin as f32;
+        let after = m.advance_width - (m.xmin + m.width as i32) as f32 + zero.xmin as f32;
+        (before, after)
+    }
+
+    /// A timecode reads "00:00:06:00" and a level "-12.5", tight: the
+    /// interface mono draws its colon and its full stop in the middle of
+    /// their cells, as Hack (the mono before it) did. B612 Mono's own sit at
+    /// the left, which drew "00: 00: 06: 00".
+    #[test]
+    fn a_timecodes_colons_sit_between_its_figures() {
+        let hack = egui::FontDefinitions::default().font_data["Hack"].font.to_vec();
+        for px in [13.0, 40.0] {
+            for mark in [':', '.', ';', ','] {
+                let (before, after) = gaps_around(super::UI_MONO_BYTES, mark, px);
+                assert!((before - after).abs() <= 1.0, "{mark:?} at {px} px: {before} px before its ink, {after} after");
+                // A timecode's and a level's: B612's cell is a little wider
+                // than Hack's (0.65 em to 0.60), its gap centred by as much
+                // more and no further.
+                if !matches!(mark, ':' | '.') {
+                    continue;
+                }
+                let (hb, ha) = gaps_around(&hack, mark, px);
+                let room = 0.04 * px + 1.0;
+                assert!(before <= hb + room && after <= ha + room, "{mark:?} at {px} px: {before}/{after} px around it, Hack's {hb}/{ha}");
+            }
+        }
     }
 
     /// The ▾ of "Add ▾" draws whatever the machine has installed: a Mac

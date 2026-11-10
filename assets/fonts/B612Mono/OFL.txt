@@ -1,5 +1,9 @@
 Copyright 2012 The B612 Project Authors (https://github.com/polarsys/b612)
 
+Modified for Klipp: the colon, semicolon, full stop and comma of
+B612Mono-Regular.ttf are moved to the middle of their cells (advance widths
+unchanged), and its digital signature table, which no longer holds, removed.
+
 This Font Software is licensed under the SIL Open Font License, Version 1.1.
 This license is copied below, and is also available with a FAQ at:
 http://scripts.sil.org/OFL
