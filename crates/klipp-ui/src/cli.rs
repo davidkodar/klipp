@@ -55,8 +55,9 @@ pub fn parse(args: impl IntoIterator<Item = std::ffi::OsString>) -> Cli {
 pub const USAGE: &str = "\
 Usage: klipp [OPTIONS] [PATH]...
 
-Open Klipp, and with it each PATH: a project folder (name.klipp) is
-opened, a media file is imported into the project that is open.
+Open Klipp, and with it each PATH: a project folder (name.klipp), or the
+project.json in one, is opened; a media file is imported into the project
+that is open.
 
 Options:
   -V, --version   Print the version and build, and exit
@@ -94,6 +95,17 @@ pub fn startup_paths() -> &'static [PathBuf] {
 /// or one named `*.klipp`.
 pub fn is_project(path: &std::path::Path) -> bool {
     path.is_dir() && (path.join("project.json").is_file() || path.extension().is_some_and(|e| e == "klipp"))
+}
+
+/// The project `path` stands for: the project folder itself, or, for its
+/// `project.json` (what "Open With Klipp" passes when a file manager shows
+/// a .klipp folder as the folder it is), the folder holding it. Anything
+/// else as it is.
+fn project_of_its_file(path: &std::path::Path) -> PathBuf {
+    match path.parent() {
+        Some(folder) if path.file_name().is_some_and(|n| n == "project.json") && path.is_file() && is_project(folder) => folder.to_path_buf(),
+        _ => path.to_path_buf(),
+    }
 }
 
 /// What to do on a step of [`StartupOpen`].
@@ -135,6 +147,7 @@ impl StartupOpen {
         let mut unknown = Vec::new();
         for p in paths {
             let name = p.display().to_string();
+            let p = &project_of_its_file(p);
             if is_project(p) {
                 if open.project.is_none() {
                     open.project = Some(p.clone());
@@ -295,6 +308,24 @@ mod tests {
         let steps = two.step(None, None);
         assert!(matches!(&steps[0], Step::Toast(t) if t.contains("One project opens at a time")), "{steps:?}");
         assert_eq!(steps[1], Step::Open(project.clone()));
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// "Open With Klipp" on a project's project.json, as a file manager
+    /// shows a .klipp folder's files: the project opens, not an import.
+    #[test]
+    fn a_projects_project_json_opens_the_project() {
+        let (root, project, clip) = fixture("project-json");
+        let json = project.join("project.json");
+        std::fs::write(&json, b"{}").unwrap();
+        let mut open = StartupOpen::plan(&[json.clone(), clip.clone()]);
+        assert_eq!(open.step(None, None), vec![Step::Open(project.clone())]);
+        assert_eq!(open.step(Some(&project), None), vec![Step::Import(clip)]);
+        // Another JSON file is not a project.
+        let other = root.join("notes.json");
+        std::fs::write(&other, b"{}").unwrap();
+        let steps = StartupOpen::plan(&[other]).step(None, None);
+        assert!(matches!(&steps[..], [Step::Toast(t)] if t.starts_with("Not a project")), "{steps:?}");
         std::fs::remove_dir_all(&root).ok();
     }
 
