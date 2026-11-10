@@ -65,7 +65,8 @@ class MetainfoTests(unittest.TestCase):
         r = self.root
         self.assertEqual(r.findtext("id"), "io.github.davidkodar.Klipp")
         self.assertEqual(r.find("launchable").text, "io.github.davidkodar.Klipp.desktop")
-        self.assertTrue(r.find("developer").get("id"))
+        self.assertEqual(r.find("developer").get("id"), "io.github.davidkodar")
+        self.assertEqual(r.findtext("developer/name"), "davidkodar")
         self.assertIsNotNone(r.find("content_rating[@type='oars-1.1']"))
         urls = {u.get("type") for u in r.findall("url")}
         self.assertLessEqual({"homepage", "bugtracker", "vcs-browser"}, urls)
