@@ -1522,38 +1522,6 @@ impl ViewerPanel {
         painter.line_segment([egui::pos2(cx, cy - 12.0), egui::pos2(cx, cy + 12.0)], cross);
     }
 
-    fn draw_checkerboard_overlay(
-        &self,
-        painter: &egui::Painter,
-        state: &AppState,
-        frame: &ViewerFrameState,
-    ) {
-        let image_rect = frame.image_rect;
-        let tile: f32 = state.viewer_prefs.checkerboard_tile_size;
-        let c1 = egui::Color32::from_rgb(80, 80, 80);
-        let c2 = egui::Color32::from_rgb(120, 120, 120);
-        let x0 = image_rect.left();
-        let y0 = image_rect.top();
-        let mut y = y0;
-        let mut row = 0;
-        while y < image_rect.bottom() {
-            let mut x = x0;
-            let mut col = 0;
-            while x < image_rect.right() {
-                let color = if (row + col) % 2 == 0 { c1 } else { c2 };
-                let r = egui::Rect::from_min_size(
-                    egui::pos2(x, y),
-                    egui::vec2(tile.min(image_rect.right() - x), tile.min(image_rect.bottom() - y)),
-                );
-                painter.rect_filled(r, 0.0, color);
-                x += tile;
-                col += 1;
-            }
-            y += tile;
-            row += 1;
-        }
-    }
-
     fn draw_proxy_badge(
         &self,
         painter: &egui::Painter,
@@ -2135,6 +2103,10 @@ impl ViewerPanel {
         let mut te_ui = ui.new_child(egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(bb.min, egui::vec2(1.0, 1.0))));
         te_ui.style_mut().visuals.selection.bg_fill = egui::Color32::TRANSPARENT;
         te_ui.style_mut().visuals.selection.stroke = egui::Stroke::NONE;
+        // Its caret too: the one shown is drawn in the text, below. One
+        // pixel wide, this editor puts a character on each line, and its
+        // own caret showed a line down per character, below the picture.
+        te_ui.style_mut().visuals.text_cursor.stroke = egui::Stroke::NONE;
         let te_output = egui::TextEdit::multiline(&mut state.viewer_text_edit_buffer)
             .id(edit_id)
             .desired_width(1.0)
@@ -2475,10 +2447,9 @@ impl ViewerPanel {
             self.draw_grid_overlay(ui.painter(), state, &frame);
         }
 
-        // Checkerboard transparency overlay (drawn behind video, replaces black background)
-        if state.viewer_overlays.checkerboard {
-            self.draw_checkerboard_overlay(ui.painter(), state, &frame);
-        }
+        // No checkerboard: the viewer's frame is flattened over black, so
+        // there is no transparency to show, and grey tiles painted over the
+        // frame hid the picture. Its switches are greyed, saying why.
 
         // Timecode + zoom now shown in playbar below scrub bar
 
@@ -4718,11 +4689,18 @@ impl ViewerPanel {
                     let upright = new_t.rotation.rem_euclid(360.0) == 0.0;
                     match drag.handle {
                         H::Body if !free => {
-                            // The layer as it is seen: its box hugs its text.
+                            // The layer as it is seen: its box hugs its text,
+                            // which left or right aligned text sits beside
+                            // the layer's anchor, not round it. The box moves
+                            // with the anchor, so it is snapped where it is
+                            // drawn and the anchor shifted by as much.
                             let mut seen = td.object(drag.object_id).map(|o| o.transform.clone()).unwrap_or_else(|| new_t.clone());
-                            seen.center = new_t.center;
+                            let anchor_now = raw_title.object(drag.object_id).map(|o| o.transform.evaluated_center(time));
+                            let (ox, oy) = anchor_now.map_or((0.0, 0.0), |a| (seen.center.x - a.x, seen.center.y - a.y));
+                            seen.center.x = new_t.center.x + ox;
+                            seen.center.y = new_t.center.y + oy;
                             let (hw, hh) = layer_half_extent(&seen, drag.frame_aspect);
-                            let c = new_t.center;
+                            let c = seen.center;
                             if let Some((shift, line)) = snap_to_lines(&[c.x - hw, c.x, c.x + hw], &xs, within_x) {
                                 new_t.center.x += shift;
                                 guides.push((true, line));
@@ -5176,8 +5154,10 @@ impl ViewerPanel {
             return;
         }
 
-        // The clip's placement as its picture holds it (M3 step 13).
-        let transform = crate::inspector::placement_by_path::placement(clip);
+        // The clip's placement as its picture draws it at the playhead
+        // (M3 step 13): its keyed lanes at their values there, so the box
+        // follows the picture as the playhead moves.
+        let transform = crate::inspector::placement_by_path::placement_at(clip, (state.playhead - clip.timeline_in).to_secs_f64().max(0.0));
         let effect_index = find_transform_index(clip);
         let n_builtin_effects = clip.builtin_effects().len();
 
@@ -6585,7 +6565,9 @@ impl ViewerPanel {
             menu_toggle_value(ui, &mut state.viewer_overlays.zebras, "Zebras", &key("toggle_zebra"));
             menu_toggle_value(ui, &mut state.viewer_overlays.false_color, "False Colour", &key("toggle_false_color"));
             menu_toggle_value(ui, &mut state.viewer_overlays.focus_peaking, "Focus Peaking", "Ctrl+P");
-            menu_toggle_value(ui, &mut state.viewer_overlays.checkerboard, "Checkerboard", "");
+            ui.add_enabled_ui(false, |ui| {
+                menu_toggle_value(ui, &mut state.viewer_overlays.checkerboard, "Checkerboard", "");
+            }).response.on_disabled_hover_text(CHECKERBOARD_NOT_YET);
 
             ui.separator();
 
@@ -7068,8 +7050,13 @@ pub(crate) fn shown_title_layer(
     editor_title_geometry(title, frame, 0.0, &mut None).object(object).cloned()
 }
 
-/// Match the editor frame to the renderer's measured glyph bounds while
-/// preserving the authored transform centre and wrapping constraint.
+/// Match the editor frame to the renderer's measured glyph bounds, around
+/// the text as it is drawn, keeping the wrapping constraint. Across, the
+/// box is centred on the text: the renderer sets left text from the
+/// layer's anchor and right text up to it, and a box kept on the anchor
+/// held half the text. Down, and for text on a path, it keeps the
+/// authored centre. The document
+/// keeps the anchor; a drag starts from it, not from this box.
 fn tighten_text_editor_boxes(title: &mut klipp_timeline::TitleData, dimensions: (u32, u32)) {
     with_editor_renderer(|renderer| tighten_with(renderer, title, dimensions));
 }
@@ -7113,6 +7100,11 @@ fn tighten_with(renderer: &mut klipp_title::TitleRenderer, title: &mut klipp_tim
         let h = (layout.text_bottom - layout.text_top + pad_y * 2.0) / height.max(1) as f32;
         obj.transform.size.x = w.clamp(0.01, obj.transform.size.x.max(0.01));
         obj.transform.size.y = h.clamp(0.01, obj.transform.size.y.max(0.01));
+        // Text on a path turns about the layer's centre, which its handle
+        // reads: kept there.
+        if tb.text_path.is_none() {
+            obj.transform.center.x = (layout.text_left + layout.text_right) * 0.5 / width.max(1) as f32;
+        }
     }
 }
 
@@ -8574,6 +8566,28 @@ mod fitted_backing_editor_tests {
         assert!(bb.height() < frame.height() * 0.25);
     }
 
+    /// Left, centred or right aligned, the layer's box (its handles and
+    /// what a click on it hits) is around the text as it is drawn. The
+    /// renderer sets left text from the layer's anchor and right text up
+    /// to it, and the box stayed centred on the anchor: half the text out
+    /// of it, and a click on its end selected the clip.
+    #[test]
+    fn the_layer_box_is_around_its_text_whatever_the_alignment() {
+        use klipp_timeline::TextAlignment;
+        let frame = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1920.0, 1080.0));
+        for alignment in [TextAlignment::Left, TextAlignment::Center, TextAlignment::Right] {
+            let title = TitleData::single_text(TextBox { text: "Maria Lind".into(), font_size: 72.0, alignment, ..Default::default() });
+            let ink = klipp_title::TitleRenderer::new().render_layout(&title, 1920, 1080);
+            let mut fitted = title.clone();
+            tighten_text_editor_boxes(&mut fitted, (1920, 1080));
+            let bb = object_screen_bb(&fitted.objects[0], frame);
+            assert!(
+                bb.left() <= ink.text_left && bb.right() >= ink.text_right,
+                "{alignment:?}: the box {:.0}..{:.0} holds the text {:.0}..{:.0}", bb.left(), bb.right(), ink.text_left, ink.text_right
+            );
+        }
+    }
+
     /// A text layer emptied keeps a box one line high at its anchor, where
     /// typing puts the text: it kept the layout box behind it, the whole
     /// frame and more, reaching below the picture.
@@ -8875,6 +8889,11 @@ fn draw_view_channel(ui: &mut egui::Ui, state: &AppState, image_rect: egui::Rect
 }
 
 /// A channel's name in the viewer's chrome.
+/// Why the Checkerboard (transparency grid) can't be switched on: the
+/// viewer's frame is flattened over black, so it has no transparency to
+/// show, and a grid painted over it hid the picture.
+pub const CHECKERBOARD_NOT_YET: &str = "The viewer doesn't show transparency yet";
+
 pub fn view_channel_label(channel: klipp_core::ViewChannel) -> &'static str {
     use klipp_core::ViewChannel as V;
     match channel {
