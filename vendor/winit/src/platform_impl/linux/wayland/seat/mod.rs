@@ -81,6 +81,7 @@ impl SeatHandler for WinitState {
         seat: WlSeat,
         capability: SeatCapability,
     ) {
+        tracing::debug!("Drag and drop: seat {} has {capability:?}", seat.id());
         let seat_state = match self.seats.get_mut(&seat.id()) {
             Some(seat_state) => seat_state,
             None => {
@@ -88,6 +89,23 @@ impl SeatHandler for WinitState {
                 return;
             },
         };
+
+        // KLIPP PATCH: the seat's data device made again once it has a
+        // pointer, replacing (releasing) the one made at start, never a
+        // second beside it, which would take each drop twice. Mutter sent
+        // the device made before the seat's capabilities nothing at all.
+        if capability == SeatCapability::Pointer {
+            if let Some(manager) = self.data_device_manager.as_ref() {
+                let device = manager.get_data_device(queue_handle, &seat);
+                tracing::debug!(
+                    "Drag and drop: seat {} pointer, data device {} (was {:?})",
+                    seat.id(),
+                    device.inner().id(),
+                    seat_state.data_device.as_ref().map(|d| d.inner().id())
+                );
+                seat_state.data_device = Some(device);
+            }
+        }
 
         match capability {
             SeatCapability::Touch if seat_state.touch.is_none() => {
