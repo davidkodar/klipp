@@ -4905,12 +4905,12 @@ impl BrowserPanel {
                     resolved.as_ref().and_then(|r| r.peaks.clone());
                 let audition_peaks: Option<&[(f32, f32)]> =
                     local_peaks.as_deref();
-                // "Failed" = clip resolved + media item exists + we
+                // No sound: clip resolved + media item exists + we
                 // know it has no audio stream. The conform worker
                 // marks this on the MediaItem at import time. If the
                 // clip simply hasn't conformed yet we stay in the
                 // Loading state and the spinner keeps polling.
-                let audition_failed = resolved
+                let no_sound = resolved
                     .as_ref()
                     .map(|r| !r.has_audio)
                     .unwrap_or(false);
@@ -4929,7 +4929,7 @@ impl BrowserPanel {
                     active_path.as_deref(),
                     active_media_id,
                     audition_peaks,
-                    audition_failed,
+                    no_sound,
                     active_duration_secs,
                     &mut self.audio_fx_audition_volume,
                     &mut self.audio_fx_audition_anchor_secs,
