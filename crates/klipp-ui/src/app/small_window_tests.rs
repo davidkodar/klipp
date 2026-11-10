@@ -312,3 +312,50 @@ fn a_toast_stands_above_the_small_screen_note() {
     let low = alone.iter().find(|(s, _)| s == "Clip placed on Video 2").expect("drawn").1;
     assert!(low.bottom() > said.bottom(), "lower without the note: {low:?} vs {said:?}");
 }
+
+/// A tiling compositor gives the window half the screen beside a file
+/// dialog, then the whole of it back. Auto made the interface 80% for the
+/// half, and put up the note; with the screen back it is 100% again and
+/// the note goes. A size the person chose stays as chosen.
+#[test]
+fn auto_returns_to_full_size_when_the_window_does_and_a_chosen_size_stays() {
+    use super::appearance::{ScaleStep, UiScale, SETTLE_SECS};
+    let (half, whole) = (egui::vec2(800.0, 900.0), egui::vec2(1920.0, 1080.0));
+    let mut prefs = crate::prefs::Preferences::default().appearance;
+    let mut state = AppState { project_path: Some(crate::project_paths::UNTITLED.into()), ..AppState::default() };
+
+    let mut auto = UiScale::default();
+    assert_eq!(auto.step(0, whole, 0.0), ScaleStep::Set(1.0), "the start applies at once");
+    assert_eq!(auto.step(0, half, 10.0), ScaleStep::Wait, "a new size waits until it holds");
+    assert_eq!(auto.step(0, half, 10.0 + SETTLE_SECS), ScaleStep::Set(0.8));
+    assert!(crate::welcome::small_screen_note_now(&mut state, &mut prefs, 0.8));
+    assert_eq!(state.small_screen_note, Some(80));
+    assert_eq!(auto.step(0, whole, 20.0), ScaleStep::Wait);
+    let ScaleStep::Set(back) = auto.step(0, whole, 20.0 + SETTLE_SECS) else { panic!("the whole screen back is applied") };
+    assert_eq!(back, 1.0, "Auto returns to 100%");
+    crate::welcome::small_screen_note_now(&mut state, &mut prefs, back);
+    assert_eq!(state.small_screen_note, None, "and the note goes with it");
+    assert_eq!(auto.step(0, whole, 30.0), ScaleStep::Same);
+
+    // Half again: smaller again, but the note was shown once, ever.
+    auto.step(0, half, 40.0);
+    assert_eq!(auto.step(0, half, 40.0 + SETTLE_SECS), ScaleStep::Set(0.8));
+    assert!(!crate::welcome::small_screen_note_now(&mut state, &mut prefs, 0.8) && state.small_screen_note.is_none());
+
+    // A note up while the window is a size Auto makes 90% says 90%.
+    state.small_screen_note = Some(80);
+    crate::welcome::small_screen_note_now(&mut state, &mut prefs, 0.9);
+    assert_eq!(state.small_screen_note, Some(90));
+
+    // 80% chosen: it stays 80% with the whole screen back, and the note,
+    // which was about Auto, goes.
+    let mut chosen = UiScale::default();
+    prefs.ui_scale_percent = 80;
+    assert_eq!(chosen.step(80, half, 0.0), ScaleStep::Set(0.8));
+    chosen.step(80, whole, 10.0);
+    assert_eq!(chosen.step(80, whole, 10.0 + SETTLE_SECS), ScaleStep::Set(0.8), "a chosen size stays");
+    crate::welcome::small_screen_note_now(&mut state, &mut prefs, 0.8);
+    assert_eq!(state.small_screen_note, None);
+    // And choosing it is applied at once, without waiting.
+    assert_eq!(auto.step(80, half, 50.0), ScaleStep::Set(0.8));
+}
