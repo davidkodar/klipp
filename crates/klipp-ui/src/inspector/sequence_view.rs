@@ -48,12 +48,32 @@ pub fn show(ui: &mut Ui, theme: &KlippTheme, state: &AppState, cmds: &mut Vec<Ap
             });
         }
         // One channel of the picture in grey (#2758).
+        // The channels side by side where they fit beside the label, else
+        // one drop-down: in a narrow inspector they drew over the label
+        // and pushed the card past the panel's edge.
         row(ui, theme, "Channel", |ui| {
-            for channel in klipp_core::ViewChannel::ALL {
-                let label = crate::panels::viewer::view_channel_label(channel);
-                if ui.selectable_label(state.view_channel == channel, RichText::new(label).size(12.0)).clicked() && state.view_channel != channel {
-                    cmds.push(AppCommand::SetViewChannel { channel });
+            let label = crate::panels::viewer::view_channel_label;
+            let font = egui::FontId::proportional(12.0);
+            let pad = ui.spacing().button_padding.x * 2.0 + ui.spacing().item_spacing.x;
+            let wide: f32 = ui.fonts(|f| klipp_core::ViewChannel::ALL.iter().map(|c| f.layout_no_wrap(label(*c).to_owned(), font.clone(), egui::Color32::WHITE).size().x + pad).sum());
+            let mut chosen = state.view_channel;
+            if wide <= ui.available_width() {
+                for channel in klipp_core::ViewChannel::ALL {
+                    if ui.selectable_label(chosen == channel, RichText::new(label(channel)).size(12.0)).clicked() {
+                        chosen = channel;
+                    }
                 }
+            } else {
+                egui::ComboBox::from_id_salt("inspector_view_channel")
+                    .selected_text(RichText::new(label(chosen)).size(12.0))
+                    .show_ui(ui, |ui| {
+                        for channel in klipp_core::ViewChannel::ALL {
+                            ui.selectable_value(&mut chosen, channel, label(channel));
+                        }
+                    });
+            }
+            if chosen != state.view_channel {
+                cmds.push(AppCommand::SetViewChannel { channel: chosen });
             }
         });
         ui.add_space(4.0);
@@ -179,5 +199,36 @@ mod tests {
         assert!(matches!(click(&ctx, &state, at("\u{2715}")).as_slice(), [AppCommand::MarkRange { in_point: Some(None), out_point: None }]));
         assert!(matches!(click(&ctx, &state, at("Sequence Settings\u{2026}")).as_slice(), [AppCommand::OpenSequenceSettings { .. }]));
         assert!(texts.iter().any(|(t, _)| t == "Not set"), "the Out point unset: {texts:?}");
+    }
+
+    /// The inspector at its narrowest, as a narrow window opens it from
+    /// its rail, and wider: no text over another, none past its edges.
+    /// The Channel row's six buttons drew over its label and pushed the
+    /// card's rows past the panel's left edge ("se proxies").
+    #[test]
+    fn nothing_overlaps_at_the_inspectors_narrowest() {
+        // Less a scrollbar's width, too.
+        for width in [crate::theme::INSPECTOR_MIN_W - 24.0, crate::theme::INSPECTOR_MIN_W, 300.0, 360.0] {
+            let ctx = egui::Context::default();
+            let state = AppState::default();
+            let theme = KlippTheme::default();
+            let mut texts = Vec::new();
+            for _ in 0..3 {
+                let out = ctx.run(egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, vec2(width, 900.0))), ..Default::default() }, |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| show(ui, &theme, &state, &mut Vec::new()));
+                });
+                texts = out.shapes.iter().filter_map(|s| match &s.shape {
+                    egui::Shape::Text(t) if !t.galley.text().trim().is_empty() => Some((t.galley.text().to_owned(), t.visual_bounding_rect())),
+                    _ => None,
+                }).collect::<Vec<_>>();
+            }
+            for (i, (a, ra)) in texts.iter().enumerate() {
+                assert!(ra.left() >= -0.5 && ra.right() <= width + 0.5, "{a:?} {ra:?} past the edge at {width}");
+                for (b, rb) in &texts[i + 1..] {
+                    assert!(!ra.shrink(0.5).intersects(rb.shrink(0.5)), "{a:?} {ra:?} over {b:?} {rb:?} at {width}");
+                }
+            }
+            assert!(texts.iter().any(|(t, _)| t == "Use proxies") && texts.iter().any(|(t, _)| t == "Channel"), "{texts:?}");
+        }
     }
 }

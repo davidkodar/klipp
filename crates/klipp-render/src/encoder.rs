@@ -249,11 +249,55 @@ fn refusal(codec: &ExportVideoCodec, bit_depth: u8, hardware: bool, name: &str, 
     }
 }
 
-/// AMD ships AMF's runtime for x86-64 only. FFmpeg may still list the
-/// encoder elsewhere, and opening it there only logs that the library is
-/// missing (#3407).
+/// Whether hardware encoder `name` can open on this machine at all (see
+/// [`EncoderMachine`]).
 fn encoder_can_exist_here(name: &str) -> bool {
-    cfg!(target_arch = "x86_64") || !name.ends_with("_amf")
+    EncoderMachine::here().can_open(name)
+}
+
+/// What a hardware encoder needs from the machine before FFmpeg can open
+/// it. FFmpeg lists NVENC and AMF wherever it was built with them, and
+/// trying one without its driver logged an error each export ("Cannot
+/// load libcuda.so.1", "DLL libamfrt64.so.1 failed to open") on every AMD
+/// and Intel machine before the export went on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct EncoderMachine {
+    /// AMD ships AMF's runtime for x86-64 only (#3407).
+    x86_64: bool,
+    /// An NVIDIA driver is loaded, without which NVENC can't open.
+    nvidia_driver: bool,
+    /// AMF's runtime loads: AMD's own driver (amdgpu-pro); Mesa has none.
+    amf_runtime: bool,
+}
+
+impl EncoderMachine {
+    /// This machine, looked at once.
+    fn here() -> Self {
+        static HERE: std::sync::OnceLock<EncoderMachine> = std::sync::OnceLock::new();
+        *HERE.get_or_init(|| {
+            let x86_64 = cfg!(target_arch = "x86_64");
+            EncoderMachine { x86_64, nvidia_driver: klipp_core::GpuVendor::nvidia_driver_loaded(), amf_runtime: x86_64 && amf_runtime_loads() }
+        })
+    }
+
+    /// Whether `name` can open here: NVENC with an NVIDIA driver, AMF
+    /// where its runtime loads, any other as FFmpeg has it.
+    fn can_open(self, name: &str) -> bool {
+        if name.ends_with("_nvenc") {
+            self.nvidia_driver
+        } else if name.ends_with("_amf") {
+            self.x86_64 && self.amf_runtime
+        } else {
+            true
+        }
+    }
+}
+
+/// Whether AMF's runtime library loads, as FFmpeg's AMF encoder loads it.
+fn amf_runtime_loads() -> bool {
+    // SAFETY: AMD's runtime, opened as FFmpeg opens it when an AMF
+    // encoder starts; nothing of it is called, and it is closed again.
+    unsafe { libloading::Library::new("libamfrt64.so.1") }.is_ok()
 }
 
 /// Every encoder a render tries for `codec`, best first: each hardware
@@ -2636,8 +2680,26 @@ mod tests {
             let has_amf = hardware_video_encoders(&codec, 1920, 1080, false).iter().any(|n| n.ends_with("_amf"));
             assert!(cfg!(target_arch = "x86_64") || !has_amf, "{codec:?}");
         }
-        assert_eq!(encoder_can_exist_here("h264_amf"), cfg!(target_arch = "x86_64"));
-        assert!(encoder_can_exist_here("h264_nvenc") && encoder_can_exist_here("h264_vaapi"));
+        assert!(encoder_can_exist_here("h264_vaapi"));
+        assert!(!encoder_can_exist_here("h264_amf") || cfg!(target_arch = "x86_64"));
+    }
+
+    /// An AMD or Intel machine with Mesa: neither NVENC nor AMF is tried,
+    /// each of which logged an error on every export; VAAPI and software
+    /// are, in the same order as before. NVENC with an NVIDIA driver, AMF
+    /// with AMD's runtime, on x86-64 only.
+    #[test]
+    fn hardware_encoders_are_tried_only_where_their_driver_is() {
+        let m = |x86_64, nvidia_driver, amf_runtime| EncoderMachine { x86_64, nvidia_driver, amf_runtime };
+        let names = ["h264_nvenc", "hevc_nvenc", "av1_nvenc", "h264_amf", "hevc_amf", "av1_amf", "h264_vaapi", "libx264"];
+        let open = |machine: EncoderMachine| names.iter().copied().filter(|n| machine.can_open(n)).collect::<Vec<_>>();
+        assert_eq!(open(m(true, false, false)), ["h264_vaapi", "libx264"], "Mesa, no NVIDIA");
+        assert_eq!(open(m(true, true, false)), ["h264_nvenc", "hevc_nvenc", "av1_nvenc", "h264_vaapi", "libx264"], "NVIDIA");
+        assert_eq!(open(m(true, false, true)), ["h264_amf", "hevc_amf", "av1_amf", "h264_vaapi", "libx264"], "AMD's own driver");
+        assert_eq!(open(m(false, true, true)), ["h264_nvenc", "hevc_nvenc", "av1_nvenc", "h264_vaapi", "libx264"], "AMF is x86-64 only");
+        let here = EncoderMachine::here();
+        assert_eq!(here.nvidia_driver, klipp_core::GpuVendor::nvidia_driver_loaded());
+        assert!(here.x86_64 || !here.amf_runtime);
     }
 
     /// #555: AMF was given NVENC's options, `rc vbr` and `preset p5`,
