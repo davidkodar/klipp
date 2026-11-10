@@ -672,3 +672,54 @@ fn a_roll_takes_its_partners_as_linked_and_alt_say() {
         assert_eq!(sent, Some(want), "Linked {linked_selection}, Alt {alt}");
     }
 }
+
+/// While a roll is dragged with Linked on, the sound cut under the
+/// picture's moves with it, and is back where it was at the release (the
+/// command makes the edit). It moved only at the release, so the cut
+/// jumped then. With Linked off the sound stays put throughout.
+#[test]
+fn a_linked_roll_shows_its_partners_moving() {
+    for linked_selection in [true, false] {
+        let (mut state, ids) = clips_on_video_2(&[(0.0, 2.0), (2.0, 4.0)]);
+        state.active_tool = klipp_core::Tool::Trim;
+        state.linked_selection = linked_selection;
+        let a1 = state.sequence().tracks.iter().position(|t| t.kind == TrackKind::Audio).unwrap();
+        let v2 = state.sequence().tracks.iter().position(|t| t.name == "Video 2").unwrap();
+        let mut sounds = Vec::new();
+        for (i, &id) in ids.iter().enumerate() {
+            let picture = state.sequences[0].tracks[v2].clips.iter_mut().find(|c| c.id == id).unwrap();
+            let mut sound = picture.clone();
+            sound.id = ClipId::new();
+            sound.linked_clip_id = Some(id);
+            picture.linked_clip_id = Some(sound.id);
+            sounds.push(sound.id);
+            if i == 0 { state.sequences[0].tracks[a1].clips.clear(); }
+            state.sequences[0].tracks[a1].clips.push(sound);
+        }
+        let mut tl = Timeline::new(state);
+        let row = tl.track("Video 2");
+        let cut = tl.at(row, 2.0);
+        let m = egui::Modifiers::NONE;
+        let b = |p, d| egui::Event::PointerButton { pos: p, button: egui::PointerButton::Primary, pressed: d, modifiers: m };
+        let sound_cut = |tl: &Timeline| {
+            let s = tl.state.sequence();
+            let (a, b) = (s.all_clips().find(|c| c.id == sounds[0]).unwrap(), s.all_clips().find(|c| c.id == sounds[1]).unwrap());
+            (a.timeline_out, a.source_out, b.timeline_in, b.source_in)
+        };
+        let before = sound_cut(&tl);
+        tl.frame(vec![egui::Event::PointerMoved(cut)], m);
+        tl.frame(vec![b(cut, true)], m);
+        for dx in [8.0, 15.0, 30.0] {
+            tl.frame(vec![egui::Event::PointerMoved(cut + egui::vec2(dx, 0.0))], m);
+        }
+        let s = tl.state.sequence();
+        let (pa, pb) = (s.all_clips().find(|c| c.id == ids[0]).unwrap(), s.all_clips().find(|c| c.id == ids[1]).unwrap());
+        let picture = (pa.timeline_out, pa.source_out, pb.timeline_in, pb.source_in);
+        assert!(picture.0 > t(2.0), "the picture cut is rolling");
+        let want = if linked_selection { picture } else { before };
+        assert_eq!(sound_cut(&tl), want, "during the drag, Linked {linked_selection}");
+        tl.frame(vec![b(cut + egui::vec2(30.0, 0.0), false)], m);
+        tl.frame(Vec::new(), m);
+        assert_eq!(sound_cut(&tl), before, "after the release the command edits, Linked {linked_selection}");
+    }
+}

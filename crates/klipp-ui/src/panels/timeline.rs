@@ -1198,6 +1198,53 @@ struct RollTrimState {
     /// The linked partners roll too: Linked on and Alt not held at its
     /// start, as an edge trim takes it.
     linked: bool,
+    /// The partners that roll with it, as they were at its start, so the
+    /// drag shows them moving and its release puts them back for the
+    /// command to edit.
+    partners: Vec<RollPartner>,
+}
+
+/// A linked partner of one side of a roll: its id, whether it follows
+/// clip A (its out moves) or clip B (its in moves), and its source and
+/// timeline time on that side at the start.
+struct RollPartner {
+    id: ClipId,
+    of_a: bool,
+    source: Timecode,
+    timeline: Timecode,
+}
+
+impl RollPartner {
+    /// The partners of a roll between `a` and `b`, as `AppState::roll_trim`
+    /// moves them.
+    fn of(seq: &klipp_timeline::Sequence, a: ClipId, b: ClipId) -> Vec<RollPartner> {
+        let partner = |id: ClipId| seq.all_clips().find(|c| c.id == id).and_then(|c| c.linked_clip_id);
+        let (linked_a, linked_b) = (partner(a), partner(b));
+        seq.all_clips().filter_map(|c| {
+            if Some(c.id) == linked_a && c.id != b {
+                Some(RollPartner { id: c.id, of_a: true, source: c.source_out, timeline: c.timeline_out })
+            } else if Some(c.id) == linked_b && c.id != a {
+                Some(RollPartner { id: c.id, of_a: false, source: c.source_in, timeline: c.timeline_in })
+            } else {
+                None
+            }
+        }).collect()
+    }
+
+    /// Each partner moved from its start by `d` (source, timeline): clip
+    /// A's moves for its side, clip B's for the other.
+    fn set(seq: &mut klipp_timeline::Sequence, partners: &[RollPartner], d_a: (Timecode, Timecode), d_b: (Timecode, Timecode)) {
+        for p in partners {
+            let Some(c) = seq.tracks.iter_mut().find_map(|t| t.find_clip_mut(p.id)) else { continue };
+            if p.of_a {
+                c.source_out = p.source + d_a.0;
+                c.timeline_out = p.timeline + d_a.1;
+            } else {
+                c.source_in = p.source + d_b.0;
+                c.timeline_in = p.timeline + d_b.1;
+            }
+        }
+    }
 }
 
 #[allow(dead_code)]
@@ -8217,6 +8264,7 @@ impl TimelinePanel {
                                 original_b_timeline_in: clips[i + 1].timeline_in,
                                 hold: None,
                                 linked,
+                                partners: if linked { RollPartner::of(state.sequence(), clips[i].id, clips[i + 1].id) } else { Vec::new() },
                             }
                         })
                     };
@@ -11091,6 +11139,11 @@ impl TimelinePanel {
                             c.timeline_in = final_b_timeline_in;
                         }
                     }
+                    // The linked partners move with it as they will at the
+                    // release, so the cut doesn't jump then.
+                    let d_a = (final_a_source_out - roll.original_a_source_out, final_a_timeline_out - roll.original_a_timeline_out);
+                    let d_b = (final_b_source_in - roll.original_b_source_in, final_b_timeline_in - roll.original_b_timeline_in);
+                    RollPartner::set(state.sequence_mut(), &roll.partners, d_a, d_b);
 
                     // Rich overlay for roll trim
                     let delta_frames = snapped_boundary - roll.original_boundary;
@@ -11127,6 +11180,10 @@ impl TimelinePanel {
                             c.timeline_in = roll.original_b_timeline_in;
                         }
                     }
+                    let zero = |t: Timecode| RationalTime { value: 0, rate: t.rate };
+                    let none_a = (zero(roll.original_a_source_out), zero(roll.original_a_timeline_out));
+                    let none_b = (zero(roll.original_b_source_in), zero(roll.original_b_timeline_in));
+                    RollPartner::set(state.sequence_mut(), &roll.partners, none_a, none_b);
                     cmds.push(AppCommand::RollTrimClip {
                         clip_a_id: roll.clip_a_id,
                         clip_b_id: roll.clip_b_id,
