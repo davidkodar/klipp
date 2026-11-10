@@ -26,6 +26,9 @@ pub(super) struct Viewer {
     pub(super) circles: Vec<(egui::Pos2, egui::Color32)>,
     /// The filled rectangles the last frame drew, and their fill.
     pub(super) rects: Vec<(egui::Rect, egui::Color32)>,
+    /// The straight lines the last frame drew, a caret among them: their
+    /// ends, and where each was clipped to.
+    pub(super) lines: Vec<([egui::Pos2; 2], egui::Rect)>,
     /// A window lying over the viewer, as Colour Check or Clip Properties do.
     pub(super) window_over: Option<egui::Rect>,
 }
@@ -35,7 +38,7 @@ impl Viewer {
         // Paused on an empty timeline: the viewer shows a frame to
         // draw on.
         let state = AppState { playback: klipp_engine::PlaybackState::Paused, active_tool: Tool::Text, ..Default::default() };
-        let mut v = Self { ctx: egui::Context::default(), panel: ViewerPanel::default(), state, theme: KlippTheme::default(), clock: 0.0, sent: Vec::new(), modifiers: egui::Modifiers::NONE, texts: Vec::new(), circles: Vec::new(), rects: Vec::new(), window_over: None };
+        let mut v = Self { ctx: egui::Context::default(), panel: ViewerPanel::default(), state, theme: KlippTheme::default(), clock: 0.0, sent: Vec::new(), modifiers: egui::Modifiers::NONE, texts: Vec::new(), circles: Vec::new(), rects: Vec::new(), lines: Vec::new(), window_over: None };
         v.frame(Vec::new());
         v
     }
@@ -67,6 +70,11 @@ impl Viewer {
         }).collect();
         self.rects = out.shapes.iter().filter_map(|s| match &s.shape {
             egui::Shape::Rect(r) => Some((r.rect, r.fill)),
+            _ => None,
+        }).collect();
+        self.lines = out.shapes.iter().filter_map(|s| match &s.shape {
+            // Only what is seen: a line of no width or colour is not.
+            egui::Shape::LineSegment { points, stroke } if !stroke.is_empty() => Some((*points, s.clip_rect)),
             _ => None,
         }).collect();
         for cmd in cmds {
