@@ -852,13 +852,16 @@ fn row_card(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppState, clip: &Clip
     let effect = node.and_then(|n| klipp_graph_lift::effect_params::tag(n).map(|tag| (n, tag))).and_then(|(n, tag)| effect_types().find(|t| t.tag == tag).map(|t| (n, t)));
     match effect {
         Some((n, ty)) if !row.read_only => {
-            if ty.tag == "chroma_key" {
-                if let Ok(klipp_effects::BuiltinEffect::ChromaKey { key_color, tolerance, soft_edge, .. }) = serde_json::from_value(klipp_graph_lift::effect_params::entry_of(n).unwrap_or(serde_json::Value::Null)) {
-                    if let Some(note) = greys_keyed_note(key_color, tolerance, soft_edge) {
-                        ui.add(egui::Label::new(egui::RichText::new(note).size(10.0).color(theme.marker_warning)).wrap());
-                    }
-                }
-            }
+            // Said under the card's rows, not above them: it comes and goes
+            // as Tolerance and Spill move, and above them it moved every row
+            // a line under the pointer in the middle of a drag.
+            let greys_note = (ty.tag == "chroma_key")
+                .then(|| serde_json::from_value(klipp_graph_lift::effect_params::entry_of(n).unwrap_or(serde_json::Value::Null)).ok())
+                .flatten()
+                .and_then(|e| match e {
+                    klipp_effects::BuiltinEffect::ChromaKey { key_color, tolerance, soft_edge, .. } => greys_keyed_note(key_color, tolerance, soft_edge),
+                    _ => None,
+                });
             if ty.tag == "surface_pin" {
                 surface_choice(ui, theme, clip, &row.addr, &klipp_graph_lift::effect_params::entry_of(n).unwrap_or(serde_json::Value::Null), cmds);
             }
@@ -931,6 +934,9 @@ fn row_card(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppState, clip: &Clip
             };
             ui.indent(("stack_row", row.addr.clone()), |ui| {
                 effect_card(ui, &mut rc, &rows, ty, clip, state);
+                if let Some(note) = greys_note {
+                    ui.add(egui::Label::new(egui::RichText::new(note).size(10.0).color(theme.marker_warning)).wrap());
+                }
                 if height_follows_width(ty.tag, clip) {
                     ui.label(egui::RichText::new("Scale Y follows Scale X's keys, at the clip's aspect").small().color(theme.text_dim))
                         .on_hover_text("The clip's scale is keyed: its height keeps its aspect against the width.");
