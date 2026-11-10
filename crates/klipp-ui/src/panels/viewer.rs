@@ -7078,7 +7078,22 @@ fn tighten_with(renderer: &mut klipp_title::TitleRenderer, title: &mut klipp_tim
         let mut single = klipp_timeline::TitleData::single_text_fx(tb.clone(), obj.fx().clone());
         single.objects[0].transform = obj.transform.clone();
         let layout = renderer.render_layout(&single, width.max(1), height.max(1));
-        if layout.glyph_count == 0 { continue; }
+        if layout.glyph_count == 0 {
+            // Emptied: a line high at its anchor, where typing puts the
+            // text, a caret wide, not the layout box behind it (the whole
+            // frame, reaching below the picture). The line is measured on
+            // a stand-in with a capital and a descender, in its own type.
+            let klipp_timeline::TitleObjectContent::TextBox(stand_in) = &mut single.objects[0].content else { continue };
+            stand_in.text = "Ag".into();
+            let line = renderer.render_layout(&single, width.max(1), height.max(1));
+            if line.glyph_count == 0 { continue; }
+            let pad_x = (line.scale * 8.0).clamp(4.0, 12.0);
+            let pad_y = (line.scale * 6.0).clamp(3.0, 10.0);
+            obj.transform.size.x = (2.0 + pad_x * 2.0) / width.max(1) as f32;
+            obj.transform.size.y = (line.text_bottom - line.text_top + pad_y * 2.0) / height.max(1) as f32;
+            obj.transform.center.y = (line.text_top + line.text_bottom) * 0.5 / height.max(1) as f32;
+            continue;
+        }
         let pad_x = (layout.scale * 8.0).clamp(4.0, 12.0);
         let pad_y = (layout.scale * 6.0).clamp(3.0, 10.0);
         let w = (layout.text_right - layout.text_left + pad_x * 2.0) / width.max(1) as f32;
@@ -8570,6 +8585,52 @@ mod fitted_backing_editor_tests {
                 bb.left() <= ink.text_left && bb.right() >= ink.text_right,
                 "{alignment:?}: the box {:.0}..{:.0} holds the text {:.0}..{:.0}", bb.left(), bb.right(), ink.text_left, ink.text_right
             );
+        }
+    }
+
+    /// A text layer emptied keeps a box one line high at its anchor, where
+    /// typing puts the text: it kept the layout box behind it, the whole
+    /// frame and more, reaching below the picture.
+    #[test]
+    fn an_empty_text_layer_has_a_one_line_box_at_its_anchor() {
+        let frame = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1920.0, 1080.0));
+        let mut typed = TitleData::single_text(TextBox { text: "Harbour".into(), font_size: 72.0, ..Default::default() });
+        typed.objects[0].transform.center = klipp_timeline::TitlePosition { x: 0.3, y: 0.8 };
+        let mut empty = typed.clone();
+        let klipp_timeline::TitleObjectContent::TextBox(tb) = &mut empty.objects[0].content else { unreachable!() };
+        tb.text.clear();
+        tighten_text_editor_boxes(&mut typed, (1920, 1080));
+        tighten_text_editor_boxes(&mut empty, (1920, 1080));
+        let (line, bb) = (object_screen_bb(&typed.objects[0], frame), object_screen_bb(&empty.objects[0], frame));
+        let anchor = egui::pos2(0.3 * 1920.0, 0.8 * 1080.0);
+        assert!(bb.contains(anchor), "at its anchor: {bb:?}");
+        assert!(frame.contains_rect(bb), "inside the picture: {bb:?}");
+        assert!((bb.height() - line.height()).abs() < line.height() * 0.25, "a line high: {} vs a typed line's {}", bb.height(), line.height());
+        assert!(bb.width() < line.width(), "narrower than a word: {}", bb.width());
+    }
+
+    /// Left, centred or right aligned, an empty layer's box is where
+    /// typing puts the text: the first letter typed starts in it (left),
+    /// is centred in it, or ends in it (right).
+    #[test]
+    fn an_empty_layers_box_is_where_typing_starts_whatever_the_alignment() {
+        use klipp_timeline::TextAlignment;
+        let frame = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1920.0, 1080.0));
+        for alignment in [TextAlignment::Left, TextAlignment::Center, TextAlignment::Right] {
+            let mut empty = TitleData::single_text(TextBox { text: String::new(), font_size: 72.0, alignment, ..Default::default() });
+            empty.objects[0].transform.center = klipp_timeline::TitlePosition { x: 0.4, y: 0.6 };
+            let mut typed = empty.clone();
+            let klipp_timeline::TitleObjectContent::TextBox(tb) = &mut typed.objects[0].content else { unreachable!() };
+            tb.text = "W".into();
+            let ink = klipp_title::TitleRenderer::new().render_layout(&typed, 1920, 1080);
+            tighten_text_editor_boxes(&mut empty, (1920, 1080));
+            let bb = object_screen_bb(&empty.objects[0], frame);
+            let start = match alignment {
+                TextAlignment::Left => ink.text_left,
+                TextAlignment::Right => ink.text_right,
+                _ => (ink.text_left + ink.text_right) * 0.5,
+            };
+            assert!(bb.left() <= start && start <= bb.right(), "{alignment:?}: the letter's {start:.0} in the box {:.0}..{:.0}", bb.left(), bb.right());
         }
     }
 
