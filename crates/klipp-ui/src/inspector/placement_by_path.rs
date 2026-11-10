@@ -43,6 +43,22 @@ pub fn lane_key(param: VideoParam) -> Option<&'static str> {
     })
 }
 
+/// The keyable lane a Transform field is on the clip's placement, as the
+/// Video tab keys it: Position X is the `pos_x` lane. `None` for a field
+/// with no lane (an anchor, the perspective).
+pub fn video_param_of_field(field: &str) -> Option<VideoParam> {
+    Some(match field {
+        "position_x" => VideoParam::PositionX,
+        "position_y" => VideoParam::PositionY,
+        "scale_x" => VideoParam::Scale,
+        "scale_y" => VideoParam::ScaleY,
+        "rotation" => VideoParam::Rotation,
+        "rotation_x" => VideoParam::TiltX,
+        "rotation_y" => VideoParam::TiltY,
+        _ => return None,
+    })
+}
+
 /// `effect`'s values as the placement's keys, if it is a Transform or an
 /// Opacity.
 fn values(effect: &BuiltinEffect) -> Vec<(&'static str, f32)> {
@@ -102,6 +118,36 @@ pub fn placement(clip: &Clip) -> crate::inspector::video_tab::TransformParams {
     if let Some(v) = get("tilt_y") { t.rotation_y = v; }
     if let Some(v) = get("perspective") { t.perspective = v; }
     t
+}
+
+/// The clip's placement at `t` seconds into it, as the picture draws it
+/// there: each keyed placement lane at its value at `t`, the rest as
+/// [`placement`] holds them. What the viewer's box shows.
+pub fn placement_at(clip: &Clip, t: f64) -> crate::inspector::video_tab::TransformParams {
+    let mut p = placement(clip);
+    let at = |key: &str, v: &mut f32| {
+        let keys = lane_keys(clip, key);
+        if !keys.is_empty() {
+            *v = klipp_core::keyframe::evaluate(&keys, t, *v);
+        }
+    };
+    at("pos_x", &mut p.position_x);
+    at("pos_y", &mut p.position_y);
+    // A keyed width carries the height at the stored aspect, unless the
+    // height has keys of its own.
+    let aspect = if p.scale_x.abs() > f32::EPSILON { p.scale_y / p.scale_x } else { 1.0 };
+    at("scale", &mut p.scale_x);
+    if lane_keys(clip, "scale_y").is_empty() {
+        p.scale_y = p.scale_x * aspect;
+    }
+    at("scale_y", &mut p.scale_y);
+    at("rotation", &mut p.rotation);
+    at("anchor_x", &mut p.anchor_x);
+    at("anchor_y", &mut p.anchor_y);
+    at("tilt_x", &mut p.rotation_x);
+    at("tilt_y", &mut p.rotation_y);
+    at("perspective", &mut p.perspective);
+    p
 }
 
 /// The clip's animation of a placement or opacity `key`, as its picture
@@ -202,6 +248,22 @@ mod tests {
 
     /// The card's first move on a clip with no Transform: no Transform
     /// added, only the value that changed, on the placement node.
+    /// The placement at a time of the clip: each keyed lane at its value
+    /// there, the rest as stored, so the viewer's box follows the picture
+    /// as the playhead moves. It stood at the pose of the last edit.
+    #[test]
+    fn the_placement_at_a_time_follows_its_keys() {
+        let c = klipp_timeline::test_clip::TestClip::of(clip())
+            .lane("pos_x", 1.0, -600.0).lane("pos_x", 3.0, 600.0)
+            .lane("rotation", 1.0, 0.0).lane("rotation", 3.0, 30.0)
+            .build();
+        let at = |t| placement_at(&c, t);
+        assert!((at(2.0).position_x - 0.0).abs() < 1e-3, "half way: {}", at(2.0).position_x);
+        assert!((at(1.0).position_x + 600.0).abs() < 1e-3 && (at(3.0).position_x - 600.0).abs() < 1e-3);
+        assert!((at(2.0).rotation - 15.0).abs() < 1e-3, "{}", at(2.0).rotation);
+        assert_eq!(at(2.0).scale_x, placement(&c).scale_x, "an unkeyed lane as stored");
+    }
+
     #[test]
     fn an_add_becomes_the_changed_values_on_the_placement_node() {
         let c = clip();

@@ -97,7 +97,7 @@ fn draw_stack(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppState, clip: &Cl
         }
     }
     selected_matte(ui, theme, clip, graph, view, selected, cmds, clip_time_secs);
-    add_menu(ui, clip, view, cmds);
+    add_menu(ui, state, clip, view, cmds);
 }
 
 /// One placed recipe's controls as the inspector shows them.
@@ -409,7 +409,7 @@ pub fn add_effects_command(state: &AppState, clip: &Clip, effects: &[klipp_effec
     Ok(adds)
 }
 
-fn add_menu(ui: &mut egui::Ui, clip: &Clip, view: &StackView, cmds: &mut Vec<AppCommand>) {
+fn add_menu(ui: &mut egui::Ui, state: &AppState, clip: &Clip, view: &StackView, cmds: &mut Vec<AppCommand>) {
     let Some(after) = add_after(view) else { return };
     ui.add_space(6.0);
     ui.menu_rows("+ Add effect", |ui| {
@@ -418,12 +418,38 @@ fn add_menu(ui: &mut egui::Ui, clip: &Clip, view: &StackView, cmds: &mut Vec<App
         egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
             for t in types {
                 if ui.button(t.desc.name).clicked() {
-                    cmds.extend(add_command(clip, &after, t.tag));
+                    cmds.extend(add_to_selection(state, clip, &after, t));
                     ui.close_menu();
                 }
             }
         });
     });
+}
+
+/// What the add menu's `ty` sends: on `clip` alone, or, with it one of
+/// several selected clips, on each of them that can take a picture
+/// effect, as a drop on the selection does: one undo step, or refused
+/// whole with the reason in a toast.
+fn add_to_selection(state: &AppState, clip: &Clip, after: &NodePath, ty: &klipp_effects::registry::EffectType) -> Vec<AppCommand> {
+    let many = state.selected_clips.len() > 1 && state.selected_clips.contains(&clip.id);
+    if !many {
+        return add_command(clip, after, ty.tag).into_iter().collect();
+    }
+    let targets = crate::effect_targets::targets(state.sequence(), state.selected_clip, &state.selected_clips, Some(clip.id), crate::effect_targets::EffectKind::Picture);
+    let effect = (ty.sample)();
+    let adds = crate::effect_targets::all_or_none(&targets, ty.desc.name, |id| {
+        let c = state.sequence().all_clips().find(|c| c.id == id).ok_or("the clip isn't in the sequence")?;
+        add_effects_command(state, c, std::slice::from_ref(&effect))
+    });
+    match adds {
+        Ok(mut adds) => {
+            if targets.skipped > 0 {
+                adds.push(AppCommand::ShowToast { text: crate::effect_targets::said(ty.desc.name, &targets) });
+            }
+            adds
+        }
+        Err(why) => vec![AppCommand::ShowToast { text: format!("\"{}\" wasn't added: {why}", ty.desc.name) }],
+    }
 }
 
 fn header(ui: &mut egui::Ui, theme: &KlippTheme, section: Section) {
@@ -483,6 +509,32 @@ pub fn route_placed(clip: &Clip, cmds: Vec<AppCommand>) -> Vec<AppCommand> {
         }
     }
     out
+}
+
+/// The Transform card's command `cmd` on a field with a keyed placement
+/// lane as that lane's command, as the Video tab sends it, or `None` for
+/// one that goes through the clip's effect list: a key set or taken off;
+/// a value set on a keyed field as a key at `t` (the stored value under
+/// the keys would change nothing seen); a drag of a keyed field as the
+/// lane's own key drag, one step however many ticks it writes (a step per
+/// tick made one Ctrl+Z take back a pixel), and its Escape as that drag
+/// taken back.
+fn to_placement_lane(clip: &Clip, t: f64, cmd: &AppCommand) -> Option<AppCommand> {
+    use crate::inspector::placement_by_path::{lane_key, lane_keys, video_param_of_field};
+    let keyed = |key: &klipp_graph_format::ParamKey| video_param_of_field(key.as_str()).filter(|p| lane_key(*p).is_some_and(|lane| !lane_keys(clip, lane).is_empty()));
+    let lane_drag = |p: klipp_core::VideoParam| format!("kf:video:{}:{p:?}", clip.id.0);
+    Some(match cmd {
+        AppCommand::SetParamAt { key, value: klipp_graph_format::ParamValue::Float(v), .. } => AppCommand::AddVideoKeyframe { clip_id: clip.id, param: keyed(key)?, time_secs: t, value: *v },
+        AppCommand::AddKeyAt { key, keyframe, .. } => {
+            let k = serde_json::from_value::<Keyframe>(keyframe.clone()).ok()?;
+            AppCommand::AddVideoKeyframe { clip_id: clip.id, param: video_param_of_field(key.as_str())?, time_secs: k.time_secs, value: k.value }
+        }
+        AppCommand::RemoveKeyAt { key, time_secs, .. } => AppCommand::RemoveVideoKeyframe { clip_id: clip.id, param: video_param_of_field(key.as_str())?, time_secs: *time_secs },
+        AppCommand::BeginParamEditAt { key, .. } => AppCommand::BeginKeyframeDrag { key: lane_drag(keyed(key)?), clip_id: clip.id },
+        AppCommand::EndParamEditAt { key, .. } => AppCommand::EndKeyframeDrag { key: lane_drag(keyed(key)?), clip_id: clip.id },
+        AppCommand::AbandonParamEditAt { key, .. } => AppCommand::AbandonParamEditAt { addr: clip.placement_path()?, key: lane_key(keyed(key)?)?.into() },
+        _ => return None,
+    })
 }
 
 /// A placed kind's row commands as the clip's effect-list commands, which
@@ -650,6 +702,14 @@ pub fn display_name(graph: &Graph, addr: &NodePath, label: &str, is_group: bool)
         return label.to_owned();
     }
     let node = node_at(graph, addr);
+    // A frei0r plug-in by the plug-in it runs (Brightness), the last part
+    // of its entry's `frei0r:{path}:{name}`, not the kind all share.
+    let plugin = node.filter(|n| klipp_graph_lift::effect_params::tag(n) == Some("frei0r"))
+        .and_then(|n| klipp_graph_lift::effect_params::entry_of(n).ok())
+        .and_then(|e| e.get("type_id")?.as_str().and_then(|id| id.rsplit(':').next()).filter(|name| !name.is_empty()).map(str::to_owned));
+    if let Some(name) = plugin {
+        return name;
+    }
     if let Some(ty) = node.and_then(klipp_graph_lift::effect_params::tag).and_then(|tag| effect_types().find(|t| t.tag == tag)) {
         return ty.desc.name.to_owned();
     }
@@ -657,6 +717,19 @@ pub fn display_name(graph: &Graph, addr: &NodePath, label: &str, is_group: bool)
         return String::from("Grade");
     }
     node.map_or_else(String::new, |n| n.type_id.as_str().rsplit('.').next().unwrap_or_default().replace('_', " "))
+}
+
+/// What a Chroma Key's card says when its key colour is so near grey that
+/// white and greys key out with it: the key measures colour alone (its
+/// CbCr), and a neutral pixel sits at its centre, `tolerance + soft_edge`
+/// from the key or nearer. A dark navy logo's white letters went with its
+/// blue at the default 0.2. `None` for a key colour clear of grey.
+pub(crate) fn greys_keyed_note(key_color: [u8; 3], tolerance: f32, soft_edge: f32) -> Option<&'static str> {
+    let [r, g, b] = key_color.map(f32::from);
+    let cb = -0.168736 * r - 0.331264 * g + 0.5 * b;
+    let cr = 0.5 * r - 0.418688 * g - 0.081312 * b;
+    let from_grey = (cb * cb + cr * cr).sqrt() / 255.0;
+    (from_grey < tolerance + soft_edge).then_some("This key colour is close to grey: white, black and greys key out with it. Lower the Tolerance, or key a more saturated colour.")
 }
 
 /// What the Placement row says: the renderer's cut, or pending.
@@ -779,6 +852,16 @@ fn row_card(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppState, clip: &Clip
     let effect = node.and_then(|n| klipp_graph_lift::effect_params::tag(n).map(|tag| (n, tag))).and_then(|(n, tag)| effect_types().find(|t| t.tag == tag).map(|t| (n, t)));
     match effect {
         Some((n, ty)) if !row.read_only => {
+            // Said under the card's rows, not above them: it comes and goes
+            // as Tolerance and Spill move, and above them it moved every row
+            // a line under the pointer in the middle of a drag.
+            let greys_note = (ty.tag == "chroma_key")
+                .then(|| serde_json::from_value(klipp_graph_lift::effect_params::entry_of(n).unwrap_or(serde_json::Value::Null)).ok())
+                .flatten()
+                .and_then(|e| match e {
+                    klipp_effects::BuiltinEffect::ChromaKey { key_color, tolerance, soft_edge, .. } => greys_keyed_note(key_color, tolerance, soft_edge),
+                    _ => None,
+                });
             if ty.tag == "surface_pin" {
                 surface_choice(ui, theme, clip, &row.addr, &klipp_graph_lift::effect_params::entry_of(n).unwrap_or(serde_json::Value::Null), cmds);
             }
@@ -803,8 +886,17 @@ fn row_card(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppState, clip: &Clip
                 ty.presentation(ty.desc.params.iter().find(|p| p.key == original).unwrap_or(p))
             };
             let stored = |p: &ParamDesc| effect_value(&entry, p);
+            // The clip's own Transform: each field keyed on the clip's
+            // placement lane, which the Video tab and the viewer read.
+            let clip_transform = ty.tag == "transform" && (row.placed || n.type_id.as_str() == klipp_graph_format::lifted::types::PLACEMENT);
             let keys = |p: &ParamDesc| {
                 let base = crate::inspector::generated::row::number(&effect_value(&entry, p)).unwrap_or(p.default);
+                if let Some(lane) = crate::inspector::placement_by_path::video_param_of_field(p.key).and_then(crate::inspector::placement_by_path::lane_key).filter(|_| clip_transform) {
+                    let lane_keys = crate::inspector::placement_by_path::lane_keys(clip, lane);
+                    if !lane_keys.is_empty() {
+                        return crate::inspector::generated::keys_from_lane(&lane_keys, base, clip_time_secs, KEY_TOLERANCE);
+                    }
+                }
                 // Non-anchor Opacity keeps its effect keys in the legacy
                 // lane; the lift intentionally does not animate this node.
                 if ty.tag == "opacity" {
@@ -842,6 +934,9 @@ fn row_card(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppState, clip: &Clip
             };
             ui.indent(("stack_row", row.addr.clone()), |ui| {
                 effect_card(ui, &mut rc, &rows, ty, clip, state);
+                if let Some(note) = greys_note {
+                    ui.add(egui::Label::new(egui::RichText::new(note).size(10.0).color(theme.marker_warning)).wrap());
+                }
                 if height_follows_width(ty.tag, clip) {
                     ui.label(egui::RichText::new("Scale Y follows Scale X's keys, at the clip's aspect").small().color(theme.text_dim))
                         .on_hover_text("The clip's scale is keyed: its height keeps its aspect against the width.");
@@ -851,7 +946,25 @@ fn row_card(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppState, clip: &Clip
                 }
             });
             if placed {
-                cmds.extend(to_effect_list(clip, ty, n.id, &entry, scratch));
+                // A key the clip's own Transform card sets or takes off goes
+                // on the placement lane it reads, as the Video tab's.
+                if clip_transform {
+                    // What goes on a lane goes as it is; the rest, in runs
+                    // between, through the clip's effect list, in order.
+                    let mut run = Vec::new();
+                    for cmd in scratch {
+                        match to_placement_lane(clip, clip_time_secs, &cmd) {
+                            Some(lane) => {
+                                cmds.extend(to_effect_list(clip, ty, n.id, &entry, std::mem::take(&mut run)));
+                                cmds.push(lane);
+                            }
+                            None => run.push(cmd),
+                        }
+                    }
+                    cmds.extend(to_effect_list(clip, ty, n.id, &entry, run));
+                } else {
+                    cmds.extend(to_effect_list(clip, ty, n.id, &entry, scratch));
+                }
             }
         }
         _ if row.is_group || row.section == Section::Colour => {
@@ -866,6 +979,32 @@ fn row_card(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppState, clip: &Clip
 
 #[cfg(test)]
 mod surface_choice_tests {
+
+    /// A key colour near grey says that greys key out with it (the walk's
+    /// navy 13/59/102 at the default 0.2 took the white letters); a green
+    /// screen's, and the navy at 0.05, say nothing.
+    #[test]
+    fn a_key_colour_near_grey_says_greys_key_out() {
+        assert!(greys_keyed_note([13, 59, 102], 0.2, 0.1).is_some());
+        assert!(greys_keyed_note([13, 59, 102], 0.05, 0.1).is_none());
+        assert!(greys_keyed_note([0, 255, 0], 0.2, 0.1).is_none());
+        assert!(greys_keyed_note([0, 71, 187], 0.2, 0.1).is_none(), "a blue screen");
+    }
+
+    /// A frei0r plug-in's card is named after the plug-in it runs
+    /// (Brightness), not the kind every plug-in shares ("frei0r").
+    #[test]
+    fn a_frei0r_card_is_named_after_its_plugin() {
+        let t = |s| klipp_core::RationalTime::from_secs_f64(s, 24);
+        let fx = klipp_effects::BuiltinEffect::Frei0r { type_id: "frei0r:/usr/lib/frei0r-1/brightness.so:Brightness".into(), params: Vec::new() };
+        let clip = klipp_timeline::test_clip::TestClip::of(klipp_timeline::Clip::media(klipp_core::MediaId::new(), t(0.0), t(2.0), t(0.0), t(2.0))).effect(fx).build();
+        let graph = clip.picture_v2().unwrap().picture.graph.clone();
+        let node = graph.nodes.iter().find(|n| klipp_graph_lift::effect_params::tag(n) == Some("frei0r")).expect("the plug-in's node").id;
+        let addr = NodePath::new(Root::Clip { clip: clip.id.0 }, [node]);
+        let label = graph.nodes.iter().find(|n| n.id == node).unwrap().label.clone();
+        assert_eq!(super::display_name(&graph, &addr, &label, false), "Brightness", "its label {label:?}");
+    }
+
     use super::*;
 
     fn frame(ctx: &egui::Context, clip: &Clip, addr: &NodePath, entry: &serde_json::Value, clock: f64, events: Vec<egui::Event>) -> (Vec<AppCommand>, Vec<(String, egui::Pos2)>) {

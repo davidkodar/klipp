@@ -64,10 +64,23 @@ impl AppState {
     pub(crate) fn node_feedback(&self, clip: ClipId) -> std::collections::HashMap<klipp_nodes::NodeId, crate::panels::node_graph_v2::NodeFeedback> {
         use crate::panels::node_graph_v2::{FeedbackKind, NodeFeedback};
         let mut out = std::collections::HashMap::new();
+        // The clip's placed nodes (its Transform, its Opacity…), which the
+        // frame applies as it lays the layers together, not as nodes: in
+        // this frame, but with no preview of their own, said so rather
+        // than as a node that doesn't run.
+        let placed: std::collections::HashSet<klipp_nodes::NodeId> = self.sequence().all_clips().find(|c| c.id == clip)
+            .and_then(|c| c.picture_v2().ok())
+            .map(|p| p.picture.graph.nodes.iter().filter(|n| klipp_graph_lift::effect_params::tag(n).is_some_and(crate::inspector::stack_view::is_placed_kind)).map(|n| n.id).collect())
+            .unwrap_or_default();
         for (at, why) in &self.node_thumbs_unavailable {
             if at.path.root != (klipp_graph_format::path::Root::Clip { clip: clip.0 }) { continue; }
             if let Some(node) = at.path.node() {
-                out.insert(node, NodeFeedback { kind: FeedbackKind::NoPreview, reason: why.clone() });
+                let reason = if at.path.nodes.len() == 1 && placed.contains(&node) {
+                    "it is applied as the clip's layers are laid together, so it has no preview of its own".to_owned()
+                } else {
+                    why.clone()
+                };
+                out.insert(node, NodeFeedback { kind: FeedbackKind::NoPreview, reason });
             }
         }
         for d in self.frame_declines.iter().filter(|d| d.shown() && d.clip == Some(clip)) {

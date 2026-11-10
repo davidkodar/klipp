@@ -709,6 +709,15 @@ impl crate::state::AppState {
         whole(self, vec![op], label)
     }
 
+    /// Whether `cmd` is a keyframe command on one of a clip's placement or
+    /// opacity lanes, which the path writes and records ([`Self::lane_command`]):
+    /// the app tries it there before its keyframe handlers, whose list
+    /// write of a key's move recorded no step (an empty batch, so the undo
+    /// after a Dope Sheet move took back the edit before it).
+    pub(crate) fn is_lane_key_command(&self, cmd: &AppCommand) -> bool {
+        self.lane_target(cmd).is_some()
+    }
+
     /// The placement or opacity lane a keyframe command on one lane edits
     /// (or a key drag over one names), by its node path and key.
     fn lane_target(&self, cmd: &AppCommand) -> Option<(NodePath, ParamKey)> {
@@ -794,6 +803,14 @@ impl crate::state::AppState {
             // A whole entry written (a colour dragged in its popup) is part
             // of a drag over the node's values.
             AppCommand::SetPayloadAt { addr, .. } => node_drag(addr) != open,
+            // A mask's key on a matte beside the picture chain, written into
+            // its masks by path: part of a drag over those masks (a value
+            // typed or dragged in its field).
+            AppCommand::AddMaskKeyframe { clip_id, node_id, .. }
+            | AppCommand::RemoveMaskKeyframe { clip_id, node_id, .. }
+            | AppCommand::ClearMaskKeyframes { clip_id, node_id, .. }
+            | AppCommand::MoveMaskKeyframe { clip_id, node_id, .. }
+            | AppCommand::SetMaskKeyframeInterpolation { clip_id, node_id, .. } => drag_key(&NodePath::new(Root::Clip { clip: clip_id.0 }, [*node_id]), &ParamKey::from("masks")) != open,
             _ => super::command_writes::writes(cmd),
         }
     }
