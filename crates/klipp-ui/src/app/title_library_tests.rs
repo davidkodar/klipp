@@ -119,3 +119,49 @@ fn adding_a_title_redraws_the_frame_at_the_playhead() {
     assert!(follows.iter().any(|c| matches!(c, klipp_core::AppCommand::SequenceUpdated)), "{follows:?}");
 }
 
+
+/// A plain title's long sentence, wrapped in its box, stays inside the
+/// picture with the title set left of centre: its lines lost their first
+/// letters at the left edge. (Repro: an unsized box wraps at nine tenths
+/// of the frame's width wherever its centre is.)
+#[test]
+fn a_wrapped_title_left_of_centre_stays_in_the_picture() {
+    let mut r = klipp_title::TitleRenderer::new();
+    for (x, y) in [(0.38, 0.5), (0.17, 0.79)] {
+        let mut td = super::titles::default_title_data(&crate::prefs::TitlePrefs::default());
+        td.primary_text_mut().unwrap().text = "A long line of words that the title wraps across the picture, set to see how it behaves near the edge of the frame when moved".into();
+        td.objects[0].transform.center = klipp_timeline::TitlePosition { x, y };
+        let (w, h) = (640u32, 360u32);
+        let px = r.render_with_window(&td, w, h, None, 2.0, Some(5.0));
+        let drawn_in = |cols: std::ops::Range<u32>| (0..h).flat_map(|row| cols.clone().map(move |col| (row, col))).filter(|(row, col)| px[((row * w + col) * 4 + 3) as usize] > 8).count();
+        assert!(drawn_in(0..w) > 200, "the title is drawn at x {x}");
+        assert_eq!(drawn_in(0..2), 0, "nothing at the picture's left edge at x {x}: the lines run past it");
+    }
+}
+
+/// Centred lines with tracking stay centred on each other: the first line
+/// grew only to the left and the second only to the right.
+#[test]
+fn tracked_centred_lines_stay_centred() {
+    let mut r = klipp_title::TitleRenderer::new();
+    let mut td = super::titles::default_title_data(&crate::prefs::TitlePrefs::default());
+    {
+        let tb = td.primary_text_mut().unwrap();
+        tb.text = "Harbour Light\nEvening Tide".into();
+        tb.alignment = klipp_timeline::TextAlignment::Center;
+        tb.tracking = 20.0;
+    }
+    let (w, h) = (1280u32, 720u32);
+    let px = r.render_with_window(&td, w, h, None, 2.0, Some(5.0));
+    let ink = |row: u32| (0..w).filter(|&x| px[((row * w + x) * 4 + 3) as usize] > 8).collect::<Vec<_>>();
+    // The rows with ink, split into lines at the first empty band.
+    let rows: Vec<u32> = (0..h).filter(|&y| !ink(y).is_empty()).collect();
+    let split = rows.windows(2).position(|w| w[1] > w[0] + 2).expect("two lines");
+    let span = |ys: &[u32]| {
+        let xs: Vec<u32> = ys.iter().flat_map(|&y| ink(y)).collect();
+        (*xs.iter().min().unwrap(), *xs.iter().max().unwrap())
+    };
+    let (a, b) = (span(&rows[..=split]), span(&rows[split + 1..]));
+    let centre = |s: (u32, u32)| (s.0 + s.1) as f32 / 2.0;
+    assert!((centre(a) - centre(b)).abs() < 6.0, "line 1 {a:?}, line 2 {b:?}: centres {} and {}", centre(a), centre(b));
+}

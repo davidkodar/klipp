@@ -5,6 +5,8 @@
 //! each change it makes to the rest.
 
 use klipp_core::{AppCommand, ClipId};
+use klipp_graph_format::path::{NodePath, Root};
+use klipp_graph_lift::ops::GraphOp;
 use klipp_timeline::Clip;
 
 /// Where in an edit gesture a command falls.
@@ -40,11 +42,129 @@ pub fn classify(cmd: &AppCommand) -> Option<(ClipId, Phase)> {
         | AppCommand::SetClipRole { clip_id, .. }
         | AppCommand::SetClipBlendMode { clip_id, .. } => (*clip_id, Phase::Update),
         AppCommand::SetClipSpeed { clip_id, .. } => (*clip_id, Phase::Redo),
+        // A node of the clip's picture edited by its path, as the Effects
+        // tab's rows edit it: a drag of one of its values, a value, its
+        // whole entry, its mix, its eye, its remove.
+        AppCommand::BeginParamEditAt { addr, .. } => (path_clip(addr)?, Phase::Begin),
+        AppCommand::EndParamEditAt { addr, .. } => (path_clip(addr)?, Phase::End),
+        AppCommand::AbandonParamEditAt { addr, .. } => (path_clip(addr)?, Phase::Abandon),
+        AppCommand::SetParamAt { addr, .. } | AppCommand::SetPayloadAt { addr, .. } | AppCommand::SetMixAt { addr, .. } | AppCommand::SetNodeEnabledAt { addr, .. } | AppCommand::RemoveNodeAt { addr } | AppCommand::MoveNodeAt { addr, .. } => (path_clip(addr)?, Phase::Update),
         // A title's look, set on each selected title by its own handler
         // (#1716): what every title has, never its words.
         AppCommand::UpdateTitleData { clip_id, .. } | AppCommand::SetTitleAlignment { clip_id, .. } | AppCommand::SetTitleLastLine { clip_id, .. } | AppCommand::SetTitleVerticalAlign { clip_id, .. } | AppCommand::SetTitleBackground { clip_id, .. } | AppCommand::SetTitleBackgroundLines { clip_id, .. } | AppCommand::SetTitleLanguage { clip_id, .. } | AppCommand::SetTitleContrastProtect { clip_id, .. } | AppCommand::SetTitleShadow { clip_id, .. } | AppCommand::SetTitleShadows { clip_id, .. } | AppCommand::SetTitleShadowStackEnabled { clip_id, .. } | AppCommand::SetTitleOutline { clip_id, .. } | AppCommand::SetTitleOutlines { clip_id, .. } | AppCommand::SetTitleOutlineStackEnabled { clip_id, .. } | AppCommand::SetTitleGlow { clip_id, .. } | AppCommand::SetTitleGlows { clip_id, .. } | AppCommand::SetTitleGlowStackEnabled { clip_id, .. } | AppCommand::SetTitleGradient { clip_id, .. } | AppCommand::SetTitleInnerShadow { clip_id, .. } | AppCommand::SetTitleInnerShadows { clip_id, .. } | AppCommand::SetTitleInnerShadowStackEnabled { clip_id, .. } | AppCommand::SetTitlePattern { clip_id, .. } | AppCommand::SetTitlePatternEnabled { clip_id, .. } | AppCommand::SetTitleTracking { clip_id, .. } | AppCommand::SetTitleMotion { clip_id, .. } | AppCommand::SetTitleLineSpacing { clip_id, .. } | AppCommand::SetTitleUnderline { clip_id, .. } | AppCommand::SetTitleFontVariation { clip_id, .. } | AppCommand::SetTitleFeatures { clip_id, .. } | AppCommand::SetTitleStrikethrough { clip_id, .. } | AppCommand::ApplyTitlePreset { clip_id, .. } | AppCommand::SetTitleCaseTransform { clip_id, .. } | AppCommand::SetTitleBaselineShift { clip_id, .. } | AppCommand::SetTitleChromaticAberration { clip_id, .. } | AppCommand::SetTitleGlitch { clip_id, .. } | AppCommand::SetTitleNeonPreset { clip_id, .. } | AppCommand::SetTitleExtrusion { clip_id, .. } | AppCommand::SetTitleMotionBlur { clip_id, .. } | AppCommand::SetTitleLoops { clip_id, .. } | AppCommand::SetTitleAnimators { clip_id, .. } | AppCommand::SetTitleEdgeFade { clip_id, .. } | AppCommand::SetTitleWriteOn { clip_id, .. } | AppCommand::SetTitleDirection { clip_id, .. } | AppCommand::SetTitleColumns { clip_id, .. } | AppCommand::SetTitleVerticalLayout { clip_id, .. } | AppCommand::SetTitleVerticalColumnsLtr { clip_id, .. } => (*clip_id, Phase::Redo),
         _ => return None,
     })
+}
+
+/// The clip whose own node, at the top of its picture, `addr` names.
+fn path_clip(addr: &NodePath) -> Option<ClipId> {
+    (addr.nodes.len() == 1).then(|| addr.root_clip()).flatten().map(ClipId)
+}
+
+/// The node a path edit names, when `cmd` is one.
+fn path_of(cmd: &AppCommand) -> Option<&NodePath> {
+    match cmd {
+        AppCommand::BeginParamEditAt { addr, .. }
+        | AppCommand::EndParamEditAt { addr, .. }
+        | AppCommand::AbandonParamEditAt { addr, .. }
+        | AppCommand::SetParamAt { addr, .. }
+        | AppCommand::SetPayloadAt { addr, .. }
+        | AppCommand::SetMixAt { addr, .. }
+        | AppCommand::SetNodeEnabledAt { addr, .. }
+        | AppCommand::RemoveNodeAt { addr }
+        | AppCommand::MoveNodeAt { addr, .. } => Some(addr),
+        _ => None,
+    }
+}
+
+/// Whether `cmd` is a path edit.
+pub fn is_path_edit(cmd: &AppCommand) -> bool {
+    path_of(cmd).is_some()
+}
+
+/// The kind of effect node `addr` names on `clip`, and its place among
+/// the nodes of that kind along the clip's spine.
+fn effect_place(clip: &Clip, addr: &NodePath) -> Option<(String, usize)> {
+    let lifted = clip.picture_v2().ok()?;
+    let graph = &lifted.picture.graph;
+    let node = graph.nodes.iter().find(|n| Some(n.id) == addr.node())?;
+    let kind = klipp_graph_lift::effect_params::tag(node)?.to_owned();
+    let at = spine_of_kind(graph, &kind).iter().position(|id| *id == node.id)?;
+    Some((kind, at))
+}
+
+/// Whether a path edit `cmd` goes to the other selected clips too: it
+/// names an effect node on `primary`'s spine (a grade's nodes, and
+/// anything off the spine, stay the clip's own).
+pub fn takes_path(cmd: &AppCommand, primary: &Clip) -> bool {
+    path_of(cmd).is_some_and(|addr| addr.root_clip() == Some(primary.id.0) && effect_place(primary, addr).is_some())
+}
+
+/// The kind and place among its kind of the effect node a path edit
+/// `cmd` names on `primary`: taken before `cmd` is made, since a remove
+/// takes the node away.
+pub fn path_place(cmd: &AppCommand, primary: &Clip) -> Option<(String, usize)> {
+    effect_place(primary, path_of(cmd)?)
+}
+
+/// The op a path edit `cmd` makes on `other`, on its node of the kind
+/// and at the place among that kind `place` names (the second Glow's
+/// value to its second Glow). None when it has no such node, or `cmd`
+/// sets nothing (a drag's bracket).
+pub fn path_op_at(cmd: &AppCommand, place: &(String, usize), other: &Clip) -> Option<GraphOp> {
+    let lifted = other.picture_v2().ok()?;
+    let graph = &lifted.picture.graph;
+    let node = *spine_of_kind(graph, &place.0).get(place.1)?;
+    let path = NodePath::new(Root::Clip { clip: other.id.0 }, [node]);
+    Some(match cmd {
+        AppCommand::SetParamAt { key, value, .. } => GraphOp::SetParam { path, key: key.clone(), value: value.clone() },
+        AppCommand::SetPayloadAt { payload, .. } => GraphOp::SetPayload { path, payload: payload.clone() },
+        AppCommand::SetMixAt { mix, .. } => GraphOp::SetMix { path, mix: *mix },
+        AppCommand::SetNodeEnabledAt { enabled, .. } => GraphOp::SetEnabled { path, enabled: *enabled },
+        AppCommand::RemoveNodeAt { .. } => GraphOp::RemoveNode { path },
+        _ => return None,
+    })
+}
+
+/// [`path_op_at`] at the place `cmd` names on `primary`.
+pub fn path_op_for(cmd: &AppCommand, primary: &Clip, other: &Clip) -> Option<GraphOp> {
+    path_op_at(cmd, &path_place(cmd, primary)?, other)
+}
+
+/// What a moved effect is put after, told so another clip can find its
+/// own: an effect, by its kind and place among that kind, or a stage of
+/// the picture (scene to display, the source), by its type.
+#[derive(Clone, Debug, PartialEq)]
+pub enum After {
+    Effect(String, usize),
+    Stage(String),
+}
+
+/// What a move `cmd` puts its node after on `primary`, read before the
+/// move: the place among a kind changes once a node of that kind moves.
+pub fn after_place(cmd: &AppCommand, primary: &Clip) -> Option<After> {
+    let AppCommand::MoveNodeAt { after, .. } = cmd else { return None };
+    let lifted = primary.picture_v2().ok()?;
+    let graph = &lifted.picture.graph;
+    let node = graph.nodes.iter().find(|n| n.id == *after)?;
+    Some(match klipp_graph_lift::effect_params::tag(node) {
+        Some(kind) => After::Effect(kind.to_owned(), spine_of_kind(graph, kind).iter().position(|id| id == after)?),
+        None => After::Stage(node.type_id.as_str().to_owned()),
+    })
+}
+
+/// The move of `other`'s effect at `place` to after its node `after` names
+/// (an effect reordered with several clips selected). None when it has no
+/// such effect, or nothing of what it goes after, or it is there already.
+pub fn move_op_at(place: &(String, usize), after: &After, other: &Clip) -> Option<GraphOp> {
+    let lifted = other.picture_v2().ok()?;
+    let graph = &lifted.picture.graph;
+    let node = *spine_of_kind(graph, &place.0).get(place.1)?;
+    let target = match after {
+        After::Effect(kind, at) => *spine_of_kind(graph, kind).get(*at)?,
+        After::Stage(ty) => spine(graph).into_iter().find(|id| graph.nodes.iter().any(|n| n.id == *id && n.type_id.as_str() == ty))?,
+    };
+    (target != node).then(|| GraphOp::MoveAfter { path: NodePath::new(Root::Clip { clip: other.id.0 }, [node]), after: target })
 }
 
 /// `cmd`, made on the clip it names, made on `other` too, from what it
@@ -62,8 +182,13 @@ fn effect_kind(effect: &klipp_effects::BuiltinEffect) -> Option<String> {
 /// in, which a picture-truth clip may hold apart from its list's.
 pub(crate) fn first_on_the_spine(clip: &mut Clip, kind: &str) -> Option<klipp_timeline::EffectId> {
     let lifted = clip.picture_v2().ok()?;
-    let graph = &lifted.picture.graph;
-    // Back from the output along each node's primary input.
+    let ids = spine_of_kind(&lifted.picture.graph, kind);
+    ids.into_iter().map(klipp_timeline::EffectId::of_node).find(|id| clip.index_of(*id).is_some())
+}
+
+/// `graph`'s spine, from the source to the output: back from the output
+/// along each node's primary input.
+fn spine(graph: &klipp_graph_format::Graph) -> Vec<klipp_graph_format::NodeId> {
     let mut spine = Vec::new();
     let mut at = Some(graph.output);
     while let Some(id) = at.filter(|id| !spine.contains(id)) {
@@ -71,11 +196,17 @@ pub(crate) fn first_on_the_spine(clip: &mut Clip, kind: &str) -> Option<klipp_ti
         at = graph.edges.iter().find(|e| e.to == (id, "in".into())).map(|e| e.from.0);
     }
     spine.reverse();
+    spine
+}
+
+/// The nodes of type `kind` along `graph`'s spine, from the source to
+/// the output.
+fn spine_of_kind(graph: &klipp_graph_format::Graph, kind: &str) -> Vec<klipp_graph_format::NodeId> {
+    let spine = spine(graph);
     let of_kind = |id: &klipp_graph_format::NodeId| {
         graph.nodes.iter().find(|n| n.id == *id).and_then(klipp_graph_lift::effect_params::tag) == Some(kind)
     };
-    let ids: Vec<_> = spine.into_iter().filter(of_kind).collect();
-    ids.into_iter().map(klipp_timeline::EffectId::of_node).find(|id| clip.index_of(*id).is_some())
+    spine.into_iter().filter(of_kind).collect()
 }
 
 pub fn copy_to(cmd: &AppCommand, primary: &Clip, other: &mut Clip) -> bool {
@@ -383,6 +514,84 @@ mod tests {
         assert!(copy_to(&end, &c, &mut other), "its values were copied as they came");
         let ofx = AppCommand::SetEffectParam { clip_id: c.id, effect_index: 0, param_name: "amount".into(), value: klipp_core::OfxValue::Double(0.5) };
         assert_eq!(classify(&ofx), Some((c.id, Phase::Live)));
+    }
+
+    /// An effect moved on the clip shown is moved the same way on each other
+    /// selected clip that has it: its node of the same kind and place among
+    /// its kind, put after the node of the kind and place the shown one went
+    /// after (read before the move), or after the same stage of the picture
+    /// for the top. A clip without the effect, or without what it goes
+    /// after, is left as it is.
+    #[test]
+    fn a_move_lands_on_the_same_effect_of_the_others() {
+        use klipp_graph_format::path::{NodePath, Root};
+        let (blur, glow, sharpen) = (BuiltinEffect::GaussianBlur { radius: 3.0 }, BuiltinEffect::Glow { radius: 30.0, intensity: 0.4, threshold: 0.0 }, BuiltinEffect::Sharpen { amount: 0.5 });
+        let vignette = BuiltinEffect::Vignette { amount: -0.4, size: 0.8, softness: 0.5, roundness: 0.5 };
+        let primary = TestClip::of(clip()).effects([blur.clone(), glow.clone(), sharpen.clone()]).build();
+        let other = TestClip::of(clip()).effects([vignette, blur.clone(), glow.clone(), sharpen.clone()]).build();
+        let node = |c: &Clip, kind: &str, i: usize| spine_of_kind(&c.picture_v2().unwrap().picture.graph, kind)[i];
+        // The sharpen up, after the blur.
+        let cmd = AppCommand::MoveNodeAt { addr: NodePath::new(Root::Clip { clip: primary.id.0 }, [node(&primary, "sharpen", 0)]), after: node(&primary, "gaussian_blur", 0) };
+        assert_eq!(classify(&cmd), Some((primary.id, Phase::Update)));
+        assert!(takes_path(&cmd, &primary));
+        let (place, after) = (path_place(&cmd, &primary).unwrap(), after_place(&cmd, &primary).unwrap());
+        assert!(matches!(move_op_at(&place, &after, &other), Some(GraphOp::MoveAfter { path, after }) if path.node() == Some(node(&other, "sharpen", 0)) && after == node(&other, "gaussian_blur", 0)));
+        // To the top: after the stage before the effects, the other's own.
+        let graph = primary.picture_v2().unwrap().picture.graph.clone();
+        let stage = graph.nodes.iter().find(|n| n.type_id.as_str() == klipp_graph_format::lifted::types::SCENE_TO_DISPLAY).expect("scene to display").id;
+        let top = AppCommand::MoveNodeAt { addr: NodePath::new(Root::Clip { clip: primary.id.0 }, [node(&primary, "glow", 0)]), after: stage };
+        let other_stage = other.picture_v2().unwrap().picture.graph.nodes.iter().find(|n| n.type_id.as_str() == klipp_graph_format::lifted::types::SCENE_TO_DISPLAY).unwrap().id;
+        assert!(matches!(move_op_at(&path_place(&top, &primary).unwrap(), &after_place(&top, &primary).unwrap(), &other), Some(GraphOp::MoveAfter { after, .. }) if after == other_stage));
+        // Two of a kind: the first blur down after the second, read before
+        // the move, on the other's first and second.
+        let two = TestClip::of(clip()).effects([blur.clone(), blur.clone()]).build();
+        let other_two = TestClip::of(clip()).effects([blur.clone(), blur.clone()]).build();
+        let down = AppCommand::MoveNodeAt { addr: NodePath::new(Root::Clip { clip: two.id.0 }, [node(&two, "gaussian_blur", 0)]), after: node(&two, "gaussian_blur", 1) };
+        assert!(matches!(move_op_at(&path_place(&down, &two).unwrap(), &after_place(&down, &two).unwrap(), &other_two), Some(GraphOp::MoveAfter { path, after }) if path.node() == Some(node(&other_two, "gaussian_blur", 0)) && after == node(&other_two, "gaussian_blur", 1)));
+        // Without the effect, or without what it goes after: nothing.
+        let no_sharpen = TestClip::of(clip()).effects([blur.clone(), glow.clone()]).build();
+        assert!(move_op_at(&place, &after, &no_sharpen).is_none());
+        let no_blur = TestClip::of(clip()).effects([glow, sharpen]).build();
+        assert!(move_op_at(&place, &after, &no_blur).is_none());
+    }
+
+    /// A parameter of a node on the clip shown, set by its path, goes to
+    /// the node of the same kind in the same place among its kind on
+    /// another selected clip: the second Glow's to the second Glow there,
+    /// past a Vignette in front. A clip with no second Glow takes none, and
+    /// the drag around it opens and closes a gesture.
+    #[test]
+    fn a_path_edit_lands_on_the_same_kind_of_node_on_the_others() {
+        use klipp_graph_format::path::{NodePath, Root};
+        let glow = |i: f32| BuiltinEffect::Glow { radius: 30.0, intensity: i, threshold: 0.0 };
+        let primary = TestClip::of(clip()).effects([glow(0.4), glow(0.4)]).build();
+        let other = TestClip::of(clip()).effects([BuiltinEffect::Vignette { amount: -0.4, size: 0.8, softness: 0.5, roundness: 0.5 }, glow(0.4), glow(0.4)]).build();
+        let glows = |c: &Clip| {
+            let g = c.picture_v2().unwrap();
+            spine_of_kind(&g.picture.graph, "glow")
+        };
+        let addr = NodePath::new(Root::Clip { clip: primary.id.0 }, [glows(&primary)[1]]);
+        let cmd = AppCommand::SetParamAt { addr: addr.clone(), key: "intensity".into(), value: klipp_graph_format::ParamValue::Float(1.5) };
+        assert_eq!(classify(&cmd), Some((primary.id, Phase::Update)));
+        assert!(takes_path(&cmd, &primary), "an effect node of the clip's own");
+        let Some(klipp_graph_lift::ops::GraphOp::SetParam { path, key, value }) = path_op_for(&cmd, &primary, &other) else { panic!("an op for the other clip") };
+        assert_eq!(path, NodePath::new(Root::Clip { clip: other.id.0 }, [glows(&other)[1]]), "its second Glow");
+        assert_eq!((key.as_str(), value), ("intensity", klipp_graph_format::ParamValue::Float(1.5)));
+        let one = TestClip::of(clip()).effect(glow(0.4)).build();
+        assert!(path_op_for(&cmd, &primary, &one).is_none(), "no second Glow, nothing");
+        assert!(path_op_for(&cmd, &primary, &clip()).is_none(), "no Glow, nothing");
+        assert_eq!(classify(&AppCommand::BeginParamEditAt { addr: addr.clone(), key: "intensity".into() }), Some((primary.id, Phase::Begin)));
+        assert_eq!(classify(&AppCommand::EndParamEditAt { addr: addr.clone(), key: "intensity".into() }), Some((primary.id, Phase::End)));
+        assert_eq!(classify(&AppCommand::AbandonParamEditAt { addr: addr.clone(), key: "intensity".into() }), Some((primary.id, Phase::Abandon)));
+        // Its eye and its remove go the same way, by its place taken before
+        // the remove takes it off the shown clip.
+        let off = AppCommand::SetNodeEnabledAt { addr: addr.clone(), enabled: false };
+        assert_eq!(classify(&off), Some((primary.id, Phase::Update)));
+        let place = path_place(&off, &primary).expect("its place");
+        assert!(matches!(path_op_at(&off, &place, &other), Some(GraphOp::SetEnabled { path, enabled: false }) if path.node() == Some(glows(&other)[1])));
+        let remove = AppCommand::RemoveNodeAt { addr };
+        assert_eq!(classify(&remove), Some((primary.id, Phase::Update)));
+        assert!(matches!(path_op_at(&remove, &place, &other), Some(GraphOp::RemoveNode { path }) if path.node() == Some(glows(&other)[1])));
     }
 
     #[test]

@@ -12176,6 +12176,20 @@ fn retime(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, clip_id: ClipId,
             old_timeline_out: m.timeline_out,
             new_timeline_out: new_out,
         });
+        // Its keys, markers and cuts with it, as a speed change moves them
+        // in other editors: they are timed from the clip's start, and
+        // stayed where they were, a 2x clip ending before its 4 s key.
+        // Its fades stay a length of time, as a stretch keeps them.
+        let old_len = secs(m.timeline_out - m.timeline_in);
+        if old_len > 0.0 {
+            let mut retimed = m.clone();
+            retimed.speed = speed;
+            retimed.timeline_out = new_out;
+            let mut scaled = retimed.clone();
+            if scaled.scale_content_time(secs(new_out - m.timeline_in) / old_len).is_ok() && serde_json::to_value(&scaled).ok() != serde_json::to_value(&retimed).ok() {
+                speeds.push(EditCommand::ReplaceClip { description: "Clip Speed", old: Box::new(retimed), new: Box::new(scaled) });
+            }
+        }
     }
     let new_out_of_clip = ends[0].2;
     let Rippled { moves, ids: moved, later: moved_later, delta, partners } = ripple_after(seq, pool, fps, i, &ends, ripple, "retime")?;
@@ -24700,5 +24714,56 @@ mod freeze_track_tests {
         let thaw = resolve(&held, &pool, &[op(serde_json::json!({ "op": "set_track", "track": 0, "frozen": false }))]).unwrap();
         let EditCommand::SetTrack { new, .. } = &thaw.steps[0].edit else { panic!() };
         assert!(!new.frozen && !new.locked, "{}", thaw.steps[0].what);
+    }
+}
+
+#[cfg(test)]
+mod retime_keys_tests {
+    use super::*;
+
+    fn tc(s: f64) -> Timecode {
+        Timecode::from_secs_f64(s, 24)
+    }
+
+    /// A clip's speed changed, its keys move with it, as a speed change
+    /// moves them in other editors: at 2x a Position X key 4 s into the
+    /// clip is 2 s into it, and so are its marker and its linked sound's
+    /// volume key; the undo puts them back. They stayed at their times,
+    /// and the clip at 2x ended before its 4 s key.
+    #[test]
+    fn a_speed_change_moves_the_clips_keys_with_it() {
+        let mut pool = MediaPool::new();
+        let mut item = klipp_media::MediaItem::synthetic_for_test("/tmp/retime-keys.mov".into(), None);
+        item.duration = tc(20.0);
+        item.has_audio = true;
+        let media = pool.add(item);
+        let mut picture = klipp_timeline::test_clip::TestClip::of(Clip::media(media, tc(0.0), tc(8.0), tc(0.0), tc(8.0))).lane("pos_x", 4.0, 300.0).build();
+        picture.clip_markers.push(klipp_timeline::ClipMarker { time_secs: 4.0, name: "Here".into(), color: klipp_core::MarkerColor::Red, comment: String::new() });
+        let mut sound = Clip::media(media, tc(0.0), tc(8.0), tc(0.0), tc(8.0));
+        sound.volume_keyframes = vec![klipp_core::keyframe::upserted(&[], 4.0, 0.5)];
+        picture.linked_clip_id = Some(sound.id);
+        sound.linked_clip_id = Some(picture.id);
+        let (pid, sid) = (picture.id, sound.id);
+        let mut seq = Sequence::new_default();
+        let vi = seq.tracks.iter().position(|t| t.kind == TrackKind::Video).unwrap();
+        let ai = seq.tracks.iter().position(|t| t.kind == TrackKind::Audio).unwrap();
+        seq.tracks[vi].clips = vec![picture];
+        seq.tracks[ai].clips = vec![sound];
+        let (_, edit) = retime_at(&seq, &pool, pid, 2.0, false).expect("retimed");
+        let mut seqs = vec![seq.clone()];
+        let (mut p, mut f) = (pool.clone(), seq.fps);
+        let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut f };
+        view.apply_forward(&edit);
+        let clip = |v: &crate::apply::DocumentView, id: ClipId| v.sequences[0].all_clips().find(|c| c.id == id).unwrap().clone();
+        let pos_x = |c: &Clip| klipp_timeline::frame_glide::lane(c, "pos_x").iter().map(|k| k.time_secs).collect::<Vec<_>>();
+        let p2 = clip(&view, pid);
+        assert_eq!(p2.timeline_out, tc(4.0), "the clip halved");
+        assert_eq!(pos_x(&p2), vec![2.0], "its key with it");
+        assert_eq!(p2.clip_markers[0].time_secs, 2.0, "its marker");
+        assert_eq!(clip(&view, sid).volume_keyframes[0].time_secs, 2.0, "its sound's key");
+        view.apply_inverse(&edit);
+        assert_eq!(pos_x(&clip(&view, pid)), vec![4.0], "undone, back");
+        assert_eq!(clip(&view, sid).volume_keyframes[0].time_secs, 4.0);
+        assert_eq!(serde_json::to_value(&view.sequences[0]).unwrap(), serde_json::to_value(&seq).unwrap(), "undone, as it was");
     }
 }

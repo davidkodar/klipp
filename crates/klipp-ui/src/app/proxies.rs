@@ -507,7 +507,7 @@ impl KlippApp {
                     self.state.control_shared.mask_track_failed(clip_id, error.clone());
                     self.state.toast.show(format!("Point tracking failed: {error}"));
                 }
-                AppEvent::SurfaceTracked { clip_id, surface, name, wider_area, corners, reference_secs, keys, source_size, media_fps, held_secs, direction, interactive, track_area, exclude } => {
+                AppEvent::SurfaceTracked { clip_id, surface, name, wider_area, corners, reference_secs, keys, source_size, media_fps, held_secs, direction, interactive, track_area, exclude, ended } => {
                     self.state.tracking_in_progress.remove(&clip_id);
                     self.state.tracking_progress.remove(&clip_id);
                     self.state.surface_track_cancel.remove(&clip_id);
@@ -521,7 +521,7 @@ impl KlippApp {
                         media_fps,
                         track_area,
                         exclude,
-                    }, held_secs, direction, interactive, wider_area);
+                    }, held_secs, direction, interactive, wider_area, ended);
                 }
                 AppEvent::SurfaceCorrected { clip_id, surface, source_secs, corners, spans, sure } => {
                     self.state.tracking_in_progress.remove(&clip_id);

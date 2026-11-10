@@ -172,6 +172,29 @@ mod tests {
         assert!(v.titles().iter().any(|c| c.id == clip_id));
     }
 
+    /// Editing a title's text in place draws one caret, in the text: the
+    /// hidden editor that takes the keys drew its own too, one character
+    /// wide, so a line down, below the picture.
+    #[test]
+    fn editing_in_place_draws_one_caret() {
+        let mut v = Viewer::new();
+        let r = v.image_rect();
+        // What the viewer draws round the picture anyway.
+        let upright = |v: &Viewer| -> Vec<(egui::Pos2, egui::Pos2)> {
+            v.lines.iter().filter(|(p, _)| (p[0].x - p[1].x).abs() < 0.5 && (p[1].y - p[0].y).abs() > 4.0).map(|(p, _)| (p[0], p[1])).collect()
+        };
+        let around = upright(&v);
+        v.click(r.min + egui::vec2(r.width() * 0.5, r.height() * 0.7));
+        v.frame(Vec::new());
+        v.frame(vec![egui::Event::Text("Harbour light at dawn".into())]);
+        v.frame(Vec::new());
+        assert!(v.state.viewer_text_edit, "editing");
+        let carets: Vec<_> = upright(&v).into_iter().filter(|l| !around.contains(l)).collect();
+        let outside: Vec<_> = carets.iter().filter(|(a, b)| !r.contains(*a) || !r.contains(*b)).collect();
+        assert!(outside.is_empty(), "a caret outside the picture: {outside:?} (picture {r:?})");
+        assert_eq!(carets.len(), 1, "one caret: {carets:?}");
+    }
+
     /// A Text-tool click on a title's text at the playhead edits that
     /// title in place, with no new title; a click beside it still makes
     /// one (#1714).

@@ -23,8 +23,9 @@ fn required() -> bool {
     std::env::var_os("KLIPP_TEST_REQUIRE_GPU").is_some_and(|v| v == "1")
 }
 
-/// A bright picture with stripes in it, or a dark one.
-struct Backdrop(Arc<Vec<f32>>);
+/// A bright picture with stripes in it, or a dark one, `W` × `H` unless
+/// made at another size.
+struct Backdrop(Arc<Vec<f32>>, u32, u32);
 
 impl Backdrop {
     fn new(bright: bool) -> Self {
@@ -34,31 +35,48 @@ impl Backdrop {
                 [v, v, v * 0.95, 1.0]
             }))
             .collect();
-        Self(Arc::new(v))
+        Self(Arc::new(v), W, H)
     }
 
     /// Bright grey on the left half, dark blue on the right.
     fn split() -> Self {
         let v = (0..H).flat_map(|_| (0..W).flat_map(|x| if x < W / 2 { [0.85, 0.85, 0.85, 1.0] } else { [0.03, 0.04, 0.3, 1.0] })).collect();
-        Self(Arc::new(v))
+        Self(Arc::new(v), W, H)
     }
 }
 
 impl FrameSource for Backdrop {
     fn frame(&mut self, _: &Clip, _: f64, _: u32, _: u32) -> Option<SourceFrame> {
-        Some(SourceFrame { pixels: SourcePixels::Linear(Arc::clone(&self.0)), width: W, height: H, pts: None })
+        Some(SourceFrame { pixels: SourcePixels::Linear(Arc::clone(&self.0)), width: self.1, height: self.2, pts: None })
     }
 }
 
 fn seq(protect: ContrastProtect) -> Sequence {
     let mut td = TitleData::single_text(TextBox { text: "Readable".into(), font_size: 400.0, color: [255, 255, 255, 255], ..Default::default() });
     td.protect = protect;
+    seq_of(td, W, H)
+}
+
+/// A plain title's white text, 60 px, with an 8 px black stroke round
+/// it, on a 1280 × 720 frame: the blur the pass reads the picture with
+/// grows with the frame, and at this size the stroke's ring is most of
+/// what the cells round the letters hold.
+fn seq_stroked(protect: ContrastProtect) -> Sequence {
+    let mut td = TitleData::single_text(TextBox { text: "Harbour Light".into(), font_size: 60.0, color: [255, 255, 255, 255], ..Default::default() });
+    td.protect = protect;
+    let outline = serde_json::from_value(serde_json::json!({ "color": [0, 0, 0, 255], "width": 8.0 })).expect("a stroke");
+    td.objects[0].fx_mut().outlines.push(outline);
+    seq_of(td, 1280, 720)
+}
+
+/// `td` over a picture clip on a `w` × `h` sequence.
+fn seq_of(td: TitleData, w: u32, h: u32) -> Sequence {
     let mut text = Track::new("T1", TrackKind::Text);
     text.clips = vec![Clip { kind: ClipKind::Title(td), ..Clip::gap(tc(0.0), tc(4.0)) }];
     let mut v1 = Track::new("V1", TrackKind::Video);
     v1.clips = vec![Clip::media(klipp_core::MediaId::new(), tc(0.0), tc(4.0), tc(0.0), tc(4.0))];
     let mut seq = Sequence::new_default();
-    seq.resolution = klipp_core::Resolution { width: W, height: H };
+    seq.resolution = klipp_core::Resolution { width: w, height: h };
     seq.tracks = vec![text, v1];
     seq
 }
@@ -70,13 +88,17 @@ fn render(protect: ContrastProtect, bright: bool) -> Option<Vec<u8>> {
 }
 
 fn render_over(protect: ContrastProtect, backdrop: impl Fn() -> Backdrop) -> Option<Vec<u8>> {
-    let seq = seq(protect);
+    render_seq(seq(protect), protect, backdrop)
+}
+
+fn render_seq(seq: Sequence, protect: ContrastProtect, backdrop: impl Fn() -> Backdrop) -> Option<Vec<u8>> {
+    let klipp_core::Resolution { width: w, height: h } = seq.resolution;
     let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
     r.set_gpu_enabled(true);
-    let (stack, _) = r.render_display_u8_on_gpu(&seq, tc(1.0), W, H, &mut backdrop(), RenderOptions::default())?;
+    let (stack, _) = r.render_display_u8_on_gpu(&seq, tc(1.0), w, h, &mut backdrop(), RenderOptions::default())?;
     let mut cpu = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
     cpu.set_gpu_enabled(false);
-    let want = klipp_effects::linear_f32_rgba_to_srgb_u8(&cpu.render(&seq, tc(1.0), W, H, &mut backdrop(), RenderOptions::default()));
+    let want = klipp_effects::linear_f32_rgba_to_srgb_u8(&cpu.render(&seq, tc(1.0), w, h, &mut backdrop(), RenderOptions::default()));
     let worst = stack.iter().zip(&want).map(|(a, b)| (*a as i32 - *b as i32).abs()).max().unwrap_or(0);
     assert!(worst <= 3, "{protect:?}: the stack differs from the CPU path by {worst} levels");
     Some(stack)
@@ -179,4 +201,29 @@ fn a_title_over_bright_and_dark_is_shaded_evenly() {
     eprintln!("shade round the letters: bright half {bright:.3}, dark half {dark:.3}");
     assert!(bright < 0.6, "the bright half is shaded: {bright:.3}");
     assert!((bright - dark).abs() < 0.08, "the shade is even across the title: bright half {bright:.3}, dark half {dark:.3}");
+}
+
+/// White text with a black stroke, Readability on Auto, over a warm
+/// sunset brown at 1280 × 720: the picture round it is darkened or left,
+/// never lightened, on the GPU as on the CPU. Decided cell by cell, the
+/// cells the stroke's ring filled read as dark text, and the picture
+/// round the letters was lightened into a bright rim about a ragged dark
+/// patch.
+#[test]
+fn a_stroked_title_on_auto_gets_no_bright_rim() {
+    let (w, h) = (1280, 720);
+    let sunset = || {
+        let v = (0..h).flat_map(|_| (0..w).flat_map(|_| [0.45, 0.2, 0.08, 1.0])).collect();
+        Backdrop(Arc::new(v), w, h)
+    };
+    let Some(off) = render_seq(seq_stroked(ContrastProtect::Off), ContrastProtect::Off, sunset) else {
+        assert!(!required(), "required, but the GPU stack declined the title");
+        eprintln!("UNVERIFIED: no GPU stack");
+        return;
+    };
+    let auto = render_seq(seq_stroked(ContrastProtect::Auto), ContrastProtect::Auto, sunset).unwrap();
+    // Brighter with protection than without, outside the text's own ink
+    // (which the two draw alike).
+    let lighter = (0..(w * h) as usize).filter(|&i| luminance(&auto, i) > luminance(&off, i) + 0.02 && luminance(&off, i) < 0.5).count();
+    assert_eq!(lighter, 0, "{lighter} pixels of the picture lightened round the stroked title");
 }
