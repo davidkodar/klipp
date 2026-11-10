@@ -92,6 +92,17 @@ pub(super) fn follow_marks(dialog: &mut ExportDialogState, seq: &klipp_timeline:
 
 /// What the marks' running past the timeline's end does to this export,
 /// said beside the range and when it starts, as nothing in the file would.
+/// The Range list's In/Out choice for `seq`: whether it can be picked,
+/// its label (with the marks' times, by `at`), and, when it can't, what
+/// sets it. Always listed: left out without marks, it read as no such
+/// option.
+pub(super) fn in_out_option(seq: &klipp_timeline::Sequence, at: impl Fn(klipp_core::Timecode) -> String) -> (bool, String, Option<&'static str>) {
+    match seq.marked_range_on_timeline() {
+        Some((a, b)) => (true, format!("In/Out range ({} \u{2192} {})", at(a), at(b)), None),
+        None => (false, "In/Out range".to_owned(), Some("Set In and Out on the timeline (I, O)")),
+    }
+}
+
 pub(super) fn export_range_note(dialog: &ExportDialogState, seq: &klipp_timeline::Sequence) -> Option<&'static str> {
     let (Some(a), Some(b)) = (seq.in_point, seq.out_point) else { return None };
     match seq.marked_range_on_timeline() {
@@ -2234,11 +2245,17 @@ impl KlippApp {
         section_card(ui, "RANGE", None, &theme, |ui| { indent(ui, &mut |ui| {
                 let before = self.export_dialog.range_mode;
                 ui.radio_value(&mut self.export_dialog.range_mode, 0, "Full timeline");
-                let marked = self.state.sequences[self.state.active_sequence_idx].marked_range_on_timeline();
-                let has_range = marked.is_some();
-                if let Some((in_pt, out_pt)) = marked {
-                    ui.radio_value(&mut self.export_dialog.range_mode, 1,
-                        format!("In/Out range ({} \u{2192} {})", self.state.timecode_display().position(in_pt), self.state.timecode_display().position(out_pt)));
+                let display = self.state.timecode_display();
+                let (has_range, label, hint) = in_out_option(&self.state.sequences[self.state.active_sequence_idx], |t| display.position(t));
+                let picked = self.export_dialog.range_mode == 1;
+                let r = ui.add_enabled(has_range, egui::RadioButton::new(picked, label)).on_disabled_hover_text(hint.unwrap_or_default());
+                if r.clicked() {
+                    self.export_dialog.range_mode = 1;
+                }
+                if let Some(hint) = hint {
+                    ui.indent("in_out_hint", |ui| {
+                        ui.label(egui::RichText::new(hint).small().color(self.theme.text_dim));
+                    });
                 }
                 // Under the range it speaks of: the section scrolls.
                 if let Some(note) = export_range_note(&self.export_dialog, &self.state.sequences[self.state.active_sequence_idx]) {
@@ -5014,7 +5031,29 @@ mod custom_ceiling_tests {
 
 #[cfg(test)]
 mod export_range_tests {
-    use super::{export_range_note, follow_marks, range_for_export, ExportDialogState};
+    use super::{export_range_note, follow_marks, in_out_option, range_for_export, ExportDialogState};
+
+    /// The In/Out range is always among the Range choices: with both marks
+    /// set, picked by their times; without them, greyed, saying how to set
+    /// them. It was left out of the list, so a missing range read as no
+    /// such option.
+    #[test]
+    fn the_in_out_range_is_offered_greyed_until_the_marks_are_set() {
+        let mut pool = klipp_media::MediaPool::new();
+        let mut seq = sixty_seconds(&mut pool);
+        let at = |t: klipp_core::Timecode| format!("{:.0}", t.to_secs_f64());
+        let (on, label, hint) = in_out_option(&seq, at);
+        assert!(!on);
+        assert_eq!(label, "In/Out range");
+        assert_eq!(hint, Some("Set In and Out on the timeline (I, O)"));
+        seq.in_point = Some(klipp_core::RationalTime::from_secs_f64(20.0, 25));
+        assert!(!in_out_option(&seq, at).0, "In alone is no range");
+        seq.out_point = Some(klipp_core::RationalTime::from_secs_f64(30.0, 25));
+        let (on, label, hint) = in_out_option(&seq, at);
+        assert!(on);
+        assert_eq!(label, "In/Out range (20 \u{2192} 30)");
+        assert_eq!(hint, None);
+    }
 
     /// The frames an export from the form covers: the range step the
     /// export runs, then the render snapshot `queue_export` makes.
