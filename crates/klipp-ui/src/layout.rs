@@ -73,7 +73,19 @@ fn side_widths(width: f32, layout: &LayoutState, state: &AppState) -> (Option<f3
     if used(browser, inspector) > room {
         inspector = None;
     }
-    (browser, inspector)
+    // The panel last opened from its rail stays open where it would fold,
+    // at most its minimum and within the window, the other folded: the
+    // centre gives up what it must. A click on a folded rail did nothing.
+    let opened = |set: f32, min: f32| set.min((room - theme::COLLAPSED_RAIL_W).max(min)).min((width - theme::RESIZER_THICKNESS * 2.0 - theme::COLLAPSED_RAIL_W).max(0.0));
+    match state.narrow_side {
+        Some(crate::state::SidePanel::Browser) if state.show_browser_panel && browser.is_none() => {
+            (Some(opened(layout.browser_width, theme::BROWSER_MIN_W)), None)
+        }
+        Some(crate::state::SidePanel::Inspector) if state.show_inspector_panel && inspector.is_none() => {
+            (None, Some(opened(layout.inspector_width, theme::INSPECTOR_MIN_W)))
+        }
+        _ => (browser, inspector),
+    }
 }
 
 /// Compute all panel rects from the full available rect, layout state, and
@@ -633,6 +645,34 @@ mod narrow_window_tests {
                 assert!(r.browser_open <= browser && r.inspector_open <= inspector, "a hidden panel stays hidden");
             }
         }
+    }
+
+    #[test]
+    fn a_panel_opened_from_its_rail_stays_open_and_folds_the_other() {
+        use crate::state::SidePanel;
+        for width in [300.0, 400.0, 500.0, 640.0, 760.0] {
+            for side in [SidePanel::Browser, SidePanel::Inspector] {
+                let full = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, 600.0));
+                let state = AppState { narrow_side: Some(side), ..AppState::default() };
+                let r = compute_layout(full, &LayoutState::default(), &state);
+                let (open, other) = match side {
+                    SidePanel::Browser => ((r.browser_open, r.browser_rect), (r.inspector_open, r.inspector_rect)),
+                    SidePanel::Inspector => ((r.inspector_open, r.inspector_rect), (r.browser_open, r.browser_rect)),
+                };
+                assert!(open.0 && !other.0, "{side:?} open, the other folded at {width}");
+                assert_eq!(other.1.width(), theme::COLLAPSED_RAIL_W);
+                assert!(open.1.width() > theme::COLLAPSED_RAIL_W, "{side:?} {:?} at {width}", open.1);
+                assert!(r.browser_rect.left() >= -0.5 && r.inspector_rect.right() <= width + 0.5 && r.browser_rect.right() <= r.inspector_rect.left(), "inside the window, apart, at {width}");
+                for m in [r.viewer_rect, r.source_viewer_rect, r.timeline_rect] {
+                    assert!(!m.is_positive() || (!r.browser_rect.intersects(m.shrink(0.5)) && !r.inspector_rect.intersects(m.shrink(0.5))), "over {m:?} at {width}");
+                }
+            }
+        }
+        // Hidden stays hidden, and a wide window opens both as set.
+        let hidden = AppState { narrow_side: Some(SidePanel::Browser), show_browser_panel: false, ..AppState::default() };
+        assert!(!compute_layout(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(500.0, 600.0)), &LayoutState::default(), &hidden).browser_open);
+        let wide = compute_layout(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1920.0, 600.0)), &LayoutState::default(), &AppState { narrow_side: Some(SidePanel::Browser), ..AppState::default() });
+        assert!(wide.browser_open && wide.inspector_open);
     }
 
     #[test]
