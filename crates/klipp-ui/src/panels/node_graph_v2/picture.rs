@@ -66,10 +66,16 @@ fn is_grade_node(n: &Node) -> bool {
 
 /// Whether `node` is on as the menu and canvas show it: a clip's grade
 /// group by the nodes inside it, which are what its Bypass switches
-/// (#2553); any other node by its own switch.
+/// (#2553); the clip's own Opacity, and a Speed Ramp that doesn't blend
+/// frames, by whether the clip has it on (the graph keeps those nodes
+/// off, as the clip applies them itself, as it lays the layers together
+/// or times its frames, not the node); any other node by its own switch.
 fn shown_on(node: &Node) -> bool {
     match node.group.as_ref().filter(|_| node.type_id.as_str() == lt::GROUP) {
         Some(body) if body.graph.nodes.iter().any(is_grade_node) => body.graph.nodes.iter().any(|n| is_grade_node(n) && n.enabled),
+        _ if matches!(node.type_id.as_str(), klipp_graph_format::types::LEGACY_OPACITY | klipp_graph_format::types::LEGACY_SPEED_RAMP) => {
+            node.enabled || node.legacy_flags.as_ref().and_then(|f| f.was_enabled) == Some(true)
+        }
         _ => node.enabled,
     }
 }
@@ -2109,5 +2115,30 @@ mod tests {
         assert_eq!(d.graph(), before, "nothing changed");
         assert_eq!(d.steps(), 0);
     }
-}
 
+    /// A clip's Opacity node at 0.50, as the Video tab's typed value
+    /// makes it, is on: its card read "OFF" with a bypass mark, which
+    /// says the opacity is off, though the picture shows its 50 %.
+    #[test]
+    fn an_opacity_node_at_half_is_not_drawn_off() {
+        let t = |s| klipp_core::RationalTime::from_secs_f64(s, 25);
+        let c = TestClip::of(Clip::media(klipp_core::MediaId::new(), t(0.0), t(2.0), t(0.0), t(2.0))).effect(klipp_effects::BuiltinEffect::Opacity { value: 0.5 }).build();
+        let d = Dock::of(c);
+        d.at("Opacity");
+        let off = |d: &Dock| d.texts.iter().any(|(s, _)| s == "OFF" || s == "\u{00F8}");
+        assert!(!off(&d), "drawn off: {:?}", d.texts);
+    }
+
+    /// A clip's Speed Ramp that doesn't blend frames, on in its list, is
+    /// on on the canvas too: the clip plays at its speed, so its card
+    /// doesn't read "OFF" with a bypass mark.
+    #[test]
+    fn a_speed_ramp_without_blending_is_not_drawn_off() {
+        let t = |s| klipp_core::RationalTime::from_secs_f64(s, 25);
+        let c = TestClip::of(Clip::media(klipp_core::MediaId::new(), t(0.0), t(2.0), t(0.0), t(2.0))).effect(klipp_effects::BuiltinEffect::SpeedRamp { speed: 0.5, blend_mode: 0 }).build();
+        let d = Dock::of(c);
+        d.at("Speed Ramp");
+        let off = d.texts.iter().any(|(s, _)| s == "OFF" || s == "\u{00F8}");
+        assert!(!off, "drawn off: {:?}", d.texts);
+    }
+}
