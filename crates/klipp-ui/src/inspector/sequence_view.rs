@@ -37,10 +37,14 @@ pub fn show(ui: &mut Ui, theme: &KlippTheme, state: &AppState, cmds: &mut Vec<Ap
             ("Grid", ViewerOverlay::Grid, o.grid),
             ("Transparency grid", ViewerOverlay::Checkerboard, o.checkerboard),
         ] {
+            // The viewer has no transparency to show yet: its switch greyed.
+            let ready = overlay != ViewerOverlay::Checkerboard;
             row(ui, theme, label, |ui| {
-                if switch(ui, theme, on).clicked() {
+                let r = ui.add_enabled_ui(ready, |ui| switch(ui, theme, on)).inner;
+                if r.clicked() {
                     cmds.push(AppCommand::SetViewerOverlay { overlay, on: !on });
                 }
+                r.on_disabled_hover_text(crate::panels::viewer::CHECKERBOARD_NOT_YET);
             });
         }
         // One channel of the picture in grey (#2758).
