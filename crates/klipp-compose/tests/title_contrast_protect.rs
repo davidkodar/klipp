@@ -227,3 +227,46 @@ fn a_stroked_title_on_auto_gets_no_bright_rim() {
     let lighter = (0..(w * h) as usize).filter(|&i| luminance(&auto, i) > luminance(&off, i) + 0.02 && luminance(&off, i) < 0.5).count();
     assert_eq!(lighter, 0, "{lighter} pixels of the picture lightened round the stroked title");
 }
+
+/// A title of a big black block (a logo's place, set here as a run of
+/// solid glyphs) above a line of white words, Readability on Auto, over a
+/// bright sky at 1280 × 720 (the End Screen template): the white words are
+/// light text, so the sky round them is darkened or left, never lightened,
+/// on the GPU as on the CPU. Read by the average of all its ink, the
+/// block made the title dark text, and the sky round the white words was
+/// lightened to their own white.
+#[test]
+fn white_words_beside_a_black_block_on_auto_keep_the_sky_unlightened() {
+    let (w, h) = (1280, 720);
+    let sky = || {
+        let v = (0..h).flat_map(|_| (0..w).flat_map(|_| [0.55, 0.65, 0.9, 1.0])).collect();
+        Backdrop(Arc::new(v), w, h)
+    };
+    let seq = |protect: ContrastProtect| {
+        let mut td = TitleData::single_text(TextBox { text: "Thanks for watching".into(), font_size: 40.0, color: [255, 255, 255, 255], ..Default::default() });
+        td.objects[0].transform.center.y = 0.72;
+        let mut block = td.objects[0].clone();
+        block.id = klipp_timeline::TitleObjectId(td.objects[0].id.0 + 1);
+        if let klipp_timeline::TitleObjectContent::TextBox(tb) = &mut block.content {
+            tb.text = "\u{2588}\u{2588}\u{2588}\n\u{2588}\u{2588}\u{2588}".into();
+            tb.font_size = 160.0;
+            tb.color = [0, 0, 0, 255];
+        }
+        block.transform.center.y = 0.4;
+        td.objects.push(block);
+        td.protect = protect;
+        seq_of(td, w, h)
+    };
+    let Some(off) = render_seq(seq(ContrastProtect::Off), ContrastProtect::Off, sky) else {
+        assert!(!required(), "required, but the GPU stack declined the title");
+        eprintln!("UNVERIFIED: no GPU stack");
+        return;
+    };
+    let auto = render_seq(seq(ContrastProtect::Auto), ContrastProtect::Auto, sky).unwrap();
+    // The sky under the words: the band below them, across the frame.
+    let band = (h * 78 / 100..h * 82 / 100).flat_map(|y| (0..w).map(move |x| (y * w + x) as usize));
+    let lighter = band.filter(|&i| luminance(&auto, i) > luminance(&off, i) + 0.02).count();
+    assert_eq!(lighter, 0, "{lighter} pixels of sky under the white words lightened");
+    let darker = (h * 74 / 100..h * 80 / 100).flat_map(|y| (0..w).map(move |x| (y * w + x) as usize)).filter(|&i| luminance(&auto, i) + 0.02 < luminance(&off, i)).count();
+    assert!(darker > 0, "the sky round the white words is darkened");
+}

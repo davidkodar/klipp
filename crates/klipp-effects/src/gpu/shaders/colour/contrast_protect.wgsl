@@ -11,6 +11,13 @@ struct Params {
 
 const TARGET: f32 = 4.5;
 const LIGHT_TEXT: f32 = 0.179;
+// The share of a title's ink that must be light text for the title to be
+// light text (protect::LIGHT_SHARE).
+const LIGHT_SHARE: f32 = 0.1;
+// The least share that counts by the light ink's need (protect::MIN_LIGHT_SHARE).
+const MIN_LIGHT_SHARE: f32 = 0.02;
+// A cell covered this much is solid ink, no edge of it (protect::SOLID).
+const SOLID: f32 = 0.98;
 const HALO_FULL: f32 = 0.04;
 
 fn luma(c: vec3<f32>) -> f32 {
@@ -19,27 +26,33 @@ fn luma(c: vec3<f32>) -> f32 {
 
 // The light text's darkening `k` and the dark text's lightening `t` a
 // cell's measures ask for (protect::pull).
-fn pull_k(lb: f32, busy: f32, lt: f32) -> f32 {
+fn pull_k_in(lb: f32, busy: f32, lt: f32, mode: u32) -> f32 {
     let need = (lt + 0.05) / TARGET - 0.05;
     let cur = min(lb + busy, 1.0);
     var k = 1.0;
     if cur > need { k = clamp(max(need, 0.0) / cur, 0.12, 1.0); }
-    if p.mode == 2u { k = min(k, 0.55); }
+    if mode == 2u { k = min(k, 0.55); }
     return k;
 }
 
-fn pull_t(lb: f32, busy: f32, lt: f32) -> f32 {
+fn pull_t_in(lb: f32, busy: f32, lt: f32, mode: u32) -> f32 {
     let need = TARGET * (lt + 0.05) - 0.05;
     let cur = max(lb - busy, 0.0);
     var t = clamp((need - cur) / max(1.0 - cur, 1e-4), 0.0, 0.88);
-    if p.mode == 2u { t = max(t, 0.45); }
+    if mode == 2u { t = max(t, 0.45); }
     return t;
 }
 
+fn pull_k(lb: f32, busy: f32, lt: f32) -> f32 { return pull_k_in(lb, busy, lt, p.mode); }
+fn pull_t(lb: f32, busy: f32, lt: f32) -> f32 { return pull_t_in(lb, busy, lt, p.mode); }
+
 var<workgroup> wk: array<vec4<f32>, 256>;
 var<workgroup> wany: array<vec2<f32>, 256>;
-var<workgroup> wsum: array<vec2<f32>, 256>;
+var<workgroup> wsum: array<vec4<f32>, 256>;
+var<workgroup> wall: array<vec4<f32>, 256>;
+var<workgroup> wneed: array<vec4<f32>, 256>;
 var<workgroup> wlt: f32;
+var<workgroup> wlight: f32;
 
 fn small_at(x: i32, y: i32) -> vec4<f32> {
     let cx = clamp(x, 0, i32(p.small_w) - 1);
@@ -56,27 +69,76 @@ fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgro
         // none is, over any the text reaches (zw), into the cell after the
         // grid as (k, t).
         let n = p.small_w * p.small_h;
-        // First the whole title's text luminance (protect::title_luminance):
-        // light or dark text by it everywhere, each part's need for it.
-        var sum = vec2<f32>(0.0);
+        // First whether the whole title is light or dark text, and the
+        // luminance its need is for (protect::title_tone), from the ink
+        // that meets the picture (cells under SOLID; all, when every cell
+        // is solid): light when the cells reading as light text hold
+        // LIGHT_SHARE of it, or MIN_LIGHT_SHARE and need more protecting
+        // than the dark ink, at their luminance; else dark, at the dark
+        // ink's. Edge sums (x lt, y coverage, z light lt, w light
+        // coverage), the same over all ink, and the needs (light, dark;
+        // edge then all).
+        var sum = vec4<f32>(0.0);
+        var all = vec4<f32>(0.0);
+        var need = vec4<f32>(0.0);
         for (var c = li; c < n; c += 256u) {
             let m = unpack(output[c]);
             if m.z <= 1e-3 { continue; }
-            sum += vec2<f32>(m.w, m.z);
+            let own = clamp(m.w / m.z, 0.0, 1.0);
+            let busy = sqrt(max(m.y - m.x * m.x, 0.0));
+            let is_light = m.w / m.z >= LIGHT_TEXT;
+            var tone = vec4<f32>(m.w, m.z, 0.0, 0.0);
+            var nd = vec2<f32>(0.0);
+            if is_light {
+                tone = vec4<f32>(m.w, m.z, m.w, m.z);
+                nd = vec2<f32>((1.0 - pull_k_in(m.x, busy, own, 1u)) * m.z, 0.0);
+            } else {
+                nd = vec2<f32>(0.0, pull_t_in(m.x, busy, own, 1u) * m.z);
+            }
+            all += tone;
+            need += vec4<f32>(0.0, 0.0, nd);
+            if m.z < SOLID {
+                sum += tone;
+                need += vec4<f32>(nd, 0.0, 0.0);
+            }
         }
         wsum[li] = sum;
+        wall[li] = all;
+        wneed[li] = need;
         workgroupBarrier();
         for (var half = 128u; half > 0u; half >>= 1u) {
-            if li < half { wsum[li] += wsum[li + half]; }
+            if li < half {
+                wsum[li] += wsum[li + half];
+                wall[li] += wall[li + half];
+                wneed[li] += wneed[li + half];
+            }
             workgroupBarrier();
         }
         if li == 0u {
+            var t = wsum[0];
+            var nd = wneed[0].xy;
+            if t.y <= 0.0 {
+                t = wall[0];
+                nd = wneed[0].zw;
+            }
             var t_lt = 1.0;
-            if wsum[0].y > 0.0 { t_lt = clamp(wsum[0].x / wsum[0].y, 0.0, 1.0); }
+            var t_light = 1.0;
+            if t.y > 0.0 {
+                let dark_cov = max(t.y - t.w, 1e-6);
+                let needs_more = t.w >= MIN_LIGHT_SHARE * t.y && t.w > 0.0 && nd.x / t.w > nd.y / dark_cov;
+                if t.w >= LIGHT_SHARE * t.y || needs_more {
+                    t_lt = clamp(t.z / t.w, 0.0, 1.0);
+                } else {
+                    t_light = 0.0;
+                    t_lt = clamp((t.x - t.z) / dark_cov, 0.0, 1.0);
+                }
+            }
             wlt = t_lt;
+            wlight = t_light;
         }
         workgroupBarrier();
         let lt = wlt;
+        let light = wlight > 0.5;
         var acc = vec4<f32>(1.0, 0.0, 1.0, 0.0);
         var seen = vec2<f32>(0.0);
         for (var c = li; c < n; c += 256u) {
@@ -84,7 +146,7 @@ fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgro
             if m.z <= 1e-3 { continue; }
             let busy = sqrt(max(m.y - m.x * m.x, 0.0));
             let full = m.z >= HALO_FULL;
-            if lt >= LIGHT_TEXT {
+            if light {
                 let k = pull_k(m.x, busy, lt);
                 acc.z = min(acc.z, k);
                 if full { acc.x = min(acc.x, k); }
@@ -113,7 +175,7 @@ fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgro
             var kt = vec2<f32>(1.0, 0.0);
             if wany[0].x > 0.5 { kt = r.xy; } else if wany[0].y > 0.5 { kt = r.zw; }
             // The pull, and the title light (1) or dark (0) text.
-            output[n] = pack(vec4<f32>(kt, select(0.0, 1.0, lt >= LIGHT_TEXT), 0.0));
+            output[n] = pack(vec4<f32>(kt, select(0.0, 1.0, light), 0.0));
         }
         return;
     }
