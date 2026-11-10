@@ -784,7 +784,7 @@ fn a_lut_tile_dropped_on_a_clip_puts_it_on() {
         let luts: Vec<ClipId> = tl.sent.iter().filter_map(|c| match c { AppCommand::ApplyClipLut { clip_id, lut_path, .. } if *lut_path == path => Some(*clip_id), _ => None }).collect();
         let want = if on_selection { vec![ids[0], ids[1]] } else { vec![target] };
         assert_eq!(luts, want, "selected {selected}, on the selection {on_selection}: {:?}", tl.sent);
-        let batched = tl.sent.iter().any(|c| matches!(c, AppCommand::BeginHistoryBatch)) && tl.sent.iter().any(|c| matches!(c, AppCommand::EndHistoryBatch));
+        let batched = tl.sent.iter().any(|c| matches!(c, AppCommand::BeginHistoryBatch)) && tl.sent.iter().any(|c| matches!(c, AppCommand::EndHistoryBatchAs { label } if label.starts_with("Add ") && label.ends_with(" to 2 Clips")));
         assert_eq!(batched, want.len() > 1, "one step for several");
         assert!(tl.state.drag_drop.payload.is_none(), "the drag is over");
     }

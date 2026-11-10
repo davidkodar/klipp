@@ -631,6 +631,7 @@ fn an_effect_added_with_two_clips_selected_lands_on_both_as_one_step() {
     assert!(run.click_last("+ Add effect"), "the add menu");
     assert!(run.click_last("Bloom"), "Bloom in it");
     assert_eq!((blooms(&run, run.clip), blooms(&run, other_id)), (1, 1), "on both: {:?}", run.unapplied);
+    assert_eq!(run.state.active_history().undo_label(), Some("Add Bloom to 2 Clips"), "the step named for the effect");
     assert!(run.step(false));
     assert_eq!((blooms(&run, run.clip), blooms(&run, other_id)), (0, 0), "one undo takes it off both");
 }

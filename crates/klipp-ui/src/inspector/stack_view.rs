@@ -437,7 +437,7 @@ fn add_to_selection(state: &AppState, clip: &Clip, after: &NodePath, ty: &klipp_
     }
     let targets = crate::effect_targets::targets(state.sequence(), state.selected_clip, &state.selected_clips, Some(clip.id), crate::effect_targets::EffectKind::Picture);
     let effect = (ty.sample)();
-    let adds = crate::effect_targets::all_or_none(&targets, |id| {
+    let adds = crate::effect_targets::all_or_none(&targets, ty.desc.name, |id| {
         let c = state.sequence().all_clips().find(|c| c.id == id).ok_or("the clip isn't in the sequence")?;
         add_effects_command(state, c, std::slice::from_ref(&effect))
     });

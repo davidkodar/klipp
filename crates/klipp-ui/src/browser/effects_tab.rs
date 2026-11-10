@@ -569,7 +569,7 @@ pub fn show(
                                 } else {
                                     push_recent(recent_effects, &fx.name);
                                     let source = fx.source.clone();
-                                    match crate::effect_targets::all_or_none(&targets, |clip_id| effect_commands_in(state, &source, clip_id)) {
+                                    match crate::effect_targets::all_or_none(&targets, &fx.name, |clip_id| effect_commands_in(state, &source, clip_id)) {
                                         Ok(adds) => {
                                             cmds.extend(adds);
                                             state.toast.show(crate::effect_targets::said(&fx.name, &targets));
