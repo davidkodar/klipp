@@ -820,6 +820,7 @@ mod tests {
             source_in,
             source_out,
             picture: Default::default(),
+            effects_switched_off: Vec::new(),
             linked_clip_id: None,
             linked_title_asset_id: None,
             group_id: None,

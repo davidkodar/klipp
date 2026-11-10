@@ -795,30 +795,43 @@ fn switched(clip: &Clip, graph: &Graph, row: &Row, on: bool) -> Vec<AppCommand> 
 /// (Transform, Opacity, Speed Ramp, Temporal Denoise), which turned off
 /// would move, fade or retime it rather than take a look off it.
 fn own_effects<'a>(graph: &Graph, view: &'a StackView) -> Vec<&'a Row> {
-    let is_effect = |n: &klipp_graph_format::Node| klipp_graph_lift::effect_params::tag(n).is_some() || n.type_id.as_str() == klipp_graph_format::types::LEGACY_OFX;
+    use klipp_graph_format::lifted::types as lt;
+    let stage = |n: &klipp_graph_format::Node| {
+        [lt::SOURCE, lt::OUTPUT, lt::GROUP, lt::GROUP_INPUT, lt::GROUP_OUTPUT, lt::GROUP_FRAME, lt::GRADE_COMPOUND, lt::MERGE, lt::PLACEMENT, lt::TEMPORAL_DENOISE, lt::FRAME_BLEND, lt::SCENE_TO_DISPLAY].contains(&n.type_id.as_str())
+    };
     view.items.iter().filter_map(|item| match item {
         Item::Node(row) if row.section == Section::Effects && !row.read_only && row.provenance.is_none() && !row.placed
-            && node_at(graph, &row.addr).is_some_and(|n| is_effect(n) && n.type_id.as_str() != klipp_graph_format::lifted::types::PLACEMENT) => Some(&**row),
+            && node_at(graph, &row.addr).is_some_and(|n| !stage(n)) => Some(&**row),
         _ => None,
     }).collect()
 }
 
-/// One switch for all the clip's effects (the walks' bypass-all): ticked
-/// while any is on; switched off, each that is on goes off, and on, each
-/// that is off comes on, as one undo step either way. An effect turned
-/// off on its own before comes on with the rest.
+/// One switch for all the clip's effects (the walks' bypass-all), as one
+/// undo step either way. Switched off, each effect that is on goes off,
+/// and the clip remembers which (`Clip::effects_switched_off`); switched
+/// on, those come back on, and no other: one the person had off of their
+/// own stays off, and one switched on or added by hand meanwhile stays as
+/// it is. It reads off while the clip remembers any.
 fn all_effects_switch(ui: &mut egui::Ui, clip: &Clip, graph: &Graph, view: &StackView, cmds: &mut Vec<AppCommand>) {
     let rows = own_effects(graph, view);
-    if rows.is_empty() {
+    if rows.is_empty() && clip.effects_switched_off.is_empty() {
         return;
     }
-    let mut on = rows.iter().any(|r| r.enabled);
-    let hover = if on { "Turn all the clip's effects off, as one step" } else { "Turn all the clip's effects on, as one step" };
+    let mut on = clip.effects_switched_off.is_empty();
+    let hover = if on { "Turn all the clip's effects off, as one step" } else { "Turn back on the effects this switch turned off, as one step" };
     if ui.checkbox(&mut on, "All effects").on_hover_text(hover).changed() {
-        let changes: Vec<AppCommand> = rows.iter().filter(|r| r.enabled != on).flat_map(|r| switched(clip, graph, r, on)).collect();
-        if !changes.is_empty() {
+        let node = |r: &Row| r.addr.node();
+        let (changes, remembered): (Vec<AppCommand>, Vec<uuid::Uuid>) = if on {
+            let back: Vec<&&Row> = rows.iter().filter(|r| !r.enabled && node(r).is_some_and(|n| clip.effects_switched_off.contains(&n))).collect();
+            (back.iter().flat_map(|r| switched(clip, graph, r, true)).collect(), Vec::new())
+        } else {
+            let off: Vec<&&Row> = rows.iter().filter(|r| r.enabled).collect();
+            (off.iter().flat_map(|r| switched(clip, graph, r, false)).collect(), off.iter().filter_map(|r| node(r)).collect())
+        };
+        if !changes.is_empty() || remembered != clip.effects_switched_off {
             cmds.push(AppCommand::BeginHistoryBatch);
             cmds.extend(changes);
+            cmds.push(AppCommand::SetEffectsSwitchedOff { clip_id: clip.id, nodes: remembered });
             cmds.push(AppCommand::EndHistoryBatchAs { label: if on { "Turn Effects On" } else { "Turn Effects Off" }.into() });
         }
     }
