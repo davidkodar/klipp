@@ -933,3 +933,75 @@ fn a_dope_sheet_key_drag_in_the_apps_order_moves_and_is_one_step() {
     undo(&mut e.state);
     assert_eq!(keys(&e.state, e.clip, &pos_x), vec![(1.0, 10.0), (2.0, 20.0)], "the undo takes back the move");
 }
+
+/// The walk's clip: 6 s, Position X keyed at 1 s and 4 s. Its 4 s key
+/// dragged in the dope sheet a second to the right by hand, a few points
+/// a move, at several step sizes, lands a second on, at 5 s. It went one
+/// frame: each move is made from where the last left the key, and once
+/// one found no key there, none after did.
+#[test]
+fn a_dope_sheet_key_dragged_in_small_steps_lands_where_it_is_let_go() {
+    for step in [1.0f32, 2.0, 3.0, 5.0] {
+        let mut state = AppState::default();
+        let t = |s| RationalTime::from_secs_f64(s, 25);
+        state.sequences[0].fps = klipp_core::Fps::new(25, 1);
+        let mut item = klipp_media::MediaItem::synthetic_for_test("/tmp/cafe.mov".into(), None);
+        item.duration = t(60.0);
+        let media = state.media_pool.add(item);
+        let clip = TestClip::of(klipp_timeline::Clip::media(media, t(0.0), t(6.0), t(0.0), t(6.0))).lane("pos_x", 1.0, 0.0).lane("pos_x", 4.0, 400.0).build();
+        let id = clip.id;
+        let v1 = state.sequences[0].tracks.iter().position(|t| t.kind == TrackKind::Video).unwrap();
+        state.sequences[0].tracks[v1].clips.push(clip);
+        state.selected_clip = Some(id);
+        let mut e = Editor::showing(state, id, klipp_nodes::NodeId::new_v4(), CurveParam::Video(VideoParam::PositionX));
+        let drawn = e.frame(Vec::new(), egui::Modifiers::NONE);
+        let tab = drawn.iter().find(|(t, _)| t == "Dope Sheet").expect("the Dope Sheet tab").1;
+        e.press(tab, egui::PointerButton::Primary, egui::Modifiers::NONE);
+        e.frame(Vec::new(), egui::Modifiers::NONE);
+        let pos_x = KeyframeParamKind::Video(VideoParam::PositionX);
+        let (from, to) = (e.panel.sheet_at(0, 4.0).unwrap(), e.panel.sheet_at(0, 5.0).unwrap());
+        let m = egui::Modifiers::NONE;
+        let b = |p, d| egui::Event::PointerButton { pos: p, button: egui::PointerButton::Primary, pressed: d, modifiers: m };
+        e.frame(vec![egui::Event::PointerMoved(from)], m);
+        e.frame(vec![b(from, true)], m);
+        let mut x = from.x;
+        while x < to.x {
+            x = (x + step).min(to.x);
+            e.frame(vec![egui::Event::PointerMoved(egui::pos2(x, from.y))], m);
+        }
+        e.frame(vec![b(to, false)], m);
+        e.frame(Vec::new(), m);
+        let got = keys(&e.state, e.clip, &pos_x);
+        assert!((got[1].0 - 5.0).abs() < 1e-6, "{step} pt a move over {} pt: {got:?}", to.x - from.x);
+    }
+}
+
+/// A drag goes on when a key's last move left it a hair off where the
+/// drag put it (a time read back through points, a lane write's own
+/// rounding): each move finds the key near its place, within half a
+/// frame. Found only at its exact time, the next move found nothing, and
+/// none after it did, so the key stopped one frame on.
+#[test]
+fn a_key_drag_goes_on_when_a_move_lands_a_hair_off() {
+    let (mut state, id, _) = state();
+    let pos_x = KeyframeParamKind::Video(VideoParam::PositionX);
+    let c = clip(&state, id);
+    crate::key_selection::click(&mut state, &c, &pos_x, 1, false);
+    let begin = crate::key_selection::begin_drag(&mut state, &c, None);
+    apply(&mut state, &begin);
+    let frame = 1.0 / state.sequence().fps.as_f64();
+    let first = crate::key_selection::drag_to(&mut state, &c, frame, 0.0);
+    apply(&mut state, &first);
+    // The key a hair off where the move put it.
+    let c = clip(&state, id);
+    let off = keys(&state, id, &pos_x)[1].0 + 3e-5;
+    let nudge = crate::key_selection::move_command(&c, &pos_x, keys(&state, id, &pos_x)[1].0, off, None).unwrap();
+    apply(&mut state, &[nudge]);
+    let c = clip(&state, id);
+    let next = crate::key_selection::drag_to(&mut state, &c, 10.0 * frame, 0.0);
+    apply(&mut state, &next);
+    let end = crate::key_selection::end_drag(&mut state);
+    apply(&mut state, &end);
+    let at = keys(&state, id, &pos_x)[1].0;
+    assert!((at - (2.0 + 10.0 * frame)).abs() < 1e-6, "the key went on to ten frames: at {at}");
+}
