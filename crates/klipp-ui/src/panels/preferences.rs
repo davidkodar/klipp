@@ -4711,9 +4711,9 @@ impl PreferencesPanel {
         Self::setting_row(ui, "Version", theme, |ui| {
             ui.label(egui::RichText::new(build.label()).color(theme.text_dim));
         });
-        if let Some(at) = build.built_at {
+        if let Some(built) = build.built() {
             Self::setting_row(ui, "Built", theme, |ui| {
-                ui.label(egui::RichText::new(klipp_core::build_info::format_utc(at)).color(theme.text_dim));
+                ui.label(egui::RichText::new(built.text()).color(theme.text_dim));
             });
         }
 

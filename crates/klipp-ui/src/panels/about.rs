@@ -417,9 +417,11 @@ fn body(ui: &mut egui::Ui, theme: &KlippTheme, status: &Status<'_>) -> Option<Ab
                 ui.ctx().copy_text(build.label());
             }
         });
-        if let Some(at) = build.built_at {
+        // The executable's time, or where it has no real one (a Flatpak's
+        // files read 1970-01-01) its commit's date, said to be that.
+        if let Some(built) = build.built() {
             row(ui, "Built", &mut |ui| {
-                ui.label(egui::RichText::new(klipp_core::build_info::format_utc(at)).size(13.0).color(theme.text_secondary));
+                ui.label(egui::RichText::new(built.text()).size(13.0).color(theme.text_secondary));
             });
         }
         // What it runs on, as Preferences and the system probe say it
