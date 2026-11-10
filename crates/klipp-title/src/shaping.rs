@@ -1094,7 +1094,7 @@ mod tests {
         r.system_fallback = false;
         let path = std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fonts/NotoSansHebrew-subset.ttf"));
         let traits = crate::variable::face_traits(&std::fs::read(&path).unwrap()).unwrap();
-        let info = crate::font_discovery::FontInfo { family: "Hebrew Test".into(), style: "Regular".into(), path, weight: traits.weight, italic: traits.italic, axes: traits.axes };
+        let info = crate::font_discovery::FontInfo { family: "Hebrew Test".into(), style: "Regular".into(), path, weight: traits.weight, italic: traits.italic, axes: traits.axes, aliases: Vec::new() };
         r.font_registry = Arc::new([("Hebrew Test".to_string(), vec![info])].into_iter().collect());
         let title = |text: &str| {
             let tb = klipp_timeline::TextBox { text: text.into(), font_size: 80.0, font_name: "Hebrew Test".into(), text_direction: klipp_timeline::TextDirection::Rtl, ..Default::default() };
