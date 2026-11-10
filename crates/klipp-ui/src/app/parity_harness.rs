@@ -426,3 +426,40 @@ impl Run {
     }
 
 }
+
+/// The Effects tab's Transform card on a clip whose Position X is keyed
+/// (0 at 1 s, 400 at 4 s) reads the keyed value at the playhead, as the
+/// Video tab and the viewer's box do: 2.5 s is half way, 200. It read the
+/// stored 400 at every time. A value typed there at a time between the
+/// keys keys the lane there.
+#[test]
+fn the_transform_card_reads_and_keys_the_placement_at_the_playhead() {
+    let t = |s| klipp_core::RationalTime::from_secs_f64(s, 24);
+    let transform = BuiltinEffect::Transform { position_x: 400.0, position_y: 0.0, scale_x: 1.0, scale_y: 1.0, rotation: 0.0, anchor_x: 0.5, anchor_y: 0.5, rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0, focal_ref: None };
+    let clip = klipp_timeline::test_clip::TestClip::of(klipp_timeline::Clip::media(klipp_core::MediaId::new(), t(0.0), t(6.0), t(0.0), t(6.0)))
+        .effect(transform)
+        .lane("pos_x", 1.0, 0.0)
+        .lane("pos_x", 4.0, 400.0)
+        .build();
+    let mut run = Run::new(clip);
+    run.state.playhead = t(2.5);
+    let number = |run: &mut Run| -> f32 {
+        let (_, at) = run.row("Pos X").expect("the card's Pos X row");
+        let drawn = run.frame(Vec::new(), egui::Modifiers::NONE);
+        let text = drawn.iter().find(|(_, p)| p.distance(at) < 0.5).map(|(s, _)| s.clone()).unwrap();
+        text.trim_end_matches(|c: char| !c.is_ascii_digit()).parse().unwrap_or_else(|_| panic!("a number: {text}"))
+    };
+    assert!((number(&mut run) - 200.0).abs() < 1.0, "Pos X at 2.5 s: {}", number(&mut run));
+    let (_, at) = run.row("Pos X").unwrap();
+    run.button(at, egui::PointerButton::Primary, true);
+    run.button(at, egui::PointerButton::Primary, false);
+    run.button(at, egui::PointerButton::Primary, true);
+    run.button(at, egui::PointerButton::Primary, false);
+    run.frame(Vec::new(), egui::Modifiers::NONE);
+    run.key(egui::Key::A, egui::Modifiers::COMMAND);
+    run.frame(vec![egui::Event::Text("300".into())], egui::Modifiers::NONE);
+    run.key(egui::Key::Enter, egui::Modifiers::NONE);
+    run.frame(Vec::new(), egui::Modifiers::NONE);
+    let keys = crate::inspector::placement_by_path::lane_keys(run.clip(), "pos_x");
+    assert!(keys.iter().any(|k| (k.time_secs - 2.5).abs() < 1e-6 && (k.value - 300.0).abs() < 1e-3), "a key at 2.5 s: {keys:?}, unapplied {:?}", run.unapplied);
+}
