@@ -235,7 +235,10 @@ impl<'a> PictureCanvas<'a> {
                 .unwrap_or(defaults[&n.id]);
             (n.id, p)
         }).collect();
-        let after = selected.filter(|id| nodes.iter().any(|n| n.node.id == *id && !n.kind().is_output()))
+        // After the picked node when it is on the picture's chain; a node
+        // beside it (a matte, a source) gives no picture to follow, and an
+        // effect after it read its matte as one (PortTypeMismatch).
+        let after = selected.filter(|id| nodes.iter().any(|n| n.node.id == *id && !n.kind().is_output()) && on_the_chain(graph, *id))
             .or_else(|| add_after(graph));
         Ok(Self { graph, level, nodes, edges, positions,
             frames: graph.ui.frames.iter().filter_map(|v| serde_json::from_value(v.clone()).ok()).collect(),
@@ -244,6 +247,12 @@ impl<'a> PictureCanvas<'a> {
 
     fn path(&self, node: NodeId) -> NodePath {
         NodePath::new(self.level.root, self.level.nodes.iter().copied().chain([node]))
+    }
+
+    /// Whether input `index` of `node` is its picture input.
+    fn feeds_the_picture(&self, node: NodeId, index: u8) -> bool {
+        let (Some(key), Some(stored)) = (self.port(node, index, false), self.graph.nodes.iter().find(|n| n.id == node)) else { return false };
+        klipp_timeline::RegistryCatalog.primary_input(stored).is_some_and(|p| p == key)
     }
 
     fn port(&self, node: NodeId, index: u8, output: bool) -> Option<PortKey> {
@@ -300,6 +309,23 @@ impl<'a> PictureCanvas<'a> {
 
 /// The last effect on the primary picture chain, otherwise its display
 /// or grade stage. Storage order and side branches never choose the site.
+/// Whether `id` is on `graph`'s picture chain: reached from its output
+/// back along each node's primary input.
+fn on_the_chain(graph: &Graph, id: NodeId) -> bool {
+    let mut at = graph.output;
+    let mut seen = std::collections::HashSet::new();
+    while seen.insert(at) {
+        if at == id {
+            return true;
+        }
+        let Some(node) = graph.nodes.iter().find(|n| n.id == at) else { return false };
+        let Some(port) = klipp_timeline::RegistryCatalog.primary_input(node) else { return false };
+        let Some(edge) = graph.edges.iter().find(|e| e.to == (at, port.clone())) else { return false };
+        at = edge.from.0;
+    }
+    false
+}
+
 fn add_after(graph: &Graph) -> Option<NodeId> {
     let mut at = graph.output;
     let mut seen = std::collections::HashSet::new();
@@ -432,6 +458,11 @@ impl<'a> CanvasGraph for PictureCanvas<'a> {
             }
             AppCommand::SpliceNodeIntoWire { node_id, .. } if self.copyable(*node_id).is_none() => {
                 Some("Only an effect moves into a wire here".to_owned())
+            }
+            // A wire into a node's picture input, at the clip's own level,
+            // is the order its effects run in: not a wire to take away.
+            AppCommand::DisconnectEdge { to, to_port, .. } if self.level.nodes.is_empty() && self.feeds_the_picture(*to, *to_port) => {
+                Some("A clip's effects run in order, so this wire can't be taken away: reorder them in the Effects tab, or open Grade to wire nodes".to_owned())
             }
             AppCommand::ResetNode { node_id, .. } if self.effect_reset(*node_id).is_none() => {
                 Some("Reset works on an effect here; the grade's nodes reset in the grade".to_owned())
@@ -950,6 +981,54 @@ mod tests {
         assert!(graph.edges.iter().any(|e| e.from.0 == source && e.to.0 == key), "the key reads the source");
         let on_wire = AppCommand::AddNodeWired { clip_id: c.id, kind: "matte.window".into(), position: (0.0, 0.0), from: source, from_port: 0 };
         assert!(model.refusal(&on_wire).is_some_and(|why| why.contains("add it from its menu")));
+    }
+
+    /// A wire of the clip's own chain can't be taken away there, and says
+    /// so before it is picked (its Delete greyed, the reason on hover); a
+    /// matte's wire into an effect's mask can.
+    #[test]
+    fn a_chain_wire_refuses_delete_and_a_mask_wire_takes_it() {
+        let mut c = clip();
+        let graph = c.picture_v2().unwrap().picture.graph.clone();
+        let blur = graph.nodes.iter().find(|n| klipp_graph_lift::effect_params::tag(n) == Some("gaussian_blur")).unwrap().id;
+        let model = PictureCanvas::new(&graph, root(&c), Some(blur)).unwrap();
+        let AppCommand::GraphOps { ops, .. } = model.command(AppCommand::AddNode { clip_id: c.id, kind: "matte.window".into(), node_id: None, position: (40.0, 300.0) }).unwrap() else { panic!("one graph batch") };
+        c.apply_picture_ops(&ops).unwrap();
+        let graph = c.picture_v2().unwrap().picture.graph.clone();
+        let model = PictureCanvas::new(&graph, root(&c), None).unwrap();
+        let index = |node: NodeId, key: &str| model.nodes.iter().find(|n| n.id() == node).unwrap().inputs.iter().position(|p| p.key == key).unwrap() as u8;
+        let chain = AppCommand::DisconnectEdge { clip_id: c.id, to: blur, to_port: index(blur, "in") };
+        assert!(model.refusal(&chain).is_some_and(|why| why.contains("run in order")), "{:?}", model.refusal(&chain));
+        let mask = AppCommand::DisconnectEdge { clip_id: c.id, to: blur, to_port: index(blur, "mask") };
+        assert_eq!(model.refusal(&mask), None);
+    }
+
+    /// With a Window added from the menu, and it picked (as the editor
+    /// leaves the node it just added) or nothing picked, adding an effect
+    /// from the menu adds it to the clip's chain. It was put after the
+    /// Window, reading its matte as a picture, and refused as an invalid
+    /// graph (PortTypeMismatch on the effect's "in").
+    #[test]
+    fn an_effect_added_after_a_window_goes_on_the_chain() {
+        for picked_window in [false, true] {
+            let mut c = clip();
+            let graph = c.picture_v2().unwrap().picture.graph.clone();
+            let model = PictureCanvas::new(&graph, root(&c), None).unwrap();
+            let window = NodeId::new_v4();
+            let AppCommand::GraphOps { ops, .. } = model.command(AppCommand::AddNode { clip_id: c.id, kind: "matte.window".into(), node_id: Some(window), position: (40.0, 300.0) }).unwrap() else { panic!("one graph batch") };
+            c.apply_picture_ops(&ops).unwrap();
+            let graph = c.picture_v2().unwrap().picture.graph.clone();
+            let model = PictureCanvas::new(&graph, root(&c), picked_window.then_some(window)).unwrap();
+            let add = AppCommand::AddNode { clip_id: c.id, kind: "sharpen".into(), node_id: None, position: (300.0, 120.0) };
+            let refused = model.refusal(&add);
+            let applied = refused.clone().map_or_else(|| {
+                let AppCommand::GraphOps { ops, .. } = model.command(add).unwrap() else { panic!("one graph batch") };
+                c.apply_picture_ops(&ops).map_err(|e| e.to_string())
+            }, Err);
+            assert!(applied.is_ok(), "Window picked {picked_window}: {applied:?}");
+            let graph = &c.picture_v2().unwrap().picture.graph;
+            assert!(graph.nodes.iter().any(|n| klipp_graph_lift::effect_params::tag(n) == Some("sharpen")), "Window picked {picked_window}: the sharpen is in");
+        }
     }
 
     /// A Solid Colour on a merge's picture, and a window on a blur's mask,
@@ -1904,6 +1983,49 @@ mod tests {
         d.drag(out_port(&d, sharpen), in_port(&d, s2d, 0));
         assert_eq!(d.steps(), 1, "nothing made");
         assert!(d.panel.bookmark_toast.as_ref().is_some_and(|(t, _)| t.contains("loop")), "{:?}", d.panel.bookmark_toast);
+    }
+
+    /// A clip's Opacity node, which the frame's picture applies while it
+    /// lays the layers together rather than as a node, says in words why
+    /// it has no preview: it read "Not in this frame" while its opacity
+    /// showed, and its tooltip named the node by its id.
+    #[test]
+    fn an_opacity_node_says_in_words_why_it_has_no_preview() {
+        let t = |s| klipp_core::RationalTime::from_secs_f64(s, 25);
+        let c = TestClip::of(Clip::media(klipp_core::MediaId::new(), t(0.0), t(2.0), t(0.0), t(2.0)))
+            .effect(klipp_effects::BuiltinEffect::Opacity { value: 0.5 })
+            .build();
+        let mut d = Dock::of(c);
+        let c = d.clip();
+        let graph = d.graph();
+        let model = PictureCanvas::new(&graph, root(&c), None).unwrap();
+        let opacity = graph.nodes.iter().find(|n| klipp_graph_lift::effect_params::tag(n) == Some("opacity")).expect("an Opacity node").id;
+        let wanted: Vec<_> = model.nodes.iter().filter_map(|n| model.output(n.id())).collect();
+        let seq = d.state.sequence().baked_for_render().into_owned();
+        let mut renderer = klipp_compose::Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
+        renderer.set_gpu_enabled(false);
+        let inspect = klipp_compose::Inspect { clip: Some(c.id), only: Some(c.id), thumbs: Some(wanted.iter().cloned().collect()), ..Default::default() };
+        struct Grey;
+        impl klipp_compose::FrameSource for Grey {
+            fn frame(&mut self, _: &Clip, _: f64, w: u32, h: u32) -> Option<klipp_compose::SourceFrame> {
+                Some(klipp_compose::SourceFrame { pixels: klipp_compose::SourcePixels::Linear(std::sync::Arc::new([0.18, 0.18, 0.18, 1.0].repeat((w * h) as usize))), width: w, height: h, pts: None })
+            }
+        }
+        let (_, found) = renderer.render_inspected(&seq, t(1.0), 64, 36, &mut Grey, klipp_compose::RenderOptions::default(), inspect);
+        let batch = klipp_engine::node_thumbnails::ThumbnailBatch::new(1, 0, klipp_engine::node_thumbnails::PreviewQuality::Viewer, klipp_timeline::SharedSequence::new(seq.clone()).revision(), &wanted, found.thumbs)
+            .with_unavailable(&wanted, found.unavailable);
+        assert!(batch.unavailable.iter().any(|(at, _)| at.path.node() == Some(opacity)), "the renderer has no preview of it: {:?}", batch.unavailable);
+        d.state.node_thumbs_unavailable = batch.unavailable.clone();
+        d.settle();
+        let at = card_of(&d, opacity);
+        let notes = d.texts.iter().filter(|(t, p)| t == "Not in this frame" && at.contains(*p)).count();
+        assert_eq!(notes, 0, "it is in this frame: no \"Not in this frame\" on it, let alone twice");
+        for _ in 0..12 {
+            d.frame(vec![egui::Event::PointerMoved(at.center())]);
+        }
+        let tip = d.texts.iter().find(|(t, _)| t.starts_with("No preview")).map(|(t, _)| t.clone()).expect("its reason on hover");
+        assert!(!tip.contains(&opacity.to_string()), "in words, not by its id: {tip}");
+        assert!(tip.contains("no preview of its own"), "why, as it is: {tip}");
     }
 
     /// A node the frame shown declined and one whose preview the renderer

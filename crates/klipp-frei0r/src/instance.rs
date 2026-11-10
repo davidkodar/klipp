@@ -62,6 +62,28 @@ impl Frei0rValue {
     }
 }
 
+/// The values a fresh instance of the plug-in starts with, as it sets
+/// them in `f0r_construct` (frei0r keeps no defaults in its info): what a
+/// newly added effect starts at. A value the plug-in doesn't give back is
+/// its kind's own ([`Frei0rValue::default_for`]). `None` when the plug-in
+/// can't be opened or made.
+/// Read once per plug-in and kept: a hovered card asks every frame.
+pub fn fresh_defaults(info: &Frei0rPluginInfo) -> Option<Vec<Frei0rValue>> {
+    static READ: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, Option<Vec<Frei0rValue>>>>> = std::sync::OnceLock::new();
+    let key = info.type_id();
+    let cache = READ.get_or_init(Default::default);
+    if let Some(known) = cache.lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
+        return known.clone();
+    }
+    let read = (|| {
+        let plugin = std::sync::Arc::new(Frei0rPlugin::open(&info.path, info.clone()).ok()?);
+        let effect = Frei0rEffect::new(plugin, 64, 64).ok()?;
+        Some(info.params.iter().enumerate().map(|(i, p)| effect.get_param(i).filter(|v| v.matches_kind(p.kind)).unwrap_or_else(|| Frei0rValue::default_for(p.kind))).collect::<Vec<_>>())
+    })();
+    cache.lock().unwrap_or_else(|e| e.into_inner()).insert(key, read.clone());
+    read
+}
+
 // ─── Plugin (dlopen + f0r_init / f0r_deinit lifecycle) ────────────────────
 
 /// One dlopened frei0r `.so` with its entry points resolved. Holds the
@@ -79,6 +101,9 @@ pub struct Frei0rPlugin {
     destruct: F0rDestructFn,
     update: Option<F0rUpdateFn>,
     set_param_value: F0rSetParamValueFn,
+    /// Reads a parameter back; every plug-in should have it, but a value
+    /// not read falls back to its kind's own.
+    get_param_value: Option<F0rGetParamValueFn>,
     deinit: F0rDeinitFn,
 }
 
@@ -111,6 +136,9 @@ impl Frei0rPlugin {
         let construct = sym!(b"f0r_construct\0", F0rConstructFn);
         let destruct = sym!(b"f0r_destruct\0", F0rDestructFn);
         let set_param_value = sym!(b"f0r_set_param_value\0", F0rSetParamValueFn);
+        let get_param_value: Option<F0rGetParamValueFn> = unsafe { lib.get(b"f0r_get_param_value\0") }
+            .ok()
+            .map(|s: libloading::Symbol<F0rGetParamValueFn>| *s);
         // f0r_update is required for FILTER + SOURCE; absent is OK if
         // the plugin only ships f0r_update2 (mixers). v1 host only
         // activates Filter plugins so update must be present here.
@@ -134,6 +162,7 @@ impl Frei0rPlugin {
             destruct,
             update,
             set_param_value,
+            get_param_value,
             deinit,
         })
     }
@@ -263,6 +292,49 @@ impl Frei0rEffect {
                 }
             }
         });
+    }
+
+    /// A parameter's value as the instance holds it, read back from the
+    /// plug-in; `None` when it can't be read.
+    pub fn get_param(&self, index: usize) -> Option<Frei0rValue> {
+        let kind = self.plugin.info.params.get(index)?.kind;
+        let getter = self.plugin.get_param_value?;
+        let inst = self.instance;
+        let idx = index as i32;
+        frei0r_guard!({
+            unsafe {
+                match kind {
+                    ParamKind::Bool => {
+                        let mut v: f64 = 0.0;
+                        getter(inst, &mut v as *mut f64 as F0rParam, idx);
+                        v.is_finite().then_some(Frei0rValue::Bool(v >= 0.5))
+                    }
+                    ParamKind::Double => {
+                        let mut v: f64 = f64::NAN;
+                        getter(inst, &mut v as *mut f64 as F0rParam, idx);
+                        v.is_finite().then_some(Frei0rValue::Double(v))
+                    }
+                    ParamKind::Color => {
+                        let mut v = F0rParamColor { r: f32::NAN, g: f32::NAN, b: f32::NAN };
+                        getter(inst, &mut v as *mut F0rParamColor as F0rParam, idx);
+                        [v.r, v.g, v.b].iter().all(|c| c.is_finite()).then_some(Frei0rValue::Color([v.r, v.g, v.b]))
+                    }
+                    ParamKind::Position => {
+                        let mut v = F0rParamPosition { x: f64::NAN, y: f64::NAN };
+                        getter(inst, &mut v as *mut F0rParamPosition as F0rParam, idx);
+                        (v.x.is_finite() && v.y.is_finite()).then_some(Frei0rValue::Position([v.x, v.y]))
+                    }
+                    ParamKind::String => {
+                        let mut p: *const std::os::raw::c_char = std::ptr::null();
+                        getter(inst, &mut p as *mut _ as F0rParam, idx);
+                        (!p.is_null()).then(|| Frei0rValue::String(std::ffi::CStr::from_ptr(p).to_string_lossy().into_owned()))
+                    }
+                    ParamKind::Unknown => None,
+                }
+            }
+        })
+        .ok()
+        .flatten()
     }
 
     /// Process one frame — input + output are RGBA8888 buffers in
@@ -415,6 +487,28 @@ pub mod temporal {
 
 #[cfg(test)]
 mod tests {
+    /// A plug-in's numbers start where the plug-in sets them in a fresh
+    /// instance, not at zero: Brightness's own 0.5 leaves the picture as
+    /// it is, where 0 turned it black. Skipped where the plug-ins aren't
+    /// installed.
+    #[test]
+    fn fresh_defaults_are_the_plugins_own() {
+        for (file, want) in [("brightness.so", 0.5), ("saturat0r.so", 1.0 / 8.0)] {
+            let path = std::path::Path::new("/usr/lib/frei0r-1").join(file);
+            if !path.exists() {
+                eprintln!("skipping: no {}", path.display());
+                continue;
+            }
+            let info = crate::host::scan_library(&path).into_iter().next().expect("the plug-in scans");
+            let values = super::fresh_defaults(&info).expect("a fresh instance reads back");
+            assert_eq!(values.len(), info.params.len());
+            match &values[0] {
+                super::Frei0rValue::Double(v) => assert!((v - want).abs() < 1e-6, "{file}: {v}, the plug-in's own {want}"),
+                other => panic!("{file}: {other:?}"),
+            }
+        }
+    }
+
     /// #3181: a plug-in frame that panics inside its guard is passed
     /// through as it came, not shown as the black the unwritten output
     /// was, and the next frame runs the plug-in again.

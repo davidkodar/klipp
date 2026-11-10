@@ -76,6 +76,7 @@ pub(crate) fn state(
         has_any_keyframes: !keys.is_empty(),
         keys_in_frame: keys.iter().filter(|k| in_window(k.time_secs, time, tolerance)).count(),
         current_interpolation: current.map(|i| keys[i].interpolation),
+        current_ease: current.and_then(|i| crate::widgets::scrubby_param::ease_preset_at(keys, i)),
         prev_keyframe_time: keys
             .iter()
             .rfind(|k| k.time_secs < time && !in_window(k.time_secs, time, tolerance))

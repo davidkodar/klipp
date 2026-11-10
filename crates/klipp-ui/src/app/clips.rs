@@ -179,95 +179,9 @@ impl KlippApp {
                     }
                     true
                 }
-                AppCommand::RollTrimClip {
-                    clip_a_id,
-                    clip_b_id,
-                    new_a_source_out,
-                    new_a_timeline_out,
-                    new_b_source_in,
-                    new_b_timeline_in,
-                } => {
+                AppCommand::RollTrimClip { clip_a_id, clip_b_id, new_a_source_out, new_a_timeline_out, new_b_source_in, new_b_timeline_in, linked } => {
                     if self.refused_by_lock(clip_a_id) || self.refused_by_lock(clip_b_id) { return true; }
-
-                    // Save old values for undo, then apply
-                    let seq = &mut self.state.sequences[self.state.active_sequence_idx];
-                    let old_a = seq.tracks.iter().flat_map(|t| t.clips.iter())
-                        .find(|c| c.id == *clip_a_id)
-                        .map(|c| (c.source_out, c.timeline_out));
-                    let old_b = seq.tracks.iter().flat_map(|t| t.clips.iter())
-                        .find(|c| c.id == *clip_b_id)
-                        .map(|c| (c.source_in, c.timeline_in));
-
-                    if let (Some((old_a_src_out, old_a_tl_out)), Some((old_b_src_in, old_b_tl_in))) = (old_a, old_b) {
-                        // The roll and its linked partners, one undo step.
-                        let batching = self.state.active_history_mut().is_batching();
-                        if !batching {
-                            self.state.active_history_mut().begin_batch();
-                        }
-                        self.state.push_history(EditCommand::LegacyRollTrimClip {
-                                clip_a_id: *clip_a_id,
-                                clip_b_id: *clip_b_id,
-                                old_a_source_out: old_a_src_out,
-                                old_a_timeline_out: old_a_tl_out,
-                                old_b_source_in: old_b_src_in,
-                                old_b_timeline_in: old_b_tl_in,
-                                new_a_source_out: *new_a_source_out,
-                                new_a_timeline_out: *new_a_timeline_out,
-                                new_b_source_in: *new_b_source_in,
-                                new_b_timeline_in: *new_b_timeline_in,
-                            });
-
-                        // Apply to clip A
-                        let seq = &mut self.state.sequences[self.state.active_sequence_idx];
-                        for track in &mut seq.tracks {
-                            if let Some(c) = track.find_clip_mut(*clip_a_id) {
-                                c.source_out = *new_a_source_out;
-                                c.timeline_out = *new_a_timeline_out;
-                            }
-                            if let Some(c) = track.find_clip_mut(*clip_b_id) {
-                                c.source_in = *new_b_source_in;
-                                c.timeline_in = *new_b_timeline_in;
-                            }
-                        }
-
-                        // Linked partners follow by the same amounts. They were
-                        // given A's and B's own source times, which is wrong
-                        // whenever a partner's source starts elsewhere (sound
-                        // recorded apart and synced, a slipped partner), and
-                        // the undo above never put them back (#911).
-                        let a_tl = *new_a_timeline_out - old_a_tl_out;
-                        let a_src = *new_a_source_out - old_a_src_out;
-                        let b_tl = *new_b_timeline_in - old_b_tl_in;
-                        let b_src = *new_b_source_in - old_b_src_in;
-                        let linked_a = seq.all_clips().find(|c| c.id == *clip_a_id).and_then(|c| c.linked_clip_id);
-                        let linked_b = seq.all_clips().find(|c| c.id == *clip_b_id).and_then(|c| c.linked_clip_id);
-                        let mut partner_edits = Vec::new();
-                        for track in &mut seq.tracks {
-                            for c in track.clips.iter_mut() {
-                                let old = c.clone();
-                                if Some(c.id) == linked_a && c.id != *clip_b_id {
-                                    c.timeline_out += a_tl;
-                                    c.source_out += a_src;
-                                } else if Some(c.id) == linked_b && c.id != *clip_a_id {
-                                    c.timeline_in += b_tl;
-                                    c.source_in += b_src;
-                                } else {
-                                    continue;
-                                }
-                                partner_edits.push(EditCommand::ReplaceClip { description: "Roll", old: Box::new(old), new: Box::new(c.clone()) });
-                            }
-                        }
-                        // B's picture moved against its start: a multicam
-                        // primary's cuts stay on the picture they cut.
-                        partner_edits.extend(klipp_document::ops::keep_angle_cuts(seq, *clip_b_id, b_tl.to_secs_f64()));
-                        for edit in partner_edits {
-                            self.state.push_history(edit);
-                        }
-                        if !batching {
-                            self.state.active_history_mut().end_batch_as("Roll");
-                        }
-                    }
-
+                    self.state.roll_trim(*clip_a_id, *clip_b_id, (*new_a_source_out, *new_a_timeline_out), (*new_b_source_in, *new_b_timeline_in), *linked);
                     self.sync_sequence_to_engine();
                     self.state.dirty = true;
                     true
@@ -1795,6 +1709,7 @@ pub(super) fn duplicate_after(clip: &klipp_timeline::Clip) -> klipp_timeline::Cl
         speed: clip.speed,
         speed_keyframes: clip.speed_keyframes.clone(),
         keep_pitch: clip.keep_pitch,
+        sound_apart: clip.sound_apart,
         hold: None,
         source_rotation: clip.source_rotation,
         enabled: clip.enabled,
