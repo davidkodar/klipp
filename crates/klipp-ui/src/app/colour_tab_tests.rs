@@ -260,3 +260,57 @@ fn every_row_of_the_colour_tab_shows_in_the_inspector() {
         assert!(shown.iter().any(|(t, _)| t == key), "{key} is not in view: {:?}", shown.iter().map(|(t, _)| t).collect::<Vec<_>>());
     }
 }
+
+/// A title's Clip Video tab opens at its top, with the clip's Position and
+/// Opacity in view, after the Title tab was scrolled down: the tabs shared
+/// one scroll, so Clip Video opened as far down as Title was, at
+/// Compositing, and read as having no transform or opacity.
+#[test]
+fn each_tab_keeps_its_own_scroll() {
+    let td = klipp_timeline::TitleData::single_text(klipp_timeline::TextBox { text: "Harbour Light".into(), ..Default::default() });
+    let clip = klipp_timeline::Clip { kind: klipp_timeline::ClipKind::Title(td), ..klipp_timeline::Clip::gap(klipp_core::Timecode::zero(), klipp_core::Timecode { value: 120, rate: 24 }) };
+    let mut state = crate::state::AppState::default();
+    let id = clip.id;
+    state.sequences[0].tracks[0].clips.push(clip);
+    state.selected_clip = Some(id);
+    let ctx = egui::Context::default();
+    crate::icons::install(&ctx);
+    let theme = crate::theme::KlippTheme::default();
+    let prefs = crate::prefs::Preferences::default();
+    let mut panel = crate::inspector::NewInspectorPanel::default();
+    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(WIDTH, 900.0));
+    let mut time = 0.0;
+    let mut frame = |tab: crate::layout_state::InspectorTab, events: Vec<egui::Event>| {
+        time += 0.1;
+        let input = egui::RawInput { screen_rect: Some(screen), time: Some(time), events, ..Default::default() };
+        let out = ctx.run(input, |ctx| {
+            egui::CentralPanel::default().frame(egui::Frame::none()).show(ctx, |ui| {
+                let mut tab = tab;
+                let _ = panel.show(ui, &state, &prefs, &theme, &mut tab);
+            });
+        });
+        out.shapes.iter().filter_map(|s| match &s.shape {
+            egui::Shape::Text(t) => {
+                let rect = egui::Rect::from_min_size(t.pos, t.galley.size());
+                s.clip_rect.contains_rect(rect.shrink(0.5)).then(|| t.galley.text().to_string())
+            }
+            _ => None,
+        }).collect::<Vec<_>>()
+    };
+    use crate::layout_state::InspectorTab;
+    for _ in 0..3 {
+        frame(InspectorTab::Title, Vec::new());
+    }
+    let at = screen.center();
+    for _ in 0..10 {
+        frame(InspectorTab::Title, vec![egui::Event::PointerMoved(at), egui::Event::MouseWheel { unit: egui::MouseWheelUnit::Point, delta: egui::vec2(0.0, -400.0), modifiers: egui::Modifiers::NONE }]);
+    }
+    let mut shown = Vec::new();
+    for _ in 0..3 {
+        shown = frame(InspectorTab::Video, Vec::new());
+    }
+    for label in ["Position X", "Opacity"] {
+        assert!(shown.iter().any(|t| t == label), "{label} in view on Clip Video: {shown:?}");
+    }
+}
+

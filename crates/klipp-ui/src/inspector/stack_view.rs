@@ -73,6 +73,7 @@ fn draw_stack(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppState, clip: &Cl
     // A placed recipe's own controls first: what it was made to be set by,
     // above its nodes' raw fields.
     recipe_cards(ui, theme, state, clip, graph, cmds);
+    all_effects_switch(ui, clip, graph, view, cmds);
     for item in &view.items {
         match item {
             Item::Header(section) => header(ui, theme, *section),
@@ -774,20 +775,76 @@ fn surface_choice(ui: &mut egui::Ui, theme: &KlippTheme, clip: &Clip, addr: &Nod
     }
 }
 
+/// The commands that turn `row`'s node on or off: by path, or a placed
+/// kind's through the clip's effect list, as the rest of its card goes
+/// (`to_effect_list`).
+fn switched(clip: &Clip, graph: &Graph, row: &Row, on: bool) -> Vec<AppCommand> {
+    let node = node_at(graph, &row.addr);
+    let toggle = AppCommand::SetNodeEnabledAt { addr: row.addr.clone(), enabled: on };
+    let placed = row.placed || node.is_some_and(|n| n.type_id.as_str() == klipp_graph_format::lifted::types::PLACEMENT);
+    let effect = node.and_then(|n| klipp_graph_lift::effect_params::tag(n).and_then(|tag| effect_types().find(|t| t.tag == tag)).map(|ty| (n, ty)));
+    match effect.filter(|_| placed) {
+        Some((n, ty)) => to_effect_list(clip, ty, n.id, &klipp_graph_lift::effect_params::entry_of(n).unwrap_or(serde_json::Value::Null), vec![toggle]),
+        None => vec![toggle],
+    }
+}
+
+/// The clip's own effects as the stack lists them: the Effects section's
+/// effect and plug-in rows that can be switched; not the track's, not the
+/// picture's own stages listed there (its placement, scene to display),
+/// which a switch refuses, and not the kinds the clip is laid down by
+/// (Transform, Opacity, Speed Ramp, Temporal Denoise), which turned off
+/// would move, fade or retime it rather than take a look off it.
+fn own_effects<'a>(graph: &Graph, view: &'a StackView) -> Vec<&'a Row> {
+    use klipp_graph_format::lifted::types as lt;
+    let stage = |n: &klipp_graph_format::Node| {
+        [lt::SOURCE, lt::OUTPUT, lt::GROUP, lt::GROUP_INPUT, lt::GROUP_OUTPUT, lt::GROUP_FRAME, lt::GRADE_COMPOUND, lt::MERGE, lt::PLACEMENT, lt::TEMPORAL_DENOISE, lt::FRAME_BLEND, lt::SCENE_TO_DISPLAY].contains(&n.type_id.as_str())
+    };
+    view.items.iter().filter_map(|item| match item {
+        Item::Node(row) if row.section == Section::Effects && !row.read_only && row.provenance.is_none() && !row.placed
+            && node_at(graph, &row.addr).is_some_and(|n| !stage(n)) => Some(&**row),
+        _ => None,
+    }).collect()
+}
+
+/// One switch for all the clip's effects (the walks' bypass-all), as one
+/// undo step either way. Switched off, each effect that is on goes off,
+/// and the clip remembers which (`Clip::effects_switched_off`); switched
+/// on, those come back on, and no other: one the person had off of their
+/// own stays off, and one switched on or added by hand meanwhile stays as
+/// it is. It reads off while the clip remembers any.
+fn all_effects_switch(ui: &mut egui::Ui, clip: &Clip, graph: &Graph, view: &StackView, cmds: &mut Vec<AppCommand>) {
+    let rows = own_effects(graph, view);
+    if rows.is_empty() && clip.effects_switched_off.is_empty() {
+        return;
+    }
+    let mut on = clip.effects_switched_off.is_empty();
+    let hover = if on { "Turn all the clip's effects off, as one step" } else { "Turn back on the effects this switch turned off, as one step" };
+    if ui.checkbox(&mut on, "All effects").on_hover_text(hover).changed() {
+        let node = |r: &Row| r.addr.node();
+        let (changes, remembered): (Vec<AppCommand>, Vec<uuid::Uuid>) = if on {
+            let back: Vec<&&Row> = rows.iter().filter(|r| !r.enabled && node(r).is_some_and(|n| clip.effects_switched_off.contains(&n))).collect();
+            (back.iter().flat_map(|r| switched(clip, graph, r, true)).collect(), Vec::new())
+        } else {
+            let off: Vec<&&Row> = rows.iter().filter(|r| r.enabled).collect();
+            (off.iter().flat_map(|r| switched(clip, graph, r, false)).collect(), off.iter().filter_map(|r| node(r)).collect())
+        };
+        if !changes.is_empty() || remembered != clip.effects_switched_off {
+            cmds.push(AppCommand::BeginHistoryBatch);
+            cmds.extend(changes);
+            cmds.push(AppCommand::SetEffectsSwitchedOff { clip_id: clip.id, nodes: remembered });
+            cmds.push(AppCommand::EndHistoryBatchAs { label: if on { "Turn Effects On" } else { "Turn Effects Off" }.into() });
+        }
+    }
+    ui.add_space(4.0);
+}
+
 fn row_card(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppState, clip: &Clip, graph: &Graph, row: &Row, cmds: &mut Vec<AppCommand>, clip_time_secs: f64) {
     let node = node_at(graph, &row.addr);
     ui.horizontal(|ui| {
         let mut on = row.enabled;
         if ui.add_enabled(!row.read_only, egui::Checkbox::without_text(&mut on)).on_hover_text(if on { "Turn off" } else { "Turn on" }).changed() {
-            let toggle = AppCommand::SetNodeEnabledAt { addr: row.addr.clone(), enabled: on };
-            // A placed kind's eye goes through the clip's effect list, as
-            // the rest of its card does (`to_effect_list`).
-            let placed = row.placed || node.is_some_and(|n| n.type_id.as_str() == klipp_graph_format::lifted::types::PLACEMENT);
-            let effect = node.and_then(|n| klipp_graph_lift::effect_params::tag(n).and_then(|tag| effect_types().find(|t| t.tag == tag)).map(|ty| (n, ty)));
-            match effect.filter(|_| placed) {
-                Some((n, ty)) => cmds.extend(to_effect_list(clip, ty, n.id, &klipp_graph_lift::effect_params::entry_of(n).unwrap_or(serde_json::Value::Null), vec![toggle])),
-                None => cmds.push(toggle),
-            }
+            cmds.extend(switched(clip, graph, row, on));
         }
         let name = egui::RichText::new(display_name(graph, &row.addr, &row.label, row.is_group)).strong();
         ui.label(if row.enabled { name } else { name.color(theme.text_dim) });

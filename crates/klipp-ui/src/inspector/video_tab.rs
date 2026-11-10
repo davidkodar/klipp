@@ -135,8 +135,11 @@ pub fn show(
             let start = cmds.len();
             // The clip's placement and opacity are its properties, read from
             // its picture and set by path (M3 step 13); a timeline's
-            // stand-in keeps the effect-list commands.
-            let by_path = !is_timeline;
+            // stand-in keeps the effect-list commands, unless its picture is
+            // held as its graph (a mask, a mix), which has no list to read
+            // or write: there the card read no Opacity, and each move of a
+            // drag added one the clip refused.
+            let by_path = !is_timeline || clip.is_picture_truth();
             show_clip_video(ui, theme, state, clip, cmds, clip_time_secs, is_timeline, by_path);
             if by_path {
                 let mine = cmds.split_off(start);
@@ -171,6 +174,7 @@ fn show_bin_media_video(
         source_in: Timecode { value: 0, rate: media.duration.rate },
         source_out: media.duration,
         picture: Default::default(),
+        effects_switched_off: Vec::new(),
         linked_clip_id: None,
         linked_title_asset_id: None,
         group_id: None,
