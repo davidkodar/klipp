@@ -4,11 +4,15 @@ Access appearance preferences from **Edit → Preferences... → Appearance**.
 
 ## Theme
 
-**Follow system theme** follows the desktop's theme where Klipp can read it: on Omarchy, switching the theme there changes Klipp's live.
+Klipp starts dark, in your desktop's accent colour.
 
-Otherwise pick one. Klipp uses a theme registry — themes are data, not hardcoded. The dropdown lists every theme Klipp has discovered:
+**Follow desktop dark or light** follows the desktop's theme where Klipp can read it: on Omarchy its whole palette, so switching the theme there changes Klipp's live; elsewhere whether the desktop prefers dark or light, with Klipp's Dark and Light themes. Off by default, except on Omarchy.
 
-- **Built-in themes** — bundled with Klipp, compiled in via `include_str!`: Dark (the neutral grading-suite look with a blue accent), Cut (warm greys, cobalt accent, white playhead, dialogue-green / music-teal / effects-violet roles), Light, Slate, Nord, Solarized Dark, Cream and High Contrast. Every theme owns its accent; there is no separate accent-colour preference.
+**Follow desktop accent** colours buttons, selection and focus in the desktop's accent colour, in any theme. On by default.
+
+Otherwise pick a theme. Klipp uses a theme registry — themes are data, not hardcoded. The dropdown lists every theme Klipp has discovered:
+
+- **Built-in themes** — bundled with Klipp, compiled in via `include_str!`: Dark (the neutral grading-suite look with a blue accent), Cut (warm greys, cobalt accent, white playhead, dialogue-green / music-teal / effects-violet roles), Light, Slate, Nord, Solarized Dark, Cream and High Contrast. Every theme has its own accent, used when the desktop's is not followed.
 - **User themes** — TOML files in `~/.config/klipp/themes/`. Drop a TOML into that directory and Klipp picks it up on next launch (or when you run `Reload Themes` from the command palette).
 
 ## Theme File Format
