@@ -5,6 +5,8 @@
 //! each change it makes to the rest.
 
 use klipp_core::{AppCommand, ClipId};
+use klipp_graph_format::path::{NodePath, Root};
+use klipp_graph_lift::ops::GraphOp;
 use klipp_timeline::Clip;
 
 /// Where in an edit gesture a command falls.
@@ -40,9 +42,75 @@ pub fn classify(cmd: &AppCommand) -> Option<(ClipId, Phase)> {
         | AppCommand::SetClipRole { clip_id, .. }
         | AppCommand::SetClipBlendMode { clip_id, .. } => (*clip_id, Phase::Update),
         AppCommand::SetClipSpeed { clip_id, .. } => (*clip_id, Phase::Redo),
+        // A node of the clip's picture edited by its path, as the Effects
+        // tab's rows edit it: a drag of one of its values, a value, its
+        // whole entry, its mix.
+        AppCommand::BeginParamEditAt { addr, .. } => (path_clip(addr)?, Phase::Begin),
+        AppCommand::EndParamEditAt { addr, .. } => (path_clip(addr)?, Phase::End),
+        AppCommand::AbandonParamEditAt { addr, .. } => (path_clip(addr)?, Phase::Abandon),
+        AppCommand::SetParamAt { addr, .. } | AppCommand::SetPayloadAt { addr, .. } | AppCommand::SetMixAt { addr, .. } => (path_clip(addr)?, Phase::Update),
         // A title's look, set on each selected title by its own handler
         // (#1716): what every title has, never its words.
         AppCommand::UpdateTitleData { clip_id, .. } | AppCommand::SetTitleAlignment { clip_id, .. } | AppCommand::SetTitleLastLine { clip_id, .. } | AppCommand::SetTitleVerticalAlign { clip_id, .. } | AppCommand::SetTitleBackground { clip_id, .. } | AppCommand::SetTitleBackgroundLines { clip_id, .. } | AppCommand::SetTitleLanguage { clip_id, .. } | AppCommand::SetTitleContrastProtect { clip_id, .. } | AppCommand::SetTitleShadow { clip_id, .. } | AppCommand::SetTitleShadows { clip_id, .. } | AppCommand::SetTitleShadowStackEnabled { clip_id, .. } | AppCommand::SetTitleOutline { clip_id, .. } | AppCommand::SetTitleOutlines { clip_id, .. } | AppCommand::SetTitleOutlineStackEnabled { clip_id, .. } | AppCommand::SetTitleGlow { clip_id, .. } | AppCommand::SetTitleGlows { clip_id, .. } | AppCommand::SetTitleGlowStackEnabled { clip_id, .. } | AppCommand::SetTitleGradient { clip_id, .. } | AppCommand::SetTitleInnerShadow { clip_id, .. } | AppCommand::SetTitleInnerShadows { clip_id, .. } | AppCommand::SetTitleInnerShadowStackEnabled { clip_id, .. } | AppCommand::SetTitlePattern { clip_id, .. } | AppCommand::SetTitlePatternEnabled { clip_id, .. } | AppCommand::SetTitleTracking { clip_id, .. } | AppCommand::SetTitleMotion { clip_id, .. } | AppCommand::SetTitleLineSpacing { clip_id, .. } | AppCommand::SetTitleUnderline { clip_id, .. } | AppCommand::SetTitleFontVariation { clip_id, .. } | AppCommand::SetTitleFeatures { clip_id, .. } | AppCommand::SetTitleStrikethrough { clip_id, .. } | AppCommand::ApplyTitlePreset { clip_id, .. } | AppCommand::SetTitleCaseTransform { clip_id, .. } | AppCommand::SetTitleBaselineShift { clip_id, .. } | AppCommand::SetTitleChromaticAberration { clip_id, .. } | AppCommand::SetTitleGlitch { clip_id, .. } | AppCommand::SetTitleNeonPreset { clip_id, .. } | AppCommand::SetTitleExtrusion { clip_id, .. } | AppCommand::SetTitleMotionBlur { clip_id, .. } | AppCommand::SetTitleLoops { clip_id, .. } | AppCommand::SetTitleAnimators { clip_id, .. } | AppCommand::SetTitleEdgeFade { clip_id, .. } | AppCommand::SetTitleWriteOn { clip_id, .. } | AppCommand::SetTitleDirection { clip_id, .. } | AppCommand::SetTitleColumns { clip_id, .. } | AppCommand::SetTitleVerticalLayout { clip_id, .. } | AppCommand::SetTitleVerticalColumnsLtr { clip_id, .. } => (*clip_id, Phase::Redo),
+        _ => return None,
+    })
+}
+
+/// The clip whose own node, at the top of its picture, `addr` names.
+fn path_clip(addr: &NodePath) -> Option<ClipId> {
+    (addr.nodes.len() == 1).then(|| addr.root_clip()).flatten().map(ClipId)
+}
+
+/// The node a path edit names, when `cmd` is one.
+fn path_of(cmd: &AppCommand) -> Option<&NodePath> {
+    match cmd {
+        AppCommand::BeginParamEditAt { addr, .. }
+        | AppCommand::EndParamEditAt { addr, .. }
+        | AppCommand::AbandonParamEditAt { addr, .. }
+        | AppCommand::SetParamAt { addr, .. }
+        | AppCommand::SetPayloadAt { addr, .. }
+        | AppCommand::SetMixAt { addr, .. } => Some(addr),
+        _ => None,
+    }
+}
+
+/// Whether `cmd` is a path edit.
+pub fn is_path_edit(cmd: &AppCommand) -> bool {
+    path_of(cmd).is_some()
+}
+
+/// The kind of effect node `addr` names on `clip`, and its place among
+/// the nodes of that kind along the clip's spine.
+fn effect_place(clip: &Clip, addr: &NodePath) -> Option<(String, usize)> {
+    let lifted = clip.picture_v2().ok()?;
+    let graph = &lifted.picture.graph;
+    let node = graph.nodes.iter().find(|n| Some(n.id) == addr.node())?;
+    let kind = klipp_graph_lift::effect_params::tag(node)?.to_owned();
+    let at = spine_of_kind(graph, &kind).iter().position(|id| *id == node.id)?;
+    Some((kind, at))
+}
+
+/// Whether a path edit `cmd` goes to the other selected clips too: it
+/// names an effect node on `primary`'s spine (a grade's nodes, and
+/// anything off the spine, stay the clip's own).
+pub fn takes_path(cmd: &AppCommand, primary: &Clip) -> bool {
+    path_of(cmd).is_some_and(|addr| addr.root_clip() == Some(primary.id.0) && effect_place(primary, addr).is_some())
+}
+
+/// The op a path edit `cmd` on `primary` makes on `other`: on its node
+/// of the same kind at the same place among that kind (the second Glow's
+/// value to its second Glow). None when it has no such node, or `cmd`
+/// sets no value (a drag's bracket).
+pub fn path_op_for(cmd: &AppCommand, primary: &Clip, other: &Clip) -> Option<GraphOp> {
+    let (kind, at) = effect_place(primary, path_of(cmd)?)?;
+    let lifted = other.picture_v2().ok()?;
+    let graph = &lifted.picture.graph;
+    let node = *spine_of_kind(graph, &kind).get(at)?;
+    let path = NodePath::new(Root::Clip { clip: other.id.0 }, [node]);
+    Some(match cmd {
+        AppCommand::SetParamAt { key, value, .. } => GraphOp::SetParam { path, key: key.clone(), value: value.clone() },
+        AppCommand::SetPayloadAt { payload, .. } => GraphOp::SetPayload { path, payload: payload.clone() },
+        AppCommand::SetMixAt { mix, .. } => GraphOp::SetMix { path, mix: *mix },
         _ => return None,
     })
 }
@@ -62,7 +130,13 @@ fn effect_kind(effect: &klipp_effects::BuiltinEffect) -> Option<String> {
 /// in, which a picture-truth clip may hold apart from its list's.
 pub(crate) fn first_on_the_spine(clip: &mut Clip, kind: &str) -> Option<klipp_timeline::EffectId> {
     let lifted = clip.picture_v2().ok()?;
-    let graph = &lifted.picture.graph;
+    let ids = spine_of_kind(&lifted.picture.graph, kind);
+    ids.into_iter().map(klipp_timeline::EffectId::of_node).find(|id| clip.index_of(*id).is_some())
+}
+
+/// The nodes of type `kind` along `graph`'s spine, from the source to
+/// the output.
+fn spine_of_kind(graph: &klipp_graph_format::Graph, kind: &str) -> Vec<klipp_graph_format::NodeId> {
     // Back from the output along each node's primary input.
     let mut spine = Vec::new();
     let mut at = Some(graph.output);
@@ -74,8 +148,7 @@ pub(crate) fn first_on_the_spine(clip: &mut Clip, kind: &str) -> Option<klipp_ti
     let of_kind = |id: &klipp_graph_format::NodeId| {
         graph.nodes.iter().find(|n| n.id == *id).and_then(klipp_graph_lift::effect_params::tag) == Some(kind)
     };
-    let ids: Vec<_> = spine.into_iter().filter(of_kind).collect();
-    ids.into_iter().map(klipp_timeline::EffectId::of_node).find(|id| clip.index_of(*id).is_some())
+    spine.into_iter().filter(of_kind).collect()
 }
 
 pub fn copy_to(cmd: &AppCommand, primary: &Clip, other: &mut Clip) -> bool {
@@ -383,6 +456,36 @@ mod tests {
         assert!(copy_to(&end, &c, &mut other), "its values were copied as they came");
         let ofx = AppCommand::SetEffectParam { clip_id: c.id, effect_index: 0, param_name: "amount".into(), value: klipp_core::OfxValue::Double(0.5) };
         assert_eq!(classify(&ofx), Some((c.id, Phase::Live)));
+    }
+
+    /// A parameter of a node on the clip shown, set by its path, goes to
+    /// the node of the same kind in the same place among its kind on
+    /// another selected clip: the second Glow's to the second Glow there,
+    /// past a Vignette in front. A clip with no second Glow takes none, and
+    /// the drag around it opens and closes a gesture.
+    #[test]
+    fn a_path_edit_lands_on_the_same_kind_of_node_on_the_others() {
+        use klipp_graph_format::path::{NodePath, Root};
+        let glow = |i: f32| BuiltinEffect::Glow { radius: 30.0, intensity: i, threshold: 0.0 };
+        let primary = TestClip::of(clip()).effects([glow(0.4), glow(0.4)]).build();
+        let other = TestClip::of(clip()).effects([BuiltinEffect::Vignette { amount: -0.4, size: 0.8, softness: 0.5, roundness: 0.5 }, glow(0.4), glow(0.4)]).build();
+        let glows = |c: &Clip| {
+            let g = c.picture_v2().unwrap();
+            spine_of_kind(&g.picture.graph, "glow")
+        };
+        let addr = NodePath::new(Root::Clip { clip: primary.id.0 }, [glows(&primary)[1]]);
+        let cmd = AppCommand::SetParamAt { addr: addr.clone(), key: "intensity".into(), value: klipp_graph_format::ParamValue::Float(1.5) };
+        assert_eq!(classify(&cmd), Some((primary.id, Phase::Update)));
+        assert!(takes_path(&cmd, &primary), "an effect node of the clip's own");
+        let Some(klipp_graph_lift::ops::GraphOp::SetParam { path, key, value }) = path_op_for(&cmd, &primary, &other) else { panic!("an op for the other clip") };
+        assert_eq!(path, NodePath::new(Root::Clip { clip: other.id.0 }, [glows(&other)[1]]), "its second Glow");
+        assert_eq!((key.as_str(), value), ("intensity", klipp_graph_format::ParamValue::Float(1.5)));
+        let one = TestClip::of(clip()).effect(glow(0.4)).build();
+        assert!(path_op_for(&cmd, &primary, &one).is_none(), "no second Glow, nothing");
+        assert!(path_op_for(&cmd, &primary, &clip()).is_none(), "no Glow, nothing");
+        assert_eq!(classify(&AppCommand::BeginParamEditAt { addr: addr.clone(), key: "intensity".into() }), Some((primary.id, Phase::Begin)));
+        assert_eq!(classify(&AppCommand::EndParamEditAt { addr: addr.clone(), key: "intensity".into() }), Some((primary.id, Phase::End)));
+        assert_eq!(classify(&AppCommand::AbandonParamEditAt { addr, key: "intensity".into() }), Some((primary.id, Phase::Abandon)));
     }
 
     #[test]

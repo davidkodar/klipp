@@ -97,7 +97,7 @@ fn draw_stack(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppState, clip: &Cl
         }
     }
     selected_matte(ui, theme, clip, graph, view, selected, cmds, clip_time_secs);
-    add_menu(ui, clip, view, cmds);
+    add_menu(ui, state, clip, view, cmds);
 }
 
 /// One placed recipe's controls as the inspector shows them.
@@ -409,7 +409,7 @@ pub fn add_effects_command(state: &AppState, clip: &Clip, effects: &[klipp_effec
     Ok(adds)
 }
 
-fn add_menu(ui: &mut egui::Ui, clip: &Clip, view: &StackView, cmds: &mut Vec<AppCommand>) {
+fn add_menu(ui: &mut egui::Ui, state: &AppState, clip: &Clip, view: &StackView, cmds: &mut Vec<AppCommand>) {
     let Some(after) = add_after(view) else { return };
     ui.add_space(6.0);
     ui.menu_rows("+ Add effect", |ui| {
@@ -418,12 +418,38 @@ fn add_menu(ui: &mut egui::Ui, clip: &Clip, view: &StackView, cmds: &mut Vec<App
         egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
             for t in types {
                 if ui.button(t.desc.name).clicked() {
-                    cmds.extend(add_command(clip, &after, t.tag));
+                    cmds.extend(add_to_selection(state, clip, &after, t));
                     ui.close_menu();
                 }
             }
         });
     });
+}
+
+/// What the add menu's `ty` sends: on `clip` alone, or, with it one of
+/// several selected clips, on each of them that can take a picture
+/// effect, as a drop on the selection does: one undo step, or refused
+/// whole with the reason in a toast.
+fn add_to_selection(state: &AppState, clip: &Clip, after: &NodePath, ty: &klipp_effects::registry::EffectType) -> Vec<AppCommand> {
+    let many = state.selected_clips.len() > 1 && state.selected_clips.contains(&clip.id);
+    if !many {
+        return add_command(clip, after, ty.tag).into_iter().collect();
+    }
+    let targets = crate::effect_targets::targets(state.sequence(), state.selected_clip, &state.selected_clips, Some(clip.id), crate::effect_targets::EffectKind::Picture);
+    let effect = (ty.sample)();
+    let adds = crate::effect_targets::all_or_none(&targets, |id| {
+        let c = state.sequence().all_clips().find(|c| c.id == id).ok_or("the clip isn't in the sequence")?;
+        add_effects_command(state, c, std::slice::from_ref(&effect))
+    });
+    match adds {
+        Ok(mut adds) => {
+            if targets.skipped > 0 {
+                adds.push(AppCommand::ShowToast { text: crate::effect_targets::said(ty.desc.name, &targets) });
+            }
+            adds
+        }
+        Err(why) => vec![AppCommand::ShowToast { text: format!("\"{}\" wasn't added: {why}", ty.desc.name) }],
+    }
 }
 
 fn header(ui: &mut egui::Ui, theme: &KlippTheme, section: Section) {

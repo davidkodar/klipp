@@ -30,6 +30,14 @@ impl KlippApp {
         if others.is_empty() {
             return None;
         }
+        // A path edit goes to the others when it is an effect's (the
+        // Effects tab's rows); a grade's nodes stay the clip's own.
+        if crate::multi_edit::is_path_edit(cmd) {
+            let primary = self.state.sequence().all_clips().find(|c| c.id == clip)?;
+            if !crate::multi_edit::takes_path(cmd, primary) {
+                return None;
+            }
+        }
         let mut in_drag = self.multi_edit.as_ref().is_some_and(|m| m.primary == clip);
         // An audio plugin's slider coalesces in its own handler under a
         // history drag key: while that drag is open, a value is a live
@@ -96,7 +104,18 @@ impl KlippApp {
             }
         } else {
             let primary = self.state.sequence().all_clips().find(|c| c.id == primary_id).cloned();
-            if let Some(primary) = primary {
+            if let (Some(primary), true) = (&primary, crate::multi_edit::is_path_edit(&post.cmd)) {
+                // Each other clip's node of the same kind, by its own path,
+                // written live: the step below records each clip whole.
+                for other in &post.others {
+                    let Some(clip) = self.state.sequence().all_clips().find(|c| c.id == *other).cloned() else { continue };
+                    let Some(op) = crate::multi_edit::path_op_for(&post.cmd, primary, &clip) else { continue };
+                    if let Ok(graph_ops::GraphOpsOutcome { edit: EditCommand::PictureEdit { clip_id, edit, .. }, .. }) = graph_ops::graph_ops_edit(self.state.sequence(), &[op]) {
+                        self.state.set_picture(clip_id, &edit.after);
+                    }
+                }
+                self.sync_sequence_to_engine();
+            } else if let Some(primary) = primary {
                 let seq = &mut self.state.sequences[self.state.active_sequence_idx];
                 for other in &post.others {
                     if let Some(c) = seq.tracks.iter_mut().find_map(|t| t.find_clip_mut(*other)) {
