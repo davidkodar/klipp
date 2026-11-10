@@ -4,7 +4,7 @@ Common issues and solutions.
 
 ## Log File
 
-Klipp writes diagnostic logs to `klipp-debug.log` in the working directory. The file contains decode pipeline selection, GPU initialisation, audio device setup, ML runtime resolution, and any errors.
+Klipp writes diagnostic logs to `klipp-debug.log` in the working directory. The Flatpak writes it to `~/.var/app/io.github.davidkodar.Klipp/.local/state/klipp/klipp-debug.log`. The file contains decode pipeline selection, GPU initialisation, audio device setup, ML runtime resolution, and any errors.
 
 When reporting issues, include the relevant sections.
 

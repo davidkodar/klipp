@@ -104,6 +104,38 @@ impl RotatingLog {
     }
 }
 
+/// The debug log's file name.
+pub const FILE_NAME: &str = "klipp-debug.log";
+
+/// Where the debug log is written. Outside a Flatpak, the working directory
+/// as always. In a Flatpak, the app's own state folder
+/// (`~/.var/app/<id>/.local/state/klipp/`): there the working directory is
+/// wherever Klipp happened to be started from, so a person asked for the
+/// log couldn't be told where to find it.
+pub fn path() -> PathBuf {
+    path_for(
+        crate::flatpak::app_id().is_some(),
+        std::env::var_os("XDG_STATE_HOME").map(PathBuf::from).as_deref(),
+        std::env::var_os("HOME").map(PathBuf::from).as_deref(),
+    )
+}
+
+/// [`path`] from whether Klipp is a Flatpak, `XDG_STATE_HOME` and `HOME`.
+/// A relative or empty `XDG_STATE_HOME` is ignored, as the XDG spec says.
+pub fn path_for(flatpak: bool, state_home: Option<&Path>, home: Option<&Path>) -> PathBuf {
+    if !flatpak {
+        return PathBuf::from(FILE_NAME);
+    }
+    let state = state_home
+        .filter(|p| p.is_absolute())
+        .map(Path::to_path_buf)
+        .or_else(|| home.filter(|h| h.is_absolute()).map(|h| h.join(".local/state")));
+    match state {
+        Some(state) => state.join("klipp").join(FILE_NAME),
+        None => PathBuf::from(FILE_NAME),
+    }
+}
+
 /// `path`'s pieces moved one along, `path` itself becoming `path.1`, and
 /// the one past `keep` removed.
 fn shift(path: &Path, keep: usize) {
@@ -132,6 +164,19 @@ impl Write for &RotatingLog {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A Flatpak's debug log is in its own state folder, whatever folder
+    /// Klipp was started from; elsewhere it stays in the working directory.
+    #[test]
+    fn a_flatpaks_debug_log_is_in_its_state_folder() {
+        let state = Path::new("/home/u/.var/app/io.github.davidkodar.Klipp/.local/state");
+        let home = Path::new("/home/u");
+        assert_eq!(path_for(true, Some(state), Some(home)), state.join("klipp/klipp-debug.log"));
+        assert_eq!(path_for(true, None, Some(home)), PathBuf::from("/home/u/.local/state/klipp/klipp-debug.log"), "no XDG_STATE_HOME: its default under HOME");
+        assert_eq!(path_for(true, Some(Path::new("relative/state")), Some(home)), PathBuf::from("/home/u/.local/state/klipp/klipp-debug.log"), "a relative XDG_STATE_HOME is ignored");
+        assert_eq!(path_for(true, None, None), PathBuf::from(FILE_NAME), "nothing to go by: the working directory");
+        assert_eq!(path_for(false, Some(state), Some(home)), PathBuf::from(FILE_NAME), "outside a Flatpak, as before");
+    }
 
     fn dir(name: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("klipp-debug-log-{name}-{}", std::process::id()));
