@@ -549,7 +549,8 @@ fn main() -> Result<()> {
             .with_maximized(klipp_ui::prefs::Preferences::load().general.open_maximized)
             .with_min_inner_size([960.0, 600.0])
             .with_icon(std::sync::Arc::new(icon_data))
-            .with_app_id("klipp")
+            // The desktop entry's name: a Flatpak's id, else "klipp".
+            .with_app_id(klipp_core::flatpak::window_app_id())
             .with_drag_and_drop(true),
         // Phase 1 of the GPU-residency plan: move the UI off the GL
         // backend onto wgpu so the engine's wgpu device (klipp-effects)

@@ -1089,7 +1089,26 @@ impl KlippApp {
                 let seg_start = resume_from_segment.to_string();
                 let seg_pattern = parts_dir.join("seg_%05d.mkv").to_string_lossy().into_owned();
 
-                let result = if source_rotation != 0 && !is_hdr_source {
+                // Every encoder this machine can use, in turn, each
+                // with the same picture: NVENC only where an NVIDIA
+                // driver is loaded (a distribution's FFmpeg lists it
+                // everywhere, and it failed every skim's first encode on
+                // AMD and Intel machines), libx264 last. An HDR clip
+                // keeps its LUT whichever encoder writes it.
+                let caps = klipp_engine::ffmpeg_caps::FfmpegCaps::usable();
+                let segment_args = || -> Vec<String> {
+                    ["-an", "-f", "segment", "-segment_time", &seg_time, "-segment_format", "matroska",
+                     "-reset_timestamps", "1", "-segment_start_number", &seg_start, &seg_pattern]
+                        .map(String::from).to_vec()
+                };
+                let libx264_sdr = |label: &str| -> SkimAttempt {
+                    let mut args: Vec<String> = ["-y", "-ss", &start_ss, "-protocol_whitelist", "file,pipe", "-i", src,
+                        "-c:v", "libx264", "-g", "15", "-crf", &qp_str, "-preset", "ultrafast", "-vf", &cpu_vf_sdr]
+                        .map(String::from).to_vec();
+                    args.extend(segment_args());
+                    SkimAttempt { label: label.into(), args }
+                };
+                let attempts: Vec<SkimAttempt> = if source_rotation != 0 && !is_hdr_source {
                     // Portrait/rotated SDR source: skip nvenc/CUDA entirely.
                     // libavformat's autorotate filter only inserts a CPU
                     // `transpose`, which can't sit between scale_cuda and
@@ -1104,131 +1123,65 @@ impl KlippApp {
                         "Skim transcode: portrait source ({}°) — using libx264 + autorotate",
                         source_rotation,
                     );
-                    run_ffmpeg(&[
-                        "-y",
-                        "-ss", &start_ss,
-                        "-protocol_whitelist", "file,pipe", "-i", src,
-                        "-c:v", "libx264", "-g", "15", "-crf", &qp_str,
-                        "-preset", "ultrafast",
-                        "-an", "-vf", &cpu_vf_sdr,
-                        "-f", "segment",
-                        "-segment_time", &seg_time,
-                        "-segment_format", "matroska",
-                        "-reset_timestamps", "1",
-                        "-segment_start_number", &seg_start,
-                        &seg_pattern,
-                    ], "skim-encode-sdr-libx264-portrait")
+                    vec![libx264_sdr("skim-encode-sdr-libx264-portrait")]
                 } else if is_hdr_source {
-                    let caps = klipp_engine::ffmpeg_caps::FfmpegCaps::detect();
                     let Some(cube) = hdr_cube.as_deref() else {
                         unreachable!("an HDR source has its LUT or no skim");
                     };
-                    let chain = caps.pick_hdr_chain(target_height, cube);
-                    tracing::info!(
-                        "Skim transcode: HDR source detected — using {}",
-                        chain.tier.label(),
-                    );
-                    // Build the args vector dynamically — tiers vary
-                    // in input flags (`-hwaccel cuda` vs none) and
-                    // encoder args.
-                    let mut args: Vec<String> = vec!["-y".into()];
-                    args.extend(chain.input_args.iter().cloned());
-                    args.push("-ss".into());
-                    args.push(start_ss.clone());
-                    args.extend(["-protocol_whitelist".into(), "file,pipe".into(), "-i".into(), src.into()]);
-                    args.push("-c:v".into());
-                    args.push(chain.encoder.clone());
-                    // GOP 15. `-g 1` (every frame a keyframe) gave
-                    // instant per-frame seek but produced ~5× the
-                    // bitrate of an FCP/DaVinci proxy. A 15-frame
-                    // GOP keeps worst-case hover seek under ~30 ms
-                    // on the skim decoder while matching industry
-                    // proxy sizes. Paired with the Standard CRF the
-                    // skim for a 35-min 4K clip drops from ~50 GB
-                    // to the ~10 GB range.
-                    args.push("-g".into()); args.push("15".into());
-                    // Quality knob: nvenc uses -qp (constqp), libx264 uses -crf.
-                    if chain.encoder == "h264_nvenc" {
-                        args.push("-qp".into());
-                    } else {
-                        args.push("-crf".into());
-                    }
-                    args.push(qp_str.clone());
-                    args.extend(chain.encoder_args.iter().cloned());
-                    args.push("-an".into());
-                    args.push("-vf".into());
-                    args.push(chain.vf.clone());
-                    args.push("-f".into()); args.push("segment".into());
-                    args.push("-segment_time".into()); args.push(seg_time.clone());
-                    args.push("-segment_format".into()); args.push("matroska".into());
-                    args.push("-reset_timestamps".into()); args.push("1".into());
-                    args.push("-segment_start_number".into()); args.push(seg_start.clone());
-                    args.push(seg_pattern.clone());
-                    let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-                    run_ffmpeg(&arg_refs, "skim-encode-hdr")
+                    caps.skim_encoders().into_iter().map(|encoder| {
+                        let chain = klipp_engine::ffmpeg_caps::hdr_chain(encoder, target_height, cube);
+                        // GOP 15. `-g 1` (every frame a keyframe) gave
+                        // instant per-frame seek but produced ~5× the
+                        // bitrate of an FCP/DaVinci proxy. A 15-frame
+                        // GOP keeps worst-case hover seek under ~30 ms
+                        // on the skim decoder while matching industry
+                        // proxy sizes. Paired with the Standard CRF the
+                        // skim for a 35-min 4K clip drops from ~50 GB
+                        // to the ~10 GB range.
+                        // Quality knob: nvenc uses -qp (constqp), libx264 uses -crf.
+                        let quality = if encoder == SkimEncoder::Nvenc { "-qp" } else { "-crf" };
+                        let mut args: Vec<String> = vec!["-y".into()];
+                        args.extend(chain.input_args.iter().cloned());
+                        args.extend(["-ss", &start_ss, "-protocol_whitelist", "file,pipe", "-i", src,
+                            "-c:v", &chain.encoder, "-g", "15", quality, &qp_str].map(String::from));
+                        args.extend(chain.encoder_args.iter().cloned());
+                        args.extend(["-vf".to_string(), chain.vf.clone()]);
+                        args.extend(segment_args());
+                        SkimAttempt { label: format!("skim-encode-hdr ({})", chain.tier.label()), args }
+                    }).collect()
                 } else {
-                    // `-hwaccel_output_format cuda` is mandatory when
-                    // we want `scale_cuda` (in `nvenc_vf`) to consume
-                    // the decoded frames directly. Without it,
-                    // `-hwaccel cuda` silently downloads each frame
-                    // to a software pixel format (yuv420p10le for a
-                    // 10-bit source), then `scale_cuda` rejects the
-                    // CPU input with "Impossible to convert between
-                    // the formats supported by the filter 'graph -1
-                    // input from stream 0:0' and the filter
-                    // 'auto_scale_0'" — the whole nvenc tier fails
-                    // and we fall through to the libx264 CPU path
-                    // (which is ~10× slower at 4K).
-                    //
-                    // The HDR chain in ffmpeg_caps already passes
-                    // this pair; the SDR hardcoded path was missing
-                    // the output-format flag.
-                    run_ffmpeg(&[
-                        "-y", "-hwaccel", "cuda",
-                        "-hwaccel_output_format", "cuda",
-                        "-ss", &start_ss,
-                        "-protocol_whitelist", "file,pipe", "-i", src,
-                        "-c:v", "h264_nvenc", "-g", "15", "-preset", "p1",
-                        "-rc", "constqp", "-qp", &qp_str,
-                        "-an", "-vf", &nvenc_vf,
-                        "-f", "segment",
-                        "-segment_time", &seg_time,
-                        "-segment_format", "matroska",
-                        "-reset_timestamps", "1",
-                        "-segment_start_number", &seg_start,
-                        &seg_pattern,
-                    ], "skim-encode-sdr-nvenc")
-                };
-
-                let result = match &result {
-                    Ok(status) if status.success() => result,
-                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => result,
-                    _ => {
-                        if job.is_cancelled() {
-                            result
-                        } else {
-                            tracing::info!("NVENC skim transcode failed, falling back to libx264");
-                            // Fallback uses the SDR filter chain
-                            // (HDR sources never reach this branch —
-                            // they go straight to the libx264 + tone-
-                            // map path above).
-                            run_ffmpeg(&[
-                                "-y",
-                                "-ss", &start_ss,
-                                "-protocol_whitelist", "file,pipe", "-i", src,
-                                "-c:v", "libx264", "-g", "15", "-crf", &qp_str,
-                                "-preset", "ultrafast",
-                                "-an", "-vf", &cpu_vf_sdr,
-                                "-f", "segment",
-                                "-segment_time", &seg_time,
-                                "-segment_format", "matroska",
-                                "-reset_timestamps", "1",
-                                "-segment_start_number", &seg_start,
-                                &seg_pattern,
-                            ], "skim-encode-sdr-libx264")
+                    caps.skim_encoders().into_iter().map(|encoder| match encoder {
+                        // `-hwaccel_output_format cuda` is mandatory when
+                        // we want `scale_cuda` (in `nvenc_vf`) to consume
+                        // the decoded frames directly. Without it,
+                        // `-hwaccel cuda` silently downloads each frame
+                        // to a software pixel format (yuv420p10le for a
+                        // 10-bit source), then `scale_cuda` rejects the
+                        // CPU input with "Impossible to convert between
+                        // the formats supported by the filter 'graph -1
+                        // input from stream 0:0' and the filter
+                        // 'auto_scale_0'" — the whole nvenc tier fails
+                        // and we fall through to the libx264 CPU path
+                        // (which is ~10× slower at 4K).
+                        SkimEncoder::Nvenc => {
+                            let mut args: Vec<String> = ["-y", "-hwaccel", "cuda", "-hwaccel_output_format", "cuda",
+                                "-ss", &start_ss, "-protocol_whitelist", "file,pipe", "-i", src,
+                                "-c:v", "h264_nvenc", "-g", "15", "-preset", "p1", "-rc", "constqp", "-qp", &qp_str,
+                                "-vf", &nvenc_vf].map(String::from).to_vec();
+                            args.extend(segment_args());
+                            SkimAttempt { label: "skim-encode-sdr-nvenc".into(), args }
                         }
-                    }
+                        SkimEncoder::Libx264 => libx264_sdr("skim-encode-sdr-libx264"),
+                    }).collect()
                 };
+                tracing::info!(
+                    "Skim transcode: {}",
+                    attempts.iter().map(|a| a.label.as_str()).collect::<Vec<_>>().join(", then "),
+                );
+                let result = encode_in_turn(&attempts, || job.is_cancelled(), |attempt| {
+                    let args: Vec<&str> = attempt.args.iter().map(String::as_str).collect();
+                    run_ffmpeg(&args, &attempt.label)
+                });
 
                 // Encode phase done. Now (on success) concat the
                 // segments into one MKV. On failure or cancel, leave
@@ -1578,6 +1531,97 @@ impl KlippApp {
 /// Whether a file has a picture a skim transcode can make: a sound-only
 /// file sent to the video encoder only failed, once a file, with ffmpeg's
 /// exit 234 in the log. Its skim sound comes from its audio cache.
+use klipp_engine::ffmpeg_caps::SkimEncoder;
+
+/// One way to encode a skim: the ffmpeg arguments, and the label its log
+/// lines carry.
+struct SkimAttempt {
+    label: String,
+    args: Vec<String>,
+}
+
+/// Runs `attempts` in turn until one succeeds, and gives that run's result,
+/// or the last one's. A cancelled run (`Interrupted`, or `cancelled` once it
+/// has ended) stops it: a cancel is not a failed encoder.
+fn encode_in_turn(
+    attempts: &[SkimAttempt],
+    cancelled: impl Fn() -> bool,
+    mut run: impl FnMut(&SkimAttempt) -> std::io::Result<std::process::ExitStatus>,
+) -> std::io::Result<std::process::ExitStatus> {
+    let mut result = Err(std::io::Error::other("no encoder to make the skim with"));
+    for (i, attempt) in attempts.iter().enumerate() {
+        if i > 0 {
+            tracing::info!("Skim transcode: {} failed, trying {}", attempts[i - 1].label, attempt.label);
+        }
+        result = run(attempt);
+        let done = match &result {
+            Ok(status) => status.success(),
+            Err(e) => e.kind() == std::io::ErrorKind::Interrupted,
+        };
+        if done || cancelled() {
+            break;
+        }
+    }
+    result
+}
+
+#[cfg(test)]
+mod skim_encoder_tests {
+    use super::*;
+    use klipp_engine::ffmpeg_caps::FfmpegCaps;
+    use std::os::unix::process::ExitStatusExt;
+
+    fn attempt(label: &str) -> SkimAttempt {
+        SkimAttempt { label: label.into(), args: Vec::new() }
+    }
+
+    fn exit(code: i32) -> std::io::Result<std::process::ExitStatus> {
+        Ok(std::process::ExitStatus::from_raw(code << 8))
+    }
+
+    #[test]
+    fn without_nvenc_the_first_skim_encoder_is_software() {
+        let caps = FfmpegCaps { h264_nvenc: true, h264_vaapi: true, ..FfmpegCaps::default() };
+        assert_eq!(caps.on_machine(false).skim_encoders()[0], SkimEncoder::Libx264);
+        let no_nvenc = FfmpegCaps { h264_vaapi: true, ..FfmpegCaps::default() };
+        assert_eq!(no_nvenc.on_machine(true).skim_encoders()[0], SkimEncoder::Libx264);
+    }
+
+    #[test]
+    fn a_failed_hardware_encode_falls_back_to_software() {
+        let attempts = [attempt("nvenc"), attempt("libx264")];
+        let mut ran = Vec::new();
+        let result = encode_in_turn(&attempts, || false, |a| {
+            ran.push(a.label.clone());
+            if a.label == "nvenc" { exit(255) } else { exit(0) }
+        });
+        assert_eq!(ran, ["nvenc", "libx264"]);
+        assert!(result.unwrap().success());
+
+        // The first that works is the last tried.
+        let mut ran = Vec::new();
+        let result = encode_in_turn(&attempts, || false, |a| { ran.push(a.label.clone()); exit(0) });
+        assert_eq!(ran, ["nvenc"]);
+        assert!(result.unwrap().success());
+    }
+
+    #[test]
+    fn a_cancelled_encode_is_not_tried_again_in_software() {
+        let attempts = [attempt("nvenc"), attempt("libx264")];
+        let mut ran = 0;
+        let interrupted = encode_in_turn(&attempts, || false, |_| {
+            ran += 1;
+            Err(std::io::Error::new(std::io::ErrorKind::Interrupted, "cancelled"))
+        });
+        assert_eq!((ran, interrupted.unwrap_err().kind()), (1, std::io::ErrorKind::Interrupted));
+        let mut ran = 0;
+        let killed = encode_in_turn(&attempts, || true, |_| { ran += 1; exit(255) });
+        assert_eq!(ran, 1);
+        assert!(!killed.unwrap().success());
+        assert!(encode_in_turn(&[], || false, |_| exit(0)).is_err(), "no encoder is a failure");
+    }
+}
+
 fn has_picture_to_skim(item: &klipp_media::MediaItem) -> bool {
     !item.video_codec.is_empty()
 }

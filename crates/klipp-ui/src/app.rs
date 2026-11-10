@@ -437,13 +437,10 @@ pub struct KlippApp {
     /// An Inspector change on one of several selected clips, being made
     /// on the others too (#843): how they were when it began.
     multi_edit: Option<MultiEditSession>,
-    /// The interface size last applied, and the screen width it was
-    /// worked out for, so it is set once per change rather than every
-    /// frame (and never fights a zoom made another way).
-    ui_scale_applied: Option<(u32, u32, u32)>,
-    /// The window's size, and whether it is maximised, each counting once
-    /// it holds (`appearance::Settling`).
-    size_settling: appearance::Settling<(u32, u32)>,
+    /// The interface size last applied, and the window size it waits on.
+    ui_scale: appearance::UiScale,
+    /// Whether the window is maximised, counting once it holds
+    /// (`appearance::Settling`).
     maximized_settling: appearance::Settling<bool>,
     /// The files a filmstrip refinement pass is running for; see
     /// `AppCommand::RefineFilmstrip`.
