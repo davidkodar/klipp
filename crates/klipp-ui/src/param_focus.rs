@@ -314,6 +314,25 @@ mod tests {
         TestClip::of(Clip::media(klipp_core::MediaId::new(), t(0.0), t(4.0), t(0.0), t(4.0))).lane("opacity", 1.0, 0.5).lane("pos_x", 1.0, 10.0).lane("pos_x", 2.0, 20.0).build()
     }
 
+    /// The first key on a clip moves no field: the Animated strip has its
+    /// row before anything is keyed. It came in above the tabs with the
+    /// first key and moved every field down a row, so the next
+    /// double-click landed on the field above the one aimed at (Band 3
+    /// Freq set to 20 Hz, aiming at Gain).
+    #[test]
+    fn the_first_key_moves_no_field() {
+        let t = |s| klipp_core::RationalTime::from_secs_f64(s, 24);
+        let plain = Clip::media(klipp_core::MediaId::new(), t(0.0), t(4.0), t(0.0), t(4.0));
+        let keyed = TestClip::of(plain.clone()).lane("opacity", 1.0, 0.5).build();
+        let field_y = |clip: Clip| {
+            let mut s = Shown::new(clip, InspectorTab::Video);
+            let drawn = s.frame(Vec::new());
+            drawn.iter().find(|(t, _)| t == "Rotation").map(|(_, p)| p.y).unwrap_or_else(|| panic!("Rotation drawn: {:?}", drawn.iter().map(|d| &d.0).collect::<Vec<_>>()))
+        };
+        let (before, after) = (field_y(plain), field_y(keyed));
+        assert!((before - after).abs() < 0.5, "Rotation at {before} before the first key, {after} after");
+    }
+
     /// On another tab, the Animated strip names the clip's keyed
     /// parameters and the Video tab is marked; a chip opens the Video tab
     /// and brings its parameter into focus.
