@@ -75,7 +75,8 @@ pub(crate) fn paste_key_commands(state: &AppState, target: &klipp_timeline::Clip
     }
     if !out.is_empty() {
         out.insert(0, AppCommand::BeginHistoryBatch);
-        out.push(AppCommand::EndHistoryBatch);
+        // Named for what it does: unnamed, a batch read "Add Clips".
+        out.push(AppCommand::EndHistoryBatchAs { label: "Paste Keys".into() });
     }
     (out, skipped)
 }

@@ -875,6 +875,7 @@ fn copied_keys_paste_on_their_own_properties() {
     let target = clip(&state, other_id);
     let (cmds, skipped) = crate::panels::curve_editor::paste_key_commands(&state, &target, 1.0);
     assert_eq!(skipped, 0);
+    assert!(matches!(cmds.last(), Some(AppCommand::EndHistoryBatchAs { label }) if label == "Paste Keys"), "named for what it does, not \"Add Clips\": {:?}", cmds.last());
     let steps = state.active_history().undo_count();
     assert!(apply(&mut state, &cmds).is_empty());
     // Copied at 1 s (x 10) and 3 s (opacity 0.5): pasted at 1 s and 3 s.
