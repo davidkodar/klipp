@@ -473,15 +473,14 @@ impl NewInspectorPanel {
                         let clip_time_secs = keyframe_selection::clip_time(state, clip);
                         let track_infos: Vec<audio_tab::TrackInfo> = audio_tab::TrackInfo::of(state.sequence());
                         // Re-seed DuckSettings when the selected clip changes: pull
-                        // defaults from prefs and pick the first Dialogue-bearing audio
-                        // track as the sidechain source (falls back to first audio track).
+                        // defaults from prefs and tick every heard track of
+                        // dialogue to duck under (else the first other sound track).
                         if self.last_duck_clip != Some(clip.id) {
                             self.duck = audio_tab::DuckSettings::from_prefs(&prefs.audio);
-                            // Never the clip's own track: ducked under itself,
-                            // it was an error until changed. With no
-                            // other sound track, none: its own, which the
-                            // tab refuses with the reason.
-                            self.duck.sidechain_track = audio_tab::default_sidechain(state.sequence(), track_idx).unwrap_or(track_idx);
+                            // Never the clip's own track. With no other sound
+                            // track, none, which the tab refuses with the
+                            // reason.
+                            self.duck.sidechain_tracks = audio_tab::default_sidechains(state.sequence(), track_idx);
                             self.last_duck_clip = Some(clip.id);
                         }
                         let is_timeline = true; // clip_info comes from timeline selection
