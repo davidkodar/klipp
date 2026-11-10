@@ -5176,8 +5176,10 @@ impl ViewerPanel {
             return;
         }
 
-        // The clip's placement as its picture holds it (M3 step 13).
-        let transform = crate::inspector::placement_by_path::placement(clip);
+        // The clip's placement as its picture draws it at the playhead
+        // (M3 step 13): its keyed lanes at their values there, so the box
+        // follows the picture as the playhead moves.
+        let transform = crate::inspector::placement_by_path::placement_at(clip, (state.playhead - clip.timeline_in).to_secs_f64().max(0.0));
         let effect_index = find_transform_index(clip);
         let n_builtin_effects = clip.builtin_effects().len();
 
