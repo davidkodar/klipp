@@ -468,13 +468,7 @@ impl NewInspectorPanel {
                             .and_then(|mid| state.media_pool.get(&mid))
                             .and_then(|item| item.audio_channels);
                         let clip_time_secs = keyframe_selection::clip_time(state, clip);
-                        let track_infos: Vec<audio_tab::TrackInfo> = state.sequence().tracks.iter().enumerate()
-                            .filter(|(_, t)| t.kind == klipp_timeline::TrackKind::Audio)
-                            .map(|(i, t)| audio_tab::TrackInfo {
-                                index: i,
-                                name: if t.name.is_empty() { format!("Track {}", i + 1) } else { t.name.clone() },
-                            })
-                            .collect();
+                        let track_infos: Vec<audio_tab::TrackInfo> = audio_tab::TrackInfo::of(state.sequence());
                         // Re-seed DuckSettings when the selected clip changes: pull
                         // defaults from prefs and pick the first Dialogue-bearing audio
                         // track as the sidechain source (falls back to first audio track).
@@ -492,13 +486,7 @@ impl NewInspectorPanel {
                     } else if let Some(bm) = bin_media {
                         // Bin media selected — show audio info for the media item
                         let source_channels = bm.audio_channels;
-                        let track_infos: Vec<audio_tab::TrackInfo> = state.sequence().tracks.iter().enumerate()
-                            .filter(|(_, t)| t.kind == klipp_timeline::TrackKind::Audio)
-                            .map(|(i, t)| audio_tab::TrackInfo {
-                                index: i,
-                                name: if t.name.is_empty() { format!("Track {}", i + 1) } else { t.name.clone() },
-                            })
-                            .collect();
+                        let track_infos: Vec<audio_tab::TrackInfo> = audio_tab::TrackInfo::of(state.sequence());
                         // Create a temporary clip for the bin media (same pattern as video tab)
                         let temp_clip = klipp_timeline::Clip {
                             id: klipp_core::ClipId::new(),
@@ -2111,7 +2099,11 @@ fn show_title_pinned_core_textbox(
     ui.horizontal(|ui| {
         let total = ui.available_width();
         let size_w = 70.0;
-        let combo_w = (total - size_w - 8.0).max(80.0);
+        // The size's key controls, after the field when the layer's size
+        // is keyable, have their room too: without it they were drawn
+        // over the field, and a click on its number hit the diamond.
+        let keys_w = if size_target.is_some() { crate::widgets::scrubby_param::key_controls_width(!tb.font_size_keyframes.is_empty(), ui.spacing().item_spacing.x) } else { 0.0 };
+        let combo_w = (total - size_w - 8.0 - keys_w).max(80.0);
         // The font picker (#1719): each family in its own face, the
         // title's words as the sample, starred and recent ones first.
         let choice = ui.vertical(|ui| {
@@ -8930,6 +8922,54 @@ mod selection_underline_tests {
         assert!(matches!(&cmds[..], [AppCommand::ApplyTitleStyle { value, .. }] if value == "none"), "a second press takes it off: {cmds:?}");
         let texts = frame(&ctx, &td, (0, 0), Vec::new()).1;
         assert!(!texts.iter().any(|(t, _)| t == "x\u{00b2}"), "no selection, no button");
+    }
+
+    /// A double-click on a keyed field (the layer's Text size, keyed)
+    /// edits its number, as on any field: the typed size is set, and the
+    /// Curve Editor is not brought up for it. On the titles walk the
+    /// double-click opened the Curve Editor and the digits went nowhere.
+    #[test]
+    fn a_double_click_on_a_keyed_field_edits_its_number() {
+        let ctx = egui::Context::default();
+        let mut tb = klipp_timeline::TextBox { text: "Harbour".into(), font_name: "Inter".into(), font_size: 72.0, ..Default::default() };
+        tb.font_size_keyframes = vec![klipp_core::keyframe::upserted(&[], 0.0, 72.0), klipp_core::keyframe::upserted(&[], 1.5, 120.0)];
+        let td = klipp_timeline::TitleData::single_text(tb);
+        let layer = td.objects[0].id;
+        let clip = klipp_timeline::Clip { kind: klipp_timeline::ClipKind::Title(td), ..klipp_timeline::Clip::gap(klipp_core::Timecode::zero(), klipp_core::Timecode { value: 48, rate: 24 }) };
+        let state = AppState { selected_title_object: Some((clip.id, layer)), ..Default::default() };
+        let mut chips = title_tab::TitleChips::default();
+        let mut time = 0.0;
+        let mut frame = |events: Vec<egui::Event>| {
+            time += 0.05;
+            let mut cmds = Vec::new();
+            let out = ctx.run(
+                egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(420.0, 6000.0))), time: Some(time), events, ..Default::default() },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        egui::ScrollArea::vertical().show(ui, |ui| show_title_editor(ui, &KlippTheme::default(), &clip, &state, &mut cmds, &mut chips));
+                    });
+                },
+            );
+            let texts: Vec<(String, egui::Pos2)> = out.shapes.iter().filter_map(|s| match &s.shape {
+                egui::Shape::Text(t) => Some((t.galley.text().to_string(), t.pos + t.galley.size() / 2.0)),
+                _ => None,
+            }).collect();
+            (cmds, texts)
+        };
+        frame(Vec::new());
+        let (_, texts) = frame(Vec::new());
+        let at = texts.iter().find(|(t, _)| t == "72 pt").unwrap_or_else(|| panic!("the size field: {:?}", texts.iter().map(|t| &t.0).collect::<Vec<_>>())).1;
+        let b = |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+        let mut cmds = Vec::new();
+        for events in [vec![egui::Event::PointerMoved(at), b(true)], vec![b(false)], vec![b(true)], vec![b(false)], Vec::new()] {
+            cmds.extend(frame(events).0);
+        }
+        assert_eq!(crate::param_focus::take_request(&ctx), None, "no curve brought up");
+        cmds.extend(frame(vec![egui::Event::Key { key: egui::Key::A, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::COMMAND }]).0);
+        cmds.extend(frame(vec![egui::Event::Text("90".into())]).0);
+        cmds.extend(frame(vec![egui::Event::Key { key: egui::Key::Enter, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE }]).0);
+        cmds.extend(frame(Vec::new()).0);
+        assert!(format!("{cmds:?}").contains("90.0"), "the typed size is set: {cmds:?}");
     }
 
     /// #1721: the Typography group has the paragraph rows, each showing

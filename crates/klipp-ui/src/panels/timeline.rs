@@ -3507,7 +3507,7 @@ impl TimelinePanel {
                                 if crate::effect_targets::drop_reselects(state.selected_clip, &state.selected_clips, clip_id) {
                                     cmds.push(AppCommand::SelectClip(Some(clip_id)));
                                 }
-                                cmds.extend(crate::effect_targets::commands(&targets, |id| vec![crate::browser::effect_registry::lut_command(id, path)]));
+                                cmds.extend(crate::effect_targets::commands(&targets, name, |id| vec![crate::browser::effect_registry::lut_command(id, path)]));
                                 state.toast.show(crate::effect_targets::said(name, &targets));
                             }
                             if let Some(crate::drag_drop::DragPayload::Effect { name, is_builtin, plugin_id }) = payload {
@@ -3527,7 +3527,7 @@ impl TimelinePanel {
                                     // step 19).
                                     let effects = state.effect_registry.effects.iter().find(|e| e.name == name).and_then(|e| crate::browser::effects_tab::starting_effects(state, &e.source)).unwrap_or_default();
                                     if !effects.is_empty() {
-                                        let adds = crate::effect_targets::all_or_none(&targets, |clip_id| {
+                                        let adds = crate::effect_targets::all_or_none(&targets, &name, |clip_id| {
                                             let clip = state.sequence().tracks.iter().flat_map(|t| &t.clips).find(|c| c.id == clip_id).ok_or("the clip isn't in the sequence")?;
                                             crate::inspector::stack_view::add_effects_command(state, clip, &effects)
                                         });
@@ -3540,7 +3540,7 @@ impl TimelinePanel {
                                         }
                                     }
                                 } else {
-                                    cmds.extend(crate::effect_targets::commands(&targets, |clip_id| vec![AppCommand::AddEffect { clip_id, plugin_name: plugin_id.clone() }]));
+                                    cmds.extend(crate::effect_targets::commands(&targets, &name, |clip_id| vec![AppCommand::AddEffect { clip_id, plugin_name: plugin_id.clone() }]));
                                     state.toast.show(crate::effect_targets::said(&name, &targets));
                                 }
                             }
@@ -3599,7 +3599,7 @@ impl TimelinePanel {
                                 if crate::effect_targets::drop_reselects(state.selected_clip, &state.selected_clips, clip_id) {
                                     cmds.push(AppCommand::SelectClip(Some(clip_id)));
                                 }
-                                cmds.extend(crate::effect_targets::commands(&targets, |clip_id| vec![AppCommand::AddAudioEffect { clip_id, effect_type: type_id.clone() }]));
+                                cmds.extend(crate::effect_targets::commands(&targets, &name, |clip_id| vec![AppCommand::AddAudioEffect { clip_id, effect_type: type_id.clone() }]));
                                 state.toast.show(crate::effect_targets::said(&name, &targets));
                             }
                         } else {

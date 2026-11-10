@@ -144,6 +144,11 @@ pub(super) struct Run {
     /// Draw the clip's Video tab, not its stack, in either view: the
     /// effect is a clip property there (M3 step 13).
     pub(super) property: bool,
+    /// The panel's width, in points.
+    pub(super) width: f32,
+    /// The Video tab drawn as the app's inspector draws a timeline clip's
+    /// (its `is_timeline`), whose commands the dispatch routes.
+    pub(super) timeline: bool,
 }
 
 /// The one clip both views start from: a clone each, so their pictures
@@ -226,6 +231,8 @@ impl Run {
             shapes: Vec::new(),
             seeks: Vec::new(),
             property: false,
+            width: 520.0,
+            timeline: false,
         }
     }
 
@@ -247,7 +254,7 @@ impl Run {
         let input = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(
                 egui::Pos2::ZERO,
-                egui::vec2(520.0, 3000.0),
+                egui::vec2(self.width, 3000.0),
             )),
             time: Some(self.time),
             events,
@@ -255,7 +262,7 @@ impl Run {
             ..Default::default()
         };
         let mut cmds = Vec::new();
-        let (state, clip_id, property) = (&mut self.state, self.clip, self.property);
+        let (state, clip_id, property, timeline) = (&mut self.state, self.clip, self.property, self.timeline);
         let out = self.ctx.run(input, |ctx| {
             // As the app's frame does before its panels draw.
             state.forget_stale_path_drag(ctx.input(|i| i.pointer.any_down()));
@@ -275,7 +282,7 @@ impl Run {
                         ui,
                         &theme,
                         state,
-                        Some((clip, clip_time, false)),
+                        Some((clip, clip_time, timeline)),
                         None,
                         &mut cmds,
                     );
@@ -302,7 +309,15 @@ impl Run {
             .collect()
     }
 
+    /// `cmd` as the app's dispatch takes it: a graph-held clip's placement
+    /// edits routed by path first (`send_commands`).
     pub(super) fn apply(&mut self, cmd: AppCommand) {
+        for cmd in self.state.placed_by_path(cmd) {
+            self.apply_one(cmd);
+        }
+    }
+
+    fn apply_one(&mut self, cmd: AppCommand) {
         self.state.before_dispatch(&cmd);
         if let AppCommand::SeekTo(time) = cmd {
             self.seeks.push(time);
@@ -427,6 +442,98 @@ impl Run {
 
 }
 
+/// The Track button of a Window that masks an effect, drawn under the
+/// effect's card ("Masked by: Window"), sends the track of that window on
+/// that clip. Pressed in the app, it lit and nothing followed.
+#[test]
+fn the_track_button_under_a_masked_effect_sends_its_track() {
+    let mut c = fixture(&BuiltinEffect::GaussianBlur { radius: 3.0 });
+    let graph = c.picture_v2().unwrap().picture.graph.clone();
+    let blur = graph.nodes.iter().find(|n| klipp_graph_lift::effect_params::tag(n) == Some("gaussian_blur")).unwrap().id;
+    let level = klipp_graph_format::path::NodePath::new(klipp_graph_format::path::Root::Clip { clip: c.id.0 }, []);
+    let window = uuid::Uuid::new_v4();
+    let ops = crate::picture_mattes::add_ops(&graph, &level, crate::picture_mattes::matte("matte.window").unwrap(), window, (0.0, 0.0), Some(blur)).unwrap();
+    c.apply_picture_ops(&ops).unwrap();
+    let mut run = Run::new(c);
+    let drawn = run.frame(Vec::new(), egui::Modifiers::NONE);
+    let label = drawn.iter().map(|(t, _)| t.clone()).find(|t| t.ends_with("Track")).expect("the Track button is drawn");
+    assert!(run.click_last(&label), "pressed");
+    let sent: Vec<&String> = run.unapplied.iter().filter(|c| c.contains("TrackMaskRegion")).collect();
+    assert_eq!(sent.len(), 1, "the track sent once, of the window: {:?}", run.unapplied);
+    assert!(sent[0].contains(&window.to_string()), "{sent:?}");
+}
+
+/// A tracked Window under a masked effect shows as tracked there, as a
+/// grade's does: "Re-track", "Untrack" and the stretch it followed. The
+/// panel was told of no tracked masks, so after a track nothing showed it.
+#[test]
+fn a_tracked_window_under_a_masked_effect_shows_as_tracked() {
+    let mut c = fixture(&BuiltinEffect::GaussianBlur { radius: 3.0 });
+    let graph = c.picture_v2().unwrap().picture.graph.clone();
+    let blur = graph.nodes.iter().find(|n| klipp_graph_lift::effect_params::tag(n) == Some("gaussian_blur")).unwrap().id;
+    let level = klipp_graph_format::path::NodePath::new(klipp_graph_format::path::Root::Clip { clip: c.id.0 }, []);
+    let window = uuid::Uuid::new_v4();
+    let ops = crate::picture_mattes::add_ops(&graph, &level, crate::picture_mattes::matte("matte.window").unwrap(), window, (0.0, 0.0), Some(blur)).unwrap();
+    c.apply_picture_ops(&ops).unwrap();
+    let key = |t: f64, v: f32| klipp_core::Keyframe { time_secs: t, value: v, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() };
+    super::colour::edit_clip_masks(&mut c, window, "Track Window", |ms| ms.masks[0].keyframes.track_x = vec![key(0.0, 0.0), key(1.0, 0.1)]).unwrap();
+    c.track_points.push(klipp_core::TrackPoint { name: "Mask 1 tracker".into(), linked_mask: Some((window, 0)), ..Default::default() });
+    let mut run = Run::new(c);
+    let drawn = run.frame(Vec::new(), egui::Modifiers::NONE);
+    let texts: Vec<&str> = drawn.iter().map(|(t, _)| t.as_str()).collect();
+    assert!(texts.iter().any(|t| t.ends_with("Re-track")) && texts.iter().any(|t| t.ends_with("Untrack")), "{texts:?}");
+}
+
+/// A tracked Window's panel under a masked effect fits an inspector of
+/// its usual width: its tracking controls on their own row, nothing drawn
+/// past either edge. On the header row beside the name they pushed it
+/// past the panel, cutting "Re-track" and the start of every label below.
+#[test]
+fn a_tracked_windows_panel_fits_the_inspector() {
+    let mut c = fixture(&BuiltinEffect::GaussianBlur { radius: 3.0 });
+    let graph = c.picture_v2().unwrap().picture.graph.clone();
+    let blur = graph.nodes.iter().find(|n| klipp_graph_lift::effect_params::tag(n) == Some("gaussian_blur")).unwrap().id;
+    let level = klipp_graph_format::path::NodePath::new(klipp_graph_format::path::Root::Clip { clip: c.id.0 }, []);
+    let window = uuid::Uuid::new_v4();
+    let ops = crate::picture_mattes::add_ops(&graph, &level, crate::picture_mattes::matte("matte.window").unwrap(), window, (0.0, 0.0), Some(blur)).unwrap();
+    c.apply_picture_ops(&ops).unwrap();
+    let key = |t: f64, v: f32| klipp_core::Keyframe { time_secs: t, value: v, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() };
+    super::colour::edit_clip_masks(&mut c, window, "Track Window", |ms| ms.masks[0].keyframes.track_x = vec![key(0.0, 0.0), key(1.8, 0.1)]).unwrap();
+    c.track_points.push(klipp_core::TrackPoint { name: "Mask 1 tracker".into(), linked_mask: Some((window, 0)), ..Default::default() });
+    let mut run = Run::new(c);
+    run.width = 280.0;
+    run.frame(Vec::new(), egui::Modifiers::NONE);
+    run.frame(Vec::new(), egui::Modifiers::NONE);
+    let texts: Vec<(String, egui::Rect)> = run.shapes.iter().filter_map(|s| match &s.shape {
+        egui::Shape::Text(t) if !t.galley.text().trim().is_empty() => Some((t.galley.text().to_string(), egui::Rect::from_min_size(t.pos, t.galley.size()))),
+        _ => None,
+    }).collect();
+    for name in ["Re-track", "Untrack", "Perspective", "Center x", "Feather"] {
+        assert!(texts.iter().any(|(t, _)| t.ends_with(name)), "{name} drawn: {:?}", texts.iter().map(|(t, _)| t).collect::<Vec<_>>());
+    }
+    let out: Vec<&(String, egui::Rect)> = texts.iter().filter(|(_, r)| r.left() < -1.5 || r.right() > 281.5).collect();
+    assert!(out.is_empty(), "drawn past the panel's edge: {out:?}");
+}
+
+/// A Window whose track was undone (its tracker's binding kept, its track
+/// keys gone) reads as untracked: "Track", no Untrack. It still read
+/// "Re-track" with an Untrack after the undo.
+#[test]
+fn an_undone_track_reads_as_untracked() {
+    let mut c = fixture(&BuiltinEffect::GaussianBlur { radius: 3.0 });
+    let graph = c.picture_v2().unwrap().picture.graph.clone();
+    let blur = graph.nodes.iter().find(|n| klipp_graph_lift::effect_params::tag(n) == Some("gaussian_blur")).unwrap().id;
+    let level = klipp_graph_format::path::NodePath::new(klipp_graph_format::path::Root::Clip { clip: c.id.0 }, []);
+    let window = uuid::Uuid::new_v4();
+    let ops = crate::picture_mattes::add_ops(&graph, &level, crate::picture_mattes::matte("matte.window").unwrap(), window, (0.0, 0.0), Some(blur)).unwrap();
+    c.apply_picture_ops(&ops).unwrap();
+    c.track_points.push(klipp_core::TrackPoint { name: "Mask 1 tracker".into(), linked_mask: Some((window, 0)), ..Default::default() });
+    let mut run = Run::new(c);
+    let drawn = run.frame(Vec::new(), egui::Modifiers::NONE);
+    let texts: Vec<&str> = drawn.iter().map(|(t, _)| t.as_str()).collect();
+    assert!(texts.iter().any(|t| t.ends_with(" Track")) && !texts.iter().any(|t| t.ends_with("Re-track") || t.ends_with("Untrack")), "{texts:?}");
+}
+
 /// The Chroma Key card says when its key colour takes greys with it: the
 /// walk's navy at the default Tolerance, and not once it is lowered.
 #[test]
@@ -536,6 +643,7 @@ fn an_effect_added_with_two_clips_selected_lands_on_both_as_one_step() {
     assert!(run.click_last("+ Add effect"), "the add menu");
     assert!(run.click_last("Bloom"), "Bloom in it");
     assert_eq!((blooms(&run, run.clip), blooms(&run, other_id)), (1, 1), "on both: {:?}", run.unapplied);
+    assert_eq!(run.state.active_history().undo_label(), Some("Add Bloom to 2 Clips"), "the step named for the effect");
     assert!(run.step(false));
     assert_eq!((blooms(&run, run.clip), blooms(&run, other_id)), (0, 0), "one undo takes it off both");
 }
