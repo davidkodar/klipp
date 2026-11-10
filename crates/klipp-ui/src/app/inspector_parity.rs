@@ -607,3 +607,34 @@ fn a_frei0r_effect_is_added_only_by_an_installed_plug_ins_id() {
     }).collect();
     assert_eq!(added, ["frei0r:/usr/lib/frei0r-1/klipp3200ui.so:Klipp3200Ui"], "added as the installed plug-in's own id");
 }
+
+/// The stack's "All effects" switch turns every one of the clip's
+/// effects off, as one undo step, and on again, as one; the undo puts
+/// each back as it was.
+#[test]
+fn the_all_effects_switch_turns_every_effect_off_and_on() {
+    let t = |s| klipp_core::RationalTime::from_secs_f64(s, 24);
+    let clip = klipp_timeline::test_clip::TestClip::of(klipp_timeline::Clip::media(klipp_core::MediaId::new(), t(0.0), t(2.0), t(0.0), t(2.0)))
+        .effect(BuiltinEffect::GaussianBlur { radius: 3.0 })
+        .effect(BuiltinEffect::Sharpen { amount: 0.5 })
+        .effect(BuiltinEffect::Opacity { value: 0.5 })
+        .build();
+    let mut run = Run::new(clip);
+    let opacity = |run: &Run| crate::inspector::placement_by_path::opacity(run.clip());
+    let on = |run: &Run| -> Vec<bool> {
+        let graph = run.clip().picture_v2().unwrap().picture.graph.clone();
+        ["gaussian_blur", "sharpen"].iter().map(|tag| graph.nodes.iter().find(|n| klipp_graph_lift::effect_params::tag(n) == Some(tag)).unwrap().enabled).collect()
+    };
+    assert_eq!(on(&run), [true, true]);
+    assert!(run.click_last("All effects"), "the switch is drawn");
+    assert_eq!(on(&run), [false, false], "all off: {:?}", run.unapplied);
+    assert_eq!(opacity(&run), 0.5, "the clip's own opacity is not an effect to take off");
+    assert_eq!(run.state.active_history().undo_count(), 1, "one step");
+    assert_eq!(run.state.active_history().undo_label(), Some("Turn Effects Off"));
+    assert!(run.click_last("All effects"));
+    assert_eq!(on(&run), [true, true], "all on again");
+    assert_eq!(run.state.active_history().undo_count(), 2, "one step");
+    assert!(run.step(false), "an undo");
+    assert_eq!(on(&run), [false, false], "the undo takes back the switch on");
+    assert!(run.unapplied.is_empty(), "{:?}", run.unapplied);
+}
