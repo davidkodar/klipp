@@ -502,10 +502,21 @@ fn install_unicode_fallback_fonts(ctx: &egui::Context) {
     ctx.set_fonts(unicode_fallback_fonts());
 }
 
-fn unicode_fallback_fonts() -> egui::FontDefinitions {
+/// The interface's monospace face: see [`unicode_fallback_fonts`].
+const UI_MONO: &str = "klipp_ui_mono";
+const UI_MONO_BYTES: &[u8] = include_bytes!("../../../assets/fonts/B612Mono/B612Mono-Regular.ttf");
+
+pub(crate) fn unicode_fallback_fonts() -> egui::FontDefinitions {
     use egui::{FontData, FontFamily};
 
     let mut defs = egui::FontDefinitions::default();
+
+    // The interface's monospace face first: B612 Mono, a cockpit-display
+    // face (SIL Open Font License), whose zero is plain. egui's own mono
+    // (Hack) dots its zero, which at the 10 px of the readouts and counts
+    // read as an 8: "104" as "184", twice, to two readers.
+    defs.font_data.insert(UI_MONO.to_owned(), FontData::from_static(UI_MONO_BYTES));
+    defs.families.entry(FontFamily::Monospace).or_default().insert(0, UI_MONO.to_owned());
 
     fn try_load_first(paths: &[&str]) -> Option<Vec<u8>> {
         for p in paths {
@@ -680,6 +691,31 @@ mod fallback_font_tests {
         for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
             assert_eq!(defs.families[&family].last().map(String::as_str), Some("klipp_fallback_bundled"), "{family:?}");
         }
+    }
+
+    /// Ink in the middle fifth of `font`'s "0", where a dot or a slash
+    /// would be: none in a plain zero.
+    fn ink_inside_zero(bytes: &[u8]) -> usize {
+        let font = fontdue::Font::from_bytes(bytes, fontdue::FontSettings::default()).expect("a font");
+        let (m, bitmap) = font.rasterize('0', 80.0);
+        let (w, h) = (m.width, m.height);
+        (2 * h / 5..3 * h / 5).flat_map(|y| (2 * w / 5..3 * w / 5).map(move |x| (x, y))).filter(|&(x, y)| bitmap[y * w + x] > 128).count()
+    }
+
+    /// The interface's monospace face comes first in its family, and its
+    /// zero is plain, where egui's own (Hack) dots it: at 10 px the dotted
+    /// zero of a count read as an 8, "104" as "184". Its figures are all
+    /// one width, so columns of numbers stay still.
+    #[test]
+    fn the_interface_mono_has_a_plain_zero() {
+        let defs = unicode_fallback_fonts();
+        assert_eq!(defs.families[&egui::FontFamily::Monospace].first().map(String::as_str), Some(super::UI_MONO));
+        assert_eq!(ink_inside_zero(super::UI_MONO_BYTES), 0, "a plain zero");
+        let hack = egui::FontDefinitions::default().font_data["Hack"].font.to_vec();
+        assert!(ink_inside_zero(&hack) > 0, "the measure finds Hack's dot");
+        let font = fontdue::Font::from_bytes(super::UI_MONO_BYTES, fontdue::FontSettings::default()).unwrap();
+        let widths: Vec<f32> = "0123456789.-+ ".chars().map(|c| font.metrics(c, 10.0).advance_width).collect();
+        assert!(widths.iter().all(|w| (w - widths[0]).abs() < 1e-3), "figures one width: {widths:?}");
     }
 
     /// The ▾ of "Add ▾" draws whatever the machine has installed: a Mac
