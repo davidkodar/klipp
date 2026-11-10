@@ -404,8 +404,6 @@ impl KlippApp {
                 }
                 AppCommand::PasteAudioKeyframes { clip_id, param } => {
                     if let Some(ref cb) = self.state.keyframe_clipboard.clone() {
-                        let old_state = self.state.sequences[self.state.active_sequence_idx]
-                            .all_clips().find(|c| c.id == *clip_id).map(KeyframeSnapshot::from_clip);
                         let target_dur = self.state.sequences[self.state.active_sequence_idx]
                             .all_clips().find(|c| c.id == *clip_id).map(|c| c.duration().to_secs_f64());
                         if let Some(target_dur) = target_dur {
@@ -416,31 +414,11 @@ impl KlippApp {
                                 k
                             }).collect();
                             new_kfs.sort_by(|a, b| a.time_secs.partial_cmp(&b.time_secs).unwrap_or(std::cmp::Ordering::Equal));
-                            for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
-                                if let Some(clip) = track.find_clip_mut(*clip_id) {
-                                    let target = match param {
-                                        klipp_core::AudioParam::Volume => &mut clip.volume_keyframes,
-                                        klipp_core::AudioParam::Pan => &mut clip.pan_keyframes,
-                                        klipp_core::AudioParam::Gain => &mut clip.gain_keyframes,
-                                    };
-                                    *target = new_kfs;
-                                    break;
-                                }
-                            }
-                            if let Some(old_snap) = old_state {
-                                let new_snap = self.state.sequences[self.state.active_sequence_idx]
-                                    .all_clips().find(|c| c.id == *clip_id).map(KeyframeSnapshot::from_clip);
-                                if let Some(new_snap) = new_snap {
-                                    self.state.push_history(EditCommand::EditKeyframes {
-                                            clip_id: *clip_id,
-                                            linked_clip_id: None,
-                                            description: "Paste Audio Keyframes",
-                                            old_state: old_snap,
-                                            new_state: new_snap,
-                                            old_linked_state: None,
-                                            new_linked_state: None,
-                                        });
-                                }
+                            // On its linked partner too, where a pair's
+                            // level is read.
+                            let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                            if let Some(edit) = super::linked_audio::set_audio_keys_with_partner(seq, *clip_id, *param, new_kfs, "Paste Audio Keyframes") {
+                                self.state.push_history(edit);
                             }
                             self.sync_sequence_to_engine();
                             let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
@@ -450,43 +428,18 @@ impl KlippApp {
                     true
                 }
                 AppCommand::ReverseAudioKeyframes { clip_id, param } => {
-                    let old_state = self.state.sequences[self.state.active_sequence_idx]
-                        .all_clips().find(|c| c.id == *clip_id).map(KeyframeSnapshot::from_clip);
-                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
-                        if let Some(clip) = track.find_clip_mut(*clip_id) {
-                            let keyframes = match param {
-                                klipp_core::AudioParam::Volume => &mut clip.volume_keyframes,
-                                klipp_core::AudioParam::Pan => &mut clip.pan_keyframes,
-                                klipp_core::AudioParam::Gain => &mut clip.gain_keyframes,
-                            };
-                            if keyframes.len() >= 2 {
-                                let max_time = keyframes.last().map(|k| k.time_secs).unwrap_or(0.0);
-                                for kf in keyframes.iter_mut() {
-                                    kf.time_secs = max_time - kf.time_secs;
-                                    let old_in = kf.tangent_in;
-                                    let old_out = kf.tangent_out;
-                                    kf.tangent_in = (-old_out.0, old_out.1);
-                                    kf.tangent_out = (-old_in.0, old_in.1);
-                                }
-                                keyframes.reverse();
-                                keyframes.sort_by(|a, b| a.time_secs.partial_cmp(&b.time_secs).unwrap_or(std::cmp::Ordering::Equal));
-                            }
-                            break;
-                        }
-                    }
-                    if let Some(old_snap) = old_state {
-                        let new_snap = self.state.sequences[self.state.active_sequence_idx]
-                            .all_clips().find(|c| c.id == *clip_id).map(KeyframeSnapshot::from_clip);
-                        if let Some(new_snap) = new_snap {
-                            self.state.push_history(EditCommand::EditKeyframes {
-                                    clip_id: *clip_id,
-                                    linked_clip_id: None,
-                                    description: "Reverse Audio Keyframes",
-                                    old_state: old_snap,
-                                    new_state: new_snap,
-                                    old_linked_state: None,
-                                    new_linked_state: None,
-                                });
+                    let reversed = self.state.sequences[self.state.active_sequence_idx].all_clips().find(|c| c.id == *clip_id).map(|clip| {
+                        super::linked_audio::reversed_keys(match param {
+                            klipp_core::AudioParam::Volume => &clip.volume_keyframes,
+                            klipp_core::AudioParam::Pan => &clip.pan_keyframes,
+                            klipp_core::AudioParam::Gain => &clip.gain_keyframes,
+                        })
+                    });
+                    // On its linked partner too, where a pair's level is read.
+                    if let Some(reversed) = reversed {
+                        let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                        if let Some(edit) = super::linked_audio::set_audio_keys_with_partner(seq, *clip_id, *param, reversed, "Reverse Audio Keyframes") {
+                            self.state.push_history(edit);
                         }
                     }
                     self.sync_sequence_to_engine();
