@@ -2644,6 +2644,11 @@ pub struct AppState {
     /// The same once clicked, until the engine's sample of the node's
     /// input comes back.
     pub hue_curve_awaiting: Option<(ClipId, uuid::Uuid, u8)>,
+    /// The Chroma Key whose Key Colour the viewer's next click picks:
+    /// its clip and its node's path in the clip's picture.
+    pub key_colour_pick: Option<(ClipId, klipp_graph_format::path::NodePath)>,
+    /// That pick sent to the engine, waiting for its `NodeInputSampled`.
+    pub key_colour_awaiting: Option<(ClipId, klipp_graph_format::path::NodePath)>,
     /// Matte preview — show B&W qualifier/mask matte in viewer
     pub matte_preview_active: bool,
     /// The matte node the viewer shows, when one was named.
@@ -3662,6 +3667,8 @@ pub enum EyedropperMode {
     HueCurve,
     /// A 3D qualifier stroke (#895): dragged, not clicked.
     QualifierStroke,
+    /// A Chroma Key's Key Colour.
+    KeyColour,
 }
 
 /// A 3D qualifier stroke being sampled (#895): the node, whether it takes
@@ -5333,6 +5340,8 @@ impl Default for AppState {
             qualifier_pick: None,
             hue_curve_pick: None,
             hue_curve_awaiting: None,
+            key_colour_pick: None,
+            key_colour_awaiting: None,
             matte_preview_active: false,
             matte_preview_node: None,
             solo_node: None,
