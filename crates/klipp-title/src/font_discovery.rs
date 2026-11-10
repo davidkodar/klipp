@@ -261,10 +261,7 @@ fn run_scan_and_publish() {
             Arc::new(loaded)
         }
         None => {
-            let mut fonts: BTreeMap<String, Vec<FontInfo>> = BTreeMap::new();
-            for dir in &dirs {
-                scan_directory(Path::new(dir), &mut fonts, &mut Vec::new());
-            }
+            let fonts = scan_dirs(&dirs);
             tracing::info!("Font discovery: scanned {} families from disk", fonts.len());
             // Persist the result so the next launch is fast. Failures here are
             // non-fatal — the cache is purely an optimization.
@@ -314,13 +311,41 @@ fn run_scan_and_publish() {
 
 pub(crate) fn font_directories() -> Vec<String> {
     let home = std::env::var("HOME").unwrap_or_default();
-    vec![
+    font_directories_in(&home, Path::new("/run/host"), crate::catalogue::fonts_dir().to_string_lossy().into_owned())
+}
+
+/// [`font_directories`] for `home`, with `host` where a Flatpak sees the
+/// host's files (`/run/host`) and `catalogue` the catalogue's folder. In
+/// a Flatpak the host's system fonts are in `host/fonts` and the person's
+/// own in `host/user-fonts`: scanned after the runtime's, when there.
+pub(crate) fn font_directories_in(home: &str, host: &Path, catalogue: String) -> Vec<String> {
+    let mut dirs = vec![
         "/usr/share/fonts".to_string(),
         "/usr/local/share/fonts".to_string(),
         format!("{home}/.local/share/fonts"),
         // The catalogue's fetched families (#2732).
-        crate::catalogue::fonts_dir().to_string_lossy().into_owned(),
-    ]
+        catalogue,
+    ];
+    dirs.extend(["fonts", "user-fonts"].iter().map(|d| host.join(d)).filter(|d| d.is_dir()).map(|d| d.to_string_lossy().into_owned()));
+    dirs
+}
+
+/// The fonts in `dirs`, in order, by family: a face a folder before has
+/// already given (the same family and style, as a Flatpak's runtime and
+/// its host both have DejaVu) is kept from that folder alone.
+pub(crate) fn scan_dirs(dirs: &[String]) -> BTreeMap<String, Vec<FontInfo>> {
+    let mut fonts: BTreeMap<String, Vec<FontInfo>> = BTreeMap::new();
+    for dir in dirs {
+        for (family, faces) in scan_folder(Path::new(dir)) {
+            let entry = fonts.entry(family).or_default();
+            for face in faces {
+                if !entry.iter().any(|f| f.style == face.style) {
+                    entry.push(face);
+                }
+            }
+        }
+    }
+    fonts
 }
 
 /// The fonts in one folder and the folders under it, by family: a
@@ -560,6 +585,37 @@ fn normalize_style(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    /// In a Flatpak the host's fonts are under `/run/host`: its system
+    /// fonts (`fonts`) and the person's own (`user-fonts`) are scanned with
+    /// the runtime's when they are there, and a family the runtime has too
+    /// is listed once, the runtime's face kept. A temporary folder stands
+    /// in for `/run/host` and for the runtime's fonts.
+    #[test]
+    fn a_flatpak_scans_the_hosts_fonts_without_listing_a_family_twice() {
+        use super::*;
+        let root = std::env::temp_dir().join(format!("klipp-host-fonts-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (runtime, host) = (root.join("usr-share-fonts"), root.join("run-host"));
+        let inter = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/fonts/Inter/Inter-Regular.ttf");
+        for (dir, name) in [(&runtime, "Shared-Regular.ttf"), (&host.join("fonts"), "Shared-Regular.ttf"), (&host.join("user-fonts"), "Mine-Regular.ttf")] {
+            std::fs::create_dir_all(dir).unwrap();
+            std::fs::copy(inter, dir.join(name)).unwrap();
+        }
+        let dirs = font_directories_in("/nonexistent-home", &host, "/nonexistent-catalogue".into());
+        for want in [host.join("fonts"), host.join("user-fonts")] {
+            assert!(dirs.contains(&want.to_string_lossy().into_owned()), "{dirs:?}");
+        }
+        assert!(!font_directories_in("/h", &root.join("no-host"), "/c".into()).iter().any(|d| d.contains("no-host")), "no /run/host outside a Flatpak");
+        let mut scanned = vec![runtime.to_string_lossy().into_owned()];
+        scanned.extend(dirs);
+        let fonts = scan_dirs(&scanned);
+        let shared = &fonts["Shared"];
+        assert_eq!(shared.len(), 1, "listed once: {shared:?}");
+        assert!(shared[0].path.starts_with(&runtime), "the runtime's face kept: {:?}", shared[0].path);
+        assert_eq!(fonts["Mine"].len(), 1, "the person's own font on the host");
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     /// A font folder with a link back up into itself is scanned once:
     /// the scan ends, and the font in it is listed once.
