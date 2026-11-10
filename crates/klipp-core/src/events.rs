@@ -1401,6 +1401,9 @@ pub enum AppCommand {
     /// The viewer click for an armed hue-curve eyedropper
     /// (`PickHueCurve`), as a fraction of the frame.
     RequestHueCurveSample { nx: f32, ny: f32 },
+    /// The viewer click for an armed Chroma Key eyedropper
+    /// (`PickKeyColour`), as a fraction of the frame.
+    RequestKeyColourSample { nx: f32, ny: f32 },
     BeginTitleEdit { clip_id: ClipId },
     EndTitleEdit,
 
@@ -2836,6 +2839,10 @@ pub enum AppCommand {
     /// (0 Hue vs Hue, 1 Hue vs Sat, 2 Hue vs Lum): the next click puts
     /// a range on that curve round the hue picked (#612).
     PickHueCurve { clip_id: ClipId, node_id: uuid::Uuid, curve: u8 },
+    /// Arm the viewer's eyedropper for the Chroma Key at `at` (a node of
+    /// `clip_id`'s picture): the next click sets its Key Colour to the
+    /// colour the key receives there, one undo step.
+    PickKeyColour { clip_id: ClipId, at: klipp_graph_format::path::NodePath },
 
     // Global LUT
     LoadGlobalLut { path: PathBuf },

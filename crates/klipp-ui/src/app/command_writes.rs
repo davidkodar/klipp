@@ -51,6 +51,7 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::SetPlayheadFromTimecode { .. }
         | AppCommand::RequestQualifierSample { .. }
         | AppCommand::RequestHueCurveSample { .. }
+        | AppCommand::RequestKeyColourSample { .. }
         | AppCommand::BeginTitleEdit { .. }
         | AppCommand::EndTitleEdit
         | AppCommand::RenderRange { .. }
@@ -204,6 +205,7 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::PickQualifierStroke { .. }
         | AppCommand::QualifierStroke { .. }
         | AppCommand::PickHueCurve { .. }
+        | AppCommand::PickKeyColour { .. }
         | AppCommand::SetLutTetrahedral(..)
         | AppCommand::SetSdrTransfer(..)
         | AppCommand::SaveBuiltinEffectPreset { .. }

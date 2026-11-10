@@ -724,6 +724,20 @@ pub fn display_name(graph: &Graph, addr: &NodePath, label: &str, is_group: bool)
 /// CbCr), and a neutral pixel sits at its centre, `tolerance + soft_edge`
 /// from the key or nearer. A dark navy logo's white letters went with its
 /// blue at the default 0.2. `None` for a key colour clear of grey.
+/// The Chroma Key's eyedropper: armed, the viewer's next click keys the
+/// effect at `addr` on the colour the key receives there.
+fn key_colour_picker(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppState, clip: &Clip, addr: &klipp_graph_format::path::NodePath, cmds: &mut Vec<AppCommand>) {
+    let armed = state.eyedropper_mode == crate::state::EyedropperMode::KeyColour && state.key_colour_pick.as_ref().is_some_and(|(c, at)| *c == clip.id && at == addr);
+    let tint = if armed { theme.accent } else { theme.overlay(160) };
+    let text = if armed { "Click the colour in the viewer" } else { "Pick Key Colour" };
+    let pick = ui
+        .add(egui::Button::image_and_text(crate::icons::Icon::Eyedropper.image(12.0).tint(tint), egui::RichText::new(text).size(11.0)).selected(armed))
+        .on_hover_text("Click the colour to key out in the viewer. It is read from the picture the key receives, before it is keyed out (Esc cancels)");
+    if pick.clicked() {
+        cmds.push(AppCommand::PickKeyColour { clip_id: clip.id, at: addr.clone() });
+    }
+}
+
 pub(crate) fn greys_keyed_note(key_color: [u8; 3], tolerance: f32, soft_edge: f32) -> Option<&'static str> {
     let [r, g, b] = key_color.map(f32::from);
     let cb = -0.168736 * r - 0.331264 * g + 0.5 * b;
@@ -862,6 +876,9 @@ fn row_card(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppState, clip: &Clip
                     klipp_effects::BuiltinEffect::ChromaKey { key_color, tolerance, soft_edge, .. } => greys_keyed_note(key_color, tolerance, soft_edge),
                     _ => None,
                 });
+            if ty.tag == "chroma_key" {
+                key_colour_picker(ui, theme, state, clip, &row.addr, cmds);
+            }
             if ty.tag == "surface_pin" {
                 surface_choice(ui, theme, clip, &row.addr, &klipp_graph_lift::effect_params::entry_of(n).unwrap_or(serde_json::Value::Null), cmds);
             }
