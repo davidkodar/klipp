@@ -78,6 +78,23 @@ class ReleaseTests(unittest.TestCase):
         for base in ("http://127.0.0.1:8000", "http://localhost:8000/x"):
             self.assertEqual(key_for(base), "RWQtestkey", f"base {base!r}")
 
+    def test_a_flatpak_is_left_to_its_store(self):
+        """In a Flatpak the updater says the store updates Klipp, and runs
+        nothing: no sudo, no pacman."""
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            sudo = root / "sudo"
+            sudo.write_text('#!/bin/sh\nprintf "%s\\n" "$@" > "$CALLS"\n')
+            sudo.chmod(0o755)
+            calls = root / "calls"
+            env = dict(os.environ, PATH=f"{root}:{os.environ['PATH']}", CALLS=str(calls), FLATPAK_ID="io.github.davidkodar.Klipp")
+            for args in (["--terminal"], ["0.9.9"], []):
+                result = subprocess.run(["bash", str(ROOT / "packaging/klipp-update"), *args],
+                                        input="y\n\n", capture_output=True, text=True, env=env)
+                self.assertEqual(result.returncode, 0, args)
+                self.assertIn("updated by your software store", result.stdout, args)
+                self.assertFalse(calls.exists(), f"{args}: nothing run")
+
     def test_failure_does_not_claim_update_succeeded(self):
         result, _ = self.updater("y\n\n", 1)
         self.assertEqual(result.returncode, 1)
