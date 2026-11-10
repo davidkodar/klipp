@@ -650,6 +650,14 @@ pub fn display_name(graph: &Graph, addr: &NodePath, label: &str, is_group: bool)
         return label.to_owned();
     }
     let node = node_at(graph, addr);
+    // A frei0r plug-in by the plug-in it runs (Brightness), the last part
+    // of its entry's `frei0r:{path}:{name}`, not the kind all share.
+    let plugin = node.filter(|n| klipp_graph_lift::effect_params::tag(n) == Some("frei0r"))
+        .and_then(|n| klipp_graph_lift::effect_params::entry_of(n).ok())
+        .and_then(|e| e.get("type_id")?.as_str().and_then(|id| id.rsplit(':').next()).filter(|name| !name.is_empty()).map(str::to_owned));
+    if let Some(name) = plugin {
+        return name;
+    }
     if let Some(ty) = node.and_then(klipp_graph_lift::effect_params::tag).and_then(|tag| effect_types().find(|t| t.tag == tag)) {
         return ty.desc.name.to_owned();
     }
@@ -866,6 +874,20 @@ fn row_card(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppState, clip: &Clip
 
 #[cfg(test)]
 mod surface_choice_tests {
+    /// A frei0r plug-in's card is named after the plug-in it runs
+    /// (Brightness), not the kind every plug-in shares ("frei0r").
+    #[test]
+    fn a_frei0r_card_is_named_after_its_plugin() {
+        let t = |s| klipp_core::RationalTime::from_secs_f64(s, 24);
+        let fx = klipp_effects::BuiltinEffect::Frei0r { type_id: "frei0r:/usr/lib/frei0r-1/brightness.so:Brightness".into(), params: Vec::new() };
+        let clip = klipp_timeline::test_clip::TestClip::of(klipp_timeline::Clip::media(klipp_core::MediaId::new(), t(0.0), t(2.0), t(0.0), t(2.0))).effect(fx).build();
+        let graph = clip.picture_v2().unwrap().picture.graph.clone();
+        let node = graph.nodes.iter().find(|n| klipp_graph_lift::effect_params::tag(n) == Some("frei0r")).expect("the plug-in's node").id;
+        let addr = NodePath::new(Root::Clip { clip: clip.id.0 }, [node]);
+        let label = graph.nodes.iter().find(|n| n.id == node).unwrap().label.clone();
+        assert_eq!(super::display_name(&graph, &addr, &label, false), "Brightness", "its label {label:?}");
+    }
+
     use super::*;
 
     fn frame(ctx: &egui::Context, clip: &Clip, addr: &NodePath, entry: &serde_json::Value, clock: f64, events: Vec<egui::Event>) -> (Vec<AppCommand>, Vec<(String, egui::Pos2)>) {
