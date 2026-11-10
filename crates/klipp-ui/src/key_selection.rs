@@ -180,13 +180,30 @@ pub fn drag_to(state: &mut AppState, clip: &Clip, dt: f64, dv: f32) -> Vec<AppCo
         return Vec::new();
     }
     let duration = clip.duration().to_secs_f64();
+    // Where each key stands now: near where the last move put it, within
+    // half a frame, as its time may read back a hair off (a time through
+    // points, a lane write's rounding). Found only at the exact time, the
+    // next move found nothing, and no move after it either: the drag
+    // stopped one frame on. Any key not found leaves the drag where it is
+    // for the next move to try again.
+    let half_frame = 0.5 / state.sequence().fps.as_f64().max(1.0);
+    let mut found = Vec::with_capacity(drag.keys.len());
+    for (kind, t0, _) in &drag.keys {
+        let want = t0 + drag.dt;
+        let near = track_keys(clip, kind).into_iter().map(|k| k.time_secs).filter(|t| (t - want).abs() < half_frame).min_by(|a, b| (a - want).abs().total_cmp(&(b - want).abs()));
+        match near {
+            Some(t) => found.push(t),
+            None => return Vec::new(),
+        }
+    }
+    let now = |kind: &KeyframeParamKind, t0: f64| drag.keys.iter().zip(&found).find(|((k, t, _), _)| k == kind && same_time(*t, t0)).map(|(_, f)| *f);
     // Every key's new time inside the clip, and clear of the keys left.
     for (kind, t0, _) in &drag.keys {
         let to = t0 + dt;
         if !(0.0..=duration + 1e-9).contains(&to) {
             return Vec::new();
         }
-        let moving: Vec<f64> = drag.keys.iter().filter(|(k, ..)| k == kind).map(|(_, t, _)| t + drag.dt).collect();
+        let moving: Vec<f64> = drag.keys.iter().zip(&found).filter(|((k, ..), _)| k == kind).map(|(_, f)| *f).collect();
         let still = track_keys(clip, kind).into_iter().filter(|k| !moving.iter().any(|m| same_time(*m, k.time_secs)));
         if still.into_iter().any(|k| same_time(k.time_secs, to)) {
             return Vec::new();
@@ -202,7 +219,7 @@ pub fn drag_to(state: &mut AppState, clip: &Clip, dt: f64, dv: f32) -> Vec<AppCo
     // So the sound keys' moves go first, held as one keyframe drag.
     let (mut held, mut rest) = (Vec::new(), Vec::new());
     for (kind, t0, v0) in order {
-        let (from, to) = (t0 + drag.dt, t0 + dt);
+        let (from, to) = (now(kind, *t0).unwrap_or(t0 + drag.dt), t0 + dt);
         let value = if drag.value_track.as_ref() == Some(kind) { Some(v0 + dv) } else { None };
         let bucket = if matches!(kind, KeyframeParamKind::Audio(_) | KeyframeParamKind::AudioEffect { .. }) { &mut held } else { &mut rest };
         bucket.extend(move_command(clip, kind, from, to, value));

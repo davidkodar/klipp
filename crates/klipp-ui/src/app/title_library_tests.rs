@@ -120,6 +120,25 @@ fn adding_a_title_redraws_the_frame_at_the_playhead() {
 }
 
 
+/// A plain title's long sentence, wrapped in its box, stays inside the
+/// picture with the title set left of centre: its lines lost their first
+/// letters at the left edge. (Repro: an unsized box wraps at nine tenths
+/// of the frame's width wherever its centre is.)
+#[test]
+fn a_wrapped_title_left_of_centre_stays_in_the_picture() {
+    let mut r = klipp_title::TitleRenderer::new();
+    for (x, y) in [(0.38, 0.5), (0.17, 0.79)] {
+        let mut td = super::titles::default_title_data(&crate::prefs::TitlePrefs::default());
+        td.primary_text_mut().unwrap().text = "A long line of words that the title wraps across the picture, set to see how it behaves near the edge of the frame when moved".into();
+        td.objects[0].transform.center = klipp_timeline::TitlePosition { x, y };
+        let (w, h) = (640u32, 360u32);
+        let px = r.render_with_window(&td, w, h, None, 2.0, Some(5.0));
+        let drawn_in = |cols: std::ops::Range<u32>| (0..h).flat_map(|row| cols.clone().map(move |col| (row, col))).filter(|(row, col)| px[((row * w + col) * 4 + 3) as usize] > 8).count();
+        assert!(drawn_in(0..w) > 200, "the title is drawn at x {x}");
+        assert_eq!(drawn_in(0..2), 0, "nothing at the picture's left edge at x {x}: the lines run past it");
+    }
+}
+
 /// Centred lines with tracking stay centred on each other: the first line
 /// grew only to the left and the second only to the right.
 #[test]

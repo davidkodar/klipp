@@ -1206,23 +1206,8 @@ impl KlippApp {
             // Markers — handled by handle_marker_commands
             // Linked clips
             AppCommand::UnlinkClip { clip_id } => {
-                let cid = *clip_id;
-                // Find the linked partner
-                let partner_id = self.state.sequences[self.state.active_sequence_idx].tracks.iter()
-                    .flat_map(|t| t.clips.iter())
-                    .find(|c| c.id == cid)
-                    .and_then(|c| c.linked_clip_id);
-                // Clear linked_clip_id on both
-                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
-                    if let Some(c) = track.find_clip_mut(cid) {
-                        c.linked_clip_id = None;
-                    }
-                    if let Some(pid) = partner_id {
-                        if let Some(c) = track.find_clip_mut(pid) {
-                            c.linked_clip_id = None;
-                        }
-                    }
-                }
+                // Both halves unlinked, the picture's own sound kept out.
+                self.state.sequences[self.state.active_sequence_idx].unlink(*clip_id);
                 self.state.dirty = true;
                 true
             }
