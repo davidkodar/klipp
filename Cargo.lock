@@ -3536,6 +3536,7 @@ dependencies = [
  "klipp-timeline",
  "klipp-title",
  "klipp-transitions",
+ "libloading 0.8.9",
  "rayon",
  "serde_json",
  "serial_test",
