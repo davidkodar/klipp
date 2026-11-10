@@ -213,6 +213,11 @@ impl SeatHandler for WinitState {
         // KLIPP PATCH: files dropped on our windows (`dnd.rs`).
         seat_state.data_device =
             self.data_device_manager.as_ref().map(|m| m.get_data_device(queue_handle, &seat));
+        tracing::debug!(
+            "Drag and drop: new seat {}, data device {:?}",
+            seat.id(),
+            seat_state.data_device.as_ref().map(|d| d.inner().id())
+        );
         self.seats.insert(seat.id(), seat_state);
     }
 

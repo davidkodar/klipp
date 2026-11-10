@@ -151,12 +151,29 @@ impl WinitState {
         // KLIPP PATCH: a data device on each seat, for files dropped on our
         // windows (`dnd.rs`).
         let data_device_manager =
-            sctk::data_device_manager::DataDeviceManagerState::bind(globals, queue_handle).ok();
+            match sctk::data_device_manager::DataDeviceManagerState::bind(globals, queue_handle) {
+                Ok(m) => {
+                    tracing::debug!(
+                        "Drag and drop: wl_data_device_manager v{} bound",
+                        m.data_device_manager().version()
+                    );
+                    Some(m)
+                },
+                Err(e) => {
+                    tracing::warn!("Drag and drop: no wl_data_device_manager ({e}); files can't be dropped");
+                    None
+                },
+            };
         let mut seats = AHashMap::default();
         for seat in seat_state.seats() {
             let mut state = WinitSeatState::new();
             state.data_device =
                 data_device_manager.as_ref().map(|m| m.get_data_device(queue_handle, &seat));
+            tracing::debug!(
+                "Drag and drop: seat {} at start, data device {:?}",
+                seat.id(),
+                state.data_device.as_ref().map(|d| d.inner().id())
+            );
             seats.insert(seat.id(), state);
         }
 

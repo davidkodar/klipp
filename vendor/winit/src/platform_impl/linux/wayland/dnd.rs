@@ -154,6 +154,12 @@ impl DataDeviceHandler for WinitState {
         _: f64,
         surface: &WlSurface,
     ) {
+        tracing::debug!(
+            "Drag and drop: enter on {} (device {}), offer {}",
+            surface.id(),
+            device.id(),
+            if drag_offer(device).is_some() { "from another client" } else { "none" }
+        );
         self.dnd.drag += 1;
         self.dnd.window = Some(super::make_wid(surface));
         self.dnd.hovered = false;
@@ -175,6 +181,7 @@ impl DataDeviceHandler for WinitState {
             let dnd = &mut state.dnd;
             let Some(window) = dnd.window.filter(|_| dnd.drag == drag && !dnd.dropped) else { return };
             dnd.hovered = !paths.is_empty();
+            tracing::debug!("Drag and drop: hovering {} file(s)", paths.len());
             for path in paths {
                 state.events_sink.push_window_event(WindowEvent::HoveredFile(path), window);
             }
@@ -182,6 +189,7 @@ impl DataDeviceHandler for WinitState {
     }
 
     fn leave(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataDevice) {
+        tracing::debug!("Drag and drop: leave (hovered {}, dropped {})", self.dnd.hovered, self.dnd.dropped);
         if let Some(window) = self.dnd.window.take() {
             if self.dnd.hovered && !self.dnd.dropped {
                 self.events_sink.push_window_event(WindowEvent::HoveredFileCancelled, window);
@@ -193,9 +201,13 @@ impl DataDeviceHandler for WinitState {
     fn motion(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataDevice, _: f64, _: f64) {}
 
     // The clipboard is egui's own connection's; nothing of it here.
-    fn selection(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataDevice) {}
+    fn selection(&mut self, _: &Connection, _: &QueueHandle<Self>, device: &WlDataDevice) {
+        // Logged only to show the device hears the compositor.
+        tracing::debug!("Drag and drop: selection event on device {}", device.id());
+    }
 
     fn drop_performed(&mut self, _: &Connection, _: &QueueHandle<Self>, device: &WlDataDevice) {
+        tracing::debug!("Drag and drop: drop on device {}, over window {:?}", device.id(), self.dnd.window);
         let Some(offer) = drag_offer(device) else { return };
         let Some(window) = self.dnd.window else { return };
         if !offer.with_mime_types(|types| types.iter().any(|t| t == URI_LIST)) {
@@ -204,6 +216,7 @@ impl DataDeviceHandler for WinitState {
         self.dnd.dropped = true;
         let finished = offer.clone();
         read_uri_list(self, &offer, move |state, paths| {
+            tracing::debug!("Drag and drop: dropped {} file(s)", paths.len());
             for path in paths {
                 state.events_sink.push_window_event(WindowEvent::DroppedFile(path), window);
             }
@@ -219,8 +232,9 @@ impl DataOfferHandler for WinitState {
         _: &Connection,
         _: &QueueHandle<Self>,
         offer: &mut DragOffer,
-        _: DndAction,
+        actions: DndAction,
     ) {
+        tracing::debug!("Drag and drop: the source offers {actions:?}");
         offer.set_actions(DndAction::Copy, DndAction::Copy);
     }
 
@@ -229,8 +243,9 @@ impl DataOfferHandler for WinitState {
         _: &Connection,
         _: &QueueHandle<Self>,
         _: &mut DragOffer,
-        _: DndAction,
+        action: DndAction,
     ) {
+        tracing::debug!("Drag and drop: the compositor chose {action:?}");
     }
 }
 
