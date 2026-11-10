@@ -44,6 +44,15 @@ fn pull_t_in(lb: f32, busy: f32, lt: f32, mode: u32) -> f32 {
 }
 
 fn pull_k(lb: f32, busy: f32, lt: f32) -> f32 { return pull_k_in(lb, busy, lt, p.mode); }
+
+// How much of cell `m` is ink of the title's tone (protect::tone_coverage):
+// light ink (as light as LIGHT_TEXT or lighter counting whole) in a
+// light-text title, dark ink the same way round in a dark-text one.
+fn tone_coverage(m: vec4<f32>, light: bool) -> f32 {
+    let cov = max(m.z, 0.0);
+    if light { return clamp(m.w / LIGHT_TEXT, 0.0, cov); }
+    return clamp((m.z - m.w) / (1.0 - LIGHT_TEXT), 0.0, cov);
+}
 fn pull_t(lb: f32, busy: f32, lt: f32) -> f32 { return pull_t_in(lb, busy, lt, p.mode); }
 
 var<workgroup> wk: array<vec4<f32>, 256>;
@@ -143,9 +152,11 @@ fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgro
         var seen = vec2<f32>(0.0);
         for (var c = li; c < n; c += 256u) {
             let m = unpack(output[c]);
-            if m.z <= 1e-3 { continue; }
+            // Over the cells the halo of the title's tone reaches.
+            let cov = tone_coverage(m, light);
+            if cov <= 1e-3 { continue; }
             let busy = sqrt(max(m.y - m.x * m.x, 0.0));
-            let full = m.z >= HALO_FULL;
+            let full = cov >= HALO_FULL;
             if light {
                 let k = pull_k(m.x, busy, lt);
                 acc.z = min(acc.z, k);
@@ -189,13 +200,13 @@ fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgro
         let x0 = i32(floor(u)); let y0 = i32(floor(v));
         let fx = u - floor(u); let fy = v - floor(v);
         let m = mix(mix(small_at(x0, y0), small_at(x0 + 1, y0), fx), mix(small_at(x0, y0 + 1), small_at(x0 + 1, y0 + 1), fx), fy);
-        let a = m.z;
+        // The whole title's pull, and whether it is light text, from op 5,
+        // evenly through the halo round the ink of the title's tone.
+        let title = unpack(input[p.small_w * p.small_h]);
+        let a = tone_coverage(m, title.z > 0.5);
         if a <= 1e-3 { return; }
         let ht = clamp(a / HALO_FULL, 0.0, 1.0);
         let halo = ht * ht * (3.0 - 2.0 * ht);
-        // The whole title's pull, and whether it is light text, from op 5,
-        // evenly through the halo.
-        let title = unpack(input[p.small_w * p.small_h]);
         let kt = title.xy;
         var px = unpack(output[i]);
         if title.z > 0.5 {

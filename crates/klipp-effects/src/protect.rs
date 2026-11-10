@@ -90,10 +90,12 @@ pub fn pull(lb: f32, busy: f32, lt: f32, mode: u32) -> Result<f32, f32> {
 pub fn title_pull(cells: &[[f32; 4]], mode: u32) -> (f32, f32) {
     // Each part's need for the text the whole title is, light or dark: a
     // part's own read a stroke round light letters as dark text.
-    let (_, lt) = title_tone(cells);
+    let (light, lt) = title_tone(cells);
     let need = |full: bool| {
         let (mut k, mut t, mut any) = (1.0f32, 0.0f32, false);
-        for m in cells.iter().filter(|m| if full { m[2] >= HALO_FULL } else { m[2] > 1e-3 }) {
+        // Over the cells the halo of the title's tone reaches: what
+        // dark ink beside light text sits on needs no darkening.
+        for m in cells.iter().filter(|m| if full { tone_coverage(m, light) >= HALO_FULL } else { tone_coverage(m, light) > 1e-3 }) {
             any = true;
             let busy = (m[1] - m[0] * m[0]).max(0.0).sqrt();
             match pull(m[0], busy, lt, mode) {
@@ -104,6 +106,23 @@ pub fn title_pull(cells: &[[f32; 4]], mode: u32) -> (f32, f32) {
         any.then_some((k, t))
     };
     need(true).or_else(|| need(false)).unwrap_or((1.0, 0.0))
+}
+
+/// How much of a measuring cell `m` is ink of the title's tone: in a
+/// light-text title its light ink (ink as light as [`LIGHT_TEXT`] or
+/// lighter counting whole, darker less, black not at all), in a dark-text
+/// title its dark ink, the same way round. The
+/// halo and the pull follow it, so black letterbox bars or a logo block
+/// beside white words take none of the words' darkening.
+pub fn tone_coverage(m: &[f32; 4], light: bool) -> f32 {
+    let cov = m[2].max(0.0);
+    if light {
+        // Ink as light as light text or lighter counts whole: a grey
+        // attribution under white words keeps its halo.
+        (m[3] / LIGHT_TEXT).clamp(0.0, cov)
+    } else {
+        ((m[2] - m[3]) / (1.0 - LIGHT_TEXT)).clamp(0.0, cov)
+    }
 }
 
 /// The share of a title's ink, by coverage, that must be light text for
@@ -254,7 +273,9 @@ pub fn protect_backdrop(acc: &mut [f32], layer: &[f32], width: u32, height: u32,
                 let bottom = c01[k] + (c11[k] - c01[k]) * fx;
                 m[k] = top + (bottom - top) * fy;
             }
-            let a = m[2];
+            // The halo round the ink of the title's own tone: black bars
+            // round white words spread none of the words' darkening.
+            let a = tone_coverage(&m, light);
             if a <= 1e-3 {
                 continue;
             }
@@ -342,6 +363,40 @@ mod tests {
         // The sky just under the letters.
         let lighter = (106..116u32).flat_map(|y| (80..172u32).map(move |x| (y * w + x) as usize * 4)).filter(|&i| luma(&acc[i..i + 4], K) > luma(&before[i..i + 4], K) + 1e-3).count();
         assert_eq!(lighter, 0, "{lighter} pixels of sky round the white text lightened");
+    }
+
+    /// Black letterbox bars across the frame with white words between them
+    /// (the Opener template), over a bright sky: the words are protected,
+    /// but the sky just inside the bars is left as it is. With one halo
+    /// round all the ink, the bars' edges took the darkening the white
+    /// words asked for, a dark band along each bar.
+    #[test]
+    fn letterbox_bars_round_white_words_get_no_dark_band() {
+        let (w, h) = (256, 144);
+        let mut acc = frame(w, h, [0.7, 0.8, 0.95, 1.0]);
+        let before = acc.clone();
+        let mut layer = frame(w, h, [0.0; 4]);
+        let mut put = |x0: u32, y0: u32, x1: u32, y1: u32, c: f32| {
+            for y in y0..y1 {
+                for x in x0..x1 {
+                    let i = ((y * w + x) * 4) as usize;
+                    layer[i..i + 4].copy_from_slice(&[c, c, c, 1.0]);
+                }
+            }
+        };
+        // The bars, 20 high, and five letters in the middle.
+        put(0, 0, w, 20, 0.0);
+        put(0, h - 20, w, h, 0.0);
+        for letter in 0..5u32 {
+            put(80 + letter * 20, 64, 92 + letter * 20, 80, 1.0);
+        }
+        protect_backdrop(&mut acc, &layer, w, h, 1.0, 1, K);
+        let band = |y0: u32, y1: u32| (y0..y1).flat_map(|y| (0..w).map(move |x| (y * w + x) as usize * 4)).map(|i| luma(&acc[i..i + 4], K) - luma(&before[i..i + 4], K)).fold(0.0f32, f32::min);
+        let (top, bottom) = (band(20, 44), band(h - 44, h - 20));
+        assert!(top > -0.02 && bottom > -0.02, "the sky inside the bars darkened by {top} (top) and {bottom} (bottom)");
+        // The words still get their shade.
+        let under = (82..86u32).flat_map(|y| (80..172u32).map(move |x| (y * w + x) as usize * 4)).map(|i| luma(&acc[i..i + 4], K) - luma(&before[i..i + 4], K)).fold(0.0f32, f32::min);
+        assert!(under < -0.1, "the sky round the words is darkened: {under}");
     }
 
     /// White text over a picture half bright, half dark: the shade behind

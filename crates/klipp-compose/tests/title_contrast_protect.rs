@@ -270,3 +270,49 @@ fn white_words_beside_a_black_block_on_auto_keep_the_sky_unlightened() {
     let darker = (h * 74 / 100..h * 80 / 100).flat_map(|y| (0..w).map(move |x| (y * w + x) as usize)).filter(|&i| luminance(&auto, i) + 0.02 < luminance(&off, i)).count();
     assert!(darker > 0, "the sky round the white words is darkened");
 }
+
+/// Black letterbox bars across the frame with white words between them
+/// (the Opener template), Readability on Auto, over a bright sky at
+/// 1280 × 720: the words get their shade, the sky just inside each bar is
+/// left as it is, on the GPU as on the CPU. With one halo round all the
+/// ink, the bars' edges took the darkening the white words asked for: a
+/// dark band along each bar, the sky there at a seventh of its light.
+#[test]
+fn letterbox_bars_round_white_words_on_auto_leave_the_sky_inside_them() {
+    let (w, h) = (1280, 720);
+    let sky = || {
+        let v = (0..h).flat_map(|_| (0..w).flat_map(|_| [0.55, 0.65, 0.9, 1.0])).collect();
+        Backdrop(Arc::new(v), w, h)
+    };
+    let seq = |protect: ContrastProtect| {
+        let mut td = TitleData::single_text(TextBox { text: "THE TITLE".into(), font_size: 100.0, color: [255, 255, 255, 255], ..Default::default() });
+        for y in [0.06, 0.94] {
+            let mut xf = klipp_timeline::default_text_transform();
+            xf.center = klipp_timeline::TitlePosition { x: 0.5, y };
+            xf.size = klipp_timeline::TitlePosition { x: 1.0, y: 0.12 };
+            td.add_object(
+                klipp_timeline::TitleObjectContent::Shape(klipp_timeline::Shape { kind: klipp_timeline::ShapeKind::Rectangle { corner_radius: 0.0 }, fill: Some([0, 0, 0, 255]), gradient: None, stroke: None, fit: None }),
+                xf,
+            );
+        }
+        td.protect = protect;
+        seq_of(td, w, h)
+    };
+    let Some(off) = render_seq(seq(ContrastProtect::Off), ContrastProtect::Off, sky) else {
+        assert!(!required(), "required, but the GPU stack declined the title");
+        eprintln!("UNVERIFIED: no GPU stack");
+        return;
+    };
+    let auto = render_seq(seq(ContrastProtect::Auto), ContrastProtect::Auto, sky).unwrap();
+    // The bars' inner edges, found as the first rows from each end the
+    // frame without protection shows the sky in.
+    let dark_row = |y: u32| luminance(&off, (y * w + w / 2) as usize) < 0.01;
+    let top = (0..h).take_while(|&y| dark_row(y)).count() as u32;
+    let bottom = h - (0..h).rev().take_while(|&y| dark_row(y)).count() as u32;
+    assert!(top > 0 && bottom < h, "the bars are drawn: {top}, {bottom}");
+    let band = |ys: std::ops::Range<u32>| ys.flat_map(|y| (0..w).map(move |x| (y * w + x) as usize)).map(|i| luminance(&auto, i) - luminance(&off, i)).fold(0.0f32, f32::min);
+    let (above, below) = (band(top..top + 24), band(bottom - 24..bottom));
+    assert!(above > -0.02 && below > -0.02, "the sky inside the bars darkened by {above} (top) and {below} (bottom)");
+    let words = band(h / 2 - 50..h / 2 + 50);
+    assert!(words < -0.1, "the sky round the words is darkened: {words}");
+}
