@@ -544,7 +544,7 @@ pub fn show(
                             if targets.clips.is_empty() {
                                 state.toast.show("Select a clip first".to_string());
                             } else {
-                                cmds.extend(crate::effect_targets::commands(&targets, |clip_id| {
+                                cmds.extend(crate::effect_targets::commands(&targets, &entry.name, |clip_id| {
                                     vec![AppCommand::AddAudioEffect { clip_id, effect_type: type_id.clone() }]
                                 }));
                                 state.toast.show(crate::effect_targets::said(&entry.name, &targets));

@@ -1544,6 +1544,11 @@ pub enum AppCommand {
         new_a_timeline_out: Timecode,
         new_b_source_in: Timecode,
         new_b_timeline_in: Timecode,
+        /// The two clips' linked partners roll with them: Linked on and
+        /// Alt not held when the roll began, as an edge trim takes it.
+        /// They always did, so a roll on a sound cut moved its picture's
+        /// cut with Linked off.
+        linked: bool,
     },
     SelectClip(Option<ClipId>),
 
@@ -4122,8 +4127,9 @@ pub enum AppCommand {
     // Audio ducking
     AutoDuckAudio {
         target_clip_id: ClipId,
-        /// Track index of the dialogue/sidechain source
-        sidechain_track_idx: usize,
+        /// The tracks of the dialogue it ducks under, by index: their
+        /// speech joined.
+        sidechain_tracks: Vec<usize>,
         /// How much to reduce volume (0.0 = silence, 0.3 = reduce to 30%)
         duck_level: f32,
         /// How quickly to ramp down in seconds
@@ -4459,6 +4465,11 @@ pub enum AppCommand {
     /// Set a clip's compositor blend mode (Normal, Multiply, Screen, …).
     /// `mode` is the discriminant index into `BlendMode::ALL`.
     SetClipBlendMode { clip_id: ClipId, mode: crate::types::BlendMode },
+
+    /// The effects the inspector's All effects switch turned off on a
+    /// clip, by their picture nodes (`Clip::effects_switched_off`), set
+    /// with the switch's own changes, in the same undo step.
+    SetEffectsSwitchedOff { clip_id: ClipId, nodes: Vec<uuid::Uuid> },
 
     /// Bind another clip as this clip's track matte. The render path
     /// resolves `source_clip_id`'s rendered RGBA at the same timeline
@@ -5218,7 +5229,11 @@ pub enum AppEvent {
     /// surface is there, 0 to 1 (#2751).
     /// `track_area` and `exclude` are the area followed and the parts left
     /// out, on the reference frame as `corners` are.
-    SurfaceTracked { clip_id: ClipId, surface: uuid::Uuid, name: String, wider_area: bool, corners: [[f32; 2]; 4], reference_secs: f64, keys: Vec<(f64, [f64; 9], f32, u8, Option<f32>)>, source_size: [u32; 2], media_fps: f64, held_secs: (f64, f64), direction: i8, interactive: bool, track_area: Option<[[f32; 2]; 4]>, exclude: Vec<Vec<[f32; 2]>> },
+    /// `ended`: why the run after the reference and the one before it
+    /// stopped short of the frames read, where they did: 0 the match was
+    /// lost, 1 the surface was leaving the picture, 2 it had grown or
+    /// shrunk by the factor given since the reference frame.
+    SurfaceTracked { clip_id: ClipId, surface: uuid::Uuid, name: String, wider_area: bool, corners: [[f32; 2]; 4], reference_secs: f64, keys: Vec<(f64, [f64; 9], f32, u8, Option<f32>)>, source_size: [u32; 2], media_fps: f64, held_secs: (f64, f64), direction: i8, interactive: bool, track_area: Option<[[f32; 2]; 4]>, exclude: Vec<Vec<[f32; 2]>>, ended: [Option<(u8, f32)>; 2] },
     SurfaceTrackFailed { clip_id: ClipId, surface: uuid::Uuid, error: String },
     /// A [`AppCommand::CorrectSurface`] solved (#2754): the correction at
     /// file second `source_secs`, `corners` there as fractions of the
