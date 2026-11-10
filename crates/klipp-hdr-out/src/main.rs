@@ -96,6 +96,16 @@ impl ApplicationHandler for App {
             return;
         }
         let mut attrs = Window::default_attributes().with_title("Klipp HDR output");
+        // Klipp's own id, so the window shows Klipp's icon and sits with
+        // it: it has no desktop entry of its own, and had no id at all.
+        let app_id = window_app_id_from(std::env::var("FLATPAK_ID").ok().as_deref());
+        #[cfg(target_os = "linux")]
+        {
+            use winit::platform::wayland::WindowAttributesExtWayland as _;
+            attrs = attrs.with_name(app_id, "");
+        }
+        #[cfg(not(target_os = "linux"))]
+        let _ = app_id;
         if self.args.fullscreen {
             attrs = attrs.with_fullscreen(Some(Fullscreen::Borderless(None)));
         }
@@ -404,6 +414,13 @@ impl App {
     }
 }
 
+/// The app id the window carries, as Klipp's own windows do (klipp-core's
+/// `flatpak::window_app_id`, not a dependency of this tool): the Flatpak's
+/// id from `FLATPAK_ID`, else "klipp".
+fn window_app_id_from(var: Option<&str>) -> String {
+    var.map(str::trim).filter(|v| !v.is_empty()).unwrap_or("klipp").to_owned()
+}
+
 fn main() {
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -442,5 +459,15 @@ mod shader_tests {
     fn the_shader_is_as_it_was_before_the_move() {
         let fnv = super::SHADER.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3));
         assert_eq!((super::SHADER.len(), fnv), (931, 0xc224c57b86ed6c0f));
+    }
+}
+
+#[cfg(test)]
+mod app_id_tests {
+    #[test]
+    fn the_window_carries_klipps_app_id() {
+        assert_eq!(super::window_app_id_from(Some("io.github.davidkodar.Klipp")), "io.github.davidkodar.Klipp");
+        assert_eq!(super::window_app_id_from(Some("")), "klipp");
+        assert_eq!(super::window_app_id_from(None), "klipp");
     }
 }
