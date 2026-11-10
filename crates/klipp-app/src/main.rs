@@ -27,6 +27,19 @@ use std::sync::{Arc, Mutex, RwLock};
 use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
+/// The debug log's path, chosen once at start ([`klipp_core::debug_log::path`]),
+/// and the same path as a C string for the native crash handler, which
+/// can't allocate one inside a signal.
+static LOG_PATH: std::sync::OnceLock<(std::path::PathBuf, std::ffi::CString)> = std::sync::OnceLock::new();
+
+fn log_path() -> &'static std::path::Path {
+    &LOG_PATH.get_or_init(|| {
+        let path = klipp_core::debug_log::path();
+        let c = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).unwrap_or_else(|_| c"klipp-debug.log".to_owned());
+        (path, c)
+    }).0
+}
+
 /// Append a single message to klipp-debug.log (best-effort,
 /// async-signal-safe-ish: open + write + close, no allocator
 /// surprises). Used by both the panic hook and the native
@@ -36,7 +49,7 @@ fn write_crash_marker(msg: &str) -> std::io::Result<()> {
     let mut f = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open("klipp-debug.log")?;
+        .open(log_path())?;
     writeln!(f, "[CRASH-MARKER] {msg}")?;
     f.flush()?;
     Ok(())
@@ -72,9 +85,13 @@ fn install_native_crash_handler() {
             "[CRASH-MARKER] NATIVE_CRASH signal={name} ({signum}) — process aborting\n"
         );
         unsafe {
-            let path = b"klipp-debug.log\0";
+            // Set before the handler is installed; reading it is a load.
+            let path: *const libc::c_char = match LOG_PATH.get() {
+                Some((_, c)) => c.as_ptr(),
+                None => c"klipp-debug.log".as_ptr(),
+            };
             let fd = libc::open(
-                path.as_ptr() as *const _,
+                path,
                 libc::O_WRONLY | libc::O_APPEND | libc::O_CREAT,
                 0o644,
             );
@@ -244,9 +261,13 @@ fn main() -> Result<()> {
     // them the moment the user did the one thing a frozen app leaves them
     // — restart it. A write that fails, or a log moved away, is opened
     // again and said, rather than the rest of the run going unlogged.
+    // In a Flatpak the log goes to the app's state folder, made here.
+    if let Some(dir) = log_path().parent().filter(|d| !d.as_os_str().is_empty()) {
+        let _ = std::fs::create_dir_all(dir);
+    }
     let log_file = std::sync::Arc::new(
-        klipp_core::debug_log::RotatingLog::start("klipp-debug.log", 32 << 20, 3)
-            .expect("Failed to create klipp-debug.log"),
+        klipp_core::debug_log::RotatingLog::start(log_path(), 32 << 20, 3)
+            .unwrap_or_else(|e| panic!("Failed to create the debug log {}: {e}", log_path().display())),
     );
 
     tracing_subscriber::fmt()
@@ -329,6 +350,7 @@ fn main() -> Result<()> {
         build.label(),
         build.built_at.map_or_else(|| "unknown".to_string(), klipp_core::build_info::format_utc)
     );
+    info!("Debug log: {}", log_path().display());
 
     let (cmd_tx, cmd_rx) = crossbeam_channel::unbounded();
     let (event_tx, event_rx) = crossbeam_channel::unbounded();
@@ -605,7 +627,7 @@ fn main() -> Result<()> {
         media_pool: media_pool.clone(),
         frame_buffer: frame_buffer.clone(),
         perf_ring: perf_ring.clone(),
-        log_path: std::path::PathBuf::from("klipp-debug.log"),
+        log_path: log_path().to_path_buf(),
     };
     // The assistant is opt-out in preferences (Preferences → AI). Off means
     // the control socket and MCP server never start, so no agent can drive
