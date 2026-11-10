@@ -646,3 +646,33 @@ fn a_moved_clip_snaps_by_the_edge_it_was_grabbed_nearer() {
         assert_eq!(moved_to(&tl.sent), [(RationalTime::from_frames(start, 24), None)], "grabbed at {grab_secs} s");
     }
 }
+
+/// A LUT tile from the Library dropped on a clip puts it on as the clip's
+/// look, as the other tiles' drops do: on the clip under the pointer, or
+/// on every selected clip when it lands on one of them, as one step. The
+/// tile carried nothing, so its drop did nothing at all.
+#[test]
+fn a_lut_tile_dropped_on_a_clip_puts_it_on() {
+    for (selected, on_selection) in [(false, false), (true, true), (true, false)] {
+        let (mut state, ids) = clips_on_video_2(&[(0.0, 2.0), (2.0, 4.0), (4.0, 6.0)]);
+        if selected {
+            state.selected_clip = Some(ids[0]);
+            state.selected_clips = vec![ids[0], ids[1]];
+        }
+        let path = std::path::PathBuf::from("/luts/film.cube");
+        let mut tl = Timeline::new(state);
+        tl.state.drag_drop.begin(crate::drag_drop::DragPayload::Lut { name: "film".into(), path: path.clone() });
+        let row = tl.track("Video 2");
+        let target = if on_selection { ids[1] } else { ids[2] };
+        let secs = if on_selection { 3.0 } else { 5.0 };
+        tl.sent.clear();
+        tl.frame(vec![egui::Event::PointerMoved(tl.at(row, secs))], egui::Modifiers::NONE);
+        tl.frame(Vec::new(), egui::Modifiers::NONE);
+        let luts: Vec<ClipId> = tl.sent.iter().filter_map(|c| match c { AppCommand::ApplyClipLut { clip_id, lut_path, .. } if *lut_path == path => Some(*clip_id), _ => None }).collect();
+        let want = if on_selection { vec![ids[0], ids[1]] } else { vec![target] };
+        assert_eq!(luts, want, "selected {selected}, on the selection {on_selection}: {:?}", tl.sent);
+        let batched = tl.sent.iter().any(|c| matches!(c, AppCommand::BeginHistoryBatch)) && tl.sent.iter().any(|c| matches!(c, AppCommand::EndHistoryBatch));
+        assert_eq!(batched, want.len() > 1, "one step for several");
+        assert!(tl.state.drag_drop.payload.is_none(), "the drag is over");
+    }
+}

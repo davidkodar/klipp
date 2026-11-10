@@ -608,9 +608,15 @@ pub fn show(
                                             type_id: plugin.type_id(),
                                         });
                                     }
-                                    // A LUT preset is put on by a click, as
-                                    // the clip's look; it has no drop.
-                                    EffectSource::LutLook(_) => {}
+                                    // A LUT preset, put on as the clip's look
+                                    // where it is dropped, as a click puts it
+                                    // on the selected clip.
+                                    EffectSource::LutLook(path) => {
+                                        state.drag_drop.begin(DragPayload::Lut {
+                                            name: fx.name.clone(),
+                                            path: path.clone(),
+                                        });
+                                    }
                                     EffectSource::Clap(plugin) => {
                                         // CLAP also rides the audio-effect
                                         // drop target. type_id = "clap:{plugin_id}".
