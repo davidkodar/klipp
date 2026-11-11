@@ -402,6 +402,12 @@ pub const TINT_PLAUSIBLE: f32 = 8.0;
 /// the frame alone cannot tell from an underexposed face.
 pub const BACKLIT_GAP: f32 = 40.0;
 
+/// How far a face may read from the look's lightness for skin, in L*,
+/// and still be taken as right: past it the face is a note to judge by
+/// eye, never a fault, and the band's top is as light as a grade takes a
+/// face (#2590).
+pub const FACE_L_BAND: f32 = 7.0;
+
 /// How much more of a screen recording's flat picture may band than the
 /// file's own and still be the app's drawing: half the warning's
 /// threshold, under which a reading is within the material's own spread
@@ -1889,8 +1895,8 @@ fn graded(rule: &'static str, reading: f32, target: f32, warn: f32, fail: f32, w
     // clipping its sky or pinning its colours, which are the faults (and
     // judged as such). Off the taste is a warning, until it is so far off
     // (three times the fail distance) that no look explains it: a frame
-    // gone to black. A face blown or lost is a fault (#461).
-    let fails_at = if rule == "skin_exposure" { fail } else { fail * 3.0 };
+    // gone to black. A face is never a fault by its lightness (#2590).
+    let fails_at = fail * 3.0;
     let verdict = if off > fails_at { Verdict::Fail } else if off > warn { Verdict::Warn } else { Verdict::Pass };
     Finding { rule, verdict, reading, target, tolerance: warn, what, fix }
 }
@@ -1941,29 +1947,32 @@ pub fn judge(m: &FrameMeasure, t: &LookTarget) -> Vec<Finding> {
         if let Some(wv) = t.white_l {
             out.push(graded("white_point", m.l_p99, wv, 4.0, 9.0, format!("white point L* {:.0} (target {wv:.0})", m.l_p99), "gain"));
         }
-        // With a face in the picture the exposure is judged on the face,
-        // not on the frame: a portrait against a dark backdrop has a low
-        // median by design, and a grade that chases the median blows the
-        // face off the top.
+        // A face's lightness is the person's as much as the light's: real
+        // complexions span about L* 20 to 75, and a well-exposed dark face
+        // read as a face blown or lost (#2590). So a face is said, never a
+        // fault: one inside the look's band for skin is taken as right and
+        // the frame's median, low by design behind a lit portrait, is not
+        // judged; one outside it is a note to judge by eye, and the frame
+        // is judged by its median as with no face.
         let face_l = m.faces.iter().find(|f| f.readable()).map(|f| f.median.l);
-        match (face_l, t.skin_l) {
-            (Some(l), Some(want)) => {
-                let mut f = graded("skin_exposure", l, want, 7.0, 14.0, format!("the face is L* {l:.0} (target {want:.0}; the frame's median is {:.0})", m.l_p50), "exposure, until the face sits right — the frame's median follows the picture, not a number");
+        let face_right = matches!((face_l, t.skin_l), (Some(l), Some(want)) if (l - want).abs() <= FACE_L_BAND);
+        if let (Some(l), Some(want)) = (face_l, t.skin_l) {
+            let mut f = graded("skin_exposure", l, want, FACE_L_BAND, f32::INFINITY, String::new(), "judge the face by eye: if it should be lighter or darker, move it on its own (a window or a secondary) rather than the whole frame");
+            f.what = if face_right {
+                format!("the face reads L* {l:.0}, as skin under this look usually does (L* {want:.0}; the frame's median is {:.0})", m.l_p50)
+            } else if l < want && m.l_p95 - l >= BACKLIT_GAP {
                 // A dark face against a bright background is lit from
                 // behind: a silhouette or rim light on purpose, or an
-                // underexposed face. Said both ways, as a warning a
-                // review can keep for the shot (#1590).
-                if f.verdict == Verdict::Fail && l < want && m.l_p95 - l >= BACKLIT_GAP {
-                    f.verdict = Verdict::Warn;
-                    f.what = format!("backlit: the face is L* {l:.0} against a background at L* {:.0} (target {want:.0}) — a silhouette or rim light, or an underexposed face", m.l_p95);
-                    f.fix = "if the face should read, lift it on its own (a window or a secondary) rather than the whole frame; if it is a silhouette, accept it for the shot";
-                }
-                out.push(f);
-            }
-            _ => {
-                if let Some(mid) = t.mid_l {
-                    out.push(graded("mid_grey", m.l_p50, mid, 6.0, 12.0, format!("median L* {:.0} (target {mid:.0})", m.l_p50), "exposure or gamma"));
-                }
+                // underexposed face (#1590).
+                format!("backlit: the face reads L* {l:.0} against a background at L* {:.0} — a silhouette or rim light, a darker complexion, or an underexposed face", m.l_p95)
+            } else {
+                format!("the face reads L* {l:.0}; skin lightness varies with complexion, so judge it by eye (the frame's median is {:.0})", m.l_p50)
+            };
+            out.push(f);
+        }
+        if !face_right {
+            if let Some(mid) = t.mid_l {
+                out.push(graded("mid_grey", m.l_p50, mid, 6.0, 12.0, format!("median L* {:.0} (target {mid:.0})", m.l_p50), "exposure or gamma"));
             }
         }
         if let Some(c) = t.contrast_range {
@@ -2204,15 +2213,27 @@ pub fn primaries_toward(m: &FrameMeasure, t: &LookTarget) -> PrimaryStep {
         if let Some(wv) = t.white_l {
             s.gain = ((wv - m.l_p99) * 0.010 * DAMP).clamp(-0.3, 0.3);
         }
-        // Expose for the face when there is one, else for the frame.
+        // Expose for the frame, not toward a face's lightness, which is
+        // the person's as much as the light's (#2590). The face only holds
+        // it: one the look calls right is left where it is (a portrait
+        // against a dark backdrop has a low median by design), and none is
+        // taken past the top of the look's band for skin.
         let face = m.faces.iter().find(|f| f.readable());
-        let (have, want) = match (face, t.skin_l) {
-            (Some(f), Some(l)) => (Some(f.median.l), Some(l)),
-            _ => (Some(m.l_p50), t.mid_l),
+        let face_band = face.map(|f| f.median.l).zip(t.skin_l);
+        let exposure = match face_band {
+            Some((l, want)) if (l - want).abs() <= FACE_L_BAND => Some(0.0),
+            _ => t.mid_l.map(|want| ((want - m.l_p50) / 15.0 * DAMP).clamp(-1.5, 1.5)),
         };
-        if let (Some(have), Some(want)) = (have, want) {
-            // A stop of exposure moves a lightness by about 15 L*.
-            s.exposure = ((want - have) / 15.0 * DAMP).clamp(-1.5, 1.5);
+        let exposure = match (exposure, face_band) {
+            (e, Some((l, want))) => {
+                let to_top = (luminance_of_l(want + FACE_L_BAND) / luminance_of_l(l).max(1e-4)).log2();
+                let cap = if to_top < 0.0 { to_top * DAMP } else { to_top };
+                Some(e.unwrap_or(0.0).min(cap))
+            }
+            (e, None) => e,
+        };
+        if let Some(e) = exposure {
+            s.exposure = e;
             if clipping {
                 s.exposure = s.exposure.min(0.0);
                 s.gain = s.gain.min(0.0);
@@ -2965,9 +2986,64 @@ mod match_tests {
         let f = exposure(&sunset);
         assert_eq!(f.verdict, Verdict::Warn, "{f:?}");
         assert!(f.what.starts_with("backlit"), "{}", f.what);
+        // The same face under a flat light: a darker complexion or an
+        // underexposed face, which the frame cannot tell apart, so it is
+        // said, never a fault (#2590).
         let mut dim = sunset.clone();
         dim.l_p95 = 45.0;
-        assert_eq!(exposure(&dim).verdict, Verdict::Fail, "a dark face under a flat light");
+        assert_eq!(exposure(&dim).verdict, Verdict::Warn, "a dark face under a flat light");
+    }
+
+    /// #2590: a real dark-skinned face, evenly lit, reads about L* 22. Its
+    /// lightness is the person's, not the exposure's: no fault, and the
+    /// grade exposes for the frame, not toward a lighter face.
+    #[test]
+    fn a_dark_skinned_face_is_neither_a_fault_nor_an_exposure_target() {
+        let look = LookTarget::preset("broadcast_neutral").unwrap();
+        let mut even = with_face(flat(48.0, 0.0, 0.0), Lab { l: 22.0, a: 9.0, b: 14.0 });
+        even.l_p95 = 70.0;
+        let findings = judge(&even, &look);
+        assert!(findings.iter().all(|f| f.verdict != Verdict::Fail), "{findings:?}");
+        let f = findings.iter().find(|f| f.rule == "skin_exposure").expect("the face is said");
+        assert_eq!(f.verdict, Verdict::Warn, "{f:?}");
+        assert!(f.what.contains("L* 22") && f.what.contains("varies with complexion"), "{}", f.what);
+        let step = primaries_toward(&even, &look);
+        assert!(step.exposure.abs() < 0.03, "the frame's median is at the look's, so the exposure holds: {step:?}");
+        // The same face in a frame that is dark all over: the frame leads,
+        // and brightens it.
+        let mut dark = with_face(flat(24.0, 0.0, 0.0), Lab { l: 12.0, a: 6.0, b: 9.0 });
+        dark.l_p95 = 40.0;
+        assert!(primaries_toward(&dark, &look).exposure > 0.8, "{:?}", primaries_toward(&dark, &look));
+        assert!(judge(&dark, &look).iter().any(|f| f.rule == "mid_grey" && f.verdict != Verdict::Pass), "the dark frame is said by its median");
+    }
+
+    /// #2590: a face the look calls right still holds the exposure — a
+    /// portrait against a dark backdrop is not brightened to a median —
+    /// and no face is taken past the top of the look's band for skin.
+    #[test]
+    fn a_face_still_caps_the_exposure() {
+        let look = LookTarget::preset("broadcast_neutral").unwrap();
+        let mut portrait = with_face(flat(18.0, 0.0, 0.0), Lab { l: 62.0, a: 14.0, b: 18.0 });
+        portrait.l_p95 = 66.0;
+        let s = primaries_toward(&portrait, &look);
+        assert!(s.exposure.abs() < 0.03, "{s:?}");
+        let findings = judge(&portrait, &look);
+        assert!(findings.iter().any(|f| f.rule == "skin_exposure" && f.verdict == Verdict::Pass), "{findings:?}");
+        assert!(findings.iter().all(|f| f.rule != "mid_grey"), "{findings:?}");
+        // A lighter face below the band in the same dark room: the median
+        // brightens it, but only as far as the band's top, L* 69.
+        let mut under = with_face(flat(14.0, 0.0, 0.0), Lab { l: 50.0, a: 14.0, b: 18.0 });
+        under.l_p95 = 55.0;
+        let s = primaries_toward(&under, &look);
+        let to_top = (luminance_of_l(62.0 + FACE_L_BAND) / luminance_of_l(50.0)).log2();
+        assert!(s.exposure > 0.5 && s.exposure <= to_top + 1e-3, "{:.2} against {to_top:.2}: {s:?}", s.exposure);
+        // A face already past it is not brightened, whatever the median.
+        let mut hot = with_face(flat(20.0, 0.0, 0.0), Lab { l: 80.0, a: 10.0, b: 14.0 });
+        hot.l_p95 = 85.0;
+        let s = primaries_toward(&hot, &look);
+        assert!(s.exposure < 0.0, "{s:?}");
+        let f = judge(&hot, &look).into_iter().find(|f| f.rule == "skin_exposure").expect("said");
+        assert_eq!(f.verdict, Verdict::Warn, "{f:?}");
     }
 
     /// #1590: with nothing truly neutral, the least-coloured quarter is a
