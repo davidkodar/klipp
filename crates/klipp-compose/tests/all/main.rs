@@ -181,6 +181,8 @@ mod a_placed_clips_window_moves_with_it;
 
 #[path = "../animated_generators_gpu.rs"]
 mod animated_generators_gpu;
+#[path = "../still_generators_kept.rs"]
+mod still_generators_kept;
 #[path = "../still_layers_kept.rs"]
 mod still_layers_kept;
 #[path = "../living_gradient_gpu.rs"]

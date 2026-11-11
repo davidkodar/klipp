@@ -576,6 +576,10 @@ pub struct GpuEffectsPipeline {
     /// A frame of another size held while it is fitted into the chain's
     /// first buffer (`fit_chain_input_in_place`).
     fit_scratch: Option<wgpu::Buffer>,
+    /// Still generators' pictures kept on the GPU, by the identity of the
+    /// pixels the compositor keeps for them, the last few: sent up once,
+    /// not every frame (see `stack_layer_from_kept_srgb_f16`).
+    kept_generators: Vec<(Arc<Vec<u32>>, wgpu::Buffer)>,
     /// A countdown's or a timer's rects, `[x0, y0, x1, y1)` each (#2067).
     stack_rects: Option<wgpu::Buffer>,
     /// Title sprites kept on the GPU by the id their renderer gave
