@@ -265,6 +265,10 @@ name = "play_starts_without_waiting"
 path = "tests/play_starts_without_waiting.rs"
 
 [[test]]
+name = "a_thumbnail_decode_stays_light"
+path = "tests/a_thumbnail_decode_stays_light.rs"
+
+[[test]]
 name = "the_shot_after_a_gap_is_taken_over_warm"
 path = "tests/the_shot_after_a_gap_is_taken_over_warm.rs"
 
