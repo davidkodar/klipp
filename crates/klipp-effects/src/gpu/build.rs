@@ -903,6 +903,9 @@ impl GpuEffectsPipeline {
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });
+        let table = |size: u64, label: &str| {
+            device.create_buffer(&wgpu::BufferDescriptor { label: Some(label), size, usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false })
+        };
         // RGB curves LUT buffer: 4 channels × 256 entries × 4 bytes = 4096 bytes
         let rgb_curves_lut_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("rgb_curves_lut"),
@@ -932,6 +935,8 @@ impl GpuEffectsPipeline {
             })
             .collect();
         let chain_params = ParamSlots::new(&device, CHAIN_PARAMS_RING_SIZE, PARAMS_SIZE, "chain_params");
+        let huesat_chain_luts = (0..CHAIN_PARAMS_RING_SIZE).map(|_| table(HUESAT_LUT_LEN as u64 * 4, "huesat_chain_lut")).collect();
+        let rgb_curves_chain_luts = (0..CHAIN_PARAMS_RING_SIZE).map(|_| table(4 * 256 * 4, "rgb_curves_chain_lut")).collect();
         let effect_params = Some(ParamSlots::new(&device, EFFECT_PARAMS_RING_SIZE, PARAMS_SIZE, "effect_params"));
 
         info!("GPU effects pipeline initialized");
@@ -957,6 +962,8 @@ impl GpuEffectsPipeline {
             lut3d_buf_size: 0,
             grade_mix_src: None,
             rgb_curves_lut_buf,
+            huesat_chain_luts,
+            rgb_curves_chain_luts,
             plate_buf: None,
             plate_key: None,
             plate_read_in_chain: false,
