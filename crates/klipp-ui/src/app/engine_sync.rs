@@ -145,7 +145,7 @@ impl KlippApp {
     }
 
     pub(super) fn sync_media_pool_to_engine(&self) {
-        let mut pool = self.media_pool_shared.write().unwrap_or_else(|e| e.into_inner());
+        let mut pool = klipp_engine::ui_stage::timed_lock("media pool (sync to engine)", || self.media_pool_shared.write().unwrap_or_else(|e| e.into_inner()));
         *pool = self.state.media_pool.clone();
         drop(pool);
         self.sync_log_formats_to_decoders();
