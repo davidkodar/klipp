@@ -123,12 +123,12 @@ impl TransportBar {
                 .on_hover_text("Play/Pause")
                 .clicked()
             {
-                let focus_playback = if state.viewer_mode == ViewerMode::Source {
-                    state.source_playback
+                let pauses = if state.viewer_mode == ViewerMode::Source {
+                    state.source_playback == PlaybackState::Playing
                 } else {
-                    state.playback
+                    state.timeline_toggle_pauses()
                 };
-                if focus_playback == PlaybackState::Playing {
+                if pauses {
                     cmds.push(route_for_viewer(AppCommand::Pause, state));
                 } else {
                     cmds.push(route_for_viewer(AppCommand::Play, state));
@@ -535,7 +535,8 @@ impl TransportBar {
                 state.playback
             };
             if !text_editing && !state.files_panel_focused && kb.is_action_pressed("play_pause", i) {
-                if focus_playback == PlaybackState::Playing {
+                let pauses = if state.viewer_mode == ViewerMode::Source { focus_playback == PlaybackState::Playing } else { state.timeline_toggle_pauses() };
+                if pauses {
                     cmds.push(route_for_viewer(AppCommand::Pause, state));
                 } else {
                     cmds.push(route_for_viewer(AppCommand::Play, state));
@@ -780,6 +781,39 @@ mod jkl_step_tests {
             AppCommand::SetSpeed(s) => Some(*s),
             _ => None,
         })
+    }
+
+    /// Space with the timeline as it is: what it asks the engine.
+    fn press_space(state: &AppState) -> Vec<AppCommand> {
+        let kb = crate::keybindings::KeyBindings::default();
+        let mut panel = TransportBar::default();
+        let ctx = egui::Context::default();
+        let mut cmds = Vec::new();
+        let key = |pressed| egui::Event::Key { key: egui::Key::Space, physical_key: None, pressed, repeat: false, modifiers: egui::Modifiers::NONE };
+        let _ = ctx.run(egui::RawInput { events: vec![key(true)], ..Default::default() }, |ctx| {
+            cmds = panel.handle_keyboard(ctx, state, &kb);
+        });
+        cmds
+    }
+
+    /// Play waits for its first picture before the engine says it plays.
+    /// Space pressed in between pauses it; it asked to play again, which
+    /// changed nothing, and the timecode ran on. A Play that never started
+    /// is forgotten, and Space plays again.
+    #[test]
+    fn space_pauses_a_play_still_waiting_for_its_first_picture() {
+        let mut state = AppState::default();
+        let v1 = state.sequences[0].tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
+        let (zero, end) = (RationalTime { value: 0, rate: 24 }, RationalTime { value: 240, rate: 24 });
+        state.sequences[0].tracks[v1].clips.push(klipp_timeline::Clip::media(klipp_core::MediaId::new(), zero, end, zero, end));
+        state.project_path = Some(crate::project_paths::UNTITLED.into());
+        state.playback = PlaybackState::Paused;
+        let asked = |cmds: &[AppCommand]| cmds.iter().find(|c| matches!(c, AppCommand::Play | AppCommand::Pause)).map(|c| format!("{c:?}"));
+        assert_eq!(asked(&press_space(&state)).as_deref(), Some("Play"));
+        state.play_starting = Some(std::time::Instant::now());
+        assert_eq!(asked(&press_space(&state)).as_deref(), Some("Pause"), "still starting: Space pauses");
+        state.play_starting = std::time::Instant::now().checked_sub(std::time::Duration::from_secs(3));
+        assert_eq!(asked(&press_space(&state)).as_deref(), Some("Play"), "a Play that never started is forgotten");
     }
 
     /// #1816: L while playing multiplies the speed by the JKL step the

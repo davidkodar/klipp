@@ -26,6 +26,7 @@ impl KlippApp {
             }
             match event {
                 AppEvent::PlaybackStarted => {
+                    self.state.play_starting = None;
                     self.state.playback = PlaybackState::Playing;
                     self.state.playhead_anchor = self.state.playhead;
                     self.state.playhead_anchor_wall = std::time::Instant::now();
@@ -37,6 +38,7 @@ impl KlippApp {
                     }
                 }
                 AppEvent::PlaybackPaused => {
+                    self.state.play_starting = None;
                     self.state.playback = PlaybackState::Paused;
                 }
                 AppEvent::TimelineSkimShown { composited, .. } => {
@@ -83,6 +85,7 @@ impl KlippApp {
                     }
                 }
                 AppEvent::PlaybackStopped => {
+                    self.state.play_starting = None;
                     self.state.playback = PlaybackState::Stopped;
                 }
                 AppEvent::SourcePlaybackStarted => {
@@ -410,6 +413,7 @@ impl KlippApp {
                     self.state.toast.show(format!("Could not import {name}: {error}"));
                 }
                 AppEvent::PlaybackGaveUp { what } => {
+                    self.state.play_starting = None;
                     self.state.toast.show(format!("{what} kept failing and was stopped. Move the playhead or play again to try once more."));
                 }
                 AppEvent::FrameReady => {

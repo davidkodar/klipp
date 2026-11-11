@@ -208,6 +208,12 @@ impl KlippApp {
             // A path drag the command doesn't belong to is closed as its own
             // step before any handler runs (M3 step 2).
             self.state.before_dispatch(&cmd);
+            // Play asked for, until the engine answers (`play_starting`).
+            match &cmd {
+                AppCommand::Play if self.state.playback != PlaybackState::Playing => self.state.play_starting = Some(std::time::Instant::now()),
+                AppCommand::Pause | AppCommand::Stop => self.state.play_starting = None,
+                _ => {}
+            }
             // A take previewed in its slot (#3209) gives way to anything
             // but the transport and its own commands: they see the
             // document.

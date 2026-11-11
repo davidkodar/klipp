@@ -1546,6 +1546,11 @@ pub struct PlayToOut {
 
 pub struct AppState {
     pub playback: PlaybackState,
+    /// When the timeline's Play was asked for, until the engine says it
+    /// started, paused or stopped: playback starts with its first picture,
+    /// up to 1.5 s later, and a Play/Pause pressed meanwhile pauses it
+    /// (`timeline_toggle_pauses`) rather than asking to play again.
+    pub play_starting: Option<std::time::Instant>,
     pub playhead: Timecode,
     pub fps: Fps,
     pub playback_speed: f64,
@@ -4870,6 +4875,14 @@ impl AppState {
     /// The scope dock under the viewer exists only in the Color
     /// workspace, where the timeline is hidden. Elsewhere it would take
     /// the timeline's rows, so the dock flag is ignored there.
+    /// Whether the timeline's Play/Pause pauses now: it is playing, or a
+    /// Play asked for is still waiting for its first picture. Past a
+    /// little more than the engine waits (1.5 s), a Play that never
+    /// started is forgotten.
+    pub fn timeline_toggle_pauses(&self) -> bool {
+        self.playback == PlaybackState::Playing || self.play_starting.is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(2))
+    }
+
     pub fn scopes_docked(&self) -> bool {
         self.show_scopes && self.show_color_panel
     }
@@ -4978,6 +4991,7 @@ impl Default for AppState {
         let shared_registry = build_shared_registry();
         Self {
             playback: PlaybackState::Idle,
+            play_starting: None,
             playhead: Timecode { value: 0, rate: 24 },
             fps: Fps::film_24(),
             playback_speed: 1.0,

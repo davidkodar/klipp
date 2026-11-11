@@ -3092,7 +3092,7 @@ impl ViewerPanel {
             // play state.
             let is_playing = match viewer_kind {
                 ViewerMode::Source => state.source_playback == PlaybackState::Playing,
-                ViewerMode::Program => state.playback == PlaybackState::Playing,
+                ViewerMode::Program => state.timeline_toggle_pauses(),
             };
             // No block of colour under the play glyph: the glyph is the
             // control, lit when it can be pressed, the field only under
