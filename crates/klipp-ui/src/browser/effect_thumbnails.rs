@@ -164,6 +164,9 @@ pub struct ThumbnailResult {
     pub height: u32,
 }
 
+/// Effect thumbnails made into textures in one frame, at most.
+const THUMBNAILS_PER_FRAME: usize = 8;
+
 /// Manages background thumbnail generation and texture caching.
 pub struct ThumbnailRenderer {
     /// Cached textures keyed by effect name.
@@ -209,17 +212,17 @@ impl ThumbnailRenderer {
         if self.ref_frame_hash != 0 {
             return; // Already generated
         }
-        let Some(ref_frame) = load_embedded_reference() else {
-            tracing::warn!("Failed to decode embedded effect preview reference image");
-            return;
-        };
         self.ref_frame_hash = 1; // Mark as generated
 
         let tx = self.tx.clone();
         let all_effects: Vec<_> = effects.to_vec();
-        let frame = ref_frame;
 
         std::thread::spawn(move || {
+            // The reference decoded here, not on the window's thread.
+            let Some(frame) = load_embedded_reference() else {
+                tracing::warn!("Failed to decode embedded effect preview reference image");
+                return;
+            };
             for (name, source) in &all_effects {
                 let rgba = match source {
                     EffectSource::Builtin(effect) => {
@@ -373,7 +376,12 @@ impl ThumbnailRenderer {
         displaced: &mut Vec<egui::TextureHandle>,
     ) {
         let mut received_any = false;
-        while let Ok(result) = self.rx.try_recv() {
+        // A few a frame: all of them in one frame, at startup or with a
+        // project opening, held the window up to 160 ms (#3941 follow-up).
+        let mut budget = THUMBNAILS_PER_FRAME;
+        while budget > 0 {
+            let Ok(result) = self.rx.try_recv() else { break };
+            budget -= 1;
             self.ofx_pending.remove(&result.effect_name);
 
             let pixels: Vec<egui::Color32> = result
@@ -408,7 +416,8 @@ impl ThumbnailRenderer {
             received_any = true;
         }
 
-        if received_any {
+        // Received, or more waiting: the next frame takes the rest.
+        if received_any || !self.rx.is_empty() {
             ctx.request_repaint();
         }
     }
@@ -1258,6 +1267,32 @@ fn simple_name_hash(name: &str) -> u32 {
     h
 }
 
+
+#[cfg(test)]
+mod upload_tests {
+    use super::*;
+
+    /// Many thumbnails finished at once are made into textures a few a
+    /// frame, every one of them in the end.
+    #[test]
+    fn thumbnails_are_uploaded_a_few_a_frame() {
+        let ctx = egui::Context::default();
+        let mut thumbs = ThumbnailRenderer::default();
+        for i in 0..50 {
+            thumbs.tx.send(ThumbnailResult { effect_name: format!("fx{i}"), rgba: vec![128; 16 * 9 * 4], width: 16, height: 9 }).unwrap();
+        }
+        let mut dropped = Vec::new();
+        let mut frame = || {
+            let _ = ctx.run(egui::RawInput::default(), |ctx| thumbs.poll_and_upload(ctx, &mut dropped));
+            thumbs.textures.len()
+        };
+        assert_eq!(frame(), THUMBNAILS_PER_FRAME, "one frame takes a few");
+        for _ in 0..10 {
+            frame();
+        }
+        assert_eq!(thumbs.textures.len(), 50, "and all, frame by frame");
+    }
+}
 
 #[cfg(test)]
 mod pad_tests {
