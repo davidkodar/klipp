@@ -5090,7 +5090,10 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             // A library's music is music and its effects are effects from
             // the start: left unmarked, a bed was unknown sound to duck and
             // to the check until a role op said otherwise (#797).
-            let library = transcripts.library_role(item);
+            // A picture placed without its sound plays none (muted
+            // below): a role read from that sound isn't the clip's.
+            let silent = !*with_audio && item.has_audio && t.kind != TrackKind::Audio;
+            let library = transcripts.library_role(item).filter(|_| !silent);
             if let Some(role) = library {
                 clip.role = klipp_core::roles::RoleRef::from_legacy(role);
                 // Proposed, not chosen: a hand-set role still replaces it,
@@ -5107,7 +5110,7 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
                 clip.role_source = klipp_core::RoleSource::Proposed;
             }
             // A sound-only file is Music until its sound is heard (#2953).
-            let starting = (library.is_none() && track_role.is_none()).then(|| item.starting_role()).flatten();
+            let starting = (library.is_none() && track_role.is_none() && !silent).then(|| item.starting_role()).flatten();
             if let Some((role, source)) = starting {
                 clip.role = klipp_core::roles::RoleRef::from_legacy(role);
                 clip.role_source = source;
@@ -5117,7 +5120,7 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             let bring_audio = *with_audio && item.has_audio && t.kind != TrackKind::Audio;
             // A video clip with no linked audio clip plays the sound in
             // its file; left out means silent, so the clip is muted.
-            let muted = !*with_audio && item.has_audio && t.kind != TrackKind::Audio;
+            let muted = silent;
             if muted {
                 clip.volume = 0.0;
             }
@@ -18108,6 +18111,31 @@ mod tests {
         let (role, what) = placed(media);
         assert_eq!(role, None, "a file with a picture: no role");
         assert!(!what.contains("marked"), "{what}");
+    }
+
+    /// A picture placed without its sound is muted, so the role its
+    /// sound was heard as isn't given to it, nor said.
+    #[test]
+    fn a_picture_placed_without_its_sound_gets_no_sound_role() {
+        struct HeardAsMusic;
+        impl Transcripts for HeardAsMusic {
+            fn words(&self, _item: &klipp_media::MediaItem) -> Option<Vec<SpokenWord>> {
+                None
+            }
+            fn library_role(&self, _item: &klipp_media::MediaItem) -> Option<klipp_core::ClipRole> {
+                Some(klipp_core::ClipRole::Music)
+            }
+        }
+        let (seq, mut pool, media, _, _) = fixture();
+        pool.get_mut(&media).expect("the fixture's file").has_audio = true;
+        let place = |with_audio: bool| Op::Place { media_id: media, track: TrackRef::Index(0), at: Anchor::TrackEnd(TrackRef::Index(0)), source_in: Some(0.0), source_out: Some(1.0), insert: false, with_audio, sync_source_secs: None };
+        let plan = resolve_with(&seq, &pool, &[place(false)], &HeardAsMusic).unwrap_or_else(|r| panic!("refused: {}", r.why));
+        let EditCommand::LegacyAppendClip { clip, .. } = &plan.steps[0].edit else { panic!("{:?}", plan.steps[0].edit) };
+        assert_eq!((clip.volume, clip.role.clone()), (0.0, None), "muted, and no role from the sound it doesn't play");
+        assert!(plan.steps[0].what.contains("its sound muted") && !plan.steps[0].what.contains("marked"), "{}", plan.steps[0].what);
+        // With its sound, the role still comes.
+        let plan = resolve_with(&seq, &pool, &[place(true)], &HeardAsMusic).unwrap_or_else(|r| panic!("refused: {}", r.why));
+        assert!(plan.steps[0].what.contains("marked music"), "{}", plan.steps[0].what);
     }
 
     /// #2953: a sound-only file is placed as music before its sound is
