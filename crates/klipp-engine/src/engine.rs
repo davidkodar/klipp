@@ -1175,6 +1175,20 @@ pub(crate) static STREAMS_SHORTENED: std::sync::atomic::AtomicU64 = std::sync::a
 /// viewer's streams may read from it (#2128).
 pub(crate) static STREAMS_DISK_SHORT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
+/// The sound torn down whole while playing, sources opened, and sources
+/// sent to a new place, since the process began: a cut plays on through
+/// with none of them unless its sound changes there (#572).
+static SOUND_STOPS_PLAYING: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static SOUND_OPENS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static SOUND_RESEEKS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// (whole stops while playing, sources opened, sources reseeked) since
+/// the process began. For tests.
+pub fn sound_counts() -> (u64, u64, u64) {
+    let load = |c: &std::sync::atomic::AtomicU64| c.load(std::sync::atomic::Ordering::Relaxed);
+    (load(&SOUND_STOPS_PLAYING), load(&SOUND_OPENS), load(&SOUND_RESEEKS))
+}
+
 /// (from the preroll, opened cold) cuts to the next shot on the primary
 /// track since the process began.
 pub fn cut_openings() -> (u64, u64) {
@@ -6010,6 +6024,9 @@ fn take_nearest_frame(dec: &VideoDecoder, target: f64, half: f64, best: &mut Opt
 impl PlaybackEngine {
 
     fn stop_all_audio(&mut self) {
+        if self.state == PlaybackState::Playing {
+            SOUND_STOPS_PLAYING.fetch_add(1, Ordering::Relaxed);
+        }
         // Clear mix thread staging first (stop reading from source ring buffers)
         if let Some(ref mt) = self.mix_thread {
             mt.clear_all();
@@ -6043,6 +6060,7 @@ impl PlaybackEngine {
         // a chain rebuild is required.
         let chain_fp = audio_chain_fingerprint_for(&audio_effects, &audio_effect_keyframes);
         let settings_fp = audio_settings_fingerprint_for(&audio_effects);
+        SOUND_OPENS.fetch_add(1, Ordering::Relaxed);
 
         // Try PCM cache first (instant seeks, zero codec overhead)
         let pcm_path = self.pcm_cache_path(media_id);
@@ -6343,6 +6361,7 @@ impl PlaybackEngine {
         for active in &self.audio_sources {
             if let Some((_, secs)) = seek_positions.iter().find(|(idx, _)| *idx == active.track_index) {
                 active.source.seek(*secs);
+                SOUND_RESEEKS.fetch_add(1, Ordering::Relaxed);
             }
         }
 
@@ -7885,11 +7904,16 @@ impl PlaybackEngine {
             // cut, from its preroll. Anything else there — a picture on
             // another track in the gap — is found by a seek, as before.
             if let Some((from, next)) = self.gap_hand_over.take() {
-                let (only_it, media) = {
+                let (only_it, media, reached) = {
                     let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
-                    let on_track = seq.tracks.get(self.current_track_index).and_then(|t| t.clip_at_timecode(tc));
+                    let track = seq.tracks.get(self.current_track_index);
+                    let on_track = track.and_then(|t| t.clip_at_timecode(tc));
                     let layers = klipp_compose::active_layers(&seq, tc);
-                    (on_track.as_ref().map(|(i, _)| *i) == Some(next) && layers.len() == 1, on_track.and_then(|(_, c)| c.media_id()))
+                    // At or past the shot after the gap. Short of it, the
+                    // picture here is another track's, a card over the
+                    // gap: its stream takes over below, as at any cut.
+                    let reached = track.and_then(|t| t.clips.get(next)).is_none_or(|c| tc >= c.timeline_in);
+                    (on_track.as_ref().map(|(i, _)| *i) == Some(next) && layers.len() == 1, on_track.and_then(|(_, c)| c.media_id()), reached)
                 };
                 if only_it && media.is_some_and(|m| self.preroll_is(next, m)) {
                     GAP_HAND_OVERS_WARM.fetch_add(1, Ordering::Relaxed);
@@ -7902,10 +7926,10 @@ impl PlaybackEngine {
                 // gap among them, is stale. Let go of it, and open the shot
                 // here as a seek does: a clip stream taken over after a
                 // late hand-over kept a strobe's next pieces dark.
-                if self.preroll_clip_index == Some(next) {
+                if reached && self.preroll_clip_index == Some(next) {
                     self.clear_preroll();
                     GAP_HAND_OVERS_COLD.fetch_add(1, Ordering::Relaxed);
-                    self.seek_in_sequence(tc);
+                    self.take_over_cold_at(tc);
                     if self.v1_decoder.is_none() && self.current_file.is_none() {
                         let at = self.clip_source_start + (tc - self.clip_timeline_start).to_secs_f64().max(0.0) * self.clip_speed;
                         self.master_clock.seek((at * 1_000_000.0) as u64);
@@ -7915,10 +7939,13 @@ impl PlaybackEngine {
                 }
             }
             if self.take_over_stream_at(tc) {
+                // Another track's shot is the primary now: a preroll
+                // for this one's next shot is not its.
+                self.clear_preroll();
                 return;
             }
             GAP_HAND_OVERS_COLD.fetch_add(1, Ordering::Relaxed);
-            self.seek_in_sequence(tc);
+            self.take_over_cold_at(tc);
             // A title or generator takes over on the synthetic path, which
             // reads the clock as the clip's own seconds.
             if self.v1_decoder.is_none() && self.current_file.is_none() {
@@ -8516,6 +8543,30 @@ impl PlaybackEngine {
     }
 
     fn seek_in_sequence_with_timeout(&mut self, tc: Timecode, grab_timeout: Duration) {
+        self.seek_in_sequence_inner(tc, grab_timeout, false);
+    }
+
+    /// Open the picture at `tc` while playing on, where nothing was ready
+    /// to take over from: a cut, not a seek. The sound plays on, only the
+    /// tracks that change here swapped (#572), and the picture is anchored
+    /// where the sound has got to while the file opened. A seek's way
+    /// stopped every source and opened them all again on this thread,
+    /// 50–100 ms at each end of a card over a gap.
+    fn take_over_cold_at(&mut self, tc: Timecode) {
+        let keep_sound = self.state == PlaybackState::Playing && !self.audio_sources.is_empty() && self.audio_output.is_some();
+        self.seek_in_sequence_inner(tc, Duration::from_millis(50), keep_sound);
+    }
+
+    /// The sound at a cut taken by [`Self::take_over_cold_at`]: the
+    /// changed tracks swapped, the rest left streaming.
+    fn sound_on_through_cut(&mut self, tc: Timecode) {
+        self.pending_audio_reposition = None;
+        self.playhead = tc;
+        self.swap_changed_audio_at_cut();
+        self.refresh_audio_fades(tc);
+    }
+
+    fn seek_in_sequence_inner(&mut self, tc: Timecode, grab_timeout: Duration, keep_sound: bool) {
         // A decoder that ended with a panic is opened again below (#3181).
         if self.v1_decoder.as_ref().is_some_and(VideoDecoder::has_panicked) {
             self.v1_decoder = None;
@@ -8575,7 +8626,11 @@ impl PlaybackEngine {
                 self.master_clock.set_speed(speed);
                 self.refresh_speed_keyframes();
                 let source_secs = source_start + (tc - timeline_in).to_secs_f64() * speed;
-                self.reposition_audio_or_defer(tc, source_secs);
+                if keep_sound {
+                    self.sound_on_through_cut(tc);
+                } else {
+                    self.reposition_audio_or_defer(tc, source_secs);
+                }
                 self.master_clock.seek((source_secs.max(0.0) * 1_000_000.0) as u64);
                 self.playhead = tc;
                 self.present_frame(None);
@@ -8622,7 +8677,9 @@ impl PlaybackEngine {
             if need_new_decoder {
                 if let Some((path, effective_rot)) = file {
                     self.v1_decoder = None;
-                    self.stop_all_audio();
+                    if !keep_sound {
+                        self.stop_all_audio();
+                    }
                     match VideoDecoder::open(&path, effective_rot) {
                         Ok(dec) => {
                             dec.seek(source_secs);
@@ -8660,6 +8717,21 @@ impl PlaybackEngine {
 
             let was_playing = self.state == PlaybackState::Playing;
             let t_video = t_seek.elapsed();
+
+            if keep_sound {
+                // A cut: the sound streamed on while the file opened, so
+                // the picture starts where the sound has got to.
+                self.sound_on_through_cut(tc);
+                let caught_up = t_seek.elapsed().as_secs_f64();
+                self.master_clock.seek(((source_secs + caught_up * spd).max(0.0) * 1_000_000.0) as u64);
+                self.master_clock.resume();
+                self.playhead = tc + RationalTime::from_secs_f64(caught_up, self.fps.rate());
+                self.last_frame_time = std::time::Instant::now();
+                self.sync_streams();
+                self.report_playhead();
+                (self.repaint_cb)();
+                return;
+            }
 
             // 1. Pause clock + cpal output
             self.master_clock.pause();
@@ -8773,12 +8845,16 @@ impl PlaybackEngine {
                 let was_playing = self.state == PlaybackState::Playing;
 
                 self.master_clock.pause();
-                if let Some(aout) = &self.audio_output {
+                if let Some(aout) = self.audio_output.as_ref().filter(|_| !keep_sound) {
                     aout.0.pause();
                 }
 
                 // Put the audio at the new time
-                self.reposition_audio(tc);
+                if keep_sound {
+                    self.sound_on_through_cut(tc);
+                } else {
+                    self.reposition_audio(tc);
+                }
                 let target_us = (tc.to_secs_f64() * 1_000_000.0) as u64;
                 self.master_clock.seek(target_us);
 
