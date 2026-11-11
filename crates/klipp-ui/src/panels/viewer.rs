@@ -148,6 +148,14 @@ impl TitleView {
 /// The time a title's canvas is edited at: the smoothed playhead the
 /// editor reads its layers at, so the placement and the layers it carries
 /// don't drift apart while scrubbing or playing.
+/// A hint laid out to fit a viewer `width` wide: wrapped, with a margin
+/// each side, centred line by line.
+fn viewer_hint(ctx: &egui::Context, text: &str, width: f32, color: egui::Color32) -> std::sync::Arc<egui::Galley> {
+    let mut job = egui::text::LayoutJob::simple(text.to_owned(), egui::FontId::proportional(13.0), color, (width - 24.0).max(40.0));
+    job.halign = egui::Align::Center;
+    ctx.fonts(|f| f.layout_job(job))
+}
+
 /// The file the source viewer names over its picture.
 fn source_viewer_named(state: &AppState) -> Option<klipp_core::MediaId> {
     named_in_source_viewer(state.browser_skim_texture.is_some(), state.browser_skim_media_id, state.source_media_id)
@@ -6865,13 +6873,11 @@ impl ViewerPanel {
                 }
             }
         } else {
-            ui.painter().text(
-                viewer_rect.center(),
-                egui::Align2::CENTER_CENTER,
-                "Click a media item to load it here",
-                egui::FontId::proportional(13.0),
-                theme.text_dim,
-            );
+            // Wrapped to the viewer, and kept inside it: one line ran past
+            // a narrow viewer into the panel beside it.
+            let galley = viewer_hint(ui.ctx(), "Click a media item to load it here", viewer_rect.width(), theme.text_dim);
+            let at = viewer_rect.center() - galley.size() / 2.0;
+            ui.painter_at(viewer_rect).galley(at, galley, theme.text_dim);
         }
     }
 
@@ -7663,6 +7669,23 @@ fn pictured_at(seq: &klipp_timeline::Sequence, time: klipp_core::RationalTime) -
         .iter()
         .filter(|t| !matches!(t.kind, klipp_timeline::TrackKind::Audio))
         .any(|t| t.clip_at_timecode(time).is_some_and(|(_, c)| !c.kind.is_gap()))
+}
+
+#[cfg(test)]
+mod viewer_hint_tests {
+    /// The empty viewer's hint fits a narrow viewer, on more lines,
+    /// and stays one line in a wide one.
+    #[test]
+    fn the_hint_wraps_to_a_narrow_viewer() {
+        let ctx = egui::Context::default();
+        let _ = ctx.run(egui::RawInput::default(), |_| {});
+        let text = "Click a media item to load it here";
+        let narrow = super::viewer_hint(&ctx, text, 160.0, egui::Color32::WHITE);
+        assert!(narrow.size().x <= 160.0 - 24.0 + 0.5, "{} wide in a 160 px viewer", narrow.size().x);
+        assert!(narrow.rows.len() > 1, "wrapped");
+        let wide = super::viewer_hint(&ctx, text, 800.0, egui::Color32::WHITE);
+        assert_eq!(wide.rows.len(), 1);
+    }
 }
 
 #[cfg(test)]
