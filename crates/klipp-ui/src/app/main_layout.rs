@@ -133,6 +133,7 @@ impl KlippApp {
                         scopes_rect,
                         nodes_rect,
                         nodes_resizer_rect,
+                        scopes_nodes_resizer_rect,
                         nodes_on_right,
                         browser_open,
                         inspector_open,
@@ -158,7 +159,10 @@ impl KlippApp {
                     let show_nodes_bar = self.state.graph_is_visible() && !nodes_on_right;
                     let toggle_bar_h = toggle_bar_rect.height();
                     let scopes_h = scopes_rect.height();
-                    let nodes_h = if nodes_on_right { 0.0 } else { nodes_rect.height() };
+                    // The strip's height with the line above it, which was
+                    // taken from its top.
+                    let divider_h = if scopes_nodes_resizer_rect.is_positive() { scopes_nodes_resizer_rect.height() } else { 0.0 };
+                    let nodes_h = if nodes_on_right { 0.0 } else { nodes_rect.height() + divider_h };
                     let audio_mixer_h = audio_mixer_rect.height();
                     let curve_editor_h = curve_editor_rect.height();
                     // flexible_h is the ratio-drag denominator — same formula as in layout.rs.
@@ -328,6 +332,7 @@ impl KlippApp {
                                 toggle_bar_rect,
                                 nodes_rect,
                                 nodes_resizer_rect,
+                                scopes_nodes_resizer_rect,
                                 bottom_scope_cursor,
                             },
                         );
