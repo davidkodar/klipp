@@ -80,7 +80,7 @@ pub mod transforms;
 pub mod white_balance;
 pub mod wheels;
 
-pub use lut::{apply_3d_lut, apply_3d_lut_linear_ws, apply_3d_lut_linear_ws_with_overrides, apply_3d_lut_tetrahedral, generate_lut_preview, generate_lut_reference_image, lut_bracket, load_cube, load_lut, parse_3dl, parse_csp, parse_cube, write_cube, LutData, LutError};
+pub use lut::{load_lut_shared, shared_lut_is_kept, SHARED_LUT_BUDGET, apply_3d_lut, apply_3d_lut_linear_ws, apply_3d_lut_linear_ws_with_overrides, apply_3d_lut_tetrahedral, generate_lut_preview, generate_lut_reference_image, lut_bracket, load_cube, load_lut, parse_3dl, parse_csp, parse_cube, write_cube, LutData, LutError};
 pub use pipeline::ColorPipeline;
 pub use transforms::*;
 pub use klipp_core::ColorWarperParams;

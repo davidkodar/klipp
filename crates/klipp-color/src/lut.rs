@@ -313,6 +313,116 @@ pub fn parse_cube(text: &str) -> Result<LutData, LutError> {
     }
 }
 
+/// Parsed LUTs shared by every reader in the process, so a LUT is parsed
+/// once, ahead of the frame that needs it (see [`load_lut_shared`]).
+/// Bounded by [`SHARED_LUT_BUDGET`] bytes of tables, the least recently
+/// used let go first: browsing many looks keeps only the last few.
+static SHARED_LUTS: std::sync::Mutex<SharedLuts> = std::sync::Mutex::new(SharedLuts::new(SHARED_LUT_BUDGET));
+
+/// The most parsed tables kept: about nineteen 65-point cubes.
+pub const SHARED_LUT_BUDGET: usize = 64 << 20;
+
+struct SharedLut {
+    path: std::path::PathBuf,
+    len: u64,
+    modified: Option<std::time::SystemTime>,
+    lut: std::sync::Arc<LutData>,
+}
+
+struct SharedLuts {
+    /// Least recently used first.
+    entries: Vec<SharedLut>,
+    bytes: usize,
+    budget: usize,
+}
+
+fn table_bytes(lut: &LutData) -> usize {
+    lut.data.len() * std::mem::size_of::<f32>()
+}
+
+impl SharedLuts {
+    const fn new(budget: usize) -> Self {
+        SharedLuts { entries: Vec::new(), bytes: 0, budget }
+    }
+
+    /// The table for `path` as the file is now: kept, or read with
+    /// `load` and kept. A file changed since (its length or time) is
+    /// read again.
+    #[cfg(test)]
+    fn get_or_load(&mut self, path: &Path, load: impl FnOnce(&Path) -> Result<LutData, LutError>) -> Result<std::sync::Arc<LutData>, LutError> {
+        let (len, modified) = file_stamp(path)?;
+        if let Some(lut) = self.kept(path, len, modified) {
+            return Ok(lut);
+        }
+        let lut = std::sync::Arc::new(load(path)?);
+        self.keep(SharedLut { path: path.to_path_buf(), len, modified, lut: std::sync::Arc::clone(&lut) });
+        Ok(lut)
+    }
+
+    /// The kept table for `path` at this length and time, now the most
+    /// recently used; one kept for another state of the file is let go.
+    fn kept(&mut self, path: &Path, len: u64, modified: Option<std::time::SystemTime>) -> Option<std::sync::Arc<LutData>> {
+        let i = self.entries.iter().position(|e| e.path == path)?;
+        if self.entries[i].len == len && self.entries[i].modified == modified {
+            let e = self.entries.remove(i);
+            let lut = std::sync::Arc::clone(&e.lut);
+            self.entries.push(e);
+            return Some(lut);
+        }
+        let stale = self.entries.remove(i);
+        self.bytes -= table_bytes(&stale.lut);
+        None
+    }
+
+    fn keep(&mut self, entry: SharedLut) {
+        // Parsed twice at once (a frame and the warm-up): one is kept.
+        if let Some(i) = self.entries.iter().position(|e| e.path == entry.path) {
+            let old = self.entries.remove(i);
+            self.bytes -= table_bytes(&old.lut);
+        }
+        let size = table_bytes(&entry.lut);
+        while self.bytes + size > self.budget && !self.entries.is_empty() {
+            let old = self.entries.remove(0);
+            self.bytes -= table_bytes(&old.lut);
+        }
+        if size <= self.budget {
+            self.bytes += size;
+            self.entries.push(entry);
+        }
+    }
+
+    fn has(&self, path: &Path) -> bool {
+        self.entries.iter().any(|e| e.path == path)
+    }
+}
+
+/// [`load_lut`], parsed once for the whole process: the same file asked
+/// for again is the table already parsed, until it changes on disk. A
+/// 65-point cube is 7 MB of text and about a tenth of a second to parse;
+/// read in a frame, it held that frame up.
+pub fn load_lut_shared(path: &Path) -> Result<std::sync::Arc<LutData>, LutError> {
+    let (len, modified) = file_stamp(path)?;
+    if let Some(lut) = SHARED_LUTS.lock().unwrap_or_else(|e| e.into_inner()).kept(path, len, modified) {
+        return Ok(lut);
+    }
+    // Parsed outside the lock: a frame asking for another kept table
+    // never waits for this one.
+    let lut = std::sync::Arc::new(load_lut(path)?);
+    SHARED_LUTS.lock().unwrap_or_else(|e| e.into_inner()).keep(SharedLut { path: path.to_path_buf(), len, modified, lut: std::sync::Arc::clone(&lut) });
+    Ok(lut)
+}
+
+/// A file's length and time, what tells a kept table is still its own.
+fn file_stamp(path: &Path) -> Result<(u64, Option<std::time::SystemTime>), LutError> {
+    let meta = std::fs::metadata(path)?;
+    Ok((meta.len(), meta.modified().ok()))
+}
+
+/// Whether `path`'s table is parsed and kept now.
+pub fn shared_lut_is_kept(path: &Path) -> bool {
+    SHARED_LUTS.lock().unwrap_or_else(|e| e.into_inner()).has(path)
+}
+
 /// Load any supported LUT format by file extension (.cube, .3dl, .csp).
 pub fn load_lut(path: &Path) -> Result<LutData, LutError> {
     let ext = path.extension()
@@ -792,6 +902,74 @@ pub fn write_cube(
         writeln!(f, "{r:.6} {g:.6} {b:.6}")?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod shared_lut_tests {
+    use super::*;
+
+    fn cube(dir: &Path, name: &str, size: usize) -> std::path::PathBuf {
+        let mut text = format!("LUT_3D_SIZE {size}\n");
+        let n = size.max(2) - 1;
+        for b in 0..size {
+            for g in 0..size {
+                for r in 0..size {
+                    text.push_str(&format!("{} {} {}\n", r as f32 / n as f32, g as f32 / n as f32, b as f32 / n as f32));
+                }
+            }
+        }
+        let p = dir.join(name);
+        std::fs::write(&p, text).unwrap();
+        p
+    }
+
+    fn dir(tag: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("klipp-shared-lut-{tag}-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    /// Asked for twice, a LUT is parsed once: the second is the same table.
+    #[test]
+    fn a_lut_asked_for_again_is_parsed_once() {
+        let d = dir("once");
+        let p = cube(&d, "a.cube", 5);
+        let mut luts = SharedLuts::new(1 << 20);
+        let mut parses = 0;
+        let a = luts.get_or_load(&p, |p| { parses += 1; load_lut(p) }).unwrap();
+        let b = luts.get_or_load(&p, |p| { parses += 1; load_lut(p) }).unwrap();
+        assert!(std::sync::Arc::ptr_eq(&a, &b) && parses == 1, "parsed {parses} times");
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    /// A file changed on disk is parsed again.
+    #[test]
+    fn a_changed_file_is_parsed_again() {
+        let d = dir("changed");
+        let p = cube(&d, "a.cube", 3);
+        let mut luts = SharedLuts::new(1 << 20);
+        let a = luts.get_or_load(&p, load_lut).unwrap();
+        cube(&d, "a.cube", 5);
+        let b = luts.get_or_load(&p, load_lut).unwrap();
+        assert_eq!((a.size, b.size), (3, 5), "the new table, not the kept one");
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    /// Past the budget the least recently used goes first.
+    #[test]
+    fn the_least_recently_used_goes_past_the_budget() {
+        let d = dir("budget");
+        let (a, b, c) = (cube(&d, "a.cube", 5), cube(&d, "b.cube", 5), cube(&d, "c.cube", 5));
+        // Room for two 5-point tables (5³ × 3 floats each).
+        let mut luts = SharedLuts::new(2 * 5 * 5 * 5 * 3 * 4);
+        luts.get_or_load(&a, load_lut).unwrap();
+        luts.get_or_load(&b, load_lut).unwrap();
+        luts.get_or_load(&a, load_lut).unwrap(); // a used again
+        luts.get_or_load(&c, load_lut).unwrap();
+        assert!(luts.has(&a) && luts.has(&c) && !luts.has(&b), "b, the least recently used, let go");
+        assert!(luts.bytes <= luts.budget);
+        let _ = std::fs::remove_dir_all(d);
+    }
 }
 
 #[cfg(test)]

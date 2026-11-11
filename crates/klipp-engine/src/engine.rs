@@ -1751,6 +1751,10 @@ pub struct PlaybackEngine {
     sequence: Arc<klipp_timeline::SharedSequence>,
     media_pool: Arc<RwLock<MediaPool>>,
     repaint_cb: Box<dyn Fn() + Send>,
+    /// The sequence revision whose LUTs were last looked for, and every
+    /// LUT handed to the warm-up this session (`warm_luts`).
+    lut_warm_revision: Option<klipp_timeline::SequenceRevision>,
+    luts_warmed: std::collections::HashSet<PathBuf>,
     /// The probe thread's queue of files to read, and its answers
     /// (`load_file`); made at the first load.
     probe_tx: Option<crossbeam_channel::Sender<(PathBuf, MediaId)>>,
@@ -3119,6 +3123,8 @@ impl PlaybackEngine {
             sequence,
             media_pool,
             repaint_cb,
+            lut_warm_revision: None,
+            luts_warmed: std::collections::HashSet::new(),
             probe_tx: None,
             probe_done: None,
             play_gate: None,
@@ -3625,6 +3631,7 @@ impl PlaybackEngine {
             // Frames drawn ahead in their job (#3212): progress and end.
             self.poll_frames_job();
             self.tick_background();
+            self.warm_luts();
             self.keep_backward_play();
             if self.state == PlaybackState::Playing {
                 // Playback already produces fresh frames at full res
@@ -11377,6 +11384,42 @@ impl PlaybackEngine {
     /// sound start together with the picture, instead of running ahead
     /// while a 4K group of pictures decodes and the video then jumping
     /// to catch up.
+    /// Parse the LUTs the sequence's grades use ahead of the frames that
+    /// need them, on a thread of their own, whenever the sequence
+    /// changes: an open, a switch, an edit that adds one. A 65-point cube
+    /// is about a tenth of a second to parse, which the first frame
+    /// graded with it waited for. Nothing waits on this: a frame that
+    /// comes first parses the LUT itself, as before.
+    fn warm_luts(&mut self) {
+        let revision = self.sequence.revision();
+        if self.lut_warm_revision == Some(revision) {
+            return;
+        }
+        self.lut_warm_revision = Some(revision);
+        let seq = self.sequence.snapshot();
+        let luts: Vec<PathBuf> = seq
+            .grades()
+            .iter()
+            .flat_map(|g| g.nodes.iter())
+            .filter(|n| n.kind == klipp_nodes::NodeKind::Lut3D)
+            .filter_map(|n| n.params.lut_path.clone())
+            .filter(|p| self.luts_warmed.insert(p.clone()))
+            .collect();
+        if luts.is_empty() {
+            return;
+        }
+        let spawned = std::thread::Builder::new().name("klipp-lut-warm".into()).spawn(move || {
+            for path in luts {
+                if let Err(e) = klipp_color::load_lut_shared(&path) {
+                    debug!("LUT warm-up: {:?} not read: {e}", path);
+                }
+            }
+        });
+        if let Err(e) = spawned {
+            debug!("LUT warm-up not started: {e}");
+        }
+    }
+
     /// Whether Play is still waiting for its first picture, this tick.
     /// Once it is decoded — or [`PLAY_GATE_LIMIT`] has passed, or there is
     /// nothing to wait for — the clock and the sound start together, as

@@ -5333,8 +5333,10 @@ impl GraphExecutor {
                         // keeps the image visible and the warn log
                         // points at the broken path so the user can
                         // relink.
-                        match klipp_color::load_lut(path) {
-                            Ok(lut) => Arc::new(lut),
+                        // Parsed once for the process, and usually ahead
+                        // of this frame by the engine's warm-up.
+                        match klipp_color::load_lut_shared(path) {
+                            Ok(lut) => lut,
                             Err(e) => {
                                 tracing::warn!(
                                     "Lut3D: load failed for {:?}: {} — passing through",
@@ -7257,8 +7259,8 @@ impl GraphExecutor {
                             // previous fallback was an all-zero size-2
                             // LUT, which rendered the clip black
                             // silently with no log.
-                            match klipp_color::load_lut(path) {
-                                Ok(lut) => Arc::new(lut),
+                            match klipp_color::load_lut_shared(path) {
+                                Ok(lut) => lut,
                                 Err(e) => {
                                     tracing::warn!(
                                         "Lut3D: load failed for {:?}: {} — passing through",
