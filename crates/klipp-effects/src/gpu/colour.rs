@@ -670,8 +670,10 @@ impl GpuEffectsPipeline {
         if self.is_device_lost() {
             return;
         }
-        self.upload(&self.rgb_curves_lut_buf, 0, bytemuck::cast_slice(lut_data));
+        // This pass's own table, by its slot: another curves pass in the
+        // chain has its own.
         let slot = self.next_params_slot();
+        self.upload(&self.rgb_curves_chain_luts[slot], 0, bytemuck::cast_slice(lut_data));
         self.write_chain_params(slot, &GpuRgbCurvesParams {
             width, height,
             preserve_luma: if preserve_luma { 1 } else { 0 },
@@ -829,8 +831,10 @@ impl GpuEffectsPipeline {
         if self.is_device_lost() {
             return;
         }
-        self.upload(&self.huesat_lut_buf, 0, bytemuck::cast_slice(lut_data));
+        // This pass's own table, by its slot: another Hue/Sat pass in the
+        // chain has its own.
         let slot = self.next_params_slot();
+        self.upload(&self.huesat_chain_luts[slot], 0, bytemuck::cast_slice(lut_data));
         self.write_chain_params(slot, &GpuHueSatParams { width, height, mix, active });
         let workgroups = (width * height).div_ceil(WORKGROUP_SIZE);
         let bind_group = self.chain_bg_huesat[slot * 2 + Self::chain_cfg_4b(in_is_a)]

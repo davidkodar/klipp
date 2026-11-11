@@ -491,6 +491,12 @@ pub struct GpuEffectsPipeline {
     // Compute pipeline — wheel sat/bri (per-wheel saturation & brightness)
     // Compute pipeline — RGB curves (LUT-based, reuses huesat_bgl 4-binding layout)
     rgb_curves_lut_buf: wgpu::Buffer,
+    /// The Hue/Sat and RGB curve tables a chain's passes read, one for
+    /// each params slot: a chain records its passes and submits them
+    /// together, after every queue write, so two curve nodes in one chain
+    /// reading one table both read the one written last.
+    huesat_chain_luts: Vec<wgpu::Buffer>,
+    rgb_curves_chain_luts: Vec<wgpu::Buffer>,
     // Compute pipeline — vibrance
     // Compute pipeline — a scene-referred clip's display step (step 11c)
     // Compute pipeline — color warper (12-sector hue/sat)
@@ -1259,7 +1265,7 @@ impl GpuEffectsPipeline {
                         wgpu::BindGroupEntry { binding: 0, resource: input.as_entire_binding() },
                         wgpu::BindGroupEntry { binding: 1, resource: output.as_entire_binding() },
                         wgpu::BindGroupEntry { binding: 2, resource: self.chain_params.buffer(slot).as_entire_binding() },
-                        wgpu::BindGroupEntry { binding: 3, resource: self.huesat_lut_buf.as_entire_binding() },
+                        wgpu::BindGroupEntry { binding: 3, resource: self.huesat_chain_luts[slot].as_entire_binding() },
                     ],
                 });
                 self.chain_bg_build_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -1272,7 +1278,7 @@ impl GpuEffectsPipeline {
                         wgpu::BindGroupEntry { binding: 0, resource: input.as_entire_binding() },
                         wgpu::BindGroupEntry { binding: 1, resource: output.as_entire_binding() },
                         wgpu::BindGroupEntry { binding: 2, resource: self.chain_params.buffer(slot).as_entire_binding() },
-                        wgpu::BindGroupEntry { binding: 3, resource: self.rgb_curves_lut_buf.as_entire_binding() },
+                        wgpu::BindGroupEntry { binding: 3, resource: self.rgb_curves_chain_luts[slot].as_entire_binding() },
                     ],
                 });
                 self.chain_bg_build_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);

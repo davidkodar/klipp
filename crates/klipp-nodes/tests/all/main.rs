@@ -72,6 +72,8 @@ mod hdr_zones_node;
 mod scene_to_display_node;
 #[path = "../two_luts_in_one_chain.rs"]
 mod two_luts_in_one_chain;
+#[path = "../two_huesat_in_one_chain.rs"]
+mod two_huesat_in_one_chain;
 #[path = "../wireless_loop.rs"]
 mod wireless_loop;
 #[path = "../zero_mix.rs"]
