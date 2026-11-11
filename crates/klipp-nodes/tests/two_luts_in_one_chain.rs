@@ -58,6 +58,25 @@ fn worst_levels(a: &[f32], b: &[f32]) -> f32 {
     a.chunks_exact(4).zip(b.chunks_exact(4)).flat_map(|(p, q)| (0..3).map(move |i| (enc(p[i]) - enc(q[i])).abs())).fold(0.0f32, f32::max) * 255.0
 }
 
+/// Frame after frame, a graph's tables go up once each: a frame does
+/// not send them again.
+#[test]
+fn a_lut_goes_up_once_not_every_frame() {
+    let both = graph(vec![(NodeKind::Lut3D, lut("fuji-xtrans/fuji_xtrans_iii_classic_chrome.cube")), (NodeKind::Lut3D, lut("fuji-xtrans/fuji_xtrans_iii_acros.cube"))]);
+    let mut exec = GraphExecutor::new();
+    exec.set_working_colorspace(WorkingColorspace::Rec709Linear);
+    let input = frame();
+    for n in 0..5 {
+        exec.execute_linear(&input, &both, W, H, n as f64 / 25.0, n, None, None).expect("graph runs");
+    }
+    let Some(gpu) = exec.gpu_pipeline_mut() else {
+        assert!(std::env::var("KLIPP_TEST_REQUIRE_GPU").as_deref() != Ok("1"), "no usable GPU");
+        eprintln!("skipping: no usable GPU");
+        return;
+    };
+    assert_eq!(gpu.chain_lut_uploads(), 2, "two tables, each uploaded once over five frames");
+}
+
 #[test]
 fn two_luts_in_one_chain_each_read_their_own_table() {
     let (a, b) = (lut("fuji-xtrans/fuji_xtrans_iii_classic_chrome.cube"), lut("fuji-xtrans/fuji_xtrans_iii_acros.cube"));

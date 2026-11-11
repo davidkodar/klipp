@@ -861,6 +861,7 @@ impl GpuEffectsPipeline {
         }));
         // A new buffer: nothing recorded reads it yet.
         self.queue.write_buffer(&buffer, 0, bytemuck::cast_slice(data));
+        self.chain_lut_uploads.set(self.chain_lut_uploads.get() + 1);
         if kept.len() >= 8 {
             kept.remove(0);
         }
