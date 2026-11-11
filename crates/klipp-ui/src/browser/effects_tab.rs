@@ -103,6 +103,9 @@ impl EffectSort {
 
 const CATEGORY_SIDEBAR_W: f32 = 168.0;
 
+/// The filter row's square icon buttons.
+const ICON_BUTTON_W: f32 = 24.0;
+
 pub fn show(
     ui: &mut egui::Ui,
     state: &mut AppState,
@@ -117,8 +120,53 @@ pub fn show(
     let mut cmds = Vec::new();
     let avail = ui.available_rect_before_wrap();
 
-    // ── Split: category sidebar (left) | thumbnail grid (right) ──
-    let sidebar_w = CATEGORY_SIDEBAR_W.min(avail.width() * 0.40);
+    // Counts that don't depend on the search query: sidebar numbers
+    // reflect the registry, not the current filter.
+    let video_total = state
+        .effect_registry
+        .filtered_with_favorites(EffectCategory::All, "", &[])
+        .len();
+    let installed_total = state.effect_registry.effects.len();
+    let general = [
+        (Icon::Star, "Favorites", favorite_effects.len(), EffectCategory::Favourites, "general_favourites"),
+        // No clock icon in the bundled Phosphor set: ArrowCounterClockwise
+        // reads as "history".
+        (Icon::ArrowCounterClockwise, "Recent", recent_effects.len(), EffectCategory::Recent, "general_recent"),
+        // No download icon in the bundled set; UploadSimple is closest.
+        (Icon::UploadSimple, "Installed", installed_total, EffectCategory::Installed, "general_installed"),
+    ];
+    let video_categories: [(EffectCategory, &'static str, Option<Icon>); 11] = [
+        (EffectCategory::All, "All", Some(Icon::List)),
+        (EffectCategory::Looks, "Looks", Some(Icon::Star)),
+        (EffectCategory::Luts, "LUTs", Some(Icon::FilmStrip)),
+        (EffectCategory::Recipes, "Recipes", Some(Icon::Sliders)),
+        // No drop/blur icon: blank reads cleaner than a wrong-fit stand-in.
+        (EffectCategory::Blur, "Blur", None),
+        (EffectCategory::Color, "Colour", Some(Icon::Eyedropper)),
+        (EffectCategory::Stylize, "Stylize", Some(Icon::Sliders)),
+        // No keying-specific icon: blank.
+        (EffectCategory::Keying, "Keying", None),
+        (EffectCategory::Distort, "Distort", Some(Icon::ArrowsOut)),
+        (EffectCategory::Light, "Light", Some(Icon::Lightning)),
+        (EffectCategory::Film, "Film", Some(Icon::FilmStrip)),
+    ];
+    let video_counts: Vec<usize> = video_categories
+        .iter()
+        .map(|(cat, _, _)| {
+            if *cat == EffectCategory::All {
+                video_total
+            } else if *cat == EffectCategory::Recipes {
+                crate::browser::recipes_list::all_rows(state).len()
+            } else {
+                state.effect_registry.filtered_with_favorites(*cat, "", &[]).len()
+            }
+        })
+        .collect();
+
+    // ── Split: category sidebar (left) | thumbnail grid (right); a narrow
+    // panel folds the sidebar into a dropdown over the grid (#2602) ──
+    let folded = super::sidebar_folds(avail.width());
+    let sidebar_w = if folded { 0.0 } else { CATEGORY_SIDEBAR_W.min(avail.width() * 0.40) };
     let sidebar_rect = egui::Rect::from_min_size(
         avail.min,
         egui::vec2(sidebar_w, avail.height()),
@@ -128,129 +176,70 @@ pub fn show(
         avail.max,
     );
 
-    // ── Category sidebar (3 sections: General / Video FX / Audio FX) ──
-    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(sidebar_rect), |ui| {
-        ui.set_min_size(sidebar_rect.size());
+    // ── Category sidebar (General / Video FX) ──
+    if !folded {
+        ui.allocate_new_ui(egui::UiBuilder::new().max_rect(sidebar_rect), |ui| {
+            ui.set_min_size(sidebar_rect.size());
 
-        // Soft sidebar fill that lifts above the panel base.
-        ui.painter().rect_filled(sidebar_rect, 0.0, theme.bg_panel);
-        ui.painter().vline(
-            sidebar_rect.max.x,
-            sidebar_rect.y_range(),
-            egui::Stroke::new(1.0_f32, theme.border),
-        );
+            // Soft sidebar fill that lifts above the panel base.
+            ui.painter().rect_filled(sidebar_rect, 0.0, theme.bg_panel);
+            ui.painter().vline(
+                sidebar_rect.max.x,
+                sidebar_rect.y_range(),
+                egui::Stroke::new(1.0_f32, theme.border),
+            );
 
-        egui::ScrollArea::vertical()
-            .id_salt("effects_category_scroll")
-            .show(ui, |ui| {
-                ui.add_space(6.0);
+            egui::ScrollArea::vertical()
+                .id_salt("effects_category_scroll")
+                .show(ui, |ui| {
+                    ui.add_space(6.0);
 
-                // Counts that don't depend on the search query — sidebar
-                // numbers reflect the registry, not the current filter.
-                let video_total = state
-                    .effect_registry
-                    .filtered_with_favorites(EffectCategory::All, "", &[])
-                    .len();
-                let _audio_total = state
-                    .effect_registry
-                    .filtered_with_favorites(EffectCategory::AudioAll, "", &[])
-                    .len();
-                let installed_total = state.effect_registry.effects.len();
+                    // ── General section: Favorites / Recent / Installed ──
+                    for (icon, label, count, cat, salt) in general {
+                        sidebar_row(ui, theme, Some(icon), label, count, *active_category == cat, salt, &mut |c| *active_category = c, cat);
+                    }
 
-                // ── General section: Favorites / Recent / Installed ──
-                sidebar_row(
-                    ui,
-                    theme,
-                    Some(Icon::Star),
-                    "Favorites",
-                    favorite_effects.len(),
-                    *active_category == EffectCategory::Favourites,
-                    "general_favourites",
-                    &mut |c| *active_category = c,
-                    EffectCategory::Favourites,
-                );
-                sidebar_row(
-                    ui,
-                    theme,
-                    // No clock icon in the bundled Phosphor set —
-                    // ArrowCounterClockwise reads as "history" until a
-                    // proper Clock SVG lands. Flagged as TODO.
-                    Some(Icon::ArrowCounterClockwise),
-                    "Recent",
-                    recent_effects.len(),
-                    *active_category == EffectCategory::Recent,
-                    "general_recent",
-                    &mut |c| *active_category = c,
-                    EffectCategory::Recent,
-                );
-                sidebar_row(
-                    ui,
-                    theme,
-                    // No download/install icon in the bundled set;
-                    // UploadSimple is closest in shape. TODO: drop in a
-                    // proper Phosphor `download-simple` SVG.
-                    Some(Icon::UploadSimple),
-                    "Installed",
-                    installed_total,
-                    *active_category == EffectCategory::Installed,
-                    "general_installed",
-                    &mut |c| *active_category = c,
-                    EffectCategory::Installed,
-                );
+                    ui.add_space(8.0);
+                    sidebar_section_separator(ui, theme);
 
-                ui.add_space(8.0);
-                sidebar_section_separator(ui, theme);
+                    // ── VIDEO FX section ──
+                    sidebar_section_header(ui, theme, Some(Icon::FilmStrip), "Video FX");
 
-                // ── VIDEO FX section ──
-                sidebar_section_header(ui, theme, Some(Icon::FilmStrip), "Video FX");
+                    for ((cat, label, icon), count) in video_categories.iter().zip(&video_counts) {
+                        sidebar_row(
+                            ui,
+                            theme,
+                            *icon,
+                            label,
+                            *count,
+                            *active_category == *cat,
+                            &format!("video_cat_{:?}", cat),
+                            &mut |c| *active_category = c,
+                            *cat,
+                        );
+                    }
 
-                let video_categories: [(EffectCategory, &str, Option<Icon>); 11] = [
-                    (EffectCategory::All, "All", Some(Icon::List)),
-                    (EffectCategory::Looks, "Looks", Some(Icon::Star)),
-                    (EffectCategory::Luts, "LUTs", Some(Icon::FilmStrip)),
-                    (EffectCategory::Recipes, "Recipes", Some(Icon::Sliders)),
-                    // No drop/blur icon — leaving blank reads cleaner than
-                    // a wrong-fit stand-in. TODO: bespoke blur glyph.
-                    (EffectCategory::Blur, "Blur", None),
-                    (EffectCategory::Color, "Colour", Some(Icon::Eyedropper)),
-                    (EffectCategory::Stylize, "Stylize", Some(Icon::Sliders)),
-                    // No keying-specific icon — leaving blank. TODO.
-                    (EffectCategory::Keying, "Keying", None),
-                    (EffectCategory::Distort, "Distort", Some(Icon::ArrowsOut)),
-                    (EffectCategory::Light, "Light", Some(Icon::Lightning)),
-                    (EffectCategory::Film, "Film", Some(Icon::FilmStrip)),
-                ];
-                for (cat, label, icon) in &video_categories {
-                    let count = if *cat == EffectCategory::All {
-                        video_total
-                    } else if *cat == EffectCategory::Recipes {
-                        crate::browser::recipes_list::all_rows(state).len()
-                    } else {
-                        state.effect_registry.filtered_with_favorites(*cat, "", &[]).len()
-                    };
-                    sidebar_row(
-                        ui,
-                        theme,
-                        *icon,
-                        label,
-                        count,
-                        *active_category == *cat,
-                        &format!("video_cat_{:?}", cat),
-                        &mut |c| *active_category = c,
-                        *cat,
-                    );
-                }
-
-                ui.add_space(8.0);
-            });
-    });
+                    ui.add_space(8.0);
+                });
+        });
+    }
 
     // ── Thumbnail grid pane ──
     ui.allocate_new_ui(egui::UiBuilder::new().max_rect(grid_rect), |ui| {
         ui.set_min_size(grid_rect.size());
 
-        // ── Search bar (shared style, see browser::browser_search_field) ──
         ui.add_space(6.0);
+        if folded {
+            let choices: Vec<super::CategoryChoice> = general
+                .iter()
+                .map(|(_, label, count, cat, _)| super::CategoryChoice { label: *label, count: *count, cat: *cat })
+                .chain(video_categories.iter().zip(&video_counts).map(|((cat, label, _), count)| super::CategoryChoice { label: *label, count: *count, cat: *cat }))
+                .collect();
+            super::category_dropdown(ui, "effects_category_folded", &choices, active_category);
+            ui.add_space(6.0);
+        }
+
+        // ── Search bar (shared style, see browser::browser_search_field) ──
         egui::Frame::none()
             .inner_margin(egui::Margin::symmetric(8.0, 0.0))
             .show(ui, |ui| {
@@ -262,38 +251,44 @@ pub fn show(
             return;
         }
 
-        // ── Filter row: segmented source filter (All / Built-in / OFX) ──
+        // ── Filter row: segmented source filter (All / Built-in / OFX),
+        // the GPU pill and the view buttons; the chips on a line of their
+        // own where they don't fit beside the rest (#2602) ──
+        // Counts feed the segmented control's embedded badges. They honour
+        // the active category + search query (and recents/favs) so the
+        // user can always see how many entries each segment would return
+        // at the current scope.
+        let scoped = state
+            .effect_registry
+            .filtered_full(*active_category, search_query, favorite_effects, recent_effects);
+        let all_count = scoped.len();
+        let builtin_count = scoped
+            .iter()
+            .filter(|fx| is_builtin_source(&fx.source))
+            .count();
+        let ofx_count = scoped
+            .iter()
+            .filter(|fx| matches!(fx.source, EffectSource::Ofx(_) | EffectSource::Frei0r(_)))
+            .count();
+        let row_w = ui.available_width() - 12.0;
+        let (label_w, count_w) = super::chip_measures(ui, theme, &source_segments(all_count, builtin_count, ofx_count), &count_font());
+        let controls_w = gpu_only_pill_width(ui, theme) + 6.0 + 3.0 * (ICON_BUTTON_W + ui.spacing().item_spacing.x) + 6.0;
+        let beside = row_w - controls_w - ui.spacing().item_spacing.x;
+        let own_line = super::fit_source_chips(&label_w, &count_w, super::CHIP_PAD, beside).is_none();
         ui.add_space(6.0);
+        if own_line {
+            ui.horizontal(|ui| {
+                ui.add_space(6.0);
+                segmented_source_filter(ui, theme, &mut state.effect_source_filter, all_count, builtin_count, ofx_count, row_w);
+            });
+            ui.add_space(4.0);
+        }
         ui.horizontal(|ui| {
             ui.add_space(6.0);
-
-            // Counts feed the segmented control's embedded badges. They
-            // honour the active category + search query (and recents/favs)
-            // so the user can always see how many entries each segment
-            // would return at the current scope.
-            let scoped = state
-                .effect_registry
-                .filtered_full(*active_category, search_query, favorite_effects, recent_effects);
-            let all_count = scoped.len();
-            let builtin_count = scoped
-                .iter()
-                .filter(|fx| is_builtin_source(&fx.source))
-                .count();
-            let ofx_count = scoped
-                .iter()
-                .filter(|fx| matches!(fx.source, EffectSource::Ofx(_) | EffectSource::Frei0r(_)))
-                .count();
-
-            segmented_source_filter(
-                ui,
-                theme,
-                &mut state.effect_source_filter,
-                all_count,
-                builtin_count,
-                ofx_count,
-            );
-
-            ui.add_space(6.0);
+            if !own_line {
+                segmented_source_filter(ui, theme, &mut state.effect_source_filter, all_count, builtin_count, ofx_count, beside);
+                ui.add_space(6.0);
+            }
             // GPU-only toggle pill — accent-tinted when active.
             gpu_only_pill(ui, theme, &mut state.effect_filter_gpu);
 
@@ -1121,31 +1116,25 @@ fn sidebar_row(
         );
     }
 
-    // Label, vertically centered.
-    let label_galley = ui.painter().layout_no_wrap(
-        label.to_string(),
-        egui::FontId::proportional(11.0),
-        label_color,
-    );
+    // Label, and the count where both fit; the label cut with "…" past
+    // its room (#2602).
+    let count_color = if is_active { theme.accent } else { theme.text_dim };
+    let count_galley = ui.painter().layout_no_wrap(format!("{}", count), count_font(), count_color);
+    let label_w = ui.painter().layout_no_wrap(label.to_string(), egui::FontId::proportional(11.0), label_color).size().x;
+    let (show_count, label_room) = super::row_fit(label_x, rect.max.x, label_w, count_galley.size().x);
+    let label_galley = super::elided_galley(ui, label, egui::FontId::proportional(11.0), label_color, label_room);
     ui.painter().galley(
         egui::pos2(label_x, rect.center().y - label_galley.size().y * 0.5),
         label_galley,
         label_color,
     );
-
-    // Right-aligned count.
-    let count_str = format!("{}", count);
-    let count_color = if is_active { theme.accent } else { theme.text_dim };
-    let count_galley = ui.painter().layout_no_wrap(
-        count_str,
-        count_font(),
-        count_color,
-    );
-    let count_pos = egui::pos2(
-        rect.max.x - 14.0 - count_galley.size().x,
-        rect.center().y - count_galley.size().y * 0.5,
-    );
-    ui.painter().galley(count_pos, count_galley, count_color);
+    if show_count {
+        let count_pos = egui::pos2(
+            rect.max.x - 14.0 - count_galley.size().x,
+            rect.center().y - count_galley.size().y * 0.5,
+        );
+        ui.painter().galley(count_pos, count_galley, count_color);
+    }
 
     if click_resp.clicked() || resp.clicked() {
         on_click(target_cat);
@@ -1228,17 +1217,8 @@ fn is_builtin_source(source: &EffectSource) -> bool {
 /// competing colored pills. Three buttons share an outer pill body; the
 /// active segment paints with `bg_raised` to lift out of the bg_panel
 /// trough. Embedded count badges in tabular monospace.
-fn segmented_source_filter(
-    ui: &mut egui::Ui,
-    theme: &KlippTheme,
-    filter: &mut SourceFilter,
-    all_count: usize,
-    builtin_count: usize,
-    ofx_count: usize,
-) {
-    let outer_h = 24.0;
-    let pad = 2.0;
-    let segments = [
+fn source_segments(all_count: usize, builtin_count: usize, ofx_count: usize) -> [(SourceFilter, &'static str, usize); 3] {
+    [
         (SourceFilter::Builtin, "Built-in", builtin_count),
         // "Plug-ins", not "Installed": this pill counts OFX and frei0r
         // plugins, while the sidebar row three centimetres away says
@@ -1246,114 +1226,33 @@ fn segmented_source_filter(
         // mean 102 things and 401 things on the same screen.
         (SourceFilter::Installed, "Plug-ins", ofx_count),
         (SourceFilter::All, "All", all_count),
-    ];
+    ]
+}
 
-    // Pre-measure each segment so total width is known before allocating.
-    let mut seg_widths = [0.0f32; 3];
-    let mut total_w = pad * 2.0;
-    for (i, (_, label, count)) in segments.iter().enumerate() {
-        let label_galley = ui.painter().layout_no_wrap(
-            (*label).to_string(),
-            egui::FontId::proportional(11.0),
-            theme.text_secondary,
-        );
-        let count_galley = ui.painter().layout_no_wrap(
-            format!("{}", count),
-            count_font(),
-            theme.text_dim,
-        );
-        let w = label_galley.size().x + 5.0 + count_galley.size().x + 18.0;
-        seg_widths[i] = w;
-        total_w += w + 1.0;
-    }
-    total_w -= 1.0; // no trailing gap
-
-    let (outer_rect, _) = ui.allocate_exact_size(
-        egui::vec2(total_w, outer_h),
-        egui::Sense::hover(),
-    );
-
-    ui.painter().rect_filled(outer_rect, 4.0, theme.bg_panel);
-    ui.painter().rect_stroke(
-        outer_rect,
-        5.0,
-        egui::Stroke::new(1.0_f32, theme.border),
-    );
-
-    let mut x = outer_rect.min.x + pad;
-    for (i, (variant, label, count)) in segments.iter().enumerate() {
-        let seg_rect = egui::Rect::from_min_size(
-            egui::pos2(x, outer_rect.min.y + pad),
-            egui::vec2(seg_widths[i], outer_h - pad * 2.0),
-        );
-        let resp = ui.interact(
-            seg_rect,
-            ui.id().with(("source_seg", i)),
-            egui::Sense::click(),
-        );
-        let is_active = *filter == *variant;
-        let hovered = resp.hovered();
-
-        if is_active {
-            ui.painter().rect_filled(seg_rect, 2.0, theme.bg_raised);
-        } else if hovered {
-            ui.painter().rect_filled(seg_rect, 2.0, theme.accent_subtle);
-        }
-
-        let label_color = if is_active || hovered {
-            theme.text_primary
-        } else {
-            theme.text_secondary
-        };
-        let count_color = if is_active { theme.accent } else { theme.text_dim };
-
-        let label_galley = ui.painter().layout_no_wrap(
-            (*label).to_string(),
-            egui::FontId::proportional(11.0),
-            label_color,
-        );
-        let count_galley = ui.painter().layout_no_wrap(
-            format!("{}", count),
-            count_font(),
-            count_color,
-        );
-
-        let inner_w = label_galley.size().x + 5.0 + count_galley.size().x;
-        let lx = seg_rect.center().x - inner_w * 0.5;
-        ui.painter().galley(
-            egui::pos2(lx, seg_rect.center().y - label_galley.size().y * 0.5),
-            label_galley.clone(),
-            label_color,
-        );
-        ui.painter().galley(
-            egui::pos2(
-                lx + label_galley.size().x + 5.0,
-                seg_rect.center().y - count_galley.size().y * 0.5,
-            ),
-            count_galley,
-            count_color,
-        );
-
-        if resp.clicked() {
-            *filter = *variant;
-        }
-
-        x += seg_widths[i] + 1.0;
-    }
+fn segmented_source_filter(
+    ui: &mut egui::Ui,
+    theme: &KlippTheme,
+    filter: &mut SourceFilter,
+    all_count: usize,
+    builtin_count: usize,
+    ofx_count: usize,
+    available: f32,
+) {
+    super::source_chips(ui, theme, "source_seg", filter, &source_segments(all_count, builtin_count, ofx_count), count_font(), 24.0, available);
 }
 
 /// "GPU only" filter pill — shaped like the segmented buttons (24px tall,
 /// rounded), but tinted with `accent_subtle` + accent border when active.
+/// The "GPU only" pill's width.
+fn gpu_only_pill_width(ui: &egui::Ui, theme: &KlippTheme) -> f32 {
+    let label = ui.painter().layout_no_wrap("GPU only".to_string(), egui::FontId::proportional(11.0), theme.text_secondary).size().x;
+    10.0 * 2.0 + 11.0 + 5.0 + label
+}
+
 fn gpu_only_pill(ui: &mut egui::Ui, theme: &KlippTheme, active: &mut bool) {
-    let label_galley = ui.painter().layout_no_wrap(
-        "GPU only".to_string(),
-        egui::FontId::proportional(11.0),
-        theme.text_secondary,
-    );
     let icon_size = 11.0;
     let pad_x = 10.0;
-    let gap = 5.0;
-    let w = pad_x * 2.0 + icon_size + gap + label_galley.size().x;
+    let w = gpu_only_pill_width(ui, theme);
     let (rect, resp) = ui.allocate_exact_size(
         egui::vec2(w, 24.0),
         egui::Sense::click(),
@@ -1381,7 +1280,7 @@ fn gpu_only_pill(ui: &mut egui::Ui, theme: &KlippTheme, active: &mut bool) {
     );
     ui.painter().text(
         egui::pos2(
-            rect.min.x + pad_x + icon_size + gap,
+            rect.min.x + pad_x + icon_size + 5.0,
             rect.center().y,
         ),
         egui::Align2::LEFT_CENTER,
@@ -1404,7 +1303,7 @@ fn icon_filter_button(
     tooltip: &str,
 ) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(
-        egui::vec2(24.0, 24.0),
+        egui::vec2(ICON_BUTTON_W, ICON_BUTTON_W),
         egui::Sense::click(),
     );
     let hovered = resp.hovered();
@@ -2049,7 +1948,7 @@ mod tests {
             egui::CentralPanel::default().show(ctx, |ui| {
                 let theme = KlippTheme::default();
                 let mut filter = SourceFilter::Builtin;
-                super::segmented_source_filter(ui, &theme, &mut filter, 477, 373, 104);
+                super::segmented_source_filter(ui, &theme, &mut filter, 477, 373, 104, f32::INFINITY);
                 super::sidebar_row(ui, &theme, None, "LUTs", 304, false, "probe", &mut |_| {}, EffectCategory::Luts);
             });
         });
