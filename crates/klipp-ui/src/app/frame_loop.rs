@@ -291,7 +291,7 @@ impl KlippApp {
             // The clip occupies (source_duration / clip_speed) timeline seconds,
             // so the playhead advances at playback_speed in timeline space.
             let speed = self.state.playback_speed;
-            let interpolated_secs = anchor_secs + wall_elapsed * speed;
+            let interpolated_secs = smooth_playhead(anchor_secs, wall_elapsed, speed, self.state.fps.frame_duration_secs());
             let dur_secs = self.state.sequence_duration().to_secs_f64();
             // When looping, clamp to out_point to prevent one-frame overshoot
             let max_secs = if self.state.loop_playback_enabled {
@@ -2147,8 +2147,54 @@ impl KlippApp {
 /// `secs` on a timeline ending at `end`. An out point or a length below
 /// zero (from a project file, say) puts it at the start, it doesn't stop
 /// the app.
+/// How many frames the playhead may run on past the engine's last
+/// report while playing. The engine reports every frame it shows, so
+/// two frames covers the jitter between reports.
+const PLAYHEAD_LEAD_FRAMES: f64 = 2.0;
+
+/// The playhead between the engine's reports while playing: on from
+/// the last one (`anchor_secs`) at `speed` for the wall time since, but
+/// no further than [`PLAYHEAD_LEAD_FRAMES`] past it. An engine that
+/// stops reporting (a stall, a long first frame on Play) holds the
+/// playhead still instead of letting it run on and pulling it back when
+/// the report comes: it ran 625 ms on and stepped back as far.
+fn smooth_playhead(anchor_secs: f64, wall_elapsed: f64, speed: f64, frame_secs: f64) -> f64 {
+    let lead = PLAYHEAD_LEAD_FRAMES * frame_secs * speed.abs();
+    anchor_secs + (wall_elapsed * speed).clamp(-lead, lead)
+}
+
 fn playhead_within(secs: f64, end: f64) -> f64 {
     secs.clamp(0.0, end.max(0.0))
+}
+
+#[cfg(test)]
+mod smooth_playhead_tests {
+    use super::smooth_playhead;
+
+    const FRAME: f64 = 1.0 / 24.0;
+
+    /// Between reports the playhead moves on with the clock.
+    #[test]
+    fn between_reports_the_playhead_runs_with_the_clock() {
+        let at = smooth_playhead(10.0, 0.030, 1.0, FRAME);
+        assert!((at - 10.030).abs() < 1e-9, "at {at}");
+        let back = smooth_playhead(10.0, 0.030, -1.0, FRAME);
+        assert!((back - 9.970).abs() < 1e-9, "played backwards: at {back}");
+    }
+
+    /// A stall of 670 ms with no report: the playhead stops two frames
+    /// past the last report, so the report after it moves it at most
+    /// that far back, not 625 ms.
+    #[test]
+    fn a_stalled_engine_holds_the_playhead_near_its_last_report() {
+        let at = smooth_playhead(54.208, 0.670, 1.0, FRAME);
+        assert!(at <= 54.208 + 2.0 * FRAME + 1e-9, "ran on to {at}");
+        assert!(at > 54.208, "still moved on a little: {at}");
+        let fast = smooth_playhead(54.208, 0.670, 2.0, FRAME);
+        assert!(fast <= 54.208 + 4.0 * FRAME + 1e-9, "at 2x ran on to {fast}");
+        let back = smooth_playhead(54.208, 0.670, -1.0, FRAME);
+        assert!(back >= 54.208 - 2.0 * FRAME - 1e-9, "backwards ran on to {back}");
+    }
 }
 
 #[cfg(test)]
