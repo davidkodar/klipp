@@ -261,6 +261,10 @@ name = "a_cut_keeps_the_sound_running"
 path = "tests/a_cut_keeps_the_sound_running.rs"
 
 [[test]]
+name = "play_starts_without_waiting"
+path = "tests/play_starts_without_waiting.rs"
+
+[[test]]
 name = "the_shot_after_a_gap_is_taken_over_warm"
 path = "tests/the_shot_after_a_gap_is_taken_over_warm.rs"
 

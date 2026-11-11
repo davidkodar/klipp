@@ -1189,6 +1189,19 @@ pub fn sound_counts() -> (u64, u64, u64) {
     (load(&SOUND_STOPS_PLAYING), load(&SOUND_OPENS), load(&SOUND_RESEEKS))
 }
 
+/// The longest Play waits for its first picture before starting anyway,
+/// as the blocking wait did.
+const PLAY_GATE_LIMIT: Duration = Duration::from_millis(1500);
+
+/// Play pressed, the clock and the sound held until the first picture
+/// near `target_secs` is decoded, so the sound never runs ahead of it.
+/// `speed`, when set, is the clock's speed to start at.
+struct PlayGate {
+    target_secs: f64,
+    speed: Option<f64>,
+    since: std::time::Instant,
+}
+
 /// (from the preroll, opened cold) cuts to the next shot on the primary
 /// track since the process began.
 pub fn cut_openings() -> (u64, u64) {
@@ -1742,6 +1755,8 @@ pub struct PlaybackEngine {
     /// (`load_file`); made at the first load.
     probe_tx: Option<crossbeam_channel::Sender<(PathBuf, MediaId)>>,
     probe_done: Option<crossbeam_channel::Receiver<AppEvent>>,
+    /// Play waiting for its first picture ([`PlayGate`]).
+    play_gate: Option<PlayGate>,
     last_frame_time: std::time::Instant,
     dropped_frames: u64,
     // Video decoders
@@ -3106,6 +3121,7 @@ impl PlaybackEngine {
             repaint_cb,
             probe_tx: None,
             probe_done: None,
+            play_gate: None,
             last_frame_time: std::time::Instant::now(),
             dropped_frames: 0,
             v1_decoder: None,
@@ -3616,7 +3632,9 @@ impl PlaybackEngine {
                 self.force_full_res_regrade = false;
                 self.dbg_update_playback_count += 1;
                 mark_stage(EngineStage::UpdatePlayback);
-                self.update_playback();
+                if !self.waits_at_play_gate() {
+                    self.update_playback();
+                }
                 // Sync clip audio params periodically during playback (for keyframe animation)
                 self.sync_clip_volumes();
             } else if self.state == PlaybackState::Paused {
@@ -3905,36 +3923,16 @@ impl PlaybackEngine {
                     // and bumps seek_gen on audio output to drain stale main buffer.
                     self.seek_all_audio_to_timecode(self.playhead);
 
-                    // Wait for a valid post-seek video frame before starting
-                    // clock+audio. This also gives cpal time to process the
-                    // seek_gen bump (drain stale samples) while we wait.
-                    self.wait_for_valid_frame(source_secs);
-
                     // Set clock to target position (not running yet)
                     let source_us = (source_secs * 1_000_000.0) as u64;
                     self.master_clock.seek(source_us);
 
-                    // Pre-fill audio pipeline: resume audio sources so samples
-                    // flow through staging → mix thread → main ring buffer.
-                    // cpal is still paused, so it accumulates without consuming.
-                    for active in &self.audio_sources {
-                        active.source.resume();
-                    }
-                    std::thread::sleep(Duration::from_millis(20));
-
-                    // Start playback: resume audio output + clock together.
-                    // Main ring buffer already has ~20ms of correct samples.
-                    if let Some(aout) = &self.audio_output {
-                        aout.0.resume();
-                    }
-                    self.master_clock.resume();
+                    // The clock and the sound start together once the first
+                    // picture near the target is decoded: see `PlayGate`.
+                    // Waited for here, it held the engine up to 1.5 s at a
+                    // slowed long-GOP shot.
                     self.state = PlaybackState::Playing;
-                    self.last_frame_time = std::time::Instant::now();
-                    // Re-anchor the ramp integrator at the current playhead so
-                    // the first update_playback tick samples the correct speed.
-                    self.reset_ramp_anchor();
-                    let _ = self.event_tx.send(AppEvent::PlaybackStarted);
-                    (self.repaint_cb)();
+                    self.play_gate = Some(PlayGate { target_secs: source_secs, speed: None, since: std::time::Instant::now() });
                 } else if self.state == PlaybackState::Paused
                     || self.state == PlaybackState::Stopped
                     || self.state == PlaybackState::Idle
@@ -5009,27 +5007,9 @@ impl PlaybackEngine {
                     aout.0.pause();
                 }
 
-                // Wait for a valid post-seek video frame
-                self.wait_for_valid_frame(source_secs);
-
                 // Set clock to target (not running yet)
                 let source_us = (source_secs * 1_000_000.0) as u64;
                 self.master_clock.seek(source_us);
-
-                // Pre-fill: resume audio sources so samples flow into ring buffer
-                // while cpal is still paused (accumulates without consuming)
-                for active in &self.audio_sources {
-                    active.source.resume();
-                }
-                std::thread::sleep(Duration::from_millis(20));
-
-                // Start playback: resume cpal + clock together
-                if let Some(aout) = &self.audio_output {
-                    aout.0.resume();
-                }
-                // Set clock speed to clip_speed so source time advances at the right rate.
-                self.master_clock.set_speed(clip_speed);
-                self.master_clock.resume();
 
                 // A retimed clip's own sound is left out of the mix by
                 // `audio_rows`; music and other tracks play on (#638).
@@ -5046,6 +5026,9 @@ impl PlaybackEngine {
                 self.current_file = Some(path);
                 self.refresh_speed_keyframes();
                 self.state = PlaybackState::Playing;
+                // The clock (at the clip's speed) and the sound start with
+                // the first picture near the target: see `PlayGate`.
+                self.play_gate = Some(PlayGate { target_secs: source_secs, speed: Some(clip_speed), since: std::time::Instant::now() });
 
                 // Open overlay decoders for all non-primary video tracks at the playhead
                 self.sync_streams();
@@ -5053,8 +5036,6 @@ impl PlaybackEngine {
                 self.frames_consumed = 0;
                 self.last_playback_log = std::time::Instant::now();
                 self.last_frame_time = std::time::Instant::now();
-                let _ = self.event_tx.send(AppEvent::PlaybackStarted);
-                (self.repaint_cb)();
             } else {
                 warn!("No path for media {:?}", media_id);
             }
@@ -8550,6 +8531,9 @@ impl PlaybackEngine {
     }
 
     fn seek_in_sequence_with_timeout(&mut self, tc: Timecode, grab_timeout: Duration) {
+        // A seek while Play waits for its first picture starts the clock
+        // and the sound itself, at the new place.
+        self.play_gate = None;
         self.seek_in_sequence_inner(tc, grab_timeout, false);
     }
 
@@ -11393,6 +11377,66 @@ impl PlaybackEngine {
     /// sound start together with the picture, instead of running ahead
     /// while a 4K group of pictures decodes and the video then jumping
     /// to catch up.
+    /// Whether Play is still waiting for its first picture, this tick.
+    /// Once it is decoded — or [`PLAY_GATE_LIMIT`] has passed, or there is
+    /// nothing to wait for — the clock and the sound start together, as
+    /// they did after the blocking wait, and the playback ticks begin.
+    /// Meanwhile the engine goes on ticking: commands, streams, the UI's
+    /// reports. A Pause or a stop while it waits lets it go.
+    fn waits_at_play_gate(&mut self) -> bool {
+        let Some(gate) = self.play_gate.as_ref() else { return false };
+        if self.state != PlaybackState::Playing {
+            self.play_gate = None;
+            return false;
+        }
+        let ready = self.first_frame_near(gate.target_secs) || gate.since.elapsed() >= PLAY_GATE_LIMIT;
+        if !ready {
+            // The frames the layers need, on their way meanwhile.
+            self.sync_streams();
+            return true;
+        }
+        let gate = self.play_gate.take().expect("checked above");
+        let waited = gate.since.elapsed();
+        if waited > Duration::from_millis(100) {
+            info!("play waited {:.0} ms for the first frame near {:.3}s, ticking meanwhile", waited.as_secs_f64() * 1000.0, gate.target_secs);
+        }
+        // Pre-fill: the sources run into the ring while cpal is still
+        // paused, then cpal and the clock start together.
+        for active in &self.audio_sources {
+            active.source.resume();
+        }
+        std::thread::sleep(Duration::from_millis(20));
+        if let Some(aout) = &self.audio_output {
+            aout.0.resume();
+        }
+        if let Some(speed) = gate.speed {
+            self.master_clock.set_speed(speed);
+        }
+        self.master_clock.resume();
+        self.last_frame_time = std::time::Instant::now();
+        // Re-anchor the ramp integrator at the current playhead so the
+        // first update_playback tick samples the correct speed.
+        self.reset_ramp_anchor();
+        let _ = self.event_tx.send(AppEvent::PlaybackStarted);
+        (self.repaint_cb)();
+        false
+    }
+
+    /// Whether the primary decoder's queue has a frame near `target_secs`
+    /// (or its end) at the front, frames left from before the seek
+    /// dropped; or there is no decoder to wait for. Never waits.
+    fn first_frame_near(&self, target_secs: f64) -> bool {
+        let Some(dec) = &self.v1_decoder else { return true };
+        let mut queue = dec.frame_queue().lock().unwrap_or_else(|e| e.into_inner());
+        while let Some(front) = queue.front() {
+            if (front.pts_secs() - target_secs).abs() < 2.0 || front.is_eof {
+                return true;
+            }
+            queue.pop();
+        }
+        false
+    }
+
     fn wait_for_valid_frame(&self, target_secs: f64) {
         let Some(dec) = &self.v1_decoder else { return };
         let started = std::time::Instant::now();
