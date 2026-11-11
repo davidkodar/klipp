@@ -49,7 +49,9 @@ impl KlippApp {
                 }
             }
 
-            // Generate from source
+            // Generate from source, a few at a time: an open asks for every
+            // file's at once (see `ThumbnailGate`).
+            let _turn = THUMBNAIL_GATE.enter();
             match klipp_engine::generate_thumbnail_at_size_non_black(&path, seek_secs, duration_secs, max_width) {
                 Ok((rgba, w, h)) => {
                     // Write to cache
@@ -1729,5 +1731,117 @@ mod stale_hdr_skim_tests {
         stale.sort();
         assert_eq!(stale, ["abc.hdrk00000001.mkv", "abc.hdrtm.mkv", "abc.mkv"]);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// How many media-pool thumbnails decode at once.
+const THUMBNAILS_AT_ONCE: usize = 4;
+
+/// The thumbnails being decoded from their files: at most a few at a
+/// time, the rest waiting their turn in the order they came to it. An
+/// open asks for every file's thumbnail at once, and 54 decoded together
+/// held 8.5 GB for seconds; four at a time held under half a gigabyte
+/// and were all done in 4.2 s. A thumbnail read from the cache never
+/// waits here.
+static THUMBNAIL_GATE: ThumbnailGate = ThumbnailGate::new(THUMBNAILS_AT_ONCE);
+
+struct ThumbnailGate {
+    limit: usize,
+    /// (next ticket to give, next ticket to let in, decoding now)
+    state: std::sync::Mutex<(u64, u64, usize)>,
+    changed: std::sync::Condvar,
+}
+
+/// A turn at decoding; the next one in line goes when it is dropped.
+struct ThumbnailTurn<'a>(&'a ThumbnailGate);
+
+impl ThumbnailGate {
+    const fn new(limit: usize) -> Self {
+        ThumbnailGate { limit, state: std::sync::Mutex::new((0, 0, 0)), changed: std::sync::Condvar::new() }
+    }
+
+    /// Wait for a turn: in the order asked, once fewer than `limit`
+    /// are decoding.
+    fn enter(&self) -> ThumbnailTurn<'_> {
+        let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let ticket = st.0;
+        st.0 += 1;
+        while !(st.1 == ticket && st.2 < self.limit) {
+            st = self.changed.wait(st).unwrap_or_else(|e| e.into_inner());
+        }
+        st.1 += 1;
+        st.2 += 1;
+        self.changed.notify_all();
+        ThumbnailTurn(self)
+    }
+}
+
+impl Drop for ThumbnailTurn<'_> {
+    fn drop(&mut self) {
+        let mut st = self.0.state.lock().unwrap_or_else(|e| e.into_inner());
+        st.2 -= 1;
+        self.0.changed.notify_all();
+    }
+}
+
+#[cfg(test)]
+mod thumbnail_gate_tests {
+    use super::ThumbnailGate;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+
+    /// Twelve asked for at once: never more than four decoding, and
+    /// every one gets its turn.
+    #[test]
+    fn at_most_four_decode_at_once() {
+        let gate = Arc::new(ThumbnailGate::new(4));
+        let (now, most, done) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+        let hs: Vec<_> = (0..12)
+            .map(|_| {
+                let (gate, now, most, done) = (gate.clone(), now.clone(), most.clone(), done.clone());
+                std::thread::spawn(move || {
+                    let _turn = gate.enter();
+                    let n = now.fetch_add(1, Ordering::SeqCst) + 1;
+                    most.fetch_max(n, Ordering::SeqCst);
+                    std::thread::sleep(Duration::from_millis(20));
+                    now.fetch_sub(1, Ordering::SeqCst);
+                    done.fetch_add(1, Ordering::SeqCst);
+                })
+            })
+            .collect();
+        for h in hs {
+            h.join().unwrap();
+        }
+        assert_eq!(done.load(Ordering::SeqCst), 12, "every one decoded");
+        assert!(most.load(Ordering::SeqCst) <= 4, "{} decoded at once", most.load(Ordering::SeqCst));
+        assert_eq!(most.load(Ordering::SeqCst), 4, "four at a time, not one");
+    }
+
+    /// The turns go in the order they were asked for.
+    #[test]
+    fn turns_go_in_the_order_asked() {
+        let gate = Arc::new(ThumbnailGate::new(1));
+        let first = gate.enter();
+        let order = Arc::new(Mutex::new(Vec::new()));
+        let hs: Vec<_> = (0..5)
+            .map(|i| {
+                let (theirs, order) = (gate.clone(), order.clone());
+                let h = std::thread::spawn(move || {
+                    let _turn = theirs.enter();
+                    order.lock().unwrap().push(i);
+                });
+                // Each takes its ticket before the next is started.
+                while gate.state.lock().unwrap().0 < i as u64 + 2 {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                h
+            })
+            .collect();
+        drop(first);
+        for h in hs {
+            h.join().unwrap();
+        }
+        assert_eq!(*order.lock().unwrap(), vec![0, 1, 2, 3, 4]);
     }
 }

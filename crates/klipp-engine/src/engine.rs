@@ -13125,6 +13125,9 @@ fn sw_frame_to_rgba(
 
 /// Open a software-only video decoder (no GPU). Used for thumbnails where
 /// GPU context creation overhead isn't worth it for a single frame.
+/// The software decoder threads of one thumbnail's decode.
+const THUMBNAIL_DECODE_THREADS: i32 = 2;
+
 fn open_sw_decoder(
     format_ctx: &ffmpeg_next::format::context::Input,
 ) -> Result<(ffmpeg_next::decoder::Video, usize), String> {
@@ -13138,12 +13141,12 @@ fn open_sw_decoder(
     let mut codec_ctx = ffmpeg_next::codec::context::Context::from_parameters(params)
         .map_err(|e| format!("codec context: {e}"))?;
 
+    // One still frame is wanted. A frame thread a core (16) each held
+    // its own frames: a project's thumbnails, all asked for as it
+    // opened, took 8.5 GB for a few seconds on 54 files. Two threads
+    // keep a thumbnail quick and its memory a frame or two.
     unsafe {
-        let cores = (std::thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(4) as i32)
-            .min(16);
-        (*codec_ctx.as_mut_ptr()).thread_count = cores;
+        (*codec_ctx.as_mut_ptr()).thread_count = THUMBNAIL_DECODE_THREADS;
     }
 
     let decoder = codec_ctx.decoder().video()
