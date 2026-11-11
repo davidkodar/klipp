@@ -3011,9 +3011,16 @@ fn decode_thread_main(
     let tb_den = time_base.denominator() as f64;
     let tb_f64 = if tb_den != 0.0 { tb_num / tb_den } else { 1.0 / 90000.0 };
 
+    // Which file, which codec, and which decoder it got, and whether the
+    // decode budget moved it to software: a heavy stretch's slow layer is
+    // read off this line (a 10-bit HDR stream decoding on the CPU was only
+    // guessed at from the budget's lines).
     debug!(
-        "decode_thread: started, stream={stream_index}, time_base={tb_num}/{tb_den}, hw={:?}",
-        hw_accel
+        "decode_thread: started, stream={stream_index}, time_base={tb_num}/{tb_den}, hw={:?}, file={:?}, codec={:?}, moved_to_software={}",
+        hw_accel,
+        path.file_name().unwrap_or_default(),
+        stream_parameters.id(),
+        sw_threads.is_some(),
     );
 
     let mut paused = true;
