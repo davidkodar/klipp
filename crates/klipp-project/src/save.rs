@@ -905,6 +905,26 @@ pub fn iso8601_now() -> String {
 /// manifest holds for each. A file re-probed when its project opens, and
 /// found as it was stored, leaves nothing to save (#1353), while what is
 /// only in memory (whether the probe has run, its caches) doesn't count.
+/// The saved fields in which `a` and `b` differ, by name, each with
+/// both values (shortened): what a re-read changed that a save would
+/// write.
+pub fn media_item_save_diff(a: &MediaItem, b: &MediaItem) -> Vec<String> {
+    let dir = Path::new("");
+    let (Ok(serde_json::Value::Object(x)), Ok(serde_json::Value::Object(y))) =
+        (serde_json::to_value(media_item_to_json(a, dir)), serde_json::to_value(media_item_to_json(b, dir)))
+    else {
+        return Vec::new();
+    };
+    let short = |v: Option<&serde_json::Value>| {
+        let t = v.map_or("none".to_string(), |v| v.to_string());
+        if t.len() > 80 { format!("{}…", &t[..80]) } else { t }
+    };
+    let mut keys: Vec<&String> = x.keys().chain(y.keys()).collect();
+    keys.sort();
+    keys.dedup();
+    keys.into_iter().filter(|k| x.get(*k) != y.get(*k)).map(|k| format!("{k}: {} -> {}", short(x.get(k)), short(y.get(k)))).collect()
+}
+
 pub fn media_items_save_alike(a: &MediaItem, b: &MediaItem) -> bool {
     let dir = Path::new("");
     let saved = |item: &MediaItem| serde_json::to_value(media_item_to_json(item, dir)).ok();

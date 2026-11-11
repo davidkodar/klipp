@@ -286,8 +286,12 @@ impl KlippApp {
                     // every open's does for an unchanged file, leaves
                     // nothing to save (#1353).
                     let saves_alike = previous.as_ref().is_some_and(|old| klipp_project::media_items_save_alike(old, &media_item));
-                    if previous.is_some() && !saves_alike {
-                        tracing::info!("Re-read of {:?} differs from what the project kept: it counts as a change to save", media_item.filename);
+                    if let (Some(old), false) = (&previous, saves_alike) {
+                        tracing::info!(
+                            "Re-read of {:?} differs from what the project kept: it counts as a change to save ({})",
+                            media_item.filename,
+                            klipp_project::media_item_save_diff(old, &media_item).join("; "),
+                        );
                     }
                     media_parts[1].1 += ms(t_part);
                     let t_part = std::time::Instant::now();
