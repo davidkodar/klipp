@@ -75,7 +75,19 @@ klipp
 
 Run `makepkg` as your normal user. If prompted for an ONNX Runtime provider, choose `onnxruntime-cpu` for the standard setup; NVIDIA/CUDA acceleration is optional. The first build needs substantial time and disk space. AI models download on demand.
 
-See the [installation guide](packaging/README.md) for driver checks, updates, removal, and troubleshooting. Ubuntu, Fedora and other distributions have no package yet; build from source with [Building](docs/project-reference.md#building). They are less tested.
+See the [installation guide](packaging/README.md) for driver checks, updates, removal, and troubleshooting.
+
+### Ubuntu, Fedora and other distributions: Flatpak
+
+On other x86_64 distributions, install the Flatpak bundle `klipp-0.3.6-x86_64.flatpak` from the [release page](https://github.com/davidkodar/klipp/releases/tag/v0.3.6). Check it against the signed `SHA256SUMS` as above (the `minisign` tool comes from your distribution's packages). Flatpak fetches Klipp's runtime from Flathub the first time:
+
+```bash
+flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+flatpak install --user klipp-0.3.6-x86_64.flatpak
+flatpak run io.github.davidkodar.Klipp
+```
+
+The bundle doesn't update itself: to update, install the next release's bundle the same way. Klipp isn't on Flathub yet. These distributions are less tested than Arch; to build from source instead, see [Building](docs/project-reference.md#building).
 
 ## Local AI and external assistants
 
