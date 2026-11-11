@@ -482,6 +482,41 @@ pub struct Pending {
     answer: std::sync::mpsc::Receiver<Outcome>,
     given_up: std::sync::Arc<std::sync::atomic::AtomicBool>,
     known: bool,
+    /// This take's place among the takes of its project in this process.
+    take: u64,
+}
+
+/// The latest take of each project started in this process. A take given
+/// up gives back the lock it took only while it is still its project's
+/// latest: the project opened again since, the newer take holds the same
+/// lock, this session's, and giving it back would leave the project open
+/// with no lock until the next heartbeat.
+static LATEST_TAKE: std::sync::Mutex<Vec<(PathBuf, u64)>> = std::sync::Mutex::new(Vec::new());
+
+fn latest_take(project: &Path) -> u64 {
+    LATEST_TAKE.lock().unwrap_or_else(|e| e.into_inner()).iter().find(|(p, _)| p == project).map_or(0, |(_, n)| *n)
+}
+
+fn next_take(project: &Path) -> u64 {
+    let mut takes = LATEST_TAKE.lock().unwrap_or_else(|e| e.into_inner());
+    match takes.iter_mut().find(|(p, _)| p == project) {
+        Some((_, n)) => {
+            *n += 1;
+            *n
+        }
+        None => {
+            takes.push((project.to_path_buf(), 1));
+            1
+        }
+    }
+}
+
+/// Give back a lock a take given up took, unless a newer take of the
+/// project has started since.
+fn give_back(project: &Path, holder: &Holder, take: u64) {
+    if latest_take(project) == take {
+        release(project, holder);
+    }
 }
 
 impl Pending {
@@ -495,6 +530,7 @@ impl Pending {
     pub fn start_with(project: PathBuf, holder: Holder, work: impl FnOnce() -> Outcome + Send + 'static) -> Self {
         let (tx, answer) = std::sync::mpsc::channel();
         let given_up = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let take = next_take(&project);
         let (p, h, gone) = (project.clone(), holder.clone(), given_up.clone());
         let run = move || {
             let outcome = work();
@@ -502,7 +538,7 @@ impl Pending {
             // Nobody waits for it any more: what it took goes back.
             let unwanted = gone.load(std::sync::atomic::Ordering::SeqCst) || tx.send(outcome).is_err();
             if unwanted && ours {
-                release(&p, &h);
+                give_back(&p, &h, take);
             }
         };
         if let Err(e) = std::thread::Builder::new().name("project-lock-take".into()).spawn(run) {
@@ -510,7 +546,7 @@ impl Pending {
             // written, and the project still opens.
             tracing::warn!("project lock: could not start taking it: {e}");
         }
-        Self { project, holder, answer, given_up, known: false }
+        Self { project, holder, answer, given_up, known: false, take }
     }
 
     pub fn project(&self) -> &Path {
@@ -547,7 +583,7 @@ impl Drop for Pending {
         // Said just before it was given up: given back here.
         if let Ok(outcome) = self.answer.try_recv() {
             if outcome.is_ours() {
-                release(&self.project, &self.holder);
+                give_back(&self.project, &self.holder, self.take);
             }
         }
     }
@@ -668,6 +704,30 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
         assert!(matches!(inspect(&dir, &me), LockState::Free), "the lock was left behind");
+    }
+
+    /// The project opened, closed and opened again before the first take
+    /// answered: the first, given up, does not give back the lock the
+    /// second holds, which is the same session's.
+    #[test]
+    fn a_take_given_up_leaves_a_newer_takes_lock() {
+        let dir = project("retaken");
+        let me = Holder::current();
+        let (p, h) = (dir.clone(), me.clone());
+        let slow = Pending::start_with(dir.clone(), me.clone(), move || {
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            resolve(&p, &h, Ask::Acquire)
+        });
+        drop(slow);
+        let mut again = Pending::start(dir.clone(), me.clone(), Ask::Acquire);
+        let t0 = std::time::Instant::now();
+        while again.poll().is_none() && t0.elapsed() < std::time::Duration::from_secs(5) {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        // Past the first take's answer, and its giving back.
+        std::thread::sleep(std::time::Duration::from_millis(600));
+        assert!(matches!(inspect(&dir, &me), LockState::Ours), "the newer take's lock was given back");
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// Off its thread the lock is judged as before: someone else's live
