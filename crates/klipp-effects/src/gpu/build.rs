@@ -944,6 +944,8 @@ impl GpuEffectsPipeline {
             device,
             queue,
             effect_luts: std::cell::RefCell::new(Vec::new()),
+            chain_luts: std::cell::RefCell::new(Vec::new()),
+            chain_lut_uploads: std::cell::Cell::new(0),
             rsc_row_buf: None,
             rsc_row_buf_size: 0,
             stabilization_buf: None,

@@ -428,6 +428,11 @@ impl EffectPipelines {
     }
 }
 
+/// What a 3D LUT node's table is kept by while the GPU holds its upload:
+/// the table itself, shared, so its upload is known by it and is never
+/// taken for another table's (`apply_3d_lut_chain`).
+pub type LutKeep = Arc<dyn std::any::Any + Send + Sync>;
+
 pub struct GpuEffectsPipeline {
     /// Shared with every renderer on the device (#2688).
     pipelines: Arc<EffectPipelines>,
@@ -448,6 +453,12 @@ pub struct GpuEffectsPipeline {
     /// The LUT effects' tables on the GPU, the latest last, each kept with
     /// the preparation it was uploaded from so a table is uploaded once.
     effect_luts: std::cell::RefCell<Vec<(Arc<crate::colour_transform::LutTable>, Arc<wgpu::Buffer>)>>,
+    /// The 3D LUT nodes' tables on the GPU, the latest last, each kept
+    /// with the table it was uploaded from: a table goes up once, and two
+    /// in one chain each read their own.
+    chain_luts: std::cell::RefCell<Vec<(LutKeep, Arc<wgpu::Buffer>)>>,
+    /// The 3D LUT tables uploaded for chains (`chain_lut_uploads`).
+    chain_lut_uploads: std::cell::Cell<u64>,
     // Compute pipeline — rolling shutter correction (uses huesat 4-binding layout)
     rsc_row_buf: Option<wgpu::Buffer>,
     rsc_row_buf_size: u64,
@@ -1413,6 +1424,13 @@ impl GpuEffectsPipeline {
     /// plate. Its change over a graph run is
     /// `ChainStats::uploads`, so a test can tell a CPU-made value that was
     /// uploaded into the chain from one that made the chain decline.
+    /// The 3D LUT tables uploaded for chains so far: once per table, not
+    /// per frame.
+    #[doc(hidden)]
+    pub fn chain_lut_uploads(&self) -> u64 {
+        self.chain_lut_uploads.get()
+    }
+
     pub fn frame_upload_count(&self) -> u64 {
         self.frame_upload_count.load(std::sync::atomic::Ordering::Relaxed)
     }

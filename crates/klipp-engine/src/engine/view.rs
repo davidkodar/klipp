@@ -973,7 +973,7 @@ impl PlaybackEngine {
             return;
         }
         let lut = match &p.global_lut {
-            Some(lut) if p.applies() => Some(klipp_compose::GlobalLut { lut: lut.clone(), opacity: p.global_lut_opacity }),
+            Some(lut) if p.applies() => Some(klipp_compose::GlobalLut { lut: std::sync::Arc::new(lut.clone()), opacity: p.global_lut_opacity }),
             _ => None,
         };
         self.renderer.set_global_lut(lut);
