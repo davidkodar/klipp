@@ -502,6 +502,9 @@ pub struct GraphExecutor {
     /// line (#2107): whether its input was seeded on the GPU or uploaded,
     /// and the time each part took.
     chain_start_split: Vec<(&'static str, f64)>,
+    /// An effect node's dispatch in parts (diagnostic): its recording
+    /// buffers and its record, said beside the node's own time.
+    effect_split: Vec<(&'static str, f64)>,
     /// Keys drawn on the chain in the run so far (`ChainStats::extends`).
     run_key_draws: u32,
     /// The matte the next mixed effect node's mask reads, handed from the
@@ -1016,6 +1019,7 @@ impl GraphExecutor {
             start_kept: None,
             start_kept_for_gates: None,
             chain_start_split: Vec::new(),
+            effect_split: Vec::new(),
             run_key_draws: 0,
             effect_mask: None,
             effect_window: None,
@@ -1164,6 +1168,7 @@ impl GraphExecutor {
             start_kept: None,
             start_kept_for_gates: None,
             chain_start_split: Vec::new(),
+            effect_split: Vec::new(),
             run_key_draws: 0,
             effect_mask: None,
             effect_window: None,
@@ -2511,7 +2516,16 @@ impl GraphExecutor {
                 continue;
             }
             evaluations += 1;
-            let node_kind_name = format!("{:?}", node.kind);
+            // An effect node says which effects it runs, so a slow first
+            // use names its effect (diagnostic).
+            let node_kind_name = match node.kind {
+                NodeKind::Effect | NodeKind::EffectSegment if !node.params.effects.is_empty() && tracing::enabled!(tracing::Level::DEBUG) => {
+                    let names: Vec<String> = node.params.effects.iter().map(crate::decline::effect_name).collect();
+                    format!("{:?}[{}]", node.kind, names.join("+"))
+                }
+                _ => format!("{:?}", node.kind),
+            };
+            self.effect_split.clear();
 
             // Bypassed nodes — and single-input filter nodes whose params
             // are all at defaults — pass their primary input through
@@ -3284,6 +3298,9 @@ impl GraphExecutor {
                         }
                         chain_extend_count += 1;
                         per_node_ms.push((format!("{node_kind_name}#chain_extend"), t_node.elapsed().as_secs_f64() * 1000.0));
+                        for (part, part_ms) in std::mem::take(&mut self.effect_split) {
+                            per_node_ms.push((format!("{node_kind_name}#chain_extend/{part}"), part_ms));
+                        }
                         continue;
                     }
                     _ => {
@@ -3396,6 +3413,10 @@ impl GraphExecutor {
                     let rest = total - parts.iter().map(|(_, ms)| ms).sum::<f64>();
                     for (part, part_ms) in parts.into_iter().chain([("rest", rest)]) {
                         per_node_ms.push((format!("{node_kind_name}#chain_start/{part}"), part_ms));
+                    }
+                    // Inside `dispatch`, not beside it.
+                    for (part, part_ms) in std::mem::take(&mut self.effect_split) {
+                        per_node_ms.push((format!("{node_kind_name}#chain_start/dispatch/{part}"), part_ms));
                     }
                     continue;
                 }
@@ -5095,6 +5116,12 @@ impl GraphExecutor {
             let keyed = self.effect_keyed.take().and_then(|id| self.key_mattes.remove(&id).map(|k| (id, k)));
             let luma = klipp_color::linear::luma_coefs(self.working_colorspace);
             let gpu = self.gpu.as_mut()?;
+            // Diagnostic: the recording buffers, made on an effect's first
+            // run, timed apart from the record itself.
+            let t_buffers = std::time::Instant::now();
+            gpu.ensure_recording_buffers(width, height);
+            let fx_buffers_ms = t_buffers.elapsed().as_secs_f64() * 1000.0;
+            let t_record = std::time::Instant::now();
             let run = match params.effect_blend {
                 Some(blend) => klipp_effects::mask_mix::MaskMix::new(blend.mix, blend.channel, luma).ok().and_then(|mix| {
                     let matte = match (&window, &keyed, &mask) {
@@ -5107,6 +5134,8 @@ impl GraphExecutor {
                 }),
                 None => Some(gpu.chain_run_effects(effects, in_is_a, width, height)),
             };
+            self.effect_split.push(("fx_buffers", fx_buffers_ms));
+            self.effect_split.push(("fx_record", t_record.elapsed().as_secs_f64() * 1000.0));
             if let Some((id, k)) = keyed {
                 self.key_mattes.insert(id, k);
                 if run.is_some() {
