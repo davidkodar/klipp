@@ -1420,7 +1420,12 @@ pub(crate) fn respond(
             let target_m = klipp_color::measure::measure_frame(&td, tw, th, &[]);
             let reference_m = klipp_color::measure::measure_frame(&rd, rw, rh, &[]);
             let mut knobs = match_grade_knobs(&target_stats, &ref_stats, &target_m, &reference_m);
-            let held = hold_match_for_highlights(&mut knobs, &target_m, &reference_m);
+            let highlights = hold_match_for_highlights(&mut knobs, &target_m, &reference_m);
+            let flat = hold_match_for_flat_reference(&mut knobs, &ref_stats);
+            let held = match (highlights, flat) {
+                (Some(a), Some(b)) => Some(format!("{a}; {b}")),
+                (a, b) => a.or(b),
+            };
             if knobs.is_empty() {
                 if let Some(why) = &held {
                     return Ok(json!({
