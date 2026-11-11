@@ -61,6 +61,8 @@ impl KlippApp {
         if let Some(keeper) = self.lock_keeper.take() {
             keeper.release_now();
         }
+        // One still being taken gives back what it took, if it has.
+        self.lock_pending = None;
         const BUDGET: std::time::Duration = std::time::Duration::from_millis(2000);
         let t0 = std::time::Instant::now();
 
