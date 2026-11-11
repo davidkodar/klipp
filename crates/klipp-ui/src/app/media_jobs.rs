@@ -698,6 +698,13 @@ impl KlippApp {
         if self.state.skim_transcoding.contains(&media_id) {
             return;
         }
+        // While the opened project's skims are being looked for, one asked
+        // for waits a frame: its whole skim may be on disk, and made again
+        // it would be written over as the lookup handed it out.
+        if self.skim_lookup.is_some() {
+            self.state.pending_skim_transcodes.push(media_id);
+            return;
+        }
         if let Some(item) = self.state.media_pool.get(&media_id).filter(|item| has_picture_to_skim(item)) {
             let duration_secs = item.duration.to_secs_f64();
             if let Some(existing) = item.skim_file.as_ref().filter(|p| p.exists()) {
