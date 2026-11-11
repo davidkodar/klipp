@@ -64,9 +64,125 @@ pub const DEFAULT_SOFTWARE_PER_THREAD: f64 = 80e6;
 /// than it asks: a decoder just keeping up falls behind at every seek.
 const SOFTWARE_HEADROOM: f64 = 1.25;
 
+/// What one software thread is taken to deliver for a class of stream
+/// not measured yet, in pixels a second, frames on the queue: decoded,
+/// repacked and uploaded. Under a heavy stretch's load a 4K 8-bit H.264
+/// stream on four threads delivered 18–20 frames a second, about 40 a
+/// thread, though its decoder alone had read 241. HEVC,
+/// AV1 and deep streams cost about twice that.
+pub const DEFAULT_DELIVERED_PER_THREAD: f64 = 40e6;
+const DEFAULT_DELIVERED_PER_THREAD_HEAVY: f64 = 20e6;
+
+/// A busy window never sets the budget below this share of the most the
+/// hardware decoders were seen to decode this session: they gave that
+/// much, so a window that read less was held back by something else (a
+/// render loading the GPU the frames are converted on).
+const PEAK_FLOOR: f64 = 0.9;
+
+/// Windows in a row a stream moved to software must deliver less than it
+/// asks, decoding flat out, before its class is held on the GPU.
+const SHORT_WINDOWS: u32 = 2;
+
 /// How far each busy window after the first moves the budget toward what
 /// it measured.
 const EMA_WEIGHT: f64 = 0.3;
+
+/// A kind of stream, as far as software decoding it costs: its codec,
+/// whether its samples are deeper than 8 bits, and its size. A software
+/// rate measured on one class says nothing of another: 1080p H.264
+/// stood in for 4K and moved a stream software could not keep up with.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+pub struct Class {
+    pub codec: Codec,
+    pub deep: bool,
+    pub band: SizeBand,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+pub enum Codec {
+    H264,
+    Hevc,
+    Av1,
+    ProRes,
+    #[default]
+    Other,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+pub enum SizeBand {
+    /// Up to 1920×1080's pixels.
+    #[default]
+    Hd,
+    /// Up to 4096×2160's.
+    Uhd,
+    Larger,
+}
+
+impl Class {
+    /// The class of a stream of `codec` (the probe's name) at `width` ×
+    /// `height`.
+    pub fn of(codec: &str, deep: bool, width: u32, height: u32) -> Class {
+        let codec = match codec.to_ascii_lowercase().as_str() {
+            "h264" | "avc" | "avc1" => Codec::H264,
+            "hevc" | "h265" => Codec::Hevc,
+            "av1" => Codec::Av1,
+            "prores" => Codec::ProRes,
+            _ => Codec::Other,
+        };
+        let px = width as u64 * height as u64;
+        let band = if px <= 1920 * 1080 { SizeBand::Hd } else if px <= 4096 * 2160 { SizeBand::Uhd } else { SizeBand::Larger };
+        Class { codec, deep, band }
+    }
+
+    fn default_per_thread(&self) -> f64 {
+        if self.deep || matches!(self.codec, Codec::Hevc | Codec::Av1) { DEFAULT_DELIVERED_PER_THREAD_HEAVY } else { DEFAULT_DELIVERED_PER_THREAD }
+    }
+}
+
+/// Whether a file's samples are deeper than 8 bits, from the probe's bit
+/// depth, else its pixel format's name (`yuv420p10le`); `None` when the
+/// probe said neither.
+pub fn deep_samples(bit_depth: Option<u8>, pixel_format: Option<&str>) -> Option<bool> {
+    match (bit_depth, pixel_format) {
+        (Some(d), _) => Some(d >= 10),
+        (None, Some(pf)) => Some(["p10", "p12", "p14", "p16", "10le", "12le", "16le", "10be", "12be", "16be"].iter().any(|t| pf.contains(t))),
+        (None, None) => None,
+    }
+}
+
+/// What software decoding delivers, by class: measured where a stream of
+/// the class was moved and decoded flat out, the class's default until
+/// then; nothing for a class a moved stream fell short on.
+#[derive(Default)]
+pub struct SoftwareRates {
+    rates: std::collections::HashMap<Class, (f64, bool)>,
+}
+
+impl SoftwareRates {
+    /// What a thread delivers for `class`, pixels a second; 0 when a
+    /// stream of it fell short, so none of it moves again.
+    pub fn per_thread(&self, class: Class) -> f64 {
+        match self.rates.get(&class) {
+            Some((_, true)) => 0.0,
+            Some((rate, false)) => *rate,
+            None => class.default_per_thread(),
+        }
+    }
+
+    /// A stream of `class` delivered `per_thread` a thread, flat out. The
+    /// first measure replaces the default; later ones move by average.
+    pub fn note(&mut self, class: Class, per_thread: f64) -> f64 {
+        let e = self.rates.entry(class).or_insert((f64::NAN, false));
+        e.0 = if e.0.is_nan() { per_thread } else { e.0 * (1.0 - EMA_WEIGHT) + per_thread * EMA_WEIGHT };
+        e.0
+    }
+
+    /// A stream of `class` moved to software could not deliver its rate.
+    pub fn fell_short(&mut self, class: Class) {
+        let e = self.rates.entry(class).or_insert((class.default_per_thread(), false));
+        e.1 = true;
+    }
+}
 
 /// How a decoder decodes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -97,6 +213,10 @@ struct Entry {
     /// Software threads it was given; 0 for one the ladder put on
     /// software itself (no GPU), which is not ours to count.
     threads: usize,
+    class: Class,
+    /// Moved to software and, in its last window, short of its rate:
+    /// nothing else moves while one is.
+    short: bool,
 }
 
 struct Registry {
@@ -109,13 +229,18 @@ struct Registry {
     /// whether a software stream has measured it.
     software_per_thread: f64,
     software_measured: bool,
+    /// What software delivers, by class.
+    classes: SoftwareRates,
+    /// The most the hardware decoders were seen to decode, pixels a
+    /// second, in any window this session.
+    peak: f64,
     /// Where the current window started, and the counters there.
     window: Option<(Instant, u64, u64)>,
 }
 
 fn registry() -> &'static Mutex<Registry> {
     static R: OnceLock<Mutex<Registry>> = OnceLock::new();
-    R.get_or_init(|| Mutex::new(Registry { next: 1, entries: Vec::new(), budget: DEFAULT_BUDGET, measured: false, software_per_thread: DEFAULT_SOFTWARE_PER_THREAD, software_measured: false, window: None }))
+    R.get_or_init(|| Mutex::new(Registry { next: 1, entries: Vec::new(), budget: DEFAULT_BUDGET, measured: false, software_per_thread: DEFAULT_SOFTWARE_PER_THREAD, software_measured: false, classes: SoftwareRates::default(), peak: 0.0, window: None }))
 }
 
 /// Pixels the hardware decoders decoded, every frame counted, those a seek
@@ -199,11 +324,19 @@ impl Drop for Lease {
 // small loses nothing to software, and its scaled frames are cheap. Not
 // done yet: what a layer covers is the renderer's to say.
 pub fn admit(rate: f64, priority: Priority) -> Lease {
+    admit_class(rate, Class::default(), priority)
+}
+
+/// [`admit`] for a stream of `class`: it moves to software only if what
+/// software was measured delivering for its class (or the class's
+/// default) holds its rate, never while another moved stream is short.
+pub fn admit_class(rate: f64, class: Class, priority: Priority) -> Lease {
     let mut r = registry().lock().unwrap_or_else(|e| e.into_inner());
     let decoding = if priority == Priority::Overflow && enabled() && crate::video_decoder::hardware_decode_enabled() {
         let gpu_demand: f64 = r.entries.iter().filter(|e| e.on_gpu).map(|e| e.rate).sum();
         let used: usize = r.entries.iter().map(|e| e.threads).sum();
-        choose(rate, gpu_demand, r.budget, used, software_thread_cap(), r.software_per_thread)
+        let per_thread = if r.entries.iter().any(|e| e.short) { 0.0 } else { r.classes.per_thread(class) };
+        choose(rate, gpu_demand, r.budget, used, software_thread_cap(), per_thread)
     } else {
         Decoding::Gpu
     };
@@ -213,7 +346,7 @@ pub fn admit(rate: f64, priority: Priority) -> Lease {
         Decoding::Gpu => (true, 0),
         Decoding::Software { threads } => (false, threads),
     };
-    r.entries.push(Entry { id, rate, on_gpu, threads });
+    r.entries.push(Entry { id, rate, on_gpu, threads, class, short: false });
     if let Decoding::Software { threads } = decoding {
         tracing::info!("decode overflow: a stream of {:.0} Mpx/s decodes in software on {threads} threads (GPU asked {:.0} of {:.0} Mpx/s)", rate / 1e6, r.entries.iter().filter(|e| e.on_gpu).map(|e| e.rate).sum::<f64>() / 1e6, r.budget / 1e6);
     }
@@ -238,32 +371,56 @@ pub fn set_rate(id: u64, rate: f64) {
     }
 }
 
-/// A software decoder moved off the GPU, decoding flat out, decoded
-/// `per_thread` pixels a second on each of its threads. The first such
-/// measure replaces the default; later ones move it by moving average.
-pub fn note_software_rate(per_thread: f64) {
+/// The decoder `id`, moved off the GPU and decoding flat out, delivered
+/// `per_thread` pixels a second on each of its threads: frames on its
+/// queue, repacked and uploaded, not what its decoder alone read. Kept
+/// for its class; `short` when that was less than the stream asks, and
+/// [`SHORT_WINDOWS`] such in a row hold its class on the GPU.
+pub fn note_software_rate(id: u64, per_thread: f64, short_windows: u32) {
     let mut r = registry().lock().unwrap_or_else(|e| e.into_inner());
+    let Some(i) = r.entries.iter().position(|e| e.id == id) else { return };
+    let class = r.entries[i].class;
     let was = r.software_per_thread;
+    let now = r.classes.note(class, per_thread);
     r.software_per_thread = if r.software_measured { was * (1.0 - EMA_WEIGHT) + per_thread * EMA_WEIGHT } else { per_thread };
     r.software_measured = true;
-    tracing::debug!("decode overflow: a software thread measured {:.0} Mpx/s; {:.0} → {:.0}", per_thread / 1e6, was / 1e6, r.software_per_thread / 1e6);
+    r.entries[i].short = short_windows > 0;
+    if short_windows >= SHORT_WINDOWS {
+        r.classes.fell_short(class);
+        tracing::info!("decode overflow: a {class:?} stream in software delivered {:.0} of the {:.0} Mpx/s it asks; its kind stays on the GPU from now", per_thread * r.entries[i].threads as f64 / 1e6, r.entries[i].rate / 1e6);
+    }
+    tracing::debug!("decode overflow: a software thread delivered {:.0} Mpx/s ({class:?} now {:.0})", per_thread / 1e6, now / 1e6);
 }
 
 /// One decode thread's measure of what it decodes and waits (#2116): a
 /// hardware decoder's frames and waits are the GPU's measure, and a
-/// software decoder decoding flat out measures what its threads give.
+/// software decoder decoding flat out measures what it delivers.
 pub struct Meter {
     on_gpu: bool,
     /// The threads of a software decoder moved off the GPU.
     threads: Option<usize>,
+    /// What the stream asks, pixels a second: a software window short of
+    /// it counts toward holding its class on the GPU.
+    rate: f64,
     start: Instant,
     pixels: u64,
     idle: Duration,
+    /// Software windows in a row short of `rate`.
+    short: u32,
 }
 
 impl Meter {
-    pub fn new(on_gpu: bool, threads: Option<usize>) -> Self {
-        Self { on_gpu, threads, start: Instant::now(), pixels: 0, idle: Duration::ZERO }
+    pub fn new(on_gpu: bool, threads: Option<usize>, rate: f64) -> Self {
+        Self::at(on_gpu, threads, rate, Instant::now())
+    }
+
+    fn at(on_gpu: bool, threads: Option<usize>, rate: f64, start: Instant) -> Self {
+        Self { on_gpu, threads, rate, start, pixels: 0, idle: Duration::ZERO, short: 0 }
+    }
+
+    /// The stream asks `rate` pixels a second, once its file is read.
+    pub fn set_rate(&mut self, rate: f64) {
+        self.rate = rate;
     }
 
     /// The thread waited `d`: a full queue, paused, at the end.
@@ -274,20 +431,56 @@ impl Meter {
         self.idle += d;
     }
 
-    /// The thread decoded a frame of `pixels`, those a seek skips too.
-    pub fn frame(&mut self, pixels: u64) {
+    /// The thread spent `d` downloading and converting a hardware frame:
+    /// work on the GPU's compute, which a render loads, not its decoder.
+    /// Time the decoder is not what holds this thread, so not counted as
+    /// the decoder running flat out.
+    pub fn converted(&mut self, d: Duration) {
+        if self.on_gpu {
+            note_gpu_idle(d);
+        }
+    }
+
+    /// The decoder gave a frame of `pixels`, those a seek decodes and
+    /// skips too: the GPU decoder's work.
+    pub fn decoded(&mut self, pixels: u64) {
         if self.on_gpu {
             note_gpu_frame(pixels);
         }
+    }
+
+    /// A seek's first frame reached the queue: the delivered measure
+    /// starts again here, the frames decoded on the way to it not counted.
+    pub fn seeked(&mut self) {
+        self.seeked_at(Instant::now());
+    }
+
+    fn seeked_at(&mut self, now: Instant) {
+        *self = Self { short: self.short, ..Self::at(self.on_gpu, self.threads, self.rate, now) };
+    }
+
+    /// A frame of `pixels` reached the queue. A software decoder's window
+    /// closes past [`WINDOW`]: decoding flat out (waiting less than
+    /// [`BUSY_IDLE_SHARE`] of it), it answers what each thread delivered
+    /// and how many windows in a row that fell short of its rate.
+    pub fn delivered(&mut self, pixels: u64) -> Option<(f64, u32)> {
+        self.delivered_at(pixels, Instant::now())
+    }
+
+    fn delivered_at(&mut self, pixels: u64, now: Instant) -> Option<(f64, u32)> {
         self.pixels += pixels;
-        let span = self.start.elapsed();
+        let span = now.duration_since(self.start);
         if span < WINDOW {
-            return;
+            return None;
         }
-        if let Some(threads) = self.threads.filter(|_| self.idle.as_secs_f64() < BUSY_IDLE_SHARE * span.as_secs_f64()) {
-            note_software_rate(self.pixels as f64 / span.as_secs_f64() / threads as f64);
-        }
-        *self = Self::new(self.on_gpu, self.threads);
+        let busy = self.idle.as_secs_f64() < BUSY_IDLE_SHARE * span.as_secs_f64();
+        let measured = self.threads.filter(|_| busy).map(|threads| {
+            let total = self.pixels as f64 / span.as_secs_f64();
+            self.short = if total < self.rate { self.short + 1 } else { 0 };
+            (total / threads as f64, self.short)
+        });
+        *self = Self { short: self.short, ..Self::at(self.on_gpu, self.threads, self.rate, now) };
+        measured
     }
 }
 
@@ -325,7 +518,8 @@ pub fn sample() {
     let on_gpu = r.entries.iter().filter(|e| e.on_gpu).count();
     let rate = pixels.saturating_sub(p0) as f64 / span.as_secs_f64();
     let busy = is_busy(idle.saturating_sub(i0) as f64 / 1e6, span.as_secs_f64(), on_gpu);
-    if let Some(budget) = calibrated(r.budget, r.measured, rate, busy) {
+    r.peak = r.peak.max(rate);
+    if let Some(budget) = calibrated(r.budget, r.measured, rate, busy, r.peak) {
         tracing::debug!("decode overflow: GPU measured {:.0} Mpx/s{}; budget {:.0} → {:.0} Mpx/s", rate / 1e6, if busy { " busy" } else { "" }, r.budget / 1e6, budget / 1e6);
         r.budget = budget;
         r.measured |= busy;
@@ -348,14 +542,17 @@ pub fn is_busy(idle: f64, span: f64, decoders: usize) -> bool {
 /// decoding more than the budget raises it there: live, decoders mostly
 /// wait on full queues, and a busy window alone never came, which left
 /// the starting guess in place for a whole session. Only a busy window,
-/// the GPU's limit itself, sets the budget (the first) or moves it down.
-pub fn calibrated(budget: f64, measured: bool, rate: f64, busy: bool) -> Option<f64> {
+/// the GPU's limit itself, sets the budget (the first) or moves it down,
+/// and never below [`PEAK_FLOOR`] of `peak`, the most seen decoded: a
+/// first busy window read 820 under a heavy render where 2,170 had just
+/// been decoded, and moved every stream after it to software.
+pub fn calibrated(budget: f64, measured: bool, rate: f64, busy: bool, peak: f64) -> Option<f64> {
     if rate <= 0.0 {
         return None;
     }
     let next = match (busy, measured) {
-        (true, false) => rate,
-        (true, true) => (budget * (1.0 - EMA_WEIGHT) + rate * EMA_WEIGHT).max(rate.min(budget)),
+        (true, false) => rate.max(PEAK_FLOOR * peak),
+        (true, true) => (budget * (1.0 - EMA_WEIGHT) + rate * EMA_WEIGHT).max(rate.min(budget)).max(PEAK_FLOOR * peak),
         (false, _) if rate > budget => rate,
         (false, _) => return None,
     };
@@ -555,15 +752,15 @@ mod tests {
 
     #[test]
     fn the_first_busy_window_sets_the_budget() {
-        assert_eq!(calibrated(DEFAULT_BUDGET, false, 200.0 * K4, true), Some(200.0 * K4));
-        assert_eq!(calibrated(DEFAULT_BUDGET, false, 60.0 * K4, true), Some(60.0 * K4));
+        assert_eq!(calibrated(DEFAULT_BUDGET, false, 200.0 * K4, true, 0.0), Some(200.0 * K4));
+        assert_eq!(calibrated(DEFAULT_BUDGET, false, 60.0 * K4, true, 0.0), Some(60.0 * K4));
     }
 
     #[test]
     fn later_busy_windows_move_it_toward_theirs() {
-        let up = calibrated(150.0 * K4, true, 200.0 * K4, true).expect("busy");
+        let up = calibrated(150.0 * K4, true, 200.0 * K4, true, 0.0).expect("busy");
         assert!(up > 150.0 * K4 && up < 200.0 * K4, "{up}");
-        let down = calibrated(150.0 * K4, true, 60.0 * K4, true).expect("busy");
+        let down = calibrated(150.0 * K4, true, 60.0 * K4, true, 0.0).expect("busy");
         assert!(down < 150.0 * K4 && down > 60.0 * K4, "{down}");
     }
 
@@ -571,13 +768,13 @@ mod tests {
     fn any_window_decoding_more_than_the_budget_raises_it() {
         // Waiting on full queues, yet decoding more than the budget: the
         // GPU gives at least that.
-        assert_eq!(calibrated(DEFAULT_BUDGET, false, 1.5 * DEFAULT_BUDGET, false), Some(1.5 * DEFAULT_BUDGET));
-        assert_eq!(calibrated(DEFAULT_BUDGET, true, 1.5 * DEFAULT_BUDGET, false), Some(1.5 * DEFAULT_BUDGET));
+        assert_eq!(calibrated(DEFAULT_BUDGET, false, 1.5 * DEFAULT_BUDGET, false, 0.0), Some(1.5 * DEFAULT_BUDGET));
+        assert_eq!(calibrated(DEFAULT_BUDGET, true, 1.5 * DEFAULT_BUDGET, false, 0.0), Some(1.5 * DEFAULT_BUDGET));
     }
 
     #[test]
     fn an_idle_window_under_the_budget_says_nothing() {
-        assert_eq!(calibrated(DEFAULT_BUDGET, false, 50.0 * K4, false), None);
+        assert_eq!(calibrated(DEFAULT_BUDGET, false, 50.0 * K4, false, 0.0), None);
         assert!(!is_busy(0.5, 0.5, 4), "waiting on full queues");
         assert!(!is_busy(0.0, 0.5, 1), "one decoder alone");
         assert!(is_busy(0.05, 0.5, 2));
@@ -585,7 +782,110 @@ mod tests {
 
     #[test]
     fn the_budget_has_a_floor() {
-        assert_eq!(calibrated(DEFAULT_BUDGET, false, 1.0, true), Some(MIN_BUDGET));
+        assert_eq!(calibrated(DEFAULT_BUDGET, false, 1.0, true, 0.0), Some(MIN_BUDGET));
+    }
+
+    /// A hardware decoder's thread spending its frame downloading and
+    /// converting on a GPU a render loads is not its decoder running flat
+    /// out: that time counts as the decoder waiting.
+    #[test]
+    fn a_window_spent_converting_is_not_the_decoder_flat_out() {
+        let before = GPU_IDLE_US.load(Relaxed);
+        let mut m = Meter::new(true, None, 30.0 * K4);
+        m.converted(Duration::from_micros(18_600));
+        assert!(GPU_IDLE_US.load(Relaxed) - before >= 18_600, "converting is not decoding");
+        // Two decoders, each converting 18.6 ms of each 33 ms frame:
+        // over half the window not on the decoder.
+        assert!(!is_busy(2.0 * 0.5 * 18.6 / 33.3, 0.5, 2));
+    }
+
+    /// The first busy window, read under a heavy render, does not take the
+    /// budget below what the hardware decoders were seen to decode: 820
+    /// after 2,170 moved every stream after it to software.
+    #[test]
+    fn a_busy_window_does_not_drop_the_budget_far_below_the_peak() {
+        let (peak, low) = (2170e6, 820e6);
+        let after = calibrated(peak, false, low, true, peak).expect("busy");
+        assert!(after >= PEAK_FLOOR * peak, "{:.0}", after / 1e6);
+        let later = calibrated(after, true, low, true, peak).expect("busy");
+        assert!(later >= PEAK_FLOOR * peak, "{:.0}", later / 1e6);
+        // With nothing seen above it, a busy window still sets it.
+        assert_eq!(calibrated(DEFAULT_BUDGET, false, low, true, low), Some(low));
+    }
+
+    /// What a software stream delivers is frames on its queue, the seek's
+    /// burst of decoded and skipped frames not counted: the decoder read
+    /// 241 a thread at the seek, the queue got 18–20 4K frames a second.
+    #[test]
+    fn a_software_stream_is_measured_by_what_it_delivers() {
+        let t0 = Instant::now();
+        let mut m = Meter::at(false, Some(4), 30.0 * K4, t0);
+        // The seek: 58 frames decoded in half a second, none delivered.
+        for _ in 0..58 {
+            m.decoded(K4 as u64);
+        }
+        let ms = |n: u64| t0 + Duration::from_millis(n);
+        m.seeked_at(ms(500));
+        // Then 20 frames a second for a second, flat out.
+        let mut got = None;
+        for f in 1..=20u64 {
+            got = got.or(m.delivered_at(K4 as u64, ms(500 + f * 50)));
+        }
+        let (per_thread, short) = got.expect("a window closed");
+        let total = per_thread * 4.0;
+        assert!((total - 20.0 * K4).abs() < 0.15 * 20.0 * K4, "{:.0} Mpx/s delivered", total / 1e6);
+        assert_eq!(short, 1, "20 frames a second is short of 30");
+    }
+
+    /// A 4K 30 H.264 stream, 249 Mpx/s, stays on the GPU, over its budget,
+    /// when its class delivered 160 on four threads: software would play
+    /// it at 18–20.
+    #[test]
+    fn a_stream_software_cannot_hold_stays_on_the_gpu_over_budget() {
+        let k4_h264 = Class::of("h264", false, 3840, 2160);
+        let mut rates = SoftwareRates::default();
+        rates.note(k4_h264, 40e6);
+        assert_eq!(choose(30.0 * K4, 1600e6, 2022e6, 0, 16, rates.per_thread(k4_h264)), Decoding::Gpu);
+        // Unmeasured, its default does not move it either.
+        assert_eq!(choose(30.0 * K4, 1600e6, 2022e6, 0, 16, SoftwareRates::default().per_thread(k4_h264)), Decoding::Gpu);
+        // A 1080p 25 one, 52 Mpx/s, fits its class's default.
+        let hd = Class::of("h264", false, 1920, 1080);
+        assert_eq!(choose(1920.0 * 1080.0 * 25.0, 1600e6, 1650e6, 0, 16, rates.per_thread(hd)), Decoding::Software { threads: 4 });
+    }
+
+    /// A class a moved stream fell short on is not moved again, however
+    /// its average reads.
+    #[test]
+    fn a_class_that_fell_short_is_never_moved_again() {
+        let hd = Class::of("h264", false, 1920, 1080);
+        let mut rates = SoftwareRates::default();
+        rates.note(hd, 100e6);
+        rates.fell_short(hd);
+        rates.note(hd, 200e6);
+        assert_eq!(rates.per_thread(hd), 0.0);
+        assert_eq!(choose(1920.0 * 1080.0 * 25.0, 1600e6, 1650e6, 0, 16, rates.per_thread(hd)), Decoding::Gpu);
+    }
+
+    /// A 10-bit file is deep by its probed depth, whatever its colour
+    /// space: an SDR log file is classed as the heavier decode it is.
+    #[test]
+    fn a_files_depth_comes_from_its_probe() {
+        assert_eq!(deep_samples(Some(8), Some("yuv420p")), Some(false));
+        assert_eq!(deep_samples(Some(10), None), Some(true));
+        assert_eq!(deep_samples(None, Some("yuv422p10le")), Some(true));
+        assert_eq!(deep_samples(None, Some("yuv420p")), Some(false));
+        assert_eq!(deep_samples(None, None), None);
+    }
+
+    /// A rate measured on 1080p H.264 says nothing of 4K, nor of HEVC.
+    #[test]
+    fn a_1080p_measure_does_not_move_a_4k_stream() {
+        let (hd, k4, hevc) = (Class::of("h264", false, 1920, 1080), Class::of("h264", false, 3840, 2160), Class::of("hevc", true, 3840, 2160));
+        let mut rates = SoftwareRates::default();
+        rates.note(hd, 241e6);
+        assert_eq!(rates.per_thread(k4), DEFAULT_DELIVERED_PER_THREAD);
+        assert_eq!(rates.per_thread(hevc), DEFAULT_DELIVERED_PER_THREAD_HEAVY);
+        assert_eq!(choose(30.0 * K4, 1600e6, 2022e6, 0, 16, rates.per_thread(k4)), Decoding::Gpu);
     }
 
     fn on_gpu(id: u64) -> Option<bool> {
