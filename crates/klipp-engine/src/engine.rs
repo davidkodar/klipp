@@ -1738,6 +1738,10 @@ pub struct PlaybackEngine {
     sequence: Arc<klipp_timeline::SharedSequence>,
     media_pool: Arc<RwLock<MediaPool>>,
     repaint_cb: Box<dyn Fn() + Send>,
+    /// The probe thread's queue of files to read, and its answers
+    /// (`load_file`); made at the first load.
+    probe_tx: Option<crossbeam_channel::Sender<(PathBuf, MediaId)>>,
+    probe_done: Option<crossbeam_channel::Receiver<AppEvent>>,
     last_frame_time: std::time::Instant,
     dropped_frames: u64,
     // Video decoders
@@ -3100,6 +3104,8 @@ impl PlaybackEngine {
             sequence,
             media_pool,
             repaint_cb,
+            probe_tx: None,
+            probe_done: None,
             last_frame_time: std::time::Instant::now(),
             dropped_frames: 0,
             v1_decoder: None,
@@ -3536,6 +3542,7 @@ impl PlaybackEngine {
             // Pause this is the ONLY site that drains the queue (update_playback
             // doesn't run). Cheap no-op when the queue is empty, so it's safe to
             // call every tick.
+            self.pass_on_probes();
             mark_stage(EngineStage::ParamDrain);
             let applied = self.drain_param_changes();
 
@@ -11531,7 +11538,64 @@ impl PlaybackEngine {
             })
     }
 
+    /// Read `path`'s streams for the media pool, on the probe thread:
+    /// the engine's thread only hands the file over, and passes the
+    /// answer on as it comes back ([`Self::pass_on_probes`]).
     fn load_file(&mut self, path: PathBuf, media_id: MediaId) {
+        if self.probe_tx.is_none() {
+            let (tx, rx) = crossbeam_channel::unbounded::<(PathBuf, MediaId)>();
+            let (done_tx, done_rx) = crossbeam_channel::unbounded::<AppEvent>();
+            // One thread, in turn: the answers come back in the order the
+            // files were asked for, as they did from the engine's thread.
+            let spawned = std::thread::Builder::new().name("klipp-probe".into()).spawn(move || {
+                while let Ok((path, media_id)) = rx.recv() {
+                    let mut answer = None;
+                    let panicked = crate::thread_guard::caught_panic("klipp-probe", || answer = Some(Self::probe_media_file(path.clone(), media_id)));
+                    let answer = answer.filter(|_| !panicked).unwrap_or_else(|| AppEvent::MediaLoadFailed {
+                        media_id,
+                        path,
+                        error: "reading the file's streams failed".into(),
+                    });
+                    if done_tx.send(answer).is_err() {
+                        return;
+                    }
+                }
+            });
+            match spawned {
+                Ok(_) => {
+                    self.probe_tx = Some(tx);
+                    self.probe_done = Some(done_rx);
+                }
+                Err(e) => {
+                    warn!("could not start the probe thread ({e}); reading the file here");
+                    let answer = Self::probe_media_file(path, media_id);
+                    let _ = self.event_tx.send(answer);
+                    (self.repaint_cb)();
+                    return;
+                }
+            }
+        }
+        if let Some(tx) = &self.probe_tx {
+            let _ = tx.send((path, media_id));
+        }
+    }
+
+    /// The probes answered since the last tick, passed on to the app.
+    fn pass_on_probes(&mut self) {
+        let Some(done) = &self.probe_done else { return };
+        let mut any = false;
+        while let Ok(answer) = done.try_recv() {
+            let _ = self.event_tx.send(answer);
+            any = true;
+        }
+        if any {
+            (self.repaint_cb)();
+        }
+    }
+
+    /// What `path`'s streams say, as the event the app adds it to the
+    /// pool from. Reads the file only: no engine state.
+    fn probe_media_file(path: PathBuf, media_id: MediaId) -> AppEvent {
         info!("Loading media: {:?}", path);
 
         match klipp_media::open_input(&path) {
@@ -11827,7 +11891,7 @@ impl PlaybackEngine {
                     }
                 }
 
-                let _ = self.event_tx.send(AppEvent::MediaLoaded(Box::new(
+                AppEvent::MediaLoaded(Box::new(
                     klipp_core::MediaLoadedPayload {
                         media_id,
                         path,
@@ -11862,7 +11926,7 @@ impl PlaybackEngine {
                         stream_ends,
                         dolby_vision_profile,
                     },
-                )));
+                ))
 
                 // NOTE: Do NOT grab the first frame here. `load_file`
                 // runs on every media import, and writing the first
@@ -11876,16 +11940,14 @@ impl PlaybackEngine {
                 // own decode when a clip at the playhead is activated,
                 // so losing the side-effect first-frame here doesn't
                 // regress the Program viewer's grade / scrub paths.
-                (self.repaint_cb)();
             }
             Err(e) => {
                 error!("Failed to open media file: {e}");
-                let _ = self.event_tx.send(AppEvent::MediaLoadFailed {
+                AppEvent::MediaLoadFailed {
                     media_id,
                     path: path.clone(),
                     error: e.to_string(),
-                });
-                (self.repaint_cb)();
+                }
             }
         }
     }
