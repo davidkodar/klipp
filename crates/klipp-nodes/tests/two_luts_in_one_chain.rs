@@ -96,3 +96,70 @@ fn two_luts_in_one_chain_each_read_their_own_table() {
     let w = worst_levels(&cpu, &gpu);
     assert!(w < 1.0, "the GPU's two LUTs differ from the CPU's by {w:.2} display levels: one read the other's table");
 }
+
+/// More LUTs in one chain than the GPU keeps tables for (8): the first
+/// table is let go while the chain that reads it is still being recorded.
+/// The picture is still the CPU's.
+#[test]
+fn ten_luts_in_one_chain_match_the_cpu() {
+    let files = [
+        "cinematic/D-CINELIKE -0_3 BASE.cube",
+        "cinematic/D-CINELIKE -0_3 V2.cube",
+        "cinematic/NORMAL -1_0 BASE.cube",
+        "cinematic/NORMAL -1_0 SCENE 01.cube",
+        "cinematic/NORMAL -1_0 SCENE 02.cube",
+        "cinematic/NORMAL -1_0 SKIN.cube",
+        "fuji-xtrans/fuji_xtrans_iii_classic_chrome.cube",
+        "fuji-xtrans/fuji_xtrans_iii_acros.cube",
+        "film-bw/agfa_apx_100.cube",
+        "film-bw/fuji_neopan_1600.cube",
+    ];
+    let mut chain: Vec<(NodeKind, NodeParams)> = files.iter().map(|f| (NodeKind::Lut3D, NodeParams { lut_opacity: Some(0.35), ..lut(f) })).collect();
+    chain.truncate(10);
+    let g = graph(chain);
+    let (cpu, _) = run(&g, false);
+    let (gpu, stats) = run(&g, true);
+    if stats.extends == 0 && stats.flushes == 0 {
+        assert!(std::env::var("KLIPP_TEST_REQUIRE_GPU").as_deref() != Ok("1"), "no usable GPU");
+        return;
+    }
+    // All on the GPU, in one chain: the source, then nine extends.
+    assert!(stats.extends >= 9 && stats.cpu_nodes <= 1, "not one GPU chain: {stats:?}");
+    let w = worst_levels(&cpu, &gpu);
+    assert!(w < 1.5, "ten LUTs in one chain: the GPU differs from the CPU by {w:.2} display levels");
+}
+
+/// The same for LUT effects, of which the GPU keeps four tables: six in
+/// one effect node, each its own table.
+#[test]
+fn six_lut_effects_in_one_chain_match_the_cpu() {
+    use klipp_effects::colour_transform::{LutTable, Prepared};
+    let table = |k: f32| {
+        let n = 9;
+        let mut data = Vec::with_capacity(n * n * n * 3);
+        for b in 0..n {
+            for g in 0..n {
+                for r in 0..n {
+                    let [r, g, b] = [r, g, b].map(|i| i as f32 / (n - 1) as f32);
+                    data.extend_from_slice(&[r.powf(k), g.powf(1.0 / k), b * k.min(1.0)]);
+                }
+            }
+        }
+        LutTable { size: n, data, pre: None, post: None }
+    };
+    let effects: Vec<klipp_effects::BuiltinEffect> = [0.7f32, 0.8, 0.9, 1.1, 1.25, 1.4]
+        .iter()
+        .map(|k| klipp_effects::BuiltinEffect::Lut3D { path: format!("look-{k}.cube"), opacity: 1.0, tetrahedral: true, prepared: Some(Prepared(std::sync::Arc::new(table(*k)))) })
+        .collect();
+    let g = graph(vec![(NodeKind::Effect, NodeParams { effects, ..Default::default() })]);
+    let (cpu, _) = run(&g, false);
+    let (gpu, stats) = run(&g, true);
+    if stats.extends == 0 && stats.flushes == 0 {
+        assert!(std::env::var("KLIPP_TEST_REQUIRE_GPU").as_deref() != Ok("1"), "no usable GPU");
+        return;
+    }
+    // Recorded into the chain, not run as breaks of their own.
+    assert_eq!(stats.effect_breaks, 0, "the LUT effects broke the chain: {stats:?}");
+    let w = worst_levels(&cpu, &gpu);
+    assert!(w < 1.5, "six LUT effects in one chain: the GPU differs from the CPU by {w:.2} display levels");
+}
