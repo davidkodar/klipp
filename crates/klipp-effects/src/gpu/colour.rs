@@ -840,12 +840,41 @@ impl GpuEffectsPipeline {
         Self::record_compute_dispatch(enc, &self.pipelines.huesat_pipeline, bind_group, workgroups);
     }
 
+    /// `lut`'s table as a storage buffer, uploaded the first time it is
+    /// asked for; the last few are kept. A chain records its passes and
+    /// submits them together, after every queue write: two lookups in one
+    /// chain sharing one buffer both read the table written last.
+    fn chain_lut_buffer(&self, keep: &LutKeep, data: &[f32]) -> Arc<wgpu::Buffer> {
+        let mut kept = self.chain_luts.borrow_mut();
+        let same = |k: &LutKeep| std::ptr::eq(Arc::as_ptr(k).cast::<()>(), Arc::as_ptr(keep).cast::<()>());
+        if let Some(i) = kept.iter().position(|(k, _)| same(k)) {
+            let entry = kept.remove(i);
+            let buffer = entry.1.clone();
+            kept.push(entry);
+            return buffer;
+        }
+        let buffer = Arc::new(self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("lut3d_chain_data"),
+            size: (data.len() * 4) as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        }));
+        // A new buffer: nothing recorded reads it yet.
+        self.queue.write_buffer(&buffer, 0, bytemuck::cast_slice(data));
+        if kept.len() >= 8 {
+            kept.remove(0);
+        }
+        kept.push((keep.clone(), buffer.clone()));
+        buffer
+    }
+
     /// Dispatch-only 3D LUT pass with trilinear interpolation.
     pub fn apply_3d_lut_chain(
         &mut self,
         in_is_a: bool,
         width: u32,
         height: u32,
+        keep: &LutKeep,
         lut_data: &[f32],
         lut_size: u32,
         opacity: f32,
@@ -872,29 +901,16 @@ impl GpuEffectsPipeline {
             enc.copy_buffer_to_buffer(input, 0, output, 0, byte_size);
             return;
         }
-        let lut_byte_size = (lut_data.len() * 4) as u64;
-        if self.lut3d_buf.is_none() || self.lut3d_buf_size < lut_byte_size {
-            self.lut3d_buf = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("lut3d_data"),
-                size: lut_byte_size,
-                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            }));
-            self.lut3d_buf_size = lut_byte_size;
-        }
+        let lut_buf = self.chain_lut_buffer(keep, lut_data);
         // Claim the params slot first so subsequent `&self` borrows
-        // (lut_buf, chain_in_out) don't clash with the `&mut self` that
+        // (chain_in_out) don't clash with the `&mut self` that
         // `next_params_slot` needs.
         let slot = self.next_params_slot();
         self.write_chain_params(slot, &GpuLut3dParams::new(width, height, lut_size, opacity, tetrahedral, bracket));
-        let lut_buf = self.lut3d_buf.as_ref().unwrap();
-        self.upload(lut_buf, 0, bytemuck::cast_slice(lut_data));
         let workgroups = (width * height).div_ceil(WORKGROUP_SIZE);
         let (input, output) = self.chain_in_out(in_is_a);
-        // NOTE: lut3d_buf is dynamically sized (different LUT dimensions
-        // produce different buffer sizes), so it's not pooled — a fresh
-        // bind group is created per dispatch. This path runs at most
-        // once per chain (≤1 3D LUT node per grade) so the cost is bounded.
+        // A table's buffer is its own, so its bind group is made per
+        // dispatch, with the slots the chain is at.
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("lut3d_chain_bg"),
             layout: &self.pipelines.huesat_bgl,
