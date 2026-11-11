@@ -183,16 +183,21 @@ pub(crate) fn timeline_text(
             if !matches!(c.blend_mode, klipp_core::BlendMode::Normal) {
                 let _ = write!(line, "  blend {:?}", c.blend_mode);
             }
-            let own = c.own_grade();
-            let over: Vec<&str> = [(t.effects.track_grade().is_some_and(|g| !g.is_identity()), "track's"), (timeline_graded, "timeline's")].into_iter().filter(|(on, _)| *on).map(|(_, w)| w).collect();
-            let grade = match (own.is_identity(), over.is_empty()) {
-                (true, true) => "none".to_string(),
-                (true, false) => format!("none of its own, under the {} grade", over.join(" and ")),
-                (false, _) => format!("{} nodes", own.nodes.len()),
-            };
-            let _ = write!(line, "  grade {grade}");
+            // A sound clip has no picture to grade or zoom: its line says
+            // neither.
+            let picture = t.kind != klipp_timeline::TrackKind::Audio;
+            if picture {
+                let own = c.own_grade();
+                let over: Vec<&str> = [(t.effects.track_grade().is_some_and(|g| !g.is_identity()), "track's"), (timeline_graded, "timeline's")].into_iter().filter(|(on, _)| *on).map(|(_, w)| w).collect();
+                let grade = match (own.is_identity(), over.is_empty()) {
+                    (true, true) => "none".to_string(),
+                    (true, false) => format!("none of its own, under the {} grade", over.join(" and ")),
+                    (false, _) => format!("{} nodes", own.nodes.len()),
+                };
+                let _ = write!(line, "  grade {grade}");
+            }
             // A push or pull on the picture, a still's especially (#2492).
-            let scale = klipp_timeline::frame_glide::lane(c, "scale");
+            let scale = if picture { klipp_timeline::frame_glide::lane(c, "scale") } else { Vec::new() };
             if let (Some(a), Some(b)) = (scale.first(), scale.last()) {
                 if (a.value - b.value).abs() > 1e-3 {
                     let _ = write!(line, "  zoom {:.2} to {:.2}", a.value, b.value);
@@ -201,7 +206,7 @@ pub(crate) fn timeline_text(
                 }
             }
             // The grade group it grades inside (#237).
-            if let Some(g) = c.grade_group.and_then(|g| seq.grade_group(g)) {
+            if let Some(g) = c.grade_group.filter(|_| picture).and_then(|g| seq.grade_group(g)) {
                 let _ = write!(line, " in group {}", quoted(&g.name));
             }
             // Read from the clip's picture (M4 step 12d).
@@ -731,6 +736,22 @@ mod tests {
         let text = timeline_text(&seq, &klipp_media::MediaPool::new(), None, 1, TimelineView::default());
         let line = text.lines().find(|l| l.contains("0.00-4.00 s")).unwrap_or("");
         assert!(line.contains(&format!("sound fx {} (bypassed), {}", word("compressor"), word("eq"))), "{text}");
+    }
+
+    /// A sound clip's line says nothing of a grade, even under a
+    /// timeline grade; a picture clip's still does.
+    #[test]
+    fn a_sound_clip_has_no_grade_words() {
+        let tc = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 25);
+        let mut seq = klipp_timeline::Sequence::new_default();
+        let a = seq.tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Audio).unwrap();
+        seq.tracks[a].clips = vec![klipp_timeline::Clip::media(klipp_core::MediaId::new(), tc(0.0), tc(4.0), tc(0.0), tc(4.0))];
+        seq.tracks[0].clips = vec![klipp_timeline::Clip::gap(tc(5.0), tc(7.0))];
+        let text = timeline_text(&seq, &klipp_media::MediaPool::new(), None, 1, TimelineView::default());
+        let sound = text.lines().find(|l| l.contains("0.00-4.00 s")).expect("the sound clip's line");
+        assert!(!sound.contains("grade") && !sound.contains("zoom"), "{sound}");
+        let picture = text.lines().find(|l| l.contains("5.00-7.00 s")).expect("the picture clip's line");
+        assert!(picture.contains("grade none"), "{picture}");
     }
 
     /// #2492: a timeline grade is said, and a clip with none of its own
