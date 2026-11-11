@@ -624,13 +624,21 @@ impl FrameSource for ExportFrameSource<'_> {
 /// — a node with no GPU dispatch, an effect the chain cannot carry.
 struct SeedableFrame {
     rgba: Arc<Vec<u16>>,
+    /// The samples' own size: a frame of another size is fitted on the
+    /// GPU into the size it is seeded at.
+    width: u32,
+    height: u32,
     to_working: Option<[[f32; 3]; 3]>,
     linear: Arc<std::sync::OnceLock<Arc<Vec<f32>>>>,
 }
 
 impl klipp_compose::GpuPixels for SeedableFrame {
     fn seed(&self, exec: &mut klipp_nodes::GraphExecutor, width: u32, height: u32) -> bool {
-        exec.prime_chain_from_rgba64(&self.rgba, width, height, seed_matrix(self.to_working))
+        if (self.width, self.height) == (width, height) {
+            exec.prime_chain_from_rgba64(&self.rgba, width, height, seed_matrix(self.to_working))
+        } else {
+            exec.prime_chain_fit_from_rgba64(&self.rgba, self.width, self.height, width, height, seed_matrix(self.to_working))
+        }
     }
 
     fn read(&self) -> Arc<Vec<f32>> {
@@ -683,6 +691,8 @@ fn source_frame(
         {
             SourcePixels::Gpu(Arc::new(SeedableFrame {
                 rgba: Arc::clone(rgba),
+                width,
+                height,
                 to_working,
                 linear: Arc::clone(&d.linear),
             }))
@@ -725,8 +735,14 @@ impl klipp_nodes::frame_context::GpuFramePixels for GpuLinearFrame {
 
 impl klipp_compose::GpuPixels for GpuLinearFrame {
     fn seed(&self, exec: &mut klipp_nodes::GraphExecutor, width: u32, height: u32) -> bool {
-        (self.width, self.height) == (width, height)
-            && exec.prime_chain_from_gpu_linear_buffer(&self.buf, width, height)
+        if (self.width, self.height) == (width, height) {
+            exec.prime_chain_from_gpu_linear_buffer(&self.buf, width, height)
+        } else {
+            // A frame of another size is fitted where it is: read back,
+            // fitted on the CPU and sent up again, it cost a 4096-wide
+            // clip in a 3840 sequence 37 ms a frame.
+            exec.prime_chain_fit_from_gpu_linear_buffer(&self.buf, self.width, self.height, width, height)
+        }
     }
 
     fn read(&self) -> Arc<Vec<f32>> {
@@ -823,6 +839,38 @@ mod fitted_size_tests {
         assert_eq!(fitted_size(1280, 721, 1280, 720), (1280, 720));
         // An odd picture keeps its odd side.
         assert_eq!(fitted_size(1920, 803, 1920, 1080), (1920, 803));
+    }
+}
+
+#[cfg(test)]
+mod another_size_seeds_tests {
+    //! An export frame of another size than the sequence seeds the grade
+    //! on the GPU, fitted there; it used to refuse, and every frame was
+    //! read back, fitted on the CPU and sent up again (37 ms at 4K). The
+    //! fit itself is checked against the CPU's in klipp-compose.
+    use super::*;
+    use klipp_compose::GpuPixels;
+    use wgpu::util::DeviceExt;
+
+    #[test]
+    fn a_frame_of_another_size_seeds_where_it_is() {
+        let Some(ctx) = klipp_effects::gpu_context::GpuContext::shared() else {
+            assert_ne!(std::env::var("KLIPP_TEST_REQUIRE_GPU").as_deref(), Ok("1"), "GPU required");
+            return;
+        };
+        let (sw, sh, w, h) = (256u32, 135u32, 240u32, 135u32);
+        let linear = vec![0.5f32; (sw * sh * 4) as usize];
+        let buf = ctx.device().create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("test frame"), contents: bytemuck::cast_slice(&linear), usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC });
+        let on_gpu = GpuLinearFrame { buf: Arc::new(buf), width: sw, height: sh, linear: Arc::new(std::sync::OnceLock::new()) };
+        let mut exec = klipp_nodes::GraphExecutor::new();
+        assert!(on_gpu.seed(&mut exec, w, h), "a decoded frame of another size seeds");
+        assert!(on_gpu.seed(&mut exec, sw, sh), "and one of the size, as before");
+        let samples = SeedableFrame { rgba: Arc::new(vec![32768u16; (sw * sh * 4) as usize]), width: sw, height: sh, to_working: None, linear: Arc::new(std::sync::OnceLock::new()) };
+        assert!(samples.seed(&mut exec, w, h), "scaled samples of another size seed");
+        // A device's pipelines go on compiling on a thread after it is
+        // made; a process that ends under it crashes in the driver
+        // ("NVVM compilation failed"), after the test has passed.
+        std::thread::sleep(std::time::Duration::from_secs(2));
     }
 }
 

@@ -342,6 +342,7 @@ pub(super) struct EffectPipelines {
     /// [`Self::bridge_u8_fit_to_linear_into_chain`]: the same decode, from
     /// a frame of another size, fitted into the chain's.
     bridge_u8_fit_pipeline: wgpu::ComputePipeline,
+    linear_fit_pipeline: wgpu::ComputePipeline,
     /// The 8-bit bridges' decode table (`srgb8_to_linear`), alpha's after.
     srgb8_lut: wgpu::Buffer,
     /// The same bridge at 16 bits a sample, with the source primaries
@@ -572,6 +573,9 @@ pub struct GpuEffectsPipeline {
     stack_acc: Option<std::sync::Arc<wgpu::Buffer>>,
     stack_sprite_u8: Option<wgpu::Buffer>,
     stack_sprite_f16: Option<wgpu::Buffer>,
+    /// A frame of another size held while it is fitted into the chain's
+    /// first buffer (`fit_chain_input_in_place`).
+    fit_scratch: Option<wgpu::Buffer>,
     /// A countdown's or a timer's rects, `[x0, y0, x1, y1)` each (#2067).
     stack_rects: Option<wgpu::Buffer>,
     /// Title sprites kept on the GPU by the id their renderer gave
@@ -2692,6 +2696,7 @@ pub fn shader_sources() -> Vec<(&'static str, &'static str)> {
         ("SHADER_SPRITE_PLACE", SHADER_SPRITE_PLACE),
         ("SHADER_SPRITE_GLYPHS", SHADER_SPRITE_GLYPHS),
         ("SHADER_U8_FIT_TO_LINEAR", SHADER_U8_FIT_TO_LINEAR),
+        ("SHADER_LINEAR_FIT_INTO_CHAIN", SHADER_LINEAR_FIT_INTO_CHAIN),
         // Compiled into pipelines but missing from this list until #692,
         // which kept them out of the WGSL validation and pack lints.
         ("SHADER_HDR10_TO_LINEAR", shader_hdr10_to_linear()),

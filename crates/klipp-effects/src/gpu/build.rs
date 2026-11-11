@@ -478,6 +478,7 @@ impl EffectPipelines {
         let bridge_u8_fit_pipeline = create_pipeline(
             &device, &huesat_pl, "bridge_u8_fit_to_linear", SHADER_U8_FIT_TO_LINEAR,
         );
+        let linear_fit_pipeline = create_pipeline(&device, &pipeline_layout, "linear_fit_into_chain", SHADER_LINEAR_FIT_INTO_CHAIN);
         // Each 8-bit code's linear value, decoded once here as every CPU
         // route decodes it (`srgb8_to_linear`), so a
         // frame put on the GPU as 8-bit codes is the CPU's bit for bit.
@@ -827,6 +828,7 @@ impl EffectPipelines {
             bridge_u8_pipeline,
             bridge_u8_to_linear_pipeline,
             bridge_u8_fit_pipeline,
+            linear_fit_pipeline,
             srgb8_lut,
             bridge_rgba64_to_linear_pipeline,
             srgb16_lut,
@@ -989,6 +991,7 @@ impl GpuEffectsPipeline {
             stack_acc: None,
             stack_sprite_u8: None,
             stack_sprite_f16: None,
+            fit_scratch: None,
             stack_rects: None,
             stack_sprites: Vec::new(),
             stack_sprite_tick: 0,

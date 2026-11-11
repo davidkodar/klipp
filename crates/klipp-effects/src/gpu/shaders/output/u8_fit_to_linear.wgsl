@@ -33,10 +33,13 @@ fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgro
     let sx = f32(params.src_w) / f32(params.dst_w);
     let sy = f32(params.src_h) / f32(params.dst_h);
     if sx >= 2.0 && sy >= 2.0 {
-        let x0 = min(u32(f32(x) * sx), params.src_w - 1u);
-        let x1 = clamp(u32(f32(x + 1u) * sx), x0 + 1u, params.src_w);
-        let y0 = min(u32(f32(y) * sy), params.src_h - 1u);
-        let y1 = clamp(u32(f32(y + 1u) * sy), y0 + 1u, params.src_h);
+        // The windows in whole numbers: as floats, a bound landing on a
+        // whole pixel (228 × 800/384 = 475) rounded one way here and the
+        // other on the CPU, and took a column more or less.
+        let x0 = min(x * params.src_w / params.dst_w, params.src_w - 1u);
+        let x1 = clamp((x + 1u) * params.src_w / params.dst_w, x0 + 1u, params.src_w);
+        let y0 = min(y * params.src_h / params.dst_h, params.src_h - 1u);
+        let y1 = clamp((y + 1u) * params.src_h / params.dst_h, y0 + 1u, params.src_h);
         var acc = vec4<f32>(0.0);
         for (var yy = y0; yy < y1; yy = yy + 1u) {
             for (var xx = x0; xx < x1; xx = xx + 1u) {

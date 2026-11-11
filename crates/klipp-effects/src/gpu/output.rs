@@ -375,6 +375,73 @@ impl GpuEffectsPipeline {
         true
     }
 
+    /// [`Self::bridge_u8_fit_to_linear_into_chain`] from a linear frame:
+    /// `input`, `src_w` by `src_h` linear RGBA in the chain's own layout,
+    /// fitted into the chain's first buffer at `width` by `height`, by the
+    /// same rules as the CPU compositor's `fit`. An export frame of
+    /// another size — a 4096-wide clip in a 3840 sequence — was read back,
+    /// fitted on the CPU and sent up again: 37 ms a 4K frame.
+    pub fn fit_linear_into_chain(&mut self, input: &wgpu::Buffer, src_w: u32, src_h: u32, width: u32, height: u32) -> bool {
+        if self.is_device_lost() || src_w == 0 || src_h == 0 || width == 0 || height == 0 {
+            return false;
+        }
+        if input.size() < (src_w as u64) * (src_h as u64) * 16 {
+            return false;
+        }
+        let pixel_count = (width as u64) * (height as u64);
+        self.ensure_buffers(pixel_count * 16);
+        let (dst_w, dst_h, x_off, y_off) = fit_rect(src_w, src_h, width, height);
+        let buf_a = self.buf_a.as_ref().expect("ensure_buffers established buf_a");
+        self.write_params(&BridgeU8FitParams { src_w, src_h, out_w: width, out_h: height, dst_w, dst_h, x_off, y_off });
+        let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("linear_fit_bg"),
+            layout: &self.pipelines.bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: input.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: buf_a.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: self.params_binding() },
+            ],
+        });
+        let workgroups = (pixel_count as u32).div_ceil(WORKGROUP_SIZE);
+        let mut encoder = self.encoder(Some("linear_fit_into_chain"));
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
+            pass.set_pipeline(&self.pipelines.linear_fit_pipeline);
+            pass.set_bind_group(0, &bg, &[]);
+            dispatch_flat(&mut pass, workgroups);
+        }
+        self.submit(encoder);
+        true
+    }
+
+    /// The chain's first buffer, holding a `src_w` by `src_h` linear frame
+    /// a bridge just wrote there (sRGB samples, scene codes), fitted in
+    /// place to `width` by `height`: copied aside, then fitted back.
+    pub fn fit_chain_input_in_place(&mut self, src_w: u32, src_h: u32, width: u32, height: u32) -> bool {
+        if (src_w, src_h) == (width, height) {
+            return true;
+        }
+        let bytes = (src_w as u64) * (src_h as u64) * 16;
+        if self.is_device_lost() || self.buf_a.as_ref().is_none_or(|a| a.size() < bytes) {
+            return false;
+        }
+        if self.fit_scratch.as_ref().is_none_or(|b| b.size() < bytes) {
+            self.fit_scratch = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("fit_scratch"),
+                size: bytes,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }));
+        }
+        let scratch = self.fit_scratch.take().expect("made above");
+        let mut encoder = self.encoder(Some("fit_chain_input_aside"));
+        encoder.copy_buffer_to_buffer(self.buf_a.as_ref().expect("checked above"), 0, &scratch, 0, bytes);
+        self.submit(encoder);
+        let ok = self.fit_linear_into_chain(&scratch, src_w, src_h, width, height);
+        self.fit_scratch = Some(scratch);
+        ok
+    }
+
     /// The chain's graded frame straight to 8-bit 4:2:0 planes: Y, then
     /// Cb, then Cr, tightly packed, ready for the encoder.
     ///
@@ -1597,6 +1664,7 @@ pub(super) const SHADER_U8_TO_LINEAR: &str = gpu_shader!("output/u8_to_linear.wg
 // source is at least twice the size both ways, bilinear otherwise, on
 // linear values with straight alpha.
 pub(super) const SHADER_U8_FIT_TO_LINEAR: &str = gpu_shader!("output/u8_fit_to_linear.wgsl");
+pub(super) const SHADER_LINEAR_FIT_INTO_CHAIN: &str = gpu_shader!("output/linear_fit_into_chain.wgsl");
 
 // A BT.2020 project's viewer display transform, on the GPU.
 //
