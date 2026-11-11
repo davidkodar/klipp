@@ -989,6 +989,7 @@ impl GpuEffectsPipeline {
             stack_acc: None,
             stack_sprite_u8: None,
             stack_sprite_f16: None,
+            kept_generators: Vec::new(),
             stack_rects: None,
             stack_sprites: Vec::new(),
             stack_sprite_tick: 0,
