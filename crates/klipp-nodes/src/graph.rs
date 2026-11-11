@@ -667,9 +667,13 @@ impl NodeGraph {
             self.edges.push(Edge { from_node: src, from_port: 0, to_node: qual_id, to_port: 0 });
         }
         self.edges.push(Edge { from_node: qual_id, from_port: 0, to_node: corr_id, to_port: 1 });
-        let base = self.node_positions.get(&output_id).copied().unwrap_or(NodePos { x: 440.0, y: 0.0 });
-        self.node_positions.insert(corr_id, NodePos { x: base.x - 160.0, y: base.y });
-        self.node_positions.insert(qual_id, NodePos { x: base.x - 320.0, y: base.y - 140.0 });
+        // The correction takes the output's place and the output moves on,
+        // as a spliced node does (`place_before_output`); the keyer sits
+        // above the correction. Placed left of the output, they landed on
+        // a node already before it.
+        self.place_before_output(corr_id, output_id);
+        let corr = self.node_positions[&corr_id];
+        self.node_positions.insert(qual_id, NodePos { x: corr.x - 160.0, y: corr.y - 140.0 });
         (qual_id, corr_id)
     }
 
@@ -736,7 +740,10 @@ impl NodeGraph {
         self.edges.push(Edge { from_node: mask_id, from_port: 0, to_node: combine_id, to_port: 1 });
         self.edges.push(Edge { from_node: combine_id, from_port: 0, to_node: corr_id, to_port: 1 });
         let base = self.node_positions.get(&corr_id).copied().unwrap_or(NodePos { x: 440.0, y: 0.0 });
+        // The combiner takes the keyer's place and the keyer moves on
+        // before it, beside the window.
         self.node_positions.insert(combine_id, NodePos { x: base.x - 160.0, y: base.y - 140.0 });
+        self.node_positions.insert(qual_id, NodePos { x: base.x - 320.0, y: base.y - 140.0 });
         self.node_positions.insert(mask_id, NodePos { x: base.x - 320.0, y: base.y - 260.0 });
         (qual_id, mask_id, corr_id)
     }
@@ -2187,6 +2194,40 @@ impl NodeGraph {
             }
         }
         said
+    }
+}
+
+#[cfg(test)]
+mod placement_tests {
+    use super::*;
+
+    /// Two nodes closer than a node's size, either way, sit on each other.
+    fn overlapping(g: &NodeGraph) -> Vec<(String, String)> {
+        let label = |id: &NodeId| g.nodes.iter().find(|n| n.id == *id).map_or_else(String::new, |n| n.label.clone());
+        let placed: Vec<_> = g.node_positions.iter().collect();
+        let mut out = Vec::new();
+        for (i, (a, pa)) in placed.iter().enumerate() {
+            for (b, pb) in &placed[i + 1..] {
+                if (pa.x - pb.x).abs() < 150.0 && (pa.y - pb.y).abs() < 100.0 {
+                    out.push((label(a), label(b)));
+                }
+            }
+        }
+        out
+    }
+
+    /// A secondary added after a corrector lands clear of it, and the
+    /// output moves on past it; windowed, the window's nodes are clear
+    /// of the keyer too.
+    #[test]
+    fn a_secondary_added_after_a_corrector_overlaps_nothing() {
+        let mut g = NodeGraph::default();
+        g.ensure_corrector();
+        let (_, corr) = g.ensure_masked_secondary(NodeKind::Corrector);
+        assert_eq!(overlapping(&g), Vec::<(String, String)>::new());
+        assert!(g.node_positions[&g.output_node_id].x > g.node_positions[&corr].x, "the output after the secondary");
+        g.ensure_windowed_secondary(NodeKind::Corrector);
+        assert_eq!(overlapping(&g), Vec::<(String, String)>::new());
     }
 }
 
