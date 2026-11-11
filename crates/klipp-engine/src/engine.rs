@@ -1986,6 +1986,9 @@ pub struct PlaybackEngine {
     dbg_last_readback_us: u64,
     dbg_commands_handled: u64,
     frames_consumed: u64,
+    /// The decoder's frame count at the last perf sample: a sample says a
+    /// decode time only when a frame was decoded since (#2355).
+    decodes_sampled: u64,
     last_playback_log: std::time::Instant,
     /// Reliability telemetry — emitted every 10s so a long-playback
     /// log shows memory/queue trends at a glance. `last_rss_mb` is
@@ -3239,6 +3242,7 @@ impl PlaybackEngine {
             dbg_last_readback_us: 0,
             dbg_commands_handled: 0,
             frames_consumed: 0,
+            decodes_sampled: 0,
             last_playback_log: std::time::Instant::now(),
             last_reliability_time: std::time::Instant::now(),
             last_rss_mb: 0.0,
@@ -10594,7 +10598,7 @@ impl PlaybackEngine {
         // sample too or the display freezes on the last graded frame and
         // reports numbers this frame never paid.
         let target_fps = self.target_fps_for_overlay();
-        let decode_ms = self.v1_decoder.as_ref().map(|d| d.last_decode_ms()).unwrap_or(0.0);
+        let decode_ms = self.decode_ms_since_last_sample();
         let dropped = match target_fps {
             Some(fps) if fps > 0.0 => (total_ms as f32).max(decode_ms) > (1000.0 / fps),
             _ => false,
@@ -16761,3 +16765,39 @@ mod frozen_sound_tests {
     }
 }
 
+impl PlaybackEngine {
+    /// The last decoded frame's time, when a frame was decoded since the
+    /// last perf sample; else 0. A present that showed a frame decoded
+    /// earlier, or a held one, decoded nothing: the old time on it read as
+    /// a decode cost it never paid, and could mark it dropped (#2355).
+    pub(crate) fn decode_ms_since_last_sample(&mut self) -> f32 {
+        let Some(d) = self.v1_decoder.as_ref() else { return 0.0 };
+        decode_ms_if_new(&mut self.decodes_sampled, d.frames_decoded(), d.last_decode_ms())
+    }
+}
+
+/// `last_ms` when `decoded` has moved on from `seen`, which it then
+/// becomes; else 0. A new decoder counts from 0 again, so any change is
+/// news, not only a rise.
+fn decode_ms_if_new(seen: &mut u64, decoded: u64, last_ms: f32) -> f32 {
+    if decoded == *seen {
+        return 0.0;
+    }
+    *seen = decoded;
+    last_ms
+}
+
+#[cfg(test)]
+mod decode_ms_tests {
+    use super::decode_ms_if_new;
+
+    #[test]
+    fn a_present_that_decoded_nothing_says_no_decode_time() {
+        let mut seen = 0;
+        assert_eq!(decode_ms_if_new(&mut seen, 0, 0.0), 0.0, "nothing decoded yet");
+        assert_eq!(decode_ms_if_new(&mut seen, 1, 12.5), 12.5, "a frame decoded");
+        assert_eq!(decode_ms_if_new(&mut seen, 1, 12.5), 0.0, "the same frame shown again: no decode");
+        assert_eq!(decode_ms_if_new(&mut seen, 3, 8.0), 8.0);
+        assert_eq!(decode_ms_if_new(&mut seen, 1, 9.0), 9.0, "a new decoder, counting again from 0");
+    }
+}
