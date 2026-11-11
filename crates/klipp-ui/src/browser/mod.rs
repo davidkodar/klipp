@@ -1622,6 +1622,7 @@ impl BrowserPanel {
             // Left pane: FILES browser (source → import flow is left-to-right)
             ui.allocate_new_ui(egui::UiBuilder::new().max_rect(left_rect), |ui| {
                 ui.set_clip_rect(left_rect);
+                klipp_engine::ui_stage::sub("panel/browser/files_tab");
                 let file_cmds = self.show_files_tab(ui, state, theme, Some((files_pinned, active_tab)));
                 cmds.extend(file_cmds);
             });
@@ -1672,10 +1673,12 @@ impl BrowserPanel {
                         // within the colour-label bitmask.
                         // Inset like the pool's items below them.
                         egui::Frame::none().inner_margin(egui::Margin::symmetric(8.0, 0.0)).show(ui, |ui| {
+                            klipp_engine::ui_stage::sub("panel/browser/media_filters");
                             self.render_media_filter_toolbar(ui, theme, state);
                             media_pool_buttons(ui, &mut cmds);
                         });
                         let media_query = self.query_for(BrowserTab::Media).to_string();
+                        klipp_engine::ui_stage::sub("panel/browser/media_tab");
                         let tab_cmds = media_tab::show(
                             ui,
                             state,
@@ -1696,6 +1699,7 @@ impl BrowserPanel {
                         cmds.extend(tab_cmds);
                     }
                     BrowserTab::Library => {
+                        klipp_engine::ui_stage::sub("panel/browser/library_tab");
                         let tab_cmds = self.show_library_tab(ui, state, theme);
                         cmds.extend(tab_cmds);
                     }
@@ -1706,6 +1710,7 @@ impl BrowserPanel {
             // Normal single-tab view
             match active_tab {
                 BrowserTab::Files => {
+                    klipp_engine::ui_stage::sub("panel/browser/files_tab");
                     let file_cmds = self.show_files_tab(ui, state, theme, Some((files_pinned, active_tab)));
                     cmds.extend(file_cmds);
                 }
@@ -1716,10 +1721,12 @@ impl BrowserPanel {
                     // discoverability.
                     // Inset like the pool's items below them.
                     egui::Frame::none().inner_margin(egui::Margin::symmetric(8.0, 0.0)).show(ui, |ui| {
+                        klipp_engine::ui_stage::sub("panel/browser/media_filters");
                         self.render_media_filter_toolbar(ui, theme, state);
                         media_pool_buttons(ui, &mut cmds);
                     });
                     let media_query = self.query_for(BrowserTab::Media).to_string();
+                    klipp_engine::ui_stage::sub("panel/browser/media_tab");
                     let tab_cmds = media_tab::show(
                         ui,
                         state,
@@ -1740,12 +1747,14 @@ impl BrowserPanel {
                     cmds.extend(tab_cmds);
                 }
                 BrowserTab::Library => {
+                    klipp_engine::ui_stage::sub("panel/browser/library_tab");
                     let tab_cmds = self.show_library_tab(ui, state, theme);
                     cmds.extend(tab_cmds);
                 }
             }
         }
 
+        klipp_engine::ui_stage::sub("panel/browser/smart_bin_editor");
         self.show_smart_bin_editor(ui.ctx(), theme);
         cmds.append(&mut self.pending_cmds);
         cmds

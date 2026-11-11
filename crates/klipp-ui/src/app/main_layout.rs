@@ -1559,6 +1559,7 @@ impl KlippApp {
         crate::ui_util::panel_ui(ui, browser_rect, "browser_panel", |ui| {
             ui.set_min_size(browser_rect.size());
             ui.painter().rect_filled(browser_rect, 0.0, bg_panel);
+            klipp_engine::ui_stage::sub("panel/browser/show");
             let panel_cmds = self.browser.show(
                 ui,
                 &mut self.state,
