@@ -315,11 +315,9 @@ impl KlippApp {
                     // A new file goes over at once: it may be placed on
                     // the timeline right below, and the engine plays it
                     // from its own pool.
-                    if previous.is_some() {
-                        pool_sync_due = true;
-                    } else {
-                        self.sync_media_pool_to_engine();
-                    }
+                    // DIAG A: one pool copy per reply, as before #3939.
+                    let _ = &mut pool_sync_due;
+                    self.sync_media_pool_to_engine();
                     if previous.is_some() {
                         tracing::info!(
                             "Reloaded {:?}: {}",
