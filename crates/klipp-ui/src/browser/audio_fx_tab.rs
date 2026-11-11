@@ -1312,6 +1312,50 @@ fn resolve_source_label(
 
 // ──────────────────────────── Source segmented ────────────────────────────
 
+/// How the source chips are laid out: with their counts or not, and the
+/// room on each side of a chip's text.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ChipFit {
+    counts: bool,
+    side: f32,
+}
+
+fn chip_width(label: f32, count: f32, fit: ChipFit) -> f32 {
+    label + if fit.counts { 6.0 + count } else { 0.0 } + fit.side
+}
+
+fn chips_width(labels: &[f32], counts: &[f32], pad: f32, fit: ChipFit) -> f32 {
+    let chips: f32 = labels.iter().zip(counts).map(|(l, c)| chip_width(*l, *c, fit)).sum();
+    pad * 2.0 + chips + (labels.len().saturating_sub(1)) as f32
+}
+
+/// The roomiest layout that fits `available`; the tightest when none does.
+fn fit_source_chips(labels: &[f32], counts: &[f32], pad: f32, available: f32) -> ChipFit {
+    let tries = [ChipFit { counts: true, side: 22.0 }, ChipFit { counts: false, side: 22.0 }, ChipFit { counts: false, side: 10.0 }];
+    tries.into_iter().find(|fit| chips_width(labels, counts, pad, *fit) <= available).unwrap_or(tries[2])
+}
+
+#[cfg(test)]
+mod chip_fit_tests {
+    use super::*;
+
+    /// A wide panel keeps the counts; a narrow one drops them before a
+    /// chip is cut off, then tightens the chips.
+    #[test]
+    fn narrow_source_chips_drop_their_counts_first() {
+        let (labels, counts) = ([14.0, 40.0, 38.0, 18.0, 28.0], [12.0, 12.0, 6.0, 6.0, 6.0]);
+        let wide = fit_source_chips(&labels, &counts, 2.0, 600.0);
+        assert_eq!(wide, ChipFit { counts: true, side: 22.0 });
+        let full = chips_width(&labels, &counts, 2.0, wide);
+        let narrower = fit_source_chips(&labels, &counts, 2.0, full - 1.0);
+        assert!(!narrower.counts);
+        assert!(chips_width(&labels, &counts, 2.0, narrower) <= full - 1.0);
+        let tight = fit_source_chips(&labels, &counts, 2.0, 200.0);
+        assert_eq!(tight, ChipFit { counts: false, side: 10.0 });
+        assert!(chips_width(&labels, &counts, 2.0, tight) <= 200.0, "the five chips fit 200 px");
+    }
+}
+
 fn segmented_audio_source_filter(
     ui: &mut egui::Ui,
     theme: &KlippTheme,
@@ -1332,24 +1376,17 @@ fn segmented_audio_source_filter(
         (AudioSourceFilter::Clap, "CLAP", clap_count),
     ];
 
-    let mut seg_widths = [0.0f32; 5];
-    let mut total_w = pad * 2.0;
+    let mut label_w = [0.0f32; 5];
+    let mut count_w = [0.0f32; 5];
     for (i, (_, label, count)) in segments.iter().enumerate() {
-        let label_galley = ui.painter().layout_no_wrap(
-            (*label).to_string(),
-            egui::FontId::proportional(11.0),
-            theme.text_secondary,
-        );
-        let count_galley = ui.painter().layout_no_wrap(
-            format!("{}", count),
-            egui::FontId::monospace(10.0),
-            theme.text_dim,
-        );
-        let w = label_galley.size().x + 6.0 + count_galley.size().x + 22.0;
-        seg_widths[i] = w;
-        total_w += w + 1.0;
+        label_w[i] = ui.painter().layout_no_wrap((*label).to_string(), egui::FontId::proportional(11.0), theme.text_secondary).size().x;
+        count_w[i] = ui.painter().layout_no_wrap(format!("{}", count), egui::FontId::monospace(10.0), theme.text_dim).size().x;
     }
-    total_w -= 1.0;
+    // A narrow panel drops the counts, then the room around the labels,
+    // so every chip stays whole and can be clicked.
+    let fit = fit_source_chips(&label_w, &count_w, pad, ui.available_width());
+    let seg_widths: [f32; 5] = std::array::from_fn(|i| chip_width(label_w[i], count_w[i], fit));
+    let total_w = chips_width(&label_w, &count_w, pad, fit);
 
     let (outer_rect, _) = ui.allocate_exact_size(
         egui::vec2(total_w, outer_h),
@@ -1401,21 +1438,23 @@ fn segmented_audio_source_filter(
             count_color,
         );
 
-        let inner_w = label_galley.size().x + 6.0 + count_galley.size().x;
+        let inner_w = if fit.counts { label_galley.size().x + 6.0 + count_galley.size().x } else { label_galley.size().x };
         let lx = seg_rect.center().x - inner_w * 0.5;
         ui.painter().galley(
             egui::pos2(lx, seg_rect.center().y - label_galley.size().y * 0.5),
             label_galley.clone(),
             label_color,
         );
-        ui.painter().galley(
-            egui::pos2(
-                lx + label_galley.size().x + 6.0,
-                seg_rect.center().y - count_galley.size().y * 0.5,
-            ),
-            count_galley,
-            count_color,
-        );
+        if fit.counts {
+            ui.painter().galley(
+                egui::pos2(
+                    lx + label_galley.size().x + 6.0,
+                    seg_rect.center().y - count_galley.size().y * 0.5,
+                ),
+                count_galley,
+                count_color,
+            );
+        }
 
         if resp.clicked() {
             *filter = *variant;
