@@ -942,21 +942,23 @@ impl eframe::App for KlippApp {
         let ui_tick_ms = t_update_start.elapsed().as_secs_f64() * 1000.0;
         if ui_tick_ms > 2000.0 {
             tracing::error!(
-                "UI_TICK_FROZEN {:.0}ms state={:?} show_scopes={} show_color={} viewer_mode={:?}",
+                "UI_TICK_FROZEN {:.0}ms state={:?} show_scopes={} show_color={} viewer_mode={:?} stages: {}",
                 ui_tick_ms,
                 self.state.playback,
                 self.state.show_scopes,
                 self.state.show_color_panel,
                 self.state.viewer_mode,
+                klipp_engine::ui_stage::frame_parts(),
             );
         } else if ui_tick_ms > 25.0 {
             tracing::debug!(
-                "UI_TICK_SLOW {:.1}ms state={:?} show_scopes={} show_color={} viewer_mode={:?}",
+                "UI_TICK_SLOW {:.1}ms state={:?} show_scopes={} show_color={} viewer_mode={:?} stages: {}",
                 ui_tick_ms,
                 self.state.playback,
                 self.state.show_scopes,
                 self.state.show_color_panel,
                 self.state.viewer_mode,
+                klipp_engine::ui_stage::frame_parts(),
             );
         }
 

@@ -1278,6 +1278,23 @@ impl MediaItem {
 mod reprobe_tests {
     use super::*;
 
+    /// A portrait phone clip an older build stored at the codec's
+    /// landscape size: the re-read on open (the probe swaps a 90°/270°
+    /// file's size) puts it right. The open no longer reads each file's
+    /// rotation on the window's thread for it.
+    #[test]
+    fn a_reprobe_puts_a_rotated_files_stored_size_right() {
+        let mut old = MediaItem::synthetic_for_test(std::path::PathBuf::from("/media/phone.mov"), None);
+        old.resolution = klipp_core::Resolution { width: 1920, height: 1080 };
+        old.source_rotation = 90;
+        old.file_size_bytes = 10;
+        old.file_modified_at = Some(1);
+        let mut probed = old.clone();
+        probed.resolution = klipp_core::Resolution { width: 1080, height: 1920 };
+        merge_reprobed(&old, &mut probed);
+        assert_eq!((probed.resolution.width, probed.resolution.height), (1080, 1920), "the probed, upright size");
+    }
+
     #[test]
     fn a_reprobe_keeps_what_the_user_said_and_drops_caches_of_another_file() {
         let mut old = MediaItem::synthetic_for_test(std::path::PathBuf::from("/media/a.mp4"), Some("/cache/id.mp4"));
