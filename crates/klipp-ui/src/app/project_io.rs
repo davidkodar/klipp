@@ -889,9 +889,13 @@ impl KlippApp {
     }
 
     pub(super) fn do_open_project_inner(&mut self, path: &std::path::Path) {
+        // Where an open's time goes, said once at the end (OPEN_TIMING):
+        // all of it is on this thread, the window waiting.
+        let mut open_laps = OpenLaps::new();
         match klipp_project::load_project(path) {
             Ok((mut sequences, media_pool, color_settings, active_id, created_at, notes,
                 timeline_zoom, timeline_scroll_x, timeline_track_scale, title_assets)) => {
+                open_laps.lap("load_project");
                 // A clip saved running over the next one on its track (an
                 // append ended it at its file's length, off the frames:
                 // #3230) ends before it; said once.
@@ -920,6 +924,7 @@ impl KlippApp {
                 self.state.active_sequence_idx = active_idx;
                 self.state.created_at = created_at;
                 self.state.project_notes = notes;
+                open_laps.lap("mend");
                 self.state.last_import_report = klipp_project::import_report::read(path).unwrap_or_else(|e| { tracing::warn!("Could not read last import report: {e}"); None });
                 self.state.show_import_report = false;
                 if let Some(first) = mended.first() {
@@ -934,6 +939,7 @@ impl KlippApp {
                 }
                 *self.state.control_shared.import_outcome.lock().unwrap_or_else(|e| e.into_inner()) = self.state.last_import_report.as_ref().map(|r| serde_json::json!({"report":r}));
                 self.state.project_epoch += 1;
+                open_laps.lap("import_report");
                 self.retire_project_media();
                 self.state.media_pool = media_pool;
                 // Reopening a project brings its own media back.
@@ -941,10 +947,12 @@ impl KlippApp {
                     self.state.retired_media_ids.remove(&item.id);
                 }
                 self.state.title_assets = title_assets;
+                open_laps.lap("retire_media");
                 self.state.looks = klipp_project::load_looks(path);
                 // The fonts the project carries, drawn where this machine
                 // lacks them (#3009); a list that fails its checks is
                 // said and none of it is used.
+                open_laps.lap("looks");
                 match klipp_project::project_fonts::load_fonts(path) {
                     Ok(fonts) => klipp_title::catalogue::set_project_fonts(fonts),
                     Err(why) => {
@@ -965,6 +973,7 @@ impl KlippApp {
                     self.state.timeline_track_scale = scale.clamp(0.1, 1.0);
                 }
 
+                open_laps.lap("fonts");
                 // Fix media resolutions for rotated videos (phone portrait clips)
                 // Older projects may have stored raw codec dimensions without rotation
                 {
@@ -990,6 +999,7 @@ impl KlippApp {
                 }
 
                 // Aspect versions not yet reframed when the project was
+                open_laps.lap("rotation");
                 // closed wait again for their files' framing (#2231).
                 self.state.pending_refits = super::aspect_version::waiting_refits(&self.state.sequences, &self.state.media_pool);
 
@@ -1044,10 +1054,12 @@ impl KlippApp {
                 // now, after what the open itself does and before any
                 // re-read or analysis arrives, so a file that changed on
                 // disk still shows as a change.
+                open_laps.lap("engine_setup");
                 self.mark_saved();
                 // Sound effects a project kept where they weren't heard:
                 // after the saved state is taken, so the move counts as a
                 // change to save.
+                open_laps.lap("mark_saved");
                 for said in self.state.move_sound_effects_on_open() {
                     self.state.toast.show(said);
                 }
@@ -1109,6 +1121,7 @@ impl KlippApp {
                 };
                 self.prefs.add_recent_project(rp);
                 self.prefs_dirty = true;
+                open_laps.lap("sound_effects");
                 self.drop_automation_pass();
                 self.state.playback = PlaybackState::Idle;
                 let seq_rate = self.state.sequences[self.state.active_sequence_idx].fps.rate();
@@ -1156,8 +1169,10 @@ impl KlippApp {
                     }
                 }
 
+                open_laps.lap("textures_skims");
                 self.sync_sequence_to_engine();
                 self.sync_media_pool_to_engine();
+                open_laps.lap("sync_to_engine");
 
                 // Detect offline media
                 self.state.offline_media_ids = self.state.media_pool.all()
@@ -1178,6 +1193,7 @@ impl KlippApp {
                 // Load grade stills (PNG sidecars in <project>/media/stills/).
                 // Reset comparison state — the previous project's selection is
                 // meaningless for the new project's still list.
+                open_laps.lap("offline_notes");
                 self.state.grade_stills = klipp_project::load_grade_stills(path)
                     .into_iter()
                     .map(|d| crate::state::GradeStill {
@@ -1195,6 +1211,7 @@ impl KlippApp {
                 self.state.active_grade_still = None;
                 self.state.grade_still_compare = false;
 
+                open_laps.lap("grade_stills");
                 // Reload media files into the engine and trigger thumbnails/filmstrips/audio/skim.
                 // This read is also the re-probe of each file's shot
                 // metadata a load owes (#1148): a source may have changed
@@ -1217,7 +1234,9 @@ impl KlippApp {
                     self.state.filmstrip_generating = true;
                 }
 
+                open_laps.lap("file_jobs");
                 tracing::info!("Project loaded from {:?}", path);
+                tracing::info!("OPEN_TIMING {}", open_laps.line());
                 self.note_project_event(ProjectEvent::Replaced, None);
 
                 // Show the frame the playhead is on.
@@ -1390,6 +1409,36 @@ enum ProjectEvent {
     Saved,
     /// Replaced in memory: opened, reopened, made new or closed.
     Replaced,
+}
+
+/// Laps of an open, for its OPEN_TIMING line.
+struct OpenLaps {
+    started: std::time::Instant,
+    last: std::time::Instant,
+    laps: Vec<(&'static str, f64)>,
+}
+
+impl OpenLaps {
+    fn new() -> Self {
+        let now = std::time::Instant::now();
+        OpenLaps { started: now, last: now, laps: Vec::new() }
+    }
+
+    /// The time since the last lap, as `name`.
+    fn lap(&mut self, name: &'static str) {
+        let now = std::time::Instant::now();
+        self.laps.push((name, now.duration_since(self.last).as_secs_f64() * 1000.0));
+        self.last = now;
+    }
+
+    /// "total=… a=… b=…" in ms.
+    fn line(&self) -> String {
+        let mut out = format!("total={:.0}ms", self.started.elapsed().as_secs_f64() * 1000.0);
+        for (name, ms) in &self.laps {
+            out.push_str(&format!(" {name}={ms:.0}"));
+        }
+        out
+    }
 }
 
 /// The files an open reads again, each once: every one that isn't
