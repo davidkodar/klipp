@@ -271,6 +271,7 @@ impl KlippApp {
             lock_holder: klipp_project::lock::Holder::current(),
             lock_keeper: None,
             lock_pending: None,
+            skim_lookup: None,
             lock_seen_path: None,
             read_only_project: None,
             lock_prompt: None,

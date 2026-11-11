@@ -1145,35 +1145,16 @@ impl KlippApp {
                 if let Ok(mut fb) = self.frame_buffer.lock() {
                     fb.clear();
                 }
-                // Pre-populate skim_file paths from disk cache before syncing to engine
-                {
-                    let mut skim_updates: Vec<(klipp_core::MediaId, std::path::PathBuf)> = Vec::new();
-                    for item in self.state.media_pool.all() {
-                        if item.skim_file.is_none() {
-                            // The same key the transcode writes under —
-                            // with its HDR and rotation markers. The bare
-                            // content key found exactly the stale skims
-                            // those markers exist to skip.
-                            if let Some(key) = skim_cache_key_for(item, self.state.project_working_colorspace) {
-                                let skim_path = klipp_media::disk_cache::skim_transcode_path(&key);
-                                if skim_path.exists() {
-                                    if skim_file_is_complete(&skim_path, item.duration.to_secs_f64()) {
-                                        skim_updates.push((item.id, skim_path));
-                                    } else {
-                                        let _ = std::fs::remove_file(&skim_path);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    for (id, path) in skim_updates {
-                        if let Some(item) = self.state.media_pool.get_mut(&id) {
-                            item.skim_file = Some(path);
-                            tracing::info!("Pre-loaded skim path for {:?}", item.filename);
-                        }
-                    }
-                }
-
+                // Each file's skim, looked for on the disk cache on a thread
+                // of its own (`SkimLookup`): opening each to see how long it
+                // ran held the window a third of a second on a 93-file
+                // project. What it finds is kept as it comes back, and only
+                // the files with no whole skim are given one to make.
+                self.skim_lookup = Some(SkimLookup::start(
+                    self.state.project_path.clone(),
+                    self.state.media_pool.all().cloned().collect(),
+                    self.state.project_working_colorspace,
+                ));
                 open_laps.lap("textures_skims");
                 self.sync_sequence_to_engine();
                 self.sync_media_pool_to_engine();
@@ -1233,7 +1214,7 @@ impl KlippApp {
                     if has_audio {
                         self.spawn_audio_conform(id, source_path.clone());
                     }
-                    self.state.pending_skim_transcodes.push(id);
+                    // Its skim: made once the lookup says it has none.
                 }
                 if !self.state.filmstrip_queue.is_empty() || !self.state.filmstrip_in_progress.is_empty() {
                     self.state.filmstrip_generating = true;
@@ -1709,6 +1690,46 @@ pub(super) fn ensure_klipp_extension(mut path: PathBuf) -> PathBuf {
         }
     }
     path
+}
+
+/// The skims of an opened project's files, looked for on a thread of
+/// their own ([`super::proxies::find_skims`]).
+pub(super) struct SkimLookup {
+    pub(super) project: Option<PathBuf>,
+    answer: std::sync::mpsc::Receiver<super::proxies::SkimsFound>,
+    /// The files looked for, all to be given a skim if the lookup ends
+    /// without an answer.
+    ids: Vec<klipp_core::MediaId>,
+}
+
+impl SkimLookup {
+    pub(super) fn start(project: Option<PathBuf>, items: Vec<klipp_media::MediaItem>, working: klipp_core::WorkingColorspace) -> Self {
+        let ids = items.iter().map(|m| m.id).collect();
+        let (tx, answer) = std::sync::mpsc::channel();
+        let spawned = std::thread::Builder::new().name("skim-lookup".into()).spawn(move || {
+            let files: Vec<(klipp_core::MediaId, f64)> = items.iter().map(|m| (m.id, m.duration.to_secs_f64())).collect();
+            let skim_at = |id: klipp_core::MediaId| {
+                let item = items.iter().find(|m| m.id == id)?;
+                // One it already names, else where the transcode writes it.
+                item.skim_file.clone().or_else(|| skim_cache_key_for(item, working).map(|key| klipp_media::disk_cache::skim_transcode_path(&key)))
+            };
+            let _ = tx.send(super::proxies::find_skims(&files, skim_at, skim_file_is_complete));
+        });
+        if let Err(e) = spawned {
+            tracing::warn!("skims: could not look for them on a thread of their own: {e}");
+        }
+        Self { project, answer, ids }
+    }
+
+    /// What it found, once it has. A lookup that ended without an answer
+    /// leaves every file's skim to make, as before there was one.
+    pub(super) fn take(&self) -> Option<super::proxies::SkimsFound> {
+        match self.answer.try_recv() {
+            Ok(found) => Some(found),
+            Err(std::sync::mpsc::TryRecvError::Empty) => None,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => Some(super::proxies::SkimsFound { whole: Vec::new(), to_make: self.ids.clone() }),
+        }
+    }
 }
 
 #[cfg(test)]

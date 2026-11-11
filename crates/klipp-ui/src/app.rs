@@ -644,6 +644,8 @@ pub struct KlippApp {
     /// The lock of the project just opened, being taken off the window's
     /// thread: its file is written and synced, which can wait seconds.
     lock_pending: Option<klipp_project::lock::Pending>,
+    /// The opened project's skims, being looked for on the disk cache.
+    skim_lookup: Option<project_io::SkimLookup>,
     /// The project path the lock was last reconciled against.
     lock_seen_path: Option<PathBuf>,
     /// The open project, when it is open read-only because someone else

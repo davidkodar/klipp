@@ -746,6 +746,65 @@ pub(super) fn hdr_skim_lut(item: &klipp_media::MediaItem, working: klipp_core::W
     Some(klipp_render::skim_lut::prepared(transfer, working, &dir))
 }
 
+/// What an open finds of its files' skims: each file's skim from the disk
+/// cache (`skim_at` says where it would be, `None` when it has no key),
+/// kept when it is whole, removed when it was cut short. The files without
+/// one are the skims to make. Opening the files one by one to see how long
+/// their skims ran, twice, was a third of a second on the window's thread
+/// when a 93-file project was opened again; it runs on a thread of its own
+/// now (`SkimLookup`).
+pub(super) fn find_skims(
+    files: &[(MediaId, f64)],
+    skim_at: impl Fn(MediaId) -> Option<std::path::PathBuf>,
+    complete: impl Fn(&Path, f64) -> bool,
+) -> SkimsFound {
+    let mut found = SkimsFound::default();
+    for &(id, duration_secs) in files {
+        match skim_at(id).filter(|p| p.exists()) {
+            Some(path) if complete(&path, duration_secs) => found.whole.push((id, path)),
+            Some(path) => {
+                let _ = std::fs::remove_file(&path);
+                found.to_make.push(id);
+            }
+            None => found.to_make.push(id),
+        }
+    }
+    found
+}
+
+/// [`find_skims`]'s answer.
+#[derive(Debug, Default, PartialEq)]
+pub(super) struct SkimsFound {
+    /// Files whose skim is on disk and whole.
+    pub(super) whole: Vec<(MediaId, std::path::PathBuf)>,
+    /// Files whose skim is still to make.
+    pub(super) to_make: Vec<MediaId>,
+}
+
+#[cfg(test)]
+mod find_skims_tests {
+    use super::*;
+
+    /// A whole skim is kept, a cut-short one removed and made again, and
+    /// a file with none, or no key, is one to make.
+    #[test]
+    fn an_opens_skims_are_found_kept_or_made() {
+        let dir = std::env::temp_dir().join(format!("klipp-find-skims-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let (whole, short, none, keyless) = (MediaId::new(), MediaId::new(), MediaId::new(), MediaId::new());
+        let path = |id: MediaId| dir.join(format!("{id:?}.mp4"));
+        std::fs::write(path(whole), b"10").unwrap();
+        std::fs::write(path(short), b"4").unwrap();
+        let files = [(whole, 10.0), (short, 10.0), (none, 10.0), (keyless, 10.0)];
+        let found = find_skims(&files, |id| (id != keyless).then(|| path(id)), |p, secs| std::fs::read_to_string(p).ok().and_then(|s| s.parse::<f64>().ok()) == Some(secs));
+        assert_eq!(found.whole, vec![(whole, path(whole))]);
+        assert_eq!(found.to_make, vec![short, none, keyless]);
+        assert!(!path(short).exists(), "a cut-short skim is removed");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+}
+
 #[cfg(test)]
 mod proxy_completeness_tests {
 
