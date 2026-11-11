@@ -426,6 +426,133 @@ impl Drop for Keeper {
     }
 }
 
+/// What a project just opened asks of its lock.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Ask {
+    /// Take it if it is free; a dead holder's is taken over.
+    Acquire,
+    /// Take it whoever holds it (the user chose to), recording whom from.
+    TakeOver(Option<LockInfo>),
+}
+
+/// What came of an [`Ask`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Outcome {
+    /// The lock is ours: keep it alive with a [`Keeper`].
+    Held,
+    /// Someone has it open: the project is read-only here.
+    HeldElsewhere(LockInfo),
+    /// It was to be taken over and could not be written: read-only.
+    TakeOverFailed(String),
+}
+
+impl Outcome {
+    fn is_ours(&self) -> bool {
+        matches!(self, Outcome::Held)
+    }
+}
+
+/// `ask` of `project`'s lock, done here: the files' writes and their sync.
+pub fn resolve(project: &Path, me: &Holder, ask: Ask) -> Outcome {
+    let take = |from: Option<LockInfo>| match take_over(project, me, from.as_ref()) {
+        Ok(()) => Outcome::Held,
+        Err(e) => {
+            tracing::warn!("project lock: could not take over {}: {e}", project.display());
+            Outcome::TakeOverFailed(e.to_string())
+        }
+    };
+    match ask {
+        Ask::TakeOver(from) => take(from),
+        Ask::Acquire => match acquire(project, me).map_err(|held| *held) {
+            Ok(()) => Outcome::Held,
+            Err((info, Liveness::Dead)) => take(Some(info)),
+            Err((info, _)) => Outcome::HeldElsewhere(info),
+        },
+    }
+}
+
+/// A lock being taken on a thread of its own. Taking it writes and syncs
+/// a file in the project folder, and a sync waits for the filesystem: with
+/// other files being written it took seconds, and done by the window the
+/// window froze on opening a project. [`Pending::poll`] says what came of
+/// it once it is known; dropped before then, a lock it took is given back.
+pub struct Pending {
+    project: PathBuf,
+    holder: Holder,
+    answer: std::sync::mpsc::Receiver<Outcome>,
+    given_up: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    known: bool,
+}
+
+impl Pending {
+    pub fn start(project: PathBuf, holder: Holder, ask: Ask) -> Self {
+        let (p, h) = (project.clone(), holder.clone());
+        Self::start_with(project, holder, move || resolve(&p, &h, ask))
+    }
+
+    /// [`Self::start`] with the work given, for tests.
+    #[doc(hidden)]
+    pub fn start_with(project: PathBuf, holder: Holder, work: impl FnOnce() -> Outcome + Send + 'static) -> Self {
+        let (tx, answer) = std::sync::mpsc::channel();
+        let given_up = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (p, h, gone) = (project.clone(), holder.clone(), given_up.clone());
+        let run = move || {
+            let outcome = work();
+            let ours = outcome.is_ours();
+            // Nobody waits for it any more: what it took goes back.
+            let unwanted = gone.load(std::sync::atomic::Ordering::SeqCst) || tx.send(outcome).is_err();
+            if unwanted && ours {
+                release(&p, &h);
+            }
+        };
+        if let Err(e) = std::thread::Builder::new().name("project-lock-take".into()).spawn(run) {
+            // No thread: the lock is not taken, as when it cannot be
+            // written, and the project still opens.
+            tracing::warn!("project lock: could not start taking it: {e}");
+        }
+        Self { project, holder, answer, given_up, known: false }
+    }
+
+    pub fn project(&self) -> &Path {
+        &self.project
+    }
+
+    /// What came of it, once: `None` while it is still being taken, and
+    /// after it was said. A thread that ended without saying counts as a
+    /// lock that could not be written: held by nobody.
+    pub fn poll(&mut self) -> Option<Option<Outcome>> {
+        if self.known {
+            return None;
+        }
+        match self.answer.try_recv() {
+            Ok(outcome) => {
+                self.known = true;
+                Some(Some(outcome))
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => None,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.known = true;
+                Some(None)
+            }
+        }
+    }
+}
+
+impl Drop for Pending {
+    fn drop(&mut self) {
+        if self.known {
+            return;
+        }
+        self.given_up.store(true, std::sync::atomic::Ordering::SeqCst);
+        // Said just before it was given up: given back here.
+        if let Ok(outcome) = self.answer.try_recv() {
+            if outcome.is_ours() {
+                release(&self.project, &self.holder);
+            }
+        }
+    }
+}
+
 fn write_atomic(path: &Path, body: &[u8]) -> std::io::Result<()> {
     crate::path_util::atomic_write(path, body)
 }
@@ -489,6 +616,85 @@ mod tests {
 
     fn other(host: &str, pid: u32) -> Holder {
         Holder { user: "anna".into(), host: host.into(), machine: format!("{host}-machine-id"), pid, session: format!("anna-{pid}") }
+    }
+
+    /// Taking the lock waits for the filesystem, and the one asking does
+    /// not: it goes on at once, and hears what came of it after.
+    #[test]
+    fn a_slow_lock_is_taken_without_waiting_for_it() {
+        let dir = project("slow");
+        let me = Holder::current();
+        let (p, h) = (dir.clone(), me.clone());
+        let asked = std::time::Instant::now();
+        let mut pending = Pending::start_with(dir.clone(), me.clone(), move || {
+            std::thread::sleep(std::time::Duration::from_millis(600));
+            resolve(&p, &h, Ask::Acquire)
+        });
+        assert!(asked.elapsed() < std::time::Duration::from_millis(200), "starting it waited {:?}", asked.elapsed());
+        assert_eq!(pending.poll(), None, "not known yet");
+        let t0 = std::time::Instant::now();
+        let outcome = loop {
+            if let Some(o) = pending.poll() {
+                break o;
+            }
+            assert!(t0.elapsed() < std::time::Duration::from_secs(10), "never resolved");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        };
+        assert_eq!(outcome, Some(Outcome::Held));
+        assert_eq!(pending.poll(), None, "said once");
+        assert!(matches!(inspect(&dir, &me), LockState::Ours));
+    }
+
+    /// A lock still being taken when the project is closed, or another
+    /// opened, is given back once taken: nobody would keep it alive, and
+    /// it would read as held for minutes.
+    #[test]
+    fn a_lock_given_up_while_being_taken_is_given_back() {
+        let dir = project("given-up");
+        let me = Holder::current();
+        let (p, h) = (dir.clone(), me.clone());
+        let pending = Pending::start_with(dir.clone(), me.clone(), move || {
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            resolve(&p, &h, Ask::Acquire)
+        });
+        drop(pending);
+        let t0 = std::time::Instant::now();
+        while t0.elapsed() < std::time::Duration::from_secs(5) && !matches!(inspect(&dir, &me), LockState::Ours) {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        // Taken, then given back.
+        let t1 = std::time::Instant::now();
+        while t1.elapsed() < std::time::Duration::from_secs(5) && !matches!(inspect(&dir, &me), LockState::Free) {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(matches!(inspect(&dir, &me), LockState::Free), "the lock was left behind");
+    }
+
+    /// Off its thread the lock is judged as before: someone else's live
+    /// one makes this session read-only and says who.
+    /// A dead holder's lock on this machine is taken over, as on the
+    /// window's thread before.
+    #[test]
+    fn a_dead_holders_lock_is_taken_over() {
+        if !cfg!(target_os = "linux") {
+            return;
+        }
+        let dir = project("dead-taken");
+        let me = Holder::current();
+        let ghost = Holder { host: me.host.clone(), machine: me.machine.clone(), ..other("", u32::MAX - 1) };
+        acquire(&dir, &ghost).unwrap();
+        assert_eq!(resolve(&dir, &me, Ask::Acquire), Outcome::Held);
+        assert!(matches!(inspect(&dir, &me), LockState::Ours));
+        assert!(std::fs::read_to_string(dir.join(HISTORY_FILE)).unwrap_or_default().contains("took the lock from"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn someone_elses_lock_is_still_said() {
+        let dir = project("elsewhere");
+        let anna = other("studio", 4242);
+        acquire(&dir, &anna).expect("anna takes it");
+        assert!(matches!(resolve(&dir, &Holder::current(), Ask::Acquire), Outcome::HeldElsewhere(info) if info.user == "anna"));
     }
 
     #[test]

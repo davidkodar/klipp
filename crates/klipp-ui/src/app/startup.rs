@@ -270,6 +270,7 @@ impl KlippApp {
             relink_panel: Default::default(),
             lock_holder: klipp_project::lock::Holder::current(),
             lock_keeper: None,
+            lock_pending: None,
             lock_seen_path: None,
             read_only_project: None,
             lock_prompt: None,

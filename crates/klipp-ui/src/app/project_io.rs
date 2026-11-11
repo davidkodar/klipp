@@ -547,12 +547,15 @@ impl KlippApp {
         if let Some(taker) = self.lock_keeper.as_ref().and_then(|k| k.lost()) {
             self.lose_lock(taker);
         }
+        self.take_pending_lock();
         if self.state.project_path == self.lock_seen_path {
             return;
         }
         self.lock_seen_path = self.state.project_path.clone();
-        // Another project, or none: whatever was held is given up.
+        // Another project, or none: whatever was held is given up, and a
+        // lock still being taken is given back once it is.
         self.lock_keeper = None;
+        self.lock_pending = None;
         if self.read_only_project != self.state.project_path {
             self.read_only_project = None;
         }
@@ -563,34 +566,43 @@ impl KlippApp {
         };
         let decision = self.lock_decision.take().filter(|(p, _)| *p == path).map(|(_, d)| d);
         let already_read_only = self.read_only_project.as_ref() == Some(&path);
-        match opened_lock_step(already_read_only, decision, || lock::acquire(&path, &self.lock_holder)) {
+        match opened_lock_step(already_read_only, decision) {
             LockStep::Nothing => {}
-            LockStep::Held => self.lock_keeper = Some(lock::Keeper::start(path, self.lock_holder.clone())),
             LockStep::ReadOnly => self.read_only_project = Some(path),
-            LockStep::TakeOver(from) => self.take_over_lock(path, from.as_ref()),
-            LockStep::HeldElsewhere(info) => {
+            // Taken on its own thread: the window goes on, and a save in
+            // the meantime is judged by the lock file, as for a project
+            // whose lock could not be written (`may_write_project`).
+            LockStep::Take(ask) => self.lock_pending = Some(lock::Pending::start(path, self.lock_holder.clone(), ask)),
+        }
+    }
+
+    /// What came of the lock being taken, once it is known: kept alive
+    /// when it is ours, read-only and said when it is not. A keeper
+    /// started on a lock that was never taken would blame the holder for
+    /// a takeover thirty seconds later.
+    fn take_pending_lock(&mut self) {
+        use klipp_project::lock::{Keeper, Outcome};
+        let Some(outcome) = self.lock_pending.as_mut().and_then(|p| p.poll()) else { return };
+        let Some(pending) = self.lock_pending.take() else { return };
+        let path = pending.project().to_path_buf();
+        match outcome {
+            Some(Outcome::Held) => self.lock_keeper = Some(Keeper::start(path, self.lock_holder.clone())),
+            Some(Outcome::HeldElsewhere(info)) => {
                 self.read_only_project = Some(path);
                 self.state.toast.show(format!(
                     "{} has this project open, so it is read-only here. Save As keeps your changes in a copy.",
                     info.who()
                 ));
             }
-        }
-    }
-
-    /// Take the lock on `path`, or, when it cannot be written, say so and
-    /// open read-only: a keeper started on a lock that was never taken
-    /// would blame the holder for a takeover thirty seconds later.
-    fn take_over_lock(&mut self, path: PathBuf, from: Option<&klipp_project::lock::LockInfo>) {
-        match klipp_project::lock::take_over(&path, &self.lock_holder, from) {
-            Ok(()) => self.lock_keeper = Some(klipp_project::lock::Keeper::start(path, self.lock_holder.clone())),
-            Err(e) => {
-                tracing::warn!("project lock: could not take over {}: {e}", path.display());
+            Some(Outcome::TakeOverFailed(e)) => {
                 self.read_only_project = Some(path);
                 self.state.toast.show(format!(
                     "Could not take the project over ({e}), so it is open read-only. Save As keeps your changes in a copy."
                 ));
             }
+            // Its thread ended without a word: not locked, as when the
+            // lock cannot be written, and the project stays editable.
+            None => tracing::warn!("project lock: taking it ended without an answer for {}", path.display()),
         }
     }
 
@@ -676,7 +688,9 @@ impl KlippApp {
                     self.state.toast.show(format!("The project saved, but not every Look did: {e}"));
                 }
                 // A first save has just made the folder there is to lock.
-                if self.lock_keeper.is_none() && self.read_only_project.is_none() {
+                // Not while one is being taken: given up, its thread would
+                // give back the lock the next one takes, ours as well.
+                if self.lock_keeper.is_none() && self.read_only_project.is_none() && self.lock_pending.is_none() {
                     self.lock_seen_path = None;
                 }
                 self.state.project_path = Some(path.to_path_buf());
@@ -1512,36 +1526,24 @@ fn save_refusal(read_only: bool, ours: bool, holder: impl FnOnce() -> Option<Str
 enum LockStep {
     /// Already read-only here: leave it so.
     Nothing,
-    /// The lock was free and is ours now: keep it alive.
-    Held,
     /// The user chose to look without editing.
     ReadOnly,
-    /// Take the lock, recording whom from.
-    TakeOver(Option<klipp_project::lock::LockInfo>),
-    /// Someone has it open and nobody asked the user (an agent or a
-    /// restore opened it, or they opened it in the same instant): open
-    /// read-only and say who.
-    HeldElsewhere(klipp_project::lock::LockInfo),
+    /// Take the lock (`lock::resolve`): if it is free, or from whom the
+    /// user chose to take it, a dead holder's taken over; someone else's
+    /// live one opens the project read-only and says who.
+    Take(klipp_project::lock::Ask),
 }
 
 /// The lock step for a project just opened: a read-only open stays so,
 /// the user's answer to the lock prompt is followed, and only without
-/// one is the lock tried (`acquire`), a dead holder's being taken over.
-fn opened_lock_step(
-    already_read_only: bool,
-    decision: Option<LockDecision>,
-    acquire: impl FnOnce() -> Result<(), Box<(klipp_project::lock::LockInfo, klipp_project::lock::Liveness)>>,
-) -> LockStep {
-    use klipp_project::lock::Liveness;
+/// one is the lock tried.
+fn opened_lock_step(already_read_only: bool, decision: Option<LockDecision>) -> LockStep {
+    use klipp_project::lock::Ask;
     match decision {
         _ if already_read_only => LockStep::Nothing,
         Some(LockDecision::ReadOnly) => LockStep::ReadOnly,
-        Some(LockDecision::TakeOver(from)) => LockStep::TakeOver(from),
-        None => match acquire().map_err(|held| *held) {
-            Ok(()) => LockStep::Held,
-            Err((info, Liveness::Dead)) => LockStep::TakeOver(Some(info)),
-            Err((info, _)) => LockStep::HeldElsewhere(info),
-        },
+        Some(LockDecision::TakeOver(from)) => LockStep::Take(Ask::TakeOver(from)),
+        None => LockStep::Take(Ask::Acquire),
     }
 }
 
@@ -1587,7 +1589,7 @@ fn unsaved_step(answer: UnsavedAnswer) -> UnsavedStep {
 #[cfg(test)]
 mod decision_tests {
     use super::*;
-    use klipp_project::lock::{LockInfo, Liveness};
+    use klipp_project::lock::LockInfo;
 
     fn someone() -> LockInfo {
         LockInfo { user: "ana".into(), host: "studio".into(), ..Default::default() }
@@ -1615,17 +1617,15 @@ mod decision_tests {
         assert_eq!(save_refusal(false, false, || None), None, "nobody has it open");
     }
 
+    /// What a dead, live or stale holder's lock comes to is
+    /// `lock::resolve`'s, on its own thread (klipp-project's tests).
     #[test]
     fn an_opened_project_follows_the_users_answer_and_tries_the_lock_only_without_one() {
-        let untried = || -> Result<(), Box<(LockInfo, Liveness)>> { panic!("the lock is not tried") };
-        assert_eq!(opened_lock_step(true, Some(LockDecision::TakeOver(None)), untried), LockStep::Nothing, "read-only stays so");
-        assert_eq!(opened_lock_step(false, Some(LockDecision::ReadOnly), untried), LockStep::ReadOnly);
-        assert_eq!(opened_lock_step(false, Some(LockDecision::TakeOver(Some(someone()))), untried), LockStep::TakeOver(Some(someone())));
-        assert_eq!(opened_lock_step(false, None, || Ok(())), LockStep::Held);
-        assert_eq!(opened_lock_step(false, None, || Err(Box::new((someone(), Liveness::Dead)))), LockStep::TakeOver(Some(someone())), "a dead holder's lock is taken");
-        for alive in [Liveness::Active, Liveness::Stale] {
-            assert_eq!(opened_lock_step(false, None, || Err(Box::new((someone(), alive)))), LockStep::HeldElsewhere(someone()), "{alive:?}");
-        }
+        use klipp_project::lock::Ask;
+        assert_eq!(opened_lock_step(true, Some(LockDecision::TakeOver(None))), LockStep::Nothing, "read-only stays so");
+        assert_eq!(opened_lock_step(false, Some(LockDecision::ReadOnly)), LockStep::ReadOnly);
+        assert_eq!(opened_lock_step(false, Some(LockDecision::TakeOver(Some(someone())))), LockStep::Take(Ask::TakeOver(Some(someone()))));
+        assert_eq!(opened_lock_step(false, None), LockStep::Take(Ask::Acquire));
     }
 }
 
