@@ -7319,8 +7319,7 @@ mod narrow_library_tests {
     fn laid_out_width(category: LibraryCategory, panel_w: f32) -> f32 {
         let ctx = egui::Context::default();
         crate::icons::install(&ctx);
-        let mut panel = BrowserPanel::default();
-        panel.library_category = category;
+        let mut panel = BrowserPanel { library_category: category, ..Default::default() };
         let mut state = AppState::default();
         let theme = KlippTheme::default();
         let mut width = 0.0;

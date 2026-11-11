@@ -289,7 +289,7 @@ pub fn show(
         if folded {
             let choices: Vec<super::CategoryChoice> = general
                 .iter()
-                .map(|(_, label, count, cat, _)| super::CategoryChoice { label: *label, count: *count, cat: *cat })
+                .map(|(_, label, count, cat, _)| super::CategoryChoice { label, count: *count, cat: *cat })
                 .chain(sub_counts.iter().map(|&(cat, count)| super::CategoryChoice { label: sidebar_label_for(cat), count, cat }))
                 .collect();
             super::category_dropdown(ui, "audio_fx_category_folded", &choices, active_category);

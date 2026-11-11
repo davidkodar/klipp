@@ -232,8 +232,8 @@ pub fn show(
         if folded {
             let choices: Vec<super::CategoryChoice> = general
                 .iter()
-                .map(|(_, label, count, cat, _)| super::CategoryChoice { label: *label, count: *count, cat: *cat })
-                .chain(video_categories.iter().zip(&video_counts).map(|((cat, label, _), count)| super::CategoryChoice { label: *label, count: *count, cat: *cat }))
+                .map(|(_, label, count, cat, _)| super::CategoryChoice { label, count: *count, cat: *cat })
+                .chain(video_categories.iter().zip(&video_counts).map(|((cat, label, _), count)| super::CategoryChoice { label, count: *count, cat: *cat }))
                 .collect();
             super::category_dropdown(ui, "effects_category_folded", &choices, active_category);
             ui.add_space(6.0);
