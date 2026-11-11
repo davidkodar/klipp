@@ -252,6 +252,8 @@ pub(crate) struct Cost {
     pub frame_bytes: f64,
     pub read_bytes: f64,
     pub drive: Option<crate::disk_budget::Drive>,
+    /// What software decoding it costs, by kind.
+    pub class: crate::decode_budget::Class,
 }
 
 /// A layer on screen opened while memory is short holds at least this
@@ -599,7 +601,7 @@ impl ClipStreams {
                     let Some((path, rotation, cost)) = resolve(w) else { continue };
                     // The decoder forward playback uses, its frames on the
                     // GPU where there is one, held a window at a time.
-                    let lease = crate::decode_budget::admit(cost.rate, crate::decode_budget::Priority::Overflow);
+                    let lease = crate::decode_budget::admit_class(cost.rate, cost.class, crate::decode_budget::Priority::Overflow);
                     match VideoDecoder::open_with_queue(&path, rotation, lease, MIN_QUEUE_FRAMES * 2) {
                         Ok(decoder) => {
                             let free = window_free(crate::video_decoder::should_attach_gpu_source(), (self.free_vram)(), (self.free_memory)());
@@ -668,7 +670,7 @@ impl ClipStreams {
                         let (tx, rx) = std::sync::mpsc::channel();
                         let want = w.clone();
                         // Admitted here, in order, not on the thread.
-                        let lease = crate::decode_budget::admit(cost.rate, crate::decode_budget::Priority::Overflow);
+                        let lease = crate::decode_budget::admit_class(cost.rate, cost.class, crate::decode_budget::Priority::Overflow);
                         // Counted while it opens: a process exiting while
                         // ffmpeg or the GPU is mid-open crashes (#2261).
                         let alive = crate::video_decoder::DecodeThreadToken::new();

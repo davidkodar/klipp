@@ -2934,7 +2934,7 @@ fn decode_thread_main(
         crate::decode_budget::opened_in_software(lease_id);
     }
     // What this thread decodes and waits is the GPU's measure (#2116).
-    let mut meter = crate::decode_budget::Meter::new(hw_accel != HwAccel::Software, sw_threads);
+    let mut meter = crate::decode_budget::Meter::new(hw_accel != HwAccel::Software, sw_threads, 0.0);
 
     // Capture the source's colourspace from the AVCodecParameters
     // before the decoder starts producing frames. NVDEC's
@@ -2954,6 +2954,7 @@ fn decode_thread_main(
         (klipp_media::frame_reader::stream_colour_baseline(par_raw), w * h)
     };
     crate::decode_budget::set_rate(lease_id, source_pixels as f64 * source_fps);
+    meter.set_rate(source_pixels as f64 * source_fps);
 
     // KLIPP_FORCE_LOG_FORMAT is the test/dev override before the
     // per-clip UI exists. Setting it to one of the recognised tokens
@@ -3252,7 +3253,7 @@ fn decode_thread_main(
                 // No more buffered frames — need to feed more packets
                 break;
             }
-            meter.frame(received_frame.width() as u64 * received_frame.height() as u64);
+            meter.decoded(received_frame.width() as u64 * received_frame.height() as u64);
             frames_decoded.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
             let pts_secs = received_frame
@@ -3268,6 +3269,8 @@ fn decode_thread_main(
                     continue; // skip this frame, try next
                 }
                 seek_target = None;
+                // What it delivers is measured from here, not the seek's burst.
+                meter.seeked();
             }
 
             // Convert frame to RGBA
@@ -3350,6 +3353,9 @@ fn decode_thread_main(
 
             let this_transfer_us = t_transfer.elapsed().as_micros() as u64;
             perf_transfer_us += this_transfer_us;
+            if is_hw_frame {
+                meter.converted(Duration::from_micros(this_transfer_us));
+            }
             // Publish this frame's decode + transfer cost for the perf
             // overlay. receive_frame alone under-reports on async HW
             // decoders, so include the download/scale step too.
@@ -3377,6 +3383,9 @@ fn decode_thread_main(
             }
             frame_queue.lock().unwrap_or_else(|e| e.into_inner()).push(linear_frame);
             perf_queue_us += t_queue.elapsed().as_micros() as u64;
+            if let Some((per_thread, short)) = meter.delivered(source_pixels) {
+                crate::decode_budget::note_software_rate(lease_id, per_thread, short);
+            }
             drained_any = true;
             perf_frame_count += 1;
 

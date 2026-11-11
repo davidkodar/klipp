@@ -7757,7 +7757,8 @@ impl PlaybackEngine {
                 let (tx, rx) = std::sync::mpsc::channel();
                 // Opened ahead, it is among the first to decode in
                 // software when the GPU's decoder is full (#2116).
-                let lease = crate::decode_budget::admit(self.media_pixel_rate(media_id, &path), crate::decode_budget::Priority::Overflow);
+                let cost = self.media_cost(media_id, &path);
+                let lease = crate::decode_budget::admit_class(cost.rate, cost.class, crate::decode_budget::Priority::Overflow);
                 // Counted while it opens (#2261), as a decoder's own thread is.
                 let alive = crate::video_decoder::DecodeThreadToken::new();
                 std::thread::spawn(move || crate::thread_guard::catch_panic("klipp-preroll", move || {
@@ -11550,10 +11551,13 @@ impl PlaybackEngine {
     fn media_cost(&self, media_id: MediaId, path: &std::path::Path) -> streams::Cost {
         let rate = self.media_pixel_rate(media_id, path);
         let pool = self.media_pool.read().unwrap_or_else(|e| e.into_inner());
-        let (w, h, deep) = match pool.get(&media_id) {
-            Some(item) if item.path == path => (item.resolution.width, item.resolution.height, matches!(item.colour_space, klipp_media::ColourSpace::Hdr10 | klipp_media::ColourSpace::Hlg)),
-            _ => (1920, 1080, false),
+        let (w, h, deep, codec, samples) = match pool.get(&media_id) {
+            Some(item) if item.path == path => (item.resolution.width, item.resolution.height, matches!(item.colour_space, klipp_media::ColourSpace::Hdr10 | klipp_media::ColourSpace::Hlg), item.video_codec.as_str(), (item.bit_depth, item.pixel_format.as_deref())),
+            _ => (1920, 1080, false, "", (None, None)),
         };
+        // Its samples' depth as probed, for what software decoding costs;
+        // HDR stands in only for a file probed without it.
+        let class = crate::decode_budget::Class::of(codec, crate::decode_budget::deep_samples(samples.0, samples.1).unwrap_or(deep), w, h);
         let (pw, ph) = crate::video_decoder::playback_dimensions(w.max(1), h.max(1), 0);
         // What it reads: the item's probed rates for its own file; a proxy
         // or skim file's size over the item's length.
@@ -11562,7 +11566,7 @@ impl PlaybackEngine {
             Some(item) => crate::disk_budget::read_bytes_per_sec(0, 0, std::fs::metadata(path).map(|m| m.len()).unwrap_or(0), item.duration.to_secs_f64()),
             None => 0.0,
         };
-        streams::Cost { rate, frame_bytes: pw as f64 * ph as f64 * if deep { 8.0 } else { 4.0 }, read_bytes, drive: Some(crate::disk_budget::drive_of(path)) }
+        streams::Cost { rate, frame_bytes: pw as f64 * ph as f64 * if deep { 8.0 } else { 4.0 }, read_bytes, drive: Some(crate::disk_budget::drive_of(path)), class }
     }
 
     fn media_pixel_rate(&self, media_id: MediaId, path: &std::path::Path) -> f64 {
