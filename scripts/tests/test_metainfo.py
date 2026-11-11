@@ -73,8 +73,16 @@ class MetainfoTests(unittest.TestCase):
         schemes = {c.get("scheme_preference") for c in r.findall("branding/color[@type='primary']")}
         self.assertEqual(schemes, {"light", "dark"})
         self.assertIsNotNone(r.find("requires/display_length"))
-        # Screenshots wait for free-licensed media only.
-        self.assertIsNone(r.find("screenshots"))
+        # Screenshots of free-licensed media only, at a fixed commit so a
+        # store's copy never changes under it, one of them the default.
+        shots = r.findall("screenshots/screenshot")
+        self.assertGreaterEqual(len(shots), 1)
+        self.assertEqual(sum(s.get("type") == "default" for s in shots), 1)
+        for s in shots:
+            self.assertTrue(s.findtext("caption"), "each screenshot has a caption")
+            url = s.findtext("image")
+            self.assertRegex(url, r"^https://raw\.githubusercontent\.com/davidkodar/klipp/[0-9a-f]{40}/assets/screenshots/[\w.-]+\.png$")
+            self.assertTrue((REPO / "assets" / "screenshots" / url.rsplit("/", 1)[1]).is_file(), url)
 
 
 if __name__ == "__main__":

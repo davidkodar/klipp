@@ -17,6 +17,28 @@
       <li>An assistant that works in the project over MCP</li>
     </ul>
   </description>
+  <screenshots>
+    <screenshot type="default">
+      <caption>Edit page: media bin, source and program viewers, timeline and clip inspector</caption>
+      <image type="source" width="1920" height="1080">https://raw.githubusercontent.com/davidkodar/klipp/a93ba3d23c3fa756d0e1005e4469c9f27eab0ee2/assets/screenshots/01-edit.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Colour page: colour wheels and four scopes on a graded shot</caption>
+      <image type="source" width="1920" height="1080">https://raw.githubusercontent.com/davidkodar/klipp/a93ba3d23c3fa756d0e1005e4469c9f27eab0ee2/assets/screenshots/02-colour.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>A clip's grade as a node graph: corrector, qualifier and secondary</caption>
+      <image type="source" width="1920" height="1080">https://raw.githubusercontent.com/davidkodar/klipp/a93ba3d23c3fa756d0e1005e4469c9f27eab0ee2/assets/screenshots/03-nodes.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Effects library, and a title edited in the inspector</caption>
+      <image type="source" width="1920" height="1080">https://raw.githubusercontent.com/davidkodar/klipp/a93ba3d23c3fa756d0e1005e4469c9f27eab0ee2/assets/screenshots/04-library-titles.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Audio mixer with meters and loudness during playback</caption>
+      <image type="source" width="1920" height="1080">https://raw.githubusercontent.com/davidkodar/klipp/a93ba3d23c3fa756d0e1005e4469c9f27eab0ee2/assets/screenshots/05-sound.png</image>
+    </screenshot>
+  </screenshots>
   <launchable type="desktop-id">io.github.davidkodar.Klipp.desktop</launchable>
   <url type="homepage">https://davidkodar.github.io/klipp/</url>
   <url type="bugtracker">https://github.com/davidkodar/klipp/issues</url>
