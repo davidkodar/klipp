@@ -339,6 +339,7 @@ impl KlippApp {
                     match crate::project_paths::rename_project_folder(&written, &path) {
                         Ok(crate::project_paths::RenameOutcome::Renamed) => {
                             self.lock_keeper.take();
+                            self.lock_pending.take();
                             self.finish_project_move(&written, &path, true);
                         }
                         // Another filesystem: copied on a thread of its

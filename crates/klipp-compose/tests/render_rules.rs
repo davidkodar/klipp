@@ -363,7 +363,7 @@ fn an_hdr_delivery_renders_display_light() {
         [false, true].map(|gpu| {
             let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
             r.set_gpu_enabled(gpu);
-            r.set_global_lut(lut.map(|l| klipp_compose::GlobalLut { lut: l.clone(), opacity: 1.0 }));
+            r.set_global_lut(lut.map(|l| klipp_compose::GlobalLut { lut: l.clone().into(), opacity: 1.0 }));
             r.render(seq, tc(1.0), W, H, src, hdr)
         })
     };

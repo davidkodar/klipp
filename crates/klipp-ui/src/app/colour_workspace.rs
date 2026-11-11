@@ -27,6 +27,7 @@ impl KlippApp {
             toggle_bar_rect,
             nodes_rect,
             nodes_resizer_rect,
+            scopes_nodes_resizer_rect,
             bottom_scope_cursor,
         } = p;
         let theme = self.theme.clone();
@@ -90,6 +91,19 @@ impl KlippApp {
         // Scope settings dropdown
         if self.state.scope_settings_open && show_scopes_bar {
             self.render_color_ws_scope_settings_dropdown(ctx, ui, toggle_bar_rect, &theme);
+        }
+
+        // The line between the scopes and the node strip: down gives the
+        // scopes more.
+        if scopes_nodes_resizer_rect.is_positive() {
+            let delta = resizer::horizontal_resizer(ui, scopes_nodes_resizer_rect, &theme);
+            if delta != 0.0 {
+                let shared = scopes_h + scopes_nodes_resizer_rect.height() + nodes_rect.height();
+                if shared > 0.0 {
+                    self.layout.scopes_nodes_ratio = ((scopes_h + delta) / shared).clamp(0.2, 0.8);
+                    self.layout_dirty = true;
+                }
+            }
         }
 
         if nodes_resizer_rect.is_positive() {
@@ -492,7 +506,7 @@ impl KlippApp {
             let ratio = self.layout.color_viewer_height_ratio.clamp(0.15, 0.90);
             let flex = (main_bottom - main_top - toggle_bar_h - theme::RESIZER_THICKNESS).max(200.0);
             let total_bottom = (flex * (1.0 - ratio)).clamp(60.0, flex * 0.85);
-            if show_nodes_bar { total_bottom * 0.6 } else { total_bottom }
+            if show_nodes_bar { crate::layout::split_scopes_nodes(total_bottom, self.layout.scopes_nodes_ratio).0 } else { total_bottom }
         };
         let live_scopes_rect = egui::Rect::from_min_size(
             egui::pos2(center_left, toggle_bar_rect.max.y),
@@ -867,6 +881,7 @@ pub(super) struct ColorWsParams {
     pub(super) toggle_bar_rect: egui::Rect,
     pub(super) nodes_rect: egui::Rect,
     pub(super) nodes_resizer_rect: egui::Rect,
+    pub(super) scopes_nodes_resizer_rect: egui::Rect,
     pub(super) bottom_scope_cursor: Option<crate::state::ScopeCursorData>,
 }
 

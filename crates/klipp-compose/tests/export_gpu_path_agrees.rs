@@ -1008,7 +1008,7 @@ fn a_global_lut_over_a_composite_agrees_with_the_renderer() {
     let lut = strong_lut();
 
     let mut r = renderer();
-    r.set_global_lut(Some(klipp_compose::GlobalLut { lut: lut.clone(), opacity: 0.8 }));
+    r.set_global_lut(Some(klipp_compose::GlobalLut { lut: lut.clone().into(), opacity: 0.8 }));
     let Some((planes, _)) =
         r.render_yuv420_on_gpu(&seq, tc(0.5), W, H, &mut src, RenderOptions::default(), plain_target())
     else {
@@ -1016,7 +1016,7 @@ fn a_global_lut_over_a_composite_agrees_with_the_renderer() {
         return;
     };
     let mut rr = renderer();
-    rr.set_global_lut(Some(klipp_compose::GlobalLut { lut, opacity: 0.8 }));
+    rr.set_global_lut(Some(klipp_compose::GlobalLut { lut: lut.into(), opacity: 0.8 }));
     let px = rr.cpu_render(&seq, tc(0.5), W, H, &mut src, RenderOptions::default());
     let display = klipp_color::display::ExportDisplay::new(
         klipp_core::ToneMapOp::None,
@@ -1171,7 +1171,7 @@ fn a_global_lut_is_applied_and_agrees_with_the_renderer() {
     let lut = strong_lut();
 
     let mut r = renderer();
-    r.set_global_lut(Some(klipp_compose::GlobalLut { lut: lut.clone(), opacity: 1.0 }));
+    r.set_global_lut(Some(klipp_compose::GlobalLut { lut: lut.clone().into(), opacity: 1.0 }));
     let Some((planes, _)) = r.render_yuv420_on_gpu(
         &seq,
         tc(0.5),
@@ -1187,7 +1187,7 @@ fn a_global_lut_is_applied_and_agrees_with_the_renderer() {
 
     // The renderer's own frame, with the same LUT, encoded the same way.
     let mut rr = renderer();
-    rr.set_global_lut(Some(klipp_compose::GlobalLut { lut: lut.clone(), opacity: 1.0 }));
+    rr.set_global_lut(Some(klipp_compose::GlobalLut { lut: lut.clone().into(), opacity: 1.0 }));
     let px = rr.cpu_render(&seq, tc(0.5), W, H, &mut src, RenderOptions::default());
     let display = klipp_color::display::ExportDisplay::new(
         klipp_core::ToneMapOp::None,
@@ -1248,7 +1248,7 @@ fn a_global_lut_is_refused_where_its_position_is_ambiguous() {
     // and that split has no chain pass.
     let mut src = Flat::default().with(&c, [190, 110, 70]).on_gpu();
     let mut r = renderer();
-    r.set_global_lut(Some(klipp_compose::GlobalLut { lut: lut.clone(), opacity: 1.0 }));
+    r.set_global_lut(Some(klipp_compose::GlobalLut { lut: lut.clone().into(), opacity: 1.0 }));
     assert!(
         r.render_yuv420_on_gpu(
             &seq,
@@ -1267,7 +1267,7 @@ fn a_global_lut_is_refused_where_its_position_is_ambiguous() {
     // and the fused writer runs that pass last.
     let mut scene_src = Flat::default().scene(&c, HdrTransfer::Pq);
     let mut r2 = renderer();
-    r2.set_global_lut(Some(klipp_compose::GlobalLut { lut, opacity: 1.0 }));
+    r2.set_global_lut(Some(klipp_compose::GlobalLut { lut: lut.into(), opacity: 1.0 }));
     assert!(
         r2.render_yuv420_on_gpu(
             &seq,
