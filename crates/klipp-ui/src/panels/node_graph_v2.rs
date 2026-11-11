@@ -940,6 +940,9 @@ impl NodeGraphV2Panel {
             .clicked()
         {
             cmds.push(AppCommand::AutoLayoutNodeGraph { clip_id });
+            // The laid-out graph is framed when it shows: the nodes
+            // move, and the view fitted to the old places lost some.
+            self.request_fit();
         }
         if toolbar_ui.selectable_label(self.snap_to_grid, "Snap")
             .on_hover_text("Node drags land on the grid")
@@ -3334,6 +3337,7 @@ impl NodeGraphV2Panel {
                 let mods = ui.input(|inp| inp.modifiers);
                 if !mods.ctrl && !mods.alt && !mods.command && !mods.shift {
                     cmds.push(AppCommand::AutoLayoutNodeGraph { clip_id });
+                    self.request_fit();
                 }
             }
         }
@@ -6098,6 +6102,21 @@ pub(crate) mod canvas_command_tests {
         assert!(tall < wide * 0.6, "fitted again for the narrow canvas: {wide} then {tall}");
         h.panel.zoom = 1.7;
         assert_eq!(show(&mut h, egui::vec2(1600.0, 260.0)), 1.7, "a zoomed view is left alone");
+    }
+
+    /// Auto-layout frames the laid-out graph: the view fitted to the old
+    /// places, or zoomed in, left nodes outside it.
+    #[test]
+    fn auto_layout_frames_the_laid_out_graph() {
+        let mut h = Harness::new();
+        h.panel.zoom = 1.7;
+        h.settle();
+        let cmds = h.key(egui::Key::L);
+        assert!(cmds.iter().any(|c| matches!(c, AppCommand::AutoLayoutNodeGraph { .. })), "{cmds:?}");
+        // The app lays the graph out, then the canvas shows it.
+        h.graph.node_positions = klipp_nodes::auto_layout(&h.graph);
+        h.settle();
+        assert_ne!(h.panel.zoom, 1.7, "the laid-out graph was framed");
     }
 
     /// A node added where the view shows it leaves the view and the zoom as
