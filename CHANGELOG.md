@@ -5,6 +5,27 @@ Each release lists what changed for people using Klipp. Versions follow
 
 ## Unreleased
 
+## 0.3.6 — 2026-11-11
+
+0.3.5 was built but not published: playing and opening a large project
+on it showed the problems below. 0.3.6 has everything listed under
+0.3.5, and these fixes.
+
+### Playback and opening
+
+- Playback no longer stutters at a cut to a title card or another clip
+  over a gap: the sound keeps running instead of restarting.
+- Opening a project with many files no longer holds the window or
+  playback while each file is read. A project of 93 files opens in a
+  fraction of a second instead of about three.
+- Opening a project whose thumbnails are not made yet no longer takes
+  several gigabytes of memory for a few seconds: thumbnails are made a
+  few at a time.
+- On Play, the picture, the clock and the sound start together, and
+  Klipp keeps responding while the first frame of a long or slowed clip
+  is decoded.
+- The playhead no longer jumps back after a short pause in playback.
+
 ## 0.3.5 — 2026-11-11
 
 This release comes from extensive testing of effects, titles,
