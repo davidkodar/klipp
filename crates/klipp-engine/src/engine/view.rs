@@ -973,7 +973,7 @@ impl PlaybackEngine {
             return;
         }
         let lut = match &p.global_lut {
-            Some(lut) if p.applies() => Some(klipp_compose::GlobalLut { lut: lut.clone(), opacity: p.global_lut_opacity }),
+            Some(lut) if p.applies() => Some(klipp_compose::GlobalLut { lut: std::sync::Arc::new(lut.clone()), opacity: p.global_lut_opacity }),
             _ => None,
         };
         self.renderer.set_global_lut(lut);
@@ -1848,7 +1848,7 @@ impl PlaybackEngine {
         let before = phases.sync_ms + phases.snapshot_ms + phases.frame_snapshot_ms + phases.render_ms;
         phases.present_ms = (total_ms as f32 - before).max(0.0);
         let target_fps = self.target_fps_for_overlay();
-        let decode_ms = self.v1_decoder.as_ref().map(|d| d.last_decode_ms()).unwrap_or(0.0);
+        let decode_ms = self.decode_ms_since_last_sample();
         let dropped = match target_fps {
             Some(fps) if fps > 0.0 => (total_ms as f32).max(decode_ms) > 1000.0 / fps,
             _ => false,

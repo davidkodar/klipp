@@ -148,6 +148,17 @@ impl TitleView {
 /// The time a title's canvas is edited at: the smoothed playhead the
 /// editor reads its layers at, so the placement and the layers it carries
 /// don't drift apart while scrubbing or playing.
+/// The file the source viewer names over its picture.
+fn source_viewer_named(state: &AppState) -> Option<klipp_core::MediaId> {
+    named_in_source_viewer(state.browser_skim_texture.is_some(), state.browser_skim_media_id, state.source_media_id)
+}
+
+/// While a skim's picture shows, the skimmed file, and no other: the
+/// loaded clip's name over another file's picture said the wrong file.
+fn named_in_source_viewer(skimming: bool, skimmed: Option<klipp_core::MediaId>, loaded: Option<klipp_core::MediaId>) -> Option<klipp_core::MediaId> {
+    if skimming { skimmed } else { loaded }
+}
+
 fn title_edit_time(state: &AppState) -> klipp_core::Timecode {
     klipp_core::RationalTime::from_secs_f64(state.playhead_smooth_secs.max(0.0), state.playhead.rate)
 }
@@ -6692,8 +6703,10 @@ impl ViewerPanel {
                     egui::Color32::WHITE,
                 );
 
-                // Show filename overlay in top-left
-                if let Some(media) = state.source_media_id.and_then(|mid| state.media_pool.get(&mid)) {
+                // Show filename overlay in top-left: the skimmed file's
+                // while a skim shows, not the loaded clip's.
+                let skimming = state.browser_skim_texture.is_some();
+                if let Some(media) = source_viewer_named(state).and_then(|mid| state.media_pool.get(&mid)) {
                     ui.painter().text(
                         egui::pos2(viewer_rect.min.x + 12.0, viewer_rect.min.y + 28.0),
                         egui::Align2::LEFT_TOP,
@@ -6702,8 +6715,11 @@ impl ViewerPanel {
                         egui::Color32::from_rgba_premultiplied(200, 200, 210, 180),
                     );
 
-                    // Graphical IN/OUT markers
-                    Self::draw_source_in_out_markers(ui, &image_rect, media, theme);
+                    // Graphical IN/OUT markers: the loaded clip's, so not
+                    // over another file's picture.
+                    if !skimming {
+                        Self::draw_source_in_out_markers(ui, &image_rect, media, theme);
+                    }
                 }
                 return;
             }
@@ -7647,6 +7663,21 @@ fn pictured_at(seq: &klipp_timeline::Sequence, time: klipp_core::RationalTime) -
         .iter()
         .filter(|t| !matches!(t.kind, klipp_timeline::TrackKind::Audio))
         .any(|t| t.clip_at_timecode(time).is_some_and(|(_, c)| !c.kind.is_gap()))
+}
+
+#[cfg(test)]
+mod source_name_tests {
+    use super::named_in_source_viewer;
+
+    /// Skimming a pool thumbnail names the skimmed file over its picture;
+    /// the loaded clip is named again when the skim ends.
+    #[test]
+    fn a_skim_names_the_skimmed_file() {
+        let (loaded, skimmed) = (klipp_core::MediaId::new(), klipp_core::MediaId::new());
+        assert_eq!(named_in_source_viewer(true, Some(skimmed), Some(loaded)), Some(skimmed));
+        assert_eq!(named_in_source_viewer(true, None, Some(loaded)), None, "a skim of no known file names none, not the loaded one");
+        assert_eq!(named_in_source_viewer(false, Some(skimmed), Some(loaded)), Some(loaded));
+    }
 }
 
 #[cfg(test)]

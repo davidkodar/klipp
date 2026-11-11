@@ -904,7 +904,9 @@ fn stack(seq: &Sequence, time: Timecode) -> Vec<(usize, &Track, TrackItem<'_>)> 
 
 /// The timeline's global LUT.
 pub struct GlobalLut {
-    pub lut: klipp_color::lut::LutData,
+    /// Shared: the GPU keeps its table uploaded for as long as this one
+    /// stays, so a frame does not send it again.
+    pub lut: std::sync::Arc<klipp_color::lut::LutData>,
     pub opacity: f32,
 }
 
@@ -4132,8 +4134,7 @@ impl Renderer {
         let ok = self.executor.apply_global_lut_to_output(
             width,
             height,
-            &lut.lut.data,
-            lut.lut.size as u32,
+            &lut.lut,
             lut.opacity,
             self.lut_tetrahedral,
             bracket,

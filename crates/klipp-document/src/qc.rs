@@ -392,7 +392,9 @@ pub fn titles_to_read(seq: &Sequence, pool: &MediaPool, limit: usize) -> Vec<Tit
     let pictures: Vec<&Clip> = seq.tracks.iter().filter(|t| t.kind == TrackKind::Video && t.visible).flat_map(|t| t.clips.iter()).filter(|c| is_picture(c)).collect();
     let mut out = Vec::new();
     for t in seq.tracks.iter().filter(|t| t.kind == TrackKind::Text && t.visible) {
-        for c in t.clips.iter().filter(|c| c.enabled) {
+        // A title used as another clip's matte is never seen as text: it
+        // only cuts the picture out.
+        for c in t.clips.iter().filter(|c| c.enabled && !c.consumed_as_matte) {
             let ClipKind::Title(td) = &c.kind else { continue };
             if !matches!(td.background, klipp_timeline::TitleBackground::None) {
                 continue;
@@ -2181,5 +2183,20 @@ mod tests {
         assert!(plain.hint.contains("darker"), "{}", plain.hint);
         assert_eq!(legibility(&to_read[1], &surf, 64, 36).map(|f| f.severity), Some(Severity::Note), "a shadow may carry it");
         assert_eq!(legibility(&to_read[0], &sea, 64, 36), None, "cream over a dark sea reads");
+    }
+
+    /// A title another clip uses as its matte isn't shown as text, so
+    /// it isn't read against the picture.
+    #[test]
+    fn a_title_used_as_a_matte_is_not_read() {
+        let (mut seq, pool, _) = screencast(&[(0.0, 10.0, 40.0)]);
+        let td = klipp_timeline::TitleData::single_text(klipp_timeline::TextBox { text: "MATTE".into(), font_size: 140.0, color: [0xf2, 0xe8, 0xd0, 255], ..Default::default() });
+        let mut text = Track::new("T", TrackKind::Text);
+        let at = |a: f64, matte: bool| Clip { id: klipp_core::ClipId::new(), kind: ClipKind::Title(td.clone()), source_in: tc(0.0), source_out: tc(2.0), consumed_as_matte: matte, ..Clip::gap(tc(a), tc(a + 2.0)) };
+        text.clips.push(at(0.0, true));
+        text.clips.push(at(2.0, false));
+        seq.tracks.insert(0, text);
+        let to_read = titles_to_read(&seq, &pool, 16);
+        assert_eq!(to_read.iter().map(|t| t.at_secs).collect::<Vec<_>>(), vec![3.0], "only the title shown as text is read");
     }
 }

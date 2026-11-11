@@ -1544,8 +1544,7 @@ impl GraphExecutor {
         &mut self,
         width: u32,
         height: u32,
-        lut_data: &[f32],
-        lut_size: u32,
+        lut: &Arc<LutData>,
         opacity: f32,
         tetrahedral: bool,
         bracket: klipp_effects::gpu::LutBracket,
@@ -1556,7 +1555,8 @@ impl GraphExecutor {
         // fresh one for the single pass. `begin_chain` resets the params
         // ring, which the LUT dispatch draws a slot from.
         gpu.begin_chain();
-        gpu.apply_3d_lut_chain(slot_a, width, height, lut_data, lut_size, opacity, tetrahedral, bracket);
+        let keep: klipp_effects::gpu::LutKeep = lut.clone();
+        gpu.apply_3d_lut_chain(slot_a, width, height, &keep, &lut.data, lut.size as u32, opacity, tetrahedral, bracket);
         gpu.submit_chain();
         // The pass reads one slot and writes the other.
         self.output_on_gpu = Some(!slot_a);
@@ -5350,7 +5350,7 @@ impl GraphExecutor {
                 let bracket = lut_node_bracket(params, &lut, self.working_colorspace);
                 self.gpu.as_mut().unwrap().apply_3d_lut_chain(
                     in_is_a, width, height,
-                    &lut.data, lut.size as u32, opacity, tetrahedral, bracket,
+                    &(lut.clone() as klipp_effects::gpu::LutKeep), &lut.data, lut.size as u32, opacity, tetrahedral, bracket,
                 );
                 Some(1)
             }

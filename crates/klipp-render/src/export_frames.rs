@@ -61,7 +61,7 @@ pub fn export_renderer_with_host(snapshot: &SequenceSnapshot, label: &str, ofx: 
     renderer.set_lut_tetrahedral(true);
     if let Some(path) = &snapshot.global_lut_path {
         match klipp_color::lut::load_lut(path) {
-            Ok(lut) => renderer.set_global_lut(Some(klipp_compose::GlobalLut { lut, opacity: snapshot.video.global_lut_opacity })),
+            Ok(lut) => renderer.set_global_lut(Some(klipp_compose::GlobalLut { lut: lut.into(), opacity: snapshot.video.global_lut_opacity })),
             Err(e) => tracing::warn!("{label}: global LUT {path:?} failed to load: {e}"),
         }
     }

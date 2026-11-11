@@ -978,6 +978,8 @@ impl KlippApp {
                 // By path, the whole layout one step (#1528).
                 if self.state.canvas_auto_layout(cmd) == Some(true) {
                     *needs_refresh = true;
+                    // From the command palette too: framed when it shows.
+                    self.node_graph_v2_panel.request_fit();
                 }
                 true
             }

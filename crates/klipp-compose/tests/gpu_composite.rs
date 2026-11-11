@@ -1094,7 +1094,7 @@ fn a_global_lut_over_the_stack_matches() {
     let (seq, mut src) = stack();
     let lut = test_lut();
     let mut r = renderer();
-    r.set_global_lut(Some(klipp_compose::GlobalLut { lut: lut.clone(), opacity: 0.9 }));
+    r.set_global_lut(Some(klipp_compose::GlobalLut { lut: lut.clone().into(), opacity: 0.9 }));
     let Some((gpu, _)) = r.render_display_u8_on_gpu(&seq, tc(1.0), W, H, &mut src, RenderOptions::default()) else {
         no_gpu("the GPU stack declined (no usable GPU?)");
         return;
@@ -1133,7 +1133,7 @@ fn a_global_lut_in_an_acescg_project_is_bracketed_on_both_sides() {
     let mut r = renderer();
     r.set_lut_tetrahedral(true);
     r.set_working_colorspace(AcesCG);
-    r.set_global_lut(Some(klipp_compose::GlobalLut { lut, opacity: 0.9 }));
+    r.set_global_lut(Some(klipp_compose::GlobalLut { lut: lut.into(), opacity: 0.9 }));
     let d = worst(&ap1_display(&want), &ap1_display(&r.cpu_render(&seq, tc(1.0), W, H, &mut src, straight)));
     assert!(d <= 1, "the CPU renderer's LUT is not the node's bracketed lookup: {d} levels");
     let Some((gpu, _)) = r.render_display_u8_on_gpu(&seq, tc(1.0), W, H, &mut src, RenderOptions::default()) else {
