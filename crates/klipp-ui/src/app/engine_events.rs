@@ -29,8 +29,8 @@ impl KlippApp {
         let mut pool_sync_due = false;
         let before_ms = ms(t_drain);
         while let Ok(event) = self.event_rx.try_recv() {
-            let t_event = std::time::Instant::now();
             let kind = event_kind(&event);
+            let t_event = std::time::Instant::now();
             if super::event_writes::event_writes(&event) {
                 self.close_drag_for_result();
             }
@@ -672,7 +672,27 @@ impl KlippApp {
 }
 
 /// An event's kind, for DRAIN_TIMING: its variant's name.
+/// The kinds that carry pictures or long lists are named here, not
+/// printed whole: printing a thumbnail's pixels takes longer than handling it.
 fn event_kind(event: &AppEvent) -> String {
+    let named = match event {
+        AppEvent::MediaLoaded(_) => "MediaLoaded",
+        AppEvent::ThumbnailReady { .. } => "ThumbnailReady",
+        AppEvent::BrowserSkimFrameReady { .. } => "BrowserSkimFrameReady",
+        AppEvent::MatteMaskReady { .. } => "MatteMaskReady",
+        AppEvent::SceneDetectComplete { .. } => "SceneDetectComplete",
+        AppEvent::TrackingComplete { .. } => "TrackingComplete",
+        AppEvent::SurfaceTracked { .. } => "SurfaceTracked",
+        AppEvent::SurfaceCorrected { .. } => "SurfaceCorrected",
+        AppEvent::MulticamSyncReady { .. } => "MulticamSyncReady",
+        AppEvent::MediaFileChanged { .. } => "MediaFileChanged",
+        AppEvent::MediaLoadFailed { .. } => "MediaLoadFailed",
+        AppEvent::AudioSyncComplete { .. } => "AudioSyncComplete",
+        _ => "",
+    };
+    if !named.is_empty() {
+        return named.to_string();
+    }
     let text = format!("{event:?}");
     let end = text.find(['(', '{', ' ']).unwrap_or(text.len());
     text[..end].to_string()
