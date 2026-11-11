@@ -37,12 +37,22 @@ pub(crate) struct LayoutRects {
     pub scopes_rect: egui::Rect,
     pub nodes_rect: egui::Rect,
     pub nodes_resizer_rect: egui::Rect,
+    /// The line between the docked scopes and the node strip under them;
+    /// nothing unless both are there.
+    pub scopes_nodes_resizer_rect: egui::Rect,
     pub nodes_on_right: bool,
     /// Whether the browser is drawn as its panel: shown, and the window
     /// wide enough for it. Otherwise its rail.
     pub browser_open: bool,
     /// The same for the inspector.
     pub inspector_open: bool,
+}
+
+/// The Colour page's bottom `height` shared by the scopes (`ratio` of it,
+/// kept to 20–80 % so neither is dragged away) and the node strip.
+pub(crate) fn split_scopes_nodes(height: f32, ratio: f32) -> (f32, f32) {
+    let scopes = height * ratio.clamp(0.2, 0.8);
+    (scopes, height - scopes)
 }
 
 /// The narrowest the column between the side panels is left: two viewers
@@ -184,7 +194,7 @@ pub(crate) fn compute_layout(
 
     // Split bottom panel between scopes and nodes
     let (scopes_h, nodes_h) = match (show_scopes_bar, show_nodes_bar) {
-        (true, true) => (bottom_panel_h * 0.6, bottom_panel_h * 0.4),
+        (true, true) => split_scopes_nodes(bottom_panel_h, layout.scopes_nodes_ratio),
         (true, false) => (bottom_panel_h, 0.0),
         (false, true) => (0.0, bottom_panel_h),
         (false, false) => (0.0, 0.0),
@@ -205,6 +215,14 @@ pub(crate) fn compute_layout(
         egui::pos2(center_left, scopes_rect.max.y),
         egui::vec2(center_w, nodes_h),
     );
+
+    // The line between the scopes and the node strip under them, taken
+    // from the strip's top, dragged to share the bottom between them.
+    let mut scopes_nodes_resizer_rect = egui::Rect::NOTHING;
+    if show_scopes_bar && show_nodes_bar && nodes_rect.height() > theme::RESIZER_THICKNESS * 2.0 {
+        scopes_nodes_resizer_rect = egui::Rect::from_min_size(nodes_rect.min, egui::vec2(center_w, theme::RESIZER_THICKNESS));
+        nodes_rect.min.y += theme::RESIZER_THICKNESS;
+    }
 
     // Timeline: hidden in Color workspace, normal otherwise
     // Timeline sits above the scopes/nodes area (or fills to bottom if none)
@@ -369,6 +387,7 @@ pub(crate) fn compute_layout(
         scopes_rect,
         nodes_rect,
         nodes_resizer_rect,
+        scopes_nodes_resizer_rect,
         nodes_on_right,
         browser_open: browser_open.is_some(),
         inspector_open: inspector_open.is_some(),
@@ -381,6 +400,27 @@ mod tests {
 
     fn test_full_rect() -> egui::Rect {
         egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1920.0, 1080.0))
+    }
+
+    /// Scopes and nodes both docked in Colour: the line between them is
+    /// there, they share the bottom by the stored ratio, and neither can
+    /// be dragged away.
+    #[test]
+    fn the_scopes_and_nodes_share_the_bottom_by_the_dragged_line() {
+        let state = AppState { show_color_panel: true, show_scopes: true, show_node_strip: true, ..Default::default() };
+        let share = |ratio: f32| {
+            let layout = LayoutState { scopes_nodes_ratio: ratio, ..Default::default() };
+            let r = compute_layout(test_full_rect(), &layout, &state);
+            assert!(r.scopes_nodes_resizer_rect.is_positive(), "the line is there");
+            assert_eq!(r.scopes_nodes_resizer_rect.min.y, r.scopes_rect.max.y);
+            assert_eq!(r.scopes_nodes_resizer_rect.max.y, r.nodes_rect.min.y);
+            r.scopes_rect.height() / (r.scopes_rect.height() + r.nodes_rect.height() + theme::RESIZER_THICKNESS)
+        };
+        assert!((share(0.6) - 0.6).abs() < 0.01);
+        assert!((share(0.3) - 0.3).abs() < 0.01, "dragged up, the nodes get more");
+        assert!((share(0.0) - 0.2).abs() < 0.01, "never dragged away");
+        let scopes_only = AppState { show_node_strip: false, ..state };
+        assert!(!compute_layout(test_full_rect(), &LayoutState::default(), &scopes_only).scopes_nodes_resizer_rect.is_positive());
     }
 
     #[test]
