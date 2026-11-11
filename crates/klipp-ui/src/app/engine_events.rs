@@ -5,6 +5,13 @@ use super::*;
 
 impl KlippApp {
     pub(super) fn drain_events(&mut self, ctx: &egui::Context) {
+        // Where a drain's time goes (DRAIN_TIMING, said when one takes
+        // over 100 ms): before the events, each kind of event, the steps
+        // of a media item's arrival, and after.
+        let t_drain = std::time::Instant::now();
+        let mut by_kind: Vec<(String, u32, f64)> = Vec::new();
+        let mut media_parts: [(&str, f64); 7] = [("build", 0.0), ("merge", 0.0), ("analysis", 0.0), ("import", 0.0), ("spans", 0.0), ("place", 0.0), ("rest", 0.0)];
+        let ms = |t: std::time::Instant| t.elapsed().as_secs_f64() * 1000.0;
         self.sync_system_theme(ctx);
         self.drain_control_inbox();
         self.apply_analysis_markers();
@@ -20,7 +27,10 @@ impl KlippApp {
         // readings go over in one copy of the pool once the events are in,
         // not one copy per file. Opening a project reads all of them.
         let mut pool_sync_due = false;
+        let before_ms = ms(t_drain);
         while let Ok(event) = self.event_rx.try_recv() {
+            let t_event = std::time::Instant::now();
+            let kind = event_kind(&event);
             if super::event_writes::event_writes(&event) {
                 self.close_drag_for_result();
             }
@@ -249,6 +259,8 @@ impl KlippApp {
                         span: None,
                     };
 
+                    media_parts[0].1 += ms(t_event);
+                    let t_part = std::time::Instant::now();
                     // Auto-detect log format from metadata
                     let detected = media_item.detect_log_format();
                     if detected != klipp_core::LogFormat::Srgb {
@@ -274,6 +286,11 @@ impl KlippApp {
                     // every open's does for an unchanged file, leaves
                     // nothing to save (#1353).
                     let saves_alike = previous.as_ref().is_some_and(|old| klipp_project::media_items_save_alike(old, &media_item));
+                    if previous.is_some() && !saves_alike {
+                        tracing::info!("Re-read of {:?} differs from what the project kept: it counts as a change to save", media_item.filename);
+                    }
+                    media_parts[1].1 += ms(t_part);
+                    let t_part = std::time::Instant::now();
                     let filmstrips_enabled = self.state.project_auto_filmstrips
                         .unwrap_or(self.prefs.editing.auto_generate_filmstrips);
                     let skim_enabled = self.state.project_auto_skim
@@ -303,12 +320,20 @@ impl KlippApp {
                         self.apply_brief_to_transcription();
                         klipp_analysis::service::request(&media_item);
                     }
+                    media_parts[2].1 += ms(t_part);
+                    let t_part = std::time::Instant::now();
                     self.state.complete_pool_import(media_item, previous.is_none());
+                    media_parts[3].1 += ms(t_part);
+                    let t_part = std::time::Instant::now();
                     self.refresh_spans_beside(&span_path);
+                    media_parts[4].1 += ms(t_part);
+                    let t_part = std::time::Instant::now();
                     // A recorded take lands where it was punched in (#114).
                     self.place_take(media_id);
                     // A bounced track's file, placed as it replaces (#3264).
                     self.place_bounce(media_id);
+                    media_parts[5].1 += ms(t_part);
+                    let t_rest = std::time::Instant::now();
                     if !saves_alike {
                         self.state.dirty = true;
                     }
@@ -397,6 +422,7 @@ impl KlippApp {
                             }
                         }
                     }
+                    media_parts[6].1 += ms(t_rest);
                 }
                 AppEvent::MediaLoadFailed { media_id, path, error } => {
                     self.state.pending_undo_imports.remove(&media_id);
@@ -565,7 +591,16 @@ impl KlippApp {
                 | AppEvent::NormalizeMeasured { .. }
                 | AppEvent::WaterMeasured { .. } => {}
             }
+            let took = ms(t_event);
+            match by_kind.iter_mut().find(|(k, _, _)| *k == kind) {
+                Some(entry) => {
+                    entry.1 += 1;
+                    entry.2 += took;
+                }
+                None => by_kind.push((kind, 1, took)),
+            }
         }
+        let t_after = std::time::Instant::now();
         if pool_sync_due {
             self.sync_media_pool_to_engine();
         }
@@ -624,5 +659,21 @@ impl KlippApp {
                 }
             }
         }
+        let total_ms = ms(t_drain);
+        if total_ms > 100.0 {
+            let kinds: Vec<String> = by_kind.iter().filter(|(_, _, t)| *t >= 1.0).map(|(k, n, t)| format!("{k}x{n}={t:.0}")).collect();
+            let parts: Vec<String> = media_parts.iter().filter(|(_, t)| *t >= 1.0).map(|(k, t)| format!("{k}={t:.0}")).collect();
+            tracing::info!(
+                "DRAIN_TIMING total={total_ms:.0}ms before={before_ms:.0} after={:.0} | {} | media: {}",
+                ms(t_after), kinds.join(" "), parts.join(" "),
+            );
+        }
     }
+}
+
+/// An event's kind, for DRAIN_TIMING: its variant's name.
+fn event_kind(event: &AppEvent) -> String {
+    let text = format!("{event:?}");
+    let end = text.find(['(', '{', ' ']).unwrap_or(text.len());
+    text[..end].to_string()
 }
