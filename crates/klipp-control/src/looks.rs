@@ -223,6 +223,32 @@ pub fn match_on_top(now: &MatchKnobs, by: &MatchKnobs) -> MatchKnobs {
 /// its 95th percentile. A match had taken a shot up a stop and left a
 /// fifth of the frame at white. Returns why, when a knob was held.
 ///
+/// A reference this flat, black at or above [`FLAT_BLACK_IRE`] with
+/// under [`FLAT_RANGE_IRE`] between its black and its white, reads as an
+/// ungraded log or a faded shot: Log C reads 21 IRE black and 33 of
+/// range shown as it is stored, a camera's log 11 and 30, and a graded
+/// Rec.709 shot 2 and 87.
+pub const FLAT_BLACK_IRE: f64 = 10.0;
+pub const FLAT_RANGE_IRE: f64 = 60.0;
+
+/// The lift a match would give a shot to raise its blacks to a flat
+/// reference's, held (#2577): matched to an ungraded log, every shot was
+/// given the log's grey blacks. A lift that lowers them is kept. Says why
+/// when it holds, from the reference's levels (`frame_stats`).
+pub fn hold_match_for_flat_reference(knobs: &mut MatchKnobs, reference: &serde_json::Value) -> Option<String> {
+    let ire = |k: &str| reference.get("luma_ire").and_then(|x| x.get(k)).and_then(|x| x.as_f64());
+    let (black, white) = (ire("black")?, ire("white")?);
+    let flat = black >= FLAT_BLACK_IRE && white - black < FLAT_RANGE_IRE;
+    if !flat || knobs.lift.is_none_or(|l| l <= 0.0) {
+        return None;
+    }
+    knobs.lift = None;
+    Some(format!(
+        "blacks not raised: the reference's sit at {black:.0} IRE with {:.0} IRE of range, as an ungraded or faded shot's do — lift by hand if that look is wanted",
+        white - black
+    ))
+}
+
 /// The reference `r` sets what is allowed: a shot may go as far into
 /// white as the shot it is matched to. A chart or a sunlit scene with
 /// its whites at the rail held every copy of itself short of the match,
@@ -246,4 +272,46 @@ pub fn hold_match_for_highlights(knobs: &mut MatchKnobs, m: &klipp_color::measur
         return None;
     };
     Some(why)
+}
+
+#[cfg(test)]
+mod flat_reference_tests {
+    use super::*;
+
+    fn levels(black: f64, white: f64) -> serde_json::Value {
+        serde_json::json!({ "luma_ire": { "black": black, "mid": (black + white) / 2.0, "white": white } })
+    }
+
+    fn lifting(lift: f32) -> MatchKnobs {
+        MatchKnobs { lift: Some(lift), exposure: Some(0.3), ..Default::default() }
+    }
+
+    /// Matched to a flat reference, as Log C and a camera's log read as
+    /// stored, the blacks are not raised, and the match says why; the
+    /// rest of the match stands.
+    #[test]
+    fn a_flat_references_raised_blacks_are_not_copied() {
+        for (black, white) in [(20.8, 53.7), (10.6, 40.8)] {
+            let mut k = lifting(0.12);
+            let why = hold_match_for_flat_reference(&mut k, &levels(black, white)).expect("held");
+            assert_eq!(k.lift, None);
+            assert_eq!(k.exposure, Some(0.3), "the exposure still goes");
+            assert!(why.contains("blacks not raised") && why.contains(&format!("{black:.0} IRE")), "{why}");
+        }
+    }
+
+    /// A reference with deep blacks, or with its blacks up but a full
+    /// range (a bright scene), sets the lift; and a lift that lowers a
+    /// raised shot is kept whatever the reference.
+    #[test]
+    fn other_references_still_set_the_lift() {
+        let mut k = lifting(0.05);
+        assert_eq!(hold_match_for_flat_reference(&mut k, &levels(2.0, 89.4)), None);
+        assert_eq!(k.lift, Some(0.05), "a graded reference's blacks are matched");
+        let mut k = lifting(0.05);
+        assert_eq!(hold_match_for_flat_reference(&mut k, &levels(14.0, 96.0)), None, "a bright scene's raised black has its range");
+        let mut k = lifting(-0.08);
+        assert_eq!(hold_match_for_flat_reference(&mut k, &levels(20.8, 53.7)), None);
+        assert_eq!(k.lift, Some(-0.08), "lowering a raised black is kept");
+    }
 }
