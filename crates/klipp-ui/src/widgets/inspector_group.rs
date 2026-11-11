@@ -210,11 +210,10 @@ pub fn tab_strip_with_tips(ui: &mut Ui, labels: &[&str], short: &[&str], tips: &
                 .map(|(names, size)| (names, size, widths(ui, names, size)))
                 .find(|(_, _, w)| w.iter().sum::<f32>() <= avail)
                 .unwrap_or_else(|| (short, crate::theme::type_scale::CAPTION, widths(ui, short, crate::theme::type_scale::CAPTION)));
-            let total: f32 = w.iter().sum();
-            let stretch = if total > 0.0 { (avail / total).max(1.0) } else { 1.0 };
+            let w = tab_widths(&w, avail);
             for (i, name) in names.iter().enumerate() {
                 let is_active = i == active;
-                let (tab_rect, resp) = ui.allocate_exact_size(vec2(w[i] * stretch, SECTION_HEADER_H - 2.0), Sense::click());
+                let (tab_rect, resp) = ui.allocate_exact_size(vec2(w[i], SECTION_HEADER_H - 2.0), Sense::click());
                 let colour = if is_active {
                     theme.text_primary
                 } else if resp.hovered() {
@@ -222,7 +221,9 @@ pub fn tab_strip_with_tips(ui: &mut Ui, labels: &[&str], short: &[&str], tips: &
                 } else {
                     theme.text_dim
                 };
-                ui.painter().text(tab_rect.center(), egui::Align2::CENTER_CENTER, *name, egui::FontId::proportional(size), colour);
+                // Squeezed below its name's width, a tab's name is cut at
+                // its edge rather than drawn over its neighbour's.
+                ui.painter().with_clip_rect(tab_rect).text(tab_rect.center(), egui::Align2::CENTER_CENTER, *name, egui::FontId::proportional(size), colour);
                 if is_active {
                     ui.painter().hline(tab_rect.x_range().shrink(4.0), tab_rect.max.y - 1.0, Stroke::new(2.0_f32, theme.accent));
                 }
@@ -237,6 +238,16 @@ pub fn tab_strip_with_tips(ui: &mut Ui, labels: &[&str], short: &[&str], tips: &
     });
     ui.advance_cursor_after_rect(strip);
     clicked
+}
+
+/// The tabs' widths in a strip `avail` wide, from their names' `natural`
+/// widths: stretched to fill it, and squeezed to fit it when even the short
+/// names don't. Laid out wider, a strip widened the whole panel under it,
+/// and every row below was laid out past the panel's edge and cut (#2602).
+pub fn tab_widths(natural: &[f32], avail: f32) -> Vec<f32> {
+    let total: f32 = natural.iter().sum();
+    let scale = if total > 0.0 && avail > 0.0 { avail / total } else { 1.0 };
+    natural.iter().map(|w| w * scale).collect()
 }
 
 pub fn inspector_group_header(
@@ -438,6 +449,17 @@ pub fn quick_preset_button(
 
 #[cfg(test)]
 mod tests {
+    /// A strip too narrow for even the short names squeezes its tabs into
+    /// its width; one with room stretches them across it (#2602).
+    #[test]
+    fn a_tab_strip_never_lays_out_wider_than_it_is() {
+        let natural = [34.0, 34.0, 36.0, 34.0, 34.0, 34.0, 34.0];
+        let narrow = super::tab_widths(&natural, 200.0);
+        assert!((narrow.iter().sum::<f32>() - 200.0).abs() < 0.01, "{narrow:?}");
+        let wide = super::tab_widths(&natural, 400.0);
+        assert!((wide.iter().sum::<f32>() - 400.0).abs() < 0.01 && wide[0] > 34.0, "{wide:?}");
+    }
+
     use super::*;
 
     /// What the remembered set means changed: it holds the titles whose

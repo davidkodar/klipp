@@ -36,6 +36,9 @@ pub struct AuditionSourceOption {
 
 const CATEGORY_SIDEBAR_W: f32 = 180.0;
 
+/// The eye toggle beside the source chips.
+const EYE_TOGGLE_W: f32 = 28.0;
+
 /// Public colour mapping for audio effect type IDs: a built-in effect
 /// takes its browser group's colour, so the tile in the FX library and
 /// the timeline bypass strips share one palette and a "Reverb" looks the
@@ -208,8 +211,22 @@ pub fn show(
         *active_category = EffectCategory::AudioAll;
     }
 
-    // ── Split: category sidebar (left) | content (right) ──
-    let sidebar_w = CATEGORY_SIDEBAR_W.min(avail.width() * 0.40);
+    // The sidebar's counts don't depend on the search query: they count
+    // the registry.
+    let is_audio = |e: &EffectEntry| matches!(e.source, EffectSource::Audio(_) | EffectSource::Ladspa(_) | EffectSource::Lv2(_) | EffectSource::Clap(_));
+    let installed_total = state.effect_registry.effects.iter().filter(|e| is_audio(e)).count();
+    let named_audio = |names: &[String]| names.iter().filter(|n| state.effect_registry.effects.iter().any(|e| &e.name == *n && is_audio(e))).count();
+    let general = [
+        (Icon::Star, "Favorites", named_audio(favorite_effects), EffectCategory::Favourites, "audio_general_favourites"),
+        (Icon::ArrowCounterClockwise, "Recent", named_audio(recent_effects), EffectCategory::Recent, "audio_general_recent"),
+        (Icon::UploadSimple, "Installed", installed_total, EffectCategory::Installed, "audio_general_installed"),
+    ];
+    let sub_counts: Vec<(EffectCategory, usize)> = AUDIO_SUB_CATEGORIES.iter().map(|c| (*c, audio_count_in_registry(state, *c))).collect();
+
+    // ── Split: category sidebar (left) | content (right); a narrow panel
+    // folds the sidebar into a dropdown over the content (#2602) ──
+    let folded = super::sidebar_folds(avail.width());
+    let sidebar_w = if folded { 0.0 } else { CATEGORY_SIDEBAR_W.min(avail.width() * 0.40) };
     let sidebar_rect = egui::Rect::from_min_size(
         avail.min,
         egui::vec2(sidebar_w, avail.height()),
@@ -220,120 +237,64 @@ pub fn show(
     );
 
     // ── Sidebar ─────────────────────────────────────────────────────
-    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(sidebar_rect), |ui| {
-        ui.set_min_size(sidebar_rect.size());
-        ui.painter().rect_filled(sidebar_rect, 0.0, theme.bg_panel);
-        ui.painter().vline(
-            sidebar_rect.max.x,
-            sidebar_rect.y_range(),
-            egui::Stroke::new(1.0_f32, theme.border),
-        );
+    if !folded {
+        ui.allocate_new_ui(egui::UiBuilder::new().max_rect(sidebar_rect), |ui| {
+            ui.set_min_size(sidebar_rect.size());
+            ui.painter().rect_filled(sidebar_rect, 0.0, theme.bg_panel);
+            ui.painter().vline(
+                sidebar_rect.max.x,
+                sidebar_rect.y_range(),
+                egui::Stroke::new(1.0_f32, theme.border),
+            );
 
-        egui::ScrollArea::vertical()
-            .id_salt("audio_fx_sidebar_scroll")
-            .show(ui, |ui| {
-                ui.add_space(6.0);
+            egui::ScrollArea::vertical()
+                .id_salt("audio_fx_sidebar_scroll")
+                .show(ui, |ui| {
+                    ui.add_space(6.0);
 
-                // ── General section: Favorites / Recent / Installed ──
-                let installed_total = state
-                    .effect_registry
-                    .effects
-                    .iter()
-                    .filter(|e| {
-                        matches!(
-                            e.source,
-                            EffectSource::Audio(_) | EffectSource::Ladspa(_) | EffectSource::Lv2(_) | EffectSource::Clap(_)
-                        )
-                    })
-                    .count();
-                let fav_audio_count = favorite_effects
-                    .iter()
-                    .filter(|n| {
-                        state.effect_registry.effects.iter().any(|e| {
-                            &e.name == *n
-                                && matches!(
-                                    e.source,
-                                    EffectSource::Audio(_) | EffectSource::Ladspa(_) | EffectSource::Lv2(_) | EffectSource::Clap(_)
-                                )
-                        })
-                    })
-                    .count();
-                let recent_audio_count = recent_effects
-                    .iter()
-                    .filter(|n| {
-                        state.effect_registry.effects.iter().any(|e| {
-                            &e.name == *n
-                                && matches!(
-                                    e.source,
-                                    EffectSource::Audio(_) | EffectSource::Ladspa(_) | EffectSource::Lv2(_) | EffectSource::Clap(_)
-                                )
-                        })
-                    })
-                    .count();
+                    // ── General section: Favorites / Recent / Installed ──
+                    for (icon, label, count, cat, salt) in general {
+                        sidebar_row(ui, theme, Some(icon), label, count, *active_category == cat, salt, &mut |c| *active_category = c, cat);
+                    }
 
-                sidebar_row(
-                    ui,
-                    theme,
-                    Some(Icon::Star),
-                    "Favorites",
-                    fav_audio_count,
-                    *active_category == EffectCategory::Favourites,
-                    "audio_general_favourites",
-                    &mut |c| *active_category = c,
-                    EffectCategory::Favourites,
-                );
-                sidebar_row(
-                    ui,
-                    theme,
-                    Some(Icon::ArrowCounterClockwise),
-                    "Recent",
-                    recent_audio_count,
-                    *active_category == EffectCategory::Recent,
-                    "audio_general_recent",
-                    &mut |c| *active_category = c,
-                    EffectCategory::Recent,
-                );
-                sidebar_row(
-                    ui,
-                    theme,
-                    Some(Icon::UploadSimple),
-                    "Installed",
-                    installed_total,
-                    *active_category == EffectCategory::Installed,
-                    "audio_general_installed",
-                    &mut |c| *active_category = c,
-                    EffectCategory::Installed,
-                );
+                    ui.add_space(8.0);
+                    sidebar_section_separator(ui, theme);
 
-                ui.add_space(8.0);
-                sidebar_section_separator(ui, theme);
+                    // ── AUDIO FX section ──
+                    sidebar_section_header(ui, theme, Some(Icon::SpeakerHigh), "Audio FX");
 
-                // ── AUDIO FX section ──
-                sidebar_section_header(ui, theme, Some(Icon::SpeakerHigh), "Audio FX");
-
-                for cat in AUDIO_SUB_CATEGORIES {
-                    let count = audio_count_in_registry(state, cat);
-                    sidebar_row(
-                        ui,
-                        theme,
-                        Some(sidebar_icon_for(cat)),
-                        sidebar_label_for(cat),
-                        count,
-                        *active_category == cat,
-                        &format!("audio_cat_{:?}", cat),
-                        &mut |c| *active_category = c,
-                        cat,
-                    );
-                }
-                ui.add_space(8.0);
-            });
-    });
+                    for &(cat, count) in &sub_counts {
+                        sidebar_row(
+                            ui,
+                            theme,
+                            Some(sidebar_icon_for(cat)),
+                            sidebar_label_for(cat),
+                            count,
+                            *active_category == cat,
+                            &format!("audio_cat_{:?}", cat),
+                            &mut |c| *active_category = c,
+                            cat,
+                        );
+                    }
+                    ui.add_space(8.0);
+                });
+        });
+    }
 
     // ── Right pane ──────────────────────────────────────────────────
     ui.allocate_new_ui(egui::UiBuilder::new().max_rect(content_rect), |ui| {
         ui.set_min_size(content_rect.size());
 
         ui.add_space(8.0);
+        if folded {
+            let choices: Vec<super::CategoryChoice> = general
+                .iter()
+                .map(|(_, label, count, cat, _)| super::CategoryChoice { label, count: *count, cat: *cat })
+                .chain(sub_counts.iter().map(|&(cat, count)| super::CategoryChoice { label: sidebar_label_for(cat), count, cat }))
+                .collect();
+            super::category_dropdown(ui, "audio_fx_category_folded", &choices, active_category);
+            ui.add_space(8.0);
+        }
 
         // ── Audition transport ──
         let audition_cmds = audition_player(
@@ -398,6 +359,9 @@ pub fn show(
             .inner_margin(egui::Margin::symmetric(8.0, 0.0))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
+                    // The chips fit beside the eye toggle, not under it
+                    // (#2602).
+                    let available = ui.available_width() - EYE_TOGGLE_W - ui.spacing().item_spacing.x;
                     segmented_audio_source_filter(
                         ui,
                         theme,
@@ -407,6 +371,7 @@ pub fn show(
                         ladspa_count,
                         lv2_count,
                         clap_count,
+                        available,
                     );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         eye_toggle_button(ui, theme, hide_unsupported);
@@ -671,7 +636,9 @@ fn audition_player(
         .fill(theme.bg_raised)
         .stroke(egui::Stroke::new(1.0_f32, theme.border))
         .rounding(4.0)
-        .inner_margin(egui::Margin::symmetric(12.0, 10.0))
+        // 11 inside the 1 px outline, which the frame adds to its size:
+        // at 12 it came out a pixel wider than the panel (#2602).
+        .inner_margin(egui::Margin::symmetric(11.0, 10.0))
         .outer_margin(egui::Margin::symmetric(8.0, 0.0))
         .show(ui, |ui| {
             // Header row: AUDITION label + Source selector.
@@ -825,7 +792,10 @@ fn audition_player(
                 // playhead to that point. The whole rect is a
                 // click-and-drag target so dragging scrubs while held.
                 let avail_w = ui.available_width();
-                let wave_w = (avail_w - 130.0).max(160.0);
+                // What the time and volume beside it leave, down to a
+                // narrow strip: held at 160 it laid the panel out wider
+                // than it is, and cut everything under it (#2602).
+                let wave_w = (avail_w - 140.0).max(48.0);
                 let wave_h = 96.0;
                 let (wave_rect, wave_resp) = ui.allocate_exact_size(
                     egui::vec2(wave_w, wave_h),
@@ -1312,47 +1282,26 @@ fn resolve_source_label(
 
 // ──────────────────────────── Source segmented ────────────────────────────
 
-/// How the source chips are laid out: with their counts or not, and the
-/// room on each side of a chip's text.
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct ChipFit {
-    counts: bool,
-    side: f32,
-}
-
-fn chip_width(label: f32, count: f32, fit: ChipFit) -> f32 {
-    label + if fit.counts { 6.0 + count } else { 0.0 } + fit.side
-}
-
-fn chips_width(labels: &[f32], counts: &[f32], pad: f32, fit: ChipFit) -> f32 {
-    let chips: f32 = labels.iter().zip(counts).map(|(l, c)| chip_width(*l, *c, fit)).sum();
-    pad * 2.0 + chips + (labels.len().saturating_sub(1)) as f32
-}
-
-/// The roomiest layout that fits `available`; the tightest when none does.
-fn fit_source_chips(labels: &[f32], counts: &[f32], pad: f32, available: f32) -> ChipFit {
-    let tries = [ChipFit { counts: true, side: 22.0 }, ChipFit { counts: false, side: 22.0 }, ChipFit { counts: false, side: 10.0 }];
-    tries.into_iter().find(|fit| chips_width(labels, counts, pad, *fit) <= available).unwrap_or(tries[2])
-}
-
 #[cfg(test)]
 mod chip_fit_tests {
-    use super::*;
+    use super::super::{chips_width, fit_source_chips, ChipFit};
 
     /// A wide panel keeps the counts; a narrow one drops them before a
-    /// chip is cut off, then tightens the chips.
+    /// chip is cut off, then tightens the chips; one too narrow for even
+    /// those makes them a dropdown (#2602).
     #[test]
     fn narrow_source_chips_drop_their_counts_first() {
         let (labels, counts) = ([14.0, 40.0, 38.0, 18.0, 28.0], [12.0, 12.0, 6.0, 6.0, 6.0]);
-        let wide = fit_source_chips(&labels, &counts, 2.0, 600.0);
+        let wide = fit_source_chips(&labels, &counts, 2.0, 600.0).unwrap();
         assert_eq!(wide, ChipFit { counts: true, side: 22.0 });
         let full = chips_width(&labels, &counts, 2.0, wide);
-        let narrower = fit_source_chips(&labels, &counts, 2.0, full - 1.0);
+        let narrower = fit_source_chips(&labels, &counts, 2.0, full - 1.0).unwrap();
         assert!(!narrower.counts);
         assert!(chips_width(&labels, &counts, 2.0, narrower) <= full - 1.0);
-        let tight = fit_source_chips(&labels, &counts, 2.0, 200.0);
+        let tight = fit_source_chips(&labels, &counts, 2.0, 200.0).unwrap();
         assert_eq!(tight, ChipFit { counts: false, side: 10.0 });
         assert!(chips_width(&labels, &counts, 2.0, tight) <= 200.0, "the five chips fit 200 px");
+        assert_eq!(fit_source_chips(&labels, &counts, 2.0, 150.0), None, "a dropdown");
     }
 }
 
@@ -1365,9 +1314,8 @@ fn segmented_audio_source_filter(
     ladspa_count: usize,
     lv2_count: usize,
     clap_count: usize,
+    available: f32,
 ) {
-    let outer_h = 26.0;
-    let pad = 2.0;
     let segments = [
         (AudioSourceFilter::All, "All", all_count),
         (AudioSourceFilter::Builtin, "Built-in", builtin_count),
@@ -1375,100 +1323,14 @@ fn segmented_audio_source_filter(
         (AudioSourceFilter::Lv2, "LV2", lv2_count),
         (AudioSourceFilter::Clap, "CLAP", clap_count),
     ];
-
-    let mut label_w = [0.0f32; 5];
-    let mut count_w = [0.0f32; 5];
-    for (i, (_, label, count)) in segments.iter().enumerate() {
-        label_w[i] = ui.painter().layout_no_wrap((*label).to_string(), egui::FontId::proportional(11.0), theme.text_secondary).size().x;
-        count_w[i] = ui.painter().layout_no_wrap(format!("{}", count), egui::FontId::monospace(10.0), theme.text_dim).size().x;
-    }
-    // A narrow panel drops the counts, then the room around the labels,
-    // so every chip stays whole and can be clicked.
-    let fit = fit_source_chips(&label_w, &count_w, pad, ui.available_width());
-    let seg_widths: [f32; 5] = std::array::from_fn(|i| chip_width(label_w[i], count_w[i], fit));
-    let total_w = chips_width(&label_w, &count_w, pad, fit);
-
-    let (outer_rect, _) = ui.allocate_exact_size(
-        egui::vec2(total_w, outer_h),
-        egui::Sense::hover(),
-    );
-
-    ui.painter().rect_filled(outer_rect, 4.0, theme.bg_panel);
-    ui.painter().rect_stroke(
-        outer_rect,
-        5.0,
-        egui::Stroke::new(1.0_f32, theme.border),
-    );
-
-    let mut x = outer_rect.min.x + pad;
-    for (i, (variant, label, count)) in segments.iter().enumerate() {
-        let seg_rect = egui::Rect::from_min_size(
-            egui::pos2(x, outer_rect.min.y + pad),
-            egui::vec2(seg_widths[i], outer_h - pad * 2.0),
-        );
-        let resp = ui.interact(
-            seg_rect,
-            ui.id().with(("audio_source_seg", i)),
-            egui::Sense::click(),
-        );
-        let is_active = *filter == *variant;
-        let hovered = resp.hovered();
-
-        if is_active {
-            ui.painter().rect_filled(seg_rect, 2.0, theme.bg_raised);
-        } else if hovered {
-            ui.painter().rect_filled(seg_rect, 2.0, theme.accent_subtle);
-        }
-
-        let label_color = if is_active || hovered {
-            theme.text_primary
-        } else {
-            theme.text_secondary
-        };
-        let count_color = if is_active { theme.accent } else { theme.text_dim };
-
-        let label_galley = ui.painter().layout_no_wrap(
-            (*label).to_string(),
-            egui::FontId::proportional(11.0),
-            label_color,
-        );
-        let count_galley = ui.painter().layout_no_wrap(
-            format!("{}", count),
-            egui::FontId::monospace(10.0),
-            count_color,
-        );
-
-        let inner_w = if fit.counts { label_galley.size().x + 6.0 + count_galley.size().x } else { label_galley.size().x };
-        let lx = seg_rect.center().x - inner_w * 0.5;
-        ui.painter().galley(
-            egui::pos2(lx, seg_rect.center().y - label_galley.size().y * 0.5),
-            label_galley.clone(),
-            label_color,
-        );
-        if fit.counts {
-            ui.painter().galley(
-                egui::pos2(
-                    lx + label_galley.size().x + 6.0,
-                    seg_rect.center().y - count_galley.size().y * 0.5,
-                ),
-                count_galley,
-                count_color,
-            );
-        }
-
-        if resp.clicked() {
-            *filter = *variant;
-        }
-
-        x += seg_widths[i] + 1.0;
-    }
+    super::source_chips(ui, theme, "audio_source_seg", filter, &segments, egui::FontId::monospace(10.0), 26.0, available);
 }
 
 // ───────────────────────────── Eye toggle button ─────────────────────────────
 
 fn eye_toggle_button(ui: &mut egui::Ui, theme: &KlippTheme, hide_unsupported: &mut bool) {
     let (rect, resp) = ui.allocate_exact_size(
-        egui::vec2(28.0, 26.0),
+        egui::vec2(EYE_TOGGLE_W, 26.0),
         egui::Sense::click(),
     );
     let hovered = resp.hovered();
@@ -1557,29 +1419,25 @@ fn sidebar_row(
         );
     }
 
-    let label_galley = ui.painter().layout_no_wrap(
-        label.to_string(),
-        egui::FontId::proportional(11.0),
-        label_color,
-    );
+    // Label, and the count where both fit; the label cut with "…" past
+    // its room (#2602).
+    let count_color = if is_active { theme.accent } else { theme.text_dim };
+    let count_galley = ui.painter().layout_no_wrap(format!("{}", count), egui::FontId::monospace(10.0), count_color);
+    let label_w = ui.painter().layout_no_wrap(label.to_string(), egui::FontId::proportional(11.0), label_color).size().x;
+    let (show_count, label_room) = super::row_fit(label_x, rect.max.x, label_w, count_galley.size().x);
+    let label_galley = super::elided_galley(ui, label, egui::FontId::proportional(11.0), label_color, label_room);
     ui.painter().galley(
         egui::pos2(label_x, rect.center().y - label_galley.size().y * 0.5),
         label_galley,
         label_color,
     );
-
-    let count_str = format!("{}", count);
-    let count_color = if is_active { theme.accent } else { theme.text_dim };
-    let count_galley = ui.painter().layout_no_wrap(
-        count_str,
-        egui::FontId::monospace(10.0),
-        count_color,
-    );
-    let count_pos = egui::pos2(
-        rect.max.x - 14.0 - count_galley.size().x,
-        rect.center().y - count_galley.size().y * 0.5,
-    );
-    ui.painter().galley(count_pos, count_galley, count_color);
+    if show_count {
+        let count_pos = egui::pos2(
+            rect.max.x - 14.0 - count_galley.size().x,
+            rect.center().y - count_galley.size().y * 0.5,
+        );
+        ui.painter().galley(count_pos, count_galley, count_color);
+    }
 
     if click_resp.clicked() || resp.clicked() {
         on_click(target_cat);

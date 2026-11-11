@@ -32,6 +32,155 @@ use std::sync::Arc;
 /// against `PanelKind::Browser`). Library sub-tabs previously rendered
 /// a 32px-tall bespoke version with a magnifier icon; that diverged
 /// from the Files/Media bar and is now consolidated here.
+/// Below this width a library tab's category sidebar folds into a
+/// dropdown over its content (#2602): at the narrowest panel the sidebar's
+/// share left neither its rows nor the content room to read.
+pub(crate) const SIDEBAR_FOLDS_BELOW: f32 = 360.0;
+
+/// Whether a library tab `panel_w` wide shows its categories as a dropdown.
+pub(crate) fn sidebar_folds(panel_w: f32) -> bool {
+    panel_w < SIDEBAR_FOLDS_BELOW
+}
+
+/// How a sidebar row's label and count share it: the count only when both
+/// fit beside each other, and the room left for the label, which is cut
+/// with "…" past it. They were drawn over each other in a narrow sidebar.
+pub(crate) fn row_fit(label_x: f32, row_right: f32, label_w: f32, count_w: f32) -> (bool, f32) {
+    const RIGHT: f32 = 14.0;
+    const GAP: f32 = 6.0;
+    let room = (row_right - RIGHT - label_x).max(0.0);
+    if label_w + GAP + count_w <= room {
+        (true, room - GAP - count_w)
+    } else {
+        (false, room)
+    }
+}
+
+/// `text` on one line at most `max_w` wide, cut with "…" past it.
+pub(crate) fn elided_galley(ui: &egui::Ui, text: &str, font: egui::FontId, color: egui::Color32, max_w: f32) -> Arc<egui::Galley> {
+    let mut job = egui::text::LayoutJob::simple_singleline(text.to_string(), font, color);
+    job.wrap = egui::text::TextWrapping { max_width: max_w.max(1.0), max_rows: 1, break_anywhere: true, overflow_character: Some('\u{2026}') };
+    ui.fonts(|f| f.layout_job(job))
+}
+
+/// One category a folded sidebar offers.
+pub(crate) struct CategoryChoice {
+    pub label: &'static str,
+    pub count: usize,
+    pub cat: effects_tab::EffectCategory,
+}
+
+/// A folded sidebar: its categories, with their counts, as one dropdown
+/// across the content's width.
+pub(crate) fn category_dropdown(ui: &mut egui::Ui, id_salt: &str, choices: &[CategoryChoice], active: &mut effects_tab::EffectCategory) {
+    let name = |c: &CategoryChoice| format!("{}  {}", c.label, c.count);
+    let current = choices.iter().find(|c| c.cat == *active).map(name).unwrap_or_default();
+    egui::Frame::none().inner_margin(egui::Margin::symmetric(8.0, 0.0)).show(ui, |ui| {
+        // A little short of the row: the button's outline is drawn outside
+        // the width asked for, and laid the panel out wider than it is.
+        egui::ComboBox::from_id_salt(id_salt).width(ui.available_width() - 4.0).truncate().selected_text(current).show_ui(ui, |ui| {
+            for c in choices {
+                ui.selectable_value(active, c.cat, name(c));
+            }
+        });
+    });
+}
+
+/// How a row of source chips is laid out: with their counts or not, and
+/// the room on each side of a chip's text.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct ChipFit {
+    pub counts: bool,
+    pub side: f32,
+}
+
+pub(crate) fn chip_width(label: f32, count: f32, fit: ChipFit) -> f32 {
+    label + if fit.counts { 6.0 + count } else { 0.0 } + fit.side
+}
+
+pub(crate) fn chips_width(labels: &[f32], counts: &[f32], pad: f32, fit: ChipFit) -> f32 {
+    let chips: f32 = labels.iter().zip(counts).map(|(l, c)| chip_width(*l, *c, fit)).sum();
+    pad * 2.0 + chips + (labels.len().saturating_sub(1)) as f32
+}
+
+/// The roomiest layout of the chips that fits `available`: counts dropped
+/// first, then the room around the labels. `None` when not even the
+/// tightest fits, and the chips are a dropdown instead (#2602).
+pub(crate) fn fit_source_chips(labels: &[f32], counts: &[f32], pad: f32, available: f32) -> Option<ChipFit> {
+    let tries = [ChipFit { counts: true, side: 22.0 }, ChipFit { counts: false, side: 22.0 }, ChipFit { counts: false, side: 10.0 }];
+    tries.into_iter().find(|fit| chips_width(labels, counts, pad, *fit) <= available)
+}
+
+/// The room around a row of chips, inside its outline.
+pub(crate) const CHIP_PAD: f32 = 2.0;
+
+/// The chips' labels' and counts' widths.
+pub(crate) fn chip_measures<T>(ui: &egui::Ui, theme: &KlippTheme, segments: &[(T, &str, usize)], count_font: &egui::FontId) -> (Vec<f32>, Vec<f32>) {
+    let label_w = segments.iter().map(|(_, l, _)| ui.painter().layout_no_wrap((*l).to_string(), egui::FontId::proportional(11.0), theme.text_secondary).size().x).collect();
+    let count_w = segments.iter().map(|(_, _, c)| ui.painter().layout_no_wrap(format!("{c}"), count_font.clone(), theme.text_dim).size().x).collect();
+    (label_w, count_w)
+}
+
+/// A row of source chips, `segments` each a filter value, its label and
+/// its count, in at most `available` width: whole chips that can each be
+/// clicked, their counts where there is room, or a dropdown where there
+/// isn't room for the chips at all. Never wider than `available`.
+pub(crate) fn source_chips<T: Copy + PartialEq>(
+    ui: &mut egui::Ui,
+    theme: &KlippTheme,
+    id_salt: &str,
+    filter: &mut T,
+    segments: &[(T, &str, usize)],
+    count_font: egui::FontId,
+    outer_h: f32,
+    available: f32,
+) {
+    let pad = CHIP_PAD;
+    let (label_w, count_w) = chip_measures(ui, theme, segments, &count_font);
+    let Some(fit) = fit_source_chips(&label_w, &count_w, pad, available) else {
+        let name = |(_, l, c): &(T, &str, usize)| format!("{l}  {c}");
+        let current = segments.iter().find(|s| s.0 == *filter).map(name).unwrap_or_default();
+        egui::ComboBox::from_id_salt(id_salt).width((available - 4.0).max(40.0)).truncate().selected_text(current).show_ui(ui, |ui| {
+            for s in segments {
+                ui.selectable_value(filter, s.0, name(s));
+            }
+        });
+        return;
+    };
+    let total_w = chips_width(&label_w, &count_w, pad, fit);
+    let (outer_rect, _) = ui.allocate_exact_size(egui::vec2(total_w, outer_h), egui::Sense::hover());
+    ui.painter().rect_filled(outer_rect, 4.0, theme.bg_panel);
+    ui.painter().rect_stroke(outer_rect, 5.0, egui::Stroke::new(1.0_f32, theme.border));
+    let mut x = outer_rect.min.x + pad;
+    for (i, (variant, label, count)) in segments.iter().enumerate() {
+        let seg_w = chip_width(label_w[i], count_w[i], fit);
+        let seg_rect = egui::Rect::from_min_size(egui::pos2(x, outer_rect.min.y + pad), egui::vec2(seg_w, outer_h - pad * 2.0));
+        let resp = ui.interact(seg_rect, ui.id().with((id_salt, i)), egui::Sense::click());
+        let is_active = *filter == *variant;
+        let hovered = resp.hovered();
+        if is_active {
+            ui.painter().rect_filled(seg_rect, 2.0, theme.bg_raised);
+        } else if hovered {
+            ui.painter().rect_filled(seg_rect, 2.0, theme.accent_subtle);
+        }
+        let label_color = if is_active || hovered { theme.text_primary } else { theme.text_secondary };
+        let count_color = if is_active { theme.accent } else { theme.text_dim };
+        let label_galley = ui.painter().layout_no_wrap((*label).to_string(), egui::FontId::proportional(11.0), label_color);
+        let count_galley = ui.painter().layout_no_wrap(format!("{count}"), count_font.clone(), count_color);
+        let inner_w = if fit.counts { label_galley.size().x + 6.0 + count_galley.size().x } else { label_galley.size().x };
+        let lx = seg_rect.center().x - inner_w * 0.5;
+        let label_size = label_galley.size();
+        ui.painter().galley(egui::pos2(lx, seg_rect.center().y - label_size.y * 0.5), label_galley, label_color);
+        if fit.counts {
+            ui.painter().galley(egui::pos2(lx + label_size.x + 6.0, seg_rect.center().y - count_galley.size().y * 0.5), count_galley, count_color);
+        }
+        if resp.clicked() {
+            *filter = *variant;
+        }
+        x += seg_w + 1.0;
+    }
+}
+
 pub fn browser_search_field(
     ui: &mut egui::Ui,
     theme: &KlippTheme,
@@ -7142,5 +7291,59 @@ mod folder_search_tests {
         panel.navigate_files_to(inner);
         assert!(panel.files_search_query.is_empty(), "the folder opened is not filtered by it");
         let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
+#[cfg(test)]
+mod narrow_library_tests {
+    use super::*;
+
+    /// A narrow panel folds the category sidebar into a dropdown; a
+    /// sidebar row drops its count before it cuts its label (#2602).
+    #[test]
+    fn a_narrow_sidebar_folds_and_a_row_drops_its_count_first() {
+        assert!(sidebar_folds(277.0) && !sidebar_folds(420.0));
+        // A row 111 px wide, its label at 35: "Installed" (44) and "256"
+        // (18) don't fit side by side; the label keeps its room.
+        let (count, room) = row_fit(35.0, 111.0, 44.0, 18.0);
+        assert!(!count && room >= 44.0, "{count} {room}");
+        let (count, room) = row_fit(35.0, 180.0, 44.0, 18.0);
+        assert!(count && room >= 44.0);
+        // Too narrow even for the label: it is cut, never drawn past.
+        let (count, room) = row_fit(35.0, 80.0, 60.0, 18.0);
+        assert!(!count && room < 60.0);
+    }
+
+    /// How wide the Library's `category` tab is laid out in a panel
+    /// `panel_w` wide.
+    fn laid_out_width(category: LibraryCategory, panel_w: f32) -> f32 {
+        let ctx = egui::Context::default();
+        crate::icons::install(&ctx);
+        let mut panel = BrowserPanel { library_category: category, ..Default::default() };
+        let mut state = AppState::default();
+        let theme = KlippTheme::default();
+        let mut width = 0.0;
+        let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(panel_w, 900.0))), ..Default::default() };
+        // Twice: a first frame sizes what a second lays out.
+        for _ in 0..2 {
+            let _ = ctx.run(input.clone(), |ctx| {
+                egui::CentralPanel::default().frame(egui::Frame::none()).show(ctx, |ui| {
+                    panel.show_library_tab(ui, &mut state, &theme);
+                    width = ui.min_rect().width();
+                });
+            });
+        }
+        width
+    }
+
+    /// At the narrowest Library panel, nothing in the video or audio
+    /// effects tab is laid out past the panel's edge: a tab strip wider
+    /// than the panel widened everything under it, which was cut (#2602).
+    #[test]
+    fn the_effects_tabs_stay_inside_a_narrow_panel() {
+        for category in [LibraryCategory::VideoFx, LibraryCategory::AudioFx] {
+            let w = laid_out_width(category, 277.0);
+            assert!(w <= 277.5, "{category:?} laid out {w:.0} px wide in a 277 px panel");
+        }
     }
 }
