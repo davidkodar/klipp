@@ -51,7 +51,7 @@ pub(super) fn validate_ops(args: &Value) -> Result<(), String> {
                     "sync_source_secs",
                 ],
             ),
-            "move" => (&["clip_id", "to"], &["op", "clip_id", "to"]),
+            "move" => (&["clip_id", "to"], &["op", "clip_id", "to", "track", "linked"]),
             "remove" => (&["clip_id"], &["op", "clip_id", "ripple", "linked"]),
             "add_track" => (&["kind"], &["op", "kind", "name"]),
             _ => unreachable!(),
@@ -207,5 +207,15 @@ mod tests {
         )
         .unwrap_err()
         .contains("clip ID"));
+    }
+
+    /// A move takes the track it goes to and whether its linked clip
+    /// goes with it, as the edit itself does; both are still checked.
+    #[test]
+    fn a_move_takes_its_track_and_linked() {
+        assert!(validate_ops(&json!({"ops":[{"op":"move","clip_id":"abc","to":{"secs":2},"track":1,"linked":false}]})).is_ok());
+        assert!(validate_ops(&json!({"ops":[{"op":"move","clip_id":"abc","to":{"secs":2},"linked":"no"}]}))
+            .unwrap_err()
+            .contains("linked must be boolean"));
     }
 }
