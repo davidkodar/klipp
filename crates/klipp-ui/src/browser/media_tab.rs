@@ -1371,7 +1371,8 @@ fn render_grid_view(
                 ui.painter().rect_filled(thumb_rect, 0.0, theme.bg_raised);
                 let icon_size = 24.0;
                 let icon_rect = egui::Rect::from_center_size(thumb_rect.center(), egui::vec2(icon_size, icon_size));
-                Icon::FilmSlate.image(icon_size).tint(theme.text_dim).paint_at(ui, icon_rect);
+                let sound_only = state.media_pool.get(&item.id).is_some_and(klipp_media::MediaItem::sound_only);
+                placeholder_icon(sound_only).image(icon_size).tint(theme.text_dim).paint_at(ui, icon_rect);
             }
 
             // Skim indicator: if transcoding, show subtle spinner overlay
@@ -2350,6 +2351,27 @@ fn show_multi_context_menu(
             cmds.push(AppCommand::RemoveFromPool { media_id: id });
         }
         ui.close_menu();
+    }
+}
+
+/// The card's mark when it has no thumbnail: a sound file has no picture
+/// to wait for, and a slate said it was a film.
+fn placeholder_icon(sound_only: bool) -> Icon {
+    if sound_only { Icon::Waveform } else { Icon::FilmSlate }
+}
+
+#[cfg(test)]
+mod placeholder_tests {
+    use super::{placeholder_icon, Icon};
+
+    #[test]
+    fn a_sound_file_shows_a_waveform_not_a_slate() {
+        let mut item = klipp_media::MediaItem::synthetic_for_test("/tmp/song.mp3".into(), None);
+        item.has_audio = true;
+        item.video_codec = String::new();
+        assert_eq!(placeholder_icon(item.sound_only()), Icon::Waveform);
+        item.video_codec = "h264".into();
+        assert_eq!(placeholder_icon(item.sound_only()), Icon::FilmSlate, "a film with sound is still a film");
     }
 }
 
