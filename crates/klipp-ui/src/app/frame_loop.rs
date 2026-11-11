@@ -310,13 +310,16 @@ impl KlippApp {
         // 1. Drain events from engine
         klipp_engine::ui_stage::mark(klipp_engine::ui_stage::DRAIN_EVENTS);
         self.drain_events(ctx);
+        klipp_engine::ui_stage::sub("auto_fit");
         if self.state.step_auto_fit(std::time::Instant::now()) {
             ctx.request_repaint();
         }
+        klipp_engine::ui_stage::sub("stop_record_automation");
         self.stop_at_out();
         self.tick_recording();
         self.tick_automation();
 
+        klipp_engine::ui_stage::sub("block_324");
         // Sync scope mode to engine — only when it actually changed.
         // Previously this sent unconditionally every UI frame (~120
         // commands/sec), contributing to engine command-channel load
@@ -474,6 +477,7 @@ impl KlippApp {
             }
         }
 
+        klipp_engine::ui_stage::sub("block_482");
         // Sync scope-panel visibility to the engine — same change-
         // tracking pattern as the mode sync above. Catches every
         // mutation site (keyboard toggle, button click, layout
@@ -487,14 +491,19 @@ impl KlippApp {
             }
         }
 
+        klipp_engine::ui_stage::sub("ui_scale_capture");
         self.apply_ui_scale(ctx);
         self.serve_window_capture(ctx);
+        klipp_engine::ui_stage::sub("drain_thumbnails");
         self.drain_thumbnails();
+        klipp_engine::ui_stage::sub("drain_source_frame");
         self.drain_source_frame(ctx);
+        klipp_engine::ui_stage::sub("filmstrip");
         // Keep repainting while filmstrip is generating so timeline updates progressively
         if self.state.filmstrip_generating || !self.filmstrip_cache_loads.is_empty() {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }
+        klipp_engine::ui_stage::sub("scene_detect");
         // And while scenes are being found: their progress moves in the
         // menu, and the result is taken in, and a clip split, on the frame
         // after it arrives, which with nothing else moving never came
@@ -502,6 +511,7 @@ impl KlippApp {
         if !self.state.scene_detect_in_progress.is_empty() {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }
+        klipp_engine::ui_stage::sub("matte_key_publish");
         // The node the viewer's matte was named by gone from the clip in hand:
         // back to the picture, not a badge over one.
         crate::panels::node_inspector::publish_matte_shown(ctx, self.state.matte_preview_node);
@@ -510,13 +520,17 @@ impl KlippApp {
         }
         let waiting = (self.state.eyedropper_mode == crate::state::EyedropperMode::Qualifier).then_some(self.state.qualifier_pick).flatten().map(|(_, node)| node);
         crate::panels::node_inspector::publish_key_waiting(ctx, waiting);
+        klipp_engine::ui_stage::sub("tracking");
         // Likewise a track, a window's or a surface's: with the window
         // idle its result sat unapplied until the pointer moved.
         if !self.state.tracking_in_progress.is_empty() || self.state.surface_snaps_pending > 0 {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }
+        klipp_engine::ui_stage::sub("audio_conforms");
         self.drain_audio_conforms();
+        klipp_engine::ui_stage::sub("proxy_events");
         self.drain_proxy_events();
+        klipp_engine::ui_stage::sub("normalize_water");
         self.measure_stale_normalizes();
         self.measure_unmeasured_water();
         // Its result is read here, so it needs a frame: an idle window draws
@@ -524,6 +538,7 @@ impl KlippApp {
         if self.water_tries.any_running() {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }
+        klipp_engine::ui_stage::sub("skim_decode");
         // If a skim decode just finished and there's a queued request,
         // dispatch it immediately. After `drain_proxy_events`, because that
         // is where `BrowserSkimFrameReady` clears `skim_decode_in_flight`:
@@ -535,9 +550,13 @@ impl KlippApp {
                 self.request_skim_frame(mid, time, target);
             }
         }
+        klipp_engine::ui_stage::sub("proxy_progress");
         self.drain_proxy_progress();
+        klipp_engine::ui_stage::sub("render_queue");
         self.poll_render_queue();
+        klipp_engine::ui_stage::sub("ensure_analyses");
         self.ensure_analyses(ctx);
+        klipp_engine::ui_stage::sub("awaiting_seek");
         // Show filmstrip thumbnail preview only while waiting for a seek result
         if self.state.awaiting_seek_frame && !self.state.showing_thumbnail_preview {
             // A skim frame that has landed but not yet been uploaded sets
@@ -553,11 +572,17 @@ impl KlippApp {
                 self.show_filmstrip_preview(ctx);
             }
         }
+        klipp_engine::ui_stage::sub("upload_frame");
         self.upload_frame_to_egui(ctx);
+        klipp_engine::ui_stage::sub("viewer_lut");
         self.refresh_viewer_lut(frame);
+        klipp_engine::ui_stage::sub("upload_source_frame");
         self.upload_source_frame_to_egui(ctx);
+        klipp_engine::ui_stage::sub("title_overlay");
         self.upload_title_overlay(ctx);
+        klipp_engine::ui_stage::sub("char_positions");
         self.recompute_char_positions_if_needed();
+        klipp_engine::ui_stage::sub("effect_thumbnails");
         self.poll_effect_thumbnails(ctx);
     }
 
@@ -565,6 +590,7 @@ impl KlippApp {
     /// viewer and its grid, the window title, preferences saved and the
     /// auto-save.
     pub(super) fn sync_derived_state(&mut self, ctx: &egui::Context) {
+        klipp_engine::ui_stage::sub("media_usage");
         // Rebuild media usage cache if dirty (O(clips) once per edit, then O(1) per render)
         if self.state.media_usage_cache_dirty {
             self.state.media_usage_cache.clear();
@@ -581,6 +607,7 @@ impl KlippApp {
             self.state.media_usage_cache_dirty = false;
         }
 
+        klipp_engine::ui_stage::sub("multicam");
         // Multicam mode (#1844) shows the group under the playhead, else
         // the opened one, and only while the mode is on: the playhead
         // crossing a multicam clip never turns it on. The program
@@ -621,6 +648,7 @@ impl KlippApp {
             self.defer_drop_texture(t);
         }
 
+        klipp_engine::ui_stage::sub("block_627");
         // Window title with project name and dirty indicator — only
         // send the viewport command when the title actually changed to
         // avoid a per-frame String allocation + IPC round-trip.
@@ -645,6 +673,7 @@ impl KlippApp {
             }
         }
 
+        klipp_engine::ui_stage::sub("false_color");
         // Apply pending false color palette switch from toolbar quick-switcher
         if let Some(palette) = self.state.pending_false_color_palette.take() {
             self.state.false_color_lut = palette.build_lut();
@@ -652,6 +681,7 @@ impl KlippApp {
             self.prefs_dirty = true;
         }
 
+        klipp_engine::ui_stage::sub("inspector_layout");
         // Collapsing or expanding a section is a preference change made
         // by a widget with no access to `self`, so nothing marks the
         // prefs dirty and the mirror below — which only runs when they
@@ -677,11 +707,13 @@ impl KlippApp {
             }
         }
 
+        klipp_engine::ui_stage::sub("ease_hints");
         // The ease shortcuts as the key menus name them (#2307): once, and
         // again while the preferences, where they are rebound, are open.
         if self.state.show_preferences || !crate::widgets::scrubby_param::has_ease_hints(ctx) {
             crate::widgets::scrubby_param::set_ease_hints(ctx, &self.key_bindings);
         }
+        klipp_engine::ui_stage::sub("prefs_save");
         // Debounced preferences save (at most once per second)
         if self.prefs_dirty && self.prefs_last_save.elapsed().as_secs() >= 1 {
             // Sync prefs to state
@@ -782,6 +814,7 @@ impl KlippApp {
             self.prefs_last_save = std::time::Instant::now();
         }
 
+        klipp_engine::ui_stage::sub("autosave_rx");
         // Auto-save. The write itself runs on a worker thread — see the
         // spawn below for why — so first reap a finished one.
         if let Some(rx) = &self.autosave_rx {
@@ -805,17 +838,27 @@ impl KlippApp {
             }
         }
 
+        klipp_engine::ui_stage::sub("project_copy");
         self.poll_project_copy();
+        klipp_engine::ui_stage::sub("fetched_fonts");
         self.poll_fetched_fonts();
+        klipp_engine::ui_stage::sub("frozen_tracks");
         self.keep_frozen_tracks(ctx);
+        klipp_engine::ui_stage::sub("reuse_marks");
         self.keep_reuse_marks(ctx);
+        klipp_engine::ui_stage::sub("bounces");
         self.poll_bounces();
+        klipp_engine::ui_stage::sub("playback_note");
         self.keep_playback_note();
+        klipp_engine::ui_stage::sub("untitled_write");
         self.write_untitled_on_first_edit();
+        klipp_engine::ui_stage::sub("project_lock");
         self.sync_project_lock();
 
+        klipp_engine::ui_stage::sub("viewer_compare");
         self.publish_viewer_compare();
 
+        klipp_engine::ui_stage::sub("autosave");
         // Auto-save: trigger on time interval OR op-count threshold (whichever hits first).
         let interval = self.prefs.general.auto_save_interval_secs;
         let op_threshold = self.prefs.general.auto_save_op_threshold;
@@ -926,6 +969,7 @@ impl KlippApp {
     /// The repaint clock, the meters' ballistics, thumbnail textures, and
     /// skim frames routed to the viewer that asked for them.
     pub(super) fn tick_meters_and_skims(&mut self, ctx: &egui::Context) {
+        klipp_engine::ui_stage::sub("delivery_loudness");
         // The loudness playback is heard at, sent when it changes (#1565).
         let brief_lufs = self.state.sequence().brief.as_ref().and_then(|b| b.loudness_lufs);
         let enabled = self.prefs.playback.hear_delivery_loudness;
@@ -936,6 +980,7 @@ impl KlippApp {
             self.state.delivery_loudness.sent = Some(target);
             let _ = self.cmd_tx.send(AppCommand::SetDeliveryTarget(target));
         }
+        klipp_engine::ui_stage::sub("continuous_frames");
         // Frame-rate-aware repaint during playback (must be AFTER drain_events so Playing state is set).
         // 16 ms = 60 Hz cap. Engine grade time at 1080p typically exceeds
         // 8 ms budget under load, so asking the UI for 125 Hz just burns
@@ -959,6 +1004,7 @@ impl KlippApp {
         klipp_engine::UI_WANTS_FRAMES
             .store(wants_continuous_frames, std::sync::atomic::Ordering::Relaxed);
 
+        klipp_engine::ui_stage::sub("meters");
         // The meters' ballistics are tuned per frame at 60 fps, and taken
         // per this frame's real length: the UI draws at whatever rate the
         // display and the present mode give it, 120 fps and more, and a
@@ -995,14 +1041,17 @@ impl KlippApp {
         ema_lufs(&mut self.state.lufs_momentary_smooth, self.state.lufs_momentary, ballistics.momentary_alpha, ballistics.drift);
         ema_lufs(&mut self.state.lufs_short_term_smooth, self.state.lufs_short_term, ballistics.short_term_alpha, ballistics.drift);
 
+        klipp_engine::ui_stage::sub("perf_overlay");
         // Update performance stats
         if self.state.show_perf_overlay {
             self.update_perf_stats(ctx);
         }
 
+        klipp_engine::ui_stage::sub("thumbnail_textures");
         // Update thumbnails: convert ready thumbnails to textures
         self.update_thumbnail_textures(ctx);
 
+        klipp_engine::ui_stage::sub("skims");
         // Reset skim flag for this frame (set by browser or timeline hover).
         // A playhead drag holds it for the whole gesture: `scrub_to` only
         // runs on frames egui reports the drag on, and the skim must not be
@@ -1091,8 +1140,10 @@ impl KlippApp {
     /// The window drawn: file pickers, shortcuts, dialogs, the layout and
     /// every panel. Returns the commands they asked for.
     pub(super) fn draw_window(&mut self, ctx: &egui::Context) -> Vec<AppCommand> {
+        klipp_engine::ui_stage::sub("graph_before_input");
         self.keep_graph_before_input(ctx);
         self.state.forget_stale_path_drag(ctx.input(|i| i.pointer.any_down()));
+        klipp_engine::ui_stage::sub("file_dialog");
         // Pickers run off the UI thread (see `file_dialog`); what the
         // ones that closed since the last frame chose starts this
         // frame's commands. Their scope is the open project and the
@@ -1899,12 +1950,15 @@ impl KlippApp {
         // current sequence state has just unlocked. Cheap per-frame
         // check; the dismissal set is consulted up front so each tip
         // ever fires at most once, persisted to prefs.
+        klipp_engine::ui_stage::sub("first_time_tips");
         self.maybe_fire_first_time_tips();
+        klipp_engine::ui_stage::sub("toast");
         let note_top = self.state.small_screen_note.and(ctx.memory(|m| m.area_rect(egui::Id::new(crate::welcome::SMALL_SCREEN_NOTE_ID)))).map(|r| r.top());
         if let Some(action) = self.state.toast.render(ctx, &self.theme, note_top) {
             self.toast_action(action);
         }
         self.state.toast.cleanup();
+        klipp_engine::ui_stage::sub("drag_ghost");
 
         // 11c-bis. Floating drag ghost for FilePaths drags from the file
         // browser. Other DragPayload types rely on target-side highlighting

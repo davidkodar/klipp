@@ -384,6 +384,61 @@ pub mod ui_stage {
     pub fn mark(s: u64) {
         UI_STAGE.store(s, Ordering::Relaxed);
         lap_to(s);
+        sub_to(None, s == FRAME_TOP);
+    }
+
+    /// A step inside the stage under way (diagnostic): it runs until the
+    /// next step or stage mark, and a slow frame's parts say it as
+    /// `Stage/step=ms`.
+    pub fn sub(step: &'static str) {
+        sub_to(Some(step), false);
+    }
+
+    // The steps' laps, by (stage, step), as the stages' are.
+    thread_local! {
+        static SUBS: std::cell::RefCell<(Option<(u64, &'static str, std::time::Instant)>, Vec<(u64, &'static str, f64)>)> =
+            const { std::cell::RefCell::new((None, Vec::new())) };
+    }
+
+    fn sub_to(next: Option<&'static str>, frame_top: bool) {
+        SUBS.with(|l| {
+            let mut l = l.borrow_mut();
+            let now = std::time::Instant::now();
+            if frame_top {
+                l.1.clear();
+            } else if let Some((stage, step, since)) = l.0 {
+                let ms = now.duration_since(since).as_secs_f64() * 1000.0;
+                match l.1.iter_mut().find(|(s, n, _)| *s == stage && *n == step) {
+                    Some(entry) => entry.2 += ms,
+                    None => l.1.push((stage, step, ms)),
+                }
+            }
+            l.0 = next.map(|step| (UI_STAGE.load(Ordering::Relaxed), step, now));
+        });
+    }
+
+    /// This frame's steps so far, "Stage/step=ms …", each of 1 ms or more.
+    fn sub_parts() -> String {
+        SUBS.with(|l| {
+            let l = l.borrow();
+            let mut parts = l.1.clone();
+            if let Some((stage, step, since)) = l.0 {
+                parts.push((stage, step, since.elapsed().as_secs_f64() * 1000.0));
+            }
+            parts.iter().filter(|(_, _, ms)| *ms >= 1.0).map(|(s, n, ms)| format!("{}/{n}={ms:.0}", name(*s))).collect::<Vec<_>>().join(" ")
+        })
+    }
+
+    /// How long `what` waited for a lock, said when over 50 ms
+    /// (diagnostic): the lock's guard, taken by `take`.
+    pub fn timed_lock<T>(what: &str, take: impl FnOnce() -> T) -> T {
+        let t = std::time::Instant::now();
+        let guard = take();
+        let waited = t.elapsed().as_secs_f64() * 1000.0;
+        if waited > 50.0 {
+            tracing::info!("LOCK_WAIT {what}: {waited:.0} ms");
+        }
+        guard
     }
 
     // Where a UI frame's time went, by stage: each mark ends the stage
@@ -423,7 +478,9 @@ pub mod ui_stage {
                     None => parts.push((stage, ms)),
                 }
             }
-            parts.iter().filter(|(_, ms)| *ms >= 1.0).map(|(s, ms)| format!("{}={ms:.0}", name(*s))).collect::<Vec<_>>().join(" ")
+            let stages = parts.iter().filter(|(_, ms)| *ms >= 1.0).map(|(s, ms)| format!("{}={ms:.0}", name(*s))).collect::<Vec<_>>().join(" ");
+            let steps = sub_parts();
+            if steps.is_empty() { stages } else { format!("{stages} | steps: {steps}") }
         })
     }
 

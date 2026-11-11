@@ -1295,8 +1295,13 @@ impl Preferences {
 
         let json = serde_json::to_string_pretty(self)
             .map_err(|e| format!("Failed to serialize preferences: {e}"))?;
+        let t_write = std::time::Instant::now();
         std::fs::write(&path, json)
             .map_err(|e| format!("Failed to write preferences: {e}"))?;
+        let write_ms = t_write.elapsed().as_secs_f64() * 1000.0;
+        if write_ms > 50.0 {
+            tracing::info!("LOCK_WAIT preferences write: {write_ms:.0} ms (the file's write, on the calling thread)");
+        }
 
         tracing::info!("Preferences saved to {}", path.display());
         Ok(())

@@ -12,17 +12,25 @@ impl KlippApp {
         let mut by_kind: Vec<(String, u32, f64)> = Vec::new();
         let mut media_parts: [(&str, f64); 7] = [("build", 0.0), ("merge", 0.0), ("analysis", 0.0), ("import", 0.0), ("spans", 0.0), ("place", 0.0), ("rest", 0.0)];
         let ms = |t: std::time::Instant| t.elapsed().as_secs_f64() * 1000.0;
+        use klipp_engine::ui_stage::sub;
+        sub("drain/theme");
         self.sync_system_theme(ctx);
+        sub("drain/control_inbox");
         self.drain_control_inbox();
+        sub("drain/analysis_markers");
         self.apply_analysis_markers();
+        sub("drain/find_people_refits_brand_deliveries");
         self.advance_find_people();
         self.advance_refits();
         self.advance_brand_kit();
         self.advance_deliveries();
+        sub("drain/audio_roles");
         self.propose_audio_roles();
+        sub("drain/follow_sync");
         if std::mem::take(&mut self.state.matched_follow_sync) {
             self.sync_sequence_to_engine();
         }
+        sub("drain/events");
         // Files the engine read again, already in its pool: their new
         // readings go over in one copy of the pool once the events are in,
         // not one copy per file. Opening a project reads all of them.
@@ -601,6 +609,7 @@ impl KlippApp {
             }
         }
         let t_after = std::time::Instant::now();
+        sub("drain/after");
         if pool_sync_due {
             self.sync_media_pool_to_engine();
         }
