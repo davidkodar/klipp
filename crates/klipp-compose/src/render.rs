@@ -1297,6 +1297,12 @@ impl Renderer {
         &mut self.executor
     }
 
+    /// Frames the GPU stack has sent up from the CPU, whole pictures, not
+    /// tables or parameters.
+    pub fn stack_frame_uploads(&mut self) -> u64 {
+        self.executor.gpu_pipeline_mut().map_or(0, |g| g.frame_upload_count())
+    }
+
     /// The GPU effects pipeline, built on first use; `None` without a
     /// usable GPU or with the GPU disabled.
     pub fn gpu_pipeline(&mut self) -> Option<&mut klipp_effects::gpu::GpuEffectsPipeline> {
@@ -3255,7 +3261,10 @@ impl Renderer {
                     let t = Instant::now();
                     let px = self.generator_layer(c.id, g, width, height, clip_time, total);
                     stats.cpu_generator_ms += ms_since(t);
-                    self.executor.gpu_pipeline_or_init().is_some_and(|p| p.stack_layer_from_srgb_f16(slot, &px))
+                    // A still one's picture is the same Arc while it stays the
+                    // same: kept on the GPU, not sent up every frame.
+                    let still = is_still_generator(g);
+                    self.executor.gpu_pipeline_or_init().is_some_and(|p| if still { p.stack_layer_from_kept_srgb_f16(slot, &px) } else { p.stack_layer_from_srgb_f16(slot, &px) })
                 }
             }
             _ => {

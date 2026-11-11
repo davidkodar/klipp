@@ -99,10 +99,52 @@ impl GpuEffectsPipeline {
             }));
         }
         let sprite = self.stack_sprite_f16.as_ref().unwrap();
-        self.upload(sprite, 0, bytemuck::cast_slice(packed));
+        self.upload_frame(sprite, bytemuck::cast_slice(packed));
         self.write_params(&SpriteRowsParams { width, height, y0: 0, y1: height, to_working: self.authored_to_working });
         let px = width * height;
         self.stack_pass(&self.pipelines.sprite_rows_f16_pipeline, sprite, &layer, px.div_ceil(WORKGROUP_SIZE), "stack_sprite_f16");
+        true
+    }
+
+    /// [`Self::stack_layer_from_srgb_f16`] for a picture that stays the
+    /// same from frame to frame, a still generator's: kept on the GPU by
+    /// the identity of `packed`, so it goes up once and each frame only
+    /// decodes it into the layer. A solid colour behind a whole timeline
+    /// sent a 4K frame, 66 MB, up every frame: about 7 ms of each (the
+    /// stress test). New pixels, a changed colour, are a new `packed` and
+    /// go up again; the last few are kept.
+    pub fn stack_layer_from_kept_srgb_f16(&mut self, i: usize, packed: &Arc<Vec<u32>>) -> bool {
+        const KEPT: usize = 4;
+        if self.is_device_lost() || i >= self.stack_layers.len() {
+            return false;
+        }
+        let (width, height) = self.stack_dims;
+        let pixel_count = self.stack_pixel_count();
+        if packed.len() as u64 != pixel_count * 2 {
+            return false;
+        }
+        let layer = std::sync::Arc::clone(&self.stack_layers[i]);
+        let at = match self.kept_generators.iter().position(|(k, b)| Arc::ptr_eq(k, packed) && b.size() == pixel_count * 8) {
+            Some(at) => at,
+            None => {
+                let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("kept generator"),
+                    size: pixel_count * 8,
+                    usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                });
+                self.upload_frame(&buffer, bytemuck::cast_slice(packed));
+                if self.kept_generators.len() >= KEPT {
+                    self.kept_generators.remove(0);
+                }
+                self.kept_generators.push((Arc::clone(packed), buffer));
+                self.kept_generators.len() - 1
+            }
+        };
+        self.write_params(&SpriteRowsParams { width, height, y0: 0, y1: height, to_working: self.authored_to_working });
+        let px = width * height;
+        let kept = &self.kept_generators[at].1;
+        self.stack_pass(&self.pipelines.sprite_rows_f16_pipeline, kept, &layer, px.div_ceil(WORKGROUP_SIZE), "stack_kept_generator");
         true
     }
 
