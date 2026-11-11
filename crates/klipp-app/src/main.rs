@@ -335,8 +335,11 @@ fn main() -> Result<()> {
             location = %location,
             "PANIC: {message}\nbacktrace:\n{backtrace}"
         );
-        // The lines before it, and it, written before the process goes.
+        // The lines before it, and it, written before the process goes;
+        // and a preferences save still queued, since a panic on the
+        // window's thread ends the app.
         flush_log();
+        klipp_ui::prefs::flush_pending_saves(std::time::Duration::from_secs(2));
         // Belt-and-braces: also write directly to klipp-debug.log in
         // case tracing's writer is wedged (panic mid-log-flush etc.).
         let _ = write_crash_marker(&format!(

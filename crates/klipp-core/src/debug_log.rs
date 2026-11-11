@@ -181,6 +181,13 @@ pub struct QueuedLog {
     /// from `epoch`.
     drop_span: std::sync::Arc<std::sync::Mutex<Option<(u64, u64)>>>,
     epoch: std::time::Instant,
+    /// The line's writer, shared with the thread: a line whose thread has
+    /// gone (it panicked, or never started) is written here, directly.
+    write: std::sync::Arc<dyn Fn(&[u8]) + Send + Sync>,
+    /// Whether the thread is still there to write.
+    alive: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// Whether its going has been said.
+    said_gone: std::sync::atomic::AtomicBool,
 }
 
 impl QueuedLog {
@@ -191,15 +198,26 @@ impl QueuedLog {
 
     /// [`Self::start`] with the line's writer given, for tests.
     #[doc(hidden)]
-    pub fn start_with(mut write: impl FnMut(&[u8]) + Send + 'static) -> Self {
+    pub fn start_with(write: impl Fn(&[u8]) + Send + Sync + 'static) -> Self {
         use std::sync::atomic::{AtomicU64, Ordering};
         use std::sync::Arc;
         let (lines, rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(QUEUE_LINES);
         let (queued, written, dropped) = (Arc::new(AtomicU64::new(0)), Arc::new(AtomicU64::new(0)), Arc::new(AtomicU64::new(0)));
         let drop_span = Arc::new(std::sync::Mutex::new(None::<(u64, u64)>));
         let epoch = std::time::Instant::now();
-        let (w, d, span) = (written.clone(), dropped.clone(), drop_span.clone());
+        let write: Arc<dyn Fn(&[u8]) + Send + Sync> = Arc::new(write);
+        let alive = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let (w, d, span, write_t, alive_t) = (written.clone(), dropped.clone(), drop_span.clone(), write.clone(), alive.clone());
         let spawned = std::thread::Builder::new().name("debug-log".into()).spawn(move || {
+            // Said gone however the thread ends, a panic included.
+            struct Gone(Arc<std::sync::atomic::AtomicBool>);
+            impl Drop for Gone {
+                fn drop(&mut self) {
+                    self.0.store(false, Ordering::SeqCst);
+                }
+            }
+            let _gone = Gone(alive_t);
+            let write = write_t;
             let mut said_dropped = 0u64;
             while let Ok(line) = rx.recv() {
                 write(&line);
@@ -217,19 +235,25 @@ impl QueuedLog {
             }
         });
         if let Err(e) = spawned {
-            // No thread: nothing would be written. Said where it can be.
-            eprintln!("debug log: could not start its writer: {e}");
+            // No thread: every line is written directly instead.
+            eprintln!("debug log: could not start its writer: {e}; written directly");
+            alive.store(false, Ordering::SeqCst);
         }
-        Self { lines, queued, written, dropped, drop_span, epoch }
+        Self { lines, queued, written, dropped, drop_span, epoch, write, alive, said_gone: std::sync::atomic::AtomicBool::new(false) }
     }
 
     fn queue(&self, line: &[u8]) {
         use std::sync::atomic::Ordering;
+        if !self.alive.load(Ordering::SeqCst) {
+            self.write_directly(line);
+            return;
+        }
         match self.lines.try_send(line.to_vec()) {
             Ok(()) => {
                 self.queued.fetch_add(1, Ordering::SeqCst);
             }
-            Err(_) => {
+            Err(std::sync::mpsc::TrySendError::Disconnected(line)) => self.write_directly(&line),
+            Err(std::sync::mpsc::TrySendError::Full(_)) => {
                 let at = self.epoch.elapsed().as_micros() as u64;
                 let mut span = self.drop_span.lock().unwrap_or_else(|e| e.into_inner());
                 *span = Some(span.map_or((at, at), |(first, _)| (first, at)));
@@ -240,13 +264,24 @@ impl QueuedLog {
         }
     }
 
+    /// A line written on the caller's thread, the queue's thread being
+    /// gone: as the log was written before it had one. Said once.
+    fn write_directly(&self, line: &[u8]) {
+        use std::sync::atomic::Ordering;
+        if !self.said_gone.swap(true, Ordering::SeqCst) {
+            eprintln!("debug log: its writer thread has gone; lines are written directly");
+        }
+        (self.write)(line);
+    }
+
     /// Wait, at most `within`, for every line queued so far to be
-    /// written. `false` when they were not all written in time.
+    /// written. `false` when they were not all written in time. A queue
+    /// whose thread has gone has nothing more to wait for.
     pub fn flush(&self, within: std::time::Duration) -> bool {
         use std::sync::atomic::Ordering;
         let want = self.queued.load(Ordering::SeqCst);
         let t0 = std::time::Instant::now();
-        while self.written.load(Ordering::SeqCst) < want {
+        while self.written.load(Ordering::SeqCst) < want && self.alive.load(Ordering::SeqCst) {
             if t0.elapsed() >= within {
                 return false;
             }
@@ -309,6 +344,34 @@ mod tests {
         assert_eq!(got, (0..50).map(|i| format!("line {i}\n")).collect::<Vec<_>>());
     }
 
+    /// A writer thread that panics leaves no line unwritten: the lines
+    /// after it are written directly, and a flush does not wait for it.
+    #[test]
+    fn a_writer_that_dies_does_not_lose_the_lines_after() {
+        let got = std::sync::Arc::new(Mutex::new(Vec::<String>::new()));
+        let g = got.clone();
+        let first = std::sync::atomic::AtomicBool::new(true);
+        let log = QueuedLog::start_with(move |line| {
+            if first.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                panic!("the disk said no");
+            }
+            g.lock().unwrap().push(String::from_utf8_lossy(line).into_owned());
+        });
+        let mut w = &log;
+        w.write_all(b"the line it died on\n").unwrap();
+        let t0 = std::time::Instant::now();
+        while log.alive.load(std::sync::atomic::Ordering::SeqCst) && t0.elapsed() < std::time::Duration::from_secs(5) {
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        for i in 0..3 {
+            w.write_all(format!("after {i}\n").as_bytes()).unwrap();
+        }
+        let t1 = std::time::Instant::now();
+        log.flush(std::time::Duration::from_secs(2));
+        assert!(t1.elapsed() < std::time::Duration::from_millis(500), "a flush waited for a writer that had gone");
+        assert_eq!(*got.lock().unwrap(), vec!["after 0\n", "after 1\n", "after 2\n"]);
+    }
+
     /// Past the queue's bound a line is dropped, not waited for, and the
     /// log says how many once it catches up.
     #[test]
@@ -316,12 +379,12 @@ mod tests {
         let (go_tx, go_rx) = std::sync::mpsc::channel::<()>();
         let got = std::sync::Arc::new(Mutex::new(Vec::<String>::new()));
         let g = got.clone();
-        let mut first = true;
+        let first = std::sync::atomic::AtomicBool::new(true);
+        let go_rx = Mutex::new(go_rx);
         let log = QueuedLog::start_with(move |line| {
-            if first {
+            if first.swap(false, std::sync::atomic::Ordering::SeqCst) {
                 // Held until the queue has filled behind it.
-                let _ = go_rx.recv();
-                first = false;
+                let _ = go_rx.lock().unwrap().recv();
             }
             g.lock().unwrap().push(String::from_utf8_lossy(line).into_owned());
         });
