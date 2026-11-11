@@ -11586,6 +11586,13 @@ impl PlaybackEngine {
     /// the engine's thread only hands the file over, and passes the
     /// answer on as it comes back ([`Self::pass_on_probes`]).
     fn load_file(&mut self, path: PathBuf, media_id: MediaId) {
+        // DIAG B: read on the engine's thread, as before #3939.
+        if std::env::var_os("KLIPP_DIAG_PROBE_THREAD").is_none() {
+            let answer = Self::probe_media_file(path, media_id);
+            let _ = self.event_tx.send(answer);
+            (self.repaint_cb)();
+            return;
+        }
         if self.probe_tx.is_none() {
             let (tx, rx) = crossbeam_channel::unbounded::<(PathBuf, MediaId)>();
             let (done_tx, done_rx) = crossbeam_channel::unbounded::<AppEvent>();
