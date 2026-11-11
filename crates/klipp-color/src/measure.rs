@@ -428,6 +428,12 @@ pub struct MemoryColours {
     pub foliage_chroma: f32,
 }
 
+/// The share of the frame's height, from the top, where a sky is looked
+/// for, and the share of a row that is sky-coloured for the row to be
+/// sky (#2569).
+const SKY_TOP_SHARE: f32 = 0.4;
+const SKY_ROW_SHARE: f32 = 0.3;
+
 fn sky_candidate(c: Lab) -> bool {
     let h = c.hue();
     c.l > 50.0 && c.chroma() >= 6.0 && (200.0..=300.0).contains(&h)
@@ -721,6 +727,11 @@ fn measure_picture(rgba: &[u8], width: u32, height: u32, faces: &[[f32; 4]]) -> 
     // greys are blue, and that is the finding.
     let mut mids: Vec<(f32, f32, f32)> = Vec::new();
     let mut mid_l: Vec<f32> = Vec::new();
+    // Each mid's row, and whether it is sky-coloured, for leaving the sky
+    // out of the neutrals below; and each top row's samples and sky.
+    let mut mid_where: Vec<(u32, bool)> = Vec::new();
+    let sky_top = (h as f32 * SKY_TOP_SHARE) as usize;
+    let mut top_rows: Vec<(u32, u32)> = vec![(0, 0); sky_top];
     let (mut skin_h, mut skin_c, mut skin_l): (Vec<f32>, Vec<f32>, Vec<f32>) = (Vec::new(), Vec::new(), Vec::new());
     let (mut sky_c, mut leaf_c): (Vec<f32>, Vec<f32>) = (Vec::new(), Vec::new());
     let (mut clip_hi, mut clip_lo, mut gamut_clip, mut gamut_hi, mut n) = (0usize, 0usize, 0usize, 0usize, 0usize);
@@ -751,9 +762,15 @@ fn measure_picture(rgba: &[u8], width: u32, height: u32, faces: &[[f32; 4]]) -> 
         if mx == 255 && mn < 240 {
             gamut_hi += 1;
         }
+        let (row, sky) = (i / w.max(1), sky_candidate(c));
+        if row < sky_top {
+            top_rows[row].0 += 1;
+            top_rows[row].1 += u32::from(sky);
+        }
         if c.l >= 20.0 && c.l <= 90.0 {
             mids.push((c.chroma(), c.a, c.b));
             mid_l.push(c.l);
+            mid_where.push((row as u32, sky));
         }
         if skin_candidate(c) && c.chroma() >= SKIN_CHROMA_LOW {
             skin_h.push(c.hue());
@@ -779,6 +796,20 @@ fn measure_picture(rgba: &[u8], width: u32, height: u32, faces: &[[f32; 4]]) -> 
     // warm balance moves every grey surface together, and a gate about
     // zero lost them and read whatever had been bluish instead, the cast
     // read the wrong way at +50 (#1580).
+    //
+    // The sky is not a grey surface (#2569): a pale blue sky is as little
+    // coloured as a grey wall under a cool lamp, and read as the frame's
+    // neutral it called a daylit scene blue. Sky-coloured pixels across a
+    // wide band of the frame's top rows are left out. A cool-lit wall
+    // reaching below that band is still read there, and still a cast.
+    let sky_row = |row: u32| top_rows.get(row as usize).is_some_and(|(n, sky)| *n > 0 && *sky as f32 >= SKY_ROW_SHARE * *n as f32);
+    let keep: Vec<bool> = mid_where.iter().map(|(row, sky)| !(*sky && sky_row(*row))).collect();
+    if keep.iter().any(|k| !k) {
+        let mut k = keep.iter();
+        mids.retain(|_| *k.next().unwrap_or(&true));
+        let mut k = keep.iter();
+        mid_l.retain(|_| *k.next().unwrap_or(&true));
+    }
     let (mode_a, mode_b) = grey_mode(&mids);
     let solid: Vec<&(f32, f32, f32)> = mids.iter().filter(|(_, a, b)| (a - mode_a).hypot(b - mode_b) < 6.0).collect();
     let enough = solid.len() as f32 >= 0.01 * n.max(1) as f32 && solid.len() >= 40;
@@ -2943,6 +2974,38 @@ mod match_tests {
     /// white reference only where a light could have put it: pale sea
     /// water sits too far toward green, a grey wall under a warm lamp
     /// does not.
+    /// A frame of `top` over `rest`, the top `share` of its rows.
+    fn banded(w: usize, h: usize, share: usize, top: [u8; 3], rest: [u8; 3]) -> Vec<u8> {
+        (0..w * h).flat_map(|i| { let c = if i / w < h * share / 100 { top } else { rest }; [c[0], c[1], c[2], 255] }).collect()
+    }
+
+    /// #2569: a pale blue sky across the top of a daylit scene is not its
+    /// grey: with nothing else neutral, the scene is not judged blue.
+    #[test]
+    fn a_pale_sky_is_not_read_as_the_frames_neutral() {
+        let (w, h) = (160, 90);
+        let sky = lab_to_srgb8(Lab { l: 75.0, a: -3.0, b: -14.0 });
+        let leaves = lab_to_srgb8(Lab { l: 45.0, a: -25.0, b: 28.0 });
+        let m = measure_frame(&banded(w, h, 35, sky, leaves), w as u32, h as u32, &[]);
+        let t = LookTarget::unbriefed();
+        let cast = judge(&m, &t).into_iter().find(|f| f.rule == "cast").map(|f| f.verdict);
+        assert_ne!(cast, Some(Verdict::Fail), "the sky read as a blue cast: b* {:.1}", m.cast_b);
+        assert!(m.cast_b > -8.0 || !m.neutral_solid, "the neutral was read off the sky: b* {:.1}", m.cast_b);
+    }
+
+    /// A grey wall under a cool lamp across the top of the frame, and on
+    /// below it, is still the frame's grey, and its cast still a fault.
+    #[test]
+    fn a_cool_wall_across_the_top_is_still_a_cast() {
+        let (w, h) = (160, 90);
+        let wall = lab_to_srgb8(Lab { l: 60.0, a: -1.0, b: -12.0 });
+        let jumper = lab_to_srgb8(Lab { l: 50.0, a: 40.0, b: 30.0 });
+        let m = measure_frame(&banded(w, h, 60, wall, jumper), w as u32, h as u32, &[]);
+        assert!(m.neutral_solid && m.cast_b < -8.0, "the wall's cast: b* {:.1}", m.cast_b);
+        let t = LookTarget::unbriefed();
+        assert_eq!(judge(&m, &t).into_iter().find(|f| f.rule == "cast").map(|f| f.verdict), Some(Verdict::Fail));
+    }
+
     #[test]
     fn the_sea_is_not_taken_for_a_neutral() {
         let frame = |c: Lab| {
