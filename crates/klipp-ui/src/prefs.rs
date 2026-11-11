@@ -1282,23 +1282,17 @@ impl Preferences {
         }
     }
 
-    /// Save preferences to disk.
+    /// Save preferences to disk: taken as they are now, and written on a
+    /// thread of its own ([`PrefsWriter`]). Written by the window's thread,
+    /// the file's open waited half a second for the disk while an opened
+    /// project's caches were being written. A failed write is logged there.
     pub fn save(&self) -> Result<(), String> {
         let Some(path) = Self::config_path() else {
             return Err("Could not determine config directory".into());
         };
-
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| format!("Failed to create config directory: {e}"))?;
-        }
-
         let json = serde_json::to_string_pretty(self)
             .map_err(|e| format!("Failed to serialize preferences: {e}"))?;
-        std::fs::write(&path, json)
-            .map_err(|e| format!("Failed to write preferences: {e}"))?;
-
-        tracing::info!("Preferences saved to {}", path.display());
+        prefs_writer().save(path, json.into_bytes());
         Ok(())
     }
 
@@ -2218,6 +2212,187 @@ impl Default for AiPrefs {
 
 fn default_media_list_columns() -> Vec<klipp_media::Field> {
     klipp_media::Field::DEFAULT_COLUMNS.to_vec()
+}
+
+/// Writes the preferences file on a thread of its own: the newest asked
+/// for wins, so a burst of saves is one write, and each write goes to a
+/// temporary file renamed over the old one, so a reader never sees half
+/// a file and the open never waits for the old file's pages.
+pub(crate) struct PrefsWriter {
+    pending: std::sync::Arc<(std::sync::Mutex<WriterState>, std::sync::Condvar)>,
+}
+
+#[derive(Default)]
+struct WriterState {
+    next: Option<(PathBuf, Vec<u8>)>,
+    /// Saves asked for, and written (or failed), so far.
+    asked: u64,
+    done: u64,
+    /// The first write that failed, for the window to say once.
+    failed: Option<String>,
+    failure_said: bool,
+}
+
+impl PrefsWriter {
+    pub(crate) fn start() -> Self {
+        Self::start_with(write_prefs_file)
+    }
+
+    /// [`Self::start`] with the file's writer given, for tests.
+    pub(crate) fn start_with(write: impl Fn(&std::path::Path, &[u8]) -> std::io::Result<()> + Send + 'static) -> Self {
+        let pending = std::sync::Arc::new((std::sync::Mutex::new(WriterState::default()), std::sync::Condvar::new()));
+        let p = pending.clone();
+        let spawned = std::thread::Builder::new().name("prefs-writer".into()).spawn(move || {
+            let (state, wake) = &*p;
+            loop {
+                let (path, bytes, asked) = {
+                    let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
+                    while s.next.is_none() {
+                        s = wake.wait(s).unwrap_or_else(|e| e.into_inner());
+                    }
+                    let (path, bytes) = s.next.take().expect("waited for");
+                    (path, bytes, s.asked)
+                };
+                let result = write(&path, &bytes);
+                let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
+                match result {
+                    Ok(()) => tracing::info!("Preferences saved to {}", path.display()),
+                    Err(e) => {
+                        tracing::warn!("Failed to save preferences to {}: {e}", path.display());
+                        if !s.failure_said && s.failed.is_none() {
+                            s.failed = Some(e.to_string());
+                        }
+                    }
+                }
+                s.done = s.done.max(asked);
+                wake.notify_all();
+            }
+        });
+        if let Err(e) = spawned {
+            tracing::warn!("preferences: could not start their writer: {e}");
+        }
+        Self { pending }
+    }
+
+    /// Ask for `bytes` at `path`, in place of any save not written yet.
+    pub(crate) fn save(&self, path: PathBuf, bytes: Vec<u8>) {
+        let (state, wake) = &*self.pending;
+        let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
+        s.next = Some((path, bytes));
+        s.asked += 1;
+        wake.notify_all();
+    }
+
+    /// A save that failed, once a run: for the window to say, since a
+    /// full disk would otherwise go unnoticed.
+    pub(crate) fn take_failure(&self) -> Option<String> {
+        let mut s = self.pending.0.lock().unwrap_or_else(|e| e.into_inner());
+        let failed = s.failed.take()?;
+        s.failure_said = true;
+        Some(failed)
+    }
+
+    /// Wait, at most `within`, until every save asked for so far is
+    /// written. `false` when it was not in time.
+    pub(crate) fn flush(&self, within: std::time::Duration) -> bool {
+        let (state, wake) = &*self.pending;
+        let deadline = std::time::Instant::now() + within;
+        let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
+        let want = s.asked;
+        while s.done < want {
+            let now = std::time::Instant::now();
+            if now >= deadline {
+                return false;
+            }
+            s = wake.wait_timeout(s, deadline - now).unwrap_or_else(|e| e.into_inner()).0;
+        }
+        true
+    }
+}
+
+/// The preferences file written whole: its folder made, a temporary file
+/// beside it written, and renamed over it.
+fn write_prefs_file(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let tmp = path.with_extension(format!("json.tmp.{}", std::process::id()));
+    std::fs::write(&tmp, bytes)?;
+    std::fs::rename(&tmp, path)
+}
+
+fn prefs_writer() -> &'static PrefsWriter {
+    static WRITER: std::sync::OnceLock<PrefsWriter> = std::sync::OnceLock::new();
+    WRITER.get_or_init(PrefsWriter::start)
+}
+
+/// Why the preferences could not be saved, once a run, when they could
+/// not.
+pub fn take_save_failure() -> Option<String> {
+    prefs_writer().take_failure()
+}
+
+/// Wait, at most `within`, for the preferences asked to be saved to be
+/// written: before the process exits.
+pub fn flush_pending_saves(within: std::time::Duration) {
+    prefs_writer().flush(within);
+}
+
+#[cfg(test)]
+mod writer_tests {
+    use super::*;
+
+    /// A save is asked for without waiting for the disk; a burst is one
+    /// write, of the newest; a flush waits for it.
+    #[test]
+    fn a_save_does_not_wait_for_the_disk_and_the_newest_wins() {
+        let wrote = std::sync::Arc::new(std::sync::Mutex::new(Vec::<Vec<u8>>::new()));
+        let w = wrote.clone();
+        let writer = PrefsWriter::start_with(move |_, bytes| {
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            w.lock().unwrap().push(bytes.to_vec());
+            Ok(())
+        });
+        let t0 = std::time::Instant::now();
+        for i in 0..20u8 {
+            writer.save(PathBuf::from("/nowhere/preferences.json"), vec![i]);
+        }
+        assert!(t0.elapsed() < std::time::Duration::from_millis(100), "the saves waited {:?}", t0.elapsed());
+        assert!(writer.flush(std::time::Duration::from_secs(10)), "flushed in time");
+        let wrote = wrote.lock().unwrap().clone();
+        assert_eq!(wrote.last(), Some(&vec![19u8]), "the newest is what is on disk");
+        assert!(wrote.len() <= 2, "a burst is one write, or two with one under way: {}", wrote.len());
+    }
+
+    /// The file is replaced whole: what is there is the newest save, and
+    /// nothing is left beside it.
+    #[test]
+    fn the_file_is_replaced_whole() {
+        let dir = std::env::temp_dir().join(format!("klipp-prefs-writer-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("klipp").join("preferences.json");
+        let writer = PrefsWriter::start();
+        writer.save(path.clone(), b"{\"a\":1}".to_vec());
+        assert!(writer.flush(std::time::Duration::from_secs(10)));
+        writer.save(path.clone(), b"{\"a\":2}".to_vec());
+        assert!(writer.flush(std::time::Duration::from_secs(10)));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "{\"a\":2}");
+        let left: Vec<_> = std::fs::read_dir(path.parent().unwrap()).unwrap().filter_map(|e| e.ok()).map(|e| e.file_name()).collect();
+        assert_eq!(left.len(), 1, "no temporary file left: {left:?}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A save that fails is said once, not each time it fails again.
+    #[test]
+    fn a_failed_save_is_said_once() {
+        let writer = PrefsWriter::start_with(|_, _| Err(std::io::Error::other("No space left on device")));
+        writer.save(PathBuf::from("/nowhere/preferences.json"), vec![1]);
+        assert!(writer.flush(std::time::Duration::from_secs(10)));
+        assert_eq!(writer.take_failure().as_deref(), Some("No space left on device"));
+        writer.save(PathBuf::from("/nowhere/preferences.json"), vec![2]);
+        assert!(writer.flush(std::time::Duration::from_secs(10)));
+        assert_eq!(writer.take_failure(), None, "said once a run");
+    }
 }
 
 #[cfg(test)]

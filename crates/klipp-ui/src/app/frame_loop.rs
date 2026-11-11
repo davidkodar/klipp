@@ -781,6 +781,11 @@ impl KlippApp {
             self.prefs_dirty = false;
             self.prefs_last_save = std::time::Instant::now();
         }
+        // Saved on a thread of their own: a save that failed is said here,
+        // once, since a full disk would otherwise go unnoticed.
+        if let Some(why) = crate::prefs::take_save_failure() {
+            self.state.toast.show(format!("Preferences could not be saved: {why}"));
+        }
 
         // Auto-save. The write itself runs on a worker thread — see the
         // spawn below for why — so first reap a finished one.
