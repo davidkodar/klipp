@@ -1513,11 +1513,12 @@ pub struct LookTarget {
     /// Where skin hue should sit; the band's centre when left out.
     #[serde(default)]
     pub skin_hue: Option<f32>,
-    /// How light a face should be, L*. With a face in the picture this
-    /// is what the exposure is set by — a portrait against a dark
-    /// backdrop has a low median by design, and driving that median to
-    /// a number blows the face. The frame's median only leads when
-    /// there is no face to expose for.
+    /// How light a face usually reads under the look, L*. Never an
+    /// exposure target, as skin lightness varies with complexion
+    /// (#2590): a face within [`FACE_L_BAND`] of it holds the exposure (a
+    /// portrait against a dark backdrop has a low median by design), and
+    /// the band's top is as light as a grade takes a face. Otherwise the
+    /// frame's median leads.
     #[serde(default)]
     pub skin_l: Option<f32>,
     /// A screen recording: blacks and whites are by design; only the
@@ -2471,7 +2472,9 @@ mod tests {
             region: [0.4, 0.2, 0.2, 0.3], patches: 9, grid: 3, median: Lab { l: 26.0, a: 12.0, b: 16.0 }, hue: 53.0, chroma: 20.0,
             hue_iqr: 0.0, l_iqr: 0.0, worst_hue: 53.0, mixed_light: false, hue_off_band: 0.0, hue_wb: 53.0, hue_off_band_wb: 0.0,
         };
-        let target = LookTarget { skin_l: Some(58.0), ..LookTarget::default() };
+        // The frame's median leads, the face below the band for skin
+        // (#2590): the headroom holds it all the same.
+        let target = LookTarget { skin_l: Some(58.0), mid_l: Some(62.0), ..LookTarget::default() };
         let bright_window = FrameMeasure { l_p50: 40.0, l_p95: 88.0, l_p99: 95.0, faces: vec![face.clone()], ..FrameMeasure::default() };
         let s = primaries_toward(&bright_window, &target);
         assert!(s.held_for_highlights, "{s:?}");
@@ -3000,8 +3003,9 @@ mod match_tests {
     #[test]
     fn a_dark_skinned_face_is_neither_a_fault_nor_an_exposure_target() {
         let look = LookTarget::preset("broadcast_neutral").unwrap();
+        // Lit evenly: the highlights sit nowhere near a backlight's gap.
         let mut even = with_face(flat(48.0, 0.0, 0.0), Lab { l: 22.0, a: 9.0, b: 14.0 });
-        even.l_p95 = 70.0;
+        even.l_p95 = 55.0;
         let findings = judge(&even, &look);
         assert!(findings.iter().all(|f| f.verdict != Verdict::Fail), "{findings:?}");
         let f = findings.iter().find(|f| f.rule == "skin_exposure").expect("the face is said");
