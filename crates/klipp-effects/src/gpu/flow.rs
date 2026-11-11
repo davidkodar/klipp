@@ -96,7 +96,7 @@ impl FlowPipelines {
 
 /// A device's flow pipelines: being compiled, or done.
 struct Warm {
-    ready: std::sync::Mutex<Option<std::sync::Arc<FlowPipelines>>>,
+    ready: std::sync::Mutex<WarmState>,
     done: std::sync::Condvar,
     /// Compiled by the first flow frame itself: nothing warmed them.
     built_on_use: std::sync::atomic::AtomicBool,
@@ -110,17 +110,33 @@ fn warm_entry(device: &std::sync::Arc<wgpu::Device>) -> (std::sync::Arc<Warm>, b
     if let Some((_, w)) = kept.iter().find(|(d, _)| std::ptr::eq(d.as_ptr(), std::sync::Arc::as_ptr(device))) {
         return (w.clone(), false);
     }
-    let w = std::sync::Arc::new(Warm { ready: std::sync::Mutex::new(None), done: std::sync::Condvar::new(), built_on_use: std::sync::atomic::AtomicBool::new(false) });
+    let w = std::sync::Arc::new(Warm { ready: std::sync::Mutex::new(WarmState::Compiling), done: std::sync::Condvar::new(), built_on_use: std::sync::atomic::AtomicBool::new(false) });
     kept.push((std::sync::Arc::downgrade(device), w.clone()));
     (w, true)
 }
 
+/// Where a device's warm-up is.
+enum WarmState {
+    Compiling,
+    Done(std::sync::Arc<FlowPipelines>),
+    /// The warm-up's thread panicked: whoever asks compiles them.
+    Failed,
+}
+
 fn finish(w: &Warm, built: FlowPipelines) -> std::sync::Arc<FlowPipelines> {
     let built = std::sync::Arc::new(built);
-    *w.ready.lock().unwrap_or_else(|e| e.into_inner()) = Some(built.clone());
+    *w.ready.lock().unwrap_or_else(|e| e.into_inner()) = WarmState::Done(built.clone());
     w.done.notify_all();
     built
 }
+
+/// Devices whose warm-up is made to panic, for tests.
+#[cfg(test)]
+static WARM_FAILS_FOR: std::sync::Mutex<Vec<usize>> = std::sync::Mutex::new(Vec::new());
+
+/// The longest a flow frame waits for a warm-up still compiling before it
+/// compiles the pipelines itself.
+const WARM_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// Start compiling the flow's pipelines for `device` on a thread of their
 /// own, once per device. Compiled on a speed ramp's first flow frame, the
@@ -133,7 +149,24 @@ pub(super) fn warm(device: &std::sync::Arc<wgpu::Device>) {
     let d = device.clone();
     let wt = w.clone();
     let spawned = std::thread::Builder::new().name("flow-pipelines".into()).spawn(move || {
-        finish(&wt, FlowPipelines::build(&d));
+        // A compile that panics (a device lost, an error the device's
+        // handler raises) must not leave a flow frame waiting for ever.
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            #[cfg(test)]
+            if WARM_FAILS_FOR.lock().unwrap_or_else(|e| e.into_inner()).contains(&(std::sync::Arc::as_ptr(&d) as usize)) {
+                panic!("a warm-up made to fail, for a test");
+            }
+            FlowPipelines::build(&d)
+        })) {
+            Ok(built) => {
+                finish(&wt, built);
+            }
+            Err(_) => {
+                tracing::warn!("flow pipelines: their compile panicked; a flow frame compiles them itself");
+                *wt.ready.lock().unwrap_or_else(|e| e.into_inner()) = WarmState::Failed;
+                wt.done.notify_all();
+            }
+        }
     });
     if let Err(e) = spawned {
         // No thread: compiled here, as before, once.
@@ -150,13 +183,25 @@ pub(super) fn pipelines_for(device: &std::sync::Arc<wgpu::Device>) -> std::sync:
         w.built_on_use.store(true, std::sync::atomic::Ordering::SeqCst);
         return finish(&w, FlowPipelines::build(device));
     }
+    let deadline = std::time::Instant::now() + WARM_WAIT;
     let mut ready = w.ready.lock().unwrap_or_else(|e| e.into_inner());
     loop {
-        if let Some(p) = ready.as_ref() {
-            return p.clone();
+        match &*ready {
+            WarmState::Done(p) => return p.clone(),
+            WarmState::Failed => break,
+            WarmState::Compiling => {}
         }
-        ready = w.done.wait(ready).unwrap_or_else(|e| e.into_inner());
+        let now = std::time::Instant::now();
+        if now >= deadline {
+            tracing::warn!("flow pipelines: their warm-up has not finished in {WARM_WAIT:?}; compiled here");
+            break;
+        }
+        ready = w.done.wait_timeout(ready, deadline - now).unwrap_or_else(|e| e.into_inner()).0;
     }
+    // Compiled here, as before the warm-up, and kept for the others.
+    drop(ready);
+    w.built_on_use.store(true, std::sync::atomic::Ordering::SeqCst);
+    finish(&w, FlowPipelines::build(device))
 }
 
 pub(super) struct FlowGpu {
@@ -677,6 +722,24 @@ mod tests {
         // A second renderer on the device shares them, compiling nothing.
         let first = pipelines_for(&gpu.device);
         assert!(std::sync::Arc::ptr_eq(&first, &pipelines_for(&gpu.device)));
+    }
+
+    /// A warm-up that fails leaves no flow frame waiting: the first one
+    /// compiles the pipelines itself and is drawn, at once.
+    #[test]
+    fn a_failed_warm_up_does_not_hold_a_flow_frame() {
+        let Some(ctx) = crate::gpu_context::GpuContext::new() else { return };
+        WARM_FAILS_FOR.lock().unwrap().push(std::sync::Arc::as_ptr(&ctx.device) as usize);
+        let Some(mut gpu) = GpuEffectsPipeline::with_context(&ctx) else { return };
+        let (w, h) = (64, 48);
+        let a = square_frame(w, h, 10.0, 12.0, 12.0);
+        let b = square_frame(w, h, 18.0, 14.0, 12.0);
+        let t0 = std::time::Instant::now();
+        let drawn = gpu.interpolate_by_flow(key(0.0), &a, &b, w, h, 0.5, LUMA);
+        assert!(drawn.is_some(), "the frame is drawn");
+        assert!(t0.elapsed() < WARM_WAIT, "it did not wait out the bound: {:?}", t0.elapsed());
+        let (warm, _) = warm_entry(&gpu.device);
+        assert!(warm.built_on_use.load(std::sync::atomic::Ordering::SeqCst), "compiled by the frame, the warm-up having failed");
     }
 
     #[test]
