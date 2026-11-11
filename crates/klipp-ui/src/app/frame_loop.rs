@@ -1014,6 +1014,24 @@ impl KlippApp {
         // declared over on the frames in between.
         self.state.browser_skim_active_this_frame = self.state.is_scrubbing;
 
+        // The opened project's skims, once found: kept, and the files
+        // without one queued for one. Another project opened since drops
+        // the answer.
+        if let Some(found) = self.skim_lookup.as_ref().and_then(|l| l.take()) {
+            let lookup = self.skim_lookup.take();
+            if lookup.is_some_and(|l| l.project == self.state.project_path) {
+                let kept = !found.whole.is_empty();
+                for (id, path) in found.whole {
+                    if let Some(item) = self.state.media_pool.get_mut(&id) {
+                        item.skim_file = Some(path);
+                    }
+                }
+                if kept {
+                    self.sync_media_pool_to_engine();
+                }
+                self.state.pending_skim_transcodes.extend(found.to_make);
+            }
+        }
         // Process pending skim transcodes (queued during drain_events)
         let pending_skims: Vec<MediaId> = std::mem::take(&mut self.state.pending_skim_transcodes);
         for mid in pending_skims {
