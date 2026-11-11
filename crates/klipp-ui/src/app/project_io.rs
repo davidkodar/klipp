@@ -974,32 +974,23 @@ impl KlippApp {
                 }
 
                 open_laps.lap("fonts");
-                // Fix media resolutions for rotated videos (phone portrait clips)
-                // Older projects may have stored raw codec dimensions without rotation
-                {
-                    let mut fixes = Vec::new();
-                    for item in self.state.media_pool.all() {
-                        if item.path.exists() && !item.video_codec.is_empty() {
-                            let rotation = klipp_engine::detect_rotation_from_path(&item.path);
-                            if rotation == 90 || rotation == 270 {
-                                // Check if dimensions need swapping (width > height = landscape encoded)
-                                if item.resolution.width > item.resolution.height {
-                                    fixes.push((item.id, item.resolution.height, item.resolution.width));
-                                }
-                            }
-                        }
-                    }
-                    for (id, new_w, new_h) in fixes {
-                        if let Some(item) = self.state.media_pool.get_mut(&id) {
-                            item.resolution.width = new_w;
-                            item.resolution.height = new_h;
-                            tracing::info!("Fixed rotation-aware resolution for {:?}: {}x{}", item.filename, new_w, new_h);
-                        }
+                // A rotated file's size (a phone's portrait clip, stored
+                // by an older build as the codec's landscape one) set
+                // upright from the rotation the project keeps, before
+                // anything reads it: a refit or a placement computes from
+                // it and saves what it computed. No file is read: reading
+                // each file's rotation here held the window 2.9 s on a
+                // 93-file project. The re-read every file gets on open
+                // (the probe thread) confirms the size after.
+                for item in self.state.media_pool.all_mut() {
+                    if let Some((w, h)) = upright_stored_size(item) {
+                        tracing::info!("Fixed rotation-aware resolution for {:?}: {}x{}", item.filename, w, h);
+                        item.resolution = klipp_core::Resolution { width: w, height: h };
                     }
                 }
 
-                // Aspect versions not yet reframed when the project was
                 open_laps.lap("rotation");
+                // Aspect versions not yet reframed when the project was
                 // closed wait again for their files' framing (#2231).
                 self.state.pending_refits = super::aspect_version::waiting_refits(&self.state.sequences, &self.state.media_pool);
 
@@ -1441,6 +1432,16 @@ impl OpenLaps {
     }
 }
 
+/// The upright size of a rotated file stored at the codec's landscape
+/// size by an older build, from the item's own stored rotation (90° or
+/// 270°); `None` when it is already upright, has no picture, or is
+/// offline. The rule the open's file-reading fix used, without the read.
+fn upright_stored_size(item: &klipp_media::MediaItem) -> Option<(u32, u32)> {
+    let turned = matches!(item.source_rotation, 90 | 270 | -90 | -270);
+    let landscape = item.resolution.width > item.resolution.height;
+    (turned && landscape && !item.video_codec.is_empty() && !item.offline).then_some((item.resolution.height, item.resolution.width))
+}
+
 /// The files an open reads again, each once: every one that isn't
 /// offline. The read brings each file's streams and shot metadata up to
 /// date, which a load leaves unread (#1148).
@@ -1737,6 +1738,44 @@ mod global_lut_tests {
             to_engine.as_slice(),
             [AppCommand::LoadGlobalLut { path }, AppCommand::SetGlobalLutOpacity(o), AppCommand::SetGlobalLutEnabled(false)] if *path == here && *o == 0.5
         ));
+    }
+}
+
+#[cfg(test)]
+mod upright_stored_size_tests {
+    use super::upright_stored_size;
+    use klipp_media::MediaItem;
+
+    fn clip(w: u32, h: u32, rotation: i32) -> MediaItem {
+        let mut item = MediaItem::synthetic_for_test("/m/phone.mov".into(), None);
+        item.resolution = klipp_core::Resolution { width: w, height: h };
+        item.source_rotation = rotation;
+        item.video_codec = "H264".into();
+        item.offline = false;
+        item
+    }
+
+    /// A portrait phone clip stored landscape is set upright from its
+    /// stored rotation, with no file read.
+    #[test]
+    fn a_turned_clip_stored_landscape_is_set_upright() {
+        assert_eq!(upright_stored_size(&clip(1920, 1080, 90)), Some((1080, 1920)));
+        assert_eq!(upright_stored_size(&clip(1920, 1080, 270)), Some((1080, 1920)));
+    }
+
+    /// One already upright is left alone, so it is never turned twice;
+    /// so are an unturned clip, a sound, and an offline file.
+    #[test]
+    fn an_upright_or_unturned_clip_is_left_alone() {
+        assert_eq!(upright_stored_size(&clip(1080, 1920, 90)), None, "already upright");
+        assert_eq!(upright_stored_size(&clip(1920, 1080, 0)), None, "not turned");
+        assert_eq!(upright_stored_size(&clip(1920, 1080, 180)), None, "upside down keeps its shape");
+        let mut sound = clip(1920, 1080, 90);
+        sound.video_codec.clear();
+        assert_eq!(upright_stored_size(&sound), None, "no picture");
+        let mut gone = clip(1920, 1080, 90);
+        gone.offline = true;
+        assert_eq!(upright_stored_size(&gone), None, "offline: as the file-reading fix, left as stored");
     }
 }
 
