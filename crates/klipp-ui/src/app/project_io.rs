@@ -960,6 +960,11 @@ impl KlippApp {
                         self.state.toast.show(format!("The project's own fonts were not used: {why}"));
                     }
                 }
+                // DIAG C: the loads sent here, early in the open, where the
+                // metadata probe sent them before #3939.
+                for (id, source_path, _, _) in files_to_read_on_open(&self.state.media_pool) {
+                    self.cmd_tx.send(AppCommand::LoadMediaFile { path: source_path, media_id: id }).ok();
+                }
                 // Restore saved timeline view-state (zoom + scroll). Legacy
                 // project files don't carry these — leave the in-memory
                 // defaults alone in that case.
@@ -1218,11 +1223,7 @@ impl KlippApp {
                 // while the project was closed. One read a file.
                 let media_items = files_to_read_on_open(&self.state.media_pool);
                 for (id, source_path, duration, has_audio) in media_items {
-                    // Always use the original source for timeline playback (full quality + audio)
-                    self.cmd_tx.send(AppCommand::LoadMediaFile {
-                        path: source_path.clone(),
-                        media_id: id,
-                    }).ok();
+                    // DIAG C: sent early in the open instead.
                     self.spawn_thumbnail(id, source_path.clone(), duration);
                     self.spawn_filmstrip(id, source_path.clone(), duration);
                     if has_audio {
