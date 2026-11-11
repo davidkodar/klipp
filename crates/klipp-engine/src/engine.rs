@@ -385,6 +385,189 @@ pub mod ui_stage {
         UI_STAGE.store(s, Ordering::Relaxed);
         lap_to(s);
         sub_to(None, s == FRAME_TOP);
+        sampler::frame_mark(s);
+    }
+
+    /// Where a slow UI frame waits in the kernel (diagnostic, Linux): a
+    /// thread of this process reads the UI thread's current system call
+    /// and wait point from /proc every 100 ms once a frame has run 250 ms,
+    /// and logs each distinct one with the file it is on, as UI_SYSCALL.
+    /// A thread may read its own process's threads there without ptrace.
+    pub mod sampler {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        use std::sync::{Mutex, OnceLock};
+
+        static EPOCH: OnceLock<std::time::Instant> = OnceLock::new();
+        /// When the frame under way began, in µs from EPOCH; 0 between frames.
+        static FRAME_FROM_US: AtomicU64 = AtomicU64::new(0);
+        static UI_TID: AtomicU64 = AtomicU64::new(0);
+        pub(super) static STEP: Mutex<&'static str> = Mutex::new("");
+
+        fn now_us() -> u64 {
+            EPOCH.get_or_init(std::time::Instant::now).elapsed().as_micros() as u64 + 1
+        }
+
+        pub(super) fn frame_mark(stage: u64) {
+            if stage == super::FRAME_TOP {
+                start_once();
+                FRAME_FROM_US.store(now_us(), Ordering::Relaxed);
+            } else if stage == super::FRAME_END || stage == super::IDLE {
+                FRAME_FROM_US.store(0, Ordering::Relaxed);
+            }
+        }
+
+        fn start_once() {
+            static STARTED: OnceLock<()> = OnceLock::new();
+            STARTED.get_or_init(|| {
+                if !cfg!(target_os = "linux") {
+                    return;
+                }
+                let tid = std::fs::read_link("/proc/thread-self").ok().and_then(|p| p.file_name()?.to_str()?.parse::<u64>().ok()).unwrap_or(0);
+                if tid == 0 {
+                    return;
+                }
+                UI_TID.store(tid, Ordering::Relaxed);
+                let _ = std::thread::Builder::new().name("ui-syscall-sampler".into()).spawn(run);
+            });
+        }
+
+        fn run() {
+            let tid = UI_TID.load(Ordering::Relaxed);
+            let mut last = String::new();
+            let mut repeats = 0u32;
+            loop {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                let from = FRAME_FROM_US.load(Ordering::Relaxed);
+                let frame_ms = if from == 0 { 0 } else { now_us().saturating_sub(from) / 1000 };
+                if frame_ms < 250 {
+                    if repeats > 0 {
+                        tracing::info!("UI_SYSCALL (the last one {repeats} more sample(s))");
+                    }
+                    last.clear();
+                    repeats = 0;
+                    continue;
+                }
+                let seen = sample(tid);
+                let stage = super::name(super::super::UI_STAGE.load(Ordering::Relaxed));
+                let step = *STEP.lock().unwrap_or_else(|e| e.into_inner());
+                let line = format!("stage={stage} step={step} {seen}");
+                if line == last {
+                    repeats += 1;
+                    continue;
+                }
+                if repeats > 0 {
+                    tracing::info!("UI_SYSCALL (the last one {repeats} more sample(s))");
+                }
+                tracing::info!("UI_SYSCALL frame_ms={frame_ms} {line}");
+                last = line;
+                repeats = 0;
+            }
+        }
+
+        /// The thread's system call (or "running"), its kernel wait point,
+        /// and the file its first argument names when there is one.
+        fn sample(tid: u64) -> String {
+            let base = format!("/proc/self/task/{tid}");
+            let wchan = std::fs::read_to_string(format!("{base}/wchan")).unwrap_or_default();
+            let raw = std::fs::read_to_string(format!("{base}/syscall")).unwrap_or_default();
+            let mut parts = raw.split_whitespace();
+            let Some(nr) = parts.next() else { return format!("syscall=? wchan={wchan}") };
+            let Ok(nr) = nr.parse::<i64>() else { return format!("syscall={nr} wchan={wchan}") };
+            let args: Vec<u64> = parts.take(2).filter_map(|a| u64::from_str_radix(a.trim_start_matches("0x"), 16).ok()).collect();
+            let name = syscall_name(nr);
+            let target = match nr {
+                // fd first: read write close fstat pread pwrite fsync fdatasync ftruncate getdents64 flock
+                0 | 1 | 3 | 5 | 17 | 18 | 44 | 45 | 72 | 73 | 74 | 75 | 77 | 217 => args.first().map(|fd| fd_path(*fd)).unwrap_or_default(),
+                // path second, after a dir fd: openat newfstatat statx unlinkat renameat2 linkat mkdirat
+                257 | 262 | 332 | 263 | 316 | 265 | 258 => args.get(1).map(|p| c_string(*p)).unwrap_or_default(),
+                // path first: open stat lstat access rename mkdir unlink link
+                2 | 4 | 6 | 21 | 82 | 83 | 87 | 86 => args.first().map(|p| c_string(*p)).unwrap_or_default(),
+                _ => String::new(),
+            };
+            format!("syscall={name}({nr}) wchan={wchan} on={target}")
+        }
+
+        fn fd_path(fd: u64) -> String {
+            std::fs::read_link(format!("/proc/self/fd/{fd}")).map(|p| p.display().to_string()).unwrap_or_else(|_| format!("fd {fd}"))
+        }
+
+        /// A path string at `addr` in this process, read through
+        /// /proc/self/mem so a bad address is an error, not a crash.
+        fn c_string(addr: u64) -> String {
+            use std::os::unix::fs::FileExt;
+            let Ok(mem) = std::fs::File::open("/proc/self/mem") else { return String::new() };
+            let mut buf = vec![0u8; 512];
+            match mem.read_at(&mut buf, addr) {
+                Ok(n) => {
+                    let end = buf[..n].iter().position(|b| *b == 0).unwrap_or(n);
+                    String::from_utf8_lossy(&buf[..end]).into_owned()
+                }
+                Err(_) => format!("@{addr:#x}"),
+            }
+        }
+
+        /// A thread blocked reading a socket is seen there, with the
+        /// socket named.
+        #[cfg(all(test, target_os = "linux"))]
+        #[test]
+        fn a_blocked_read_is_seen_with_its_file() {
+            use std::io::Read;
+            let (mut a, _b) = std::os::unix::net::UnixStream::pair().unwrap();
+            let (tx, rx) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let tid = std::fs::read_link("/proc/thread-self").unwrap().file_name().unwrap().to_str().unwrap().parse::<u64>().unwrap();
+                tx.send(tid).unwrap();
+                let mut buf = [0u8; 1];
+                let _ = a.read(&mut buf);
+            });
+            let tid = rx.recv().unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            let seen = sample(tid);
+            assert!(seen.starts_with("syscall=read(0)") || seen.starts_with("syscall=recvfrom(45)"), "{seen}");
+            assert!(seen.contains("socket:"), "{seen}");
+        }
+
+        fn syscall_name(nr: i64) -> &'static str {
+            match nr {
+                -1 => "running",
+                0 => "read",
+                1 => "write",
+                2 => "open",
+                3 => "close",
+                4 => "stat",
+                5 => "fstat",
+                6 => "lstat",
+                7 => "poll",
+                17 => "pread64",
+                18 => "pwrite64",
+                21 => "access",
+                44 => "sendto",
+                45 => "recvfrom",
+                72 => "fcntl",
+                73 => "flock",
+                74 => "fsync",
+                75 => "fdatasync",
+                77 => "ftruncate",
+                82 => "rename",
+                83 => "mkdir",
+                86 => "link",
+                87 => "unlink",
+                202 => "futex",
+                217 => "getdents64",
+                232 => "epoll_wait",
+                257 => "openat",
+                258 => "mkdirat",
+                262 => "newfstatat",
+                263 => "unlinkat",
+                265 => "linkat",
+                270 => "pselect6",
+                271 => "ppoll",
+                281 => "epoll_pwait",
+                316 => "renameat2",
+                332 => "statx",
+                _ => "other",
+            }
+        }
     }
 
     /// A step inside the stage under way (diagnostic): it runs until the
@@ -415,6 +598,7 @@ pub mod ui_stage {
             }
             l.0 = next.map(|step| (UI_STAGE.load(Ordering::Relaxed), step, now));
         });
+        *sampler::STEP.lock().unwrap_or_else(|e| e.into_inner()) = next.unwrap_or("");
     }
 
     /// This frame's steps so far, "Stage/step=ms …", each of 1 ms or more.

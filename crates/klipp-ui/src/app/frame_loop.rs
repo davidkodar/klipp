@@ -1215,15 +1215,19 @@ impl KlippApp {
 
         klipp_engine::ui_stage::mark(klipp_engine::ui_stage::RENDER_PANELS);
         let typing_before = ctx.memory(|m| m.focused().is_some());
+        klipp_engine::ui_stage::sub("main_layout");
         self.render_main_layout(ctx, &mut all_cmds);
+        klipp_engine::ui_stage::sub("focus_keys");
         // A field left by Enter holds the single keys (#2943).
         let typing_now = ctx.memory(|m| m.focused().is_some());
         let held = self.state.field_keys_held;
         self.state.field_keys_held = ctx.input(|i| super::shortcuts::field_keys_held(held, typing_before, typing_now, i));
         self.state.typing_at_frame_end = typing_now;
+        klipp_engine::ui_stage::sub("first_time_help");
         // The Welcome window and the tour (#2933), over the layout just drawn.
         self.show_first_time_help(ctx);
 
+        klipp_engine::ui_stage::sub("scrub");
         // A scrub that lost its release. egui does not promise
         // `drag_stopped` when the window loses focus or a modal opens over a
         // drag, and since the scrub flag reached the engine (#483) a stuck
@@ -1237,6 +1241,7 @@ impl KlippApp {
             self.timeline.scrub_end(&mut self.state, &mut all_cmds);
         }
 
+        klipp_engine::ui_stage::sub("dim_ui");
         // Dim UI on play: darken everything outside the viewer rect during
         // playback for cinematic focus. Click-through (no allocate_rect),
         // Order::Middle so modals/command palette/markers/toasts paint above
@@ -1300,6 +1305,7 @@ impl KlippApp {
             }
         }
 
+        klipp_engine::ui_stage::sub("side_panels");
         // Markers panel
         if self.state.show_markers_panel {
             let cmds = self.markers.show(ctx, &mut self.state);
@@ -1325,8 +1331,10 @@ impl KlippApp {
         } else {
             self.state.transcript_panel_hovered = false;
         }
+        klipp_engine::ui_stage::sub("doc_ops");
         self.run_pending_doc_ops();
 
+        klipp_engine::ui_stage::sub("notes_colour_check");
         // Project Notes panel
         if self.state.show_project_notes {
             // Borrow split: take the open flag out of state so the panel
@@ -1359,6 +1367,7 @@ impl KlippApp {
                 tool => self.run_colour_tool(tool),
             }
         }
+        klipp_engine::ui_stage::sub("replies");
         // A colour tool keeps running with the window closed; its answer
         // is there when it is opened again.
         if self.colour_tool_reply.is_some() {
@@ -1366,8 +1375,10 @@ impl KlippApp {
         }
         self.take_recipe_reply(ctx);
 
+        klipp_engine::ui_stage::sub("picture_transform");
         self.publish_picture_transform();
 
+        klipp_engine::ui_stage::sub("delivery_translation");
         // Delivery Check window (#1978): the check's findings, reviewed
         // where they are read. Its request keeps running with the window
         // closed; the answer is there when it opens again.
@@ -1388,6 +1399,7 @@ impl KlippApp {
             self.show_translation_consent(ctx);
         }
 
+        klipp_engine::ui_stage::sub("sound_narrate_plan");
         // Sound Over Time window: a whole file's sound at once.
         if self.state.show_sound_over_time {
             let mut open = self.state.show_sound_over_time;
@@ -1411,6 +1423,7 @@ impl KlippApp {
             self.act_on_edit_plan(action);
         }
 
+        klipp_engine::ui_stage::sub("command_palette");
         // Command palette (Ctrl+K). Entry list comes from
         // `crate::command_palette::build` so adding a new entry is a
         // single edit (and the `palette_anchors_present` test there
@@ -1572,6 +1585,7 @@ impl KlippApp {
             }
         }
 
+        klipp_engine::ui_stage::sub("model_aaf");
         // Model-download dialogs (consent + progress + error). Drives
         // the F-97 SAM2 download flow. The state machine lives on
         // AppState.model_download; transitions are handled here per
@@ -1579,14 +1593,17 @@ impl KlippApp {
         self.render_model_download_dialogs(ctx, &mut all_cmds);
         crate::aaf_install::show(ctx, &mut self.state.aaf_install, &mut all_cmds);
         self.poll_aaf_reading(ctx);
+        klipp_engine::ui_stage::sub("transcriptions");
         self.keep_brief_with_transcription();
         self.follow_transcriptions();
         // An audition's takes played in their slot (#3209).
         self.follow_take_preview();
+        klipp_engine::ui_stage::sub("spelling");
         // The words the project knows, for the editors' spelling (#3236).
         self.state.spelling.enabled = self.prefs.general.check_spelling;
         self.state.spelling.follow_project(self.state.sequence().brief.as_ref(), &self.state.media_pool);
 
+        klipp_engine::ui_stage::sub("history");
         // History panel
         if self.state.show_history_panel {
             let mut open = true;
@@ -1636,6 +1653,7 @@ impl KlippApp {
             }
         }
 
+        klipp_engine::ui_stage::sub("about_relink");
         // About dialog
         if self.state.show_about_dialog {
             match crate::panels::about::show(ctx, &self.theme, &self.updates.status()) {
@@ -1680,6 +1698,7 @@ impl KlippApp {
         // fast as the event loop can go, burning CPU. 60 Hz via the
         // request_repaint_after is sufficient and matches the engine.)
 
+        klipp_engine::ui_stage::sub("overlays");
         // 9b. Floating scope window — runs AFTER CentralPanel so viewer_image_rect is current-frame
         if !self.state.fullscreen_viewer {
             let locked_data = if self.state.scope_cursor_locked {

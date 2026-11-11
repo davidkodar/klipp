@@ -82,7 +82,9 @@ impl KlippApp {
         // A parameter focus set in the Inspector shows its curve, opening
         // the Curve Editor (#2296), before the layout is worked out.
         self.curve_editor.follow_focus(&mut self.state);
+        klipp_engine::ui_stage::sub("panel/launch_screen");
         if self.render_launch_screen(ctx, all_cmds) { return; }
+        klipp_engine::ui_stage::sub("panel/fullscreen_viewer");
         if self.render_fullscreen_viewer(ctx, all_cmds) { return; }
         {
             // ── Manual rect layout ──
@@ -176,12 +178,16 @@ impl KlippApp {
                     };
 
                     // ── Render panels into their rects ──
+                    klipp_engine::ui_stage::sub("panel/toolbar_panel");
                     self.render_toolbar_panel(ui, toolbar_rect, all_cmds);
+                    klipp_engine::ui_stage::sub("panel/status_bar_panel");
                     self.render_status_bar_panel(ui, statusbar_rect);
 
                     if browser_open {
+                        klipp_engine::ui_stage::sub("panel/browser_panel");
                         self.render_browser_panel(ui, browser_rect, all_cmds);
                     } else {
+                        klipp_engine::ui_stage::sub("panel/browser_rail");
                         self.render_browser_rail(ui, browser_rect);
                     }
 
@@ -189,9 +195,11 @@ impl KlippApp {
                         // Grading the timeline: the panels show and edit
                         // its grade as the selected clip's.
                         let stood_in = self.stand_in_timeline_grade();
+                        klipp_engine::ui_stage::sub("panel/inspector_panel");
                         self.render_inspector_panel(ui, inspector_rect, all_cmds);
                         self.stand_down_timeline_grade(stood_in);
                     } else {
+                        klipp_engine::ui_stage::sub("panel/inspector_rail");
                         self.render_inspector_rail(ui, inspector_rect);
                     }
 
@@ -202,9 +210,11 @@ impl KlippApp {
                     // A single-viewer layout gives the hidden viewer no
                     // width; it is not drawn at all.
                     if source_viewer_rect.width() > 1.0 {
+                        klipp_engine::ui_stage::sub("panel/source_viewer_placeholder");
                         self.render_source_viewer_placeholder(ui, source_viewer_rect, all_cmds);
                     }
                     if viewer_rect.width() > 1.0 {
+                        klipp_engine::ui_stage::sub("panel/viewer_panel");
                         self.render_viewer_panel(ui, viewer_rect, all_cmds);
                     }
 
@@ -292,6 +302,7 @@ impl KlippApp {
                     }
 
                     if self.state.show_curve_editor && curve_editor_h > 0.0 {
+                        klipp_engine::ui_stage::sub("panel/curve_editor_panel");
                         self.render_curve_editor_panel(ui, curve_editor_rect, all_cmds);
                     } else {
                         // Not drawn, so Previous / Next walk the rubber band (#1401).
@@ -299,8 +310,10 @@ impl KlippApp {
                         self.state.curve_editor_mask_track = None;
                     }
                     if self.state.show_audio_mixer && audio_mixer_h > 0.0 {
+                        klipp_engine::ui_stage::sub("panel/audio_mixer_panel");
                         self.render_audio_mixer_panel(ui, audio_mixer_rect, all_cmds);
                     }
+                    klipp_engine::ui_stage::sub("panel/timeline_panel");
                     self.render_timeline_panel(ui, timeline_rect, all_cmds);
 
                     // ── Color workspace bottom panels ──
@@ -310,6 +323,7 @@ impl KlippApp {
                     // internally on `toggle_bar_h > 0` and `color_tools_bottom`.
                     if in_color_ws || show_scopes_bar || self.state.graph_dock_open {
                         let stood_in = if self.state.graph_dock_open { None } else { self.stand_in_timeline_grade() };
+                        klipp_engine::ui_stage::sub("panel/color_workspace_bottom");
                         self.render_color_workspace_bottom(
                             ctx,
                             ui,
