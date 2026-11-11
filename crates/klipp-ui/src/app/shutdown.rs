@@ -111,6 +111,10 @@ impl KlippApp {
         if klipp_render::live_render_decoders() > 0 {
             tracing::warn!("{} render decoder(s) still alive after 1000ms — exiting anyway", klipp_render::live_render_decoders());
         }
+        // Written on threads of their own: waited for, briefly, so the
+        // last preferences and log lines are on disk before the exit.
+        crate::prefs::flush_pending_saves(std::time::Duration::from_secs(2));
+        klipp_core::debug_log::flush_global(std::time::Duration::from_secs(2));
         std::process::exit(0);
     }
 

@@ -161,9 +161,187 @@ impl Write for &RotatingLog {
     }
 }
 
+/// Lines queued for the log at most: past them a line is dropped and
+/// counted, not waited for.
+const QUEUE_LINES: usize = 32 * 1024;
+
+/// The debug log written on a thread of its own. A write to a file waits
+/// when the disk is busy: other files being flushed held the window's
+/// thread for half a second on one log line. A line is handed over here
+/// and written there, in order; past [`QUEUE_LINES`] waiting, a line is
+/// dropped, and how many is said in the log once it has caught up.
+/// [`QueuedLog::flush`] waits for what is queued: the panic hook and the
+/// exit call it. Killed outright, the lines still queued are lost.
+pub struct QueuedLog {
+    lines: std::sync::mpsc::SyncSender<Vec<u8>>,
+    queued: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    written: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    dropped: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    /// When the first and the last line not yet said dropped were, in µs
+    /// from `epoch`.
+    drop_span: std::sync::Arc<std::sync::Mutex<Option<(u64, u64)>>>,
+    epoch: std::time::Instant,
+}
+
+impl QueuedLog {
+    /// `log`, written on its own thread.
+    pub fn start(log: std::sync::Arc<RotatingLog>) -> Self {
+        Self::start_with(move |line| log.write_line(line))
+    }
+
+    /// [`Self::start`] with the line's writer given, for tests.
+    #[doc(hidden)]
+    pub fn start_with(mut write: impl FnMut(&[u8]) + Send + 'static) -> Self {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        use std::sync::Arc;
+        let (lines, rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(QUEUE_LINES);
+        let (queued, written, dropped) = (Arc::new(AtomicU64::new(0)), Arc::new(AtomicU64::new(0)), Arc::new(AtomicU64::new(0)));
+        let drop_span = Arc::new(std::sync::Mutex::new(None::<(u64, u64)>));
+        let epoch = std::time::Instant::now();
+        let (w, d, span) = (written.clone(), dropped.clone(), drop_span.clone());
+        let spawned = std::thread::Builder::new().name("debug-log".into()).spawn(move || {
+            let mut said_dropped = 0u64;
+            while let Ok(line) = rx.recv() {
+                write(&line);
+                w.fetch_add(1, Ordering::SeqCst);
+                let now_dropped = d.load(Ordering::SeqCst);
+                if now_dropped > said_dropped {
+                    let now_us = epoch.elapsed().as_micros() as u64;
+                    let when = span.lock().unwrap_or_else(|e| e.into_inner()).take().map(|(first, last)| {
+                        let ago = |t: u64| now_us.saturating_sub(t) as f64 / 1e6;
+                        format!(", from {:.2} s to {:.2} s before this line", ago(first), ago(last))
+                    });
+                    write(format!("debug log: {} line(s) dropped while the disk was busy{}\n", now_dropped - said_dropped, when.unwrap_or_default()).as_bytes());
+                    said_dropped = now_dropped;
+                }
+            }
+        });
+        if let Err(e) = spawned {
+            // No thread: nothing would be written. Said where it can be.
+            eprintln!("debug log: could not start its writer: {e}");
+        }
+        Self { lines, queued, written, dropped, drop_span, epoch }
+    }
+
+    fn queue(&self, line: &[u8]) {
+        use std::sync::atomic::Ordering;
+        match self.lines.try_send(line.to_vec()) {
+            Ok(()) => {
+                self.queued.fetch_add(1, Ordering::SeqCst);
+            }
+            Err(_) => {
+                let at = self.epoch.elapsed().as_micros() as u64;
+                let mut span = self.drop_span.lock().unwrap_or_else(|e| e.into_inner());
+                *span = Some(span.map_or((at, at), |(first, _)| (first, at)));
+                // Counted under the span's lock, so the note's count and
+                // its span are of the same lines.
+                self.dropped.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+    }
+
+    /// Wait, at most `within`, for every line queued so far to be
+    /// written. `false` when they were not all written in time.
+    pub fn flush(&self, within: std::time::Duration) -> bool {
+        use std::sync::atomic::Ordering;
+        let want = self.queued.load(Ordering::SeqCst);
+        let t0 = std::time::Instant::now();
+        while self.written.load(Ordering::SeqCst) < want {
+            if t0.elapsed() >= within {
+                return false;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        true
+    }
+}
+
+/// The process's debug log, once installed, for those that end the
+/// process to flush.
+static GLOBAL: std::sync::OnceLock<std::sync::Arc<QueuedLog>> = std::sync::OnceLock::new();
+
+/// Make `log` the one [`flush_global`] waits for.
+pub fn install_global(log: std::sync::Arc<QueuedLog>) {
+    let _ = GLOBAL.set(log);
+}
+
+/// Wait, at most `within`, for the process's queued log lines to be
+/// written: before an exit or after a panic is logged.
+pub fn flush_global(within: std::time::Duration) {
+    if let Some(log) = GLOBAL.get() {
+        log.flush(within);
+    }
+}
+
+impl Write for &QueuedLog {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.queue(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A line is handed over without waiting for a slow disk, and every
+    /// line arrives, in order, once flushed.
+    #[test]
+    fn a_log_line_does_not_wait_for_a_slow_disk() {
+        let got = std::sync::Arc::new(Mutex::new(Vec::<String>::new()));
+        let g = got.clone();
+        let log = QueuedLog::start_with(move |line| {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            g.lock().unwrap().push(String::from_utf8_lossy(line).into_owned());
+        });
+        let t0 = std::time::Instant::now();
+        let mut w = &log;
+        for i in 0..50 {
+            w.write_all(format!("line {i}\n").as_bytes()).unwrap();
+        }
+        assert!(t0.elapsed() < std::time::Duration::from_millis(100), "the writes waited {:?} for the disk", t0.elapsed());
+        assert!(log.flush(std::time::Duration::from_secs(10)), "flushed in time");
+        let got = got.lock().unwrap().clone();
+        assert_eq!(got, (0..50).map(|i| format!("line {i}\n")).collect::<Vec<_>>());
+    }
+
+    /// Past the queue's bound a line is dropped, not waited for, and the
+    /// log says how many once it catches up.
+    #[test]
+    fn a_full_queue_drops_and_says_so() {
+        let (go_tx, go_rx) = std::sync::mpsc::channel::<()>();
+        let got = std::sync::Arc::new(Mutex::new(Vec::<String>::new()));
+        let g = got.clone();
+        let mut first = true;
+        let log = QueuedLog::start_with(move |line| {
+            if first {
+                // Held until the queue has filled behind it.
+                let _ = go_rx.recv();
+                first = false;
+            }
+            g.lock().unwrap().push(String::from_utf8_lossy(line).into_owned());
+        });
+        let mut w = &log;
+        let t0 = std::time::Instant::now();
+        for i in 0..QUEUE_LINES + 100 {
+            w.write_all(format!("{i}\n").as_bytes()).unwrap();
+        }
+        assert!(t0.elapsed() < std::time::Duration::from_secs(2), "a full queue was waited for");
+        go_tx.send(()).unwrap();
+        assert!(log.flush(std::time::Duration::from_secs(10)));
+        // The note follows the line written after the drops were counted.
+        let t1 = std::time::Instant::now();
+        while t1.elapsed() < std::time::Duration::from_secs(5) && !got.lock().unwrap().iter().any(|l| l.contains("dropped")) {
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        let got = got.lock().unwrap().clone();
+        let note = got.iter().find(|l| l.contains("dropped")).expect("the drops are said");
+        assert!(note.contains("line(s) dropped") && note.contains("s before this line"), "{note}");
+    }
 
     /// A Flatpak's debug log is in its own state folder, whatever folder
     /// Klipp was started from; elsewhere it stays in the working directory.

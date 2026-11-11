@@ -40,6 +40,11 @@ fn log_path() -> &'static std::path::Path {
     }).0
 }
 
+/// Wait, briefly, for the queued log lines to be written.
+fn flush_log() {
+    klipp_core::debug_log::flush_global(std::time::Duration::from_secs(2));
+}
+
 /// Append a single message to klipp-debug.log (best-effort,
 /// async-signal-safe-ish: open + write + close, no allocator
 /// surprises). Used by both the panic hook and the native
@@ -265,10 +270,13 @@ fn main() -> Result<()> {
     if let Some(dir) = log_path().parent().filter(|d| !d.as_os_str().is_empty()) {
         let _ = std::fs::create_dir_all(dir);
     }
-    let log_file = std::sync::Arc::new(
+    // Written on a thread of its own: a log line from the window's thread
+    // waited half a second for a busy disk (QueuedLog).
+    let log_file = std::sync::Arc::new(klipp_core::debug_log::QueuedLog::start(std::sync::Arc::new(
         klipp_core::debug_log::RotatingLog::start(log_path(), 32 << 20, 3)
             .unwrap_or_else(|e| panic!("Failed to create the debug log {}: {e}", log_path().display())),
-    );
+    )));
+    klipp_core::debug_log::install_global(log_file.clone());
 
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -292,7 +300,7 @@ fn main() -> Result<()> {
                 )
             }),
         )
-        .with_writer(log_file)
+        .with_writer(log_file.clone())
         .with_ansi(false)
         .init();
 
@@ -327,6 +335,8 @@ fn main() -> Result<()> {
             location = %location,
             "PANIC: {message}\nbacktrace:\n{backtrace}"
         );
+        // The lines before it, and it, written before the process goes.
+        flush_log();
         // Belt-and-braces: also write directly to klipp-debug.log in
         // case tracing's writer is wedged (panic mid-log-flush etc.).
         let _ = write_crash_marker(&format!(
@@ -722,6 +732,7 @@ fn main() -> Result<()> {
     info!("Klipp shutting down");
     let _ = cmd_tx.send(klipp_core::AppCommand::Quit);
     let _ = engine_handle.join();
+    flush_log();
 
     Ok(())
 }
