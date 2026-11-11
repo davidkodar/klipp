@@ -874,6 +874,9 @@ impl GpuEffectsPipeline {
     ) -> Option<Self> {
         let pipelines = EffectPipelines::shared(&device)?;
         let layer_gpu = layer::LayerGpu::new(&device, Arc::clone(&pipelines.layer));
+        // The flow's pipelines, compiled now on a thread of their own,
+        // once a device: a speed ramp's first frame no longer does it.
+        flow::warm(&device);
 
         // What a renderer writes as it draws, its own.
         //

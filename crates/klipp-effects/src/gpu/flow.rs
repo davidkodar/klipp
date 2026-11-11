@@ -76,13 +76,91 @@ struct CountRead {
     mapped: std::sync::Arc<std::sync::Mutex<Option<bool>>>,
 }
 
-pub(super) struct FlowGpu {
+/// The flow's six compute pipelines, compiled once for a device and
+/// shared by every renderer on it ([`pipelines_for`]).
+pub(super) struct FlowPipelines {
     luma: wgpu::ComputePipeline,
     halve: wgpu::ComputePipeline,
     search: wgpu::ComputePipeline,
     smooth: wgpu::ComputePipeline,
     count: wgpu::ComputePipeline,
     synth: wgpu::ComputePipeline,
+}
+
+impl FlowPipelines {
+    fn build(device: &wgpu::Device) -> Self {
+        let [luma, halve, search, smooth, count, synth] = sources().map(|(label, source)| pipeline(device, label, &source));
+        FlowPipelines { luma, halve, search, smooth, count, synth }
+    }
+}
+
+/// A device's flow pipelines: being compiled, or done.
+struct Warm {
+    ready: std::sync::Mutex<Option<std::sync::Arc<FlowPipelines>>>,
+    done: std::sync::Condvar,
+    /// Compiled by the first flow frame itself: nothing warmed them.
+    built_on_use: std::sync::atomic::AtomicBool,
+}
+
+/// The device's entry, made when there was none (`true`).
+fn warm_entry(device: &std::sync::Arc<wgpu::Device>) -> (std::sync::Arc<Warm>, bool) {
+    static KEPT: std::sync::Mutex<Vec<(std::sync::Weak<wgpu::Device>, std::sync::Arc<Warm>)>> = std::sync::Mutex::new(Vec::new());
+    let mut kept = KEPT.lock().unwrap_or_else(|e| e.into_inner());
+    kept.retain(|(d, _)| d.strong_count() > 0);
+    if let Some((_, w)) = kept.iter().find(|(d, _)| std::ptr::eq(d.as_ptr(), std::sync::Arc::as_ptr(device))) {
+        return (w.clone(), false);
+    }
+    let w = std::sync::Arc::new(Warm { ready: std::sync::Mutex::new(None), done: std::sync::Condvar::new(), built_on_use: std::sync::atomic::AtomicBool::new(false) });
+    kept.push((std::sync::Arc::downgrade(device), w.clone()));
+    (w, true)
+}
+
+fn finish(w: &Warm, built: FlowPipelines) -> std::sync::Arc<FlowPipelines> {
+    let built = std::sync::Arc::new(built);
+    *w.ready.lock().unwrap_or_else(|e| e.into_inner()) = Some(built.clone());
+    w.done.notify_all();
+    built
+}
+
+/// Start compiling the flow's pipelines for `device` on a thread of their
+/// own, once per device. Compiled on a speed ramp's first flow frame, the
+/// six took about 90 ms of that frame.
+pub(super) fn warm(device: &std::sync::Arc<wgpu::Device>) {
+    let (w, new) = warm_entry(device);
+    if !new {
+        return;
+    }
+    let d = device.clone();
+    let wt = w.clone();
+    let spawned = std::thread::Builder::new().name("flow-pipelines".into()).spawn(move || {
+        finish(&wt, FlowPipelines::build(&d));
+    });
+    if let Err(e) = spawned {
+        // No thread: compiled here, as before, once.
+        tracing::warn!("flow pipelines: could not compile them on a thread of their own: {e}");
+        finish(&w, FlowPipelines::build(device));
+    }
+}
+
+/// `device`'s flow pipelines: the warmed ones, waiting only for what is
+/// left of their compile; compiled here when nothing warmed them.
+pub(super) fn pipelines_for(device: &std::sync::Arc<wgpu::Device>) -> std::sync::Arc<FlowPipelines> {
+    let (w, new) = warm_entry(device);
+    if new {
+        w.built_on_use.store(true, std::sync::atomic::Ordering::SeqCst);
+        return finish(&w, FlowPipelines::build(device));
+    }
+    let mut ready = w.ready.lock().unwrap_or_else(|e| e.into_inner());
+    loop {
+        if let Some(p) = ready.as_ref() {
+            return p.clone();
+        }
+        ready = w.done.wait(ready).unwrap_or_else(|e| e.into_inner());
+    }
+}
+
+pub(super) struct FlowGpu {
+    pipelines: std::sync::Arc<FlowPipelines>,
     pairs: Vec<Pair>,
     /// The drawn frame's buffer and its read-back copy (with room for the
     /// count after it), kept for the next frame of the same size.
@@ -287,16 +365,17 @@ pub(super) fn sources() -> [(&'static str, String); 6] {
     ]
 }
 
+impl std::ops::Deref for FlowGpu {
+    type Target = FlowPipelines;
+    fn deref(&self) -> &FlowPipelines {
+        &self.pipelines
+    }
+}
+
 impl FlowGpu {
-    pub(super) fn new(device: &wgpu::Device) -> Self {
-        let [luma, halve, search, smooth, count, synth] = sources().map(|(label, source)| pipeline(device, label, &source));
+    pub(super) fn new(device: &std::sync::Arc<wgpu::Device>) -> Self {
         FlowGpu {
-            luma,
-            halve,
-            search,
-            smooth,
-            count,
-            synth,
+            pipelines: pipelines_for(device),
             pairs: Vec::new(),
             frame: None,
             gauge: crate::gpu_memory::Gauge::new(crate::gpu_memory::Held::FlowPairs),
@@ -364,7 +443,7 @@ impl GpuEffectsPipeline {
         let pair = &flow_gpu.pairs[index];
         let params = Params { src_w: width, src_h: height, lr: luma[0], lg: luma[1], lb: luma[2], t, total: pair.work.0 * pair.work.1, ..Params::level(pair.work.0, pair.work.1, 0) };
         let (fa, fb) = pair.frames.as_ref().expect("an uploaded pair");
-        pass(&device, &mut enc, &flow_gpu.synth, &params, &[fa, fb, &pair.forward, &pair.backward, &pair.count, &out], (width, height));
+        pass(&device, &mut enc, &flow_gpu.pipelines.synth, &params, &[fa, fb, &pair.forward, &pair.backward, &pair.count, &out], (width, height));
         // The frame and its pair's count, read back in one map.
         enc.copy_buffer_to_buffer(&out, 0, &staging, 0, frame_bytes);
         enc.copy_buffer_to_buffer(&pair.count, 0, &staging, frame_bytes, 4);
@@ -435,7 +514,7 @@ impl GpuEffectsPipeline {
         };
         let pair = &mut flow_gpu.pairs[index];
         let params = Params { src_w: width, src_h: height, lr: luma[0], lg: luma[1], lb: luma[2], t, total: pair.work.0 * pair.work.1, ..Params::level(pair.work.0, pair.work.1, 0) };
-        pass(&device, enc, &flow_gpu.synth, &params, &[a, b, &pair.forward, &pair.backward, &pair.count, out], (width, height));
+        pass(&device, enc, &flow_gpu.pipelines.synth, &params, &[a, b, &pair.forward, &pair.backward, &pair.count, out], (width, height));
         // The count, copied out with the estimate and submitted with it:
         // asked for by the frame after, once that chain has gone, and read
         // when it is there.
@@ -580,6 +659,24 @@ mod tests {
         let worst = gpu.iter().zip(cpu).map(|(g, c)| (g - c).abs()).fold(0.0f32, f32::max);
         let off = gpu.iter().zip(cpu).filter(|(g, c)| (*g - *c).abs() > 0.02).count();
         (worst, off as f32 / cpu.len() as f32)
+    }
+
+    /// A device's flow pipelines are compiled when its renderer is made,
+    /// on a thread of their own, not by the first flow frame: compiled
+    /// there, they took about 90 ms of a speed ramp's first frame.
+    #[test]
+    fn the_first_flow_frame_compiles_no_pipelines() {
+        let Some(mut gpu) = gpu() else { return };
+        let (w, h) = (64, 48);
+        let a = square_frame(w, h, 10.0, 12.0, 12.0);
+        let b = square_frame(w, h, 18.0, 14.0, 12.0);
+        gpu.interpolate_by_flow(key(0.0), &a, &b, w, h, 0.5, LUMA).expect("drawn");
+        let (warm, new) = warm_entry(&gpu.device);
+        assert!(!new, "the device's pipelines are known");
+        assert!(!warm.built_on_use.load(std::sync::atomic::Ordering::SeqCst), "the first flow frame compiled the pipelines");
+        // A second renderer on the device shares them, compiling nothing.
+        let first = pipelines_for(&gpu.device);
+        assert!(std::sync::Arc::ptr_eq(&first, &pipelines_for(&gpu.device)));
     }
 
     #[test]
