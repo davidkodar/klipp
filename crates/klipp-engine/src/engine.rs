@@ -383,6 +383,48 @@ pub mod ui_stage {
 
     pub fn mark(s: u64) {
         UI_STAGE.store(s, Ordering::Relaxed);
+        lap_to(s);
+    }
+
+    // Where a UI frame's time went, by stage: each mark ends the stage
+    // before it. Kept on the UI thread, which is the one that marks.
+    thread_local! {
+        static LAPS: std::cell::RefCell<(Option<(u64, std::time::Instant)>, Vec<(u64, f64)>)> =
+            const { std::cell::RefCell::new((None, Vec::new())) };
+    }
+
+    fn lap_to(next: u64) {
+        LAPS.with(|l| {
+            let mut l = l.borrow_mut();
+            let now = std::time::Instant::now();
+            if next == FRAME_TOP {
+                l.1.clear();
+            } else if let Some((stage, since)) = l.0 {
+                let ms = now.duration_since(since).as_secs_f64() * 1000.0;
+                match l.1.iter_mut().find(|(s, _)| *s == stage) {
+                    Some(entry) => entry.1 += ms,
+                    None => l.1.push((stage, ms)),
+                }
+            }
+            l.0 = Some((next, now));
+        });
+    }
+
+    /// This frame's stages so far, "Name=ms …", each of 1 ms or more,
+    /// the one under way counted to now. For a slow frame's log line.
+    pub fn frame_parts() -> String {
+        LAPS.with(|l| {
+            let l = l.borrow();
+            let mut parts = l.1.clone();
+            if let Some((stage, since)) = l.0 {
+                let ms = since.elapsed().as_secs_f64() * 1000.0;
+                match parts.iter_mut().find(|(s, _)| *s == stage) {
+                    Some(entry) => entry.1 += ms,
+                    None => parts.push((stage, ms)),
+                }
+            }
+            parts.iter().filter(|(_, ms)| *ms >= 1.0).map(|(s, ms)| format!("{}={ms:.0}", name(*s))).collect::<Vec<_>>().join(" ")
+        })
     }
 
     pub fn name(v: u64) -> &'static str {
