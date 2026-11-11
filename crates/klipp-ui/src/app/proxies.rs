@@ -772,6 +772,25 @@ pub(super) fn find_skims(
     found
 }
 
+/// [`find_skims`]'s answer, applied to the pool as it is now: each whole
+/// skim kept by its file, the files without one to be given one. Only
+/// files still in the pool: another project opened since, or the project
+/// closed, holds none of them. Renamed or moved since, the project keeps
+/// them, and the skims, kept with the cache, still hold. Taken by the
+/// project's path, the answer was dropped after a rename, and its files'
+/// skims were made again. `true` when a skim was kept.
+pub(super) fn apply_skims_found(pool: &mut klipp_media::MediaPool, found: SkimsFound) -> (bool, Vec<MediaId>) {
+    let mut kept = false;
+    for (id, path) in found.whole {
+        if let Some(item) = pool.get_mut(&id) {
+            item.skim_file = Some(path);
+            kept = true;
+        }
+    }
+    let to_make = found.to_make.into_iter().filter(|id| pool.get(id).is_some()).collect();
+    (kept, to_make)
+}
+
 /// [`find_skims`]'s answer.
 #[derive(Debug, Default, PartialEq)]
 pub(super) struct SkimsFound {
@@ -784,6 +803,21 @@ pub(super) struct SkimsFound {
 #[cfg(test)]
 mod find_skims_tests {
     use super::*;
+
+    /// An answer is applied to the files still in the pool, whatever the
+    /// project's path is now; files no longer there are left alone.
+    #[test]
+    fn an_answer_holds_for_the_files_still_there() {
+        let mut pool = klipp_media::MediaPool::default();
+        let mut item = klipp_media::MediaItem::synthetic_for_test("/tmp/a.mov".into(), None);
+        item.skim_file = None;
+        let (here, also, gone) = (pool.add(item), pool.add(klipp_media::MediaItem::synthetic_for_test("/tmp/b.mov".into(), None)), MediaId::new());
+        let found = SkimsFound { whole: vec![(here, "/cache/a.mp4".into()), (gone, "/cache/x.mp4".into())], to_make: vec![also, gone] };
+        let (kept, to_make) = apply_skims_found(&mut pool, found);
+        assert!(kept);
+        assert_eq!(pool.get(&here).unwrap().skim_file.as_deref(), Some(std::path::Path::new("/cache/a.mp4")));
+        assert_eq!(to_make, vec![also], "a file no longer in the pool is not made");
+    }
 
     /// A whole skim is kept, a cut-short one removed and made again, and
     /// a file with none, or no key, is one to make.

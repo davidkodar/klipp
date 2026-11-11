@@ -1151,7 +1151,6 @@ impl KlippApp {
                 // project. What it finds is kept as it comes back, and only
                 // the files with no whole skim are given one to make.
                 self.skim_lookup = Some(SkimLookup::start(
-                    self.state.project_path.clone(),
                     self.state.media_pool.all().cloned().collect(),
                     self.state.project_working_colorspace,
                 ));
@@ -1695,7 +1694,6 @@ pub(super) fn ensure_klipp_extension(mut path: PathBuf) -> PathBuf {
 /// The skims of an opened project's files, looked for on a thread of
 /// their own ([`super::proxies::find_skims`]).
 pub(super) struct SkimLookup {
-    pub(super) project: Option<PathBuf>,
     answer: std::sync::mpsc::Receiver<super::proxies::SkimsFound>,
     /// The files looked for, all to be given a skim if the lookup ends
     /// without an answer.
@@ -1703,7 +1701,7 @@ pub(super) struct SkimLookup {
 }
 
 impl SkimLookup {
-    pub(super) fn start(project: Option<PathBuf>, items: Vec<klipp_media::MediaItem>, working: klipp_core::WorkingColorspace) -> Self {
+    pub(super) fn start(items: Vec<klipp_media::MediaItem>, working: klipp_core::WorkingColorspace) -> Self {
         let ids = items.iter().map(|m| m.id).collect();
         let (tx, answer) = std::sync::mpsc::channel();
         let spawned = std::thread::Builder::new().name("skim-lookup".into()).spawn(move || {
@@ -1718,7 +1716,7 @@ impl SkimLookup {
         if let Err(e) = spawned {
             tracing::warn!("skims: could not look for them on a thread of their own: {e}");
         }
-        Self { project, answer, ids }
+        Self { answer, ids }
     }
 
     /// What it found, once it has. A lookup that ended without an answer
