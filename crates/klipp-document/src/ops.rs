@@ -14002,8 +14002,10 @@ fn motion_extras(t: &Typeset, i: usize) -> Result<(Option<Vec<klipp_core::title_
 /// checked against the title's `secs` and the path against `layers`,
 /// the title's. An error says what does not fit.
 fn set_motion_extras(tb: &mut klipp_timeline::TextBox, fx: &mut Option<klipp_timeline::LayerFx>, t: &Typesetting, secs: f64, layers: &[klipp_timeline::TitleObject]) -> Result<(), String> {
+    // What may be keyed said with the refusal (#2605): a key just past the
+    // end refused a whole apply, saying only that it was late.
     let late = |keys: &[klipp_core::Keyframe], what: &str| match keys.iter().find(|k| k.time_secs > secs + 1e-6) {
-        Some(k) => Err(format!("a {what} key at {} s is after the title's end at {secs:.2} s", k.time_secs)),
+        Some(k) => Err(format!("a {what} key at {:.2} s is after the title's end at {secs:.2} s; give keys from 0 to {secs:.2} s, or make the title longer (its secs)", k.time_secs)),
         None => Ok(()),
     };
     if let Some(animators) = &t.animators {
@@ -14053,7 +14055,14 @@ fn set_motion_extras(tb: &mut klipp_timeline::TextBox, fx: &mut Option<klipp_tim
             ThreeDAsk::Off => None,
             ThreeDAsk::On(patch) => {
                 for (name, keys) in &patch.keys {
-                    late(keys, &format!("3D {name}"))?;
+                    // By the op's own name for it, not the model's (#2605).
+                    let asked = match *name {
+                        "rotate_y" => "turn",
+                        "rotate_x" => "tilt",
+                        "rotate_z" => "roll",
+                        other => other,
+                    };
+                    late(keys, &format!("3D {asked}"))?;
                 }
                 Some(patch.apply(tb.three_d.as_ref()))
             }
