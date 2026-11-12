@@ -2177,11 +2177,12 @@ fn content_for(name: &str, result: &Value) -> Result<Vec<Value>, String> {
                         "mimeType": mime,
                     }));
                 } else {
-                    // Said, not left out without a word: a picture too
-                    // large came back as its path alone (#2586).
+                    // Said, not left out without a word: a picture or a
+                    // sound too large came back as its path alone (#2586).
+                    let what = if kind == "audio" { "sound" } else { "picture" };
                     content.push(json!({
                         "type": "text",
-                        "text": format!("The picture is too large to show here ({:.1} MB); it is at {path}.", bytes.len() as f64 / 1e6),
+                        "text": format!("The {what} is too large to show here ({:.1} MB); it is at {path}.", bytes.len() as f64 / 1e6),
                     }));
                 }
             }
@@ -3011,6 +3012,21 @@ mod sheet_inline_tests {
         let shown = content_for("klipp_timeline_sheet", &with_copy).unwrap();
         assert!(shown.iter().any(|c| c["type"] == "image"), "the copy is shown: {shown:?}");
         assert!(!shown.iter().any(|c| c["text"].as_str().is_some_and(|t| t.contains("too large"))), "{shown:?}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A sound excerpt too large to play here is said to be a sound, not
+    /// a picture: the two share the budget.
+    #[test]
+    fn a_sound_too_large_to_play_is_called_a_sound() {
+        let dir = std::env::temp_dir().join(format!("klipp-mcp-big-wav-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let wav = dir.join("excerpt.wav");
+        std::fs::write(&wav, vec![0u8; INLINE_IMAGE_MAX_BYTES + 1]).unwrap();
+        let reply = json!({ "path": wav.to_string_lossy(), "from_secs": 0.0, "to_secs": 30.0, "format": "wav 16 kHz mono 16-bit" });
+        let said = content_for("klipp_audio_excerpt", &reply).unwrap();
+        assert!(!said.iter().any(|c| c["type"] == "audio"), "{said:?}");
+        assert!(said.iter().any(|c| c["text"].as_str().is_some_and(|t| t.contains("The sound is too large"))), "{said:?}");
         std::fs::remove_dir_all(&dir).ok();
     }
 }
