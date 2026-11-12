@@ -50,6 +50,18 @@ fn strict_motion_spec<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<k
     }).transpose()
 }
 
+/// A title layer's id, said what it is when it is not one (#2574): a
+/// name or a quoted number gave serde's bare "expected u32".
+fn layer_id<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<u32>, D::Error> {
+    use serde::Deserialize;
+    let value = Option::<serde_json::Value>::deserialize(d)?;
+    value.map(|v| {
+        v.as_u64().and_then(|n| u32::try_from(n).ok()).ok_or_else(|| {
+            serde::de::Error::custom(format!("object_id is a layer's number, as the reply that made the layer names it, not {v}; leave it out for a new layer"))
+        })
+    }).transpose()
+}
+
 
 use crate::history::{EditCommand, LinkedMovePartner};
 use klipp_core::quote::quoted;
@@ -906,7 +918,7 @@ pub enum Op {
     /// (fractions of the frame).
     VectorPath {
         clip_id: ClipRef,
-        #[serde(default)]
+        #[serde(default, deserialize_with = "layer_id")]
         object_id: Option<u32>,
         #[serde(default)]
         path: Option<klipp_timeline::VectorPath>,
@@ -4491,12 +4503,17 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
                 if let Some(w) = w { t.size.x = *w; }
                 if let Some(h) = h { t.size.y = *h; }
             };
-            if let Some(id)=object_id {
-                let object=new.object_mut(klipp_timeline::TitleObjectId(*id)).ok_or_else(||refuse(i,"path object not found","use a title layer id"))?;
-                if object.locked {return Err(refuse(i,"path object is locked","unlock it before editing"));}
-                if !matches!(object.content,klipp_timeline::TitleObjectContent::Shape(_)) {return Err(refuse(i,"object is not a shape","add a new path or name a shape layer"));}
+            // Which layer it went to, said back so the next edit can name
+            // it (#2574): the reply was the same for a new layer and an
+            // edited one, and named neither.
+            let layer = if let Some(id)=object_id {
+                let ids = old.objects.iter().map(|o| o.id.0.to_string()).collect::<Vec<_>>().join(", ");
+                let object=new.object_mut(klipp_timeline::TitleObjectId(*id)).ok_or_else(||refuse(i,format!("the clip has no layer {id}"),format!("its layers are {ids}; leave object_id out for a new path layer")))?;
+                if object.locked {return Err(refuse(i,format!("layer {id} is locked"),"unlock it before editing"));}
+                if !matches!(object.content,klipp_timeline::TitleObjectContent::Shape(_)) {return Err(refuse(i,format!("layer {id} is not a shape"),"add a new path or name a shape layer"));}
                 object.content=content;
                 place(&mut object.transform);
+                format!("path layer {id}")
             } else {
                 let size = match shape {
                     None => klipp_timeline::TitlePosition{x:1.0,y:1.0},
@@ -4506,9 +4523,10 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
                 };
                 let mut t = klipp_timeline::ObjectTransform {center:klipp_timeline::TitlePosition{x:0.5,y:0.5},size,..klipp_timeline::default_text_transform()};
                 place(&mut t);
-                new.add_object(content,t);
-            }
-            Ok(("Edit vector path geometry and paint".into(),EditCommand::EditTitle {clip_id:clip.id,description:"Edit Vector Path",old_data:old.clone(),new_data:new},vec![clip.id]))
+                let id = new.add_object(content,t).0;
+                format!("new path layer {id}; object_id {id} edits it again")
+            };
+            Ok((format!("set geometry and paint of {layer}"),EditCommand::EditTitle {clip_id:clip.id,description:"Edit Vector Path",old_data:old.clone(),new_data:new},vec![clip.id]))
         }
         Op::Connector { at, secs: held, from, to, color, stroke_width, reveal_secs, track } => {
             let at = resolve_anchor(seq, fps, at, i)?;
