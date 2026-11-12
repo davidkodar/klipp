@@ -313,12 +313,27 @@ pub fn clips_of(words: &[HeardWord], first: usize, last: usize) -> Vec<klipp_cor
     clips
 }
 
-/// The cuts for `ranges` as `Op::Cut`s, latest first: each is resolved
-/// on the timeline the ones before it left, and cutting from the end
-/// leaves the earlier times where they were. Each is kept to the tracks
-/// of its clips, so music and a picture over the voice play on.
-pub fn cut_ops(mut ranges: Vec<CutRange>) -> Vec<klipp_document::ops::Op> {
+/// The cuts for `ranges` on `seq` as `Op::Cut`s, latest first: each is
+/// resolved on the timeline the ones before it left, and cutting from
+/// the end leaves the earlier times where they were. Each is kept to the
+/// tracks of its clips, so music and a picture over the voice play on.
+///
+/// A clip is named by where it is in the cut, not by its id (#2582): a
+/// later cut through the same clip splits it into pieces with new ids,
+/// and an earlier cut naming the old id was refused, its filler left in.
+/// One not on `seq` keeps its id.
+pub fn cut_ops(seq: &klipp_timeline::Sequence, mut ranges: Vec<CutRange>) -> Vec<klipp_document::ops::Op> {
     use klipp_document::ops::{Anchor, ClipRef, Op};
+    let named = |id: klipp_core::ClipId, (a, b): (f64, f64)| {
+        seq.tracks
+            .iter()
+            .enumerate()
+            .find_map(|(track, t)| t.clips.iter().find(|c| c.id == id).map(|c| (track, c)))
+            .map_or(ClipRef::Id(id), |(track, c)| {
+                let (from, to) = (a.max(c.timeline_in.to_secs_f64()), b.min(c.timeline_out.to_secs_f64()));
+                ClipRef::At { track, secs: (from + to) / 2.0 }
+            })
+    };
     ranges.retain(|((a, b), _)| b > a);
     ranges.sort_by(|a, b| b.0 .0.total_cmp(&a.0 .0));
     // Overlapping ranges (fillers either side of one pause) merge, with
@@ -335,7 +350,7 @@ pub fn cut_ops(mut ranges: Vec<CutRange>) -> Vec<klipp_document::ops::Op> {
     }
     merged
         .into_iter()
-        .map(|((a, b), clips)| Op::Cut { from: Anchor::Secs(a), to: Anchor::Secs(b), tracks_of: clips.into_iter().map(ClipRef::Id).collect() })
+        .map(|((a, b), clips)| Op::Cut { from: Anchor::Secs(a), to: Anchor::Secs(b), tracks_of: clips.into_iter().map(|c| named(c, (a, b))).collect() })
         .collect()
 }
 
@@ -465,7 +480,7 @@ mod tests {
     fn cuts_go_latest_first_and_overlapping_ones_merge() {
         use klipp_document::ops::{Anchor, Op};
         let (voice, other) = (klipp_core::ClipId::new(), klipp_core::ClipId::new());
-        let ops = cut_ops(vec![((1.0, 2.0), vec![voice]), ((5.0, 6.0), vec![voice]), ((1.8, 2.5), vec![other])]);
+        let ops = cut_ops(&klipp_timeline::Sequence::new_default(), vec![((1.0, 2.0), vec![voice]), ((5.0, 6.0), vec![voice]), ((1.8, 2.5), vec![other])]);
         let spans: Vec<((f64, f64), usize)> = ops
             .iter()
             .map(|op| match op {
