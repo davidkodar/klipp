@@ -1081,6 +1081,10 @@ pub struct BrowserPanel {
     /// focus (search bar, dialogs, etc.). Controls whether arrow keys / Enter
     /// / Backspace navigate the file list.
     pub files_panel_focused: bool,
+    /// The pointer is over the Files tab this frame: Ctrl+A there selects
+    /// its files though no row was clicked yet, and the timeline yields it
+    /// (#2562). No other key goes by it.
+    pub files_hovered: bool,
     /// Type-to-navigate prefix buffer. Accumulates typed characters within
     /// a 750ms window; matches the first visible entry whose name starts
     /// with the buffer (case-insensitive). Cleared on timeout or when the
@@ -1294,6 +1298,7 @@ impl Default for BrowserPanel {
             effect_sort: effects_tab::EffectSort::default(),
             system_bookmarks: read_system_bookmarks(),
             files_panel_focused: false,
+            files_hovered: false,
             type_ahead_buffer: String::new(),
             type_ahead_last_input: None,
             file_skim_texture: None,
@@ -1398,6 +1403,7 @@ impl BrowserPanel {
         // the user switches away from the Files tab (e.g. to Media),
         // which would permanently block the transport's Spacebar handling.
         state.files_panel_focused = false;
+        state.files_hovered = false;
 
         // Transfer reveal_in_browser request from AppState to browser scroll
         if let Some(mid) = state.reveal_in_browser.take() {
@@ -2398,6 +2404,8 @@ impl BrowserPanel {
         // (which runs in a different panel, before the browser) knows to
         // yield Spacebar to Quick Look instead of triggering play/pause.
         state.files_panel_focused = self.files_panel_focused;
+        self.files_hovered = ui.rect_contains_pointer(ui.max_rect());
+        state.files_hovered = self.files_hovered;
 
         // Drain any completed thumbnail results into textures.
         self.drain_file_thumbs(ui.ctx());
@@ -2943,6 +2951,11 @@ impl BrowserPanel {
             self.type_ahead_last_input = None;
         }
         let mut scroll_to_index: Option<usize> = None;
+        // Ctrl+A with the pointer over the list selects its files before
+        // any row was clicked (#2562); a text field keeps it for its text.
+        if !self.files_panel_focused && self.files_hovered && !text_edit_active && ui.input(|i| i.modifiers.command && i.key_pressed(egui::Key::A)) {
+            self.files_selected = filtered.iter().filter(|e| !e.is_dir).map(|e| e.path.clone()).collect();
+        }
         if self.files_panel_focused && !text_edit_active && !filtered.is_empty() {
             let (k_down, k_up, k_home, k_end, k_pgdn, k_pgup, k_enter, k_back, k_f2, k_space) = ui.input(|i| (
                 i.key_pressed(egui::Key::ArrowDown),
@@ -3856,17 +3869,16 @@ impl BrowserPanel {
                     } else {
                         let mods = ui.input(|i| i.modifiers);
                         if mods.shift {
-                            // Shift+click: select range from anchor (or current
-                            // row if no anchor) up to and including this row.
+                            // Shift+click: select range from the anchor up to
+                            // and including this row. With no anchor it runs
+                            // from the keyboard's row, else the first (#2562):
+                            // it took the clicked row alone.
                             let anchor_idx = self.files_selection_anchor.as_ref()
-                                .and_then(|a| filtered.iter().position(|e| e.path == *a));
-                            let range_paths: Vec<std::path::PathBuf> = match anchor_idx {
-                                Some(a) => {
-                                    let (lo, hi) = if a <= row_idx { (a, row_idx) } else { (row_idx, a) };
-                                    filtered[lo..=hi].iter().map(|e| e.path.clone()).collect()
-                                }
-                                None => vec![entry.path.clone()],
-                            };
+                                .or(self.files_selection_cursor.as_ref())
+                                .and_then(|a| filtered.iter().position(|e| e.path == *a))
+                                .unwrap_or(0);
+                            let (lo, hi) = if anchor_idx <= row_idx { (anchor_idx, row_idx) } else { (row_idx, anchor_idx) };
+                            let range_paths: Vec<std::path::PathBuf> = filtered[lo..=hi].iter().map(|e| e.path.clone()).collect();
                             pending_select = Some(FileSelectAction::Range(range_paths));
                         } else if mods.ctrl || mods.command {
                             // Ctrl/Cmd+click: toggle this row in the selection.
@@ -7225,6 +7237,69 @@ mod keyboard_selection_tests {
         assert_eq!(names(&panel), ["a.mp4", "b.mp4", "c.mp4", "d.mp4", "e.mp4"], "every file, not the folder");
         frame(&mut panel, &mut state, &[(egui::Key::ArrowDown, egui::Modifiers::NONE)]);
         assert_eq!(panel.files_selected.len(), 1, "a plain arrow selects one");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// #2562: with the pointer over the list, Ctrl+A selects every file
+    /// shown though no row was clicked; Shift+click with nothing selected
+    /// selects from the first row to the one clicked.
+    #[test]
+    fn ctrl_a_over_the_list_and_shift_click_from_the_top() {
+        let dir = std::env::temp_dir().join(format!("klipp-files-hover-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for f in ["a.mp4", "b.mp4", "c.mp4", "d.mp4", "e.mp4"] {
+            std::fs::write(dir.join(f), b"").unwrap();
+        }
+        let mut panel = BrowserPanel::default();
+        let mut state = AppState { file_browser_auto_refresh: false, ..Default::default() };
+        let ctx = egui::Context::default();
+        let theme = KlippTheme::default();
+        // One frame on the one context, the pointer kept between frames:
+        // the text it drew, and where.
+        let run = |panel: &mut BrowserPanel, state: &mut AppState, events: Vec<egui::Event>, modifiers: egui::Modifiers| {
+            let input = egui::RawInput { events, modifiers, screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(600.0, 800.0))), ..Default::default() };
+            let out = ctx.run(input, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let (mut tab, mut pinned, mut ratio) = (crate::layout_state::BrowserTab::Files, false, 0.5);
+                    let _ = panel.show(ui, state, &theme, &mut tab, &mut pinned, &mut ratio);
+                });
+            });
+            out.shapes.iter().filter_map(|s| match &s.shape {
+                egui::Shape::Text(t) => Some((t.galley.text().to_owned(), t.pos + t.galley.size() / 2.0)),
+                _ => None,
+            }).collect::<Vec<_>>()
+        };
+        panel.navigate_files_to(dir.clone());
+        run(&mut panel, &mut state, Vec::new(), egui::Modifiers::NONE);
+        if let Some(pending) = panel.files_receiver.take() {
+            let read = pending.recv_timeout(std::time::Duration::from_secs(30)).expect("the folder is read");
+            let (tx, rx) = std::sync::mpsc::channel();
+            tx.send(read).unwrap();
+            panel.files_receiver = Some(rx);
+        }
+        run(&mut panel, &mut state, Vec::new(), egui::Modifiers::NONE);
+        let texts = run(&mut panel, &mut state, Vec::new(), egui::Modifiers::NONE);
+        let at = |name: &str| texts.iter().find(|(t, _)| t == name).map(|(_, p)| *p).unwrap_or_else(|| panic!("{name} is drawn: {texts:?}"));
+
+        let over = at("b.mp4");
+        run(&mut panel, &mut state, vec![egui::Event::PointerMoved(over)], egui::Modifiers::NONE);
+        assert!(!panel.files_panel_focused && state.files_hovered, "over the list, nothing clicked");
+        let ctrl = egui::Modifiers::COMMAND;
+        run(&mut panel, &mut state, vec![egui::Event::Key { key: egui::Key::A, physical_key: None, pressed: true, repeat: false, modifiers: ctrl }], ctrl);
+        assert_eq!(names(&panel), ["a.mp4", "b.mp4", "c.mp4", "d.mp4", "e.mp4"], "Ctrl+A over the list");
+
+        panel.files_selected.clear();
+        panel.files_selection_anchor = None;
+        panel.files_selection_cursor = None;
+        let c = at("c.mp4");
+        let shift = egui::Modifiers::SHIFT;
+        let press = |pressed| egui::Event::PointerButton { pos: c, button: egui::PointerButton::Primary, pressed, modifiers: shift };
+        // Over the row a frame before the press, as a pointer comes to it.
+        run(&mut panel, &mut state, vec![egui::Event::PointerMoved(c)], shift);
+        run(&mut panel, &mut state, vec![press(true)], shift);
+        run(&mut panel, &mut state, vec![press(false)], shift);
+        run(&mut panel, &mut state, Vec::new(), egui::Modifiers::NONE);
+        assert_eq!(names(&panel), ["a.mp4", "b.mp4", "c.mp4"], "from the first row to the one clicked");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
