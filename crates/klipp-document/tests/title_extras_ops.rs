@@ -284,7 +284,10 @@ fn wrong_3d_values_are_refused() {
         (json!({"light":{"glare":1}}), "unknown field"),
         (json!({"face_color":"gold"}), "#rrggbb"),
         (json!({"keys":{"spin":[{"at":0,"value":1}]}}), "key turn, tilt, roll"),
-        (json!({"keys":{"turn":[{"at":9,"value":1}]}}), "after the title's end"),
+        // #2605: just past the end, by the op's own name for it, with
+        // what may be keyed.
+        (json!({"keys":{"turn":[{"at":4.05,"value":1}]}}), "a 3D turn key at 4.05 s is after the title's end at 4.00 s"),
+        (json!({"keys":{"turn":[{"at":4.05,"value":1}]}}), "give keys from 0 to 4.00 s, or make the title longer"),
         (json!("sideways"), "\"none\""),
         (json!({"bevel":{"size":0.02,"depth":1}}), "unknown field `depth`"),
     ] {
@@ -292,6 +295,7 @@ fn wrong_3d_values_are_refused() {
         assert!(why.contains(says), "{three_d}: {why}");
         assert_eq!(d.title().1, &before);
     }
+    assert!(d.run(json!([{"op":"style","clip_id":id,"three_d":{"keys":{"turn":[{"at":4,"value":1}]}}}])).is_ok(), "a key at the title's end is taken");
     // A name-or-fields spec's own error reaches the reply, not "did not
     // match any variant".
     for (field, value) in [("on_path", json!({"layer":0,"wobble":1})), ("mask", json!({"layer":0,"opacity":1}))] {

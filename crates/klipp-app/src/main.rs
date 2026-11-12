@@ -224,6 +224,14 @@ fn main() -> Result<()> {
         // SAFETY: main thread, before any threads spawn.
         unsafe { std::env::set_var("RUST_MIN_STACK", "1073741824"); }
     }
+    // PIPEWIRE_LATENCY = the output buffer chosen in Audio Hardware
+    // (#173), which PipeWire's ALSA plugin reads as the output opens.
+    // Read here, before any thread, from that one setting alone; none
+    // chosen, or one set already, leaves the environment as it is. A
+    // worker has returned above, and opens no output.
+    if let Some(latency) = klipp_ui::audio_buffer::pipewire_latency() {
+        std::env::set_var("PIPEWIRE_LATENCY", latency);
+    }
     // ORT_DYLIB_PATH = first libonnxruntime.so found on disk.
     // Probes ~/.local/lib/onnxruntime*, /usr/lib, etc. via
     // klipp_ml_ort::find_libonnxruntime. No-op when the user
@@ -237,9 +245,6 @@ fn main() -> Result<()> {
     // (TitleRenderer::new in engine init, or the UI font picker) will reuse
     // this scan's result via the OnceLock inside klipp_title::font_discovery.
     klipp_title::font_discovery::discover_system_fonts_async();
-
-    // VAAPI on NVIDIA requires this before any ffmpeg calls
-    unsafe { std::env::set_var("LIBVA_DRIVER_NAME", "nvidia") };
 
     {
         let _t = LogTimer::new("ffmpeg::init");
@@ -410,6 +415,8 @@ fn main() -> Result<()> {
     // preferences once eframe has booted.
     let launch_prefs = klipp_ui::Preferences::load();
     klipp_engine::audio_output::set_preferred_device(launch_prefs.audio_hardware.output_device.clone());
+    // Before the first decoder opens: whether it may try VA-API.
+    klipp_core::GpuVendor::set_vaapi_preference(launch_prefs.system.vaapi_decode);
     let mut engine = {
         let _t = LogTimer::new("PlaybackEngine::new (TOTAL)");
         PlaybackEngine::new(

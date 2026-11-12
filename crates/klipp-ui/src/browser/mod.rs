@@ -193,14 +193,20 @@ pub fn browser_search_field(
         .stroke(egui::Stroke::new(1.0_f32, theme.border))
         .rounding(4.0)
         .inner_margin(egui::Margin::symmetric(9.0, 5.0))
-        .show(ui, |ui| {
+        .show(ui, |ui| ui.horizontal(|ui| {
+            // A search kept from another tab is seen and cleared here
+            // (#2599): a × while there is text. The text keeps its keys.
+            let clear_w = if query.is_empty() { 0.0 } else { 18.0 };
             let search = egui::TextEdit::singleline(query)
                 .hint_text(placeholder)
-                .desired_width(ui.available_width() - 4.0)
+                .desired_width(ui.available_width() - 4.0 - clear_w)
                 .font(egui::FontId::proportional(12.0))
                 .text_color(theme.text_primary)
                 .frame(false);
             let resp = ui.add(search);
+            if !query.is_empty() && ui.add(egui::Button::new(egui::RichText::new("\u{00d7}").size(13.0).color(theme.text_dim)).frame(false)).on_hover_text("Clear the search").clicked() {
+                query.clear();
+            }
             // Ctrl+F focus consumer — single shared check so every
             // search field grabs focus the same way.
             if state.focus_search_request == Some(crate::state::PanelKind::Browser) {
@@ -224,7 +230,7 @@ pub fn browser_search_field(
                 );
             }
             (resp.id, resp.rect)
-        });
+        }).inner);
     // The frame around the text is the field too: a click on its padding
     // (most of a narrow field's height) used to focus nothing, and the
     // typing that followed ran single-key shortcuts (#2551).
@@ -232,6 +238,15 @@ pub fn browser_search_field(
     let on_padding = ui.input(|i| i.pointer.primary_clicked() && i.pointer.interact_pos().is_some_and(|p| !text_rect.contains(p)));
     if on_padding && ui.rect_contains_pointer(framed.response.rect) {
         ui.memory_mut(|m| m.request_focus(text_id));
+    }
+}
+
+/// "Clear search" under a Library tab's empty list while a search hides
+/// everything (#2599): the search is shared by the tabs, and one typed on
+/// another tab emptied this one with nothing to undo it here.
+pub fn clear_search_button(ui: &mut egui::Ui, query: &mut String) {
+    if !query.is_empty() && ui.button("Clear search").clicked() {
+        query.clear();
     }
 }
 
@@ -710,6 +725,32 @@ impl FileSortBy {
     }
 }
 
+/// A folder typed in the Files search field (#2563): text from "/" or "~"
+/// is a path to go to, not a name to filter by.
+#[derive(Debug, Clone, PartialEq)]
+enum TypedFolder {
+    /// A folder that is there.
+    There(std::path::PathBuf),
+    /// Nothing there, or not a folder.
+    Missing,
+}
+
+/// What `text` names when it is a path, `~` as `home`; `None` for a name
+/// to filter by.
+fn typed_folder(text: &str, home: Option<&std::path::Path>) -> Option<TypedFolder> {
+    let t = text.trim();
+    let path = if t == "~" {
+        home?.to_path_buf()
+    } else if let Some(rest) = t.strip_prefix("~/") {
+        home?.join(rest)
+    } else if t.starts_with('/') {
+        std::path::PathBuf::from(t)
+    } else {
+        return None;
+    };
+    Some(if path.is_dir() { TypedFolder::There(path) } else { TypedFolder::Missing })
+}
+
 /// Sort a slice of FileEntry in place by the chosen key. Directories are
 /// always grouped above files; the sort key + direction only affect ordering
 /// within the file group (and within the directory group).
@@ -1019,6 +1060,9 @@ pub struct BrowserPanel {
     pub scroll_to_media_id: Option<klipp_core::MediaId>,
     // Files tab state
     pub files_current_path: std::path::PathBuf,
+    /// The project the Files tab's folder is for (#2580): `None` for one
+    /// never saved. A project opened takes the Files tab to its own folder.
+    files_project: Option<std::path::PathBuf>,
     pub files_entries: Vec<FileEntry>,
     pub files_entries_dirty: bool,
     pub files_loading: bool,
@@ -1081,6 +1125,10 @@ pub struct BrowserPanel {
     /// focus (search bar, dialogs, etc.). Controls whether arrow keys / Enter
     /// / Backspace navigate the file list.
     pub files_panel_focused: bool,
+    /// The pointer is over the Files tab this frame: Ctrl+A there selects
+    /// its files though no row was clicked yet, and the timeline yields it
+    /// (#2562). No other key goes by it.
+    pub files_hovered: bool,
     /// Type-to-navigate prefix buffer. Accumulates typed characters within
     /// a 750ms window; matches the first visible entry whose name starts
     /// with the buffer (case-insensitive). Cleared on timeout or when the
@@ -1266,7 +1314,10 @@ impl Default for BrowserPanel {
             audio_add_id: None,
             audio_add_drop: klipp_core::events::ClipDrop::PoolOnly,
             scroll_to_media_id: None,
-            files_current_path: dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/")),
+            // Where it was last for a project never saved, else ~/Videos
+            // (#2580): a new profile opened it on the home folder.
+            files_current_path: crate::import_folder::files_folder(None),
+            files_project: None,
             files_entries: Vec::new(),
             files_entries_dirty: true,
             files_loading: false,
@@ -1294,6 +1345,7 @@ impl Default for BrowserPanel {
             effect_sort: effects_tab::EffectSort::default(),
             system_bookmarks: read_system_bookmarks(),
             files_panel_focused: false,
+            files_hovered: false,
             type_ahead_buffer: String::new(),
             type_ahead_last_input: None,
             file_skim_texture: None,
@@ -1392,12 +1444,22 @@ impl BrowserPanel {
         self.rotate_deferred_drops();
         let mut cmds = Vec::new();
 
+        // Another project open (#2580): the Files tab goes to that
+        // project's folder, and the Import Media picker opens in its own.
+        let project = state.project_path.clone().filter(|p| !crate::project_paths::is_untitled(Some(p)));
+        if project != self.files_project {
+            crate::import_folder::set_project(project.as_deref());
+            self.files_project = project;
+            self.navigate_files_to(crate::import_folder::files_folder(self.files_project.as_deref()));
+        }
+
         // Clear files_panel_focused on state every frame. The Files tab's
         // show_files_tab re-sets it if the tab is active and a row was
         // clicked. This prevents the flag from staying stuck true when
         // the user switches away from the Files tab (e.g. to Media),
         // which would permanently block the transport's Spacebar handling.
         state.files_panel_focused = false;
+        state.files_hovered = false;
 
         // Transfer reveal_in_browser request from AppState to browser scroll
         if let Some(mid) = state.reveal_in_browser.take() {
@@ -1920,6 +1982,8 @@ impl BrowserPanel {
         if path != self.files_current_path {
             self.files_search_query.clear();
         }
+        // Where this project's Files tab is, for the next time (#2580).
+        crate::import_folder::remember_files(self.files_project.as_deref(), &path);
         self.files_current_path = path.clone();
         self.files_entries_dirty = true;
         // Route cleared TextureHandles through the deferred-drop
@@ -2398,6 +2462,8 @@ impl BrowserPanel {
         // (which runs in a different panel, before the browser) knows to
         // yield Spacebar to Quick Look instead of triggering play/pause.
         state.files_panel_focused = self.files_panel_focused;
+        self.files_hovered = ui.rect_contains_pointer(ui.max_rect());
+        state.files_hovered = self.files_hovered;
 
         // Drain any completed thumbnail results into textures.
         self.drain_file_thumbs(ui.ctx());
@@ -2848,7 +2914,10 @@ impl BrowserPanel {
         // Uses `files_search_query` (Files-only) rather than the shared
         // `search_query` so text typed into the effects/media search bar
         // in the adjacent right pane doesn't filter the file list here.
-        let search = self.files_search_query.to_lowercase();
+        // A path typed there goes to its folder (#2563), and filters
+        // nothing: it filtered names and said "No matches".
+        let typed = typed_folder(&self.files_search_query, dirs::home_dir().as_deref());
+        let search = if typed.is_some() { String::new() } else { self.files_search_query.to_lowercase() };
         let type_filter = self.files_type_filter;
         let filtered: Vec<&FileEntry> = self.files_entries.iter()
             .filter(|e| type_filter.matches(e))
@@ -2860,6 +2929,19 @@ impl BrowserPanel {
         // without borrow conflicts with `filtered`/`self.files_entries`.
         let mut go_home_clicked = false;
         let mut pending_navigate: Option<std::path::PathBuf> = None;
+        match &typed {
+            Some(TypedFolder::There(folder)) => {
+                let go = ui.add(egui::Button::new(egui::RichText::new(format!("Go to {}", folder.display())).size(11.0)).frame(false));
+                // Enter in the search field, which it leaves, goes there too.
+                if go.clicked() || (!self.files_panel_focused && ui.input(|i| i.key_pressed(egui::Key::Enter))) {
+                    pending_navigate = Some(folder.clone());
+                }
+            }
+            Some(TypedFolder::Missing) => {
+                ui.label(egui::RichText::new("No such folder").size(11.0).color(theme.text_dim));
+            }
+            None => {}
+        }
         let mut thumb_spawn_requests: Vec<std::path::PathBuf> = Vec::new();
         let mut audio_peaks_spawn_requests: Vec<std::path::PathBuf> = Vec::new();
         let mut filmstrip_spawn_requests: Vec<(std::path::PathBuf, f64, u32)> = Vec::new();
@@ -2943,6 +3025,11 @@ impl BrowserPanel {
             self.type_ahead_last_input = None;
         }
         let mut scroll_to_index: Option<usize> = None;
+        // Ctrl+A with the pointer over the list selects its files before
+        // any row was clicked (#2562); a text field keeps it for its text.
+        if !self.files_panel_focused && self.files_hovered && !text_edit_active && ui.input(|i| i.modifiers.command && i.key_pressed(egui::Key::A)) {
+            self.files_selected = filtered.iter().filter(|e| !e.is_dir).map(|e| e.path.clone()).collect();
+        }
         if self.files_panel_focused && !text_edit_active && !filtered.is_empty() {
             let (k_down, k_up, k_home, k_end, k_pgdn, k_pgup, k_enter, k_back, k_f2, k_space) = ui.input(|i| (
                 i.key_pressed(egui::Key::ArrowDown),
@@ -3856,17 +3943,16 @@ impl BrowserPanel {
                     } else {
                         let mods = ui.input(|i| i.modifiers);
                         if mods.shift {
-                            // Shift+click: select range from anchor (or current
-                            // row if no anchor) up to and including this row.
+                            // Shift+click: select range from the anchor up to
+                            // and including this row. With no anchor it runs
+                            // from the keyboard's row, else the first (#2562):
+                            // it took the clicked row alone.
                             let anchor_idx = self.files_selection_anchor.as_ref()
-                                .and_then(|a| filtered.iter().position(|e| e.path == *a));
-                            let range_paths: Vec<std::path::PathBuf> = match anchor_idx {
-                                Some(a) => {
-                                    let (lo, hi) = if a <= row_idx { (a, row_idx) } else { (row_idx, a) };
-                                    filtered[lo..=hi].iter().map(|e| e.path.clone()).collect()
-                                }
-                                None => vec![entry.path.clone()],
-                            };
+                                .or(self.files_selection_cursor.as_ref())
+                                .and_then(|a| filtered.iter().position(|e| e.path == *a))
+                                .unwrap_or(0);
+                            let (lo, hi) = if anchor_idx <= row_idx { (anchor_idx, row_idx) } else { (row_idx, anchor_idx) };
+                            let range_paths: Vec<std::path::PathBuf> = filtered[lo..=hi].iter().map(|e| e.path.clone()).collect();
                             pending_select = Some(FileSelectAction::Range(range_paths));
                         } else if mods.ctrl || mods.command {
                             // Ctrl/Cmd+click: toggle this row in the selection.
@@ -7228,6 +7314,144 @@ mod keyboard_selection_tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// #2562: with the pointer over the list, Ctrl+A selects every file
+    /// shown though no row was clicked; Shift+click with nothing selected
+    /// selects from the first row to the one clicked.
+    #[test]
+    fn ctrl_a_over_the_list_and_shift_click_from_the_top() {
+        let dir = std::env::temp_dir().join(format!("klipp-files-hover-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for f in ["a.mp4", "b.mp4", "c.mp4", "d.mp4", "e.mp4"] {
+            std::fs::write(dir.join(f), b"").unwrap();
+        }
+        let mut panel = BrowserPanel::default();
+        let mut state = AppState { file_browser_auto_refresh: false, ..Default::default() };
+        let ctx = egui::Context::default();
+        let theme = KlippTheme::default();
+        // One frame on the one context, the pointer kept between frames:
+        // the text it drew, and where.
+        let run = |panel: &mut BrowserPanel, state: &mut AppState, events: Vec<egui::Event>, modifiers: egui::Modifiers| {
+            let input = egui::RawInput { events, modifiers, screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(600.0, 800.0))), ..Default::default() };
+            let out = ctx.run(input, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let (mut tab, mut pinned, mut ratio) = (crate::layout_state::BrowserTab::Files, false, 0.5);
+                    let _ = panel.show(ui, state, &theme, &mut tab, &mut pinned, &mut ratio);
+                });
+            });
+            out.shapes.iter().filter_map(|s| match &s.shape {
+                egui::Shape::Text(t) => Some((t.galley.text().to_owned(), t.pos + t.galley.size() / 2.0)),
+                _ => None,
+            }).collect::<Vec<_>>()
+        };
+        panel.navigate_files_to(dir.clone());
+        run(&mut panel, &mut state, Vec::new(), egui::Modifiers::NONE);
+        if let Some(pending) = panel.files_receiver.take() {
+            let read = pending.recv_timeout(std::time::Duration::from_secs(30)).expect("the folder is read");
+            let (tx, rx) = std::sync::mpsc::channel();
+            tx.send(read).unwrap();
+            panel.files_receiver = Some(rx);
+        }
+        run(&mut panel, &mut state, Vec::new(), egui::Modifiers::NONE);
+        let texts = run(&mut panel, &mut state, Vec::new(), egui::Modifiers::NONE);
+        let at = |name: &str| texts.iter().find(|(t, _)| t == name).map(|(_, p)| *p).unwrap_or_else(|| panic!("{name} is drawn: {texts:?}"));
+
+        let over = at("b.mp4");
+        run(&mut panel, &mut state, vec![egui::Event::PointerMoved(over)], egui::Modifiers::NONE);
+        assert!(!panel.files_panel_focused && state.files_hovered, "over the list, nothing clicked");
+        let ctrl = egui::Modifiers::COMMAND;
+        run(&mut panel, &mut state, vec![egui::Event::Key { key: egui::Key::A, physical_key: None, pressed: true, repeat: false, modifiers: ctrl }], ctrl);
+        assert_eq!(names(&panel), ["a.mp4", "b.mp4", "c.mp4", "d.mp4", "e.mp4"], "Ctrl+A over the list");
+
+        panel.files_selected.clear();
+        panel.files_selection_anchor = None;
+        panel.files_selection_cursor = None;
+        let c = at("c.mp4");
+        let shift = egui::Modifiers::SHIFT;
+        let press = |pressed| egui::Event::PointerButton { pos: c, button: egui::PointerButton::Primary, pressed, modifiers: shift };
+        // Over the row a frame before the press, as a pointer comes to it.
+        run(&mut panel, &mut state, vec![egui::Event::PointerMoved(c)], shift);
+        run(&mut panel, &mut state, vec![press(true)], shift);
+        run(&mut panel, &mut state, vec![press(false)], shift);
+        run(&mut panel, &mut state, Vec::new(), egui::Modifiers::NONE);
+        assert_eq!(names(&panel), ["a.mp4", "b.mp4", "c.mp4"], "from the first row to the one clicked");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// #2563: a folder typed in the Files search field is gone to, by its
+    /// "Go to" row or by Enter, and one that isn't there says so; any
+    /// other text still filters the names.
+    #[test]
+    fn a_typed_folder_is_gone_to() {
+        let root = std::env::temp_dir().join(format!("klipp-files-typed-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(root.join("shots")).unwrap();
+        std::fs::write(root.join("take.mp4"), b"").unwrap();
+        let home = Some(root.as_path());
+        assert_eq!(typed_folder("~/shots", home), Some(TypedFolder::There(root.join("shots"))));
+        assert_eq!(typed_folder(&root.join("nope").display().to_string(), home), Some(TypedFolder::Missing));
+        assert_eq!(typed_folder(&root.join("take.mp4").display().to_string(), home), Some(TypedFolder::Missing), "a file is no folder");
+        assert_eq!(typed_folder("take", home), None, "a name filters");
+
+        let mut panel = BrowserPanel::default();
+        let mut state = AppState { file_browser_auto_refresh: false, ..Default::default() };
+        let ctx = egui::Context::default();
+        let theme = KlippTheme::default();
+        let run = |panel: &mut BrowserPanel, state: &mut AppState, events: Vec<egui::Event>| {
+            let input = egui::RawInput { events, screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(600.0, 800.0))), ..Default::default() };
+            let out = ctx.run(input, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let (mut tab, mut pinned, mut ratio) = (crate::layout_state::BrowserTab::Files, false, 0.5);
+                    let _ = panel.show(ui, state, &theme, &mut tab, &mut pinned, &mut ratio);
+                });
+            });
+            out.shapes.iter().filter_map(|s| match &s.shape {
+                egui::Shape::Text(t) => Some((t.galley.text().to_owned(), t.pos + t.galley.size() / 2.0)),
+                _ => None,
+            }).collect::<Vec<_>>()
+        };
+        panel.navigate_files_to(root.clone());
+        let shots = root.join("shots");
+        panel.files_search_query = shots.display().to_string();
+        run(&mut panel, &mut state, Vec::new());
+        let texts = run(&mut panel, &mut state, Vec::new());
+        let go = texts.iter().find(|(t, _)| t.starts_with("Go to ")).map(|(_, p)| *p).unwrap_or_else(|| panic!("a Go to row: {texts:?}"));
+        let press = |pressed| egui::Event::PointerButton { pos: go, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+        run(&mut panel, &mut state, vec![egui::Event::PointerMoved(go)]);
+        run(&mut panel, &mut state, vec![press(true)]);
+        run(&mut panel, &mut state, vec![press(false)]);
+        assert_eq!(panel.files_current_path, shots, "the Go to row goes there");
+        assert!(panel.files_search_query.is_empty(), "and the field is cleared");
+
+        panel.files_search_query = root.display().to_string();
+        run(&mut panel, &mut state, vec![egui::Event::Key { key: egui::Key::Enter, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE }]);
+        assert_eq!(panel.files_current_path, root, "Enter goes there");
+
+        panel.files_search_query = root.join("nope").display().to_string();
+        let texts = run(&mut panel, &mut state, Vec::new());
+        assert!(texts.iter().any(|(t, _)| t == "No such folder"), "{texts:?}");
+        assert_eq!(panel.files_current_path, root, "and it stays");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// #2580: a project opened takes the Files tab to its own folder, the
+    /// one it is in when it has none remembered, and a project never
+    /// saved, the "Untitled" one, has the default.
+    #[test]
+    fn a_project_opened_takes_the_files_tab_to_its_folder() {
+        let films = std::env::temp_dir().join(format!("klipp-files-project-{}", uuid::Uuid::new_v4()));
+        let project = films.join("Trip.klipp");
+        std::fs::create_dir_all(&project).unwrap();
+        let mut panel = BrowserPanel::default();
+        let unsaved = panel.files_current_path.clone();
+        assert_eq!(unsaved, crate::import_folder::files_folder(None), "a new profile: the default, not home");
+        let mut state = AppState { file_browser_auto_refresh: false, project_path: Some(project.clone()), ..Default::default() };
+        frame(&mut panel, &mut state, &[]);
+        assert_eq!(panel.files_current_path, films, "the folder the project is in");
+        state.project_path = Some(crate::project_paths::UNTITLED.into());
+        frame(&mut panel, &mut state, &[]);
+        assert_eq!(panel.files_current_path, unsaved, "a project never saved: the default");
+        let _ = std::fs::remove_dir_all(&films);
+    }
+
     #[test]
     fn a_keyboard_range_runs_from_the_anchor() {
         assert_eq!(keyboard_selection(Some(2), 5, true), (2, 5));
@@ -7345,5 +7569,62 @@ mod narrow_library_tests {
             let w = laid_out_width(category, 277.0);
             assert!(w <= 277.5, "{category:?} laid out {w:.0} px wide in a 277 px panel");
         }
+    }
+
+    /// #2599: the Library's tabs share one search. One that matches
+    /// nothing, typed on Video FX, says so there and on Generators, each
+    /// with a Clear that empties it; the field's ×, shown only while there
+    /// is text, empties it too, and typing still goes to the field.
+    #[test]
+    fn a_shared_search_is_named_and_cleared_on_each_tab() {
+        let ctx = egui::Context::default();
+        crate::icons::install(&ctx);
+        let theme = KlippTheme::default();
+        let mut state = AppState::default();
+        let mut panel = BrowserPanel::default();
+        let run = |panel: &mut BrowserPanel, state: &mut AppState, events: Vec<egui::Event>| {
+            let input = egui::RawInput { events, screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(700.0, 900.0))), ..Default::default() };
+            let out = ctx.run(input, |ctx| {
+                egui::CentralPanel::default().frame(egui::Frame::none()).show(ctx, |ui| panel.show_library_tab(ui, state, &theme));
+            });
+            out.shapes.iter().filter_map(|s| match &s.shape {
+                egui::Shape::Text(t) => Some((t.galley.text().to_owned(), t.pos + t.galley.size() / 2.0)),
+                _ => None,
+            }).collect::<Vec<_>>()
+        };
+        let click = |panel: &mut BrowserPanel, state: &mut AppState, at: egui::Pos2| {
+            let press = |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+            run(panel, state, vec![egui::Event::PointerMoved(at)]);
+            run(panel, state, vec![press(true)]);
+            run(panel, state, vec![press(false)]);
+            run(panel, state, Vec::new())
+        };
+        let at = |texts: &[(String, egui::Pos2)], s: &str| texts.iter().find(|(t, _)| t == s).map(|(_, p)| *p).unwrap_or_else(|| panic!("{s} is drawn: {:?}", texts.iter().map(|t| &t.0).collect::<Vec<_>>()));
+        let q = "zzqx matches nothing";
+        for (category, message) in [(LibraryCategory::VideoFx, "No effects match"), (LibraryCategory::Generators, "No generators match")] {
+            panel.library_category = category;
+            panel.search_query = q.to_string();
+            run(&mut panel, &mut state, Vec::new());
+            let texts = run(&mut panel, &mut state, Vec::new());
+            at(&texts, &format!("{message} \"{q}\""));
+            let after = click(&mut panel, &mut state, at(&texts, "Clear search"));
+            assert!(panel.search_query.is_empty(), "{category:?}: Clear empties the search");
+            assert!(!after.iter().any(|(t, _)| t == "\u{00d7}" || t == "Clear search"), "{category:?}: nothing to clear, no ×");
+        }
+
+        panel.search_query = "vignette".into();
+        run(&mut panel, &mut state, Vec::new());
+        let texts = run(&mut panel, &mut state, Vec::new());
+        click(&mut panel, &mut state, at(&texts, "\u{00d7}"));
+        assert!(panel.search_query.is_empty(), "the field's × empties it");
+
+        panel.search_query = "ab".into();
+        run(&mut panel, &mut state, Vec::new());
+        let texts = run(&mut panel, &mut state, Vec::new());
+        click(&mut panel, &mut state, at(&texts, "ab"));
+        // Focused by a click, the field has its text selected: End, then type.
+        let end = egui::Event::Key { key: egui::Key::End, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE };
+        run(&mut panel, &mut state, vec![end, egui::Event::Text("c".into())]);
+        assert_eq!(panel.search_query, "abc", "typing goes to the field beside its ×");
     }
 }

@@ -375,7 +375,8 @@ impl TranscriptPanel {
         let range = transcript::cut_for_words(&self.words, a, b);
         let label = if a == b { format!("Cut \u{201C}{}\u{201D}", self.words[a].text) } else { format!("Cut {} words", b - a + 1) };
         let clips = transcript::clips_of(&self.words, a, b);
-        state.pending_doc_ops.push(DocOpsRequest { label, ops: transcript::cut_ops(vec![(range, clips)]), independent: false });
+        let ops = transcript::cut_ops(state.sequence(), vec![(range, clips)]);
+        state.pending_doc_ops.push(DocOpsRequest { label, ops, independent: false });
         self.selection = None;
     }
 }
@@ -403,7 +404,8 @@ fn review_sweep(ui: &mut egui::Ui, sweep: &mut Sweep, state: &mut AppState) -> b
             // Each cut stands on its own: one that is refused (through a
             // retimed clip, say) is reported, and the rest are made.
             let label = format!("Cut {{n}} {}", sweep.title.to_lowercase());
-            state.pending_doc_ops.push(DocOpsRequest { label, ops: transcript::cut_ops(ticked), independent: true });
+            let ops = transcript::cut_ops(state.sequence(), ticked);
+            state.pending_doc_ops.push(DocOpsRequest { label, ops, independent: true });
             done = true;
         }
         if ui.button("Back").clicked() {
@@ -515,6 +517,17 @@ mod range_tests {
     /// on an audio track, the eight words of `SAID` heard from 1 s, one
     /// each half second.
     fn interview() -> (AppState, TranscriptSource) {
+        interview_saying(&SAID)
+    }
+
+    /// [`interview`] with `said` heard in it instead.
+    fn interview_saying(said: &[&str]) -> (AppState, TranscriptSource) {
+        interview_heard(said.iter().enumerate().map(|(k, w)| (*w, 1.0 + 0.5 * k as f64, 1.3 + 0.5 * k as f64)).collect())
+    }
+
+    /// [`interview`] with each of `heard`'s words heard from its start to
+    /// its end, in seconds.
+    fn interview_heard(heard: Vec<(&str, f64, f64)>) -> (AppState, TranscriptSource) {
         let t = |s: f64| RationalTime::from_secs_f64(s, 25);
         let mut state = AppState::default();
         let mut item = klipp_media::MediaItem::synthetic_for_test("/tmp/klipp-transcript-range.mov".into(), None);
@@ -528,7 +541,7 @@ mod range_tests {
         sound.linked_clip_id = Some(picture.id);
         seq.tracks[v].clips.push(picture);
         seq.tracks[a].clips.push(sound);
-        let words = SAID.iter().enumerate().map(|(k, w)| SpokenWord { start_secs: 1.0 + 0.5 * k as f64, end_secs: 1.3 + 0.5 * k as f64, text: (*w).into(), confidence: 1.0 }).collect();
+        let words = heard.into_iter().map(|(w, start_secs, end_secs)| SpokenWord { start_secs, end_secs, text: w.into(), confidence: 1.0 }).collect();
         let source = TranscriptSource::with_words(media, words);
         (state, source)
     }
@@ -608,6 +621,101 @@ mod range_tests {
         let entry = state.take_undo().expect("a step to undo");
         klipp_document::apply::DocumentView { sequences: &mut state.sequences, active, media_pool: &mut state.media_pool, fps: &mut state.fps }.apply_inverse(&entry.command);
         assert_eq!(timeline(&state), before, "one undo puts it all back");
+    }
+
+    /// The interview played as two takes, cut at 3 s: two picture clips
+    /// and their two sounds, each pair linked.
+    fn in_two_clips(state: &mut AppState) {
+        let t = |s: f64| RationalTime::from_secs_f64(s, 25);
+        let seq = &mut state.sequences[0];
+        let (v, a) = (seq.tracks.iter().position(|t| t.kind == TrackKind::Video).unwrap(), seq.tracks.iter().position(|t| t.kind == TrackKind::Audio).unwrap());
+        let media = seq.tracks[v].clips[0].media_id().unwrap();
+        let mut pairs = Vec::new();
+        for (from, to) in [(0.0, 3.0), (3.0, 10.0)] {
+            let mut picture = Clip::media(media, t(from), t(to), t(from), t(to));
+            let mut sound = Clip::media(media, t(from), t(to), t(from), t(to));
+            picture.linked_clip_id = Some(sound.id);
+            sound.linked_clip_id = Some(picture.id);
+            pairs.push((picture, sound));
+        }
+        seq.tracks[v].clips = pairs.iter().map(|(p, _)| p.clone()).collect();
+        seq.tracks[a].clips = pairs.into_iter().map(|(_, s)| s).collect();
+    }
+
+    /// The sweep behind `button` run, and the two cuts it finds, ticked,
+    /// made as the app makes them: the words heard after, which the
+    /// panel's words must be, and the text it then draws.
+    fn cut_both_ticked(mut state: AppState, source: TranscriptSource, button: &str) -> (Vec<klipp_document::ops::HeardWord>, Vec<(String, egui::Pos2)>) {
+        state.show_transcript_panel = true;
+        let (ctx, mut panel) = (egui::Context::default(), TranscriptPanel::new());
+        frame(&ctx, &mut panel, &mut state, &source, Vec::new());
+        let texts = frame(&ctx, &mut panel, &mut state, &source, Vec::new());
+        let sweep = at(&texts, button);
+        frame(&ctx, &mut panel, &mut state, &source, vec![egui::Event::PointerMoved(sweep), press(sweep, true, false)]);
+        frame(&ctx, &mut panel, &mut state, &source, vec![press(sweep, false, false)]);
+        let texts = frame(&ctx, &mut panel, &mut state, &source, Vec::new());
+        let cut = at(&texts, "Cut 2 Ticked");
+        frame(&ctx, &mut panel, &mut state, &source, vec![egui::Event::PointerMoved(cut), press(cut, true, false)]);
+        frame(&ctx, &mut panel, &mut state, &source, vec![press(cut, false, false)]);
+
+        // Applied as the app applies a sweep: each cut on its own.
+        let requests = std::mem::take(&mut state.pending_doc_ops);
+        assert_eq!(requests.len(), 1, "one request");
+        assert!(requests[0].independent);
+        let (plan, refused) = klipp_document::ops::resolve_each_with(state.sequence(), &state.media_pool, &requests[0].ops, &source);
+        assert!(refused.is_empty(), "both cuts are made: {:?} of {:?}", refused.iter().map(|r| (r.step, &r.why, &r.hint)).collect::<Vec<_>>(), requests[0].ops);
+        assert_eq!(plan.steps.len(), 2);
+        let edits: Vec<_> = plan.steps.iter().map(|s| s.edit.clone()).collect();
+        let active = state.active_sequence_idx;
+        let mut view = klipp_document::apply::DocumentView { sequences: &mut state.sequences, active, media_pool: &mut state.media_pool, fps: &mut state.fps };
+        for e in &edits {
+            view.apply_forward(e);
+        }
+        state.push_edits_as_one(&edits, &requests[0].label);
+
+        let heard = klipp_document::ops::heard_words(state.sequence(), &state.media_pool, &source);
+        let texts = frame(&ctx, &mut panel, &mut state, &source, Vec::new());
+        let text = |w: &[klipp_document::ops::HeardWord]| w.iter().map(|w| w.text.clone()).collect::<Vec<_>>();
+        assert_eq!(text(&panel.words), text(&heard), "the panel's words are what is heard");
+        (heard, texts)
+    }
+
+    /// Both fillers cut from the clips and gone from the panel's text,
+    /// `said` left.
+    fn cut_both_fillers(state: AppState, source: TranscriptSource, said: &[&str]) {
+        let (heard, texts) = cut_both_ticked(state, source, "Fillers\u{2026}");
+        assert_eq!(heard.iter().map(|w| w.text.as_str()).collect::<Vec<_>>(), said, "both fillers are cut from the clips");
+        assert!(!texts.iter().any(|(t, _)| crate::transcript::is_filler(t)), "no filler is drawn: {texts:?}");
+    }
+
+    /// #2582: a fillers sweep finds both fillers in one take, and cutting
+    /// the two ticked takes both out of the clips and out of the panel's
+    /// text. The later cut split the take, and the earlier one named it
+    /// by an id that was gone.
+    #[test]
+    fn both_ticked_fillers_leave_the_text() {
+        let (state, source) = interview_saying(&["one", "um", "three", "four", "uh", "six", "seven", "eight"]);
+        cut_both_fillers(state, source, &["one", "three", "four", "six", "seven", "eight"]);
+    }
+
+    /// #2582 as a transcript has it: the fillers written with their
+    /// punctuation, one in each of two takes.
+    #[test]
+    fn fillers_in_two_takes_leave_the_text() {
+        let (mut state, source) = interview_saying(&["one", "um,", "three", "four", "five", "Uh.", "seven", "eight"]);
+        in_two_clips(&mut state);
+        cut_both_fillers(state, source, &["one", "three", "four", "five", "seven", "eight"]);
+    }
+
+    /// The pauses sweep through one take as the fillers one: two long
+    /// pauses in it, both cut down to the 0.4 s kept, every word heard.
+    #[test]
+    fn both_ticked_pauses_in_one_take_are_cut() {
+        let (state, source) = interview_heard(vec![("one", 1.0, 1.3), ("two", 3.0, 3.3), ("three", 3.5, 3.8), ("four", 6.0, 6.3), ("five", 6.5, 6.8)]);
+        let (heard, _) = cut_both_ticked(state, source, "Long Pauses\u{2026}");
+        assert_eq!(heard.iter().map(|w| w.text.as_str()).collect::<Vec<_>>(), ["one", "two", "three", "four", "five"]);
+        let gaps: Vec<f64> = heard.windows(2).map(|w| w[1].start - w[0].end).collect();
+        assert!(gaps.iter().all(|g| *g < 0.45), "both pauses are cut down: {gaps:?}");
     }
 
     /// Shift-click extends the selection from the word clicked first.

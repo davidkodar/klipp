@@ -2785,6 +2785,14 @@ impl PreferencesPanel {
             }
         });
 
+        Self::setting_row_with_subtitle(ui, "VA-API (AMD, Intel)", "Untested here: off by default", theme, |ui| {
+            let mut val = prefs.system.vaapi_decode;
+            if ui.add(Switch::new(&mut val, theme)).changed() {
+                prefs.system.vaapi_decode = val;
+                *dirty = true;
+            }
+        });
+
         // ── THREADING section ──
         Self::section_header(ui, "THREADING", theme);
 
@@ -3096,35 +3104,34 @@ impl PreferencesPanel {
                 });
         });
 
-        Self::setting_row(ui, "Sample rate", theme, |ui| {
-            let rates = [(44100_u32, "44.1 kHz"), (48000, "48 kHz"), (96000, "96 kHz"), (192000, "192 kHz")];
-            let current = rates.iter()
-                .find(|(v, _)| *v == prefs.audio_hardware.sample_rate)
-                .map(|(_, l)| *l).unwrap_or("48 kHz");
-            egui::ComboBox::from_id_salt("sample_rate")
-                .selected_text(current)
-                .width(80.0)
-                .show_ui(ui, |ui| {
-                    for (val, label) in &rates {
-                        if ui.selectable_value(&mut prefs.audio_hardware.sample_rate, *val, *label).changed() { *dirty = true; }
-                    }
-                });
+        // The rate playback runs at (#173): 48 kHz when the device takes
+        // it, which every sound cache and effect is made at. It was a
+        // choice that changed nothing.
+        Self::setting_row_with_subtitle(ui, "Sample rate", "48 kHz when the device takes it, else the device's own", theme, |ui| {
+            let rate = klipp_engine::audio_output::probe_sample_rate();
+            ui.label(egui::RichText::new(format!("{} kHz", rate as f64 / 1000.0)).color(theme.text_secondary));
         });
 
-        Self::setting_row_with_subtitle(ui, "Buffer size", "Larger = more stable, higher latency", theme, |ui| {
-            let sizes: &[u32] = &[64, 128, 256, 512, 1024, 2048];
-            let current = format!("{}", prefs.audio_hardware.buffer_size);
+        // The buffer asked of PipeWire (#173), read as the app starts.
+        let buffer_label = |n: Option<u32>| match n {
+            None => "Device default".to_string(),
+            Some(n) => format!("{n} ({:.1} ms)", n as f64 / 48.0),
+        };
+        Self::setting_row_with_subtitle(ui, "Buffer size", "PipeWire only; applies after a restart. Larger = more stable, higher latency", theme, |ui| {
             egui::ComboBox::from_id_salt("buffer_sz")
-                .selected_text(&current)
-                .width(60.0)
+                .selected_text(buffer_label(prefs.audio_hardware.output_buffer))
+                .width(130.0)
                 .show_ui(ui, |ui| {
-                    for &s in sizes {
-                        if ui.selectable_value(&mut prefs.audio_hardware.buffer_size, s, format!("{s}")).changed() {
+                    for choice in std::iter::once(None).chain(crate::audio_buffer::CHOICES.iter().copied().map(Some)) {
+                        if ui.selectable_value(&mut prefs.audio_hardware.output_buffer, choice, buffer_label(choice)).changed() {
                             *dirty = true;
                         }
                     }
                 });
         });
+        if prefs.audio_hardware.output_buffer.is_some() {
+            ui.label(egui::RichText::new("PipeWire runs every program on this device at the smallest buffer any of them asks for.").size(10.5).color(theme.text_dim));
+        }
 
         // ── INPUT DEVICE section (for audio recording, #60) ──
         Self::section_header(ui, "RECORDING INPUT", theme);

@@ -152,16 +152,44 @@ pub(super) fn try_poster_from_media(
     duration_secs: f64,
     out_path: &std::path::Path,
 ) -> Option<PathBuf> {
-    // Find first video media file
-    let first_media = media_pool.all()
-        .find(|m| m.path.exists() && is_video_ext(&m.path))?;
-
-    let est_dur = if duration_secs > 0.0 { duration_secs } else { 60.0 };
-    let (rgba, w, h) = klipp_engine::generate_thumbnail_at_size_non_black(
-        &first_media.path, 1.0, est_dur, 320,
-    ).ok()?;
+    let (path, seek, duration) = poster_source(media_pool.all(), duration_secs, |p| p.exists())?;
+    let (rgba, w, h) = klipp_engine::generate_thumbnail_at_size_non_black(path, seek, duration, 320).ok()?;
 
     save_rgba_as_png(&rgba, w, h, out_path).then(|| out_path.to_path_buf())
+}
+
+/// The file a project's poster is decoded from, and where in it: the
+/// first on disk that is a video or a still, a second in over the
+/// project's length (60 s when it has none), a still at its one frame.
+fn poster_source<'a>(
+    items: impl Iterator<Item = &'a klipp_media::MediaItem>,
+    duration_secs: f64,
+    exists: impl Fn(&std::path::Path) -> bool,
+) -> Option<(&'a std::path::Path, f64, f64)> {
+    let first_media = items.into_iter().find(|m| exists(&m.path) && (is_video_ext(&m.path) || m.is_still))?;
+    let est_dur = if duration_secs > 0.0 { duration_secs } else { 60.0 };
+    let (seek, duration) = super::media_jobs::poster_position(1.0, est_dur, first_media.is_still);
+    Some((&first_media.path, seek, duration))
+}
+
+#[cfg(test)]
+mod poster_source_tests {
+    use klipp_media::MediaItem;
+
+    /// A project of stills alone had no file to take a poster from: only
+    /// video files were looked at, so its card on the welcome screen said
+    /// "Empty project" whatever its timeline held.
+    #[test]
+    fn a_still_gives_a_project_its_poster() {
+        let mut still = MediaItem::synthetic_for_test("/m/a.png".into(), None);
+        still.video_codec = "png".into();
+        still.is_still = true;
+        let video = MediaItem::synthetic_for_test("/m/b.mov".into(), None);
+        let on_disk = |_: &std::path::Path| true;
+        assert_eq!(super::poster_source([&still].into_iter(), 10.0, on_disk), Some((std::path::Path::new("/m/a.png"), 0.0, 0.0)));
+        assert_eq!(super::poster_source([&video].into_iter(), 10.0, on_disk), Some((std::path::Path::new("/m/b.mov"), 1.0, 10.0)));
+        assert_eq!(super::poster_source([&still].into_iter(), 10.0, |_| false), None, "a file not on disk gives none");
+    }
 }
 
 /// Force-capture the current viewer frame as project thumbnail (for custom thumbnail).

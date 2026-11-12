@@ -100,14 +100,14 @@ pub use time::{whole_frames_within, Fps, RationalTime, TimeRange, Timecode, Time
 pub use modifier::{EvalContext, Extrapolation, Modifier, ModifierBlend, ModifierStack, ParamId, Waveform, evaluate_level_param, evaluate_param};
 pub use snap::{GridInterval, SnapConfig, SnapTargetKind};
 pub use ofx_value::OfxValue;
-pub use types::{AudioEffectInstance, BlendMode, ChannelConfig, ClipRole, ColorSpace, DEFAULT_GENERATOR_GRAIN, RoleProposal, RoleSource, FadeCurve, FocalRef, FourPointGradient, GeneratorData, LogFormat, PixelFormat, Resolution, TimerFormat, TimerMode, TrackPoint, TransitionAlignment, TransitionUserParams, ViewChannel};
+pub use types::{AudioEffectInstance, BlendMode, ChannelConfig, ClipRole, ColorSpace, DEFAULT_GENERATOR_GRAIN, RoleProposal, RoleSource, FadeCurve, FocalRef, FourPointGradient, GeneratorData, GENERATOR_KINDS, LogFormat, PixelFormat, Resolution, TimerFormat, TimerMode, TrackPoint, TransitionAlignment, TransitionUserParams, ViewChannel};
 pub use transition_registry::{TransitionGroup, TransitionKind, TransitionSpec, TRANSITION_SPECS, spec_for_kind, spec_for_kind_id, spec_for_string_key};
 pub use config::{
     ChannelMask, GpuPreference, HistogramDisplayMode, HistogramLevels, HistogramSettings,
     LoudnessStandard, MeteringBallistics, PanLaw, PlaybackQuality, ScopeSettings,
     ScopeQuality, VectorscopeSettings, WaveformParadeSettings,
 };
-pub use gpu_vendor::GpuVendor;
+pub use gpu_vendor::{GpuVendor, VaapiUse};
 pub use working_colorspace::{grade_encoding, set_grade_encoding, GradeEncoding, WorkingColorspace};
 pub use shot::{ShotMetadata, StreamEnds};
 pub use logging::ClipLog;

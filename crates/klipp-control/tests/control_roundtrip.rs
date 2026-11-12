@@ -1482,6 +1482,12 @@ fn control_socket_reads_state_and_forwards_commands() {
     let none = h.call(json!({ "method": "import_media", "folder": shots.to_string_lossy(), "recursive": false }));
     assert_eq!(none["ok"], json!(false), "a folder with no media is refused: {none}");
     assert!(none["error"].as_str().unwrap().contains("no media file") && none["error"].as_str().unwrap().contains("1 subfolder not read"), "{}", none["error"]);
+    // A folder given as path is imported as a folder is (#2562), not
+    // refused as a file, and what it skipped is said.
+    write_wav(&shots.join("tone.wav"));
+    let as_path = h.ok(json!({ "method": "import_media", "path": shots.to_string_lossy(), "recursive": false, "analyze": false }));
+    assert_eq!(as_path["imported"], 1, "{as_path}");
+    assert!(as_path["text"].as_str().unwrap().contains("1 file that is not a picture or sound skipped"), "{as_path}");
     let _ = std::fs::remove_dir_all(&shots);
     let nothing = h.call(json!({ "method": "import_media" }));
     assert_eq!(nothing["ok"], json!(false), "{nothing}");
@@ -4224,6 +4230,7 @@ fn audio_excerpt_hears_the_sequences_mix() {
     let out = dir.join("mix.wav");
     let r = h.ok(json!({ "method": "audio_excerpt", "from_secs": 2.0, "to_secs": 10.0, "path": out.to_string_lossy() }));
     assert!(r["source"].as_str().unwrap().contains("mix"), "{r}");
+    assert!(r.get("capped").is_none() && !r["text"].as_str().unwrap().contains("Cut"), "nothing cut, nothing said of a cut: {r}");
     let bytes = std::fs::read(&out).unwrap();
     let data = bytes.windows(4).position(|w| w == b"data").expect("a data chunk") + 8;
     let samples: Vec<f32> = bytes[data..].chunks_exact(2).map(|b| i16::from_le_bytes([b[0], b[1]]) as f32 / 32768.0).collect();
@@ -4242,6 +4249,42 @@ fn audio_excerpt_hears_the_sequences_mix() {
 
     let both_asked = h.call(json!({ "method": "audio_excerpt", "media_id": media.0.to_string(), "sequence": true, "from_secs": 0.0, "to_secs": 1.0 }));
     assert!(both_asked["error"].as_str().unwrap().contains("not both"), "{both_asked}");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// #2603: an excerpt of the mix longer than it holds is cut to 60 s and
+/// says so, with what was asked and where the next stretch starts; it
+/// stopped at 60 s without a word, only its to_secs a hint.
+#[test]
+fn a_mix_excerpt_past_its_most_says_it_was_cut() {
+    let mut h = harness();
+    let dir = std::env::temp_dir().join(format!("klipp-mix-excerpt-cap-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let wav = dir.join("long.wav");
+    let made = std::process::Command::new("ffmpeg")
+        .args(["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=16000:duration=70", "-ac", "1"])
+        .arg(&wav)
+        .status();
+    if !made.is_ok_and(|s| s.success()) {
+        eprintln!("skipping: no ffmpeg");
+        return;
+    }
+    let mut item = klipp_media::MediaItem::synthetic_for_test(wav.clone(), None);
+    item.has_audio = true;
+    item.video_codec = String::new();
+    item.duration = klipp_core::RationalTime::from_secs_f64(70.0, 30);
+    let media = h.media_pool.write().unwrap().add(item);
+    let time = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 30);
+    let mut track = klipp_timeline::Track::new("A", klipp_timeline::TrackKind::Audio);
+    track.clips = vec![klipp_timeline::Clip::media(media, time(0.0), time(70.0), time(0.0), time(70.0))];
+    h.sequence.write().unwrap().tracks = vec![klipp_timeline::Track::new("V1", klipp_timeline::TrackKind::Video), track];
+
+    let r = h.ok(json!({ "method": "audio_excerpt", "sequence": true, "from_secs": 0.0, "to_secs": 194.0, "path": dir.join("mix.wav").to_string_lossy() }));
+    assert_eq!(r["to_secs"], json!(60.0), "{r}");
+    assert_eq!(r["capped"], json!(true), "{r}");
+    assert_eq!(r["asked_to_secs"], json!(194.0), "{r}");
+    let text = r["text"].as_str().unwrap();
+    assert!(text.contains("Cut to 60 s") && text.contains("next stretch from 60.00 s"), "{text}");
     std::fs::remove_dir_all(&dir).ok();
 }
 

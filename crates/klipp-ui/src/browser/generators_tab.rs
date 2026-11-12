@@ -198,6 +198,7 @@ pub fn show(
                             "No generators in this category".to_string()
                         };
                         ui.label(egui::RichText::new(msg).size(11.0).color(theme.text_dim));
+                        super::clear_search_button(ui, search_query);
                     });
                     return;
                 }

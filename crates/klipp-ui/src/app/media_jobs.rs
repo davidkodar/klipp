@@ -9,17 +9,43 @@ pub(super) fn poster_width(prefs: &crate::prefs::MediaCachePrefs) -> u32 {
     prefs.thumbnail_height.clamp(160, 1920)
 }
 
+/// Where a poster frame is first looked for, `seek_secs`, and the length
+/// the later tries are shares of (`generate_thumbnail_at_size_non_black`).
+/// A still image's one frame is at its start, and its length is only the
+/// default a still is given on the timeline: it is read at 0, unseeked.
+pub(super) fn poster_position(seek_secs: f64, duration_secs: f64, is_still: bool) -> (f64, f64) {
+    if is_still {
+        (0.0, 0.0)
+    } else {
+        (seek_secs, duration_secs)
+    }
+}
+
+#[cfg(test)]
+mod poster_position_tests {
+    /// Looked for past its start, a still gave the decoder no frame: the
+    /// Media tab's card kept its placeholder, and a project that begins
+    /// with one had no poster on the welcome screen.
+    #[test]
+    fn a_stills_poster_is_its_first_frame() {
+        assert_eq!(super::poster_position(0.5, 5.0, true), (0.0, 0.0));
+        assert_eq!(super::poster_position(1.0, 60.0, true), (0.0, 0.0));
+        assert_eq!(super::poster_position(2.0, 20.0, false), (2.0, 20.0));
+    }
+}
+
 impl KlippApp {
     pub(super) fn spawn_thumbnail(
         &mut self,
         media_id: MediaId,
         path: PathBuf,
         duration: Timecode,
+        is_still: bool,
     ) {
         self.state.thumbnail_cache.set_pending(media_id);
         let tx = self.thumb_tx.clone();
         let duration_secs = duration.to_secs_f64();
-        let seek_secs = duration_secs * 0.1;
+        let (seek_secs, duration_secs) = poster_position(duration_secs * 0.1, duration_secs, is_still);
         let cache_key = klipp_engine::video_decoder::picture_cache_key(&path);
         // Decode the media-pool poster at the cache preferences' size,
         // 480 wide unless changed, the Files browser's size. A small size
@@ -78,14 +104,14 @@ impl KlippApp {
     /// from the disk cache when pictures for its current decode settings
     /// exist, freshly decoded otherwise.
     pub(super) fn refresh_media_pictures(&mut self, media_id: MediaId) {
-        let Some((path, duration)) = self.state.media_pool.get(&media_id)
-            .map(|m| (m.path.clone(), m.duration))
+        let Some((path, duration, is_still)) = self.state.media_pool.get(&media_id)
+            .map(|m| (m.path.clone(), m.duration, m.is_still))
         else {
             return;
         };
         let stale = self.state.forget_media_pictures(media_id);
         self.defer_drop_textures(stale);
-        self.spawn_thumbnail(media_id, path.clone(), duration);
+        self.spawn_thumbnail(media_id, path.clone(), duration, is_still);
         self.spawn_filmstrip(media_id, path, duration);
     }
 
@@ -1631,8 +1657,11 @@ mod skim_encoder_tests {
     }
 }
 
-fn has_picture_to_skim(item: &klipp_media::MediaItem) -> bool {
-    !item.video_codec.is_empty()
+/// Whether a file is given a skim transcode: one with a moving picture.
+/// Not sound alone, and not a still, whose own file is its skim
+/// (`skim_file` in klipp-engine's skim_render).
+pub(super) fn has_picture_to_skim(item: &klipp_media::MediaItem) -> bool {
+    !item.is_still && !item.video_codec.is_empty()
 }
 
 #[cfg(test)]
@@ -1644,6 +1673,18 @@ mod skim_picture_tests {
         let mut item = klipp_media::MediaItem::synthetic_for_test("/tmp/a.mov".into(), None);
         assert!(super::has_picture_to_skim(&item));
         item.video_codec.clear();
+        assert!(!super::has_picture_to_skim(&item));
+    }
+
+    /// A still's skim is its own file. One transcoded from it is a single
+    /// frame, which the completeness check takes for a skim cut short
+    /// against the still's default duration, so it was thrown away and
+    /// encoded again at every project open.
+    #[test]
+    fn a_still_has_no_skim_transcode() {
+        let mut item = klipp_media::MediaItem::synthetic_for_test("/tmp/a.png".into(), None);
+        item.video_codec = "png".into();
+        item.is_still = true;
         assert!(!super::has_picture_to_skim(&item));
     }
 }

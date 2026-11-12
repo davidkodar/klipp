@@ -726,6 +726,7 @@ impl KlippApp {
             self.state.show_first_cut_button = self.prefs.editing.show_first_cut_button;
             // Sync engine statics
             klipp_engine::video_decoder::set_hardware_decode(self.prefs.system.hardware_decode);
+            klipp_core::GpuVendor::set_vaapi_preference(self.prefs.system.vaapi_decode);
             klipp_engine::video_decoder::set_optimised_playback_mode(
                 self.prefs.playback.optimised_playback.to_engine_mode(),
             );

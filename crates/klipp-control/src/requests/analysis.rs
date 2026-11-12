@@ -798,15 +798,26 @@ pub(crate) fn respond(
                     };
                     let end = snapshot.end_frame() as f64 / snapshot.fps.max(1.0);
                     let from = from_secs.clamp(0.0, end.max(0.0));
-                    let to = to_secs.clamp(from, end.max(from)).min(from + 60.0);
+                    let held = to_secs.clamp(from, end.max(from));
+                    let to = held.min(from + MIX_EXCERPT_SECS);
                     if to - from < 0.1 {
                         return Err(format!("{from:.2}-{to:.2} s holds no sound of the timeline (it ends at {end:.2} s)"));
                     }
                     let out = temp_output(path, "klipp-mix-excerpt", "wav")?;
                     let p = mix_excerpt(&snapshot, from, to, &out)?;
                     let bytes = std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0);
-                    return Ok(json!({ "path": p.to_string_lossy(), "from_secs": from, "to_secs": to, "bytes": bytes, "format": "wav 16 kHz mono 16-bit",
-                        "source": "the sequence's mix, as the export mixes it, before loudness normalisation" }));
+                    let mut reply = json!({ "path": p.to_string_lossy(), "from_secs": from, "to_secs": to, "bytes": bytes, "format": "wav 16 kHz mono 16-bit",
+                        "source": "the sequence's mix, as the export mixes it, before loudness normalisation" });
+                    // A cut said, not left to be read off to_secs (#2603).
+                    let text = if to < held - 1e-6 {
+                        reply["capped"] = json!(true);
+                        reply["asked_to_secs"] = json!(to_secs);
+                        format!("Cut to {MIX_EXCERPT_SECS:.0} s, the most a mix excerpt holds: {from:.2}-{to:.2} s of the {from:.2}-{to_secs:.2} s asked. Ask for the next stretch from {to:.2} s.")
+                    } else {
+                        format!("The mix from {from:.2} to {to:.2} s.")
+                    };
+                    reply["text"] = json!(text);
+                    return Ok(reply);
                 }
             };
             let (media_path, duration) = media_path_and_duration(ctx, &media_id)?;
@@ -913,6 +924,10 @@ pub(crate) fn respond(
         _ => Err("internal: a request was routed to the wrong area".into()),
     }
 }
+
+/// The most an excerpt of the sequence's mix holds (#2603): it is mixed
+/// as the export mixes it, which takes as long as the stretch does.
+const MIX_EXCERPT_SECS: f64 = 60.0;
 
 /// The most an audition plays of one stretch, and how many previews it
 /// queues: as `audio_excerpt`'s cut, and `listen`'s five.

@@ -857,8 +857,9 @@ fn effect_input(clip: &klipp_timeline::Clip, node: klipp_nodes::NodeId) -> Optio
     use klipp_graph_format::path::{NodeOutput, NodePath, Root};
     let picture = clip.picture_v2().ok()?;
     let graph = &picture.picture.graph;
-    // An effect's node carries its type in its payload, as the lift writes it.
-    graph.nodes.iter().find(|n| n.id == node).and_then(|n| n.legacy.as_ref()?.payload.get("type")?.as_str())?;
+    // An effect's node: one with an effect's tag, read where every reader
+    // of an effect node's entry reads it.
+    graph.nodes.iter().find(|n| n.id == node).and_then(klipp_graph_lift::effect_params::tag)?;
     let feed = graph.edges.iter().find(|e| e.to.0 == node && e.to.1.as_str() == "in")?;
     Some(NodeOutput { path: NodePath::new(Root::Clip { clip: clip.id.0 }, [feed.from.0]), port: feed.from.1.clone() })
 }
@@ -3104,7 +3105,7 @@ impl PlaybackEngine {
         };
         info!("PlaybackEngine: cpal sample rate = {cpal_sample_rate}");
 
-        info!("{}", klipp_core::GpuVendor::vaapi_startup_line(&klipp_core::GpuVendor::vaapi_nodes()));
+        info!("{}", klipp_core::GpuVendor::vaapi_startup_line(klipp_core::GpuVendor::vaapi_use(), &klipp_core::GpuVendor::vaapi_nodes()));
 
         // Create audio output eagerly so skim audio works without playing a clip first.
         let mixer = std::sync::Arc::new(std::sync::Mutex::new(klipp_audio::AudioMixer::new(0)));

@@ -57,7 +57,6 @@ makedepends=(
   'git'
 )
 optdepends=(
-  'onnxruntime-cuda: the ONNX vision models on an NVIDIA GPU (in place of onnxruntime-cpu; brings cuDNN)'
   'pipewire: PipeWire audio output (ALSA is used otherwise)'
   'frei0r-plugins: extra video effects through the frei0r host'
   'lsp-plugins-lv2: a large set of audio effects for the LV2 host'

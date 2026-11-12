@@ -18,13 +18,20 @@ use std::path::{Path, PathBuf};
 use ffmpeg_next::ffi;
 
 /// The render nodes an export may encode on through VAAPI: AMD's and
-/// Intel's, in node order.
+/// Intel's, in node order, and none while VAAPI is off, as by default.
 ///
 /// NVIDIA's are left out. Its VAAPI driver decodes only, and it writes
 /// its errors straight to stderr, past FFmpeg's log level; NVENC is that
 /// card's encoder.
 pub(crate) fn encode_nodes() -> Vec<PathBuf> {
-    klipp_core::GpuVendor::render_nodes()
+    encode_nodes_of(klipp_core::GpuVendor::vaapi_use(), klipp_core::GpuVendor::render_nodes())
+}
+
+fn encode_nodes_of(vaapi: klipp_core::VaapiUse, nodes: Vec<(PathBuf, klipp_core::GpuVendor)>) -> Vec<PathBuf> {
+    if vaapi == klipp_core::VaapiUse::Off {
+        return Vec::new();
+    }
+    nodes
         .into_iter()
         .filter(|(_, vendor)| matches!(vendor, klipp_core::GpuVendor::Amd | klipp_core::GpuVendor::Intel))
         .map(|(node, _)| node)
@@ -202,6 +209,23 @@ mod tests {
         assert_eq!(surface.format(), ffmpeg_next::format::Pixel::VAAPI);
         assert_eq!((surface.width(), surface.height()), (w, h));
         assert_eq!(surface.pts(), Some(7));
+    }
+
+    /// An export encodes through VAAPI on AMD's and Intel's nodes only, and
+    /// on none while VAAPI is off, as by default.
+    #[test]
+    fn an_export_encodes_through_vaapi_only_while_it_is_on() {
+        use klipp_core::{GpuVendor, VaapiUse};
+        let nodes = vec![
+            (PathBuf::from("/dev/dri/renderD128"), GpuVendor::Amd),
+            (PathBuf::from("/dev/dri/renderD129"), GpuVendor::Nvidia),
+            (PathBuf::from("/dev/dri/renderD130"), GpuVendor::Intel),
+            (PathBuf::from("/dev/dri/renderD131"), GpuVendor::Unknown),
+        ];
+        assert!(encode_nodes_of(VaapiUse::Off, nodes.clone()).is_empty());
+        for vaapi in [VaapiUse::On, VaapiUse::Force] {
+            assert_eq!(encode_nodes_of(vaapi, nodes.clone()), [PathBuf::from("/dev/dri/renderD128"), PathBuf::from("/dev/dri/renderD130")]);
+        }
     }
 
     #[test]

@@ -1458,9 +1458,10 @@ pub(super) fn key_scope(state: &crate::state::AppState, text_editing: bool) -> K
 /// panel, active. In the inspector or any other panel it selected every
 /// clip behind it, and the inspector then edited them all (a missed
 /// double-click on a field, a colour picker); the Files list takes it for
-/// its own files while it has the keyboard (#3019).
+/// its own files while it has the keyboard (#3019), or the pointer is over
+/// it (#2562).
 pub(super) fn select_all_reaches_timeline(state: &crate::state::AppState) -> bool {
-    !state.files_panel_focused && matches!(state.active_panel, None | Some(crate::state::PanelKind::Timeline))
+    !state.files_panel_focused && !state.files_hovered && matches!(state.active_panel, None | Some(crate::state::PanelKind::Timeline))
 }
 
 /// Whether Delete goes to the timeline's selection: not while the
@@ -1578,6 +1579,8 @@ mod select_all_tests {
         }
         let files = AppState { active_panel: Some(PanelKind::Timeline), files_panel_focused: true, ..Default::default() };
         assert!(!super::select_all_reaches_timeline(&files), "the Files list keeps its own");
+        let over_files = AppState { active_panel: Some(PanelKind::Timeline), files_hovered: true, ..Default::default() };
+        assert!(!super::select_all_reaches_timeline(&over_files), "nor the pointer over the Files list (#2562)");
     }
 
     /// Through the presses themselves, as the layout notes them: a clip

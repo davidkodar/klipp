@@ -1,0 +1,18 @@
+kind = "app"
+categories = ["AudioVideo", "Video"]
+icon = "assets/branding/klipp-refined/klipp-icon-512.png"
+screenshots = [
+  "assets/screenshots/01-edit.png",
+  "assets/screenshots/02-colour.png",
+  "assets/screenshots/03-nodes.png",
+  "assets/screenshots/04-library-titles.png",
+  "assets/screenshots/05-sound.png",
+]
+
+[linux.x86_64]
+asset = "klipp-{version}-*-x86_64.pkg.tar.zst"
+exec = "usr/bin/klipp"
+
+[linux.aarch64]
+asset = "klipp-{version}-*-aarch64.pkg.tar.xz"
+exec = "usr/bin/klipp"

@@ -51,6 +51,7 @@ pub mod auto_duck;
 pub mod automation_record;
 pub mod audio_plugins_disabled;
 pub mod import_folder;
+pub mod audio_buffer;
 pub mod speed_dialog;
 pub mod first_cut;
 pub mod browser;
