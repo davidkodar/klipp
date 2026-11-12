@@ -34,6 +34,8 @@ mod codec_true_peak;
 mod aux_sends_export;
 #[path = "../track_effects_run_on_the_bus.rs"]
 mod track_effects_run_on_the_bus;
+#[path = "../plugin_settings_survive_reopen.rs"]
+mod plugin_settings_survive_reopen;
 #[path = "../export_status_timings.rs"]
 mod export_status_timings;
 #[path = "../export_audio_plays_the_whole_source.rs"]
