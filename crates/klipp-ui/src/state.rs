@@ -2258,6 +2258,10 @@ pub struct AppState {
     /// so the transport handler knows to yield Spacebar to Quick Look
     /// instead of triggering play/pause.
     pub files_panel_focused: bool,
+    /// The pointer is over the Files tab, mirrored from
+    /// `BrowserPanel::files_hovered`: Ctrl+A there is the Files list's,
+    /// not the timeline's (#2562).
+    pub files_hovered: bool,
     /// Quick Look preview: the file currently being previewed via
     /// Spacebar in the file browser. `None` = Quick Look is closed.
     /// The path is used to decode a preview frame (video/image) or
@@ -5211,6 +5215,7 @@ impl Default for AppState {
             system_audio_last_reminder: std::time::Instant::now(),
             mute_reminder_interval_secs: 15,
             files_panel_focused: false,
+            files_hovered: false,
             quick_look_path: None,
             quick_look_texture: None,
             quick_look_info: None,

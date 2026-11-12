@@ -287,6 +287,9 @@ pub(crate) fn respond(
         }
 
         ControlCommand::ImportMedia { path, paths, folder, recursive, bins, analyze } => {
+            // A folder given as `path` is imported as `folder` is (#2562):
+            // as one file it was refused, "Is a directory".
+            let (path, folder) = if paths.is_empty() && folder.is_none() && std::path::Path::new(&path).is_dir() { (String::new(), Some(path)) } else { (path, folder) };
             // Many files: each imported as one would be, each answered on
             // its own, and a file that can't be doesn't stop the rest
             // (#1587: 42 shots took a 42-entry batch).

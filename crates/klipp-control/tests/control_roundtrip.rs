@@ -1482,6 +1482,12 @@ fn control_socket_reads_state_and_forwards_commands() {
     let none = h.call(json!({ "method": "import_media", "folder": shots.to_string_lossy(), "recursive": false }));
     assert_eq!(none["ok"], json!(false), "a folder with no media is refused: {none}");
     assert!(none["error"].as_str().unwrap().contains("no media file") && none["error"].as_str().unwrap().contains("1 subfolder not read"), "{}", none["error"]);
+    // A folder given as path is imported as a folder is (#2562), not
+    // refused as a file, and what it skipped is said.
+    write_wav(&shots.join("tone.wav"));
+    let as_path = h.ok(json!({ "method": "import_media", "path": shots.to_string_lossy(), "recursive": false, "analyze": false }));
+    assert_eq!(as_path["imported"], 1, "{as_path}");
+    assert!(as_path["text"].as_str().unwrap().contains("1 file that is not a picture or sound skipped"), "{as_path}");
     let _ = std::fs::remove_dir_all(&shots);
     let nothing = h.call(json!({ "method": "import_media" }));
     assert_eq!(nothing["ok"], json!(false), "{nothing}");

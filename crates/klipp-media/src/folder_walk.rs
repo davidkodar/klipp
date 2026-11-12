@@ -38,6 +38,9 @@ pub struct FolderMedia {
     pub hidden: usize,
     /// A camera card's proxies, thumbnails and indexes: not clips.
     pub card_extras: usize,
+    /// Files that are not pictures or sounds (a text, a document): left
+    /// out, and said to be (#2562).
+    pub not_media: usize,
     /// Subfolders that could not be read.
     pub unreadable: usize,
     /// Subfolders not read: the walk is not recursive, or they are
@@ -77,6 +80,9 @@ impl FolderMedia {
         }
         if self.card_extras > 0 {
             out.push(format!("{} skipped", plural(self.card_extras, "card proxy or index file", "card proxy and index files")));
+        }
+        if self.not_media > 0 {
+            out.push(format!("{} skipped", plural(self.not_media, "file that is not a picture or sound", "files that are not pictures or sounds")));
         }
         if self.unreadable > 0 {
             out.push(format!("{} could not be read", plural(self.unreadable, "subfolder", "subfolders")));
@@ -152,6 +158,8 @@ pub fn media_in_folder(root: &Path, recursive: bool) -> std::io::Result<FolderMe
                     return Ok(found);
                 }
                 found.files.push(FoundFile { path: entry.path(), folder: folder.clone() });
+            } else if kind.is_file() {
+                found.not_media += 1;
             }
         }
         if !recursive || depth == MAX_DEPTH {
@@ -199,7 +207,8 @@ mod tests {
     }
 
     /// #3096: media two levels of subfolders down is found, each file
-    /// with its folder, in name order; other files are passed over.
+    /// with its folder, in name order; other files are passed over, and
+    /// said to be (#2562).
     #[test]
     fn two_levels_of_subfolders_are_read_in_order() {
         let root = scratch("levels");
@@ -216,7 +225,7 @@ mod tests {
             ("video/day 2/b.mp4".to_string(), Some("video/day 2")),
         ]);
         assert_eq!(found.by_folder(), [(None, 1), (Some("music".into()), 1), (Some("sfx".into()), 1), (Some("video".into()), 1), (Some("video/day 2".into()), 1)]);
-        assert!(found.left_out().is_empty(), "{:?}", found.left_out());
+        assert_eq!(found.left_out(), ["1 file that is not a picture or sound skipped"]);
 
         let flat = media_in_folder(&root, false).unwrap();
         assert_eq!(flat.files.len(), 1, "not recursive: the picked folder's own files");
