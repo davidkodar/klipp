@@ -2785,6 +2785,14 @@ impl PreferencesPanel {
             }
         });
 
+        Self::setting_row_with_subtitle(ui, "VA-API (AMD, Intel)", "Untested here: off by default", theme, |ui| {
+            let mut val = prefs.system.vaapi_decode;
+            if ui.add(Switch::new(&mut val, theme)).changed() {
+                prefs.system.vaapi_decode = val;
+                *dirty = true;
+            }
+        });
+
         // ── THREADING section ──
         Self::section_header(ui, "THREADING", theme);
 

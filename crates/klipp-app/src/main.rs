@@ -246,9 +246,6 @@ fn main() -> Result<()> {
     // this scan's result via the OnceLock inside klipp_title::font_discovery.
     klipp_title::font_discovery::discover_system_fonts_async();
 
-    // VAAPI on NVIDIA requires this before any ffmpeg calls
-    unsafe { std::env::set_var("LIBVA_DRIVER_NAME", "nvidia") };
-
     {
         let _t = LogTimer::new("ffmpeg::init");
         ffmpeg_next::init().expect("Failed to initialize ffmpeg");
@@ -418,6 +415,8 @@ fn main() -> Result<()> {
     // preferences once eframe has booted.
     let launch_prefs = klipp_ui::Preferences::load();
     klipp_engine::audio_output::set_preferred_device(launch_prefs.audio_hardware.output_device.clone());
+    // Before the first decoder opens: whether it may try VA-API.
+    klipp_core::GpuVendor::set_vaapi_preference(launch_prefs.system.vaapi_decode);
     let mut engine = {
         let _t = LogTimer::new("PlaybackEngine::new (TOTAL)");
         PlaybackEngine::new(

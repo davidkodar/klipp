@@ -3095,7 +3095,7 @@ impl PlaybackEngine {
         };
         info!("PlaybackEngine: cpal sample rate = {cpal_sample_rate}");
 
-        info!("{}", klipp_core::GpuVendor::vaapi_startup_line(&klipp_core::GpuVendor::vaapi_nodes()));
+        info!("{}", klipp_core::GpuVendor::vaapi_startup_line(klipp_core::GpuVendor::vaapi_use(), &klipp_core::GpuVendor::vaapi_nodes()));
 
         // Create audio output eagerly so skim audio works without playing a clip first.
         let mixer = std::sync::Arc::new(std::sync::Mutex::new(klipp_audio::AudioMixer::new(0)));

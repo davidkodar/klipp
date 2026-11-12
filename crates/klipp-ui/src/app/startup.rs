@@ -446,6 +446,7 @@ impl KlippApp {
         let _ = app.cmd_tx.send(AppCommand::SetPanLaw(app.prefs.audio.pan_law));
         klipp_engine::pcm_reader::set_anti_click_fade_ms(app.prefs.advanced.anti_click_fade_ms);
         klipp_engine::video_decoder::set_hardware_decode(app.prefs.system.hardware_decode);
+        klipp_core::GpuVendor::set_vaapi_preference(app.prefs.system.vaapi_decode);
         klipp_engine::video_decoder::set_max_playback_height(app.prefs.system.max_playback_height);
         klipp_engine::video_decoder::set_frame_queue_size(app.prefs.system.frame_queue_size);
         klipp_engine::video_decoder::set_decode_threads(app.prefs.system.decode_threads);

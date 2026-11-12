@@ -1811,6 +1811,11 @@ pub(crate) unsafe fn try_init_vaapi(codec_ctx_ptr: *mut ffmpeg_next::ffi::AVCode
     if klipp_core::GpuVendor::vaapi_unavailable() {
         return false;
     }
+    // None while VAAPI is off, as by default.
+    let nodes = klipp_core::GpuVendor::vaapi_nodes();
+    if nodes.is_empty() {
+        return false;
+    }
     let device_type = av_hwdevice_find_type_by_name(c"vaapi".as_ptr());
     if device_type == AVHWDeviceType::AV_HWDEVICE_TYPE_NONE {
         warn!("VAAPI: device type not found");
@@ -1821,7 +1826,7 @@ pub(crate) unsafe fn try_init_vaapi(codec_ctx_ptr: *mut ffmpeg_next::ffi::AVCode
 
     // Never NVIDIA's node: its VAAPI driver can deadlock the process
     // against a CUDA decoder opening on another thread.
-    for node in klipp_core::GpuVendor::vaapi_nodes() {
+    for node in nodes {
         let Ok(device_path) = std::ffi::CString::new(std::os::unix::ffi::OsStrExt::as_bytes(node.as_os_str())) else {
             continue;
         };
