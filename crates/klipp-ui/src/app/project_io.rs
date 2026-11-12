@@ -1208,7 +1208,8 @@ impl KlippApp {
                         path: source_path.clone(),
                         media_id: id,
                     }).ok();
-                    self.spawn_thumbnail(id, source_path.clone(), duration);
+                    let is_still = self.state.media_pool.get(&id).is_some_and(|m| m.is_still);
+                    self.spawn_thumbnail(id, source_path.clone(), duration, is_still);
                     self.spawn_filmstrip(id, source_path.clone(), duration);
                     if has_audio {
                         self.spawn_audio_conform(id, source_path.clone());

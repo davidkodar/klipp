@@ -335,7 +335,7 @@ impl KlippApp {
                             // miss on their own.
                             self.state.thumbnail_cache.set_filmstrip(media_id, Vec::new());
                             self.state.filmstrip_in_progress.remove(&media_id);
-                            self.spawn_thumbnail(media_id, path.clone(), duration);
+                            self.spawn_thumbnail(media_id, path.clone(), duration, is_still);
                             if filmstrips_enabled {
                                 self.spawn_filmstrip(media_id, path.clone(), duration);
                             }
@@ -375,7 +375,7 @@ impl KlippApp {
                         }
 
                         // Start thumbnail (always) + optional filmstrip/audio/skim generation
-                        self.spawn_thumbnail(media_id, path.clone(), duration);
+                        self.spawn_thumbnail(media_id, path.clone(), duration, is_still);
                         if filmstrips_enabled {
                             self.spawn_filmstrip(media_id, path.clone(), duration);
                             self.state.filmstrip_generating = true;

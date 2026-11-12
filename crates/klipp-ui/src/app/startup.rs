@@ -569,7 +569,9 @@ impl KlippApp {
                         if media_path.exists() {
                             // Extract a non-black frame and save as PNG
                             let est_duration = rp.duration_secs.unwrap_or(60.0);
-                            if let Ok((rgba, w, h)) = klipp_engine::generate_thumbnail_at_size_non_black(&media_path, 1.0, est_duration, 320) {
+                            let is_still = klipp_core::media_extensions::path_is_image(&media_path);
+                            let (seek, duration) = super::media_jobs::poster_position(1.0, est_duration, is_still);
+                            if let Ok((rgba, w, h)) = klipp_engine::generate_thumbnail_at_size_non_black(&media_path, seek, duration, 320) {
                                 let stem = rp.path.file_stem().unwrap_or_default().to_string_lossy();
                                 let out_path = cache_dir.join(format!("{stem}.png"));
                                 if save_rgba_as_png(&rgba, w, h, &out_path) {
