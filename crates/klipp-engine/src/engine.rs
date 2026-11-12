@@ -2716,7 +2716,8 @@ impl PlaybackEngine {
                     continue;
                 }
                 if self.titles_warmed.insert((clip.id, w, h)) {
-                    wants.push((td.clone(), w, h));
+                    let total = (clip.timeline_out - clip.timeline_in).to_secs_f64() as f32;
+                    wants.push((td.clone(), w, h, total));
                 }
             }
         }

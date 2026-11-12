@@ -3497,27 +3497,7 @@ impl TitleRenderer {
     /// title it renders as in [`Self::render_stack`], kept as any resting
     /// render is. `None` for anything else.
     fn fading_layers(&mut self, title: &TitleData, width: u32, height: u32, gpu: &mut Option<&mut dyn AlphaMaskProcessor>, time_secs: f32) -> Option<TitleFrame> {
-        if title.background != TitleBackground::None || title.mixes_layers() {
-            return None;
-        }
-        let visible: Vec<&TitleObject> = title.objects.iter().filter(|o| o.visible).collect();
-        if visible.is_empty() || !visible.iter().any(|o| !o.opacity_keyframes.is_empty() || (visible.len() > 1 && o.fx().motion.is_active())) {
-            return None;
-        }
-        let window = self.motion_window;
-        let mut plan = Vec::with_capacity(visible.len());
-        for o in &visible {
-            let TitleObjectContent::TextBox(tb) = &o.content else { return None };
-            if tb.text_path.is_some() || ScreenFade::new(o.fx().edge_fade, None).is_some() {
-                return None;
-            }
-            let alpha = whole_layer_fade(o, tb, time_secs, window)? * o.evaluated_opacity(time_secs as f64).clamp(0.0, 1.0);
-            let mut single = TitleData::single_text_fx(tb.clone(), o.fx().clone());
-            if let Some(first) = single.objects.first_mut() {
-                first.transform = o.transform.clone();
-            }
-            plan.push((single, alpha));
-        }
+        let plan = fading_layer_plan(title, time_secs, self.motion_window)?;
         let (mut y0, mut y1) = (height, 0);
         let mut layers = Vec::with_capacity(plan.len());
         for (single, alpha) in plan {
@@ -4269,8 +4249,29 @@ impl TitleRenderer {
     /// `width`×`height`, made here on the CPU: for a warm-up on another
     /// thread, handed to the renderer that will place it by `adopt`.
     pub fn render_resting(&mut self, title: &TitleData, width: u32, height: u32) -> RestingRender {
-        let pixels = self.raster_at(&resting_title(title), width, height, None, None);
+        let pixels = self.make_resting(&resting_title(title), width, height, None);
         RestingRender { pixels, units: self.last_units.take() }
+    }
+
+    /// The titles whose resting renders the frame of `title` at
+    /// `time_secs` looks up, by the names `adopt` keeps them under: each
+    /// layer of one drawn layer by layer, else the title itself.
+    pub fn resting_keys(&self, title: &TitleData, time_secs: f32, window_secs: Option<f32>) -> Vec<TitleData> {
+        match fading_layer_plan(title, time_secs, window_secs) {
+            Some(plan) => plan.into_iter().map(|(single, _)| single).collect(),
+            None => vec![resting_title(title).into_owned()],
+        }
+    }
+
+    /// A resting render of `title` made: on this thread for the frame
+    /// that wants it, or on the warm-up's ahead of it, the same way. A
+    /// lone layer's edge fade and focus band are left to where it is
+    /// placed.
+    fn make_resting(&mut self, title: &TitleData, width: u32, height: u32, gpu: Option<&mut dyn AlphaMaskProcessor>) -> BoxRaster {
+        self.defer_layer_fades = title.objects.iter().filter(|o| o.visible).count() == 1 && !title.mixes_layers();
+        let raster = self.raster_at(title, width, height, gpu, None);
+        self.defer_layer_fades = false;
+        raster
     }
 
     /// Keep a resting render of `title` made by `render_resting`
@@ -4354,9 +4355,7 @@ impl TitleRenderer {
             Some(hit) => hit,
             None => {
                 self.resting_renders += 1;
-                self.defer_layer_fades = title.objects.iter().filter(|o| o.visible).count() == 1 && !title.mixes_layers();
-                let raster = self.raster_at(title, width, height, gpu, None);
-                self.defer_layer_fades = false;
+                let raster = self.make_resting(title, width, height, gpu);
                 self.cache_store(title.clone(), width, height, raster)
             }
         }
@@ -5686,6 +5685,33 @@ fn scale_layer_alpha(layer: &mut [u8], factor: f32) {
 /// keyed except object opacity and nothing that moves on its own: its frame is the layer at
 /// rest with that alpha, its shadow, glow and outline fading with it
 /// (#2095, #2069). `None` when anything else changes.
+/// The layers [`TitleRenderer::fading_layers`] draws `title` as at
+/// `time_secs`, each a one-text title with its fade; `None` when the
+/// title is not drawn that way.
+fn fading_layer_plan(title: &TitleData, time_secs: f32, window: Option<f32>) -> Option<Vec<(TitleData, f32)>> {
+    if title.background != TitleBackground::None || title.mixes_layers() {
+        return None;
+    }
+    let visible: Vec<&TitleObject> = title.objects.iter().filter(|o| o.visible).collect();
+    if visible.is_empty() || !visible.iter().any(|o| !o.opacity_keyframes.is_empty() || (visible.len() > 1 && o.fx().motion.is_active())) {
+        return None;
+    }
+    let mut plan = Vec::with_capacity(visible.len());
+    for o in &visible {
+        let TitleObjectContent::TextBox(tb) = &o.content else { return None };
+        if tb.text_path.is_some() || ScreenFade::new(o.fx().edge_fade, None).is_some() {
+            return None;
+        }
+        let alpha = whole_layer_fade(o, tb, time_secs, window)? * o.evaluated_opacity(time_secs as f64).clamp(0.0, 1.0);
+        let mut single = TitleData::single_text_fx(tb.clone(), o.fx().clone());
+        if let Some(first) = single.objects.first_mut() {
+            first.transform = o.transform.clone();
+        }
+        plan.push((single, alpha));
+    }
+    Some(plan)
+}
+
 fn whole_layer_fade(obj: &TitleObject, tb: &klipp_timeline::TextBox, t: f32, window: Option<f32>) -> Option<f32> {
     let fx = obj.fx();
     let plain_fade = |m: &Option<klipp_timeline::Motion>| m.as_ref().is_none_or(|m| m.kind == klipp_core::title_motion::MotionKind::Fade && m.stagger == klipp_timeline::StaggerUnit::None);

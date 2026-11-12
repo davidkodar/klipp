@@ -1329,14 +1329,30 @@ impl Renderer {
     /// made on the warm-up thread; `adopt_warm_titles` takes them in.
     /// A title's first frame then places a sprite that is already
     /// there, instead of rastering 4K of text on the frame's thread.
-    pub fn warm_titles(&mut self, wants: Vec<(klipp_timeline::TitleData, u32, u32)>) {
-        // A title the GPU lays out on its glyph route has no resting
-        // raster to wait on (#2335); the CPU one is the fallback's.
-        let wants: Vec<_> = if self.allow_gpu {
-            wants.into_iter().filter(|(td, _, _)| !klipp_title::takes_glyph_route(td, None)).collect()
-        } else {
-            wants
-        };
+    ///
+    /// Each want is a title, the frame size, and the clip's length in
+    /// seconds. What is made is what the title's first frame looks up:
+    /// on the GPU stack, each object of a title of several on its own
+    /// (`stack_title_keys`); a title drawn layer by layer, each layer.
+    pub fn warm_titles(&mut self, wants: Vec<(klipp_timeline::TitleData, u32, u32, f32)>) {
+        let mut keys: Vec<(klipp_timeline::TitleData, u32, u32)> = Vec::new();
+        for (td, w, h, total) in wants {
+            let placed = if self.allow_gpu {
+                let mut out = Vec::new();
+                stack_title_keys(&td, &td, w, h, 0.0, total, &mut out);
+                out
+            } else {
+                vec![td]
+            };
+            for title in placed {
+                for key in self.titles.resting_keys(&title, 0.0, Some(total)) {
+                    if !keys.iter().any(|(k, kw, kh)| *kw == w && *kh == h && *k == key) {
+                        keys.push((key, w, h));
+                    }
+                }
+            }
+        }
+        let wants = keys;
         if wants.is_empty() {
             return;
         }
@@ -8125,6 +8141,112 @@ fn title_rasters_each_frame(title: &klipp_timeline::TitleData, text: &klipp_time
         o.visible && (keyed || (pose.wave.is_some() && posed_glyphs(o))
             || fx.styles_keyed())
     })
+}
+
+/// The titles the GPU stack hands `place_title_frame` for `td` at
+/// `clip_time`, branch by branch as `place_title_source_in_scene` takes
+/// them: what that frame looks up as resting renders, and so what the
+/// warm-up makes ahead. A shape, an image, the glyph route and a solid
+/// have none. `warmed_titles_match_cold` holds the two together.
+fn stack_title_keys(td: &klipp_timeline::TitleData, scene: &klipp_timeline::TitleData, width: u32, height: u32, clip_time: f64, total: f32, out: &mut Vec<klipp_timeline::TitleData>) {
+    use klipp_timeline::{TitleBackground, TitleObjectContent};
+    let full_frame = matches!(td.background, TitleBackground::FullFrame { .. });
+    if let [object] = td.objects.as_slice() {
+        if matches!(object.content, TitleObjectContent::Shape(_) | TitleObjectContent::Image(_)) {
+            return;
+        }
+        if let TitleObjectContent::TextBox(tb) = &object.content {
+            let loops: Vec<_> = object.fx().loops.iter().filter(|l| !title_source_loops(std::slice::from_ref(*l))).cloned().collect();
+            if !loops.is_empty() && !full_frame {
+                let text = tb.at(clip_time);
+                let font_px = text.font_size * klipp_title::frame_scale(width, height);
+                let (text_w, text_h) = text.loop_extent(font_px);
+                let geometry = klipp_timeline::LoopGeometry { frame_w: width as f32, frame_h: height as f32, text_w, text_h, font_px };
+                let pose = klipp_core::title_motion::eval_loops(&loops, clip_time as f32, Some(total), geometry, text.color);
+                let whole = klipp_core::title_motion::eval_loops(&object.fx().loops, clip_time as f32, Some(total), geometry, text.color);
+                let placed_on_cpu = scene.objects.iter().filter(|o| o.visible).count() == 1 && !scene.mixes_layers() && !title_rasters_each_frame(scene, &text, &whole);
+                if pose.focus.is_none() && placed_on_cpu {
+                    out.push(td.clone());
+                    return;
+                }
+                // With a focus band, a layer placed from its resting
+                // render goes on as it is.
+                if !(pose.focus.is_some() && placed_on_cpu) {
+                    let mut source = td.clone();
+                    let target = &mut source.objects[0];
+                    target.fx_mut().loops.retain(|l| title_source_loops(std::slice::from_ref(l)));
+                    if pose.focus.is_some() {
+                        target.fx_mut().edge_fade = Default::default();
+                    }
+                    target.opacity *= pose.opacity;
+                    if target.opacity <= 0.001 {
+                        return;
+                    }
+                    if pose.focus.is_some() {
+                        target.opacity = 1.0;
+                        target.opacity_keyframes.clear();
+                    }
+                    target.transform.center.x += pose.dx / width as f32;
+                    target.transform.center.y += pose.dy / height as f32;
+                    stack_title_keys(&source, scene, width, height, clip_time, total, out);
+                    return;
+                }
+            }
+        }
+        if !full_frame && (object.opacity != 1.0 || !object.opacity_keyframes.is_empty()) {
+            let mut source = td.clone();
+            source.objects[0].opacity = 1.0;
+            source.objects[0].opacity_keyframes.clear();
+            stack_title_keys(&source, scene, width, height, clip_time, total, out);
+            return;
+        }
+        if !full_frame && !object.fx().edge_fade.is_none() && title_source_loops(&object.fx().loops) {
+            let mut source = td.clone();
+            source.objects[0].fx_mut().edge_fade = Default::default();
+            stack_title_keys(&source, scene, width, height, clip_time, total, out);
+            return;
+        }
+        if let TitleObjectContent::TextBox(tb) = &object.content {
+            if !full_frame && !matches!(tb.text_path, Some(klipp_timeline::TextPath::Layer { .. })) && (object.transform.rotation != 0.0 || !object.transform.rotation_keyframes.is_empty()) {
+                let mut source = td.clone();
+                source.objects[0].transform.rotation = 0.0;
+                source.objects[0].transform.rotation_keyframes.clear();
+                stack_title_keys(&source, scene, width, height, clip_time, total, out);
+                return;
+            }
+        }
+    }
+    if td.objects.len() > 1 || td.mixes_layers() || full_frame || td.objects.iter().any(|o| matches!(o.content, TitleObjectContent::Shape(_) | TitleObjectContent::Image(_))) {
+        let backing = matches!(td.background, TitleBackground::Color { .. }).then(|| td.background.clone());
+        for object in td.objects.iter().filter(|o| o.visible && !td.is_matte(o.id)) {
+            let mut single = td.clone();
+            single.objects = vec![object.clone()];
+            single.background = if matches!(object.content, TitleObjectContent::TextBox(_)) { backing.clone().unwrap_or_default() } else { TitleBackground::None };
+            single.objects[0].opacity = 1.0;
+            single.objects[0].opacity_keyframes.clear();
+            single.objects[0].blend = klipp_core::BlendMode::Normal;
+            single.objects[0].mask = None;
+            stack_title_keys(&single, scene, width, height, clip_time, total, out);
+            if let Some((matte, _)) = td.mask_of(object) {
+                let mut mask_title = td.clone();
+                mask_title.objects = vec![matte.clone()];
+                mask_title.background = TitleBackground::None;
+                mask_title.objects[0].visible = true;
+                mask_title.objects[0].mask = None;
+                mask_title.objects[0].blend = klipp_core::BlendMode::Normal;
+                stack_title_keys(&mask_title, scene, width, height, clip_time, total, out);
+            }
+        }
+        return;
+    }
+    let post = title_post_source(td);
+    let td = post.as_ref().map_or(td, |(title, _, _)| title);
+    let post_requires_glyph = post.is_some() && td.objects.iter().any(|o| o.fx().motion.is_active());
+    let solid = td.primary_text().is_some_and(|t| t.three_d.as_ref().is_some_and(|d| d.enabled));
+    if solid || klipp_title::takes_glyph_route(td, Some(scene)) || post_requires_glyph || matches!(td.text_path(), Some(klipp_timeline::TextPath::Layer { .. })) {
+        return;
+    }
+    out.push(td.clone());
 }
 
 fn title_source_loops(loops:&[klipp_timeline::TitleLoop])->bool {
