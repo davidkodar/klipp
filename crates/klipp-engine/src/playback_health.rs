@@ -43,6 +43,9 @@ pub struct Recorder {
     seconds: VecDeque<Second>,
     started: Option<Instant>,
     last: Option<Instant>,
+    /// When the due rate became what it is, each change over the last
+    /// second and the one before it.
+    dues: VecDeque<(Instant, f64)>,
 }
 
 impl Recorder {
@@ -56,6 +59,9 @@ impl Recorder {
     /// `shown` the rate presented over the last second, `due` the rate
     /// the sequence plays at.
     pub fn tick(&mut self, now: Instant, shown: Option<f64>, due: f64) {
+        if self.dues.back().is_none_or(|&(_, d)| d != due) {
+            self.dues.push_back((now, due));
+        }
         let started = *self.started.get_or_insert(now);
         if now.duration_since(started) < Duration::from_secs(1) {
             self.last = Some(now);
@@ -65,11 +71,32 @@ impl Recorder {
             return;
         }
         self.last = Some(now);
+        // Due over the same second `shown` counts: a second across a cut
+        // from a 24 fps clip to a 30 fps one was due 27, not 30.
+        let due = self.due_over_last_second(now);
         let shown = shown.unwrap_or(0.0).min(due) as f32;
         self.seconds.push_back(Second { due: due as f32, shown });
         while self.seconds.len() > 30 {
             self.seconds.pop_front();
         }
+    }
+
+    /// The due rate over the second before `now`, each rate weighted by
+    /// how long it held.
+    fn due_over_last_second(&mut self, now: Instant) -> f64 {
+        let from = now - Duration::from_secs(1);
+        while self.dues.len() > 1 && self.dues[1].0 <= from {
+            self.dues.pop_front();
+        }
+        let mut frames = 0.0;
+        let mut counted = 0.0;
+        for (i, &(at, due)) in self.dues.iter().enumerate() {
+            let until = self.dues.get(i + 1).map_or(now, |&(t, _)| t);
+            let held = until.saturating_duration_since(at.max(from)).as_secs_f64();
+            frames += due * held;
+            counted += held;
+        }
+        if counted > 0.0 { frames / counted } else { self.dues.back().map_or(0.0, |&(_, d)| d) }
     }
 
     pub fn health(&self) -> Health {
@@ -266,6 +293,9 @@ pub struct Shared {
     pub proxies_on: bool,
     /// The sequence time the record was last taken at, s.
     pub at_secs: f64,
+    /// The frames a second playback was last due to show: what the
+    /// picture can change at (`engine::pacing::due_rate`).
+    pub due_fps: f64,
 }
 
 static SHARED: std::sync::LazyLock<Mutex<Shared>> = std::sync::LazyLock::new(Default::default);
@@ -360,6 +390,30 @@ mod tests {
         assert!(h.sustained, "{h:?}");
         r.reset();
         assert_eq!(r.health(), Health::default());
+    }
+
+    /// A second across a change of the due rate, as at a cut from a 24 fps
+    /// clip to a 30 fps one, is due what each part of it was.
+    #[test]
+    fn a_second_across_a_change_of_rate_is_due_each_parts_rate() {
+        let t0 = Instant::now();
+        let mut r = Recorder::default();
+        for ms in (0..=2000).step_by(100) {
+            r.tick(t0 + Duration::from_millis(ms), Some(24.0), 24.0);
+        }
+        for ms in (2100..=2400).step_by(100) {
+            r.tick(t0 + Duration::from_millis(ms), Some(24.0), 24.0);
+        }
+        for ms in (2500..=3000).step_by(100) {
+            r.tick(t0 + Duration::from_millis(ms), Some(27.0), 30.0);
+        }
+        let last = *r.seconds.back().expect("recorded");
+        assert!((last.due - 27.0).abs() < 0.7, "half at 24 and half at 30: {last:?}");
+        assert!(last.due - last.shown < 1.0, "nothing dropped: {last:?}");
+        for ms in (3100..=5000).step_by(100) {
+            r.tick(t0 + Duration::from_millis(ms), Some(30.0), 30.0);
+        }
+        assert_eq!(r.seconds.back().expect("recorded").due, 30.0, "a whole second at 30");
     }
 
     fn trouble() -> Inputs {
