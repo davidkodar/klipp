@@ -27,6 +27,9 @@ pub fn format_rate(format: &Format, wanted: Option<Rate>) -> Option<Rate> {
 pub struct NewProjectDialog {
     pub project_name: String,
     pub location: PathBuf,
+    /// The Location field as typed (#2563): `location` follows it while it
+    /// names a folder that is there or can be made.
+    location_text: String,
     pub resolution_idx: usize,
     pub custom_width: u32,
     pub custom_height: u32,
@@ -53,6 +56,27 @@ pub struct NewProjectDialog {
     pub made_from: Option<String>,
 }
 
+/// The folder a typed Location names (#2563), `~` as `home`: a whole path
+/// that is a folder or can be made one (saving makes the folders a
+/// location is missing, as it did for a `~/Videos` not made yet), or why
+/// not.
+fn typed_location(text: &str, home: Option<&Path>) -> Result<PathBuf, &'static str> {
+    let t = text.trim();
+    let path = match (t, home) {
+        ("~", Some(h)) => h.to_path_buf(),
+        (t, Some(h)) if t.starts_with("~/") => h.join(&t[2..]),
+        (t, _) => PathBuf::from(t),
+    };
+    if t.is_empty() || !path.is_absolute() {
+        return Err("Give the location as a whole path, from / or ~");
+    }
+    // The nearest part of it that is there must be a folder.
+    match path.ancestors().find(|a| a.exists()) {
+        Some(there) if there.is_dir() => Ok(path),
+        _ => Err("The location is a file, not a folder"),
+    }
+}
+
 /// The brand kits there are, by name: the user's, then the starters.
 fn brand_kit_names() -> Vec<String> {
     klipp_project::brand_kit::list(klipp_timeline::template_places::data_root().as_deref()).into_iter().map(|f| f.kit.name).collect()
@@ -66,6 +90,7 @@ impl NewProjectDialog {
             .unwrap_or_else(|| PathBuf::from("."));
         Self {
             project_name: String::new(),
+            location_text: location.display().to_string(),
             location,
             resolution_idx: 0, // Automatic (from first clip)
             custom_width: 1920,
@@ -140,6 +165,7 @@ impl NewProjectDialog {
         if let Some(loc) = default_location {
             self.location = loc.clone();
         }
+        self.location_text = self.location.display().to_string();
     }
 
     /// Show the new project dialog. Pushes `AppCommand::CreateProject{..}`
@@ -196,15 +222,14 @@ impl NewProjectDialog {
                             .color(theme.text_secondary),
                     );
                     ui.add_space(40.0 * control_scale);
-                    // Where it goes, as words, not a field: a field that
-                    // took no typing looked editable. Browse
-                    // changes it; all of it on hover.
-                    let loc_str = self.location.to_string_lossy().to_string();
-                    ui.add_sized(
-                        [230.0 * control_scale, 20.0 * control_scale],
-                        egui::Label::new(egui::RichText::new(&loc_str).color(theme.text_secondary)).truncate(),
-                    )
-                    .on_hover_text(&loc_str);
+                    // Typed, or chosen with Browse (#2563): it read only
+                    // as words, and only Browse changed it.
+                    let field = ui.add(egui::TextEdit::singleline(&mut self.location_text).desired_width(230.0 * control_scale));
+                    if field.changed() {
+                        if let Ok(dir) = typed_location(&self.location_text, dirs::home_dir().as_deref()) {
+                            self.location = dir;
+                        }
+                    }
                     let picker = egui::Id::new("new-project-location");
                     if ui.button("Browse...").clicked() {
                         let start = self.location.clone();
@@ -216,9 +241,13 @@ impl NewProjectDialog {
                         });
                     }
                     if let Some(crate::file_dialog::Picked::Path(dir)) = crate::file_dialog::take_path(picker) {
+                        self.location_text = dir.display().to_string();
                         self.location = dir;
                     }
                 });
+                if typed_location(&self.location_text, dirs::home_dir().as_deref()).is_ok_and(|p| !p.is_dir()) {
+                    ui.label(egui::RichText::new("A new folder, made with the project").size(10.0 * control_scale).color(theme.text_dim));
+                }
 
                 ui.add_space(6.0);
                 ui.separator();
@@ -470,7 +499,9 @@ impl NewProjectDialog {
                 ui.horizontal(|ui| {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let name = self.project_name.trim();
-                        let can_create = !name.is_empty();
+                        let place = typed_location(&self.location_text, dirs::home_dir().as_deref());
+                        let can_create = !name.is_empty() && place.is_ok();
+                        let why_not = if name.is_empty() { "Name the project to continue" } else { place.err().unwrap_or_default() };
 
                         // Why it is disabled, said out loud.
                         //
@@ -486,7 +517,7 @@ impl NewProjectDialog {
                                     egui::RichText::new("Create Project").size(13.0 * control_scale),
                                 ),
                             )
-                            .on_disabled_hover_text("Give the project a name first");
+                            .on_disabled_hover_text(why_not);
                         if create_btn.clicked() && can_create {
                             let (width, height) = self.resolved_resolution();
                             let (fps_num, fps_den) = self.resolved_fps();
@@ -524,7 +555,7 @@ impl NewProjectDialog {
                         if !can_create {
                             ui.add_space(8.0);
                             ui.label(
-                                egui::RichText::new("Name the project to continue")
+                                egui::RichText::new(why_not)
                                     .size(11.0 * control_scale)
                                     .color(theme.text_dim),
                             );
@@ -749,6 +780,42 @@ mod template_tests {
 
     fn at(texts: &[(String, egui::Pos2)], label: &str) -> egui::Pos2 {
         texts.iter().find(|(t, _)| t == label).map(|(_, p)| *p).unwrap_or_else(|| panic!("{label} is drawn: {:?}", texts.iter().map(|t| &t.0).collect::<Vec<_>>()))
+    }
+
+    /// #2563: the Location is typed and checked: part of a path keeps
+    /// Create off and says why, as does one through a file; a whole path
+    /// to a folder, typed into the field, is where the project is made.
+    #[test]
+    fn a_typed_location_is_checked_and_used() {
+        let root = std::env::temp_dir().join(format!("klipp-new-project-location-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(root.join("there")).unwrap();
+        std::fs::write(root.join("a-file"), b"x").unwrap();
+        let home = Some(root.as_path());
+        assert_eq!(typed_location(&root.join("there").display().to_string(), None), Ok(root.join("there")));
+        assert_eq!(typed_location("~/there", home), Ok(root.join("there")));
+        assert_eq!(typed_location("~/new/deeper", home), Ok(root.join("new/deeper")), "a folder made with the project");
+        assert!(typed_location("there", home).is_err() && typed_location("  ", home).is_err());
+        assert!(typed_location(&root.join("a-file/inside").display().to_string(), home).is_err(), "through a file");
+
+        let ctx = egui::Context::default();
+        let mut dialog = NewProjectDialog::new(Some(&root));
+        dialog.project_name = "Clip".into();
+        dialog.location_text = "somewhere".into();
+        let mut open = true;
+        let theme = KlippTheme::default();
+        let mut run = |ctx: &egui::Context, cmds: &mut Vec<AppCommand>| dialog.show(ctx, &mut open, &theme, cmds);
+        frame(&ctx, Vec::new(), &mut run);
+        let (_, texts) = frame(&ctx, Vec::new(), &mut run);
+        assert!(texts.iter().any(|(t, _)| t == "Give the location as a whole path, from / or ~"), "it says why");
+        assert!(click(&ctx, at(&texts, "Create Project"), &mut run).is_empty(), "and Create makes nothing");
+        click(&ctx, at(&texts, "somewhere"), &mut run);
+        let typed = root.join("there").display().to_string();
+        let select_all = egui::Event::Key { key: egui::Key::A, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::COMMAND };
+        frame(&ctx, vec![select_all, egui::Event::Text(typed)], &mut run);
+        let (_, texts) = frame(&ctx, Vec::new(), &mut run);
+        let cmds = click(&ctx, at(&texts, "Create Project"), &mut run);
+        assert!(matches!(&cmds[..], [AppCommand::CreateProject { location, .. }] if *location == root.join("there")), "{cmds:?}");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// A templates folder holding "Weekly Series" (two sequences).
