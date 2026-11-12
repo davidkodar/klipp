@@ -1045,6 +1045,9 @@ pub struct BrowserPanel {
     pub scroll_to_media_id: Option<klipp_core::MediaId>,
     // Files tab state
     pub files_current_path: std::path::PathBuf,
+    /// The project the Files tab's folder is for (#2580): `None` for one
+    /// never saved. A project opened takes the Files tab to its own folder.
+    files_project: Option<std::path::PathBuf>,
     pub files_entries: Vec<FileEntry>,
     pub files_entries_dirty: bool,
     pub files_loading: bool,
@@ -1296,7 +1299,10 @@ impl Default for BrowserPanel {
             audio_add_id: None,
             audio_add_drop: klipp_core::events::ClipDrop::PoolOnly,
             scroll_to_media_id: None,
-            files_current_path: dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/")),
+            // Where it was last for a project never saved, else ~/Videos
+            // (#2580): a new profile opened it on the home folder.
+            files_current_path: crate::import_folder::files_folder(None),
+            files_project: None,
             files_entries: Vec::new(),
             files_entries_dirty: true,
             files_loading: false,
@@ -1422,6 +1428,15 @@ impl BrowserPanel {
     ) -> Vec<AppCommand> {
         self.rotate_deferred_drops();
         let mut cmds = Vec::new();
+
+        // Another project open (#2580): the Files tab goes to that
+        // project's folder, and the Import Media picker opens in its own.
+        let project = state.project_path.clone().filter(|p| !crate::project_paths::is_untitled(Some(p)));
+        if project != self.files_project {
+            crate::import_folder::set_project(project.as_deref());
+            self.files_project = project;
+            self.navigate_files_to(crate::import_folder::files_folder(self.files_project.as_deref()));
+        }
 
         // Clear files_panel_focused on state every frame. The Files tab's
         // show_files_tab re-sets it if the tab is active and a row was
@@ -1952,6 +1967,8 @@ impl BrowserPanel {
         if path != self.files_current_path {
             self.files_search_query.clear();
         }
+        // Where this project's Files tab is, for the next time (#2580).
+        crate::import_folder::remember_files(self.files_project.as_deref(), &path);
         self.files_current_path = path.clone();
         self.files_entries_dirty = true;
         // Route cleared TextureHandles through the deferred-drop
@@ -7398,6 +7415,26 @@ mod keyboard_selection_tests {
         assert!(texts.iter().any(|(t, _)| t == "No such folder"), "{texts:?}");
         assert_eq!(panel.files_current_path, root, "and it stays");
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// #2580: a project opened takes the Files tab to its own folder, the
+    /// one it is in when it has none remembered, and a project never
+    /// saved, the "Untitled" one, has the default.
+    #[test]
+    fn a_project_opened_takes_the_files_tab_to_its_folder() {
+        let films = std::env::temp_dir().join(format!("klipp-files-project-{}", uuid::Uuid::new_v4()));
+        let project = films.join("Trip.klipp");
+        std::fs::create_dir_all(&project).unwrap();
+        let mut panel = BrowserPanel::default();
+        let unsaved = panel.files_current_path.clone();
+        assert_eq!(unsaved, crate::import_folder::files_folder(None), "a new profile: the default, not home");
+        let mut state = AppState { file_browser_auto_refresh: false, project_path: Some(project.clone()), ..Default::default() };
+        frame(&mut panel, &mut state, &[]);
+        assert_eq!(panel.files_current_path, films, "the folder the project is in");
+        state.project_path = Some(crate::project_paths::UNTITLED.into());
+        frame(&mut panel, &mut state, &[]);
+        assert_eq!(panel.files_current_path, unsaved, "a project never saved: the default");
+        let _ = std::fs::remove_dir_all(&films);
     }
 
     #[test]
