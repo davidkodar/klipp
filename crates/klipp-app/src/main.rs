@@ -224,6 +224,14 @@ fn main() -> Result<()> {
         // SAFETY: main thread, before any threads spawn.
         unsafe { std::env::set_var("RUST_MIN_STACK", "1073741824"); }
     }
+    // PIPEWIRE_LATENCY = the output buffer chosen in Audio Hardware
+    // (#173), which PipeWire's ALSA plugin reads as the output opens.
+    // Read here, before any thread, from that one setting alone; none
+    // chosen, or one set already, leaves the environment as it is. A
+    // worker has returned above, and opens no output.
+    if let Some(latency) = klipp_ui::audio_buffer::pipewire_latency() {
+        std::env::set_var("PIPEWIRE_LATENCY", latency);
+    }
     // ORT_DYLIB_PATH = first libonnxruntime.so found on disk.
     // Probes ~/.local/lib/onnxruntime*, /usr/lib, etc. via
     // klipp_ml_ort::find_libonnxruntime. No-op when the user
