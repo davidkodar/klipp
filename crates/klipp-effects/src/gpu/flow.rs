@@ -102,9 +102,11 @@ struct Warm {
     built_on_use: std::sync::atomic::AtomicBool,
 }
 
+/// Each device's warm-up, while the device lives.
+static KEPT: std::sync::Mutex<Vec<(std::sync::Weak<wgpu::Device>, std::sync::Arc<Warm>)>> = std::sync::Mutex::new(Vec::new());
+
 /// The device's entry, made when there was none (`true`).
 fn warm_entry(device: &std::sync::Arc<wgpu::Device>) -> (std::sync::Arc<Warm>, bool) {
-    static KEPT: std::sync::Mutex<Vec<(std::sync::Weak<wgpu::Device>, std::sync::Arc<Warm>)>> = std::sync::Mutex::new(Vec::new());
     let mut kept = KEPT.lock().unwrap_or_else(|e| e.into_inner());
     kept.retain(|(d, _)| d.strong_count() > 0);
     if let Some((_, w)) = kept.iter().find(|(d, _)| std::ptr::eq(d.as_ptr(), std::sync::Arc::as_ptr(device))) {
@@ -134,6 +136,79 @@ fn finish(w: &Warm, built: FlowPipelines) -> std::sync::Arc<FlowPipelines> {
 #[cfg(test)]
 static WARM_FAILS_FOR: std::sync::Mutex<Vec<usize>> = std::sync::Mutex::new(Vec::new());
 
+/// Devices whose warm-up is made to take this long, for tests.
+#[cfg(test)]
+static WARM_SLOW_FOR: std::sync::Mutex<Vec<(usize, std::time::Duration)>> = std::sync::Mutex::new(Vec::new());
+
+/// Whether a sequence that draws by optical flow is open ([`want_flow`]):
+/// until then no device warms the flow's pipelines.
+static FLOW_WANTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Devices made while the flow was not wanted, warmed if it comes to be.
+static UNWARMED: std::sync::Mutex<Vec<std::sync::Weak<wgpu::Device>>> = std::sync::Mutex::new(Vec::new());
+
+/// A renderer was made on `device`: its flow pipelines are warmed now if
+/// a sequence needs them, else kept in mind for when one does. Warmed on
+/// every device, the compile ran in every process that drew anything, an
+/// export of a few frames too, and a quit in the middle of it crashed
+/// NVIDIA's driver (`NVVM compilation failed`, then SIGSEGV at exit).
+pub(super) fn on_new_device(device: &std::sync::Arc<wgpu::Device>, wanted: bool) {
+    if wanted {
+        warm(device);
+    } else {
+        let mut unwarmed = UNWARMED.lock().unwrap_or_else(|e| e.into_inner());
+        unwarmed.retain(|d| d.strong_count() > 0);
+        unwarmed.push(std::sync::Arc::downgrade(device));
+    }
+}
+
+/// Whether the flow is wanted in this process.
+pub fn flow_wanted() -> bool {
+    FLOW_WANTED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// A sequence draws by optical flow: warm the flow's pipelines on every
+/// device, now and from here on. Once is enough.
+pub fn want_flow() {
+    if !FLOW_WANTED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        warm_unwarmed();
+    }
+}
+
+/// Warm every device made while the flow was not wanted.
+fn warm_unwarmed() {
+    let devices: Vec<_> = std::mem::take(&mut *UNWARMED.lock().unwrap_or_else(|e| e.into_inner())).into_iter().filter_map(|d| d.upgrade()).collect();
+    for device in devices {
+        warm(&device);
+    }
+}
+
+/// Whether `device`'s flow pipelines have been asked for, by a warm-up
+/// or a flow frame.
+#[cfg(test)]
+fn warm_started(device: &std::sync::Arc<wgpu::Device>) -> bool {
+    KEPT.lock().unwrap_or_else(|e| e.into_inner()).iter().any(|(d, _)| std::ptr::eq(d.as_ptr(), std::sync::Arc::as_ptr(device)))
+}
+
+/// Wait, at most `bound`, for every warm-up still compiling: what a
+/// process does before it exits, since a driver can crash when its
+/// compiler is torn down under a compile. `true` when none is left.
+pub fn settle_flow_warmups(bound: std::time::Duration) -> bool {
+    let deadline = std::time::Instant::now() + bound;
+    let warms: Vec<std::sync::Arc<Warm>> = KEPT.lock().unwrap_or_else(|e| e.into_inner()).iter().map(|(_, w)| w.clone()).collect();
+    for w in warms {
+        let mut ready = w.ready.lock().unwrap_or_else(|e| e.into_inner());
+        while matches!(*ready, WarmState::Compiling) {
+            let now = std::time::Instant::now();
+            if now >= deadline {
+                return false;
+            }
+            ready = w.done.wait_timeout(ready, deadline - now).unwrap_or_else(|e| e.into_inner()).0;
+        }
+    }
+    true
+}
+
 /// The longest a flow frame waits for a warm-up still compiling before it
 /// compiles the pipelines itself.
 const WARM_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
@@ -155,6 +230,15 @@ pub(super) fn warm(device: &std::sync::Arc<wgpu::Device>) {
             #[cfg(test)]
             if WARM_FAILS_FOR.lock().unwrap_or_else(|e| e.into_inner()).contains(&(std::sync::Arc::as_ptr(&d) as usize)) {
                 panic!("a warm-up made to fail, for a test");
+            }
+            #[cfg(test)]
+            {
+                // Read, then slept on with the list let go: held, it held
+                // every other device's warm-up too.
+                let slow = WARM_SLOW_FOR.lock().unwrap_or_else(|e| e.into_inner()).iter().find(|(id, _)| *id == std::sync::Arc::as_ptr(&d) as usize).map(|(_, slow)| *slow);
+                if let Some(slow) = slow {
+                    std::thread::sleep(slow);
+                }
             }
             FlowPipelines::build(&d)
         })) {
@@ -706,12 +790,16 @@ mod tests {
         (worst, off as f32 / cpu.len() as f32)
     }
 
-    /// A device's flow pipelines are compiled when its renderer is made,
-    /// on a thread of their own, not by the first flow frame: compiled
-    /// there, they took about 90 ms of a speed ramp's first frame.
+    /// A device's flow pipelines, warmed on a thread of their own once a
+    /// sequence needs them, are not compiled by the first flow frame:
+    /// compiled there, they took about 90 ms of a speed ramp's first frame.
     #[test]
     fn the_first_flow_frame_compiles_no_pipelines() {
-        let Some(mut gpu) = gpu() else { return };
+        // A device of its own: the others' flow frames, none of them
+        // warmed, compile on theirs.
+        let Some(ctx) = crate::gpu_context::GpuContext::new() else { return };
+        warm(&ctx.device);
+        let Some(mut gpu) = GpuEffectsPipeline::with_context(&ctx) else { return };
         let (w, h) = (64, 48);
         let a = square_frame(w, h, 10.0, 12.0, 12.0);
         let b = square_frame(w, h, 18.0, 14.0, 12.0);
@@ -740,6 +828,31 @@ mod tests {
         assert!(t0.elapsed() < WARM_WAIT, "it did not wait out the bound: {:?}", t0.elapsed());
         let (warm, _) = warm_entry(&gpu.device);
         assert!(warm.built_on_use.load(std::sync::atomic::Ordering::SeqCst), "compiled by the frame, the warm-up having failed");
+    }
+
+    /// No warm-up starts on a device until a sequence wants the flow:
+    /// then the devices already made are warmed.
+    #[test]
+    fn no_warm_up_starts_until_the_flow_is_wanted() {
+        let Some(ctx) = crate::gpu_context::GpuContext::new() else { return };
+        on_new_device(&ctx.device, false);
+        assert!(!warm_started(&ctx.device), "a warm-up started with no flow wanted");
+        warm_unwarmed();
+        assert!(warm_started(&ctx.device), "wanted, the device made before is warmed");
+        assert!(settle_flow_warmups(std::time::Duration::from_secs(60)), "and its warm-up ends");
+    }
+
+    /// An exit with a warm-up still compiling waits for it no longer than
+    /// its bound.
+    #[test]
+    fn an_exit_waits_for_a_warm_up_only_as_long_as_its_bound() {
+        let Some(ctx) = crate::gpu_context::GpuContext::new() else { return };
+        WARM_SLOW_FOR.lock().unwrap().push((std::sync::Arc::as_ptr(&ctx.device) as usize, std::time::Duration::from_secs(3)));
+        warm(&ctx.device);
+        let t0 = std::time::Instant::now();
+        assert!(!settle_flow_warmups(std::time::Duration::from_millis(300)), "a warm-up still compiling is said");
+        let waited = t0.elapsed();
+        assert!(waited >= std::time::Duration::from_millis(290) && waited < std::time::Duration::from_millis(600), "waited {waited:?}");
     }
 
     #[test]

@@ -742,6 +742,11 @@ fn main() -> Result<()> {
     info!("Klipp shutting down");
     let _ = cmd_tx.send(klipp_core::AppCommand::Quit);
     let _ = engine_handle.join();
+    // A flow warm-up still compiling when the process goes crashed
+    // NVIDIA's driver at exit: given a moment to end, no longer.
+    if !klipp_effects::gpu::settle_flow_warmups(std::time::Duration::from_millis(300)) {
+        info!("flow pipelines: their warm-up was still compiling at exit, after 300 ms");
+    }
     flush_log();
 
     Ok(())
