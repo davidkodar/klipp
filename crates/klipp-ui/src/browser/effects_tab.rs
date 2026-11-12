@@ -393,6 +393,21 @@ pub fn show(
         egui::ScrollArea::vertical()
             .id_salt("browser_effects_scroll")
             .show(ui, |ui| {
+                // Nothing shown says why, as the other tabs do (#2599): a
+                // search that matched nothing left the grid blank.
+                if filtered.is_empty() {
+                    ui.add_space(20.0);
+                    ui.vertical_centered(|ui| {
+                        let msg = if !search_query.is_empty() {
+                            format!("No effects match \"{}\"", search_query)
+                        } else {
+                            "No effects in this category".to_string()
+                        };
+                        ui.label(egui::RichText::new(msg).size(11.0).color(theme.text_dim));
+                        super::clear_search_button(ui, search_query);
+                    });
+                    return;
+                }
                 let grid_w = ui.available_width() - 8.0;
                 let spacing = 6.0;
                 let card_w = ((grid_w - spacing) / 2.0).floor();
