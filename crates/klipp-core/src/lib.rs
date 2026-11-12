@@ -107,7 +107,7 @@ pub use config::{
     LoudnessStandard, MeteringBallistics, PanLaw, PlaybackQuality, ScopeSettings,
     ScopeQuality, VectorscopeSettings, WaveformParadeSettings,
 };
-pub use gpu_vendor::GpuVendor;
+pub use gpu_vendor::{GpuVendor, VaapiUse};
 pub use working_colorspace::{grade_encoding, set_grade_encoding, GradeEncoding, WorkingColorspace};
 pub use shot::{ShotMetadata, StreamEnds};
 pub use logging::ClipLog;

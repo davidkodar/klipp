@@ -1421,6 +1421,11 @@ pub struct SystemPrefs {
     /// Enable hardware video decode (NVDEC / VAAPI).
     #[serde(default = "default_true")]
     pub hardware_decode: bool,
+    /// Let AMD, Intel and other non-NVIDIA GPUs decode and encode through
+    /// VA-API. Off by default: those drivers are not yet tested here.
+    /// `KLIPP_VAAPI=1`, `0` or `force` overrules it.
+    #[serde(default)]
+    pub vaapi_decode: bool,
     /// Decode thread count (0 = auto/all cores).
     #[serde(default)]
     pub decode_threads: u32,
@@ -1435,7 +1440,7 @@ fn default_max_playback_h() -> u32 { 1080 }
 fn default_frame_queue() -> u32 { 16 }
 impl Default for SystemPrefs {
     fn default() -> Self {
-        Self { gpu_preference: Default::default(), hardware_decode: true, decode_threads: 0, max_playback_height: default_max_playback_h(), frame_queue_size: default_frame_queue() }
+        Self { gpu_preference: Default::default(), hardware_decode: true, vaapi_decode: false, decode_threads: 0, max_playback_height: default_max_playback_h(), frame_queue_size: default_frame_queue() }
     }
 }
 
