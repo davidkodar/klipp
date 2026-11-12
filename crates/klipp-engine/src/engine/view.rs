@@ -821,12 +821,26 @@ impl PlaybackEngine {
             return;
         }
         let shown = self.frame_buffer.lock().ok().and_then(|fb| fb.presented_fps(now, std::time::Duration::from_secs(1)));
-        self.playback_record.tick(now, shown, self.fps.as_f64());
+        // Due: what the picture can change at. A lone 24 fps clip in a 30
+        // fps sequence is due its 24, not the sequence's 30, which read as
+        // a fifth of its frames dropped when none were (`pacing`).
+        // A ramp's speed changes as it plays: due at the sequence's rate,
+        // so a stretch at 2× can't hide what it drops.
+        let primary_fps = self.v1_decoder.as_ref().filter(|_| !self.speed_ramp_enabled).and_then(|_| {
+            let seq = self.sequence.read().ok()?;
+            let media = seq.tracks.get(self.current_track_index)?.clips.get(self.current_clip_index)?.media_id()?;
+            let pool = self.media_pool.read().ok()?;
+            let item = pool.get(&media)?;
+            Some(if item.is_still { 0.0 } else { item.fps.as_f64() })
+        });
+        let due = super::pacing::due_rate(self.fps.as_f64(), primary_fps, self.clip_speed, self.others_change());
+        self.playback_record.tick(now, shown, due);
         let (health, proxies, at) = (self.playback_record.health(), self.use_proxies, self.playhead.to_secs_f64());
         crate::playback_health::set_shared(|s| {
             s.health = health;
             s.proxies_on = proxies;
             s.at_secs = at;
+            s.due_fps = due;
         });
     }
 

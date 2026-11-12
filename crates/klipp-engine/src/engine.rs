@@ -22,6 +22,7 @@ mod reverse_gop;
 mod skim_render;
 pub use skim_render::{SKIMS_COMPOSITED, SKIMS_DECLINED, SKIM_SOURCES_OFF_GPU};
 mod streams;
+mod pacing;
 pub(crate) mod view;
 
 /// Wrapper to make AudioOutput Send. The cpal::Stream inside is !Send
@@ -1936,6 +1937,15 @@ pub struct PlaybackEngine {
     /// sequence frame, where it used to be shown once and the picture held
     /// until the clip's end (#2097).
     held_tail: Option<(klipp_core::ClipId, streams::HeldFrame, i64)>,
+    /// The primary's frame on screen while playing, kept to draw again on
+    /// the sequence's frame clock when something over or under it changes
+    /// between its file's frames (see `pacing`).
+    on_screen: Option<(klipp_core::ClipId, streams::HeldFrame)>,
+    /// Whether the picture changed between the last two timeline frames
+    /// worked out, and which: drawn again, and counted due, by it.
+    pacing_changes: Option<(i64, i64, bool)>,
+    /// Per title clip, whether it moves at all (`pacing::picture_changes`).
+    pacing_titles: HashMap<klipp_core::ClipId, bool>,
     /// No picture clip is under the playhead but the timeline goes on
     /// (titles on a text track, music, a gap before the next shot): the
     /// playhead follows the master clock, in timeline seconds, and the
@@ -3224,6 +3234,9 @@ impl PlaybackEngine {
             current_source_rotation: 0,
             last_synth_frame_rendered: None,
             held_tail: None,
+            on_screen: None,
+            pacing_changes: None,
+            pacing_titles: HashMap::new(),
             clock_only: false,
             gap_hand_over: None,
             empty_stack_warm: None,
@@ -6791,6 +6804,12 @@ impl PlaybackEngine {
         // path copied; one only on the CPU is taken over where it is
         // presented, not copied.
         let mut keep_tail = None;
+        // The frame on screen, kept to draw again on the sequence's clock
+        // (`present_again_if_changed`): shared where it is on the GPU, no
+        // copy; one only on the CPU is kept where the renderer takes it.
+        if let Some(shared) = display_frame.as_ref().filter(|f| !f.is_eof).and_then(streams::HeldFrame::from_gpu_frame) {
+            self.on_screen = self.sequence.read().ok().and_then(|s| self.v1_clip_id(&s)).map(|id| (id, shared));
+        }
         if let Some(f) = display_frame.as_ref().filter(|f| !f.is_eof) {
             if last_of_file || self.primary_is_still() {
                 keep_tail = self.sequence.read().ok().and_then(|s| self.v1_clip_id(&s));
@@ -6851,6 +6870,14 @@ impl PlaybackEngine {
                 // two frames, and showed the file's frame nearest that, not
                 // the one on screen.
                 self.playhead = due.map_or(self.clip_timeline_start + elapsed_tc, |(_, at)| at);
+                // The primary's file has no new frame for this timeline
+                // frame: drawn again if anything else on screen changes. A
+                // file that has ended is drawn by its held tail below, which
+                // draws every frame; the change is still worked out, for
+                // what playback's health counts as due.
+                if let Some((_, at)) = due {
+                    self.present_again_if_changed(at, !held_at_end);
+                }
                 if held_at_end {
                     self.present_held_tail();
                     // The look-ahead below runs as frames are taken, and
@@ -7055,6 +7082,9 @@ impl PlaybackEngine {
         if let Some(id) = keep_tail.filter(|_| self.held_tail.is_none()) {
             self.held_tail = Some((id, held.clone(), self.playhead.value));
         }
+        if let Some(id) = self.sequence.read().ok().and_then(|s| self.v1_clip_id(&s)) {
+            self.on_screen = Some((id, held.clone()));
+        }
         self.present_frame(Some(held));
         stage_mid_us = t_stage.elapsed().as_micros();
 
@@ -7112,6 +7142,47 @@ impl PlaybackEngine {
         if dist_to_out < PREROLL_LEAD_SECS && dist_to_out > 0.0 && self.preroll_decoder.is_none() && self.preroll_pending.is_none() {
             self.start_preroll_for_next_clip();
         }
+    }
+
+    /// The primary's frame on screen drawn again at timeline frame `at`,
+    /// with everything over and under it as it is there, when the picture
+    /// can differ from the one shown (`pacing::picture_changes`): a 30 fps
+    /// layer over a 24 fps primary moved only at the primary's 24 a second.
+    /// Nothing is drawn for a lone clip between its own frames.
+    fn present_again_if_changed(&mut self, at: RationalTime, draw: bool) {
+        let Some(prev) = self.frame_buffer.lock().ok().and_then(|fb| fb.latest_presented()) else { return };
+        if prev == at || !self.picture_changes_between(prev, at) || !draw {
+            return;
+        }
+        let clip = self.sequence.read().ok().and_then(|s| self.v1_clip_id(&s));
+        let Some((_, frame)) = self.on_screen.as_ref().filter(|(id, _)| Some(*id) == clip) else { return };
+        let frame = frame.clone();
+        self.present_frame(Some(frame));
+        self.frames_consumed += 1;
+    }
+
+    /// `pacing::picture_changes` from `prev` to `at`, kept for the pair:
+    /// worked out once per timeline frame, and what playback's health
+    /// counts as due follows it.
+    fn picture_changes_between(&mut self, prev: RationalTime, at: RationalTime) -> bool {
+        if let Some((p, a, changes)) = self.pacing_changes {
+            if (p, a) == (prev.value, at.value) {
+                return changes;
+            }
+        }
+        let (sequence, pool) = (Arc::clone(&self.sequence), Arc::clone(&self.media_pool));
+        let seq = sequence.read().unwrap_or_else(|e| e.into_inner());
+        let pool = pool.read().unwrap_or_else(|e| e.into_inner());
+        let primary = self.v1_clip_id(&seq);
+        let changes = pacing::picture_changes(&seq, &pool, primary, prev, at, &mut self.pacing_titles);
+        self.pacing_changes = Some((prev.value, at.value, changes));
+        changes
+    }
+
+    /// Whether the picture last changed between frames other than by the
+    /// primary's own, for what playback's health counts as due.
+    pub(super) fn others_change(&self) -> bool {
+        self.pacing_changes.is_some_and(|(_, _, c)| c)
     }
 
     /// Show the primary clip's held last frame at the playhead, once per

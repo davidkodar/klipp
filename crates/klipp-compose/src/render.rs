@@ -7762,6 +7762,26 @@ pub fn list_effects(
     (place_and_finish(clip, fx, t, &ctx, resolved), eval::evaluate_clip_opacity(clip, time, fps))
 }
 
+/// Whether `effect` draws differently from frame to frame with no key of
+/// its own: the effects [`frame_inputs`] gives a frame's seed, time or
+/// progress, and a pin to a moving surface. Keep the two together: playback
+/// draws a frame again for these when nothing else on screen changes.
+pub fn effect_varies_in_time(effect: &BuiltinEffect) -> bool {
+    matches!(
+        effect,
+        BuiltinEffect::FilmGrain { .. }
+            | BuiltinEffect::OldFilm { .. }
+            | BuiltinEffect::Vhs { .. }
+            | BuiltinEffect::Flicker { .. }
+            | BuiltinEffect::Displace { .. }
+            | BuiltinEffect::Warp { .. }
+            | BuiltinEffect::Reflection { .. }
+            | BuiltinEffect::Particles { .. }
+            | BuiltinEffect::ColorFade { .. }
+            | BuiltinEffect::SurfacePin { .. }
+    )
+}
+
 /// What one frame gives an animated effect (R16): the film effects' seed,
 /// a flicker's and particles' time, the deflicker gain, a pinned clip's first corner pin, a colour fade's
 /// progress, a surface pin's corners.
