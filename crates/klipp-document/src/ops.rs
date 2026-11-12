@@ -8277,7 +8277,11 @@ fn place_composition(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, at: T
     let id = clip.id;
     edits.push(EditCommand::LegacyAppendClip { clip, track_index });
     let copied = if missing.is_empty() { String::new() } else { format!(", its {} sequence{} copied into the project", missing.len(), if missing.len() == 1 { "" } else { "s" }) };
-    Ok((format!("template {} at {:.2}-{:.2} s on track {track_index}{copied}", quoted(&t.name), secs(tl_in), secs(tl_out)), EditCommand::Batch(edits), vec![id]))
+    // A track made on top moves every other one down (#2565), said as
+    // the title op says it: the reply named only "track 0".
+    let made = edits.iter().any(|e| matches!(e, EditCommand::AddTrack { .. }));
+    let on = if made { "a new video track 0; every other track's index moves down by one".to_string() } else { format!("track {track_index}") };
+    Ok((format!("template {} at {:.2}-{:.2} s on {on}{copied}", quoted(&t.name), secs(tl_in), secs(tl_out)), EditCommand::Batch(edits), vec![id]))
 }
 
 /// New words for a title or a caption: the clip's first text box takes
@@ -16042,6 +16046,12 @@ mod tests {
         let op = |fields: serde_json::Value| Op::Template { name: "Card".into(), at: Anchor::Secs(1.0), secs: Some(3.0), track: None, fields: serde_json::from_value(fields).unwrap(), source: None, kind: None, data: None, composition: Some(Box::new(placed.clone())) };
         let plan = resolve(&seq, &pool, &[op(serde_json::json!({ "Headline": "Ship it" }))]).unwrap();
         assert!(plan.steps[0].what.contains("copied into the project"), "{}", plan.steps[0].what);
+        // #2565: no video track free there, so one is made on top, and
+        // the reply says every other index moved; on a free one, nothing.
+        assert!(plan.steps[0].what.contains("on a new video track 0; every other track's index moves down by one"), "{}", plan.steps[0].what);
+        let free = Op::Template { name: "Card".into(), at: Anchor::Secs(8.5), secs: Some(1.0), track: None, fields: Default::default(), source: None, kind: None, data: None, composition: Some(Box::new(placed.clone())) };
+        let on_free = resolve(&seq, &pool, &[free]).unwrap();
+        assert!(on_free.steps[0].what.contains("on track 0") && !on_free.steps[0].what.contains("moves down"), "{}", on_free.steps[0].what);
         let mut seqs = vec![seq.clone()];
         let mut p = pool.clone();
         let mut fps = seq.fps;
