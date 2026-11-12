@@ -100,3 +100,7 @@ path = "tests/title_fallback_tally.rs"
 [[test]]
 name = "title_styles_gpu"
 path = "tests/title_styles_gpu.rs"
+
+[[test]]
+name = "warmed_titles_match_cold"
+path = "tests/warmed_titles_match_cold.rs"
