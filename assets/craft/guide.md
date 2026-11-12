@@ -252,7 +252,10 @@ exist until the plan runs.
   two lines of 42 characters unless you say otherwise, fewer on a tall
   frame, where captions are larger and sit up in the lower third (a
   `refit` after `format` gives existing captions that look). They go on the
-  first subtitle track, made at the bottom if there is none. The reply
+  first subtitle track, made at the bottom if there is none. `track` is
+  where they go (a subtitle or text track), not the sound they are made
+  from: every clip heard on the timeline is used; to caption part of it,
+  give `from` and `to`. The reply
   lists every cue: read them, and correct one with `set_text`. Do it
   last, once the speech is where it will stay: a trim afterwards does
   not move them, and `replace: true` makes them again. They say what the transcript says, mishearings and
