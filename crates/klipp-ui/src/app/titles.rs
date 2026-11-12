@@ -4190,15 +4190,30 @@ fn paste_title_style(seq: &klipp_timeline::Sequence, look: &klipp_timeline::Titl
 /// `tb` set on contour `contour` of the path layer `layer` (#1508), at
 /// `offset` along it, `align` 0 start, 1 centre, 2 end, `flip` to the
 /// other side; the offset's keys kept while it stays on that layer.
+///
+/// An align changed with the offset where the old align puts it, and no
+/// keys on it, takes the offset to where the new one does, as the
+/// document op does (#2584): Centre from the start put the text's middle
+/// on the path's first point, and its first half off the path.
 fn set_text_path_layer(tb: &mut klipp_timeline::TextBox, layer: klipp_timeline::TitleObjectId, contour: usize, offset: f32, align: u8, flip: bool) {
+    use klipp_timeline::PathTextAlign;
     let align = match align {
-        1 => klipp_timeline::PathTextAlign::Center,
-        2 => klipp_timeline::PathTextAlign::End,
-        _ => klipp_timeline::PathTextAlign::Start,
+        1 => PathTextAlign::Center,
+        2 => PathTextAlign::End,
+        _ => PathTextAlign::Start,
     };
-    let offset_keyframes = match &tb.text_path {
-        Some(klipp_timeline::TextPath::Layer { layer: was, offset_keyframes, .. }) if *was == layer => offset_keyframes.clone(),
-        _ => Vec::new(),
+    let anchor = |a: PathTextAlign| match a {
+        PathTextAlign::Start => 0.0,
+        PathTextAlign::Center => 0.5,
+        PathTextAlign::End => 1.0,
+    };
+    let (offset_keyframes, was_align) = match &tb.text_path {
+        Some(klipp_timeline::TextPath::Layer { layer: was, offset_keyframes, align: was_align, .. }) if *was == layer => (offset_keyframes.clone(), Some(*was_align)),
+        _ => (Vec::new(), None),
+    };
+    let offset = match was_align {
+        Some(was) if was != align && offset_keyframes.is_empty() && (offset - anchor(was)).abs() < 1e-4 => anchor(align),
+        _ => offset,
     };
     tb.text_path = Some(klipp_timeline::TextPath::Layer { layer, contour, offset: offset.clamp(0.0, 1.0), offset_keyframes, align, flip });
 }
@@ -4340,6 +4355,35 @@ mod text_path_tests {
         assert!(matches!(&tb.text_path, Some(TextPath::Layer { offset, align: PathTextAlign::Center, flip: true, offset_keyframes, .. }) if *offset == 0.25 && offset_keyframes.len() == 1), "the travel stays: {:?}", tb.text_path);
         set_text_path_layer(tb, klipp_timeline::TitleObjectId(77), 0, 2.0, 2, false);
         assert!(matches!(&tb.text_path, Some(TextPath::Layer { offset, offset_keyframes, align: PathTextAlign::End, .. }) if *offset == 1.0 && offset_keyframes.is_empty()), "another layer starts afresh, the offset kept on the path");
+    }
+
+    /// #2584: Centre, then End, clicked on a freshly drawn open path take
+    /// the text's start to where each puts it, and every glyph stays on
+    /// the path; a start moved by hand stays where it was put.
+    #[test]
+    fn centre_and_end_on_a_drawn_path_keep_the_text_on_it() {
+        let mut td = TitleData::default();
+        let text = td.objects[0].id;
+        let path = draw_text_path(&mut td, Some(text));
+        // A glyph off the path is not drawn, and its box is left empty.
+        let placed = |td: &TitleData| {
+            let layout = klipp_title::TitleRenderer::new().render_layout(td, 1920, 1080);
+            (layout.glyph_boxes.len(), layout.glyph_boxes.iter().filter(|b| **b != [0; 4]).count())
+        };
+        let (n, on) = placed(&td);
+        assert!(n > 0 && on == n, "from the path's start, all {n} glyphs are on it: {on}");
+        for (align, anchor) in [(1u8, 0.5f32), (2, 1.0)] {
+            let TitleObjectContent::TextBox(tb) = &mut td.objects[0].content else { panic!() };
+            let Some(TextPath::Layer { offset, flip, .. }) = tb.text_path.clone() else { panic!("on the path") };
+            set_text_path_layer(tb, path, 0, offset, align, flip);
+            assert!(matches!(&tb.text_path, Some(TextPath::Layer { offset, .. }) if *offset == anchor), "align {align}: {:?}", tb.text_path);
+            let (n, on) = placed(&td);
+            assert_eq!(on, n, "align {align}: every glyph is on the path");
+        }
+        let TitleObjectContent::TextBox(tb) = &mut td.objects[0].content else { panic!() };
+        set_text_path_layer(tb, path, 0, 0.3, 2, false);
+        set_text_path_layer(tb, path, 0, 0.3, 1, false);
+        assert!(matches!(&tb.text_path, Some(TextPath::Layer { offset, align: PathTextAlign::Center, .. }) if *offset == 0.3), "{:?}", tb.text_path);
     }
 }
 

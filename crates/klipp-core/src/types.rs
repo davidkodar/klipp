@@ -544,6 +544,14 @@ pub enum TimerFormat {
     HhMmSsMs,
 }
 
+/// The kinds of [`GeneratorData`], as its settings are named (#2606): what
+/// a refusal of settings in the wrong shape lists. A test keeps it to the
+/// enum.
+pub const GENERATOR_KINDS: [&str; 14] = [
+    "SolidColor", "LivingGradient", "Grain", "Placeholder", "Gradient", "ColorBars", "ColorBars100",
+    "ColorBarsSmpte", "Countdown", "Timer", "Slate", "StillFrame", "Polygon", "Star",
+];
+
 /// Data for a generator clip (solid color, gradient, bars, countdown, still).
 /// Lives in klipp-core so AppCommand can carry it directly.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -853,5 +861,19 @@ mod fade_curve_tests {
     #[test]
     fn the_default_is_still_linear() {
         assert_eq!(FadeCurve::default(), FadeCurve::Linear);
+    }
+}
+
+#[cfg(test)]
+mod generator_kinds_tests {
+    use super::*;
+
+    /// The kinds a refusal lists are the enum's, every one: read from
+    /// what serde says it expects for a kind it has never heard of.
+    #[test]
+    fn the_generator_kinds_are_the_enums() {
+        let err = serde_json::from_value::<GeneratorData>(serde_json::json!({ "NoSuchKind": {} })).unwrap_err().to_string();
+        let listed: Vec<&str> = err.split('`').skip(3).step_by(2).collect();
+        assert_eq!(listed, GENERATOR_KINDS, "{err}");
     }
 }

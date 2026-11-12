@@ -96,6 +96,14 @@ impl KlippApp {
             // texture: nothing to upload, the viewer samples it.
             self.viewer.gpu_frame_live = fb.gpu_output_live && fb.gpu_output.is_some();
             self.viewer.gpu_frame_size = (fb.gpu_output_width, fb.gpu_output_height);
+            // A zero-copy frame is a full-resolution frame too, so a seek
+            // that lands on one is over, as for a frame of bytes below.
+            // Else the wait outlived every seek on the GPU path, and with it
+            // the transport the control socket reads stopped being published.
+            if new_gpu_frame(self.viewer.gpu_frame_live, fb.gpu_output_frame, &mut self.viewer.gpu_frame_seen) {
+                self.state.showing_thumbnail_preview = false;
+                self.state.awaiting_seek_frame = false;
+            }
             if !fb.dirty {
                 return;
             }
@@ -759,3 +767,35 @@ mod source_frame_tests {
     }
 }
 
+/// Whether the GPU stack has written a zero-copy frame since the last one
+/// seen, noting it as seen. `live` is whether the newest frame is one
+/// (`FrameBuffer::gpu_output_live` with a texture), `frame` its count
+/// (`FrameBuffer::gpu_output_frame`).
+fn new_gpu_frame(live: bool, frame: u64, seen: &mut u64) -> bool {
+    if !live || frame == *seen {
+        return false;
+    }
+    *seen = frame;
+    true
+}
+
+#[cfg(test)]
+mod gpu_frame_tests {
+    use super::new_gpu_frame;
+
+    /// A seek waits for the next full-resolution frame, and while it waits
+    /// the control socket is not told where the transport is. On the GPU
+    /// path that frame has no bytes, so it has to end the wait too: else a
+    /// play over the socket read as paused, with no presented rate, for as
+    /// long as playback ran after any seek.
+    #[test]
+    fn a_zero_copy_frame_ends_the_wait_for_a_seek() {
+        let mut seen = 0;
+        assert!(!new_gpu_frame(false, 0, &mut seen), "no frame on the GPU yet");
+        assert!(new_gpu_frame(true, 1, &mut seen), "the first zero-copy frame");
+        assert!(!new_gpu_frame(true, 1, &mut seen), "the same frame painted again");
+        assert!(new_gpu_frame(true, 2, &mut seen), "the next one");
+        assert!(!new_gpu_frame(false, 2, &mut seen), "a frame of bytes followed: its own path ends the wait");
+        assert!(new_gpu_frame(true, 3, &mut seen), "back on the GPU");
+    }
+}

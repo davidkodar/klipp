@@ -193,14 +193,20 @@ pub fn browser_search_field(
         .stroke(egui::Stroke::new(1.0_f32, theme.border))
         .rounding(4.0)
         .inner_margin(egui::Margin::symmetric(9.0, 5.0))
-        .show(ui, |ui| {
+        .show(ui, |ui| ui.horizontal(|ui| {
+            // A search kept from another tab is seen and cleared here
+            // (#2599): a × while there is text. The text keeps its keys.
+            let clear_w = if query.is_empty() { 0.0 } else { 18.0 };
             let search = egui::TextEdit::singleline(query)
                 .hint_text(placeholder)
-                .desired_width(ui.available_width() - 4.0)
+                .desired_width(ui.available_width() - 4.0 - clear_w)
                 .font(egui::FontId::proportional(12.0))
                 .text_color(theme.text_primary)
                 .frame(false);
             let resp = ui.add(search);
+            if !query.is_empty() && ui.add(egui::Button::new(egui::RichText::new("\u{00d7}").size(13.0).color(theme.text_dim)).frame(false)).on_hover_text("Clear the search").clicked() {
+                query.clear();
+            }
             // Ctrl+F focus consumer — single shared check so every
             // search field grabs focus the same way.
             if state.focus_search_request == Some(crate::state::PanelKind::Browser) {
@@ -224,7 +230,7 @@ pub fn browser_search_field(
                 );
             }
             (resp.id, resp.rect)
-        });
+        }).inner);
     // The frame around the text is the field too: a click on its padding
     // (most of a narrow field's height) used to focus nothing, and the
     // typing that followed ran single-key shortcuts (#2551).
@@ -232,6 +238,15 @@ pub fn browser_search_field(
     let on_padding = ui.input(|i| i.pointer.primary_clicked() && i.pointer.interact_pos().is_some_and(|p| !text_rect.contains(p)));
     if on_padding && ui.rect_contains_pointer(framed.response.rect) {
         ui.memory_mut(|m| m.request_focus(text_id));
+    }
+}
+
+/// "Clear search" under a Library tab's empty list while a search hides
+/// everything (#2599): the search is shared by the tabs, and one typed on
+/// another tab emptied this one with nothing to undo it here.
+pub fn clear_search_button(ui: &mut egui::Ui, query: &mut String) {
+    if !query.is_empty() && ui.button("Clear search").clicked() {
+        query.clear();
     }
 }
 
@@ -7517,5 +7532,62 @@ mod narrow_library_tests {
             let w = laid_out_width(category, 277.0);
             assert!(w <= 277.5, "{category:?} laid out {w:.0} px wide in a 277 px panel");
         }
+    }
+
+    /// #2599: the Library's tabs share one search. One that matches
+    /// nothing, typed on Video FX, says so there and on Generators, each
+    /// with a Clear that empties it; the field's ×, shown only while there
+    /// is text, empties it too, and typing still goes to the field.
+    #[test]
+    fn a_shared_search_is_named_and_cleared_on_each_tab() {
+        let ctx = egui::Context::default();
+        crate::icons::install(&ctx);
+        let theme = KlippTheme::default();
+        let mut state = AppState::default();
+        let mut panel = BrowserPanel::default();
+        let run = |panel: &mut BrowserPanel, state: &mut AppState, events: Vec<egui::Event>| {
+            let input = egui::RawInput { events, screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(700.0, 900.0))), ..Default::default() };
+            let out = ctx.run(input, |ctx| {
+                egui::CentralPanel::default().frame(egui::Frame::none()).show(ctx, |ui| panel.show_library_tab(ui, state, &theme));
+            });
+            out.shapes.iter().filter_map(|s| match &s.shape {
+                egui::Shape::Text(t) => Some((t.galley.text().to_owned(), t.pos + t.galley.size() / 2.0)),
+                _ => None,
+            }).collect::<Vec<_>>()
+        };
+        let click = |panel: &mut BrowserPanel, state: &mut AppState, at: egui::Pos2| {
+            let press = |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+            run(panel, state, vec![egui::Event::PointerMoved(at)]);
+            run(panel, state, vec![press(true)]);
+            run(panel, state, vec![press(false)]);
+            run(panel, state, Vec::new())
+        };
+        let at = |texts: &[(String, egui::Pos2)], s: &str| texts.iter().find(|(t, _)| t == s).map(|(_, p)| *p).unwrap_or_else(|| panic!("{s} is drawn: {:?}", texts.iter().map(|t| &t.0).collect::<Vec<_>>()));
+        let q = "zzqx matches nothing";
+        for (category, message) in [(LibraryCategory::VideoFx, "No effects match"), (LibraryCategory::Generators, "No generators match")] {
+            panel.library_category = category;
+            panel.search_query = q.to_string();
+            run(&mut panel, &mut state, Vec::new());
+            let texts = run(&mut panel, &mut state, Vec::new());
+            at(&texts, &format!("{message} \"{q}\""));
+            let after = click(&mut panel, &mut state, at(&texts, "Clear search"));
+            assert!(panel.search_query.is_empty(), "{category:?}: Clear empties the search");
+            assert!(!after.iter().any(|(t, _)| t == "\u{00d7}" || t == "Clear search"), "{category:?}: nothing to clear, no ×");
+        }
+
+        panel.search_query = "vignette".into();
+        run(&mut panel, &mut state, Vec::new());
+        let texts = run(&mut panel, &mut state, Vec::new());
+        click(&mut panel, &mut state, at(&texts, "\u{00d7}"));
+        assert!(panel.search_query.is_empty(), "the field's × empties it");
+
+        panel.search_query = "ab".into();
+        run(&mut panel, &mut state, Vec::new());
+        let texts = run(&mut panel, &mut state, Vec::new());
+        click(&mut panel, &mut state, at(&texts, "ab"));
+        // Focused by a click, the field has its text selected: End, then type.
+        let end = egui::Event::Key { key: egui::Key::End, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE };
+        run(&mut panel, &mut state, vec![end, egui::Event::Text("c".into())]);
+        assert_eq!(panel.search_query, "abc", "typing goes to the field beside its ×");
     }
 }

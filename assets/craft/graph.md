@@ -111,6 +111,11 @@ keyframes, so key operations there are refused. A track's effects are named by
 their place in its list: after an add, remove or move, use the `created` paths
 and read the track again before naming its other effects. Placed kinds are
 owned by the clip's placement model and cannot be edited as ordinary nodes.
+A plug-in node (frei0r, OFX) declares no colour domain, so what it gives is
+of unknown domain: on a clip it goes after the Scene to Display node
+(`klipp.colour.scene_to_display`), where pictures are display-referred. Added
+before it, inside the grade, it is refused, since nothing says its picture is
+scene-referred.
 On a clip, an effect node's mix, its mask connection and channel, and a custom
 label are kept: they read back, survive saving and reopening, and undo as one
 step. The timeline grade and a grade group's stages keep a correction's mix and

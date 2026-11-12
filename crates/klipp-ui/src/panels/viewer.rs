@@ -485,6 +485,9 @@ pub struct ViewerPanel {
     /// `video_texture` again.
     pub gpu_frame_live: bool,
     pub gpu_frame_size: (u32, u32),
+    /// The last zero-copy frame (`FrameBuffer::gpu_output_frame`) the UI
+    /// has seen arrive.
+    pub gpu_frame_seen: u64,
     /// Owned wgpu `TextureView` backing the registered `gpu_texture_id`.
     /// MUST stay alive for the lifetime of `gpu_texture_id`: wgpu 22's
     /// `BindGroup` records the view's storage Id without taking a

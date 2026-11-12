@@ -294,6 +294,7 @@ pub fn show(
             kind: m.kind.clone(),
             columns: columns.iter().map(|c| c.text(m)).collect(),
             synced_audio: m.synced_audio.is_some(),
+            is_still: m.is_still,
             span_parts: m.span.map(|sp| {
                 let mut parts: Vec<(u32, MediaId)> = state.media_pool.all().filter_map(|o| o.span.filter(|os| os.first == sp.first).map(|os| (os.index, o.id))).collect();
                 parts.sort_by_key(|(i, _)| *i);
@@ -1261,7 +1262,7 @@ fn render_list_view(
                 if state.selected_media_ids.len() > 1 && state.selected_media_ids.contains(&item.id) {
                     show_multi_context_menu(ui, &state.selected_media_ids, sync_pair_of(state), state.multicam_default_sync, &bin_list, any_in_a_bin(state), cmds);
                 } else {
-                    show_context_menu(ui, item.id, &item.path, item.offline, &item.filename, item.has_zone, item.parent_media_id.is_some(), item.synced_audio, &item.span_parts, &bin_list, item.bin.as_deref(), cmds);
+                    show_context_menu(ui, item.id, &item.path, item.offline, &item.filename, item.has_zone, item.parent_media_id.is_some(), item.synced_audio, item.is_still, &item.span_parts, &bin_list, item.bin.as_deref(), cmds);
                 }
             }));
         }
@@ -1601,7 +1602,7 @@ fn render_grid_view(
                 if state.selected_media_ids.len() > 1 && state.selected_media_ids.contains(&item.id) {
                     show_multi_context_menu(ui, &state.selected_media_ids, sync_pair_of(state), state.multicam_default_sync, &bin_list, any_in_a_bin(state), cmds);
                 } else {
-                    show_context_menu(ui, item.id, &item.path, item.offline, &item.filename, item.has_zone, item.parent_media_id.is_some(), item.synced_audio, &item.span_parts, &bin_list, item.bin.as_deref(), cmds);
+                    show_context_menu(ui, item.id, &item.path, item.offline, &item.filename, item.has_zone, item.parent_media_id.is_some(), item.synced_audio, item.is_still, &item.span_parts, &bin_list, item.bin.as_deref(), cmds);
                 }
             }));
 
@@ -1957,6 +1958,8 @@ struct MediaRow {
     columns: Vec<String>,
     /// A separate recording is paired with the clip.
     synced_audio: bool,
+    /// A still image: its own file is its skim, so there is none to make.
+    is_still: bool,
     /// The parts of the split take this clip belongs to, in order, when
     /// it is one.
     span_parts: Vec<MediaId>,
@@ -1975,6 +1978,7 @@ fn show_context_menu(
     has_zone: bool,
     is_subclip: bool,
     synced_audio: bool,
+    is_still: bool,
     span_parts: &[MediaId],
     bins: &[String],
     bin: Option<&str>,
@@ -2068,7 +2072,8 @@ fn show_context_menu(
         cmds.push(AppCommand::RegenerateFilmstrip { media_id });
         ui.close_menu();
     }
-    if menu_item(ui, "Regenerate Skim Transcode", "").clicked() {
+    // A still is its own skim: there is none to make again.
+    if !is_still && menu_item(ui, "Regenerate Skim Transcode", "").clicked() {
         cmds.push(AppCommand::RegenerateSkimTranscode { media_id });
         ui.close_menu();
     }

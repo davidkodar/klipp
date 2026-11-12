@@ -50,6 +50,18 @@ fn strict_motion_spec<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<k
     }).transpose()
 }
 
+/// A title layer's id, said what it is when it is not one (#2574): a
+/// name or a quoted number gave serde's bare "expected u32".
+fn layer_id<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<u32>, D::Error> {
+    use serde::Deserialize;
+    let value = Option::<serde_json::Value>::deserialize(d)?;
+    value.map(|v| {
+        v.as_u64().and_then(|n| u32::try_from(n).ok()).ok_or_else(|| {
+            serde::de::Error::custom(format!("object_id is a layer's number, as the reply that made the layer names it, not {v}; leave it out for a new layer"))
+        })
+    }).transpose()
+}
+
 
 use crate::history::{EditCommand, LinkedMovePartner};
 use klipp_core::quote::quoted;
@@ -869,13 +881,20 @@ fn run_script(s: &str, i: usize) -> Result<klipp_timeline::Script, Refusal> {
 }
 
 /// A generator's settings, or a name the Generators tab lists (any case),
-/// read as that one's settings (#3095).
+/// read as that one's settings (#3095). Settings in another shape are
+/// refused with the shape they take and the kinds there are (#2606): serde
+/// alone said "invalid value: map, expected map with a single key".
 fn generator_or_named<'de, D: serde::Deserializer<'de>>(d: D) -> Result<klipp_core::GeneratorData, D::Error> {
     let value = serde_json::Value::deserialize(d)?;
     if let Some(entry) = value.as_str().and_then(klipp_core::generator_entries::generator_named) {
         return Ok(entry.data.clone());
     }
-    serde_json::from_value(value).map_err(serde::de::Error::custom)
+    serde_json::from_value(value).map_err(|e| {
+        serde::de::Error::custom(format!(
+            "data is a name from the Generators tab, or one generator's settings under its kind, as {{\"SolidColor\": {{\"color\": [0, 0, 0, 255]}}}}; the kinds are {} ({e})",
+            klipp_core::GENERATOR_KINDS.join(", ")
+        ))
+    })
 }
 
 /// One editorial operation.
@@ -899,7 +918,7 @@ pub enum Op {
     /// (fractions of the frame).
     VectorPath {
         clip_id: ClipRef,
-        #[serde(default)]
+        #[serde(default, deserialize_with = "layer_id")]
         object_id: Option<u32>,
         #[serde(default)]
         path: Option<klipp_timeline::VectorPath>,
@@ -4484,12 +4503,17 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
                 if let Some(w) = w { t.size.x = *w; }
                 if let Some(h) = h { t.size.y = *h; }
             };
-            if let Some(id)=object_id {
-                let object=new.object_mut(klipp_timeline::TitleObjectId(*id)).ok_or_else(||refuse(i,"path object not found","use a title layer id"))?;
-                if object.locked {return Err(refuse(i,"path object is locked","unlock it before editing"));}
-                if !matches!(object.content,klipp_timeline::TitleObjectContent::Shape(_)) {return Err(refuse(i,"object is not a shape","add a new path or name a shape layer"));}
+            // Which layer it went to, said back so the next edit can name
+            // it (#2574): the reply was the same for a new layer and an
+            // edited one, and named neither.
+            let layer = if let Some(id)=object_id {
+                let ids = old.objects.iter().map(|o| o.id.0.to_string()).collect::<Vec<_>>().join(", ");
+                let object=new.object_mut(klipp_timeline::TitleObjectId(*id)).ok_or_else(||refuse(i,format!("the clip has no layer {id}"),format!("its layers are {ids}; leave object_id out for a new path layer")))?;
+                if object.locked {return Err(refuse(i,format!("layer {id} is locked"),"unlock it before editing"));}
+                if !matches!(object.content,klipp_timeline::TitleObjectContent::Shape(_)) {return Err(refuse(i,format!("layer {id} is not a shape"),"add a new path or name a shape layer"));}
                 object.content=content;
                 place(&mut object.transform);
+                format!("path layer {id}")
             } else {
                 let size = match shape {
                     None => klipp_timeline::TitlePosition{x:1.0,y:1.0},
@@ -4499,9 +4523,10 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
                 };
                 let mut t = klipp_timeline::ObjectTransform {center:klipp_timeline::TitlePosition{x:0.5,y:0.5},size,..klipp_timeline::default_text_transform()};
                 place(&mut t);
-                new.add_object(content,t);
-            }
-            Ok(("Edit vector path geometry and paint".into(),EditCommand::EditTitle {clip_id:clip.id,description:"Edit Vector Path",old_data:old.clone(),new_data:new},vec![clip.id]))
+                let id = new.add_object(content,t).0;
+                format!("new path layer {id}; object_id {id} edits it again")
+            };
+            Ok((format!("set geometry and paint of {layer}"),EditCommand::EditTitle {clip_id:clip.id,description:"Edit Vector Path",old_data:old.clone(),new_data:new},vec![clip.id]))
         }
         Op::Connector { at, secs: held, from, to, color, stroke_width, reveal_secs, track } => {
             let at = resolve_anchor(seq, fps, at, i)?;
@@ -7667,8 +7692,14 @@ fn captions(
     };
     if let Some(ti) = existing {
         let t = &seq.tracks[ti];
+        // `track` is where they go, read as the sound to caption (#2608):
+        // said as such, with where the words come from.
         if !matches!(t.kind, TrackKind::Subtitle | TrackKind::Text) {
-            return Err(refuse(i, format!("track {ti} is not a subtitle or text track"), "name a subtitle track, or leave the track out"));
+            return Err(refuse(
+                i,
+                format!("track is where the captions go, and track {ti} {} is {} track, not a subtitle or text track", quoted(&t.name), if t.kind == TrackKind::Audio { "an audio" } else { "a video" }),
+                "the words come from every clip heard on the timeline (from and to give part of it); name a subtitle track for them, or leave track out for the first one, made at the bottom if there is none",
+            ));
         }
         if t.locked {
             return Err(refuse(i, format!("track {ti} is locked"), "unlock it, or use another track"));
@@ -8277,7 +8308,11 @@ fn place_composition(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, at: T
     let id = clip.id;
     edits.push(EditCommand::LegacyAppendClip { clip, track_index });
     let copied = if missing.is_empty() { String::new() } else { format!(", its {} sequence{} copied into the project", missing.len(), if missing.len() == 1 { "" } else { "s" }) };
-    Ok((format!("template {} at {:.2}-{:.2} s on track {track_index}{copied}", quoted(&t.name), secs(tl_in), secs(tl_out)), EditCommand::Batch(edits), vec![id]))
+    // A track made on top moves every other one down (#2565), said as
+    // the title op says it: the reply named only "track 0".
+    let made = edits.iter().any(|e| matches!(e, EditCommand::AddTrack { .. }));
+    let on = if made { "a new video track 0; every other track's index moves down by one".to_string() } else { format!("track {track_index}") };
+    Ok((format!("template {} at {:.2}-{:.2} s on {on}{copied}", quoted(&t.name), secs(tl_in), secs(tl_out)), EditCommand::Batch(edits), vec![id]))
 }
 
 /// New words for a title or a caption: the clip's first text box takes
@@ -14002,8 +14037,10 @@ fn motion_extras(t: &Typeset, i: usize) -> Result<(Option<Vec<klipp_core::title_
 /// checked against the title's `secs` and the path against `layers`,
 /// the title's. An error says what does not fit.
 fn set_motion_extras(tb: &mut klipp_timeline::TextBox, fx: &mut Option<klipp_timeline::LayerFx>, t: &Typesetting, secs: f64, layers: &[klipp_timeline::TitleObject]) -> Result<(), String> {
+    // What may be keyed said with the refusal (#2605): a key just past the
+    // end refused a whole apply, saying only that it was late.
     let late = |keys: &[klipp_core::Keyframe], what: &str| match keys.iter().find(|k| k.time_secs > secs + 1e-6) {
-        Some(k) => Err(format!("a {what} key at {} s is after the title's end at {secs:.2} s", k.time_secs)),
+        Some(k) => Err(format!("a {what} key at {:.2} s is after the title's end at {secs:.2} s; give keys from 0 to {secs:.2} s, or make the title longer (its secs)", k.time_secs)),
         None => Ok(()),
     };
     if let Some(animators) = &t.animators {
@@ -14053,7 +14090,14 @@ fn set_motion_extras(tb: &mut klipp_timeline::TextBox, fx: &mut Option<klipp_tim
             ThreeDAsk::Off => None,
             ThreeDAsk::On(patch) => {
                 for (name, keys) in &patch.keys {
-                    late(keys, &format!("3D {name}"))?;
+                    // By the op's own name for it, not the model's (#2605).
+                    let asked = match *name {
+                        "rotate_y" => "turn",
+                        "rotate_x" => "tilt",
+                        "rotate_z" => "roll",
+                        other => other,
+                    };
+                    late(keys, &format!("3D {asked}"))?;
                 }
                 Some(patch.apply(tb.three_d.as_ref()))
             }
@@ -14766,6 +14810,34 @@ pub fn title_from_fields(seq: &Sequence, fields: &serde_json::Value, at_secs: f6
     }
 }
 
+/// Why track `ti` has no room for `tl_in..tl_out` (#2604): locked, or the
+/// clip there, by how much it runs over and what length fits before it.
+/// Both were said as "is locked or has a clip there", a frame's overlap
+/// and a locked track alike.
+fn no_room(seq: &Sequence, fps: Fps, i: usize, ti: usize, tl_in: Timecode, tl_out: Timecode) -> Refusal {
+    let leave = "or leave the track out and one with room is found or made";
+    if seq.tracks[ti].locked {
+        return refuse(i, format!("track {ti} is locked"), format!("unlock it, {leave}"));
+    }
+    let Some(c) = overlapping(seq, ti, tl_in, tl_out, None) else {
+        return refuse(i, format!("track {ti} has no room there"), leave);
+    };
+    let over = secs(tl_out.min(c.timeline_out)) - secs(tl_in.max(c.timeline_in));
+    let frames = (over * fps.as_f64()).round() as i64;
+    let why = format!(
+        "the clip at {:.3}-{:.3} s on track {ti} runs over it by {frames} frame{} ({over:.3} s)",
+        secs(c.timeline_in),
+        secs(c.timeline_out),
+        if frames == 1 { "" } else { "s" }
+    );
+    if c.timeline_in > tl_in {
+        let room = secs(c.timeline_in) - secs(tl_in);
+        refuse(i, why, format!("{room:.3} s fits from {:.3} s: hold it that long, start it elsewhere, {leave}", secs(tl_in)))
+    } else {
+        refuse(i, why, format!("start it after {:.3} s, {leave}", secs(c.timeline_out)))
+    }
+}
+
 /// Put `td` on the timeline at `at` for `secs`, on `track` or on a text
 /// track with room (one made when there is none): the edit, named `what`
 /// with `note` after where it went. The title op, a template's (#1139),
@@ -14784,7 +14856,7 @@ fn place_title(seq: &Sequence, fps: Fps, i: usize, at: Timecode, secs_held: f64,
                 return Err(refuse(i, format!("track {ti} is not a text track"), "name a text track, or leave the track out"));
             }
             if !fits(ti) {
-                return Err(refuse(i, format!("track {ti} is locked or has a clip there"), "leave the track out and one with room is found or made"));
+                return Err(no_room(seq, fps, i, ti, tl_in, tl_out));
             }
             Some(ti)
         }
@@ -14861,7 +14933,7 @@ fn lower_third(
                 return Err(refuse(i, format!("track {ti} is not a text or video track"), "name a text track, or leave the track out"));
             }
             if !fits(ti) {
-                return Err(refuse(i, format!("track {ti} is locked or has a clip there"), "leave the track out and one with room is found or made"));
+                return Err(no_room(seq, fps, i, ti, tl_in, tl_out));
             }
             Some(ti)
         }
@@ -16022,6 +16094,34 @@ mod tests {
         assert!((enter(4.0, serde_json::json!({ "Duration": 1.0 })) - 0.25).abs() < 1e-6, "a Duration given wins");
     }
 
+    /// #2604: a title refused on the track it names says why: the clip
+    /// there, by how many frames it runs over and the length that fits
+    /// before it, or that the track is locked. Both were said as "is
+    /// locked or has a clip there".
+    #[test]
+    fn a_title_refused_on_a_named_track_says_which_clip_and_by_how_much() {
+        let (mut seq, pool, ..) = fixture();
+        let mut text = Track::new("T1", TrackKind::Text);
+        let title = klipp_timeline::TitleData::single_text(klipp_timeline::TextBox { text: "Old".into(), ..Default::default() });
+        text.clips.push(Clip { kind: ClipKind::Title(title), ..Clip::gap(tc(2.96), tc(5.0)) });
+        seq.tracks.push(text);
+        let td = klipp_timeline::TitleData::single_text(klipp_timeline::TextBox { text: "Hi".into(), ..Default::default() });
+        let place = |seq: &Sequence, track: usize| {
+            let op = Op::Template { name: "Hi".into(), at: Anchor::Secs(1.0), secs: Some(2.0), track: Some(TrackRef::Index(track)), fields: Default::default(), source: None, kind: None, data: Some(Box::new(td.clone())), composition: None };
+            resolve(seq, &pool, &[op]).unwrap_err()
+        };
+        let r = place(&seq, 2);
+        assert!(r.why.contains("2.960-5.000 s on track 2 runs over it by 1 frame (0.040 s)"), "{}", r.why);
+        assert!(r.hint.contains("1.960 s fits from 1.000 s"), "{}", r.hint);
+        let r = place(&seq, 0);
+        assert!(r.why.contains("0.000-4.000 s on track 0 runs over it by 50 frames"), "{}", r.why);
+        assert!(r.hint.contains("start it after 4.000 s"), "{}", r.hint);
+        seq.tracks[2].locked = true;
+        let r = place(&seq, 2);
+        assert_eq!(r.why, "track 2 is locked");
+        assert!(r.hint.starts_with("unlock it"), "{}", r.hint);
+    }
+
     /// #2757: a composition template placed by the template op in a
     /// project without its composition: the sequence copied in and the
     /// clip laid as one, its parameter set, in one step that undo takes
@@ -16042,6 +16142,12 @@ mod tests {
         let op = |fields: serde_json::Value| Op::Template { name: "Card".into(), at: Anchor::Secs(1.0), secs: Some(3.0), track: None, fields: serde_json::from_value(fields).unwrap(), source: None, kind: None, data: None, composition: Some(Box::new(placed.clone())) };
         let plan = resolve(&seq, &pool, &[op(serde_json::json!({ "Headline": "Ship it" }))]).unwrap();
         assert!(plan.steps[0].what.contains("copied into the project"), "{}", plan.steps[0].what);
+        // #2565: no video track free there, so one is made on top, and
+        // the reply says every other index moved; on a free one, nothing.
+        assert!(plan.steps[0].what.contains("on a new video track 0; every other track's index moves down by one"), "{}", plan.steps[0].what);
+        let free = Op::Template { name: "Card".into(), at: Anchor::Secs(8.5), secs: Some(1.0), track: None, fields: Default::default(), source: None, kind: None, data: None, composition: Some(Box::new(placed.clone())) };
+        let on_free = resolve(&seq, &pool, &[free]).unwrap();
+        assert!(on_free.steps[0].what.contains("on track 0") && !on_free.steps[0].what.contains("moves down"), "{}", on_free.steps[0].what);
         let mut seqs = vec![seq.clone()];
         let mut p = pool.clone();
         let mut fps = seq.fps;
@@ -18865,6 +18971,19 @@ mod tests {
         assert!(why(serde_json::json!({"look": "glow_caps", "look_colour": "red"})).contains("Ice, Peach, Mint"));
         assert!(why(serde_json::json!({"look": "glow_caps", "glow": 5.0})).contains("0 to 3"));
         assert!(why(serde_json::json!({"glow": 1.0})).contains("name the look"));
+    }
+
+    /// #2608: captions asked onto the audio track, `track` read as the
+    /// sound to caption, are refused saying track is where they go and
+    /// where the words come from.
+    #[test]
+    fn captions_on_a_sound_track_say_track_is_where_they_go() {
+        let (seq, pool, ..) = fixture();
+        let r = resolve_with(&seq, &pool, &[Op::Captions { track: Some(TrackRef::Index(1)), from: None, to: None, max_chars: 42, max_lines: 2, replace: false, animate: None }], &Spoken).unwrap_err();
+        assert!(r.why.contains("track is where the captions go") && r.why.contains("track 1 \"A1\" is an audio track"), "{}", r.why);
+        assert!(r.hint.contains("every clip heard on the timeline") && r.hint.contains("leave track out"), "{}", r.hint);
+        let r = resolve_with(&seq, &pool, &[Op::Captions { track: Some(TrackRef::Index(0)), from: None, to: None, max_chars: 42, max_lines: 2, replace: false, animate: None }], &Spoken).unwrap_err();
+        assert!(r.why.contains("track 0 \"V1\" is a video track"), "{}", r.why);
     }
 
     #[test]
@@ -24094,6 +24213,18 @@ mod generator_tests {
         let plain: Op = serde_json::from_value(serde_json::json!({ "op": "generator", "data": "ColorBars100", "at": { "secs": 0.0 }, "secs": 2.0 })).unwrap();
         assert!(matches!(plain, Op::Generator { data: klipp_core::GeneratorData::ColorBars100, .. }));
         assert!(serde_json::from_value::<Op>(serde_json::json!({ "op": "generator", "data": "No Such Thing", "at": { "secs": 0.0 }, "secs": 2.0 })).is_err());
+    }
+
+    /// #2606: settings in another shape are refused with the shape they
+    /// take, an example, and every kind there is; serde alone said
+    /// "invalid value: map, expected map with a single key".
+    #[test]
+    fn generator_settings_in_the_wrong_shape_say_the_right_one() {
+        let err = serde_json::from_value::<Op>(serde_json::json!({ "op": "generator", "data": { "kind": "solid", "color": [255, 0, 0, 255] }, "at": { "secs": 0.0 }, "secs": 2.0 })).unwrap_err().to_string();
+        assert!(err.contains(r#"{"SolidColor": {"color": [0, 0, 0, 255]}}"#), "{err}");
+        for kind in klipp_core::GENERATOR_KINDS {
+            assert!(err.contains(kind), "{kind} is named: {err}");
+        }
     }
 
     #[test]

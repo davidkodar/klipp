@@ -1445,12 +1445,13 @@ pub struct AudioHardwarePrefs {
     /// Output device name (None = system default).
     #[serde(default)]
     pub output_device: Option<String>,
-    /// Output sample rate in Hz.
-    #[serde(default = "default_sample_rate")]
-    pub sample_rate: u32,
-    /// Audio buffer size in samples.
-    #[serde(default = "default_buffer_size")]
-    pub buffer_size: u32,
+    /// The output buffer asked of PipeWire, in samples at 48 kHz (#173);
+    /// `None` is the device's own. Read before the app starts its threads
+    /// ([`crate::audio_buffer`]): a change applies after a restart. The
+    /// `sample_rate` and `buffer_size` older files hold were never used,
+    /// and are passed over, so nobody's playback changes on upgrade.
+    #[serde(default)]
+    pub output_buffer: Option<u32>,
     /// How often (in seconds) to re-show the "muted by system" toast
     /// while the OS-level app mute is active. 0 = show only once.
     /// Detects PipeWire/WirePlumber per-app mute state.
@@ -1463,8 +1464,6 @@ pub struct AudioHardwarePrefs {
     pub input_device: String,
 }
 
-fn default_sample_rate() -> u32 { 48000 }
-fn default_buffer_size() -> u32 { 256 }
 fn default_mute_reminder_interval() -> u32 { 15 }
 fn default_visible_columns() -> Vec<crate::browser::ColumnId> {
     use crate::browser::ColumnId;
@@ -1474,8 +1473,7 @@ impl Default for AudioHardwarePrefs {
     fn default() -> Self {
         Self {
             output_device: None,
-            sample_rate: default_sample_rate(),
-            buffer_size: default_buffer_size(),
+            output_buffer: None,
             mute_reminder_interval_secs: default_mute_reminder_interval(),
             input_device: String::new(),
         }
@@ -2616,8 +2614,7 @@ mod tests {
 
         // AudioHardwarePrefs
         assert!(rt.audio_hardware.output_device.is_none());
-        assert_eq!(rt.audio_hardware.sample_rate, 48000);
-        assert_eq!(rt.audio_hardware.buffer_size, 256);
+        assert_eq!(rt.audio_hardware.output_buffer, None, "the device's own buffer");
 
         // AppearancePrefs
         assert_eq!(rt.appearance.ui_text_size, 13.0);
@@ -2705,7 +2702,7 @@ mod tests {
         assert!(prefs.editing.auto_create_tracks);
         assert_eq!(prefs.audio.fade_overlay_mode, FadeOverlayMode::AudioOnly);
         assert_eq!(prefs.system.max_playback_height, 1080);
-        assert_eq!(prefs.audio_hardware.sample_rate, 48000);
+        assert_eq!(prefs.audio_hardware.output_buffer, None);
         assert_eq!(prefs.appearance.ui_text_size, 13.0);
         assert_eq!(prefs.media_cache.max_cache_size_gb, 20);
         assert!(prefs.title.default_font.is_empty());
@@ -2767,7 +2764,7 @@ mod tests {
         assert!(prefs.editing.auto_create_tracks);
         assert_eq!(prefs.audio.fade_overlay_mode, FadeOverlayMode::AudioOnly);
         assert_eq!(prefs.system.gpu_preference, klipp_core::GpuPreference::Auto);
-        assert_eq!(prefs.audio_hardware.buffer_size, 256);
+        assert_eq!(prefs.audio_hardware.output_buffer, None);
         assert_eq!(prefs.appearance.accent_color, [0x4a, 0x8f, 0xe7]);
         assert_eq!(prefs.media_cache.thumbnail_height, 480);
         assert_eq!(prefs.color.scope_update_interval_ms, 32);
@@ -2845,8 +2842,7 @@ mod tests {
 
         // AudioHardwarePrefs
         prefs.audio_hardware.output_device = Some("HDMI Audio".into());
-        prefs.audio_hardware.sample_rate = 44100;
-        prefs.audio_hardware.buffer_size = 1024;
+        prefs.audio_hardware.output_buffer = Some(1024);
 
         // AppearancePrefs
         prefs.appearance.ui_text_size = 16.0;
@@ -2967,8 +2963,7 @@ mod tests {
         assert_eq!(rt.system.frame_queue_size, 32);
 
         assert_eq!(rt.audio_hardware.output_device.as_deref(), Some("HDMI Audio"));
-        assert_eq!(rt.audio_hardware.sample_rate, 44100);
-        assert_eq!(rt.audio_hardware.buffer_size, 1024);
+        assert_eq!(rt.audio_hardware.output_buffer, Some(1024));
 
         assert_eq!(rt.appearance.ui_text_size, 16.0);
         assert_eq!(rt.appearance.accent_color, [255, 0, 128]);
@@ -3059,7 +3054,7 @@ mod tests {
         // New sections get defaults
         assert_eq!(prefs.system.gpu_preference, klipp_core::GpuPreference::Auto);
         assert_eq!(prefs.system.frame_queue_size, 16);
-        assert_eq!(prefs.audio_hardware.sample_rate, 48000);
+        assert_eq!(prefs.audio_hardware.output_buffer, None);
         assert_eq!(prefs.appearance.ui_text_size, 13.0);
         assert_eq!(prefs.appearance.accent_color, [0x4a, 0x8f, 0xe7]);
         assert_eq!(prefs.media_cache.max_cache_size_gb, 20);
@@ -3810,5 +3805,20 @@ mod revision_tests {
         let mut current = serde_json::to_value(Preferences::default()).unwrap();
         current["media_cache"]["thumbnail_height"] = 640.into();
         assert_eq!(Preferences::from_json_str(&current.to_string()).media_cache.thumbnail_height, 640);
+    }
+
+    /// #173: the sample rate and buffer size older files hold were never
+    /// used; such a file loads with the device's own buffer, so nobody's
+    /// playback changes on upgrade. A buffer chosen since is kept.
+    #[test]
+    fn an_old_buffer_size_is_the_devices_own_buffer() {
+        let old = old_file(|v| {
+            v["audio_hardware"]["sample_rate"] = 44100.into();
+            v["audio_hardware"]["buffer_size"] = 256.into();
+        });
+        assert_eq!(old.audio_hardware.output_buffer, None);
+        let mut current = serde_json::to_value(Preferences::default()).unwrap();
+        current["audio_hardware"]["output_buffer"] = 512.into();
+        assert_eq!(Preferences::from_json_str(&current.to_string()).audio_hardware.output_buffer, Some(512));
     }
 }

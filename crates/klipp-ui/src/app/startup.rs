@@ -562,14 +562,15 @@ impl KlippApp {
                     // Try to find the first media file from the project's manifest
                     let manifest_path = rp.path.join("media").join("manifest.json");
                     let first_media = std::fs::read_to_string(&manifest_path).ok()
-                        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-                        .and_then(|v| v.get("items")?.as_array()?.first()?.get("path")?.as_str().map(std::path::PathBuf::from));
+                        .and_then(|s| first_manifest_media(&rp.path, &s));
 
                     if let Some(media_path) = first_media {
                         if media_path.exists() {
                             // Extract a non-black frame and save as PNG
                             let est_duration = rp.duration_secs.unwrap_or(60.0);
-                            if let Ok((rgba, w, h)) = klipp_engine::generate_thumbnail_at_size_non_black(&media_path, 1.0, est_duration, 320) {
+                            let is_still = klipp_core::media_extensions::path_is_image(&media_path);
+                            let (seek, duration) = super::media_jobs::poster_position(1.0, est_duration, is_still);
+                            if let Ok((rgba, w, h)) = klipp_engine::generate_thumbnail_at_size_non_black(&media_path, seek, duration, 320) {
                                 let stem = rp.path.file_stem().unwrap_or_default().to_string_lossy();
                                 let out_path = cache_dir.join(format!("{stem}.png"));
                                 if save_rgba_as_png(&rgba, w, h, &out_path) {
@@ -728,5 +729,33 @@ impl KlippApp {
                 Step::Toast(text) => self.state.toast.show(text),
             }
         }
+    }
+}
+
+/// The first media file a project's manifest names, as a path to read:
+/// one stored relative to the project folder is resolved against it, as
+/// opening the project resolves it.
+fn first_manifest_media(project_dir: &std::path::Path, manifest: &str) -> Option<std::path::PathBuf> {
+    let v = serde_json::from_str::<serde_json::Value>(manifest).ok()?;
+    let stored = v.get("items")?.as_array()?.first()?.get("path")?.as_str()?;
+    Some(klipp_project::path_util::resolve_media_path(project_dir, std::path::Path::new(stored)))
+}
+
+#[cfg(test)]
+mod first_manifest_media_tests {
+    use std::path::{Path, PathBuf};
+
+    /// Saved projects store their media relative to the project folder.
+    /// Read as it was stored, the path was looked for from wherever Klipp
+    /// was started, so no project of that kind got a poster at launch.
+    #[test]
+    fn a_relative_media_path_is_read_from_the_project_folder() {
+        let project = Path::new("/work/films/trip.klipp");
+        let manifest = r#"{"items":[{"path":"../../footage/a.mov"},{"path":"b.png"}]}"#;
+        assert_eq!(super::first_manifest_media(project, manifest), Some(PathBuf::from("/work/footage/a.mov")));
+        let absolute = r#"{"items":[{"path":"/media/card/a.mov"}]}"#;
+        assert_eq!(super::first_manifest_media(project, absolute), Some(PathBuf::from("/media/card/a.mov")));
+        assert_eq!(super::first_manifest_media(project, r#"{"items":[]}"#), None);
+        assert_eq!(super::first_manifest_media(project, "not json"), None);
     }
 }
