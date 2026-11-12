@@ -14782,6 +14782,34 @@ pub fn title_from_fields(seq: &Sequence, fields: &serde_json::Value, at_secs: f6
     }
 }
 
+/// Why track `ti` has no room for `tl_in..tl_out` (#2604): locked, or the
+/// clip there, by how much it runs over and what length fits before it.
+/// Both were said as "is locked or has a clip there", a frame's overlap
+/// and a locked track alike.
+fn no_room(seq: &Sequence, fps: Fps, i: usize, ti: usize, tl_in: Timecode, tl_out: Timecode) -> Refusal {
+    let leave = "or leave the track out and one with room is found or made";
+    if seq.tracks[ti].locked {
+        return refuse(i, format!("track {ti} is locked"), format!("unlock it, {leave}"));
+    }
+    let Some(c) = overlapping(seq, ti, tl_in, tl_out, None) else {
+        return refuse(i, format!("track {ti} has no room there"), leave);
+    };
+    let over = secs(tl_out.min(c.timeline_out)) - secs(tl_in.max(c.timeline_in));
+    let frames = (over * fps.as_f64()).round() as i64;
+    let why = format!(
+        "the clip at {:.3}-{:.3} s on track {ti} runs over it by {frames} frame{} ({over:.3} s)",
+        secs(c.timeline_in),
+        secs(c.timeline_out),
+        if frames == 1 { "" } else { "s" }
+    );
+    if c.timeline_in > tl_in {
+        let room = secs(c.timeline_in) - secs(tl_in);
+        refuse(i, why, format!("{room:.3} s fits from {:.3} s: hold it that long, start it elsewhere, {leave}", secs(tl_in)))
+    } else {
+        refuse(i, why, format!("start it after {:.3} s, {leave}", secs(c.timeline_out)))
+    }
+}
+
 /// Put `td` on the timeline at `at` for `secs`, on `track` or on a text
 /// track with room (one made when there is none): the edit, named `what`
 /// with `note` after where it went. The title op, a template's (#1139),
@@ -14800,7 +14828,7 @@ fn place_title(seq: &Sequence, fps: Fps, i: usize, at: Timecode, secs_held: f64,
                 return Err(refuse(i, format!("track {ti} is not a text track"), "name a text track, or leave the track out"));
             }
             if !fits(ti) {
-                return Err(refuse(i, format!("track {ti} is locked or has a clip there"), "leave the track out and one with room is found or made"));
+                return Err(no_room(seq, fps, i, ti, tl_in, tl_out));
             }
             Some(ti)
         }
@@ -14877,7 +14905,7 @@ fn lower_third(
                 return Err(refuse(i, format!("track {ti} is not a text or video track"), "name a text track, or leave the track out"));
             }
             if !fits(ti) {
-                return Err(refuse(i, format!("track {ti} is locked or has a clip there"), "leave the track out and one with room is found or made"));
+                return Err(no_room(seq, fps, i, ti, tl_in, tl_out));
             }
             Some(ti)
         }
@@ -16036,6 +16064,34 @@ mod tests {
         assert!((enter(2.0, serde_json::json!({})) - 0.5).abs() < 1e-6, "placed for as long as made: as made");
         assert!((enter(4.0, serde_json::json!({})) - 1.0).abs() < 1e-6, "twice as long: twice as slow");
         assert!((enter(4.0, serde_json::json!({ "Duration": 1.0 })) - 0.25).abs() < 1e-6, "a Duration given wins");
+    }
+
+    /// #2604: a title refused on the track it names says why: the clip
+    /// there, by how many frames it runs over and the length that fits
+    /// before it, or that the track is locked. Both were said as "is
+    /// locked or has a clip there".
+    #[test]
+    fn a_title_refused_on_a_named_track_says_which_clip_and_by_how_much() {
+        let (mut seq, pool, ..) = fixture();
+        let mut text = Track::new("T1", TrackKind::Text);
+        let title = klipp_timeline::TitleData::single_text(klipp_timeline::TextBox { text: "Old".into(), ..Default::default() });
+        text.clips.push(Clip { kind: ClipKind::Title(title), ..Clip::gap(tc(2.96), tc(5.0)) });
+        seq.tracks.push(text);
+        let td = klipp_timeline::TitleData::single_text(klipp_timeline::TextBox { text: "Hi".into(), ..Default::default() });
+        let place = |seq: &Sequence, track: usize| {
+            let op = Op::Template { name: "Hi".into(), at: Anchor::Secs(1.0), secs: Some(2.0), track: Some(TrackRef::Index(track)), fields: Default::default(), source: None, kind: None, data: Some(Box::new(td.clone())), composition: None };
+            resolve(seq, &pool, &[op]).unwrap_err()
+        };
+        let r = place(&seq, 2);
+        assert!(r.why.contains("2.960-5.000 s on track 2 runs over it by 1 frame (0.040 s)"), "{}", r.why);
+        assert!(r.hint.contains("1.960 s fits from 1.000 s"), "{}", r.hint);
+        let r = place(&seq, 0);
+        assert!(r.why.contains("0.000-4.000 s on track 0 runs over it by 50 frames"), "{}", r.why);
+        assert!(r.hint.contains("start it after 4.000 s"), "{}", r.hint);
+        seq.tracks[2].locked = true;
+        let r = place(&seq, 2);
+        assert_eq!(r.why, "track 2 is locked");
+        assert!(r.hint.starts_with("unlock it"), "{}", r.hint);
     }
 
     /// #2757: a composition template placed by the template op in a
