@@ -3067,11 +3067,10 @@ impl Renderer {
                         }
                         let t = Instant::now();
                         let input = if other_size || codes.len() != (width as usize) * (height as usize) {
-                            // Decoded and fitted on the CPU, as the CPU
-                            // composite fits it (`to_linear`); graded and
-                            // displayed on the GPU from there.
-                            let decoded = codes.to_scene_linear_rgba(transfer, source_to_working);
-                            GradeInput::Cpu(fit(Arc::new(decoded), fw, fh, width, height))
+                            // Decoded and fitted on the GPU in scene light,
+                            // as the CPU composite fits it (`to_linear`);
+                            // on the CPU only if the chain can't take it.
+                            GradeInput::Gpu(Arc::new(SceneFitted { codes, transfer, source_to_working, w: fw, h: fh, ow: width, oh: height, fitted: std::sync::OnceLock::new() }))
                         } else {
                             GradeInput::Scene { codes, transfer, source_to_working }
                         };
@@ -8259,6 +8258,41 @@ impl GpuPixels for FittedGpu {
     }
 }
 
+/// Scene-referred codes of another size than the frame: decoded and fitted
+/// on the GPU when the chain seeds from them, decoded and fitted on the
+/// CPU as `to_linear` does when it is read instead.
+struct SceneFitted {
+    codes: Arc<klipp_color::hdr::SceneCodes>,
+    transfer: klipp_color::hdr::HdrTransfer,
+    source_to_working: [[f32; 3]; 3],
+    w: u32,
+    h: u32,
+    /// The frame's size, which it is fitted into.
+    ow: u32,
+    oh: u32,
+    fitted: std::sync::OnceLock<Arc<Vec<f32>>>,
+}
+
+impl GpuPixels for SceneFitted {
+    fn seed(&self, exec: &mut klipp_nodes::GraphExecutor, width: u32, height: u32) -> bool {
+        (width, height) == (self.ow, self.oh)
+            && exec.prime_chain_fit_from_hdr10_codes(
+            &self.codes,
+            self.w,
+            self.h,
+            width,
+            height,
+            self.transfer.transfer_id(),
+            self.transfer.scene_scale(),
+            klipp_effects::color_wgsl::pack_primaries_matrix(self.source_to_working),
+        )
+    }
+
+    fn read(&self) -> Arc<Vec<f32>> {
+        Arc::clone(self.fitted.get_or_init(|| fit(Arc::new(self.codes.to_scene_linear_rgba(self.transfer, self.source_to_working)), self.w, self.h, self.ow, self.oh)))
+    }
+}
+
 /// Place a source of another size in the output frame the way the
 /// suites do: scaled by one factor to fit, centred, the rest left empty
 /// (a portrait clip in a landscape sequence gets bars, not a stretch).
@@ -8284,11 +8318,14 @@ fn fit(p: Arc<Vec<f32>>, w: u32, h: u32, ow: u32, oh: u32) -> Arc<Vec<f32>> {
         let y = oy - y_off;
         let dest = &mut row[x_off * 4..(x_off + dw) * 4];
         if sx >= 2.0 && sy >= 2.0 {
-            let y0 = ((y as f32 * sy) as usize).min(h - 1);
-            let y1 = (((y + 1) as f32 * sy) as usize).clamp(y0 + 1, h);
+            // Whole-number windows, as the GPU's fit takes them: a float
+            // bound on a whole pixel rounded one way here and the other
+            // there.
+            let y0 = (y * h / dh).min(h - 1);
+            let y1 = ((y + 1) * h / dh).clamp(y0 + 1, h);
             for x in 0..dw {
-                let x0 = ((x as f32 * sx) as usize).min(w - 1);
-                let x1 = (((x + 1) as f32 * sx) as usize).clamp(x0 + 1, w);
+                let x0 = (x * w / dw).min(w - 1);
+                let x1 = ((x + 1) * w / dw).clamp(x0 + 1, w);
                 let mut acc = [0.0f32; 4];
                 for yy in y0..y1 {
                     for xx in x0..x1 {
@@ -9427,6 +9464,131 @@ mod contrast_protect_tests {
         }
         for plain in ["Clean Line", "Impact", "Statement"] {
             assert_eq!(contrast_protect(&clip_of(plain, ContrastProtect::Auto)), ContrastProtect::Auto.code(), "{plain} on Auto");
+        }
+    }
+}
+
+#[cfg(test)]
+mod fit_on_gpu_tests {
+    //! A frame of another size than the sequence is fitted on the GPU by
+    //! the CPU's rules (`fit`), from a linear frame (export's decoded
+    //! frames), 16-bit sRGB samples (export's scaled frames) and scene
+    //! codes (HDR): every pixel, the edges and the bars included.
+    use super::*;
+    use wgpu::util::DeviceExt;
+
+    fn executor() -> Option<klipp_nodes::GraphExecutor> {
+        let mut exec = klipp_nodes::GraphExecutor::new();
+        if exec.gpu_pipeline_or_init().is_none() {
+            assert_ne!(std::env::var("KLIPP_TEST_REQUIRE_GPU").as_deref(), Ok("1"), "GPU required");
+            eprintln!("unverified: no GPU");
+            return None;
+        }
+        Some(exec)
+    }
+
+    /// A picture with detail in every pixel and alpha that varies, straight.
+    fn picture(w: u32, h: u32) -> Vec<f32> {
+        (0..w * h)
+            .flat_map(|i| {
+                let (x, y) = ((i % w) as f32, (i / w) as f32);
+                [((x * 0.37).sin() * 0.5 + 0.5) * 0.9, ((y * 0.23).cos() * 0.5 + 0.5) * 0.7, ((x + y) % 17.0) / 17.0, 0.3 + 0.7 * ((x * 3.0 + y) % 29.0) / 29.0]
+            })
+            .collect()
+    }
+
+    fn chain(exec: &mut klipp_nodes::GraphExecutor, w: u32, h: u32) -> Vec<f32> {
+        exec.gpu_pipeline_mut().expect("a GPU").download_chain_output_linear(true, (w * h) as usize)
+    }
+
+    /// The worst difference, relative above one, and where.
+    fn worst(got: &[f32], want: &[f32], w: u32) -> (f32, u32, u32) {
+        let mut out = (0.0, 0, 0);
+        for (i, (g, e)) in got.iter().zip(want).enumerate() {
+            let d = (g - e).abs() / e.abs().max(1.0);
+            if d > out.0 {
+                out = (d, (i / 4) as u32 % w, (i / 4) as u32 / w);
+            }
+        }
+        out
+    }
+
+    /// Sizes that land the picture's edges on half pixels (1919×1081 in
+    /// 1920×1080), shrink by under two (bilinear), by two or more (an area
+    /// average), by exactly two on one axis and just under on the other
+    /// (a single scale cannot give 1.9 against 2.0; rounding gives 1.995),
+    /// and a portrait source between bars.
+    const CASES: [((u32, u32), (u32, u32)); 7] = [
+        ((1919, 1081), (1920, 1080)),
+        ((410, 216), (384, 216)),
+        ((800, 450), (384, 216)),
+        ((768, 432), (384, 216)),
+        ((768, 411), (384, 216)),
+        ((216, 384), (384, 216)),
+        ((500, 281), (384, 216)),
+    ];
+
+    #[test]
+    fn a_linear_frame_of_another_size_is_fitted_as_the_cpu_fits_it() {
+        let Some(mut exec) = executor() else { return };
+        for ((sw, sh), (w, h)) in CASES {
+            let src = picture(sw, sh);
+            let buf = exec.gpu_pipeline_mut().unwrap().device().create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("test source"),
+                contents: bytemuck::cast_slice(&src),
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            });
+            assert!(exec.prime_chain_fit_from_gpu_linear_buffer(&buf, sw, sh, w, h), "{sw}x{sh} → {w}x{h} seeds");
+            let got = chain(&mut exec, w, h);
+            let want = fit(Arc::new(src), sw, sh, w, h);
+            let (d, x, y) = worst(&got, &want, w);
+            assert!(d <= 1e-4, "{sw}x{sh} → {w}x{h}: {d} at ({x}, {y})");
+        }
+    }
+
+    #[test]
+    fn sixteen_bit_samples_of_another_size_are_fitted_as_the_cpu_fits_them() {
+        let Some(mut exec) = executor() else { return };
+        let identity = klipp_effects::color_wgsl::pack_primaries_matrix([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]);
+        for ((sw, sh), (w, h)) in CASES {
+            let linear = picture(sw, sh);
+            let samples: Vec<u16> = linear
+                .chunks(4)
+                .flat_map(|p| [klipp_color::transfer::linear_to_srgb(p[0]), klipp_color::transfer::linear_to_srgb(p[1]), klipp_color::transfer::linear_to_srgb(p[2]), p[3]].map(|v| (v.clamp(0.0, 1.0) * 65535.0).round() as u16))
+                .collect();
+            // What the samples say, decoded on the CPU, then fitted there.
+            let decoded: Vec<f32> = samples.chunks(4).flat_map(|p| [klipp_color::transfer::srgb_to_linear(p[0] as f32 / 65535.0), klipp_color::transfer::srgb_to_linear(p[1] as f32 / 65535.0), klipp_color::transfer::srgb_to_linear(p[2] as f32 / 65535.0), p[3] as f32 / 65535.0]).collect();
+            assert!(exec.prime_chain_fit_from_rgba64(&Arc::new(samples), sw, sh, w, h, identity), "{sw}x{sh} → {w}x{h} seeds");
+            let got = chain(&mut exec, w, h);
+            let want = fit(Arc::new(decoded), sw, sh, w, h);
+            let (d, x, y) = worst(&got, &want, w);
+            assert!(d <= 2e-4, "{sw}x{sh} → {w}x{h}: {d} at ({x}, {y})");
+        }
+    }
+
+    /// An HDR source of another size, a PQ frame at 1080p in a larger
+    /// sequence or a 4K one in a smaller: decoded and fitted in scene light
+    /// on the GPU, as the CPU decodes and fits it.
+    #[test]
+    fn scene_codes_of_another_size_are_fitted_as_the_cpu_fits_them() {
+        let Some(mut exec) = executor() else { return };
+        for ((sw, sh), (w, h)) in [((192, 108), (384, 216)), ((800, 450), (384, 216)), ((216, 384), (384, 216))] {
+            let codes: Vec<u32> = (0..sw * sh).map(|i| klipp_color::hdr::pack_rgb10(64 + (i * 7) % 900, 64 + (i * 13) % 900, 64 + (i / sw * 5) % 900)).collect();
+            let scene = SceneFitted {
+                codes: Arc::new(klipp_color::hdr::SceneCodes::Packed10(codes)),
+                transfer: klipp_color::hdr::HdrTransfer::Pq,
+                source_to_working: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+                w: sw,
+                h: sh,
+                ow: w,
+                oh: h,
+                fitted: std::sync::OnceLock::new(),
+            };
+            assert!(scene.seed(&mut exec, w, h), "{sw}x{sh} → {w}x{h} seeds");
+            let got = chain(&mut exec, w, h);
+            let want = scene.read();
+            let (d, x, y) = worst(&got, &want, w);
+            assert!(d <= 1e-3, "{sw}x{sh} → {w}x{h}: {d} at ({x}, {y})");
         }
     }
 }

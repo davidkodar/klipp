@@ -1699,6 +1699,58 @@ impl GraphExecutor {
         ok
     }
 
+    /// [`Self::prime_chain_from_gpu_linear_buffer`] from a frame of another
+    /// size: fitted into `width` by `height` on the GPU as the compositor
+    /// fits a source on the CPU, not read back to be.
+    pub fn prime_chain_fit_from_gpu_linear_buffer(&mut self, input: &wgpu::Buffer, src_width: u32, src_height: u32, width: u32, height: u32) -> bool {
+        self.ensure_gpu();
+        let Some(gpu) = self.gpu.as_mut() else { return false };
+        let ok = gpu.fit_linear_into_chain(input, src_width, src_height, width, height);
+        if ok {
+            self.gpu_chain_preseeded = true;
+            self.gpu_chain_preseed_dims = Some((width, height));
+        }
+        ok
+    }
+
+    /// The chain seeded at a source's own size (a bridge from samples or
+    /// codes), then fitted in place to `width` by `height`.
+    fn fit_preseeded(&mut self, seeded: bool, src_width: u32, src_height: u32, width: u32, height: u32) -> bool {
+        let Some(gpu) = self.gpu.as_mut().filter(|_| seeded) else { return false };
+        let ok = gpu.fit_chain_input_in_place(src_width, src_height, width, height);
+        if ok {
+            self.gpu_chain_preseed_dims = Some((width, height));
+        } else {
+            self.gpu_chain_preseeded = false;
+        }
+        ok
+    }
+
+    /// [`Self::prime_chain_from_rgba64`] from a frame of another size,
+    /// fitted on the GPU.
+    pub fn prime_chain_fit_from_rgba64(&mut self, rgba: &Arc<Vec<u16>>, src_width: u32, src_height: u32, width: u32, height: u32, source_to_working: [[f32; 4]; 3]) -> bool {
+        let seeded = self.prime_chain_from_rgba64(rgba, src_width, src_height, source_to_working);
+        self.fit_preseeded(seeded, src_width, src_height, width, height)
+    }
+
+    /// [`Self::prime_chain_from_hdr10_codes`] from a frame of another size,
+    /// fitted on the GPU in scene light, as the CPU composite fits it.
+    #[allow(clippy::too_many_arguments)]
+    pub fn prime_chain_fit_from_hdr10_codes(
+        &mut self,
+        codes: &Arc<klipp_color::hdr::SceneCodes>,
+        src_width: u32,
+        src_height: u32,
+        width: u32,
+        height: u32,
+        transfer_id: u32,
+        scene_scale: f32,
+        source_to_working: [[f32; 4]; 3],
+    ) -> bool {
+        let seeded = self.prime_chain_from_hdr10_codes(codes, src_width, src_height, transfer_id, scene_scale, source_to_working);
+        self.fit_preseeded(seeded, src_width, src_height, width, height)
+    }
+
     /// [`Self::prime_chain_from_srgb8`] from 16-bit samples, with the
     /// source primaries folded into the expansion.
     ///
