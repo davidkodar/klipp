@@ -363,6 +363,14 @@ mod portal_tests {
 
     const BLUE: Color32 = Color32::from_rgb(53, 132, 228);
 
+    /// The accent Light shows for a desktop's: darkened to read on it.
+    fn readable_on(light: &KlippTheme, accent: Color32) -> Color32 {
+        let mut t = light.clone();
+        t.set_accent(accent, true);
+        assert_ne!(t.accent, accent, "this blue is too light to be text on Light as it is");
+        t.accent
+    }
+
     fn found(scheme: ColorScheme, accent: Option<Color32>) -> PortalStatus {
         PortalStatus::Found(Appearance { scheme, accent })
     }
@@ -401,7 +409,8 @@ mod portal_tests {
         assert_eq!((t.bg_panel, t.accent), (dark.bg_panel, BLUE), "dark, in the accent");
         let on = crate::prefs::AppearancePrefs { follow_system_theme: true, ..fresh.clone() };
         let t = KlippTheme::from_prefs(&on, &reg);
-        assert_eq!((t.bg_panel, t.accent), (light.bg_panel, BLUE), "following dark and light: light");
+        // On Light the accent is darkened in its hue until it reads as text there (#3936).
+        assert_eq!((t.bg_panel, t.accent), (light.bg_panel, readable_on(&light, BLUE)), "following dark and light: light");
         let own = crate::prefs::AppearancePrefs { follow_system_accent: false, ..fresh };
         assert_eq!(KlippTheme::from_prefs(&own, &reg).accent, dark.accent, "the accent not followed: the theme's");
     }
@@ -423,7 +432,7 @@ mod portal_tests {
             crate::prefs::Preferences::from_json_str(&file.to_string()).appearance
         };
         let t = KlippTheme::from_prefs(&old(true), &reg);
-        assert_eq!((t.bg_panel, t.accent), (light.bg_panel, BLUE));
+        assert_eq!((t.bg_panel, t.accent), (light.bg_panel, readable_on(&light, BLUE)));
         let t = KlippTheme::from_prefs(&old(false), &reg);
         assert!(!old(false).follow_system_accent);
         assert_eq!((t.bg_panel, t.accent), (dark.bg_panel, dark.accent));
