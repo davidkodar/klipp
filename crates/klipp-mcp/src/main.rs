@@ -37,7 +37,13 @@ const MAX_CONCURRENT_READS: usize = 8;
 const MAX_QUEUED_WRITES: usize = 8;
 /// Inline a screenshot in the reply only when it is small enough to be
 /// worth a client's context window. Bigger ones come back as a path.
-const INLINE_IMAGE_MAX_BYTES: usize = 1_000_000;
+///
+/// Counted on the file, but what a client takes is the base64 of it, a
+/// third larger, on one line (#2586): a sheet of 836 kB, under the old
+/// megabyte here, is 1.12 MB on the wire, which a client may refuse.
+/// 700 kB is about 930 kB of base64, under a megabyte as sent.
+/// klipp-control sizes the copies it makes to show by the same budget.
+const INLINE_IMAGE_MAX_BYTES: usize = 700_000;
 
 /// Generation of the viewer frame when the most recent write was queued,
 /// or `u64::MAX` when no write is outstanding.
@@ -2160,12 +2166,22 @@ fn content_for(name: &str, result: &Value) -> Result<Vec<Value>, String> {
             if result.get("inline").and_then(Value::as_bool) == Some(false) {
                 return Ok(content);
             }
-            if let Ok(bytes) = std::fs::read(path) {
+            // A sheet too large to show comes with a smaller copy to show
+            // (#2586); the full one stays at `path`.
+            let shown = result.get("inline_path").and_then(Value::as_str).unwrap_or(path);
+            if let Ok(bytes) = std::fs::read(shown) {
                 if bytes.len() <= INLINE_IMAGE_MAX_BYTES {
                     content.push(json!({
                         "type": kind,
                         "data": base64_encode(&bytes),
                         "mimeType": mime,
+                    }));
+                } else {
+                    // Said, not left out without a word: a picture too
+                    // large came back as its path alone (#2586).
+                    content.push(json!({
+                        "type": "text",
+                        "text": format!("The picture is too large to show here ({:.1} MB); it is at {path}.", bytes.len() as f64 / 1e6),
                     }));
                 }
             }
@@ -2973,6 +2989,28 @@ mod sheet_inline_tests {
         assert!(kept.iter().all(|c| c["type"] == "text"), "{kept:?}");
         let shown = content_for("klipp_timeline_sheet", &reply(true)).unwrap();
         assert!(shown.iter().any(|c| c["type"] == "image"), "{shown:?}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// #2586: a sheet too large to show says so, rather than coming back
+    /// with no picture and no word; with a smaller copy beside it, the
+    /// copy is what is shown.
+    #[test]
+    fn a_sheet_too_large_to_show_says_so_or_shows_its_copy() {
+        let dir = std::env::temp_dir().join(format!("klipp-mcp-big-sheet-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (big, small) = (dir.join("sheet.png"), dir.join("sheet.inline.png"));
+        std::fs::write(&big, vec![0u8; INLINE_IMAGE_MAX_BYTES + 1]).unwrap();
+        std::fs::write(&small, [0x89u8, b'P', b'N', b'G', 0, 0, 0, 0]).unwrap();
+        let alone = json!({ "text": "sheet", "path": big.to_string_lossy(), "tiles": [], "inline": true });
+        let said = content_for("klipp_timeline_sheet", &alone).unwrap();
+        assert!(!said.iter().any(|c| c["type"] == "image"), "{said:?}");
+        assert!(said.iter().any(|c| c["text"].as_str().is_some_and(|t| t.contains("too large to show here") && t.contains(&*big.to_string_lossy()))), "{said:?}");
+        let mut with_copy = alone.clone();
+        with_copy["inline_path"] = json!(small.to_string_lossy());
+        let shown = content_for("klipp_timeline_sheet", &with_copy).unwrap();
+        assert!(shown.iter().any(|c| c["type"] == "image"), "the copy is shown: {shown:?}");
+        assert!(!shown.iter().any(|c| c["text"].as_str().is_some_and(|t| t.contains("too large"))), "{shown:?}");
         std::fs::remove_dir_all(&dir).ok();
     }
 }

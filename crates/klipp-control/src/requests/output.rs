@@ -874,13 +874,21 @@ pub(crate) fn respond(
             }
             let out = path.map(std::path::PathBuf::from).unwrap_or_else(|| std::env::temp_dir().join(format!("klipp-timeline-sheet-{}.png", uuid::Uuid::new_v4())));
             write_png(&out, &sheet, sw, sh)?;
+            // One too large to show in a reply gets a smaller copy beside
+            // it to show instead (#2586): a sheet of real frames passed
+            // what a reply takes, and came back with no picture.
+            let small = if inline { inline_copy(&out, &sheet, sw, sh, INLINE_MAX_BYTES)? } else { None };
             let listed: Vec<serde_json::Value> = tiles.iter().zip(&names).enumerate().map(|(k, (t, n))| json!({ "tile": k + 1, "secs": (t * 100.0).round() / 100.0, "shows": n })).collect();
             let text = format!(
                 "{} tiles, {cols} to a row, left to right then down:\n{}",
                 tiles.len(),
                 tiles.iter().zip(&names).enumerate().map(|(k, (t, n))| format!("  {:>2}. {t:.2} s  {n}", k + 1)).collect::<Vec<_>>().join("\n"),
             );
-            Ok(json!({ "text": text, "path": out.to_string_lossy(), "width": sw, "height": sh, "tiles": listed, "inline": inline }))
+            let mut reply = json!({ "text": text, "path": out.to_string_lossy(), "width": sw, "height": sh, "tiles": listed, "inline": inline });
+            if let Some(small) = small {
+                reply["inline_path"] = json!(small.to_string_lossy());
+            }
+            Ok(reply)
         }
 
         ControlCommand::FrameAt { secs, path, max_width, timeout_ms, channel, node, preview } => {
@@ -1832,6 +1840,67 @@ fn ttml_family(f: &str) -> &str {
 fn subtitle_format(p: &std::path::Path) -> Option<&'static str> {
     let ext = p.extension()?.to_str()?.to_ascii_lowercase();
     SUBTITLE_FORMATS.iter().copied().find(|f| *f == ext)
+}
+
+/// The most a picture shown in a reply may be, as klipp-mcp's
+/// `INLINE_IMAGE_MAX_BYTES` takes it: 700 kB on disk, about 930 kB as the
+/// base64 a client is sent, under the megabyte one takes on a line
+/// (#2586).
+const INLINE_MAX_BYTES: u64 = 700_000;
+
+/// For a sheet at `path` larger than `max_bytes`, a copy beside it,
+/// `<name>.inline.png`, its width halved until it fits (#2586): what a
+/// reply shows, the full sheet kept at `path`. `None` when the sheet
+/// fits already, or no copy wider than 160 does.
+fn inline_copy(path: &std::path::Path, rgba: &[u8], width: u32, height: u32, max_bytes: u64) -> Result<Option<std::path::PathBuf>, String> {
+    if std::fs::metadata(path).map_or(0, |m| m.len()) <= max_bytes {
+        return Ok(None);
+    }
+    let copy = path.with_extension("inline.png");
+    let mut w = width / 2;
+    while w >= 160 {
+        let (px, cw, ch) = downscale_rgba(rgba, width, height, w);
+        write_png(&copy, &px, cw, ch)?;
+        if std::fs::metadata(&copy).map_or(u64::MAX, |m| m.len()) <= max_bytes {
+            return Ok(Some(copy));
+        }
+        w /= 2;
+    }
+    let _ = std::fs::remove_file(&copy);
+    Ok(None)
+}
+
+#[cfg(test)]
+mod inline_copy_tests {
+    use super::*;
+
+    /// Pixels that don't compress, as a sheet of grainy frames doesn't.
+    fn noise(width: u32, height: u32) -> Vec<u8> {
+        let mut x = 0x2545_f491u32;
+        (0..width * height * 4).map(|_| { x ^= x << 13; x ^= x >> 17; x ^= x << 5; (x >> 24) as u8 }).collect()
+    }
+
+    /// #2586: a sheet too large to show gets a copy beside it that fits,
+    /// smaller by halves; one that fits gets none.
+    #[test]
+    fn a_sheet_too_large_to_show_gets_a_copy_that_fits() {
+        let dir = std::env::temp_dir().join(format!("klipp-inline-copy-{}", uuid::Uuid::new_v4()));
+        let (w, h) = (1920, 720);
+        let px = noise(w, h);
+        let sheet = dir.join("sheet.png");
+        write_png(&sheet, &px, w, h).unwrap();
+        let full = std::fs::metadata(&sheet).unwrap().len();
+        assert!(full > INLINE_MAX_BYTES, "the full sheet is {full} bytes");
+        let copy = inline_copy(&sheet, &px, w, h, INLINE_MAX_BYTES).unwrap().expect("a copy");
+        assert_eq!(copy, dir.join("sheet.inline.png"));
+        assert!(std::fs::metadata(&copy).unwrap().len() <= INLINE_MAX_BYTES);
+        assert_eq!(std::fs::metadata(&sheet).unwrap().len(), full, "the full sheet is kept");
+        let (sw, sh) = (480, 180);
+        let small = dir.join("small.png");
+        write_png(&small, &noise(sw, sh), sw, sh).unwrap();
+        assert_eq!(inline_copy(&small, &noise(sw, sh), sw, sh, INLINE_MAX_BYTES).unwrap(), None, "one that fits");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
 
 #[cfg(test)]
