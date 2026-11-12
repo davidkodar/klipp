@@ -684,8 +684,10 @@ fn audition_player(
 
             ui.add_space(6.0);
 
-            // Player row: play button · waveform · time · level meter.
-            ui.horizontal(|ui| {
+            // Player row: play button · waveform · time · level meter;
+            // the time and level meter wrap under the waveform where they
+            // don't fit beside it.
+            ui.horizontal_wrapped(|ui| {
                 // ── Play / pause button ──
                 let play_size = 36.0;
                 let (play_rect, play_resp) = ui.allocate_exact_size(
@@ -792,11 +794,17 @@ fn audition_player(
                 // Click anywhere on the waveform to seek the audition
                 // playhead to that point. The whole rect is a
                 // click-and-drag target so dragging scrubs while held.
-                let avail_w = ui.available_width();
-                // What the time and volume beside it leave, down to a
-                // narrow strip: held at 160 it laid the panel out wider
-                // than it is, and cut everything under it (#2602).
-                let wave_w = (avail_w - 140.0).max(48.0);
+                // What is left of the row: in a wrapping row the
+                // available width is the whole row's.
+                let avail_w = ui.available_size_before_wrap().x;
+                // What the time and volume beside it leave: held at 160 it
+                // laid the panel out wider than it is, and cut everything
+                // under it (#2602). Where that leaves less than a 48 px
+                // strip, the waveform takes the row and they go under it:
+                // held at 48 it ran the volume past the narrowest panel's
+                // edge.
+                let beside = avail_w - 140.0 >= 48.0;
+                let wave_w = if beside { avail_w - 140.0 } else { avail_w };
                 let wave_h = 96.0;
                 let (wave_rect, wave_resp) = ui.allocate_exact_size(
                     egui::vec2(wave_w, wave_h),
@@ -959,7 +967,11 @@ fn audition_player(
                     }
                 }
 
-                ui.add_space(8.0);
+                if beside {
+                    ui.add_space(8.0);
+                } else {
+                    ui.end_row();
+                }
 
                 // ── Time readout ──
                 //

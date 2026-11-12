@@ -196,7 +196,16 @@ pub fn browser_search_field(
         .show(ui, |ui| ui.horizontal(|ui| {
             // A search kept from another tab is seen and cleared here
             // (#2599): a × while there is text. The text keeps its keys.
-            let clear_w = if query.is_empty() { 0.0 } else { 18.0 };
+            // Its room is what the × takes, measured: 18 held for it was
+            // short of its padding and spacing, and the field ran past
+            // its gutter (#2602).
+            let clear = egui::RichText::new("\u{00d7}").size(13.0).color(theme.text_dim);
+            let clear_w = if query.is_empty() {
+                0.0
+            } else {
+                let glyph = ui.fonts(|f| f.layout_no_wrap("\u{00d7}".into(), egui::FontId::proportional(13.0), theme.text_dim).size().x);
+                glyph + ui.spacing().button_padding.x * 2.0 + ui.spacing().item_spacing.x
+            };
             let search = egui::TextEdit::singleline(query)
                 .hint_text(placeholder)
                 .desired_width(ui.available_width() - 4.0 - clear_w)
@@ -204,7 +213,7 @@ pub fn browser_search_field(
                 .text_color(theme.text_primary)
                 .frame(false);
             let resp = ui.add(search);
-            if !query.is_empty() && ui.add(egui::Button::new(egui::RichText::new("\u{00d7}").size(13.0).color(theme.text_dim)).frame(false)).on_hover_text("Clear the search").clicked() {
+            if !query.is_empty() && ui.add(egui::Button::new(clear).frame(false)).on_hover_text("Clear the search").clicked() {
                 query.clear();
             }
             // Ctrl+F focus consumer — single shared check so every
@@ -7579,6 +7588,59 @@ mod narrow_library_tests {
         for category in [LibraryCategory::VideoFx, LibraryCategory::AudioFx] {
             let w = laid_out_width(category, 277.0);
             assert!(w <= 277.5, "{category:?} laid out {w:.0} px wide in a 277 px panel");
+        }
+    }
+
+    /// At the narrowest panel, nothing the audio effects tab draws runs
+    /// past the panel's right edge, with a search typed or not: the
+    /// audition card's player row needed 277 px, so its volume slider and
+    /// the search field, widened to the card, were cut (#2602).
+    #[test]
+    fn the_audition_card_and_search_stay_inside_a_narrow_panel() {
+        for (panel_w, query) in [(crate::theme::BROWSER_MIN_W, ""), (crate::theme::BROWSER_MIN_W, "eq"), (250.0, "eq"), (277.0, "")] {
+            let ctx = egui::Context::default();
+            crate::icons::install(&ctx);
+            let theme = KlippTheme::default();
+            theme.apply_to_egui(&ctx);
+            theme.apply_fonts(&ctx);
+            let mut panel = BrowserPanel { library_category: LibraryCategory::AudioFx, search_query: query.into(), ..Default::default() };
+            let mut state = AppState::default();
+            let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(panel_w, 900.0))), ..Default::default() };
+            let mut shapes = Vec::new();
+            // Twice: a first frame sizes what a second lays out.
+            for _ in 0..2 {
+                shapes = ctx.run(input.clone(), |ctx| {
+                    egui::CentralPanel::default().frame(egui::Frame::none()).show(ctx, |ui| {
+                        panel.show_library_tab(ui, &mut state, &theme);
+                    });
+                }).shapes;
+            }
+            for s in &shapes {
+                // Hairline separators reach a pixel or two past and are
+                // drawn in the panel's own colour; what is cut is a box,
+                // a knob or a word.
+                let what = match &s.shape {
+                    egui::Shape::Text(t) => t.galley.text().to_owned(),
+                    egui::Shape::Rect(_) => "a box".to_owned(),
+                    egui::Shape::Circle(_) => "a knob".to_owned(),
+                    _ => continue,
+                };
+                let r = s.shape.visual_bounding_rect();
+                if !r.is_finite() {
+                    continue; // an empty text: nothing drawn
+                }
+                assert!(r.max.x <= panel_w + 0.5, "{what} at {:.0}..{:.0}, y {:.0}, runs past a {panel_w} px panel (search {query:?})", r.min.x, r.max.x, r.min.y);
+            }
+            // The card and the search field, raised boxes set in from the
+            // left, are set in as far from the right.
+            let raised: Vec<egui::Rect> = shapes.iter().filter_map(|s| match &s.shape {
+                egui::Shape::Rect(r) if r.fill == theme.bg_raised && (r.rect.min.x - 8.0).abs() < 1.0 => Some(r.rect),
+                _ => None,
+            }).collect();
+            assert!(raised.len() >= 2, "the card and the search field are drawn: {raised:?}");
+            for r in raised {
+                assert!(panel_w - r.max.x >= r.min.x - 0.5, "a box at {:.0}..{:.0}, y {:.0}, runs into a {panel_w} px panel's right gutter (search {query:?})", r.min.x, r.max.x, r.min.y);
+            }
         }
     }
 
