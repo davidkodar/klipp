@@ -377,6 +377,13 @@ exist until the plan runs.
   keyframes. For the dip `duck` cannot find, or a swell into a moment.
 - `grade {clip_id | on, exposure?, contrast?, saturation?, temperature?, tint?, lift?, gamma?, gain?, highlights?, shadows?, reset?}`:
   a picture clip's primary grade. What you give is set, the rest stays.
+  `lift`, `gamma` and `gain` are one number each, the brightness of the
+  shadows, mids and highlights. A colour push on the wheels is set on the
+  grade's Corrector node with `klipp_set_node_param` (its id from
+  `klipp_get_grade`): `lift_x`/`lift_y`, `gamma_x`/`gamma_y` and
+  `gain_x`/`gain_y` place each wheel's colour, `lift_master`,
+  `gamma_master` and `gain_master` its brightness, as
+  `{"clip_id": C, "node_id": CORRECTOR, "param": "gain_x", "value": -0.03}`.
   Instead of `clip_id`, `on: {group, stage}` grades a grade group (`stage`
   `pre` or `post`, as `grade_group` made it) and `on: "timeline"` the
   timeline grade, after every clip's own. `on: {"track": n, "from"?,
@@ -761,7 +768,9 @@ exist until the plan runs.
   frame's short side, so a size and the built-in styles read the same
   on a vertical frame as on a wide one, and the whole title is kept
   inside title-safe; a word too wide for the frame shrinks the line
-  rather than breaking. Look at the frame all the same.
+  rather than breaking. Look at the frame all the same. `glow` is a
+  number, the glow's strength (0 takes it off; 0.6 is a soft glow, the
+  one `glow_color` alone gives), in `glow_color` or the text's colour.
   Typesetting: `weight` 100 (thin) to 900 (black), the family's nearest
   face (400 regular, 700 bold); `axes` a variable font's axes by
   four-letter tag, `{"wdth": 80, "opsz": 36}`; `features` OpenType
