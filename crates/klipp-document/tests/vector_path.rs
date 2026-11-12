@@ -149,3 +149,45 @@ fn a_ready_made_shape_is_added_by_name() {
     let wrong: Result<Op, _> = serde_json::from_value(json!({"op":"vector_path","clip_id":id,"shape":"blob"}));
     assert!(wrong.is_err(), "an unknown shape is refused when read");
 }
+
+/// #2574: the reply names the layer a path went to, so the next edit can
+/// name it back; a layer id that is not a whole number, or not on the
+/// clip, is refused saying what an id is and which there are.
+#[test]
+fn a_path_reply_names_its_layer_and_a_bad_layer_id_says_why() {
+    let mut sequences = vec![Sequence::new_default()];
+    let mut pool = MediaPool::new();
+    let mut fps = sequences[0].fps;
+    sequences[0].tracks[0].clips.push(klipp_timeline::Clip::gap(
+        klipp_core::Timecode::from_secs_f64(0.0, 24),
+        klipp_core::Timecode::from_secs_f64(4.0, 24),
+    ));
+    let title: Op = serde_json::from_value(json!({"op":"title","text":"Five","at":{"secs":0},"secs":4})).unwrap();
+    let planned = ops::resolve(&sequences[0], &pool, &[title]).unwrap();
+    let mut doc = DocumentView { sequences: &mut sequences, active: 0, media_pool: &mut pool, fps: &mut fps };
+    for s in &planned.steps {
+        doc.apply_forward(&s.edit);
+    }
+    let id = doc.sequences[0].tracks.iter().flat_map(|t| &t.clips).find(|c| c.title_data().is_some()).unwrap().id;
+    let triangle: Op = serde_json::from_value(json!({"op":"vector_path","clip_id":id,"shape":"triangle"})).unwrap();
+    let plan = ops::resolve(&doc.sequences[0], doc.media_pool, &[triangle]).unwrap();
+    for s in &plan.steps {
+        doc.apply_forward(&s.edit);
+    }
+    let data = doc.sequences[0].tracks.iter().flat_map(|t| &t.clips).find(|c| c.id == id).unwrap().title_data().unwrap();
+    let layer = data.objects.last().unwrap().id.0;
+    let text = data.objects[0].id.0;
+    assert!(plan.steps[0].what.contains(&format!("new path layer {layer}")), "{}", plan.steps[0].what);
+
+    let again: Op = serde_json::from_value(json!({"op":"vector_path","clip_id":id,"object_id":layer,"shape":"ellipse"})).unwrap();
+    let plan = ops::resolve(&doc.sequences[0], doc.media_pool, &[again]).unwrap();
+    assert!(plan.steps[0].what.contains(&format!("path layer {layer}")) && !plan.steps[0].what.contains("new"), "{}", plan.steps[0].what);
+
+    let missing: Op = serde_json::from_value(json!({"op":"vector_path","clip_id":id,"object_id":999,"shape":"ellipse"})).unwrap();
+    let r = ops::resolve(&doc.sequences[0], doc.media_pool, &[missing]).unwrap_err();
+    assert!(r.why.contains("no layer 999"), "{}", r.why);
+    assert!(r.hint.contains(&format!("{text}, {layer}")), "its layers listed: {}", r.hint);
+
+    let word = serde_json::from_value::<Op>(json!({"op":"vector_path","clip_id":id,"object_id":"star","shape":"ellipse"})).unwrap_err().to_string();
+    assert!(word.contains("object_id is a layer's number") && word.contains("\"star\""), "{word}");
+}
