@@ -1151,7 +1151,7 @@ impl KlippApp {
                 // project. What it finds is kept as it comes back, and only
                 // the files with no whole skim are given one to make.
                 self.skim_lookup = Some(SkimLookup::start(
-                    self.state.media_pool.all().cloned().collect(),
+                    skim_lookup_items(self.state.media_pool.all()),
                     self.state.project_working_colorspace,
                 ));
                 open_laps.lap("textures_skims");
@@ -1689,6 +1689,27 @@ pub(super) fn ensure_klipp_extension(mut path: PathBuf) -> PathBuf {
         }
     }
     path
+}
+
+/// The files an opened project's skims are looked for: those that are
+/// given one ([`super::media_jobs::has_picture_to_skim`]).
+fn skim_lookup_items<'a>(items: impl Iterator<Item = &'a klipp_media::MediaItem>) -> Vec<klipp_media::MediaItem> {
+    items.filter(|m| super::media_jobs::has_picture_to_skim(m)).cloned().collect()
+}
+
+#[cfg(test)]
+mod skim_lookup_items_tests {
+    /// A still is not looked for at open: looked for, its one-frame skim
+    /// read as cut short, was deleted and queued to be made again.
+    #[test]
+    fn an_opened_projects_stills_are_not_looked_for() {
+        let clip = klipp_media::MediaItem::synthetic_for_test("/tmp/a.mov".into(), None);
+        let mut still = klipp_media::MediaItem::synthetic_for_test("/tmp/b.png".into(), None);
+        still.video_codec = "png".into();
+        still.is_still = true;
+        let ids: Vec<_> = super::skim_lookup_items([&clip, &still].into_iter()).iter().map(|m| m.id).collect();
+        assert_eq!(ids, vec![clip.id]);
+    }
 }
 
 /// The skims of an opened project's files, looked for on a thread of
