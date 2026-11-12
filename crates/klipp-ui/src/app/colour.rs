@@ -348,7 +348,7 @@ impl KlippApp {
     /// graph. This is a free function (vs `&mut self` method) so
     /// callers can hold the returned borrow without locking self.
     /// Decode a representative RGBA frame (midpoint of the clip's
-    /// source range) for colour-match workflows. Uses
+    /// source range, a still's one frame) for colour-match workflows. Uses
     /// `generate_thumbnail_at_size` at 480-wide so the caller can feed
     /// it to `match_colors` without waiting for a full-resolution
     /// decode. Returns the decoded bytes + dimensions, or a
@@ -367,10 +367,8 @@ impl KlippApp {
         let item = state.media_pool.get(&media_id)
             .ok_or_else(|| "media not in pool".to_string())?;
         let path = item.path.clone();
-        let src_in = clip.source_in.to_secs_f64();
-        let src_out = clip.source_out.to_secs_f64();
-        let mid = (src_in + src_out) * 0.5;
-        klipp_engine::generate_thumbnail_at_size(&path, mid, 480)
+        let at = representative_secs(clip.source_in.to_secs_f64(), clip.source_out.to_secs_f64(), item.is_still);
+        klipp_engine::generate_thumbnail_at_size(&path, at, 480)
             .map_err(|e| format!("decode: {e}"))
     }
 
@@ -4246,4 +4244,26 @@ pub(super) fn key_colour_payload(seq: &klipp_timeline::Sequence, clip: klipp_cor
     let mut entry = klipp_graph_lift::effect_params::entry_of(n).ok()?;
     *entry.get_mut("key_color")? = serde_json::json!(key);
     Some(entry)
+}
+
+/// Where in its file a clip's frame for a colour match is read: the middle
+/// of its source range, or for a still its one frame, at the start.
+fn representative_secs(source_in: f64, source_out: f64, is_still: bool) -> f64 {
+    if is_still {
+        0.0
+    } else {
+        (source_in + source_out) * 0.5
+    }
+}
+
+#[cfg(test)]
+mod representative_secs_tests {
+    /// A still's one frame is at its start. Read in the middle of its
+    /// clip, the decoder found no frame, and a still could be neither a
+    /// colour reference nor matched to one.
+    #[test]
+    fn a_still_clip_is_read_at_its_frame() {
+        assert_eq!(super::representative_secs(0.0, 5.0, true), 0.0);
+        assert_eq!(super::representative_secs(2.0, 6.0, false), 4.0);
+    }
 }
