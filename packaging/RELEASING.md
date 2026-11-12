@@ -121,6 +121,21 @@ script does not replace that gate and does not publish or create tags.
    and About does not offer it. Publish only after validation; for stable
    versions, publish the repository package before the release announcement.
    Keep old release assets and their matching source archives available.
+7. **OmaStore** (Omarchy's app store) installs Klipp from the latest published
+   stable release, as `omastore.toml` names its files, and updates installed
+   copies on its own: drafts and prereleases are skipped. It updates without
+   asking only while the packages keep the names the manifest matches
+   (`klipp-<version>-<n>-x86_64.pkg.tar.zst`, `klipp-<version>-<n>-aarch64.pkg.tar.xz`)
+   and `SHA256SUMS` lists them; a renamed file needs `omastore.toml` changed
+   with it. It installs the `depends` and `optdepends` of `packaging/PKGBUILD`
+   on main, so keep conflicting packages (such as `onnxruntime-cuda`) out of
+   `optdepends`. After publishing, check:
+
+   ```bash
+   omastore index davidkodar/klipp && omastore show davidkodar/klipp
+   ```
+
+   It must show the new version and `installable: true`.
 
 ## The release key
 
