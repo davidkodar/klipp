@@ -43,11 +43,10 @@ const KNOWN: &[(&str, &str, usize)] = &[
     ("klipp-ui/src/app/effects.rs", "EditBuiltinEffect", 2),
     // The grade closures (node edits, balance) and their tests (the zones
     // the colour page and the op place alike, #2767, among them). A look
-    // is applied by grade_edits' apply_grade now (#3821).
-    ("klipp-ui/src/app/colour.rs", "SetNodeGraph", 8),
-    // A compound's grade moved in and out with its clips.
-    // Keys generated from a track, on a grade window.
-    ("klipp-ui/src/app/stabilization.rs", "SetNodeGraph", 3),
+    // is applied by grade_edits' apply_grade now (#3821). Keys generated
+    // from a track, on a grade window, moved here from stabilization.rs
+    // with the picture-graph Window's track (#3875).
+    ("klipp-ui/src/app/colour.rs", "SetNodeGraph", 9),
     // A still's, a look's or a library grade put on clips (one write, its
     // node labels beside it, #3821), and its tests.
     ("klipp-ui/src/app/grade_edits.rs", "SetNodeGraph", 4),
