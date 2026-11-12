@@ -293,6 +293,10 @@ name = "layers_play_at_the_sequence_rate"
 path = "tests/layers_play_at_the_sequence_rate.rs"
 
 [[test]]
+name = "an_edited_title_is_warmed_again"
+path = "tests/an_edited_title_is_warmed_again.rs"
+
+[[test]]
 name = "a_layer_shows_only_its_own_clip"
 path = "tests/a_layer_shows_only_its_own_clip.rs"
 

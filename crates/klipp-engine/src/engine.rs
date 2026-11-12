@@ -1831,8 +1831,10 @@ pub struct PlaybackEngine {
     /// GPU effects pipeline the fast paths drive too.
     renderer: klipp_compose::Renderer,
     /// Title clips (and the frame size) whose resting render was asked
-    /// for ahead of their start; cleared when the layout changes.
-    titles_warmed: std::collections::HashSet<(klipp_core::ClipId, u32, u32)>,
+    /// for ahead of their start, with the title and length asked for: a
+    /// title edited since is asked for again. Cleared when the layout
+    /// changes.
+    titles_warmed: std::collections::HashMap<(klipp_core::ClipId, u32, u32), (klipp_timeline::TitleData, f32)>,
     titles_warm_checked: std::time::Instant,
     /// Until when each presented or missing frame is logged after a cut.
     cut_diag_until: Option<std::time::Instant>,
@@ -2715,8 +2717,10 @@ impl PlaybackEngine {
                 if w == 0 || h == 0 {
                     continue;
                 }
-                if self.titles_warmed.insert((clip.id, w, h)) {
-                    let total = (clip.timeline_out - clip.timeline_in).to_secs_f64() as f32;
+                let total = (clip.timeline_out - clip.timeline_in).to_secs_f64() as f32;
+                let asked = self.titles_warmed.get(&(clip.id, w, h)).is_some_and(|(t, l)| t == td && *l == total);
+                if !asked {
+                    self.titles_warmed.insert((clip.id, w, h), (td.clone(), total));
                     wants.push((td.clone(), w, h, total));
                 }
             }
@@ -3190,7 +3194,7 @@ impl PlaybackEngine {
             hold_neighbours: true,
             previous_primary: None,
             renderer: klipp_compose::Renderer::new(ofx_host, title_renderer),
-            titles_warmed: std::collections::HashSet::new(),
+            titles_warmed: std::collections::HashMap::new(),
             titles_warm_checked: std::time::Instant::now(),
             cut_diag_until: None,
             boundary_frame: None,
