@@ -7667,8 +7667,14 @@ fn captions(
     };
     if let Some(ti) = existing {
         let t = &seq.tracks[ti];
+        // `track` is where they go, read as the sound to caption (#2608):
+        // said as such, with where the words come from.
         if !matches!(t.kind, TrackKind::Subtitle | TrackKind::Text) {
-            return Err(refuse(i, format!("track {ti} is not a subtitle or text track"), "name a subtitle track, or leave the track out"));
+            return Err(refuse(
+                i,
+                format!("track is where the captions go, and track {ti} {} is {} track, not a subtitle or text track", quoted(&t.name), if t.kind == TrackKind::Audio { "an audio" } else { "a video" }),
+                "the words come from every clip heard on the timeline (from and to give part of it); name a subtitle track for them, or leave track out for the first one, made at the bottom if there is none",
+            ));
         }
         if t.locked {
             return Err(refuse(i, format!("track {ti} is locked"), "unlock it, or use another track"));
@@ -18865,6 +18871,19 @@ mod tests {
         assert!(why(serde_json::json!({"look": "glow_caps", "look_colour": "red"})).contains("Ice, Peach, Mint"));
         assert!(why(serde_json::json!({"look": "glow_caps", "glow": 5.0})).contains("0 to 3"));
         assert!(why(serde_json::json!({"glow": 1.0})).contains("name the look"));
+    }
+
+    /// #2608: captions asked onto the audio track, `track` read as the
+    /// sound to caption, are refused saying track is where they go and
+    /// where the words come from.
+    #[test]
+    fn captions_on_a_sound_track_say_track_is_where_they_go() {
+        let (seq, pool, ..) = fixture();
+        let r = resolve_with(&seq, &pool, &[Op::Captions { track: Some(TrackRef::Index(1)), from: None, to: None, max_chars: 42, max_lines: 2, replace: false, animate: None }], &Spoken).unwrap_err();
+        assert!(r.why.contains("track is where the captions go") && r.why.contains("track 1 \"A1\" is an audio track"), "{}", r.why);
+        assert!(r.hint.contains("every clip heard on the timeline") && r.hint.contains("leave track out"), "{}", r.hint);
+        let r = resolve_with(&seq, &pool, &[Op::Captions { track: Some(TrackRef::Index(0)), from: None, to: None, max_chars: 42, max_lines: 2, replace: false, animate: None }], &Spoken).unwrap_err();
+        assert!(r.why.contains("track 0 \"V1\" is a video track"), "{}", r.why);
     }
 
     #[test]
