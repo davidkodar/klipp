@@ -2930,15 +2930,23 @@ impl BrowserPanel {
         let mut go_home_clicked = false;
         let mut pending_navigate: Option<std::path::PathBuf> = None;
         match &typed {
+            // In from the panel's edge as the rows below are: drawn
+            // flush against it, at x 0.
             Some(TypedFolder::There(folder)) => {
-                let go = ui.add(egui::Button::new(egui::RichText::new(format!("Go to {}", folder.display())).size(11.0)).frame(false));
+                let go = ui.horizontal(|ui| {
+                    ui.add_space(pad);
+                    ui.add(egui::Button::new(egui::RichText::new(format!("Go to {}", folder.display())).size(11.0)).frame(false))
+                }).inner;
                 // Enter in the search field, which it leaves, goes there too.
                 if go.clicked() || (!self.files_panel_focused && ui.input(|i| i.key_pressed(egui::Key::Enter))) {
                     pending_navigate = Some(folder.clone());
                 }
             }
             Some(TypedFolder::Missing) => {
-                ui.label(egui::RichText::new("No such folder").size(11.0).color(theme.text_dim));
+                ui.horizontal(|ui| {
+                    ui.add_space(pad);
+                    ui.label(egui::RichText::new("No such folder").size(11.0).color(theme.text_dim));
+                });
             }
             None => {}
         }
@@ -7404,7 +7412,7 @@ mod keyboard_selection_tests {
                 });
             });
             out.shapes.iter().filter_map(|s| match &s.shape {
-                egui::Shape::Text(t) => Some((t.galley.text().to_owned(), t.pos + t.galley.size() / 2.0)),
+                egui::Shape::Text(t) => Some((t.galley.text().to_owned(), t.pos + t.galley.size() / 2.0, t.pos.x + t.galley.rect.min.x)),
                 _ => None,
             }).collect::<Vec<_>>()
         };
@@ -7413,7 +7421,9 @@ mod keyboard_selection_tests {
         panel.files_search_query = shots.display().to_string();
         run(&mut panel, &mut state, Vec::new());
         let texts = run(&mut panel, &mut state, Vec::new());
-        let go = texts.iter().find(|(t, _)| t.starts_with("Go to ")).map(|(_, p)| *p).unwrap_or_else(|| panic!("a Go to row: {texts:?}"));
+        let (_, go, left) = texts.iter().find(|(t, _, _)| t.starts_with("Go to ")).cloned().unwrap_or_else(|| panic!("a Go to row: {texts:?}"));
+        // Not flush against the panel's edge: in from it as the rows are.
+        assert!(left >= 10.0, "the Go to row is indented as the list's rows are: {left}");
         let press = |pressed| egui::Event::PointerButton { pos: go, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
         run(&mut panel, &mut state, vec![egui::Event::PointerMoved(go)]);
         run(&mut panel, &mut state, vec![press(true)]);
@@ -7427,7 +7437,8 @@ mod keyboard_selection_tests {
 
         panel.files_search_query = root.join("nope").display().to_string();
         let texts = run(&mut panel, &mut state, Vec::new());
-        assert!(texts.iter().any(|(t, _)| t == "No such folder"), "{texts:?}");
+        let missing = texts.iter().find(|(t, _, _)| t == "No such folder").unwrap_or_else(|| panic!("{texts:?}"));
+        assert!(missing.2 >= 10.0, "indented as the list's rows are: {}", missing.2);
         assert_eq!(panel.files_current_path, root, "and it stays");
         let _ = std::fs::remove_dir_all(&root);
     }
