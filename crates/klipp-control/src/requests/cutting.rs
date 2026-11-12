@@ -569,6 +569,11 @@ fn prepare_track(pick: MusicPick) -> Result<ReadyTrack, String> {
     let signed_in = klipp_audio_search::freesound_auth::signed_in().is_some();
     let choice = download_choice(freesound, signed_in, quality.as_deref())?;
     let source = if freesound { klipp_audio_search::Source::Freesound } else { klipp_audio_search::Source::JamendoMusic };
+    // A preview asked for is the preview (#2578): a library track with a
+    // download as well came whole, several times the bytes. Left out, a
+    // music track still comes as its library offers it.
+    let asked_preview = quality.as_deref().map(str::trim) == Some("preview") && !preview_url.is_empty();
+    let download_url = if asked_preview { String::new() } else { download_url };
     let mut track = klipp_audio_search::Track {
         source,
         id: track_id, title, artist,
@@ -623,21 +628,24 @@ mod parallel_download_tests {
     use std::sync::Arc;
 
     /// A file server that sends each file slowly, as a library's does,
-    /// and counts the most downloads it had going at once; a path with
-    /// "missing" in it is not found.
-    fn slow_server() -> (String, Arc<AtomicUsize>) {
+    /// counts the most downloads it had going at once, and keeps the
+    /// request line of each; a path with "missing" in it is not found.
+    fn slow_server() -> (String, Arc<AtomicUsize>, Arc<std::sync::Mutex<Vec<String>>>) {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
         let (going, most) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
-        let seen = most.clone();
+        let (seen, asked) = (most.clone(), Arc::new(std::sync::Mutex::new(Vec::new())));
+        let lines = asked.clone();
         std::thread::spawn(move || {
             for s in listener.incoming() {
                 let Ok(mut s) = s else { return };
-                let (going, most) = (going.clone(), most.clone());
+                let (going, most, lines) = (going.clone(), most.clone(), lines.clone());
                 std::thread::spawn(move || {
                     let mut req = [0u8; 2048];
                     let n = s.read(&mut req).unwrap_or(0);
-                    if String::from_utf8_lossy(&req[..n]).lines().next().is_some_and(|l| l.contains("missing")) {
+                    let line = String::from_utf8_lossy(&req[..n]).lines().next().unwrap_or_default().to_string();
+                    lines.lock().unwrap().push(line.clone());
+                    if line.contains("missing") {
                         let _ = write!(s, "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
                         return;
                     }
@@ -658,7 +666,7 @@ mod parallel_download_tests {
                 });
             }
         });
-        (base, seen)
+        (base, seen, asked)
     }
 
     fn pick(base: &str, name: &str) -> MusicPick {
@@ -670,7 +678,7 @@ mod parallel_download_tests {
     /// its own failure and the rest still come.
     #[test]
     fn several_picks_download_at_once_and_answer_in_order() {
-        let (base, most) = slow_server();
+        let (base, most, _) = slow_server();
         let project = std::env::temp_dir().join(format!("klipp-add-music-at-once-{}", uuid::Uuid::new_v4()));
         let ready: Vec<_> = ["one", "two", "missing", "four", "five"].iter().map(|n| prepare_track(pick(&base, n))).collect();
         let started = std::time::Instant::now();
@@ -685,6 +693,28 @@ mod parallel_download_tests {
         }
         // Each takes about 0.5 s alone; one after another, four took 2.1 s.
         assert!(took < std::time::Duration::from_millis(1300), "{took:?} for four files");
+    }
+
+    /// A library track with a download and a preview: the preview asked
+    /// for is the one fetched, and said to be; left to its default, the
+    /// track comes as the library offers it, its download.
+    #[test]
+    fn a_preview_asked_for_fetches_the_preview_url() {
+        let (base, _, asked) = slow_server();
+        let project = std::env::temp_dir().join(format!("klipp-add-music-preview-{}", uuid::Uuid::new_v4()));
+        let song = |quality: Option<&str>| MusicPick { download_url: format!("{base}/whole.mp3"), preview_url: format!("{base}/short.mp3"), quality: quality.map(Into::into), ..pick(&base, "song") };
+        let fetched = |quality: Option<&str>| {
+            asked.lock().unwrap().clear();
+            let ready = prepare_track(song(quality)).unwrap();
+            download_prepared(&ready, Some(&project)).unwrap();
+            (asked.lock().unwrap().clone(), ready.track.download_url.is_empty())
+        };
+        let (lines, said_preview) = fetched(Some("preview"));
+        assert!(lines.len() == 1 && lines[0].contains("/short.mp3"), "the preview: {lines:?}");
+        assert!(said_preview, "and it is said to be the preview");
+        let (lines, _) = fetched(None);
+        assert!(lines.len() == 1 && lines[0].contains("/whole.mp3"), "left to its default, the download: {lines:?}");
+        let _ = std::fs::remove_dir_all(&project);
     }
 
     /// The order holds however long each one takes.
