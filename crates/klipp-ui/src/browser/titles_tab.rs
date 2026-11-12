@@ -422,6 +422,7 @@ pub fn show(
                                 .size(11.0)
                                 .color(theme.text_dim),
                         );
+                        super::clear_search_button(ui, search_query);
                     });
                     return;
                 }
