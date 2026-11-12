@@ -725,6 +725,32 @@ impl FileSortBy {
     }
 }
 
+/// A folder typed in the Files search field (#2563): text from "/" or "~"
+/// is a path to go to, not a name to filter by.
+#[derive(Debug, Clone, PartialEq)]
+enum TypedFolder {
+    /// A folder that is there.
+    There(std::path::PathBuf),
+    /// Nothing there, or not a folder.
+    Missing,
+}
+
+/// What `text` names when it is a path, `~` as `home`; `None` for a name
+/// to filter by.
+fn typed_folder(text: &str, home: Option<&std::path::Path>) -> Option<TypedFolder> {
+    let t = text.trim();
+    let path = if t == "~" {
+        home?.to_path_buf()
+    } else if let Some(rest) = t.strip_prefix("~/") {
+        home?.join(rest)
+    } else if t.starts_with('/') {
+        std::path::PathBuf::from(t)
+    } else {
+        return None;
+    };
+    Some(if path.is_dir() { TypedFolder::There(path) } else { TypedFolder::Missing })
+}
+
 /// Sort a slice of FileEntry in place by the chosen key. Directories are
 /// always grouped above files; the sort key + direction only affect ordering
 /// within the file group (and within the directory group).
@@ -2871,7 +2897,10 @@ impl BrowserPanel {
         // Uses `files_search_query` (Files-only) rather than the shared
         // `search_query` so text typed into the effects/media search bar
         // in the adjacent right pane doesn't filter the file list here.
-        let search = self.files_search_query.to_lowercase();
+        // A path typed there goes to its folder (#2563), and filters
+        // nothing: it filtered names and said "No matches".
+        let typed = typed_folder(&self.files_search_query, dirs::home_dir().as_deref());
+        let search = if typed.is_some() { String::new() } else { self.files_search_query.to_lowercase() };
         let type_filter = self.files_type_filter;
         let filtered: Vec<&FileEntry> = self.files_entries.iter()
             .filter(|e| type_filter.matches(e))
@@ -2883,6 +2912,19 @@ impl BrowserPanel {
         // without borrow conflicts with `filtered`/`self.files_entries`.
         let mut go_home_clicked = false;
         let mut pending_navigate: Option<std::path::PathBuf> = None;
+        match &typed {
+            Some(TypedFolder::There(folder)) => {
+                let go = ui.add(egui::Button::new(egui::RichText::new(format!("Go to {}", folder.display())).size(11.0)).frame(false));
+                // Enter in the search field, which it leaves, goes there too.
+                if go.clicked() || (!self.files_panel_focused && ui.input(|i| i.key_pressed(egui::Key::Enter))) {
+                    pending_navigate = Some(folder.clone());
+                }
+            }
+            Some(TypedFolder::Missing) => {
+                ui.label(egui::RichText::new("No such folder").size(11.0).color(theme.text_dim));
+            }
+            None => {}
+        }
         let mut thumb_spawn_requests: Vec<std::path::PathBuf> = Vec::new();
         let mut audio_peaks_spawn_requests: Vec<std::path::PathBuf> = Vec::new();
         let mut filmstrip_spawn_requests: Vec<(std::path::PathBuf, f64, u32)> = Vec::new();
@@ -7316,6 +7358,61 @@ mod keyboard_selection_tests {
         run(&mut panel, &mut state, Vec::new(), egui::Modifiers::NONE);
         assert_eq!(names(&panel), ["a.mp4", "b.mp4", "c.mp4"], "from the first row to the one clicked");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// #2563: a folder typed in the Files search field is gone to, by its
+    /// "Go to" row or by Enter, and one that isn't there says so; any
+    /// other text still filters the names.
+    #[test]
+    fn a_typed_folder_is_gone_to() {
+        let root = std::env::temp_dir().join(format!("klipp-files-typed-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(root.join("shots")).unwrap();
+        std::fs::write(root.join("take.mp4"), b"").unwrap();
+        let home = Some(root.as_path());
+        assert_eq!(typed_folder("~/shots", home), Some(TypedFolder::There(root.join("shots"))));
+        assert_eq!(typed_folder(&root.join("nope").display().to_string(), home), Some(TypedFolder::Missing));
+        assert_eq!(typed_folder(&root.join("take.mp4").display().to_string(), home), Some(TypedFolder::Missing), "a file is no folder");
+        assert_eq!(typed_folder("take", home), None, "a name filters");
+
+        let mut panel = BrowserPanel::default();
+        let mut state = AppState { file_browser_auto_refresh: false, ..Default::default() };
+        let ctx = egui::Context::default();
+        let theme = KlippTheme::default();
+        let run = |panel: &mut BrowserPanel, state: &mut AppState, events: Vec<egui::Event>| {
+            let input = egui::RawInput { events, screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(600.0, 800.0))), ..Default::default() };
+            let out = ctx.run(input, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let (mut tab, mut pinned, mut ratio) = (crate::layout_state::BrowserTab::Files, false, 0.5);
+                    let _ = panel.show(ui, state, &theme, &mut tab, &mut pinned, &mut ratio);
+                });
+            });
+            out.shapes.iter().filter_map(|s| match &s.shape {
+                egui::Shape::Text(t) => Some((t.galley.text().to_owned(), t.pos + t.galley.size() / 2.0)),
+                _ => None,
+            }).collect::<Vec<_>>()
+        };
+        panel.navigate_files_to(root.clone());
+        let shots = root.join("shots");
+        panel.files_search_query = shots.display().to_string();
+        run(&mut panel, &mut state, Vec::new());
+        let texts = run(&mut panel, &mut state, Vec::new());
+        let go = texts.iter().find(|(t, _)| t.starts_with("Go to ")).map(|(_, p)| *p).unwrap_or_else(|| panic!("a Go to row: {texts:?}"));
+        let press = |pressed| egui::Event::PointerButton { pos: go, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+        run(&mut panel, &mut state, vec![egui::Event::PointerMoved(go)]);
+        run(&mut panel, &mut state, vec![press(true)]);
+        run(&mut panel, &mut state, vec![press(false)]);
+        assert_eq!(panel.files_current_path, shots, "the Go to row goes there");
+        assert!(panel.files_search_query.is_empty(), "and the field is cleared");
+
+        panel.files_search_query = root.display().to_string();
+        run(&mut panel, &mut state, vec![egui::Event::Key { key: egui::Key::Enter, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE }]);
+        assert_eq!(panel.files_current_path, root, "Enter goes there");
+
+        panel.files_search_query = root.join("nope").display().to_string();
+        let texts = run(&mut panel, &mut state, Vec::new());
+        assert!(texts.iter().any(|(t, _)| t == "No such folder"), "{texts:?}");
+        assert_eq!(panel.files_current_path, root, "and it stays");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
