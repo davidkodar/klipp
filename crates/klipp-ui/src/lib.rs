@@ -86,6 +86,7 @@ pub mod icons;
 pub mod inspector;
 pub mod spelling;
 pub mod auditions;
+pub mod cover_section;
 pub mod role_badge;
 pub mod keybindings;
 pub mod welcome;

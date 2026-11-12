@@ -119,6 +119,7 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::OpenEditHelper { .. }
         | AppCommand::FrameGrab
         | AppCommand::ExportSubtitles { .. }
+        | AppCommand::ShowCoverSection { .. }
         | AppCommand::ExportFcpxml { .. }
         | AppCommand::ExportKdenlive { .. }
         | AppCommand::ExportEdl { .. }
