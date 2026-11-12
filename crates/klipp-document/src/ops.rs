@@ -869,13 +869,20 @@ fn run_script(s: &str, i: usize) -> Result<klipp_timeline::Script, Refusal> {
 }
 
 /// A generator's settings, or a name the Generators tab lists (any case),
-/// read as that one's settings (#3095).
+/// read as that one's settings (#3095). Settings in another shape are
+/// refused with the shape they take and the kinds there are (#2606): serde
+/// alone said "invalid value: map, expected map with a single key".
 fn generator_or_named<'de, D: serde::Deserializer<'de>>(d: D) -> Result<klipp_core::GeneratorData, D::Error> {
     let value = serde_json::Value::deserialize(d)?;
     if let Some(entry) = value.as_str().and_then(klipp_core::generator_entries::generator_named) {
         return Ok(entry.data.clone());
     }
-    serde_json::from_value(value).map_err(serde::de::Error::custom)
+    serde_json::from_value(value).map_err(|e| {
+        serde::de::Error::custom(format!(
+            "data is a name from the Generators tab, or one generator's settings under its kind, as {{\"SolidColor\": {{\"color\": [0, 0, 0, 255]}}}}; the kinds are {} ({e})",
+            klipp_core::GENERATOR_KINDS.join(", ")
+        ))
+    })
 }
 
 /// One editorial operation.
@@ -24094,6 +24101,18 @@ mod generator_tests {
         let plain: Op = serde_json::from_value(serde_json::json!({ "op": "generator", "data": "ColorBars100", "at": { "secs": 0.0 }, "secs": 2.0 })).unwrap();
         assert!(matches!(plain, Op::Generator { data: klipp_core::GeneratorData::ColorBars100, .. }));
         assert!(serde_json::from_value::<Op>(serde_json::json!({ "op": "generator", "data": "No Such Thing", "at": { "secs": 0.0 }, "secs": 2.0 })).is_err());
+    }
+
+    /// #2606: settings in another shape are refused with the shape they
+    /// take, an example, and every kind there is; serde alone said
+    /// "invalid value: map, expected map with a single key".
+    #[test]
+    fn generator_settings_in_the_wrong_shape_say_the_right_one() {
+        let err = serde_json::from_value::<Op>(serde_json::json!({ "op": "generator", "data": { "kind": "solid", "color": [255, 0, 0, 255] }, "at": { "secs": 0.0 }, "secs": 2.0 })).unwrap_err().to_string();
+        assert!(err.contains(r#"{"SolidColor": {"color": [0, 0, 0, 255]}}"#), "{err}");
+        for kind in klipp_core::GENERATOR_KINDS {
+            assert!(err.contains(kind), "{kind} is named: {err}");
+        }
     }
 
     #[test]
