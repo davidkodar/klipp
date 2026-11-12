@@ -1631,8 +1631,11 @@ mod skim_encoder_tests {
     }
 }
 
-fn has_picture_to_skim(item: &klipp_media::MediaItem) -> bool {
-    !item.video_codec.is_empty()
+/// Whether a file is given a skim transcode: one with a moving picture.
+/// Not sound alone, and not a still, whose own file is its skim
+/// (`skim_file` in klipp-engine's skim_render).
+pub(super) fn has_picture_to_skim(item: &klipp_media::MediaItem) -> bool {
+    !item.is_still && !item.video_codec.is_empty()
 }
 
 #[cfg(test)]
@@ -1644,6 +1647,18 @@ mod skim_picture_tests {
         let mut item = klipp_media::MediaItem::synthetic_for_test("/tmp/a.mov".into(), None);
         assert!(super::has_picture_to_skim(&item));
         item.video_codec.clear();
+        assert!(!super::has_picture_to_skim(&item));
+    }
+
+    /// A still's skim is its own file. One transcoded from it is a single
+    /// frame, which the completeness check takes for a skim cut short
+    /// against the still's default duration, so it was thrown away and
+    /// encoded again at every project open.
+    #[test]
+    fn a_still_has_no_skim_transcode() {
+        let mut item = klipp_media::MediaItem::synthetic_for_test("/tmp/a.png".into(), None);
+        item.video_codec = "png".into();
+        item.is_still = true;
         assert!(!super::has_picture_to_skim(&item));
     }
 }
