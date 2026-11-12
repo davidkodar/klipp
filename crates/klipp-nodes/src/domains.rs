@@ -85,7 +85,7 @@ pub fn step(step: DomainStep, inputs: &[PictureDomain]) -> Result<PictureDomain,
         DomainStep::ToDisplay => match inputs.first() {
             None | Some(PictureDomain::Scene) => Ok(PictureDomain::Display),
             Some(PictureDomain::Display) => Err("the picture reaching it is display-referred already: the display tone map would run twice".into()),
-            Some(PictureDomain::Unknown) => Err("the picture reaching it is of unknown domain (a plug-in's), so nothing says it is scene-referred".into()),
+            Some(PictureDomain::Unknown) => Err("the picture reaching it is of unknown domain (a plug-in's), so nothing says it is scene-referred: put the plug-in after the Scene to Display node, where pictures are display-referred".into()),
         },
         DomainStep::Undeclared => Ok(PictureDomain::Unknown),
         DomainStep::Keeps => Ok(inputs.first().copied().filter(|d| *d != PictureDomain::Unknown).or_else(|| known.first().copied()).unwrap_or(PictureDomain::Unknown)),
@@ -218,6 +218,16 @@ mod tests {
     use crate::graph::{Edge, Node};
     use crate::params::NodeParams;
     use PictureDomain::*;
+
+    /// A plug-in's picture before the Scene to Display node is refused, and
+    /// the refusal says where the plug-in can go: an agent found the place
+    /// by trial before.
+    #[test]
+    fn a_plug_in_before_the_display_step_is_told_where_it_goes() {
+        let why = step(DomainStep::ToDisplay, &[Unknown]).unwrap_err();
+        assert!(why.contains("after the Scene to Display node"), "{why}");
+        assert_eq!(step(DomainStep::Undeclared, &[Display]), Ok(Unknown), "after it, a plug-in is taken");
+    }
 
     fn node(kind: NodeKind) -> Node {
         let params = match kind {

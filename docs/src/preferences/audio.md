@@ -22,7 +22,7 @@ The duck level, attack, release and threshold a new Auto Duck starts with.
 ## Audio Hardware
 
 - **Output device** — **Default (auto)** or a specific device; **Refresh** after plugging one in.
-- **Sample rate** — 44.1, 48 (default), 96 or 192 kHz.
-- **Buffer size** — 64 to 2048 samples; larger is more stable, with more latency. See [Audio Hardware](../audio/hardware.md#buffer-size).
+- **Sample rate** — the rate playback runs at, shown: 48 kHz when the device takes it, else the device's own. See [Audio Hardware](../audio/hardware.md#sample-rate).
+- **Buffer size** — **Device default** (the default), or 64 to 2048 samples, asked of PipeWire; larger is more stable, with more latency. PipeWire only; applies after a restart. See [Audio Hardware](../audio/hardware.md#buffer-size).
 - **Recording input** — the input device used when a track is armed and recording, and a reminder when the system input is muted.
 - **Detected hardware** — the audio backend and the output devices found.

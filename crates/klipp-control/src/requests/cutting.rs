@@ -237,16 +237,22 @@ pub(crate) fn respond(
             if tracks.is_empty() {
                 return add_one_track(ctx, MusicPick { title, artist, track_id, download_url, preview_url, license, license_url, page_url, quality, max_secs });
             }
-            // Many at once (#1587): each downloaded and imported in turn,
-            // each answered on its own; one that fails doesn't stop the
-            // rest. Fifteen effects took fifteen calls.
-            let mut results = Vec::with_capacity(tracks.len());
+            // Many at once (#1587): each answered on its own, in the order
+            // given; one that fails doesn't stop the rest. Fifteen effects
+            // took fifteen calls.
+            let picks: Vec<MusicPick> = tracks
+                .into_iter()
+                .map(|mut pick| {
+                    pick.quality = pick.quality.or_else(|| quality.clone());
+                    pick.max_secs = pick.max_secs.or(max_secs);
+                    pick
+                })
+                .collect();
+            let titles: Vec<String> = picks.iter().map(|p| p.title.clone()).collect();
+            let mut results = Vec::with_capacity(picks.len());
             let mut failed = 0;
-            for mut pick in tracks {
-                pick.quality = pick.quality.or_else(|| quality.clone());
-                pick.max_secs = pick.max_secs.or(max_secs);
-                let title = pick.title.clone();
-                match add_one_track(ctx, pick) {
+            for (title, added) in titles.into_iter().zip(add_tracks(ctx, picks)) {
+                match added {
                     Ok(v) => results.push(json!({ "title": title, "media_id": v["media_id"], "already_imported": v["already_imported"] == true, "job_id": v["job_id"], "attribution": v["attribution"] })),
                     Err(why) => {
                         failed += 1;
@@ -500,6 +506,60 @@ fn listen_ids_outside(listen: &Listen, tracks: &[klipp_audio_search::Track]) -> 
 }
 
 fn add_one_track(ctx: &ControlContext, pick: MusicPick) -> Result<serde_json::Value, String> {
+    let ready = prepare_track(pick)?;
+    let project = ctx.shared.project.lock().recovered().path.clone();
+    let path = download_prepared(&ready, project.as_deref())?;
+    finish_track(ctx, ready, &path)
+}
+
+/// How many picks of one `add_music` download at once (#2578): a
+/// library's file server sends each at its own slow pace, so four
+/// previews one after another took four times one.
+const DOWNLOADS_AT_ONCE: usize = 4;
+
+/// The picks of one `add_music` (#1587), each answered on its own and in
+/// the order given: each made ready in turn, with any call to the
+/// library's API it needs, then up to [`DOWNLOADS_AT_ONCE`] of their
+/// files fetched at a time, then each imported in turn.
+fn add_tracks(ctx: &ControlContext, picks: Vec<MusicPick>) -> Vec<Result<serde_json::Value, String>> {
+    let ready: Vec<Result<ReadyTrack, String>> = picks.into_iter().map(prepare_track).collect();
+    let project = ctx.shared.project.lock().recovered().path.clone();
+    let paths = each_at_once(&ready, DOWNLOADS_AT_ONCE, |r| r.as_ref().map_err(Clone::clone).and_then(|r| download_prepared(r, project.as_deref())));
+    ready.into_iter().zip(paths).map(|(r, path)| finish_track(ctx, r?, &path?)).collect()
+}
+
+/// `run` on each of `items`, at most `at_once` at a time, its results in
+/// the order of `items`.
+fn each_at_once<T: Sync, R: Send>(items: &[T], at_once: usize, run: impl Fn(&T) -> R + Sync) -> Vec<R> {
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let done: Vec<std::sync::Mutex<Option<R>>> = items.iter().map(|_| std::sync::Mutex::new(None)).collect();
+    std::thread::scope(|s| {
+        for _ in 0..at_once.clamp(1, items.len().max(1)) {
+            s.spawn(|| loop {
+                let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let Some(item) = items.get(i) else { break };
+                let r = run(item);
+                *done[i].lock().recovered() = Some(r);
+            });
+        }
+    });
+    done.into_iter().map(|r| r.into_inner().recovered().expect("each item is run")).collect()
+}
+
+/// A pick checked and made ready to download: the track, what is brought
+/// of it, and the sign-in it is brought with.
+struct ReadyTrack {
+    track: klipp_audio_search::Track,
+    choice: &'static str,
+    freesound: bool,
+    signed_in: bool,
+    bearer: Option<String>,
+    max_secs: Option<f64>,
+}
+
+/// `pick` checked, and what a download of it needs from the library
+/// asked for: an original's details and the sign-in's token.
+fn prepare_track(pick: MusicPick) -> Result<ReadyTrack, String> {
     let MusicPick { title, artist, track_id, download_url, preview_url, license, license_url, page_url, quality, max_secs } = pick;
     if max_secs.is_some_and(|s| !(s > 0.0 && s.is_finite())) {
         return Err("max_secs is a length in seconds, above zero".into());
@@ -509,13 +569,17 @@ fn add_one_track(ctx: &ControlContext, pick: MusicPick) -> Result<serde_json::Va
     let signed_in = klipp_audio_search::freesound_auth::signed_in().is_some();
     let choice = download_choice(freesound, signed_in, quality.as_deref())?;
     let source = if freesound { klipp_audio_search::Source::Freesound } else { klipp_audio_search::Source::JamendoMusic };
+    // A preview asked for is the preview (#2578): a library track with a
+    // download as well came whole, several times the bytes. Left out, a
+    // music track still comes as its library offers it.
+    let asked_preview = quality.as_deref().map(str::trim) == Some("preview") && !preview_url.is_empty();
+    let download_url = if asked_preview { String::new() } else { download_url };
     let mut track = klipp_audio_search::Track {
         source,
-        id: track_id, title: title.clone(), artist: artist.clone(),
-        duration_secs: 0.0, license: license.clone(), license_url,
+        id: track_id, title, artist,
+        duration_secs: 0.0, license, license_url,
         commercial_ok: true, preview_url, download_url, page_url, image_url: String::new(), tags: Vec::new(), pace: String::new(), original: None,
     };
-    let project = ctx.shared.project.lock().recovered().path.clone();
     let bearer = if choice == "original" {
         // What the original is, from the library: a pick carries only
         // what a search printed.
@@ -524,15 +588,26 @@ fn add_one_track(ctx: &ControlContext, pick: MusicPick) -> Result<serde_json::Va
     } else {
         None
     };
-    let fetch = |dir: &std::path::Path| match &bearer {
-        Some(b) => klipp_audio_search::download_original(&track, dir, b),
-        None => klipp_audio_search::download_track_up_to(&track, dir, max_secs),
+    Ok(ReadyTrack { track, choice, freesound, signed_in, bearer, max_secs })
+}
+
+/// `ready`'s file, downloaded where `project` keeps its music.
+fn download_prepared(ready: &ReadyTrack, project: Option<&std::path::Path>) -> Result<std::path::PathBuf, String> {
+    let fetch = |dir: &std::path::Path| match &ready.bearer {
+        Some(b) => klipp_audio_search::download_original(&ready.track, dir, b),
+        None => klipp_audio_search::download_track_up_to(&ready.track, dir, ready.max_secs),
     };
-    let path = fetch(&music_destination(project.as_deref()))
+    fetch(&music_destination(project))
         // A project folder that can't be written to (read-only, gone):
         // the kept folder, and the next save adopts from there.
-        .or_else(|e| if project.is_some() { fetch(&klipp_audio_search::download_dir()) } else { Err(e) })?;
-    let download = klipp_audio_search::Download::measure(&path, if choice == "original" { "original" } else if freesound || track.download_url.is_empty() { "preview" } else { "download" });
+        .or_else(|e| if project.is_some() { fetch(&klipp_audio_search::download_dir()) } else { Err(e) })
+}
+
+/// `ready`, downloaded to `path`, measured and imported: the reply.
+fn finish_track(ctx: &ControlContext, ready: ReadyTrack, path: &std::path::Path) -> Result<serde_json::Value, String> {
+    let ReadyTrack { track, choice, freesound, signed_in, .. } = ready;
+    let (title, artist, license) = (track.title.clone(), track.artist.clone(), track.license.clone());
+    let download = klipp_audio_search::Download::measure(path, if choice == "original" { "original" } else if freesound || track.download_url.is_empty() { "preview" } else { "download" });
     let mut v = handle(ctx, ControlCommand::import_one(path.to_string_lossy().to_string(), true), &mut None)?;
     v["text"] = json!(format!("Added \"{title}\" by {artist} ({license}) to the media pool as the {}. Place it on an audio track (place marks it music) and duck it under speech.", download.describe(), license = if license.is_empty() { "licence with the file".to_string() } else { license }));
     v["attribution"] = json!(track.attribution());
@@ -543,6 +618,116 @@ fn add_one_track(ctx: &ControlContext, pick: MusicPick) -> Result<serde_json::Va
         "Place it on an audio track (place marks it music, or sfx for an effect) and duck it under any speech. The credit is saved beside the file for your export notes."
     });
     Ok(v)
+}
+
+#[cfg(test)]
+mod parallel_download_tests {
+    use super::*;
+    use std::io::{Read, Write};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    /// A file server that sends each file slowly, as a library's does,
+    /// counts the most downloads it had going at once, and keeps the
+    /// request line of each; a path with "missing" in it is not found.
+    fn slow_server() -> (String, Arc<AtomicUsize>, Arc<std::sync::Mutex<Vec<String>>>) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let (going, most) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+        let (seen, asked) = (most.clone(), Arc::new(std::sync::Mutex::new(Vec::new())));
+        let lines = asked.clone();
+        std::thread::spawn(move || {
+            for s in listener.incoming() {
+                let Ok(mut s) = s else { return };
+                let (going, most, lines) = (going.clone(), most.clone(), lines.clone());
+                std::thread::spawn(move || {
+                    let mut req = [0u8; 2048];
+                    let n = s.read(&mut req).unwrap_or(0);
+                    let line = String::from_utf8_lossy(&req[..n]).lines().next().unwrap_or_default().to_string();
+                    lines.lock().unwrap().push(line.clone());
+                    if line.contains("missing") {
+                        let _ = write!(s, "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                        return;
+                    }
+                    let now = going.fetch_add(1, Ordering::SeqCst) + 1;
+                    most.fetch_max(now, Ordering::SeqCst);
+                    let body = vec![0x55u8; 8192];
+                    let _ = write!(s, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len());
+                    // A pause before each piece but the first, and the
+                    // download counted done with its last byte: the next
+                    // of a run one at a time can't overlap it.
+                    for (k, piece) in body.chunks(1024).enumerate() {
+                        if k > 0 {
+                            std::thread::sleep(std::time::Duration::from_millis(75));
+                        }
+                        let _ = s.write_all(piece);
+                    }
+                    going.fetch_sub(1, Ordering::SeqCst);
+                });
+            }
+        });
+        (base, seen, asked)
+    }
+
+    fn pick(base: &str, name: &str) -> MusicPick {
+        MusicPick { title: name.into(), artist: "a".into(), track_id: name.into(), preview_url: format!("{base}/{name}.mp3"), license: "CC0".into(), ..Default::default() }
+    }
+
+    /// #2578: the files of one add_music come several at once, not one
+    /// after another, each answered in the order asked; one not found is
+    /// its own failure and the rest still come.
+    #[test]
+    fn several_picks_download_at_once_and_answer_in_order() {
+        let (base, most, _) = slow_server();
+        let project = std::env::temp_dir().join(format!("klipp-add-music-at-once-{}", uuid::Uuid::new_v4()));
+        let ready: Vec<_> = ["one", "two", "missing", "four", "five"].iter().map(|n| prepare_track(pick(&base, n))).collect();
+        let started = std::time::Instant::now();
+        let got = each_at_once(&ready, DOWNLOADS_AT_ONCE, |r| r.as_ref().map_err(Clone::clone).and_then(|r| download_prepared(r, Some(&project))));
+        let took = started.elapsed();
+        let names: Vec<Option<String>> = got.iter().map(|r| r.as_ref().ok().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned())).collect();
+        let _ = std::fs::remove_dir_all(&project);
+        assert!(most.load(Ordering::SeqCst) >= 3, "at most {} at once", most.load(Ordering::SeqCst));
+        assert!(names[2].is_none(), "the one not found fails: {:?}", got[2]);
+        for (i, name) in ["one", "two", "four", "five"].iter().zip([0, 1, 3, 4]).map(|(n, i)| (i, *n)) {
+            assert!(names[i].as_deref().is_some_and(|f| f.contains(name)), "answer {i} is {name}'s: {names:?}");
+        }
+        // Each takes about 0.5 s alone; one after another, four took 2.1 s.
+        assert!(took < std::time::Duration::from_millis(1300), "{took:?} for four files");
+    }
+
+    /// A library track with a download and a preview: the preview asked
+    /// for is the one fetched, and said to be; left to its default, the
+    /// track comes as the library offers it, its download.
+    #[test]
+    fn a_preview_asked_for_fetches_the_preview_url() {
+        let (base, _, asked) = slow_server();
+        let project = std::env::temp_dir().join(format!("klipp-add-music-preview-{}", uuid::Uuid::new_v4()));
+        let song = |quality: Option<&str>| MusicPick { download_url: format!("{base}/whole.mp3"), preview_url: format!("{base}/short.mp3"), quality: quality.map(Into::into), ..pick(&base, "song") };
+        let fetched = |quality: Option<&str>| {
+            asked.lock().unwrap().clear();
+            let ready = prepare_track(song(quality)).unwrap();
+            download_prepared(&ready, Some(&project)).unwrap();
+            (asked.lock().unwrap().clone(), ready.track.download_url.is_empty())
+        };
+        let (lines, said_preview) = fetched(Some("preview"));
+        assert!(lines.len() == 1 && lines[0].contains("/short.mp3"), "the preview: {lines:?}");
+        assert!(said_preview, "and it is said to be the preview");
+        let (lines, _) = fetched(None);
+        assert!(lines.len() == 1 && lines[0].contains("/whole.mp3"), "left to its default, the download: {lines:?}");
+        let _ = std::fs::remove_dir_all(&project);
+    }
+
+    /// The order holds however long each one takes.
+    #[test]
+    fn each_at_once_keeps_the_order() {
+        let items: Vec<u64> = (0..9).collect();
+        let back = each_at_once(&items, 4, |&n| {
+            std::thread::sleep(std::time::Duration::from_millis((9 - n) * 5));
+            n * 10
+        });
+        assert_eq!(back, (0..9).map(|n| n * 10).collect::<Vec<_>>());
+        assert!(each_at_once(&Vec::<u64>::new(), 4, |&n| n).is_empty());
+    }
 }
 
 #[cfg(test)]
