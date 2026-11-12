@@ -38,12 +38,37 @@ pub fn readable_name(node: &klipp_graph_format::Node) -> String {
     if let Some(ty) = crate::effect_params::tag(node).and_then(|tag| klipp_effects::registry::effect_types().find(|t| t.tag == tag)) {
         return ty.desc.name.to_owned();
     }
+    if let Some(name) = structural_name(node.type_id.as_str()) {
+        return name.to_owned();
+    }
     // Through the one reader of a grade node's kind (`structure::kind_of`).
-    let kind = serde_json::from_value::<klipp_nodes::NodeKind>(serde_json::Value::String(crate::structure::kind_of(node).to_owned())).ok();
+    // A node with no kind reads as `Unknown` (the enum's catch-all), which
+    // named a lifted display step "Unknown" in a refusal: not taken.
+    let kind = serde_json::from_value::<klipp_nodes::NodeKind>(serde_json::Value::String(crate::structure::kind_of(node).to_owned()))
+        .ok()
+        .filter(|k| *k != klipp_nodes::NodeKind::Unknown);
     if let Some(kind) = kind {
         return kind.display_name().to_owned();
     }
     node.type_id.as_str().rsplit('.').next().unwrap_or_default().replace('_', " ")
+}
+
+/// A lifted graph's structural node by the name the node graph shows it
+/// under (klipp-ui's `node_graph_v2::picture`); `None` for any other type.
+fn structural_name(type_id: &str) -> Option<&'static str> {
+    use klipp_graph_format::lifted::types as lt;
+    Some(match type_id {
+        lt::SOURCE => "Source",
+        lt::OUTPUT | lt::GROUP_OUTPUT => "Output",
+        lt::GROUP => "Grade",
+        lt::GROUP_INPUT => "Input",
+        lt::GROUP_FRAME => "Frame",
+        lt::PLACEMENT => "Placement",
+        lt::SCENE_TO_DISPLAY => "Scene to Display",
+        lt::TEMPORAL_DENOISE => "Temporal Denoise",
+        lt::FRAME_BLEND => "Frame Blend",
+        _ => return None,
+    })
 }
 
 pub(crate) fn node_label(node: &klipp_graph_format::Node) -> &str {

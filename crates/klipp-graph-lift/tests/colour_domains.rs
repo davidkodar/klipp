@@ -110,6 +110,19 @@ fn a_display_step_after_a_plugin_or_a_second_one_is_refused() {
     ops::apply_with_catalog(&mut d, &connect(1, 8, "in"), &Catalog).expect("the source is scene-referred");
 }
 
+/// A lifted display step has no label, as a clip's graph has it: the
+/// refusal names it as the node graph does, not "Unknown".
+#[test]
+fn an_unlabelled_display_step_is_named_as_the_graph_shows_it() {
+    let mut beside = graph();
+    let mut step = node(11, lt::SCENE_TO_DISPLAY);
+    step.label.clear();
+    beside.nodes.extend([node(10, lt::OFX), step]);
+    beside.edges.extend([edge(2, 10, "in"), edge(2, 11, "in")]);
+    let err = ops::apply_with_catalog(&mut docs(beside), &connect(10, 11, "in"), &Catalog).unwrap_err();
+    assert!(err.contains("\u{201c}Scene to Display\u{201d}"), "{err}");
+}
+
 #[test]
 fn a_mask_carries_no_domain() {
     // The key off the scene-referred source masks the merge's input fx...
