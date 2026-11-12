@@ -1992,6 +1992,9 @@ pub struct PlaybackEngine {
     dbg_update_playback_count: u64,
     dbg_regrade_count: u64,
     dbg_param_changes_drained: u64,
+    /// The sequence revision last looked at for optical flow, and when
+    /// ([`Self::note_flow_need`]).
+    flow_checked: Option<(klipp_timeline::SequenceRevision, std::time::Instant)>,
     /// Last-seen cumulative readback counters, for per-interval deltas.
     dbg_last_readback_count: u64,
     dbg_last_readback_us: u64,
@@ -3063,6 +3066,32 @@ impl PlaybackEngine {
         self.prewarm_stack = on;
     }
 
+    /// Start the flow's GPU warm-up once the sequence draws by optical
+    /// flow ([`klipp_timeline::Sequence::needs_flow`]): looked at again
+    /// when the sequence has changed, at most once a second, until then.
+    /// Nothing else warms it, so a session that never slows a clip by
+    /// optical flow never compiles those pipelines.
+    fn note_flow_need(&mut self) {
+        if klipp_effects::gpu::flow_wanted() {
+            return;
+        }
+        let now = std::time::Instant::now();
+        if let Some((_, at)) = self.flow_checked {
+            if now.duration_since(at) < std::time::Duration::from_secs(1) {
+                return;
+            }
+        }
+        let revision = self.sequence.revision();
+        if self.flow_checked.is_some_and(|(seen, _)| seen == revision) {
+            return;
+        }
+        self.flow_checked = Some((revision, now));
+        if self.sequence.snapshot().needs_flow() {
+            info!("flow pipelines: the sequence draws by optical flow; warming them");
+            klipp_effects::gpu::want_flow();
+        }
+    }
+
     /// Apply every queued `ParamChange` to `self.sequence`. Takes the write
     /// lock at most once (when the first entry is popped) and releases it when
     /// the queue is empty. Also invalidates `current_grade_hash` and
@@ -3252,6 +3281,7 @@ impl PlaybackEngine {
             dbg_update_playback_count: 0,
             dbg_regrade_count: 0,
             dbg_param_changes_drained: 0,
+            flow_checked: None,
             dbg_last_readback_count: 0,
             dbg_last_readback_us: 0,
             dbg_commands_handled: 0,
@@ -3621,6 +3651,7 @@ impl PlaybackEngine {
             self.pass_on_probes();
             mark_stage(EngineStage::ParamDrain);
             let applied = self.drain_param_changes();
+            self.note_flow_need();
 
             // Source-viewer playback runs in parallel with the
             // timeline state machine — this is the only site that

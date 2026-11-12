@@ -164,6 +164,18 @@ impl Clip {
     }
 }
 
+impl crate::Sequence {
+    /// Whether anything in the sequence draws by optical flow: a clip
+    /// slowed with its ramp's Optical Flow blend, or a smooth cut. Only
+    /// then is the flow's GPU warm-up worth starting; it compiles six
+    /// pipelines on a thread of its own, which a quick quit then outran
+    /// (an NVIDIA driver crashed at exit in the middle of it).
+    pub fn needs_flow(&self) -> bool {
+        self.tracks.iter().any(|t| t.transitions.iter().any(|tr| tr.kind == klipp_core::TransitionKind::SmoothCut))
+            || self.all_clips().any(|c| c.frame_blend_mode() == Some(2) || c.precomp.as_deref().is_some_and(crate::Sequence::needs_flow))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -511,5 +523,44 @@ mod tests {
             let c = TestClip::of(c).effect(effect).off().build();
             assert_eq!(c.picture_references(), vec![host, host]);
         }
+    }
+
+    /// Only a ramp by optical flow or a smooth cut needs the flow: a
+    /// sequence with neither starts no warm-up.
+    #[test]
+    fn only_optical_flow_or_a_smooth_cut_needs_the_flow() {
+        let with = |clips: Vec<Clip>| {
+            let mut seq = crate::Sequence::new_default();
+            seq.tracks = vec![crate::sequence::Track::new("V1", crate::sequence::TrackKind::Video)];
+            seq.tracks[0].clips = clips;
+            seq
+        };
+        let ramp = |mode: u32| TestClip::of(clip()).effect(BuiltinEffect::SpeedRamp { speed: 0.5, blend_mode: mode }).build();
+        assert!(!with(vec![]).needs_flow(), "an empty sequence");
+        assert!(!with(vec![clip(), clip()]).needs_flow(), "no ramp");
+        assert!(!with(vec![ramp(0)]).needs_flow(), "a ramp with no blend");
+        assert!(!with(vec![ramp(1)]).needs_flow(), "a ramp cross-fading its frames");
+        assert!(!with(vec![TestClip::of(clip()).effect(BuiltinEffect::SpeedRamp { speed: 0.5, blend_mode: 2 }).off().build()]).needs_flow(), "a flow ramp switched off");
+        assert!(with(vec![clip(), ramp(2)]).needs_flow(), "a ramp by optical flow");
+
+        let (a, b) = (clip(), clip());
+        let mut cut = with(vec![a.clone(), b.clone()]);
+        let transition = |kind| crate::sequence::Transition {
+            id: klipp_core::TransitionId::new(),
+            kind,
+            duration: klipp_core::Timecode::from_frames(12, 24),
+            clip_a_id: a.id,
+            clip_b_id: b.id,
+            user_params: Default::default(),
+            alignment: Default::default(),
+        };
+        cut.tracks[0].transitions.push(transition(klipp_core::TransitionKind::CrossDissolve));
+        assert!(!cut.needs_flow(), "a dissolve");
+        cut.tracks[0].transitions.push(transition(klipp_core::TransitionKind::SmoothCut));
+        assert!(cut.needs_flow(), "a smooth cut");
+
+        let mut inner = clip();
+        inner.precomp = Some(std::sync::Arc::new(with(vec![ramp(2)])));
+        assert!(with(vec![inner]).needs_flow(), "a flow ramp inside a precomposition");
     }
 }

@@ -2142,6 +2142,7 @@ mod layer;
 mod contrast_protect;
 mod surface_light;
 mod flow;
+pub use flow::{flow_wanted, settle_flow_warmups, want_flow};
 mod transitions;
 use transitions::*;
 mod composite;
