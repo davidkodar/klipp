@@ -95,6 +95,11 @@ struct Played {
     rate: f64,
     /// Each picture's timeline time, in order, without repeats.
     shown: Vec<RationalTime>,
+    /// When each of those was first seen, and when Play was sent.
+    shown_when: Vec<Instant>,
+    played_at: Instant,
+    /// Where playing started.
+    from: RationalTime,
     /// Every layer frame the renders were given: clip, source time asked,
     /// the file frame's time.
     given: Vec<(ClipId, f64, Option<f64>)>,
@@ -119,17 +124,21 @@ fn play(seq: Sequence, pool: MediaPool, from_secs: f64, secs: f64) -> Played {
     let thread = engine.spawn();
     // On a timeline frame: 1 s is between two of 29.97's.
     let frame = (from_secs * fps.as_f64()).round() as i64;
-    cmd.send(AppCommand::SetPlayhead(RationalTime::from_frames(frame * i64::from(fps.den), fps.rate()))).unwrap();
+    let from = RationalTime::from_frames(frame * i64::from(fps.den), fps.rate());
+    cmd.send(AppCommand::SetPlayhead(from)).unwrap();
     common::settle(&fb);
     std::thread::sleep(Duration::from_millis(300));
     klipp_engine::engine::keep_frames_given();
+    let played_at = Instant::now();
     cmd.send(AppCommand::Play).unwrap();
     let mut shown: Vec<RationalTime> = Vec::new();
+    let mut shown_when: Vec<Instant> = Vec::new();
     let end = Instant::now() + Duration::from_secs_f64(secs);
     while Instant::now() < end {
         if let Some(at) = fb.lock().unwrap().latest_presented() {
             if shown.last() != Some(&at) {
                 shown.push(at);
+                shown_when.push(Instant::now());
             }
         }
         std::thread::sleep(Duration::from_millis(1));
@@ -142,7 +151,7 @@ fn play(seq: Sequence, pool: MediaPool, from_secs: f64, secs: f64) -> Played {
     let _ = cmd.send(AppCommand::Quit);
     let _ = thread.join();
     klipp_engine::video_decoder::wait_for_decode_threads(Duration::from_secs(10));
-    Played { rate, shown, given, dropping: health.dropping, seconds: health.seconds, due: shared.due_fps }
+    Played { rate, shown, shown_when, played_at, from, given, dropping: health.dropping, seconds: health.seconds, due: shared.due_fps }
 }
 
 fn sequence(fps: Fps, tracks: Vec<Vec<Clip>>) -> Sequence {
@@ -294,4 +303,137 @@ fn a_real_overload_is_still_reported() {
     klipp_engine::video_decoder::set_decode_delay_for_tests(0);
     assert!(played.rate < 20.0, "the delay held decoding to under 15 a second, yet {:.1} shown", played.rate);
     assert!(played.dropping > 0.2, "an overload reported as {:.0}% dropped", played.dropping * 100.0);
+}
+
+/// Eight seconds of a tone, stereo, as a WAV.
+fn tone() -> Option<std::path::PathBuf> {
+    let out = std::env::temp_dir().join("klipp-pacing-tone-8s.wav");
+    if out.exists() {
+        return Some(out);
+    }
+    let partial = common::unshared(&out, "wav");
+    let ok = std::process::Command::new("ffmpeg")
+        .args(["-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=8"])
+        .args(["-ac", "2", "-c:a", "pcm_s16le"])
+        .arg(&partial)
+        .status()
+        .ok()?
+        .success();
+    if !ok {
+        let _ = std::fs::remove_file(&partial);
+        return None;
+    }
+    std::fs::rename(&partial, &out).ok()?;
+    Some(out)
+}
+
+/// Mixed rates across cuts in a 30 fps sequence: on V1 (the primary) a 24
+/// fps clip to 3 s, then a 25 fps one; over it, small, a 30 fps clip to
+/// 3.2 s, a 24 fps one to 4 s, then a 10 fps one. At 10 fps, half of the
+/// file's frame and half of the sequence's pick different frames (#696);
+/// at 24 and 30 they agree. With a tone under it all when `sound`. The
+/// layers' clips, and the pool with each file for export.
+fn mixed_rates(sound: bool) -> Option<(Sequence, MediaPool, Vec<Clip>, std::collections::HashMap<MediaId, std::path::PathBuf>)> {
+    let fps = Fps::new(30, 1);
+    let (p10, p24, p25, p30) = (video(10, 1)?, video(24, 1)?, video(25, 1)?, video(30, 1)?);
+    let mut pool = MediaPool::default();
+    let layers = vec![
+        clip(&mut pool, &p30, Fps::new(30, 1), false, fps, 0.0, 3.2, true),
+        clip(&mut pool, &p24, Fps::new(24, 1), false, fps, 3.2, 4.0, true),
+        clip(&mut pool, &p10, Fps::new(10, 1), false, fps, 4.0, 8.0, true),
+    ];
+    let primary = vec![
+        clip(&mut pool, &p24, Fps::new(24, 1), false, fps, 0.0, 3.0, false),
+        clip(&mut pool, &p25, Fps::new(25, 1), false, fps, 3.0, 8.0, false),
+    ];
+    let files = pool.all().map(|m| (m.id, m.path.clone())).collect();
+    let mut seq = sequence(fps, vec![layers.clone(), primary]);
+    if sound {
+        let tone = tone()?;
+        let id = MediaId::new();
+        let tc = |s: f64| RationalTime::from_secs_f64(s, fps.rate());
+        pool.add(MediaItem {
+            id,
+            path: tone.clone(),
+            kind: klipp_media::MediaItemKind::File,
+            has_audio: true,
+            audio_codec: "pcm_s16le".into(),
+            audio_channels: Some(2),
+            ..MediaItem::new_synthetic_title(id, tone.display().to_string(), tc(8.0), fps)
+        });
+        let mut a1 = Track::new("A1", TrackKind::Audio);
+        a1.clips = vec![Clip { kind: ClipKind::Media { media_id: id }, source_in: tc(0.0), source_out: tc(8.0), ..Clip::gap(tc(0.0), tc(8.0)) }];
+        seq.tracks.push(a1);
+    }
+    Some((seq, pool, layers, files))
+}
+
+/// Playing across cuts between rates, each layer frame the viewer draws
+/// is the one export draws at that timeline frame (its file frame's time),
+/// and every timeline frame where export's layer frame moves on is drawn.
+#[test]
+fn played_across_mixed_rate_cuts_the_layers_show_exports_frames() {
+    let _one = ONE.lock().unwrap_or_else(|e| e.into_inner());
+    let Some((seq, pool, layers, files)) = mixed_rates(false) else { return eprintln!("skipping: no ffmpeg") };
+    let fps = seq.fps;
+    let played = play(seq, pool, 2.0, 3.0);
+    let media: std::collections::HashMap<MediaId, klipp_render::MediaFile> =
+        files.into_iter().map(|(id, path)| (id, klipp_render::MediaFile { path, ..Default::default() })).collect();
+    let mut export = klipp_render::ExportFrameSource::new(&media, fps.as_f64(), WorkingColorspace::default());
+    let frame_of = |c: &Clip, asked: f64| ((c.timeline_in.to_secs_f64() + asked - c.source_in.to_secs_f64()) * fps.as_f64()).round() as i64;
+    let mut checked = 0;
+    for c in &layers {
+        // The viewer's frame for each timeline frame it drew the layer at.
+        let mut drawn: std::collections::BTreeMap<i64, f64> = std::collections::BTreeMap::new();
+        for (id, asked, pts) in &played.given {
+            if *id == c.id {
+                let n = frame_of(c, *asked);
+                assert!(((c.timeline_in.to_secs_f64() + asked) * fps.as_f64() - n as f64).abs() < 1e-3, "{:?}: asked between timeline frames, at {asked}", c.id);
+                drawn.insert(n, pts.expect("a decoded frame"));
+            }
+        }
+        let (Some(&first), Some(&last)) = (drawn.keys().next(), drawn.keys().next_back()) else { continue };
+        let mut before = None;
+        for n in first..=last {
+            let secs = klipp_compose::render::source_secs(c, RationalTime::from_frames(n * i64::from(fps.den), fps.rate()), fps.as_f64());
+            let exported = klipp_compose::FrameSource::frame(&mut export, c, secs, W, H).and_then(|f| f.pts).expect("export decodes the layer");
+            if let Some(&shown) = drawn.get(&n) {
+                assert!((shown - exported).abs() < 1e-4, "timeline frame {n}: the viewer drew the layer's {shown:.4} s, export {exported:.4} s");
+                checked += 1;
+            } else if before.is_some_and(|b: f64| (b - exported).abs() > 1e-4) {
+                panic!("timeline frame {n}: export's layer frame moves on to {exported:.4} s, and the viewer did not draw it");
+            }
+            before = Some(exported);
+        }
+    }
+    eprintln!("MEASURE layer frames checked against export: {checked}");
+    assert!(layers.iter().all(|c| played.given.iter().any(|(id, _, _)| *id == c.id)), "each layer was drawn");
+    assert!(checked > 60, "only {checked} layer frames drawn in ~3 s");
+}
+
+/// Playing mixed rates across cuts, with sound: each picture is shown
+/// within a frame of the clock both sound and picture follow (sync.rs's
+/// master clock, wall time from Play at 1×), drawn again on the
+/// sequence's clock or not.
+#[test]
+fn played_across_mixed_rate_cuts_the_picture_keeps_to_the_clock() {
+    let _one = ONE.lock().unwrap_or_else(|e| e.into_inner());
+    let Some((seq, pool, _, _)) = mixed_rates(true) else { return eprintln!("skipping: no ffmpeg") };
+    let frame = seq.fps.frame_duration_secs();
+    let played = play(seq, pool, 2.0, 3.0);
+    // Past the start: the clock runs from when Play arrives.
+    let offsets: Vec<f64> = played
+        .shown
+        .iter()
+        .zip(&played.shown_when)
+        .filter(|(_, w)| w.duration_since(played.played_at) > Duration::from_millis(300))
+        .map(|(at, w)| played.from.to_secs_f64() + w.duration_since(played.played_at).as_secs_f64() - at.to_secs_f64())
+        .collect();
+    assert!(offsets.len() > 60, "only {} pictures in ~3 s", offsets.len());
+    let mut sorted = offsets.clone();
+    sorted.sort_by(f64::total_cmp);
+    let median = sorted[sorted.len() / 2];
+    let worst = offsets.iter().map(|o| (o - median).abs()).fold(0.0, f64::max);
+    eprintln!("MEASURE picture vs clock over {} pictures: median {:.1} ms behind, worst {:.1} ms from it, range {:.1}..{:.1} ms", offsets.len(), median * 1e3, worst * 1e3, sorted[0] * 1e3, sorted[sorted.len() - 1] * 1e3);
+    assert!(worst <= frame, "a picture {:.1} ms off the clock's steady lag, over a frame ({:.1} ms)", worst * 1e3, frame * 1e3);
 }
