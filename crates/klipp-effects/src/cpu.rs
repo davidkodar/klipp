@@ -127,7 +127,9 @@ fn round(v: f32) -> i32 {
 /// of summed afresh at every pixel (#3176): the sum's cost no longer grows
 /// with the radius. Below it the window is small enough to sum directly,
 /// and the pictures stay what they were to the bit. The GPU's box passes
-/// change over at the same radius (`blur/blur_h.wgsl`).
+/// differ, within float rounding: a row's box is summed from the
+/// workgroup's tile up to a radius of 64 and slid past it
+/// (`blur/blur_h.wgsl`), a column's slid at every radius (`blur_v.wgsl`).
 pub(crate) const BOX_SLIDES_FROM: i32 = 8;
 
 /// A box of radius `r` slid along `row` (`n` pixels) into `out`: the

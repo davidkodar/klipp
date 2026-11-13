@@ -349,9 +349,13 @@ fn the_widest_light_wrap_costs_what_a_narrow_one_does() {
         eprintln!("skipping the GPU: none");
         return;
     };
-    let (gpu_narrow, _) = time(&mut || gpu.apply_effects(&narrow, &input, w, h));
+    // On the GPU a narrow box is summed from the workgroup's tile, up to a
+    // radius of 64, and costs a fraction of a slid one: the widest is held
+    // to the narrowest wrap whose boxes slide, the cost #3176 is about.
+    let slid = [BuiltinEffect::LightWrap { width: 80.0, intensity: 0.5, softness: 1.0 }];
+    let (gpu_narrow, _) = time(&mut || gpu.apply_effects(&slid, &input, w, h));
     let (gpu_widest, on_gpu) = time(&mut || gpu.apply_effects(&widest, &input, w, h));
-    eprintln!("GPU light wrap at 1080p: narrow {gpu_narrow:.1} ms, widest {gpu_widest:.1} ms");
+    eprintln!("GPU light wrap at 1080p: narrowest slid {gpu_narrow:.1} ms, widest {gpu_widest:.1} ms");
     assert!(gpu_widest < gpu_narrow * 3.0 + 50.0, "the widest took {gpu_widest:.1} ms on the GPU, the narrow {gpu_narrow:.1} ms");
     let (worst, _) = diff(&cpu, &on_gpu);
     assert!(worst <= 1, "the widest differs by {worst} levels between the CPU and the GPU");
@@ -561,6 +565,40 @@ fn the_brightness_gated_effects_follow_the_working_space() {
                 "{name} moved by {worst} levels with the weights, but its luma term \
                  should cancel — has what it means changed?"
             ));
+        }
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
+/// A Gaussian blur draws the same on the GPU as on the CPU at every
+/// sigma from 1 to 40, on frames whose rows straddle the GPU's 256-pixel
+/// workgroups (a width that is not a multiple of 256, rows shorter than
+/// the widest box), one pixel wide or high, and partly transparent. The
+/// GPU's box passes read their stretch of the frame into the workgroup's
+/// memory, with the box's reach either side; a tap clamped to the wrong
+/// row or read from outside the stretch shows here.
+#[test]
+fn a_blur_matches_the_cpu_on_any_frame_shape() {
+    let Some(mut gpu) = GpuEffectsPipeline::new() else {
+        eprintln!("skipping: no GPU");
+        return;
+    };
+    let mut failures = Vec::new();
+    for (w, h) in [(333u32, 77u32), (257, 9), (37, 41), (1, 50), (50, 1), (1, 1)] {
+        let input: Vec<f32> = (0..w * h).flat_map(|i| {
+            let (x, y) = (i % w, i / w);
+            let check = if (x / 5 + y / 3) % 2 == 0 { 0.6 } else { 0.05 };
+            let alpha = [1.0, 0.0, 0.35, 1.0, 0.8][(x as usize + 2 * y as usize) % 5];
+            [check, (x as f32 / w as f32) * 0.9, (y as f32 / h as f32) * 0.7, alpha]
+        }).collect();
+        for sigma in (1..=40).map(|s| s as f32) {
+            let fx = [BuiltinEffect::GaussianBlur { radius: sigma }];
+            let cpu = apply_effects(&fx, input.clone(), w, h);
+            let on_gpu = gpu.apply_effects(&fx, &input, w, h);
+            let worst = cpu.iter().zip(&on_gpu).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
+            if worst > 1e-4 {
+                failures.push(format!("{w}x{h} sigma {sigma}: CPU and GPU differ by {worst}"));
+            }
         }
     }
     assert!(failures.is_empty(), "{failures:#?}");
