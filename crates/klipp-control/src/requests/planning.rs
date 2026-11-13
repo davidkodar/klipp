@@ -859,9 +859,16 @@ pub(crate) fn respond(
             let labels = || { let p = ctx.shared.project.lock().recovered(); (p.undo.clone(), p.redo.clone()) };
             let (was_undo, was_redo) = labels();
             let step = if undo { was_undo } else { was_redo };
+            let nothing = if undo { "Nothing to undo." } else { "Nothing to redo." };
+            // Nothing to take: refused, with nothing sent to the app. It
+            // answered "applied" before, as if a step had gone. In a batch
+            // a write before it may make the step, so it goes as sent.
+            if step.is_none() && !in_batch {
+                return Err(nothing.into());
+            }
             let mut v = send(if undo { AppCommand::Undo } else { AppCommand::Redo })?;
             let Some(step) = step else {
-                v["text"] = json!(if undo { "Nothing to undo." } else { "Nothing to redo." });
+                v["text"] = json!(nothing);
                 return Ok(v);
             };
             let (next_undo, next_redo) = labels();

@@ -1550,6 +1550,7 @@ fn a_batch_is_one_envelope_or_nothing_and_writes_answer_with_the_revision() {
     assert!(reply["error"].as_str().unwrap().contains("cannot be part of a batch"));
 
     // Undo is a write like any other.
+    h.shared.project.lock().unwrap().undo = Some("Play".into());
     let r = h.ok(json!({ "method": "undo" }));
     assert_eq!(r["applied"], json!(true));
     assert!(matches!(h.cmd_rx.recv_timeout(std::time::Duration::from_secs(1)), Ok(klipp_core::AppCommand::Undo)));
@@ -3898,12 +3899,21 @@ fn a_failed_clip_alone_read_still_clears_and_repaints() {
 }
 
 /// #741: undo and redo say what they took back or put back, by the name
-/// the history gives the step, and say so when there is nothing to undo.
+/// the history gives the step. With nothing to take they refuse, and send
+/// the app nothing: they answered "applied" before, as if a step had gone.
+/// In a batch they go on as sent: a write before them there makes the step.
 #[test]
 fn undo_says_what_it_undid() {
     let mut h = harness();
-    let r = h.ok(json!({ "method": "undo" }));
-    assert_eq!(r["text"], "Nothing to undo.", "{r}");
+    let sent = h.envelopes.lock().unwrap().len();
+    for (method, said) in [("undo", "Nothing to undo."), ("redo", "Nothing to redo.")] {
+        let reply = h.call(json!({ "method": method }));
+        assert_eq!(reply["ok"], json!(false), "{method} with nothing to take: {reply}");
+        assert_eq!(reply["error"], said, "{reply}");
+    }
+    assert_eq!(h.envelopes.lock().unwrap().len(), sent, "a refused undo or redo sends nothing");
+    assert!(h.cmd_rx.try_recv().is_err());
+    h.ok(json!({ "method": "batch", "commands": [ { "method": "play" }, { "method": "undo" } ] }));
     h.shared.project.lock().unwrap().undo = Some("Compose".into());
     let r = h.ok(json!({ "method": "undo" }));
     assert!(r["text"].as_str().unwrap().starts_with("Undid \"Compose\"."), "{r}");
