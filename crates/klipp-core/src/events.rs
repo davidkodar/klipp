@@ -903,6 +903,19 @@ impl ExportVideoCodec {
         }
     }
 
+    /// The bits a sample the file holds, with `bit_depth` asked: what the
+    /// encoder writes, not what was asked. ProRes and DNxHR HQX/444 are
+    /// 10-bit whatever is asked, FFV1 16-bit RGB, a GIF's palette 8; the
+    /// export reply said 8 for a ProRes file that was 10.
+    pub fn written_bit_depth(&self, bit_depth: u8) -> u8 {
+        match self {
+            Self::Ffv1 => 16,
+            Self::Gif => 8,
+            _ if self.writes_8bit(bit_depth) => 8,
+            _ => 10,
+        }
+    }
+
     /// [`hint`](Self::hint) for the depth actually chosen.
     ///
     /// H.264's hint is a promise it cannot keep at ten bits: "GPU

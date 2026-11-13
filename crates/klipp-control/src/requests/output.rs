@@ -414,7 +414,9 @@ pub(crate) fn respond(
                     (klipp_core::RateControl::Crf, _) | (_, None) => format!("crf {}", settings.crf),
                     (_, Some(kbps)) => format!("{kbps} kbps"),
                 }),
-                "bit_depth": (!settings.format.is_audio_only()).then_some(if settings.bit_depth == 10 { 10 } else { 8 }),
+                // What the file holds: a ProRes file is 10-bit whatever
+                // bit_depth says.
+                "bit_depth": (!settings.format.is_audio_only()).then_some(settings.video_codec.written_bit_depth(settings.bit_depth)),
                 "audio": settings.audio_codec.described(settings.audio_bitrate_kbps),
             });
             let burnt = !has_captions || said["captions_burnt_in"].as_bool().unwrap_or(true) || said["captions_embedded"].as_bool().unwrap_or(false);
