@@ -104,3 +104,7 @@ path = "tests/title_styles_gpu.rs"
 [[test]]
 name = "warmed_titles_match_cold"
 path = "tests/warmed_titles_match_cold.rs"
+
+[[test]]
+name = "still_title_scenes_kept"
+path = "tests/still_title_scenes_kept.rs"

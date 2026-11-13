@@ -16,6 +16,7 @@ mod title_shutter;
 mod ofx_node;
 pub mod synth;
 mod title3d_gpu;
+mod still_title_scenes;
 pub mod render;
 pub mod resolve;
 pub mod selfcheck;
