@@ -157,11 +157,15 @@ pub fn color_wheel_spanned(
     drag_ended |= wheel_resp.drag_stopped();
     dragging |= wheel_resp.dragged();
 
-    // A drag moves the puck from where it is, at half the wheel's scale
-    // (a full radius of travel is half the range) and a tenth of that
-    // with Shift held: grading moves are small — a lift of 0.01 is a
-    // third of a pixel at the wheel's own scale — and the puck must not
-    // jump to the pointer on the first press. A click still places it.
+    // A drag moves the puck from where it is, under the pointer (#2597):
+    // the offset is the one at the press plus the whole way the pointer
+    // has gone since, at the scale the puck is drawn at. Summed per-frame
+    // deltas lost the 6 pt before egui calls a press a drag, and went at
+    // half the puck's scale, so a 20 px drag on a large wheel barely
+    // moved the grade and the puck slipped from the pointer. With Shift
+    // held it goes a tenth as far, from where Shift took over, so pressing
+    // or letting go of Shift mid-drag doesn't jump. The puck must not jump
+    // to the pointer on the first press; a click still places it.
     let fine = ui.input(|i| i.modifiers.shift);
     // Not while dragging: the hint sat over the R/G/B pills exactly when
     // they were the thing to read.
@@ -170,23 +174,36 @@ pub fn color_wheel_spanned(
     } else {
         wheel_resp.on_hover_text("Drag to adjust, Shift for fine steps.\nClick to place, double-click to reset.")
     };
+    let anchor_id = wheel_resp.id.with("drag_anchor");
     if wheel_resp.dragged() {
-        let d = wheel_resp.drag_delta();
-        if d != egui::Vec2::ZERO {
-            let rate = 1.0 / wheel_radius * if fine { 0.1 } else { 1.0 };
-            let mut ox = offset[0] + d.x * rate;
-            let mut oy = offset[1] + d.y * rate;
+        let pointer = ui.input(|i| i.pointer.interact_pos());
+        // Where this stretch of the drag started: the press, or where
+        // Shift was last pressed or let go.
+        let anchor = ui.data(|d| d.get_temp::<DragAnchor>(anchor_id)).filter(|a| a.fine == fine).or_else(|| {
+            let at = if wheel_resp.drag_started() { ui.input(|i| i.pointer.press_origin()) } else { pointer };
+            at.map(|at| DragAnchor { at, offset: *offset, fine })
+        });
+        if let (Some(a), Some(p)) = (anchor, pointer) {
+            ui.data_mut(|d| d.insert_temp(anchor_id, a));
+            let rate = 1.0 / (wheel_radius * 0.5) * if fine { 0.1 } else { 1.0 };
+            let mut ox = a.offset[0] + (p.x - a.at.x) * rate;
+            let mut oy = a.offset[1] + (p.y - a.at.y) * rate;
             // Clamp to full wheel radius (offset 2.0 = outer edge)
             let mag = (ox * ox + oy * oy).sqrt();
             if mag > 2.0 {
                 ox = ox / mag * 2.0;
                 oy = oy / mag * 2.0;
             }
-            offset[0] = ox;
-            offset[1] = oy;
-            changed = true;
+            if [ox, oy] != *offset {
+                offset[0] = ox;
+                offset[1] = oy;
+                changed = true;
+            }
         }
-    } else if wheel_resp.clicked() {
+    } else {
+        ui.data_mut(|d| d.remove::<DragAnchor>(anchor_id));
+    }
+    if !wheel_resp.dragged() && wheel_resp.clicked() {
         if let Some(pos) = wheel_resp.interact_pointer_pos() {
             let dx = pos.x - wc.x;
             let dy = pos.y - wc.y;
@@ -456,6 +473,14 @@ pub fn color_wheel_spanned(
     }
 }
 
+/// Where a stretch of a puck drag started, and the offset there.
+#[derive(Clone, Copy)]
+struct DragAnchor {
+    at: egui::Pos2,
+    offset: [f32; 2],
+    fine: bool,
+}
+
 /// The decimals and monospace size a pill `pill_w` wide shows "+0.000"
 /// at: three decimals at `size` when they fit with a little room, else
 /// two, else two a point smaller.
@@ -470,5 +495,90 @@ fn pill_text_fit(ui: &egui::Ui, pill_w: f32, size: f32) -> (usize, f32) {
         (2, size)
     } else {
         (2, (size - 1.0).max(6.0))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A wheel `diameter` across, dragged from its puck by `steps` (each a
+    /// pointer move and whether Shift is held): the offset it leaves, and
+    /// where the puck is drawn after each step with the pointer there.
+    fn drag(diameter: f32, steps: &[(egui::Vec2, bool)]) -> ([f32; 2], Vec<(egui::Pos2, egui::Pos2)>) {
+        let ctx = egui::Context::default();
+        let theme = KlippTheme::default();
+        let mut state = ColorWheelState::default();
+        let (mut offset, mut master) = ([0.0f32; 2], 0.0f32);
+        let mut frame = |events: Vec<egui::Event>, shift: bool, offset: &mut [f32; 2]| {
+            let modifiers = if shift { egui::Modifiers::SHIFT } else { egui::Modifiers::NONE };
+            let input = egui::RawInput { events, modifiers, screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(400.0, 400.0))), ..Default::default() };
+            let out = ctx.run(input, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    color_wheel_sized(ui, &mut state, &theme, "Gamma", offset, &mut master, diameter, None, None);
+                });
+            });
+            // The puck: the wheel's one white disc.
+            out.shapes.iter().find_map(|s| match &s.shape {
+                egui::Shape::Circle(c) if c.fill == egui::Color32::WHITE => Some(c.center),
+                _ => None,
+            }).expect("the puck is drawn")
+        };
+        let mut at = frame(Vec::new(), false, &mut offset);
+        let press = |pressed, shift: bool| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: if shift { egui::Modifiers::SHIFT } else { egui::Modifiers::NONE } };
+        let first_shift = steps.first().is_some_and(|s| s.1);
+        frame(vec![egui::Event::PointerMoved(at)], first_shift, &mut offset);
+        frame(vec![press(true, first_shift)], first_shift, &mut offset);
+        let mut seen = Vec::new();
+        for (step, shift) in steps {
+            at += *step;
+            let puck = frame(vec![egui::Event::PointerMoved(at)], *shift, &mut offset);
+            seen.push((at, puck));
+        }
+        frame(vec![egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE }], false, &mut offset);
+        (offset, seen)
+    }
+
+    /// How far a Gamma wheel at `offset` moves mid grey, as CIEDE2000.
+    fn gamma_de(offset: [f32; 2]) -> f32 {
+        let rgb = klipp_color::wheel_offset_to_rgb(offset[0], offset[1], 0.0);
+        let mut px = [0.18, 0.18, 0.18, 1.0];
+        klipp_color::linear::apply_lift_gamma_gain(&mut px, (0.0, 0.0, 0.0), rgb, (0.0, 0.0, 0.0));
+        klipp_color::measure::delta_e2000(klipp_color::measure::linear_to_lab(0.18, 0.18, 0.18), klipp_color::measure::linear_to_lab(px[0], px[1], px[2]))
+    }
+
+    /// #2597: a 20 px drag of the puck on the Colour page's 180 px wheel
+    /// moves mid grey visibly but not wildly, and the puck stays under the
+    /// pointer all the way. Summed per-frame deltas lost the 6 pt before
+    /// egui calls a press a drag and went at half the puck's scale: the
+    /// puck slipped behind and the grade barely moved.
+    #[test]
+    fn a_small_puck_drag_moves_the_grade_visibly_and_keeps_the_puck_under_the_pointer() {
+        let steps = vec![(egui::vec2(2.0, 0.0), false); 10];
+        let (offset, seen) = drag(180.0, &steps);
+        // Under 6 pt from the press it may still be a click, and egui
+        // calls nothing a drag; from there on the puck is under the
+        // pointer, the way it came included.
+        for (i, (pointer, puck)) in seen.iter().enumerate().skip(3) {
+            assert!(pointer.distance(*puck) < 0.5, "{} px in, the puck at {puck:?} with the pointer at {pointer:?}", (i + 1) * 2);
+        }
+        let de = gamma_de(offset);
+        assert!((2.0..12.0).contains(&de), "a 20 px Gamma drag moved mid grey by ΔE00 {de:.2} (offset {offset:?})");
+    }
+
+    /// With Shift held a drag goes a tenth as far; pressing Shift mid-drag
+    /// carries on from where the puck is, without a jump.
+    #[test]
+    fn shift_drags_a_tenth_as_far_from_where_it_was_pressed() {
+        let (full, _) = drag(180.0, &[(egui::vec2(2.0, 0.0), false); 10]);
+        let (fine, _) = drag(180.0, &[(egui::vec2(2.0, 0.0), true); 10]);
+        assert!((fine[0] / full[0] - 0.1).abs() < 0.005, "Shift: {} against {}", fine[0], full[0]);
+        // 10 px plain, Shift pressed, then 10 px more.
+        let mut steps = vec![(egui::vec2(2.0, 0.0), false); 5];
+        steps.push((egui::vec2(0.0, 0.0), true));
+        steps.extend(vec![(egui::vec2(2.0, 0.0), true); 5]);
+        let (mixed, _) = drag(180.0, &steps);
+        let expect = full[0] * 0.5 * 1.1;
+        assert!((mixed[0] - expect).abs() < 0.005, "half plain, half fine: {} against {expect}", mixed[0]);
     }
 }

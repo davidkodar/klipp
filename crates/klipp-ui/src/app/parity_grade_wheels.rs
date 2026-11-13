@@ -331,13 +331,14 @@ fn reset(g: &mut Grade, control: Control) -> Result<(), String> {
 }
 
 /// What a drag must store, where the control's rule is plain from what's
-/// drawn: a puck moves by the drag over the wheel's radius (`color_wheel`:
-/// a full radius of travel is half the range), from where it is. `None`
+/// drawn: a puck moves with the pointer, from where it is (`color_wheel`,
+/// #2597), and is drawn at half the radius per unit, so it stores twice
+/// the drag over the wheel's radius. `None`
 /// for a control whose rule goes through its own layout (a master's
 /// track, a rail, a sector), held to moving instead.
 fn drag_rule(g: &mut Grade, control: Control, start: f32) -> Result<Option<f32>, String> {
     match control {
-        Control::Wheel { label, axis: WheelAxis::X | WheelAxis::Y } => Ok(Some(start + PUCK_DRAG / (wheel(g, label)?.diameter / 2.0))),
+        Control::Wheel { label, axis: WheelAxis::X | WheelAxis::Y } => Ok(Some(start + PUCK_DRAG / (wheel(g, label)?.diameter / 4.0))),
         _ => Ok(None),
     }
 }
