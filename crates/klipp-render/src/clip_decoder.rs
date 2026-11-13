@@ -161,6 +161,31 @@ pub struct RenderDecoder {
     frames_skipped: u64,
     /// A still image (#978): opened at its one frame whatever the in point.
     still: bool,
+    /// A software-decoded frame's planes as the GPU converters take them,
+    /// kept from frame to frame so packing one allocates nothing.
+    packed: PackedPlanes,
+}
+
+/// A software-decoded 4:2:0 frame's planes in the layout the GPU
+/// converters read: NV12 (the luma plane as decoded, chroma interleaved)
+/// or P010 (both shifted to the top of 16 bits). Only what has to be
+/// rewritten is held here; 8-bit luma goes up from the frame itself.
+#[derive(Default)]
+struct PackedPlanes {
+    y: Vec<u8>,
+    uv: Vec<u8>,
+}
+
+/// One frame's NV12 or P010 planes, wherever they came from: a hardware
+/// frame's download or a software frame packed on the CPU.
+struct Planes<'a> {
+    y: &'a [u8],
+    uv: &'a [u8],
+    width: u32,
+    height: u32,
+    y_stride: u32,
+    uv_stride: u32,
+    ten_bit: bool,
 }
 
 /// A scene-referred source frame (PQ, HLG, camera log) as the viewer's
@@ -240,7 +265,9 @@ impl RenderDecoder {
 
         // Try hardware acceleration: CUDA → VAAPI → Software
         let hw_accel = unsafe {
-            if try_init_cuda(codec_ctx.as_mut_ptr()) {
+            if software_only() {
+                HwAccel::Software
+            } else if try_init_cuda(codec_ctx.as_mut_ptr()) {
                 HwAccel::Cuda
             } else if try_init_vaapi(codec_ctx.as_mut_ptr()) {
                 HwAccel::Vaapi
@@ -347,6 +374,7 @@ impl RenderDecoder {
             frames_decoded: 0,
             frames_skipped: 0,
             still,
+            packed: PackedPlanes::default(),
         })
     }
 
@@ -542,9 +570,12 @@ impl RenderDecoder {
         // display-referred frame: NV12 down from the decoder, linear
         // working-space f32 straight into a buffer the grade chain can
         // take. Skips swscale and the rotation pass both, and uploads
-        // 12 MB of planes instead of 66 MB of RGBA64.
+        // 12 MB of planes instead of 66 MB of RGBA64. A software-decoded
+        // 4:2:0 frame goes the same way, its planes packed as the
+        // hardware's: converting a 4K frame on the CPU took 52 ms of
+        // every core, against under 8 for this.
         let t_gpu = std::time::Instant::now();
-        if let Some(pixels) = unsafe { self.hw_frame_on_gpu(decoded, gpu) } {
+        if let Some(pixels) = unsafe { self.hw_frame_on_gpu(decoded, gpu).or_else(|| self.sw_frame_on_gpu(decoded, gpu)) } {
             self.t_convert += t_gpu.elapsed();
             return Ok(pixels);
         }
@@ -608,8 +639,8 @@ impl RenderDecoder {
     ) -> Option<DecodedPixels> {
         use ffmpeg_next::ffi::*;
 
-        // Software decode has the frame on the CPU already, so converting
-        // it on the GPU would mean uploading YUV to save a conversion.
+        // A software decoder's frames are not hardware frames;
+        // `sw_frame_on_gpu` takes those.
         if self.hw_accel == HwAccel::Software
             || self.scene.is_some()
             || self.log_format.is_some()
@@ -641,36 +672,143 @@ impl RenderDecoder {
                 return None;
             }
         };
-        if (ten_bit && gpu.p010.is_none()) || (!ten_bit && gpu.nv12.is_none()) {
-            av_frame_free(&mut (sw_frame as *mut _));
-            return None;
-        }
-
         let (src_w, src_h) = ((*sw_frame).width as u32, (*sw_frame).height as u32);
-
-        // At any size. A straight conversion and a 90/180/270 rotation are
-        // permutations, exact one source pixel per output pixel; a
-        // downscale averages each output pixel's footprint in linear light
-        // (#744), as the viewer's decode now does too; an upscale is
-        // Lanczos-3 (#2557), the kernel swscale used here, on the encoded
-        // values as it filtered them, so a 4K export keeps its look.
-        // Each used to be refused, and went down to the CPU through
-        // swscale and back up: a 1080p source in a 4K export took 44 ms a
-        // frame there, against a millisecond on the GPU.
-
         let (y_stride, uv_stride) =
             ((*sw_frame).linesize[0] as u32, (*sw_frame).linesize[1] as u32);
         // The planes as they came down, strides and all — the shader
         // indexes by stride, so there is nothing to repack.
-        let y = std::slice::from_raw_parts(
-            (*sw_frame).data[0],
-            (y_stride as usize) * (src_h as usize),
-        );
-        let uv = std::slice::from_raw_parts(
-            (*sw_frame).data[1],
-            (uv_stride as usize) * (src_h as usize / 2),
-        );
+        let planes = Planes {
+            y: std::slice::from_raw_parts((*sw_frame).data[0], (y_stride as usize) * (src_h as usize)),
+            uv: std::slice::from_raw_parts((*sw_frame).data[1], (uv_stride as usize) * (src_h as usize / 2)),
+            width: src_w,
+            height: src_h,
+            y_stride,
+            uv_stride,
+            ten_bit,
+        };
+        let out = self.planes_on_gpu(decoded, &planes, gpu);
+        av_frame_free(&mut (sw_frame as *mut _));
+        out
+    }
 
+    /// A software-decoded 4:2:0 frame converted on the GPU as a hardware
+    /// one is ([`Self::hw_frame_on_gpu`]): its chroma interleaved into
+    /// NV12, or for ten bits both planes moved to the top of 16 bits as
+    /// P010, then the same shader. The CPU's own conversion
+    /// (`klipp_rgba64`) is that shader's twin, so the picture is the same;
+    /// it took 52 ms of every core for a 4K frame into a 1080p export,
+    /// where packing takes under one and the GPU under eight.
+    ///
+    /// `None` where this is not the route, and the frame goes to the CPU:
+    /// no converter, a scene-referred or log source (as for hardware
+    /// frames), or a frame that is not 8- or 10-bit 4:2:0 (4:2:2, 4:4:4,
+    /// alpha, RGB), which the converters do not read.
+    ///
+    /// SAFETY: `decoded` must be a valid decoded frame.
+    unsafe fn sw_frame_on_gpu(
+        &mut self,
+        decoded: &ffmpeg_next::util::frame::Video,
+        gpu: &mut GpuConverters,
+    ) -> Option<DecodedPixels> {
+        use ffmpeg_next::format::Pixel;
+        use rayon::prelude::*;
+
+        // `KLIPP_SW_FRAMES_ON_GPU=0` keeps them on the CPU, to compare, as
+        // it does for playback's software frames (#2116).
+        static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let on = *ON.get_or_init(|| std::env::var("KLIPP_SW_FRAMES_ON_GPU").as_deref() != Ok("0"));
+        if !on || self.scene.is_some() || self.log_format.is_some() {
+            return None;
+        }
+        let ten_bit = match decoded.format() {
+            Pixel::YUV420P | Pixel::YUVJ420P => false,
+            Pixel::YUV420P10LE => true,
+            _ => return None,
+        };
+        if (ten_bit && gpu.p010.is_none()) || (!ten_bit && gpu.nv12.is_none()) {
+            return None;
+        }
+        let f = &*decoded.as_ptr();
+        let (w, h) = (f.width.max(0) as usize, f.height.max(0) as usize);
+        // A negative stride is a picture stored bottom up; leave it to
+        // the CPU, which reads any layout.
+        if w == 0 || h == 0 || f.linesize[0] <= 0 || f.linesize[1] <= 0 || f.linesize[2] <= 0 {
+            return None;
+        }
+        // Chroma rounds up on an odd side, as the shaders read it.
+        let (cw, ch) = (w.div_ceil(2), h.div_ceil(2));
+        let (ys, us, vs) = (f.linesize[0] as usize, f.linesize[1] as usize, f.linesize[2] as usize);
+        let y_in = std::slice::from_raw_parts(f.data[0], ys * h);
+        let u_in = std::slice::from_raw_parts(f.data[1], us * ch);
+        let v_in = std::slice::from_raw_parts(f.data[2], vs * ch);
+        // Rows a multiple of four bytes: a buffer upload's size must be.
+        let sample = if ten_bit { 2 } else { 1 };
+        let uv_stride = (cw * 2 * sample).next_multiple_of(4);
+        let mut packed = std::mem::take(&mut self.packed);
+        packed.uv.resize(uv_stride * ch, 0);
+        if ten_bit {
+            // P010: each 10-bit sample in the top bits of its 16, as the
+            // shader shifts it back down.
+            let top = |b: &[u8], i: usize| (u16::from_le_bytes([b[2 * i], b[2 * i + 1]]) << 6).to_le_bytes();
+            packed.uv.par_chunks_exact_mut(uv_stride).enumerate().for_each(|(r, dst)| {
+                let (u, v) = (&u_in[r * us..], &v_in[r * vs..]);
+                for i in 0..cw {
+                    dst[4 * i..4 * i + 2].copy_from_slice(&top(u, i));
+                    dst[4 * i + 2..4 * i + 4].copy_from_slice(&top(v, i));
+                }
+            });
+            let y_stride = (w * 2).next_multiple_of(4);
+            packed.y.resize(y_stride * h, 0);
+            packed.y.par_chunks_exact_mut(y_stride).enumerate().for_each(|(r, dst)| {
+                let src = &y_in[r * ys..];
+                for i in 0..w {
+                    dst[2 * i..2 * i + 2].copy_from_slice(&top(src, i));
+                }
+            });
+        } else {
+            packed.uv.par_chunks_exact_mut(uv_stride).enumerate().for_each(|(r, dst)| {
+                let (u, v) = (&u_in[r * us..r * us + cw], &v_in[r * vs..r * vs + cw]);
+                for i in 0..cw {
+                    dst[2 * i] = u[i];
+                    dst[2 * i + 1] = v[i];
+                }
+            });
+        }
+        // Eight-bit luma is NV12's as it was decoded, stride and all.
+        let (y, y_stride) = if ten_bit { (&packed.y[..], (w * 2).next_multiple_of(4)) } else { (y_in, ys) };
+        let planes = Planes {
+            y,
+            uv: &packed.uv,
+            width: w as u32,
+            height: h as u32,
+            y_stride: y_stride as u32,
+            uv_stride: uv_stride as u32,
+            ten_bit,
+        };
+        let out = self.planes_on_gpu(decoded, &planes, gpu);
+        self.packed = packed;
+        out
+    }
+
+    /// NV12 or P010 planes converted to linear working-space f32 on the
+    /// GPU, resized and rotated to the frame asked for in the same pass.
+    /// `None` without the converter for their depth.
+    ///
+    /// At any size. A straight conversion and a 90/180/270 rotation are
+    /// permutations, exact one source pixel per output pixel; a downscale
+    /// averages each output pixel's footprint in linear light (#744), as
+    /// the viewer's decode now does too; an upscale is Lanczos-3 (#2557),
+    /// the kernel swscale used here, on the encoded values as it filtered
+    /// them, so a 4K export keeps its look. Each used to be refused, and
+    /// went down to the CPU through swscale and back up: a 1080p source in
+    /// a 4K export took 44 ms a frame there, against a millisecond on the
+    /// GPU.
+    fn planes_on_gpu(
+        &self,
+        decoded: &ffmpeg_next::util::frame::Video,
+        planes: &Planes,
+        gpu: &mut GpuConverters,
+    ) -> Option<DecodedPixels> {
         let ids = klipp_core::color_ids::ids(self.source_cs);
         let primaries = klipp_effects::color_wgsl::pack_primaries_matrix(
             klipp_color::camera_log::primaries_to_working_matrix(
@@ -682,18 +820,19 @@ impl RenderDecoder {
         // through the rotation itself, so this is the frame the renderer
         // asked for and no separate pass is needed.
         // Where the file's chroma sits (#3266), off the decoded frame:
-        // the download copies the pixels and not the tags.
+        // a download copies the pixels and not the tags.
         let offsets = klipp_media::yuv_samples::chroma_siting(decoded).shader_offsets();
-        let buf = if ten_bit {
+        let p = planes;
+        let buf = if p.ten_bit {
             let p010 = gpu.p010.as_mut()?;
             p010.set_chroma_offsets(offsets);
             p010.convert_p010_to_linear_on_gpu(
-                y,
-                uv,
-                src_w,
-                src_h,
-                y_stride,
-                uv_stride,
+                p.y,
+                p.uv,
+                p.width,
+                p.height,
+                p.y_stride,
+                p.uv_stride,
                 self.target_width,
                 self.target_height,
                 self.source_rotation as u32,
@@ -704,12 +843,12 @@ impl RenderDecoder {
             let nv12 = gpu.nv12.as_mut()?;
             nv12.set_chroma_offsets(offsets);
             nv12.convert_nv12_to_linear_on_gpu(
-                y,
-                uv,
-                src_w,
-                src_h,
-                y_stride,
-                uv_stride,
+                p.y,
+                p.uv,
+                p.width,
+                p.height,
+                p.y_stride,
+                p.uv_stride,
                 self.target_width,
                 self.target_height,
                 self.source_rotation as u32,
@@ -717,7 +856,6 @@ impl RenderDecoder {
                 primaries,
             )
         };
-        av_frame_free(&mut (sw_frame as *mut _));
         Some(DecodedPixels::GpuLinear(buf))
     }
 
@@ -860,6 +998,25 @@ fn hardware_decodes(codec: ffmpeg_next::ffi::AVCodecID, format: ffmpeg_next::ffi
         AV_CODEC_ID_HEVC => four_two_oh || deep_four_two_oh || matches!(format, AV_PIX_FMT_YUV444P),
         AV_CODEC_ID_VP9 | AV_CODEC_ID_AV1 => four_two_oh || deep_four_two_oh,
         _ => false,
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Tests: open decoders in software on a machine with a hardware
+    /// decoder, as one without has them.
+    static SOFTWARE_ONLY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Whether decoders this thread opens skip the hardware (tests only).
+fn software_only() -> bool {
+    #[cfg(test)]
+    {
+        SOFTWARE_ONLY.with(|s| s.get())
+    }
+    #[cfg(not(test))]
+    {
+        false
     }
 }
 
@@ -1664,7 +1821,7 @@ mod upscale_tests {
     }
 
     /// The working-space linear RGBA of a frame on the GPU, read back.
-    fn read_back(gpu: &GpuConverters, buf: &wgpu::Buffer, pixels: usize) -> Vec<f32> {
+    pub(super) fn read_back(gpu: &GpuConverters, buf: &wgpu::Buffer, pixels: usize) -> Vec<f32> {
         let conv = gpu.nv12.as_ref().expect("a converter");
         let (device, queue) = (conv.device(), conv.queue());
         let size = (pixels * 16) as u64;
@@ -1686,7 +1843,7 @@ mod upscale_tests {
     }
 
     /// Linear light to an 8-bit sRGB level, where the difference is read.
-    fn srgb8(v: f32) -> f32 {
+    pub(super) fn srgb8(v: f32) -> f32 {
         let v = v.clamp(0.0, 1.0);
         255.0 * if v <= 0.0031308 { v * 12.92 } else { 1.055 * v.powf(1.0 / 2.4) - 0.055 }
     }
@@ -1752,5 +1909,168 @@ mod upscale_tests {
         // Swscale's export, to a level, as at 1:1: a 4K export keeps its look.
         assert!(mean <= base_mean + 0.1, "the upscale adds {:.3} levels on average to what 1:1 differs by", mean - base_mean);
         assert!(max <= base_max + 1.0, "the upscale is {max:.1} levels off at worst, against {base_max:.1} at 1:1");
+    }
+}
+
+/// A software-decoded 4:2:0 frame converted on the GPU, as a hardware
+/// one is, in place of the CPU's 52 ms a 4K frame: the same picture the
+/// CPU route makes, at 1:1, smaller and larger, 8 and 10 bits, either
+/// chroma siting, an odd size and a coded 1088 cropped to 1080.
+#[cfg(test)]
+mod software_on_gpu_tests {
+    use super::upscale_tests::{read_back, srgb8};
+    use super::{DecodedPixels, GpuConverters, RenderDecoder, SOFTWARE_ONLY};
+
+    /// Decoders this thread opens decode in software while it lives.
+    struct SoftwareOnly;
+
+    impl SoftwareOnly {
+        fn on() -> Self {
+            SOFTWARE_ONLY.with(|s| s.set(true));
+            Self
+        }
+    }
+
+    impl Drop for SoftwareOnly {
+        fn drop(&mut self) {
+            SOFTWARE_ONLY.with(|s| s.set(false));
+        }
+    }
+
+    /// Two seconds of the colour test chart at `size`, by the ffmpeg CLI
+    /// with `args`; `None` where this ffmpeg cannot make it.
+    fn clip(name: &str, size: &str, args: &[&str]) -> Option<std::path::PathBuf> {
+        let path = std::env::temp_dir().join(format!("klipp-sw-gpu-{}-{name}", std::process::id()));
+        let made = std::process::Command::new("ffmpeg")
+            .args(["-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i", &format!("testsrc2=s={size}:r=25:d=2")])
+            .args(args)
+            .arg(&path)
+            .status()
+            .is_ok_and(|s| s.success());
+        made.then_some(path)
+    }
+
+    /// Both converters, or `None` (a failure under KLIPP_TEST_REQUIRE_GPU)
+    /// where there is no GPU to convert on.
+    fn converters() -> Option<GpuConverters> {
+        let gpu = GpuConverters::shared();
+        if gpu.nv12.is_none() || gpu.p010.is_none() {
+            assert!(std::env::var_os("KLIPP_TEST_REQUIRE_GPU").is_none(), "no GPU converter");
+            eprintln!("skipping: no GPU converter here");
+            return None;
+        }
+        Some(gpu)
+    }
+
+    /// One software-decoded frame of `path` at `w` x `h`.
+    fn frame(path: &std::path::Path, w: u32, h: u32, gpu: &mut GpuConverters) -> DecodedPixels {
+        let _software = SoftwareOnly::on();
+        let mut d = RenderDecoder::open(path, 1.0, f64::INFINITY, w, h, 25.0, 0).unwrap();
+        assert_eq!(d.hw_accel_name(), "Software", "{path:?}");
+        d.next_frame_with_pts(gpu).unwrap().expect("a frame").1
+    }
+
+    /// The same frame through the GPU route and the CPU route at `w` x
+    /// `h`, as the compositor gets each: the largest and the mean
+    /// difference, in 8-bit sRGB levels.
+    fn routes(path: &std::path::Path, w: u32, h: u32, gpu: &mut GpuConverters) -> (f32, f32) {
+        let DecodedPixels::GpuLinear(buf) = frame(path, w, h, gpu) else { panic!("{path:?} at {w}x{h} was converted on the CPU") };
+        let on_gpu = read_back(gpu, &buf, (w * h) as usize);
+        let DecodedPixels::Rgba64(rgba) = frame(path, w, h, &mut GpuConverters::default()) else { panic!("no CPU frame") };
+        let on_cpu = crate::frame_source::rgba64_to_linear(&rgba, None);
+        assert_eq!(on_gpu.len(), on_cpu.len(), "{path:?} at {w}x{h}");
+        let (mut worst, mut sum) = (0.0f32, 0.0f64);
+        for (i, (a, b)) in on_gpu.iter().zip(&on_cpu).enumerate() {
+            if i % 4 != 3 {
+                let d = (srgb8(*a) - srgb8(*b)).abs();
+                worst = worst.max(d);
+                sum += d as f64;
+            }
+        }
+        (worst, (sum / (w as f64 * h as f64 * 3.0)) as f32)
+    }
+
+    #[test]
+    fn a_software_decoded_frame_converts_on_the_gpu_as_on_the_cpu() {
+        let _watch = crate::test_watchdog::Watchdog::start();
+        let Some(mut gpu) = converters() else { return };
+        let h264 = |more: &[&'static str]| -> Vec<&'static str> { ["-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt"].iter().chain(more).copied().collect() };
+        let cases: [(&str, &str, Vec<&str>, &[(u32, u32)]); 6] = [
+            // A camera's 4K: into a 1080p export, and at its own size.
+            ("uhd.mp4", "3840x2160", h264(&["yuv420p"]), &[(1920, 1080), (3840, 2160)]),
+            // 1080p is coded 1088 high and cropped: at 1:1, smaller and larger.
+            ("hd.mp4", "1920x1080", h264(&["yuv420p"]), &[(1920, 1080), (1280, 720), (3840, 2160)]),
+            // Chroma sited top-left rather than left.
+            ("topleft.mp4", "1920x1080", h264(&["yuv420p", "-chroma_sample_location", "topleft"]), &[(1920, 1080), (960, 540)]),
+            // Full range.
+            ("full.mp4", "1920x1080", h264(&["yuvj420p"]), &[(1920, 1080)]),
+            // Ten bits, as P010.
+            ("ten.mp4", "1920x1080", h264(&["yuv420p10le"]), &[(1920, 1080), (960, 540), (3840, 2160)]),
+            // Odd on both sides: chroma rounds up. (testsrc2 makes its
+            // size even, so it is scaled to the odd one.)
+            ("odd.mkv", "1280x722", vec!["-vf", "scale=1279:721", "-c:v", "ffv1", "-pix_fmt", "yuv420p"], &[(1279, 721), (640, 360)]),
+        ];
+        let mut failed = Vec::new();
+        for (name, size, args, outs) in cases {
+            let Some(path) = clip(name, size, &args) else {
+                eprintln!("skipped {name}: this ffmpeg cannot make it");
+                continue;
+            };
+            for &(w, h) in outs {
+                let (max, mean) = routes(&path, w, h, &mut gpu);
+                eprintln!("{name} {size} into {w}x{h}: GPU against CPU max {max:.2}, mean {mean:.4} levels");
+                // Measured: 0.02 at most, 0.0003 on average.
+                if max > 0.5 || mean > 0.01 {
+                    failed.push(format!("{name} into {w}x{h}: max {max:.2}, mean {mean:.4}"));
+                }
+            }
+            let _ = std::fs::remove_file(&path);
+        }
+        assert!(failed.is_empty(), "the GPU route differs from the CPU's: {failed:?}");
+    }
+
+    /// What is not 4:2:0 at 8 or 10 bits stays on the CPU, which reads it.
+    #[test]
+    fn other_layouts_stay_on_the_cpu() {
+        let _watch = crate::test_watchdog::Watchdog::start();
+        let Some(mut gpu) = converters() else { return };
+        for (name, args) in [("422.mp4", ["-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv422p"]), ("444.mp4", ["-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv444p"])] {
+            let Some(path) = clip(name, "640x360", &args) else { continue };
+            assert!(matches!(frame(&path, 640, 360, &mut gpu), DecodedPixels::Rgba64(_)), "{name} went to the GPU");
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+
+    /// What the route saves: a software-decoded 4K frame into a 1080p
+    /// export, through each route, in milliseconds a frame.
+    #[test]
+    #[ignore = "perf probe"]
+    fn a_software_4k_frame_into_1080p_costs() {
+        let _watch = crate::test_watchdog::Watchdog::start();
+        let Some(mut gpu) = converters() else { return };
+        let Some(path) = clip("probe.mp4", "3840x2160", &["-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p"]) else { return };
+        let _software = SoftwareOnly::on();
+        let timed = |gpu: &mut GpuConverters| {
+            let mut d = RenderDecoder::open(&path, 0.0, f64::INFINITY, 1920, 1080, 25.0, 0).unwrap();
+            let _ = d.next_frame_with_pts(gpu).unwrap();
+            let t = std::time::Instant::now();
+            let mut on_gpu = true;
+            for _ in 0..40 {
+                let (_, px) = d.next_frame_with_pts(gpu).unwrap().expect("a frame");
+                if let DecodedPixels::GpuLinear(buf) = &px {
+                    // Waited for, so the GPU's share is counted.
+                    let _ = read_back(gpu, buf, 4);
+                } else {
+                    on_gpu = false;
+                }
+            }
+            (t.elapsed().as_secs_f64() * 1000.0 / 40.0, on_gpu)
+        };
+        let (gpu_ms, on_gpu) = timed(&mut gpu);
+        let (cpu_ms, _) = timed(&mut GpuConverters::default());
+        eprintln!("software 4K into 1080p: {gpu_ms:.1} ms a frame on the GPU route, {cpu_ms:.1} on the CPU's");
+        let _ = std::fs::remove_file(&path);
+        assert!(on_gpu, "a frame went to the CPU");
+        assert!(gpu_ms < cpu_ms, "the GPU route is not quicker");
     }
 }

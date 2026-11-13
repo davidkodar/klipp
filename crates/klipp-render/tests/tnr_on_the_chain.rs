@@ -1,9 +1,10 @@
 //! An export's temporal noise reduction draws on the GPU chain (#1988),
-//! within a level of the CPU route's frames, from a software-decoded
-//! source (FFV1: its neighbours uploaded) and a hardware-decoded one
-//! (H.264: its neighbours the decoder's own GPU frames, bound as they
-//! are, nothing uploaded). Needs the ffmpeg CLI and a GPU; without the
-//! hardware decoder the H.264 half says it is unverified.
+//! within a level of the CPU route's frames, from a source converted on
+//! the CPU (FFV1 4:2:2: its neighbours uploaded) and ones converted on
+//! the GPU (H.264, hardware- or software-decoded, and FFV1 4:2:0: their
+//! neighbours GPU frames, bound as they are, nothing uploaded). Needs the
+//! ffmpeg CLI and a GPU; without the hardware decoder the H.264 case says
+//! it was decoded in software.
 
 use klipp_core::*;
 use klipp_render::*;
@@ -78,28 +79,37 @@ fn an_exports_temporal_denoise_draws_on_the_chain_as_the_cpu_draws_it() {
         eprintln!("UNVERIFIED: no GPU");
         return;
     }
-    for (name, codec, hardware) in [("ffv1.mkv", &["-c:v", "ffv1"][..], false), ("h264.mp4", &["-c:v", "libx264", "-crf", "16", "-g", "5"][..], true)] {
+    // Whether software-decoded 4:2:0 frames go to the GPU, as they do
+    // unless turned off to compare.
+    let software_on_gpu = std::env::var("KLIPP_SW_FRAMES_ON_GPU").as_deref() != Ok("0");
+    for (name, codec, four_two_oh) in [
+        ("ffv1.mkv", &["-c:v", "ffv1", "-pix_fmt", "yuv422p"][..], false),
+        ("ffv1-420.mkv", &["-c:v", "ffv1"][..], true),
+        ("h264.mp4", &["-c:v", "libx264", "-crf", "16", "-g", "5"][..], true),
+    ] {
         let Some(src) = source(name, codec) else {
             eprintln!("skipping {name}: ffmpeg could not write it");
             continue;
         };
         let snap = snapshot(&src);
         let (cpu, gpu) = (frames(&snap, false), frames(&snap, true));
-        // The hardware decoder's frames are on the GPU: none of them is
-        // uploaded. Without it every neighbour is.
+        // A 4:2:0 frame is on the GPU, the hardware decoder's or a
+        // software one's converted there: none of them is uploaded. A
+        // frame converted on the CPU has every neighbour uploaded.
         let decoded_on_gpu = RenderDecoder::open(&src, 0.0, 1.0, W, H, 25.0, 0).is_ok_and(|d| d.hw_accel_name() != "Software");
-        if hardware && !decoded_on_gpu {
-            eprintln!("UNVERIFIED {name}: not hardware-decoded here");
+        let resident = four_two_oh && (decoded_on_gpu || software_on_gpu);
+        if name == "h264.mp4" && !decoded_on_gpu {
+            eprintln!("{name}: decoded in software here, not by the hardware");
         }
         let mut worst = 0;
         for (f, ((a, ..), (b, on_chain, uploads))) in cpu.iter().zip(&gpu).enumerate() {
             assert_eq!(*on_chain, 1, "{name} frame {f}: the denoise drew on the chain");
-            match (hardware && decoded_on_gpu, f) {
+            match (resident, f) {
                 // The first frame's neighbour before was read before the
                 // stream kept the frame before it shows (#1988 phase 1).
                 (true, 0) => assert!(*uploads <= 1, "{name} frame 0: {uploads} uploaded"),
-                (true, _) => assert_eq!(*uploads, 0, "{name} frame {f}: the decoder's GPU frames bound as they are"),
-                (false, _) => assert_eq!(*uploads, 2, "{name} frame {f}: a software frame's neighbours uploaded"),
+                (true, _) => assert_eq!(*uploads, 0, "{name} frame {f}: the GPU frames bound as they are"),
+                (false, _) => assert_eq!(*uploads, 2, "{name} frame {f}: a CPU frame's neighbours uploaded"),
             }
             assert_eq!(a.len(), b.len());
             let off = a.chunks_exact(4).zip(b.chunks_exact(4)).map(|(p, q)| (0..3).map(|c| (srgb8(p[c]) - srgb8(q[c])).abs()).max().unwrap()).max().unwrap();
