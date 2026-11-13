@@ -191,12 +191,36 @@ impl ThemeRegistry {
         self.omarchy_name.is_some() || self.portal_theme().is_some()
     }
 
-    /// What following the system theme follows, in a sentence for the
-    /// setting's subtitle.
-    pub fn system_theme_summary(&self) -> String {
+    /// The theme following the system gives, by name: Omarchy's, or the
+    /// built-in Dark or Light the desktop's preference picks. `None` when
+    /// there is nothing to follow.
+    pub fn followed_theme_name(&self) -> Option<String> {
         use super::portal::{ColorScheme, PortalStatus};
         if let Some(name) = &self.omarchy_name {
-            return format!("Omarchy: {name}. Switching the theme in Omarchy changes Klipp live.");
+            return Some(name.clone());
+        }
+        match self.portal {
+            PortalStatus::Found(a) => match a.scheme {
+                ColorScheme::Dark => Some("Dark".into()),
+                ColorScheme::Light => Some("Light".into()),
+                ColorScheme::NoPreference => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// What following the system theme follows, in a sentence for the
+    /// setting's subtitle; `following`, whether the setting is on. Off,
+    /// it says what the desktop is set to and that the theme below is
+    /// used: it said "Following your desktop" while it wasn't.
+    pub fn system_theme_summary(&self, following: bool) -> String {
+        use super::portal::{ColorScheme, PortalStatus};
+        if let Some(name) = &self.omarchy_name {
+            return if following {
+                format!("Omarchy: {name}. Switching the theme in Omarchy changes Klipp live.")
+            } else {
+                format!("Omarchy: {name}. Off, so the theme below is used.")
+            };
         }
         match self.portal {
             PortalStatus::Looking => "Looking for your desktop\u{2019}s appearance settings\u{2026}".to_string(),
@@ -208,7 +232,11 @@ impl ThemeRegistry {
                     ColorScheme::NoPreference => return "Your desktop sets no dark or light preference, so the theme below is used.".to_string(),
                 };
                 let accent = a.accent.map(|c| format!(", {} accent", super::portal::colour_name(c))).unwrap_or_default();
-                format!("Following your desktop: {mode}{accent}. Changes there apply here live.")
+                if following {
+                    format!("Following your desktop: {mode}{accent}. Changes there apply here live.")
+                } else {
+                    format!("Your desktop is set to {mode}{accent}. Off, so the theme below is used.")
+                }
             }
         }
     }
@@ -481,17 +509,26 @@ mod portal_tests {
         assert_eq!(KlippTheme::from_prefs(&following("Dark"), &reg).bg_panel, light);
     }
 
-    /// The setting's subtitle says what is followed, or that nothing is.
+    /// The setting's subtitle says what is followed, or that nothing is;
+    /// switched off, that it is not followed.
     #[test]
     fn the_subtitle_says_what_is_followed() {
         let mut reg = ThemeRegistry::builtins_only();
         reg.set_portal(found(ColorScheme::Dark, Some(BLUE)));
-        assert_eq!(reg.system_theme_summary(), "Following your desktop: dark, blue accent. Changes there apply here live.");
+        assert_eq!(reg.system_theme_summary(true), "Following your desktop: dark, blue accent. Changes there apply here live.");
+        assert_eq!(reg.system_theme_summary(false), "Your desktop is set to dark, blue accent. Off, so the theme below is used.");
+        assert_eq!(reg.followed_theme_name().as_deref(), Some("Dark"));
         reg.set_portal(found(ColorScheme::Light, None));
-        assert_eq!(reg.system_theme_summary(), "Following your desktop: light. Changes there apply here live.");
+        assert_eq!(reg.system_theme_summary(true), "Following your desktop: light. Changes there apply here live.");
+        assert!(!reg.system_theme_summary(false).contains("Following"), "off, it does not say it follows");
+        assert_eq!(reg.followed_theme_name().as_deref(), Some("Light"));
         reg.set_portal(found(ColorScheme::NoPreference, None));
-        assert!(reg.system_theme_summary().starts_with("Your desktop sets no dark or light preference"));
+        for on in [false, true] {
+            assert!(reg.system_theme_summary(on).starts_with("Your desktop sets no dark or light preference"));
+        }
+        assert_eq!(reg.followed_theme_name(), None);
         reg.set_portal(PortalStatus::Absent);
-        assert!(reg.system_theme_summary().starts_with("No desktop appearance settings found"));
+        assert!(reg.system_theme_summary(true).starts_with("No desktop appearance settings found"));
+        assert_eq!(reg.followed_theme_name(), None);
     }
 }

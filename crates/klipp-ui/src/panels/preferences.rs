@@ -2777,7 +2777,7 @@ impl PreferencesPanel {
                 });
         });
 
-        Self::setting_row_with_subtitle(ui, "Hardware video decode", "NVDEC / VAAPI", theme, |ui| {
+        Self::setting_row_with_subtitle(ui, "Hardware video decode", HARDWARE_DECODE_SUBTITLE, theme, |ui| {
             let mut val = prefs.system.hardware_decode;
             if ui.add(Switch::new(&mut val, theme)).changed() {
                 prefs.system.hardware_decode = val;
@@ -2876,7 +2876,7 @@ impl PreferencesPanel {
         // was found. While it is on and something is followed, the
         // picker below stays visible but inactive so the user sees
         // what they get back.
-        let subtitle = theme_registry.system_theme_summary();
+        let subtitle = theme_registry.system_theme_summary(prefs.appearance.follow_system_theme);
         Self::setting_row_with_subtitle(ui, "Follow desktop dark or light", &subtitle, theme, |ui| {
             let mut val = prefs.appearance.follow_system_theme;
             if ui.add(Switch::new(&mut val, theme)).changed() {
@@ -2919,9 +2919,13 @@ impl PreferencesPanel {
                     .filter(|(_, s)| *s != crate::theme::ThemeSource::Omarchy)
                     .map(|(n, s)| (n.to_string(), s))
                     .collect();
+                // Greyed while followed, it shows the theme in effect, not
+                // the one kept for when following is off: it showed "Dark"
+                // over a Light interface.
+                let shown = theme_picker_text(&current, theme_registry.followed_theme_name().filter(|_| following).as_deref());
                 ui.add_enabled_ui(!following, |ui| {
                     egui::ComboBox::from_id_salt("theme_picker")
-                        .selected_text(&current)
+                        .selected_text(shown)
                         .width(180.0)
                         .show_ui(ui, |ui| {
                             for (name, source) in names {
@@ -5540,5 +5544,39 @@ mod keyboard_section_tests {
         }).collect();
         assert_eq!(texts.iter().filter(|t| *t == NO_KEY).count(), unbound, "every unbound row says so");
         assert!(!texts.iter().any(|t| t == "\u{2014}"), "no bare dash");
+    }
+}
+
+/// The hardware decode row's subtitle: NVDEC is what it turns on and off
+/// by itself; VA-API (AMD, Intel) is a row of its own since #4004.
+const HARDWARE_DECODE_SUBTITLE: &str = "NVDEC on NVIDIA; AMD and Intel use the VA-API row below";
+
+/// What the Theme picker shows: the theme in effect while the desktop's
+/// is `followed`, said to be the desktop's; else the one chosen.
+fn theme_picker_text(chosen: &str, followed: Option<&str>) -> String {
+    match followed {
+        Some(name) => format!("{name} (from your desktop)"),
+        None => chosen.to_owned(),
+    }
+}
+
+#[cfg(test)]
+mod theme_wording_tests {
+    use super::*;
+
+    /// Following the desktop, the picker shows the theme in effect; not
+    /// following, the one chosen.
+    #[test]
+    fn the_theme_picker_shows_the_theme_in_effect() {
+        assert_eq!(theme_picker_text("Dark", Some("Light")), "Light (from your desktop)");
+        assert_eq!(theme_picker_text("Dark", None), "Dark");
+    }
+
+    /// Hardware decode is NVDEC; VA-API is its own row (#4004).
+    #[test]
+    fn hardware_decode_names_nvdec_and_points_to_va_api() {
+        assert!(HARDWARE_DECODE_SUBTITLE.starts_with("NVDEC on NVIDIA"));
+        assert!(!HARDWARE_DECODE_SUBTITLE.contains("VAAPI"), "VA-API is the row below, not this one");
+        assert!(HARDWARE_DECODE_SUBTITLE.contains("VA-API row"));
     }
 }
