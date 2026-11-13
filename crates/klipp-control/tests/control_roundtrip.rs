@@ -1789,9 +1789,18 @@ fn export_takes_a_preset_a_codec_and_a_bitrate() {
     let (r, s) = sent(&mut h, json!({ "method": "export", "path": "/tmp/klipp-codec-master.mov", "preset": "prores 422" }));
     assert_eq!((s.video_codec, s.audio_codec), (V::ProRes422, A::Pcm24));
     assert_eq!(r["export"]["preset"], "ProRes 422", "{r}");
+    assert!(r["export"]["encoder_note"].is_null(), "{r}");
+    // The GPU preset says it runs on the CPU where no hardware H.265
+    // encoder is in reach, and nothing where one is.
+    let (r, s) = sent(&mut h, json!({ "method": "export", "path": "/tmp/klipp-codec-gpu.mp4", "preset": "H.265 HQ (GPU)" }));
+    assert_eq!((s.video_codec, r["export"]["preset"].as_str()), (V::H265, Some("H.265 HQ (GPU)")), "{r}");
+    let gpu_here = klipp_render::encoder::gpu_encoder_in_reach(&V::H265, s.bit_depth, 1920, 1080);
+    let note = (!gpu_here).then_some(klipp_core::export_preset::ON_THE_CPU_HERE);
+    assert_eq!(r["export"]["encoder_note"].as_str(), note, "{r}");
     // A field beside a preset wins.
-    let (_, s) = sent(&mut h, json!({ "method": "export", "path": "/tmp/klipp-codec-web.mp4", "preset": "YouTube 1080p", "crf": 22 }));
+    let (r, s) = sent(&mut h, json!({ "method": "export", "path": "/tmp/klipp-codec-web.mp4", "preset": "YouTube 1080p", "crf": 22 }));
     assert_eq!((s.video_codec, s.crf, s.target_lufs), (V::H264, 22, Some(-14.0)));
+    assert!(r["export"]["encoder_note"].is_null(), "{r}");
     // A codec, ten bits and a bitrate.
     let (r, s) = sent(&mut h, json!({ "method": "export", "path": "/tmp/klipp-codec-hevc.mp4", "codec": "hevc", "bit_depth": 10, "bitrate_kbps": 20000 }));
     assert_eq!((s.video_codec, s.bit_depth, s.rate_control, s.video_bitrate_kbps), (V::H265, 10, klipp_core::RateControl::Vbr, Some(20000)));

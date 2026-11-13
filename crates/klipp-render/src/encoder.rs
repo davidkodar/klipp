@@ -231,6 +231,35 @@ pub fn why_not_encodable_here(codec: &ExportVideoCodec, bit_depth: u8, width: u3
     why
 }
 
+/// Whether an export of `codec` here can encode on the GPU: a hardware
+/// encoder this machine can open is among those a render tries. Without
+/// one it encodes on the CPU, which a preset named for the GPU has to say
+/// ([`klipp_core::export_preset::ON_THE_CPU_HERE`]). Remembered for the
+/// process, as [`why_not_encodable_here`] is, for a list drawn every frame.
+pub fn gpu_encoder_in_reach(codec: &ExportVideoCodec, bit_depth: u8, width: u32, height: u32) -> bool {
+    type Key = (ExportVideoCodec, bool, bool);
+    static KNOWN: std::sync::Mutex<Vec<(Key, bool)>> = std::sync::Mutex::new(Vec::new());
+    let key = (*codec, bit_depth == 10, width >= 128 && height >= 128);
+    if let Some((_, gpu)) = KNOWN.lock().unwrap_or_else(|e| e.into_inner()).iter().find(|(k, _)| *k == key) {
+        return *gpu;
+    }
+    let gpu = video_encoder_attempts(codec, width, height, bit_depth == 10, &crate::vaapi::encode_nodes()).iter().any(|a| a.hardware);
+    KNOWN.lock().unwrap_or_else(|e| e.into_inner()).push((key, gpu));
+    gpu
+}
+
+/// What an export of `preset_id` says about where it encodes: the GPU
+/// preset, with no hardware encoder for `codec` here, that it runs on the
+/// CPU. `None` for any other preset, or where the GPU is in reach.
+pub fn preset_encoder_note(preset_id: &str, codec: &ExportVideoCodec, bit_depth: u8, width: u32, height: u32) -> Option<&'static str> {
+    preset_encoder_note_with(preset_id, gpu_encoder_in_reach(codec, bit_depth, width, height))
+}
+
+/// [`preset_encoder_note`] with the machine's answer given.
+pub fn preset_encoder_note_with(preset_id: &str, gpu_in_reach: bool) -> Option<&'static str> {
+    (preset_id == klipp_core::export_preset::GPU_PRESET_ID && !gpu_in_reach).then_some(klipp_core::export_preset::ON_THE_CPU_HERE)
+}
+
 /// [`why_not_encodable`]'s answer from what it found: whether a hardware
 /// encoder is in reach, and the software encoder `name` if this FFmpeg
 /// has it.

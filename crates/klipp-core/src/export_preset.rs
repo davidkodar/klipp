@@ -182,6 +182,15 @@ impl ProxyResolution {
 /// quieter ones quiet, so a web delivery is normalised there by default.
 pub const WEB_LOUDNESS_LUFS: f32 = -14.0;
 
+/// The built-in preset named for the GPU's encoder, "H.265 HQ (GPU)": on
+/// a machine with no hardware H.265 encoder it encodes on the CPU, and
+/// says so where it is offered and in an export's reply. Its name stays,
+/// as saved presets and projects name it.
+pub const GPU_PRESET_ID: &str = "00000000-0000-4000-a000-00000000000b";
+
+/// What the GPU preset says where no hardware encoder is in reach.
+pub const ON_THE_CPU_HERE: &str = "on the CPU here: no GPU encoder";
+
 /// The built-in presets, with deterministic UUIDs so a project that
 /// names one keeps it across versions.
 pub fn builtin_presets() -> Vec<ExportPreset> {
@@ -418,7 +427,7 @@ pub fn builtin_presets() -> Vec<ExportPreset> {
             },
         },
         ExportPreset {
-            id: "00000000-0000-4000-a000-00000000000b".into(),
+            id: GPU_PRESET_ID.into(),
             name: "H.265 HQ (GPU)".into(),
             built_in: true,
             settings: ExportPresetSettings {
