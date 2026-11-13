@@ -1978,6 +1978,13 @@ impl GraphExecutor {
         self.gpu.is_some()
     }
 
+    /// Whether the pipeline is still being built ahead
+    /// ([`Self::prewarm_gpu`]): a frame that needs it now would wait for
+    /// the whole compile, which a cold shader cache makes seconds.
+    pub fn gpu_build_pending(&self) -> bool {
+        self.gpu_prewarm.as_ref().is_some_and(|(_, handle)| !handle.is_finished())
+    }
+
     /// Mutable accessor to the underlying GPU pipeline (if any).
     /// Used by the engine's post_process to encode the final graded
     /// frame into a viewer-bindable texture on the same device.
