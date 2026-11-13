@@ -305,6 +305,11 @@ impl GlyphPose {
 pub struct RestingRender {
     pub pixels: BoxRaster,
     pub units: Option<std::sync::Arc<UnitMap>>,
+    /// The catalogue fetches and the title's image files as they stood
+    /// when the render was begun: a face that arrived or an image that
+    /// changed since makes it another picture than the title's now.
+    fonts: u64,
+    images: Vec<Option<FileStamp>>,
 }
 
 /// A colour glyph of a [`TitleLayout`] (#1503): its box's top-left in
@@ -4249,8 +4254,14 @@ impl TitleRenderer {
     /// `width`×`height`, made here on the CPU: for a warm-up on another
     /// thread, handed to the renderer that will place it by `adopt`.
     pub fn render_resting(&mut self, title: &TitleData, width: u32, height: u32) -> RestingRender {
-        let pixels = self.make_resting(&resting_title(title), width, height, None);
-        RestingRender { pixels, units: self.last_units.take() }
+        let key = resting_title(title);
+        // Read before the raster: what changes during it makes the
+        // render stale, never the other way round.
+        self.fonts_current();
+        let fonts = self.fonts_seen;
+        let images = self.image_stamps(&key);
+        let pixels = self.make_resting(&key, width, height, None);
+        RestingRender { pixels, units: self.last_units.take(), fonts, images }
     }
 
     /// The titles whose resting renders the frame of `title` at
@@ -4276,16 +4287,20 @@ impl TitleRenderer {
 
     /// Keep a resting render of `title` made by `render_resting`
     /// elsewhere, so the first frame of the title costs this thread
-    /// nothing. Ignored when one is cached already or the bytes are not
-    /// a frame.
-    pub fn adopt(&mut self, title: &TitleData, width: u32, height: u32, render: RestingRender) {
+    /// nothing; whether it was kept. Ignored when one is cached already,
+    /// the bytes are not a frame, or a catalogue face arrived or one of
+    /// the title's images changed after the render was begun: kept, it
+    /// would be the old picture under the name of the new.
+    pub fn adopt(&mut self, title: &TitleData, width: u32, height: u32, render: RestingRender) -> bool {
         let key = resting_title(title);
-        let RestingRender { pixels, units } = render;
-        if pixels.frame != (width, height) || self.cache_lookup(&key, width, height).is_some() {
-            return;
+        let RestingRender { pixels, units, fonts, images } = render;
+        self.fonts_current();
+        if pixels.frame != (width, height) || fonts != self.fonts_seen || images != self.image_stamps(&key) || self.cache_lookup(&key, width, height).is_some() {
+            return false;
         }
         self.last_units = units;
         self.cache_store(key.into_owned(), width, height, pixels);
+        true
     }
 
     /// What blurs a posed layer of several by its blur entrance (#2370),

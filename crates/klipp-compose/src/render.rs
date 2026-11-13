@@ -1385,13 +1385,15 @@ impl Renderer {
         }
     }
 
-    /// Take in the resting renders the warm-up thread has finished.
+    /// Take in the resting renders the warm-up thread has finished; how
+    /// many were kept.
     pub fn adopt_warm_titles(&mut self) -> usize {
         let mut n = 0;
         if let Some(rx) = &self.warm_rx {
             while let Ok((td, w, h, render)) = rx.try_recv() {
-                self.titles.adopt(&td, w, h, render);
-                n += 1;
+                if self.titles.adopt(&td, w, h, render) {
+                    n += 1;
+                }
             }
         }
         n
