@@ -324,25 +324,9 @@ impl KlippApp {
         *self.state.control_shared.import_outcome.lock().unwrap_or_else(|e| e.into_inner()) = None;
         self.mark_saved();
 
-        // 3. Clear undo/redo history — entries reference clip IDs that no
-        //    longer exist in the new project.
-        self.state.command_histories.clear();
-        self.state.project_history = crate::history::CommandHistory::new();
-        self.state.history_ops_since_save = 0;
-
-        // 4. Clear selection / hover / drag state
-        self.state.selected_clip = None;
-        self.state.selected_clips.clear();
-        self.state.hovered_clip = None;
-        self.state.dragging_media = None;
-        self.state.dragging_media_group.clear();
-        self.state.dragging_audio_keyframe = None;
-        self.state.dragging_video_keyframe = None;
-        self.state.dragging_rubber_band = None;
-        self.state.dragging_bezier_handle = None;
-        self.state.dragging_video_bezier_handle = None;
-        self.state.dragging_fade_handle = None;
-        self.state.forget_old_project_views();
+        // 3–4. Its undo history, selection, hover, drags and views
+        //      (`AppState::forget_project`).
+        self.state.forget_project();
 
         // 5. Reset playback / playhead
         self.drop_automation_pass();
@@ -378,14 +362,6 @@ impl KlippApp {
         if let Some(old) = self.viewer.title_overlay_texture.take() {
             self.defer_drop_texture(old);
         }
-
-        // 7. Invalidate media usage cache (clip-counts per media item)
-        self.state.media_usage_cache.clear();
-        self.state.media_usage_cache_dirty = true;
-
-        // 8. Clear render-cache range markers (no clips → no ranges)
-        self.state.render_cache_ranges.clear();
-        self.state.render_status.clear();
     }
 
     /// Mark every item of the open project, and every import still
@@ -930,6 +906,13 @@ impl KlippApp {
                 for note in &mended {
                     tracing::warn!("{}: {note}", path.display());
                 }
+                // The project open now goes first, as a new or closed one
+                // does: its engine state, undo history, selection and
+                // views. Only once the file has loaded, so an open that
+                // fails leaves it as it was. Without this the history,
+                // kept by sequence id, came back when a project was opened
+                // again, unsaved steps included.
+                self.reset_project_state();
                 self.state.fps = sequences.first().map(|s| s.fps).unwrap_or(klipp_core::Fps { num: 24, den: 1 });
                 let active_idx = active_id.as_deref()
                     .and_then(|id| sequences.iter().position(|s| s.id.to_string() == id))
@@ -1845,5 +1828,49 @@ mod files_read_on_open_tests {
         assert_eq!(listed.len(), 2, "the online files, each once: {listed:?}");
         assert!(listed.contains(&ids[0]) && listed.contains(&ids[1]), "the unread and the read file: {listed:?}");
         assert!(!listed.contains(&ids[2]), "not the offline one");
+    }
+}
+
+#[cfg(test)]
+mod project_replace_tests {
+    /// The body of `fn name` in `src`: from its signature to the next
+    /// function at the same indent.
+    fn body<'a>(src: &'a str, name: &str) -> &'a str {
+        let start = src.find(&format!("fn {name}(")).unwrap_or_else(|| panic!("fn {name} is in the file"));
+        let rest = &src[start..];
+        let end = rest[1..].find("\n    pub(super) fn ").or_else(|| rest[1..].find("\n    fn ")).map_or(rest.len(), |e| e + 1);
+        &rest[..end]
+    }
+
+    /// Where `needle` first is in `text`, said when it isn't.
+    fn at(text: &str, needle: &str, what: &str) -> usize {
+        text.find(needle).unwrap_or_else(|| panic!("{what}: {needle:?} not found"))
+    }
+
+    /// Every way a project is replaced, opened, made new or closed, goes
+    /// through `reset_project_state` before the next project is put in
+    /// place: the engine reset, the undo history, selection and views.
+    /// An open went past it: the history, kept by sequence id, came back
+    /// when a project was opened again, unsaved steps included, and an
+    /// undo there emptied its media pool. An open resets only once the
+    /// file has loaded, so one that fails leaves the project as it was.
+    #[test]
+    fn every_project_replace_resets_before_the_next_project_goes_in() {
+        let io = include_str!("project_io.rs");
+        let commands = include_str!("project_commands.rs");
+        let reset = "self.reset_project_state();";
+
+        let open = body(io, "do_open_project_inner");
+        let loaded = at(open, "Ok((", "the open's loaded arm");
+        let failed = at(open, "Err(e) =>", "the open's failure arm");
+        let reset_at = at(open, reset, "do_open_project_inner");
+        let installed = at(open, "self.state.sequences = sequences;", "the open installing the project");
+        assert!(loaded < reset_at && reset_at < installed, "an open resets in its loaded arm, before the project goes in");
+        assert!(reset_at < failed, "a failed open does not reset");
+
+        let new = body(commands, "start_new_project");
+        assert!(at(new, reset, "start_new_project") < at(new, "self.state.sequences = vec![seq];", "the new project going in"));
+        at(body(io, "do_new_project"), reset, "do_new_project");
+        at(body(io, "do_close_project"), reset, "do_close_project");
     }
 }
