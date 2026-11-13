@@ -32,8 +32,10 @@ resizer_idle  = "#b0b0b8"
 # ── Accent (warm amber, same family) ──
 # Slightly darker than Dark's accent so it carries enough weight against
 # white surfaces.
-accent        = "#2a62b8"
-accent_dim    = "#245399"
+# Dark enough to read on its own tint (accent_subtle) over every panel:
+# a selected page tab, a lit INS, at least 4.5:1.
+accent        = "#24539c"
+accent_dim    = "#1b3e75"
 # Glow alphas re-tuned for white background: higher opacity so the hint
 # of accent reads, lower RGB so we don't tint to a muddy yellow.
 accent_glow   = "#0b1a303c"

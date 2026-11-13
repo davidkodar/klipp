@@ -76,6 +76,10 @@ pub struct KlippTheme {
     /// Dark text for use ON accent-colored backgrounds (amber buttons, badges).
     /// RULE: Any amber/gold background MUST use this color for text, never light text.
     pub text_on_accent: Color32,
+    /// A light theme's selection fill when a desktop's accent colours it
+    /// ([`Self::set_accent`]): a pale tint of that accent. `None`, the
+    /// theme's own ([`LIGHT_SELECTION`]).
+    pub light_selection: Option<Color32>,
 
     // Functional marker / status colours.
     //
@@ -201,6 +205,7 @@ impl From<ThemeColors> for KlippTheme {
             text_dim: c.text_dim.0,
             text_accent: c.text_accent.0,
             text_on_accent: c.text_on_accent.0,
+            light_selection: None,
             marker_error: c.marker_error.0,
             marker_success: c.marker_success.0,
             marker_info: c.marker_info.0,
@@ -234,12 +239,23 @@ impl Default for KlippTheme {
     }
 }
 
+/// A light theme's selection fill in its own accent: a pale blue.
+pub const LIGHT_SELECTION: Color32 = Color32::from_rgb(0xd6, 0xe4, 0xf8);
+
 /// A dark theme's selection fill: the amber selected buttons have.
 pub const DARK_SELECTION: Color32 = Color32::from_rgb(0x38, 0x2c, 0x14);
 
 /// WCAG's least contrast for text, and for a control's edge or state.
 pub const TEXT_CONTRAST: f32 = 4.5;
 pub const UI_CONTRAST: f32 = 3.0;
+
+/// `top`, a premultiplied translucent token such as `accent_subtle`, as
+/// drawn over the opaque `bg`.
+pub(crate) fn over(top: Color32, bg: Color32) -> Color32 {
+    let keep = 1.0 - top.a() as f32 / 255.0;
+    let ch = |t: u8, b: u8| (t as f32 + b as f32 * keep).round().min(255.0) as u8;
+    Color32::from_rgb(ch(top.r(), bg.r()), ch(top.g(), bg.g()), ch(top.b(), bg.b()))
+}
 
 /// The WCAG contrast ratio of two opaque colours, 1 to 21.
 pub fn contrast(a: Color32, b: Color32) -> f32 {
@@ -258,7 +274,16 @@ impl KlippTheme {
         // selection: a light desktop accent (Breeze's #3daee9 is 2.3:1 on
         // white) is darkened in its own hue until it reads there, and its
         // dim form is darker still, as the built-in Light's is.
-        let accent = if light { self.readable(accent, &[self.bg_hover, self.selection_fill()], TEXT_CONTRAST) } else { accent };
+        // A light selection (a lit RIPPLE or LINKED, a selected row) is a
+        // pale tint of the accent, not a fixed blue: a yellow accent drew
+        // olive text on blue.
+        if light {
+            self.light_selection = Some(self.selection_tint(accent));
+        }
+        // A selected chip (a page tab, a lit INS) draws it on its own
+        // tint over a surface, too: the tint is the accent's, so it is
+        // made again from each darker accent tried.
+        let accent = if light { self.readable_with_tint(accent, subtle) } else { accent };
         self.accent = accent;
         self.accent_dim = if light { mix(accent, Color32::BLACK, 0.25) } else { mix(accent, self.bg_panel, 0.4) };
         self.accent_glow = veil(accent, glow);
@@ -395,7 +420,7 @@ impl KlippTheme {
     /// every theme; Dark keeps its look).
     pub fn selection_fill(&self) -> Color32 {
         if self.is_light() {
-            Color32::from_rgb(0xd6, 0xe4, 0xf8)
+            self.light_selection.unwrap_or(LIGHT_SELECTION)
         } else {
             DARK_SELECTION
         }
@@ -415,6 +440,32 @@ impl KlippTheme {
             .map(|i| omarchy::mix(c, toward, i as f32 * 0.05))
             .find(|c| on.iter().all(|bg| contrast(*c, *bg) >= min))
             .unwrap_or(toward)
+    }
+
+    /// A light selection fill in `accent`'s hue: 80% of the way to white,
+    /// about as pale as the theme's own blue, and paler still if the
+    /// theme's text needs it to read on it.
+    fn selection_tint(&self, accent: Color32) -> Color32 {
+        let text = [self.text_primary, self.text_secondary, self.text_dim, self.text_accent];
+        (80..=100)
+            .map(|p| omarchy::mix(accent, Color32::WHITE, p as f32 / 100.0))
+            .find(|fill| text.iter().all(|t| contrast(*t, *fill) >= TEXT_CONTRAST))
+            .unwrap_or(Color32::WHITE)
+    }
+
+    /// `accent`, darkened in its own hue until it reads as text on a
+    /// hovered row, on a selection, and on its own `tint` veil over every
+    /// surface a chip is drawn on.
+    fn readable_with_tint(&self, accent: Color32, tint: f32) -> Color32 {
+        let surfaces = [self.bg_void, self.bg_deep, self.bg_panel, self.bg_panel_alt, self.bg_raised, self.bg_hover];
+        (0..=20)
+            .map(|i| omarchy::mix(accent, Color32::BLACK, i as f32 * 0.05))
+            .find(|c| {
+                let veil = omarchy::veil(*c, tint);
+                [self.bg_hover, self.selection_fill()].iter().all(|bg| contrast(*c, *bg) >= TEXT_CONTRAST)
+                    && surfaces.iter().all(|bg| contrast(*c, over(veil, *bg)) >= TEXT_CONTRAST)
+            })
+            .unwrap_or(Color32::BLACK)
     }
 
     pub(crate) fn is_light(&self) -> bool {
@@ -851,6 +902,11 @@ mod light_contrast_tests {
         for (on, bg) in [("bg_panel", t.bg_panel), ("bg_raised", t.bg_raised), ("bg_hover", t.bg_hover), ("selection", t.selection_fill())] {
             check("accent", t.accent, on, bg, TEXT_CONTRAST);
         }
+        // A selected chip, the Edit page's tab or a lit INS among them:
+        // accent text on the accent's own tint, over any surface.
+        for (on, bg) in &surfaces[..surfaces.len() - 1] {
+            check("accent (a selected chip)", t.accent, &format!("accent_subtle over {on}"), over(t.accent_subtle, *bg), TEXT_CONTRAST);
+        }
         check("text_on_accent", t.text_on_accent, "accent", t.accent, TEXT_CONTRAST);
         check("text_on(accent_dim)", t.text_on(t.accent_dim), "accent_dim", t.accent_dim, TEXT_CONTRAST);
         for (on, bg) in surfaces {
@@ -888,6 +944,51 @@ mod light_contrast_tests {
         assert_eq!(dark.selection_fill(), Color32::from_rgb(0x38, 0x2c, 0x14));
         assert!(contrast(dark.text_primary, dark.selection_fill()) >= TEXT_CONTRAST);
         assert!(contrast(dark.text_secondary, dark.selection_fill()) >= TEXT_CONTRAST);
+    }
+
+    /// Dark's accent tones as they are, shipped and in a desktop's
+    /// accent: what Light's contrast work must leave alone.
+    #[test]
+    fn dark_keeps_its_accent_tones() {
+        let reg = crate::theme::ThemeRegistry::builtins_only();
+        let dark = reg.get("Dark").expect("the built-in Dark").clone();
+        assert_eq!((dark.accent, dark.accent_dim, dark.accent_subtle), (Color32::from_rgb(0x4a, 0x8f, 0xe7), Color32::from_rgb(0x2f, 0x5e, 0x9a), Color32::from_rgba_premultiplied(0x10, 0x1f, 0x33, 0x38)));
+        assert_eq!(dark.selection_fill(), DARK_SELECTION);
+        for accent in [(0x35, 0x84, 0xe4), (0x3d, 0xae, 0xe9), (0xf6, 0xd3, 0x2d), (0x91, 0x41, 0xac), (0x3a, 0x94, 0x4a)] {
+            let a = Color32::from_rgb(accent.0, accent.1, accent.2);
+            let mut t = dark.clone();
+            t.set_accent(a, false);
+            assert_eq!(t.accent, a, "Dark takes the accent as it is");
+            assert_eq!(t.accent_dim, omarchy::mix(a, dark.bg_panel, 0.4));
+            assert_eq!((t.accent_glow, t.accent_subtle), (omarchy::veil(a, 0.18), omarchy::veil(a, 0.22)));
+            assert_eq!(t.selection_fill(), DARK_SELECTION);
+        }
+    }
+
+    /// A light selection, a lit RIPPLE or LINKED among them, is in the
+    /// desktop's accent: a yellow one is not drawn on a fixed blue. The
+    /// shipped Light keeps its own.
+    #[test]
+    fn a_light_selection_takes_the_desktops_accent() {
+        fn hue(c: Color32) -> f32 {
+            let (r, g, b) = (c.r() as f32, c.g() as f32, c.b() as f32);
+            let (max, min) = (r.max(g).max(b), r.min(g).min(b));
+            let d = max - min;
+            let h = if d == 0.0 { 0.0 } else if max == r { ((g - b) / d).rem_euclid(6.0) } else if max == g { (b - r) / d + 2.0 } else { (r - g) / d + 4.0 };
+            h * 60.0
+        }
+        let reg = crate::theme::ThemeRegistry::builtins_only();
+        let light = reg.get("Light").expect("the built-in Light").clone();
+        assert_eq!(light.selection_fill(), LIGHT_SELECTION);
+        for accent in [(0x35, 0x84, 0xe4), (0x3d, 0xae, 0xe9), (0xf6, 0xd3, 0x2d), (0x91, 0x41, 0xac), (0x3a, 0x94, 0x4a)] {
+            let a = Color32::from_rgb(accent.0, accent.1, accent.2);
+            let mut t = light.clone();
+            t.set_accent(a, true);
+            let fill = t.selection_fill();
+            let off = (hue(fill) - hue(a)).abs();
+            assert!(off.min(360.0 - off) < 12.0, "#{:02x}{:02x}{:02x}: a fill of hue {} for an accent of {}", accent.0, accent.1, accent.2, hue(fill), hue(a));
+            assert!(contrast(t.accent, fill) >= TEXT_CONTRAST && contrast(t.text_dim, fill) >= TEXT_CONTRAST);
+        }
     }
 
     #[test]
