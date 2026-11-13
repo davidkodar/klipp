@@ -3926,7 +3926,9 @@ fn list_clips_reads_the_sound_back() {
     picture.volume = 10f32.powf(-14.0 / 20.0);
     picture.fade_out_secs = 0.5;
     picture.role = klipp_core::roles::RoleRef::parse("effects.ambience");
-    picture.audio_effects = vec![klipp_core::AudioEffectInstance { effect_type: "denoiser".into(), enabled: true, wet_dry: 1.0, params: vec![("wind".into(), 1.0)] }];
+    // Its effects are the sound clip's, where the mix plays them (#3840);
+    // level, fades and role are the picture's (#3481).
+    sound.audio_effects = vec![klipp_core::AudioEffectInstance { effect_type: "denoiser".into(), enabled: true, wet_dry: 1.0, params: vec![("wind".into(), 1.0)] }];
     let sound_id = sound.id;
     {
         let mut seq = h.sequence.write().unwrap();
