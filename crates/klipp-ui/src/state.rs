@@ -739,6 +739,36 @@ impl AppState {
         raw.filter(|_| !composited)
     }
 
+    /// What of the project going away the next one must not inherit: its
+    /// undo history, selection, hover, drags, views, media usage counts
+    /// and render-cache ranges. The history most of all: it is kept by
+    /// sequence id, which the project file saves, so a project opened
+    /// again in the same session got back the steps of its last opening,
+    /// unsaved ones included, and an undo there emptied its media pool.
+    /// Every way a project is replaced comes through here, by
+    /// `reset_project_state`.
+    pub fn forget_project(&mut self) {
+        self.command_histories.clear();
+        self.project_history = crate::history::CommandHistory::new();
+        self.history_ops_since_save = 0;
+        self.selected_clip = None;
+        self.selected_clips.clear();
+        self.hovered_clip = None;
+        self.dragging_media = None;
+        self.dragging_media_group.clear();
+        self.dragging_audio_keyframe = None;
+        self.dragging_video_keyframe = None;
+        self.dragging_rubber_band = None;
+        self.dragging_bezier_handle = None;
+        self.dragging_video_bezier_handle = None;
+        self.dragging_fade_handle = None;
+        self.forget_old_project_views();
+        self.media_usage_cache.clear();
+        self.media_usage_cache_dirty = true;
+        self.render_cache_ranges.clear();
+        self.render_status.clear();
+    }
+
     /// What belongs to the project being left and must not be carried
     /// into the next: a gap or transition selected in it (the inspector
     /// went on showing them), the multicam angle view (a new project's
@@ -7763,6 +7793,28 @@ mod per_sequence_history_tests {
     fn new_default_seq_has_known_shape() {
         let seq = Sequence::new_default();
         assert_eq!(seq.resolution, Resolution::hd_1080());
+    }
+
+    /// A project replaced leaves no steps behind (`forget_project`), its
+    /// own sequences' or the project's: opened again, with the same
+    /// sequence ids as the file saves them, it has nothing to undo. Its
+    /// last opening's history came back before, unsaved steps and all,
+    /// and an undo there emptied the media pool.
+    #[test]
+    fn a_project_opened_again_has_no_steps_from_before() {
+        let mut state = AppState::default();
+        let seq = state.sequences[0].clone();
+        state.push_history(seq_command("Lift Clips"));
+        state.push_history(project_command("from X"));
+        assert_eq!(state.undo_depth(), 2);
+        state.forget_project();
+        // The same project's sequences, as the file loads them.
+        state.sequences = vec![seq];
+        state.active_sequence_idx = 0;
+        assert_eq!(state.undo_depth(), 0, "no step of the last opening is left");
+        assert_eq!(state.undo_label(), None);
+        assert!(state.take_undo().is_none(), "undo has nothing to take");
+        assert_eq!(state.redo_depth(), 0);
     }
 }
 
