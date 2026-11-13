@@ -287,7 +287,7 @@ pub fn show(
 
         ui.add_space(8.0);
         if folded {
-            let choices: Vec<super::CategoryChoice> = general
+            let choices: Vec<super::CategoryChoice<EffectCategory>> = general
                 .iter()
                 .map(|(_, label, count, cat, _)| super::CategoryChoice { label, count: *count, cat: *cat })
                 .chain(sub_counts.iter().map(|&(cat, count)| super::CategoryChoice { label: sidebar_label_for(cat), count, cat }))
