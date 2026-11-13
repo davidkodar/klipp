@@ -484,6 +484,88 @@ pub fn resting_title(title: &TitleData) -> std::borrow::Cow<'_, TitleData> {
     }
 }
 
+/// Whether a layer's entrance or exit changes its frame at `time_secs`
+/// of a clip `window` seconds long: inside the motion's own time, with
+/// the stagger of its last unit counted only when it staggers. Outside
+/// it the layer is at rest, its frame the resting one.
+pub fn motion_live_at(o: &TitleObject, time_secs: f32, window: Option<f32>) -> bool {
+    // A shape or a picture moves as one: no stagger, one unit.
+    let text = match &o.content { TitleObjectContent::TextBox(tb) => tb.text.as_str(), _ => "" };
+    let fx = o.fx();
+    // How long a motion runs: its own time, plus the stagger of
+    // its last unit — and only when it staggers. The stagger time
+    // has a default of its own, and counting it for a motion with
+    // no stagger made a 0.4 s fade on a 22-letter name "live" for
+    // 1.55 s at each end: a four-second lower third was rastered
+    // afresh on three frames in four, 110 ms each.
+    let units = |m: &klipp_timeline::Motion| -> f32 {
+        match m.stagger {
+            klipp_timeline::StaggerUnit::None => 0.0,
+            klipp_timeline::StaggerUnit::Line => text.lines().count().max(1) as f32,
+            klipp_timeline::StaggerUnit::Word => word_count(text).max(1) as f32,
+            klipp_timeline::StaggerUnit::Char => text.chars().filter(|c| !c.is_whitespace()).count().max(1) as f32,
+        }
+    };
+    let span = |m: &klipp_timeline::Motion| m.delay_secs + m.duration_secs + units(m) * m.stagger_secs + 0.05;
+    let enter = fx.motion.enter.as_ref().is_some_and(|m| time_secs < span(m));
+    let exit = match (fx.motion.exit.as_ref(), window) {
+        (Some(m), Some(w)) => (w - time_secs) < span(m),
+        _ => false,
+    };
+    enter || exit
+}
+
+/// Whether nothing in `title` changes with its clip's time at
+/// `time_secs`, of a clip `window` seconds long: [`title_time_free`],
+/// and no layer's entrance or exit under way, by [`motion_live_at`].
+/// Such a title draws the same picture at each such instant.
+pub fn title_still_at(title: &TitleData, time_secs: f32, window: Option<f32>) -> bool {
+    title_at_rest(title, time_secs, window) && title_time_free(title)
+}
+
+/// Whether no layer of `title`, shown or not (a hidden one may be
+/// another's matte), is inside its entrance or exit at `time_secs`.
+pub fn title_at_rest(title: &TitleData, time_secs: f32, window: Option<f32>) -> bool {
+    !title.objects.iter().any(|o| motion_live_at(o, time_secs, window))
+}
+
+/// Whether nothing in `title` but its layers' entrances and exits goes
+/// by its clip's time: no loop, enabled animator or per-character
+/// animation, no glitch (drawn afresh at each instant), no 3D solid,
+/// and no key anywhere in it, on any field of any layer.
+pub fn title_time_free(title: &TitleData) -> bool {
+    let layers_still = title.objects.iter().all(|o| {
+        let fx = o.fx();
+        fx.loops.is_empty()
+            && !fx.animators.iter().any(|a| a.enabled)
+            && match &o.content {
+                TitleObjectContent::TextBox(tb) => {
+                    tb.glitch_intensity <= 0.0 && tb.char_animation.as_ref().is_none_or(|c| !c.enabled) && tb.three_d.as_ref().is_none_or(|d| !d.enabled)
+                }
+                _ => true,
+            }
+    });
+    // Keys are kept on many fields, each under a name ending in
+    // `keyframes` (a 3D solid's are its `keys`): looked for by name, so a
+    // field keyed later is found as well.
+    fn keyed(v: &serde_json::Value) -> bool {
+        fn empty(v: &serde_json::Value) -> bool {
+            match v {
+                serde_json::Value::Null => true,
+                serde_json::Value::Array(a) => a.is_empty(),
+                serde_json::Value::Object(m) => m.values().all(empty),
+                _ => false,
+            }
+        }
+        match v {
+            serde_json::Value::Object(m) => m.iter().any(|(k, v)| ((k.ends_with("keyframes") || k == "keys") && !empty(v)) || keyed(v)),
+            serde_json::Value::Array(a) => a.iter().any(keyed),
+            _ => false,
+        }
+    }
+    layers_still && serde_json::to_value(title).is_ok_and(|v| !keyed(&v))
+}
+
 /// Whether a title's frames pose its resting glyphs each on its own: a
 /// staggered motion, an animator, a wave or animated tracking.
 fn poses_its_glyphs(title: &TitleData) -> bool {
@@ -3002,32 +3084,7 @@ impl TitleRenderer {
         // An entrance or exit only changes the frame inside its own
         // window; at rest the render is the resting one and cacheable.
         let window = self.motion_window;
-        let motion_live = |o: &TitleObject| -> bool {
-            // A shape or a picture moves as one: no stagger, one unit.
-            let text = match &o.content { TitleObjectContent::TextBox(tb) => tb.text.as_str(), _ => "" };
-            let fx = o.fx();
-            // How long a motion runs: its own time, plus the stagger of
-            // its last unit — and only when it staggers. The stagger time
-            // has a default of its own, and counting it for a motion with
-            // no stagger made a 0.4 s fade on a 22-letter name "live" for
-            // 1.55 s at each end: a four-second lower third was rastered
-            // afresh on three frames in four, 110 ms each.
-            let units = |m: &klipp_timeline::Motion| -> f32 {
-                match m.stagger {
-                    klipp_timeline::StaggerUnit::None => 0.0,
-                    klipp_timeline::StaggerUnit::Line => text.lines().count().max(1) as f32,
-                    klipp_timeline::StaggerUnit::Word => word_count(text).max(1) as f32,
-                    klipp_timeline::StaggerUnit::Char => text.chars().filter(|c| !c.is_whitespace()).count().max(1) as f32,
-                }
-            };
-            let span = |m: &klipp_timeline::Motion| m.delay_secs + m.duration_secs + units(m) * m.stagger_secs + 0.05;
-            let enter = fx.motion.enter.as_ref().is_some_and(|m| time_secs < span(m));
-            let exit = match (fx.motion.exit.as_ref(), window) {
-                (Some(m), Some(w)) => (w - time_secs) < span(m),
-                _ => false,
-            };
-            enter || exit
-        };
+        let motion_live = |o: &TitleObject| motion_live_at(o, time_secs, window);
         // The loops, evaluated up front: a loop that only moves or
         // fades the layer can be applied to the cached resting render.
         let scale = crate::frame_scale(width, height);
@@ -13843,5 +13900,52 @@ mod complex_justify_tests {
                 assert!((pair[0].1 - pair[1].1).abs() < 1e-3, "a word's letters moved apart: {moved:?}");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod still_title_tests {
+    use super::*;
+    use klipp_timeline::title_library;
+
+    fn statement() -> TitleData {
+        let t = title_library::TITLES.iter().find(|t| t.name == "Statement").expect("Statement");
+        title_library::for_frame(t.build(), 1920, 1080)
+    }
+
+    fn key(time_secs: f64, value: f32) -> klipp_core::Keyframe {
+        klipp_core::Keyframe { time_secs, value, interpolation: Default::default(), tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() }
+    }
+
+    /// A template with an entrance and an exit is still between them,
+    /// and only there.
+    #[test]
+    fn a_still_template_rests_between_its_entrance_and_exit() {
+        let td = statement();
+        assert!(title_time_free(&td), "nothing in Statement goes by the clock but its motions");
+        assert!(!title_still_at(&td, 0.0, Some(5.0)), "its entrance is under way at the start");
+        assert!(title_still_at(&td, 2.5, Some(5.0)), "at rest in the middle");
+        assert!(!title_still_at(&td, 4.99, Some(5.0)), "its exit is under way at the end");
+    }
+
+    /// A key on any field of any layer, however deep, and a loop, each
+    /// make the title change with time.
+    #[test]
+    fn a_key_or_a_loop_anywhere_is_not_still() {
+        let mut glow = statement();
+        let text = glow.objects.iter_mut().find(|o| matches!(o.content, TitleObjectContent::TextBox(_))).expect("words");
+        text.fx_mut().glows.push(klipp_timeline::TextGlow { enabled: true, color: [255; 4], radius: 4.0, radius_keyframes: vec![key(0.0, 4.0), key(3.0, 9.0)], intensity: 1.0, intensity_keyframes: Vec::new() });
+        assert!(!title_time_free(&glow), "a glow's keyed radius");
+        let mut colour = statement();
+        if let TitleObjectContent::TextBox(tb) = &mut colour.objects.iter_mut().find(|o| matches!(o.content, TitleObjectContent::TextBox(_))).expect("words").content {
+            tb.color_keyframes.r = vec![key(0.0, 0.0), key(1.0, 1.0)];
+        }
+        assert!(!title_time_free(&colour), "a keyed colour channel");
+        let mut moved = statement();
+        moved.objects[0].transform.center_x_keyframes = vec![key(0.0, 0.2), key(3.0, 0.8)];
+        assert!(!title_time_free(&moved), "a keyed position");
+        let mut pulsing = statement();
+        pulsing.objects[0].fx_mut().loops.push(klipp_timeline::TitleLoop::Pulse { rate_hz: 1.0, min_opacity: 0.3 });
+        assert!(!title_time_free(&pulsing), "a loop");
     }
 }

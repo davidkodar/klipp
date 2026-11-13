@@ -149,6 +149,31 @@ impl GpuEffectsPipeline {
         true
     }
 
+    /// Layer `i` copied into a buffer of its own, kept by the caller
+    /// across frames: a still title's composed scene, put back with
+    /// [`Self::stack_layer_restore`]. `None` when the device is lost.
+    pub fn stack_layer_keep(&mut self, i: usize) -> Option<std::sync::Arc<wgpu::Buffer>> {
+        if self.is_device_lost() || i >= self.stack_layers.len() {
+            return None;
+        }
+        let kept = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("kept stack layer"),
+            size: self.stack_pixel_count() * 16,
+            usage: wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        self.stack_copy(&self.stack_layers[i], &kept, "stack_layer_keep").then(|| std::sync::Arc::new(kept))
+    }
+
+    /// Layer `i` becomes `kept`, as [`Self::stack_layer_keep`] took it.
+    /// `false`, and nothing recorded, when it was kept at another size.
+    pub fn stack_layer_restore(&mut self, i: usize, kept: &wgpu::Buffer) -> bool {
+        if self.is_device_lost() || i >= self.stack_layers.len() || kept.size() != self.stack_pixel_count() * 16 {
+            return false;
+        }
+        self.stack_copy(kept, &self.stack_layers[i], "stack_layer_restore")
+    }
+
     /// Layer `i`'s buffer, for a chain to seed from: a layer whose effects
     /// run as a plan of its own after it was placed (a title's sprite, a
     /// generator; phase 2b M2 step 11d), its result copied back with

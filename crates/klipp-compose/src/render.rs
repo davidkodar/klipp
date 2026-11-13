@@ -1085,6 +1085,11 @@ pub struct Renderer {
     ofx: std::sync::Arc<std::sync::Mutex<klipp_plugin::OfxHost>>,
     titles: klipp_title::TitleRenderer,
     gpu_text3d: Option<crate::title3d_gpu::GpuText3d>,
+    /// Scenes of several title layers composed while nothing in them
+    /// moves, kept on the GPU so each later frame at rest is a copy.
+    still_title_scenes: crate::still_title_scenes::StillTitleScenes,
+    /// Scenes of several title layers composed on the GPU (for tests).
+    title_scene_composes: u64,
     /// The warm-up thread's ends: titles to render ahead go out, their
     /// resting renders come back for `titles` to keep.
     warm_tx: Option<std::sync::mpsc::Sender<(klipp_timeline::TitleData, u32, u32)>>,
@@ -1243,6 +1248,8 @@ impl Renderer {
             ofx: std::sync::Arc::new(std::sync::Mutex::new(ofx)),
             titles,
             gpu_text3d: None,
+            still_title_scenes: crate::still_title_scenes::StillTitleScenes::default(),
+            title_scene_composes: 0,
             warm_tx: None,
             warm_rx: None,
             glyph_cache: HashMap::new(),
@@ -1316,6 +1323,13 @@ impl Renderer {
     /// Geometry uploads since this renderer created its current GPU solid cache.
     pub fn title_3d_geometry_uploads(&self) -> u64 {
         self.gpu_text3d.as_ref().map_or(0, |g| g.uploads())
+    }
+
+    /// How many scenes of several title layers this renderer composed on
+    /// the GPU, rather than took from the ones it keeps at rest.
+    #[doc(hidden)]
+    pub fn title_scene_composes(&self) -> u64 {
+        self.title_scene_composes
     }
 
     pub fn title_renderer(&mut self) -> &mut klipp_title::TitleRenderer {
@@ -3703,6 +3717,23 @@ impl Renderer {
         // GPU styles and time evaluation before authored-space composition.
         if td.objects.len() > 1 || td.mixes_layers() || matches!(td.background,klipp_timeline::TitleBackground::FullFrame{..}) || td.objects.iter().any(|o|matches!(o.content,klipp_timeline::TitleObjectContent::Shape(_)|klipp_timeline::TitleObjectContent::Image(_)))
  {
+            // A title drawn whole (not a part of one) that nothing moves
+            // at this instant is the scene kept when it came to rest.
+            let at_rest = shape_straight.is_none() && std::ptr::eq(td, scene) && klipp_title::title_at_rest(td, clip_time as f32, Some(total));
+            let working = self.working;
+            // Its pictures as they are on disk now: a file changed since
+            // is read again, and the scene with it.
+            let images: Vec<Option<u64>> = if at_rest {
+                td.objects.iter().filter_map(|o| match &o.content {
+                    klipp_timeline::TitleObjectContent::Image(i) => Some(self.titles.decoded_image(i).map(|d| d.id)),
+                    _ => None,
+                }).collect()
+            } else {Vec::new()};
+            if at_rest && self.still_title_scenes.restore(self.executor.gpu_pipeline_or_init()?, td, &images, slot, width, height, working) {
+                return Some(((0,height),Vec::new()));
+            }
+            let keep = at_rest && klipp_title::title_time_free(td);
+            self.title_scene_composes += 1;
             let object_slot = self.executor.gpu_pipeline_or_init()?.stack_title_object_slot(0)?;
             let initialized=match td.background {
                 klipp_timeline::TitleBackground::FullFrame{color}=>self.executor.gpu_pipeline_or_init()?.stack_layer_segments(slot,color,[0;4],&[]),
@@ -3759,7 +3790,11 @@ impl Renderer {
             // The CPU keeps only the final scene's alpha bounding box. Preserve
             // faint pixels inside that box, but discard its low-alpha fringe.
             if crop_faded_matte_scene && !gpu.stack_title_crop_to_alpha_bounds(slot) {return None;}
-            return gpu.stack_title_precision(slot,false).then_some(((0,height),Vec::new()));
+            if !gpu.stack_title_precision(slot,false) {return None;}
+            if keep {
+                self.still_title_scenes.keep(self.executor.gpu_pipeline_or_init()?, td, images, slot, width, height, working);
+            }
+            return Some(((0,height),Vec::new()));
         }
         let rows;
         let mut lead = Vec::new();
