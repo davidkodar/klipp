@@ -151,8 +151,11 @@ pub fn show(
         .all()
         .find_map(|m| state.thumbnail_textures.get(&m.id).cloned());
 
-    // ── Split: sidebar (left) | content (right) ──
-    let sidebar_w = TITLES_SIDEBAR_W.min(avail.width() * 0.40);
+    // ── Split: sidebar (left) | content (right); a narrow panel folds the
+    // sidebar into a dropdown over the content, as the effects tabs do
+    // (#2602) ──
+    let folded = super::sidebar_folds(avail.width());
+    let sidebar_w = if folded { 0.0 } else { TITLES_SIDEBAR_W.min(avail.width() * 0.40) };
     let sidebar_rect = egui::Rect::from_min_size(
         avail.min,
         egui::vec2(sidebar_w, avail.height()),
@@ -163,6 +166,7 @@ pub fn show(
     );
 
     // ── Sidebar ─────────────────────────────────────────────────────
+    if !folded {
     ui.allocate_new_ui(egui::UiBuilder::new().max_rect(sidebar_rect), |ui| {
         ui.set_min_size(sidebar_rect.size());
         ui.painter().rect_filled(sidebar_rect, 0.0, theme.bg_panel);
@@ -232,18 +236,38 @@ pub fn show(
                 ui.add_space(8.0);
             });
     });
+    }
 
     // ── Right pane ──────────────────────────────────────────────────
     ui.allocate_new_ui(egui::UiBuilder::new().max_rect(content_rect), |ui| {
         ui.set_min_size(content_rect.size());
 
         ui.add_space(8.0);
+        if folded {
+            // The sidebar's rows as one dropdown: a list or a category,
+            // each with its count.
+            let in_list = |keys: &[String]| entries.iter().filter(|t| keys.iter().any(|k| *k == t.list_key())).count();
+            let choices: Vec<super::CategoryChoice<(Option<LibraryList>, Option<&'static str>)>> = [
+                super::CategoryChoice { label: "Favorites", count: in_list(favourites), cat: (Some(LibraryList::Favourites), None) },
+                super::CategoryChoice { label: "Recent", count: in_list(&recent), cat: (Some(LibraryList::Recent), None) },
+                super::CategoryChoice { label: "All", count: entries.len(), cat: (None, None) },
+            ]
+            .into_iter()
+            .chain(CATEGORIES.iter().map(|cat| super::CategoryChoice { label: cat, count: entries.iter().filter(|t| t.category() == *cat).count(), cat: (None, Some(*cat)) }))
+            .collect();
+            let mut picked = (*list, if list.is_some() { None } else { *active_category });
+            super::category_dropdown(ui, "titles_category_folded", &choices, &mut picked);
+            (*list, *active_category) = picked;
+            ui.add_space(6.0);
+        }
 
         // ── Preview header: PREVIEW ON [swatches] [text input] ──
         egui::Frame::none()
             .inner_margin(egui::Margin::symmetric(8.0, 0.0))
             .show(ui, |ui| {
-                ui.horizontal(|ui| {
+                // Wrapped: in a narrow panel the swatches and the text
+                // field go on lines of their own, not past the edge (#2602).
+                ui.horizontal_wrapped(|ui| {
                     ui.label(
                         egui::RichText::new("\u{1F5BC} PREVIEW ON")
                             .size(10.0)
@@ -257,7 +281,11 @@ pub fn show(
                     preview_swatch(ui, theme, TitlesPreviewBg::BlueGradient, preview_bg);
                     preview_swatch(ui, theme, TitlesPreviewBg::OrangeWood, preview_bg);
                     preview_swatch(ui, theme, TitlesPreviewBg::GreenPattern, preview_bg);
-                    ui.add_space(8.0);
+                    if ui.available_size_before_wrap().x < 8.0 + 120.0 {
+                        ui.end_row();
+                    } else {
+                        ui.add_space(8.0);
+                    }
                     // Live preview text input — empty falls back to
                     // each template's own preview_text.
                     let edit = egui::TextEdit::singleline(preview_text)
@@ -265,7 +293,7 @@ pub fn show(
                             egui::RichText::new("Klipp the new Linux NLE!")
                                 .color(theme.text_dim),
                         )
-                        .desired_width(ui.available_width().max(120.0))
+                        .desired_width(ui.available_size_before_wrap().x)
                         .font(egui::FontId::proportional(11.0))
                         .text_color(theme.text_primary);
                     ui.add(edit);
@@ -309,20 +337,27 @@ pub fn show(
         let user_count = scoped.iter().filter(|t| matches!(t, Entry::User(_))).count() - pack_count;
         let builtin_count = scoped_total - user_count - pack_count;
 
+        // The chips beside the pill and the view buttons where they fit,
+        // else on a line of their own above them (#2602).
+        let segments = source_segments(scoped_total, builtin_count, user_count, pack_count);
         egui::Frame::none()
             .inner_margin(egui::Margin::symmetric(8.0, 0.0))
             .show(ui, |ui| {
+                let row_w = ui.available_width();
+                let spacing = ui.spacing().item_spacing.x;
+                let (label_w, count_w) = super::chip_measures(ui, theme, &segments, &egui::FontId::monospace(10.0));
+                let controls_w = 6.0 + animated_only_pill_width(ui, theme) + 2.0 * (26.0 + spacing);
+                let beside = row_w - controls_w - spacing;
+                let own_line = super::fit_source_chips(&label_w, &count_w, super::CHIP_PAD, beside).is_none();
+                if own_line {
+                    titles_segmented_filter(ui, theme, source_filter, &segments, row_w);
+                    ui.add_space(4.0);
+                }
                 ui.horizontal(|ui| {
-                    titles_segmented_filter(
-                        ui,
-                        theme,
-                        source_filter,
-                        scoped_total,
-                        builtin_count,
-                        user_count,
-                        pack_count,
-                    );
-                    ui.add_space(6.0);
+                    if !own_line {
+                        titles_segmented_filter(ui, theme, source_filter, &segments, beside);
+                        ui.add_space(6.0);
+                    }
                     animated_only_pill(ui, theme, animated_only);
                     ui.with_layout(
                         egui::Layout::right_to_left(egui::Align::Center),
@@ -814,24 +849,17 @@ fn title_list_row(
 
     let text_x = mini_rect.max.x + 12.0;
     let text_y = rect.center().y;
-    ui.painter().text(
-        egui::pos2(text_x, text_y - 7.0),
-        egui::Align2::LEFT_CENTER,
-        title.name(),
-        egui::FontId::proportional(12.0),
-        theme.text_primary,
-    );
+    // Cut to the row with an ellipsis, as the effects' rows are: in a
+    // narrow panel they ran past its edge (#2602).
+    let room = rect.max.x - 8.0 - text_x;
+    let name = super::elided_galley(ui, title.name(), egui::FontId::proportional(12.0), theme.text_primary, room);
+    ui.painter().galley(egui::pos2(text_x, text_y - 7.0 - name.size().y / 2.0), name, theme.text_primary);
     let mut meta = format!("{}  \u{00B7} {}", title.category(), title.source_label());
     if template_is_animated(title) {
         meta.push_str("  \u{00B7} Animated");
     }
-    ui.painter().text(
-        egui::pos2(text_x, text_y + 8.0),
-        egui::Align2::LEFT_CENTER,
-        meta,
-        egui::FontId::proportional(10.0),
-        theme.text_dim,
-    );
+    let meta = super::elided_galley(ui, &meta, egui::FontId::proportional(10.0), theme.text_dim, room);
+    ui.painter().galley(egui::pos2(text_x, text_y + 8.0 - meta.size().y / 2.0), meta, theme.text_dim);
     resp
 }
 
@@ -1161,117 +1189,40 @@ fn category_icon(cat: &str) -> Icon {
 
 // ──────────────────────────── Filter row widgets ────────────────────────────
 
-fn titles_segmented_filter(
-    ui: &mut egui::Ui,
-    theme: &KlippTheme,
-    filter: &mut TitlesSourceFilter,
-    all_count: usize,
-    builtin_count: usize,
-    user_count: usize,
-    pack_count: usize,
-) {
-    let outer_h = 26.0;
-    let pad = 2.0;
-    let segments = [
+/// The source filter's chips: each a filter value, its label and its count.
+fn source_segments(all_count: usize, builtin_count: usize, user_count: usize, pack_count: usize) -> [(TitlesSourceFilter, &'static str, usize); 4] {
+    [
         (TitlesSourceFilter::All, "All", all_count),
         (TitlesSourceFilter::Builtin, "Built-in", builtin_count),
         (TitlesSourceFilter::User, "Mine", user_count),
         (TitlesSourceFilter::Packs, "Packs", pack_count),
-    ];
-    let mut seg_widths = [0.0f32; 4];
-    let mut total_w = pad * 2.0;
-    for (i, (_, label, count)) in segments.iter().enumerate() {
-        let label_galley = ui.painter().layout_no_wrap(
-            (*label).to_string(),
-            egui::FontId::proportional(11.0),
-            theme.text_secondary,
-        );
-        let count_galley = ui.painter().layout_no_wrap(
-            format!("{}", count),
-            egui::FontId::monospace(10.0),
-            theme.text_dim,
-        );
-        let w = label_galley.size().x + 6.0 + count_galley.size().x + 22.0;
-        seg_widths[i] = w;
-        total_w += w + 1.0;
-    }
-    total_w -= 1.0;
-    let (outer_rect, _) = ui.allocate_exact_size(
-        egui::vec2(total_w, outer_h),
-        egui::Sense::hover(),
-    );
-    ui.painter().rect_filled(outer_rect, 4.0, theme.bg_panel);
-    ui.painter().rect_stroke(
-        outer_rect,
-        5.0,
-        egui::Stroke::new(1.0_f32, theme.border),
-    );
-    let mut x = outer_rect.min.x + pad;
-    for (i, (variant, label, count)) in segments.iter().enumerate() {
-        let seg_rect = egui::Rect::from_min_size(
-            egui::pos2(x, outer_rect.min.y + pad),
-            egui::vec2(seg_widths[i], outer_h - pad * 2.0),
-        );
-        let resp = ui.interact(
-            seg_rect,
-            ui.id().with(("titles_source_seg", i)),
-            egui::Sense::click(),
-        );
-        let is_active = *filter == *variant;
-        let hovered = resp.hovered();
-        if is_active {
-            ui.painter().rect_filled(seg_rect, 2.0, theme.bg_raised);
-        } else if hovered {
-            ui.painter().rect_filled(seg_rect, 2.0, theme.accent_subtle);
-        }
-        let label_color = if is_active || hovered {
-            theme.text_primary
-        } else {
-            theme.text_secondary
-        };
-        let count_color = if is_active { theme.accent } else { theme.text_dim };
-        let label_galley = ui.painter().layout_no_wrap(
-            (*label).to_string(),
-            egui::FontId::proportional(11.0),
-            label_color,
-        );
-        let count_galley = ui.painter().layout_no_wrap(
-            format!("{}", count),
-            egui::FontId::monospace(10.0),
-            count_color,
-        );
-        let inner_w = label_galley.size().x + 6.0 + count_galley.size().x;
-        let lx = seg_rect.center().x - inner_w * 0.5;
-        ui.painter().galley(
-            egui::pos2(lx, seg_rect.center().y - label_galley.size().y * 0.5),
-            label_galley.clone(),
-            label_color,
-        );
-        ui.painter().galley(
-            egui::pos2(
-                lx + label_galley.size().x + 6.0,
-                seg_rect.center().y - count_galley.size().y * 0.5,
-            ),
-            count_galley,
-            count_color,
-        );
-        if resp.clicked() {
-            *filter = *variant;
-        }
-        x += seg_widths[i] + 1.0;
-    }
+    ]
+}
+
+/// The source filter in at most `available` width, as the effects tabs'
+/// (#2602): counts dropped first, then the room around the labels, then a
+/// dropdown. Its own chips, at their widest, ran past a narrow panel.
+fn titles_segmented_filter(
+    ui: &mut egui::Ui,
+    theme: &KlippTheme,
+    filter: &mut TitlesSourceFilter,
+    segments: &[(TitlesSourceFilter, &'static str, usize)],
+    available: f32,
+) {
+    super::source_chips(ui, theme, "titles_source_seg", filter, segments, egui::FontId::monospace(10.0), 26.0, available);
+}
+
+/// The "Animated only" pill's width.
+fn animated_only_pill_width(ui: &egui::Ui, theme: &KlippTheme) -> f32 {
+    let label = ui.painter().layout_no_wrap("Animated only".to_string(), egui::FontId::proportional(11.0), theme.text_secondary).size().x;
+    10.0 * 2.0 + 11.0 + 5.0 + label
 }
 
 fn animated_only_pill(ui: &mut egui::Ui, theme: &KlippTheme, active: &mut bool) {
-    let label_galley = ui.painter().layout_no_wrap(
-        "Animated only".to_string(),
-        egui::FontId::proportional(11.0),
-        theme.text_secondary,
-    );
     let icon_size = 11.0;
     let pad_x = 10.0;
     let gap = 5.0;
-    let w = pad_x * 2.0 + icon_size + gap + label_galley.size().x;
+    let w = animated_only_pill_width(ui, theme);
     let (rect, resp) = ui.allocate_exact_size(
         egui::vec2(w, 26.0),
         egui::Sense::click(),
@@ -1464,6 +1415,57 @@ fn title_frames(at: i64, picture_end: Option<i64>, rate: u32) -> (u32, i64) {
 #[cfg(test)]
 mod tests {
     use klipp_timeline::title_library::builtin;
+
+    /// What the Library's Titles tab draws past the right edge of a panel
+    /// `panel_w` wide, in `mode`: each a box, a knob or a word, and where.
+    fn drawn_past(panel_w: f32, mode: crate::browser::effects_tab::EffectViewMode) -> Vec<String> {
+        use crate::browser::BrowserPanel;
+        let ctx = egui::Context::default();
+        crate::icons::install(&ctx);
+        let theme = crate::theme::KlippTheme::default();
+        theme.apply_to_egui(&ctx);
+        theme.apply_fonts(&ctx);
+        let mut panel = BrowserPanel { library_category: crate::layout_state::LibraryCategory::Titles, titles_view_mode: mode, ..Default::default() };
+        let mut state = crate::state::AppState::default();
+        let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(panel_w, 900.0))), ..Default::default() };
+        let mut shapes = Vec::new();
+        // Twice: a first frame sizes what a second lays out.
+        for _ in 0..2 {
+            shapes = ctx.run(input.clone(), |ctx| {
+                egui::CentralPanel::default().frame(egui::Frame::none()).show(ctx, |ui| {
+                    panel.show_library_tab(ui, &mut state, &theme);
+                });
+            }).shapes;
+        }
+        shapes.iter().filter_map(|s| {
+            // Hairline separators reach a pixel or two past and are drawn
+            // in the panel's own colour; what is cut is a box, a knob or a
+            // word.
+            let what = match &s.shape {
+                egui::Shape::Text(t) => t.galley.text().to_owned(),
+                egui::Shape::Rect(_) => "a box".to_owned(),
+                egui::Shape::Circle(_) => "a knob".to_owned(),
+                _ => return None,
+            };
+            let r = s.shape.visual_bounding_rect();
+            (r.is_finite() && r.max.x > panel_w + 0.5 && r.min.y < 900.0).then(|| format!("{what} at {:.0}..{:.0}, y {:.0}", r.min.x, r.max.x, r.min.y))
+        }).collect()
+    }
+
+    /// From the narrowest panel up, nothing the Titles tab draws, in grid
+    /// or list, runs past the panel's right edge: its preview row was some
+    /// 400 px wide whatever the panel, and laid everything under it out as
+    /// wide, cut at the edge (#2602).
+    #[test]
+    fn the_titles_tab_stays_inside_a_narrow_panel() {
+        use crate::browser::effects_tab::EffectViewMode;
+        for panel_w in [crate::theme::BROWSER_MIN_W, 250.0, 277.0, 300.0, 420.0] {
+            for mode in [EffectViewMode::Grid, EffectViewMode::List] {
+                let past = drawn_past(panel_w, mode);
+                assert!(past.is_empty(), "{mode:?} in a {panel_w} px panel: {} drawn past its edge, first {:?}", past.len(), &past[..past.len().min(4)]);
+            }
+        }
+    }
 
     /// A title placed near the picture's end ends with it; with under a
     /// second of picture left it keeps its five seconds and says how far

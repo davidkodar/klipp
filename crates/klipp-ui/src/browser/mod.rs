@@ -64,16 +64,16 @@ pub(crate) fn elided_galley(ui: &egui::Ui, text: &str, font: egui::FontId, color
 }
 
 /// One category a folded sidebar offers.
-pub(crate) struct CategoryChoice {
+pub(crate) struct CategoryChoice<T> {
     pub label: &'static str,
     pub count: usize,
-    pub cat: effects_tab::EffectCategory,
+    pub cat: T,
 }
 
 /// A folded sidebar: its categories, with their counts, as one dropdown
 /// across the content's width.
-pub(crate) fn category_dropdown(ui: &mut egui::Ui, id_salt: &str, choices: &[CategoryChoice], active: &mut effects_tab::EffectCategory) {
-    let name = |c: &CategoryChoice| format!("{}  {}", c.label, c.count);
+pub(crate) fn category_dropdown<T: PartialEq + Copy>(ui: &mut egui::Ui, id_salt: &str, choices: &[CategoryChoice<T>], active: &mut T) {
+    let name = |c: &CategoryChoice<T>| format!("{}  {}", c.label, c.count);
     let current = choices.iter().find(|c| c.cat == *active).map(name).unwrap_or_default();
     egui::Frame::none().inner_margin(egui::Margin::symmetric(8.0, 0.0)).show(ui, |ui| {
         // A little short of the row: the button's outline is drawn outside

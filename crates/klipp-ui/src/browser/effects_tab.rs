@@ -230,7 +230,7 @@ pub fn show(
 
         ui.add_space(6.0);
         if folded {
-            let choices: Vec<super::CategoryChoice> = general
+            let choices: Vec<super::CategoryChoice<EffectCategory>> = general
                 .iter()
                 .map(|(_, label, count, cat, _)| super::CategoryChoice { label, count: *count, cat: *cat })
                 .chain(video_categories.iter().zip(&video_counts).map(|((cat, label, _), count)| super::CategoryChoice { label, count: *count, cat: *cat }))
