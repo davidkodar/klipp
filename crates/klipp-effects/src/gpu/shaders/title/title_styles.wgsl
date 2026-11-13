@@ -74,6 +74,37 @@ fn rounded_rect(point:vec2<f32>,lo:vec2<f32>,hi:vec2<f32>,r:f32)->bool {
 fn matrix(v: vec3<f32>) -> vec3<f32> {
     return vec3<f32>(dot(p.row0.xyz,v),dot(p.row1.xyz,v),dot(p.row2.xyz,v));
 }
+// Op 11 after another op in the same pass: encoded authored colour to the
+// working space by the second matrix, held in `stops[0..3]`, in the order
+// `matrix` multiplies.
+fn to_working(v: vec4<f32>) -> vec4<f32> {
+    let m=vec3<f32>(linear(v.x),linear(v.y),linear(v.z));
+    return vec4<f32>(dot(bitcast<vec4<f32>>(p.stops[0]).xyz,m),dot(bitcast<vec4<f32>>(p.stops[1]).xyz,m),dot(bitcast<vec4<f32>>(p.stops[2]).xyz,m),v.a);
+}
+// Op 36: an undressed shape's premultiplied encoded colour over `dst`.
+fn painted_over(src: vec4<f32>, dst: vec4<f32>) -> vec4<f32> {
+    let sc=matrix(src.rgb);let dc=matrix(dst.rgb);
+    let s=vec3<f32>(encoded(sc.x),encoded(sc.y),encoded(sc.z));let d=vec3<f32>(encoded(dc.x),encoded(dc.y),encoded(dc.z));
+    return vec4<f32>(s+d*(1.0-src.a),src.a+dst.a*(1.0-src.a));
+}
+// Op 10: an object over the scene in encoded authored colour, with its
+// opacity and blend mode.
+fn object_over(s: vec4<f32>, d: vec4<f32>) -> vec4<f32> {
+    let srgb=matrix(s.rgb); let drgb=matrix(d.rgb);
+    var alpha=s.a;
+    if abs(p.color.a-1.0)>=0.001 { alpha=floor(alpha*p.color.a*255.0+0.5)/255.0; }
+    if p.offset_x==0 {
+        return over(vec4<f32>(encoded(srgb.x),encoded(srgb.y),encoded(srgb.z),alpha),
+            vec4<f32>(encoded(drgb.x),encoded(drgb.y),encoded(drgb.z),d.a));
+    }
+    let a=alpha+d.a*(1.0-alpha);
+    var rgb=vec3<f32>(0.0);
+    if a>0.0 {
+        let mixed=(1.0-d.a)*srgb+d.a*clamp(blend3(u32(p.offset_x),drgb,srgb),vec3<f32>(0.0),vec3<f32>(1.0));
+        rgb=(mixed*alpha+drgb*d.a*(1.0-alpha))/a;
+    }
+    return vec4<f32>(encoded(rgb.x),encoded(rgb.y),encoded(rgb.z),a);
+}
 fn over(s: vec4<f32>, d: vec4<f32>) -> vec4<f32> {
     let a=s.a+d.a*(1.0-s.a);
     if a<=0.0 { return vec4<f32>(0.0); }
@@ -632,9 +663,20 @@ fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgro
             store_rgba(i,vec4<f32>(unpack2x16float(pack2x16float(v.xy)),unpack2x16float(pack2x16float(v.zw))));
         }
     } else if p.op==36u {
-        let src=load_rgba(i);let dst=load_dst(i);let sc=matrix(src.rgb);let dc=matrix(dst.rgb);
-        let s=vec3<f32>(encoded(sc.x),encoded(sc.y),encoded(sc.z));let d=vec3<f32>(encoded(dc.x),encoded(dc.y),encoded(dc.z));
-        store_rgba(i,vec4<f32>(s+d*(1.0-src.a),src.a+dst.a*(1.0-src.a)));
+        store_rgba(i,painted_over(load_rgba(i),load_dst(i)));
+    } else if p.op==69u {
+        // Op 36 then op 11, in one pass: the scene stays in working light.
+        store_rgba(i,to_working(painted_over(load_rgba(i),load_dst(i))));
+    } else if p.op==68u {
+        // Op 10 then op 11, in one pass.
+        store_rgba(i,to_working(object_over(load_rgba(i),load_dst(i))));
+    } else if p.op==67u {
+        // Op 35 then op 11 on the layer in place (`stack_title_precision`).
+        let old=load_dst(i);let rgb=matrix(old.rgb);
+        let v=vec4<f32>(encoded(rgb.x),encoded(rgb.y),encoded(rgb.z),old.a);
+        var q=vec4<f32>(unpack2x16float(pack2x16float(v.xy)),unpack2x16float(pack2x16float(v.zw)));
+        if p.offset_x!=0 { q=floor(clamp(v,vec4<f32>(0.0),vec4<f32>(1.0))*255.0+0.5)/255.0; }
+        store_rgba(i,to_working(q));
     } else if p.op==51u || p.op==52u {
         // A vector path's painted layer, as `vector_path::paint_filled`
         // draws it: two-by-two samples, even-odd fill and round-capped
@@ -1015,8 +1057,10 @@ fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgro
         value=clamp(value,0.0,1.0);
         if p.offset_y!=0 { value=1.0-value; }
         store_rgba(i,vec4<f32>(object.rgb,object.a*value));
-    } else if p.op==12u {
-        let v=load_rgba(i);
+    } else if p.op==12u || p.op==66u {
+        // Op 66 is op 12 on the layer in place.
+        var v: vec4<f32>;
+        if p.op==66u { v=load_dst(i); } else { v=load_rgba(i); }
         let uv=(vec2<f32>(f32(x),f32(y))+vec2<f32>(0.5))/vec2<f32>(f32(p.width),f32(p.height));
         var a=1.0;
         if p.color.x>0.0 { a*=smoothstep(0.0,p.color.x,uv.y); }
@@ -1070,22 +1114,7 @@ fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgro
         }
         store_rgba(i,select(vec4<f32>(0.0),vec4<f32>(acc.rgb/acc.a,acc.a),acc.a>0.0));
     } else if p.op==10u {
-        let s=load_rgba(i); let d=load_dst(i);
-        let srgb=matrix(s.rgb); let drgb=matrix(d.rgb);
-        var alpha=s.a;
-        if abs(p.color.a-1.0)>=0.001 { alpha=floor(alpha*p.color.a*255.0+0.5)/255.0; }
-        if p.offset_x==0 {
-        store_rgba(i,over(vec4<f32>(encoded(srgb.x),encoded(srgb.y),encoded(srgb.z),alpha),
-            vec4<f32>(encoded(drgb.x),encoded(drgb.y),encoded(drgb.z),d.a)));
-        } else {
-            let a=alpha+d.a*(1.0-alpha);
-            var rgb=vec3<f32>(0.0);
-            if a>0.0 {
-                let mixed=(1.0-d.a)*srgb+d.a*clamp(blend3(u32(p.offset_x),drgb,srgb),vec3<f32>(0.0),vec3<f32>(1.0));
-                rgb=(mixed*alpha+drgb*d.a*(1.0-alpha))/a;
-            }
-            store_rgba(i,vec4<f32>(encoded(rgb.x),encoded(rgb.y),encoded(rgb.z),a));
-        }
+        store_rgba(i,object_over(load_rgba(i),load_dst(i)));
     } else if p.op==54u {
         // An image layer fitted into its box, as `paint_image_layer` paints
         // it: in `color` the drawn rectangle's left and top and the picture's

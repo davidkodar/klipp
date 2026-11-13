@@ -307,6 +307,15 @@ struct FillParams {
     // Two (position bits, packed RGBA) stops per aligned uniform vector.
     stops: [[u32; 4]; 8],
 }
+/// A pass that ends in op 11 (ops 67 to 69): the base's own matrix for
+/// its first step, and the one to the working space after it, where the
+/// shader's `to_working` reads it (`stops[0..3]`).
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct TwoSpaceParams {
+    base: StyleParams,
+    to_working: [[f32; 4]; 3],
+}
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct TextureParams {
@@ -1095,30 +1104,39 @@ impl GpuEffectsPipeline {
                 mapped_at_creation: false,
             }));
         }
+        let edges = edges.map(|v| v.clamp(0.0, 0.5));
+        let opacity = opacity.clamp(0.0, 1.0);
+        // No edge, no focus and a full opacity leave every pixel as it is,
+        // to the bit (op 12): such a fade, which every precision step asks
+        // for, is not run.
+        let full = if sprite_alpha { (opacity - 1.0).abs() < 0.000001 } else { (opacity - 1.0).abs() < 0.001 };
+        if focus.is_none() && full && edges.iter().all(|e| *e <= 0.0) {
+            return true;
+        }
         let layer = &self.stack_layers[slot];
         let scratch = self.title_post_scratch.as_ref().unwrap();
         self.write_params(&StyleParams {
             width: w,
             height: h,
             frame_width: w,
-            op: 12,
+            // Op 12 on the layer in place: no scratch to copy back from.
+            op: 66,
             x0: 0,
             y0: 0,
             offset_x: 0,
             offset_y: 0,
-            color: edges.map(|v| v.clamp(0.0, 0.5)),
-            matrix: [[opacity.clamp(0.0, 1.0), if sprite_alpha {1.0}else{0.0}, 0.0, 0.0], focus.map_or([0.0;4], |(vertical,band,edge)| [if vertical {2.0}else{1.0},band.clamp(0.0,0.999),edge.clamp(0.0,1.0),0.0]), [0.0; 4]],
+            color: edges,
+            matrix: [[opacity, if sprite_alpha {1.0}else{0.0}, 0.0, 0.0], focus.map_or([0.0;4], |(vertical,band,edge)| [if vertical {2.0}else{1.0},band.clamp(0.0,0.999),edge.clamp(0.0,1.0),0.0]), [0.0; 4]],
         });
+        // The pass reads and writes the layer; its read binding, unused,
+        // is the scratch.
         self.stack_pass(
             &self.pipelines.title_style_pipeline,
-            layer,
             scratch,
+            layer,
             (count as u32).div_ceil(WORKGROUP_SIZE),
             "title edge fade",
         );
-        let mut enc = self.encoder(Some("title fade copy"));
-        enc.copy_buffer_to_buffer(scratch, 0, layer, 0, count * 16);
-        self.submit(enc);
         true
     }
 
@@ -1406,9 +1424,11 @@ impl GpuEffectsPipeline {
         let Some(to_authored)=inverse(self.authored_to_working) else {return false;};
         let (w,h)=self.stack_dims;let count=w*h;
         let layer=&self.stack_layers[slot];let scratch=self.title_post_scratch.as_ref().unwrap();
-        let params=StyleParams{width:w,height:h,frame_width:w,op:35,x0:0,y0:0,offset_x:i32::from(bytes),offset_y:0,color:[0.0;4],matrix:to_authored};
-        self.write_params(&params);self.stack_pass(&self.pipelines.title_style_pipeline,layer,scratch,count.div_ceil(WORKGROUP_SIZE),"title scene quantization");
-        self.write_params(&StyleParams{op:11,matrix:self.authored_to_working,..params});self.stack_pass(&self.pipelines.title_style_pipeline,scratch,layer,count.div_ceil(WORKGROUP_SIZE),"title scene quantized working");true
+        // Op 35 then op 11, as one pass on the layer in place (op 67); the
+        // read binding, unused, is the scratch.
+        let params=StyleParams{width:w,height:h,frame_width:w,op:67,x0:0,y0:0,offset_x:i32::from(bytes),offset_y:0,color:[0.0;4],matrix:to_authored};
+        self.write_params(&TwoSpaceParams{base:params,to_working:self.authored_to_working});
+        self.stack_pass(&self.pipelines.title_style_pipeline,scratch,layer,count.div_ceil(WORKGROUP_SIZE),"title scene quantization");true
     }
 
     /// Match the CPU title raster's bounding box (alpha >= half a byte).
@@ -1738,7 +1758,10 @@ impl GpuEffectsPipeline {
             width: w,
             height: h,
             frame_width: w,
-            op: if painted {36} else {10},
+            // Op 36 or 10, the object over the scene in encoded authored
+            // colour, then op 11 back to the working space, in one pass
+            // (op 69 or 68): the scene is written once, in place.
+            op: if painted {69} else {68},
             x0: 0,
             y0: 0,
             offset_x: mode as i32,
@@ -1748,8 +1771,7 @@ impl GpuEffectsPipeline {
         };
         let src = &self.stack_layers[source];
         let dst = &self.stack_layers[destination];
-        let scratch = self.title_post_scratch.as_ref().unwrap();
-        self.write_params(&params);
+        self.write_params(&TwoSpaceParams { base: params, to_working: self.authored_to_working });
         self.stack_pass(
             &self.pipelines.title_style_pipeline,
             src,
@@ -1757,21 +1779,6 @@ impl GpuEffectsPipeline {
             (count as u32).div_ceil(WORKGROUP_SIZE),
             "title object over",
         );
-        self.write_params(&StyleParams {
-            op: 11,
-            matrix: self.authored_to_working,
-            ..params
-        });
-        self.stack_pass(
-            &self.pipelines.title_style_pipeline,
-            dst,
-            scratch,
-            (count as u32).div_ceil(WORKGROUP_SIZE),
-            "title scene working space",
-        );
-        let mut enc = self.encoder(Some("title scene copy"));
-        enc.copy_buffer_to_buffer(scratch, 0, dst, 0, count * 16);
-        self.submit(enc);
         true
     }
 
