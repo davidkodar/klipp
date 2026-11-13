@@ -30,7 +30,8 @@ enum Cover {
     /// A labelled case in `cpu_gpu_effect_parity.rs`'s `cases()`, rendered
     /// both ways by `every_effect_matches_between_cpu_and_gpu`.
     Case(&'static str),
-    /// A test function, by its file under `crates/` and its name.
+    /// A test function, by its file under `crates/` and its name: at the
+    /// file's top level or in a module of it (a crate's own `src` tests).
     Test(&'static str, &'static str),
     /// No CPU/GPU comparison, and why.
     Exempt(&'static str),
@@ -255,6 +256,8 @@ const SHADERS: &[(&str, Cover)] = &[
     ("SHADER_SPRITE_PLACE", Test(STACK, "a_posed_sprite_is_the_cpu_pose_uploaded")),
     ("SHADER_SPRITE_GLYPHS", Test(STACK, "posed_glyphs_are_the_cpu_glyph_pose_uploaded")),
     ("SHADER_U8_FIT_TO_LINEAR", Test(COMPOSITE, "a_layer_of_another_size_is_fitted_on_the_gpu")),
+    // Its linear twin, for export's frames of another size (#3977).
+    ("SHADER_LINEAR_FIT_INTO_CHAIN", Test("klipp-compose/src/render.rs", "a_linear_frame_of_another_size_is_fitted_as_the_cpu_fits_it")),
     ("SHADER_HDR10_TO_LINEAR", Test("klipp-engine/tests/hdr_gpu_graded_path.rs", "a_chain_seeded_from_hdr_codes_on_the_gpu_grades_like_the_cpu_path")),
     ("SHADER_HDR16_TO_LINEAR", Test("klipp-engine/tests/hdr_gpu_graded_path.rs", "a_deep_source_seeded_on_the_gpu_grades_like_the_cpu_path")),
     ("SHADER_SCENE_TO_DISPLAY", Test("klipp-nodes/tests/scene_to_display_node.rs", "the_display_step_on_the_chain_draws_the_cpu_step")),
@@ -341,7 +344,7 @@ fn check_cover(what: &str, cover: Cover, failures: &mut Vec<String>) {
             let src = source(file);
             if !src.contains(&format!("fn {name}(")) {
                 failures.push(format!("{what}: no fn {name} in {file}"));
-            } else if !src.contains(&format!("#[test]\nfn {name}(")) && !src.contains(&format!("#[test]\r\nfn {name}(")) {
+            } else if !src.lines().zip(src.lines().skip(1)).any(|(a, b)| a.trim() == "#[test]" && b.trim_start().starts_with(&format!("fn {name}("))) {
                 failures.push(format!("{what}: {file}::{name} is not a #[test]"));
             }
         }
