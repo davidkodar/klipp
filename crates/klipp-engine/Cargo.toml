@@ -297,6 +297,10 @@ name = "an_edited_title_is_warmed_again"
 path = "tests/an_edited_title_is_warmed_again.rs"
 
 [[test]]
+name = "an_empty_start_does_not_wait_for_the_gpu_build"
+path = "tests/an_empty_start_does_not_wait_for_the_gpu_build.rs"
+
+[[test]]
 name = "a_layer_shows_only_its_own_clip"
 path = "tests/a_layer_shows_only_its_own_clip.rs"
 

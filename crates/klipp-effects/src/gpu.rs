@@ -423,10 +423,38 @@ impl EffectPipelines {
         if let Some((_, p)) = kept.iter().find(|(d, _)| std::ptr::eq(d.as_ptr(), Arc::as_ptr(device))) {
             return Some(Arc::clone(p));
         }
+        #[cfg(feature = "test-hooks")]
+        build_hold::wait();
         let built = Arc::new(Self::build(device)?);
         kept.push((Arc::downgrade(device), Arc::clone(&built)));
         Some(built)
     }
+}
+
+/// The pipelines' build held at its start, the shared list locked, as a
+/// driver compiling with its shader cache cold holds it: a test's.
+#[cfg(feature = "test-hooks")]
+mod build_hold {
+    static HELD: std::sync::Mutex<bool> = std::sync::Mutex::new(false);
+    static RELEASED: std::sync::Condvar = std::sync::Condvar::new();
+
+    pub(super) fn set(held: bool) {
+        *HELD.lock().unwrap_or_else(|e| e.into_inner()) = held;
+        RELEASED.notify_all();
+    }
+
+    pub(super) fn wait() {
+        let held = HELD.lock().unwrap_or_else(|e| e.into_inner());
+        drop(RELEASED.wait_while(held, |h| *h).unwrap_or_else(|e| e.into_inner()));
+    }
+}
+
+/// Hold every build of the effect pipelines at its start until called
+/// again with `false`: a test's, for a compile that takes as long as the
+/// test wants.
+#[cfg(feature = "test-hooks")]
+pub fn hold_pipeline_build(held: bool) {
+    build_hold::set(held);
 }
 
 /// What a 3D LUT node's table is kept by while the GPU holds its upload:

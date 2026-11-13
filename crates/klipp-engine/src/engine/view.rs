@@ -319,6 +319,10 @@ fn source_frame(f: &HeldFrame) -> SourceFrame {
     SourceFrame { pixels: f.source_pixels(), width: f.width, height: f.height, pts: f.pts }
 }
 
+/// What the viewer's trail says of an empty frame shown while the GPU's
+/// pipelines still compile.
+const EMPTY_WHILE_BUILDING: &str = "empty frame shown, the GPU pipelines still building";
+
 /// Media clips that start within [`seek_lead::MAX_LEAD_SECS`] of `time`
 /// while playing, at their first frame, each with when it starts: their
 /// streams open and start decoding before the playhead reaches them, each
@@ -1252,7 +1256,9 @@ impl PlaybackEngine {
                 None
             }
         }
-        if !self.prewarm_stack || !klipp_compose::gpu_composite_enabled() {
+        // Not while the pipelines compile: it would wait for them. A
+        // later paused frame, or play starting, draws it.
+        if !self.prewarm_stack || !klipp_compose::gpu_composite_enabled() || self.renderer.executor().gpu_build_pending() {
             return;
         }
         let full = {
@@ -1275,6 +1281,13 @@ impl PlaybackEngine {
         let drawn = self.renderer.render_display_on_gpu(&seq, self.playhead, w, h, &mut Nothing, RenderOptions::default(), klipp_compose::DisplayDelivery { texture: None, bytes: false });
         self.empty_stack_warm = Some((w, h));
         tracing::debug!("the GPU stack's empty frame drawn ahead at {w}x{h} in {:.1} ms (drawn {})", t.elapsed().as_secs_f64() * 1000.0, drawn.is_some());
+    }
+
+    /// Whether `seq`, a frame's snapshot, draws nothing at all: no clip in
+    /// it and no timeline LUT over it. Track effects go onto each clip,
+    /// so an empty track draws nothing whatever it holds.
+    fn nothing_to_draw(&self, seq: &Sequence) -> bool {
+        self.color_pipeline.global_lut.is_none() && seq.tracks.iter().all(|t| t.clips.is_empty())
     }
 
     /// The preview up drawn at `at` (#3210), as a timeline skim draws a
@@ -1403,6 +1416,19 @@ impl PlaybackEngine {
         let (w, h) = reduced_for_quality((w, h), quality_divisor_for(self.state, crate::video_decoder::playback_quality_divisor()));
         if w == 0 || h == 0 {
             return false;
+        }
+
+        // Nothing to draw while the GPU's pipelines are still compiling:
+        // the empty frame shown as it is, black. The GPU stack would wait
+        // for the whole compile first — the first frame of every start,
+        // no project open yet, waited 2 s with the shader cache cold, and
+        // the engine took no command meanwhile.
+        if primary.is_none() && !previewing && self.nothing_to_draw(&seq) && self.renderer.executor().gpu_build_pending() {
+            self.note_composite_path("empty frame, the GPU still building");
+            self.note_view(EMPTY_WHILE_BUILDING.to_string());
+            let black = [0u8, 0, 0, 255].repeat((w as usize) * (h as usize));
+            self.show_rendered(Rendered { picture: Picture::Display(black), width: w, height: h, stats: None }, t_frame);
+            return true;
         }
 
         // The ungraded frame, for compare modes, scrubbing back and the UI's
