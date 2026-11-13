@@ -666,17 +666,22 @@ fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgro
         store_rgba(i,painted_over(load_rgba(i),load_dst(i)));
     } else if p.op==69u {
         // Op 36 then op 11, in one pass: the scene stays in working light.
-        store_rgba(i,to_working(painted_over(load_rgba(i),load_dst(i))));
+        // Ops 66 to 69 run over a rectangle of the frame: `width` by
+        // `height` from (`x0`, `y0`), rows `frame_width` apart.
+        let fi=(y+p.y0)*p.frame_width+x+p.x0;
+        store_rgba(fi,to_working(painted_over(load_rgba(fi),load_dst(fi))));
     } else if p.op==68u {
         // Op 10 then op 11, in one pass.
-        store_rgba(i,to_working(object_over(load_rgba(i),load_dst(i))));
+        let fi=(y+p.y0)*p.frame_width+x+p.x0;
+        store_rgba(fi,to_working(object_over(load_rgba(fi),load_dst(fi))));
     } else if p.op==67u {
         // Op 35 then op 11 on the layer in place (`stack_title_precision`).
-        let old=load_dst(i);let rgb=matrix(old.rgb);
+        let fi=(y+p.y0)*p.frame_width+x+p.x0;
+        let old=load_dst(fi);let rgb=matrix(old.rgb);
         let v=vec4<f32>(encoded(rgb.x),encoded(rgb.y),encoded(rgb.z),old.a);
         var q=vec4<f32>(unpack2x16float(pack2x16float(v.xy)),unpack2x16float(pack2x16float(v.zw)));
         if p.offset_x!=0 { q=floor(clamp(v,vec4<f32>(0.0),vec4<f32>(1.0))*255.0+0.5)/255.0; }
-        store_rgba(i,to_working(q));
+        store_rgba(fi,to_working(q));
     } else if p.op==51u || p.op==52u {
         // A vector path's painted layer, as `vector_path::paint_filled`
         // draws it: two-by-two samples, even-odd fill and round-capped
@@ -1058,10 +1063,15 @@ fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgro
         if p.offset_y!=0 { value=1.0-value; }
         store_rgba(i,vec4<f32>(object.rgb,object.a*value));
     } else if p.op==12u || p.op==66u {
-        // Op 66 is op 12 on the layer in place.
+        // Op 66 is op 12 on the layer in place, over a rectangle of it (as
+        // ops 67 to 69); the frame's height is in `stops[3].x`.
         var v: vec4<f32>;
-        if p.op==66u { v=load_dst(i); } else { v=load_rgba(i); }
-        let uv=(vec2<f32>(f32(x),f32(y))+vec2<f32>(0.5))/vec2<f32>(f32(p.width),f32(p.height));
+        var at=i; var fx=x; var fy=y; var fw=p.width; var fh=p.height;
+        if p.op==66u {
+            fx=x+p.x0; fy=y+p.y0; fw=p.frame_width; fh=p.stops[3].x;
+            at=fy*fw+fx; v=load_dst(at);
+        } else { v=load_rgba(i); }
+        let uv=(vec2<f32>(f32(fx),f32(fy))+vec2<f32>(0.5))/vec2<f32>(f32(fw),f32(fh));
         var a=1.0;
         if p.color.x>0.0 { a*=smoothstep(0.0,p.color.x,uv.y); }
         if p.color.y>0.0 { a*=smoothstep(0.0,p.color.y,1.0-uv.y); }
@@ -1084,7 +1094,7 @@ fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgro
                 alpha=floor(half_alpha*p.row0.x*255.0+0.5)/255.0;
             }
         } else if abs(p.row0.x-1.0)>=0.001 { alpha=floor(alpha*p.row0.x*255.0+0.5)/255.0; }
-        store_rgba(i,vec4<f32>(v.rgb,alpha));
+        store_rgba(at,vec4<f32>(v.rgb,alpha));
     } else if p.op==65u {
         // Op 10's over, onto a picture held in encoded authored colour (or
         // onto nothing, `offset_y` 1), left encoded: layers laid one after

@@ -1113,6 +1113,14 @@ pub struct Renderer {
     layer_bounds: Vec<(LayerBoundsKey, Option<(u32, u32, u32, u32)>)>,
     /// Scenes of several title layers composed on the GPU (for tests).
     title_scene_composes: u64,
+    /// The part of the frame the title object last placed paints, `[x0,
+    /// y0, x1, y1)`, when its route knows it (`None` when it does not):
+    /// what a scene's in-place passes on it run over (`title_bounds`).
+    title_ink: Option<[u32; 4]>,
+    /// Tests only: whether scenes run their passes over their bounds, and
+    /// pixels taken off each side of them.
+    #[cfg(feature = "bounds-hook")]
+    bounds_hook: (bool, u32),
     /// The warm-up thread's ends: titles to render ahead go out, their
     /// resting renders come back for `titles` to keep.
     warm_tx: Option<std::sync::mpsc::Sender<(klipp_timeline::TitleData, u32, u32)>>,
@@ -1274,6 +1282,9 @@ impl Renderer {
             still_title_scenes: crate::still_title_scenes::StillTitleScenes::default(),
             layer_bounds: Vec::new(),
             title_scene_composes: 0,
+            title_ink: None,
+            #[cfg(feature = "bounds-hook")]
+            bounds_hook: (true, 0),
             warm_tx: None,
             warm_rx: None,
             glyph_cache: HashMap::new(),
@@ -1354,6 +1365,30 @@ impl Renderer {
     #[doc(hidden)]
     pub fn title_scene_composes(&self) -> u64 {
         self.title_scene_composes
+    }
+
+    /// Tests only: scenes composed over their bounds (`on`) or the whole
+    /// frame, with `shrink` pixels taken off each side of the bounds, so a
+    /// test can see bounds too tight change the picture.
+    #[cfg(feature = "bounds-hook")]
+    #[doc(hidden)]
+    pub fn set_title_bounds_for_test(&mut self, on: bool, shrink: u32) {
+        self.bounds_hook = (on, shrink);
+    }
+
+    /// A placed object's or a scene's bounds as its passes take them:
+    /// under the test hook, none when it is off, or shrunk.
+    fn title_pass_bounds(&self, rect: Option<[u32; 4]>) -> Option<[u32; 4]> {
+        #[cfg(feature = "bounds-hook")]
+        {
+            let (on, s) = self.bounds_hook;
+            if !on {
+                return None;
+            }
+            return rect.map(|[x0, y0, x1, y1]| [x0 + s, y0 + s, x1.saturating_sub(s).max(x0 + s), y1.saturating_sub(s).max(y0 + s)]);
+        }
+        #[allow(unreachable_code)]
+        rect
     }
 
     pub fn title_renderer(&mut self) -> &mut klipp_title::TitleRenderer {
@@ -3483,6 +3518,8 @@ impl Renderer {
     }
 
     fn place_title_source_in_scene(&mut self, td: &klipp_timeline::TitleData, slot: usize, width: u32, height: u32, clip_time: f64, total: f32, scene: &klipp_timeline::TitleData, shape_straight: Option<bool>) -> Option<((u32,u32),Vec<BuiltinEffect>)> {
+        // A route that knows what part of the frame it paints says so.
+        self.title_ink = None;
         if let [object] = td.objects.as_slice() {
             let shape=match &object.content {klipp_timeline::TitleObjectContent::Shape(s)=>Some(s),_=>None};
             let image=match &object.content {klipp_timeline::TitleObjectContent::Image(i)=>Some(i),_=>None};
@@ -3705,6 +3742,36 @@ impl Renderer {
                     // Scene objects arrive with opacity stripped; matte sources retain it.
                     let opacity=object.evaluated_opacity(clip_time).clamp(0.0,1.0);
                     if (opacity-1.0).abs()>=0.001 && (!gpu.stack_title_precision(slot,true) || !gpu.stack_title_alpha(slot,[0.0;4],opacity)) {return None;}
+                    // The part of the frame the shape paints: its rectangle,
+                    // its stack's reach round it, and, moving, the blur and
+                    // the travel its pose measures by that part's height (the
+                    // shader takes the height of what is painted, no taller).
+                    // A scaled or masked pose, or a picture, is not known here.
+                    self.title_ink=(|| {
+                        if image.is_some() || clip_rows || (motion.is_active() && scales) {return None;}
+                        let (bx0,by0,bx1,by1)=klipp_title::rect_layer_bounds(shape?,&transform,width,height)?;
+                        let styled=passes.iter().any(|p|!matches!(p,klipp_effects::gpu::TitleStyle::Face));
+                        let pad=if styled {klipp_title::stack_reach(&stack,scale) as u32} else {0};
+                        let mut r=grow_rect([bx0,by0,bx1,by1],pad+1,width,height);
+                        if motion.is_active() {
+                            use klipp_timeline::MotionKind;
+                            let tall=(r[3]-r[1]) as f32;
+                            if blurs {
+                                let sigma=|m:Option<klipp_timeline::Motion>,progress:f32| m.map_or(0.0,|m| (1.0-progress)*tall*match m.kind {MotionKind::Blur=>0.12,MotionKind::FocusIn=>0.14,MotionKind::SoftRise=>0.08,_=>0.0});
+                                let sigma=sigma(motion.enter,enter).max(sigma(motion.exit,exit));
+                                let radius=(sigma/1.7+0.5).floor().max(1.0) as u32;
+                                r=grow_rect(r,3*radius+2,width,height);
+                            }
+                            let (mut ax,mut ay)=(0.0f32,0.0f32);
+                            for t in [enter_travel,exit_travel] {
+                                ax+=(t[0]*(tall*t[1])*t[2]).abs();
+                                ay+=(t[0]*(tall*t[1])*t[3]).abs();
+                            }
+                            let (gx,gy)=(ax.ceil() as u32+1,ay.ceil() as u32+1);
+                            r=[r[0].saturating_sub(gx),r[1].saturating_sub(gy),(r[2]+gx).min(width),(r[3]+gy).min(height)];
+                        }
+                        Some(r)
+                    })();
                     return Some(((0,height),Vec::new()));
                 }
             }
@@ -3835,6 +3902,14 @@ impl Renderer {
             // Every text box its own backing, as the CPU title (#2487).
             let backing=matches!(td.background,klipp_timeline::TitleBackground::Color{..}).then(||td.background.clone());
             let mut crop_faded_matte_scene=false;
+            // In a title whose every object's painted part is known, each
+            // object's fade and precision run over that part alone, and its
+            // laying over the scene and the scene's precision over all of
+            // them: outside those both layers are empty, which those passes
+            // keep so.
+            let bounded=title_bounds_refused(td).is_none();
+            let mut scene_rect:Option<[u32;4]>=None;
+            let mut scene_known=true;
             for object in td.objects.iter().filter(|o| o.visible && !td.is_matte(o.id)) {
                 let opacity = object.evaluated_opacity(clip_time).clamp(0.0,1.0);
                 let mut single = td.clone();
@@ -3846,14 +3921,33 @@ impl Renderer {
                 single.objects[0].mask=None;
                 let (_,soft) = self.place_title_source_in_scene(&single,object_slot,width,height,clip_time,total,scene,Some(object.blend!=klipp_core::BlendMode::Normal || td.mask_of(object).is_some()))?;
                 if !self.executor.gpu_pipeline_or_init()?.stack_title_source_effects(object_slot,&soft) { return None; }
+                // What it paints, its blurs' reach included; any other effect
+                // leaves it unknown.
+                let mut ink=if bounded {self.title_ink} else {None};
+                for effect in &soft {
+                    ink=match effect {
+                        BuiltinEffect::GaussianBlur{radius}|BuiltinEffect::FocusBlur{radius,..}=>ink.map(|r|grow_rect(r,blur_reach(*radius),width,height)),
+                        _=>None,
+                    };
+                }
+                let roi=self.title_pass_bounds(ink);
+                match roi {
+                    Some(r)=>scene_rect=Some(scene_rect.map_or(r,|s|union_rect(s,r))),
+                    None=>scene_known=false,
+                }
                 // Shapes with opacity are byte layers in the CPU painter; at full
                 // opacity an undressed normal shape paints fractional colour directly.
                 // An image is always a byte layer.
                 let plain_shape=matches!(object.content,klipp_timeline::TitleObjectContent::Shape(_)) && object.fx().is_default();
                 let image=matches!(object.content,klipp_timeline::TitleObjectContent::Image(_));
-                if (plain_shape || image) && (opacity-1.0).abs()>=0.001 && !self.executor.gpu_pipeline_or_init()?.stack_title_precision(object_slot,true) {return None;}
                 // Apply opacity before the mask, exactly as the authored stack.
-                if !self.executor.gpu_pipeline_or_init()?.stack_title_alpha(object_slot,[0.0;4],opacity) { return None; }
+                // The part is set around these passes alone, never left set.
+                let gpu=self.executor.gpu_pipeline_or_init()?;
+                gpu.stack_title_set_roi(roi);
+                let faded=!((plain_shape || image) && (opacity-1.0).abs()>=0.001 && !gpu.stack_title_precision(object_slot,true))
+                    && gpu.stack_title_alpha(object_slot,[0.0;4],opacity);
+                gpu.stack_title_set_roi(None);
+                if !faded {return None;}
                 if let Some((matte,kind)) = td.mask_of(object) {
                     crop_faded_matte_scene |= matches!(matte.content,klipp_timeline::TitleObjectContent::Shape(_))
                         && (!matte.fx().edge_fade.is_none() || matte.fx().motion.is_active());
@@ -3875,14 +3969,26 @@ impl Renderer {
                 // into what is under it as a rectangle's colour is (#2201).
                 let path=matches!(&object.content,klipp_timeline::TitleObjectContent::Shape(s) if matches!(s.kind,klipp_timeline::ShapeKind::Path(_)));
                 let painted=plain_shape && !path && (opacity-1.0).abs()<0.001 && object.blend==klipp_core::BlendMode::Normal && td.mask_of(object).is_none();
+                // Laid over the scene, a pixel the object leaves empty is the
+                // scene's sent to authored colour and back, which is not the
+                // same to the bit: the pass covers all laid so far, outside
+                // which the scene is empty too.
                 let gpu=self.executor.gpu_pipeline_or_init()?;
-                if !(if painted {gpu.stack_title_painted_over(object_slot,slot)} else {gpu.stack_title_over(object_slot,slot,1.0,object.blend)}) {return None;}
+                gpu.stack_title_set_roi(if scene_known {scene_rect} else {None});
+                let laid=if painted {gpu.stack_title_painted_over(object_slot,slot)} else {gpu.stack_title_over(object_slot,slot,1.0,object.blend)};
+                gpu.stack_title_set_roi(None);
+                if !laid {return None;}
             }
             let gpu=self.executor.gpu_pipeline_or_init()?;
             // The CPU keeps only the final scene's alpha bounding box. Preserve
             // faint pixels inside that box, but discard its low-alpha fringe.
             if crop_faded_matte_scene && !gpu.stack_title_crop_to_alpha_bounds(slot) {return None;}
-            if !gpu.stack_title_precision(slot,false) {return None;}
+            // The scene's precision over every object's part: none laid is
+            // an empty part, and an empty scene stays as it is.
+            gpu.stack_title_set_roi((bounded && scene_known).then(||scene_rect.unwrap_or([0;4])));
+            let precise=gpu.stack_title_precision(slot,false);
+            gpu.stack_title_set_roi(None);
+            if !precise {return None;}
             if keep {
                 self.still_title_scenes.keep(self.executor.gpu_pipeline_or_init()?, td, images, slot, width, height, working);
             }
@@ -3975,16 +4081,27 @@ impl Renderer {
                     }
                     rows = (source.roi[1], source.roi[1] + source.roi[3]);
                     let passes = crate::synth::title_style_passes(&source.fx, klipp_title::frame_scale(width, height), clip_time);
-                    self.executor.gpu_pipeline_or_init().is_some_and(|p| {
+                    let styled = self.executor.gpu_pipeline_or_init().is_some_and(|p| {
                         p.stack_layer_place_sprite_posed(slot, source.id, &source.pixels.texels, sprite_box(&source.pixels), 0, 0, 1.0, 1.0, (0.0, 0.0), None, None, rows.0, rows.1)
                             && p.stack_title_styles(slot, source.roi, &passes)
-                    })
+                    });
+                    // The sprite where it rests, and its styles over the box
+                    // they dress.
+                    let b = &source.pixels;
+                    let r = source.roi;
+                    self.title_ink = sprite_placed_rect((b.x0, b.y0, b.w, b.h), 0, 0, 1.0, (0.0, 0.0), width, height)
+                        .map(|s| union_rect(s, [r[0], r[1], (r[0] + r[2]).min(width), (r[1] + r[3]).min(height)]));
+                    styled
                 } else {
                     let (frame_rows, frame_lead) = self.place_title_frame(td, slot, width, height, clip_time, total)?;
                     rows = frame_rows;
                     lead = frame_lead;
                     true
                  };
+                // A chromatic split or a glitch spreads past what was placed.
+                if post.is_some() {
+                    self.title_ink = None;
+                }
                 let ok = placed && post.as_ref().is_none_or(|(_, chromatic, glitch)| {
                     self.executor.gpu_pipeline_or_init().is_some_and(|p| {
                         p.stack_title_post(slot, *chromatic * klipp_title::frame_scale(width, height), *glitch, clip_time as f32)
@@ -4017,9 +4134,18 @@ impl Renderer {
                 residency::record("title.resting", "Still title rastered on the CPU once, then kept on the GPU", Work::Preparation);
             }
         }
+        // The part of the frame it paints, where the route places a sprite
+        // whose box and pose it knows (`title_ink`).
+        let mut ink = None;
         let placed = match frame {
             klipp_title::TitleFrame::Placed { sprite, dx, dy, opacity, scale, anchor, under, blur, shape, rows: r, backing } => {
                 rows = r;
+                // A colour beneath fills its rows; line boxes reach past
+                // the text: their part is not known here.
+                if under.is_none() && backing.is_none() {
+                    let b = &sprite.pixels;
+                    ink = sprite_placed_rect((b.x0, b.y0, b.w, b.h), dx, dy, scale, anchor, width, height);
+                }
                 // The blur entrance, and a roll's focus band going
                 // soft (#592): the placed sprite blurred first, as
                 // the CPU blurs the title it draws, and then the
@@ -4063,6 +4189,9 @@ impl Renderer {
             }
             klipp_title::TitleFrame::Layers { layers, rows: r } => {
                 rows = r;
+                ink = layers.iter().map(|(s, _)| sprite_placed_rect((s.pixels.x0, s.pixels.y0, s.pixels.w, s.pixels.h), 0, 0, 1.0, (0.0, 0.0), width, height))
+                    .collect::<Option<Vec<_>>>()
+                    .and_then(|rects| rects.into_iter().reduce(union_rect));
                 self.executor.gpu_pipeline_or_init().is_some_and(|p| {
                     layers.iter().enumerate().all(|(index, (sprite, opacity))| {
                         if index == 0 {
@@ -4080,6 +4209,7 @@ impl Renderer {
                 self.executor.gpu_pipeline_or_init().is_some_and(|p| p.stack_layer_from_srgb_f16_box(slot, &pixels.texels, sprite_box(&pixels)))
             }
         };
+        self.title_ink = if placed { ink } else { None };
         placed.then_some((rows, lead))
     }
 
@@ -8433,6 +8563,76 @@ fn title_raster_moves(td: &klipp_timeline::TitleData) -> Option<&klipp_timeline:
     moves.then_some(td)
 }
 
+/// Why a title scene's in-place passes run over the whole frame rather
+/// than over the part its objects paint: `None` for a title of text boxes
+/// and rectangles whose every object's painted part its route knows.
+/// Anything else (a picture, a vector path, a mask, a turn, a full-frame
+/// background, or what moves by the clock: loops, animators, keys, 3D)
+/// keeps the whole frame.
+pub(crate) fn title_bounds_refused(td: &klipp_timeline::TitleData) -> Option<&'static str> {
+    use klipp_timeline::{ShapeKind, TitleBackground, TitleObjectContent};
+    if matches!(td.background, TitleBackground::FullFrame { .. }) {
+        return Some("a full-frame background");
+    }
+    if !klipp_title::title_time_free(td) {
+        return Some("loops, animators, keys, a glitch or a 3D solid");
+    }
+    for o in &td.objects {
+        if td.is_matte(o.id) || td.mask_of(o).is_some() || o.mask.is_some() {
+            return Some("a mask");
+        }
+        match &o.content {
+            TitleObjectContent::TextBox(tb) if tb.text_path.is_none() => {}
+            TitleObjectContent::TextBox(_) => return Some("text on a path"),
+            TitleObjectContent::Shape(s) if matches!(s.kind, ShapeKind::Rectangle { .. }) && s.fit.is_none() => {}
+            TitleObjectContent::Shape(_) => return Some("a vector path or a fitted shape"),
+            TitleObjectContent::Image(_) => return Some("a picture"),
+            #[allow(unreachable_patterns)]
+            _ => return Some("another kind of layer"),
+        }
+        if o.transform.rotation != 0.0 || !o.transform.rotation_keyframes.is_empty() {
+            return Some("a turn");
+        }
+    }
+    None
+}
+
+/// `[x0, y0, x1, y1)` grown by `by` pixels each side, within the frame.
+fn grow_rect(r: [u32; 4], by: u32, width: u32, height: u32) -> [u32; 4] {
+    [r[0].saturating_sub(by), r[1].saturating_sub(by), (r[2] + by).min(width), (r[3] + by).min(height)]
+}
+
+fn union_rect(a: [u32; 4], b: [u32; 4]) -> [u32; 4] {
+    [a[0].min(b[0]), a[1].min(b[1]), a[2].max(b[2]), a[3].max(b[3])]
+}
+
+/// How far a Gaussian blur of `sigma` reaches: its three boxes' radii,
+/// each run once across and once down, and a pixel more.
+fn blur_reach(sigma: f32) -> u32 {
+    klipp_effects::blur::boxes_for_gaussian(sigma).iter().sum::<usize>() as u32 + 1
+}
+
+/// The pixels a sprite of box `bx` placed `(dx, dy)` and scaled `scale`
+/// about `anchor` covers, as the sprite shader samples it (bilinearly when
+/// scaled: a pixel either side), `[x0, y0, x1, y1)` within the frame.
+/// `None` for a scale the shader does not place.
+fn sprite_placed_rect(bx: (u32, u32, u32, u32), dx: i32, dy: i32, scale: f32, anchor: (f32, f32), width: u32, height: u32) -> Option<[u32; 4]> {
+    let (x0, y0, w, h) = (bx.0 as f32, bx.1 as f32, bx.2 as f32, bx.3 as f32);
+    let (lo, hi) = if (scale - 1.0).abs() < 1e-6 {
+        ([x0 + dx as f32, y0 + dy as f32], [x0 + w + dx as f32, y0 + h + dy as f32])
+    } else if scale.is_finite() && scale > 0.0 {
+        // The source position of pixel x is (x + 0.5 - dx - a) / s + a - 0.5,
+        // tapped at it and the next texel: a pixel lands on the box from
+        // one texel before it to its end.
+        let at = |f: f32, d: i32, a: f32| (f + 0.5 - a) * scale + a + d as f32 - 0.5;
+        ([at(x0 - 1.0, dx, anchor.0) - 1.0, at(y0 - 1.0, dy, anchor.1) - 1.0], [at(x0 + w, dx, anchor.0) + 2.0, at(y0 + h, dy, anchor.1) + 2.0])
+    } else {
+        return None;
+    };
+    let px = |v: f32, max: u32| (v.max(0.0) as u32).min(max);
+    Some([px(lo[0].floor(), width), px(lo[1].floor(), height), px(hi[0].ceil(), width), px(hi[1].ceil(), height)])
+}
+
 /// Whether a title's own motion blur runs on the stack. A title whose
 /// drawing holds still is placed at each sample as the camera's shutter
 /// places a picture; one whose drawing moves is drawn at each sample, which
@@ -9860,6 +10060,69 @@ mod fit_on_gpu_tests {
             let want = scene.read();
             let (d, x, y) = worst(&got, &want, w);
             assert!(d <= 1e-3, "{sw}x{sh} → {w}x{h}: {d} at ({x}, {y})");
+        }
+    }
+}
+
+#[cfg(test)]
+mod title_bounds_scope_tests {
+    use super::title_bounds_refused;
+    use klipp_timeline::{title_library, ShapeKind, TitleBackground, TitleLoop, TitleObjectContent};
+
+    fn statement() -> klipp_timeline::TitleData {
+        let t = title_library::TITLES.iter().find(|t| t.name == "Statement").expect("Statement");
+        title_library::for_frame(t.build(), 1920, 1080)
+    }
+
+    /// A title of text and a rectangle is in scope; one with a picture,
+    /// a vector path, a mask, a 3D solid, a loop, a key, a full-frame
+    /// background or a turn keeps the whole frame, and says why.
+    #[test]
+    fn a_title_outside_the_bounds_scope_keeps_the_whole_frame() {
+        assert_eq!(title_bounds_refused(&statement()), None, "Statement: text and a bar");
+        let text = |td: &mut klipp_timeline::TitleData| td.objects.iter_mut().find(|o| matches!(o.content, TitleObjectContent::TextBox(_))).expect("words").id;
+        let bar = |td: &klipp_timeline::TitleData| td.objects.iter().position(|o| matches!(o.content, TitleObjectContent::Shape(_))).expect("a bar");
+        let mut cases: Vec<(&str, klipp_timeline::TitleData)> = Vec::new();
+        let mut picture = statement();
+        let i = bar(&picture);
+        picture.objects[i].content = TitleObjectContent::Image(klipp_timeline::ImageLayer { path: "/logo.png".into(), fit: Default::default() });
+        cases.push(("a picture", picture));
+        let mut path = statement();
+        let i = bar(&path);
+        if let TitleObjectContent::Shape(s) = &mut path.objects[i].content {
+            s.kind = ShapeKind::Path(klipp_core::vector_path::VectorPath::text_guide());
+        }
+        cases.push(("a vector path", path));
+        let mut masked = statement();
+        let words = text(&mut masked);
+        let i = bar(&masked);
+        masked.objects[i].mask = Some(klipp_timeline::LayerMask { source: words, kind: Default::default() });
+        cases.push(("a mask", masked));
+        let mut solid = statement();
+        for o in &mut solid.objects {
+            if let TitleObjectContent::TextBox(tb) = &mut o.content {
+                tb.three_d = Some(serde_json::from_value(serde_json::json!({})).expect("a 3D solid"));
+            }
+        }
+        cases.push(("a 3D solid", solid));
+        let mut looped = statement();
+        let i = bar(&looped);
+        looped.objects[i].fx_mut().loops.push(TitleLoop::Pulse { rate_hz: 1.0, min_opacity: 0.3 });
+        cases.push(("a loop", looped));
+        let mut keyed = statement();
+        keyed.objects[0].opacity_keyframes = vec![
+            klipp_core::Keyframe { time_secs: 0.0, value: 0.0, interpolation: Default::default(), tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() },
+            klipp_core::Keyframe { time_secs: 1.0, value: 1.0, interpolation: Default::default(), tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() },
+        ];
+        cases.push(("a key", keyed));
+        let mut full = statement();
+        full.background = TitleBackground::FullFrame { color: [0, 0, 0, 255] };
+        cases.push(("a full-frame background", full));
+        let mut turned = statement();
+        turned.objects[0].transform.rotation = 5.0;
+        cases.push(("a turn", turned));
+        for (what, td) in &cases {
+            assert!(title_bounds_refused(td).is_some(), "{what}: the whole frame");
         }
     }
 }

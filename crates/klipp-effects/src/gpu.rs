@@ -565,6 +565,11 @@ pub struct GpuEffectsPipeline {
     surface_light_scratch: Option<surface_light::Scratch>,
     title_post_scratch: Option<wgpu::Buffer>,
     title_scene_bounds: Option<wgpu::Buffer>,
+    /// The part of the frame a title's object or scene covers, `[x0, y0,
+    /// x1, y1)`, when its renderer knows it: the in-place title passes
+    /// (fade, precision, object over) run over it alone. Everything
+    /// outside it is empty in both layers, which those passes leave so.
+    title_roi: Option<[u32; 4]>,
     title_outlines: Vec<(u64,wgpu::Buffer)>,
     // Compute pipelines — transitions (3-buffer: from, to, output, params)
     // ── linear-f32 → sRGB-u8 pixel encode pipeline ─────────────────
