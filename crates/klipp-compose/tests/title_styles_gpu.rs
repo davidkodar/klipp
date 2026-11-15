@@ -2733,7 +2733,10 @@ fn a_still_path_moved_whole_stays_resident() {
                 let worst = got.iter().zip(&want).map(|(a, b)| a.abs_diff(*b)).max().unwrap();
                 assert!(worst <= 1, "mode={mode} {ws:?} t={t}: {worst} levels apart");
             }
-            assert_eq!(gpu.title_renderer().resting_renders(), 1, "mode={mode}: one resting raster for the clip");
+            // A loop that moves it (mode 2) poses it as a rectangle is, its
+            // path scanned on the GPU at each pose and its bounds painted
+            // once (#3167): no resting raster at all.
+            assert_eq!(gpu.title_renderer().resting_renders(), if mode == 2 { 0 } else { 1 }, "mode={mode}: one resting raster for the clip, or none");
         }
     }
 }

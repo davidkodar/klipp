@@ -1180,9 +1180,20 @@ impl GpuEffectsPipeline {
     /// Retains translation, scaling and row clipping in the same sampling pass.
     #[allow(clippy::too_many_arguments)]
     pub fn stack_title_motion_blur_pose(&mut self, slot: usize, blur: [f32;4], enter: [f32;4], exit: [f32;4], scaled: Option<[f32;4]>, solid: bool, clip_rows: bool) -> bool {
+        self.stack_title_motion_blur_pose_in(slot,blur,enter,exit,scaled,solid,clip_rows,[0.0;2],None)
+    }
+
+    /// [`Self::stack_title_motion_blur_pose`] moved `offset` frame pixels
+    /// more, as [`Self::stack_title_motion_translate_by`], and measured by
+    /// `painted`, the box the layer covered before its stack was drawn round
+    /// it, as the CPU poses a dressed shape (#3167): its travel, blur,
+    /// anchor and kept rows go by that box, and its glow or shadow moves
+    /// with it.
+    #[allow(clippy::too_many_arguments)]
+    pub fn stack_title_motion_blur_pose_in(&mut self, slot: usize, blur: [f32;4], enter: [f32;4], exit: [f32;4], scaled: Option<[f32;4]>, solid: bool, clip_rows: bool, offset: [f32;2], painted: Option<[u32;4]>) -> bool {
         if blur.iter().any(|v| !v.is_finite() || *v<0.0)
             || blur[0]>1.0 || blur[2]>1.0
-            || enter.iter().chain(exit.iter()).any(|v|!v.is_finite()) {return false;}
+            || enter.iter().chain(exit.iter()).chain(offset.iter()).any(|v|!v.is_finite()) {return false;}
         let scaled=match scaled {
             Some([scale,opacity,x,y]) => {
                 if !scale.is_finite() || scale<=0.0 || !opacity.is_finite() || !x.is_finite() || !y.is_finite() {return false;}
@@ -1190,10 +1201,10 @@ impl GpuEffectsPipeline {
             }
             None=>None,
         };
-        let translates=enter[2..].iter().chain(exit[2..].iter()).any(|v|*v!=0.0);
+        let translates=enter[2..].iter().chain(exit[2..].iter()).chain(offset.iter()).any(|v|*v!=0.0);
         if blur[0]*blur[1]==0.0 && blur[2]*blur[3]==0.0 {
-            if let Some([scale,opacity,x,y])=scaled {return self.stack_title_motion_scale(slot,enter,exit,scale,opacity,[x,y],solid,clip_rows);}
-            return (!translates && !clip_rows) || self.stack_title_motion_translate(slot,enter,exit,clip_rows);
+            if let Some([scale,opacity,x,y])=scaled {return self.stack_title_motion_scale_in(slot,enter,exit,scale,opacity,[x,y],solid,clip_rows,offset,painted);}
+            return (!translates && !clip_rows) || self.stack_title_motion_translate_in(slot,enter,exit,offset,clip_rows,painted);
         }
         let Some(temp)=self.stack_title_object_slot(2) else {return false;};
         if temp==slot || !self.stack_title_alpha(slot,[0.0;4],1.0) {return false;}
@@ -1208,12 +1219,14 @@ impl GpuEffectsPipeline {
         });
         if self.title_post_scratch.as_ref().is_none_or(|b|b.size()<size) {self.title_post_scratch=Some(buffer());}
         if self.stack_layers[temp].size()<size {self.stack_layers[temp]=std::sync::Arc::new(buffer());}
-        if !self.stack_title_alpha_bounds(slot) {return false;}
+        if painted.is_some_and(|b|b[2]<=b[0] || b[3]<=b[1] || b[2]>w || b[3]>h) {return false;}
+        if painted.is_none() && !self.stack_title_alpha_bounds(slot) {return false;}
         if solid {self.ensure_title_solid_grid();}
         let source=&self.stack_layers[slot];let blurred=&self.stack_layers[temp];
         let scratch=self.title_post_scratch.as_ref().unwrap();
-        let mut enc=self.encoder(Some("title blur bounds"));
-        enc.copy_buffer_to_buffer(scratch,0,blurred,0,16);self.submit(enc);
+        if let Some(b)=painted {self.stack_title_given_bounds(source,blurred,b);}
+        else {let mut enc=self.encoder(Some("title blur bounds"));
+        enc.copy_buffer_to_buffer(scratch,0,blurred,0,16);self.submit(enc);}
         let params=StyleParams {width:w,height:h,frame_width:w,op:44,x0:0,y0:0,
             offset_x:0,offset_y:0,color:blur,matrix:to_authored};
         self.write_params(&params);
@@ -1225,7 +1238,8 @@ impl GpuEffectsPipeline {
             self.stack_pass(&self.pipelines.title_style_pipeline,scratch,blurred,w.div_ceil(WORKGROUP_SIZE),"title motion blur vertical");
         }
         if solid {self.stack_title_solid_anchor(blurred,true);}
-        self.write_params(&StyleParams {offset_x:i32::from(solid),offset_y:i32::from(clip_rows),op:if scaled.is_some() {48}else if translates {47}else{46},matrix:[enter,exit,scaled.unwrap_or([0.0;4])],..params});
+        self.write_params(&StyleParams {offset_x:i32::from(solid),offset_y:i32::from(clip_rows),op:if scaled.is_some() {48}else if translates {47}else{46},
+            x0:offset[0].to_bits(),y0:offset[1].to_bits(),matrix:[enter,exit,scaled.unwrap_or([0.0;4])],..params});
         self.stack_pass(&self.pipelines.title_style_pipeline,blurred,source,(w*h).div_ceil(WORKGROUP_SIZE),"title motion blur bytes");
         self.write_params(&StyleParams {op:11,matrix:self.authored_to_working,..params});
         self.stack_pass(&self.pipelines.title_style_pipeline,source,scratch,(w*h).div_ceil(WORKGROUP_SIZE),"title motion blur working space");
@@ -1414,7 +1428,7 @@ impl GpuEffectsPipeline {
     /// the painted layer's clipped height, measured entirely on GPU.
     /// `clip_rows` retains only destination rows in that original box.
     pub fn stack_title_motion_translate(&mut self, slot: usize, enter: [f32;4], exit: [f32;4], clip_rows: bool) -> bool {
-        self.stack_title_motion_pose(slot,enter,exit,None,false,clip_rows,[0.0;2])
+        self.stack_title_motion_pose(slot,enter,exit,None,false,clip_rows,[0.0;2],None)
     }
 
     /// [`Self::stack_title_motion_translate`] with `offset` frame pixels
@@ -1422,8 +1436,14 @@ impl GpuEffectsPipeline {
     /// a loop's offset to a shape's pose (#3167). A zero offset is the plain
     /// translate.
     pub fn stack_title_motion_translate_by(&mut self, slot: usize, enter: [f32;4], exit: [f32;4], offset: [f32;2], clip_rows: bool) -> bool {
+        self.stack_title_motion_translate_in(slot,enter,exit,offset,clip_rows,None)
+    }
+
+    /// [`Self::stack_title_motion_translate_by`] measured by `painted`, as
+    /// [`Self::stack_title_motion_blur_pose_in`].
+    pub fn stack_title_motion_translate_in(&mut self, slot: usize, enter: [f32;4], exit: [f32;4], offset: [f32;2], clip_rows: bool, painted: Option<[u32;4]>) -> bool {
         if offset.iter().any(|v|!v.is_finite()) {return false;}
-        self.stack_title_motion_pose(slot,enter,exit,None,false,clip_rows,offset)
+        self.stack_title_motion_pose(slot,enter,exit,None,false,clip_rows,offset,painted)
     }
 
     /// Scale around a point in the clipped source bounds, sampling the CPU's
@@ -1439,12 +1459,19 @@ impl GpuEffectsPipeline {
     /// as [`Self::stack_title_motion_translate_by`].
     #[allow(clippy::too_many_arguments)]
     pub fn stack_title_motion_scale_by(&mut self, slot: usize, enter: [f32;4], exit: [f32;4], scale: f32, opacity: f32, anchor: [f32;2], solid: bool, clip_rows: bool, offset: [f32;2]) -> bool {
+        self.stack_title_motion_scale_in(slot,enter,exit,scale,opacity,anchor,solid,clip_rows,offset,None)
+    }
+
+    /// [`Self::stack_title_motion_scale_by`] measured by `painted`, as
+    /// [`Self::stack_title_motion_blur_pose_in`].
+    #[allow(clippy::too_many_arguments)]
+    pub fn stack_title_motion_scale_in(&mut self, slot: usize, enter: [f32;4], exit: [f32;4], scale: f32, opacity: f32, anchor: [f32;2], solid: bool, clip_rows: bool, offset: [f32;2], painted: Option<[u32;4]>) -> bool {
         if !scale.is_finite() || scale<=0.0 || !opacity.is_finite() || anchor.iter().chain(offset.iter()).any(|v|!v.is_finite()) {return false;}
-        self.stack_title_motion_pose(slot,enter,exit,Some([scale,opacity.clamp(0.0,1.0),anchor[0].clamp(0.0,1.0),anchor[1].clamp(0.0,1.0)]),solid,clip_rows,offset)
+        self.stack_title_motion_pose(slot,enter,exit,Some([scale,opacity.clamp(0.0,1.0),anchor[0].clamp(0.0,1.0),anchor[1].clamp(0.0,1.0)]),solid,clip_rows,offset,painted)
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn stack_title_motion_pose(&mut self, slot: usize, enter: [f32;4], exit: [f32;4], scaled: Option<[f32;4]>, solid: bool, clip_rows: bool, offset: [f32;2]) -> bool {
+    fn stack_title_motion_pose(&mut self, slot: usize, enter: [f32;4], exit: [f32;4], scaled: Option<[f32;4]>, solid: bool, clip_rows: bool, offset: [f32;2], painted: Option<[u32;4]>) -> bool {
         if enter.iter().chain(exit.iter()).any(|v|!v.is_finite())
             || !self.stack_title_alpha(slot,[0.0;4],1.0) {return false;}
         let (w,h)=self.stack_dims;
@@ -1470,7 +1497,12 @@ impl GpuEffectsPipeline {
             let mut enc=self.encoder(Some("title scale source copy"));
             enc.copy_buffer_to_buffer(scratch,0,source,0,bytes);self.submit(enc);
         }
-        if !self.stack_title_alpha_bounds(slot) {return false;}
+        // A dressed layer is measured by the box it painted before its
+        // stack, and reaches past it.
+        if let Some(b)=painted {
+            if b[2]<=b[0] || b[3]<=b[1] || b[2]>self.stack_dims.0 || b[3]>self.stack_dims.1 {return false;}
+            self.stack_title_given_bounds(&self.stack_layers[slot],self.title_post_scratch.as_ref().unwrap(),b);
+        } else if !self.stack_title_alpha_bounds(slot) {return false;}
         if solid {self.ensure_title_solid_grid();}
         let source=&self.stack_layers[slot];
         let scratch=self.title_post_scratch.as_ref().unwrap();
@@ -1478,7 +1510,7 @@ impl GpuEffectsPipeline {
         enc.copy_buffer_to_buffer(source,0,scratch,16,bytes);self.submit(enc);
         if solid {self.stack_title_solid_anchor(scratch,false);}
         self.write_params(&StyleParams {width:w,height:h,frame_width:w,op:if scaled.is_some() {43}else{41},x0:0,y0:0,
-            offset_x:i32::from(solid),offset_y:i32::from(clip_rows),color:[offset[0],offset[1],0.0,0.0],matrix:[enter,exit,scaled.unwrap_or([0.0;4])]});
+            offset_x:i32::from(solid),offset_y:i32::from(clip_rows),color:[offset[0],offset[1],if painted.is_some() {1.0}else{0.0},0.0],matrix:[enter,exit,scaled.unwrap_or([0.0;4])]});
         self.stack_pass(&self.pipelines.title_style_pipeline,scratch,source,(w*h).div_ceil(WORKGROUP_SIZE),"title whole-layer motion");
         if scaled.is_some() {
             self.write_params(&StyleParams {width:w,height:h,frame_width:w,op:11,x0:0,y0:0,
@@ -1513,6 +1545,16 @@ impl GpuEffectsPipeline {
         self.stack_pass(&self.pipelines.title_style_pipeline,source,grid,(w.min(319)*h.min(319)).div_ceil(WORKGROUP_SIZE),"title solid anchor coverage");
         self.write_params(&StyleParams {op:50,..params});
         self.stack_pass(&self.pipelines.title_style_pipeline,grid,source,1,"title solid anchor distance");
+    }
+
+    /// Leave `b`, [x0,y0,x1,y1], in the first four words of `target`, in
+    /// order with the passes recorded before it (a queue write would land
+    /// ahead of those still held in a stack frame's encoder).
+    fn stack_title_given_bounds(&self, read: &wgpu::Buffer, target: &wgpu::Buffer, b: [u32;4]) {
+        let (w,h)=self.stack_dims;
+        self.write_params(&StyleParams {width:w,height:h,frame_width:w,op:39,x0:0,y0:0,
+            offset_x:1,offset_y:0,color:[0.0;4],matrix:[b.map(|v|v as f32),[0.0;4],[0.0;4]]});
+        self.stack_pass(&self.pipelines.title_style_pipeline,read,target,1,"title given bounds");
     }
 
     /// Leave [x0,y0,x1,y1] in the first four scratch words.

@@ -250,7 +250,11 @@ fn motion_tap(pos: vec2<i32>) -> vec4<f32> {
         if any(pos<vec2<i32>(0)) || any(pos>=vec2<i32>(i32(p.width),i32(p.height))) {return vec4<f32>(0.0);}
         return byte_half(blurred_byte(load_rgba(u32(pos.y)*p.width+u32(pos.x)+1u)));
     }
-    if any(pos<vec2<i32>(i32(input[0]),i32(input[1]))) || any(pos>=vec2<i32>(i32(input[2]),i32(input[3]))) {return vec4<f32>(0.0);}
+    // Measured by the box a dressed layer painted (colour z), the layer
+    // reaches past it: the frame bounds what is sampled.
+    let lo=select(vec2<i32>(i32(input[0]),i32(input[1])),vec2<i32>(0),p.color.z>0.5);
+    let hi=select(vec2<i32>(i32(input[2]),i32(input[3])),vec2<i32>(i32(p.width),i32(p.height)),p.color.z>0.5);
+    if any(pos<lo) || any(pos>=hi) {return vec4<f32>(0.0);}
     return load_rgba(u32(pos.y)*p.width+u32(pos.x)+1u);
 }
 fn motion_premult(pos: vec2<i32>) -> vec4<f32> {
@@ -532,8 +536,10 @@ fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgro
             // The header retains pre-blur bounds through all six box passes.
             // Do not crop samples to those bounds: the halo moves as well.
             let height=f32(input[3]-min(input[1],input[3]));
+            // A loop's offset in pixels (x0, y0 as floats), rounded with
+            // the motion's as the CPU rounds the one pose.
             let a=p.row0.x*(height*p.row0.y)*p.row0.zw;
-            let b=p.row1.x*(height*p.row1.y)*p.row1.zw;
+            let b=p.row1.x*(height*p.row1.y)*p.row1.zw+vec2<f32>(bitcast<f32>(p.x0),bitcast<f32>(p.y0));
             let shift=sign(a+b)*floor(abs(a+b)+vec2<f32>(0.5));
             let pos=vec2<f32>(f32(x),f32(y))-shift;
             if any(pos<vec2<f32>(0.0)) || any(pos>=vec2<f32>(f32(p.width),f32(p.height))) {
@@ -551,6 +557,11 @@ fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgro
         output[i*2u]=lo;output[i*2u+1u]=hi;
     } else if p.op==39u {
         if i!=0u {return;}
+        // A box given (offset x): the one a dressed layer painted.
+        if p.offset_x==1 {
+            output[0]=u32(p.row0.x);output[1]=u32(p.row0.y);output[2]=u32(p.row0.z);output[3]=u32(p.row0.w);
+            return;
+        }
         var x0=p.width;var x1=0u;var y0=p.height;var y1=0u;
         for(var row=0u;row<p.height;row+=1u) {
             let lo=input[row*2u];let hi=input[row*2u+1u];
@@ -566,9 +577,10 @@ fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgro
         if input[2]>input[0] && input[3]>input[1] {
             let height=f32(input[3]-input[1]);
             let a=p.row0.x*(height*p.row0.y)*p.row0.zw;
-            // A loop's offset in pixels (43 only: 48's colour is its blur),
-            // rounded with the motion's as the CPU rounds the one pose.
-            let b=p.row1.x*(height*p.row1.y)*p.row1.zw+select(vec2<f32>(0.0),p.color.xy,p.op==43u);
+            // A loop's offset in pixels (43's colour; 48's colour is its
+            // blur, so x0, y0 as floats), rounded with the motion's as the
+            // CPU rounds the one pose.
+            let b=p.row1.x*(height*p.row1.y)*p.row1.zw+select(vec2<f32>(bitcast<f32>(p.x0),bitcast<f32>(p.y0)),p.color.xy,p.op==43u);
             let shift=sign(a+b)*floor(abs(a+b)+vec2<f32>(0.5));
             let lo=vec2<f32>(f32(input[0]),f32(input[1]));
             let hi=vec2<f32>(f32(input[2]),f32(input[3]));
@@ -603,7 +615,11 @@ fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgro
             let shift=enter+exit+p.color.xy;
             let delta=vec2<i32>(sign(shift)*floor(abs(shift)+vec2<f32>(0.5)));
             let src=vec2<i32>(i32(x),i32(y))-delta;
-            if all(src>=vec2<i32>(i32(input[0]),i32(input[1]))) && all(src<vec2<i32>(i32(input[2]),i32(input[3]))) {
+            // Measured by the box a dressed layer painted before its stack
+            // (colour z), the layer reaches past it: the frame bounds it.
+            let lo=select(vec2<i32>(i32(input[0]),i32(input[1])),vec2<i32>(0),p.color.z>0.5);
+            let hi=select(vec2<i32>(i32(input[2]),i32(input[3])),vec2<i32>(i32(p.width),i32(p.height)),p.color.z>0.5);
+            if all(src>=lo) && all(src<hi) {
                 pixel=load_rgba(u32(src.y)*p.width+u32(src.x)+1u);
             }
         }

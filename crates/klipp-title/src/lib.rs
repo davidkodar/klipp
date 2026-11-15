@@ -7319,6 +7319,31 @@ pub fn rect_layer_bounds(shape: &Shape, transform: &ObjectTransform, width: u32,
     (bx1 > bx0).then_some((bx0 as u32, by0 as u32, bx1 as u32, by1 as u32))
 }
 
+/// The pixels a shape's layer covers, as `layer_bounds` finds them in
+/// the byte layer `paint_shape_layer` paints for it at `time_secs` (#3167):
+/// a rectangle's by [`rect_layer_bounds`], a path's from that layer
+/// painted here, a frame of bytes, so a caller keeps it for a path that
+/// does not change. `None` when it covers none.
+pub fn shape_layer_bounds(shape: &Shape, transform: &ObjectTransform, width: u32, height: u32, time_secs: f32, straight: bool) -> Option<(u32, u32, u32, u32)> {
+    if !matches!(shape.kind, ShapeKind::Path(_)) {
+        return rect_layer_bounds(shape, transform, width, height);
+    }
+    let mut layer = vec![0u8; width as usize * height as usize * 4];
+    paint_shape_layer(&mut layer, shape, transform, width, height, time_secs, None, straight);
+    layer_bounds(&layer, width, height).map(|(x0, y0, x1, y1)| (x0 as u32, y0 as u32, x1 as u32, y1 as u32))
+}
+
+/// The pixels an image layer covers, as `layer_bounds` finds them in the
+/// byte layer `paint_image_layer` paints for it (#3167): its placed box
+/// less any clear margin the picture has. A frame of bytes is painted
+/// here, so a caller keeps it for a picture that holds still. `None`
+/// when it covers none.
+pub fn image_layer_bounds(img: &DecodedImage, fit: ImageFit, transform: &ObjectTransform, width: u32, height: u32) -> Option<(u32, u32, u32, u32)> {
+    let mut layer = vec![0u8; width as usize * height as usize * 4];
+    paint_image_layer(&mut layer, img, fit, transform, width, height);
+    layer_bounds(&layer, width, height).map(|(x0, y0, x1, y1)| (x0 as u32, y0 as u32, x1 as u32, y1 as u32))
+}
+
 /// Test whether a point lies inside a rounded rectangle defined by
 /// its bounds and corner radius. The four corners use a circular
 /// quadrant; the body is a plain rectangle inset by `r` on each
