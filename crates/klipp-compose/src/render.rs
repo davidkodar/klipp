@@ -3469,7 +3469,13 @@ impl Renderer {
                     // loop does nothing to a shape there. The loops that move
                     // it go by its painted height or width and stay with the
                     // title's raster.
-                    let loops=if source_fx.loops.iter().all(|l|matches!(l,klipp_timeline::TitleLoop::Blink{..}|klipp_timeline::TitleLoop::Pulse{..}|klipp_timeline::TitleLoop::Flicker{..}|klipp_timeline::TitleLoop::ColorCycle{..}|klipp_timeline::TitleLoop::ColorBlend{..})) {
+                    // A rectangle's loops that move it (#3167) too: the CPU
+                    // offsets the painted layer by them, by its painted width
+                    // and height, which `rect_layer_bounds` finds as it does.
+                    // A path's coverage box and an image's placed box are not
+                    // its painted bounds, so those stay with the raster.
+                    let rectangle=shape.is_some_and(|s|matches!(s.kind,klipp_timeline::ShapeKind::Rectangle{..}));
+                    let loops=if rectangle || source_fx.loops.iter().all(|l|matches!(l,klipp_timeline::TitleLoop::Blink{..}|klipp_timeline::TitleLoop::Pulse{..}|klipp_timeline::TitleLoop::Flicker{..}|klipp_timeline::TitleLoop::ColorCycle{..}|klipp_timeline::TitleLoop::ColorBlend{..})) {
                         std::mem::take(&mut source_fx.loops)
                     } else {Vec::new()};
                     // A shape's stack (#3160): its glows, shadows, outlines and
@@ -3504,6 +3510,20 @@ impl Renderer {
                     // Their geometry moves nothing here: only the opacity is read.
                     let geo=klipp_timeline::LoopGeometry {frame_w:width as f32,frame_h:height as f32,text_w:1.0,text_h:1.0,font_px:1.0};
                     let loop_fade=if loops.is_empty() {1.0} else {klipp_core::title_motion::eval_loops(&loops,clip_time as f32,Some(total),geo,[255,255,255,255]).opacity.clamp(0.0,1.0)};
+                    // The loops' offset, by the painted box (#3167), as
+                    // `dress_layer` measures it; none for a box that paints
+                    // nothing, which leaves no layer to move.
+                    let loop_offset=if loops.is_empty() {[0.0;2]} else {
+                        match shape.and_then(|s|klipp_title::rect_layer_bounds(s,&transform,width,height)) {
+                            Some((x0,y0,x1,y1))=>{
+                                let unit=(y1-y0) as f32;
+                                let geo=klipp_timeline::LoopGeometry {frame_w:width as f32,frame_h:height as f32,text_w:(x1-x0) as f32,text_h:unit,font_px:unit};
+                                let pose=klipp_core::title_motion::eval_loops(&loops,clip_time as f32,Some(total),geo,[255,255,255,255]);
+                                [pose.dx,pose.dy]
+                            }
+                            None=>[0.0;2],
+                        }
+                    };
                     let fade=motion.enter.map_or(1.0,|m|m.pose(enter,1.0).0)*motion.exit.map_or(1.0,|m|m.pose(exit,1.0).0)*loop_fade;
                     let travel=|m:Option<klipp_timeline::Motion>,progress:f32| {
                         use klipp_timeline::MotionKind;
@@ -3583,6 +3603,13 @@ impl Renderer {
                         // The dressed layer is a byte layer on the CPU.
                         if x1>x0 && y1>y0 && (!gpu.stack_title_styles(slot,[x0,y0,x1-x0,y1-y0],&passes) || !gpu.stack_title_precision(slot,true)) {return None;}
                     }
+                    // A loop that moves the layer under a motion blur: its
+                    // shutter is not posed here, so the raster draws it.
+                    let loop_moves=loops.iter().any(|l|!matches!(l,klipp_timeline::TitleLoop::Blink{..}|klipp_timeline::TitleLoop::Pulse{..}|klipp_timeline::TitleLoop::Flicker{..}|klipp_timeline::TitleLoop::ColorCycle{..}|klipp_timeline::TitleLoop::ColorBlend{..}));
+                    if loop_moves && blurs && motion.is_active() {return None;}
+                    // Off its rest by a whole pixel or more: the CPU leaves a
+                    // layer within half a pixel where it was painted.
+                    let loop_shifts=loop_offset.iter().any(|v|v.abs()>=0.5);
                     if motion.is_active() {
                         if !gpu.stack_title_precision(slot,true) {return None;}
                         if scales && motion_scale == 0.0 {
@@ -3601,10 +3628,10 @@ impl Renderer {
                             if !gpu.stack_title_motion_blur_pose(slot,[a[0],a[1],b[0],b[1]],enter_travel,exit_travel,scaled,solid,clip_rows)
                                 || (!scales && !gpu.stack_title_motion_alpha(slot,fade)) {return None;}
                         } else if scales {
-                            if !gpu.stack_title_motion_scale(slot,enter_travel,exit_travel,motion_scale,fade,anchor,solid,clip_rows) {return None;}
-                        } else if (moves && !gpu.stack_title_motion_translate(slot,enter_travel,exit_travel,clip_rows))
+                            if !gpu.stack_title_motion_scale_by(slot,enter_travel,exit_travel,motion_scale,fade,anchor,solid,clip_rows,loop_offset) {return None;}
+                        } else if ((moves || loop_shifts) && !gpu.stack_title_motion_translate_by(slot,enter_travel,exit_travel,loop_offset,clip_rows))
                             || !gpu.stack_title_motion_alpha(slot,fade) {return None;}
-                    }
+                    } else if loop_shifts && (!gpu.stack_title_precision(slot,true) || !gpu.stack_title_motion_translate_by(slot,[0.0;4],[0.0;4],loop_offset,false)) {return None;}
                     // The loops' fade on top, as the CPU poses the layer once
                     // with its motion's fade and its loops' together.
                     if !motion.is_active() && !loops.is_empty() && (!gpu.stack_title_precision(slot,true) || !gpu.stack_title_motion_alpha(slot,loop_fade)) {return None;}

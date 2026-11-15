@@ -566,7 +566,9 @@ fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgro
         if input[2]>input[0] && input[3]>input[1] {
             let height=f32(input[3]-input[1]);
             let a=p.row0.x*(height*p.row0.y)*p.row0.zw;
-            let b=p.row1.x*(height*p.row1.y)*p.row1.zw;
+            // A loop's offset in pixels (43 only: 48's colour is its blur),
+            // rounded with the motion's as the CPU rounds the one pose.
+            let b=p.row1.x*(height*p.row1.y)*p.row1.zw+select(vec2<f32>(0.0),p.color.xy,p.op==43u);
             let shift=sign(a+b)*floor(abs(a+b)+vec2<f32>(0.5));
             let lo=vec2<f32>(f32(input[0]),f32(input[1]));
             let hi=vec2<f32>(f32(input[2]),f32(input[3]));
@@ -597,7 +599,8 @@ fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgro
             let height=f32(input[3]-input[1]);
             let enter=p.row0.x*(height*p.row0.y)*p.row0.zw;
             let exit=p.row1.x*(height*p.row1.y)*p.row1.zw;
-            let shift=enter+exit;
+            // A loop's offset in pixels, rounded with the motion's.
+            let shift=enter+exit+p.color.xy;
             let delta=vec2<i32>(sign(shift)*floor(abs(shift)+vec2<f32>(0.5)));
             let src=vec2<i32>(i32(x),i32(y))-delta;
             if all(src>=vec2<i32>(i32(input[0]),i32(input[1]))) && all(src<vec2<i32>(i32(input[2]),i32(input[3]))) {
