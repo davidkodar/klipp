@@ -337,6 +337,9 @@ pub(crate) fn respond(
                 let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
                 seq.tracks.iter().any(|t| t.kind == klipp_timeline::TrackKind::Subtitle && !t.clips.is_empty())
             };
+            // The GPU preset on a machine with no hardware encoder runs on
+            // the CPU, which its name does not say: the reply does.
+            let mut encoder_note = None;
             // What this machine can't encode is refused here, not accepted
             // to fail as its job starts (an 8-bit-only x265, an FFmpeg
             // with no AV1 encoder in reach, as on the M1).
@@ -348,6 +351,8 @@ pub(crate) fn respond(
                 if let Some(why) = klipp_render::encoder::why_not_encodable(&settings.video_codec, settings.bit_depth, w, h) {
                     return Err(why);
                 }
+                let preset_id = preset_name.as_ref().and_then(|n| klipp_core::builtin_presets().into_iter().find(|p| &p.name == n)).map(|p| p.id);
+                encoder_note = preset_id.and_then(|id| klipp_render::encoder::preset_encoder_note(&id, &settings.video_codec, settings.bit_depth, w, h));
             }
             // Another shape than the timeline's (#2784): letterboxed, said.
             let frame_warning = {
@@ -401,6 +406,7 @@ pub(crate) fn respond(
                 "video_codec": (!settings.format.is_audio_only()).then(|| settings.video_codec.label()),
                 "audio_codec": settings.audio_codec.label(),
                 "preset": preset_name,
+                "encoder_note": encoder_note,
                 // The speed used: as asked, else the preset's own, else
                 // medium; none for an encoder that has none.
                 "encoder_speed": (speed_ignored(&settings).is_none() && !settings.format.is_audio_only()).then(|| settings.preset.ffmpeg_value()),

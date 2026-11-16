@@ -688,11 +688,22 @@ pub(super) fn build_export_settings(
 }
 
 /// A preset as the list names it: a user's marked ⚙, a 10-bit one
-/// marked so (#2074).
+/// marked so (#2074), and the GPU preset, where no hardware encoder is in
+/// reach, saying it runs on the CPU here.
 pub(super) fn preset_label(preset: &ExportPreset) -> String {
+    let s = &preset.settings;
+    let (w, h) = s.resolution.map_or((1920, 1080), |r| (r.width, r.height));
+    let gpu = preset.id != klipp_core::export_preset::GPU_PRESET_ID || klipp_render::encoder::gpu_encoder_in_reach(&s.video_codec, s.bit_depth, w, h);
+    preset_label_with(preset, gpu)
+}
+
+/// [`preset_label`] with the machine's answer given: whether the GPU
+/// preset's encoder is in reach here.
+fn preset_label_with(preset: &ExportPreset, gpu_in_reach: bool) -> String {
     let mark = if preset.built_in { "" } else { "⚙ " };
     let depth = if preset.settings.is_10bit() { " · 10-bit" } else { "" };
-    format!("{mark}{}{depth}", preset.name)
+    let note = klipp_render::encoder::preset_encoder_note_with(&preset.id, gpu_in_reach).map(|n| format!(" · {n}")).unwrap_or_default();
+    format!("{mark}{}{depth}{note}", preset.name)
 }
 
 /// The dialog's settings as a preset holds them, with the frame size and
@@ -3674,6 +3685,22 @@ mod export_rule_tests {
         assert_eq!((dialog.video_codec, dialog.bit_depth), (klipp_core::ExportVideoCodec::H265, 10));
         super::apply_preset_to_dialog(&mut dialog, &named("YouTube 1080p").settings);
         assert_eq!(dialog.bit_depth, 0);
+    }
+
+    /// The GPU preset keeps its name, saved presets naming it, and where
+    /// no hardware encoder is in reach the list says it runs on the CPU;
+    /// no other preset says so.
+    #[test]
+    fn the_gpu_preset_says_where_there_is_no_gpu_encoder() {
+        let presets = klipp_core::builtin_presets();
+        let named = |n: &str| presets.iter().find(|p| p.name == n).unwrap();
+        let gpu = named("H.265 HQ (GPU)");
+        assert_eq!(gpu.id, klipp_core::export_preset::GPU_PRESET_ID);
+        assert_eq!(super::preset_label_with(gpu, true), "H.265 HQ (GPU)");
+        assert_eq!(super::preset_label_with(gpu, false), "H.265 HQ (GPU) · on the CPU here: no GPU encoder");
+        for p in presets.iter().filter(|p| p.id != gpu.id) {
+            assert!(!super::preset_label_with(p, false).contains("on the CPU"), "{}", p.name);
+        }
     }
 
     #[test]
