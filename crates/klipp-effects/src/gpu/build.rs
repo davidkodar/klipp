@@ -980,6 +980,7 @@ impl GpuEffectsPipeline {
             surface_light_scratch: None,
             title_post_scratch: None,
             title_scene_bounds: None,
+            title_roi: None,
             title_outlines: Vec::new(),
             aces_rec709_data: None,
             bt2020_gamut_data: None,

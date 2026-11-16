@@ -307,14 +307,17 @@ struct FillParams {
     // Two (position bits, packed RGBA) stops per aligned uniform vector.
     stops: [[u32; 4]; 8],
 }
-/// A pass that ends in op 11 (ops 67 to 69): the base's own matrix for
-/// its first step, and the one to the working space after it, where the
-/// shader's `to_working` reads it (`stops[0..3]`).
+/// The in-place title passes (ops 66 to 69): over the rectangle `base`
+/// gives, `width` by `height` from (`x0`, `y0`) in a frame `frame_width`
+/// wide and `frame[0]` high; those that end in op 11 with the matrix to
+/// the working space after their own, where the shader's `to_working`
+/// reads it (`stops[0..3]`).
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct TwoSpaceParams {
     base: StyleParams,
     to_working: [[f32; 4]; 3],
+    frame: [u32; 4],
 }
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -1062,6 +1065,25 @@ impl GpuEffectsPipeline {
         true
     }
 
+    /// What the next in-place title passes (fade, precision, object over)
+    /// may run over, `[x0, y0, x1, y1)`: the part of the frame the title's
+    /// object or scene covers, outside which both layers are empty; `None`
+    /// for the whole frame. Its renderer sets it around those passes alone.
+    pub fn stack_title_set_roi(&mut self, roi: Option<[u32; 4]>) {
+        self.title_roi = roi;
+    }
+
+    /// The rectangle the in-place title passes run over, `[x, y, w, h]`:
+    /// the title's set one within the frame, else the whole frame; `None`
+    /// when it covers nothing, and there is nothing for them to change.
+    fn title_pass_rect(&self) -> Option<[u32; 4]> {
+        let (w, h) = self.stack_dims;
+        let [x0, y0, x1, y1] = self.title_roi.unwrap_or([0, 0, w, h]);
+        let (x1, y1) = (x1.min(w), y1.min(h));
+        let (x0, y0) = (x0.min(x1), y0.min(y1));
+        (x1 > x0 && y1 > y0).then_some([x0, y0, x1 - x0, y1 - y0])
+    }
+
     /// Fade the fully decorated title object after its post-processing.
     pub fn stack_title_alpha(&mut self, slot: usize, edges: [f32; 4], opacity: f32) -> bool {
         self.stack_title_fade(slot, edges, opacity, None)
@@ -1113,20 +1135,25 @@ impl GpuEffectsPipeline {
         if focus.is_none() && full && edges.iter().all(|e| *e <= 0.0) {
             return true;
         }
+        let Some([rx, ry, rw, rh]) = self.title_pass_rect() else { return true };
         let layer = &self.stack_layers[slot];
         let scratch = self.title_post_scratch.as_ref().unwrap();
-        self.write_params(&StyleParams {
-            width: w,
-            height: h,
-            frame_width: w,
-            // Op 12 on the layer in place: no scratch to copy back from.
-            op: 66,
-            x0: 0,
-            y0: 0,
-            offset_x: 0,
-            offset_y: 0,
-            color: edges,
-            matrix: [[opacity, if sprite_alpha {1.0}else{0.0}, 0.0, 0.0], focus.map_or([0.0;4], |(vertical,band,edge)| [if vertical {2.0}else{1.0},band.clamp(0.0,0.999),edge.clamp(0.0,1.0),0.0]), [0.0; 4]],
+        self.write_params(&TwoSpaceParams {
+            base: StyleParams {
+                width: rw,
+                height: rh,
+                frame_width: w,
+                // Op 12 on the layer in place: no scratch to copy back from.
+                op: 66,
+                x0: rx,
+                y0: ry,
+                offset_x: 0,
+                offset_y: 0,
+                color: edges,
+                matrix: [[opacity, if sprite_alpha {1.0}else{0.0}, 0.0, 0.0], focus.map_or([0.0;4], |(vertical,band,edge)| [if vertical {2.0}else{1.0},band.clamp(0.0,0.999),edge.clamp(0.0,1.0),0.0]), [0.0; 4]],
+            },
+            to_working: [[0.0; 4]; 3],
+            frame: [h, 0, 0, 0],
         });
         // The pass reads and writes the layer; its read binding, unused,
         // is the scratch.
@@ -1134,7 +1161,7 @@ impl GpuEffectsPipeline {
             &self.pipelines.title_style_pipeline,
             scratch,
             layer,
-            (count as u32).div_ceil(WORKGROUP_SIZE),
+            (rw * rh).div_ceil(WORKGROUP_SIZE),
             "title edge fade",
         );
         true
@@ -1422,13 +1449,14 @@ impl GpuEffectsPipeline {
     pub fn stack_title_precision(&mut self,slot:usize,bytes:bool)->bool {
         if !self.stack_title_alpha(slot,[0.0;4],1.0) {return false;}
         let Some(to_authored)=inverse(self.authored_to_working) else {return false;};
-        let (w,h)=self.stack_dims;let count=w*h;
+        let (w,h)=self.stack_dims;
         let layer=&self.stack_layers[slot];let scratch=self.title_post_scratch.as_ref().unwrap();
         // Op 35 then op 11, as one pass on the layer in place (op 67); the
         // read binding, unused, is the scratch.
-        let params=StyleParams{width:w,height:h,frame_width:w,op:67,x0:0,y0:0,offset_x:i32::from(bytes),offset_y:0,color:[0.0;4],matrix:to_authored};
-        self.write_params(&TwoSpaceParams{base:params,to_working:self.authored_to_working});
-        self.stack_pass(&self.pipelines.title_style_pipeline,scratch,layer,count.div_ceil(WORKGROUP_SIZE),"title scene quantization");true
+        let Some([rx,ry,rw,rh])=self.title_pass_rect() else {return true;};
+        let params=StyleParams{width:rw,height:rh,frame_width:w,op:67,x0:rx,y0:ry,offset_x:i32::from(bytes),offset_y:0,color:[0.0;4],matrix:to_authored};
+        self.write_params(&TwoSpaceParams{base:params,to_working:self.authored_to_working,frame:[h,0,0,0]});
+        self.stack_pass(&self.pipelines.title_style_pipeline,scratch,layer,(rw*rh).div_ceil(WORKGROUP_SIZE),"title scene quantization");true
     }
 
     /// Match the CPU title raster's bounding box (alpha >= half a byte).
@@ -1754,16 +1782,17 @@ impl GpuEffectsPipeline {
                 mapped_at_creation: false,
             }));
         }
+        let Some([rx, ry, rw, rh]) = self.title_pass_rect() else { return true };
         let params = StyleParams {
-            width: w,
-            height: h,
+            width: rw,
+            height: rh,
             frame_width: w,
             // Op 36 or 10, the object over the scene in encoded authored
             // colour, then op 11 back to the working space, in one pass
             // (op 69 or 68): the scene is written once, in place.
             op: if painted {69} else {68},
-            x0: 0,
-            y0: 0,
+            x0: rx,
+            y0: ry,
             offset_x: mode as i32,
             offset_y: 0,
             color: [0.0, 0.0, 0.0, opacity.clamp(0.0, 1.0)],
@@ -1771,12 +1800,12 @@ impl GpuEffectsPipeline {
         };
         let src = &self.stack_layers[source];
         let dst = &self.stack_layers[destination];
-        self.write_params(&TwoSpaceParams { base: params, to_working: self.authored_to_working });
+        self.write_params(&TwoSpaceParams { base: params, to_working: self.authored_to_working, frame: [h, 0, 0, 0] });
         self.stack_pass(
             &self.pipelines.title_style_pipeline,
             src,
             dst,
-            (count as u32).div_ceil(WORKGROUP_SIZE),
+            (rw * rh).div_ceil(WORKGROUP_SIZE),
             "title object over",
         );
         true

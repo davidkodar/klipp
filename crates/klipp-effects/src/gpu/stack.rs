@@ -17,6 +17,7 @@ impl GpuEffectsPipeline {
             self.failed_frames_in_row.set(0);
         }
         self.title_metal_shots.clear();
+        self.title_roi = None;
         self.batching.set(true);
         self.stack_params_slot.set(0);
         if self.is_device_lost() || width == 0 || height == 0 {
