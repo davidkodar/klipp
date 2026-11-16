@@ -955,7 +955,11 @@ pub fn yuv_to_linear_display(
 /// the export's read a file's colour the same way (#3266).
 struct DisplaySignal {
     cw: usize,
-    ch: usize,
+    /// [`chroma_taps`] for each source column and each source row, worked
+    /// out once a frame: worked out for every pixel they were most of a
+    /// 4K software frame's 52 ms in the export's downscale.
+    taps_x: Vec<(usize, usize, f32)>,
+    taps_y: Vec<(usize, usize, f32)>,
     y_off: f32,
     y_inv: f32,
     uv_off: f32,
@@ -976,9 +980,11 @@ impl DisplaySignal {
             }
             ColorRange::Full => (0.0, 1.0 / max, max * 0.5 + 0.5, 1.0 / max),
         };
+        let (cw, ch) = (s.chroma_width() as usize, s.chroma_height() as usize);
         Self {
-            cw: s.chroma_width() as usize,
-            ch: s.chroma_height() as usize,
+            cw,
+            taps_x: (0..s.width.max(1) as usize).map(|sx| chroma_taps(sx, s.chroma_shift_w, cw, s.siting.h)).collect(),
+            taps_y: (0..s.height.max(1) as usize).map(|sy| chroma_taps(sy, s.chroma_shift_h, ch, s.siting.v)).collect(),
             y_off,
             y_inv,
             uv_off,
@@ -989,9 +995,15 @@ impl DisplaySignal {
 
     #[inline]
     fn at(&self, s: &crate::hdr::YuvSamples, sx: usize, sy: usize) -> [f32; 3] {
+        self.at_row(s, sx, &s.y[sy * s.width.max(1) as usize..], self.taps_y[sy])
+    }
+
+    /// [`Self::at`] with the source row's luma and vertical chroma taps
+    /// already taken, for a loop that reads along one row.
+    #[inline]
+    fn at_row(&self, s: &crate::hdr::YuvSamples, sx: usize, y_row: &[u16], (y0, y1, ty): (usize, usize, f32)) -> [f32; 3] {
         let cw = self.cw;
-        let (x0, x1, tx) = chroma_taps(sx, s.chroma_shift_w, cw, s.siting.h);
-        let (y0, y1, ty) = chroma_taps(sy, s.chroma_shift_h, self.ch, s.siting.v);
+        let (x0, x1, tx) = self.taps_x[sx];
         let lerp2 = |p: &[u16]| {
             let at = |x: usize, yy: usize| p[yy * cw + x] as f32;
             let top = at(x0, y0) + (at(x1, y0) - at(x0, y0)) * tx;
@@ -999,7 +1011,7 @@ impl DisplaySignal {
             top + (bot - top) * ty
         };
         let (cv_r, cu_b, cu_g, cv_g) = self.coefficients;
-        let yv = (s.y[sy * s.width.max(1) as usize + sx] as f32 - self.y_off) * self.y_inv;
+        let yv = (y_row[sx] as f32 - self.y_off) * self.y_inv;
         let u = (lerp2(s.u) - self.uv_off) * self.uv_inv;
         let v = (lerp2(s.v) - self.uv_off) * self.uv_inv;
         [yv + cv_r * v, yv + cu_g * u + cv_g * v, yv + cu_b * u]
@@ -1081,8 +1093,9 @@ pub fn yuv_to_display_rgba64_downscaled(s: &crate::hdr::YuvSamples, cs: SourceCo
         for (dx, xs) in cols.iter().enumerate() {
             let (mut acc, mut a) = ([0.0f32; 3], 0.0f32);
             for &sy in &rows {
+                let (y_row, taps) = (&s.y[sy * src_w as usize..], signal.taps_y[sy]);
                 for &sx in xs {
-                    let rgb = signal.at(s, sx, sy);
+                    let rgb = signal.at_row(s, sx, y_row, taps);
                     for c in 0..3 {
                         acc[c] += linear(rgb[c]);
                     }
@@ -1659,5 +1672,91 @@ mod tests {
         let grey = leica_llog_to_linear(445.0 / 1023.0);
         let ev = (grey / 0.18).log2();
         assert!(ev.abs() < 0.01, "middle grey lands at {ev:+.3} EV, not 0");
+    }
+
+    /// The chroma taps worked out once a frame give every pixel the very
+    /// numbers they gave when worked out per pixel, and the export's
+    /// downscale the very codes: 4:2:0, 4:2:2 and 4:4:4, odd sizes, both
+    /// sitings on each axis, 8 and 10 bits, either range. So the viewer's
+    /// software decode and the export's convert as they did, bit for bit,
+    /// only quicker.
+    #[test]
+    fn the_taps_worked_out_once_are_the_taps_per_pixel() {
+        use crate::hdr::{chroma_taps, ChromaAxis, ChromaSiting, YuvSamples};
+        // As `DisplaySignal::at` was: the taps worked out for each pixel.
+        fn per_pixel(d: &DisplaySignal, s: &YuvSamples, sx: usize, sy: usize) -> [f32; 3] {
+            let cw = s.chroma_width() as usize;
+            let (x0, x1, tx) = chroma_taps(sx, s.chroma_shift_w, cw, s.siting.h);
+            let (y0, y1, ty) = chroma_taps(sy, s.chroma_shift_h, s.chroma_height() as usize, s.siting.v);
+            let lerp2 = |p: &[u16]| {
+                let at = |x: usize, yy: usize| p[yy * cw + x] as f32;
+                let top = at(x0, y0) + (at(x1, y0) - at(x0, y0)) * tx;
+                let bot = at(x0, y1) + (at(x1, y1) - at(x0, y1)) * tx;
+                top + (bot - top) * ty
+            };
+            let (cv_r, cu_b, cu_g, cv_g) = d.coefficients;
+            let yv = (s.y[sy * s.width as usize + sx] as f32 - d.y_off) * d.y_inv;
+            let u = (lerp2(s.u) - d.uv_off) * d.uv_inv;
+            let v = (lerp2(s.v) - d.uv_off) * d.uv_inv;
+            [yv + cv_r * v, yv + cu_g * u + cv_g * v, yv + cu_b * u]
+        }
+        let mut seed = 0x2545_f491_u32;
+        let mut noise = |bits: u32| {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            (seed >> (32 - bits)) as u16
+        };
+        let axes = [ChromaAxis::CoSited, ChromaAxis::Between];
+        let mut checked = 0;
+        for (shift_w, shift_h) in [(1, 1), (1, 0), (0, 0)] {
+            for (w, h) in [(7u32, 5u32), (16, 9), (33, 18)] {
+                for bits in [8u32, 10] {
+                    for range in [ColorRange::Limited, ColorRange::Full] {
+                        for (sh, sv) in axes.iter().flat_map(|a| axes.iter().map(move |b| (*a, *b))) {
+                            let (cw, ch) = ((w + (1 << shift_w) - 1) >> shift_w, (h + (1 << shift_h) - 1) >> shift_h);
+                            let y: Vec<u16> = (0..w * h).map(|_| noise(bits)).collect();
+                            let u: Vec<u16> = (0..cw * ch).map(|_| noise(bits)).collect();
+                            let v: Vec<u16> = (0..cw * ch).map(|_| noise(bits)).collect();
+                            let s = YuvSamples { y: &y, u: &u, v: &v, width: w, height: h, chroma_shift_w: shift_w, chroma_shift_h: shift_h, bit_depth: bits, siting: ChromaSiting { h: sh, v: sv } };
+                            let cs = SourceColorspace { range, matrix: ColorMatrix::Bt709, transfer: ColorTransfer::Bt709, primaries: ColorPrimaries::Bt709 };
+                            let d = DisplaySignal::new(&s, cs);
+                            for sy in 0..h as usize {
+                                for sx in 0..w as usize {
+                                    let (got, want) = (d.at(&s, sx, sy), per_pixel(&d, &s, sx, sy));
+                                    assert!(got.iter().zip(&want).all(|(a, b)| a.to_bits() == b.to_bits()), "{w}x{h} shift {shift_w},{shift_h} {bits}-bit {range:?} {sh:?}/{sv:?} at {sx},{sy}: {got:?} against {want:?}");
+                                }
+                            }
+                            // The downscale reads along rows: the same
+                            // codes as averaging the per-pixel signal.
+                            let (dw, dh) = (w / 2, h / 2);
+                            let code = |v: f32| (v.clamp(0.0, 1.0) * 65535.0 + 0.5) as u16;
+                            let linear = |v: f32| crate::transfer::srgb_to_linear(code(v) as f32 / 65535.0);
+                            let mut want = Vec::new();
+                            for dy in 0..dh {
+                                for dx in 0..dw {
+                                    let (rows, cols): (Vec<usize>, Vec<usize>) = (footprint_taps(dy, dh, h).collect(), footprint_taps(dx, dw, w).collect());
+                                    let mut acc = [0.0f32; 3];
+                                    for &sy in &rows {
+                                        for &sx in &cols {
+                                            let rgb = per_pixel(&d, &s, sx, sy);
+                                            for c in 0..3 {
+                                                acc[c] += linear(rgb[c]);
+                                            }
+                                        }
+                                    }
+                                    let n = (rows.len() * cols.len()) as f32;
+                                    want.extend(acc.map(|a| code(crate::transfer::linear_to_srgb(a / n))));
+                                    want.push(u16::MAX);
+                                }
+                            }
+                            assert_eq!(yuv_to_display_rgba64_downscaled(&s, cs, None, dw, dh), want, "{w}x{h} into {dw}x{dh} shift {shift_w},{shift_h} {bits}-bit {range:?} {sh:?}/{sv:?}");
+                            checked += 1;
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(checked, 3 * 3 * 2 * 2 * 4);
     }
 }
