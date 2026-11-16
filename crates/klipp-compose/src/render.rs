@@ -943,6 +943,26 @@ fn channel_code(channel: klipp_core::ViewChannel) -> u32 {
 /// next scene composed, so a couple is all a nest ever waits on.
 const SPARE_SCENES: usize = 2;
 
+/// What a layer's painted bounds depend on: for a path shape, the shape,
+/// its pose and trim at the instant, its transform, the frame and its
+/// mixing; for an image, its picture, fit, transform and the frame.
+#[derive(Clone, PartialEq)]
+enum LayerBoundsKey {
+    Path {
+        shape: Box<klipp_timeline::Shape>,
+        pose: Box<(klipp_core::vector_path::PathPose, Option<klipp_core::vector_path::TrimRange>)>,
+        transform: klipp_timeline::ObjectTransform,
+        size: (u32, u32),
+        straight: bool,
+    },
+    Image {
+        picture: u64,
+        fit: klipp_timeline::ImageFit,
+        transform: klipp_timeline::ObjectTransform,
+        size: (u32, u32),
+    },
+}
+
 /// The resources rendering needs, owned per thread: the viewer has one,
 /// every export job has its own.
 pub struct Renderer {
@@ -1088,6 +1108,9 @@ pub struct Renderer {
     /// Scenes of several title layers composed while nothing in them
     /// moves, kept on the GPU so each later frame at rest is a copy.
     still_title_scenes: crate::still_title_scenes::StillTitleScenes,
+    /// The painted bounds of the path shapes and images posed lately
+    /// (#3167), so one that holds still is painted on the CPU for them once.
+    layer_bounds: Vec<(LayerBoundsKey, Option<(u32, u32, u32, u32)>)>,
     /// Scenes of several title layers composed on the GPU (for tests).
     title_scene_composes: u64,
     /// The warm-up thread's ends: titles to render ahead go out, their
@@ -1249,6 +1272,7 @@ impl Renderer {
             titles,
             gpu_text3d: None,
             still_title_scenes: crate::still_title_scenes::StillTitleScenes::default(),
+            layer_bounds: Vec::new(),
             title_scene_composes: 0,
             warm_tx: None,
             warm_rx: None,
@@ -3427,6 +3451,32 @@ impl Renderer {
         Ok(())
     }
 
+    /// A shape's painted bounds as the CPU's byte layer has them (#3167):
+    /// a rectangle's from its geometry, a path's painted on the CPU once
+    /// for each pose and kept, so a path that holds still costs one.
+    fn shape_layer_bounds(&mut self, shape: &klipp_timeline::Shape, transform: &klipp_timeline::ObjectTransform, width: u32, height: u32, time: f32, straight: bool) -> Option<(u32,u32,u32,u32)> {
+        let klipp_timeline::ShapeKind::Path(path)=&shape.kind else {return klipp_title::rect_layer_bounds(shape,transform,width,height)};
+        let key=LayerBoundsKey::Path {shape:Box::new(shape.clone()),pose:Box::new((path.at(time as f64),path.trim.as_ref().map(|t|t.at(time as f64)))),transform:transform.clone(),size:(width,height),straight};
+        self.kept_layer_bounds(key,"Path shape painted on the CPU for its bounds, once for each pose",|| klipp_title::shape_layer_bounds(shape,transform,width,height,time,straight))
+    }
+
+    /// An image layer's painted bounds as the CPU's byte layer has them
+    /// (#3167), painted on the CPU once for each placement and kept.
+    fn image_layer_bounds(&mut self, img: &klipp_timeline::ImageLayer, transform: &klipp_timeline::ObjectTransform, width: u32, height: u32) -> Option<(u32,u32,u32,u32)> {
+        let picture=self.titles.decoded_image(img)?;
+        let key=LayerBoundsKey::Image {picture:picture.id,fit:img.fit,transform:transform.clone(),size:(width,height)};
+        self.kept_layer_bounds(key,"Image layer painted on the CPU for its bounds, once for each placement",|| klipp_title::image_layer_bounds(&picture,img.fit,transform,width,height))
+    }
+
+    fn kept_layer_bounds(&mut self, key: LayerBoundsKey, work: &'static str, paint: impl FnOnce() -> Option<(u32,u32,u32,u32)>) -> Option<(u32,u32,u32,u32)> {
+        if let Some((_,bounds))=self.layer_bounds.iter().find(|(k,_)|*k==key) {return *bounds;}
+        residency::record("title.layer_bounds",work,Work::Preparation);
+        let bounds=paint();
+        if self.layer_bounds.len()>=8 {self.layer_bounds.remove(0);}
+        self.layer_bounds.push((key,bounds));
+        bounds
+    }
+
     fn place_title_source(&mut self, td: &klipp_timeline::TitleData, slot: usize, width: u32, height: u32, clip_time: f64, total: f32) -> Option<((u32,u32),Vec<BuiltinEffect>)> {
         self.place_title_source_in_scene(td, slot, width, height, clip_time, total, td, None)
             .or_else(|| self.place_title_frame(td, slot, width, height, clip_time, total))
@@ -3452,8 +3502,17 @@ impl Renderer {
                     // A still path moved or faded whole is its resting render
                     // posed, which the CPU's byte layer rounds exactly; only
                     // changing geometry is scanned here at each pose (#2201).
-                    if shape.is_some_and(|s|matches!(s.kind,klipp_timeline::ShapeKind::Path(_)))
-                        && object.fx().motion.is_active() && !klipp_title::keys_path_geometry(td) {return None;}
+                    // A dressed one, or one a loop moves, is dressed and posed
+                    // here as a rectangle is (#3167): that render is rastered
+                    // afresh on the CPU at each pose.
+                    let path=shape.is_some_and(|s|matches!(s.kind,klipp_timeline::ShapeKind::Path(_)));
+                    let dressed=|fx:&klipp_timeline::LayerFx| fx.glows.iter().any(|g|g.enabled) || fx.shadows.iter().any(|s|s.enabled) || fx.outlines.iter().any(|o|o.enabled) || fx.inner_shadows.iter().any(|i|i.enabled);
+                    let moved_by_loop=|fx:&klipp_timeline::LayerFx| fx.loops.iter().any(|l|!matches!(l,klipp_timeline::TitleLoop::Blink{..}|klipp_timeline::TitleLoop::Pulse{..}|klipp_timeline::TitleLoop::Flicker{..}|klipp_timeline::TitleLoop::ColorCycle{..}|klipp_timeline::TitleLoop::ColorBlend{..}));
+                    if path && object.fx().motion.is_active() && !klipp_title::keys_path_geometry(td)
+                        && !dressed(object.fx()) && !moved_by_loop(object.fx()) {return None;}
+                    // The transform a path is painted in: its keys taken at the
+                    // CPU's single-precision time (#2201).
+                    let paint_transform=if path && shape.is_some_and(|s|s.fit.is_none()) {object.transform.evaluated_at(clip_time as f32 as f64)} else {transform.clone()};
                     // Entrance/exit fades act on the painted byte layer before
                     // edge fades, object opacity and scene masking.
                     let mut source_fx=object.fx().clone();
@@ -3469,13 +3528,11 @@ impl Renderer {
                     // loop does nothing to a shape there. The loops that move
                     // it go by its painted height or width and stay with the
                     // title's raster.
-                    // A rectangle's loops that move it (#3167) too: the CPU
-                    // offsets the painted layer by them, by its painted width
-                    // and height, which `rect_layer_bounds` finds as it does.
-                    // A path's coverage box and an image's placed box are not
-                    // its painted bounds, so those stay with the raster.
-                    let rectangle=shape.is_some_and(|s|matches!(s.kind,klipp_timeline::ShapeKind::Rectangle{..}));
-                    let loops=if rectangle || source_fx.loops.iter().all(|l|matches!(l,klipp_timeline::TitleLoop::Blink{..}|klipp_timeline::TitleLoop::Pulse{..}|klipp_timeline::TitleLoop::Flicker{..}|klipp_timeline::TitleLoop::ColorCycle{..}|klipp_timeline::TitleLoop::ColorBlend{..})) {
+                    // A shape's or an image's loops that move it (#3167) too:
+                    // the CPU offsets the painted layer by them, by its painted
+                    // width and height, which `shape_layer_bounds` and
+                    // `image_layer_bounds` find as it does.
+                    let loops=if shape.is_some() || image.is_some() || source_fx.loops.iter().all(|l|matches!(l,klipp_timeline::TitleLoop::Blink{..}|klipp_timeline::TitleLoop::Pulse{..}|klipp_timeline::TitleLoop::Flicker{..}|klipp_timeline::TitleLoop::ColorCycle{..}|klipp_timeline::TitleLoop::ColorBlend{..})) {
                         std::mem::take(&mut source_fx.loops)
                     } else {Vec::new()};
                     // A shape's stack (#3160): its glows, shadows, outlines and
@@ -3513,8 +3570,14 @@ impl Renderer {
                     // The loops' offset, by the painted box (#3167), as
                     // `dress_layer` measures it; none for a box that paints
                     // nothing, which leaves no layer to move.
+                    // Its painted bounds, for its loops and its stack.
+                    let bounds=match (shape,image) {
+                        (Some(s),_) if !loops.is_empty() || dressed(&stack) => self.shape_layer_bounds(s,&paint_transform,width,height,clip_time as f32,shape_straight),
+                        (_,Some(img)) if !loops.is_empty() => self.image_layer_bounds(img,&transform,width,height),
+                        _=>None,
+                    };
                     let loop_offset=if loops.is_empty() {[0.0;2]} else {
-                        match shape.and_then(|s|klipp_title::rect_layer_bounds(s,&transform,width,height)) {
+                        match bounds {
                             Some((x0,y0,x1,y1))=>{
                                 let unit=(y1-y0) as f32;
                                 let geo=klipp_timeline::LoopGeometry {frame_w:width as f32,frame_h:height as f32,text_w:(x1-x0) as f32,text_h:unit,font_px:unit};
@@ -3532,7 +3595,11 @@ impl Renderer {
                             [1.0-progress,if matches!(m.kind,MotionKind::MaskRise|MotionKind::MaskDrop) {1.0}else{m.distance},direction[0],direction[1]]
                         })
                     };
-                    let clip_rows=motion.enter.iter().chain(motion.exit.iter()).any(|m|matches!(m.kind,klipp_timeline::MotionKind::MaskRise|klipp_timeline::MotionKind::MaskDrop));
+                    // A mask keeps the painted rows; a title still at this
+                    // instant is drawn by the CPU without its motion, whole,
+                    // its glow with it (#3167).
+                    let clip_rows=motion.enter.iter().chain(motion.exit.iter()).any(|m|matches!(m.kind,klipp_timeline::MotionKind::MaskRise|klipp_timeline::MotionKind::MaskDrop))
+                        && !klipp_title::title_still_at(scene,clip_time as f32,Some(total));
                     let enter_travel=travel(motion.enter,enter);
                     let exit_travel=travel(motion.exit,exit);
                     let moves=enter_travel[2..].iter().chain(exit_travel[2..].iter()).any(|v|*v!=0.0);
@@ -3576,10 +3643,9 @@ impl Renderer {
                             // Scanned from the CPU's own points, its keys and
                             // transform taken at the CPU's single-precision time
                             // (#2201); a path that paints nothing leaves no layer.
-                            let transform=if shape.fit.is_some() {transform.clone()} else {object.transform.evaluated_at(clip_time as f32 as f64)};
                             // A gradient fill is evaluated per pixel at its box
                             // fractions (#2208).
-                            match klipp_title::path_coverage(path,&transform,width,height,clip_time as f32,gradient.is_some()) {
+                            match klipp_title::path_coverage(path,&paint_transform,width,height,clip_time as f32,gradient.is_some()) {
                                 Some(c)=>gpu.stack_title_path(slot,&klipp_effects::gpu::TitlePath {bounds:c.bounds,fill_edges:c.fill_edges,stroke_segments:c.stroke_segments,half:c.half,fill:c.fill,stroke:c.stroke,glow:c.glow,gradient:gradient.clone().map(|g|(g,c.unmap))}),
                                 None=>gpu.stack_layer_clear(slot),
                             }
@@ -3590,7 +3656,7 @@ impl Renderer {
                     if passes.iter().any(|p|!matches!(p,klipp_effects::gpu::TitleStyle::Face)) {
                         // Over the box the CPU dresses: the layer's painted pixels
                         // padded by how far the stack spreads from them.
-                        let (bx0,by0,bx1,by1)=shape.and_then(|s|klipp_title::rect_layer_bounds(s,&transform,width,height))?;
+                        let (bx0,by0,bx1,by1)=bounds?;
                         // A glow seen through a translucent shape is mixed in the
                         // working space here and in the authored one on the CPU:
                         // outside Rec.709 the two part by several levels, so that
@@ -3603,13 +3669,12 @@ impl Renderer {
                         // The dressed layer is a byte layer on the CPU.
                         if x1>x0 && y1>y0 && (!gpu.stack_title_styles(slot,[x0,y0,x1-x0,y1-y0],&passes) || !gpu.stack_title_precision(slot,true)) {return None;}
                     }
-                    // A loop that moves the layer under a motion blur: its
-                    // shutter is not posed here, so the raster draws it.
-                    let loop_moves=loops.iter().any(|l|!matches!(l,klipp_timeline::TitleLoop::Blink{..}|klipp_timeline::TitleLoop::Pulse{..}|klipp_timeline::TitleLoop::Flicker{..}|klipp_timeline::TitleLoop::ColorCycle{..}|klipp_timeline::TitleLoop::ColorBlend{..}));
-                    if loop_moves && blurs && motion.is_active() {return None;}
                     // Off its rest by a whole pixel or more: the CPU leaves a
                     // layer within half a pixel where it was painted.
                     let loop_shifts=loop_offset.iter().any(|v|v.abs()>=0.5);
+                    // A dressed layer moves by the box it painted, as the CPU
+                    // measures it before its stack is drawn round it (#3167).
+                    let painted=bounds.filter(|_|dressed(&stack)).map(|(x0,y0,x1,y1)|[x0,y0,x1,y1]);
                     if motion.is_active() {
                         if !gpu.stack_title_precision(slot,true) {return None;}
                         if scales && motion_scale == 0.0 {
@@ -3625,13 +3690,13 @@ impl Renderer {
                             };
                             let a=blur_part(motion.enter,enter);let b=blur_part(motion.exit,exit);
                             let scaled=scales.then_some([motion_scale,fade,anchor[0],anchor[1]]);
-                            if !gpu.stack_title_motion_blur_pose(slot,[a[0],a[1],b[0],b[1]],enter_travel,exit_travel,scaled,solid,clip_rows)
+                            if !gpu.stack_title_motion_blur_pose_in(slot,[a[0],a[1],b[0],b[1]],enter_travel,exit_travel,scaled,solid,clip_rows,loop_offset,painted)
                                 || (!scales && !gpu.stack_title_motion_alpha(slot,fade)) {return None;}
                         } else if scales {
-                            if !gpu.stack_title_motion_scale_by(slot,enter_travel,exit_travel,motion_scale,fade,anchor,solid,clip_rows,loop_offset) {return None;}
-                        } else if ((moves || loop_shifts) && !gpu.stack_title_motion_translate_by(slot,enter_travel,exit_travel,loop_offset,clip_rows))
+                            if !gpu.stack_title_motion_scale_in(slot,enter_travel,exit_travel,motion_scale,fade,anchor,solid,clip_rows,loop_offset,painted) {return None;}
+                        } else if ((moves || loop_shifts) && !gpu.stack_title_motion_translate_in(slot,enter_travel,exit_travel,loop_offset,clip_rows,painted))
                             || !gpu.stack_title_motion_alpha(slot,fade) {return None;}
-                    } else if loop_shifts && (!gpu.stack_title_precision(slot,true) || !gpu.stack_title_motion_translate_by(slot,[0.0;4],[0.0;4],loop_offset,false)) {return None;}
+                    } else if loop_shifts && (!gpu.stack_title_precision(slot,true) || !gpu.stack_title_motion_translate_in(slot,[0.0;4],[0.0;4],loop_offset,false,painted)) {return None;}
                     // The loops' fade on top, as the CPU poses the layer once
                     // with its motion's fade and its loops' together.
                     if !motion.is_active() && !loops.is_empty() && (!gpu.stack_title_precision(slot,true) || !gpu.stack_title_motion_alpha(slot,loop_fade)) {return None;}
