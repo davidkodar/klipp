@@ -89,6 +89,10 @@ name = "directional_blur_cost"
 path = "tests/directional_blur_cost.rs"
 
 [[test]]
+name = "box_blur_cost"
+path = "tests/box_blur_cost.rs"
+
+[[test]]
 name = "effect_chain_cost"
 path = "tests/effect_chain_cost.rs"
 

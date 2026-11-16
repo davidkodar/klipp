@@ -13,35 +13,55 @@ struct Params {
 //#include pixel_storage
 //#include linear_helpers
 
-// Keep with `cpu::BOX_SLIDES_FROM`.
-const SLIDES_FROM: i32 = 8;
+// The widest box summed from the workgroup's tile, which holds
+// 256 + 2 × TILE_R pixels; past it the window is slid.
+const TILE_R: i32 = 64;
+// The workgroup's 256 pixels and TILE_R either side, in the frame's
+// flat order.
+var<workgroup> tile: array<vec4<f32>, 384>;
 
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>, @builtin(local_invocation_index) lid: u32) {
     let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let idx = gid.x;
-    let y = idx / params.width;
-    let x = idx % params.width;
-    if y >= params.height { return; }
 
     var sum = vec4<f32>(0.0);
     let diam = 2 * params.radius + 1;
     let inv = 1.0 / f32(diam);
     let w_i32 = i32(params.width);
 
-    if params.radius < SLIDES_FROM {
-        for (var dx = -params.radius; dx <= params.radius; dx++) {
-            let sx = clamp(i32(x) + dx, 0, w_i32 - 1);
-            sum += unpack(input[y * params.width + u32(sx)]);
+    if params.radius <= TILE_R {
+        // Each pixel was read from the frame at every tap, 2r + 1 reads a
+        // pixel, which on the Apple GPU (Mesa) made the op's default blur
+        // 31 ms at 1080p. The workgroup reads its stretch of the frame
+        // and r either side once, then sums from that. A workgroup may
+        // run over the end of a row; a tap clamped to its own row still
+        // lies within r of its pixel, so inside the tile.
+        let r = params.radius;
+        let n = i32(params.width * params.height);
+        let start = i32(idx - lid) - r;
+        for (var i = i32(lid); i < 256 + 2 * r; i += 256) {
+            tile[i] = unpack(input[clamp(start + i, 0, n - 1)]);
+        }
+        workgroupBarrier();
+        let y = idx / params.width;
+        if y >= params.height { return; }
+        let x = i32(idx % params.width);
+        let row = i32(y * params.width) - start;
+        for (var dx = -r; dx <= r; dx++) {
+            sum += tile[row + clamp(x + dx, 0, w_i32 - 1)];
         }
         output[idx] = pack(sum * inv);
         return;
     }
-    // From SLIDES_FROM the window is slid along a stretch of the row at
-    // least as long as itself, by the invocation at the stretch's start;
-    // the rest return (#3176). Summed afresh at every pixel, a light
-    // wrap's widest box (a sigma of 3200) ran past the GPU's job time
-    // limit. `cpu::slide_box` is the same sum.
+    let y = idx / params.width;
+    let x = idx % params.width;
+    if y >= params.height { return; }
+    // A wider window is slid along a stretch of the row at least as long
+    // as itself, by the invocation at the stretch's start; the rest
+    // return (#3176). Summed afresh at every pixel, a light wrap's widest
+    // box (a sigma of 3200) ran past the GPU's job time limit.
+    // `cpu::slide_box` is the same sum.
     let r = params.radius;
     let len = min(w_i32, max(32, diam));
     let x0 = i32(x);

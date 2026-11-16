@@ -13,9 +13,6 @@ struct Params {
 //#include pixel_storage
 //#include linear_helpers
 
-// Keep with `cpu::BOX_SLIDES_FROM`.
-const SLIDES_FROM: i32 = 8;
-
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
     let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
@@ -29,17 +26,11 @@ fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgro
     let inv = 1.0 / f32(diam);
     let h_i32 = i32(params.height);
 
-    if params.radius < SLIDES_FROM {
-        for (var dy = -params.radius; dy <= params.radius; dy++) {
-            let sy = clamp(i32(y) + dy, 0, h_i32 - 1);
-            sum += unpack(input[u32(sy) * params.width + x]);
-        }
-        output[idx] = pack(sum * inv);
-        return;
-    }
-    // `blur_h.wgsl`'s slide down a stretch of the column; neighbouring
-    // invocations take neighbouring columns, so they read neighbouring
-    // pixels.
+    // A slide down a stretch of the column, at every radius, as
+    // `cpu::slide_box` slides; neighbouring invocations take neighbouring
+    // columns, so they read neighbouring pixels. Below a radius of 8 each
+    // pixel was summed afresh, 2r + 1 reads from the frame a pixel, which
+    // on the Apple GPU (Mesa) cost several times the slide.
     let r = params.radius;
     let len = min(h_i32, max(32, diam));
     let y0 = i32(y);
