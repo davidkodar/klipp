@@ -3005,6 +3005,55 @@ mod tests {
         assert_eq!(super::why_not_encodable(&ExportVideoCodec::DNxHD115, 0, 1920, 1080), None);
     }
 
+    /// The depth the export reply names is the depth the encoder opens
+    /// at: every codec this machine encodes, asked for 8 and for 10 bits.
+    /// The reply said 8 for ProRes, which the encoder writes at 10.
+    #[test]
+    #[serial]
+    fn the_written_bit_depth_is_the_encoders() {
+        let _watch = crate::test_watchdog::Watchdog::start();
+        ffmpeg_next::init().unwrap();
+        let dir = std::env::temp_dir().join("klipp_render_test");
+        let _ = std::fs::create_dir_all(&dir);
+        let snapshot = make_snapshot();
+        let mut opened = 0;
+        for (codec, format) in [
+            (ExportVideoCodec::H264, ExportFormat::Mp4),
+            (ExportVideoCodec::H265, ExportFormat::Mp4),
+            (ExportVideoCodec::Av1, ExportFormat::Mp4),
+            (ExportVideoCodec::Vp9, ExportFormat::WebM),
+            (ExportVideoCodec::ProRes422, ExportFormat::Mov),
+            (ExportVideoCodec::ProRes422HQ, ExportFormat::Mov),
+            (ExportVideoCodec::ProRes4444, ExportFormat::Mov),
+            (ExportVideoCodec::DnxhrLb, ExportFormat::Mov),
+            (ExportVideoCodec::DnxhrSq, ExportFormat::Mov),
+            (ExportVideoCodec::DnxhrHq, ExportFormat::Mov),
+            (ExportVideoCodec::DnxhrHqx, ExportFormat::Mov),
+            (ExportVideoCodec::Dnxhr444, ExportFormat::Mov),
+            (ExportVideoCodec::Ffv1, ExportFormat::Mkv),
+            (ExportVideoCodec::Gif, ExportFormat::Gif),
+        ] {
+            for asked in [0u8, 10] {
+                if super::why_not_encodable(&codec, asked, snapshot.width, snapshot.height).is_some() {
+                    continue;
+                }
+                let path = dir.join(format!("test_depth_{codec:?}_{asked}.{}", format.extension()));
+                let mut settings = make_settings(codec, path.to_str().unwrap());
+                settings.format = format;
+                settings.bit_depth = asked;
+                settings.audio_codec = ExportAudioCodec::Copy;
+                let enc = Encoder::open(&path, &settings, &snapshot).unwrap_or_else(|e| panic!("{codec:?} at {asked}: {e}"));
+                // SAFETY: a pixel format the encoder opened with has a descriptor.
+                let bits = unsafe { (*ffmpeg_next::ffi::av_pix_fmt_desc_get(enc.video_format().into())).comp[0].depth };
+                assert_eq!(bits as u8, codec.written_bit_depth(asked), "{codec:?} asked for {asked} bits opened at {:?}", enc.video_format());
+                drop(enc);
+                let _ = std::fs::remove_file(&path);
+                opened += 1;
+            }
+        }
+        assert!(opened >= 20, "only {opened} encoders opened here");
+    }
+
     #[test]
     #[serial]
     fn encode_h264_10_frames() {

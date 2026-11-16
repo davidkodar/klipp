@@ -1789,6 +1789,9 @@ fn export_takes_a_preset_a_codec_and_a_bitrate() {
     let (r, s) = sent(&mut h, json!({ "method": "export", "path": "/tmp/klipp-codec-master.mov", "preset": "prores 422" }));
     assert_eq!((s.video_codec, s.audio_codec), (V::ProRes422, A::Pcm24));
     assert_eq!(r["export"]["preset"], "ProRes 422", "{r}");
+    // Its depth as the file holds it: ProRes is 10-bit, though no depth
+    // was asked for.
+    assert_eq!((s.bit_depth, r["export"]["bit_depth"].as_u64()), (0, Some(10)), "{r}");
     assert!(r["export"]["encoder_note"].is_null(), "{r}");
     // The GPU preset says it runs on the CPU where no hardware H.265
     // encoder is in reach, and nothing where one is.
