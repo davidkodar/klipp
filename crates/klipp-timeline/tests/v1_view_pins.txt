@@ -33,7 +33,7 @@ edit_param_modifiers 32
 edit_transform_pos_x_keyframes 10
 edit_transform_pos_y_keyframes 10
 edit_transform_rotation_keyframes 6
-edit_transform_scale_keyframes 9
+edit_transform_scale_keyframes 10
 edit_transform_scale_y_keyframes 4
 edit_transform_tilt_x_keyframes 3
 edit_transform_tilt_y_keyframes 4
@@ -42,7 +42,7 @@ edit_video_param_keyframes 25
 effect_entries 19
 effect_id_at 37
 effect_id_list 12
-effect_keyframes 49
+effect_keyframes 50
 effect_param_keyframes 2
 effects_state 5
 insert_effect 10
@@ -52,12 +52,12 @@ LEGACY_OFX 44
 move_builtin_effect 15
 move_effect 10
 ofx_effects 30
-opacity_keyframes 26
+opacity_keyframes 27
 own_effects 1
 ParamId::Effect 49
 param_modifiers 52
 PictureView 18
-push_effect 83
+push_effect 84
 refresh_effect_ids 3
 remove_builtin_effect 11
 remove_effect 10
@@ -112,13 +112,17 @@ SetPayload 27
 # and that row's test. The surface is the id of the clip's surface, text,
 # and a node's text field is written by its payload: SetParamAt carries
 # numbers, flags and choices only.
-SetPayloadAt 22
+# 24: a chroma key's picked colour written as its node's payload (#3912)
+# and that pick's test; text the numeric SetParamAt can't carry.
+SetPayloadAt 24
 legacy 171
-legacy_flags 44
+legacy_flags 45
 LEGACY_NODE 60
 LEGACY_GRADE 24
-LEGACY_OPACITY 25
+# 26 and 16 below, with legacy_flags 45: an Opacity or Speed Ramp node
+# is shown as on when its legacy flags say it was (#3884).
+LEGACY_OPACITY 26
 LEGACY_TRANSFORM 18
-LEGACY_SPEED_RAMP 15
+LEGACY_SPEED_RAMP 16
 LEGACY_TEMPORAL_DENOISE 9
 STRUCTURAL 2

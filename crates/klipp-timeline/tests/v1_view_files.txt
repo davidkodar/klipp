@@ -57,8 +57,12 @@ klipp-document/tests/placed_kind_ops.rs
 klipp-timeline/src/canonical_hash.rs
 klipp-engine/src/engine.rs
 klipp-engine/src/engine/view.rs
+# Playback pacing (#4007): whether a clip's picture moves reads its opacity and effect keys.
+klipp-engine/src/engine/pacing.rs
 klipp-engine/tests/clip_serde_rich.rs
 klipp-engine/tests/clip_serde_shape.rs
+# #4007's test builds a clip with a scale key.
+klipp-engine/tests/layers_play_at_the_sequence_rate.rs
 klipp-engine/tests/viewer_matches_export.rs
 klipp-graph-format/src/lib.rs
 klipp-graph-format/src/tests.rs
@@ -134,7 +138,11 @@ klipp-timeline/tests/stack_projection.rs
 klipp-timeline/tests/support/picture_ops_check.rs
 klipp-timeline/tests/video_param_value.rs
 klipp-ui/src/app/clips.rs
+# A chroma key's picked colour written as its node's payload (#3912).
+klipp-ui/src/app/colour.rs
 klipp-ui/src/app/compound.rs
+# #3912's test writes that payload.
+klipp-ui/src/app/key_colour_pick_tests.rs
 klipp-ui/src/app/effects.rs
 klipp-ui/src/app/graph_ops.rs
 klipp-ui/src/app/hyperzoom.rs
@@ -152,6 +160,8 @@ klipp-ui/src/app/parity_pixels.rs
 klipp-ui/src/app/parity_stack_switches.rs
 klipp-ui/src/app/path_commands.rs
 klipp-ui/src/app/picture_truth_rebuild_tests.rs
+# #3924's test builds a clip with a blur, as the compose fixtures do.
+klipp-ui/src/app/picture_mask_handles_tests.rs
 klipp-ui/src/app/placement.rs
 klipp-ui/src/app/placement_row_tests.rs
 klipp-ui/src/app/project_commands.rs
