@@ -200,13 +200,13 @@ impl GpuText3d {
             },
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: wgpu::TextureFormat::Depth32Float,
-                depth_write_enabled: true,
-                depth_compare: wgpu::CompareFunction::Less,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::Less),
                 stencil: Default::default(),
                 bias: Default::default(),
             }),
             multisample: Default::default(),
-            multiview: None,
+            multiview_mask: None,
             cache: None,
         });
         let resolve_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -565,6 +565,7 @@ impl GpuText3d {
                 color_attachments: &[
                     Some(wgpu::RenderPassColorAttachment {
                         view: &targets.color,
+                        depth_slice: None,
                         resolve_target: None,
                         ops: wgpu::Operations {
                             load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
@@ -573,6 +574,7 @@ impl GpuText3d {
                     }),
                     Some(wgpu::RenderPassColorAttachment {
                         view: &targets.metal,
+                        depth_slice: None,
                         resolve_target: None,
                         ops: wgpu::Operations {
                             load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
@@ -590,6 +592,7 @@ impl GpuText3d {
                 }),
                 timestamp_writes: None,
                 occlusion_query_set: None,
+                multiview_mask: None,
             });
             pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, &bg, &[]);

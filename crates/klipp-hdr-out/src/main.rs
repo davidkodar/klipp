@@ -205,7 +205,7 @@ impl ApplicationHandler for App {
             primitive: Default::default(),
             depth_stencil: None,
             multisample: Default::default(),
-            multiview: None,
+            multiview_mask: None,
             cache: None,
         });
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
@@ -361,7 +361,7 @@ impl App {
         let Some((_, bind, _, _)) = gpu.texture.as_ref() else {
             // Nothing published yet: leave the window black rather than
             // showing whatever the surface happened to contain.
-            if let Ok(frame) = gpu.surface.get_current_texture() {
+            if let wgpu::CurrentSurfaceTexture::Success(frame) | wgpu::CurrentSurfaceTexture::Suboptimal(frame) = gpu.surface.get_current_texture() {
                 let view = frame.texture.create_view(&Default::default());
                 let mut enc = gpu.device.create_command_encoder(&Default::default());
                 {
@@ -369,6 +369,7 @@ impl App {
                         label: None,
                         color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                             view: &view,
+                            depth_slice: None,
                             resolve_target: None,
                             ops: wgpu::Operations {
                                 load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
@@ -378,6 +379,7 @@ impl App {
                         depth_stencil_attachment: None,
                         timestamp_writes: None,
                         occlusion_query_set: None,
+                        multiview_mask: None,
                     });
                 }
                 gpu.queue.submit(Some(enc.finish()));
@@ -386,7 +388,7 @@ impl App {
             return;
         };
 
-        let Ok(frame) = gpu.surface.get_current_texture() else { return };
+        let (wgpu::CurrentSurfaceTexture::Success(frame) | wgpu::CurrentSurfaceTexture::Suboptimal(frame)) = gpu.surface.get_current_texture() else { return };
         let view = frame.texture.create_view(&Default::default());
         let mut enc = gpu.device.create_command_encoder(&Default::default());
         {
@@ -394,6 +396,7 @@ impl App {
                 label: Some("present"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &view,
+                    depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
@@ -403,6 +406,7 @@ impl App {
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
+                multiview_mask: None,
             });
             pass.set_pipeline(&gpu.pipeline);
             pass.set_bind_group(0, bind, &[]);
