@@ -78,7 +78,7 @@ fn bridge_sized(rgba: &[u16], w: u32, h: u32, m: [[f32; 4]; 3]) -> Option<Vec<f3
         mapped_at_creation: false,
     });
     ctx.queue.write_buffer(&input, 0, bytes);
-    ctx.device.poll(wgpu::Maintain::Poll);
+    ctx.device.poll(wgpu::PollType::Poll);
 
     assert!(
         pipeline.bridge_rgba64_to_linear_into_chain(&input, w, h, m),

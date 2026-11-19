@@ -6176,7 +6176,7 @@ mod wheel_layout_tests {
 fn render_wheel_layout_review(ctx: &egui::Context, out: &egui::FullOutput, textures: &egui::TexturesDelta, width: u32, path: &str) {
     let instance = klipp_effects::gpu_context::instance();
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).unwrap();
-    let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default(), None)).unwrap();
+    let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).unwrap();
     let format = wgpu::TextureFormat::Rgba8Unorm;
     let mut renderer = eframe::egui_wgpu::Renderer::new(&device, format, None, 1, false);
     for (id, delta) in &textures.set { renderer.update_texture(&device, &queue, *id, delta); }
@@ -6202,11 +6202,11 @@ fn render_wheel_layout_review(ctx: &egui::Context, out: &egui::FullOutput, textu
         }).forget_lifetime();
         renderer.render(&mut pass, &jobs, &screen);
     }
-    encoder.copy_texture_to_buffer(texture.as_image_copy(), wgpu::ImageCopyBuffer { buffer: &buffer,
-        layout: wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(stride), rows_per_image: None } }, size);
+    encoder.copy_texture_to_buffer(texture.as_image_copy(), wgpu::TexelCopyBufferInfo { buffer: &buffer,
+        layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(stride), rows_per_image: None } }, size);
     queue.submit(commands.into_iter().chain(std::iter::once(encoder.finish())));
     buffer.slice(..).map_async(wgpu::MapMode::Read, |r| r.unwrap());
-    device.poll(wgpu::Maintain::Wait);
+    device.poll(wgpu::PollType::wait_indefinitely());
     let mapped = buffer.slice(..).get_mapped_range();
     let pixels: Vec<u8> = mapped.chunks(stride as usize).flat_map(|row| row[..width as usize * 4].iter().copied()).collect();
     image::save_buffer(path, &pixels, width, 2000, image::ColorType::Rgba8).unwrap();

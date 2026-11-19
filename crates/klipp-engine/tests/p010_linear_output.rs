@@ -107,7 +107,7 @@ fn linear_frame(conv: &mut GpuP010Converter) -> Vec<f32> {
     queue.submit(std::iter::once(enc.finish()));
     let slice = staging.slice(..);
     slice.map_async(wgpu::MapMode::Read, |_| {});
-    device.poll(wgpu::Maintain::Wait);
+    device.poll(wgpu::PollType::wait_indefinitely());
     let data = slice.get_mapped_range();
     let out: Vec<f32> = bytemuck::pod_collect_to_vec(&data);
     drop(data);

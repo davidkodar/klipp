@@ -34,11 +34,11 @@ pub fn backends() -> wgpu::Backends {
 fn backends_unlocked() -> wgpu::Backends {
     static PICKED: std::sync::OnceLock<wgpu::Backends> = std::sync::OnceLock::new();
     *PICKED.get_or_init(|| {
-        if let Some(chosen) = wgpu::util::backend_bits_from_env() {
+        if let Some(chosen) = wgpu::Backends::from_env() {
             return chosen;
         }
-        let primary = wgpu::Instance::new(wgpu::InstanceDescriptor { backends: wgpu::Backends::PRIMARY, flags: wgpu::InstanceFlags::from_build_config() & !wgpu::InstanceFlags::VALIDATION, ..Default::default() });
-        if primary.enumerate_adapters(wgpu::Backends::PRIMARY).is_empty() {
+        let primary = wgpu::Instance::new(wgpu::InstanceDescriptor { backends: wgpu::Backends::PRIMARY, flags: wgpu::InstanceFlags::from_build_config() & !wgpu::InstanceFlags::VALIDATION, ..wgpu::InstanceDescriptor::new_without_display_handle() });
+        if pollster::block_on(primary.enumerate_adapters(wgpu::Backends::PRIMARY)).is_empty() {
             info!("GpuContext: no Vulkan adapter; GL instead");
             wgpu::Backends::GL
         } else {
@@ -60,7 +60,7 @@ fn instance_unlocked() -> wgpu::Instance {
     wgpu::Instance::new(wgpu::InstanceDescriptor {
         backends: backends_unlocked(),
         flags: wgpu::InstanceFlags::from_build_config() & !wgpu::InstanceFlags::VALIDATION,
-        ..Default::default()
+        ..wgpu::InstanceDescriptor::new_without_display_handle()
     })
 }
 
@@ -162,7 +162,8 @@ impl GpuContext {
             power_preference: wgpu::PowerPreference::HighPerformance,
             force_fallback_adapter: false,
             compatible_surface: None,
-        }))?;
+        }))
+        .ok()?;
 
         let adapter_info = adapter.get_info();
         info!("GpuContext: {} ({:?})", adapter_info.name, adapter_info.backend);
@@ -174,7 +175,6 @@ impl GpuContext {
                 required_limits: device_limits(&adapter),
                 ..Default::default()
             },
-            None,
         ))
         .ok()?;
         drop(_loading);
@@ -481,7 +481,7 @@ fn register_device_callbacks(
     {
         let flag = device_lost.clone();
         let tally = std::sync::Mutex::new(ErrorTally::default());
-        device.on_uncaptured_error(Box::new(move |err| {
+        device.on_uncaptured_error(std::sync::Arc::new(move |err: wgpu::Error| {
             // A validation error is one dropped command on a device that
             // is otherwise fine: the frame it was part of is wrong, the
             // next frame records afresh. It used to take the GPU away
@@ -521,15 +521,12 @@ fn register_device_callbacks(
     }
     {
         let flag = device_lost.clone();
-        device.set_device_lost_callback(Box::new(move |reason, msg| {
-            // `ReplacedCallback` fires if a newer callback ever takes
-            // over this slot — the device itself is fine.
-            if matches!(reason, wgpu::DeviceLostReason::ReplacedCallback) {
-                return;
-            }
+        // A callback a newer one replaces is dropped without being called
+        // (wgpu 24 removed `ReplacedCallback`), so every call is a loss.
+        device.set_device_lost_callback(move |reason, msg| {
             tracing::error!("WGPU device lost ({reason:?}): {msg} — disabling GPU effects");
             flag.store(true, Ordering::SeqCst);
-        }));
+        });
     }
     device_lost
 }

@@ -157,8 +157,8 @@ impl GpuText3d {
         });
         let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("3D title"),
-            bind_group_layouts: &[&layout],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&layout)],
+            immediate_size: 0,
         });
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("3D title"),
@@ -169,7 +169,7 @@ impl GpuText3d {
             layout: Some(&pl),
             vertex: wgpu::VertexState {
                 module: &shader,
-                entry_point: "vertex",
+                entry_point: Some("vertex"),
                 compilation_options: Default::default(),
                 buffers: &[wgpu::VertexBufferLayout {
                     array_stride: 32,
@@ -179,7 +179,7 @@ impl GpuText3d {
             },
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
-                entry_point: "fragment",
+                entry_point: Some("fragment"),
                 compilation_options: Default::default(),
                 targets: &[
                     Some(wgpu::ColorTargetState {
@@ -237,8 +237,8 @@ impl GpuText3d {
         });
         let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("3D title resolve"),
-            bind_group_layouts: &[&resolve_layout],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&resolve_layout)],
+            immediate_size: 0,
         });
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("3D title resolve"),
@@ -248,7 +248,7 @@ impl GpuText3d {
             label: Some("3D title resolve"),
             layout: Some(&pl),
             module: &shader,
-            entry_point: "resolve",
+            entry_point: Some("resolve"),
             compilation_options: Default::default(),
             cache: None,
         });

@@ -248,10 +248,10 @@ impl GpuP010Converter {
         });
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("p010_pl"), bind_group_layouts: &[&bind_group_layout], push_constant_ranges: &[],
+            label: Some("p010_pl"), bind_group_layouts: &[Some(&bind_group_layout)], immediate_size: 0,
         });
 
-        device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let validation_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
         let shader_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("p010_to_rgba"),
             source: wgpu::ShaderSource::Wgsl(p010_shader().into()),
@@ -260,11 +260,11 @@ impl GpuP010Converter {
             label: Some("p010_to_rgba"),
             layout: Some(&pipeline_layout),
             module: &shader_module,
-            entry_point: "main",
+            entry_point: Some("main"),
             compilation_options: Default::default(),
             cache: None,
         });
-        if let Some(err) = pollster::block_on(device.pop_error_scope()) {
+        if let Some(err) = pollster::block_on(validation_scope.pop()) {
             crate::shader_check::shader_failed("P010 converter", &err.to_string());
             return None;
         }
@@ -461,7 +461,7 @@ impl GpuP010Converter {
             let start = std::time::Instant::now();
             let timeout = std::time::Duration::from_secs(2);
             loop {
-                self.device.poll(wgpu::Maintain::Poll);
+                let _ = self.device.poll(wgpu::PollType::Poll);
                 match rx.try_recv() {
                     Ok(v) => break Some(v),
                     Err(std::sync::mpsc::TryRecvError::Disconnected) => break None,

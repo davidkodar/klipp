@@ -63,16 +63,16 @@ impl ViewerLutPass {
         });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("viewer_lut"),
-            bind_group_layouts: &[&layout],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&layout)],
+            immediate_size: 0,
         });
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("viewer_lut"),
             layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState { module: &module, entry_point: "vs", compilation_options: Default::default(), buffers: &[] },
+            vertex: wgpu::VertexState { module: &module, entry_point: Some("vs"), compilation_options: Default::default(), buffers: &[] },
             fragment: Some(wgpu::FragmentState {
                 module: &module,
-                entry_point: "fs",
+                entry_point: Some("fs"),
                 compilation_options: Default::default(),
                 targets: &[Some(wgpu::ColorTargetState { format: TARGET_FORMAT, blend: None, write_mask: wgpu::ColorWrites::ALL })],
             }),
@@ -97,9 +97,9 @@ impl ViewerLutPass {
         // Red fastest, then green, then blue: the `.cube` order, and the
         // texture's x, y, z.
         queue.write_texture(
-            wgpu::ImageCopyTexture { texture: &lut_texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+            wgpu::TexelCopyTextureInfo { texture: &lut_texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
             bytemuck::cast_slice(&texels),
-            wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(n * 16), rows_per_image: Some(n) },
+            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(n * 16), rows_per_image: Some(n) },
             wgpu::Extent3d { width: n, height: n, depth_or_array_layers: n },
         );
         let lut_view = lut_texture.create_view(&wgpu::TextureViewDescriptor::default());
@@ -177,9 +177,9 @@ impl ViewerLutPass {
         }
         let Some(source) = &self.source else { return false };
         queue.write_texture(
-            wgpu::ImageCopyTexture { texture: &source.texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+            wgpu::TexelCopyTextureInfo { texture: &source.texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
             rgba,
-            wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(size.0 * 4), rows_per_image: Some(size.1) },
+            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(size.0 * 4), rows_per_image: Some(size.1) },
             wgpu::Extent3d { width: size.0, height: size.1, depth_or_array_layers: 1 },
         );
         let view = source.texture.create_view(&wgpu::TextureViewDescriptor::default());
@@ -261,8 +261,8 @@ mod tests {
 
     fn device() -> Option<(wgpu::Device, wgpu::Queue)> {
         let instance = klipp_effects::gpu_context::instance();
-        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))?;
-        pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default(), None)).ok()
+        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok()?;
+        pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()
     }
 
     /// A LUT that is not the identity: a warm, contrasty curve, as a show
@@ -298,9 +298,9 @@ mod tests {
             view_formats: &[],
         });
         queue.write_texture(
-            wgpu::ImageCopyTexture { texture: &texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+            wgpu::TexelCopyTextureInfo { texture: &texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
             &src,
-            wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(w * 4), rows_per_image: Some(h) },
+            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(w * 4), rows_per_image: Some(h) },
             wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
         );
         let lut = warm_lut(17);
@@ -330,13 +330,13 @@ mod tests {
         });
         let mut encoder = device.create_command_encoder(&Default::default());
         encoder.copy_texture_to_buffer(
-            wgpu::ImageCopyTexture { texture: pass.output_texture().unwrap(), mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
-            wgpu::ImageCopyBuffer { buffer: &buffer, layout: wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(w * 4), rows_per_image: Some(h) } },
+            wgpu::TexelCopyTextureInfo { texture: pass.output_texture().unwrap(), mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+            wgpu::TexelCopyBufferInfo { buffer: &buffer, layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(w * 4), rows_per_image: Some(h) } },
             wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
         );
         queue.submit(Some(encoder.finish()));
         buffer.slice(..).map_async(wgpu::MapMode::Read, |_| {});
-        device.poll(wgpu::Maintain::Wait);
+        device.poll(wgpu::PollType::wait_indefinitely());
         let got = buffer.slice(..).get_mapped_range().to_vec();
         got
     }

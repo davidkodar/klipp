@@ -113,7 +113,7 @@ impl ApplicationHandler for App {
 
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::VULKAN,
-            ..Default::default()
+            ..wgpu::InstanceDescriptor::new_without_display_handle()
         });
         let surface = instance.create_surface(window.clone()).expect("no surface");
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
@@ -146,7 +146,6 @@ impl ApplicationHandler for App {
 
         let (device, queue) = pollster::block_on(adapter.request_device(
             &wgpu::DeviceDescriptor { label: Some("klipp-hdr-out"), ..Default::default() },
-            None,
         ))
         .expect("no device");
 
@@ -185,21 +184,21 @@ impl ApplicationHandler for App {
         });
         let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: None,
-            bind_group_layouts: &[&layout],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&layout)],
+            immediate_size: 0,
         });
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("blit"),
             layout: Some(&pl),
             vertex: wgpu::VertexState {
                 module: &module,
-                entry_point: "vs",
+                entry_point: Some("vs"),
                 buffers: &[],
                 compilation_options: Default::default(),
             },
             fragment: Some(wgpu::FragmentState {
                 module: &module,
-                entry_point: "fs",
+                entry_point: Some("fs"),
                 targets: &[Some(format.into())],
                 compilation_options: Default::default(),
             }),
@@ -341,14 +340,14 @@ impl App {
                 }
                 if let Some((texture, _, _, _)) = gpu.texture.as_ref() {
                     gpu.queue.write_texture(
-                        wgpu::ImageCopyTexture {
+                        wgpu::TexelCopyTextureInfo {
                             texture,
                             mip_level: 0,
                             origin: wgpu::Origin3d::ZERO,
                             aspect: wgpu::TextureAspect::All,
                         },
                         bytemuck::cast_slice(&self.half),
-                        wgpu::ImageDataLayout {
+                        wgpu::TexelCopyBufferLayout {
                             offset: 0,
                             bytes_per_row: Some(w * 8),
                             rows_per_image: Some(h),

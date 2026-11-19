@@ -47,7 +47,7 @@ impl LayerPipelines {
                 label: Some(entry),
                 layout: Some(layout),
                 module: &module,
-                entry_point: entry,
+                entry_point: Some(entry),
                 compilation_options: Default::default(),
                 cache: None,
             })
@@ -76,8 +76,8 @@ impl LayerPipelines {
         });
         let spill_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("spill_pl"),
-            bind_group_layouts: &[&spill_layout],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&spill_layout)],
+            immediate_size: 0,
         });
         Self {
             rows: build(single, ROWS, "rows"),

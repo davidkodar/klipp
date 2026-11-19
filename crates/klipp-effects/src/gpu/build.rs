@@ -50,8 +50,8 @@ impl EffectPipelines {
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("effects_pl"),
-            bind_group_layouts: &[&bind_group_layout],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&bind_group_layout)],
+            immediate_size: 0,
         });
 
         // Transition bind group layout: from (read), to (read), output (write), params (uniform)
@@ -103,8 +103,8 @@ impl EffectPipelines {
 
         let transition_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("transition_pl"),
-            bind_group_layouts: &[&transition_bgl],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&transition_bgl)],
+            immediate_size: 0,
         });
 
         // Posed pieces (#985): the transition's four bindings and the plan.
@@ -133,12 +133,12 @@ impl EffectPipelines {
         });
         let pieces_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("pieces_pl"),
-            bind_group_layouts: &[&pieces_bgl],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&pieces_bgl)],
+            immediate_size: 0,
         });
 
         // Push error handler to capture shader validation errors
-        device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let validation_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
 
         let pipeline_compile_start = std::time::Instant::now();
 
@@ -151,7 +151,7 @@ impl EffectPipelines {
                 label: Some(label),
                 layout: Some(layout),
                 module: &module,
-                entry_point: "main",
+                entry_point: Some("main"),
                 compilation_options: Default::default(),
                 cache: None,
             })
@@ -256,8 +256,8 @@ impl EffectPipelines {
         });
         let huesat_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("huesat_pl"),
-            bind_group_layouts: &[&huesat_bgl],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&huesat_bgl)],
+            immediate_size: 0,
         });
 
         // ApplyMatte needs the graded frame, the frame before the
@@ -294,8 +294,8 @@ impl EffectPipelines {
         });
         let apply_matte_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("apply_matte_pl"),
-            bind_group_layouts: &[&apply_matte_bgl],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&apply_matte_bgl)],
+            immediate_size: 0,
         });
 
         // Difference key: the effects layout plus the clean plate.
@@ -325,8 +325,8 @@ impl EffectPipelines {
         });
         let difference_key_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("difference_key_pl"),
-            bind_group_layouts: &[&difference_key_bgl],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&difference_key_bgl)],
+            immediate_size: 0,
         });
         let difference_key_pipeline = create_pipeline(
             &device,
@@ -358,8 +358,8 @@ impl EffectPipelines {
         });
         let temporal_denoise_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("temporal_denoise_pl"),
-            bind_group_layouts: &[&temporal_denoise_bgl],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&temporal_denoise_bgl)],
+            immediate_size: 0,
         });
         let temporal_denoise_pipeline = create_pipeline(&device, &temporal_denoise_pl, "temporal_denoise", SHADER_TEMPORAL_DENOISE);
 
@@ -419,8 +419,8 @@ impl EffectPipelines {
         });
         let mask_v2_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("mask_v2_pl"),
-            bind_group_layouts: &[&mask_v2_bgl],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&mask_v2_bgl)],
+            immediate_size: 0,
         });
         let huesat_pipeline = create_pipeline(&device, &huesat_pl, "huesat", SHADER_HUESAT);
         let lut3d_pipeline = create_pipeline(&device, &huesat_pl, "lut3d", SHADER_LUT3D);
@@ -575,8 +575,8 @@ impl EffectPipelines {
         });
         let display_tables_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("display_tables_pl"),
-            bind_group_layouts: &[&display_tables_bgl],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&display_tables_bgl)],
+            immediate_size: 0,
         });
         let aces_rec709_pipeline =
             create_pipeline(&device, &display_tables_pl, "aces_rec709", SHADER_ACES_REC709_U8);
@@ -656,8 +656,8 @@ impl EffectPipelines {
         });
         let u8_to_texture_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("u8_to_texture_pl"),
-            bind_group_layouts: &[&u8_to_texture_bgl],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&u8_to_texture_bgl)],
+            immediate_size: 0,
         });
         let u8_to_texture_pipeline = create_pipeline(&device, &u8_to_texture_pl, "u8_to_texture", SHADER_U8_TO_TEXTURE);
         let blend_layer_pipeline = create_pipeline(&device, &pipeline_layout, "blend_layer", SHADER_BLEND_LAYER);
@@ -692,8 +692,8 @@ impl EffectPipelines {
         });
         let sprite_glyphs_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("sprite_glyphs_pl"),
-            bind_group_layouts: &[&sprite_glyphs_bgl],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&sprite_glyphs_bgl)],
+            immediate_size: 0,
         });
         let sprite_glyphs_pipeline = create_pipeline(&device, &sprite_glyphs_pl, "sprite_glyphs", SHADER_SPRITE_GLYPHS);
         let matte_extract_pipeline = create_pipeline(&device, &pipeline_layout, "matte_extract", SHADER_MATTE_EXTRACT);
@@ -718,7 +718,7 @@ impl EffectPipelines {
         );
 
         // Check if any shader compilation failed
-        if let Some(err) = pollster::block_on(device.pop_error_scope()) {
+        if let Some(err) = pollster::block_on(validation_scope.pop()) {
             crate::shader_check::shader_failed("effects", &err.to_string());
             return None;
         }

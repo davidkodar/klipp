@@ -26,7 +26,7 @@ fn run(ctx: &klipp_effects::gpu_context::GpuContext, range: u32, max: f32, sampl
         source: wgpu::ShaderSource::Wgsl(format!("{WGSL_PRELUDE}{WGSL_HELPERS}{BODY}").into()),
     });
     let pipeline = dev.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-        label: None, layout: None, module: &module, entry_point: "main",
+        label: None, layout: None, module: &module, entry_point: Some("main"),
         compilation_options: Default::default(), cache: None,
     });
     let input: Vec<f32> = samples.iter().flat_map(|s| [s[0], s[1], s[2], 0.0]).collect();

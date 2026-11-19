@@ -188,7 +188,7 @@ fn tracking_4k_cached_and_raster_composition_timing() {
             assert!(gpu.stack_blend(0, 1.0, 0));
             assert!(gpu.stack_finish_into_chain(true));
             gpu.stack_end();
-            gpu.device().poll(wgpu::Maintain::Wait);
+            gpu.device().poll(wgpu::PollType::wait_indefinitely());
             if f > 0 { samples.push(start.elapsed().as_secs_f64() * 1000.0); }
         }
         assert_eq!(before, gpu.readback_stats(), "composition stays on GPU");

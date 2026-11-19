@@ -2,7 +2,7 @@
 //! (submitting every frame, never letting the queue drain) and the
 //! engine (reading frames back), does an engine readback still return?
 //! It did not on wgpu 22 with `device.poll(Wait)`; every readback now
-//! spins on `Maintain::Poll` through `poll_until_mapped`. This holds
+//! spins on `PollType::Poll` through `poll_until_mapped`. This holds
 //! that under a thread that submits without pause.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};

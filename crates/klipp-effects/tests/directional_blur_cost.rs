@@ -37,7 +37,7 @@ fn measure_4k_directional_blur_pass() {
                 gpu.begin_chain();
                 let ran = gpu.chain_run_effects(&blur, true, W, H);
                 gpu.submit_chain();
-                device.poll(wgpu::Maintain::Wait);
+                let _ = device.poll(wgpu::PollType::wait_indefinitely());
                 assert!(ran.complete);
                 if n >= 10 {
                     samples.push(start.elapsed().as_secs_f64() * 1000.0);

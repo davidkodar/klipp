@@ -131,7 +131,7 @@ impl GpuEffectsPipeline {
         self.submit(encoder);
         // Non-blocking driver nudge so NVIDIA Vulkan's deferred-destruction
         // queue drains between submits. See submit_chain for context.
-        self.device.poll(wgpu::Maintain::Poll);
+        let _ = self.device.poll(wgpu::PollType::Poll);
 
         self.download_linear_rgba_as_u8(buf_b, (width * height) as usize)
     }
@@ -222,7 +222,7 @@ impl GpuEffectsPipeline {
             dispatch_flat(&mut pass, workgroups);
         }
         self.submit(encoder);
-        self.device.poll(wgpu::Maintain::Poll);
+        let _ = self.device.poll(wgpu::PollType::Poll);
 
         self.download_linear_rgba_f32(buf_b, (width * height) as usize)
     }
@@ -295,7 +295,7 @@ impl GpuEffectsPipeline {
         self.upload(buf_a, 0, bytemuck::cast_slice(from_linear));
         self.upload(buf_c, 0, bytemuck::cast_slice(to_linear));
         self.dispatch_pieces(buf_a, buf_c, buf_b, plan, "render_pieces_linear");
-        self.device.poll(wgpu::Maintain::Poll);
+        let _ = self.device.poll(wgpu::PollType::Poll);
         self.download_linear_rgba_f32(buf_b, (plan.width * plan.height) as usize)
     }
 
@@ -436,7 +436,7 @@ impl GpuEffectsPipeline {
             dispatch_flat(&mut pass, workgroups);
         }
         self.submit(enc);
-        self.device.poll(wgpu::Maintain::Poll);
+        let _ = self.device.poll(wgpu::PollType::Poll);
     }
 }
 

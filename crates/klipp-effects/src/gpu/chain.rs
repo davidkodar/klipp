@@ -52,9 +52,9 @@ impl GpuEffectsPipeline {
             // accumulate across long sessions — paired with the
             // pre-allocated bind group pools above, this is the second
             // belt against the observed `device lost (Dropped)` crash.
-            // `Maintain::Poll` returns immediately — it's a hint, not a
+            // `PollType::Poll` returns immediately — it's a hint, not a
             // fence.
-            self.device.poll(wgpu::Maintain::Poll);
+            let _ = self.device.poll(wgpu::PollType::Poll);
         }
     }
 
@@ -346,7 +346,7 @@ impl GpuEffectsPipeline {
                     self.submit(encoder);
                     // Non-blocking driver nudge so NVIDIA Vulkan's deferred-destruction
                     // queue drains between submits. See submit_chain for context.
-                    self.device.poll(wgpu::Maintain::Poll);
+                    let _ = self.device.poll(wgpu::PollType::Poll);
 
                     !current_in_a
                 }
@@ -679,7 +679,7 @@ impl GpuEffectsPipeline {
             flow.let_go();
         }
         self.neighbour_pool.lock().unwrap_or_else(|e| e.into_inner()).trim_if_pressed();
-        let _ = self.device.poll(wgpu::Maintain::Wait);
+        let _ = self.device.poll(wgpu::PollType::wait_indefinitely());
         tracing::warn!("GPU memory ran out: the effect caches let go of what they keep, and the next frame tries again");
     }
 

@@ -23,15 +23,16 @@ fn try_wgpu() -> Option<(Arc<wgpu::Device>, Arc<wgpu::Queue>)> {
         power_preference: wgpu::PowerPreference::HighPerformance,
         force_fallback_adapter: false,
         compatible_surface: None,
-    }))?;
+    }))
+    .ok()?;
     let (device, queue) = pollster::block_on(adapter.request_device(
         &wgpu::DeviceDescriptor {
             label: Some("frame_gpu_roundtrip"),
             required_features: wgpu::Features::empty(),
             required_limits: wgpu::Limits::default(),
             memory_hints: wgpu::MemoryHints::Performance,
+            ..Default::default()
         },
-        None,
     ))
     .ok()?;
     Some((Arc::new(device), Arc::new(queue)))
@@ -58,7 +59,7 @@ fn gpu_frame_into_cpu_reads_back_exact_bytes() {
     });
     queue.write_buffer(&buffer, 0, &expected);
     // Flush the write before we submit a dependent copy.
-    device.poll(wgpu::Maintain::Poll);
+    device.poll(wgpu::PollType::Poll);
 
     let frame = Frame::Gpu(GpuFrame::new(
         device,

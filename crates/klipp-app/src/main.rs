@@ -691,7 +691,7 @@ fn main() -> Result<()> {
             // texture and reads nothing back. This used to deadlock on
             // wgpu 22: a readback's `device.poll(Wait)` never returned
             // while the UI kept the queue busy. Every readback now spins
-            // on `Maintain::Poll` (`poll_until_mapped`), which the
+            // on `PollType::Poll` (`poll_until_mapped`), which the
             // `shared_device_pressure` test holds under a thread that
             // submits without pause. `KLIPP_SHARED_GPU_DEVICE=0` is the
             // hatch back to two devices.

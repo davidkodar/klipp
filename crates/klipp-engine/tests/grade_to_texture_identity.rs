@@ -145,15 +145,15 @@ fn encode_grade_to_texture_matches_cpu() {
         &wgpu::CommandEncoderDescriptor { label: Some("grade_to_texture_test_readback") },
     );
     encoder.copy_texture_to_buffer(
-        wgpu::ImageCopyTexture {
+        wgpu::TexelCopyTextureInfo {
             texture: &texture,
             mip_level: 0,
             origin: wgpu::Origin3d::ZERO,
             aspect: wgpu::TextureAspect::All,
         },
-        wgpu::ImageCopyBuffer {
+        wgpu::TexelCopyBufferInfo {
             buffer: &staging,
-            layout: wgpu::ImageDataLayout {
+            layout: wgpu::TexelCopyBufferLayout {
                 offset: 0,
                 bytes_per_row: Some(W * 4),
                 rows_per_image: Some(H),
@@ -166,7 +166,7 @@ fn encode_grade_to_texture_matches_cpu() {
     let slice = staging.slice(..staging_size);
     let (tx, rx) = std::sync::mpsc::channel();
     slice.map_async(wgpu::MapMode::Read, move |r| { let _ = tx.send(r); });
-    ctx.device.poll(wgpu::Maintain::Wait);
+    ctx.device.poll(wgpu::PollType::wait_indefinitely());
     rx.recv().unwrap().unwrap();
     let data = slice.get_mapped_range();
     let actual: Vec<u8> = data.to_vec();

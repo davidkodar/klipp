@@ -214,7 +214,7 @@ fn a_recorded_effect_never_writes_its_source() {
         enc.copy_buffer_to_buffer(b, 0, &staging, 0, bytes);
         queue.submit([enc.finish()]);
         staging.slice(..).map_async(wgpu::MapMode::Read, |r| r.unwrap());
-        device.poll(wgpu::Maintain::Wait);
+        let _ = device.poll(wgpu::PollType::wait_indefinitely());
         let v = bytemuck::cast_slice(&staging.slice(..).get_mapped_range()).to_vec();
         v
     };

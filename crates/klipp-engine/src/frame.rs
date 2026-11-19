@@ -148,7 +148,7 @@ fn gpu_frame_into_cpu(f: GpuFrame) -> CpuFrame {
         let _ = tx.send(res);
     });
     klipp_effects::gpu::mark_gpu_stage(klipp_effects::gpu::GpuStage::FrameIntoCpu);
-    // Non-blocking poll loop instead of `Maintain::Wait` — see
+    // Non-blocking poll loop instead of `PollType::wait_indefinitely()` — see
     // `klipp_effects::gpu::poll_until_mapped` for why Wait deadlocks
     // on a UI-shared device. Falls back to a zero-filled buffer if
     // the map times out.

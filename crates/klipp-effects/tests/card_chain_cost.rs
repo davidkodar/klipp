@@ -99,7 +99,7 @@ fn frame_budget_of_four_cards() {
         let ms = best(Box::new(|| {
             let t = std::time::Instant::now();
             let out = nv12.convert_nv12_on_gpu(&y, &uv, W, H, W, W, W, H, 0, [0, 0, 0, 0], klipp_effects::color_wgsl::IDENTITY_PRIMARIES_MATRIX_PACKED);
-            device.poll(wgpu::Maintain::Wait);
+            let _ = device.poll(wgpu::PollType::wait_indefinitely());
             drop(out);
             t.elapsed().as_secs_f64() * 1000.0
         }));
