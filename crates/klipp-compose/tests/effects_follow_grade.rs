@@ -141,13 +141,10 @@ fn both(name: &str, effects: Vec<E>) -> Option<bool> {
 /// [`both`] on a sequence of its own.
 fn both_seq(name: &str, seq: Sequence) -> Option<bool> {
     let (new, followed) = render(&seq, false);
-    let (declines, breaks, submits) = last();
-    let legacy = legacy_f32(|| {
-        let (frame, legacy_followed) = render(&seq, true);
-        assert_eq!(declines, last().0, "{name}: no new declines");
-        assert_eq!(legacy_followed, 0, "{name}: the legacy route never follows");
-        frame
-    });
+    let (_, breaks, submits) = last();
+    // Stored from today's route when recorded again (#2823): the legacy
+    // route that drew the rest is gone.
+    let legacy = legacy_f32(|| new.clone());
     if followed == 1 {
         let recorded = test_clip::effects(&seq.tracks[0].clips[0]).iter().all(|e| klipp_effects::gpu::slots_needed(e).is_some());
         if recorded {
