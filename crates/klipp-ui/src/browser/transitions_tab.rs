@@ -1357,7 +1357,7 @@ pub fn show(
 
         // Search bar
         egui::Frame::none()
-            .inner_margin(egui::Margin::symmetric(8.0, 0.0))
+            .inner_margin(egui::Margin::symmetric(8, 0))
             .show(ui, |ui| {
                 super::browser_search_field(ui, theme, search_query, "Search transitions\u{2026}", state);
             });
@@ -1367,7 +1367,7 @@ pub fn show(
         // (with a CPU twin for parity), so there is no source or
         // capability to filter by.
         egui::Frame::none()
-            .inner_margin(egui::Margin::symmetric(8.0, 0.0))
+            .inner_margin(egui::Margin::symmetric(8, 0))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.with_layout(
@@ -1877,9 +1877,9 @@ fn transition_list_row(
         let bg = egui::Color32::from_rgba_unmultiplied(
             theme.accent.r(), theme.accent.g(), theme.accent.b(), 28,
         );
-        ui.painter().rect_filled(rect, egui::Rounding::same(4.0), bg);
+        ui.painter().rect_filled(rect, egui::Rounding::same(4), bg);
     } else if hovered {
-        ui.painter().rect_filled(rect, egui::Rounding::same(4.0), theme.bg_raised);
+        ui.painter().rect_filled(rect, egui::Rounding::same(4), theme.bg_raised);
     }
     // At the pictures' own 16:9, not stretched into a wider box (#548).
     let mini_h = row_h - 12.0;
@@ -1889,7 +1889,7 @@ fn transition_list_row(
     );
     let progress = if elapsed_secs > 0.0 { tx_progress(elapsed_secs) } else { 0.5 };
     if let Some(t) = rendered {
-        ui.painter().rect_filled(mini_rect, egui::Rounding::same(4.0), egui::Color32::BLACK);
+        ui.painter().rect_filled(mini_rect, egui::Rounding::same(4), egui::Color32::BLACK);
         ui.painter().image(t.id(), mini_rect, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), egui::Color32::WHITE);
     } else {
         paint_ab_canvas(ui.painter(), mini_rect, progress);
@@ -1931,8 +1931,8 @@ fn paint_ab_canvas(painter: &egui::Painter, rect: egui::Rect, _progress: f32) {
     let mid_x = rect.center().x;
     let left = egui::Rect::from_min_max(rect.min, egui::pos2(mid_x, rect.max.y));
     let right = egui::Rect::from_min_max(egui::pos2(mid_x, rect.min.y), rect.max);
-    painter.rect_filled(left, egui::Rounding::same(4.0), a);
-    painter.rect_filled(right, egui::Rounding::same(4.0), b);
+    painter.rect_filled(left, egui::Rounding::same(4), a);
+    painter.rect_filled(right, egui::Rounding::same(4), b);
 }
 
 /// The piece transitions' card at `t` (#985), drawn as their defaults
@@ -2034,7 +2034,7 @@ fn paint_kind_motion_overlay(
     let t = progress.clamp(0.0, 1.0);
     let a = egui::Color32::from_rgb(0xc4, 0x6e, 0x3d);
     let b = egui::Color32::from_rgb(0x60, 0x7a, 0xa8);
-    let r = egui::Rounding::same(4.0);
+    let r = egui::Rounding::same(4);
 
     // Helper closures kept local — don't pollute the module's public
     // surface. Each is a single visual primitive.
@@ -2178,7 +2178,7 @@ fn paint_kind_motion_overlay(
         let bw = rect.width() * t;
         let bh = rect.height() * t;
         let inner = egui::Rect::from_center_size(rect.center(), egui::vec2(bw, bh));
-        p.rect_filled(inner, egui::Rounding::same(2.0), b);
+        p.rect_filled(inner, egui::Rounding::same(2), b);
     };
     let box_out = || {
         // BoxWipeOut — full B canvas with an A "hole" shrinking toward centre.
@@ -2186,7 +2186,7 @@ fn paint_kind_motion_overlay(
         let aw = rect.width() * (1.0 - t);
         let ah = rect.height() * (1.0 - t);
         let hole = egui::Rect::from_center_size(rect.center(), egui::vec2(aw, ah));
-        p.rect_filled(hole, egui::Rounding::same(2.0), a);
+        p.rect_filled(hole, egui::Rounding::same(2), a);
     };
     let circle_in = || {
         // CircleWipeIn — disc grows from centre.
@@ -2384,7 +2384,7 @@ fn paint_kind_motion_overlay(
             egui::vec2(rect.width() * scale, rect.height() * scale),
         );
         p.rect_filled(rect, r, b);
-        p.rect_filled(small, egui::Rounding::same(2.0), a);
+        p.rect_filled(small, egui::Rounding::same(2), a);
     };
     let cross_zoom = || {
         // Both clips zoom toward centre with a flash mid-way.
@@ -2462,7 +2462,7 @@ fn paint_kind_motion_overlay(
         );
         p.rect_filled(
             band,
-            egui::Rounding::same(2.0),
+            egui::Rounding::same(2),
             egui::Color32::from_rgba_unmultiplied(0xff, 0xc0, 0x60, (pulse * 220.0) as u8),
         );
         if t > 0.5 {
@@ -2489,7 +2489,7 @@ fn paint_kind_motion_overlay(
         let alpha = (pulse * 235.0) as u8;
         p.rect_filled(
             band,
-            egui::Rounding::same(4.0),
+            egui::Rounding::same(4),
             egui::Color32::from_rgba_unmultiplied(0xff, 0xff, 0xc0, alpha),
         );
         fade_over(b, t);
@@ -3037,7 +3037,7 @@ fn view_mode_button(
         (theme.bg_panel, theme.border, theme.text_secondary)
     };
     ui.painter().rect_filled(rect, 4.0, bg);
-    ui.painter().rect_stroke(rect, 4.0, egui::Stroke::new(1.0_f32, border));
+    ui.painter().rect_stroke(rect, 4.0, egui::Stroke::new(1.0_f32, border), egui::StrokeKind::Outside);
     let size = 13.0;
     let icon_rect = egui::Rect::from_center_size(rect.center(), egui::vec2(size, size));
     let img = icon.image(size).tint(fg);

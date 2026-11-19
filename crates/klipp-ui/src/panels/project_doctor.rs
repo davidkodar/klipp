@@ -292,8 +292,8 @@ fn render_finding(
         .fill(theme.bg_raised)
         .stroke(egui::Stroke::new(1.0_f32, theme.border))
         .rounding(4.0)
-        .inner_margin(egui::Margin::symmetric(10.0, 8.0))
-        .outer_margin(egui::Margin::symmetric(0.0, 2.0))
+        .inner_margin(egui::Margin::symmetric(10, 8))
+        .outer_margin(egui::Margin::symmetric(0, 2))
         .show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.label(

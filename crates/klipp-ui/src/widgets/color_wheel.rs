@@ -104,7 +104,7 @@ pub fn color_wheel_spanned(
     // ── Key strip, right of the title ──
     let mut key = crate::widgets::scrubby_param::KeyStrip::default();
     if let Some(ks) = keys {
-        let title_w = ui.fonts(|f| f.layout_no_wrap(label.to_owned(), egui::FontId::proportional(10.0), text_accent).size().x);
+        let title_w = ui.fonts_mut(|f| f.layout_no_wrap(label.to_owned(), egui::FontId::proportional(10.0), text_accent).size().x);
         let strip_w = if ks.has_any_keyframes { 36.0 } else { 16.0 };
         let left = center_x + title_w / 2.0 + 2.0;
         let strip = egui::Rect::from_min_size(egui::pos2(left, full_rect.min.y + label_h / 2.0 - 9.0), egui::vec2(strip_w, 18.0));
@@ -312,7 +312,7 @@ pub fn color_wheel_spanned(
         };
         let text = if is_zero { neutral_text } else { text_c };
         painter.rect_filled(pill_rect, 2.0, bg);
-        painter.rect_stroke(pill_rect, 2.0, egui::Stroke::new(0.5_f32, border));
+        painter.rect_stroke(pill_rect, 2.0, egui::Stroke::new(0.5_f32, border), egui::StrokeKind::Outside);
 
         // The pill's own paint stays; the DragValue sits on it with no
         // fill or stroke of its own, so the channel colouring survives
@@ -348,7 +348,7 @@ pub fn color_wheel_spanned(
                 w.bg_fill = egui::Color32::TRANSPARENT;
                 w.bg_stroke = egui::Stroke::NONE;
                 w.fg_stroke.color = text;
-                w.rounding = egui::Rounding::same(2.0);
+                w.corner_radius = egui::Rounding::same(2);
             }
             // Hover needs to say "this is a field" without repainting
             // the border the channel colour is carried by.
@@ -486,7 +486,7 @@ struct DragAnchor {
 /// two, else two a point smaller.
 fn pill_text_fit(ui: &egui::Ui, pill_w: f32, size: f32) -> (usize, f32) {
     let width = |text: &str, size: f32| {
-        ui.fonts(|f| f.layout_no_wrap(text.to_string(), egui::FontId::monospace(size), egui::Color32::WHITE).size().x)
+        ui.fonts_mut(|f| f.layout_no_wrap(text.to_string(), egui::FontId::monospace(size), egui::Color32::WHITE).size().x)
     };
     let room = pill_w - 4.0;
     if width("+0.000", size) <= room {

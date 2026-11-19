@@ -176,7 +176,7 @@ fn ends_in_view(name: &str, rect: egui::Rect, draw: &mut dyn FnMut(&mut egui::Ui
     let mut shown = Vec::new();
     for frame in 0..12 {
         let events = if frame >= 2 {
-            vec![egui::Event::PointerMoved(screen.center()), egui::Event::MouseWheel { unit: egui::MouseWheelUnit::Point, delta: egui::vec2(0.0, -4000.0), modifiers: Default::default() }]
+            vec![egui::Event::PointerMoved(screen.center()), egui::Event::MouseWheel { unit: egui::MouseWheelUnit::Point, delta: egui::vec2(0.0, -4000.0), modifiers: Default::default(), phase: egui::TouchPhase::Move }]
         } else {
             Vec::new()
         };

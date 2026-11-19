@@ -60,7 +60,7 @@ pub(crate) fn row_fit(label_x: f32, row_right: f32, label_w: f32, count_w: f32) 
 pub(crate) fn elided_galley(ui: &egui::Ui, text: &str, font: egui::FontId, color: egui::Color32, max_w: f32) -> Arc<egui::Galley> {
     let mut job = egui::text::LayoutJob::simple_singleline(text.to_string(), font, color);
     job.wrap = egui::text::TextWrapping { max_width: max_w.max(1.0), max_rows: 1, break_anywhere: true, overflow_character: Some('\u{2026}') };
-    ui.fonts(|f| f.layout_job(job))
+    ui.fonts_mut(|f| f.layout_job(job))
 }
 
 /// One category a folded sidebar offers.
@@ -75,7 +75,7 @@ pub(crate) struct CategoryChoice<T> {
 pub(crate) fn category_dropdown<T: PartialEq + Copy>(ui: &mut egui::Ui, id_salt: &str, choices: &[CategoryChoice<T>], active: &mut T) {
     let name = |c: &CategoryChoice<T>| format!("{}  {}", c.label, c.count);
     let current = choices.iter().find(|c| c.cat == *active).map(name).unwrap_or_default();
-    egui::Frame::none().inner_margin(egui::Margin::symmetric(8.0, 0.0)).show(ui, |ui| {
+    egui::Frame::none().inner_margin(egui::Margin::symmetric(8, 0)).show(ui, |ui| {
         // A little short of the row: the button's outline is drawn outside
         // the width asked for, and laid the panel out wider than it is.
         egui::ComboBox::from_id_salt(id_salt).width(ui.available_width() - 4.0).truncate().selected_text(current).show_ui(ui, |ui| {
@@ -150,7 +150,7 @@ pub(crate) fn source_chips<T: Copy + PartialEq>(
     let total_w = chips_width(&label_w, &count_w, pad, fit);
     let (outer_rect, _) = ui.allocate_exact_size(egui::vec2(total_w, outer_h), egui::Sense::hover());
     ui.painter().rect_filled(outer_rect, 4.0, theme.bg_panel);
-    ui.painter().rect_stroke(outer_rect, 5.0, egui::Stroke::new(1.0_f32, theme.border));
+    ui.painter().rect_stroke(outer_rect, 5.0, egui::Stroke::new(1.0_f32, theme.border), egui::StrokeKind::Outside);
     let mut x = outer_rect.min.x + pad;
     for (i, (variant, label, count)) in segments.iter().enumerate() {
         let seg_w = chip_width(label_w[i], count_w[i], fit);
@@ -192,7 +192,7 @@ pub fn browser_search_field(
         .fill(theme.bg_raised)
         .stroke(egui::Stroke::new(1.0_f32, theme.border))
         .rounding(4.0)
-        .inner_margin(egui::Margin::symmetric(9.0, 5.0))
+        .inner_margin(egui::Margin::symmetric(9, 5))
         .show(ui, |ui| ui.horizontal(|ui| {
             // A search kept from another tab is seen and cleared here
             // (#2599): a × while there is text. The text keeps its keys.
@@ -203,7 +203,7 @@ pub fn browser_search_field(
             let clear_w = if query.is_empty() {
                 0.0
             } else {
-                let glyph = ui.fonts(|f| f.layout_no_wrap("\u{00d7}".into(), egui::FontId::proportional(13.0), theme.text_dim).size().x);
+                let glyph = ui.fonts_mut(|f| f.layout_no_wrap("\u{00d7}".into(), egui::FontId::proportional(13.0), theme.text_dim).size().x);
                 glyph + ui.spacing().button_padding.x * 2.0 + ui.spacing().item_spacing.x
             };
             let search = egui::TextEdit::singleline(query)
@@ -211,7 +211,7 @@ pub fn browser_search_field(
                 .desired_width(ui.available_width() - 4.0 - clear_w)
                 .font(egui::FontId::proportional(12.0))
                 .text_color(theme.text_primary)
-                .frame(false);
+                .frame(egui::Frame::new().inner_margin(egui::Margin::symmetric(4, 2)));
             let resp = ui.add(search);
             if !query.is_empty() && ui.add(egui::Button::new(clear).frame(false)).on_hover_text("Clear the search").clicked() {
                 query.clear();
@@ -230,12 +230,12 @@ pub fn browser_search_field(
                 ui.painter().rect_stroke(
                     frame_rect.expand(2.0),
                     7.0,
-                    egui::Stroke::new(3.0_f32, theme.accent_subtle),
+                    egui::Stroke::new(3.0_f32, theme.accent_subtle), egui::StrokeKind::Outside,
                 );
                 ui.painter().rect_stroke(
                     frame_rect,
                     5.0,
-                    egui::Stroke::new(1.0_f32, theme.accent),
+                    egui::Stroke::new(1.0_f32, theme.accent), egui::StrokeKind::Outside,
                 );
             }
             (resp.id, resp.rect)
@@ -1891,7 +1891,7 @@ impl BrowserPanel {
                         // AND-combined across categories, OR-combined
                         // within the colour-label bitmask.
                         // Inset like the pool's items below them.
-                        egui::Frame::none().inner_margin(egui::Margin::symmetric(8.0, 0.0)).show(ui, |ui| {
+                        egui::Frame::none().inner_margin(egui::Margin::symmetric(8, 0)).show(ui, |ui| {
                             self.render_media_filter_toolbar(ui, theme, state);
                             media_pool_buttons(ui, &mut cmds);
                         });
@@ -1935,7 +1935,7 @@ impl BrowserPanel {
                     // visible when Files is pinned, which is poor
                     // discoverability.
                     // Inset like the pool's items below them.
-                    egui::Frame::none().inner_margin(egui::Margin::symmetric(8.0, 0.0)).show(ui, |ui| {
+                    egui::Frame::none().inner_margin(egui::Margin::symmetric(8, 0)).show(ui, |ui| {
                         self.render_media_filter_toolbar(ui, theme, state);
                         media_pool_buttons(ui, &mut cmds);
                     });
@@ -2129,10 +2129,7 @@ impl BrowserPanel {
                 .chunks_exact(4)
                 .map(|c| egui::Color32::from_rgba_unmultiplied(c[0], c[1], c[2], c[3]))
                 .collect();
-            let image = egui::ColorImage {
-                size: [result.width as usize, result.height as usize],
-                pixels,
-            };
+            let image = egui::ColorImage::new([result.width as usize, result.height as usize], pixels);
             let name = format!("file_thumb_{}", result.path.display());
             let tex = crate::app::alloc_texture_logged(ctx, &name, image, egui::TextureOptions::LINEAR);
             if let Some(old) = self.file_thumb_textures.insert(result.path, tex) {
@@ -2201,10 +2198,7 @@ impl BrowserPanel {
                     .chunks_exact(4)
                     .map(|c| egui::Color32::from_rgba_unmultiplied(c[0], c[1], c[2], c[3]))
                     .collect();
-                let image = egui::ColorImage {
-                    size: [result.width as usize, result.height as usize],
-                    pixels,
-                };
+                let image = egui::ColorImage::new([result.width as usize, result.height as usize], pixels);
                 let tex = crate::app::alloc_texture_logged(
                     ctx,
                     "file_skim_frame",
@@ -2280,10 +2274,7 @@ impl BrowserPanel {
                                 egui::Color32::from_rgba_unmultiplied(c[0], c[1], c[2], c[3])
                             })
                             .collect();
-                        let image = egui::ColorImage {
-                            size: [w as usize, h as usize],
-                            pixels,
-                        };
+                        let image = egui::ColorImage::new([w as usize, h as usize], pixels);
                         {
                             let name = format!("filmstrip_{}_{}", result.path.display(), i);
                             crate::app::alloc_texture_logged(ctx, &name, image, egui::TextureOptions::LINEAR)
@@ -2623,7 +2614,7 @@ impl BrowserPanel {
                 } else {
                     (theme.bg_raised, theme.border)
                 };
-                ui.painter().rect(rect, 3.0, bg, egui::Stroke::new(0.5_f32, border));
+                ui.painter().rect(rect, 3.0, bg, egui::Stroke::new(0.5_f32, border), egui::StrokeKind::Outside);
                 let gw = glyph_w(size);
                 let gh = gw * 9.0 / 16.0;
                 let glyph_rect = egui::Rect::from_center_size(rect.center(), egui::vec2(gw, gh));
@@ -3523,7 +3514,7 @@ impl BrowserPanel {
                             ui.painter().rect_stroke(
                                 active_rect,
                                 0.0,
-                                egui::Stroke::new(1.5_f32, theme.accent),
+                                egui::Stroke::new(1.5_f32, theme.accent), egui::StrokeKind::Outside,
                             );
 
                             // Large preview popup — shows the active tile
@@ -3563,7 +3554,7 @@ impl BrowserPanel {
                                         preview_rect,
                                         4.0,
                                         theme.bg_void,
-                                        egui::Stroke::new(1.0_f32, theme.accent),
+                                        egui::Stroke::new(1.0_f32, theme.accent), egui::StrokeKind::Outside,
                                     );
                                     ui.painter().image(
                                         tex.id(),
@@ -4106,7 +4097,7 @@ impl BrowserPanel {
 
                     // ── Copy file path ──
                     if menu_item(ui, "Copy File Path", "").clicked() {
-                        ui.output_mut(|o| o.copied_text = menu_path.to_string_lossy().to_string());
+                        ui.ctx().copy_text(menu_path.to_string_lossy().to_string());
                         ui.close_menu();
                     }
 
@@ -4924,7 +4915,7 @@ impl BrowserPanel {
                 ui.memory_mut(|m| m.toggle_popup(popup_id));
             }
 
-            egui::popup::popup_below_widget(
+            egui::popup_below_widget(
                 ui,
                 popup_id,
                 &pill_resp,

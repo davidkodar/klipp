@@ -399,7 +399,7 @@ impl KlippApp {
     pub(super) fn serve_window_capture(&mut self, ctx: &egui::Context) {
         let Some((path, max_width, asked)) = self.state.window_capture.clone() else { return };
         if !asked {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot);
+            ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::default()));
             ctx.request_repaint();
             self.state.window_capture = Some((path, max_width, true));
             return;

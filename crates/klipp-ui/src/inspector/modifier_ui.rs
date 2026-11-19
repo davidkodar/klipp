@@ -114,7 +114,7 @@ fn show_modifier_stack(
             .fill(theme.bg_raised)
             .stroke(egui::Stroke::new(0.5_f32, theme.border))
             .rounding(2.0)
-            .inner_margin(egui::Margin::symmetric(6.0, 4.0))
+            .inner_margin(egui::Margin::symmetric(6, 4))
             .show(ui, |ui| {
                 // Header row: name + enabled toggle + remove button
                 ui.horizontal(|ui| {

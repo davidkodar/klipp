@@ -19,7 +19,7 @@ pub fn library_card(
     theme: &KlippTheme,
     paint_preview: impl FnOnce(&egui::Painter, egui::Rect),
 ) -> egui::Rect {
-    let rounding = egui::Rounding::same(crate::theme::radius::PANEL);
+    let rounding = egui::Rounding::from(crate::theme::radius::PANEL);
     let painter = ui.painter().clone();
     painter.rect_filled(rect, rounding, theme.bg_panel_alt);
     let preview = egui::Rect::from_min_size(rect.min, egui::vec2(rect.width(), (rect.height() - CAPTION_H).max(1.0)));
@@ -32,7 +32,7 @@ pub fn library_card(
     } else {
         (1.0_f32, theme.border)
     };
-    painter.rect_stroke(rect, rounding, egui::Stroke::new(stroke_w, stroke_colour));
+    painter.rect_stroke(rect, rounding, egui::Stroke::new(stroke_w, stroke_colour), egui::StrokeKind::Outside);
 
     let name_font = egui::FontId::proportional(crate::theme::type_scale::BODY);
     let caption_font = egui::FontId::proportional(crate::theme::type_scale::CAPTION);

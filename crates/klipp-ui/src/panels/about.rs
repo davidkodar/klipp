@@ -157,7 +157,7 @@ fn hero(ui: &mut egui::Ui, theme: &KlippTheme, t: f64) -> bool {
     let rect = Rect::from_min_size(ui.cursor().min, vec2(WIDTH, HERO));
     let painter = ui.painter_at(rect);
     let dark = ui.visuals().dark_mode;
-    painter.rect_filled(rect, egui::Rounding { nw: ROUND, ne: ROUND, sw: 0.0, se: 0.0 }, theme.bg_deep);
+    painter.rect_filled(rect, egui::Rounding { nw: ROUND as u8, ne: ROUND as u8, sw: 0, se: 0 }, theme.bg_deep);
     painter.hline(rect.x_range(), rect.bottom() - 0.5, Stroke::new(1.0_f32, theme.border));
 
     let appear = ease_out(t / 0.45);
@@ -393,7 +393,7 @@ const LABEL_W: f32 = 68.0;
 fn body(ui: &mut egui::Ui, theme: &KlippTheme, status: &Status<'_>) -> Option<AboutAction> {
     let mut action = None;
     let build = klipp_core::build_info::get();
-    egui::Frame::none().inner_margin(egui::Margin { left: 32.0, right: 32.0, top: 22.0, bottom: 24.0 }).show(ui, |ui| {
+    egui::Frame::none().inner_margin(egui::Margin { left: 32, right: 32, top: 22, bottom: 24 }).show(ui, |ui| {
         ui.spacing_mut().item_spacing = vec2(8.0, 0.0);
         let row = |ui: &mut egui::Ui, label: &str, add: &mut dyn FnMut(&mut egui::Ui)| {
             ui.horizontal(|ui| {
@@ -501,7 +501,7 @@ fn status_row(ui: &mut egui::Ui, theme: &KlippTheme, status: &Status<'_>) -> Opt
         .fill(theme.bg_deep)
         .stroke(Stroke::new(1.0_f32, theme.border))
         .rounding(8.0)
-        .inner_margin(egui::Margin { left: 12.0, right: 14.0, top: 11.0, bottom: 11.0 })
+        .inner_margin(egui::Margin { left: 12, right: 14, top: 11, bottom: 11 })
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.spacing_mut().item_spacing = vec2(10.0, 0.0);
@@ -661,7 +661,7 @@ fn commands(ui: &mut egui::Ui, theme: &KlippTheme, line: &str) {
         .fill(theme.bg_panel)
         .stroke(Stroke::new(1.0_f32, theme.border))
         .rounding(6.0)
-        .inner_margin(egui::Margin::symmetric(10.0, 7.0))
+        .inner_margin(egui::Margin::symmetric(10, 7))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
@@ -702,6 +702,7 @@ fn open(url: &str) {
 /// Drive a dialog in a test: the text it drew, and clicks on it.
 #[cfg(test)]
 pub(crate) mod probe {
+
     /// Each text drawn, with where it was drawn.
     pub(crate) fn texts(out: &egui::FullOutput) -> Vec<(String, egui::Rect)> {
         fn walk(shape: &egui::Shape, out: &mut Vec<(String, egui::Rect)>) {
@@ -738,6 +739,12 @@ pub(crate) mod probe {
 
 #[cfg(test)]
 mod tests {
+    /// The text a frame put on the clipboard (egui 0.34 says it as an
+    /// output command rather than a field).
+    fn copied(out: &egui::FullOutput) -> String {
+        out.platform_output.commands.iter().rev().find_map(|c| match c { egui::OutputCommand::CopyText(t) => Some(t.clone()), _ => None }).unwrap_or_default()
+    }
+
     use super::*;
 
     /// The K starts whole, is fully cut once the slip is over, and the
@@ -871,7 +878,7 @@ mod tests {
         }
         let ctx = egui::Context::default();
         let out = probe::click(&ctx, "Copy", |ctx| { let _ = show(ctx, &theme, &Status::Store { asked: true }); });
-        assert_eq!(out.platform_output.copied_text, "flatpak update io.github.davidkodar.Klipp");
+        assert_eq!(copied(&out), "flatpak update io.github.davidkodar.Klipp");
     }
 
     /// Each place the check can be in draws as a row in About: nothing
@@ -936,7 +943,7 @@ mod tests {
         let status = available(Install::Steps(steps));
         let ctx = egui::Context::default();
         let out = probe::click(&ctx, "Copy", |ctx| { let _ = show(ctx, &theme, &status); });
-        assert_eq!(out.platform_output.copied_text, steps.line());
+        assert_eq!(copied(&out), steps.line());
         let out = ctx.run(egui::RawInput::default(), |ctx| { let _ = show(ctx, &theme, &status); });
         assert!(probe::texts(&out).iter().any(|(t, _)| t == "Copied"), "says so");
     }

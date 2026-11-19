@@ -87,7 +87,7 @@ fn save_button(ui: &mut egui::Ui, row: &mut RowCtx, ty: &EffectType, entry: &ser
             if let Some(effect) = current {
                 row.cmds.push(AppCommand::SaveBuiltinEffectPreset { name: name.trim().to_owned(), description: String::new(), effect_key: ty.desc.id.to_owned(), effect });
                 ui.data_mut(|d| d.remove::<String>(buffer));
-                ui.memory_mut(|m| m.close_popup());
+                egui::Popup::close_all(ui.ctx());
             }
         }
     });

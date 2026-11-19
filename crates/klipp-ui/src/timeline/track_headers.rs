@@ -150,7 +150,7 @@ pub fn show(
         );
         ui.painter().rect_filled(
             bar_rect,
-            egui::Rounding { nw: 0.0, ne: 2.0, sw: 0.0, se: 2.0 },
+            egui::Rounding { nw: 0, ne: 2, sw: 0, se: 2 },
             role_color,
         );
 
@@ -244,7 +244,7 @@ pub fn show(
                 egui::TextEdit::singleline(&mut buf)
                     .id(rename_edit_id())
                     .font(egui::FontId::proportional(10.0))
-                    .margin(egui::Margin::symmetric(2.0, 1.0)),
+                    .margin(egui::Margin::symmetric(2, 1)),
             );
             if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                 ui.data_mut(|d| d.remove::<(klipp_core::TrackId, String)>(rename_id()));
@@ -1139,7 +1139,7 @@ pub fn show(
         let pointer = ui.input(|i| i.pointer.interact_pos());
         let target = pointer.and_then(|p| rows.iter().find(|(_, r)| r.contains(p))).map(|(i, r)| (*i, *r)).filter(|(i, _)| *i != from && kind_of(*i) == kind_of(from));
         if let Some((_, rect)) = target {
-            ui.painter().rect_stroke(rect.shrink(1.0), 2.0, egui::Stroke::new(2.0_f32, theme.accent));
+            ui.painter().rect_stroke(rect.shrink(1.0), 2.0, egui::Stroke::new(2.0_f32, theme.accent), egui::StrokeKind::Outside);
         }
         if !ui.input(|i| i.pointer.primary_down()) {
             if let Some((to, _)) = target {

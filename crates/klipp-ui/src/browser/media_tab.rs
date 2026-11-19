@@ -401,7 +401,7 @@ pub fn show(
                 ui.painter().rect_stroke(
                     panel_rect,
                     0.0,
-                    egui::Stroke::new(2.0_f32, theme.marker_info),
+                    egui::Stroke::new(2.0_f32, theme.marker_info), egui::StrokeKind::Outside,
                 );
                 if !any_down {
                     state.drag_drop.end();
@@ -544,7 +544,7 @@ fn paint_usage_badges(
         painter.rect_stroke(
             thumb_rect,
             3.0,
-            egui::Stroke::new(2.0_f32, accent),
+            egui::Stroke::new(2.0_f32, accent), egui::StrokeKind::Outside,
         );
     }
     if on_timeline {
@@ -628,7 +628,7 @@ fn draw_info_icon_with_tooltip(
             .fill(bg_panel_alt)
             .stroke(egui::Stroke::new(1.0_f32, border_light))
             .rounding(4.0)
-            .inner_margin(egui::Margin::symmetric(10.0, 8.0))
+            .inner_margin(egui::Margin::symmetric(10, 8))
             .show(ui, |ui| {
                 ui.set_max_width(420.0);
                 ui.spacing_mut().item_spacing.y = 3.0;
@@ -794,7 +794,7 @@ fn paint_synthetic_title_thumb(
     // BlueGradient swatch so the asset reads as "made from a title".
     painter.rect_filled(
         rect,
-        egui::Rounding::same(2.0),
+        egui::Rounding::same(2),
         egui::Color32::from_rgb(0x4d, 0x77, 0xab),
     );
     let upper = egui::Rect::from_min_max(
@@ -803,7 +803,7 @@ fn paint_synthetic_title_thumb(
     );
     painter.rect_filled(
         upper,
-        egui::Rounding { nw: 2.0, ne: 2.0, sw: 0.0, se: 0.0 },
+        egui::Rounding { nw: 2, ne: 2, sw: 0, se: 0 },
         egui::Color32::from_rgb(0x6b, 0x8d, 0xb5),
     );
 
@@ -1391,7 +1391,7 @@ fn render_grid_view(
             } else {
                 (1.0_f32, theme.border)
             };
-            ui.painter().rect_stroke(card_rect, crate::theme::radius::PANEL, egui::Stroke::new(border_w, border_color));
+            ui.painter().rect_stroke(card_rect, crate::theme::radius::PANEL, egui::Stroke::new(border_w, border_color), egui::StrokeKind::Outside);
 
             // Offline badge: dim the thumbnail and overlay an OFFLINE pill.
             if item.offline {
@@ -1698,7 +1698,7 @@ fn bin_section(
     // Items dragged onto the header go into the bin.
     if let Some(dragging) = state.dragging_media {
         if resp.contains_pointer() {
-            ui.painter().rect_stroke(resp.rect, 2.0, egui::Stroke::new(2.0_f32, theme.accent));
+            ui.painter().rect_stroke(resp.rect, 2.0, egui::Stroke::new(2.0_f32, theme.accent), egui::StrokeKind::Outside);
             if !ui.ctx().input(|i| i.pointer.primary_down()) {
                 let media_ids = if state.dragging_media_group.is_empty() { vec![dragging] } else { state.dragging_media_group.clone() };
                 cmds.push(AppCommand::MoveItemsToBin { media_ids, bin: Some(name.clone()) });

@@ -303,7 +303,7 @@ fn each_tab_keeps_its_own_scroll() {
     }
     let at = screen.center();
     for _ in 0..10 {
-        frame(InspectorTab::Title, vec![egui::Event::PointerMoved(at), egui::Event::MouseWheel { unit: egui::MouseWheelUnit::Point, delta: egui::vec2(0.0, -400.0), modifiers: egui::Modifiers::NONE }]);
+        frame(InspectorTab::Title, vec![egui::Event::PointerMoved(at), egui::Event::MouseWheel { unit: egui::MouseWheelUnit::Point, delta: egui::vec2(0.0, -400.0), modifiers: egui::Modifiers::NONE, phase: egui::TouchPhase::Move }]);
     }
     let mut shown = Vec::new();
     for _ in 0..3 {

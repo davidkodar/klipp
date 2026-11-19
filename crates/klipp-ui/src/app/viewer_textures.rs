@@ -52,7 +52,7 @@ impl KlippApp {
                                     let pixels: Vec<egui::Color32> = frame.rgba.chunks_exact(4)
                                         .map(|p| egui::Color32::from_rgba_unmultiplied(p[0], p[1], p[2], p[3]))
                                         .collect();
-                                    let image = egui::ColorImage { size: [fw, fh], pixels };
+                                    let image = egui::ColorImage::new([fw, fh], pixels);
                                     // Upload as viewer texture — bilinear upscale handles the rest.
                                     // Must go through upload_texture_deferred: a size change on
                                     // viewer.video_texture (e.g. 720p thumbnail → 1080p frame)
@@ -315,10 +315,7 @@ impl KlippApp {
         self.viewer.lut_source_bytes = self.viewer.lut_pass.is_some().then(|| (rgba_bytes.clone(), w as u32, h as u32));
 
         let t_texture = std::time::Instant::now();
-        let image = egui::ColorImage {
-            size: [w, h],
-            pixels,
-        };
+        let image = egui::ColorImage::new([w, h], pixels);
 
         // Reuse existing texture handle when dimensions match; fall
         // through to a fresh alloc + deferred-drop when the frame
@@ -737,7 +734,7 @@ mod empty_texture_tests {
         let ctx = egui::Context::default();
         let mut slot = None;
         let mut drops = Vec::new();
-        let image = |w: usize, h: usize| egui::ColorImage { size: [w, h], pixels: vec![egui::Color32::BLACK; w * h] };
+        let image = |w: usize, h: usize| egui::ColorImage::new([w, h], vec![egui::Color32::BLACK; w * h]);
         upload_texture_deferred(&ctx, &mut slot, &mut drops, "t", image(4, 2), egui::TextureOptions::LINEAR);
         assert!(slot.is_some());
         let before = ctx.tex_manager().read().allocated().count();

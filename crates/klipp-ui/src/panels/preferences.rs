@@ -236,7 +236,7 @@ impl PreferencesPanel {
                 // ── Title bar ──
                 let title_h = 40.0;
                 let title_rect = egui::Rect::from_min_size(win_rect.min, egui::vec2(win_rect.width(), title_h));
-                ui.painter().rect_filled(title_rect, egui::Rounding { nw: 10.0, ne: 10.0, sw: 0.0, se: 0.0 }, theme.bg_deep);
+                ui.painter().rect_filled(title_rect, egui::Rounding { nw: 10, ne: 10, sw: 0, se: 0 }, theme.bg_deep);
                 // Close button (red circle)
                 let close_center = egui::pos2(title_rect.left() + 20.0, title_rect.center().y);
                 let close_resp = ui.allocate_rect(egui::Rect::from_center_size(close_center, egui::vec2(16.0, 16.0)), egui::Sense::click());
@@ -259,7 +259,7 @@ impl PreferencesPanel {
                     egui::vec2(win_rect.width() - 24.0, search_h),
                 );
                 ui.painter().rect_filled(search_rect, 4.0, theme.bg_panel_alt);
-                ui.painter().rect_stroke(search_rect, 4.0, egui::Stroke::new(1.0_f32, theme.bg_hover));
+                ui.painter().rect_stroke(search_rect, 4.0, egui::Stroke::new(1.0_f32, theme.bg_hover), egui::StrokeKind::Outside);
                 // Interactive search input — vertically centered in the bar
                 let text_h = 18.0;
                 let text_rect = egui::Rect::from_min_max(
@@ -270,7 +270,7 @@ impl PreferencesPanel {
                 search_ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                     ui.add(
                         egui::TextEdit::singleline(&mut self.search_query)
-                            .frame(false)
+                            .frame(egui::Frame::new().inner_margin(egui::Margin::symmetric(4, 2)))
                             .hint_text("Search preferences...")
                             .desired_width(text_rect.width())
                             .text_color(theme.text_primary)
@@ -411,7 +411,7 @@ impl PreferencesPanel {
                     win_rect.max,
                 );
                 let bottom_painter = ui.painter().clone();
-                bottom_painter.rect_filled(bottom_rect, egui::Rounding { nw: 0.0, ne: 0.0, sw: 10.0, se: 10.0 }, theme.bg_deep);
+                bottom_painter.rect_filled(bottom_rect, egui::Rounding { nw: 0, ne: 0, sw: 10, se: 10 }, theme.bg_deep);
                 // Separator line
                 bottom_painter.line_segment(
                     [egui::pos2(bottom_rect.left(), bottom_rect.top()), egui::pos2(bottom_rect.right(), bottom_rect.top())],
@@ -448,7 +448,7 @@ impl PreferencesPanel {
                 let reset_resp = ui.allocate_rect(reset_rect, egui::Sense::click());
                 let reset_bg = if reset_resp.hovered() { theme.bg_hover } else { theme.bg_raised };
                 bottom_painter.rect_filled(reset_rect, 4.0, reset_bg);
-                bottom_painter.rect_stroke(reset_rect, 4.0, egui::Stroke::new(1.0_f32, theme.border_light));
+                bottom_painter.rect_stroke(reset_rect, 4.0, egui::Stroke::new(1.0_f32, theme.border_light), egui::StrokeKind::Outside);
                 bottom_painter.text(reset_rect.center(), egui::Align2::CENTER_CENTER, "Reset to defaults", egui::FontId::proportional(11.0), theme.text_primary);
                 if reset_resp.clicked() {
                     *prefs = Preferences::default();
@@ -601,7 +601,7 @@ impl PreferencesPanel {
                 break_anywhere: false,
                 overflow_character: Some('\u{2026}'),
             };
-            ui.ctx().fonts(|f| f.layout_job(job))
+            ui.ctx().fonts_mut(|f| f.layout_job(job))
         });
         let sub_h = subtitle_galley.as_ref().map_or(0.0, |g| g.rows.len().max(1) as f32 * SUBTITLE_LINE_H + 4.0);
         let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), ROW_H + sub_h), egui::Sense::hover());
@@ -2025,7 +2025,7 @@ impl PreferencesPanel {
             let btn_resp = ui.allocate_rect(btn_rect, egui::Sense::click());
             let btn_bg = if btn_resp.hovered() { theme.bg_hover } else { theme.bg_raised };
             ui.painter().rect_filled(btn_rect, 4.0, btn_bg);
-            ui.painter().rect_stroke(btn_rect, 4.0, egui::Stroke::new(1.0_f32, theme.border_light));
+            ui.painter().rect_stroke(btn_rect, 4.0, egui::Stroke::new(1.0_f32, theme.border_light), egui::StrokeKind::Outside);
             ui.painter().text(btn_rect.center(), egui::Align2::CENTER_CENTER, "Browse...", egui::FontId::proportional(11.0), theme.text_primary);
             // Path display
             let display = prefs.proxy.proxy_cache_dir.as_ref()
@@ -2087,7 +2087,7 @@ impl PreferencesPanel {
                 ui.painter().rect_stroke(
                     btn_rect,
                     4.0,
-                    egui::Stroke::new(1.0_f32, theme.border_light),
+                    egui::Stroke::new(1.0_f32, theme.border_light), egui::StrokeKind::Outside,
                 );
                 ui.painter().text(
                     btn_rect.center(),
@@ -2752,7 +2752,7 @@ impl PreferencesPanel {
             let text_galley = ui.painter().layout_no_wrap(badge_text.to_string(), badge_font.clone(), theme.marker_warning);
             let badge_size = egui::vec2(text_galley.size().x + 12.0, 20.0);
             let (badge_rect, _) = ui.allocate_exact_size(badge_size, egui::Sense::hover());
-            ui.painter().rect_stroke(badge_rect, 4.0, egui::Stroke::new(1.0_f32, theme.marker_warning));
+            ui.painter().rect_stroke(badge_rect, 4.0, egui::Stroke::new(1.0_f32, theme.marker_warning), egui::StrokeKind::Outside);
             ui.painter().text(badge_rect.center(), egui::Align2::CENTER_CENTER, badge_text, badge_font, theme.marker_warning);
         });
         ui.add_space(4.0);
@@ -3005,7 +3005,7 @@ impl PreferencesPanel {
             let edit_resp = ui.allocate_rect(edit_rect, egui::Sense::click());
             let edit_bg = if edit_resp.hovered() { theme.bg_hover } else { theme.bg_raised };
             ui.painter().rect_filled(edit_rect, 4.0, edit_bg);
-            ui.painter().rect_stroke(edit_rect, 4.0, egui::Stroke::new(1.0_f32, theme.border_light));
+            ui.painter().rect_stroke(edit_rect, 4.0, egui::Stroke::new(1.0_f32, theme.border_light), egui::StrokeKind::Outside);
             ui.painter().text(edit_rect.center(), egui::Align2::CENTER_CENTER, "Edit...", egui::FontId::proportional(11.0), theme.text_primary);
             // Color swatch (before Edit button)
             let swatch_center = egui::pos2(edit_rect.left() - 18.0, rect.center().y);
@@ -3358,7 +3358,7 @@ impl PreferencesPanel {
             let btn_resp = ui.allocate_rect(btn_rect, egui::Sense::click());
             let btn_bg = if btn_resp.hovered() { theme.bg_hover } else { theme.bg_raised };
             ui.painter().rect_filled(btn_rect, 4.0, btn_bg);
-            ui.painter().rect_stroke(btn_rect, 4.0, egui::Stroke::new(1.0_f32, theme.border_light));
+            ui.painter().rect_stroke(btn_rect, 4.0, egui::Stroke::new(1.0_f32, theme.border_light), egui::StrokeKind::Outside);
             ui.painter().text(btn_rect.center(), egui::Align2::CENTER_CENTER, "Browse...", egui::FontId::proportional(11.0), theme.text_primary);
             // Path display (dim, before button)
             let display = path.as_ref().map(|p| p.to_string_lossy().to_string()).unwrap_or_else(|| default_display.to_string());
@@ -3593,7 +3593,7 @@ impl PreferencesPanel {
             let btn_rect = resp.rect;
             let bg = if resp.hovered() { theme.bg_hover } else { theme.bg_raised };
             ui.painter().rect_filled(btn_rect, 4.0, bg);
-            ui.painter().rect_stroke(btn_rect, 4.0, egui::Stroke::new(1.0_f32, theme.accent));
+            ui.painter().rect_stroke(btn_rect, 4.0, egui::Stroke::new(1.0_f32, theme.accent), egui::StrokeKind::Outside);
             ui.painter().text(btn_rect.center(), egui::Align2::CENTER_CENTER, label, egui::FontId::proportional(11.0), theme.accent);
             resp.clicked()
         };
@@ -3696,7 +3696,7 @@ impl PreferencesPanel {
             let btn_rect = resp.rect;
             let bg = if resp.hovered() { theme.bg_hover } else { theme.bg_raised };
             ui.painter().rect_filled(btn_rect, 4.0, bg);
-            ui.painter().rect_stroke(btn_rect, 4.0, egui::Stroke::new(1.0_f32, theme.accent));
+            ui.painter().rect_stroke(btn_rect, 4.0, egui::Stroke::new(1.0_f32, theme.accent), egui::StrokeKind::Outside);
             ui.painter().text(btn_rect.center(), egui::Align2::CENTER_CENTER, "Scan & Clean", egui::FontId::proportional(11.0), theme.accent);
             if resp.clicked() {
                 cmds.push(AppCommand::CleanOrphanedCaches);
@@ -3711,7 +3711,7 @@ impl PreferencesPanel {
             let btn_rect = resp.rect;
             let bg = if resp.hovered() { theme.bg_hover } else { theme.bg_raised };
             ui.painter().rect_filled(btn_rect, 4.0, bg);
-            ui.painter().rect_stroke(btn_rect, 4.0, egui::Stroke::new(1.0_f32, theme.marker_error));
+            ui.painter().rect_stroke(btn_rect, 4.0, egui::Stroke::new(1.0_f32, theme.marker_error), egui::StrokeKind::Outside);
             ui.painter().text(btn_rect.center(), egui::Align2::CENTER_CENTER, "Clear all", egui::FontId::proportional(11.0), theme.marker_error);
             if resp.clicked() {
                 // Stage the destructive action behind a confirmation modal
@@ -4432,7 +4432,7 @@ impl PreferencesPanel {
             let resp = ui.allocate_rect(btn_rect, egui::Sense::click());
             let bg = if resp.hovered() { theme.bg_hover } else { theme.bg_raised };
             ui.painter().rect_filled(btn_rect, 4.0, bg);
-            ui.painter().rect_stroke(btn_rect, 4.0, egui::Stroke::new(1.0_f32, theme.border_light));
+            ui.painter().rect_stroke(btn_rect, 4.0, egui::Stroke::new(1.0_f32, theme.border_light), egui::StrokeKind::Outside);
             ui.painter().text(btn_rect.center(), egui::Align2::CENTER_CENTER, "Reset layout", egui::FontId::proportional(11.0), theme.text_primary);
             if resp.clicked() {
                 // Reset egui memory (window positions, sizes)
@@ -4445,7 +4445,7 @@ impl PreferencesPanel {
             let resp = ui.allocate_rect(btn_rect, egui::Sense::click());
             let bg = if resp.hovered() { theme.bg_hover } else { theme.bg_raised };
             ui.painter().rect_filled(btn_rect, 4.0, bg);
-            ui.painter().rect_stroke(btn_rect, 4.0, egui::Stroke::new(1.0_f32, theme.accent));
+            ui.painter().rect_stroke(btn_rect, 4.0, egui::Stroke::new(1.0_f32, theme.accent), egui::StrokeKind::Outside);
             // CONTRAST RULE: accent-bordered button uses accent text on dark bg
             ui.painter().text(btn_rect.center(), egui::Align2::CENTER_CENTER, "Clear", egui::FontId::proportional(11.0), theme.accent);
             if resp.clicked() {
@@ -4459,7 +4459,7 @@ impl PreferencesPanel {
             let resp = ui.allocate_rect(btn_rect, egui::Sense::click());
             let bg = if resp.hovered() { theme.bg_hover } else { theme.bg_raised };
             ui.painter().rect_filled(btn_rect, 4.0, bg);
-            ui.painter().rect_stroke(btn_rect, 4.0, egui::Stroke::new(1.0_f32, theme.accent));
+            ui.painter().rect_stroke(btn_rect, 4.0, egui::Stroke::new(1.0_f32, theme.accent), egui::StrokeKind::Outside);
             ui.painter().text(btn_rect.center(), egui::Align2::CENTER_CENTER, "Reset everything", egui::FontId::proportional(11.0), theme.accent);
             if resp.clicked() {
                 *prefs = crate::prefs::Preferences::default();
@@ -4543,7 +4543,7 @@ impl PreferencesPanel {
             let btn_resp = ui.allocate_rect(btn_rect, egui::Sense::click());
             let btn_bg = if btn_resp.hovered() { theme.bg_hover } else { theme.bg_raised };
             ui.painter().rect_filled(btn_rect, 4.0, btn_bg);
-            ui.painter().rect_stroke(btn_rect, 4.0, egui::Stroke::new(1.0_f32, theme.border_light));
+            ui.painter().rect_stroke(btn_rect, 4.0, egui::Stroke::new(1.0_f32, theme.border_light), egui::StrokeKind::Outside);
             ui.painter().text(btn_rect.center(), egui::Align2::CENTER_CENTER, "Reset all to layout", egui::FontId::proportional(10.0), theme.text_primary);
             if btn_resp.clicked() {
                 key_bindings.reset_to_preset();
@@ -4654,7 +4654,7 @@ impl PreferencesPanel {
                     else if set_resp.hovered() { theme.bg_hover }
                     else { theme.bg_raised };
                 ui.painter().rect_filled(set_rect, 4.0, set_bg);
-                ui.painter().rect_stroke(set_rect, 4.0, egui::Stroke::new(1.0_f32, theme.border_light));
+                ui.painter().rect_stroke(set_rect, 4.0, egui::Stroke::new(1.0_f32, theme.border_light), egui::StrokeKind::Outside);
                 let set_label = if is_remapping { "..." } else { "Set" };
                 ui.painter().text(set_rect.center(), egui::Align2::CENTER_CENTER, set_label, egui::FontId::proportional(10.0), theme.text_primary);
                 if set_resp.clicked() && !is_remapping {
@@ -4686,7 +4686,7 @@ impl PreferencesPanel {
                                 egui::vec2(pill_w, pill_h),
                             );
                             ui.painter().rect_filled(pill_rect, 4.0, theme.border);
-                            ui.painter().rect_stroke(pill_rect, 4.0, egui::Stroke::new(1.0_f32, theme.border_light));
+                            ui.painter().rect_stroke(pill_rect, 4.0, egui::Stroke::new(1.0_f32, theme.border_light), egui::StrokeKind::Outside);
                             ui.painter().text(pill_rect.center(), egui::Align2::CENTER_CENTER, *part, font, theme.text_primary);
                             x = pill_rect.left() - 3.0;
                         }

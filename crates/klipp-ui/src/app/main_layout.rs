@@ -1161,7 +1161,7 @@ impl KlippApp {
                                     let pixels: Vec<egui::Color32> = still.rgba.chunks_exact(4)
                                         .map(|px| egui::Color32::from_rgba_premultiplied(px[0], px[1], px[2], px[3]))
                                         .collect();
-                                    let image = egui::ColorImage { size: [sw, sh], pixels };
+                                    let image = egui::ColorImage::new([sw, sh], pixels);
                                     let name = format!("grade_still_thumb_{}", i);
                                     still.texture = Some(alloc_texture_logged(
                                         ui.ctx(),
@@ -1185,7 +1185,7 @@ impl KlippApp {
                                 } else {
                                     egui::Stroke::new(1.0_f32, theme.border)
                                 };
-                                ui.painter().rect_stroke(rect, crate::theme::radius::CONTROL, stroke);
+                                ui.painter().rect_stroke(rect, crate::theme::radius::CONTROL, stroke, egui::StrokeKind::Outside);
                                 if resp.clicked() {
                                     all_cmds.push(AppCommand::SetActiveGradeStill {
                                         index: if is_active { None } else { Some(i) },

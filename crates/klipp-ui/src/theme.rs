@@ -621,7 +621,7 @@ pub(crate) fn unicode_fallback_fonts() -> egui::FontDefinitions {
     // face (SIL Open Font License), whose zero is plain. egui's own mono
     // (Hack) dots its zero, which at the 10 px of the readouts and counts
     // read as an 8: "104" as "184", twice, to two readers.
-    defs.font_data.insert(UI_MONO.to_owned(), FontData::from_static(UI_MONO_BYTES));
+    defs.font_data.insert(UI_MONO.to_owned(), std::sync::Arc::new(FontData::from_static(UI_MONO_BYTES)));
     defs.families.entry(FontFamily::Monospace).or_default().insert(0, UI_MONO.to_owned());
 
     fn try_load_first(paths: &[&str]) -> Option<Vec<u8>> {
@@ -643,7 +643,7 @@ pub(crate) fn unicode_fallback_fonts() -> egui::FontDefinitions {
     if let Some(bytes) = try_load_first(DEJAVU_PATHS) {
         defs.font_data.insert(
             "klipp_fallback_dejavu".to_owned(),
-            FontData::from_owned(bytes),
+            std::sync::Arc::new(FontData::from_owned(bytes)),
         );
         for family in [FontFamily::Proportional, FontFamily::Monospace] {
             defs.families
@@ -665,7 +665,7 @@ pub(crate) fn unicode_fallback_fonts() -> egui::FontDefinitions {
     if let Some(bytes) = try_load_first(CJK_PATHS) {
         let mut data = FontData::from_owned(bytes);
         data.index = 0;
-        defs.font_data.insert("klipp_fallback_cjk".to_owned(), data);
+        defs.font_data.insert("klipp_fallback_cjk".to_owned(), std::sync::Arc::new(data));
         for family in [FontFamily::Proportional, FontFamily::Monospace] {
             defs.families
                 .entry(family)
@@ -678,7 +678,7 @@ pub(crate) fn unicode_fallback_fonts() -> egui::FontDefinitions {
     // never leaves an arrow as tofu. The bytes are the title renderer's
     // own copy, not a second one.
     if let Some(bytes) = klipp_title::bundled::lookup("JetBrains Mono", "Regular") {
-        defs.font_data.insert("klipp_fallback_bundled".to_owned(), FontData::from_static(bytes));
+        defs.font_data.insert("klipp_fallback_bundled".to_owned(), std::sync::Arc::new(FontData::from_static(bytes)));
         for family in [FontFamily::Proportional, FontFamily::Monospace] {
             defs.families
                 .entry(family)
@@ -867,7 +867,7 @@ mod fallback_font_tests {
         ctx.set_fonts(unicode_fallback_fonts());
         let _ = ctx.run(Default::default(), |_| {});
         for c in ['▾', '▸', '●', '✓'] {
-            assert!(ctx.fonts(|f| f.has_glyph(&egui::FontId::proportional(13.0), c)), "no glyph for {c:?}");
+            assert!(ctx.fonts_mut(|f| f.has_glyph(&egui::FontId::proportional(13.0), c)), "no glyph for {c:?}");
         }
     }
 }

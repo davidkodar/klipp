@@ -116,7 +116,7 @@ pub fn show(
 
         // Search bar
         egui::Frame::none()
-            .inner_margin(egui::Margin::symmetric(8.0, 0.0))
+            .inner_margin(egui::Margin::symmetric(8, 0))
             .show(ui, |ui| {
                 super::browser_search_field(ui, theme, search_query, "Search generators\u{2026}", state);
             });
@@ -125,7 +125,7 @@ pub fn show(
         // Filter row: Animated only + view toggle. Every generator is
         // built in, so there is no source to filter by.
         egui::Frame::none()
-            .inner_margin(egui::Margin::symmetric(8.0, 0.0))
+            .inner_margin(egui::Margin::symmetric(8, 0))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     animated_only_pill(ui, theme, animated_only);
@@ -432,7 +432,7 @@ fn generator_list_row(
     );
 
     if is_selected {
-        ui.painter().rect_stroke(rect, crate::theme::radius::PANEL, egui::Stroke::new(1.5_f32, theme.accent));
+        ui.painter().rect_stroke(rect, crate::theme::radius::PANEL, egui::Stroke::new(1.5_f32, theme.accent), egui::StrokeKind::Outside);
     }
 
     resp
@@ -651,7 +651,7 @@ fn animated_only_pill(ui: &mut egui::Ui, theme: &KlippTheme, active: &mut bool) 
         (theme.bg_panel, theme.border, theme.text_secondary)
     };
     ui.painter().rect_filled(rect, 4.0, bg);
-    ui.painter().rect_stroke(rect, 4.0, egui::Stroke::new(1.0_f32, border));
+    ui.painter().rect_stroke(rect, 4.0, egui::Stroke::new(1.0_f32, border), egui::StrokeKind::Outside);
     let icon_rect = egui::Rect::from_min_size(
         egui::pos2(rect.min.x + pad_x, rect.center().y - icon_size * 0.5),
         egui::vec2(icon_size, icon_size),
@@ -689,7 +689,7 @@ fn view_mode_button(
         (theme.bg_panel, theme.border, theme.text_secondary)
     };
     ui.painter().rect_filled(rect, 4.0, bg);
-    ui.painter().rect_stroke(rect, 4.0, egui::Stroke::new(1.0_f32, border));
+    ui.painter().rect_stroke(rect, 4.0, egui::Stroke::new(1.0_f32, border), egui::StrokeKind::Outside);
     let size = 13.0;
     let icon_rect = egui::Rect::from_center_size(rect.center(), egui::vec2(size, size));
     let img = icon.image(size).tint(fg);

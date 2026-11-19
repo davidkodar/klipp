@@ -121,7 +121,7 @@ pub fn section_card(ui: &mut Ui, title: &str, badge: Option<String>, theme: &Kli
     }
     if col_state.is_open() {
         Frame::none()
-            .inner_margin(Margin { left: 0.0, right: 0.0, top: 4.0, bottom: 6.0 })
+            .inner_margin(Margin { left: 0, right: 0, top: 4, bottom: 6 })
             .show(ui, |ui| add_contents(ui));
     }
     col_state.store(ui.ctx());
@@ -291,11 +291,11 @@ fn themed_toggle_ui(ui: &mut Ui, on: &mut bool, theme: &KlippTheme) -> Response 
     let bg = lerp_color(theme.bg_raised, theme.accent, how_on);
     let rounding = rect.height() / 2.0;
     ui.painter()
-        .rect_filled(rect, Rounding::same(rounding), bg);
+        .rect_filled(rect, Rounding::from(rounding), bg);
     ui.painter().rect_stroke(
         rect,
-        Rounding::same(rounding),
-        Stroke::new(1.0_f32, theme.border),
+        Rounding::from(rounding),
+        Stroke::new(1.0_f32, theme.border), egui::StrokeKind::Outside,
     );
 
     // Knob.
@@ -338,8 +338,8 @@ pub fn inspector_subgroup_card<R>(
     let frame = Frame::none()
         .fill(theme.bg_panel_alt)
         .stroke(Stroke::new(1.0_f32, theme.border))
-        .rounding(Rounding::same(4.0))
-        .inner_margin(Margin::same(0.0));
+        .rounding(Rounding::same(4))
+        .inner_margin(Margin::same(0));
 
     let mut body_result: Option<R> = None;
 
@@ -389,10 +389,10 @@ pub fn inspector_subgroup_card<R>(
         // matching the reference's interior rhythm.
         if *enabled {
             let body_frame = Frame::none().inner_margin(Margin {
-                left: 12.0,
-                right: 12.0,
-                top: 8.0,
-                bottom: 12.0,
+                left: 12,
+                right: 12,
+                top: 8,
+                bottom: 12,
             });
             let inner = body_frame.show(ui, |ui| add_body(ui));
             body_result = Some(inner.inner);
@@ -432,9 +432,9 @@ pub fn quick_preset_button(
 
     ui.painter().rect(
         rect,
-        Rounding::same(4.0),
+        Rounding::same(4),
         bg,
-        Stroke::new(1.0_f32, stroke_color),
+        Stroke::new(1.0_f32, stroke_color), egui::StrokeKind::Outside,
     );
     ui.painter().text(
         rect.center(),

@@ -170,7 +170,7 @@ fn draw_peak_bar(
     let bar_rect = egui::Rect::from_min_size(egui::pos2(x, top), egui::vec2(bar_w, h));
     // Dark fill + visible border so empty meters are still visible
     painter.rect_filled(bar_rect, 1.0, theme.bg_deep);
-    painter.rect_stroke(bar_rect, 1.0, egui::Stroke::new(0.5_f32, theme.bg_raised));
+    painter.rect_stroke(bar_rect, 1.0, egui::Stroke::new(0.5_f32, theme.bg_raised), egui::StrokeKind::Outside);
 
     let db = vol_to_db(peak_linear);
     let t = db_to_t(db);
@@ -223,7 +223,7 @@ fn draw_lufs_bar(
     let h = bottom - top;
     let bar_rect = egui::Rect::from_min_size(egui::pos2(x, top), egui::vec2(bar_w, h));
     painter.rect_filled(bar_rect, 1.0, theme.bg_deep);
-    painter.rect_stroke(bar_rect, 1.0, egui::Stroke::new(0.5_f32, theme.bg_raised));
+    painter.rect_stroke(bar_rect, 1.0, egui::Stroke::new(0.5_f32, theme.bg_raised), egui::StrokeKind::Outside);
 
     // Green target zone (subtle background)
     let on_lo = lufs_to_t(target - 2.0);
@@ -392,7 +392,7 @@ fn fader_strip(
     let painter = ui.painter_at(rect);
     // Strip background + border (consistent with master)
     painter.rect_filled(rect, 2.0, theme.bg_panel);
-    painter.rect_stroke(rect, 2.0, egui::Stroke::new(1.0_f32, theme.border));
+    painter.rect_stroke(rect, 2.0, egui::Stroke::new(1.0_f32, theme.border), egui::StrokeKind::Outside);
 
     let inner_left = rect.min.x + STRIP_PAD;
     let inner_right = rect.max.x - STRIP_PAD;
@@ -431,8 +431,7 @@ fn fader_strip(
             |ui| {
                 let te = egui::TextEdit::singleline(edit_buf)
                     .font(egui::FontId::proportional(10.0))
-                    .desired_width(STRIP_W - 8.0)
-                    .frame(true);
+                    .desired_width(STRIP_W - 8.0);
                 ui.add(te)
             },
         ).inner;
@@ -467,7 +466,7 @@ fn fader_strip(
         egui::vec2(pan_w, 4.0),
     );
     painter.rect_filled(groove, 2.0, theme.bg_raised);
-    painter.rect_stroke(groove, 2.0, egui::Stroke::new(0.5_f32, theme.border_light));
+    painter.rect_stroke(groove, 2.0, egui::Stroke::new(0.5_f32, theme.border_light), egui::StrokeKind::Outside);
     // Center tick
     painter.line_segment(
         [egui::pos2(pan_rect.center().x, pan_rect.center().y - 5.0),
@@ -497,7 +496,7 @@ fn fader_strip(
         egui::vec2(thumb_w, thumb_h),
     );
     painter.rect_filled(thumb_rect, 2.0, theme.text_secondary);
-    painter.rect_stroke(thumb_rect, 2.0, egui::Stroke::new(0.5_f32, theme.border));
+    painter.rect_stroke(thumb_rect, 2.0, egui::Stroke::new(0.5_f32, theme.border), egui::StrokeKind::Outside);
     // Pan interaction
     let pan_resp = ui.allocate_rect(pan_rect.expand(2.0), egui::Sense::click_and_drag());
     // Held, the pan is recorded by the track's mode (#2306), moving from
@@ -574,7 +573,7 @@ fn fader_strip(
     }
     let thumb_rect = egui::Rect::from_center_size(egui::pos2(fader_cx, thumb_y), egui::vec2(16.0, 8.0));
     painter.rect_filled(thumb_rect, 2.0, theme.text_primary);
-    painter.rect_stroke(thumb_rect, 2.0, egui::Stroke::new(1.0_f32, fill_color));
+    painter.rect_stroke(thumb_rect, 2.0, egui::Stroke::new(1.0_f32, fill_color), egui::StrokeKind::Outside);
     painter.line_segment(
         [egui::pos2(fader_cx - 5.0, thumb_y), egui::pos2(fader_cx + 5.0, thumb_y)],
         egui::Stroke::new(1.0_f32, theme.text_dim),
@@ -671,7 +670,7 @@ fn fader_strip(
     let mute_bg = if *muted { theme.marker_error } else { theme.bg_raised };
     let mute_tc = if *muted { egui::Color32::WHITE } else { theme.text_secondary };
     painter.rect_filled(mute_rect, 2.0, mute_bg);
-    painter.rect_stroke(mute_rect, 2.0, egui::Stroke::new(1.0_f32, theme.border));
+    painter.rect_stroke(mute_rect, 2.0, egui::Stroke::new(1.0_f32, theme.border), egui::StrokeKind::Outside);
     painter.text(mute_rect.center(), egui::Align2::CENTER_CENTER, "M", egui::FontId::proportional(10.0), mute_tc);
     let mute_resp = ui.allocate_rect(mute_rect, egui::Sense::click());
     if mute_resp.clicked() {
@@ -684,7 +683,7 @@ fn fader_strip(
     let solo_bg = if *solo { theme.accent } else { theme.bg_raised };
     let solo_tc = if *solo { theme.text_on_accent } else { theme.text_secondary };
     painter.rect_filled(solo_rect, 2.0, solo_bg);
-    painter.rect_stroke(solo_rect, 2.0, egui::Stroke::new(1.0_f32, theme.border));
+    painter.rect_stroke(solo_rect, 2.0, egui::Stroke::new(1.0_f32, theme.border), egui::StrokeKind::Outside);
     painter.text(solo_rect.center(), egui::Align2::CENTER_CENTER, "S", egui::FontId::proportional(10.0), solo_tc);
     let solo_resp = ui.allocate_rect(solo_rect, egui::Sense::click());
     if solo_resp.clicked() {
@@ -699,7 +698,7 @@ fn fader_strip(
         .on_hover_text("This track's sends to the aux buses: some of its sound into a bus, for one reverb many tracks share");
     let sends_bg = if sends_resp.hovered() { theme.bg_raised } else { theme.bg_deep };
     painter.rect_filled(sends_rect, 2.0, sends_bg);
-    painter.rect_stroke(sends_rect, 2.0, egui::Stroke::new(1.0_f32, theme.border));
+    painter.rect_stroke(sends_rect, 2.0, egui::Stroke::new(1.0_f32, theme.border), egui::StrokeKind::Outside);
     let label = if sends == 0 { "Sends".to_string() } else { format!("Sends {sends}") };
     let colour = if sends == 0 { theme.text_dim } else { theme.accent };
     painter.text(sends_rect.center(), egui::Align2::CENTER_CENTER, label, egui::FontId::proportional(9.0), colour);
@@ -738,7 +737,7 @@ fn master_strip(
 
     // Master background — just slightly lighter than track strips for subtle distinction
     painter.rect_filled(rect, 2.0, theme.bg_panel_alt);
-    painter.rect_stroke(rect, 2.0, egui::Stroke::new(1.0_f32, theme.border));
+    painter.rect_stroke(rect, 2.0, egui::Stroke::new(1.0_f32, theme.border), egui::StrokeKind::Outside);
 
     let mut y = rect.min.y + 10.0;
 
@@ -818,7 +817,7 @@ fn master_strip(
     }
     let thumb_rect = egui::Rect::from_center_size(egui::pos2(fader_cx, thumb_y), egui::vec2(18.0, 8.0));
     painter.rect_filled(thumb_rect, 2.0, theme.text_primary);
-    painter.rect_stroke(thumb_rect, 2.0, egui::Stroke::new(1.0_f32, fill_color));
+    painter.rect_stroke(thumb_rect, 2.0, egui::Stroke::new(1.0_f32, fill_color), egui::StrokeKind::Outside);
     painter.line_segment(
         [egui::pos2(fader_cx - 6.0, thumb_y), egui::pos2(fader_cx + 6.0, thumb_y)],
         egui::Stroke::new(1.0_f32, theme.text_dim),
@@ -929,7 +928,7 @@ fn master_strip(
     // Reset button
     let btn_rect = egui::Rect::from_min_size(egui::pos2(rect.center().x - 16.0, y), egui::vec2(32.0, 14.0));
     painter.rect_filled(btn_rect, 2.0, theme.bg_raised);
-    painter.rect_stroke(btn_rect, 2.0, egui::Stroke::new(1.0_f32, theme.border));
+    painter.rect_stroke(btn_rect, 2.0, egui::Stroke::new(1.0_f32, theme.border), egui::StrokeKind::Outside);
     painter.text(btn_rect.center(), egui::Align2::CENTER_CENTER, "RST",
         egui::FontId::monospace(10.0), theme.text_secondary);
     let rst_resp = ui.allocate_rect(btn_rect, egui::Sense::click());

@@ -241,7 +241,7 @@ pub fn show(
 
         // ── Search bar (shared style, see browser::browser_search_field) ──
         egui::Frame::none()
-            .inner_margin(egui::Margin::symmetric(8.0, 0.0))
+            .inner_margin(egui::Margin::symmetric(8, 0))
             .show(ui, |ui| {
                 super::browser_search_field(ui, theme, search_query, "Search effects\u{2026}", state);
             });
@@ -767,7 +767,7 @@ fn effect_card(
     let painter = ui.painter();
 
     // The card: the same field, border and hover as a media card.
-    let rounding = egui::Rounding::same(crate::theme::radius::PANEL);
+    let rounding = egui::Rounding::from(crate::theme::radius::PANEL);
     painter.rect_filled(card_rect, rounding, theme.bg_panel_alt);
     let preview_rect = egui::Rect::from_min_size(card_rect.min, egui::vec2(width, preview_h));
 
@@ -793,7 +793,7 @@ fn effect_card(
     }
 
     let stroke_color = if hovered { theme.border_light } else { theme.border };
-    painter.rect_stroke(card_rect, rounding, egui::Stroke::new(1.0_f32, stroke_color));
+    painter.rect_stroke(card_rect, rounding, egui::Stroke::new(1.0_f32, stroke_color), egui::StrokeKind::Outside);
 
     // Faint centre divider on hover: a hint of the before/after split.
     if hovered {
@@ -941,9 +941,9 @@ fn effect_list_row(
         egui::pos2(rect.min.x + 6.0, rect.center().y - thumb_h * 0.5),
         egui::vec2(thumb_w, thumb_h),
     );
-    let rounding = egui::Rounding::same(4.0);
+    let rounding = egui::Rounding::same(4);
     painter.rect_filled(thumb_rect, rounding, theme.bg_panel);
-    painter.rect_stroke(thumb_rect, rounding, egui::Stroke::new(1.0_f32, theme.border));
+    painter.rect_stroke(thumb_rect, rounding, egui::Stroke::new(1.0_f32, theme.border), egui::StrokeKind::Outside);
     if let Some(tex) = thumbnail {
         let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
         painter.image(tex.id(), thumb_rect, uv, egui::Color32::WHITE);
@@ -1281,7 +1281,7 @@ fn gpu_only_pill(ui: &mut egui::Ui, theme: &KlippTheme, active: &mut bool) {
         (theme.bg_panel, theme.border, theme.text_secondary)
     };
     ui.painter().rect_filled(rect, 4.0, bg);
-    ui.painter().rect_stroke(rect, 4.0, egui::Stroke::new(1.0_f32, border));
+    ui.painter().rect_stroke(rect, 4.0, egui::Stroke::new(1.0_f32, border), egui::StrokeKind::Outside);
     let icon_rect = egui::Rect::from_min_size(
         egui::pos2(rect.min.x + pad_x, rect.center().y - icon_size * 0.5),
         egui::vec2(icon_size, icon_size),
@@ -1330,7 +1330,7 @@ fn icon_filter_button(
         (theme.bg_panel, theme.border, theme.text_secondary)
     };
     ui.painter().rect_filled(rect, 4.0, bg);
-    ui.painter().rect_stroke(rect, 4.0, egui::Stroke::new(1.0_f32, border));
+    ui.painter().rect_stroke(rect, 4.0, egui::Stroke::new(1.0_f32, border), egui::StrokeKind::Outside);
     let size = 12.0;
     let icon_rect = egui::Rect::from_center_size(rect.center(), egui::vec2(size, size));
     let img = icon.image(size).tint(fg);
@@ -1507,7 +1507,7 @@ fn paint_thumb_badge(
         egui::Stroke::new(
             1.0_f32,
             egui::Color32::from_rgba_unmultiplied(255, 255, 255, 24),
-        ),
+        ), egui::StrokeKind::Outside,
     );
     let text_pos = egui::pos2(rect.min.x + pad_x, rect.center().y - galley.size().y * 0.5);
     painter.galley(text_pos, galley, label_color);

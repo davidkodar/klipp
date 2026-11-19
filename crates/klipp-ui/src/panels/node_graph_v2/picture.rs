@@ -1302,7 +1302,7 @@ mod tests {
         let moved = at + egui::vec2(60.0, 20.0);
         assert_ne!(frame(vec![egui::Event::PointerMoved(moved)]).1, pan);
         let zoom = frame(vec![button(moved, egui::PointerButton::Middle, false)]).2;
-        assert_ne!(frame(vec![egui::Event::MouseWheel { unit: egui::MouseWheelUnit::Point, delta: egui::vec2(0.0, 80.0), modifiers: egui::Modifiers::NONE }]).2, zoom);
+        assert_ne!(frame(vec![egui::Event::MouseWheel { unit: egui::MouseWheelUnit::Point, delta: egui::vec2(0.0, 80.0), modifiers: egui::Modifiers::NONE, phase: egui::TouchPhase::Move }]).2, zoom);
         assert_eq!(c.picture_v2().unwrap(), before);
     }
 

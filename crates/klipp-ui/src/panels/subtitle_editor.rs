@@ -390,7 +390,7 @@ pub fn show(ctx: &egui::Context, state: &mut AppState) -> Vec<AppCommand> {
                                     } else {
                                         egui::Color32::TRANSPARENT
                                     })
-                                    .inner_margin(egui::Margin::same(4.0))
+                                    .inner_margin(egui::Margin::same(4))
                                     .stroke(egui::Stroke::new(
                                         1.0_f32,
                                         egui::Color32::from_rgba_unmultiplied(0xff, 0xff, 0xff, 10),
@@ -463,7 +463,7 @@ fn render_track_header(
     let collapsed = state.subtitle_editor.subtitle_track_collapsed.contains(&st.track_id);
     let hdr_frame = egui::Frame::none()
         .fill(egui::Color32::from_rgba_unmultiplied(0xff, 0xff, 0xff, 6))
-        .inner_margin(egui::Margin::symmetric(4.0, 3.0))
+        .inner_margin(egui::Margin::symmetric(4, 3))
         .stroke(egui::Stroke::new(
             1.0_f32,
             egui::Color32::from_rgba_unmultiplied(0xff, 0xff, 0xff, 16),

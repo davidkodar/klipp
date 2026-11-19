@@ -1688,7 +1688,7 @@ impl CurveEditorPanel {
         }
 
         // ── Border ──
-        painter.rect_stroke(clip_rect, 0.0, Stroke::new(0.5_f32, theme.border));
+        painter.rect_stroke(clip_rect, 0.0, Stroke::new(0.5_f32, theme.border), egui::StrokeKind::Outside);
     }
 
     /// The selected keys' exact time and value, typed (#2272), and their
@@ -2334,7 +2334,7 @@ impl CurveEditorPanel {
             if let Some(pos) = pointer_pos {
                 let r = Rect::from_two_pos(from, pos);
                 painter.rect_filled(r, 0.0, theme.accent.gamma_multiply(0.12));
-                painter.rect_stroke(r, 0.0, Stroke::new(1.0_f32, theme.accent));
+                painter.rect_stroke(r, 0.0, Stroke::new(1.0_f32, theme.accent), egui::StrokeKind::Outside);
                 if response.drag_stopped() {
                     let at = |p: egui::Pos2| (self.x_to_time(p.x, graph_rect, clip_duration), self.y_to_value(p.y, graph_rect, v_min, v_range));
                     let found = state.sequences[state.active_sequence_idx].all_clips().find(|c| c.id == clip_id).cloned();

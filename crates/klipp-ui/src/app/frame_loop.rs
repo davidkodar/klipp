@@ -249,7 +249,7 @@ impl KlippApp {
                 .show(ctx, |ui| {
                     let (rect, _) = ui.allocate_exact_size(screen.size(), egui::Sense::hover());
                     ui.painter().rect_filled(rect, 0.0, self.theme.accent_subtle);
-                    ui.painter().rect_stroke(rect.shrink(4.0), 4.0, egui::Stroke::new(2.0_f32, self.theme.accent_glow));
+                    ui.painter().rect_stroke(rect.shrink(4.0), 4.0, egui::Stroke::new(2.0_f32, self.theme.accent_glow), egui::StrokeKind::Outside);
                     ui.painter().text(
                         rect.center(),
                         egui::Align2::CENTER_CENTER,
@@ -1946,7 +1946,7 @@ impl KlippApp {
                             .fill(theme.bg_raised)
                             .stroke(egui::Stroke::new(1.0_f32, theme.accent))
                             .rounding(4.0)
-                            .inner_margin(egui::Margin::symmetric(8.0, 4.0))
+                            .inner_margin(egui::Margin::symmetric(8, 4))
                             .show(ui, |ui| {
                                 ui.label(
                                     egui::RichText::new(label)
@@ -2020,7 +2020,7 @@ impl KlippApp {
                                 .fill(self.theme.bg_raised)
                                 .stroke(egui::Stroke::new(1.0_f32, self.theme.border))
                                 .rounding(4.0)
-                                .inner_margin(egui::Margin::symmetric(16.0, 10.0))
+                                .inner_margin(egui::Margin::symmetric(16, 10))
                                 .show(ui, |ui| {
                                     ui.horizontal(|ui| {
                                         if is_generating {

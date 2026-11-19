@@ -70,7 +70,7 @@ pub(super) fn show(
         )
     };
     ui.painter()
-        .rect_stroke(rect, 0.0, egui::Stroke::new(1.0_f32, egui::Color32::GRAY));
+        .rect_stroke(rect, 0.0, egui::Stroke::new(1.0_f32, egui::Color32::GRAY), egui::StrokeKind::Outside);
     let total_vertices: usize = pose.contours.iter().map(|c| c.vertices.len()).sum();
     for (ci, c) in pose.contours.iter_mut().enumerate() {
         let n = if c.closed {

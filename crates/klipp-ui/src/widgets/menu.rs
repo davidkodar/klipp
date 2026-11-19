@@ -34,7 +34,7 @@ pub fn open_at_frame_start(ctx: &egui::Context) -> bool {
 
 /// A menu drawn in its own popup frame (an `Area` the caller places).
 pub fn menu_frame<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> egui::InnerResponse<R> {
-    egui::Frame::popup(ui.style()).inner_margin(egui::Margin::symmetric(4.0, 4.0)).show(ui, |ui| menu_body(ui, add))
+    egui::Frame::popup(ui.style()).inner_margin(egui::Margin::symmetric(4, 4)).show(ui, |ui| menu_body(ui, add))
 }
 
 /// A menu's rows inside a popup egui already framed (a `context_menu`'s).

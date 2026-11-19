@@ -613,8 +613,8 @@ pub fn show_content(
             .fill(theme.bg_raised)
             .stroke(egui::Stroke::new(1.0_f32, theme.border))
             .rounding(4.0)
-            .inner_margin(egui::Margin::symmetric(8.0, 6.0))
-            .outer_margin(egui::Margin::symmetric(0.0, 2.0))
+            .inner_margin(egui::Margin::symmetric(8, 6))
+            .outer_margin(egui::Margin::symmetric(0, 2))
             .show(ui, |ui| {
                 // ── Header row ──
                 ui.horizontal(|ui| {

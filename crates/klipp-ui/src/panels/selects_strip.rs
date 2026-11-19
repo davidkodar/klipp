@@ -163,7 +163,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState, theme: &KlippTheme, rect: e
     if let Some((a, b)) = state.selects_range.filter(|(a, b)| b > a) {
         let r = egui::Rect::from_x_y_ranges(scale.x(a)..=scale.x(b), lanes.y_range());
         painter.rect_filled(r, 0.0, theme.accent.gamma_multiply(0.18));
-        painter.rect_stroke(r, 0.0, egui::Stroke::new(1.5_f32, theme.accent));
+        painter.rect_stroke(r, 0.0, egui::Stroke::new(1.5_f32, theme.accent), egui::StrokeKind::Outside);
     }
 
     // ── Pointer: skim, mark, take a clip, drag the range down ──
@@ -210,7 +210,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState, theme: &KlippTheme, rect: e
             let galley = ghost.layout_no_wrap(text, egui::FontId::proportional(11.0), theme.text_primary);
             let r = egui::Rect::from_min_size(p + egui::vec2(12.0, 8.0), galley.size() + egui::vec2(8.0, 4.0));
             ghost.rect_filled(r, 3.0, theme.bg_panel);
-            ghost.rect_stroke(r, 3.0, egui::Stroke::new(1.0_f32, theme.accent));
+            ghost.rect_stroke(r, 3.0, egui::Stroke::new(1.0_f32, theme.accent), egui::StrokeKind::Outside);
             ghost.galley(r.min + egui::vec2(4.0, 2.0), galley, theme.text_primary);
             ui.ctx().request_repaint();
         }

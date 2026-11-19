@@ -62,7 +62,7 @@ fn the_viewer_wipes_against_another_clip_graded() {
         });
         shapes = out.shapes;
     }
-    let drew = shapes.iter().any(|s| matches!(&s.shape, egui::Shape::Mesh(m) if m.texture_id == frame) || matches!(&s.shape, egui::Shape::Rect(r) if r.fill_texture_id == frame));
+    let drew = shapes.iter().any(|s| matches!(&s.shape, egui::Shape::Mesh(m) if m.texture_id == frame) || matches!(&s.shape, egui::Shape::Rect(r) if r.fill_texture_id() == frame));
     assert!(drew, "the wiped clip's frame isn't on the split's left");
     let texts: Vec<String> = shapes.iter().filter_map(|s| match &s.shape { egui::Shape::Text(t) => Some(t.galley.text().to_string()), _ => None }).collect();
     assert!(texts.iter().any(|t| t == "Clip: Reverse") && texts.iter().any(|t| t == "Now"), "the split says what it shows: {texts:?}");
@@ -75,5 +75,5 @@ fn the_viewer_wipes_against_another_clip_graded() {
             let _ = panel.show(ui, &mut state, &theme, &crate::keybindings::KeyBindings::default());
         });
     });
-    assert!(!out.shapes.iter().any(|s| matches!(&s.shape, egui::Shape::Mesh(m) if m.texture_id == frame) || matches!(&s.shape, egui::Shape::Rect(r) if r.fill_texture_id == frame)), "the Edit page's viewer wipes");
+    assert!(!out.shapes.iter().any(|s| matches!(&s.shape, egui::Shape::Mesh(m) if m.texture_id == frame) || matches!(&s.shape, egui::Shape::Rect(r) if r.fill_texture_id() == frame)), "the Edit page's viewer wipes");
 }

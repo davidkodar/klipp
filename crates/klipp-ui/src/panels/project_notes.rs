@@ -39,7 +39,7 @@ pub fn show_project_notes(
                             .desired_width(f32::INFINITY)
                             .desired_rows(20)
                             .hint_text("Add project notes, shot lists, delivery specs\u{2026}")
-                            .frame(false),
+                            .frame(egui::Frame::new().inner_margin(egui::Margin::symmetric(4, 2))),
                     );
                     if response.changed() {
                         state.dirty = true;

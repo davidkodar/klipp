@@ -661,7 +661,7 @@ impl NewTimelinePanel {
             let bg = egui::Rect::from_min_size(at, galley.size()).expand(6.0);
             let painter = ui.painter().with_clip_rect(tracks_rect);
             painter.rect_filled(bg, 4.0, theme.bg_raised);
-            painter.rect_stroke(bg, 4.0, egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(120, 220, 120)));
+            painter.rect_stroke(bg, 4.0, egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(120, 220, 120)), egui::StrokeKind::Outside);
             painter.galley(at, galley, theme.text_primary);
         }
         if let Some(typed) = &state.trim_entry {
@@ -673,7 +673,7 @@ impl NewTimelinePanel {
             let bg = egui::Rect::from_min_size(at, galley.size()).expand(6.0);
             let painter = ui.painter().with_clip_rect(tracks_rect);
             painter.rect_filled(bg, 4.0, theme.bg_raised);
-            painter.rect_stroke(bg, 4.0, egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(120, 220, 120)));
+            painter.rect_stroke(bg, 4.0, egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(120, 220, 120)), egui::StrokeKind::Outside);
             painter.galley(at, galley, theme.text_primary);
         }
 
@@ -1914,7 +1914,7 @@ mod menu_smoke_tests {
         update(&mut timeline, 0.0);
         let texture = timeline.state.graded_thumbs.texture(clip).expect("the clip's graded thumbnail").id();
         timeline.frame(Vec::new());
-        let drawn = |t: &Timeline, id: egui::TextureId| t.shapes.iter().any(|s| matches!(&s.shape, egui::Shape::Rect(r) if r.fill_texture_id == id) || matches!(&s.shape, egui::Shape::Mesh(m) if m.texture_id == id));
+        let drawn = |t: &Timeline, id: egui::TextureId| t.shapes.iter().any(|s| matches!(&s.shape, egui::Shape::Rect(r) if r.fill_texture_id() == id) || matches!(&s.shape, egui::Shape::Mesh(m) if m.texture_id == id));
         assert!(drawn(&timeline, texture), "the graded thumbnail isn't drawn on the strip");
 
         // A grade change: the thumbnail is stale until it is drawn again.

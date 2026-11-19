@@ -523,8 +523,8 @@ fn render_plugin_row(
         .fill(row_bg)
         .stroke(egui::Stroke::new(1.0_f32, row_border))
         .rounding(4.0)
-        .inner_margin(egui::Margin::symmetric(8.0, 6.0))
-        .outer_margin(egui::Margin::symmetric(0.0, 1.0))
+        .inner_margin(egui::Margin::symmetric(8, 6))
+        .outer_margin(egui::Margin::symmetric(0, 1))
         .show(ui, |ui| {
             // ── Header row (always visible) ─────────────────────────
             //

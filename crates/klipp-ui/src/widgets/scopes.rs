@@ -419,10 +419,7 @@ pub fn show_scopes(
                     let pixels: Vec<egui::Color32> = entry.data.chunks_exact(4)
                         .map(|c| egui::Color32::from_rgba_premultiplied(c[0], c[1], c[2], c[3]))
                         .collect();
-                    let image = egui::ColorImage {
-                        size: [entry.w as usize, entry.h as usize],
-                        pixels,
-                    };
+                    let image = egui::ColorImage::new([entry.w as usize, entry.h as usize], pixels);
                     Some((image, gen))
                 } else {
                     None
@@ -614,7 +611,7 @@ pub fn show_scopes(
                 painter.rect_stroke(
                     rect,
                     0.0,
-                    egui::Stroke::new(1.0_f32, target_color),
+                    egui::Stroke::new(1.0_f32, target_color), egui::StrokeKind::Outside,
                 );
                 // Label offset radially outward — never overlaps the
                 // target square or the scatter cluster.
@@ -748,7 +745,7 @@ impl AccumBuffer {
                 lb.clamp(0.0, 255.0) as u8,
             ));
         }
-        egui::ColorImage { size: [self.w, self.h], pixels }
+        egui::ColorImage::new([self.w, self.h], pixels)
     }
 }
 
@@ -995,7 +992,7 @@ pub(crate) fn render_audio_spectrum(bins: &[f32], rw: usize, rh: usize) -> egui:
         }
     }
 
-    egui::ColorImage { size: [w, h], pixels }
+    egui::ColorImage::new([w, h], pixels)
 }
 
 /// Render an audio-correlation (Lissajous / goniometer) scope plus a
@@ -1079,7 +1076,7 @@ pub(crate) fn render_audio_correlation(
         }
     }
 
-    egui::ColorImage { size: [w, h], pixels }
+    egui::ColorImage::new([w, h], pixels)
 }
 
 /// Render a rolling short-term-LUFS history graph with the user's
@@ -1128,7 +1125,7 @@ pub(crate) fn render_lufs_history(
     }
 
     if history.is_empty() {
-        return egui::ColorImage { size: [w, h], pixels };
+        return egui::ColorImage::new([w, h], pixels);
     }
 
     // ── History line ──
@@ -1164,7 +1161,7 @@ pub(crate) fn render_lufs_history(
         }
     }
 
-    egui::ColorImage { size: [w, h], pixels }
+    egui::ColorImage::new([w, h], pixels)
 }
 
 /// Render a scrolling FFT waterfall (spectrogram): x = time, y = frequency
@@ -1192,7 +1189,7 @@ pub fn render_audio_spectrogram(
     let mut pixels = vec![bg; w * h];
 
     if history.is_empty() {
-        return egui::ColorImage { size: [w, h], pixels };
+        return egui::ColorImage::new([w, h], pixels);
     }
 
     // Clamp the floor to a usable range so a pref set to 0 or positive
@@ -1232,7 +1229,7 @@ pub fn render_audio_spectrogram(
         }
     }
 
-    egui::ColorImage { size: [w, h], pixels }
+    egui::ColorImage::new([w, h], pixels)
 }
 
 /// Map a normalized magnitude `[0.0, 1.0]` to an RGB heat-map colour via

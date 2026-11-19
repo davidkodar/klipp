@@ -45,7 +45,7 @@ pub fn draw(painter: &egui::Painter, theme: &crate::theme::KlippTheme, roles: &R
     let fill = theme.role_color(roles, clip.role.as_ref());
     let light = 0.2126 * fill.r() as f32 + 0.7152 * fill.g() as f32 + 0.0722 * fill.b() as f32 > 140.0;
     let ink = if light { egui::Color32::from_rgb(20, 20, 20) } else { egui::Color32::from_rgb(240, 240, 240) };
-    painter.rect(rect, HEIGHT / 2.0, fill, egui::Stroke::new(1.0_f32, egui::Color32::from_black_alpha(110)));
+    painter.rect(rect, HEIGHT / 2.0, fill, egui::Stroke::new(1.0_f32, egui::Color32::from_black_alpha(110)), egui::StrokeKind::Outside);
     painter.text(rect.center(), egui::Align2::CENTER_CENTER, text, egui::FontId::proportional(9.0), ink);
 }
 

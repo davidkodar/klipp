@@ -413,7 +413,7 @@ fn slider_row(
     );
 
     // Draw the bordered input box background
-    ui.painter().rect(input_rect, 4.0, theme.bg_raised, egui::Stroke::new(1.0_f32, theme.border));
+    ui.painter().rect(input_rect, 4.0, theme.bg_raised, egui::Stroke::new(1.0_f32, theme.border), egui::StrokeKind::Outside);
 
     // Place DragValue inside the input rect
     let dv_resp = ui.allocate_new_ui(egui::UiBuilder::new().max_rect(input_rect.shrink(2.0)), |ui| {
@@ -850,7 +850,7 @@ fn show_clip_audio(
     section_card(ui, "BEHAVIORS", theme, |ui| {
         ui.add_space(4.0);
         egui::Frame::default()
-            .inner_margin(egui::Margin { left: 14.0, right: 14.0, top: 0.0, bottom: 0.0 })
+            .inner_margin(egui::Margin { left: 14, right: 14, top: 0, bottom: 0 })
             .fill(egui::Color32::TRANSPARENT)
             .stroke(egui::Stroke::NONE)
             .shadow(egui::Shadow::NONE)
@@ -868,7 +868,7 @@ fn show_clip_audio(
     section_card(ui, "LEVEL", theme, |ui| {
         ui.add_space(6.0);
         egui::Frame::default()
-            .inner_margin(egui::Margin { left: 14.0, right: 14.0, top: 0.0, bottom: 0.0 })
+            .inner_margin(egui::Margin { left: 14, right: 14, top: 0, bottom: 0 })
             .fill(egui::Color32::TRANSPARENT)
             .stroke(egui::Stroke::NONE)
             .shadow(egui::Shadow::NONE)
@@ -884,7 +884,7 @@ fn show_clip_audio(
     section_card(ui, "WAVEFORM", theme, |ui| {
         ui.add_space(6.0);
         egui::Frame::default()
-            .inner_margin(egui::Margin { left: 14.0, right: 14.0, top: 0.0, bottom: 0.0 })
+            .inner_margin(egui::Margin { left: 14, right: 14, top: 0, bottom: 0 })
             .fill(egui::Color32::TRANSPARENT)
             .stroke(egui::Stroke::NONE)
             .shadow(egui::Shadow::NONE)
@@ -893,7 +893,7 @@ fn show_clip_audio(
             .fill(theme.bg_raised)
             .stroke(egui::Stroke::new(1.0_f32, theme.border))
             .rounding(4.0)
-            .inner_margin(egui::Margin::symmetric(4.0, 4.0))
+            .inner_margin(egui::Margin::symmetric(4, 4))
             .show(ui, |ui| {
                 // Measured inside the frame's margin: from outside it, the
                 // waveform came out 8 points wider than the column.
@@ -930,7 +930,7 @@ fn show_clip_audio(
     section_card(ui, "AUDIO EFFECTS", theme, |ui| {
         ui.add_space(4.0);
         egui::Frame::default()
-            .inner_margin(egui::Margin { left: 14.0, right: 14.0, top: 0.0, bottom: 0.0 })
+            .inner_margin(egui::Margin { left: 14, right: 14, top: 0, bottom: 0 })
             .fill(egui::Color32::TRANSPARENT)
             .stroke(egui::Stroke::NONE)
             .shadow(egui::Shadow::NONE)
@@ -1363,7 +1363,7 @@ fn draw_stereo_meter(ui: &mut egui::Ui, theme: &KlippTheme, peak_l: f32, peak_r:
     let tick_left = tick_rect.left() + label_w + 4.0;
     let tick_w = meter_w - label_w - 4.0;
     let font = egui::FontId::monospace(10.0);
-    let text_w = |label: &str| ui.fonts(|f| f.layout_no_wrap(label.to_owned(), font.clone(), theme.text_dim).size().x);
+    let text_w = |label: &str| ui.fonts_mut(|f| f.layout_no_wrap(label.to_owned(), font.clone(), theme.text_dim).size().x);
     for (x, label) in tick_labels(tick_left, tick_w, max_level, text_w) {
         ui.painter().text(egui::pos2(x, tick_rect.center().y), egui::Align2::CENTER_CENTER, label, font.clone(), theme.text_dim);
     }

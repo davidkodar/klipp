@@ -320,7 +320,7 @@ fn task_tile(
     } else {
         (theme.bg_raised.gamma_multiply(0.6), egui::Stroke::NONE)
     };
-    painter.rect(rect, 6.0, fill, stroke);
+    painter.rect(rect, 6.0, fill, stroke, egui::StrokeKind::Outside);
 
     // Content padding inside the tile.
     let pad = 10.0;
@@ -512,7 +512,7 @@ fn model_card(
     egui::Frame::none()
         .fill(theme.bg_raised.gamma_multiply(0.6))
         .rounding(4.0)
-        .inner_margin(egui::Margin::symmetric(10.0, 8.0))
+        .inner_margin(egui::Margin::symmetric(10, 8))
         .show(ui, |ui| {
             ui.horizontal(|ui| {
                 // Status indicator — spinning glyph during
@@ -642,7 +642,7 @@ fn model_picker_button(
     if response.clicked() {
         ui.memory_mut(|m| m.toggle_popup(popup_id));
     }
-    egui::popup::popup_below_widget(
+    egui::popup_below_widget(
         ui,
         popup_id,
         &response,
@@ -961,7 +961,7 @@ fn tag_chip(ui: &mut egui::Ui, accent: egui::Color32, label: &str) {
         .fill(accent.gamma_multiply(0.18))
         .stroke(egui::Stroke::new(1.0_f32, accent))
         .rounding(4.0)
-        .inner_margin(egui::Margin::symmetric(8.0, 1.5))
+        .inner_margin(egui::Margin::symmetric(8, 2))
         .show(ui, |ui| {
             ui.label(
                 egui::RichText::new(label)
@@ -990,7 +990,7 @@ fn counter_chip(
     egui::Frame::none()
         .fill(theme.bg_raised.gamma_multiply(0.5))
         .rounding(2.0)
-        .inner_margin(egui::Margin::symmetric(6.0, 3.0))
+        .inner_margin(egui::Margin::symmetric(6, 3))
         .show(ui, |ui| {
             ui.label(
                 egui::RichText::new(text)
@@ -1171,7 +1171,7 @@ fn running_progress_section(
         .fill(theme.bg_raised)
         .stroke(egui::Stroke::new(1.0_f32, theme.marker_warning))
         .rounding(4.0)
-        .inner_margin(egui::Margin::same(0.0))
+        .inner_margin(egui::Margin::same(0))
         .show(ui, |ui| {
             let (rect, _) = ui.allocate_exact_size(
                 egui::vec2(bar_w, bar_h),
@@ -1368,7 +1368,7 @@ fn done_preview(ui: &mut egui::Ui, state: &mut AiToolsState, theme: &KlippTheme)
         .fill(theme.marker_success.gamma_multiply(0.18))
         .stroke(egui::Stroke::new(1.0_f32, theme.marker_success))
         .rounding(4.0)
-        .inner_margin(egui::Margin::symmetric(10.0, 6.0))
+        .inner_margin(egui::Margin::symmetric(10, 6))
         .show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.add(Icon::Check.image(12.0).tint(theme.marker_success));
@@ -1404,7 +1404,7 @@ fn done_preview(ui: &mut egui::Ui, state: &mut AiToolsState, theme: &KlippTheme)
     let preview_w = (avail - 4.0).max(120.0);
     egui::Frame::none()
         .rounding(4.0)
-        .inner_margin(egui::Margin::same(0.0))
+        .inner_margin(egui::Margin::same(0))
         .show(ui, |ui| {
             let (rect, _) = ui.allocate_exact_size(
                 egui::vec2(preview_w, h),
@@ -1627,7 +1627,7 @@ fn recent_row(
     theme: &KlippTheme,
 ) {
     egui::Frame::none()
-        .inner_margin(egui::Margin::symmetric(0.0, 4.0))
+        .inner_margin(egui::Margin::symmetric(0, 4))
         .show(ui, |ui| {
             ui.horizontal(|ui| {
                 // Thumbnail or coloured placeholder block.
@@ -1715,7 +1715,7 @@ fn running_output_overlay(
     egui::Frame::none()
         .fill(theme.bg_raised.gamma_multiply(0.4))
         .rounding(4.0)
-        .inner_margin(egui::Margin::same(0.0))
+        .inner_margin(egui::Margin::same(0))
         .show(ui, |ui| {
             let (rect, _) = ui.allocate_exact_size(
                 egui::vec2(avail - 4.0, h),
@@ -1730,7 +1730,7 @@ fn running_output_overlay(
                     rect.min
                         + egui::vec2(b.x2 * rect.width(), b.y2 * rect.height()),
                 );
-                painter.rect_stroke(r, 0.0, egui::Stroke::new(1.5_f32, theme.marker_warning));
+                painter.rect_stroke(r, 0.0, egui::Stroke::new(1.5_f32, theme.marker_warning), egui::StrokeKind::Outside);
             }
             // Draw point markers — green for keep, warning-red
             // for exclude. Cosmetically matches the keep/exclude
@@ -1841,7 +1841,7 @@ fn run_said_no(ui: &mut egui::Ui, theme: &KlippTheme, said: &str) {
     egui::Frame::none()
         .fill(theme.bg_raised.gamma_multiply(0.6))
         .rounding(4.0)
-        .inner_margin(egui::Margin::symmetric(10.0, 12.0))
+        .inner_margin(egui::Margin::symmetric(10, 12))
         .show(ui, |ui| {
             ui.add(egui::Label::new(egui::RichText::new(said).small().color(theme.text_secondary)).wrap());
         });
@@ -1856,7 +1856,7 @@ fn empty_output_placeholder(ui: &mut egui::Ui, theme: &KlippTheme) {
     egui::Frame::none()
         .fill(theme.bg_raised.gamma_multiply(0.6))
         .rounding(4.0)
-        .inner_margin(egui::Margin::symmetric(8.0, 36.0))
+        .inner_margin(egui::Margin::symmetric(8, 36))
         .show(ui, |ui| {
             ui.vertical_centered(|ui| {
                 ui.add(Icon::Info.image(28.0).tint(theme.text_dim));
@@ -1913,7 +1913,7 @@ fn advanced_section(ui: &mut egui::Ui, state: &mut AiToolsState, theme: &KlippTh
     egui::Frame::none()
         .fill(theme.bg_raised.gamma_multiply(0.4))
         .rounding(4.0)
-        .inner_margin(egui::Margin::same(8.0))
+        .inner_margin(egui::Margin::same(8))
         .show(ui, |ui| {
             // Mask threshold — slider 0.0..=1.0 with the value
             // pinned right-aligned. Reuses MaskTunables's

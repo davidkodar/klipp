@@ -118,7 +118,7 @@ fn navigate(run: &mut Run, label: RowLabel, next: bool) -> Result<(), String> {
         .shapes
         .iter()
         .filter_map(|s| match &s.shape {
-            egui::Shape::Rect(shape) if shape.fill_texture_id != egui::TextureId::default() => {
+            egui::Shape::Rect(shape) if shape.fill_texture_id() != egui::TextureId::default() => {
                 let rect = shape.rect;
                 ((rect.width() - 8.0).abs() < 0.1
                     && (rect.height() - 8.0).abs() < 0.1

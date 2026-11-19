@@ -463,10 +463,7 @@ impl KlippApp {
                 .chunks_exact(4)
                 .map(|p| egui::Color32::from_rgba_unmultiplied(p[0], p[1], p[2], p[3]))
                 .collect();
-            let image = egui::ColorImage {
-                size: [result.width as usize, result.height as usize],
-                pixels,
-            };
+            let image = egui::ColorImage::new([result.width as usize, result.height as usize], pixels);
             let new_size = egui::vec2(result.width as f32, result.height as f32);
             // Reuse the existing handle only when the incoming frame
             // matches (same media, same size). Different media or a
@@ -1478,10 +1475,7 @@ impl KlippApp {
                                 egui::Color32::from_rgba_unmultiplied(p[0], p[1], p[2], p[3])
                             })
                             .collect();
-                        let image = egui::ColorImage {
-                            size: [w, h],
-                            pixels,
-                        };
+                        let image = egui::ColorImage::new([w, h], pixels);
                         let tex_name = format!("thumb-{}", media_id);
                         let tex = alloc_texture_logged(ctx, &tex_name, image, egui::TextureOptions::LINEAR);
                         if let Some(old) = self.state.thumbnail_textures.insert(media_id, tex) {
@@ -1539,10 +1533,7 @@ impl KlippApp {
                                     egui::Color32::from_rgba_unmultiplied(p[0], p[1], p[2], p[3])
                                 })
                                 .collect();
-                            let image = egui::ColorImage {
-                                size: [w, h_p],
-                                pixels,
-                            };
+                            let image = egui::ColorImage::new([w, h_p], pixels);
                             let tex_name = format!("filmstrip-{}-{}", media_id, i);
                             let tex = alloc_texture_logged(ctx, &tex_name, image, egui::TextureOptions::LINEAR);
                             new_vec.push((frame.time_secs, tex));

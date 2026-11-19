@@ -209,7 +209,7 @@ pub(crate) fn row_drawn(ui: &egui::Ui, tag: &Tag, rect: egui::Rect, clicked: boo
     let accent = ui.visuals().selection.stroke.color;
     let fade = (1.0 - age / FLASH_SECS) as f32;
     ui.painter().rect_filled(rect.expand(1.0), 3.0, accent.gamma_multiply(0.25 * fade));
-    ui.painter().rect_stroke(rect.expand(1.0), 3.0, egui::Stroke::new(1.0_f32, accent.gamma_multiply(fade)));
+    ui.painter().rect_stroke(rect.expand(1.0), 3.0, egui::Stroke::new(1.0_f32, accent.gamma_multiply(fade)), egui::StrokeKind::Outside);
     ui.ctx().request_repaint();
 }
 

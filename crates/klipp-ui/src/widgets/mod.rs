@@ -145,7 +145,7 @@ impl<'a> NumberField<'a> {
         self
     }
     pub fn prefix(mut self, prefix: impl ToString) -> Self {
-        self.inner = self.inner.prefix(prefix);
+        self.inner = self.inner.prefix(prefix.to_string());
         self
     }
     pub fn suffix(mut self, suffix: impl ToString) -> Self {

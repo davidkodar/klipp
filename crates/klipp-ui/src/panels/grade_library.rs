@@ -132,7 +132,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut GradeLibraryPanelState, library: &mut
                     }
                 }
                 if picked {
-                    ui.painter().rect_stroke(rect, 2.0, egui::Stroke::new(2.0_f32, theme.accent));
+                    ui.painter().rect_stroke(rect, 2.0, egui::Stroke::new(2.0_f32, theme.accent), egui::StrokeKind::Outside);
                 }
                 // The name picks it as the thumbnail does.
                 let name = ui.add_sized([size.x, 12.0], egui::Label::new(egui::RichText::new(&grade.name).size(9.0).color(if picked { theme.text_primary } else { theme.text_dim })).truncate().sense(egui::Sense::click()).selectable(false));

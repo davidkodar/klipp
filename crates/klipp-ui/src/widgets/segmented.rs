@@ -28,7 +28,7 @@ pub fn segmented_in(ui: &mut Ui, rect: Rect, labels: &[&str], active: usize, the
     let resp: Response = ui.allocate_rect(rect, Sense::click());
     let painter = ui.painter().clone();
     painter.rect_filled(rect, crate::theme::radius::PANEL, theme.bg_panel);
-    painter.rect_stroke(rect, crate::theme::radius::PANEL, egui::Stroke::new(1.0_f32, theme.border));
+    painter.rect_stroke(rect, crate::theme::radius::PANEL, egui::Stroke::new(1.0_f32, theme.border), egui::StrokeKind::Outside);
     let widths: Vec<f32> = labels
         .iter()
         .map(|l| painter.layout_no_wrap(l.to_string(), font.clone(), egui::Color32::WHITE).size().x + PAD * 2.0)

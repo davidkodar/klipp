@@ -154,7 +154,7 @@ pub fn picker(
     }
     if mem.open {
         let sample = sample.lines().next().map(str::trim).filter(|s| !s.is_empty());
-        egui::Frame::none().fill(theme.bg_panel).stroke(egui::Stroke::new(1.0_f32, theme.border)).rounding(4.0).inner_margin(egui::Margin::same(6.0)).show(ui, |ui| {
+        egui::Frame::none().fill(theme.bg_panel).stroke(egui::Stroke::new(1.0_f32, theme.border)).rounding(4.0).inner_margin(egui::Margin::same(6)).show(ui, |ui| {
             let search = ui.add(egui::TextEdit::singleline(&mut mem.search).hint_text("Search fonts\u{2026}").desired_width(f32::INFINITY));
             if field.clicked() {
                 search.request_focus();
@@ -183,7 +183,7 @@ pub fn picker(
                                 ui.painter().rect_filled(row.rect, 3.0, theme.bg_hover);
                             }
                             if family == current {
-                                ui.painter().rect_stroke(row.rect, 3.0, egui::Stroke::new(1.0_f32, theme.accent));
+                                ui.painter().rect_stroke(row.rect, 3.0, egui::Stroke::new(1.0_f32, theme.accent), egui::StrokeKind::Outside);
                             }
                             // The family in its own face; its name small
                             // beside it, and alone until the preview comes.

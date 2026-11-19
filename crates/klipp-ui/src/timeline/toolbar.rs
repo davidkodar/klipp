@@ -50,7 +50,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState, theme: &KlippTheme, cmds: &
             if resp.clicked() {
                 ui.memory_mut(|m| m.toggle_popup(popup));
             }
-            egui::popup::popup_below_widget(ui, popup, &resp, egui::PopupCloseBehavior::CloseOnClickOutside, |ui| {
+            egui::popup_below_widget(ui, popup, &resp, egui::PopupCloseBehavior::CloseOnClickOutside, |ui| {
                 ui.set_min_width(200.0);
                 for group in &folded {
                     ui.horizontal(|ui| {
@@ -280,7 +280,7 @@ fn draw_group(group: Group, ui: &mut egui::Ui, state: &mut AppState, theme: &Kli
             // shows. ──
             let resp = ui.add(egui::Button::new("\u{22EF}").min_size(egui::vec2(btn, btn)));
             styled_tooltip(&resp, theme, "Timeline options", None);
-            egui::popup::popup_below_widget(ui, ui.id().with("timeline_options"), &resp, egui::PopupCloseBehavior::CloseOnClickOutside, |ui| {
+            egui::popup_below_widget(ui, ui.id().with("timeline_options"), &resp, egui::PopupCloseBehavior::CloseOnClickOutside, |ui| {
                 ui.set_min_width(230.0);
                 ui.label(egui::RichText::new("Follow the playhead").strong().size(11.0));
                 for follow in [crate::state::PlayheadFollow::Off, crate::state::PlayheadFollow::Page, crate::state::PlayheadFollow::Smooth] {
@@ -302,7 +302,7 @@ fn draw_group(group: Group, ui: &mut egui::Ui, state: &mut AppState, theme: &Kli
                 ui.separator();
                 if ui.add(egui::Button::new("Find in Timeline\u{2026}").shortcut_text(kb.display_for("focus_panel_search"))).clicked() {
                     state.focus_search_request = Some(crate::state::PanelKind::Timeline);
-                    ui.memory_mut(|m| m.close_popup());
+                    egui::Popup::close_all(ui.ctx());
                 }
             });
             if resp.clicked() {

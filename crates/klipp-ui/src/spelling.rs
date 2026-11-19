@@ -368,10 +368,11 @@ pub fn show(
     cmds: &mut Vec<AppCommand>,
 ) -> (egui::text_edit::TextEditOutput, Option<String>) {
     let ctx = ui.ctx().clone();
-    let mut layouter = |ui: &egui::Ui, text: &str, wrap: f32| {
+    let mut layouter = |ui: &egui::Ui, text: &dyn egui::TextBuffer, wrap: f32| {
+        let text = text.as_str();
         let marks = spell.marks(&ctx, text, language);
         let job = layout_job(text, wrap, font.clone(), color, &marks, mark);
-        ui.fonts(|f| f.layout_job(job))
+        ui.fonts_mut(|f| f.layout_job(job))
     };
     let output = configure(egui::TextEdit::multiline(text)).layouter(&mut layouter).show(ui);
     let text = output.galley.text().to_string();
@@ -379,14 +380,16 @@ pub fn show(
     if output.response.secondary_clicked() {
         let target = ui.input(|i| i.pointer.interact_pos()).and_then(|pos| {
             let cursor = output.galley.cursor_from_pos(pos - output.galley_pos);
-            let at = text.char_indices().nth(cursor.ccursor.index).map_or(text.len(), |(b, _)| b);
+            let at = text.char_indices().nth(cursor.index).map_or(text.len(), |(b, _)| b);
             let marks = spell.marks(&ctx, &text, language);
             let (start, end) = mark_at(&marks, at)?;
             let word = text[start..end].to_string();
             Some(Target { start, end, suggestions: spell.suggestions(&word, language), word })
         });
         ui.data_mut(|d| match &target {
-            Some(t) => d.insert_temp(id, t.clone()),
+            Some(t) => {
+                d.insert_temp(id, t.clone());
+            }
             None => d.remove::<Target>(id),
         });
     }
@@ -480,7 +483,7 @@ pub(crate) mod tests {
         };
 
         // On "dog", spelt right: no menu.
-        let on = |galley: &egui::Galley, at: egui::Pos2, char_index: usize| at + galley.pos_from_cursor(&galley.from_ccursor(egui::text::CCursor::new(char_index))).center().to_vec2() + egui::vec2(2.0, 0.0);
+        let on = |galley: &egui::Galley, at: egui::Pos2, char_index: usize| at + galley.pos_from_cursor(egui::text::CCursor::new(char_index)).center().to_vec2() + egui::vec2(2.0, 0.0);
         let (.., texts) = click(&mut text, on(&galley, at, 9), egui::PointerButton::Secondary);
         assert!(!texts.iter().any(|(t, _)| t == "Ignore in This Project"), "no menu over a word spelt right");
 

@@ -32,15 +32,18 @@ impl FrameRateMismatchDialog {
     pub fn show(&mut self, ctx: &egui::Context) -> Option<FrameRateMismatchChoice> {
         let mut choice: Option<FrameRateMismatchChoice> = None;
 
-        egui::Area::new(egui::Id::new("fps_mismatch_backdrop"))
+        // Above the panels and under every window, where egui 0.29's
+        // PanelResizeLine order put it: the top of the background layers.
+        let backdrop = egui::Area::new(egui::Id::new("fps_mismatch_backdrop"))
             .fixed_pos(egui::pos2(0.0, 0.0))
-            .order(egui::Order::PanelResizeLine)
+            .order(egui::Order::Background)
             .show(ctx, |ui| {
                 let screen = ctx.screen_rect();
                 // Takes the clicks so that what is behind it doesn't.
                 ui.allocate_rect(screen, egui::Sense::click());
                 ui.painter().rect_filled(screen, 0.0, egui::Color32::from_black_alpha(120));
             });
+        ctx.move_to_top(backdrop.response.layer_id);
 
         if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
             choice = Some(FrameRateMismatchChoice::Cancel);

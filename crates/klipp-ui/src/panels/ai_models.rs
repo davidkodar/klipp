@@ -1606,7 +1606,7 @@ fn render_custom_row(
     let left_w = (avail - right_reserve - 28.0).max(200.0);
 
     egui::Frame::none()
-        .inner_margin(egui::Margin::symmetric(8.0, 6.0))
+        .inner_margin(egui::Margin::symmetric(8, 6))
         .show(ui, |ui| {
             ui.set_min_height(row_h);
             ui.horizontal(|ui| {
@@ -1677,7 +1677,7 @@ fn render_custom_row(
                             .fill(badge_color.gamma_multiply(0.18))
                             .stroke(egui::Stroke::new(1.0_f32, badge_color))
                             .rounding(2.0)
-                            .inner_margin(egui::Margin::symmetric(6.0, 2.0));
+                            .inner_margin(egui::Margin::symmetric(6, 2));
                         badge.show(ui, |ui| {
                             ui.label(
                                 egui::RichText::new(badge_label)
@@ -2093,7 +2093,7 @@ fn show_custom_install(
                     );
                     ui.add_space(10.0);
                     egui::Frame::group(ui.style())
-                        .inner_margin(egui::Margin::same(8.0))
+                        .inner_margin(egui::Margin::same(8))
                         .show(ui, |ui| {
                             ui.label(format!("Adapter: {}",
                                 form.adapter
@@ -2428,7 +2428,7 @@ fn render_row(
     // Leave room for the status dot (~18px) + a small margin.
     let left_w = (avail - right_reserve - 28.0).max(200.0);
     egui::Frame::none()
-        .inner_margin(egui::Margin::symmetric(8.0, 6.0))
+        .inner_margin(egui::Margin::symmetric(8, 6))
         .show(ui, |ui| {
             ui.set_min_height(row_h);
             ui.horizontal(|ui| {
@@ -2578,7 +2578,7 @@ fn section_header(ui: &mut egui::Ui, header: &str, count: usize, theme: &KlippTh
         let badge = egui::Frame::none()
             .fill(theme.bg_raised)
             .rounding(2.0)
-            .inner_margin(egui::Margin::symmetric(5.0, 0.5));
+            .inner_margin(egui::Margin::symmetric(5, 1));
         badge.show(ui, |ui| {
             ui.label(
                 egui::RichText::new(count.to_string())
@@ -2610,7 +2610,7 @@ fn recommended_badge(ui: &mut egui::Ui, theme: &KlippTheme) {
     egui::Frame::none()
         .fill(bg)
         .rounding(2.0)
-        .inner_margin(egui::Margin::symmetric(6.0, 1.0))
+        .inner_margin(egui::Margin::symmetric(6, 1))
         .show(ui, |ui| {
             ui.label(
                 egui::RichText::new("RECOMMENDED")
@@ -2634,7 +2634,7 @@ fn status_badge(
         .fill(color.gamma_multiply(0.18))
         .stroke(egui::Stroke::new(1.0_f32, color))
         .rounding(2.0)
-        .inner_margin(egui::Margin::symmetric(6.0, 2.0))
+        .inner_margin(egui::Margin::symmetric(6, 2))
         .show(ui, |ui| {
             ui.label(
                 egui::RichText::new(status.label().to_uppercase())
@@ -2741,7 +2741,7 @@ fn row_overflow_menu(
     if response.clicked() {
         ui.memory_mut(|m| m.toggle_popup(popup_id));
     }
-    egui::popup::popup_below_widget(
+    egui::popup_below_widget(
         ui,
         popup_id,
         &response,

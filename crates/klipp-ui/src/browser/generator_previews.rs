@@ -122,7 +122,7 @@ impl GeneratorPreviews {
                 .chunks_exact(4)
                 .map(|p| egui::Color32::from_rgba_unmultiplied(p[0], p[1], p[2], p[3]))
                 .collect();
-            let image = egui::ColorImage { size: [PREVIEW_W as usize, PREVIEW_H as usize], pixels };
+            let image = egui::ColorImage::new([PREVIEW_W as usize, PREVIEW_H as usize], pixels);
             let tex = crate::app::alloc_texture_logged(ctx, "generator_preview", image, egui::TextureOptions::LINEAR);
             if let Some(old) = self.textures.insert(done.key, tex) {
                 displaced.push(old);

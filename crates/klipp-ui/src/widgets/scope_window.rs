@@ -209,7 +209,7 @@ pub fn show_scope_window(
                 .stroke(egui::Stroke::new(1.0_f32, theme.border_light))
                 .rounding(4.0)
                 .inner_margin(0.0)
-                .shadow(egui::Shadow { offset: egui::vec2(0.0, 2.0), blur: 12.0, spread: 0.0, color: egui::Color32::from_black_alpha(100) });
+                .shadow(egui::Shadow { offset: [0, 2], blur: 12, spread: 0, color: egui::Color32::from_black_alpha(100) });
 
             panel_frame.show(ui, |ui| {
                 egui::Resize::default()
@@ -333,7 +333,7 @@ pub fn draw_pane_grid(
             // pane's own true-black interior (matching the scope
             // texture and the main-dock paint path).
             ui.painter().rect_stroke(pane_rect, 0.0,
-                egui::Stroke::new(0.5_f32, egui::Color32::BLACK));
+                egui::Stroke::new(0.5_f32, egui::Color32::BLACK), egui::StrokeKind::Outside);
             let mut child = ui.new_child(egui::UiBuilder::new().max_rect(pane_rect));
             draw_pane(&mut child, pane_idx, state, scope_options, runtime, frame_buffer, skin_tone_angle, is_playing, scope_cursor, spectrum_bins, correlation_samples, lufs_history, lufs_target, spectrum_history, theme, basis);
         }
@@ -866,7 +866,7 @@ fn render_pane_scope(
                     painter.rect_stroke(
                         rect,
                         0.0,
-                        egui::Stroke::new(1.0_f32, target_color),
+                        egui::Stroke::new(1.0_f32, target_color), egui::StrokeKind::Outside,
                     );
                     let mag = (cb * cb + cr * cr).sqrt().max(0.001);
                     let ux = cb / mag;

@@ -793,7 +793,7 @@ impl LaunchScreen {
         let open_resp = ui.allocate_rect(open_rect, egui::Sense::click());
         let open_bg = if open_resp.hovered() { theme.bg_hover } else { theme.bg_raised };
         ui.painter().rect_filled(open_rect, 4.0, open_bg);
-        ui.painter().rect_stroke(open_rect, 4.0, egui::Stroke::new(1.0_f32, theme.border_light));
+        ui.painter().rect_stroke(open_rect, 4.0, egui::Stroke::new(1.0_f32, theme.border_light), egui::StrokeKind::Outside);
         ui.painter().text(
             open_rect.center(),
             egui::Align2::CENTER_CENTER,
@@ -1249,7 +1249,7 @@ impl LaunchScreen {
         let sort_resp = ui.allocate_rect(sort_rect, egui::Sense::click());
         let sort_bg = if sort_resp.hovered() { theme.bg_hover } else { theme.bg_raised };
         ui.painter().rect_filled(sort_rect, 4.0, sort_bg);
-        ui.painter().rect_stroke(sort_rect, 4.0, egui::Stroke::new(1.0_f32, theme.border));
+        ui.painter().rect_stroke(sort_rect, 4.0, egui::Stroke::new(1.0_f32, theme.border), egui::StrokeKind::Outside);
         ui.painter().text(
             egui::pos2(sort_rect.center().x - 4.0, sort_rect.center().y),
             egui::Align2::CENTER_CENTER,
@@ -1746,14 +1746,14 @@ impl LaunchScreen {
         } else {
             egui::Stroke::new(1.0_f32, theme.border)
         };
-        ui.painter().rect(rect, 8.0, bg, stroke);
+        ui.painter().rect(rect, 8.0, bg, stroke, egui::StrokeKind::Outside);
 
         // The thumbnail: 16:9, the card's full width.
         let thumb_rect = egui::Rect::from_min_size(
             rect.min + egui::vec2(1.0, 1.0),
             egui::vec2(rect.width() - 2.0, (rect.width() - 2.0) * 9.0 / 16.0),
         );
-        let thumb_rounding = egui::Rounding { nw: 7.0, ne: 7.0, sw: 0.0, se: 0.0 };
+        let thumb_rounding = egui::Rounding { nw: 7, ne: 7, sw: 0, se: 0 };
 
         let poster = self.poster(ctx, rp);
         // Across the thumbnail the pointer scrubs through the project,
@@ -2119,7 +2119,7 @@ fn sort_projects(list: &mut [&RecentProject], mode: SortMode, descending: bool) 
 fn draw_poster(painter: &egui::Painter, rect: egui::Rect, poster: Option<&Poster>, crop: Option<egui::Rect>, theme: &KlippTheme) {
     let Some(poster) = poster else {
         painter.rect_filled(rect, 3.0, theme.bg_raised);
-        painter.rect_stroke(rect, 3.0, egui::Stroke::new(1.0_f32, theme.border));
+        painter.rect_stroke(rect, 3.0, egui::Stroke::new(1.0_f32, theme.border), egui::StrokeKind::Outside);
         return;
     };
     let uv = crop.unwrap_or(egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)));
@@ -2176,7 +2176,7 @@ fn soften(img: &egui::ColorImage, across: usize) -> egui::ColorImage {
             pixels.push(egui::Color32::from_rgb((sum[0] / n) as u8, (sum[1] / n) as u8, (sum[2] / n) as u8));
         }
     }
-    egui::ColorImage { size: [sw, sh], pixels }
+    egui::ColorImage::new([sw, sh], pixels)
 }
 
 /// Draw one sidebar mark centred on `c`.
@@ -2483,10 +2483,7 @@ fn image_from_png(data: &[u8]) -> Result<egui::ColorImage, String> {
         _ => return Err("Unsupported PNG colour type".into()),
     };
 
-    Ok(egui::ColorImage {
-        size: [w, h],
-        pixels,
-    })
+    Ok(egui::ColorImage::new([w, h], pixels))
 }
 
 #[cfg(test)]
@@ -2725,7 +2722,7 @@ mod tests {
         assert!(details.iter().any(|(t, _)| t.starts_with("1920\u{00D7}1080 \u{00B7} 24 fps \u{00B7} 1:55")), "{details:?}");
         assert!(details.iter().all(|(_, f)| *f == egui::FontFamily::Proportional), "{details:?}");
         // Its figures are tabular, so they still line up.
-        let width = |s: &str| ctx.fonts(|f| f.layout_no_wrap(s.into(), egui::FontId::proportional(10.0), egui::Color32::WHITE).size().x);
+        let width = |s: &str| ctx.fonts_mut(|f| f.layout_no_wrap(s.into(), egui::FontId::proportional(10.0), egui::Color32::WHITE).size().x);
         let ones = width("1111");
         for d in ["0000", "4444", "8888"] {
             assert!((width(d) - ones).abs() < 0.01, "{d}: {} vs {ones}", width(d));

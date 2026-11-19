@@ -249,7 +249,7 @@ pub fn show_tour(ctx: &egui::Context, state: &mut AppState, kb: &KeyBindings, th
     let target = anchor_rect(ctx, &step.anchor);
     if let Some(r) = target {
         ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("klipp_tour_ring")))
-            .rect_stroke(r.expand(3.0), 4.0_f32, egui::Stroke::new(2.0_f32, theme.accent));
+            .rect_stroke(r.expand(3.0), 4.0_f32, egui::Stroke::new(2.0_f32, theme.accent), egui::StrokeKind::Outside);
     }
     const WIDTH: f32 = 300.0;
     const HEIGHT: f32 = 150.0;

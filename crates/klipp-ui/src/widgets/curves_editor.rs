@@ -147,7 +147,7 @@ pub fn curves_editor_in(
 
     // Background
     painter.rect_filled(rect, 4.0, bg_color);
-    painter.rect_stroke(rect, 4.0, egui::Stroke::new(0.5_f32, border_color));
+    painter.rect_stroke(rect, 4.0, egui::Stroke::new(0.5_f32, border_color), egui::StrokeKind::Outside);
 
     // Histogram background (if provided)
     if let Some(bins) = histogram_bins {

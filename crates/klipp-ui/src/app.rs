@@ -900,7 +900,17 @@ impl eframe::App for KlippApp {
         self.exit_after_engine_shutdown();
     }
 
-    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+    /// eframe 0.34 calls this each frame with the root `Ui`. Klipp's frame
+    /// lays out its panels on the context, as eframe's deprecated `update`
+    /// still does in the same place of the same frame.
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+        let ctx = ui.ctx().clone();
+        self.frame_update(&ctx, frame);
+    }
+}
+
+impl KlippApp {
+    fn frame_update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         self.run_startup_open();
         // Heartbeat for the freeze watchdog in klipp-app::main. Bumped
         // at the very top so any stall below (layout, viewer paint,

@@ -88,7 +88,7 @@ pub(super) fn show(
         let r = egui::Rect::from_min_max(egui::pos2(bar.left() + a * bar.width(), bar.top()), egui::pos2(bar.left() + b * bar.width(), bar.bottom()));
         painter.rect_filled(r, 0.0, egui::Color32::from_rgba_unmultiplied(c[0], c[1], c[2], c[3]));
     }
-    painter.rect_stroke(bar, 2.0, egui::Stroke::new(1.0_f32, egui::Color32::from_gray(90)));
+    painter.rect_stroke(bar, 2.0, egui::Stroke::new(1.0_f32, egui::Color32::from_gray(90)), egui::StrokeKind::Outside);
     for i in 0..stops.len() {
         let x = bar.left() + stops[i].position * bar.width();
         let hit = egui::Rect::from_center_size(egui::pos2(x, handles.center().y), egui::vec2(12.0, 14.0));

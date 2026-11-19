@@ -92,7 +92,7 @@ impl PointerPlayer {
             PointerAction::Release if first => raw.events.push(press(false)),
             PointerAction::Click if first => raw.events.push(press(true)),
             PointerAction::Click if self.played == 1 => raw.events.push(press(false)),
-            PointerAction::Scroll if first => raw.events.push(egui::Event::MouseWheel { unit: egui::MouseWheelUnit::Point, delta: egui::vec2(step.scroll[0], step.scroll[1]), modifiers }),
+            PointerAction::Scroll if first => raw.events.push(egui::Event::MouseWheel { unit: egui::MouseWheelUnit::Point, delta: egui::vec2(step.scroll[0], step.scroll[1]), modifiers, phase: egui::TouchPhase::Move }),
             PointerAction::KeyPress | PointerAction::Key if first => raw.events.extend(key_event(true)),
             PointerAction::KeyRelease if first => raw.events.extend(key_event(false)),
             PointerAction::Key if self.played == 1 => raw.events.extend(key_event(false)),

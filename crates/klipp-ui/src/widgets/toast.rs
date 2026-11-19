@@ -131,11 +131,11 @@ impl ToastState {
                     .fill(bg)
                     .stroke(egui::Stroke::new(1.0_f32, border))
                     .rounding(4.0)
-                    .inner_margin(egui::Margin::symmetric(16.0, 8.0))
+                    .inner_margin(egui::Margin::symmetric(16, 8))
                     .shadow(egui::Shadow {
-                        spread: 0.0,
-                        blur: 20.0,
-                        offset: egui::vec2(0.0, 4.0),
+                        spread: 0,
+                        blur: 20,
+                        offset: [0, 4],
                         color: egui::Color32::from_rgba_premultiplied(
                             0,
                             0,

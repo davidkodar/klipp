@@ -263,7 +263,7 @@ pub fn show(
 
         // ── Preview header: PREVIEW ON [swatches] [text input] ──
         egui::Frame::none()
-            .inner_margin(egui::Margin::symmetric(8.0, 0.0))
+            .inner_margin(egui::Margin::symmetric(8, 0))
             .show(ui, |ui| {
                 // Wrapped: in a narrow panel the swatches and the text
                 // field go on lines of their own, not past the edge (#2602).
@@ -304,14 +304,14 @@ pub fn show(
 
         // ── Search bar ──
         egui::Frame::none()
-            .inner_margin(egui::Margin::symmetric(8.0, 0.0))
+            .inner_margin(egui::Margin::symmetric(8, 0))
             .show(ui, |ui| {
                 super::browser_search_field(ui, theme, search_query, "Search titles\u{2026}", state);
             });
         ui.add_space(6.0);
         // Rolling credits from a list (#1514).
         if *active_category == Some("Credits") {
-            egui::Frame::none().inner_margin(egui::Margin::symmetric(8.0, 0.0)).show(ui, |ui| {
+            egui::Frame::none().inner_margin(egui::Margin::symmetric(8, 0)).show(ui, |ui| {
                 if ui.button("Credits from a list\u{2026}").on_hover_text("Build rolling credits from a CSV or tab-separated list of roles and names").clicked() {
                     state.credits_dialog = Some(Default::default());
                 }
@@ -341,7 +341,7 @@ pub fn show(
         // else on a line of their own above them (#2602).
         let segments = source_segments(scoped_total, builtin_count, user_count, pack_count);
         egui::Frame::none()
-            .inner_margin(egui::Margin::symmetric(8.0, 0.0))
+            .inner_margin(egui::Margin::symmetric(8, 0))
             .show(ui, |ui| {
                 let row_w = ui.available_width();
                 let spacing = ui.spacing().item_spacing.x;
@@ -648,7 +648,7 @@ fn title_card(
         if template_is_animated(title) { " \u{00B7} Animated" } else { "" },
     );
     crate::browser::library_card::library_card(ui, rect, title.name(), &caption, is_selected, hovered, theme, |p, area| {
-        let top = egui::Rounding { nw: crate::theme::radius::PANEL, ne: crate::theme::radius::PANEL, sw: 0.0, se: 0.0 };
+        let top = egui::Rounding { nw: crate::theme::radius::PANEL as u8, ne: crate::theme::radius::PANEL as u8, sw: 0, se: 0 };
         let shown = preview.map_or(area, |t| fitted(area, t));
         paint_preview_backdrop(p, shown, if shown == area { top } else { egui::Rounding::ZERO }, preview_bg, footage);
         if let Some(t) = preview {
@@ -830,9 +830,9 @@ fn title_list_row(
             28,
         );
         ui.painter()
-            .rect_filled(rect, egui::Rounding::same(4.0), bg);
+            .rect_filled(rect, egui::Rounding::same(4), bg);
     } else if hovered {
-        ui.painter().rect_filled(rect, egui::Rounding::same(4.0), theme.bg_raised);
+        ui.painter().rect_filled(rect, egui::Rounding::same(4), theme.bg_raised);
     }
 
     // Mini preview on the left, text block on the right.
@@ -842,7 +842,7 @@ fn title_list_row(
         egui::vec2(mini_w, row_h - 12.0),
     );
     let shown = preview.map_or(mini_rect, |t| fitted(mini_rect, t));
-    paint_preview_backdrop(ui.painter(), shown, egui::Rounding::same(4.0), preview_bg, footage);
+    paint_preview_backdrop(ui.painter(), shown, egui::Rounding::same(4), preview_bg, footage);
     if let Some(t) = preview {
         ui.painter().image(t.id(), shown, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), egui::Color32::WHITE);
     }
@@ -948,7 +948,7 @@ fn preview_swatch(
         egui::vec2(size, size),
         egui::Sense::click(),
     );
-    paint_preview_canvas(ui.painter(), rect, egui::Rounding::same(4.0), bg);
+    paint_preview_canvas(ui.painter(), rect, egui::Rounding::same(4), bg);
     let is_active = *selected == bg;
     let stroke = if is_active {
         egui::Stroke::new(2.0_f32, theme.accent)
@@ -957,7 +957,7 @@ fn preview_swatch(
     } else {
         egui::Stroke::new(1.0_f32, theme.border)
     };
-    ui.painter().rect_stroke(rect, egui::Rounding::same(4.0), stroke);
+    ui.painter().rect_stroke(rect, egui::Rounding::same(4), stroke, egui::StrokeKind::Outside);
     if resp.clicked() {
         *selected = bg;
     }
@@ -1236,7 +1236,7 @@ fn animated_only_pill(ui: &mut egui::Ui, theme: &KlippTheme, active: &mut bool) 
         (theme.bg_panel, theme.border, theme.text_secondary)
     };
     ui.painter().rect_filled(rect, 4.0, bg);
-    ui.painter().rect_stroke(rect, 4.0, egui::Stroke::new(1.0_f32, border));
+    ui.painter().rect_stroke(rect, 4.0, egui::Stroke::new(1.0_f32, border), egui::StrokeKind::Outside);
     let icon_rect = egui::Rect::from_min_size(
         egui::pos2(rect.min.x + pad_x, rect.center().y - icon_size * 0.5),
         egui::vec2(icon_size, icon_size),
@@ -1282,7 +1282,7 @@ fn view_mode_button(
         (theme.bg_panel, theme.border, theme.text_secondary)
     };
     ui.painter().rect_filled(rect, 4.0, bg);
-    ui.painter().rect_stroke(rect, 4.0, egui::Stroke::new(1.0_f32, border));
+    ui.painter().rect_stroke(rect, 4.0, egui::Stroke::new(1.0_f32, border), egui::StrokeKind::Outside);
     let size = 13.0;
     let icon_rect = egui::Rect::from_center_size(rect.center(), egui::vec2(size, size));
     let img = icon.image(size).tint(fg);

@@ -73,21 +73,24 @@ impl SequenceSettingsDialog {
             .collect();
 
         // Backdrop
-        egui::Area::new(egui::Id::new("seq_settings_backdrop"))
+        // Above the panels and under every window, where egui 0.29's
+        // PanelResizeLine order put it: the top of the background layers.
+        let backdrop = egui::Area::new(egui::Id::new("seq_settings_backdrop"))
             .fixed_pos(egui::pos2(0.0, 0.0))
-            .order(egui::Order::PanelResizeLine)
+            .order(egui::Order::Background)
             .show(ctx, |ui| {
                 let screen = ctx.screen_rect();
                 let resp = ui.allocate_rect(screen, egui::Sense::click());
                 ui.painter().rect_filled(screen, 0.0, egui::Color32::from_black_alpha(120));
                 if resp.clicked() { open = false; }
             });
+        ctx.move_to_top(backdrop.response.layer_id);
 
         crate::widgets::window("Sequence Settings")
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
-            .frame(egui::Frame::window(&ctx.style()).fill(theme.bg_panel).inner_margin(egui::Margin::symmetric(0.0, 8.0)))
+            .frame(egui::Frame::window(&ctx.style()).fill(theme.bg_panel).inner_margin(egui::Margin::symmetric(0, 8)))
             .show(ctx, |ui| {
                 ui.set_width(420.0);
 

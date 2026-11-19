@@ -1720,7 +1720,7 @@ impl NodeInspectorPanel {
             );
         });
         egui::Frame::none()
-            .inner_margin(egui::Margin { left: 12.0, right: 12.0, top: 4.0, bottom: 0.0 })
+            .inner_margin(egui::Margin { left: 12, right: 12, top: 4, bottom: 0 })
             .show(ui, |ui| {
                 ui.label(egui::RichText::new("The encoding the file is converted from. Applies to every clip of this file.")
                     .size(10.0).color(theme.text_dim));
@@ -2091,7 +2091,7 @@ impl NodeInspectorPanel {
                 let text_color = if active { theme.text_on_accent } else { color };
                 ui.painter().rect_filled(rect, 4.0, bg);
                 ui.painter().rect_stroke(rect, 4.0, egui::Stroke::new(0.5_f32,
-                    theme.overlay(30)));
+                    theme.overlay(30)), egui::StrokeKind::Outside);
                 ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER,
                     label, egui::FontId::proportional(11.0), text_color);
                 if resp.clicked() { self.active_curve_channel = ch; }
@@ -4453,17 +4453,17 @@ fn section_header(ui: &mut egui::Ui, title: &str, enabled: bool, theme: &KlippTh
 
     // Background card
     let rounding = if is_open {
-        egui::Rounding { nw: 6.0, ne: 6.0, sw: 0.0, se: 0.0 }
+        egui::Rounding { nw: 6, ne: 6, sw: 0, se: 0 }
     } else {
-        egui::Rounding::same(4.0)
+        egui::Rounding::same(4)
     };
     ui.painter().rect_filled(rect, rounding, theme.bg_deep);
 
     // Left accent bar
     let accent_rounding = if is_open {
-        egui::Rounding { nw: 6.0, ne: 0.0, sw: 0.0, se: 0.0 }
+        egui::Rounding { nw: 6, ne: 0, sw: 0, se: 0 }
     } else {
-        egui::Rounding { nw: 6.0, ne: 0.0, sw: 6.0, se: 0.0 }
+        egui::Rounding { nw: 6, ne: 0, sw: 6, se: 0 }
     };
     ui.painter().rect_filled(
         egui::Rect::from_min_size(rect.min, egui::vec2(3.0, header_h)),
@@ -6178,7 +6178,7 @@ fn render_wheel_layout_review(ctx: &egui::Context, out: &egui::FullOutput, textu
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).unwrap();
     let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).unwrap();
     let format = wgpu::TextureFormat::Rgba8Unorm;
-    let mut renderer = eframe::egui_wgpu::Renderer::new(&device, format, None, 1, false);
+    let mut renderer = eframe::egui_wgpu::Renderer::new(&device, format, eframe::egui_wgpu::RendererOptions { msaa_samples: 1, depth_stencil_format: None, dithering: false, ..Default::default() });
     for (id, delta) in &textures.set { renderer.update_texture(&device, &queue, *id, delta); }
     let jobs = ctx.tessellate(out.shapes.clone(), out.pixels_per_point);
     let screen = eframe::egui_wgpu::ScreenDescriptor { size_in_pixels: [width, 2000], pixels_per_point: 1.0 };
@@ -6196,9 +6196,9 @@ fn render_wheel_layout_review(ctx: &egui::Context, out: &egui::FullOutput, textu
     {
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: None,
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: &view, resolve_target: None,
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: &view, depth_slice: None, resolve_target: None,
                 ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store } })],
-            depth_stencil_attachment: None, timestamp_writes: None, occlusion_query_set: None,
+            depth_stencil_attachment: None, timestamp_writes: None, occlusion_query_set: None, multiview_mask: None,
         }).forget_lifetime();
         renderer.render(&mut pass, &jobs, &screen);
     }

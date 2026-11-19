@@ -354,15 +354,18 @@ impl KlippApp {
         // Speed dialog
         if self.state.show_speed_dialog {
             // Modal backdrop
-            egui::Area::new(egui::Id::new("speed_dialog_backdrop"))
+            // Above the panels and under every window, where egui 0.29's
+            // PanelResizeLine order put it: the top of the background layers.
+            let backdrop = egui::Area::new(egui::Id::new("speed_dialog_backdrop"))
                 .fixed_pos(egui::pos2(0.0, 0.0))
-                .order(egui::Order::PanelResizeLine)
+                .order(egui::Order::Background)
                 .show(ctx, |ui| {
                     let screen = ctx.screen_rect();
                     let resp = ui.allocate_rect(screen, egui::Sense::click());
                     ui.painter().rect_filled(screen, 0.0, egui::Color32::from_black_alpha(120));
                     if resp.clicked() { self.state.close_speed_dialog(false); }
                 });
+            ctx.move_to_top(backdrop.response.layer_id);
 
             let mut open = true;
             crate::widgets::window("Set Clip Speed")
@@ -1546,10 +1549,7 @@ impl KlippApp {
                             .chunks_exact(4)
                             .map(|c| egui::Color32::from_rgba_unmultiplied(c[0], c[1], c[2], c[3]))
                             .collect();
-                        let image = egui::ColorImage {
-                            size: [w as usize, h as usize],
-                            pixels,
-                        };
+                        let image = egui::ColorImage::new([w as usize, h as usize], pixels);
                         if let Some(old) = self.state.file_info_thumb.take() {
                             self.defer_drop_texture(old);
                         }
@@ -1682,10 +1682,7 @@ impl KlippApp {
                         .chunks_exact(4)
                         .map(|c| egui::Color32::from_rgba_unmultiplied(c[0], c[1], c[2], c[3]))
                         .collect();
-                    let image = egui::ColorImage {
-                        size: [w as usize, h as usize],
-                        pixels,
-                    };
+                    let image = egui::ColorImage::new([w as usize, h as usize], pixels);
                     if let Some(old) = self.state.quick_look_texture.take() {
                         self.defer_drop_texture(old);
                     }

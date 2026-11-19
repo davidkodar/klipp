@@ -1452,7 +1452,7 @@ fn draw_roles_icon(painter: &egui::Painter, btn: egui::Rect, c: egui::Color32) {
 
 pub(crate) fn draw_scopes_icon(painter: &egui::Painter, btn: egui::Rect, c: egui::Color32) {
     let ir = icon_rect(btn);
-    painter.rect_stroke(ir, 2.0, egui::Stroke::new(1.2_f32, c));
+    painter.rect_stroke(ir, 2.0, egui::Stroke::new(1.2_f32, c), egui::StrokeKind::Outside);
     let pts = vec![
         egui::pos2(ir.min.x + 2.0, ir.center().y + 3.0),
         egui::pos2(ir.min.x + 5.0, ir.center().y - 4.0),
@@ -1524,7 +1524,7 @@ fn menu_titles_width(ui: &egui::Ui) -> f32 {
     let font = egui::FontId::proportional(crate::theme::type_scale::CONTROL);
     let pad = ui.spacing().button_padding.x * 2.0;
     let gap = ui.spacing().item_spacing.x;
-    ui.fonts(|f| MENU_TITLES.iter().map(|t| f.layout_no_wrap((*t).to_owned(), font.clone(), egui::Color32::WHITE).size().x + pad + gap).sum())
+    ui.fonts_mut(|f| MENU_TITLES.iter().map(|t| f.layout_no_wrap((*t).to_owned(), font.clone(), egui::Color32::WHITE).size().x + pad + gap).sum())
 }
 
 /// The narrowest drop-down the switcher shrinks to.

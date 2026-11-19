@@ -22,8 +22,8 @@ fn toggle_ui(ui: &mut Ui, on: &mut bool) -> Response {
             (0x32 as f32 + (0x20 - 0x32) as f32 * how_on.min(0.0_f32.max(how_on))) as u8,
         );
         let rounding = rect.height() / 2.0;
-        ui.painter().rect_filled(rect, Rounding::same(rounding), bg);
-        ui.painter().rect_stroke(rect, Rounding::same(rounding), Stroke::new(1.0_f32, Color32::from_rgb(0x38, 0x38, 0x42)));
+        ui.painter().rect_filled(rect, Rounding::from(rounding), bg);
+        ui.painter().rect_stroke(rect, Rounding::from(rounding), Stroke::new(1.0_f32, Color32::from_rgb(0x38, 0x38, 0x42)), egui::StrokeKind::Outside);
 
         let circle_r = rect.height() / 2.0 - 2.0;
         let circle_x = egui::lerp(rect.left() + circle_r + 3.0..=rect.right() - circle_r - 3.0, how_on);

@@ -224,7 +224,7 @@ pub fn bus_strip(ui: &mut egui::Ui, theme: &KlippTheme, state: &mut AppState, cm
     let Some(bus) = routing.buses.get(at).cloned() else { return };
     let (rect, _) = ui.allocate_exact_size(egui::vec2(w, h), egui::Sense::hover());
     ui.painter().rect_filled(rect, 2.0, theme.bg_panel);
-    ui.painter().rect_stroke(rect, 2.0, egui::Stroke::new(1.0_f32, theme.accent.gamma_multiply(0.5)));
+    ui.painter().rect_stroke(rect, 2.0, egui::Stroke::new(1.0_f32, theme.accent.gamma_multiply(0.5)), egui::StrokeKind::Outside);
     let inner = rect.shrink2(egui::vec2(6.0, 6.0));
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(egui::Layout::top_down(egui::Align::Center)));
     let ui = &mut child;
@@ -364,7 +364,7 @@ pub fn sends_popup(ui: &mut egui::Ui, theme: &KlippTheme, state: &mut AppState, 
     if button.clicked() {
         ui.memory_mut(|m| m.toggle_popup(id));
     }
-    egui::popup::popup_below_widget(ui, id, button, egui::PopupCloseBehavior::CloseOnClickOutside, |ui| {
+    egui::popup_below_widget(ui, id, button, egui::PopupCloseBehavior::CloseOnClickOutside, |ui| {
         ui.set_min_width(230.0);
         let routing = state.sequence().routing();
         let sends: Vec<AuxSend> = sends_of(&routing, track).to_vec();

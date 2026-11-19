@@ -292,7 +292,7 @@ fn chip(
     } else {
         egui::Stroke::new(1.0_f32, theme.border)
     };
-    painter.rect_stroke(pic, rounding, stroke);
+    painter.rect_stroke(pic, rounding, stroke, egui::StrokeKind::Outside);
     if let Some(l) = spec.label {
         let color = if spec.selected { theme.text_primary } else { theme.text_secondary };
         painter.text(
@@ -485,7 +485,7 @@ fn inline_picker(
         .fill(theme.bg_panel_alt)
         .stroke(egui::Stroke::new(1.0_f32, theme.border))
         .rounding(crate::theme::radius::PANEL)
-        .inner_margin(egui::Margin::same(8.0))
+        .inner_margin(egui::Margin::same(8))
         .show(ui, |ui| {
             // The picture with its name beside it: the same height either
             // way, so the chips below never move under the pointer.

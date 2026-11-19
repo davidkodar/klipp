@@ -173,9 +173,9 @@ fn row_ui(
 ) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), ROW_H), egui::Sense::click_and_drag());
     if is_selected {
-        ui.painter().rect(rect.shrink(1.0), egui::Rounding::same(4.0), theme.accent_subtle, egui::Stroke::new(1.5_f32, theme.accent));
+        ui.painter().rect(rect.shrink(1.0), egui::Rounding::same(4), theme.accent_subtle, egui::Stroke::new(1.5_f32, theme.accent), egui::StrokeKind::Outside);
     } else if resp.hovered() {
-        ui.painter().rect_filled(rect, egui::Rounding::same(4.0), theme.bg_hover);
+        ui.painter().rect_filled(rect, egui::Rounding::same(4), theme.bg_hover);
     }
     if resp.clicked() {
         cmds.push(AppCommand::SelectTitleObject { clip_id, object_id: Some(obj.id.0) });
@@ -250,7 +250,7 @@ fn row_ui(
         TitleObjectContent::Shape(_) => (theme.bg_raised, theme.text_primary, "S"),
         TitleObjectContent::Image(_) => (theme.bg_raised, theme.text_primary, "I"),
     };
-    ui.painter().rect_filled(badge, egui::Rounding::same(4.0), fill);
+    ui.painter().rect_filled(badge, egui::Rounding::same(4), fill);
     ui.painter().text(badge.center(), egui::Align2::CENTER_CENTER, letter, egui::FontId::proportional(12.0), ink);
     x += 28.0;
 
@@ -285,7 +285,7 @@ fn row_ui(
     if !masks.is_empty() {
         let g = ui.painter().layout_no_wrap("Matte".into(), egui::FontId::proportional(10.0), theme.text_on_accent);
         let pill = egui::Rect::from_min_size(egui::pos2(x_right - g.size().x - 14.0, rect.center().y - 8.0), egui::vec2(g.size().x + 8.0, 16.0));
-        ui.painter().rect_filled(pill, egui::Rounding::same(8.0), theme.accent);
+        ui.painter().rect_filled(pill, egui::Rounding::same(8), theme.accent);
         ui.painter().galley(pill.min + egui::vec2(4.0, (16.0 - g.size().y) * 0.5), g, theme.text_on_accent);
         ui.interact(pill, ui.id().with(("title_layer_matte", obj.id.0)), egui::Sense::hover()).on_hover_text(format!("Masks {}: a matte, not drawn itself", masks.join(", ")));
         x_right = pill.left() - 6.0;

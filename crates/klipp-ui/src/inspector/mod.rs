@@ -39,8 +39,8 @@ fn inspector_scope_banner(ui: &mut egui::Ui, theme: &KlippTheme, scope: &str, de
         .fill(theme.accent_subtle)
         .stroke(egui::Stroke::new(1.0_f32, theme.accent))
         .rounding(4.0)
-        .inner_margin(egui::Margin::symmetric(8.0, 5.0))
-        .outer_margin(egui::Margin::symmetric(0.0, 4.0))
+        .inner_margin(egui::Margin::symmetric(8, 5))
+        .outer_margin(egui::Margin::symmetric(0, 4))
         .show(ui, |ui| {
             // Wrapped, so a narrow column takes it on more lines rather
             // than widening to fit it and pushing every row after it off
@@ -570,7 +570,7 @@ impl NewInspectorPanel {
                             // inset, so nothing touches the inspector edges.
                             egui::Frame::none()
                                 .inner_margin(egui::Margin {
-                                    left: 12.0, right: 12.0, top: 0.0, bottom: 0.0,
+                                    left: 12, right: 12, top: 0, bottom: 0,
                                 })
                                 .show(ui, |ui| {
                                     let full = |ui: &mut egui::Ui, cmds: &mut Vec<AppCommand>, chips: &mut title_tab::TitleChips| {
@@ -2047,13 +2047,13 @@ fn show_title_pinned_core_textbox(
     let (text_resp, respelt) = egui::Frame::none()
         .fill(theme.bg_raised)
         .rounding(4.0)
-        .inner_margin(egui::Margin::symmetric(8.0, 6.0))
+        .inner_margin(egui::Margin::symmetric(8, 6))
         .show(ui, |ui| {
             let (out, respelt) = crate::spelling::show(
                 ui,
                 &state.spelling,
                 &mut text_buf,
-                |e| e.desired_width(f32::INFINITY).desired_rows(2).frame(false),
+                |e| e.desired_width(f32::INFINITY).desired_rows(2).frame(egui::Frame::new().inner_margin(egui::Margin::symmetric(4, 2))),
                 &language,
                 egui::FontId::proportional(13.0),
                 ui.visuals().text_color(),
@@ -2161,7 +2161,7 @@ fn show_title_pinned_core_textbox(
         let size_resp = egui::Frame::none()
             .fill(theme.bg_raised)
             .rounding(4.0)
-            .inner_margin(egui::Margin::symmetric(8.0, 6.0))
+            .inner_margin(egui::Margin::symmetric(8, 6))
             .show(ui, |ui| {
                 ui.add(
                     crate::widgets::number_field(&mut size)
@@ -2520,7 +2520,7 @@ fn show_title_pinned_core_textbox(
             egui::Frame::none()
                 .fill(theme.bg_raised)
                 .rounding(4.0)
-                .inner_margin(egui::Margin::symmetric(8.0, 6.0))
+                .inner_margin(egui::Margin::symmetric(8, 6))
                 .show(ui, |ui| {
                     ui.label(
                         egui::RichText::new(format!("{}%", opacity_pct as u32))
@@ -2536,7 +2536,7 @@ fn show_title_pinned_core_textbox(
             let slider_changed = egui::Frame::none()
                 .fill(theme.bg_raised)
                 .rounding(4.0)
-                .inner_margin(egui::Margin::symmetric(8.0, 6.0))
+                .inner_margin(egui::Margin::symmetric(8, 6))
                 .show(ui, |ui| {
                     ui.set_width(slider_outer_w - 16.0);
                     ui.spacing_mut().slider_width = slider_outer_w - 16.0;
@@ -4289,7 +4289,7 @@ fn show_title_layers_panel(
         .fill(theme.bg_panel)
         .stroke(egui::Stroke::new(1.0_f32, theme.border))
         .rounding(4.0)
-        .inner_margin(egui::Margin::symmetric(6.0, 6.0))
+        .inner_margin(egui::Margin::symmetric(6, 6))
         .show(ui, |ui| {
             if total == 0 {
                 ui.label(
@@ -4349,7 +4349,7 @@ fn show_title_layers_panel(
                 if resp.clicked() {
                     ui.memory_mut(|m| m.toggle_popup(popup_id));
                 }
-                egui::popup::popup_below_widget(ui, popup_id, &resp, egui::PopupCloseBehavior::CloseOnClick, |ui| {
+                egui::popup_below_widget(ui, popup_id, &resp, egui::PopupCloseBehavior::CloseOnClick, |ui| {
                     ui.set_min_width(140.0);
                     for (shape_kind, name) in TITLE_SHAPES {
                         if ui.button(*name).clicked() {
@@ -4398,7 +4398,7 @@ fn compact_axis_input(
     let framed = egui::Frame::none()
         .fill(theme.bg_raised)
         .rounding(4.0)
-        .inner_margin(egui::Margin::symmetric(8.0, 6.0))
+        .inner_margin(egui::Margin::symmetric(8, 6))
         .show(ui, |ui| {
             ui.set_width(col_w - 16.0);
             ui.horizontal(|ui| {
@@ -4514,12 +4514,12 @@ fn effect_color_row(
         let hex_resp = egui::Frame::none()
             .fill(theme.bg_raised)
             .rounding(4.0)
-            .inner_margin(egui::Margin::symmetric(8.0, 6.0))
+            .inner_margin(egui::Margin::symmetric(8, 6))
             .show(ui, |ui| {
                 ui.set_width(ui.available_width().max(40.0));
                 ui.add(
                     egui::TextEdit::singleline(&mut hex_buf)
-                        .frame(false)
+                        .frame(egui::Frame::new().inner_margin(egui::Margin::symmetric(4, 2)))
                         .desired_width(f32::INFINITY)
                         .font(egui::FontId::monospace(11.0)),
                 )
@@ -4667,7 +4667,7 @@ fn effect_param_row(
         egui::Frame::none()
             .fill(theme.bg_raised)
             .rounding(4.0)
-            .inner_margin(egui::Margin::symmetric(8.0, 6.0))
+            .inner_margin(egui::Margin::symmetric(8, 6))
             .show(ui, |ui| {
                 ui.set_width(pill_w - 16.0);
                 ui.with_layout(
@@ -4756,7 +4756,7 @@ fn pill_toggle_icon_button(
         egui::Sense::click(),
     );
     let painter = ui.painter();
-    painter.rect_filled(rect, egui::Rounding::same(4.0), fill);
+    painter.rect_filled(rect, egui::Rounding::same(4), fill);
     let icon_size = 14.0;
     let icon_rect = egui::Rect::from_center_size(
         rect.center(),
@@ -4980,8 +4980,8 @@ fn show_title_editor(
                 .fill(theme.accent_subtle)
                 .stroke(egui::Stroke::new(1.0_f32, theme.accent))
                 .rounding(4.0)
-                .inner_margin(egui::Margin::symmetric(8.0, 6.0))
-                .outer_margin(egui::Margin::symmetric(0.0, 4.0))
+                .inner_margin(egui::Margin::symmetric(8, 6))
+                .outer_margin(egui::Margin::symmetric(0, 4))
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
                         let icon_size = 12.0;
@@ -6073,7 +6073,7 @@ fn show_transition_inspector(
 
     egui::Frame::none()
         .fill(theme.bg_raised)
-        .inner_margin(egui::Margin::symmetric(12.0, 10.0))
+        .inner_margin(egui::Margin::symmetric(12, 10))
         .show(ui, |ui| {
             ui.label(
                 egui::RichText::new(if is_crossfade { "CROSSFADE" } else { "TRANSITION" })

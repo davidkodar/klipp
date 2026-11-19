@@ -79,7 +79,7 @@ impl ViewerLutPass {
             primitive: wgpu::PrimitiveState::default(),
             depth_stencil: None,
             multisample: wgpu::MultisampleState::default(),
-            multiview: None,
+            multiview_mask: None,
             cache: None,
         });
         let n = lut.size as u32;
@@ -141,12 +141,14 @@ impl ViewerLutPass {
                 label: Some("viewer_lut"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &out,
+                    depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store },
                 })],
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
+                multiview_mask: None,
             });
             pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, &bind_group, &[]);

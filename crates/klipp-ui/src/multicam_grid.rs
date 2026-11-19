@@ -457,7 +457,7 @@ pub fn show(ui: &mut egui::Ui, rect: egui::Rect, runtime: &GridRuntime, active: 
         } else {
             egui::Stroke::NONE
         };
-        painter.rect_stroke(cell_rect.shrink(2.0), 2.0, stroke);
+        painter.rect_stroke(cell_rect.shrink(2.0), 2.0, stroke, egui::StrokeKind::Outside);
         if resp.clicked() {
             clicked = Some(source.angle);
         }

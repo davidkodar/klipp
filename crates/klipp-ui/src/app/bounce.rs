@@ -149,13 +149,16 @@ impl KlippApp {
         let dlg = self.bounces.dialog.as_mut()?;
         let mut close = false;
         let mut send = None;
-        egui::Area::new(egui::Id::new("bounce_backdrop")).fixed_pos(egui::pos2(0.0, 0.0)).order(egui::Order::PanelResizeLine).show(ctx, |ui| {
+        // Above the panels and under every window, where egui 0.29's
+        // PanelResizeLine order put it: the top of the background layers.
+        let backdrop = egui::Area::new(egui::Id::new("bounce_backdrop")).fixed_pos(egui::pos2(0.0, 0.0)).order(egui::Order::Background).show(ctx, |ui| {
             let screen = ctx.screen_rect();
             if ui.allocate_rect(screen, egui::Sense::click()).clicked() {
                 close = true;
             }
             ui.painter().rect_filled(screen, 0.0, egui::Color32::from_black_alpha(120));
         });
+        ctx.move_to_top(backdrop.response.layer_id);
         crate::widgets::window("Bounce to Media File").collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0)).show(ctx, |ui| {
             ui.set_min_width(440.0);
             ui.add_space(4.0);

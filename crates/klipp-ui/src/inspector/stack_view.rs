@@ -67,7 +67,9 @@ fn draw_stack(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppState, clip: &Cl
     let revealed_id = egui::Id::new("stack_view_revealed");
     let reveal = selected.filter(|a| ui.data(|d| d.get_temp::<NodePath>(revealed_id)).as_ref() != Some(*a));
     ui.data_mut(|d| match selected {
-        Some(a) => d.insert_temp(revealed_id, a.clone()),
+        Some(a) => {
+            d.insert_temp(revealed_id, a.clone());
+        }
         None => d.remove::<NodePath>(revealed_id),
     });
     // A placed recipe's own controls first: what it was made to be set by,
@@ -88,7 +90,7 @@ fn draw_stack(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppState, clip: &Cl
                     }
                 });
                 if selected == Some(&row.addr) {
-                    ui.painter().rect_stroke(card.response.rect.expand(2.0), 3.0, egui::Stroke::new(1.0_f32, theme.accent));
+                    ui.painter().rect_stroke(card.response.rect.expand(2.0), 3.0, egui::Stroke::new(1.0_f32, theme.accent), egui::StrokeKind::Outside);
                     if reveal == Some(&row.addr) {
                         card.response.scroll_to_me(Some(egui::Align::Center));
                     }
@@ -216,7 +218,7 @@ fn selected_matte(ui: &mut egui::Ui, theme: &KlippTheme, clip: &Clip, graph: &Gr
         drawn
     });
     if card.inner {
-        ui.painter().rect_stroke(card.response.rect.expand(2.0), 3.0, egui::Stroke::new(1.0_f32, theme.accent));
+        ui.painter().rect_stroke(card.response.rect.expand(2.0), 3.0, egui::Stroke::new(1.0_f32, theme.accent), egui::StrokeKind::Outside);
         ui.add_space(4.0);
     }
 }
