@@ -541,6 +541,12 @@ impl KlippTheme {
         visuals.window_shadow = egui::Shadow::NONE;
 
         ctx.set_visuals(visuals);
+        // No fade at a scroll area's edges: egui 0.34 started painting the
+        // panel colour over the content there, which Klipp's panels never
+        // had; a row half under it read as disabled.
+        let mut style = (*ctx.global_style()).clone();
+        style.spacing.scroll.fade.strength = 0.0;
+        ctx.set_global_style(style);
     }
 
     /// Configure egui font sizes. `base_size` is the body text size (default 13.0).
